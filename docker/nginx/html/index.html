@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>标书分析助手 - 智能招标文件分析平台</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;500;600;700&family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            navy: { 50:'#EFF3F8', 100:'#D7E2F0', 200:'#AFC5DF', 300:'#7FA8CF', 400:'#4F8BBF', 500:'#1E6EB5', 600:'#1A5C9E', 700:'#1E3A5F', 800:'#162E4D', 900:'#0F2340' },
+            brand: { DEFAULT:'#1E3A5F', light:'#2563EB', dark:'#0F2340' },
+            accent: { DEFAULT:'#059669', light:'#34D399', dark:'#047857' },
+          },
+          fontFamily: {
+            serif: ['Noto Serif SC', 'serif'],
+            sans: ['Noto Sans SC', 'system-ui', 'sans-serif'],
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    body { font-family: 'Noto Sans SC', system-ui, sans-serif; }
+    .font-serif { font-family: 'Noto Serif SC', serif; }
+    .hero-bg {
+      background: linear-gradient(135deg, #0F2340 0%, #1E3A5F 40%, #162E4D 70%, #1E3A5F 100%);
+      position: relative;
+      overflow: hidden;
+    }
+    .hero-bg::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse at 70% 20%, rgba(37,99,235,0.15) 0%, transparent 60%);
+    }
+    .hero-bg::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cpath d='M36 34v-4h-8v4h8v4h-8v-4' fill='%23ffffff' fill-opacity='0.03'/%3E%3Cpath d='M48 34v-4h-8v4h8v4h-8v-4' fill='%23ffffff' fill-opacity='0.02'/%3E%3C/g%3E%3C/svg%3E") repeat;
+      opacity: 0.5;
+    }
+    .feature-card {
+      transition: all 0.3s ease;
+    }
+    .feature-card:hover {
+      transform: translateY(-4px);
+      box-shadow: 0 12px 40px rgba(30,58,95,0.12);
+    }
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .animate-in { animation: fadeInUp 0.6s ease-out forwards; }
+    .delay-1 { animation-delay: 0.1s; opacity: 0; }
+    .delay-2 { animation-delay: 0.2s; opacity: 0; }
+    .delay-3 { animation-delay: 0.3s; opacity: 0; }
+    .delay-4 { animation-delay: 0.4s; opacity: 0; }
+    .delay-5 { animation-delay: 0.5s; opacity: 0; }
+    .delay-6 { animation-delay: 0.6s; opacity: 0; }
+  </style>
+</head>
+<body class="bg-white">
+
+  <!-- Navigation -->
+  <nav class="bg-navy-800 shadow-lg sticky top-0 z-50">
+    <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 bg-navy-600 rounded-lg flex items-center justify-center">
+          <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+          </svg>
+        </div>
+        <span class="font-serif text-lg font-bold text-white tracking-wide">标书分析助手</span>
+      </div>
+      <div class="flex items-center gap-6">
+        <a href="#features" class="text-navy-200 hover:text-white text-sm transition">功能特性</a>
+        <a href="#flow" class="text-navy-200 hover:text-white text-sm transition">使用流程</a>
+        <a href="/chat" class="bg-accent hover:bg-accent-dark text-white px-5 py-2 rounded-lg text-sm font-medium transition shadow-md">开始使用</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Hero Section -->
+  <section class="hero-bg text-white py-24 lg:py-32">
+    <div class="max-w-6xl mx-auto px-6">
+      <div class="max-w-3xl">
+        <div class="animate-in">
+          <div class="inline-flex items-center gap-2 bg-white/10 border border-white/20 rounded-full px-4 py-1.5 text-sm text-navy-100 mb-6">
+            <span class="w-2 h-2 bg-accent rounded-full animate-pulse"></span>
+            AI 驱动 &middot; 智能分析
+          </div>
+        </div>
+        <h1 class="font-serif text-4xl lg:text-5xl font-bold leading-tight mb-6 animate-in delay-1">
+          招标文件智能分析<br>
+          <span class="text-accent">决策支持平台</span>
+        </h1>
+        <p class="text-navy-200 text-lg leading-relaxed mb-10 animate-in delay-2">
+          基于大语言模型与知识库检索技术，为政府采购、投标决策提供精准的招标文件分析、关键信息提取与智能问答服务。
+        </p>
+        <div class="flex flex-wrap gap-4 animate-in delay-3">
+          <a href="/chat" class="inline-flex items-center gap-2 bg-accent hover:bg-accent-dark text-white px-8 py-3.5 rounded-lg font-medium transition shadow-lg hover:shadow-xl text-base">
+            立即体验
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5-5m5 5H6"/></svg>
+          </a>
+          <a href="#features" class="inline-flex items-center gap-2 border-2 border-white/30 text-white px-8 py-3.5 rounded-lg font-medium hover:bg-white/10 transition text-base">
+            了解更多
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+          </a>
+        </div>
+      </div>
+      <!-- Stats -->
+      <div class="grid grid-cols-3 gap-6 mt-20 animate-in delay-4">
+        <div class="text-center bg-white/5 backdrop-blur rounded-xl p-6 border border-white/10">
+          <div class="font-serif text-3xl font-bold text-accent">10s</div>
+          <div class="text-navy-200 text-sm mt-1">平均响应时间</div>
+        </div>
+        <div class="text-center bg-white/5 backdrop-blur rounded-xl p-6 border border-white/10">
+          <div class="font-serif text-3xl font-bold text-white">95%</div>
+          <div class="text-navy-200 text-sm mt-1">关键信息提取率</div>
+        </div>
+        <div class="text-center bg-white/5 backdrop-blur rounded-xl p-6 border border-white/10">
+          <div class="font-serif text-3xl font-bold text-white">100+</div>
+          <div class="text-navy-200 text-sm mt-1">支持文件格式</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features Section -->
+  <section id="features" class="py-20 lg:py-28 bg-slate-50">
+    <div class="max-w-6xl mx-auto px-6">
+      <div class="text-center mb-16">
+        <span class="text-accent font-medium text-sm tracking-wider uppercase">核心能力</span>
+        <h2 class="font-serif text-3xl font-bold text-navy-800 mt-2">功能特性</h2>
+        <p class="text-slate-500 mt-3 max-w-2xl mx-auto">六大核心功能，覆盖招标文件分析全流程</p>
+      </div>
+      <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <!-- Feature 1 -->
+        <div class="feature-card bg-white rounded-xl p-6 border border-slate-100 hover:border-navy-200">
+          <div class="w-12 h-12 bg-navy-50 rounded-xl flex items-center justify-center mb-4">
+            <svg class="w-6 h-6 text-navy-700" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+          </div>
+          <h3 class="font-serif text-lg font-semibold text-navy-800 mb-2">智能问答</h3>
+          <p class="text-slate-500 text-sm leading-relaxed">基于知识库内容的精准问答，自动关联招标文件原文并标注出处页码，确保信息准确可溯源。</p>
+        </div>
+        <!-- Feature 2 -->
+        <div class="feature-card bg-white rounded-xl p-6 border border-slate-100 hover:border-navy-200">
+          <div class="w-12 h-12 bg-accent/10 rounded-xl flex items-center justify-center mb-4">
+            <svg class="w-6 h-6 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 012 2v2m2 4h16a2 2 0 002 2V9a2 2 0 00-2-2h-2m-6 4h12a2 2 0 002 2v2M3 10h18"/></svg>
+          </div>
+          <h3 class="font-serif text-lg font-semibold text-navy-800 mb-2">关键信息提取</h3>
+          <p class="text-slate-500 text-sm leading-relaxed">自动提炼预算金额、评分标准、技术要求、商务条款等核心维度，结构化呈现。</p>
+        </div>
+        <!-- Feature 3 -->
+        <div class="feature-card bg-white rounded-xl p-6 border border-slate-100 hover:border-navy-200">
+          <div class="w-12 h-12 bg-blue-50 rounded-xl flex items-center justify-center mb-4">
+            <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-line="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"/></svg>
+          </div>
+          <h3 class="font-serif text-lg font-semibold text-navy-800 mb-2">多采购包对比</h3>
+          <p class="text-slate-500 text-sm leading-relaxed">支持同一标书中多个采购包的横向对比分析，快速发现差异与优劣。</p>
+        </div>
+        <!-- Feature 4 -->
+        <div class="feature-card bg-white rounded-xl p-6 border border-slate-100 hover:border-navy-200">
+          <div class="w-12 h-12 bg-amber-50 rounded-xl flex items-center justify-center mb-4">
+            <svg class="w-6 h-6 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6 3v-4a9 9 0 11-18 0 9 9 0 0118 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0"/></svg>
+          </div>
+          <h3 class="font-serif text-lg font-semibold text-navy-800 mb-2">评审规则解析</h3>
+          <p class="text-slate-500 text-sm leading-relaxed">自动识别评审方法、权重分配、评分标准，帮助制定最优投标策略。</p>
+        </div>
+        <!-- Feature 5 -->
+        <div class="feature-card bg-white rounded-xl p-6 border border-slate-100 hover:border-navy-200">
+          <div class="w-12 h-12 bg-emerald-50 rounded-xl flex items-center justify-center mb-4">
+            <svg class="w-6 h-6 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          </div>
+          <h3 class="font-serif text-lg font-semibold text-navy-800 mb-2">合规性检查</h3>
+          <p class="text-slate-500 text-sm leading-relaxed">自动标注实质性要求和禁止项，避免因疏忽导致废标。</p>
+        </div>
+        <!-- Feature 6 -->
+        <div class="feature-card bg-white rounded-xl p-6 border border-slate-100 hover:border-navy-200">
+          <div class="w-12 h-12 bg-violet-50 rounded-xl flex items-center justify-center mb-4">
+            <svg class="w-6 h-6 text-violet-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h6m2 6h-2m2-10h.01M8 9l4-4 4 4"/></svg>
+          </div>
+          <h3 class="font-serif text-lg font-semibold text-navy-800 mb-2">来源精准标注</h3>
+          <p class="text-slate-500 text-sm leading-relaxed">每条分析结果均标注文件来源和页码，支持原文追溯验证。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Flow Section -->
+  <section id="flow" class="py-20 lg:py-28 bg-white">
+    <div class="max-w-6xl mx-auto px-6">
+      <div class="text-center mb-16">
+        <span class="text-accent font-medium text-sm tracking-wider uppercase">简单高效</span>
+        <h2 class="font-serif text-3xl font-bold text-navy-800 mt-2">使用流程</h2>
+        <p class="text-slate-500 mt-3 max-w-2xl mx-auto">三步完成，从上传到分析</p>
+      </div>
+      <div class="grid md:grid-cols-3 gap-8">
+        <div class="text-center">
+          <div class="w-16 h-16 bg-navy-50 rounded-2xl mx-auto flex items-center justify-center mb-4 shadow-sm">
+            <span class="font-serif text-2xl font-bold text-navy-700">1</span>
+          </div>
+          <h3 class="font-serif text-xl font-semibold text-navy-800 mb-2">上传标书</h3>
+          <p class="text-slate-500 text-sm leading-relaxed">将招标文件（PDF）上传至知识库系统，系统自动进行文档解析与切片。</p>
+        </div>
+        <div class="text-center">
+          <div class="w-16 h-16 bg-accent/10 rounded-2xl mx-auto flex items-center justify-center mb-4 shadow-sm">
+            <span class="font-serif text-2xl font-bold text-accent">2</span>
+          </div>
+          <h3 class="font-serif text-xl font-semibold text-navy-800 mb-2">智能分析</h3>
+          <p class="text-slate-500 text-sm leading-relaxed">通过自然语言提问，AI 自动检索知识库并生成结构化分析结果。</p>
+        </div>
+        <div class="text-center">
+          <div class="w-16 h-16 bg-navy-700 rounded-2xl mx-auto flex items-center justify-center mb-4 shadow-sm">
+            <span class="font-serif text-2xl font-bold text-white">3</span>
+          </div>
+          <h3 class="font-serif text-xl font-semibold text-navy-800 mb-2">辅助决策</h3>
+          <p class="text-slate-500 text-sm leading-relaxed">基于分析结果，快速掌握标书要点，制定最优投标方案。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA Section -->
+  <section class="bg-navy-800 py-16">
+    <div class="max-w-4xl mx-auto px-6 text-center">
+      <h2 class="font-serif text-2xl font-bold text-white mb-3">准备好开始了吗？</h2>
+      <p class="text-navy-300 mb-8">登录系统后，即可开始您的标书智能分析之旅</p>
+      <a href="/chat" class="inline-flex items-center gap-2 bg-accent hover:bg-accent-dark text-white px-10 py-4 rounded-lg font-medium transition shadow-lg hover:shadow-xl text-lg">
+        进入分析平台
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5-5m5 5H6"/></svg>
+      </a>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="bg-navy-900 text-navy-300 py-8">
+    <div class="max-w-6xl mx-auto px-6 text-center text-sm">
+      <p class="text-navy-400">标书分析助手 &middot; RAGFlow 驱动的智能招标分析系统</p>
+      <p class="text-navy-500 mt-1">&copy; 2026 All Rights Reserved</p>
+    </div>
+  </footer>
+
+</body>
+</html>

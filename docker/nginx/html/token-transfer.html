@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>Token Transfer</title>
+</head>
+<body>
+<script>
+  // This page is loaded inside an iframe from the RAGFlow admin (port 18082).
+  // It reads the token from localStorage and sends it to the parent window (port 80).
+  const token = localStorage.getItem('Authorization') || '';
+  const userInfo = localStorage.getItem('userInfo') || '';
+  const bareToken = localStorage.getItem('token') || '';
+  window.parent.postMessage({
+    type: 'ragflow-token',
+    Authorization: token,
+    token: bareToken,
+    userInfo: userInfo,
+  }, '*');
+</script>
+</body>
+</html>

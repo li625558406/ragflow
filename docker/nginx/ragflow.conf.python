@@ -1,0 +1,86 @@
+# =============================================================================
+# User-facing server (port 80) - Landing page + Chat
+# =============================================================================
+server {
+    listen 80;
+    server_name _;
+    root /ragflow/web/dist;
+
+    gzip on;
+    gzip_min_length 1k;
+    gzip_comp_level 9;
+    gzip_types text/plain application/javascript application/x-javascript text/css application/xml text/javascript application/x-httpd-php image/jpeg image/gif image/png;
+    gzip_vary on;
+    gzip_disable "MSIE [1-6]\.";
+
+    # API routes - needed for chat functionality
+    location ~ ^/api/v1/admin {
+        proxy_pass http://localhost:9381;
+        include proxy.conf;
+    }
+
+    location ~ ^/(v1|api) {
+        proxy_pass http://localhost:9380;
+        include proxy.conf;
+    }
+
+    # Landing page
+    location = / {
+        root /ragflow/web/custom;
+        try_files /landing.html =404;
+    }
+
+    # Chat page
+    location = /chat {
+        root /ragflow/web/custom;
+        try_files /chat.html =404;
+    }
+
+    # Block all other paths on user port
+    location / {
+        return 404;
+    }
+}
+
+# =============================================================================
+# RAGFlow Admin server (port 18082) - Management interface
+# =============================================================================
+server {
+    listen 18082;
+    server_name _;
+    root /ragflow/web/dist;
+
+    gzip on;
+    gzip_min_length 1k;
+    gzip_comp_level 9;
+    gzip_types text/plain application/javascript application/x-javascript text/css application/xml text/javascript application/x-httpd-php image/jpeg image/gif image/png;
+    gzip_vary on;
+    gzip_disable "MSIE [1-6]\.";
+
+    location ~ ^/api/v1/admin {
+        proxy_pass http://localhost:9381;
+        include proxy.conf;
+    }
+
+    location ~ ^/(v1|api) {
+        proxy_pass http://localhost:9380;
+        include proxy.conf;
+    }
+
+    # Token transfer page for cross-origin auth sharing
+    location = /token-transfer.html {
+        root /ragflow/web/custom;
+        add_header Content-Security-Policy "frame-ancestors http://localhost http://localhost:80";
+    }
+
+    location / {
+        index index.html;
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Cache-Control: max-age Expires
+    location ~ ^/static/(css|js|media)/ {
+        expires 10y;
+        access_log off;
+    }
+}
