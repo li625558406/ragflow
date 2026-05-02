@@ -338,7 +338,7 @@ async def list_analysis_results():
     - kb_id: 可选，过滤特定知识库的分析结果
     """
     from api.apps import current_user
-    from api.db.db_models import DB, Document
+    from api.db.db_models import DocumentAnalysisResult
 
     page = int(request.args.get('page', 1))
     page_size = int(request.args.get('page_size', 20))
@@ -349,21 +349,21 @@ async def list_analysis_results():
 
     try:
         # 构建查询
-        query = (DB.DocumentAnalysisResult
+        query = (DocumentAnalysisResult
                 .select()
-                .where(DB.DocumentAnalysisResult.status == 'completed')
-                .where(DB.DocumentAnalysisResult.tenant_id == tenant_id))
+                .where(DocumentAnalysisResult.status == 'completed')
+                .where(DocumentAnalysisResult.tenant_id == tenant_id))
 
         # 可选的知识库过滤
         if kb_id:
-            query = query.where(DB.DocumentAnalysisResult.kb_id == kb_id)
+            query = query.where(DocumentAnalysisResult.kb_id == kb_id)
 
         # 获取总数（用于分页）
         total_count = query.count()
 
         # 分页查询
         results = (query
-                  .order_by(DB.DocumentAnalysisResult.create_time.desc())
+                  .order_by(DocumentAnalysisResult.create_time.desc())
                   .paginate(page, page_size))
 
         # 转换为响应格式
