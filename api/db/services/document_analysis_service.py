@@ -15,7 +15,7 @@
 #
 import logging
 
-from api.db.db_models import DB, DocumentAnalysisResult
+from api.db.db_models import DB, Document, DocumentAnalysisResult
 from api.db.services.common_service import CommonService
 from common.misc_utils import get_uuid
 from rag.utils.redis_conn import REDIS_CONN
