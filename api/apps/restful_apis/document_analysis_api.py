@@ -233,7 +233,17 @@ async def analyze_document(document_id):
     # 获取租户信息
     tenant_id = data.get('tenant_id') or doc.created_by
 
-    # 创建分析记录
+    # 删除该文档的旧分析结果（如果存在）
+    # 这样确保同一文档只有最新的分析结果
+    try:
+        deleted_count = DocumentAnalysisService.delete_by_document(document_id)
+        if deleted_count > 0:
+            logger.info(f"Deleted {deleted_count} old analysis results for document {document_id}")
+    except Exception as e:
+        logger.warning(f"Failed to delete old analysis results for document {document_id}: {e}")
+        # 继续执行，不阻塞新分析的创建
+
+    # 创建新的分析记录
     result_id = get_uuid()
     DocumentAnalysisService.create({
         'id': result_id,
