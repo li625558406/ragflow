@@ -208,6 +208,10 @@ class Retrieval(ToolBase, ABC):
     async def _retrieve_kb(self, query_text: str):
         kb_ids: list[str] = []
         for id in self._dataset_ids:
+            # 跳过虚拟分析结果 kb_id
+            if isinstance(id, str) and id.startswith("analysis_"):
+                continue
+
             if id.find("@") < 0:
                 kb_ids.append(id)
                 continue
