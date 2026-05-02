@@ -337,34 +337,22 @@ async def list_analysis_results():
     - page_size: 每页数量，默认 20
     - kb_id: 可选，过滤特定知识库的分析结果
     """
-    from flask import request as flask_request
-    from api.db import UserTenantService
+    from api.apps import current_user
     from api.db.db_models import DB, Document
 
     page = int(request.args.get('page', 1))
     page_size = int(request.args.get('page_size', 20))
     kb_id = request.args.get('kb_id')
 
-    # 获取当前租户 ID
-    # 从请求上下文获取用户信息
-    user_id = request.headers.get('user-id')
-
-    if not user_id:
-        return get_error_data_result(message='用户未登录')
-
-    # 获取用户的租户列表
-    tenant_list = UserTenantService.get_tenants_by_user_id(user_id)
-    if not tenant_list:
-        return get_error_data_result(message='未找到租户信息')
-
-    tenant_ids = [t['tenant_id'] for t in tenant_list]
+    # 获取当前租户 ID (在 RAGFlow 中用户和租户是 1:1 关系)
+    tenant_id = current_user.id
 
     try:
         # 构建查询
         query = (DB.DocumentAnalysisResult
                 .select()
                 .where(DB.DocumentAnalysisResult.status == 'completed')
-                .where(DB.DocumentAnalysisResult.tenant_id.in_(tenant_ids)))
+                .where(DB.DocumentAnalysisResult.tenant_id == tenant_id))
 
         # 可选的知识库过滤
         if kb_id:
@@ -375,7 +363,6 @@ async def list_analysis_results():
 
         # 分页查询
         results = (query
-                  .join(Document, on=(DB.DocumentAnalysisResult.document_id == Document.id))
                   .order_by(DB.DocumentAnalysisResult.create_time.desc())
                   .paginate(page, page_size))
 
