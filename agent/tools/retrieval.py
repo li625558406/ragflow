@@ -94,21 +94,27 @@ class Retrieval(ToolBase, ABC):
         return self._param.dataset_ids or getattr(self._param, "kb_ids", None) or []
 
     @property
-    def _analysis_ids(self):
-        """Get analysis result IDs (prefixed with 'analysis:')."""
-        analysis_ids = []
-        for id in self._dataset_ids:
-            if isinstance(id, str) and id.startswith("analysis:"):
-                # 提取分析结果 ID，格式可能是 analysis:result_id 或 analysis:doc_id
-                analysis_id = id.replace("analysis:", "", 1)
-                if analysis_id:
-                    analysis_ids.append(analysis_id)
-        return analysis_ids
+    def _analysis_result_ids(self):
+        """Extract analysis result IDs from virtual analysis kb_ids.
+
+        Virtual kb_id format: analysis_<result_id>
+        """
+        result_ids = []
+        for kb_id in self._dataset_ids:
+            if isinstance(kb_id, str) and kb_id.startswith("analysis_"):
+                # 提取 result_id
+                result_id = kb_id.replace("analysis_", "", 1)
+                if result_id:
+                    result_ids.append(result_id)
+        return result_ids
 
     @property
     def _has_analysis_source(self):
-        """Check if any dataset_id is an analysis result source."""
-        return any(isinstance(id, str) and id.startswith("analysis:") for id in self._dataset_ids)
+        """Check if any kb_id is a virtual analysis result kb_id."""
+        return any(
+            isinstance(kb_id, str) and kb_id.startswith("analysis_")
+            for kb_id in self._dataset_ids
+        )
 
     async def _retrieve_analysis_results(self, query_text: str):
         """从分析结果中检索相关内容
@@ -123,10 +129,10 @@ class Retrieval(ToolBase, ABC):
 
         tenant_id = self._canvas.get_tenant_id()
 
-        # 获取分析结果 chunks
+        # 获取分析结果 chunks - 使用 result_ids 过滤
         chunks = DocumentAnalysisService.get_analysis_results_as_kb_chunks(
             tenant_id=tenant_id,
-            document_ids=self._analysis_ids if self._analysis_ids else None
+            result_ids=self._analysis_result_ids if self._analysis_result_ids else None
         )
 
         if not chunks:

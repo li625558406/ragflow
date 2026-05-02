@@ -115,13 +115,14 @@ class DocumentAnalysisService(CommonService):
 
     @classmethod
     @DB.connection_context()
-    def get_analysis_results_as_kb_chunks(cls, tenant_id, document_ids=None, template_ids=None):
+    def get_analysis_results_as_kb_chunks(cls, tenant_id, document_ids=None, template_ids=None, result_ids=None):
         """将分析结果转换为知识库 chunk 格式
 
         Args:
             tenant_id: 租户 ID
             document_ids: 可选的文档 ID 列表，过滤特定文档的分析结果
             template_ids: 可选的模板 ID 列表，过滤特定模板的分析结果
+            result_ids: 可选的分析结果 ID 列表，过滤特定的分析结果
 
         Returns:
             类似知识库 chunk 的字典列表，可用于检索
@@ -138,6 +139,8 @@ class DocumentAnalysisService(CommonService):
             query = query.where(cls.model.document_id.in_(document_ids))
         if template_ids:
             query = query.where(cls.model.template_id.in_(template_ids))
+        if result_ids:
+            query = query.where(cls.model.id.in_(result_ids))
 
         results = query.order_by(cls.model.create_time.desc())
 

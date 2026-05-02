@@ -87,13 +87,13 @@ export function KnowledgeBaseFormField({
 
   const knowledgeOptions = datasetOptions;
 
-  // 构建分析结果选项
+  // 构建分析结果选项 - 使用虚拟 kb_id 格式（与后端一致）
   const analysisOptions = useMemo(() => {
     if (!analysisResultsData?.data) return [];
 
     return analysisResultsData.data.map((item: AnalysisResultItem) => ({
       label: `${item.doc_name} - ${item.template_name}`,
-      value: `analysis:${item.document_id}`,
+      value: `analysis_${item.id}`, // 虚拟 kb_id 格式：analysis_{result_id}
       icon: () => (
         <div className="flex items-center gap-2">
           <FileText className="size-4 text-blue-500" />
