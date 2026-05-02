@@ -73,6 +73,7 @@ export enum Routes {
   AdminWhitelist = `${Admin}/whitelist`,
   AdminRoles = `${Admin}/roles`,
   AdminMonitoring = `${Admin}/monitoring`,
+  DocumentAnalysis = '/document-analysis',
 }
 
 const defaultRouteFallback = (
@@ -138,6 +139,10 @@ const routeConfigOptions = [
     path: '/document/:id',
     Component: () => import('@/pages/document-viewer'),
     layout: false,
+  },
+  {
+    path: `${Routes.DocumentAnalysis}/:documentId`,
+    Component: () => import('@/pages/document-analysis'),
   },
   {
     path: '/*',
