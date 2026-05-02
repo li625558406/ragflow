@@ -325,3 +325,85 @@ async def delete_document_analysis(document_id):
     """删除文档分析结果"""
     count = DocumentAnalysisService.delete_by_document(document_id)
     return get_result(message=f'已删除 {count} 条分析记录')
+
+
+@manager.route('/analysis-results', methods=['GET'])  # noqa: F821
+@login_required
+async def list_analysis_results():
+    """获取租户下所有已完成的文档分析列表
+
+    Query参数:
+    - page: 页码，默认 1
+    - page_size: 每页数量，默认 20
+    - kb_id: 可选，过滤特定知识库的分析结果
+    """
+    from flask import request as flask_request
+    from api.db import UserTenantService
+    from api.db.db_models import DB, Document
+
+    page = int(request.args.get('page', 1))
+    page_size = int(request.args.get('page_size', 20))
+    kb_id = request.args.get('kb_id')
+
+    # 获取当前租户 ID
+    # 从请求上下文获取用户信息
+    user_id = request.headers.get('user-id')
+
+    if not user_id:
+        return get_error_data_result(message='用户未登录')
+
+    # 获取用户的租户列表
+    tenant_list = UserTenantService.get_tenants_by_user_id(user_id)
+    if not tenant_list:
+        return get_error_data_result(message='未找到租户信息')
+
+    tenant_ids = [t['tenant_id'] for t in tenant_list]
+
+    try:
+        # 构建查询
+        query = (DB.DocumentAnalysisResult
+                .select()
+                .where(DB.DocumentAnalysisResult.status == 'completed')
+                .where(DB.DocumentAnalysisResult.tenant_id.in_(tenant_ids)))
+
+        # 可选的知识库过滤
+        if kb_id:
+            query = query.where(DB.DocumentAnalysisResult.kb_id == kb_id)
+
+        # 获取总数（用于分页）
+        total_count = query.count()
+
+        # 分页查询
+        results = (query
+                  .join(Document, on=(DB.DocumentAnalysisResult.document_id == Document.id))
+                  .order_by(DB.DocumentAnalysisResult.create_time.desc())
+                  .paginate(page, page_size))
+
+        # 转换为响应格式
+        data = []
+        for result in results:
+            # 获取模板名称
+            template = AnalysisTemplateService.get_by_id(result.template_id)
+
+            data.append({
+                'id': result.id,
+                'document_id': result.document_id,
+                'doc_name': result.doc_name,
+                'template_id': result.template_id,
+                'template_name': template.name if template else '未知模板',
+                'kb_id': result.kb_id,
+                'create_time': result.create_time.isoformat() if result.create_time else None,
+                'progress': result.progress,
+                'status': result.status
+            })
+
+        return get_result(data={
+            'total': total_count,
+            'page': page,
+            'page_size': page_size,
+            'data': data
+        })
+
+    except Exception as e:
+        logger.error(f"Failed to list analysis results: {e}", exc_info=True)
+        return get_error_data_result(message=f'获取分析结果列表失败: {str(e)}')

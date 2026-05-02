@@ -1,5 +1,6 @@
 import { DocumentParserType } from '@/constants/knowledge';
 import { useFetchKnowledgeList } from '@/hooks/use-knowledge-request';
+import { useListAnalysisResults, type AnalysisResultItem } from '@/hooks/use-document-analysis-request';
 import { IDataset } from '@/interfaces/database/dataset';
 import { useBuildQueryVariableOptions } from '@/pages/agent/hooks/use-get-begin-query';
 import { toLower } from 'lodash';
@@ -9,6 +10,7 @@ import { useTranslation } from 'react-i18next';
 import { RAGFlowAvatar } from './ragflow-avatar';
 import { RAGFlowFormItem } from './ragflow-form';
 import { MultiSelect } from './ui/multi-select';
+import { FileText } from 'lucide-react';
 
 function buildQueryVariableOptionsByShowVariable(showVariable?: boolean) {
   return showVariable ? useBuildQueryVariableOptions : () => [];
@@ -78,16 +80,52 @@ export function KnowledgeBaseFormField({
 
   const { datasetOptions } = useDisableDifferenceEmbeddingDataset(name);
 
+  // 获取分析结果列表
+  const { data: analysisResultsData } = useListAnalysisResults();
+
   const nextOptions = buildQueryVariableOptionsByShowVariable(showVariable)();
 
   const knowledgeOptions = datasetOptions;
+
+  // 构建分析结果选项
+  const analysisOptions = useMemo(() => {
+    if (!analysisResultsData?.data) return [];
+
+    return analysisResultsData.data.map((item: AnalysisResultItem) => ({
+      label: `${item.doc_name} - ${item.template_name}`,
+      value: `analysis:${item.document_id}`,
+      icon: () => (
+        <div className="flex items-center gap-2">
+          <FileText className="size-4 text-blue-500" />
+          <span className="text-xs text-text-tertiary">{t('knowledgeDetails.analysis')}</span>
+        </div>
+      ),
+      suffix: (
+        <div className="flex gap-1">
+          <DatasetLabel text={item.template_name} />
+        </div>
+      ),
+    }));
+  }, [analysisResultsData, t]);
+
   const options = useMemo(() => {
+    const baseOptions = [
+      {
+        label: t('knowledgeDetails.dataset'),
+        options: knowledgeOptions,
+      },
+    ];
+
+    // 添加分析结果分组（如果有数据）
+    if (analysisOptions.length > 0) {
+      baseOptions.push({
+        label: t('knowledgeDetails.analysisResults'),
+        options: analysisOptions,
+      });
+    }
+
     if (showVariable) {
-      return [
-        {
-          label: t('knowledgeDetails.dataset'),
-          options: knowledgeOptions,
-        },
+      baseOptions.push(
         ...nextOptions.map((x) => {
           return {
             ...x,
@@ -104,12 +142,12 @@ export function KnowledgeBaseFormField({
                 ),
               })),
           };
-        }),
-      ];
+        })
+      );
     }
 
-    return knowledgeOptions;
-  }, [knowledgeOptions, nextOptions, showVariable, t]);
+    return baseOptions;
+  }, [knowledgeOptions, analysisOptions, nextOptions, showVariable, t]);
 
   return (
     <RAGFlowFormItem

@@ -137,3 +137,34 @@ export function useCancelDocumentAnalysis() {
     },
   });
 }
+
+// 分析结果列表项接口
+export interface AnalysisResultItem {
+  id: string;
+  document_id: string;
+  doc_name: string;
+  template_id: string;
+  template_name: string;
+  kb_id: string;
+  create_time: string;
+  progress: number;
+  status: string;
+}
+
+// 获取分析结果列表
+export interface AnalysisResultsListResponse {
+  total: number;
+  page: number;
+  page_size: number;
+  data: AnalysisResultItem[];
+}
+
+export function useListAnalysisResults(params?: { page?: number; page_size?: number; kb_id?: string }) {
+  return useQuery({
+    queryKey: ['analysisResults', params],
+    queryFn: async () => {
+      const { data } = await request.get(api.listAnalysisResults, { params });
+      return data.data as AnalysisResultsListResponse;
+    },
+  });
+}

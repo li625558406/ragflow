@@ -113,3 +113,127 @@ class DocumentAnalysisService(CommonService):
         except Exception as e:
             logger.warning(f"Failed to clear cancel flag for {result_id}: {e}")
 
+    @classmethod
+    @DB.connection_context()
+    def get_analysis_results_as_kb_chunks(cls, tenant_id, document_ids=None, template_ids=None):
+        """将分析结果转换为知识库 chunk 格式
+
+        Args:
+            tenant_id: 租户 ID
+            document_ids: 可选的文档 ID 列表，过滤特定文档的分析结果
+            template_ids: 可选的模板 ID 列表，过滤特定模板的分析结果
+
+        Returns:
+            类似知识库 chunk 的字典列表，可用于检索
+        """
+        import json
+        from rag.nlp import rag_tokenizer
+
+        query = cls.model.select().where(cls.model.status == 'completed')
+
+        # 过滤租户 - 需要关联 document 表
+        query = query.join(DB.Document).where(DB.Document.tenant_id == tenant_id)
+
+        if document_ids:
+            query = query.where(cls.model.document_id.in_(document_ids))
+        if template_ids:
+            query = query.where(cls.model.template_id.in_(template_ids))
+
+        results = query.order_by(cls.model.create_time.desc())
+
+        chunks = []
+        for result in results:
+            try:
+                # 解析 result JSON
+                result_data = {}
+                if result.result:
+                    try:
+                        result_data = json.loads(result.result)
+                    except json.JSONDecodeError:
+                        result_data = {"raw": result.result}
+
+                # 构建章节内容
+                sections = result_data.get("sections", [])
+                for section in sections:
+                    section_title = section.get("section_title", "")
+                    analyses = section.get("analyses", [])
+
+                    # 为每个分析类型创建一个 chunk
+                    for analysis in analyses:
+                        analysis_type = analysis.get("analysis_type", "")
+                        analysis_result = analysis.get("result", "")
+
+                        if not analysis_result:
+                            continue
+
+                        # 构建内容
+                        content_parts = []
+                        if result.doc_name:
+                            content_parts.append(f"文档: {result.doc_name}")
+                        if result.template_name:
+                            content_parts.append(f"模板: {result.template_name}")
+                        if section_title:
+                            content_parts.append(f"章节: {section_title}")
+                        if analysis_type:
+                            content_parts.append(f"类型: {analysis_type}")
+
+                        content_prefix = " | ".join(content_parts)
+                        content = f"{content_prefix}\n{analysis_result}"
+
+                        # 创建 chunk
+                        chunk = {
+                            "content_with_weight": content,
+                            "content_ltks": rag_tokenizer.tokenize(content),
+                            "content_sm_ltks": rag_tokenizer.fine_grained_tokenize(
+                                rag_tokenizer.tokenize(content)
+                            ),
+                            # 分析结果特有字段
+                            "doc_id": result.document_id,
+                            "doc_name": result.doc_name or "",
+                            "template_id": result.template_id or "",
+                            "template_name": result.template_name or "",
+                            "section_title": section_title,
+                            "analysis_type": analysis_type,
+                            "analysis_result_id": result.id,
+                            # 兼容字段
+                            "kb_id": f"analysis_{result.id}",  # 虚拟知识库 ID
+                            "important_keywords": [],
+                            "image_id": None,
+                            "available_int": 1,
+                            "display_qa": "",
+                        }
+                        chunks.append(chunk)
+
+                # 如果没有 sections 结构，直接使用 raw result
+                if not sections and result.result:
+                    content = f"文档: {result.doc_name or '未知'}"
+                    if result.template_name:
+                        content += f" | 模板: {result.template_name}"
+                    content += f"\n{result.result}"
+
+                    chunk = {
+                        "content_with_weight": content,
+                        "content_ltks": rag_tokenizer.tokenize(content),
+                        "content_sm_ltks": rag_tokenizer.fine_grained_tokenize(
+                            rag_tokenizer.tokenize(content)
+                        ),
+                        "doc_id": result.document_id,
+                        "doc_name": result.doc_name or "",
+                        "template_id": result.template_id or "",
+                        "template_name": result.template_name or "",
+                        "analysis_result_id": result.id,
+                        "kb_id": f"analysis_{result.id}",
+                        "important_keywords": [],
+                        "image_id": None,
+                        "available_int": 1,
+                        "display_qa": "",
+                    }
+                    chunks.append(chunk)
+
+            except Exception as e:
+                logger.warning(f"Failed to convert analysis result {result.id} to chunk: {e}")
+                continue
+
+        logger.info(f"Converted {len(chunks)} analysis result chunks for tenant {tenant_id}")
+        return chunks
+

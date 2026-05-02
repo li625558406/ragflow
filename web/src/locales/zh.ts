@@ -425,6 +425,8 @@ export default {
         '进行检索测试，检查 RAGFlow 是否能够为大语言模型（LLM）恢复预期的内容。',
       Parse: '解析',
       dataset: '知识库',
+      analysis: '文档分析',
+      analysisResults: '文档分析结果',
       testing: '检索测试',
       configuration: '配置',
       knowledgeGraph: '知识图谱',

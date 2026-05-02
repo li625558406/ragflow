@@ -26,12 +26,14 @@ from common.metadata_utils import apply_meta_data_filter
 from api.db.services.knowledgebase_service import KnowledgebaseService
 from api.db.services.llm_service import LLMBundle
 from api.db.services.memory_service import MemoryService
+from api.db.services.document_analysis_service import DocumentAnalysisService
 from api.db.joint_services import memory_message_service
 from api.db.joint_services.tenant_model_service import get_model_config_by_type_and_name, get_tenant_default_model_by_type
 from common import settings
 from common.connection_utils import timeout
 from rag.app.tag import label_question
 from rag.prompts.generator import cross_languages, kb_prompt, memory_prompt
+from rag.nlp import rag_tokenizer
 
 
 class RetrievalParam(ToolParamBase):
@@ -90,6 +92,114 @@ class Retrieval(ToolBase, ABC):
     def _dataset_ids(self):
         """Get dataset IDs with backward compatibility for kb_ids."""
         return self._param.dataset_ids or getattr(self._param, "kb_ids", None) or []
+
+    @property
+    def _analysis_ids(self):
+        """Get analysis result IDs (prefixed with 'analysis:')."""
+        analysis_ids = []
+        for id in self._dataset_ids:
+            if isinstance(id, str) and id.startswith("analysis:"):
+                # 提取分析结果 ID，格式可能是 analysis:result_id 或 analysis:doc_id
+                analysis_id = id.replace("analysis:", "", 1)
+                if analysis_id:
+                    analysis_ids.append(analysis_id)
+        return analysis_ids
+
+    @property
+    def _has_analysis_source(self):
+        """Check if any dataset_id is an analysis result source."""
+        return any(isinstance(id, str) and id.startswith("analysis:") for id in self._dataset_ids)
+
+    async def _retrieve_analysis_results(self, query_text: str):
+        """从分析结果中检索相关内容
+
+        Args:
+            query_text: 查询文本
+
+        Returns:
+            格式化后的内容
+        """
+        from api.db.db_models import DB, Document
+
+        tenant_id = self._canvas.get_tenant_id()
+
+        # 获取分析结果 chunks
+        chunks = DocumentAnalysisService.get_analysis_results_as_kb_chunks(
+            tenant_id=tenant_id,
+            document_ids=self._analysis_ids if self._analysis_ids else None
+        )
+
+        if not chunks:
+            self.set_output("formalized_content", self._param.empty_response)
+            self.set_output("json", [])
+            return
+
+        # 简单的关键词匹配（由于分析结果没有向量，使用关键词匹配）
+        vars = self.get_input_elements_from_text(query_text)
+        vars = {k: o["value"] for k, o in vars.items()}
+        query = self.string_format(query_text, vars)
+
+        # 提取查询关键词
+        query_lower = query.lower()
+
+        # 计算每个 chunk 的相关性分数
+        scored_chunks = []
+        for chunk in chunks:
+            score = 0
+            content = chunk.get("content_with_weight", "")
+
+            # 检查查询词是否出现在内容中
+            if query_lower in content.lower():
+                score += 10
+
+            # 检查查询词的各个部分
+            query_words = [w for w in query_lower.split() if len(w) > 1]
+            for word in query_words:
+                if word in content.lower():
+                    score += 2
+
+            if score > 0:
+                scored_chunks.append((score, chunk))
+
+        # 按分数排序，取 top_n
+        scored_chunks.sort(key=lambda x: x[0], reverse=True)
+        top_chunks = scored_chunks[:self._param.top_n] if hasattr(self._param, 'top_n') else scored_chunks[:10]
+
+        if not top_chunks:
+            self.set_output("formalized_content", self._param.empty_response)
+            self.set_output("json", [])
+            return
+
+        # 提取 chunks
+        retrieved_chunks = [chunk for score, chunk in top_chunks]
+
+        # 移除向量字段（如果存在）
+        for chunk in retrieved_chunks:
+            chunk.pop("vector", None)
+            chunk.pop("content_ltks", None)
+            chunk.pop("content_sm_ltks", None)
+
+        # 添加引用
+        doc_aggs = []
+        for chunk in retrieved_chunks:
+            doc_aggs.append({
+                "doc_id": chunk.get("doc_id", ""),
+                "doc_name": chunk.get("doc_name", ""),
+                "template_name": chunk.get("template_name", ""),
+            })
+
+        self._canvas.add_reference(retrieved_chunks, doc_aggs)
+
+        # 格式化输出
+        form_cnt = "\n\n".join([
+            f"【{chunk.get('doc_name', '文档')} - {chunk.get('template_name', '分析')}】\n{chunk.get('content_with_weight', '')}"
+            for chunk in retrieved_chunks
+        ])
+
+        self.set_output("formalized_content", form_cnt)
+        self.set_output("json", retrieved_chunks)
+
+        return form_cnt
 
     async def _retrieve_kb(self, query_text: str):
         kb_ids: list[str] = []
@@ -306,6 +416,10 @@ class Retrieval(ToolBase, ABC):
         if not kwargs.get("query"):
             self.set_output("formalized_content", self._param.empty_response)
             return
+
+        # 检查是否需要从分析结果中检索
+        if self._has_analysis_source:
+            return await self._retrieve_analysis_results(kwargs["query"])
 
         if hasattr(self._param, "retrieval_from") and self._param.retrieval_from == "dataset":
             return await self._retrieve_kb(kwargs["query"])

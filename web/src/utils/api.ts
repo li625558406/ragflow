@@ -352,6 +352,7 @@ export default {
     `${restAPIv1}/documents/${documentId}/analysis/cancel`,
   deleteDocumentAnalysis: (documentId: string) =>
     `${restAPIv1}/documents/${documentId}/analysis`,
+  listAnalysisResults: `${restAPIv1}/analysis-results`,
 
   // Analysis Templates
   listAnalysisTemplates: `${restAPIv1}/analysis-templates`,
