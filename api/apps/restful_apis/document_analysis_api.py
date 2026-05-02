@@ -17,7 +17,7 @@ import asyncio
 import logging
 from quart import request
 
-from api.apps import manager, login_required
+from api.apps import login_required
 from api.db.services.document_analysis_service import DocumentAnalysisService
 from api.db.services.analysis_template_service import AnalysisTemplateService
 from api.db.services.document_service import DocumentService

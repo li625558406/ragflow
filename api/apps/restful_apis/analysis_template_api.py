@@ -15,7 +15,7 @@
 #
 from quart import request
 
-from api.apps import manager, login_required
+from api.apps import login_required
 from api.db.services.analysis_template_service import AnalysisTemplateService
 from api.utils.api_utils import (
     get_request_json,
@@ -26,7 +26,7 @@ from api.utils.api_utils import (
 from common.misc_utils import get_uuid
 
 
-@manager.route('/analysis-templates', methods=['GET'])  # noqa: F821
+@manager.route('/analysis-templates', methods=['GET'])  # noqa: F821  # noqa: F821
 @login_required
 async def get_analysis_templates():
     """获取分析模板列表"""
