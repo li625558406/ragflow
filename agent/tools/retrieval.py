@@ -125,8 +125,6 @@ class Retrieval(ToolBase, ABC):
         Returns:
             格式化后的内容
         """
-        from api.db.db_models import DB, Document
-
         tenant_id = self._canvas.get_tenant_id()
 
         # 获取分析结果 chunks - 使用 result_ids 过滤
