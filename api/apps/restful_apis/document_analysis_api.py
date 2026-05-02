@@ -372,6 +372,17 @@ async def list_analysis_results():
             # 获取模板名称
             template = AnalysisTemplateService.get_by_id(result.template_id)
 
+            # 处理时间戳：create_time 是 BigIntegerField，需要转换为 datetime
+            create_time_str = None
+            if result.create_time:
+                try:
+                    from datetime import datetime
+                    # 假设是毫秒级时间戳
+                    create_time_str = datetime.fromtimestamp(result.create_time / 1000).isoformat()
+                except:
+                    # 如果转换失败，直接使用原始值
+                    create_time_str = str(result.create_time)
+
             data.append({
                 'id': result.id,
                 'document_id': result.document_id,
@@ -379,7 +390,7 @@ async def list_analysis_results():
                 'template_id': result.template_id,
                 'template_name': template.name if template else '未知模板',
                 'kb_id': result.kb_id,
-                'create_time': result.create_time.isoformat() if result.create_time else None,
+                'create_time': create_time_str,
                 'progress': result.progress,
                 'status': result.status
             })
