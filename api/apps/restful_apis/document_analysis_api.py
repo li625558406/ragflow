@@ -29,8 +29,7 @@ from api.utils.api_utils import (
     get_result,
     get_error_data_result,
 )
-from api.lib.analysis.chunk_merger import ChunkMerger
-from api.lib.analysis.section_analyzer import SectionAnalyzer
+from api.lib.analysis.document_analyzer import DocumentAnalyzer
 from common.misc_utils import get_uuid
 from common import settings
 from common.constants import LLMType
@@ -59,8 +58,8 @@ async def run_analysis_task(
             return
 
         # 获取文档信息
-        doc = DocumentService.get_by_id(document_id)
-        if not doc:
+        success, doc = DocumentService.get_by_id(document_id)
+        if not success or not doc:
             DocumentAnalysisService.update_status(result_id, 'failed', error_message='文档不存在')
             return
 
@@ -92,16 +91,31 @@ async def run_analysis_task(
             }
             chunks.append(chunk_data)
 
-        # 合并章节
-        merger = ChunkMerger()
-        sections = merger.merge_chunks(chunks)
+        # 确定 LLM：优先使用模板中的 llm_id，否则使用传入的 llm_id
+        actual_llm_id = template.llm_id or llm_id
 
-        if not sections:
-            DocumentAnalysisService.update_status(result_id, 'failed', error_message='无法识别章节')
+        # 如果没有指定模型，尝试获取租户的默认 Chat 模型
+        if not actual_llm_id:
+            from api.db.services.tenant_llm_service import TenantService
+            tenant_result = TenantService.get_by_id(tenant_id)
+            if isinstance(tenant_result, tuple):
+                t_success, tenant = tenant_result
+            else:
+                tenant = tenant_result
+            if tenant and hasattr(tenant, 'llm_id') and tenant.llm_id:
+                actual_llm_id = tenant.llm_id
+
+        if not actual_llm_id:
+            DocumentAnalysisService.update_status(result_id, 'failed', error_message='未配置 Chat 模型，请在模板中选择模型或配置系统默认模型')
             return
 
         # 获取 LLM 配置
-        llm_config = get_model_config_by_type_and_name(tenant_id, LLMType.CHAT, llm_id)
+        try:
+            llm_config = get_model_config_by_type_and_name(tenant_id, LLMType.CHAT, actual_llm_id)
+        except Exception as e:
+            DocumentAnalysisService.update_status(result_id, 'failed', error_message=f'获取模型配置失败: {str(e)}')
+            return
+
         if not llm_config:
             DocumentAnalysisService.update_status(result_id, 'failed', error_message='未配置模型')
             return
@@ -112,13 +126,18 @@ async def run_analysis_task(
 
         # 创建分析器
         doc_type = template.doc_type or "bid"
-        analyzer = SectionAnalyzer(llm_client, doc_type=doc_type)
+        analyzer = DocumentAnalyzer(llm_client, doc_type=doc_type)
 
         # 定义进度回调
-        def progress_callback(current, total, section_title):
-            progress = int((current / total) * 100)
+        def progress_callback(current, total, stage, message):
+            if stage == "analyzing":
+                progress = int((current / total) * 80)
+            elif stage == "merging":
+                progress = 80 + int((current / total) * 20)
+            else:
+                progress = int((current / total) * 100)
             DocumentAnalysisService.update_status(result_id, 'running', progress=progress)
-            logger.info(f"Analysis progress: {progress}% - {section_title}")
+            logger.debug(f"Analysis progress: {progress}% - {stage} - {message}")
 
         # 获取分析类型
         analysis_types = None
@@ -126,14 +145,18 @@ async def run_analysis_task(
             analysis_types = template.dimensions
 
         # 执行分析
-        results = analyzer.analyze_sections(
-            sections=sections,
+        result = analyzer.analyze_document(
+            chunks=chunks,
+            doc_name=doc.name,
             analysis_types=analysis_types,
             progress_callback=progress_callback
         )
 
         # 转换结果为可序列化格式
-        result_data = [r.to_dict() for r in results]
+        result_data = [{
+            "section_title": "整体分析",
+            "analyses": [a.to_dict() for a in result.analyses]
+        }]
 
         # 更新结果
         DocumentAnalysisService.update_status(
@@ -155,8 +178,8 @@ async def analyze_document(document_id):
     data = await get_request_json() or {}
 
     # 获取文档信息
-    doc = DocumentService.get_by_id(document_id)
-    if not doc:
+    success, doc = DocumentService.get_by_id(document_id)
+    if not success or not doc:
         return get_error_data_result(message='文档不存在')
 
     # 获取模板
@@ -165,15 +188,15 @@ async def analyze_document(document_id):
         template = AnalysisTemplateService.get_by_id(template_id)
     else:
         # 根据知识库配置获取默认模板
-        kb = KnowledgebaseService.get_by_id(doc.kb_id)
-        doc_type = kb.parser_id if kb else 'general'
+        kb_success, kb = KnowledgebaseService.get_by_id(doc.kb_id)
+        doc_type = kb.parser_id if kb_success and kb else 'general'
         template = AnalysisTemplateService.get_default_by_type(doc_type)
 
     if not template:
         return get_error_data_result(message='未找到合适的分析模板')
 
     # 获取租户信息
-    tenant_id = data.get('tenant_id', doc.created_by)
+    tenant_id = data.get('tenant_id') or doc.created_by
 
     # 创建分析记录
     result_id = get_uuid()
