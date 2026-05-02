@@ -1334,6 +1334,40 @@ class SystemSettings(DataBaseModel):
     class Meta:
         db_table = "system_settings"
 
+
+class DocumentAnalysisTemplate(DataBaseModel):
+    id = CharField(max_length=32, primary_key=True)
+    name = CharField(max_length=255, null=False, help_text="模板名称")
+    doc_type = CharField(max_length=64, null=False, index=True, help_text="文档类型: bid/contract/law/general")
+    description = TextField(null=True, help_text="模板说明")
+    dimensions = JSONField(default=list, help_text="分析维度配置")
+    prompt_templates = JSONField(default=dict, help_text="Prompt模板")
+    chunk_merge_rule = JSONField(default=dict, help_text="章节合并规则")
+    is_default = BooleanField(default=False, index=True, help_text="是否默认模板")
+    is_system = BooleanField(default=False, index=True, help_text="是否系统模板")
+    tenant_id = CharField(max_length=32, null=True, index=True, help_text="租户ID")
+
+    class Meta:
+        db_table = "document_analysis_template"
+
+
+class DocumentAnalysisResult(DataBaseModel):
+    id = CharField(max_length=32, primary_key=True)
+    document_id = CharField(max_length=32, null=False, index=True, help_text="文档ID")
+    template_id = CharField(max_length=32, null=False, index=True, help_text="模板ID")
+    status = CharField(max_length=16, null=False, default="pending", index=True, help_text="状态: pending/running/completed/failed")
+    progress = IntegerField(default=0, help_text="进度 0-100")
+    result = JSONField(default=list, help_text="分析结果")
+    error_message = TextField(null=True, help_text="错误信息")
+    doc_name = CharField(max_length=255, null=True, help_text="文档名称")
+    kb_id = CharField(max_length=32, null=False, index=True, help_text="知识库ID")
+    tenant_id = CharField(max_length=32, null=False, index=True, help_text="租户ID")
+    llm_id = CharField(max_length=64, null=True, help_text="使用的模型ID")
+
+    class Meta:
+        db_table = "document_analysis_result"
+
+
 def alter_db_add_column(migrator, table_name, column_name, column_type):
     try:
         migrate(migrator.add_column(table_name, column_name, column_type))
