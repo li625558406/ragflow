@@ -402,6 +402,36 @@ class LLMBundle(LLM4Tenant):
 
         return txt
 
+    def chat(self, history: list, gen_conf: dict = {}, **kwargs):
+        """Synchronous chat method that wraps async_chat.
+
+        Args:
+            history: Chat history as list of messages [{"role": "user", "content": "..."}]
+            gen_conf: Generation config (temperature, max_tokens, etc.)
+
+        Returns:
+            LLM response text
+        """
+        import asyncio
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            # If we're already in an async context, we need to use run_in_executor
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    asyncio.run,
+                    self.async_chat("", history, gen_conf, **kwargs)
+                )
+                return future.result()
+        else:
+            # Not in async context, we can use asyncio.run
+            return asyncio.run(self.async_chat("", history, gen_conf, **kwargs))
+
     async def async_chat_streamly(self, system: str, history: list, gen_conf: dict = {}, **kwargs):
         total_tokens = 0
         ans = ""

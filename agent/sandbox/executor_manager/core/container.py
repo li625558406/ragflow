@@ -85,7 +85,6 @@ async def create_container(name: str, language: SupportLanguage) -> bool:
         "docker",
         "run",
         "-d",
-        "--runtime=runsc",
         "--name",
         name,
         "--read-only",

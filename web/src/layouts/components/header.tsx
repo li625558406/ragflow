@@ -15,6 +15,7 @@ import {
 import { cn } from '@/lib/utils';
 import { TenantRole } from '@/pages/user-setting/constants';
 import { Routes } from '@/routes';
+import { getStaticAsset } from '@/utils/common-util';
 import { LucideChevronDown, LucideCircleHelp } from 'lucide-react';
 import React, { useMemo } from 'react';
 import { Link, useLocation } from 'react-router';
@@ -63,7 +64,7 @@ export function Header({
           to={Routes.Root}
           aria-current={pathname === Routes.Root ? 'page' : undefined}
         >
-          <img src={'/logo.svg'} alt="RAGFlow logo" className="size-10" />
+          <img src={getStaticAsset('/logo.svg')} alt="RAGFlow logo" className="size-10" />
         </Link>
       </div>
 

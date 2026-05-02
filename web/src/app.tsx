@@ -13,12 +13,13 @@ import localeData from 'dayjs/plugin/localeData';
 import weekOfYear from 'dayjs/plugin/weekOfYear';
 import weekYear from 'dayjs/plugin/weekYear';
 import weekday from 'dayjs/plugin/weekday';
-import React, { useEffect } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import { RouterProvider } from 'react-router';
 import { ThemeProvider } from './components/theme-provider';
 import { TooltipProvider } from './components/ui/tooltip';
 import { ThemeEnum } from './constants/common';
-import { routers } from './routes';
+import { routers, ADMIN_PREFIX } from './routes';
+import { cRouters } from './c-routes';
 import storage from './utils/authorization-util';
 
 import 'react-photo-view/dist/react-photo-view.css';
@@ -105,9 +106,14 @@ const RouterProviderWrapper: React.FC<{ router: typeof routers }> = ({
 RouterProviderWrapper.whyDidYouRender = false;
 
 export default function AppContainer() {
+  const isAdmin = useMemo(
+    () => window.location.pathname.startsWith(ADMIN_PREFIX),
+    [],
+  );
+
   return (
     <RootProvider>
-      <RouterProviderWrapper router={routers} />
+      <RouterProviderWrapper router={isAdmin ? routers : cRouters} />
     </RootProvider>
   );
 }

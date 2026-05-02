@@ -74,6 +74,8 @@ export enum Routes {
   AdminRoles = `${Admin}/roles`,
   AdminMonitoring = `${Admin}/monitoring`,
   DocumentAnalysis = '/document-analysis',
+  AnalysisTemplates = '/analysis-templates',
+  AnalysisTemplateEdit = '/analysis-template',
 }
 
 const defaultRouteFallback = (
@@ -298,6 +300,18 @@ const routeConfigOptions = [
             path: `${Routes.UserSetting}${Routes.DataSource}`,
             Component: () => import('@/pages/user-setting/data-source'),
           },
+          {
+            path: `${Routes.UserSetting}${Routes.AnalysisTemplates}`,
+            Component: () => import('@/pages/analysis-templates'),
+          },
+          {
+            path: `${Routes.UserSetting}${Routes.AnalysisTemplateEdit}/create`,
+            Component: () => import('@/pages/analysis-templates/edit'),
+          },
+          {
+            path: `${Routes.UserSetting}${Routes.AnalysisTemplateEdit}/:templateId/edit`,
+            Component: () => import('@/pages/analysis-templates/edit'),
+          },
         ],
       },
       {
@@ -429,5 +443,7 @@ const routeConfig = wrapRoutes(routeConfigOptions);
 const routers = createBrowserRouter(routeConfig, {
   basename: import.meta.env.VITE_BASE_URL || '/',
 });
+
+export const ADMIN_PREFIX = '/5d41402abc4b2a76b9719d911017c592';
 
 export { routers };

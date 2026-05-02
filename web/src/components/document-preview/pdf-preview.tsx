@@ -14,6 +14,7 @@ import { Authorization } from '@/constants/authorization';
 import { cn } from '@/lib/utils';
 import FileError from '@/pages/document-viewer/file-error';
 import { getAuthorization } from '@/utils/authorization-util';
+import { getStaticAsset } from '@/utils/common-util';
 import { useCatchDocumentError } from './hooks';
 type PdfLoaderProps = React.ComponentProps<typeof PdfLoader> & {
   httpHeaders?: Record<string, string>;
@@ -83,7 +84,7 @@ const PdfPreview = ({
             <Spin />
           </div>
         }
-        workerSrc="/pdfjs-dist/pdf.worker.min.js"
+        workerSrc={getStaticAsset('/pdfjs-dist/pdf.worker.min.js')}
         errorMessage={<FileError>{error}</FileError>}
       >
         {(pdfDocument) => {
@@ -112,9 +113,7 @@ const PdfPreview = ({
                 screenshot,
                 isScrolledTo,
               ) => {
-                const isTextHighlight = !Boolean(
-                  highlight.content && highlight.content.image,
-                );
+                const isTextHighlight = !(highlight.content && highlight.content.image);
 
                 const component = isTextHighlight ? (
                   <Highlight

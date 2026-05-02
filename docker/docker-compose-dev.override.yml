@@ -1,0 +1,18 @@
+# Development override for Windows Docker
+# Usage: docker compose -f docker-compose-base.yml -f docker-compose-dev.override.yml --profile elasticsearch up -d
+#
+# Memory budget (Docker 8GB total):
+#   ES: 2GB (JVM 1-1.5GB) + MySQL: 512MB + Redis: 128MB + MinIO: 256MB + OS ~1GB ≈ 4GB
+#   Remaining ~4GB buffer — safe from OOM
+
+services:
+  es01:
+    environment:
+      - ES_JAVA_OPTS=-Xms1g -Xmx1500m
+    mem_limit: 2g
+
+  mysql:
+    mem_limit: 512m
+
+  minio:
+    mem_limit: 256m

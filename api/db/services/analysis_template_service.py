@@ -42,7 +42,24 @@ class AnalysisTemplateService(CommonService):
         templates = query.order_by(cls.model.is_default.desc(), cls.model.create_time.desc()) \
             .paginate(page, page_size)
 
-        return list(templates.dicts()), total
+        # 转换为字典列表
+        result = []
+        for t in templates:
+            result.append({
+                'id': t.id,
+                'name': t.name,
+                'doc_type': t.doc_type,
+                'dimensions': t.dimensions or [],
+                'prompt_template': t.prompt_templates,
+                'llm_id': t.llm_id,
+                'is_system': t.is_system,
+                'is_default': t.is_default,
+                'tenant_id': t.tenant_id,
+                'create_time': t.create_time,
+                'update_time': t.update_time,
+            })
+
+        return result, total
 
     @classmethod
     @DB.connection_context()
@@ -72,13 +89,20 @@ class AnalysisTemplateService(CommonService):
         """创建模板"""
         if 'id' not in data or not data['id']:
             data['id'] = get_uuid()
+        # 转换字段名：prompt_template -> prompt_templates
+        if 'prompt_template' in data:
+            data['prompt_templates'] = data.pop('prompt_template')
         return cls.model.create(**data)
 
     @classmethod
     @DB.connection_context()
     def update(cls, template_id, data):
         """更新模板"""
-        data['id'] = template_id
+        # 移除 id，避免更新主键
+        data.pop('id', None)
+        # 转换字段名：prompt_template -> prompt_templates
+        if 'prompt_template' in data:
+            data['prompt_templates'] = data.pop('prompt_template')
         return cls.model.update(**data).where(cls.model.id == template_id).execute() > 0
 
     @classmethod

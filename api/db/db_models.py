@@ -1343,6 +1343,7 @@ class DocumentAnalysisTemplate(DataBaseModel):
     dimensions = JSONField(default=list, help_text="分析维度配置")
     prompt_templates = JSONField(default=dict, help_text="Prompt模板")
     chunk_merge_rule = JSONField(default=dict, help_text="章节合并规则")
+    llm_id = CharField(max_length=64, null=True, help_text="Chat模型ID或名称")
     is_default = BooleanField(default=False, index=True, help_text="是否默认模板")
     is_system = BooleanField(default=False, index=True, help_text="是否系统模板")
     tenant_id = CharField(max_length=32, null=True, index=True, help_text="租户ID")

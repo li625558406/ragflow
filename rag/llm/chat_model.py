@@ -1341,7 +1341,7 @@ class LiteLLMBase(ABC):
             if not hist or hist[0].get("role") != "system":
                 hist.insert(0, {"role": "system", "content": system})
 
-        logging.info("[HISTORY]" + json.dumps(hist, ensure_ascii=False, indent=2))
+        logging.debug("[HISTORY] %s messages", len(hist))
         gen_conf = self._clean_conf(gen_conf)
         _, kwargs = _apply_model_family_policies(
             self.model_name,

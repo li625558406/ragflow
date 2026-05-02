@@ -72,27 +72,26 @@ class DocumentAnalyzer:
     对整个文档进行分析，支持超长文档分批处理和结果合并。
     """
 
-    # 分析 prompt 缓存
-    _prompt_templates = {}
-
-    def __init__(self, llm_client, doc_type: str = "bid"):
+    def __init__(self, llm_client, doc_type: str = "bid", prompt_templates: dict = None):
         """初始化分析器
 
         Args:
             llm_client: LLM 客户端实例
             doc_type: 文档类型
+            prompt_templates: Prompt 模板字典（从数据库获取），如果为 None 则从文件加载
         """
         self.llm_client = llm_client
         self.doc_type = doc_type
+        self.prompt_templates = prompt_templates or {}
         self.text_splitter = TextSplitter()
         self.result_merger = ResultMerger(llm_client)
-        self._load_prompts()
 
-    def _load_prompts(self):
-        """加载分析 prompt 模板"""
-        if self.doc_type in self._prompt_templates:
-            return
+        # 如果没有提供 prompt_templates，从文件加载
+        if not self.prompt_templates:
+            self._load_prompts_from_file()
 
+    def _load_prompts_from_file(self):
+        """从文件加载分析 prompt 模板（后备方案）"""
         prompt_file = Path(__file__).parent / "prompts" / f"{self.doc_type}_analysis.yaml"
 
         if not prompt_file.exists():
@@ -100,9 +99,9 @@ class DocumentAnalyzer:
 
         if prompt_file.exists():
             with open(prompt_file, "r", encoding="utf-8") as f:
-                self._prompt_templates[self.doc_type] = yaml.safe_load(f)
+                self.prompt_templates = yaml.safe_load(f)
         else:
-            self._prompt_templates[self.doc_type] = self._get_default_prompts()
+            self.prompt_templates = self._get_default_prompts()
 
     def _get_default_prompts(self) -> dict:
         """获取默认 prompt 模板"""
@@ -115,8 +114,13 @@ class DocumentAnalyzer:
 
     def get_prompt(self, analysis_type: str) -> Optional[dict]:
         """获取指定分析类型的 prompt"""
-        templates = self._prompt_templates.get(self.doc_type, {})
-        return templates.get(analysis_type)
+        # 如果 prompt_templates 是字符串，将其作为通用 prompt
+        if isinstance(self.prompt_templates, str):
+            return {
+                "name": analysis_type,
+                "prompt": self.prompt_templates
+            }
+        return self.prompt_templates.get(analysis_type)
 
     def analyze_document(
         self,
@@ -153,7 +157,11 @@ class DocumentAnalyzer:
 
             # 3. 获取分析类型
             if not analysis_types:
-                analysis_types = list(self._prompt_templates.get(self.doc_type, {}).keys())
+                if isinstance(self.prompt_templates, str):
+                    # 如果 prompt_templates 是字符串，使用默认的分析类型
+                    analysis_types = ["key_points"]
+                else:
+                    analysis_types = list(self.prompt_templates.keys())
 
             # 4. 判断是否需要分批
             if tokens <= MAX_CONTENT_TOKENS:
@@ -184,7 +192,7 @@ class DocumentAnalyzer:
             content = chunk.get("content", "") or chunk.get("content_with_weight", "")
             if content:
                 contents.append(content)
-        return "\n\n".join(contents)
+        return "\n".join(contents)
 
     def _analyze_single(
         self,
@@ -205,7 +213,13 @@ class DocumentAnalyzer:
                 continue
 
             try:
-                prompt = prompt_info["prompt"].format(content=text)
+                prompt_template = prompt_info["prompt"]
+                # 检查 prompt 是否包含 {content} 占位符
+                if "{content}" in prompt_template:
+                    prompt = prompt_template.format(content=text)
+                else:
+                    # 如果没有占位符，将内容附加到 prompt 后面
+                    prompt = f"{prompt_template}\n\n请分析以下内容：\n{text}"
                 analysis_result = self._call_llm(prompt)
 
                 results.append(AnalysisItem(
@@ -254,7 +268,13 @@ class DocumentAnalyzer:
                     )
 
                 try:
-                    prompt = prompt_info["prompt"].format(content=batch.content)
+                    prompt_template = prompt_info["prompt"]
+                    # 检查 prompt 是否包含 {content} 占位符
+                    if "{content}" in prompt_template:
+                        prompt = prompt_template.format(content=batch.content)
+                    else:
+                        # 如果没有占位符，将内容附加到 prompt 后面
+                        prompt = f"{prompt_template}\n请分析以下内容：\n{batch.content}"
                     result = self._call_llm(prompt)
                     batch_results.append(result)
                 except Exception as e:

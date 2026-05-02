@@ -8,6 +8,7 @@ import {
 } from '@/hooks/use-login-request';
 import { useSystemConfig } from '@/hooks/use-system-request';
 import { rsaPsw } from '@/utils';
+import { getStaticAsset } from '@/utils/common-util';
 import { useContext, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router';
@@ -365,7 +366,7 @@ const Login = () => {
           <div className="flex items-center mb-4 w-full pl-10 pt-10 ">
             <div className="w-12 h-12 p-2 rounded-lg flex items-center justify-center mr-3">
               <img
-                src={'/logo.svg'}
+                src={getStaticAsset('/logo.svg')}
                 alt="logo"
                 className="size-8 mr-[12] cursor-pointer"
               />

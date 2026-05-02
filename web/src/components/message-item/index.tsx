@@ -11,6 +11,7 @@ import { memo, useCallback, useMemo } from 'react';
 import { IRegenerateMessage, IRemoveMessageById } from '@/hooks/logic-hooks';
 import { cn } from '@/lib/utils';
 import { DocumentDownloadButton } from '../document-download-button';
+import { getStaticAsset } from '@/utils/common-util';
 import MarkdownContent from '../markdown-content';
 import { ReferenceDocumentList } from '../next-message-item/reference-document-list';
 import { ReferenceImageList } from '../next-message-item/reference-image-list';
@@ -95,7 +96,7 @@ const MessageItem = ({
             (item.role === MessageType.User ? (
               <RAGFlowAvatar
                 className="size-10"
-                avatar={avatar ?? '/logo.svg'}
+                avatar={avatar ?? getStaticAsset('/logo.svg')}
                 isPerson
               />
             ) : avatarDialog ? (

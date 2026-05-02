@@ -30,12 +30,41 @@ from api.utils.api_utils import (
     get_error_data_result,
 )
 from api.lib.analysis.document_analyzer import DocumentAnalyzer
-from common.misc_utils import get_uuid
+from common.misc_utils import get_uuid, thread_pool_exec
 from common import settings
 from common.constants import LLMType
 from rag.nlp import search
 
 logger = logging.getLogger(__name__)
+
+
+def _run_analysis_task_sync(
+    result_id: str,
+    document_id: str,
+    template_id: str,
+    kb_id: str,
+    tenant_id: str,
+    llm_id: str = None
+):
+    """同步包装函数，用于在新线程中运行分析任务
+
+    在新线程中创建独立的事件循环来运行异步任务，
+    避免阻塞主事件循环，同时确保数据库操作正常工作。
+    """
+    import asyncio
+    try:
+        asyncio.run(run_analysis_task(
+            result_id=result_id,
+            document_id=document_id,
+            template_id=template_id,
+            kb_id=kb_id,
+            tenant_id=tenant_id,
+            llm_id=llm_id
+        ))
+    except Exception as e:
+        logger.error(f"Analysis task failed in thread: {e}", exc_info=True)
+        # 更新状态为失败
+        DocumentAnalysisService.update_status(result_id, 'failed', error_message=str(e))
 
 
 async def run_analysis_task(
@@ -124,12 +153,18 @@ async def run_analysis_task(
         from api.db.services.llm_service import LLMBundle
         llm_client = LLMBundle(tenant_id, llm_config)
 
-        # 创建分析器
+        # 创建分析器 - 使用数据库中配置的 prompt_templates
         doc_type = template.doc_type or "bid"
-        analyzer = DocumentAnalyzer(llm_client, doc_type=doc_type)
+        prompt_templates = template.prompt_templates or {}
+        analyzer = DocumentAnalyzer(llm_client, doc_type=doc_type, prompt_templates=prompt_templates)
 
         # 定义进度回调
         def progress_callback(current, total, stage, message):
+            # 检查是否被取消
+            if DocumentAnalysisService.has_canceled(result_id):
+                logger.info(f"Analysis task {result_id} was canceled by user")
+                raise Exception("用户取消分析")
+
             if stage == "analyzing":
                 progress = int((current / total) * 80)
             elif stage == "merging":
@@ -211,8 +246,9 @@ async def analyze_document(document_id):
         'llm_id': data.get('llm_id')
     })
 
-    # 启动后台任务
-    asyncio.create_task(run_analysis_task(
+    # 启动后台任务（在线程池中执行，避免阻塞事件循环）
+    # 不等待结果，fire-and-forget 模式
+    asyncio.create_task(thread_pool_exec(_run_analysis_task_sync,
         result_id=result_id,
         document_id=document_id,
         template_id=template.id,
@@ -250,6 +286,37 @@ async def get_document_analysis(document_id):
     }
 
     return get_result(data=response)
+
+
+@manager.route('/documents/<document_id>/analysis/cancel', methods=['POST'])  # noqa: F821
+@login_required
+async def cancel_document_analysis(document_id):
+    """取消正在进行的文档分析"""
+    data = await get_request_json() or {}
+    task_id = data.get('task_id')
+
+    if not task_id:
+        # 如果没有指定 task_id，尝试获取当前正在进行的分析
+        result = DocumentAnalysisService.get_by_document(document_id)
+        if result and result.status in ['pending', 'running']:
+            task_id = result.id
+
+    if not task_id:
+        return get_error_data_result(message='没有找到正在进行的分析任务')
+
+    # 检查任务状态
+    result = DocumentAnalysisService.get_by_id(task_id)
+    if not result:
+        return get_error_data_result(message='分析任务不存在')
+
+    if result.status not in ['pending', 'running']:
+        return get_error_data_result(message=f'任务状态为 {result.status}，无法取消')
+
+    # 设置取消标记
+    DocumentAnalysisService.cancel_analysis(task_id)
+    DocumentAnalysisService.update_status(task_id, 'failed', error_message='用户取消分析')
+
+    return get_result(message='已取消分析任务')
 
 
 @manager.route('/documents/<document_id>/analysis', methods=['DELETE'])  # noqa: F821

@@ -342,4 +342,24 @@ export default {
   skillSearch: `${restAPIv1}/skills/search`,
   skillIndex: `${restAPIv1}/skills/index`,
   skillReindex: `${restAPIv1}/skills/reindex`,
+
+  // Document Analysis
+  analyzeDocument: (documentId: string) =>
+    `${restAPIv1}/documents/${documentId}/analyze`,
+  getDocumentAnalysis: (documentId: string) =>
+    `${restAPIv1}/documents/${documentId}/analysis`,
+  cancelDocumentAnalysis: (documentId: string) =>
+    `${restAPIv1}/documents/${documentId}/analysis/cancel`,
+  deleteDocumentAnalysis: (documentId: string) =>
+    `${restAPIv1}/documents/${documentId}/analysis`,
+
+  // Analysis Templates
+  listAnalysisTemplates: `${restAPIv1}/analysis-templates`,
+  getAnalysisTemplate: (templateId: string) =>
+    `${restAPIv1}/analysis-templates/${templateId}`,
+  createAnalysisTemplate: `${restAPIv1}/analysis-templates`,
+  updateAnalysisTemplate: (templateId: string) =>
+    `${restAPIv1}/analysis-templates/${templateId}`,
+  deleteAnalysisTemplate: (templateId: string) =>
+    `${restAPIv1}/analysis-templates/${templateId}`,
 };

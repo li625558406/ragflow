@@ -88,11 +88,11 @@ class ResultMerger:
         merge_template = self._merge_prompts.get(analysis_type, {})
         merge_prompt_template = merge_template.get(
             "prompt",
-            "请合并以下分析结果：\n\n{batch_results}\n\n请输出合并后的结果："
+            "请合并以下分析结果：\n{batch_results}\n\n请输出合并后的结果："
         )
 
         # 构建批次结果文本
-        batch_text = "\n\n".join([
+        batch_text = "\n".join([
             f"=== 批次 {i + 1} 结果 ===\n{result}"
             for i, result in enumerate(batch_results)
         ])
@@ -108,7 +108,7 @@ class ResultMerger:
         except Exception as e:
             logger.error(f"ResultMerger: merge failed: {e}")
             # 合并失败时，直接拼接返回
-            return "\n\n".join(batch_results)
+            return "\n".join(batch_results)
 
     def _call_llm(self, prompt: str) -> str:
         """调用 LLM

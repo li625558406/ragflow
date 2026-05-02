@@ -257,3 +257,18 @@ export function middleEllipsis(str: string, front = 12, back = 8) {
   if (str.length <= front + back) return str;
   return `${str.slice(0, front)}…${str.slice(-back)}`;
 }
+
+/**
+ * Get the correct path for static assets in the public folder.
+ * Uses Vite's BASE_URL to handle path prefixes.
+ * @param path - The asset path (e.g., '/logo.svg')
+ * @returns The full path with base URL prefix
+ */
+export function getStaticAsset(path: string): string {
+  const base = import.meta.env.BASE_URL || '';
+  // Remove leading slash from path if present
+  const cleanPath = path.startsWith('/') ? path.slice(1) : path;
+  // Ensure base ends without slash and path starts with slash
+  const cleanBase = base.endsWith('/') ? base.slice(0, -1) : base;
+  return `${cleanBase}/${cleanPath}`;
+}
