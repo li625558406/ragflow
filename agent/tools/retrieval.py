@@ -14,6 +14,7 @@
 #  limitations under the License.
 #
 import asyncio
+import logging
 from functools import partial
 import json
 import os
@@ -34,6 +35,8 @@ from common.connection_utils import timeout
 from rag.app.tag import label_question
 from rag.prompts.generator import cross_languages, kb_prompt, memory_prompt
 from rag.nlp import rag_tokenizer
+
+logger = logging.getLogger(__name__)
 
 
 class RetrievalParam(ToolParamBase):
@@ -109,23 +112,25 @@ class Retrieval(ToolBase, ABC):
         return result_ids
 
     @property
-    def _has_analysis_source(self):
-        """Check if any kb_id is a virtual analysis result kb_id."""
-        return any(
-            isinstance(kb_id, str) and kb_id.startswith("analysis_")
-            for kb_id in self._dataset_ids
-        )
+    def _real_kb_ids(self):
+        """Extract real knowledge base IDs (excluding virtual analysis kb_ids)."""
+        real_ids = []
+        for kb_id in self._dataset_ids:
+            if isinstance(kb_id, str) and not kb_id.startswith("analysis_"):
+                real_ids.append(kb_id)
+        return real_ids
 
-    async def _retrieve_analysis_results(self, query_text: str):
-        """从分析结果中检索相关内容
+    def _retrieve_analysis_results_chunks(self, query_text: str):
+        """从分析结果中检索相关内容，返回 chunks 列表
 
         Args:
             query_text: 查询文本
 
         Returns:
-            格式化后的内容
+            list: 检索到的 chunks 列表
         """
         tenant_id = self._canvas.get_tenant_id()
+        logger.info(f"[Analysis Retrieval] tenant_id: {tenant_id}, analysis_result_ids: {self._analysis_result_ids}")
 
         # 获取分析结果 chunks - 使用 result_ids 过滤
         chunks = DocumentAnalysisService.get_analysis_results_as_kb_chunks(
@@ -133,15 +138,18 @@ class Retrieval(ToolBase, ABC):
             result_ids=self._analysis_result_ids if self._analysis_result_ids else None
         )
 
+        logger.info(f"[Analysis Retrieval] Found {len(chunks)} total chunks before filtering")
+
         if not chunks:
-            self.set_output("formalized_content", self._param.empty_response)
-            self.set_output("json", [])
-            return
+            logger.info(f"[Analysis Retrieval] No chunks found, returning empty list")
+            return []
 
         # 简单的关键词匹配（由于分析结果没有向量，使用关键词匹配）
         vars = self.get_input_elements_from_text(query_text)
         vars = {k: o["value"] for k, o in vars.items()}
         query = self.string_format(query_text, vars)
+
+        logger.info(f"[Analysis Retrieval] Query: {query}")
 
         # 提取查询关键词
         query_lower = query.lower()
@@ -165,53 +173,29 @@ class Retrieval(ToolBase, ABC):
             if score > 0:
                 scored_chunks.append((score, chunk))
 
+        logger.info(f"[Analysis Retrieval] Scored {len(scored_chunks)} chunks with score > 0")
+
         # 按分数排序，取 top_n
+        top_n = self._param.top_n if hasattr(self._param, 'top_n') else 10
         scored_chunks.sort(key=lambda x: x[0], reverse=True)
-        top_chunks = scored_chunks[:self._param.top_n] if hasattr(self._param, 'top_n') else scored_chunks[:10]
+        top_chunks = scored_chunks[:top_n]
 
-        if not top_chunks:
-            self.set_output("formalized_content", self._param.empty_response)
-            self.set_output("json", [])
-            return
+        logger.info(f"[Analysis Retrieval] Returning top {len(top_chunks)} chunks")
 
-        # 提取 chunks
-        retrieved_chunks = [chunk for score, chunk in top_chunks]
+        # 提取 chunks 并清理字段
+        retrieved_chunks = []
+        for score, chunk in top_chunks:
+            chunk_copy = chunk.copy()
+            chunk_copy.pop("vector", None)
+            chunk_copy.pop("content_ltks", None)
+            chunk_copy.pop("content_sm_ltks", None)
+            retrieved_chunks.append(chunk_copy)
 
-        # 移除向量字段（如果存在）
-        for chunk in retrieved_chunks:
-            chunk.pop("vector", None)
-            chunk.pop("content_ltks", None)
-            chunk.pop("content_sm_ltks", None)
-
-        # 添加引用
-        doc_aggs = []
-        for chunk in retrieved_chunks:
-            doc_aggs.append({
-                "doc_id": chunk.get("doc_id", ""),
-                "doc_name": chunk.get("doc_name", ""),
-                "template_name": chunk.get("template_name", ""),
-            })
-
-        self._canvas.add_reference(retrieved_chunks, doc_aggs)
-
-        # 格式化输出
-        form_cnt = "\n\n".join([
-            f"【{chunk.get('doc_name', '文档')} - {chunk.get('template_name', '分析')}】\n{chunk.get('content_with_weight', '')}"
-            for chunk in retrieved_chunks
-        ])
-
-        self.set_output("formalized_content", form_cnt)
-        self.set_output("json", retrieved_chunks)
-
-        return form_cnt
+        return retrieved_chunks
 
     async def _retrieve_kb(self, query_text: str):
         kb_ids: list[str] = []
-        for id in self._dataset_ids:
-            # 跳过虚拟分析结果 kb_id
-            if isinstance(id, str) and id.startswith("analysis_"):
-                continue
-
+        for id in self._real_kb_ids:  # 使用新属性，只获取真实 KB IDs
             if id.find("@") < 0:
                 kb_ids.append(id)
                 continue
@@ -229,9 +213,41 @@ class Retrieval(ToolBase, ABC):
 
         filtered_kb_ids: list[str] = list(set([kb_id for kb_id in kb_ids if kb_id]))
 
-        kbs = KnowledgebaseService.get_by_ids(filtered_kb_ids)
-        if not kbs:
+        kbs = KnowledgebaseService.get_by_ids(filtered_kb_ids) if filtered_kb_ids else []
+
+        logger.info(f"[KB Retrieval] real_kb_ids: {filtered_kb_ids}, analysis_result_ids: {self._analysis_result_ids}")
+
+        # 如果只有分析结果源，没有真实 KB，直接跳过 KB 检索
+        if not kbs and not self._analysis_result_ids:
             raise Exception("No dataset is selected.")
+        if not kbs and self._analysis_result_ids:
+            # 只有分析结果，没有 KB - 跳过向量检索，直接获取分析结果
+            logger.info(f"[KB Retrieval] Analysis-only mode, retrieving from analysis results")
+            analysis_chunks = self._retrieve_analysis_results_chunks(query_text)
+            if not analysis_chunks:
+                self.set_output("formalized_content", self._param.empty_response)
+                return
+
+            # 构建输出格式
+            doc_aggs = []
+            for chunk in analysis_chunks:
+                doc_aggs.append({
+                    "doc_id": chunk.get("doc_id", ""),
+                    "doc_name": chunk.get("doc_name", ""),
+                    "template_name": chunk.get("template_name", ""),
+                })
+
+            self._canvas.add_reference(analysis_chunks, doc_aggs)
+
+            # 格式化输出
+            form_cnt = "\n\n".join([
+                f"【{chunk.get('doc_name', '文档')} - {chunk.get('template_name', '分析')}】\n{chunk.get('content_with_weight', '')}"
+                for chunk in analysis_chunks
+            ])
+
+            self.set_output("formalized_content", form_cnt)
+            self.set_output("json", analysis_chunks)
+            return form_cnt
 
         embd_nms = list(set([kb.embd_id for kb in kbs]))
         assert len(embd_nms) == 1, "Knowledge bases use different embedding models."
@@ -365,6 +381,26 @@ class Retrieval(ToolBase, ABC):
             if "content_ltks" in ck:
                 del ck["content_ltks"]
 
+        # 获取分析结果并合并
+        if self._analysis_result_ids:
+            logger.info(f"[KB Retrieval] Merging analysis results, current chunk count: {len(kbinfos.get('chunks', []))}")
+            analysis_chunks = self._retrieve_analysis_results_chunks(query_text)
+            if analysis_chunks:
+                # 将分析结果 chunks 添加到 KB chunks 中
+                kbinfos["chunks"].extend(analysis_chunks)
+
+                # 添加分析结果到 doc_aggs
+                for chunk in analysis_chunks:
+                    kbinfos["doc_aggs"].append({
+                        "doc_id": chunk.get("doc_id", ""),
+                        "doc_name": chunk.get("doc_name", ""),
+                        "template_name": chunk.get("template_name", ""),
+                    })
+
+                logger.info(f"[KB Retrieval] After merge, total chunks: {len(kbinfos['chunks'])}")
+            else:
+                logger.info(f"[KB Retrieval] No analysis chunks retrieved")
+
         if not kbinfos["chunks"]:
             self.set_output("formalized_content", self._param.empty_response)
             return
@@ -425,18 +461,17 @@ class Retrieval(ToolBase, ABC):
             self.set_output("formalized_content", self._param.empty_response)
             return
 
-        # 检查是否需要从分析结果中检索
-        if self._has_analysis_source:
-            return await self._retrieve_analysis_results(kwargs["query"])
+        query = kwargs["query"]
 
+        # 原有逻辑保持不变 - 根据 retrieval_from 和 dataset_ids/memory_ids 决定检索源
         if hasattr(self._param, "retrieval_from") and self._param.retrieval_from == "dataset":
-            return await self._retrieve_kb(kwargs["query"])
+            return await self._retrieve_kb(query)
         elif hasattr(self._param, "retrieval_from") and self._param.retrieval_from == "memory":
-            return await self._retrieve_memory(kwargs["query"])
+            return await self._retrieve_memory(query)
         elif self._dataset_ids:
-            return await self._retrieve_kb(kwargs["query"])
+            return await self._retrieve_kb(query)
         elif hasattr(self._param, "memory_ids") and self._param.memory_ids:
-            return await self._retrieve_memory(kwargs["query"])
+            return await self._retrieve_memory(query)
         else:
             self.set_output("formalized_content", self._param.empty_response)
             return
