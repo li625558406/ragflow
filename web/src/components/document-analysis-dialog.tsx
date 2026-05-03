@@ -6,6 +6,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   Select,
   SelectContent,
@@ -13,15 +14,24 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import {
-  useListAnalysisTemplates,
-} from '@/hooks/use-analysis-template-request';
-import { useAnalyzeDocument, useGetDocumentAnalysis, useCancelDocumentAnalysis, type AnalysisSection } from '@/hooks/use-document-analysis-request';
-import { useTranslation } from 'react-i18next';
-import { useState, useEffect, useRef } from 'react';
-import { Loader2, CheckCircle2, AlertCircle, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
-import { ScrollArea } from '@/components/ui/scroll-area';
+import { useListAnalysisTemplates } from '@/hooks/use-analysis-template-request';
+import {
+  useAnalyzeDocument,
+  useCancelDocumentAnalysis,
+  useGetDocumentAnalysis,
+  type AnalysisSection,
+} from '@/hooks/use-document-analysis-request';
+import {
+  AlertCircle,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Loader2,
+  RefreshCw,
+} from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 interface DocumentAnalysisDialogProps {
   open: boolean;
@@ -30,7 +40,13 @@ interface DocumentAnalysisDialogProps {
   documentName?: string;
 }
 
-type AnalysisStatus = 'idle' | 'loading' | 'pending' | 'running' | 'completed' | 'failed';
+type AnalysisStatus =
+  | 'idle'
+  | 'loading'
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed';
 
 export function DocumentAnalysisDialog({
   open,
@@ -38,7 +54,9 @@ export function DocumentAnalysisDialog({
   documentId,
   documentName,
 }: DocumentAnalysisDialogProps) {
-  const { t } = useTranslation('translation', { keyPrefix: 'documentAnalysis' });
+  const { t } = useTranslation('translation', {
+    keyPrefix: 'documentAnalysis',
+  });
 
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -49,15 +67,22 @@ export function DocumentAnalysisDialog({
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [templateName, setTemplateName] = useState<string>('');
   const [taskId, setTaskId] = useState<string>('');
-  const [hasCheckedExistingTask, setHasCheckedExistingTask] = useState<boolean>(false);
+  const [hasCheckedExistingTask, setHasCheckedExistingTask] =
+    useState<boolean>(false);
 
-  const { data: templatesData, isLoading: templatesLoading } = useListAnalysisTemplates({}, open);
-  const { mutate: analyzeDocument, isPending: isAnalyzing } = useAnalyzeDocument();
-  const { mutate: cancelAnalysis, isPending: isCanceling } = useCancelDocumentAnalysis();
+  const { data: templatesData, isLoading: templatesLoading } =
+    useListAnalysisTemplates({}, open);
+  const { mutate: analyzeDocument, isPending: isAnalyzing } =
+    useAnalyzeDocument();
+  const { mutate: cancelAnalysis, isPending: isCanceling } =
+    useCancelDocumentAnalysis();
 
-  // 获取分析结果 - 弹框打开时启用
-  // 注意：这里 enabled 始终为 true（当 open 时），这样轮询才会工作
-  const { data: analysisResult, refetch } = useGetDocumentAnalysis(documentId, taskId, true);
+  // 获取分析结果 - 只在弹框打开时启用
+  const { data: analysisResult, refetch } = useGetDocumentAnalysis(
+    documentId,
+    taskId,
+    open,
+  );
 
   const templates = templatesData?.data || [];
 
@@ -90,12 +115,18 @@ export function DocumentAnalysisDialog({
     const resultStatus = analysisResult.status as AnalysisStatus;
 
     // 如果刚启动任务，且后端返回 running/pending，清除标记
-    if (justStartedRef.current && (resultStatus === 'running' || resultStatus === 'pending')) {
+    if (
+      justStartedRef.current &&
+      (resultStatus === 'running' || resultStatus === 'pending')
+    ) {
       justStartedRef.current = false;
     }
 
     // 如果进度为 100 且有 sections，视为完成
-    if (analysisResult.progress === 100 && analysisResult.sections?.length > 0) {
+    if (
+      analysisResult.progress === 100 &&
+      analysisResult.sections?.length > 0
+    ) {
       setStatus('completed');
     } else {
       setStatus(resultStatus);
@@ -127,7 +158,10 @@ export function DocumentAnalysisDialog({
             setStatus(resultStatus);
             setProgress(result.data.progress || 0);
             setTemplateName(result.data.template_name || '');
-          } else if (resultStatus === 'completed' || resultStatus === 'failed') {
+          } else if (
+            resultStatus === 'completed' ||
+            resultStatus === 'failed'
+          ) {
             // 如果已完成或失败，也设置状态
             setStatus(resultStatus);
             setProgress(result.data.progress || 0);
@@ -183,7 +217,7 @@ export function DocumentAnalysisDialog({
           setStatus('idle');
           justStartedRef.current = false;
         },
-      }
+      },
     );
   };
 
@@ -207,7 +241,7 @@ export function DocumentAnalysisDialog({
         onError: (err) => {
           console.error('Cancel error:', err);
         },
-      }
+      },
     );
   };
 
@@ -226,7 +260,9 @@ export function DocumentAnalysisDialog({
         {analyses.map((analysis, idx) => (
           <div key={idx} className="space-y-1">
             <div className="text-sm font-medium text-primary">
-              {analysis.analysis_type === 'key_points' ? '关键要点' : analysis.analysis_type}
+              {analysis.analysis_type === 'key_points'
+                ? '关键要点'
+                : analysis.analysis_type}
             </div>
             <div className="text-sm whitespace-pre-wrap">{analysis.result}</div>
           </div>
@@ -280,7 +316,9 @@ export function DocumentAnalysisDialog({
               </div>
             </div>
             <p className="text-sm text-muted-foreground text-center">
-              {progress === 0 ? '正在初始化分析任务...' : `已处理约 ${progress}% 的内容`}
+              {progress === 0
+                ? '正在初始化分析任务...'
+                : `已处理约 ${progress}% 的内容`}
             </p>
           </div>
           <div className="flex justify-end gap-2">
@@ -317,7 +355,9 @@ export function DocumentAnalysisDialog({
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900 rounded-lg p-3">
-              <p className="text-sm text-red-800 dark:text-red-200">{errorMessage || '未知错误'}</p>
+              <p className="text-sm text-red-800 dark:text-red-200">
+                {errorMessage || '未知错误'}
+              </p>
             </div>
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => onOpenChange(false)}>
@@ -347,8 +387,8 @@ export function DocumentAnalysisDialog({
               分析完成
             </DialogTitle>
             <DialogDescription>
-              {templateName && `模板: ${templateName} · `}
-              共 {sections.length} 个章节
+              {templateName && `模板: ${templateName} · `}共 {sections.length}{' '}
+              个章节
             </DialogDescription>
           </DialogHeader>
 
@@ -392,7 +432,7 @@ export function DocumentAnalysisDialog({
                 variant="outline"
                 size="sm"
                 disabled={activeSectionIndex === 0}
-                onClick={() => setActiveSectionIndex(i => i - 1)}
+                onClick={() => setActiveSectionIndex((i) => i - 1)}
               >
                 <ChevronLeft className="size-4" />
                 上一节
@@ -401,7 +441,7 @@ export function DocumentAnalysisDialog({
                 variant="outline"
                 size="sm"
                 disabled={activeSectionIndex === sections.length - 1}
-                onClick={() => setActiveSectionIndex(i => i + 1)}
+                onClick={() => setActiveSectionIndex((i) => i + 1)}
               >
                 下一节
                 <ChevronRight className="size-4" />
@@ -441,8 +481,13 @@ export function DocumentAnalysisDialog({
           ) : (
             <>
               <div className="space-y-2">
-                <label className="text-sm font-medium">{t('selectTemplate')}</label>
-                <Select value={selectedTemplateId} onValueChange={setSelectedTemplateId}>
+                <label className="text-sm font-medium">
+                  {t('selectTemplate')}
+                </label>
+                <Select
+                  value={selectedTemplateId}
+                  onValueChange={setSelectedTemplateId}
+                >
                   <SelectTrigger>
                     <SelectValue placeholder={t('selectTemplate')} />
                   </SelectTrigger>
@@ -450,7 +495,9 @@ export function DocumentAnalysisDialog({
                     {templates.map((template) => (
                       <SelectItem key={template.id} value={template.id}>
                         {template.name}
-                        {template.is_system ? ` (${t('defaultTemplate')})` : ` (${t('customTemplate')})`}
+                        {template.is_system
+                          ? ` (${t('defaultTemplate')})`
+                          : ` (${t('customTemplate')})`}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -478,7 +525,9 @@ export function DocumentAnalysisDialog({
           </Button>
           <Button
             onClick={handleStartAnalysis}
-            disabled={!selectedTemplateId || isAnalyzing || templates.length === 0}
+            disabled={
+              !selectedTemplateId || isAnalyzing || templates.length === 0
+            }
           >
             {isAnalyzing ? (
               <>
