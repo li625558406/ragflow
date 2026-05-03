@@ -24,7 +24,10 @@ export function MetadataSemiAutoFields({
   const { t } = useTranslation();
   const form = useFormContext();
   const name = prefix + 'meta_data_filter.semi_auto';
-  const metadata = useFetchKnowledgeMetadata(kbIds);
+
+  // 过滤掉虚拟分析结果 kb_id，避免获取元数据时权限错误
+  const realKbIds = kbIds.filter(id => !id.startsWith('analysis_'));
+  const metadata = useFetchKnowledgeMetadata(realKbIds);
 
   const { fields, remove, append } = useFieldArray({
     name,

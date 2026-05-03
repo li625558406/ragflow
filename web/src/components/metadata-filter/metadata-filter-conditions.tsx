@@ -175,7 +175,10 @@ export function MetadataFilterConditions({
   const form = useFormContext();
   const name = prefix + 'meta_data_filter.manual';
   const logic = prefix + 'meta_data_filter.logic';
-  const metadata = useFetchKnowledgeMetadata(kbIds);
+
+  // 过滤掉虚拟分析结果 kb_id，避免获取元数据时权限错误
+  const realKbIds = kbIds.filter(id => !id.startsWith('analysis_'));
+  const metadata = useFetchKnowledgeMetadata(realKbIds);
 
   const switchOperatorOptions = useBuildSwitchOperatorOptions();
 
