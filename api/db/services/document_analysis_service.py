@@ -132,8 +132,13 @@ class DocumentAnalysisService(CommonService):
 
         query = cls.model.select().where(cls.model.status == 'completed')
 
-        # 过滤租户 - 需要关联 document 表
-        query = query.join(DB.Document).where(DB.Document.tenant_id == tenant_id)
+        # 过滤租户 - 通过 document_id 关联查询，不需要 join
+        # 先获取租户下的所有文档 ID
+        from peewee import fn
+        from api.db.db_models import Document
+
+        doc_subquery = Document.select(Document.id).where(Document.tenant_id == tenant_id)
+        query = query.where(cls.model.document_id.in_(doc_subquery))
 
         if document_ids:
             query = query.where(cls.model.document_id.in_(document_ids))
