@@ -414,7 +414,7 @@ export const useFetchKnowledgeList = (
     initialData: [],
     gcTime: 0, // https://tanstack.com/query/latest/docs/framework/react/guides/caching?from=reactQueryV3
     queryFn: async () => {
-      const { data } = await listDataset();
+      const { data } = await listDataset({ page_size: 1000 });
       const list = data?.data ?? [];
       return shouldFilterListWithoutDocument
         ? list.filter((x: IDataset) => x.chunk_count > 0)

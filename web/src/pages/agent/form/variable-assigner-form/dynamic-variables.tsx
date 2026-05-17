@@ -24,7 +24,7 @@ import { DynamicFormHeader } from '../components/dynamic-fom-header';
 import { QueryVariable } from '../components/query-variable';
 import { useBuildLogicalOptions } from './use-build-logical-options';
 
-loader.config({ paths: { vs: '/vs' } });
+loader.config({ paths: { vs: `${import.meta.env.BASE_URL}/vs` } });
 
 type SelectKeysProps = {
   name: string;

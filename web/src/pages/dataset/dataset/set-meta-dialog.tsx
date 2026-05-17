@@ -27,7 +27,7 @@ import Editor, { loader } from '@monaco-editor/react';
 import DOMPurify from 'dompurify';
 import { useEffect } from 'react';
 
-loader.config({ paths: { vs: '/vs' } });
+loader.config({ paths: { vs: `${import.meta.env.BASE_URL}/vs` } });
 
 export function SetMetaDialog({
   hideModal,
@@ -49,7 +49,7 @@ export function SetMetaDialog({
           try {
             JSON.parse(value);
             return true;
-          } catch (error) {
+          } catch {
             return false;
           }
         },

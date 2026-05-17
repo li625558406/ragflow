@@ -94,4 +94,4 @@ def json_loads(src, object_hook=None, object_pairs_hook=None):
     if isinstance(src, bytes):
         src = bytes_to_string(src)
     return json.loads(src, object_hook=object_hook,
-                      object_pairs_hook=object_pairs_hook)
+                      object_pairs_hook=object_pairs_hook, strict=False)

@@ -15,7 +15,7 @@ import { TypesWithArray } from '../../../constant';
 import { buildConversationVariableSelectOptions } from '../../../utils';
 import { DynamicFormHeader } from '../../components/dynamic-fom-header';
 
-loader.config({ paths: { vs: '/vs' } });
+loader.config({ paths: { vs: `${import.meta.env.BASE_URL}/vs` } });
 
 type SelectKeysProps = {
   name: string;

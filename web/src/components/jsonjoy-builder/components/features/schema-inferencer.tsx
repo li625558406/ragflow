@@ -7,13 +7,19 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import Editor, { type BeforeMount, type OnMount } from '@monaco-editor/react';
+import Editor, {
+  loader,
+  type BeforeMount,
+  type OnMount,
+} from '@monaco-editor/react';
 import { Loader2 } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { useMonacoTheme } from '../../hooks/use-monaco-theme';
 import { useTranslation } from '../../hooks/use-translation';
 import { createSchemaFromJson } from '../../lib/schema-inference';
 import type { JSONSchema } from '../../types/json-schema';
+
+loader.config({ paths: { vs: `${import.meta.env.BASE_URL}/vs` } });
 
 /** @public */
 export interface SchemaInferencerProps {

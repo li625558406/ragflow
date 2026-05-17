@@ -1,10 +1,16 @@
-import Editor, { type BeforeMount, type OnMount } from '@monaco-editor/react';
+import Editor, {
+  loader,
+  type BeforeMount,
+  type OnMount,
+} from '@monaco-editor/react';
 import { Download, FileJson, Loader2 } from 'lucide-react';
 import { useRef, type FC } from 'react';
 import { useMonacoTheme } from '../../hooks/use-monaco-theme';
 import { useTranslation } from '../../hooks/use-translation';
 import { cn } from '../../lib/utils';
 import type { JSONSchema } from '../../types/json-schema';
+
+loader.config({ paths: { vs: `${import.meta.env.BASE_URL}/vs` } });
 
 /** @public */
 export interface JsonSchemaVisualizerProps {
@@ -51,7 +57,7 @@ const JsonSchemaVisualizer: FC<JsonSchemaVisualizerProps> = ({
       if (onChange && typeof parsedJson !== 'number') {
         onChange(parsedJson);
       }
-    } catch (_error) {
+    } catch {
       // Monaco will show the error inline, no need for additional error handling
     }
   };

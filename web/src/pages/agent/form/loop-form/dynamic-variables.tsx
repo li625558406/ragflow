@@ -20,7 +20,7 @@ import { DynamicFormHeader } from '../components/dynamic-fom-header';
 import { QueryVariable } from '../components/query-variable';
 import { useInitializeConditions } from './use-watch-form-change';
 
-loader.config({ paths: { vs: '/vs' } });
+loader.config({ paths: { vs: `${import.meta.env.BASE_URL}/vs` } });
 
 type SelectKeysProps = {
   name: string;

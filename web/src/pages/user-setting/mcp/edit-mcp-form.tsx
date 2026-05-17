@@ -19,7 +19,7 @@ import { loader } from '@monaco-editor/react';
 import { Dispatch, SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 
-loader.config({ paths: { vs: '/vs' } });
+loader.config({ paths: { vs: `${import.meta.env.BASE_URL}/vs` } });
 
 export const FormId = 'EditMcpForm';
 
@@ -71,6 +71,7 @@ export function EditMcpForm({
   setFieldChanged: Dispatch<SetStateAction<boolean>>;
 }) {
   const { t } = useTranslation();
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const FormSchema = useBuildFormSchema();
 
   function onSubmit(data: z.infer<typeof FormSchema>) {

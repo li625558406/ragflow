@@ -43,7 +43,7 @@ import {
   serializeCodeOutputContract,
 } from './utils';
 
-loader.config({ paths: { vs: '/vs' } });
+loader.config({ paths: { vs: `${import.meta.env.BASE_URL}/vs` } });
 
 const options = [
   ProgrammingLanguage.Python,

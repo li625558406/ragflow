@@ -33,7 +33,7 @@ import { useEditVariableRecord } from './use-edit-variable';
 import { VariableDialog } from './variable-dialog';
 import { VariableTable } from './variable-table';
 
-loader.config({ paths: { vs: '/vs' } });
+loader.config({ paths: { vs: `${import.meta.env.BASE_URL}/vs` } });
 
 enum Method {
   GET = 'GET',

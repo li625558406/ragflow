@@ -31,7 +31,7 @@ import {
   useInitializeConditions,
 } from './use-watch-form-change';
 
-loader.config({ paths: { vs: '/vs' } });
+loader.config({ paths: { vs: `${import.meta.env.BASE_URL}/vs` } });
 
 const VariablesExceptOperatorOutputs = [AgentVariableType.Conversation];
 

@@ -5,7 +5,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import Editor, { type BeforeMount, type OnMount } from '@monaco-editor/react';
+import Editor, {
+  loader,
+  type BeforeMount,
+  type OnMount,
+} from '@monaco-editor/react';
 import { AlertCircle, Check, Loader2 } from 'lucide-react';
 import type * as Monaco from 'monaco-editor';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -16,6 +20,8 @@ import {
   validateJson,
   type ValidationResult,
 } from '../../utils/json-validator';
+
+loader.config({ paths: { vs: `${import.meta.env.BASE_URL}/vs` } });
 
 /** @public */
 export interface JsonValidatorProps {

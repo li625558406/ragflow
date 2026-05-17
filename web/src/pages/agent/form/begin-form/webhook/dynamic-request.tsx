@@ -12,7 +12,7 @@ import { useFieldArray, useFormContext } from 'react-hook-form';
 import { TypesWithArray, WebhookRequestParameters } from '../../../constant';
 import { DynamicFormHeader } from '../../components/dynamic-fom-header';
 
-loader.config({ paths: { vs: '/vs' } });
+loader.config({ paths: { vs: `${import.meta.env.BASE_URL}/vs` } });
 
 type SelectKeysProps = {
   name: string;

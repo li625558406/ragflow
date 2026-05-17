@@ -48,6 +48,12 @@ services:
       - ./nginx/html/agent-chat.html:/ragflow/web/custom/chat.html
       - ./nginx/html/index.html:/ragflow/web/custom/landing.html
       - ./nginx/html/token-transfer.html:/ragflow/web/custom/token-transfer.html
+      # 二次开发代码挂载
+      - ../api:/ragflow/api
+      - ../rag:/ragflow/rag
+      - ../agent:/ragflow/agent
+      - ../common:/ragflow/common
+      - ../deepdoc:/ragflow/deepdoc
     env_file: .env
     networks:
       - ragflow
@@ -103,6 +109,12 @@ services:
       - ./nginx/html/agent-chat.html:/ragflow/web/custom/chat.html
       - ./nginx/html/index.html:/ragflow/web/custom/landing.html
       - ./nginx/html/token-transfer.html:/ragflow/web/custom/token-transfer.html
+      # 二次开发代码挂载
+      - ../api:/ragflow/api
+      - ../rag:/ragflow/rag
+      - ../agent:/ragflow/agent
+      - ../common:/ragflow/common
+      - ../deepdoc:/ragflow/deepdoc
     env_file: .env
     networks:
       - ragflow
