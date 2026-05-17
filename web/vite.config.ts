@@ -54,6 +54,7 @@ export default defineConfig(({ mode }) => {
   }
   proxyScheme = proxyScheme || 'python';
 
+  // eslint-disable-next-line no-console
   console.log(`[vite.config] mode: ${mode}, API_PROXY_SCHEME: ${proxyScheme}`);
 
   const proxySchemes = {
@@ -186,6 +187,7 @@ export default defineConfig(({ mode }) => {
         overlay: false,
       },
       proxy,
+      allowedHosts: ['konusmumu.com', 'aa.konusmumu.com'],
     },
     assetsInclude: ['**/*.md'],
     base: env.VITE_BASE_URL,

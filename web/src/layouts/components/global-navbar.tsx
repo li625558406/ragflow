@@ -15,6 +15,7 @@ const PathMap = {
   [Routes.Agents]: [Routes.Agents, Routes.AgentTemplates],
   [Routes.Memories]: [Routes.Memories, Routes.Memory, Routes.MemoryMessage],
   [Routes.Files]: [Routes.Files],
+  [Routes.ScheduledTasks]: [Routes.ScheduledTasks, Routes.ScheduledTaskLogs],
 } as const;
 
 const menuItems = [
@@ -37,6 +38,7 @@ const menuItems = [
   },
   { path: Routes.Memories, name: 'header.memories' /* icon: Cpu, */ },
   { path: Routes.Files, name: 'header.fileManager' /* icon: File, */ },
+  { path: Routes.ScheduledTasks, name: 'header.scheduledTasks' },
 ];
 
 const GlobalNavbar = supportsCssAnchor

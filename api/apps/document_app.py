@@ -40,7 +40,19 @@ async def get(doc_id):
 
         b, n = File2DocumentService.get_storage_address(doc_id=doc_id)
         data = await thread_pool_exec(settings.STORAGE_IMPL.get, b, n)
+        total_size = len(data) if isinstance(data, bytes) else len(data.encode("utf-8"))
+
+        # Support ?max_bytes=N to truncate response for preview
+        max_bytes = request.args.get("max_bytes", None)
+        if max_bytes is not None:
+            max_bytes = int(max_bytes)
+            if isinstance(data, bytes):
+                data = data[:max_bytes]
+            else:
+                data = data[:max_bytes]
+
         response = await make_response(data)
+        response.headers["X-Full-Content-Length"] = str(total_size)
 
         ext = re.search(r"\.([^.]+)$", doc.name.lower())
         ext = ext.group(1) if ext else None

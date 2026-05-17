@@ -363,4 +363,21 @@ export default {
     `${restAPIv1}/analysis-templates/${templateId}`,
   deleteAnalysisTemplate: (templateId: string) =>
     `${restAPIv1}/analysis-templates/${templateId}`,
+
+  // scheduled tasks
+  listScheduledTasks: `${restAPIv1}/scheduled-tasks`,
+  createScheduledTask: `${restAPIv1}/scheduled-tasks`,
+  getScheduledTask: (id: string) => `${restAPIv1}/scheduled-tasks/${id}`,
+  updateScheduledTask: (id: string) => `${restAPIv1}/scheduled-tasks/${id}`,
+  deleteScheduledTask: (id: string) => `${restAPIv1}/scheduled-tasks/${id}`,
+  toggleScheduledTask: (id: string) =>
+    `${restAPIv1}/scheduled-tasks/${id}/toggle`,
+  runScheduledTaskNow: (id: string) =>
+    `${restAPIv1}/scheduled-tasks/${id}/run-now`,
+  stopScheduledTask: (id: string) => `${restAPIv1}/scheduled-tasks/${id}/stop`,
+  listScheduledTaskLogs: (id: string) =>
+    `${restAPIv1}/scheduled-tasks/${id}/logs`,
+  fetchCrawlerState: (id: string) => `${restAPIv1}/scheduled-tasks/${id}/state`,
+  updateCrawlerState: (id: string) =>
+    `${restAPIv1}/scheduled-tasks/${id}/state`,
 };

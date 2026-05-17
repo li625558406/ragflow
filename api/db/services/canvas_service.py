@@ -221,7 +221,7 @@ class UserCanvasService(CommonService):
         e, cvs = cls.get_by_id(agent_id)
         if not e:
             raise LookupError("Agent not found.")
-        if tenant_id and cvs.user_id != tenant_id:
+        if tenant_id and not cls.accessible(agent_id, tenant_id):
             raise PermissionError("You do not own the agent.")
 
         if release_mode:
@@ -254,12 +254,19 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
             conv.message = []
         if not isinstance(conv.dsl, str):
             conv.dsl = json.dumps(conv.dsl, ensure_ascii=False)
-        canvas = Canvas(conv.dsl, tenant_id, agent_id, canvas_id=agent_id, custom_header=custom_header)
+        # Use agent owner's tenant_id for model configuration
+        _, agent_canvas = UserCanvasService.get_by_id(agent_id)
+        canvas = Canvas(conv.dsl, agent_canvas.user_id, agent_id, canvas_id=agent_id, custom_header=custom_header)
+        # Override sys.user_id with current user for proper logging/permissions
+        canvas.globals["sys.user_id"] = tenant_id
     else:
         cvs, dsl = UserCanvasService.get_agent_dsl_with_release(agent_id, release_mode=release_mode == "true", tenant_id=tenant_id)
 
         session_id = get_uuid()
-        canvas = Canvas(dsl, tenant_id, agent_id, canvas_id=cvs.id, custom_header=custom_header)
+        # Use agent owner's tenant_id for model configuration
+        canvas = Canvas(dsl, cvs.user_id, agent_id, canvas_id=cvs.id, custom_header=custom_header)
+        # Override sys.user_id with current user for proper logging/permissions
+        canvas.globals["sys.user_id"] = tenant_id
         canvas.reset()
         # Get the version title based on release_mode
         version_title = UserCanvasVersionService.get_latest_version_title(cvs.id, release_mode=release_mode == "true")

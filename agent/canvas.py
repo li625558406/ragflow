@@ -20,6 +20,7 @@ import inspect
 import binascii
 import json
 import logging
+import pickle
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -110,6 +111,13 @@ class Graph:
 
         self.path = self.dsl["path"]
 
+    def _safe_deepcopy(self, obj):
+        """Deep copy that skips unpicklable objects (e.g. SimpleQueue, partial)."""
+        try:
+            return deepcopy(obj)
+        except (TypeError, pickle.PicklingError):
+            return json.loads(json.dumps(obj, ensure_ascii=False, default=lambda o: None))
+
     def __str__(self):
         self.dsl["path"] = self.path
         self.dsl["task_id"] = self.task_id
@@ -119,7 +127,7 @@ class Graph:
         for k in self.dsl.keys():
             if k in ["components"]:
                 continue
-            dsl[k] = deepcopy(self.dsl[k])
+            dsl[k] = self._safe_deepcopy(self.dsl[k])
 
         for k, cpn in self.components.items():
             if k not in dsl["components"]:
@@ -128,7 +136,7 @@ class Graph:
                 if c == "obj":
                     dsl["components"][k][c] = json.loads(str(cpn["obj"]))
                     continue
-                dsl["components"][k][c] = deepcopy(cpn[c])
+                dsl["components"][k][c] = self._safe_deepcopy(cpn[c])
         return json.dumps(dsl, ensure_ascii=False)
 
     def reset(self):
@@ -284,7 +292,7 @@ class Graph:
 
 class Canvas(Graph):
 
-    def __init__(self, dsl: str, tenant_id=None, task_id=None, canvas_id=None, custom_header=None):
+    def __init__(self, dsl: str, tenant_id=None, task_id=None, canvas_id=None, custom_header=None, owner_tenant_id=None):
         self.globals = {
             "sys.query": "",
             "sys.user_id": tenant_id,
@@ -294,6 +302,9 @@ class Canvas(Graph):
             "sys.date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         }
         self.variables = {}
+        # Use owner's tenant_id for model configuration (for team members to use owner's models)
+        self._model_tenant_id = owner_tenant_id if owner_tenant_id else tenant_id
+        # Store current user's tenant_id for logging and permissions
         super().__init__(dsl, tenant_id, task_id, custom_header=custom_header)
         self._id = canvas_id
 
@@ -655,7 +666,13 @@ class Canvas(Graph):
                            "elapsed_time": time.perf_counter() - st,
                            "created_at": st,
                        })
-            self.history.append(("assistant", self.get_component_obj(self.path[-1]).output()))
+            _out = self.get_component_obj(self.path[-1]).output()
+            # Ensure history only contains JSON-serializable data
+            try:
+                json.dumps(_out, ensure_ascii=False, default=lambda o: None)
+                self.history.append(("assistant", _out))
+            except (TypeError, ValueError):
+                self.history.append(("assistant", json.loads(json.dumps(_out, ensure_ascii=False, default=lambda o: None))))
             self.globals["sys.history"].append(f"{self.history[-1][0]}: {self.history[-1][1]}")
         elif "Task has been canceled" in self.error:
             yield decorate("workflow_finished",

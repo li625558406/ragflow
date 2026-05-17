@@ -12,6 +12,7 @@ export enum EmptyCardType {
   Search = 'search',
   Memory = 'memory',
   Skills = 'skills',
+  ScheduledTask = 'scheduled_task',
 }
 
 export const EmptyCardData = {
@@ -44,5 +45,10 @@ export const EmptyCardData = {
     icon: <HomeIcon name="skills" width={'24'} />,
     titleKey: 'empty.skillsTitle',
     notFoundKey: 'empty.notFoundSkills',
+  },
+  [EmptyCardType.ScheduledTask]: {
+    icon: <HomeIcon name="file" width={'24'} />,
+    titleKey: 'empty.scheduledTaskTitle',
+    notFoundKey: 'empty.notFoundScheduledTask',
   },
 };

@@ -116,7 +116,7 @@ dependencies = [
     "webdriver-manager==4.0.1",
     "wikipedia==1.4.0",
     "word2number==1.1",
-    "xgboost==1.6.0",
+    "xgboost>=2.1.4,<3.0.0",
     "xpinyin==0.7.6",
     "yfinance==0.2.65",
     "zhipuai==2.0.1",
@@ -157,6 +157,9 @@ dependencies = [
     "python-gitlab>=7.0.0",
     "alibabacloud-dingtalk>=2.0.0",
     "quart-schema==0.23.0",
+    "gmssl>=3.2.2",
+    "croniter>=2.0.0",
+    "undetected-chromedriver>=3.5.5",
 ]
 
 [dependency-groups]
@@ -173,6 +176,9 @@ test = [
     "reportlab>=4.4.1",
     "requests>=2.32.2",
     "requests-toolbelt>=1.0.0",
+    "croniter>=2.0.0",
+    "crawl4ai>=0.6.0",
+    "beautifulsoup4>=4.12.0",
     "pycryptodomex==3.20.0",
     "pytest-playwright>=0.7.2",
     "codecov>=2.1.13",

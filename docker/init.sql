@@ -4,51 +4,105 @@ USE rag_flow;
 -- 文档分析模板表
 CREATE TABLE IF NOT EXISTS document_analysis_template (
     id VARCHAR(32) PRIMARY KEY,
-    f_name VARCHAR(255) NOT NULL,
-    f_doc_type VARCHAR(64) NOT NULL,
-    f_description TEXT,
-    f_dimensions JSON,
-    f_prompt_templates JSON,
-    f_chunk_merge_rule JSON,
-    f_is_default TINYINT(1) DEFAULT 0,
-    f_is_system TINYINT(1) DEFAULT 0,
-    f_tenant_id VARCHAR(32),
-    f_create_time BIGINT,
-    f_create_date DATETIME,
-    f_update_time BIGINT,
-    f_update_date DATETIME,
-    INDEX idx_doc_type (f_doc_type),
-    INDEX idx_is_default (f_is_default),
-    INDEX idx_tenant_id (f_tenant_id)
+    name VARCHAR(255) NOT NULL,
+    doc_type VARCHAR(64) NOT NULL,
+    description TEXT,
+    dimensions JSON,
+    prompt_templates JSON,
+    chunk_merge_rule JSON,
+    llm_id VARCHAR(64),
+    is_default TINYINT(1) DEFAULT 0,
+    is_system TINYINT(1) DEFAULT 0,
+    tenant_id VARCHAR(32),
+    create_time BIGINT,
+    create_date DATETIME,
+    update_time BIGINT,
+    update_date DATETIME,
+    INDEX idx_doc_type (doc_type),
+    INDEX idx_is_default (is_default),
+    INDEX idx_tenant_id (tenant_id)
 );
 
 -- 文档分析结果表
 CREATE TABLE IF NOT EXISTS document_analysis_result (
     id VARCHAR(32) PRIMARY KEY,
-    f_document_id VARCHAR(32) NOT NULL,
-    f_template_id VARCHAR(32) NOT NULL,
-    f_status VARCHAR(16) NOT NULL DEFAULT 'pending',
-    f_progress INT DEFAULT 0,
-    f_result JSON,
-    f_error_message TEXT,
-    f_doc_name VARCHAR(255),
-    f_kb_id VARCHAR(32) NOT NULL,
-    f_tenant_id VARCHAR(32) NOT NULL,
-    f_llm_id VARCHAR(64),
-    f_create_time BIGINT,
-    f_create_date DATETIME,
-    f_update_time BIGINT,
-    f_update_date DATETIME,
-    INDEX idx_document_id (f_document_id),
-    INDEX idx_template_id (f_template_id),
-    INDEX idx_status (f_status),
-    INDEX idx_kb_id (f_kb_id),
-    INDEX idx_tenant_id (f_tenant_id)
+    document_id VARCHAR(32) NOT NULL,
+    template_id VARCHAR(32) NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'pending',
+    progress INT DEFAULT 0,
+    result JSON,
+    error_message TEXT,
+    doc_name VARCHAR(255),
+    kb_id VARCHAR(32) NOT NULL,
+    tenant_id VARCHAR(32) NOT NULL,
+    llm_id VARCHAR(64),
+    create_time BIGINT,
+    create_date DATETIME,
+    update_time BIGINT,
+    update_date DATETIME,
+    INDEX idx_document_id (document_id),
+    INDEX idx_template_id (template_id),
+    INDEX idx_status (status),
+    INDEX idx_kb_id (kb_id),
+    INDEX idx_tenant_id (tenant_id)
 );
+
+-- 定时任务表
+CREATE TABLE IF NOT EXISTS scheduled_task (
+    id VARCHAR(32) PRIMARY KEY,
+    tenant_id VARCHAR(32) NOT NULL,
+    name VARCHAR(255) NOT NULL COMMENT 'task display name',
+    description TEXT COMMENT 'task description',
+    script_path TEXT NOT NULL COMMENT 'absolute path to Python script',
+    script_args TEXT COMMENT 'CLI arguments passed to script',
+    schedule_type VARCHAR(16) NOT NULL DEFAULT 'interval' COMMENT 'cron|interval',
+    cron_expression VARCHAR(64) DEFAULT '' COMMENT 'cron expr',
+    interval_seconds INT DEFAULT 3600 COMMENT 'seconds between runs',
+    enabled TINYINT(1) DEFAULT 1 COMMENT 'whether task is active',
+    last_run_time BIGINT COMMENT 'timestamp of last execution',
+    last_run_status VARCHAR(16) DEFAULT '' COMMENT 'success|fail|running',
+    next_run_time BIGINT COMMENT 'computed next execution timestamp',
+    timeout INT DEFAULT 3600 COMMENT 'max execution seconds',
+    max_retries INT DEFAULT 0 COMMENT 'retry count on failure',
+    retry_count INT DEFAULT 0,
+    target_url TEXT COMMENT 'crawl target URL',
+    llm_id VARCHAR(64) DEFAULT '' COMMENT 'LLM factory for image analysis',
+    llm_model_name VARCHAR(128) DEFAULT '' COMMENT 'LLM model name for image analysis',
+    kb_id VARCHAR(32) DEFAULT '' COMMENT 'target knowledge base ID',
+    access_token TEXT COMMENT 'access token for authenticated crawling',
+    create_time BIGINT,
+    create_date DATETIME,
+    update_time BIGINT,
+    update_date DATETIME,
+    INDEX idx_tenant_id (tenant_id),
+    INDEX idx_enabled_next (enabled, next_run_time),
+    INDEX idx_kb_id (kb_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 定时任务日志表
+CREATE TABLE IF NOT EXISTS scheduled_task_log (
+    id VARCHAR(32) PRIMARY KEY,
+    task_id VARCHAR(32) NOT NULL,
+    tenant_id VARCHAR(32) NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'running' COMMENT 'running|success|fail',
+    start_time BIGINT,
+    end_time BIGINT,
+    duration DOUBLE COMMENT 'execution duration in seconds',
+    output LONGTEXT COMMENT 'stdout captured from script',
+    error_msg LONGTEXT COMMENT 'stderr or exception message',
+    pid INT COMMENT 'OS process ID',
+    create_time BIGINT,
+    create_date DATETIME,
+    update_time BIGINT,
+    update_date DATETIME,
+    INDEX idx_task_id (task_id),
+    INDEX idx_tenant_id (tenant_id),
+    INDEX idx_task_start (task_id, start_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 预置分析模板
 INSERT INTO document_analysis_template
-(id, f_name, f_doc_type, f_description, f_dimensions, f_prompt_templates, f_chunk_merge_rule, f_is_default, f_is_system, f_create_time, f_create_date, f_update_time, f_update_date)
+(id, name, doc_type, description, dimensions, prompt_templates, chunk_merge_rule, is_default, is_system, create_time, create_date, update_time, update_date)
 VALUES
 ('tpl_bid_default', '招标文件分析', 'bid', '适用于招标文件、投标文件分析',
  '["关键条款摘要", "时间节点提醒", "风险/注意事项", "商务条件分析"]',

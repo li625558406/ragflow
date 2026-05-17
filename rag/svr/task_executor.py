@@ -107,6 +107,7 @@ TASK_TYPE_TO_PIPELINE_TASK_TYPE = {
     "graphrag": PipelineTaskType.GRAPH_RAG,
     "mindmap": PipelineTaskType.MINDMAP,
     "memory": PipelineTaskType.MEMORY,
+    "scheduled_script": None,
 }
 
 UNACKED_ITERATOR = None
@@ -213,6 +214,8 @@ async def collect():
     elif msg.get("task_type") == PipelineTaskType.MEMORY.lower():
         _, task_obj = TaskService.get_by_id(msg["id"])
         task = task_obj.to_dict()
+    elif msg.get("task_type") == "scheduled_script":
+        task = msg
     else:
         task = TaskService.get_task(msg["id"])
 
@@ -1046,12 +1049,169 @@ async def insert_chunks(task_id, task_tenant_id, task_dataset_id, chunks, progre
     return True
 
 
+async def handle_scheduled_script_task(task: dict):
+    """Execute a user-configured Python script via subprocess and record the result."""
+    import subprocess
+    import sys as _sys
+
+    from api.db.services.scheduled_task_service import (
+        ScheduledTaskLogService,
+        ScheduledTaskService,
+    )
+
+    log_id = task["id"]
+    script_path = task.get("script_path", "")
+    script_args = task.get("script_args", "")
+    timeout = task.get("timeout", 3600)
+    task_id_ref = task.get("task_id_ref", "")
+
+    # Check if already canceled before starting
+    if has_canceled(task_id_ref):
+        logging.info("scheduled_script task %s canceled before start, skipping", task_id_ref)
+        ScheduledTaskLogService.update_by_id(log_id, {
+            "status": "fail",
+            "end_time": int(time.time() * 1000),
+            "error_msg": "Manually stopped by user",
+        })
+        if task_id_ref:
+            ScheduledTaskService.update_by_id(task_id_ref, {
+                "last_run_time": int(time.time() * 1000),
+                "last_run_status": "fail",
+            })
+        return
+
+    cmd = [_sys.executable, script_path]
+
+    extra_args = []
+    extra_args.extend(["--tenant-id", task.get("tenant_id", "")])
+    extra_args.extend(["--task-name", task.get("name", "scheduled_task")])
+    if task.get("target_url"):
+        extra_args.extend(["--target-url", task["target_url"]])
+    if task.get("llm_id"):
+        extra_args.extend(["--llm-id", task["llm_id"]])
+    if task.get("llm_model_name"):
+        extra_args.extend(["--llm-model", task["llm_model_name"]])
+    if task.get("kb_id"):
+        extra_args.extend(["--kb-id", task["kb_id"]])
+    if task.get("access_token"):
+        extra_args.extend(["--access-token", task["access_token"]])
+    if extra_args:
+        cmd.extend(extra_args)
+
+    if script_args:
+        cmd.extend(script_args.split())
+
+    start_ts = time.time()
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        # Monitor for cancel signal while subprocess runs
+        monitor_task = None
+        try:
+            async def _monitor_cancel():
+                while proc.returncode is None:
+                    await asyncio.sleep(2)
+                    if has_canceled(task_id_ref):
+                        proc.kill()
+                        return
+
+            monitor_task = asyncio.create_task(_monitor_cancel())
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout
+            )
+        finally:
+            if monitor_task:
+                monitor_task.cancel()
+                try:
+                    await monitor_task
+                except asyncio.CancelledError:
+                    pass
+
+        duration = time.time() - start_ts
+        output = stdout.decode("utf-8", errors="replace") if stdout else ""
+        error = stderr.decode("utf-8", errors="replace") if stderr else ""
+
+        was_canceled = proc.returncode < 0 or (proc.returncode != 0 and has_canceled(task_id_ref))
+        if was_canceled and has_canceled(task_id_ref):
+            status = "fail"
+            error = "Manually stopped by user\n" + error if error else "Manually stopped by user"
+        elif proc.returncode == 0:
+            status = "success"
+        else:
+            status = "fail"
+
+        cancel_note = "  (Manually stopped)" if was_canceled else ""
+        logging.info(
+            "scheduled_script task %s finished (returncode=%d, duration=%.2fs%s)\n"
+            "--- stdout ---\n%s\n--- stderr ---\n%s\n--- end ---",
+            task_id_ref or log_id, proc.returncode, duration,
+            cancel_note,
+            output[:2000], error[:2000],
+        )
+
+        ScheduledTaskLogService.update_by_id(log_id, {
+            "status": status,
+            "end_time": int(time.time() * 1000),
+            "duration": duration,
+            "output": output,
+            "error_msg": error,
+            "pid": proc.pid,
+        })
+
+        if task_id_ref:
+            ScheduledTaskService.update_by_id(task_id_ref, {
+                "last_run_time": int(time.time() * 1000),
+                "last_run_status": status,
+                "retry_count": 0,
+            })
+
+    except asyncio.TimeoutError:
+        duration = time.time() - start_ts
+        logging.error(
+            "scheduled_script task %s timed out after %ss",
+            task_id_ref or log_id, timeout,
+        )
+        ScheduledTaskLogService.update_by_id(log_id, {
+            "status": "fail",
+            "end_time": int(time.time() * 1000),
+            "duration": duration,
+            "error_msg": f"Timeout after {timeout}s",
+        })
+        if task_id_ref:
+            ScheduledTaskService.update_by_id(task_id_ref, {
+                "last_run_time": int(time.time() * 1000),
+                "last_run_status": "fail",
+            })
+    except Exception as e:
+        duration = time.time() - start_ts
+        ScheduledTaskLogService.update_by_id(log_id, {
+            "status": "fail",
+            "end_time": int(time.time() * 1000),
+            "duration": duration,
+            "error_msg": str(e),
+        })
+        if task_id_ref:
+            ScheduledTaskService.update_by_id(task_id_ref, {
+                "last_run_time": int(time.time() * 1000),
+                "last_run_status": "fail",
+            })
+        logging.exception(f"scheduled_script task failed: {e}")
+
+
 @timeout(60 * 60 * 3, 1)
 async def do_handle_task(task):
     task_type = task.get("task_type", "")
 
     if task_type == "memory":
         await handle_save_to_memory_task(task)
+        return
+
+    if task_type == "scheduled_script":
+        await handle_scheduled_script_task(task)
         return
 
     if task_type == "dataflow" and task.get("doc_id", "") == CANVAS_DEBUG_DOC_ID:
@@ -1318,6 +1478,12 @@ async def handle_task():
     try:
         logging.info(f"handle_task begin for task {json.dumps(task)}")
         CURRENT_TASKS[task["id"]] = copy.deepcopy(task)
+
+        # Ack immediately for scheduled_script — execution is async via subprocess
+        # and may outlive the consumer, causing duplicate re-delivery on restart.
+        if task_type == "scheduled_script":
+            redis_msg.ack()
+
         await do_handle_task(task)
         DONE_TASKS += 1
         CURRENT_TASKS.pop(task_id, None)
@@ -1346,9 +1512,11 @@ async def handle_task():
             referred_document_id = None
             if task_type in ["graphrag", "raptor", "mindmap"]:
                 referred_document_id = task["doc_ids"][0]
-            PipelineOperationLogService.record_pipeline_operation(document_id=task["doc_id"], pipeline_id="",
-                                                                  task_type=pipeline_task_type,
-                                                                  task_id=task_id, referred_document_id=referred_document_id)
+            doc_id = task.get("doc_id", "")
+            if doc_id:
+                PipelineOperationLogService.record_pipeline_operation(document_id=doc_id, pipeline_id="",
+                                                                      task_type=pipeline_task_type,
+                                                                      task_id=task_id, referred_document_id=referred_document_id)
 
     redis_msg.ack()
 

@@ -17,6 +17,7 @@
 import datetime
 import json
 from enum import Enum, IntEnum
+from functools import partial
 from api.utils.common import string_to_bytes, bytes_to_string
 
 
@@ -72,6 +73,8 @@ class CustomJSONEncoder(json.JSONEncoder):
                 return obj.to_dict_with_type()
         elif isinstance(obj, type):
             return obj.__name__
+        elif isinstance(obj, partial):
+            return None
         else:
             return json.JSONEncoder.default(self, obj)
 

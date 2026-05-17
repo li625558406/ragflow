@@ -1,18 +1,27 @@
+import HighLightMarkdown from '@/components/highlight-markdown';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import api from '@/utils/api';
+import { useQuery } from '@tanstack/react-query';
 import JSEncrypt from 'jsencrypt';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import HighLightMarkdown from '@/components/highlight-markdown';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import api from '@/utils/api';
-import request from '@/utils/request';
-import { useQuery } from '@tanstack/react-query';
 
 const RSA_PUBLIC_KEY =
   '-----BEGIN PUBLIC KEY-----MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArq9XTUSeYr2+N1h3Afl/z8Dse/2yD0ZGrKwx+EEEcdsBLca9Ynmx3nIB5obmLlSfmskLpBo0UACBmB5rEjBp2Q2f3AG3Hjd4B+gNCG6BDaawuDlgANIhGnaTLrIqWrrcm4EMzJOnAOI1fgzJRsOOUEfaS318Eq9OVO3apEyCCt0lOQK6PuksduOjVxtltDav+guVAA068NrPYmRNabVKRNLJpL8w4D44sfth5RvZ3q9t+6RTArpEtc5sh5ChzvqPOzKGMXW83C95TxmXqpbK6olN4RevSfVjEAgCydH6HN6OhtOQEcnrU97r9H0iZOWwbw3pVrZiUkuRD1R56Wzs2wIDAQAB-----END PUBLIC KEY-----';
+
+// 默认开场白
+const DEFAULT_PROLOGUE = '你好！我是你的助理，有什么可以帮到你的吗？';
 
 interface Agent {
   id: string;
   title: string;
   dataset_ids?: string[];
+  canvas?: string; // JSON string of the graph/canvas
 }
 
 interface Session {
@@ -82,13 +91,20 @@ export default function CChat() {
     const handleClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       if (target.classList.contains('cite-badge')) {
-        const index = parseInt(target.getAttribute('data-cite-index') || '0', 10);
+        const index = parseInt(
+          target.getAttribute('data-cite-index') || '0',
+          10,
+        );
         if (index > 0) {
           const card = document.getElementById(`ref-${index - 1}`);
           if (card) {
             card.scrollIntoView({ behavior: 'smooth', block: 'center' });
             card.classList.add('border-[#0F2340]/30', 'bg-[#0F2340]/5');
-            setTimeout(() => card.classList.remove('border-[#0F2340]/30', 'bg-[#0F2340]/5'), 2000);
+            setTimeout(
+              () =>
+                card.classList.remove('border-[#0F2340]/30', 'bg-[#0F2340]/5'),
+              2000,
+            );
           }
         }
       }
@@ -136,10 +152,9 @@ export default function CChat() {
   const [currentAgentId, setCurrentAgentId] = useState(
     () => localStorage.getItem('ragflow_agent_id') || '',
   );
+  const [currentAgentPrologue, setCurrentAgentPrologue] = useState<string>('');
   const [sessions, setSessions] = useState<Session[]>([]);
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(
-    null,
-  );
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
@@ -165,7 +180,9 @@ export default function CChat() {
 
   // Analysis results state
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
-  const [availableDocs, setAvailableDocs] = useState<Array<{id: string, name: string}>>([]);
+  const [availableDocs, setAvailableDocs] = useState<
+    Array<{ id: string; name: string }>
+  >([]);
   const [loadingDocs, setLoadingDocs] = useState(false);
 
   // Ref state
@@ -246,30 +263,6 @@ export default function CChat() {
     }
   }, [messages, fullContent, thinkingContent]);
 
-  // Load agents when logged in
-  useEffect(() => {
-    if (!token) return;
-    apiFetch('/api/v1/agents?page_size=100')
-      .then((r) => r.json())
-      .then((result) => {
-        if (result.code !== 0) throw new Error(result.message);
-        const list: Agent[] = result.data?.canvas || [];
-        setAgents(list);
-        if (list.length > 0) {
-          const savedId = localStorage.getItem('ragflow_agent_id');
-          const targetId = savedId && list.find((a) => a.id === savedId)
-            ? savedId
-            : list[0].id;
-          switchAgent(targetId);
-        }
-      })
-      .catch((e) => {
-        console.error('加载智能体列表失败:', e);
-        showToast('加载智能体列表失败');
-      });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
-
   const switchAgent = useCallback(
     (agentId: string) => {
       setCurrentAgentId(agentId);
@@ -279,10 +272,35 @@ export default function CChat() {
       setAvailableDocs([]); // 清空文档列表
       setSelectedDocId(null);
       localStorage.setItem('ragflow_agent_id', agentId);
+
+      // 获取智能体详情，提取开场白
+      apiFetch(`/api/v1/agents/${agentId}`)
+        .then((r) => r.json())
+        .then((result) => {
+          if (result.code === 0 && result.data) {
+            // DSL 直接在 result.data.dsl 中
+            const dsl = result.data.dsl;
+            if (dsl && dsl.graph && dsl.graph.nodes) {
+              const beginNode = dsl.graph.nodes.find(
+                (n: any) => n.type === 'beginNode',
+              );
+              const prologue = beginNode?.data?.form?.prologue || '';
+              setCurrentAgentPrologue(prologue);
+            } else {
+              setCurrentAgentPrologue('');
+            }
+          }
+        })
+        .catch(() => {
+          setCurrentAgentPrologue('');
+        });
+
       // 加载该智能体的历史会话
       const userId =
         userInfo?.id || userInfo?.user_id || userInfo?.email || 'current';
-      apiFetch(`/api/v1/agents/${agentId}/sessions?exp_user_id=${userId}&orderby=update_time&desc=true`)
+      apiFetch(
+        `/api/v1/agents/${agentId}/sessions?exp_user_id=${userId}&orderby=update_time&desc=true`,
+      )
         .then((r) => r.json())
         .then((result) => {
           if (result.code === 0 && result.data) {
@@ -299,6 +317,31 @@ export default function CChat() {
     },
     [apiFetch, userInfo],
   );
+
+  // Load agents when logged in
+  useEffect(() => {
+    if (!token) return;
+    apiFetch('/api/v1/agents?page_size=100')
+      .then((r) => r.json())
+      .then((result) => {
+        if (result.code !== 0) throw new Error(result.message);
+        const list: Agent[] = result.data?.canvas || [];
+        setAgents(list);
+        if (list.length > 0) {
+          const savedId = localStorage.getItem('ragflow_agent_id');
+          const targetId =
+            savedId && list.find((a) => a.id === savedId)
+              ? savedId
+              : list[0].id;
+          switchAgent(targetId);
+        }
+      })
+      .catch((e) => {
+        console.error('加载智能体列表失败:', e);
+        showToast('加载智能体列表失败');
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
 
   // 获取知识库中已分析的文档列表
   const loadAnalyzedDocuments = useCallback(async () => {
@@ -337,7 +380,9 @@ export default function CChat() {
       const allDocuments: any[] = [];
       for (const datasetId of datasetsToCheck) {
         try {
-          const docsResp = await apiFetch(`/api/v1/datasets/${datasetId}/documents?page_size=1000`);
+          const docsResp = await apiFetch(
+            `/api/v1/datasets/${datasetId}/documents?page_size=1000`,
+          );
           const docsResult = await docsResp.json();
           if (docsResult.code === 0) {
             const dataObj = docsResult.data;
@@ -352,10 +397,12 @@ export default function CChat() {
       const documents = allDocuments;
 
       // 过滤出有分析结果的文档
-      const analyzedDocs: Array<{id: string, name: string}> = [];
+      const analyzedDocs: Array<{ id: string; name: string }> = [];
       for (const doc of documents) {
         try {
-          const analysisResp = await apiFetch(`/api/v1/documents/${doc.id}/analysis`);
+          const analysisResp = await apiFetch(
+            `/api/v1/documents/${doc.id}/analysis`,
+          );
           const analysisResult = await analysisResp.json();
           if (analysisResult.code === 0 && analysisResult.data) {
             analyzedDocs.push({
@@ -474,7 +521,9 @@ export default function CChat() {
                   chunk_id: c.chunk_id || c.id || '',
                   docnm_kwd: c.docnm_kwd || c.document_name || '',
                   document_name: c.docnm_kwd || c.document_name || '',
-                  positions: Array.isArray(c.positions) ? c.positions : c.position_int || [],
+                  positions: Array.isArray(c.positions)
+                    ? c.positions
+                    : c.position_int || [],
                   content_with_weight: c.content_with_weight || c.content || '',
                   content: c.content_with_weight || c.content || '',
                   image_id: c.image_id || c.img_id || '',
@@ -496,23 +545,26 @@ export default function CChat() {
   );
 
   // 获取文档分析结果
-  const fetchAnalysisResult = useCallback(async (documentId: string) => {
-    try {
-      const resp = await apiFetch(api.getDocumentAnalysis(documentId));
-      const result = await resp.json();
-      if (result.code === 0 && result.data) {
-        return result.data;
+  const fetchAnalysisResult = useCallback(
+    async (documentId: string) => {
+      try {
+        const resp = await apiFetch(api.getDocumentAnalysis(documentId));
+        const result = await resp.json();
+        if (result.code === 0 && result.data) {
+          return result.data;
+        }
+        return null;
+      } catch (e) {
+        console.error('获取分析结果失败:', e);
+        return null;
       }
-      return null;
-    } catch (e) {
-      console.error('获取分析结果失败:', e);
-      return null;
-    }
-  }, [apiFetch]);
+    },
+    [apiFetch],
+  );
 
   const { data: analysisResult, isLoading: analysisLoading } = useQuery({
     queryKey: ['documentAnalysis', selectedDocId],
-    queryFn: () => selectedDocId ? fetchAnalysisResult(selectedDocId) : null,
+    queryFn: () => (selectedDocId ? fetchAnalysisResult(selectedDocId) : null),
     enabled: !!selectedDocId,
   });
 
@@ -530,8 +582,15 @@ export default function CChat() {
     // 不创建会话，只清空当前状态
     // 会话在用户发送第一条消息时创建，标题用问题截取
     setCurrentSessionId(null);
-    setMessages([]);
-  }, []);
+    // 如果有开场白，显示开场白消息；否则显示默认开场白
+    const prologueToShow = currentAgentPrologue || DEFAULT_PROLOGUE;
+    setMessages([
+      {
+        role: 'assistant',
+        content: prologueToShow,
+      },
+    ]);
+  }, [currentAgentPrologue]);
 
   const deleteSession = useCallback(
     async (sessionId: string) => {
@@ -578,7 +637,11 @@ export default function CChat() {
         sessionId = newId;
         setCurrentSessionId(sessionId);
         setSessions((prev) => [
-          { id: newId, name: query.slice(0, 30), update_time: Date.now() / 1000 },
+          {
+            id: newId,
+            name: query.slice(0, 30),
+            update_time: Date.now() / 1000,
+          },
           ...prev,
         ]);
         setMessages([]);
@@ -606,23 +669,20 @@ export default function CChat() {
     setMessages((prev) => [...prev, assistantMsg]);
 
     try {
-      const resp = await apiFetch(
-        '/api/v1/agents/chat/completion',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            agent_id: currentAgentId,
-            query,
-            session_id: sessionId,
-            stream: true,
-          }),
-          signal: abortRef.current.signal,
-        },
-      );
+      const resp = await apiFetch('/api/v1/agents/chat/completion', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agent_id: currentAgentId,
+          query,
+          session_id: sessionId,
+          stream: true,
+        }),
+        signal: abortRef.current.signal,
+      });
 
-      const reader = resp.body!
-        .pipeThrough(new TextDecoderStream())
+      const reader = resp
+        .body!.pipeThrough(new TextDecoderStream())
         .getReader();
       let buffer = '';
       let localThinking = false;
@@ -708,9 +768,7 @@ export default function CChat() {
           updated[updated.length - 1] = {
             ...last,
             content:
-              e.name === 'AbortError'
-                ? '(已停止)'
-                : '请求失败: ' + e.message,
+              e.name === 'AbortError' ? '(已停止)' : '请求失败: ' + e.message,
           };
         }
         return updated;
@@ -748,8 +806,7 @@ export default function CChat() {
         body: JSON.stringify({ email, password: encryptedPwd }),
       });
       const authHeader =
-        resp.headers.get('Authorization') ||
-        resp.headers.get('authorization');
+        resp.headers.get('Authorization') || resp.headers.get('authorization');
       const result = await resp.json();
       if (result.code !== 0) throw new Error(result.message || '登录失败');
 
@@ -759,13 +816,17 @@ export default function CChat() {
       const authorization = t.startsWith('Bearer ') ? t : 'Bearer ' + t;
       const info = {
         email: result.data.email || email,
-        nickname: result.data.nickname || result.data.name || email.split('@')[0],
+        nickname:
+          result.data.nickname || result.data.name || email.split('@')[0],
         avatar: result.data.avatar,
       };
       setToken(authorization);
       setUserInfo(info);
       localStorage.setItem('Authorization', authorization);
-      localStorage.setItem('token', result.data?.access_token || t.replace('Bearer ', ''));
+      localStorage.setItem(
+        'token',
+        result.data?.access_token || t.replace('Bearer ', ''),
+      );
       localStorage.setItem('userInfo', JSON.stringify(info));
     } catch (e: any) {
       setLoginError(e.message || '登录失败，请检查网络连接');
@@ -780,15 +841,25 @@ export default function CChat() {
 
   // --- Render ---
   if (!token) {
-    return <LoginScreen {...{ email, password, loginError, loginLoading, setEmail, setPassword, handleLogin }} />;
+    return (
+      <LoginScreen
+        {...{
+          email,
+          password,
+          loginError,
+          loginLoading,
+          setEmail,
+          setPassword,
+          handleLogin,
+        }}
+      />
+    );
   }
 
   const currentAgent = agents.find((a) => a.id === currentAgentId);
   const chatTitle = currentAgent?.title || '标书分析助手';
 
-  const streamingContent = isThinking
-    ? null
-    : fullContent;
+  const streamingContent = isThinking ? null : fullContent;
 
   return (
     <div className="h-screen flex bg-slate-100 overflow-hidden">
@@ -801,20 +872,45 @@ export default function CChat() {
       )}
 
       {/* Sidebar */}
-      <aside className={`fixed md:static inset-y-0 left-0 z-50 w-64 flex flex-col shrink-0 bg-[#0F2340] transition-transform duration-200 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
+      <aside
+        className={`fixed md:static inset-y-0 left-0 z-50 w-64 flex flex-col shrink-0 bg-[#0F2340] transition-transform duration-200 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}
+      >
         {/* Sidebar header */}
         <div className="h-14 flex items-center justify-between px-4 border-b border-white/10 shrink-0">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 bg-[#1E3A5F] rounded-lg flex items-center justify-center">
-              <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              <svg
+                className="w-4 h-4 text-white"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                />
               </svg>
             </div>
             <span className="text-sm font-bold text-white">标书分析助手</span>
           </div>
-          <button className="md:hidden text-white/60 hover:text-white" onClick={() => setSidebarOpen(false)}>
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          <button
+            className="md:hidden text-white/60 hover:text-white"
+            onClick={() => setSidebarOpen(false)}
+          >
+            <svg
+              className="w-5 h-5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M6 18L18 6M6 6l12 12"
+              />
             </svg>
           </button>
         </div>
@@ -822,11 +918,25 @@ export default function CChat() {
         {/* New session button */}
         <div className="px-3 pt-3 pb-2">
           <button
-            onClick={() => { setMainView('chat'); createNewSession(); setSidebarOpen(false); }}
+            onClick={() => {
+              setMainView('chat');
+              createNewSession();
+              setSidebarOpen(false);
+            }}
             className="w-full flex items-center justify-center gap-2 bg-[#059669] hover:bg-[#047857] text-white py-2 rounded-lg transition font-medium text-sm"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            <svg
+              className="w-4 h-4"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M12 4v16m8-8H4"
+              />
             </svg>
             新建分析
           </button>
@@ -843,24 +953,45 @@ export default function CChat() {
               }}
               className="w-full bg-white/10 text-white text-sm rounded-lg px-3 py-1.5 outline-none appearance-none cursor-pointer border border-white/10 focus:border-white/25 transition pr-7"
             >
-              <option value="" disabled className="text-slate-800">选择智能体...</option>
+              <option value="" disabled className="text-slate-800">
+                选择智能体...
+              </option>
               {agents.map((a) => (
-                <option key={a.id} value={a.id} className="text-slate-800">{a.title || '未命名智能体'}</option>
+                <option key={a.id} value={a.id} className="text-slate-800">
+                  {a.title || '未命名智能体'}
+                </option>
               ))}
             </select>
-            <svg className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-white/40 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            <svg
+              className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-white/40 pointer-events-none"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M19 9l-7 7-7-7"
+              />
             </svg>
           </div>
         </div>
 
         {/* Session list */}
         <div className="px-3 py-1">
-          <span className="text-white/30 text-[10px] font-semibold tracking-widest uppercase px-1">历史对话</span>
+          <span className="text-white/30 text-[10px] font-semibold tracking-widest uppercase px-1">
+            历史对话
+          </span>
         </div>
-        <div className="flex-1 overflow-y-auto px-2 space-y-0.5 pb-2" style={{ scrollbarWidth: 'none' }}>
+        <div
+          className="flex-1 overflow-y-auto px-2 space-y-0.5 pb-2"
+          style={{ scrollbarWidth: 'none' }}
+        >
           {sessions.length === 0 ? (
-            <div className="text-center text-white/20 text-xs py-10">暂无对话</div>
+            <div className="text-center text-white/20 text-xs py-10">
+              暂无对话
+            </div>
           ) : (
             sessions.map((s) => (
               <div
@@ -870,18 +1001,44 @@ export default function CChat() {
                     ? 'bg-white/10 text-white'
                     : 'text-white/50 hover:bg-white/5 hover:text-white/80'
                 }`}
-                onClick={() => { switchSession(s.id); setSidebarOpen(false); }}
+                onClick={() => {
+                  switchSession(s.id);
+                  setSidebarOpen(false);
+                }}
               >
-                <svg className="w-3.5 h-3.5 shrink-0 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+                <svg
+                  className="w-3.5 h-3.5 shrink-0 opacity-50"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"
+                  />
                 </svg>
                 <span className="flex-1 truncate">{s.name}</span>
                 <button
                   className="hidden w-5 h-5 items-center justify-center rounded text-white/30 hover:text-red-400 hover:bg-white/10 shrink-0 group-hover:flex"
-                  onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteSession(s.id);
+                  }}
                 >
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  <svg
+                    className="w-3 h-3"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M6 18L18 6M6 6l12 12"
+                    />
                   </svg>
                 </button>
               </div>
@@ -894,20 +1051,46 @@ export default function CChat() {
           {mainView === 'chat' ? (
             <div
               className="flex items-center gap-2 px-3 py-2.5 rounded-lg cursor-pointer transition text-sm bg-[#1E6EB5] hover:bg-[#1a5ca3] text-white font-medium shadow-md"
-              onClick={() => { setMainView('analysis'); setSidebarOpen(false); }}
+              onClick={() => {
+                setMainView('analysis');
+                setSidebarOpen(false);
+              }}
             >
-              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              <svg
+                className="w-4 h-4 shrink-0"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                />
               </svg>
               <span className="flex-1">文档全量分析结果</span>
             </div>
           ) : (
             <div
               className="flex items-center gap-2 px-3 py-2.5 rounded-lg cursor-pointer transition text-sm bg-white/10 text-white font-medium"
-              onClick={() => { setMainView('chat'); setSidebarOpen(false); }}
+              onClick={() => {
+                setMainView('chat');
+                setSidebarOpen(false);
+              }}
             >
-              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+              <svg
+                className="w-4 h-4 shrink-0"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M10 19l-7-7m0 0l7-7m-7 7h18"
+                />
               </svg>
               <span className="flex-1">返回对话</span>
             </div>
@@ -921,11 +1104,27 @@ export default function CChat() {
               {(userInfo?.nickname || userInfo?.email || 'U')[0].toUpperCase()}
             </div>
             <div className="flex-1 min-w-0">
-              <div className="text-xs font-medium text-white/80 truncate">{userInfo?.nickname || userInfo?.email || ''}</div>
+              <div className="text-xs font-medium text-white/80 truncate">
+                {userInfo?.nickname || userInfo?.email || ''}
+              </div>
             </div>
-            <button onClick={handleLogout} className="text-white/30 hover:text-white/70 transition p-0.5 rounded" title="退出登录">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+            <button
+              onClick={handleLogout}
+              className="text-white/30 hover:text-white/70 transition p-0.5 rounded"
+              title="退出登录"
+            >
+              <svg
+                className="w-4 h-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
+                />
               </svg>
             </button>
           </div>
@@ -939,29 +1138,61 @@ export default function CChat() {
           <>
             {/* Header */}
             <div className="h-14 bg-white border-b border-slate-200/80 flex items-center px-4 shrink-0">
-              <button className="md:hidden mr-2 p-1.5 rounded-lg hover:bg-slate-100 transition" onClick={() => setSidebarOpen(true)}>
-                <svg className="w-5 h-5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+              <button
+                className="md:hidden mr-2 p-1.5 rounded-lg hover:bg-slate-100 transition"
+                onClick={() => setSidebarOpen(true)}
+              >
+                <svg
+                  className="w-5 h-5 text-slate-500"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M4 6h16M4 12h16M4 18h16"
+                  />
                 </svg>
               </button>
               <div className="flex items-center gap-2">
-                <h2 className="text-sm font-semibold text-slate-800">{chatTitle}</h2>
+                <h2 className="text-sm font-semibold text-slate-800">
+                  {chatTitle}
+                </h2>
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
               </div>
             </div>
 
             {/* Messages Area */}
             <div className="flex-1 flex flex-col min-h-0 bg-white">
-              <div className="flex-1 overflow-y-auto p-4 lg:p-6 space-y-4" style={{ scrollbarWidth: 'thin' }}>
+              <div
+                className="flex-1 overflow-y-auto p-4 lg:p-6 space-y-4"
+                style={{ scrollbarWidth: 'thin' }}
+              >
                 {messages.length === 0 ? (
                   <div className="text-center py-20">
                     <div className="w-14 h-14 bg-slate-100 rounded-2xl mx-auto flex items-center justify-center mb-4">
-                      <svg className="w-7 h-7 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+                      <svg
+                        className="w-7 h-7 text-slate-400"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={1.5}
+                          d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"
+                        />
                       </svg>
                     </div>
-                    <p className="text-slate-400 text-sm">选择或创建一个对话开始分析</p>
-                    <p className="text-slate-300 text-xs mt-1">上传招标文件至知识库后，即可在此进行智能问答</p>
+                    <p className="text-slate-400 text-sm">
+                      选择或创建一个对话开始分析
+                    </p>
+                    <p className="text-slate-300 text-xs mt-1">
+                      上传招标文件至知识库后，即可在此进行智能问答
+                    </p>
                   </div>
                 ) : (
                   messages.map((msg, i) => {
@@ -976,26 +1207,49 @@ export default function CChat() {
                         </div>
                       );
                     }
-                    const content = streaming ? streamingContent || '' : msg.content;
+                    const content = streaming
+                      ? streamingContent || ''
+                      : msg.content;
                     const thinking = streaming ? null : msg.thinking;
                     const refs = streaming ? null : msg.references;
-                    const processedContent = processCitationMarkers(content, refs || undefined);
+                    const processedContent = processCitationMarkers(
+                      content,
+                      refs || undefined,
+                    );
                     return (
                       <div key={i} className="flex justify-start">
                         <div className="max-w-[80%] lg:max-w-[70%]">
                           <div className="bg-white border border-slate-200/80 px-4 py-2.5 rounded-2xl rounded-bl-md text-sm leading-relaxed text-slate-800">
                             {thinking && <ThinkingBlock text={thinking} />}
                             <div className="msg-content text-slate-800">
-                              <HighLightMarkdown>{processedContent}</HighLightMarkdown>
+                              <HighLightMarkdown>
+                                {processedContent}
+                              </HighLightMarkdown>
                             </div>
                             {streaming && (
                               <span className="inline-block w-2 h-4 bg-[#0F2340] ml-1 animate-pulse" />
                             )}
                             {streaming && isThinking && (
                               <div className="flex items-center gap-2 text-slate-400 text-xs py-1">
-                                <svg className="w-3.5 h-3.5 animate-spin text-slate-300" viewBox="0 0 24 24" fill="none">
-                                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" opacity="0.25" />
-                                  <path d="M12 2a10 10 0 019.95 9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                                <svg
+                                  className="w-3.5 h-3.5 animate-spin text-slate-300"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                >
+                                  <circle
+                                    cx="12"
+                                    cy="12"
+                                    r="10"
+                                    stroke="currentColor"
+                                    strokeWidth="3"
+                                    opacity="0.25"
+                                  />
+                                  <path
+                                    d="M12 2a10 10 0 019.95 9"
+                                    stroke="currentColor"
+                                    strokeWidth="3"
+                                    strokeLinecap="round"
+                                  />
                                 </svg>
                                 <span>正在思考中...</span>
                               </div>
@@ -1047,8 +1301,18 @@ export default function CChat() {
                         disabled={!inputValue.trim()}
                         className="shrink-0 w-8 h-8 flex items-center justify-center bg-[#0F2340] text-white rounded-lg hover:bg-slate-800 transition disabled:opacity-30 disabled:cursor-not-allowed"
                       >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14M12 5l7 7-7 7" />
+                        <svg
+                          className="w-4 h-4"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M5 12h14M12 5l7 7-7 7"
+                          />
                         </svg>
                       </button>
                     ) : (
@@ -1056,7 +1320,11 @@ export default function CChat() {
                         onClick={stopStreaming}
                         className="shrink-0 w-8 h-8 flex items-center justify-center bg-red-500 text-white rounded-lg hover:bg-red-600 transition"
                       >
-                        <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                        <svg
+                          className="w-3.5 h-3.5"
+                          fill="currentColor"
+                          viewBox="0 0 24 24"
+                        >
                           <rect x="6" y="6" width="12" height="12" rx="1" />
                         </svg>
                       </button>
@@ -1073,13 +1341,28 @@ export default function CChat() {
           <>
             {/* Header */}
             <div className="h-14 bg-white border-b border-slate-200/80 flex items-center px-4 shrink-0">
-              <button className="md:hidden mr-2 p-1.5 rounded-lg hover:bg-slate-100 transition" onClick={() => setSidebarOpen(true)}>
-                <svg className="w-5 h-5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+              <button
+                className="md:hidden mr-2 p-1.5 rounded-lg hover:bg-slate-100 transition"
+                onClick={() => setSidebarOpen(true)}
+              >
+                <svg
+                  className="w-5 h-5 text-slate-500"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M4 6h16M4 12h16M4 18h16"
+                  />
                 </svg>
               </button>
               <div className="flex items-center gap-2">
-                <h2 className="text-sm font-semibold text-slate-800">分析结果</h2>
+                <h2 className="text-sm font-semibold text-slate-800">
+                  分析结果
+                </h2>
               </div>
             </div>
 
@@ -1096,12 +1379,26 @@ export default function CChat() {
                 <div className="flex items-center justify-center py-20">
                   <div className="text-center max-w-md">
                     <div className="w-16 h-16 bg-slate-100 rounded-2xl mx-auto flex items-center justify-center mb-4">
-                      <svg className="w-8 h-8 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      <svg
+                        className="w-8 h-8 text-slate-400"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={1.5}
+                          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                        />
                       </svg>
                     </div>
-                    <p className="text-slate-600 text-base mb-2">暂无已分析的文档</p>
-                    <p className="text-slate-400 text-sm">请先在知识库文档列表中点击&quot;分析&quot;按钮进行文档分析</p>
+                    <p className="text-slate-600 text-base mb-2">
+                      暂无已分析的文档
+                    </p>
+                    <p className="text-slate-400 text-sm">
+                      请先在知识库文档列表中点击&quot;分析&quot;按钮进行文档分析
+                    </p>
                   </div>
                 </div>
               ) : (
@@ -1111,7 +1408,10 @@ export default function CChat() {
                     <label className="block text-sm font-medium text-slate-700 mb-2">
                       选择文档查看分析结果
                     </label>
-                    <Select value={selectedDocId || ''} onValueChange={(v) => setSelectedDocId(v)}>
+                    <Select
+                      value={selectedDocId || ''}
+                      onValueChange={(v) => setSelectedDocId(v)}
+                    >
                       <SelectTrigger className="w-full max-w-md">
                         <SelectValue placeholder="选择文档..." />
                       </SelectTrigger>
@@ -1128,7 +1428,9 @@ export default function CChat() {
                   {/* 分析结果内容 */}
                   {!selectedDocId ? (
                     <div className="text-center py-20">
-                      <p className="text-slate-400">请选择一个文档查看分析结果</p>
+                      <p className="text-slate-400">
+                        请选择一个文档查看分析结果
+                      </p>
                     </div>
                   ) : analysisLoading ? (
                     <div className="flex items-center justify-center py-20">
@@ -1140,54 +1442,82 @@ export default function CChat() {
                     </div>
                   ) : analysisResult.status === 'failed' ? (
                     <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-                      <p className="text-red-800">分析失败：{analysisResult.error_message || '未知错误'}</p>
+                      <p className="text-red-800">
+                        分析失败：{analysisResult.error_message || '未知错误'}
+                      </p>
                     </div>
                   ) : (
                     <div className="space-y-6">
                       {/* 分析状态和进度 */}
-                      {(analysisResult.status === 'running' || analysisResult.status === 'pending') && (
+                      {(analysisResult.status === 'running' ||
+                        analysisResult.status === 'pending') && (
                         <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
                           <div className="flex items-center gap-2 mb-2">
                             <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-500" />
-                            <span className="text-sm font-medium text-blue-800">分析进行中...</span>
+                            <span className="text-sm font-medium text-blue-800">
+                              分析进行中...
+                            </span>
                           </div>
                           <div className="w-full bg-blue-200 rounded-full h-2 overflow-hidden">
                             <div
                               className="bg-blue-500 h-2 rounded-full transition-all duration-500"
-                              style={{ width: `${analysisResult.progress || 0}%` }}
+                              style={{
+                                width: `${analysisResult.progress || 0}%`,
+                              }}
                             />
                           </div>
                         </div>
                       )}
 
                       {/* 分析结果 */}
-                      {analysisResult.sections && analysisResult.sections.length > 0 ? (
+                      {analysisResult.sections &&
+                      analysisResult.sections.length > 0 ? (
                         <div className="space-y-4">
-                          {analysisResult.sections.map((section: any, idx: number) => (
-                            <div key={idx} className="border border-slate-200 rounded-lg overflow-hidden">
-                              <div className="bg-slate-50 px-4 py-2 border-b border-slate-200">
-                                <h3 className="text-sm font-semibold text-slate-800">{section.section_title}</h3>
-                              </div>
-                              <div className="p-4 bg-white">
-                                {section.analyses && section.analyses.map((analysis: any, aIdx: number) => (
-                                  <div key={aIdx} className="mb-4 last:mb-0">
-                                    <div className="text-xs font-semibold text-[#0F2340] mb-1">
-                                      {analysis.analysis_type === 'key_points' ? '关键要点' : analysis.analysis_type}
-                                    </div>
-                                    {analysis.success ? (
-                                      <div className="text-sm text-slate-700 leading-relaxed">
-                                        <HighLightMarkdown>{analysis.result}</HighLightMarkdown>
-                                      </div>
-                                    ) : (
-                                      <div className="text-sm text-red-600 bg-red-50 p-2 rounded">
-                                        分析失败：{analysis.error_message || '未知错误'}
-                                      </div>
+                          {analysisResult.sections.map(
+                            (section: any, idx: number) => (
+                              <div
+                                key={idx}
+                                className="border border-slate-200 rounded-lg overflow-hidden"
+                              >
+                                <div className="bg-slate-50 px-4 py-2 border-b border-slate-200">
+                                  <h3 className="text-sm font-semibold text-slate-800">
+                                    {section.section_title}
+                                  </h3>
+                                </div>
+                                <div className="p-4 bg-white">
+                                  {section.analyses &&
+                                    section.analyses.map(
+                                      (analysis: any, aIdx: number) => (
+                                        <div
+                                          key={aIdx}
+                                          className="mb-4 last:mb-0"
+                                        >
+                                          <div className="text-xs font-semibold text-[#0F2340] mb-1">
+                                            {analysis.analysis_type ===
+                                            'key_points'
+                                              ? '关键要点'
+                                              : analysis.analysis_type}
+                                          </div>
+                                          {analysis.success ? (
+                                            <div className="text-sm text-slate-700 leading-relaxed">
+                                              <HighLightMarkdown>
+                                                {analysis.result}
+                                              </HighLightMarkdown>
+                                            </div>
+                                          ) : (
+                                            <div className="text-sm text-red-600 bg-red-50 p-2 rounded">
+                                              分析失败：
+                                              {analysis.error_message ||
+                                                '未知错误'}
+                                            </div>
+                                          )}
+                                        </div>
+                                      ),
                                     )}
-                                  </div>
-                                ))}
+                                </div>
                               </div>
-                            </div>
-                          ))}
+                            ),
+                          )}
                         </div>
                       ) : (
                         <div className="text-center py-20">
@@ -1230,8 +1560,18 @@ function LoginScreen({
       <div className="bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl p-10 w-full max-w-md border border-white/30">
         <div className="text-center mb-8">
           <div className="w-20 h-20 bg-[#1E3A5F] rounded-2xl mx-auto flex items-center justify-center mb-5 shadow-lg">
-            <svg className="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            <svg
+              className="w-10 h-10 text-white"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={1.5}
+                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+              />
             </svg>
           </div>
           <h1 className="text-3xl font-bold text-[#162E4D] tracking-wide">
@@ -1259,7 +1599,7 @@ function LoginScreen({
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="请输入注册邮箱"
-              className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#1E3A5F] focus:border-[#1E3A5F] outline-none transition text-sm"
+              className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#1E3A5F] focus:border-[#1E3A5F] outline-none transition text-sm text-slate-800"
             />
           </div>
           <div>
@@ -1274,7 +1614,7 @@ function LoginScreen({
                 if (e.key === 'Enter') handleLogin();
               }}
               placeholder="请输入密码"
-              className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#1E3A5F] focus:border-[#1E3A5F] outline-none transition text-sm"
+              className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#1E3A5F] focus:border-[#1E3A5F] outline-none transition text-sm text-slate-800"
             />
           </div>
           <button
@@ -1309,10 +1649,25 @@ function ThinkingBlock({ text }: { text: string }) {
           stroke="currentColor"
           viewBox="0 0 24 24"
         >
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M9 5l7 7-7 7"
+          />
         </svg>
-        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+        <svg
+          className="w-3.5 h-3.5"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
+          />
         </svg>
         <span className="italic">思考过程</span>
       </button>
@@ -1326,7 +1681,10 @@ function ThinkingBlock({ text }: { text: string }) {
 }
 
 // 处理内容中的引用标记，替换为可点击徽章
-function processCitationMarkers(content: string, refs: Reference[] | undefined): string {
+function processCitationMarkers(
+  content: string,
+  refs: Reference[] | undefined,
+): string {
   if (!refs || refs.length === 0 || !content) return content;
 
   // 建立 ID -> 序号的映射
@@ -1389,7 +1747,12 @@ function ReferenceSection({
             stroke="currentColor"
             viewBox="0 0 24 24"
           >
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M9 5l7 7-7 7"
+            />
           </svg>
           引用来源 ({refs.length})
         </button>
@@ -1408,11 +1771,13 @@ function ReferenceSection({
                 page = String(ref.positions[0]);
               }
             }
-            const snippet = (ref.content_with_weight || ref.content || '').slice(0, 120);
+            const snippet = (
+              ref.content_with_weight ||
+              ref.content ||
+              ''
+            ).slice(0, 120);
             const imageId = ref.image_id || ref.img_id || '';
-            const imgUrl = imageId
-              ? `/api/v1/documents/images/${imageId}`
-              : '';
+            const imgUrl = imageId ? `/api/v1/documents/images/${imageId}` : '';
 
             return (
               <div
@@ -1424,7 +1789,12 @@ function ReferenceSection({
                     : 'border-slate-100 hover:border-slate-200 bg-slate-50/50'
                 }`}
                 onClick={() => {
-                  if (imgUrl) setOverlayImg({ url: imgUrl, doc: docName, page: String(page) });
+                  if (imgUrl)
+                    setOverlayImg({
+                      url: imgUrl,
+                      doc: docName,
+                      page: String(page),
+                    });
                 }}
               >
                 {imgUrl && (
@@ -1432,7 +1802,9 @@ function ReferenceSection({
                     src={imgUrl}
                     className="w-12 h-16 rounded object-cover border border-slate-100 shrink-0 bg-slate-100"
                     loading="lazy"
-                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                    onError={(e) => {
+                      (e.target as HTMLImageElement).style.display = 'none';
+                    }}
                   />
                 )}
                 <div className="flex-1 min-w-0">
@@ -1475,8 +1847,18 @@ function ReferenceSection({
                 onClick={() => setOverlayImg(null)}
                 className="text-slate-400 hover:text-slate-600 transition p-1"
               >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                <svg
+                  className="w-5 h-5"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M6 18L18 6M6 6l12 12"
+                  />
                 </svg>
               </button>
             </div>

@@ -76,6 +76,8 @@ export enum Routes {
   DocumentAnalysis = '/document-analysis',
   AnalysisTemplates = '/analysis-templates',
   AnalysisTemplateEdit = '/analysis-template',
+  ScheduledTasks = '/scheduled-tasks',
+  ScheduledTaskLogs = '/scheduled-task-logs',
 }
 
 const defaultRouteFallback = (
@@ -253,6 +255,14 @@ const routeConfigOptions = [
       {
         path: Routes.Files,
         Component: () => import('@/pages/files'),
+      },
+      {
+        path: Routes.ScheduledTasks,
+        Component: () => import('@/pages/scheduled-tasks'),
+      },
+      {
+        path: `${Routes.ScheduledTaskLogs}/:taskId`,
+        Component: () => import('@/pages/scheduled-tasks/logs'),
       },
       {
         path: Routes.Skills,

@@ -1369,6 +1369,55 @@ class DocumentAnalysisResult(DataBaseModel):
         db_table = "document_analysis_result"
 
 
+class ScheduledTask(DataBaseModel):
+    id = CharField(max_length=32, primary_key=True)
+    tenant_id = CharField(max_length=32, null=False, index=True)
+    name = CharField(max_length=255, null=False, help_text="task display name")
+    description = TextField(null=True, help_text="task description", default="")
+    script_path = TextField(null=False, help_text="absolute path to Python script")
+    script_args = TextField(null=True, help_text="CLI arguments passed to script", default="")
+    schedule_type = CharField(
+        max_length=16, null=False, default="interval",
+        help_text="cron|interval"
+    )
+    cron_expression = CharField(max_length=64, null=True, help_text="cron expr", default="")
+    interval_seconds = IntegerField(null=True, default=3600, help_text="seconds between runs")
+    enabled = BooleanField(default=True, help_text="whether task is active")
+    last_run_time = BigIntegerField(null=True, help_text="timestamp of last execution")
+    last_run_status = CharField(max_length=16, null=True, help_text="success|fail|running", default="")
+    next_run_time = BigIntegerField(null=True, help_text="computed next execution timestamp")
+    timeout = IntegerField(default=3600, help_text="max execution seconds")
+    max_retries = IntegerField(default=0, help_text="retry count on failure")
+    retry_count = IntegerField(default=0)
+    target_url = TextField(null=True, help_text="crawl target URL", default="")
+    llm_id = CharField(max_length=64, null=True, help_text="LLM factory for image analysis", default="")
+    llm_model_name = CharField(max_length=128, null=True, help_text="LLM model name for image analysis", default="")
+    kb_id = CharField(max_length=32, null=True, index=True, help_text="target knowledge base ID", default="")
+    access_token = TextField(null=True, help_text="access token for authenticated crawling", default="")
+
+    class Meta:
+        db_table = "scheduled_task"
+
+
+class ScheduledTaskLog(DataBaseModel):
+    id = CharField(max_length=32, primary_key=True)
+    task_id = CharField(max_length=32, null=False, index=True)
+    tenant_id = CharField(max_length=32, null=False, index=True)
+    status = CharField(max_length=16, null=False, default="running", help_text="running|success|fail")
+    start_time = BigIntegerField(null=True)
+    end_time = BigIntegerField(null=True)
+    duration = FloatField(null=True, help_text="execution duration in seconds")
+    output = LongTextField(null=True, help_text="stdout captured from script", default="")
+    error_msg = LongTextField(null=True, help_text="stderr or exception message", default="")
+    pid = IntegerField(null=True, help_text="OS process ID")
+
+    class Meta:
+        db_table = "scheduled_task_log"
+        indexes = (
+            (("task_id", "start_time"), False),
+        )
+
+
 def alter_db_add_column(migrator, table_name, column_name, column_type):
     try:
         migrate(migrator.add_column(table_name, column_name, column_type))
@@ -1683,6 +1732,11 @@ def migrate_db():
     alter_db_add_column(migrator, "memory", "tenant_llm_id", IntegerField(null=True, help_text="id in tenant_llm", index=True))
     alter_db_add_column(migrator, "user_canvas_version", "release", BooleanField(null=False, help_text="is released", default=False, index=True))
     alter_db_add_column(migrator, "api_4_conversation", "version_title", CharField(max_length=255, null=True, help_text="canvas version title when session created", index=False))
+    alter_db_add_column(migrator, "scheduled_task", "target_url", TextField(null=True, help_text="crawl target URL", default=""))
+    alter_db_add_column(migrator, "scheduled_task", "llm_id", CharField(max_length=64, null=True, help_text="LLM factory for image analysis", default=""))
+    alter_db_add_column(migrator, "scheduled_task", "llm_model_name", CharField(max_length=128, null=True, help_text="LLM model name for image analysis", default=""))
+    alter_db_add_column(migrator, "scheduled_task", "kb_id", CharField(max_length=32, null=True, index=True, help_text="target knowledge base ID", default=""))
+    alter_db_add_column(migrator, "scheduled_task", "access_token", TextField(null=True, help_text="access token for authenticated crawling", default=""))
     alter_db_column_type(migrator, "document", "size", BigIntegerField(default=0, index=True))
     alter_db_column_type(migrator, "file", "size", BigIntegerField(default=0, index=True))
     logging.disable(logging.NOTSET)

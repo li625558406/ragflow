@@ -16,13 +16,20 @@ import { useFetchAgentListByPage } from '@/hooks/use-agent-request';
 import { Routes } from '@/routes';
 import { t } from 'i18next';
 import { pick } from 'lodash';
-import { Clipboard, ClipboardPlus, FileInput, Plus } from 'lucide-react';
-import { useCallback, useEffect } from 'react';
+import {
+  Clipboard,
+  ClipboardPlus,
+  FileInput,
+  KeyRound,
+  Plus,
+} from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { AgentCard } from './agent-card';
 import { CreateAgentDialog } from './create-agent-dialog';
 import { useCreateAgentOrPipeline } from './hooks/use-create-agent';
 import { useSelectFilters } from './hooks/use-selelct-filters';
+import TokenManageDialog from './token-manage-dialog';
 import { UploadAgentDialog } from './upload-agent-dialog';
 import { useHandleImportJsonFile } from './use-import-json';
 import { useRenameAgent } from './use-rename-agent';
@@ -65,6 +72,8 @@ export default function Agents() {
   } = useHandleImportJsonFile();
 
   const filters = useSelectFilters();
+
+  const [tokenDialogVisible, setTokenDialogVisible] = useState(false);
 
   const handlePageChange = useCallback(
     (page: number, pageSize?: number) => {
@@ -129,6 +138,13 @@ export default function Agents() {
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
+              <Button
+                variant="outline"
+                onClick={() => setTokenDialogVisible(true)}
+              >
+                <KeyRound className="size-[1em]" />
+                API Token
+              </Button>
             </ListFilterBar>
           </header>
 
@@ -237,6 +253,9 @@ export default function Agents() {
           hideModal={hideFileUploadModal}
           onOk={onFileUploadOk}
         ></UploadAgentDialog>
+      )}
+      {tokenDialogVisible && (
+        <TokenManageDialog hideModal={() => setTokenDialogVisible(false)} />
       )}
     </>
   );

@@ -10,12 +10,18 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router';
 import { useChatUrlParams } from './use-chat-url';
 
+// 默认开场白
+const DEFAULT_PROLOGUE = '你好！我是你的助理，有什么可以帮到你的吗？';
+
 export const useFindPrologueFromDialogList = () => {
   const { id: dialogId } = useParams();
   const { data } = useFetchChatList();
 
   const prologue = useMemo(() => {
-    return data.chats.find((x) => x.id === dialogId)?.prompt_config?.prologue;
+    const prologueFromConfig = data.chats.find((x) => x.id === dialogId)
+      ?.prompt_config?.prologue;
+    // 如果配置了开场白就使用配置的，否则使用默认开场白
+    return prologueFromConfig || DEFAULT_PROLOGUE;
   }, [dialogId, data]);
 
   return prologue;

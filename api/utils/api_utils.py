@@ -271,6 +271,32 @@ def apikey_required(func):
     return decorated_function
 
 
+def login_or_apikey_required(func):
+    """Decorator that accepts either login session or API key authentication.
+    Sets tenant_id in kwargs from whichever auth method succeeds."""
+    @wraps(func)
+    async def decorated_function(*args, **kwargs):
+        from api.apps import current_user
+        authorization = request.headers.get("Authorization")
+        if authorization:
+            parts = authorization.split()
+            if len(parts) < 2:
+                return build_error_result(message="Invalid authorization format.", code=RetCode.FORBIDDEN)
+            token = parts[1]
+            objs = APIToken.query(token=token)
+            if not objs:
+                return build_error_result(message="API-KEY is invalid!", code=RetCode.FORBIDDEN)
+            kwargs["tenant_id"] = objs[0].tenant_id
+        else:
+            if not current_user.is_authenticated:
+                return build_error_result(message="Authentication required.", code=RetCode.FORBIDDEN)
+            kwargs["tenant_id"] = current_user.id
+        if inspect.iscoroutinefunction(func):
+            return await func(*args, **kwargs)
+        return func(*args, **kwargs)
+    return decorated_function
+
+
 def build_error_result(code=RetCode.FORBIDDEN, message="success"):
     response = {"code": code, "message": message}
     response = _safe_jsonify(response)

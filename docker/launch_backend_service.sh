@@ -121,6 +121,11 @@ do
   PIDS+=($!)
 done
 
+# Start the scheduled task executor
+echo "Starting scheduled_task_executor.py"
+$PY rag/svr/scheduled_task_executor.py &
+PIDS+=($!)
+
 # Start the main server
 run_server &
 PIDS+=($!)

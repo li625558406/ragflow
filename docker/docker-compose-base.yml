@@ -158,8 +158,6 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - ragflow
-    security_opt:
-      - no-new-privileges:true
     environment:
       - SANDBOX_EXECUTOR_MANAGER_POOL_SIZE=${SANDBOX_EXECUTOR_MANAGER_POOL_SIZE:-3}
       - SANDBOX_BASE_PYTHON_IMAGE=${SANDBOX_BASE_PYTHON_IMAGE:-infiniflow/sandbox-base-python:latest}

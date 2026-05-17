@@ -22,6 +22,7 @@ import hmac
 import inspect
 import ipaddress
 import json
+from api.utils.json_encode import CustomJSONEncoder
 import logging
 import time
 from functools import partial
@@ -52,10 +53,12 @@ from api.db.services.user_service import TenantService, UserService
 from api.db.services.user_canvas_version import UserCanvasVersionService
 from api.utils.api_utils import (
     add_tenant_id_to_kwargs,
+    apikey_required,
     get_data_error_result,
     get_json_result,
     get_result,
     get_request_json,
+    login_or_apikey_required,
     server_error_response,
     validate_request,
 )
@@ -76,10 +79,18 @@ def _get_user_nickname(user_id: str) -> str:
 
 def _build_sse_response(body):
     resp = Response(body, mimetype="text/event-stream")
-    resp.headers.add_header("Cache-control", "no-cache")
-    resp.headers.add_header("Connection", "keep-alive")
-    resp.headers.add_header("X-Accel-Buffering", "no")
-    resp.headers.add_header("Content-Type", "text/event-stream; charset=utf-8")
+    # Cloudflare-compatible headers for SSE streaming
+    # no-transform prevents Cloudflare from modifying the response
+    resp.headers["Cache-Control"] = "no-cache, no-store, no-transform"
+    resp.headers["Connection"] = "keep-alive"
+    resp.headers["X-Accel-Buffering"] = "no"
+    resp.headers["Content-Type"] = "text/event-stream; charset=utf-8"
+    # Ensure CORS headers are set for SSE (Cloudflare may not inherit them)
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    # Prevent Cloudflare from processing the response
+    resp.headers["X-Content-Type-Options"] = "nosniff"
     return resp
 
 
@@ -120,8 +131,7 @@ def _agent_session_list_result(data, total):
 
 
 @manager.route("/agents/<agent_id>/sessions", methods=["GET"])  # noqa: F821
-@login_required
-@add_tenant_id_to_kwargs
+@login_or_apikey_required
 def list_agent_sessions(agent_id, tenant_id):
     if not UserCanvasService.accessible(agent_id, tenant_id):
         return get_json_result(
@@ -166,8 +176,7 @@ def list_agent_sessions(agent_id, tenant_id):
 
 
 @manager.route("/agents/<agent_id>/sessions", methods=["POST"])  # noqa: F821
-@login_required
-@add_tenant_id_to_kwargs
+@login_or_apikey_required
 async def create_agent_session(agent_id, tenant_id):
     req = await get_request_json()
     user_id = req.get("user_id") or request.args.get("user_id", tenant_id)
@@ -181,7 +190,10 @@ async def create_agent_session(agent_id, tenant_id):
         return get_data_error_result(message=str(e))
 
     session_id = get_uuid()
-    canvas = Canvas(dsl, tenant_id, agent_id, canvas_id=cvs.id)
+    # Use agent owner's tenant_id for model configuration, so team members can use owner's models
+    canvas = Canvas(dsl, cvs.user_id, agent_id, canvas_id=cvs.id)
+    # Override sys.user_id with current user for proper logging/permissions
+    canvas.globals["sys.user_id"] = tenant_id
     canvas.reset()
 
     cvs.dsl = json.loads(str(canvas))
@@ -203,8 +215,7 @@ async def create_agent_session(agent_id, tenant_id):
 
 
 @manager.route("/agents/<agent_id>/sessions/<session_id>", methods=["GET"])  # noqa: F821
-@login_required
-@add_tenant_id_to_kwargs
+@login_or_apikey_required
 def get_agent_session(agent_id, session_id, tenant_id):
     if not UserCanvasService.accessible(agent_id, tenant_id):
         return get_json_result(
@@ -217,8 +228,7 @@ def get_agent_session(agent_id, session_id, tenant_id):
 
 
 @manager.route("/agents/<agent_id>/sessions/<session_id>", methods=["DELETE"])  # noqa: F821
-@login_required
-@add_tenant_id_to_kwargs
+@login_or_apikey_required
 def delete_agent_session_item(agent_id, session_id, tenant_id):
     if not UserCanvasService.accessible(agent_id, tenant_id):
         return get_json_result(
@@ -977,7 +987,10 @@ async def agent_chat_completion(tenant_id):
             return get_json_result(data={"message_id": task_id})
 
         try:
-            canvas = Canvas(dsl_str, str(tenant_id), canvas_id=agent_id)
+            # Use agent owner's tenant_id for model configuration
+            canvas = Canvas(dsl_str, cvs.user_id, canvas_id=agent_id)
+            # Override sys.user_id with current user for proper logging/permissions
+            canvas.globals["sys.user_id"] = str(tenant_id)
         except Exception as exc:
             return server_error_response(exc)
 
@@ -985,7 +998,7 @@ async def agent_chat_completion(tenant_id):
             nonlocal canvas
             try:
                 async for ans in canvas.run(query=query, files=files, user_id=user_id, inputs=inputs):
-                    yield "data:" + json.dumps(ans, ensure_ascii=False) + "\n\n"
+                    yield "data:" + json.dumps(ans, ensure_ascii=False, cls=CustomJSONEncoder) + "\n\n"
 
                 commit_ok = CanvasReplicaService.commit_after_run(
                     canvas_id=agent_id,

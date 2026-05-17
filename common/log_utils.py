@@ -16,6 +16,7 @@
 
 import os
 import os.path
+import sys
 import logging
 from logging.handlers import RotatingFileHandler
 from common.file_utils import get_project_base_directory
@@ -36,9 +37,16 @@ def init_root_logger(logfile_basename: str, log_format: str = "%(asctime)-15s %(
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     formatter = logging.Formatter(log_format)
 
-    handler1 = RotatingFileHandler(log_path, maxBytes=10*1024*1024, backupCount=5)
+    handler1 = RotatingFileHandler(log_path, maxBytes=10*1024*1024, backupCount=5, encoding="utf-8")
     handler1.setFormatter(formatter)
     logger.addHandler(handler1)
+
+    # Fix Windows console encoding issue (GBK vs UTF-8)
+    # Reconfigure sys.stderr to use UTF-8 encoding for logging Chinese/Unicode characters
+    if sys.platform == 'win32':
+        import io
+        # Create a UTF-8 encoded wrapper for stderr
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
 
     handler2 = logging.StreamHandler()
     handler2.setFormatter(formatter)

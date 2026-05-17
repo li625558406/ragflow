@@ -35,6 +35,7 @@ function usage() {
 ENABLE_WEBSERVER=1 # Default to enable web server
 ENABLE_TASKEXECUTOR=1  # Default to enable task executor
 ENABLE_DATASYNC=1
+ENABLE_SCHEDULED_TASK=1
 ENABLE_MCP_SERVER=0
 ENABLE_ADMIN_SERVER=0 # Default close admin server
 INIT_SUPERUSER_ARGS="" # Default to not initialize superuser
@@ -312,6 +313,15 @@ if [[ "${ENABLE_DATASYNC}" -eq 1 ]]; then
     echo "Starting data sync..."
     while true; do
         "$PY" rag/svr/sync_data_source.py &
+        wait;
+        sleep 1;
+    done &
+fi
+
+if [[ "${ENABLE_SCHEDULED_TASK}" -eq 1 ]]; then
+    echo "Starting scheduled task executor..."
+    while true; do
+        "$PY" rag/svr/scheduled_task_executor.py &
         wait;
         sleep 1;
     done &
