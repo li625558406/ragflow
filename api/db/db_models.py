@@ -1418,6 +1418,33 @@ class ScheduledTaskLog(DataBaseModel):
         )
 
 
+class CollaborationDocument(DataBaseModel):
+    id = CharField(max_length=32, primary_key=True)
+    name = CharField(max_length=255, null=False, index=True, help_text="document name")
+    file_type = CharField(max_length=16, null=False, default="docx", index=True, help_text="docx|pdf")
+    file_path = CharField(max_length=512, null=True, help_text="storage key in STORAGE_IMPL for generated file")
+    content = JSONField(null=True, default={}, help_text="Lexical editor JSON state for rich editing")
+    markdown_content = TextField(null=True, help_text="original markdown source from chat message")
+    tenant_id = CharField(max_length=32, null=False, index=True)
+    created_by = CharField(max_length=32, null=False, index=True)
+    agent_id = CharField(max_length=32, null=True, index=True)
+
+    class Meta:
+        db_table = "collaboration_document"
+
+
+class CollaborationFormatRule(DataBaseModel):
+    id = CharField(max_length=32, primary_key=True)
+    name = CharField(max_length=128, null=False, help_text="rule name")
+    description = TextField(null=True, help_text="rule description")
+    config = JSONField(null=False, default={}, help_text="font_name, font_size, line_spacing, margins, alignment, etc.")
+    tenant_id = CharField(max_length=32, null=False, index=True)
+    created_by = CharField(max_length=32, null=False, index=True)
+
+    class Meta:
+        db_table = "collaboration_format_rule"
+
+
 def alter_db_add_column(migrator, table_name, column_name, column_type):
     try:
         migrate(migrator.add_column(table_name, column_name, column_type))
