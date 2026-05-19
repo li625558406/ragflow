@@ -278,22 +278,57 @@ def login_or_apikey_required(func):
     async def decorated_function(*args, **kwargs):
         from api.apps import current_user
         authorization = request.headers.get("Authorization")
-        if authorization:
-            parts = authorization.split()
-            if len(parts) < 2:
-                return build_error_result(message="Invalid authorization format.", code=RetCode.FORBIDDEN)
-            token = parts[1]
-            objs = APIToken.query(token=token)
-            if not objs:
-                return build_error_result(message="API-KEY is invalid!", code=RetCode.FORBIDDEN)
-            kwargs["tenant_id"] = objs[0].tenant_id
-        else:
+
+        # No Authorization header at all — try session cookie via current_user
+        if not authorization:
             if not current_user.is_authenticated:
                 return build_error_result(message="Authentication required.", code=RetCode.FORBIDDEN)
             kwargs["tenant_id"] = current_user.id
-        if inspect.iscoroutinefunction(func):
-            return await func(*args, **kwargs)
-        return func(*args, **kwargs)
+            if inspect.iscoroutinefunction(func):
+                return await func(*args, **kwargs)
+            return func(*args, **kwargs)
+
+        # Extract token (handle both "Bearer <token>" and bare <token>)
+        if authorization.lower().startswith("bearer "):
+            token = authorization.split(maxsplit=1)[1]
+        else:
+            token = authorization
+
+        # 1) Try API token
+        objs = APIToken.query(token=token)
+        if objs:
+            kwargs["tenant_id"] = objs[0].tenant_id
+            if inspect.iscoroutinefunction(func):
+                return await func(*args, **kwargs)
+            return func(*args, **kwargs)
+
+        # 2) Try login token (itsdangerous-signed access_token)
+        from api.db.services.user_service import UserService, UserTenantService
+        from common.constants import StatusEnum
+        from common import settings
+        from itsdangerous.url_safe import URLSafeTimedSerializer as Serializer
+        try:
+            jwt = Serializer(secret_key=settings.SECRET_KEY)
+            raw_token = str(jwt.loads(token))
+            user = UserService.query(access_token=raw_token, status=StatusEnum.VALID.value)
+            if user:
+                tenants = UserTenantService.query(user_id=user[0].id)
+                if tenants:
+                    kwargs["tenant_id"] = tenants[0].tenant_id
+                    if inspect.iscoroutinefunction(func):
+                        return await func(*args, **kwargs)
+                    return func(*args, **kwargs)
+        except Exception:
+            pass
+
+        # 3) Fallback: session cookie via current_user
+        if current_user.is_authenticated:
+            kwargs["tenant_id"] = current_user.id
+            if inspect.iscoroutinefunction(func):
+                return await func(*args, **kwargs)
+            return func(*args, **kwargs)
+
+        return build_error_result(message="Authentication failed.", code=RetCode.FORBIDDEN)
     return decorated_function
 
 

@@ -149,6 +149,16 @@ def _load_user():
     except Exception as e_api_token:
         logging.warning(f"load_user from api token got exception {e_api_token}")
 
+    # Fallback: try raw token directly as access_token (e.g. frontend sent raw UUID instead of signed JWT)
+    try:
+        if len(auth_token) >= 32:
+            user = UserService.query(access_token=auth_token, status=StatusEnum.VALID.value)
+            if user:
+                g.user = user[0]
+                return user[0]
+    except Exception:
+        pass
+
     return None
 
 
