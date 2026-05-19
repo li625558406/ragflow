@@ -7,165 +7,160 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/jsencrypt@3.3.2/bin/jsencrypt.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;500;600;700&family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
   <script>
     tailwind.config = {
       theme: {
         extend: {
-          colors: {
-            navy: { 50:'#EFF3F8', 100:'#D7E2F0', 200:'#AFC5DF', 300:'#7FA8CF', 400:'#4F8BBF', 500:'#1E6EB5', 600:'#1A5C9E', 700:'#1E3A5F', 800:'#162E4D', 900:'#0F2340' },
-            brand: { DEFAULT:'#1E3A5F', light:'#2563EB', dark:'#0F2340' },
-            accent: { DEFAULT:'#059669', light:'#34D399', dark:'#047857' },
-          },
           fontFamily: {
-            serif: ['Noto Serif SC', 'serif'],
-            sans: ['Noto Sans SC', 'system-ui', 'sans-serif'],
+            sans: ['Inter', '-apple-system', 'PingFang SC', 'Microsoft YaHei', 'sans-serif'],
           },
         },
       },
     };
   </script>
   <style>
-    body { font-family: 'Noto Sans SC', system-ui, sans-serif; }
-    .font-serif { font-family: 'Noto Serif SC', serif; }
-    .msg-content pre { background: #f1f5f9; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 13px; border-left: 3px solid #1E3A5F; }
-    .msg-content code { background: #e8eef4; padding: 1px 5px; border-radius: 3px; font-size: 13px; }
+    body { font-family: 'Inter', -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+    .msg-content pre { background: #F8FAFC; padding: 14px 16px; border-radius: 10px; overflow-x: auto; font-size: 13px; border: 1px solid #E2E8F0; }
+    .msg-content code { background: #F1F5F9; padding: 2px 6px; border-radius: 5px; font-size: 13px; }
     .msg-content pre code { background: none; padding: 0; }
     .msg-content ul, .msg-content ol { padding-left: 1.5em; margin: 0.5em 0; }
     .msg-content table { border-collapse: collapse; margin: 0.5em 0; font-size: 13px; }
-    .msg-content th, .msg-content td { border: 1px solid #d7e2f0; padding: 6px 10px; }
-    .msg-content th { background: #eff3f8; font-weight: 600; }
+    .msg-content th, .msg-content td { border: 1px solid #E2E8F0; padding: 8px 12px; }
+    .msg-content th { background: #F8FAFC; font-weight: 600; color: #334155; }
     @keyframes blink { 0%,50% { opacity: 1; } 51%,100% { opacity: 0; } }
-    .typing-cursor { display: inline-block; width: 2px; height: 1em; background: #1E3A5F; margin-left: 2px; vertical-align: text-bottom; animation: blink 0.8s infinite; }
+    .typing-cursor { display: inline-block; width: 2px; height: 1em; background: #94A3B8; margin-left: 2px; vertical-align: text-bottom; animation: blink 0.8s infinite; }
     .session-item:hover .delete-btn { display: flex; }
     .scrollbar-thin::-webkit-scrollbar { width: 4px; }
-    .scrollbar-thin::-webkit-scrollbar-thumb { background: #b0c4de; border-radius: 2px; }
-    .login-bg { background: linear-gradient(135deg, #0F2340 0%, #1E3A5F 50%, #2563EB 100%); }
-    .glass-card { background: rgba(255,255,255,0.95); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.3); }
-    .sidebar-gradient { background: linear-gradient(180deg, #0F2340 0%, #1E3A5F 100%); }
-    .ref-card:hover { box-shadow: 0 2px 8px rgba(30,58,95,0.08); }
+    .scrollbar-thin::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 2px; }
+    .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
+    .login-bg {
+      background: #F8FAFC;
+      background-image:
+        radial-gradient(ellipse 60% 50% at 50% 50%, rgba(37,99,235,0.04) 0%, transparent 70%);
+    }
+    .login-card {
+      background: #FFFFFF;
+      border: 1px solid #E2E8F0;
+      box-shadow: 0 20px 60px -12px rgba(15,23,42,0.08);
+    }
+    .sidebar-bg { background: #0F172A; }
+    .ref-card { transition: box-shadow 0.2s ease, border-color 0.2s ease; }
+    .ref-card:hover { box-shadow: 0 2px 8px rgba(15,23,42,0.06); border-color: #CBD5E1; }
     .ref-list { max-height: 400px; overflow-y: auto; }
     .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-    .cite-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 4px; font-size: 11px; font-weight: 600; line-height: 1; border-radius: 4px; background: #eff3f8; color: #1e3a5f; vertical-align: super; margin: 0 1px; cursor: pointer; transition: all 0.15s; }
-    .cite-badge:hover { background: #1e3a5f; color: #fff; }
-    .ref-card.highlight { border-color: #1e3a5f; background: #f0f5fa; }
-    .thinking-block { background: #f8f9fb; border: 1px solid #e8ecf1; border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
-    .thinking-toggle { display: flex; align-items: center; gap: 6px; padding: 6px 12px; font-size: 12px; color: #94a3b8; cursor: pointer; user-select: none; transition: color 0.15s; }
-    .thinking-toggle:hover { color: #64748b; }
-    .thinking-toggle .arrow { transition: transform 0.2s; }
-    .thinking-toggle.open .arrow { transform: rotate(90deg); }
-    .thinking-body { padding: 0 12px 8px; font-size: 12px; color: #94a3b8; line-height: 1.6; max-height: 200px; overflow-y: auto; }
+    .cite-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 4px; font-size: 11px; font-weight: 600; line-height: 1; border-radius: 5px; background: #F1F5F9; color: #2563EB; vertical-align: super; margin: 0 1px; cursor: pointer; transition: all 0.15s; }
+    .cite-badge:hover { background: #2563EB; color: #fff; }
+    .ref-card.highlight { border-color: #2563EB; background: #F0F7FF; }
+    .input-ring { transition: box-shadow 0.2s ease, border-color 0.2s ease; }
+    .input-ring:focus-within { box-shadow: 0 0 0 3px rgba(37,99,235,0.1); border-color: #93C5FD; }
   </style>
 </head>
 <body class="bg-slate-50 h-screen overflow-hidden">
 
   <!-- Login Screen -->
   <div id="loginScreen" class="hidden fixed inset-0 login-bg flex items-center justify-center">
-    <div class="glass-card rounded-2xl shadow-2xl p-10 w-full max-w-md">
+    <div class="login-card rounded-2xl p-10 w-full max-w-[400px]">
       <div class="text-center mb-8">
-        <div class="w-20 h-20 bg-navy-700 rounded-2xl mx-auto flex items-center justify-center mb-5 shadow-lg">
-          <svg class="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+        <div class="w-14 h-14 bg-slate-900 rounded-2xl mx-auto flex items-center justify-center mb-5">
+          <svg class="w-7 h-7 text-white" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
           </svg>
         </div>
-        <h1 class="font-serif text-3xl font-bold text-navy-800 tracking-wide">标书分析助手</h1>
-        <div class="w-16 h-0.5 bg-accent mx-auto mt-3 mb-2"></div>
-        <p class="text-slate-500 text-sm">智能招标文件分析与决策支持系统</p>
+        <h1 class="text-xl font-bold text-slate-900 tracking-tight">标书分析助手</h1>
+        <p class="text-slate-400 text-sm mt-1">智能招标文件分析与决策支持</p>
       </div>
-      <div id="loginError" class="hidden bg-red-50 border border-red-200 text-red-700 text-sm p-3 rounded-lg mb-4"></div>
-      <div class="space-y-5">
+      <div id="loginError" class="hidden bg-red-50 border border-red-100 text-red-600 text-sm p-3 rounded-xl mb-5"></div>
+      <div class="space-y-4">
         <div>
           <label class="block text-sm font-medium text-slate-700 mb-1.5">邮箱地址</label>
-          <input id="emailInput" type="email" placeholder="请输入注册邮箱" class="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-navy-500 focus:border-navy-500 outline-none transition text-sm">
+          <input id="emailInput" type="email" placeholder="请输入注册邮箱" class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-0 focus:outline-none focus:border-blue-400 focus:bg-white transition text-sm placeholder:text-slate-300">
         </div>
         <div>
           <label class="block text-sm font-medium text-slate-700 mb-1.5">登录密码</label>
-          <input id="passwordInput" type="password" placeholder="请输入密码" class="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-navy-500 focus:border-navy-500 outline-none transition text-sm" onkeydown="if(event.key==='Enter')doLogin()">
+          <input id="passwordInput" type="password" placeholder="请输入密码" class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-0 focus:outline-none focus:border-blue-400 focus:bg-white transition text-sm placeholder:text-slate-300" onkeydown="if(event.key==='Enter')doLogin()">
         </div>
-        <button id="loginBtn" onclick="doLogin()" class="w-full bg-navy-700 text-white py-3 rounded-lg hover:bg-navy-800 transition font-medium text-sm tracking-wide shadow-md hover:shadow-lg">
+        <button id="loginBtn" onclick="doLogin()" class="w-full bg-slate-900 hover:bg-slate-800 text-white py-3 rounded-xl transition-colors font-medium text-sm">
           登录系统
         </button>
       </div>
-      <p class="text-center text-xs text-slate-400 mt-6">RAGFlow Powered &middot; 安全可信</p>
+      <p class="text-center text-xs text-slate-300 mt-6">RAGFlow Powered</p>
     </div>
   </div>
 
   <!-- Chat Screen -->
   <div id="chatScreen" class="hidden h-screen flex">
     <!-- Sidebar -->
-    <div class="w-72 sidebar-gradient flex flex-col shrink-0">
-      <div class="p-4 border-b border-white/10">
-        <button onclick="createNewSession()" class="w-full flex items-center justify-center gap-2 bg-accent hover:bg-accent-dark text-white py-2.5 rounded-lg transition font-medium text-sm shadow-md">
+    <div class="w-[272px] sidebar-bg flex flex-col shrink-0">
+      <div class="p-4">
+        <button onclick="createNewSession()" class="w-full flex items-center justify-center gap-2 bg-white/10 hover:bg-white/15 text-white py-2.5 rounded-xl transition-colors font-medium text-sm">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
           新建分析
         </button>
       </div>
-      <div class="px-4 py-2">
+      <div class="px-4 pb-2">
         <div class="relative">
-          <select id="agentSelector" onchange="switchAgent(this.value)" class="w-full bg-white/10 text-white text-sm rounded-lg px-3 py-2 outline-none appearance-none cursor-pointer border border-white/10 focus:border-white/30 transition pr-8">
+          <select id="agentSelector" onchange="switchAgent(this.value)" class="w-full bg-white/8 text-white text-sm rounded-xl px-3 py-2.5 outline-none appearance-none cursor-pointer border border-white/10 focus:border-white/25 transition pr-8">
             <option value="" disabled selected class="text-slate-800">选择智能体...</option>
           </select>
-          <svg class="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-navy-200 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+          <svg class="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
         </div>
       </div>
-      <div class="px-4 py-2">
-        <span class="text-navy-200 text-xs font-medium tracking-wider uppercase">历史对话</span>
+      <div class="px-5 py-2">
+        <span class="text-[11px] font-semibold text-slate-500 tracking-wider uppercase">历史对话</span>
       </div>
-      <div id="sessionList" class="flex-1 overflow-y-auto scrollbar-thin px-3 space-y-1 pb-2"></div>
-      <div class="p-4 border-t border-white/10 bg-navy-900/50">
+      <div id="sessionList" class="flex-1 overflow-y-auto scrollbar-thin px-3 space-y-0.5 pb-2"></div>
+      <div class="p-4 border-t border-white/8">
         <div class="flex items-center gap-3">
-          <div id="userAvatar" class="w-8 h-8 bg-navy-500 text-navy-100 rounded-full flex items-center justify-center text-sm font-bold"></div>
+          <div id="userAvatar" class="w-8 h-8 bg-white/10 text-white/70 rounded-lg flex items-center justify-center text-sm font-semibold"></div>
           <div class="flex-1 min-w-0">
-            <div id="userName" class="text-sm font-medium text-navy-100 truncate"></div>
-            <div id="userEmail" class="text-xs text-navy-300 truncate"></div>
+            <div id="userName" class="text-sm font-medium text-white/90 truncate"></div>
+            <div id="userEmail" class="text-xs text-slate-500 truncate"></div>
           </div>
-          <button onclick="doLogout()" class="text-navy-300 hover:text-white transition p-1 rounded" title="退出登录" aria-label="退出登录">
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
+          <button onclick="doLogout()" class="text-slate-500 hover:text-white transition-colors p-1.5 rounded-lg hover:bg-white/8" title="退出登录" aria-label="退出登录">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
           </button>
         </div>
       </div>
     </div>
 
     <!-- Main Chat Area -->
-    <div class="flex-1 flex flex-col min-w-0 bg-slate-50">
+    <div class="flex-1 flex flex-col min-w-0 bg-white">
       <!-- Header -->
-      <div class="h-14 bg-white border-b border-slate-200 flex items-center px-6 shrink-0 shadow-sm">
+      <div class="h-[56px] bg-white border-b border-slate-100 flex items-center px-6 shrink-0">
         <div class="flex items-center gap-3">
-          <div class="w-8 h-8 bg-navy-700 rounded-lg flex items-center justify-center">
-            <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+          <div class="w-8 h-8 bg-slate-100 rounded-lg flex items-center justify-center">
+            <svg class="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
           </div>
-          <div>
-            <h2 id="chatTitle" class="font-serif text-lg font-semibold text-navy-800">标书分析助手</h2>
-          </div>
+          <h2 id="chatTitle" class="text-sm font-semibold text-slate-900">标书分析助手</h2>
         </div>
         <div class="ml-auto flex items-center gap-1.5">
-          <span class="w-2 h-2 rounded-full bg-accent animate-pulse" title="在线"></span>
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
           <span class="text-xs text-slate-400">在线</span>
         </div>
       </div>
 
       <!-- Messages -->
-      <div id="messagesArea" class="flex-1 overflow-y-auto scrollbar-thin p-6 space-y-4">
+      <div id="messagesArea" class="flex-1 overflow-y-auto scrollbar-thin p-6 space-y-5">
         <div class="text-center py-16">
-          <div class="w-16 h-16 bg-navy-100 rounded-2xl mx-auto flex items-center justify-center mb-4">
-            <svg class="w-8 h-8 text-navy-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+          <div class="w-14 h-14 bg-slate-100 rounded-2xl mx-auto flex items-center justify-center mb-4">
+            <svg class="w-7 h-7 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
           </div>
-          <p class="text-slate-400 text-sm font-serif">选择或创建一个对话开始分析</p>
+          <p class="text-slate-400 text-sm">选择或创建一个对话开始分析</p>
           <p class="text-slate-300 text-xs mt-2">上传招标文件至知识库后，即可在此进行智能问答</p>
         </div>
       </div>
 
       <!-- Input Area -->
-      <div class="bg-white border-t border-slate-200 p-4 shrink-0 shadow-[0_-2px_8px_rgba(0,0,0,0.04)]">
+      <div class="bg-white border-t border-slate-100 p-4 shrink-0">
         <div class="flex gap-3 max-w-4xl mx-auto">
-          <input id="messageInput" type="text" placeholder="输入标书相关问题，如：采购包2的评分标准是什么？" class="flex-1 px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-navy-500 focus:border-navy-500 outline-none transition text-sm" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage()}">
-          <button id="sendBtn" onclick="sendMessage()" class="bg-navy-700 text-white px-5 py-3 rounded-lg hover:bg-navy-800 transition font-medium text-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-md">
+          <div class="flex-1 border border-slate-200 rounded-xl flex items-center input-ring bg-slate-50 focus-within:bg-white transition-colors">
+            <input id="messageInput" type="text" placeholder="输入标书相关问题，如：采购包2的评分标准是什么？" class="flex-1 px-4 py-3 bg-transparent outline-none text-sm text-slate-900 placeholder:text-slate-300" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage()}">
+          </div>
+          <button id="sendBtn" onclick="sendMessage()" class="bg-slate-900 hover:bg-slate-800 text-white px-5 py-3 rounded-xl transition-colors font-medium text-sm disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19V5m0 0l-7 7m7-7l7 7"/></svg>
             发送
           </button>
-          <button id="stopBtn" onclick="stopStreaming()" class="hidden bg-red-600 text-white px-4 py-3 rounded-lg hover:bg-red-700 transition font-medium text-sm shadow-md">
+          <button id="stopBtn" onclick="stopStreaming()" class="hidden bg-red-500 hover:bg-red-600 text-white px-4 py-3 rounded-xl transition-colors font-medium text-sm">
             停止
           </button>
         </div>
@@ -176,7 +171,8 @@
   <script>
     // ===== CONFIG =====
     const CONFIG = {
-      BASE_URL: window.location.origin,
+      // LOCAL DEV: 指向服务器 | 部署时改回 window.location.origin
+      BASE_URL: 'http://47.98.102.55',
       RSA_PUBLIC_KEY: '-----BEGIN PUBLIC KEY-----MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArq9XTUSeYr2+N1h3Afl/z8Dse/2yD0ZGrKwx+EEEcdsBLca9Ynmx3nIB5obmLlSfmskLpBo0UACBmB5rEjBp2Q2f3AG3Hjd4B+gNCG6BDaawuDlgANIhGnaTLrIqWrrcm4EMzJOnAOI1fgzJRsOOUEfaS318Eq9OVO3apEyCCt0lOQK6PuksduOjVxtltDav+guVAA068NrPYmRNabVKRNLJpL8w4D44sfth5RvZ3q9t+6RTArpEtc5sh5ChzvqPOzKGMXW83C95TxmXqpbK6olN4RevSfVjEAgCydH6HN6OhtOQEcnrU97r9H0iZOWwbw3pVrZiUkuRD1R56Wzs2wIDAQAB-----END PUBLIC KEY-----',
     };
 
@@ -210,15 +206,48 @@
       currentSessionId: null,
       messages: [],
       isStreaming: false,
-      isThinking: false,
-      thinkingContent: '',
       abortController: null,
       fullContent: '',
+      isThinking: false,
     };
 
     // ===== HTTP WRAPPER (auto 401 redirect) =====
     function stripBlockChars(text) {
       return (text || '').replace(/[\u2580-\u259F\u25A0-\u25FF\u2800-\u28FF]/g, '');
+    }
+
+    function stripThinking(text) {
+      if (!text) return '';
+      // Remove <think ...>...</think > blocks (LLM native thinking tags, may have spaces)
+      text = text.replace(/<think[^>]*>[\s\S]*?<\/think\s*>/gi, '');
+      // Remove unclosed <think ...> blocks to end of string
+      text = text.replace(/<think[^>]*>[\s\S]*$/gi, '');
+      return text.trim();
+    }
+
+    function replaceEmoji(text) {
+      return (text || '')
+        .replace(/⚠️?/g, '[!]')
+        .replace(/🔴/g, '[高]')
+        .replace(/🟡/g, '[中]')
+        .replace(/🟢/g, '[低]')
+        .replace(/✅/g, '[OK]')
+        .replace(/❌/g, '[X]')
+        .replace(/🚨/g, '[!]')
+        .replace(/📌/g, '[*]')
+        .replace(/💡/g, '[提示]')
+        .replace(/📋/g, '[清单]')
+        .replace(/📝/g, '[笔记]')
+        .replace(/🔍/g, '[查]')
+        .replace(/📊/g, '[图]')
+        .replace(/📅/g, '[日期]')
+        .replace(/💰/g, '[费用]')
+        .replace(/⏰/g, '[时间]')
+        .replace(/🏢/g, '[机构]')
+        .replace(/👥/g, '[人员]')
+        .replace(/📄/g, '[文件]')
+        .replace(/🔗/g, '[链接]')
+        .replace(/#[\uFE0F\u200D]?/g, '#');
     }
 
     async function apiFetch(url, options = {}) {
@@ -312,6 +341,7 @@
         const bareToken = result.data?.access_token || token.replace('Bearer ', '');
         STATE.token = authorization;
         STATE.userInfo = {
+          id: result.data.id || result.data.user_id,
           email: result.data.email || email,
           nickname: result.data.nickname || result.data.name || email.split('@')[0],
           avatar: result.data.avatar,
@@ -388,11 +418,11 @@
     // ===== SESSIONS =====
     async function loadSessions() {
       try {
-        // Use get_names endpoint which doesn't trigger the normalize bug
-        // This endpoint requires user_id parameter - fetch it from user info first
         let userId = STATE.userInfo && (STATE.userInfo.id || STATE.userInfo.user_id || STATE.userInfo.email);
+        console.log('[loadSessions] agentId:', STATE.currentAgentId, 'userId:', userId, 'token:', STATE.token ? 'yes' : 'no');
         const resp = await apiFetch(`${CONFIG.BASE_URL}/api/v1/agents/${STATE.currentAgentId}/sessions?exp_user_id=${userId || 'current'}&orderby=update_time&desc=true`);
         const result = await resp.json();
+        console.log('[loadSessions] response:', result.code, result.message, 'count:', (result.data || []).length);
         if (result.code === 0 && result.data) {
           STATE.sessions = (result.data || []).map(s => ({
             id: s.id,
@@ -422,7 +452,7 @@
       try {
         // Show loading state
         const area = document.getElementById('messagesArea');
-        area.innerHTML = '<div class="text-center py-16"><svg class="w-8 h-8 animate-spin text-navy-400 mx-auto" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" opacity="0.25"/><path d="M12 2a10 10 0 019.95 9" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg><p class="text-slate-400 text-sm mt-3">加载中...</p></div>';
+        area.innerHTML = '<div class="text-center py-16"><svg class="w-6 h-6 animate-spin text-slate-300 mx-auto" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" opacity="0.2"/><path d="M12 2a10 10 0 019.95 9" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg><p class="text-slate-400 text-sm mt-3">加载中...</p></div>';
 
         const resp = await apiFetch(`${CONFIG.BASE_URL}/api/v1/agents/${STATE.currentAgentId}/sessions/${sessionId}`);
         const result = await resp.json();
@@ -435,8 +465,7 @@
         const rawRef = data.reference || {};
         STATE.messages = rawMessages.map((m, idx) => ({
           role: m.role || 'assistant',
-          content: stripBlockChars(m.content || m.answer || ''),
-          thinking: stripBlockChars(m.thinking || '').trim(),
+          content: stripThinking(stripBlockChars(m.content || m.answer || '')),
         }));
         console.log('[loadSessionMessages] mapped messages:', STATE.messages.length, 'rawRef type:', typeof rawRef, 'rawRef:', rawRef);
 
@@ -480,22 +509,11 @@
     }
 
     async function createNewSession() {
-      try {
-        const resp = await apiFetch(`${CONFIG.BASE_URL}/api/v1/agents/${STATE.currentAgentId}/sessions`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: '新对话' }),
-        });
-        const result = await resp.json();
-        if (result.code !== 0) throw new Error(result.message);
-        const newId = result.data && result.data.id;
-        if (newId) {
-          STATE.sessions.unshift({ id: newId, name: '新对话', update_time: Date.now() / 1000 });
-          switchSession(newId);
-        }
-      } catch (e) {
-        showToast('创建对话失败: ' + e.message);
-      }
+      STATE.currentSessionId = null;
+      STATE.messages = [];
+      renderMessages();
+      renderSessionList();
+      document.getElementById('messageInput').focus();
     }
 
     async function deleteSession(sessionId, event) {
@@ -549,8 +567,6 @@
       renderMessages();
 
       STATE.isStreaming = true;
-      STATE.isThinking = false;
-      STATE.thinkingContent = '';
       STATE.fullContent = '';
       STATE.abortController = new AbortController();
       updateSendButton();
@@ -573,6 +589,7 @@
 
         const reader = resp.body.pipeThrough(new TextDecoderStream()).getReader();
         let buffer = '';
+        let receivedEnd = false;
 
         while (true) {
           const { done, value } = await reader.read();
@@ -591,23 +608,19 @@
             try {
               const event = JSON.parse(content);
               if (event.event === 'message' && event.data) {
-                if (event.data.start_to_think) {
-                  STATE.isThinking = true;
-                  STATE.thinkingContent = '';
-                }
-                if (STATE.isThinking) {
-                  STATE.thinkingContent += event.data.content || '';
-                  updateStreamingMessage(null);
-                } else {
-                  STATE.fullContent += stripBlockChars(event.data.content || '');
+                if (event.data.start_to_think) STATE.isThinking = true;
+                const raw = event.data.content || '';
+                if (!STATE.isThinking) {
+                  STATE.fullContent += replaceEmoji(stripBlockChars(raw));
                   updateStreamingMessage(STATE.fullContent);
                 }
-                if (event.data.end_to_think) {
-                  STATE.isThinking = false;
-                  updateStreamingMessage(STATE.fullContent);
-                }
+                if (/<think[^>]*>/i.test(raw)) STATE.isThinking = true;
+                if (/<\/think\s*>/i.test(raw)) STATE.isThinking = false;
+                if (event.data.end_to_think) STATE.isThinking = false;
               }
               if (event.event === 'message_end' && event.data) {
+                STATE.isThinking = false;
+                receivedEnd = true;
                 const ref = event.data.reference;
                 if (ref && ref.chunks) {
                   STATE.messages[STATE.messages.length - 1].references = Object.values(ref.chunks);
@@ -617,22 +630,24 @@
           }
         }
 
-        STATE.messages[STATE.messages.length - 1].content = stripBlockChars(STATE.fullContent);
-        STATE.messages[STATE.messages.length - 1].thinking = stripBlockChars(STATE.thinkingContent).trim();
+        STATE.messages[STATE.messages.length - 1].content = replaceEmoji(stripBlockChars(STATE.fullContent));
         STATE.isStreaming = false;
-        STATE.isThinking = false;
         updateSendButton();
         renderMessages();
+        loadSessions();
       } catch (e) {
         if (e.name === 'AbortError') {
-          STATE.messages[STATE.messages.length - 1].content = stripBlockChars(STATE.fullContent) || '(已停止)';
+          STATE.messages[STATE.messages.length - 1].content = replaceEmoji(stripBlockChars(STATE.fullContent)) || '(已停止)';
+        } else if (receivedEnd) {
+          // Agent already finished (message_end received), stream close error is harmless
+          STATE.messages[STATE.messages.length - 1].content = replaceEmoji(stripBlockChars(STATE.fullContent));
         } else {
           STATE.messages[STATE.messages.length - 1].content = '请求失败: ' + e.message;
         }
-        STATE.messages[STATE.messages.length - 1].thinking = stripBlockChars(STATE.thinkingContent).trim();
         STATE.isStreaming = false;
         updateSendButton();
         renderMessages();
+        loadSessions();
       }
     }
 
@@ -645,21 +660,66 @@
     function updateStreamingMessage(content) {
       const el = document.getElementById('streamingMsg');
       if (!el) return;
-      if (STATE.isThinking) {
-        const thinkingText = stripBlockChars(STATE.thinkingContent).trim();
-        el.innerHTML = renderThinking(thinkingText) + '<div class="flex items-center gap-2 text-slate-400 text-xs py-1"><svg class="w-4 h-4 animate-spin text-navy-400" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" opacity="0.25"/><path d="M12 2a10 10 0 019.95 9" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg><span>正在思考中...</span></div>';
-      } else {
-        const thinkingHtml = STATE.thinkingContent ? renderThinking(stripBlockChars(STATE.thinkingContent).trim()) : '';
-        el.innerHTML = thinkingHtml + renderMarkdown(content || '') + '<span class="typing-cursor"></span>';
-      }
+      el.innerHTML = renderMarkdown(content || '') + '<span class="typing-cursor"></span>';
       scrollToBottom();
     }
+
+    function sha1Hex(str) {
+      // Pure JS SHA-1 (crypto.subtle requires HTTPS)
+      const s = unescape(encodeURIComponent(str));
+      const words = [];
+      for (let i = 0; i < s.length * 8; i += 8) words[i >> 5] |= (s.charCodeAt(i / 8) & 0xff) << (24 - i % 32);
+      words[s.length * 8 >> 5] |= 0x80 << (24 - (s.length * 8) % 32);
+      words[(((s.length * 8) + 64) >> 9) << 4] = s.length * 8;
+      const H = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
+      const w = new Array(80);
+      for (let i = 0; i < 16; i++) w[i] = words[i] || 0;
+      for (let i = 16; i < 80; i++) { const t = w[i-3] ^ w[i-8] ^ w[i-14] ^ w[i-16]; w[i] = (t << 1) | (t >>> 31); }
+      let a=H[0],b=H[1],c=H[2],d=H[3],e=H[4];
+      for (let i = 0; i < 80; i++) {
+        let f,k;
+        if (i<20){f=(b&c)|(~b&d);k=0x5A827999;}
+        else if(i<40){f=b^c^d;k=0x6ED9EBA1;}
+        else if(i<60){f=(b&c)|(b&d)|(c&d);k=0x8F1BBCDC;}
+        else{f=b^c^d;k=0xCA62C1D6;}
+        const t=((a<<5)|(a>>>27))+f+e+k+w[i];
+        e=d;d=c;c=(b<<30)|(b>>>2);b=a;a=t;
+      }
+      H[0]=(H[0]+a)>>>0;H[1]=(H[1]+b)>>>0;H[2]=(H[2]+c)>>>0;H[3]=(H[3]+d)>>>0;H[4]=(H[4]+e)>>>0;
+      return H.map(h => h.toString(16).padStart(8,'0')).join('');
+    }
+
+    function buildRefIdMap(references) {
+      const map = {};
+      for (const [idx, ref] of (references || []).entries()) {
+        const chunkId = ref.chunk_id || ref.id || '';
+        if (chunkId) {
+          const hex = sha1Hex(String(chunkId));
+          let num = 0n;
+          for (let i = 0; i < hex.length; i++) num = num * 16n + BigInt(parseInt(hex[i], 16));
+          map[Number(num % 500n)] = idx;
+        }
+      }
+      return map;
+    }
+
+    let _refIdMap = {};
 
     function renderMarkdown(text, refCount) {
       text = stripBlockChars(text);
       try {
         let html = marked.parse(text || '');
         if (refCount && refCount > 0) {
+          // Match [ID:xxx] format (hash-based citation)
+          html = html.replace(/\[ID:(\d+)\]/gi, (match, num) => {
+            const hashId = parseInt(num);
+            const idx = _refIdMap[hashId];
+            if (idx !== undefined) {
+              return `<a href="javascript:void(0)" class="cite-badge" onclick="scrollToRef(this, 'ref-${idx}')">${idx + 1}</a>`;
+            }
+            return `<span class="cite-badge" style="opacity:0.4">${num}</span>`;
+          });
+          // Match [N] format (positional citation)
           html = html.replace(/\[(\d+)\]/g, (match, num) => {
             const idx = parseInt(num) - 1;
             if (idx >= 0 && idx < refCount) {
@@ -680,22 +740,11 @@
       setTimeout(() => card.classList.remove('highlight'), 2000);
     }
 
-    function renderThinking(thinkingText) {
-      if (!thinkingText) return '';
-      const safeText = escapeHtml(thinkingText);
-      return `
-        <div class="thinking-block">
-          <div class="thinking-toggle" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('hidden')">
-            <svg class="w-3 h-3 arrow" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
-            <span>思考过程</span>
-          </div>
-          <div class="thinking-body hidden"><pre style="white-space:pre-wrap;word-break:break-word;margin:0;font-family:inherit;">${safeText}</pre></div>
-        </div>`;
-    }
+    let _currentRefList = [];
 
     function renderReferences(references) {
       if (!references || references.length === 0) return '';
+      _currentRefList = references;
       const cards = references.map((ref, idx) => {
         const refId = 'ref-' + idx;
         const docName = ref.docnm_kwd || ref.document_name || '未知文档';
@@ -705,22 +754,22 @@
         const similarity = ref.similarity ? Math.round(ref.similarity * 100) : '';
         const imgUrl = imageId ? `${CONFIG.BASE_URL}/api/v1/documents/images/${imageId}` : '';
         return `
-          <div id="${refId}" class="ref-card flex gap-3 p-3 rounded-lg border border-slate-200 bg-white hover:border-navy-200 transition cursor-pointer" ${imgUrl ? `onclick="openRefImage('${imgUrl}','${escapeHtml(docName)}','${page}')"` : ''}>
-            ${imgUrl ? `<img src="${imgUrl}" class="w-16 h-20 rounded object-cover border border-slate-200 shrink-0 bg-slate-50" loading="lazy" onerror="this.style.display='none'">` : ''}
+          <div id="${refId}" class="ref-card flex gap-3 p-3 rounded-xl border border-slate-100 bg-slate-50/50 cursor-pointer" onclick="openRefDetail(${idx})">
+            ${imgUrl ? `<img src="${imgUrl}" class="w-14 h-18 rounded-lg object-cover border border-slate-100 shrink-0 bg-white" loading="lazy" onerror="this.style.display='none'">` : ''}
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2 mb-1">
-                <span class="text-xs font-medium text-navy-700 bg-navy-50 px-2 py-0.5 rounded">来源 ${idx + 1}</span>
-                <span class="text-xs text-slate-400">${page ? '第' + page + '页' : ''}</span>
-                ${similarity ? `<span class="text-xs text-slate-300">${similarity}%</span>` : ''}
+                <span class="text-[11px] font-semibold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-md">来源 ${idx + 1}</span>
+                <span class="text-[11px] text-slate-400">${page ? '第' + page + '页' : ''}</span>
+                ${similarity ? `<span class="text-[11px] text-slate-300">${similarity}%</span>` : ''}
               </div>
-              <div class="text-xs text-slate-500 font-medium truncate">${escapeHtml(docName)}</div>
+              <div class="text-xs text-slate-600 font-medium truncate">${escapeHtml(docName)}</div>
               <div class="text-xs text-slate-400 mt-1 line-clamp-2">${escapeHtml(snippet)}</div>
             </div>
           </div>`;
       }).join('');
       return `
         <div class="ref-section mt-3 border-t border-slate-100 pt-3">
-          <button class="flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-navy-600 transition mb-2" onclick="this.nextElementSibling.classList.toggle('hidden');this.querySelector('.ref-arrow').classList.toggle('rotate-90')">
+          <button class="flex items-center gap-1.5 text-xs font-medium text-slate-400 hover:text-slate-600 transition-colors mb-2" onclick="this.nextElementSibling.classList.toggle('hidden');this.querySelector('.ref-arrow').classList.toggle('rotate-90')">
             <svg class="w-3 h-3 ref-arrow transition-transform ${references.length <= 3 ? 'rotate-90' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
             引用来源 (${references.length})
           </button>
@@ -730,18 +779,51 @@
 
     function openRefImage(url, docName, page) {
       const overlay = document.createElement('div');
-      overlay.className = 'fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-8';
+      overlay.className = 'fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-8';
       overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
       overlay.innerHTML = `
-        <div class="bg-white rounded-2xl shadow-2xl max-w-3xl max-h-[90vh] overflow-hidden">
+        <div class="bg-white rounded-2xl shadow-xl max-w-3xl max-h-[90vh] overflow-hidden">
           <div class="flex items-center justify-between px-5 py-3 border-b border-slate-100">
             <span class="text-sm font-medium text-slate-700">${escapeHtml(docName)} ${page ? '- 第' + page + '页' : ''}</span>
-            <button onclick="this.closest('.fixed').remove()" class="text-slate-400 hover:text-slate-600 transition p-1">
+            <button onclick="this.closest('.fixed').remove()" class="text-slate-400 hover:text-slate-600 transition-colors p-1">
               <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
             </button>
           </div>
           <div class="p-4 flex items-center justify-center bg-slate-50">
-            <img src="${url}" class="max-w-full max-h-[75vh] rounded border border-slate-200" loading="lazy">
+            <img src="${url}" class="max-w-full max-h-[75vh] rounded-lg border border-slate-100" loading="lazy">
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+    }
+
+    function openRefDetail(idx) {
+      const ref = _currentRefList[idx];
+      if (!ref) return;
+      const docName = ref.docnm_kwd || ref.document_name || '未知文档';
+      const page = (ref.positions && ref.positions[0] && ref.positions[0][0]) ? ref.positions[0][0] : '';
+      const content = ref.content_with_weight || ref.content || '';
+      const imageId = ref.image_id || ref.img_id || '';
+      const similarity = ref.similarity ? Math.round(ref.similarity * 100) : '';
+      const imgUrl = imageId ? `${CONFIG.BASE_URL}/api/v1/documents/images/${imageId}` : '';
+
+      const overlay = document.createElement('div');
+      overlay.className = 'fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-8';
+      overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+      overlay.innerHTML = `
+        <div class="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[85vh] overflow-hidden flex flex-col">
+          <div class="flex items-center justify-between px-5 py-3 border-b border-slate-100 shrink-0">
+            <div class="flex items-center gap-2 min-w-0">
+              <span class="text-sm font-medium text-slate-700 truncate">${escapeHtml(docName)}</span>
+              ${page ? `<span class="text-xs text-slate-400 shrink-0">第${page}页</span>` : ''}
+              ${similarity ? `<span class="text-xs text-slate-300 shrink-0">${similarity}%</span>` : ''}
+            </div>
+            <button onclick="this.closest('.fixed').remove()" class="text-slate-400 hover:text-slate-600 transition-colors p-1 shrink-0">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <div class="flex-1 overflow-y-auto p-5">
+            ${imgUrl ? `<img src="${imgUrl}" class="max-w-full max-h-[40vh] rounded-lg border border-slate-100 mb-4" loading="lazy">` : ''}
+            <pre class="whitespace-pre-wrap word-break-break-word text-sm text-slate-600 leading-relaxed m-0 font-sans">${escapeHtml(content)}</pre>
           </div>
         </div>`;
       document.body.appendChild(overlay);
@@ -757,15 +839,15 @@
     function renderSessionList() {
       const container = document.getElementById('sessionList');
       if (STATE.sessions.length === 0) {
-        container.innerHTML = '<div class="text-center text-navy-300/50 text-sm py-8">暂无对话记录</div>';
+        container.innerHTML = '<div class="text-center text-slate-600/40 text-xs py-8">暂无对话记录</div>';
         return;
       }
       container.innerHTML = STATE.sessions.map(s => `
-        <div class="session-item group flex items-center gap-2 px-3 py-2.5 rounded-lg cursor-pointer transition ${s.id === STATE.currentSessionId ? 'bg-white/15 text-white' : 'hover:bg-white/10 text-navy-200'}" onclick="switchSession('${s.id}')">
-          <svg class="w-4 h-4 shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/></svg>
+        <div class="session-item group flex items-center gap-2 px-3 py-2.5 rounded-xl cursor-pointer transition-colors ${s.id === STATE.currentSessionId ? 'bg-white/12 text-white' : 'hover:bg-white/6 text-slate-400'}" onclick="switchSession('${s.id}')">
+          <svg class="w-4 h-4 shrink-0 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/></svg>
           <span class="flex-1 text-sm truncate">${escapeHtml(s.name)}</span>
-          <button class="delete-btn hidden w-6 h-6 items-center justify-center rounded text-navy-300/50 hover:text-red-400 hover:bg-white/10 shrink-0" onclick="deleteSession('${s.id}', event)" title="删除" aria-label="删除对话">
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+          <button class="delete-btn hidden w-6 h-6 items-center justify-center rounded-lg text-slate-500/40 hover:text-red-400 hover:bg-white/10 shrink-0" onclick="deleteSession('${s.id}', event)" title="删除" aria-label="删除对话">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M6 18L18 6M6 6l12 12"/></svg>
           </button>
         </div>
       `).join('');
@@ -774,8 +856,17 @@
     function renderMessages() {
       const area = document.getElementById('messagesArea');
       if (STATE.messages.length === 0) {
-        area.innerHTML = '<div class="text-center py-16"><div class="w-16 h-16 bg-navy-100 rounded-2xl mx-auto flex items-center justify-center mb-4"><svg class="w-8 h-8 text-navy-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg></div><p class="text-slate-400 text-sm font-serif">选择或创建一个对话开始分析</p><p class="text-slate-300 text-xs mt-2">上传招标文件至知识库后，即可在此进行智能问答</p></div>';
+        area.innerHTML = '<div class="text-center py-16"><div class="w-14 h-14 bg-slate-100 rounded-2xl mx-auto flex items-center justify-center mb-4"><svg class="w-7 h-7 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg></div><p class="text-slate-400 text-sm">选择或创建一个对话开始分析</p><p class="text-slate-300 text-xs mt-2">上传招标文件至知识库后，即可在此进行智能问答</p></div>';
         return;
+      }
+
+      // Build hash ID map for [ID:xxx] citation matching
+      const lastAssistant = [...STATE.messages].reverse().find(m => m.role === 'assistant' && m.references && m.references.length > 0);
+      console.log('[renderMessages] msgs:', STATE.messages.length, 'lastAssistant with refs:', !!lastAssistant, 'all refs:', STATE.messages.map(m => m.references ? m.references.length : 0));
+      if (lastAssistant) {
+        _refIdMap = buildRefIdMap(lastAssistant.references);
+      } else {
+        _refIdMap = {};
       }
 
       area.innerHTML = STATE.messages.map((msg, i) => {
@@ -783,14 +874,13 @@
         const isStreaming = isLast && STATE.isStreaming;
 
         if (msg.role === 'user') {
-          return `<div class="flex justify-end"><div class="max-w-[75%] bg-navy-700 text-white px-4 py-3 rounded-2xl rounded-br-sm text-sm leading-relaxed shadow-md">${escapeHtml(msg.content)}</div></div>`;
+          return `<div class="flex justify-end"><div class="max-w-[70%] bg-slate-900 text-white px-4 py-3 rounded-2xl rounded-br-md text-sm leading-relaxed">${escapeHtml(msg.content)}</div></div>`;
         } else {
           const content = isStreaming ? (STATE.fullContent || '') : msg.content;
-          const thinking = isStreaming ? null : msg.thinking;
           const refs = isStreaming ? null : msg.references;
           const refCount = refs ? refs.length : 0;
-          const thinkingHtml = thinking ? renderThinking(thinking) : '';
-          return `<div class="flex justify-start"><div class="max-w-[75%]"><div class="bg-white border border-slate-200 px-4 py-3 rounded-2xl rounded-bl-sm text-sm leading-relaxed msg-content shadow-sm"><div ${isStreaming ? 'id="streamingMsg"' : ''}>${isStreaming ? (renderMarkdown(content, refCount) + '<span class="typing-cursor"></span>') : (thinkingHtml + renderMarkdown(content, refCount))}</div>${refs ? renderReferences(refs) : ''}</div></div></div>`;
+          const dlBtn = (!isStreaming && content && content.length > 100) ? `<div class="mt-1 text-right"><button onclick="downloadMsg(${i})" class="text-[11px] text-slate-300 hover:text-slate-500 transition-colors" title="下载为 Markdown 文件">下载</button></div>` : '';
+          return `<div class="flex justify-start"><div class="max-w-[70%]"><div class="bg-slate-50 border border-slate-100 px-4 py-3 rounded-2xl rounded-bl-md text-sm leading-relaxed msg-content"><div ${isStreaming ? 'id="streamingMsg"' : ''}>${isStreaming ? (renderMarkdown(content, refCount) + '<span class="typing-cursor"></span>') : renderMarkdown(content, refCount)}</div>${refs ? renderReferences(refs) : ''}</div>${dlBtn}</div></div>`;
         }
       }).join('');
 
@@ -835,9 +925,22 @@
       return div.innerHTML;
     }
 
+    function downloadMsg(idx) {
+      const msg = STATE.messages[idx];
+      if (!msg || !msg.content) return;
+      const blob = new Blob([msg.content], { type: 'text/markdown;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const ts = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+      a.href = url;
+      a.download = `标书内容_${ts}.md`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
     function showToast(message) {
       const toast = document.createElement('div');
-      toast.className = 'fixed top-4 right-4 bg-red-600 text-white px-5 py-3 rounded-lg shadow-lg text-sm z-50 transition-all';
+      toast.className = 'fixed top-4 right-4 bg-slate-900 text-white px-5 py-3 rounded-xl shadow-lg text-sm z-50 transition-all';
       toast.textContent = message;
       document.body.appendChild(toast);
       setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 300); }, 2500);
