@@ -380,4 +380,16 @@ export default {
   fetchCrawlerState: (id: string) => `${restAPIv1}/scheduled-tasks/${id}/state`,
   updateCrawlerState: (id: string) =>
     `${restAPIv1}/scheduled-tasks/${id}/state`,
+
+  // Collaboration
+  collaborationDocuments: `${restAPIv1}/collaboration/documents`,
+  collaborationDocument: (docId: string) =>
+    `${restAPIv1}/collaboration/documents/${docId}`,
+  collaborationDocumentDownload: (docId: string) =>
+    `${restAPIv1}/collaboration/documents/${docId}/download`,
+  collaborationDocumentApplyRule: (docId: string) =>
+    `${restAPIv1}/collaboration/documents/${docId}/apply-rule`,
+  collaborationFormatRules: `${restAPIv1}/collaboration/format-rules`,
+  collaborationFormatRule: (ruleId: string) =>
+    `${restAPIv1}/collaboration/format-rules/${ruleId}`,
 };

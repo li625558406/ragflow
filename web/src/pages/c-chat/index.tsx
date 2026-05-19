@@ -1,18 +1,8 @@
+import CollaborationPanel from '@/components/collaboration';
+import CreateDocumentDialog from '@/components/collaboration/create-document-dialog';
 import HighLightMarkdown from '@/components/highlight-markdown';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import api from '@/utils/api';
-import { useQuery } from '@tanstack/react-query';
-import JSEncrypt from 'jsencrypt';
 import { useCallback, useEffect, useRef, useState } from 'react';
-
-const RSA_PUBLIC_KEY =
-  '-----BEGIN PUBLIC KEY-----MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArq9XTUSeYr2+N1h3Afl/z8Dse/2yD0ZGrKwx+EEEcdsBLca9Ynmx3nIB5obmLlSfmskLpBo0UACBmB5rEjBp2Q2f3AG3Hjd4B+gNCG6BDaawuDlgANIhGnaTLrIqWrrcm4EMzJOnAOI1fgzJRsOOUEfaS318Eq9OVO3apEyCCt0lOQK6PuksduOjVxtltDav+guVAA068NrPYmRNabVKRNLJpL8w4D44sfth5RvZ3q9t+6RTArpEtc5sh5ChzvqPOzKGMXW83C95TxmXqpbK6olN4RevSfVjEAgCydH6HN6OhtOQEcnrU97r9H0iZOWwbw3pVrZiUkuRD1R56Wzs2wIDAQAB-----END PUBLIC KEY-----';
+import { useNavigate } from 'react-router';
 
 // 默认开场白
 const DEFAULT_PROLOGUE = '你好！我是你的助理，有什么可以帮到你的吗？';
@@ -51,18 +41,6 @@ interface Message {
   references?: Reference[];
 }
 
-function utf8ToBase64(str: string) {
-  return btoa(unescape(encodeURIComponent(str)));
-}
-
-function rsaEncrypt(password: string): string {
-  const encryptor = new JSEncrypt();
-  encryptor.setPublicKey(RSA_PUBLIC_KEY);
-  const encrypted = encryptor.encrypt(utf8ToBase64(password));
-  if (!encrypted) throw new Error('加密失败');
-  return encrypted;
-}
-
 function stripBlockChars(text: string) {
   // Strip block drawing characters and ␐ (U+23C0) used for thinking delimiters
   return (text || '').replace(
@@ -72,6 +50,8 @@ function stripBlockChars(text: string) {
 }
 
 export default function CChat() {
+  const navigate = useNavigate();
+
   // Auth state
   const [token, setToken] = useState(
     () => localStorage.getItem('Authorization') || '',
@@ -99,10 +79,10 @@ export default function CChat() {
           const card = document.getElementById(`ref-${index - 1}`);
           if (card) {
             card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            card.classList.add('border-[#0F2340]/30', 'bg-[#0F2340]/5');
+            card.classList.add('border-indigo-500/30', 'bg-indigo-50');
             setTimeout(
               () =>
-                card.classList.remove('border-[#0F2340]/30', 'bg-[#0F2340]/5'),
+                card.classList.remove('border-indigo-500/30', 'bg-indigo-50'),
               2000,
             );
           }
@@ -113,13 +93,27 @@ export default function CChat() {
     return () => document.removeEventListener('click', handleClick);
   }, []);
 
-  // 注入引用徽章样式
+  // 注入引用徽章样式 + 登录样式
   useEffect(() => {
-    const styleId = 'c-chat-citation-styles';
+    const styleId = 'c-chat-styles';
     if (document.getElementById(styleId)) return;
     const style = document.createElement('style');
     style.id = styleId;
     style.textContent = `
+      .login-bg {
+        background: #FAFAF9;
+        background-image: radial-gradient(ellipse 60% 50% at 50% 50%, rgba(99,102,241,0.05) 0%, transparent 70%);
+      }
+      .login-card {
+        background: #FFFFFF;
+        border: 1px solid #E7E5E4;
+        box-shadow: 0 20px 60px -12px rgba(28,25,23,0.06);
+      }
+      .sidebar-bg { background: #FAFAF9; }
+      .scrollbar-thin::-webkit-scrollbar { width: 4px; }
+      .scrollbar-thin::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 2px; }
+      .input-ring { transition: box-shadow 0.2s ease, border-color 0.2s ease; }
+      .input-ring:focus-within { box-shadow: 0 0 0 3px rgba(99,102,241,0.1); border-color: #A5B4FC; }
       .cite-badge {
         display: inline-flex;
         align-items: center;
@@ -130,16 +124,16 @@ export default function CChat() {
         font-size: 11px;
         font-weight: 600;
         line-height: 1;
-        border-radius: 4px;
-        background: #eff3f8;
-        color: #1e3a5f;
+        border-radius: 5px;
+        background: #EEF2FF;
+        color: #6366F1;
         vertical-align: super;
         margin: 0 1px;
         cursor: pointer;
         transition: all 0.15s;
       }
       .cite-badge:hover {
-        background: #1e3a5f;
+        background: #6366F1;
         color: #fff;
       }
     `;
@@ -163,12 +157,6 @@ export default function CChat() {
   const abortRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Login form state
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [loginError, setLoginError] = useState('');
-  const [loginLoading, setLoginLoading] = useState(false);
-
   // Chat input
   const [inputValue, setInputValue] = useState('');
 
@@ -176,14 +164,11 @@ export default function CChat() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Main view state: 'chat' or 'analysis'
-  const [mainView, setMainView] = useState<'chat' | 'analysis'>('chat');
+  const [mainView, setMainView] = useState<'chat' | 'collaboration'>('chat');
 
-  // Analysis results state
-  const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
-  const [availableDocs, setAvailableDocs] = useState<
-    Array<{ id: string; name: string }>
-  >([]);
-  const [loadingDocs, setLoadingDocs] = useState(false);
+  // Collaboration state
+  const [collabDialogOpen, setCollabDialogOpen] = useState(false);
+  const [collabMessage, setCollabMessage] = useState('');
 
   // Ref state
   const [expandedRefs, setExpandedRefs] = useState<Set<number>>(new Set());
@@ -343,96 +328,6 @@ export default function CChat() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
-  // 获取知识库中已分析的文档列表
-  const loadAnalyzedDocuments = useCallback(async () => {
-    if (!currentAgentId) return;
-
-    setLoadingDocs(true);
-    try {
-      // 获取智能体详情，找到关联的知识库
-      const agentResp = await apiFetch(`/api/v1/agents/${currentAgentId}`);
-      const agentResult = await agentResp.json();
-      if (agentResult.code !== 0) {
-        console.error('获取智能体详情失败:', agentResult.message);
-        return;
-      }
-
-      const agentData = agentResult.data;
-      const datasetIds = agentData.dataset_ids || [];
-
-      // 如果智能体有关联知识库，使用那些知识库；否则使用所有知识库
-      let datasetsToCheck = datasetIds;
-      if (datasetIds.length === 0) {
-        // 获取所有知识库列表
-        const kbResp = await apiFetch('/api/v1/datasets?page_size=100');
-        const kbResult = await kbResp.json();
-        if (kbResult.code === 0 && kbResult.data) {
-          datasetsToCheck = (kbResult.data || []).map((d: any) => d.id);
-        }
-      }
-
-      if (datasetsToCheck.length === 0) {
-        setAvailableDocs([]);
-        return;
-      }
-
-      // 遍历知识库，获取所有文档
-      const allDocuments: any[] = [];
-      for (const datasetId of datasetsToCheck) {
-        try {
-          const docsResp = await apiFetch(
-            `/api/v1/datasets/${datasetId}/documents?page_size=1000`,
-          );
-          const docsResult = await docsResp.json();
-          if (docsResult.code === 0) {
-            const dataObj = docsResult.data;
-            const docs = dataObj?.docs || [];
-            allDocuments.push(...docs);
-          }
-        } catch {
-          // 忽略错误，继续处理其他知识库
-        }
-      }
-
-      const documents = allDocuments;
-
-      // 过滤出有分析结果的文档
-      const analyzedDocs: Array<{ id: string; name: string }> = [];
-      for (const doc of documents) {
-        try {
-          const analysisResp = await apiFetch(
-            `/api/v1/documents/${doc.id}/analysis`,
-          );
-          const analysisResult = await analysisResp.json();
-          if (analysisResult.code === 0 && analysisResult.data) {
-            analyzedDocs.push({
-              id: doc.id,
-              name: doc.name || doc.doc_name || '未命名文档',
-            });
-          }
-        } catch {
-          // 忽略错误，继续处理其他文档
-        }
-      }
-
-      setAvailableDocs(analyzedDocs);
-      if (analyzedDocs.length > 0 && !selectedDocId) {
-        setSelectedDocId(analyzedDocs[0].id);
-      }
-    } catch (e) {
-      console.error('加载已分析文档失败:', e);
-    } finally {
-      setLoadingDocs(false);
-    }
-  }, [currentAgentId, apiFetch, selectedDocId]);
-
-  // 当切换到分析结果视图时，加载已分析文档列表
-  useEffect(() => {
-    if (mainView === 'analysis') {
-      loadAnalyzedDocuments();
-    }
-  }, [mainView, loadAnalyzedDocuments]);
-
   const loadSessions = useCallback(
     async (agentId?: string) => {
       const aid = agentId || currentAgentId;
@@ -543,30 +438,6 @@ export default function CChat() {
     },
     [currentAgentId, apiFetch],
   );
-
-  // 获取文档分析结果
-  const fetchAnalysisResult = useCallback(
-    async (documentId: string) => {
-      try {
-        const resp = await apiFetch(api.getDocumentAnalysis(documentId));
-        const result = await resp.json();
-        if (result.code === 0 && result.data) {
-          return result.data;
-        }
-        return null;
-      } catch (e) {
-        console.error('获取分析结果失败:', e);
-        return null;
-      }
-    },
-    [apiFetch],
-  );
-
-  const { data: analysisResult, isLoading: analysisLoading } = useQuery({
-    queryKey: ['documentAnalysis', selectedDocId],
-    queryFn: () => (selectedDocId ? fetchAnalysisResult(selectedDocId) : null),
-    enabled: !!selectedDocId,
-  });
 
   const switchSession = useCallback(
     (sessionId: string) => {
@@ -790,70 +661,20 @@ export default function CChat() {
     abortRef.current?.abort();
   }, []);
 
-  // --- Login ---
-  const handleLogin = async () => {
-    if (!email || !password) {
-      setLoginError('请输入邮箱和密码');
-      return;
-    }
-    setLoginLoading(true);
-    setLoginError('');
-    try {
-      const encryptedPwd = rsaEncrypt(password);
-      const resp = await fetch('/api/v1/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password: encryptedPwd }),
-      });
-      const authHeader =
-        resp.headers.get('Authorization') || resp.headers.get('authorization');
-      const result = await resp.json();
-      if (result.code !== 0) throw new Error(result.message || '登录失败');
-
-      const t = authHeader || result.data?.access_token;
-      if (!t) throw new Error('登录响应中未获取到令牌');
-
-      const authorization = t.startsWith('Bearer ') ? t : 'Bearer ' + t;
-      const info = {
-        email: result.data.email || email,
-        nickname:
-          result.data.nickname || result.data.name || email.split('@')[0],
-        avatar: result.data.avatar,
-      };
-      setToken(authorization);
-      setUserInfo(info);
-      localStorage.setItem('Authorization', authorization);
-      localStorage.setItem(
-        'token',
-        result.data?.access_token || t.replace('Bearer ', ''),
-      );
-      localStorage.setItem('userInfo', JSON.stringify(info));
-    } catch (e: any) {
-      setLoginError(e.message || '登录失败，请检查网络连接');
-    } finally {
-      setLoginLoading(false);
-    }
-  };
-
   const handleLogout = () => {
     clearAuth();
   };
 
+  // Redirect to login if no token (must be in effect, not render)
+  useEffect(() => {
+    if (!token) {
+      navigate('/login');
+    }
+  }, [token, navigate]);
+
   // --- Render ---
   if (!token) {
-    return (
-      <LoginScreen
-        {...{
-          email,
-          password,
-          loginError,
-          loginLoading,
-          setEmail,
-          setPassword,
-          handleLogin,
-        }}
-      />
-    );
+    return null;
   }
 
   const currentAgent = agents.find((a) => a.id === currentAgentId);
@@ -862,45 +683,14 @@ export default function CChat() {
   const streamingContent = isThinking ? null : fullContent;
 
   return (
-    <div className="h-screen flex bg-slate-100 overflow-hidden">
-      {/* Mobile sidebar overlay */}
-      {sidebarOpen && (
-        <div
-          className="fixed inset-0 bg-black/40 z-40 md:hidden"
-          onClick={() => setSidebarOpen(false)}
-        />
-      )}
-
-      {/* Sidebar */}
-      <aside
-        className={`fixed md:static inset-y-0 left-0 z-50 w-64 flex flex-col shrink-0 bg-[#0F2340] transition-transform duration-200 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}
-      >
-        {/* Sidebar header */}
-        <div className="h-14 flex items-center justify-between px-4 border-b border-white/10 shrink-0">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 bg-[#1E3A5F] rounded-lg flex items-center justify-center">
-              <svg
-                className="w-4 h-4 text-white"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                />
-              </svg>
-            </div>
-            <span className="text-sm font-bold text-white">标书分析助手</span>
-          </div>
-          <button
-            className="md:hidden text-white/60 hover:text-white"
-            onClick={() => setSidebarOpen(false)}
-          >
+    <div className="h-screen flex flex-col bg-stone-50 overflow-hidden">
+      {/* Top Navigation Bar */}
+      <header className="h-14 bg-white border-b border-stone-100 flex items-center px-6 shrink-0">
+        {/* Left: Logo */}
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 bg-indigo-500 rounded-lg flex items-center justify-center">
             <svg
-              className="w-5 h-5"
+              className="w-4 h-4 text-white"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -909,21 +699,74 @@ export default function CChat() {
                 strokeLinecap="round"
                 strokeLinejoin="round"
                 strokeWidth={2}
-                d="M6 18L18 6M6 6l12 12"
+                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
               />
             </svg>
-          </button>
+          </div>
+          <span className="text-sm font-bold text-stone-900 hidden sm:inline">
+            标书分析助手
+          </span>
         </div>
 
-        {/* New session button */}
-        <div className="px-3 pt-3 pb-2">
+        {/* Center: Module Tabs */}
+        <div className="flex-1 flex justify-center">
+          <div className="flex items-center gap-1 bg-stone-50 rounded-xl p-1">
+            {(
+              [
+                {
+                  key: 'chat',
+                  label: '对话',
+                  icon: 'M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z',
+                },
+                {
+                  key: 'collaboration',
+                  label: '协作',
+                  icon: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z',
+                },
+              ] as const
+            ).map((tab) => (
+              <button
+                key={tab.key}
+                onClick={() => setMainView(tab.key)}
+                className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                  mainView === tab.key
+                    ? 'bg-white text-stone-900 shadow-sm'
+                    : 'text-stone-500 hover:text-stone-700'
+                }`}
+              >
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={1.5}
+                    d={tab.icon}
+                  />
+                </svg>
+                <span className="hidden sm:inline">{tab.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Right: User */}
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 bg-indigo-100 text-indigo-600 rounded-lg flex items-center justify-center text-sm font-semibold">
+            {(userInfo?.nickname || userInfo?.email || 'U')[0].toUpperCase()}
+          </div>
+          <div className="hidden md:block">
+            <div className="text-sm font-medium text-stone-700">
+              {userInfo?.nickname || userInfo?.email || ''}
+            </div>
+          </div>
           <button
-            onClick={() => {
-              setMainView('chat');
-              createNewSession();
-              setSidebarOpen(false);
-            }}
-            className="w-full flex items-center justify-center gap-2 bg-[#059669] hover:bg-[#047857] text-white py-2 rounded-lg transition font-medium text-sm"
+            onClick={handleLogout}
+            className="text-stone-400 hover:text-stone-600 transition-colors p-1.5 rounded-lg hover:bg-stone-100"
+            title="退出登录"
           >
             <svg
               className="w-4 h-4"
@@ -934,80 +777,40 @@ export default function CChat() {
               <path
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                strokeWidth={2}
-                d="M12 4v16m8-8H4"
+                strokeWidth={1.5}
+                d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
               />
             </svg>
-            新建分析
           </button>
         </div>
+      </header>
 
-        {/* Agent selector */}
-        <div className="px-3 pb-2">
-          <div className="relative">
-            <select
-              value={currentAgentId}
-              onChange={(e) => {
-                switchAgent(e.target.value);
-                loadSessions(e.target.value);
-              }}
-              className="w-full bg-white/10 text-white text-sm rounded-lg px-3 py-1.5 outline-none appearance-none cursor-pointer border border-white/10 focus:border-white/25 transition pr-7"
-            >
-              <option value="" disabled className="text-slate-800">
-                选择智能体...
-              </option>
-              {agents.map((a) => (
-                <option key={a.id} value={a.id} className="text-slate-800">
-                  {a.title || '未命名智能体'}
-                </option>
-              ))}
-            </select>
-            <svg
-              className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-white/40 pointer-events-none"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M19 9l-7 7-7-7"
-              />
-            </svg>
-          </div>
-        </div>
+      {/* Main body: Sidebar + Content */}
+      <div className="flex-1 flex min-h-0">
+        {/* Mobile sidebar overlay */}
+        {sidebarOpen && (
+          <div
+            className="fixed inset-0 bg-black/40 z-40 md:hidden"
+            onClick={() => setSidebarOpen(false)}
+          />
+        )}
 
-        {/* Session list */}
-        <div className="px-3 py-1">
-          <span className="text-white/30 text-[10px] font-semibold tracking-widest uppercase px-1">
-            历史对话
-          </span>
-        </div>
-        <div
-          className="flex-1 overflow-y-auto px-2 space-y-0.5 pb-2"
-          style={{ scrollbarWidth: 'none' }}
-        >
-          {sessions.length === 0 ? (
-            <div className="text-center text-white/20 text-xs py-10">
-              暂无对话
-            </div>
-          ) : (
-            sessions.map((s) => (
-              <div
-                key={s.id}
-                className={`group flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition text-sm ${
-                  s.id === currentSessionId
-                    ? 'bg-white/10 text-white'
-                    : 'text-white/50 hover:bg-white/5 hover:text-white/80'
-                }`}
-                onClick={() => {
-                  switchSession(s.id);
-                  setSidebarOpen(false);
-                }}
+        {/* Sidebar - only visible on chat tab */}
+        {mainView === 'chat' && (
+          <aside
+            className={`fixed md:static inset-y-0 left-0 z-50 w-64 flex flex-col shrink-0 sidebar-bg border-r border-stone-200/60 transition-transform duration-200 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}
+          >
+            {/* Mobile close */}
+            <div className="md:hidden h-12 flex items-center justify-between px-4 border-b border-stone-200/60 shrink-0">
+              <span className="text-sm font-bold text-stone-900">
+                标书分析助手
+              </span>
+              <button
+                className="text-stone-500 hover:text-stone-700"
+                onClick={() => setSidebarOpen(false)}
               >
                 <svg
-                  className="w-3.5 h-3.5 shrink-0 opacity-50"
+                  className="w-5 h-5"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -1016,19 +819,158 @@ export default function CChat() {
                     strokeLinecap="round"
                     strokeLinejoin="round"
                     strokeWidth={2}
-                    d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"
+                    d="M6 18L18 6M6 6l12 12"
                   />
                 </svg>
-                <span className="flex-1 truncate">{s.name}</span>
-                <button
-                  className="hidden w-5 h-5 items-center justify-center rounded text-white/30 hover:text-red-400 hover:bg-white/10 shrink-0 group-hover:flex"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    deleteSession(s.id);
+              </button>
+            </div>
+
+            {/* New session button */}
+            <div className="px-3 pt-3 pb-2">
+              <button
+                onClick={() => {
+                  setMainView('chat');
+                  createNewSession();
+                  setSidebarOpen(false);
+                }}
+                className="w-full flex items-center justify-center gap-2 bg-indigo-500 hover:bg-indigo-600 text-white py-2 rounded-lg transition font-medium text-sm"
+              >
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 4v16m8-8H4"
+                  />
+                </svg>
+                新建分析
+              </button>
+            </div>
+
+            {/* Agent selector */}
+            <div className="px-3 pb-2">
+              <div className="relative">
+                <select
+                  value={currentAgentId}
+                  onChange={(e) => {
+                    switchAgent(e.target.value);
+                    loadSessions(e.target.value);
                   }}
+                  className="w-full bg-indigo-50 text-indigo-700 text-sm rounded-lg px-3 py-1.5 outline-none appearance-none cursor-pointer border border-stone-200/60 focus:border-white/25 transition pr-7"
+                >
+                  <option value="" disabled className="text-stone-900">
+                    选择智能体...
+                  </option>
+                  {agents.map((a) => (
+                    <option key={a.id} value={a.id} className="text-stone-900">
+                      {a.title || '未命名智能体'}
+                    </option>
+                  ))}
+                </select>
+                <svg
+                  className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-stone-400 pointer-events-none"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M19 9l-7 7-7-7"
+                  />
+                </svg>
+              </div>
+            </div>
+
+            {/* Session list */}
+            <div className="px-3 py-1">
+              <span className="text-stone-400 text-[10px] font-semibold tracking-widest uppercase px-1">
+                历史对话
+              </span>
+            </div>
+            <div
+              className="flex-1 overflow-y-auto px-2 space-y-0.5 pb-2"
+              style={{ scrollbarWidth: 'none' }}
+            >
+              {sessions.length === 0 ? (
+                <div className="text-center text-stone-400/40 text-xs py-10">
+                  暂无对话
+                </div>
+              ) : (
+                sessions.map((s) => (
+                  <div
+                    key={s.id}
+                    className={`group flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition text-sm ${
+                      s.id === currentSessionId
+                        ? 'bg-indigo-50 text-indigo-700'
+                        : 'text-stone-500 hover:bg-stone-100 hover:text-stone-700'
+                    }`}
+                    onClick={() => {
+                      switchSession(s.id);
+                      setSidebarOpen(false);
+                    }}
+                  >
+                    <svg
+                      className="w-3.5 h-3.5 shrink-0 opacity-50"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"
+                      />
+                    </svg>
+                    <span className="flex-1 truncate">{s.name}</span>
+                    <button
+                      className="hidden w-5 h-5 items-center justify-center rounded text-stone-400 hover:text-red-400 hover:bg-stone-100 shrink-0 group-hover:flex"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteSession(s.id);
+                      }}
+                    >
+                      <svg
+                        className="w-3 h-3"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M6 18L18 6M6 6l12 12"
+                        />
+                      </svg>
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </aside>
+        )}
+
+        {/* Main Content Area */}
+        <div className="flex-1 flex flex-col min-w-0">
+          {/* Chat View */}
+          {mainView === 'chat' && (
+            <>
+              {/* Header */}
+              <div className="h-14 bg-white border-b border-stone-100 flex items-center px-4 shrink-0">
+                <button
+                  className="md:hidden mr-2 p-1.5 rounded-lg hover:bg-stone-100 transition"
+                  onClick={() => setSidebarOpen(true)}
                 >
                   <svg
-                    className="w-3 h-3"
+                    className="w-5 h-5 text-stone-500"
                     fill="none"
                     stroke="currentColor"
                     viewBox="0 0 24 24"
@@ -1037,272 +979,29 @@ export default function CChat() {
                       strokeLinecap="round"
                       strokeLinejoin="round"
                       strokeWidth={2}
-                      d="M6 18L18 6M6 6l12 12"
+                      d="M4 6h16M4 12h16M4 18h16"
                     />
                   </svg>
                 </button>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-sm font-semibold text-stone-900">
+                    {chatTitle}
+                  </h2>
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                </div>
               </div>
-            ))
-          )}
-        </div>
 
-        {/* View toggle - Analysis Results or Back to Chat */}
-        <div className="px-3 py-3 border-t border-white/10">
-          {mainView === 'chat' ? (
-            <div
-              className="flex items-center gap-2 px-3 py-2.5 rounded-lg cursor-pointer transition text-sm bg-[#1E6EB5] hover:bg-[#1a5ca3] text-white font-medium shadow-md"
-              onClick={() => {
-                setMainView('analysis');
-                setSidebarOpen(false);
-              }}
-            >
-              <svg
-                className="w-4 h-4 shrink-0"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                />
-              </svg>
-              <span className="flex-1">文档全量分析结果</span>
-            </div>
-          ) : (
-            <div
-              className="flex items-center gap-2 px-3 py-2.5 rounded-lg cursor-pointer transition text-sm bg-white/10 text-white font-medium"
-              onClick={() => {
-                setMainView('chat');
-                setSidebarOpen(false);
-              }}
-            >
-              <svg
-                className="w-4 h-4 shrink-0"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M10 19l-7-7m0 0l7-7m-7 7h18"
-                />
-              </svg>
-              <span className="flex-1">返回对话</span>
-            </div>
-          )}
-        </div>
-
-        {/* User section */}
-        <div className="px-3 py-3 border-t border-white/10">
-          <div className="flex items-center gap-2.5 px-1">
-            <div className="w-7 h-7 bg-[#1E6EB5] text-white/80 rounded-full flex items-center justify-center text-xs font-bold shrink-0">
-              {(userInfo?.nickname || userInfo?.email || 'U')[0].toUpperCase()}
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="text-xs font-medium text-white/80 truncate">
-                {userInfo?.nickname || userInfo?.email || ''}
-              </div>
-            </div>
-            <button
-              onClick={handleLogout}
-              className="text-white/30 hover:text-white/70 transition p-0.5 rounded"
-              title="退出登录"
-            >
-              <svg
-                className="w-4 h-4"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
-                />
-              </svg>
-            </button>
-          </div>
-        </div>
-      </aside>
-
-      {/* Main Content Area */}
-      <div className="flex-1 flex flex-col min-w-0">
-        {/* Chat View */}
-        {mainView === 'chat' && (
-          <>
-            {/* Header */}
-            <div className="h-14 bg-white border-b border-slate-200/80 flex items-center px-4 shrink-0">
-              <button
-                className="md:hidden mr-2 p-1.5 rounded-lg hover:bg-slate-100 transition"
-                onClick={() => setSidebarOpen(true)}
-              >
-                <svg
-                  className="w-5 h-5 text-slate-500"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
+              {/* Messages Area */}
+              <div className="flex-1 flex flex-col min-h-0 bg-white">
+                <div
+                  className="flex-1 overflow-y-auto p-4 lg:p-6 space-y-4"
+                  style={{ scrollbarWidth: 'thin' }}
                 >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M4 6h16M4 12h16M4 18h16"
-                  />
-                </svg>
-              </button>
-              <div className="flex items-center gap-2">
-                <h2 className="text-sm font-semibold text-slate-800">
-                  {chatTitle}
-                </h2>
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-              </div>
-            </div>
-
-            {/* Messages Area */}
-            <div className="flex-1 flex flex-col min-h-0 bg-white">
-              <div
-                className="flex-1 overflow-y-auto p-4 lg:p-6 space-y-4"
-                style={{ scrollbarWidth: 'thin' }}
-              >
-                {messages.length === 0 ? (
-                  <div className="text-center py-20">
-                    <div className="w-14 h-14 bg-slate-100 rounded-2xl mx-auto flex items-center justify-center mb-4">
-                      <svg
-                        className="w-7 h-7 text-slate-400"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={1.5}
-                          d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"
-                        />
-                      </svg>
-                    </div>
-                    <p className="text-slate-400 text-sm">
-                      选择或创建一个对话开始分析
-                    </p>
-                    <p className="text-slate-300 text-xs mt-1">
-                      上传招标文件至知识库后，即可在此进行智能问答
-                    </p>
-                  </div>
-                ) : (
-                  messages.map((msg, i) => {
-                    const isLast = i === messages.length - 1;
-                    const streaming = isLast && isStreaming;
-                    if (msg.role === 'user') {
-                      return (
-                        <div key={i} className="flex justify-end">
-                          <div className="max-w-[80%] lg:max-w-[70%] bg-[#0F2340] text-white px-4 py-2.5 rounded-2xl rounded-br-md text-sm leading-relaxed">
-                            {msg.content}
-                          </div>
-                        </div>
-                      );
-                    }
-                    const content = streaming
-                      ? streamingContent || ''
-                      : msg.content;
-                    const thinking = streaming ? null : msg.thinking;
-                    const refs = streaming ? null : msg.references;
-                    const processedContent = processCitationMarkers(
-                      content,
-                      refs || undefined,
-                    );
-                    return (
-                      <div key={i} className="flex justify-start">
-                        <div className="max-w-[80%] lg:max-w-[70%]">
-                          <div className="bg-white border border-slate-200/80 px-4 py-2.5 rounded-2xl rounded-bl-md text-sm leading-relaxed text-slate-800">
-                            {thinking && <ThinkingBlock text={thinking} />}
-                            <div className="msg-content text-slate-800">
-                              <HighLightMarkdown>
-                                {processedContent}
-                              </HighLightMarkdown>
-                            </div>
-                            {streaming && (
-                              <span className="inline-block w-2 h-4 bg-[#0F2340] ml-1 animate-pulse" />
-                            )}
-                            {streaming && isThinking && (
-                              <div className="flex items-center gap-2 text-slate-400 text-xs py-1">
-                                <svg
-                                  className="w-3.5 h-3.5 animate-spin text-slate-300"
-                                  viewBox="0 0 24 24"
-                                  fill="none"
-                                >
-                                  <circle
-                                    cx="12"
-                                    cy="12"
-                                    r="10"
-                                    stroke="currentColor"
-                                    strokeWidth="3"
-                                    opacity="0.25"
-                                  />
-                                  <path
-                                    d="M12 2a10 10 0 019.95 9"
-                                    stroke="currentColor"
-                                    strokeWidth="3"
-                                    strokeLinecap="round"
-                                  />
-                                </svg>
-                                <span>正在思考中...</span>
-                              </div>
-                            )}
-                          </div>
-                          {refs && refs.length > 0 && (
-                            <ReferenceSection
-                              refs={refs}
-                              expanded={expandedRefs}
-                              onToggle={(idx) =>
-                                setExpandedRefs((prev) => {
-                                  const next = new Set(prev);
-                                  if (next.has(idx)) next.delete(idx);
-                                  else next.add(idx);
-                                  return next;
-                                })
-                              }
-                            />
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-                <div ref={messagesEndRef} />
-              </div>
-
-              {/* Input Area */}
-              <div className="bg-white border-t border-slate-200/80 p-3 lg:p-4 shrink-0">
-                <div className="max-w-3xl mx-auto">
-                  <div className="flex items-end gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 focus-within:border-slate-300 focus-within:ring-2 focus-within:ring-slate-100 transition">
-                    <textarea
-                      value={inputValue}
-                      onChange={(e) => setInputValue(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey) {
-                          e.preventDefault();
-                          sendMessage();
-                        }
-                      }}
-                      placeholder="输入标书相关问题..."
-                      rows={1}
-                      className="flex-1 bg-transparent outline-none resize-none text-sm leading-relaxed max-h-32 py-1 placeholder:text-slate-400 text-slate-800"
-                      disabled={isStreaming}
-                    />
-                    {!isStreaming ? (
-                      <button
-                        onClick={sendMessage}
-                        disabled={!inputValue.trim()}
-                        className="shrink-0 w-8 h-8 flex items-center justify-center bg-[#0F2340] text-white rounded-lg hover:bg-slate-800 transition disabled:opacity-30 disabled:cursor-not-allowed"
-                      >
+                  {messages.length === 0 ? (
+                    <div className="text-center py-20">
+                      <div className="w-14 h-14 bg-stone-100 rounded-2xl mx-auto flex items-center justify-center mb-4">
                         <svg
-                          className="w-4 h-4"
+                          className="w-7 h-7 text-stone-400"
                           fill="none"
                           stroke="currentColor"
                           viewBox="0 0 24 24"
@@ -1310,337 +1009,214 @@ export default function CChat() {
                           <path
                             strokeLinecap="round"
                             strokeLinejoin="round"
-                            strokeWidth={2}
-                            d="M5 12h14M12 5l7 7-7 7"
+                            strokeWidth={1.5}
+                            d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"
                           />
                         </svg>
-                      </button>
-                    ) : (
-                      <button
-                        onClick={stopStreaming}
-                        className="shrink-0 w-8 h-8 flex items-center justify-center bg-red-500 text-white rounded-lg hover:bg-red-600 transition"
-                      >
-                        <svg
-                          className="w-3.5 h-3.5"
-                          fill="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <rect x="6" y="6" width="12" height="12" rx="1" />
-                        </svg>
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </>
-        )}
-
-        {/* Analysis Results View */}
-        {mainView === 'analysis' && (
-          <>
-            {/* Header */}
-            <div className="h-14 bg-white border-b border-slate-200/80 flex items-center px-4 shrink-0">
-              <button
-                className="md:hidden mr-2 p-1.5 rounded-lg hover:bg-slate-100 transition"
-                onClick={() => setSidebarOpen(true)}
-              >
-                <svg
-                  className="w-5 h-5 text-slate-500"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M4 6h16M4 12h16M4 18h16"
-                  />
-                </svg>
-              </button>
-              <div className="flex items-center gap-2">
-                <h2 className="text-sm font-semibold text-slate-800">
-                  分析结果
-                </h2>
-              </div>
-            </div>
-
-            {/* Analysis Results Content */}
-            <div className="flex-1 overflow-y-auto p-4 lg:p-6 bg-white">
-              {loadingDocs ? (
-                <div className="flex items-center justify-center py-20">
-                  <div className="text-center">
-                    <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-[#0F2340] mx-auto mb-3" />
-                    <p className="text-slate-500 text-sm">加载文档列表中...</p>
-                  </div>
-                </div>
-              ) : availableDocs.length === 0 ? (
-                <div className="flex items-center justify-center py-20">
-                  <div className="text-center max-w-md">
-                    <div className="w-16 h-16 bg-slate-100 rounded-2xl mx-auto flex items-center justify-center mb-4">
-                      <svg
-                        className="w-8 h-8 text-slate-400"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={1.5}
-                          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                        />
-                      </svg>
-                    </div>
-                    <p className="text-slate-600 text-base mb-2">
-                      暂无已分析的文档
-                    </p>
-                    <p className="text-slate-400 text-sm">
-                      请先在知识库文档列表中点击&quot;分析&quot;按钮进行文档分析
-                    </p>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  {/* 文档选择器 */}
-                  <div className="mb-4 pb-4 border-b border-slate-200">
-                    <label className="block text-sm font-medium text-slate-700 mb-2">
-                      选择文档查看分析结果
-                    </label>
-                    <Select
-                      value={selectedDocId || ''}
-                      onValueChange={(v) => setSelectedDocId(v)}
-                    >
-                      <SelectTrigger className="w-full max-w-md">
-                        <SelectValue placeholder="选择文档..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {availableDocs.map((doc) => (
-                          <SelectItem key={doc.id} value={doc.id}>
-                            {doc.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  {/* 分析结果内容 */}
-                  {!selectedDocId ? (
-                    <div className="text-center py-20">
-                      <p className="text-slate-400">
-                        请选择一个文档查看分析结果
+                      </div>
+                      <p className="text-stone-400 text-sm">
+                        选择或创建一个对话开始分析
                       </p>
-                    </div>
-                  ) : analysisLoading ? (
-                    <div className="flex items-center justify-center py-20">
-                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#0F2340]" />
-                    </div>
-                  ) : !analysisResult ? (
-                    <div className="text-center py-20">
-                      <p className="text-slate-400">该文档暂无分析结果</p>
-                    </div>
-                  ) : analysisResult.status === 'failed' ? (
-                    <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-                      <p className="text-red-800">
-                        分析失败：{analysisResult.error_message || '未知错误'}
+                      <p className="text-stone-300 text-xs mt-1">
+                        上传招标文件至知识库后，即可在此进行智能问答
                       </p>
                     </div>
                   ) : (
-                    <div className="space-y-6">
-                      {/* 分析状态和进度 */}
-                      {(analysisResult.status === 'running' ||
-                        analysisResult.status === 'pending') && (
-                        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                          <div className="flex items-center gap-2 mb-2">
-                            <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-500" />
-                            <span className="text-sm font-medium text-blue-800">
-                              分析进行中...
-                            </span>
+                    messages.map((msg, i) => {
+                      const isLast = i === messages.length - 1;
+                      const streaming = isLast && isStreaming;
+                      if (msg.role === 'user') {
+                        return (
+                          <div key={i} className="flex justify-end">
+                            <div className="max-w-[80%] lg:max-w-[70%] bg-indigo-500 text-white px-4 py-2.5 rounded-2xl rounded-br-md text-sm leading-relaxed">
+                              {msg.content}
+                            </div>
                           </div>
-                          <div className="w-full bg-blue-200 rounded-full h-2 overflow-hidden">
-                            <div
-                              className="bg-blue-500 h-2 rounded-full transition-all duration-500"
-                              style={{
-                                width: `${analysisResult.progress || 0}%`,
-                              }}
-                            />
-                          </div>
-                        </div>
-                      )}
-
-                      {/* 分析结果 */}
-                      {analysisResult.sections &&
-                      analysisResult.sections.length > 0 ? (
-                        <div className="space-y-4">
-                          {analysisResult.sections.map(
-                            (section: any, idx: number) => (
-                              <div
-                                key={idx}
-                                className="border border-slate-200 rounded-lg overflow-hidden"
-                              >
-                                <div className="bg-slate-50 px-4 py-2 border-b border-slate-200">
-                                  <h3 className="text-sm font-semibold text-slate-800">
-                                    {section.section_title}
-                                  </h3>
-                                </div>
-                                <div className="p-4 bg-white">
-                                  {section.analyses &&
-                                    section.analyses.map(
-                                      (analysis: any, aIdx: number) => (
-                                        <div
-                                          key={aIdx}
-                                          className="mb-4 last:mb-0"
-                                        >
-                                          <div className="text-xs font-semibold text-[#0F2340] mb-1">
-                                            {analysis.analysis_type ===
-                                            'key_points'
-                                              ? '关键要点'
-                                              : analysis.analysis_type}
-                                          </div>
-                                          {analysis.success ? (
-                                            <div className="text-sm text-slate-700 leading-relaxed">
-                                              <HighLightMarkdown>
-                                                {analysis.result}
-                                              </HighLightMarkdown>
-                                            </div>
-                                          ) : (
-                                            <div className="text-sm text-red-600 bg-red-50 p-2 rounded">
-                                              分析失败：
-                                              {analysis.error_message ||
-                                                '未知错误'}
-                                            </div>
-                                          )}
-                                        </div>
-                                      ),
-                                    )}
-                                </div>
+                        );
+                      }
+                      const content = streaming
+                        ? streamingContent || ''
+                        : msg.content;
+                      const thinking = streaming ? null : msg.thinking;
+                      const refs = streaming ? null : msg.references;
+                      const processedContent = processCitationMarkers(
+                        content,
+                        refs || undefined,
+                      );
+                      return (
+                        <div key={i} className="flex justify-start">
+                          <div className="max-w-[80%] lg:max-w-[70%]">
+                            <div className="bg-white border border-stone-100 px-4 py-2.5 rounded-2xl rounded-bl-md text-sm leading-relaxed text-stone-900">
+                              {thinking && <ThinkingBlock text={thinking} />}
+                              <div className="msg-content text-stone-900">
+                                <HighLightMarkdown>
+                                  {processedContent}
+                                </HighLightMarkdown>
                               </div>
-                            ),
-                          )}
+                              {streaming && (
+                                <span className="inline-block w-2 h-4 bg-indigo-500 ml-1 animate-pulse" />
+                              )}
+                              {streaming && isThinking && (
+                                <div className="flex items-center gap-2 text-stone-400 text-xs py-1">
+                                  <svg
+                                    className="w-3.5 h-3.5 animate-spin text-stone-300"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                  >
+                                    <circle
+                                      cx="12"
+                                      cy="12"
+                                      r="10"
+                                      stroke="currentColor"
+                                      strokeWidth="3"
+                                      opacity="0.25"
+                                    />
+                                    <path
+                                      d="M12 2a10 10 0 019.95 9"
+                                      stroke="currentColor"
+                                      strokeWidth="3"
+                                      strokeLinecap="round"
+                                    />
+                                  </svg>
+                                  <span>正在思考中...</span>
+                                </div>
+                              )}
+                            </div>
+                            {refs && refs.length > 0 && (
+                              <ReferenceSection
+                                refs={refs}
+                                expanded={expandedRefs}
+                                onToggle={(idx) =>
+                                  setExpandedRefs((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(idx)) next.delete(idx);
+                                    else next.add(idx);
+                                    return next;
+                                  })
+                                }
+                              />
+                            )}
+                            {!streaming && msg.content && (
+                              <div className="mt-2 flex justify-end">
+                                <button
+                                  className="flex items-center gap-1 px-2.5 py-1 text-xs text-stone-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                                  onClick={() => {
+                                    setCollabMessage(msg.content);
+                                    setCollabDialogOpen(true);
+                                  }}
+                                >
+                                  <svg
+                                    className="w-3.5 h-3.5"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    viewBox="0 0 24 24"
+                                  >
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                                    />
+                                  </svg>
+                                  协作
+                                </button>
+                              </div>
+                            )}
+                          </div>
                         </div>
+                      );
+                    })
+                  )}
+                  <div ref={messagesEndRef} />
+                </div>
+
+                {/* Input Area */}
+                <div className="bg-white border-t border-stone-100 p-3 lg:p-4 shrink-0">
+                  <div className="max-w-3xl mx-auto">
+                    <div className="flex items-end gap-2 bg-stone-50 border border-stone-200 rounded-xl px-3 py-2 focus-within:border-stone-300 focus-within:ring-2 focus-within:ring-stone-100 transition">
+                      <textarea
+                        value={inputValue}
+                        onChange={(e) => setInputValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            sendMessage();
+                          }
+                        }}
+                        placeholder="输入标书相关问题..."
+                        rows={1}
+                        className="flex-1 bg-transparent outline-none resize-none text-sm leading-relaxed max-h-32 py-1 placeholder:text-stone-400 text-stone-900"
+                        disabled={isStreaming}
+                      />
+                      {!isStreaming ? (
+                        <button
+                          onClick={sendMessage}
+                          disabled={!inputValue.trim()}
+                          className="shrink-0 w-8 h-8 flex items-center justify-center bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          <svg
+                            className="w-4 h-4"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M5 12h14M12 5l7 7-7 7"
+                            />
+                          </svg>
+                        </button>
                       ) : (
-                        <div className="text-center py-20">
-                          <p className="text-slate-400">分析结果为空</p>
-                        </div>
+                        <button
+                          onClick={stopStreaming}
+                          className="shrink-0 w-8 h-8 flex items-center justify-center bg-red-500 text-white rounded-lg hover:bg-indigo-500 transition"
+                        >
+                          <svg
+                            className="w-3.5 h-3.5"
+                            fill="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <rect x="6" y="6" width="12" height="12" rx="1" />
+                          </svg>
+                        </button>
                       )}
                     </div>
-                  )}
-                </>
-              )}
-            </div>
-          </>
-        )}
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Collaboration View */}
+          {mainView === 'collaboration' && (
+            <CollaborationPanel apiFetch={apiFetch} />
+          )}
+        </div>
       </div>
+
+      <CreateDocumentDialog
+        open={collabDialogOpen}
+        onOpenChange={setCollabDialogOpen}
+        messageContent={collabMessage}
+        agentId={currentAgentId || undefined}
+        apiFetch={apiFetch}
+        onCreated={() => {}}
+      />
     </div>
   );
 }
 
 // --- Sub-components ---
 
-function LoginScreen({
-  email,
-  password,
-  loginError,
-  loginLoading,
-  setEmail,
-  setPassword,
-  handleLogin,
-}: {
-  email: string;
-  password: string;
-  loginError: string;
-  loginLoading: boolean;
-  setEmail: (v: string) => void;
-  setPassword: (v: string) => void;
-  handleLogin: () => void;
-}) {
-  return (
-    <div className="fixed inset-0 bg-gradient-to-br from-[#0F2340] via-[#1E3A5F] to-[#2563EB] flex items-center justify-center">
-      <div className="bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl p-10 w-full max-w-md border border-white/30">
-        <div className="text-center mb-8">
-          <div className="w-20 h-20 bg-[#1E3A5F] rounded-2xl mx-auto flex items-center justify-center mb-5 shadow-lg">
-            <svg
-              className="w-10 h-10 text-white"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={1.5}
-                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-              />
-            </svg>
-          </div>
-          <h1 className="text-3xl font-bold text-[#162E4D] tracking-wide">
-            标书分析助手
-          </h1>
-          <div className="w-16 h-0.5 bg-[#059669] mx-auto mt-3 mb-2" />
-          <p className="text-slate-500 text-sm">
-            智能招标文件分析与决策支持系统
-          </p>
-        </div>
-
-        {loginError && (
-          <div className="bg-red-50 border border-red-200 text-red-700 text-sm p-3 rounded-lg mb-4">
-            {loginError}
-          </div>
-        )}
-
-        <div className="space-y-5">
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">
-              邮箱地址
-            </label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="请输入注册邮箱"
-              className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#1E3A5F] focus:border-[#1E3A5F] outline-none transition text-sm text-slate-800"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">
-              登录密码
-            </label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleLogin();
-              }}
-              placeholder="请输入密码"
-              className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#1E3A5F] focus:border-[#1E3A5F] outline-none transition text-sm text-slate-800"
-            />
-          </div>
-          <button
-            onClick={handleLogin}
-            disabled={loginLoading}
-            className="w-full bg-[#1E3A5F] text-white py-3 rounded-lg hover:bg-[#0F2340] transition font-medium text-sm tracking-wide shadow-md hover:shadow-lg disabled:opacity-50"
-          >
-            {loginLoading ? '登录中...' : '登录系统'}
-          </button>
-        </div>
-
-        <p className="text-center text-xs text-slate-400 mt-6">
-          RAGFlow Powered &middot; 安全可信
-        </p>
-      </div>
-    </div>
-  );
-}
-
 function ThinkingBlock({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
   if (!text) return null;
   return (
-    <div className="bg-slate-50 border border-slate-200/60 rounded-lg mb-2 overflow-hidden">
+    <div className="bg-stone-50 border border-stone-200/60 rounded-lg mb-2 overflow-hidden">
       <button
-        className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-slate-400 cursor-pointer hover:text-slate-500 transition w-full"
+        className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-stone-400 cursor-pointer hover:text-stone-500 transition w-full"
         onClick={() => setOpen(!open)}
       >
         <svg
@@ -1672,7 +1248,7 @@ function ThinkingBlock({ text }: { text: string }) {
         <span className="italic">思考过程</span>
       </button>
       {open && (
-        <pre className="px-3 pb-2 text-xs text-slate-400 italic leading-relaxed max-h-[200px] overflow-y-auto whitespace-pre-wrap break-words m-0 font-[family-name:var(--font-mono)]">
+        <pre className="px-3 pb-2 text-xs text-stone-400 italic leading-relaxed max-h-[200px] overflow-y-auto whitespace-pre-wrap break-words m-0 font-[family-name:var(--font-mono)]">
           {text}
         </pre>
       )}
@@ -1736,9 +1312,9 @@ function ReferenceSection({
 
   return (
     <>
-      <div className="mt-2.5 pt-2.5 border-t border-slate-100">
+      <div className="mt-2.5 pt-2.5 border-t border-stone-100">
         <button
-          className="flex items-center gap-1.5 text-xs font-medium text-slate-400 hover:text-slate-600 transition mb-2"
+          className="flex items-center gap-1.5 text-xs font-medium text-stone-400 hover:text-stone-600 transition mb-2"
           onClick={() => onToggle(-1)}
         >
           <svg
@@ -1785,8 +1361,8 @@ function ReferenceSection({
                 id={`ref-${idx}`}
                 className={`flex gap-2.5 p-2.5 rounded-lg border hover:shadow-sm transition cursor-pointer ${
                   highlightIdx === idx
-                    ? 'border-[#0F2340]/30 bg-[#0F2340]/5'
-                    : 'border-slate-100 hover:border-slate-200 bg-slate-50/50'
+                    ? 'border-indigo-500/30 bg-indigo-50'
+                    : 'border-stone-100 hover:border-stone-200 bg-stone-50/50'
                 }`}
                 onClick={() => {
                   if (imgUrl)
@@ -1800,7 +1376,7 @@ function ReferenceSection({
                 {imgUrl && (
                   <img
                     src={imgUrl}
-                    className="w-12 h-16 rounded object-cover border border-slate-100 shrink-0 bg-slate-100"
+                    className="w-12 h-16 rounded object-cover border border-slate-100 shrink-0 bg-stone-100"
                     loading="lazy"
                     onError={(e) => {
                       (e.target as HTMLImageElement).style.display = 'none';
@@ -1809,19 +1385,19 @@ function ReferenceSection({
                 )}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5 mb-0.5">
-                    <span className="text-[10px] font-semibold text-[#0F2340] bg-slate-100 px-1.5 py-0.5 rounded">
+                    <span className="text-[10px] font-semibold text-indigo-600 bg-stone-100 px-1.5 py-0.5 rounded">
                       {idx + 1}
                     </span>
-                    <span className="text-[11px] text-slate-500 truncate">
+                    <span className="text-[11px] text-stone-500 truncate">
                       {docName}
                     </span>
                     {page ? (
-                      <span className="text-[10px] text-blue-500 bg-blue-50 px-1.5 py-0.5 rounded shrink-0">
+                      <span className="text-[10px] text-stone-400 bg-stone-50 px-1.5 py-0.5 rounded shrink-0">
                         P{page}
                       </span>
                     ) : null}
                   </div>
-                  <div className="text-[11px] text-slate-400 leading-relaxed line-clamp-2">
+                  <div className="text-[11px] text-stone-400 leading-relaxed line-clamp-2">
                     {snippet}
                   </div>
                 </div>
@@ -1838,14 +1414,14 @@ function ReferenceSection({
           onClick={() => setOverlayImg(null)}
         >
           <div className="bg-white rounded-2xl shadow-2xl max-w-3xl max-h-[90vh] overflow-hidden">
-            <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100">
-              <span className="text-sm font-medium text-slate-700">
+            <div className="flex items-center justify-between px-5 py-3 border-b border-stone-100">
+              <span className="text-sm font-medium text-stone-700">
                 {overlayImg.doc}
                 {overlayImg.page ? ` - 第${overlayImg.page}页` : ''}
               </span>
               <button
                 onClick={() => setOverlayImg(null)}
-                className="text-slate-400 hover:text-slate-600 transition p-1"
+                className="text-stone-400 hover:text-stone-600 transition p-1"
               >
                 <svg
                   className="w-5 h-5"
@@ -1862,10 +1438,10 @@ function ReferenceSection({
                 </svg>
               </button>
             </div>
-            <div className="p-4 flex items-center justify-center bg-slate-50">
+            <div className="p-4 flex items-center justify-center bg-stone-50">
               <img
                 src={overlayImg.url}
-                className="max-w-full max-h-[75vh] rounded border border-slate-200"
+                className="max-w-full max-h-[75vh] rounded border border-stone-200"
               />
             </div>
           </div>
@@ -1880,7 +1456,7 @@ function showToast(message: string) {
   // Dynamic toast creation for non-React context
   const toast = document.createElement('div');
   toast.className =
-    'fixed top-4 right-4 bg-red-600 text-white px-5 py-3 rounded-lg shadow-lg text-sm z-[9999] transition-all';
+    'fixed top-4 right-4 bg-indigo-500 text-white px-5 py-3 rounded-xl shadow-lg text-sm z-[9999] transition-all';
   toast.textContent = message;
   document.body.appendChild(toast);
   setTimeout(() => {
