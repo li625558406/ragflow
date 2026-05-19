@@ -254,8 +254,6 @@ export default function CChat() {
       setCurrentSessionId(null);
       setMessages([]);
       setSessions([]);
-      setAvailableDocs([]); // 清空文档列表
-      setSelectedDocId(null);
       localStorage.setItem('ragflow_agent_id', agentId);
 
       // 获取智能体详情，提取开场白
