@@ -38,10 +38,12 @@ if [ "$BUILD_ONLY" = true ]; then
 fi
 
 # Step 2: Clean old dist and upload new one
+# NOTE: Must delete contents only (not the directory itself), otherwise
+# Docker bind mount breaks — container still follows the old inode.
 echo "==> Cleaning old dist on server..."
-$SSH_CMD "rm -rf $SERVER_PATH/$WEB_DIR/dist"
+$SSH_CMD "rm -rf $SERVER_PATH/$WEB_DIR/dist/* $SERVER_PATH/$WEB_DIR/dist/.[!.]* $SERVER_PATH/$WEB_DIR/dist/..?* 2>/dev/null; mkdir -p $SERVER_PATH/$WEB_DIR/dist"
 echo "==> Uploading web/dist/ to server..."
-$SCP_CMD "$WEB_DIR/dist" "root@$SERVER_IP:$SERVER_PATH/$WEB_DIR/"
+$SCP_CMD "$WEB_DIR/dist/"* "root@$SERVER_IP:$SERVER_PATH/$WEB_DIR/dist/"
 
 # Step 3: Upload nginx config (in case it changed)
 echo "==> Uploading nginx config..."
