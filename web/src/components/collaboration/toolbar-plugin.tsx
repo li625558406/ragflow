@@ -4,7 +4,7 @@ import {
 } from '@lexical/list';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { $createHeadingNode, $isHeadingNode } from '@lexical/rich-text';
-import { $setBlocksType } from '@lexical/selection';
+import { $patchStyleText, $setBlocksType } from '@lexical/selection';
 import {
   $createParagraphNode,
   $getSelection,
@@ -12,8 +12,10 @@ import {
   $isTextNode,
   FORMAT_ELEMENT_COMMAND,
   FORMAT_TEXT_COMMAND,
+  REDO_COMMAND,
+  UNDO_COMMAND,
 } from 'lexical';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 const FONT_FAMILIES = [
   { label: '宋体', value: 'SimSun' },
@@ -73,45 +75,51 @@ export default function ToolbarPlugin() {
   const [isBold, setIsBold] = useState(false);
   const [isItalic, setIsItalic] = useState(false);
   const [isUnderline, setIsUnderline] = useState(false);
+  const [isStrikethrough, setIsStrikethrough] = useState(false);
   const [fontFamily, setFontFamily] = useState('SimSun');
   const [fontSize, setFontSize] = useState('12pt');
   const [alignment, setAlignment] = useState('left');
   const [lineSpacing, setLineSpacing] = useState('1.5');
   const [heading, setHeading] = useState('paragraph');
+  const [textColor, setTextColor] = useState('#1C1917');
+  const [bgColor, setBgColor] = useState('transparent');
+  const colorInputRef = useRef<HTMLInputElement>(null);
+  const bgColorInputRef = useRef<HTMLInputElement>(null);
 
   const updateFormatState = useCallback(() => {
     editor.getEditorState().read(() => {
       const selection = $getSelection();
       if (!$isRangeSelection(selection)) return;
 
-      // Font family
       const ff = getStyleValueFromSelection(selection, 'font-family');
       if (ff) setFontFamily(ff);
 
-      // Font size
       const fs = getStyleValueFromSelection(selection, 'font-size');
       if (fs) setFontSize(fs);
 
-      // Line spacing
       const ls = getStyleValueFromSelection(selection, 'line-height');
       if (ls) setLineSpacing(ls);
 
-      // Bold / Italic / Underline — check first text node
+      const tc = getStyleValueFromSelection(selection, 'color');
+      if (tc) setTextColor(tc);
+
+      const bc = getStyleValueFromSelection(selection, 'background-color');
+      if (bc) setBgColor(bc);
+
       const anchorNode = selection.anchor.getNode();
       if ($isTextNode(anchorNode)) {
         setIsBold(anchorNode.hasFormat('bold'));
         setIsItalic(anchorNode.hasFormat('italic'));
         setIsUnderline(anchorNode.hasFormat('underline'));
+        setIsStrikethrough(anchorNode.hasFormat('strikethrough'));
       }
 
-      // Alignment — check parent block
       const anchorBlock = selection.anchor
         .getNode()
         .getTopLevelElementOrThrow();
       const align = anchorBlock.getFormat();
       if (align) setAlignment(align);
 
-      // Heading detection
       if ($isHeadingNode(anchorBlock)) {
         setHeading(anchorBlock.getTag());
       } else {
@@ -131,7 +139,7 @@ export default function ToolbarPlugin() {
     editor.update(() => {
       const selection = $getSelection();
       if ($isRangeSelection(selection)) {
-        selection.formatText('font-family', value);
+        $patchStyleText(selection, { 'font-family': value });
       }
     });
     setFontFamily(value);
@@ -141,7 +149,7 @@ export default function ToolbarPlugin() {
     editor.update(() => {
       const selection = $getSelection();
       if ($isRangeSelection(selection)) {
-        selection.formatText('font-size', value);
+        $patchStyleText(selection, { 'font-size': value });
       }
     });
     setFontSize(value);
@@ -151,10 +159,32 @@ export default function ToolbarPlugin() {
     editor.update(() => {
       const selection = $getSelection();
       if ($isRangeSelection(selection)) {
-        selection.formatText('line-height', value);
+        $patchStyleText(selection, { 'line-height': value });
       }
     });
     setLineSpacing(value);
+  };
+
+  const applyTextColor = (value: string) => {
+    editor.update(() => {
+      const selection = $getSelection();
+      if ($isRangeSelection(selection)) {
+        $patchStyleText(selection, { color: value });
+      }
+    });
+    setTextColor(value);
+  };
+
+  const applyBgColor = (value: string) => {
+    editor.update(() => {
+      const selection = $getSelection();
+      if ($isRangeSelection(selection)) {
+        $patchStyleText(selection, {
+          'background-color': value === 'transparent' ? 'transparent' : value,
+        });
+      }
+    });
+    setBgColor(value);
   };
 
   const applyHeading = (value: string) => {
@@ -178,8 +208,65 @@ export default function ToolbarPlugin() {
     setHeading(value);
   };
 
+  const clearFormatting = () => {
+    editor.update(() => {
+      const selection = $getSelection();
+      if ($isRangeSelection(selection)) {
+        $patchStyleText(selection, {
+          'font-family': '',
+          'font-size': '',
+          'line-height': '',
+          color: '',
+          'background-color': '',
+        });
+      }
+    });
+  };
+
   return (
-    <div className="flex items-center gap-1 px-3 py-2 border-b border-stone-100 bg-stone-50/80 overflow-x-auto flex-wrap">
+    <div className="flex items-center gap-1 px-3 py-2 border-b border-stone-100 bg-stone-50/80 overflow-x-auto flex-wrap select-none">
+      {/* Undo / Redo */}
+      <button
+        className="h-7 w-7 flex items-center justify-center rounded text-stone-500 hover:bg-stone-100 transition-colors"
+        title="撤销"
+        onClick={() => editor.dispatchCommand(UNDO_COMMAND, undefined)}
+      >
+        <svg
+          className="w-3.5 h-3.5"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"
+          />
+        </svg>
+      </button>
+      <button
+        className="h-7 w-7 flex items-center justify-center rounded text-stone-500 hover:bg-stone-100 transition-colors"
+        title="重做"
+        onClick={() => editor.dispatchCommand(REDO_COMMAND, undefined)}
+      >
+        <svg
+          className="w-3.5 h-3.5"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M21 10H11a8 8 0 00-8 8v2m18-10l-6 6m6-6l-6-6"
+          />
+        </svg>
+      </button>
+
+      <div className="w-px h-5 bg-stone-200 mx-0.5" />
+
       {/* Heading */}
       <select
         className="h-7 px-1.5 text-xs border border-stone-200 rounded bg-white text-stone-700 focus:outline-none focus:border-indigo-300"
@@ -225,12 +312,8 @@ export default function ToolbarPlugin() {
 
       {/* Bold */}
       <button
-        className={`h-7 w-7 flex items-center justify-center rounded text-xs font-bold transition-colors ${
-          isBold
-            ? 'bg-indigo-100 text-indigo-700'
-            : 'text-stone-500 hover:bg-stone-100'
-        }`}
-        title="加粗"
+        className={`h-7 w-7 flex items-center justify-center rounded text-xs font-bold transition-colors ${isBold ? 'bg-indigo-100 text-indigo-700' : 'text-stone-500 hover:bg-stone-100'}`}
+        title="加粗 (Ctrl+B)"
         onMouseDown={(e) => {
           e.preventDefault();
           editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'bold');
@@ -241,12 +324,8 @@ export default function ToolbarPlugin() {
 
       {/* Italic */}
       <button
-        className={`h-7 w-7 flex items-center justify-center rounded text-xs italic transition-colors ${
-          isItalic
-            ? 'bg-indigo-100 text-indigo-700'
-            : 'text-stone-500 hover:bg-stone-100'
-        }`}
-        title="斜体"
+        className={`h-7 w-7 flex items-center justify-center rounded text-xs italic transition-colors ${isItalic ? 'bg-indigo-100 text-indigo-700' : 'text-stone-500 hover:bg-stone-100'}`}
+        title="斜体 (Ctrl+I)"
         onMouseDown={(e) => {
           e.preventDefault();
           editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'italic');
@@ -257,12 +336,8 @@ export default function ToolbarPlugin() {
 
       {/* Underline */}
       <button
-        className={`h-7 w-7 flex items-center justify-center rounded text-xs underline transition-colors ${
-          isUnderline
-            ? 'bg-indigo-100 text-indigo-700'
-            : 'text-stone-500 hover:bg-stone-100'
-        }`}
-        title="下划线"
+        className={`h-7 w-7 flex items-center justify-center rounded text-xs underline transition-colors ${isUnderline ? 'bg-indigo-100 text-indigo-700' : 'text-stone-500 hover:bg-stone-100'}`}
+        title="下划线 (Ctrl+U)"
         onMouseDown={(e) => {
           e.preventDefault();
           editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'underline');
@@ -271,15 +346,94 @@ export default function ToolbarPlugin() {
         U
       </button>
 
+      {/* Strikethrough */}
+      <button
+        className={`h-7 w-7 flex items-center justify-center rounded text-xs line-through transition-colors ${isStrikethrough ? 'bg-indigo-100 text-indigo-700' : 'text-stone-500 hover:bg-stone-100'}`}
+        title="删除线"
+        onMouseDown={(e) => {
+          e.preventDefault();
+          editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'strikethrough');
+        }}
+      >
+        S
+      </button>
+
+      <div className="w-px h-5 bg-stone-200 mx-0.5" />
+
+      {/* Text Color */}
+      <div className="relative flex items-center" title="字体颜色">
+        <button
+          className="h-7 w-7 flex items-center justify-center rounded text-stone-500 hover:bg-stone-100 transition-colors"
+          onClick={() => colorInputRef.current?.click()}
+        >
+          <svg
+            className="w-3.5 h-3.5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"
+            />
+          </svg>
+          <span
+            className="absolute bottom-1 left-1/2 -translate-x-1/2 w-2.5 h-0.5 rounded"
+            style={{ backgroundColor: textColor }}
+          />
+        </button>
+        <input
+          ref={colorInputRef}
+          type="color"
+          className="absolute opacity-0 w-0 h-0"
+          value={textColor}
+          onChange={(e) => applyTextColor(e.target.value)}
+        />
+      </div>
+
+      {/* Highlight Color */}
+      <div className="relative flex items-center" title="高亮底色">
+        <button
+          className="h-7 w-7 flex items-center justify-center rounded text-stone-500 hover:bg-stone-100 transition-colors"
+          onClick={() => bgColorInputRef.current?.click()}
+        >
+          <svg
+            className="w-3.5 h-3.5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
+            />
+          </svg>
+          <span
+            className="absolute bottom-1 left-1/2 -translate-x-1/2 w-2.5 h-0.5 rounded"
+            style={{
+              backgroundColor:
+                bgColor === 'transparent' ? 'transparent' : bgColor,
+            }}
+          />
+        </button>
+        <input
+          ref={bgColorInputRef}
+          type="color"
+          className="absolute opacity-0 w-0 h-0"
+          value={bgColor === 'transparent' ? '#FFFFFF' : bgColor}
+          onChange={(e) => applyBgColor(e.target.value)}
+        />
+      </div>
+
       <div className="w-px h-5 bg-stone-200 mx-0.5" />
 
       {/* Align Left */}
       <button
-        className={`h-7 w-7 flex items-center justify-center rounded transition-colors ${
-          alignment === 'left'
-            ? 'bg-indigo-100 text-indigo-700'
-            : 'text-stone-500 hover:bg-stone-100'
-        }`}
+        className={`h-7 w-7 flex items-center justify-center rounded transition-colors ${alignment === 'left' ? 'bg-indigo-100 text-indigo-700' : 'text-stone-500 hover:bg-stone-100'}`}
         title="左对齐"
         onMouseDown={(e) => {
           e.preventDefault();
@@ -303,11 +457,7 @@ export default function ToolbarPlugin() {
 
       {/* Align Center */}
       <button
-        className={`h-7 w-7 flex items-center justify-center rounded transition-colors ${
-          alignment === 'center'
-            ? 'bg-indigo-100 text-indigo-700'
-            : 'text-stone-500 hover:bg-stone-100'
-        }`}
+        className={`h-7 w-7 flex items-center justify-center rounded transition-colors ${alignment === 'center' ? 'bg-indigo-100 text-indigo-700' : 'text-stone-500 hover:bg-stone-100'}`}
         title="居中"
         onMouseDown={(e) => {
           e.preventDefault();
@@ -331,11 +481,7 @@ export default function ToolbarPlugin() {
 
       {/* Align Right */}
       <button
-        className={`h-7 w-7 flex items-center justify-center rounded transition-colors ${
-          alignment === 'right'
-            ? 'bg-indigo-100 text-indigo-700'
-            : 'text-stone-500 hover:bg-stone-100'
-        }`}
+        className={`h-7 w-7 flex items-center justify-center rounded transition-colors ${alignment === 'right' ? 'bg-indigo-100 text-indigo-700' : 'text-stone-500 hover:bg-stone-100'}`}
         title="右对齐"
         onMouseDown={(e) => {
           e.preventDefault();
@@ -359,11 +505,7 @@ export default function ToolbarPlugin() {
 
       {/* Align Justify */}
       <button
-        className={`h-7 w-7 flex items-center justify-center rounded transition-colors ${
-          alignment === 'justify'
-            ? 'bg-indigo-100 text-indigo-700'
-            : 'text-stone-500 hover:bg-stone-100'
-        }`}
+        className={`h-7 w-7 flex items-center justify-center rounded transition-colors ${alignment === 'justify' ? 'bg-indigo-100 text-indigo-700' : 'text-stone-500 hover:bg-stone-100'}`}
         title="两端对齐"
         onMouseDown={(e) => {
           e.preventDefault();
@@ -381,6 +523,54 @@ export default function ToolbarPlugin() {
             strokeLinejoin="round"
             strokeWidth={2}
             d="M4 6h16M4 10h16M4 14h16M4 18h16"
+          />
+        </svg>
+      </button>
+
+      <div className="w-px h-5 bg-stone-200 mx-0.5" />
+
+      {/* Indent / Outdent */}
+      <button
+        className="h-7 w-7 flex items-center justify-center rounded text-stone-500 hover:bg-stone-100 transition-colors"
+        title="减少缩进"
+        onMouseDown={(e) => {
+          e.preventDefault();
+          editor.dispatchCommand(FORMAT_ELEMENT_COMMAND, 'outdent');
+        }}
+      >
+        <svg
+          className="w-3.5 h-3.5"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M7 6H21M7 12H21M3 12L7 9m-4 3l4 3m-4 3h18"
+          />
+        </svg>
+      </button>
+      <button
+        className="h-7 w-7 flex items-center justify-center rounded text-stone-500 hover:bg-stone-100 transition-colors"
+        title="增加缩进"
+        onMouseDown={(e) => {
+          e.preventDefault();
+          editor.dispatchCommand(FORMAT_ELEMENT_COMMAND, 'indent');
+        }}
+      >
+        <svg
+          className="w-3.5 h-3.5"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M17 6h4m-4 6h4m-4 6h4M3 12l4-3m-4 3l4 3m4 3h11"
           />
         </svg>
       </button>
@@ -447,6 +637,29 @@ export default function ToolbarPlugin() {
             strokeLinejoin="round"
             strokeWidth={2}
             d="M7 6h14M7 12h14M7 18h14M4 6h.01M4 12h.01M4 18h.01"
+          />
+        </svg>
+      </button>
+
+      <div className="w-px h-5 bg-stone-200 mx-0.5" />
+
+      {/* Clear Formatting */}
+      <button
+        className="h-7 w-7 flex items-center justify-center rounded text-stone-400 hover:text-red-500 hover:bg-red-50 transition-colors"
+        title="清除格式"
+        onClick={clearFormatting}
+      >
+        <svg
+          className="w-3.5 h-3.5"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M6 18L18 6M6 6l12 12"
           />
         </svg>
       </button>
