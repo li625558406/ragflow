@@ -7,6 +7,7 @@ import { $createHeadingNode, $isHeadingNode } from '@lexical/rich-text';
 import { $patchStyleText, $setBlocksType } from '@lexical/selection';
 import {
   $createParagraphNode,
+  $getRoot,
   $getSelection,
   $isRangeSelection,
   $isTextNode,
@@ -76,6 +77,9 @@ export default function ToolbarPlugin() {
   const [isItalic, setIsItalic] = useState(false);
   const [isUnderline, setIsUnderline] = useState(false);
   const [isStrikethrough, setIsStrikethrough] = useState(false);
+  const [isSubscript, setIsSubscript] = useState(false);
+  const [isSuperscript, setIsSuperscript] = useState(false);
+  const [isCode, setIsCode] = useState(false);
   const [fontFamily, setFontFamily] = useState('SimSun');
   const [fontSize, setFontSize] = useState('12pt');
   const [alignment, setAlignment] = useState('left');
@@ -83,11 +87,17 @@ export default function ToolbarPlugin() {
   const [heading, setHeading] = useState('paragraph');
   const [textColor, setTextColor] = useState('#1C1917');
   const [bgColor, setBgColor] = useState('transparent');
+  const [wordCount, setWordCount] = useState(0);
   const colorInputRef = useRef<HTMLInputElement>(null);
   const bgColorInputRef = useRef<HTMLInputElement>(null);
 
   const updateFormatState = useCallback(() => {
     editor.getEditorState().read(() => {
+      // Word count
+      const text = $getRoot().getTextContent();
+      const chars = text.replace(/\s/g, '').length;
+      setWordCount(chars);
+
       const selection = $getSelection();
       if (!$isRangeSelection(selection)) return;
 
@@ -112,6 +122,9 @@ export default function ToolbarPlugin() {
         setIsItalic(anchorNode.hasFormat('italic'));
         setIsUnderline(anchorNode.hasFormat('underline'));
         setIsStrikethrough(anchorNode.hasFormat('strikethrough'));
+        setIsSubscript(anchorNode.hasFormat('subscript'));
+        setIsSuperscript(anchorNode.hasFormat('superscript'));
+        setIsCode(anchorNode.hasFormat('code'));
       }
 
       const anchorBlock = selection.anchor
@@ -223,12 +236,19 @@ export default function ToolbarPlugin() {
     });
   };
 
+  const btn = (active: boolean) =>
+    `h-7 w-7 flex items-center justify-center rounded text-xs transition-colors ${
+      active
+        ? 'bg-indigo-100 text-indigo-700'
+        : 'text-stone-500 hover:bg-stone-100'
+    }`;
+
   return (
     <div className="flex items-center gap-1 px-3 py-2 border-b border-stone-100 bg-stone-50/80 overflow-x-auto flex-wrap select-none">
       {/* Undo / Redo */}
       <button
         className="h-7 w-7 flex items-center justify-center rounded text-stone-500 hover:bg-stone-100 transition-colors"
-        title="撤销"
+        title="撤销 (Ctrl+Z)"
         onClick={() => editor.dispatchCommand(UNDO_COMMAND, undefined)}
       >
         <svg
@@ -247,7 +267,7 @@ export default function ToolbarPlugin() {
       </button>
       <button
         className="h-7 w-7 flex items-center justify-center rounded text-stone-500 hover:bg-stone-100 transition-colors"
-        title="重做"
+        title="重做 (Ctrl+Y)"
         onClick={() => editor.dispatchCommand(REDO_COMMAND, undefined)}
       >
         <svg
@@ -312,50 +332,74 @@ export default function ToolbarPlugin() {
 
       {/* Bold */}
       <button
-        className={`h-7 w-7 flex items-center justify-center rounded text-xs font-bold transition-colors ${isBold ? 'bg-indigo-100 text-indigo-700' : 'text-stone-500 hover:bg-stone-100'}`}
+        className={btn(isBold, '加粗 (Ctrl+B)')}
         title="加粗 (Ctrl+B)"
         onMouseDown={(e) => {
           e.preventDefault();
           editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'bold');
         }}
       >
-        B
+        <span className="font-bold">B</span>
       </button>
 
       {/* Italic */}
       <button
-        className={`h-7 w-7 flex items-center justify-center rounded text-xs italic transition-colors ${isItalic ? 'bg-indigo-100 text-indigo-700' : 'text-stone-500 hover:bg-stone-100'}`}
+        className={btn(isItalic, '斜体 (Ctrl+I)')}
         title="斜体 (Ctrl+I)"
         onMouseDown={(e) => {
           e.preventDefault();
           editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'italic');
         }}
       >
-        I
+        <span className="italic">I</span>
       </button>
 
       {/* Underline */}
       <button
-        className={`h-7 w-7 flex items-center justify-center rounded text-xs underline transition-colors ${isUnderline ? 'bg-indigo-100 text-indigo-700' : 'text-stone-500 hover:bg-stone-100'}`}
+        className={btn(isUnderline, '下划线 (Ctrl+U)')}
         title="下划线 (Ctrl+U)"
         onMouseDown={(e) => {
           e.preventDefault();
           editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'underline');
         }}
       >
-        U
+        <span className="underline">U</span>
       </button>
 
       {/* Strikethrough */}
       <button
-        className={`h-7 w-7 flex items-center justify-center rounded text-xs line-through transition-colors ${isStrikethrough ? 'bg-indigo-100 text-indigo-700' : 'text-stone-500 hover:bg-stone-100'}`}
+        className={btn(isStrikethrough, '删除线')}
         title="删除线"
         onMouseDown={(e) => {
           e.preventDefault();
           editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'strikethrough');
         }}
       >
-        S
+        <span className="line-through">S</span>
+      </button>
+
+      {/* Subscript */}
+      <button
+        className={btn(isSubscript, '下标')}
+        title="下标"
+        onMouseDown={(e) => {
+          e.preventDefault();
+          editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'subscript');
+        }}
+      >
+        X<span className="text-[8px]">2</span>
+      </button>
+
+      {/* Superscript */}
+      <button
+        className={btn(isSuperscript, '上标')}
+        title="上标"
+        onMouseDown={(e) => {
+          e.preventDefault();
+          editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'superscript');
+        }}
+      >
+        X<span className="text-[8px]">2</span>
       </button>
 
       <div className="w-px h-5 bg-stone-200 mx-0.5" />
@@ -431,9 +475,35 @@ export default function ToolbarPlugin() {
 
       <div className="w-px h-5 bg-stone-200 mx-0.5" />
 
+      {/* Inline Code */}
+      <button
+        className={btn(isCode, '行内代码')}
+        title="行内代码"
+        onMouseDown={(e) => {
+          e.preventDefault();
+          editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'code');
+        }}
+      >
+        <svg
+          className="w-3.5 h-3.5"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"
+          />
+        </svg>
+      </button>
+
+      <div className="w-px h-5 bg-stone-200 mx-0.5" />
+
       {/* Align Left */}
       <button
-        className={`h-7 w-7 flex items-center justify-center rounded transition-colors ${alignment === 'left' ? 'bg-indigo-100 text-indigo-700' : 'text-stone-500 hover:bg-stone-100'}`}
+        className={btn(alignment === 'left', '左对齐')}
         title="左对齐"
         onMouseDown={(e) => {
           e.preventDefault();
@@ -457,7 +527,7 @@ export default function ToolbarPlugin() {
 
       {/* Align Center */}
       <button
-        className={`h-7 w-7 flex items-center justify-center rounded transition-colors ${alignment === 'center' ? 'bg-indigo-100 text-indigo-700' : 'text-stone-500 hover:bg-stone-100'}`}
+        className={btn(alignment === 'center', '居中')}
         title="居中"
         onMouseDown={(e) => {
           e.preventDefault();
@@ -481,7 +551,7 @@ export default function ToolbarPlugin() {
 
       {/* Align Right */}
       <button
-        className={`h-7 w-7 flex items-center justify-center rounded transition-colors ${alignment === 'right' ? 'bg-indigo-100 text-indigo-700' : 'text-stone-500 hover:bg-stone-100'}`}
+        className={btn(alignment === 'right', '右对齐')}
         title="右对齐"
         onMouseDown={(e) => {
           e.preventDefault();
@@ -505,7 +575,7 @@ export default function ToolbarPlugin() {
 
       {/* Align Justify */}
       <button
-        className={`h-7 w-7 flex items-center justify-center rounded transition-colors ${alignment === 'justify' ? 'bg-indigo-100 text-indigo-700' : 'text-stone-500 hover:bg-stone-100'}`}
+        className={btn(alignment === 'justify', '两端对齐')}
         title="两端对齐"
         onMouseDown={(e) => {
           e.preventDefault();
@@ -663,6 +733,14 @@ export default function ToolbarPlugin() {
           />
         </svg>
       </button>
+
+      {/* Spacer */}
+      <div className="flex-1" />
+
+      {/* Word Count */}
+      <span className="text-[10px] text-stone-400 tabular-nums whitespace-nowrap">
+        {wordCount} 字
+      </span>
     </div>
   );
 }

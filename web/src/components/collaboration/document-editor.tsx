@@ -7,7 +7,6 @@ import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin';
 import { ListPlugin } from '@lexical/react/LexicalListPlugin';
 import { RichTextPlugin } from '@lexical/react/LexicalRichTextPlugin';
 import { HeadingNode } from '@lexical/rich-text';
-import type { EditorState } from 'lexical';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ToolbarPlugin from './toolbar-plugin';
 
@@ -25,6 +24,8 @@ interface Props {
   onUpdate: () => void;
 }
 
+type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
+
 const theme = {
   paragraph: 'mb-2 text-stone-900 text-sm leading-relaxed',
   heading: {
@@ -40,6 +41,11 @@ const theme = {
   text: {
     bold: 'font-bold',
     italic: 'italic',
+    underline: 'underline',
+    strikethrough: 'line-through',
+    code: 'bg-stone-100 text-amber-700 px-1 py-0.5 rounded text-xs font-mono',
+    subscript: 'text-[0.7em] align-sub',
+    superscript: 'text-[0.7em] align-super',
   },
 };
 
@@ -47,52 +53,75 @@ function onError(error: Error) {
   console.error('Lexical error:', error);
 }
 
+interface AutoSavePluginProps {
+  docId: string;
+  apiFetch: (url: string, options?: RequestInit) => Promise<Response>;
+  onUpdate: () => void;
+  onSaveStatus: (status: SaveStatus) => void;
+  triggerSaveRef: React.MutableRefObject<(() => void) | null>;
+}
+
 function AutoSavePlugin({
   docId,
   apiFetch,
   onUpdate,
-}: {
-  docId: string;
-  apiFetch: (url: string, options?: RequestInit) => Promise<Response>;
-  onUpdate: () => void;
-}) {
+  onSaveStatus,
+  triggerSaveRef,
+}: AutoSavePluginProps) {
   const [editor] = useLexicalComposerContext();
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savingRef = useRef(false);
+  const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const doSave = useCallback(async () => {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    onSaveStatus('saving');
+    try {
+      const editorState = editor.getEditorState();
+      const json = editorState.toJSON();
+      await apiFetch(`/api/v1/collaboration/documents/${docId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: json }),
+      });
+      onSaveStatus('saved');
+      onUpdate();
+      // Reset to idle after 2s
+      if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+      statusTimerRef.current = setTimeout(() => onSaveStatus('idle'), 2000);
+    } catch (e) {
+      console.error('Save failed:', e);
+      onSaveStatus('error');
+      if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+      statusTimerRef.current = setTimeout(() => onSaveStatus('idle'), 3000);
+    } finally {
+      savingRef.current = false;
+    }
+  }, [docId, editor, apiFetch, onUpdate, onSaveStatus]);
+
+  useEffect(() => {
+    triggerSaveRef.current = doSave;
+  }, [doSave, triggerSaveRef]);
 
   useEffect(() => {
     if (!docId) return;
 
-    const unregister = editor.registerUpdateListener(
-      ({ editorState }: { editorState: EditorState }) => {
-        if (timerRef.current) {
-          clearTimeout(timerRef.current);
-        }
-        timerRef.current = setTimeout(async () => {
-          if (savingRef.current) return;
-          savingRef.current = true;
-          try {
-            const json = editorState.toJSON();
-            await apiFetch(`/api/v1/collaboration/documents/${docId}`, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ content: json }),
-            });
-            onUpdate();
-          } catch (e) {
-            console.error('Auto-save failed:', e);
-          } finally {
-            savingRef.current = false;
-          }
-        }, 2000);
-      },
-    );
+    const unregister = editor.registerUpdateListener(() => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+      }
+      timerRef.current = setTimeout(() => {
+        doSave();
+      }, 2000);
+    });
 
     return () => {
       unregister();
       if (timerRef.current) clearTimeout(timerRef.current);
+      if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
     };
-  }, [docId, editor, apiFetch, onUpdate]);
+  }, [docId, editor, doSave]);
 
   return null;
 }
@@ -124,6 +153,8 @@ export default function DocumentEditor({
   onUpdate,
 }: Props) {
   const [downloading, setDownloading] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
+  const triggerSaveRef = useRef<(() => void) | null>(null);
 
   const handleDownload = useCallback(
     async (type: 'docx' | 'pdf') => {
@@ -150,6 +181,10 @@ export default function DocumentEditor({
     },
     [document, downloading, apiFetch],
   );
+
+  const handleSave = useCallback(() => {
+    triggerSaveRef.current?.();
+  }, []);
 
   if (!document) {
     return (
@@ -181,6 +216,13 @@ export default function DocumentEditor({
     nodes: [HeadingNode, ListNode, ListItemNode],
   };
 
+  const saveLabel = {
+    idle: '保存',
+    saving: '保存中...',
+    saved: '已保存 ✓',
+    error: '保存失败',
+  }[saveStatus];
+
   return (
     <div className="flex-1 flex flex-col min-h-0 bg-white">
       {/* Header */}
@@ -189,6 +231,22 @@ export default function DocumentEditor({
           {document.name}
         </h2>
         <div className="flex items-center gap-1.5">
+          <button
+            className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors disabled:opacity-50 ${
+              saveStatus === 'saved'
+                ? 'text-emerald-600 bg-emerald-50'
+                : saveStatus === 'saving'
+                  ? 'text-amber-600 bg-amber-50'
+                  : saveStatus === 'error'
+                    ? 'text-red-600 bg-red-50'
+                    : 'text-indigo-600 hover:bg-indigo-50'
+            }`}
+            onClick={handleSave}
+            disabled={saveStatus === 'saving'}
+          >
+            {saveLabel}
+          </button>
+          <div className="w-px h-4 bg-stone-200" />
           <button
             className="px-3 py-1.5 text-xs font-medium text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors disabled:opacity-50"
             onClick={() => handleDownload('docx')}
@@ -229,6 +287,8 @@ export default function DocumentEditor({
                 docId={document.id}
                 apiFetch={apiFetch}
                 onUpdate={onUpdate}
+                onSaveStatus={setSaveStatus}
+                triggerSaveRef={triggerSaveRef}
               />
               <SetInitialStatePlugin content={document.content} />
             </div>
