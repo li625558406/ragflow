@@ -9,6 +9,7 @@ import { RichTextPlugin } from '@lexical/react/LexicalRichTextPlugin';
 import { HeadingNode } from '@lexical/rich-text';
 import type { EditorState } from 'lexical';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import ToolbarPlugin from './toolbar-plugin';
 
 interface DocumentData {
   id: string;
@@ -209,6 +210,7 @@ export default function DocumentEditor({
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-3xl mx-auto px-6 py-5">
           <LexicalComposer initialConfig={initialConfig}>
+            <ToolbarPlugin />
             <div className="relative">
               <RichTextPlugin
                 contentEditable={
