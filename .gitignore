@@ -232,3 +232,18 @@ internal/cpp/cmake-build-debug/
 bin/*
 !bin/.gitkeep
 .claude/settings.local.json
+.gstack/
+
+# Temp test/investigation scripts (underscore-prefixed)
+_*.py
+_*.html
+_*.js
+_*.json
+_*.sh
+=2.0.0
+
+# Test data directories under rag/
+rag/中央政府采购网/
+rag/test/
+rag/rag/
+rag/[0-9]*

@@ -1,4 +1,4 @@
-import { ListItemNode, ListNode } from '@lexical/list';
+import { $isListNode, ListItemNode, ListNode } from '@lexical/list';
 import { LexicalComposer } from '@lexical/react/LexicalComposer';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { ContentEditable } from '@lexical/react/LexicalContentEditable';
@@ -6,7 +6,12 @@ import LexicalErrorBoundary from '@lexical/react/LexicalErrorBoundary';
 import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin';
 import { ListPlugin } from '@lexical/react/LexicalListPlugin';
 import { RichTextPlugin } from '@lexical/react/LexicalRichTextPlugin';
-import { HeadingNode } from '@lexical/rich-text';
+import {
+  $createHeadingNode,
+  $isHeadingNode,
+  HeadingNode,
+} from '@lexical/rich-text';
+import { $getRoot, $isTextNode } from 'lexical';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ToolbarPlugin from './toolbar-plugin';
 
@@ -22,6 +27,8 @@ interface Props {
   document: DocumentData | null;
   apiFetch: (url: string, options?: RequestInit) => Promise<Response>;
   onUpdate: () => void;
+  appliedRuleConfig?: Record<string, unknown> | null;
+  onRuleApplied?: () => void;
 }
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
@@ -80,10 +87,38 @@ function AutoSavePlugin({
     try {
       const editorState = editor.getEditorState();
       const json = editorState.toJSON();
+
+      // Convert Lexical state to markdown text for file generation
+      let markdownContent = '';
+      editorState.read(() => {
+        const root = $getRoot();
+        const lines: string[] = [];
+        for (const child of root.getChildren()) {
+          const text = child.getTextContent();
+          if ($isHeadingNode(child)) {
+            const tag = child.getTag();
+            const prefix = { h1: '# ', h2: '## ', h3: '### ' }[tag] || '';
+            lines.push(prefix + text);
+          } else if ($isListNode(child)) {
+            const isBullet = child.getListType() === 'bullet';
+            const listItems = child.getChildren();
+            for (const item of listItems) {
+              lines.push((isBullet ? '- ' : '1. ') + item.getTextContent());
+            }
+          } else {
+            lines.push(text);
+          }
+        }
+        markdownContent = lines.join('\n');
+      });
+
       await apiFetch(`/api/v1/collaboration/documents/${docId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: json }),
+        body: JSON.stringify({
+          content: json,
+          markdown_content: markdownContent,
+        }),
       });
       onSaveStatus('saved');
       onUpdate();
@@ -147,10 +182,151 @@ function SetInitialStatePlugin({
   return null;
 }
 
+function setCssProperty(
+  style: string,
+  property: string,
+  value: string,
+): string {
+  const regex = new RegExp(`${property}:\\s*[^;]+;?`, 'i');
+  const newEntry = `${property}: ${value};`;
+  if (regex.test(style)) {
+    return style.replace(regex, newEntry);
+  }
+  const sep = style && !style.endsWith(';') ? ';' : '';
+  return style + sep + newEntry;
+}
+
+interface StyleRuleConfig {
+  name: string;
+  pattern: string;
+  fontFamily: string;
+  fontSize: number;
+  fontColor: string;
+  alignment: string;
+  bold: boolean;
+  heading: string;
+}
+
+function matchParagraphStyle(
+  text: string,
+  rules: StyleRuleConfig[],
+): StyleRuleConfig | null {
+  for (const rule of rules) {
+    try {
+      if (new RegExp(rule.pattern).test(text)) {
+        return rule;
+      }
+    } catch {
+      // Invalid regex, skip
+    }
+  }
+  return null;
+}
+
+function FormatApplyPlugin({
+  config,
+  onApplied,
+}: {
+  config: Record<string, unknown> | undefined | null;
+  onApplied?: () => void;
+}) {
+  const [editor] = useLexicalComposerContext();
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!config) return;
+
+    const styleRules: StyleRuleConfig[] | undefined = Array.isArray(
+      config.rules,
+    )
+      ? (config.rules as StyleRuleConfig[])
+      : undefined;
+
+    editor.update(() => {
+      const root = $getRoot();
+      // Snapshot paragraph list before mutation — replace() modifies the tree
+      const paragraphs = [...root.getChildren()];
+      for (const paragraph of paragraphs) {
+        const text = paragraph.getTextContent();
+        const matched = styleRules
+          ? matchParagraphStyle(text, styleRules)
+          : null;
+
+        const fontFamily = matched?.fontFamily || (config.font_name as string);
+        const fontSize = matched?.fontSize || (config.font_size as number);
+        const fontColor = matched?.fontColor;
+        const bold = matched?.bold;
+        const heading = matched?.heading;
+        const alignment = matched?.alignment;
+
+        // Snapshot text children — append() moves nodes between parents
+        const textNodes = [...paragraph.getChildren()];
+        for (const node of textNodes) {
+          if ($isTextNode(node)) {
+            let style = node.getStyle();
+            if (fontFamily) {
+              style = setCssProperty(style, 'font-family', String(fontFamily));
+            }
+            if (fontSize) {
+              style = setCssProperty(style, 'font-size', `${fontSize}pt`);
+            }
+            if (fontColor) {
+              style = setCssProperty(style, 'color', String(fontColor));
+            }
+            if (typeof bold === 'boolean') {
+              if (bold) {
+                const fmt = node.getFormat();
+                node.setFormat(fmt === '' ? 'bold' : `${fmt} bold`);
+              }
+            }
+            node.setStyle(style);
+          }
+        }
+
+        // Set alignment on paragraph
+        if (alignment && 'setFormat' in paragraph) {
+          (paragraph as { setFormat: (f: string) => void }).setFormat(
+            alignment as string,
+          );
+        }
+
+        // Convert to heading if needed
+        if (
+          heading &&
+          (heading === 'h1' || heading === 'h2' || heading === 'h3')
+        ) {
+          const needsConvert =
+            !$isHeadingNode(paragraph) || paragraph.getTag() !== heading;
+          if (needsConvert) {
+            const headingNode = $createHeadingNode(heading);
+            // Snapshot children before moving — append() removes from source
+            const childrenToMove = [...paragraph.getChildren()];
+            for (const child of childrenToMove) {
+              headingNode.append(child);
+            }
+            paragraph.replace(headingNode);
+          }
+        }
+      }
+    });
+
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => onApplied?.(), 300);
+
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, [config, editor, onApplied]);
+
+  return null;
+}
+
 export default function DocumentEditor({
   document,
   apiFetch,
   onUpdate,
+  appliedRuleConfig,
+  onRuleApplied,
 }: Props) {
   const [downloading, setDownloading] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
@@ -265,17 +441,23 @@ export default function DocumentEditor({
       </div>
 
       {/* Editor */}
-      <div className="flex-1 overflow-y-auto">
-        <div className="max-w-3xl mx-auto px-6 py-5">
-          <LexicalComposer initialConfig={initialConfig}>
-            <ToolbarPlugin />
-            <div className="relative">
+      <div className="flex-1 overflow-y-auto bg-stone-100/60">
+        <LexicalComposer initialConfig={initialConfig}>
+          {/* Sticky toolbar — full width, outside max-w constraint */}
+          <div className="sticky top-0 z-10 bg-white border-b border-stone-200">
+            <div className="max-w-3xl mx-auto px-6">
+              <ToolbarPlugin />
+            </div>
+          </div>
+          {/* Content — white paper card on gray background */}
+          <div className="max-w-3xl mx-auto px-6 py-5">
+            <div className="bg-white rounded-xl border border-stone-200 shadow-sm p-6 relative">
               <RichTextPlugin
                 contentEditable={
                   <ContentEditable className="min-h-[400px] outline-none" />
                 }
                 placeholder={
-                  <div className="absolute top-0 left-0 text-stone-400 text-sm pointer-events-none">
+                  <div className="absolute top-6 left-6 text-stone-400 text-sm pointer-events-none">
                     开始编辑文档内容...
                   </div>
                 }
@@ -291,9 +473,13 @@ export default function DocumentEditor({
                 triggerSaveRef={triggerSaveRef}
               />
               <SetInitialStatePlugin content={document.content} />
+              <FormatApplyPlugin
+                config={appliedRuleConfig}
+                onApplied={onRuleApplied}
+              />
             </div>
-          </LexicalComposer>
-        </div>
+          </div>
+        </LexicalComposer>
       </div>
     </div>
   );

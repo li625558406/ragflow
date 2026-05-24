@@ -1,9 +1,11 @@
 # =============================================================================
-# Unified server (port 80) - C-end pages + Admin SPA
+# Unified server (port 80) - React SPA handles all routing
+# Admin: /5d41402abc4b2a76b9719d911017c592/*
+# C-end: /, /chat, /token-transfer.html
 # =============================================================================
 server {
     listen 80;
-    server_name _;
+    server_name _ bidagent.konusmumu.com;
     root /ragflow/web/dist;
 
     gzip on;
@@ -36,36 +38,22 @@ server {
         include proxy.conf;
     }
 
-    # C-end pages (from web/custom/)
-    location = / {
-        root /ragflow/web/custom;
-        try_files /landing.html =404;
-    }
-
-    location = /chat {
-        root /ragflow/web/custom;
-        try_files /chat.html =404;
-    }
-
-    location = /token-transfer.html {
-        root /ragflow/web/custom;
-        add_header Content-Security-Policy "frame-ancestors 'self'";
-    }
-
-    # Admin SPA (prefixed with hash)
-    location /5d41402abc4b2a76b9719d911017c592/ {
+    # Admin SPA - ^~ ensures alias takes priority over regex locations
+    location ^~ /5d41402abc4b2a76b9719d911017c592/ {
+        alias /ragflow/web/dist/;
         index index.html;
         try_files $uri $uri/ /5d41402abc4b2a76b9719d911017c592/index.html;
+
+        # Cache all hashed static files (assets, chunks, entry modules)
+        location ~ ^/5d41402abc4b2a76b9719d911017c592/(assets|chunk|entry)/ {
+            expires 10y;
+            access_log off;
+            add_header Cache-Control "public, immutable";
+        }
     }
 
-    # Block all other paths
+    # All other routes -> React SPA (C-end pages handled by React Router)
     location / {
-        try_files $uri $uri/ =404;
-    }
-
-    # Cache-Control for static assets
-    location ~ ^/5d41402abc4b2a76b9719d911017c592/assets/ {
-        expires 10y;
-        access_log off;
+        try_files $uri $uri/ /index.html;
     }
 }

@@ -15,41 +15,54 @@
 #  limitations under the License.
 #
 """
-Dedicated web crawler for www.mohurd.gov.cn (住房和城乡建设部).
+Dedicated web crawler for mohurd.gov.cn (中华人民共和国住房和城乡建设部).
 
-Crawls multiple content sections (建设要闻, 领导动态, 地方信息, 政策发布),
-extracts article content from detail pages, converts to Markdown, and uploads
-the result to a RAGFlow knowledge base.
+Crawls content from the government information disclosure portal using the
+TRS WCM unitbuild API backend.
 
-This site uses a CMS with an internal API for listing pages (instead of
-server-rendered HTML). Articles are loaded from:
-  /api-gateway/jpaas-publish-server/front/page/build/unit
+Site characteristics
+--------------------
+  • TRS WCM CMS — list content loaded via AJAX from unitbuild API.
+  • API endpoint: /api-gateway/jpaas-publish-server/front/page/build/unit
+  • Pagination via paramJson={"pageNo","pageSize","loadEnabled","search"}
+  • Detail pages: standard HTML with <meta name="PubDate"> and TRS_Editor divs.
+  • Attachments served via API gateway download endpoint.
+  • 5 modules across 4 URLs (see _MODULES below).
 
-Article URL pattern:
-  /{section}/art/{YYYY}/art_{hash}.html
-
-Content container:
-  <div class="editor-content"><p>...</p></div>
+Modules
+-------
+  1. 行政规范性文件 (zc/xzgfxwjk) — ALL ~510 items, full pagination
+  2. 文件库 (zc/wjk) — today only (from ~18000 total)
+  3. 文告 (zc/wgk) — today only (from ~39 total)
+  4. 国务院及有关部门 (gkgd/gwyjygbm) — ALL items
+  5. 住房和城乡建设部 (gkgd/zfhcxjsb) — ALL items
 
 Usage (typically spawned by task_executor):
     python mohurd_crawler.py \
         --tenant-id <TENANT_ID> \
-        --target-url https://www.mohurd.gov.cn/xinwen/gzdt/ \
+        --target-url https://www.mohurd.gov.cn/gongkai/zc/index.html \
         --kb-id <KB_ID> \
         --task-name <NAME>
 """
 
 import argparse
+import datetime
 import json
 import logging
 import os
+import random
 import re
 import sys
-from datetime import datetime
-from urllib.parse import urljoin
+import time
+import urllib.request
+import zipfile
+from urllib.parse import unquote, urljoin, urlparse
 
-import requests
+import requests as _requests
 from bs4 import BeautifulSoup
+
+import urllib3
+urllib3.disable_warnings()
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", ".."))
@@ -58,291 +71,435 @@ sys.path.insert(0, _PROJECT_ROOT)
 from common import settings
 from common.log_utils import init_root_logger
 from common.misc_utils import get_uuid
-from rag.svr.crawler_utils import PlaywrightHttpClient
-
 
 # ---------------------------------------------------------------------------
-# Known sections on www.mohurd.gov.cn
+# Constants
 # ---------------------------------------------------------------------------
-# Key: display label
-# Value: (URL_path, CMS_pageId)
-SECTIONS = {
-    "建设要闻": ("xinwen/gzdt/", "919e942639b5477d96e4c97471c61d9f"),
-    "领导动态": ("xinwen/jsyw/", "f317736c953f43b893310d52b48aadaa"),
-    "地方信息": ("xinwen/dfxx/", "13f214f3a89147ea859e47aab5f60d72"),
-    "政策发布": ("zhengcefabu/", "8soTiiRMg3k87m5e2CQit"),
-}
-
-_CMS_API = "https://www.mohurd.gov.cn/api-gateway/jpaas-publish-server/front/page/build/unit"
 _SITE_ROOT = "https://www.mohurd.gov.cn"
+_SITE_NAME = "住房和城乡建设部"
 
+_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="MOHURD crawler for scheduled tasks")
-    parser.add_argument("--tenant-id", required=True, help="Tenant ID for KB upload")
-    parser.add_argument("--target-url", required=True, help="Homepage URL (e.g. https://www.mohurd.gov.cn/)")
-    parser.add_argument("--kb-id", required=True, help="Target knowledge-base ID")
-    parser.add_argument("--task-name", required=True, help="Task name used as output sub-directory")
-    parser.add_argument("--output-dir", default=None, help="Output root directory (default: project root)")
-    parser.add_argument("--full", action="store_true", help="Ignore saved state and re-crawl all articles")
-    parser.add_argument("--section", default=None, help="Comma-separated list of section labels to crawl (default: all)")
-    parser.add_argument("--llm-id", default=None, help="Unused (legacy)")
-    parser.add_argument("--llm-model", default=None, help="Unused (legacy)")
-    return parser.parse_args()
-
-
-# ---------------------------------------------------------------------------
-# Initialisation
-# ---------------------------------------------------------------------------
-
-def _init():
-    settings.init_settings()
-    logging.info("Project settings initialised")
-
-
-# ---------------------------------------------------------------------------
-# HTTP helpers
-# ---------------------------------------------------------------------------
-
-_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    )
+_HTML_HEADERS = {
+    "User-Agent": _USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
 }
 
-_client: PlaywrightHttpClient | None = None
+# TRS unitbuild API constants
+_API_URL = f"{_SITE_ROOT}/api-gateway/jpaas-publish-server/front/page/build/unit"
+_WEB_ID = "86ca573ec4df405db627fdc2493677f3"
+_TPLSET_ID = "fc259c381af3496d85e61997ea7771cb"
+
+# Module definitions
+# (label, listing_url, col_id, tag_id, crawl_mode)
+# crawl_mode: "all" = paginate all items; "today" = stop when no more today items
+_MODULES = [
+    # 1. 行政规范性文件
+    ("行政规范性文件",
+     f"{_SITE_ROOT}/gongkai/zc/xzgfxwjk/index.html",
+     "CddoJMk2fUTffhM06m29m", "内容1",
+     "all"),
+
+    # 2. 文件库 — today only
+    ("文件库",
+     f"{_SITE_ROOT}/gongkai/zc/wjk/index.html",
+     "vhiC3JxmPC8o7Lqg4Jw0E", "内容1",
+     "today"),
+
+    # 3. 文告 — today only
+    ("文告",
+     f"{_SITE_ROOT}/gongkai/zc/wgk/index.html",
+     "2b9996f111a0454ebc4a278e9ae92571", "内容1",
+     "today"),
+
+    # 4. 国务院及有关部门政府信息公开制度
+    ("国务院及有关部门政府信息公开制度",
+     f"{_SITE_ROOT}/gongkai/gkgd/gwyjygbm/index.html",
+     "e4a041cb9eba4fed8ffa5440289dc0bc", "信息公开制度-list",
+     "all"),
+
+    # 5. 住房和城乡建设部政府信息公开制度
+    ("住房和城乡建设部政府信息公开制度",
+     f"{_SITE_ROOT}/gongkai/gkgd/zfhcxjsb/index.html",
+     "f633695139cc4f19a1d78ec9d6a425d8", "信息公开制度-list",
+     "all"),
+]
+
+# Anti-crawling delays (seconds)
+_PAGE_DELAY = (1.0, 2.5)
+_ARTICLE_DELAY = (0.3, 1.0)
+
+_STATE_FILENAME = "_crawler_state.json"
+
+_ATTACH_EXTENSIONS = {
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx",
+    ".ppt", ".pptx", ".zip", ".rar", ".7z",
+    ".txt", ".jpg", ".jpeg", ".png", ".tif", ".tiff",
+}
 
 
-def _fetch(url, timeout=30):
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _safe_print(msg):
     try:
-        resp = _client.get(url, timeout=timeout)
-        resp.raise_for_status()
-        raw = resp.content
-        import chardet
-        detected = chardet.detect(raw)
-        enc = detected.get("encoding", "") or ""
-        if not enc or enc.upper() in ("ASCII", "ISO-8859-1"):
-            enc = "utf-8"
-        try:
-            return raw.decode(enc)
-        except (UnicodeDecodeError, LookupError):
-            return raw.decode("gbk", errors="replace")
+        print(msg)
+    except UnicodeEncodeError:
+        print(msg.encode("gbk", errors="replace").decode("gbk"))
+
+
+def _request_delay(min_s, max_s):
+    time.sleep(random.uniform(min_s, max_s))
+
+
+def _sanitize_filename(text, max_len=150):
+    if not text:
+        return "untitled"
+    name = re.sub(r'[\\/:*?"<>|]', "_", str(text).strip())
+    name = re.sub(r'\s+', " ", name)
+    name = name.strip("._ ")
+    return name[:max_len] if name else "untitled"
+
+
+def _is_attach_url(url):
+    lower = url.lower().split("?")[0]
+    return any(lower.endswith(ext) for ext in _ATTACH_EXTENSIONS)
+
+
+def _is_download_url(url):
+    return "/api-gateway/" in url and "/document/download" in url
+
+
+# ---------------------------------------------------------------------------
+# HTTP session
+# ---------------------------------------------------------------------------
+
+def _init_session():
+    sess = _requests.Session()
+    sess.headers.update(_HTML_HEADERS)
+    sess.verify = False
+    try:
+        sess.get(_SITE_ROOT, timeout=30, verify=False)
+        logging.info("Session initialized")
     except Exception as e:
-        logging.error("Failed to fetch %s: %s", url, e)
+        logging.warning("Failed to init session: %s", e)
+    return sess
+
+
+# ---------------------------------------------------------------------------
+# API-based listing
+# ---------------------------------------------------------------------------
+
+def _call_list_api(sess, col_id, tag_id, page_no, page_size):
+    """Call the TRS unitbuild API for a column listing page.
+
+    Returns (BeautifulSoup of HTML fragment, total_count).
+    """
+    params = {
+        'webId': _WEB_ID,
+        'pageId': col_id,
+        'parseType': 'bulidstatic',
+        'pageType': 'column',
+        'tagId': tag_id,
+        'tplSetId': _TPLSET_ID,
+        'unitUrl': _API_URL,
+        'editType': 'null',
+        'paramJson': json.dumps({
+            'pageNo': page_no,
+            'pageSize': page_size,
+            'loadEnabled': True,
+            'search': '{}',
+        }),
+    }
+    try:
+        r = sess.get(_API_URL, params=params, timeout=60, verify=False)
+        data = r.json()
+        html = data.get('data', {}).get('html', '')
+        if not html:
+            return None, 0
+        soup = BeautifulSoup(html, 'lxml')
+        total = 0
+        pag_div = soup.find('div', id=lambda x: x and 'pagination' in x)
+        if pag_div:
+            qd = pag_div.get('querydata', '')
+            m = re.search(r"'count'\s*:\s*'(\d+)'", qd)
+            if m:
+                total = int(m.group(1))
+        if not total:
+            # Use page items count as fallback
+            items = _parse_list_items(soup, "")
+            total = page_no * page_size + (1 if len(items) == page_size else 0)
+        return soup, total
+    except Exception as e:
+        logging.error("API call failed for col=%s page=%d: %s", col_id, page_no, e)
+        return None, 0
+
+
+def _parse_list_items(soup, listing_url):
+    """Extract list items from an API-rendered listing page.
+
+    Handles two formats:
+      1. Table rows (xzgfxwjk, wjk) — <tr> with <td> cells
+      2. List items (wgk, gkgd) — <li> with <a> tags
+
+    Returns list of dicts: {title, date (YYYY-MM-DD), href (absolute URL)}.
+    """
+    items = []
+
+    # Format 1: Table rows
+    for tr in soup.find_all('tr'):
+        tds = tr.find_all('td')
+        if len(tds) < 2:
+            continue
+        a = tr.find('a', href=True)
+        if not a:
+            continue
+        href = a.get('href', '')
+        if not href or 'art/' not in href:
+            continue
+        title = a.get_text(strip=True)
+        if not title or len(title) < 4:
+            continue
+
+        date_str = ''
+        for td in reversed(tds):
+            text = td.get_text(strip=True)
+            m = re.search(r'(\d{4}-\d{1,2}-\d{1,2})', text)
+            if m:
+                date_str = m.group(1)
+                break
+        if not date_str:
+            m = re.search(r'/art/(\d{4})/', href)
+            if m:
+                date_str = m.group(1)
+
+        abs_url = urljoin(listing_url, href)
+        items.append({'title': title, 'date': date_str, 'href': abs_url})
+
+    # Format 2: List items (for wgk and gkgd)
+    if not items:
+        for li in soup.find_all('li'):
+            a = li.find('a', href=True)
+            if not a:
+                continue
+            href = a.get('href', '')
+            if not href or 'art/' not in href:
+                continue
+            title = a.get_text(strip=True)
+            if not title or len(title) < 4:
+                continue
+
+            full_text = li.get_text(strip=True)
+            date_str = ''
+            m = re.search(r'(\d{4}-\d{1,2}-\d{1,2})', full_text)
+            if m:
+                date_str = m.group(1)
+            if not date_str:
+                m = re.search(r'(\d{4})年(\d{1,2})月(\d{1,2})日', full_text)
+                if m:
+                    date_str = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+            if not date_str:
+                m = re.search(r'/art/(\d{4})/', href)
+                if m:
+                    date_str = m.group(1)
+
+            abs_url = urljoin(listing_url, href)
+            items.append({'title': title, 'date': date_str, 'href': abs_url})
+
+    return items
+
+
+# ---------------------------------------------------------------------------
+# Detail page parsing
+# ---------------------------------------------------------------------------
+
+def _parse_detail(html, detail_url):
+    """Extract content and attachments from a TRS CMS detail page.
+
+    Returns dict: {title, pub_date, content_text, attachments: [(name, url)]}.
+    """
+    soup = BeautifulSoup(html, 'lxml')
+    result = {'title': '', 'pub_date': '', 'content_text': '', 'attachments': []}
+
+    # Title
+    meta_title = soup.find('meta', attrs={'name': 'ArticleTitle'})
+    if meta_title and meta_title.get('content'):
+        result['title'] = meta_title['content'].strip()
+    if not result['title']:
+        title_el = soup.find('title')
+        if title_el:
+            raw_title = title_el.get_text(strip=True)
+            result['title'] = raw_title.split('_')[0].strip()
+
+    # PubDate
+    for meta_name in ('PubDate', 'publishdate', 'articledate', 'dc.date'):
+        meta = soup.find('meta', attrs={'name': meta_name})
+        if meta and meta.get('content'):
+            result['pub_date'] = meta['content'].strip()[:10]
+            break
+
+    if not result['pub_date']:
+        for el in soup.find_all(['span', 'div', 'p'],
+                                string=re.compile(r'\d{4}-\d{2}-\d{2}')):
+            m = re.search(r'(\d{4}-\d{2}-\d{2})', el.get_text())
+            if m:
+                result['pub_date'] = m.group(1)
+                break
+
+    # Content extraction
+    content_div = None
+    for selector in [
+        {'class_': re.compile(r'TRS_Editor|Custom_UnionStyle|TRS_PreAppend|'
+                              r'article_con|article_content')},
+        {'id': re.compile(r'article|content|detail|text|zoom|con', re.I)},
+        {'class_': re.compile(r'content|text_con|body_con|detail_con|'
+                              r'pages_content', re.I)},
+    ]:
+        content_div = soup.find('div', **selector)
+        if content_div:
+            break
+
+    if not content_div:
+        max_len = 0
+        for div in soup.find_all('div'):
+            if div.find_parent(['header', 'nav', 'footer', 'script', 'style']):
+                continue
+            text = div.get_text(strip=True)
+            if 200 < len(text) < 50000 and len(text) > max_len:
+                content_div = div
+                max_len = len(text)
+
+    if content_div:
+        for tag in content_div.find_all(['script', 'style']):
+            tag.decompose()
+        text = content_div.get_text(separator='\n', strip=True)
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        result['content_text'] = text
+
+    # Attachments
+    seen_urls = set()
+    for a in soup.find_all('a', href=True):
+        href = a.get('href', '')
+        abs_url = urljoin(detail_url, href)
+
+        if _is_download_url(abs_url) and abs_url not in seen_urls:
+            seen_urls.add(abs_url)
+            att_name = a.get_text(strip=True)
+            if not att_name:
+                m = re.search(r'fileName=([^&]+)', href)
+                if m:
+                    att_name = unquote(m.group(1))
+                else:
+                    att_name = os.path.basename(urlparse(href).path) or "attachment"
+            result['attachments'].append((att_name, abs_url))
+        elif _is_attach_url(abs_url) and abs_url not in seen_urls:
+            seen_urls.add(abs_url)
+            att_name = a.get_text(strip=True) or \
+                       os.path.basename(urlparse(abs_url).path)
+            result['attachments'].append((att_name, abs_url))
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# File download
+# ---------------------------------------------------------------------------
+
+def _download_file(sess, file_url, timeout=120):
+    """Download a binary file, returning bytes or None."""
+    parsed = urlparse(file_url)
+    main_parsed = urlparse(_SITE_ROOT)
+
+    if parsed.netloc == main_parsed.netloc or not parsed.netloc:
+        try:
+            resp = sess.get(file_url, timeout=timeout, stream=True, verify=False)
+            if resp.status_code == 200 and len(resp.content) > 100:
+                return resp.content
+        except Exception as e:
+            logging.error("Download error %s: %s", file_url, e)
         return None
 
-
-def _abs_url(href, base):
-    if href.startswith("http://") or href.startswith("https://"):
-        return href
-    return urljoin(base, href)
-
-
-# ---------------------------------------------------------------------------
-# Date parsing
-# ---------------------------------------------------------------------------
-
-def _parse_date(text):
-    """Try to parse a date string; return datetime or None."""
-    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d",
-                "%Y—%m—%d", "%Y年%m月%d日",
-                "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S",
-                "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M"):
-        try:
-            return datetime.strptime(text.strip(), fmt)
-        except (ValueError, AttributeError):
-            continue
+    req = urllib.request.Request(file_url, headers=_HTML_HEADERS)
+    try:
+        resp = urllib.request.urlopen(req, timeout=timeout)
+        data = resp.read()
+        if len(data) > 100:
+            return data
+    except Exception as e:
+        logging.error("Download error (external) %s: %s", file_url, e)
     return None
 
 
 # ---------------------------------------------------------------------------
-# Listing — via CMS internal API
+# ZIP extraction
 # ---------------------------------------------------------------------------
 
-def _fetch_listing(page_id):
-    """Fetch article listing from the MOHURD CMS API.
+def _extract_zip(zip_path, dest_dir):
+    extracted = []
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            for name in zf.namelist():
+                safe_name = re.sub(r'[\\/:*?"<>|]', "_", os.path.basename(name))
+                if not safe_name:
+                    continue
+                dest_path = os.path.join(dest_dir, safe_name)
+                if os.path.exists(dest_path):
+                    continue
+                with open(dest_path, 'wb') as f:
+                    f.write(zf.read(name))
+                extracted.append(dest_path)
+                _safe_print(f"           Extracted: {safe_name}")
+    except Exception as e:
+        _safe_print(f"           ZIP extract error: {e}")
+    return extracted
 
-    Returns list[dict] with keys: title, url, date (datetime or None).
-    """
-    params = {
-        "parseType": "bulidstatic",
-        "webId": "86ca573ec4df405db627fdc2493677f3",
-        "tplSetId": "fc259c381af3496d85e61997ea7771cb",
-        "pageType": "column",
-        "editType": "null",
-        "pageId": page_id,
-    }
+
+# ---------------------------------------------------------------------------
+# Text extraction from attachments
+# ---------------------------------------------------------------------------
+
+def _extract_file_text(filepath):
+    """Extract text from PDF/DOC/DOCX/XLS/XLSX files."""
+    ext = os.path.splitext(filepath)[1].lower()
+    text = ""
 
     try:
-        qs = "&".join(f"{k}={v}" for k, v in params.items())
-        api_url = f"{_CMS_API}?{qs}"
-        resp = _client.fetch_get(
-            api_url, timeout=15,
-            headers={**_HEADERS, "Referer": "https://www.mohurd.gov.cn/"}
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        html = data.get("data", {}).get("html", "")
+        if ext == '.pdf':
+            import fitz
+            with fitz.open(filepath) as doc:
+                for page in doc:
+                    text += page.get_text() + "\n"
+        elif ext == '.docx':
+            from docx import Document
+            doc = Document(filepath)
+            for para in doc.paragraphs:
+                text += para.text + "\n"
+        elif ext in ('.xls', '.xlsx'):
+            import openpyxl
+            wb = openpyxl.load_workbook(filepath, data_only=True)
+            for ws in wb.worksheets:
+                for row in ws.iter_rows(values_only=True):
+                    line = '\t'.join(str(c) if c is not None else '' for c in row)
+                    text += line + "\n"
+                text += "\n"
+        elif ext == '.txt':
+            with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+                text = f.read()
     except Exception as e:
-        logging.error("Failed to fetch CMS listing for pageId %s: %s", page_id, e)
-        return []
+        logging.warning("Failed to extract text from %s: %s", filepath, e)
 
-    soup = BeautifulSoup(html, "lxml")
-    articles = []
-    seen_urls = set()
-
-    for li in soup.find_all("li"):
-        a = li.find("a", href=True)
-        if not a:
-            continue
-        href = a["href"].strip()
-        title = (a.get("title") or a.text or "").strip()
-        if not title or len(title) < 4:
-            continue
-        url = _abs_url(href, _SITE_ROOT)
-        if url in seen_urls:
-            continue
-        seen_urls.add(url)
-
-        # Date from <span class="date-info">
-        dt = None
-        span = li.find("span", class_="date-info")
-        if span:
-            dt = _parse_date(span.get_text(strip=True))
-
-        if dt and dt.year < 2023:
-            continue
-
-        articles.append({
-            "title": title,
-            "url": url,
-            "date": dt,
-            "section": "",
-        })
-
-    return articles
+    return text.strip()
 
 
 # ---------------------------------------------------------------------------
-# Article detail page parsing
+# State persistence
 # ---------------------------------------------------------------------------
-
-def _fetch_article_content(url):
-    """Fetch and parse a mohurd.gov.cn article detail page.
-
-    Metadata from <meta> tags:
-      <meta name="ArticleTitle" content="...">
-      <meta name="PubDate" content="YYYY-MM-DD HH:MM">
-      <meta name="ContentSource" content="...">
-
-    Title fallback: <h3>TITLE</h3>
-    Content: <div class="editor-content"><p>...</p></div>
-
-    Returns (markdown_text, resources_list, metadata_dict).
-    Returns ("", [], {}) on failure.
-    """
-    html = _fetch(url)
-    if not html:
-        return "", [], {}
-
-    soup = BeautifulSoup(html, "lxml")
-
-    # -- Extract metadata from <meta> tags --
-    meta_title = ""
-    meta_date = ""
-    meta_source = ""
-    for meta in soup.find_all("meta"):
-        name = (meta.get("name") or "").strip()
-        content = (meta.get("content") or "").strip()
-        if name == "ArticleTitle":
-            meta_title = content
-        elif name == "PubDate":
-            meta_date = content
-        elif name == "ContentSource":
-            meta_source = content
-
-    # Fallback: <h3> for title
-    if not meta_title:
-        h3 = soup.find("h3")
-        if h3:
-            meta_title = h3.get_text(strip=True)
-
-    metadata = {
-        "title": meta_title,
-        "date": meta_date,
-        "source": meta_source,
-    }
-
-    # -- Strip clutter --
-    for tag in soup.find_all(["script", "style", "nav", "header", "footer",
-                               "aside", "noscript"]):
-        tag.decompose()
-
-    # -- Parse main content from <div class="editor-content"> --
-    content_div = soup.find("div", class_="editor-content")
-    if not content_div:
-        logging.warning("No editor-content div found in %s", url)
-        return "", [], metadata
-
-    markdown_text = _content_to_markdown(content_div)
-
-    return markdown_text, [], metadata
-
-
-def _content_to_markdown(content_div):
-    """Convert the content div to Markdown text.
-
-    MOHURD uses <p> tags with text-indent style for paragraphs.
-    """
-    lines = []
-    for el in content_div.find_all(["p", "h1", "h2", "h3", "h4",
-                                     "li", "blockquote", "pre", "img"]):
-        tn = el.name
-
-        if tn == "img":
-            src = el.get("src", "")
-            alt = el.get("alt", "")
-            if src:
-                alt_text = f" ({alt})" if alt else ""
-                lines.append(f"![{alt_text}]({src})")
-            continue
-
-        text = el.get_text(strip=True)
-        if not text:
-            continue
-
-        if tn == "h1":
-            lines.append(f"\n# {text}\n")
-        elif tn == "h2":
-            lines.append(f"\n## {text}\n")
-        elif tn == "h3":
-            lines.append(f"\n### {text}\n")
-        elif tn in ("h4",):
-            lines.append(f"\n**{text}**\n")
-        elif tn == "blockquote":
-            lines.append(f"> {text}")
-        elif tn == "li":
-            lines.append(f"- {text}")
-        elif tn == "pre":
-            lines.append(f"```\n{text}\n```")
-        elif tn == "p":
-            lines.append(text)
-
-    # Remove leading empty lines
-    while lines and not lines[0].strip():
-        lines.pop(0)
-
-    return "\n\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# Markdown persistence & incremental state
-# ---------------------------------------------------------------------------
-
-_STATE_FILENAME = "_crawler_state.json"
-
 
 def _load_state(output_dir):
     path = os.path.join(output_dir, _STATE_FILENAME)
@@ -351,33 +508,32 @@ def _load_state(output_dir):
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception as e:
-            logging.warning("Failed to load crawler state: %s", e)
-    return {"processed_urls": []}
+            logging.warning("Failed to load state: %s", e)
+    return {"processed_ids": []}
 
 
 def _save_state(output_dir, state):
-    path = os.path.join(output_dir, _STATE_FILENAME)
     os.makedirs(output_dir, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    with open(os.path.join(output_dir, _STATE_FILENAME), "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False)
-    logging.info("Crawler state saved (%d processed URLs)", len(state.get("processed_urls", [])))
+    logging.info("State saved (%d IDs)", len(state.get("processed_ids", [])))
 
 
-def _save_markdown(content, output_dir):
-    os.makedirs(output_dir, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = os.path.join(output_dir, f"{ts}.md")
+def _save_markdown(content, output_dir, article_id):
+    articles_dir = os.path.join(output_dir, "articles")
+    os.makedirs(articles_dir, exist_ok=True)
+    safe_id = re.sub(r'[\\/:*?"<>|]', "_", article_id)
+    path = os.path.join(articles_dir, f"{safe_id}.md")
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
-    logging.info("Saved markdown to %s", path)
     return path
 
 
 # ---------------------------------------------------------------------------
-# Knowledge-base upload
+# KB upload
 # ---------------------------------------------------------------------------
 
-def _upload_to_kb(filepath, kb_id, tenant_id):
+def _upload_to_kb(filepath, kb_id, tenant_id, parser_id="laws"):
     from api.db.services.knowledgebase_service import KnowledgebaseService
     from api.db.services.file_service import FileService
     from api.db.services.document_service import DocumentService
@@ -400,207 +556,315 @@ def _upload_to_kb(filepath, kb_id, tenant_id):
 
     file_obj = _FileObj(os.path.basename(filepath), blob)
     errs, doc_pairs = FileService.upload_document(kb, [file_obj], tenant_id)
+
     if errs:
         logging.warning("Upload errors: %s", errs)
+
     for doc, _ in doc_pairs:
-        logging.info("Document %s uploaded to KB %s", doc["id"], kb_id)
+        doc_id = doc["id"]
+        logging.info("Document %s uploaded to KB %s", doc_id, kb_id)
         try:
-            DocumentService.begin2parse(doc["id"])
-            DocumentService.run(tenant_id, doc, {})
-            logging.info("Parsing task queued for document %s", doc["id"])
+            DocumentService.update_by_id(doc_id, {"parser_id": parser_id})
         except Exception as e:
-            logging.error("Failed to queue parsing for document %s: %s", doc["id"], e)
+            logging.error("Failed to update parser_id for %s: %s", doc_id, e)
+        try:
+            DocumentService.begin2parse(doc_id)
+            DocumentService.run(tenant_id, doc, {})
+        except Exception as e:
+            logging.error("Failed to queue parsing for %s: %s", doc_id, e)
     return doc_pairs
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Markdown builder
 # ---------------------------------------------------------------------------
 
-def _safe_print(msg):
-    try:
-        print(msg)
-    except UnicodeEncodeError:
-        print(msg.encode("gbk", errors="replace").decode("gbk"))
+def _build_markdown(module_name, item, detail, attachments_dir):
+    lines = [
+        f"# {detail.get('title', item['title'])}",
+        "",
+        f"**来源**: {_SITE_NAME}",
+        f"**栏目**: {module_name}",
+    ]
+    pub_date = detail.get('pub_date') or item.get('date')
+    if pub_date:
+        lines.append(f"**发布日期**: {pub_date}")
+    lines.append(f"**原文链接**: {item['href']}")
 
+    lines.append("")
+    lines.append("---")
+    lines.append("")
 
-def main():
-    global _client
-    args = parse_args()
-    _safe_print(f"\n{'='*60}")
-    _safe_print(f"[MOHURD] Starting Housing & Urban-Rural Development crawler")
-    _safe_print(f"[MOHURD] Target URL: {args.target_url}")
-    _safe_print(f"[MOHURD] Task name: {args.task_name}")
-    _safe_print(f"[MOHURD] Target KB: {args.kb_id}")
-    _safe_print(f"{'='*60}\n")
-    sys.stdout.flush()
+    if detail.get('content_text'):
+        lines.append(detail['content_text'])
+    else:
+        lines.append("(无法提取正文内容)")
 
-    _init()
-    logging.info("=== MOHURD crawler started for %s ===", args.target_url)
-
-    _client = PlaywrightHttpClient()
-    _client.start()
-    try:
-
-        if args.section:
-            selected = {}
-            for label in args.section.split(","):
-                label = label.strip()
-                if label in SECTIONS:
-                    selected[label] = SECTIONS[label]
-            if not selected:
-                _safe_print(f"[MOHURD] WARNING: No matching sections found for '{args.section}', using all")
-                sys.stdout.flush()
-                selected = dict(SECTIONS)
-        else:
-            selected = dict(SECTIONS)
-
-        _safe_print(f"[MOHURD] Sections to crawl: {len(selected)}")
-        for label, (path, _page_id) in selected.items():
-            _safe_print(f"         - {label} ({path})")
-        sys.stdout.flush()
-
-        output_dir = args.output_dir or os.path.join(
-            _PROJECT_ROOT,
-            "rag",
-            args.task_name.strip()
-        )
-        os.makedirs(output_dir, exist_ok=True)
-        _safe_print(f"\n[MOHURD] Output directory: {output_dir}\n")
-        sys.stdout.flush()
-
-        state = _load_state(output_dir) if not args.full else {"processed_urls": []}
-        processed_urls = set(state.get("processed_urls", []))
-        _safe_print(f"[MOHURD] Already processed: {len(processed_urls)} URLs\n")
-        sys.stdout.flush()
-
-        # 1/5 + 2/5: Fetch listings via CMS API and collect articles
-        _safe_print(f"[MOHURD] Step 1/5: Fetching listings via CMS API...")
-        sys.stdout.flush()
-
-        all_articles = []
-        section_stats = {}
-
-        for label, (_path, page_id) in selected.items():
-            _safe_print(f"[MOHURD]   Section '{label}': pageId={page_id}")
-            sys.stdout.flush()
-
-            arts = _fetch_listing(page_id)
-            for a in arts:
-                a["section"] = label
-            logging.info("Section %s: %d articles", label, len(arts))
-            section_stats[label] = len(arts)
-            all_articles.extend(arts)
-
-        _safe_print(f"[MOHURD] Step 1/5: Collected {len(all_articles)} total articles across {len(selected)} sections\n")
-        sys.stdout.flush()
-
-        if not all_articles:
-            _safe_print(f"[MOHURD] No articles found, exiting")
-            sys.stdout.flush()
-            sys.exit(0)
-
-        _safe_print(f"[MOHURD] Breakdown by section:")
-        for label, count in sorted(section_stats.items(), key=lambda x: -x[1]):
-            _safe_print(f"         - {label}: {count}")
-        sys.stdout.flush()
-
-        if processed_urls:
-            new_articles = [a for a in all_articles if a["url"] not in processed_urls]
-            _safe_print(f"\n[MOHURD] Skipping {len(all_articles) - len(new_articles)} already-processed article(s)")
-            sys.stdout.flush()
-            all_articles = new_articles
-
-        if not all_articles:
-            _safe_print(f"[MOHURD] All articles already processed, nothing to do")
-            sys.stdout.flush()
-            sys.exit(0)
-
-        # 3/5 + 4/5: Fetch detail pages
-        _safe_print(f"\n[MOHURD] Step 2/5: Fetching {len(all_articles)} article detail pages...\n")
-        sys.stdout.flush()
-
-        md_parts = []
-        success_count = 0
-        fail_count = 0
-        total = len(all_articles)
-
-        for idx, art in enumerate(all_articles, 1):
-            _safe_print(f"[MOHURD] [{idx}/{total}] {art['section']}: {art['title'][:70]}")
-            sys.stdout.flush()
-            logging.info("[%d/%d] %s - %s", idx, total, art["section"], art["title"])
-
-            content, resources, metadata = _fetch_article_content(art["url"])
-            if not content:
-                _safe_print(f"[MOHURD]   -> Empty content, skipped")
-                sys.stdout.flush()
-                fail_count += 1
-                continue
-
-            _safe_print(f"[MOHURD]   -> {len(content)} chars")
-            sys.stdout.flush()
-
-            article_date_str = ""
-            if art.get("date"):
-                article_date_str = art["date"].strftime("%Y-%m-%d")
-            elif metadata.get("date"):
-                article_date_str = metadata["date"]
-
-            source_str = metadata.get("source", "")
-            source_line = f"**Source:** {source_str}" if source_str else ""
-
-            lines = [
-                f"# {art['title']}",
-                f"**Section:** {art['section']}",
-                f"**Date:** {article_date_str}",
-                f"**URL:** {art['url']}",
-            ]
-            if source_line:
-                lines.append(source_line)
-            lines.append("")
-            lines.append(content)
+    if attachments_dir and os.path.isdir(attachments_dir):
+        files = [f for f in os.listdir(attachments_dir)
+                 if os.path.isfile(os.path.join(attachments_dir, f))]
+        if files:
             lines.append("")
             lines.append("---")
-            md_parts.append("\n".join(lines))
-            success_count += 1
+            lines.append("")
+            lines.append("## 附件")
+            lines.append("")
+            for fname in sorted(files):
+                fpath = os.path.join(attachments_dir, fname)
+                fsize = os.path.getsize(fpath)
+                lines.append(f"- **{fname}** ({fsize:,} bytes)")
 
-        if not md_parts:
-            _safe_print(f"[MOHURD] No articles processed successfully, exiting")
-            sys.stdout.flush()
-            sys.exit(0)
+    return "\n".join(lines)
 
-        _safe_print(f"\n[MOHURD] Detail pages fetched: {success_count} success, {fail_count} failed\n")
-        sys.stdout.flush()
 
-        # 5/5: Save + upload
-        _safe_print(f"[MOHURD] Step 3/5: Saving markdown...")
-        sys.stdout.flush()
-        combined = "\n".join(md_parts)
-        filepath = _save_markdown(combined, output_dir)
-        _safe_print(f"[MOHURD] Saved to {filepath} ({len(combined)} chars)\n")
-        sys.stdout.flush()
+# ---------------------------------------------------------------------------
+# Single item processing
+# ---------------------------------------------------------------------------
 
-        new_urls = [a["url"] for a in all_articles]
-        if new_urls:
-            processed_urls.update(new_urls)
-            _save_state(output_dir, {"processed_urls": list(processed_urls)})
+def _process_item(sess, module_name, item, output_dir, kb_id, tenant_id):
+    """Fetch detail page, download attachments, save markdown, upload to KB."""
+    item_id = item['href']
+    _safe_print(f"\n  [{module_name}] {item['title'][:80]}")
+    _safe_print(f"  {item['href'][:150]}")
 
-        _safe_print(f"[MOHURD] Uploading to KB {args.kb_id}...")
-        sys.stdout.flush()
-        logging.info("Uploading to KB %s ...", args.kb_id)
+    attachments_dir = None
+
+    try:
+        r = sess.get(item['href'], timeout=60, verify=False)
+        if r.status_code != 200:
+            _safe_print(f"  HTTP {r.status_code} — skipped")
+            return False
+        r.encoding = 'utf-8'
+        html = r.text
+    except Exception as e:
+        _safe_print(f"  Fetch error: {e}")
+        return False
+
+    detail = _parse_detail(html, item['href'])
+    _safe_print(f"  Date: {detail.get('pub_date', item.get('date', 'N/A'))} | "
+                f"Content: {len(detail['content_text'])} chars")
+
+    if detail['attachments']:
+        safe_key = _sanitize_filename(item_id, 100)
+        attachments_dir = os.path.join(output_dir, "attachments", safe_key)
+        os.makedirs(attachments_dir, exist_ok=True)
+        for att_name, att_url in detail['attachments']:
+            _safe_print(f"  Downloading: {att_name[:60]}")
+            data = _download_file(sess, att_url)
+            if data:
+                fname = _sanitize_filename(att_name, 100)
+                if '.' not in fname:
+                    m2 = re.search(r'fileName=([^&]+)', att_url)
+                    if m2:
+                        url_fname = unquote(m2.group(1))
+                        ext = os.path.splitext(url_fname)[1]
+                        if ext:
+                            fname += ext
+                fpath = os.path.join(attachments_dir, fname)
+                with open(fpath, 'wb') as f:
+                    f.write(data)
+                _safe_print(f"    OK ({len(data):,} bytes)")
+                if fname.lower().endswith('.zip'):
+                    _extract_zip(fpath, attachments_dir)
+            else:
+                _safe_print(f"    FAILED")
+
+    if not detail['pub_date'] and item.get('date'):
+        detail['pub_date'] = item['date']
+
+    md_content = _build_markdown(module_name, item, detail, attachments_dir)
+    md_path = _save_markdown(md_content, output_dir, item_id)
+    _safe_print(f"  Markdown: {md_path}")
+
+    if kb_id:
         try:
-            _upload_to_kb(filepath, args.kb_id, args.tenant_id)
-            _safe_print(f"[MOHURD] Upload complete!\n")
-            sys.stdout.flush()
-            logging.info("Upload complete")
+            _upload_to_kb(md_path, kb_id, tenant_id)
         except Exception as e:
-            _safe_print(f"[MOHURD] ERROR: Upload failed: {e}")
-            sys.stdout.flush()
             logging.error("Upload failed: %s", e)
-            sys.exit(1)
-    finally:
-        _client.stop()
+
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Main crawl logic
+# ---------------------------------------------------------------------------
+
+def crawl(target_url, output_dir, kb_id, tenant_id, max_runtime=3300):
+    start_time = time.time()
+    today_str = datetime.date.today().strftime("%Y-%m-%d")
+
+    _safe_print("=" * 60)
+    _safe_print(f"MOHURD Crawler | Today: {today_str}")
+    _safe_print(f"Target: {target_url}")
+    _safe_print(f"Modules: {len(_MODULES)}")
+    for mod_name, mod_url, col_id, tag_id, mode in _MODULES:
+        _safe_print(f"  - {mod_name} [{mode}]")
+    _safe_print("=" * 60)
+
+    os.makedirs(output_dir, exist_ok=True)
+    state = _load_state(output_dir)
+    processed_ids = set(state.get("processed_ids", []))
+
+    sess = _init_session()
+    total_processed = 0
+
+    for mod_name, mod_url, col_id, tag_id, mode in _MODULES:
+        remaining = max_runtime - (time.time() - start_time)
+        grace = min(120, max_runtime * 0.05)
+        if remaining < grace:
+            _safe_print(f"\nTimeout approaching ({remaining:.0f}s left) — stopping")
+            break
+
+        _safe_print(f"\n{'='*50}")
+        _safe_print(f"Module: {mod_name} [{mode}]")
+
+        page_no = 1
+        page_size = 10
+        total_for_mod = 0
+        consecutive_empty = 0
+
+        while True:
+            remaining = max_runtime - (time.time() - start_time)
+            if remaining < grace:
+                _safe_print(f"  Timeout ({remaining:.0f}s) — stopping module")
+                break
+
+            soup, total = _call_list_api(sess, col_id, tag_id, page_no, page_size)
+            if soup is None:
+                _safe_print(f"  API failed on page {page_no}")
+                consecutive_empty += 1
+                if consecutive_empty >= 3:
+                    _safe_print(f"  Too many failures — skipping module")
+                    break
+                page_no += 1
+                continue
+
+            items = _parse_list_items(soup, mod_url)
+            if not items:
+                _safe_print(f"  Page {page_no}: no items — end of list")
+                break
+
+            consecutive_empty = 0
+            _safe_print(f"  Page {page_no}: {len(items)} items (total={total})")
+
+            # For "today" mode: stop when latest date < today
+            no_today_count = 0
+            if mode == "today":
+                dates = sorted(set(it['date'] for it in items if it['date']),
+                               reverse=True)
+                latest = dates[0] if dates else 'N/A'
+                has_today = today_str in dates
+                if not has_today:
+                    no_today_count += 1
+                    _safe_print(f"    No today items on page {page_no}. "
+                                f"Latest: {latest}")
+                    if latest != 'N/A' and latest < today_str:
+                        _safe_print(f"    Past today — stopping")
+                        break
+                    if no_today_count >= 5:
+                        _safe_print(f"    No today items for 5 pages — stopping")
+                        break
+                else:
+                    no_today_count = 0
+
+            for item in items:
+                remaining = max_runtime - (time.time() - start_time)
+                if remaining < grace:
+                    _safe_print(f"  Timeout — stopping")
+                    break
+
+                if mode == "today" and item['date'] != today_str:
+                    continue
+
+                if item['href'] in processed_ids:
+                    continue
+
+                success = _process_item(sess, mod_name, item, output_dir,
+                                        kb_id, tenant_id)
+                if success:
+                    processed_ids.add(item['href'])
+                    state["processed_ids"] = list(processed_ids)
+                    total_processed += 1
+                    total_for_mod += 1
+                    if total_processed % 5 == 0:
+                        _save_state(output_dir, state)
+
+                _request_delay(*_ARTICLE_DELAY)
+
+            if total > 0 and page_no * page_size >= total:
+                _safe_print(f"    Reached total ({total}) — end of list")
+                break
+
+            page_no += 1
+            _request_delay(*_PAGE_DELAY)
+
+        _safe_print(f"  Module processed: {total_for_mod}")
+
+    _save_state(output_dir, state)
+
+    elapsed = time.time() - start_time
+    _safe_print(f"\n{'='*60}")
+    _safe_print(f"Crawl complete. {total_processed} new items in {elapsed:.0f}s")
+    _safe_print(f"{'='*60}")
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="MOHURD Crawler — 住房和城乡建设部 政府信息公开"
+    )
+    parser.add_argument("--tenant-id", required=True, help="Tenant ID")
+    parser.add_argument("--target-url",
+                        default=f"{_SITE_ROOT}/gongkai/zc/index.html",
+                        help="Target URL")
+    parser.add_argument("--kb-id", default=None, help="Knowledge base ID")
+    parser.add_argument("--task-name", default="mohurd_crawler", help="Task name")
+    parser.add_argument("--output-dir", default=None, help="Output directory")
+    parser.add_argument("--max-runtime", type=int, default=3300,
+                        help="Maximum runtime in seconds (default: 3300)")
+    parser.add_argument("--project-root", default=None, help="Project root")
+    parser.add_argument("--modules", default=None,
+                        help="Comma-separated 1-based module indexes (e.g. '1,2')")
+
+    args = parser.parse_args()
+
+    if args.project_root:
+        sys.path.insert(0, args.project_root)
+        os.chdir(args.project_root)
+
+    output_dir = args.output_dir or os.path.join(_SCRIPT_DIR, args.task_name)
+    os.makedirs(output_dir, exist_ok=True)
+
+    init_root_logger("mohurd_crawler")
+    logging.info("MOHURD Crawler | task=%s | output=%s", args.task_name, output_dir)
+
+    global _MODULES
+    if args.modules:
+        indices = [int(x.strip()) - 1 for x in args.modules.split(",")]
+        _MODULES = [_MODULES[i] for i in indices if 0 <= i < len(_MODULES)]
+        logging.info("Filtered modules: %s", [m[0] for m in _MODULES])
+
+    try:
+        crawl(
+            target_url=args.target_url,
+            output_dir=output_dir,
+            kb_id=args.kb_id,
+            tenant_id=args.tenant_id,
+            max_runtime=args.max_runtime,
+        )
+    except KeyboardInterrupt:
+        _safe_print("\nInterrupted by user")
+        logging.info("Interrupted by user")
+    except Exception as e:
+        logging.exception("Fatal error: %s", e)
+        _safe_print(f"\nFATAL: {e}")
+        raise
 
 
 if __name__ == "__main__":
+    CONSUMER_NAME = "mohurd_crawler"
+    init_root_logger(CONSUMER_NAME)
     main()

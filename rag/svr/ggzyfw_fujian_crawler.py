@@ -21,10 +21,9 @@ This is a Vue.js SPA with a signed (MD5 + app secret) and AES-256-CBC encrypted 
 All listing and article data is fetched via API calls (POST /FwPortalApi/Article/PageList
 and POST /FwPortalApi/Article/Detail), then decrypted client-side.
 
-Three content sections:
-  - 新闻动态 (type=11) — ~738 articles
-  - 通知公告 (type=12) — ~893 articles
-  - 行业动态 (type=13) — ~1033 articles
+Two content sections:
+  - 通知公告 (type=12) — newList?type=12 / newDetail?id=
+  - 行业动态 (type=13) — newList?type=13 / newDetail?id=
 
 Usage (typically spawned by task_executor):
     python ggzyfw_fujian_crawler.py \
@@ -39,6 +38,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import re
 import sys
 import time
@@ -82,6 +82,10 @@ SECTIONS = {
     "hydt":   (13, "行业动态"),
 }
 
+# Anti-crawling
+_REQUEST_DELAY_MIN = 1.0
+_REQUEST_DELAY_MAX = 2.5
+
 _FRONTEND_BASE = "https://ggzyfw.fujian.gov.cn"
 
 
@@ -100,6 +104,8 @@ def parse_args():
                         help="Max articles to fetch per section (0 = unlimited)")
     parser.add_argument("--max-days", type=int, default=90,
                         help="Max age in days for articles to crawl (default: 90)")
+    parser.add_argument("--max-pages", type=int, default=5,
+                        help="Max pages to crawl per section (default: 5)")
     return parser.parse_args()
 
 
@@ -133,7 +139,7 @@ def _aes_decrypt(data_b64: str) -> dict:
 
 
 def _api_post(endpoint: str, body: dict, client: PlaywrightHttpClient = None) -> dict:
-    """POST to the signed/encrypted API and return the decrypted response."""
+    """POST to the signed/encrypted API with retry+backoff, return decrypted data."""
     ts = int(time.time() * 1000)
     body["ts"] = ts
     sig = _sign(body)
@@ -151,16 +157,26 @@ def _api_post(endpoint: str, body: dict, client: PlaywrightHttpClient = None) ->
     }
 
     url = f"{_API_BASE}{endpoint}"
-    if client is not None:
-        resp = client.post(url, json_body=body, headers=headers, timeout=30)
-    else:
-        resp = requests.post(url, json=body, headers=headers, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-
-    if data.get("Success") and data.get("Data"):
-        return _aes_decrypt(data["Data"])
-    raise RuntimeError(f"API error: {data}")
+    last_error = None
+    for attempt in range(4):
+        try:
+            if client is not None:
+                resp = client.post(url, json_body=body, headers=headers, timeout=30)
+            else:
+                resp = requests.post(url, json=body, headers=headers, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("Success") and data.get("Data"):
+                return _aes_decrypt(data["Data"])
+            raise RuntimeError(f"API error: {data}")
+        except Exception as e:
+            last_error = e
+            if attempt < 3:
+                wait = (2 ** attempt) + random.uniform(1, 3)
+                logging.warning("API %s attempt %d failed: %s, retrying in %.1fs",
+                              endpoint, attempt + 1, e, wait)
+                time.sleep(wait)
+    raise last_error
 
 
 # ---------------------------------------------------------------------------
@@ -168,11 +184,13 @@ def _api_post(endpoint: str, body: dict, client: PlaywrightHttpClient = None) ->
 # ---------------------------------------------------------------------------
 
 def _fetch_article_list(api_type: int, max_articles: int = 0,
-                        max_days: int = 90, client: PlaywrightHttpClient = None):
+                        max_days: int = 90, max_pages: int = 5,
+                        client: PlaywrightHttpClient = None):
     """Fetch article list for a given type via PageList API with pagination.
 
     Returns list[dict] with keys: id, title, type, tm, section_label.
     Filters out articles older than max_days.
+    Stops after max_pages pages.
     """
     articles = []
     page_index = 1
@@ -223,10 +241,13 @@ def _fetch_article_list(api_type: int, max_articles: int = 0,
 
         if page_index >= page_total:
             break
+        if max_pages and page_index >= max_pages:
+            logging.info("Reached max_pages=%d limit, stopping pagination", max_pages)
+            break
         page_index += 1
 
-        # Small delay between pages
-        time.sleep(0.3)
+        # Anti-crawling delay between pages
+        _request_delay()
 
     return articles
 
@@ -342,6 +363,11 @@ def _html_to_markdown(html: str, art_id: str) -> str:
 # Date parsing
 # ---------------------------------------------------------------------------
 
+def _request_delay():
+    """Random delay between API calls to avoid rate limiting."""
+    time.sleep(random.uniform(_REQUEST_DELAY_MIN, _REQUEST_DELAY_MAX))
+
+
 def _parse_date(text):
     """Try to parse a date string; return datetime or None."""
     for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d",
@@ -444,7 +470,7 @@ def _safe_print(msg):
 
 def _build_article_url(art_id: str) -> str:
     """Build a human-friendly frontend URL for an article."""
-    return f"{_FRONTEND_BASE}/index/new/detail?id={art_id}"
+    return f"{_FRONTEND_BASE}/index/newDetail?id={art_id}"
 
 
 def main():
@@ -455,6 +481,7 @@ def main():
     _safe_print(f"[GGZYFW] Task name: {args.task_name}")
     _safe_print(f"[GGZYFW] Target KB: {args.kb_id}")
     _safe_print(f"[GGZYFW] Max days: {args.max_days}")
+    _safe_print(f"[GGZYFW] Max pages/section: {args.max_pages}")
     if args.max_articles:
         _safe_print(f"[GGZYFW] Max articles/section: {args.max_articles}")
     _safe_print(f"{'='*60}\n")
@@ -516,6 +543,7 @@ def main():
                     api_type,
                     max_articles=args.max_articles,
                     max_days=args.max_days,
+                    max_pages=args.max_pages,
                     client=client,
                 )
             except Exception as e:
@@ -562,94 +590,88 @@ def main():
             sys.stdout.flush()
             sys.exit(0)
 
-        # Step 2: Fetch detail pages
-        _safe_print(f"\n[GGZYFW] Step 2/4: Fetching {len(all_articles)} article details (signed API)...\n")
+        # Step 2: Fetch detail pages (batch every 10 → checkpoint)
+        _safe_print(f"\n[GGZYFW] Step 2/4: Fetching {len(all_articles)} article details (batches of 10)...\n")
         sys.stdout.flush()
 
-        md_parts = []
+        BATCH_SIZE = 10
+        total = len(all_articles)
         success_count = 0
         fail_count = 0
-        total = len(all_articles)
+        batch_num = 0
 
-        for idx, art in enumerate(all_articles, 1):
-            title_preview = art["title"][:70]
-            _safe_print(f"[GGZYFW] [{idx}/{total}] [{art['section_label']}] {title_preview}")
-            sys.stdout.flush()
-            logging.info("[%d/%d] %s - %s", idx, total, art["section_label"], art["title"])
+        for batch_start in range(0, total, BATCH_SIZE):
+            batch = all_articles[batch_start:batch_start + BATCH_SIZE]
+            batch_num += 1
+            md_parts = []
+            batch_ids = []
 
-            try:
-                content, resources = _fetch_article_detail(art["id"], art["type"], client=client)
-            except Exception as e:
-                _safe_print(f"[GGZYFW]   -> ERROR: {e}")
+            for idx, art in enumerate(batch, 1):
+                global_idx = batch_start + idx
+                title_preview = art["title"][:70]
+                _safe_print(f"[GGZYFW] [{global_idx}/{total}] [{art['section_label']}] {title_preview}")
                 sys.stdout.flush()
-                logging.error("Failed to fetch detail for article %s: %s", art["id"], e)
-                fail_count += 1
-                continue
+                logging.info("[%d/%d] %s - %s", global_idx, total, art["section_label"], art["title"])
 
-            if not content:
-                _safe_print(f"[GGZYFW]   -> Empty content, skipped")
+                try:
+                    content, resources = _fetch_article_detail(art["id"], art["type"], client=client)
+                except Exception as e:
+                    _safe_print(f"[GGZYFW]   -> ERROR: {e}")
+                    sys.stdout.flush()
+                    logging.error("Failed to fetch detail for article %s: %s", art["id"], e)
+                    fail_count += 1
+                    continue
+
+                if not content:
+                    _safe_print(f"[GGZYFW]   -> Empty content, skipped")
+                    sys.stdout.flush()
+                    fail_count += 1
+                    continue
+
+                _safe_print(f"[GGZYFW]   -> {len(content)} chars")
                 sys.stdout.flush()
-                fail_count += 1
-                continue
 
-            _safe_print(f"[GGZYFW]   -> {len(content)} chars")
-            sys.stdout.flush()
+                article_date_str = art["date"].strftime("%Y-%m-%d") if art.get("date") else art.get("tm", "")
+                article_url = _build_article_url(art["id"])
 
-            article_date_str = art["date"].strftime("%Y-%m-%d") if art.get("date") else art.get("tm", "")
-            article_url = _build_article_url(art["id"])
+                lines = [
+                    f"# {art['title']}",
+                    f"**Section:** {art['section_label']}",
+                    f"**Date:** {article_date_str}",
+                    f"**URL:** {article_url}",
+                    "",
+                    content,
+                    "",
+                    "---",
+                ]
+                md_parts.append("\n".join(lines))
+                batch_ids.append(art["id"])
+                success_count += 1
 
-            lines = [
-                f"# {art['title']}",
-                f"**Section:** {art['section_label']}",
-                f"**Date:** {article_date_str}",
-                f"**URL:** {article_url}",
-                "",
-                content,
-                "",
-                "---",
-            ]
-            md_parts.append("\n".join(lines))
-            success_count += 1
+                # Anti-crawling delay between detail API calls
+                _request_delay()
 
-            # Small delay between API calls
-            time.sleep(0.2)
+            # ── Checkpoint: save batch + upload + update state ──
+            if md_parts:
+                batch_path = os.path.join(output_dir,
+                    f"batch_{batch_start + 1:04d}_{batch_start + len(batch):04d}.md")
+                with open(batch_path, "w", encoding="utf-8") as f:
+                    f.write("\n\n---\n\n".join(md_parts))
 
-        if not md_parts:
-            _safe_print(f"[GGZYFW] No articles processed successfully, exiting")
-            sys.stdout.flush()
-            sys.exit(0)
+                processed_keys.update(batch_ids)
+                _save_state(output_dir, {"processed_urls": list(processed_keys)})
 
-        _safe_print(f"\n[GGZYFW] Detail pages fetched: {success_count} success, {fail_count} failed\n")
+                if args.kb_id:
+                    try:
+                        _upload_to_kb(batch_path, args.kb_id, args.tenant_id)
+                    except Exception as e:
+                        logging.error("Upload batch %d failed: %s", batch_num, e)
+
+                _safe_print(f"[GGZYFW]   Batch {batch_num} uploaded ({success_count}/{total} done)")
+                sys.stdout.flush()
+
+        _safe_print(f"\n[GGZYFW] Detail pages: {success_count} success, {fail_count} failed\n")
         sys.stdout.flush()
-
-        # Step 3: Save markdown
-        _safe_print(f"[GGZYFW] Step 3/4: Saving markdown...")
-        sys.stdout.flush()
-        combined = "\n".join(md_parts)
-        filepath = _save_markdown(combined, output_dir)
-        _safe_print(f"[GGZYFW] Saved to {filepath} ({len(combined)} chars)\n")
-        sys.stdout.flush()
-
-        # Update state
-        new_ids = [a["id"] for a in all_articles]
-        if new_ids:
-            processed_keys.update(new_ids)
-            _save_state(output_dir, {"processed_urls": list(processed_keys)})
-
-        # Step 4: Upload to KB
-        _safe_print(f"[GGZYFW] Step 4/4: Uploading to KB {args.kb_id}...")
-        sys.stdout.flush()
-        logging.info("Uploading to KB %s ...", args.kb_id)
-        try:
-            _upload_to_kb(filepath, args.kb_id, args.tenant_id)
-            _safe_print(f"[GGZYFW] Upload complete!\n")
-            sys.stdout.flush()
-            logging.info("Upload complete")
-        except Exception as e:
-            _safe_print(f"[GGZYFW] ERROR: Upload failed: {e}")
-            sys.stdout.flush()
-            logging.error("Upload failed: %s", e)
-            sys.exit(1)
 
     finally:
         client.stop()

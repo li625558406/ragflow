@@ -370,9 +370,32 @@ class LLM(ComponentBase):
             return
 
         def clean_formated_answer(ans: str) -> str:
-            ans = re.sub(r"^.*</think>", "", ans, flags=re.DOTALL)
+            # Step 1: Try to find JSON in the raw response first (before any cleaning)
+            # This handles cases where JSON is embedded within or near thinking blocks
+            m = re.search(r"\{[^{}]*\"chapters\"[^{}]*\{[\s\S]*?\}\s*\}", ans)
+            if not m:
+                m = re.search(r"\{[^{}]*\"chapters\"\s*:\s*\[[\s\S]*\]\s*\}", ans)
+            if m:
+                logging.info("[structured] Found JSON with 'chapters' key in raw response")
+                return m.group(0).strip()
+            # Step 2: Remove thinking blocks (<think >...</think >)
+            ans = re.sub(r"<think[^>]*>[\s\S]*?</think\s*>", "", ans, flags=re.IGNORECASE)
+            ans = re.sub(r"<think[^>]*>[\s\S]*$", "", ans, flags=re.IGNORECASE)
+            # Remove emoji-style thinking markers
+            ans = re.sub(r"^.*\U0001f4ad", "", ans, flags=re.DOTALL)
+            # Remove markdown code fences
             ans = re.sub(r"^.*```json", "", ans, flags=re.DOTALL)
-            return re.sub(r"```\n*$", "", ans, flags=re.DOTALL)
+            ans = re.sub(r"^.*```", "", ans, flags=re.DOTALL)
+            ans = re.sub(r"```\s*$", "", ans, flags=re.DOTALL)
+            ans = ans.strip()
+            # Step 3: Extract JSON object/array if embedded in surrounding text
+            m = re.search(r"\{[\s\S]*\}", ans)
+            if m:
+                return m.group(0).strip()
+            m = re.search(r"\[[\s\S]*\]", ans)
+            if m:
+                return m.group(0).strip()
+            return ans
 
         prompt, msg, _ = self._prepare_prompt_variables()
         error: str = ""
@@ -399,10 +422,19 @@ class LLM(ComponentBase):
                     logging.error(f"LLM response error: {ans}")
                     error = ans
                     continue
+                cleaned = clean_formated_answer(ans)
+                has_brace = '{' in ans
+                has_chapters = '"chapters"' in ans
+                logging.info(f"[structured] raw len={len(ans)} cleaned len={len(cleaned)} has_brace={has_brace} has_chapters={has_chapters}")
+                logging.info(f"[structured] raw_tail={ans[-500:]}")
+                logging.info(f"[structured] cleaned_head={cleaned[:300]}")
                 try:
-                    self.set_output("structured", json_repair.loads(clean_formated_answer(ans)))
+                    parsed = json_repair.loads(cleaned)
+                    logging.info(f"[structured] parsed type={type(parsed).__name__} keys={list(parsed.keys()) if isinstance(parsed, dict) else 'N/A'}")
+                    self.set_output("structured", parsed)
                     return
-                except Exception:
+                except Exception as e:
+                    logging.error(f"[structured] json_repair failed: {e}, cleaned_head={cleaned[:500]}")
                     msg_fit.append({"role": "user", "content": "The answer can't not be parsed as JSON"})
                     error = "The answer can't not be parsed as JSON"
             if error:

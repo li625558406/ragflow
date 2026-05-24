@@ -1,0 +1,1257 @@
+{
+    "title": {
+        "en": "Bidding Intelligence Assistant V2",
+        "zh": "投标智能助手 V2（分章节生成）"
+    },
+    "description": {
+        "en": "Full-featured bidding assistant: quick analysis, Q&A, and chapter-by-chapter document generation.",
+        "zh": "全功能投标助手：快速分析招标文件/公司资质/投标框架、Q&A问答、分章节迭代生成完整投标文件（DOCX）。"
+    },
+    "canvas_type": "Other",
+    "dsl": {
+        "components": {
+            "begin": {
+                "downstream": ["Categorize:IntentClassifier"],
+                "obj": {
+                    "component_name": "Begin",
+                    "params": {
+                        "inputs": {},
+                        "mode": "conversational",
+                        "outputs": {},
+                        "prologue": "您好！我是投标智能助手 V2，可以帮您：\n\n1. **🔍 快速分析** — 深度分析招标文件、公司资质、投标框架、联网数据，输出结构化分析报告\n2. **📖 Q&A问答** — 检索招标公告、政策法规、公司资质等，回答具体问题\n3. **📝 生成投标文件** — 分章节迭代生成完整投标文档（DOCX），突破AI输出长度限制\n\n请告诉我您的需求！"
+                    }
+                },
+                "upstream": []
+            },
+
+            "Categorize:IntentClassifier": {
+                "downstream": ["Agent:QuickAnalyzer", "Retrieval:KnowledgeBase", "Agent:InfoCollector"],
+                "obj": {
+                    "component_name": "Categorize",
+                    "params": {
+                        "frequencyPenaltyEnabled": true,
+                        "frequency_penalty": 0.7,
+                        "items": [
+                            {
+                                "description": "用户要求分析招标文件内容、公司资质、投标框架、联网信息等，需要输出结构化的分析报告或对比总结",
+                                "examples": [
+                                    {"value": "帮我分析一下这个招标文件"},
+                                    {"value": "分析我们的公司资质是否满足这个项目"},
+                                    {"value": "看看投标框架是什么结构"},
+                                    {"value": "对比一下招标要求和公司情况"},
+                                    {"value": "快速了解一下这个招标项目"},
+                                    {"value": "分析竞争对手情况"},
+                                    {"value": "看看这个项目有哪些风险点"}
+                                ],
+                                "name": "快速分析",
+                                "uuid": "analysis-category-003"
+                            },
+                            {
+                                "description": "用户询问招标信息、政策法规、公司资质等具体问题，需要简洁准确的回答",
+                                "examples": [
+                                    {"value": "这个项目对资质有什么要求？"},
+                                    {"value": "最近有哪些装修工程招标？"},
+                                    {"value": "我们公司符合投标条件吗？"},
+                                    {"value": "标书中技术评分标准是什么？"},
+                                    {"value": "投标截止时间是什么时候？"}
+                                ],
+                                "name": "Q&A问答",
+                                "uuid": "qa-category-001"
+                            },
+                            {
+                                "description": "用户要求生成投标文件、标书、投标方案等文档",
+                                "examples": [
+                                    {"value": "帮我生成投标文件"},
+                                    {"value": "根据这个招标文件写一份标书"},
+                                    {"value": "生成完整的投标方案"},
+                                    {"value": "编写投标文档"}
+                                ],
+                                "name": "文档生成",
+                                "uuid": "doc-gen-category-002"
+                            }
+                        ],
+                        "llm_id": "",
+                        "maxTokensEnabled": false,
+                        "max_tokens": 256,
+                        "message_history_window_size": 7,
+                        "outputs": {
+                            "category_name": {"type": "string"}
+                        },
+                        "parameter": "Precise",
+                        "presencePenaltyEnabled": true,
+                        "presence_penalty": 0.4,
+                        "query": "sys.query",
+                        "temperature": 0.1,
+                        "temperatureEnabled": true,
+                        "topPEnabled": true,
+                        "top_p": 0.3
+                    }
+                },
+                "upstream": ["begin"]
+            },
+
+            "Agent:QuickAnalyzer": {
+                "downstream": ["Message:AnalysisResult"],
+                "obj": {
+                    "component_name": "Agent",
+                    "params": {
+                        "cite": true,
+                        "delay_after_error": 1,
+                        "description": "",
+                        "exception_default_value": "",
+                        "exception_goto": [],
+                        "exception_method": "",
+                        "frequencyPenaltyEnabled": true,
+                        "frequency_penalty": 0.3,
+                        "llm_id": "",
+                        "maxTokensEnabled": false,
+                        "max_retries": 3,
+                        "max_rounds": 10,
+                        "max_tokens": 8192,
+                        "mcp": [],
+                        "message_history_window_size": 12,
+                        "outputs": {"content": {"type": "string", "value": ""}},
+                        "parameter": "Balance",
+                        "presencePenaltyEnabled": true,
+                        "presence_penalty": 0.2,
+                        "prompts": [
+                            {
+                                "content": "用户需求：{sys.query}\n\n请根据用户需求，有针对性地检索知识库和联网信息，输出结构化分析报告。",
+                                "role": "user"
+                            }
+                        ],
+                        "showStructuredOutput": false,
+                        "sys_prompt": "# 角色\n你是资深投标分析专家，擅长从招标文件、公司资料、投标框架中快速提取关键信息并生成结构化分析报告。\n\n# 分析工具\n你拥有以下检索工具，请根据分析需要灵活调用：\n- **招标文件检索**：搜索招标公告、招标文件、采购需求\n- **公司资料检索**：搜索公司资质、业绩、人员、技术能力\n- **文档框架检索**：搜索投标文件模板、结构要求\n- **联网搜索**：查询行业动态、市场行情、政策法规、竞争对手\n\n# 工作流程\n1. 理解用户分析意图（分析招标文件？分析公司资质？分析框架？综合分析？）\n2. 调用相应检索工具获取信息\n3. 如需补充，调用联网搜索\n4. 整合信息，输出结构化分析报告\n\n# 分析维度\n## 招标文件分析\n- 项目基本信息（名称、编号、预算、采购人、时间节点）\n- 资格审查要求（资质、证书、经验、人员、财务）\n- 技术评分标准（评分项、分值、评审方法）\n- 商务条款（付款方式、交付期、违约责任、质保期）\n- 关键风险点与注意事项\n\n## 公司资质分析\n- 现有资质清单与等级\n- 类似项目业绩（数量、金额、年限）\n- 人员配置与资质匹配度\n- 技术能力与项目需求匹配度\n- 竞争优势与不足\n\n## 投标框架分析\n- 文档结构与章节要求\n- 各章节内容要点\n- 格式与规范要求\n\n## 综合分析\n- 招标要求 vs 公司资质匹配度\n- 投标可行性评估（是否值得投标）\n- 优势/劣势/风险/机会（SWOT）\n- 建议的投标策略\n\n# 输出格式\n根据分析类型选择合适的格式：\n- 使用 Markdown 表格呈现对比信息\n- 使用 ✅/❌ 标记满足/不满足项\n- 使用 🔴🟡🟢 标记风险等级\n- 缺失信息标注【待确认】\n- 关键数据加粗显示\n\n# 分析原则\n1. **数据驱动**：所有结论必须基于检索到的实际数据\n2. **结构清晰**：分点分项，层次分明\n3. **结论明确**：每个分析项给出明确结论和建议\n4. **风险预警**：主动识别潜在风险和合规问题\n5. **来源标注**：关键信息标注来源【知识库】/【联网搜索】",
+                        "temperature": 0.3,
+                        "temperatureEnabled": true,
+                        "tools": [
+                            {
+                                "component_name": "Retrieval",
+                                "name": "招标文件检索",
+                                "params": {
+                                    "cross_languages": [],
+                                    "dataset_ids": [],
+                                    "empty_response": "",
+                                    "kb_ids": [],
+                                    "keywords_similarity_weight": 0.3,
+                                    "meta_data_filter": {"manual": [], "method": "disabled"},
+                                    "rerank_id": "",
+                                    "retrieval_from": "dataset",
+                                    "similarity_threshold": 0.05,
+                                    "toc_enhance": true,
+                                    "top_k": 1024,
+                                    "top_n": 50,
+                                    "use_kg": false
+                                }
+                            },
+                            {
+                                "component_name": "Retrieval",
+                                "name": "公司资料检索",
+                                "params": {
+                                    "cross_languages": [],
+                                    "dataset_ids": [],
+                                    "empty_response": "",
+                                    "kb_ids": [],
+                                    "keywords_similarity_weight": 0.3,
+                                    "meta_data_filter": {"manual": [], "method": "disabled"},
+                                    "rerank_id": "",
+                                    "retrieval_from": "dataset",
+                                    "similarity_threshold": 0.05,
+                                    "toc_enhance": true,
+                                    "top_k": 1024,
+                                    "top_n": 50,
+                                    "use_kg": false
+                                }
+                            },
+                            {
+                                "component_name": "Retrieval",
+                                "name": "文档框架检索",
+                                "params": {
+                                    "cross_languages": [],
+                                    "dataset_ids": [],
+                                    "empty_response": "",
+                                    "kb_ids": [],
+                                    "keywords_similarity_weight": 0.3,
+                                    "meta_data_filter": {"manual": [], "method": "disabled"},
+                                    "rerank_id": "",
+                                    "retrieval_from": "dataset",
+                                    "similarity_threshold": 0.05,
+                                    "toc_enhance": true,
+                                    "top_k": 1024,
+                                    "top_n": 50,
+                                    "use_kg": false
+                                }
+                            },
+                            {
+                                "component_name": "DuckDuckGo",
+                                "name": "联网搜索",
+                                "params": {"top_n": 8}
+                            }
+                        ],
+                        "topPEnabled": true,
+                        "top_p": 0.85,
+                        "user_prompt": "",
+                        "visual_files_var": ""
+                    }
+                },
+                "upstream": ["Categorize:IntentClassifier"]
+            },
+
+            "Message:AnalysisResult": {
+                "downstream": [],
+                "obj": {
+                    "component_name": "Message",
+                    "params": {
+                        "content": ["{Agent:QuickAnalyzer@content}"],
+                        "memory_ids": [],
+                        "output_format": "md"
+                    }
+                },
+                "upstream": ["Agent:QuickAnalyzer"]
+            },
+
+            "Retrieval:KnowledgeBase": {
+                "downstream": ["VariableAggregator:QAAggregator"],
+                "obj": {
+                    "component_name": "Retrieval",
+                    "params": {
+                        "cross_languages": [],
+                        "dataset_ids": [],
+                        "empty_response": "未找到相关信息",
+                        "kb_ids": [],
+                        "keywords_similarity_weight": 0.3,
+                        "meta_data_filter": {"manual": [], "method": "disabled"},
+                        "outputs": {
+                            "formalized_content": {"type": "string", "value": ""},
+                            "json": {"type": "Array<Object>", "value": []}
+                        },
+                        "query": "{sys.query}",
+                        "rerank_id": "",
+                        "retrieval_from": "dataset",
+                        "similarity_threshold": 0.05,
+                        "toc_enhance": true,
+                        "top_k": 1024,
+                        "top_n": 50,
+                        "use_kg": false
+                    }
+                },
+                "upstream": ["Categorize:IntentClassifier"]
+            },
+
+            "CodeExec:EmptyContent": {
+                "downstream": ["VariableAggregator:QAAggregator"],
+                "obj": {
+                    "component_name": "CodeExec",
+                    "params": {
+                        "arguments": {},
+                        "lang": "python",
+                        "outputs": {"result": {"type": "String", "value": null}},
+                        "script": "def main() -> str:\n    return \"\""
+                    }
+                },
+                "upstream": ["Retrieval:KnowledgeBase"]
+            },
+
+            "CodeExec:EmptyJson": {
+                "downstream": ["VariableAggregator:QAAggregator"],
+                "obj": {
+                    "component_name": "CodeExec",
+                    "params": {
+                        "arguments": {},
+                        "lang": "python",
+                        "outputs": {"result": {"type": "Array<Object>", "value": null}},
+                        "script": "def main() -> str:\n    return []"
+                    }
+                },
+                "upstream": ["Retrieval:KnowledgeBase"]
+            },
+
+            "VariableAggregator:QAAggregator": {
+                "downstream": ["Agent:QAResponder"],
+                "obj": {
+                    "component_name": "VariableAggregator",
+                    "params": {
+                        "groups": [
+                            {
+                                "group_name": "content",
+                                "type": "string",
+                                "variables": [
+                                    {"value": "Retrieval:KnowledgeBase@formalized_content"},
+                                    {"value": "CodeExec:EmptyContent@result"}
+                                ]
+                            },
+                            {
+                                "group_name": "json",
+                                "type": "Array<Object>",
+                                "variables": [
+                                    {"value": "Retrieval:KnowledgeBase@json"},
+                                    {"value": "CodeExec:EmptyJson@result"}
+                                ]
+                            }
+                        ],
+                        "outputs": {
+                            "content": {"type": "string"},
+                            "json": {"type": "Array<Object>"}
+                        }
+                    }
+                },
+                "upstream": ["Retrieval:KnowledgeBase", "CodeExec:EmptyContent", "CodeExec:EmptyJson"]
+            },
+
+            "Agent:QAResponder": {
+                "downstream": ["Message:QAResult"],
+                "obj": {
+                    "component_name": "Agent",
+                    "params": {
+                        "cite": true,
+                        "delay_after_error": 1,
+                        "description": "",
+                        "exception_default_value": "",
+                        "exception_goto": [],
+                        "exception_method": "",
+                        "frequencyPenaltyEnabled": true,
+                        "frequency_penalty": 0.3,
+                        "llm_id": "",
+                        "maxTokensEnabled": false,
+                        "max_retries": 3,
+                        "max_rounds": 5,
+                        "max_tokens": 4096,
+                        "mcp": [],
+                        "message_history_window_size": 12,
+                        "outputs": {"content": {"type": "string", "value": ""}},
+                        "parameter": "Balance",
+                        "presencePenaltyEnabled": true,
+                        "presence_penalty": 0.2,
+                        "prompts": [
+                            {
+                                "content": "用户问题：{sys.query}\n\n检索到的相关信息：\n{VariableAggregator:QAAggregator@content}\n\n联网搜索结果：{DuckDuckGo:WebSearch@formalized_content}\n\n请基于检索结果和联网信息回答用户问题。",
+                                "role": "user"
+                            }
+                        ],
+                        "showStructuredOutput": false,
+                        "sys_prompt": "# 角色\n你是一位资深的政府采购投标分析专家，擅长从招标文件中提取、归纳和分析关键投标信息。\n\n# 任务\n根据知识库检索结果回答用户的问题。\n\n# 回答规则\n1. 严格基于检索到的原文回答，不要编造信息\n2. 使用表格、分点等方式组织信息\n3. 关键信息后标注来源：【知识库】\n4. 如果信息不足，明确说明\n5. 回答简洁准确，直接给出答案",
+                        "temperature": 0.5,
+                        "temperatureEnabled": true,
+                        "tools": [
+                            {
+                                "component_name": "DuckDuckGo",
+                                "name": "WebSearch",
+                                "params": {"top_n": 5}
+                            }
+                        ],
+                        "topPEnabled": true,
+                        "top_p": 0.85,
+                        "user_prompt": "",
+                        "visual_files_var": ""
+                    }
+                },
+                "upstream": ["VariableAggregator:QAAggregator"]
+            },
+
+            "Message:QAResult": {
+                "downstream": [],
+                "obj": {
+                    "component_name": "Message",
+                    "params": {
+                        "content": ["{Agent:QAResponder@content}"],
+                        "memory_ids": [],
+                        "output_format": "md"
+                    }
+                },
+                "upstream": ["Agent:QAResponder"]
+            },
+
+            "Agent:InfoCollector": {
+                "downstream": ["LLM:ChapterPlanner"],
+                "obj": {
+                    "component_name": "Agent",
+                    "params": {
+                        "cite": true,
+                        "delay_after_error": 1,
+                        "description": "",
+                        "exception_default_value": "",
+                        "exception_goto": [],
+                        "exception_method": "",
+                        "frequencyPenaltyEnabled": true,
+                        "frequency_penalty": 0.7,
+                        "llm_id": "",
+                        "maxTokensEnabled": false,
+                        "max_retries": 3,
+                        "max_rounds": 8,
+                        "max_tokens": 4096,
+                        "mcp": [],
+                        "message_history_window_size": 12,
+                        "outputs": {
+                            "content": {"type": "string", "value": ""}
+                        },
+                        "parameter": "Precise",
+                        "presencePenaltyEnabled": true,
+                        "presence_penalty": 0.4,
+                        "prompts": [
+                            {
+                                "content": "用户需求：{sys.query}\n\n请按计划执行检索，收集所有相关信息。",
+                                "role": "user"
+                            }
+                        ],
+                        "showStructuredOutput": false,
+                        "sys_prompt": "# 角色\n你是信息收集专家，负责为投标文档生成收集全面的招标文件和公司资料信息。\n\n# 工作流程\n1. 搜索招标文件知识库 — 获取招标公告/招标文件的完整要求\n2. 搜索公司资料知识库 — 获取公司资质、业绩、人员信息\n3. 搜索投标文档框架知识库 — 获取投标文件结构模板\n4. 联网搜索 — 补充行业信息、市场行情\n5. 整合所有信息\n\n# 信息收集清单\n## 招标要求\n- 项目基本信息（名称、编号、预算、采购人）\n- 投标资格要求（资质、证书、经验、人员）\n- 技术规范与要求\n- 商务条款（付款方式、交付期、违约责任）\n- 评标标准与方法（评分项、权重）\n- 投标程序（截止时间、递交方式、开标地点）\n\n## 公司资料\n- 公司资质证书\n- 类似项目业绩\n- 技术能力\n- 人员配置\n\n## 投标文档框架\n- 文档结构要求\n- 各章节内容要求\n\n## 联网补充\n- 行业动态、市场行情、相关政策法规\n\n# 输出格式\n收集完成后按以下格式整理：\n\n---招标要求---\n（逐项列出）\n\n---公司资质---\n（逐项列出）\n\n---文档框架---\n（章节结构）\n\n---补充信息---\n（联网搜索结果汇总）",
+                        "temperature": 0.2,
+                        "temperatureEnabled": true,
+                        "tools": [
+                            {
+                                "component_name": "Retrieval",
+                                "name": "招标文件检索",
+                                "params": {
+                                    "cross_languages": [],
+                                    "dataset_ids": [],
+                                    "empty_response": "",
+                                    "kb_ids": [],
+                                    "keywords_similarity_weight": 0.3,
+                                    "meta_data_filter": {"manual": [], "method": "disabled"},
+                                    "rerank_id": "",
+                                    "retrieval_from": "dataset",
+                                    "similarity_threshold": 0.05,
+                                    "toc_enhance": true,
+                                    "top_k": 1024,
+                                    "top_n": 50,
+                                    "use_kg": false
+                                }
+                            },
+                            {
+                                "component_name": "Retrieval",
+                                "name": "公司资料检索",
+                                "params": {
+                                    "cross_languages": [],
+                                    "dataset_ids": [],
+                                    "empty_response": "",
+                                    "kb_ids": [],
+                                    "keywords_similarity_weight": 0.3,
+                                    "meta_data_filter": {"manual": [], "method": "disabled"},
+                                    "rerank_id": "",
+                                    "retrieval_from": "dataset",
+                                    "similarity_threshold": 0.05,
+                                    "toc_enhance": true,
+                                    "top_k": 1024,
+                                    "top_n": 50,
+                                    "use_kg": false
+                                }
+                            },
+                            {
+                                "component_name": "Retrieval",
+                                "name": "文档框架检索",
+                                "params": {
+                                    "cross_languages": [],
+                                    "dataset_ids": [],
+                                    "empty_response": "",
+                                    "kb_ids": [],
+                                    "keywords_similarity_weight": 0.3,
+                                    "meta_data_filter": {"manual": [], "method": "disabled"},
+                                    "rerank_id": "",
+                                    "retrieval_from": "dataset",
+                                    "similarity_threshold": 0.05,
+                                    "toc_enhance": true,
+                                    "top_k": 1024,
+                                    "top_n": 50,
+                                    "use_kg": false
+                                }
+                            },
+                            {
+                                "component_name": "DuckDuckGo",
+                                "name": "联网搜索",
+                                "params": {"top_n": 5}
+                            }
+                        ],
+                        "topPEnabled": true,
+                        "top_p": 0.9,
+                        "user_prompt": "",
+                        "visual_files_var": ""
+                    }
+                },
+                "upstream": ["Categorize:IntentClassifier"]
+            },
+
+            "LLM:ChapterPlanner": {
+                "downstream": ["Iteration:ChapterLoop"],
+                "obj": {
+                    "component_name": "LLM",
+                    "params": {
+                        "cite": false,
+                        "delay_after_error": 1,
+                        "exception_default_value": "",
+                        "exception_goto": [],
+                        "exception_method": "",
+                        "frequencyPenaltyEnabled": true,
+                        "frequency_penalty": 0.3,
+                        "llm_id": "",
+                        "maxTokensEnabled": true,
+                        "max_retries": 2,
+                        "max_tokens": 4096,
+                        "message_history_window_size": 12,
+                        "outputs": {
+                            "content": {"type": "string", "value": ""},
+                            "structured": {
+                                "type": "array",
+                                "value": [],
+                                "properties": {
+                                    "chapter_number": {"type": "integer", "description": "章节序号"},
+                                    "chapter_title": {"type": "string", "description": "章节标题"},
+                                    "chapter_type": {"type": "string", "description": "章节类型: bid_letter/authorization/quotation/qualification/performance/technical/team/service/other"},
+                                    "requirements": {"type": "string", "description": "该章节需要涵盖的内容要求"},
+                                    "retrieval_query": {"type": "string", "description": "用于知识库检索的关键词"}
+                                }
+                            }
+                        },
+                        "parameter": "Precise",
+                        "presencePenaltyEnabled": true,
+                        "presence_penalty": 0.3,
+                        "prompts": [
+                            {
+                                "content": "用户需求：{sys.query}\n\n收集到的招标文件和公司资料：\n{Agent:InfoCollector@content}\n\n请分析以上信息，规划投标文件的章节结构。",
+                                "role": "user"
+                            }
+                        ],
+                        "showStructuredOutput": true,
+                        "sys_prompt": "# 角色\n你是投标文件结构规划专家。\n\n# 任务\n根据收集到的招标要求和公司资料，规划投标文件的章节结构。\n\n# 规划规则\n1. 按照招标文件要求的顺序和结构规划章节\n2. 参考投标文档框架知识库中的模板\n3. 技术方案如果内容较长，应拆分为多个子章节（如：项目理解、技术架构、实施方案、质量保障、进度计划等）\n4. 每个章节必须包含 retrieval_query（用于后续定向检索知识库）\n5. requirements 要详细描述该章节应包含的具体内容\n\n# 常见章节类型\n- bid_letter: 投标函\n- authorization: 法定代表人授权书\n- quotation: 报价明细表\n- qualification: 公司资质证明\n- performance: 类似项目业绩\n- technical: 技术方案（可拆分多个）\n- team: 项目管理团队\n- service: 售后服务承诺\n- other: 其他章节\n\n# 输出要求\n输出 JSON 数组，每个元素代表一个章节。",
+                        "temperature": 0.2,
+                        "temperatureEnabled": true,
+                        "topPEnabled": true,
+                        "top_p": 0.3
+                    }
+                },
+                "upstream": ["Agent:InfoCollector"]
+            },
+
+            "Iteration:ChapterLoop": {
+                "downstream": ["CodeExec:JoinChapters"],
+                "obj": {
+                    "component_name": "Iteration",
+                    "params": {
+                        "items_ref": "LLM:ChapterPlanner@structured",
+                        "variable": {},
+                        "outputs": {
+                            "chapters": {
+                                "type": "Array<string>",
+                                "value": [],
+                                "ref": "LLM:ChapterGenerator@content"
+                            }
+                        }
+                    }
+                },
+                "upstream": ["LLM:ChapterPlanner"]
+            },
+
+            "IterationItem:ChapterItem": {
+                "downstream": ["Retrieval:ChapterKB"],
+                "upstream": [],
+                "parent_id": "Iteration:ChapterLoop",
+                "obj": {
+                    "component_name": "IterationItem",
+                    "params": {
+                        "outputs": {
+                            "item": {"type": "object", "value": null},
+                            "index": {"type": "number", "value": 0}
+                        }
+                    }
+                }
+            },
+
+            "Retrieval:ChapterKB": {
+                "downstream": ["LLM:ChapterGenerator"],
+                "upstream": ["IterationItem:ChapterItem"],
+                "parent_id": "Iteration:ChapterLoop",
+                "obj": {
+                    "component_name": "Retrieval",
+                    "params": {
+                        "cross_languages": [],
+                        "dataset_ids": [],
+                        "empty_response": "",
+                        "kb_ids": [],
+                        "keywords_similarity_weight": 0.3,
+                        "meta_data_filter": {"manual": [], "method": "disabled"},
+                        "outputs": {
+                            "formalized_content": {"type": "string", "value": ""},
+                            "json": {"type": "Array<Object>", "value": []}
+                        },
+                        "query": "{IterationItem:ChapterItem@item.retrieval_query}",
+                        "rerank_id": "",
+                        "retrieval_from": "dataset",
+                        "similarity_threshold": 0.05,
+                        "toc_enhance": true,
+                        "top_k": 1024,
+                        "top_n": 20,
+                        "use_kg": false
+                    }
+                }
+            },
+
+            "LLM:ChapterGenerator": {
+                "downstream": [],
+                "upstream": ["Retrieval:ChapterKB"],
+                "parent_id": "Iteration:ChapterLoop",
+                "obj": {
+                    "component_name": "LLM",
+                    "params": {
+                        "cite": false,
+                        "delay_after_error": 1,
+                        "exception_default_value": "",
+                        "exception_goto": [],
+                        "exception_method": "",
+                        "frequencyPenaltyEnabled": true,
+                        "frequency_penalty": 0.3,
+                        "llm_id": "",
+                        "maxTokensEnabled": true,
+                        "max_retries": 2,
+                        "max_tokens": 4096,
+                        "message_history_window_size": 12,
+                        "outputs": {
+                            "content": {"type": "string", "value": ""}
+                        },
+                        "parameter": "Creative",
+                        "presencePenaltyEnabled": true,
+                        "presence_penalty": 0.2,
+                        "prompts": [
+                            {
+                                "content": "## 当前章节信息\n- 章节序号：{IterationItem:ChapterItem@item.chapter_number}\n- 章节标题：{IterationItem:ChapterItem@item.chapter_title}\n- 章节类型：{IterationItem:ChapterItem@item.chapter_type}\n- 内容要求：{IterationItem:ChapterItem@item.requirements}\n\n## 检索到的参考资料\n{Retrieval:ChapterKB@formalized_content}\n\n## 整体招标背景\n{Agent:InfoCollector@content}\n\n---\n请生成上述章节的完整、专业内容。",
+                                "role": "user"
+                            }
+                        ],
+                        "sys_prompt": "# 角色\n你是资深投标专家，擅长根据招标文件要求撰写专业投标文档。\n\n# 任务\n生成指定章节的完整内容。\n\n# 撰写要求\n1. 严格按检索到的资料撰写，不虚构信息\n2. 缺失信息用【待补充】标记\n3. 使用正式、专业的商务语言\n4. 使用 Markdown 格式输出\n5. 章节标题用 ## 二级标题\n6. 只输出当前章节内容，不要输出其他章节\n7. 内容要详实完整，充分利用检索到的参考资料",
+                        "temperature": 0.5,
+                        "temperatureEnabled": true,
+                        "topPEnabled": true,
+                        "top_p": 0.9
+                    }
+                }
+            },
+
+            "CodeExec:JoinChapters": {
+                "downstream": ["DocGenerator:Output"],
+                "obj": {
+                    "component_name": "CodeExec",
+                    "params": {
+                        "arguments": {
+                            "chapters": "Iteration:ChapterLoop@chapters"
+                        },
+                        "lang": "python",
+                        "outputs": {
+                            "result": {"type": "String", "value": null}
+                        },
+                        "script": "def main(chapters: list) -> dict:\n    \"\"\"将各章节内容拼接为完整投标文件\"\"\"\n    if not chapters:\n        return {\"result\": \"\"}\n    return {\"result\": \"\\n\\n---\\n\\n\".join(str(c) for c in chapters)}"
+                    }
+                },
+                "upstream": ["Iteration:ChapterLoop"]
+            },
+
+            "DocGenerator:Output": {
+                "downstream": ["Message:BidResult"],
+                "obj": {
+                    "component_name": "DocGenerator",
+                    "params": {
+                        "content": "{CodeExec:JoinChapters@result}",
+                        "output_format": "docx",
+                        "filename": "投标文件_{sys.date}",
+                        "header_text": "投标文件 — 机密",
+                        "footer_text": "由 RAGFlow 投标智能助手生成",
+                        "add_page_numbers": true,
+                        "add_timestamp": true,
+                        "watermark_text": ""
+                    }
+                },
+                "upstream": ["CodeExec:JoinChapters"]
+            },
+
+            "Message:BidResult": {
+                "downstream": [],
+                "obj": {
+                    "component_name": "Message",
+                    "params": {
+                        "content": ["{DocGenerator:Output@content}"],
+                        "memory_ids": [],
+                        "output_format": "md"
+                    }
+                },
+                "upstream": ["DocGenerator:Output"]
+            }
+        },
+        "globals": {
+            "sys.conversation_turns": 0,
+            "sys.date": "",
+            "sys.files": [],
+            "sys.history": [],
+            "sys.query": "",
+            "sys.user_id": ""
+        },
+        "history": [],
+        "path": ["begin"]
+    },
+    "graph": {
+        "nodes": [
+            {
+                "data": {
+                    "form": {
+                        "inputs": {},
+                        "mode": "conversational",
+                        "outputs": {},
+                        "prologue": "您好！我是投标智能助手 V2，可以帮您：\n\n1. **🔍 快速分析** — 深度分析招标文件、公司资质、投标框架、联网数据\n2. **📖 Q&A问答** — 检索招标公告、政策法规等，回答具体问题\n3. **📝 生成投标文件** — 分章节迭代生成完整投标文档（DOCX）\n\n请告诉我您的需求！"
+                    },
+                    "label": "Begin",
+                    "name": "begin"
+                },
+                "id": "begin",
+                "position": {"x": -400, "y": 200},
+                "type": "beginNode"
+            },
+            {
+                "data": {
+                    "form": {
+                        "frequencyPenaltyEnabled": true,
+                        "frequency_penalty": 0.7,
+                        "items": [
+                            {
+                                "description": "用户要求分析招标文件、公司资质、投标框架等",
+                                "examples": [
+                                    {"value": "帮我分析一下这个招标文件"},
+                                    {"value": "分析公司资质是否满足"},
+                                    {"value": "看看投标框架是什么结构"},
+                                    {"value": "快速了解这个招标项目"}
+                                ],
+                                "name": "快速分析",
+                                "uuid": "analysis-category-003"
+                            },
+                            {
+                                "description": "用户询问具体问题",
+                                "examples": [
+                                    {"value": "资质有什么要求？"},
+                                    {"value": "投标截止时间？"},
+                                    {"value": "评标标准是什么？"}
+                                ],
+                                "name": "Q&A问答",
+                                "uuid": "qa-category-001"
+                            },
+                            {
+                                "description": "用户要求生成投标文件",
+                                "examples": [
+                                    {"value": "帮我生成投标文件"},
+                                    {"value": "根据这个招标文件写标书"},
+                                    {"value": "生成投标方案"}
+                                ],
+                                "name": "文档生成",
+                                "uuid": "doc-gen-category-002"
+                            }
+                        ],
+                        "llm_id": "",
+                        "maxTokensEnabled": false,
+                        "max_tokens": 256,
+                        "message_history_window_size": 7,
+                        "outputs": {"category_name": {"type": "string"}},
+                        "parameter": "Precise",
+                        "presencePenaltyEnabled": true,
+                        "presence_penalty": 0.4,
+                        "query": "sys.query",
+                        "temperature": 0.1,
+                        "temperatureEnabled": true,
+                        "topPEnabled": true,
+                        "top_p": 0.3
+                    },
+                    "label": "Categorize",
+                    "name": "意图分类"
+                },
+                "id": "Categorize:IntentClassifier",
+                "position": {"x": -100, "y": 200},
+                "type": "categorizeNode"
+            },
+
+            {
+                "data": {
+                    "form": {
+                        "cite": true,
+                        "llm_id": "",
+                        "max_rounds": 10,
+                        "max_tokens": 8192,
+                        "outputs": {"content": {"type": "string", "value": ""}},
+                        "parameter": "Balance",
+                        "temperature": 0.3,
+                        "tools": [
+                            {"component_name": "Retrieval", "name": "招标文件检索", "params": {"similarity_threshold": 0.05, "top_n": 50}},
+                            {"component_name": "Retrieval", "name": "公司资料检索", "params": {"similarity_threshold": 0.05, "top_n": 50}},
+                            {"component_name": "Retrieval", "name": "文档框架检索", "params": {"similarity_threshold": 0.05, "top_n": 50}},
+                            {"component_name": "DuckDuckGo", "name": "联网搜索", "params": {"top_n": 8}}
+                        ]
+                    },
+                    "label": "Agent",
+                    "name": "快速分析"
+                },
+                "id": "Agent:QuickAnalyzer",
+                "position": {"x": 200, "y": 100},
+                "type": "agentNode"
+            },
+            {
+                "data": {
+                    "form": {
+                        "content": ["{Agent:QuickAnalyzer@content}"],
+                        "memory_ids": [],
+                        "output_format": "md"
+                    },
+                    "label": "Message",
+                    "name": "分析报告输出"
+                },
+                "id": "Message:AnalysisResult",
+                "position": {"x": 500, "y": 100},
+                "type": "messageNode"
+            },
+
+            {
+                "data": {
+                    "form": {
+                        "cross_languages": [],
+                        "dataset_ids": [],
+                        "empty_response": "未找到相关信息",
+                        "kb_ids": [],
+                        "keywords_similarity_weight": 0.3,
+                        "meta_data_filter": {"manual": [], "method": "disabled"},
+                        "outputs": {
+                            "formalized_content": {"type": "string", "value": ""},
+                            "json": {"type": "Array<Object>", "value": []}
+                        },
+                        "query": "{sys.query}",
+                        "rerank_id": "",
+                        "retrieval_from": "dataset",
+                        "similarity_threshold": 0.05,
+                        "toc_enhance": true,
+                        "top_k": 1024,
+                        "top_n": 50,
+                        "use_kg": false
+                    },
+                    "label": "Retrieval",
+                    "name": "知识库检索"
+                },
+                "id": "Retrieval:KnowledgeBase",
+                "position": {"x": 200, "y": 400},
+                "type": "retrievalNode"
+            },
+            {
+                "data": {
+                    "form": {
+                        "arguments": {},
+                        "lang": "python",
+                        "outputs": {"result": {"type": "String", "value": null}},
+                        "script": "def main() -> str:\n    return \"\""
+                    },
+                    "label": "CodeExec",
+                    "name": "空内容"
+                },
+                "id": "CodeExec:EmptyContent",
+                "position": {"x": 450, "y": 550},
+                "type": "ragNode"
+            },
+            {
+                "data": {
+                    "form": {
+                        "arguments": {},
+                        "lang": "python",
+                        "outputs": {"result": {"type": "Array<Object>", "value": null}},
+                        "script": "def main() -> str:\n    return []"
+                    },
+                    "label": "CodeExec",
+                    "name": "空JSON"
+                },
+                "id": "CodeExec:EmptyJson",
+                "position": {"x": 450, "y": 480},
+                "type": "ragNode"
+            },
+            {
+                "data": {
+                    "form": {
+                        "groups": [
+                            {
+                                "group_name": "content",
+                                "type": "string",
+                                "variables": [
+                                    {"value": "Retrieval:KnowledgeBase@formalized_content"},
+                                    {"value": "CodeExec:EmptyContent@result"}
+                                ]
+                            },
+                            {
+                                "group_name": "json",
+                                "type": "Array<Object>",
+                                "variables": [
+                                    {"value": "Retrieval:KnowledgeBase@json"},
+                                    {"value": "CodeExec:EmptyJson@result"}
+                                ]
+                            }
+                        ],
+                        "outputs": {
+                            "content": {"type": "string"},
+                            "json": {"type": "Array<Object>"}
+                        }
+                    },
+                    "label": "VariableAggregator",
+                    "name": "变量聚合_QA"
+                },
+                "id": "VariableAggregator:QAAggregator",
+                "position": {"x": 700, "y": 400},
+                "type": "variableAggregatorNode"
+            },
+            {
+                "data": {
+                    "form": {
+                        "cite": true,
+                        "llm_id": "",
+                        "max_rounds": 5,
+                        "max_tokens": 4096,
+                        "outputs": {"content": {"type": "string", "value": ""}},
+                        "parameter": "Balance",
+                        "temperature": 0.5,
+                        "tools": [
+                            {"component_name": "DuckDuckGo", "name": "WebSearch", "params": {"top_n": 5}}
+                        ]
+                    },
+                    "label": "Agent",
+                    "name": "Q&A回答"
+                },
+                "id": "Agent:QAResponder",
+                "position": {"x": 950, "y": 400},
+                "type": "agentNode"
+            },
+            {
+                "data": {
+                    "form": {
+                        "content": ["{Agent:QAResponder@content}"],
+                        "memory_ids": [],
+                        "output_format": "md"
+                    },
+                    "label": "Message",
+                    "name": "Q&A结果输出"
+                },
+                "id": "Message:QAResult",
+                "position": {"x": 1200, "y": 400},
+                "type": "messageNode"
+            },
+
+            {
+                "data": {
+                    "form": {
+                        "cite": true,
+                        "llm_id": "",
+                        "max_rounds": 8,
+                        "max_tokens": 4096,
+                        "outputs": {"content": {"type": "string", "value": ""}},
+                        "parameter": "Precise",
+                        "temperature": 0.2,
+                        "tools": [
+                            {"component_name": "Retrieval", "name": "招标文件检索", "params": {"similarity_threshold": 0.05, "top_n": 50}},
+                            {"component_name": "Retrieval", "name": "公司资料检索", "params": {"similarity_threshold": 0.05, "top_n": 50}},
+                            {"component_name": "Retrieval", "name": "文档框架检索", "params": {"similarity_threshold": 0.05, "top_n": 50}},
+                            {"component_name": "DuckDuckGo", "name": "联网搜索", "params": {"top_n": 5}}
+                        ]
+                    },
+                    "label": "Agent",
+                    "name": "多轮信息收集"
+                },
+                "id": "Agent:InfoCollector",
+                "position": {"x": 200, "y": -100},
+                "type": "agentNode"
+            },
+            {
+                "data": {
+                    "form": {
+                        "cite": false,
+                        "llm_id": "",
+                        "max_tokens": 4096,
+                        "outputs": {
+                            "content": {"type": "string", "value": ""},
+                            "structured": {
+                                "type": "array",
+                                "value": [],
+                                "properties": {
+                                    "chapter_number": {"type": "integer"},
+                                    "chapter_title": {"type": "string"},
+                                    "chapter_type": {"type": "string"},
+                                    "requirements": {"type": "string"},
+                                    "retrieval_query": {"type": "string"}
+                                }
+                            }
+                        },
+                        "showStructuredOutput": true,
+                        "temperature": 0.2
+                    },
+                    "label": "LLM",
+                    "name": "章节规划"
+                },
+                "id": "LLM:ChapterPlanner",
+                "position": {"x": 500, "y": -100},
+                "type": "logicNode"
+            },
+            {
+                "data": {
+                    "form": {
+                        "items_ref": "LLM:ChapterPlanner@structured",
+                        "outputs": {
+                            "chapters": {
+                                "type": "Array<string>",
+                                "value": [],
+                                "ref": "LLM:ChapterGenerator@content"
+                            }
+                        }
+                    },
+                    "label": "Iteration",
+                    "name": "章节循环生成"
+                },
+                "id": "Iteration:ChapterLoop",
+                "position": {"x": 800, "y": -100},
+                "type": "iterationNode"
+            },
+            {
+                "data": {
+                    "form": {
+                        "outputs": {
+                            "item": {"type": "object", "value": null},
+                            "index": {"type": "number", "value": 0}
+                        }
+                    },
+                    "label": "IterationItem",
+                    "name": "章节项"
+                },
+                "id": "IterationItem:ChapterItem",
+                "position": {"x": 800, "y": 50},
+                "type": "iterationStartNode"
+            },
+            {
+                "data": {
+                    "form": {
+                        "dataset_ids": [],
+                        "kb_ids": [],
+                        "keywords_similarity_weight": 0.3,
+                        "query": "{IterationItem:ChapterItem@item.retrieval_query}",
+                        "similarity_threshold": 0.05,
+                        "top_n": 20
+                    },
+                    "label": "Retrieval",
+                    "name": "章节知识检索"
+                },
+                "id": "Retrieval:ChapterKB",
+                "position": {"x": 1050, "y": 50},
+                "type": "retrievalNode"
+            },
+            {
+                "data": {
+                    "form": {
+                        "cite": false,
+                        "llm_id": "",
+                        "max_tokens": 4096,
+                        "outputs": {"content": {"type": "string", "value": ""}},
+                        "parameter": "Creative",
+                        "temperature": 0.5
+                    },
+                    "label": "LLM",
+                    "name": "章节内容生成"
+                },
+                "id": "LLM:ChapterGenerator",
+                "position": {"x": 1300, "y": 50},
+                "type": "logicNode"
+            },
+            {
+                "data": {
+                    "form": {
+                        "arguments": {
+                            "chapters": "Iteration:ChapterLoop@chapters"
+                        },
+                        "lang": "python",
+                        "outputs": {"result": {"type": "String", "value": null}},
+                        "script": "def main(chapters: list) -> dict:\n    if not chapters:\n        return {\"result\": \"\"}\n    return {\"result\": \"\\n\\n---\\n\\n\".join(str(c) for c in chapters)}"
+                    },
+                    "label": "CodeExec",
+                    "name": "合并章节"
+                },
+                "id": "CodeExec:JoinChapters",
+                "position": {"x": 1100, "y": -100},
+                "type": "ragNode"
+            },
+            {
+                "data": {
+                    "form": {
+                        "content": "{CodeExec:JoinChapters@result}",
+                        "output_format": "docx",
+                        "filename": "投标文件_{sys.date}",
+                        "header_text": "投标文件 — 机密",
+                        "footer_text": "由 RAGFlow 投标智能助手生成",
+                        "add_page_numbers": true,
+                        "add_timestamp": true,
+                        "watermark_text": ""
+                    },
+                    "label": "DocGenerator",
+                    "name": "文档输出"
+                },
+                "id": "DocGenerator:Output",
+                "position": {"x": 1400, "y": -100},
+                "type": "ragNode"
+            },
+            {
+                "data": {
+                    "form": {
+                        "content": ["{DocGenerator:Output@content}"],
+                        "memory_ids": [],
+                        "output_format": "md"
+                    },
+                    "label": "Message",
+                    "name": "投标文档展示"
+                },
+                "id": "Message:BidResult",
+                "position": {"x": 1700, "y": -100},
+                "type": "messageNode"
+            }
+        ],
+        "edges": [
+            {
+                "id": "edge-begin-categorize",
+                "source": "begin",
+                "sourceHandle": "start",
+                "target": "Categorize:IntentClassifier",
+                "targetHandle": "end",
+                "type": "buttonEdge"
+            },
+            {
+                "id": "edge-categorize-analysis",
+                "source": "Categorize:IntentClassifier",
+                "sourceHandle": "analysis-category-003",
+                "target": "Agent:QuickAnalyzer",
+                "targetHandle": "end",
+                "type": "buttonEdge"
+            },
+            {
+                "id": "edge-categorize-qa",
+                "source": "Categorize:IntentClassifier",
+                "sourceHandle": "qa-category-001",
+                "target": "Retrieval:KnowledgeBase",
+                "targetHandle": "end",
+                "type": "buttonEdge"
+            },
+            {
+                "id": "edge-categorize-docgen",
+                "source": "Categorize:IntentClassifier",
+                "sourceHandle": "doc-gen-category-002",
+                "target": "Agent:InfoCollector",
+                "targetHandle": "end",
+                "type": "buttonEdge"
+            },
+            {
+                "id": "edge-analysis-message",
+                "source": "Agent:QuickAnalyzer",
+                "sourceHandle": "start",
+                "target": "Message:AnalysisResult",
+                "targetHandle": "end",
+                "type": "buttonEdge"
+            },
+            {
+                "id": "edge-retrieval-emptycontent",
+                "source": "Retrieval:KnowledgeBase",
+                "sourceHandle": "start",
+                "target": "CodeExec:EmptyContent",
+                "targetHandle": "end"
+            },
+            {
+                "id": "edge-retrieval-emptyjson",
+                "source": "Retrieval:KnowledgeBase",
+                "sourceHandle": "start",
+                "target": "CodeExec:EmptyJson",
+                "targetHandle": "end"
+            },
+            {
+                "id": "edge-emptycontent-aggregator",
+                "source": "CodeExec:EmptyContent",
+                "sourceHandle": "start",
+                "target": "VariableAggregator:QAAggregator",
+                "targetHandle": "end",
+                "type": "buttonEdge"
+            },
+            {
+                "id": "edge-emptyjson-aggregator",
+                "source": "CodeExec:EmptyJson",
+                "sourceHandle": "start",
+                "target": "VariableAggregator:QAAggregator",
+                "targetHandle": "end",
+                "type": "buttonEdge"
+            },
+            {
+                "id": "edge-retrieval-aggregator",
+                "source": "Retrieval:KnowledgeBase",
+                "sourceHandle": "start",
+                "target": "VariableAggregator:QAAggregator",
+                "targetHandle": "end",
+                "type": "buttonEdge"
+            },
+            {
+                "id": "edge-aggregator-qa",
+                "source": "VariableAggregator:QAAggregator",
+                "sourceHandle": "start",
+                "target": "Agent:QAResponder",
+                "targetHandle": "end",
+                "type": "buttonEdge"
+            },
+            {
+                "id": "edge-qa-message",
+                "source": "Agent:QAResponder",
+                "sourceHandle": "start",
+                "target": "Message:QAResult",
+                "targetHandle": "end",
+                "type": "buttonEdge"
+            },
+            {
+                "id": "edge-infocollector-planner",
+                "source": "Agent:InfoCollector",
+                "sourceHandle": "start",
+                "target": "LLM:ChapterPlanner",
+                "targetHandle": "end",
+                "type": "buttonEdge"
+            },
+            {
+                "id": "edge-planner-iteration",
+                "source": "LLM:ChapterPlanner",
+                "sourceHandle": "start",
+                "target": "Iteration:ChapterLoop",
+                "targetHandle": "end",
+                "type": "buttonEdge"
+            },
+            {
+                "id": "edge-iterationitem-retrieval",
+                "source": "IterationItem:ChapterItem",
+                "sourceHandle": "start",
+                "target": "Retrieval:ChapterKB",
+                "targetHandle": "end",
+                "type": "buttonEdge"
+            },
+            {
+                "id": "edge-retrieval-generator",
+                "source": "Retrieval:ChapterKB",
+                "sourceHandle": "start",
+                "target": "LLM:ChapterGenerator",
+                "targetHandle": "end",
+                "type": "buttonEdge"
+            },
+            {
+                "id": "edge-iteration-joinchapters",
+                "source": "Iteration:ChapterLoop",
+                "sourceHandle": "start",
+                "target": "CodeExec:JoinChapters",
+                "targetHandle": "end",
+                "type": "buttonEdge"
+            },
+            {
+                "id": "edge-joinchapters-docgen",
+                "source": "CodeExec:JoinChapters",
+                "sourceHandle": "start",
+                "target": "DocGenerator:Output",
+                "targetHandle": "end",
+                "type": "buttonEdge"
+            },
+            {
+                "id": "edge-docgen-message",
+                "source": "DocGenerator:Output",
+                "sourceHandle": "start",
+                "target": "Message:BidResult",
+                "targetHandle": "end",
+                "type": "buttonEdge"
+            }
+        ]
+    }
+}

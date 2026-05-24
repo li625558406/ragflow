@@ -1,4 +1,4 @@
-import React, { Suspense, lazy } from 'react';
+import React, { lazy, Suspense } from 'react';
 import { createBrowserRouter, Navigate, type RouteObject } from 'react-router';
 
 function TokenTransferPage() {
@@ -33,8 +33,16 @@ const cRouteConfig: RouteObject[] = [
     Component: lazy(() => import('./pages/c-landing')),
   },
   {
-    path: '/chat',
+    path: '/login',
+    Component: lazy(() => import('./pages/c-login')),
+  },
+  {
+    path: '/home',
     Component: lazy(() => import('./pages/c-chat')),
+  },
+  {
+    path: '/chat',
+    element: <Navigate to="/home" replace />,
   },
   {
     path: '/token-transfer.html',

@@ -1102,11 +1102,15 @@ async def handle_scheduled_script_task(task: dict):
         cmd.extend(script_args.split())
 
     start_ts = time.time()
+    # Clear LD_PRELOAD to avoid conflicts with Chrome/Playwright in subprocess
+    sub_env = dict(os.environ)
+    sub_env.pop("LD_PRELOAD", None)
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=sub_env,
         )
 
         # Monitor for cancel signal while subprocess runs

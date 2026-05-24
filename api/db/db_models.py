@@ -1428,6 +1428,7 @@ class CollaborationDocument(DataBaseModel):
     tenant_id = CharField(max_length=32, null=False, index=True)
     created_by = CharField(max_length=32, null=False, index=True)
     agent_id = CharField(max_length=32, null=True, index=True)
+    permission = CharField(max_length=16, null=False, help_text="me|team", default="me", index=True)
 
     class Meta:
         db_table = "collaboration_document"
@@ -1440,6 +1441,7 @@ class CollaborationFormatRule(DataBaseModel):
     config = JSONField(null=False, default={}, help_text="font_name, font_size, line_spacing, margins, alignment, etc.")
     tenant_id = CharField(max_length=32, null=False, index=True)
     created_by = CharField(max_length=32, null=False, index=True)
+    permission = CharField(max_length=16, null=False, help_text="me|team", default="me", index=True)
 
     class Meta:
         db_table = "collaboration_format_rule"
@@ -1764,6 +1766,8 @@ def migrate_db():
     alter_db_add_column(migrator, "scheduled_task", "llm_model_name", CharField(max_length=128, null=True, help_text="LLM model name for image analysis", default=""))
     alter_db_add_column(migrator, "scheduled_task", "kb_id", CharField(max_length=32, null=True, index=True, help_text="target knowledge base ID", default=""))
     alter_db_add_column(migrator, "scheduled_task", "access_token", TextField(null=True, help_text="access token for authenticated crawling", default=""))
+    alter_db_add_column(migrator, "collaboration_document", "permission", CharField(max_length=16, null=False, help_text="me|team", default="me", index=True))
+    alter_db_add_column(migrator, "collaboration_format_rule", "permission", CharField(max_length=16, null=False, help_text="me|team", default="me", index=True))
     alter_db_column_type(migrator, "document", "size", BigIntegerField(default=0, index=True))
     alter_db_column_type(migrator, "file", "size", BigIntegerField(default=0, index=True))
     logging.disable(logging.NOTSET)

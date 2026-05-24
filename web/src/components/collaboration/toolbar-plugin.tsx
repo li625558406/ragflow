@@ -221,19 +221,43 @@ export default function ToolbarPlugin() {
     setHeading(value);
   };
 
-  const clearFormatting = () => {
+  const applyBodyFormat = () => {
     editor.update(() => {
       const selection = $getSelection();
-      if ($isRangeSelection(selection)) {
-        $patchStyleText(selection, {
-          'font-family': '',
-          'font-size': '',
-          'line-height': '',
-          color: '',
-          'background-color': '',
-        });
+      if (!$isRangeSelection(selection)) return;
+
+      // Convert selected blocks to paragraph (remove heading)
+      $setBlocksType(selection, () => $createParagraphNode());
+
+      // Apply body format styles
+      $patchStyleText(selection, {
+        'font-family': 'SimSun',
+        'font-size': '12pt',
+        'line-height': '1.5',
+        color: '#1C1917',
+        'background-color': 'transparent',
+      });
+
+      // Remove bold/italic/underline/strikethrough/code
+      const nodes = selection.getNodes();
+      for (const node of nodes) {
+        if ($isTextNode(node)) {
+          node.setFormat('');
+        }
       }
     });
+    setHeading('paragraph');
+    setFontFamily('SimSun');
+    setFontSize('12pt');
+    setLineSpacing('1.5');
+    setTextColor('#1C1917');
+    setBgColor('transparent');
+    setAlignment('left');
+    setIsBold(false);
+    setIsItalic(false);
+    setIsUnderline(false);
+    setIsStrikethrough(false);
+    setIsCode(false);
   };
 
   const btn = (active: boolean) =>
@@ -713,11 +737,11 @@ export default function ToolbarPlugin() {
 
       <div className="w-px h-5 bg-stone-200 mx-0.5" />
 
-      {/* Clear Formatting */}
+      {/* Apply Body Format */}
       <button
-        className="h-7 w-7 flex items-center justify-center rounded text-stone-400 hover:text-red-500 hover:bg-red-50 transition-colors"
-        title="清除格式"
-        onClick={clearFormatting}
+        className="h-7 w-7 flex items-center justify-center rounded text-stone-400 hover:text-indigo-500 hover:bg-indigo-50 transition-colors"
+        title="正文格式"
+        onClick={applyBodyFormat}
       >
         <svg
           className="w-3.5 h-3.5"

@@ -15,34 +15,61 @@
 #  limitations under the License.
 #
 """
-Dedicated web crawler for fjtba.com (福建省建筑业协会).
+Crawler for www.fjtba.com (福建省招标投标协会) — 政策法规.
 
-Crawls http://www.fjtba.com/ — a traditional ASP.NET website.
-Extracts article listings from .mid_content sections, fetches each
-article's content via the internal AJAX API, converts to Markdown,
-and uploads the result to a RAGFlow knowledge base.  Images and file
-links embedded in the content are kept as Markdown references and
-will be processed by the KB's native document parser.
+Target: http://www.fjtba.com/PortalPage/ISDInfo.aspx?type=2
+Section: 政策法规 (type=2), 632 articles across 64 pages.
 
-Usage (typically spawned by task_executor):
+Site characteristics
+────────────────────
+ASP.NET WebForms site with AJAX-based data loading.  All content is loaded
+via POST requests to ``/PortalPage/AjaxHandler/DataHandler.ashx``.
+
+API endpoints (form-encoded POST)
+─────────────────────────────────
+Listing:
+    OPtype=GetArticleList  type=2  pageNo=N  pageSize=10
+    Returns ``{"count": 632, "ds": {"ds": [...]}}``
+
+    Each article::
+        RN, ID, TITLE, TYPE, TM (ISO date), IMG_AID, CONTENTS (full HTML)
+
+The listing API already returns the full CONTENTS HTML (up to 200KB+),
+so we do NOT need to call the detail API for each article.
+
+Data flow
+─────────
+  1. POST listing API page by page → extract article IDs, titles, dates, content
+  2. Dedup by article ID via ``_crawler_state.json``
+  3. For each new article → parse HTML content → extract text + attachment links
+  4. Download attachments if any (PDF/DOC/XLSX/ZIP) → extract text
+  5. Build markdown → save locally → upload to KB
+
+Usage
+─────
     python fjtba_crawler.py \\
         --tenant-id <TENANT_ID> \\
-        --target-url <URL> \\
         --kb-id <KB_ID> \\
         --task-name <NAME>
+
+    # Optional:
+        --max-runtime 3300    # Max runtime before graceful stop
+        --full                # Ignore saved state, re-crawl
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import os
+import random
 import re
 import sys
+import time
+import urllib.parse
+import urllib.request
+import zipfile
 from datetime import datetime
-from urllib.parse import urljoin, urlparse
-
-import requests
-from bs4 import BeautifulSoup
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", ".."))
@@ -51,423 +78,409 @@ sys.path.insert(0, _PROJECT_ROOT)
 from common import settings
 from common.log_utils import init_root_logger
 from common.misc_utils import get_uuid
-from rag.svr.crawler_utils import PlaywrightHttpClient
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(description="FJTBA crawler for scheduled tasks")
-    parser.add_argument("--tenant-id", required=True, help="Tenant ID for KB upload")
-    parser.add_argument("--target-url", required=True, help="Homepage URL to crawl")
-    parser.add_argument("--kb-id", required=True, help="Target knowledge-base ID")
-    parser.add_argument("--task-name", required=True, help="Task name used as output sub-directory")
-    parser.add_argument("--output-dir", default=None, help="Output root directory (default: project root)")
-    parser.add_argument("--full", action="store_true", help="Ignore saved state and re-crawl all articles")
-    # Vision model for image OCR
-    parser.add_argument("--llm-id", default=None, help="LLM factory name (e.g. OpenAI)")
-    parser.add_argument("--llm-model", default=None, help="Vision model name for image OCR (e.g. gpt-4o)")
-    return parser.parse_args()
+from bs4 import BeautifulSoup
 
 
 # ---------------------------------------------------------------------------
-# Initialisation
+# Constants
 # ---------------------------------------------------------------------------
 
-def _init():
-    settings.init_settings()
-    logging.info("Project settings initialised")
+_SITE_ROOT = "http://www.fjtba.com"
+_AJAX_URL = _SITE_ROOT + "/PortalPage/AjaxHandler/DataHandler.ashx"
+_LISTING_URL = _SITE_ROOT + "/PortalPage/ISDInfo.aspx?type=2"
+_SECTION_TYPE = "2"
+_SECTION_LABEL = "政策法规"
+
+_PAGE_SIZE = 10
+_BATCH_SIZE = 5
+_MAX_RUNTIME_DEFAULT = 3300
+_REQUEST_DELAY_MIN = 0.2
+_REQUEST_DELAY_MAX = 0.8
+_STATE_FILENAME = "_crawler_state.json"
+_MAX_PAGES = 100
+
+_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _safe_print(msg):
+    try:
+        print(msg)
+    except UnicodeEncodeError:
+        print(msg.encode("gbk", errors="replace").decode("gbk"))
+
+
+def _sanitize_filename(text, max_len=120):
+    if not text:
+        return "untitled"
+    name = re.sub(r'[\\/:*?"<>|]', "_", str(text).strip())
+    name = re.sub(r'\s+', "_", name).strip("._ ")
+    return (name or "untitled")[:max_len]
+
+
+def _resolve_url(href, base_url):
+    if href.startswith("http://") or href.startswith("https://"):
+        return href
+    if href.startswith("//"):
+        return "https:" + href
+    return urllib.parse.urljoin(base_url, href)
+
+
+def _normalize_pubdate(text):
+    """Normalize date from ISO format or various formats to YYYY-MM-DD."""
+    if not text:
+        return ""
+    text = text.strip()
+    text = text.replace("\u2014", "-").replace("\uff0d", "-").replace("/", "-")
+    m = re.search(r'(\d{4})-(\d{2})-(\d{2})', text)
+    if m:
+        return "{}-{}-{}".format(m.group(1), m.group(2), m.group(3))
+    return ""
 
 
 # ---------------------------------------------------------------------------
 # HTTP helpers
 # ---------------------------------------------------------------------------
 
-_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    )
-}
-
-
-def _fetch(url, timeout=30, client=None):
+def _http_post(url, data_dict, referer=None, timeout=30):
+    """POST form-encoded data to a URL, return response bytes."""
+    data_bytes = urllib.parse.urlencode(data_dict).encode("utf-8")
+    req = urllib.request.Request(url, data=data_bytes)
+    req.add_header("User-Agent", _USER_AGENT)
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    req.add_header("Accept", "application/json, text/javascript, */*; q=0.01")
+    req.add_header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+    req.add_header("X-Requested-With", "XMLHttpRequest")
+    if referer:
+        req.add_header("Referer", referer)
     try:
-        if client:
-            resp = client.get(url, headers=_HEADERS, timeout=timeout)
-        else:
-            resp = requests.get(url, headers=_HEADERS, timeout=timeout)
-        resp.raise_for_status()
-        raw = resp.content
-        import chardet
-        detected = chardet.detect(raw)
-        enc = detected.get("encoding", "") or ""
-        if enc.upper() in ("EUC-JP", "EUC-KR", "SHIFT_JIS", "ISO-8859-1"):
-            enc = getattr(resp, "apparent_encoding", None) or "utf-8"
-        if not enc or enc.upper() in ("ASCII", "ISO-8859-1"):
-            enc = "utf-8"
-        try:
-            return raw.decode(enc)
-        except (UnicodeDecodeError, LookupError):
-            return raw.decode("gbk", errors="replace")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read()
     except Exception as e:
-        logging.error("Failed to fetch %s: %s", url, e)
+        logging.error("POST %s failed: %s", url, e)
         return None
 
 
-def _abs_url(href, base):
-    if href.startswith("http"):
-        return href
-    if href.startswith("/"):
-        p = urlparse(base)
-        return f"{p.scheme}://{p.netloc}{href}"
-    return urljoin(base, href)
-
-
-# ---------------------------------------------------------------------------
-# Date parsing
-# ---------------------------------------------------------------------------
-
-_DATE_PATTERNS = [
-    "%Y-%m-%d",
-    "%Y/%m/%d",
-    "%Y-%m-%dT%H:%M:%S",
-    "%Y-%m-%dT%H:%M:%S%z",
-    "%Y-%m-%d %H:%M:%S",
-    "%B %d, %Y",
-    "%d %B %Y",
-    "%b %d, %Y",
-    "%d %b %Y",
-    "%Y年%m月%d日",
-]
-
-
-def _parse_date(text):
-    if not text:
+def _download_binary(url, referer=None, timeout=60):
+    req = urllib.request.Request(url)
+    req.add_header("User-Agent", _USER_AGENT)
+    if referer:
+        req.add_header("Referer", referer)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read()
+    except Exception as e:
+        logging.error("Download failed: %s — %s", url[:120], e)
         return None
-    text = text.strip()
-    for fmt in _DATE_PATTERNS:
-        try:
-            return datetime.strptime(text, fmt)
-        except ValueError:
+
+
+# ---------------------------------------------------------------------------
+# Listing API
+# ---------------------------------------------------------------------------
+
+def _fetch_listing_page(page_no, referer=None):
+    """POST the listing API for one page.  Returns (articles_list, total_count)."""
+    params = {
+        "OPtype": "GetArticleList",
+        "type": _SECTION_TYPE,
+        "pageNo": str(page_no),
+        "pageSize": str(_PAGE_SIZE),
+        "r": str(random.random()),
+    }
+    data_bytes = _http_post(_AJAX_URL, params, referer=referer)
+    if not data_bytes:
+        return [], 0
+
+    text = data_bytes.decode("utf-8", errors="replace")
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        logging.error("Listing page %d: invalid JSON", page_no)
+        return [], 0
+
+    total = int(parsed.get("count", 0))
+    articles = parsed.get("ds", {})
+    if isinstance(articles, dict):
+        articles = articles.get("ds", [])
+    if not isinstance(articles, list):
+        articles = []
+
+    return articles, total
+
+
+def _crawl_all_listings(seen_ids):
+    """Iterate all listing pages and return deduped articles."""
+    all_articles = []
+
+    time.sleep(random.uniform(_REQUEST_DELAY_MIN, _REQUEST_DELAY_MAX))
+    first_page, total = _fetch_listing_page(1, referer=_LISTING_URL)
+
+    if not first_page and total == 0:
+        _safe_print("[FJTBA] Empty first page, aborting.")
+        return all_articles
+
+    total_pages = (total + _PAGE_SIZE - 1) // _PAGE_SIZE if total else 1
+    total_pages = min(total_pages, _MAX_PAGES)
+    _safe_print("[FJTBA] Total: {} article(s), {} page(s)".format(total, total_pages))
+    sys.stdout.flush()
+
+    for item in first_page:
+        aid = str(item.get("ID", ""))
+        if aid and aid not in seen_ids:
+            seen_ids.add(aid)
+            all_articles.append({
+                "article_id": aid,
+                "title": (item.get("TITLE") or "").strip(),
+                "tm": (item.get("TM") or "").strip(),
+                "content_html": (item.get("CONTENTS") or "").strip(),
+            })
+
+    for page_no in range(2, total_pages + 1):
+        time.sleep(random.uniform(_REQUEST_DELAY_MIN, _REQUEST_DELAY_MAX))
+        articles, _ = _fetch_listing_page(page_no, referer=_LISTING_URL)
+        if not articles:
+            _safe_print("[FJTBA] Page {} returned no articles, stopping.".format(page_no))
+            break
+        for item in articles:
+            aid = str(item.get("ID", ""))
+            if aid and aid not in seen_ids:
+                seen_ids.add(aid)
+                all_articles.append({
+                    "article_id": aid,
+                    "title": (item.get("TITLE") or "").strip(),
+                    "tm": (item.get("TM") or "").strip(),
+                    "content_html": (item.get("CONTENTS") or "").strip(),
+                })
+
+    return all_articles
+
+
+# ---------------------------------------------------------------------------
+# Content parsing (from CONTENTS HTML)
+# ---------------------------------------------------------------------------
+
+def _parse_content_html(html, page_url):
+    """Extract text and attachment links from the CONTENTS HTML.
+
+    Returns (text, attachment_list).
+    """
+    if not html:
+        return "", []
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    # Remove script/style tags
+    for tag in soup.find_all(["script", "style"]):
+        tag.decompose()
+
+    text = soup.get_text(separator="\n", strip=True)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    # Find attachment links in the HTML
+    attachments = []
+    seen_urls = set()
+    for a_tag in soup.find_all("a", href=True):
+        href = a_tag["href"].strip()
+        if not href or href.startswith("javascript:") or href.startswith("#"):
             continue
-    m = re.search(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", text)
-    if m:
-        try:
-            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-        except ValueError:
-            pass
+        link_text = a_tag.get_text(strip=True)
+        href_lower = href.lower()
+
+        # Check for attachment indicators
+        is_attachment = False
+        if re.search(r'\.(pdf|doc|docx|xls|xlsx|zip|rar|7z)(\?|$)', href_lower):
+            is_attachment = True
+        elif link_text and any(kw in link_text for kw in ("附件", "下载", "attachment", "download")):
+            is_attachment = True
+        elif any(kw in href_lower for kw in ("/upload/", "/Upload/", "/attachments/", "/files/")):
+            is_attachment = True
+
+        if is_attachment and href not in seen_urls:
+            seen_urls.add(href)
+            fname = link_text if link_text else os.path.basename(urllib.parse.urlparse(href).path)
+            if not fname:
+                fname = "attachment"
+            attachments.append({
+                "filename": fname,
+                "url": _resolve_url(href, page_url),
+            })
+
+    return text, attachments
+
+
+# ---------------------------------------------------------------------------
+# Attachment download + processing
+# ---------------------------------------------------------------------------
+
+def _download_attachments(attachments, download_dir, referer=None):
+    os.makedirs(download_dir, exist_ok=True)
+    local_files = []
+
+    for att in attachments:
+        url = att.get("url", "")
+        if not url:
+            continue
+        fname = _sanitize_filename(att.get("filename", "attachment"), max_len=120)
+        ext = os.path.splitext(urllib.parse.urlparse(url).path)[1].lower()
+        if ext and re.match(r'\.(pdf|doc|docx|xls|xlsx|zip|rar|7z|txt)$', ext):
+            if not fname.lower().endswith(ext):
+                fname += ext
+
+        filepath = os.path.join(download_dir, fname)
+        if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+            local_files.append(filepath)
+            continue
+
+        data = _download_binary(url, referer=referer)
+        if data:
+            if data[:100].strip().startswith(b"<!DOCTYPE") or data[:100].strip().startswith(b"<html"):
+                logging.warning("Attachment %s returned HTML, skipping.", url[:120])
+                continue
+            with open(filepath, "wb") as f:
+                f.write(data)
+            local_files.append(filepath)
+            time.sleep(random.uniform(0.1, 0.3))
+
+    return local_files
+
+
+def _extract_zip(filepath):
+    extracted = []
+    extract_dir = os.path.splitext(filepath)[0] + "_extracted"
+    os.makedirs(extract_dir, exist_ok=True)
+    try:
+        with zipfile.ZipFile(filepath, "r") as zf:
+            for name in zf.namelist():
+                safe_name = _sanitize_filename(name, max_len=120)
+                out_path = os.path.join(extract_dir, safe_name)
+                os.makedirs(os.path.dirname(out_path) or extract_dir, exist_ok=True)
+                with zf.open(name) as src, open(out_path, "wb") as dst:
+                    dst.write(src.read())
+                extracted.append(out_path)
+    except Exception as e:
+        logging.warning("ZIP extraction failed for %s: %s", filepath, e)
+    return extracted
+
+
+# ---------------------------------------------------------------------------
+# Text extraction from binary files
+# ---------------------------------------------------------------------------
+
+def _extract_text_from_file(filepath):
+    ext = os.path.splitext(filepath)[1].lower()
+    try:
+        if ext == ".txt":
+            with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+                return f.read()
+        elif ext == ".pdf":
+            import pdfplumber
+            parts = []
+            with pdfplumber.open(filepath) as pdf:
+                for pg in pdf.pages:
+                    t = pg.extract_text()
+                    if t:
+                        parts.append(t)
+            return "\n\n".join(parts)
+        elif ext in (".docx", ".doc"):
+            import docx
+            doc = docx.Document(filepath)
+            return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        elif ext in (".xlsx", ".xls"):
+            import openpyxl
+            wb = openpyxl.load_workbook(filepath, read_only=True)
+            parts = []
+            for ws in wb.worksheets:
+                rows = []
+                for row in ws.iter_rows(values_only=True):
+                    rows.append(" | ".join(str(c) if c is not None else "" for c in row))
+                if rows:
+                    parts.append("### {}\n".format(ws.title) + "\n".join(rows))
+            wb.close()
+            return "\n\n".join(parts)
+    except Exception as e:
+        logging.warning("Text extraction failed for %s: %s", filepath, e)
     return None
 
 
 # ---------------------------------------------------------------------------
-# Article extraction from fjtba.com homepage
-# ---------------------------------------------------------------------------
-#
-# fjtba.com is an ASP.NET website whose homepage lists articles under
-# several category sections (<div class="mid_content"> …).  Each section
-# contains <div class="top_new"> article cards; each holds an <a> linking
-# to the detail page and a <span class="date"> with the date.
-#
-# Detail-page URL pattern:
-#   /PortalPage/ISDInfo.aspx?type=<CATEGORY>&id=<ARTICLE_ID>&isContent=1
-#
-# IMPORTANT: The actual article content is NOT in the ASP.NET page HTML.
-# Instead it is loaded via an AJAX POST to DataHandler.ashx with
-# OPtype=GetArticleContent&id=<ARTICLE_ID>.  See fetch_article_content_via_api().
+# Markdown builder
 # ---------------------------------------------------------------------------
 
-def _extract_article_id(url):
-    """Extract the numeric article ID from a fjtba.com detail URL."""
-    m = re.search(r"[?&]id=(\d+)", url)
-    return m.group(1) if m else None
+def _build_markdown(title, pub_date, content_text, attachments, download_dir, detail_url):
+    lines = [
+        "# {}".format(title or "无标题"),
+        "",
+        "**数据来源:** 福建省招标投标协会 — {}".format(_SECTION_LABEL),
+        "**页面地址:** {}".format(detail_url),
+        "**抓取时间:** {}".format(datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+    ]
+    if pub_date:
+        lines.append("**发布时间:** {}".format(pub_date))
+    lines.append("")
 
+    if content_text:
+        lines.append("---")
+        lines.append("")
+        lines.append("## 正文")
+        lines.append("")
+        content_clean = re.sub(r"\n{3,}", "\n\n", content_text)
+        lines.append(content_clean)
+        lines.append("")
 
-def extract_fjtba_articles(html, base_url):
-    """Extract article entries from fjtba.com homepage HTML.
+    if attachments:
+        lines.append("---")
+        lines.append("")
+        lines.append("## 附件")
+        lines.append("")
+        for att in attachments:
+            fname = att.get("filename", "unknown")
+            att_url = att.get("url", "")
+            lines.append("- [{}]({})".format(fname, att_url))
+        lines.append("")
 
-    Returns list[dict] with keys: title, url, article_id, date, etc.
-    Articles published before 2023 are filtered out.
-    """
-    soup = BeautifulSoup(html, "lxml")
-    articles = []
-    seen_urls = set()
-
-    mid_sections = soup.find_all("div", class_="mid_content")
-
-    print(f"[FJTBA] Found {len(mid_sections)} .mid_content sections")
-    sys.stdout.flush()
-
-    for section in mid_sections:
-        # Category heading lives in previous sibling <div class="tab_top img_jddt">
-        prev = section.find_previous_sibling()
-        category = ""
-        if prev:
-            raw = prev.get_text(strip=True)
-            category = re.sub(r"更多[>》].*$", "", raw).strip()
-
-        for article_div in section.find_all("div", class_="top_new"):
-            a = article_div.find("a", href=True)
-            if not a:
-                continue
-            href = a["href"].strip()
-            title = (a.get("title") or a.text or "").strip()
-            title = title.lstrip("(")
-            if not title or len(title) < 2:
-                continue
-
-            url = _abs_url(href, base_url)
-            if url in seen_urls:
-                continue
-            seen_urls.add(url)
-
-            # Date in <span class="date">
-            date_text = ""
-            date_span = article_div.find("span", class_=re.compile(r"date|time", re.I))
-            if date_span:
-                date_text = date_span.get_text(strip=True)
-            else:
-                all_text = article_div.get_text()
-                m = re.search(r"(\d{4}-\d{1,2}-\d{1,2})", all_text)
-                if m:
-                    date_text = m.group(1)
-
-            dt = _parse_date(date_text)
-
-            if dt and dt.year < 2023:
-                logging.info("Skipped %s (date: %s)", title[:60], dt.date())
-                continue
-
-            article_id = _extract_article_id(url)
-
-            articles.append({
-                "title": title,
-                "url": url,
-                "article_id": article_id,
-                "date": dt,
-                "date_str": date_text,
-                "category": category,
-            })
-
-    logging.info("Found %d unique articles on fjtba.com", len(articles))
-    return articles
-
-
-# ---------------------------------------------------------------------------
-# Article content via AJAX API (DataHandler.ashx)
-# ---------------------------------------------------------------------------
-#
-# fjtba.com loads article content asynchronously via a POST to:
-#   /PortalPage/AjaxHandler/DataHandler.ashx
-# with form-encoded body: OPtype=GetArticleContent&id=<ARTICLE_ID>
-#
-# The response is a JSON array where the first element contains:
-#   TITLE, CONTENTS (HTML), SOURCES, TM, READ_NUM
-# ---------------------------------------------------------------------------
-
-_API_URL = "http://www.fjtba.com/PortalPage/AjaxHandler/DataHandler.ashx"
-_API_HEADERS = {
-    "User-Agent": _HEADERS["User-Agent"],
-    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-}
-
-
-def fetch_article_content_via_api(article_id, base_url, client=None):
-    """Fetch article content from the fjtba.com internal API.
-
-    Images embedded in the article are OCR'd using RAGFlow's built-in
-    local engine and the extracted text is inserted alongside the image
-    reference in a ``> `` blockquote.
-
-    Returns (markdown_text, list_of_resource_dicts).
-    Each resource has keys: type ("image"|"file"), src, caption.
-    Returns ("", []) on failure.
-    """
-    try:
-        if client:
-            resp = client.post(
-                _API_URL,
-                data={"OPtype": "GetArticleContent", "id": article_id},
-                headers=_API_HEADERS,
-                timeout=30,
-            )
-        else:
-            resp = requests.post(
-                _API_URL,
-                data={"OPtype": "GetArticleContent", "id": article_id},
-                headers=_API_HEADERS,
-                timeout=30,
-            )
-        resp.raise_for_status()
-    except Exception as e:
-        logging.error("API fetch failed for article %s: %s", article_id, e)
-        return "", []
-
-    try:
-        import json
-        items = json.loads(resp.text)
-        if not items or not isinstance(items, list):
-            return "", []
-        item = items[0]
-    except (json.JSONDecodeError, IndexError, KeyError) as e:
-        logging.error("API response parse failed for article %s: %s", article_id, e)
-        return "", []
-
-    content_html = item.get("CONTENTS", "")
-    if not content_html or not content_html.strip():
-        return "", []
-
-    content, resources = _html_to_markdown(content_html, base_url)
-
-    # Enrich content with image references + OCR text
-    if resources:
-        extra = []
-        for r in resources:
-            if r["type"] == "image":
-                cap = f" *({r['caption']})*" if r.get("caption") else ""
-                img_line = f"![]({r['src']}){cap}"
-                extra.append(img_line)
-                ocr_text = _ocr_image(r["src"], client=client)
-                if ocr_text:
-                    r["ocr_text"] = ocr_text
-                    extra.append(f"\n> {ocr_text}\n")
-            elif r["type"] == "file":
-                cap = f" ({r['caption']})" if r.get("caption") else ""
-                extra.append(f"[{r['caption']}]({r['src']}){cap}")
-        if extra:
-            content += "\n\n" + "\n\n".join(extra)
-
-    return content, resources
-
-
-# ---------------------------------------------------------------------------
-# HTML → Markdown conversion (shared logic)
-# ---------------------------------------------------------------------------
-
-def _html_to_markdown(html_content, base_url):
-    """Convert HTML to a rough Markdown string.
-
-    Returns (markdown_text, list_of_resources) where each resource is a dict:
-        {"type": "image"|"file", "src": str, "caption": str}
-    Image and file URLs are kept as Markdown references so the KB's native
-    document parser can process them (OCR, layout analysis, chunking, etc.).
-    """
-    if not html_content or not html_content.strip():
-        return "", []
-
-    soup = BeautifulSoup(html_content, "lxml")
-
-    # Strip clutter
-    for tag in soup.find_all(["script", "style", "nav", "header", "footer", "aside", "noscript"]):
-        tag.decompose()
-
-    # Collect embedded resources: images + downloadable files
-    resources = []
-    seen_srcs = set()
-
-    _FILE_EXT = re.compile(r"\.(pdf|doc|docx|xls|xlsx|ppt|pptx|zip|rar|7z|txt|csv)", re.I)
-
-    # Images
-    for img in soup.find_all("img"):
-        src = img.get("src") or img.get("data-src") or ""
-        if not src:
-            continue
-        src = _abs_url(src, base_url)
-        if not src.startswith(("http://", "https://")):
-            continue
-        if src in seen_srcs:
-            continue
-        seen_srcs.add(src)
-        parent = img.find_parent(["figure", "a"])
-        caption = ""
-        if parent:
-            cap_tag = parent.find(["figcaption", "span", "em"])
-            if cap_tag:
-                caption = cap_tag.get_text(strip=True)
-        resources.append({"type": "image", "src": src, "caption": caption})
-
-    # Downloadable file links embedded in <a> tags
-    for a in soup.find_all("a", href=True):
-        href = a["href"].strip()
-        if not _FILE_EXT.search(href):
-            continue
-        src = _abs_url(href, base_url)
-        if src in seen_srcs:
-            continue
-        seen_srcs.add(src)
-        caption = a.get_text(strip=True) or os.path.basename(href)
-        resources.append({"type": "file", "src": src, "caption": caption})
-
-    # Convert block elements to rough markdown
-    lines = []
-    for el in soup.find_all(["p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote", "pre"]):
-        text = el.get_text(strip=True)
-        if not text:
-            continue
-        tn = el.name
-        if tn == "h1":
-            lines.append(f"\n# {text}\n")
-        elif tn == "h2":
-            lines.append(f"\n## {text}\n")
-        elif tn == "h3":
-            lines.append(f"\n### {text}\n")
-        elif tn in ("h4", "h5", "h6"):
-            lines.append(f"\n**{text}**\n")
-        elif tn == "blockquote":
-            lines.append(f"> {text}")
-        elif tn == "li":
-            lines.append(f"- {text}")
-        elif tn == "pre":
-            lines.append(f"```\n{text}\n```")
-        else:
-            lines.append(text)
-
-    # Also grab <table> elements (common in fjtba.com government notices)
-    for table in soup.find_all("table"):
-        md_table = _table_to_markdown(table)
-        if md_table:
+        if download_dir and os.path.isdir(download_dir):
+            lines.append("### 附件内容")
             lines.append("")
-            lines.append(md_table)
-            lines.append("")
+            for att in attachments:
+                fname = att.get("filename", "")
+                local_path = os.path.join(download_dir, fname)
+                safe_name = _sanitize_filename(fname, max_len=120)
+                alt_path = os.path.join(download_dir, safe_name)
+                if not os.path.exists(local_path) and os.path.exists(alt_path):
+                    local_path = alt_path
+                if not os.path.exists(local_path):
+                    for root, _, files in os.walk(download_dir):
+                        for fn in files:
+                            if fn == safe_name or fn == fname:
+                                local_path = os.path.join(root, fn)
+                                break
+                if not os.path.exists(local_path):
+                    continue
 
-    return "\n\n".join(lines), resources
+                lines.append("#### {}".format(fname))
+                lines.append("")
+                extracted_text = _extract_text_from_file(local_path)
+                if extracted_text and extracted_text.strip():
+                    if len(extracted_text) > 50000:
+                        extracted_text = extracted_text[:50000] + "\n\n（内容过长，已截断）"
+                    lines.append(extracted_text)
+                else:
+                    lines.append("（无法提取文本内容）")
+                lines.append("")
 
-
-def _table_to_markdown(table):
-    """Convert an HTML <table> to a simple Markdown table."""
-    rows = []
-    for tr in table.find_all("tr"):
-        cells = []
-        for cell in tr.find_all(["th", "td"]):
-            cells.append(cell.get_text(strip=True))
-        if cells:
-            rows.append(cells)
-
-    if not rows:
-        return ""
-
-    # Determine column count
-    n_cols = max(len(r) for r in rows)
-
-    # Build markdown table
-    md = []
-    # Header row
-    md.append("| " + " | ".join(r.ljust(15) for r in rows[0]) + " |")
-    # Separator
-    md.append("| " + " | ".join(["---"] * n_cols) + " |")
-    # Data rows
-    for row in rows[1:]:
-        padded = list(row) + [""] * (n_cols - len(row))
-        md.append("| " + " | ".join(r.ljust(15) for r in padded) + " |")
-
-    return "\n".join(md)
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
-# Markdown persistence & incremental state
+# State management
 # ---------------------------------------------------------------------------
-
-_STATE_FILENAME = "_crawler_state.json"
-
 
 def _load_state(output_dir):
     path = os.path.join(output_dir, _STATE_FILENAME)
@@ -477,7 +490,7 @@ def _load_state(output_dir):
                 return json.load(f)
         except Exception as e:
             logging.warning("Failed to load crawler state: %s", e)
-    return {"processed_urls": []}
+    return {"processed_ids": []}
 
 
 def _save_state(output_dir, state):
@@ -485,97 +498,80 @@ def _save_state(output_dir, state):
     os.makedirs(output_dir, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False)
-    logging.info("Crawler state saved (%d processed URLs)", len(state.get("processed_urls", [])))
-
-
-def _save_markdown(content, output_dir):
-    os.makedirs(output_dir, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = os.path.join(output_dir, f"{ts}.md")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
-    logging.info("Saved markdown to %s", path)
-    return path
 
 
 # ---------------------------------------------------------------------------
-# Knowledge-base upload
+# KB upload
 # ---------------------------------------------------------------------------
 
-def _upload_to_kb(filepath, kb_id, tenant_id):
+def _upload_to_kb(md_content, attachment_files, kb_id, tenant_id, folder_name):
     from api.db.services.knowledgebase_service import KnowledgebaseService
     from api.db.services.file_service import FileService
     from api.db.services.document_service import DocumentService
 
     ok, kb = KnowledgebaseService.get_by_id(kb_id)
     if not ok:
-        raise LookupError(f"Knowledge base {kb_id} not found")
+        raise LookupError("Knowledge base {} not found".format(kb_id))
 
-    with open(filepath, "rb") as f:
-        blob = f.read()
-
-    class _FileObj:
-        def __init__(self, filename, blob):
+    class _FO:
+        def __init__(self, fn, b):
             self.id = get_uuid()
-            self.filename = filename
-            self.blob = blob
+            self.filename = fn
+            self.blob = b
 
         def read(self):
             return self.blob
 
-    file_obj = _FileObj(os.path.basename(filepath), blob)
-    errs, doc_pairs = FileService.upload_document(kb, [file_obj], tenant_id)
+    fo = _FO("{}.md".format(folder_name), md_content.encode("utf-8"))
+    errs, pairs = FileService.upload_document(kb, [fo], tenant_id)
     if errs:
-        logging.warning("Upload errors: %s", errs)
-    for doc, _ in doc_pairs:
-        logging.info("Document %s uploaded to KB %s", doc["id"], kb_id)
+        logging.warning("MD upload errors: %s", errs)
+    for doc, _ in pairs:
+        did = doc["id"]
         try:
-            DocumentService.begin2parse(doc["id"])
+            DocumentService.begin2parse(did)
             DocumentService.run(tenant_id, doc, {})
-            logging.info("Parsing task queued for document %s", doc["id"])
         except Exception as e:
-            logging.error("Failed to queue parsing for document %s: %s", doc["id"], e)
-    return doc_pairs
+            logging.error("Queue parse for %s: %s", did, e)
+
+    for fp in attachment_files:
+        fname = os.path.basename(fp)
+        with open(fp, "rb") as f:
+            blob = f.read()
+        fo2 = _FO(fname, blob)
+        errs2, pairs2 = FileService.upload_document(kb, [fo2], tenant_id)
+        if errs2:
+            logging.warning("Attachment upload errors: %s", errs2)
+        for doc, _ in pairs2:
+            did = doc["id"]
+            try:
+                DocumentService.begin2parse(did)
+                DocumentService.run(tenant_id, doc, {})
+            except Exception as e:
+                logging.error("Queue parse for %s: %s", did, e)
 
 
 # ---------------------------------------------------------------------------
-# Local OCR (built-in RAGFlow engine, no external API needed)
+# Argument parsing
 # ---------------------------------------------------------------------------
 
-def _ocr_image(image_url, client=None):
-    """Download an image and run RAGFlow's built-in local OCR on it.
-
-    Uses the same engine as the ``picture`` parser mode — works entirely
-    offline, no API calls needed.  Returns extracted text (str) or None
-    if the engine produced no output or an error occurred.
-    """
-    try:
-        if client:
-            resp = client.get(image_url, headers=_HEADERS, timeout=30)
-        else:
-            resp = requests.get(image_url, headers=_HEADERS, timeout=30)
-        resp.raise_for_status()
-        image_bytes = resp.content
-    except Exception as e:
-        logging.warning("Failed to download image %s: %s", image_url, e)
-        return None
-
-    try:
-        import io
-        import numpy as np
-        from PIL import Image
-        from deepdoc.vision import OCR
-
-        ocr_engine = OCR()
-        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        bxs = ocr_engine(np.array(img))
-        txt = "\n".join([t[0] for _, t in bxs if t[0]]).strip()
-        if not txt:
-            return None
-        return txt
-    except Exception as e:
-        logging.warning("Local OCR failed for %s: %s", image_url, e)
-        return None
+def parse_args():
+    p = argparse.ArgumentParser(
+        description="fjtba_crawler — 福建省招标投标协会 政策法规"
+    )
+    p.add_argument("--tenant-id", required=True)
+    p.add_argument("--kb-id", required=True)
+    p.add_argument("--task-name", required=True)
+    p.add_argument("--output-dir", default=None,
+                   help="Output root directory (default: PROJECT_ROOT/rag/<task_name>)")
+    p.add_argument("--full", action="store_true",
+                   help="Ignore saved state and re-crawl all")
+    p.add_argument("--max-runtime", type=int, default=_MAX_RUNTIME_DEFAULT,
+                   help="Max runtime in seconds (default: 3300)")
+    for opt in ("--max-days", "--hours", "--max-articles",
+                "--llm-id", "--llm-model", "--access-token", "--target-url"):
+        p.add_argument(opt, default=None)
+    return p.parse_args()
 
 
 # ---------------------------------------------------------------------------
@@ -584,155 +580,162 @@ def _ocr_image(image_url, client=None):
 
 def main():
     args = parse_args()
-    print(f"\n{'='*60}")
-    print(f"[FJTBA] Starting FJTBA crawler")
-    print(f"[FJTBA] Target URL: {args.target_url}")
-    print(f"[FJTBA] Task name: {args.task_name}")
-    print(f"[FJTBA] Target KB: {args.kb_id}")
-    print(f"{'='*60}\n")
+
+    _safe_print("\n" + "=" * 60)
+    _safe_print("[FJTBA] 福建省招标投标协会 — {} crawler".format(_SECTION_LABEL))
+    _safe_print("[FJTBA] KB: {}".format(args.kb_id))
+    _safe_print("[FJTBA] Task: {}".format(args.task_name))
+    _safe_print("[FJTBA] Max runtime: {}s".format(args.max_runtime))
+    _safe_print("[FJTBA] Target: {}".format(_LISTING_URL))
+    _safe_print("=" * 60 + "\n")
     sys.stdout.flush()
 
-    _init()
-    logging.info("=== FJTBA crawler started for %s ===", args.target_url)
-    print(f"[FJTBA] Local OCR engine active — images will be OCR'd for text content")
+    settings.init_settings()
+    logging.info("=== FJTBA crawler started ===")
+
+    output_dir = args.output_dir or os.path.join(
+        _PROJECT_ROOT, "rag", args.task_name.strip()
+    )
+    os.makedirs(output_dir, exist_ok=True)
+    _safe_print("[FJTBA] Output: {}\n".format(output_dir))
     sys.stdout.flush()
 
-    client = PlaywrightHttpClient()
-    client.start()
-    try:
+    # ── State ──────────────────────────────────────────────────────────
+    state = _load_state(output_dir) if not args.full else {"processed_ids": []}
+    processed_ids = set(state.get("processed_ids", []))
 
-        # 1/4: Fetch homepage
-        print(f"[FJTBA] Step 1/4: Fetching homepage...")
+    _safe_print("[FJTBA] Already processed: {} article(s)".format(len(processed_ids)))
+    sys.stdout.flush()
+
+    crawl_start = time.time()
+
+    # ── Step 1: Crawl listing via AJAX API ─────────────────────────────
+    _safe_print("\n[FJTBA] Step 1/3: Crawling listing via AJAX API...")
+    sys.stdout.flush()
+
+    seen_ids = set()
+    all_articles = _crawl_all_listings(seen_ids)
+
+    _safe_print("[FJTBA]   Total: {} article(s) from listing".format(len(all_articles)))
+    sys.stdout.flush()
+
+    if not all_articles:
+        _safe_print("[FJTBA] No articles found, done.")
         sys.stdout.flush()
-        html = _fetch(args.target_url, client=client)
-        if not html:
-            print(f"[FJTBA] ERROR: Homepage fetch failed, exiting")
+        return
+
+    # Filter already-processed
+    new_articles = [
+        a for a in all_articles
+        if a.get("article_id") and a["article_id"] not in processed_ids
+    ]
+    skipped = len(all_articles) - len(new_articles)
+    if skipped:
+        _safe_print("[FJTBA] {} already processed, {} new".format(skipped, len(new_articles)))
+        sys.stdout.flush()
+
+    if not new_articles:
+        _safe_print("[FJTBA] All available articles already processed.")
+        sys.stdout.flush()
+        return
+
+    # ── Step 2: Process each article ───────────────────────────────────
+    _safe_print("\n[FJTBA] Step 2/3: Processing {} article(s)...\n".format(len(new_articles)))
+    sys.stdout.flush()
+
+    processed_count = 0
+    stopped_early = False
+    downloads_dir = os.path.join(output_dir, "downloads")
+
+    for i, article in enumerate(new_articles, 1):
+        elapsed = time.time() - crawl_start
+        remaining = args.max_runtime - elapsed
+        if remaining < 120:
+            _safe_print(
+                "\n[FJTBA] Runtime {:.0f}s, {:.0f}s remaining (limit {}s), "
+                "stopping gracefully. {} processed. "
+                "Next run will resume.".format(elapsed, remaining, args.max_runtime, processed_count))
             sys.stdout.flush()
-            logging.error("Homepage fetch failed, exiting")
-            sys.exit(1)
-        print(f"[FJTBA] Step 1/4: Homepage fetched successfully ({len(html)} bytes)\n")
+            stopped_early = True
+            break
+
+        article_id = article["article_id"]
+        title = article["title"]
+        date_str = _normalize_pubdate(article.get("tm", ""))
+        content_html = article.get("content_html", "")
+
+        full_url = "{}/PortalPage/ISDInfoDetail.aspx?type=2&id={}".format(
+            _SITE_ROOT, article_id)
+
+        _safe_print("[FJTBA] [{}/{}] {}...".format(
+            i, len(new_articles), title[:60]))
         sys.stdout.flush()
 
-        # 2/4: Extract articles (filters < 2023)
-        print(f"[FJTBA] Step 2/4: Extracting articles from .mid_content sections...")
+        # Parse HTML content
+        content_text, attachments = _parse_content_html(content_html, full_url)
+
+        # Download attachments
+        local_files = []
+        article_dl_dir = ""
+        if attachments:
+            dl_name = "{}_{}".format(article_id[:12], _sanitize_filename(title[:30], 40))
+            article_dl_dir = os.path.join(downloads_dir, dl_name)
+            local_files = _download_attachments(attachments, article_dl_dir, referer=full_url)
+            for fp in list(local_files):
+                is_zip = fp.lower().endswith(".zip")
+                if not is_zip and os.path.exists(fp) and os.path.getsize(fp) >= 4:
+                    with open(fp, "rb") as f:
+                        is_zip = f.read(4) == b"PK\x03\x04"
+                if is_zip:
+                    extracted = _extract_zip(fp)
+                    local_files.remove(fp)
+                    local_files.extend(extracted)
+
+        # Build markdown
+        md_content = _build_markdown(title, date_str, content_text,
+                                     attachments, article_dl_dir, full_url)
+
+        # Save markdown locally
+        date_for_name = date_str or datetime.now().strftime("%Y-%m-%d")
+        folder_name = _sanitize_filename(
+            "{}_{}_{}".format(date_for_name, article_id[:12], title[:40]), max_len=120)
+        md_path = os.path.join(output_dir, "{}.md".format(folder_name))
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(md_content)
+        _safe_print("[FJTBA]   Saved ({} chars, {} attachments)".format(
+            len(md_content), len(local_files)))
         sys.stdout.flush()
-        articles = extract_fjtba_articles(html, args.target_url)
-        print(f"[FJTBA] Step 2/4: Found {len(articles)} articles after filtering\n")
-        sys.stdout.flush()
-        if not articles:
-            print(f"[FJTBA] No articles found, exiting")
-            sys.stdout.flush()
-            logging.warning("No articles found, exiting")
-            sys.exit(0)
-
-        # Output directory
-        output_dir = args.output_dir or os.path.join(
-            _PROJECT_ROOT,
-            "rag",
-            args.task_name.strip()
-        )
-        os.makedirs(output_dir, exist_ok=True)
-        print(f"[FJTBA] Output directory: {output_dir}\n")
-        sys.stdout.flush()
-
-        # Incremental state
-        state = _load_state(output_dir) if not args.full else {"processed_urls": []}
-        processed_urls = set(state.get("processed_urls", []))
-        if processed_urls:
-            new_articles = [a for a in articles if a["url"] not in processed_urls]
-            skipped = len(articles) - len(new_articles)
-            print(f"[FJTBA] Skipping {skipped} already-processed article(s)\n")
-            sys.stdout.flush()
-            articles = new_articles
-
-        # 3/4: Process each article (API → markdown with images & file links)
-        print(f"[FJTBA] Step 3/4: Processing {len(articles)} articles...\n")
-        sys.stdout.flush()
-        md_parts = []
-        for idx, art in enumerate(articles, 1):
-            print(f"[FJTBA] Article [{idx}/{len(articles)}]: {art['title']}")
-            sys.stdout.flush()
-            logging.info("[%d/%d] %s", idx, len(articles), art["title"])
-
-            if not art.get("article_id"):
-                print(f"[FJTBA]   -> No article ID found in URL, skipped")
-                sys.stdout.flush()
-                logging.warning("No article ID for %s, skipped", art["title"])
-                continue
-
-            content, resources = fetch_article_content_via_api(
-                art["article_id"], art["url"], client=client,
-            )
-            if not content:
-                print(f"[FJTBA]   -> Empty content, skipped")
-                sys.stdout.flush()
-                logging.warning("Empty content for %s, skipped", art["title"])
-                continue
-
-            n_images = sum(1 for r in resources if r.get("type") == "image")
-            n_files = sum(1 for r in resources if r.get("type") == "file")
-            n_ocr = sum(1 for r in resources if r.get("type") == "image" and r.get("ocr_text"))
-            print(f"[FJTBA]   -> Content: {len(content)} chars, {n_images} images ({n_ocr} OCR'd), {n_files} files")
-            sys.stdout.flush()
-
-            # Build article markdown section
-            article_date_str = art["date"].strftime("%Y-%m-%d") if art.get("date") else art.get("date_str", "")
-            category_str = f" [{art['category']}]" if art.get("category") else ""
-            lines = [
-                f"# {art['title']}{category_str}",
-                f"**Date:** {article_date_str}",
-                f"**Source:** {art['url']}",
-                "",
-                content,
-            ]
-
-            lines.append("")
-            lines.append("---")
-            md_parts.append("\n".join(lines))
-
-        if not md_parts:
-            print(f"[FJTBA] No articles processed successfully, exiting")
-            sys.stdout.flush()
-            logging.warning("No articles processed successfully")
-            sys.exit(0)
-
-        # 4/4: Save combined markdown + upload to KB
-        print(f"[FJTBA] Step 4/4: Saving markdown...")
-        sys.stdout.flush()
-        combined = "\n".join(md_parts)
-        filepath = _save_markdown(combined, output_dir)
-        print(f"[FJTBA] Step 4/4: Saved to {filepath} ({len(combined)} chars)\n")
-        sys.stdout.flush()
-
-        # Save state for incremental crawling
-        new_urls = [a["url"] for a in articles]
-        if new_urls:
-            processed_urls.update(new_urls)
-            _save_state(output_dir, {"processed_urls": list(processed_urls)})
 
         # Upload to KB
-        print(f"[FJTBA] Uploading to KB {args.kb_id}...")
-        sys.stdout.flush()
-        logging.info("Uploading to KB %s …", args.kb_id)
-        try:
-            _upload_to_kb(filepath, args.kb_id, args.tenant_id)
-            print(f"[FJTBA] Upload complete!\n")
-            sys.stdout.flush()
-            logging.info("Upload complete")
-        except Exception as e:
-            print(f"[FJTBA] ERROR: Upload failed: {e}")
-            sys.stdout.flush()
-            logging.error("Upload failed: %s", e)
-            sys.exit(1)
+        if args.kb_id:
+            try:
+                _upload_to_kb(md_content, local_files, args.kb_id,
+                             args.tenant_id, folder_name)
+            except Exception as e:
+                logging.error("KB upload failed: %s", e)
+                _save_state(output_dir, {"processed_ids": list(processed_ids)})
+                _safe_print("[FJTBA]   Upload error: {}".format(e))
+                sys.stdout.flush()
 
-        print(f"{'='*60}")
-        print(f"[FJTBA] All done! Task completed successfully.")
-        print(f"{'='*60}")
-        sys.stdout.flush()
-        logging.info("=== FJTBA crawler finished successfully ===")
+        processed_ids.add(article_id)
+        processed_count += 1
 
-    finally:
-        client.stop()
+        if processed_count % _BATCH_SIZE == 0:
+            _save_state(output_dir, {"processed_ids": list(processed_ids)})
+            _safe_print("[FJTBA]   Checkpoint ({} processed)".format(processed_count))
+            sys.stdout.flush()
+
+    # ── Final state ────────────────────────────────────────────────────
+    state["processed_ids"] = list(processed_ids)
+    _save_state(output_dir, state)
+
+    _safe_print("\n" + "=" * 60)
+    _safe_print("[FJTBA] Crawl complete — {} new article(s)".format(processed_count))
+    if stopped_early:
+        _safe_print("[FJTBA] Stopped early, will resume next run")
+    _safe_print("=" * 60 + "\n")
+    sys.stdout.flush()
+    logging.info("=== FJTBA crawler finished ===")
 
 
 if __name__ == "__main__":

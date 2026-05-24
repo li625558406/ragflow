@@ -1,6 +1,6 @@
 import { CodeTemplateStrMap, ProgrammingLanguage } from '@/constants/agent';
 import { isEmpty } from 'lodash';
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { UseFormReturn, useWatch } from 'react-hook-form';
 import useGraphStore from '../../store';
 import { FormSchemaType } from './schema';
@@ -25,8 +25,15 @@ export function useWatchFormChange(
   const watchedValues = useWatch({ control: form?.control });
   const updateNodeForm = useGraphStore((state) => state.updateNodeForm);
   const getNode = useGraphStore((state) => state.getNode);
+  const isInitialMount = useRef(true);
 
   useEffect(() => {
+    // Skip the first render to avoid overwriting stored data with potentially incomplete initial values
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      return;
+    }
+
     // Manually triggered form updates are synchronized to the canvas
     if (id) {
       const values = form?.getValues() || watchedValues || {};

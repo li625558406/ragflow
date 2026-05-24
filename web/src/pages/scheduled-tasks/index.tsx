@@ -54,7 +54,7 @@ export default function ScheduledTasks() {
       'scheduledTasks',
       {
         debouncedSearchString,
-        page: pagination.page,
+        page: pagination.current,
         pageSize: pagination.pageSize,
       },
     ],
@@ -69,7 +69,7 @@ export default function ScheduledTasks() {
       const { data: res } = await scheduledTaskService.listScheduledTasks(
         {
           params: {
-            page: pagination.page,
+            page: pagination.current,
             items_per_page: pagination.pageSize,
             name: debouncedSearchString || undefined,
           },
@@ -320,7 +320,7 @@ export default function ScheduledTasks() {
                             <Button
                               variant="ghost"
                               size="icon"
-                              onClick={() => handleDelete(task.id, task.name)}
+                              onClick={() => handleDelete(task.id)}
                               title={t('common.delete')}
                             >
                               <Trash2 className="size-4" />
@@ -336,9 +336,9 @@ export default function ScheduledTasks() {
               <footer className="mt-4 px-5 pb-5">
                 <RAGFlowPagination
                   total={total}
-                  currentPage={pagination.page}
+                  current={pagination.current}
                   pageSize={pagination.pageSize}
-                  setCurrentPage={handlePageChange}
+                  onChange={handlePageChange}
                 />
               </footer>
             </>

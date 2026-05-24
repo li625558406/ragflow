@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import DocumentEditor from './document-editor';
 import DocumentList from './document-list';
 
@@ -9,6 +9,8 @@ interface DocumentItem {
   agent_id: string;
   create_time: string;
   update_time: string;
+  created_by?: string;
+  permission?: string;
 }
 
 interface DocumentData {
@@ -23,6 +25,13 @@ interface DocumentData {
   update_time: string;
 }
 
+interface FormatRule {
+  id: string;
+  name: string;
+  description: string;
+  config: Record<string, unknown>;
+}
+
 interface Props {
   apiFetch: (url: string, options?: RequestInit) => Promise<Response>;
 }
@@ -33,6 +42,8 @@ export default function CollaborationPanel({ apiFetch }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedDoc, setSelectedDoc] = useState<DocumentData | null>(null);
   const [docLoading, setDocLoading] = useState(false);
+  const [applyingRuleId, setApplyingRuleId] = useState<string | null>(null);
+  const appliedRuleConfigRef = useRef<Record<string, unknown> | null>(null);
 
   const loadDocuments = useCallback(async () => {
     setLoading(true);
@@ -83,6 +94,18 @@ export default function CollaborationPanel({ apiFetch }: Props) {
     loadDocuments();
   }, [loadDocuments]);
 
+  const handleApplyFormatRule = useCallback((rule: FormatRule) => {
+    setApplyingRuleId(rule.id);
+    appliedRuleConfigRef.current = rule.config;
+    // Force re-render of DocumentEditor with a new key to trigger the plugin
+    setSelectedDoc((prev) => (prev ? { ...prev } : prev));
+  }, []);
+
+  const handleRuleApplied = useCallback(() => {
+    setApplyingRuleId(null);
+    appliedRuleConfigRef.current = null;
+  }, []);
+
   return (
     <div className="flex-1 flex min-h-0">
       <DocumentList
@@ -92,6 +115,8 @@ export default function CollaborationPanel({ apiFetch }: Props) {
         loading={loading}
         apiFetch={apiFetch}
         onRefresh={loadDocuments}
+        onApplyFormatRule={handleApplyFormatRule}
+        applyingRuleId={applyingRuleId}
       />
       <div className="flex-1 flex min-w-0">
         {docLoading ? (
@@ -100,9 +125,12 @@ export default function CollaborationPanel({ apiFetch }: Props) {
           </div>
         ) : selectedDoc ? (
           <DocumentEditor
+            key={selectedDoc.id}
             document={selectedDoc}
             apiFetch={apiFetch}
             onUpdate={handleDocUpdate}
+            appliedRuleConfig={appliedRuleConfigRef.current}
+            onRuleApplied={handleRuleApplied}
           />
         ) : (
           <div className="flex-1 flex items-center justify-center bg-stone-50">

@@ -58,6 +58,23 @@ export default defineConfig(({ mode }) => {
   console.log(`[vite.config] mode: ${mode}, API_PROXY_SCHEME: ${proxyScheme}`);
 
   const proxySchemes = {
+    remote: {
+      '/api/v1/admin': {
+        target: 'http://47.98.102.55/',
+        changeOrigin: true,
+        ws: true,
+      },
+      '/api': {
+        target: 'http://47.98.102.55/',
+        changeOrigin: true,
+        ws: true,
+      },
+      '/v1': {
+        target: 'http://47.98.102.55/',
+        changeOrigin: true,
+        ws: true,
+      },
+    },
     python: {
       '/api/v1/admin': {
         target: 'http://127.0.0.1:9381/',
@@ -209,7 +226,7 @@ export default defineConfig(({ mode }) => {
       outDir: 'dist',
       assetsDir: 'assets',
       assetsInlineLimit: 4096,
-      experimentalMinChunkSize: 30 * 1024,
+      experimentalMinChunkSize: 100 * 1024,
       chunkSizeWarningLimit: 1000,
       rollupOptions: {
         onwarn(warning, warn) {
@@ -232,27 +249,58 @@ export default defineConfig(({ mode }) => {
             }
 
             if (id.includes('node_modules')) {
-              if (id.includes('node_modules/d3')) {
-                return 'd3';
+              // Large libs that benefit from lazy-loading — keep as separate chunks
+              const largeLibs = [
+                'echarts',
+                'zrender',
+                'd3',
+                '@antv',
+                'monaco-editor',
+                '@monaco-editor',
+                'pdfjs-dist',
+                'katex',
+                'highlight.js',
+                'refractor',
+                'rehype-prism-plus',
+                'jsoneditor',
+                'html2canvas',
+                'recharts',
+                'antd',
+                '@ant-design',
+                '@lexical',
+                '@xyflow',
+                '@js-preview',
+                'sql.js',
+              ];
+              for (const lib of largeLibs) {
+                if (id.includes(`node_modules/${lib}`)) {
+                  return lib.replace(/[^a-zA-Z0-9]/g, '-');
+                }
               }
-              if (id.includes('node_modules/ajv')) {
-                return 'ajv';
-              }
-              if (id.includes('node_modules/@antv')) {
-                return 'antv';
-              }
+
               const name = id
                 .toString()
                 .split('node_modules/')[1]
                 .split('/')[0]
                 .toString();
-              if (['lodash', 'dayjs', 'date-fns', 'axios'].includes(name)) {
+              // Small, always-used utils — bundle together
+              if (
+                [
+                  'lodash',
+                  'dayjs',
+                  'date-fns',
+                  'axios',
+                  'classnames',
+                  'clsx',
+                ].includes(name)
+              ) {
                 return 'utils';
               }
-              if (['@xmldom', 'xmlbuilder '].includes(name)) {
+              if (['@xmldom', 'xmlbuilder'].includes(name)) {
                 return 'xml-js';
               }
-              return name;
+              // Everything else goes into a shared vendor chunk
+              return 'vendor';
             }
           },
           chunkFileNames: 'chunk/js/[name]-[hash].js',

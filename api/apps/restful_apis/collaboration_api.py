@@ -32,6 +32,7 @@ async def create_document():
     name = req.get("name", "").strip()
     markdown_content = req.get("markdown_content", "")
     agent_id = req.get("agent_id")
+    permission = req.get("permission", "me")
 
     if not name:
         return get_error_argument_result("name is required")
@@ -43,6 +44,7 @@ async def create_document():
             name=name,
             markdown_content=markdown_content,
             agent_id=agent_id,
+            permission=permission,
         )
         return get_json_result(data=doc)
     except Exception as e:
@@ -176,6 +178,7 @@ async def apply_format_rule(doc_id):
 @validate_request("name")
 async def create_format_rule():
     req = await get_request_json()
+    permission = req.get("permission", "me")
     try:
         rule = await collaboration_api_service.create_format_rule(
             tenant_id=current_user.id,
@@ -183,6 +186,7 @@ async def create_format_rule():
             name=req.get("name", "").strip(),
             description=req.get("description", ""),
             config=req.get("config"),
+            permission=permission,
         )
         return get_json_result(data=rule)
     except Exception as e:

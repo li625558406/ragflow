@@ -237,6 +237,18 @@ function ensure_docling() {
       || uv pip install -i https://pypi.tuna.tsinghua.edu.cn/simple --extra-index-url https://pypi.org/simple --no-cache-dir "docling${DOCLING_PIN}"
 }
 
+function ensure_ddddocr() {
+    echo "Installing ddddocr for CAPTCHA recognition..."
+    python3 -c "import ddddocr" 2>/dev/null || python3 -m pip install ddddocr -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com -q
+    echo "ddddocr ready."
+}
+
+function ensure_croniter() {
+    echo "Installing croniter for scheduled tasks..."
+    python3 -c "import croniter" 2>/dev/null || python3 -m pip install croniter -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com -q
+    echo "croniter ready."
+}
+
 function ensure_db_init() {
     echo "Initializing database tables..."
     "$PY" -c "from api.db.db_models import init_database_tables as init_web_db; init_web_db()"
@@ -265,6 +277,8 @@ function wait_for_server() {
 # Start components based on flags
 # -----------------------------------------------------------------------------
 ensure_docling
+ensure_ddddocr
+ensure_croniter
 ensure_db_init
 
 if [[ "${ENABLE_WEBSERVER}" -eq 1 ]]; then

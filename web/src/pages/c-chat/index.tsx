@@ -1,6 +1,15 @@
 import CollaborationPanel from '@/components/collaboration';
 import CreateDocumentDialog from '@/components/collaboration/create-document-dialog';
-import HighLightMarkdown from '@/components/highlight-markdown';
+import MarkdownContent from '@/components/next-markdown-content';
+import { ReferenceDocumentList } from '@/components/next-message-item/reference-document-list';
+import { ReferenceImageList } from '@/components/next-message-item/reference-image-list';
+import ToolsPanel from '@/components/tools';
+import type {
+  Docagg,
+  IReferenceChunk,
+  IReferenceObject,
+} from '@/interfaces/database/chat';
+import { EventSourceParserStream } from 'eventsource-parser/stream';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 
@@ -20,25 +29,13 @@ interface Session {
   update_time: number;
 }
 
-interface Reference {
-  // 兼容多种字段名
-  id?: string;
-  chunk_id?: string;
-  docnm_kwd?: string;
-  document_name?: string;
-  document_id?: string;
-  positions?: number[][];
-  content_with_weight?: string;
-  content?: string;
-  image_id?: string;
-  img_id?: string;
-}
-
 interface Message {
   role: 'user' | 'assistant';
   content: string;
   thinking?: string;
-  references?: Reference[];
+  references?: IReferenceObject | null;
+  attachment?: Record<string, unknown>;
+  downloads?: Array<{ name?: string; url?: string }>;
 }
 
 function stripBlockChars(text: string) {
@@ -47,6 +44,116 @@ function stripBlockChars(text: string) {
     /[\u23C0\u2580-\u259F\u25A0-\u25FF\u2800-\u28FF]/g,
     '',
   );
+}
+
+// Process accumulated SSE event list into message content (mirrors agent canvas findMessageFromList)
+interface ChatEvent {
+  event: string;
+  message_id?: string;
+  data: Record<string, unknown>;
+}
+
+function findContentFromEvents(events: ChatEvent[]) {
+  const messageEvents = events.filter((x) => x.event === 'message');
+  let content = '';
+  let startIndex = -1;
+  let endIndex = -1;
+
+  messageEvents.forEach((x, idx) => {
+    const { data } = x;
+    const chunk = (data.content as string) || '';
+    if (data.start_to_think === true) {
+      content += '<think>' + chunk;
+      startIndex = idx;
+      return;
+    }
+    if (data.end_to_think === true) {
+      endIndex = idx;
+      content += chunk + '</think>';
+      return;
+    }
+    content += chunk;
+  });
+
+  // Ensure closing </think> if think block was started but never ended
+  const lastIdx = messageEvents.length - 1;
+  if (startIndex >= 0 && startIndex <= lastIdx && endIndex === -1) {
+    content += '</think>';
+  }
+
+  // Extract attachment/downloads from workflow_finished
+  const workflowFinished = events.find((x) => x.event === 'workflow_finished');
+  const outputs = (workflowFinished?.data?.outputs || {}) as Record<
+    string,
+    unknown
+  >;
+
+  return {
+    content,
+    attachment: (outputs.attachment || {}) as Record<string, unknown>,
+    downloads: (outputs.downloads || []) as Array<{
+      name?: string;
+      url?: string;
+    }>,
+  };
+}
+
+// Extract references from message_end events, return IReferenceObject
+function findRefsFromEvents(events: ChatEvent[]): IReferenceObject | null {
+  for (const e of events) {
+    if (e.event === 'message_end' && (e.data as any)?.reference) {
+      const rawRef = (e.data as any).reference;
+      const chunks: Record<string, IReferenceChunk> = {};
+      if (rawRef.chunks) {
+        for (const [key, val] of Object.entries(rawRef.chunks)) {
+          const c = val as any;
+          chunks[key] = {
+            id: c.chunk_id || c.id || key,
+            content: c.content_with_weight || c.content || '',
+            document_id: c.document_id || '',
+            document_name: c.docnm_kwd || c.document_name || '',
+            dataset_id: c.dataset_id || '',
+            image_id: c.image_id || c.img_id || '',
+            similarity: c.similarity || 0,
+            vector_similarity: c.vector_similarity || 0,
+            term_similarity: c.term_similarity || 0,
+            positions: Array.isArray(c.positions)
+              ? c.positions
+              : c.position_int || [],
+          } as IReferenceChunk;
+        }
+      }
+      const docAggs: Record<string, Docagg> = {};
+      if (rawRef.doc_aggs) {
+        for (const [key, val] of Object.entries(rawRef.doc_aggs)) {
+          const d = val as any;
+          docAggs[key] = {
+            doc_id: d.doc_id || key,
+            doc_name: d.doc_name || '',
+            count: d.count || 0,
+            url: d.url || '',
+          };
+        }
+      }
+      return { chunks, doc_aggs: docAggs };
+    }
+  }
+  return null;
+}
+
+// Extract latest error from event list
+function findErrorFromEvents(events: ChatEvent[]): string | null {
+  const last = events[events.length - 1];
+  if (
+    last &&
+    (last.data as any)?.code !== undefined &&
+    (last.data as any).code !== 0
+  ) {
+    return (last.data as any).message || '请求失败';
+  }
+  const outputs = (last?.data as any)?.outputs;
+  if (outputs?._ERROR) return outputs._ERROR as string;
+  return null;
 }
 
 export default function CChat() {
@@ -66,34 +173,7 @@ export default function CChat() {
     },
   );
 
-  // 引用徽章点击处理
-  useEffect(() => {
-    const handleClick = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      if (target.classList.contains('cite-badge')) {
-        const index = parseInt(
-          target.getAttribute('data-cite-index') || '0',
-          10,
-        );
-        if (index > 0) {
-          const card = document.getElementById(`ref-${index - 1}`);
-          if (card) {
-            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            card.classList.add('border-indigo-500/30', 'bg-indigo-50');
-            setTimeout(
-              () =>
-                card.classList.remove('border-indigo-500/30', 'bg-indigo-50'),
-              2000,
-            );
-          }
-        }
-      }
-    };
-    document.addEventListener('click', handleClick);
-    return () => document.removeEventListener('click', handleClick);
-  }, []);
-
-  // 注入引用徽章样式 + 登录样式
+  // 注入登录样式
   useEffect(() => {
     const styleId = 'c-chat-styles';
     if (document.getElementById(styleId)) return;
@@ -114,28 +194,6 @@ export default function CChat() {
       .scrollbar-thin::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 2px; }
       .input-ring { transition: box-shadow 0.2s ease, border-color 0.2s ease; }
       .input-ring:focus-within { box-shadow: 0 0 0 3px rgba(99,102,241,0.1); border-color: #A5B4FC; }
-      .cite-badge {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        min-width: 18px;
-        height: 18px;
-        padding: 0 4px;
-        font-size: 11px;
-        font-weight: 600;
-        line-height: 1;
-        border-radius: 5px;
-        background: #EEF2FF;
-        color: #6366F1;
-        vertical-align: super;
-        margin: 0 1px;
-        cursor: pointer;
-        transition: all 0.15s;
-      }
-      .cite-badge:hover {
-        background: #6366F1;
-        color: #fff;
-      }
     `;
     document.head.appendChild(style);
     return () => document.getElementById(styleId)?.remove();
@@ -163,15 +221,14 @@ export default function CChat() {
   // UI state
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  // Main view state: 'chat' or 'analysis'
-  const [mainView, setMainView] = useState<'chat' | 'collaboration'>('chat');
+  // Main view state: 'chat' or 'collaboration' or 'tools'
+  const [mainView, setMainView] = useState<'chat' | 'collaboration' | 'tools'>(
+    'chat',
+  );
 
   // Collaboration state
   const [collabDialogOpen, setCollabDialogOpen] = useState(false);
   const [collabMessage, setCollabMessage] = useState('');
-
-  // Ref state
-  const [expandedRefs, setExpandedRefs] = useState<Set<number>>(new Set());
 
   const clearAuth = useCallback(() => {
     setToken('');
@@ -391,39 +448,51 @@ export default function CChat() {
             role: m.role || 'assistant',
             content,
             thinking,
-            references: [],
+            references: null,
           };
         });
 
         // 处理顶层 reference 对象，附加到 assistant 消息
-        // reference 结构: {chunks: {0: {...}, 1: {...}}, doc_aggs: {...}}
+        // reference 结构: {chunks: {"0": {...}, "1": {...}}, doc_aggs: {...}}
         if (rawRef && rawRef.chunks) {
           const chunksObj = rawRef.chunks;
-          // chunks 可能是对象 {0: {...}, 1: {...}} 或数组
-          const chunksList: any[] = Array.isArray(chunksObj)
-            ? chunksObj
-            : Object.values(chunksObj);
+          const chunks: Record<string, IReferenceChunk> = {};
+          for (const [key, val] of Object.entries(chunksObj)) {
+            const c = val as any;
+            chunks[key] = {
+              id: c.chunk_id || c.id || key,
+              content: c.content_with_weight || c.content || '',
+              document_id: c.document_id || '',
+              document_name: c.docnm_kwd || c.document_name || '',
+              dataset_id: c.dataset_id || '',
+              image_id: c.image_id || c.img_id || '',
+              similarity: c.similarity || 0,
+              vector_similarity: c.vector_similarity || 0,
+              term_similarity: c.term_similarity || 0,
+              positions: Array.isArray(c.positions)
+                ? c.positions
+                : c.position_int || [],
+            } as IReferenceChunk;
+          }
+          const docAggs: Record<string, Docagg> = {};
+          if (rawRef.doc_aggs) {
+            for (const [key, val] of Object.entries(rawRef.doc_aggs)) {
+              const d = val as any;
+              docAggs[key] = {
+                doc_id: d.doc_id || key,
+                doc_name: d.doc_name || '',
+                count: d.count || 0,
+                url: d.url || '',
+              };
+            }
+          }
+          const refObj: IReferenceObject = { chunks, doc_aggs: docAggs };
 
-          // 只有一条引用记录，对应最后一条 assistant 消息
-          if (chunksList.length > 0) {
-            // 找到最后一条 assistant 消息
-            for (let i = mapped.length - 1; i >= 0; i--) {
-              if (mapped[i].role === 'assistant') {
-                mapped[i].references = chunksList.map((c: any) => ({
-                  id: c.chunk_id || c.id || '',
-                  chunk_id: c.chunk_id || c.id || '',
-                  docnm_kwd: c.docnm_kwd || c.document_name || '',
-                  document_name: c.docnm_kwd || c.document_name || '',
-                  positions: Array.isArray(c.positions)
-                    ? c.positions
-                    : c.position_int || [],
-                  content_with_weight: c.content_with_weight || c.content || '',
-                  content: c.content_with_weight || c.content || '',
-                  image_id: c.image_id || c.img_id || '',
-                  img_id: c.image_id || c.img_id || '',
-                }));
-                break;
-              }
+          // 找到最后一条 assistant 消息
+          for (let i = mapped.length - 1; i >= 0; i--) {
+            if (mapped[i].role === 'assistant') {
+              mapped[i].references = refObj;
+              break;
             }
           }
         }
@@ -533,7 +602,7 @@ export default function CChat() {
     const assistantMsg: Message = {
       role: 'assistant',
       content: '',
-      references: [],
+      references: null,
     };
     setMessages((prev) => [...prev, assistantMsg]);
 
@@ -550,72 +619,68 @@ export default function CChat() {
         signal: abortRef.current.signal,
       });
 
+      if (!resp.ok) {
+        throw new Error(`HTTP ${resp.status}`);
+      }
+
+      // Use EventSourceParserStream for robust SSE parsing (same as agent canvas)
       const reader = resp
         .body!.pipeThrough(new TextDecoderStream())
+        .pipeThrough(new EventSourceParserStream())
         .getReader();
-      let buffer = '';
-      let localThinking = false;
-      let localThinkingContent = '';
+
+      const events: ChatEvent[] = [];
       let localFullContent = '';
+      let localThinkingContent = '';
+      let inThink = false;
 
       // eslint-disable-next-line no-constant-condition
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
-        buffer += value;
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+        try {
+          const event: ChatEvent = JSON.parse(value?.data || '');
+          events.push(event);
 
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith('data:')) continue;
-          const data = trimmed.slice(5).trim();
-          if (data === '[DONE]') continue;
+          if (event.event === 'message' && event.data) {
+            const chunk = (event.data.content as string) || '';
 
-          try {
-            const event = JSON.parse(data);
-            if (event.event === 'message' && event.data) {
-              if (event.data.start_to_think) {
-                localThinking = true;
-                localThinkingContent = '';
-                setIsThinking(true);
-                setThinkingContent('');
-              }
-              const chunk = event.data.content || '';
-              if (localThinking) {
+            if (event.data.start_to_think) {
+              inThink = true;
+              localThinkingContent = '';
+              setIsThinking(true);
+            } else if (event.data.end_to_think) {
+              inThink = false;
+              setIsThinking(false);
+            } else {
+              // Regular content chunk
+              if (inThink) {
                 localThinkingContent += chunk;
                 setThinkingContent(localThinkingContent);
               } else {
                 localFullContent += stripBlockChars(chunk);
                 setFullContent(localFullContent);
               }
-              if (event.data.end_to_think) {
-                localThinking = false;
-                setIsThinking(false);
-              }
             }
-            if (event.event === 'message_end' && event.data) {
-              const ref = event.data.reference;
-              if (ref?.chunks) {
-                setMessages((prev) => {
-                  const updated = [...prev];
-                  const last = updated[updated.length - 1];
-                  if (last) {
-                    updated[updated.length - 1] = {
-                      ...last,
-                      references: Object.values(ref.chunks) as Reference[],
-                    };
-                  }
-                  return updated;
-                });
-              }
-            }
-          } catch {
-            /* skip */
           }
+        } catch {
+          // skip malformed event
         }
       }
+
+      // Process accumulated events (same logic as agent canvas findMessageFromList)
+      const { content, attachment, downloads } = findContentFromEvents(events);
+      const refs = findRefsFromEvents(events);
+      const errorMsg = findErrorFromEvents(events);
+
+      // Extract thinking from <think> tags in content
+      const thinkMatch = content.match(/<think>([\s\S]*?)<\/think>/);
+      const thinking = thinkMatch ? thinkMatch[1].trim() : '';
+      // Remove think tags from display content, keep rest
+      const cleanContent = content
+        .replace(/<think>[\s\S]*?<\/think>/g, '')
+        .trim();
 
       setMessages((prev) => {
         const updated = [...prev];
@@ -623,8 +688,11 @@ export default function CChat() {
         if (last) {
           updated[updated.length - 1] = {
             ...last,
-            content: stripBlockChars(localFullContent),
-            thinking: stripBlockChars(localThinkingContent).trim(),
+            content: errorMsg || cleanContent,
+            thinking: thinking,
+            references: refs,
+            attachment: attachment,
+            downloads: downloads,
           };
         }
         return updated;
@@ -720,6 +788,11 @@ export default function CChat() {
                   key: 'collaboration',
                   label: '协作',
                   icon: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z',
+                },
+                {
+                  key: 'tools',
+                  label: '工具',
+                  icon: 'M11.42 15.17l-5.658 3.286a1 1 0 01-1.414-.386l-1.894-3.28a1 1 0 01.386-1.364l5.658-3.286a1 1 0 011.414.386l1.894 3.28a1 1 0 01-.386 1.364zM21.758 8.59l-5.658 3.286a1 1 0 01-1.414-.386l-1.894-3.28a1 1 0 01.386-1.364l5.658-3.286a1 1 0 011.414.386l1.894 3.28a1 1 0 01-.386 1.364z',
                 },
               ] as const
             ).map((tab) => (
@@ -1026,7 +1099,7 @@ export default function CChat() {
                       if (msg.role === 'user') {
                         return (
                           <div key={i} className="flex justify-end">
-                            <div className="max-w-[80%] lg:max-w-[70%] bg-indigo-500 text-white px-4 py-2.5 rounded-2xl rounded-br-md text-sm leading-relaxed">
+                            <div className="max-w-[85%] bg-indigo-500 text-white px-4 py-2.5 rounded-2xl rounded-br-md text-[14px] leading-relaxed">
                               {msg.content}
                             </div>
                           </div>
@@ -1037,19 +1110,17 @@ export default function CChat() {
                         : msg.content;
                       const thinking = streaming ? null : msg.thinking;
                       const refs = streaming ? null : msg.references;
-                      const processedContent = processCitationMarkers(
-                        content,
-                        refs || undefined,
-                      );
                       return (
                         <div key={i} className="flex justify-start">
-                          <div className="max-w-[80%] lg:max-w-[70%]">
-                            <div className="bg-white border border-stone-100 px-4 py-2.5 rounded-2xl rounded-bl-md text-sm leading-relaxed text-stone-900">
+                          <div className="max-w-[85%]">
+                            <div className="bg-white border border-stone-100 px-4 py-2.5 rounded-2xl rounded-bl-md text-[13px] leading-relaxed text-stone-900">
                               {thinking && <ThinkingBlock text={thinking} />}
                               <div className="msg-content text-stone-900">
-                                <HighLightMarkdown>
-                                  {processedContent}
-                                </HighLightMarkdown>
+                                <MarkdownContent
+                                  content={content}
+                                  loading={streaming}
+                                  reference={refs || undefined}
+                                />
                               </div>
                               {streaming && (
                                 <span className="inline-block w-2 h-4 bg-indigo-500 ml-1 animate-pulse" />
@@ -1080,19 +1151,16 @@ export default function CChat() {
                                 </div>
                               )}
                             </div>
-                            {refs && refs.length > 0 && (
-                              <ReferenceSection
-                                refs={refs}
-                                expanded={expandedRefs}
-                                onToggle={(idx) =>
-                                  setExpandedRefs((prev) => {
-                                    const next = new Set(prev);
-                                    if (next.has(idx)) next.delete(idx);
-                                    else next.add(idx);
-                                    return next;
-                                  })
-                                }
-                              />
+                            {!streaming && refs?.chunks && (
+                              <>
+                                <ReferenceImageList
+                                  referenceChunks={refs.chunks}
+                                  messageContent={content}
+                                />
+                                <ReferenceDocumentList
+                                  list={Object.values(refs.doc_aggs || {})}
+                                />
+                              </>
                             )}
                             {!streaming && msg.content && (
                               <div className="mt-2 flex justify-end">
@@ -1191,6 +1259,9 @@ export default function CChat() {
           {mainView === 'collaboration' && (
             <CollaborationPanel apiFetch={apiFetch} />
           )}
+
+          {/* Tools View */}
+          {mainView === 'tools' && <ToolsPanel />}
         </div>
       </div>
 
@@ -1251,201 +1322,6 @@ function ThinkingBlock({ text }: { text: string }) {
         </pre>
       )}
     </div>
-  );
-}
-
-// 处理内容中的引用标记，替换为可点击徽章
-function processCitationMarkers(
-  content: string,
-  refs: Reference[] | undefined,
-): string {
-  if (!refs || refs.length === 0 || !content) return content;
-
-  // 建立 ID -> 序号的映射
-  const idToIndex: Map<string, number> = new Map();
-  refs.forEach((ref, idx) => {
-    const refId = ref.id || ref.chunk_id || '';
-    if (refId) idToIndex.set(refId, idx + 1);
-  });
-
-  // 替换 [ID: xxx] 格式的标记
-  return content.replace(/\[ID:\s*([a-f0-9]+)\]/gi, (match, id) => {
-    const index = idToIndex.get(id);
-    if (index) {
-      return `<span class="cite-badge" data-cite-index="${index}">${index}</span>`;
-    }
-    return match;
-  });
-}
-
-function ReferenceSection({
-  refs,
-  expanded,
-  onToggle,
-}: {
-  refs: Reference[];
-  expanded: Set<number>;
-  onToggle: (idx: number) => void;
-}) {
-  const [highlightIdx, setHighlightIdx] = useState<number | null>(null);
-  const [overlayImg, setOverlayImg] = useState<{
-    url: string;
-    doc: string;
-    page: string;
-  } | null>(null);
-
-  useEffect(() => {
-    if (highlightIdx !== null) {
-      const timer = setTimeout(() => setHighlightIdx(null), 2000);
-      return () => clearTimeout(timer);
-    }
-  }, [highlightIdx]);
-
-  // Auto-expand when <= 3 refs
-  useEffect(() => {
-    if (refs.length <= 3) {
-      onToggle(0); // trigger expand
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  return (
-    <>
-      <div className="mt-2.5 pt-2.5 border-t border-stone-100">
-        <button
-          className="flex items-center gap-1.5 text-xs font-medium text-stone-400 hover:text-stone-600 transition mb-2"
-          onClick={() => onToggle(-1)}
-        >
-          <svg
-            className={`w-3 h-3 transition-transform ${refs.length <= 3 || expanded.has(-1) ? 'rotate-90' : ''}`}
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M9 5l7 7-7 7"
-            />
-          </svg>
-          引用来源 ({refs.length})
-        </button>
-        <div
-          className={`space-y-1.5 max-h-[300px] overflow-y-auto ${refs.length <= 3 || expanded.has(-1) ? '' : 'hidden'}`}
-        >
-          {refs.map((ref, idx) => {
-            // 兼容多种字段名
-            const docName = ref.docnm_kwd || ref.document_name || '未知文档';
-            // positions 可能是 [[页码, ...], ...] 或 [页码, x, y, w, h]
-            let page = '';
-            if (ref.positions) {
-              if (Array.isArray(ref.positions[0])) {
-                page = String(ref.positions[0][0] || '');
-              } else if (typeof ref.positions[0] === 'number') {
-                page = String(ref.positions[0]);
-              }
-            }
-            const snippet = (
-              ref.content_with_weight ||
-              ref.content ||
-              ''
-            ).slice(0, 120);
-            const imageId = ref.image_id || ref.img_id || '';
-            const imgUrl = imageId ? `/api/v1/documents/images/${imageId}` : '';
-
-            return (
-              <div
-                key={idx}
-                id={`ref-${idx}`}
-                className={`flex gap-2.5 p-2.5 rounded-lg border hover:shadow-sm transition cursor-pointer ${
-                  highlightIdx === idx
-                    ? 'border-indigo-500/30 bg-indigo-50'
-                    : 'border-stone-100 hover:border-stone-200 bg-stone-50/50'
-                }`}
-                onClick={() => {
-                  if (imgUrl)
-                    setOverlayImg({
-                      url: imgUrl,
-                      doc: docName,
-                      page: String(page),
-                    });
-                }}
-              >
-                {imgUrl && (
-                  <img
-                    src={imgUrl}
-                    className="w-12 h-16 rounded object-cover border border-slate-100 shrink-0 bg-stone-100"
-                    loading="lazy"
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).style.display = 'none';
-                    }}
-                  />
-                )}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5 mb-0.5">
-                    <span className="text-[10px] font-semibold text-indigo-600 bg-stone-100 px-1.5 py-0.5 rounded">
-                      {idx + 1}
-                    </span>
-                    <span className="text-[11px] text-stone-500 truncate">
-                      {docName}
-                    </span>
-                    {page ? (
-                      <span className="text-[10px] text-stone-400 bg-stone-50 px-1.5 py-0.5 rounded shrink-0">
-                        P{page}
-                      </span>
-                    ) : null}
-                  </div>
-                  <div className="text-[11px] text-stone-400 leading-relaxed line-clamp-2">
-                    {snippet}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Image overlay */}
-      {overlayImg && (
-        <div
-          className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-8"
-          onClick={() => setOverlayImg(null)}
-        >
-          <div className="bg-white rounded-2xl shadow-2xl max-w-3xl max-h-[90vh] overflow-hidden">
-            <div className="flex items-center justify-between px-5 py-3 border-b border-stone-100">
-              <span className="text-sm font-medium text-stone-700">
-                {overlayImg.doc}
-                {overlayImg.page ? ` - 第${overlayImg.page}页` : ''}
-              </span>
-              <button
-                onClick={() => setOverlayImg(null)}
-                className="text-stone-400 hover:text-stone-600 transition p-1"
-              >
-                <svg
-                  className="w-5 h-5"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M6 18L18 6M6 6l12 12"
-                  />
-                </svg>
-              </button>
-            </div>
-            <div className="p-4 flex items-center justify-center bg-stone-50">
-              <img
-                src={overlayImg.url}
-                className="max-w-full max-h-[75vh] rounded border border-stone-200"
-              />
-            </div>
-          </div>
-        </div>
-      )}
-    </>
   );
 }
 

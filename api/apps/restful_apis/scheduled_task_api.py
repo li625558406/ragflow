@@ -15,6 +15,7 @@
 #
 import logging
 import os
+import shutil
 from datetime import datetime
 
 from quart import request
@@ -115,6 +116,17 @@ async def update_scheduled_task(task_id):
     e, obj = ScheduledTaskService.get_by_id(task_id)
     if not e:
         return get_data_error_result(message="Task not found.")
+
+    # Migrate crawler state file if task name changed
+    new_name = req.get("name")
+    if new_name and new_name.strip() != obj.name.strip():
+        old_path = _get_state_file_path(obj.name)
+        new_path = _get_state_file_path(new_name)
+        if os.path.exists(old_path) and not os.path.exists(new_path):
+            old_dir = os.path.dirname(old_path)
+            new_dir = os.path.dirname(new_path)
+            if os.path.isdir(old_dir):
+                shutil.move(old_dir, new_dir)
 
     # Recompute next_run_time if schedule changed
     if "schedule_type" in req or "cron_expression" in req or "interval_seconds" in req:

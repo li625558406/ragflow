@@ -84,7 +84,8 @@ def json_dumps(src, byte=False, indent=None, with_type=False):
         src,
         indent=indent,
         cls=CustomJSONEncoder,
-        with_type=with_type)
+        with_type=with_type,
+        ensure_ascii=False)
     if byte:
         dest = string_to_bytes(dest)
     return dest

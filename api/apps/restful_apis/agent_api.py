@@ -270,7 +270,7 @@ async def _iter_session_completion_events(tenant_id, agent_id, req, return_trace
                     }
                 )
                 ans.setdefault("data", {})["trace"] = trace_items
-            yield ans
+                yield ans
             continue
 
         if event in ["message", "message_end"]:

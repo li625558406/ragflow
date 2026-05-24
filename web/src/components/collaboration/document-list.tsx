@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
+import FormatRulePanel from './format-rule-panel';
 
 interface DocumentItem {
   id: string;
@@ -7,6 +8,8 @@ interface DocumentItem {
   agent_id: string;
   create_time: string;
   update_time: string;
+  created_by?: string;
+  permission?: string;
 }
 
 interface FormatRule {
@@ -23,6 +26,17 @@ interface Props {
   loading: boolean;
   apiFetch: (url: string, options?: RequestInit) => Promise<Response>;
   onRefresh: () => void;
+  onApplyFormatRule?: (rule: FormatRule) => void;
+  applyingRuleId?: string | null;
+}
+
+function getCurrentUserId(): string | null {
+  try {
+    const userInfo = JSON.parse(localStorage.getItem('userInfo') || 'null');
+    return userInfo?.id || userInfo?.user_id || null;
+  } catch {
+    return null;
+  }
 }
 
 export default function DocumentList({
@@ -32,28 +46,12 @@ export default function DocumentList({
   loading,
   apiFetch,
   onRefresh,
+  onApplyFormatRule,
+  applyingRuleId,
 }: Props) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
-  const [rules, setRules] = useState<FormatRule[]>([]);
-  const [showRules, setShowRules] = useState(false);
-  const [applyingRule, setApplyingRule] = useState<string | null>(null);
-
-  const loadRules = useCallback(async () => {
-    try {
-      const resp = await apiFetch('/api/v1/collaboration/format-rules');
-      const result = await resp.json();
-      if (result.code === 0) {
-        setRules(result.data || []);
-      }
-    } catch (e) {
-      console.error('加载格式规则失败:', e);
-    }
-  }, [apiFetch]);
-
-  useEffect(() => {
-    loadRules();
-  }, [loadRules]);
+  const currentUserId = getCurrentUserId();
 
   const handleRename = async (docId: string) => {
     if (!renameValue.trim()) {
@@ -88,42 +86,38 @@ export default function DocumentList({
     }
   };
 
-  const handleApplyRule = async (docId: string, ruleId: string) => {
-    setApplyingRule(ruleId);
+  const handleTogglePermission = async (docId: string, current: string) => {
+    const next = current === 'team' ? 'me' : 'team';
     try {
-      const resp = await apiFetch(
-        `/api/v1/collaboration/documents/${docId}/apply-rule`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ rule_id: ruleId }),
-        },
-      );
-      if (resp.ok) {
-        const blob = await resp.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'document.docx';
-        a.click();
-        URL.revokeObjectURL(url);
-      }
+      await apiFetch(`/api/v1/collaboration/documents/${docId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ permission: next }),
+      });
+      onRefresh();
     } catch (e) {
-      console.error('应用规则失败:', e);
-    } finally {
-      setApplyingRule(null);
+      console.error('修改权限失败:', e);
     }
   };
 
+  const handleApplyRule = useCallback(
+    (rule: FormatRule) => {
+      onApplyFormatRule?.(rule);
+    },
+    [onApplyFormatRule],
+  );
+
   return (
-    <div className="w-64 flex-shrink-0 border-r border-stone-100 flex flex-col bg-stone-50/50">
+    <div className="w-56 shrink-0 border-r border-stone-200/60 bg-white flex flex-col">
       {/* Header */}
-      <div className="px-3 py-3 border-b border-stone-100">
-        <h3 className="text-sm font-semibold text-stone-900">文档列表</h3>
+      <div className="px-4 pt-4 pb-2">
+        <span className="text-stone-400 text-[10px] font-semibold tracking-widest uppercase">
+          文档列表
+        </span>
       </div>
 
       {/* Document List */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto px-2 space-y-0.5 pb-4">
         {loading ? (
           <div className="flex items-center justify-center py-8">
             <div className="w-5 h-5 border-2 border-indigo-300 border-t-indigo-500 rounded-full animate-spin" />
@@ -133,162 +127,175 @@ export default function DocumentList({
             暂无文档
           </div>
         ) : (
-          <div className="py-1">
+          <>
             {documents.map((doc) => (
-              <div
+              <button
                 key={doc.id}
-                className={`group px-3 py-2.5 cursor-pointer transition-colors ${
+                className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg cursor-pointer transition text-left ${
                   selectedId === doc.id
-                    ? 'bg-white border-r-2 border-indigo-500'
-                    : 'hover:bg-stone-100'
+                    ? 'bg-indigo-50 text-indigo-700'
+                    : 'text-stone-600 hover:bg-stone-50 hover:text-stone-800'
                 }`}
                 onClick={() => onSelect(doc)}
               >
-                {renamingId === doc.id ? (
-                  <input
-                    type="text"
-                    className="w-full px-2 py-1 text-xs border border-indigo-300 rounded focus:outline-none text-stone-900"
-                    value={renameValue}
-                    onChange={(e) => setRenameValue(e.target.value)}
-                    onBlur={() => handleRename(doc.id)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') handleRename(doc.id);
-                      if (e.key === 'Escape') setRenamingId(null);
-                    }}
-                    autoFocus
-                    onClick={(e) => e.stopPropagation()}
-                  />
-                ) : (
-                  <>
+                <div
+                  className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                    selectedId === doc.id ? 'bg-indigo-100' : 'bg-stone-100'
+                  }`}
+                >
+                  <svg
+                    className={`w-4 h-4 ${selectedId === doc.id ? 'text-indigo-600' : 'text-stone-500'}`}
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={1.5}
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"
+                    />
+                  </svg>
+                </div>
+                <div className="min-w-0 flex-1">
+                  {renamingId === doc.id ? (
+                    <input
+                      type="text"
+                      className="w-full px-2 py-1 text-xs border border-indigo-300 rounded focus:outline-none text-stone-900"
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onBlur={() => handleRename(doc.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleRename(doc.id);
+                        if (e.key === 'Escape') setRenamingId(null);
+                      }}
+                      autoFocus
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  ) : (
                     <div className="flex items-center justify-between">
-                      <span className="text-sm text-stone-900 truncate flex-1">
+                      <span className="text-sm font-medium truncate">
                         {doc.name}
                       </span>
                       <div className="hidden group-hover:flex items-center gap-0.5 ml-1">
-                        {/* Rename */}
-                        <button
-                          className="p-0.5 text-stone-400 hover:text-stone-600"
-                          title="重命名"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setRenamingId(doc.id);
-                            setRenameValue(doc.name);
-                          }}
-                        >
-                          <svg
-                            className="w-3 h-3"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth={2}
-                              d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                            />
-                          </svg>
-                        </button>
-                        {/* Delete */}
-                        <button
-                          className="p-0.5 text-stone-400 hover:text-red-500"
-                          title="删除"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDelete(doc.id);
-                          }}
-                        >
-                          <svg
-                            className="w-3 h-3"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth={2}
-                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                            />
-                          </svg>
-                        </button>
+                        {doc.created_by === currentUserId && (
+                          <>
+                            <button
+                              className={`p-0.5 ${
+                                doc.permission === 'team'
+                                  ? 'text-amber-500 hover:text-amber-600'
+                                  : 'text-stone-300 hover:text-stone-500'
+                              }`}
+                              title={
+                                doc.permission === 'team'
+                                  ? '团队共享中'
+                                  : '仅自己可见'
+                              }
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleTogglePermission(
+                                  doc.id,
+                                  doc.permission || 'me',
+                                );
+                              }}
+                            >
+                              {doc.permission === 'team' ? (
+                                <svg
+                                  className="w-3 h-3"
+                                  fill="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zM7.07 18.28c.43-.9 3.05-1.78 4.93-1.78s4.51.88 4.93 1.78C15.57 19.36 13.86 20 12 20s-3.57-.64-4.93-1.72zm11.29-1.45c-1.43-1.74-4.9-2.33-6.36-2.33s-4.93.59-6.36 2.33C4.62 15.49 4 13.82 4 12c0-4.41 3.59-8 8-8s8 3.59 8 8c0 1.82-.62 3.49-1.64 4.83zM12 6c-1.94 0-3.5 1.56-3.5 3.5S10.06 13 12 13s3.5-1.56 3.5-3.5S13.94 6 12 6zm0 5c-.83 0-1.5-.67-1.5-1.5S11.17 8 12 8s1.5.67 1.5 1.5S12.83 11 12 11z" />
+                                </svg>
+                              ) : (
+                                <svg
+                                  className="w-3 h-3"
+                                  fill="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM12 17c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z" />
+                                </svg>
+                              )}
+                            </button>
+                            <button
+                              className="p-0.5 text-stone-400 hover:text-stone-600"
+                              title="重命名"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setRenamingId(doc.id);
+                                setRenameValue(doc.name);
+                              }}
+                            >
+                              <svg
+                                className="w-3 h-3"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                                />
+                              </svg>
+                            </button>
+                            <button
+                              className="p-0.5 text-stone-400 hover:text-red-500"
+                              title="删除"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDelete(doc.id);
+                              }}
+                            >
+                              <svg
+                                className="w-3 h-3"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                                />
+                              </svg>
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
-                    <div className="flex items-center gap-1 mt-0.5">
-                      <span className="text-[10px] text-stone-400 font-mono uppercase">
-                        {doc.file_type}
+                  )}
+                  <div className="flex items-center gap-1 mt-0.5">
+                    <span className="text-[11px] text-stone-400 truncate">
+                      {doc.file_type.toUpperCase()}
+                    </span>
+                    {doc.permission === 'team' && (
+                      <span className="text-[9px] px-1 py-px rounded bg-amber-50 text-amber-600 border border-amber-200">
+                        团队
                       </span>
-                    </div>
-                  </>
-                )}
-              </div>
+                    )}
+                    {currentUserId && doc.created_by !== currentUserId && (
+                      <span className="text-[9px] px-1 py-px rounded bg-blue-50 text-blue-500 border border-blue-200">
+                        共享
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </button>
             ))}
-          </div>
+          </>
         )}
       </div>
 
       {/* Format Rules Section */}
-      <div className="border-t border-stone-100">
-        <button
-          className="w-full px-3 py-2 text-xs text-stone-500 hover:text-stone-700 hover:bg-stone-100 flex items-center gap-1.5 transition-colors"
-          onClick={() => setShowRules(!showRules)}
-        >
-          <svg
-            className="w-3.5 h-3.5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M4 6h16M4 12h16M4 18h7"
-            />
-          </svg>
-          格式规则
-          <svg
-            className={`w-3 h-3 ml-auto transition-transform ${showRules ? 'rotate-180' : ''}`}
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M19 9l-7 7-7-7"
-            />
-          </svg>
-        </button>
-        {showRules && (
-          <div className="px-2 pb-2">
-            {rules.length === 0 ? (
-              <p className="text-[10px] text-stone-400 px-1">暂无格式规则</p>
-            ) : (
-              rules.map((rule) => (
-                <div
-                  key={rule.id}
-                  className="flex items-center justify-between px-1 py-1 text-xs"
-                >
-                  <span className="text-stone-600 truncate flex-1">
-                    {rule.name}
-                  </span>
-                  {selectedId && (
-                    <button
-                      className="text-[10px] text-indigo-500 hover:text-indigo-700 disabled:opacity-30 px-1"
-                      disabled={applyingRule === rule.id}
-                      onClick={() => handleApplyRule(selectedId!, rule.id)}
-                    >
-                      {applyingRule === rule.id ? '...' : '应用'}
-                    </button>
-                  )}
-                </div>
-              ))
-            )}
-          </div>
-        )}
-      </div>
+      <FormatRulePanel
+        apiFetch={apiFetch}
+        selectedDocId={selectedId}
+        onApplyRule={handleApplyRule}
+        applyingRuleId={applyingRuleId}
+      />
     </div>
   );
 }

@@ -227,6 +227,10 @@
       text = text.replace(/<think[^>]*>[\s\S]*?<\/think\s*>/gi, '');
       // Remove unclosed <think ...> blocks to end of string
       text = text.replace(/<think[^>]*>[\s\S]*$/gi, '');
+      // Remove 💭...🎈 emoji thinking markers (stored by older server versions)
+      text = text.replace(/💭[\s\S]*?🎈/g, '');
+      // Remove unclosed 💭 thinking markers to end of string
+      text = text.replace(/💭[\s\S]*$/g, '');
       return text.trim();
     }
 

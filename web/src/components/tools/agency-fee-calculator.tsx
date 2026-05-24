@@ -1,0 +1,279 @@
+import { useCallback, useState } from 'react';
+
+// 费率分档表: [上限(万元), 货物招标%, 服务招标%, 工程招标%]
+const TIERS: [number, number, number, number][] = [
+  [100, 1.5, 1.5, 1.0],
+  [500, 1.1, 0.8, 0.7],
+  [1000, 0.8, 0.45, 0.55],
+  [5000, 0.5, 0.25, 0.35],
+  [10000, 0.25, 0.1, 0.2],
+  [50000, 0.05, 0.05, 0.05],
+  [100000, 0.035, 0.035, 0.035],
+  [500000, 0.008, 0.008, 0.008],
+  [1000000, 0.006, 0.006, 0.006],
+];
+const ABOVE_TIER_RATE: [number, number, number] = [0.004, 0.004, 0.004];
+const LABELS = ['货物（采购）招标', '服务招标', '工程招标'];
+
+interface FeeResult {
+  label: string;
+  fee: number;
+  lower: number;
+  upper: number;
+}
+
+function calcTiered(amountWan: number, rateCol: number): number {
+  let fee = 0;
+  let prevUpper = 0;
+  for (const [upper, ...rates] of TIERS) {
+    const rate = rates[rateCol] / 100;
+    if (amountWan <= prevUpper) break;
+    fee += (Math.min(amountWan, upper) - prevUpper) * 10000 * rate;
+    prevUpper = upper;
+  }
+  if (amountWan > TIERS[TIERS.length - 1][0]) {
+    fee +=
+      (amountWan - TIERS[TIERS.length - 1][0]) *
+      10000 *
+      (ABOVE_TIER_RATE[rateCol] / 100);
+  }
+  return fee;
+}
+
+function formatYuan(yuan: number): string {
+  return yuan.toLocaleString('zh-CN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function calcAll(amountWan: number): FeeResult[] {
+  return LABELS.map((label, i) => {
+    const fee = calcTiered(amountWan, i);
+    return { label, fee, lower: fee * 0.8, upper: fee * 1.2 };
+  });
+}
+
+export default function AgencyFeeCalculator() {
+  const [input, setInput] = useState('');
+  const [amount, setAmount] = useState<number | null>(null);
+  const [error, setError] = useState('');
+
+  const handleCalc = useCallback(() => {
+    const raw = input.replace(/[,，\s]/g, '');
+    if (!raw) {
+      setError('请输入中标金额');
+      setAmount(null);
+      return;
+    }
+    const val = parseFloat(raw);
+    if (isNaN(val) || val <= 0) {
+      setError('请输入大于0的数字');
+      setAmount(null);
+      return;
+    }
+    setError('');
+    setAmount(val);
+  }, [input]);
+
+  const results = amount !== null ? calcAll(amount) : null;
+
+  return (
+    <div className="h-full flex flex-col">
+      {/* Title bar */}
+      <div className="shrink-0 px-6 pt-5 pb-4 border-b border-stone-100 bg-white">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 bg-indigo-100 rounded-xl flex items-center justify-center">
+            <svg
+              className="w-4.5 h-4.5 text-indigo-600"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={1.5}
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M15.75 15.75V18m-7.5-6.75h.008v.008H8.25v-.008zm0 2.25h.008v.008H8.25V16.5zm0 2.25h.008v.008H8.25v-.008zm0 2.25h.008v.008H8.25v-.008zm2.25-4.5h.008v.008H10.5v-.008zm0 2.25h.008v.008H10.5V16.5zm0 2.25h.008v.008H10.5v-.008zm2.25-4.5h.008v.008H12.75v-.008zm0 2.25h.008v.008H12.75V16.5zm2.25-4.5h.008v.008H15v-.008zm0 2.25h.008v.008H15V16.5z"
+              />
+            </svg>
+          </div>
+          <div>
+            <h2 className="text-[15px] font-bold text-stone-900">
+              招标代理服务费计算器
+            </h2>
+            <p className="text-[11px] text-stone-400">
+              依据：闽招协[2021]32号 收费指导价 · 差额定率分档累进法
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Left-Right layout */}
+      <div className="flex-1 flex min-h-0 overflow-hidden">
+        {/* Left: Form + Results */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-4 min-w-0">
+          {/* Input */}
+          <div>
+            <label className="block text-xs font-medium text-stone-500 mb-1.5">
+              输入中标金额
+            </label>
+            <div className="flex gap-3">
+              <div className="flex-1 relative">
+                <input
+                  type="text"
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleCalc();
+                  }}
+                  placeholder="请输入金额"
+                  className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 pr-14 text-sm text-stone-900 outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-50 transition placeholder:text-stone-400"
+                />
+                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-stone-400">
+                  万元
+                </span>
+              </div>
+              <button
+                onClick={handleCalc}
+                className="shrink-0 bg-indigo-500 hover:bg-indigo-600 text-white px-6 py-2.5 rounded-xl text-sm font-medium transition-colors"
+              >
+                计算
+              </button>
+            </div>
+            {error && <p className="mt-1.5 text-xs text-red-500">{error}</p>}
+          </div>
+
+          {/* Results */}
+          {results && (
+            <div className="bg-white rounded-2xl border border-stone-100 p-5">
+              <div className="mb-4">
+                <div className="text-xs text-stone-400">中标金额</div>
+                <div className="text-xl font-bold text-stone-900 mt-0.5">
+                  {amount!.toLocaleString('zh-CN', {
+                    minimumFractionDigits: 2,
+                  })}{' '}
+                  万元
+                  <span className="text-xs font-normal text-stone-400 ml-2">
+                    (
+                    {(amount! * 10000).toLocaleString('zh-CN', {
+                      minimumFractionDigits: 2,
+                    })}{' '}
+                    元)
+                  </span>
+                </div>
+              </div>
+              <div className="space-y-3">
+                {results.map((r) => (
+                  <div
+                    key={r.label}
+                    className="flex items-center justify-between py-2 border-b border-stone-50 last:border-0"
+                  >
+                    <span className="text-sm text-stone-600">{r.label}</span>
+                    <div className="text-right">
+                      <span className="text-sm font-semibold text-indigo-600">
+                        {formatYuan(r.fee)}
+                      </span>
+                      <span className="text-xs text-stone-400 ml-1">元</span>
+                      <div className="text-[11px] text-stone-400 mt-0.5">
+                        {formatYuan(r.lower)} ~ {formatYuan(r.upper)} 元
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {results.some((r) => r.fee < 8000) && (
+                <div className="mt-3 flex items-start gap-2 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+                  <svg
+                    className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z"
+                    />
+                  </svg>
+                  <span className="text-[11px] text-amber-700">
+                    部分结果低于 8,000 元，实际收费请参考指导价浮动范围
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Right: Rate table */}
+        <div className="w-72 shrink-0 border-l border-stone-100 bg-white/50 overflow-y-auto p-5">
+          <div className="bg-white rounded-2xl border border-stone-100 p-4">
+            <h4 className="text-sm font-semibold text-stone-700 mb-3">
+              费率分档表
+            </h4>
+            <table className="w-full text-xs table-fixed">
+              <thead>
+                <tr className="border-b border-stone-100">
+                  <th className="text-left py-1.5 text-stone-400 font-medium">
+                    分档（万元）
+                  </th>
+                  <th className="text-right py-1.5 text-stone-400 font-medium w-11">
+                    货物
+                  </th>
+                  <th className="text-right py-1.5 text-stone-400 font-medium w-11">
+                    服务
+                  </th>
+                  <th className="text-right py-1.5 text-stone-400 font-medium w-11">
+                    工程
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {TIERS.map(([upper, r0, r1, r2], i) => {
+                  const prev = i === 0 ? 0 : TIERS[i - 1][0];
+                  return (
+                    <tr
+                      key={i}
+                      className="border-b border-stone-50 last:border-0"
+                    >
+                      <td className="py-1.5 text-stone-600">
+                        {prev} - {upper}
+                      </td>
+                      <td className="text-right py-1.5 text-stone-500">
+                        {r0}%
+                      </td>
+                      <td className="text-right py-1.5 text-stone-500">
+                        {r1}%
+                      </td>
+                      <td className="text-right py-1.5 text-stone-500">
+                        {r2}%
+                      </td>
+                    </tr>
+                  );
+                })}
+                <tr>
+                  <td className="py-1.5 text-stone-600">
+                    {TIERS[TIERS.length - 1][0]} 以上
+                  </td>
+                  <td className="text-right py-1.5 text-stone-500">
+                    {ABOVE_TIER_RATE[0]}%
+                  </td>
+                  <td className="text-right py-1.5 text-stone-500">
+                    {ABOVE_TIER_RATE[1]}%
+                  </td>
+                  <td className="text-right py-1.5 text-stone-500">
+                    {ABOVE_TIER_RATE[2]}%
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <p className="text-[11px] text-stone-400 mt-3">
+              注：上下浮动幅度不超过 20%
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
