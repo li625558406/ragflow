@@ -8,6 +8,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import {
+  RAGFlowSelect,
   Select,
   SelectContent,
   SelectItem,
@@ -19,6 +20,7 @@ import {
   fetchKnowledgeBases,
   fetchLlmModels,
 } from '@/services/scheduled-task-service';
+import request from '@/utils/next-request';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -76,6 +78,80 @@ export function ScheduledTaskDialog({
 
   const [llmModels, setLlmModels] = useState<any[]>([]);
   const [kbList, setKbList] = useState<any[]>([]);
+
+  const [provinceOptions, setProvinceOptions] = useState<
+    { label: string; value: string }[]
+  >([]);
+  const [cityOptions, setCityOptions] = useState<
+    { label: string; value: string }[]
+  >([]);
+  const [selectedProvince, setSelectedProvince] = useState<string>('');
+  const [selectedCity, setSelectedCity] = useState<string>('');
+
+  // Load provinces on mount
+  useEffect(() => {
+    request
+      .get('/api/v1/bid/areas', { params: { parent_code: '0', level: 1 } })
+      .then((res: any) => {
+        const list = res?.data?.data ?? [];
+        setProvinceOptions(
+          list.map((a: any) => ({ label: a.name, value: a.code })),
+        );
+      })
+      .catch(() => {});
+  }, []);
+
+  // Load cities when province changes
+  useEffect(() => {
+    if (!selectedProvince) {
+      setCityOptions([]);
+      return;
+    }
+    request
+      .get('/api/v1/bid/areas', { params: { parent_code: selectedProvince } })
+      .then((res: any) => {
+        const list = res?.data?.data ?? [];
+        setCityOptions(
+          list.map((a: any) => ({ label: a.name, value: a.code })),
+        );
+      })
+      .catch(() => {
+        setCityOptions([]);
+      });
+  }, [selectedProvince]);
+
+  // Parse province/city from editing task's script_args
+  useEffect(() => {
+    if (editingTask?.script_args) {
+      try {
+        const args = JSON.parse(editingTask.script_args);
+        if (args.province_code) setSelectedProvince(args.province_code);
+        if (args.city_code) setSelectedCity(args.city_code);
+      } catch {
+        // ignore
+      }
+    } else {
+      setSelectedProvince('');
+      setSelectedCity('');
+    }
+  }, [editingTask, visible]);
+
+  // Build script_args JSON from province/city + existing args
+  const buildScriptArgs = useCallback(() => {
+    try {
+      const base = form.script_args ? JSON.parse(form.script_args) : {};
+      return JSON.stringify({
+        ...base,
+        province_code: selectedProvince || undefined,
+        city_code: selectedCity || undefined,
+      });
+    } catch {
+      return JSON.stringify({
+        province_code: selectedProvince || undefined,
+        city_code: selectedCity || undefined,
+      });
+    }
+  }, [form.script_args, selectedProvince, selectedCity]);
 
   useEffect(() => {
     if (!visible) return;
@@ -158,8 +234,9 @@ export function ScheduledTaskDialog({
   const handleSubmit = useCallback(async () => {
     if (!form.name.trim()) return;
     if (!form.script_path.trim()) return;
-    await onOk(form);
-  }, [form, onOk]);
+    const submitData = { ...form, script_args: buildScriptArgs() };
+    await onOk(submitData);
+  }, [form, onOk, buildScriptArgs]);
 
   return (
     <Dialog open={visible} onOpenChange={hideModal}>
@@ -204,8 +281,38 @@ export function ScheduledTaskDialog({
             <Input
               value={form.script_args}
               onChange={(e) => handleChange('script_args', e.target.value)}
-              placeholder="--arg1 value1 --arg2 value2"
+              placeholder="--key value --key2 value2"
             />
+          </div>
+
+          {/* 省市联动 */}
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">省份</label>
+              <RAGFlowSelect
+                value={selectedProvince}
+                onChange={(val) => {
+                  setSelectedProvince(val ?? '');
+                  setSelectedCity('');
+                }}
+                options={provinceOptions}
+                placeholder="全部省份"
+                allowClear
+                triggerClassName="w-full h-9 text-sm"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">城市</label>
+              <RAGFlowSelect
+                value={selectedCity}
+                onChange={(val) => setSelectedCity(val ?? '')}
+                options={cityOptions}
+                placeholder="全部城市"
+                allowClear
+                disabled={!selectedProvince}
+                triggerClassName="w-full h-9 text-sm"
+              />
+            </div>
           </div>
 
           {/* Target URL — crawler field */}

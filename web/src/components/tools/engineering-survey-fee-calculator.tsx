@@ -256,11 +256,11 @@ export default function EngineeringSurveyFeeCalculator() {
   return (
     <div className="h-full flex flex-col">
       {/* Title bar */}
-      <div className="shrink-0 px-6 pt-5 pb-4 border-b border-stone-100 bg-white">
+      <div className="shrink-0 px-6 pt-5 pb-4 border-b border-[rgba(124,92,252,0.06)] bg-white">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 bg-indigo-100 rounded-xl flex items-center justify-center">
+          <div className="w-9 h-9 bg-[#ede9fe] rounded-xl flex items-center justify-center">
             <svg
-              className="w-4.5 h-4.5 text-indigo-600"
+              className="w-4.5 h-4.5 text-[#7c5cfc]"
               fill="none"
               stroke="currentColor"
               strokeWidth={1.5}
@@ -274,10 +274,10 @@ export default function EngineeringSurveyFeeCalculator() {
             </svg>
           </div>
           <div>
-            <h2 className="text-[15px] font-bold text-stone-900">
+            <h2 className="text-[15px] font-bold text-black">
               工程勘察设计费计算器
             </h2>
-            <p className="text-[11px] text-stone-400">
+            <p className="text-[11px] text-black/30">
               依据：工程勘察设计收费标准（2002）10号
             </p>
           </div>
@@ -290,8 +290,8 @@ export default function EngineeringSurveyFeeCalculator() {
               onClick={() => setTab(t.id)}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
                 tab === t.id
-                  ? 'bg-indigo-500 text-white'
-                  : 'bg-stone-100 text-stone-500 hover:bg-stone-200'
+                  ? 'bg-black text-white'
+                  : 'bg-black/[0.04] text-black/40 hover:bg-stone-200'
               }`}
             >
               {t.label}
@@ -370,7 +370,7 @@ function DesignTab() {
       <div className="flex-1 p-6 space-y-4 min-w-0">
         {/* 计费额 */}
         <div>
-          <label className="block text-xs font-medium text-stone-500 mb-1.5">
+          <label className="block text-xs font-medium text-black/40 mb-1.5">
             计费额（概算投资额）
           </label>
           <div className="flex gap-3">
@@ -383,15 +383,15 @@ function DesignTab() {
                   if (e.key === 'Enter') handleCalc();
                 }}
                 placeholder="请输入金额"
-                className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 pr-14 text-sm text-stone-900 outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-50 transition placeholder:text-stone-400"
+                className="w-full bg-black/[0.02] border border-black/[0.08] rounded-xl px-4 py-2.5 pr-14 text-sm text-black outline-none focus:border-black/20 focus:ring-2 focus:ring-black/[0.04] transition placeholder:text-black/30"
               />
-              <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-stone-400">
+              <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-black/30">
                 万元
               </span>
             </div>
             <button
               onClick={handleCalc}
-              className="shrink-0 bg-indigo-500 hover:bg-indigo-600 text-white px-6 py-2.5 rounded-xl text-sm font-medium transition-colors"
+              className="shrink-0 bg-black hover:bg-black/85 text-white px-6 py-2.5 rounded-xl text-sm font-medium transition-colors"
             >
               计算
             </button>
@@ -401,13 +401,13 @@ function DesignTab() {
 
         {/* 专业调整系数 */}
         <div>
-          <label className="block text-xs font-medium text-stone-500 mb-1.5">
+          <label className="block text-xs font-medium text-black/40 mb-1.5">
             专业类型
           </label>
           <select
             value={profIdx}
             onChange={(e) => setProfIdx(Number(e.target.value))}
-            className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 text-sm text-stone-900 outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-50 transition"
+            className="w-full bg-black/[0.02] border border-black/[0.08] rounded-xl px-4 py-2.5 text-sm text-black outline-none focus:border-black/20 focus:ring-2 focus:ring-black/[0.04] transition"
           >
             {PROFESSIONAL_GROUPS.map((g) => (
               <optgroup key={g.group} label={g.group}>
@@ -428,7 +428,7 @@ function DesignTab() {
 
         {/* 工程复杂程度 */}
         <div>
-          <label className="block text-xs font-medium text-stone-500 mb-1.5">
+          <label className="block text-xs font-medium text-black/40 mb-1.5">
             工程复杂程度
           </label>
           <div className="flex gap-2">
@@ -438,8 +438,8 @@ function DesignTab() {
                 onClick={() => setComplexIdx(i)}
                 className={`flex-1 px-3 py-2 rounded-lg text-xs font-medium transition ${
                   complexIdx === i
-                    ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
-                    : 'bg-stone-50 text-stone-500 border border-stone-200 hover:bg-stone-100'
+                    ? 'bg-black/[0.04] text-indigo-700 border border-indigo-200'
+                    : 'bg-black/[0.02] text-black/40 border border-black/[0.08] hover:bg-black/[0.04]'
                 }`}
               >
                 {c.label}
@@ -458,15 +458,15 @@ function DesignTab() {
               type="checkbox"
               checked={isRenovation}
               onChange={(e) => setIsRenovation(e.target.checked)}
-              className="rounded border-stone-300 text-indigo-500 focus:ring-indigo-200"
+              className="rounded border-black/10 text-indigo-500 focus:ring-indigo-200"
             />
-            <span className="text-xs text-stone-600">改扩建/技术改造项目</span>
+            <span className="text-xs text-black/50">改扩建/技术改造项目</span>
           </label>
           {isRenovation && (
             <select
               value={renovationCoef}
               onChange={(e) => setRenovationCoef(e.target.value)}
-              className="bg-stone-50 border border-stone-200 rounded-lg px-3 py-1.5 text-xs text-stone-700 outline-none"
+              className="bg-black/[0.02] border border-black/[0.08] rounded-lg px-3 py-1.5 text-xs text-black/70 outline-none"
             >
               <option value="1.1">1.1（简单）</option>
               <option value="1.2">1.2（一般）</option>
@@ -478,21 +478,21 @@ function DesignTab() {
 
         {/* 自定义附加调整系数 */}
         <div>
-          <label className="block text-xs font-medium text-stone-500 mb-1.5">
+          <label className="block text-xs font-medium text-black/40 mb-1.5">
             附加调整系数（默认1.0）
           </label>
           <input
             type="text"
             value={extraAdj}
             onChange={(e) => setExtraAdj(e.target.value)}
-            className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 text-sm text-stone-900 outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-50 transition placeholder:text-stone-400"
+            className="w-full bg-black/[0.02] border border-black/[0.08] rounded-xl px-4 py-2.5 text-sm text-black outline-none focus:border-black/20 focus:ring-2 focus:ring-black/[0.04] transition placeholder:text-black/30"
             placeholder="默认1.0，多个系数相加减个数加1"
           />
         </div>
 
         {/* 其他设计收费 */}
         <div>
-          <label className="block text-xs font-medium text-stone-500 mb-1.5">
+          <label className="block text-xs font-medium text-black/40 mb-1.5">
             其他设计收费（可选）
           </label>
           <div className="flex flex-wrap gap-2">
@@ -504,7 +504,7 @@ function DesignTab() {
             ].map((opt) => (
               <label
                 key={opt.key}
-                className="flex items-center gap-1.5 cursor-pointer bg-stone-50 border border-stone-200 rounded-lg px-3 py-1.5"
+                className="flex items-center gap-1.5 cursor-pointer bg-black/[0.02] border border-black/[0.08] rounded-lg px-3 py-1.5"
               >
                 <input
                   type="checkbox"
@@ -512,9 +512,9 @@ function DesignTab() {
                   onChange={(e) =>
                     setOptions((o) => ({ ...o, [opt.key]: e.target.checked }))
                   }
-                  className="rounded border-stone-300 text-indigo-500 focus:ring-indigo-200"
+                  className="rounded border-black/10 text-indigo-500 focus:ring-indigo-200"
                 />
-                <span className="text-xs text-stone-600">{opt.label}</span>
+                <span className="text-xs text-black/50">{opt.label}</span>
               </label>
             ))}
           </div>
@@ -522,52 +522,52 @@ function DesignTab() {
 
         {/* Results */}
         {result && (
-          <div className="bg-white rounded-2xl border border-stone-100 p-5 space-y-3">
-            <h4 className="text-sm font-semibold text-stone-700">计算结果</h4>
+          <div className="bg-white rounded-2xl border border-[rgba(124,92,252,0.06)] p-5 space-y-3">
+            <h4 className="text-sm font-semibold text-black/70">计算结果</h4>
             <div className="space-y-2 text-sm">
               <div className="flex justify-between py-1.5 border-b border-stone-50">
-                <span className="text-stone-500">收费基价（内插法）</span>
+                <span className="text-black/40">收费基价（内插法）</span>
                 <span className="font-medium text-stone-800">
                   {fmtWan(result.basePrice)} 万元
                 </span>
               </div>
               <div className="flex justify-between py-1.5 border-b border-stone-50">
-                <span className="text-stone-500">基本设计收费</span>
+                <span className="text-black/40">基本设计收费</span>
                 <span className="font-medium text-stone-800">
                   {fmtWan(result.basicFee)} 万元
                 </span>
               </div>
               {result.otherFee > 0 && (
                 <div className="flex justify-between py-1.5 border-b border-stone-50">
-                  <span className="text-stone-500">其他设计收费</span>
+                  <span className="text-black/40">其他设计收费</span>
                   <span className="font-medium text-stone-800">
                     {fmtWan(result.otherFee)} 万元
                   </span>
                 </div>
               )}
               <div className="flex justify-between py-2">
-                <span className="text-stone-700 font-medium">
+                <span className="text-black/70 font-medium">
                   工程设计收费基准价
                 </span>
-                <span className="text-lg font-bold text-indigo-600">
+                <span className="text-lg font-bold text-black/60">
                   {fmtWan(result.benchmark)} 万元
                 </span>
               </div>
-              <div className="flex justify-between py-1.5 text-xs text-stone-400">
+              <div className="flex justify-between py-1.5 text-xs text-black/30">
                 <span>浮动下限（-20%）</span>
                 <span>{fmtWan(result.benchmark * 0.8)} 万元</span>
               </div>
-              <div className="flex justify-between py-1.5 text-xs text-stone-400">
+              <div className="flex justify-between py-1.5 text-xs text-black/30">
                 <span>浮动上限（+20%）</span>
                 <span>{fmtWan(result.benchmark * 1.2)} 万元</span>
               </div>
             </div>
             {/* 参数回显 */}
             <div className="flex flex-wrap gap-1.5 mt-2">
-              <span className="bg-indigo-100 text-indigo-700 rounded-lg px-2 py-0.5 text-[10px] font-medium">
+              <span className="bg-black/[0.04] text-indigo-700 rounded-lg px-2 py-0.5 text-[10px] font-medium">
                 专业系数 {profCoef}
               </span>
-              <span className="bg-indigo-100 text-indigo-700 rounded-lg px-2 py-0.5 text-[10px] font-medium">
+              <span className="bg-black/[0.04] text-indigo-700 rounded-lg px-2 py-0.5 text-[10px] font-medium">
                 复杂程度 {complexCoef}
               </span>
               {(parseFloat(extraAdj) !== 1 || isRenovation) && (
@@ -583,18 +583,18 @@ function DesignTab() {
       </div>
 
       {/* Right: Reference table */}
-      <div className="w-72 shrink-0 border-l border-stone-100 bg-white/50 overflow-y-auto p-5">
-        <div className="bg-white rounded-2xl border border-stone-100 p-4">
-          <h4 className="text-sm font-semibold text-stone-700 mb-3">
+      <div className="w-72 shrink-0 border-l border-[rgba(124,92,252,0.06)] bg-white/50 overflow-y-auto p-5">
+        <div className="bg-white rounded-2xl border border-[rgba(124,92,252,0.06)] p-4">
+          <h4 className="text-sm font-semibold text-black/70 mb-3">
             收费基价表
           </h4>
           <table className="w-full text-xs table-fixed">
             <thead>
-              <tr className="border-b border-stone-100">
-                <th className="text-left py-1.5 text-stone-400 font-medium">
+              <tr className="border-b border-[rgba(124,92,252,0.06)]">
+                <th className="text-left py-1.5 text-black/30 font-medium">
                   计费额（万元）
                 </th>
-                <th className="text-right py-1.5 text-stone-400 font-medium">
+                <th className="text-right py-1.5 text-black/30 font-medium">
                   基价（万元）
                 </th>
               </tr>
@@ -602,30 +602,26 @@ function DesignTab() {
             <tbody>
               {DESIGN_FEE_TABLE.map(([amt, fee], i) => (
                 <tr key={i} className="border-b border-stone-50 last:border-0">
-                  <td className="py-1 text-stone-600">
-                    {amt.toLocaleString()}
-                  </td>
-                  <td className="text-right py-1 text-stone-500">
+                  <td className="py-1 text-black/50">{amt.toLocaleString()}</td>
+                  <td className="text-right py-1 text-black/40">
                     {fee.toLocaleString()}
                   </td>
                 </tr>
               ))}
               <tr>
-                <td className="py-1 text-stone-600">&gt;2,000,000</td>
-                <td className="text-right py-1 text-stone-500">×1.6%</td>
+                <td className="py-1 text-black/50">&gt;2,000,000</td>
+                <td className="text-right py-1 text-black/40">×1.6%</td>
               </tr>
             </tbody>
           </table>
-          <p className="text-[11px] text-stone-400 mt-3">
+          <p className="text-[11px] text-black/30 mt-3">
             注：计费额处于两个数值区间的，采用直线内插法确定收费基价
           </p>
         </div>
 
-        <div className="bg-white rounded-2xl border border-stone-100 p-4 mt-4">
-          <h4 className="text-sm font-semibold text-stone-700 mb-2">
-            计算公式
-          </h4>
-          <div className="text-[11px] text-stone-500 space-y-1.5 leading-relaxed">
+        <div className="bg-white rounded-2xl border border-[rgba(124,92,252,0.06)] p-4 mt-4">
+          <h4 className="text-sm font-semibold text-black/70 mb-2">计算公式</h4>
+          <div className="text-[11px] text-black/40 space-y-1.5 leading-relaxed">
             <p>工程设计收费 = 基准价 × (1±浮动幅度)</p>
             <p>基准价 = 基本设计收费 + 其他设计收费</p>
             <p>
@@ -686,7 +682,7 @@ function SurveyTab() {
 
         {/* 收费基价 */}
         <div>
-          <label className="block text-xs font-medium text-stone-500 mb-1.5">
+          <label className="block text-xs font-medium text-black/40 mb-1.5">
             收费基价（元）
           </label>
           <div className="relative">
@@ -698,9 +694,9 @@ function SurveyTab() {
                 if (e.key === 'Enter') handleCalc();
               }}
               placeholder="根据勘察类型查表确定"
-              className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 pr-8 text-sm text-stone-900 outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-50 transition placeholder:text-stone-400"
+              className="w-full bg-black/[0.02] border border-black/[0.08] rounded-xl px-4 py-2.5 pr-8 text-sm text-black outline-none focus:border-black/20 focus:ring-2 focus:ring-black/[0.04] transition placeholder:text-black/30"
             />
-            <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-stone-400">
+            <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-black/30">
               元
             </span>
           </div>
@@ -708,7 +704,7 @@ function SurveyTab() {
 
         {/* 实物工作量 */}
         <div>
-          <label className="block text-xs font-medium text-stone-500 mb-1.5">
+          <label className="block text-xs font-medium text-black/40 mb-1.5">
             实物工作量
           </label>
           <div className="relative">
@@ -717,9 +713,9 @@ function SurveyTab() {
               value={quantity}
               onChange={(e) => setQuantity(e.target.value)}
               placeholder="如：钻孔深度、测点数等"
-              className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 pr-14 text-sm text-stone-900 outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-50 transition placeholder:text-stone-400"
+              className="w-full bg-black/[0.02] border border-black/[0.08] rounded-xl px-4 py-2.5 pr-14 text-sm text-black outline-none focus:border-black/20 focus:ring-2 focus:ring-black/[0.04] transition placeholder:text-black/30"
             />
-            <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-stone-400">
+            <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-black/30">
               数量
             </span>
           </div>
@@ -727,13 +723,13 @@ function SurveyTab() {
 
         {/* 勘察类型 / 技术工作费比例 */}
         <div>
-          <label className="block text-xs font-medium text-stone-500 mb-1.5">
+          <label className="block text-xs font-medium text-black/40 mb-1.5">
             勘察类型（技术工作费比例）
           </label>
           <select
             value={techIdx}
             onChange={(e) => setTechIdx(Number(e.target.value))}
-            className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 text-sm text-stone-900 outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-50 transition"
+            className="w-full bg-black/[0.02] border border-black/[0.08] rounded-xl px-4 py-2.5 text-sm text-black outline-none focus:border-black/20 focus:ring-2 focus:ring-black/[0.04] transition"
           >
             {SURVEY_TECH_RATIOS.map((r, i) => (
               <option key={i} value={i}>
@@ -745,7 +741,7 @@ function SurveyTab() {
 
         {/* 附加调整系数 */}
         <div>
-          <label className="block text-xs font-medium text-stone-500 mb-1.5">
+          <label className="block text-xs font-medium text-black/40 mb-1.5">
             附加调整系数
           </label>
           <div className="space-y-2">
@@ -754,18 +750,18 @@ function SurveyTab() {
                 type="checkbox"
                 checked={tempCoef}
                 onChange={(e) => setTempCoef(e.target.checked)}
-                className="rounded border-stone-300 text-indigo-500 focus:ring-indigo-200"
+                className="rounded border-black/10 text-indigo-500 focus:ring-indigo-200"
               />
-              <span className="text-xs text-stone-600">
+              <span className="text-xs text-black/50">
                 高温/低温附加（≥35℃ 或 ≤-10℃），系数 1.2
               </span>
             </label>
             <div className="flex items-center gap-2">
-              <span className="text-xs text-stone-600">海拔附加：</span>
+              <span className="text-xs text-black/50">海拔附加：</span>
               <select
                 value={altitudeIdx}
                 onChange={(e) => setAltitudeIdx(Number(e.target.value))}
-                className="bg-stone-50 border border-stone-200 rounded-lg px-3 py-1.5 text-xs text-stone-700 outline-none"
+                className="bg-black/[0.02] border border-black/[0.08] rounded-lg px-3 py-1.5 text-xs text-black/70 outline-none"
               >
                 {ALTITUDE_COEFS.map((a, i) => (
                   <option key={i} value={i}>
@@ -775,13 +771,13 @@ function SurveyTab() {
               </select>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-xs text-stone-600">自定义：</span>
+              <span className="text-xs text-black/50">自定义：</span>
               <input
                 type="text"
                 value={customAdj}
                 onChange={(e) => setCustomAdj(e.target.value)}
                 placeholder="如1.1，无需填写则留空"
-                className="bg-stone-50 border border-stone-200 rounded-lg px-3 py-1.5 text-xs text-stone-700 outline-none w-40"
+                className="bg-black/[0.02] border border-black/[0.08] rounded-lg px-3 py-1.5 text-xs text-black/70 outline-none w-40"
               />
             </div>
           </div>
@@ -790,7 +786,7 @@ function SurveyTab() {
         {/* 计算按钮 */}
         <button
           onClick={handleCalc}
-          className="w-full bg-indigo-500 hover:bg-indigo-600 text-white px-6 py-2.5 rounded-xl text-sm font-medium transition-colors"
+          className="w-full bg-black hover:bg-black/85 text-white px-6 py-2.5 rounded-xl text-sm font-medium transition-colors"
         >
           计算
         </button>
@@ -798,23 +794,23 @@ function SurveyTab() {
 
         {/* Results */}
         {result && (
-          <div className="bg-white rounded-2xl border border-stone-100 p-5 space-y-3">
-            <h4 className="text-sm font-semibold text-stone-700">计算结果</h4>
+          <div className="bg-white rounded-2xl border border-[rgba(124,92,252,0.06)] p-5 space-y-3">
+            <h4 className="text-sm font-semibold text-black/70">计算结果</h4>
             <div className="space-y-2 text-sm">
               <div className="flex justify-between py-1.5 border-b border-stone-50">
-                <span className="text-stone-500">附加调整系数（合计）</span>
+                <span className="text-black/40">附加调整系数（合计）</span>
                 <span className="font-medium text-stone-800">
                   {result.adjCoef.toFixed(4)}
                 </span>
               </div>
               <div className="flex justify-between py-1.5 border-b border-stone-50">
-                <span className="text-stone-500">实物工作收费</span>
+                <span className="text-black/40">实物工作收费</span>
                 <span className="font-medium text-stone-800">
                   {fmtYuan(result.physicalFee)} 元
                 </span>
               </div>
               <div className="flex justify-between py-1.5 border-b border-stone-50">
-                <span className="text-stone-500">
+                <span className="text-black/40">
                   技术工作收费（
                   {(SURVEY_TECH_RATIOS[techIdx].ratio * 100).toFixed(0)}%）
                 </span>
@@ -823,22 +819,22 @@ function SurveyTab() {
                 </span>
               </div>
               <div className="flex justify-between py-2">
-                <span className="text-stone-700 font-medium">
+                <span className="text-black/70 font-medium">
                   勘察收费基准价
                 </span>
-                <span className="text-lg font-bold text-indigo-600">
+                <span className="text-lg font-bold text-black/60">
                   {fmtYuan(result.benchmark)} 元
                 </span>
               </div>
-              <div className="flex justify-between py-1.5 text-xs text-stone-400">
+              <div className="flex justify-between py-1.5 text-xs text-black/30">
                 <span>主体勘察协调费（基准价×5%）</span>
                 <span>{fmtYuan(result.benchmark * 0.05)} 元</span>
               </div>
-              <div className="flex justify-between py-1.5 text-xs text-stone-400">
+              <div className="flex justify-between py-1.5 text-xs text-black/30">
                 <span>浮动下限（-20%）</span>
                 <span>{fmtYuan(result.benchmark * 0.8)} 元</span>
               </div>
-              <div className="flex justify-between py-1.5 text-xs text-stone-400">
+              <div className="flex justify-between py-1.5 text-xs text-black/30">
                 <span>浮动上限（+20%）</span>
                 <span>{fmtYuan(result.benchmark * 1.2)} 元</span>
               </div>
@@ -848,39 +844,35 @@ function SurveyTab() {
       </div>
 
       {/* Right: Reference */}
-      <div className="w-72 shrink-0 border-l border-stone-100 bg-white/50 overflow-y-auto p-5">
-        <div className="bg-white rounded-2xl border border-stone-100 p-4">
-          <h4 className="text-sm font-semibold text-stone-700 mb-2">
-            计算公式
-          </h4>
-          <div className="text-[11px] text-stone-500 space-y-1.5 leading-relaxed">
+      <div className="w-72 shrink-0 border-l border-[rgba(124,92,252,0.06)] bg-white/50 overflow-y-auto p-5">
+        <div className="bg-white rounded-2xl border border-[rgba(124,92,252,0.06)] p-4">
+          <h4 className="text-sm font-semibold text-black/70 mb-2">计算公式</h4>
+          <div className="text-[11px] text-black/40 space-y-1.5 leading-relaxed">
             <p>勘察收费 = 基准价 × (1±浮动幅度)</p>
             <p>基准价 = 实物工作收费 + 技术工作收费</p>
             <p>实物工作收费 = 基价 × 工作量 × 附加系数</p>
             <p>技术工作收费 = 实物工作收费 × 技术比例</p>
           </div>
         </div>
-        <div className="bg-white rounded-2xl border border-stone-100 p-4 mt-4">
-          <h4 className="text-sm font-semibold text-stone-700 mb-2">
+        <div className="bg-white rounded-2xl border border-[rgba(124,92,252,0.06)] p-4 mt-4">
+          <h4 className="text-sm font-semibold text-black/70 mb-2">
             附加调整系数规则
           </h4>
-          <div className="text-[11px] text-stone-500 space-y-1.5 leading-relaxed">
+          <div className="text-[11px] text-black/40 space-y-1.5 leading-relaxed">
             <p>多个附加调整系数不能连乘</p>
             <p>计算方法：各系数相加 － 系数个数 ＋ 1</p>
             <p>例：1.2 + 1.1 → 1.2 + 1.1 - 2 + 1 = 1.3</p>
           </div>
         </div>
-        <div className="bg-white rounded-2xl border border-stone-100 p-4 mt-4">
-          <h4 className="text-sm font-semibold text-stone-700 mb-2">
-            温度附加
-          </h4>
-          <div className="text-[11px] text-stone-500 leading-relaxed">
+        <div className="bg-white rounded-2xl border border-[rgba(124,92,252,0.06)] p-4 mt-4">
+          <h4 className="text-sm font-semibold text-black/70 mb-2">温度附加</h4>
+          <div className="text-[11px] text-black/40 leading-relaxed">
             <p>室外气温≥35℃或≤-10℃时，系数 1.2</p>
           </div>
-          <h4 className="text-sm font-semibold text-stone-700 mb-2 mt-3">
+          <h4 className="text-sm font-semibold text-black/70 mb-2 mt-3">
             海拔附加
           </h4>
-          <div className="text-[11px] text-stone-500 space-y-1 leading-relaxed">
+          <div className="text-[11px] text-black/40 space-y-1 leading-relaxed">
             <p>2000~3000m：1.1</p>
             <p>3001~3500m：1.2</p>
             <p>3501~4000m：1.3</p>
@@ -935,7 +927,7 @@ function WaterTab() {
 
         {/* 计费额 */}
         <div>
-          <label className="block text-xs font-medium text-stone-500 mb-1.5">
+          <label className="block text-xs font-medium text-black/40 mb-1.5">
             计费额（概算投资额）
           </label>
           <div className="flex gap-3">
@@ -948,15 +940,15 @@ function WaterTab() {
                   if (e.key === 'Enter') handleCalc();
                 }}
                 placeholder="请输入金额"
-                className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 pr-14 text-sm text-stone-900 outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-50 transition placeholder:text-stone-400"
+                className="w-full bg-black/[0.02] border border-black/[0.08] rounded-xl px-4 py-2.5 pr-14 text-sm text-black outline-none focus:border-black/20 focus:ring-2 focus:ring-black/[0.04] transition placeholder:text-black/30"
               />
-              <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-stone-400">
+              <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-black/30">
                 万元
               </span>
             </div>
             <button
               onClick={handleCalc}
-              className="shrink-0 bg-indigo-500 hover:bg-indigo-600 text-white px-6 py-2.5 rounded-xl text-sm font-medium transition-colors"
+              className="shrink-0 bg-black hover:bg-black/85 text-white px-6 py-2.5 rounded-xl text-sm font-medium transition-colors"
             >
               计算
             </button>
@@ -966,13 +958,13 @@ function WaterTab() {
 
         {/* 工程类别 */}
         <div>
-          <label className="block text-xs font-medium text-stone-500 mb-1.5">
+          <label className="block text-xs font-medium text-black/40 mb-1.5">
             工程类别（专业调整系数）
           </label>
           <select
             value={profIdx}
             onChange={(e) => setProfIdx(Number(e.target.value))}
-            className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 text-sm text-stone-900 outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-50 transition"
+            className="w-full bg-black/[0.02] border border-black/[0.08] rounded-xl px-4 py-2.5 text-sm text-black outline-none focus:border-black/20 focus:ring-2 focus:ring-black/[0.04] transition"
           >
             {WATER_PROF_COEFS.map((c, i) => (
               <option key={i} value={i}>
@@ -984,7 +976,7 @@ function WaterTab() {
 
         {/* 复杂程度 */}
         <div>
-          <label className="block text-xs font-medium text-stone-500 mb-1.5">
+          <label className="block text-xs font-medium text-black/40 mb-1.5">
             工程复杂程度
           </label>
           <div className="flex gap-2">
@@ -994,8 +986,8 @@ function WaterTab() {
                 onClick={() => setComplexIdx(i)}
                 className={`flex-1 px-3 py-2 rounded-lg text-xs font-medium transition ${
                   complexIdx === i
-                    ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
-                    : 'bg-stone-50 text-stone-500 border border-stone-200 hover:bg-stone-100'
+                    ? 'bg-black/[0.04] text-indigo-700 border border-indigo-200'
+                    : 'bg-black/[0.02] text-black/40 border border-black/[0.08] hover:bg-black/[0.04]'
                 }`}
               >
                 {c.label}
@@ -1009,55 +1001,55 @@ function WaterTab() {
 
         {/* 附加调整系数 */}
         <div>
-          <label className="block text-xs font-medium text-stone-500 mb-1.5">
+          <label className="block text-xs font-medium text-black/40 mb-1.5">
             附加调整系数（默认1.0）
           </label>
           <input
             type="text"
             value={adjCoef}
             onChange={(e) => setAdjCoef(e.target.value)}
-            className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 text-sm text-stone-900 outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-50 transition placeholder:text-stone-400"
+            className="w-full bg-black/[0.02] border border-black/[0.08] rounded-xl px-4 py-2.5 text-sm text-black outline-none focus:border-black/20 focus:ring-2 focus:ring-black/[0.04] transition placeholder:text-black/30"
             placeholder="默认1.0，多个系数相加减个数加1"
           />
         </div>
 
         {/* Results */}
         {result && (
-          <div className="bg-white rounded-2xl border border-stone-100 p-5 space-y-3">
-            <h4 className="text-sm font-semibold text-stone-700">计算结果</h4>
+          <div className="bg-white rounded-2xl border border-[rgba(124,92,252,0.06)] p-5 space-y-3">
+            <h4 className="text-sm font-semibold text-black/70">计算结果</h4>
             <div className="space-y-2 text-sm">
               <div className="flex justify-between py-1.5 border-b border-stone-50">
-                <span className="text-stone-500">收费基价（内插法）</span>
+                <span className="text-black/40">收费基价（内插法）</span>
                 <span className="font-medium text-stone-800">
                   {fmtWan(result.basePrice)} 万元
                 </span>
               </div>
               <div className="flex justify-between py-1.5 border-b border-stone-50">
-                <span className="text-stone-500">基本勘察收费</span>
+                <span className="text-black/40">基本勘察收费</span>
                 <span className="font-medium text-stone-800">
                   {fmtWan(result.basicFee)} 万元
                 </span>
               </div>
               <div className="flex justify-between py-2">
-                <span className="text-stone-700 font-medium">
+                <span className="text-black/70 font-medium">
                   勘察收费基准价
                 </span>
-                <span className="text-lg font-bold text-indigo-600">
+                <span className="text-lg font-bold text-black/60">
                   {fmtWan(result.basicFee)} 万元
                 </span>
               </div>
-              <div className="flex justify-between py-1.5 text-xs text-stone-400">
+              <div className="flex justify-between py-1.5 text-xs text-black/30">
                 <span>作业准备费（基准价×15%~20%）</span>
                 <span>
                   {fmtWan(result.basicFee * 0.15)} ~{' '}
                   {fmtWan(result.basicFee * 0.2)} 万元
                 </span>
               </div>
-              <div className="flex justify-between py-1.5 text-xs text-stone-400">
+              <div className="flex justify-between py-1.5 text-xs text-black/30">
                 <span>浮动下限（-20%）</span>
                 <span>{fmtWan(result.basicFee * 0.8)} 万元</span>
               </div>
-              <div className="flex justify-between py-1.5 text-xs text-stone-400">
+              <div className="flex justify-between py-1.5 text-xs text-black/30">
                 <span>浮动上限（+20%）</span>
                 <span>{fmtWan(result.basicFee * 1.2)} 万元</span>
               </div>
@@ -1080,12 +1072,10 @@ function WaterTab() {
       </div>
 
       {/* Right: Reference */}
-      <div className="w-72 shrink-0 border-l border-stone-100 bg-white/50 overflow-y-auto p-5">
-        <div className="bg-white rounded-2xl border border-stone-100 p-4">
-          <h4 className="text-sm font-semibold text-stone-700 mb-2">
-            计算公式
-          </h4>
-          <div className="text-[11px] text-stone-500 space-y-1.5 leading-relaxed">
+      <div className="w-72 shrink-0 border-l border-[rgba(124,92,252,0.06)] bg-white/50 overflow-y-auto p-5">
+        <div className="bg-white rounded-2xl border border-[rgba(124,92,252,0.06)] p-4">
+          <h4 className="text-sm font-semibold text-black/70 mb-2">计算公式</h4>
+          <div className="text-[11px] text-black/40 space-y-1.5 leading-relaxed">
             <p>勘察收费 = 基准价 × (1±浮动幅度)</p>
             <p>基准价 = 基本勘察收费 + 其他勘察收费</p>
             <p>
@@ -1093,17 +1083,17 @@ function WaterTab() {
             </p>
           </div>
         </div>
-        <div className="bg-white rounded-2xl border border-stone-100 p-4 mt-4">
-          <h4 className="text-sm font-semibold text-stone-700 mb-3">
+        <div className="bg-white rounded-2xl border border-[rgba(124,92,252,0.06)] p-4 mt-4">
+          <h4 className="text-sm font-semibold text-black/70 mb-3">
             收费基价表
           </h4>
           <table className="w-full text-xs table-fixed">
             <thead>
-              <tr className="border-b border-stone-100">
-                <th className="text-left py-1.5 text-stone-400 font-medium">
+              <tr className="border-b border-[rgba(124,92,252,0.06)]">
+                <th className="text-left py-1.5 text-black/30 font-medium">
                   计费额（万元）
                 </th>
-                <th className="text-right py-1.5 text-stone-400 font-medium">
+                <th className="text-right py-1.5 text-black/30 font-medium">
                   基价（万元）
                 </th>
               </tr>
@@ -1111,16 +1101,14 @@ function WaterTab() {
             <tbody>
               {WATER_CONSERVANCY_TABLE.slice(0, 10).map(([amt, fee], i) => (
                 <tr key={i} className="border-b border-stone-50 last:border-0">
-                  <td className="py-1 text-stone-600">
-                    {amt.toLocaleString()}
-                  </td>
-                  <td className="text-right py-1 text-stone-500">
+                  <td className="py-1 text-black/50">{amt.toLocaleString()}</td>
+                  <td className="text-right py-1 text-black/40">
                     {fee.toLocaleString()}
                   </td>
                 </tr>
               ))}
               <tr>
-                <td colSpan={2} className="py-1 text-center text-stone-400">
+                <td colSpan={2} className="py-1 text-center text-black/30">
                   {'... 共18档，>2000000万 ×1.7%'}
                 </td>
               </tr>

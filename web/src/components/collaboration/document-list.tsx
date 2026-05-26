@@ -108,10 +108,10 @@ export default function DocumentList({
   );
 
   return (
-    <div className="w-56 shrink-0 border-r border-stone-200/60 bg-white flex flex-col">
+    <div className="w-56 shrink-0 border-r border-[rgba(124,92,252,0.06)] bg-white flex flex-col">
       {/* Header */}
       <div className="px-4 pt-4 pb-2">
-        <span className="text-stone-400 text-[10px] font-semibold tracking-widest uppercase">
+        <span className="text-[#9494b5] text-[10px] font-semibold tracking-widest uppercase">
           文档列表
         </span>
       </div>
@@ -120,10 +120,10 @@ export default function DocumentList({
       <div className="flex-1 overflow-y-auto px-2 space-y-0.5 pb-4">
         {loading ? (
           <div className="flex items-center justify-center py-8">
-            <div className="w-5 h-5 border-2 border-indigo-300 border-t-indigo-500 rounded-full animate-spin" />
+            <div className="w-5 h-5 border-2 border-[#c4b5fd] border-t-[#7c5cfc] rounded-full animate-spin" />
           </div>
         ) : documents.length === 0 ? (
-          <div className="text-center py-8 text-xs text-stone-400">
+          <div className="text-center py-8 text-xs text-[#9494b5]">
             暂无文档
           </div>
         ) : (
@@ -131,20 +131,20 @@ export default function DocumentList({
             {documents.map((doc) => (
               <button
                 key={doc.id}
-                className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg cursor-pointer transition text-left ${
+                className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer transition text-left group ${
                   selectedId === doc.id
-                    ? 'bg-indigo-50 text-indigo-700'
-                    : 'text-stone-600 hover:bg-stone-50 hover:text-stone-800'
+                    ? 'bg-[#ede9fe] text-[#7c5cfc]'
+                    : 'text-[#5a5a7a] hover:bg-[#f4f1fb] hover:text-[#1c1c2e]'
                 }`}
                 onClick={() => onSelect(doc)}
               >
                 <div
-                  className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-                    selectedId === doc.id ? 'bg-indigo-100' : 'bg-stone-100'
+                  className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${
+                    selectedId === doc.id ? 'bg-white' : 'bg-[#f4f1fb]'
                   }`}
                 >
                   <svg
-                    className={`w-4 h-4 ${selectedId === doc.id ? 'text-indigo-600' : 'text-stone-500'}`}
+                    className={`w-4 h-4 ${selectedId === doc.id ? 'text-[#7c5cfc]' : 'text-[#9494b5]'}`}
                     fill="none"
                     stroke="currentColor"
                     strokeWidth={1.5}
@@ -268,16 +268,16 @@ export default function DocumentList({
                     </div>
                   )}
                   <div className="flex items-center gap-1 mt-0.5">
-                    <span className="text-[11px] text-stone-400 truncate">
+                    <span className="text-[11px] text-[#9494b5] truncate">
                       {doc.file_type.toUpperCase()}
                     </span>
                     {doc.permission === 'team' && (
-                      <span className="text-[9px] px-1 py-px rounded bg-amber-50 text-amber-600 border border-amber-200">
+                      <span className="text-[9px] px-1 py-px rounded bg-[#fef3c7] text-[#d97706] border border-[#fde68a]">
                         团队
                       </span>
                     )}
                     {currentUserId && doc.created_by !== currentUserId && (
-                      <span className="text-[9px] px-1 py-px rounded bg-blue-50 text-blue-500 border border-blue-200">
+                      <span className="text-[9px] px-1 py-px rounded bg-[#ede9fe] text-[#7c5cfc] border border-[#ddd6fe]">
                         共享
                       </span>
                     )}

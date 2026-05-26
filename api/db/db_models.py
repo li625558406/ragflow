@@ -1447,6 +1447,148 @@ class CollaborationFormatRule(DataBaseModel):
         db_table = "collaboration_format_rule"
 
 
+class BidProject(DataBaseModel):
+    id = BigIntegerField(primary_key=True, help_text="标讯信息ID")
+    title = TextField(null=True, help_text="标题(去HTML标签)")
+    title_html = TextField(null=True, help_text="标题(含高亮标签)")
+    content = TextField(null=True, help_text="命中内容摘要")
+    publish_time = DateTimeField(null=True, index=True, help_text="发布时间")
+    news_type_id = IntegerField(null=True, help_text="信息类别(老版):1招标2中标3合同")
+    project_class_id = CharField(max_length=20, null=True, index=True, help_text="新分类ID")
+    purchase_type_id = CharField(max_length=20, null=True, help_text="采购类别ID")
+    project_money = CharField(max_length=50, null=True, help_text="项目金额(带单位)")
+    provice_code = CharField(max_length=20, null=True, help_text="省代码")
+    city_code = CharField(max_length=20, null=True, help_text="市代码")
+    county_code = CharField(max_length=20, null=True, help_text="区/县代码")
+    industry_codes = JSONField(null=True, help_text="行业code数组")
+    part_a_names = JSONField(null=True, help_text="甲方名称数组")
+    part_b_names = JSONField(null=True, help_text="乙方名称数组")
+    has_file = IntegerField(null=True, help_text="是否有附件:0=无,1=有")
+    contract_end_date = CharField(max_length=20, null=True, help_text="合同到期时间")
+    se_keywords = CharField(max_length=200, null=True, help_text="API返回的搜索关键词")
+    score = FloatField(null=True, help_text="相关度得分")
+    source_type = CharField(max_length=10, null=True, help_text="数据来源")
+    raw_json = JSONField(null=True, help_text="原始返回JSON(备用)")
+    sync_batch_id = CharField(max_length=36, null=True, help_text="同步批次ID")
+    created_at = DateTimeField(null=True, index=True)
+    updated_at = DateTimeField(null=True, index=True)
+
+    class Meta:
+        db_table = "bid_project"
+
+
+class BidProjectDetail(DataBaseModel):
+    id = BigIntegerField(primary_key=True)
+    project_id = BigIntegerField(null=False, unique=True, help_text="关联bid_project.id")
+    content_html = TextField(null=True, help_text="完整HTML内容")
+    news_type_id = IntegerField(null=True, help_text="信息类别ID:1招标2中标3合同")
+    project_class_name = CharField(max_length=100, null=True, help_text="项目子分类名称")
+    purchase_type_id = CharField(max_length=20, null=True, help_text="采购类别ID")
+    industry_name = TextField(null=True, help_text="行业分类名称")
+    part_a_name = TextField(null=True, help_text="甲方名称")
+    part_b_name = TextField(null=True, help_text="乙方名称")
+    agent_name = TextField(null=True, help_text="代理机构名称")
+    project_money = CharField(max_length=50, null=True, help_text="项目金额")
+    provice_code = CharField(max_length=20, null=True, help_text="省代码")
+    city_code = CharField(max_length=20, null=True, help_text="市代码")
+    county_code = CharField(max_length=20, null=True, help_text="区/县代码")
+    fetched_at = DateTimeField(null=True, help_text="获取时间")
+    cache_expires_at = DateTimeField(null=True, help_text="缓存过期时间")
+    created_at = DateTimeField(null=True)
+
+    class Meta:
+        db_table = "bid_project_detail"
+
+
+class BidProjectStructure(DataBaseModel):
+    id = BigIntegerField(primary_key=True)
+    project_id = BigIntegerField(null=False, unique=True, help_text="关联bid_project.id")
+    project_name = TextField(null=True, help_text="项目名称")
+    project_numbers = JSONField(null=True, help_text="项目编号数组")
+    section_codes = JSONField(null=True, help_text="标段编号数组")
+    budget_money = JSONField(null=True, help_text="预算金额数组")
+    bid_money = JSONField(null=True, help_text="中标金额数组")
+    bid_start_date = DateTimeField(null=True, help_text="开标日期")
+    bid_start_address = JSONField(null=True, help_text="开标地点")
+    sign_up_stop_date = DateTimeField(null=True, help_text="报名截止日期")
+    party_a_info = JSONField(null=True, help_text="甲方信息")
+    party_b_info = JSONField(null=True, help_text="乙方信息")
+    agency_info = JSONField(null=True, help_text="代理机构信息")
+    bid_companies = JSONField(null=True, help_text="投标企业")
+    sbkj_bid_url = CharField(max_length=500, null=True, help_text="世舶科技静态页")
+    collect_url = CharField(max_length=500, null=True, help_text="采集源网址")
+    fetched_at = DateTimeField(null=True)
+    cache_expires_at = DateTimeField(null=True)
+    created_at = DateTimeField(null=True)
+
+    class Meta:
+        db_table = "bid_project_structure"
+
+
+class BidProjectFile(DataBaseModel):
+    project_file_id = BigIntegerField(primary_key=True)
+    project_id = BigIntegerField(null=False, index=True, help_text="关联bid_project.id")
+    file_name = CharField(max_length=500, null=True, help_text="附件名称")
+    file_url = CharField(max_length=1000, null=True, help_text="下载地址")
+    file_suffix = CharField(max_length=20, null=True, help_text="文件后缀")
+    file_size = FloatField(null=True, help_text="文件大小(KB)")
+    state = CharField(max_length=5, null=True, help_text="状态")
+    local_path = CharField(max_length=500, null=True, help_text="本地存储路径")
+    kb_document_id = CharField(max_length=64, null=True, help_text="关联的KB文档ID")
+    publish_time = DateTimeField(null=True, help_text="项目发布时间")
+    create_time = DateTimeField(null=True, help_text="附件创建时间")
+    fetched_at = DateTimeField(null=True)
+    downloaded_at = DateTimeField(null=True)
+    created_at = DateTimeField(null=True)
+
+    class Meta:
+        db_table = "bid_project_file"
+
+
+class BidProjectParse(DataBaseModel):
+    project_id = BigIntegerField(primary_key=True, help_text="关联bid_project.id")
+    kb_id = CharField(max_length=64, null=False, help_text="知识库ID")
+    status = CharField(max_length=20, default="pending", help_text="pending/parsing/done/fail")
+    progress = FloatField(default=0, help_text="解析进度 0-1")
+    progress_msg = TextField(null=True, help_text="进度消息")
+    combined_doc_id = CharField(max_length=64, null=True, help_text="拼接文档的KB doc ID")
+    created_at = DateTimeField(null=True)
+    updated_at = DateTimeField(null=True)
+
+    class Meta:
+        db_table = "bid_project_parse"
+
+
+class BidSyncLog(DataBaseModel):
+    id = BigIntegerField(primary_key=True)
+    batch_id = CharField(max_length=36, unique=True, help_text="同步批次ID")
+    api_name = CharField(max_length=100, help_text="调用的API名称")
+    sync_type = CharField(max_length=20, help_text="full/incremental")
+    date_range_start = DateTimeField(null=True)
+    date_range_end = DateTimeField(null=True)
+    total_fetched = IntegerField(default=0)
+    total_new = IntegerField(default=0)
+    total_updated = IntegerField(default=0)
+    status = CharField(max_length=20, default="running", help_text="running/success/failed")
+    error_msg = TextField(null=True)
+    started_at = DateTimeField(null=True)
+    completed_at = DateTimeField(null=True)
+    created_at = DateTimeField(null=True)
+
+    class Meta:
+        db_table = "bid_sync_log"
+
+
+class AreaCode(DataBaseModel):
+    code = CharField(max_length=12, primary_key=True, help_text="行政区划编码")
+    name = CharField(max_length=50, null=False, help_text="区划名称")
+    parent_code = CharField(max_length=12, default="0", help_text="上级编码, 0=顶级")
+    level = IntegerField(default=0, help_text="层级: 1=省, 2=市, 3=区县")
+
+    class Meta:
+        db_table = "area_code"
+
+
 def alter_db_add_column(migrator, table_name, column_name, column_type):
     try:
         migrate(migrator.add_column(table_name, column_name, column_type))

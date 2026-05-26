@@ -108,3 +108,11 @@ export const replaceTextByOldReg = (text: string) => {
     return `[ID:${substring.slice(2, -2)}]`;
   });
 };
+
+// Convert bare "ID:NNN" (no brackets) to "[ID:NNN]" so the citation regex can match it
+const bareIdReg = /(?<!\[)ID:([0-9\u0660-\u0669\u06F0-\u06F9]+)(?!\])/g;
+export const replaceBareIdToCitation = (text: string) => {
+  return text?.replace(bareIdReg, (_match: string, digits: string) => {
+    return `[ID:${digits}]`;
+  });
+};

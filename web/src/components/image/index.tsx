@@ -9,28 +9,32 @@ interface IImage extends React.ImgHTMLAttributes<HTMLImageElement> {
   label?: string;
 }
 
-const Image = ({ id, t, label, className, ...props }: IImage) => {
-  const imageElement = (
-    <img
-      {...props}
-      src={`${restAPIv1}/documents/images/${id}${t ? `?_t=${t}` : ''}`}
-      className={classNames('max-w-[45vw] max-h-[40wh] block', className)}
-    />
-  );
+const Image = React.forwardRef<HTMLImageElement, IImage>(
+  ({ id, t, label, className, ...props }, ref) => {
+    const imageElement = (
+      <img
+        {...props}
+        ref={ref}
+        src={`${restAPIv1}/documents/images/${id}${t ? `?_t=${t}` : ''}`}
+        className={classNames('max-w-[45vw] max-h-[40wh] block', className)}
+      />
+    );
 
-  if (!label) {
-    return imageElement;
-  }
+    if (!label) {
+      return imageElement;
+    }
 
-  return (
-    <div className="relative inline-block w-full">
-      {imageElement}
-      <div className="absolute bottom-2 right-2 bg-accent-primary text-white px-2 py-0.5 rounded-xl text-xs font-normal backdrop-blur-sm">
-        {label}
+    return (
+      <div className="relative inline-block w-full">
+        {imageElement}
+        <div className="absolute bottom-2 right-2 bg-accent-primary text-white px-2 py-0.5 rounded-xl text-xs font-normal backdrop-blur-sm">
+          {label}
+        </div>
       </div>
-    </div>
-  );
-};
+    );
+  },
+);
+Image.displayName = 'Image';
 
 export default Image;
 

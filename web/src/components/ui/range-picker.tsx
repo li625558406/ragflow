@@ -8,6 +8,7 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover';
 import { format } from 'date-fns';
+import { zhCN } from 'date-fns/locale/zh-CN';
 import { CalendarIcon } from 'lucide-react';
 import { PropsRangeRequired } from 'react-day-picker';
 
@@ -15,31 +16,26 @@ export function DatePickerWithRange({
   selected,
   ...props
 }: Omit<PropsRangeRequired, 'mode'>) {
-  //   const [date, setDate] = React.useState<DateRange | undefined>({
-  //     from: new Date(new Date().getFullYear(), 0, 20),
-  //     to: addDays(new Date(new Date().getFullYear(), 0, 20), 20),
-  //   });
-
   return (
     <Popover>
       <PopoverTrigger asChild>
         <Button
           variant="outline"
           id="date-picker-range"
-          className="justify-start px-2.5 font-normal"
+          className="justify-start px-2.5 font-normal h-9 text-sm border border-[rgba(124,92,252,0.25)] bg-[#f5f3fa] text-[#2d2d4a] hover:bg-[#ede9fe] hover:text-[#2d2d4a]"
         >
-          <CalendarIcon />
+          <CalendarIcon className="size-4" />
           {selected?.from ? (
             selected.to ? (
               <>
-                {format(selected.from, 'LLL dd, y')} -{' '}
-                {format(selected.to, 'LLL dd, y')}
+                {format(selected.from, 'yyyy-MM-dd', { locale: zhCN })} -{' '}
+                {format(selected.to, 'yyyy-MM-dd', { locale: zhCN })}
               </>
             ) : (
-              format(selected.from, 'LLL dd, y')
+              format(selected.from, 'yyyy-MM-dd', { locale: zhCN })
             )
           ) : (
-            <span>Pick a date</span>
+            <span>选择日期范围</span>
           )}
         </Button>
       </PopoverTrigger>
@@ -47,8 +43,8 @@ export function DatePickerWithRange({
         <Calendar
           mode="range"
           selected={selected}
-          //   defaultMonth={date?.from}
           numberOfMonths={2}
+          locale={zhCN}
           {...props}
         />
       </PopoverContent>

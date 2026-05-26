@@ -121,6 +121,7 @@ export default {
       welcome: 'Welcome to',
       dataset: 'Dataset',
       memories: 'Memory',
+      bid: 'Bid',
     },
     skills: {
       title: 'Skills',
@@ -2801,6 +2802,8 @@ Important structured information may include: names, dates, locations, events, k
       notFoundSkills: 'Skill space not found',
       scheduledTaskTitle: 'No scheduled task created yet',
       notFoundScheduledTask: 'Scheduled task not found',
+      bidTitle: 'No bid data',
+      notFoundBid: 'No bid data found',
       addNow: 'Add Now',
     },
 

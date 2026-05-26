@@ -263,15 +263,15 @@ export default function ToolbarPlugin() {
   const btn = (active: boolean) =>
     `h-7 w-7 flex items-center justify-center rounded text-xs transition-colors ${
       active
-        ? 'bg-indigo-100 text-indigo-700'
-        : 'text-stone-500 hover:bg-stone-100'
+        ? 'bg-black/[0.04] text-indigo-700'
+        : 'text-black/50 hover:bg-black/[0.04]'
     }`;
 
   return (
-    <div className="flex items-center gap-1 px-3 py-2 border-b border-stone-100 bg-stone-50/80 overflow-x-auto flex-wrap select-none">
+    <div className="flex items-center gap-1 px-3 py-2 border-b border-black/[0.06] bg-black/[0.02]/80 overflow-x-auto flex-wrap select-none">
       {/* Undo / Redo */}
       <button
-        className="h-7 w-7 flex items-center justify-center rounded text-stone-500 hover:bg-stone-100 transition-colors"
+        className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
         title="撤销 (Ctrl+Z)"
         onClick={() => editor.dispatchCommand(UNDO_COMMAND, undefined)}
       >
@@ -290,7 +290,7 @@ export default function ToolbarPlugin() {
         </svg>
       </button>
       <button
-        className="h-7 w-7 flex items-center justify-center rounded text-stone-500 hover:bg-stone-100 transition-colors"
+        className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
         title="重做 (Ctrl+Y)"
         onClick={() => editor.dispatchCommand(REDO_COMMAND, undefined)}
       >
@@ -309,11 +309,11 @@ export default function ToolbarPlugin() {
         </svg>
       </button>
 
-      <div className="w-px h-5 bg-stone-200 mx-0.5" />
+      <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
 
       {/* Heading */}
       <select
-        className="h-7 px-1.5 text-xs border border-stone-200 rounded bg-white text-stone-700 focus:outline-none focus:border-indigo-300"
+        className="h-7 px-1.5 text-xs border border-black/[0.08] rounded bg-white text-black/70 focus:outline-none focus:border-black/20"
         value={heading}
         onChange={(e) => applyHeading(e.target.value)}
       >
@@ -324,11 +324,11 @@ export default function ToolbarPlugin() {
         ))}
       </select>
 
-      <div className="w-px h-5 bg-stone-200 mx-0.5" />
+      <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
 
       {/* Font Family */}
       <select
-        className="h-7 px-1.5 text-xs border border-stone-200 rounded bg-white text-stone-700 w-[100px] focus:outline-none focus:border-indigo-300"
+        className="h-7 px-1.5 text-xs border border-black/[0.08] rounded bg-white text-black/70 w-[100px] focus:outline-none focus:border-black/20"
         value={fontFamily}
         onChange={(e) => applyFontFamily(e.target.value)}
       >
@@ -341,7 +341,7 @@ export default function ToolbarPlugin() {
 
       {/* Font Size */}
       <select
-        className="h-7 px-1.5 text-xs border border-stone-200 rounded bg-white text-stone-700 w-[90px] focus:outline-none focus:border-indigo-300"
+        className="h-7 px-1.5 text-xs border border-black/[0.08] rounded bg-white text-black/70 w-[90px] focus:outline-none focus:border-black/20"
         value={fontSize}
         onChange={(e) => applyFontSize(e.target.value)}
       >
@@ -352,7 +352,7 @@ export default function ToolbarPlugin() {
         ))}
       </select>
 
-      <div className="w-px h-5 bg-stone-200 mx-0.5" />
+      <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
 
       {/* Bold */}
       <button
@@ -363,7 +363,7 @@ export default function ToolbarPlugin() {
           editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'bold');
         }}
       >
-        <span className="font-bold">B</span>
+        <span className="font-normal">B</span>
       </button>
 
       {/* Italic */}
@@ -426,12 +426,12 @@ export default function ToolbarPlugin() {
         X<span className="text-[8px]">2</span>
       </button>
 
-      <div className="w-px h-5 bg-stone-200 mx-0.5" />
+      <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
 
       {/* Text Color */}
       <div className="relative flex items-center" title="字体颜色">
         <button
-          className="h-7 w-7 flex items-center justify-center rounded text-stone-500 hover:bg-stone-100 transition-colors"
+          className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
           onClick={() => colorInputRef.current?.click()}
         >
           <svg
@@ -464,7 +464,7 @@ export default function ToolbarPlugin() {
       {/* Highlight Color */}
       <div className="relative flex items-center" title="高亮底色">
         <button
-          className="h-7 w-7 flex items-center justify-center rounded text-stone-500 hover:bg-stone-100 transition-colors"
+          className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
           onClick={() => bgColorInputRef.current?.click()}
         >
           <svg
@@ -497,7 +497,7 @@ export default function ToolbarPlugin() {
         />
       </div>
 
-      <div className="w-px h-5 bg-stone-200 mx-0.5" />
+      <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
 
       {/* Inline Code */}
       <button
@@ -523,7 +523,7 @@ export default function ToolbarPlugin() {
         </svg>
       </button>
 
-      <div className="w-px h-5 bg-stone-200 mx-0.5" />
+      <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
 
       {/* Align Left */}
       <button
@@ -621,11 +621,11 @@ export default function ToolbarPlugin() {
         </svg>
       </button>
 
-      <div className="w-px h-5 bg-stone-200 mx-0.5" />
+      <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
 
       {/* Indent / Outdent */}
       <button
-        className="h-7 w-7 flex items-center justify-center rounded text-stone-500 hover:bg-stone-100 transition-colors"
+        className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
         title="减少缩进"
         onMouseDown={(e) => {
           e.preventDefault();
@@ -647,7 +647,7 @@ export default function ToolbarPlugin() {
         </svg>
       </button>
       <button
-        className="h-7 w-7 flex items-center justify-center rounded text-stone-500 hover:bg-stone-100 transition-colors"
+        className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
         title="增加缩进"
         onMouseDown={(e) => {
           e.preventDefault();
@@ -669,11 +669,11 @@ export default function ToolbarPlugin() {
         </svg>
       </button>
 
-      <div className="w-px h-5 bg-stone-200 mx-0.5" />
+      <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
 
       {/* Line Spacing */}
       <select
-        className="h-7 px-1 text-xs border border-stone-200 rounded bg-white text-stone-700 w-[70px] focus:outline-none focus:border-indigo-300"
+        className="h-7 px-1 text-xs border border-black/[0.08] rounded bg-white text-black/70 w-[70px] focus:outline-none focus:border-black/20"
         value={lineSpacing}
         onChange={(e) => applyLineSpacing(e.target.value)}
         title="行距"
@@ -685,11 +685,11 @@ export default function ToolbarPlugin() {
         ))}
       </select>
 
-      <div className="w-px h-5 bg-stone-200 mx-0.5" />
+      <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
 
       {/* Bullet List */}
       <button
-        className="h-7 w-7 flex items-center justify-center rounded text-stone-500 hover:bg-stone-100 transition-colors"
+        className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
         title="无序列表"
         onMouseDown={(e) => {
           e.preventDefault();
@@ -713,7 +713,7 @@ export default function ToolbarPlugin() {
 
       {/* Numbered List */}
       <button
-        className="h-7 w-7 flex items-center justify-center rounded text-stone-500 hover:bg-stone-100 transition-colors"
+        className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
         title="有序列表"
         onMouseDown={(e) => {
           e.preventDefault();
@@ -735,11 +735,11 @@ export default function ToolbarPlugin() {
         </svg>
       </button>
 
-      <div className="w-px h-5 bg-stone-200 mx-0.5" />
+      <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
 
       {/* Apply Body Format */}
       <button
-        className="h-7 w-7 flex items-center justify-center rounded text-stone-400 hover:text-indigo-500 hover:bg-indigo-50 transition-colors"
+        className="h-7 w-7 flex items-center justify-center rounded text-black/30 hover:text-black/60 hover:bg-black/[0.04] transition-colors"
         title="正文格式"
         onClick={applyBodyFormat}
       >
@@ -762,7 +762,7 @@ export default function ToolbarPlugin() {
       <div className="flex-1" />
 
       {/* Word Count */}
-      <span className="text-[10px] text-stone-400 tabular-nums whitespace-nowrap">
+      <span className="text-[10px] text-black/30 tabular-nums whitespace-nowrap">
         {wordCount} 字
       </span>
     </div>

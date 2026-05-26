@@ -620,8 +620,10 @@ def _upload_file_to_kb_folder(filepath, kb, tenant_id, parent_folder_id, parser_
 
     if not os.environ.get("SKIP_PARSE", "").strip():
         try:
-            DocumentService.begin2parse(doc_id)
-            DocumentService.run(tenant_id, doc, {})
+            from api.db.services.task_service import queue_tasks
+            from api.db.services.file2document_service import File2DocumentService
+            bucket, name = File2DocumentService.get_storage_address(doc_id=doc_id)
+            queue_tasks(doc, bucket, name, 0)
         except Exception as e:
             logging.error("Failed to queue parsing for %s: %s", doc_id, e)
 

@@ -151,11 +151,11 @@ export default function SupervisionFeeCalculator() {
   return (
     <div className="h-full flex flex-col">
       {/* Title bar */}
-      <div className="shrink-0 px-6 pt-5 pb-4 border-b border-stone-100 bg-white">
+      <div className="shrink-0 px-6 pt-5 pb-4 border-b border-[rgba(124,92,252,0.06)] bg-white">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 bg-indigo-100 rounded-xl flex items-center justify-center">
+          <div className="w-9 h-9 bg-[#ede9fe] rounded-xl flex items-center justify-center">
             <svg
-              className="w-4.5 h-4.5 text-indigo-600"
+              className="w-4.5 h-4.5 text-[#7c5cfc]"
               fill="none"
               stroke="currentColor"
               strokeWidth={1.5}
@@ -169,10 +169,10 @@ export default function SupervisionFeeCalculator() {
             </svg>
           </div>
           <div>
-            <h2 className="text-[15px] font-bold text-stone-900">
+            <h2 className="text-[15px] font-normal text-black">
               建设工程监理费计算器
             </h2>
-            <p className="text-[11px] text-stone-400">
+            <p className="text-[11px] text-black/30">
               依据：发改价格[2007]670号
             </p>
           </div>
@@ -183,10 +183,10 @@ export default function SupervisionFeeCalculator() {
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-normal transition ${
                 tab === t.id
-                  ? 'bg-indigo-500 text-white'
-                  : 'bg-stone-100 text-stone-500 hover:bg-stone-200'
+                  ? 'bg-black text-white'
+                  : 'bg-black/[0.04] text-black/40 hover:bg-black/[0.06]'
               }`}
             >
               {t.label}
@@ -249,7 +249,7 @@ function SupervisionTab() {
       <div className="flex-1 p-6 space-y-4 min-w-0">
         {/* 计费额 */}
         <div>
-          <label className="block text-xs font-medium text-stone-500 mb-1.5">
+          <label className="block text-xs font-normal text-black/40 mb-1.5">
             计费额（工程概算投资额）
           </label>
           <div className="flex gap-3">
@@ -262,15 +262,15 @@ function SupervisionTab() {
                   if (e.key === 'Enter') handleCalc();
                 }}
                 placeholder="请输入金额"
-                className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 pr-14 text-sm text-stone-900 outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-50 transition placeholder:text-stone-400"
+                className="w-full bg-black/[0.02] border border-black/[0.08] rounded-lg px-4 py-2.5 pr-14 text-sm text-black outline-none focus:border-black/20 focus:ring-2 focus:ring-black/[0.04] transition placeholder:text-black/30"
               />
-              <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-stone-400">
+              <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-black/30">
                 万元
               </span>
             </div>
             <button
               onClick={handleCalc}
-              className="shrink-0 bg-indigo-500 hover:bg-indigo-600 text-white px-6 py-2.5 rounded-xl text-sm font-medium transition-colors"
+              className="shrink-0 bg-black hover:bg-black/85 text-white px-6 py-2.5 rounded-[50px] text-sm font-normal transition-colors"
             >
               计算
             </button>
@@ -280,13 +280,13 @@ function SupervisionTab() {
 
         {/* 专业调整系数 */}
         <div>
-          <label className="block text-xs font-medium text-stone-500 mb-1.5">
+          <label className="block text-xs font-normal text-black/40 mb-1.5">
             专业类型
           </label>
           <select
             value={profIdx}
             onChange={(e) => setProfIdx(Number(e.target.value))}
-            className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 text-sm text-stone-900 outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-50 transition"
+            className="w-full bg-black/[0.02] border border-black/[0.08] rounded-lg px-4 py-2.5 text-sm text-black outline-none focus:border-black/20 focus:ring-2 focus:ring-black/[0.04] transition"
           >
             {PROF_GROUPS.map((g) => (
               <optgroup key={g.group} label={g.group}>
@@ -307,7 +307,7 @@ function SupervisionTab() {
 
         {/* 工程复杂程度 */}
         <div>
-          <label className="block text-xs font-medium text-stone-500 mb-1.5">
+          <label className="block text-xs font-normal text-black/40 mb-1.5">
             工程复杂程度
           </label>
           <div className="flex gap-2">
@@ -315,10 +315,10 @@ function SupervisionTab() {
               <button
                 key={i}
                 onClick={() => setComplexIdx(i)}
-                className={`flex-1 px-3 py-2 rounded-lg text-xs font-medium transition ${
+                className={`flex-1 px-3 py-2 rounded-lg text-xs font-normal transition ${
                   complexIdx === i
-                    ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
-                    : 'bg-stone-50 text-stone-500 border border-stone-200 hover:bg-stone-100'
+                    ? 'bg-black/[0.04] text-indigo-700 border border-indigo-200'
+                    : 'bg-black/[0.02] text-black/40 border border-black/[0.08] hover:bg-black/[0.04]'
                 }`}
               >
                 {c.label}
@@ -332,13 +332,13 @@ function SupervisionTab() {
 
         {/* 高程调整系数 */}
         <div>
-          <label className="block text-xs font-medium text-stone-500 mb-1.5">
+          <label className="block text-xs font-normal text-black/40 mb-1.5">
             高程调整系数
           </label>
           <select
             value={altIdx}
             onChange={(e) => setAltIdx(Number(e.target.value))}
-            className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 text-sm text-stone-900 outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-50 transition"
+            className="w-full bg-black/[0.02] border border-black/[0.08] rounded-lg px-4 py-2.5 text-sm text-black outline-none focus:border-black/20 focus:ring-2 focus:ring-black/[0.04] transition"
           >
             {ALTITUDE.map((a, i) => (
               <option key={i} value={i}>
@@ -350,42 +350,42 @@ function SupervisionTab() {
 
         {/* Results */}
         {result && (
-          <div className="bg-white rounded-2xl border border-stone-100 p-5 space-y-3">
-            <h4 className="text-sm font-semibold text-stone-700">计算结果</h4>
+          <div className="bg-white rounded-2xl border border-[rgba(124,92,252,0.06)] p-5 space-y-3">
+            <h4 className="text-sm font-normal text-black/70">计算结果</h4>
             <div className="space-y-2 text-sm">
               <div className="flex justify-between py-1.5 border-b border-stone-50">
-                <span className="text-stone-500">收费基价（内插法）</span>
-                <span className="font-medium text-stone-800">
+                <span className="text-black/40">收费基价（内插法）</span>
+                <span className="font-normal text-stone-800">
                   {fmt(result.basePrice)} 万元
                 </span>
               </div>
               <div className="flex justify-between py-2">
-                <span className="text-stone-700 font-medium">
+                <span className="text-black/70 font-normal">
                   施工监理服务收费基准价
                 </span>
-                <span className="text-lg font-bold text-indigo-600">
+                <span className="text-lg font-normal text-black/60">
                   {fmt(result.benchmark)} 万元
                 </span>
               </div>
-              <div className="flex justify-between py-1.5 text-xs text-stone-400">
+              <div className="flex justify-between py-1.5 text-xs text-black/30">
                 <span>浮动下限（-20%）</span>
                 <span>{fmt(result.benchmark * 0.8)} 万元</span>
               </div>
-              <div className="flex justify-between py-1.5 text-xs text-stone-400">
+              <div className="flex justify-between py-1.5 text-xs text-black/30">
                 <span>浮动上限（+20%）</span>
                 <span>{fmt(result.benchmark * 1.2)} 万元</span>
               </div>
             </div>
             {/* 参数回显 */}
             <div className="flex flex-wrap gap-1.5 mt-2">
-              <span className="bg-indigo-100 text-indigo-700 rounded-lg px-2 py-0.5 text-[10px] font-medium">
+              <span className="bg-black/[0.04] text-indigo-700 rounded-lg px-2 py-0.5 text-[10px] font-normal">
                 专业系数 {profCoef}
               </span>
-              <span className="bg-indigo-100 text-indigo-700 rounded-lg px-2 py-0.5 text-[10px] font-medium">
+              <span className="bg-black/[0.04] text-indigo-700 rounded-lg px-2 py-0.5 text-[10px] font-normal">
                 复杂程度 {complexCoef}
               </span>
               {altCoef !== 1 && (
-                <span className="bg-amber-100 text-amber-700 rounded-lg px-2 py-0.5 text-[10px] font-medium">
+                <span className="bg-amber-100 text-amber-700 rounded-lg px-2 py-0.5 text-[10px] font-normal">
                   高程系数 {altCoef}
                 </span>
               )}
@@ -395,18 +395,18 @@ function SupervisionTab() {
       </div>
 
       {/* Right: Reference table */}
-      <div className="w-72 shrink-0 border-l border-stone-100 bg-white/50 overflow-y-auto p-5">
-        <div className="bg-white rounded-2xl border border-stone-100 p-4">
-          <h4 className="text-sm font-semibold text-stone-700 mb-3">
+      <div className="w-72 shrink-0 border-l border-[rgba(124,92,252,0.06)] bg-white/50 overflow-y-auto p-5">
+        <div className="bg-white rounded-2xl border border-[rgba(124,92,252,0.06)] p-4">
+          <h4 className="text-sm font-normal text-black/70 mb-3">
             收费基价表（附表二）
           </h4>
           <table className="w-full text-xs table-fixed">
             <thead>
-              <tr className="border-b border-stone-100">
-                <th className="text-left py-1.5 text-stone-400 font-medium">
+              <tr className="border-b border-[rgba(124,92,252,0.06)]">
+                <th className="text-left py-1.5 text-black/30 font-normal">
                   计费额（万元）
                 </th>
-                <th className="text-right py-1.5 text-stone-400 font-medium">
+                <th className="text-right py-1.5 text-black/30 font-normal">
                   基价（万元）
                 </th>
               </tr>
@@ -414,30 +414,26 @@ function SupervisionTab() {
             <tbody>
               {SUPERVISION_FEE_TABLE.map(([amt, fee], i) => (
                 <tr key={i} className="border-b border-stone-50 last:border-0">
-                  <td className="py-1 text-stone-600">
-                    {amt.toLocaleString()}
-                  </td>
-                  <td className="text-right py-1 text-stone-500">
+                  <td className="py-1 text-black/50">{amt.toLocaleString()}</td>
+                  <td className="text-right py-1 text-black/40">
                     {fee.toLocaleString()}
                   </td>
                 </tr>
               ))}
               <tr>
-                <td className="py-1 text-stone-600">{'>1,000,000'}</td>
-                <td className="text-right py-1 text-stone-500">{'×1.039%'}</td>
+                <td className="py-1 text-black/50">{'>1,000,000'}</td>
+                <td className="text-right py-1 text-black/40">{'×1.039%'}</td>
               </tr>
             </tbody>
           </table>
-          <p className="text-[11px] text-stone-400 mt-3">
+          <p className="text-[11px] text-black/30 mt-3">
             注：计费额处于两个数值区间的，采用直线内插法确定基价
           </p>
         </div>
 
-        <div className="bg-white rounded-2xl border border-stone-100 p-4 mt-4">
-          <h4 className="text-sm font-semibold text-stone-700 mb-2">
-            计算公式
-          </h4>
-          <div className="text-[11px] text-stone-500 space-y-1.5 leading-relaxed">
+        <div className="bg-white rounded-2xl border border-[rgba(124,92,252,0.06)] p-4 mt-4">
+          <h4 className="text-sm font-normal text-black/70 mb-2">计算公式</h4>
+          <div className="text-[11px] text-black/40 space-y-1.5 leading-relaxed">
             <p>施工监理收费 = 基准价 × (1±浮动幅度)</p>
             <p>基准价 = 基价 × 专业调整系数 × 复杂程度系数 × 高程调整系数</p>
             <p>浮动幅度：上下 20%</p>
@@ -478,27 +474,27 @@ function DailyTab() {
   return (
     <div className="flex min-h-full">
       <div className="flex-1 p-6 space-y-4 min-w-0">
-        <div className="bg-amber-50 border border-amber-100 rounded-xl px-4 py-2.5 text-xs text-amber-700">
+        <div className="bg-amber-50 border border-amber-100 rounded-lg px-4 py-2.5 text-xs text-amber-700">
           适用于勘察、设计、保修等其他阶段的相关服务，以及短期服务的人工费用计算
         </div>
 
-        <div className="bg-white rounded-2xl border border-stone-100 p-5">
-          <h4 className="text-sm font-semibold text-stone-700 mb-4">
+        <div className="bg-white rounded-2xl border border-[rgba(124,92,252,0.06)] p-5">
+          <h4 className="text-sm font-normal text-black/70 mb-4">
             人工日费用计算
           </h4>
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-stone-100">
-                <th className="text-left py-2 text-xs text-stone-400 font-medium">
+              <tr className="border-b border-[rgba(124,92,252,0.06)]">
+                <th className="text-left py-2 text-xs text-black/30 font-normal">
                   人员级别
                 </th>
-                <th className="text-center py-2 text-xs text-stone-400 font-medium w-24">
+                <th className="text-center py-2 text-xs text-black/30 font-normal w-24">
                   工日数
                 </th>
-                <th className="text-center py-2 text-xs text-stone-400 font-medium w-28">
+                <th className="text-center py-2 text-xs text-black/30 font-normal w-28">
                   单价（元/日）
                 </th>
-                <th className="text-right py-2 text-xs text-stone-400 font-medium w-28">
+                <th className="text-right py-2 text-xs text-black/30 font-normal w-28">
                   小计（元）
                 </th>
               </tr>
@@ -515,9 +511,9 @@ function DailyTab() {
                     className="border-b border-stone-50 last:border-0"
                   >
                     <td className="py-2">
-                      <span className="text-stone-700 text-xs">{r.level}</span>
+                      <span className="text-black/70 text-xs">{r.level}</span>
                       {ref && (
-                        <span className="block text-[10px] text-stone-400">
+                        <span className="block text-[10px] text-black/30">
                           {ref.min}~{ref.max}元/日
                         </span>
                       )}
@@ -528,7 +524,7 @@ function DailyTab() {
                         value={r.days}
                         onChange={(e) => updateRow(i, 'days', e.target.value)}
                         placeholder="0"
-                        className="w-full bg-stone-50 border border-stone-200 rounded-lg px-2 py-1.5 text-xs text-center text-stone-900 outline-none focus:border-indigo-300"
+                        className="w-full bg-black/[0.02] border border-black/[0.08] rounded-lg px-2 py-1.5 text-xs text-center text-black outline-none focus:border-black/20"
                       />
                     </td>
                     <td className="py-2 px-1">
@@ -536,11 +532,11 @@ function DailyTab() {
                         type="text"
                         value={r.rate}
                         onChange={(e) => updateRow(i, 'rate', e.target.value)}
-                        className="w-full bg-stone-50 border border-stone-200 rounded-lg px-2 py-1.5 text-xs text-center text-stone-900 outline-none focus:border-indigo-300"
+                        className="w-full bg-black/[0.02] border border-black/[0.08] rounded-lg px-2 py-1.5 text-xs text-center text-black outline-none focus:border-black/20"
                       />
                     </td>
                     <td className="py-2 text-right">
-                      <span className="text-xs text-stone-600">
+                      <span className="text-xs text-black/50">
                         {sub > 0 ? fmt(sub) : '-'}
                       </span>
                     </td>
@@ -550,9 +546,9 @@ function DailyTab() {
             </tbody>
           </table>
 
-          <div className="mt-4 pt-3 border-t border-stone-100 flex justify-between items-center">
-            <span className="text-sm font-medium text-stone-700">合计</span>
-            <span className="text-lg font-bold text-indigo-600">
+          <div className="mt-4 pt-3 border-t border-[rgba(124,92,252,0.06)] flex justify-between items-center">
+            <span className="text-sm font-normal text-black/70">合计</span>
+            <span className="text-lg font-normal text-black/60">
               {total > 0 ? `${fmt(total)} 元` : '-'}
             </span>
           </div>
@@ -560,18 +556,18 @@ function DailyTab() {
       </div>
 
       {/* Right: Reference */}
-      <div className="w-72 shrink-0 border-l border-stone-100 bg-white/50 overflow-y-auto p-5">
-        <div className="bg-white rounded-2xl border border-stone-100 p-4">
-          <h4 className="text-sm font-semibold text-stone-700 mb-3">
+      <div className="w-72 shrink-0 border-l border-[rgba(124,92,252,0.06)] bg-white/50 overflow-y-auto p-5">
+        <div className="bg-white rounded-2xl border border-[rgba(124,92,252,0.06)] p-4">
+          <h4 className="text-sm font-normal text-black/70 mb-3">
             人工日费用标准（附表四）
           </h4>
           <table className="w-full text-xs">
             <thead>
-              <tr className="border-b border-stone-100">
-                <th className="text-left py-1.5 text-stone-400 font-medium">
+              <tr className="border-b border-[rgba(124,92,252,0.06)]">
+                <th className="text-left py-1.5 text-black/30 font-normal">
                   人员职级
                 </th>
-                <th className="text-right py-1.5 text-stone-400 font-medium">
+                <th className="text-right py-1.5 text-black/30 font-normal">
                   标准（元/日）
                 </th>
               </tr>
@@ -579,22 +575,22 @@ function DailyTab() {
             <tbody>
               {DAILY_RATES.map((d, i) => (
                 <tr key={i} className="border-b border-stone-50 last:border-0">
-                  <td className="py-1.5 text-stone-600">{d.level}</td>
-                  <td className="text-right py-1.5 text-stone-500">
+                  <td className="py-1.5 text-black/50">{d.level}</td>
+                  <td className="text-right py-1.5 text-black/40">
                     {d.min}~{d.max}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
-          <p className="text-[11px] text-stone-400 mt-3">
+          <p className="text-[11px] text-black/30 mt-3">
             注：本表适用于提供短期服务的人工费用标准
           </p>
         </div>
 
-        <div className="bg-white rounded-2xl border border-stone-100 p-4 mt-4">
-          <h4 className="text-sm font-semibold text-stone-700 mb-2">说明</h4>
-          <div className="text-[11px] text-stone-500 space-y-1.5 leading-relaxed">
+        <div className="bg-white rounded-2xl border border-[rgba(124,92,252,0.06)] p-4 mt-4">
+          <h4 className="text-sm font-normal text-black/70 mb-2">说明</h4>
+          <div className="text-[11px] text-black/40 space-y-1.5 leading-relaxed">
             <p>
               其他阶段（勘察、设计、保修等）的相关服务收费，按工作所需工日和附表四标准计算。
             </p>

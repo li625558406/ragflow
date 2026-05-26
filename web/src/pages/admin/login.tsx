@@ -33,9 +33,9 @@ import authorizationUtil from '@/utils/authorization-util';
 
 import { login } from '@/services/admin-service';
 
+import { getStaticAsset } from '@/utils/common-util';
 import ThemeSwitch from '../../components/theme-switch';
 import { BgSvg } from '../login-next/bg';
-import { getStaticAsset } from '@/utils/common-util';
 
 import { CurrentUserInfoContext } from './layouts/root-layout';
 
@@ -116,7 +116,7 @@ function AdminLogin() {
 
   return (
     <ScrollArea className="w-screen h-screen">
-      <div className="relative h-max min-h-[100vh]">
+      <div className="relative h-max min-h-screen bg-bg-page">
         <Spotlight opcity={0.4} coverage={60} color="rgb(128, 255, 248)" />
         <Spotlight
           opcity={0.3}
@@ -137,7 +137,11 @@ function AdminLogin() {
 
         <div className="absolute top-3 left-0 w-full">
           <div className="absolute mt-12 ml-12 flex items-center">
-            <img className="size-8 mr-5" src={getStaticAsset('/logo.svg')} alt="logo" />
+            <img
+              className="size-8 mr-5"
+              src={getStaticAsset('/logo.svg')}
+              alt="logo"
+            />
             <span className="text-xl font-bold">RAGFlow</span>
           </div>
 

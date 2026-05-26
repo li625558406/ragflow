@@ -13,6 +13,7 @@ export enum EmptyCardType {
   Memory = 'memory',
   Skills = 'skills',
   ScheduledTask = 'scheduled_task',
+  Bid = 'bid',
 }
 
 export const EmptyCardData = {
@@ -50,5 +51,10 @@ export const EmptyCardData = {
     icon: <HomeIcon name="file" width={'24'} />,
     titleKey: 'empty.scheduledTaskTitle',
     notFoundKey: 'empty.notFoundScheduledTask',
+  },
+  [EmptyCardType.Bid]: {
+    icon: <HomeIcon name="file" width={'24'} />,
+    titleKey: 'empty.bidTitle',
+    notFoundKey: 'empty.notFoundBid',
   },
 };

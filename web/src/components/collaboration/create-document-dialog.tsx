@@ -72,35 +72,35 @@ export default function CreateDocumentDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpen}>
-      <DialogContent className="sm:max-w-md !bg-white !border-stone-200 !shadow-[0_20px_60px_-12px_rgba(28,25,23,0.06)] !rounded-2xl">
-        <DialogHeader className="!-mx-6 !-mt-6 !p-5 !border-b !border-stone-100">
-          <DialogTitle className="!text-base !font-semibold !text-stone-900">
+      <DialogContent className="sm:max-w-md !bg-white !border-[rgba(124,92,252,0.08)] !shadow-[0_20px_60px_-12px_rgba(124,92,252,0.08)] !rounded-2xl">
+        <DialogHeader className="!-mx-6 !-mt-6 !p-5 !border-b !border-[rgba(124,92,252,0.06)]">
+          <DialogTitle className="!text-base !font-semibold !text-[#1c1c2e]">
             创建协作文档
           </DialogTitle>
         </DialogHeader>
         <div className="space-y-4 py-4">
           <div>
-            <label className="block text-sm font-medium text-stone-700 mb-1.5">
+            <label className="block text-sm font-medium text-[#5a5a7a] mb-1.5">
               文档名称
             </label>
             <input
               type="text"
-              className="w-full px-3 py-2.5 bg-stone-50 border border-stone-200 rounded-xl text-sm text-stone-900 placeholder:text-stone-300 focus:outline-none focus:border-indigo-300 focus:bg-white transition"
+              className="w-full px-3 py-2.5 bg-[#f8f6f3] border border-[rgba(124,92,252,0.06)] rounded-xl text-sm text-[#1c1c2e] placeholder:text-stone-300 focus:outline-none focus:border-[#7c5cfc] focus:bg-white transition"
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="输入文档名称"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-stone-700 mb-1.5">
+            <label className="block text-sm font-medium text-[#5a5a7a] mb-1.5">
               文件格式
             </label>
             <div className="flex gap-2">
               <button
                 className={`flex-1 px-3 py-2 rounded-xl text-sm font-medium border transition-colors ${
                   fileType === 'docx'
-                    ? 'bg-indigo-50 border-indigo-300 text-indigo-700'
-                    : 'border-stone-200 text-stone-600 hover:bg-stone-50'
+                    ? 'bg-[#ede9fe] border-[#c4b5fd] text-[#7c5cfc]'
+                    : 'border-[rgba(124,92,252,0.06)] text-[#5a5a7a] hover:bg-[#f4f1fb]'
                 }`}
                 onClick={() => setFileType('docx')}
               >
@@ -109,8 +109,8 @@ export default function CreateDocumentDialog({
               <button
                 className={`flex-1 px-3 py-2 rounded-xl text-sm font-medium border transition-colors ${
                   fileType === 'pdf'
-                    ? 'bg-indigo-50 border-indigo-300 text-indigo-700'
-                    : 'border-stone-200 text-stone-600 hover:bg-stone-50'
+                    ? 'bg-[#ede9fe] border-[#c4b5fd] text-[#7c5cfc]'
+                    : 'border-[rgba(124,92,252,0.06)] text-[#5a5a7a] hover:bg-[#f4f1fb]'
                 }`}
                 onClick={() => setFileType('pdf')}
               >
@@ -119,15 +119,15 @@ export default function CreateDocumentDialog({
             </div>
           </div>
           <div>
-            <label className="block text-sm font-medium text-stone-700 mb-1.5">
+            <label className="block text-sm font-medium text-[#5a5a7a] mb-1.5">
               可见范围
             </label>
             <div className="flex gap-2">
               <button
                 className={`flex-1 px-3 py-2 rounded-xl text-sm font-medium border transition-colors ${
                   permission === 'me'
-                    ? 'bg-indigo-50 border-indigo-300 text-indigo-700'
-                    : 'border-stone-200 text-stone-600 hover:bg-stone-50'
+                    ? 'bg-[#ede9fe] border-[#c4b5fd] text-[#7c5cfc]'
+                    : 'border-[rgba(124,92,252,0.06)] text-[#5a5a7a] hover:bg-[#f4f1fb]'
                 }`}
                 onClick={() => setPermission('me')}
               >
@@ -136,8 +136,8 @@ export default function CreateDocumentDialog({
               <button
                 className={`flex-1 px-3 py-2 rounded-xl text-sm font-medium border transition-colors ${
                   permission === 'team'
-                    ? 'bg-indigo-50 border-indigo-300 text-indigo-700'
-                    : 'border-stone-200 text-stone-600 hover:bg-stone-50'
+                    ? 'bg-[#ede9fe] border-[#c4b5fd] text-[#7c5cfc]'
+                    : 'border-[rgba(124,92,252,0.06)] text-[#5a5a7a] hover:bg-[#f4f1fb]'
                 }`}
                 onClick={() => setPermission('team')}
               >
@@ -146,15 +146,15 @@ export default function CreateDocumentDialog({
             </div>
           </div>
         </div>
-        <DialogFooter className="!-mx-6 !-mb-6 !p-5 !border-t !border-stone-100">
+        <DialogFooter className="!-mx-6 !-mb-6 !p-5 !border-t !border-[rgba(124,92,252,0.06)]">
           <button
-            className="px-4 py-2.5 text-sm text-stone-500 hover:text-stone-700 transition-colors"
+            className="px-4 py-2.5 text-sm text-[#5a5a7a] hover:text-[#1c1c2e] transition-colors"
             onClick={() => onOpenChange(false)}
           >
             取消
           </button>
           <button
-            className="px-5 py-2.5 text-sm font-medium bg-indigo-500 text-white rounded-xl hover:bg-indigo-600 transition-colors disabled:opacity-50 shadow-sm"
+            className="px-5 py-2.5 text-sm font-medium bg-gradient-to-r from-[#7c5cfc] to-[#a78bfa] text-white rounded-xl hover:from-[#6b4ce0] hover:to-[#9678e8] transition-colors disabled:opacity-50 shadow-sm"
             onClick={handleCreate}
             disabled={!name.trim() || creating}
           >

@@ -392,4 +392,17 @@ export default {
   collaborationFormatRules: `${restAPIv1}/collaboration/format-rules`,
   collaborationFormatRule: (ruleId: string) =>
     `${restAPIv1}/collaboration/format-rules/${ruleId}`,
+
+  // bid
+  bidProjects: `${restAPIv1}/bid/projects`,
+  bidProject: (id: number) => `${restAPIv1}/bid/projects/${id}`,
+  bidProjectDetail: (id: number) => `${restAPIv1}/bid/projects/${id}/detail`,
+  bidProjectStructure: (id: number) =>
+    `${restAPIv1}/bid/projects/${id}/structure`,
+  bidProjectFiles: (id: number) => `${restAPIv1}/bid/projects/${id}/files`,
+  bidSyncLogs: `${restAPIv1}/bid/sync-logs`,
+  bidStats: `${restAPIv1}/bid/stats`,
+  bidProjectParse: (id: number) => `${restAPIv1}/bid/projects/${id}/parse`,
+  bidProjectParseStatus: (id: number) =>
+    `${restAPIv1}/bid/projects/${id}/parse-status`,
 };

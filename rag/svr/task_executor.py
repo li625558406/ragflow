@@ -1099,7 +1099,12 @@ async def handle_scheduled_script_task(task: dict):
         cmd.extend(extra_args)
 
     if script_args:
-        cmd.extend(script_args.split())
+        import shlex
+        _sa = script_args.strip()
+        if _sa and _sa[0] in ('{', '['):
+            cmd.extend(["--script-args", _sa])
+        else:
+            cmd.extend(shlex.split(_sa))
 
     start_ts = time.time()
     # Clear LD_PRELOAD to avoid conflicts with Chrome/Playwright in subprocess

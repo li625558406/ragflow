@@ -107,7 +107,7 @@ export default function CollaborationPanel({ apiFetch }: Props) {
   }, []);
 
   return (
-    <div className="flex-1 flex min-h-0">
+    <div className="flex-1 flex min-h-0 bg-[#f8f6f3]">
       <DocumentList
         selectedId={selectedId}
         onSelect={handleSelect}
@@ -133,10 +133,10 @@ export default function CollaborationPanel({ apiFetch }: Props) {
             onRuleApplied={handleRuleApplied}
           />
         ) : (
-          <div className="flex-1 flex items-center justify-center bg-stone-50">
-            <div className="text-center text-stone-400">
+          <div className="flex-1 flex items-center justify-center bg-black/[0.02]">
+            <div className="text-center text-black/30">
               <svg
-                className="w-12 h-12 mx-auto mb-3 text-stone-300"
+                className="w-12 h-12 mx-auto mb-3 text-black/20"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"

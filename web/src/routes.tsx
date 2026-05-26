@@ -78,6 +78,7 @@ export enum Routes {
   AnalysisTemplateEdit = '/analysis-template',
   ScheduledTasks = '/scheduled-tasks',
   ScheduledTaskLogs = '/scheduled-task-logs',
+  Bids = '/bids',
 }
 
 const defaultRouteFallback = (

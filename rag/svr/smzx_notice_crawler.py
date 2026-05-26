@@ -604,10 +604,12 @@ def _upload_to_kb(md_content, attachment_files, kb_id, tenant_id, folder_name):
     for doc, _ in pairs:
         did = doc["id"]
         try:
-            DocumentService.begin2parse(did)
-            DocumentService.run(tenant_id, doc, {})
+            from api.db.services.task_service import queue_tasks
+            from api.db.services.file2document_service import File2DocumentService
+            bucket, name = File2DocumentService.get_storage_address(doc_id=did)
+            queue_tasks(doc, bucket, name, 0)
         except Exception as e:
-            logging.error("Queue parse for %s: %s", did, e)
+            logging.error("Failed to queue parsing for %s: %s", did, e)
 
     for fp in attachment_files:
         fname = os.path.basename(fp)
@@ -620,10 +622,12 @@ def _upload_to_kb(md_content, attachment_files, kb_id, tenant_id, folder_name):
         for doc, _ in pairs2:
             did = doc["id"]
             try:
-                DocumentService.begin2parse(did)
-                DocumentService.run(tenant_id, doc, {})
+                from api.db.services.task_service import queue_tasks
+                from api.db.services.file2document_service import File2DocumentService
+                bucket, name = File2DocumentService.get_storage_address(doc_id=did)
+                queue_tasks(doc, bucket, name, 0)
             except Exception as e:
-                logging.error("Queue parse for %s: %s", did, e)
+                logging.error("Failed to queue parsing for %s: %s", did, e)
 
 
 # ---------------------------------------------------------------------------

@@ -581,8 +581,23 @@ def _upload_to_kb(filepath, kb_id, tenant_id, parser_id="laws"):
     from api.db.services.document_service import DocumentService
 
     ok, kb = KnowledgebaseService.get_by_id(kb_id)
-    if not ok:
-        raise LookupError(f"Knowledge base {kb_id} not found")
+    if not ok or kb is None:
+        logging.warning("KB %s not found, skip upload %s", kb_id, os.path.basename(filepath))
+        return []
+
+    # KB-level dedup
+    existing = set()
+    try:
+        for d in DocumentService.select(DocumentService.model.name).where(
+            DocumentService.model.kb_id == kb_id
+        ):
+            existing.add(d.name)
+    except Exception:
+        pass
+    fname = os.path.basename(filepath)
+    if fname in existing:
+        logging.info("Skip duplicate: %s", fname)
+        return []
 
     with open(filepath, "rb") as f:
         blob = f.read()
@@ -596,7 +611,7 @@ def _upload_to_kb(filepath, kb_id, tenant_id, parser_id="laws"):
         def read(self):
             return self.blob
 
-    file_obj = _FileObj(os.path.basename(filepath), blob)
+    file_obj = _FileObj(fname, blob)
     errs, doc_pairs = FileService.upload_document(kb, [file_obj], tenant_id)
 
     if errs:
@@ -610,8 +625,10 @@ def _upload_to_kb(filepath, kb_id, tenant_id, parser_id="laws"):
         except Exception as e:
             logging.error("Failed to update parser_id for %s: %s", doc_id, e)
         try:
-            DocumentService.begin2parse(doc_id)
-            DocumentService.run(tenant_id, doc, {})
+            from api.db.services.task_service import queue_tasks
+            from api.db.services.file2document_service import File2DocumentService
+            bucket, name = File2DocumentService.get_storage_address(doc_id=doc_id)
+            queue_tasks(doc, bucket, name, 0)
         except Exception as e:
             logging.error("Failed to queue parsing for %s: %s", doc_id, e)
     return doc_pairs
@@ -811,6 +828,9 @@ def main():
     parser.add_argument("--max-runtime", type=int, default=3300,
                         help="Maximum runtime in seconds (default: 3300)")
     parser.add_argument("--project-root", default=None, help="Project root")
+    parser.add_argument("--llm-id", default=None, help="LLM ID (unused)")
+    parser.add_argument("--llm-model", default=None, help="LLM model (unused)")
+    parser.add_argument("--access-token", default=None, help="Access token (unused)")
 
     args = parser.parse_args()
 
@@ -818,11 +838,13 @@ def main():
         sys.path.insert(0, args.project_root)
         os.chdir(args.project_root)
 
-    output_dir = args.output_dir or os.path.join(_SCRIPT_DIR, args.task_name)
+    output_dir = args.output_dir or os.path.join(_PROJECT_ROOT, "rag", args.task_name.strip())
     os.makedirs(output_dir, exist_ok=True)
 
     init_root_logger("ncha_crawler")
     logging.info("NCHA Crawler | task=%s | output=%s", args.task_name, output_dir)
+
+    settings.init_settings()
 
     try:
         crawl(

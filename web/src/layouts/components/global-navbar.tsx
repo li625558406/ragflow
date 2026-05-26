@@ -17,7 +17,6 @@ const PathMap = {
   [Routes.Files]: [Routes.Files],
   [Routes.ScheduledTasks]: [Routes.ScheduledTasks, Routes.ScheduledTaskLogs],
 } as const;
-
 const menuItems = [
   { path: Routes.Root, name: 'header.Root', icon: LucideHouse },
   { path: Routes.Datasets, name: 'header.dataset' /* icon: Library, */ },

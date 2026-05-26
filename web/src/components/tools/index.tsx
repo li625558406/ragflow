@@ -44,11 +44,11 @@ export default function ToolsPanel() {
   const selectedTool = tools.find((t) => t.id === selectedId);
 
   return (
-    <div className="flex-1 flex min-h-0">
+    <div className="flex-1 flex min-h-0 bg-[#f8f6f3]">
       {/* Left: Tool list */}
-      <div className="w-56 shrink-0 border-r border-stone-200/60 bg-white flex flex-col">
+      <div className="w-56 shrink-0 border-r border-[rgba(124,92,252,0.06)] bg-white flex flex-col">
         <div className="px-4 pt-4 pb-2">
-          <span className="text-stone-400 text-[10px] font-semibold tracking-widest uppercase">
+          <span className="text-[#9494b5] text-[10px] font-semibold tracking-widest uppercase">
             工具列表
           </span>
         </div>
@@ -57,22 +57,20 @@ export default function ToolsPanel() {
             <button
               key={tool.id}
               onClick={() => setSelectedId(tool.id)}
-              className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg cursor-pointer transition text-left ${
+              className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer transition text-left group ${
                 tool.id === selectedId
-                  ? 'bg-indigo-50 text-indigo-700'
-                  : 'text-stone-600 hover:bg-stone-50 hover:text-stone-800'
+                  ? 'bg-[#ede9fe] text-[#7c5cfc]'
+                  : 'text-[#5a5a7a] hover:bg-[#f4f1fb] hover:text-[#1c1c2e]'
               }`}
             >
               <div
-                className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-                  tool.id === selectedId ? 'bg-indigo-100' : 'bg-stone-100'
+                className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${
+                  tool.id === selectedId ? 'bg-white' : 'bg-[#f4f1fb]'
                 }`}
               >
                 <svg
                   className={`w-4 h-4 ${
-                    tool.id === selectedId
-                      ? 'text-indigo-600'
-                      : 'text-stone-500'
+                    tool.id === selectedId ? 'text-[#7c5cfc]' : 'text-[#9494b5]'
                   }`}
                   fill="none"
                   stroke="currentColor"
@@ -88,7 +86,7 @@ export default function ToolsPanel() {
               </div>
               <div className="min-w-0">
                 <div className="text-sm font-medium truncate">{tool.name}</div>
-                <div className="text-[11px] text-stone-400 truncate">
+                <div className="text-[11px] text-[#9494b5] truncate">
                   {tool.description}
                 </div>
               </div>
@@ -98,7 +96,7 @@ export default function ToolsPanel() {
       </div>
 
       {/* Right: Tool content */}
-      <div className="flex-1 overflow-y-auto bg-stone-50/50">
+      <div className="flex-1 overflow-y-auto bg-[#f8f6f3]">
         {selectedTool?.id === 'agency-fee' && <AgencyFeeCalculator />}
         {selectedTool?.id === 'cost-consulting' && <CostConsultingCalculator />}
         {selectedTool?.id === 'engineering-survey' && (

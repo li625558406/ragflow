@@ -22,6 +22,7 @@ import {
   currentReg,
   parseCitationIndex,
   preprocessLaTeX,
+  replaceBareIdToCitation,
   replaceTextByOldReg,
   replaceThinkToSection,
 } from '@/utils/chat';
@@ -177,7 +178,7 @@ function MarkdownContent({
     if (text === '') {
       text = t('chat.searching');
     }
-    const nextText = replaceTextByOldReg(text);
+    const nextText = replaceBareIdToCitation(replaceTextByOldReg(text));
     return pipe(replaceThinkToSection, preprocessLaTeX)(nextText);
   }, [content, t]);
 
@@ -357,7 +358,9 @@ function MarkdownContent({
         remarkPlugins={[remarkGfm, remarkMath]}
         components={
           {
-            p: ({ children, ...props }: any) => <p {...props}>{children}</p>,
+            p: ({ children, ...props }: any) => (
+              <div {...props}>{children}</div>
+            ),
             'custom-typography': ({ children }: { children: string }) =>
               renderReference(children),
             a({ href, children, ...props }: any) {

@@ -105,6 +105,7 @@ export default {
       welcome: '欢迎来到',
       dataset: '知识库',
       memories: '记忆',
+      bid: '标书',
     },
     skills: {
       title: '技能',
@@ -2474,6 +2475,8 @@ Tokenizer 会根据所选方式将内容存储为对应的数据结构。`,
       notFoundSkills: '未查询到技能空间',
       scheduledTaskTitle: '尚未创建定时任务',
       notFoundScheduledTask: '未查询到定时任务',
+      bidTitle: '暂无标讯数据',
+      notFoundBid: '未查询到标讯数据',
       addNow: '立即添加',
     },
 

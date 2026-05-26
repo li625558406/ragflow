@@ -449,8 +449,10 @@ def _upload_to_kb(filepath, kb_id, tenant_id):
     for doc, _ in doc_pairs:
         logging.info("Document %s uploaded to KB %s", doc["id"], kb_id)
         try:
-            DocumentService.begin2parse(doc["id"])
-            DocumentService.run(tenant_id, doc, {})
+            from api.db.services.task_service import queue_tasks
+            from api.db.services.file2document_service import File2DocumentService
+            bucket, name = File2DocumentService.get_storage_address(doc_id=doc["id"])
+            queue_tasks(doc, bucket, name, 0)
             logging.info("Parsing task queued for document %s", doc["id"])
         except Exception as e:
             logging.error("Failed to queue parsing for document %s: %s", doc["id"], e)
