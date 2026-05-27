@@ -21,6 +21,7 @@ import { BidDetailView } from '@/pages/home/bid-detail-view';
 import { getAuthorization } from '@/utils/authorization-util';
 import { format } from 'date-fns';
 import {
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Eye,
@@ -127,6 +128,21 @@ export function BidList({
   const [selectedProvince, setSelectedProvince] = useState<string>('');
   const [selectedCity, setSelectedCity] = useState<string>('');
   const [selectedIndustry, setSelectedIndustry] = useState<string>('');
+  // 高级筛选（折叠面板）
+  const [showAdvancedPanel, setShowAdvancedPanel] = useState(false);
+  const [excludeKeyword, setExcludeKeyword] = useState('');
+  const [includeKeyword, setIncludeKeyword] = useState('');
+  const [agentName, setAgentName] = useState('');
+  const [partAName, setPartAName] = useState('');
+  const [partBName, setPartBName] = useState('');
+  const [selectedCounty, setSelectedCounty] = useState<string>('');
+  const [projectMoneyMin, setProjectMoneyMin] = useState('');
+  const [projectMoneyMax, setProjectMoneyMax] = useState('');
+  const [hasFile, setHasFile] = useState<string>('');
+  const [selectedNewsType, setSelectedNewsType] = useState<string>('');
+  const [contractEndDateRange, setContractEndDateRange] = useState<
+    DateRange | undefined
+  >();
 
   // 实际提交的搜索条件
   const [appliedKeyword, setAppliedKeyword] = useState('');
@@ -138,11 +154,16 @@ export function BidList({
   const [appliedIndustry, setAppliedIndustry] = useState<string>('');
   const [appliedIndustryCategory, setAppliedIndustryCategory] =
     useState<string>('');
+  // 高级筛选 applied 状态（一次性打包）
+  const [appliedFilters, setAppliedFilters] = useState<Record<string, any>>({});
 
   const [provinceOptions, setProvinceOptions] = useState<
     { label: string; value: string }[]
   >([]);
   const [cityOptions, setCityOptions] = useState<
+    { label: string; value: string }[]
+  >([]);
+  const [countyOptions, setCountyOptions] = useState<
     { label: string; value: string }[]
   >([]);
   const [areaNameMap, setAreaNameMap] = useState<Record<string, string>>({});
@@ -290,6 +311,26 @@ export function BidList({
     setSelectedCity('');
   }, [selectedProvince]);
 
+  // Load counties when city changes
+  useEffect(() => {
+    if (!selectedCity) {
+      setCountyOptions([]);
+      setSelectedCounty('');
+      return;
+    }
+    bidFetch('areas', { parent_code: selectedCity })
+      .then((res: any) => {
+        const list = res?.data ?? [];
+        setCountyOptions(
+          list.map((a: any) => ({ label: a.name, value: a.code })),
+        );
+      })
+      .catch(() => {
+        setCountyOptions([]);
+      });
+    setSelectedCounty('');
+  }, [selectedCity]);
+
   // 用 ref 保存外部回调，避免每次渲染获取新引用导致无限请求
   const setListLengthRef = useRef(setListLength);
   setListLengthRef.current = setListLength;
@@ -331,6 +372,34 @@ export function BidList({
       if (appliedIndustry) params.industry_code = appliedIndustry;
       else if (appliedIndustryCategory)
         params.industry_code = appliedIndustryCategory;
+      // 高级筛选参数
+      if (appliedFilters.exclude_keyword)
+        params.exclude_keyword = appliedFilters.exclude_keyword;
+      if (appliedFilters.include_keyword)
+        params.include_keyword = appliedFilters.include_keyword;
+      if (appliedFilters.agent_name)
+        params.agent_name = appliedFilters.agent_name;
+      if (appliedFilters.part_a_name)
+        params.part_a_name = appliedFilters.part_a_name;
+      if (appliedFilters.part_b_name)
+        params.part_b_name = appliedFilters.part_b_name;
+      if (appliedFilters.county_code)
+        params.county_code = appliedFilters.county_code;
+      if (appliedFilters.project_money_min)
+        params.project_money_min = appliedFilters.project_money_min;
+      if (appliedFilters.project_money_max)
+        params.project_money_max = appliedFilters.project_money_max;
+      if (
+        appliedFilters.file_flag !== undefined &&
+        appliedFilters.file_flag !== ''
+      )
+        params.file_flag = appliedFilters.file_flag;
+      if (appliedFilters.news_type_id)
+        params.news_type_id = appliedFilters.news_type_id;
+      if (appliedFilters.contract_end_min)
+        params.contract_end_min = appliedFilters.contract_end_min;
+      if (appliedFilters.contract_end_max)
+        params.contract_end_max = appliedFilters.contract_end_max;
       return params;
     },
     [
@@ -340,6 +409,7 @@ export function BidList({
       appliedCity,
       appliedIndustry,
       appliedIndustryCategory,
+      appliedFilters,
     ],
   );
 
@@ -362,6 +432,7 @@ export function BidList({
     appliedCity,
     appliedIndustry,
     appliedIndustryCategory,
+    appliedFilters,
   ]);
 
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -371,6 +442,29 @@ export function BidList({
 
     const industryCode = selectedIndustry || selectedIndustryCategory;
 
+    // 构建高级筛选 applied 对象
+    const advFilters: Record<string, any> = {};
+    if (excludeKeyword) advFilters.exclude_keyword = excludeKeyword;
+    if (includeKeyword) advFilters.include_keyword = includeKeyword;
+    if (agentName) advFilters.agent_name = agentName;
+    if (partAName) advFilters.part_a_name = partAName;
+    if (partBName) advFilters.part_b_name = partBName;
+    if (selectedCounty) advFilters.county_code = selectedCounty;
+    if (projectMoneyMin) advFilters.project_money_min = Number(projectMoneyMin);
+    if (projectMoneyMax) advFilters.project_money_max = Number(projectMoneyMax);
+    if (hasFile !== '') advFilters.file_flag = Number(hasFile);
+    if (selectedNewsType) advFilters.news_type_id = Number(selectedNewsType);
+    if (contractEndDateRange?.from)
+      advFilters.contract_end_min = format(
+        contractEndDateRange.from,
+        'yyyy-MM-dd',
+      );
+    if (contractEndDateRange?.to)
+      advFilters.contract_end_max = format(
+        contractEndDateRange.to,
+        'yyyy-MM-dd',
+      );
+
     // 更新 applied 状态（由 useEffect 自动触发请求）
     setAppliedKeyword(keyword);
     setAppliedDateRange(dateRange);
@@ -378,6 +472,7 @@ export function BidList({
     setAppliedCity(selectedCity);
     setAppliedIndustry(selectedIndustry);
     setAppliedIndustryCategory(selectedIndustryCategory);
+    setAppliedFilters(advFilters);
 
     // 重置页码（若当前不是第1页，翻页会触发请求；若已是第1页则手动触发）
     if (page !== 1) {
@@ -393,6 +488,7 @@ export function BidList({
       if (selectedProvince) params.provice_code = selectedProvince;
       if (selectedCity) params.city_code = selectedCity;
       if (industryCode) params.industry_code = industryCode;
+      Object.assign(params, advFilters);
       doFetch(params);
     }
 
@@ -472,7 +568,7 @@ export function BidList({
                   value={keyword}
                   onChange={(e) => setKeyword(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                  placeholder="搜索标题、甲方、乙方、内容..."
+                  placeholder="搜索项目名称..."
                   className={INPUT_CLASS}
                 />
                 {keyword && (
@@ -553,9 +649,153 @@ export function BidList({
                 <Search className="size-3.5 mr-1.5" />
                 搜索
               </Button>
+
+              {/* Toggle advanced filters */}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowAdvancedPanel((v) => !v)}
+                className={`h-9 px-3 text-sm text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-all ${showAdvancedPanel ? 'bg-[#F5F5F5] text-[#000000]' : ''}`}
+              >
+                <ChevronDown
+                  className={`size-4 mr-1 transition-transform ${showAdvancedPanel ? 'rotate-180' : ''}`}
+                />
+                更多筛选
+              </Button>
             </div>
           </div>
         </div>
+
+        {/* Advanced filter panel */}
+        {showAdvancedPanel && (
+          <div className="cs-page-enter shrink-0 px-6 pb-2">
+            <div className="bg-white rounded-xl border border-[#E8E8E8] shadow-[0_1px_3px_rgba(0,0,0,0.03)] p-4">
+              <div className="flex items-center gap-3 flex-wrap">
+                {/* Include keyword */}
+                <div className="relative flex-1 min-w-[160px] max-w-[220px]">
+                  <Input
+                    value={includeKeyword}
+                    onChange={(e) => setIncludeKeyword(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                    placeholder="包含关键词"
+                    className={INPUT_CLASS}
+                  />
+                </div>
+
+                {/* Exclude keyword */}
+                <div className="relative flex-1 min-w-[160px] max-w-[220px]">
+                  <Input
+                    value={excludeKeyword}
+                    onChange={(e) => setExcludeKeyword(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                    placeholder="排除关键词"
+                    className={INPUT_CLASS}
+                  />
+                </div>
+
+                {/* Separator */}
+                <div className="w-px h-6 bg-[#E8E8E8] hidden md:block" />
+
+                {/* County */}
+                <BidSelect
+                  value={selectedCounty}
+                  onChange={(val) => setSelectedCounty(val)}
+                  options={countyOptions}
+                  placeholder="全部区县"
+                  allowClear
+                  disabled={!selectedCity}
+                  className={`${SELECT_CLASS} w-32`}
+                />
+
+                {/* Project money range */}
+                <div className="flex items-center gap-1.5">
+                  <Input
+                    value={projectMoneyMin}
+                    onChange={(e) => setProjectMoneyMin(e.target.value)}
+                    placeholder="金额下限"
+                    className={`${INPUT_CLASS} w-28`}
+                  />
+                  <span className="text-xs text-[#A3A3A3]">-</span>
+                  <Input
+                    value={projectMoneyMax}
+                    onChange={(e) => setProjectMoneyMax(e.target.value)}
+                    placeholder="金额上限"
+                    className={`${INPUT_CLASS} w-28`}
+                  />
+                </div>
+
+                {/* File flag */}
+                <BidSelect
+                  value={hasFile}
+                  onChange={(val) => setHasFile(val)}
+                  options={[
+                    { label: '附件状态', value: '' },
+                    { label: '有附件', value: '1' },
+                    { label: '无附件', value: '0' },
+                  ]}
+                  placeholder="附件状态"
+                  className={`${SELECT_CLASS} w-28`}
+                />
+
+                {/* News type */}
+                <BidSelect
+                  value={selectedNewsType}
+                  onChange={(val) => setSelectedNewsType(val)}
+                  options={[
+                    { label: '资讯类别', value: '' },
+                    { label: '招标', value: '1' },
+                    { label: '中标', value: '2' },
+                    { label: '合同', value: '3' },
+                  ]}
+                  placeholder="资讯类别"
+                  className={`${SELECT_CLASS} w-28`}
+                />
+
+                {/* Separator */}
+                <div className="w-px h-6 bg-[#E8E8E8] hidden md:block" />
+
+                {/* Part A name */}
+                <div className="relative flex-1 min-w-[140px] max-w-[180px]">
+                  <Input
+                    value={partAName}
+                    onChange={(e) => setPartAName(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                    placeholder="甲方名称"
+                    className={INPUT_CLASS}
+                  />
+                </div>
+
+                {/* Part B name */}
+                <div className="relative flex-1 min-w-[140px] max-w-[180px]">
+                  <Input
+                    value={partBName}
+                    onChange={(e) => setPartBName(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                    placeholder="乙方名称"
+                    className={INPUT_CLASS}
+                  />
+                </div>
+
+                {/* Agent name */}
+                <div className="relative flex-1 min-w-[140px] max-w-[180px]">
+                  <Input
+                    value={agentName}
+                    onChange={(e) => setAgentName(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                    placeholder="代理机构"
+                    className={INPUT_CLASS}
+                  />
+                </div>
+
+                {/* Contract end date */}
+                <DatePickerWithRange
+                  selected={contractEndDateRange}
+                  onSelect={(range: any) => setContractEndDateRange(range)}
+                />
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Table */}
         <div className="flex-1 min-h-0 px-6 pb-4 overflow-auto">

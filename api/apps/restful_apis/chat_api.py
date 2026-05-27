@@ -22,9 +22,11 @@ import tempfile
 from copy import deepcopy
 from types import SimpleNamespace
 
-from quart import Response, request
+from quart import Blueprint, Response, request
 
 from api.apps import current_user, login_required
+
+manager = Blueprint("rest_chat_api", __name__)
 from api.db.joint_services.tenant_model_service import (
     get_model_config_by_type_and_name,
     get_tenant_default_model_by_type,

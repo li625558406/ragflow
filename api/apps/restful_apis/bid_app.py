@@ -27,7 +27,7 @@ import threading
 from datetime import datetime
 from io import BytesIO
 
-from quart import request
+from quart import Blueprint, request
 from werkzeug.datastructures import FileStorage
 
 from api.apps import current_user, login_required
@@ -48,6 +48,8 @@ from api.utils.api_utils import (
 )
 from api.utils.bid_api_client import BidApiClient
 from api.utils.bid_file_utils import download_file, extract_archive
+
+manager = Blueprint("rest_bid_app", __name__)
 
 
 # ---------------------------------------------------------------------------
@@ -83,44 +85,190 @@ def list_areas():
 
 
 # ---------------------------------------------------------------------------
-# 标讯列表（纯本地查询，不调外部 API）
+# 标讯列表（本地查询优先，不足20条时自动调第三方API补充）
 # ---------------------------------------------------------------------------
+def _parse_dt(dt_str: str):
+    if not dt_str:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(dt_str, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _safe_json(val) -> str:
+    if val is None:
+        return "[]"
+    return json.dumps(val, ensure_ascii=False)
+
+
 @manager.route("/bid/projects", methods=["GET"])  # noqa: F821
 @login_required
 def list_bid_projects():
     page_number = int(request.args.get("page", 1))
     items_per_page = int(request.args.get("items_per_page", 20))
     keyword = request.args.get("keyword", "") or None
+    exclude_keyword = request.args.get("exclude_keyword", "") or None
+    include_keyword = request.args.get("include_keyword", "") or None
     project_class_id = request.args.get("project_class_id", "") or None
     purchase_type_id = request.args.get("purchase_type_id", "") or None
     provice_code = request.args.get("provice_code", "") or None
     city_code = request.args.get("city_code", "") or None
+    county_code = request.args.get("county_code", "") or None
     start_date = request.args.get("start_date", "") or None
     end_date = request.args.get("end_date", "") or None
+    contract_end_min = request.args.get("contract_end_min", "") or None
+    contract_end_max = request.args.get("contract_end_max", "") or None
     project_money_min = request.args.get("project_money_min", type=int) or None
     project_money_max = request.args.get("project_money_max", type=int) or None
     part_a_name = request.args.get("part_a_name", "") or None
     part_b_name = request.args.get("part_b_name", "") or None
+    agent_name = request.args.get("agent_name", "") or None
     has_file = request.args.get("has_file", type=int) or None
+    file_flag = request.args.get("file_flag", type=int) or None
     industry_code = request.args.get("industry_code", "") or None
+    news_type_id = request.args.get("news_type_id", type=int) or None
+    source_type = request.args.get("source_type", "") or None
 
+    # Step 1: 查本地 DB
     objs, total = BidProjectService.get_list(
         page_number=page_number,
         items_per_page=items_per_page,
         keyword=keyword,
+        exclude_keyword=exclude_keyword,
+        include_keyword=include_keyword,
         project_class_id=project_class_id,
         purchase_type_id=purchase_type_id,
         provice_code=provice_code,
         city_code=city_code,
+        county_code=county_code,
         start_date=start_date,
         end_date=end_date,
+        contract_end_min=contract_end_min,
+        contract_end_max=contract_end_max,
         project_money_min=project_money_min,
         project_money_max=project_money_max,
         part_a_name=part_a_name,
         part_b_name=part_b_name,
         has_file=has_file,
+        file_flag=file_flag,
         industry_code=industry_code,
+        news_type_id=news_type_id,
+        source_type=source_type,
     )
+
+    # Step 2: 本地不足 20 条 → 调第三方 API 补充
+    if total < 20:
+        try:
+            client = BidApiClient()
+
+            # 行业编码映射
+            api_industry_code = {"firstCodeList": ["0"], "secondCodeList": [], "thirdCodeList": []}
+            if industry_code:
+                if len(industry_code) == 1:
+                    api_industry_code["firstCodeList"] = [industry_code]
+                else:
+                    api_industry_code["secondCodeList"] = [industry_code]
+
+            # 地区编码映射
+            api_area_code = {
+                "proviceCodeList": [provice_code] if provice_code else ["0"],
+                "cityCodeList": [city_code] if city_code else [],
+                "countyCodeList": [county_code] if county_code else [],
+            }
+
+            api_resp = client.search_project(
+                keyword=keyword or "",
+                exclude_kw=exclude_keyword or "",
+                include_kw=include_keyword or "",
+                source_type=source_type or "",
+                class_id=str(news_type_id) if news_type_id else "-100",
+                project_class_id=project_class_id or "",
+                search_mode=1,
+                area_code=api_area_code,
+                industry_code=api_industry_code,
+                start_date=start_date or "",
+                end_date=end_date or "",
+                contract_end_min=contract_end_min or "",
+                contract_end_max=contract_end_max or "",
+                part_a_name=part_a_name or "",
+                part_b_name=part_b_name or "",
+                agent_name=agent_name or "",
+                project_money_min=project_money_min,
+                project_money_max=project_money_max,
+                file_flag=file_flag if file_flag is not None else -1,
+                purchase_type_id=purchase_type_id or "",
+                page_id=1,
+                page_number=50,
+            )
+
+            data = api_resp.get("data", {})
+            items = data.get("data", [])
+            batch_id = str(datetime.now().timestamp())
+
+            for item in items:
+                try:
+                    project_id = item.get("id")
+                    if not project_id:
+                        continue
+                    project_data = {
+                        "id": project_id,
+                        "title": _strip_html(item.get("title", "")),
+                        "title_html": item.get("title", ""),
+                        "content": item.get("content", ""),
+                        "publish_time": _parse_dt(item.get("publishTime")),
+                        "news_type_id": item.get("newsTypeID"),
+                        "project_class_id": str(item.get("projectClassID")) if item.get("projectClassID") else None,
+                        "purchase_type_id": str(item.get("purchaseTypeID")) if item.get("purchaseTypeID") else None,
+                        "project_money": item.get("projectMoney", ""),
+                        "provice_code": item.get("proviceCode", ""),
+                        "city_code": item.get("cityCode", ""),
+                        "county_code": item.get("countyCode", ""),
+                        "industry_codes": _safe_json(item.get("industryCodeList", [])),
+                        "part_a_names": _safe_json(item.get("partANameList", [])),
+                        "part_b_names": _safe_json(item.get("partBNameList", [])),
+                        "has_file": item.get("hasFile", 0),
+                        "contract_end_date": item.get("contractEndDate", ""),
+                        "se_keywords": data.get("seKeyWords", ""),
+                        "score": item.get("score"),
+                        "source_type": str(item.get("sourceType")) if item.get("sourceType") else None,
+                        "sync_batch_id": batch_id,
+                    }
+                    BidProjectService.upsert_project(project_data)
+                except Exception as e:
+                    logging.warning("Failed to cache project %s: %s", item.get("id"), e)
+
+            # Step 3: 重新查 DB
+            objs, total = BidProjectService.get_list(
+                page_number=page_number,
+                items_per_page=items_per_page,
+                keyword=keyword,
+                exclude_keyword=exclude_keyword,
+                include_keyword=include_keyword,
+                project_class_id=project_class_id,
+                purchase_type_id=purchase_type_id,
+                provice_code=provice_code,
+                city_code=city_code,
+                county_code=county_code,
+                start_date=start_date,
+                end_date=end_date,
+                contract_end_min=contract_end_min,
+                contract_end_max=contract_end_max,
+                project_money_min=project_money_min,
+                project_money_max=project_money_max,
+                part_a_name=part_a_name,
+                part_b_name=part_b_name,
+                has_file=has_file,
+                file_flag=file_flag,
+                industry_code=industry_code,
+                news_type_id=news_type_id,
+                source_type=source_type,
+            )
+        except Exception as e:
+            logging.warning("API fallback failed: %s", e)
+
     return get_json_result(data={"projects": objs, "total": total})
 
 

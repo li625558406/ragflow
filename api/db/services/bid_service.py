@@ -33,31 +33,33 @@ class BidProjectService(CommonService):
         page_number: int = 1,
         items_per_page: int = 20,
         keyword: str = None,
+        exclude_keyword: str = None,
+        include_keyword: str = None,
         project_class_id: str = None,
         purchase_type_id: str = None,
         provice_code: str = None,
         city_code: str = None,
+        county_code: str = None,
         start_date: str = None,
         end_date: str = None,
+        contract_end_min: str = None,
+        contract_end_max: str = None,
         project_money_min: int = None,
         project_money_max: int = None,
         part_a_name: str = None,
         part_b_name: str = None,
         has_file: int = None,
+        file_flag: int = None,
         industry_code: str = None,
+        news_type_id: int = None,
+        source_type: str = None,
         orderby: str = "publish_time",
         desc: bool = True,
     ) -> Tuple[List[dict], int]:
         query = cls.model.select()
 
         if keyword:
-            query = query.where(
-                (cls.model.title ** f"%{keyword}%")
-                | (cls.model.content ** f"%{keyword}%")
-                | (cls.model.se_keywords ** f"%{keyword}%")
-                | (cls.model.part_a_names ** f"%{keyword}%")
-                | (cls.model.part_b_names ** f"%{keyword}%")
-            )
+            query = query.where(cls.model.title ** f"%{keyword}%")
         if project_class_id:
             query = query.where(cls.model.project_class_id == project_class_id)
         if purchase_type_id:
@@ -88,6 +90,22 @@ class BidProjectService(CommonService):
                 query = query.where(cls.model.industry_codes ** f'%"{industry_code}%')
             else:
                 query = query.where(cls.model.industry_codes ** f'%"{industry_code}"%')
+        if county_code:
+            query = query.where(cls.model.county_code == county_code)
+        if contract_end_min:
+            query = query.where(cls.model.contract_end_date >= contract_end_min)
+        if contract_end_max:
+            query = query.where(cls.model.contract_end_date <= contract_end_max)
+        if file_flag is not None and file_flag in (0, 1):
+            query = query.where(cls.model.has_file == file_flag)
+        if news_type_id is not None:
+            query = query.where(cls.model.news_type_id == news_type_id)
+        if source_type:
+            query = query.where(cls.model.source_type == source_type)
+        if include_keyword:
+            query = query.where(cls.model.title ** f"%{include_keyword}%")
+        if exclude_keyword:
+            query = query.where(~(cls.model.title ** f"%{exclude_keyword}%"))
 
         total = query.count()
 
