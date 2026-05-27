@@ -296,13 +296,7 @@ function CheckboxFormMultiple({
           >
             {t('common.clear')}
           </Button>
-          <Button
-            type="submit"
-            onClick={() => {
-              console.log(form.formState.errors, form.getValues());
-            }}
-            size={'sm'}
-          >
+          <Button type="submit" onClick={() => {}} size={'sm'}>
             {t('common.submit')}
           </Button>
         </div>

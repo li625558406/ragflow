@@ -81,9 +81,7 @@ function AdminLogin() {
         navigate('/admin/services');
       }
     },
-    onError: (error) => {
-      console.log('Failed:', error);
-    },
+    onError: () => {},
     retry: false,
   });
 

@@ -337,8 +337,8 @@ const Login = () => {
           setTitle('login');
         }
       }
-    } catch (errorInfo) {
-      console.log('Failed:', errorInfo);
+    } catch {
+      // ignore
     }
   };
 

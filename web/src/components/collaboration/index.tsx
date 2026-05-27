@@ -107,7 +107,7 @@ export default function CollaborationPanel({ apiFetch }: Props) {
   }, []);
 
   return (
-    <div className="flex-1 flex min-h-0 bg-[#f8f6f3]">
+    <div className="flex-1 flex min-h-0 bg-[#FFFFFF]">
       <DocumentList
         selectedId={selectedId}
         onSelect={handleSelect}

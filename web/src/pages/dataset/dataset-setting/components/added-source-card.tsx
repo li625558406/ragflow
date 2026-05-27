@@ -70,7 +70,6 @@ export const AddedSourceCard = (props: IAddedSourceCardProps) => {
                   // { hidden: item.name.indexOf(filterString) <= -1 },
                 )}
                 onClick={() => {
-                  console.log('item--->', item);
                   // toDetail(item.id);
                   onCheck(item);
                 }}

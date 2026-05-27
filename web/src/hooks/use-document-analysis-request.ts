@@ -1,7 +1,7 @@
 import api from '@/utils/api';
 import request from '@/utils/request';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useRef, useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 
 export interface AnalysisItem {
   analysis_type: string;
@@ -41,8 +41,9 @@ export function useAnalyzeDocument() {
       documentId: string;
       params?: AnalyzeDocumentParams;
     }) => {
-      const { data } = await request.post(api.analyzeDocument(documentId), { data: params });
-      console.log('Analyze response:', data);
+      const { data } = await request.post(api.analyzeDocument(documentId), {
+        data: params,
+      });
       if (data.code !== 0) {
         throw new Error(data.message || '启动分析失败');
       }
@@ -59,7 +60,11 @@ export function useAnalyzeDocument() {
 // 获取文档分析结果
 // 注意：taskId 参数用于构建查询 URL，但不是 queryKey 的一部分
 // 这样 taskId 变化不会重置轮询状态
-export function useGetDocumentAnalysis(documentId: string, taskId: string = '', enabled: boolean = true) {
+export function useGetDocumentAnalysis(
+  documentId: string,
+  taskId: string = '',
+  enabled: boolean = true,
+) {
   // 使用 ref 来存储最新的 taskId，确保 queryFn 总是使用最新的值
   const taskIdRef = useRef(taskId);
 
@@ -124,10 +129,19 @@ export function useCancelDocumentAnalysis() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ documentId, taskId }: { documentId: string; taskId?: string }) => {
-      const { data } = await request.post(api.cancelDocumentAnalysis(documentId), {
-        data: { task_id: taskId || '' },
-      });
+    mutationFn: async ({
+      documentId,
+      taskId,
+    }: {
+      documentId: string;
+      taskId?: string;
+    }) => {
+      const { data } = await request.post(
+        api.cancelDocumentAnalysis(documentId),
+        {
+          data: { task_id: taskId || '' },
+        },
+      );
       return data;
     },
     onSuccess: (_, variables) => {
@@ -159,7 +173,11 @@ export interface AnalysisResultsListResponse {
   data: AnalysisResultItem[];
 }
 
-export function useListAnalysisResults(params?: { page?: number; page_size?: number; kb_id?: string }) {
+export function useListAnalysisResults(params?: {
+  page?: number;
+  page_size?: number;
+  kb_id?: string;
+}) {
   return useQuery({
     queryKey: ['analysisResults', params],
     queryFn: async () => {

@@ -272,12 +272,9 @@ const SearchSetting: React.FC<SearchSettingProps> = ({
           <form
             onSubmit={formMethods.handleSubmit(
               (data) => {
-                console.log('Form submitted with data:', data);
                 onSubmit(data as unknown as IUpdateSearchProps);
               },
-              (errors) => {
-                console.log('Validation errors:', errors);
-              },
+              () => {},
             )}
             className="space-y-6"
           >

@@ -120,7 +120,7 @@ function formatYuan(yuan: number): string {
 function SelectArrow() {
   return (
     <svg
-      className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400"
+      className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#1a1a1a]"
       fill="none"
       stroke="currentColor"
       viewBox="0 0 24 24"
@@ -148,31 +148,31 @@ function ResultCard({
   coef?: number;
 }) {
   return (
-    <div className="bg-white rounded-2xl border border-stone-100 p-5">
-      <div className="text-xs text-stone-400 mb-2">{title}</div>
+    <div className="bg-white rounded-2xl border border-[#D4D4D4] p-5">
+      <div className="text-xs text-[#1a1a1a] mb-2">{title}</div>
       {detail && detail.length > 0 && (
         <div className="space-y-1 mb-3 text-sm">
           {detail.map((d, i) => (
             <div key={i} className="flex justify-between">
-              <span className="text-stone-500">{d.label}</span>
-              <span className="font-medium text-stone-800">{d.value}</span>
+              <span className="text-[#000000]">{d.label}</span>
+              <span className="font-medium text-[#000000]">{d.value}</span>
             </div>
           ))}
-          <div className="border-t border-stone-100 pt-1.5" />
+          <div className="border-t border-[#D4D4D4] pt-1.5" />
         </div>
       )}
       <div className="flex items-baseline gap-1">
-        <span className="text-2xl font-bold text-emerald-600">
+        <span className="text-2xl font-bold text-[#000000]">
           {formatYuan(total)}
         </span>
-        <span className="text-sm text-stone-400">元</span>
+        <span className="text-sm text-[#1a1a1a]">元</span>
       </div>
-      <div className="flex gap-5 mt-2 text-[11px] text-stone-400">
+      <div className="flex gap-5 mt-2 text-[11px] text-[#1a1a1a]">
         <span>浮动下限 -20%：{formatYuan(total * 0.8)} 元</span>
         <span>浮动上限 +20%：{formatYuan(total * 1.2)} 元</span>
       </div>
       {coef && coef !== 1.0 && (
-        <p className="mt-2 text-[11px] text-stone-400">
+        <p className="mt-2 text-[11px] text-[#1a1a1a]">
           已乘专业工程系数 {coef}
         </p>
       )}
@@ -183,15 +183,15 @@ function ResultCard({
 // ── Right panel: rate table ──
 function RateTableCard({ title, rates }: { title: string; rates: number[] }) {
   return (
-    <div className="bg-white rounded-2xl border border-stone-100 p-4">
-      <h4 className="text-xs font-semibold text-stone-600 mb-2">{title}</h4>
+    <div className="bg-white rounded-2xl border border-[#D4D4D4] p-4">
+      <h4 className="text-xs font-semibold text-[#000000] mb-2">{title}</h4>
       <table className="w-full text-[11px] table-fixed">
         <thead>
-          <tr className="border-b border-stone-100">
-            <th className="text-left py-1 text-stone-400 font-medium">
+          <tr className="border-b border-[#D4D4D4]">
+            <th className="text-left py-1 text-[#1a1a1a] font-medium">
               分档（万元）
             </th>
-            <th className="text-right py-1 text-stone-400 font-medium w-10">
+            <th className="text-right py-1 text-[#1a1a1a] font-medium w-10">
               费率
             </th>
           </tr>
@@ -200,17 +200,17 @@ function RateTableCard({ title, rates }: { title: string; rates: number[] }) {
           {rates.slice(0, 6).map((rate, i) => {
             const prev = i === 0 ? 0 : TIERS[i - 1];
             return (
-              <tr key={i} className="border-b border-stone-50 last:border-0">
-                <td className="py-1 text-stone-600">
+              <tr key={i} className="border-b border-[#EAEAEA] last:border-0">
+                <td className="py-1 text-[#000000]">
                   {prev} - {TIERS[i]}
                 </td>
-                <td className="text-right py-1 text-stone-500">{rate}‰</td>
+                <td className="text-right py-1 text-[#000000]">{rate}‰</td>
               </tr>
             );
           })}
           <tr>
-            <td className="py-1 text-stone-600">{TIERS[5]} 以上</td>
-            <td className="text-right py-1 text-stone-500">{rates[6]}‰</td>
+            <td className="py-1 text-[#000000]">{TIERS[5]} 以上</td>
+            <td className="text-right py-1 text-[#000000]">{rates[6]}‰</td>
           </tr>
         </tbody>
       </table>
@@ -220,17 +220,17 @@ function RateTableCard({ title, rates }: { title: string; rates: number[] }) {
 
 function CoefTableCard() {
   return (
-    <div className="bg-white rounded-2xl border border-stone-100 p-4">
-      <h4 className="text-xs font-semibold text-stone-600 mb-2">
+    <div className="bg-white rounded-2xl border border-[#D4D4D4] p-4">
+      <h4 className="text-xs font-semibold text-[#000000] mb-2">
         专业工程系数表
       </h4>
       <div className="space-y-0.5">
         {Object.entries(COEFFICIENTS).map(([k, v]) => (
           <div key={k} className="flex justify-between text-[11px] py-0.5">
-            <span className="text-stone-600 truncate mr-2" title={v.name}>
+            <span className="text-[#000000] truncate mr-2" title={v.name}>
               {v.name}
             </span>
-            <span className="text-stone-500 shrink-0">{v.coef}</span>
+            <span className="text-[#000000] shrink-0">{v.coef}</span>
           </div>
         ))}
       </div>
@@ -447,11 +447,11 @@ export default function CostConsultingCalculator() {
   return (
     <div className="h-full flex flex-col">
       {/* Title bar */}
-      <div className="shrink-0 px-6 pt-5 pb-4 border-b border-stone-100 bg-white">
+      <div className="shrink-0 px-6 pt-5 pb-4 border-b border-[#D4D4D4] bg-white">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 bg-emerald-100 rounded-xl flex items-center justify-center">
+          <div className="w-9 h-9 bg-[#EAEAEA] rounded-xl flex items-center justify-center">
             <svg
-              className="w-4.5 h-4.5 text-emerald-600"
+              className="w-4.5 h-4.5 text-[#000000]"
               fill="none"
               stroke="currentColor"
               strokeWidth={1.5}
@@ -465,10 +465,10 @@ export default function CostConsultingCalculator() {
             </svg>
           </div>
           <div>
-            <h2 className="text-[15px] font-bold text-stone-900">
+            <h2 className="text-[15px] font-bold text-[#000000]">
               造价咨询服务费计算器
             </h2>
-            <p className="text-[11px] text-stone-400">
+            <p className="text-[11px] text-[#1a1a1a]">
               依据：闽招协[2021]32号 附件2 · 差额定率分档累进法 × 专业工程系数
             </p>
           </div>
@@ -481,7 +481,7 @@ export default function CostConsultingCalculator() {
         <div className="flex-1 overflow-y-auto p-6 space-y-3 min-w-0">
           {/* ① 咨询项目 */}
           <div>
-            <label className="block text-xs font-medium text-stone-500 mb-1.5">
+            <label className="block text-xs font-medium text-[#000000] mb-1.5">
               ① 咨询项目
             </label>
             <div className="relative">
@@ -491,7 +491,7 @@ export default function CostConsultingCalculator() {
                   setProjectId(Number(e.target.value));
                   clearResults();
                 }}
-                className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 pr-9 text-sm text-stone-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-50 transition appearance-none cursor-pointer"
+                className="w-full bg-[#EAEAEA] border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-9 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition appearance-none cursor-pointer"
               >
                 {Object.entries(PROJECTS).map(([k, v]) => (
                   <option key={k} value={k}>
@@ -501,7 +501,7 @@ export default function CostConsultingCalculator() {
               </select>
               <SelectArrow />
             </div>
-            <p className="mt-1 text-[11px] text-stone-400">
+            <p className="mt-1 text-[11px] text-[#1a1a1a]">
               计费基数：{project.base}
             </p>
           </div>
@@ -509,7 +509,7 @@ export default function CostConsultingCalculator() {
           {/* ② 通用输入 */}
           {![8, 9].includes(projectId) && (
             <div>
-              <label className="block text-xs font-medium text-stone-500 mb-1.5">
+              <label className="block text-xs font-medium text-[#000000] mb-1.5">
                 ② 输入{project.base}
               </label>
               <div className="relative">
@@ -524,9 +524,9 @@ export default function CostConsultingCalculator() {
                     if (e.key === 'Enter') handleCalc();
                   }}
                   placeholder={`请输入${project.base}`}
-                  className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 pr-14 text-sm text-stone-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-50 transition placeholder:text-stone-400"
+                  className="w-full bg-[#EAEAEA] border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-14 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition placeholder:text-[#A3A3A3]"
                 />
-                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-stone-400">
+                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-[#1a1a1a]">
                   {projectId === 13 ? '吨' : projectId === 14 ? '工日' : '万元'}
                 </span>
               </div>
@@ -537,7 +537,7 @@ export default function CostConsultingCalculator() {
           {projectId === 8 && (
             <div className="space-y-3">
               <div>
-                <label className="block text-xs font-medium text-stone-500 mb-1.5">
+                <label className="block text-xs font-medium text-[#000000] mb-1.5">
                   ② 计费方式
                 </label>
                 <div className="flex gap-2">
@@ -553,7 +553,7 @@ export default function CostConsultingCalculator() {
                         setAuditMode(k);
                         clearResults();
                       }}
-                      className={`flex-1 py-2 rounded-xl text-xs font-medium border transition ${auditMode === k ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-stone-50 border-stone-200 text-stone-500 hover:border-stone-300'}`}
+                      className={`flex-1 py-2 rounded-xl text-xs font-medium border transition ${auditMode === k ? 'bg-[#EAEAEA] border-[#D4D4D4] text-[#000000]' : 'bg-[#EAEAEA] border-[#D4D4D4] text-[#000000] hover:border-[#A3A3A3]'}`}
                     >
                       {label}
                     </button>
@@ -561,7 +561,7 @@ export default function CostConsultingCalculator() {
                 </div>
               </div>
               <div>
-                <label className="block text-xs font-medium text-stone-500 mb-1.5">
+                <label className="block text-xs font-medium text-[#000000] mb-1.5">
                   送审造价
                 </label>
                 <div className="relative">
@@ -573,9 +573,9 @@ export default function CostConsultingCalculator() {
                       clearResults();
                     }}
                     placeholder="请输入送审造价"
-                    className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 pr-14 text-sm text-stone-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-50 transition placeholder:text-stone-400"
+                    className="w-full bg-[#EAEAEA] border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-14 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition placeholder:text-[#A3A3A3]"
                   />
-                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-stone-400">
+                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-[#1a1a1a]">
                     万元
                   </span>
                 </div>
@@ -584,7 +584,7 @@ export default function CostConsultingCalculator() {
                 <>
                   <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-xs font-medium text-stone-500 mb-1.5">
+                      <label className="block text-xs font-medium text-[#000000] mb-1.5">
                         核减金额
                       </label>
                       <div className="relative">
@@ -596,15 +596,15 @@ export default function CostConsultingCalculator() {
                             clearResults();
                           }}
                           placeholder="无则填0"
-                          className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 pr-14 text-sm text-stone-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-50 transition placeholder:text-stone-400"
+                          className="w-full bg-[#EAEAEA] border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-14 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition placeholder:text-[#A3A3A3]"
                         />
-                        <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-stone-400">
+                        <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-[#1a1a1a]">
                           万元
                         </span>
                       </div>
                     </div>
                     <div>
-                      <label className="block text-xs font-medium text-stone-500 mb-1.5">
+                      <label className="block text-xs font-medium text-[#000000] mb-1.5">
                         核增金额
                       </label>
                       <div className="relative">
@@ -616,16 +616,16 @@ export default function CostConsultingCalculator() {
                             clearResults();
                           }}
                           placeholder="无则填0"
-                          className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 pr-14 text-sm text-stone-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-50 transition placeholder:text-stone-400"
+                          className="w-full bg-[#EAEAEA] border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-14 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition placeholder:text-[#A3A3A3]"
                         />
-                        <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-stone-400">
+                        <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-[#1a1a1a]">
                           万元
                         </span>
                       </div>
                     </div>
                   </div>
                   <div>
-                    <label className="block text-xs font-medium text-stone-500 mb-1.5">
+                    <label className="block text-xs font-medium text-[#000000] mb-1.5">
                       审级
                     </label>
                     <div className="flex gap-2">
@@ -641,7 +641,7 @@ export default function CostConsultingCalculator() {
                             setAuditLevel(k as 1 | 2);
                             clearResults();
                           }}
-                          className={`flex-1 py-2 rounded-xl text-xs font-medium border transition ${auditLevel === k ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-stone-50 border-stone-200 text-stone-500 hover:border-stone-300'}`}
+                          className={`flex-1 py-2 rounded-xl text-xs font-medium border transition ${auditLevel === k ? 'bg-[#EAEAEA] border-[#D4D4D4] text-[#000000]' : 'bg-[#EAEAEA] border-[#D4D4D4] text-[#000000] hover:border-[#A3A3A3]'}`}
                         >
                           {label}
                         </button>
@@ -657,7 +657,7 @@ export default function CostConsultingCalculator() {
           {projectId === 9 && (
             <div className="space-y-3">
               <div>
-                <label className="block text-xs font-medium text-stone-500 mb-1.5">
+                <label className="block text-xs font-medium text-[#000000] mb-1.5">
                   ② 阶段选择
                 </label>
                 <div className="flex gap-2">
@@ -668,7 +668,7 @@ export default function CostConsultingCalculator() {
                         setPhase(k as 'a' | 'b');
                         clearResults();
                       }}
-                      className={`flex-1 py-2 rounded-xl text-xs font-medium border transition ${phase === k ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-stone-50 border-stone-200 text-stone-500 hover:border-stone-300'}`}
+                      className={`flex-1 py-2 rounded-xl text-xs font-medium border transition ${phase === k ? 'bg-[#EAEAEA] border-[#D4D4D4] text-[#000000]' : 'bg-[#EAEAEA] border-[#D4D4D4] text-[#000000] hover:border-[#A3A3A3]'}`}
                     >
                       {v.label}
                     </button>
@@ -676,7 +676,7 @@ export default function CostConsultingCalculator() {
                 </div>
               </div>
               <div>
-                <label className="block text-xs font-medium text-stone-500 mb-1.5">
+                <label className="block text-xs font-medium text-[#000000] mb-1.5">
                   结算价
                 </label>
                 <div className="relative">
@@ -688,16 +688,16 @@ export default function CostConsultingCalculator() {
                       clearResults();
                     }}
                     placeholder="请输入结算价"
-                    className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 pr-14 text-sm text-stone-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-50 transition placeholder:text-stone-400"
+                    className="w-full bg-[#EAEAEA] border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-14 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition placeholder:text-[#A3A3A3]"
                   />
-                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-stone-400">
+                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-[#1a1a1a]">
                     万元
                   </span>
                 </div>
               </div>
               <div>
                 <div className="flex items-center gap-2 mb-2">
-                  <label className="text-xs font-medium text-stone-500">
+                  <label className="text-xs font-medium text-[#000000]">
                     驻场人员增加费
                   </label>
                   <button
@@ -705,7 +705,7 @@ export default function CostConsultingCalculator() {
                       setNeedOnsite(!needOnsite);
                       clearResults();
                     }}
-                    className={`relative w-8 h-4 rounded-full transition-colors ${needOnsite ? 'bg-emerald-500' : 'bg-stone-200'}`}
+                    className={`relative w-8 h-4 rounded-full transition-colors ${needOnsite ? 'bg-[#000000]' : 'bg-[#D4D4D4]'}`}
                   >
                     <span
                       className={`absolute top-[1px] left-[1px] w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${needOnsite ? 'translate-x-4' : ''}`}
@@ -721,9 +721,9 @@ export default function CostConsultingCalculator() {
                     ].map(([key, os, setOs, info]) => (
                       <div
                         key={key}
-                        className="flex items-center gap-2 bg-stone-50 rounded-lg px-3 py-1.5"
+                        className="flex items-center gap-2 bg-[#EAEAEA] rounded-lg px-3 py-1.5"
                       >
-                        <span className="text-[11px] text-stone-600 flex-1 truncate">
+                        <span className="text-[11px] text-[#000000] flex-1 truncate">
                           {info.label}
                         </span>
                         <input
@@ -737,10 +737,10 @@ export default function CostConsultingCalculator() {
                             });
                             clearResults();
                           }}
-                          className="w-14 bg-white border border-stone-200 rounded-lg px-2 py-1 text-[11px] text-center outline-none focus:border-emerald-300"
+                          className="w-14 bg-white border border-[#D4D4D4] rounded-lg px-2 py-1 text-[11px] text-center outline-none focus:border-[#A3A3A3]"
                           placeholder="人"
                         />
-                        <span className="text-[11px] text-stone-400">人</span>
+                        <span className="text-[11px] text-[#1a1a1a]">人</span>
                         <input
                           type="number"
                           min={0}
@@ -752,10 +752,10 @@ export default function CostConsultingCalculator() {
                             });
                             clearResults();
                           }}
-                          className="w-14 bg-white border border-stone-200 rounded-lg px-2 py-1 text-[11px] text-center outline-none focus:border-emerald-300"
+                          className="w-14 bg-white border border-[#D4D4D4] rounded-lg px-2 py-1 text-[11px] text-center outline-none focus:border-[#A3A3A3]"
                           placeholder="月"
                         />
-                        <span className="text-[11px] text-stone-400">月</span>
+                        <span className="text-[11px] text-[#1a1a1a]">月</span>
                       </div>
                     ))}
                   </div>
@@ -767,7 +767,7 @@ export default function CostConsultingCalculator() {
           {/* ③ 工程类别 */}
           {needsCoef && (
             <div>
-              <label className="block text-xs font-medium text-stone-500 mb-1.5">
+              <label className="block text-xs font-medium text-[#000000] mb-1.5">
                 ③ 工程类别
               </label>
               <div className="relative">
@@ -777,7 +777,7 @@ export default function CostConsultingCalculator() {
                     setCoefId(Number(e.target.value));
                     clearResults();
                   }}
-                  className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 pr-9 text-sm text-stone-900 outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-50 transition appearance-none cursor-pointer"
+                  className="w-full bg-[#EAEAEA] border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-9 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition appearance-none cursor-pointer"
                 >
                   {Object.entries(COEFFICIENTS).map(([k, v]) => (
                     <option key={k} value={k}>
@@ -794,7 +794,7 @@ export default function CostConsultingCalculator() {
           {error && <p className="text-xs text-red-500">{error}</p>}
           <button
             onClick={handleCalc}
-            className="w-full bg-emerald-500 hover:bg-emerald-600 text-white py-2.5 rounded-xl text-sm font-medium transition-colors"
+            className="w-full bg-[#000000] hover:bg-[#000000] text-white py-2.5 rounded-xl text-sm font-medium transition-colors"
           >
             计算
           </button>
@@ -811,26 +811,26 @@ export default function CostConsultingCalculator() {
         </div>
 
         {/* Right: Reference tables */}
-        <div className="w-72 shrink-0 border-l border-stone-100 bg-white/50 overflow-y-auto p-4 space-y-3">
+        <div className="w-72 shrink-0 border-l border-[#D4D4D4] bg-[#FFFFFF]/50 overflow-y-auto p-4 space-y-3">
           {rightRates && (
             <RateTableCard title={rightRates.title} rates={rightRates.rates} />
           )}
           {projectId === 13 && (
-            <div className="bg-white rounded-2xl border border-stone-100 p-4">
-              <h4 className="text-xs font-semibold text-stone-600 mb-1">
+            <div className="bg-white rounded-2xl border border-[#D4D4D4] p-4">
+              <h4 className="text-xs font-semibold text-[#000000] mb-1">
                 固定单价
               </h4>
-              <p className="text-[11px] text-stone-500">
+              <p className="text-[11px] text-[#000000]">
                 钢筋工程量精细计算或审核：15 元/吨
               </p>
             </div>
           )}
           {projectId === 14 && (
-            <div className="bg-white rounded-2xl border border-stone-100 p-4">
-              <h4 className="text-xs font-semibold text-stone-600 mb-1">
+            <div className="bg-white rounded-2xl border border-[#D4D4D4] p-4">
+              <h4 className="text-xs font-semibold text-[#000000] mb-1">
                 固定单价
               </h4>
-              <p className="text-[11px] text-stone-500">
+              <p className="text-[11px] text-[#000000]">
                 造价师计时咨询：2,000 元/工日
               </p>
             </div>

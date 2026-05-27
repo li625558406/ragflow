@@ -187,7 +187,6 @@ const SourceDetailPage = () => {
           detail as FieldValues,
         ),
       };
-      console.log('defaultValue', defaultValueTemp);
       setDefaultValues(defaultValueTemp);
     }
   }, [detail, customFields, onSubmit]);

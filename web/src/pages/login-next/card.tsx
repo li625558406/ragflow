@@ -11,7 +11,6 @@ const FlipCard3D = (props: IProps) => {
   const { children, isLoginPage } = props;
   const [isFlipped, setIsFlipped] = useState(false);
   useEffect(() => {
-    console.log('title', isLoginPage);
     if (isLoginPage) {
       setIsFlipped(false);
     } else {

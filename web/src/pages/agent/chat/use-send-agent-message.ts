@@ -342,8 +342,8 @@ export const useSendAgentMessage = ({
         } else {
           refetch?.(); // pull the message list after sending the message successfully
         }
-      } catch (error) {
-        console.log('🚀 ~ useSendAgentMessage ~ error:', error);
+      } catch {
+        // ignore
       }
     },
     [

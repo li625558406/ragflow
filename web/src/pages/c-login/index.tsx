@@ -46,42 +46,33 @@ export default function CLogin() {
     style.id = id;
     style.textContent = `
       .login-bg-cs {
-        background: #f8f6f3 !important;
-        position: relative;
+        background: #FFFFFF !important;
         min-height: 100vh;
         min-height: 100dvh;
       }
-      .login-bg-cs::before {
-        content: '';
-        position: absolute;
-        inset: 0;
-        background:
-          radial-gradient(ellipse 50% 60% at 30% 40%, rgba(124, 92, 252, 0.08) 0%, transparent 60%),
-          radial-gradient(ellipse 40% 50% at 70% 60%, rgba(244, 114, 182, 0.06) 0%, transparent 55%),
-          radial-gradient(ellipse 30% 40% at 50% 80%, rgba(46, 196, 182, 0.05) 0%, transparent 50%);
-        pointer-events: none;
-      }
       .login-card-cs {
         background: #FFFFFF;
-        border: 1px solid rgba(124, 92, 252, 0.08);
-        box-shadow: 0 24px 80px -12px rgba(124, 92, 252, 0.10);
-        border-radius: 20px;
+        border: 1px solid #D4D4D4;
+        border-radius: 16px;
       }
       .login-input-cs {
-        transition: border-color 0.2s, box-shadow 0.2s, background-color 0.2s;
-        border-radius: 12px;
+        transition: border-color 0.15s, background-color 0.15s;
+        border-radius: 10px;
       }
       .login-input-cs:focus {
         outline: none;
-        border-color: #7c5cfc;
+        border-color: #000000;
         background: #FFFFFF;
-        box-shadow: 0 0 0 3px rgba(124, 92, 252, 0.1);
       }
       .login-btn-cs {
-        border-radius: 50px;
-        transition: background-color 0.2s, transform 0.15s, box-shadow 0.2s;
+        border-radius: 10px;
+        transition: background-color 0.15s;
       }
-      .login-btn-cs:active { transform: scale(0.97); }
+      .login-btn-cs:active { opacity: 0.9; }
+      @keyframes login-card-in { from { opacity: 0; transform: scale(0.95) translateY(12px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+      .login-card-cs { animation: login-card-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both; }
+      @keyframes login-tab-slide { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+      .login-tab-indicator { animation: login-tab-slide 0.3s cubic-bezier(0.22, 1, 0.36, 1); transform-origin: center; }
     `;
     document.head.appendChild(style);
   }, []);
@@ -173,43 +164,24 @@ export default function CLogin() {
 
   return (
     <div className="fixed inset-0 h-screen login-bg-cs flex items-center justify-center">
-      {/* Decorative elements */}
-      <div className="absolute top-20 left-1/4 w-72 h-72 rounded-full bg-gradient-to-br from-[#7c5cfc]/10 to-[#a78bfa]/5 blur-3xl pointer-events-none" />
-      <div className="absolute bottom-20 right-1/4 w-64 h-64 rounded-full bg-gradient-to-br from-[#f472b6]/10 to-[#fb923c]/5 blur-3xl pointer-events-none" />
-
-      <div className="login-card-cs p-10 w-full max-w-[400px] relative z-10">
+      <div className="login-card-cs p-10 w-full max-w-[420px]">
         {/* Header */}
         <div className="text-center mb-8">
-          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#7c5cfc] to-[#a78bfa] mx-auto flex items-center justify-center mb-5 shadow-lg shadow-[rgba(124,92,252,0.2)]">
-            <svg
-              className="w-7 h-7 text-white"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={1.5}
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-              />
-            </svg>
-          </div>
-          <h1 className="text-xl font-bold text-[#1c1c2e] tracking-[-0.02em]">
+          <h1 className="text-xl font-bold text-[#000000] tracking-tight">
             标书分析助手
           </h1>
-          <p className="text-[#5a5a7a] text-sm mt-1 tracking-[-0.01em]">
+          <p className="text-[#333333] text-sm mt-1.5">
             智能招标文件分析与决策支持
           </p>
         </div>
 
-        {/* Tab Switch */}
-        <div className="flex bg-[#f4f1fb] rounded-[50px] p-1 mb-6">
+        {/* Tab Switch — underline style */}
+        <div className="flex border-b border-[#D4D4D4] mb-6">
           <button
-            className={`flex-1 py-2 text-sm tracking-[-0.01em] rounded-[50px] transition-all ${
+            className={`flex-1 py-2.5 text-sm font-medium transition-colors relative ${
               tab === 'login'
-                ? 'bg-white text-[#7c5cfc] shadow-sm font-medium'
-                : 'text-[#5a5a7a] hover:text-[#1c1c2e]'
+                ? 'text-[#000000]'
+                : 'text-[#333333] hover:text-[#000000]'
             }`}
             onClick={() => {
               setTab('login');
@@ -218,12 +190,15 @@ export default function CLogin() {
             }}
           >
             登录
+            {tab === 'login' && (
+              <span className="absolute bottom-0 left-1/4 right-1/4 h-0.5 bg-[#000000]" />
+            )}
           </button>
           <button
-            className={`flex-1 py-2 text-sm tracking-[-0.01em] rounded-[50px] transition-all ${
+            className={`flex-1 py-2.5 text-sm font-medium transition-colors relative ${
               tab === 'register'
-                ? 'bg-white text-[#7c5cfc] shadow-sm font-medium'
-                : 'text-[#5a5a7a] hover:text-[#1c1c2e]'
+                ? 'text-[#000000]'
+                : 'text-[#333333] hover:text-[#000000]'
             }`}
             onClick={() => {
               setTab('register');
@@ -232,6 +207,9 @@ export default function CLogin() {
             }}
           >
             注册
+            {tab === 'register' && (
+              <span className="absolute bottom-0 left-1/4 right-1/4 h-0.5 bg-[#000000]" />
+            )}
           </button>
         </div>
 
@@ -239,13 +217,13 @@ export default function CLogin() {
         {tab === 'login' && (
           <>
             {loginError && (
-              <div className="bg-[#fef2f2] border border-[#fecaca] text-[#dc2626] text-sm p-3 rounded-xl mb-5">
+              <div className="bg-[#FEF2F2] border border-[#FECACA] text-[#DC2626] text-sm p-3 rounded-[10px] mb-5">
                 {loginError}
               </div>
             )}
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-[#5a5a7a] mb-1.5 tracking-[-0.01em]">
+                <label className="block text-sm font-medium text-[#1a1a1a] mb-1.5">
                   邮箱地址
                 </label>
                 <input
@@ -253,11 +231,11 @@ export default function CLogin() {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="请输入注册邮箱"
-                  className="login-input-cs w-full px-4 py-3 bg-[#f8f6f3] border border-[rgba(124,92,252,0.08)] text-sm text-[#1c1c2e] placeholder:text-[#9494b5] tracking-[-0.01em]"
+                  className="login-input-cs w-full px-4 py-3 bg-[#FFFFFF] border border-[#D4D4D4] text-sm text-[#000000] placeholder:text-[#A3A3A3]"
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-[#5a5a7a] mb-1.5 tracking-[-0.01em]">
+                <label className="block text-sm font-medium text-[#1a1a1a] mb-1.5">
                   登录密码
                 </label>
                 <input
@@ -268,13 +246,13 @@ export default function CLogin() {
                     if (e.key === 'Enter') handleLogin();
                   }}
                   placeholder="请输入密码"
-                  className="login-input-cs w-full px-4 py-3 bg-[#f8f6f3] border border-[rgba(124,92,252,0.08)] text-sm text-[#1c1c2e] placeholder:text-[#9494b5] tracking-[-0.01em]"
+                  className="login-input-cs w-full px-4 py-3 bg-[#FFFFFF] border border-[#D4D4D4] text-sm text-[#000000] placeholder:text-[#A3A3A3]"
                 />
               </div>
               <button
                 onClick={handleLogin}
                 disabled={loginLoading}
-                className="login-btn-cs w-full bg-gradient-to-r from-[#7c5cfc] to-[#a78bfa] hover:from-[#6b4ce0] hover:to-[#9678e8] text-white py-3 font-medium text-sm disabled:opacity-50 flex items-center justify-center gap-2 shadow-md shadow-[rgba(124,92,252,0.2)] hover:shadow-lg hover:shadow-[rgba(124,92,252,0.3)] tracking-[-0.01em]"
+                className="login-btn-cs w-full bg-[#000000] hover:bg-[#000000] text-white py-3 font-medium text-sm disabled:opacity-50 flex items-center justify-center gap-2"
               >
                 {loginLoading && (
                   <svg
@@ -308,22 +286,22 @@ export default function CLogin() {
         {tab === 'register' && (
           <>
             {regSuccess ? (
-              <div className="bg-[#f0fdf4] border border-[#bbf7d0] text-[#16a34a] text-sm p-4 rounded-xl text-center">
+              <div className="bg-[#F0FDF4] border border-[#BBF7D0] text-[#16A34A] text-sm p-4 rounded-[10px] text-center">
                 <p className="font-medium mb-1">注册成功！</p>
-                <p className="text-[#16a34a]/70 text-xs">
+                <p className="text-[#16A34A]/70 text-xs">
                   即将跳转到登录页面...
                 </p>
               </div>
             ) : (
               <>
                 {regError && (
-                  <div className="bg-[#fef2f2] border border-[#fecaca] text-[#dc2626] text-sm p-3 rounded-xl mb-5">
+                  <div className="bg-[#FEF2F2] border border-[#FECACA] text-[#DC2626] text-sm p-3 rounded-[10px] mb-5">
                     {regError}
                   </div>
                 )}
                 <div className="space-y-4">
                   <div>
-                    <label className="block text-sm font-medium text-[#5a5a7a] mb-1.5 tracking-[-0.01em]">
+                    <label className="block text-sm font-medium text-[#1a1a1a] mb-1.5">
                       昵称
                     </label>
                     <input
@@ -331,11 +309,11 @@ export default function CLogin() {
                       value={regNickname}
                       onChange={(e) => setRegNickname(e.target.value)}
                       placeholder="请输入您的昵称"
-                      className="login-input-cs w-full px-4 py-3 bg-[#f8f6f3] border border-[rgba(124,92,252,0.08)] text-sm text-[#1c1c2e] placeholder:text-[#9494b5] tracking-[-0.01em]"
+                      className="login-input-cs w-full px-4 py-3 bg-[#FFFFFF] border border-[#D4D4D4] text-sm text-[#000000] placeholder:text-[#A3A3A3]"
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-[#5a5a7a] mb-1.5 tracking-[-0.01em]">
+                    <label className="block text-sm font-medium text-[#1a1a1a] mb-1.5">
                       邮箱地址
                     </label>
                     <input
@@ -343,11 +321,11 @@ export default function CLogin() {
                       value={regEmail}
                       onChange={(e) => setRegEmail(e.target.value)}
                       placeholder="请输入邮箱地址"
-                      className="login-input-cs w-full px-4 py-3 bg-[#f8f6f3] border border-[rgba(124,92,252,0.08)] text-sm text-[#1c1c2e] placeholder:text-[#9494b5] tracking-[-0.01em]"
+                      className="login-input-cs w-full px-4 py-3 bg-[#FFFFFF] border border-[#D4D4D4] text-sm text-[#000000] placeholder:text-[#A3A3A3]"
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-[#5a5a7a] mb-1.5 tracking-[-0.01em]">
+                    <label className="block text-sm font-medium text-[#1a1a1a] mb-1.5">
                       登录密码
                     </label>
                     <input
@@ -358,13 +336,13 @@ export default function CLogin() {
                         if (e.key === 'Enter') handleRegister();
                       }}
                       placeholder="请设置密码（至少6位）"
-                      className="login-input-cs w-full px-4 py-3 bg-[#f8f6f3] border border-[rgba(124,92,252,0.08)] text-sm text-[#1c1c2e] placeholder:text-[#9494b5] tracking-[-0.01em]"
+                      className="login-input-cs w-full px-4 py-3 bg-[#FFFFFF] border border-[#D4D4D4] text-sm text-[#000000] placeholder:text-[#A3A3A3]"
                     />
                   </div>
                   <button
                     onClick={handleRegister}
                     disabled={regLoading}
-                    className="login-btn-cs w-full bg-gradient-to-r from-[#7c5cfc] to-[#a78bfa] hover:from-[#6b4ce0] hover:to-[#9678e8] text-white py-3 font-medium text-sm disabled:opacity-50 shadow-md shadow-[rgba(124,92,252,0.2)] hover:shadow-lg hover:shadow-[rgba(124,92,252,0.3)] tracking-[-0.01em]"
+                    className="login-btn-cs w-full bg-[#000000] hover:bg-[#000000] text-white py-3 font-medium text-sm disabled:opacity-50"
                   >
                     {regLoading ? '注册中...' : '注册账号'}
                   </button>
@@ -374,16 +352,16 @@ export default function CLogin() {
           </>
         )}
 
-        <p className="text-center text-xs text-[#9494b5] mt-6 tracking-[-0.01em]">
+        <p className="text-center text-xs text-[#525252] mt-6">
           RAGFlow Powered
         </p>
       </div>
 
       {/* Login success full-screen overlay */}
       {loginSuccess && (
-        <div className="fixed inset-0 bg-white/80 backdrop-blur-sm flex flex-col items-center justify-center z-50">
+        <div className="fixed inset-0 bg-white flex flex-col items-center justify-center z-50">
           <svg
-            className="w-8 h-8 animate-spin text-[#7c5cfc] mb-4"
+            className="w-8 h-8 animate-spin text-[#000000] mb-4"
             viewBox="0 0 24 24"
             fill="none"
           >
@@ -402,7 +380,7 @@ export default function CLogin() {
               strokeLinecap="round"
             />
           </svg>
-          <p className="text-sm text-[#5a5a7a] font-medium tracking-[-0.01em]">
+          <p className="text-sm text-[#333333] font-medium">
             登录成功，正在进入...
           </p>
         </div>

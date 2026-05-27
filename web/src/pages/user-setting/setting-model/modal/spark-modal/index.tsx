@@ -169,9 +169,7 @@ const SparkModal = ({
     >
       <DynamicForm.Root
         fields={fields}
-        onSubmit={(data) => {
-          console.log(data);
-        }}
+        onSubmit={() => {}}
         ref={formRef}
         defaultValues={
           {

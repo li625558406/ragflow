@@ -110,7 +110,6 @@ export const useFetchExcel = (filePath: string) => {
     myExcelPreviewer
       ?.preview(jsonFile.data)
       .then(() => {
-        console.log('succeed');
         setStatus(true);
       })
       .catch((e) => {

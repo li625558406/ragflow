@@ -85,8 +85,7 @@ export const useHandleImportJsonFile = () => {
           } else {
             message.error(errorMessage);
           }
-        } catch (error) {
-          console.log('🚀 ~ useHandleImportJsonFile ~ error:', error);
+        } catch {
           message.error(errorMessage);
         }
       }

@@ -12,7 +12,6 @@ export const useParserInit = ({
 
   useEffect(() => {
     setContent(initialValue);
-    console.log('initialValue json parse', initialValue);
   }, [initialValue]);
 
   const [activeEditIndex, setActiveEditIndex] = useState<number | undefined>(

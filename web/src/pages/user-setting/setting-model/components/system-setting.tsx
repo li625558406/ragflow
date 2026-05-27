@@ -24,7 +24,7 @@ interface IProps {
   ) => void;
 }
 
-const SystemSetting = ({ onOk, loading }: IProps) => {
+const SystemSetting = ({ onOk }: IProps) => {
   const { systemSetting: initialValues, allOptions } =
     useFetchSystemModelSettingOnMount();
   const { t } = useTranslate('setting');
@@ -42,7 +42,6 @@ const SystemSetting = ({ onOk, loading }: IProps) => {
     (field: string, value: string) => {
       const updatedData = { ...formData, [field]: value || '' };
       setFormData(updatedData);
-      console.log('updatedData', updatedData);
       onOk(updatedData);
     },
     [formData, onOk],

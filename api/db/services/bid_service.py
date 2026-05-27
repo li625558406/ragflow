@@ -82,8 +82,12 @@ class BidProjectService(CommonService):
             query = query.where(cls.model.has_file == has_file)
         if industry_code:
             # industry_codes is stored as JSON array like ["G544","E481"]
-            # Match the quoted code to avoid partial matches
-            query = query.where(cls.model.industry_codes ** f'%"{industry_code}"%')
+            # Single-letter codes are categories (A-T), use prefix match
+            # Multi-character codes are sub-industries, use exact match
+            if len(industry_code) == 1:
+                query = query.where(cls.model.industry_codes ** f'%"{industry_code}%')
+            else:
+                query = query.where(cls.model.industry_codes ** f'%"{industry_code}"%')
 
         total = query.count()
 

@@ -165,9 +165,9 @@ export default function DatasetSettings() {
     }
   }, [knowledgeDetails, form]);
 
-  async function onSubmit(data: z.infer<typeof formSchema>) {
+  async function onSubmit() {
     try {
-      console.log('Form validation passed, submit data', data);
+      // ignore
     } catch (error) {
       console.error('An error occurred during submission:', error);
     }

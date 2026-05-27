@@ -15,7 +15,6 @@ export default function CheckboxSets(props: ICheckboxSetProps) {
   const { t } = useTranslation();
   const handleSelectAllCheck = useCallback(
     (e: any) => {
-      console.log('eee=', e);
       selectAllChunk(e);
     },
     [selectAllChunk],

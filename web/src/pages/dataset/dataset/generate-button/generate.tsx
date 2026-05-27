@@ -193,7 +193,6 @@ const Generate: React.FC<GenerateProps> = (props) => {
   const { runGenerate, pauseGenerate } = useDatasetGenerate();
   const handleOpenChange = (isOpen: boolean) => {
     setOpen(isOpen);
-    console.log('Dropdown is now', isOpen ? 'open' : 'closed');
   };
 
   return (
@@ -270,7 +269,6 @@ export const GenerateLogButton = (props: IGenerateLogProps) => {
       type: GenerateTypeMap[type as GenerateType],
     });
     Modal.destroy();
-    console.log('handleUnbindTask', data);
     if (data.code === 0) {
       onDelete?.();
     }
@@ -341,7 +339,6 @@ export const GenerateLogButton = (props: IGenerateLogProps) => {
               size={14}
               className="cursor-pointer"
               onClick={(e) => {
-                console.log('delete');
                 handleDelete();
                 e.stopPropagation();
               }}

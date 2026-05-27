@@ -48,7 +48,6 @@ const ParserContainer = (props: IProps) => {
       };
     const value = outputs[key as keyof typeof outputs]?.value;
     const type = outputs[key as keyof typeof outputs]?.type;
-    console.log('outputs-->', outputs, data, key, value);
     return {
       key: key as 'text' | 'html' | 'json' | 'chunks',
       type,
@@ -63,7 +62,6 @@ const ParserContainer = (props: IProps) => {
     setInitialText(initialValue);
   }, [initialValue]);
   const handleSave = (newContent: any) => {
-    console.log('newContent-change-->', newContent, initialValue);
     if (JSON.stringify(newContent) !== JSON.stringify(initialValue)) {
       setIsChange(true);
       setInitialText(newContent);

@@ -72,11 +72,11 @@ function StructTable({ data }: { data: StructureData }) {
           const val = data[f.key];
           if (!val || val === '' || val === '[]' || val === '{}') return null;
           return (
-            <tr key={f.key} className="border-b border-[rgba(124,92,252,0.08)]">
-              <td className="py-3 pr-4 text-[#6b6b8a] align-top whitespace-nowrap w-28">
+            <tr key={f.key} className="border-b border-[#F0F0F0] last:border-0">
+              <td className="py-3 pr-6 text-[#A3A3A3] text-xs uppercase tracking-wider font-medium align-top whitespace-nowrap w-28">
                 {f.label}
               </td>
-              <td className="py-3 text-[#2d2d4a] whitespace-pre-wrap break-words">
+              <td className="py-3 text-[#000000] text-sm whitespace-pre-wrap break-words leading-relaxed">
                 {f.json ? formatJsonField(val) : String(val)}
               </td>
             </tr>
@@ -90,7 +90,7 @@ function StructTable({ data }: { data: StructureData }) {
 function FilesList({ files }: { files: any[] }) {
   if (!files || files.length === 0) {
     return (
-      <div className="py-8 text-center text-sm text-[#9b9bb5]">暂无附件</div>
+      <div className="py-12 text-center text-sm text-[#A3A3A3]">暂无附件</div>
     );
   }
 
@@ -114,17 +114,17 @@ function FilesList({ files }: { files: any[] }) {
         return (
           <div
             key={f.project_file_id || f.file_name || f.file_url || idx}
-            className="flex items-center gap-3 p-3 rounded-lg border border-[rgba(124,92,252,0.08)] hover:bg-[#f4f1fb] transition-colors group"
+            className="flex items-center gap-3 p-3.5 rounded-xl border border-[#F0F0F0] hover:border-[#D4D4D4] hover:shadow-[0_2px_8px_rgba(0,0,0,0.04)] transition-all group bg-white"
           >
             <span className="text-lg">
               {suffixIcon[suffix.toLowerCase()] || '📎'}
             </span>
             <div className="flex-1 min-w-0">
-              <div className="text-sm text-[#2d2d4a] truncate group-hover:text-[#7c5cfc]">
+              <div className="text-sm text-[#000000] truncate group-hover:text-[#000000]">
                 {f.file_name || f.name}
               </div>
               {size && (
-                <div className="text-xs text-[#9b9bb5]">
+                <div className="text-xs text-[#525252]">
                   {suffix.toUpperCase()} · {size} KB
                 </div>
               )}
@@ -134,7 +134,7 @@ function FilesList({ files }: { files: any[] }) {
                 onClick={() =>
                   window.open(`/web/document/get/${f.kb_document_id}`, '_blank')
                 }
-                className="flex items-center gap-1 text-xs text-[#7c5cfc] hover:text-[#6b4ce0] shrink-0"
+                className="flex items-center gap-1 text-xs text-[#000000] hover:text-[#000000] shrink-0"
                 title="预览知识库文档"
               >
                 <Eye className="size-3.5" />
@@ -146,7 +146,7 @@ function FilesList({ files }: { files: any[] }) {
                 href={f.file_url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-1 text-xs text-[#7c5cfc] hover:text-[#6b4ce0] shrink-0"
+                className="flex items-center gap-1 text-xs text-[#000000] hover:text-[#000000] shrink-0"
                 title="下载原始文件"
               >
                 <Download className="size-3.5" />
@@ -271,21 +271,21 @@ export function BidDetailView({
   ];
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 bg-[#f8f6f3]">
+    <div className="flex-1 flex flex-col min-h-0 bg-[#F8F9FB]">
       {/* Header */}
-      <div className="shrink-0 px-6 py-3 bg-white border-b border-[rgba(124,92,252,0.06)] flex items-center gap-3">
+      <div className="shrink-0 px-6 py-3 bg-white border-b border-[#E8E8E8] flex items-center gap-3">
         <button
           onClick={onBack}
-          className="flex items-center gap-1 text-sm text-[#5a5a7a] hover:text-[#7c5cfc] transition-colors"
+          className="flex items-center gap-1.5 text-sm text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] px-2 py-1 rounded-lg transition-all"
         >
           <ArrowLeft className="size-4" />
           返回列表
         </button>
-        <span className="text-[rgba(124,92,252,0.2)]">|</span>
-        <h1 className="text-sm font-semibold text-[#1c1c2e] truncate">
+        <span className="w-px h-4 bg-[#E8E8E8]" />
+        <h1 className="text-sm font-semibold text-[#000000] truncate">
           {projectTitle || `项目 #${projectId}`}
           {detail?.part_a_name && (
-            <span className="font-normal text-[#6b6b8a] ml-2">
+            <span className="font-normal text-[#525252] ml-2">
               — {detail.part_a_name}
             </span>
           )}
@@ -293,16 +293,16 @@ export function BidDetailView({
       </div>
 
       {/* Tabs */}
-      <div className="shrink-0 px-6 bg-white border-b border-[rgba(124,92,252,0.06)]">
-        <div className="flex gap-0">
+      <div className="shrink-0 px-6 pt-4 pb-0">
+        <div className="flex gap-1 bg-[#F0F0F0] p-1 rounded-xl w-fit">
           {tabs.map((tab) => (
             <button
               key={tab.key}
               onClick={() => setActiveTab(tab.key)}
-              className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium transition-colors relative ${
+              className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-lg transition-all ${
                 activeTab === tab.key
-                  ? 'text-[#7c5cfc] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-[#7c5cfc]'
-                  : 'text-[#6b6b8a] hover:text-[#7c5cfc]'
+                  ? 'bg-white text-[#000000] shadow-[0_1px_3px_rgba(0,0,0,0.08)]'
+                  : 'text-[#525252] hover:text-[#000000]'
               }`}
             >
               {tab.icon}
@@ -316,15 +316,15 @@ export function BidDetailView({
       <div className="flex-1 min-h-0 overflow-auto px-6 py-4">
         {/* Content Tab */}
         {activeTab === 'content' && (
-          <div className="bg-white rounded-lg shadow-sm p-6">
+          <div className="bg-white rounded-xl border border-[#E8E8E8] shadow-[0_1px_3px_rgba(0,0,0,0.03)] p-6">
             {detailLoading && (
               <div className="flex items-center justify-center py-12">
-                <Loader2 className="size-5 animate-spin text-[#7c5cfc]" />
-                <span className="ml-2 text-sm text-[#6b6b8a]">加载中...</span>
+                <Loader2 className="size-5 animate-spin text-[#000000]" />
+                <span className="ml-2 text-sm text-[#333333]">加载中...</span>
               </div>
             )}
             {detailError && !detailLoading && (
-              <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+              <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
                 {detailError}
               </div>
             )}
@@ -339,12 +339,12 @@ export function BidDetailView({
                     return (
                       <div
                         key={f.key}
-                        className="rounded-lg bg-[#f5f3fa] border border-[rgba(124,92,252,0.08)] p-3"
+                        className="rounded-xl bg-[#FAFAFA] border border-[#F0F0F0] p-3.5 hover:border-[#D4D4D4] transition-all"
                       >
-                        <div className="text-xs text-[#6b6b8a] mb-0.5">
+                        <div className="text-[11px] text-[#A3A3A3] mb-1 uppercase tracking-wider font-medium">
                           {f.label}
                         </div>
-                        <div className="text-sm font-medium text-[#2d2d4a] break-all">
+                        <div className="text-sm font-semibold text-[#000000] break-all">
                           {v}
                         </div>
                       </div>
@@ -354,7 +354,7 @@ export function BidDetailView({
 
                 {/* HTML content */}
                 <div
-                  className="text-sm leading-relaxed text-[#2d2d4a] [&_h1]:text-lg [&_h1]:font-semibold [&_h1]:mt-4 [&_h1]:mb-2 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mt-4 [&_h2]:mb-2 [&_p]:my-1.5 [&_table]:w-full [&_table]:text-xs [&_table]:border-collapse [&_td]:border [&_td]:border-[rgba(124,92,252,0.08)] [&_td]:p-1.5 [&_th]:border [&_th]:border-[rgba(124,92,252,0.08)] [&_th]:p-1.5 [&_th]:bg-[#f5f3fa] [&_th]:font-medium [&_img]:max-w-full [&_img]:h-auto [&_a]:text-[#7c5cfc] [&_a]:underline"
+                  className="text-sm leading-relaxed text-[#000000] [&_h1]:text-lg [&_h1]:font-semibold [&_h1]:mt-4 [&_h1]:mb-2 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mt-4 [&_h2]:mb-2 [&_p]:my-1.5 [&_table]:w-full [&_table]:text-xs [&_table]:border-collapse [&_td]:border [&_td]:border-[#D4D4D4] [&_td]:p-1.5 [&_th]:border [&_th]:border-[#D4D4D4] [&_th]:p-1.5 [&_th]:bg-[#FFFFFF] [&_th]:font-medium [&_img]:max-w-full [&_img]:h-auto [&_a]:text-[#000000] [&_a]:underline"
                   dangerouslySetInnerHTML={{
                     __html: detail.content_html || '',
                   }}
@@ -362,7 +362,7 @@ export function BidDetailView({
               </>
             )}
             {!detail && !detailLoading && !detailError && (
-              <div className="py-12 text-center text-sm text-[#9b9bb5]">
+              <div className="py-12 text-center text-sm text-[#A3A3A3]">
                 暂无正文内容
               </div>
             )}
@@ -371,11 +371,11 @@ export function BidDetailView({
 
         {/* Structure Tab */}
         {activeTab === 'structure' && (
-          <div className="bg-white rounded-lg shadow-sm p-6">
+          <div className="bg-white rounded-xl border border-[#E8E8E8] shadow-[0_1px_3px_rgba(0,0,0,0.03)] p-6">
             {structureLoading && (
               <div className="flex items-center justify-center py-12">
-                <Loader2 className="size-5 animate-spin text-[#7c5cfc]" />
-                <span className="ml-2 text-sm text-[#6b6b8a]">加载中...</span>
+                <Loader2 className="size-5 animate-spin text-[#000000]" />
+                <span className="ml-2 text-sm text-[#333333]">加载中...</span>
               </div>
             )}
             {structure && !structureLoading && (
@@ -388,7 +388,7 @@ export function BidDetailView({
                         href={structure.collect_url}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-sm text-[#7c5cfc] hover:underline"
+                        className="text-sm text-[#000000] hover:underline"
                       >
                         查看原始采集页面
                       </a>
@@ -398,7 +398,7 @@ export function BidDetailView({
               </>
             )}
             {!structure && !structureLoading && (
-              <div className="py-12 text-center text-sm text-[#9b9bb5]">
+              <div className="py-12 text-center text-sm text-[#A3A3A3]">
                 暂无结构化数据
               </div>
             )}
@@ -407,11 +407,11 @@ export function BidDetailView({
 
         {/* Files Tab */}
         {activeTab === 'files' && (
-          <div className="bg-white rounded-lg shadow-sm p-6">
+          <div className="bg-white rounded-xl border border-[#E8E8E8] shadow-[0_1px_3px_rgba(0,0,0,0.03)] p-6">
             {filesLoading && (
               <div className="flex items-center justify-center py-12">
-                <Loader2 className="size-5 animate-spin text-[#7c5cfc]" />
-                <span className="ml-2 text-sm text-[#6b6b8a]">加载中...</span>
+                <Loader2 className="size-5 animate-spin text-[#000000]" />
+                <span className="ml-2 text-sm text-[#333333]">加载中...</span>
               </div>
             )}
             {!filesLoading && <FilesList files={files} />}

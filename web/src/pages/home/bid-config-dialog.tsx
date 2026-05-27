@@ -131,9 +131,9 @@ export function BidConfigDialog({
         return <XCircle className="size-5 text-red-500" />;
       case 'parsing':
       case 'pending':
-        return <Loader2 className="size-5 animate-spin text-[#a78bfa]" />;
+        return <Loader2 className="size-5 animate-spin text-[#000000]" />;
       default:
-        return <Clock className="size-5 text-[#9b9bb5]" />;
+        return <Clock className="size-5 text-[#525252]" />;
     }
   };
 
@@ -159,12 +159,12 @@ export function BidConfigDialog({
         if (!open) handleClose();
       }}
     >
-      <DialogContent className="sm:max-w-[480px] bg-[#fdfcff] border-[#e8e0f0]">
+      <DialogContent className="sm:max-w-[480px] bg-[#FFFFFF] border-[#D4D4D4]">
         <DialogHeader>
-          <DialogTitle className="text-[#3d3d5c]">
+          <DialogTitle className="text-[#1a1a1a]">
             项目解析配置
             {projectTitle && (
-              <span className="text-sm font-normal text-[#9090aa] ml-2">
+              <span className="text-sm font-normal text-[#525252] ml-2">
                 — {projectTitle}
               </span>
             )}
@@ -174,7 +174,7 @@ export function BidConfigDialog({
         <div className="space-y-5 py-4">
           {/* KB Selector */}
           <div className="space-y-2">
-            <label className="text-sm font-medium text-[#80809e]">
+            <label className="text-sm font-medium text-[#333333]">
               选择知识库
             </label>
             <RAGFlowSelect
@@ -190,27 +190,27 @@ export function BidConfigDialog({
                 parseStatus?.status === 'parsing' ||
                 parseStatus?.status === 'pending'
               }
-              triggerClassName="bg-white border-[#e0d8ec] text-[#2d2d4a] hover:bg-[#f5f1fa] hover:border-[#c8b8e8] hover:text-[#2d2d4a]"
+              triggerClassName="bg-white border-[#D4D4D4] text-[#000000] hover:bg-[#FFFFFF] hover:border-[#000000] hover:text-[#000000]"
             />
           </div>
 
           {/* Progress Display */}
           {showProgress && (
-            <div className="rounded-lg border border-[#e8e0f0] bg-[#faf8fd] p-4 space-y-3">
+            <div className="rounded-lg border border-[#D4D4D4] bg-[#FFFFFF] p-4 space-y-3">
               <div className="flex items-center gap-2">
                 {statusIcon(parseStatus.status)}
-                <span className="text-sm font-medium text-[#4a4a6a]">
+                <span className="text-sm font-medium text-[#1a1a1a]">
                   {statusLabel(parseStatus.status)}
                 </span>
               </div>
 
               <Progress
                 value={Math.round((parseStatus.progress || 0) * 100)}
-                className="h-2 [&>div]:bg-[#a78bfa]"
+                className="h-2 [&>div]:bg-[#000000]"
               />
 
               {parseStatus.progress_msg && (
-                <p className="text-xs text-[#9090aa]">
+                <p className="text-xs text-[#525252]">
                   {parseStatus.progress_msg}
                 </p>
               )}
@@ -222,7 +222,7 @@ export function BidConfigDialog({
           <Button
             variant="outline"
             onClick={handleClose}
-            className="border-[#e0d8ec] text-[#80809e] hover:bg-[#f5f1fa] hover:text-[#5a5a7a]"
+            className="border-[#D4D4D4] text-[#333333] hover:bg-[#FFFFFF] hover:text-[#333333]"
           >
             关闭
           </Button>
@@ -235,7 +235,7 @@ export function BidConfigDialog({
               parseStatus?.status === 'pending'
             }
             loading={parseLoading}
-            className="bg-[#9b8aef] hover:bg-[#8b7ae0]"
+            className="bg-[#000000] hover:bg-[#000000]"
           >
             开始解析
           </Button>

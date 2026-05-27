@@ -94,6 +94,24 @@ const ALIGNMENT_OPTIONS: { value: StyleRule['alignment']; label: string }[] = [
   { value: 'justify', label: '两端' },
 ];
 
+function SelectArrow() {
+  return (
+    <svg
+      className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 text-[#1a1a1a]"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M19 9l-7 7-7-7"
+      />
+    </svg>
+  );
+}
+
 function StyleRuleEditor({
   rule,
   isLast,
@@ -112,12 +130,12 @@ function StyleRuleEditor({
   const canRemove = !isLast; // Last rule is always the fallback "正文"
 
   return (
-    <div className="border border-stone-200 rounded-xl p-3 bg-white space-y-2">
+    <div className="border border-[#D4D4D4] rounded-xl p-3 bg-white space-y-2">
       {/* Row 1: Name + Pattern + Remove */}
       <div className="flex items-center gap-2">
         <input
           type="text"
-          className="flex-1 px-2.5 py-1.5 bg-stone-50 border border-stone-200 rounded-lg text-xs text-stone-900 placeholder:text-stone-300 focus:outline-none focus:border-indigo-300 focus:bg-white transition disabled:opacity-60"
+          className="flex-1 px-2.5 py-1.5 bg-[#EAEAEA] border border-[#D4D4D4] rounded-lg text-xs text-[#000000] placeholder:text-[#A3A3A3] focus:outline-none focus:border-[#000000] focus:bg-white transition disabled:opacity-60"
           value={rule.name}
           onChange={(e) => onChange('name', e.target.value)}
           placeholder="样式名称"
@@ -125,7 +143,7 @@ function StyleRuleEditor({
         />
         <input
           type="text"
-          className="flex-[2] px-2.5 py-1.5 bg-stone-50 border border-stone-200 rounded-lg text-xs text-stone-900 placeholder:text-stone-300 font-mono focus:outline-none focus:border-indigo-300 focus:bg-white transition disabled:opacity-60"
+          className="flex-[2] px-2.5 py-1.5 bg-[#EAEAEA] border border-[#D4D4D4] rounded-lg text-xs text-[#000000] placeholder:text-[#A3A3A3] font-mono focus:outline-none focus:border-[#000000] focus:bg-white transition disabled:opacity-60"
           value={rule.pattern}
           onChange={(e) => onChange('pattern', e.target.value)}
           placeholder={isLast ? '.* (匹配所有)' : '正则匹配，如 ^[一二三]+[、]'}
@@ -133,7 +151,7 @@ function StyleRuleEditor({
         />
         {canRemove && !disabled && (
           <button
-            className="shrink-0 w-6 h-6 flex items-center justify-center rounded text-stone-300 hover:text-red-500 hover:bg-red-50 transition-colors"
+            className="shrink-0 w-6 h-6 flex items-center justify-center rounded text-[#A3A3A3] hover:text-red-500 hover:bg-red-50 transition-colors"
             onClick={onRemove}
             title="删除此样式"
           >
@@ -157,51 +175,57 @@ function StyleRuleEditor({
       {/* Row 2: Formatting controls */}
       <div className="flex items-center gap-1.5 flex-wrap">
         {/* Font */}
-        <select
-          className="h-7 px-1.5 text-[11px] border border-stone-200 rounded-lg bg-stone-50 text-stone-700 focus:outline-none focus:border-indigo-300 disabled:opacity-60"
-          value={rule.fontFamily}
-          onChange={(e) => onChange('fontFamily', e.target.value)}
-          disabled={disabled}
-        >
-          {FONT_FAMILIES.map((f) => (
-            <option key={f} value={f}>
-              {f === 'SimSun'
-                ? '宋体'
-                : f === 'SimHei'
-                  ? '黑体'
-                  : f === 'KaiTi'
-                    ? '楷体'
-                    : f === 'FangSong'
-                      ? '仿宋'
-                      : f === 'Microsoft YaHei'
-                        ? '微软雅黑'
-                        : f}
-            </option>
-          ))}
-        </select>
+        <div className="relative">
+          <select
+            className="h-7 px-1.5 pr-6 text-[11px] border border-[#D4D4D4] rounded-lg bg-[#EAEAEA] text-[#000000] focus:outline-none focus:border-[#000000] disabled:opacity-60 appearance-none cursor-pointer"
+            value={rule.fontFamily}
+            onChange={(e) => onChange('fontFamily', e.target.value)}
+            disabled={disabled}
+          >
+            {FONT_FAMILIES.map((f) => (
+              <option key={f} value={f}>
+                {f === 'SimSun'
+                  ? '宋体'
+                  : f === 'SimHei'
+                    ? '黑体'
+                    : f === 'KaiTi'
+                      ? '楷体'
+                      : f === 'FangSong'
+                        ? '仿宋'
+                        : f === 'Microsoft YaHei'
+                          ? '微软雅黑'
+                          : f}
+              </option>
+            ))}
+          </select>
+          <SelectArrow />
+        </div>
 
         {/* Size */}
-        <select
-          className="h-7 px-1 text-[11px] border border-stone-200 rounded-lg bg-stone-50 text-stone-700 focus:outline-none focus:border-indigo-300 disabled:opacity-60"
-          value={rule.fontSize}
-          onChange={(e) => onChange('fontSize', Number(e.target.value))}
-          disabled={disabled}
-        >
-          {FONT_SIZE_OPTIONS.map((s) => (
-            <option key={s} value={s}>
-              {s}pt
-            </option>
-          ))}
-        </select>
+        <div className="relative">
+          <select
+            className="h-7 px-1 pr-6 text-[11px] border border-[#D4D4D4] rounded-lg bg-[#EAEAEA] text-[#000000] focus:outline-none focus:border-[#000000] disabled:opacity-60 appearance-none cursor-pointer"
+            value={rule.fontSize}
+            onChange={(e) => onChange('fontSize', Number(e.target.value))}
+            disabled={disabled}
+          >
+            {FONT_SIZE_OPTIONS.map((s) => (
+              <option key={s} value={s}>
+                {s}pt
+              </option>
+            ))}
+          </select>
+          <SelectArrow />
+        </div>
 
-        <div className="w-px h-5 bg-stone-200" />
+        <div className="w-px h-5 bg-[#D4D4D4]" />
 
         {/* Bold */}
         <button
           className={`h-7 w-7 flex items-center justify-center rounded-lg text-[11px] font-bold transition-colors ${
             rule.bold
-              ? 'bg-black/[0.04] text-indigo-700'
-              : 'bg-stone-50 text-stone-400 hover:bg-stone-100'
+              ? 'bg-black/[0.04] text-[#000000]'
+              : 'bg-[#EAEAEA] text-[#525252] hover:bg-[#EAEAEA]'
           } disabled:opacity-50`}
           onClick={() => !disabled && onChange('bold', !rule.bold)}
           title="加粗"
@@ -212,13 +236,13 @@ function StyleRuleEditor({
 
         {/* Color */}
         <button
-          className="h-7 w-7 flex items-center justify-center rounded-lg bg-stone-50 border border-stone-200 hover:border-indigo-300 transition-colors disabled:opacity-50"
+          className="h-7 w-7 flex items-center justify-center rounded-lg bg-[#EAEAEA] border border-[#D4D4D4] hover:border-[#000000] transition-colors disabled:opacity-50"
           title="字体颜色"
           onClick={() => !disabled && colorInputRef.current?.click()}
           disabled={disabled}
         >
           <span
-            className="w-3.5 h-3.5 rounded-full border border-stone-300"
+            className="w-3.5 h-3.5 rounded-full border border-[#D4D4D4]"
             style={{ backgroundColor: rule.fontColor }}
           />
           <input
@@ -231,7 +255,7 @@ function StyleRuleEditor({
           />
         </button>
 
-        <div className="w-px h-5 bg-stone-200" />
+        <div className="w-px h-5 bg-[#D4D4D4]" />
 
         {/* Alignment */}
         {ALIGNMENT_OPTIONS.map((a) => (
@@ -239,8 +263,8 @@ function StyleRuleEditor({
             key={a.value}
             className={`h-7 px-1.5 text-[10px] rounded-lg transition-colors ${
               rule.alignment === a.value
-                ? 'bg-black/[0.04] text-indigo-700'
-                : 'bg-stone-50 text-stone-400 hover:bg-stone-100'
+                ? 'bg-black/[0.04] text-[#000000]'
+                : 'bg-[#EAEAEA] text-[#525252] hover:bg-[#EAEAEA]'
             } disabled:opacity-50`}
             onClick={() => !disabled && onChange('alignment', a.value)}
             title={a.label + '对齐'}
@@ -250,20 +274,23 @@ function StyleRuleEditor({
           </button>
         ))}
 
-        <div className="w-px h-5 bg-stone-200" />
+        <div className="w-px h-5 bg-[#D4D4D4]" />
 
         {/* Heading level */}
-        <select
-          className="h-7 px-1.5 text-[10px] border border-stone-200 rounded-lg bg-stone-50 text-stone-700 focus:outline-none focus:border-indigo-300 disabled:opacity-60"
-          value={rule.heading}
-          onChange={(e) => onChange('heading', e.target.value)}
-          disabled={disabled}
-        >
-          <option value="">正文</option>
-          <option value="h1">标题1</option>
-          <option value="h2">标题2</option>
-          <option value="h3">标题3</option>
-        </select>
+        <div className="relative">
+          <select
+            className="h-7 px-1.5 pr-6 text-[10px] border border-[#D4D4D4] rounded-lg bg-[#EAEAEA] text-[#000000] focus:outline-none focus:border-[#000000] disabled:opacity-60 appearance-none cursor-pointer"
+            value={rule.heading}
+            onChange={(e) => onChange('heading', e.target.value)}
+            disabled={disabled}
+          >
+            <option value="">正文</option>
+            <option value="h1">标题1</option>
+            <option value="h2">标题2</option>
+            <option value="h3">标题3</option>
+          </select>
+          <SelectArrow />
+        </div>
       </div>
     </div>
   );
@@ -423,9 +450,9 @@ export default function FormatRulePanel({
   return (
     <>
       {/* Collapsible Rules Panel */}
-      <div className="border-t border-[rgba(124,92,252,0.06)]">
+      <div className="border-t border-[#D4D4D4]">
         <button
-          className="w-full px-3 py-2 text-xs text-[#5a5a7a] hover:text-[#7c5cfc] hover:bg-[#f4f1fb] flex items-center gap-1.5 transition-colors"
+          className="w-full px-3 py-2 text-xs text-[#333333] hover:text-[#000000] hover:bg-[#EAEAEA] flex items-center gap-1.5 transition-colors"
           onClick={() => setCollapsed(!collapsed)}
         >
           <svg
@@ -459,27 +486,27 @@ export default function FormatRulePanel({
         {!collapsed && (
           <div className="px-2 pb-2">
             <div className="flex items-center justify-between px-1 mb-1">
-              <span className="text-[10px] text-[#9494b5]">
+              <span className="text-[10px] text-[#333333]">
                 {rules.length === 0 ? '暂无规则' : `${rules.length} 条规则`}
               </span>
               <button
-                className="text-[10px] text-[#7c5cfc] hover:text-[#6b4ce0] font-medium"
+                className="text-[10px] text-[#000000] hover:text-[#000000] font-medium"
                 onClick={openCreate}
               >
                 + 新建
               </button>
             </div>
             {loading ? (
-              <div className="px-1 text-[10px] text-stone-400">加载中...</div>
+              <div className="px-1 text-[10px] text-[#525252]">加载中...</div>
             ) : (
               <div className="space-y-0.5">
                 {rules.map((rule) => (
                   <div
                     key={rule.id}
-                    className="flex items-center justify-between px-1 py-1 rounded hover:bg-[#f4f1fb] group"
+                    className="flex items-center justify-between px-1 py-1 rounded hover:bg-[#EAEAEA] group"
                   >
                     <span
-                      className="text-xs text-[#4a4a6a] truncate flex-1"
+                      className="text-xs text-[#1a1a1a] truncate flex-1"
                       title={`${rule.name}${rule.description ? ` — ${rule.description}` : ''}`}
                     >
                       {rule.name}
@@ -491,7 +518,7 @@ export default function FormatRulePanel({
                       {currentUserId &&
                         rule.created_by &&
                         rule.created_by !== currentUserId && (
-                          <span className="ml-1 text-[9px] px-1 py-px rounded bg-[#ede9fe] text-[#7c5cfc] border border-[#ddd6fe]">
+                          <span className="ml-1 text-[9px] px-1 py-px rounded bg-[#EAEAEA] text-[#000000] border border-[#D4D4D4]">
                             共享
                           </span>
                         )}
@@ -499,7 +526,7 @@ export default function FormatRulePanel({
                     <div className="hidden group-hover:flex items-center gap-0.5">
                       {selectedDocId && onApplyRule && (
                         <button
-                          className="text-[10px] text-[#7c5cfc] hover:text-[#6b4ce0] disabled:opacity-30 px-1"
+                          className="text-[10px] text-[#000000] hover:text-[#000000] disabled:opacity-30 px-1"
                           disabled={applyingRuleId === rule.id}
                           onClick={() => onApplyRule(rule)}
                         >
@@ -509,13 +536,13 @@ export default function FormatRulePanel({
                       {rule.created_by === currentUserId ? (
                         <>
                           <button
-                            className="text-[10px] text-[#9494b5] hover:text-[#5a5a7a] px-1"
+                            className="text-[10px] text-[#333333] hover:text-[#333333] px-1"
                             onClick={() => openEdit(rule)}
                           >
                             编辑
                           </button>
                           <button
-                            className="text-[10px] text-[#9494b5] hover:text-[#ef4444] px-1"
+                            className="text-[10px] text-[#333333] hover:text-[#ef4444] px-1"
                             onClick={() => handleDelete(rule.id)}
                           >
                             删除
@@ -523,7 +550,7 @@ export default function FormatRulePanel({
                         </>
                       ) : (
                         <button
-                          className="text-[10px] text-[#9494b5] hover:text-[#5a5a7a] px-1"
+                          className="text-[10px] text-[#333333] hover:text-[#333333] px-1"
                           onClick={() => openEdit(rule, true)}
                         >
                           查看
@@ -540,9 +567,9 @@ export default function FormatRulePanel({
 
       {/* Create/Edit Dialog */}
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
-        <DialogContent className="sm:max-w-md !bg-white !border-[rgba(124,92,252,0.08)] !shadow-[0_24px_80px_-12px_rgba(124,92,252,0.12)] !rounded-3xl">
-          <DialogHeader className="!-mx-6 !-mt-6 !p-5 !border-b !border-[rgba(124,92,252,0.06)]">
-            <DialogTitle className="!text-base !font-bold !text-[#1c1c2e]">
+        <DialogContent className="sm:max-w-md !bg-white !border-[#D4D4D4] !shadow-[0_24px_80px_-12px_rgba(0,0,0,0.08)] !rounded-3xl">
+          <DialogHeader className="!-mx-6 !-mt-6 !p-5 !border-b !border-[#D4D4D4]">
+            <DialogTitle className="!text-base !font-bold !text-[#000000]">
               {readonly
                 ? '查看格式规则'
                 : editingRule
@@ -553,12 +580,12 @@ export default function FormatRulePanel({
           <div className="space-y-4 py-4 max-h-[60vh] overflow-y-auto">
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-sm font-medium text-[#5a5a7a] mb-1.5">
+                <label className="block text-sm font-medium text-[#333333] mb-1.5">
                   规则名称
                 </label>
                 <input
                   type="text"
-                  className="w-full px-3 py-2.5 bg-[#f8f6f3] border border-[rgba(124,92,252,0.08)] rounded-xl text-sm text-[#1c1c2e] placeholder:text-[#9494b5] focus:outline-none focus:border-[#7c5cfc] focus:bg-white focus:ring-2 focus:ring-[rgba(124,92,252,0.08)] transition disabled:opacity-60"
+                  className="w-full px-3 py-2.5 bg-[#FFFFFF] border border-[#D4D4D4] rounded-xl text-sm text-[#000000] placeholder:text-[#A3A3A3] focus:outline-none focus:border-[#000000] focus:bg-white focus:ring-2 focus:ring-[#D4D4D4] transition disabled:opacity-60"
                   value={formName}
                   onChange={(e) => setFormName(e.target.value)}
                   placeholder="例如：招标文件标准格式"
@@ -566,12 +593,12 @@ export default function FormatRulePanel({
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-[#5a5a7a] mb-1.5">
+                <label className="block text-sm font-medium text-[#333333] mb-1.5">
                   描述
                 </label>
                 <input
                   type="text"
-                  className="w-full px-3 py-2.5 bg-[#f8f6f3] border border-[rgba(124,92,252,0.08)] rounded-xl text-sm text-[#1c1c2e] placeholder:text-[#9494b5] focus:outline-none focus:border-[#7c5cfc] focus:bg-white focus:ring-2 focus:ring-[rgba(124,92,252,0.08)] transition disabled:opacity-60"
+                  className="w-full px-3 py-2.5 bg-[#FFFFFF] border border-[#D4D4D4] rounded-xl text-sm text-[#000000] placeholder:text-[#A3A3A3] focus:outline-none focus:border-[#000000] focus:bg-white focus:ring-2 focus:ring-[#D4D4D4] transition disabled:opacity-60"
                   value={formDesc}
                   onChange={(e) => setFormDesc(e.target.value)}
                   placeholder="描述此规则的用途"
@@ -583,15 +610,15 @@ export default function FormatRulePanel({
             {/* Permission */}
             {!readonly && (
               <div>
-                <label className="block text-sm font-medium text-[#5a5a7a] mb-1.5">
+                <label className="block text-sm font-medium text-[#333333] mb-1.5">
                   可见范围
                 </label>
                 <div className="flex gap-2">
                   <button
                     className={`flex-1 px-3 py-2 rounded-xl text-sm font-medium border transition-colors ${
                       formPermission === 'me'
-                        ? 'bg-[#ede9fe] border-[#c4b5fd] text-[#7c5cfc]'
-                        : 'border-[rgba(124,92,252,0.08)] text-[#5a5a7a] hover:bg-[#f4f1fb]'
+                        ? 'bg-[#EAEAEA] border-[#A3A3A3] text-[#000000]'
+                        : 'border-[#D4D4D4] text-[#333333] hover:bg-[#EAEAEA]'
                     }`}
                     onClick={() => setFormPermission('me')}
                   >
@@ -600,8 +627,8 @@ export default function FormatRulePanel({
                   <button
                     className={`flex-1 px-3 py-2 rounded-xl text-sm font-medium border transition-colors ${
                       formPermission === 'team'
-                        ? 'bg-[#ede9fe] border-[#c4b5fd] text-[#7c5cfc]'
-                        : 'border-[rgba(124,92,252,0.08)] text-[#5a5a7a] hover:bg-[#f4f1fb]'
+                        ? 'bg-[#EAEAEA] border-[#A3A3A3] text-[#000000]'
+                        : 'border-[#D4D4D4] text-[#333333] hover:bg-[#EAEAEA]'
                     }`}
                     onClick={() => setFormPermission('team')}
                   >
@@ -614,10 +641,10 @@ export default function FormatRulePanel({
             {/* Style Rules */}
             <div>
               <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-medium text-[#2d2d4a]">
+                <span className="text-sm font-medium text-[#000000]">
                   样式列表
                 </span>
-                <span className="text-[10px] text-[#9494b5]">
+                <span className="text-[10px] text-[#333333]">
                   从上到下优先匹配，第一个命中生效
                 </span>
               </div>
@@ -638,7 +665,7 @@ export default function FormatRulePanel({
               </div>
               {!readonly && (
                 <button
-                  className="mt-2 w-full py-2 border border-dashed border-[rgba(124,92,252,0.12)] rounded-xl text-xs text-[#9494b5] hover:text-[#7c5cfc] hover:border-[#7c5cfc] transition-colors"
+                  className="mt-2 w-full py-2 border border-dashed border-[#A3A3A3] rounded-xl text-xs text-[#333333] hover:text-[#000000] hover:border-[#000000] transition-colors"
                   onClick={addStyleRule}
                 >
                   + 添加样式
@@ -647,29 +674,29 @@ export default function FormatRulePanel({
             </div>
 
             {/* Preview hint */}
-            <div className="bg-[#f4f1fb] rounded-xl p-3 text-xs text-[#5a5a7a]">
+            <div className="bg-[#EAEAEA] rounded-xl p-3 text-xs text-[#333333]">
               <span className="font-medium">匹配示例：</span>
               {formStyleRules.map((sr, i) => (
                 <span key={i} className="ml-2">
                   {i > 0 && ' → '}
-                  <span className="text-[#1c1c2e]">{sr.name}</span>
-                  <span className="text-[#9494b5]">
+                  <span className="text-[#000000]">{sr.name}</span>
+                  <span className="text-[#333333]">
                     ({sr.pattern || '未设置'})
                   </span>
                 </span>
               ))}
             </div>
           </div>
-          <DialogFooter className="!-mx-6 !-mb-6 !p-5 !border-t !border-[rgba(124,92,252,0.06)]">
+          <DialogFooter className="!-mx-6 !-mb-6 !p-5 !border-t !border-[#D4D4D4]">
             <button
-              className="px-4 py-2.5 text-sm text-[#9494b5] hover:text-[#5a5a7a] transition-colors"
+              className="px-4 py-2.5 text-sm text-[#333333] hover:text-[#333333] transition-colors"
               onClick={() => setShowDialog(false)}
             >
               {readonly ? '关闭' : '取消'}
             </button>
             {!readonly && (
               <button
-                className="px-5 py-2.5 text-sm font-medium bg-gradient-to-r from-[#7c5cfc] to-[#a78bfa] text-white rounded-xl hover:from-[#6b4ce0] hover:to-[#9678e8] disabled:opacity-50 shadow-md transition-all hover:shadow-lg"
+                className="px-5 py-2.5 text-sm font-medium bg-[#000000] text-white rounded-lg hover:bg-[#000000] disabled:opacity-50 transition-colors"
                 onClick={handleSave}
                 disabled={!formName.trim()}
               >

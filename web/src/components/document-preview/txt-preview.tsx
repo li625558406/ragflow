@@ -25,9 +25,7 @@ export const TxtPreviewer = ({ className, url }: TxtPreviewerProps) => {
     reader.onload = () => {
       setData(reader.result as string);
       setLoading(false);
-      console.log('file loaded successfully', reader.result);
     };
-    console.log('file data:', res);
   };
   useEffect(() => {
     if (url) {

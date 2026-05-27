@@ -64,7 +64,6 @@ export default function MemoryMessage() {
     });
   }, [data, form]);
   const onSubmit = (data: IMemory) => {
-    console.log('data', data);
     onMemoryRenameOk(data);
   };
   return (
@@ -100,7 +99,6 @@ export default function MemoryMessage() {
               <DynamicForm.SavingButton
                 submitLoading={loading}
                 submitFunc={(value) => {
-                  console.log('form-value', value);
                   onSubmit(value as IMemory);
                 }}
               ></DynamicForm.SavingButton>

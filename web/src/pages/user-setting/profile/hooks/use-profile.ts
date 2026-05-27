@@ -93,7 +93,6 @@ export const useProfile = () => {
       payload.password = rsaPsw(newProfile.currPasswd!) as string;
       payload.new_password = rsaPsw(newProfile.newPasswd!) as string;
     }
-    console.log('payload', payload);
     if (editType === EditType.editName && payload.nickname) {
       saveSetting({ nickname: payload.nickname });
       setProfile(newProfile);
@@ -127,7 +126,6 @@ export const useProfile = () => {
   }, []);
 
   const handleSave = (data: ProfileData) => {
-    console.log('handleSave', data);
     const newProfile = { ...profile, ...data };
 
     onSubmit(newProfile);

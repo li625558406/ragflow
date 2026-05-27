@@ -51,7 +51,6 @@ const CSVFileViewer: React.FC<FileViewerProps> = ({ url }) => {
         reader.readAsText(res.data);
         reader.onload = () => {
           const parsedData = parseCSV(reader.result as string);
-          console.log('file loaded successfully', reader.result);
           setData(parsedData);
         };
       } catch (error) {

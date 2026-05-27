@@ -14,8 +14,6 @@ const FormatPreserveEditor = ({
   clickChunk,
   isReadonly,
 }: FormatPreserveEditorProps) => {
-  console.log('initialValue', initialValue);
-
   const escapeNewlines = (text: string) => {
     return text.replace(/\n/g, '\\n');
   };

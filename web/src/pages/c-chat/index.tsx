@@ -181,15 +181,52 @@ export default function CChat() {
     const style = document.createElement('style');
     style.id = styleId;
     style.textContent = `
-      .cs-bg {
-        background: #f8f6f3;
-        background-image: radial-gradient(ellipse 60% 50% at 50% 50%, rgba(124,92,252,0.04) 0%, transparent 70%);
-      }
-      .cs-sidebar-bg { background: #faf8f5; }
+      .cs-bg { background: #FFFFFF; }
+      .cs-sidebar-bg { background: #FFFFFF; }
       .cs-scrollbar::-webkit-scrollbar { width: 4px; }
-      .cs-scrollbar::-webkit-scrollbar-thumb { background: rgba(124,92,252,0.15); border-radius: 4px; }
-      .cs-input-ring { transition: box-shadow 0.2s ease, border-color 0.2s ease, background-color 0.2s; }
-      .cs-input-ring:focus-within { box-shadow: 0 0 0 3px rgba(124,92,252,0.08); border-color: #c4b5fd; background: white; }
+      .cs-scrollbar::-webkit-scrollbar-thumb { background: #A3A3A3; border-radius: 4px; }
+      .cs-input-ring { transition: border-color 0.15s ease, background-color 0.15s; }
+      .cs-input-ring:focus-within { border-color: #000000; background: white; }
+      .cs-typewriter-cursor::after { content: '|'; animation: cs-blink 1s step-end infinite; color: #000000; }
+      @keyframes cs-blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+      @keyframes cs-msg-in { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+      .cs-msg-enter { animation: cs-msg-in 0.35s ease-out; }
+      @keyframes cs-input-focus-in { from { transform: scale(0.98); opacity: 0.6; } to { transform: scale(1); opacity: 1; } }
+      .cs-input-enter { animation: cs-input-focus-in 0.4s ease-out; }
+      /* Page enter */
+      @keyframes cs-page-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+      .cs-page-enter { animation: cs-page-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both; }
+      /* Card pop enter */
+      @keyframes cs-card-pop { from { opacity: 0; transform: scale(0.92) translateY(6px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+      .cs-card-enter { animation: cs-card-pop 0.4s cubic-bezier(0.22, 1, 0.36, 1) both; }
+      .cs-card-d1 { animation-delay: 0.05s; }
+      .cs-card-d2 { animation-delay: 0.12s; }
+      .cs-card-d3 { animation-delay: 0.19s; }
+      .cs-card-d4 { animation-delay: 0.26s; }
+      /* List item enter */
+      @keyframes cs-list-in { from { opacity: 0; transform: translateX(-6px); } to { opacity: 1; transform: translateX(0); } }
+      .cs-list-enter { animation: cs-list-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both; }
+      .cs-list-d0 { animation-delay: 0.03s; }
+      .cs-list-d1 { animation-delay: 0.06s; }
+      .cs-list-d2 { animation-delay: 0.09s; }
+      .cs-list-d3 { animation-delay: 0.12s; }
+      .cs-list-d4 { animation-delay: 0.15s; }
+      .cs-list-d5 { animation-delay: 0.18s; }
+      .cs-list-d6 { animation-delay: 0.21s; }
+      .cs-list-d7 { animation-delay: 0.24s; }
+      /* Table row enter */
+      @keyframes cs-row-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+      .cs-row-enter { animation: cs-row-in 0.25s cubic-bezier(0.22, 1, 0.36, 1) both; }
+      .cs-row-d0 { animation-delay: 0.02s; }
+      .cs-row-d1 { animation-delay: 0.04s; }
+      .cs-row-d2 { animation-delay: 0.06s; }
+      .cs-row-d3 { animation-delay: 0.08s; }
+      .cs-row-d4 { animation-delay: 0.10s; }
+      .cs-row-d5 { animation-delay: 0.12s; }
+      .cs-row-d6 { animation-delay: 0.14s; }
+      .cs-row-d7 { animation-delay: 0.16s; }
+      .cs-row-d8 { animation-delay: 0.18s; }
+      .cs-row-d9 { animation-delay: 0.20s; }
     `;
     document.head.appendChild(style);
     return () => document.getElementById(styleId)?.remove();
@@ -215,8 +252,44 @@ export default function CChat() {
   // Chat input
   const [inputValue, setInputValue] = useState('');
 
+  // Typewriter placeholder effect
+  const FULL_PLACEHOLDER =
+    '请在此描述您的标书分析需求，例如：提取招标文件中的关键资质要求、分析评分标准的权重分布、对比各投标企业的技术方案优劣、检查合同条款中的潜在风险点...';
+  const [typewriterText, setTypewriterText] = useState('');
+  const [typewriterIdx, setTypewriterIdx] = useState(0);
+  const [typewriterForward, setTypewriterForward] = useState(true);
+
+  const hasMessages = messages.length > 0;
+
+  useEffect(() => {
+    if (hasMessages) return;
+    const timer = setInterval(
+      () => {
+        if (typewriterForward) {
+          if (typewriterIdx < FULL_PLACEHOLDER.length) {
+            setTypewriterText(FULL_PLACEHOLDER.slice(0, typewriterIdx + 1));
+            setTypewriterIdx((prev) => prev + 1);
+          } else {
+            // Pause at the end, then start deleting
+            setTypewriterForward(false);
+          }
+        } else {
+          if (typewriterIdx > 0) {
+            setTypewriterText(FULL_PLACEHOLDER.slice(0, typewriterIdx - 1));
+            setTypewriterIdx((prev) => prev - 1);
+          } else {
+            setTypewriterForward(true);
+          }
+        }
+      },
+      typewriterForward ? 60 : 30,
+    );
+    return () => clearInterval(timer);
+  }, [typewriterIdx, typewriterForward, hasMessages]);
+
   // UI state
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [agentDropdownOpen, setAgentDropdownOpen] = useState(false);
 
   // Main view state: 'chat' or 'collaboration' or 'tools'
   const [mainView, setMainView] = useState<
@@ -291,14 +364,20 @@ export default function CChat() {
     };
   }, []);
 
-  // Auto-scroll
+  // Auto-scroll — always scroll on new messages, gentle during streaming
+  const lastMsgCountRef = useRef(0);
   useEffect(() => {
-    const area = messagesEndRef.current?.parentElement;
+    const area = messagesEndRef.current?.parentElement?.parentElement;
     if (!area) return;
+    const isNewMessage = messages.length > lastMsgCountRef.current;
+    lastMsgCountRef.current = messages.length;
     const isNearBottom =
-      area.scrollHeight - area.scrollTop - area.clientHeight < 150;
-    if (isNearBottom) {
-      area.scrollTop = area.scrollHeight;
+      area.scrollHeight - area.scrollTop - area.clientHeight < 200;
+    if (isNewMessage || isNearBottom) {
+      area.scrollTo({
+        top: area.scrollHeight,
+        behavior: isNewMessage ? 'smooth' : 'auto',
+      });
     }
   }, [messages, fullContent, thinkingContent]);
 
@@ -736,21 +815,6 @@ export default function CChat() {
       // Process accumulated events (same logic as agent canvas findMessageFromList)
       const { content, attachment, downloads } = findContentFromEvents(events);
       const refs = findRefsFromEvents(events);
-      // DEBUG: inspect reference data structure
-      console.log(
-        '[DEBUG] refs:',
-        refs,
-        'content snippet:',
-        content?.slice(0, 200),
-      );
-      if (refs?.chunks) {
-        console.log(
-          '[DEBUG] chunk keys:',
-          Object.keys(refs.chunks),
-          'first chunk:',
-          Object.values(refs.chunks)[0],
-        );
-      }
       const errorMsg = findErrorFromEvents(events);
 
       // Extract thinking from <think> tags in content
@@ -830,10 +894,10 @@ export default function CChat() {
   return (
     <div className="h-screen flex flex-col cs-bg overflow-hidden">
       {/* Top Navigation Bar */}
-      <header className="h-14 bg-white/90 backdrop-blur-md border-b border-[rgba(124,92,252,0.06)] flex items-center px-6 shrink-0">
+      <header className="h-14 bg-white border-b border-[#D4D4D4] flex items-center px-6 shrink-0">
         {/* Left: Logo */}
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[#7c5cfc] to-[#a78bfa] flex items-center justify-center shadow-sm">
+          <div className="w-8 h-8 rounded-lg bg-[#14B8A6] flex items-center justify-center">
             <svg
               className="w-4 h-4 text-white"
               fill="none"
@@ -848,14 +912,14 @@ export default function CChat() {
               />
             </svg>
           </div>
-          <span className="text-sm font-bold text-[#1c1c2e] hidden sm:inline">
+          <span className="text-sm font-bold text-[#000000] hidden sm:inline">
             标书分析助手
           </span>
         </div>
 
         {/* Center: Module Tabs */}
         <div className="flex-1 flex justify-center">
-          <div className="flex items-center gap-1 bg-[#f4f1fb] rounded-xl p-1">
+          <div className="flex items-center gap-1 bg-[#EAEAEA] rounded-lg p-1">
             {(
               [
                 {
@@ -883,10 +947,10 @@ export default function CChat() {
               <button
                 key={tab.key}
                 onClick={() => setMainView(tab.key)}
-                className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
                   mainView === tab.key
-                    ? 'bg-white text-[#7c5cfc] shadow-sm'
-                    : 'text-[#5a5a7a] hover:text-[#1c1c2e]'
+                    ? 'bg-white text-[#000000]'
+                    : 'text-[#333333] hover:text-[#000000]'
                 }`}
               >
                 <svg
@@ -910,17 +974,17 @@ export default function CChat() {
 
         {/* Right: User */}
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[#ede9fe] to-[#ddd6fe] text-[#7c5cfc] flex items-center justify-center text-sm font-bold">
+          <div className="w-8 h-8 rounded-lg bg-[#F59E0B] text-white flex items-center justify-center text-sm font-bold">
             {(userInfo?.nickname || userInfo?.email || 'U')[0].toUpperCase()}
           </div>
           <div className="hidden md:block">
-            <div className="text-sm font-medium text-[#2d2d4a]">
+            <div className="text-sm font-medium text-[#000000]">
               {userInfo?.nickname || userInfo?.email || ''}
             </div>
           </div>
           <button
             onClick={handleLogout}
-            className="text-[#9494b5] hover:text-[#7c5cfc] transition-colors p-1.5 rounded-lg hover:bg-[#ede9fe]"
+            className="text-[#525252] hover:text-[#000000] transition-colors p-1.5 rounded-lg hover:bg-[#EAEAEA]"
             title="退出登录"
           >
             <svg
@@ -953,15 +1017,15 @@ export default function CChat() {
         {/* Sidebar - only visible on chat tab */}
         {mainView === 'chat' && (
           <aside
-            className={`fixed md:static inset-y-0 left-0 z-50 md:z-auto w-56 flex flex-col shrink-0 bg-white border-r border-[rgba(124,92,252,0.06)] transition-transform duration-200 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}
+            className={`fixed md:static inset-y-0 left-0 z-50 md:z-auto w-56 flex flex-col shrink-0 bg-white border-r border-[#D4D4D4] transition-transform duration-200 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}
           >
             {/* Mobile close */}
-            <div className="md:hidden h-12 flex items-center justify-between px-4 border-b border-[rgba(124,92,252,0.06)] shrink-0">
-              <span className="text-sm font-bold text-[#1c1c2e]">
+            <div className="md:hidden h-12 flex items-center justify-between px-4 border-b border-[#D4D4D4] shrink-0">
+              <span className="text-sm font-bold text-[#000000]">
                 标书分析助手
               </span>
               <button
-                className="text-[#5a5a7a] hover:text-[#1c1c2e]"
+                className="text-[#333333] hover:text-[#000000]"
                 onClick={() => setSidebarOpen(false)}
               >
                 <svg
@@ -988,7 +1052,7 @@ export default function CChat() {
                   createNewSession();
                   setSidebarOpen(false);
                 }}
-                className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-[#7c5cfc] to-[#a78bfa] hover:from-[#6b4ce0] hover:to-[#9678e8] text-white py-2 rounded-xl transition-all font-medium text-sm shadow-sm hover:shadow-md hover:-translate-y-0.5"
+                className="w-full flex items-center justify-center gap-2 bg-[#000000] hover:bg-[#000000] text-white py-2 rounded-lg transition-colors font-medium text-sm"
               >
                 <svg
                   className="w-4 h-4"
@@ -1007,45 +1071,67 @@ export default function CChat() {
               </button>
             </div>
 
-            {/* Agent selector */}
+            {/* Agent selector — custom monochrome dropdown */}
             <div className="px-3 pb-2">
               <div className="relative">
-                <select
-                  value={currentAgentId}
-                  onChange={(e) => {
-                    switchAgent(e.target.value);
-                    loadSessions(e.target.value);
-                  }}
-                  className="w-full bg-[#ede9fe] text-[#7c5cfc] text-sm rounded-xl px-3 py-1.5 outline-none appearance-none cursor-pointer border border-[rgba(124,92,252,0.08)] focus:border-[#7c5cfc] transition pr-7"
+                <button
+                  onClick={() => setAgentDropdownOpen(!agentDropdownOpen)}
+                  className="w-full flex items-center justify-between bg-[#EAEAEA] text-[#000000] text-sm rounded-lg px-3 py-1.5 border border-[#D4D4D4] hover:border-[#000000] transition truncate"
                 >
-                  <option value="" disabled className="text-[#2d2d4a]">
-                    选择智能体...
-                  </option>
-                  {agents.map((a) => (
-                    <option key={a.id} value={a.id} className="text-[#2d2d4a]">
-                      {a.title || '未命名智能体'}
-                    </option>
-                  ))}
-                </select>
-                <svg
-                  className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#7c5cfc] pointer-events-none"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M19 9l-7 7-7-7"
-                  />
-                </svg>
+                  <span className="truncate">
+                    {agents.find((a) => a.id === currentAgentId)?.title ||
+                      '选择智能体...'}
+                  </span>
+                  <svg
+                    className={`w-3.5 h-3.5 shrink-0 ml-1.5 transition-transform ${agentDropdownOpen ? 'rotate-180' : ''}`}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M19 9l-7 7-7-7"
+                    />
+                  </svg>
+                </button>
+                {agentDropdownOpen && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-10"
+                      onClick={() => setAgentDropdownOpen(false)}
+                    />
+                    <div
+                      className="absolute top-full left-0 right-0 mt-1 bg-white border border-[#D4D4D4] rounded-lg shadow-[0_4px_16px_rgba(0,0,0,0.08)] z-20 max-h-52 overflow-y-auto py-1"
+                      style={{ scrollbarWidth: 'thin' }}
+                    >
+                      {agents.map((a) => (
+                        <button
+                          key={a.id}
+                          onClick={() => {
+                            switchAgent(a.id);
+                            loadSessions(a.id);
+                            setAgentDropdownOpen(false);
+                          }}
+                          className={`w-full text-left px-3 py-2 text-sm transition-colors truncate ${
+                            a.id === currentAgentId
+                              ? 'bg-[#EAEAEA] text-[#000000] font-medium'
+                              : 'text-[#333333] hover:bg-[#EAEAEA] hover:text-[#000000]'
+                          }`}
+                        >
+                          {a.title || '未命名智能体'}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
               </div>
             </div>
 
             {/* Session list header */}
             <div className="px-4 pb-2">
-              <span className="text-[#9494b5] text-[10px] font-semibold tracking-widest uppercase">
+              <span className="text-[#525252] text-[15px] font-semibold tracking-widest uppercase">
                 历史对话
               </span>
             </div>
@@ -1054,17 +1140,17 @@ export default function CChat() {
               style={{ scrollbarWidth: 'none' }}
             >
               {sessions.length === 0 ? (
-                <div className="text-center text-[#9494b5]/40 text-xs py-10">
+                <div className="text-center text-[#525252]/40 text-xs py-10">
                   暂无对话
                 </div>
               ) : (
-                sessions.map((s) => (
+                sessions.map((s, idx) => (
                   <div
                     key={s.id}
-                    className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer transition text-left group ${
+                    className={`cs-list-enter cs-list-d${Math.min(idx, 7)} w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer transition text-left group ${
                       s.id === currentSessionId
-                        ? 'bg-[#ede9fe] text-[#7c5cfc]'
-                        : 'text-[#5a5a7a] hover:bg-[#f4f1fb] hover:text-[#1c1c2e]'
+                        ? 'bg-[#EAEAEA] text-[#000000]'
+                        : 'text-[#333333] hover:bg-[#EAEAEA] hover:text-[#000000]'
                     }`}
                     onClick={() => {
                       switchSession(s.id);
@@ -1073,11 +1159,11 @@ export default function CChat() {
                   >
                     <div
                       className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${
-                        s.id === currentSessionId ? 'bg-white' : 'bg-[#f4f1fb]'
+                        s.id === currentSessionId ? 'bg-white' : 'bg-[#EAEAEA]'
                       }`}
                     >
                       <svg
-                        className={`w-4 h-4 ${s.id === currentSessionId ? 'text-[#7c5cfc]' : 'text-[#9494b5]'}`}
+                        className={`w-4 h-4 ${s.id === currentSessionId ? 'text-[#000000]' : 'text-[#525252]'}`}
                         fill="none"
                         stroke="currentColor"
                         strokeWidth={1.5}
@@ -1096,7 +1182,7 @@ export default function CChat() {
                           {s.name}
                         </span>
                         <button
-                          className="hidden items-center justify-center w-5 h-5 rounded text-[#9494b5] hover:text-red-500 shrink-0 group-hover:flex"
+                          className="hidden items-center justify-center w-5 h-5 rounded text-[#525252] hover:text-red-500 shrink-0 group-hover:flex"
                           onClick={(e) => {
                             e.stopPropagation();
                             deleteSession(s.id);
@@ -1117,16 +1203,6 @@ export default function CChat() {
                           </svg>
                         </button>
                       </div>
-                      <span className="text-[11px] text-[#9494b5] truncate block">
-                        {s.update_time
-                          ? new Date(
-                              typeof s.update_time === 'number' &&
-                                s.update_time < 1e12
-                                ? s.update_time * 1000
-                                : s.update_time,
-                            ).toLocaleDateString()
-                          : ''}
-                      </span>
                     </div>
                   </div>
                 ))
@@ -1139,15 +1215,15 @@ export default function CChat() {
         <div className="flex-1 flex flex-col min-w-0">
           {/* Chat View */}
           {mainView === 'chat' && (
-            <>
+            <div className="cs-page-enter flex-1 flex flex-col min-h-0">
               {/* Header */}
-              <div className="h-14 bg-white border-b border-[rgba(124,92,252,0.06)] flex items-center px-4 shrink-0">
+              <div className="h-14 bg-white border-b border-[#D4D4D4] flex items-center px-4 shrink-0">
                 <button
-                  className="md:hidden mr-2 p-1.5 rounded-lg hover:bg-[#f4f1fb] transition"
+                  className="md:hidden mr-2 p-1.5 rounded-lg hover:bg-[#EAEAEA] transition"
                   onClick={() => setSidebarOpen(true)}
                 >
                   <svg
-                    className="w-5 h-5 text-[#5a5a7a]"
+                    className="w-5 h-5 text-[#333333]"
                     fill="none"
                     stroke="currentColor"
                     viewBox="0 0 24 24"
@@ -1161,48 +1237,22 @@ export default function CChat() {
                   </svg>
                 </button>
                 <div className="flex items-center gap-2">
-                  <h2 className="text-sm font-semibold text-[#1c1c2e]">
+                  <h2 className="text-sm font-semibold text-[#000000]">
                     {chatTitle}
                   </h2>
                   <span className="w-1.5 h-1.5 rounded-full bg-[#2ec4b6] animate-pulse" />
                 </div>
               </div>
 
-              {/* Messages Area */}
-              <div className="flex-1 flex flex-col min-h-0 bg-white/50 backdrop-blur-sm">
-                <div
-                  className="flex-1 overflow-y-auto p-4 lg:p-6 space-y-4 cs-scrollbar"
-                  style={{ scrollbarWidth: 'thin' }}
-                >
-                  {isLoadingSession ? (
-                    <div className="flex flex-col items-center justify-center py-20">
-                      <svg
-                        className="w-7 h-7 animate-spin text-[#7c5cfc] mb-4"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                      >
-                        <circle
-                          cx="12"
-                          cy="12"
-                          r="10"
-                          stroke="currentColor"
-                          strokeWidth="3"
-                          opacity="0.25"
-                        />
-                        <path
-                          d="M12 2a10 10 0 019.95 9"
-                          stroke="currentColor"
-                          strokeWidth="3"
-                          strokeLinecap="round"
-                        />
-                      </svg>
-                      <p className="text-[#5a5a7a] text-sm">加载对话中...</p>
-                    </div>
-                  ) : messages.length === 0 ? (
-                    <div className="text-center py-20">
-                      <div className="w-14 h-14 bg-[#f4f1fb] rounded-2xl mx-auto flex items-center justify-center mb-4">
+              {/* Messages Area + Input — centered when empty */}
+              {messages.length === 0 && !isLoadingSession ? (
+                /* Empty state: vertically centered input */
+                <div className="flex-1 flex items-center justify-center min-h-0 px-4">
+                  <div className="w-full max-w-2xl cs-input-enter">
+                    <div className="text-center mb-6">
+                      <div className="w-14 h-14 bg-[#EAEAEA] rounded-2xl mx-auto flex items-center justify-center mb-4">
                         <svg
-                          className="w-7 h-7 text-[#7c5cfc]"
+                          className="w-7 h-7 text-[#000000]"
                           fill="none"
                           stroke="currentColor"
                           viewBox="0 0 24 24"
@@ -1215,181 +1265,70 @@ export default function CChat() {
                           />
                         </svg>
                       </div>
-                      <p className="text-[#5a5a7a] text-sm">
+                      <p className="text-[#333333] text-sm">
                         选择或创建一个对话开始分析
                       </p>
-                      <p className="text-[#9494b5] text-xs mt-1">
+                      <p className="text-[#525252] text-xs mt-1">
                         上传招标文件至知识库后，即可在此进行智能问答
                       </p>
-                    </div>
-                  ) : (
-                    messages.map((msg, i) => {
-                      const isLast = i === messages.length - 1;
-                      const streaming = isLast && isStreaming;
-                      if (msg.role === 'user') {
-                        return (
-                          <div key={i} className="flex justify-end">
-                            <div className="max-w-[85%] bg-gradient-to-br from-[#7c5cfc] to-[#a78bfa] text-white px-4 py-2.5 rounded-2xl rounded-br-md text-[14px] leading-relaxed shadow-sm">
-                              {msg.content}
-                            </div>
-                          </div>
-                        );
-                      }
-                      const content = streaming
-                        ? streamingContent || ''
-                        : msg.content;
-                      const thinking = streaming ? null : msg.thinking;
-                      const refs = streaming ? null : msg.references;
-                      return (
-                        <div key={i} className="flex justify-start">
-                          <div className="max-w-[85%]">
-                            <div className="bg-white border border-[rgba(124,92,252,0.06)] px-4 py-2.5 rounded-2xl rounded-bl-md text-[13px] leading-relaxed text-[#2d2d4a] shadow-sm">
-                              {thinking && <ThinkingBlock text={thinking} />}
-                              <div className="msg-content text-[#2d2d4a]">
-                                <MarkdownContent
-                                  content={content}
-                                  loading={streaming}
-                                  reference={refs || undefined}
+                      {/* Feature highlight cards */}
+                      <div className="grid grid-cols-2 gap-2.5 mt-5 max-w-sm mx-auto">
+                        {[
+                          {
+                            icon: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z',
+                            label: '招标文件解析',
+                            color: '#2ec4b6',
+                            bg: '#e6f9f7',
+                          },
+                          {
+                            icon: 'M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z',
+                            label: '智能评分分析',
+                            color: '#f59e0b',
+                            bg: '#fef9e7',
+                          },
+                          {
+                            icon: 'M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z',
+                            label: '关键信息提取',
+                            color: '#4f8ce8',
+                            bg: '#eef4ff',
+                          },
+                          {
+                            icon: 'M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z',
+                            label: '合规性检查',
+                            color: '#8b5cf6',
+                            bg: '#f3f0ff',
+                          },
+                        ].map((card, idx) => (
+                          <div
+                            key={card.label}
+                            className={`cs-card-enter cs-card-d${idx + 1} flex items-center gap-2 px-3 py-2.5 rounded-xl border border-[#E5E5E5] hover:border-[#000000] transition-colors cursor-pointer bg-white group`}
+                          >
+                            <div
+                              className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors"
+                              style={{ backgroundColor: card.bg }}
+                            >
+                              <svg
+                                className="w-4 h-4"
+                                fill="none"
+                                stroke={card.color}
+                                strokeWidth={1.5}
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  d={card.icon}
                                 />
-                              </div>
-                              {streaming && (
-                                <span className="inline-block w-2 h-4 bg-gradient-to-b from-[#7c5cfc] to-[#a78bfa] ml-1 animate-pulse rounded-sm" />
-                              )}
-                              {streaming && isThinking && (
-                                <div className="flex items-center gap-2 text-[#9494b5] text-xs py-1">
-                                  <svg
-                                    className="w-3.5 h-3.5 animate-spin text-[#c4b5fd]"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                  >
-                                    <circle
-                                      cx="12"
-                                      cy="12"
-                                      r="10"
-                                      stroke="currentColor"
-                                      strokeWidth="3"
-                                      opacity="0.25"
-                                    />
-                                    <path
-                                      d="M12 2a10 10 0 019.95 9"
-                                      stroke="currentColor"
-                                      strokeWidth="3"
-                                      strokeLinecap="round"
-                                    />
-                                  </svg>
-                                  <span>正在思考中...</span>
-                                </div>
-                              )}
+                              </svg>
                             </div>
-                            {!streaming &&
-                              refs?.chunks &&
-                              Object.keys(refs.chunks).length > 0 && (
-                                <details className="mt-2 group">
-                                  <summary className="list-none cursor-pointer select-none">
-                                    <span className="inline-flex items-center gap-1 text-[11px] text-[#9494b5] hover:text-[#7c5cfc] transition-colors">
-                                      <svg
-                                        className="w-3 h-3 transition-transform group-open:rotate-90"
-                                        viewBox="0 0 20 20"
-                                        fill="currentColor"
-                                      >
-                                        <path
-                                          fillRule="evenodd"
-                                          d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z"
-                                          clipRule="evenodd"
-                                        />
-                                      </svg>
-                                      引用来源 (
-                                      {Object.keys(refs.chunks).length})
-                                    </span>
-                                  </summary>
-                                  <div className="mt-1 space-y-0.5 max-h-44 overflow-y-auto pr-1">
-                                    {Object.entries(refs.chunks).map(
-                                      ([idx, chunk]) => {
-                                        const doc = Object.values(
-                                          refs.doc_aggs || {},
-                                        ).find(
-                                          (d) => d.doc_id === chunk.document_id,
-                                        );
-                                        return (
-                                          <div
-                                            key={idx}
-                                            className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-[#f8f6f3] transition-colors"
-                                          >
-                                            {chunk.image_id ? (
-                                              <Image
-                                                id={chunk.image_id}
-                                                className="w-7 h-7 rounded object-cover flex-shrink-0"
-                                              />
-                                            ) : (
-                                              <span className="w-7 h-7 flex items-center justify-center text-stone-300 flex-shrink-0">
-                                                <svg
-                                                  viewBox="0 0 24 24"
-                                                  className="w-4 h-4"
-                                                  fill="none"
-                                                  stroke="currentColor"
-                                                  strokeWidth="1.5"
-                                                >
-                                                  <path d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
-                                                </svg>
-                                              </span>
-                                            )}
-                                            <div className="min-w-0 flex-1">
-                                              <div className="truncate text-[12px] text-[#4a4a6a] leading-tight">
-                                                {doc?.doc_name ||
-                                                  chunk.document_name ||
-                                                  `引用 #${Number(idx) + 1}`}
-                                              </div>
-                                              {chunk.content && (
-                                                <div className="truncate text-[11px] text-[#9494b5] leading-tight mt-0.5">
-                                                  {chunk.content.slice(0, 80)}
-                                                </div>
-                                              )}
-                                            </div>
-                                          </div>
-                                        );
-                                      },
-                                    )}
-                                  </div>
-                                </details>
-                              )}
-                            {!streaming && msg.content && (
-                              <div className="mt-2 flex justify-end">
-                                <button
-                                  className="flex items-center gap-1 px-2.5 py-1 text-xs text-[#9494b5] hover:text-[#7c5cfc] hover:bg-[#ede9fe] rounded-lg transition-colors"
-                                  onClick={() => {
-                                    setCollabMessage(msg.content);
-                                    setCollabDialogOpen(true);
-                                  }}
-                                >
-                                  <svg
-                                    className="w-3.5 h-3.5"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    viewBox="0 0 24 24"
-                                  >
-                                    <path
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth={2}
-                                      d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                                    />
-                                  </svg>
-                                  协作
-                                </button>
-                              </div>
-                            )}
+                            <span className="text-xs font-medium text-[#1a1a1a] group-hover:text-[#000000] transition-colors">
+                              {card.label}
+                            </span>
                           </div>
-                        </div>
-                      );
-                    })
-                  )}
-                  <div ref={messagesEndRef} />
-                </div>
-
-                {/* Input Area */}
-                <div className="bg-white/80 backdrop-blur-sm border-t border-[rgba(124,92,252,0.06)] p-3 lg:p-4 shrink-0">
-                  <div className="max-w-3xl mx-auto">
-                    <div className="cs-input-ring flex items-end gap-2 bg-[#f8f6f3] border border-[rgba(124,92,252,0.08)] rounded-2xl px-3 py-2">
+                        ))}
+                      </div>
+                    </div>
+                    <div className="cs-input-ring flex items-end gap-2 bg-[#FFFFFF] border border-[#D4D4D4] rounded-2xl px-4 py-3">
                       <textarea
                         value={inputValue}
                         onChange={(e) => {
@@ -1397,7 +1336,7 @@ export default function CChat() {
                           const el = e.target;
                           el.style.height = 'auto';
                           el.style.height =
-                            Math.min(el.scrollHeight, 128) + 'px';
+                            Math.min(el.scrollHeight, 200) + 'px';
                         }}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter' && !e.shiftKey) {
@@ -1405,62 +1344,333 @@ export default function CChat() {
                             sendMessage();
                           }
                         }}
-                        placeholder="输入标书相关问题..."
-                        rows={1}
-                        className="flex-1 bg-transparent outline-none resize-none text-sm leading-relaxed max-h-32 py-1 placeholder:text-[#9494b5] text-[#2d2d4a]"
+                        placeholder={typewriterText}
+                        rows={3}
+                        className="flex-1 bg-transparent outline-none resize-none text-sm leading-relaxed placeholder:text-[#A3A3A3] text-[#000000] cs-typewriter-cursor min-h-[72px]"
                         disabled={isStreaming}
+                        autoFocus
                       />
-                      {!isStreaming ? (
-                        <button
-                          onClick={sendMessage}
-                          disabled={!inputValue.trim()}
-                          className="shrink-0 w-8 h-8 flex items-center justify-center bg-gradient-to-br from-[#7c5cfc] to-[#a78bfa] text-white rounded-xl hover:from-[#6b4ce0] hover:to-[#9678e8] transition-all disabled:opacity-30 disabled:cursor-not-allowed shadow-sm hover:shadow-md"
+                      <button
+                        onClick={sendMessage}
+                        disabled={!inputValue.trim()}
+                        className="shrink-0 w-9 h-9 flex items-center justify-center bg-[#000000] hover:bg-[#1a1a1a] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
+                      >
+                        <svg
+                          className="w-4 h-4"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
                         >
-                          <svg
-                            className="w-4 h-4"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth={2}
-                              d="M5 12h14M12 5l7 7-7 7"
-                            />
-                          </svg>
-                        </button>
-                      ) : (
-                        <button
-                          onClick={stopStreaming}
-                          className="shrink-0 w-8 h-8 flex items-center justify-center bg-red-400 text-white rounded-xl hover:bg-red-500 transition"
-                        >
-                          <svg
-                            className="w-3.5 h-3.5"
-                            fill="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <rect x="6" y="6" width="12" height="12" rx="1" />
-                          </svg>
-                        </button>
-                      )}
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M5 12h14M12 5l7 7-7 7"
+                          />
+                        </svg>
+                      </button>
                     </div>
                   </div>
                 </div>
-              </div>
-            </>
+              ) : (
+                /* Non-empty state: messages + bottom input */
+                <>
+                  <div
+                    className="flex-1 overflow-y-auto px-4 lg:px-6 py-4 cs-scrollbar"
+                    style={{ scrollbarWidth: 'thin' }}
+                  >
+                    <div className="max-w-3xl mx-auto space-y-4">
+                      {isLoadingSession ? (
+                        <div className="flex flex-col items-center justify-center py-20">
+                          <svg
+                            className="w-7 h-7 animate-spin text-[#000000] mb-4"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                          >
+                            <circle
+                              cx="12"
+                              cy="12"
+                              r="10"
+                              stroke="currentColor"
+                              strokeWidth="3"
+                              opacity="0.25"
+                            />
+                            <path
+                              d="M12 2a10 10 0 019.95 9"
+                              stroke="currentColor"
+                              strokeWidth="3"
+                              strokeLinecap="round"
+                            />
+                          </svg>
+                          <p className="text-[#333333] text-sm">
+                            加载对话中...
+                          </p>
+                        </div>
+                      ) : (
+                        messages.map((msg, i) => {
+                          const isLast = i === messages.length - 1;
+                          const streaming = isLast && isStreaming;
+                          if (msg.role === 'user') {
+                            return (
+                              <div
+                                key={i}
+                                className="flex justify-end cs-msg-enter"
+                              >
+                                <div className="max-w-[85%] bg-[#000000] text-white px-4 py-2.5 rounded-2xl rounded-br-md text-[14px] leading-relaxed">
+                                  {msg.content}
+                                </div>
+                              </div>
+                            );
+                          }
+                          const content = streaming
+                            ? streamingContent || ''
+                            : msg.content;
+                          const thinking = streaming ? null : msg.thinking;
+                          const refs = streaming ? null : msg.references;
+                          return (
+                            <div
+                              key={i}
+                              className="flex justify-start cs-msg-enter"
+                            >
+                              <div className="max-w-[85%]">
+                                <div className="bg-white border border-[#D4D4D4] px-4 py-2.5 rounded-2xl rounded-bl-md text-[13px] leading-relaxed text-[#000000]">
+                                  {thinking && (
+                                    <ThinkingBlock text={thinking} />
+                                  )}
+                                  <div className="msg-content text-[#000000]">
+                                    <MarkdownContent
+                                      content={content}
+                                      loading={streaming}
+                                      reference={refs || undefined}
+                                    />
+                                  </div>
+                                  {streaming && (
+                                    <span className="inline-block w-2 h-4 bg-[#000000] ml-1 animate-pulse rounded-sm" />
+                                  )}
+                                  {streaming && isThinking && (
+                                    <div className="flex items-center gap-2 text-[#525252] text-xs py-1">
+                                      <svg
+                                        className="w-3.5 h-3.5 animate-spin text-[#A3A3A3]"
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                      >
+                                        <circle
+                                          cx="12"
+                                          cy="12"
+                                          r="10"
+                                          stroke="currentColor"
+                                          strokeWidth="3"
+                                          opacity="0.25"
+                                        />
+                                        <path
+                                          d="M12 2a10 10 0 019.95 9"
+                                          stroke="currentColor"
+                                          strokeWidth="3"
+                                          strokeLinecap="round"
+                                        />
+                                      </svg>
+                                      <span>正在思考中...</span>
+                                    </div>
+                                  )}
+                                </div>
+                                {!streaming &&
+                                  refs?.chunks &&
+                                  Object.keys(refs.chunks).length > 0 && (
+                                    <details className="mt-2 group">
+                                      <summary className="list-none cursor-pointer select-none">
+                                        <span className="inline-flex items-center gap-1 text-[11px] text-[#525252] hover:text-[#000000] transition-colors">
+                                          <svg
+                                            className="w-3 h-3 transition-transform group-open:rotate-90"
+                                            viewBox="0 0 20 20"
+                                            fill="currentColor"
+                                          >
+                                            <path
+                                              fillRule="evenodd"
+                                              d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z"
+                                              clipRule="evenodd"
+                                            />
+                                          </svg>
+                                          引用来源 (
+                                          {Object.keys(refs.chunks).length})
+                                        </span>
+                                      </summary>
+                                      <div className="mt-1 space-y-0.5 max-h-44 overflow-y-auto pr-1">
+                                        {Object.entries(refs.chunks).map(
+                                          ([idx, chunk]) => {
+                                            const doc = Object.values(
+                                              refs.doc_aggs || {},
+                                            ).find(
+                                              (d) =>
+                                                d.doc_id === chunk.document_id,
+                                            );
+                                            return (
+                                              <div
+                                                key={idx}
+                                                className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-[#FFFFFF] transition-colors"
+                                              >
+                                                {chunk.image_id ? (
+                                                  <Image
+                                                    id={chunk.image_id}
+                                                    className="w-7 h-7 rounded object-cover flex-shrink-0"
+                                                  />
+                                                ) : (
+                                                  <span className="w-7 h-7 flex items-center justify-center text-stone-300 flex-shrink-0">
+                                                    <svg
+                                                      viewBox="0 0 24 24"
+                                                      className="w-4 h-4"
+                                                      fill="none"
+                                                      stroke="currentColor"
+                                                      strokeWidth="1.5"
+                                                    >
+                                                      <path d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                                                    </svg>
+                                                  </span>
+                                                )}
+                                                <div className="min-w-0 flex-1">
+                                                  <div className="truncate text-[12px] text-[#1a1a1a] leading-tight">
+                                                    {doc?.doc_name ||
+                                                      chunk.document_name ||
+                                                      `引用 #${Number(idx) + 1}`}
+                                                  </div>
+                                                  {chunk.content && (
+                                                    <div className="truncate text-[11px] text-[#525252] leading-tight mt-0.5">
+                                                      {chunk.content.slice(
+                                                        0,
+                                                        80,
+                                                      )}
+                                                    </div>
+                                                  )}
+                                                </div>
+                                              </div>
+                                            );
+                                          },
+                                        )}
+                                      </div>
+                                    </details>
+                                  )}
+                                {!streaming && msg.content && (
+                                  <div className="mt-2 flex justify-end">
+                                    <button
+                                      className="flex items-center gap-1 px-2.5 py-1 text-xs text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA] rounded-lg transition-colors"
+                                      onClick={() => {
+                                        setCollabMessage(msg.content);
+                                        setCollabDialogOpen(true);
+                                      }}
+                                    >
+                                      <svg
+                                        className="w-3.5 h-3.5"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        viewBox="0 0 24 24"
+                                      >
+                                        <path
+                                          strokeLinecap="round"
+                                          strokeLinejoin="round"
+                                          strokeWidth={2}
+                                          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                                        />
+                                      </svg>
+                                      协作
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                      <div ref={messagesEndRef} />
+                    </div>
+                  </div>
+
+                  {/* Input Area (bottom, non-empty state) */}
+                  <div className="bg-white border-t border-[#D4D4D4] p-3 lg:p-4 shrink-0">
+                    <div className="max-w-3xl mx-auto">
+                      <div className="cs-input-ring flex items-end gap-2 bg-[#FFFFFF] border border-[#D4D4D4] rounded-2xl px-3 py-2">
+                        <textarea
+                          value={inputValue}
+                          onChange={(e) => {
+                            setInputValue(e.target.value);
+                            const el = e.target;
+                            el.style.height = 'auto';
+                            el.style.height =
+                              Math.min(el.scrollHeight, 200) + 'px';
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && !e.shiftKey) {
+                              e.preventDefault();
+                              sendMessage();
+                            }
+                          }}
+                          placeholder={
+                            hasMessages ? '继续输入您的问题...' : typewriterText
+                          }
+                          rows={3}
+                          className={`flex-1 bg-transparent outline-none resize-none text-sm leading-relaxed placeholder:text-[#A3A3A3] text-[#000000] min-h-[72px]${hasMessages ? '' : ' cs-typewriter-cursor'}`}
+                          disabled={isStreaming}
+                        />
+                        {!isStreaming ? (
+                          <button
+                            onClick={sendMessage}
+                            disabled={!inputValue.trim()}
+                            className="shrink-0 w-9 h-9 flex items-center justify-center bg-[#000000] hover:bg-[#1a1a1a] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
+                          >
+                            <svg
+                              className="w-4 h-4"
+                              fill="none"
+                              stroke="currentColor"
+                              viewBox="0 0 24 24"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M5 12h14M12 5l7 7-7 7"
+                              />
+                            </svg>
+                          </button>
+                        ) : (
+                          <button
+                            onClick={stopStreaming}
+                            className="shrink-0 w-9 h-9 flex items-center justify-center bg-red-400 text-white rounded-xl hover:bg-red-500 transition active:scale-95"
+                          >
+                            <svg
+                              className="w-3.5 h-3.5"
+                              fill="currentColor"
+                              viewBox="0 0 24 24"
+                            >
+                              <rect x="6" y="6" width="12" height="12" rx="1" />
+                            </svg>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
           )}
 
           {/* Collaboration View */}
           {mainView === 'collaboration' && (
-            <CollaborationPanel apiFetch={apiFetch} />
+            <div className="cs-page-enter flex-1 flex flex-col min-h-0">
+              <CollaborationPanel apiFetch={apiFetch} />
+            </div>
           )}
 
           {/* Tools View */}
-          {mainView === 'tools' && <ToolsPanel />}
+          {mainView === 'tools' && (
+            <div className="cs-page-enter flex-1 flex flex-col min-h-0">
+              <ToolsPanel />
+            </div>
+          )}
 
           {/* Bid View */}
-          {mainView === 'bid' && <BidList setListLength={() => {}} />}
+          {mainView === 'bid' && (
+            <div className="cs-page-enter flex-1 flex flex-col min-h-0">
+              <BidList setListLength={() => {}} />
+            </div>
+          )}
         </div>
       </div>
 
@@ -1482,9 +1692,9 @@ function ThinkingBlock({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
   if (!text) return null;
   return (
-    <div className="bg-[#f4f1fb] border border-[rgba(124,92,252,0.08)] rounded-xl mb-2 overflow-hidden">
+    <div className="bg-[#EAEAEA] border border-[#D4D4D4] rounded-lg mb-2 overflow-hidden">
       <button
-        className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-[#7c5cfc] cursor-pointer hover:text-[#6b4ce0] transition w-full"
+        className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-[#000000] cursor-pointer hover:text-[#000000] transition w-full"
         onClick={() => setOpen(!open)}
       >
         <svg
@@ -1516,7 +1726,7 @@ function ThinkingBlock({ text }: { text: string }) {
         <span className="italic font-medium">思考过程</span>
       </button>
       {open && (
-        <pre className="px-3 pb-2 text-xs text-[#5a5a7a] italic leading-relaxed max-h-[200px] overflow-y-auto whitespace-pre-wrap break-words m-0 font-[family-name:var(--font-mono)]">
+        <pre className="px-3 pb-2 text-xs text-[#333333] italic leading-relaxed max-h-[200px] overflow-y-auto whitespace-pre-wrap break-words m-0 font-[family-name:var(--font-mono)]">
           {text}
         </pre>
       )}
@@ -1529,7 +1739,7 @@ function showToast(message: string) {
   // Dynamic toast creation for non-React context
   const toast = document.createElement('div');
   toast.className =
-    'fixed top-4 right-4 bg-gradient-to-r from-[#7c5cfc] to-[#a78bfa] text-white px-5 py-3 rounded-2xl shadow-lg shadow-[rgba(124,92,252,0.2)] text-sm z-[9999] transition-all font-medium';
+    'fixed top-4 right-4 bg-[#000000] text-white px-5 py-3 rounded-lg text-sm z-[9999] transition-all font-medium';
   toast.textContent = message;
   document.body.appendChild(toast);
   setTimeout(() => {

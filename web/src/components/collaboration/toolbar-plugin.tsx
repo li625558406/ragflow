@@ -71,6 +71,24 @@ function getStyleValueFromSelection(
   return '';
 }
 
+function SelectArrow() {
+  return (
+    <svg
+      className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 w-3 h-3 text-[#1a1a1a]"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M19 9l-7 7-7-7"
+      />
+    </svg>
+  );
+}
+
 export default function ToolbarPlugin() {
   const [editor] = useLexicalComposerContext();
   const [isBold, setIsBold] = useState(false);
@@ -312,45 +330,54 @@ export default function ToolbarPlugin() {
       <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
 
       {/* Heading */}
-      <select
-        className="h-7 px-1.5 text-xs border border-black/[0.08] rounded bg-white text-black/70 focus:outline-none focus:border-black/20"
-        value={heading}
-        onChange={(e) => applyHeading(e.target.value)}
-      >
-        {HEADINGS.map((h) => (
-          <option key={h.value} value={h.value}>
-            {h.label}
-          </option>
-        ))}
-      </select>
+      <div className="relative">
+        <select
+          className="h-7 px-1.5 text-xs border border-[#D4D4D4] rounded bg-[#EAEAEA] text-[#000000] focus:outline-none focus:border-[#000000] appearance-none cursor-pointer"
+          value={heading}
+          onChange={(e) => applyHeading(e.target.value)}
+        >
+          {HEADINGS.map((h) => (
+            <option key={h.value} value={h.value}>
+              {h.label}
+            </option>
+          ))}
+        </select>
+        <SelectArrow />
+      </div>
 
       <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
 
       {/* Font Family */}
-      <select
-        className="h-7 px-1.5 text-xs border border-black/[0.08] rounded bg-white text-black/70 w-[100px] focus:outline-none focus:border-black/20"
-        value={fontFamily}
-        onChange={(e) => applyFontFamily(e.target.value)}
-      >
-        {FONT_FAMILIES.map((f) => (
-          <option key={f.value} value={f.value}>
-            {f.label}
-          </option>
-        ))}
-      </select>
+      <div className="relative">
+        <select
+          className="h-7 px-1.5 text-xs border border-[#D4D4D4] rounded bg-[#EAEAEA] text-[#000000] w-[100px] focus:outline-none focus:border-[#000000] appearance-none cursor-pointer"
+          value={fontFamily}
+          onChange={(e) => applyFontFamily(e.target.value)}
+        >
+          {FONT_FAMILIES.map((f) => (
+            <option key={f.value} value={f.value}>
+              {f.label}
+            </option>
+          ))}
+        </select>
+        <SelectArrow />
+      </div>
 
       {/* Font Size */}
-      <select
-        className="h-7 px-1.5 text-xs border border-black/[0.08] rounded bg-white text-black/70 w-[90px] focus:outline-none focus:border-black/20"
-        value={fontSize}
-        onChange={(e) => applyFontSize(e.target.value)}
-      >
-        {FONT_SIZES.map((s) => (
-          <option key={s.value} value={s.value}>
-            {s.label}
-          </option>
-        ))}
-      </select>
+      <div className="relative">
+        <select
+          className="h-7 px-1.5 text-xs border border-[#D4D4D4] rounded bg-[#EAEAEA] text-[#000000] w-[90px] focus:outline-none focus:border-[#000000] appearance-none cursor-pointer"
+          value={fontSize}
+          onChange={(e) => applyFontSize(e.target.value)}
+        >
+          {FONT_SIZES.map((s) => (
+            <option key={s.value} value={s.value}>
+              {s.label}
+            </option>
+          ))}
+        </select>
+        <SelectArrow />
+      </div>
 
       <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
 
@@ -672,18 +699,21 @@ export default function ToolbarPlugin() {
       <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
 
       {/* Line Spacing */}
-      <select
-        className="h-7 px-1 text-xs border border-black/[0.08] rounded bg-white text-black/70 w-[70px] focus:outline-none focus:border-black/20"
-        value={lineSpacing}
-        onChange={(e) => applyLineSpacing(e.target.value)}
-        title="行距"
-      >
-        {LINE_SPACINGS.map((l) => (
-          <option key={l.value} value={l.value}>
-            {l.label}
-          </option>
-        ))}
-      </select>
+      <div className="relative">
+        <select
+          className="h-7 px-1 text-xs border border-[#D4D4D4] rounded bg-[#EAEAEA] text-[#000000] w-[70px] focus:outline-none focus:border-[#000000] appearance-none cursor-pointer"
+          value={lineSpacing}
+          onChange={(e) => applyLineSpacing(e.target.value)}
+          title="行距"
+        >
+          {LINE_SPACINGS.map((l) => (
+            <option key={l.value} value={l.value}>
+              {l.label}
+            </option>
+          ))}
+        </select>
+        <SelectArrow />
+      </div>
 
       <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
 

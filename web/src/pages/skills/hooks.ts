@@ -697,10 +697,6 @@ export const useSkills = () => {
         }
 
         // Search returned empty, fall back to file system
-        // eslint-disable-next-line no-console
-        console.log(
-          '[Skills] Search returned empty, falling back to file system',
-        );
         const fsResult = await fetchSkillsFromFileSystem(spaceName);
         setSkills(fsResult.skills);
         return fsResult;
@@ -1045,29 +1041,16 @@ export const useSkills = () => {
         // Delete search index for all versions
         // Backend uses skillName_version as doc_id (replacing '/' with '_')
         // We need to delete each version's index separately
-        // eslint-disable-next-line no-console
-        console.log(
-          `[deleteSkill] Starting index deletion for skillId: ${skillId}, spaceId: ${normalizedSpaceId}`,
-        );
-        // eslint-disable-next-line no-console
-        console.log(`[deleteSkill] versionsToDelete:`, versionsToDelete);
 
         for (const version of versionsToDelete) {
           const indexId =
             version === 'latest' ? skillId : `${skillId}/${version}`;
           try {
-            // eslint-disable-next-line no-console
-            console.log(
-              `[deleteSkill] Deleting index: ${indexId} for space: ${normalizedSpaceId}`,
-            );
             await skillSpaceService.deleteSkillIndex(
               indexId,
               normalizedSpaceId,
             );
-            // eslint-disable-next-line no-console
-            console.log(`[deleteSkill] Successfully deleted index: ${indexId}`);
           } catch (indexError: any) {
-            // eslint-disable-next-line no-console
             console.warn(
               `[deleteSkill] Error deleting skill index for ${indexId}:`,
               indexError?.message || indexError,
@@ -1082,17 +1065,9 @@ export const useSkills = () => {
           for (const version of commonVersions) {
             const indexId = `${skillId}/${version}`;
             try {
-              // eslint-disable-next-line no-console
-              console.log(
-                `[deleteSkill] Trying to delete index with version: ${indexId}`,
-              );
               await skillSpaceService.deleteSkillIndex(
                 indexId,
                 normalizedSpaceId,
-              );
-              // eslint-disable-next-line no-console
-              console.log(
-                `[deleteSkill] Successfully deleted index: ${indexId}`,
               );
             } catch {
               // Ignore errors for versions that don't exist

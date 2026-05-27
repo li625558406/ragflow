@@ -26,7 +26,6 @@ const PortalModal = ({
   }, []);
 
   if (!mounted || !visible) return null;
-  console.log('PortalModal:', visible);
   return createPortal(
     <Modal open={visible} onOpenChange={onVisibleChange} {...restProps}>
       {children}

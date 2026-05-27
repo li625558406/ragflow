@@ -58,7 +58,6 @@ export const AdvancedSettingsForm = () => {
                   className="flex"
                   {...field}
                   onValueChange={(value) => {
-                    console.log(value);
                     field.onChange(value);
                   }}
                 >

@@ -347,7 +347,7 @@ export const RenderField = ({
   field: FormFieldConfig;
   labelClassName?: string;
 }) => {
-  const form = useFormContext();
+  useFormContext();
   if (field.render) {
     if (field.type === FormFieldType.Custom && field.hideLabel) {
       return <div className="w-full">{field.render({})}</div>;
@@ -442,7 +442,6 @@ export const RenderField = ({
               ? {
                   ...fieldProps,
                   onChange: (value: string) => {
-                    console.log('select value', value);
                     if (fieldProps.onChange) {
                       fieldProps.onChange(value);
                     }
@@ -469,7 +468,6 @@ export const RenderField = ({
           labelClassName={labelClassName || field.labelClassName}
         >
           {(fieldProps) => {
-            console.log('multi select value', fieldProps);
             const finalFieldProps = {
               ...fieldProps,
               onValueChange: (value: string[]) => {
@@ -712,7 +710,6 @@ const DynamicForm = {
               combinedErrors[key] = combinedErrors[key][0];
             }
           }
-          console.log('combinedErrors', combinedErrors);
           return {
             values: Object.keys(combinedErrors).length ? {} : data,
             errors: combinedErrors,
@@ -926,7 +923,6 @@ const DynamicForm = {
           (async () => {
             try {
               const beValid = await form.trigger();
-              console.log('form valid', beValid, form);
               // if (beValid) {
               //   form.handleSubmit(async (values) => {
               //     console.log('form values', values);
@@ -939,17 +935,13 @@ const DynamicForm = {
                   const filteredValues = (form as any).filterActiveValues
                     ? (form as any).filterActiveValues(values)
                     : values;
-                  console.log(
-                    'filtered form values in saving button',
-                    filteredValues,
-                  );
                   submitFunc(filteredValues);
                 })();
               }
             } catch (e) {
               console.error(e);
             } finally {
-              console.log('form submit3');
+              // ignore
             }
           })();
         }}

@@ -160,7 +160,6 @@ export const useSendMessageBySSE = (url: string) => {
             }
           } catch (e) {
             if (e instanceof DOMException && e.name === 'AbortError') {
-              console.log('Request was aborted by user or logic.');
               break;
             }
           }

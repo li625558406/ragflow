@@ -143,9 +143,7 @@ const YiyanModal = ({
         key={`${visible}-${llmFactory}`}
         fields={fields}
         ref={formRef}
-        onSubmit={(data) => {
-          console.log(data);
-        }}
+        onSubmit={() => {}}
         defaultValues={
           {
             model_type: 'chat',

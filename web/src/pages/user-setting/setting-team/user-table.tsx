@@ -34,7 +34,6 @@ const UserTable = ({ searchUser }: { searchUser: string }) => {
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc' | null>(null);
   const { t } = useTranslation();
   const sortedData = useMemo(() => {
-    console.log('sortedData', data, searchUser);
     if (!data || data.length === 0) return data;
     let filtered = data;
     if (searchUser) {

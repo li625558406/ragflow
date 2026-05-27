@@ -79,15 +79,8 @@ export const useHandleFormValuesChange = (
   );
 
   useEffect(() => {
-    const subscription = form?.watch((value, { name, type, values }) => {
+    const subscription = form?.watch((value, { name, type }) => {
       if (id && name) {
-        console.log(
-          '🚀 ~ useEffect ~ value:',
-          name,
-          type,
-          values,
-          operatorName,
-        );
         let nextValues: any = value;
 
         // Fixed the issue that the related form value does not change after selecting the freedom field of the model

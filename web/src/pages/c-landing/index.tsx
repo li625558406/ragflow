@@ -3,7 +3,6 @@ import { useEffect, useRef, useState } from 'react';
 export default function CLanding() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  // Scroll reveal animation
   useEffect(() => {
     const observer = new IntersectionObserver(
       (entries) => {
@@ -17,70 +16,75 @@ export default function CLanding() {
       { threshold: 0.1, rootMargin: '0px 0px -40px 0px' },
     );
     document
-      .querySelectorAll('.ds-reveal')
+      .querySelectorAll(
+        '.ds-reveal, .ds-scale-in, .ds-slide-left, .ds-slide-right, .ds-blur-in',
+      )
       .forEach((el) => observer.observe(el));
     return () => observer.disconnect();
   }, []);
 
+  // Parallax scroll effect
+  useEffect(() => {
+    const scrollEl = document.querySelector('.c-landing-scroll');
+    if (!scrollEl) return;
+    const elements = document.querySelectorAll('.ds-parallax');
+    const handler = () => {
+      const st = scrollEl.scrollTop;
+      elements.forEach((el) => {
+        const speed = parseFloat(
+          (el as HTMLElement).dataset.parallaxSpeed || '-0.15',
+        );
+        (el as HTMLElement).style.transform = `translateY(${st * speed}px)`;
+      });
+    };
+    scrollEl.addEventListener('scroll', handler, { passive: true });
+    return () => scrollEl.removeEventListener('scroll', handler);
+  }, []);
+
   return (
-    <div className="c-landing-scroll bg-[#f8f6f3] text-[#2d2d4a] antialiased">
+    <div className="c-landing-scroll bg-gradient-to-b from-[#F0F4FF] via-[#F5F0FF] to-[#FFF0F5] text-[#000000] antialiased">
       {/* Navigation */}
-      <nav className="sticky top-0 z-50 bg-white/80 backdrop-blur-xl border-b border-[rgba(124,92,252,0.06)]">
-        <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[#7c5cfc] to-[#a78bfa] flex items-center justify-center shadow-sm">
-              <svg
-                className="w-4 h-4 text-white"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth={2}
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                />
-              </svg>
-            </div>
-            <span className="text-[15px] font-semibold tracking-[-0.02em] text-[#1c1c2e]">
+      <nav className="sticky top-0 z-50 bg-white border-b border-[#D4D4D4]">
+        <div className="max-w-5xl mx-auto px-6 h-14 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-base font-bold tracking-tight text-[#000000]">
               标书分析助手
             </span>
           </div>
           <div className="hidden md:flex items-center gap-8">
             <a
               href="#features"
-              className="text-sm text-[#5a5a7a] hover:text-[#7c5cfc] transition-colors tracking-[-0.01em]"
+              className="text-sm text-[#333333] hover:text-[#000000] transition-colors"
             >
               功能特性
             </a>
             <a
               href="#flow"
-              className="text-sm text-[#5a5a7a] hover:text-[#7c5cfc] transition-colors tracking-[-0.01em]"
+              className="text-sm text-[#333333] hover:text-[#000000] transition-colors"
             >
               使用流程
             </a>
             <a
               href="#scenarios"
-              className="text-sm text-[#5a5a7a] hover:text-[#7c5cfc] transition-colors tracking-[-0.01em]"
+              className="text-sm text-[#333333] hover:text-[#000000] transition-colors"
             >
               应用场景
             </a>
             <a
               href="#faq"
-              className="text-sm text-[#5a5a7a] hover:text-[#7c5cfc] transition-colors tracking-[-0.01em]"
+              className="text-sm text-[#333333] hover:text-[#000000] transition-colors"
             >
               常见问题
             </a>
           </div>
           <a
             href="/home"
-            className="hidden md:inline-flex bg-gradient-to-r from-[#7c5cfc] to-[#a78bfa] hover:from-[#6b4ce0] hover:to-[#9678e8] text-white text-sm font-medium px-5 py-2 rounded-[50px] transition-all duration-200 cursor-pointer shadow-md shadow-[rgba(124,92,252,0.2)] hover:shadow-lg hover:shadow-[rgba(124,92,252,0.3)] hover:-translate-y-0.5 tracking-[-0.01em]"
+            className="hidden md:inline-flex bg-[#000000] hover:bg-[#171717] text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors cursor-pointer"
           >
             开始使用
           </a>
           <button
-            className="md:hidden text-[#5a5a7a]"
+            className="md:hidden text-[#333333]"
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
             aria-label="菜单"
           >
@@ -109,38 +113,38 @@ export default function CLanding() {
           </button>
         </div>
         {mobileMenuOpen && (
-          <div className="md:hidden border-t border-[rgba(124,92,252,0.06)] px-6 py-4 bg-white space-y-3">
+          <div className="md:hidden border-t border-[#D4D4D4] px-6 py-4 bg-white space-y-3">
             <a
               href="#features"
               onClick={() => setMobileMenuOpen(false)}
-              className="block text-sm text-[#5a5a7a] hover:text-[#7c5cfc] py-2"
+              className="block text-sm text-[#333333] hover:text-[#000000] py-2"
             >
               功能特性
             </a>
             <a
               href="#flow"
               onClick={() => setMobileMenuOpen(false)}
-              className="block text-sm text-[#5a5a7a] hover:text-[#7c5cfc] py-2"
+              className="block text-sm text-[#333333] hover:text-[#000000] py-2"
             >
               使用流程
             </a>
             <a
               href="#scenarios"
               onClick={() => setMobileMenuOpen(false)}
-              className="block text-sm text-[#5a5a7a] hover:text-[#7c5cfc] py-2"
+              className="block text-sm text-[#333333] hover:text-[#000000] py-2"
             >
               应用场景
             </a>
             <a
               href="#faq"
               onClick={() => setMobileMenuOpen(false)}
-              className="block text-sm text-[#5a5a7a] hover:text-[#7c5cfc] py-2"
+              className="block text-sm text-[#333333] hover:text-[#000000] py-2"
             >
               常见问题
             </a>
             <a
               href="/home"
-              className="block bg-gradient-to-r from-[#7c5cfc] to-[#a78bfa] text-white text-center px-5 py-2.5 rounded-[50px] text-sm font-medium tracking-[-0.01em]"
+              className="block bg-[#000000] text-white text-center px-5 py-2.5 rounded-lg text-sm font-medium"
             >
               开始使用
             </a>
@@ -148,120 +152,109 @@ export default function CLanding() {
         )}
       </nav>
 
-      {/* Hero Section */}
+      {/* Hero */}
       <section className="relative overflow-hidden">
-        <div className="hero-gradient-cs">
-          {/* Decorative floating shapes */}
-          <div className="absolute top-20 left-10 w-64 h-64 rounded-full bg-gradient-to-br from-[#f472b6]/20 to-[#fb923c]/10 blur-3xl pointer-events-none animate-float-slow" />
+        {/* Floating decorative blobs */}
+        <div
+          className="absolute inset-0 pointer-events-none overflow-hidden"
+          aria-hidden
+        >
           <div
-            className="absolute bottom-10 right-20 w-80 h-80 rounded-full bg-gradient-to-br from-[#7c5cfc]/15 to-[#a78bfa]/10 blur-3xl pointer-events-none animate-float-slow"
-            style={{ animationDelay: '-3s' }}
+            className="ds-parallax absolute top-[15%] left-[10%] w-64 h-64 rounded-full bg-[#E0E7FF] opacity-40 blur-3xl animate-[ds-hero-float_12s_ease-in-out_infinite]"
+            data-parallax-speed="-0.25"
           />
-          <div className="absolute top-40 right-1/3 w-40 h-40 rounded-full bg-gradient-to-br from-[#2ec4b6]/20 to-[#7c5cfc]/10 blur-2xl pointer-events-none" />
-
-          <div className="max-w-6xl mx-auto px-6 pt-20 pb-24 lg:pt-32 lg:pb-36 relative z-10">
-            <div className="max-w-3xl">
-              <div className="ds-reveal">
-                <span className="inline-flex items-center gap-2 text-sm font-medium text-white bg-white/15 rounded-[50px] px-4 py-1.5 mb-8 tracking-[-0.01em] backdrop-blur-sm border border-white/10">
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#2ec4b6] animate-pulse" />
-                  AI 驱动 · 智能分析
-                </span>
-              </div>
-              <h1 className="ds-reveal ds-reveal-d1 text-4xl sm:text-5xl lg:text-[60px] font-bold leading-[1.05] tracking-[-0.04em] text-white mb-6">
-                招标文件
-                <br />
-                <span className="bg-gradient-to-r from-[#f472b6] via-[#fb923c] to-[#facc15] bg-clip-text text-transparent">
-                  智能分析
-                </span>
-                平台
-              </h1>
-              <p className="ds-reveal ds-reveal-d2 text-lg text-white/70 leading-relaxed max-w-xl mb-10 tracking-[-0.01em]">
-                基于大语言模型与知识库检索技术，为政府采购、投标决策提供精准的招标文件分析、关键信息提取与智能问答服务。
-              </p>
-              <div className="ds-reveal ds-reveal-d3 flex flex-wrap gap-3">
-                <a
-                  href="/home"
-                  className="inline-flex items-center gap-2 bg-white hover:bg-white/90 text-[#1c1c2e] text-sm font-semibold px-6 py-3 rounded-[50px] transition-all duration-200 cursor-pointer shadow-lg shadow-black/10 hover:shadow-xl hover:-translate-y-0.5 tracking-[-0.01em]"
-                >
-                  立即体验
-                  <svg
-                    className="w-4 h-4"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={2.5}
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M13 7l5 5m0 0l-5-5m5 5H6"
-                    />
-                  </svg>
-                </a>
-                <a
-                  href="#features"
-                  className="inline-flex items-center gap-2 text-sm font-medium text-white/80 hover:text-white px-6 py-3 rounded-[50px] border border-white/20 hover:border-white/40 transition-colors backdrop-blur-sm tracking-[-0.01em]"
-                >
-                  了解更多
-                  <svg
-                    className="w-4 h-4"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M19 9l-7 7-7-7"
-                    />
-                  </svg>
-                </a>
-              </div>
+          <div
+            className="ds-parallax absolute top-[50%] right-[5%] w-80 h-80 rounded-full bg-[#FCE7F3] opacity-40 blur-3xl animate-[ds-hero-float_15s_ease-in-out_infinite_2s]"
+            data-parallax-speed="-0.12"
+          />
+          <div
+            className="ds-parallax absolute bottom-[10%] left-[30%] w-48 h-48 rounded-full bg-[#D1FAE5] opacity-40 blur-3xl animate-[ds-hero-float_10s_ease-in-out_infinite_4s]"
+            data-parallax-speed="-0.18"
+          />
+        </div>
+        <div className="max-w-5xl mx-auto px-6 pt-20 pb-24 lg:pt-32 lg:pb-36 relative z-10">
+          <div className="max-w-2xl">
+            <div className="ds-reveal mb-8">
+              <span className="inline-flex items-center gap-2 text-sm font-medium text-[#525252] border border-[#1a1a1a] rounded-full px-4 py-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#10B981] animate-pulse" />
+                AI 驱动 · 智能分析
+              </span>
             </div>
+            <h1 className="ds-reveal ds-reveal-d1 text-4xl sm:text-5xl lg:text-[56px] font-bold leading-[1.08] tracking-tight text-[#000000] mb-6">
+              招标文件
+              <br />
+              <span>智能分析</span>
+              平台
+            </h1>
+            <p className="ds-reveal ds-reveal-d2 text-lg text-[#525252] leading-relaxed max-w-xl mb-10">
+              基于大语言模型与知识库检索技术，为政府采购、投标决策提供精准的招标文件分析、关键信息提取与智能问答服务。
+            </p>
+            <div className="ds-reveal ds-reveal-d3 flex flex-wrap gap-3">
+              <a
+                href="/home"
+                className="ds-btn-hover inline-flex items-center gap-2 bg-[#000000] hover:bg-[#171717] text-white text-sm font-semibold px-6 py-3 rounded-lg cursor-pointer"
+              >
+                立即体验
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M13 7l5 5m0 0l-5-5m5 5H6"
+                  />
+                </svg>
+              </a>
+              <a
+                href="#features"
+                className="ds-btn-hover inline-flex items-center gap-2 text-sm font-medium text-[#525252] hover:text-[#000000] px-6 py-3 rounded-lg border border-[#D4D4D4] hover:border-[#000000] cursor-pointer"
+              >
+                了解更多
+              </a>
+            </div>
+          </div>
 
-            {/* Stats */}
-            <div className="ds-reveal ds-reveal-d4 mt-20 grid grid-cols-3 gap-4 max-w-lg">
-              <div className="text-center py-5 px-4 rounded-2xl bg-white/5 backdrop-blur-sm border border-white/10">
-                <div className="text-3xl sm:text-4xl font-bold tracking-[-0.03em] text-white">
-                  10s
-                </div>
-                <div className="text-sm text-white/50 mt-1 font-medium tracking-[-0.01em]">
-                  平均响应时间
-                </div>
+          {/* Stats */}
+          <div className="ds-reveal ds-reveal-d4 mt-20 grid grid-cols-3 gap-4 max-w-lg">
+            <div className="text-center py-5 px-4 rounded-xl border border-[#E5E5E5] ds-card-lift">
+              <div className="text-3xl sm:text-4xl font-bold text-[#000000]">
+                <CountUp end={10} suffix="s" />
               </div>
-              <div className="text-center py-5 px-4 rounded-2xl bg-white/5 backdrop-blur-sm border border-white/10">
-                <div className="text-3xl sm:text-4xl font-bold tracking-[-0.03em] text-white">
-                  95%
-                </div>
-                <div className="text-sm text-white/50 mt-1 font-medium tracking-[-0.01em]">
-                  信息提取准确率
-                </div>
+              <div className="text-sm text-[#525252] mt-1">平均响应时间</div>
+            </div>
+            <div className="text-center py-5 px-4 rounded-xl border border-[#E5E5E5] ds-card-lift">
+              <div className="text-3xl sm:text-4xl font-bold text-[#000000]">
+                <CountUp end={95} suffix="%" />
               </div>
-              <div className="text-center py-5 px-4 rounded-2xl bg-white/5 backdrop-blur-sm border border-white/10">
-                <div className="text-3xl sm:text-4xl font-bold tracking-[-0.03em] text-white">
-                  100+
-                </div>
-                <div className="text-sm text-white/50 mt-1 font-medium tracking-[-0.01em]">
-                  支持文件格式
-                </div>
+              <div className="text-sm text-[#525252] mt-1">信息提取准确率</div>
+            </div>
+            <div className="text-center py-5 px-4 rounded-xl border border-[#E5E5E5] ds-card-lift">
+              <div className="text-3xl sm:text-4xl font-bold text-[#000000]">
+                <CountUp end={100} suffix="+" />
               </div>
+              <div className="text-sm text-[#525252] mt-1">支持文件格式</div>
             </div>
           </div>
         </div>
       </section>
 
-      {/* Features Section */}
-      <section id="features" className="py-24 lg:py-32 bg-[#f8f6f3]">
-        <div className="max-w-6xl mx-auto px-6">
+      <Divider />
+
+      {/* Features */}
+      <section id="features" className="py-24 lg:py-32">
+        <div className="max-w-5xl mx-auto px-6">
           <div className="text-center mb-16 ds-reveal">
-            <span className="text-xs font-semibold text-[#7c5cfc] tracking-[0.12em] uppercase">
+            <span className="text-xs font-semibold text-[#000000] tracking-[0.1em] uppercase">
               核心能力
             </span>
-            <h2 className="text-3xl sm:text-4xl font-bold tracking-[-0.03em] text-[#1c1c2e] mt-3">
+            <h2 className="text-3xl sm:text-4xl font-bold tracking-tight text-[#000000] mt-3">
               六大核心功能
             </h2>
-            <p className="text-[#5a5a7a] mt-3 max-w-md mx-auto text-base tracking-[-0.01em]">
+            <p className="text-[#333333] mt-3 max-w-md mx-auto text-base">
               覆盖招标文件分析全流程，让投标决策更高效
             </p>
           </div>
@@ -269,10 +262,10 @@ export default function CLanding() {
             {features.map((f, i) => (
               <div
                 key={f.title}
-                className={`creative-card bg-white rounded-2xl p-7 border border-[rgba(124,92,252,0.06)] ds-reveal ds-reveal-d${Math.min(i + 1, 6)}`}
+                className={`ds-scale-in ds-reveal-d${Math.min(i + 1, 6)} ds-card-lift bg-white rounded-xl p-7 border border-[#D4D4D4] hover:border-[#000000]`}
               >
                 <div
-                  className={`w-11 h-11 rounded-xl flex items-center justify-center mb-5 ${f.bg}`}
+                  className={`w-10 h-10 rounded-lg flex items-center justify-center mb-5 ${f.bg}`}
                 >
                   <svg
                     className={`w-5 h-5 ${f.color}`}
@@ -288,10 +281,10 @@ export default function CLanding() {
                     />
                   </svg>
                 </div>
-                <h3 className="text-base font-semibold text-[#1c1c2e] mb-2 tracking-[-0.01em]">
+                <h3 className="text-base font-semibold text-[#000000] mb-2">
                   {f.title}
                 </h3>
-                <p className="text-sm text-[#5a5a7a] leading-relaxed tracking-[-0.005em]">
+                <p className="text-sm text-[#333333] leading-relaxed">
                   {f.desc}
                 </p>
               </div>
@@ -300,35 +293,37 @@ export default function CLanding() {
         </div>
       </section>
 
-      {/* Flow Section */}
-      <section id="flow" className="py-24 lg:py-32 bg-white">
-        <div className="max-w-6xl mx-auto px-6">
+      <Divider />
+
+      {/* Flow */}
+      <section id="flow" className="py-24 lg:py-32">
+        <div className="max-w-5xl mx-auto px-6">
           <div className="text-center mb-16 ds-reveal">
-            <span className="text-xs font-semibold text-[#7c5cfc] tracking-[0.12em] uppercase">
+            <span className="text-xs font-semibold text-[#000000] tracking-[0.1em] uppercase">
               简单高效
             </span>
-            <h2 className="text-3xl sm:text-4xl font-bold tracking-[-0.03em] text-[#1c1c2e] mt-3">
+            <h2 className="text-3xl sm:text-4xl font-bold tracking-tight text-[#000000] mt-3">
               三步完成分析
             </h2>
-            <p className="text-[#5a5a7a] mt-3 max-w-md mx-auto text-base tracking-[-0.01em]">
+            <p className="text-[#333333] mt-3 max-w-md mx-auto text-base">
               从上传到智能分析，全程简洁高效
             </p>
           </div>
-          <div className="grid md:grid-cols-3 gap-8 md:gap-6">
+          <div className="grid md:grid-cols-3 gap-8">
             {steps.map((s, i) => (
               <div
                 key={s.title}
-                className={`step-card ds-reveal ds-reveal-d${i + 1} text-center`}
+                className={`ds-scale-in ds-reveal-d${i + 1} ds-card-lift text-center py-8 px-6 bg-[#FFFFFF] rounded-xl border border-[#D4D4D4]`}
               >
-                <div
-                  className={`w-16 h-16 bg-gradient-to-br ${s.bg} rounded-2xl mx-auto flex items-center justify-center mb-5 shadow-lg shadow-[${s.shadow}]`}
-                >
-                  <span className="font-bold text-xl text-white">{s.num}</span>
+                <div className="w-14 h-14 bg-[#F0F4FF] rounded-xl mx-auto flex items-center justify-center mb-5">
+                  <span className="font-bold text-lg text-[#4F46E5]">
+                    {s.num}
+                  </span>
                 </div>
-                <h3 className="text-lg font-semibold text-[#1c1c2e] text-center mb-2 tracking-[-0.01em]">
+                <h3 className="text-lg font-semibold text-[#000000] mb-2">
                   {s.title}
                 </h3>
-                <p className="text-sm text-[#5a5a7a] text-center leading-relaxed max-w-[260px] mx-auto tracking-[-0.005em]">
+                <p className="text-sm text-[#333333] leading-relaxed max-w-[260px] mx-auto">
                   {s.desc}
                 </p>
               </div>
@@ -337,17 +332,19 @@ export default function CLanding() {
         </div>
       </section>
 
-      {/* Scenarios Section */}
-      <section id="scenarios" className="py-24 lg:py-32 bg-[#f8f6f3]">
-        <div className="max-w-6xl mx-auto px-6">
+      <Divider />
+
+      {/* Scenarios */}
+      <section id="scenarios" className="py-24 lg:py-32">
+        <div className="max-w-5xl mx-auto px-6">
           <div className="text-center mb-16 ds-reveal">
-            <span className="text-xs font-semibold text-[#7c5cfc] tracking-[0.12em] uppercase">
+            <span className="text-xs font-semibold text-[#000000] tracking-[0.1em] uppercase">
               广泛应用
             </span>
-            <h2 className="text-3xl sm:text-4xl font-bold tracking-[-0.03em] text-[#1c1c2e] mt-3">
+            <h2 className="text-3xl sm:text-4xl font-bold tracking-tight text-[#000000] mt-3">
               应用场景
             </h2>
-            <p className="text-[#5a5a7a] mt-3 max-w-md mx-auto text-base tracking-[-0.01em]">
+            <p className="text-[#333333] mt-3 max-w-md mx-auto text-base">
               覆盖政府采购、工程建设、信息技术等多个招投标领域
             </p>
           </div>
@@ -355,11 +352,11 @@ export default function CLanding() {
             {scenarios.map((s, i) => (
               <div
                 key={s.title}
-                className={`creative-card bg-white rounded-2xl p-7 border border-[rgba(124,92,252,0.06)] ds-reveal ds-reveal-d${Math.min(i + 1, 6)}`}
+                className={`${i % 2 === 0 ? 'ds-slide-left' : 'ds-slide-right'} ds-reveal-d${Math.min(i + 1, 6)} ds-card-lift bg-white rounded-xl p-7 border border-[#D4D4D4] hover:border-[#000000]`}
               >
-                <div className="w-11 h-11 rounded-xl bg-[#ede9fe] flex items-center justify-center mb-5">
+                <div className="w-10 h-10 rounded-lg bg-[#EAEAEA] flex items-center justify-center mb-5">
                   <svg
-                    className="w-5 h-5 text-[#7c5cfc]"
+                    className="w-5 h-5 text-[#000000]"
                     fill="none"
                     stroke="currentColor"
                     strokeWidth={1.5}
@@ -372,10 +369,10 @@ export default function CLanding() {
                     />
                   </svg>
                 </div>
-                <h3 className="text-base font-semibold text-[#1c1c2e] mb-2 tracking-[-0.01em]">
+                <h3 className="text-base font-semibold text-[#000000] mb-2">
                   {s.title}
                 </h3>
-                <p className="text-sm text-[#5a5a7a] leading-relaxed tracking-[-0.005em]">
+                <p className="text-sm text-[#333333] leading-relaxed">
                   {s.desc}
                 </p>
               </div>
@@ -384,28 +381,30 @@ export default function CLanding() {
         </div>
       </section>
 
-      {/* Advantages Section */}
-      <section className="py-24 lg:py-32 bg-white">
-        <div className="max-w-6xl mx-auto px-6">
+      <Divider />
+
+      {/* Advantages */}
+      <section className="py-24 lg:py-32">
+        <div className="max-w-5xl mx-auto px-6">
           <div className="text-center mb-16 ds-reveal">
-            <span className="text-xs font-semibold text-[#7c5cfc] tracking-[0.12em] uppercase">
+            <span className="text-xs font-semibold text-[#000000] tracking-[0.1em] uppercase">
               为什么选择我们
             </span>
-            <h2 className="text-3xl sm:text-4xl font-bold tracking-[-0.03em] text-[#1c1c2e] mt-3">
+            <h2 className="text-3xl sm:text-4xl font-bold tracking-tight text-[#000000] mt-3">
               技术优势
             </h2>
-            <p className="text-[#5a5a7a] mt-3 max-w-md mx-auto text-base tracking-[-0.01em]">
+            <p className="text-[#333333] mt-3 max-w-md mx-auto text-base">
               基于 RAGFlow 开源引擎，企业级安全可靠
             </p>
           </div>
-          <div className="grid md:grid-cols-2 gap-6">
+          <div className="grid md:grid-cols-2 gap-5">
             {advantages.map((a, i) => (
               <div
                 key={a.title}
-                className={`creative-card flex gap-5 p-7 rounded-2xl border border-[rgba(124,92,252,0.06)] bg-white ds-reveal ds-reveal-d${Math.min(i + 1, 6)}`}
+                className={`ds-blur-in ds-reveal-d${Math.min(i + 1, 6)} ds-card-lift flex gap-5 p-7 rounded-xl border border-[#D4D4D4] hover:border-[#000000] bg-white`}
               >
                 <div
-                  className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${a.bg}`}
+                  className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 ${a.bg}`}
                 >
                   <svg
                     className={`w-5 h-5 ${a.color}`}
@@ -422,10 +421,10 @@ export default function CLanding() {
                   </svg>
                 </div>
                 <div>
-                  <h3 className="text-base font-semibold text-[#1c1c2e] mb-1.5 tracking-[-0.01em]">
+                  <h3 className="text-base font-semibold text-[#000000] mb-1.5">
                     {a.title}
                   </h3>
-                  <p className="text-sm text-[#5a5a7a] leading-relaxed tracking-[-0.005em]">
+                  <p className="text-sm text-[#333333] leading-relaxed">
                     {a.desc}
                   </p>
                 </div>
@@ -435,14 +434,16 @@ export default function CLanding() {
         </div>
       </section>
 
-      {/* FAQ Section */}
-      <section id="faq" className="py-24 lg:py-32 bg-[#f8f6f3]">
+      <Divider />
+
+      {/* FAQ */}
+      <section id="faq" className="py-24 lg:py-32">
         <div className="max-w-3xl mx-auto px-6">
           <div className="text-center mb-16 ds-reveal">
-            <span className="text-xs font-semibold text-[#7c5cfc] tracking-[0.12em] uppercase">
+            <span className="text-xs font-semibold text-[#000000] tracking-[0.1em] uppercase">
               帮助中心
             </span>
-            <h2 className="text-3xl sm:text-4xl font-bold tracking-[-0.03em] text-[#1c1c2e] mt-3">
+            <h2 className="text-3xl sm:text-4xl font-bold tracking-tight text-[#000000] mt-3">
               常见问题
             </h2>
           </div>
@@ -454,69 +455,49 @@ export default function CLanding() {
         </div>
       </section>
 
-      {/* CTA Section */}
-      <section className="relative overflow-hidden py-24 lg:py-32">
-        <div className="cta-gradient-cs">
-          <div className="absolute top-0 right-0 w-96 h-96 rounded-full bg-gradient-to-br from-[#f472b6]/20 to-transparent blur-3xl pointer-events-none" />
-          <div className="absolute bottom-0 left-0 w-80 h-80 rounded-full bg-gradient-to-tr from-[#2ec4b6]/15 to-transparent blur-3xl pointer-events-none" />
-          <div className="max-w-6xl mx-auto px-6 text-center relative z-10 ds-reveal">
-            <h2 className="text-3xl sm:text-4xl font-bold tracking-[-0.03em] text-white mb-4">
-              准备好开始了吗？
-            </h2>
-            <p className="text-white/60 mb-10 max-w-md mx-auto text-base tracking-[-0.01em]">
-              登录系统后，即可开始您的标书智能分析之旅
-            </p>
-            <a
-              href="/home"
-              className="inline-flex items-center gap-2 bg-white hover:bg-white/90 text-[#1c1c2e] text-sm font-semibold px-8 py-3.5 rounded-[50px] transition-all duration-200 cursor-pointer shadow-xl hover:shadow-2xl hover:-translate-y-0.5 tracking-[-0.01em]"
+      <Divider />
+
+      {/* CTA */}
+      <section className="py-24 lg:py-32">
+        <div className="max-w-5xl mx-auto px-6 text-center ds-scale-in">
+          <h2 className="text-3xl sm:text-4xl font-bold tracking-tight text-[#000000] mb-4">
+            准备好开始了吗？
+          </h2>
+          <p className="text-[#525252] mb-10 max-w-md mx-auto text-base">
+            登录系统后，即可开始您的标书智能分析之旅
+          </p>
+          <a
+            href="/home"
+            className="ds-btn-hover inline-flex items-center gap-2 bg-white hover:bg-[#EAEAEA] text-[#000000] text-sm font-semibold px-8 py-3.5 rounded-lg cursor-pointer"
+          >
+            进入分析平台
+            <svg
+              className="w-4 h-4"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2.5}
+              viewBox="0 0 24 24"
             >
-              进入分析平台
-              <svg
-                className="w-4 h-4"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth={2.5}
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M13 7l5 5m0 0l-5-5m5 5H6"
-                />
-              </svg>
-            </a>
-          </div>
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M13 7l5 5m0 0l-5-5m5 5H6"
+              />
+            </svg>
+          </a>
         </div>
       </section>
 
       {/* Footer */}
-      <footer className="py-8 bg-white border-t border-[rgba(124,92,252,0.06)]">
-        <div className="max-w-6xl mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-[#7c5cfc] to-[#a78bfa] flex items-center justify-center">
-              <svg
-                className="w-3 h-3 text-white"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth={2}
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                />
-              </svg>
-            </div>
-            <span className="text-sm text-[#5a5a7a]">标书分析助手</span>
-          </div>
-          <p className="text-xs text-[#9494b5]">
+      <footer className="py-8 border-t border-[#E5E5E5]">
+        <div className="max-w-5xl mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <span className="text-sm text-[#333333]">标书分析助手</span>
+          <p className="text-xs text-[#525252]">
             &copy; {new Date().getFullYear()} All Rights Reserved
           </p>
         </div>
       </footer>
 
-      {/* Inject CSS */}
       <LandingStyles />
     </div>
   );
@@ -529,43 +510,43 @@ const features = [
     title: '智能问答',
     desc: '基于知识库内容的精准问答，自动关联招标文件原文并标注出处页码，确保信息准确可溯源。',
     icon: 'M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z',
-    bg: 'bg-[#ede9fe]',
-    color: 'text-[#7c5cfc]',
+    bg: 'bg-[#EAEAEA]',
+    color: 'text-[#000000]',
   },
   {
     title: '关键信息提取',
     desc: '自动提炼预算金额、评分标准、技术要求、商务条款等核心维度，结构化呈现。',
     icon: 'M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z',
-    bg: 'bg-[#d1fae5]',
+    bg: 'bg-[#DCFCE7]',
     color: 'text-[#059669]',
   },
   {
     title: '多采购包对比',
     desc: '支持同一标书中多个采购包的横向对比分析，快速发现差异与优劣。',
     icon: 'M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5',
-    bg: 'bg-[#fef3c7]',
-    color: 'text-[#d97706]',
+    bg: 'bg-[#FEF9C3]',
+    color: 'text-[#CA8A04]',
   },
   {
     title: '评审规则解析',
     desc: '自动识别评审方法、权重分配、评分标准，帮助制定最优投标策略。',
     icon: 'M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z',
-    bg: 'bg-[#fce4ec]',
-    color: 'text-[#e11d48]',
+    bg: 'bg-[#FEE2E2]',
+    color: 'text-[#DC2626]',
   },
   {
     title: '合规性检查',
     desc: '自动标注实质性要求和禁止项，避免因疏忽导致废标。',
     icon: 'M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z',
-    bg: 'bg-[#e0f2fe]',
-    color: 'text-[#0284c7]',
+    bg: 'bg-[#EAEAEA]',
+    color: 'text-[#1a1a1a]',
   },
   {
     title: '来源精准标注',
     desc: '每条分析结果均标注文件来源和页码，支持原文追溯验证。',
     icon: 'M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244',
-    bg: 'bg-[#f3e8ff]',
-    color: 'text-[#9333ea]',
+    bg: 'bg-[#F3E8FF]',
+    color: 'text-[#7C3AED]',
   },
 ];
 
@@ -574,22 +555,16 @@ const steps = [
     num: '01',
     title: '上传标书',
     desc: '将招标文件上传至知识库系统，自动进行文档解析与切片处理',
-    bg: 'from-[#7c5cfc] to-[#a78bfa]',
-    shadow: 'rgba(124,92,252,0.3)',
   },
   {
     num: '02',
     title: '智能分析',
     desc: '通过自然语言提问，AI 自动检索知识库并生成结构化分析结果',
-    bg: 'from-[#f472b6] to-[#fb923c]',
-    shadow: 'rgba(244,114,182,0.3)',
   },
   {
     num: '03',
     title: '辅助决策',
     desc: '基于分析结果，快速掌握标书要点，制定最优投标方案',
-    bg: 'from-[#2ec4b6] to-[#7c5cfc]',
-    shadow: 'rgba(46,196,182,0.3)',
   },
 ];
 
@@ -631,29 +606,29 @@ const advantages = [
     title: 'RAG 检索增强生成',
     desc: '采用先进的 RAG 技术，AI 回答基于招标文件原文，避免幻觉，确保分析结果准确可信。',
     icon: 'M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z',
-    bg: 'bg-[#ede9fe]',
-    color: 'text-[#7c5cfc]',
+    bg: 'bg-[#EAEAEA]',
+    color: 'text-[#000000]',
   },
   {
     title: '深度文档理解',
     desc: '支持 PDF、Word 等多种格式，自动识别表格、章节、附件等复杂结构，精准提取关键信息。',
     icon: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z',
-    bg: 'bg-[#dbeafe]',
-    color: 'text-[#2563eb]',
+    bg: 'bg-[#EAEAEA]',
+    color: 'text-[#1a1a1a]',
   },
   {
     title: '企业级数据安全',
     desc: '支持私有化部署，数据全程加密存储与传输，满足政企客户对数据安全的严格要求。',
     icon: 'M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z',
-    bg: 'bg-[#d1fae5]',
+    bg: 'bg-[#DCFCE7]',
     color: 'text-[#059669]',
   },
   {
     title: '灵活可扩展',
     desc: '基于 RAGFlow 开源引擎构建，支持自定义知识库、智能体配置，可根据业务需求灵活扩展。',
     icon: 'M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z',
-    bg: 'bg-[#fef3c7]',
-    color: 'text-[#d97706]',
+    bg: 'bg-[#FEF9C3]',
+    color: 'text-[#CA8A04]',
   },
 ];
 
@@ -685,16 +660,16 @@ const faqs = [
 function FAQItem({ question, answer }: { question: string; answer: string }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="bg-white rounded-2xl border border-[rgba(124,92,252,0.06)] overflow-hidden transition-all duration-200 hover:border-[rgba(124,92,252,0.12)]">
+    <div className="bg-white rounded-xl border border-[#D4D4D4] overflow-hidden">
       <button
-        className="w-full flex items-center justify-between px-7 py-5 text-left cursor-pointer hover:bg-[#faf8f5] transition-colors"
+        className="w-full flex items-center justify-between px-7 py-5 text-left cursor-pointer hover:bg-[#FFFFFF] transition-colors"
         onClick={() => setOpen(!open)}
       >
-        <span className="text-base font-medium text-[#1c1c2e] pr-4 tracking-[-0.01em]">
+        <span className="text-base font-medium text-[#000000] pr-4">
           {question}
         </span>
         <svg
-          className={`w-5 h-5 text-[#7c5cfc] shrink-0 transition-transform duration-300 ${open ? 'rotate-180' : ''}`}
+          className={`w-5 h-5 text-[#000000] shrink-0 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
@@ -708,7 +683,7 @@ function FAQItem({ question, answer }: { question: string; answer: string }) {
         </svg>
       </button>
       {open && (
-        <div className="px-7 pb-5 text-[#5a5a7a] text-sm leading-relaxed border-t border-[rgba(124,92,252,0.06)] pt-4 tracking-[-0.005em]">
+        <div className="px-7 pb-5 text-[#333333] text-sm leading-relaxed border-t border-[#D4D4D4] pt-4">
           {answer}
         </div>
       )}
@@ -716,7 +691,66 @@ function FAQItem({ question, answer }: { question: string; answer: string }) {
   );
 }
 
-/* ── Styles (injected once) ──────────────────────────────── */
+/* ── Styles ───────────────────────────────────────────────── */
+
+function CountUp({
+  end,
+  suffix = '',
+  duration = 1500,
+}: {
+  end: number;
+  suffix?: string;
+  duration?: number;
+}) {
+  const [val, setVal] = useState(0);
+  const ref = useRef<HTMLSpanElement>(null);
+  const triggered = useRef(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting && !triggered.current) {
+          triggered.current = true;
+          const start = performance.now();
+          const tick = (now: number) => {
+            const p = Math.min((now - start) / duration, 1);
+            const eased = 1 - Math.pow(1 - p, 3); // ease-out cubic
+            setVal(Math.round(eased * end));
+            if (p < 1) requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+          obs.disconnect();
+        }
+      },
+      { threshold: 0.5 },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [end, duration]);
+
+  return (
+    <span ref={ref}>
+      {val}
+      {suffix}
+    </span>
+  );
+}
+
+function Divider() {
+  return (
+    <div className="max-w-5xl mx-auto px-6">
+      <div
+        className="h-px w-full"
+        style={{
+          background:
+            'linear-gradient(to right, transparent, #D4D4D4 20%, #D4D4D4 80%, transparent)',
+        }}
+      />
+    </div>
+  );
+}
 
 function LandingStyles() {
   const injected = useRef(false);
@@ -731,74 +765,36 @@ function LandingStyles() {
     style.textContent = `
       .c-landing-scroll { position: fixed; inset: 0; overflow-y: auto; overflow-x: hidden; scrollbar-width: none; }
       .c-landing-scroll::-webkit-scrollbar { display: none; }
-      .hero-gradient-cs {
-        background: linear-gradient(135deg, #0f0a1a 0%, #1a0f2e 20%, #2d1b4e 40%, #1c1c2e 65%, #0f0a1a 100%);
-        position: relative;
+      .ds-reveal { opacity: 0; transform: translateY(20px); transition: opacity 0.6s cubic-bezier(0.22, 1, 0.36, 1), transform 0.6s cubic-bezier(0.22, 1, 0.36, 1); }
+      .ds-reveal.visible { opacity: 1; transform: translateY(0); }
+      .ds-reveal-d1 { transition-delay: 0.06s; }
+      .ds-reveal-d2 { transition-delay: 0.12s; }
+      .ds-reveal-d3 { transition-delay: 0.18s; }
+      .ds-reveal-d4 { transition-delay: 0.24s; }
+      .ds-reveal-d5 { transition-delay: 0.30s; }
+      .ds-reveal-d6 { transition-delay: 0.36s; }
+      .ds-reveal-d7 { transition-delay: 0.42s; }
+      .ds-reveal-d8 { transition-delay: 0.48s; }
+      .ds-reveal-d9 { transition-delay: 0.54s; }
+      .ds-scale-in { opacity: 0; transform: scale(0.92); transition: opacity 0.6s cubic-bezier(0.22, 1, 0.36, 1), transform 0.6s cubic-bezier(0.22, 1, 0.36, 1); }
+      .ds-scale-in.visible { opacity: 1; transform: scale(1); }
+      .ds-slide-left { opacity: 0; transform: translateX(-24px); transition: opacity 0.6s cubic-bezier(0.22, 1, 0.36, 1), transform 0.6s cubic-bezier(0.22, 1, 0.36, 1); }
+      .ds-slide-left.visible { opacity: 1; transform: translateX(0); }
+      .ds-slide-right { opacity: 0; transform: translateX(24px); transition: opacity 0.6s cubic-bezier(0.22, 1, 0.36, 1), transform 0.6s cubic-bezier(0.22, 1, 0.36, 1); }
+      .ds-slide-right.visible { opacity: 1; transform: translateX(0); }
+      .ds-blur-in { opacity: 0; filter: blur(8px); transition: opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1), filter 0.7s cubic-bezier(0.22, 1, 0.36, 1); }
+      .ds-blur-in.visible { opacity: 1; filter: blur(0); }
+      .ds-parallax { will-change: transform; }
+      .ds-card-lift { transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.2s cubic-bezier(0.22, 1, 0.36, 1), border-color 0.2s ease; }
+      .ds-card-lift:hover { transform: translateY(-4px); box-shadow: 0 12px 32px rgba(0,0,0,0.06); }
+      .ds-btn-hover { transition: all 0.2s cubic-bezier(0.22, 1, 0.36, 1); }
+      .ds-btn-hover:hover { transform: scale(1.03); }
+      .ds-btn-hover:active { transform: scale(0.98); }
+      @keyframes ds-hero-float {
+        0%, 100% { transform: translateY(0) rotate(0deg); opacity: 0.06; }
+        33% { transform: translateY(-20px) rotate(1deg); opacity: 0.04; }
+        66% { transform: translateY(-10px) rotate(-1deg); opacity: 0.08; }
       }
-      .hero-gradient-cs::before {
-        content: '';
-        position: absolute;
-        inset: 0;
-        background:
-          radial-gradient(ellipse 45% 60% at 15% 40%, rgba(124, 92, 252, 0.35) 0%, transparent 65%),
-          radial-gradient(ellipse 35% 50% at 65% 30%, rgba(244, 114, 182, 0.25) 0%, transparent 60%),
-          radial-gradient(ellipse 30% 40% at 85% 70%, rgba(46, 196, 182, 0.2) 0%, transparent 60%),
-          radial-gradient(ellipse 25% 30% at 45% 80%, rgba(251, 146, 60, 0.15) 0%, transparent 55%);
-        pointer-events: none;
-      }
-      .cta-gradient-cs {
-        background: linear-gradient(135deg, #0f0a1a 0%, #1a0f2e 30%, #2d1b4e 60%, #1a0f2e 100%);
-        position: relative;
-      }
-      .cta-gradient-cs::before {
-        content: '';
-        position: absolute;
-        inset: 0;
-        background:
-          radial-gradient(ellipse 40% 50% at 30% 50%, rgba(124, 92, 252, 0.3) 0%, transparent 60%),
-          radial-gradient(ellipse 30% 40% at 70% 50%, rgba(244, 114, 182, 0.2) 0%, transparent 55%);
-        pointer-events: none;
-      }
-      .creative-card {
-        transition: box-shadow 0.3s ease, transform 0.3s ease, border-color 0.3s ease;
-      }
-      .creative-card:hover {
-        transform: translateY(-3px);
-        box-shadow: 0 16px 40px -12px rgba(124, 92, 252, 0.12);
-        border-color: rgba(124, 92, 252, 0.15);
-      }
-      .step-card {
-        position: relative;
-        padding: 32px 24px;
-        background: white;
-        border-radius: 20px;
-        border: 1px solid rgba(124, 92, 252, 0.06);
-        transition: box-shadow 0.3s ease, transform 0.3s ease;
-      }
-      .step-card:hover {
-        transform: translateY(-3px);
-        box-shadow: 0 20px 48px -12px rgba(124, 92, 252, 0.12);
-      }
-      .step-card::after {
-        content: '';
-        position: absolute;
-        top: 50%;
-        right: -16px;
-        width: 12px;
-        height: 12px;
-        border-top: 2px solid rgba(124, 92, 252, 0.15);
-        border-right: 2px solid rgba(124, 92, 252, 0.15);
-        transform: translateY(-50%) rotate(45deg);
-      }
-      .step-card:last-child::after { display: none; }
-      @media (max-width: 768px) {
-        .step-card::after { display: none; }
-      }
-      @keyframes float-slow {
-        0%, 100% { transform: translateY(0) scale(1); }
-        50% { transform: translateY(-20px) scale(1.05); }
-      }
-      .animate-float-slow { animation: float-slow 8s ease-in-out infinite; }
     `;
     document.head.appendChild(style);
   }, []);

@@ -126,7 +126,6 @@ export const ReparseDialog = memo(
       if (check) {
         instance.submit();
         const formValues = instance.getValues();
-        console.log(formValues);
         handleOperationIconClick({
           delete: formValues.delete,
           apply_kb: formValues.apply_kb,
@@ -147,9 +146,7 @@ export const ReparseDialog = memo(
           node: (
             <div>
               <DynamicForm.Root
-                onSubmit={(data) => {
-                  console.log('submit', data);
-                }}
+                onSubmit={() => {}}
                 ref={formCallbackRef}
                 fields={fields}
                 defaultValues={defaultValues}

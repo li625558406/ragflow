@@ -94,8 +94,8 @@ export function SavingButton() {
                 });
               })();
             }
-          } catch (e) {
-            console.log(e);
+          } catch {
+            // ignore
           }
         })();
       }}

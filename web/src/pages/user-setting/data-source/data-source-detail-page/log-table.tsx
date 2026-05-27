@@ -71,7 +71,6 @@ const columns = ({
           <div
             className="flex items-center gap-2 text-text-primary cursor-pointer"
             onClick={() => {
-              console.log('handleToDataSetDetail', row.original.kb_id);
               handleToDataSetDetail(row.original.kb_id);
             }}
           >
@@ -149,7 +148,6 @@ export const DataSourceLogsTable = ({
 
   const handleToDataSetDetail = useCallback(
     (id: string) => {
-      console.log('handleToDataSetDetail', id);
       navigate(`${Routes.DatasetBase}${Routes.DatasetBase}/${id}`);
     },
     [navigate],

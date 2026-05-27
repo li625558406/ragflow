@@ -16,7 +16,7 @@ const tools: ToolItem[] = [
     id: 'agency-fee',
     name: '代理费用计算',
     description: '按差额定率分档累进法计算招标代理服务费',
-    icon: 'M15.75 15.75V18m-7.5-6.75h.008v.008H8.25v-.008zm0 2.25h.008v.008H8.25V16.5zm0 2.25h.008v.008H8.25v-.008zm0 2.25h.008v.008H8.25v-.008zm2.25-4.5h.008v.008H10.5v-.008zm0 2.25h.008v.008H10.5V16.5zm0 2.25h.008v.008H10.5v-.008zm2.25-4.5h.008v.008H12.75v-.008zm0 2.25h.008v.008H12.75V16.5zm2.25-4.5h.008v.008H15v-.008zm0 2.25h.008v.008H15V16.5z',
+    icon: 'M5 3h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2z M9 9h6 M10 13h4v4h-4z',
   },
   {
     id: 'cost-consulting',
@@ -44,33 +44,33 @@ export default function ToolsPanel() {
   const selectedTool = tools.find((t) => t.id === selectedId);
 
   return (
-    <div className="flex-1 flex min-h-0 bg-[#f8f6f3]">
+    <div className="flex-1 flex min-h-0 bg-[#FFFFFF]">
       {/* Left: Tool list */}
-      <div className="w-56 shrink-0 border-r border-[rgba(124,92,252,0.06)] bg-white flex flex-col">
+      <div className="w-56 shrink-0 border-r border-[#D4D4D4] bg-white flex flex-col">
         <div className="px-4 pt-4 pb-2">
-          <span className="text-[#9494b5] text-[10px] font-semibold tracking-widest uppercase">
+          <span className="text-[#333333] text-[15px] font-semibold tracking-widest uppercase">
             工具列表
           </span>
         </div>
         <div className="flex-1 overflow-y-auto px-2 space-y-0.5 pb-4">
-          {tools.map((tool) => (
+          {tools.map((tool, idx) => (
             <button
               key={tool.id}
               onClick={() => setSelectedId(tool.id)}
-              className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer transition text-left group ${
+              className={`cs-list-enter cs-list-d${Math.min(idx, 7)} w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer transition text-left group ${
                 tool.id === selectedId
-                  ? 'bg-[#ede9fe] text-[#7c5cfc]'
-                  : 'text-[#5a5a7a] hover:bg-[#f4f1fb] hover:text-[#1c1c2e]'
+                  ? 'bg-[#EAEAEA] text-[#000000]'
+                  : 'text-[#333333] hover:bg-[#EAEAEA] hover:text-[#000000]'
               }`}
             >
               <div
                 className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${
-                  tool.id === selectedId ? 'bg-white' : 'bg-[#f4f1fb]'
+                  tool.id === selectedId ? 'bg-white' : 'bg-[#EAEAEA]'
                 }`}
               >
                 <svg
                   className={`w-4 h-4 ${
-                    tool.id === selectedId ? 'text-[#7c5cfc]' : 'text-[#9494b5]'
+                    tool.id === selectedId ? 'text-[#000000]' : 'text-[#333333]'
                   }`}
                   fill="none"
                   stroke="currentColor"
@@ -85,8 +85,10 @@ export default function ToolsPanel() {
                 </svg>
               </div>
               <div className="min-w-0">
-                <div className="text-sm font-medium truncate">{tool.name}</div>
-                <div className="text-[11px] text-[#9494b5] truncate">
+                <div className="text-[15px] font-medium truncate">
+                  {tool.name}
+                </div>
+                <div className="text-[11px] text-[#333333] truncate">
                   {tool.description}
                 </div>
               </div>
@@ -96,7 +98,7 @@ export default function ToolsPanel() {
       </div>
 
       {/* Right: Tool content */}
-      <div className="flex-1 overflow-y-auto bg-[#f8f6f3]">
+      <div className="flex-1 overflow-y-auto bg-[#FFFFFF]">
         {selectedTool?.id === 'agency-fee' && <AgencyFeeCalculator />}
         {selectedTool?.id === 'cost-consulting' && <CostConsultingCalculator />}
         {selectedTool?.id === 'engineering-survey' && (

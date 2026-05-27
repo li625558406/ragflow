@@ -380,7 +380,6 @@ const FileLogsTable: FC<FileLogsTableProps> = ({
       ),
       details: row.original.progress_msg,
     } as unknown as IFileLogItem;
-    console.log('logDetail', logDetail);
     setLogInfo(logDetail);
     setIsModalVisible(true);
   };

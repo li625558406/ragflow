@@ -11,10 +11,9 @@ interface RerunButtonProps {
   loading?: boolean;
 }
 const RerunButton = (props: RerunButtonProps) => {
-  const { className, step, onRerun, loading } = props;
+  const { step, onRerun, loading } = props;
   const { t } = useTranslation();
   const clickFunc = () => {
-    console.log('click rerun button');
     Modal.show({
       visible: true,
       className: '!w-[560px]',

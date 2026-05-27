@@ -25,7 +25,7 @@ const ExeSQLForm = () => {
     defaultValues: defaultValues as FormType,
   });
 
-  const onError = (error: any) => console.log(error);
+  const onError = () => {};
 
   useWatchFormChange(form);
 

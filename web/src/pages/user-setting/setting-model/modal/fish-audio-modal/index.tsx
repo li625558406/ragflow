@@ -113,7 +113,7 @@ const FishAudioModal = ({
     >
       <DynamicForm.Root
         fields={fields}
-        onSubmit={(data) => console.log(data)}
+        onSubmit={(data) => data}
         defaultValues={{ model_type: 'tts' }}
         labelClassName="font-normal"
       >

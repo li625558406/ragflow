@@ -180,7 +180,6 @@ const ModelProviders = () => {
 
   const handleAddModel = useCallback(
     (llmFactory: string) => {
-      console.log('handleAddModel', llmFactory);
       if (isLocalLlmFactory(llmFactory)) {
         showLlmAddingModal(llmFactory);
       } else if (llmFactory in ModalMap) {

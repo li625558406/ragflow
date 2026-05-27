@@ -13,19 +13,18 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import {
-  useListAnalysisTemplates,
-  type AnalysisTemplate,
-} from '@/hooks/use-analysis-template-request';
+import { useListAnalysisTemplates } from '@/hooks/use-analysis-template-request';
 import { useAnalyzeDocument } from '@/hooks/use-document-analysis-request';
-import { useNavigate, useParams } from 'react-router';
-import { useTranslation } from 'react-i18next';
-import { useState, useEffect } from 'react';
 import { Loader2 } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { useNavigate, useParams } from 'react-router';
 
 export function AnalysisStarter() {
   const { documentId } = useParams<{ documentId: string }>();
-  const { t } = useTranslation('translation', { keyPrefix: 'documentAnalysis' });
+  const { t } = useTranslation('translation', {
+    keyPrefix: 'documentAnalysis',
+  });
   const navigate = useNavigate();
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -53,10 +52,11 @@ export function AnalysisStarter() {
       },
       {
         onSuccess: (data) => {
-          console.log('Analysis started:', data);
           if (data?.task_id) {
             // 跳转到分析结果页面
-            navigate(`/document-analysis/${documentId}?task_id=${data.task_id}`);
+            navigate(
+              `/document-analysis/${documentId}?task_id=${data.task_id}`,
+            );
           } else {
             setError('启动分析失败：未返回任务ID');
           }
@@ -65,7 +65,7 @@ export function AnalysisStarter() {
           console.error('Analysis error:', err);
           setError(err?.message || '启动分析失败');
         },
-      }
+      },
     );
   };
 
@@ -87,7 +87,10 @@ export function AnalysisStarter() {
         <CardContent className="space-y-4">
           <div className="space-y-2">
             <label className="text-sm font-medium">{t('selectTemplate')}</label>
-            <Select value={selectedTemplateId} onValueChange={setSelectedTemplateId}>
+            <Select
+              value={selectedTemplateId}
+              onValueChange={setSelectedTemplateId}
+            >
               <SelectTrigger>
                 <SelectValue placeholder={t('selectTemplate')} />
               </SelectTrigger>
@@ -95,7 +98,9 @@ export function AnalysisStarter() {
                 {templates.map((template) => (
                   <SelectItem key={template.id} value={template.id}>
                     {template.name}
-                    {template.is_system ? ` (${t('defaultTemplate')})` : ` (${t('customTemplate')})`}
+                    {template.is_system
+                      ? ` (${t('defaultTemplate')})`
+                      : ` (${t('customTemplate')})`}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -120,7 +125,9 @@ export function AnalysisStarter() {
             </Button>
             <Button
               onClick={handleStartAnalysis}
-              disabled={!selectedTemplateId || isPending || templates.length === 0}
+              disabled={
+                !selectedTemplateId || isPending || templates.length === 0
+              }
             >
               {isPending ? (
                 <>

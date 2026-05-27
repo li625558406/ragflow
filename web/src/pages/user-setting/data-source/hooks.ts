@@ -62,7 +62,6 @@ export const useListDataSource = () => {
       }
     });
 
-    console.log('🚀 ~ useListDataSource ~ sourceList:', sourceList);
     return sourceList;
   }, [list]);
 
@@ -94,7 +93,6 @@ export const useAddDataSource = ({ isEdit = false }: { isEdit?: boolean }) => {
       const { data: res } = isEdit
         ? await dataSourceUpdate(data.id, data)
         : await dataSourceService.dataSourceSet(data);
-      console.log('🚀 ~ handleAddOk ~ code:', res.code);
       if (res.code === 0) {
         queryClient.invalidateQueries({ queryKey: ['data-source'] });
         message.success(t(`message.operated`));

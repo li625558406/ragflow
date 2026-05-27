@@ -376,7 +376,6 @@ export const useManageMetaDataModal = (
 
   const handleSaveManage = useCallback(
     async (callback: () => void) => {
-      console.log('handleSaveManage', tableData);
       const { data: res } = await updateDocumentsMetadata({
         dataset_id: id as string,
         selector: { document_ids: documentIds },

@@ -216,7 +216,6 @@ export const useRerunDataflow = ({
 export const useTimelineDataFlow = (data: IPipelineFileLogDetail) => {
   const timelineNodes: TimelineNode[] = useMemo(() => {
     const nodes: Array<ITimelineNodeObj & { id: number | string }> = [];
-    console.log('time-->', data);
     const times = data?.dsl?.components;
     const graphNodes = data?.dsl?.graph?.nodes;
     if (times) {
@@ -257,7 +256,6 @@ export const useTimelineDataFlow = (data: IPipelineFileLogDetail) => {
           type: TimelineNodeType;
           detail: { value: IDslComponent; key: string };
         };
-        console.log('timeNodetype-->', type);
         nodes.push(timeNode);
 
         if (times[key].downstream && times[key].downstream.length > 0) {
@@ -282,7 +280,6 @@ export const useGetPipelineResultSearchParams = () => {
   const is_read_only = currentQueryParameters.get(
     PipelineResultSearchParams.IsReadOnly,
   ) as 'true' | 'false';
-  console.log('is_read_only', is_read_only);
   return {
     type: currentQueryParameters.get(PipelineResultSearchParams.Type) || '',
     documentId:

@@ -129,7 +129,6 @@ export const ArrayContainer = (props: IJsonContainerProps) => {
                   key={index}
                   onClick={(e) => {
                     clickChunk(item as unknown as IChunk);
-                    console.log('clickChunk', item, index);
                     if (!isReadonly) {
                       handleEdit(e, index);
                     }

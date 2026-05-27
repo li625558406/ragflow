@@ -105,9 +105,7 @@ export const AddVariableModal = (props: {
       <DynamicForm.Root
         ref={formRef}
         fields={fields || []}
-        onSubmit={(data) => {
-          console.log(data);
-        }}
+        onSubmit={() => {}}
         defaultValues={defaultValues}
         onFieldUpdate={handleFieldUpdate}
       >

@@ -81,11 +81,11 @@ export default function AgencyFeeCalculator() {
   return (
     <div className="h-full flex flex-col">
       {/* Title bar */}
-      <div className="shrink-0 px-6 pt-5 pb-4 border-b border-stone-100 bg-white">
+      <div className="shrink-0 px-6 pt-5 pb-4 border-b border-[#D4D4D4] bg-white">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 bg-indigo-100 rounded-xl flex items-center justify-center">
+          <div className="w-9 h-9 bg-[#EAEAEA] rounded-xl flex items-center justify-center">
             <svg
-              className="w-4.5 h-4.5 text-indigo-600"
+              className="w-4.5 h-4.5 text-[#000000]"
               fill="none"
               stroke="currentColor"
               strokeWidth={1.5}
@@ -94,15 +94,15 @@ export default function AgencyFeeCalculator() {
               <path
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                d="M15.75 15.75V18m-7.5-6.75h.008v.008H8.25v-.008zm0 2.25h.008v.008H8.25V16.5zm0 2.25h.008v.008H8.25v-.008zm0 2.25h.008v.008H8.25v-.008zm2.25-4.5h.008v.008H10.5v-.008zm0 2.25h.008v.008H10.5V16.5zm0 2.25h.008v.008H10.5v-.008zm2.25-4.5h.008v.008H12.75v-.008zm0 2.25h.008v.008H12.75V16.5zm2.25-4.5h.008v.008H15v-.008zm0 2.25h.008v.008H15V16.5z"
+                d="M5 3h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2z M9 9h6 M10 13h4v4h-4z"
               />
             </svg>
           </div>
           <div>
-            <h2 className="text-[15px] font-bold text-stone-900">
+            <h2 className="text-[15px] font-bold text-[#000000]">
               招标代理服务费计算器
             </h2>
-            <p className="text-[11px] text-stone-400">
+            <p className="text-[11px] text-[#1a1a1a]">
               依据：闽招协[2021]32号 收费指导价 · 差额定率分档累进法
             </p>
           </div>
@@ -115,7 +115,7 @@ export default function AgencyFeeCalculator() {
         <div className="flex-1 overflow-y-auto p-6 space-y-4 min-w-0">
           {/* Input */}
           <div>
-            <label className="block text-xs font-medium text-stone-500 mb-1.5">
+            <label className="block text-xs font-medium text-[#000000] mb-1.5">
               输入中标金额
             </label>
             <div className="flex gap-3">
@@ -128,15 +128,15 @@ export default function AgencyFeeCalculator() {
                     if (e.key === 'Enter') handleCalc();
                   }}
                   placeholder="请输入金额"
-                  className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 pr-14 text-sm text-stone-900 outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-50 transition placeholder:text-stone-400"
+                  className="w-full bg-[#EAEAEA] border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-14 text-sm text-[#000000] outline-none focus:border-[#A3A3A3] focus:ring-2 focus:ring-[#EAEAEA] transition placeholder:text-[#A3A3A3]"
                 />
-                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-stone-400">
+                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-[#1a1a1a]">
                   万元
                 </span>
               </div>
               <button
                 onClick={handleCalc}
-                className="shrink-0 bg-indigo-500 hover:bg-indigo-600 text-white px-6 py-2.5 rounded-xl text-sm font-medium transition-colors"
+                className="shrink-0 bg-[#000000] hover:bg-[#000000] text-white px-6 py-2.5 rounded-xl text-sm font-medium transition-colors"
               >
                 计算
               </button>
@@ -146,15 +146,15 @@ export default function AgencyFeeCalculator() {
 
           {/* Results */}
           {results && (
-            <div className="bg-white rounded-2xl border border-stone-100 p-5">
+            <div className="bg-white rounded-2xl border border-[#D4D4D4] p-5">
               <div className="mb-4">
-                <div className="text-xs text-stone-400">中标金额</div>
-                <div className="text-xl font-bold text-stone-900 mt-0.5">
+                <div className="text-xs text-[#1a1a1a]">中标金额</div>
+                <div className="text-xl font-bold text-[#000000] mt-0.5">
                   {amount!.toLocaleString('zh-CN', {
                     minimumFractionDigits: 2,
                   })}{' '}
                   万元
-                  <span className="text-xs font-normal text-stone-400 ml-2">
+                  <span className="text-xs font-normal text-[#1a1a1a] ml-2">
                     (
                     {(amount! * 10000).toLocaleString('zh-CN', {
                       minimumFractionDigits: 2,
@@ -167,15 +167,15 @@ export default function AgencyFeeCalculator() {
                 {results.map((r) => (
                   <div
                     key={r.label}
-                    className="flex items-center justify-between py-2 border-b border-stone-50 last:border-0"
+                    className="flex items-center justify-between py-2 border-b border-[#EAEAEA] last:border-0"
                   >
-                    <span className="text-sm text-stone-600">{r.label}</span>
+                    <span className="text-sm text-[#000000]">{r.label}</span>
                     <div className="text-right">
-                      <span className="text-sm font-semibold text-indigo-600">
+                      <span className="text-sm font-semibold text-[#000000]">
                         {formatYuan(r.fee)}
                       </span>
-                      <span className="text-xs text-stone-400 ml-1">元</span>
-                      <div className="text-[11px] text-stone-400 mt-0.5">
+                      <span className="text-xs text-[#1a1a1a] ml-1">元</span>
+                      <div className="text-[11px] text-[#1a1a1a] mt-0.5">
                         {formatYuan(r.lower)} ~ {formatYuan(r.upper)} 元
                       </div>
                     </div>
@@ -183,9 +183,9 @@ export default function AgencyFeeCalculator() {
                 ))}
               </div>
               {results.some((r) => r.fee < 8000) && (
-                <div className="mt-3 flex items-start gap-2 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+                <div className="mt-3 flex items-start gap-2 bg-[#EAEAEA] border border-[#D4D4D4] rounded-lg px-3 py-2">
                   <svg
-                    className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5"
+                    className="w-3.5 h-3.5 text-[#1a1a1a] shrink-0 mt-0.5"
                     fill="none"
                     stroke="currentColor"
                     viewBox="0 0 24 24"
@@ -197,7 +197,7 @@ export default function AgencyFeeCalculator() {
                       d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z"
                     />
                   </svg>
-                  <span className="text-[11px] text-amber-700">
+                  <span className="text-[11px] text-[#000000]">
                     部分结果低于 8,000 元，实际收费请参考指导价浮动范围
                   </span>
                 </div>
@@ -207,24 +207,24 @@ export default function AgencyFeeCalculator() {
         </div>
 
         {/* Right: Rate table */}
-        <div className="w-72 shrink-0 border-l border-stone-100 bg-white/50 overflow-y-auto p-5">
-          <div className="bg-white rounded-2xl border border-stone-100 p-4">
-            <h4 className="text-sm font-semibold text-stone-700 mb-3">
+        <div className="w-72 shrink-0 border-l border-[#D4D4D4] bg-[#FFFFFF]/50 overflow-y-auto p-5">
+          <div className="bg-white rounded-2xl border border-[#D4D4D4] p-4">
+            <h4 className="text-sm font-semibold text-[#1a1a1a] mb-3">
               费率分档表
             </h4>
             <table className="w-full text-xs table-fixed">
               <thead>
-                <tr className="border-b border-stone-100">
-                  <th className="text-left py-1.5 text-stone-400 font-medium">
+                <tr className="border-b border-[#D4D4D4]">
+                  <th className="text-left py-1.5 text-[#1a1a1a] font-medium">
                     分档（万元）
                   </th>
-                  <th className="text-right py-1.5 text-stone-400 font-medium w-11">
+                  <th className="text-right py-1.5 text-[#1a1a1a] font-medium w-11">
                     货物
                   </th>
-                  <th className="text-right py-1.5 text-stone-400 font-medium w-11">
+                  <th className="text-right py-1.5 text-[#1a1a1a] font-medium w-11">
                     服务
                   </th>
-                  <th className="text-right py-1.5 text-stone-400 font-medium w-11">
+                  <th className="text-right py-1.5 text-[#1a1a1a] font-medium w-11">
                     工程
                   </th>
                 </tr>
@@ -235,40 +235,40 @@ export default function AgencyFeeCalculator() {
                   return (
                     <tr
                       key={i}
-                      className="border-b border-stone-50 last:border-0"
+                      className="border-b border-[#EAEAEA] last:border-0"
                     >
-                      <td className="py-1.5 text-stone-600">
+                      <td className="py-1.5 text-[#000000]">
                         {prev} - {upper}
                       </td>
-                      <td className="text-right py-1.5 text-stone-500">
+                      <td className="text-right py-1.5 text-[#000000]">
                         {r0}%
                       </td>
-                      <td className="text-right py-1.5 text-stone-500">
+                      <td className="text-right py-1.5 text-[#000000]">
                         {r1}%
                       </td>
-                      <td className="text-right py-1.5 text-stone-500">
+                      <td className="text-right py-1.5 text-[#000000]">
                         {r2}%
                       </td>
                     </tr>
                   );
                 })}
                 <tr>
-                  <td className="py-1.5 text-stone-600">
+                  <td className="py-1.5 text-[#000000]">
                     {TIERS[TIERS.length - 1][0]} 以上
                   </td>
-                  <td className="text-right py-1.5 text-stone-500">
+                  <td className="text-right py-1.5 text-[#000000]">
                     {ABOVE_TIER_RATE[0]}%
                   </td>
-                  <td className="text-right py-1.5 text-stone-500">
+                  <td className="text-right py-1.5 text-[#000000]">
                     {ABOVE_TIER_RATE[1]}%
                   </td>
-                  <td className="text-right py-1.5 text-stone-500">
+                  <td className="text-right py-1.5 text-[#000000]">
                     {ABOVE_TIER_RATE[2]}%
                   </td>
                 </tr>
               </tbody>
             </table>
-            <p className="text-[11px] text-stone-400 mt-3">
+            <p className="text-[11px] text-[#1a1a1a] mt-3">
               注：上下浮动幅度不超过 20%
             </p>
           </div>

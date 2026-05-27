@@ -45,7 +45,7 @@ export const useObjectFields = () => {
         });
       }
       for (const key in obj) {
-        if (obj.hasOwnProperty(key)) {
+        if (Object.prototype.hasOwnProperty.call(obj, key)) {
           if (!/^[a-zA-Z_0-9]+$/.test(key)) {
             errors.push({
               path: [...path, key],
@@ -108,8 +108,7 @@ export const useObjectFields = () => {
         throw new Error(t('flow.formatTypeError'));
       }
       return true;
-    } catch (e) {
-      console.log('object-render-error', e, value);
+    } catch {
       throw new Error(t('flow.formatTypeError'));
     }
   }, []);
@@ -123,8 +122,7 @@ export const useObjectFields = () => {
         throw new Error(t('flow.formatTypeError'));
       }
       return true;
-    } catch (e) {
-      console.log('object-render-error', e, value);
+    } catch {
       throw new Error(t('flow.formatTypeError'));
     }
   }, []);

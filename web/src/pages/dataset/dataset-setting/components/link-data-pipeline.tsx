@@ -2,7 +2,6 @@ import { IDataPipelineSelectNode } from '@/components/data-pipeline-select';
 import { IconFont } from '@/components/icon-font';
 import { RAGFlowAvatar } from '@/components/ragflow-avatar';
 import { Button } from '@/components/ui/button';
-import { Modal } from '@/components/ui/modal/modal';
 import { Link } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -22,42 +21,8 @@ interface DataPipelineItemProps extends IDataPipelineNodeProps {
 }
 
 const DataPipelineItem = (props: DataPipelineItemProps) => {
-  const { t } = useTranslation();
-  const { name, avatar, isDefault, linked, openLinkModalFunc } = props;
-  const openUnlinkModal = () => {
-    Modal.show({
-      visible: true,
-      className: '!w-[560px]',
-      title: t('dataflowParser.unlinkPipelineModalTitle'),
-      children: (
-        <div
-          className="text-sm text-text-secondary"
-          dangerouslySetInnerHTML={{
-            __html: t('dataflowParser.unlinkPipelineModalContent'),
-          }}
-        ></div>
-      ),
-      onVisibleChange: () => {
-        Modal.hide();
-      },
-      footer: (
-        <div className="flex justify-end gap-2">
-          <Button variant={'outline'} onClick={() => Modal.hide()}>
-            {t('dataflowParser.changeStepModalCancelText')}
-          </Button>
-          <Button
-            variant={'secondary'}
-            className="!bg-state-error text-bg-base"
-            onClick={() => {
-              Modal.hide();
-            }}
-          >
-            {t('dataflowParser.unlinkPipelineModalConfirmText')}
-          </Button>
-        </div>
-      ),
-    });
-  };
+  useTranslation();
+  const { name, avatar } = props;
 
   return (
     <div className="flex items-center justify-between gap-1 px-2 rounded-md border">
@@ -121,7 +86,6 @@ const LinkDataPipeline = (props: ILinkDataPipelineProps) => {
     [data],
   );
   const openLinkModalFunc = (open: boolean, data?: IDataPipelineNodeProps) => {
-    console.log('open', open, data);
     setOpenLinkModal(open);
     if (data) {
       setCurrentDataPipeline(data);
@@ -132,7 +96,6 @@ const LinkDataPipeline = (props: ILinkDataPipelineProps) => {
   const handleLinkOrEditSubmit = (
     data: IDataPipelineSelectNode | undefined,
   ) => {
-    console.log('handleLinkOrEditSubmit', data);
     submit?.(data);
     setOpenLinkModal(false);
   };

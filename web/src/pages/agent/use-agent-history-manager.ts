@@ -72,7 +72,6 @@ export class HistoryManager {
   }
 
   redo() {
-    console.log('redo');
     if (this.canRedo()) {
       this.currentIndex++;
       const nextState = this.history[this.currentIndex];

@@ -96,7 +96,6 @@ export const useFetchMemoryList = () => {
       if (response.code !== 0) {
         throw new Error(response.message || 'Failed to fetch memory list');
       }
-      console.log(response);
       return response;
     },
   });

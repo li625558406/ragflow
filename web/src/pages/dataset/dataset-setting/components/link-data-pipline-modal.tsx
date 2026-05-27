@@ -38,7 +38,6 @@ const LinkDataPipelineModal = ({
   //   const [open, setOpen] = useState(false);
   const { navigateToAgents } = useNavigatePage();
   const handleFormSubmit = (values: any) => {
-    console.log(values, data);
     // const param = {
     //   ...data,
     //   ...values,
