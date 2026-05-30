@@ -123,7 +123,16 @@ export const useSendMessageBySSE = (url: string) => {
           signal: controller?.signal || sseRef.current?.signal,
         });
 
-        const res = response.clone().json();
+        const res = response
+          .clone()
+          .text()
+          .then((text) => {
+            try {
+              return JSON.parse(text);
+            } catch {
+              return { code: 0 };
+            }
+          });
 
         const reader = response?.body
           ?.pipeThrough(new TextDecoderStream())
