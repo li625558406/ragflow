@@ -31,7 +31,7 @@ class BidLookupCodeParam(ToolParamBase):
             "name": "lookup_bid_code",
             "description": """
 Look up Chinese administrative area codes or GB/T 4754-2017 industry codes by Chinese name.
-Use this BEFORE calling bid_search to convert user's natural-language location/industry references into codes.
+Use the returned codes as input for subsequent searches.
 
 Examples:
   - "广东" → area code "44" (广东省)
@@ -121,7 +121,7 @@ Use this tool when the user asks about bid/procurement/tender projects, such as:
   - "what bidding opportunities exist for environmental protection"
 
 The search returns project id, title, publish_time, project_money, has_file, and other metadata.
-IMPORTANT: Save the returned 'id' and 'publish_time' fields — they are REQUIRED for subsequent get_detail calls.
+IMPORTANT: Save the returned 'id' and 'publish_time' fields — they uniquely identify a project for detail retrieval.
             """,
             "parameters": {
                 "keyword": {
@@ -294,30 +294,26 @@ class BidGetDetailParam(ToolParamBase):
         self.meta: ToolMeta = {
             "name": "bid_get_detail",
             "description": """
-Get full detail of a specific bid project AND automatically import it into the knowledge base for parsing.
+Get full detail of a specific bid project AND automatically trigger async import into the knowledge base.
 This is the PRIMARY tool to use when a user wants to see or analyze a specific bid project.
 
 What it does (all in one call):
-  1. Fetches full project detail (content HTML, structured data, attached files)
-  2. Automatically imports the content + attachments into the knowledge base
-  3. Triggers document parsing and waits for it to complete (up to 120s)
-  4. Returns the detail summary + KB import status
+  1. Fetches full project detail SYNCHRONOUSLY (content HTML, structured data, attached files)
+  2. Triggers ASYNC background import: combined text + all attached files → KB → parse
+  3. Returns IMMEDIATELY with detail summary + kb_import status ("parsing" = background thread working)
 
-When kb_import.status is "done", the KB is ready — you can immediately use KB search/retrieval
-to answer the user's questions about this project's content.
+The import runs in the background — no need to wait. The kb_import status field shows the current import progress.
 
-IMPORTANT: Both project_id AND publish_time must be obtained from the bid_search result.
-The bid_search response includes 'publish_time' for each project — use the EXACT value.
             """,
             "parameters": {
                 "project_id": {
                     "type": "integer",
-                    "description": "Bid project ID — obtained from the bid_search result's 'id' field.",
+                    "description": "Bid project ID.",
                     "required": True,
                 },
                 "publish_time": {
                     "type": "string",
-                    "description": "Publish time of the project — MUST be obtained from the bid_search result's 'publish_time' field. Used for API authentication.",
+                    "description": "Publish time of the project (used for API authentication).",
                     "required": True,
                 },
             },
@@ -336,12 +332,12 @@ The bid_search response includes 'publish_time' for each project — use the EXA
 class BidGetDetail(ToolBase, ABC):
     component_name = "BidGetDetail"
 
-    @timeout(int(os.environ.get("COMPONENT_EXEC_TIMEOUT", 180)))
+    @timeout(int(os.environ.get("COMPONENT_EXEC_TIMEOUT", 60)))
     def _invoke(self, **kwargs):
         if self.check_if_canceled("BidGetDetail processing"):
             return
 
-        from api.utils.bid_tool_service import get_bid_detail, import_bid_to_kb, check_import_status
+        from api.utils.bid_tool_service import get_bid_detail, import_bid_to_kb
 
         try:
             project_id = kwargs.get("project_id")
@@ -393,8 +389,13 @@ class BidGetDetail(ToolBase, ABC):
                 "cached": result.get("cached", True),
             }
 
-            # Phase 2: Auto-import to knowledge base and wait for parsing
-            # This phase is best-effort — failure here does NOT block returning the detail content
+            # Phase 2: Auto-import to knowledge base (ASYNC — non-blocking)
+            # This phase is best-effort. The background thread handles:
+            #   - Fetching full detail + structure
+            #   - Uploading combined text as a KB document
+            #   - Downloading attached files, extracting archives, uploading to KB
+            #   - Triggering parsing and polling until complete
+            # We return immediately; use bid_check_import_status to monitor progress.
             try:
                 user_id = ""
                 if hasattr(self, '_canvas'):
@@ -407,58 +408,15 @@ class BidGetDetail(ToolBase, ABC):
                     user_id=user_id,
                 )
 
-                if import_result.get("status") == "fail":
-                    output["kb_import"] = {
-                        "status": "fail",
-                        "message": import_result.get("message", ""),
-                    }
-                elif import_result.get("status") == "done":
-                    output["kb_import"] = {
-                        "status": "done",
-                        "kb_id": import_result.get("kb_id"),
-                        "message": "Already imported to KB and parsed.",
-                    }
-                else:
-                    # Poll until parsing completes or timeout
-                    import time
-                    max_wait = 120
-                    poll_interval = 3
-                    waited = 0
-                    last_status = {}
-                    while waited < max_wait:
-                        if self.check_if_canceled("KB import polling"):
-                            output["kb_import"] = {"status": "parsing", "message": "Polling cancelled."}
-                            break
-                        time.sleep(poll_interval)
-                        waited += poll_interval
-                        last_status = check_import_status(int(project_id))
-                        if last_status.get("status") == "done":
-                            output["kb_import"] = {
-                                "status": "done",
-                                "kb_id": last_status.get("kb_id"),
-                                "combined_doc_id": last_status.get("combined_doc_id"),
-                            }
-                            break
-                        elif last_status.get("status") == "fail":
-                            output["kb_import"] = {
-                                "status": "fail",
-                                "message": last_status.get("message", ""),
-                            }
-                            break
-                        else:
-                            output["kb_import"] = {
-                                "status": "parsing",
-                                "progress": last_status.get("progress", 0),
-                                "message": f"Parsing in progress ({waited}s / {max_wait}s max)...",
-                            }
-                    else:
-                        output["kb_import"] = {
-                            "status": "timeout",
-                            "progress": last_status.get("progress", 0),
-                            "message": f"Still parsing after {max_wait}s. Use bid_check_import_status to monitor.",
-                        }
+                output["kb_import"] = {
+                    "status": import_result.get("status", "parsing"),
+                    "kb_id": import_result.get("kb_id"),
+                    "combined_doc_id": import_result.get("combined_doc_id"),
+                    "progress": import_result.get("progress", 0),
+                    "message": import_result.get("message", ""),
+                }
             except Exception as kb_err:
-                logging.exception("BidGetDetail: KB import failed (detail content unaffected)")
+                logging.exception("BidGetDetail: KB import trigger failed (detail content unaffected)")
                 output["kb_import"] = {
                     "status": "error",
                     "message": f"KB import error: {str(kb_err)}. Detail content is available below.",
@@ -497,19 +455,17 @@ Use this tool when the user wants to:
   - "generate a bid document based on this project"
 
 Dedup: If the project was already imported, returns the existing status directly.
-IMPORTANT: project_id AND publish_time must be obtained from the bid_search result.
-IMPORTANT: After calling this tool, you MUST poll check_import_status repeatedly (every few seconds)
-           until status becomes "done", then proceed to answer user questions using KB content.
+Provide the project_id and publish_time of the project to import.
             """,
             "parameters": {
                 "project_id": {
                     "type": "integer",
-                    "description": "Bid project ID — obtained from the bid_search result's 'id' field.",
+                    "description": "Bid project ID.",
                     "required": True,
                 },
                 "publish_time": {
                     "type": "string",
-                    "description": "Publish time of the project — MUST be obtained from the bid_search result's 'publish_time' field.",
+                    "description": "Publish time of the project.",
                     "required": True,
                 },
                 "kb_id": {
@@ -624,18 +580,18 @@ class BidCheckImportStatusParam(ToolParamBase):
             "name": "bid_check_import_status",
             "description": """
 Check the import/parsing progress of a bid project in the knowledge base.
-Use this tool AFTER calling bid_import_to_kb to poll until parsing is complete.
+Use this to poll until parsing is complete.
 
 Returns the current status: "parsing" (still in progress), "done" (complete), or "fail".
 When status is "parsing", doc_progress shows detailed per-document progress (done/fail/running counts).
 When status is "done", the KB is ready and you can answer user questions based on the imported content.
 
-IMPORTANT: poll this tool repeatedly (every 3-5 seconds) until status becomes "done".
+Poll repeatedly (every few seconds) until status becomes "done".
             """,
             "parameters": {
                 "project_id": {
                     "type": "integer",
-                    "description": "Bid project ID — the same ID passed to bid_import_to_kb.",
+                    "description": "Bid project ID.",
                     "required": True,
                 },
             },

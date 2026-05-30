@@ -77,15 +77,26 @@ class WxLogin:
             # in the initial HTML; Vue only controls visibility. screenshot()
             # works on hidden elements.
             qr_sel = ".login__type__container__scan__qrcode"
-            qrcode_el = await page.query_selector(qr_sel)
-            if not qrcode_el:
+            qrcode_locator = page.locator(qr_sel)
+            try:
+                await qrcode_locator.wait_for(state="attached", timeout=10000)
+            except Exception:
                 raise RuntimeError("QR code element not found on login page")
 
-            code_src = await qrcode_el.get_attribute("src")
+            # Wait up to 10s for QR code image src to be populated (JS-rendered)
+            code_src = None
+            for _ in range(20):
+                code_src = await qrcode_locator.get_attribute("src")
+                if code_src:
+                    break
+                await asyncio.sleep(0.5)
+
             logger.info("QR code src: %s", code_src)
+            if not code_src:
+                raise RuntimeError("QR code image not loaded — page may have changed")
 
             os.makedirs(os.path.dirname(QRCODE_PATH), exist_ok=True)
-            await qrcode_el.screenshot(path=QRCODE_PATH)
+            await qrcode_locator.screenshot(path=QRCODE_PATH)
 
             if os.path.getsize(QRCODE_PATH) <= 364:
                 raise RuntimeError("QR code image too small — possible capture failure")

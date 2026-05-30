@@ -315,7 +315,11 @@ export function Sessions({ handleConversationCardClick }: SessionProps) {
                     data-testid="chat-detail-session-checkbox"
                     data-session-id={x.id}
                   />
-
+                  <RAGFlowAvatar
+                    avatar={x.avatar}
+                    name={x.name}
+                    className="size-5 shrink-0"
+                  />
                   <span className="truncate">{x.name}</span>
                 </label>
               </li>
@@ -335,12 +339,17 @@ export function Sessions({ handleConversationCardClick }: SessionProps) {
                 >
                   <button
                     type="button"
-                    className="focus-visible:outline-none px-3 py-2 text-left flex-1 truncate"
+                    className="focus-visible:outline-none px-3 py-2 text-left flex-1 truncate flex items-center gap-2"
                     onClick={() => handleConversationCardClick(x.id, x.is_new)}
                     data-testid="chat-detail-session-item"
                     data-session-id={x.id}
                   >
-                    {x.name}
+                    <RAGFlowAvatar
+                      avatar={x.avatar}
+                      name={x.name}
+                      className="size-5 shrink-0"
+                    />
+                    <span className="truncate">{x.name}</span>
                   </button>
 
                   <ConversationDropdown

@@ -230,7 +230,7 @@ class DialogService(CommonService):
         return list(objs)
 
 
-async def async_chat_solo(dialog, messages, stream=True):
+async def async_chat_solo(dialog, messages, stream=True, web_search=False):
     llm_type = TenantLLMService.llm_id2llm_type(dialog.llm_id)
     attachments = ""
     image_attachments = []
@@ -262,11 +262,12 @@ async def async_chat_solo(dialog, messages, stream=True):
         msg[-1]["content"] += attachments
     if llm_type == "chat" and image_attachments:
         convert_last_user_msg_to_multimodal(msg, image_attachments, factory)
+    _solo_kwargs = {"web_search": True} if web_search else {}
     if stream:
         if llm_type == "chat":
-            stream_iter = chat_mdl.async_chat_streamly_delta(prompt_config.get("system", ""), msg, dialog.llm_setting)
+            stream_iter = chat_mdl.async_chat_streamly_delta(prompt_config.get("system", ""), msg, dialog.llm_setting, **_solo_kwargs)
         else:
-            stream_iter = chat_mdl.async_chat_streamly_delta(prompt_config.get("system", ""), msg, dialog.llm_setting, images=image_files)
+            stream_iter = chat_mdl.async_chat_streamly_delta(prompt_config.get("system", ""), msg, dialog.llm_setting, images=image_files, **_solo_kwargs)
         async for kind, value, state in _stream_with_think_delta(stream_iter):
             if kind == "marker":
                 flags = {"start_to_think": True} if value == "<think>" else {"end_to_think": True}
@@ -275,9 +276,9 @@ async def async_chat_solo(dialog, messages, stream=True):
             yield {"answer": value, "reference": {}, "audio_binary": tts(tts_mdl, value), "prompt": "", "created_at": time.time(), "final": False}
     else:
         if llm_type == "chat":
-            answer = await chat_mdl.async_chat(prompt_config.get("system", ""), msg, dialog.llm_setting)
+            answer = await chat_mdl.async_chat(prompt_config.get("system", ""), msg, dialog.llm_setting, **_solo_kwargs)
         else:
-            answer = await chat_mdl.async_chat(prompt_config.get("system", ""), msg, dialog.llm_setting, images=image_files)
+            answer = await chat_mdl.async_chat(prompt_config.get("system", ""), msg, dialog.llm_setting, images=image_files, **_solo_kwargs)
         user_content = msg[-1].get("content", "[content not available]")
         logging.debug("User: {}|Assistant: {}".format(user_content, answer))
         yield {"answer": answer, "reference": {}, "audio_binary": tts(tts_mdl, answer), "prompt": "", "created_at": time.time()}
@@ -489,10 +490,34 @@ def repair_bad_citation_formats(answer: str, kbinfos: dict, idx: set):
 async def async_chat(dialog, messages, stream=True, **kwargs):
     logging.debug("Begin async_chat")
     assert messages[-1]["role"] == "user", "The last content of this conversation is not from user."
+    # Determine web search strategy early so DeepSeek native search can be
+    # used even without a configured Tavily API key.
     use_web_search = _should_use_web_search(dialog.prompt_config, kwargs.get("internet"))
-    logging.debug("web_search kb=%s tavily=%s internet=%r enabled=%s", bool(dialog.kb_ids), bool(dialog.prompt_config.get("tavily_api_key")), kwargs.get("internet"), use_web_search)
-    if not dialog.kb_ids and not use_web_search:
+    internet_requested = _normalize_internet_flag(kwargs.get("internet")) is True
+
+    # Resolve LLM factory before the early return so we can detect DeepSeek.
+    if dialog.llm_id:
+        _early_model_config = TenantLLMService.get_model_config(dialog.tenant_id, LLMType.CHAT, dialog.llm_id)
+    elif dialog.tenant_llm_id:
+        _early_model_config = get_model_config_by_id(dialog.tenant_llm_id)
+    else:
+        _early_model_config = get_tenant_default_model_by_type(dialog.tenant_id, LLMType.CHAT)
+    _early_factory = _early_model_config.get("llm_factory", "") if _early_model_config else ""
+    use_deepseek_web_search = _early_factory == "DeepSeek" and internet_requested
+
+    logging.debug("web_search kb=%s tavily=%s internet=%r enabled=%s deepseek=%s",
+                   bool(dialog.kb_ids), bool(dialog.prompt_config.get("tavily_api_key")),
+                   kwargs.get("internet"), use_web_search, use_deepseek_web_search)
+
+    # Pure LLM (no KB, no web search of any kind).
+    if not dialog.kb_ids and not use_web_search and not use_deepseek_web_search:
         async for ans in async_chat_solo(dialog, messages, stream):
+            yield ans
+        return
+
+    # DeepSeek native web search WITHOUT knowledge base — just the LLM + web_search tool.
+    if not dialog.kb_ids and use_deepseek_web_search:
+        async for ans in async_chat_solo(dialog, messages, stream, web_search=True):
             yield ans
         return
 
@@ -663,11 +688,17 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
                     if cks:
                         kbinfos["chunks"] = cks
                 kbinfos["chunks"] = retriever.retrieval_by_children(kbinfos["chunks"], tenant_ids)
-            if use_web_search:
-                tav = Tavily(prompt_config["tavily_api_key"])
-                tav_res = tav.retrieve_chunks(" ".join(questions))
-                kbinfos["chunks"].extend(tav_res["chunks"])
-                kbinfos["doc_aggs"].extend(tav_res["doc_aggs"])
+            if use_web_search or (factory == "DeepSeek" and internet_requested):
+                if factory == "DeepSeek":
+                    # DeepSeek V4 natively supports web_search via the tools
+                    # parameter — no separate Tavily call is needed. The search
+                    # is triggered by passing web_search=True to the LLM call below.
+                    pass
+                else:
+                    tav = Tavily(prompt_config["tavily_api_key"])
+                    tav_res = tav.retrieve_chunks(" ".join(questions))
+                    kbinfos["chunks"].extend(tav_res["chunks"])
+                    kbinfos["doc_aggs"].extend(tav_res["doc_aggs"])
             if prompt_config.get("use_kg"):
                 default_chat_model = get_tenant_default_model_by_type(dialog.tenant_id, LLMType.CHAT)
                 ck = await settings.kg_retriever.retrieval(" ".join(questions), tenant_ids, dialog.kb_ids, embd_mdl,
@@ -679,7 +710,7 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
     logging.debug("{}->{}".format(" ".join(questions), "\n->".join(knowledges)))
 
     retrieval_ts = timer()
-    if not knowledges and prompt_config.get("empty_response"):
+    if not knowledges and prompt_config.get("empty_response") and not (factory == "DeepSeek" and internet_requested):
         empty_res = prompt_config["empty_response"]
         yield {"answer": empty_res, "reference": kbinfos, "prompt": "\n\n### Query:\n%s" % " ".join(questions),
                "audio_binary": tts(tts_mdl, empty_res), "final": True}
@@ -787,11 +818,15 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
             input={"prompt": prompt, "prompt4citation": prompt4citation, "messages": msg}
         )
 
+    _llm_kwargs = {}
+    if factory == "DeepSeek" and internet_requested:
+        _llm_kwargs["web_search"] = True
+
     if stream:
         if llm_type == "chat":
-            stream_iter = chat_mdl.async_chat_streamly_delta(prompt + prompt4citation, msg[1:], gen_conf)
+            stream_iter = chat_mdl.async_chat_streamly_delta(prompt + prompt4citation, msg[1:], gen_conf, **_llm_kwargs)
         else:
-            stream_iter = chat_mdl.async_chat_streamly_delta(prompt + prompt4citation, msg[1:], gen_conf, images=image_files)
+            stream_iter = chat_mdl.async_chat_streamly_delta(prompt + prompt4citation, msg[1:], gen_conf, images=image_files, **_llm_kwargs)
         last_state = None
         async for kind, value, state in _stream_with_think_delta(stream_iter):
             last_state = state
@@ -808,9 +843,9 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
             yield final
     else:
         if llm_type == "chat":
-            answer = await chat_mdl.async_chat(prompt + prompt4citation, msg[1:], gen_conf)
+            answer = await chat_mdl.async_chat(prompt + prompt4citation, msg[1:], gen_conf, **_llm_kwargs)
         else:
-            answer = await chat_mdl.async_chat(prompt + prompt4citation, msg[1:], gen_conf, images=image_files)
+            answer = await chat_mdl.async_chat(prompt + prompt4citation, msg[1:], gen_conf, images=image_files, **_llm_kwargs)
         user_content = msg[-1].get("content", "[content not available]")
         logging.debug("User: {}|Assistant: {}".format(user_content, answer))
         res = decorate_answer(answer)

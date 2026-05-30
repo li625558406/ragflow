@@ -101,16 +101,28 @@ async def get_auth_qrcode():
         # rendered in the initial HTML (server-side), Vue only controls its
         # visibility — but screenshot() works on hidden elements too.
         qr_sel = ".login__type__container__scan__qrcode"
-        qrcode_el = await page.query_selector(qr_sel)
-        if not qrcode_el:
+        qrcode_locator = page.locator(qr_sel)
+        try:
+            await qrcode_locator.wait_for(state="attached", timeout=10000)
+        except Exception:
             await driver.close()
             return get_data_error_result(message="QR code element not found on page")
 
-        code_src = await qrcode_el.get_attribute("src")
+        # Wait up to 10s for QR code image src to be populated (JS-rendered)
+        code_src = None
+        for _ in range(20):
+            code_src = await qrcode_locator.get_attribute("src")
+            if code_src:
+                break
+            await asyncio.sleep(0.5)
+
         logger.info("QR code src: %s", code_src)
+        if not code_src:
+            await driver.close()
+            return get_data_error_result(message="QR code image not loaded — page may have changed")
 
         _ensure_qrcode_dir()
-        await qrcode_el.screenshot(path=QRCODE_PATH)
+        await qrcode_locator.screenshot(path=QRCODE_PATH)
 
         # Read QR image as base64
         qrcode_base64 = ""

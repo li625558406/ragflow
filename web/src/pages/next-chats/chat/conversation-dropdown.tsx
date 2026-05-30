@@ -1,4 +1,7 @@
-import { ConfirmDeleteDialog } from '@/components/confirm-delete-dialog';
+import {
+  ConfirmDeleteDialog,
+  ConfirmDeleteDialogNode,
+} from '@/components/confirm-delete-dialog';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -54,7 +57,13 @@ export function ConversationDropdown({
     <DropdownMenu>
       <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
       <DropdownMenuContent>
-        <ConfirmDeleteDialog onOk={handleDelete}>
+        <ConfirmDeleteDialog
+          onOk={handleDelete}
+          content={{
+            title: t('common.deleteModalTitle'),
+            node: <ConfirmDeleteDialogNode name={conversation.name} />,
+          }}
+        >
           <DropdownMenuItem
             className="text-state-error"
             onSelect={(e) => {

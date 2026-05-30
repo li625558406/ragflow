@@ -1,6 +1,7 @@
 import { EmbedContainer } from '@/components/embed-container';
 import { FileUploadProps } from '@/components/file-upload';
 import { NextMessageInput } from '@/components/message-input/next';
+import MarkdownContent from '@/components/next-markdown-content';
 import MessageItem from '@/components/next-message-item';
 import PdfSheet from '@/components/pdf-drawer';
 import { useClickDrawer } from '@/components/pdf-drawer/hooks';
@@ -55,6 +56,7 @@ const ChatContainer = () => {
     inputsData,
     isTaskMode,
     stopOutputMessage,
+    removeFile,
     findReferenceByMessageId,
     appendUploadResponseList,
     parameterDialogVisible,
@@ -174,7 +176,10 @@ const ChatContainer = () => {
                     {message.role === MessageType.Assistant &&
                       derivedMessages.length - 1 !== i && (
                         <div>
-                          <div>{message?.data?.tips}</div>
+                          <MarkdownContent
+                            content={message?.data?.tips}
+                            loading={false}
+                          ></MarkdownContent>
 
                           <div>
                             {buildInputList(message)?.map((item) => item.value)}
@@ -202,6 +207,7 @@ const ChatContainer = () => {
                   sendLoading={sendLoading}
                   stopOutputMessage={stopOutputMessage}
                   onUpload={handleUploadFile}
+                  removeFile={removeFile}
                   isUploading={loading || isWaitting}
                 ></NextMessageInput>
               </div>

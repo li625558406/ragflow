@@ -1352,7 +1352,8 @@ class LiteLLMBase(ABC):
             request_kwargs=kwargs,
         )
 
-        completion_args = self._construct_completion_args(history=hist, stream=False, tools=False, **{**gen_conf, **kwargs})
+        web_search = kwargs.pop("web_search", False)
+        completion_args = self._construct_completion_args(history=hist, stream=False, tools=False, web_search=web_search, **{**gen_conf, **kwargs})
 
         for attempt in range(self.max_retries + 1):
             try:
@@ -1384,7 +1385,7 @@ class LiteLLMBase(ABC):
         reasoning_start = False
         total_tokens = 0
 
-        completion_args = self._construct_completion_args(history=history, stream=True, tools=False, **gen_conf)
+        completion_args = self._construct_completion_args(history=history, stream=True, tools=False, web_search=kwargs.pop("web_search", False), **gen_conf)
         stop = kwargs.get("stop")
         if stop:
             completion_args["stop"] = stop
@@ -1753,7 +1754,7 @@ class LiteLLMBase(ABC):
 
         assert False, "Shouldn't be here."
 
-    def _construct_completion_args(self, history, stream: bool, tools: bool, **kwargs):
+    def _construct_completion_args(self, history, stream: bool, tools: bool, web_search: bool = False, **kwargs):
         completion_args = {
             "model": self.model_name,
             "messages": history,
@@ -1774,6 +1775,16 @@ class LiteLLMBase(ABC):
             if self.provider != SupportedLiteLLMProvider.DeepSeek:
                 tool_args["tool_choice"] = "auto"
             completion_args.update(tool_args)
+        # DeepSeek native web search — inject as an additional tool.
+        # Unlike function-calling tools, the LLM does not explicitly "call"
+        # this tool; the API performs the search internally and annotates
+        # the response with results.
+        if web_search and self.provider == SupportedLiteLLMProvider.DeepSeek:
+            search_tool = {"type": "web_search"}
+            existing = completion_args.get("tools", [])
+            completion_args["tools"] = ([search_tool] + existing) if isinstance(existing, list) else [search_tool]
+            # DeepSeek does not support tool_choice; ensure it stays absent.
+            completion_args.pop("tool_choice", None)
         if self.provider in FACTORY_DEFAULT_BASE_URL:
             completion_args.update({"api_base": self.base_url})
         elif self.provider == SupportedLiteLLMProvider.Bedrock:
