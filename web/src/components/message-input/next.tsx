@@ -66,7 +66,6 @@ export function NextMessageInput({
   sendLoading,
   disabled,
   showUploadIcon = true,
-  resize = 'none',
   onUpload,
   onInputChange,
   stopOutputMessage,
@@ -291,10 +290,12 @@ export function NextMessageInput({
               />
 
               <Button
+                type="button"
                 size="icon-xs"
                 disabled={
                   sendDisabled || isUploading || sendLoading || !value.trim()
                 }
+                onClick={submit}
                 data-testid="chat-detail-send"
               >
                 <Send />
