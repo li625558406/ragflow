@@ -336,6 +336,7 @@ class Canvas(Graph):
 
     def __str__(self):
         self.dsl["history"] = self.history
+        self.dsl["globals"] = self.globals
         self.dsl["retrieval"] = self.retrieval
         self.dsl["memory"] = self.memory
         return super().__str__()

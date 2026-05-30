@@ -56,6 +56,10 @@ class BidApiClient:
         self.base_url = (base_url or BID_API_BASE_URL).rstrip("/")
         self.app_code = app_code or BID_APP_CODE
         self.timeout = timeout
+        if not self.app_code:
+            logging.warning("BidApiClient: BID_APP_CODE is not set! External API calls will fail.")
+        else:
+            logging.info("BidApiClient: initialized with base_url=%s, app_code=%s...", self.base_url, self.app_code[:8])
 
     def _post_json(self, endpoint: str, payload: dict) -> dict:
         """发送 JSON POST 请求（搜索类接口）。"""

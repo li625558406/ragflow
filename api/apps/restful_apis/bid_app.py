@@ -22,13 +22,10 @@
 import json
 import logging
 import os
-import tempfile
 import threading
 from datetime import datetime
-from io import BytesIO
 
 from quart import Blueprint, request
-from werkzeug.datastructures import FileStorage
 
 from api.apps import current_user, login_required
 from api.db.services.bid_service import (
@@ -39,15 +36,12 @@ from api.db.services.bid_service import (
     BidProjectParseService,
     BidSyncLogService,
 )
-from api.db.services.knowledgebase_service import KnowledgebaseService
-from api.db.services.file_service import FileService
 from api.db.services.document_service import DocumentService
 from api.utils.api_utils import (
     get_data_error_result,
     get_json_result,
 )
 from api.utils.bid_api_client import BidApiClient
-from api.utils.bid_file_utils import download_file, extract_archive
 
 manager = Blueprint("rest_bid_app", __name__)
 
@@ -161,8 +155,11 @@ def list_bid_projects():
 
     # Step 2: 本地不足 20 条 → 调第三方 API 补充
     if total < 20:
+        logging.info("Bid list: local total=%d (<20), falling back to external API", total)
         try:
             client = BidApiClient()
+            logging.info("Bid list: calling search_project API with keyword=%s, provice=%s, industry=%s, date=%s~%s",
+                         keyword, provice_code, industry_code, start_date, end_date)
 
             # 行业编码映射
             api_industry_code = {"firstCodeList": ["0"], "secondCodeList": [], "thirdCodeList": []}
@@ -206,6 +203,7 @@ def list_bid_projects():
 
             data = api_resp.get("data", {})
             items = data.get("data", [])
+            logging.info("Bid list: API returned %d items, total=%s", len(items), data.get("total", "?"))
             batch_id = str(datetime.now().timestamp())
 
             for item in items:
@@ -267,7 +265,8 @@ def list_bid_projects():
                 source_type=source_type,
             )
         except Exception as e:
-            logging.warning("API fallback failed: %s", e)
+            logging.warning("Bid list: API fallback FAILED — type=%s, message=%s", type(e).__name__, e)
+            logging.warning("Bid list: returning %d local results (total=%d) after API failure", len(objs), total)
 
     return get_json_result(data={"projects": objs, "total": total})
 
@@ -499,293 +498,19 @@ def _strip_html(html: str) -> str:
     return text.strip()
 
 
-def _build_combined_text(detail: dict, structure: dict) -> str:
-    """将正文和结构化数据拼接成纯文本（txt格式，便于RAGFlow解析）"""
-    parts = []
-
-    # 正文内容
-    if detail and detail.get("content_html"):
-        text = _strip_html(detail["content_html"])
-        if text:
-            parts.append(text)
-
-    # 结构化数据
-    if structure:
-        parts.append('\n\n========== 结构化数据 ==========\n')
-
-        fields = [
-            ("项目名称", structure.get("project_name")),
-            ("项目编号", _json_display(structure.get("project_numbers"))),
-            ("标段编码", _json_display(structure.get("section_codes"))),
-            ("预算金额", _json_display(structure.get("budget_money"))),
-            ("中标金额", _json_display(structure.get("bid_money"))),
-            ("开标日期", structure.get("bid_start_date")),
-            ("开标地址", _json_display(structure.get("bid_start_address"))),
-            ("报名截止日期", structure.get("sign_up_stop_date")),
-            ("甲方信息", _json_display(structure.get("party_a_info"))),
-            ("乙方信息", _json_display(structure.get("party_b_info"))),
-            ("代理机构", _json_display(structure.get("agency_info"))),
-            ("投标企业", _json_display(structure.get("bid_companies"))),
-        ]
-        for label, value in fields:
-            if value:
-                parts.append(f'{label}：{value}')
-
-    return '\n'.join(parts)
-
-
-def _json_display(raw: str | None) -> str:
-    """将JSON字符串格式化为可读文本"""
-    if not raw:
-        return ""
-    try:
-        parsed = json.loads(raw)
-        if isinstance(parsed, list):
-            return ", ".join(
-                item.get("name", str(item)) if isinstance(item, dict) else str(item)
-                for item in parsed
-            )
-        return str(parsed)
-    except (json.JSONDecodeError, TypeError):
-        return str(raw)
-
-
 def _run_parse_task(project_id: int, kb_id: str, user_id: str):
-    """后台线程：拼接文档+下载附件+上传KB+触发解析"""
-    try:
-        BidProjectParseService.upsert({
-            "project_id": project_id,
-            "kb_id": kb_id,
-            "status": "parsing",
-            "progress": 0,
-            "progress_msg": "正在准备数据...",
-        })
+    """后台线程：调用共享 tool service 完成文档导入+解析"""
+    from api.utils.bid_tool_service import import_bid_to_kb
 
-        # 获取知识库
-        kb = KnowledgebaseService.get_or_none(id=kb_id, tenant_id=user_id)
-        if not kb:
-            BidProjectParseService.upsert({
-                "project_id": project_id,
-                "status": "fail",
-                "progress_msg": "知识库不存在或无权访问",
-            })
-            return
+    project = BidProjectService.get_by_project_id(project_id)
+    publish_time = str(project.get("publish_time", "") or "") if project else ""
 
-        parent_path = f"bid_project_{project_id}"
-
-        # 获取项目基本信息（需要publish_time来调外部API）
-        project = BidProjectService.get_by_project_id(project_id)
-        publish_time = project.get("publish_time", "") if project else ""
-
-        # 获取详模块 — 缓存优先
-        detail_obj = BidProjectDetailService.get_or_none(project_id=project_id)
-        if not detail_obj and publish_time:
-            try:
-                client = BidApiClient()
-                resp = client.get_detail(project_id, publish_time)
-                data = resp.get("data", {})
-                detail_data = {
-                    "id": project_id,
-                    "content_html": data.get("content", ""),
-                    "news_type_id": data.get("newsTypeID"),
-                    "project_class_name": data.get("projectClassName", ""),
-                    "purchase_type_id": data.get("purchaseType", ""),
-                    "industry_name": data.get("industryName", ""),
-                    "part_a_name": data.get("partAName", ""),
-                    "part_b_name": data.get("partBName", ""),
-                    "agent_name": data.get("agentName", ""),
-                    "project_money": data.get("projectMoney", ""),
-                    "provice_code": data.get("proviceCode", ""),
-                    "city_code": data.get("cityCode", ""),
-                    "county_code": data.get("countyCode", ""),
-                    "fetched_at": datetime.now(),
-                }
-                BidProjectDetailService.upsert_detail(project_id, detail_data)
-                detail_obj = BidProjectDetailService.get_or_none(project_id=project_id)
-            except Exception as e:
-                logging.warning("Failed to fetch detail for parse: %s", e)
-
-        # 获取结构化数据 — 缓存优先
-        structure_obj = BidProjectStructureService.get_or_none(project_id=project_id)
-        if not structure_obj and publish_time:
-            try:
-                client = BidApiClient()
-                resp = client.get_structure(project_id, publish_time)
-                data = resp.get("data", {})
-                struct_data = {
-                    "id": project_id,
-                    "project_id": project_id,
-                    "project_name": data.get("projectName", ""),
-                    "project_numbers": json.dumps(data.get("projectNumber", []), ensure_ascii=False),
-                    "section_codes": json.dumps(data.get("projectSectionCode", []), ensure_ascii=False),
-                    "budget_money": json.dumps(data.get("budgetMoney", []), ensure_ascii=False),
-                    "bid_money": json.dumps(data.get("bidMoney", []), ensure_ascii=False),
-                    "bid_start_date": data.get("bidStartDate"),
-                    "bid_start_address": json.dumps(data.get("bidStartAddress", []), ensure_ascii=False),
-                    "sign_up_stop_date": data.get("siginUpStopDate"),
-                    "party_a_info": json.dumps(data.get("partyAInfo", []), ensure_ascii=False),
-                    "party_b_info": json.dumps(data.get("partyBInfo", []), ensure_ascii=False),
-                    "agency_info": json.dumps(data.get("agencyInfo", []), ensure_ascii=False),
-                    "bid_companies": json.dumps(data.get("bidCompany", []), ensure_ascii=False),
-                    "sbkj_bid_url": data.get("sbkjBidUrl", ""),
-                    "collect_url": data.get("collectUrl", ""),
-                    "fetched_at": datetime.now(),
-                }
-                BidProjectStructureService.upsert_structure(project_id, struct_data)
-                structure_obj = BidProjectStructureService.get_or_none(project_id=project_id)
-            except Exception as e:
-                logging.warning("Failed to fetch structure for parse: %s", e)
-
-        detail = detail_obj.to_dict() if detail_obj else None
-        structure = structure_obj.to_dict() if structure_obj else None
-
-        # 1. 拼接文本并上传
-        combined_text = _build_combined_text(detail, structure)
-        BidProjectParseService.upsert({
-            "project_id": project_id,
-            "progress": 0.1,
-            "progress_msg": "正在上传项目文档...",
-        })
-
-        combined_doc_id = None
-        try:
-            file_obj = FileStorage(
-                stream=BytesIO(combined_text.encode("utf-8")),
-                filename=f"project_{project_id}_content.txt",
-                content_type="text/plain",
-            )
-            kb.files = [file_obj]
-            FileService.upload_document(kb, [file_obj], user_id, parent_path=parent_path)
-            # 获取最后创建的文档ID（upload_document内部生成了doc_id）
-            if hasattr(file_obj, "id"):
-                combined_doc_id = file_obj.id
-        except Exception as e:
-            logging.warning("Failed to upload combined HTML: %s", e)
-
-        # 2. 下载并上传附件 — 缓存优先
-        files = BidProjectFileService.get_by_project(project_id)
-        if (not files or not any(f.get("file_url") for f in files)) and publish_time:
-            try:
-                client = BidApiClient()
-                files_raw = client.get_files(project_id, publish_time)
-                for f in files_raw:
-                    try:
-                        BidProjectFileService.upsert_file({
-                            "project_file_id": f.get("projectFileID"),
-                            "project_id": project_id,
-                            "file_name": f.get("name", ""),
-                            "file_url": f.get("url", ""),
-                            "file_suffix": f.get("suffix", ""),
-                            "file_size": f.get("size"),
-                            "state": f.get("state", "0"),
-                            "publish_time": f.get("publishTime", ""),
-                            "create_time": f.get("createTime", ""),
-                            "fetched_at": datetime.now(),
-                        })
-                    except Exception as e:
-                        logging.warning("Failed to cache file: %s", e)
-                files = BidProjectFileService.get_by_project(project_id)
-            except Exception as e:
-                logging.warning("Failed to fetch files for parse: %s", e)
-        if not files:
-            files = []
-        total = len([f for f in files if f.get("file_url")])
-        uploaded = 0
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            for f in files:
-                url = f.get("file_url")
-                if not url:
-                    continue
-                try:
-                    BidProjectParseService.upsert({
-                        "project_id": project_id,
-                        "progress": 0.2 + 0.6 * (uploaded / max(total, 1)),
-                        "progress_msg": f"正在下载附件 ({uploaded + 1}/{total})...",
-                    })
-
-                    local_path = download_file(url, tmpdir)
-                    BidProjectFileService.upsert_file({
-                        "project_file_id": f["project_file_id"],
-                        "local_path": local_path,
-                    })
-
-                    # 解压压缩包
-                    to_upload = [local_path]
-                    if local_path.lower().endswith((".zip", ".rar")):
-                        extracted = extract_archive(local_path, tmpdir)
-                        to_upload.extend(extracted)
-
-                    # 逐一上传到KB
-                    for path in to_upload:
-                        try:
-                            fname = os.path.basename(path)
-                            file_obj = FileStorage(
-                                stream=open(path, "rb"),
-                                filename=fname,
-                            )
-                            FileService.upload_document(kb, [file_obj], user_id, parent_path=parent_path)
-                            doc_id = getattr(file_obj, "id", None)
-                            if doc_id and path == local_path:
-                                BidProjectFileService.upsert_file({
-                                    "project_file_id": f["project_file_id"],
-                                    "kb_document_id": doc_id,
-                                })
-                        except Exception as e:
-                            logging.warning("Failed to upload attachment %s: %s", fname, e)
-
-                    uploaded += 1
-                except Exception as e:
-                    logging.warning("Failed to process attachment %s: %s", f.get("file_name"), e)
-                    uploaded += 1
-
-        # 3. 触发解析
-        BidProjectParseService.upsert({
-            "project_id": project_id,
-            "combined_doc_id": combined_doc_id,
-            "progress": 0.9,
-            "progress_msg": "正在触发解析...",
-        })
-
-        # 获取KB中我们刚上传的所有文档，触发解析
-        docs, _ = DocumentService.get_by_kb_id(
-            kb_id=kb_id, page_number=1, items_per_page=1000,
-            orderby="create_time", desc=True,
-            keywords="", run_status=[], types=[], suffix=[]
-        )
-        doc_ids_to_parse = []
-        for doc in docs:
-            if doc.get("run") == "0":
-                doc_ids_to_parse.append(doc["id"])
-
-        # 使用 DocumentService.run() 来正确队列任务（创建Task记录 + 推送到Redis）
-        kb_table_num_map = {}
-        for doc_id in doc_ids_to_parse:
-            try:
-                e, doc_model = DocumentService.get_by_id(doc_id)
-                if e:
-                    doc_dict = doc_model.to_dict()
-                    doc_dict["tenant_id"] = user_id
-                    DocumentService.run(user_id, doc_dict, kb_table_num_map)
-            except Exception as e:
-                logging.warning("Failed to queue task for doc %s: %s", doc_id, e)
-
-        BidProjectParseService.upsert({
-            "project_id": project_id,
-            "status": "done",
-            "progress": 1,
-            "progress_msg": "解析完成",
-        })
-
-        logging.info("Parse task completed for project %d, kb %s", project_id, kb_id)
-
-    except Exception as e:
-        logging.exception("Parse task failed for project %d", project_id)
-        BidProjectParseService.upsert({
-            "project_id": project_id,
-            "status": "fail",
-            "progress_msg": str(e),
-        })
+    import_bid_to_kb(
+        project_id=project_id,
+        publish_time=publish_time,
+        kb_id=kb_id,
+        user_id=user_id,
+    )
 
 
 @manager.route("/bid/projects/<int:project_id>/parse", methods=["POST"])  # noqa: F821

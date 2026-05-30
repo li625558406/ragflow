@@ -10,14 +10,13 @@ import { memo, useCallback, useMemo } from 'react';
 
 import { IRegenerateMessage, IRemoveMessageById } from '@/hooks/logic-hooks';
 import { cn } from '@/lib/utils';
-import { DocumentDownloadButton } from '../document-download-button';
 import { getStaticAsset } from '@/utils/common-util';
+import { DocumentDownloadButton } from '../document-download-button';
 import MarkdownContent from '../markdown-content';
 import { ReferenceDocumentList } from '../next-message-item/reference-document-list';
 import { ReferenceImageList } from '../next-message-item/reference-image-list';
 import { UploadedMessageFiles } from '../next-message-item/uploaded-message-files';
 import { RAGFlowAvatar } from '../ragflow-avatar';
-import SvgIcon from '../svg-icon';
 import { useTheme } from '../theme-provider';
 import { AssistantGroupButton, UserGroupButton } from './group-button';
 import styles from './index.module.less';
@@ -97,20 +96,16 @@ const MessageItem = ({
               <RAGFlowAvatar
                 className="size-10"
                 avatar={avatar ?? getStaticAsset('/logo.svg')}
-                isPerson
-              />
-            ) : avatarDialog ? (
-              <RAGFlowAvatar
-                className="size-10"
-                avatar={avatarDialog}
+                name={nickname}
                 isPerson
               />
             ) : (
-              <SvgIcon
-                name={'assistant'}
-                width={'100%'}
-                className={cn('size-10 fill-current')}
-              ></SvgIcon>
+              <RAGFlowAvatar
+                className="size-10"
+                avatar={avatarDialog || undefined}
+                name={nickname || 'AI'}
+                isPerson
+              />
             ))}
 
           <section className="flex min-w-0 gap-2 flex-1 flex-col">

@@ -381,6 +381,16 @@ export default {
   updateCrawlerState: (id: string) =>
     `${restAPIv1}/scheduled-tasks/${id}/state`,
 
+  // WeChat MP
+  listWechatMpAccounts: `${restAPIv1}/wechat-mp/accounts`,
+  addWechatMpAccount: `${restAPIv1}/wechat-mp/accounts`,
+  deleteWechatMpAccount: (id: string) =>
+    `${restAPIv1}/wechat-mp/accounts/${id}`,
+  searchWechatMp: `${restAPIv1}/wechat-mp/search`,
+  getWechatMpAuthQrcode: `${restAPIv1}/wechat-mp/auth/qrcode`,
+  getWechatMpAuthStatus: `${restAPIv1}/wechat-mp/auth/status`,
+  deleteWechatMpAuth: `${restAPIv1}/wechat-mp/auth`,
+
   // Collaboration
   collaborationDocuments: `${restAPIv1}/collaboration/documents`,
   collaborationDocument: (docId: string) =>

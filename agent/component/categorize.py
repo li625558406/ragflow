@@ -129,7 +129,7 @@ class Categorize(LLM, ABC):
         user_prompt = """
 ---- Real Data ----
 {} →
-""".format(" | ".join(["{}: \"{}\"".format(c["role"].upper(), re.sub(r"\n", "", c["content"], flags=re.DOTALL)) for c in msg]))
+""".format(" | ".join(["{}: \"{}\"".format(c["role"].upper(), re.sub(r"\n", "", c["content"] if isinstance(c["content"], str) else str(c["content"]), flags=re.DOTALL)) for c in msg]))
 
         if self.check_if_canceled("Categorize processing"):
             return

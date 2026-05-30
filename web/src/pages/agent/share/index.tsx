@@ -13,6 +13,7 @@ import DebugContent from '@/pages/agent/debug-content';
 import { useCacheChatLog } from '@/pages/agent/hooks/use-cache-chat-log';
 import { useAwaitCompentData } from '@/pages/agent/hooks/use-chat-logic';
 import { buildMessageUuidWithRole } from '@/utils/chat';
+import { getStaticAsset } from '@/utils/common-util';
 import { isEmpty } from 'lodash';
 import React, { forwardRef, useCallback } from 'react';
 import {
@@ -135,6 +136,7 @@ const ChatContainer = () => {
                 return (
                   <MessageItem
                     visibleAvatar={visibleAvatar}
+                    avatar={getStaticAsset('/logo.svg')}
                     conversationId={conversationId}
                     currentEventListWithoutMessageById={
                       currentEventListWithoutMessageById

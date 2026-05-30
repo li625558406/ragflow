@@ -35,4 +35,9 @@ export const ToolFormConfigMap = {
   [Operator.TavilyExtract]: TavilyForm,
   [Operator.WenCai]: WenCaiForm,
   [Operator.SearXNG]: SearXNGForm,
+  [Operator.BidSearch]: () => <div></div>,
+  [Operator.BidGetDetail]: () => <div></div>,
+  [Operator.BidImportToKb]: () => <div></div>,
+  [Operator.BidCheckImportStatus]: () => <div></div>,
+  [Operator.BidLookupCode]: () => <div></div>,
 };

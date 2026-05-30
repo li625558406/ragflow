@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(netstat -ano)",
+      "Bash(taskkill /F /PID 28708)",
+      "Bash(taskkill /F /PID 30032)",
+      "Bash(taskkill /F /PID 25780)",
+      "Bash(taskkill /F /PID 29688)",
+      "Bash(cmd //C \"taskkill /F /PID 28708 & taskkill /F /PID 30032 & taskkill /F /PID 25780 & taskkill /F /PID 29688\")"
+    ]
+  }
+}

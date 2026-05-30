@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 160 160" version="1.1" xmlns="http://www.w3.org/2000/svg">
+    <title>bid-lookup-code</title>
+    <defs>
+        <rect id="path-1" x="0" y="0" width="160" height="160"></rect>
+    </defs>
+    <g stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g transform="translate(-44, -75)">
+            <g transform="translate(44, 75)">
+                <mask id="mask-2" fill="white">
+                    <use xlink:href="#path-1"></use>
+                </mask>
+                <use fill-opacity="0" fill="#D8D8D8" xlink:href="#path-1"></use>
+                <circle cx="80" cy="80" r="45" stroke="#8FBCFA" stroke-width="6" fill="none" mask="url(#mask-2)"></circle>
+                <text x="55" y="78" font-family="monospace" font-size="28" fill="#468BFF" font-weight="bold" mask="url(#mask-2)">&lt;/&gt;</text>
+                <line x1="60" y1="92" x2="100" y2="92" stroke="#468BFF" stroke-width="5" stroke-linecap="round" mask="url(#mask-2)"></line>
+                <line x1="52" y1="104" x2="108" y2="104" stroke="#8FBCFA" stroke-width="4" stroke-linecap="round" opacity="0.6" mask="url(#mask-2)"></line>
+            </g>
+        </g>
+    </g>
+</svg>

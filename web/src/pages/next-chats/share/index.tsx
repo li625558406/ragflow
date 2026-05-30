@@ -8,6 +8,7 @@ import { MessageType } from '@/constants/chat';
 import { useFetchExternalChatInfo } from '@/hooks/use-chat-request';
 import i18n, { changeLanguageAsync } from '@/locales/config';
 import { buildMessageUuidWithRole } from '@/utils/chat';
+import { getStaticAsset } from '@/utils/common-util';
 import React, { forwardRef } from 'react';
 import { useSendButtonDisabled } from '../hooks/use-button-disabled';
 import {
@@ -74,6 +75,7 @@ const ChatContainer = () => {
                   <MessageItem
                     visibleAvatar={visibleAvatar}
                     key={buildMessageUuidWithRole(message)}
+                    avatar={getStaticAsset('/logo.svg')}
                     avatarDialog={avatarDialogSrc}
                     item={message}
                     nickname="You"

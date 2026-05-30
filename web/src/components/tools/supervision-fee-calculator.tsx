@@ -131,6 +131,14 @@ function linearInterp(x: number): number {
   return maxY + (x - maxX) * ABOVE_RATE;
 }
 
+interface InterpTrace {
+  x0: number;
+  x1: number;
+  y0: number;
+  y1: number;
+  isAbove: boolean;
+}
+
 function fmt(n: number): string {
   return n.toLocaleString('zh-CN', {
     minimumFractionDigits: 2,
@@ -237,6 +245,9 @@ function SupervisionTab() {
     benchmark: number;
   } | null>(null);
   const [error, setError] = useState('');
+  const [expanded, setExpanded] = useState(false);
+  const [interpTrace, setInterpTrace] = useState<InterpTrace | null>(null);
+  const [calcAmount, setCalcAmount] = useState(0);
 
   const profCoef = ALL_PROF[profIdx]?.coef ?? 1.0;
   const complexCoef = COMPLEXITY[complexIdx].coef;
@@ -256,9 +267,48 @@ function SupervisionTab() {
       return;
     }
     setError('');
+    setExpanded(false);
+    setCalcAmount(val);
     const basePrice = linearInterp(val);
     const benchmark = basePrice * profCoef * complexCoef * altCoef;
     setResult({ basePrice, benchmark });
+
+    // Build interpolation trace
+    const table = SUPERVISION_FEE_TABLE;
+    if (val <= table[0][0]) {
+      setInterpTrace({
+        x0: 0,
+        x1: table[0][0],
+        y0: 0,
+        y1: table[0][1],
+        isAbove: false,
+      });
+    } else {
+      let found = false;
+      for (let i = 1; i < table.length; i++) {
+        if (val <= table[i][0]) {
+          setInterpTrace({
+            x0: table[i - 1][0],
+            x1: table[i][0],
+            y0: table[i - 1][1],
+            y1: table[i][1],
+            isAbove: false,
+          });
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        const last = table[table.length - 1];
+        setInterpTrace({
+          x0: last[0],
+          x1: val,
+          y0: last[1],
+          y1: 0,
+          isAbove: true,
+        });
+      }
+    }
   }, [amount, profCoef, complexCoef, altCoef]);
 
   return (
@@ -305,7 +355,7 @@ function SupervisionTab() {
             <select
               value={profIdx}
               onChange={(e) => setProfIdx(Number(e.target.value))}
-              className="w-full bg-[#EAEAEA] border border-[#D4D4D4] rounded-lg px-4 py-2.5 pr-9 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition appearance-none cursor-pointer"
+              className="w-full bg-white border border-[#D4D4D4] rounded-lg px-4 py-2.5 pr-9 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition appearance-none cursor-pointer"
             >
               {PROF_GROUPS.map((g) => (
                 <optgroup key={g.group} label={g.group}>
@@ -360,7 +410,7 @@ function SupervisionTab() {
             <select
               value={altIdx}
               onChange={(e) => setAltIdx(Number(e.target.value))}
-              className="w-full bg-[#EAEAEA] border border-[#D4D4D4] rounded-lg px-4 py-2.5 pr-9 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition appearance-none cursor-pointer"
+              className="w-full bg-white border border-[#D4D4D4] rounded-lg px-4 py-2.5 pr-9 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition appearance-none cursor-pointer"
             >
               {ALTITUDE.map((a, i) => (
                 <option key={i} value={i}>
@@ -414,6 +464,106 @@ function SupervisionTab() {
                 </span>
               )}
             </div>
+
+            {/* Calculation Process */}
+            {interpTrace && (
+              <div className="mt-4 pt-3 border-t border-[#EAEAEA]">
+                <button
+                  onClick={() => setExpanded(!expanded)}
+                  className="flex items-center gap-1.5 text-xs text-[#1a1a1a] hover:text-[#000000] transition-colors"
+                >
+                  <svg
+                    className={`w-3 h-3 transition-transform ${expanded ? 'rotate-90' : ''}`}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M9 5l7 7-7 7"
+                    />
+                  </svg>
+                  计算过程
+                </button>
+                {expanded && (
+                  <div className="mt-3 space-y-3 text-[11px] text-[#1a1a1a]">
+                    <div>
+                      <div className="text-xs font-medium text-[#000000] mb-1.5">
+                        1. 收费基价（直线内插法）
+                      </div>
+                      {interpTrace.isAbove ? (
+                        <div className="space-y-1">
+                          <div>
+                            计费额 {fmt(calcAmount)} 万元超出最大分档（
+                            {fmt(interpTrace.x0)} 万元）
+                          </div>
+                          <div>
+                            基价 = {fmt(interpTrace.y0)} + ({fmt(calcAmount)} -{' '}
+                            {fmt(interpTrace.x0)}) × {ABOVE_RATE * 100}%
+                          </div>
+                          <div>
+                            = {fmt(interpTrace.y0)} +{' '}
+                            {fmt(calcAmount - interpTrace.x0)} ×{' '}
+                            {(ABOVE_RATE * 100).toFixed(3)}%
+                          </div>
+                          <div className="font-medium text-[#000000]">
+                            = {fmt(result.basePrice)} 万元
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-1">
+                          <div>
+                            计费额 {fmt(calcAmount)} 万元，落在区间 [
+                            {fmt(interpTrace.x0)}, {fmt(interpTrace.x1)}] 万元
+                          </div>
+                          <div>
+                            基价 = Y₀ + (Y₁ - Y₀) × (X - X₀) / (X₁ - X₀)
+                          </div>
+                          <div>
+                            = {fmt(interpTrace.y0)} + ({fmt(interpTrace.y1)} -{' '}
+                            {fmt(interpTrace.y0)}) × ({fmt(calcAmount)} -{' '}
+                            {fmt(interpTrace.x0)}) / ({fmt(interpTrace.x1)} -{' '}
+                            {fmt(interpTrace.x0)})
+                          </div>
+                          <div>
+                            = {fmt(interpTrace.y0)} +{' '}
+                            {fmt(interpTrace.y1 - interpTrace.y0)} ×{' '}
+                            {fmt(calcAmount - interpTrace.x0)} /{' '}
+                            {fmt(interpTrace.x1 - interpTrace.x0)}
+                          </div>
+                          <div className="font-medium text-[#000000]">
+                            = {fmt(result.basePrice)} 万元
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <div className="text-xs font-medium text-[#000000] mb-1.5">
+                        2. 施工监理服务收费基准价
+                      </div>
+                      <div className="space-y-1">
+                        <div>
+                          基准价 = 收费基价 × 专业调整系数 × 复杂程度系数 ×
+                          高程调整系数
+                        </div>
+                        <div>
+                          = {fmt(result.basePrice)} × {profCoef} × {complexCoef}{' '}
+                          × {altCoef}
+                        </div>
+                        <div className="font-medium text-[#000000]">
+                          = {fmt(result.benchmark)} 万元
+                        </div>
+                      </div>
+                    </div>
+                    <div className="text-[10px] text-[#1a1a1a]">
+                      浮动范围 = 基准价 × (1 ± 20%)
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -500,7 +650,7 @@ function DailyTab() {
   return (
     <div className="flex min-h-full">
       <div className="flex-1 p-6 space-y-4 min-w-0">
-        <div className="bg-[#EAEAEA] border border-[#D4D4D4] rounded-lg px-4 py-2.5 text-xs text-[#000000]">
+        <div className="bg-white border border-[#D4D4D4] rounded-lg px-4 py-2.5 text-xs text-[#000000]">
           适用于勘察、设计、保修等其他阶段的相关服务，以及短期服务的人工费用计算
         </div>
 

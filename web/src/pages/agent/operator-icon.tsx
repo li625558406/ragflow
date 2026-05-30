@@ -51,6 +51,11 @@ export const SVGIconMap = {
   [Operator.YahooFinance]: 'yahoo-finance',
   [Operator.WenCai]: 'wencai',
   [Operator.Crawler]: 'crawler',
+  [Operator.BidSearch]: 'bid-search',
+  [Operator.BidGetDetail]: 'bid-get-detail',
+  [Operator.BidImportToKb]: 'bid-import-to-kb',
+  [Operator.BidCheckImportStatus]: 'bid-check-status',
+  [Operator.BidLookupCode]: 'bid-lookup-code',
 };
 export const LucideIconMap = {
   [Operator.DataOperations]: FileCode,

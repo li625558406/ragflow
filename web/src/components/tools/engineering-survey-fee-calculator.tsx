@@ -167,6 +167,46 @@ function linearInterp(
   return maxY + (x - maxX) * aboveRate;
 }
 
+interface InterpTrace {
+  x0: number;
+  x1: number;
+  y0: number;
+  y1: number;
+  isAbove: boolean;
+  aboveRate: number;
+}
+
+function buildInterpTrace(
+  x: number,
+  table: [number, number][],
+  aboveRate: number,
+): InterpTrace {
+  if (x <= table[0][0]) {
+    return {
+      x0: 0,
+      x1: table[0][0],
+      y0: 0,
+      y1: table[0][1],
+      isAbove: false,
+      aboveRate,
+    };
+  }
+  for (let i = 1; i < table.length; i++) {
+    if (x <= table[i][0]) {
+      return {
+        x0: table[i - 1][0],
+        x1: table[i][0],
+        y0: table[i - 1][1],
+        y1: table[i][1],
+        isAbove: false,
+        aboveRate,
+      };
+    }
+  }
+  const last = table[table.length - 1];
+  return { x0: last[0], x1: x, y0: last[1], y1: 0, isAbove: true, aboveRate };
+}
+
 function fmtWan(yuan: number): string {
   return yuan.toLocaleString('zh-CN', {
     minimumFractionDigits: 2,
@@ -348,6 +388,9 @@ function DesignTab() {
     null,
   );
   const [error, setError] = useState('');
+  const [expanded, setExpanded] = useState(false);
+  const [interpTrace, setInterpTrace] = useState<InterpTrace | null>(null);
+  const [calcAmount, setCalcAmount] = useState(0);
 
   const profCoef = useMemo(
     () => ALL_PROF_ITEMS[profIdx]?.coef ?? 1.0,
@@ -369,9 +412,12 @@ function DesignTab() {
       return;
     }
     setError('');
+    setExpanded(false);
+    setCalcAmount(val);
     let adj = parseFloat(extraAdj) || 1.0;
     if (isRenovation) adj *= parseFloat(renovationCoef) || 1.1;
     setResult(calcDesignFee(val, profCoef, complexCoef, adj, options));
+    setInterpTrace(buildInterpTrace(val, DESIGN_FEE_TABLE, DESIGN_ABOVE_RATE));
   }, [
     amount,
     profCoef,
@@ -426,7 +472,7 @@ function DesignTab() {
             <select
               value={profIdx}
               onChange={(e) => setProfIdx(Number(e.target.value))}
-              className="w-full bg-[#EAEAEA] border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-9 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition appearance-none cursor-pointer"
+              className="w-full bg-white border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-9 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition appearance-none cursor-pointer"
             >
               {PROFESSIONAL_GROUPS.map((g) => (
                 <optgroup key={g.group} label={g.group}>
@@ -488,7 +534,7 @@ function DesignTab() {
               <select
                 value={renovationCoef}
                 onChange={(e) => setRenovationCoef(e.target.value)}
-                className="bg-[#EAEAEA] border border-[#D4D4D4] rounded-lg px-3 py-1.5 pr-7 text-xs text-[#000000] outline-none focus:border-[#000000] appearance-none cursor-pointer"
+                className="bg-white border border-[#D4D4D4] rounded-lg px-3 py-1.5 pr-7 text-xs text-[#000000] outline-none focus:border-[#000000] appearance-none cursor-pointer"
               >
                 <option value="1.1">1.1（简单）</option>
                 <option value="1.2">1.2（一般）</option>
@@ -602,6 +648,150 @@ function DesignTab() {
                 </span>
               )}
             </div>
+
+            {/* Calculation Process */}
+            {interpTrace && (
+              <div className="mt-4 pt-3 border-t border-[#EAEAEA]">
+                <button
+                  onClick={() => setExpanded(!expanded)}
+                  className="flex items-center gap-1.5 text-xs text-[#1a1a1a] hover:text-[#000000] transition-colors"
+                >
+                  <svg
+                    className={`w-3 h-3 transition-transform ${expanded ? 'rotate-90' : ''}`}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M9 5l7 7-7 7"
+                    />
+                  </svg>
+                  计算过程
+                </button>
+                {expanded && (
+                  <div className="mt-3 space-y-3 text-[11px] text-[#1a1a1a]">
+                    <div>
+                      <div className="text-xs font-medium text-[#000000] mb-1.5">
+                        1. 收费基价（直线内插法）
+                      </div>
+                      {interpTrace.isAbove ? (
+                        <div className="space-y-1">
+                          <div>
+                            计费额 {fmtWan(calcAmount)} 万元超出最大分档（
+                            {fmtWan(interpTrace.x0)} 万元）
+                          </div>
+                          <div>
+                            基价 = {fmtWan(interpTrace.y0)} + (
+                            {fmtWan(calcAmount)} - {fmtWan(interpTrace.x0)}) ×{' '}
+                            {interpTrace.aboveRate * 100}%
+                          </div>
+                          <div className="font-medium text-[#000000]">
+                            = {fmtWan(result.basePrice)} 万元
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-1">
+                          <div>
+                            计费额 {fmtWan(calcAmount)} 万元，落在区间 [
+                            {fmtWan(interpTrace.x0)}, {fmtWan(interpTrace.x1)}]
+                            万元
+                          </div>
+                          <div>
+                            基价 = {fmtWan(interpTrace.y0)} + (
+                            {fmtWan(interpTrace.y1)} - {fmtWan(interpTrace.y0)})
+                            × ({fmtWan(calcAmount)} - {fmtWan(interpTrace.x0)})
+                            / ({fmtWan(interpTrace.x1)} -{' '}
+                            {fmtWan(interpTrace.x0)})
+                          </div>
+                          <div className="font-medium text-[#000000]">
+                            = {fmtWan(result.basePrice)} 万元
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <div className="text-xs font-medium text-[#000000] mb-1.5">
+                        2. 基本设计收费
+                      </div>
+                      <div className="space-y-1">
+                        <div>
+                          = 收费基价 × 专业调整系数 × 复杂程度系数 ×
+                          附加调整系数
+                        </div>
+                        <div>
+                          = {fmtWan(result.basePrice)} × {profCoef} ×{' '}
+                          {complexCoef} ×{' '}
+                          {(parseFloat(extraAdj) || 1) *
+                            (isRenovation
+                              ? parseFloat(renovationCoef) || 1.1
+                              : 1)}
+                        </div>
+                        <div className="font-medium text-[#000000]">
+                          = {fmtWan(result.basicFee)} 万元
+                        </div>
+                      </div>
+                    </div>
+                    {result.otherFee > 0 && (
+                      <div>
+                        <div className="text-xs font-medium text-[#000000] mb-1.5">
+                          3. 其他设计收费
+                        </div>
+                        <div className="space-y-1">
+                          {options.overall && (
+                            <div>
+                              总体设计费 = {fmtWan(result.basicFee)} × 5% ={' '}
+                              {fmtWan(result.basicFee * 0.05)} 万元
+                            </div>
+                          )}
+                          {options.coordination && (
+                            <div>
+                              主体设计协调费 = {fmtWan(result.basicFee)} × 5% ={' '}
+                              {fmtWan(result.basicFee * 0.05)} 万元
+                            </div>
+                          )}
+                          {options.budget && (
+                            <div>
+                              施工图预算编制费 = {fmtWan(result.basicFee)} × 10%
+                              = {fmtWan(result.basicFee * 0.1)} 万元
+                            </div>
+                          )}
+                          {options.asbuilt && (
+                            <div>
+                              竣工图编制费 = {fmtWan(result.basicFee)} × 8% ={' '}
+                              {fmtWan(result.basicFee * 0.08)} 万元
+                            </div>
+                          )}
+                          <div className="font-medium text-[#000000]">
+                            合计 = {fmtWan(result.otherFee)} 万元
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    <div>
+                      <div className="text-xs font-medium text-[#000000] mb-1.5">
+                        {result.otherFee > 0 ? '4' : '3'}. 工程设计收费基准价
+                      </div>
+                      <div className="space-y-1">
+                        <div>= 基本设计收费 + 其他设计收费</div>
+                        <div>
+                          = {fmtWan(result.basicFee)} +{' '}
+                          {fmtWan(result.otherFee)}
+                        </div>
+                        <div className="font-semibold text-[#000000]">
+                          = {fmtWan(result.benchmark)} 万元
+                        </div>
+                      </div>
+                    </div>
+                    <div className="text-[10px] text-[#1a1a1a]">
+                      浮动范围 = 基准价 × (1 ± 20%)
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -676,6 +866,14 @@ function SurveyTab() {
     null,
   );
   const [error, setError] = useState('');
+  const [expanded, setExpanded] = useState(false);
+  const [surveyTrace, setSurveyTrace] = useState<{
+    bp: number;
+    qty: number;
+    techRatio: number;
+    adjCoefs: number[];
+    adjCoef: number;
+  } | null>(null);
 
   const handleCalc = useCallback(() => {
     const bp = parseFloat(basePrice.replace(/[,，\s]/g, ''));
@@ -691,12 +889,18 @@ function SurveyTab() {
       return;
     }
     setError('');
+    setExpanded(false);
     const techRatio = SURVEY_TECH_RATIOS[techIdx].ratio;
     const adjCoefs: number[] = [];
     if (tempCoef) adjCoefs.push(1.2);
     if (altitudeIdx > 0) adjCoefs.push(ALTITUDE_COEFS[altitudeIdx].coef);
     const custom = parseFloat(customAdj);
     if (!isNaN(custom) && custom !== 1.0 && custom > 0) adjCoefs.push(custom);
+    const adjCoef =
+      adjCoefs.length > 0
+        ? adjCoefs.reduce((a, b) => a + b, 0) - adjCoefs.length + 1
+        : 1.0;
+    setSurveyTrace({ bp, qty, techRatio, adjCoefs, adjCoef });
     setResult(calcSurveyFee(bp, qty, techRatio, adjCoefs));
   }, [basePrice, quantity, techIdx, tempCoef, altitudeIdx, customAdj]);
 
@@ -704,7 +908,7 @@ function SurveyTab() {
     <div className="flex min-h-full">
       {/* Left: Form + Results */}
       <div className="flex-1 p-6 space-y-4 min-w-0">
-        <div className="bg-[#EAEAEA] border border-[#D4D4D4] rounded-xl px-4 py-2.5 text-xs text-[#000000]">
+        <div className="bg-white border border-[#D4D4D4] rounded-xl px-4 py-2.5 text-xs text-[#000000]">
           通用工程勘察收费适用于：工程测量、岩土工程勘察、水文地质勘察、工程物探、室内试验等
         </div>
 
@@ -758,7 +962,7 @@ function SurveyTab() {
             <select
               value={techIdx}
               onChange={(e) => setTechIdx(Number(e.target.value))}
-              className="w-full bg-[#EAEAEA] border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-9 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition appearance-none cursor-pointer"
+              className="w-full bg-white border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-9 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition appearance-none cursor-pointer"
             >
               {SURVEY_TECH_RATIOS.map((r, i) => (
                 <option key={i} value={i}>
@@ -793,7 +997,7 @@ function SurveyTab() {
                 <select
                   value={altitudeIdx}
                   onChange={(e) => setAltitudeIdx(Number(e.target.value))}
-                  className="bg-[#EAEAEA] border border-[#D4D4D4] rounded-lg px-3 py-1.5 pr-7 text-xs text-[#000000] outline-none focus:border-[#000000] appearance-none cursor-pointer"
+                  className="bg-white border border-[#D4D4D4] rounded-lg px-3 py-1.5 pr-7 text-xs text-[#000000] outline-none focus:border-[#000000] appearance-none cursor-pointer"
                 >
                   {ALTITUDE_COEFS.map((a, i) => (
                     <option key={i} value={i}>
@@ -873,6 +1077,103 @@ function SurveyTab() {
                 <span>{fmtYuan(result.benchmark * 1.2)} 元</span>
               </div>
             </div>
+
+            {/* Calculation Process */}
+            {surveyTrace && (
+              <div className="mt-4 pt-3 border-t border-[#EAEAEA]">
+                <button
+                  onClick={() => setExpanded(!expanded)}
+                  className="flex items-center gap-1.5 text-xs text-[#1a1a1a] hover:text-[#000000] transition-colors"
+                >
+                  <svg
+                    className={`w-3 h-3 transition-transform ${expanded ? 'rotate-90' : ''}`}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M9 5l7 7-7 7"
+                    />
+                  </svg>
+                  计算过程
+                </button>
+                {expanded && (
+                  <div className="mt-3 space-y-3 text-[11px] text-[#1a1a1a]">
+                    {surveyTrace.adjCoefs.length > 0 && (
+                      <div>
+                        <div className="text-xs font-medium text-[#000000] mb-1.5">
+                          1. 附加调整系数合并
+                        </div>
+                        <div className="space-y-1">
+                          <div>
+                            附加系数列表: {surveyTrace.adjCoefs.join(', ')}
+                          </div>
+                          <div>合并系数 = 各系数相加 - 系数个数 + 1</div>
+                          <div>
+                            = ({surveyTrace.adjCoefs.join(' + ')}) -{' '}
+                            {surveyTrace.adjCoefs.length} + 1
+                          </div>
+                          <div className="font-medium text-[#000000]">
+                            = {surveyTrace.adjCoef.toFixed(4)}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    <div>
+                      <div className="text-xs font-medium text-[#000000] mb-1.5">
+                        {surveyTrace.adjCoefs.length > 0 ? '2' : '1'}.
+                        实物工作收费
+                      </div>
+                      <div className="space-y-1">
+                        <div>= 收费基价 × 实物工作量 × 附加调整系数</div>
+                        <div>
+                          = {fmtYuan(surveyTrace.bp)} × {surveyTrace.qty} ×{' '}
+                          {surveyTrace.adjCoef.toFixed(4)}
+                        </div>
+                        <div className="font-medium text-[#000000]">
+                          = {fmtYuan(result.physicalFee)} 元
+                        </div>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs font-medium text-[#000000] mb-1.5">
+                        {surveyTrace.adjCoefs.length > 0 ? '3' : '2'}.
+                        技术工作收费
+                      </div>
+                      <div className="space-y-1">
+                        <div>= 实物工作收费 × 技术工作费比例</div>
+                        <div>
+                          = {fmtYuan(result.physicalFee)} ×{' '}
+                          {(surveyTrace.techRatio * 100).toFixed(0)}%
+                        </div>
+                        <div className="font-medium text-[#000000]">
+                          = {fmtYuan(result.techFee)} 元
+                        </div>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs font-medium text-[#000000] mb-1.5">
+                        {surveyTrace.adjCoefs.length > 0 ? '4' : '3'}.
+                        勘察收费基准价
+                      </div>
+                      <div className="space-y-1">
+                        <div>= 实物工作收费 + 技术工作收费</div>
+                        <div>
+                          = {fmtYuan(result.physicalFee)} +{' '}
+                          {fmtYuan(result.techFee)}
+                        </div>
+                        <div className="font-semibold text-[#000000]">
+                          = {fmtYuan(result.benchmark)} 元
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -933,6 +1234,9 @@ function WaterTab() {
     typeof calcWaterConservancyFee
   > | null>(null);
   const [error, setError] = useState('');
+  const [expanded, setExpanded] = useState(false);
+  const [interpTrace, setInterpTrace] = useState<InterpTrace | null>(null);
+  const [calcAmount, setCalcAmount] = useState(0);
 
   const profCoef = WATER_PROF_COEFS[profIdx].coef;
   const complexCoef = COMPLEXITY_OPTIONS[complexIdx].coef;
@@ -951,15 +1255,20 @@ function WaterTab() {
       return;
     }
     setError('');
+    setExpanded(false);
+    setCalcAmount(val);
     const adj = parseFloat(adjCoef) || 1.0;
     setResult(calcWaterConservancyFee(val, profCoef, complexCoef, adj));
+    setInterpTrace(
+      buildInterpTrace(val, WATER_CONSERVANCY_TABLE, WATER_ABOVE_RATE),
+    );
   }, [amount, profCoef, complexCoef, adjCoef]);
 
   return (
     <div className="flex min-h-full">
       {/* Left: Form + Results */}
       <div className="flex-1 p-6 space-y-4 min-w-0">
-        <div className="bg-[#EAEAEA] border border-[#D4D4D4] rounded-xl px-4 py-2.5 text-xs text-[#000000]">
+        <div className="bg-white border border-[#D4D4D4] rounded-xl px-4 py-2.5 text-xs text-[#000000]">
           水利水电工程勘察收费适用于：水库、引调水、河道治理、灌区、水电站、潮汐发电、水土保持等工程
         </div>
 
@@ -1003,7 +1312,7 @@ function WaterTab() {
             <select
               value={profIdx}
               onChange={(e) => setProfIdx(Number(e.target.value))}
-              className="w-full bg-[#EAEAEA] border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-9 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition appearance-none cursor-pointer"
+              className="w-full bg-white border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-9 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition appearance-none cursor-pointer"
             >
               {WATER_PROF_COEFS.map((c, i) => (
                 <option key={i} value={i}>
@@ -1108,6 +1417,107 @@ function WaterTab() {
                 </span>
               )}
             </div>
+
+            {/* Calculation Process */}
+            {interpTrace && (
+              <div className="mt-4 pt-3 border-t border-[#EAEAEA]">
+                <button
+                  onClick={() => setExpanded(!expanded)}
+                  className="flex items-center gap-1.5 text-xs text-[#1a1a1a] hover:text-[#000000] transition-colors"
+                >
+                  <svg
+                    className={`w-3 h-3 transition-transform ${expanded ? 'rotate-90' : ''}`}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M9 5l7 7-7 7"
+                    />
+                  </svg>
+                  计算过程
+                </button>
+                {expanded && (
+                  <div className="mt-3 space-y-3 text-[11px] text-[#1a1a1a]">
+                    <div>
+                      <div className="text-xs font-medium text-[#000000] mb-1.5">
+                        1. 收费基价（直线内插法）
+                      </div>
+                      {interpTrace.isAbove ? (
+                        <div className="space-y-1">
+                          <div>
+                            计费额 {fmtWan(calcAmount)} 万元超出最大分档（
+                            {fmtWan(interpTrace.x0)} 万元）
+                          </div>
+                          <div>
+                            基价 = {fmtWan(interpTrace.y0)} + (
+                            {fmtWan(calcAmount)} - {fmtWan(interpTrace.x0)}) ×{' '}
+                            {interpTrace.aboveRate * 100}%
+                          </div>
+                          <div className="font-medium text-[#000000]">
+                            = {fmtWan(result.basePrice)} 万元
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-1">
+                          <div>
+                            计费额 {fmtWan(calcAmount)} 万元，落在区间 [
+                            {fmtWan(interpTrace.x0)}, {fmtWan(interpTrace.x1)}]
+                            万元
+                          </div>
+                          <div>
+                            基价 = {fmtWan(interpTrace.y0)} + (
+                            {fmtWan(interpTrace.y1)} - {fmtWan(interpTrace.y0)})
+                            × ({fmtWan(calcAmount)} - {fmtWan(interpTrace.x0)})
+                            / ({fmtWan(interpTrace.x1)} -{' '}
+                            {fmtWan(interpTrace.x0)})
+                          </div>
+                          <div className="font-medium text-[#000000]">
+                            = {fmtWan(result.basePrice)} 万元
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <div className="text-xs font-medium text-[#000000] mb-1.5">
+                        2. 基本勘察收费
+                      </div>
+                      <div className="space-y-1">
+                        <div>
+                          = 收费基价 × 专业调整系数 × 复杂程度系数 ×
+                          附加调整系数
+                        </div>
+                        <div>
+                          = {fmtWan(result.basePrice)} × {profCoef} ×{' '}
+                          {complexCoef} × {parseFloat(adjCoef) || 1.0}
+                        </div>
+                        <div className="font-medium text-[#000000]">
+                          = {fmtWan(result.basicFee)} 万元
+                        </div>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs font-medium text-[#000000] mb-1.5">
+                        3. 勘察收费基准价
+                      </div>
+                      <div className="space-y-1">
+                        <div>= 基本勘察收费（水利水电无其他附加收费项）</div>
+                        <div className="font-semibold text-[#000000]">
+                          = {fmtWan(result.basicFee)} 万元
+                        </div>
+                      </div>
+                    </div>
+                    <div className="text-[10px] text-[#1a1a1a]">
+                      浮动范围 = 基准价 × (1 ± 20%)；作业准备费按基准价 ×
+                      15%~20% 另行计算
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>

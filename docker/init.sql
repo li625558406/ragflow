@@ -100,6 +100,33 @@ CREATE TABLE IF NOT EXISTS scheduled_task_log (
     INDEX idx_task_start (task_id, start_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- 微信公众号账号表
+CREATE TABLE IF NOT EXISTS wechat_mp_account (
+    id VARCHAR(32) PRIMARY KEY,
+    tenant_id VARCHAR(32) NOT NULL,
+    mp_name VARCHAR(255) NOT NULL COMMENT '公众号名称',
+    faker_id VARCHAR(255) NOT NULL COMMENT '公众号fake ID',
+    mp_cover VARCHAR(500) COMMENT '公众号封面图URL',
+    mp_intro TEXT COMMENT '公众号简介',
+    status INT DEFAULT 1 COMMENT '状态: 1=正常, 0=禁用',
+    created_at DATETIME,
+    updated_at DATETIME,
+    INDEX idx_tenant (tenant_id),
+    INDEX idx_faker (tenant_id, faker_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 微信公众号授权凭证表
+CREATE TABLE IF NOT EXISTS wechat_mp_auth (
+    id VARCHAR(32) PRIMARY KEY,
+    tenant_id VARCHAR(32) NOT NULL UNIQUE,
+    cookie TEXT COMMENT '微信登录cookie字符串',
+    token VARCHAR(500) COMMENT '微信登录token',
+    expiry DATETIME COMMENT 'token/cookie过期时间',
+    ext_data TEXT COMMENT '扩展数据(公众号名称、头像等JSON)',
+    updated_at DATETIME,
+    INDEX idx_tenant (tenant_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- 预置分析模板
 INSERT INTO document_analysis_template
 (id, name, doc_type, description, dimensions, prompt_templates, chunk_merge_rule, is_default, is_system, create_time, create_date, update_time, update_date)

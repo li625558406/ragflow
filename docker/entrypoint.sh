@@ -249,6 +249,20 @@ function ensure_croniter() {
     echo "croniter ready."
 }
 
+function ensure_playwright() {
+    echo "Setting up Playwright for WeChat MP crawler..."
+    # Install system dependencies for Chromium (may need root/apt)
+    if command -v apt &> /dev/null; then
+        apt-get update -qq && apt-get install -y -qq \
+            libcups2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 \
+            libpango-1.0-0 libcairo2 libasound2t64 libatspi2.0-0t64 libdrm2 \
+            2>/dev/null || true
+    fi
+    # Install Chromium browser binary (idempotent — skips if already installed)
+    python3 -m playwright install chromium 2>/dev/null || true
+    echo "Playwright ready."
+}
+
 function ensure_db_init() {
     echo "Initializing database tables..."
     "$PY" -c "from api.db.db_models import init_database_tables as init_web_db; init_web_db()"
@@ -279,6 +293,7 @@ function wait_for_server() {
 ensure_docling
 ensure_ddddocr
 ensure_croniter
+ensure_playwright
 ensure_db_init
 
 if [[ "${ENABLE_WEBSERVER}" -eq 1 ]]; then

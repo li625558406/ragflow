@@ -47,6 +47,16 @@ const Menus = [
     label: t('flow.developer'),
     list: [Operator.GitHub, Operator.ExeSQL, Operator.Code, Operator.Retrieval],
   },
+  {
+    label: t('flow.bid'),
+    list: [
+      Operator.BidSearch,
+      Operator.BidGetDetail,
+      Operator.BidImportToKb,
+      Operator.BidCheckImportStatus,
+      Operator.BidLookupCode,
+    ],
+  },
 ];
 
 type ToolCommandProps = {

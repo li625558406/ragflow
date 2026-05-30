@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 160 160" version="1.1" xmlns="http://www.w3.org/2000/svg">
+    <title>bid-import-to-kb</title>
+    <defs>
+        <rect id="path-1" x="0" y="0" width="160" height="160"></rect>
+    </defs>
+    <g stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g transform="translate(-44, -75)">
+            <g transform="translate(44, 75)">
+                <mask id="mask-2" fill="white">
+                    <use xlink:href="#path-1"></use>
+                </mask>
+                <use fill-opacity="0" fill="#D8D8D8" xlink:href="#path-1"></use>
+                <path d="M45 55 L45 125 C45 130.5 49.5 135 55 135 L105 135 C110.5 135 115 130.5 115 125 L115 75 L90 55 Z" stroke="#8FBCFA" stroke-width="5" fill="none" stroke-linejoin="round" mask="url(#mask-2)"></path>
+                <path d="M90 55 L90 75 L115 75" stroke="#8FBCFA" stroke-width="5" fill="none" stroke-linejoin="round" mask="url(#mask-2)"></path>
+                <polyline points="80,70 80,100 65,90" stroke="#468BFF" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none" mask="url(#mask-2)"></polyline>
+                <polyline points="80,100 95,90" stroke="#468BFF" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none" mask="url(#mask-2)"></polyline>
+                <line x1="80" y1="100" x2="80" y2="118" stroke="#468BFF" stroke-width="5" stroke-linecap="round" mask="url(#mask-2)"></line>
+                <rect x="50" y="42" width="60" height="28" rx="6" fill="#FDBB11" opacity="0.4" mask="url(#mask-2)"></rect>
+            </g>
+        </g>
+    </g>
+</svg>

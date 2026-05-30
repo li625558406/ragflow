@@ -22,22 +22,53 @@ interface FeeResult {
   upper: number;
 }
 
-function calcTiered(amountWan: number, rateCol: number): number {
+interface CalcStep {
+  range: string;
+  rate: number;
+  amountWan: number;
+  result: number;
+}
+
+interface FeeTrace {
+  steps: CalcStep[];
+  aboveStep: CalcStep | null;
+  total: number;
+}
+
+function calcTieredWithTrace(amountWan: number, rateCol: number): FeeTrace {
+  const steps: CalcStep[] = [];
   let fee = 0;
   let prevUpper = 0;
   for (const [upper, ...rates] of TIERS) {
     const rate = rates[rateCol] / 100;
     if (amountWan <= prevUpper) break;
-    fee += (Math.min(amountWan, upper) - prevUpper) * 10000 * rate;
+    const segmentAmount = Math.min(amountWan, upper) - prevUpper;
+    const segmentFee = segmentAmount * 10000 * rate;
+    if (segmentAmount > 0) {
+      steps.push({
+        range: `${prevUpper} - ${upper} 万元`,
+        rate,
+        amountWan: segmentAmount,
+        result: segmentFee,
+      });
+    }
+    fee += segmentFee;
     prevUpper = upper;
   }
+  let aboveStep: CalcStep | null = null;
   if (amountWan > TIERS[TIERS.length - 1][0]) {
-    fee +=
-      (amountWan - TIERS[TIERS.length - 1][0]) *
-      10000 *
-      (ABOVE_TIER_RATE[rateCol] / 100);
+    const aboveRate = ABOVE_TIER_RATE[rateCol] / 100;
+    const aboveAmount = amountWan - TIERS[TIERS.length - 1][0];
+    const aboveFee = aboveAmount * 10000 * aboveRate;
+    aboveStep = {
+      range: `${TIERS[TIERS.length - 1][0]} 万元以上`,
+      rate: aboveRate,
+      amountWan: aboveAmount,
+      result: aboveFee,
+    };
+    fee += aboveFee;
   }
-  return fee;
+  return { steps, aboveStep, total: fee };
 }
 
 function formatYuan(yuan: number): string {
@@ -47,17 +78,23 @@ function formatYuan(yuan: number): string {
   });
 }
 
-function calcAll(amountWan: number): FeeResult[] {
-  return LABELS.map((label, i) => {
-    const fee = calcTiered(amountWan, i);
+function calcAll(amountWan: number): {
+  results: FeeResult[];
+  traces: FeeTrace[];
+} {
+  const traces = LABELS.map((_, i) => calcTieredWithTrace(amountWan, i));
+  const results = LABELS.map((label, i) => {
+    const fee = traces[i].total;
     return { label, fee, lower: fee * 0.8, upper: fee * 1.2 };
   });
+  return { results, traces };
 }
 
 export default function AgencyFeeCalculator() {
   const [input, setInput] = useState('');
   const [amount, setAmount] = useState<number | null>(null);
   const [error, setError] = useState('');
+  const [expanded, setExpanded] = useState(false);
 
   const handleCalc = useCallback(() => {
     const raw = input.replace(/[,，\s]/g, '');
@@ -73,10 +110,13 @@ export default function AgencyFeeCalculator() {
       return;
     }
     setError('');
+    setExpanded(false);
     setAmount(val);
   }, [input]);
 
-  const results = amount !== null ? calcAll(amount) : null;
+  const data = amount !== null ? calcAll(amount) : null;
+  const results = data?.results;
+  const traces = data?.traces;
 
   return (
     <div className="h-full flex flex-col">
@@ -128,7 +168,7 @@ export default function AgencyFeeCalculator() {
                     if (e.key === 'Enter') handleCalc();
                   }}
                   placeholder="请输入金额"
-                  className="w-full bg-[#EAEAEA] border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-14 text-sm text-[#000000] outline-none focus:border-[#A3A3A3] focus:ring-2 focus:ring-[#EAEAEA] transition placeholder:text-[#A3A3A3]"
+                  className="w-full bg-white border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-14 text-sm text-[#000000] outline-none focus:border-[#A3A3A3] focus:ring-2 focus:ring-[#EAEAEA] transition placeholder:text-[#A3A3A3]"
                 />
                 <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-[#1a1a1a]">
                   万元
@@ -145,7 +185,7 @@ export default function AgencyFeeCalculator() {
           </div>
 
           {/* Results */}
-          {results && (
+          {results && traces && (
             <div className="bg-white rounded-2xl border border-[#D4D4D4] p-5">
               <div className="mb-4">
                 <div className="text-xs text-[#1a1a1a]">中标金额</div>
@@ -202,6 +242,77 @@ export default function AgencyFeeCalculator() {
                   </span>
                 </div>
               )}
+
+              {/* Calculation Process */}
+              <div className="mt-4 pt-3 border-t border-[#EAEAEA]">
+                <button
+                  onClick={() => setExpanded(!expanded)}
+                  className="flex items-center gap-1.5 text-xs text-[#1a1a1a] hover:text-[#000000] transition-colors"
+                >
+                  <svg
+                    className={`w-3 h-3 transition-transform ${expanded ? 'rotate-90' : ''}`}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M9 5l7 7-7 7"
+                    />
+                  </svg>
+                  计算过程（差额定率分档累进法）
+                </button>
+                {expanded && (
+                  <div className="mt-3 space-y-4">
+                    {results.map((r, catIdx) => (
+                      <div key={r.label}>
+                        <div className="text-xs font-medium text-[#000000] mb-2">
+                          {r.label}
+                        </div>
+                        <div className="space-y-1 text-[11px] text-[#1a1a1a]">
+                          {traces[catIdx].steps.map((step, i) => (
+                            <div key={i} className="flex justify-between">
+                              <span>
+                                {step.range}: {step.amountWan.toFixed(2)} 万元 ×{' '}
+                                {(step.rate * 100).toFixed(2)}%
+                              </span>
+                              <span className="font-medium text-[#000000]">
+                                = {formatYuan(step.result)} 元
+                              </span>
+                            </div>
+                          ))}
+                          {traces[catIdx].aboveStep && (
+                            <div className="flex justify-between">
+                              <span>
+                                {traces[catIdx].aboveStep!.range}:{' '}
+                                {traces[catIdx].aboveStep!.amountWan.toFixed(2)}{' '}
+                                万元 ×{' '}
+                                {(traces[catIdx].aboveStep!.rate * 100).toFixed(
+                                  2,
+                                )}
+                                %
+                              </span>
+                              <span className="font-medium text-[#000000]">
+                                = {formatYuan(traces[catIdx].aboveStep!.result)}{' '}
+                                元
+                              </span>
+                            </div>
+                          )}
+                          <div className="flex justify-between border-t border-[#EAEAEA] pt-1 text-xs font-semibold text-[#000000]">
+                            <span>合计</span>
+                            <span>= {formatYuan(traces[catIdx].total)} 元</span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                    <div className="text-[10px] text-[#1a1a1a]">
+                      浮动范围 = 计算结果 × (1 ± 20%)
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>

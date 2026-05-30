@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
-RAGFlow MCP Server — exposes ask_agent and search_bid_projects as MCP tools.
-Integrates with Hermes / OpenClaw via stdio JSON-RPC transport.
+RAGFlow MCP Server — exposes 5 tools via MCP JSON-RPC over stdio.
+Integrates with Hermes / Claude Code / OpenClaw.
+
+Tools:
+  1. ask_agent               — Ask a RAGFlow agent/canvas a question
+  2. search_bid_projects     — Search Chinese procurement bid projects
+  3. get_bid_detail          — Get full detail (content + structure + files)
+  4. import_bid_to_kb        — Import project into knowledge base + trigger parse
+  5. check_bid_import_status — Check KB import/parse progress
 
 Usage:
   python3 rag/svr/mcp_server.py
@@ -178,6 +185,152 @@ def tool_ask_agent(api_key: str, agent_id: str, question: str,
     return json.dumps({"answer": answer}, ensure_ascii=False, indent=2)
 
 
+def tool_get_bid_detail(api_key: str, project_id: str, publish_time: str = "") -> str:
+    """Get full detail of a bid project: content HTML, structured data, and attached files.
+
+    Args:
+        api_key: RAGFlow API key (format: ragflow-xxx)
+        project_id: Bid project ID from search results
+        publish_time: Publish time from search results (required for first fetch)
+    """
+    pid = int(project_id)
+
+    # Fetch detail
+    detail_params = {}
+    if publish_time:
+        detail_params["publish_time"] = publish_time
+    detail = _http_get(f"/bid/projects/{pid}/detail", api_key, detail_params if detail_params else None)
+
+    # Fetch structure
+    struct = _http_get(f"/bid/projects/{pid}/structure", api_key, detail_params if detail_params else None)
+
+    # Fetch files
+    files = _http_get(f"/bid/projects/{pid}/files", api_key, detail_params if detail_params else None)
+
+    detail_data = detail.get("data", {}) if detail.get("code") == 0 else {}
+    struct_data = struct.get("data", {}) if struct.get("code") == 0 else {}
+    files_data = files.get("data", []) if files.get("code") == 0 else []
+
+    return json.dumps({
+        "project_id": pid,
+        "content_html": detail_data.get("content_html", ""),
+        "structure": struct_data,
+        "files": files_data if isinstance(files_data, list) else [],
+    }, ensure_ascii=False, indent=2)
+
+
+def tool_import_bid_to_kb(api_key: str, project_id: str, publish_time: str = "",
+                          kb_id: str = "") -> str:
+    """Import a bid project's detail content and files into a RAGFlow knowledge base.
+
+    Args:
+        api_key: RAGFlow API key (format: ragflow-xxx)
+        project_id: Bid project ID from search results
+        publish_time: Publish time from search results (required for first import)
+        kb_id: Target knowledge base ID (default: d23e0644578211f19c3bed5c593fe4c9)
+    """
+    pid = int(project_id)
+    body = {
+        "kb_id": kb_id or "d23e0644578211f19c3bed5c593fe4c9",
+    }
+    result = _http_post(f"/bid/projects/{pid}/parse", api_key, body)
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+def tool_check_bid_import_status(api_key: str, project_id: str) -> str:
+    """Check the KB import/parse status of a bid project.
+
+    Args:
+        api_key: RAGFlow API key (format: ragflow-xxx)
+        project_id: Bid project ID from search results
+    """
+    pid = int(project_id)
+    result = _http_get(f"/bid/projects/{pid}/parse-status", api_key)
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+def tool_lookup_bid_code(keyword: str, code_type: str = "area") -> str:
+    """Look up administrative area codes or industry codes by Chinese name.
+
+    Use this BEFORE calling search_bid_projects to convert user's natural-language
+    location/industry references into the correct codes.
+
+    Args:
+        keyword: Chinese name to search, e.g. "广东", "广州", "建筑", "农业"
+        code_type: "area" (administrative division) or "industry" (GB/T 4754-2017)
+    """
+    if code_type == "area":
+        result = _http_get("/bid/areas", "", {"parent_code": "all"})
+        data = result.get("data", [])
+        keyword_lower = keyword.strip().lower()
+        matches = []
+        for item in data:
+            name = item.get("name", "")
+            code = item.get("code", "")
+            if keyword_lower in name.lower() or keyword_lower in code:
+                matches.append({
+                    "code": code,
+                    "name": name,
+                    "level": item.get("level", 0),
+                    "parent_code": item.get("parent_code", ""),
+                })
+        # Sort: exact match first, then by level (province first)
+        matches.sort(key=lambda x: (
+            0 if x["name"] == keyword.strip() else 1,
+            x["level"],
+        ))
+        if len(matches) > 20:
+            matches = matches[:20]
+        return json.dumps({
+            "type": "area",
+            "keyword": keyword,
+            "total": len(matches),
+            "matches": matches,
+        }, ensure_ascii=False, indent=2)
+
+    elif code_type == "industry":
+        result = _http_get("/bid/industries", "")
+        tree = result.get("data", [])
+        keyword_lower = keyword.strip().lower()
+        matches = []
+        for cat in tree:
+            cat_name = cat.get("name", "")
+            cat_code = cat.get("code", "")
+            if keyword_lower in cat_name.lower() or keyword_lower in cat_code.lower():
+                matches.append({
+                    "code": cat_code,
+                    "name": cat_name,
+                    "level": "门类",
+                })
+            for child in (cat.get("children") or []):
+                child_name = child.get("name", "")
+                child_code = child.get("code", "")
+                if keyword_lower in child_name.lower() or keyword_lower in child_code.lower():
+                    matches.append({
+                        "code": child_code,
+                        "name": child_name,
+                        "level": "中类",
+                        "category": cat_name,
+                    })
+        matches.sort(key=lambda x: (
+            0 if x["name"] == keyword.strip() else 1,
+            0 if x["level"] == "门类" else 1,
+        ))
+        if len(matches) > 20:
+            matches = matches[:20]
+        return json.dumps({
+            "type": "industry",
+            "keyword": keyword,
+            "total": len(matches),
+            "matches": matches,
+        }, ensure_ascii=False, indent=2)
+
+    else:
+        return json.dumps({
+            "error": f"Unknown code_type: {code_type}. Use 'area' or 'industry'.",
+        }, ensure_ascii=False)
+
+
 def tool_search_bid_projects(api_key: str, keyword: str = "",
                              project_class_id: str = "",
                              purchase_type_id: str = "",
@@ -292,8 +445,26 @@ TOOLS = [
         },
     },
     {
+        "name": "lookup_bid_code",
+        "description": "Look up region/industry codes by Chinese name BEFORE calling search_bid_projects. The LLM does NOT know these codes natively — use this tool to convert user's natural language (e.g. '广东', '建筑') into the correct code values (e.g. '44', 'E'). Supports: area (province/city/district) and industry (GB/T 4754-2017).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "keyword": {
+                    "type": "string",
+                    "description": "Chinese name to look up, e.g. '广东', '广州', '建筑', '农业'. Partial match supported.",
+                },
+                "code_type": {
+                    "type": "string",
+                    "description": "Code type: 'area' for administrative division codes, 'industry' for GB/T 4754-2017 industry codes. Default: 'area'.",
+                },
+            },
+            "required": ["keyword", "code_type"],
+        },
+    },
+    {
         "name": "search_bid_projects",
-        "description": "Search Chinese government procurement bid projects. Supports filtering by keyword, project class, purchase type, region, date range, money range, party names, and industry code.",
+        "description": "Search Chinese government procurement bid projects. Supports filtering by keyword, project class, purchase type, region, date range, money range, party names, and industry code. IMPORTANT: Use lookup_bid_code FIRST to convert location/industry names to codes before calling this tool.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -361,6 +532,72 @@ TOOLS = [
             "required": ["api_key"],
         },
     },
+    {
+        "name": "get_bid_detail",
+        "description": "Get full detail of a specific bid project: content HTML, structured data (project name, budget, parties, bid companies, dates), and attached files. Use after search_bid_projects to drill into a project the user is interested in. The project_id and publish_time must come from search_bid_projects results.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": {
+                    "type": "string",
+                    "description": "RAGFlow API key for authentication (format: ragflow-xxx).",
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": "Bid project ID from search_bid_projects results.",
+                },
+                "publish_time": {
+                    "type": "string",
+                    "description": "Publish time from search_bid_projects results. Required when data is not yet cached.",
+                },
+            },
+            "required": ["api_key", "project_id"],
+        },
+    },
+    {
+        "name": "import_bid_to_kb",
+        "description": "Import a bid project's detail content and attached files into a RAGFlow knowledge base and trigger document parsing. After import, the KB can be used for document generation. Dedup: if already imported, returns existing status.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": {
+                    "type": "string",
+                    "description": "RAGFlow API key for authentication (format: ragflow-xxx).",
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": "Bid project ID from search_bid_projects results.",
+                },
+                "publish_time": {
+                    "type": "string",
+                    "description": "Publish time from search_bid_projects results. Required when data is not yet cached.",
+                },
+                "kb_id": {
+                    "type": "string",
+                    "description": "Target knowledge base ID. Default: d23e0644578211f19c3bed5c593fe4c9",
+                },
+            },
+            "required": ["api_key", "project_id"],
+        },
+    },
+    {
+        "name": "check_bid_import_status",
+        "description": "Check whether a bid project has been imported to a knowledge base and its parsing progress. Returns status: none/pending/parsing/done/fail with progress (0-1).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": {
+                    "type": "string",
+                    "description": "RAGFlow API key for authentication (format: ragflow-xxx).",
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": "Bid project ID from search_bid_projects results.",
+                },
+            },
+            "required": ["api_key", "project_id"],
+        },
+    },
 ]
 
 
@@ -416,6 +653,21 @@ def handle_request(req: dict) -> dict | None:
                     "isError": True,
                 })
 
+        elif tool_name == "lookup_bid_code":
+            try:
+                result_text = tool_lookup_bid_code(
+                    keyword=arguments.get("keyword", ""),
+                    code_type=arguments.get("code_type", "area"),
+                )
+                return _jsonrpc_result(rid, {
+                    "content": [{"type": "text", "text": result_text}]
+                })
+            except Exception as e:
+                return _jsonrpc_result(rid, {
+                    "content": [{"type": "text", "text": f"Error: {e}"}],
+                    "isError": True,
+                })
+
         elif tool_name == "search_bid_projects":
             try:
                 result_text = tool_search_bid_projects(
@@ -434,6 +686,54 @@ def handle_request(req: dict) -> dict | None:
                     industry_code=arguments.get("industry_code", ""),
                     page=arguments.get("page", "1"),
                     items_per_page=arguments.get("items_per_page", "20"),
+                )
+                return _jsonrpc_result(rid, {
+                    "content": [{"type": "text", "text": result_text}]
+                })
+            except Exception as e:
+                return _jsonrpc_result(rid, {
+                    "content": [{"type": "text", "text": f"Error: {e}"}],
+                    "isError": True,
+                })
+
+        elif tool_name == "get_bid_detail":
+            try:
+                result_text = tool_get_bid_detail(
+                    api_key=arguments.get("api_key", ""),
+                    project_id=str(arguments.get("project_id", "")),
+                    publish_time=arguments.get("publish_time", ""),
+                )
+                return _jsonrpc_result(rid, {
+                    "content": [{"type": "text", "text": result_text}]
+                })
+            except Exception as e:
+                return _jsonrpc_result(rid, {
+                    "content": [{"type": "text", "text": f"Error: {e}"}],
+                    "isError": True,
+                })
+
+        elif tool_name == "import_bid_to_kb":
+            try:
+                result_text = tool_import_bid_to_kb(
+                    api_key=arguments.get("api_key", ""),
+                    project_id=str(arguments.get("project_id", "")),
+                    publish_time=arguments.get("publish_time", ""),
+                    kb_id=arguments.get("kb_id", ""),
+                )
+                return _jsonrpc_result(rid, {
+                    "content": [{"type": "text", "text": result_text}]
+                })
+            except Exception as e:
+                return _jsonrpc_result(rid, {
+                    "content": [{"type": "text", "text": f"Error: {e}"}],
+                    "isError": True,
+                })
+
+        elif tool_name == "check_bid_import_status":
+            try:
+                result_text = tool_check_bid_import_status(
+                    api_key=arguments.get("api_key", ""),
+                    project_id=str(arguments.get("project_id", "")),
                 )
                 return _jsonrpc_result(rid, {
                     "content": [{"type": "text", "text": result_text}]

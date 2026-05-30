@@ -187,4 +187,19 @@ export const FormConfigMap = {
   [Operator.ExcelProcessor]: {
     component: () => <></>,
   },
+  [Operator.BidSearch]: {
+    component: () => <></>,
+  },
+  [Operator.BidGetDetail]: {
+    component: () => <></>,
+  },
+  [Operator.BidImportToKb]: {
+    component: () => <></>,
+  },
+  [Operator.BidCheckImportStatus]: {
+    component: () => <></>,
+  },
+  [Operator.BidLookupCode]: {
+    component: () => <></>,
+  },
 };

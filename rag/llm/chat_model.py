@@ -1768,12 +1768,12 @@ class LiteLLMBase(ABC):
                 }
             )
         if tools and self.tools:
-            completion_args.update(
-                {
-                    "tools": self.tools,
-                    "tool_choice": "auto",
-                }
-            )
+            tool_args: dict = {"tools": self.tools}
+            # DeepSeek V4 thinking mode does not support tool_choice parameter.
+            # Omitting it defaults to "auto" behavior on the API side.
+            if self.provider != SupportedLiteLLMProvider.DeepSeek:
+                tool_args["tool_choice"] = "auto"
+            completion_args.update(tool_args)
         if self.provider in FACTORY_DEFAULT_BASE_URL:
             completion_args.update({"api_base": self.base_url})
         elif self.provider == SupportedLiteLLMProvider.Bedrock:

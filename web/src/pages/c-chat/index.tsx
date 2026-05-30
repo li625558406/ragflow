@@ -37,6 +37,13 @@ interface Message {
   references?: IReferenceObject | null;
   attachment?: Record<string, unknown>;
   downloads?: Array<{ name?: string; url?: string }>;
+  files?: Array<{
+    id: string;
+    name: string;
+    mime_type: string;
+    size: number;
+    extension: string;
+  }>;
 }
 
 function stripBlockChars(text: string) {
@@ -101,7 +108,26 @@ function findContentFromEvents(events: ChatEvent[]) {
 
 // Extract references from message_end events, return IReferenceObject
 function findRefsFromEvents(events: ChatEvent[]): IReferenceObject | null {
+  const msgEndEvents = events.filter((e) => e.event === 'message_end');
+  console.log(
+    '[findRefsFromEvents] total events:',
+    events.length,
+    'message_end events:',
+    msgEndEvents.length,
+  );
   for (const e of events) {
+    if (e.event === 'message_end') {
+      const hasRef = !!(e.data as any)?.reference;
+      const ref = (e.data as any)?.reference;
+      console.log(
+        '[findRefsFromEvents] message_end hasRef:',
+        hasRef,
+        'ref keys:',
+        ref ? Object.keys(ref) : 'null',
+        'chunks count:',
+        ref?.chunks ? Object.keys(ref.chunks).length : 0,
+      );
+    }
     if (e.event === 'message_end' && (e.data as any)?.reference) {
       const rawRef = (e.data as any).reference;
       const chunks: Record<string, IReferenceChunk> = {};
@@ -246,7 +272,20 @@ export default function CChat() {
   const [isThinking, setIsThinking] = useState(false);
   const [thinkingContent, setThinkingContent] = useState('');
   const [fullContent, setFullContent] = useState('');
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const [uploadedFiles, setUploadedFiles] = useState<
+    Array<{
+      id: string;
+      name: string;
+      mime_type: string;
+      created_by: string;
+      size: number;
+      extension: string;
+    }>
+  >([]);
+  const [isUploadingFile, setIsUploadingFile] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Chat input
@@ -571,6 +610,16 @@ export default function CChat() {
         // Backend _normalize_agent_session is only applied on list endpoint,
         // single GET returns raw data where reference is top-level, not per-message.
         const rawRef = data.reference;
+        console.log(
+          '[loadSessionMessages] rawRef type:',
+          typeof rawRef,
+          'isArray:',
+          Array.isArray(rawRef),
+          'keys:',
+          rawRef && typeof rawRef === 'object' && !Array.isArray(rawRef)
+            ? Object.keys(rawRef)
+            : 'N/A',
+        );
         if (rawRef && typeof rawRef === 'object' && !Array.isArray(rawRef)) {
           let refList: any[];
           if ('chunks' in rawRef) {
@@ -638,6 +687,17 @@ export default function CChat() {
           }
         }
 
+        const refCount = mapped.filter(
+          (m) => m.role !== 'user' && m.references,
+        ).length;
+        const assistantCount = mapped.filter((m) => m.role !== 'user').length;
+        console.log(
+          '[loadSessionMessages] messages with refs:',
+          refCount,
+          '/',
+          assistantCount,
+          'assistant messages',
+        );
         setMessages(mapped);
       } catch (e) {
         console.error('加载消息失败:', e);
@@ -695,6 +755,48 @@ export default function CChat() {
     [currentAgentId, currentSessionId, apiFetch],
   );
 
+  const handleFileUpload = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = e.target.files;
+      if (!files || files.length === 0) return;
+
+      setIsUploadingFile(true);
+      try {
+        for (const file of Array.from(files)) {
+          const formData = new FormData();
+          formData.append('file', file);
+
+          const resp = await fetch('/api/v1/documents/upload', {
+            method: 'POST',
+            headers: { Authorization: token },
+            body: formData,
+          });
+
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          const result = await resp.json();
+          if (result.code === 0 && result.data) {
+            const fileData = Array.isArray(result.data)
+              ? result.data
+              : [result.data];
+            setUploadedFiles((prev) => [...prev, ...fileData]);
+          } else {
+            showToast('文件上传失败: ' + (result.message || '未知错误'));
+          }
+        }
+      } catch (e: any) {
+        showToast('文件上传失败: ' + e.message);
+      } finally {
+        setIsUploadingFile(false);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+      }
+    },
+    [token],
+  );
+
+  const removeUploadedFile = useCallback((fileId: string) => {
+    setUploadedFiles((prev) => prev.filter((f) => f.id !== fileId));
+  }, []);
+
   const sendMessage = useCallback(async () => {
     const query = inputValue.trim();
     if (!query || isStreaming) return;
@@ -732,9 +834,15 @@ export default function CChat() {
       }
     }
 
-    const userMsg: Message = { role: 'user', content: query };
+    const currentFiles = [...uploadedFiles];
+    const userMsg: Message = {
+      role: 'user',
+      content: query,
+      files: currentFiles.length > 0 ? currentFiles : undefined,
+    };
     setMessages((prev) => [...prev, userMsg]);
     setInputValue('');
+    setUploadedFiles([]);
 
     setIsStreaming(true);
     setIsThinking(false);
@@ -758,6 +866,7 @@ export default function CChat() {
           query,
           session_id: sessionId,
           stream: true,
+          files: currentFiles,
         }),
         signal: abortRef.current.signal,
       });
@@ -815,6 +924,12 @@ export default function CChat() {
       // Process accumulated events (same logic as agent canvas findMessageFromList)
       const { content, attachment, downloads } = findContentFromEvents(events);
       const refs = findRefsFromEvents(events);
+      console.log(
+        '[handleSendMessage] refs result:',
+        refs
+          ? `chunks=${Object.keys(refs.chunks).length} docs=${Object.keys(refs.doc_aggs).length}`
+          : 'NULL',
+      );
       const errorMsg = findErrorFromEvents(events);
 
       // Extract thinking from <think> tags in content
@@ -864,6 +979,7 @@ export default function CChat() {
     currentAgentId,
     apiFetch,
     userInfo,
+    uploadedFiles,
   ]);
 
   const stopStreaming = useCallback(() => {
@@ -1328,47 +1444,136 @@ export default function CChat() {
                         ))}
                       </div>
                     </div>
-                    <div className="cs-input-ring flex items-end gap-2 bg-[#FFFFFF] border border-[#D4D4D4] rounded-2xl px-4 py-3">
-                      <textarea
-                        value={inputValue}
-                        onChange={(e) => {
-                          setInputValue(e.target.value);
-                          const el = e.target;
-                          el.style.height = 'auto';
-                          el.style.height =
-                            Math.min(el.scrollHeight, 200) + 'px';
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' && !e.shiftKey) {
-                            e.preventDefault();
-                            sendMessage();
-                          }
-                        }}
-                        placeholder={typewriterText}
-                        rows={3}
-                        className="flex-1 bg-transparent outline-none resize-none text-sm leading-relaxed placeholder:text-[#A3A3A3] text-[#000000] cs-typewriter-cursor min-h-[72px]"
-                        disabled={isStreaming}
-                        autoFocus
-                      />
-                      <button
-                        onClick={sendMessage}
-                        disabled={!inputValue.trim()}
-                        className="shrink-0 w-9 h-9 flex items-center justify-center bg-[#000000] hover:bg-[#1a1a1a] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
-                      >
-                        <svg
-                          className="w-4 h-4"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
+                    {/* File chips + Input */}
+                    <div>
+                      {uploadedFiles.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 mb-2">
+                          {uploadedFiles.map((f) => (
+                            <span
+                              key={f.id}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 bg-[#F5F5F5] border border-[#E5E5E5] rounded-md text-[11px] text-[#000000]"
+                            >
+                              <svg
+                                className="w-3 h-3 text-[#525252]"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                                />
+                              </svg>
+                              {f.name}
+                              <button
+                                onClick={() => removeUploadedFile(f.id)}
+                                className="ml-0.5 hover:text-red-500"
+                              >
+                                <svg
+                                  className="w-2.5 h-2.5"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M6 18L18 6M6 6l12 12"
+                                  />
+                                </svg>
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <div className="cs-input-ring flex items-end gap-2 bg-[#FFFFFF] border border-[#D4D4D4] rounded-2xl px-4 py-3">
+                        <textarea
+                          value={inputValue}
+                          onChange={(e) => {
+                            setInputValue(e.target.value);
+                            const el = e.target;
+                            el.style.height = 'auto';
+                            el.style.height =
+                              Math.min(el.scrollHeight, 200) + 'px';
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && !e.shiftKey) {
+                              e.preventDefault();
+                              sendMessage();
+                            }
+                          }}
+                          placeholder={typewriterText}
+                          rows={3}
+                          className="flex-1 bg-transparent outline-none resize-none text-sm leading-relaxed placeholder:text-[#A3A3A3] text-[#000000] cs-typewriter-cursor min-h-[72px]"
+                          disabled={isStreaming}
+                          autoFocus
+                        />
+                        <button
+                          onClick={() => fileInputRef.current?.click()}
+                          disabled={isStreaming || isUploadingFile}
+                          className="shrink-0 w-9 h-9 flex items-center justify-center text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                          title="上传文件"
                         >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth={2}
-                            d="M5 12h14M12 5l7 7-7 7"
-                          />
-                        </svg>
-                      </button>
+                          {isUploadingFile ? (
+                            <svg
+                              className="w-4 h-4 animate-spin"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                            >
+                              <circle
+                                cx="12"
+                                cy="12"
+                                r="10"
+                                stroke="currentColor"
+                                strokeWidth="3"
+                                opacity="0.25"
+                              />
+                              <path
+                                d="M12 2a10 10 0 019.95 9"
+                                stroke="currentColor"
+                                strokeWidth="3"
+                                strokeLinecap="round"
+                              />
+                            </svg>
+                          ) : (
+                            <svg
+                              className="w-4 h-4"
+                              fill="none"
+                              stroke="currentColor"
+                              viewBox="0 0 24 24"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
+                              />
+                            </svg>
+                          )}
+                        </button>
+                        <button
+                          onClick={sendMessage}
+                          disabled={!inputValue.trim()}
+                          className="shrink-0 w-9 h-9 flex items-center justify-center bg-[#000000] hover:bg-[#1a1a1a] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
+                        >
+                          <svg
+                            className="w-4 h-4"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M5 12h14M12 5l7 7-7 7"
+                            />
+                          </svg>
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1379,7 +1584,7 @@ export default function CChat() {
                     className="flex-1 overflow-y-auto px-4 lg:px-6 py-4 cs-scrollbar"
                     style={{ scrollbarWidth: 'thin' }}
                   >
-                    <div className="max-w-3xl mx-auto space-y-4">
+                    <div className="max-w-[80rem] mx-auto space-y-4">
                       {isLoadingSession ? (
                         <div className="flex flex-col items-center justify-center py-20">
                           <svg
@@ -1416,8 +1621,33 @@ export default function CChat() {
                                 key={i}
                                 className="flex justify-end cs-msg-enter"
                               >
-                                <div className="max-w-[85%] bg-[#000000] text-white px-4 py-2.5 rounded-2xl rounded-br-md text-[14px] leading-relaxed">
+                                <div className="max-w-[85%] bg-[#000000] text-white px-4 py-2.5 rounded-2xl rounded-br-md text-[16px] leading-relaxed tracking-wider">
                                   {msg.content}
+                                  {msg.files && msg.files.length > 0 && (
+                                    <div className="flex flex-wrap gap-1 mt-2 pt-2 border-t border-white/20">
+                                      {msg.files.map((f) => (
+                                        <span
+                                          key={f.id}
+                                          className="inline-flex items-center gap-1 px-2 py-0.5 bg-white/15 rounded-md text-[11px] text-white/90"
+                                        >
+                                          <svg
+                                            className="w-3 h-3 shrink-0"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            viewBox="0 0 24 24"
+                                          >
+                                            <path
+                                              strokeLinecap="round"
+                                              strokeLinejoin="round"
+                                              strokeWidth={2}
+                                              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                                            />
+                                          </svg>
+                                          {f.name}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  )}
                                 </div>
                               </div>
                             );
@@ -1427,13 +1657,28 @@ export default function CChat() {
                             : msg.content;
                           const thinking = streaming ? null : msg.thinking;
                           const refs = streaming ? null : msg.references;
+                          if (!streaming && msg.role !== 'user') {
+                            console.log(
+                              '[render msg] idx:',
+                              i,
+                              'role:',
+                              msg.role,
+                              'refs:',
+                              refs
+                                ? `chunks=${Object.keys(refs.chunks).length}`
+                                : 'null',
+                              'content citations:',
+                              (msg.content || '').match(/\[ID:\d+\]/g)
+                                ?.length || 0,
+                            );
+                          }
                           return (
                             <div
                               key={i}
                               className="flex justify-start cs-msg-enter"
                             >
                               <div className="max-w-[85%]">
-                                <div className="bg-white border border-[#D4D4D4] px-4 py-2.5 rounded-2xl rounded-bl-md text-[13px] leading-relaxed text-[#000000]">
+                                <div className="bg-white border border-[#D4D4D4] px-4 py-2.5 rounded-2xl rounded-bl-md text-[15px] leading-relaxed tracking-wider text-[#000000]">
                                   {thinking && (
                                     <ThinkingBlock text={thinking} />
                                   )}
@@ -1549,7 +1794,55 @@ export default function CChat() {
                                     </details>
                                   )}
                                 {!streaming && msg.content && (
-                                  <div className="mt-2 flex justify-end">
+                                  <div className="mt-2 flex justify-end gap-1">
+                                    <button
+                                      className="flex items-center gap-1 px-2.5 py-1 text-xs text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA] rounded-lg transition-colors"
+                                      onClick={async () => {
+                                        try {
+                                          await navigator.clipboard.writeText(
+                                            msg.content,
+                                          );
+                                          setCopiedIndex(i);
+                                          setTimeout(
+                                            () => setCopiedIndex(null),
+                                            2000,
+                                          );
+                                        } catch {
+                                          // clipboard API may fail in non-HTTPS contexts
+                                        }
+                                      }}
+                                    >
+                                      {copiedIndex === i ? (
+                                        <svg
+                                          className="w-3.5 h-3.5"
+                                          fill="none"
+                                          stroke="currentColor"
+                                          viewBox="0 0 24 24"
+                                        >
+                                          <path
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
+                                            strokeWidth={2}
+                                            d="M5 13l4 4L19 7"
+                                          />
+                                        </svg>
+                                      ) : (
+                                        <svg
+                                          className="w-3.5 h-3.5"
+                                          fill="none"
+                                          stroke="currentColor"
+                                          viewBox="0 0 24 24"
+                                        >
+                                          <path
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
+                                            strokeWidth={2}
+                                            d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
+                                          />
+                                        </svg>
+                                      )}
+                                      {copiedIndex === i ? '已复制' : '复制'}
+                                    </button>
                                     <button
                                       className="flex items-center gap-1 px-2.5 py-1 text-xs text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA] rounded-lg transition-colors"
                                       onClick={() => {
@@ -1586,6 +1879,50 @@ export default function CChat() {
                   {/* Input Area (bottom, non-empty state) */}
                   <div className="bg-white border-t border-[#D4D4D4] p-3 lg:p-4 shrink-0">
                     <div className="max-w-3xl mx-auto">
+                      {/* File chips */}
+                      {uploadedFiles.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 mb-2">
+                          {uploadedFiles.map((f) => (
+                            <span
+                              key={f.id}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 bg-[#F5F5F5] border border-[#E5E5E5] rounded-md text-[11px] text-[#000000]"
+                            >
+                              <svg
+                                className="w-3 h-3 text-[#525252]"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                                />
+                              </svg>
+                              {f.name}
+                              <button
+                                onClick={() => removeUploadedFile(f.id)}
+                                className="ml-0.5 hover:text-red-500"
+                              >
+                                <svg
+                                  className="w-2.5 h-2.5"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M6 18L18 6M6 6l12 12"
+                                  />
+                                </svg>
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      )}
                       <div className="cs-input-ring flex items-end gap-2 bg-[#FFFFFF] border border-[#D4D4D4] rounded-2xl px-3 py-2">
                         <textarea
                           value={inputValue}
@@ -1610,25 +1947,70 @@ export default function CChat() {
                           disabled={isStreaming}
                         />
                         {!isStreaming ? (
-                          <button
-                            onClick={sendMessage}
-                            disabled={!inputValue.trim()}
-                            className="shrink-0 w-9 h-9 flex items-center justify-center bg-[#000000] hover:bg-[#1a1a1a] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
-                          >
-                            <svg
-                              className="w-4 h-4"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
+                          <>
+                            <button
+                              onClick={() => fileInputRef.current?.click()}
+                              disabled={isUploadingFile}
+                              className="shrink-0 w-9 h-9 flex items-center justify-center text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                              title="上传文件"
                             >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M5 12h14M12 5l7 7-7 7"
-                              />
-                            </svg>
-                          </button>
+                              {isUploadingFile ? (
+                                <svg
+                                  className="w-4 h-4 animate-spin"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                >
+                                  <circle
+                                    cx="12"
+                                    cy="12"
+                                    r="10"
+                                    stroke="currentColor"
+                                    strokeWidth="3"
+                                    opacity="0.25"
+                                  />
+                                  <path
+                                    d="M12 2a10 10 0 019.95 9"
+                                    stroke="currentColor"
+                                    strokeWidth="3"
+                                    strokeLinecap="round"
+                                  />
+                                </svg>
+                              ) : (
+                                <svg
+                                  className="w-4 h-4"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
+                                  />
+                                </svg>
+                              )}
+                            </button>
+                            <button
+                              onClick={sendMessage}
+                              disabled={!inputValue.trim()}
+                              className="shrink-0 w-9 h-9 flex items-center justify-center bg-[#000000] hover:bg-[#1a1a1a] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
+                            >
+                              <svg
+                                className="w-4 h-4"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M5 12h14M12 5l7 7-7 7"
+                                />
+                              </svg>
+                            </button>
+                          </>
                         ) : (
                           <button
                             onClick={stopStreaming}
@@ -1681,6 +2063,15 @@ export default function CChat() {
         agentId={currentAgentId || undefined}
         apiFetch={apiFetch}
         onCreated={() => {}}
+      />
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={handleFileUpload}
+        accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.csv,.json,.xml,.png,.jpg,.jpeg,.gif,.webp"
       />
     </div>
   );

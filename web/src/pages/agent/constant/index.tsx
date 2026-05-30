@@ -557,6 +557,71 @@ export const initialTavilyExtractValues = {
   },
 };
 
+export const initialBidSearchValues = {
+  outputs: {
+    formalized_content: {
+      value: '',
+      type: 'string',
+    },
+    json: {
+      value: [],
+      type: 'Array<Object>',
+    },
+  },
+};
+
+export const initialBidGetDetailValues = {
+  outputs: {
+    formalized_content: {
+      value: '',
+      type: 'string',
+    },
+    json: {
+      value: {},
+      type: 'Object',
+    },
+  },
+};
+
+export const initialBidImportToKbValues = {
+  outputs: {
+    formalized_content: {
+      value: '',
+      type: 'string',
+    },
+    json: {
+      value: {},
+      type: 'Object',
+    },
+  },
+};
+
+export const initialBidCheckImportStatusValues = {
+  outputs: {
+    formalized_content: {
+      value: '',
+      type: 'string',
+    },
+    json: {
+      value: {},
+      type: 'Object',
+    },
+  },
+};
+
+export const initialBidLookupCodeValues = {
+  outputs: {
+    formalized_content: {
+      value: '',
+      type: 'string',
+    },
+    json: {
+      value: [],
+      type: 'Array<Object>',
+    },
+  },
+};
+
 export const initialPlaceholderValues = {
   // Placeholder node doesn't need any specific form values
   // It's just a visual placeholder
@@ -680,6 +745,11 @@ export const RestrictedUpstreamMap = {
   [Operator.Agent]: [Operator.Begin],
   [Operator.TavilySearch]: [Operator.Begin],
   [Operator.TavilyExtract]: [Operator.Begin],
+  [Operator.BidSearch]: [Operator.Begin],
+  [Operator.BidGetDetail]: [Operator.Begin],
+  [Operator.BidImportToKb]: [Operator.Begin],
+  [Operator.BidCheckImportStatus]: [Operator.Begin],
+  [Operator.BidLookupCode]: [Operator.Begin],
   [Operator.StringTransform]: [Operator.Begin],
   [Operator.UserFillUp]: [Operator.Begin],
   [Operator.Tool]: [Operator.Begin],
@@ -730,6 +800,11 @@ export const NodeMap = {
   [Operator.Agent]: 'agentNode',
   [Operator.Tool]: 'toolNode',
   [Operator.TavilySearch]: 'ragNode',
+  [Operator.BidSearch]: 'ragNode',
+  [Operator.BidGetDetail]: 'ragNode',
+  [Operator.BidImportToKb]: 'ragNode',
+  [Operator.BidCheckImportStatus]: 'ragNode',
+  [Operator.BidLookupCode]: 'ragNode',
   [Operator.UserFillUp]: 'ragNode',
   [Operator.StringTransform]: 'ragNode',
   [Operator.TavilyExtract]: 'ragNode',

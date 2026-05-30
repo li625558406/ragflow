@@ -484,4 +484,5 @@ class LLM(ComponentBase):
 
     def thoughts(self) -> str:
         _, msg,_ = self._prepare_prompt_variables()
-        return "⌛Give me a moment—starting from: \n\n" + re.sub(r"(User's query:|[\\]+)", '', msg[-1]['content'], flags=re.DOTALL) + "\n\nI’ll figure out our best next move."
+        content = msg[-1]["content"] if isinstance(msg[-1]["content"], str) else str(msg[-1]["content"])
+        return "⌛Give me a moment—starting from: \n\n" + re.sub(r"(User’s query:|[\\]+)", "", content, flags=re.DOTALL) + "\n\nI’ll figure out our best next move."

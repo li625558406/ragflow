@@ -71,7 +71,10 @@ class BidProjectService(CommonService):
         if start_date:
             query = query.where(cls.model.publish_time >= start_date)
         if end_date:
-            query = query.where(cls.model.publish_time <= end_date)
+            # If end_date is just a date (no time), append 23:59:59 so records
+            # with time like "2026-05-27 10:30:00" are not excluded by string comparison.
+            end_dt = end_date if " " in end_date else f"{end_date} 23:59:59"
+            query = query.where(cls.model.publish_time <= end_dt)
         if project_money_min is not None:
             query = query.where(cls.model.project_money >= project_money_min)
         if project_money_max is not None:
@@ -95,7 +98,8 @@ class BidProjectService(CommonService):
         if contract_end_min:
             query = query.where(cls.model.contract_end_date >= contract_end_min)
         if contract_end_max:
-            query = query.where(cls.model.contract_end_date <= contract_end_max)
+            end_dt = contract_end_max if " " in contract_end_max else f"{contract_end_max} 23:59:59"
+            query = query.where(cls.model.contract_end_date <= end_dt)
         if file_flag is not None and file_flag in (0, 1):
             query = query.where(cls.model.has_file == file_flag)
         if news_type_id is not None:

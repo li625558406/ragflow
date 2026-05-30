@@ -1552,6 +1552,7 @@ class BidProjectParse(DataBaseModel):
     progress = FloatField(default=0, help_text="解析进度 0-1")
     progress_msg = TextField(null=True, help_text="进度消息")
     combined_doc_id = CharField(max_length=64, null=True, help_text="拼接文档的KB doc ID")
+    queued_doc_ids = TextField(null=True, help_text="JSON list of all KB doc IDs queued for parsing")
     created_at = DateTimeField(null=True)
     updated_at = DateTimeField(null=True)
 
@@ -1587,6 +1588,34 @@ class AreaCode(DataBaseModel):
 
     class Meta:
         db_table = "area_code"
+
+
+class WechatMpAccount(DataBaseModel):
+    id = CharField(max_length=32, primary_key=True)
+    tenant_id = CharField(max_length=32, null=False, index=True)
+    mp_name = CharField(max_length=255, null=False, help_text="公众号名称")
+    faker_id = CharField(max_length=255, null=False, help_text="公众号fake ID")
+    mp_cover = CharField(max_length=500, null=True, help_text="公众号封面图URL")
+    mp_intro = TextField(null=True, help_text="公众号简介")
+    status = IntegerField(default=1, help_text="状态: 1=正常, 0=禁用")
+    created_at = DateTimeField(null=True)
+    updated_at = DateTimeField(null=True)
+
+    class Meta:
+        db_table = "wechat_mp_account"
+
+
+class WechatMpAuth(DataBaseModel):
+    id = CharField(max_length=32, primary_key=True)
+    tenant_id = CharField(max_length=32, null=False, unique=True, index=True)
+    cookie = TextField(null=True, help_text="微信登录cookie字符串")
+    token = CharField(max_length=500, null=True, help_text="微信登录token")
+    expiry = DateTimeField(null=True, help_text="token/cookie过期时间")
+    ext_data = TextField(null=True, help_text="扩展数据(公众号名称、头像等JSON)")
+    updated_at = DateTimeField(null=True)
+
+    class Meta:
+        db_table = "wechat_mp_auth"
 
 
 def alter_db_add_column(migrator, table_name, column_name, column_type):

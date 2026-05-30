@@ -12,6 +12,11 @@ import {
   initialAgentValues,
   initialArXivValues,
   initialBeginValues,
+  initialBidCheckImportStatusValues,
+  initialBidGetDetailValues,
+  initialBidImportToKbValues,
+  initialBidLookupCodeValues,
+  initialBidSearchValues,
   initialBingValues,
   initialCategorizeValues,
   initialCodeValues,
@@ -75,7 +80,7 @@ const GroupStartNodeMap = {
       name: Operator.IterationStart,
       form: initialIterationStartValues,
     },
-    extent: 'parent' as 'parent',
+    extent: 'parent' as const,
   },
   [Operator.Loop]: {
     id: `${Operator.LoopStart}:${humanId()}`,
@@ -86,7 +91,7 @@ const GroupStartNodeMap = {
       name: Operator.LoopStart,
       form: {},
     },
-    extent: 'parent' as 'parent',
+    extent: 'parent' as const,
   },
 };
 
@@ -182,6 +187,11 @@ export const useInitializeOperatorParams = () => {
       [Operator.ExitLoop]: {},
       [Operator.DocGenerator]: initialDocGeneratorValues,
       [Operator.ExcelProcessor]: {},
+      [Operator.BidSearch]: initialBidSearchValues,
+      [Operator.BidGetDetail]: initialBidGetDetailValues,
+      [Operator.BidImportToKb]: initialBidImportToKbValues,
+      [Operator.BidCheckImportStatus]: initialBidCheckImportStatusValues,
+      [Operator.BidLookupCode]: initialBidLookupCodeValues,
     };
   }, [llmId]);
 

@@ -105,4 +105,57 @@ export const fetchKnowledgeBases = async (): Promise<any[]> => {
   return res.data ?? [];
 };
 
+// ── WeChat MP ──────────────────────────────────────────────
+
+export const fetchWechatMpAccounts = async (): Promise<any[]> => {
+  const { data: res } = await request.get(api.listWechatMpAccounts);
+  if (res?.code !== 0) return [];
+  return res.data?.accounts ?? [];
+};
+
+export const addWechatMpAccount = async (payload: {
+  mp_name: string;
+  faker_id: string;
+  mp_cover?: string;
+  mp_intro?: string;
+}) => {
+  return request.post(api.addWechatMpAccount, payload);
+};
+
+export const deleteWechatMpAccount = async (accountId: string) => {
+  return request.delete(api.deleteWechatMpAccount(accountId));
+};
+
+export const searchWechatMp = async (keyword: string) => {
+  const { data: res } = await request.get(api.searchWechatMp, {
+    params: { kw: keyword },
+  });
+  if (res?.code !== 0) return [];
+  return res.data?.accounts ?? [];
+};
+
+export const fetchWechatMpAuthQrcode = async (): Promise<{
+  qrcode_base64: string;
+  qrcode_url: string;
+  status: string;
+}> => {
+  const { data: res } = await request.get(api.getWechatMpAuthQrcode);
+  if (res?.code !== 0) throw new Error(res?.message ?? 'Failed to get QR code');
+  return res.data;
+};
+
+export const fetchWechatMpAuthStatus = async (): Promise<{
+  login_status: boolean;
+  mp_name?: string;
+  pending?: boolean;
+}> => {
+  const { data: res } = await request.get(api.getWechatMpAuthStatus);
+  if (res?.code !== 0) return { login_status: false };
+  return res.data;
+};
+
+export const deleteWechatMpAuth = async () => {
+  return request.delete(api.deleteWechatMpAuth);
+};
+
 export default scheduledTaskService;

@@ -96,6 +96,9 @@ class ToolParamBase(ComponentParamBase):
         self._init_inputs()
         self._init_attr_by_meta()
 
+    def check(self):
+        pass
+
     def _init_inputs(self):
         self.inputs = {}
         for k,p in self.meta["parameters"].items():

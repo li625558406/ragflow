@@ -123,6 +123,11 @@ export function AccordionOperators({
               Operator.WenCai,
               Operator.SearXNG,
               Operator.DocGenerator,
+              Operator.BidSearch,
+              Operator.BidGetDetail,
+              Operator.BidImportToKb,
+              Operator.BidCheckImportStatus,
+              Operator.BidLookupCode,
             ]}
             isCustomDropdown={isCustomDropdown}
             mousePosition={mousePosition}

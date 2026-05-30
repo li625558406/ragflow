@@ -287,6 +287,7 @@ def main():
                         "contract_end_date": item.get("contractEndDate", ""),
                         "se_keywords": page_se_keywords,
                         "score": item.get("score"),
+                        "source_type": _safe_str(item.get("sourceType")),
                         "sync_batch_id": batch_id,
                     }
 

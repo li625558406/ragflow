@@ -170,17 +170,14 @@ function MarkdownContent({
   const { setDocumentIds, data: fileThumbnails } =
     useFetchDocumentThumbnailsByIds();
   const contentWithCursor = useMemo(() => {
-    let text = DOMPurify.sanitize(content, {
+    const text = DOMPurify.sanitize(content, {
       ADD_TAGS: ['think', 'section'],
       ADD_ATTR: ['class'],
     });
     // let text = content;
-    if (text === '') {
-      text = t('chat.searching');
-    }
     const nextText = replaceBareIdToCitation(replaceTextByOldReg(text));
     return pipe(replaceThinkToSection, preprocessLaTeX)(nextText);
-  }, [content, t]);
+  }, [content]);
 
   useEffect(() => {
     const docAggs = reference?.doc_aggs;

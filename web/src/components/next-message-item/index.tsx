@@ -29,7 +29,6 @@ import { Atom, ChevronDown, ChevronUp } from 'lucide-react';
 import { DocumentDownloadButton } from '../document-download-button';
 import MarkdownContent from '../next-markdown-content';
 import { RAGFlowAvatar } from '../ragflow-avatar';
-import SvgIcon from '../svg-icon';
 import { useTheme } from '../theme-provider';
 import { Button } from '../ui/button';
 import { AssistantGroupButton, UserGroupButton } from './group-button';
@@ -187,19 +186,16 @@ function MessageItem({
         >
           {visibleAvatar &&
             (item.role === MessageType.User ? (
-              <RAGFlowAvatar avatar={avatar ?? getStaticAsset('/logo.svg')} />
-            ) : avatarDialog || agentName ? (
               <RAGFlowAvatar
-                avatar={avatarDialog as string}
-                name={agentName}
-                isPerson
+                avatar={avatar ?? getStaticAsset('/logo.svg')}
+                name={nickname}
               />
             ) : (
-              <SvgIcon
-                name={'assistant'}
-                width={'100%'}
-                className={cn('size-10 fill-current')}
-              ></SvgIcon>
+              <RAGFlowAvatar
+                avatar={(avatarDialog as string) || undefined}
+                name={agentName || 'AI'}
+                isPerson
+              />
             ))}
           <section className="flex-col gap-2 flex-1">
             <div className="flex justify-between items-center">

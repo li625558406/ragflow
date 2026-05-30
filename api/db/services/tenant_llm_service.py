@@ -133,7 +133,12 @@ class TenantLLMService(CommonService):
         if not llm and fid:  # for some cases seems fid mismatch
             llm = LLMService.query(llm_name=mdlnm)
         if llm:
-            model_config["is_tools"] = llm[0].is_tools
+            # All modern CHAT LLMs support function calling. The DB default is False
+            # and there is no UI to change it, so force to True for CHAT-type models.
+            if model_config.get("model_type") == LLMType.CHAT.value:
+                model_config["is_tools"] = True
+            else:
+                model_config["is_tools"] = llm[0].is_tools
         return model_config
 
     @classmethod

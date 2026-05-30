@@ -60,6 +60,13 @@ export function useAgentToolInitialValues() {
         case Operator.SearXNG:
           return pick(initialValues, 'searxng_url', 'top_n');
 
+        case Operator.BidSearch:
+        case Operator.BidGetDetail:
+        case Operator.BidImportToKb:
+        case Operator.BidCheckImportStatus:
+        case Operator.BidLookupCode:
+          return {};
+
         default:
           return initialValues;
       }

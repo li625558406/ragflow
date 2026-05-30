@@ -95,19 +95,41 @@ const COEFFICIENTS: Record<number, { name: string; coef: number }> = {
   13: { name: '其他工程', coef: 1.0 },
 };
 
-function calcTiered(amountWan: number, ratesPerMil: number[]): number {
-  let fee = 0,
-    prev = 0;
+interface CalcStep {
+  range: string;
+  rate: number;
+  amountWan: number;
+  result: number;
+}
+
+function calcTieredSteps(amountWan: number, ratesPerMil: number[]): CalcStep[] {
+  const steps: CalcStep[] = [];
+  let prev = 0;
   for (let i = 0; i < TIERS.length; i++) {
     if (amountWan <= prev) break;
-    fee +=
-      (Math.min(amountWan, TIERS[i]) - prev) * 10000 * (ratesPerMil[i] / 1000);
+    const seg = Math.min(amountWan, TIERS[i]) - prev;
+    const segFee = seg * 10000 * (ratesPerMil[i] / 1000);
+    if (seg > 0) {
+      steps.push({
+        range: `${prev} - ${TIERS[i]} 万元`,
+        rate: ratesPerMil[i],
+        amountWan: seg,
+        result: segFee,
+      });
+    }
     prev = TIERS[i];
   }
-  if (amountWan > TIERS[TIERS.length - 1])
-    fee +=
-      (amountWan - TIERS[TIERS.length - 1]) * 10000 * (ratesPerMil[6] / 1000);
-  return fee;
+  if (amountWan > TIERS[TIERS.length - 1]) {
+    const above = amountWan - TIERS[TIERS.length - 1];
+    const aboveFee = above * 10000 * (ratesPerMil[6] / 1000);
+    steps.push({
+      range: `${TIERS[TIERS.length - 1]} 万元以上`,
+      rate: ratesPerMil[6],
+      amountWan: above,
+      result: aboveFee,
+    });
+  }
+  return steps;
 }
 
 function formatYuan(yuan: number): string {
@@ -141,12 +163,16 @@ function ResultCard({
   total,
   detail,
   coef,
+  trace,
 }: {
   title: string;
   total: number;
   detail?: { label: string; value: string }[];
   coef?: number;
+  trace?: React.ReactNode;
 }) {
+  const [expanded, setExpanded] = useState(false);
+
   return (
     <div className="bg-white rounded-2xl border border-[#D4D4D4] p-5">
       <div className="text-xs text-[#1a1a1a] mb-2">{title}</div>
@@ -175,6 +201,36 @@ function ResultCard({
         <p className="mt-2 text-[11px] text-[#1a1a1a]">
           已乘专业工程系数 {coef}
         </p>
+      )}
+
+      {/* Calculation Process */}
+      {trace && (
+        <div className="mt-4 pt-3 border-t border-[#EAEAEA]">
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="flex items-center gap-1.5 text-xs text-[#1a1a1a] hover:text-[#000000] transition-colors"
+          >
+            <svg
+              className={`w-3 h-3 transition-transform ${expanded ? 'rotate-90' : ''}`}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M9 5l7 7-7 7"
+              />
+            </svg>
+            计算过程
+          </button>
+          {expanded && (
+            <div className="mt-3 space-y-3 text-[11px] text-[#1a1a1a]">
+              {trace}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -238,7 +294,59 @@ function CoefTableCard() {
   );
 }
 
-// ── Main component ──
+function formatRate(ratePerMil: number): string {
+  return `${ratePerMil.toFixed(ratePerMil % 1 === 0 ? 0 : 1)}‰`;
+}
+
+function renderTieredTrace(
+  steps: CalcStep[],
+  subtotal: number,
+  coef?: number,
+  total?: number,
+): React.ReactNode {
+  return (
+    <>
+      <div>
+        <div className="text-xs font-medium text-[#000000] mb-1.5">
+          1. 分档累进计算
+        </div>
+        <div className="space-y-1">
+          {steps.map((s, i) => (
+            <div key={i} className="flex justify-between">
+              <span>
+                {s.range}: {s.amountWan.toFixed(2)} 万元 × {formatRate(s.rate)}
+              </span>
+              <span className="font-medium text-[#000000]">
+                = {formatYuan(s.result)} 元
+              </span>
+            </div>
+          ))}
+          <div className="flex justify-between border-t border-[#EAEAEA] pt-1 font-medium text-[#000000]">
+            <span>分档累进小计</span>
+            <span>= {formatYuan(subtotal)} 元</span>
+          </div>
+        </div>
+      </div>
+      {coef !== undefined && coef !== 1.0 && (
+        <div>
+          <div className="text-xs font-medium text-[#000000] mb-1.5">
+            2. 乘以专业工程系数
+          </div>
+          <div className="space-y-1">
+            <div className="flex justify-between">
+              <span>
+                {formatYuan(subtotal)} × {coef}
+              </span>
+              <span className="font-semibold text-[#000000]">
+                = {formatYuan(total!)} 元
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
 export default function CostConsultingCalculator() {
   const [projectId, setProjectId] = useState(1);
   const [amount, setAmount] = useState('');
@@ -263,6 +371,7 @@ export default function CostConsultingCalculator() {
     coef?: number;
   } | null>(null);
   const [error, setError] = useState('');
+  const [traceData, setTraceData] = useState<React.ReactNode>(null);
 
   const parseNum = (v: string) => parseFloat(v.replace(/[,，\s]/g, ''));
   const coef = COEFFICIENTS[coefId].coef;
@@ -272,6 +381,7 @@ export default function CostConsultingCalculator() {
   const clearResults = () => {
     setResultData(null);
     setError('');
+    setTraceData(null);
   };
 
   const handleCalc = useCallback(() => {
@@ -291,6 +401,13 @@ export default function CostConsultingCalculator() {
             { label: `${qty} 吨 × 15 元/吨`, value: `${formatYuan(fee)} 元` },
           ],
         });
+        setTraceData(
+          <div className="space-y-1">
+            <div>
+              固定单价：{qty} 吨 × 15 元/吨 = {formatYuan(fee)} 元
+            </div>
+          </div>,
+        );
         return;
       }
       if (projectId === 14) {
@@ -310,6 +427,13 @@ export default function CostConsultingCalculator() {
             },
           ],
         });
+        setTraceData(
+          <div className="space-y-1">
+            <div>
+              固定单价：{qty} 工日 × 2,000 元/日 = {formatYuan(fee)} 元
+            </div>
+          </div>,
+        );
         return;
       }
       if (projectId === 8) {
@@ -319,7 +443,9 @@ export default function CostConsultingCalculator() {
             setError('请输入送审造价');
             return;
           }
-          const basic = calcTiered(base, SETTLE_AUDIT_BASIC) * coef;
+          const basicSteps = calcTieredSteps(base, SETTLE_AUDIT_BASIC);
+          const basicSubtotal = basicSteps.reduce((s, st) => s + st.result, 0);
+          const basic = basicSubtotal * coef;
           const deduct = parseNum(deductAmt) || 0;
           const add = parseNum(addAmt) || 0;
           const benefitRate = auditLevel === 1 ? 0.05 : 0.1;
@@ -340,19 +466,55 @@ export default function CostConsultingCalculator() {
               },
             ],
           });
+          setTraceData(
+            <>
+              {renderTieredTrace(basicSteps, basicSubtotal, coef, basic)}
+              <div>
+                <div className="text-xs font-medium text-[#000000] mb-1.5">
+                  {coef !== 1.0 ? '3' : '2'}. 效益费
+                </div>
+                <div className="space-y-1">
+                  <div className="flex justify-between">
+                    <span>
+                      (|核减 {formatYuan(Math.abs(deduct) * 10000)}| + |核增{' '}
+                      {formatYuan(Math.abs(add) * 10000)}|) ×{' '}
+                      {benefitRate * 100}%
+                    </span>
+                    <span className="font-medium text-[#000000]">
+                      = {formatYuan(benefitFee)} 元
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div>
+                <div className="text-xs font-medium text-[#000000] mb-1.5">
+                  {coef !== 1.0 ? '4' : '3'}. 合计
+                </div>
+                <div className="space-y-1 font-semibold text-[#000000]">
+                  <div>
+                    = {formatYuan(basic)} + {formatYuan(benefitFee)} ={' '}
+                    {formatYuan(basic + benefitFee)} 元
+                  </div>
+                </div>
+              </div>
+            </>,
+          );
         } else {
           const base = parseNum(sentCost);
           if (!base || base <= 0) {
             setError('请输入送审造价');
             return;
           }
-          const fee = calcTiered(base, PROJECTS[8].rates!) * coef;
+          const steps = calcTieredSteps(base, PROJECTS[8].rates!);
+          const subtotal = steps.reduce((s, st) => s + st.result, 0);
+          const fee = subtotal * coef;
           setResultData({
             title: '工程结算审核（按送审造价）',
             total: fee,
             detail: [],
             coef,
           });
+          setTraceData(renderTieredTrace(steps, subtotal, coef, fee));
         }
         return;
       }
@@ -363,7 +525,9 @@ export default function CostConsultingCalculator() {
           return;
         }
         const cfg = FULLPROCESS_RATES[phase];
-        const basicFee = calcTiered(base, cfg.rates) * coef;
+        const steps = calcTieredSteps(base, cfg.rates);
+        const subtotal = steps.reduce((s, st) => s + st.result, 0);
+        const basicFee = subtotal * coef;
         const detailArr: { label: string; value: string }[] = [
           {
             label: `基本费（含系数 ${coef}）`,
@@ -371,6 +535,7 @@ export default function CostConsultingCalculator() {
           },
         ];
         let onsiteTotal = 0;
+        const onsiteItems: { label: string; sub: number }[] = [];
         if (needOnsite) {
           for (const [key, info] of Object.entries(ONSITE_FEES)) {
             const os = key === '1' ? onsite1 : key === '2' ? onsite2 : onsite3;
@@ -381,6 +546,10 @@ export default function CostConsultingCalculator() {
                 label: `${info.label}（${os.persons}人×${os.months}月）`,
                 value: `${formatYuan(sub)} 元`,
               });
+              onsiteItems.push({
+                label: `${info.label}（${os.persons}人×${os.months}月）`,
+                sub,
+              });
             }
           }
         }
@@ -390,6 +559,38 @@ export default function CostConsultingCalculator() {
           coef,
           detail: detailArr,
         });
+        setTraceData(
+          <>
+            {renderTieredTrace(steps, subtotal, coef, basicFee)}
+            {onsiteItems.length > 0 && (
+              <div>
+                <div className="text-xs font-medium text-[#000000] mb-1.5">
+                  {coef !== 1.0 ? '3' : '2'}. 驻场人员增加费
+                </div>
+                <div className="space-y-1">
+                  {onsiteItems.map((item, i) => (
+                    <div key={i} className="flex justify-between">
+                      <span>{item.label}</span>
+                      <span className="font-medium text-[#000000]">
+                        = {formatYuan(item.sub)} 元
+                      </span>
+                    </div>
+                  ))}
+                  <div className="flex justify-between border-t border-[#EAEAEA] pt-1 font-medium text-[#000000]">
+                    <span>驻场合计</span>
+                    <span>= {formatYuan(onsiteTotal)} 元</span>
+                  </div>
+                </div>
+              </div>
+            )}
+            <div>
+              <div className="text-[11px] font-semibold text-[#000000]">
+                总费用 = {formatYuan(basicFee)} + {formatYuan(onsiteTotal)} ={' '}
+                {formatYuan(basicFee + onsiteTotal)} 元
+              </div>
+            </div>
+          </>,
+        );
         return;
       }
       if (!project.rates) {
@@ -401,20 +602,25 @@ export default function CostConsultingCalculator() {
         setError(`请输入${project.base}`);
         return;
       }
-      const fee = calcTiered(base, project.rates) * coef;
+      const steps = calcTieredSteps(base, project.rates);
+      const subtotal = steps.reduce((s, st) => s + st.result, 0);
+      const fee = subtotal * coef;
       setResultData({
         title: project.name,
         total: fee,
         coef: needsCoef ? coef : undefined,
         detail: [],
       });
+      setTraceData(
+        renderTieredTrace(steps, subtotal, needsCoef ? coef : undefined, fee),
+      );
     } catch {
       setError('输入数据有误，请检查');
     }
   }, [
     projectId,
     amount,
-    coefId,
+    coef,
     auditMode,
     sentCost,
     deductAmt,
@@ -491,7 +697,7 @@ export default function CostConsultingCalculator() {
                   setProjectId(Number(e.target.value));
                   clearResults();
                 }}
-                className="w-full bg-[#EAEAEA] border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-9 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition appearance-none cursor-pointer"
+                className="w-full bg-white border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-9 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition appearance-none cursor-pointer"
               >
                 {Object.entries(PROJECTS).map(([k, v]) => (
                   <option key={k} value={k}>
@@ -524,7 +730,7 @@ export default function CostConsultingCalculator() {
                     if (e.key === 'Enter') handleCalc();
                   }}
                   placeholder={`请输入${project.base}`}
-                  className="w-full bg-[#EAEAEA] border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-14 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition placeholder:text-[#A3A3A3]"
+                  className="w-full bg-white border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-14 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition placeholder:text-[#A3A3A3]"
                 />
                 <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-[#1a1a1a]">
                   {projectId === 13 ? '吨' : projectId === 14 ? '工日' : '万元'}
@@ -573,7 +779,7 @@ export default function CostConsultingCalculator() {
                       clearResults();
                     }}
                     placeholder="请输入送审造价"
-                    className="w-full bg-[#EAEAEA] border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-14 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition placeholder:text-[#A3A3A3]"
+                    className="w-full bg-white border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-14 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition placeholder:text-[#A3A3A3]"
                   />
                   <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-[#1a1a1a]">
                     万元
@@ -596,7 +802,7 @@ export default function CostConsultingCalculator() {
                             clearResults();
                           }}
                           placeholder="无则填0"
-                          className="w-full bg-[#EAEAEA] border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-14 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition placeholder:text-[#A3A3A3]"
+                          className="w-full bg-white border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-14 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition placeholder:text-[#A3A3A3]"
                         />
                         <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-[#1a1a1a]">
                           万元
@@ -616,7 +822,7 @@ export default function CostConsultingCalculator() {
                             clearResults();
                           }}
                           placeholder="无则填0"
-                          className="w-full bg-[#EAEAEA] border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-14 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition placeholder:text-[#A3A3A3]"
+                          className="w-full bg-white border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-14 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition placeholder:text-[#A3A3A3]"
                         />
                         <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-[#1a1a1a]">
                           万元
@@ -688,7 +894,7 @@ export default function CostConsultingCalculator() {
                       clearResults();
                     }}
                     placeholder="请输入结算价"
-                    className="w-full bg-[#EAEAEA] border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-14 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition placeholder:text-[#A3A3A3]"
+                    className="w-full bg-white border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-14 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition placeholder:text-[#A3A3A3]"
                   />
                   <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-[#1a1a1a]">
                     万元
@@ -777,7 +983,7 @@ export default function CostConsultingCalculator() {
                     setCoefId(Number(e.target.value));
                     clearResults();
                   }}
-                  className="w-full bg-[#EAEAEA] border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-9 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition appearance-none cursor-pointer"
+                  className="w-full bg-white border border-[#D4D4D4] rounded-xl px-4 py-2.5 pr-9 text-sm text-[#000000] outline-none focus:border-[#000000] focus:ring-2 focus:ring-[#D4D4D4] transition appearance-none cursor-pointer"
                 >
                   {Object.entries(COEFFICIENTS).map(([k, v]) => (
                     <option key={k} value={k}>
@@ -806,6 +1012,7 @@ export default function CostConsultingCalculator() {
               total={resultData.total}
               detail={resultData.detail}
               coef={resultData.coef}
+              trace={traceData}
             />
           )}
         </div>
