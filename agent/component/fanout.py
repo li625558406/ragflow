@@ -18,21 +18,32 @@ import json
 import logging
 import time
 from abc import ABC
+from copy import deepcopy
+from functools import partial
+
 from agent.component.base import ComponentBase, ComponentParamBase
-from api.db.services.llm_service import LLMBundle
-from api.db.services.tenant_llm_service import TenantLLMService
+from agent.component import component_class
+from agent.tools.base import LLMToolPluginCallSession, ToolParamBase
 from api.db.joint_services.tenant_model_service import get_model_config_by_type_and_name
+from api.db.services.llm_service import LLMBundle
+from api.db.services.mcp_server_service import MCPServerService
+from api.db.services.tenant_llm_service import TenantLLMService
+from common.mcp_tool_call_conn import MCPToolCallSession, mcp_tool_metadata_to_openai_tool
 
 
-class FanOutParam(ComponentParamBase):
+class FanOutParam(ComponentParamBase, ToolParamBase):
     def __init__(self):
-        super().__init__()
+        ComponentParamBase.__init__(self)
+        ToolParamBase.__init__(self)
         self.items_ref: str = ""
         self.llm_id: str = ""
         self.system_prompt: str = ""
         self.prompt_template: str = ""
         self.max_concurrency: int = 5
         self.error_strategy: str = "skip"
+        self.tools: list = []
+        self.mcp: list = []
+        self.custom_header: dict = {}
 
     def get_input_form(self) -> dict[str, dict]:
         return {
@@ -63,6 +74,9 @@ class FanOut(ComponentBase, ABC):
         self._event_queue: asyncio.Queue = asyncio.Queue()
         self._progress: dict[int, dict] = {}
         self._cancel_event: asyncio.Event = asyncio.Event()
+        self._tools_loaded: bool = False
+        self._tools_map: dict[str, object] = {}
+        self._tool_meta: list[dict] = []
 
     def get_start(self) -> str:
         for cid in self._canvas.components.keys():
@@ -70,6 +84,60 @@ class FanOut(ComponentBase, ABC):
             if cpn.get("parent_id") == self._id:
                 return cid
         return ""
+
+    def _load_tool_obj(self, cpn: dict):
+        tool_name = cpn["component_name"]
+        param = component_class(tool_name + "Param")()
+        param.update(cpn["params"])
+        try:
+            param.check()
+        except Exception as e:
+            self.set_output("_ERROR", cpn["component_name"] + f" configuration error: {e}")
+            raise
+        cpn_id = f"{self._id}-->" + cpn.get("name", "").replace(" ", "_")
+        return component_class(cpn["component_name"])(self._canvas, cpn_id, param)
+
+    def _setup_tools(self) -> None:
+        if self._tools_loaded:
+            return
+        self._tools_loaded = True
+
+        if not self._param.tools and not self._param.mcp:
+            return
+
+        for idx, cpn in enumerate(self._param.tools):
+            cpn_obj = self._load_tool_obj(cpn)
+            original_name = cpn_obj.get_meta()["function"]["name"]
+            indexed_name = f"{original_name}_{idx}"
+            self._tools_map[indexed_name] = cpn_obj
+
+        for indexed_name, tool_obj in self._tools_map.items():
+            original_meta = tool_obj.get_meta()
+            indexed_meta = deepcopy(original_meta)
+            indexed_meta["function"]["name"] = indexed_name
+            self._tool_meta.append(indexed_meta)
+
+        for mcp in self._param.mcp:
+            _, mcp_server = MCPServerService.get_by_id(mcp["mcp_id"])
+            custom_header = self._param.custom_header
+            tool_call_session = MCPToolCallSession(mcp_server, mcp_server.variables, custom_header)
+            for tnm, meta in mcp["tools"].items():
+                self._tool_meta.append(mcp_tool_metadata_to_openai_tool(meta))
+                self._tools_map[tnm] = tool_call_session
+
+    def _create_chat_mdl(self, tenant_id: str) -> LLMBundle:
+        self._setup_tools()
+        chat_model_config = get_model_config_by_type_and_name(
+            tenant_id,
+            TenantLLMService.llm_id2llm_type(self._param.llm_id),
+            self._param.llm_id,
+        )
+        chat_mdl = LLMBundle(tenant_id, chat_model_config)
+        if self._tool_meta:
+            callback = partial(self._canvas.tool_use_callback, self._id)
+            toolcall_session = LLMToolPluginCallSession(self._tools_map, callback)
+            chat_mdl.bind_tools(toolcall_session, self._tool_meta)
+        return chat_mdl
 
     def _render_prompt(self, item_value, idx: int) -> str:
         tmpl = self._param.prompt_template
@@ -95,18 +163,11 @@ class FanOut(ComponentBase, ABC):
             return
 
         tenant_id = self._canvas.get_tenant_id()
-        llm_id = self._param.llm_id
         try:
-            chat_model_config = get_model_config_by_type_and_name(
-                tenant_id,
-                TenantLLMService.llm_id2llm_type(llm_id),
-                llm_id,
-            )
+            chat_mdl = self._create_chat_mdl(tenant_id)
         except Exception as e:
-            self.set_output("_ERROR", f"Failed to get LLM config for {llm_id}: {e}")
+            self.set_output("_ERROR", f"Failed to get LLM config for {self._param.llm_id}: {e}")
             return
-
-        chat_mdl = LLMBundle(tenant_id, chat_model_config)
 
         self._progress = {i: {"status": "pending"} for i in range(n)}
         self._cancel_event.clear()

@@ -74,6 +74,7 @@ export function AccordionOperators({
             operators={[
               Operator.Switch,
               Operator.Iteration,
+              Operator.FanOut,
               Operator.Loop,
               ...exitLoopList,
               Operator.Categorize,

@@ -432,6 +432,8 @@ export const initialFanOutValues = {
   prompt_template: '',
   max_concurrency: 5,
   error_strategy: 'skip',
+  tools: [],
+  mcp: [],
   outputs: {
     results: {
       type: 'Array<Object>',

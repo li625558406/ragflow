@@ -15,6 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Separator } from '@/components/ui/separator';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { memo } from 'react';
 import { useForm } from 'react-hook-form';
@@ -24,6 +25,7 @@ import { ArrayFields, initialFanOutValues } from '../../constant';
 import { useWatchFormChange } from '../../hooks/use-watch-form-change';
 import { INextOperatorForm } from '../../interface';
 import { buildOutputList } from '../../utils/build-output-list';
+import { AgentTools } from '../agent-form/agent-tools';
 import { FormWrapper } from '../components/form-wrapper';
 import { Output } from '../components/output';
 import { PromptEditor } from '../components/prompt-editor';
@@ -130,6 +132,8 @@ function FanOutForm({ node }: INextOperatorForm) {
             </FormItem>
           )}
         />
+        <Separator />
+        <AgentTools />
       </FormWrapper>
       <div className="p-5">
         <Output list={outputList}></Output>
