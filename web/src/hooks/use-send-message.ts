@@ -99,6 +99,7 @@ export const useSendMessageBySSE = (url: string) => {
     if (timer.current) {
       clearTimeout(timer.current);
     }
+    setAnswerList([]);
     timer.current = setTimeout(() => {
       setAnswerList([]);
       clearTimeout(timer.current);

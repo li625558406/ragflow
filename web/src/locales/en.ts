@@ -2250,6 +2250,13 @@ Best for: Documents with flowing, contextually connected content — such as boo
       jsonUploadContentErrorMessage: 'json file error',
       iteration: 'Iteration',
       iterationDescription: `A looping component that iterates over an input array and executes a defined logic for each item.`,
+      fanOut: 'FanOut',
+      fanOutDescription: `A parallel processing component that fans out an input array across multiple LLM calls, executing them concurrently with real-time progress feedback.`,
+      maxConcurrency: 'Max concurrency',
+      errorStrategy: 'Error strategy',
+      skip: 'Skip',
+      stop: 'Stop',
+      promptTemplate: 'Prompt template',
       delimiterTip: `
 This delimiter is used to split the input text into several text pieces echo of which will be performed as input item of each iteration.`,
       delimiterOptions: {
@@ -2402,6 +2409,7 @@ This process aggregates variables from multiple branches into a single variable 
         awaitResponse: 'Waiting for you',
         switch: 'Choosing the best path',
         iteration: 'Batch processing',
+        fanOut: 'Parallel processing',
         categorize: 'Categorising info',
         code: 'Running a quick script',
         textProcessing: 'Tidying up text',

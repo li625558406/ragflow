@@ -12,6 +12,7 @@ import DuckDuckGoForm from '../form/duckduckgo-form';
 import EmailForm from '../form/email-form';
 import ExeSQLForm from '../form/exesql-form';
 import ExtractorForm from '../form/extractor-form';
+import FanOutForm from '../form/fanout-form';
 import GithubForm from '../form/github-form';
 import GoogleForm from '../form/google-form';
 import GoogleScholarForm from '../form/google-scholar-form';
@@ -122,6 +123,9 @@ export const FormConfigMap = {
   },
   [Operator.Iteration]: {
     component: IterationForm,
+  },
+  [Operator.FanOut]: {
+    component: FanOutForm,
   },
   [Operator.IterationStart]: {
     component: IterationStartForm,

@@ -7,6 +7,7 @@ import {
   HousePlus,
   Infinity as InfinityIcon,
   LogOut,
+  Split,
 } from 'lucide-react';
 import { Component } from 'react';
 import { Operator } from './constant';
@@ -59,6 +60,7 @@ export const SVGIconMap = {
 };
 export const LucideIconMap = {
   [Operator.DataOperations]: FileCode,
+  [Operator.FanOut]: Split,
   [Operator.Loop]: InfinityIcon,
   [Operator.ExitLoop]: LogOut,
   [Operator.DocGenerator]: FileText,

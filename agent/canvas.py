@@ -608,6 +608,14 @@ class Canvas(Graph):
                     else:
                         yield _node_finished(cpn_obj)
 
+                # FanOut: drain sub-canvas event queue for real-time progress
+                if cpn_obj.component_name.lower() == "fanout":
+                    eq = getattr(cpn_obj, "_event_queue", None)
+                    if eq:
+                        while not eq.empty():
+                            ev = eq.get_nowait()
+                            yield decorate(ev["event"], ev["data"])
+
                 def _append_path(cpn_id):
                     nonlocal other_branch
                     if other_branch:

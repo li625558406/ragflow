@@ -483,6 +483,12 @@ class Base(ABC):
 
                     if answer and not final_tool_calls:
                         logging.info(f"[ToolLoop] round={_round} completed with text response, exiting")
+                        if len(answer.strip()) < 50:
+                            async for fb in self.async_chat_streamly("", history, gen_conf):
+                                if isinstance(fb, int):
+                                    total_tokens += fb
+                                else:
+                                    yield fb
                         yield total_tokens
                         return
 
@@ -1569,9 +1575,19 @@ class LiteLLMBase(ABC):
                     if not hasattr(message, "tool_calls") or not message.tool_calls:
                         if reasoning_content:
                             ans += f"<think>{reasoning_content}</think>"
-                        ans += message.content or ""
+                        content = message.content or ""
+                        ans += content
                         if response.choices[0].finish_reason == "length":
                             ans = self._length_stop(ans)
+                        # When the model puts the real answer body in reasoning_content
+                        # and returns an empty / trivially-short content (e.g. just a
+                        # concluding sentence), make one additional plain-text call so the
+                        # LLM can compose a proper answer from the conversation context
+                        # (which already contains the tool results).
+                        if len(content.strip()) < 50:
+                            fallback, fb_tokens = await self.async_chat("", history, gen_conf)
+                            ans += fallback
+                            tk_count += fb_tokens
                         return ans, tk_count
 
                     async def _exec_tool(tc):
@@ -1636,7 +1652,7 @@ class LiteLLMBase(ABC):
                         timeout=self.timeout,
                     )
 
-                    final_tool_calls = {}
+                    final_tool_calls: dict[int, Any] = {}
                     answer = ""
 
                     async for resp in response:
@@ -1686,6 +1702,12 @@ class LiteLLMBase(ABC):
 
                     if answer and not final_tool_calls:
                         logging.info(f"[ToolLoop] round={_round} completed with text response, exiting")
+                        if len(answer.strip()) < 50:
+                            async for fb in self.async_chat_streamly("", history, gen_conf):
+                                if isinstance(fb, int):
+                                    total_tokens += fb
+                                else:
+                                    yield fb
                         yield total_tokens
                         return
 

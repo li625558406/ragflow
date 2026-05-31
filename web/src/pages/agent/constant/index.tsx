@@ -63,6 +63,7 @@ export const AgentOperatorList = [
   Operator.RewriteQuestion,
   Operator.Switch,
   Operator.Iteration,
+  Operator.FanOut,
   Operator.WaitingDialogue,
   Operator.Note,
   Operator.Agent,
@@ -424,6 +425,20 @@ export const initialIterationStartValues = {
   },
 };
 
+export const initialFanOutValues = {
+  items_ref: '',
+  llm_id: '',
+  system_prompt: '',
+  prompt_template: '',
+  max_concurrency: 5,
+  error_strategy: 'skip',
+  outputs: {
+    results: {
+      type: 'Array<Object>',
+    },
+  },
+};
+
 export const initialCodeValues = {
   lang: ProgrammingLanguage.Python,
   script: CodeTemplateStrMap[ProgrammingLanguage.Python],
@@ -739,6 +754,7 @@ export const RestrictedUpstreamMap = {
   [Operator.Invoke]: [Operator.Begin],
   [Operator.Email]: [Operator.Begin],
   [Operator.Iteration]: [Operator.Begin],
+  [Operator.FanOut]: [Operator.Begin],
   [Operator.IterationStart]: [Operator.Begin],
   [Operator.Code]: [Operator.Begin],
   [Operator.WaitingDialogue]: [Operator.Begin],
@@ -795,6 +811,7 @@ export const NodeMap = {
   [Operator.Email]: 'ragNode',
   [Operator.Iteration]: 'group',
   [Operator.IterationStart]: 'iterationStartNode',
+  [Operator.FanOut]: 'ragNode',
   [Operator.Code]: 'ragNode',
   [Operator.WaitingDialogue]: 'ragNode',
   [Operator.Agent]: 'agentNode',

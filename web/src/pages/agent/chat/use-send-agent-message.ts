@@ -457,6 +457,9 @@ export const useSendAgentMessage = ({
   }, [sendMessageInTaskMode]);
 
   useEffect(() => {
+    // Skip stale event processing when the stream is not active
+    if (done) return;
+
     const { content, id, attachment, audio_binary, downloads } =
       findMessageFromList(answerList);
     const inputAnswer = findInputFromList(answerList);
@@ -472,7 +475,7 @@ export const useSendAgentMessage = ({
         ...inputAnswer,
       });
     }
-  }, [answerList, addNewestOneAnswer]);
+  }, [answerList, addNewestOneAnswer, done]);
 
   useEffect(() => {
     if (isTaskMode) {

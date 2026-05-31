@@ -4,11 +4,14 @@ import {
   ConfirmDeleteDialog,
   ConfirmDeleteDialogNode,
 } from '@/components/confirm-delete-dialog';
-import Image from '@/components/image';
 import MarkdownContent from '@/components/next-markdown-content';
+import { ReferenceDocumentList } from '@/components/next-message-item/reference-document-list';
+import { ReferenceImageList } from '@/components/next-message-item/reference-image-list';
+import { useClickDrawer } from '@/components/pdf-drawer/hooks';
 import { RAGFlowAvatar } from '@/components/ragflow-avatar';
 import ToolsPanel from '@/components/tools';
 import { BidList } from '@/pages/home/bid-list';
+import PdfDrawer from '@/pages/next-search/document-preview-modal';
 
 import { RealtimeAudioButton } from '@/components/realtime-audio-button';
 import { MessageType } from '@/constants/chat';
@@ -60,6 +63,33 @@ function extractThinking(content: string): {
     };
   }
   return { thinking: '', cleanContent: content };
+}
+
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    if (
+      navigator.clipboard &&
+      typeof navigator.clipboard.writeText === 'function'
+    ) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // clipboard API unavailable; fall through to execCommand
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
 }
 
 export default function CChat() {
@@ -175,7 +205,9 @@ export default function CChat() {
   const [isLoadingSession, setIsLoadingSession] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const pendingSendRef = useRef(false);
+  const loadingSessionRef = useRef<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [newSessionKey, setNewSessionKey] = useState(0);
   const [enableInternet] = useState(false);
   const [audioInputValue, setAudioInputValue] = useState<string | null>(null);
 
@@ -195,10 +227,22 @@ export default function CChat() {
 
   // ── B-side chat hooks ──
   const { handleInputChange, value, setValue } = useHandleMessageInputChange();
-  const { send, answerList, done, stopOutputMessage } = useSendMessageBySSE(
-    api.agentChatCompletion,
-  );
+  const {
+    send,
+    answerList,
+    done,
+    stopOutputMessage,
+    setDone,
+    resetAnswerList,
+  } = useSendMessageBySSE(api.agentChatCompletion);
   const { findReferenceByMessageId } = useFindMessageReference(answerList);
+  const {
+    clickDocumentButton,
+    visible: drawerVisible,
+    hideModal: hideDrawer,
+    documentId: drawerDocumentId,
+    selectedChunk: drawerSelectedChunk,
+  } = useClickDrawer();
   const {
     derivedMessages,
     scrollRef,
@@ -214,6 +258,11 @@ export default function CChat() {
 
   // ── Process SSE events into messages ──
   useEffect(() => {
+    // Skip stale event processing when the stream is not active.
+    // When createNewSession sets done=true, any leftover answerList
+    // events must not inject content into the fresh message list.
+    if (done) return;
+
     const { content, id, attachment, downloads } =
       findMessageFromList(answerList);
     const answer = content || getLatestError(answerList);
@@ -226,7 +275,7 @@ export default function CChat() {
         id: id,
       } as IAnswer);
     }
-  }, [answerList, addNewestOneAnswer]);
+  }, [answerList, addNewestOneAnswer, done]);
 
   // ── Prologue is shown as intro text in the welcome screen, not auto-added as a message
   // This keeps the input centered until the user explicitly starts a conversation.
@@ -340,8 +389,16 @@ export default function CChat() {
   // ── Agent management ──
   const switchAgent = useCallback(
     (agentId: string) => {
+      loadingSessionRef.current = null;
+      pendingSendRef.current = false;
       setCurrentAgentId(agentId);
       setCurrentSessionId(null);
+      setIsLoadingSession(false);
+      setValue('');
+      setUploadedFiles([]);
+      stopOutputMessage();
+      setDone(true);
+      resetAnswerList();
       setDerivedMessages([]);
       setSessions([]);
       localStorage.setItem('ragflow_agent_id', agentId);
@@ -385,7 +442,15 @@ export default function CChat() {
         })
         .catch(() => {});
     },
-    [apiFetch, userInfo, setDerivedMessages],
+    [
+      apiFetch,
+      userInfo,
+      setDerivedMessages,
+      setValue,
+      stopOutputMessage,
+      setDone,
+      resetAnswerList,
+    ],
   );
 
   // Load agents
@@ -443,11 +508,16 @@ export default function CChat() {
   const loadSessionMessages = useCallback(
     async (sessionId: string) => {
       try {
+        loadingSessionRef.current = sessionId;
         setDerivedMessages([]);
         setIsLoadingSession(true);
         const resp = await apiFetch(
           `/api/v1/agents/${currentAgentId}/sessions/${sessionId}`,
         );
+        // If user clicked "new analysis" while loading, discard stale result
+        if (loadingSessionRef.current !== sessionId) {
+          return;
+        }
         const result = await resp.json();
         if (result.code !== 0) throw new Error(result.message);
         const data = result.data;
@@ -601,27 +671,56 @@ export default function CChat() {
 
   const switchSession = useCallback(
     (sessionId: string) => {
+      pendingSendRef.current = false;
       setMainView('chat');
       setCurrentSessionId(sessionId);
+      setValue('');
+      setUploadedFiles([]);
+      stopOutputMessage();
+      setDone(true);
+      resetAnswerList();
       loadSessionMessages(sessionId);
     },
-    [loadSessionMessages],
+    [
+      loadSessionMessages,
+      setValue,
+      stopOutputMessage,
+      setDone,
+      resetAnswerList,
+    ],
   );
 
   const createNewSession = useCallback(() => {
+    loadingSessionRef.current = null; // cancel any in-flight loadSessionMessages
+    pendingSendRef.current = false;
     setMainView('chat');
     setCurrentSessionId(null);
-    setDerivedMessages([]);
-    if (currentAgentPrologue) {
-      setDerivedMessages([
-        {
-          id: uuid(),
-          role: MessageType.Assistant,
-          content: currentAgentPrologue,
-        } as IMessage,
-      ]);
-    }
-  }, [currentAgentPrologue, setDerivedMessages]);
+    setIsLoadingSession(false);
+    setValue('');
+    setUploadedFiles([]);
+    stopOutputMessage();
+    setDone(true);
+    resetAnswerList();
+    setNewSessionKey((k) => k + 1);
+    setDerivedMessages(
+      currentAgentPrologue
+        ? [
+            {
+              id: uuid(),
+              role: MessageType.Assistant,
+              content: currentAgentPrologue,
+            } as IMessage,
+          ]
+        : [],
+    );
+  }, [
+    currentAgentPrologue,
+    setDerivedMessages,
+    setValue,
+    stopOutputMessage,
+    setDone,
+    resetAnswerList,
+  ]);
 
   const deleteSession = useCallback(
     async (sessionId: string) => {
@@ -634,6 +733,11 @@ export default function CChat() {
         if (result.code !== 0) throw new Error(result.message);
         if (currentSessionId === sessionId) {
           setCurrentSessionId(null);
+          setValue('');
+          setUploadedFiles([]);
+          stopOutputMessage();
+          setDone(true);
+          resetAnswerList();
           setDerivedMessages([]);
         }
         setSessions((prev) => prev.filter((s) => s.id !== sessionId));
@@ -1433,7 +1537,10 @@ export default function CChat() {
                       style={{ scrollbarWidth: 'thin' }}
                       ref={messageContainerRef}
                     >
-                      <div className="max-w-[80rem] mx-auto space-y-4">
+                      <div
+                        key={newSessionKey}
+                        className="max-w-[80rem] mx-auto space-y-4"
+                      >
                         {isLoadingSession ? (
                           <div className="flex flex-col items-center justify-center py-20">
                             <svg
@@ -1513,17 +1620,15 @@ export default function CChat() {
                                         <button
                                           className="flex items-center gap-1 px-2.5 py-1 text-xs text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA] rounded-lg transition-colors"
                                           onClick={async () => {
-                                            try {
-                                              await navigator.clipboard.writeText(
-                                                msg.content,
-                                              );
+                                            const ok = await copyToClipboard(
+                                              msg.content || '',
+                                            );
+                                            if (ok) {
                                               setCopiedIndex(i);
                                               setTimeout(
                                                 () => setCopiedIndex(null),
                                                 2000,
                                               );
-                                            } catch {
-                                              // clipboard API may fail
                                             }
                                           }}
                                         >
@@ -1633,6 +1738,9 @@ export default function CChat() {
                                         content={displayContent}
                                         loading={streaming}
                                         reference={refs}
+                                        clickDocumentButton={
+                                          clickDocumentButton
+                                        }
                                       />
                                     </div>
                                     {streaming && (
@@ -1664,81 +1772,21 @@ export default function CChat() {
                                       </div>
                                     )}
                                   </div>
-                                  {/* Reference sources */}
+                                  {/* Reference sources — B-side style */}
                                   {!streaming &&
                                     refs?.chunks &&
                                     Object.keys(refs.chunks).length > 0 && (
-                                      <details className="mt-2 group">
-                                        <summary className="list-none cursor-pointer select-none">
-                                          <span className="inline-flex items-center gap-1 text-[11px] text-[#525252] hover:text-[#000000] transition-colors">
-                                            <svg
-                                              className="w-3 h-3 transition-transform group-open:rotate-90"
-                                              viewBox="0 0 20 20"
-                                              fill="currentColor"
-                                            >
-                                              <path
-                                                fillRule="evenodd"
-                                                d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z"
-                                                clipRule="evenodd"
-                                              />
-                                            </svg>
-                                            引用来源 (
-                                            {Object.keys(refs.chunks).length})
-                                          </span>
-                                        </summary>
-                                        <div className="mt-1 space-y-0.5 max-h-44 overflow-y-auto pr-1">
-                                          {Object.entries(refs.chunks).map(
-                                            ([idx, chunk]) => {
-                                              const doc = Object.values(
-                                                refs.doc_aggs || {},
-                                              ).find(
-                                                (d) =>
-                                                  d.doc_id ===
-                                                  chunk.document_id,
-                                              );
-                                              return (
-                                                <div
-                                                  key={idx}
-                                                  className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-[#FFFFFF] transition-colors"
-                                                >
-                                                  {chunk.image_id ? (
-                                                    <Image
-                                                      id={chunk.image_id}
-                                                      className="w-7 h-7 rounded object-cover flex-shrink-0"
-                                                    />
-                                                  ) : (
-                                                    <span className="w-7 h-7 flex items-center justify-center text-stone-300 flex-shrink-0">
-                                                      <svg
-                                                        viewBox="0 0 24 24"
-                                                        className="w-4 h-4"
-                                                        fill="none"
-                                                        stroke="currentColor"
-                                                        strokeWidth="1.5"
-                                                      >
-                                                        <path d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
-                                                      </svg>
-                                                    </span>
-                                                  )}
-                                                  <div className="min-w-0 flex-1">
-                                                    <div className="truncate text-[12px] text-[#1a1a1a] leading-tight">
-                                                      {doc?.doc_name ||
-                                                        chunk.document_name ||
-                                                        `引用 #${Number(idx) + 1}`}
-                                                    </div>
-                                                    {(chunk as any).content && (
-                                                      <div className="truncate text-[11px] text-[#525252] leading-tight mt-0.5">
-                                                        {(
-                                                          chunk as any
-                                                        ).content.slice(0, 80)}
-                                                      </div>
-                                                    )}
-                                                  </div>
-                                                </div>
-                                              );
-                                            },
+                                      <div className="mt-2 space-y-3">
+                                        <ReferenceImageList
+                                          referenceChunks={refs.chunks}
+                                          messageContent={msg.content || ''}
+                                        />
+                                        <ReferenceDocumentList
+                                          list={Object.values(
+                                            refs.doc_aggs || {},
                                           )}
-                                        </div>
-                                      </details>
+                                        />
+                                      </div>
                                     )}
                                   {/* Downloads */}
                                   {!streaming &&
@@ -1781,17 +1829,15 @@ export default function CChat() {
                                       <button
                                         className="flex items-center gap-1 px-2.5 py-1 text-xs text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA] rounded-lg transition-colors"
                                         onClick={async () => {
-                                          try {
-                                            await navigator.clipboard.writeText(
-                                              msg.content,
-                                            );
+                                          const ok = await copyToClipboard(
+                                            cleanContent || msg.content || '',
+                                          );
+                                          if (ok) {
                                             setCopiedIndex(i);
                                             setTimeout(
                                               () => setCopiedIndex(null),
                                               2000,
                                             );
-                                          } catch {
-                                            // clipboard API may fail
                                           }
                                         }}
                                       >
@@ -2105,6 +2151,15 @@ export default function CChat() {
           apiFetch={apiFetch}
           onCreated={() => {}}
         />
+
+        {drawerVisible && drawerDocumentId && (
+          <PdfDrawer
+            visible={drawerVisible}
+            hideModal={hideDrawer}
+            documentId={drawerDocumentId}
+            chunk={drawerSelectedChunk as any}
+          />
+        )}
 
         <input
           ref={fileInputRef}

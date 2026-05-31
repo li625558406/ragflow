@@ -99,6 +99,7 @@ export enum Operator {
   Email = 'Email',
   Iteration = 'Iteration',
   IterationStart = 'IterationItem',
+  FanOut = 'FanOut',
   Code = 'CodeExec',
   WaitingDialogue = 'WaitingDialogue',
   Agent = 'Agent',
