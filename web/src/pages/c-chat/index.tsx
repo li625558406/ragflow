@@ -176,7 +176,7 @@ export default function CChat() {
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const pendingSendRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [enableInternet, setEnableInternet] = useState(true);
+  const [enableInternet] = useState(false);
   const [audioInputValue, setAudioInputValue] = useState<string | null>(null);
 
   // File upload state (C-side)
@@ -1352,39 +1352,6 @@ export default function CChat() {
                             autoFocus
                           />
                           <div className="flex items-center justify-end gap-2">
-                            <button
-                              type="button"
-                              onClick={() => setEnableInternet((prev) => !prev)}
-                              className={`shrink-0 w-9 h-9 flex items-center justify-center rounded-lg transition-all ${
-                                enableInternet
-                                  ? 'text-[#14B8A6] bg-[#e6f9f7]'
-                                  : 'text-[#A3A3A3] hover:text-[#525252] hover:bg-[#F5F5F5]'
-                              }`}
-                              title={
-                                enableInternet
-                                  ? '已开启联网搜索'
-                                  : '已关闭联网搜索'
-                              }
-                            >
-                              <svg
-                                className="w-4 h-4"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                              >
-                                <circle
-                                  cx="12"
-                                  cy="12"
-                                  r="10"
-                                  strokeWidth={1.5}
-                                />
-                                <path
-                                  strokeLinecap="round"
-                                  strokeWidth={1.5}
-                                  d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10M12 2a15.3 15.3 0 00-4 10 15.3 15.3 0 004 10"
-                                />
-                              </svg>
-                            </button>
                             <div className="shrink-0 w-9 h-9 flex items-center justify-center">
                               <RealtimeAudioButton
                                 onTranscript={(val) => setAudioInputValue(val)}
@@ -2007,41 +1974,6 @@ export default function CChat() {
                           <div className="flex items-center justify-end gap-2">
                             {!sendLoading ? (
                               <>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setEnableInternet((prev) => !prev)
-                                  }
-                                  className={`shrink-0 w-9 h-9 flex items-center justify-center rounded-lg transition-all ${
-                                    enableInternet
-                                      ? 'text-[#14B8A6] bg-[#e6f9f7]'
-                                      : 'text-[#A3A3A3] hover:text-[#525252] hover:bg-[#F5F5F5]'
-                                  }`}
-                                  title={
-                                    enableInternet
-                                      ? '已开启联网搜索'
-                                      : '已关闭联网搜索'
-                                  }
-                                >
-                                  <svg
-                                    className="w-4 h-4"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    viewBox="0 0 24 24"
-                                  >
-                                    <circle
-                                      cx="12"
-                                      cy="12"
-                                      r="10"
-                                      strokeWidth={1.5}
-                                    />
-                                    <path
-                                      strokeLinecap="round"
-                                      strokeWidth={1.5}
-                                      d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10M12 2a15.3 15.3 0 00-4 10 15.3 15.3 0 004 10"
-                                    />
-                                  </svg>
-                                </button>
                                 <div className="shrink-0 w-9 h-9 flex items-center justify-center">
                                   <RealtimeAudioButton
                                     onTranscript={(val) =>
