@@ -813,7 +813,7 @@ export const NodeMap = {
   [Operator.Email]: 'ragNode',
   [Operator.Iteration]: 'group',
   [Operator.IterationStart]: 'iterationStartNode',
-  [Operator.FanOut]: 'ragNode',
+  [Operator.FanOut]: 'agentNode',
   [Operator.Code]: 'ragNode',
   [Operator.WaitingDialogue]: 'ragNode',
   [Operator.Agent]: 'agentNode',

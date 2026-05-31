@@ -10,7 +10,10 @@ export function useBeforeDelete() {
   const { getOperatorTypeFromId, getNode } = useGraphStore((state) => state);
 
   const agentPredicate = (node: Node) => {
-    return getOperatorTypeFromId(node.id) === Operator.Agent;
+    return (
+      getOperatorTypeFromId(node.id) === Operator.Agent ||
+      getOperatorTypeFromId(node.id) === Operator.FanOut
+    );
   };
 
   const handleBeforeDelete: OnBeforeDelete<RAGFlowNodeType> = async ({

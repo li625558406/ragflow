@@ -65,7 +65,11 @@ const buildComponentDownstreamOrUpstream = (
       let isNotUpstreamTool = true;
       let isNotUpstreamAgent = true;
       let isNotExceptionGoto = true;
-      if (isBuildDownstream && node?.data.label === Operator.Agent) {
+      if (
+        isBuildDownstream &&
+        (node?.data.label === Operator.Agent ||
+          node?.data.label === Operator.FanOut)
+      ) {
         isNotExceptionGoto = y.sourceHandle !== NodeHandleId.AgentException;
         // Exclude the tool operator downstream of the agent operator
         isNotUpstreamTool = !y.target.startsWith(Operator.Tool);

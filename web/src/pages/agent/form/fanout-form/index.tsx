@@ -45,7 +45,7 @@ const outputList = buildOutputList(initialFanOutValues.outputs);
 function FanOutForm({ node }: INextOperatorForm) {
   const { t } = useTranslation();
 
-  const defaultValues = node?.data?.form ?? initialFanOutValues;
+  const defaultValues = { ...initialFanOutValues, ...node?.data?.form };
 
   const form = useForm<z.infer<typeof FormSchema>>({
     defaultValues,

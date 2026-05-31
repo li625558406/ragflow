@@ -362,7 +362,10 @@ const useGraphStore = create<RFState>()(
           getOperatorTypeFromId,
           deleteAgentDownstreamNodesById,
         } = get();
-        if (getOperatorTypeFromId(id) === Operator.Agent) {
+        if (
+          getOperatorTypeFromId(id) === Operator.Agent ||
+          getOperatorTypeFromId(id) === Operator.FanOut
+        ) {
           deleteAgentDownstreamNodesById(id);
           return;
         }
@@ -566,7 +569,11 @@ const useGraphStore = create<RFState>()(
       },
       getAllAgentTools: () => {
         return get()
-          .nodes.filter((n) => n?.data?.label === Operator.Agent)
+          .nodes.filter(
+            (n) =>
+              n?.data?.label === Operator.Agent ||
+              n?.data?.label === Operator.FanOut,
+          )
           .flatMap((n) => n?.data?.form?.tools);
       },
       getAgentToolById: (

@@ -61,8 +61,8 @@ function Radio({
       <input
         type="radio"
         value={value}
-        checked={isChecked}
-        onClick={handleClick}
+        checked={isChecked ?? false}
+        onChange={handleClick}
         disabled={mergedDisabled}
         className={cn('peer absolute size-[1px] opacity-0', className)}
         {...props}

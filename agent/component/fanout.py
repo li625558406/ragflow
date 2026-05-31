@@ -16,14 +16,14 @@
 import asyncio
 import json
 import logging
+import re
 import time
 from abc import ABC
 from copy import deepcopy
 from functools import partial
 
 from agent.component.base import ComponentBase, ComponentParamBase
-from agent.component import component_class
-from agent.tools.base import LLMToolPluginCallSession, ToolParamBase
+from agent.tools.base import LLMToolPluginCallSession
 from api.db.joint_services.tenant_model_service import get_model_config_by_type_and_name
 from api.db.services.llm_service import LLMBundle
 from api.db.services.mcp_server_service import MCPServerService
@@ -31,10 +31,9 @@ from api.db.services.tenant_llm_service import TenantLLMService
 from common.mcp_tool_call_conn import MCPToolCallSession, mcp_tool_metadata_to_openai_tool
 
 
-class FanOutParam(ComponentParamBase, ToolParamBase):
+class FanOutParam(ComponentParamBase):
     def __init__(self):
-        ComponentParamBase.__init__(self)
-        ToolParamBase.__init__(self)
+        super().__init__()
         self.items_ref: str = ""
         self.llm_id: str = ""
         self.system_prompt: str = ""
@@ -46,17 +45,23 @@ class FanOutParam(ComponentParamBase, ToolParamBase):
         self.custom_header: dict = {}
 
     def get_input_form(self) -> dict[str, dict]:
+        """Return the upstream data inputs for this component.
+
+        FanOut only expects ONE input from the canvas:
+            items   — {type: json} the array of items to process in parallel
+
+        Everything else (llm_id, system_prompt, prompt_template,
+        max_concurrency, error_strategy, tools, mcp) is *configuration*
+        that the user sets in the properties panel — NOT data flowing
+        through canvas edges.
+        """
         return {
-            "items": {"type": "json", "name": "Items"},
-            "llm_id": {"type": "llm", "name": "LLM"},
-            "system_prompt": {"type": "text", "name": "System Prompt"},
-            "prompt_template": {"type": "text", "name": "Prompt Template"},
-            "max_concurrency": {"type": "number", "name": "Max Concurrency"},
-            "error_strategy": {
-                "type": "options",
-                "name": "Error Strategy",
-                "options": ["skip", "stop"],
-            },
+            "items": {
+                "type": "line",
+                "name": "Items",
+                "description": "JSON array to process in parallel. "
+                "Each item is injected into the prompt template as {item}.",
+            }
         }
 
     def check(self):
@@ -78,6 +83,155 @@ class FanOut(ComponentBase, ABC):
         self._tools_map: dict[str, object] = {}
         self._tool_meta: list[dict] = []
 
+    def _invoke(self, **kwargs):
+        """Sync entry point — used by the debug/run-single-component API.
+
+        Accepts ``items`` as a JSON array (string or parsed list).
+        Executes the async FanOut logic in a one-shot event loop on a
+        worker thread so it works from both sync and async callers.
+        """
+        debug_items = kwargs.get("items")
+        if debug_items is None:
+            self.set_output("_ERROR",
+                "FanOut is an async component.  Provide an 'items' array "
+                "(e.g. [\"a\",\"b\",\"c\"]) in the debug panel to test directly, "
+                "or run via the full canvas pipeline.")
+            return
+
+        if isinstance(debug_items, str):
+            import json as _json
+            try:
+                debug_items = _json.loads(debug_items)
+            except (TypeError, _json.JSONDecodeError):
+                self.set_output("_ERROR", f"items is not valid JSON: {debug_items!r}")
+                return
+
+        if not isinstance(debug_items, (list, tuple)):
+            self.set_output("_ERROR", f"items must be an array, got {type(debug_items).__name__}")
+            return
+
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(
+                asyncio.run, self._invoke_async_with_items(list(debug_items))
+            ).result()
+
+    async def _invoke_async_with_items(self, items: list):
+        """Run FanOut with an explicit items list (used by both sync _invoke and canvas _invoke_async)."""
+        tenant_id = self._canvas.get_tenant_id() if self._canvas else ""
+
+        n = len(items)
+        if n == 0:
+            self.set_output("results", [])
+            return
+
+        await self._event_queue.put({
+            "event": "message",
+            "data": {"content": f"\n🚀 Processing {n} items (max concurrency: {self._param.max_concurrency})\n"},
+        })
+
+        try:
+            chat_mdl = self._create_chat_mdl(tenant_id)
+            logging.info(f"FanOut LLM model created: llm_id={self._param.llm_id}, tenant={tenant_id}")
+        except Exception as e:
+            logging.error(f"FanOut failed to get LLM config: {e}")
+            self.set_output("_ERROR", f"Failed to get LLM config for {self._param.llm_id}: {e}")
+            return
+
+        self._progress = {i: {"status": "pending"} for i in range(n)}
+        self._cancel_event.clear()
+        sem = asyncio.Semaphore(max(1, int(self._param.max_concurrency)))
+        completed_count = [0]
+
+        async def _process_one(idx: int, item_value):
+            async with sem:
+                if self._cancel_event.is_set():
+                    return None
+
+                started = time.perf_counter()
+                self._progress[idx] = {"status": "running", "started_at": started}
+                label = self._item_label(item_value, idx)
+
+                await self._event_queue.put({
+                    "event": "message",
+                    "data": {"content": f"\n\n---\n**{label}**: "},
+                })
+
+                try:
+                    rendered = self._render_prompt(item_value, idx)
+                    chunks: list[str] = []
+                    in_think = False  # whether current position is inside <think>...</think>
+                    async for chunk in chat_mdl.async_chat_streamly_delta(
+                        self._param.system_prompt,
+                        [{"role": "user", "content": rendered}],
+                        {},
+                    ):
+                        if self._cancel_event.is_set():
+                            break
+                        if isinstance(chunk, int):
+                            continue
+                        # Filter out <think>...</think> blocks (DeepSeek chain-of-thought
+                        # reasoning). The framework wraps each reasoning chunk individually,
+                        # so the opening <think> and closing </think> may straddle different
+                        # stream chunks — hence the state machine.
+                        clean = ""
+                        pos = 0
+                        while pos < len(chunk):
+                            if in_think:
+                                end = chunk.find("</think>", pos)
+                                if end == -1:
+                                    break  # rest of chunk is reasoning → discard
+                                in_think = False
+                                pos = end + len("</think>")
+                            else:
+                                start = chunk.find("<think>", pos)
+                                if start == -1:
+                                    clean += chunk[pos:]
+                                    break
+                                clean += chunk[pos:start]
+                                in_think = True
+                                pos = start + len("<think>")
+                        if clean:
+                            chunks.append(clean)
+                            await self._event_queue.put({
+                                "event": "message",
+                                "data": {"content": clean},
+                            })
+
+                    result = re.sub(r"<think>.*?</think>", "", "".join(chunks), flags=re.DOTALL)
+                    elapsed = time.perf_counter() - started
+                    self._progress[idx] = {"status": "completed", "result": result, "elapsed": elapsed}
+                    completed_count[0] += 1
+                    await self._event_queue.put({
+                        "event": "message",
+                        "data": {"content": f"\n✅ **{label}** 完成 ({elapsed:.1f}s) [{completed_count[0]}/{n}]\n"},
+                    })
+                    return result
+
+                except Exception as e:
+                    logging.exception(f"FanOut item {idx} failed: {e}")
+                    self._progress[idx] = {"status": "error", "error": str(e)}
+                    completed_count[0] += 1
+                    await self._event_queue.put({
+                        "event": "message",
+                        "data": {"content": f"\n❌ **{label}** 失败: {e}\n"},
+                    })
+                    if self._param.error_strategy == "stop":
+                        self._cancel_event.set()
+                        raise
+                    return None
+
+        tasks = [asyncio.create_task(_process_one(i, v)) for i, v in enumerate(items)]
+        gathered = await asyncio.gather(*tasks, return_exceptions=True)
+
+        results = []
+        for i, r in enumerate(gathered):
+            if isinstance(r, Exception):
+                results.append({"item_index": i, "content": None, "error": str(r)})
+            else:
+                results.append({"item_index": i, "content": r})
+        self.set_output("results", results)
+
     def get_start(self) -> str:
         for cid in self._canvas.components.keys():
             cpn = self._canvas.get_component(cid)
@@ -86,6 +240,8 @@ class FanOut(ComponentBase, ABC):
         return ""
 
     def _load_tool_obj(self, cpn: dict):
+        from agent.component import component_class
+
         tool_name = cpn["component_name"]
         param = component_class(tool_name + "Param")()
         param.update(cpn["params"])
@@ -146,109 +302,48 @@ class FanOut(ComponentBase, ABC):
         rendered = rendered.replace("{index}", str(idx))
         return rendered
 
+    def _item_label(self, item_value, idx: int) -> str:
+        """Extract a human-readable label from an item for progress display."""
+        if isinstance(item_value, dict):
+            for key in ("chapter_title", "title", "name", "label", "章节标题", "标题", "名称"):
+                if key in item_value and item_value[key]:
+                    return str(item_value[key])
+        if isinstance(item_value, str) and item_value:
+            return item_value[:60] + "..." if len(item_value) > 60 else item_value
+        return f"Item {idx}"
+
     async def _invoke_async(self, **kwargs):
         if self.check_if_canceled("FanOut processing"):
             return
 
-        arr = self._canvas.get_variable_value(self._param.items_ref)
-        if not isinstance(arr, (list, tuple)):
-            self.set_output("_ERROR",
-                            f"{self._param.items_ref} must be an array, but got {type(arr).__name__}")
-            return
-
-        arr = list(arr)
-        n = len(arr)
-        if n == 0:
-            self.set_output("results", [])
-            return
-
-        tenant_id = self._canvas.get_tenant_id()
-        try:
-            chat_mdl = self._create_chat_mdl(tenant_id)
-        except Exception as e:
-            self.set_output("_ERROR", f"Failed to get LLM config for {self._param.llm_id}: {e}")
-            return
-
-        self._progress = {i: {"status": "pending"} for i in range(n)}
-        self._cancel_event.clear()
-        sem = asyncio.Semaphore(max(1, int(self._param.max_concurrency)))
-        completed_count = [0]
-
-        async def _process_one(idx: int, item_value):
-            async with sem:
-                if self._cancel_event.is_set():
-                    return None
-
-                started = time.perf_counter()
-                self._progress[idx] = {"status": "running", "started_at": started}
-
+        # Try explicit items from kwargs first (debug / single-run path),
+        # otherwise resolve from the canvas variable referenced by items_ref.
+        explicit = kwargs.get("items")
+        if explicit is not None:
+            if isinstance(explicit, str):
+                import json as _json
                 try:
-                    rendered = self._render_prompt(item_value, idx)
+                    explicit = _json.loads(explicit)
+                except (TypeError, _json.JSONDecodeError):
+                    self.set_output("_ERROR", f"items is not valid JSON: {explicit!r}")
+                    return
+            if not isinstance(explicit, (list, tuple)):
+                self.set_output("_ERROR", f"items must be an array, got {type(explicit).__name__}")
+                return
+            arr = list(explicit)
+        else:
+            arr = self._canvas.get_variable_value(self._param.items_ref)
+            logging.info(f"FanOut items_ref={self._param.items_ref!r}, resolved type={type(arr).__name__}, len={len(arr) if isinstance(arr, (list, tuple)) else '?'}")
 
-                    chunks: list[str] = []
-                    async for chunk in chat_mdl.async_chat_streamly_delta(
-                        self._param.system_prompt,
-                        [{"role": "user", "content": rendered}],
-                        {},
-                    ):
-                        if self._cancel_event.is_set():
-                            break
-                        if isinstance(chunk, int):
-                            continue
-                        chunks.append(chunk)
-                        await self._event_queue.put({
-                            "event": "message",
-                            "data": {"content": chunk},
-                        })
+            if not isinstance(arr, (list, tuple)):
+                msg = f"{self._param.items_ref} must be an array, but got {type(arr).__name__}: {arr!r}"
+                logging.error(f"FanOut: {msg}")
+                self.set_output("_ERROR", msg)
+                return
+            arr = list(arr)
 
-                    result = "".join(chunks)
-                    elapsed = time.perf_counter() - started
-                    self._progress[idx] = {"status": "completed", "result": result, "elapsed": elapsed}
-
-                    completed_count[0] += 1
-                    await self._event_queue.put({
-                        "event": "fanout_progress",
-                        "data": {
-                            "idx": idx,
-                            "completed": completed_count[0],
-                            "total": n,
-                            "elapsed": elapsed,
-                        },
-                    })
-
-                    return result
-
-                except Exception as e:
-                    logging.exception(f"FanOut item {idx} failed: {e}")
-                    self._progress[idx] = {"status": "error", "error": str(e)}
-                    completed_count[0] += 1
-                    await self._event_queue.put({
-                        "event": "fanout_progress",
-                        "data": {
-                            "idx": idx,
-                            "completed": completed_count[0],
-                            "total": n,
-                            "error": str(e),
-                        },
-                    })
-
-                    if self._param.error_strategy == "stop":
-                        self._cancel_event.set()
-                        raise
-                    return None
-
-        tasks = [asyncio.create_task(_process_one(i, v)) for i, v in enumerate(arr)]
-        gathered = await asyncio.gather(*tasks, return_exceptions=True)
-
-        results = []
-        for i, r in enumerate(gathered):
-            if isinstance(r, Exception):
-                logging.error(f"FanOut item {i} unhandled exception: {r}")
-                results.append({"item_index": i, "content": None, "error": str(r)})
-            else:
-                results.append({"item_index": i, "content": r})
-
-        self.set_output("results", results)
+        logging.info(f"FanOut processing {len(arr)} items, max_concurrency={self._param.max_concurrency}")
+        await self._invoke_async_with_items(arr)
 
     def thoughts(self) -> str:
         if not self._progress:

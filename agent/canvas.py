@@ -519,7 +519,40 @@ class Canvas(Graph):
                     "component_type": self.get_component_type(self.path[i]),
                     "thoughts": self.get_component_thoughts(self.path[i])
                 })
-            await _run_batch(idx, to)
+
+            # Check if any component in this batch is FanOut — if so,
+            # run batch as background task and drain events concurrently
+            # so progress messages stream to the frontend in real time.
+            has_fanout = any(
+                self.get_component_obj(self.path[i]).component_name.lower() == "fanout"
+                for i in range(idx, to)
+            )
+            if has_fanout:
+                batch_task = asyncio.ensure_future(_run_batch(idx, to))
+                while not batch_task.done():
+                    # Drain FanOut event queues
+                    for i in range(idx, to):
+                        cpn_obj = self.get_component_obj(self.path[i])
+                        if cpn_obj.component_name.lower() == "fanout":
+                            eq = getattr(cpn_obj, "_event_queue", None)
+                            if eq:
+                                while not eq.empty():
+                                    ev = eq.get_nowait()
+                                    yield decorate(ev["event"], ev["data"])
+                    await asyncio.sleep(0.1)
+                await batch_task
+                # Drain any remaining events
+                for i in range(idx, to):
+                    cpn_obj = self.get_component_obj(self.path[i])
+                    if cpn_obj.component_name.lower() == "fanout":
+                        eq = getattr(cpn_obj, "_event_queue", None)
+                        if eq:
+                            while not eq.empty():
+                                ev = eq.get_nowait()
+                                yield decorate(ev["event"], ev["data"])
+            else:
+                await _run_batch(idx, to)
+
             to = len(self.path)
             # post-processing of components invocation
             for i in range(idx, to):
@@ -607,14 +640,6 @@ class Canvas(Graph):
                             partials.append(self.path[i])
                     else:
                         yield _node_finished(cpn_obj)
-
-                # FanOut: drain sub-canvas event queue for real-time progress
-                if cpn_obj.component_name.lower() == "fanout":
-                    eq = getattr(cpn_obj, "_event_queue", None)
-                    if eq:
-                        while not eq.empty():
-                            ev = eq.get_nowait()
-                            yield decorate(ev["event"], ev["data"])
 
                 def _append_path(cpn_id):
                     nonlocal other_branch
