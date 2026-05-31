@@ -177,7 +177,7 @@ export function MetadataFilterConditions({
   const logic = prefix + 'meta_data_filter.logic';
 
   // 过滤掉虚拟分析结果 kb_id，避免获取元数据时权限错误
-  const realKbIds = kbIds.filter(id => !id.startsWith('analysis_'));
+  const realKbIds = kbIds.filter((id) => !id.startsWith('analysis_'));
   const metadata = useFetchKnowledgeMetadata(realKbIds);
 
   const switchOperatorOptions = useBuildSwitchOperatorOptions();
@@ -206,7 +206,7 @@ export function MetadataFilterConditions({
       <div className="flex items-center justify-between">
         <FormLabel>{t('chat.conditions')}</FormLabel>
         <DropdownMenu>
-          <DropdownMenuTrigger>
+          <DropdownMenuTrigger asChild>
             <Button variant={'ghost'} type="button">
               <Plus />
             </Button>

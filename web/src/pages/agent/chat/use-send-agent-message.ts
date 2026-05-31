@@ -1,3 +1,4 @@
+import { NextMessageInputOnPressEnterParameter } from '@/components/message-input/next';
 import sonnerMessage from '@/components/ui/message';
 import { MessageType } from '@/constants/chat';
 import {
@@ -292,18 +293,22 @@ export const useSendAgentMessage = ({
       message,
       beginInputs,
       exploreSessionId,
+      enableInternet,
+      enableThinking,
     }: {
       message: Message;
       messages?: Message[];
       beginInputs?: BeginQuery[];
       exploreSessionId?: string;
-    }) => {
+    } & NextMessageInputOnPressEnterParameter) => {
       const params: Record<string, unknown> = { agent_id: agentId };
 
       params.running_hint_text = i18n.t('flow.runningHintText', {
         defaultValue: 'is running...🕞',
       });
       params['openai-compatible'] = false;
+      params.reasoning = enableThinking;
+      params.internet = enableInternet;
       if (typeof message.content === 'string') {
         const query = inputs;
 
@@ -399,7 +404,13 @@ export const useSendAgentMessage = ({
   ]);
 
   const handlePressEnter = useCallback(
-    ({ exploreSessionId }: { exploreSessionId?: string } = {}) => {
+    ({
+      exploreSessionId,
+      enableInternet,
+      enableThinking,
+    }: {
+      exploreSessionId?: string;
+    } & NextMessageInputOnPressEnterParameter = {}) => {
       if (trim(value) === '') return;
       const msgBody = buildRequestBody(value);
       if (done) {
@@ -407,6 +418,8 @@ export const useSendAgentMessage = ({
         sendMessage({
           message: msgBody,
           exploreSessionId,
+          enableInternet,
+          enableThinking,
         });
       }
       addNewestOneQuestion({ ...msgBody, files: fileList });

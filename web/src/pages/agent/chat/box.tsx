@@ -14,7 +14,7 @@ import {
 } from '@/hooks/use-agent-request';
 import { useFetchUserInfo } from '@/hooks/use-user-setting-request';
 import { buildMessageUuidWithRole } from '@/utils/chat';
-import { memo, useCallback, useContext } from 'react';
+import { memo, useCallback, useContext, useEffect } from 'react';
 import { useParams } from 'react-router';
 import { AgentChatContext } from '../context';
 import DebugContent from '../debug-content';
@@ -53,7 +53,10 @@ function AgentChatBox() {
   });
 
   const { setDerivedMessages } = useContext(AgentChatContext);
-  setDerivedMessages?.(derivedMessages);
+
+  useEffect(() => {
+    setDerivedMessages?.(derivedMessages);
+  }, [derivedMessages, setDerivedMessages]);
 
   const isTaskMode = useIsTaskMode();
 
@@ -135,6 +138,7 @@ function AgentChatBox() {
             onUpload={handleUploadFile}
             removeFile={removeFile}
             conversationId=""
+            showInternet
           />
         )}
       </section>

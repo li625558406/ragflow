@@ -69,6 +69,7 @@ function MessageItem({
   avatar,
   avatarDialog,
   agentName,
+  nickname,
   sendLoading = false,
   clickDocumentButton,
   removeMessageById,

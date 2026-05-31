@@ -289,6 +289,12 @@ export const AudioButton = ({
 
   //  Start recording
   const startRecording = () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      console.error(
+        'getUserMedia not available — page must be served over HTTPS or localhost',
+      );
+      return;
+    }
     recorderControls.startRecording();
     setIsRecording(true);
     // setShowInputBox(true);
@@ -394,14 +400,9 @@ export const AudioButton = ({
         )}
 
         <Button
+          type="button"
           variant="transparent"
           size="icon-xs"
-          // onMouseDown={() => {
-          //   startRecording();
-          // }}
-          // onMouseUp={() => {
-          //   stopRecording();
-          // }}
           onClick={() => {
             if (isRecording) {
               stopRecording();

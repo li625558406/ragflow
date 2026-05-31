@@ -1,16 +1,15 @@
 import { useTranslate } from '@/hooks/common-hooks';
 import { cn } from '@/lib/utils';
 import { LucideCheck, LucideCopy } from 'lucide-react';
-import { useState } from 'react';
+import { ComponentPropsWithoutRef, useState } from 'react';
 import { CopyToClipboard as Clipboard } from 'react-copy-to-clipboard';
-import { Button, ButtonProps } from './ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 
 const CopyToClipboard = ({
   text,
   className,
-  ...buttonProps
-}: { text: string } & ButtonProps) => {
+  ...spanProps
+}: { text: string } & ComponentPropsWithoutRef<'span'>) => {
   const [copied, setCopied] = useState(false);
   const { t } = useTranslate('common');
 
@@ -25,14 +24,16 @@ const CopyToClipboard = ({
     <Tooltip open={copied ? true : undefined}>
       <Clipboard text={text} onCopy={handleCopy}>
         <TooltipTrigger asChild>
-          <Button
-            variant="transparent"
-            size="icon-sm"
-            {...buttonProps}
-            className={cn(className, copied && '!text-state-success')}
+          <span
+            {...spanProps}
+            className={cn(
+              'inline-flex items-center justify-center cursor-pointer hover:bg-bg-base-hover rounded-sm p-1',
+              className,
+              copied && '!text-state-success',
+            )}
           >
             {copied ? <LucideCheck /> : <LucideCopy />}
-          </Button>
+          </span>
         </TooltipTrigger>
       </Clipboard>
       <TooltipContent>{copied ? t('copied') : t('copy')}</TooltipContent>

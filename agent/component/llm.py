@@ -270,12 +270,26 @@ class LLM(ComponentBase):
             sys_prompt = re.sub(rf"<{tag}>(.*?)</{tag}>", "", sys_prompt, flags=re.DOTALL|re.IGNORECASE)
         return pts, sys_prompt
 
+    def _should_web_search(self) -> bool:
+        if not self._canvas.globals.get("sys.internet"):
+            return False
+        try:
+            return self.chat_mdl.model_config.get("llm_factory", "") == "DeepSeek"
+        except Exception:
+            return False
+
     async def _generate_async(self, msg: list[dict], **kwargs) -> str:
+        kwargs = dict(kwargs)
+        if self._should_web_search():
+            kwargs["web_search"] = True
         if not self.imgs:
             return await self.chat_mdl.async_chat(msg[0]["content"], msg[1:], self._param.gen_conf(), **kwargs)
         return await self.chat_mdl.async_chat(msg[0]["content"], msg[1:], self._param.gen_conf(), images=self.imgs, **kwargs)
 
     async def _generate_streamly(self, msg: list[dict], **kwargs) -> AsyncGenerator[str, None]:
+        kwargs = dict(kwargs)
+        if self._should_web_search():
+            kwargs["web_search"] = True
         async def delta_wrapper(txt_iter):
             ans = ""
             last_idx = 0
@@ -345,6 +359,8 @@ class LLM(ComponentBase):
             return re.sub(r"(<think>|</think>)", "", delta_ans)
 
         stream_kwargs = {"images": self.imgs} if self.imgs else {}
+        if self._should_web_search():
+            stream_kwargs["web_search"] = True
         async for ans in self.chat_mdl.async_chat_streamly(msg[0]["content"], msg[1:], self._param.gen_conf(), **stream_kwargs):
             if self.check_if_canceled("LLM streaming"):
                 return

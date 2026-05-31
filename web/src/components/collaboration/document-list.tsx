@@ -129,14 +129,19 @@ export default function DocumentList({
         ) : (
           <>
             {documents.map((doc, idx) => (
-              <button
+              <div
                 key={doc.id}
+                role="button"
+                tabIndex={0}
                 className={`cs-list-enter cs-list-d${Math.min(idx, 7)} w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer transition text-left group ${
                   selectedId === doc.id
                     ? 'bg-[#EAEAEA] text-[#000000]'
                     : 'text-[#333333] hover:bg-[#EAEAEA] hover:text-[#000000]'
                 }`}
                 onClick={() => onSelect(doc)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') onSelect(doc);
+                }}
               >
                 <div
                   className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${
@@ -283,7 +288,7 @@ export default function DocumentList({
                     )}
                   </div>
                 </div>
-              </button>
+              </div>
             ))}
           </>
         )}

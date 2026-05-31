@@ -10,6 +10,7 @@ import { RAGFlowAvatar } from '@/components/ragflow-avatar';
 import ToolsPanel from '@/components/tools';
 import { BidList } from '@/pages/home/bid-list';
 
+import { RealtimeAudioButton } from '@/components/realtime-audio-button';
 import { MessageType } from '@/constants/chat';
 import {
   useHandleMessageInputChange,
@@ -174,6 +175,9 @@ export default function CChat() {
   const [isLoadingSession, setIsLoadingSession] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const pendingSendRef = useRef(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [enableInternet, setEnableInternet] = useState(true);
+  const [audioInputValue, setAudioInputValue] = useState<string | null>(null);
 
   // File upload state (C-side)
   const [uploadedFiles, setUploadedFiles] = useState<
@@ -204,7 +208,6 @@ export default function CChat() {
     addNewestOneAnswer,
     setDerivedMessages,
     scrollToBottom,
-    addPrologue,
   } = useSelectDerivedMessages();
 
   const sendLoading = !done;
@@ -225,14 +228,8 @@ export default function CChat() {
     }
   }, [answerList, addNewestOneAnswer]);
 
-  // ── Prologue ──
-  useEffect(() => {
-    if (currentAgentPrologue && derivedMessages.length === 0) {
-      addPrologue(currentAgentPrologue);
-    }
-    // Only run when prologue first becomes available
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentAgentPrologue]);
+  // ── Prologue is shown as intro text in the welcome screen, not auto-added as a message
+  // This keeps the input centered until the user explicitly starts a conversation.
 
   // ── UI state (C-side) ──
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -701,6 +698,7 @@ export default function CChat() {
         session_id: sessionId,
         stream: true,
         files: currentFiles,
+        internet: enableInternet,
       });
 
       if (
@@ -712,7 +710,14 @@ export default function CChat() {
         removeLatestMessage();
       }
     },
-    [currentAgentId, uploadedFiles, send, setValue, removeLatestMessage],
+    [
+      currentAgentId,
+      uploadedFiles,
+      send,
+      setValue,
+      removeLatestMessage,
+      enableInternet,
+    ],
   );
 
   const handlePressEnter = useCallback(async () => {
@@ -779,6 +784,15 @@ export default function CChat() {
     sendMessage,
     scrollToBottom,
   ]);
+
+  // Fill textarea with transcribed text (no auto-send)
+  useEffect(() => {
+    if (audioInputValue !== null) {
+      setValue(audioInputValue);
+      setAudioInputValue(null);
+      textareaRef.current?.focus();
+    }
+  }, [audioInputValue]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-send after regenerate sets inputValue
   useEffect(() => {
@@ -1208,6 +1222,11 @@ export default function CChat() {
                         <p className="text-[#525252] text-xs mt-1">
                           上传招标文件至知识库后，即可在此进行智能问答
                         </p>
+                        {currentAgentPrologue && (
+                          <p className="text-[#525252] text-xs mt-2 max-w-md mx-auto leading-relaxed">
+                            {currentAgentPrologue}
+                          </p>
+                        )}
                         <div className="grid grid-cols-2 gap-2.5 mt-5 max-w-sm mx-auto">
                           {[
                             {
@@ -1309,8 +1328,9 @@ export default function CChat() {
                             ))}
                           </div>
                         )}
-                        <div className="cs-input-ring flex items-end gap-2 bg-[#FFFFFF] border border-[#D4D4D4] rounded-2xl px-4 py-3">
+                        <div className="cs-input-ring flex flex-col gap-2 bg-[#FFFFFF] border border-[#D4D4D4] rounded-2xl px-4 py-3">
                           <textarea
+                            ref={textareaRef}
                             value={value}
                             onChange={(e) => {
                               const el = e.target;
@@ -1327,38 +1347,98 @@ export default function CChat() {
                             }}
                             placeholder={typewriterText}
                             rows={3}
-                            className="flex-1 bg-transparent outline-none resize-none text-sm leading-relaxed placeholder:text-[#A3A3A3] text-[#000000] cs-typewriter-cursor min-h-[72px]"
+                            className="w-full bg-transparent outline-none resize-none text-sm leading-relaxed placeholder:text-[#A3A3A3] text-[#000000] cs-typewriter-cursor min-h-[72px]"
                             disabled={sendLoading}
                             autoFocus
                           />
-                          <button
-                            onClick={() => fileInputRef.current?.click()}
-                            disabled={sendLoading || isUploadingFile}
-                            className="shrink-0 w-9 h-9 flex items-center justify-center text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-                            title="上传文件"
-                          >
-                            {isUploadingFile ? (
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setEnableInternet((prev) => !prev)}
+                              className={`shrink-0 w-9 h-9 flex items-center justify-center rounded-lg transition-all ${
+                                enableInternet
+                                  ? 'text-[#14B8A6] bg-[#e6f9f7]'
+                                  : 'text-[#A3A3A3] hover:text-[#525252] hover:bg-[#F5F5F5]'
+                              }`}
+                              title={
+                                enableInternet
+                                  ? '已开启联网搜索'
+                                  : '已关闭联网搜索'
+                              }
+                            >
                               <svg
-                                className="w-4 h-4 animate-spin"
-                                viewBox="0 0 24 24"
+                                className="w-4 h-4"
                                 fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
                               >
                                 <circle
                                   cx="12"
                                   cy="12"
                                   r="10"
-                                  stroke="currentColor"
-                                  strokeWidth="3"
-                                  opacity="0.25"
+                                  strokeWidth={1.5}
                                 />
                                 <path
-                                  d="M12 2a10 10 0 019.95 9"
-                                  stroke="currentColor"
-                                  strokeWidth="3"
                                   strokeLinecap="round"
+                                  strokeWidth={1.5}
+                                  d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10M12 2a15.3 15.3 0 00-4 10 15.3 15.3 0 004 10"
                                 />
                               </svg>
-                            ) : (
+                            </button>
+                            <div className="shrink-0 w-9 h-9 flex items-center justify-center">
+                              <RealtimeAudioButton
+                                onTranscript={(val) => setAudioInputValue(val)}
+                                testId="c-chat-audio-toggle"
+                              />
+                            </div>
+                            <button
+                              onClick={() => fileInputRef.current?.click()}
+                              disabled={sendLoading || isUploadingFile}
+                              className="shrink-0 w-9 h-9 flex items-center justify-center text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                              title="上传文件"
+                            >
+                              {isUploadingFile ? (
+                                <svg
+                                  className="w-4 h-4 animate-spin"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                >
+                                  <circle
+                                    cx="12"
+                                    cy="12"
+                                    r="10"
+                                    stroke="currentColor"
+                                    strokeWidth="3"
+                                    opacity="0.25"
+                                  />
+                                  <path
+                                    d="M12 2a10 10 0 019.95 9"
+                                    stroke="currentColor"
+                                    strokeWidth="3"
+                                    strokeLinecap="round"
+                                  />
+                                </svg>
+                              ) : (
+                                <svg
+                                  className="w-4 h-4"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
+                                  />
+                                </svg>
+                              )}
+                            </button>
+                            <button
+                              onClick={handlePressEnter}
+                              disabled={!value.trim()}
+                              className="shrink-0 w-9 h-9 flex items-center justify-center bg-[#000000] hover:bg-[#1a1a1a] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
+                            >
                               <svg
                                 className="w-4 h-4"
                                 fill="none"
@@ -1369,30 +1449,11 @@ export default function CChat() {
                                   strokeLinecap="round"
                                   strokeLinejoin="round"
                                   strokeWidth={2}
-                                  d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
+                                  d="M5 12h14M12 5l7 7-7 7"
                                 />
                               </svg>
-                            )}
-                          </button>
-                          <button
-                            onClick={handlePressEnter}
-                            disabled={!value.trim()}
-                            className="shrink-0 w-9 h-9 flex items-center justify-center bg-[#000000] hover:bg-[#1a1a1a] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
-                          >
-                            <svg
-                              className="w-4 h-4"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M5 12h14M12 5l7 7-7 7"
-                              />
-                            </svg>
-                          </button>
+                            </button>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -1917,8 +1978,9 @@ export default function CChat() {
                             ))}
                           </div>
                         )}
-                        <div className="cs-input-ring flex items-end gap-2 bg-[#FFFFFF] border border-[#D4D4D4] rounded-2xl px-3 py-2">
+                        <div className="cs-input-ring flex flex-col gap-2 bg-[#FFFFFF] border border-[#D4D4D4] rounded-2xl px-3 py-2">
                           <textarea
+                            ref={textareaRef}
                             value={value}
                             onChange={(e) => {
                               const el = e.target;
@@ -1939,39 +2001,103 @@ export default function CChat() {
                                 : typewriterText
                             }
                             rows={3}
-                            className={`flex-1 bg-transparent outline-none resize-none text-sm leading-relaxed placeholder:text-[#A3A3A3] text-[#000000] min-h-[72px]${hasMessages ? '' : ' cs-typewriter-cursor'}`}
+                            className={`w-full bg-transparent outline-none resize-none text-sm leading-relaxed placeholder:text-[#A3A3A3] text-[#000000] min-h-[72px]${hasMessages ? '' : ' cs-typewriter-cursor'}`}
                             disabled={sendLoading}
                           />
-                          {!sendLoading ? (
-                            <>
-                              <button
-                                onClick={() => fileInputRef.current?.click()}
-                                disabled={isUploadingFile}
-                                className="shrink-0 w-9 h-9 flex items-center justify-center text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-                                title="上传文件"
-                              >
-                                {isUploadingFile ? (
+                          <div className="flex items-center justify-end gap-2">
+                            {!sendLoading ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setEnableInternet((prev) => !prev)
+                                  }
+                                  className={`shrink-0 w-9 h-9 flex items-center justify-center rounded-lg transition-all ${
+                                    enableInternet
+                                      ? 'text-[#14B8A6] bg-[#e6f9f7]'
+                                      : 'text-[#A3A3A3] hover:text-[#525252] hover:bg-[#F5F5F5]'
+                                  }`}
+                                  title={
+                                    enableInternet
+                                      ? '已开启联网搜索'
+                                      : '已关闭联网搜索'
+                                  }
+                                >
                                   <svg
-                                    className="w-4 h-4 animate-spin"
-                                    viewBox="0 0 24 24"
+                                    className="w-4 h-4"
                                     fill="none"
+                                    stroke="currentColor"
+                                    viewBox="0 0 24 24"
                                   >
                                     <circle
                                       cx="12"
                                       cy="12"
                                       r="10"
-                                      stroke="currentColor"
-                                      strokeWidth="3"
-                                      opacity="0.25"
+                                      strokeWidth={1.5}
                                     />
                                     <path
-                                      d="M12 2a10 10 0 019.95 9"
-                                      stroke="currentColor"
-                                      strokeWidth="3"
                                       strokeLinecap="round"
+                                      strokeWidth={1.5}
+                                      d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10M12 2a15.3 15.3 0 00-4 10 15.3 15.3 0 004 10"
                                     />
                                   </svg>
-                                ) : (
+                                </button>
+                                <div className="shrink-0 w-9 h-9 flex items-center justify-center">
+                                  <RealtimeAudioButton
+                                    onTranscript={(val) =>
+                                      setAudioInputValue(val)
+                                    }
+                                    testId="c-chat-audio-toggle"
+                                  />
+                                </div>
+                                <button
+                                  onClick={() => fileInputRef.current?.click()}
+                                  disabled={isUploadingFile}
+                                  className="shrink-0 w-9 h-9 flex items-center justify-center text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                                  title="上传文件"
+                                >
+                                  {isUploadingFile ? (
+                                    <svg
+                                      className="w-4 h-4 animate-spin"
+                                      viewBox="0 0 24 24"
+                                      fill="none"
+                                    >
+                                      <circle
+                                        cx="12"
+                                        cy="12"
+                                        r="10"
+                                        stroke="currentColor"
+                                        strokeWidth="3"
+                                        opacity="0.25"
+                                      />
+                                      <path
+                                        d="M12 2a10 10 0 019.95 9"
+                                        stroke="currentColor"
+                                        strokeWidth="3"
+                                        strokeLinecap="round"
+                                      />
+                                    </svg>
+                                  ) : (
+                                    <svg
+                                      className="w-4 h-4"
+                                      fill="none"
+                                      stroke="currentColor"
+                                      viewBox="0 0 24 24"
+                                    >
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        strokeWidth={2}
+                                        d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
+                                      />
+                                    </svg>
+                                  )}
+                                </button>
+                                <button
+                                  onClick={handlePressEnter}
+                                  disabled={!value.trim()}
+                                  className="shrink-0 w-9 h-9 flex items-center justify-center bg-[#000000] hover:bg-[#1a1a1a] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
+                                >
                                   <svg
                                     className="w-4 h-4"
                                     fill="none"
@@ -1982,51 +2108,32 @@ export default function CChat() {
                                       strokeLinecap="round"
                                       strokeLinejoin="round"
                                       strokeWidth={2}
-                                      d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
+                                      d="M5 12h14M12 5l7 7-7 7"
                                     />
                                   </svg>
-                                )}
-                              </button>
+                                </button>
+                              </>
+                            ) : (
                               <button
-                                onClick={handlePressEnter}
-                                disabled={!value.trim()}
-                                className="shrink-0 w-9 h-9 flex items-center justify-center bg-[#000000] hover:bg-[#1a1a1a] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
+                                onClick={stopOutputMessage}
+                                className="shrink-0 w-9 h-9 flex items-center justify-center bg-red-400 text-white rounded-xl hover:bg-red-500 transition active:scale-95"
                               >
                                 <svg
-                                  className="w-4 h-4"
-                                  fill="none"
-                                  stroke="currentColor"
+                                  className="w-3.5 h-3.5"
+                                  fill="currentColor"
                                   viewBox="0 0 24 24"
                                 >
-                                  <path
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                    strokeWidth={2}
-                                    d="M5 12h14M12 5l7 7-7 7"
+                                  <rect
+                                    x="6"
+                                    y="6"
+                                    width="12"
+                                    height="12"
+                                    rx="1"
                                   />
                                 </svg>
                               </button>
-                            </>
-                          ) : (
-                            <button
-                              onClick={stopOutputMessage}
-                              className="shrink-0 w-9 h-9 flex items-center justify-center bg-red-400 text-white rounded-xl hover:bg-red-500 transition active:scale-95"
-                            >
-                              <svg
-                                className="w-3.5 h-3.5"
-                                fill="currentColor"
-                                viewBox="0 0 24 24"
-                              >
-                                <rect
-                                  x="6"
-                                  y="6"
-                                  width="12"
-                                  height="12"
-                                  rx="1"
-                                />
-                              </svg>
-                            </button>
-                          )}
+                            )}
+                          </div>
                         </div>
                       </div>
                     </div>

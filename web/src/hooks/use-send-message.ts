@@ -122,7 +122,6 @@ export const useSendMessageBySSE = (url: string) => {
           body: JSON.stringify(body),
           signal: controller?.signal || sseRef.current?.signal,
         });
-
         const res = response
           .clone()
           .text()
@@ -146,14 +145,12 @@ export const useSendMessageBySSE = (url: string) => {
             if (x) {
               const { done, value } = x;
               if (done) {
-                console.info('done');
                 resetAnswerList();
                 break;
               }
               try {
                 const val = JSON.parse(value?.data || '');
 
-                console.info('data:', val);
                 if (typeof val?.code === 'number' && val.code !== 0) {
                   message.error(val.message);
                 }
@@ -173,7 +170,6 @@ export const useSendMessageBySSE = (url: string) => {
             }
           }
         }
-        console.info('done?');
         setDone(true);
         resetAnswerList();
         return { data: await res, response };
