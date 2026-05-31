@@ -1775,14 +1775,18 @@ class LiteLLMBase(ABC):
             if self.provider != SupportedLiteLLMProvider.DeepSeek:
                 tool_args["tool_choice"] = "auto"
             completion_args.update(tool_args)
-        # DeepSeek native web search — inject as an additional tool.
+        # DeepSeek native web search — inject via extra_body to bypass
+        # litellm's function-calling tool processing. The extra_body dict
+        # is merged directly into the API request body so the raw DeepSeek-
+        # specific tool format reaches the upstream API unchanged.
         # Unlike function-calling tools, the LLM does not explicitly "call"
         # this tool; the API performs the search internally and annotates
         # the response with results.
         if web_search and self.provider == SupportedLiteLLMProvider.DeepSeek:
-            search_tool = {"type": "web_search"}
-            existing = completion_args.get("tools", [])
-            completion_args["tools"] = ([search_tool] + existing) if isinstance(existing, list) else [search_tool]
+            extra = completion_args.setdefault("extra_body", {})
+            tools: list = extra.setdefault("tools", [])
+            if not any(t.get("type") == "web_search" for t in tools):
+                tools.insert(0, {"type": "web_search", "web_search": {"enable": True}})
             # DeepSeek does not support tool_choice; ensure it stays absent.
             completion_args.pop("tool_choice", None)
         if self.provider in FACTORY_DEFAULT_BASE_URL:
