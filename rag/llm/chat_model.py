@@ -187,7 +187,6 @@ class Base(ABC):
     async def _async_chat_streamly(self, history, gen_conf, **kwargs):
         logging.info("[HISTORY STREAMLY]" + json.dumps(history, ensure_ascii=False, indent=4))
         reasoning_start = False
-
         request_kwargs = {"model": self.model_name, "messages": history, "stream": True, **gen_conf}
         stop = kwargs.get("stop")
         if stop:
@@ -205,10 +204,13 @@ class Base(ABC):
                 if not reasoning_start:
                     reasoning_start = True
                     ans = "<think>"
-                ans += _reasoning + "</think>"
+                ans += _reasoning
             else:
-                reasoning_start = False
-                ans = resp.choices[0].delta.content
+                ans = ""
+                if reasoning_start:
+                    reasoning_start = False
+                    ans = "</think>"
+                ans += resp.choices[0].delta.content
             tol = total_token_count_from_response(resp)
             if not tol:
                 tol = num_tokens_from_string(resp.choices[0].delta.content)
@@ -464,10 +466,12 @@ class Base(ABC):
                             if not reasoning_start:
                                 reasoning_start = True
                                 ans = "<think>"
-                            ans += _reasoning + "</think>"
+                            ans += _reasoning
                             yield ans
                         else:
-                            reasoning_start = False
+                            if reasoning_start:
+                                reasoning_start = False
+                                yield "</think>"
                             answer += delta.content
                             yield delta.content
 
@@ -1418,10 +1422,13 @@ class LiteLLMBase(ABC):
                         if not reasoning_start:
                             reasoning_start = True
                             ans = "<think>"
-                        ans += _reasoning + "</think>"
+                        ans += _reasoning
                     else:
-                        reasoning_start = False
-                        ans = delta.content
+                        ans = ""
+                        if reasoning_start:
+                            reasoning_start = False
+                            ans = "</think>"
+                        ans += delta.content
 
                     tol = total_token_count_from_response(resp)
                     if not tol:
@@ -1641,8 +1648,8 @@ class LiteLLMBase(ABC):
             history = deepcopy(hist)
             try:
                 for _round in range(self.max_rounds + 1):
-                    reasoning_start = False
                     reasoning_content = ""
+                    reasoning_start = False
                     logging.info(f"[ToolLoop] round={_round} model={self.model_name} tools={[t['function']['name'] for t in tools]}")
 
                     completion_args = self._construct_completion_args(history=history, stream=True, tools=True, **gen_conf)
@@ -1683,10 +1690,12 @@ class LiteLLMBase(ABC):
                             if not reasoning_start:
                                 reasoning_start = True
                                 ans = "<think>"
-                            ans += _reasoning + "</think>"
+                            ans += _reasoning
                             yield ans
                         else:
-                            reasoning_start = False
+                            if reasoning_start:
+                                reasoning_start = False
+                                yield "</think>"
                             answer += delta.content
                             yield delta.content
 

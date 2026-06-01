@@ -20,6 +20,7 @@ from api.db.db_models import Conversation, DB
 from api.db.services.api_service import API4ConversationService
 from api.db.services.common_service import CommonService
 from api.db.services.dialog_service import DialogService, async_chat
+from api.utils.compression import compress_json, decompress_json
 from common.misc_utils import get_uuid
 import json
 
@@ -28,6 +29,52 @@ from rag.prompts.generator import chunks_format
 
 class ConversationService(CommonService):
     model = Conversation
+
+    # ── compression helpers ──────────────────────────────────────────
+
+    @staticmethod
+    def _compress_fields(data: dict) -> dict:
+        """Compress *message* and *reference* fields in-place before DB write."""
+        for field in ("message", "reference"):
+            if field in data and data[field] is not None:
+                data[field] = compress_json(data[field])
+        return data
+
+    @staticmethod
+    def decompress_conv(conv) -> None:
+        """Decompress *message* and *reference* on a model instance or dict."""
+        for field in ("message", "reference"):
+            val = conv[field] if isinstance(conv, dict) else getattr(conv, field, None)
+            if val is not None:
+                decompressed = decompress_json(val)
+                if isinstance(conv, dict):
+                    conv[field] = decompressed
+                else:
+                    setattr(conv, field, decompressed)
+
+    # ── persistence overrides ────────────────────────────────────────
+
+    @classmethod
+    @DB.connection_context()
+    def save(cls, **kwargs):
+        cls._compress_fields(kwargs)
+        return super().save(**kwargs)
+
+    @classmethod
+    @DB.connection_context()
+    def update_by_id(cls, pid, data):
+        cls._compress_fields(data)
+        return super().update_by_id(pid, data)
+
+    @classmethod
+    @DB.connection_context()
+    def get_by_id(cls, pid):
+        ok, obj = super().get_by_id(pid)
+        if ok and obj:
+            cls.decompress_conv(obj)
+        return ok, obj
+
+    # ── queries (with transparent decompression) ─────────────────────
 
     @classmethod
     @DB.connection_context()
@@ -47,7 +94,10 @@ class ConversationService(CommonService):
         if items_per_page > 0:
             sessions = sessions.paginate(page_number, items_per_page)
 
-        return list(sessions.dicts())
+        result = list(sessions.dicts())
+        for r in result:
+            cls.decompress_conv(r)
+        return result
 
     @classmethod
     @DB.connection_context()
@@ -61,6 +111,8 @@ class ConversationService(CommonService):
             _temp = list(s_batch.dicts())
             if not _temp:
                 break
+            for r in _temp:
+                cls.decompress_conv(r)
             res.extend(_temp)
             offset += limit
         return res
@@ -153,6 +205,7 @@ async def async_completion(tenant_id, chat_id, question, name="New session", ses
         raise LookupError("Session does not exist")
 
     conv = conv[0]
+    ConversationService.decompress_conv(conv)
     msg = []
     question = {
         "content": question,

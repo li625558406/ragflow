@@ -7,11 +7,11 @@ import {
 import MarkdownContent from '@/components/next-markdown-content';
 import { ReferenceDocumentList } from '@/components/next-message-item/reference-document-list';
 import { ReferenceImageList } from '@/components/next-message-item/reference-image-list';
+import PdfSheet from '@/components/pdf-drawer';
 import { useClickDrawer } from '@/components/pdf-drawer/hooks';
 import { RAGFlowAvatar } from '@/components/ragflow-avatar';
 import ToolsPanel from '@/components/tools';
 import { BidList } from '@/pages/home/bid-list';
-import PdfDrawer from '@/pages/next-search/document-preview-modal';
 
 import { RealtimeAudioButton } from '@/components/realtime-audio-button';
 import { MessageType } from '@/constants/chat';
@@ -2153,11 +2153,11 @@ export default function CChat() {
         />
 
         {drawerVisible && drawerDocumentId && (
-          <PdfDrawer
+          <PdfSheet
             visible={drawerVisible}
             hideModal={hideDrawer}
             documentId={drawerDocumentId}
-            chunk={drawerSelectedChunk as any}
+            chunk={drawerSelectedChunk}
           />
         )}
 

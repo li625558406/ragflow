@@ -125,11 +125,6 @@ class FanOut(ComponentBase, ABC):
             self.set_output("results", [])
             return
 
-        await self._event_queue.put({
-            "event": "message",
-            "data": {"content": f"\n🚀 Processing {n} items (max concurrency: {self._param.max_concurrency})\n"},
-        })
-
         try:
             chat_mdl = self._create_chat_mdl(tenant_id)
             logging.info(f"FanOut LLM model created: llm_id={self._param.llm_id}, tenant={tenant_id}")
@@ -150,12 +145,6 @@ class FanOut(ComponentBase, ABC):
 
                 started = time.perf_counter()
                 self._progress[idx] = {"status": "running", "started_at": started}
-                label = self._item_label(item_value, idx)
-
-                await self._event_queue.put({
-                    "event": "message",
-                    "data": {"content": f"\n\n---\n**{label}**: "},
-                })
 
                 try:
                     rendered = self._render_prompt(item_value, idx)
@@ -169,6 +158,10 @@ class FanOut(ComponentBase, ABC):
                         if self._cancel_event.is_set():
                             break
                         if isinstance(chunk, int):
+                            continue
+                        if isinstance(chunk, Exception):
+                            raise chunk
+                        if not isinstance(chunk, str):
                             continue
                         # Filter out <think>...</think> blocks (DeepSeek chain-of-thought
                         # reasoning). The framework wraps each reasoning chunk individually,
@@ -202,20 +195,12 @@ class FanOut(ComponentBase, ABC):
                     elapsed = time.perf_counter() - started
                     self._progress[idx] = {"status": "completed", "result": result, "elapsed": elapsed}
                     completed_count[0] += 1
-                    await self._event_queue.put({
-                        "event": "message",
-                        "data": {"content": f"\n✅ **{label}** 完成 ({elapsed:.1f}s) [{completed_count[0]}/{n}]\n"},
-                    })
                     return result
 
                 except Exception as e:
                     logging.exception(f"FanOut item {idx} failed: {e}")
                     self._progress[idx] = {"status": "error", "error": str(e)}
                     completed_count[0] += 1
-                    await self._event_queue.put({
-                        "event": "message",
-                        "data": {"content": f"\n❌ **{label}** 失败: {e}\n"},
-                    })
                     if self._param.error_strategy == "stop":
                         self._cancel_event.set()
                         raise

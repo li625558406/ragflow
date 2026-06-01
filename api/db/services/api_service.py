@@ -19,6 +19,7 @@ import peewee
 
 from api.db.db_models import DB, API4Conversation, APIToken, Dialog
 from api.db.services.common_service import CommonService
+from api.utils.compression import compress_json, decompress_json
 from common.time_utils import current_timestamp, datetime_format
 
 
@@ -43,6 +44,48 @@ class APITokenService(CommonService):
 
 class API4ConversationService(CommonService):
     model = API4Conversation
+
+    # ── compression helpers ──────────────────────────────────────────
+
+    @staticmethod
+    def _compress_fields(data: dict) -> dict:
+        for field in ("message", "reference"):
+            if field in data and data[field] is not None:
+                data[field] = compress_json(data[field])
+        return data
+
+    @staticmethod
+    def decompress_conv(conv) -> None:
+        for field in ("message", "reference"):
+            val = conv[field] if isinstance(conv, dict) else getattr(conv, field, None)
+            if val is not None:
+                decompressed = decompress_json(val)
+                if isinstance(conv, dict):
+                    conv[field] = decompressed
+                else:
+                    setattr(conv, field, decompressed)
+
+    # ── persistence overrides ────────────────────────────────────────
+
+    @classmethod
+    @DB.connection_context()
+    def save(cls, **kwargs):
+        cls._compress_fields(kwargs)
+        return super().save(**kwargs)
+
+    @classmethod
+    @DB.connection_context()
+    def update_by_id(cls, pid, data):
+        cls._compress_fields(data)
+        return super().update_by_id(pid, data)
+
+    @classmethod
+    @DB.connection_context()
+    def get_by_id(cls, pid):
+        ok, obj = super().get_by_id(pid)
+        if ok and obj:
+            cls.decompress_conv(obj)
+        return ok, obj
 
     @staticmethod
     def _normalize_query_date(value, is_end=False):
@@ -84,7 +127,10 @@ class API4ConversationService(CommonService):
         count = sessions.count()
         sessions = sessions.paginate(page_number, items_per_page)
 
-        return count, list(sessions.dicts())
+        result = list(sessions.dicts())
+        for r in result:
+            cls.decompress_conv(r)
+        return count, result
     
     @classmethod
     @DB.connection_context()
