@@ -469,11 +469,13 @@ class Base(ABC):
                             ans += _reasoning
                             yield ans
                         else:
+                            ans = ""
                             if reasoning_start:
                                 reasoning_start = False
-                                yield "</think>"
+                                ans = "</think>"
+                            ans += delta.content
                             answer += delta.content
-                            yield delta.content
+                            yield ans
 
                         tol = total_token_count_from_response(resp)
                         if not tol:
@@ -1693,11 +1695,13 @@ class LiteLLMBase(ABC):
                             ans += _reasoning
                             yield ans
                         else:
+                            ans = ""
                             if reasoning_start:
                                 reasoning_start = False
-                                yield "</think>"
+                                ans = "</think>"
+                            ans += delta.content
                             answer += delta.content
-                            yield delta.content
+                            yield ans
 
                         tol = total_token_count_from_response(resp)
                         if not tol:
