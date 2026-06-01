@@ -1773,21 +1773,22 @@ export default function CChat() {
                                     )}
                                   </div>
                                   {/* Reference sources — B-side style */}
-                                  {!streaming &&
-                                    refs?.chunks &&
-                                    Object.keys(refs.chunks).length > 0 && (
-                                      <div className="mt-2 space-y-3">
-                                        <ReferenceImageList
-                                          referenceChunks={refs.chunks}
-                                          messageContent={msg.content || ''}
-                                        />
+                                  {!streaming && refs && (
+                                    <>
+                                      <ReferenceImageList
+                                        referenceChunks={refs.chunks}
+                                        messageContent={msg.content || ''}
+                                      />
+                                      {Object.values(refs.doc_aggs || {})
+                                        .length > 0 && (
                                         <ReferenceDocumentList
                                           list={Object.values(
                                             refs.doc_aggs || {},
                                           )}
                                         />
-                                      </div>
-                                    )}
+                                      )}
+                                    </>
+                                  )}
                                   {/* Downloads */}
                                   {!streaming &&
                                     msg.downloads &&
