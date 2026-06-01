@@ -70,7 +70,12 @@ export const preprocessLaTeX = (content: string) => {
 export function replaceThinkToSection(text: string = '') {
   const pattern = /<think>([\s\S]*?)<\/think>/g;
 
-  const result = text.replace(pattern, '<section class="think">$1</section>');
+  let result = text.replace(pattern, '<section class="think">$1</section>');
+
+  // Clean up unclosed <think> / orphaned </think> tags that pass through
+  // during streaming (opening tag not yet closed by the SSE).
+  // Otherwise react-markdown warns: "The tag <think> is unrecognized".
+  result = result.replace(/<think>/g, '').replace(/<\/think>/g, '');
 
   return result;
 }

@@ -187,6 +187,7 @@ class Base(ABC):
     async def _async_chat_streamly(self, history, gen_conf, **kwargs):
         logging.info("[HISTORY STREAMLY]" + json.dumps(history, ensure_ascii=False, indent=4))
         reasoning_start = False
+
         request_kwargs = {"model": self.model_name, "messages": history, "stream": True, **gen_conf}
         stop = kwargs.get("stop")
         if stop:
@@ -204,13 +205,10 @@ class Base(ABC):
                 if not reasoning_start:
                     reasoning_start = True
                     ans = "<think>"
-                ans += _reasoning
+                ans += _reasoning + "</think>"
             else:
-                ans = ""
-                if reasoning_start:
-                    reasoning_start = False
-                    ans = "</think>"
-                ans += resp.choices[0].delta.content
+                reasoning_start = False
+                ans = resp.choices[0].delta.content
             tol = total_token_count_from_response(resp)
             if not tol:
                 tol = num_tokens_from_string(resp.choices[0].delta.content)
@@ -295,8 +293,6 @@ class Base(ABC):
         return msg
 
     def _verbose_tool_use(self, name, args, res):
-        if not isinstance(res, (dict, list, str, int, float, bool, type(None))):
-            res = str(res)
         return "<tool_call>" + json.dumps({"name": name, "args": args, "result": res}, ensure_ascii=False, indent=2) + "</tool_call>"
 
     def _append_history(self, hist, tool_call, tool_res):
@@ -466,16 +462,12 @@ class Base(ABC):
                             if not reasoning_start:
                                 reasoning_start = True
                                 ans = "<think>"
-                            ans += _reasoning
+                            ans += _reasoning + "</think>"
                             yield ans
                         else:
-                            ans = ""
-                            if reasoning_start:
-                                reasoning_start = False
-                                ans = "</think>"
-                            ans += delta.content
+                            reasoning_start = False
                             answer += delta.content
-                            yield ans
+                            yield delta.content
 
                         tol = total_token_count_from_response(resp)
                         if not tol:
@@ -489,12 +481,6 @@ class Base(ABC):
 
                     if answer and not final_tool_calls:
                         logging.info(f"[ToolLoop] round={_round} completed with text response, exiting")
-                        if len(answer.strip()) < 50:
-                            async for fb in self.async_chat_streamly("", history, gen_conf):
-                                if isinstance(fb, int):
-                                    total_tokens += fb
-                                else:
-                                    yield fb
                         yield total_tokens
                         return
 
@@ -1355,7 +1341,7 @@ class LiteLLMBase(ABC):
             if not hist or hist[0].get("role") != "system":
                 hist.insert(0, {"role": "system", "content": system})
 
-        logging.debug("[HISTORY] %s messages", len(hist))
+        logging.info("[HISTORY]" + json.dumps(hist, ensure_ascii=False, indent=2))
         gen_conf = self._clean_conf(gen_conf)
         _, kwargs = _apply_model_family_policies(
             self.model_name,
@@ -1364,8 +1350,7 @@ class LiteLLMBase(ABC):
             request_kwargs=kwargs,
         )
 
-        web_search = kwargs.pop("web_search", False)
-        completion_args = self._construct_completion_args(history=hist, stream=False, tools=False, web_search=web_search, **{**gen_conf, **kwargs})
+        completion_args = self._construct_completion_args(history=hist, stream=False, tools=False, **{**gen_conf, **kwargs})
 
         for attempt in range(self.max_retries + 1):
             try:
@@ -1397,7 +1382,7 @@ class LiteLLMBase(ABC):
         reasoning_start = False
         total_tokens = 0
 
-        completion_args = self._construct_completion_args(history=history, stream=True, tools=False, web_search=kwargs.pop("web_search", False), **gen_conf)
+        completion_args = self._construct_completion_args(history=history, stream=True, tools=False, **gen_conf)
         stop = kwargs.get("stop")
         if stop:
             completion_args["stop"] = stop
@@ -1424,13 +1409,10 @@ class LiteLLMBase(ABC):
                         if not reasoning_start:
                             reasoning_start = True
                             ans = "<think>"
-                        ans += _reasoning
+                        ans += _reasoning + "</think>"
                     else:
-                        ans = ""
-                        if reasoning_start:
-                            reasoning_start = False
-                            ans = "</think>"
-                        ans += delta.content
+                        reasoning_start = False
+                        ans = delta.content
 
                     tol = total_token_count_from_response(resp)
                     if not tol:
@@ -1584,19 +1566,9 @@ class LiteLLMBase(ABC):
                     if not hasattr(message, "tool_calls") or not message.tool_calls:
                         if reasoning_content:
                             ans += f"<think>{reasoning_content}</think>"
-                        content = message.content or ""
-                        ans += content
+                        ans += message.content or ""
                         if response.choices[0].finish_reason == "length":
                             ans = self._length_stop(ans)
-                        # When the model puts the real answer body in reasoning_content
-                        # and returns an empty / trivially-short content (e.g. just a
-                        # concluding sentence), make one additional plain-text call so the
-                        # LLM can compose a proper answer from the conversation context
-                        # (which already contains the tool results).
-                        if len(content.strip()) < 50:
-                            fallback, fb_tokens = await self.async_chat("", history, gen_conf)
-                            ans += fallback
-                            tk_count += fb_tokens
                         return ans, tk_count
 
                     async def _exec_tool(tc):
@@ -1650,8 +1622,8 @@ class LiteLLMBase(ABC):
             history = deepcopy(hist)
             try:
                 for _round in range(self.max_rounds + 1):
-                    reasoning_content = ""
                     reasoning_start = False
+                    reasoning_content = ""
                     logging.info(f"[ToolLoop] round={_round} model={self.model_name} tools={[t['function']['name'] for t in tools]}")
 
                     completion_args = self._construct_completion_args(history=history, stream=True, tools=True, **gen_conf)
@@ -1661,7 +1633,7 @@ class LiteLLMBase(ABC):
                         timeout=self.timeout,
                     )
 
-                    final_tool_calls: dict[int, Any] = {}
+                    final_tool_calls = {}
                     answer = ""
 
                     async for resp in response:
@@ -1692,16 +1664,12 @@ class LiteLLMBase(ABC):
                             if not reasoning_start:
                                 reasoning_start = True
                                 ans = "<think>"
-                            ans += _reasoning
+                            ans += _reasoning + "</think>"
                             yield ans
                         else:
-                            ans = ""
-                            if reasoning_start:
-                                reasoning_start = False
-                                ans = "</think>"
-                            ans += delta.content
+                            reasoning_start = False
                             answer += delta.content
-                            yield ans
+                            yield delta.content
 
                         tol = total_token_count_from_response(resp)
                         if not tol:
@@ -1715,12 +1683,6 @@ class LiteLLMBase(ABC):
 
                     if answer and not final_tool_calls:
                         logging.info(f"[ToolLoop] round={_round} completed with text response, exiting")
-                        if len(answer.strip()) < 50:
-                            async for fb in self.async_chat_streamly("", history, gen_conf):
-                                if isinstance(fb, int):
-                                    total_tokens += fb
-                                else:
-                                    yield fb
                         yield total_tokens
                         return
 
@@ -1789,7 +1751,7 @@ class LiteLLMBase(ABC):
 
         assert False, "Shouldn't be here."
 
-    def _construct_completion_args(self, history, stream: bool, tools: bool, web_search: bool = False, **kwargs):
+    def _construct_completion_args(self, history, stream: bool, tools: bool, **kwargs):
         completion_args = {
             "model": self.model_name,
             "messages": history,
@@ -1804,26 +1766,12 @@ class LiteLLMBase(ABC):
                 }
             )
         if tools and self.tools:
-            tool_args: dict = {"tools": self.tools}
-            # DeepSeek V4 thinking mode does not support tool_choice parameter.
-            # Omitting it defaults to "auto" behavior on the API side.
-            if self.provider != SupportedLiteLLMProvider.DeepSeek:
-                tool_args["tool_choice"] = "auto"
-            completion_args.update(tool_args)
-        # DeepSeek native web search — inject via extra_body to bypass
-        # litellm's function-calling tool processing. The extra_body dict
-        # is merged directly into the API request body so the raw DeepSeek-
-        # specific tool format reaches the upstream API unchanged.
-        # Unlike function-calling tools, the LLM does not explicitly "call"
-        # this tool; the API performs the search internally and annotates
-        # the response with results.
-        if web_search and self.provider == SupportedLiteLLMProvider.DeepSeek:
-            extra = completion_args.setdefault("extra_body", {})
-            tools: list = extra.setdefault("tools", [])
-            if not any(t.get("type") == "web_search" for t in tools):
-                tools.insert(0, {"type": "web_search", "web_search": {"enable": True}})
-            # DeepSeek does not support tool_choice; ensure it stays absent.
-            completion_args.pop("tool_choice", None)
+            completion_args.update(
+                {
+                    "tools": self.tools,
+                    "tool_choice": "auto",
+                }
+            )
         if self.provider in FACTORY_DEFAULT_BASE_URL:
             completion_args.update({"api_base": self.base_url})
         elif self.provider == SupportedLiteLLMProvider.Bedrock:

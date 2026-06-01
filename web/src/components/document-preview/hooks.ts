@@ -174,9 +174,20 @@ export const useCatchDocumentError = (url: string) => {
   const [error, setError] = useState<string>('');
 
   const fetchDocument = useCallback(async () => {
-    const { data } = await axios.get(url, { headers: httpHeaders });
-    if (data.code !== 0) {
-      setError(data?.message);
+    try {
+      const response = await fetch(url, { headers: httpHeaders });
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          const data = await response.json();
+          setError(data?.message || `Error ${response.status}`);
+        } else {
+          setError(`Error ${response.status}: ${response.statusText}`);
+        }
+      }
+      // If response is OK (2xx), the document is accessible — no error
+    } catch (e: any) {
+      setError(e?.message || 'Network error');
     }
   }, [url, httpHeaders]);
   useEffect(() => {

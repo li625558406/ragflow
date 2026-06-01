@@ -400,7 +400,8 @@ class QWenRerank(Base):
                 log_exception(_e, resp)
             return rank, total_token_count_from_response(resp)
         else:
-            raise ValueError(f"Error calling QWenRerank model {self.model_name}: {resp.status_code} - {resp.text}")
+            err_msg = getattr(resp, "message", "") or getattr(resp, "text", "") or str(resp)
+            raise ValueError(f"Error calling QWenRerank model {self.model_name}: {resp.status_code} - {err_msg}")
 
 
 class HuggingfaceRerank(Base):

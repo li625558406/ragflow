@@ -5,7 +5,6 @@ import {
   ConfirmDeleteDialogNode,
 } from '@/components/confirm-delete-dialog';
 import MarkdownContent from '@/components/next-markdown-content';
-import { ReferenceDocumentList } from '@/components/next-message-item/reference-document-list';
 import { ReferenceImageList } from '@/components/next-message-item/reference-image-list';
 import PdfSheet from '@/components/pdf-drawer';
 import { useClickDrawer } from '@/components/pdf-drawer/hooks';
@@ -204,6 +203,9 @@ export default function CChat() {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [isLoadingSession, setIsLoadingSession] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(
+    new Set(),
+  );
   const pendingSendRef = useRef(false);
   const loadingSessionRef = useRef<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -1772,22 +1774,124 @@ export default function CChat() {
                                       </div>
                                     )}
                                   </div>
-                                  {/* Reference sources — B-side style */}
+                                  {/* Reference sources */}
                                   {!streaming && refs && (
-                                    <>
+                                    <div className="mt-3 space-y-2">
                                       <ReferenceImageList
                                         referenceChunks={refs.chunks}
                                         messageContent={msg.content || ''}
                                       />
                                       {Object.values(refs.doc_aggs || {})
                                         .length > 0 && (
-                                        <ReferenceDocumentList
-                                          list={Object.values(
-                                            refs.doc_aggs || {},
+                                        <div className="border-t border-gray-200 pt-2">
+                                          <button
+                                            className="flex items-center gap-1 text-xs text-gray-500 mb-1.5 font-medium hover:text-gray-700 transition-colors w-full"
+                                            onClick={() => {
+                                              setCollapsedSections((prev) => {
+                                                const next = new Set(prev);
+                                                if (next.has(msg.id)) {
+                                                  next.delete(msg.id);
+                                                } else {
+                                                  next.add(msg.id);
+                                                }
+                                                return next;
+                                              });
+                                            }}
+                                          >
+                                            <svg
+                                              className="w-3 h-3 transition-transform"
+                                              style={{
+                                                transform:
+                                                  !collapsedSections.has(msg.id)
+                                                    ? 'rotate(90deg)'
+                                                    : 'rotate(0deg)',
+                                              }}
+                                              viewBox="0 0 24 24"
+                                              fill="none"
+                                              stroke="currentColor"
+                                              strokeWidth="2"
+                                            >
+                                              <polyline points="9 18 15 12 9 6" />
+                                            </svg>
+                                            引用来源 (
+                                            {
+                                              Object.values(refs.doc_aggs || {})
+                                                .length
+                                            }
+                                            )
+                                          </button>
+                                          {!collapsedSections.has(msg.id) && (
+                                            <ul className="space-y-1">
+                                              {Object.values(
+                                                refs.doc_aggs || {},
+                                              ).map((doc) => {
+                                                const matchingChunk =
+                                                  Object.values(
+                                                    refs.chunks || {},
+                                                  ).find(
+                                                    (c) =>
+                                                      c.document_id ===
+                                                      doc.doc_id,
+                                                  );
+                                                return (
+                                                  <li
+                                                    key={doc.doc_id}
+                                                    className="flex items-center gap-1.5 text-sm text-gray-700 hover:text-blue-600 cursor-pointer transition-colors"
+                                                    onClick={() =>
+                                                      clickDocumentButton(
+                                                        doc.doc_id,
+                                                        matchingChunk ||
+                                                          ({
+                                                            id: doc.doc_id,
+                                                            document_id:
+                                                              doc.doc_id,
+                                                            document_name:
+                                                              doc.doc_name ||
+                                                              '',
+                                                            content: null,
+                                                            dataset_id: '',
+                                                            image_id: '',
+                                                            similarity: 0,
+                                                            vector_similarity: 0,
+                                                            term_similarity: 0,
+                                                            positions: [],
+                                                          } as IReferenceChunk),
+                                                      )
+                                                    }
+                                                  >
+                                                    <svg
+                                                      className="w-3.5 h-3.5 shrink-0 text-gray-400"
+                                                      viewBox="0 0 24 24"
+                                                      fill="none"
+                                                      stroke="currentColor"
+                                                      strokeWidth="2"
+                                                    >
+                                                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                                                      <polyline points="14 2 14 8 20 8" />
+                                                      <line
+                                                        x1="16"
+                                                        y1="13"
+                                                        x2="8"
+                                                        y2="13"
+                                                      />
+                                                      <line
+                                                        x1="16"
+                                                        y1="17"
+                                                        x2="8"
+                                                        y2="17"
+                                                      />
+                                                    </svg>
+                                                    <span className="truncate">
+                                                      {doc.doc_name}
+                                                    </span>
+                                                  </li>
+                                                );
+                                              })}
+                                            </ul>
                                           )}
-                                        />
+                                        </div>
                                       )}
-                                    </>
+                                    </div>
                                   )}
                                   {/* Downloads */}
                                   {!streaming &&
