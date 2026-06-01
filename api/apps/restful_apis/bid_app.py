@@ -567,28 +567,68 @@ def bid_project_parse_status(project_id):
 
     if status == "parsing" and record.get("kb_id"):
         try:
-            docs, _ = DocumentService.get_by_kb_id(
-                kb_id=record["kb_id"], page_number=1, items_per_page=1000,
-                orderby="create_time", desc=True,
-                keywords="", run_status=[], types=[], suffix=[]
-            )
-            if docs:
-                running_count = sum(1 for d in docs if d.get("run") == "1")
-                done_count = sum(1 for d in docs if d.get("run") == "3")
-                fail_count = sum(1 for d in docs if d.get("run") == "4")
-                total = len(docs)
+            # Use queued_doc_ids for project-specific filtering (avoid cross-project pollution)
+            queued_doc_ids_str = record.get("queued_doc_ids")
+            if queued_doc_ids_str:
+                try:
+                    doc_ids = json.loads(queued_doc_ids_str)
+                except (json.JSONDecodeError, TypeError):
+                    doc_ids = []
+            else:
+                doc_ids = []
+
+            if doc_ids:
+                done_count = 0
+                fail_count = 0
+                running_count = 0
+                for doc_id in doc_ids:
+                    e, doc_model = DocumentService.get_by_id(doc_id)
+                    if e and doc_model:
+                        r = doc_model.run
+                        if r == "3" or r == 3:
+                            done_count += 1
+                        elif r == "4" or r == 4:
+                            fail_count += 1
+                        else:
+                            running_count += 1
+                    else:
+                        fail_count += 1
+                total = len(doc_ids)
                 if running_count > 0:
-                    # 计算平均进度
-                    avg_progress = sum(float(d.get("progress", 0)) for d in docs) / max(total, 1)
-                    progress = 0.9 + 0.1 * avg_progress
+                    progress = 0.9 + 0.1 * (done_count + fail_count) / max(total, 1)
                     progress_msg = f"解析中 ({done_count}/{total} 已完成)"
                 elif fail_count > 0 and running_count == 0:
-                    status = "fail"
+                    progress = 0.9 + 0.1 * (done_count + fail_count) / max(total, 1)
                     progress_msg = f"部分文档解析失败 ({fail_count}/{total})"
+                    if done_count == 0:
+                        status = "fail"
                 elif done_count >= total and total > 0:
                     status = "done"
                     progress = 1
                     progress_msg = f"全部解析完成 ({total} 个文档)"
+            else:
+                # Fallback: no queued_doc_ids — query recent KB docs (backwards compatibility)
+                docs, _ = DocumentService.get_by_kb_id(
+                    kb_id=record["kb_id"], page_number=1, items_per_page=1000,
+                    orderby="create_time", desc=True,
+                    keywords="", run_status=[], types=[], suffix=[]
+                )
+                if docs:
+                    running_count = sum(1 for d in docs if d.get("run") == "1")
+                    done_count = sum(1 for d in docs if d.get("run") == "3")
+                    fail_count = sum(1 for d in docs if d.get("run") == "4")
+                    total = len(docs)
+                    if running_count > 0:
+                        avg_progress = sum(float(d.get("progress", 0)) for d in docs) / max(total, 1)
+                        progress = 0.9 + 0.1 * avg_progress
+                        progress_msg = f"解析中 ({done_count}/{total} 已完成)"
+                    elif fail_count > 0 and running_count == 0:
+                        status = "fail"
+                        progress_msg = f"部分文档解析失败 ({fail_count}/{total})"
+                    elif done_count >= total and total > 0:
+                        status = "done"
+                        progress = 1
+                        progress_msg = f"全部解析完成 ({total} 个文档)"
         except Exception as e:
             logging.warning("Failed to query KB doc status: %s", e)
 

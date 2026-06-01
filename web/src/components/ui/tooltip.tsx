@@ -35,14 +35,17 @@ export { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger };
 export const FormTooltip = ({ tooltip }: { tooltip: React.ReactNode }) => {
   return (
     <Tooltip>
-      <TooltipTrigger
-        tabIndex={-1}
-        className="align-text-top"
-        onClick={(e) => {
-          e.preventDefault(); // Prevent clicking the tooltip from triggering form save
-        }}
-      >
-        <CircleQuestionMark className="size-[.85em] ml-[.25em]" />
+      <TooltipTrigger asChild>
+        <span
+          role="button"
+          tabIndex={-1}
+          className="align-text-top inline-flex"
+          onClick={(e) => {
+            e.preventDefault(); // Prevent clicking the tooltip from triggering form save
+          }}
+        >
+          <CircleQuestionMark className="size-[.85em] ml-[.25em]" />
+        </span>
       </TooltipTrigger>
       <TooltipContent>{tooltip}</TooltipContent>
     </Tooltip>

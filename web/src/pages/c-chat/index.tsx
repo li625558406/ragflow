@@ -4,12 +4,26 @@ import {
   ConfirmDeleteDialog,
   ConfirmDeleteDialogNode,
 } from '@/components/confirm-delete-dialog';
+import {
+  FileUpload,
+  FileUploadDropzone,
+  FileUploadItem,
+  FileUploadItemDelete,
+  FileUploadItemMetadata,
+  FileUploadItemPreview,
+  FileUploadItemProgress,
+  FileUploadList,
+  FileUploadTrigger,
+  type FileUploadProps,
+} from '@/components/file-upload';
 import MarkdownContent from '@/components/next-markdown-content';
+import { ReferenceDocumentList } from '@/components/next-message-item/reference-document-list';
 import { ReferenceImageList } from '@/components/next-message-item/reference-image-list';
 import PdfSheet from '@/components/pdf-drawer';
 import { useClickDrawer } from '@/components/pdf-drawer/hooks';
 import { RAGFlowAvatar } from '@/components/ragflow-avatar';
 import ToolsPanel from '@/components/tools';
+import { Textarea } from '@/components/ui/textarea';
 import { BidList } from '@/pages/home/bid-list';
 
 import { RealtimeAudioButton } from '@/components/realtime-audio-button';
@@ -33,6 +47,7 @@ import {
 } from '@/pages/agent/chat/use-send-agent-message';
 import { AgentChatContext } from '@/pages/agent/context';
 import api from '@/utils/api';
+import { Upload, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { v4 as uuid } from 'uuid';
@@ -203,7 +218,7 @@ export default function CChat() {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [isLoadingSession, setIsLoadingSession] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
-  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(
     new Set(),
   );
   const pendingSendRef = useRef(false);
@@ -224,8 +239,7 @@ export default function CChat() {
       extension: string;
     }>
   >([]);
-  const [isUploadingFile, setIsUploadingFile] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [files, setFiles] = useState<File[]>([]);
 
   // ── B-side chat hooks ──
   const { handleInputChange, value, setValue } = useHandleMessageInputChange();
@@ -751,46 +765,44 @@ export default function CChat() {
   );
 
   // ── File upload (C-side) ──
-  const handleFileUpload = useCallback(
-    async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const files = e.target.files;
-      if (!files || files.length === 0) return;
+  const handleFileUpload: NonNullable<FileUploadProps['onUpload']> =
+    useCallback(
+      async (uploadFiles, { onProgress, onSuccess, onError }) => {
+        for (const file of uploadFiles) {
+          try {
+            onProgress(file, 0);
+            const formData = new FormData();
+            formData.append('file', file);
 
-      setIsUploadingFile(true);
-      try {
-        for (const file of Array.from(files)) {
-          const formData = new FormData();
-          formData.append('file', file);
+            const resp = await fetch('/api/v1/documents/upload', {
+              method: 'POST',
+              headers: { Authorization: token },
+              body: formData,
+            });
 
-          const resp = await fetch('/api/v1/documents/upload', {
-            method: 'POST',
-            headers: { Authorization: token },
-            body: formData,
-          });
-
-          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-          const result = await resp.json();
-          if (result.code === 0 && result.data) {
-            const fileData = Array.isArray(result.data)
-              ? result.data
-              : [result.data];
-            setUploadedFiles((prev) => [...prev, ...fileData]);
-          } else {
-            showToast('文件上传失败: ' + (result.message || '未知错误'));
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const result = await resp.json();
+            if (result.code === 0 && result.data) {
+              const fileData = Array.isArray(result.data)
+                ? result.data
+                : [result.data];
+              setUploadedFiles((prev) => [...prev, ...fileData]);
+              onProgress(file, 100);
+              onSuccess(file);
+            } else {
+              throw new Error(result.message || 'Unknown error');
+            }
+          } catch (e: any) {
+            onError(file, e);
+            showToast('文件上传失败: ' + e.message);
           }
         }
-      } catch (e: any) {
-        showToast('文件上传失败: ' + e.message);
-      } finally {
-        setIsUploadingFile(false);
-        if (fileInputRef.current) fileInputRef.current.value = '';
-      }
-    },
-    [token],
-  );
+      },
+      [token],
+    );
 
-  const removeUploadedFile = useCallback((fileId: string) => {
-    setUploadedFiles((prev) => prev.filter((f) => f.id !== fileId));
+  const removeUploadedFile = useCallback((file: File) => {
+    setUploadedFiles((prev) => prev.filter((f) => f.name !== file.name));
   }, []);
 
   // ── Send message (B-side hooks based) ──
@@ -873,6 +885,7 @@ export default function CChat() {
 
     setValue('');
     setUploadedFiles([]);
+    setFiles([]);
 
     sendMessage(query, sessionId, msgId);
 
@@ -1391,33 +1404,98 @@ export default function CChat() {
                       </div>
                       {/* File chips + Input */}
                       <div>
-                        {uploadedFiles.length > 0 && (
-                          <div className="flex flex-wrap gap-1.5 mb-2">
-                            {uploadedFiles.map((f) => (
-                              <span
-                                key={f.id}
-                                className="inline-flex items-center gap-1 px-2 py-0.5 bg-[#F5F5F5] border border-[#E5E5E5] rounded-md text-[11px] text-[#000000]"
+                        <FileUpload
+                          value={files}
+                          onValueChange={setFiles}
+                          onUpload={handleFileUpload}
+                          className="w-full"
+                          disabled={sendLoading}
+                          multiple
+                        >
+                          <FileUploadDropzone
+                            tabIndex={-1}
+                            onClick={(event) => event.preventDefault()}
+                            className="absolute top-0 left-0 z-0 flex size-full items-center justify-center rounded-none border-none bg-background/50 p-0 opacity-0 backdrop-blur transition-opacity duration-200 ease-out data-[dragging]:z-10 data-[dragging]:opacity-100"
+                          >
+                            <div className="flex flex-col items-center gap-1 text-center">
+                              <div className="flex items-center justify-center rounded-full border p-2.5">
+                                <Upload className="size-6 text-muted-foreground" />
+                              </div>
+                              <p className="font-medium text-sm">
+                                拖拽文件到此处上传
+                              </p>
+                              <p className="text-muted-foreground text-xs">
+                                最多上传5个文件，每个不超过5MB
+                              </p>
+                            </div>
+                          </FileUploadDropzone>
+
+                          <div className="cs-input-ring relative flex flex-col gap-2 bg-[#FFFFFF] border border-[#D4D4D4] rounded-2xl px-4 py-3">
+                            {files.length > 0 && (
+                              <FileUploadList
+                                orientation="horizontal"
+                                className="overflow-x-auto px-0 py-1"
                               >
-                                <svg
-                                  className="w-3 h-3 text-[#525252]"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  viewBox="0 0 24 24"
-                                >
-                                  <path
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                    strokeWidth={2}
-                                    d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                                  />
-                                </svg>
-                                {f.name}
+                                {files.map((file, index) => (
+                                  <FileUploadItem
+                                    key={index}
+                                    value={file}
+                                    className="max-w-52 p-1.5"
+                                  >
+                                    <FileUploadItemPreview className="size-8 [&>svg]:size-5">
+                                      <FileUploadItemProgress variant="fill" />
+                                    </FileUploadItemPreview>
+                                    <FileUploadItemMetadata size="sm" />
+                                    <FileUploadItemDelete asChild>
+                                      <button
+                                        className="-top-1 -right-1 absolute size-4 shrink-0 cursor-pointer rounded-full bg-gray-200 hover:bg-gray-300 flex items-center justify-center"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          removeUploadedFile(file);
+                                        }}
+                                      >
+                                        <X className="size-2.5" />
+                                      </button>
+                                    </FileUploadItemDelete>
+                                  </FileUploadItem>
+                                ))}
+                              </FileUploadList>
+                            )}
+                            <Textarea
+                              ref={textareaRef}
+                              value={value}
+                              onChange={handleInputChange}
+                              onKeyDown={(
+                                e: React.KeyboardEvent<HTMLTextAreaElement>,
+                              ) => {
+                                if (e.key === 'Enter' && !e.shiftKey) {
+                                  e.preventDefault();
+                                  handlePressEnter();
+                                }
+                              }}
+                              placeholder={typewriterText}
+                              className="min-h-[72px] w-full p-0 overflow-auto !outline-none !border-transparent !bg-transparent !shadow-none !ring-transparent !ring-offset-transparent cs-typewriter-cursor"
+                              disabled={sendLoading}
+                              autoSize={{ minRows: 3, maxRows: 10 }}
+                              autoFocus
+                            />
+                            <div className="flex items-center justify-end gap-2">
+                              <div className="shrink-0 w-9 h-9 flex items-center justify-center">
+                                <RealtimeAudioButton
+                                  onTranscript={(val) =>
+                                    setAudioInputValue(val)
+                                  }
+                                  testId="c-chat-audio-toggle"
+                                />
+                              </div>
+                              <FileUploadTrigger asChild>
                                 <button
-                                  onClick={() => removeUploadedFile(f.id)}
-                                  className="ml-0.5 hover:text-red-500"
+                                  disabled={sendLoading}
+                                  className="shrink-0 w-9 h-9 flex items-center justify-center text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                                  title="上传文件"
                                 >
                                   <svg
-                                    className="w-2.5 h-2.5"
+                                    className="w-4 h-4"
                                     fill="none"
                                     stroke="currentColor"
                                     viewBox="0 0 24 24"
@@ -1426,72 +1504,16 @@ export default function CChat() {
                                       strokeLinecap="round"
                                       strokeLinejoin="round"
                                       strokeWidth={2}
-                                      d="M6 18L18 6M6 6l12 12"
+                                      d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
                                     />
                                   </svg>
                                 </button>
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                        <div className="cs-input-ring flex flex-col gap-2 bg-[#FFFFFF] border border-[#D4D4D4] rounded-2xl px-4 py-3">
-                          <textarea
-                            ref={textareaRef}
-                            value={value}
-                            onChange={(e) => {
-                              const el = e.target;
-                              el.style.height = 'auto';
-                              el.style.height =
-                                Math.min(el.scrollHeight, 200) + 'px';
-                              handleInputChange(e);
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' && !e.shiftKey) {
-                                e.preventDefault();
-                                handlePressEnter();
-                              }
-                            }}
-                            placeholder={typewriterText}
-                            rows={3}
-                            className="w-full bg-transparent outline-none resize-none text-sm leading-relaxed placeholder:text-[#A3A3A3] text-[#000000] cs-typewriter-cursor min-h-[72px]"
-                            disabled={sendLoading}
-                            autoFocus
-                          />
-                          <div className="flex items-center justify-end gap-2">
-                            <div className="shrink-0 w-9 h-9 flex items-center justify-center">
-                              <RealtimeAudioButton
-                                onTranscript={(val) => setAudioInputValue(val)}
-                                testId="c-chat-audio-toggle"
-                              />
-                            </div>
-                            <button
-                              onClick={() => fileInputRef.current?.click()}
-                              disabled={sendLoading || isUploadingFile}
-                              className="shrink-0 w-9 h-9 flex items-center justify-center text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-                              title="上传文件"
-                            >
-                              {isUploadingFile ? (
-                                <svg
-                                  className="w-4 h-4 animate-spin"
-                                  viewBox="0 0 24 24"
-                                  fill="none"
-                                >
-                                  <circle
-                                    cx="12"
-                                    cy="12"
-                                    r="10"
-                                    stroke="currentColor"
-                                    strokeWidth="3"
-                                    opacity="0.25"
-                                  />
-                                  <path
-                                    d="M12 2a10 10 0 019.95 9"
-                                    stroke="currentColor"
-                                    strokeWidth="3"
-                                    strokeLinecap="round"
-                                  />
-                                </svg>
-                              ) : (
+                              </FileUploadTrigger>
+                              <button
+                                onClick={handlePressEnter}
+                                disabled={!value.trim()}
+                                className="shrink-0 w-9 h-9 flex items-center justify-center bg-[#000000] hover:bg-[#1a1a1a] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
+                              >
                                 <svg
                                   className="w-4 h-4"
                                   fill="none"
@@ -1502,32 +1524,13 @@ export default function CChat() {
                                     strokeLinecap="round"
                                     strokeLinejoin="round"
                                     strokeWidth={2}
-                                    d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
+                                    d="M5 12h14M12 5l7 7-7 7"
                                   />
                                 </svg>
-                              )}
-                            </button>
-                            <button
-                              onClick={handlePressEnter}
-                              disabled={!value.trim()}
-                              className="shrink-0 w-9 h-9 flex items-center justify-center bg-[#000000] hover:bg-[#1a1a1a] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
-                            >
-                              <svg
-                                className="w-4 h-4"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  strokeWidth={2}
-                                  d="M5 12h14M12 5l7 7-7 7"
-                                />
-                              </svg>
-                            </button>
+                              </button>
+                            </div>
                           </div>
-                        </div>
+                        </FileUpload>
                       </div>
                     </div>
                   </div>
@@ -1787,7 +1790,7 @@ export default function CChat() {
                                           <button
                                             className="flex items-center gap-1 text-xs text-gray-500 mb-1.5 font-medium hover:text-gray-700 transition-colors w-full"
                                             onClick={() => {
-                                              setCollapsedSections((prev) => {
+                                              setExpandedSections((prev) => {
                                                 const next = new Set(prev);
                                                 if (next.has(msg.id)) {
                                                   next.delete(msg.id);
@@ -1801,10 +1804,11 @@ export default function CChat() {
                                             <svg
                                               className="w-3 h-3 transition-transform"
                                               style={{
-                                                transform:
-                                                  !collapsedSections.has(msg.id)
-                                                    ? 'rotate(90deg)'
-                                                    : 'rotate(0deg)',
+                                                transform: expandedSections.has(
+                                                  msg.id,
+                                                )
+                                                  ? 'rotate(90deg)'
+                                                  : 'rotate(0deg)',
                                               }}
                                               viewBox="0 0 24 24"
                                               fill="none"
@@ -1820,74 +1824,12 @@ export default function CChat() {
                                             }
                                             )
                                           </button>
-                                          {!collapsedSections.has(msg.id) && (
-                                            <ul className="space-y-1">
-                                              {Object.values(
+                                          {expandedSections.has(msg.id) && (
+                                            <ReferenceDocumentList
+                                              list={Object.values(
                                                 refs.doc_aggs || {},
-                                              ).map((doc) => {
-                                                const matchingChunk =
-                                                  Object.values(
-                                                    refs.chunks || {},
-                                                  ).find(
-                                                    (c) =>
-                                                      c.document_id ===
-                                                      doc.doc_id,
-                                                  );
-                                                return (
-                                                  <li
-                                                    key={doc.doc_id}
-                                                    className="flex items-center gap-1.5 text-sm text-gray-700 hover:text-blue-600 cursor-pointer transition-colors"
-                                                    onClick={() =>
-                                                      clickDocumentButton(
-                                                        doc.doc_id,
-                                                        matchingChunk ||
-                                                          ({
-                                                            id: doc.doc_id,
-                                                            document_id:
-                                                              doc.doc_id,
-                                                            document_name:
-                                                              doc.doc_name ||
-                                                              '',
-                                                            content: null,
-                                                            dataset_id: '',
-                                                            image_id: '',
-                                                            similarity: 0,
-                                                            vector_similarity: 0,
-                                                            term_similarity: 0,
-                                                            positions: [],
-                                                          } as IReferenceChunk),
-                                                      )
-                                                    }
-                                                  >
-                                                    <svg
-                                                      className="w-3.5 h-3.5 shrink-0 text-gray-400"
-                                                      viewBox="0 0 24 24"
-                                                      fill="none"
-                                                      stroke="currentColor"
-                                                      strokeWidth="2"
-                                                    >
-                                                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                                                      <polyline points="14 2 14 8 20 8" />
-                                                      <line
-                                                        x1="16"
-                                                        y1="13"
-                                                        x2="8"
-                                                        y2="13"
-                                                      />
-                                                      <line
-                                                        x1="16"
-                                                        y1="17"
-                                                        x2="8"
-                                                        y2="17"
-                                                      />
-                                                    </svg>
-                                                    <span className="truncate">
-                                                      {doc.doc_name}
-                                                    </span>
-                                                  </li>
-                                                );
-                                              })}
-                                            </ul>
+                                              )}
+                                            />
                                           )}
                                         </div>
                                       )}
@@ -2053,114 +1995,121 @@ export default function CChat() {
                     {/* Input Area (bottom) */}
                     <div className="bg-white border-t border-[#D4D4D4] p-3 lg:p-4 shrink-0">
                       <div className="max-w-3xl mx-auto">
-                        {uploadedFiles.length > 0 && (
-                          <div className="flex flex-wrap gap-1.5 mb-2">
-                            {uploadedFiles.map((f) => (
-                              <span
-                                key={f.id}
-                                className="inline-flex items-center gap-1 px-2 py-0.5 bg-[#F5F5F5] border border-[#E5E5E5] rounded-md text-[11px] text-[#000000]"
+                        <FileUpload
+                          value={files}
+                          onValueChange={setFiles}
+                          onUpload={handleFileUpload}
+                          className="w-full"
+                          disabled={sendLoading}
+                          multiple
+                        >
+                          <FileUploadDropzone
+                            tabIndex={-1}
+                            onClick={(event) => event.preventDefault()}
+                            className="absolute top-0 left-0 z-0 flex size-full items-center justify-center rounded-none border-none bg-background/50 p-0 opacity-0 backdrop-blur transition-opacity duration-200 ease-out data-[dragging]:z-10 data-[dragging]:opacity-100"
+                          >
+                            <div className="flex flex-col items-center gap-1 text-center">
+                              <div className="flex items-center justify-center rounded-full border p-2.5">
+                                <Upload className="size-6 text-muted-foreground" />
+                              </div>
+                              <p className="font-medium text-sm">
+                                拖拽文件到此处上传
+                              </p>
+                              <p className="text-muted-foreground text-xs">
+                                最多上传5个文件，每个不超过5MB
+                              </p>
+                            </div>
+                          </FileUploadDropzone>
+
+                          <div className="cs-input-ring relative flex flex-col gap-2 bg-[#FFFFFF] border border-[#D4D4D4] rounded-2xl px-3 py-2">
+                            {files.length > 0 && (
+                              <FileUploadList
+                                orientation="horizontal"
+                                className="overflow-x-auto px-0 py-1"
                               >
-                                <svg
-                                  className="w-3 h-3 text-[#525252]"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  viewBox="0 0 24 24"
-                                >
-                                  <path
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                    strokeWidth={2}
-                                    d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                                  />
-                                </svg>
-                                {f.name}
-                                <button
-                                  onClick={() => removeUploadedFile(f.id)}
-                                  className="ml-0.5 hover:text-red-500"
-                                >
-                                  <svg
-                                    className="w-2.5 h-2.5"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    viewBox="0 0 24 24"
+                                {files.map((file, index) => (
+                                  <FileUploadItem
+                                    key={index}
+                                    value={file}
+                                    className="max-w-52 p-1.5"
                                   >
-                                    <path
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth={2}
-                                      d="M6 18L18 6M6 6l12 12"
-                                    />
-                                  </svg>
-                                </button>
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                        <div className="cs-input-ring flex flex-col gap-2 bg-[#FFFFFF] border border-[#D4D4D4] rounded-2xl px-3 py-2">
-                          <textarea
-                            ref={textareaRef}
-                            value={value}
-                            onChange={(e) => {
-                              const el = e.target;
-                              el.style.height = 'auto';
-                              el.style.height =
-                                Math.min(el.scrollHeight, 200) + 'px';
-                              handleInputChange(e);
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' && !e.shiftKey) {
-                                e.preventDefault();
-                                handlePressEnter();
+                                    <FileUploadItemPreview className="size-8 [&>svg]:size-5">
+                                      <FileUploadItemProgress variant="fill" />
+                                    </FileUploadItemPreview>
+                                    <FileUploadItemMetadata size="sm" />
+                                    <FileUploadItemDelete asChild>
+                                      <button
+                                        className="-top-1 -right-1 absolute size-4 shrink-0 cursor-pointer rounded-full bg-gray-200 hover:bg-gray-300 flex items-center justify-center"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          removeUploadedFile(file);
+                                        }}
+                                      >
+                                        <X className="size-2.5" />
+                                      </button>
+                                    </FileUploadItemDelete>
+                                  </FileUploadItem>
+                                ))}
+                              </FileUploadList>
+                            )}
+                            <Textarea
+                              ref={textareaRef}
+                              value={value}
+                              onChange={handleInputChange}
+                              onKeyDown={(
+                                e: React.KeyboardEvent<HTMLTextAreaElement>,
+                              ) => {
+                                if (e.key === 'Enter' && !e.shiftKey) {
+                                  e.preventDefault();
+                                  handlePressEnter();
+                                }
+                              }}
+                              placeholder={
+                                hasMessages
+                                  ? '继续输入您的问题...'
+                                  : typewriterText
                               }
-                            }}
-                            placeholder={
-                              hasMessages
-                                ? '继续输入您的问题...'
-                                : typewriterText
-                            }
-                            rows={3}
-                            className={`w-full bg-transparent outline-none resize-none text-sm leading-relaxed placeholder:text-[#A3A3A3] text-[#000000] min-h-[72px]${hasMessages ? '' : ' cs-typewriter-cursor'}`}
-                            disabled={sendLoading}
-                          />
-                          <div className="flex items-center justify-end gap-2">
-                            {!sendLoading ? (
-                              <>
-                                <div className="shrink-0 w-9 h-9 flex items-center justify-center">
-                                  <RealtimeAudioButton
-                                    onTranscript={(val) =>
-                                      setAudioInputValue(val)
-                                    }
-                                    testId="c-chat-audio-toggle"
-                                  />
-                                </div>
-                                <button
-                                  onClick={() => fileInputRef.current?.click()}
-                                  disabled={isUploadingFile}
-                                  className="shrink-0 w-9 h-9 flex items-center justify-center text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-                                  title="上传文件"
-                                >
-                                  {isUploadingFile ? (
-                                    <svg
-                                      className="w-4 h-4 animate-spin"
-                                      viewBox="0 0 24 24"
-                                      fill="none"
+                              className={`min-h-[72px] w-full p-0 overflow-auto !outline-none !border-transparent !bg-transparent !shadow-none !ring-transparent !ring-offset-transparent${hasMessages ? '' : ' cs-typewriter-cursor'}`}
+                              disabled={sendLoading}
+                              autoSize={{ minRows: 3, maxRows: 10 }}
+                            />
+                            <div className="flex items-center justify-end gap-2">
+                              {!sendLoading ? (
+                                <>
+                                  <div className="shrink-0 w-9 h-9 flex items-center justify-center">
+                                    <RealtimeAudioButton
+                                      onTranscript={(val) =>
+                                        setAudioInputValue(val)
+                                      }
+                                      testId="c-chat-audio-toggle"
+                                    />
+                                  </div>
+                                  <FileUploadTrigger asChild>
+                                    <button
+                                      disabled={sendLoading}
+                                      className="shrink-0 w-9 h-9 flex items-center justify-center text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                                      title="上传文件"
                                     >
-                                      <circle
-                                        cx="12"
-                                        cy="12"
-                                        r="10"
+                                      <svg
+                                        className="w-4 h-4"
+                                        fill="none"
                                         stroke="currentColor"
-                                        strokeWidth="3"
-                                        opacity="0.25"
-                                      />
-                                      <path
-                                        d="M12 2a10 10 0 019.95 9"
-                                        stroke="currentColor"
-                                        strokeWidth="3"
-                                        strokeLinecap="round"
-                                      />
-                                    </svg>
-                                  ) : (
+                                        viewBox="0 0 24 24"
+                                      >
+                                        <path
+                                          strokeLinecap="round"
+                                          strokeLinejoin="round"
+                                          strokeWidth={2}
+                                          d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
+                                        />
+                                      </svg>
+                                    </button>
+                                  </FileUploadTrigger>
+                                  <button
+                                    onClick={handlePressEnter}
+                                    disabled={!value.trim()}
+                                    className="shrink-0 w-9 h-9 flex items-center justify-center bg-[#000000] hover:bg-[#1a1a1a] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
+                                  >
                                     <svg
                                       className="w-4 h-4"
                                       fill="none"
@@ -2171,53 +2120,34 @@ export default function CChat() {
                                         strokeLinecap="round"
                                         strokeLinejoin="round"
                                         strokeWidth={2}
-                                        d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
+                                        d="M5 12h14M12 5l7 7-7 7"
                                       />
                                     </svg>
-                                  )}
-                                </button>
+                                  </button>
+                                </>
+                              ) : (
                                 <button
-                                  onClick={handlePressEnter}
-                                  disabled={!value.trim()}
-                                  className="shrink-0 w-9 h-9 flex items-center justify-center bg-[#000000] hover:bg-[#1a1a1a] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
+                                  onClick={stopOutputMessage}
+                                  className="shrink-0 w-9 h-9 flex items-center justify-center bg-red-400 text-white rounded-xl hover:bg-red-500 transition active:scale-95"
                                 >
                                   <svg
-                                    className="w-4 h-4"
-                                    fill="none"
-                                    stroke="currentColor"
+                                    className="w-3.5 h-3.5"
+                                    fill="currentColor"
                                     viewBox="0 0 24 24"
                                   >
-                                    <path
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth={2}
-                                      d="M5 12h14M12 5l7 7-7 7"
+                                    <rect
+                                      x="6"
+                                      y="6"
+                                      width="12"
+                                      height="12"
+                                      rx="1"
                                     />
                                   </svg>
                                 </button>
-                              </>
-                            ) : (
-                              <button
-                                onClick={stopOutputMessage}
-                                className="shrink-0 w-9 h-9 flex items-center justify-center bg-red-400 text-white rounded-xl hover:bg-red-500 transition active:scale-95"
-                              >
-                                <svg
-                                  className="w-3.5 h-3.5"
-                                  fill="currentColor"
-                                  viewBox="0 0 24 24"
-                                >
-                                  <rect
-                                    x="6"
-                                    y="6"
-                                    width="12"
-                                    height="12"
-                                    rx="1"
-                                  />
-                                </svg>
-                              </button>
-                            )}
+                              )}
+                            </div>
                           </div>
-                        </div>
+                        </FileUpload>
                       </div>
                     </div>
                   </>
@@ -2265,15 +2195,6 @@ export default function CChat() {
             chunk={drawerSelectedChunk}
           />
         )}
-
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          className="hidden"
-          onChange={handleFileUpload}
-          accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.csv,.json,.xml,.png,.jpg,.jpeg,.gif,.webp"
-        />
       </div>
     </AgentChatContext.Provider>
   );

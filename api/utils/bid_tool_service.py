@@ -65,6 +65,39 @@ def _strip_html(html: str) -> str:
     return text.strip()
 
 
+def _extract_file_urls_from_html(html: str) -> list:
+    """Extract file download URLs from <a> tags in HTML content.
+
+    Returns a list of {"file_name": str, "file_url": str} dicts.
+    """
+    import re
+    file_ext_pattern = r'\.(pdf|doc|docx|xls|xlsx|zip|rar|7z|tar|gz|ppt|pptx|txt|cad|dwg|jpg|jpeg|png|gif|bmp)(\?|$)'
+    results = []
+    seen_urls = set()
+    for match in re.finditer(
+        r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>([^<]*)</a>', html, re.IGNORECASE
+    ):
+        url = match.group(1).strip()
+        text = match.group(2).strip() or url.rsplit("/", 1)[-1]
+        url_lower = url.lower()
+        if re.search(file_ext_pattern, url_lower) or re.search(file_ext_pattern, text.lower()):
+            if url not in seen_urls:
+                seen_urls.add(url)
+                results.append({"file_name": text, "file_url": url})
+    return results
+
+
+def _has_meaningful_text_content(html: str) -> bool:
+    """Check if HTML has meaningful text beyond just file-download links."""
+    import re
+    text_without_links = re.sub(
+        r'<a[^>]*>.*?</a>', ' ', html, flags=re.DOTALL | re.IGNORECASE
+    )
+    stripped = _strip_html(text_without_links)
+    meaningful = re.sub(r'[\s\d\W]+', '', stripped)
+    return len(meaningful) >= 10
+
+
 def _json_display(raw: str | None) -> str:
     if not raw:
         return ""
@@ -83,9 +116,28 @@ def _json_display(raw: str | None) -> str:
 def _build_combined_text(detail: dict, structure: dict) -> str:
     parts = []
     if detail and detail.get("content_html"):
-        text = _strip_html(detail["content_html"])
-        if text:
-            parts.append(text)
+        html = detail["content_html"]
+        if _has_meaningful_text_content(html):
+            text = _strip_html(html)
+            if text:
+                parts.append(text)
+            # Also note any embedded file links within meaningful content
+            file_links = _extract_file_urls_from_html(html)
+            if file_links:
+                parts.append("\n\n---------- 附件列表 ----------\n")
+                for f in file_links:
+                    parts.append(f"  - {f['file_name']}: {f['file_url']}")
+        else:
+            file_links = _extract_file_urls_from_html(html)
+            if file_links:
+                parts.append("本项目主要内容为附件文件：")
+                for f in file_links:
+                    parts.append(f"  - {f['file_name']}: {f['file_url']}")
+            else:
+                # Truly empty content — just use whatever strips out
+                text = _strip_html(html)
+                if text:
+                    parts.append(text)
     if structure:
         parts.append('\n\n========== 结构化数据 ==========\n')
         fields = [
@@ -369,9 +421,10 @@ def get_bid_detail(project_id: int, publish_time: str) -> dict:
             client = BidApiClient()
             resp = client.get_detail(project_id, publish_time)
             data = resp.get("data", {})
+            content_html = data.get("content", "")
             detail_data = {
                 "id": project_id,
-                "content_html": data.get("content", ""),
+                "content_html": content_html,
                 "news_type_id": data.get("newsTypeID"),
                 "project_class_name": data.get("projectClassName", ""),
                 "purchase_type_id": data.get("purchaseType", ""),
@@ -388,6 +441,56 @@ def get_bid_detail(project_id: int, publish_time: str) -> dict:
             BidProjectDetailService.upsert_detail(project_id, detail_data)
             detail_obj = BidProjectDetailService.get_or_none(project_id=project_id)
             result["cached"] = False
+
+            # ── Extract files from detail response ──
+            # Source A: data.projectFiles (file list embedded in detail response)
+            project_files = data.get("projectFiles") or []
+            for pf in project_files:
+                if not isinstance(pf, dict):
+                    continue
+                file_url = pf.get("url") or pf.get("fileUrl") or ""
+                if not file_url:
+                    continue
+                try:
+                    fid = pf.get("projectFileID") or pf.get("id")
+                    if not fid:
+                        import hashlib
+                        fid = int(hashlib.md5(file_url.encode()).hexdigest()[:15], 16)
+                    BidProjectFileService.upsert_file({
+                        "project_file_id": fid,
+                        "project_id": project_id,
+                        "file_name": pf.get("name") or pf.get("fileName") or file_url.rsplit("/", 1)[-1],
+                        "file_url": file_url,
+                        "file_suffix": pf.get("suffix") or pf.get("fileSuffix") or file_url.rsplit(".", 1)[-1] if "." in file_url else "",
+                        "file_size": pf.get("size") or pf.get("fileSize"),
+                        "state": pf.get("state", "0"),
+                        "publish_time": str(pf.get("publishTime") or publish_time),
+                        "create_time": str(pf.get("createTime") or ""),
+                        "fetched_at": datetime.now(),
+                    })
+                except Exception as e:
+                    logging.warning("Tool service: cache projectFile failed: %s", e)
+
+            # Source B: file links embedded in content_html <a> tags
+            html_file_links = _extract_file_urls_from_html(content_html)
+            for hf in html_file_links:
+                try:
+                    import hashlib
+                    fid = int(hashlib.md5(hf["file_url"].encode()).hexdigest()[:15], 16)
+                    BidProjectFileService.upsert_file({
+                        "project_file_id": fid,
+                        "project_id": project_id,
+                        "file_name": hf["file_name"],
+                        "file_url": hf["file_url"],
+                        "file_suffix": hf["file_url"].rsplit(".", 1)[-1] if "." in hf["file_url"] else "",
+                        "file_size": None,
+                        "state": "0",
+                        "publish_time": publish_time,
+                        "create_time": "",
+                        "fetched_at": datetime.now(),
+                    })
+                except Exception as e:
+                    logging.warning("Tool service: cache html file link failed: %s", e)
         except Exception as e:
             logging.warning("Tool service: fetch detail failed for %d: %s", project_id, e)
 

@@ -1,10 +1,4 @@
 .markdownContentWrapper {
-  // Lazy-render off-screen portions of very long documents.
-  // The browser skips layout/paint for content outside the viewport,
-  // dramatically reducing time-to-interactive for bid documents (50k+ words).
-  content-visibility: auto;
-  contain-intrinsic-size: auto 500px;
-
   :global(section.think) {
     padding-inline-start: 10px;
     color: #8b8b8b;
