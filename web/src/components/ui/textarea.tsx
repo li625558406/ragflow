@@ -92,7 +92,7 @@ const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
       <textarea
         className={cn(
           'flex min-h-[80px] w-full bg-bg-input rounded-md border border-border-button px-3 py-2 text-base ring-offset-background placeholder:text-text-disabled focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-primary focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 md:text-sm',
-          resizable ? 'overflow-auto' : 'overflow-hidden',
+          'overflow-y-auto',
           className,
         )}
         rows={autoSize?.minRows ?? props.rows ?? undefined}

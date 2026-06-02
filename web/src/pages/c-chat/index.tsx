@@ -32,6 +32,7 @@ import {
   useHandleMessageInputChange,
   useSelectDerivedMessages,
 } from '@/hooks/logic-hooks';
+import { useCancelConversation } from '@/hooks/use-agent-request';
 import { useSendMessageBySSE } from '@/hooks/use-send-message';
 import type {
   Docagg,
@@ -237,6 +238,14 @@ export default function CChat() {
     setDone,
     resetAnswerList,
   } = useSendMessageBySSE(api.agentChatCompletion);
+  const { cancelConversation } = useCancelConversation();
+  const taskId = answerList[0]?.task_id;
+  const stopConversation = useCallback(() => {
+    stopOutputMessage();
+    if (taskId) {
+      cancelConversation(taskId);
+    }
+  }, [stopOutputMessage, cancelConversation, taskId]);
   const { findReferenceByMessageId } = useFindMessageReference(answerList);
   const {
     clickDocumentButton,
@@ -593,10 +602,14 @@ export default function CChat() {
         });
 
         // Handle top-level reference (raw to_dict() format)
+        // reference can be: array [{chunks, doc_aggs}, ...], dict with chunks key,
+        // or dict with numeric keys {0: {...}, 1: {...}}
         const rawRef = data.reference;
-        if (rawRef && typeof rawRef === 'object' && !Array.isArray(rawRef)) {
+        if (rawRef && typeof rawRef === 'object') {
           let refList: any[];
-          if ('chunks' in rawRef) {
+          if (Array.isArray(rawRef)) {
+            refList = rawRef;
+          } else if ('chunks' in rawRef) {
             refList = [rawRef];
           } else {
             refList = Object.entries(rawRef)
@@ -2104,7 +2117,7 @@ export default function CChat() {
                                 </>
                               ) : (
                                 <button
-                                  onClick={stopOutputMessage}
+                                  onClick={stopConversation}
                                   className="shrink-0 w-9 h-9 flex items-center justify-center bg-red-400 text-white rounded-xl hover:bg-red-500 transition active:scale-95"
                                 >
                                   <svg
