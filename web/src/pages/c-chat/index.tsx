@@ -65,20 +65,6 @@ interface Session {
   update_time: number;
 }
 
-function extractThinking(content: string): {
-  thinking: string;
-  cleanContent: string;
-} {
-  const match = content.match(/<think>([\s\S]*?)<\/think>/);
-  if (match) {
-    return {
-      thinking: match[1].trim(),
-      cleanContent: content.replace(/<think>[\s\S]*?<\/think>/g, '').trim(),
-    };
-  }
-  return { thinking: '', cleanContent: content };
-}
-
 async function copyToClipboard(text: string): Promise<boolean> {
   try {
     if (
@@ -692,6 +678,7 @@ export default function CChat() {
       setCurrentSessionId(sessionId);
       setValue('');
       setUploadedFiles([]);
+      setFiles([]);
       stopOutputMessage();
       setDone(true);
       resetAnswerList();
@@ -714,6 +701,7 @@ export default function CChat() {
     setIsLoadingSession(false);
     setValue('');
     setUploadedFiles([]);
+    setFiles([]);
     stopOutputMessage();
     setDone(true);
     resetAnswerList();
@@ -751,6 +739,7 @@ export default function CChat() {
           setCurrentSessionId(null);
           setValue('');
           setUploadedFiles([]);
+          setFiles([]);
           stopOutputMessage();
           setDone(true);
           resetAnswerList();
@@ -1709,15 +1698,6 @@ export default function CChat() {
                             }
 
                             // Assistant message
-                            const { thinking, cleanContent } = extractThinking(
-                              msg.content || '',
-                            );
-                            const displayContent = streaming
-                              ? msg.content || ''
-                              : cleanContent || msg.content;
-                            const displayThinking = streaming
-                              ? extractThinking(msg.content || '').thinking
-                              : thinking;
                             const isCurrentlyThinking =
                               streaming &&
                               /<think>/.test(msg.content || '') &&
@@ -1735,12 +1715,9 @@ export default function CChat() {
                                 />
                                 <div className="max-w-[85%]">
                                   <div className="bg-white border border-[#D4D4D4] px-4 py-2.5 rounded-2xl rounded-bl-md text-[15px] leading-relaxed tracking-wider text-[#000000]">
-                                    {displayThinking && (
-                                      <ThinkingBlock text={displayThinking} />
-                                    )}
                                     <div className="msg-content text-[#000000]">
                                       <MarkdownContent
-                                        content={displayContent}
+                                        content={msg.content || ''}
                                         loading={streaming}
                                         reference={refs}
                                         clickDocumentButton={
@@ -2201,52 +2178,6 @@ export default function CChat() {
 }
 
 // ── Sub-components ──
-
-function ThinkingBlock({ text }: { text: string }) {
-  const [open, setOpen] = useState(false);
-  if (!text) return null;
-  return (
-    <div className="bg-[#EAEAEA] border border-[#D4D4D4] rounded-lg mb-2 overflow-hidden">
-      <button
-        className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-[#000000] cursor-pointer hover:text-[#000000] transition w-full"
-        onClick={() => setOpen(!open)}
-      >
-        <svg
-          className={`w-3 h-3 transition-transform ${open ? 'rotate-90' : ''}`}
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M9 5l7 7-7 7"
-          />
-        </svg>
-        <svg
-          className="w-3.5 h-3.5"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
-          />
-        </svg>
-        <span className="italic font-medium">思考过程</span>
-      </button>
-      {open && (
-        <pre className="px-3 pb-2 text-xs text-[#333333] italic leading-relaxed max-h-[200px] overflow-y-auto whitespace-pre-wrap break-words m-0 font-[family-name:var(--font-mono)]">
-          {text}
-        </pre>
-      )}
-    </div>
-  );
-}
 
 // ── Utility ──
 function showToast(message: string) {
