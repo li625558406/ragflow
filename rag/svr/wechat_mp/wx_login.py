@@ -73,33 +73,23 @@ class WxLogin:
             await page.wait_for_load_state("networkidle")
 
             # Match original we-mp-rss wx.py: use query_selector (ElementHandle)
-            # which has NO visibility check. The QR image is server-side rendered
-            # in the initial HTML; Vue only controls visibility. screenshot()
-            # works on hidden elements.
+            # which has NO visibility check and NO auto-waiting. The QR image is
+            # rendered in the initial HTML (server-side), Vue only controls its
+            # visibility — but screenshot() works on hidden elements too.
             qr_sel = ".login__type__container__scan__qrcode"
-            qrcode_locator = page.locator(qr_sel)
-            try:
-                await qrcode_locator.wait_for(state="attached", timeout=10000)
-            except Exception:
+            qrcode = await page.query_selector(qr_sel)
+            if not qrcode:
                 raise RuntimeError("QR code element not found on login page")
 
-            # Wait up to 10s for QR code image src to be populated (JS-rendered)
-            code_src = None
-            for _ in range(20):
-                code_src = await qrcode_locator.get_attribute("src")
-                if code_src:
-                    break
-                await asyncio.sleep(0.5)
-
+            code_src = await qrcode.get_attribute("src")
             logger.info("QR code src: %s", code_src)
-            if not code_src:
-                raise RuntimeError("QR code image not loaded — page may have changed")
 
             os.makedirs(os.path.dirname(QRCODE_PATH), exist_ok=True)
-            await qrcode_locator.screenshot(path=QRCODE_PATH)
+            await qrcode.screenshot(path=QRCODE_PATH)
 
             if os.path.getsize(QRCODE_PATH) <= 364:
-                raise RuntimeError("QR code image too small — possible capture failure")
+                raise RuntimeError("QR code image not loaded — page may have changed. "
+                                   f"src={code_src or 'None'}")
 
             self._has_code = True
             logger.info("QR code saved, waiting for scan (5 min timeout)...")

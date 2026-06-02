@@ -167,6 +167,12 @@ class FanOut(ComponentBase, ABC):
                         # reasoning). The framework wraps each reasoning chunk individually,
                         # so the opening <think> and closing </think> may straddle different
                         # stream chunks — hence the state machine.
+                        #
+                        # NOTE: async_chat_streamly_delta merges consecutive
+                        # </think><think> boundaries (line 504), which yields
+                        # chunks like "r2</think>" without the opening <think>.
+                        # We detect this by checking for an orphaned </think>
+                        # when not currently inside a think block.
                         clean = ""
                         pos = 0
                         while pos < len(chunk):
@@ -179,6 +185,11 @@ class FanOut(ComponentBase, ABC):
                             else:
                                 start = chunk.find("<think>", pos)
                                 if start == -1:
+                                    # Merge may have stripped the opening <think>
+                                    end = chunk.find("</think>", pos)
+                                    if end != -1:
+                                        pos = end + len("</think>")
+                                        continue
                                     clean += chunk[pos:]
                                     break
                                 clean += chunk[pos:start]
@@ -192,6 +203,7 @@ class FanOut(ComponentBase, ABC):
                             })
 
                     result = re.sub(r"<think>.*?</think>", "", "".join(chunks), flags=re.DOTALL)
+                    result = re.sub(r"</?think>", "", result)
                     elapsed = time.perf_counter() - started
                     self._progress[idx] = {"status": "completed", "result": result, "elapsed": elapsed}
                     completed_count[0] += 1
