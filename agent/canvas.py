@@ -511,6 +511,8 @@ class Canvas(Graph):
         tts_mdl = None
         while idx < len(self.path):
             to = len(self.path)
+            batch_names = [self.get_component_name(self.path[i]) for i in range(idx, to)]
+            logging.info(f"Canvas batch [{idx}:{to}]: {batch_names}")
             for i in range(idx, to):
                 yield decorate("node_started", {
                     "inputs": None, "created_at": int(time.time()),
@@ -528,6 +530,7 @@ class Canvas(Graph):
                 for i in range(idx, to)
             )
             if has_fanout:
+                logging.info(f"Canvas: FanOut batch start (path[{idx}:{to}])")
                 batch_task = asyncio.ensure_future(_run_batch(idx, to))
                 while not batch_task.done():
                     # Drain FanOut event queues
@@ -550,6 +553,7 @@ class Canvas(Graph):
                             while not eq.empty():
                                 ev = eq.get_nowait()
                                 yield decorate(ev["event"], ev["data"])
+                logging.info("Canvas: FanOut batch finished, proceeding to downstream")
             else:
                 await _run_batch(idx, to)
 

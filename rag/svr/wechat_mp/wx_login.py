@@ -72,20 +72,41 @@ class WxLogin:
             page = driver.page
             await page.wait_for_load_state("networkidle")
 
-            # Match original we-mp-rss wx.py: use query_selector (ElementHandle)
-            # which has NO visibility check and NO auto-waiting. The QR image is
-            # rendered in the initial HTML (server-side), Vue only controls its
-            # visibility — but screenshot() works on hidden elements too.
+            # Wait for Vue to fetch the QR code image (src is populated by Vue
+            # after an API call). The QR img is initially hidden via visibility:hidden,
+            # so we must NOT use ElementHandle.screenshot() — Playwright 1.20+
+            # scrolls into view and waits for visibility, which times out.
+            # Use page.screenshot(clip=bbox) instead, which captures the region
+            # regardless of CSS visibility.
             qr_sel = ".login__type__container__scan__qrcode"
             qrcode = await page.query_selector(qr_sel)
             if not qrcode:
                 raise RuntimeError("QR code element not found on login page")
 
-            code_src = await qrcode.get_attribute("src")
+            # Wait for Vue to populate the QR src (poll up to 15s)
+            code_src = None
+            for _ in range(30):
+                code_src = await qrcode.get_attribute("src")
+                if code_src:
+                    break
+                await asyncio.sleep(0.5)
+
             logger.info("QR code src: %s", code_src)
 
             os.makedirs(os.path.dirname(QRCODE_PATH), exist_ok=True)
-            await qrcode.screenshot(path=QRCODE_PATH)
+
+            # Capture QR via page-level clip to bypass visibility check
+            bbox = await qrcode.bounding_box()
+            if bbox:
+                clip = {
+                    "x": bbox["x"],
+                    "y": bbox["y"],
+                    "width": bbox["width"],
+                    "height": bbox["height"],
+                }
+                await page.screenshot(path=QRCODE_PATH, clip=clip)
+            else:
+                await qrcode.screenshot(path=QRCODE_PATH)
 
             if os.path.getsize(QRCODE_PATH) <= 364:
                 raise RuntimeError("QR code image not loaded — page may have changed. "

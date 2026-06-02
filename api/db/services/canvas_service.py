@@ -24,6 +24,7 @@ from api.db.services.api_service import API4ConversationService
 from api.db.services.common_service import CommonService
 from api.db.services.user_canvas_version import UserCanvasVersionService
 from common.misc_utils import get_uuid
+from common.exceptions import TaskCanceledException
 from api.utils.api_utils import get_data_openai
 import tiktoken
 from peewee import fn
@@ -282,16 +283,24 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
         "files": files
     })
     txt = ""
-    async for ans in canvas.run(query=query, files=files, user_id=user_id, inputs=inputs, internet=kwargs.get("internet")):
-        ans["session_id"] = session_id
-        if ans["event"] == "message":
-            if ans["data"].get("start_to_think"):
-                txt += "<think>"
-            elif ans["data"].get("end_to_think"):
-                txt += "</think>"
-            else:
-                txt += ans["data"]["content"]
-        yield "data:" + json.dumps(ans, ensure_ascii=False) + "\n\n"
+    try:
+        async for ans in canvas.run(query=query, files=files, user_id=user_id, inputs=inputs, internet=kwargs.get("internet")):
+            ans["session_id"] = session_id
+            if ans["event"] == "message":
+                if ans["data"].get("start_to_think"):
+                    txt += "<think>"
+                elif ans["data"].get("end_to_think"):
+                    txt += "</think>"
+                else:
+                    txt += ans["data"]["content"]
+            yield "data:" + json.dumps(ans, ensure_ascii=False) + "\n\n"
+    except TaskCanceledException:
+        yield ("data:" + json.dumps({
+            "event": "task_canceled",
+            "data": {"message": "Task has been canceled by user."},
+            "task_id": canvas.task_id,
+        }, ensure_ascii=False) + "\n\n")
+        return
 
     conv.message.append({"role": "assistant", "content": txt, "created_at": time.time(), "id": message_id})
     conv.reference = canvas.get_reference()

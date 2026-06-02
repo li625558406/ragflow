@@ -96,24 +96,44 @@ async def get_auth_qrcode():
         page = driver.page
         await page.wait_for_load_state("networkidle")
 
-        # Match original we-mp-rss wx.py: use query_selector (ElementHandle)
-        # which has NO visibility check and NO auto-waiting. The QR image is
-        # rendered in the initial HTML (server-side), Vue only controls its
-        # visibility — but screenshot() works on hidden elements too.
+        # Wait for Vue to fetch the QR code image (src is populated by Vue
+        # after an API call). The QR img is initially hidden via visibility:hidden,
+        # so we must NOT use ElementHandle.screenshot() — Playwright 1.20+
+        # scrolls into view and waits for visibility, which times out.
+        # Use page.screenshot(clip=bbox) instead, which captures the region
+        # regardless of CSS visibility.
         qr_sel = ".login__type__container__scan__qrcode"
         qrcode = await page.query_selector(qr_sel)
         if not qrcode:
             await driver.close()
             return get_data_error_result(message="QR code element not found on page")
 
-        code_src = await qrcode.get_attribute("src")
+        # Wait for Vue to populate the QR src (poll up to 15s)
+        code_src = None
+        for _ in range(30):
+            code_src = await qrcode.get_attribute("src")
+            if code_src:
+                break
+            await asyncio.sleep(0.5)
+
         logger.info("QR code src: %s", code_src)
 
         _ensure_qrcode_dir()
-        await qrcode.screenshot(path=QRCODE_PATH)
+
+        # Capture QR via page-level clip to bypass visibility check
+        bbox = await qrcode.bounding_box()
+        if bbox:
+            clip = {
+                "x": bbox["x"],
+                "y": bbox["y"],
+                "width": bbox["width"],
+                "height": bbox["height"],
+            }
+            await page.screenshot(path=QRCODE_PATH, clip=clip)
+        else:
+            await qrcode.screenshot(path=QRCODE_PATH)
 
         if not os.path.exists(QRCODE_PATH) or os.path.getsize(QRCODE_PATH) <= 364:
-            # Debug: take full-page screenshot to diagnose
             debug_path = QRCODE_PATH.replace(".png", "_debug.png")
             try:
                 await page.screenshot(path=debug_path, full_page=True)

@@ -55,12 +55,6 @@ class AntiCrawlerConfig:
             "Accept": random.choice(self.HEADERS['accept']),
             "Accept-Language": random.choice(self.HEADERS['accept_language']),
             "Accept-Encoding": "gzip, deflate, br",
-            "Cache-Control": random.choice(self.HEADERS['cache_control']),
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
         }
         if mobile_mode:
             headers["X-Requested-With"] = "com.tencent.mm"
@@ -111,7 +105,9 @@ Object.getOwnPropertyDescriptor = function(obj, prop) {
 };
 
 // ========== 2. Navigator 属性完善 ==========
-// plugins - 模拟真实 Chrome 浏览器
+// plugins - 模拟真实 Chrome 浏览器 (wrapped in try-catch for safety)
+(function() {
+try {
 Object.defineProperty(navigator, 'plugins', {
     get: () => {
         const plugins = [
@@ -149,6 +145,8 @@ Object.defineProperty(navigator, 'plugins', {
     configurable: false,
     enumerable: true
 });
+} catch(e) { console.warn('[Anti-Detection] navigator.plugins spoof failed:', e); }
+})();
 
 // mimeTypes
 Object.defineProperty(navigator, 'mimeTypes', {

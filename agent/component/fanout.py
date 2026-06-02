@@ -137,6 +137,8 @@ class FanOut(ComponentBase, ABC):
         self._cancel_event.clear()
         sem = asyncio.Semaphore(max(1, int(self._param.max_concurrency)))
         completed_count = [0]
+        gather_started = time.perf_counter()
+        logging.info(f"FanOut START: {n} items, max_concurrency={self._param.max_concurrency}")
 
         async def _process_one(idx: int, item_value):
             async with sem:
@@ -145,6 +147,8 @@ class FanOut(ComponentBase, ABC):
 
                 started = time.perf_counter()
                 self._progress[idx] = {"status": "running", "started_at": started}
+                label = self._item_label(item_value, idx)
+                logging.info(f"FanOut lane {idx}/{n} START: {label}")
 
                 try:
                     rendered = self._render_prompt(item_value, idx)
@@ -207,12 +211,14 @@ class FanOut(ComponentBase, ABC):
                     elapsed = time.perf_counter() - started
                     self._progress[idx] = {"status": "completed", "result": result, "elapsed": elapsed}
                     completed_count[0] += 1
+                    logging.info(f"FanOut lane {idx}/{n} DONE: {self._item_label(item_value, idx)} ({elapsed:.1f}s) [{completed_count[0]}/{n}]")
                     return result
 
                 except Exception as e:
                     logging.exception(f"FanOut item {idx} failed: {e}")
                     self._progress[idx] = {"status": "error", "error": str(e)}
                     completed_count[0] += 1
+                    logging.error(f"FanOut lane {idx}/{n} ERROR: {self._item_label(item_value, idx)} — {e} [{completed_count[0]}/{n}]")
                     if self._param.error_strategy == "stop":
                         self._cancel_event.set()
                         raise
@@ -220,6 +226,11 @@ class FanOut(ComponentBase, ABC):
 
         tasks = [asyncio.create_task(_process_one(i, v)) for i, v in enumerate(items)]
         gathered = await asyncio.gather(*tasks, return_exceptions=True)
+
+        gather_elapsed = time.perf_counter() - gather_started
+        success_count = sum(1 for r in gathered if not isinstance(r, Exception))
+        error_count = sum(1 for r in gathered if isinstance(r, Exception))
+        logging.info(f"FanOut GATHER DONE: {n} items, {success_count} ok, {error_count} errors in {gather_elapsed:.1f}s")
 
         results = []
         for i, r in enumerate(gathered):
