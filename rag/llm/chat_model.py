@@ -293,7 +293,11 @@ class Base(ABC):
         return msg
 
     def _verbose_tool_use(self, name, args, res):
-        return "<tool_call>" + json.dumps({"name": name, "args": args, "result": res}, ensure_ascii=False, indent=2) + "</tool_call>"
+        try:
+            body = json.dumps({"name": name, "args": args, "result": res}, ensure_ascii=False, indent=2)
+        except TypeError:
+            body = json.dumps({"name": name, "args": args, "result": str(res)}, ensure_ascii=False, indent=2)
+        return "<tool_call>" + body + "</tool_call>"
 
     def _append_history(self, hist, tool_call, tool_res):
         hist.append(
@@ -394,7 +398,7 @@ class Base(ABC):
                             return tc, name, args, result, None
                         except Exception as e:
                             logging.exception(f"Tool call failed: {tc}")
-                            return tc, name, {}, None, e
+                            return tc, name, {}, None, str(e)
 
                     logging.info(f"Response tool_calls={response.choices[0].message.tool_calls}")
                     results = await asyncio.gather(*[_exec_tool(tc) for tc in response.choices[0].message.tool_calls])
@@ -495,7 +499,7 @@ class Base(ABC):
                             return tc, name, args, result, None
                         except Exception as e:
                             logging.exception(f"Tool call failed: {tc}")
-                            return tc, name, {}, None, e
+                            return tc, name, {}, None, str(e)
 
                     tcs = list(final_tool_calls.values())
                     logging.info(f"[ToolLoop] round={_round} executing {len(tcs)} tool(s): {[tc.function.name for tc in tcs]}")
@@ -1467,7 +1471,11 @@ class LiteLLMBase(ABC):
         return msg
 
     def _verbose_tool_use(self, name, args, res):
-        return "<tool_call>" + json.dumps({"name": name, "args": args, "result": res}, ensure_ascii=False, indent=2) + "</tool_call>"
+        try:
+            body = json.dumps({"name": name, "args": args, "result": res}, ensure_ascii=False, indent=2)
+        except TypeError:
+            body = json.dumps({"name": name, "args": args, "result": str(res)}, ensure_ascii=False, indent=2)
+        return "<tool_call>" + body + "</tool_call>"
 
     def _append_history(self, hist, tool_call, tool_res, reasoning_content=None):
         assistant_msg = {
@@ -1582,7 +1590,7 @@ class LiteLLMBase(ABC):
                             return tc, name, args, result, None
                         except Exception as e:
                             logging.exception(f"Tool call failed: {tc}")
-                            return tc, name, {}, None, e
+                            return tc, name, {}, None, str(e)
 
                     logging.info(f"Response tool_calls={message.tool_calls}")
                     results = await asyncio.gather(*[_exec_tool(tc) for tc in message.tool_calls])
@@ -1697,7 +1705,7 @@ class LiteLLMBase(ABC):
                             return tc, name, args, result, None
                         except Exception as e:
                             logging.exception(f"Tool call failed: {tc}")
-                            return tc, name, {}, None, e
+                            return tc, name, {}, None, str(e)
 
                     tcs = list(final_tool_calls.values())
                     logging.info(f"[ToolLoop] round={_round} executing {len(tcs)} tool(s): {[tc.function.name for tc in tcs]}")

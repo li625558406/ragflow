@@ -289,6 +289,8 @@ class FanOut(ComponentBase, ABC):
                 self._tool_meta.append(mcp_tool_metadata_to_openai_tool(meta))
                 self._tools_map[tnm] = tool_call_session
 
+        logging.info(f"FanOut tools registered: {list(self._tools_map.keys())}")
+
     def _create_chat_mdl(self, tenant_id: str) -> LLMBundle:
         self._setup_tools()
         chat_model_config = get_model_config_by_type_and_name(

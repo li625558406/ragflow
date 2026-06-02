@@ -268,24 +268,53 @@ export default function CChat() {
   const sendLoading = !done;
 
   // ── Process SSE events into messages ──
+  // Throttled via requestAnimationFrame to prevent browser freeze
+  // when FanOut produces massive content (full bid documents).
+  const rafRef = useRef<number | null>(null);
+  const latestAnswerRef = useRef<any>(null);
+
   useEffect(() => {
-    // Skip stale event processing when the stream is not active.
-    // When createNewSession sets done=true, any leftover answerList
-    // events must not inject content into the fresh message list.
-    if (done) return;
+    if (done) {
+      // Flush pending content when stream finishes
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      if (latestAnswerRef.current) {
+        addNewestOneAnswer(latestAnswerRef.current as IAnswer);
+        latestAnswerRef.current = null;
+      }
+      return;
+    }
 
     const { content, id, attachment, downloads } =
       findMessageFromList(answerList);
     const answer = content || getLatestError(answerList);
 
     if (answerList.length > 0) {
-      addNewestOneAnswer({
+      latestAnswerRef.current = {
         answer: answer ?? '',
         attachment: attachment as any,
         downloads,
-        id: id,
-      } as IAnswer);
+        id,
+      };
+
+      if (rafRef.current === null) {
+        rafRef.current = requestAnimationFrame(() => {
+          rafRef.current = null;
+          if (latestAnswerRef.current) {
+            addNewestOneAnswer(latestAnswerRef.current as IAnswer);
+          }
+        });
+      }
     }
+
+    return () => {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
   }, [answerList, addNewestOneAnswer, done]);
 
   // ── Prologue is shown as intro text in the welcome screen, not auto-added as a message

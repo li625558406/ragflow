@@ -473,6 +473,23 @@ class Canvas(Graph):
                     task_fn = cpn.invoke
                     i += 1
                 else:
+                    # FanOut: defer to next batch if items_ref points to a component
+                    # that hasn't finished yet (i.e. still in the current batch).
+                    defer = False
+                    if cpn.component_name.lower() == "fanout":
+                        items_ref = (cpn._param.items_ref or "").strip()
+                        if items_ref:
+                            upstream_id = items_ref.split("@")[0]
+                            if upstream_id in self.path[f:t]:
+                                self.path.pop(i)
+                                t -= 1
+                                defer = True
+                                logging.info(
+                                    f"FanOut deferred: upstream '{upstream_id}' "
+                                    f"still in current batch {self.path[f:t]}"
+                                )
+                    if defer:
+                        continue
                     for _, ele in cpn.get_input_elements().items():
                         if isinstance(ele, dict) and ele.get("_cpn_id") and ele.get("_cpn_id") not in self.path[:i] and self.path[0].lower().find("userfillup") < 0:
                             self.path.pop(i)
