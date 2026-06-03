@@ -58,8 +58,8 @@ def _check_access(obj, user_id: str) -> bool:
 def _markdown_to_lexical_json(markdown_content: str) -> dict:
     """Convert markdown content to Lexical editor JSON state.
 
-    Produces a minimal Lexical state with paragraphs.
-    Each paragraph is a <p> node with a single text child.
+    Parses block-level (headings, lists) and inline formatting
+    (bold, italic, code, strikethrough) into Lexical nodes.
     """
     if not markdown_content:
         return {"root": {"children": [{"children": [{"detail": 0, "format": 0, "mode": "normal", "style": "", "text": "", "type": "text", "version": 1}], "direction": "ltr", "format": "", "indent": 0, "type": "paragraph", "version": 1}], "direction": "ltr", "format": "", "indent": 0, "type": "root", "version": 1}}
@@ -75,25 +75,64 @@ def _markdown_to_lexical_json(markdown_content: str) -> dict:
             })
             continue
 
-        # Check for heading (## or ### format)
-        heading_match = None
+        # Check for heading
+        heading_tag = None
+        body = stripped
         if stripped.startswith("### "):
-            heading_match = ("h3", stripped[4:])
+            heading_tag, body = "h3", stripped[4:]
         elif stripped.startswith("## "):
-            heading_match = ("h2", stripped[3:])
+            heading_tag, body = "h2", stripped[3:]
         elif stripped.startswith("# "):
-            heading_match = ("h1", stripped[2:])
+            heading_tag, body = "h1", stripped[2:]
 
-        if heading_match:
-            tag, text = heading_match
+        # Check for list items
+        list_type = None
+        if not heading_tag:
+            if stripped.startswith("- "):
+                list_type, body = "bullet", stripped[2:]
+            elif stripped.startswith("1. "):
+                list_type, body = "number", stripped[3:]
+
+        # Build text children with inline formatting
+        text_children = []
+        for seg in _parse_inline_markdown(body):
+            fmt = 0
+            if seg["bold"]:
+                fmt |= 1   # IS_BOLD
+            if seg["italic"]:
+                fmt |= 2   # IS_ITALIC
+            if seg["strike"]:
+                fmt |= 4   # IS_STRIKETHROUGH
+            if seg["code"]:
+                fmt |= 16  # IS_CODE
+            text_children.append({
+                "detail": 0, "format": fmt, "mode": "normal",
+                "style": "", "text": seg["text"], "type": "text", "version": 1,
+            })
+
+        if heading_tag:
             children.append({
-                "children": [{"detail": 0, "format": 0, "mode": "normal", "style": "", "text": text, "type": "text", "version": 1}],
-                "direction": "ltr", "format": "", "indent": 0, "tag": tag, "type": "heading", "version": 1,
+                "children": text_children,
+                "direction": "ltr", "format": "", "indent": 0,
+                "tag": heading_tag, "type": "heading", "version": 1,
+            })
+        elif list_type:
+            children.append({
+                "children": [
+                    {
+                        "children": text_children,
+                        "direction": "ltr", "format": "", "indent": 0,
+                        "type": "listitem", "version": 1,
+                    }
+                ],
+                "direction": "ltr", "format": "", "indent": 0,
+                "listType": list_type, "type": "list", "version": 1,
             })
         else:
             children.append({
-                "children": [{"detail": 0, "format": 0, "mode": "normal", "style": "", "text": stripped, "type": "text", "version": 1}],
-                "direction": "ltr", "format": "", "indent": 0, "type": "paragraph", "version": 1,
+                "children": text_children,
+                "direction": "ltr", "format": "", "indent": 0,
+                "type": "paragraph", "version": 1,
             })
 
     return {"root": {"children": children, "direction": "ltr", "format": "", "indent": 0, "type": "root", "version": 1}}
@@ -291,6 +330,23 @@ def _parse_md_table_row(line: str) -> list[str]:
     return [c.strip() for c in cells]
 
 
+def _set_cell_markdown(cell, text: str, bold_all: bool = False):
+    """Set table cell text with inline markdown formatting."""
+    # Clear default empty paragraph
+    p = cell.paragraphs[0]
+    p.clear()
+    for seg in _parse_inline_markdown(text):
+        run = p.add_run(seg["text"])
+        if bold_all or seg["bold"]:
+            run.bold = True
+        if seg["italic"]:
+            run.italic = True
+        if seg["code"]:
+            run.font.name = "Courier New"
+        if seg["strike"]:
+            run.font.strike = True
+
+
 def _flush_docx_table(doc, table_rows: list[list[str]]):
     """Write accumulated table rows into a python-docx table."""
     if not table_rows:
@@ -300,23 +356,107 @@ def _flush_docx_table(doc, table_rows: list[list[str]]):
     cols = len(headers)
     rows = 1 + len(data)
     table = doc.add_table(rows=rows, cols=cols, style="Table Grid")
-    # Header row
+    # Header row — all runs bold
     for j, h in enumerate(headers):
-        cell = table.cell(0, j)
-        cell.text = h
-        for p in cell.paragraphs:
-            for run in p.runs:
-                run.bold = True
+        _set_cell_markdown(table.cell(0, j), h, bold_all=True)
     # Data rows
     for i, row_cells in enumerate(data):
         for j, val in enumerate(row_cells):
             if j < cols:
-                table.cell(i + 1, j).text = val
+                _set_cell_markdown(table.cell(i + 1, j), val)
     doc.add_paragraph("")  # spacer after table
 
 
+def _parse_inline_markdown(text: str) -> list[dict]:
+    """Parse inline markdown formatting.
+
+    Returns a list of dicts with keys: text, bold, italic, code, strike.
+    Handles ``**bold**``, ``*italic*``, `` `code` ``, ``~~strike~~``.
+    """
+    segments: list[dict] = []
+    i = 0
+    buf = ""
+
+    while i < len(text):
+        # ── **bold** ──
+        if i + 1 < len(text) and text[i : i + 2] == "**":
+            end = text.find("**", i + 2)
+            if end != -1:
+                if buf:
+                    segments.append({"text": buf, "bold": False, "italic": False, "code": False, "strike": False})
+                    buf = ""
+                for seg in _parse_inline_markdown(text[i + 2 : end]):
+                    seg["bold"] = True
+                    segments.append(seg)
+                i = end + 2
+                continue
+        # ── ~~strikethrough~~ ──
+        if i + 1 < len(text) and text[i : i + 2] == "~~":
+            end = text.find("~~", i + 2)
+            if end != -1:
+                if buf:
+                    segments.append({"text": buf, "bold": False, "italic": False, "code": False, "strike": False})
+                    buf = ""
+                for seg in _parse_inline_markdown(text[i + 2 : end]):
+                    seg["strike"] = True
+                    segments.append(seg)
+                i = end + 2
+                continue
+        # ── *italic* ──
+        if text[i] == "*":
+            end = text.find("*", i + 1)
+            if end != -1:
+                if buf:
+                    segments.append({"text": buf, "bold": False, "italic": False, "code": False, "strike": False})
+                    buf = ""
+                for seg in _parse_inline_markdown(text[i + 1 : end]):
+                    seg["italic"] = True
+                    segments.append(seg)
+                i = end + 1
+                continue
+        # ── `code` ──
+        if text[i] == "`":
+            end = text.find("`", i + 1)
+            if end != -1:
+                if buf:
+                    segments.append({"text": buf, "bold": False, "italic": False, "code": False, "strike": False})
+                    buf = ""
+                segments.append({"text": text[i + 1 : end], "bold": False, "italic": False, "code": True, "strike": False})
+                i = end + 1
+                continue
+        buf += text[i]
+        i += 1
+
+    if buf:
+        segments.append({"text": buf, "bold": False, "italic": False, "code": False, "strike": False})
+    return segments
+
+
+def _add_markdown_paragraph(doc, text: str, style_name: str = None):
+    """Add a paragraph with inline markdown formatting as styled runs."""
+    p = doc.add_paragraph()
+    if style_name:
+        p.style = doc.styles[style_name]
+    else:
+        # When no style given, clear the default empty run added by add_paragraph()
+        pass
+    # Clear default empty run
+    p.clear()
+
+    for seg in _parse_inline_markdown(text):
+        run = p.add_run(seg["text"])
+        if seg["bold"]:
+            run.bold = True
+        if seg["italic"]:
+            run.italic = True
+        if seg["code"]:
+            run.font.name = "Courier New"
+        if seg["strike"]:
+            run.font.strike = True
+
+
 def _generate_docx_markdown(markdown_content: str, cfg: dict) -> bytes:
-    """Legacy: generate .docx from plain markdown string (no inline styles)."""
+    """Generate .docx from plain markdown string with inline formatting."""
 
     try:
         from docx import Document as DocxDocument
@@ -365,27 +505,23 @@ def _generate_docx_markdown(markdown_content: str, cfg: dict) -> bytes:
             table_buffer.append(_parse_md_table_row(stripped))
             continue
 
-        # Not a table row — flush any buffered table first
         _flush_table()
 
         if not stripped:
             doc.add_paragraph("")
             continue
         if stripped.startswith("### "):
-            p = doc.add_paragraph(stripped[4:])
-            p.style = doc.styles["Heading 3"]
+            _add_markdown_paragraph(doc, stripped[4:], "Heading 3")
         elif stripped.startswith("## "):
-            p = doc.add_paragraph(stripped[3:])
-            p.style = doc.styles["Heading 2"]
+            _add_markdown_paragraph(doc, stripped[3:], "Heading 2")
         elif stripped.startswith("# "):
-            p = doc.add_paragraph(stripped[2:])
-            p.style = doc.styles["Heading 1"]
+            _add_markdown_paragraph(doc, stripped[2:], "Heading 1")
         elif stripped.startswith("- "):
-            doc.add_paragraph(stripped[2:], style="List Bullet")
+            _add_markdown_paragraph(doc, stripped[2:], "List Bullet")
         elif stripped.startswith("1. "):
-            doc.add_paragraph(stripped[3:], style="List Number")
+            _add_markdown_paragraph(doc, stripped[3:], "List Number")
         else:
-            doc.add_paragraph(stripped)
+            _add_markdown_paragraph(doc, stripped)
 
     _flush_table()
 
