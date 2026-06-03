@@ -87,6 +87,14 @@ def _extract_file_urls_from_html(html: str) -> list:
     return results
 
 
+def _html_to_markdown(html: str) -> str:
+    """Convert HTML to Markdown using markdownify, with proper table conversion."""
+    if not html:
+        return ""
+    from markdownify import markdownify as md
+    return md(html, heading_style="ATX").strip()
+
+
 def _has_meaningful_text_content(html: str) -> bool:
     """Check if HTML has meaningful text beyond just file-download links."""
     import re
@@ -118,10 +126,9 @@ def _build_combined_text(detail: dict, structure: dict) -> str:
     if detail and detail.get("content_html"):
         html = detail["content_html"]
         if _has_meaningful_text_content(html):
-            text = _strip_html(html)
+            text = _html_to_markdown(html)
             if text:
                 parts.append(text)
-            # Also note any embedded file links within meaningful content
             file_links = _extract_file_urls_from_html(html)
             if file_links:
                 parts.append("\n\n---------- 附件列表 ----------\n")
@@ -134,8 +141,7 @@ def _build_combined_text(detail: dict, structure: dict) -> str:
                 for f in file_links:
                     parts.append(f"  - {f['file_name']}: {f['file_url']}")
             else:
-                # Truly empty content — just use whatever strips out
-                text = _strip_html(html)
+                text = _html_to_markdown(html)
                 if text:
                     parts.append(text)
     if structure:

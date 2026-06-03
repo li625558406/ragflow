@@ -16,6 +16,7 @@
 
 import io
 import logging
+import re
 
 import settings
 from api.db import TenantPermission
@@ -267,8 +268,56 @@ def _generate_docx(content, format_config: dict = None) -> bytes:
     return buf.read()
 
 
+def _is_md_table_row(line: str) -> bool:
+    """Check if a line is a markdown table row (starts and ends with |)."""
+    s = line.strip()
+    return s.startswith("|") and s.endswith("|")
+
+
+def _is_md_table_separator(line: str) -> bool:
+    """Check if a line is a markdown table separator (|---|:---|)."""
+    s = line.strip()
+    if not (s.startswith("|") and s.endswith("|")):
+        return False
+    # Separator cells contain only :, -, spaces
+    cells = [c.strip() for c in s[1:-1].split("|")]
+    return all(re.match(r"^:?-+:?$", c) for c in cells if c or True)
+
+
+def _parse_md_table_row(line: str) -> list[str]:
+    """Parse a markdown table row into a list of cell values."""
+    s = line.strip()
+    cells = s[1:-1].split("|")
+    return [c.strip() for c in cells]
+
+
+def _flush_docx_table(doc, table_rows: list[list[str]]):
+    """Write accumulated table rows into a python-docx table."""
+    if not table_rows:
+        return
+    headers = table_rows[0]
+    data = table_rows[1:] if len(table_rows) > 1 else []
+    cols = len(headers)
+    rows = 1 + len(data)
+    table = doc.add_table(rows=rows, cols=cols, style="Table Grid")
+    # Header row
+    for j, h in enumerate(headers):
+        cell = table.cell(0, j)
+        cell.text = h
+        for p in cell.paragraphs:
+            for run in p.runs:
+                run.bold = True
+    # Data rows
+    for i, row_cells in enumerate(data):
+        for j, val in enumerate(row_cells):
+            if j < cols:
+                table.cell(i + 1, j).text = val
+    doc.add_paragraph("")  # spacer after table
+
+
 def _generate_docx_markdown(markdown_content: str, cfg: dict) -> bytes:
     """Legacy: generate .docx from plain markdown string (no inline styles)."""
+
     try:
         from docx import Document as DocxDocument
         from docx.shared import Pt, Inches
@@ -299,8 +348,26 @@ def _generate_docx_markdown(markdown_content: str, cfg: dict) -> bytes:
         return buf.read()
 
     lines = markdown_content.strip().split("\n")
+    table_buffer = []
+
+    def _flush_table():
+        nonlocal table_buffer
+        if table_buffer:
+            _flush_docx_table(doc, table_buffer)
+            table_buffer = []
+
     for line in lines:
         stripped = line.strip()
+
+        if _is_md_table_row(stripped):
+            if _is_md_table_separator(stripped):
+                continue
+            table_buffer.append(_parse_md_table_row(stripped))
+            continue
+
+        # Not a table row — flush any buffered table first
+        _flush_table()
+
         if not stripped:
             doc.add_paragraph("")
             continue
@@ -319,6 +386,8 @@ def _generate_docx_markdown(markdown_content: str, cfg: dict) -> bytes:
             doc.add_paragraph(stripped[3:], style="List Number")
         else:
             doc.add_paragraph(stripped)
+
+    _flush_table()
 
     buf = io.BytesIO()
     doc.save(buf)
@@ -461,7 +530,8 @@ def _generate_pdf_markdown(markdown_content: str, cfg: dict) -> bytes:
         from reportlab.lib.pagesizes import A4
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from reportlab.lib.units import inch
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+        from reportlab.lib import colors
     except ImportError:
         return b""
 
@@ -483,11 +553,44 @@ def _generate_pdf_markdown(markdown_content: str, cfg: dict) -> bytes:
                                   leading=font_size * line_spacing)
 
     story = []
+    table_buffer: list[list[str]] = []
+
+    def _flush_pdf_table():
+        nonlocal table_buffer
+        if not table_buffer:
+            return
+        headers = table_buffer[0]
+        data = table_buffer[1:] if len(table_buffer) > 1 else []
+        table_data = [headers] + data
+        n_cols = len(headers)
+        # Estimate column widths; use narrow default for tables with many cols
+        page_width = A4[0] - inch * (margins.get("left", 1.0) + margins.get("right", 1.0))
+        col_w = min(page_width / n_cols, inch * 2.0)
+        tbl = Table(table_data, colWidths=[col_w] * n_cols)
+        tbl.setStyle(TableStyle([
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E0E0E0")),
+            ("FONTSIZE", (0, 0), (-1, -1), max(font_size - 2, 8)),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        story.append(tbl)
+        story.append(Spacer(1, font_size * 0.5))
+        table_buffer = []
+
     if not markdown_content:
         story.append(Paragraph("", normal_style))
     else:
         for line in markdown_content.strip().split("\n"):
             stripped = line.strip()
+
+            if _is_md_table_row(stripped):
+                if _is_md_table_separator(stripped):
+                    continue
+                table_buffer.append(_parse_md_table_row(stripped))
+                continue
+
+            _flush_pdf_table()
+
             if not stripped:
                 story.append(Spacer(1, font_size * 0.5))
                 continue
@@ -505,6 +608,8 @@ def _generate_pdf_markdown(markdown_content: str, cfg: dict) -> bytes:
                 story.append(Paragraph(stripped[2:], hs))
             else:
                 story.append(Paragraph(stripped, normal_style))
+
+        _flush_pdf_table()
 
     doc.build(story)
     buf.seek(0)

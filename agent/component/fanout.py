@@ -153,7 +153,7 @@ class FanOut(ComponentBase, ABC):
                 try:
                     rendered = self._render_prompt(item_value, idx)
                     chunks: list[str] = []
-                    in_think = False  # whether current position is inside <think>...</think>
+                    in_think = False
                     async for chunk in chat_mdl.async_chat_streamly_delta(
                         self._param.system_prompt,
                         [{"role": "user", "content": rendered}],
@@ -167,29 +167,18 @@ class FanOut(ComponentBase, ABC):
                             raise chunk
                         if not isinstance(chunk, str):
                             continue
-                        # Filter out <think>...</think> blocks (DeepSeek chain-of-thought
-                        # reasoning). The framework wraps each reasoning chunk individually,
-                        # so the opening <think> and closing </think> may straddle different
-                        # stream chunks — hence the state machine.
-                        #
-                        # NOTE: async_chat_streamly_delta merges consecutive
-                        # </think><think> boundaries (line 504), which yields
-                        # chunks like "r2</think>" without the opening <think>.
-                        # We detect this by checking for an orphaned </think>
-                        # when not currently inside a think block.
                         clean = ""
                         pos = 0
                         while pos < len(chunk):
                             if in_think:
                                 end = chunk.find("</think>", pos)
                                 if end == -1:
-                                    break  # rest of chunk is reasoning → discard
+                                    break
                                 in_think = False
                                 pos = end + len("</think>")
                             else:
                                 start = chunk.find("<think>", pos)
                                 if start == -1:
-                                    # Merge may have stripped the opening <think>
                                     end = chunk.find("</think>", pos)
                                     if end != -1:
                                         pos = end + len("</think>")
@@ -201,17 +190,18 @@ class FanOut(ComponentBase, ABC):
                                 pos = start + len("<think>")
                         if clean:
                             chunks.append(clean)
-                            await self._event_queue.put({
-                                "event": "message",
-                                "data": {"content": clean},
-                            })
 
                     result = re.sub(r"<think>.*?</think>", "", "".join(chunks), flags=re.DOTALL)
                     result = re.sub(r"</?think>", "", result)
                     elapsed = time.perf_counter() - started
                     self._progress[idx] = {"status": "completed", "result": result, "elapsed": elapsed}
                     completed_count[0] += 1
-                    logging.info(f"FanOut lane {idx}/{n} DONE: {self._item_label(item_value, idx)} ({elapsed:.1f}s) [{completed_count[0]}/{n}]")
+                    logging.info(f"FanOut lane {idx}/{n} DONE: {label} ({elapsed:.1f}s) [{completed_count[0]}/{n}]")
+                    # Send the complete chapter content as a single message event
+                    await self._event_queue.put({
+                        "event": "message",
+                        "data": {"content": result},
+                    })
                     return result
 
                 except Exception as e:
@@ -238,7 +228,15 @@ class FanOut(ComponentBase, ABC):
                 results.append({"item_index": i, "content": None, "error": str(r)})
             else:
                 results.append({"item_index": i, "content": r})
-        self.set_output("results", results)
+        self.set_output("results_raw", results)
+
+        # Build flat text output for downstream components.
+        parts: list[str] = []
+        for entry in results:
+            c = entry.get("content")
+            if c:
+                parts.append(c)
+        self.set_output("results", "\n\n---\n\n".join(parts))
 
     def get_start(self) -> str:
         for cid in self._canvas.components.keys():
