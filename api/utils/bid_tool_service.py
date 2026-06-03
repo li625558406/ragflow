@@ -321,6 +321,7 @@ def search_bid_projects(
 
             from datetime import datetime, timedelta
             default_start = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+            default_end = datetime.now().strftime("%Y-%m-%d")
             api_resp = client.search_project(
                 keyword=keyword or "",
                 exclude_kw=exclude_keyword or "",
@@ -331,7 +332,7 @@ def search_bid_projects(
                 area_code=api_area_code,
                 industry_code=api_industry_code,
                 start_date=start_date or default_start,
-                end_date=end_date or "",
+                end_date=end_date or default_end,
                 part_a_name=part_a_name or "",
                 part_b_name=part_b_name or "",
                 project_money_min=project_money_min,

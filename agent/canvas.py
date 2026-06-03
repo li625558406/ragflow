@@ -539,29 +539,14 @@ class Canvas(Graph):
                     "thoughts": self.get_component_thoughts(self.path[i])
                 })
 
-            # Check if any component in this batch is FanOut — if so,
-            # run batch as background task and drain events concurrently
-            # so progress messages stream to the frontend in real time.
-            has_fanout = any(
-                self.get_component_obj(self.path[i]).component_name.lower() == "fanout"
-                for i in range(idx, to)
-            )
-            if has_fanout:
-                logging.info(f"Canvas: FanOut batch start (path[{idx}:{to}])")
-                batch_task = asyncio.ensure_future(_run_batch(idx, to))
-                while not batch_task.done():
-                    # Drain FanOut event queues
-                    for i in range(idx, to):
-                        cpn_obj = self.get_component_obj(self.path[i])
-                        if cpn_obj.component_name.lower() == "fanout":
-                            eq = getattr(cpn_obj, "_event_queue", None)
-                            if eq:
-                                while not eq.empty():
-                                    ev = eq.get_nowait()
-                                    yield decorate(ev["event"], ev["data"])
-                    await asyncio.sleep(0.1)
-                await batch_task
-                # Drain any remaining events
+            # Run every batch as a background task with heartbeat
+            # so the SSE connection stays alive during long-running
+            # operations (FanOut parallel LLM calls, Agent aggregation, etc.).
+            batch_task = asyncio.ensure_future(_run_batch(idx, to))
+            last_yield = time.time()
+            while not batch_task.done():
+                drained = False
+                # Drain FanOut event queues (progress messages)
                 for i in range(idx, to):
                     cpn_obj = self.get_component_obj(self.path[i])
                     if cpn_obj.component_name.lower() == "fanout":
@@ -570,9 +555,24 @@ class Canvas(Graph):
                             while not eq.empty():
                                 ev = eq.get_nowait()
                                 yield decorate(ev["event"], ev["data"])
-                logging.info("Canvas: FanOut batch finished, proceeding to downstream")
-            else:
-                await _run_batch(idx, to)
+                                drained = True
+                now = time.time()
+                if not drained and now - last_yield > 15:
+                    yield decorate("heartbeat", {})
+                    last_yield = now
+                elif drained:
+                    last_yield = now
+                await asyncio.sleep(0.1)
+            await batch_task
+            # Drain any remaining FanOut events
+            for i in range(idx, to):
+                cpn_obj = self.get_component_obj(self.path[i])
+                if cpn_obj.component_name.lower() == "fanout":
+                    eq = getattr(cpn_obj, "_event_queue", None)
+                    if eq:
+                        while not eq.empty():
+                            ev = eq.get_nowait()
+                            yield decorate(ev["event"], ev["data"])
 
             to = len(self.path)
             # post-processing of components invocation

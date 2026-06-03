@@ -299,7 +299,13 @@ export default function CChat() {
         id,
       };
 
-      if (rafRef.current === null) {
+      if (document.hidden) {
+        // requestAnimationFrame is paused when the tab is in the
+        // background / minimized, so update directly — rendering
+        // won't happen anyway until the user switches back.
+        addNewestOneAnswer(latestAnswerRef.current as IAnswer);
+        latestAnswerRef.current = null;
+      } else if (rafRef.current === null) {
         rafRef.current = requestAnimationFrame(() => {
           rafRef.current = null;
           if (latestAnswerRef.current) {
@@ -316,6 +322,24 @@ export default function CChat() {
       }
     };
   }, [answerList, addNewestOneAnswer, done]);
+
+  // When the user returns to the tab, flush any content accumulated
+  // while requestAnimationFrame was paused (background / minimized).
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (!document.hidden && latestAnswerRef.current) {
+        if (rafRef.current !== null) {
+          cancelAnimationFrame(rafRef.current);
+          rafRef.current = null;
+        }
+        addNewestOneAnswer(latestAnswerRef.current as IAnswer);
+        latestAnswerRef.current = null;
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () =>
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [addNewestOneAnswer]);
 
   // ── Prologue is shown as intro text in the welcome screen, not auto-added as a message
   // This keeps the input centered until the user explicitly starts a conversation.
