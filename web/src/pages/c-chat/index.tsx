@@ -1529,7 +1529,7 @@ export default function CChat() {
                                 }
                               }}
                               placeholder={typewriterText}
-                              className="min-h-[72px] w-full p-0 overflow-auto !outline-none !border-transparent !bg-transparent !shadow-none !ring-transparent !ring-offset-transparent cs-typewriter-cursor"
+                              className="min-h-[72px] w-full p-0 overflow-auto !outline-none !border-transparent !bg-transparent !shadow-none !ring-transparent !ring-offset-transparent !text-[#000000] cs-typewriter-cursor"
                               disabled={sendLoading}
                               autoSize={{ minRows: 3, maxRows: 10 }}
                               autoFocus
@@ -2112,7 +2112,7 @@ export default function CChat() {
                                   ? '继续输入您的问题...'
                                   : typewriterText
                               }
-                              className={`min-h-[72px] w-full p-0 overflow-auto !outline-none !border-transparent !bg-transparent !shadow-none !ring-transparent !ring-offset-transparent${hasMessages ? '' : ' cs-typewriter-cursor'}`}
+                              className={`min-h-[72px] w-full p-0 overflow-auto !outline-none !border-transparent !bg-transparent !shadow-none !ring-transparent !ring-offset-transparent !text-[#000000]${hasMessages ? '' : ' cs-typewriter-cursor'}`}
                               disabled={sendLoading}
                               autoSize={{ minRows: 3, maxRows: 10 }}
                             />

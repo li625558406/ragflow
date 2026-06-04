@@ -299,22 +299,31 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
                         txt += "🤔"
                     else:
                         txt += ans["data"]["content"]
-                await event_queue.put(ans)
+                try:
+                    event_queue.put_nowait(ans)
+                except asyncio.QueueFull:
+                    pass  # SSE consumer gone; discard event, canvas continues
         except TaskCanceledException:
-            await event_queue.put({
-                "event": "task_canceled",
-                "data": {"message": "Task has been canceled by user."},
-                "task_id": canvas.task_id,
-            })
+            try:
+                event_queue.put_nowait({
+                    "event": "task_canceled",
+                    "data": {"message": "Task has been canceled by user."},
+                    "task_id": canvas.task_id,
+                })
+            except asyncio.QueueFull:
+                pass
             return
         except Exception as e:
             logging.exception(f"Canvas run error for session {session_id}")
             error_msg = f"\n\n**ERROR**: {e}"
-            await event_queue.put({
-                "event": "message",
-                "data": {"content": error_msg},
-                "session_id": session_id,
-            })
+            try:
+                event_queue.put_nowait({
+                    "event": "message",
+                    "data": {"content": error_msg},
+                    "session_id": session_id,
+                })
+            except asyncio.QueueFull:
+                pass
             txt += error_msg
 
         # Save to DB regardless of whether SSE consumer is still listening.
@@ -329,7 +338,15 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
         except Exception as e:
             logging.exception(f"Failed to save session {session_id} to DB: {e}")
         finally:
-            await event_queue.put(sentinel)
+            try:
+                event_queue.put_nowait(sentinel)
+            except asyncio.QueueFull:
+                # Queue was full; drop oldest to make room for sentinel.
+                try:
+                    event_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                event_queue.put_nowait(sentinel)
 
     canvas_task = asyncio.create_task(_run_canvas_and_save())
 
@@ -341,7 +358,6 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
             yield "data:" + json.dumps(item, ensure_ascii=False) + "\n\n"
     except TaskCanceledException:
         canvas.cancel_task()
-    finally:
         if not canvas_task.done():
             canvas_task.cancel()
 
