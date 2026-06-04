@@ -27,6 +27,7 @@ class LoopParam(ComponentParamBase):
         self.loop_variables = []
         self.loop_termination_condition=[]
         self.maximum_loop_count = 0
+        self.outputs = {}
 
     def get_input_form(self) -> dict[str, dict]:
         return {

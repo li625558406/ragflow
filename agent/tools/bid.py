@@ -648,3 +648,712 @@ class BidCheckImportStatus(ToolBase, ABC):
         return "Checking import status for project #{}...".format(
             self.get_input().get("project_id", "-")
         )
+
+
+# =============================================================================
+# BidGetSource — 获取原始采集网址
+# =============================================================================
+
+class BidGetSourceParam(ToolParamBase):
+    def __init__(self):
+        self.meta: ToolMeta = {
+            "name": "bid_get_source",
+            "description": """
+Get the original source URL (collect URL) of a bid project.
+This is the original government website where the bid was published.
+Use this when the user wants to see the original announcement page.
+
+Requires project_id and publish_time (same as bid_get_detail).
+            """,
+            "parameters": {
+                "project_id": {
+                    "type": "integer",
+                    "description": "Bid project ID.",
+                    "required": True,
+                },
+                "publish_time": {
+                    "type": "string",
+                    "description": "Publish time of the project.",
+                    "required": True,
+                },
+            },
+        }
+        super().__init__()
+
+    def get_input_form(self) -> dict[str, dict]:
+        return {"project_id": {"name": "Project ID", "type": "line"}}
+
+
+class BidGetSource(ToolBase, ABC):
+    component_name = "BidGetSource"
+
+    @timeout(int(os.environ.get("COMPONENT_EXEC_TIMEOUT", 30)))
+    def _invoke(self, **kwargs):
+        if self.check_if_canceled("BidGetSource processing"):
+            return
+        try:
+            project_id = kwargs.get("project_id")
+            publish_time = kwargs.get("publish_time", "")
+            if not project_id:
+                self.set_output("_ERROR", "project_id is required")
+                return "Error: project_id is required"
+
+            from api.utils.bid_api_client import BidApiClient
+            client = BidApiClient()
+            url = client.get_collect_url(int(project_id), str(publish_time))
+
+            output = {"project_id": project_id, "source_url": url}
+            self.set_output("json", output)
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+            return self.output("formalized_content")
+        except Exception as e:
+            logging.exception("BidGetSource error: %s", e)
+            self.set_output("_ERROR", str(e))
+            return f"BidGetSource error: {e}"
+
+    def thoughts(self) -> str:
+        return "Fetching source URL for project #{}...".format(
+            self.get_input().get("project_id", "-")
+        )
+
+
+# =============================================================================
+# BidSearchAI — AI 专用轻量搜索
+# =============================================================================
+
+class BidSearchAIParam(ToolParamBase):
+    def __init__(self):
+        self.meta: ToolMeta = {
+            "name": "bid_search_ai",
+            "description": """
+AI-friendly lightweight bid project search.
+Returns richer structured data (party info, bid dates, areas) in a single call.
+Ideal for AI agents that need structured project overview without separate detail calls.
+
+Use this when you need:
+  - Quick project overview with structured party information
+  - Natural language area/industry filtering (pass area_name like '广东省')
+  - Category filtering (e.g., className='招标信息,中标信息')
+
+Returns up to 20 results per page.
+            """,
+            "parameters": {
+                "keyword": {
+                    "type": "string",
+                    "description": "Search keyword.",
+                    "default": "",
+                    "required": False,
+                },
+                "class_name": {
+                    "type": "string",
+                    "description": "Category filter (comma-separated): 招标信息,中标信息,合同信息,采购意向,拍租信息",
+                    "default": "",
+                    "required": False,
+                },
+                "area_name": {
+                    "type": "string",
+                    "description": "Area name for filtering (e.g., '广东省', '北京').",
+                    "default": "",
+                    "required": False,
+                },
+                "start_date": {
+                    "type": "string",
+                    "description": "Start date in YYYY-MM-DD HH:mm:ss format.",
+                    "default": "",
+                    "required": False,
+                },
+                "end_date": {
+                    "type": "string",
+                    "description": "End date in YYYY-MM-DD HH:mm:ss format.",
+                    "default": "",
+                    "required": False,
+                },
+                "page": {
+                    "type": "integer",
+                    "description": "Page number. Default: 1.",
+                    "default": 1,
+                    "required": False,
+                },
+            },
+        }
+        super().__init__()
+
+    def get_input_form(self) -> dict[str, dict]:
+        return {"keyword": {"name": "Keyword", "type": "line"}}
+
+
+class BidSearchAI(ToolBase, ABC):
+    component_name = "BidSearchAI"
+
+    @timeout(int(os.environ.get("COMPONENT_EXEC_TIMEOUT", 30)))
+    def _invoke(self, **kwargs):
+        if self.check_if_canceled("BidSearchAI processing"):
+            return
+        try:
+            from datetime import datetime, timedelta
+            from api.utils.bid_api_client import BidApiClient
+
+            client = BidApiClient()
+            default_start = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d 00:00:00")
+            default_end = datetime.now().strftime("%Y-%m-%d 23:59:59")
+
+            result = client.search_project_ai(
+                keyword=kwargs.get("keyword", ""),
+                class_name=kwargs.get("class_name", ""),
+                area_name=kwargs.get("area_name", ""),
+                start_date=kwargs.get("start_date", "") or default_start,
+                end_date=kwargs.get("end_date", "") or default_end,
+                page_id=kwargs.get("page", 1),
+                page_number=20,
+            )
+
+            data = result.get("data", {})
+            items = data.get("data", []) or []
+            simplified = []
+            for item in items:
+                simplified.append({
+                    "id": item.get("id"),
+                    "title": item.get("title", ""),
+                    "news_type_name": item.get("newsTypeName", ""),
+                    "publish_time": item.get("publishTime", ""),
+                    "area_name": item.get("areaName", ""),
+                    "project_money": item.get("projectMoney", ""),
+                    "project_class": item.get("projectClass", ""),
+                    "purchase_type": item.get("purchaseType", ""),
+                    "part_a_info": item.get("partAInfo", []),
+                    "part_b_info": item.get("partBInfo", []),
+                    "agency_info": item.get("agencyInfo", []),
+                    "bid_start_date": item.get("bidStartDate", ""),
+                    "bid_start_address": item.get("bidStartAddress", ""),
+                    "sign_up_stop_date": item.get("siginUpStopDate", ""),
+                })
+
+            output = {
+                "total": data.get("total", 0),
+                "shown": len(simplified),
+                "page": kwargs.get("page", 1),
+                "projects": simplified,
+            }
+
+            self.set_output("json", simplified)
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+            return self.output("formalized_content")
+        except Exception as e:
+            logging.exception("BidSearchAI error: %s", e)
+            self.set_output("_ERROR", str(e))
+            return f"BidSearchAI error: {e}"
+
+    def thoughts(self) -> str:
+        return "AI searching bid projects: '{}'...".format(
+            self.get_input().get("keyword", "-")
+        )
+
+
+# =============================================================================
+# BidSearchContract — 合同数据搜索
+# =============================================================================
+
+class BidSearchContractParam(ToolParamBase):
+    def __init__(self):
+        self.meta: ToolMeta = {
+            "name": "bid_search_contract",
+            "description": """
+Search contract/bid-result data from the bidding database.
+Returns projects with contract details: contract dates, project cycle, party info with contacts.
+Use this when the user asks about contracts, bid results, or winners.
+
+Parameters are similar to bid_search but results include contractStartDate, contractEndDate, projectCycle.
+            """,
+            "parameters": {
+                "keyword": {
+                    "type": "string",
+                    "description": "Search keyword.",
+                    "default": "",
+                    "required": False,
+                },
+                "start_date": {
+                    "type": "string",
+                    "description": "Start date in YYYY-MM-DD HH:mm:ss format.",
+                    "default": "",
+                    "required": False,
+                },
+                "end_date": {
+                    "type": "string",
+                    "description": "End date in YYYY-MM-DD HH:mm:ss format.",
+                    "default": "",
+                    "required": False,
+                },
+                "contract_end_min": {
+                    "type": "string",
+                    "description": "Contract end date minimum (YYYY-MM-DD).",
+                    "default": "",
+                    "required": False,
+                },
+                "contract_end_max": {
+                    "type": "string",
+                    "description": "Contract end date maximum (YYYY-MM-DD).",
+                    "default": "",
+                    "required": False,
+                },
+                "part_a_name": {
+                    "type": "string",
+                    "description": "Party A (buyer) name filter.",
+                    "default": "",
+                    "required": False,
+                },
+                "part_b_name": {
+                    "type": "string",
+                    "description": "Party B (supplier/winner) name filter.",
+                    "default": "",
+                    "required": False,
+                },
+                "provice_code": {
+                    "type": "string",
+                    "description": "Province administrative code.",
+                    "default": "",
+                    "required": False,
+                },
+                "page": {
+                    "type": "integer",
+                    "description": "Page number. Default: 1.",
+                    "default": 1,
+                    "required": False,
+                },
+            },
+        }
+        super().__init__()
+
+    def get_input_form(self) -> dict[str, dict]:
+        return {"keyword": {"name": "Keyword", "type": "line"}}
+
+
+class BidSearchContract(ToolBase, ABC):
+    component_name = "BidSearchContract"
+
+    @timeout(int(os.environ.get("COMPONENT_EXEC_TIMEOUT", 30)))
+    def _invoke(self, **kwargs):
+        if self.check_if_canceled("BidSearchContract processing"):
+            return
+        try:
+            from datetime import datetime, timedelta
+            from api.utils.bid_api_client import BidApiClient
+
+            client = BidApiClient()
+            default_start = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d 00:00:00")
+            default_end = datetime.now().strftime("%Y-%m-%d 23:59:59")
+
+            api_area_code = {
+                "proviceCodeList": [kwargs.get("provice_code")] if kwargs.get("provice_code") else ["0"],
+                "cityCodeList": [],
+                "countyCodeList": [],
+            }
+
+            result = client.search_contract(
+                keyword=kwargs.get("keyword", ""),
+                area_code=api_area_code,
+                start_date=kwargs.get("start_date", "") or default_start,
+                end_date=kwargs.get("end_date", "") or default_end,
+                contract_end_min=kwargs.get("contract_end_min", ""),
+                contract_end_max=kwargs.get("contract_end_max", ""),
+                part_a_name=kwargs.get("part_a_name", ""),
+                part_b_name=kwargs.get("part_b_name", ""),
+                page_id=kwargs.get("page", 1),
+                page_number=20,
+            )
+
+            data = result.get("data", {})
+            items = data.get("data", []) or []
+            simplified = []
+            for item in items:
+                simplified.append({
+                    "id": item.get("id"),
+                    "title": item.get("title", ""),
+                    "publish_time": item.get("publishTime", ""),
+                    "project_money": item.get("projectMoney", ""),
+                    "has_file": bool(item.get("hasFile")),
+                    "project_cycle": item.get("projectCycle", []),
+                    "part_a_info": item.get("partAInfo", []),
+                    "part_b_info": item.get("partBInfo", []),
+                    "contract_start_date": item.get("contractStartDate", ""),
+                    "contract_end_date": item.get("contractEndDate", ""),
+                })
+
+            output = {
+                "total": data.get("total", 0),
+                "shown": len(simplified),
+                "page": kwargs.get("page", 1),
+                "contracts": simplified,
+            }
+
+            self.set_output("json", simplified)
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+            return self.output("formalized_content")
+        except Exception as e:
+            logging.exception("BidSearchContract error: %s", e)
+            self.set_output("_ERROR", str(e))
+            return f"BidSearchContract error: {e}"
+
+    def thoughts(self) -> str:
+        return "Searching contracts: '{}'...".format(
+            self.get_input().get("keyword", "-")
+        )
+
+
+# =============================================================================
+# BidRewriteQuery — AI 搜索条件重写
+# =============================================================================
+
+class BidRewriteQueryParam(ToolParamBase):
+    def __init__(self):
+        self.meta: ToolMeta = {
+            "name": "bid_rewrite_query",
+            "description": """
+Rewrite a natural language query into structured search conditions for bid search.
+This is an AI-powered tool that extracts: search phrases, synonyms, party names,
+area codes, and industry codes from a natural language description.
+
+Example: "军队采购网 病床 北京" → {
+  searchPhrase: "病床",
+  partyANames: ["军队采购网"],
+  areaCode: {proviceCodeList: ["110000"]},
+  industryCodes: [{thirdCodeList: ["C277", "Q831"]}]
+}
+
+After getting the rewritten conditions, use bid_search with the extracted parameters.
+            """,
+            "parameters": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural language search query to rewrite.",
+                    "required": True,
+                },
+            },
+        }
+        super().__init__()
+
+    def get_input_form(self) -> dict[str, dict]:
+        return {"query": {"name": "Query", "type": "line"}}
+
+
+class BidRewriteQuery(ToolBase, ABC):
+    component_name = "BidRewriteQuery"
+
+    @timeout(int(os.environ.get("COMPONENT_EXEC_TIMEOUT", 30)))
+    def _invoke(self, **kwargs):
+        if self.check_if_canceled("BidRewriteQuery processing"):
+            return
+        try:
+            query = kwargs.get("query", "")
+            if not query:
+                self.set_output("_ERROR", "query is required")
+                return "Error: query is required"
+
+            from api.utils.bid_api_client import BidApiClient
+            client = BidApiClient()
+            result = client.ai_search_rewrite(query)
+
+            data = result.get("data", {})
+            output = {
+                "request_key": data.get("requestKey", ""),
+                "status": data.get("status", ""),
+                "search_condition": data.get("searchCondition"),
+                "industry_codes": data.get("industryCodes"),
+                "area_code": data.get("areaCode"),
+            }
+
+            self.set_output("json", output)
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+            return self.output("formalized_content")
+        except Exception as e:
+            logging.exception("BidRewriteQuery error: %s", e)
+            self.set_output("_ERROR", str(e))
+            return f"BidRewriteQuery error: {e}"
+
+    def thoughts(self) -> str:
+        return "Rewriting query: '{}'...".format(
+            self.get_input().get("query", "-")[:50]
+        )
+
+
+# =============================================================================
+# BidIndustryTag — AI 行业标签推理
+# =============================================================================
+
+class BidIndustryTagParam(ToolParamBase):
+    def __init__(self):
+        self.meta: ToolMeta = {
+            "name": "bid_industry_tag",
+            "description": """
+Infer industry classification codes from a keyword or phrase.
+Returns a list of candidate industry codes with full path titles.
+
+Example: "教育" → [
+  {thirdCodeList: ["P824"], fullTitle: "教育-教育-高等教育", minTitle: "高等教育"},
+  {thirdCodeList: ["P823"], fullTitle: "教育-教育-中等教育", minTitle: "中等教育"},
+  ...
+]
+
+Use the returned codes as industry_code parameter in bid_search.
+            """,
+            "parameters": {
+                "keyword": {
+                    "type": "string",
+                    "description": "Industry keyword or phrase to reason about.",
+                    "required": True,
+                },
+            },
+        }
+        super().__init__()
+
+    def get_input_form(self) -> dict[str, dict]:
+        return {"keyword": {"name": "Keyword", "type": "line"}}
+
+
+class BidIndustryTag(ToolBase, ABC):
+    component_name = "BidIndustryTag"
+
+    @timeout(int(os.environ.get("COMPONENT_EXEC_TIMEOUT", 30)))
+    def _invoke(self, **kwargs):
+        if self.check_if_canceled("BidIndustryTag processing"):
+            return
+        try:
+            keyword = kwargs.get("keyword", "")
+            if not keyword:
+                self.set_output("_ERROR", "keyword is required")
+                return "Error: keyword is required"
+
+            from api.utils.bid_api_client import BidApiClient
+            client = BidApiClient()
+            codes = client.ai_industry_reasoning(keyword)
+
+            output = {"keyword": keyword, "candidates": codes}
+            self.set_output("json", codes)
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+            return self.output("formalized_content")
+        except Exception as e:
+            logging.exception("BidIndustryTag error: %s", e)
+            self.set_output("_ERROR", str(e))
+            return f"BidIndustryTag error: {e}"
+
+    def thoughts(self) -> str:
+        return "Inferring industry codes for '{}'...".format(
+            self.get_input().get("keyword", "-")
+        )
+
+
+# =============================================================================
+# BidEnterpriseProfile — 企业画像
+# =============================================================================
+
+class BidEnterpriseProfileParam(ToolParamBase):
+    def __init__(self):
+        self.meta: ToolMeta = {
+            "name": "bid_enterprise_profile",
+            "description": """
+Get comprehensive enterprise profile from the bidding database.
+Returns: basic info (registration, capital, legal rep, business scope),
+project insights (bid/win statistics by industry), relationship summary
+(customer/supplier counts).
+
+Use this when the user asks about a company's background, capabilities,
+bidding history, or business relationships.
+            """,
+            "parameters": {
+                "company_name": {
+                    "type": "string",
+                    "description": "Company name to look up.",
+                    "required": True,
+                },
+            },
+        }
+        super().__init__()
+
+    def get_input_form(self) -> dict[str, dict]:
+        return {"company_name": {"name": "Company Name", "type": "line"}}
+
+
+class BidEnterpriseProfile(ToolBase, ABC):
+    component_name = "BidEnterpriseProfile"
+
+    @timeout(int(os.environ.get("COMPONENT_EXEC_TIMEOUT", 30)))
+    def _invoke(self, **kwargs):
+        if self.check_if_canceled("BidEnterpriseProfile processing"):
+            return
+        try:
+            company_name = kwargs.get("company_name", "")
+            if not company_name:
+                self.set_output("_ERROR", "company_name is required")
+                return "Error: company_name is required"
+
+            from api.utils.bid_api_client import BidApiClient
+            client = BidApiClient()
+            result = client.get_company_profile_summary(company_name)
+            raw_data = result.get("data", {})
+
+            # Extract key fields for a readable summary
+            base = raw_data.get("baseInfo", {})
+            profile = base.get("enterpriseProfile", {})
+            reg = base.get("registrationInfo", {})
+            operation = base.get("operationInfo", {})
+            contact = base.get("contactInfo", {})
+            insights = raw_data.get("projectInsights", {})
+            relationships = raw_data.get("relationshipSummary", {})
+            status = raw_data.get("dataStatus", {})
+
+            output = {
+                "company_name": company_name,
+                "type": profile.get("companyTypeName", ""),
+                "legal_representative": profile.get("legalRepresentative", ""),
+                "establishment_date": profile.get("establishmentDate", ""),
+                "operating_status": profile.get("operatingStatus", {}).get("statusName", ""),
+                "industry": profile.get("industryName", ""),
+                "registered_region": profile.get("registeredRegion", {}),
+                "credit_code": reg.get("creditCode", ""),
+                "registered_capital": reg.get("registeredCapital", {}),
+                "business_scope": operation.get("businessScope", ""),
+                "registered_address": contact.get("registeredAddress", ""),
+                "website": contact.get("website", ""),
+                "contact_phones": contact.get("contactPhones", []),
+                "contact_emails": contact.get("contactEmails", []),
+                "bid_statistics": insights.get("bidStatistics", []),
+                "win_statistics": insights.get("winStatistics", []),
+                "contact_person_count": relationships.get("contactPersonCount", ""),
+                "customer_project_count": relationships.get("customerProjectCount", ""),
+                "supplier_project_count": relationships.get("supplierProjectCount", ""),
+                "data_status": status,
+            }
+
+            self.set_output("json", output)
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+            return self.output("formalized_content")
+        except Exception as e:
+            logging.exception("BidEnterpriseProfile error: %s", e)
+            self.set_output("_ERROR", str(e))
+            return f"BidEnterpriseProfile error: {e}"
+
+    def thoughts(self) -> str:
+        return "Fetching enterprise profile for '{}'...".format(
+            self.get_input().get("company_name", "-")
+        )
+
+
+# =============================================================================
+# BidConstructionSearch — 拟在建项目搜索
+# =============================================================================
+
+class BidConstructionSearchParam(ToolParamBase):
+    def __init__(self):
+        self.meta: ToolMeta = {
+            "name": "bid_construction_search",
+            "description": """
+Search 'under-construction' (拟在建) project information.
+These are projects in planning, approval, or early construction stages.
+Returns project title, summary, construction company, and publish time.
+
+Use this when the user asks about upcoming construction projects,
+infrastructure plans, or projects still in the approval process.
+            """,
+            "parameters": {
+                "keyword": {
+                    "type": "string",
+                    "description": "Search keyword (e.g., hospital, highway, school).",
+                    "default": "",
+                    "required": False,
+                },
+                "start_date": {
+                    "type": "string",
+                    "description": "Start date in YYYY-MM-DD HH:mm:ss format.",
+                    "default": "",
+                    "required": False,
+                },
+                "end_date": {
+                    "type": "string",
+                    "description": "End date in YYYY-MM-DD HH:mm:ss format.",
+                    "default": "",
+                    "required": False,
+                },
+                "provice_code": {
+                    "type": "string",
+                    "description": "Province administrative code.",
+                    "default": "",
+                    "required": False,
+                },
+                "page": {
+                    "type": "integer",
+                    "description": "Page number. Default: 1.",
+                    "default": 1,
+                    "required": False,
+                },
+            },
+        }
+        super().__init__()
+
+    def get_input_form(self) -> dict[str, dict]:
+        return {"keyword": {"name": "Keyword", "type": "line"}}
+
+
+class BidConstructionSearch(ToolBase, ABC):
+    component_name = "BidConstructionSearch"
+
+    @timeout(int(os.environ.get("COMPONENT_EXEC_TIMEOUT", 30)))
+    def _invoke(self, **kwargs):
+        if self.check_if_canceled("BidConstructionSearch processing"):
+            return
+        try:
+            from datetime import datetime, timedelta
+            from api.utils.bid_api_client import BidApiClient
+
+            client = BidApiClient()
+            default_start = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d 00:00:00")
+            default_end = datetime.now().strftime("%Y-%m-%d 23:59:59")
+
+            api_area_code = {
+                "proviceCodeList": [kwargs.get("provice_code")] if kwargs.get("provice_code") else ["0"],
+                "cityCodeList": [],
+                "countyCodeList": [],
+            }
+
+            result = client.search_nzj_project(
+                keyword=kwargs.get("keyword", ""),
+                area_code=api_area_code,
+                start_date=kwargs.get("start_date", "") or default_start,
+                end_date=kwargs.get("end_date", "") or default_end,
+                page_id=kwargs.get("page", 1),
+                page_number=20,
+            )
+
+            data = result.get("data", {})
+            items = data.get("data", []) or []
+            simplified = []
+            for item in items:
+                simplified.append({
+                    "id": item.get("id"),
+                    "title": item.get("title", ""),
+                    "summary": item.get("summary", ""),
+                    "publish_time": item.get("publishTime", ""),
+                    "provice_code": item.get("proviceCode", ""),
+                    "city_code": item.get("cityCode", ""),
+                    "county_code": item.get("countyCode", ""),
+                    "has_file": bool(item.get("hasFile")),
+                    "score": item.get("score"),
+                })
+
+            output = {
+                "total": data.get("total", 0),
+                "shown": len(simplified),
+                "page": kwargs.get("page", 1),
+                "projects": simplified,
+            }
+
+            self.set_output("json", simplified)
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+            return self.output("formalized_content")
+        except Exception as e:
+            logging.exception("BidConstructionSearch error: %s", e)
+            self.set_output("_ERROR", str(e))
+            return f"BidConstructionSearch error: {e}"
+
+    def thoughts(self) -> str:
+        return "Searching construction projects: '{}'...".format(
+            self.get_input().get("keyword", "-")
+        )

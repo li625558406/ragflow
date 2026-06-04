@@ -669,3 +669,228 @@ def bid_stats():
         "has_file": has_file_count,
         "by_class": class_counts,
     })
+
+
+# ---------------------------------------------------------------------------
+# 采集源网址
+# ---------------------------------------------------------------------------
+@manager.route("/bid/projects/<int:project_id>/collect-url", methods=["GET"])  # noqa: F821
+@login_required
+def get_bid_project_collect_url(project_id):
+    publish_time = request.args.get("publish_time", "")
+    if not publish_time:
+        return get_data_error_result(message="publish_time is required")
+    try:
+        client = BidApiClient()
+        url = client.get_collect_url(project_id, publish_time)
+        return get_json_result(data={"url": url})
+    except Exception as e:
+        return get_data_error_result(message=f"Failed to fetch collect url: {e}")
+
+
+# ---------------------------------------------------------------------------
+# 项目编号查询
+# ---------------------------------------------------------------------------
+@manager.route("/bid/projects/by-number", methods=["GET"])  # noqa: F821
+@login_required
+def search_project_by_number():
+    project_number = request.args.get("project_number", "")
+    publish_time = request.args.get("publish_time", "")
+    if not project_number:
+        return get_data_error_result(message="project_number is required")
+    try:
+        client = BidApiClient()
+        projects = client.get_project_by_number(project_number, publish_time)
+        return get_json_result(data={"projects": projects})
+    except Exception as e:
+        return get_data_error_result(message=f"Failed to search by number: {e}")
+
+
+# ---------------------------------------------------------------------------
+# 合同数据搜索（v2 网关）
+# ---------------------------------------------------------------------------
+@manager.route("/bid/contracts", methods=["GET"])  # noqa: F821
+@login_required
+def list_bid_contracts():
+    page_id = int(request.args.get("page", 1))
+    page_number = int(request.args.get("items_per_page", 20))
+    keyword = request.args.get("keyword", "") or None
+    exclude_kw = request.args.get("exclude_keyword", "") or None
+    include_kw = request.args.get("include_keyword", "") or None
+    provice_code = request.args.get("provice_code", "") or None
+    city_code = request.args.get("city_code", "") or None
+    start_date = request.args.get("start_date", "") or None
+    end_date = request.args.get("end_date", "") or None
+    contract_end_min = request.args.get("contract_end_min", "") or None
+    contract_end_max = request.args.get("contract_end_max", "") or None
+    part_a_name = request.args.get("part_a_name", "") or None
+    part_b_name = request.args.get("part_b_name", "") or None
+    agent_name = request.args.get("agent_name", "") or None
+    project_money_min = request.args.get("project_money_min", "") or None
+    project_money_max = request.args.get("project_money_max", "") or None
+    file_flag = request.args.get("file_flag", type=int) or None
+    industry_code = request.args.get("industry_code", "") or None
+    purchase_type_id = request.args.get("purchase_type_id", "") or None
+
+    try:
+        client = BidApiClient()
+
+        api_industry_code = {"firstCodeList": ["0"], "secondCodeList": [], "thirdCodeList": []}
+        if industry_code:
+            if len(industry_code) == 1:
+                api_industry_code["firstCodeList"] = [industry_code]
+            else:
+                api_industry_code["secondCodeList"] = [industry_code]
+
+        api_area_code = {
+            "proviceCodeList": [provice_code] if provice_code else ["0"],
+            "cityCodeList": [city_code] if city_code else [],
+            "countyCodeList": [],
+        }
+
+        resp = client.search_contract(
+            keyword=keyword or "",
+            exclude_kw=exclude_kw or "",
+            include_kw=include_kw or "",
+            area_code=api_area_code,
+            industry_code=api_industry_code,
+            start_date=start_date or "",
+            end_date=end_date or "",
+            contract_end_min=contract_end_min or "",
+            contract_end_max=contract_end_max or "",
+            part_a_name=part_a_name or "",
+            part_b_name=part_b_name or "",
+            agent_name=agent_name or "",
+            project_money_min=project_money_min or "",
+            project_money_max=project_money_max or "",
+            file_flag=file_flag if file_flag is not None else -1,
+            purchase_type_id=purchase_type_id or "",
+            page_id=page_id,
+            page_number=page_number,
+        )
+        data = resp.get("data", {})
+        items = data.get("data", []) or []
+        total = data.get("total", 0)
+        return get_json_result(data={"contracts": items, "total": total})
+    except Exception as e:
+        logging.warning("Bid contracts search failed: %s", e)
+        return get_data_error_result(message=f"Failed to search contracts: {e}")
+
+
+# ---------------------------------------------------------------------------
+# 企业画像（v2 网关）
+# ---------------------------------------------------------------------------
+@manager.route("/bid/enterprises/profile", methods=["GET"])  # noqa: F821
+@login_required
+def get_enterprise_profile():
+    company_name = request.args.get("company_name", "")
+    if not company_name:
+        return get_data_error_result(message="company_name is required")
+    try:
+        client = BidApiClient()
+        result = client.get_company_profile_summary(company_name)
+        return get_json_result(data=result.get("data", {}))
+    except Exception as e:
+        return get_data_error_result(message=f"Failed to fetch enterprise profile: {e}")
+
+
+@manager.route("/bid/enterprises/contacts", methods=["GET"])  # noqa: F821
+@login_required
+def get_enterprise_contacts():
+    company_name = request.args.get("company_name", "")
+    page_no = int(request.args.get("page", 1))
+    page_size = int(request.args.get("page_size", 5))
+    if not company_name:
+        return get_data_error_result(message="company_name is required")
+    try:
+        client = BidApiClient()
+        result = client.get_company_profile_contacts(company_name, page_no, min(page_size, 5))
+        return get_json_result(data=result.get("data", {}))
+    except Exception as e:
+        return get_data_error_result(message=f"Failed to fetch enterprise contacts: {e}")
+
+
+@manager.route("/bid/enterprises/customers", methods=["GET"])  # noqa: F821
+@login_required
+def get_enterprise_customers():
+    company_name = request.args.get("company_name", "")
+    page_no = int(request.args.get("page", 1))
+    page_size = int(request.args.get("page_size", 20))
+    if not company_name:
+        return get_data_error_result(message="company_name is required")
+    try:
+        client = BidApiClient()
+        result = client.get_company_profile_customers(company_name, page_no, min(page_size, 20))
+        return get_json_result(data=result.get("data", {}))
+    except Exception as e:
+        return get_data_error_result(message=f"Failed to fetch enterprise customers: {e}")
+
+
+@manager.route("/bid/enterprises/suppliers", methods=["GET"])  # noqa: F821
+@login_required
+def get_enterprise_suppliers():
+    company_name = request.args.get("company_name", "")
+    page_no = int(request.args.get("page", 1))
+    page_size = int(request.args.get("page_size", 20))
+    if not company_name:
+        return get_data_error_result(message="company_name is required")
+    try:
+        client = BidApiClient()
+        result = client.get_company_profile_suppliers(company_name, page_no, min(page_size, 20))
+        return get_json_result(data=result.get("data", {}))
+    except Exception as e:
+        return get_data_error_result(message=f"Failed to fetch enterprise suppliers: {e}")
+
+
+# ---------------------------------------------------------------------------
+# 拟在建项目（v2 网关）
+# ---------------------------------------------------------------------------
+@manager.route("/bid/construction/projects", methods=["GET"])  # noqa: F821
+@login_required
+def list_construction_projects():
+    page_id = int(request.args.get("page", 1))
+    page_number = int(request.args.get("items_per_page", 20))
+    keyword = request.args.get("keyword", "") or None
+    provice_code = request.args.get("provice_code", "") or None
+    city_code = request.args.get("city_code", "") or None
+    start_date = request.args.get("start_date", "") or None
+    end_date = request.args.get("end_date", "") or None
+
+    try:
+        client = BidApiClient()
+
+        api_area_code = {
+            "proviceCodeList": [provice_code] if provice_code else ["0"],
+            "cityCodeList": [city_code] if city_code else [],
+            "countyCodeList": [],
+        }
+
+        resp = client.search_nzj_project(
+            keyword=keyword or "",
+            area_code=api_area_code,
+            start_date=start_date or "",
+            end_date=end_date or "",
+            page_id=page_id,
+            page_number=page_number,
+        )
+        data = resp.get("data", {})
+        items = data.get("data", []) or []
+        total = data.get("total", 0)
+        return get_json_result(data={"projects": items, "total": total})
+    except Exception as e:
+        logging.warning("Construction projects search failed: %s", e)
+        return get_data_error_result(message=f"Failed to search construction projects: {e}")
+
+
+@manager.route("/bid/construction/projects/<int:project_id>/detail", methods=["GET"])  # noqa: F821
+@login_required
+def get_construction_project_detail(project_id):
+    publish_time = request.args.get("publish_time", "")
+    if not publish_time:
+        return get_data_error_result(message="publish_time is required")
+    try:
+        client = BidApiClient()
+        data = client.get_nzj_project_detail(project_id, publish_time)
+        return get_json_result(data=data)
+    except Exception as e:
+        return get_data_error_result(message=f"Failed to fetch construction project detail: {e}")

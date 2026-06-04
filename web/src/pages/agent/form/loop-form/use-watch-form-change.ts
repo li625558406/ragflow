@@ -17,18 +17,29 @@ export function useWatchFormChange(
 
   useEffect(() => {
     if (id) {
+      // Loop variables as outputs
+      const variableOutputs = values.loop_variables?.reduce((pre, cur) => {
+        const variable = cur.variable;
+        if (variable) {
+          pre[variable] = {
+            type: cur.type,
+            value: '',
+          };
+        }
+        return pre;
+      }, {} as IOutputs);
+
+      // Child node output references (ref: "childId@varName")
+      const refOutputs = values.outputs?.reduce((pre: IOutputs, cur: any) => {
+        if (cur.name && cur.ref) {
+          pre[cur.name] = { ref: cur.ref, type: cur.type };
+        }
+        return pre;
+      }, {} as IOutputs);
+
       const nextValues = {
         ...values,
-        outputs: values.loop_variables?.reduce((pre, cur) => {
-          const variable = cur.variable;
-          if (variable) {
-            pre[variable] = {
-              type: cur.type,
-              value: '',
-            };
-          }
-          return pre;
-        }, {} as IOutputs),
+        outputs: { ...variableOutputs, ...refOutputs },
       };
 
       replaceNodeForm(id, nextValues);

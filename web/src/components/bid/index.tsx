@@ -1,6 +1,9 @@
 import { BidList } from '@/pages/home/bid-list';
 import { useState } from 'react';
+import ConstructionList from './construction-list';
+import ContractList from './contract-list';
 import CreditChinaSearch from './credit-china-search';
+import EnterpriseSearch from './enterprise-search';
 import ShixinSearch from './shixin-search';
 
 interface ModuleItem {
@@ -18,10 +21,28 @@ const modules: ModuleItem[] = [
     icon: 'M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z',
   },
   {
+    id: 'contracts',
+    name: '中标/合同',
+    description: '搜索中标结果和合同公告',
+    icon: 'M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15a2.25 2.25 0 012.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25zM6.75 12h.008v.008H6.75V12zm0 3h.008v.008H6.75V15zm0 3h.008v.008H6.75V18z',
+  },
+  {
+    id: 'enterprises',
+    name: '企业查询',
+    description: '查询企业画像与招投标关系',
+    icon: 'M3.75 21h16.5M4.5 3h15M5.25 3v18m13.5-18v18M9 6.75h1.5m-1.5 3h1.5m-1.5 3h1.5m3-6H15m-1.5 3H15m-1.5 3H15M9 21v-3.375c0-.621.504-1.125 1.125-1.125h3.75c.621 0 1.125.504 1.125 1.125V21',
+  },
+  {
+    id: 'construction',
+    name: '拟在建项目',
+    description: '搜索规划审批中的建设项目',
+    icon: 'M11.42 15.17l-5.384-3.108A2.093 2.093 0 005.27 12H4.5a1.5 1.5 0 01-1.5-1.5V6a1.5 1.5 0 011.5-1.5h3.637a2.093 2.093 0 011.765.94l5.384 3.108M21 12a9 9 0 11-18 0 9 9 0 0118 0z',
+  },
+  {
     id: 'shixin-search',
     name: '失信查询',
     description: '查询法院失信被执行人名单',
-    icon: 'M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008zM12 15h.008v.008H12V15zm0 0h.008v.008H12V15z',
+    icon: 'M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0018 0zm-9 3.75h.008v.008H12v-.008zM12 15h.008v.008H12V15zm0 0h.008v.008H12V15z',
   },
   {
     id: 'credit-china-search',
@@ -95,6 +116,9 @@ export default function BidPanel() {
         {selectedModule?.id === 'bid-search' && (
           <BidList setListLength={() => {}} />
         )}
+        {selectedModule?.id === 'contracts' && <ContractList />}
+        {selectedModule?.id === 'enterprises' && <EnterpriseSearch />}
+        {selectedModule?.id === 'construction' && <ConstructionList />}
         {selectedModule?.id === 'shixin-search' && <ShixinSearch />}
         {selectedModule?.id === 'credit-china-search' && <CreditChinaSearch />}
       </div>

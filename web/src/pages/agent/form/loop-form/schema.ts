@@ -19,6 +19,13 @@ export const FormSchema = z.object({
     }),
   ),
   maximum_loop_count: z.number(),
+  outputs: z.array(
+    z.object({
+      name: z.string().optional(),
+      ref: z.string().optional(),
+      type: z.string().optional(),
+    }),
+  ),
 });
 
 export type LoopFormSchemaType = z.infer<typeof FormSchema>;

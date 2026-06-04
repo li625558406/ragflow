@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 import { initialLoopValues } from '../../constant';
 import { INextOperatorForm } from '../../interface';
 import { FormWrapper } from '../components/form-wrapper';
+import { LoopDynamicOutput } from './dynamic-output';
 import { DynamicVariables } from './dynamic-variables';
 import { LoopTerminationCondition } from './loop-termination-condition';
 import { FormSchema, LoopFormSchemaType } from './schema';
@@ -37,6 +38,7 @@ function LoopForm({ node }: INextOperatorForm) {
           label={t('flow.loopTerminationCondition')}
           nodeId={node?.id}
         ></LoopTerminationCondition>
+        <LoopDynamicOutput node={node}></LoopDynamicOutput>
         <SliderInputFormField
           min={1}
           max={100}
