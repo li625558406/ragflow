@@ -197,10 +197,16 @@ class FanOut(ComponentBase, ABC):
                     self._progress[idx] = {"status": "completed", "result": result, "elapsed": elapsed}
                     completed_count[0] += 1
                     logging.info(f"FanOut lane {idx}/{n} DONE: {label} ({elapsed:.1f}s) [{completed_count[0]}/{n}]")
-                    # Send the complete chapter content as a single message event
+                    # Send the complete chapter content with lane metadata
+                    # so the frontend can render per-chapter progress.
                     await self._event_queue.put({
                         "event": "message",
-                        "data": {"content": result},
+                        "data": {
+                            "content": result,
+                            "lane_index": idx,
+                            "lane_label": label,
+                            "lane_total": n,
+                        },
                     })
                     return result
 

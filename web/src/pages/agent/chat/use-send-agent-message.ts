@@ -53,7 +53,15 @@ export function findMessageFromList(eventList: IEventList) {
   let audioBinary = undefined;
   messageEventList.forEach((x, idx) => {
     const { data } = x;
-    const { content, start_to_think, end_to_think, audio_binary } = data;
+    const {
+      content,
+      start_to_think,
+      end_to_think,
+      audio_binary,
+      lane_index,
+      lane_label,
+      lane_total,
+    } = data;
     if (audio_binary) {
       audioBinary = audio_binary;
     }
@@ -67,6 +75,16 @@ export function findMessageFromList(eventList: IEventList) {
       endIndex = idx;
       nextContent += content + '</think>';
       return;
+    }
+
+    // Insert a chapter header before FanOut lane content
+    // so users can see per-chapter progress in real-time.
+    if (
+      lane_index !== undefined &&
+      lane_total !== undefined &&
+      lane_total > 1
+    ) {
+      nextContent += `\n\n---\n\n### 📄 ${lane_label || `Chapter ${lane_index + 1}`}\n\n`;
     }
 
     nextContent += content;

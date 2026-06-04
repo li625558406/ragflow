@@ -546,16 +546,17 @@ class Canvas(Graph):
             last_yield = time.time()
             while not batch_task.done():
                 drained = False
-                # Drain FanOut event queues — pop at most one event per tick
-                # so large chapter payloads don't flood the browser at once.
+                # Drain FanOut event queues — pop ALL pending events per tick
+                # so chapters appear immediately when each lane completes.
                 for i in range(idx, to):
                     cpn_obj = self.get_component_obj(self.path[i])
                     if cpn_obj.component_name.lower() == "fanout":
                         eq = getattr(cpn_obj, "_event_queue", None)
-                        if eq and not eq.empty():
-                            ev = eq.get_nowait()
-                            yield decorate(ev["event"], ev["data"])
-                            drained = True
+                        if eq:
+                            while not eq.empty():
+                                ev = eq.get_nowait()
+                                yield decorate(ev["event"], ev["data"])
+                                drained = True
                 now = time.time()
                 if not drained and now - last_yield > 15:
                     yield decorate("heartbeat", {})
@@ -564,8 +565,7 @@ class Canvas(Graph):
                     last_yield = now
                 await asyncio.sleep(0.1)
             await batch_task
-            # Drain any remaining FanOut events — one per tick to avoid
-            # flooding the browser with large chapter payloads.
+            # Drain any remaining FanOut events.
             for i in range(idx, to):
                 cpn_obj = self.get_component_obj(self.path[i])
                 if cpn_obj.component_name.lower() == "fanout":
@@ -574,7 +574,6 @@ class Canvas(Graph):
                         while not eq.empty():
                             ev = eq.get_nowait()
                             yield decorate(ev["event"], ev["data"])
-                            await asyncio.sleep(0.3)
 
             to = len(self.path)
             # post-processing of components invocation

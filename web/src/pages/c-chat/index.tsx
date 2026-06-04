@@ -1,4 +1,5 @@
 import BidPanel from '@/components/bid';
+import ChapteredMarkdown from '@/components/chaptered-markdown';
 import CollaborationPanel from '@/components/collaboration';
 import CreateDocumentDialog from '@/components/collaboration/create-document-dialog';
 import {
@@ -17,7 +18,6 @@ import {
   FileUploadTrigger,
   type FileUploadProps,
 } from '@/components/file-upload';
-import MarkdownContent from '@/components/next-markdown-content';
 import { ReferenceDocumentList } from '@/components/next-message-item/reference-document-list';
 import { ReferenceImageList } from '@/components/next-message-item/reference-image-list';
 import PdfSheet from '@/components/pdf-drawer';
@@ -1393,11 +1393,11 @@ export default function CChat() {
                         <p className="text-[#333333] text-sm">
                           选择或创建一个对话开始分析
                         </p>
-                        <p className="text-[#525252] text-xs mt-1">
+                        <p className="text-[#525252] text-sm mt-1">
                           上传招标文件至知识库后，即可在此进行智能问答
                         </p>
                         {currentAgentPrologue && (
-                          <p className="text-[#525252] text-xs mt-2 max-w-md mx-auto leading-relaxed">
+                          <p className="text-[#525252] text-sm mt-2 max-w-md mx-auto leading-relaxed">
                             {currentAgentPrologue}
                           </p>
                         )}
@@ -1782,7 +1782,7 @@ export default function CChat() {
                                 <div className="max-w-[85%]">
                                   <div className="bg-white border border-[#D4D4D4] px-4 py-2.5 rounded-2xl rounded-bl-md text-[15px] leading-relaxed tracking-wider text-[#000000]">
                                     <div className="msg-content text-[#000000]">
-                                      <MarkdownContent
+                                      <ChapteredMarkdown
                                         content={msg.content || ''}
                                         loading={streaming}
                                         reference={refs}

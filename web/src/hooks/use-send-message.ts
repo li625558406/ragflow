@@ -54,6 +54,9 @@ export interface IMessageData {
   outputs: any;
   start_to_think?: boolean;
   end_to_think?: boolean;
+  lane_index?: number;
+  lane_label?: string;
+  lane_total?: number;
 }
 
 export interface IMessageEndData {

@@ -13,7 +13,6 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
-import asyncio
 import json
 import logging
 import time
@@ -283,83 +282,46 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
         "id": message_id,
         "files": files
     })
-    event_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
-    sentinel = object()
-
-    async def _run_canvas_and_save():
-        """Execute canvas independently of SSE connection, then save to DB."""
-        txt = ""
-        try:
-            async for ans in canvas.run(query=query, files=files, user_id=user_id, inputs=inputs, internet=kwargs.get("internet")):
-                ans["session_id"] = session_id
-                if ans["event"] == "message":
-                    if ans["data"].get("start_to_think"):
-                        txt += "🧠"
-                    elif ans["data"].get("end_to_think"):
-                        txt += "🤔"
-                    else:
-                        txt += ans["data"]["content"]
-                try:
-                    event_queue.put_nowait(ans)
-                except asyncio.QueueFull:
-                    pass  # SSE consumer gone; discard event, canvas continues
-        except TaskCanceledException:
-            try:
-                event_queue.put_nowait({
-                    "event": "task_canceled",
-                    "data": {"message": "Task has been canceled by user."},
-                    "task_id": canvas.task_id,
-                })
-            except asyncio.QueueFull:
-                pass
-            return
-        except Exception as e:
-            logging.exception(f"Canvas run error for session {session_id}")
-            error_msg = f"\n\n**ERROR**: {e}"
-            try:
-                event_queue.put_nowait({
-                    "event": "message",
-                    "data": {"content": error_msg},
-                    "session_id": session_id,
-                })
-            except asyncio.QueueFull:
-                pass
-            txt += error_msg
-
-        # Save to DB regardless of whether SSE consumer is still listening.
-        try:
-            conv.message.append({"role": "assistant", "content": txt, "created_at": time.time(), "id": message_id})
-            conv.reference = canvas.get_reference()
-            conv.errors = canvas.error
-            conv.dsl = str(canvas)
-            conv = conv.to_dict()
-            API4ConversationService.append_message(conv["id"], conv)
-            logging.info(f"Session {session_id} conversation saved ({len(txt)} chars)")
-        except Exception as e:
-            logging.exception(f"Failed to save session {session_id} to DB: {e}")
-        finally:
-            try:
-                event_queue.put_nowait(sentinel)
-            except asyncio.QueueFull:
-                # Queue was full; drop oldest to make room for sentinel.
-                try:
-                    event_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    pass
-                event_queue.put_nowait(sentinel)
-
-    canvas_task = asyncio.create_task(_run_canvas_and_save())
-
+    txt = ""
     try:
-        while True:
-            item = await event_queue.get()
-            if item is sentinel:
-                break
-            yield "data:" + json.dumps(item, ensure_ascii=False) + "\n\n"
+        async for ans in canvas.run(query=query, files=files, user_id=user_id, inputs=inputs, internet=kwargs.get("internet")):
+            ans["session_id"] = session_id
+            if ans["event"] == "message":
+                if ans["data"].get("start_to_think"):
+                    txt += "🧠"
+                elif ans["data"].get("end_to_think"):
+                    txt += "🤔"
+                else:
+                    txt += ans["data"]["content"]
+            yield "data:" + json.dumps(ans, ensure_ascii=False) + "\n\n"
     except TaskCanceledException:
-        canvas.cancel_task()
-        if not canvas_task.done():
-            canvas_task.cancel()
+        yield ("data:" + json.dumps({
+            "event": "task_canceled",
+            "data": {"message": "Task has been canceled by user."},
+            "task_id": canvas.task_id,
+        }, ensure_ascii=False) + "\n\n")
+        return
+
+    conv.message.append({"role": "assistant", "content": txt, "created_at": time.time(), "id": message_id})
+    conv.reference = canvas.get_reference()
+    conv.errors = canvas.error
+    conv.dsl = str(canvas)
+    conv_data = {
+        "id": conv.id,
+        "dialog_id": conv.dialog_id,
+        "user_id": conv.user_id,
+        "message": conv.message,
+        "reference": conv.reference,
+        "dsl": conv.dsl,
+        "errors": conv.errors,
+        "source": conv.source,
+    }
+    logging.info(f"[completion] Saving session {conv_data['id']}: {len(conv_data['message'])} messages, content length={len(txt)} chars")
+    try:
+        rows = API4ConversationService.append_message(conv_data["id"], conv_data)
+        logging.info(f"[completion] append_message returned rows={rows}")
+    except Exception as e:
+        logging.exception(f"[completion] append_message FAILED: {e}")
 
 async def completion_openai(tenant_id, agent_id, question, session_id=None, stream=True, **kwargs):
     tiktoken_encoder = tiktoken.get_encoding("cl100k_base")

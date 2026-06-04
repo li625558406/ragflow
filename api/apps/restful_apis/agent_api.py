@@ -1030,8 +1030,10 @@ async def agent_chat_completion(tenant_id):
     if req.get("stream", True):
 
         async def generate():
+            logging.info(f"[generate] Starting session completion stream: session_id={session_id}, agent_id={agent_id}")
             async for ans in _iter_session_completion_events(tenant_id, agent_id, req, return_trace):
                 yield "data:" + json.dumps(ans, ensure_ascii=False) + "\n\n"
+            logging.info(f"[generate] Stream iteration complete, yielding [DONE]")
             yield "data:[DONE]\n\n"
 
         return _build_sse_response(generate())

@@ -1,0 +1,72 @@
+{
+  "scenarios": {
+    "_note": "每种场景演示不同的数据结构。FanOut 的 _item_label() 会按优先级提取: chapter_title > title > name > label > 章节标题 > 标题 > 名称 > 文本截断 > Item N",
+
+    "rich_dicts": {
+      "desc": "标书章节——完整字典，验证 chapter_title / title 提取",
+      "data": [
+        { "chapter_title": "项目概述与背景", "content": "介绍项目的基本情况和建设背景" },
+        { "chapter_title": "技术方案设计", "content": "详细描述技术架构和实施方案" },
+        { "chapter_title": "项目实施计划", "content": "制定项目的时间表和里程碑" },
+		{ "chapter_title": "公司介绍", "content": "公司介绍" },
+		{ "chapter_title": "项目要求", "content": "项目要求" }
+      ]
+    },
+
+    "simple_dicts": {
+      "desc": "只有 name 字段的字典，验证 name 提取",
+      "data": [
+        { "name": "需求分析", "desc": "分析用户需求" },
+        { "name": "系统设计", "desc": "设计系统架构" },
+        { "name": "测试验收", "desc": "测试和验收标准" }
+      ]
+    },
+
+    "plain_strings": {
+      "desc": "纯字符串数组——截断60字符",
+      "data": [
+        "人工智能在医疗领域的应用前景分析",
+        "大数据技术如何改变金融行业",
+        "云计算基础设施的安全挑战"
+      ]
+    },
+
+    "mixed_sources": {
+      "desc": "混合——Outline 常见的实际输出格式",
+      "data": [
+        { "章节标题": "第一章 招标公告", "编号": "1" },
+        { "章节标题": "第二章 投标人须知", "编号": "2" },
+        { "章节标题": "第三章 评标办法", "编号": "3" }
+      ]
+    },
+
+    "small_test": {
+      "desc": "最小测试集——2个元素，快速验证 (适合首次跑)",
+      "data": [
+        "用一句话介绍 Python",
+        "用一句话介绍 TypeScript"
+      ]
+    }
+  },
+
+  "fanout_configs": {
+    "minimal": {
+      "desc": "极简配置——快速测试",
+      "items_ref": "test_items",
+      "llm_id": "deepseek-chat",
+      "system_prompt": "You are a helpful assistant. Answer concisely.",
+      "prompt_template": "{item}",
+      "max_concurrency": 2,
+      "error_strategy": "skip"
+    },
+    "bid_writing": {
+      "desc": "标书写作配置——接近真实场景",
+      "items_ref": "test_items",
+      "llm_id": "deepseek-chat",
+      "system_prompt": "你是一位专业的标书撰写专家。请根据章节标题撰写该章节的完整内容，使用专业、严谨的语言。",
+      "prompt_template": "请撰写标书章节「{item}」的完整内容，包括：\n1. 章节概述\n2. 核心内容论述\n3. 关键要点总结",
+      "max_concurrency": 3,
+      "error_strategy": "skip"
+    }
+  }
+}

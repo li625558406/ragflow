@@ -233,7 +233,7 @@ export enum AgentDialogueMode {
 
 export const initialBeginValues = {
   mode: AgentDialogueMode.Conversational,
-  prologue: `Hi! I'm your assistant. What can I do for you?`,
+  prologue: `我是标书智能助手，可以帮你撰写标书、分析招标文件、解答投标相关问题。`,
 };
 
 export const BeginId = 'begin';
