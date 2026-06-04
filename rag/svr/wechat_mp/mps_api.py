@@ -60,6 +60,10 @@ class MpsApi(WxGather):
 
         logger.info("API mode — collecting [%s] (gather_content=%s)", mp_title, gather_content)
 
+        # Open shared Playwright browser for all article fetches
+        if gather_content:
+            self.open_playwright()
+
         url = "https://mp.weixin.qq.com/cgi-bin/appmsg"
         count = 5
         params = {
@@ -108,7 +112,12 @@ class MpsApi(WxGather):
                     time.sleep(random.randint(1, 3))
                     if gather_content and not self.has_gathered(item["aid"]):
                         item["content"] = self.content_extract(item["link"])
-                        self.wait(min=3, max=10, tips=f"{item['title']} content done")
+                        # Shorter wait when using shared Playwright browser
+                        if self._pw_controller:
+                            time.sleep(random.randint(1, 3))
+                            logger.info("%s content done", item.get("title", ""))
+                        else:
+                            self.wait(min=3, max=10, tips=f"{item['title']} content done")
                     else:
                         item["content"] = ""
 
@@ -138,3 +147,7 @@ class MpsApi(WxGather):
                 )
 
         self.over(callback=over_callback)
+
+        # Close shared Playwright browser
+        if gather_content:
+            self.close_playwright()

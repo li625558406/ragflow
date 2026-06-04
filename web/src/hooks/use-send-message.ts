@@ -150,17 +150,37 @@ export const useSendMessageBySSE = (url: string) => {
                 break;
               }
               try {
+                // Some server implementations send "data:[DONE]" as
+                // end-of-stream marker — treat it as stream completion.
+                if (value?.data === '[DONE]') {
+                  setDone(true);
+                  break;
+                }
+
                 const val = JSON.parse(value?.data || '');
 
                 if (typeof val?.code === 'number' && val.code !== 0) {
                   message.error(val.message);
                 }
 
+                // Capture whether this event marks logical completion BEFORE
+                // pushing into the list so we can exit the read loop.
+                const isFinished = val?.event === 'workflow_finished';
+
                 setAnswerList((list) => {
                   const nextList = [...list];
                   nextList.push(val);
                   return nextList;
                 });
+
+                // When the canvas signals workflow_finished, all content has
+                // been delivered.  Stop reading the SSE stream immediately so
+                // that a TCP-level disconnect (timeout / proxy / etc.) cannot
+                // keep the front-end in a perpetual loading state.
+                if (isFinished) {
+                  setDone(true);
+                  break;
+                }
               } catch (e) {
                 console.warn(e);
               }

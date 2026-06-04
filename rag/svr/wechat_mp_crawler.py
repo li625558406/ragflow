@@ -40,7 +40,9 @@ logger = logging.getLogger("wechat_mp_crawler")
 # ── Project path setup ──────────────────────────────────────
 
 def _setup_path():
-    project_root = str(Path(__file__).resolve().parent.parent)
+    # __file__ = /ragflow/rag/svr/wechat_mp_crawler.py
+    # Need /ragflow on sys.path so "from rag.svr.xxx" resolves correctly.
+    project_root = str(Path(__file__).resolve().parent.parent.parent)
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 

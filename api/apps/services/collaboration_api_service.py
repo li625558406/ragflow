@@ -55,10 +55,61 @@ def _check_access(obj, user_id: str) -> bool:
     return obj.created_by in team_user_ids
 
 
+def _cell_text_children(cell_text: str) -> list[dict]:
+    """Build Lexical text children for a single table cell."""
+    text_children = []
+    for seg in _parse_inline_markdown(cell_text):
+        fmt = 0
+        if seg["bold"]:
+            fmt |= 1   # IS_BOLD
+        if seg["italic"]:
+            fmt |= 2   # IS_ITALIC
+        if seg["strike"]:
+            fmt |= 4   # IS_STRIKETHROUGH
+        if seg["code"]:
+            fmt |= 16  # IS_CODE
+        text_children.append({
+            "detail": 0, "format": fmt, "mode": "normal",
+            "style": "", "text": seg["text"], "type": "text", "version": 1,
+        })
+    return text_children
+
+
+def _build_lexical_table(rows: list[list[str]]) -> dict:
+    """Build a Lexical table node from markdown table rows (cell strings)."""
+    row_nodes = []
+    for row_cells in rows:
+        cell_nodes = []
+        for cell_text in row_cells:
+            cell_nodes.append({
+                "type": "tablecell",
+                "children": [{
+                    "children": _cell_text_children(cell_text),
+                    "direction": "ltr", "format": "", "indent": 0,
+                    "type": "paragraph", "version": 1,
+                }],
+                "direction": "ltr", "format": "", "indent": 0,
+                "headerState": 0, "colSpan": 1, "rowSpan": 1,
+                "version": 1,
+            })
+        row_nodes.append({
+            "type": "tablerow",
+            "children": cell_nodes,
+            "direction": "ltr", "format": "", "indent": 0,
+            "version": 1,
+        })
+    return {
+        "type": "table",
+        "children": row_nodes,
+        "direction": "ltr", "format": "", "indent": 0,
+        "version": 1,
+    }
+
+
 def _markdown_to_lexical_json(markdown_content: str) -> dict:
     """Convert markdown content to Lexical editor JSON state.
 
-    Parses block-level (headings, lists) and inline formatting
+    Parses block-level (headings, lists, tables) and inline formatting
     (bold, italic, code, strikethrough) into Lexical nodes.
     """
     if not markdown_content:
@@ -66,8 +117,24 @@ def _markdown_to_lexical_json(markdown_content: str) -> dict:
 
     lines = markdown_content.strip().split("\n")
     children = []
+    table_buffer = []
+
     for line in lines:
         stripped = line.strip()
+
+        # ── Table detection ──
+        if _is_md_table_row(stripped):
+            if _is_md_table_separator(stripped):
+                continue
+            table_buffer.append(_parse_md_table_row(stripped))
+            continue
+
+        # Not a table row — flush buffered table first
+        if table_buffer:
+            children.append(_build_lexical_table(table_buffer))
+            table_buffer = []
+
+        # ── Empty / blank lines ──
         if not stripped:
             children.append({
                 "children": [{"detail": 0, "format": 0, "mode": "normal", "style": "", "text": "\u00A0", "type": "text", "version": 1}],
@@ -94,21 +161,7 @@ def _markdown_to_lexical_json(markdown_content: str) -> dict:
                 list_type, body = "number", stripped[3:]
 
         # Build text children with inline formatting
-        text_children = []
-        for seg in _parse_inline_markdown(body):
-            fmt = 0
-            if seg["bold"]:
-                fmt |= 1   # IS_BOLD
-            if seg["italic"]:
-                fmt |= 2   # IS_ITALIC
-            if seg["strike"]:
-                fmt |= 4   # IS_STRIKETHROUGH
-            if seg["code"]:
-                fmt |= 16  # IS_CODE
-            text_children.append({
-                "detail": 0, "format": fmt, "mode": "normal",
-                "style": "", "text": seg["text"], "type": "text", "version": 1,
-            })
+        text_children = _cell_text_children(body)
 
         if heading_tag:
             children.append({
@@ -134,6 +187,9 @@ def _markdown_to_lexical_json(markdown_content: str) -> dict:
                 "direction": "ltr", "format": "", "indent": 0,
                 "type": "paragraph", "version": 1,
             })
+
+    if table_buffer:
+        children.append(_build_lexical_table(table_buffer))
 
     return {"root": {"children": children, "direction": "ltr", "format": "", "indent": 0, "type": "root", "version": 1}}
 
@@ -218,7 +274,20 @@ def _iter_lexical_blocks(root_children: list):
         alignment = block_format if block_format in ("left", "center", "right", "justify") else None
         tag = block.get("tag", "")
 
-        if block_type == "list":
+        if block_type == "table":
+            rows = []
+            for row_node in block.get("children", []):
+                if row_node.get("type") != "tablerow":
+                    continue
+                cells = []
+                for cell_node in row_node.get("children", []):
+                    if cell_node.get("type") != "tablecell":
+                        continue
+                    texts = [c for c in cell_node.get("children", []) if c.get("type") == "text"]
+                    cells.append(texts)
+                rows.append(cells)
+            yield ("table", None, None, rows)
+        elif block_type == "list":
             list_type = block.get("listType", "bullet")
             for item in block.get("children", []):
                 if item.get("type") != "listitem":
@@ -283,6 +352,34 @@ def _generate_docx(content, format_config: dict = None) -> bytes:
     heading_style_map = {"h1": "Heading 1", "h2": "Heading 2", "h3": "Heading 3"}
 
     for block_type, tag_or_listtype, alignment, texts in _iter_lexical_blocks(root_children):
+        # ── Table ──
+        if block_type == "table":
+            rows_data = texts  # list[list[list[dict]]]: rows × cells × text_nodes
+            if not rows_data or not rows_data[0]:
+                continue
+            cols = len(rows_data[0])
+            total_rows = len(rows_data)
+            table = doc.add_table(rows=total_rows, cols=cols, style="Table Grid")
+            # Header row (first row)
+            for j, cell_texts in enumerate(rows_data[0]):
+                cell = table.cell(0, j)
+                cell_paragraph = cell.paragraphs[0]
+                for text_node in cell_texts:
+                    run = cell_paragraph.add_run(text_node.get("text", ""))
+                    run.bold = True
+            # Data rows
+            for i, row_cells in enumerate(rows_data[1:]):
+                for j, cell_texts in enumerate(row_cells):
+                    if j < cols:
+                        cell = table.cell(i + 1, j)
+                        cell_paragraph = cell.paragraphs[0]
+                        cell_paragraph.clear()
+                        for text_node in cell_texts:
+                            _add_styled_docx_run(cell_paragraph, text_node)
+            doc.add_paragraph("")  # spacer after table
+            continue
+
+        # ── Paragraphs / Headings / Lists ──
         if block_type == "listitem":
             if tag_or_listtype == "bullet":
                 p = doc.add_paragraph(style="List Bullet")
@@ -634,6 +731,36 @@ def _generate_pdf(content, format_config: dict = None) -> bytes:
         for block_type, tag_or_listtype, alignment, texts in _iter_lexical_blocks(root_children):
             para_alignment = alignment_map.get(alignment, TA_LEFT) if alignment else TA_LEFT
 
+            # ── Table ──
+            if block_type == "table":
+                rows_data = texts  # list[list[list[dict]]]: rows × cells × text_nodes
+                if not rows_data or not rows_data[0]:
+                    continue
+                n_cols = len(rows_data[0])
+                table_data = []
+                for row_cells in rows_data:
+                    row_data = []
+                    for cell_texts in row_cells:
+                        cell_markup = "".join(_build_pdf_inline_markup(t) for t in cell_texts)
+                        cell_style = _make_style("TmpCell", "Normal")
+                        row_data.append(Paragraph(cell_markup, cell_style))
+                    table_data.append(row_data)
+                from reportlab.platypus import Table as PdfTable, TableStyle as PdfTableStyle
+                from reportlab.lib import colors as pdf_colors
+                page_width = A4[0] - inch * (margins.get("left", 1.0) + margins.get("right", 1.0))
+                col_w = min(page_width / max(n_cols, 1), inch * 2.0)
+                tbl = PdfTable(table_data, colWidths=[col_w] * n_cols)
+                tbl.setStyle(PdfTableStyle([
+                    ("GRID", (0, 0), (-1, -1), 0.5, pdf_colors.grey),
+                    ("BACKGROUND", (0, 0), (-1, 0), pdf_colors.HexColor("#E0E0E0")),
+                    ("FONTSIZE", (0, 0), (-1, -1), max(font_size - 2, 8)),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ]))
+                story.append(tbl)
+                story.append(Spacer(1, font_size * 0.5))
+                continue
+
+            # ── Paragraphs / Headings / Lists ──
             if block_type == "listitem":
                 bullet = "\u2022 " if tag_or_listtype == "bullet" else "1. "
                 markup_parts = [bullet] + [_build_pdf_inline_markup(t) for t in texts]

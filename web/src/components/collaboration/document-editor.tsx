@@ -6,11 +6,20 @@ import LexicalErrorBoundary from '@lexical/react/LexicalErrorBoundary';
 import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin';
 import { ListPlugin } from '@lexical/react/LexicalListPlugin';
 import { RichTextPlugin } from '@lexical/react/LexicalRichTextPlugin';
+import { TablePlugin } from '@lexical/react/LexicalTablePlugin';
 import {
   $createHeadingNode,
   $isHeadingNode,
   HeadingNode,
 } from '@lexical/rich-text';
+import {
+  $isTableCellNode,
+  $isTableNode,
+  $isTableRowNode,
+  TableCellNode,
+  TableNode,
+  TableRowNode,
+} from '@lexical/table';
 import { $getRoot, $isTextNode } from 'lexical';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ToolbarPlugin from './toolbar-plugin';
@@ -54,6 +63,11 @@ const theme = {
     subscript: 'text-[0.7em] align-sub',
     superscript: 'text-[0.7em] align-super',
   },
+  table: 'w-full border-collapse border border-stone-300 my-2 text-sm',
+  tableRow: '',
+  tableCell: 'border border-stone-300 px-2 py-1 align-top',
+  tableCellHeader:
+    'border border-stone-300 px-2 py-1 align-top bg-stone-100 font-bold',
 };
 
 function onError(error: Error) {
@@ -104,6 +118,34 @@ function AutoSavePlugin({
             const listItems = child.getChildren();
             for (const item of listItems) {
               lines.push((isBullet ? '- ' : '1. ') + item.getTextContent());
+            }
+          } else if ($isTableNode(child)) {
+            const rows = child.getChildren();
+            const mdRows: string[] = [];
+            for (const row of rows) {
+              if ($isTableRowNode(row)) {
+                const cells = row.getChildren();
+                const cellTexts = cells.map((cell) => {
+                  if ($isTableCellNode(cell)) {
+                    return cell.getTextContent().replace(/\n/g, ' ').trim();
+                  }
+                  return '';
+                });
+                mdRows.push('| ' + cellTexts.join(' | ') + ' |');
+              }
+            }
+            if (mdRows.length > 0) {
+              // Header row
+              lines.push(mdRows[0]);
+              // Separator row
+              const colCount = (mdRows[0].match(/\|/g) || []).length - 1;
+              if (colCount > 0) {
+                lines.push('|' + ' --- |'.repeat(colCount));
+              }
+              // Data rows
+              for (let i = 1; i < mdRows.length; i++) {
+                lines.push(mdRows[i]);
+              }
             }
           } else {
             lines.push(text);
@@ -247,6 +289,10 @@ function FormatApplyPlugin({
       // Snapshot paragraph list before mutation — replace() modifies the tree
       const paragraphs = [...root.getChildren()];
       for (const paragraph of paragraphs) {
+        // Skip table nodes — they have a different internal structure
+        if ($isTableNode(paragraph)) {
+          continue;
+        }
         const text = paragraph.getTextContent();
         const matched = styleRules
           ? matchParagraphStyle(text, styleRules)
@@ -389,7 +435,14 @@ export default function DocumentEditor({
     namespace: `collab-doc-${document.id}`,
     theme,
     onError,
-    nodes: [HeadingNode, ListNode, ListItemNode],
+    nodes: [
+      HeadingNode,
+      ListNode,
+      ListItemNode,
+      TableNode,
+      TableCellNode,
+      TableRowNode,
+    ],
   };
 
   const saveLabel = {
@@ -465,6 +518,12 @@ export default function DocumentEditor({
               />
               <HistoryPlugin />
               <ListPlugin />
+              <TablePlugin
+                hasCellMerge={false}
+                hasCellBackgroundColor={false}
+                hasTabHandler
+                hasHorizontalScroll
+              />
               <AutoSavePlugin
                 docId={document.id}
                 apiFetch={apiFetch}

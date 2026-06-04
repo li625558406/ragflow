@@ -7,6 +7,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import message from '@/components/ui/message';
 import {
   RAGFlowSelect,
   Select,
@@ -328,12 +329,20 @@ export function ScheduledTaskDialog({
       // Poll for status
       if (pollingRef.current) clearInterval(pollingRef.current);
       pollingRef.current = setInterval(async () => {
-        const status = await fetchWechatMpAuthStatus();
-        if (status.login_status) {
-          clearInterval(pollingRef.current!);
-          pollingRef.current = null;
-          setQrDialogOpen(false);
-          setAuthStatus(status);
+        try {
+          const status = await fetchWechatMpAuthStatus();
+          if (status.login_status) {
+            clearInterval(pollingRef.current!);
+            pollingRef.current = null;
+            setQrDialogOpen(false);
+            setAuthStatus(status);
+          } else if (status.reason === 'timeout') {
+            clearInterval(pollingRef.current!);
+            pollingRef.current = null;
+            setQrDialogOpen(false);
+          }
+        } catch {
+          // Ignore polling errors
         }
       }, 2000);
     } catch (err: any) {
@@ -416,30 +425,42 @@ export function ScheduledTaskDialog({
   // ── Submit ──────────────────────────────────────────────
 
   const handleSubmit = useCallback(async () => {
-    if (!form.name.trim()) return;
-    if (form.task_type === 'script' && !form.script_path.trim()) return;
+    if (!form.name.trim()) {
+      message.warning('请输入任务名称');
+      return;
+    }
+    if (form.task_type === 'script' && !form.script_path.trim()) {
+      message.warning('请输入脚本路径');
+      return;
+    }
 
+    // Strip frontend-only fields before sending to backend
+    const { gather_content, first_max_page, ...rest } = form;
     let submitData: Record<string, any>;
 
     if (form.task_type === 'wechat_mp') {
       submitData = {
-        ...form,
+        ...rest,
         script_path: 'rag/svr/wechat_mp_crawler.py',
         script_args: JSON.stringify({
           mp_ids: selectedMps.map((m) => m.faker_id),
-          gather_content: form.gather_content,
-          first_max_page: form.first_max_page,
+          gather_content,
+          first_max_page,
         }),
         target_url: '',
-        access_token: form.access_token || '',
+        access_token: rest.access_token || '',
         llm_id: '',
         llm_model_name: '',
       };
     } else {
-      submitData = { ...form, script_args: buildScriptArgs() };
+      submitData = { ...rest, script_args: buildScriptArgs() };
     }
 
-    await onOk(submitData);
+    try {
+      await onOk(submitData);
+    } catch (err) {
+      console.error('Save failed:', err);
+    }
   }, [form, onOk, buildScriptArgs, selectedMps]);
 
   const isWechatMp = form.task_type === 'wechat_mp';

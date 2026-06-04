@@ -208,8 +208,37 @@ class WxLogin:
             logger.error("Browser controller not initialized")
             return None
 
+        page = controller.page
+        current_url = page.url if page else ""
+
+        # Wait for the final home page URL (not intermediate redirects)
+        # WeChat login may go through redirects before reaching cgi-bin/home
+        if "cgi-bin/home" not in current_url and page:
+            try:
+                await page.wait_for_url("**/cgi-bin/home**", timeout=15000)
+                current_url = page.url
+                logger.info("Page navigated to home: %s", current_url[:100])
+            except Exception:
+                logger.warning("Wait for home URL timed out, current URL: %s", current_url[:100])
+
+        # Also wait for networkidle to ensure all cookies are set
+        if page:
+            try:
+                await page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:
+                pass
+
         token_val = await self._extract_token_from_page()
         cookies = await controller.get_cookies()
+
+        # Diagnostic logging
+        cookie_names = [c.get("name", "") for c in cookies if c.get("domain", "").endswith("qq.com")]
+        mp_cookies = [c.get("name", "") for c in cookies if "mp.weixin" in c.get("domain", "")]
+        logger.info("Login extraction: url=%s token=%s token_len=%d total_cookies=%d mp_cookies=%s all_qq_cookie_names=%s",
+                    (current_url or "")[:80], (token_val or "")[:15],
+                    len(token_val or ""), len(cookies), mp_cookies,
+                    [n for n in cookie_names if n in ("slave_sid", "slave_user", "bizuin", "token", "wxuin")])
+
         self._session = self._format_token(cookies, token_val or "")
 
         if self._session and self._session.get("expiry"):

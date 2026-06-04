@@ -3,6 +3,7 @@ WxGather base class — adapted from we-mp-rss core/wx/base.py.
 Article collection framework with token management, proxy support, and dedup.
 """
 
+import asyncio
 import json
 import logging
 import random
@@ -54,6 +55,10 @@ class WxGather:
         session = requests.Session()
         session.timeout = (5, 10)
         self.session = session
+
+        # Playwright shared browser (lazy-opened via open_playwright())
+        self._pw_loop = None
+        self._pw_controller = None
 
         # Load credentials
         self._load_token()
@@ -132,7 +137,161 @@ class WxGather:
     # ── Content extraction ───────────────────────────────────
 
     def content_extract(self, url: str) -> str:
-        """Fetch and clean article HTML content."""
+        """Fetch and clean article HTML content.
+
+        Uses shared Playwright browser if available, falls back to requests.
+        """
+        # 1. Playwright — primary method (bypasses WeChat anti-bot)
+        text = self._playwright_extract(url)
+        if text:
+            return text
+
+        # 2. Requests fallback
+        return self._requests_extract(url)
+
+    # ── Playwright shared browser ──────────────────────────
+
+    def open_playwright(self):
+        """Open a shared Playwright browser for all article fetches."""
+        if self._pw_loop is not None:
+            return
+        try:
+            self._pw_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._pw_loop)
+
+            from .playwright_driver import PlaywrightController
+            self._pw_controller = PlaywrightController(
+                proxy_url=self.http_proxy_url if self.proxy_enabled else None,
+                mobile_mode=True,
+            )
+            self._pw_loop.run_until_complete(self._pw_controller.start_browser())
+            logger.info("Shared Playwright browser opened")
+        except Exception as e:
+            logger.error("Failed to open Playwright: %s", e)
+            self._pw_cleanup()
+
+    def close_playwright(self):
+        """Close the shared Playwright browser."""
+        self._pw_cleanup()
+        logger.info("Shared Playwright browser closed")
+
+    def _pw_cleanup(self):
+        if self._pw_controller:
+            try:
+                self._pw_loop.run_until_complete(self._pw_controller.close())
+            except Exception:
+                pass
+            self._pw_controller = None
+        if self._pw_loop:
+            try:
+                self._pw_loop.close()
+            except Exception:
+                pass
+            self._pw_loop = None
+
+    def _playwright_extract(self, url: str) -> str:
+        """Fetch article content via shared Playwright browser."""
+        if self._pw_controller is None or self._pw_loop is None:
+            return ""
+        try:
+            result = self._pw_loop.run_until_complete(
+                self._async_extract_one(url)
+            )
+            if result.get("content"):
+                logger.info("Playwright extracted content: %d chars", len(result["content"]))
+                return result["content"]
+            err = result.get("fetch_error", "")
+            if err:
+                logger.warning("Playwright extract error: %s", err)
+            return ""
+        except Exception as e:
+            logger.warning("Playwright extract failed: %s", e)
+            return ""
+
+    async def _async_extract_one(self, url: str) -> dict:
+        """Extract content from one article using the shared browser page."""
+        from .article_fetcher import _clean_article_html
+        controller = self._pw_controller
+        page = controller.page
+
+        info = {"content": "", "fetch_error": ""}
+
+        success = await controller.open_url(url, timeout=30000)
+        if not success:
+            info["fetch_error"] = "页面加载失败"
+            return info
+
+        await asyncio.sleep(2)
+
+        body_text = await page.locator("body").text_content()
+
+        # Anti-bot / deleted / restricted checks
+        if "当前环境异常，完成验证后即可继续访问" in body_text:
+            info["fetch_error"] = "当前环境异常（反爬验证）"
+            return info
+
+        for keyword in [
+            "该内容已被发布者删除",
+            "The content has been deleted",
+            "内容审核中",
+            "该内容暂时无法查看",
+            "违规无法查看",
+            "Unable to view this content",
+            "发送失败无法查看",
+        ]:
+            if keyword in body_text:
+                info["fetch_error"] = keyword
+                return info
+
+        # Extract article body
+        content = await page.locator("#js_content").inner_html()
+        if not content:
+            content = await page.locator("#js_article").inner_html()
+
+        if not content:
+            info["fetch_error"] = "未找到文章正文元素"
+            return info
+
+        # Scroll to bottom to trigger lazy-loaded images
+        try:
+            await self._scroll_page(page)
+        except Exception as e:
+            logger.warning("滚动加载图片失败: %s", e)
+
+        # Re-fetch after scroll
+        content = await page.locator("#js_content").inner_html()
+        if not content:
+            content = await page.locator("#js_article").inner_html()
+
+        info["content"] = _clean_article_html(str(content))
+        return info
+
+    @staticmethod
+    async def _scroll_page(page, scroll_step: int = 500, max_scrolls: int = 30, wait_ms: int = 200) -> None:
+        """Scroll page to trigger lazy-loaded images."""
+        try:
+            total_height = await page.evaluate("() => document.body.scrollHeight")
+            current_pos = 0
+            scrolls = 0
+            while current_pos < total_height and scrolls < max_scrolls:
+                current_pos += scroll_step
+                await page.evaluate(f"() => window.scrollTo(0, {current_pos})")
+                await asyncio.sleep(wait_ms / 1000)
+                total_height = await page.evaluate("() => document.body.scrollHeight")
+                scrolls += 1
+            # Quick scroll back to top then bottom
+            await page.evaluate("() => window.scrollTo(0, 0)")
+            await asyncio.sleep(0.3)
+            await page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
+            await asyncio.sleep(0.5)
+            logger.info("Scroll complete (%d scrolls)", scrolls)
+        except Exception as e:
+            logger.warning("Scroll error: %s", e)
+
+    # ── Requests fallback ───────────────────────────────────
+
+    def _requests_extract(self, url: str) -> str:
+        """Fetch article content via requests (fallback)."""
         text = ""
         try:
             headers = self.fix_header(url)
@@ -249,9 +408,18 @@ class WxGather:
         headers = self.fix_header(url)
         try:
             proxies = self._get_proxies()
+            # Log full token and first 3 cookies for debugging
+            cookie_str = headers.get("Cookie", "")
+            first_cookies = "; ".join(cookie_str.split("; ")[:3]) if cookie_str else "(empty)"
+            logger.info("search_biz DEBUG: token=%s token_len=%d cookie_sample=%s",
+                        self.token, len(self.token), first_cookies)
             resp = requests.get(url, params=params, headers=headers, proxies=proxies)
+            logger.info("search_biz actual_url: %s", resp.url)
             resp.raise_for_status()
             data = resp.json()
+            logger.info("search_biz response: ret=%s err_msg=%s",
+                        data.get("base_resp", {}).get("ret"),
+                        data.get("base_resp", {}).get("err_msg"))
             if data.get("base_resp", {}).get("ret") == 200013:
                 logger.error("Frequency control — stop at search '%s'", keyword)
                 return None

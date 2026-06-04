@@ -122,10 +122,15 @@ export default function ScheduledTasks() {
         return res;
       }
     },
-    onSuccess: () => {
-      refresh();
-      setDialogVisible(false);
-      setEditingTask(null);
+    onSuccess: (res: any) => {
+      if (res?.code === 0) {
+        refresh();
+        setDialogVisible(false);
+        setEditingTask(null);
+      }
+    },
+    onError: (err: any) => {
+      console.error('Save task failed:', err);
     },
   });
 

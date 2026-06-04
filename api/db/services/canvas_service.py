@@ -13,6 +13,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
+import asyncio
 import json
 import logging
 import time
@@ -282,33 +283,67 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
         "id": message_id,
         "files": files
     })
-    txt = ""
+    event_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
+    sentinel = object()
+
+    async def _run_canvas_and_save():
+        """Execute canvas independently of SSE connection, then save to DB."""
+        txt = ""
+        try:
+            async for ans in canvas.run(query=query, files=files, user_id=user_id, inputs=inputs, internet=kwargs.get("internet")):
+                ans["session_id"] = session_id
+                if ans["event"] == "message":
+                    if ans["data"].get("start_to_think"):
+                        txt += "🧠"
+                    elif ans["data"].get("end_to_think"):
+                        txt += "🤔"
+                    else:
+                        txt += ans["data"]["content"]
+                await event_queue.put(ans)
+        except TaskCanceledException:
+            await event_queue.put({
+                "event": "task_canceled",
+                "data": {"message": "Task has been canceled by user."},
+                "task_id": canvas.task_id,
+            })
+            return
+        except Exception as e:
+            logging.exception(f"Canvas run error for session {session_id}")
+            error_msg = f"\n\n**ERROR**: {e}"
+            await event_queue.put({
+                "event": "message",
+                "data": {"content": error_msg},
+                "session_id": session_id,
+            })
+            txt += error_msg
+
+        # Save to DB regardless of whether SSE consumer is still listening.
+        try:
+            conv.message.append({"role": "assistant", "content": txt, "created_at": time.time(), "id": message_id})
+            conv.reference = canvas.get_reference()
+            conv.errors = canvas.error
+            conv.dsl = str(canvas)
+            conv = conv.to_dict()
+            API4ConversationService.append_message(conv["id"], conv)
+            logging.info(f"Session {session_id} conversation saved ({len(txt)} chars)")
+        except Exception as e:
+            logging.exception(f"Failed to save session {session_id} to DB: {e}")
+        finally:
+            await event_queue.put(sentinel)
+
+    canvas_task = asyncio.create_task(_run_canvas_and_save())
+
     try:
-        async for ans in canvas.run(query=query, files=files, user_id=user_id, inputs=inputs, internet=kwargs.get("internet")):
-            ans["session_id"] = session_id
-            if ans["event"] == "message":
-                if ans["data"].get("start_to_think"):
-                    txt += "<think>"
-                elif ans["data"].get("end_to_think"):
-                    txt += "</think>"
-                else:
-                    txt += ans["data"]["content"]
-            yield "data:" + json.dumps(ans, ensure_ascii=False) + "\n\n"
+        while True:
+            item = await event_queue.get()
+            if item is sentinel:
+                break
+            yield "data:" + json.dumps(item, ensure_ascii=False) + "\n\n"
     except TaskCanceledException:
-        yield ("data:" + json.dumps({
-            "event": "task_canceled",
-            "data": {"message": "Task has been canceled by user."},
-            "task_id": canvas.task_id,
-        }, ensure_ascii=False) + "\n\n")
-        return
-
-    conv.message.append({"role": "assistant", "content": txt, "created_at": time.time(), "id": message_id})
-    conv.reference = canvas.get_reference()
-    conv.errors = canvas.error
-    conv.dsl = str(canvas)
-    conv = conv.to_dict()
-    API4ConversationService.append_message(conv["id"], conv)
-
+        canvas.cancel_task()
+    finally:
+        if not canvas_task.done():
+            canvas_task.cancel()
 
 async def completion_openai(tenant_id, agent_id, question, session_id=None, stream=True, **kwargs):
     tiktoken_encoder = tiktoken.get_encoding("cl100k_base")

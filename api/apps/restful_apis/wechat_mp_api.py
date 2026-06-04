@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # ── In-memory login session tracker ─────────────────────────
 
-# Maps tenant_id -> asyncio.Task (the background login task)
+# Maps tenant_id -> dict with keys: wx, started_at, status, session, ext_data
 _login_sessions: dict = {}
 
 
@@ -79,8 +79,14 @@ async def get_auth_qrcode():
 
     # Cancel any existing login for this tenant
     existing = _login_sessions.get(tenant_id)
-    if existing and not existing.done():
-        existing.cancel()
+    if existing and existing.get("status") == "pending":
+        try:
+            old_wx = existing.get("wx")
+            if old_wx:
+                await old_wx.close()
+        except Exception:
+            pass
+        _login_sessions.pop(tenant_id, None)
 
     project_base = _get_project_base()
     if project_base not in sys.path:
@@ -164,6 +170,12 @@ async def get_auth_qrcode():
             try:
                 page = wx.controller.page
                 await page.wait_for_event("framenavigated", timeout=5 * 60 * 1000)
+                # Wait for page to fully load so all cookies are set;
+                # if networkidle times out, still proceed — token/cookie may be available
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=10000)
+                except Exception:
+                    pass
                 session_data = await wx._call_success()
                 _login_sessions[tenant_id]["status"] = "done"
                 _login_sessions[tenant_id]["session"] = session_data
@@ -319,8 +331,15 @@ async def list_mp_accounts():
 async def add_mp_account():
     """Subscribe to a WeChat MP account."""
     tenant_id = _get_tenant_id()
-    req = await get_request_json()
+    try:
+        req = await get_request_json()
+    except Exception:
+        req = None
     if not req:
+        body_bytes = await request.get_data()
+        logger.warning("add_mp_account: empty body, content_type=%s body_len=%s body=%s",
+                     request.content_type, len(body_bytes) if body_bytes else 0,
+                     body_bytes[:200] if body_bytes else b"")
         return get_data_error_result(message="Request body is required")
 
     mp_name = req.get("mp_name", "").strip()

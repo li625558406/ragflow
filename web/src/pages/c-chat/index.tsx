@@ -1,3 +1,4 @@
+import BidPanel from '@/components/bid';
 import CollaborationPanel from '@/components/collaboration';
 import CreateDocumentDialog from '@/components/collaboration/create-document-dialog';
 import {
@@ -24,7 +25,6 @@ import { useClickDrawer } from '@/components/pdf-drawer/hooks';
 import { RAGFlowAvatar } from '@/components/ragflow-avatar';
 import ToolsPanel from '@/components/tools';
 import { Textarea } from '@/components/ui/textarea';
-import { BidList } from '@/pages/home/bid-list';
 
 import { RealtimeAudioButton } from '@/components/realtime-audio-button';
 import { MessageType } from '@/constants/chat';
@@ -2215,7 +2215,7 @@ export default function CChat() {
             {/* Bid View */}
             {mainView === 'bid' && (
               <div className="cs-page-enter flex-1 flex flex-col min-h-0">
-                <BidList setListLength={() => {}} />
+                <BidPanel />
               </div>
             )}
           </div>

@@ -119,7 +119,7 @@ export const addWechatMpAccount = async (payload: {
   mp_cover?: string;
   mp_intro?: string;
 }) => {
-  return request.post(api.addWechatMpAccount, payload);
+  return request.post(api.addWechatMpAccount, { data: payload });
 };
 
 export const deleteWechatMpAccount = async (accountId: string) => {
