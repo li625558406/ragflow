@@ -105,6 +105,7 @@ export function VariableTitle({ title }: { title: ReactNode }) {
 }
 
 export function LoopDynamicOutput({ node }: IProps) {
+  const { t } = useTranslation();
   return (
     <FormContainer>
       <VariableTitle title={t('flow.output')}></VariableTitle>

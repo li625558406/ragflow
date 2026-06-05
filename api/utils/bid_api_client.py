@@ -281,42 +281,8 @@ class BidApiClient:
         return data
 
     def _v2_post_form(self, endpoint: str, data: dict) -> dict:
-        """发送 form-encoded POST 请求到 v2 网关。"""
-        url = f"{self.base_url_v2}{endpoint}?key={self.api_key}"
-        headers = {"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"}
-        try:
-            resp = requests.post(url, data=data, headers=headers, timeout=self.timeout)
-            resp.raise_for_status()
-            result = resp.json()
-        except requests.exceptions.Timeout:
-            raise BidApiError(f"Request timeout ({self.timeout}s): {endpoint}")
-        except requests.exceptions.RequestException as e:
-            raise BidApiError(f"Request failed: {e}")
-        except json.JSONDecodeError as e:
-            raise BidApiError(f"Invalid JSON response: {e}")
-
-        code = result.get("code", -1)
-        state = result.get("state")
-        sub_code = result.get("subCode", "")
-        if code is not None and code != 200:
-            raise BidApiError(
-                result.get("msg", result.get("subMsg", "Unknown error")),
-                code=code,
-                raw=result,
-            )
-        if state is not None and state != 1:
-            raise BidApiError(
-                result.get("msg", result.get("subMsg", "Unknown error")),
-                code=state,
-                raw=result,
-            )
-        if sub_code and sub_code != "0000000000":
-            raise BidApiError(
-                result.get("subMsg", "Unknown error"),
-                code=-1,
-                raw=result,
-            )
-        return result
+        """发送 JSON POST 请求到 v2 网关（v2 网关不支持 form-encoded，统一用 JSON）。"""
+        return self._v2_post_json(endpoint, data)
 
     # ------------------------------------------------------------------
     # V2 接口方法
