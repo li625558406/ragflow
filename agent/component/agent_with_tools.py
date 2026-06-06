@@ -265,9 +265,15 @@ class Agent(LLM, ToolBase):
 
         msg = self._fit_messages(prompt, msg)
 
-        need2cite = self._param.cite and self._canvas.get_reference()["chunks"] and self._id.find("-->") < 0
+        # need2cite checks cite param and that this is not a sub-agent (no "-->" in id).
+        # We intentionally do NOT check get_reference()["chunks"] here because when the
+        # LLM calls retrieval as a tool, chunks are populated mid-generation (after this
+        # check). Post-generation we re-check and run citation post-processing if chunks
+        # were added by tools during streaming.
+        need2cite = self._param.cite and self._id.find("-->") < 0
+        has_chunks_before = bool(self._canvas.get_reference()["chunks"])
         cited = False
-        if need2cite and len(msg) < 7:
+        if need2cite and has_chunks_before and len(msg) < 7:
             self._append_system_prompt(msg, citation_prompt())
             cited = True
 
@@ -291,6 +297,11 @@ class Agent(LLM, ToolBase):
             if artifact_md:
                 yield "\n\n" + artifact_md
                 answer += "\n\n" + artifact_md
+            self.set_output("content", answer)
+            return
+
+        # Re-check: chunks may have been populated by retrieval tools during streaming
+        if not self._canvas.get_reference()["chunks"]:
             self.set_output("content", answer)
             return
 
