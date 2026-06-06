@@ -57,6 +57,13 @@ export const SVGIconMap = {
   [Operator.BidImportToKb]: 'bid-import-to-kb',
   [Operator.BidCheckImportStatus]: 'bid-check-status',
   [Operator.BidLookupCode]: 'bid-lookup-code',
+  [Operator.BidGetSource]: 'bid-get-source',
+  [Operator.BidSearchAI]: 'bid-search',
+  [Operator.BidSearchContract]: 'bid-search',
+  [Operator.BidRewriteQuery]: 'bid-search',
+  [Operator.BidIndustryTag]: 'bid-lookup-code',
+  [Operator.BidEnterpriseProfile]: 'bid-get-detail',
+  [Operator.BidConstructionSearch]: 'bid-search',
 };
 export const LucideIconMap = {
   [Operator.DataOperations]: FileCode,

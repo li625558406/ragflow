@@ -1,5 +1,8 @@
 import { BidList } from '@/pages/home/bid-list';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useState } from 'react';
+import BidHome from './bid-home';
+import CcgpSearch from './ccgp-search';
 import ConstructionList from './construction-list';
 import ContractList from './contract-list';
 import CreditChinaSearch from './credit-china-search';
@@ -14,6 +17,12 @@ interface ModuleItem {
 }
 
 const modules: ModuleItem[] = [
+  {
+    id: 'bid-home',
+    name: '首页',
+    description: '快速导航常用招投标网站',
+    icon: 'M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25a2.25 2.25 0 01-2.25-2.25v-2.25z',
+  },
   {
     id: 'bid-search',
     name: '标讯搜索',
@@ -40,7 +49,7 @@ const modules: ModuleItem[] = [
   },
   {
     id: 'shixin-search',
-    name: '失信查询',
+    name: '中国执行信息公开网',
     description: '查询法院失信被执行人名单',
     icon: 'M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0018 0zm-9 3.75h.008v.008H12v-.008zM12 15h.008v.008H12V15zm0 0h.008v.008H12V15z',
   },
@@ -50,18 +59,29 @@ const modules: ModuleItem[] = [
     description: '查询严重失信主体名单',
     icon: 'M12 3v17.25m0 0c-1.472 0-2.882.265-4.185.75M12 20.25c1.472 0 2.882.265 4.185.75M18.75 4.97A48.416 48.416 0 0012 4.5c-2.291 0-4.545.16-6.75.47m13.5 0c1.01.143 2.01.317 3 .52m-3-.52l2.62 10.726c.122.499-.106 1.028-.589 1.202a5.988 5.988 0 01-2.031.352 5.988 5.988 0 01-2.031-.352c-.483-.174-.711-.703-.59-1.202L18.75 4.971zm-13.5 0l-2.62 10.726c-.122.499.106 1.028.589 1.202a5.989 5.989 0 002.031.352 5.989 5.989 0 002.031-.352c.483-.174.711-.703.59-1.202L5.25 4.971z',
   },
+  {
+    id: 'ccgp-search',
+    name: '政府采购违法失信',
+    description: '查询政府采购严重违法失信记录',
+    icon: 'M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z',
+  },
 ];
 
 export default function BidPanel() {
-  const [selectedId, setSelectedId] = useState<string>(modules[0].id);
+  const [selectedId, setSelectedId] = useState<string>('bid-home');
+  const [collapsed, setCollapsed] = useState(false);
 
   const selectedModule = modules.find((m) => m.id === selectedId);
 
   return (
     <div className="flex-1 flex min-h-0 bg-[#FFFFFF]">
       {/* Left: Module list */}
-      <div className="w-56 shrink-0 border-r border-[#D4D4D4] bg-white flex flex-col">
-        <div className="px-4 pt-4 pb-2">
+      <div
+        className={`shrink-0 border-r border-[#D4D4D4] bg-white flex flex-col transition-[width] duration-300 ease-in-out overflow-hidden ${
+          collapsed ? 'w-0 border-r-0' : 'w-56'
+        }`}
+      >
+        <div className="px-4 pt-4 pb-2 whitespace-nowrap">
           <span className="text-[#333333] text-[15px] font-semibold tracking-widest uppercase">
             模块列表
           </span>
@@ -71,7 +91,7 @@ export default function BidPanel() {
             <button
               key={mod.id}
               onClick={() => setSelectedId(mod.id)}
-              className={`cs-list-enter cs-list-d${Math.min(idx, 7)} w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer transition text-left group ${
+              className={`cs-list-enter cs-list-d${Math.min(idx, 7)} w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer transition text-left group whitespace-nowrap ${
                 mod.id === selectedId
                   ? 'bg-[#EAEAEA] text-[#000000]'
                   : 'text-[#333333] hover:bg-[#EAEAEA] hover:text-[#000000]'
@@ -111,8 +131,22 @@ export default function BidPanel() {
         </div>
       </div>
 
+      {/* Toggle button — floats on sidebar edge */}
+      <button
+        onClick={() => setCollapsed((c) => !c)}
+        className="shrink-0 self-start mt-6 -ml-3.5 z-10 size-7 flex items-center justify-center rounded-full border-2 border-[#D4D4D4] bg-white text-[#525252] hover:text-[#000000] hover:border-[#A3A3A3] hover:shadow-[0_2px_8px_rgba(0,0,0,0.12)] transition-all cursor-pointer"
+        title={collapsed ? '展开侧边栏' : '收起侧边栏'}
+      >
+        {collapsed ? (
+          <ChevronRight className="size-3.5" />
+        ) : (
+          <ChevronLeft className="size-3.5" />
+        )}
+      </button>
+
       {/* Right: Module content */}
-      <div className="flex-1 overflow-y-auto bg-[#FFFFFF]">
+      <div className="flex-1 overflow-y-auto bg-[#FFFFFF] min-w-0">
+        {selectedModule?.id === 'bid-home' && <BidHome />}
         {selectedModule?.id === 'bid-search' && (
           <BidList setListLength={() => {}} />
         )}
@@ -121,6 +155,7 @@ export default function BidPanel() {
         {selectedModule?.id === 'construction' && <ConstructionList />}
         {selectedModule?.id === 'shixin-search' && <ShixinSearch />}
         {selectedModule?.id === 'credit-china-search' && <CreditChinaSearch />}
+        {selectedModule?.id === 'ccgp-search' && <CcgpSearch />}
       </div>
     </div>
   );

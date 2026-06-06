@@ -28,6 +28,7 @@ interface Props {
   onRefresh: () => void;
   onApplyFormatRule?: (rule: FormatRule) => void;
   applyingRuleId?: string | null;
+  collapsed?: boolean;
 }
 
 function getCurrentUserId(): string | null {
@@ -48,6 +49,7 @@ export default function DocumentList({
   onRefresh,
   onApplyFormatRule,
   applyingRuleId,
+  collapsed = false,
 }: Props) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
@@ -108,9 +110,13 @@ export default function DocumentList({
   );
 
   return (
-    <div className="w-56 shrink-0 border-r border-[#D4D4D4] bg-white flex flex-col">
+    <div
+      className={`shrink-0 border-r border-[#D4D4D4] bg-white flex flex-col transition-[width] duration-300 ease-in-out overflow-hidden ${
+        collapsed ? 'w-0 border-r-0' : 'w-56'
+      }`}
+    >
       {/* Header */}
-      <div className="px-4 pt-4 pb-2">
+      <div className="px-4 pt-4 pb-2 whitespace-nowrap">
         <span className="text-[#333333] text-[15px] font-semibold tracking-widest uppercase">
           文档列表
         </span>
@@ -133,7 +139,7 @@ export default function DocumentList({
                 key={doc.id}
                 role="button"
                 tabIndex={0}
-                className={`cs-list-enter cs-list-d${Math.min(idx, 7)} w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer transition text-left group ${
+                className={`cs-list-enter cs-list-d${Math.min(idx, 7)} w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer transition text-left group whitespace-nowrap ${
                   selectedId === doc.id
                     ? 'bg-[#EAEAEA] text-[#000000]'
                     : 'text-[#333333] hover:bg-[#EAEAEA] hover:text-[#000000]'

@@ -33,7 +33,10 @@ import {
   useSelectDerivedMessages,
 } from '@/hooks/logic-hooks';
 import { useCancelConversation } from '@/hooks/use-agent-request';
-import { useSendMessageBySSE } from '@/hooks/use-send-message';
+import {
+  MessageEventType,
+  useSendMessageBySSE,
+} from '@/hooks/use-send-message';
 import type {
   Docagg,
   IMessage,
@@ -208,6 +211,8 @@ export default function CChat() {
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
     new Set(),
   );
+  const [thinkingMsgId, setThinkingMsgId] = useState<string | null>(null);
+
   const pendingSendRef = useRef(false);
   const loadingSessionRef = useRef<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -240,6 +245,25 @@ export default function CChat() {
   } = useSendMessageBySSE(api.agentChatCompletion);
   const { cancelConversation } = useCancelConversation();
   const taskId = answerList[0]?.task_id;
+
+  // Extract node events from answerList for thinking timeline
+  const nodeEventsByMsgId = useMemo(() => {
+    const map: Record<string, Array<any>> = {};
+    if (!answerList.length) return map;
+    for (const evt of answerList) {
+      if (
+        evt.event !== MessageEventType.Message &&
+        evt.event !== MessageEventType.MessageEnd
+      ) {
+        const mid = (evt as any).message_id;
+        if (mid) {
+          if (!map[mid]) map[mid] = [];
+          map[mid].push(evt);
+        }
+      }
+    }
+    return map;
+  }, [answerList]);
   const stopConversation = useCallback(() => {
     stopOutputMessage();
     if (taskId) {
@@ -346,6 +370,7 @@ export default function CChat() {
 
   // ── UI state (C-side) ──
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [agentDropdownOpen, setAgentDropdownOpen] = useState(false);
   const [mainView, setMainView] = useState<
     'chat' | 'collaboration' | 'tools' | 'bid'
@@ -679,33 +704,31 @@ export default function CChat() {
               const docAggs: Record<string, Docagg> = {};
               const rawChunks = refList[j].chunks;
               if (typeof rawChunks === 'object') {
-                Object.entries(rawChunks).forEach(
-                  ([key, val]: [string, any]) => {
-                    chunks[key] = {
-                      id: val.chunk_id || val.id || key,
-                      content: val.content_with_weight || val.content || '',
-                      document_id: val.doc_id || val.document_id || '',
-                      document_name: val.docnm_kwd || val.document_name || '',
-                      dataset_id: val.kb_id || val.dataset_id || '',
-                      image_id: val.image_id || val.img_id || '',
-                      similarity: val.similarity || 0,
-                      vector_similarity: val.vector_similarity || 0,
-                      term_similarity: val.term_similarity || 0,
-                      positions: Array.isArray(val.positions)
-                        ? val.positions
-                        : val.position_int || [],
-                    } as IReferenceChunk;
-                    const docId = val.doc_id || val.document_id;
-                    if (docId && !docAggs[docId]) {
-                      docAggs[docId] = {
-                        doc_id: docId,
-                        doc_name: val.docnm_kwd || val.document_name || '',
-                        count: 1,
-                        url: '',
-                      };
-                    }
-                  },
-                );
+                Object.values(rawChunks).forEach((val: any, idx: number) => {
+                  chunks[idx] = {
+                    id: val.chunk_id || val.id || String(idx),
+                    content: val.content_with_weight || val.content || '',
+                    document_id: val.doc_id || val.document_id || '',
+                    document_name: val.docnm_kwd || val.document_name || '',
+                    dataset_id: val.kb_id || val.dataset_id || '',
+                    image_id: val.image_id || val.img_id || '',
+                    similarity: val.similarity || 0,
+                    vector_similarity: val.vector_similarity || 0,
+                    term_similarity: val.term_similarity || 0,
+                    positions: Array.isArray(val.positions)
+                      ? val.positions
+                      : val.position_int || [],
+                  } as IReferenceChunk;
+                  const docId = val.doc_id || val.document_id;
+                  if (docId && !docAggs[docId]) {
+                    docAggs[docId] = {
+                      doc_id: docId,
+                      doc_name: val.docnm_kwd || val.document_name || '',
+                      count: 1,
+                      url: '',
+                    };
+                  }
+                });
               }
               if (refList[j].doc_aggs) {
                 Object.entries(refList[j].doc_aggs).forEach(
@@ -1133,7 +1156,7 @@ export default function CChat() {
           {/* Sidebar */}
           {mainView === 'chat' && (
             <aside
-              className={`fixed md:static inset-y-0 left-0 z-50 md:z-auto w-56 flex flex-col shrink-0 bg-white border-r border-[#D4D4D4] transition-transform duration-200 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}
+              className={`fixed md:static inset-y-0 left-0 z-50 md:z-auto flex flex-col shrink-0 bg-white border-r border-[#D4D4D4] transition-all duration-300 ease-in-out overflow-hidden ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'} ${sidebarCollapsed ? 'w-0 border-r-0' : 'w-56'}`}
             >
               {/* Mobile close */}
               <div className="md:hidden h-12 flex items-center justify-between px-4 border-b border-[#D4D4D4] shrink-0">
@@ -1336,6 +1359,45 @@ export default function CChat() {
             </aside>
           )}
 
+          {/* Sidebar toggle (desktop only) */}
+          {mainView === 'chat' && (
+            <button
+              onClick={() => setSidebarCollapsed((c) => !c)}
+              className="shrink-0 self-start mt-6 -ml-3.5 z-10 size-7 hidden md:flex items-center justify-center rounded-full border-2 border-[#D4D4D4] bg-white text-[#525252] hover:text-[#000000] hover:border-[#A3A3A3] hover:shadow-[0_2px_8px_rgba(0,0,0,0.12)] transition-all cursor-pointer"
+              title={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
+            >
+              {sidebarCollapsed ? (
+                <svg
+                  className="size-3.5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M9 5l7 7-7 7"
+                  />
+                </svg>
+              ) : (
+                <svg
+                  className="size-3.5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M15 19l-7-7 7-7"
+                  />
+                </svg>
+              )}
+            </button>
+          )}
+
           {/* Main Content Area */}
           <div className="flex-1 flex flex-col min-w-0">
             {/* Chat View */}
@@ -1485,7 +1547,34 @@ export default function CChat() {
                             </div>
                           </FileUploadDropzone>
 
-                          <div className="cs-input-ring relative flex flex-col gap-2 bg-[#FFFFFF] border border-[#D4D4D4] rounded-2xl px-4 py-3">
+                          <div
+                            className="cs-input-ring relative flex flex-col gap-2 bg-[#FFFFFF] border border-[#D4D4D4] rounded-2xl px-4 py-3"
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              const fileInput = e.currentTarget
+                                .closest('[data-slot="file-upload"]')
+                                ?.querySelector(
+                                  'input[type="file"]',
+                                ) as HTMLInputElement;
+                              if (
+                                fileInput &&
+                                e.dataTransfer.files.length > 0
+                              ) {
+                                const dt = new DataTransfer();
+                                for (const f of e.dataTransfer.files)
+                                  dt.items.add(f);
+                                fileInput.files = dt.files;
+                                fileInput.dispatchEvent(
+                                  new Event('change', { bubbles: true }),
+                                );
+                              }
+                            }}
+                          >
                             {files.length > 0 && (
                               <FileUploadList
                                 orientation="horizontal"
@@ -1495,12 +1584,15 @@ export default function CChat() {
                                   <FileUploadItem
                                     key={index}
                                     value={file}
-                                    className="max-w-52 p-1.5"
+                                    className="max-w-none w-fit p-1 pr-4 gap-1.5 rounded-lg border border-[#E8E8E8]"
                                   >
-                                    <FileUploadItemPreview className="size-8 [&>svg]:size-5">
+                                    <FileUploadItemPreview className="size-6 [&>svg]:size-3.5 [&>svg]:text-[#525252]">
                                       <FileUploadItemProgress variant="fill" />
                                     </FileUploadItemPreview>
-                                    <FileUploadItemMetadata size="sm" />
+                                    <FileUploadItemMetadata
+                                      size="sm"
+                                      className="[&_span:first-child]:text-[#000000]"
+                                    />
                                     <FileUploadItemDelete asChild>
                                       <button
                                         className="-top-1 -right-1 absolute size-4 shrink-0 cursor-pointer rounded-full bg-gray-200 hover:bg-gray-300 flex items-center justify-center"
@@ -1530,7 +1622,7 @@ export default function CChat() {
                               }}
                               placeholder={typewriterText}
                               className="min-h-[72px] w-full p-0 overflow-auto !outline-none !border-transparent !bg-transparent !shadow-none !ring-transparent !ring-offset-transparent !text-[#000000] cs-typewriter-cursor"
-                              disabled={sendLoading}
+                              style={{ color: '#000000' }}
                               autoSize={{ minRows: 3, maxRows: 10 }}
                               autoFocus
                             />
@@ -1564,25 +1656,46 @@ export default function CChat() {
                                   </svg>
                                 </button>
                               </FileUploadTrigger>
-                              <button
-                                onClick={handlePressEnter}
-                                disabled={!value.trim()}
-                                className="shrink-0 w-9 h-9 flex items-center justify-center bg-[#000000] hover:bg-[#1a1a1a] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
-                              >
-                                <svg
-                                  className="w-4 h-4"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  viewBox="0 0 24 24"
+                              {!sendLoading ? (
+                                <button
+                                  onClick={handlePressEnter}
+                                  disabled={!value.trim()}
+                                  className="shrink-0 w-9 h-9 flex items-center justify-center bg-[#000000] hover:bg-[#1a1a1a] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
                                 >
-                                  <path
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                    strokeWidth={2}
-                                    d="M5 12h14M12 5l7 7-7 7"
-                                  />
-                                </svg>
-                              </button>
+                                  <svg
+                                    className="w-4 h-4"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    viewBox="0 0 24 24"
+                                  >
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M5 12h14M12 5l7 7-7 7"
+                                    />
+                                  </svg>
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={stopConversation}
+                                  className="shrink-0 w-9 h-9 flex items-center justify-center bg-red-400 text-white rounded-lg hover:bg-red-500 transition active:scale-95"
+                                >
+                                  <svg
+                                    className="w-3.5 h-3.5"
+                                    fill="currentColor"
+                                    viewBox="0 0 24 24"
+                                  >
+                                    <rect
+                                      x="6"
+                                      y="6"
+                                      width="12"
+                                      height="12"
+                                      rx="2"
+                                    />
+                                  </svg>
+                                </button>
+                              )}
                             </div>
                           </div>
                         </FileUpload>
@@ -1820,6 +1933,111 @@ export default function CChat() {
                                       </div>
                                     )}
                                   </div>
+                                  {/* Thinking timeline toggle */}
+                                  {nodeEventsByMsgId[msg.id || ''] && (
+                                    <button
+                                      className={`flex items-center gap-1 text-[11px] text-[#525252] hover:text-[#000000] transition-colors mt-1.5 ${thinkingMsgId === msg.id ? 'text-[#000000]' : ''}`}
+                                      onClick={() =>
+                                        setThinkingMsgId((prev) =>
+                                          prev === msg.id ? null : msg.id,
+                                        )
+                                      }
+                                    >
+                                      <svg
+                                        className={`w-3 h-3 transition-transform ${thinkingMsgId === msg.id ? 'animate-spin' : ''}`}
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                        stroke="currentColor"
+                                      >
+                                        <circle
+                                          cx="12"
+                                          cy="12"
+                                          r="10"
+                                          strokeWidth="2.5"
+                                          opacity="0.3"
+                                        />
+                                        <path
+                                          d="M12 2a10 10 0 019.95 9"
+                                          strokeLinecap="round"
+                                          strokeWidth="2.5"
+                                        />
+                                      </svg>
+                                      <span>思考过程</span>
+                                      <svg
+                                        className={`w-2.5 h-2.5 transition-transform ${thinkingMsgId === msg.id ? 'rotate-180' : ''}`}
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        strokeWidth="2"
+                                      >
+                                        <polyline points="6 9 12 15 18 9" />
+                                      </svg>
+                                    </button>
+                                  )}
+                                  {thinkingMsgId === msg.id && (
+                                    <div className="mt-2 space-y-1.5 py-2 border-t border-[#EAEAEA]">
+                                      {(nodeEventsByMsgId[msg.id || ''] || [])
+                                        .filter(
+                                          (e) =>
+                                            e.event ===
+                                              MessageEventType.NodeStarted ||
+                                            e.event ===
+                                              MessageEventType.NodeFinished,
+                                        )
+                                        .reduce<
+                                          Array<{
+                                            id: string;
+                                            name: string;
+                                            status: string;
+                                            elapsed: number;
+                                          }>
+                                        >((acc, e) => {
+                                          const d = (e as any).data;
+                                          if (
+                                            acc.some(
+                                              (x) => x.id === d.component_id,
+                                            )
+                                          )
+                                            return acc;
+                                          acc.push({
+                                            id: d.component_id,
+                                            name: d.component_name,
+                                            status:
+                                              e.event ===
+                                              MessageEventType.NodeFinished
+                                                ? d.error
+                                                  ? 'error'
+                                                  : 'done'
+                                                : 'running',
+                                            elapsed: d.elapsed_time || 0,
+                                          });
+                                          return acc;
+                                        }, [])
+                                        .map((node) => (
+                                          <div
+                                            key={node.id}
+                                            className="flex items-center gap-2 text-[11px] text-[#1a1a1a] px-1"
+                                          >
+                                            <div
+                                              className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                                                node.status === 'running'
+                                                  ? 'bg-[#A3A3A3] animate-pulse'
+                                                  : node.status === 'done'
+                                                    ? 'bg-[#22c55e]'
+                                                    : 'bg-red-400'
+                                              }`}
+                                            />
+                                            <span className="truncate flex-1">
+                                              {node.name}
+                                            </span>
+                                            <span className="text-[#525252] shrink-0 tabular-nums">
+                                              {(node.elapsed / 1000).toFixed(1)}
+                                              s
+                                            </span>
+                                          </div>
+                                        ))}
+                                    </div>
+                                  )}
                                   {/* Reference sources */}
                                   {!streaming && refs && (
                                     <div className="mt-3 space-y-2">
@@ -2064,7 +2282,34 @@ export default function CChat() {
                             </div>
                           </FileUploadDropzone>
 
-                          <div className="cs-input-ring relative flex flex-col gap-2 bg-[#FFFFFF] border border-[#D4D4D4] rounded-2xl px-3 py-2">
+                          <div
+                            className="cs-input-ring relative flex flex-col gap-2 bg-[#FFFFFF] border border-[#D4D4D4] rounded-2xl px-3 py-2"
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              const fileInput = e.currentTarget
+                                .closest('[data-slot="file-upload"]')
+                                ?.querySelector(
+                                  'input[type="file"]',
+                                ) as HTMLInputElement;
+                              if (
+                                fileInput &&
+                                e.dataTransfer.files.length > 0
+                              ) {
+                                const dt = new DataTransfer();
+                                for (const f of e.dataTransfer.files)
+                                  dt.items.add(f);
+                                fileInput.files = dt.files;
+                                fileInput.dispatchEvent(
+                                  new Event('change', { bubbles: true }),
+                                );
+                              }
+                            }}
+                          >
                             {files.length > 0 && (
                               <FileUploadList
                                 orientation="horizontal"
@@ -2074,12 +2319,15 @@ export default function CChat() {
                                   <FileUploadItem
                                     key={index}
                                     value={file}
-                                    className="max-w-52 p-1.5"
+                                    className="max-w-none w-fit p-1 pr-4 gap-1.5 rounded-lg border border-[#E8E8E8]"
                                   >
-                                    <FileUploadItemPreview className="size-8 [&>svg]:size-5">
+                                    <FileUploadItemPreview className="size-6 [&>svg]:size-3.5 [&>svg]:text-[#525252]">
                                       <FileUploadItemProgress variant="fill" />
                                     </FileUploadItemPreview>
-                                    <FileUploadItemMetadata size="sm" />
+                                    <FileUploadItemMetadata
+                                      size="sm"
+                                      className="[&_span:first-child]:text-[#000000]"
+                                    />
                                     <FileUploadItemDelete asChild>
                                       <button
                                         className="-top-1 -right-1 absolute size-4 shrink-0 cursor-pointer rounded-full bg-gray-200 hover:bg-gray-300 flex items-center justify-center"
@@ -2113,7 +2361,7 @@ export default function CChat() {
                                   : typewriterText
                               }
                               className={`min-h-[72px] w-full p-0 overflow-auto !outline-none !border-transparent !bg-transparent !shadow-none !ring-transparent !ring-offset-transparent !text-[#000000]${hasMessages ? '' : ' cs-typewriter-cursor'}`}
-                              disabled={sendLoading}
+                              style={{ color: '#000000' }}
                               autoSize={{ minRows: 3, maxRows: 10 }}
                             />
                             <div className="flex items-center justify-end gap-2">

@@ -639,6 +639,69 @@ export const initialBidLookupCodeValues = {
   },
 };
 
+export const initialBidGetSourceValues = {
+  outputs: {
+    formalized_content: {
+      value: '',
+      type: 'string',
+    },
+  },
+};
+
+export const initialBidSearchAIValues = {
+  outputs: {
+    formalized_content: {
+      value: '',
+      type: 'string',
+    },
+  },
+};
+
+export const initialBidSearchContractValues = {
+  outputs: {
+    formalized_content: {
+      value: '',
+      type: 'string',
+    },
+  },
+};
+
+export const initialBidRewriteQueryValues = {
+  outputs: {
+    formalized_content: {
+      value: '',
+      type: 'string',
+    },
+  },
+};
+
+export const initialBidIndustryTagValues = {
+  outputs: {
+    formalized_content: {
+      value: '',
+      type: 'string',
+    },
+  },
+};
+
+export const initialBidEnterpriseProfileValues = {
+  outputs: {
+    formalized_content: {
+      value: '',
+      type: 'string',
+    },
+  },
+};
+
+export const initialBidConstructionSearchValues = {
+  outputs: {
+    formalized_content: {
+      value: '',
+      type: 'string',
+    },
+  },
+};
+
 export const initialPlaceholderValues = {
   // Placeholder node doesn't need any specific form values
   // It's just a visual placeholder
@@ -768,6 +831,13 @@ export const RestrictedUpstreamMap = {
   [Operator.BidImportToKb]: [Operator.Begin],
   [Operator.BidCheckImportStatus]: [Operator.Begin],
   [Operator.BidLookupCode]: [Operator.Begin],
+  [Operator.BidGetSource]: [Operator.Begin],
+  [Operator.BidSearchAI]: [Operator.Begin],
+  [Operator.BidSearchContract]: [Operator.Begin],
+  [Operator.BidRewriteQuery]: [Operator.Begin],
+  [Operator.BidIndustryTag]: [Operator.Begin],
+  [Operator.BidEnterpriseProfile]: [Operator.Begin],
+  [Operator.BidConstructionSearch]: [Operator.Begin],
   [Operator.StringTransform]: [Operator.Begin],
   [Operator.UserFillUp]: [Operator.Begin],
   [Operator.Tool]: [Operator.Begin],
@@ -824,6 +894,13 @@ export const NodeMap = {
   [Operator.BidImportToKb]: 'ragNode',
   [Operator.BidCheckImportStatus]: 'ragNode',
   [Operator.BidLookupCode]: 'ragNode',
+  [Operator.BidGetSource]: 'ragNode',
+  [Operator.BidSearchAI]: 'ragNode',
+  [Operator.BidSearchContract]: 'ragNode',
+  [Operator.BidRewriteQuery]: 'ragNode',
+  [Operator.BidIndustryTag]: 'ragNode',
+  [Operator.BidEnterpriseProfile]: 'ragNode',
+  [Operator.BidConstructionSearch]: 'ragNode',
   [Operator.UserFillUp]: 'ragNode',
   [Operator.StringTransform]: 'ragNode',
   [Operator.TavilyExtract]: 'ragNode',

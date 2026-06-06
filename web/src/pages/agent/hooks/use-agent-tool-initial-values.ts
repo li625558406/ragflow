@@ -65,6 +65,13 @@ export function useAgentToolInitialValues() {
         case Operator.BidImportToKb:
         case Operator.BidCheckImportStatus:
         case Operator.BidLookupCode:
+        case Operator.BidGetSource:
+        case Operator.BidSearchAI:
+        case Operator.BidSearchContract:
+        case Operator.BidRewriteQuery:
+        case Operator.BidIndustryTag:
+        case Operator.BidEnterpriseProfile:
+        case Operator.BidConstructionSearch:
           return {};
 
         default:

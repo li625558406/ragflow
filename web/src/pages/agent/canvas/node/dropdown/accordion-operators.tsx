@@ -129,6 +129,13 @@ export function AccordionOperators({
               Operator.BidImportToKb,
               Operator.BidCheckImportStatus,
               Operator.BidLookupCode,
+              Operator.BidGetSource,
+              Operator.BidSearchAI,
+              Operator.BidSearchContract,
+              Operator.BidRewriteQuery,
+              Operator.BidIndustryTag,
+              Operator.BidEnterpriseProfile,
+              Operator.BidConstructionSearch,
             ]}
             isCustomDropdown={isCustomDropdown}
             mousePosition={mousePosition}

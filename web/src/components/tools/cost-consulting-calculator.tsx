@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react';
+import { DiscountBar } from './discount-bar';
 
 const TIERS = [500, 1000, 5000, 10000, 30000, 50000];
 
@@ -174,7 +175,7 @@ function ResultCard({
   const [expanded, setExpanded] = useState(false);
 
   return (
-    <div className="bg-white rounded-2xl border border-[#D4D4D4] p-5">
+    <div className="bg-white rounded-2xl border border-[#D4D4D4] p-4">
       <div className="text-xs text-[#1a1a1a] mb-2">{title}</div>
       {detail && detail.length > 0 && (
         <div className="space-y-1 mb-3 text-sm">
@@ -1007,13 +1008,18 @@ export default function CostConsultingCalculator() {
 
           {/* Result */}
           {resultData && (
-            <ResultCard
-              title={resultData.title}
-              total={resultData.total}
-              detail={resultData.detail}
-              coef={resultData.coef}
-              trace={traceData}
-            />
+            <div>
+              <ResultCard
+                title={resultData.title}
+                total={resultData.total}
+                detail={resultData.detail}
+                coef={resultData.coef}
+                trace={traceData}
+              />
+              <div className="mt-4">
+                <DiscountBar baseFee={resultData.total} />
+              </div>
+            </div>
           )}
         </div>
 

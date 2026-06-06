@@ -7,11 +7,146 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Progress } from '@/components/ui/progress';
-import { RAGFlowSelect } from '@/components/ui/select';
 import { fetchBidParseStatus, triggerBidParse } from '@/services/bid-service';
 import request from '@/utils/next-request';
-import { CheckCircle2, Clock, Loader2, XCircle } from 'lucide-react';
+import {
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  Clock,
+  Loader2,
+  Search,
+  X,
+  XCircle,
+} from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+
+// ============================================================================
+// Simple Custom Select (no Radix dependency)
+// ============================================================================
+
+function SimpleSelect({
+  value,
+  onChange,
+  options,
+  placeholder,
+  disabled,
+}: {
+  value: string;
+  onChange: (val: string) => void;
+  options: { label: string; value: string }[];
+  placeholder?: string;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [keyword, setKeyword] = useState('');
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const selected = options.find((o) => o.value === value);
+  const filtered = keyword
+    ? options.filter((o) =>
+        o.label.toLowerCase().includes(keyword.toLowerCase()),
+      )
+    : options;
+
+  // Close on click outside
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
+        setOpen(false);
+        setKeyword('');
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  return (
+    <div ref={containerRef} className="relative">
+      {/* Trigger */}
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => {
+          if (!disabled) {
+            setOpen((v) => !v);
+            if (open) setKeyword('');
+          }
+        }}
+        className="w-full h-9 px-3 text-xs text-left border border-[#D4D4D4] bg-white rounded-lg flex items-center justify-between gap-2 hover:border-[#A3A3A3] focus:border-[#000000] focus:outline-none transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        <span className={selected ? 'text-[#000000]' : 'text-[#A3A3A3]'}>
+          {selected ? selected.label : placeholder || '请选择'}
+        </span>
+        <span className="flex items-center gap-1 shrink-0">
+          {value && !disabled && (
+            <X
+              className="size-3 text-[#A3A3A3] hover:text-[#000000]"
+              onClick={(e) => {
+                e.stopPropagation();
+                onChange('');
+              }}
+            />
+          )}
+          <ChevronDown
+            className={`size-3.5 text-[#A3A3A3] transition-transform ${open ? 'rotate-180' : ''}`}
+          />
+        </span>
+      </button>
+
+      {/* Dropdown */}
+      {open && (
+        <div className="absolute z-50 top-full mt-1 left-0 right-0 bg-white border border-[#E8E8E8] rounded-lg shadow-lg overflow-hidden">
+          {/* Search */}
+          <div className="px-2 py-1.5 border-b border-[#F0F0F0]">
+            <div className="flex items-center gap-1.5 px-2 h-7 bg-[#F5F5F5] rounded">
+              <Search className="size-3 text-[#A3A3A3] shrink-0" />
+              <input
+                type="text"
+                value={keyword}
+                onChange={(e) => setKeyword(e.target.value)}
+                placeholder="搜索..."
+                autoFocus
+                className="flex-1 bg-transparent text-xs text-[#000000] placeholder:text-[#A3A3A3] outline-none"
+              />
+            </div>
+          </div>
+
+          {/* Options */}
+          <div className="max-h-48 overflow-y-auto py-1">
+            {filtered.length === 0 ? (
+              <div className="px-3 py-4 text-center text-xs text-[#A3A3A3]">
+                无匹配项
+              </div>
+            ) : (
+              filtered.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => {
+                    onChange(opt.value);
+                    setOpen(false);
+                    setKeyword('');
+                  }}
+                  className="w-full px-3 py-1.5 text-xs text-left flex items-center justify-between gap-2 hover:bg-[#F5F5F5] transition-colors"
+                >
+                  <span className="truncate text-[#1a1a1a]">{opt.label}</span>
+                  {opt.value === value && (
+                    <Check className="size-3.5 text-[#000000] shrink-0" />
+                  )}
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface ParseStatus {
   status: string; // none | pending | parsing | done | fail
@@ -177,20 +312,18 @@ export function BidConfigDialog({
             <label className="text-sm font-medium text-[#333333]">
               选择知识库
             </label>
-            <RAGFlowSelect
+            <SimpleSelect
               value={selectedKb}
-              onChange={(val) => setSelectedKb(val || '')}
+              onChange={(val) => setSelectedKb(val)}
               options={kbs.map((kb: any) => ({
                 label: kb.name,
                 value: kb.id,
               }))}
               placeholder={kbsLoading ? '加载中...' : '请选择知识库'}
-              allowClear
               disabled={
                 parseStatus?.status === 'parsing' ||
                 parseStatus?.status === 'pending'
               }
-              triggerClassName="bg-white border-[#D4D4D4] text-[#000000] hover:bg-[#FFFFFF] hover:border-[#000000] hover:text-[#000000]"
             />
           </div>
 
@@ -235,7 +368,7 @@ export function BidConfigDialog({
               parseStatus?.status === 'pending'
             }
             loading={parseLoading}
-            className="bg-[#000000] hover:bg-[#000000]"
+            className="bg-[#000000] hover:bg-[#171717] text-white"
           >
             开始解析
           </Button>

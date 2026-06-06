@@ -206,4 +206,25 @@ export const FormConfigMap = {
   [Operator.BidLookupCode]: {
     component: () => <></>,
   },
+  [Operator.BidGetSource]: {
+    component: () => <></>,
+  },
+  [Operator.BidSearchAI]: {
+    component: () => <></>,
+  },
+  [Operator.BidSearchContract]: {
+    component: () => <></>,
+  },
+  [Operator.BidRewriteQuery]: {
+    component: () => <></>,
+  },
+  [Operator.BidIndustryTag]: {
+    component: () => <></>,
+  },
+  [Operator.BidEnterpriseProfile]: {
+    component: () => <></>,
+  },
+  [Operator.BidConstructionSearch]: {
+    component: () => <></>,
+  },
 };

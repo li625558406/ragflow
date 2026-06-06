@@ -1,3 +1,4 @@
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useState } from 'react';
 import AgencyFeeCalculator from './agency-fee-calculator';
 import CostConsultingCalculator from './cost-consulting-calculator';
@@ -40,14 +41,19 @@ const tools: ToolItem[] = [
 
 export default function ToolsPanel() {
   const [selectedId, setSelectedId] = useState<string>(tools[0].id);
+  const [collapsed, setCollapsed] = useState(false);
 
   const selectedTool = tools.find((t) => t.id === selectedId);
 
   return (
     <div className="flex-1 flex min-h-0 bg-[#FFFFFF]">
       {/* Left: Tool list */}
-      <div className="w-56 shrink-0 border-r border-[#D4D4D4] bg-white flex flex-col">
-        <div className="px-4 pt-4 pb-2">
+      <div
+        className={`shrink-0 border-r border-[#D4D4D4] bg-white flex flex-col transition-[width] duration-300 ease-in-out overflow-hidden ${
+          collapsed ? 'w-0 border-r-0' : 'w-56'
+        }`}
+      >
+        <div className="px-4 pt-4 pb-2 whitespace-nowrap">
           <span className="text-[#333333] text-[15px] font-semibold tracking-widest uppercase">
             工具列表
           </span>
@@ -57,7 +63,7 @@ export default function ToolsPanel() {
             <button
               key={tool.id}
               onClick={() => setSelectedId(tool.id)}
-              className={`cs-list-enter cs-list-d${Math.min(idx, 7)} w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer transition text-left group ${
+              className={`cs-list-enter cs-list-d${Math.min(idx, 7)} w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer transition text-left group whitespace-nowrap ${
                 tool.id === selectedId
                   ? 'bg-[#EAEAEA] text-[#000000]'
                   : 'text-[#333333] hover:bg-[#EAEAEA] hover:text-[#000000]'
@@ -97,8 +103,21 @@ export default function ToolsPanel() {
         </div>
       </div>
 
+      {/* Toggle button */}
+      <button
+        onClick={() => setCollapsed((c) => !c)}
+        className="shrink-0 self-start mt-6 -ml-3.5 z-10 size-7 flex items-center justify-center rounded-full border-2 border-[#D4D4D4] bg-white text-[#525252] hover:text-[#000000] hover:border-[#A3A3A3] hover:shadow-[0_2px_8px_rgba(0,0,0,0.12)] transition-all cursor-pointer"
+        title={collapsed ? '展开侧边栏' : '收起侧边栏'}
+      >
+        {collapsed ? (
+          <ChevronRight className="size-3.5" />
+        ) : (
+          <ChevronLeft className="size-3.5" />
+        )}
+      </button>
+
       {/* Right: Tool content */}
-      <div className="flex-1 overflow-y-auto bg-[#FFFFFF]">
+      <div className="flex-1 overflow-y-auto bg-[#FFFFFF] min-w-0">
         {selectedTool?.id === 'agency-fee' && <AgencyFeeCalculator />}
         {selectedTool?.id === 'cost-consulting' && <CostConsultingCalculator />}
         {selectedTool?.id === 'engineering-survey' && (

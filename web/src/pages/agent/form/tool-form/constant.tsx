@@ -40,4 +40,11 @@ export const ToolFormConfigMap = {
   [Operator.BidImportToKb]: () => <div></div>,
   [Operator.BidCheckImportStatus]: () => <div></div>,
   [Operator.BidLookupCode]: () => <div></div>,
+  [Operator.BidGetSource]: () => <div></div>,
+  [Operator.BidSearchAI]: () => <div></div>,
+  [Operator.BidSearchContract]: () => <div></div>,
+  [Operator.BidRewriteQuery]: () => <div></div>,
+  [Operator.BidIndustryTag]: () => <div></div>,
+  [Operator.BidEnterpriseProfile]: () => <div></div>,
+  [Operator.BidConstructionSearch]: () => <div></div>,
 };

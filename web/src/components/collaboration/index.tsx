@@ -1,3 +1,4 @@
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import DocumentEditor from './document-editor';
 import DocumentList from './document-list';
@@ -44,6 +45,7 @@ export default function CollaborationPanel({ apiFetch }: Props) {
   const [docLoading, setDocLoading] = useState(false);
   const [applyingRuleId, setApplyingRuleId] = useState<string | null>(null);
   const appliedRuleConfigRef = useRef<Record<string, unknown> | null>(null);
+  const [collapsed, setCollapsed] = useState(false);
 
   const loadDocuments = useCallback(async () => {
     setLoading(true);
@@ -117,11 +119,28 @@ export default function CollaborationPanel({ apiFetch }: Props) {
         onRefresh={loadDocuments}
         onApplyFormatRule={handleApplyFormatRule}
         applyingRuleId={applyingRuleId}
+        collapsed={collapsed}
       />
+      <button
+        onClick={() => setCollapsed((c) => !c)}
+        className="shrink-0 self-start mt-6 -ml-3.5 z-10 size-7 flex items-center justify-center rounded-full border-2 border-[#D4D4D4] bg-white text-[#525252] hover:text-[#000000] hover:border-[#A3A3A3] hover:shadow-[0_2px_8px_rgba(0,0,0,0.12)] transition-all cursor-pointer"
+        title={collapsed ? '展开侧边栏' : '收起侧边栏'}
+      >
+        {collapsed ? (
+          <ChevronRight className="size-3.5" />
+        ) : (
+          <ChevronLeft className="size-3.5" />
+        )}
+      </button>
       <div className="flex-1 flex min-w-0">
         {docLoading ? (
           <div className="flex-1 flex items-center justify-center">
-            <div className="w-6 h-6 border-2 border-indigo-300 border-t-indigo-500 rounded-full animate-spin" />
+            <div className="flex flex-col items-center gap-3">
+              <div className="w-6 h-6 border-2 border-[#D4D4D4] border-t-[#000000] rounded-full animate-spin" />
+              <span className="text-xs text-[#A3A3A3]">
+                文档内容过大，耐心等待加载
+              </span>
+            </div>
           </div>
         ) : selectedDoc ? (
           <DocumentEditor

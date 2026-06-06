@@ -224,7 +224,7 @@ def get_agent_session(agent_id, session_id, tenant_id):
             code=RetCode.OPERATING_ERROR,
         )
     _, conv = API4ConversationService.get_by_id(session_id)
-    return get_json_result(data=conv.to_dict())
+    return get_json_result(data=_normalize_agent_session(conv.to_dict()))
 
 
 @manager.route("/agents/<agent_id>/sessions/<session_id>", methods=["DELETE"])  # noqa: F821

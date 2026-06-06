@@ -1,11 +1,54 @@
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { getAuthorization } from '@/utils/authorization-util';
-import { Scale, Search, X } from 'lucide-react';
+import { ExternalLink, Search, X } from 'lucide-react';
 import { useCallback, useRef, useState } from 'react';
 
 const INPUT_CLASS =
   'h-9 px-3 text-xs text-[#000000] border border-[#D4D4D4] bg-white hover:border-[#A3A3A3] focus:border-[#000000] focus:ring-2 focus:ring-[#000000]/10 rounded-lg transition-all';
+
+// ============================================================================
+// Sub-tab definitions
+// ============================================================================
+
+interface SubTab {
+  key: string;
+  label: string;
+  description: string;
+  searchType: string;
+  sourceUrl: string;
+  placeholder: string;
+  emptyText: string;
+  searchBtnText: string;
+}
+
+const SUB_TABS: SubTab[] = [
+  {
+    key: 'shixin',
+    label: '失信黑名单',
+    description: '查询全国严重失信主体名单信息',
+    searchType: 'shixinheimingdan',
+    sourceUrl: 'https://www.creditchina.gov.cn/xinxigongshi/shixinheimingdan/',
+    placeholder: '输入企业名称或统一社会信用代码...',
+    emptyText: '未找到失信主体记录',
+    searchBtnText: '查询失信主体',
+  },
+  {
+    key: 'tax',
+    label: '重大税收违法',
+    description: '查询重大税收违法失信案件信息',
+    searchType: 'zhongdashuishouweifaanjian',
+    sourceUrl:
+      'https://www.creditchina.gov.cn/zhuanxiangchaxun/zhongdashuishouweifaanjian/',
+    placeholder: '输入企业名称或统一社会信用代码...',
+    emptyText: '未找到税收违法案件记录',
+    searchBtnText: '查询违法案件',
+  },
+];
+
+// ============================================================================
+// Shared result type
+// ============================================================================
 
 interface CreditChinaResult {
   index: number;
@@ -14,16 +57,15 @@ interface CreditChinaResult {
   date: string;
 }
 
-export default function CreditChinaSearch() {
-  // --- Form state ---
-  const [keyword, setKeyword] = useState('');
+// ============================================================================
+// Individual search view (used by each sub-tab)
+// ============================================================================
 
-  // --- State machine ---
+function SearchView({ tab }: { tab: SubTab }) {
+  const [keyword, setKeyword] = useState('');
   const [hasSearched, setHasSearched] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // --- Results ---
   const [results, setResults] = useState<CreditChinaResult[]>([]);
   const [total, setTotal] = useState(0);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
@@ -43,15 +85,13 @@ export default function CreditChinaSearch() {
       try {
         const params = new URLSearchParams();
         params.set('keyword', keyword.trim());
-        params.set('type', 'shixinheimingdan');
+        params.set('type', tab.searchType);
         params.set('page', '1');
         params.set('pageSize', '10');
 
         const resp = await fetch(
           `/api/v1/credit-china/search?${params.toString()}`,
-          {
-            headers: { Authorization: getAuthorization() },
-          },
+          { headers: { Authorization: getAuthorization() } },
         );
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 
@@ -69,34 +109,34 @@ export default function CreditChinaSearch() {
         setHasSearched(true);
       }
     }, 300);
-  }, [keyword, loading]);
+  }, [keyword, loading, tab.searchType]);
 
   const handleBackToSearch = () => setHasSearched(false);
 
   // ================================================================
-  // STATE 1: Search Hero (centered card)
+  // STATE 1: Search Hero
   // ================================================================
   if (!hasSearched) {
     return (
       <div className="flex-1 overflow-auto">
         <div className="min-h-full flex items-center justify-center px-6 py-12">
           <div className="w-full max-w-2xl">
-            {/* Header */}
             <div className="text-center mb-8">
-              <div className="cs-card-enter inline-flex items-center justify-center size-16 rounded-2xl bg-[#F5F5F5] mb-4">
-                <Scale className="size-7 text-[#404040]" />
-              </div>
-              <h1 className="cs-card-enter cs-card-d1 text-2xl font-bold text-[#000000] tracking-tight">
-                信用中国
-              </h1>
-              <p className="cs-card-enter cs-card-d1 text-sm text-[#A3A3A3] mt-1">
-                查询全国严重失信主体名单信息
+              <p className="text-sm text-[#A3A3A3] mt-1">
+                {tab.description}
+                <a
+                  href={tab.sourceUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 ml-2 text-[#2563EB] hover:underline"
+                >
+                  源网站
+                  <ExternalLink className="size-3" />
+                </a>
               </p>
             </div>
 
-            {/* Search card */}
-            <div className="cs-card-enter cs-card-d2 bg-white rounded-xl border border-[#E8E8E8] shadow-[0_4px_24px_rgba(0,0,0,0.04)] p-6">
-              {/* 主体名称/统一社会信用代码 */}
+            <div className="bg-white rounded-xl border border-[#E8E8E8] shadow-[0_4px_24px_rgba(0,0,0,0.04)] p-6">
               <div className="mb-4">
                 <label className="block text-sm font-medium text-[#1a1a1a] mb-1.5">
                   主体名称/统一社会信用代码
@@ -106,7 +146,7 @@ export default function CreditChinaSearch() {
                     value={keyword}
                     onChange={(e) => setKeyword(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                    placeholder="输入企业名称或统一社会信用代码..."
+                    placeholder={tab.placeholder}
                     className={`${INPUT_CLASS} w-full`}
                   />
                   {keyword && (
@@ -120,7 +160,6 @@ export default function CreditChinaSearch() {
                 </div>
               </div>
 
-              {/* Search button */}
               <Button
                 onClick={handleSearch}
                 disabled={loading || !keyword.trim()}
@@ -152,7 +191,7 @@ export default function CreditChinaSearch() {
                 ) : (
                   <>
                     <Search className="size-4 mr-2" />
-                    查询失信主体
+                    {tab.searchBtnText}
                   </>
                 )}
               </Button>
@@ -168,19 +207,26 @@ export default function CreditChinaSearch() {
   // ================================================================
   return (
     <div className="flex-1 flex flex-col min-h-0 bg-white overflow-hidden">
-      {/* Compact search bar */}
       <div className="shrink-0 px-6 py-3 border-b border-[#F0F0F0]">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 flex-1 min-w-0">
             <span className="text-sm font-semibold text-[#000000] truncate">
-              {keyword || '信用中国'}
+              {keyword}
             </span>
           </div>
-
           <span className="text-xs text-[#A3A3A3] shrink-0">
             共 <b className="text-[#000000]">{total}</b> 条结果
           </span>
 
+          <a
+            href={tab.sourceUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 h-8 px-3 text-xs font-medium text-[#2563EB] hover:bg-[#EFF6FF] rounded-lg transition-colors shrink-0"
+          >
+            <ExternalLink className="size-3" />
+            源网站
+          </a>
           <button
             onClick={handleBackToSearch}
             className="inline-flex items-center gap-1 h-8 px-3 text-xs font-medium text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-colors shrink-0"
@@ -190,7 +236,6 @@ export default function CreditChinaSearch() {
         </div>
       </div>
 
-      {/* Error banner */}
       {error && (
         <div className="shrink-0 px-6 pt-3">
           <div className="bg-[#FFF2F0] border border-[#FFCCC7] rounded-lg px-4 py-3 flex items-start gap-3">
@@ -209,7 +254,6 @@ export default function CreditChinaSearch() {
         </div>
       )}
 
-      {/* Results */}
       <div className="flex-1 min-h-0 px-6 py-4 overflow-auto">
         {loading ? (
           <div className="space-y-3">
@@ -249,7 +293,6 @@ export default function CreditChinaSearch() {
                 </div>
               </div>
             ))}
-
             <div className="py-4 flex items-center justify-center">
               <span className="text-xs text-[#A3A3A3]">
                 已显示全部 {results.length} 条结果
@@ -262,7 +305,7 @@ export default function CreditChinaSearch() {
               <X className="size-7 text-[#A3A3A3]" />
             </div>
             <p className="text-sm font-medium text-[#525252] mb-1">
-              未找到失信主体记录
+              {tab.emptyText}
             </p>
             <p className="text-xs text-[#A3A3A3] mb-4">请调整查询条件后重试</p>
             <Button
@@ -274,6 +317,42 @@ export default function CreditChinaSearch() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// Main component with sub-tabs
+// ============================================================================
+
+export default function CreditChinaSearch() {
+  const [activeTab, setActiveTab] = useState(SUB_TABS[0].key);
+  const currentTab = SUB_TABS.find((t) => t.key === activeTab) || SUB_TABS[0];
+
+  return (
+    <div className="flex-1 flex flex-col min-h-0 bg-white">
+      {/* Sub-tab bar */}
+      <div className="shrink-0 px-6 pt-4 pb-0 flex items-center gap-1 border-b border-[#F0F0F0]">
+        {SUB_TABS.map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => setActiveTab(tab.key)}
+            className={`px-4 py-2.5 text-sm font-medium transition-colors relative ${
+              tab.key === activeTab
+                ? 'text-[#000000]'
+                : 'text-[#A3A3A3] hover:text-[#525252]'
+            }`}
+          >
+            {tab.label}
+            {tab.key === activeTab && (
+              <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-[#000000] rounded-full" />
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* Search view for active tab */}
+      <SearchView key={currentTab.key} tab={currentTab} />
     </div>
   );
 }

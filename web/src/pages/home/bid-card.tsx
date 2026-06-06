@@ -1,4 +1,6 @@
-import { Eye, Paperclip, Settings } from 'lucide-react';
+import { getAuthorization } from '@/utils/authorization-util';
+import { ExternalLink, Eye, Paperclip, Settings } from 'lucide-react';
+import { useState } from 'react';
 import type { BidProject } from './bid-list';
 
 const NEWS_TYPE_MAP: Record<number, { label: string; color: string }> = {
@@ -80,6 +82,9 @@ export function BidCard({
   onView,
   onConfig,
 }: BidCardProps) {
+  const [collectUrl, setCollectUrl] = useState<string | null>(null);
+  const [urlLoading, setUrlLoading] = useState(false);
+
   const badge = getNewsTypeBadge(project.news_type_id);
   const money = fmtMoney(project.project_money);
   const area = buildAreaName(
@@ -94,6 +99,32 @@ export function BidCard({
     : '';
   const partyA = parseJsonArray(project.part_a_names).join('、');
   const partyB = parseJsonArray(project.part_b_names).join('、');
+
+  const handleCollectUrl = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (collectUrl) {
+      window.open(collectUrl, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    setUrlLoading(true);
+    try {
+      const resp = await fetch(
+        `/api/v1/bid/projects/${project.id}/collect-url?publish_time=${encodeURIComponent(project.publish_time || '')}`,
+        { headers: { Authorization: getAuthorization() } },
+      );
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const json = await resp.json();
+      const url = json?.data?.url || '';
+      if (url) {
+        setCollectUrl(url);
+        window.open(url, '_blank', 'noopener,noreferrer');
+      }
+    } catch {
+      // silently ignore
+    } finally {
+      setUrlLoading(false);
+    }
+  };
 
   return (
     <div
@@ -158,27 +189,37 @@ export function BidCard({
       </div>
 
       {/* Actions */}
-      <div className="flex items-center justify-end gap-2 pt-3 border-t border-[#F0F0F0]">
+      <div className="flex items-center justify-between pt-3 border-t border-[#F0F0F0]">
         <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onView(project);
-          }}
-          className="inline-flex items-center gap-1 h-8 px-3 text-xs font-medium text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-colors"
+          onClick={handleCollectUrl}
+          disabled={urlLoading}
+          className="inline-flex items-center gap-1 h-8 px-3 text-xs font-medium text-[#2563EB] hover:bg-[#EFF6FF] rounded-lg transition-colors disabled:opacity-50"
         >
-          <Eye className="size-3" />
-          查看详情
+          <ExternalLink className="size-3" />
+          {urlLoading ? '获取中...' : '原文跳转'}
         </button>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onConfig(project);
-          }}
-          className="inline-flex items-center gap-1 h-8 px-3 text-xs font-medium text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-colors"
-        >
-          <Settings className="size-3" />
-          配置
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onView(project);
+            }}
+            className="inline-flex items-center gap-1 h-8 px-3 text-xs font-medium text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-colors"
+          >
+            <Eye className="size-3" />
+            查看详情
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onConfig(project);
+            }}
+            className="inline-flex items-center gap-1 h-8 px-3 text-xs font-medium text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-colors"
+          >
+            <Settings className="size-3" />
+            配置
+          </button>
+        </div>
       </div>
     </div>
   );

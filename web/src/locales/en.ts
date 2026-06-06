@@ -2383,7 +2383,27 @@ This process aggregates variables from multiple branches into a single variable 
         'Check the progress of bid project import and parsing.',
       bidLookupCode: 'Code lookup',
       bidLookupCodeDescription:
-        'Look up area or industry codes by Chinese name.',
+        'Look up administrative area codes or industry codes by name.',
+      bidGetSource: 'Get bid source URL',
+      bidGetSourceDescription:
+        'Get the original collection URL for a bid project.',
+      bidSearchAI: 'AI bid search',
+      bidSearchAIDescription:
+        'Search bid projects using natural language conditions.',
+      bidSearchContract: 'Contract search',
+      bidSearchContractDescription:
+        'Search contract awards and contract announcements.',
+      bidRewriteQuery: 'Search query rewrite',
+      bidRewriteQueryDescription:
+        'AI rewrites natural language to structured search conditions.',
+      bidIndustryTag: 'Industry tag reasoning',
+      bidIndustryTagDescription: 'Infer industry codes from keywords.',
+      bidEnterpriseProfile: 'Enterprise profile',
+      bidEnterpriseProfileDescription:
+        'Query enterprise profiles and bid relationships.',
+      bidConstructionSearch: 'Construction project search',
+      bidConstructionSearchDescription:
+        'Search planned and under-construction projects.',
       log: 'Log',
       management: 'Management',
       import: 'Import',

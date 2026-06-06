@@ -47,6 +47,117 @@ manager = Blueprint("rest_bid_app", __name__)
 
 
 # ---------------------------------------------------------------------------
+# 第三方 API 调用频率限制（Redis Token Bucket）
+# ---------------------------------------------------------------------------
+
+import time
+
+from rag.utils.redis_conn import REDIS_CONN
+
+# 限额配置: (capacity, rate_per_second)
+# capacity = 突发最大请求数, rate = 恢复速度（每秒恢复几个 token）
+BID_RATE_LIMITS = {
+    "search": (30, 2),       # 搜索类: 30 burst, 2/s 恢复 → ~15次/分钟
+    "detail": (20, 1),       # 详情类: 20 burst, 1/s 恢复 → ~12次/分钟
+    "enterprise": (10, 0.5),  # 企业类: 10 burst, 0.5/s → ~7次/分钟
+}
+
+BID_RATE_LIMIT_RESET_KEY = "bid_rate_limit_reset:{user_id}:{category}"
+
+
+def check_bid_rate_limit(category: str) -> dict | None:
+    """检查当前用户的第三方 API 调用频率。
+
+    返回 None 表示通过，返回 {"retry_after": N} 表示被限流。
+    在调用 BidApiClient 之前调用此函数。
+    """
+    if category not in BID_RATE_LIMITS or not REDIS_CONN.is_alive():
+        return None
+
+    capacity, rate = BID_RATE_LIMITS[category]
+    user_id = current_user.id
+    key = f"bid_rl:{user_id}:{category}"
+    now = time.time()
+
+    try:
+        result = REDIS_CONN.lua_token_bucket(
+            keys=[key], args=[capacity, rate, now, 1],
+        )
+    except Exception:
+        return None
+
+    if result and int(result[0]) == 1:
+        return None
+
+    remaining = float(result[1]) if result else 0
+    wait = max(1, int((1 - remaining / rate))) if rate > 0 else 60
+    return {"retry_after": wait}
+
+
+def bid_rate_limit(category: str):
+    """装饰器: 对第三方 API 调用做 per-user Token Bucket 限流。
+
+    category: "search" / "detail" / "enterprise"
+    返回 429 时响应体包含 X-RateLimit-Reset 头（秒），前端可据此做冷却倒计时。
+    """
+    if category not in BID_RATE_LIMITS:
+        # 未知 category 不限流
+        def noop(f):
+            return f
+        return noop
+
+    capacity, rate = BID_RATE_LIMITS[category]
+
+    def decorator(func):
+        from functools import wraps
+
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            if not REDIS_CONN.is_alive():
+                return await func(*args, **kwargs)
+
+            user_id = current_user.id
+            key = f"bid_rl:{user_id}:{category}"
+            now = time.time()
+
+            try:
+                result = REDIS_CONN.lua_token_bucket(
+                    keys=[key],
+                    args=[capacity, rate, now, 1],
+                )
+            except Exception:
+                # Redis 异常时放行
+                return await func(*args, **kwargs)
+
+            if result and int(result[0]) == 1:
+                return await func(*args, **kwargs)
+
+            # 限流触发，计算等待时间
+            try:
+                remaining = float(result[1]) if result else 0
+                wait = max(1, int((1 - remaining / rate))) if rate > 0 else 60
+            except Exception:
+                wait = 10
+
+            from quart import jsonify
+
+            resp = jsonify({
+                "code": 429,
+                "message": f"请求过于频繁，请 {wait} 秒后重试",
+                "data": {"retry_after": wait},
+            })
+            resp.status_code = 429
+            resp.headers["X-RateLimit-Category"] = category
+            resp.headers["X-RateLimit-Reset"] = str(wait)
+            resp.headers["Retry-After"] = str(wait)
+            return resp
+
+        return wrapper
+
+    return decorator
+
+
+# ---------------------------------------------------------------------------
 # 地区编码 — 省市联动
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
@@ -155,6 +266,13 @@ def list_bid_projects():
 
     # Step 2: 本地不足 20 条 → 调第三方 API 补充
     if total < 20:
+        rl = check_bid_rate_limit("search")
+        if rl:
+            return get_data_error_result(
+                message=f"请求过于频繁，请 {rl['retry_after']} 秒后重试",
+                code=429,
+            )
+
         logging.info("Bid list: local total=%d (<20), falling back to external API", total)
         try:
             client = BidApiClient()
@@ -278,7 +396,8 @@ def list_bid_projects():
 # ---------------------------------------------------------------------------
 @manager.route("/bid/projects/<int:project_id>/detail", methods=["GET"])  # noqa: F821
 @login_required
-def get_bid_project_detail(project_id):
+@bid_rate_limit("detail")
+async def get_bid_project_detail(project_id):
     # 参数
     publish_time = request.args.get("publish_time", "")
 
@@ -343,7 +462,8 @@ def get_bid_project_detail(project_id):
 # ---------------------------------------------------------------------------
 @manager.route("/bid/projects/<int:project_id>/structure", methods=["GET"])  # noqa: F821
 @login_required
-def get_bid_project_structure(project_id):
+@bid_rate_limit("detail")
+async def get_bid_project_structure(project_id):
     publish_time = request.args.get("publish_time", "")
 
     # Step 1: 查缓存
@@ -398,7 +518,8 @@ def get_bid_project_structure(project_id):
 # ---------------------------------------------------------------------------
 @manager.route("/bid/projects/<int:project_id>/files", methods=["GET"])  # noqa: F821
 @login_required
-def get_bid_project_files(project_id):
+@bid_rate_limit("detail")
+async def get_bid_project_files(project_id):
     publish_time = request.args.get("publish_time", "")
 
     # Step 1: 查缓存（需有 file_url 才算有效缓存）
@@ -676,7 +797,8 @@ def bid_stats():
 # ---------------------------------------------------------------------------
 @manager.route("/bid/projects/<int:project_id>/collect-url", methods=["GET"])  # noqa: F821
 @login_required
-def get_bid_project_collect_url(project_id):
+@bid_rate_limit("detail")
+async def get_bid_project_collect_url(project_id):
     publish_time = request.args.get("publish_time", "")
     if not publish_time:
         return get_data_error_result(message="publish_time is required")
@@ -693,7 +815,8 @@ def get_bid_project_collect_url(project_id):
 # ---------------------------------------------------------------------------
 @manager.route("/bid/projects/by-number", methods=["GET"])  # noqa: F821
 @login_required
-def search_project_by_number():
+@bid_rate_limit("search")
+async def search_project_by_number():
     project_number = request.args.get("project_number", "")
     publish_time = request.args.get("publish_time", "")
     if not project_number:
@@ -711,7 +834,8 @@ def search_project_by_number():
 # ---------------------------------------------------------------------------
 @manager.route("/bid/contracts", methods=["GET"])  # noqa: F821
 @login_required
-def list_bid_contracts():
+@bid_rate_limit("search")
+async def list_bid_contracts():
     page_id = int(request.args.get("page", 1))
     page_number = int(request.args.get("items_per_page", 20))
     keyword = request.args.get("keyword", "") or None
@@ -782,7 +906,8 @@ def list_bid_contracts():
 # ---------------------------------------------------------------------------
 @manager.route("/bid/enterprises/profile", methods=["GET"])  # noqa: F821
 @login_required
-def get_enterprise_profile():
+@bid_rate_limit("enterprise")
+async def get_enterprise_profile():
     company_name = request.args.get("company_name", "")
     if not company_name:
         return get_data_error_result(message="company_name is required")
@@ -796,7 +921,8 @@ def get_enterprise_profile():
 
 @manager.route("/bid/enterprises/contacts", methods=["GET"])  # noqa: F821
 @login_required
-def get_enterprise_contacts():
+@bid_rate_limit("enterprise")
+async def get_enterprise_contacts():
     company_name = request.args.get("company_name", "")
     page_no = int(request.args.get("page", 1))
     page_size = int(request.args.get("page_size", 5))
@@ -812,7 +938,8 @@ def get_enterprise_contacts():
 
 @manager.route("/bid/enterprises/customers", methods=["GET"])  # noqa: F821
 @login_required
-def get_enterprise_customers():
+@bid_rate_limit("enterprise")
+async def get_enterprise_customers():
     company_name = request.args.get("company_name", "")
     page_no = int(request.args.get("page", 1))
     page_size = int(request.args.get("page_size", 20))
@@ -828,7 +955,8 @@ def get_enterprise_customers():
 
 @manager.route("/bid/enterprises/suppliers", methods=["GET"])  # noqa: F821
 @login_required
-def get_enterprise_suppliers():
+@bid_rate_limit("enterprise")
+async def get_enterprise_suppliers():
     company_name = request.args.get("company_name", "")
     page_no = int(request.args.get("page", 1))
     page_size = int(request.args.get("page_size", 20))
@@ -847,7 +975,8 @@ def get_enterprise_suppliers():
 # ---------------------------------------------------------------------------
 @manager.route("/bid/construction/projects", methods=["GET"])  # noqa: F821
 @login_required
-def list_construction_projects():
+@bid_rate_limit("search")
+async def list_construction_projects():
     page_id = int(request.args.get("page", 1))
     page_number = int(request.args.get("items_per_page", 20))
     keyword = request.args.get("keyword", "") or None
@@ -884,7 +1013,8 @@ def list_construction_projects():
 
 @manager.route("/bid/construction/projects/<int:project_id>/detail", methods=["GET"])  # noqa: F821
 @login_required
-def get_construction_project_detail(project_id):
+@bid_rate_limit("detail")
+async def get_construction_project_detail(project_id):
     publish_time = request.args.get("publish_time", "")
     if not publish_time:
         return get_data_error_result(message="publish_time is required")

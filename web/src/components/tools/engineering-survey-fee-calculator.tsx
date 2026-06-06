@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
+import { DiscountBar } from './discount-bar';
 
 /* ═══════════════════════════════════════════════════════════
    工程勘察设计费计算器
@@ -505,8 +506,8 @@ function DesignTab() {
                 onClick={() => setComplexIdx(i)}
                 className={`flex-1 px-3 py-2 rounded-lg text-xs font-medium transition ${
                   complexIdx === i
-                    ? 'bg-black/[0.04] text-[#000000] border border-[#D4D4D4]'
-                    : 'bg-black/[0.02] text-[#1a1a1a] border border-black/[0.08] hover:bg-black/[0.04]'
+                    ? 'bg-[#000000] text-white border border-[#000000]'
+                    : 'bg-white text-[#000000] border border-[#D4D4D4] hover:bg-[#F5F5F5]'
                 }`}
               >
                 {c.label}
@@ -796,6 +797,11 @@ function DesignTab() {
         )}
       </div>
 
+      {result && (
+        <div className="mt-4">
+          <DiscountBar baseFee={result.benchmark * 10000} label="设计费折扣" />
+        </div>
+      )}
       {/* Right: Reference table */}
       <div className="w-72 shrink-0 border-l border-[#D4D4D4] bg-white/50 overflow-y-auto p-5">
         <div className="bg-white rounded-2xl border border-[#D4D4D4] p-4">
@@ -1176,9 +1182,15 @@ function SurveyTab() {
             )}
           </div>
         )}
+        {result && (
+          <div className="mt-4">
+            <DiscountBar
+              baseFee={result.benchmark * 10000}
+              label="通用勘察费折扣"
+            />
+          </div>
+        )}
       </div>
-
-      {/* Right: Reference */}
       <div className="w-72 shrink-0 border-l border-[#D4D4D4] bg-white/50 overflow-y-auto p-5">
         <div className="bg-white rounded-2xl border border-[#D4D4D4] p-4">
           <h4 className="text-sm font-semibold text-[#000000] mb-2">
@@ -1336,8 +1348,8 @@ function WaterTab() {
                 onClick={() => setComplexIdx(i)}
                 className={`flex-1 px-3 py-2 rounded-lg text-xs font-medium transition ${
                   complexIdx === i
-                    ? 'bg-black/[0.04] text-[#000000] border border-[#D4D4D4]'
-                    : 'bg-black/[0.02] text-[#1a1a1a] border border-black/[0.08] hover:bg-black/[0.04]'
+                    ? 'bg-[#000000] text-white border border-[#000000]'
+                    : 'bg-white text-[#000000] border border-[#D4D4D4] hover:bg-[#F5F5F5]'
                 }`}
               >
                 {c.label}
@@ -1518,6 +1530,14 @@ function WaterTab() {
                 )}
               </div>
             )}
+          </div>
+        )}
+        {result && (
+          <div className="mt-4">
+            <DiscountBar
+              baseFee={result.benchmark * 10000}
+              label="水利勘察费折扣"
+            />
           </div>
         )}
       </div>

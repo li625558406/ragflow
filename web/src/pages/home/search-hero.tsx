@@ -8,9 +8,9 @@ import { useState } from 'react';
 import { DateRange } from 'react-day-picker';
 
 const INPUT_CLASS =
-  'h-9 px-3 text-xs text-[#000000] border border-[#D4D4D4] bg-white hover:border-[#A3A3A3] focus:border-[#000000] focus:ring-2 focus:ring-[#000000]/10 rounded-lg transition-all';
+  'h-9 px-3 text-xs text-[#000000] border border-[#D4D4D4] bg-white hover:border-[#A3A3A3] focus:border-[#000000] focus-visible:ring-0 rounded-lg transition-all';
 const SELECT_CLASS =
-  'h-9 text-xs text-[#000000] bg-white border border-[#D4D4D4] hover:border-[#A3A3A3] focus:border-[#000000] rounded-lg transition-all';
+  'h-9 text-xs text-[#000000] bg-white border border-[#D4D4D4] hover:border-[#A3A3A3] focus:border-[#000000] focus-visible:ring-0 rounded-lg transition-all';
 
 interface SearchHeroProps {
   // Core states

@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react';
+import { DiscountBar } from './discount-bar';
 
 // 费率分档表: [上限(万元), 货物招标%, 服务招标%, 工程招标%]
 const TIERS: [number, number, number, number][] = [
@@ -211,7 +212,7 @@ export default function AgencyFeeCalculator() {
                   >
                     <span className="text-sm text-[#000000]">{r.label}</span>
                     <div className="text-right">
-                      <span className="text-sm font-semibold text-[#000000]">
+                      <span className="text-lg font-semibold text-[#000000]">
                         {formatYuan(r.fee)}
                       </span>
                       <span className="text-xs text-[#1a1a1a] ml-1">元</span>
@@ -313,6 +314,19 @@ export default function AgencyFeeCalculator() {
                   </div>
                 )}
               </div>
+            </div>
+          )}
+
+          {/* Discount bars for each bid type */}
+          {results && (
+            <div className="space-y-3 mt-4">
+              {results.map((r) => (
+                <DiscountBar
+                  key={r.label}
+                  baseFee={r.fee}
+                  label={`${r.label}折扣`}
+                />
+              ))}
             </div>
           )}
         </div>

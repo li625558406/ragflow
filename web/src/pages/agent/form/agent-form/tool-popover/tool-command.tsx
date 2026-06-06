@@ -55,6 +55,13 @@ const Menus = [
       Operator.BidImportToKb,
       Operator.BidCheckImportStatus,
       Operator.BidLookupCode,
+      Operator.BidGetSource,
+      Operator.BidSearchAI,
+      Operator.BidSearchContract,
+      Operator.BidRewriteQuery,
+      Operator.BidIndustryTag,
+      Operator.BidEnterpriseProfile,
+      Operator.BidConstructionSearch,
     ],
   },
 ];

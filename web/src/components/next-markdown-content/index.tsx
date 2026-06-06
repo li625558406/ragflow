@@ -30,12 +30,10 @@ import { citationMarkerReg } from '@/utils/citation-utils';
 import { getDirAttribute } from '@/utils/text-direction';
 
 import { useFetchDocumentThumbnailsByIds } from '@/hooks/use-document-request';
-import { cn } from '@/lib/utils';
 import classNames from 'classnames';
 import { omit } from 'lodash';
 import { pipe } from 'lodash/fp';
 import reactStringReplace from 'react-string-replace';
-import { Button } from '../ui/button';
 import {
   HoverCard,
   HoverCardContent,
@@ -268,58 +266,68 @@ function MarkdownContent({
         document,
       } = getReferenceInfo(chunkIndex);
 
+      if (!chunkItem && !documentId && !imageId) {
+        return (
+          <div className="text-xs text-[#A3A3A3] italic px-1 py-0.5">
+            Reference data not available
+          </div>
+        );
+      }
+
       return (
-        <div key={chunkItem?.id} className="flex gap-2">
+        <div key={chunkItem?.id || chunkIndex} className="flex gap-3 max-w-xl">
           {imageId && (
-            <HoverCard>
-              <HoverCardTrigger>
-                <Image
-                  id={imageId}
-                  className={styles.referenceChunkImage}
-                ></Image>
-              </HoverCardTrigger>
-              <HoverCardContent>
-                <Image
-                  id={imageId}
-                  className={cn(styles.referenceImagePreview)}
-                ></Image>
-              </HoverCardContent>
-            </HoverCard>
+            <div className="shrink-0 w-28 h-20 rounded-lg overflow-hidden bg-[#F5F5F5]">
+              <Image
+                id={imageId}
+                className="w-full h-full object-cover"
+              ></Image>
+            </div>
           )}
-          <div className={'space-y-2 max-w-[40vw] w-full'}>
-            <div
-              dangerouslySetInnerHTML={{
-                __html: DOMPurify.sanitize(chunkItem?.content ?? ''),
-              }}
-              className={classNames(styles.chunkContentText, 'w-full')}
-              dir="auto"
-            ></div>
+          <div className="flex-1 min-w-0 space-y-2">
+            {/* Document source */}
             {documentId && (
-              <div className="flex gap-1">
+              <div className="flex items-center gap-1.5 text-[11px] text-[#525252]">
                 {fileThumbnail ? (
                   <img
                     src={fileThumbnail}
                     alt=""
-                    className={styles.fileThumbnail}
+                    className="w-4 h-4 rounded object-cover shrink-0"
                   />
                 ) : (
                   <SvgIcon
                     name={`file-icon/${fileExtension}`}
-                    width={24}
+                    width={16}
                   ></SvgIcon>
                 )}
-                <Button
-                  variant="link"
+                <button
                   onClick={handleDocumentButtonClick(
                     documentId,
                     chunkItem,
                     fileExtension === 'pdf',
                     documentUrl,
                   )}
-                  className="text-ellipsis text-wrap"
+                  className="text-[11px] text-[#000000] font-medium truncate hover:text-[#1677ff] transition-colors text-left"
                 >
-                  {document?.doc_name}
-                </Button>
+                  {document?.doc_name || 'Unknown document'}
+                </button>
+              </div>
+            )}
+            {/* Chunk content */}
+            {chunkItem?.content ? (
+              <div
+                dangerouslySetInnerHTML={{
+                  __html: DOMPurify.sanitize(chunkItem.content),
+                }}
+                className={classNames(
+                  'text-xs text-[#333333] leading-relaxed max-h-36 overflow-y-auto',
+                  'bg-[#F8F9FB] rounded-lg px-3 py-2 border border-[#EAEAEA]',
+                )}
+                dir="auto"
+              ></div>
+            ) : (
+              <div className="text-xs text-[#A3A3A3] italic">
+                No content available
               </div>
             )}
           </div>
@@ -337,12 +345,17 @@ function MarkdownContent({
         return (
           <HoverCard key={i}>
             <HoverCardTrigger>
-              <bdi className="text-text-secondary bg-bg-card rounded-2xl px-1 mx-1 text-nowrap inline-block">
-                Fig. {chunkIndex + 1}
+              <bdi className="inline-flex items-center text-[11px] font-medium text-[#333333] bg-[#F0F0F0] hover:bg-[#E0E0E0] rounded-md px-1.5 py-px mx-0.5 cursor-pointer transition-colors select-none">
+                [{chunkIndex + 1}]
               </bdi>
             </HoverCardTrigger>
-            <HoverCardContent className="max-w-3xl">
-              {renderPopoverContent(chunkIndex)}
+            <HoverCardContent
+              className="max-w-lg !p-0 !rounded-xl !border !border-[#E0E0E0] !shadow-lg"
+              sideOffset={6}
+            >
+              <div className="px-4 py-3">
+                {renderPopoverContent(chunkIndex)}
+              </div>
             </HoverCardContent>
           </HoverCard>
         );

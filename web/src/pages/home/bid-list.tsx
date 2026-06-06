@@ -30,6 +30,14 @@ export type BidProject = {
   source_type: string | null;
 };
 
+export class BidRateLimitError extends Error {
+  retryAfter: number;
+  constructor(msg: string, retryAfter: number) {
+    super(msg);
+    this.retryAfter = retryAfter;
+  }
+}
+
 async function bidFetch(url: string, params?: Record<string, any>) {
   const qs = params
     ? '?' +
@@ -41,6 +49,11 @@ async function bidFetch(url: string, params?: Record<string, any>) {
   const resp = await fetch(`/api/v1/bid/${url}${qs}`, {
     headers: { Authorization: getAuthorization() },
   });
+  if (resp.status === 429) {
+    const reset = resp.headers.get('X-RateLimit-Reset');
+    const retryAfter = reset ? parseInt(reset, 10) : 10;
+    throw new BidRateLimitError('请求过于频繁，请稍后重试', retryAfter);
+  }
   if (!resp.ok) {
     const errText = await resp.text().catch(() => '');
     throw new Error(`HTTP ${resp.status}: ${errText || resp.statusText}`);
@@ -68,6 +81,8 @@ export function BidList({
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [rateLimitCooldown, setRateLimitCooldown] = useState(0);
+  const cooldownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pageRef = useRef(1);
 
   // --- Detail / Config sub-views ---
@@ -229,7 +244,23 @@ export function BidList({
         })
         .catch((err: Error) => {
           console.error('Bid search failed:', err.message);
-          if (!append) {
+          if (err instanceof BidRateLimitError) {
+            if (!append) setSearchError(null);
+            const cooldown = err.retryAfter;
+            setRateLimitCooldown(cooldown);
+            if (cooldownTimerRef.current)
+              clearInterval(cooldownTimerRef.current);
+            cooldownTimerRef.current = setInterval(() => {
+              setRateLimitCooldown((prev) => {
+                if (prev <= 1) {
+                  if (cooldownTimerRef.current)
+                    clearInterval(cooldownTimerRef.current);
+                  return 0;
+                }
+                return prev - 1;
+              });
+            }, 1000);
+          } else if (!append) {
             setProjects([]);
             setTotal(0);
             setListLengthRef.current(0);
@@ -589,6 +620,17 @@ export function BidList({
               >
                 <X className="size-3.5" />
               </button>
+            </div>
+          </div>
+        )}
+
+        {/* Rate limit cooldown */}
+        {rateLimitCooldown > 0 && (
+          <div className="shrink-0 px-6 pb-2">
+            <div className="bg-[#FFFBE6] border border-[#FFE58F] rounded-lg px-4 py-3 flex items-center gap-3">
+              <span className="text-sm text-[#AD6800] shrink-0">
+                请求过于频繁，请 {rateLimitCooldown}s 后重试
+              </span>
             </div>
           </div>
         )}

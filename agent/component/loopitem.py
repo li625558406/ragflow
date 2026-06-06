@@ -14,6 +14,7 @@
 #  limitations under the License.
 #
 from abc import ABC
+import json
 from agent.component.base import ComponentBase, ComponentParamBase
 
 
@@ -48,23 +49,20 @@ class LoopItem(ComponentBase, ABC):
 
     def output_collation(self):
         """Overwrite Loop outputs with child node outputs (last value wins)."""
-        pid = self.get_parent()._id
-        for cid in self._canvas.components.keys():
-            obj = self._canvas.get_component_obj(cid)
-            p = obj.get_parent()
-            if not p or p._id != pid:
+        p = self.get_parent()
+        for k, o in p._param.outputs.items():
+            if "ref" not in o:
                 continue
-            for k, o in p._param.outputs.items():
-                if "ref" not in o:
-                    continue
-                parts = o["ref"].split("@")
-                if len(parts) != 2:
-                    continue
-                _cid, var = parts
-                if _cid != cid:
-                    continue
-                val = obj.output(var)
-                p.set_output(k, val)
+            # Use canvas get_variable_value which supports dot notation
+            # (e.g. "Agent:xxx@structured.chapters")
+            val = self._canvas.get_variable_value(o["ref"])
+            # Auto-parse JSON string into actual Python type
+            if isinstance(val, str) and val.strip():
+                try:
+                    val = json.loads(val)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            p.set_output(k, val)
 
     def evaluate_condition(self,var, operator, value):
         if isinstance(var, str):
@@ -170,6 +168,8 @@ class LoopItem(ComponentBase, ABC):
             raise ValueError("Invalid logical operator,should be 'and' or 'or'.")
 
         if should_end:
+            # Collate the last iteration's output before exiting
+            self.output_collation()
             self._idx = -1
             return True
 

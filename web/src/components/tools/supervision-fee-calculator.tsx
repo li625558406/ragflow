@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
+import { DiscountBar } from './discount-bar';
 
 /* ═══════════════════════════════════════════════════════════
    建设工程监理费计算器
@@ -566,6 +567,14 @@ function SupervisionTab() {
             )}
           </div>
         )}
+        {result && (
+          <div className="mt-4">
+            <DiscountBar
+              baseFee={result.benchmark * 10000}
+              label="监理费折扣"
+            />
+          </div>
+        )}
       </div>
 
       {/* Right: Reference table */}
@@ -728,6 +737,9 @@ function DailyTab() {
               {total > 0 ? `${fmt(total)} 元` : '-'}
             </span>
           </div>
+        </div>
+        <div className="mt-4">
+          <DiscountBar baseFee={total} label="人工日费用折扣" />
         </div>
       </div>
 
