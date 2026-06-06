@@ -265,7 +265,8 @@ def list_bid_projects():
     )
 
     # Step 2: 本地不足 20 条 → 调第三方 API 补充
-    if total < 20:
+    # 爬虫数据不需要外部 API 补充（source_type='crawler' 时跳过）
+    if total < 20 and source_type != 'crawler':
         rl = check_bid_rate_limit("search")
         if rl:
             return get_data_error_result(
@@ -406,7 +407,15 @@ async def get_bid_project_detail(project_id):
     if obj:
         return get_json_result(data=obj.to_dict())
 
-    # Step 2: 调外部 API
+    # Step 2: 爬虫项目无需外部 API（detail 已在 writer.write_detail 中写入）
+    project = BidProjectService.get_by_project_id(project_id)
+    if project and project.get("source_type") == "crawler":
+        return get_json_result(data={
+            "id": project_id,
+            "content_html": "",
+        })
+
+    # Step 3: 调外部 API
     if not publish_time:
         return get_data_error_result(message="publish_time is required for first fetch.")
 
@@ -417,7 +426,7 @@ async def get_bid_project_detail(project_id):
     except Exception as e:
         return get_data_error_result(message=f"Failed to fetch detail: {e}")
 
-    # Step 3: 解析并存入 DB
+    # Step 4: 解析并存入 DB
     files_raw = data.get("projectFiles") or []
     detail_data = {
         "id": project_id,
@@ -471,7 +480,12 @@ async def get_bid_project_structure(project_id):
     if obj:
         return get_json_result(data=obj.to_dict())
 
-    # Step 2: 调外部 API
+    # Step 2: 爬虫项目跳过外部 API
+    project = BidProjectService.get_by_project_id(project_id)
+    if project and project.get("source_type") == "crawler":
+        return get_json_result(data={})
+
+    # Step 3: 调外部 API
     if not publish_time:
         return get_data_error_result(message="publish_time is required for first fetch.")
 
@@ -527,7 +541,12 @@ async def get_bid_project_files(project_id):
     if cached and any(f.get("file_url") for f in cached):
         return get_json_result(data={"files": cached})
 
-    # Step 2: 调外部 API
+    # Step 2: 爬虫项目跳过外部 API
+    project = BidProjectService.get_by_project_id(project_id)
+    if project and project.get("source_type") == "crawler":
+        return get_json_result(data={"files": cached or []})
+
+    # Step 3: 调外部 API
     if not publish_time:
         return get_data_error_result(message="publish_time is required for first fetch.")
 
@@ -799,6 +818,14 @@ def bid_stats():
 @login_required
 @bid_rate_limit("detail")
 async def get_bid_project_collect_url(project_id):
+    # Step 1: Check if this is a crawler project — return URL from DB
+    project = BidProjectService.get_by_project_id(project_id)
+    if project and project.get("source_type") == "crawler":
+        struct = BidProjectStructureService.get_or_none(project_id=project_id)
+        url = struct.to_dict().get("collect_url", "") if struct else ""
+        return get_json_result(data={"url": url})
+
+    # Step 2: Fall through to external API for non-crawler projects
     publish_time = request.args.get("publish_time", "")
     if not publish_time:
         return get_data_error_result(message="publish_time is required")

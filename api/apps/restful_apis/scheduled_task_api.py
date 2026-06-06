@@ -13,6 +13,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
+import json
 import logging
 import os
 import shutil
@@ -36,8 +37,24 @@ from rag.utils.redis_conn import REDIS_CONN
 from common import settings
 
 
+def _resolve_site_id(task_obj) -> str:
+    """Extract site_id from a scheduled task's script_args JSON."""
+    if not task_obj or not task_obj.script_args:
+        return ""
+    try:
+        args = json.loads(task_obj.script_args)
+        return args.get("site_id", "")
+    except (json.JSONDecodeError, TypeError):
+        return ""
+
+
+def _uses_unified_crawler(task_obj) -> bool:
+    """Check if this task uses the new unified_crawler (DB state)."""
+    return bool(task_obj and "unified_crawler" in (task_obj.script_path or ""))
+
+
 def _get_state_file_path(task_name):
-    """Return the absolute path to the crawler state file for a given task name."""
+    """Return the absolute path to the legacy crawler state file."""
     from common.file_utils import get_project_base_directory
     return os.path.join(get_project_base_directory(), "rag", task_name.strip(), "_crawler_state.json")
 
@@ -157,12 +174,38 @@ async def update_scheduled_task(task_id):
 def delete_scheduled_task(task_id):
     e, obj = ScheduledTaskService.get_by_id(task_id)
     if e:
+        # New unified crawler: delete from crawler_state DB table
+        if _uses_unified_crawler(obj):
+            site_id = _resolve_site_id(obj)
+            if site_id:
+                try:
+                    from api.db.db_models import CrawlerState
+                    CrawlerState.delete().where(
+                        (CrawlerState.site_id == site_id) &
+                        (CrawlerState.tenant_id == obj.tenant_id)
+                    ).execute()
+                except Exception as ex:
+                    logging.error("Failed to delete crawler_state for %s: %s", site_id, ex)
+
+        # Legacy: delete file-based state
         state_path = _get_state_file_path(obj.name)
         if os.path.exists(state_path):
             try:
                 os.remove(state_path)
             except Exception:
                 pass
+
+        # Migrate task name directory if name changed
+        new_name = obj.name
+        old_dir = os.path.dirname(state_path)
+        if os.path.isdir(old_dir) and not any(
+            f for f in os.listdir(old_dir) if f != "_crawler_state.json"
+        ):
+            try:
+                shutil.rmtree(old_dir)
+            except Exception:
+                pass
+
     ScheduledTaskService.delete_by_id(task_id)
     ScheduledTaskLogService.filter_delete(
         [ScheduledTaskLogService.model.task_id == task_id]
@@ -202,17 +245,40 @@ def get_scheduled_task_state(task_id):
     if not e:
         return get_data_error_result(message="Task not found.")
 
+    # New unified crawler: read from crawler_state DB table
+    if _uses_unified_crawler(obj):
+        site_id = _resolve_site_id(obj)
+        if site_id:
+            try:
+                from rag.svr.crawler_engine.state_manager import StateManager
+                state = StateManager(
+                    site_id=site_id,
+                    tenant_id=obj.tenant_id,
+                    section="default",
+                )
+                state.load()
+                return get_json_result(data={
+                    "site_id": site_id,
+                    "processed_ids": list(state.processed_ids),
+                    "last_page": state.last_page,
+                    "last_offset": state.last_offset,
+                    "extra_state": state.extra,
+                })
+            except Exception as ex:
+                logging.error("Failed to read crawler_state for %s: %s", site_id, ex)
+                return get_data_error_result(message=f"Failed to read state: {ex}")
+
+    # Legacy: read from _crawler_state.json file
     state_path = _get_state_file_path(obj.name)
     if not os.path.exists(state_path):
         return get_json_result(data={"processed_urls": []})
 
     try:
         with open(state_path, "r", encoding="utf-8") as f:
-            import json
             data = json.load(f)
         return get_json_result(data=data)
-    except Exception as e:
-        return get_data_error_result(message=f"Failed to read state file: {e}")
+    except Exception as ex:
+        return get_data_error_result(message=f"Failed to read state file: {ex}")
 
 
 @manager.route("/scheduled-tasks/<task_id>/state", methods=["PUT"])  # noqa: F821
@@ -226,15 +292,41 @@ async def update_scheduled_task_state(task_id):
     if req is None:
         return get_data_error_result(message="Request body is required.")
 
+    # New unified crawler: write to crawler_state DB table
+    if _uses_unified_crawler(obj):
+        site_id = _resolve_site_id(obj)
+        if site_id:
+            try:
+                from rag.svr.crawler_engine.state_manager import StateManager
+                state = StateManager(
+                    site_id=site_id,
+                    tenant_id=obj.tenant_id,
+                    section="default",
+                )
+                state.load()
+                if "processed_ids" in req:
+                    state.processed_ids = set(str(x) for x in req["processed_ids"])
+                if "last_page" in req:
+                    state.last_page = req["last_page"]
+                if "last_offset" in req:
+                    state.last_offset = req["last_offset"]
+                if "extra_state" in req:
+                    state.extra = req["extra_state"]
+                state.save()
+                return get_json_result(data=req)
+            except Exception as ex:
+                logging.error("Failed to write crawler_state for %s: %s", site_id, ex)
+                return get_data_error_result(message=f"Failed to write state: {ex}")
+
+    # Legacy: write to _crawler_state.json file
     state_path = _get_state_file_path(obj.name)
     try:
         os.makedirs(os.path.dirname(state_path), exist_ok=True)
-        import json
         with open(state_path, "w", encoding="utf-8") as f:
             json.dump(req, f, ensure_ascii=False, indent=2)
         return get_json_result(data=req)
-    except Exception as e:
-        return get_data_error_result(message=f"Failed to write state file: {e}")
+    except Exception as ex:
+        return get_data_error_result(message=f"Failed to write state file: {ex}")
 
 
 @manager.route("/scheduled-tasks/<task_id>/run-now", methods=["POST"])  # noqa: F821

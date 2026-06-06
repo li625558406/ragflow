@@ -9,6 +9,11 @@ const NEWS_TYPE_MAP: Record<number, { label: string; color: string }> = {
   3: { label: '合同', color: 'text-[#A3A3A3] bg-[#F5F5F5]' },
 };
 
+const SOURCE_TYPE_MAP: Record<string, { label: string; color: string }> = {
+  crawler: { label: '自采', color: 'text-[#7C3AED] bg-[#F5F3FF]' },
+  shibo_api: { label: '世舶', color: 'text-[#D97706] bg-[#FFFBEB]' },
+};
+
 function getNewsTypeBadge(id: number | null) {
   if (!id || !NEWS_TYPE_MAP[id]) return null;
   const { label, color } = NEWS_TYPE_MAP[id];
@@ -135,6 +140,13 @@ export function BidCard({
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           {badge}
+          {project.source_type && SOURCE_TYPE_MAP[project.source_type] && (
+            <span
+              className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ${SOURCE_TYPE_MAP[project.source_type].color}`}
+            >
+              {SOURCE_TYPE_MAP[project.source_type].label}
+            </span>
+          )}
           {project.has_file === 1 && (
             <span className="inline-flex items-center gap-1 text-xs text-[#525252]">
               <Paperclip className="size-3" />

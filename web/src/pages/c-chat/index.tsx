@@ -6,6 +6,8 @@ import {
   ConfirmDeleteDialog,
   ConfirmDeleteDialogNode,
 } from '@/components/confirm-delete-dialog';
+import FavoriteDialog from '@/components/favorite-dialog';
+import FavoritePanel from '@/components/favorite-panel';
 import {
   FileUpload,
   FileUploadDropzone,
@@ -373,10 +375,15 @@ export default function CChat() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [agentDropdownOpen, setAgentDropdownOpen] = useState(false);
   const [mainView, setMainView] = useState<
-    'chat' | 'collaboration' | 'tools' | 'bid'
+    'chat' | 'collaboration' | 'tools' | 'bid' | 'favorites'
   >('chat');
   const [collabDialogOpen, setCollabDialogOpen] = useState(false);
   const [collabMessage, setCollabMessage] = useState('');
+  const [favoriteMode, setFavoriteMode] = useState(false);
+  const [selectedMessageIds, setSelectedMessageIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [favoriteDialogOpen, setFavoriteDialogOpen] = useState(false);
 
   // Typewriter placeholder
   const FULL_PLACEHOLDER =
@@ -1075,6 +1082,11 @@ export default function CChat() {
                     key: 'tools',
                     label: '工具',
                     icon: 'M11.42 15.17l-5.658 3.286a1 1 0 01-1.414-.386l-1.894-3.28a1 1 0 01.386-1.364l5.658-3.286a1 1 0 011.414.386l1.894 3.28a1 1 0 01-.386 1.364zM21.758 8.59l-5.658 3.286a1 1 0 01-1.414-.386l-1.894-3.28a1 1 0 01.386-1.364l5.658-3.286a1 1 0 011.414.386l1.894 3.28a1 1 0 01-.386 1.364z',
+                  },
+                  {
+                    key: 'favorites',
+                    label: '收藏',
+                    icon: 'M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z',
                   },
                   {
                     key: 'bid',
@@ -2202,6 +2214,55 @@ export default function CChat() {
                                         </svg>
                                         协作
                                       </button>
+                                      <button
+                                        className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded-lg transition-colors ${
+                                          favoriteMode &&
+                                          selectedMessageIds.has(msg.id)
+                                            ? 'text-[#6366f1] bg-[#EEF2FF]'
+                                            : 'text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA]'
+                                        }`}
+                                        onClick={() => {
+                                          if (!favoriteMode) {
+                                            setFavoriteMode(true);
+                                            setSelectedMessageIds(
+                                              new Set([msg.id]),
+                                            );
+                                          } else {
+                                            setSelectedMessageIds((prev) => {
+                                              const next = new Set(prev);
+                                              if (next.has(msg.id)) {
+                                                next.delete(msg.id);
+                                                if (next.size === 0) {
+                                                  setFavoriteMode(false);
+                                                }
+                                              } else {
+                                                next.add(msg.id);
+                                              }
+                                              return next;
+                                            });
+                                          }
+                                        }}
+                                      >
+                                        <svg
+                                          className="w-3.5 h-3.5"
+                                          fill={
+                                            favoriteMode &&
+                                            selectedMessageIds.has(msg.id)
+                                              ? 'currentColor'
+                                              : 'none'
+                                          }
+                                          stroke="currentColor"
+                                          viewBox="0 0 24 24"
+                                        >
+                                          <path
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
+                                            strokeWidth={2}
+                                            d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"
+                                          />
+                                        </svg>
+                                        收藏
+                                      </button>
                                     </div>
                                   )}
                                 </div>
@@ -2446,6 +2507,30 @@ export default function CChat() {
               </div>
             )}
 
+            {/* Favorite batch action bar */}
+            {favoriteMode && selectedMessageIds.size > 0 && (
+              <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-5 py-3 bg-white border border-[#E5E5E5] rounded-xl shadow-lg">
+                <span className="text-sm text-[#525252]">
+                  已选择 {selectedMessageIds.size} 条消息
+                </span>
+                <button
+                  className="px-4 py-1.5 text-sm font-medium text-white bg-[#6366f1] hover:bg-[#4F46E5] rounded-lg transition-colors"
+                  onClick={() => setFavoriteDialogOpen(true)}
+                >
+                  保存收藏
+                </button>
+                <button
+                  className="px-4 py-1.5 text-sm text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA] rounded-lg transition-colors"
+                  onClick={() => {
+                    setFavoriteMode(false);
+                    setSelectedMessageIds(new Set());
+                  }}
+                >
+                  取消
+                </button>
+              </div>
+            )}
+
             {/* Collaboration View */}
             {mainView === 'collaboration' && (
               <div className="cs-page-enter flex-1 flex flex-col min-h-0">
@@ -2466,6 +2551,13 @@ export default function CChat() {
                 <BidPanel />
               </div>
             )}
+
+            {/* Favorites View */}
+            {mainView === 'favorites' && (
+              <div className="cs-page-enter flex-1 flex flex-col min-h-0">
+                <FavoritePanel apiFetch={apiFetch} />
+              </div>
+            )}
           </div>
         </div>
 
@@ -2476,6 +2568,47 @@ export default function CChat() {
           agentId={currentAgentId || undefined}
           apiFetch={apiFetch}
           onCreated={() => {}}
+        />
+
+        <FavoriteDialog
+          open={favoriteDialogOpen}
+          onOpenChange={setFavoriteDialogOpen}
+          messageCount={selectedMessageIds.size}
+          onConfirm={(title) => {
+            const selectedMsgs = derivedMessages.filter((m) =>
+              selectedMessageIds.has(m.id || ''),
+            );
+            const messagesData = selectedMsgs.map((m) => ({
+              role: m.role,
+              content: m.content,
+              reference: m.reference || null,
+            }));
+            apiFetch('/api/v1/favorite/save', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                title,
+                message_ids: Array.from(selectedMessageIds),
+                messages_data: messagesData,
+                agent_id: currentAgentId || null,
+                conversation_id: currentSessionId || null,
+              }),
+            })
+              .then((resp) => resp.json())
+              .then((result) => {
+                if (result.code === 0) {
+                  setFavoriteMode(false);
+                  setSelectedMessageIds(new Set());
+                  setFavoriteDialogOpen(false);
+                  showToast('收藏已保存');
+                } else {
+                  showToast(result.message || '保存失败');
+                }
+              })
+              .catch(() => {
+                showToast('保存失败');
+              });
+          }}
         />
 
         {drawerVisible && drawerDocumentId && (

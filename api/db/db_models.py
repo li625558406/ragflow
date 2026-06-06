@@ -1418,6 +1418,23 @@ class ScheduledTaskLog(DataBaseModel):
         )
 
 
+class CrawlerState(DataBaseModel):
+    id = CharField(max_length=32, primary_key=True)
+    site_id = CharField(max_length=128, null=False, index=True, help_text="site identifier from crawler_sites.yaml")
+    tenant_id = CharField(max_length=32, null=False, index=True)
+    section = CharField(max_length=64, null=False, default="default", help_text="section label for multi-section sites")
+    processed_ids = JSONField(null=False, default=[], help_text="list of crawled item IDs for dedup")
+    last_page = IntegerField(null=False, default=0, help_text="last completed page number")
+    last_offset = IntegerField(null=False, default=0, help_text="last offset for offset-based pagination")
+    extra_state = JSONField(null=False, default={}, help_text="arbitrary extra state for complex crawlers")
+
+    class Meta:
+        db_table = "crawler_state"
+        indexes = (
+            (("site_id", "tenant_id", "section"), True),  # unique
+        )
+
+
 class CollaborationDocument(DataBaseModel):
     id = CharField(max_length=32, primary_key=True)
     name = CharField(max_length=255, null=False, index=True, help_text="document name")
@@ -1616,6 +1633,22 @@ class WechatMpAuth(DataBaseModel):
 
     class Meta:
         db_table = "wechat_mp_auth"
+
+
+class Favorite(DataBaseModel):
+    id = CharField(max_length=32, primary_key=True)
+    tenant_id = CharField(max_length=32, null=False, index=True)
+    user_id = CharField(max_length=32, null=False, index=True)
+    title = CharField(max_length=255, null=False, help_text="收藏标题")
+    message_ids = JSONField(null=False, help_text="消息ID列表(JSON array)")
+    messages_data = JSONField(null=True, help_text="完整消息数据(role+content+reference)")
+    agent_id = CharField(max_length=32, null=True, help_text="关联的agent ID")
+    conversation_id = CharField(max_length=32, null=True, help_text="关联的conversation ID")
+    created_at = DateTimeField(null=True)
+    updated_at = DateTimeField(null=True)
+
+    class Meta:
+        db_table = "favorite"
 
 
 def alter_db_add_column(migrator, table_name, column_name, column_type):
