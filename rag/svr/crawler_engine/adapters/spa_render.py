@@ -141,8 +141,10 @@ class SpaRenderAdapter(BaseAdapter):
     def fetch_detail(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Fetch detail by clicking on item or navigating to detail URL."""
         detail_cfg = self._config.detail
-        if detail_cfg.type == "inline" or not detail_cfg.url:
-            return item
+
+        # css_selector / inline / none handled by base class
+        if detail_cfg.type != "api_request" or not detail_cfg.url:
+            return super().fetch_detail(item)
 
         page = self._get_page()
         detail_url = detail_cfg.url

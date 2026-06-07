@@ -174,35 +174,61 @@ const TABS: { id: TabId; label: string }[] = [
 
 export default function SupervisionFeeCalculator() {
   const [tab, setTab] = useState<TabId>('supervision');
+  const [resetKey, setResetKey] = useState(0);
+
+  const handleReset = () => {
+    setResetKey((k) => k + 1);
+  };
 
   return (
     <div className="h-full flex flex-col">
       {/* Title bar */}
       <div className="shrink-0 px-6 pt-5 pb-4 border-b border-[#D4D4D4] bg-white">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 bg-[#EAEAEA] rounded-xl flex items-center justify-center">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 bg-[#EAEAEA] rounded-xl flex items-center justify-center">
+              <svg
+                className="w-4.5 h-4.5 text-[#000000]"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={1.5}
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"
+                />
+              </svg>
+            </div>
+            <div>
+              <h2 className="text-[15px] font-normal text-black">
+                建设工程监理费计算器
+              </h2>
+              <p className="text-[11px] text-[#333333]">
+                依据：发改价格[2007]670号
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={handleReset}
+            className="shrink-0 flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium bg-[#000000] text-white hover:bg-[#1a1a1a] border border-[#000000] rounded-lg transition-colors"
+          >
             <svg
-              className="w-4.5 h-4.5 text-[#000000]"
+              className="size-3"
               fill="none"
               stroke="currentColor"
-              strokeWidth={1.5}
+              strokeWidth="2"
               viewBox="0 0 24 24"
             >
               <path
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"
+                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
               />
             </svg>
-          </div>
-          <div>
-            <h2 className="text-[15px] font-normal text-black">
-              建设工程监理费计算器
-            </h2>
-            <p className="text-[11px] text-[#333333]">
-              依据：发改价格[2007]670号
-            </p>
-          </div>
+            重置
+          </button>
         </div>
         {/* Sub tabs */}
         <div className="flex gap-1 mt-3">
@@ -223,7 +249,7 @@ export default function SupervisionFeeCalculator() {
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto" key={resetKey}>
         {tab === 'supervision' && <SupervisionTab />}
         {tab === 'daily' && <DailyTab />}
       </div>

@@ -24,7 +24,7 @@ import sys
 import traceback
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, ".."))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", ".."))
 sys.path.insert(0, _PROJECT_ROOT)
 
 from common import settings
@@ -58,6 +58,8 @@ def parse_args():
     p.add_argument("--output-dir", default=None, help="Override output directory")
     p.add_argument("--config", default=DEFAULT_CONFIG_PATH,
                    help="Path to crawler_sites.yaml")
+    p.add_argument("--force", action="store_true",
+                   help="Force run: bypass Redis lock and clear stale locks")
     # Compatibility arguments (ignored but accepted)
     for opt in ("--section", "--max-articles", "--max-days", "--hours",
                 "--llm-id", "--llm-model", "--access-token", "--full"):
@@ -82,6 +84,7 @@ def main():
 
     section = script_args.get("section")
     full_crawl = script_args.get("full", False) or bool(args.full)
+    force_run = script_args.get("force", False) or bool(args.force)
 
     _safe_print("\n" + "=" * 60)
     _safe_print(f"[UNIFIED] Unified Crawler v1.0")
@@ -126,6 +129,7 @@ def main():
             kb_id=args.kb_id,
             task_name=args.task_name,
             full=full_crawl,
+            force=force_run,
         )
         status = summary.get("status", "unknown")
         if status == "error":

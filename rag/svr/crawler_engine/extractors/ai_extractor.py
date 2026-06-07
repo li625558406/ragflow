@@ -26,7 +26,7 @@ class AIExtractor(BaseExtractor):
         self._llm_id = llm_id
         self._llm_model = llm_model
 
-    def extract(self, raw_data: Any) -> List[Dict[str, Any]]:
+    def extract(self, raw_data: Any, **kwargs) -> List[Dict[str, Any]]:
         """Attempt AI-powered extraction from raw content.
 
         Fall back to returning the raw data as a single item if AI is

@@ -46,7 +46,7 @@ async def save_favorite():
 
     try:
         favorite = FavoriteService.create_favorite(
-            tenant_id=current_user.tenant_id,
+            tenant_id=current_user.id,
             user_id=current_user.id,
             title=title,
             message_ids=message_ids,
@@ -71,7 +71,7 @@ async def list_favorites():
 
     try:
         items, total = FavoriteService.get_user_favorites(
-            tenant_id=current_user.tenant_id,
+            tenant_id=current_user.id,
             user_id=current_user.id,
             page_number=page,
             items_per_page=items_per_page,
@@ -86,7 +86,7 @@ async def list_favorites():
 @login_required
 async def get_favorite(favorite_id: str):
     try:
-        detail = FavoriteService.get_favorite_detail(favorite_id, current_user.tenant_id)
+        detail = FavoriteService.get_favorite_detail(favorite_id, current_user.id)
         if not detail:
             return get_json_result(message="收藏未找到", code=RetCode.NOT_FOUND)
         return get_json_result(data=detail)
@@ -117,7 +117,7 @@ async def update_favorite(favorite_id: str):
 
     try:
         result = FavoriteService.update_favorite(
-            favorite_id, current_user.tenant_id, current_user.id, data
+            favorite_id, current_user.id, current_user.id, data
         )
         if not result:
             return get_json_result(message="收藏未找到或无权操作", code=RetCode.NOT_FOUND)
@@ -132,7 +132,7 @@ async def update_favorite(favorite_id: str):
 async def delete_favorite(favorite_id: str):
     try:
         count = FavoriteService.delete_favorite(
-            favorite_id, current_user.tenant_id, current_user.id
+            favorite_id, current_user.id, current_user.id
         )
         if count == 0:
             return get_json_result(message="收藏未找到或无权操作", code=RetCode.NOT_FOUND)
@@ -146,7 +146,7 @@ async def delete_favorite(favorite_id: str):
 @login_required
 async def download_favorite(favorite_id: str):
     try:
-        detail = FavoriteService.get_favorite_detail(favorite_id, current_user.tenant_id)
+        detail = FavoriteService.get_favorite_detail(favorite_id, current_user.id)
         if not detail:
             return get_json_result(message="收藏未找到", code=RetCode.NOT_FOUND)
     except Exception as e:

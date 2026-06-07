@@ -112,32 +112,25 @@ class RestApiAdapter(BaseAdapter):
         return []
 
     def _parse_html_response(self, html: str) -> List[Dict[str, Any]]:
-        """Parse HTML page for items. Override for site-specific parsing."""
-        try:
-            from bs4 import BeautifulSoup
-        except ImportError:
-            logging.warning("BeautifulSoup not available for HTML parsing")
-            return [{"html": html}]
+        """Pass raw HTML through — the engine's CSS extractor handles parsing.
 
-        soup = BeautifulSoup(html, "lxml")
-        # Default: extract all text from body
-        items = []
-        # Look for list items, tables, or article blocks
-        for tag in soup.select("ul.list li, table tbody tr, .article-item, .news-item"):
-            text = tag.get_text(strip=True)
-            if text:
-                items.append({"text": text})
-        if not items:
-            body = soup.find("body")
-            if body:
-                items.append({"html": str(body)})
-        return items
+        The engine's _maybe_extract_from_html() will use the configured
+        items_path to extract structured items from the HTML.
+        """
+        return [{"html": html}]
 
     def fetch_detail(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """If detail type is 'api_request', fetch the detail page."""
+        """Fetch and extract detail page content.
+
+        Handles:
+        - api_request: fetch from a detail API URL template
+        - css_selector / inline / none: delegated to base class
+        """
         detail_cfg = self._config.detail
-        if detail_cfg.type == "inline" or not detail_cfg.url:
-            return item
+
+        # css_selector, inline, none, and missing URL are handled by base class
+        if detail_cfg.type != "api_request" or not detail_cfg.url:
+            return super().fetch_detail(item)
 
         url_template = detail_cfg.url
         # Replace {id}, {uuid}, etc. placeholders

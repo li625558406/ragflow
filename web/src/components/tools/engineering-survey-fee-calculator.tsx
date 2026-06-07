@@ -311,35 +311,61 @@ const TABS: { id: TabId; label: string }[] = [
 
 export default function EngineeringSurveyFeeCalculator() {
   const [tab, setTab] = useState<TabId>('design');
+  const [resetKey, setResetKey] = useState(0);
+
+  const handleReset = () => {
+    setResetKey((k) => k + 1);
+  };
 
   return (
     <div className="h-full flex flex-col">
       {/* Title bar */}
       <div className="shrink-0 px-6 pt-5 pb-4 border-b border-[#D4D4D4] bg-white">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 bg-[#EAEAEA] rounded-xl flex items-center justify-center">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 bg-[#EAEAEA] rounded-xl flex items-center justify-center">
+              <svg
+                className="w-4.5 h-4.5 text-[#000000]"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={1.5}
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M3.75 21h16.5M4.5 3h15M5.25 3v18m13.5-18v18M9 6.75h1.5m-1.5 3h1.5m-1.5 3h1.5m3-6H15m-1.5 3H15m-1.5 3H15M9 21v-3.375c0-.621.504-1.125 1.125-1.125h3.75c.621 0 1.125.504 1.125 1.125V21"
+                />
+              </svg>
+            </div>
+            <div>
+              <h2 className="text-[15px] font-bold text-black">
+                工程勘察设计费计算器
+              </h2>
+              <p className="text-[11px] text-[#333333]">
+                依据：工程勘察设计收费标准（2002）10号
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={handleReset}
+            className="shrink-0 flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium bg-[#000000] text-white hover:bg-[#1a1a1a] border border-[#000000] rounded-lg transition-colors"
+          >
             <svg
-              className="w-4.5 h-4.5 text-[#000000]"
+              className="size-3"
               fill="none"
               stroke="currentColor"
-              strokeWidth={1.5}
+              strokeWidth="2"
               viewBox="0 0 24 24"
             >
               <path
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                d="M3.75 21h16.5M4.5 3h15M5.25 3v18m13.5-18v18M9 6.75h1.5m-1.5 3h1.5m-1.5 3h1.5m3-6H15m-1.5 3H15m-1.5 3H15M9 21v-3.375c0-.621.504-1.125 1.125-1.125h3.75c.621 0 1.125.504 1.125 1.125V21"
+                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
               />
             </svg>
-          </div>
-          <div>
-            <h2 className="text-[15px] font-bold text-black">
-              工程勘察设计费计算器
-            </h2>
-            <p className="text-[11px] text-[#333333]">
-              依据：工程勘察设计收费标准（2002）10号
-            </p>
-          </div>
+            重置
+          </button>
         </div>
         {/* Sub tabs */}
         <div className="flex gap-1 mt-3">
@@ -360,7 +386,7 @@ export default function EngineeringSurveyFeeCalculator() {
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto" key={resetKey}>
         {tab === 'design' && <DesignTab />}
         {tab === 'survey' && <SurveyTab />}
         {tab === 'water' && <WaterTab />}

@@ -13,7 +13,7 @@ from .base import BaseExtractor
 class JsonPathExtractor(BaseExtractor):
     """Extracts structured data from JSON/API responses."""
 
-    def extract(self, raw_data: Any) -> List[Dict[str, Any]]:
+    def extract(self, raw_data: Any, **kwargs) -> List[Dict[str, Any]]:
         """Extract items from raw JSON data."""
         if raw_data is None:
             return []

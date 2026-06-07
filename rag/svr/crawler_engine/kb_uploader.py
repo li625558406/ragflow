@@ -5,6 +5,10 @@ Encapsulates the RAGFlow KB upload + document parsing pipeline:
 1. Upload markdown file via FileService.upload_document()
 2. Set parser_id on the document
 3. Queue document for chunking/parsing via task_service.queue_tasks()
+
+Supports two modes:
+- upload_file(): upload from a local file path
+- upload_content(): upload from in-memory string (no temp file)
 """
 
 import logging
@@ -22,8 +26,15 @@ class KBUploader:
         self._tenant_id = tenant_id
         self._parser_id = parser_id
 
-    def upload_file(self, filepath: str) -> List[str]:
-        """Upload a single file to the KB. Returns list of document IDs."""
+    def upload_file(self, filepath: str, kb_filename: Optional[str] = None) -> List[str]:
+        """Upload a single file to the KB. Returns list of document IDs.
+
+        Args:
+            filepath: Local path of the file to upload.
+            kb_filename: Override the filename shown in the KB. If None,
+                uses the local filename.  For multi-batch crawls, only
+                the first batch should set this to the task name.
+        """
         from api.db.services.knowledgebase_service import KnowledgebaseService
         from api.db.services.file_service import FileService
 
@@ -34,6 +45,37 @@ class KBUploader:
         with open(filepath, "rb") as f:
             blob = f.read()
 
+        display_name = kb_filename or os.path.basename(filepath)
+        return self._upload_blob(kb, blob, display_name)
+
+    def upload_content(self, content: str, display_name: str = "content.md",
+                       suffix: str = ".md") -> Optional[str]:
+        """Upload in-memory content to KB without writing a temp file.
+
+        Args:
+            content: The content string (markdown, text, etc).
+            display_name: Name shown in the KB document list.
+            suffix: File suffix for parser selection (e.g. ".md", ".txt").
+
+        Returns:
+            Document ID string, or None on failure.
+        """
+        from api.db.services.knowledgebase_service import KnowledgebaseService
+
+        ok, kb = KnowledgebaseService.get_by_id(self._kb_id)
+        if not ok:
+            logging.error("KBUploader: KB %s not found", self._kb_id)
+            return None
+
+        blob = content.encode("utf-8")
+        filename = display_name if display_name.endswith(suffix) else display_name + suffix
+        doc_ids = self._upload_blob(kb, blob, filename)
+        return doc_ids[0] if doc_ids else None
+
+    def _upload_blob(self, kb, blob: bytes, display_name: str) -> List[str]:
+        """Upload raw bytes to a KB. Returns list of document IDs."""
+        from api.db.services.file_service import FileService
+
         class _FileObj:
             def __init__(self, fn, b):
                 self.id = get_uuid()
@@ -42,10 +84,10 @@ class KBUploader:
             def read(self):
                 return self.blob
 
-        fo = _FileObj(os.path.basename(filepath), blob)
+        fo = _FileObj(display_name, blob)
         errs, pairs = FileService.upload_document(kb, [fo], self._tenant_id)
         if errs:
-            logging.warning("KBUploader: upload errors for %s: %s", filepath, errs)
+            logging.warning("KBUploader: upload errors for %s: %s", display_name, errs)
 
         doc_ids = []
         for doc, _ in pairs:

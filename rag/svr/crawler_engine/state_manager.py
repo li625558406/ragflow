@@ -15,6 +15,12 @@ from common.misc_utils import get_uuid
 from api.db.db_models import DB, CrawlerState
 
 
+# Maximum number of processed IDs to keep in memory/DB.
+# When exceeded, oldest entries are trimmed on next save.
+# This prevents JSONField bloat while keeping recent dedup working.
+MAX_PROCESSED_IDS = 10000
+
+
 class StateManager:
     """Manages crawler state persistence via the crawler_state DB table."""
 
@@ -63,7 +69,21 @@ class StateManager:
 
     @DB.connection_context()
     def save(self) -> None:
-        """Persist current state to DB."""
+        """Persist current state to DB.
+
+        Automatically trims processed_ids if exceeding MAX_PROCESSED_IDS
+        to prevent JSONField bloat in the database.
+        """
+        # Trim oldest entries if over capacity
+        if len(self._processed_ids) > MAX_PROCESSED_IDS:
+            excess = len(self._processed_ids) - MAX_PROCESSED_IDS
+            # Convert to sorted list and remove oldest (set order is insertion order)
+            sorted_ids = sorted(self._processed_ids)
+            to_remove = set(sorted_ids[:excess])
+            self._processed_ids -= to_remove
+            logging.info("StateManager: trimmed %d old IDs (now %d/%d)",
+                        excess, len(self._processed_ids), MAX_PROCESSED_IDS)
+
         try:
             row, created = CrawlerState.get_or_create(
                 site_id=self.site_id,

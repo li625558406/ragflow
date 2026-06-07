@@ -919,7 +919,7 @@ sites:
 
   czt_jdhy:
     name: "福建省财政厅-解读回应"
-    site_url: "https://czt.fujian.gov.cn/jdhy/"
+    site_url: "https://czt.fujian.gov.cn/"
     enabled: true
     transport:
       type: rest_api
@@ -927,29 +927,36 @@ sites:
       verify_ssl: true
       timeout: 30
     listing:
-      url: "https://czt.fujian.gov.cn/jdhy/"
+      url: "https://czt.fujian.gov.cn/jdhy/zcjd/"
       method: GET
     pagination:
-      type: html_regex
-      page_size: 20
-      start: 1
+      type: single_page
     anti_crawler:
       delay_min: 1.0
       delay_max: 2.0
       max_retries: 3
     extract:
       type: css_selector
-      items_path: "ul.list li"
+      items_path: "div.list_base ul li"
       fields:
         id: "a@href"
         title: "a"
-        date: "span.date"
+        url: "a@href"
+        date: "span"
     detail:
       type: css_selector
-      content_field: ".TRS_Editor"
     format:
       parser_id: "naive"
       upload_batch_size: 10
+    sections:
+      - label: "zcjd"
+        listing:
+          url: "https://czt.fujian.gov.cn/jdhy/zcjd/"
+          method: GET
+      - label: "hygq"
+        listing:
+          url: "https://czt.fujian.gov.cn/jdhy/hygq/"
+          method: GET
 
   zjt_xxgk:
     name: "福建省住建厅-信息公开"
@@ -964,24 +971,27 @@ sites:
       url: "https://zjt.fujian.gov.cn/xxgk/"
       method: GET
     pagination:
-      type: html_regex
-      page_size: 20
-      start: 1
+      type: single_page
     anti_crawler:
       delay_min: 1.0
       delay_max: 2.0
       max_retries: 3
     extract:
       type: css_selector
-      items_path: "ul.list li"
+      items_path: "div[role='viewlist'] .bd li"
       fields:
         id: "a@href"
         title: "a"
-        date: "span.date"
+        url: "a@href"
+        date: "span"
     detail:
       type: css_selector
-      content_field: ".TRS_Editor"
     format:
+      template: |
+        # {{ title }}
+        **日期:** {{ date }}
+        **页面地址:** {{ url }}
+        {{ content }}
       parser_id: "naive"
       upload_batch_size: 10
 
@@ -998,24 +1008,28 @@ sites:
       url: "https://zjt.fujian.gov.cn/jdhy/"
       method: GET
     pagination:
-      type: html_regex
-      page_size: 20
-      start: 1
+      type: single_page
     anti_crawler:
       delay_min: 1.0
       delay_max: 2.0
       max_retries: 3
     extract:
       type: css_selector
-      items_path: "ul.list li"
+      items_path: "div[role='viewlist'] .bd li"
       fields:
         id: "a@href"
         title: "a"
-        date: "span.date"
+        url: "a@href"
+        date: "span"
     detail:
       type: css_selector
       content_field: ".TRS_Editor"
     format:
+      template: |
+        # {{ title }}
+        **日期:** {{ date }}
+        **页面地址:** {{ url }}
+        {{ content }}
       parser_id: "naive"
       upload_batch_size: 10
 

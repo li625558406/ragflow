@@ -184,8 +184,10 @@ class EncryptedApiAdapter(BaseAdapter):
     def fetch_detail(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Fetch detail page for encrypted API sites."""
         detail_cfg = self._config.detail
-        if detail_cfg.type in ("inline", "none") or not detail_cfg.url:
-            return item
+
+        # css_selector / inline / none handled by base class
+        if detail_cfg.type not in ("api_request",) or not detail_cfg.url:
+            return super().fetch_detail(item)
 
         url = detail_cfg.url
         for key, val in item.items():

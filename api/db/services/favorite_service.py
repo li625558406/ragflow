@@ -37,7 +37,7 @@ class FavoriteService(CommonService):
         conversation_id: str = None,
     ) -> Favorite:
         now = datetime.now()
-        return cls.save(
+        obj = cls.model(
             id=get_uuid(),
             tenant_id=tenant_id,
             user_id=user_id,
@@ -49,6 +49,8 @@ class FavoriteService(CommonService):
             created_at=now,
             updated_at=now,
         )
+        obj.save(force_insert=True)
+        return obj
 
     @classmethod
     @DB.connection_context()

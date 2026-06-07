@@ -374,6 +374,25 @@ export default function CostConsultingCalculator() {
   const [error, setError] = useState('');
   const [traceData, setTraceData] = useState<React.ReactNode>(null);
 
+  const handleReset = () => {
+    setProjectId(1);
+    setAmount('');
+    setCoefId(1);
+    setAuditMode('a');
+    setSentCost('');
+    setDeductAmt('');
+    setAddAmt('');
+    setAuditLevel(1);
+    setPhase('a');
+    setNeedOnsite(false);
+    setOnsite1({ persons: 0, months: 0 });
+    setOnsite2({ persons: 0, months: 0 });
+    setOnsite3({ persons: 0, months: 0 });
+    setResultData(null);
+    setError('');
+    setTraceData(null);
+  };
+
   const parseNum = (v: string) => parseFloat(v.replace(/[,，\s]/g, ''));
   const coef = COEFFICIENTS[coefId].coef;
   const project = PROJECTS[projectId];
@@ -655,30 +674,51 @@ export default function CostConsultingCalculator() {
     <div className="h-full flex flex-col">
       {/* Title bar */}
       <div className="shrink-0 px-6 pt-5 pb-4 border-b border-[#D4D4D4] bg-white">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 bg-[#EAEAEA] rounded-xl flex items-center justify-center">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 bg-[#EAEAEA] rounded-xl flex items-center justify-center">
+              <svg
+                className="w-4.5 h-4.5 text-[#000000]"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={1.5}
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M2.25 18.75a60.07 60.07 0 0115.797 2.101c.727.198 1.453-.342 1.453-1.096V18.75M3.75 4.5v.75A.75.75 0 013 6h-.75m0 0v-.375c0-.621.504-1.125 1.125-1.125H20.25M2.25 6v9m18-10.5v.75c0 .414.336.75.75.75h.75m-1.5-1.5h.375c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-.375m1.5-1.5H21a.75.75 0 00-.75.75v.75m0 0H3.75m0 0h-.375a1.125 1.125 0 01-1.125-1.125V15m1.5 1.5v-.75A.75.75 0 003 15h-.75M15 10.5a3 3 0 11-6 0 3 3 0 016 0zm3 0h.008v.008H18V10.5zm-12 0h.008v.008H6V10.5z"
+                />
+              </svg>
+            </div>
+            <div>
+              <h2 className="text-[15px] font-bold text-[#000000]">
+                造价咨询服务费计算器
+              </h2>
+              <p className="text-[11px] text-[#1a1a1a]">
+                依据：闽招协[2021]32号 附件2 · 差额定率分档累进法 × 专业工程系数
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={handleReset}
+            className="shrink-0 flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium bg-[#000000] text-white hover:bg-[#1a1a1a] border border-[#000000] rounded-lg transition-colors"
+          >
             <svg
-              className="w-4.5 h-4.5 text-[#000000]"
+              className="size-3"
               fill="none"
               stroke="currentColor"
-              strokeWidth={1.5}
+              strokeWidth="2"
               viewBox="0 0 24 24"
             >
               <path
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                d="M2.25 18.75a60.07 60.07 0 0115.797 2.101c.727.198 1.453-.342 1.453-1.096V18.75M3.75 4.5v.75A.75.75 0 013 6h-.75m0 0v-.375c0-.621.504-1.125 1.125-1.125H20.25M2.25 6v9m18-10.5v.75c0 .414.336.75.75.75h.75m-1.5-1.5h.375c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-.375m1.5-1.5H21a.75.75 0 00-.75.75v.75m0 0H3.75m0 0h-.375a1.125 1.125 0 01-1.125-1.125V15m1.5 1.5v-.75A.75.75 0 003 15h-.75M15 10.5a3 3 0 11-6 0 3 3 0 016 0zm3 0h.008v.008H18V10.5zm-12 0h.008v.008H6V10.5z"
+                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
               />
             </svg>
-          </div>
-          <div>
-            <h2 className="text-[15px] font-bold text-[#000000]">
-              造价咨询服务费计算器
-            </h2>
-            <p className="text-[11px] text-[#1a1a1a]">
-              依据：闽招协[2021]32号 附件2 · 差额定率分档累进法 × 专业工程系数
-            </p>
-          </div>
+            重置
+          </button>
         </div>
       </div>
 

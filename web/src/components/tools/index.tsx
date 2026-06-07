@@ -116,14 +116,22 @@ export default function ToolsPanel() {
         )}
       </button>
 
-      {/* Right: Tool content */}
+      {/* Right: Tool content — keep all mounted to preserve input state across tab switches */}
       <div className="flex-1 overflow-y-auto bg-[#FFFFFF] min-w-0">
-        {selectedTool?.id === 'agency-fee' && <AgencyFeeCalculator />}
-        {selectedTool?.id === 'cost-consulting' && <CostConsultingCalculator />}
-        {selectedTool?.id === 'engineering-survey' && (
+        <div className={selectedTool?.id === 'agency-fee' ? '' : 'hidden'}>
+          <AgencyFeeCalculator />
+        </div>
+        <div className={selectedTool?.id === 'cost-consulting' ? '' : 'hidden'}>
+          <CostConsultingCalculator />
+        </div>
+        <div
+          className={selectedTool?.id === 'engineering-survey' ? '' : 'hidden'}
+        >
           <EngineeringSurveyFeeCalculator />
-        )}
-        {selectedTool?.id === 'supervision-fee' && <SupervisionFeeCalculator />}
+        </div>
+        <div className={selectedTool?.id === 'supervision-fee' ? '' : 'hidden'}>
+          <SupervisionFeeCalculator />
+        </div>
       </div>
     </div>
   );

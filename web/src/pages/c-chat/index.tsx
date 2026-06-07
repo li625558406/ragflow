@@ -1413,458 +1413,385 @@ export default function CChat() {
           {/* Main Content Area */}
           <div className="flex-1 flex flex-col min-w-0">
             {/* Chat View */}
-            {mainView === 'chat' && (
-              <div className="cs-page-enter flex-1 flex flex-col min-h-0">
-                {/* Header */}
-                <div className="h-14 bg-white border-b border-[#D4D4D4] flex items-center px-4 shrink-0">
-                  <button
-                    className="md:hidden mr-2 p-1.5 rounded-lg hover:bg-[#EAEAEA] transition"
-                    onClick={() => setSidebarOpen(true)}
+            <div
+              className={
+                mainView === 'chat'
+                  ? 'cs-page-enter flex-1 flex flex-col min-h-0'
+                  : 'hidden'
+              }
+            >
+              {/* Header */}
+              <div className="h-14 bg-white border-b border-[#D4D4D4] flex items-center px-4 shrink-0">
+                <button
+                  className="md:hidden mr-2 p-1.5 rounded-lg hover:bg-[#EAEAEA] transition"
+                  onClick={() => setSidebarOpen(true)}
+                >
+                  <svg
+                    className="w-5 h-5 text-[#333333]"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
                   >
-                    <svg
-                      className="w-5 h-5 text-[#333333]"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M4 6h16M4 12h16M4 18h16"
-                      />
-                    </svg>
-                  </button>
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-sm font-semibold text-[#000000]">
-                      {chatTitle}
-                    </h2>
-                    <span className="w-1.5 h-1.5 rounded-full bg-[#2ec4b6] animate-pulse" />
-                  </div>
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M4 6h16M4 12h16M4 18h16"
+                    />
+                  </svg>
+                </button>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-sm font-semibold text-[#000000]">
+                    {chatTitle}
+                  </h2>
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#2ec4b6] animate-pulse" />
                 </div>
+              </div>
 
-                {/* Messages Area + Input */}
-                {derivedMessages.length === 0 && !isLoadingSession ? (
-                  /* Empty state */
-                  <div className="flex-1 flex items-center justify-center min-h-0 px-4">
-                    <div className="w-full max-w-2xl cs-input-enter">
-                      <div className="text-center mb-6">
-                        <div className="w-14 h-14 bg-[#EAEAEA] rounded-2xl mx-auto flex items-center justify-center mb-4">
-                          <svg
-                            className="w-7 h-7 text-[#000000]"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
+              {/* Messages Area + Input */}
+              {derivedMessages.length === 0 && !isLoadingSession ? (
+                /* Empty state */
+                <div className="flex-1 flex items-center justify-center min-h-0 px-4">
+                  <div className="w-full max-w-2xl cs-input-enter">
+                    <div className="text-center mb-6">
+                      <div className="w-14 h-14 bg-[#EAEAEA] rounded-2xl mx-auto flex items-center justify-center mb-4">
+                        <svg
+                          className="w-7 h-7 text-[#000000]"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={1.5}
+                            d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"
+                          />
+                        </svg>
+                      </div>
+                      <p className="text-[#333333] text-sm">
+                        选择或创建一个对话开始分析
+                      </p>
+                      <p className="text-[#525252] text-sm mt-1">
+                        上传招标文件至知识库后，即可在此进行智能问答
+                      </p>
+                      {currentAgentPrologue && (
+                        <p className="text-[#525252] text-sm mt-2 max-w-md mx-auto leading-relaxed">
+                          {currentAgentPrologue}
+                        </p>
+                      )}
+                      <div className="grid grid-cols-2 gap-2.5 mt-5 max-w-sm mx-auto">
+                        {[
+                          {
+                            icon: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z',
+                            label: '招标文件解析',
+                            color: '#2ec4b6',
+                            bg: '#e6f9f7',
+                          },
+                          {
+                            icon: 'M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z',
+                            label: '智能评分分析',
+                            color: '#f59e0b',
+                            bg: '#fef9e7',
+                          },
+                          {
+                            icon: 'M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z',
+                            label: '关键信息提取',
+                            color: '#4f8ce8',
+                            bg: '#eef4ff',
+                          },
+                          {
+                            icon: 'M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z',
+                            label: '合规性检查',
+                            color: '#8b5cf6',
+                            bg: '#f3f0ff',
+                          },
+                        ].map((card, idx) => (
+                          <div
+                            key={card.label}
+                            className={`cs-card-enter cs-card-d${idx + 1} flex items-center gap-2 px-3 py-2.5 rounded-xl border border-[#E5E5E5] hover:border-[#000000] transition-colors cursor-pointer bg-white group`}
                           >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth={1.5}
-                              d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"
-                            />
-                          </svg>
-                        </div>
-                        <p className="text-[#333333] text-sm">
-                          选择或创建一个对话开始分析
-                        </p>
-                        <p className="text-[#525252] text-sm mt-1">
-                          上传招标文件至知识库后，即可在此进行智能问答
-                        </p>
-                        {currentAgentPrologue && (
-                          <p className="text-[#525252] text-sm mt-2 max-w-md mx-auto leading-relaxed">
-                            {currentAgentPrologue}
-                          </p>
-                        )}
-                        <div className="grid grid-cols-2 gap-2.5 mt-5 max-w-sm mx-auto">
-                          {[
-                            {
-                              icon: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z',
-                              label: '招标文件解析',
-                              color: '#2ec4b6',
-                              bg: '#e6f9f7',
-                            },
-                            {
-                              icon: 'M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z',
-                              label: '智能评分分析',
-                              color: '#f59e0b',
-                              bg: '#fef9e7',
-                            },
-                            {
-                              icon: 'M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z',
-                              label: '关键信息提取',
-                              color: '#4f8ce8',
-                              bg: '#eef4ff',
-                            },
-                            {
-                              icon: 'M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z',
-                              label: '合规性检查',
-                              color: '#8b5cf6',
-                              bg: '#f3f0ff',
-                            },
-                          ].map((card, idx) => (
                             <div
-                              key={card.label}
-                              className={`cs-card-enter cs-card-d${idx + 1} flex items-center gap-2 px-3 py-2.5 rounded-xl border border-[#E5E5E5] hover:border-[#000000] transition-colors cursor-pointer bg-white group`}
+                              className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors"
+                              style={{ backgroundColor: card.bg }}
                             >
-                              <div
-                                className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors"
-                                style={{ backgroundColor: card.bg }}
+                              <svg
+                                className="w-4 h-4"
+                                fill="none"
+                                stroke={card.color}
+                                strokeWidth={1.5}
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  d={card.icon}
+                                />
+                              </svg>
+                            </div>
+                            <span className="text-xs font-medium text-[#1a1a1a] group-hover:text-[#000000] transition-colors">
+                              {card.label}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    {/* File chips + Input */}
+                    <div>
+                      <FileUpload
+                        value={files}
+                        onValueChange={setFiles}
+                        onUpload={handleFileUpload}
+                        className="w-full"
+                        disabled={sendLoading}
+                        multiple
+                      >
+                        <FileUploadDropzone
+                          tabIndex={-1}
+                          onClick={(event) => event.preventDefault()}
+                          className="absolute top-0 left-0 z-0 flex size-full items-center justify-center rounded-none border-none bg-background/50 p-0 opacity-0 backdrop-blur transition-opacity duration-200 ease-out data-[dragging]:z-10 data-[dragging]:opacity-100"
+                        >
+                          <div className="flex flex-col items-center gap-1 text-center">
+                            <div className="flex items-center justify-center rounded-full border p-2.5">
+                              <Upload className="size-6 text-muted-foreground" />
+                            </div>
+                            <p className="font-medium text-sm">
+                              拖拽文件到此处上传
+                            </p>
+                            <p className="text-muted-foreground text-xs">
+                              最多上传5个文件，每个不超过5MB
+                            </p>
+                          </div>
+                        </FileUploadDropzone>
+
+                        <div
+                          className="cs-input-ring relative flex flex-col gap-2 bg-[#FFFFFF] border border-[#D4D4D4] rounded-2xl px-4 py-3"
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            const fileInput = e.currentTarget
+                              .closest('[data-slot="file-upload"]')
+                              ?.querySelector(
+                                'input[type="file"]',
+                              ) as HTMLInputElement;
+                            if (fileInput && e.dataTransfer.files.length > 0) {
+                              const dt = new DataTransfer();
+                              for (const f of e.dataTransfer.files)
+                                dt.items.add(f);
+                              fileInput.files = dt.files;
+                              fileInput.dispatchEvent(
+                                new Event('change', { bubbles: true }),
+                              );
+                            }
+                          }}
+                        >
+                          {files.length > 0 && (
+                            <FileUploadList
+                              orientation="horizontal"
+                              className="overflow-x-auto px-0 py-1"
+                            >
+                              {files.map((file, index) => (
+                                <FileUploadItem
+                                  key={index}
+                                  value={file}
+                                  className="max-w-none w-fit p-1 pr-4 gap-1.5 rounded-lg border border-[#E8E8E8]"
+                                >
+                                  <FileUploadItemPreview className="size-6 [&>svg]:size-3.5 [&>svg]:text-[#525252]">
+                                    <FileUploadItemProgress variant="fill" />
+                                  </FileUploadItemPreview>
+                                  <FileUploadItemMetadata
+                                    size="sm"
+                                    className="[&_span:first-child]:text-[#000000]"
+                                  />
+                                  <FileUploadItemDelete asChild>
+                                    <button
+                                      className="-top-1 -right-1 absolute size-4 shrink-0 cursor-pointer rounded-full bg-gray-200 hover:bg-gray-300 flex items-center justify-center"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        removeUploadedFile(file);
+                                      }}
+                                    >
+                                      <X className="size-2.5" />
+                                    </button>
+                                  </FileUploadItemDelete>
+                                </FileUploadItem>
+                              ))}
+                            </FileUploadList>
+                          )}
+                          <Textarea
+                            ref={textareaRef}
+                            value={value}
+                            onChange={handleInputChange}
+                            onKeyDown={(
+                              e: React.KeyboardEvent<HTMLTextAreaElement>,
+                            ) => {
+                              if (e.key === 'Enter' && !e.shiftKey) {
+                                e.preventDefault();
+                                handlePressEnter();
+                              }
+                            }}
+                            placeholder={typewriterText}
+                            className="min-h-[72px] w-full p-0 overflow-auto !outline-none !border-transparent !bg-transparent !shadow-none !ring-transparent !ring-offset-transparent !text-[#000000] cs-typewriter-cursor"
+                            style={{ color: '#000000' }}
+                            autoSize={{ minRows: 3, maxRows: 10 }}
+                            autoFocus
+                          />
+                          <div className="flex items-center justify-end gap-2">
+                            <div className="shrink-0 w-9 h-9 flex items-center justify-center">
+                              <RealtimeAudioButton
+                                onTranscript={(val) => setAudioInputValue(val)}
+                                testId="c-chat-audio-toggle"
+                              />
+                            </div>
+                            <FileUploadTrigger asChild>
+                              <button
+                                disabled={sendLoading}
+                                className="shrink-0 w-9 h-9 flex items-center justify-center text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                                title="上传文件"
                               >
                                 <svg
                                   className="w-4 h-4"
                                   fill="none"
-                                  stroke={card.color}
-                                  strokeWidth={1.5}
+                                  stroke="currentColor"
                                   viewBox="0 0 24 24"
                                 >
                                   <path
                                     strokeLinecap="round"
                                     strokeLinejoin="round"
-                                    d={card.icon}
+                                    strokeWidth={2}
+                                    d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
                                   />
                                 </svg>
-                              </div>
-                              <span className="text-xs font-medium text-[#1a1a1a] group-hover:text-[#000000] transition-colors">
-                                {card.label}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                      {/* File chips + Input */}
-                      <div>
-                        <FileUpload
-                          value={files}
-                          onValueChange={setFiles}
-                          onUpload={handleFileUpload}
-                          className="w-full"
-                          disabled={sendLoading}
-                          multiple
-                        >
-                          <FileUploadDropzone
-                            tabIndex={-1}
-                            onClick={(event) => event.preventDefault()}
-                            className="absolute top-0 left-0 z-0 flex size-full items-center justify-center rounded-none border-none bg-background/50 p-0 opacity-0 backdrop-blur transition-opacity duration-200 ease-out data-[dragging]:z-10 data-[dragging]:opacity-100"
-                          >
-                            <div className="flex flex-col items-center gap-1 text-center">
-                              <div className="flex items-center justify-center rounded-full border p-2.5">
-                                <Upload className="size-6 text-muted-foreground" />
-                              </div>
-                              <p className="font-medium text-sm">
-                                拖拽文件到此处上传
-                              </p>
-                              <p className="text-muted-foreground text-xs">
-                                最多上传5个文件，每个不超过5MB
-                              </p>
-                            </div>
-                          </FileUploadDropzone>
-
-                          <div
-                            className="cs-input-ring relative flex flex-col gap-2 bg-[#FFFFFF] border border-[#D4D4D4] rounded-2xl px-4 py-3"
-                            onDragOver={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                            }}
-                            onDrop={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              const fileInput = e.currentTarget
-                                .closest('[data-slot="file-upload"]')
-                                ?.querySelector(
-                                  'input[type="file"]',
-                                ) as HTMLInputElement;
-                              if (
-                                fileInput &&
-                                e.dataTransfer.files.length > 0
-                              ) {
-                                const dt = new DataTransfer();
-                                for (const f of e.dataTransfer.files)
-                                  dt.items.add(f);
-                                fileInput.files = dt.files;
-                                fileInput.dispatchEvent(
-                                  new Event('change', { bubbles: true }),
-                                );
-                              }
-                            }}
-                          >
-                            {files.length > 0 && (
-                              <FileUploadList
-                                orientation="horizontal"
-                                className="overflow-x-auto px-0 py-1"
+                              </button>
+                            </FileUploadTrigger>
+                            {!sendLoading ? (
+                              <button
+                                onClick={handlePressEnter}
+                                disabled={!value.trim()}
+                                className="shrink-0 w-9 h-9 flex items-center justify-center bg-[#000000] hover:bg-[#1a1a1a] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
                               >
-                                {files.map((file, index) => (
-                                  <FileUploadItem
-                                    key={index}
-                                    value={file}
-                                    className="max-w-none w-fit p-1 pr-4 gap-1.5 rounded-lg border border-[#E8E8E8]"
-                                  >
-                                    <FileUploadItemPreview className="size-6 [&>svg]:size-3.5 [&>svg]:text-[#525252]">
-                                      <FileUploadItemProgress variant="fill" />
-                                    </FileUploadItemPreview>
-                                    <FileUploadItemMetadata
-                                      size="sm"
-                                      className="[&_span:first-child]:text-[#000000]"
-                                    />
-                                    <FileUploadItemDelete asChild>
-                                      <button
-                                        className="-top-1 -right-1 absolute size-4 shrink-0 cursor-pointer rounded-full bg-gray-200 hover:bg-gray-300 flex items-center justify-center"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          removeUploadedFile(file);
-                                        }}
-                                      >
-                                        <X className="size-2.5" />
-                                      </button>
-                                    </FileUploadItemDelete>
-                                  </FileUploadItem>
-                                ))}
-                              </FileUploadList>
+                                <svg
+                                  className="w-4 h-4"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M5 12h14M12 5l7 7-7 7"
+                                  />
+                                </svg>
+                              </button>
+                            ) : (
+                              <button
+                                onClick={stopConversation}
+                                className="shrink-0 w-9 h-9 flex items-center justify-center bg-red-400 text-white rounded-lg hover:bg-red-500 transition active:scale-95"
+                              >
+                                <svg
+                                  className="w-3.5 h-3.5"
+                                  fill="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <rect
+                                    x="6"
+                                    y="6"
+                                    width="12"
+                                    height="12"
+                                    rx="2"
+                                  />
+                                </svg>
+                              </button>
                             )}
-                            <Textarea
-                              ref={textareaRef}
-                              value={value}
-                              onChange={handleInputChange}
-                              onKeyDown={(
-                                e: React.KeyboardEvent<HTMLTextAreaElement>,
-                              ) => {
-                                if (e.key === 'Enter' && !e.shiftKey) {
-                                  e.preventDefault();
-                                  handlePressEnter();
-                                }
-                              }}
-                              placeholder={typewriterText}
-                              className="min-h-[72px] w-full p-0 overflow-auto !outline-none !border-transparent !bg-transparent !shadow-none !ring-transparent !ring-offset-transparent !text-[#000000] cs-typewriter-cursor"
-                              style={{ color: '#000000' }}
-                              autoSize={{ minRows: 3, maxRows: 10 }}
-                              autoFocus
-                            />
-                            <div className="flex items-center justify-end gap-2">
-                              <div className="shrink-0 w-9 h-9 flex items-center justify-center">
-                                <RealtimeAudioButton
-                                  onTranscript={(val) =>
-                                    setAudioInputValue(val)
-                                  }
-                                  testId="c-chat-audio-toggle"
-                                />
-                              </div>
-                              <FileUploadTrigger asChild>
-                                <button
-                                  disabled={sendLoading}
-                                  className="shrink-0 w-9 h-9 flex items-center justify-center text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-                                  title="上传文件"
-                                >
-                                  <svg
-                                    className="w-4 h-4"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    viewBox="0 0 24 24"
-                                  >
-                                    <path
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth={2}
-                                      d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
-                                    />
-                                  </svg>
-                                </button>
-                              </FileUploadTrigger>
-                              {!sendLoading ? (
-                                <button
-                                  onClick={handlePressEnter}
-                                  disabled={!value.trim()}
-                                  className="shrink-0 w-9 h-9 flex items-center justify-center bg-[#000000] hover:bg-[#1a1a1a] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
-                                >
-                                  <svg
-                                    className="w-4 h-4"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    viewBox="0 0 24 24"
-                                  >
-                                    <path
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth={2}
-                                      d="M5 12h14M12 5l7 7-7 7"
-                                    />
-                                  </svg>
-                                </button>
-                              ) : (
-                                <button
-                                  onClick={stopConversation}
-                                  className="shrink-0 w-9 h-9 flex items-center justify-center bg-red-400 text-white rounded-lg hover:bg-red-500 transition active:scale-95"
-                                >
-                                  <svg
-                                    className="w-3.5 h-3.5"
-                                    fill="currentColor"
-                                    viewBox="0 0 24 24"
-                                  >
-                                    <rect
-                                      x="6"
-                                      y="6"
-                                      width="12"
-                                      height="12"
-                                      rx="2"
-                                    />
-                                  </svg>
-                                </button>
-                              )}
-                            </div>
                           </div>
-                        </FileUpload>
-                      </div>
+                        </div>
+                      </FileUpload>
                     </div>
                   </div>
-                ) : (
-                  /* Non-empty state: messages + bottom input */
-                  <>
+                </div>
+              ) : (
+                /* Non-empty state: messages + bottom input */
+                <>
+                  <div
+                    className="flex-1 overflow-y-auto px-4 lg:px-6 py-4 cs-scrollbar"
+                    style={{ scrollbarWidth: 'thin' }}
+                    ref={messageContainerRef}
+                  >
                     <div
-                      className="flex-1 overflow-y-auto px-4 lg:px-6 py-4 cs-scrollbar"
-                      style={{ scrollbarWidth: 'thin' }}
-                      ref={messageContainerRef}
+                      key={newSessionKey}
+                      className="max-w-[80rem] mx-auto space-y-4"
                     >
-                      <div
-                        key={newSessionKey}
-                        className="max-w-[80rem] mx-auto space-y-4"
-                      >
-                        {isLoadingSession ? (
-                          <div className="flex flex-col items-center justify-center py-20">
-                            <svg
-                              className="w-7 h-7 animate-spin text-[#000000] mb-4"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                            >
-                              <circle
-                                cx="12"
-                                cy="12"
-                                r="10"
-                                stroke="currentColor"
-                                strokeWidth="3"
-                                opacity="0.25"
-                              />
-                              <path
-                                d="M12 2a10 10 0 019.95 9"
-                                stroke="currentColor"
-                                strokeWidth="3"
-                                strokeLinecap="round"
-                              />
-                            </svg>
-                            <p className="text-[#333333] text-sm">
-                              加载对话中...
-                            </p>
-                          </div>
-                        ) : (
-                          derivedMessages.map((msg, i) => {
-                            const isLast = i === derivedMessages.length - 1;
-                            const streaming = isLast && sendLoading;
-                            const refs: IReferenceObject | undefined =
-                              findReferenceByMessageId(msg.id) ??
-                              (msg.reference as any);
+                      {isLoadingSession ? (
+                        <div className="flex flex-col items-center justify-center py-20">
+                          <svg
+                            className="w-7 h-7 animate-spin text-[#000000] mb-4"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                          >
+                            <circle
+                              cx="12"
+                              cy="12"
+                              r="10"
+                              stroke="currentColor"
+                              strokeWidth="3"
+                              opacity="0.25"
+                            />
+                            <path
+                              d="M12 2a10 10 0 019.95 9"
+                              stroke="currentColor"
+                              strokeWidth="3"
+                              strokeLinecap="round"
+                            />
+                          </svg>
+                          <p className="text-[#333333] text-sm">
+                            加载对话中...
+                          </p>
+                        </div>
+                      ) : (
+                        derivedMessages.map((msg, i) => {
+                          const isLast = i === derivedMessages.length - 1;
+                          const streaming = isLast && sendLoading;
+                          const refs: IReferenceObject | undefined =
+                            findReferenceByMessageId(msg.id) ??
+                            (msg.reference as any);
 
-                            if (msg.role === MessageType.User) {
-                              const userName =
-                                userInfo?.nickname || userInfo?.email || 'U';
-                              return (
-                                <div
-                                  key={msg.id || i}
-                                  className="flex justify-end cs-msg-enter gap-2 items-start"
-                                >
-                                  <div className="max-w-[85%]">
-                                    <div className="bg-[#000000] text-white px-4 py-2.5 rounded-2xl rounded-br-md text-[16px] leading-relaxed tracking-wider">
-                                      {msg.content}
-                                      {msg.files &&
-                                        (msg.files as any[]).length > 0 && (
-                                          <div className="flex flex-wrap gap-1 mt-2 pt-2 border-t border-white/20">
-                                            {(msg.files as any[]).map(
-                                              (f: any) => (
-                                                <span
-                                                  key={f.id}
-                                                  className="inline-flex items-center gap-1 px-2 py-0.5 bg-white/15 rounded-md text-[11px] text-white/90"
-                                                >
-                                                  <svg
-                                                    className="w-3 h-3 shrink-0"
-                                                    fill="none"
-                                                    stroke="currentColor"
-                                                    viewBox="0 0 24 24"
-                                                  >
-                                                    <path
-                                                      strokeLinecap="round"
-                                                      strokeLinejoin="round"
-                                                      strokeWidth={2}
-                                                      d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                                                    />
-                                                  </svg>
-                                                  {f.name}
-                                                </span>
-                                              ),
-                                            )}
-                                          </div>
-                                        )}
-                                    </div>
-                                    {msg.content && (
-                                      <div className="mt-1 flex justify-end">
-                                        <button
-                                          className="flex items-center gap-1 px-2.5 py-1 text-xs text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA] rounded-lg transition-colors"
-                                          onClick={async () => {
-                                            const ok = await copyToClipboard(
-                                              msg.content || '',
-                                            );
-                                            if (ok) {
-                                              setCopiedIndex(i);
-                                              setTimeout(
-                                                () => setCopiedIndex(null),
-                                                2000,
-                                              );
+                          if (msg.role === MessageType.User) {
+                            const userName =
+                              userInfo?.nickname || userInfo?.email || 'U';
+                            return (
+                              <div
+                                key={msg.id || i}
+                                className="flex justify-end cs-msg-enter gap-2 items-start"
+                              >
+                                <div className="max-w-[85%]">
+                                  {favoriteMode && (
+                                    <div className="flex justify-end mb-1.5">
+                                      <button
+                                        className={`shrink-0 size-5 rounded border-2 flex items-center justify-center transition-colors ${
+                                          selectedMessageIds.has(msg.id)
+                                            ? 'bg-[#6366f1] border-[#6366f1] text-white'
+                                            : 'border-[#A3A3A3] bg-white hover:border-[#6366f1]'
+                                        }`}
+                                        onClick={() => {
+                                          setSelectedMessageIds((prev) => {
+                                            const next = new Set(prev);
+                                            if (next.has(msg.id)) {
+                                              next.delete(msg.id);
+                                            } else {
+                                              next.add(msg.id);
                                             }
-                                          }}
-                                        >
-                                          {copiedIndex === i ? (
-                                            <svg
-                                              className="w-3.5 h-3.5"
-                                              fill="none"
-                                              stroke="currentColor"
-                                              viewBox="0 0 24 24"
-                                            >
-                                              <path
-                                                strokeLinecap="round"
-                                                strokeLinejoin="round"
-                                                strokeWidth={2}
-                                                d="M5 13l4 4L19 7"
-                                              />
-                                            </svg>
-                                          ) : (
-                                            <svg
-                                              className="w-3.5 h-3.5"
-                                              fill="none"
-                                              stroke="currentColor"
-                                              viewBox="0 0 24 24"
-                                            >
-                                              <path
-                                                strokeLinecap="round"
-                                                strokeLinejoin="round"
-                                                strokeWidth={2}
-                                                d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
-                                              />
-                                            </svg>
-                                          )}
-                                          {copiedIndex === i
-                                            ? '已复制'
-                                            : '复制'}
-                                        </button>
-                                        <button
-                                          className="flex items-center gap-1 px-2.5 py-1 text-xs text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA] rounded-lg transition-colors"
-                                          disabled={sendLoading}
-                                          onClick={() => {
-                                            setValue(msg.content);
-                                            // Remove this and later messages, then re-send
-                                            setDerivedMessages((prev) =>
-                                              prev.slice(0, i),
-                                            );
-                                            pendingSendRef.current = true;
-                                          }}
-                                          title="重新生成"
-                                        >
+                                            return next;
+                                          });
+                                        }}
+                                      >
+                                        {selectedMessageIds.has(msg.id) && (
                                           <svg
-                                            className="w-3.5 h-3.5"
+                                            className="w-3 h-3"
                                             fill="none"
                                             stroke="currentColor"
                                             viewBox="0 0 24 24"
@@ -1872,285 +1799,52 @@ export default function CChat() {
                                             <path
                                               strokeLinecap="round"
                                               strokeLinejoin="round"
-                                              strokeWidth={2}
-                                              d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182"
+                                              strokeWidth={3}
+                                              d="M5 13l4 4L19 7"
                                             />
                                           </svg>
-                                          重新生成
-                                        </button>
-                                      </div>
-                                    )}
-                                  </div>
-                                  <div className="size-7 rounded-lg bg-[#F59E0B] text-white flex items-center justify-center text-xs font-bold shrink-0">
-                                    {userName[0].toUpperCase()}
-                                  </div>
-                                </div>
-                              );
-                            }
-
-                            // Assistant message
-                            const isCurrentlyThinking =
-                              streaming &&
-                              /<think>/.test(msg.content || '') &&
-                              !/<\/think>/.test(msg.content || '');
-
-                            return (
-                              <div
-                                key={msg.id || i}
-                                className="flex justify-start cs-msg-enter gap-2 items-start"
-                              >
-                                <RAGFlowAvatar
-                                  name="标"
-                                  avatar=""
-                                  className="size-7 shrink-0 mt-0.5"
-                                />
-                                <div className="max-w-[85%]">
-                                  <div className="bg-white border border-[#D4D4D4] px-4 py-2.5 rounded-2xl rounded-bl-md text-[15px] leading-relaxed tracking-wider text-[#000000]">
-                                    <div className="msg-content text-[#000000]">
-                                      <ChapteredMarkdown
-                                        content={msg.content || ''}
-                                        loading={streaming}
-                                        reference={refs}
-                                        clickDocumentButton={
-                                          clickDocumentButton
-                                        }
-                                      />
-                                    </div>
-                                    {streaming && (
-                                      <span className="inline-block w-2 h-4 bg-[#000000] ml-1 animate-pulse rounded-sm" />
-                                    )}
-                                    {streaming && isCurrentlyThinking && (
-                                      <div className="flex items-center gap-2 text-[#525252] text-xs py-1">
-                                        <svg
-                                          className="w-3.5 h-3.5 animate-spin text-[#A3A3A3]"
-                                          viewBox="0 0 24 24"
-                                          fill="none"
-                                        >
-                                          <circle
-                                            cx="12"
-                                            cy="12"
-                                            r="10"
-                                            stroke="currentColor"
-                                            strokeWidth="3"
-                                            opacity="0.25"
-                                          />
-                                          <path
-                                            d="M12 2a10 10 0 019.95 9"
-                                            stroke="currentColor"
-                                            strokeWidth="3"
-                                            strokeLinecap="round"
-                                          />
-                                        </svg>
-                                        <span>正在思考中...</span>
-                                      </div>
-                                    )}
-                                  </div>
-                                  {/* Thinking timeline toggle */}
-                                  {nodeEventsByMsgId[msg.id || ''] && (
-                                    <button
-                                      className={`flex items-center gap-1 text-[11px] text-[#525252] hover:text-[#000000] transition-colors mt-1.5 ${thinkingMsgId === msg.id ? 'text-[#000000]' : ''}`}
-                                      onClick={() =>
-                                        setThinkingMsgId((prev) =>
-                                          prev === msg.id ? null : msg.id,
-                                        )
-                                      }
-                                    >
-                                      <svg
-                                        className={`w-3 h-3 transition-transform ${thinkingMsgId === msg.id ? 'animate-spin' : ''}`}
-                                        viewBox="0 0 24 24"
-                                        fill="none"
-                                        stroke="currentColor"
-                                      >
-                                        <circle
-                                          cx="12"
-                                          cy="12"
-                                          r="10"
-                                          strokeWidth="2.5"
-                                          opacity="0.3"
-                                        />
-                                        <path
-                                          d="M12 2a10 10 0 019.95 9"
-                                          strokeLinecap="round"
-                                          strokeWidth="2.5"
-                                        />
-                                      </svg>
-                                      <span>思考过程</span>
-                                      <svg
-                                        className={`w-2.5 h-2.5 transition-transform ${thinkingMsgId === msg.id ? 'rotate-180' : ''}`}
-                                        viewBox="0 0 24 24"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        strokeWidth="2"
-                                      >
-                                        <polyline points="6 9 12 15 18 9" />
-                                      </svg>
-                                    </button>
-                                  )}
-                                  {thinkingMsgId === msg.id && (
-                                    <div className="mt-2 space-y-1.5 py-2 border-t border-[#EAEAEA]">
-                                      {(nodeEventsByMsgId[msg.id || ''] || [])
-                                        .filter(
-                                          (e) =>
-                                            e.event ===
-                                              MessageEventType.NodeStarted ||
-                                            e.event ===
-                                              MessageEventType.NodeFinished,
-                                        )
-                                        .reduce<
-                                          Array<{
-                                            id: string;
-                                            name: string;
-                                            status: string;
-                                            elapsed: number;
-                                          }>
-                                        >((acc, e) => {
-                                          const d = (e as any).data;
-                                          if (
-                                            acc.some(
-                                              (x) => x.id === d.component_id,
-                                            )
-                                          )
-                                            return acc;
-                                          acc.push({
-                                            id: d.component_id,
-                                            name: d.component_name,
-                                            status:
-                                              e.event ===
-                                              MessageEventType.NodeFinished
-                                                ? d.error
-                                                  ? 'error'
-                                                  : 'done'
-                                                : 'running',
-                                            elapsed: d.elapsed_time || 0,
-                                          });
-                                          return acc;
-                                        }, [])
-                                        .map((node) => (
-                                          <div
-                                            key={node.id}
-                                            className="flex items-center gap-2 text-[11px] text-[#1a1a1a] px-1"
-                                          >
-                                            <div
-                                              className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                                                node.status === 'running'
-                                                  ? 'bg-[#A3A3A3] animate-pulse'
-                                                  : node.status === 'done'
-                                                    ? 'bg-[#22c55e]'
-                                                    : 'bg-red-400'
-                                              }`}
-                                            />
-                                            <span className="truncate flex-1">
-                                              {node.name}
-                                            </span>
-                                            <span className="text-[#525252] shrink-0 tabular-nums">
-                                              {(node.elapsed / 1000).toFixed(1)}
-                                              s
-                                            </span>
-                                          </div>
-                                        ))}
+                                        )}
+                                      </button>
                                     </div>
                                   )}
-                                  {/* Reference sources */}
-                                  {!streaming && refs && (
-                                    <div className="mt-3 space-y-2">
-                                      <ReferenceImageList
-                                        referenceChunks={refs.chunks}
-                                        messageContent={msg.content || ''}
-                                      />
-                                      {Object.values(refs.doc_aggs || {})
-                                        .length > 0 && (
-                                        <div className="border-t border-gray-200 pt-2">
-                                          <button
-                                            className="flex items-center gap-1 text-xs text-gray-500 mb-1.5 font-medium hover:text-gray-700 transition-colors w-full"
-                                            onClick={() => {
-                                              setExpandedSections((prev) => {
-                                                const next = new Set(prev);
-                                                if (next.has(msg.id)) {
-                                                  next.delete(msg.id);
-                                                } else {
-                                                  next.add(msg.id);
-                                                }
-                                                return next;
-                                              });
-                                            }}
-                                          >
-                                            <svg
-                                              className="w-3 h-3 transition-transform"
-                                              style={{
-                                                transform: expandedSections.has(
-                                                  msg.id,
-                                                )
-                                                  ? 'rotate(90deg)'
-                                                  : 'rotate(0deg)',
-                                              }}
-                                              viewBox="0 0 24 24"
-                                              fill="none"
-                                              stroke="currentColor"
-                                              strokeWidth="2"
-                                            >
-                                              <polyline points="9 18 15 12 9 6" />
-                                            </svg>
-                                            引用来源 (
-                                            {
-                                              Object.values(refs.doc_aggs || {})
-                                                .length
-                                            }
-                                            )
-                                          </button>
-                                          {expandedSections.has(msg.id) && (
-                                            <ReferenceDocumentList
-                                              list={Object.values(
-                                                refs.doc_aggs || {},
-                                              )}
-                                            />
+                                  <div className="bg-[#000000] text-white px-4 py-2.5 rounded-2xl rounded-br-md text-[16px] leading-relaxed tracking-wider">
+                                    {msg.content}
+                                    {msg.files &&
+                                      (msg.files as any[]).length > 0 && (
+                                        <div className="flex flex-wrap gap-1 mt-2 pt-2 border-t border-white/20">
+                                          {(msg.files as any[]).map(
+                                            (f: any) => (
+                                              <span
+                                                key={f.id}
+                                                className="inline-flex items-center gap-1 px-2 py-0.5 bg-white/15 rounded-md text-[11px] text-white/90"
+                                              >
+                                                <svg
+                                                  className="w-3 h-3 shrink-0"
+                                                  fill="none"
+                                                  stroke="currentColor"
+                                                  viewBox="0 0 24 24"
+                                                >
+                                                  <path
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                    strokeWidth={2}
+                                                    d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                                                  />
+                                                </svg>
+                                                {f.name}
+                                              </span>
+                                            ),
                                           )}
                                         </div>
                                       )}
-                                    </div>
-                                  )}
-                                  {/* Downloads */}
-                                  {!streaming &&
-                                    msg.downloads &&
-                                    (msg.downloads as any[]).length > 0 && (
-                                      <div className="mt-2 space-y-1.5">
-                                        {(msg.downloads as any[]).map(
-                                          (dl: any, di: number) => (
-                                            <a
-                                              key={di}
-                                              href={dl.url}
-                                              target="_blank"
-                                              rel="noopener noreferrer"
-                                              className="flex items-center gap-2 px-3 py-2 bg-[#F5F5F5] border border-[#E5E5E5] rounded-lg text-xs text-[#000000] hover:bg-[#EAEAEA] transition-colors"
-                                            >
-                                              <svg
-                                                className="w-3.5 h-3.5 shrink-0"
-                                                fill="none"
-                                                stroke="currentColor"
-                                                viewBox="0 0 24 24"
-                                              >
-                                                <path
-                                                  strokeLinecap="round"
-                                                  strokeLinejoin="round"
-                                                  strokeWidth={2}
-                                                  d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                                                />
-                                              </svg>
-                                              <span className="truncate">
-                                                {dl.name || '下载文件'}
-                                              </span>
-                                            </a>
-                                          ),
-                                        )}
-                                      </div>
-                                    )}
-                                  {/* Copy + Collab buttons on assistant messages */}
-                                  {!streaming && msg.content && (
-                                    <div className="mt-2 flex justify-end gap-1">
+                                  </div>
+                                  {msg.content && (
+                                    <div className="mt-1 flex justify-end">
                                       <button
                                         className="flex items-center gap-1 px-2.5 py-1 text-xs text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA] rounded-lg transition-colors"
                                         onClick={async () => {
                                           const ok = await copyToClipboard(
-                                            cleanContent || msg.content || '',
+                                            msg.content || '',
                                           );
                                           if (ok) {
                                             setCopiedIndex(i);
@@ -2194,10 +1888,16 @@ export default function CChat() {
                                       </button>
                                       <button
                                         className="flex items-center gap-1 px-2.5 py-1 text-xs text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA] rounded-lg transition-colors"
+                                        disabled={sendLoading}
                                         onClick={() => {
-                                          setCollabMessage(msg.content);
-                                          setCollabDialogOpen(true);
+                                          setValue(msg.content);
+                                          // Remove this and later messages, then re-send
+                                          setDerivedMessages((prev) =>
+                                            prev.slice(0, i),
+                                          );
+                                          pendingSendRef.current = true;
                                         }}
+                                        title="重新生成"
                                       >
                                         <svg
                                           className="w-3.5 h-3.5"
@@ -2209,48 +1909,333 @@ export default function CChat() {
                                             strokeLinecap="round"
                                             strokeLinejoin="round"
                                             strokeWidth={2}
-                                            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                                            d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182"
                                           />
                                         </svg>
-                                        协作
+                                        重新生成
                                       </button>
-                                      <button
-                                        className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded-lg transition-colors ${
-                                          favoriteMode &&
-                                          selectedMessageIds.has(msg.id)
-                                            ? 'text-[#6366f1] bg-[#EEF2FF]'
-                                            : 'text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA]'
-                                        }`}
-                                        onClick={() => {
-                                          if (!favoriteMode) {
-                                            setFavoriteMode(true);
-                                            setSelectedMessageIds(
-                                              new Set([msg.id]),
-                                            );
-                                          } else {
-                                            setSelectedMessageIds((prev) => {
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="size-7 rounded-lg bg-[#F59E0B] text-white flex items-center justify-center text-xs font-bold shrink-0">
+                                  {userName[0].toUpperCase()}
+                                </div>
+                              </div>
+                            );
+                          }
+
+                          // Assistant message
+                          const isCurrentlyThinking =
+                            streaming &&
+                            /<think>/.test(msg.content || '') &&
+                            !/<\/think>/.test(msg.content || '');
+
+                          const isSelected =
+                            favoriteMode && selectedMessageIds.has(msg.id);
+                          return (
+                            <div
+                              key={msg.id || i}
+                              className="flex justify-start cs-msg-enter gap-2 items-start"
+                            >
+                              {favoriteMode && (
+                                <button
+                                  className={`shrink-0 size-5 mt-1 rounded border-2 flex items-center justify-center transition-colors ${
+                                    isSelected
+                                      ? 'bg-[#6366f1] border-[#6366f1] text-white'
+                                      : 'border-[#A3A3A3] bg-white hover:border-[#6366f1]'
+                                  }`}
+                                  onClick={() => {
+                                    setSelectedMessageIds((prev) => {
+                                      const next = new Set(prev);
+                                      if (next.has(msg.id)) {
+                                        next.delete(msg.id);
+                                      } else {
+                                        next.add(msg.id);
+                                      }
+                                      return next;
+                                    });
+                                  }}
+                                >
+                                  {isSelected && (
+                                    <svg
+                                      className="w-3 h-3"
+                                      fill="none"
+                                      stroke="currentColor"
+                                      viewBox="0 0 24 24"
+                                    >
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        strokeWidth={3}
+                                        d="M5 13l4 4L19 7"
+                                      />
+                                    </svg>
+                                  )}
+                                </button>
+                              )}
+                              <RAGFlowAvatar
+                                name="标"
+                                avatar=""
+                                className="size-7 shrink-0 mt-0.5"
+                              />
+                              <div className="max-w-[85%]">
+                                <div className="bg-white border border-[#D4D4D4] px-4 py-2.5 rounded-2xl rounded-bl-md text-[15px] leading-relaxed tracking-wider text-[#000000]">
+                                  <div className="msg-content text-[#000000]">
+                                    <ChapteredMarkdown
+                                      content={msg.content || ''}
+                                      loading={streaming}
+                                      reference={refs}
+                                      clickDocumentButton={clickDocumentButton}
+                                    />
+                                  </div>
+                                  {streaming && (
+                                    <span className="inline-block w-2 h-4 bg-[#000000] ml-1 animate-pulse rounded-sm" />
+                                  )}
+                                  {streaming && isCurrentlyThinking && (
+                                    <div className="flex items-center gap-2 text-[#525252] text-xs py-1">
+                                      <svg
+                                        className="w-3.5 h-3.5 animate-spin text-[#A3A3A3]"
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                      >
+                                        <circle
+                                          cx="12"
+                                          cy="12"
+                                          r="10"
+                                          stroke="currentColor"
+                                          strokeWidth="3"
+                                          opacity="0.25"
+                                        />
+                                        <path
+                                          d="M12 2a10 10 0 019.95 9"
+                                          stroke="currentColor"
+                                          strokeWidth="3"
+                                          strokeLinecap="round"
+                                        />
+                                      </svg>
+                                      <span>正在思考中...</span>
+                                    </div>
+                                  )}
+                                </div>
+                                {/* Thinking timeline toggle */}
+                                {nodeEventsByMsgId[msg.id || ''] && (
+                                  <button
+                                    className={`flex items-center gap-1 text-[11px] text-[#525252] hover:text-[#000000] transition-colors mt-1.5 ${thinkingMsgId === msg.id ? 'text-[#000000]' : ''}`}
+                                    onClick={() =>
+                                      setThinkingMsgId((prev) =>
+                                        prev === msg.id ? null : msg.id,
+                                      )
+                                    }
+                                  >
+                                    <svg
+                                      className={`w-3 h-3 transition-transform ${thinkingMsgId === msg.id ? 'animate-spin' : ''}`}
+                                      viewBox="0 0 24 24"
+                                      fill="none"
+                                      stroke="currentColor"
+                                    >
+                                      <circle
+                                        cx="12"
+                                        cy="12"
+                                        r="10"
+                                        strokeWidth="2.5"
+                                        opacity="0.3"
+                                      />
+                                      <path
+                                        d="M12 2a10 10 0 019.95 9"
+                                        strokeLinecap="round"
+                                        strokeWidth="2.5"
+                                      />
+                                    </svg>
+                                    <span>思考过程</span>
+                                    <svg
+                                      className={`w-2.5 h-2.5 transition-transform ${thinkingMsgId === msg.id ? 'rotate-180' : ''}`}
+                                      viewBox="0 0 24 24"
+                                      fill="none"
+                                      stroke="currentColor"
+                                      strokeWidth="2"
+                                    >
+                                      <polyline points="6 9 12 15 18 9" />
+                                    </svg>
+                                  </button>
+                                )}
+                                {thinkingMsgId === msg.id && (
+                                  <div className="mt-2 space-y-1.5 py-2 border-t border-[#EAEAEA]">
+                                    {(nodeEventsByMsgId[msg.id || ''] || [])
+                                      .filter(
+                                        (e) =>
+                                          e.event ===
+                                            MessageEventType.NodeStarted ||
+                                          e.event ===
+                                            MessageEventType.NodeFinished,
+                                      )
+                                      .reduce<
+                                        Array<{
+                                          id: string;
+                                          name: string;
+                                          status: string;
+                                          elapsed: number;
+                                        }>
+                                      >((acc, e) => {
+                                        const d = (e as any).data;
+                                        if (
+                                          acc.some(
+                                            (x) => x.id === d.component_id,
+                                          )
+                                        )
+                                          return acc;
+                                        acc.push({
+                                          id: d.component_id,
+                                          name: d.component_name,
+                                          status:
+                                            e.event ===
+                                            MessageEventType.NodeFinished
+                                              ? d.error
+                                                ? 'error'
+                                                : 'done'
+                                              : 'running',
+                                          elapsed: d.elapsed_time || 0,
+                                        });
+                                        return acc;
+                                      }, [])
+                                      .map((node) => (
+                                        <div
+                                          key={node.id}
+                                          className="flex items-center gap-2 text-[11px] text-[#1a1a1a] px-1"
+                                        >
+                                          <div
+                                            className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                                              node.status === 'running'
+                                                ? 'bg-[#A3A3A3] animate-pulse'
+                                                : node.status === 'done'
+                                                  ? 'bg-[#22c55e]'
+                                                  : 'bg-red-400'
+                                            }`}
+                                          />
+                                          <span className="truncate flex-1">
+                                            {node.name}
+                                          </span>
+                                          <span className="text-[#525252] shrink-0 tabular-nums">
+                                            {(node.elapsed / 1000).toFixed(1)}s
+                                          </span>
+                                        </div>
+                                      ))}
+                                  </div>
+                                )}
+                                {/* Reference sources */}
+                                {!streaming && refs && (
+                                  <div className="mt-3 space-y-2">
+                                    <ReferenceImageList
+                                      referenceChunks={refs.chunks}
+                                      messageContent={msg.content || ''}
+                                    />
+                                    {Object.values(refs.doc_aggs || {}).length >
+                                      0 && (
+                                      <div className="border-t border-gray-200 pt-2">
+                                        <button
+                                          className="flex items-center gap-1 text-xs text-gray-500 mb-1.5 font-medium hover:text-gray-700 transition-colors w-full"
+                                          onClick={() => {
+                                            setExpandedSections((prev) => {
                                               const next = new Set(prev);
                                               if (next.has(msg.id)) {
                                                 next.delete(msg.id);
-                                                if (next.size === 0) {
-                                                  setFavoriteMode(false);
-                                                }
                                               } else {
                                                 next.add(msg.id);
                                               }
                                               return next;
                                             });
+                                          }}
+                                        >
+                                          <svg
+                                            className="w-3 h-3 transition-transform"
+                                            style={{
+                                              transform: expandedSections.has(
+                                                msg.id,
+                                              )
+                                                ? 'rotate(90deg)'
+                                                : 'rotate(0deg)',
+                                            }}
+                                            viewBox="0 0 24 24"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            strokeWidth="2"
+                                          >
+                                            <polyline points="9 18 15 12 9 6" />
+                                          </svg>
+                                          引用来源 (
+                                          {
+                                            Object.values(refs.doc_aggs || {})
+                                              .length
                                           }
-                                        }}
-                                      >
+                                          )
+                                        </button>
+                                        {expandedSections.has(msg.id) && (
+                                          <ReferenceDocumentList
+                                            list={Object.values(
+                                              refs.doc_aggs || {},
+                                            )}
+                                          />
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                                {/* Downloads */}
+                                {!streaming &&
+                                  msg.downloads &&
+                                  (msg.downloads as any[]).length > 0 && (
+                                    <div className="mt-2 space-y-1.5">
+                                      {(msg.downloads as any[]).map(
+                                        (dl: any, di: number) => (
+                                          <a
+                                            key={di}
+                                            href={dl.url}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="flex items-center gap-2 px-3 py-2 bg-[#F5F5F5] border border-[#E5E5E5] rounded-lg text-xs text-[#000000] hover:bg-[#EAEAEA] transition-colors"
+                                          >
+                                            <svg
+                                              className="w-3.5 h-3.5 shrink-0"
+                                              fill="none"
+                                              stroke="currentColor"
+                                              viewBox="0 0 24 24"
+                                            >
+                                              <path
+                                                strokeLinecap="round"
+                                                strokeLinejoin="round"
+                                                strokeWidth={2}
+                                                d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                                              />
+                                            </svg>
+                                            <span className="truncate">
+                                              {dl.name || '下载文件'}
+                                            </span>
+                                          </a>
+                                        ),
+                                      )}
+                                    </div>
+                                  )}
+                                {/* Copy + Collab buttons on assistant messages */}
+                                {!streaming && msg.content && (
+                                  <div className="mt-2 flex justify-end gap-1">
+                                    <button
+                                      className="flex items-center gap-1 px-2.5 py-1 text-xs text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA] rounded-lg transition-colors"
+                                      onClick={async () => {
+                                        const ok = await copyToClipboard(
+                                          cleanContent || msg.content || '',
+                                        );
+                                        if (ok) {
+                                          setCopiedIndex(i);
+                                          setTimeout(
+                                            () => setCopiedIndex(null),
+                                            2000,
+                                          );
+                                        }
+                                      }}
+                                    >
+                                      {copiedIndex === i ? (
                                         <svg
                                           className="w-3.5 h-3.5"
-                                          fill={
-                                            favoriteMode &&
-                                            selectedMessageIds.has(msg.id)
-                                              ? 'currentColor'
-                                              : 'none'
-                                          }
+                                          fill="none"
                                           stroke="currentColor"
                                           viewBox="0 0 24 24"
                                         >
@@ -2258,192 +2243,35 @@ export default function CChat() {
                                             strokeLinecap="round"
                                             strokeLinejoin="round"
                                             strokeWidth={2}
-                                            d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"
+                                            d="M5 13l4 4L19 7"
                                           />
                                         </svg>
-                                        收藏
-                                      </button>
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            );
-                          })
-                        )}
-                        {/* Loading placeholder: show while waiting for first LLM response */}
-                        {sendLoading &&
-                          derivedMessages.length > 0 &&
-                          derivedMessages[derivedMessages.length - 1]?.role ===
-                            MessageType.User && (
-                            <div className="flex justify-start cs-msg-enter gap-2 items-start">
-                              <RAGFlowAvatar
-                                name="标"
-                                avatar=""
-                                className="size-7 shrink-0 mt-0.5"
-                              />
-                              <div className="max-w-[85%]">
-                                <div className="bg-white border border-[#D4D4D4] px-4 py-2.5 rounded-2xl rounded-bl-md">
-                                  <div className="flex items-center gap-2 text-[#525252] text-sm py-1">
-                                    <svg
-                                      className="w-4 h-4 animate-spin text-[#A3A3A3]"
-                                      viewBox="0 0 24 24"
-                                      fill="none"
-                                    >
-                                      <circle
-                                        cx="12"
-                                        cy="12"
-                                        r="10"
-                                        stroke="currentColor"
-                                        strokeWidth="3"
-                                        opacity="0.25"
-                                      />
-                                      <path
-                                        d="M12 2a10 10 0 019.95 9"
-                                        stroke="currentColor"
-                                        strokeWidth="3"
-                                        strokeLinecap="round"
-                                      />
-                                    </svg>
-                                    <span>正在生成中...</span>
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          )}
-                        <div ref={scrollRef} />
-                      </div>
-                    </div>
-
-                    {/* Input Area (bottom) */}
-                    <div className="bg-white border-t border-[#D4D4D4] p-3 lg:p-4 shrink-0">
-                      <div className="max-w-3xl mx-auto">
-                        <FileUpload
-                          value={files}
-                          onValueChange={setFiles}
-                          onUpload={handleFileUpload}
-                          className="w-full"
-                          disabled={sendLoading}
-                          multiple
-                        >
-                          <FileUploadDropzone
-                            tabIndex={-1}
-                            onClick={(event) => event.preventDefault()}
-                            className="absolute top-0 left-0 z-0 flex size-full items-center justify-center rounded-none border-none bg-background/50 p-0 opacity-0 backdrop-blur transition-opacity duration-200 ease-out data-[dragging]:z-10 data-[dragging]:opacity-100"
-                          >
-                            <div className="flex flex-col items-center gap-1 text-center">
-                              <div className="flex items-center justify-center rounded-full border p-2.5">
-                                <Upload className="size-6 text-muted-foreground" />
-                              </div>
-                              <p className="font-medium text-sm">
-                                拖拽文件到此处上传
-                              </p>
-                              <p className="text-muted-foreground text-xs">
-                                最多上传5个文件，每个不超过5MB
-                              </p>
-                            </div>
-                          </FileUploadDropzone>
-
-                          <div
-                            className="cs-input-ring relative flex flex-col gap-2 bg-[#FFFFFF] border border-[#D4D4D4] rounded-2xl px-3 py-2"
-                            onDragOver={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                            }}
-                            onDrop={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              const fileInput = e.currentTarget
-                                .closest('[data-slot="file-upload"]')
-                                ?.querySelector(
-                                  'input[type="file"]',
-                                ) as HTMLInputElement;
-                              if (
-                                fileInput &&
-                                e.dataTransfer.files.length > 0
-                              ) {
-                                const dt = new DataTransfer();
-                                for (const f of e.dataTransfer.files)
-                                  dt.items.add(f);
-                                fileInput.files = dt.files;
-                                fileInput.dispatchEvent(
-                                  new Event('change', { bubbles: true }),
-                                );
-                              }
-                            }}
-                          >
-                            {files.length > 0 && (
-                              <FileUploadList
-                                orientation="horizontal"
-                                className="overflow-x-auto px-0 py-1"
-                              >
-                                {files.map((file, index) => (
-                                  <FileUploadItem
-                                    key={index}
-                                    value={file}
-                                    className="max-w-none w-fit p-1 pr-4 gap-1.5 rounded-lg border border-[#E8E8E8]"
-                                  >
-                                    <FileUploadItemPreview className="size-6 [&>svg]:size-3.5 [&>svg]:text-[#525252]">
-                                      <FileUploadItemProgress variant="fill" />
-                                    </FileUploadItemPreview>
-                                    <FileUploadItemMetadata
-                                      size="sm"
-                                      className="[&_span:first-child]:text-[#000000]"
-                                    />
-                                    <FileUploadItemDelete asChild>
-                                      <button
-                                        className="-top-1 -right-1 absolute size-4 shrink-0 cursor-pointer rounded-full bg-gray-200 hover:bg-gray-300 flex items-center justify-center"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          removeUploadedFile(file);
-                                        }}
-                                      >
-                                        <X className="size-2.5" />
-                                      </button>
-                                    </FileUploadItemDelete>
-                                  </FileUploadItem>
-                                ))}
-                              </FileUploadList>
-                            )}
-                            <Textarea
-                              ref={textareaRef}
-                              value={value}
-                              onChange={handleInputChange}
-                              onKeyDown={(
-                                e: React.KeyboardEvent<HTMLTextAreaElement>,
-                              ) => {
-                                if (e.key === 'Enter' && !e.shiftKey) {
-                                  e.preventDefault();
-                                  handlePressEnter();
-                                }
-                              }}
-                              placeholder={
-                                hasMessages
-                                  ? '继续输入您的问题...'
-                                  : typewriterText
-                              }
-                              className={`min-h-[72px] w-full p-0 overflow-auto !outline-none !border-transparent !bg-transparent !shadow-none !ring-transparent !ring-offset-transparent !text-[#000000]${hasMessages ? '' : ' cs-typewriter-cursor'}`}
-                              style={{ color: '#000000' }}
-                              autoSize={{ minRows: 3, maxRows: 10 }}
-                            />
-                            <div className="flex items-center justify-end gap-2">
-                              {!sendLoading ? (
-                                <>
-                                  <div className="shrink-0 w-9 h-9 flex items-center justify-center">
-                                    <RealtimeAudioButton
-                                      onTranscript={(val) =>
-                                        setAudioInputValue(val)
-                                      }
-                                      testId="c-chat-audio-toggle"
-                                    />
-                                  </div>
-                                  <FileUploadTrigger asChild>
+                                      ) : (
+                                        <svg
+                                          className="w-3.5 h-3.5"
+                                          fill="none"
+                                          stroke="currentColor"
+                                          viewBox="0 0 24 24"
+                                        >
+                                          <path
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
+                                            strokeWidth={2}
+                                            d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
+                                          />
+                                        </svg>
+                                      )}
+                                      {copiedIndex === i ? '已复制' : '复制'}
+                                    </button>
                                     <button
-                                      disabled={sendLoading}
-                                      className="shrink-0 w-9 h-9 flex items-center justify-center text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-                                      title="上传文件"
+                                      className="flex items-center gap-1 px-2.5 py-1 text-xs text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA] rounded-lg transition-colors"
+                                      onClick={() => {
+                                        setCollabMessage(msg.content);
+                                        setCollabDialogOpen(true);
+                                      }}
                                     >
                                       <svg
-                                        className="w-4 h-4"
+                                        className="w-3.5 h-3.5"
                                         fill="none"
                                         stroke="currentColor"
                                         viewBox="0 0 24 24"
@@ -2452,15 +2280,221 @@ export default function CChat() {
                                           strokeLinecap="round"
                                           strokeLinejoin="round"
                                           strokeWidth={2}
-                                          d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
+                                          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
                                         />
                                       </svg>
+                                      协作
                                     </button>
-                                  </FileUploadTrigger>
+                                    <button
+                                      className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded-lg transition-colors ${
+                                        favoriteMode
+                                          ? 'text-[#6366f1] bg-[#EEF2FF]'
+                                          : 'text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA]'
+                                      }`}
+                                      onClick={() => {
+                                        if (!favoriteMode) {
+                                          setFavoriteMode(true);
+                                          setSelectedMessageIds(
+                                            new Set([msg.id]),
+                                          );
+                                        } else {
+                                          setFavoriteMode(false);
+                                          setSelectedMessageIds(new Set());
+                                        }
+                                      }}
+                                    >
+                                      <svg
+                                        className="w-3.5 h-3.5"
+                                        fill={
+                                          favoriteMode ? 'currentColor' : 'none'
+                                        }
+                                        stroke="currentColor"
+                                        viewBox="0 0 24 24"
+                                      >
+                                        <path
+                                          strokeLinecap="round"
+                                          strokeLinejoin="round"
+                                          strokeWidth={2}
+                                          d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"
+                                        />
+                                      </svg>
+                                      收藏
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                      {/* Loading placeholder: show while waiting for first LLM response */}
+                      {sendLoading &&
+                        derivedMessages.length > 0 &&
+                        derivedMessages[derivedMessages.length - 1]?.role ===
+                          MessageType.User && (
+                          <div className="flex justify-start cs-msg-enter gap-2 items-start">
+                            <RAGFlowAvatar
+                              name="标"
+                              avatar=""
+                              className="size-7 shrink-0 mt-0.5"
+                            />
+                            <div className="max-w-[85%]">
+                              <div className="bg-white border border-[#D4D4D4] px-4 py-2.5 rounded-2xl rounded-bl-md">
+                                <div className="flex items-center gap-2 text-[#525252] text-sm py-1">
+                                  <svg
+                                    className="w-4 h-4 animate-spin text-[#A3A3A3]"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                  >
+                                    <circle
+                                      cx="12"
+                                      cy="12"
+                                      r="10"
+                                      stroke="currentColor"
+                                      strokeWidth="3"
+                                      opacity="0.25"
+                                    />
+                                    <path
+                                      d="M12 2a10 10 0 019.95 9"
+                                      stroke="currentColor"
+                                      strokeWidth="3"
+                                      strokeLinecap="round"
+                                    />
+                                  </svg>
+                                  <span>正在生成中...</span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      <div ref={scrollRef} />
+                    </div>
+                  </div>
+
+                  {/* Input Area (bottom) */}
+                  <div className="bg-white border-t border-[#D4D4D4] p-3 lg:p-4 shrink-0">
+                    <div className="max-w-3xl mx-auto">
+                      <FileUpload
+                        value={files}
+                        onValueChange={setFiles}
+                        onUpload={handleFileUpload}
+                        className="w-full"
+                        disabled={sendLoading}
+                        multiple
+                      >
+                        <FileUploadDropzone
+                          tabIndex={-1}
+                          onClick={(event) => event.preventDefault()}
+                          className="absolute top-0 left-0 z-0 flex size-full items-center justify-center rounded-none border-none bg-background/50 p-0 opacity-0 backdrop-blur transition-opacity duration-200 ease-out data-[dragging]:z-10 data-[dragging]:opacity-100"
+                        >
+                          <div className="flex flex-col items-center gap-1 text-center">
+                            <div className="flex items-center justify-center rounded-full border p-2.5">
+                              <Upload className="size-6 text-muted-foreground" />
+                            </div>
+                            <p className="font-medium text-sm">
+                              拖拽文件到此处上传
+                            </p>
+                            <p className="text-muted-foreground text-xs">
+                              最多上传5个文件，每个不超过5MB
+                            </p>
+                          </div>
+                        </FileUploadDropzone>
+
+                        <div
+                          className="cs-input-ring relative flex flex-col gap-2 bg-[#FFFFFF] border border-[#D4D4D4] rounded-2xl px-3 py-2"
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            const fileInput = e.currentTarget
+                              .closest('[data-slot="file-upload"]')
+                              ?.querySelector(
+                                'input[type="file"]',
+                              ) as HTMLInputElement;
+                            if (fileInput && e.dataTransfer.files.length > 0) {
+                              const dt = new DataTransfer();
+                              for (const f of e.dataTransfer.files)
+                                dt.items.add(f);
+                              fileInput.files = dt.files;
+                              fileInput.dispatchEvent(
+                                new Event('change', { bubbles: true }),
+                              );
+                            }
+                          }}
+                        >
+                          {files.length > 0 && (
+                            <FileUploadList
+                              orientation="horizontal"
+                              className="overflow-x-auto px-0 py-1"
+                            >
+                              {files.map((file, index) => (
+                                <FileUploadItem
+                                  key={index}
+                                  value={file}
+                                  className="max-w-none w-fit p-1 pr-4 gap-1.5 rounded-lg border border-[#E8E8E8]"
+                                >
+                                  <FileUploadItemPreview className="size-6 [&>svg]:size-3.5 [&>svg]:text-[#525252]">
+                                    <FileUploadItemProgress variant="fill" />
+                                  </FileUploadItemPreview>
+                                  <FileUploadItemMetadata
+                                    size="sm"
+                                    className="[&_span:first-child]:text-[#000000]"
+                                  />
+                                  <FileUploadItemDelete asChild>
+                                    <button
+                                      className="-top-1 -right-1 absolute size-4 shrink-0 cursor-pointer rounded-full bg-gray-200 hover:bg-gray-300 flex items-center justify-center"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        removeUploadedFile(file);
+                                      }}
+                                    >
+                                      <X className="size-2.5" />
+                                    </button>
+                                  </FileUploadItemDelete>
+                                </FileUploadItem>
+                              ))}
+                            </FileUploadList>
+                          )}
+                          <Textarea
+                            ref={textareaRef}
+                            value={value}
+                            onChange={handleInputChange}
+                            onKeyDown={(
+                              e: React.KeyboardEvent<HTMLTextAreaElement>,
+                            ) => {
+                              if (e.key === 'Enter' && !e.shiftKey) {
+                                e.preventDefault();
+                                handlePressEnter();
+                              }
+                            }}
+                            placeholder={
+                              hasMessages
+                                ? '继续输入您的问题...'
+                                : typewriterText
+                            }
+                            className={`min-h-[72px] w-full p-0 overflow-auto !outline-none !border-transparent !bg-transparent !shadow-none !ring-transparent !ring-offset-transparent !text-[#000000]${hasMessages ? '' : ' cs-typewriter-cursor'}`}
+                            style={{ color: '#000000' }}
+                            autoSize={{ minRows: 3, maxRows: 10 }}
+                          />
+                          <div className="flex items-center justify-end gap-2">
+                            {!sendLoading ? (
+                              <>
+                                <div className="shrink-0 w-9 h-9 flex items-center justify-center">
+                                  <RealtimeAudioButton
+                                    onTranscript={(val) =>
+                                      setAudioInputValue(val)
+                                    }
+                                    testId="c-chat-audio-toggle"
+                                  />
+                                </div>
+                                <FileUploadTrigger asChild>
                                   <button
-                                    onClick={handlePressEnter}
-                                    disabled={!value.trim()}
-                                    className="shrink-0 w-9 h-9 flex items-center justify-center bg-[#000000] hover:bg-[#1a1a1a] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
+                                    disabled={sendLoading}
+                                    className="shrink-0 w-9 h-9 flex items-center justify-center text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                                    title="上传文件"
                                   >
                                     <svg
                                       className="w-4 h-4"
@@ -2472,40 +2506,59 @@ export default function CChat() {
                                         strokeLinecap="round"
                                         strokeLinejoin="round"
                                         strokeWidth={2}
-                                        d="M5 12h14M12 5l7 7-7 7"
+                                        d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
                                       />
                                     </svg>
                                   </button>
-                                </>
-                              ) : (
+                                </FileUploadTrigger>
                                 <button
-                                  onClick={stopConversation}
-                                  className="shrink-0 w-9 h-9 flex items-center justify-center bg-red-400 text-white rounded-xl hover:bg-red-500 transition active:scale-95"
+                                  onClick={handlePressEnter}
+                                  disabled={!value.trim()}
+                                  className="shrink-0 w-9 h-9 flex items-center justify-center bg-[#000000] hover:bg-[#1a1a1a] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
                                 >
                                   <svg
-                                    className="w-3.5 h-3.5"
-                                    fill="currentColor"
+                                    className="w-4 h-4"
+                                    fill="none"
+                                    stroke="currentColor"
                                     viewBox="0 0 24 24"
                                   >
-                                    <rect
-                                      x="6"
-                                      y="6"
-                                      width="12"
-                                      height="12"
-                                      rx="1"
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M5 12h14M12 5l7 7-7 7"
                                     />
                                   </svg>
                                 </button>
-                              )}
-                            </div>
+                              </>
+                            ) : (
+                              <button
+                                onClick={stopConversation}
+                                className="shrink-0 w-9 h-9 flex items-center justify-center bg-red-400 text-white rounded-xl hover:bg-red-500 transition active:scale-95"
+                              >
+                                <svg
+                                  className="w-3.5 h-3.5"
+                                  fill="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <rect
+                                    x="6"
+                                    y="6"
+                                    width="12"
+                                    height="12"
+                                    rx="1"
+                                  />
+                                </svg>
+                              </button>
+                            )}
                           </div>
-                        </FileUpload>
-                      </div>
+                        </div>
+                      </FileUpload>
                     </div>
-                  </>
-                )}
-              </div>
-            )}
+                  </div>
+                </>
+              )}
+            </div>
 
             {/* Favorite batch action bar */}
             {favoriteMode && selectedMessageIds.size > 0 && (
@@ -2532,32 +2585,48 @@ export default function CChat() {
             )}
 
             {/* Collaboration View */}
-            {mainView === 'collaboration' && (
-              <div className="cs-page-enter flex-1 flex flex-col min-h-0">
-                <CollaborationPanel apiFetch={apiFetch} />
-              </div>
-            )}
+            <div
+              className={
+                mainView === 'collaboration'
+                  ? 'cs-page-enter flex-1 flex flex-col min-h-0'
+                  : 'hidden'
+              }
+            >
+              <CollaborationPanel apiFetch={apiFetch} />
+            </div>
 
             {/* Tools View */}
-            {mainView === 'tools' && (
-              <div className="cs-page-enter flex-1 flex flex-col min-h-0">
-                <ToolsPanel />
-              </div>
-            )}
+            <div
+              className={
+                mainView === 'tools'
+                  ? 'cs-page-enter flex-1 flex flex-col min-h-0'
+                  : 'hidden'
+              }
+            >
+              <ToolsPanel />
+            </div>
 
             {/* Bid View */}
-            {mainView === 'bid' && (
-              <div className="cs-page-enter flex-1 flex flex-col min-h-0">
-                <BidPanel />
-              </div>
-            )}
+            <div
+              className={
+                mainView === 'bid'
+                  ? 'cs-page-enter flex-1 flex flex-col min-h-0'
+                  : 'hidden'
+              }
+            >
+              <BidPanel />
+            </div>
 
             {/* Favorites View */}
-            {mainView === 'favorites' && (
-              <div className="cs-page-enter flex-1 flex flex-col min-h-0">
-                <FavoritePanel apiFetch={apiFetch} />
-              </div>
-            )}
+            <div
+              className={
+                mainView === 'favorites'
+                  ? 'cs-page-enter flex-1 flex flex-col min-h-0'
+                  : 'hidden'
+              }
+            >
+              <FavoritePanel apiFetch={apiFetch} />
+            </div>
           </div>
         </div>
 
@@ -2578,18 +2647,36 @@ export default function CChat() {
             const selectedMsgs = derivedMessages.filter((m) =>
               selectedMessageIds.has(m.id || ''),
             );
-            const messagesData = selectedMsgs.map((m) => ({
-              role: m.role,
-              content: m.content,
-              reference: m.reference || null,
-            }));
+            const stripMd = (t: string) => {
+              let s = t.replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '');
+              s = s.replace(
+                /```\w*\n([\s\S]*?)```/g,
+                (_, c: string) => '\n' + c.trim() + '\n',
+              );
+              s = s.replace(/`([^`]+)`/g, '$1');
+              s = s.replace(/\*\*\*(.+?)\*\*\*/g, '$1');
+              s = s.replace(/\*\*(.+?)\*\*/g, '$1');
+              s = s.replace(/\*(.+?)\*/g, '$1');
+              s = s.replace(/~~(.+?)~~/g, '$1');
+              s = s.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+              s = s.replace(/!\[[^\]]*\]\([^)]+\)/g, '');
+              s = s.replace(/^#{1,6}\s+/gm, '');
+              s = s.replace(/^(\s*)[-*+]\s+/gm, '$1• ');
+              return s.trim();
+            };
+            const mergedContent = selectedMsgs
+              .map((m) => {
+                const roleLabel = m.role === 'user' ? '【用户】' : '【助手】';
+                return `${roleLabel}\n\n${stripMd(m.content || '')}\n`;
+              })
+              .join('\n');
             apiFetch('/api/v1/favorite/save', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 title,
                 message_ids: Array.from(selectedMessageIds),
-                messages_data: messagesData,
+                messages_data: [{ role: 'merged', content: mergedContent }],
                 agent_id: currentAgentId || null,
                 conversation_id: currentSessionId || null,
               }),

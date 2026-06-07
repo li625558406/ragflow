@@ -8,8 +8,12 @@ Each adapter abstracts a specific HTTP transport strategy:
 - playwright_http: browser-based HTTP via existing PlaywrightHttpClient
 """
 
+import logging
+import time
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple
+
+import requests
 
 from ..config import SiteConfig, TransportConfig, ListingConfig
 
@@ -48,7 +52,133 @@ class BaseAdapter(ABC):
         By default, if detail type is 'inline', the item itself is
         already the full record.  Override for API-based details.
         """
+        if self._config.detail.type == "css_selector":
+            return self._fetch_detail_css(item)
         return item
+
+    # Common content container selectors across Chinese gov / news sites.
+    # Ordered by specificity: TRS CMS first, then other popular CMS patterns.
+    _CONTENT_SELECTORS = [
+        ".TRS_Editor",
+        "#detailCont",
+        ".article-content",
+        ".news-content",
+        ".detail-content",
+        ".text-content",
+        ".pages_content",
+        "#zoom",
+        ".zoom",
+        "article",
+        ".Custom_UnionStyle",
+        ".xl_con1",
+        ".content",
+        "main .content",
+        ".post_content",
+        ".rich_media_content",
+    ]
+
+    def _fetch_detail_css(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """Fetch the item's detail URL and extract content using CSS selector.
+
+        Shared across all adapter types.  Uses a plain requests.get() call
+        which works regardless of the adapter's primary transport.
+
+        Content extraction strategy:
+        1. Try the configured ``content_field`` selector first.
+        2. If not found, automatically try a list of common selectors.
+        3. If nothing matches, strip the full page text (no navigation junk).
+        """
+        detail_cfg = self._config.detail
+        content_field = detail_cfg.content_field
+
+        # Find the URL from the item
+        detail_url = item.get("url") or item.get("href") or item.get("link")
+        if not detail_url:
+            logging.warning("BaseAdapter: no URL in item for css_selector detail")
+            return item
+
+        # Resolve relative URLs against the listing page URL (not site root)
+        from urllib.parse import urljoin
+        if not detail_url.startswith("http"):
+            base_url = self._config.listing.url or self._config.site_url
+            detail_url = urljoin(base_url, detail_url)
+
+        for attempt in range(3):
+            try:
+                resp = requests.get(detail_url, timeout=self._transport.timeout,
+                                    headers=self._transport.headers or None)
+                # Force UTF-8 decoding for Chinese text
+                ct = resp.headers.get("Content-Type", "")
+                if "charset=" not in ct.lower():
+                    resp.encoding = "utf-8"
+                if resp.status_code != 200:
+                    logging.warning("BaseAdapter: detail fetch HTTP %d for %s",
+                                    resp.status_code, detail_url)
+                    time.sleep(1 + attempt)
+                    continue
+
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(resp.text, "lxml")
+
+                # Build candidate list: configured selector first, then fallbacks
+                candidates = []
+                if content_field:
+                    candidates.append(content_field)
+                candidates.extend(self._CONTENT_SELECTORS)
+                seen = set()
+                unique_candidates = []
+                for s in candidates:
+                    if s not in seen:
+                        seen.add(s)
+                        unique_candidates.append(s)
+
+                container = None
+                for sel in unique_candidates:
+                    el = soup.select_one(sel)
+                    if el and len(el.get_text(strip=True)) > 50:
+                        if sel != content_field:
+                            logging.info("BaseAdapter: fallback selector '%s' matched in %s",
+                                         sel, detail_url)
+                        container = el
+                        break
+
+                if container:
+                    item["content"] = self._html_to_text(container)
+                else:
+                    # Last resort: strip scripts/nav/footers then get text
+                    logging.warning("BaseAdapter: no content selector matched in %s",
+                                    detail_url)
+                    item["content"] = self._strip_and_extract(soup)
+
+                item["detail_html"] = resp.text
+                return item
+
+            except Exception as e:
+                logging.warning("BaseAdapter: detail css fetch failed: %s", e)
+                time.sleep(1 + attempt)
+
+        return item
+
+    @staticmethod
+    def _html_to_text(container) -> str:
+        """Convert an HTML container to clean text with paragraph breaks."""
+        text = container.get_text(separator="\n", strip=True)
+        lines = [line.strip() for line in text.split("\n") if line.strip()]
+        return "\n\n".join(lines)
+
+    @staticmethod
+    def _strip_and_extract(soup) -> str:
+        """Last-resort extraction: remove nav/header/footer/scripts, then extract text."""
+        from copy import copy
+        s = copy(soup)
+        for tag in s.find_all(["script", "style", "nav", "header", "footer",
+                                "iframe", "noscript"]):
+            tag.decompose()
+        for el in s.select("[role='navigation'], [role='banner'], "
+                           "[role='contentinfo'], .top-link, .nav, .footer, "
+                           ".header, #top-link, .sidebar, .comment"):
+            el.decompose()
+        return BaseAdapter._html_to_text(s.find("body") or s)
 
     def fetch_raw(self, url: str, params: Dict = None,
                   method: str = "GET", body: Dict = None) -> Optional[Any]:

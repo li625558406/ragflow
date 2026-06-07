@@ -97,6 +97,13 @@ export default function AgencyFeeCalculator() {
   const [error, setError] = useState('');
   const [expanded, setExpanded] = useState(false);
 
+  const handleReset = () => {
+    setInput('');
+    setAmount(null);
+    setError('');
+    setExpanded(false);
+  };
+
   const handleCalc = useCallback(() => {
     const raw = input.replace(/[,，\s]/g, '');
     if (!raw) {
@@ -123,30 +130,51 @@ export default function AgencyFeeCalculator() {
     <div className="h-full flex flex-col">
       {/* Title bar */}
       <div className="shrink-0 px-6 pt-5 pb-4 border-b border-[#D4D4D4] bg-white">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 bg-[#EAEAEA] rounded-xl flex items-center justify-center">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 bg-[#EAEAEA] rounded-xl flex items-center justify-center">
+              <svg
+                className="w-4.5 h-4.5 text-[#000000]"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={1.5}
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M5 3h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2z M9 9h6 M10 13h4v4h-4z"
+                />
+              </svg>
+            </div>
+            <div>
+              <h2 className="text-[15px] font-bold text-[#000000]">
+                招标代理服务费计算器
+              </h2>
+              <p className="text-[11px] text-[#1a1a1a]">
+                依据：闽招协[2021]32号 收费指导价 · 差额定率分档累进法
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={handleReset}
+            className="shrink-0 flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium bg-[#000000] text-white hover:bg-[#1a1a1a] border border-[#000000] rounded-lg transition-colors"
+          >
             <svg
-              className="w-4.5 h-4.5 text-[#000000]"
+              className="size-3"
               fill="none"
               stroke="currentColor"
-              strokeWidth={1.5}
+              strokeWidth="2"
               viewBox="0 0 24 24"
             >
               <path
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                d="M5 3h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2z M9 9h6 M10 13h4v4h-4z"
+                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
               />
             </svg>
-          </div>
-          <div>
-            <h2 className="text-[15px] font-bold text-[#000000]">
-              招标代理服务费计算器
-            </h2>
-            <p className="text-[11px] text-[#1a1a1a]">
-              依据：闽招协[2021]32号 收费指导价 · 差额定率分档累进法
-            </p>
-          </div>
+            重置
+          </button>
         </div>
       </div>
 

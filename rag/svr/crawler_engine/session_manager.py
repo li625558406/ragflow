@@ -44,6 +44,15 @@ class SessionManager:
         # SSL
         sess.verify = config.verify_ssl
 
+        # Force UTF-8 encoding for Chinese government sites.
+        # Without this, requests defaults to ISO-8859-1 when the server
+        # doesn't specify a charset, garbling all Chinese text.
+        def _force_utf8(resp, *args, **kwargs):
+            ct = resp.headers.get("Content-Type", "")
+            if "charset=" not in ct.lower():
+                resp.encoding = "utf-8"
+        sess.hooks["response"].append(_force_utf8)
+
         # Proxy
         if config.proxy and config.proxy.url:
             SessionManager._configure_proxy(sess, config.proxy)

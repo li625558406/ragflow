@@ -18,11 +18,12 @@ class BaseExtractor(ABC):
         self._config = config
 
     @abstractmethod
-    def extract(self, raw_data: Any) -> List[Dict[str, Any]]:
+    def extract(self, raw_data: Any, **kwargs) -> List[Dict[str, Any]]:
         """Extract items from raw data.
 
         Args:
             raw_data: Raw response data (dict, list, or HTML string).
+            **kwargs: Optional extras (e.g. base_url for CSS extractors).
 
         Returns:
             List of item dicts with mapped field names.
@@ -30,13 +31,25 @@ class BaseExtractor(ABC):
         ...
 
     def extract_fields(self, item: Dict[str, Any]) -> Dict[str, Any]:
-        """Map source fields to internal field names."""
+        """Map source fields to internal field names.
+
+        When the CSS extractor's extract() has already populated the target
+        field names (e.g. {id, title, url, date}), the source_field is a CSS
+        selector (e.g. "a@href") which won't exist as a dict key.  In that
+        case, fall back to the existing value in the item so we don't
+        overwrite good data with empty strings.
+        """
         if not self._config.fields:
             return item
 
         mapped = {}
         for internal_name, source_field in self._config.fields.items():
-            mapped[internal_name] = self._get_nested(item, source_field)
+            val = self._get_nested(item, source_field)
+            # If dict-key lookup found nothing, keep any existing value
+            # (from CSS extractor's extract() which already mapped fields)
+            if not val and internal_name in item and item[internal_name]:
+                val = item[internal_name]
+            mapped[internal_name] = val
         # Include unmapped fields too
         for k, v in item.items():
             if k not in mapped:
