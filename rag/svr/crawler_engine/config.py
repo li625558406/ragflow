@@ -95,6 +95,7 @@ class PaginationConfig:
     next_page_selector: str = ""   # CSS for "next page" button (click_next)
     next_page_regex: str = ""      # regex to extract next page URL (html_regex)
     page_pattern: str = ""         # static page URL pattern (html_regex, e.g. /index_{}.html)
+    first_page_no_suffix: bool = False  # html_regex: start page uses listing.url, others use pattern
 
 
 @dataclass
@@ -138,6 +139,7 @@ class DetailConfig:
     extract: Optional[ExtractConfig] = None
     content_field: str = "content"  # field that contains the main content
     attachment_fields: List[str] = field(default_factory=list)
+    transport: Optional["TransportConfig"] = None  # override transport for detail (e.g. spa_render)
 
 
 @dataclass
@@ -289,6 +291,7 @@ class ConfigLoader:
             next_page_selector=data.get("next_page_selector", ""),
             next_page_regex=data.get("next_page_regex", ""),
             page_pattern=data.get("page_pattern", ""),
+            first_page_no_suffix=data.get("first_page_no_suffix", False),
         )
 
     def _parse_anti_crawler(self, data: dict) -> AntiCrawlerConfig:
@@ -317,6 +320,7 @@ class ConfigLoader:
         if not data:
             return DetailConfig()
         extract = data.get("extract")
+        transport = data.get("transport")
         return DetailConfig(
             type=data.get("type", "inline"),
             url=data.get("url", ""),
@@ -326,6 +330,7 @@ class ConfigLoader:
             extract=self._parse_extract(extract) if extract else None,
             content_field=data.get("content_field", "content"),
             attachment_fields=data.get("attachment_fields", []),
+            transport=self._parse_transport(transport) if transport else None,
         )
 
     def _parse_format(self, data: dict) -> FormatConfig:

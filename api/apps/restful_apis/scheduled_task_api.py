@@ -165,8 +165,16 @@ async def update_scheduled_task(task_id):
             if interval:
                 req["next_run_time"] = current_timestamp() + int(interval) * 1000
 
-    ScheduledTaskService.update_by_id(task_id, req)
-    return get_json_result(data=req)
+    valid_fields = {
+        "name", "description", "script_path", "script_args",
+        "schedule_type", "cron_expression", "interval_seconds", "enabled",
+        "last_run_time", "last_run_status", "next_run_time", "timeout",
+        "max_retries", "retry_count", "target_url", "llm_id", "llm_model_name", "kb_id",
+        "access_token",
+    }
+    data = {k: v for k, v in req.items() if k in valid_fields}
+    ScheduledTaskService.update_by_id(task_id, data)
+    return get_json_result(data=data)
 
 
 @manager.route("/scheduled-tasks/<task_id>", methods=["DELETE"])  # noqa: F821
@@ -245,24 +253,31 @@ def get_scheduled_task_state(task_id):
     if not e:
         return get_data_error_result(message="Task not found.")
 
-    # New unified crawler: read from crawler_state DB table
+    # New unified crawler: read from crawler_state DB table (all sections)
     if _uses_unified_crawler(obj):
         site_id = _resolve_site_id(obj)
         if site_id:
             try:
-                from rag.svr.crawler_engine.state_manager import StateManager
-                state = StateManager(
-                    site_id=site_id,
-                    tenant_id=obj.tenant_id,
-                    section="default",
-                )
-                state.load()
+                from api.db.db_models import CrawlerState
+                rows = list(CrawlerState.select().where(
+                    (CrawlerState.site_id == site_id) &
+                    (CrawlerState.tenant_id == obj.tenant_id)
+                ).order_by(CrawlerState.section))
+                # Merge all sections into one view
+                all_ids = []
+                sections = {}
+                for row in rows:
+                    ids = row.processed_ids or []
+                    all_ids.extend(ids)
+                    sections[row.section] = {
+                        "processed_count": len(ids),
+                        "last_page": row.last_page or 0,
+                    }
                 return get_json_result(data={
                     "site_id": site_id,
-                    "processed_ids": list(state.processed_ids),
-                    "last_page": state.last_page,
-                    "last_offset": state.last_offset,
-                    "extra_state": state.extra,
+                    "processed_ids": all_ids,
+                    "total_processed": len(all_ids),
+                    "sections": sections,
                 })
             except Exception as ex:
                 logging.error("Failed to read crawler_state for %s: %s", site_id, ex)

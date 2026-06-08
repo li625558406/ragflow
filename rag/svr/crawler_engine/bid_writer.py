@@ -152,7 +152,7 @@ class BidWriter:
                 "crawler_url": item.get("url") or item.get("href") or "",
                 "crawled_at": datetime.now().isoformat(),
             }
-            fields["raw_json"] = json.dumps(raw_meta, ensure_ascii=False)
+            fields["raw_json"] = raw_meta  # Pass dict; Peewee JSONField will serialize
 
             is_new, _ = BidProjectService.upsert_project(fields)
             if is_new:
@@ -285,9 +285,11 @@ class BidWriter:
         # Priority 2: Existing numeric ID
         for key in ("id", "uuid", "article_id", "infoid"):
             val = item.get(key)
-            if val:
+            if val is not None and val != "" and val != 0:
                 try:
-                    return int(val)
+                    int_val = int(val)
+                    if int_val > 0:
+                        return int_val
                 except (ValueError, TypeError):
                     # Non-numeric ID → hash it
                     return gen_bid_id(str(val))

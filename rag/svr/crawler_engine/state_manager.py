@@ -18,7 +18,7 @@ from api.db.db_models import DB, CrawlerState
 # Maximum number of processed IDs to keep in memory/DB.
 # When exceeded, oldest entries are trimmed on next save.
 # This prevents JSONField bloat while keeping recent dedup working.
-MAX_PROCESSED_IDS = 10000
+MAX_PROCESSED_IDS = 100000
 
 
 class StateManager:

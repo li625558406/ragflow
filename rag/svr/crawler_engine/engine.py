@@ -37,6 +37,9 @@ OUTPUT_DIR = os.path.join(
 # Safety limit: max crawl iterations before forced stop
 MAX_CRAWL_ITERATIONS = 10000
 
+# Default max pages if YAML doesn't specify one
+DEFAULT_MAX_PAGES = 20
+
 
 class CrawlerEngine:
     """Main engine that orchestrates a complete crawl cycle for one site."""
@@ -47,6 +50,7 @@ class CrawlerEngine:
         self._task_name: str = ""
         # Layer 1: Crawl components
         self._adapter: Optional[BaseAdapter] = None
+        self._detail_adapter: Optional[BaseAdapter] = None  # override transport for detail
         self._paginator: Optional[BasePaginator] = None
         self._anti_crawler: Optional[AntiCrawlerManager] = None
         # Layer 2: Dedup
@@ -158,6 +162,30 @@ class CrawlerEngine:
 
         self._adapter = AdapterFactory.create(self._config)
         self._paginator = PaginatorFactory.create(self._config.pagination)
+
+        # Detail adapter override (e.g. spa_render for SPA detail pages)
+        self._detail_adapter = None
+        if (self._config.detail.transport
+                and self._config.detail.transport.type != self._config.transport.type):
+            from .config import SiteConfig
+            detail_site = SiteConfig(
+                name=self._config.name,
+                site_id=self._config.site_id,
+                site_url=self._config.site_url,
+                transport=self._config.detail.transport,
+                listing=self._config.listing,
+                pagination=self._config.pagination,
+                anti_crawler=self._config.anti_crawler,
+                extract=self._config.extract,
+                detail=self._config.detail,
+            )
+            detail_transport_type = self._config.detail.transport.type
+            # Reset detail transport to avoid infinite recursion
+            detail_site.detail.transport = None
+            self._detail_adapter = AdapterFactory.create(detail_site)
+            logging.info("Engine: detail transport override %s -> %s",
+                         self._config.transport.type,
+                         detail_transport_type)
         self._anti_crawler = AntiCrawlerManager(
             self._config.anti_crawler,
             self._config.transport.captcha,
@@ -282,7 +310,7 @@ class CrawlerEngine:
         page = start_page
         stopped_early = False
         iteration = 0
-        max_pages = pag_cfg.max_pages
+        max_pages = pag_cfg.max_pages or DEFAULT_MAX_PAGES
         section_label = section.label if section else "default"
 
         while True:
@@ -317,14 +345,16 @@ class CrawlerEngine:
                 item_id = self._get_item_id(item)
                 url = item.get("url") or item.get("href") or ""
 
-                if dedup.is_duplicate(item_id, url=url):
+                dup = dedup.is_duplicate(item_id, url=url)
+                if dup:
                     continue
 
                 new_in_page += 1
 
                 # Fetch detail if configured
                 if self._config.detail.type not in ("inline", "none"):
-                    detail_result = self._adapter.fetch_detail(item)
+                    detail_adapter = self._detail_adapter or self._adapter
+                    detail_result = detail_adapter.fetch_detail(item)
                     if detail_result:
                         item = detail_result
 
@@ -346,22 +376,24 @@ class CrawlerEngine:
             else:
                 anti_crawler.record_new_items()
 
-            # Checkpoint: save state periodically
-            if page % 100 == 0 or page == start_page:
+            # Checkpoint: save state every page
+            state.last_page = page
+            if page % 10 == 0:
                 self._log_progress(page, new_in_page, all_scanned, anti_crawler.consecutive_empty)
-                state.last_page = page
+            if page % 10 == 0 or new_in_page > 0:
                 state.save()
 
             # Stop conditions
             if max_pages > 0 and page >= max_pages:
+                break
+            if total_pages > 0 and page > total_pages:
                 break
             if pag_cfg.type == "single_page":
                 break
 
             page += 1
 
-        # Final checkpoint
-        state.last_page = 0  # reset for next run
+        # Final checkpoint — save processed IDs but keep last_page
         state.save()
 
         # Collect stats
@@ -422,6 +454,8 @@ class CrawlerEngine:
         """Release all resources."""
         if self._adapter:
             self._adapter.cleanup()
+        if self._detail_adapter:
+            self._detail_adapter.cleanup()
         if self._storage_pipeline:
             self._storage_pipeline.cleanup()
 

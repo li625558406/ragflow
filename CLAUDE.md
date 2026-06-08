@@ -132,3 +132,30 @@ RAGFlow supports switching between Elasticsearch (default) and Infinity:
 6. No sycophantic openers or closing fluff.
 7. Keep solutions simple and direct.
 8. User instructions always override this file.
+
+## konus Skills (二次开发规范)
+
+本项目有一套 konus 技能系统，位于 `skills/` 目录。当用户提到 **`ragflow`** 时，激活 `konus` 技能进行意图分析，自动路由到对应子技能。
+
+### 技能清单
+
+| 技能 | 用途 | 触发关键词 |
+|------|------|-----------|
+| `konus` | 意图路由器 + 项目上下文 | ragflow, 项目, 开发, 代码 |
+| `konus-project-context` | 技术栈、目录结构、约定 | 项目结构, 技术栈, 目录 |
+| `konus-backend-dev` | 后端 API/ORM/Service 开发 | 接口, API, 后端, Service, 数据库 |
+| `konus-frontend-dev` | 前端页面/组件/样式开发 | 页面, 组件, 前端, UI, 样式 |
+| `konus-crawler-dev` | 爬虫站点配置/修复 | 爬虫, 站点, 采集, YAML |
+| `konus-code-review` | 代码审查 (开发后强制) | 审查, review, 检查, 测试 |
+| `konus-deploy-guide` | 部署规范 | 部署, 上传, 服务器, 更新 |
+
+### 核心规则
+
+1. 任何代码开发完成后，**必须** 调用 `konus-code-review` 审查
+2. **禁止自动重启服务**，需重启时报告用户
+3. 前端开发**必须适配当前风格**（深色主题、卡片布局）
+4. **禁止修改上游核心文件**（ragflow_server.py、db_models.py、pipeline.py），除非用户确认
+
+### 完整项目文档
+
+详细架构文档见 `F:\投标项目\AI\项目架构.md`

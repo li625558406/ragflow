@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from ..config import SiteConfig, TransportConfig, ListingConfig
+from ..anti_crawler import get_random_ua
 
 
 class BaseAdapter(ABC):
@@ -91,8 +92,8 @@ class BaseAdapter(ABC):
         detail_cfg = self._config.detail
         content_field = detail_cfg.content_field
 
-        # Find the URL from the item
-        detail_url = item.get("url") or item.get("href") or item.get("link")
+        # Find the URL from the item (id often holds the URL from extractor field mapping)
+        detail_url = item.get("url") or item.get("href") or item.get("link") or item.get("id")
         if not detail_url:
             logging.warning("BaseAdapter: no URL in item for css_selector detail")
             return item
@@ -106,7 +107,7 @@ class BaseAdapter(ABC):
         for attempt in range(3):
             try:
                 resp = requests.get(detail_url, timeout=self._transport.timeout,
-                                    headers=self._transport.headers or None)
+                                    headers={"User-Agent": get_random_ua()})
                 # Force UTF-8 decoding for Chinese text
                 ct = resp.headers.get("Content-Type", "")
                 if "charset=" not in ct.lower():

@@ -359,3 +359,165 @@ def _normalize_file(f: Dict[str, Any], parent_item: Dict[str, Any]) -> Dict[str,
 def _looks_like_html(text: str) -> bool:
     """Check if text appears to be HTML."""
     return bool(re.search(r"<\s*(html|div|p|table|span|a|br|ul|ol|li|h[1-6])\b", text, re.IGNORECASE))
+
+
+# ---------------------------------------------------------------------------
+# Content cleaning — strip HTML tags, normalize whitespace
+# ---------------------------------------------------------------------------
+
+_HTML_TAG_RE = re.compile(r"<[^>]*>")
+_HTML_ENTITY_RE = re.compile(r"&[a-zA-Z]+;|&#\d+;")
+_ENTITY_MAP = {
+    "&nbsp;": " ",
+    "&amp;": "&",
+    "&lt;": "<",
+    "&gt;": ">",
+    "&quot;": '"',
+    "&#39;": "'",
+    "&apos;": "'",
+}
+
+# Block-level and line-break tags → replaced with newline
+_BLOCK_TAG_RE = re.compile(
+    r"</?(?:p|div|h[1-6]|li|tr|br|hr|table|tbody|thead|ul|ol|dl|dt|dd"
+    r"|section|article|header|footer|nav|main|aside"
+    r"|blockquote|pre|fieldset|figure|figcaption|details|summary)"
+    r"[^>]*/?>",
+    re.IGNORECASE,
+)
+
+# Inline tags → stripped entirely (no space inserted, to keep
+#   adjacent text like <span>2</span><span>0</span><span>2</span><span>6</span>
+#   as "2026" instead of "2 0 2 6")
+_INLINE_TAG_RE = re.compile(
+    r"</?(?:span|font|strong|em|ins|del|sub|sup"
+    r"|small|big|mark|code|kbd|samp|var|abbr|cite|label"
+    r"|time|output|data|dfn|wbr|bdi|bdo|ruby|rt|rp"
+    # Single-letter tags need (?=[\s>]) to avoid matching prefixes
+    # of other tags (e.g. <u> must not match <ul>, <a> must not match <abbr>)
+    r"|a(?=[\s>])|b(?=[\s>])|i(?=[\s>])|u(?=[\s>])|s(?=[\s>])|q(?=[\s>]))"
+    r"[^>]*/?>",
+    re.IGNORECASE,
+)
+
+
+# Tags that indicate "structured HTML" — worth keeping for the KB parser
+_STRUCTURAL_TAGS_RE = re.compile(
+    r"<(table|ul|ol|dl|h[1-6]|blockquote|pre)\b",
+    re.IGNORECASE,
+)
+# Multiple <li> suggests a real list (not Word span soup)
+_LIST_ITEM_RE = re.compile(r"<li[\s>]", re.IGNORECASE)
+# <span> density detector
+_SPAN_TAG_RE = re.compile(r"<span[\s>]", re.IGNORECASE)
+
+# Inline style attribute — noise to strip even in light mode
+_STYLE_ATTR_RE = re.compile(r'\s*style\s*=\s*"[^"]*"', re.IGNORECASE)
+_CLASS_ATTR_RE = re.compile(r'\s*class\s*=\s*"[^"]*"', re.IGNORECASE)
+
+
+def _is_structured_html(text: str) -> bool:
+    """Detect whether the HTML has meaningful structure (tables, lists, headings).
+
+    Returns True for "real" HTML worth passing to the KB parser;
+    False for Word-export span soup that should be cleaned aggressively.
+    """
+    text_lower = text[:10000]  # check first 10k chars
+    # Has a table → structured
+    if _STRUCTURAL_TAGS_RE.search(text_lower):
+        return True
+    # Has 3+ <li> items → likely a real list
+    if len(_LIST_ITEM_RE.findall(text_lower)) >= 3:
+        return True
+    return False
+
+
+def _is_span_soup(text: str) -> bool:
+    """Detect Word-export HTML: very high density of <span> tags with inline styles."""
+    text_chunk = text[:5000]
+    if not text_chunk:
+        return False
+    # Count <span> occurrences
+    span_count = len(_SPAN_TAG_RE.findall(text_chunk))
+    if span_count == 0:
+        return False
+    # If there are many spans and no structural tags, it's span soup
+    if span_count >= 5 and not _STRUCTURAL_TAGS_RE.search(text_chunk):
+        return True
+    return False
+
+
+def _clean_aggressive(text: str) -> str:
+    """Aggressive cleaning for Word-export span soup.
+
+    Block tags → newline.  Inline tags → stripped silently.
+    """
+    text = _BLOCK_TAG_RE.sub("\n", text)
+    text = _INLINE_TAG_RE.sub("", text)
+    text = _HTML_TAG_RE.sub(" ", text)
+    return text
+
+
+def _clean_light(text: str) -> str:
+    """Light cleaning for structured HTML.
+
+    Strips noisy inline tags (<span>, <font>) and style attributes,
+    but preserves structural tags for the KB parser to handle.
+    """
+    # Strip style/class attributes (keep the tags themselves)
+    text = _STYLE_ATTR_RE.sub("", text)
+    text = _CLASS_ATTR_RE.sub("", text)
+    # Strip inline formatting tags that add noise without meaning
+    text = _INLINE_TAG_RE.sub("", text)
+    # Replace <br> with newline
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    return text
+
+
+def clean_content(text: str) -> str:
+    """Adaptively clean crawled content based on HTML structure.
+
+    - Structured HTML (tables, lists, headings) → light clean:
+      strips <span>/style noise, keeps structure for KB parser.
+    - Word-export span soup → aggressive clean:
+      strips all inline tags, block tags become paragraph breaks.
+
+    Applied to ALL crawled content before KB upload.
+    """
+    if not text:
+        return ""
+
+    # --- Step 0: classify the HTML ---
+    if _is_structured_html(text):
+        text = _clean_light(text)
+    elif _is_span_soup(text):
+        text = _clean_aggressive(text)
+    else:
+        # Mixed / plain text — use aggressive (safe default)
+        text = _clean_aggressive(text)
+
+    # --- Post-processing (common to both paths) ---
+
+    # 1. Decode common HTML entities
+    def _replace_entity(m: re.Match) -> str:
+        return _ENTITY_MAP.get(m.group(0), m.group(0))
+
+    text = _HTML_ENTITY_RE.sub(_replace_entity, text)
+
+    # 2. Collapse whitespace: space/tab/formfeed runs → single space
+    text = re.sub(r"[ \t\f\r]+", " ", text)
+
+    # 3. Normalize newlines: 3+ consecutive → 2 (keep paragraph gap)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    # 4. Remove isolated newlines within a sentence (single \n → space)
+    text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
+
+    # 5. Collapse spaces again
+    text = re.sub(r"[ \t\f\r]+", " ", text)
+
+    # 6. Trim each line, remove blank lines
+    lines = [line.strip() for line in text.split("\n")]
+    text = "\n".join(line for line in lines if line)
+
+    return text.strip()

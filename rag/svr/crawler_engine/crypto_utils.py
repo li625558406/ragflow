@@ -85,17 +85,35 @@ def aes_cbc_encrypt(plaintext: bytes, key: bytes, iv: bytes) -> bytes:
 # ---------------------------------------------------------------------------
 
 def md5_sign(params: Dict[str, Any], secret: str) -> str:
-    """Generate MD5 portal signature.
+    """Generate MD5 portal signature (ggzyfw / Fujian government portal).
 
-    Algorithm: MD5(secret + sorted_key_value_concat).lower()
-
-    Sorted-key concatenation: sort param keys alphabetically, concatenate
-    key=value pairs without separators.
+    Algorithm matches the JS getSign() function:
+      1. Remove empty-string and None params
+      2. Sort keys case-insensitively (upper-case comparison)
+      3. Concat: SECRET + key1+val1 + key2+val2 + ...
+         (no '=' separator, values use str() or json.dumps without spaces)
+      4. MD5 → lowercase hex
     """
-    sorted_keys = sorted(k for k in params.keys() if params[k] is not None)
-    concat = "".join(f"{k}={params[k]}" for k in sorted_keys)
-    sign_str = secret + concat
-    return hashlib.md5(sign_str.encode("utf-8")).hexdigest().lower()
+    # Remove empty/None values
+    clean = {}
+    for k, v in params.items():
+        if v == "" or v is None:
+            continue
+        clean[k] = v
+
+    # Case-insensitive sort
+    sorted_keys = sorted(clean.keys(), key=lambda x: x.upper())
+
+    parts = []
+    for k in sorted_keys:
+        v = clean[k]
+        if isinstance(v, (dict, list)):
+            parts.append(k + json.dumps(v, separators=(",", ":"), ensure_ascii=False))
+        else:
+            parts.append(k + str(v))
+
+    concat = secret + "".join(parts)
+    return hashlib.md5(concat.encode("utf-8")).hexdigest().lower()
 
 
 # ---------------------------------------------------------------------------

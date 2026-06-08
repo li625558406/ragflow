@@ -79,6 +79,10 @@ def item_from_dict(data: Dict[str, Any], site_id: str = "",
     id_val = (data.get("id") or data.get("uuid") or data.get("article_id") or
               data.get("infoid") or data.get("noticenumber") or
               data.get("bulletinID") or data.get("guid") or data.get("_id") or "")
+    # When URL is in the 'id' field (common with CSS extractor field mapping),
+    # promote it to url_val so it shows up in KB documents and DB records.
+    if not url_val and id_val and str(id_val).startswith("http"):
+        url_val = str(id_val)
     title_val = data.get("title") or data.get("name") or data.get("text") or ""
     date_val = (data.get("date") or data.get("publishDate") or
                 data.get("publishTime") or data.get("pubDate") or

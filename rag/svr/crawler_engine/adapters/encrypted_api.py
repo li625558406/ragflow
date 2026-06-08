@@ -7,14 +7,22 @@ responses.  Supports:
 - AES-256-CBC decryption (e.g. ggzyfw_fujian)
 - MD5 portal signature generation
 - Fallback to PlaywrightHttpClient when requests/urllib is blocked
+
+Two encryption response patterns:
+  A) Full binary encryption — raw response IS the ciphertext (SM4-ECB)
+  B) JSON-wrapped + base64 — response is {"State":"200","Data":"<b64>"}
+     then base64-decode Data, then AES decrypt (ggzyfw sites).
+     Controlled by encryption.field in config.
 """
 
+import base64
 import json
 import logging
 import time
 import urllib.request
 import urllib.error
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
 
 from ..config import SiteConfig
 from ..crypto_utils import (
@@ -34,26 +42,48 @@ class EncryptedApiAdapter(BaseAdapter):
         self._use_playwright = (self._transport.engine == "playwright_http")
         self._pw_client = None
 
+    # ------------------------------------------------------------------
+    # fetch_items — listing page
+    # ------------------------------------------------------------------
+
     def fetch_items(self, page_params: Dict[str, Any],
                     listing_override=None) -> Optional[List[Dict[str, Any]]]:
         """Fetch and decrypt a page of items."""
         listing = listing_override if listing_override else self._config.listing
         url = listing.url
+        body_type = listing.body_type or "form"
 
-        # Build params with optional signing
+        # Build params
         params = dict(listing.params)
         params.update(page_params)
 
+        # Resolve {{ page }} / {{ page_size }} templates
+        pag_cfg = self._config.pagination
+        page_val = str(page_params.get(pag_cfg.page_param, ""))
+        size_val = str(page_params.get(pag_cfg.page_size_param, ""))
+        for key, val in list(params.items()):
+            if isinstance(val, str) and "{{" in val:
+                val = val.replace("{{ page }}", page_val)
+                val = val.replace("{{ page_size }}", size_val)
+                params[key] = val
+
+        # Build sign + extra headers
+        extra_headers = {}
         if self._transport.signing:
+            # Add timestamp (required for ggzyfw sign calculation)
+            params["ts"] = int(time.time() * 1000)
             sign_val = md5_sign(params, self._transport.signing.secret)
-            params["sign"] = sign_val
+            header_name = self._transport.signing.header_name or "sign"
+            extra_headers[header_name] = sign_val
 
         for attempt in range(self._config.anti_crawler.max_retries):
             try:
                 if self._use_playwright:
-                    raw = self._fetch_via_playwright(url, params, listing.method)
+                    raw = self._fetch_via_playwright(url, params, listing.method,
+                                                     body_type, extra_headers)
                 else:
-                    raw = self._fetch_via_urllib(url, params, listing.method)
+                    raw = self._fetch_via_urllib(url, params, listing.method,
+                                                 body_type, extra_headers)
 
                 if raw is None:
                     continue
@@ -66,7 +96,6 @@ class EncryptedApiAdapter(BaseAdapter):
                     if decrypted:
                         return self._parse_decrypted(decrypted)
                 else:
-                    # No encryption, try JSON directly
                     return self._parse_json(raw)
 
                 logging.warning("EncryptedApiAdapter: decrypt returned empty, attempt %d", attempt + 1)
@@ -78,15 +107,26 @@ class EncryptedApiAdapter(BaseAdapter):
 
         return None
 
-    def _fetch_via_urllib(self, url: str, params: Dict, method: str = "GET") -> Optional[bytes]:
-        """Fetch via urllib with headers from transport config."""
-        from urllib.parse import urlencode
+    # ------------------------------------------------------------------
+    # HTTP transport
+    # ------------------------------------------------------------------
 
+    def _fetch_via_urllib(self, url: str, params: Dict, method: str = "GET",
+                           body_type: str = "form",
+                           extra_headers: Optional[Dict[str, str]] = None) -> Optional[bytes]:
+        """Fetch via urllib with headers from transport config."""
         headers = dict(self._transport.headers)
+        if extra_headers:
+            headers.update(extra_headers)
         timeout = self._transport.timeout
 
         if method.upper() == "POST":
-            data = urlencode(params).encode("utf-8")
+            if body_type == "json":
+                data = json.dumps(params, ensure_ascii=False).encode("utf-8")
+                if "Content-Type" not in headers:
+                    headers["Content-Type"] = "application/json;charset=UTF-8"
+            else:
+                data = urlencode(params).encode("utf-8")
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
         else:
             qs = urlencode(params)
@@ -104,7 +144,9 @@ class EncryptedApiAdapter(BaseAdapter):
 
         return resp.read()
 
-    def _fetch_via_playwright(self, url: str, params: Dict, method: str = "GET") -> Optional[bytes]:
+    def _fetch_via_playwright(self, url: str, params: Dict, method: str = "GET",
+                               body_type: str = "form",
+                               extra_headers: Optional[Dict[str, str]] = None) -> Optional[bytes]:
         """Fetch via PlaywrightHttpClient."""
         import sys
         import os
@@ -116,11 +158,14 @@ class EncryptedApiAdapter(BaseAdapter):
         from rag.svr.crawler_utils import PlaywrightHttpClient
 
         if self._pw_client is None:
-            self._pw_client = PlaywrightHttpClient()
+            self._pw_client = PlaywrightHttpClient(headers=extra_headers)
 
         try:
             if method.upper() == "POST":
-                resp = self._pw_client.post(url, data=params)
+                if body_type == "json":
+                    resp = self._pw_client.post(url, json=params)
+                else:
+                    resp = self._pw_client.post(url, data=params)
             else:
                 resp = self._pw_client.get(url, params=params)
 
@@ -131,30 +176,70 @@ class EncryptedApiAdapter(BaseAdapter):
             logging.warning("EncryptedApiAdapter: playwright fetch failed: %s", e)
             return None
 
+    # ------------------------------------------------------------------
+    # Decryption
+    # ------------------------------------------------------------------
+
     def _decrypt(self, raw: bytes) -> Optional[str]:
-        """Decrypt response based on encryption config."""
+        """Decrypt response based on encryption config.
+
+        Two patterns:
+          A) enc.field NOT set → raw bytes are the ciphertext (SM4-ECB etc.)
+          B) enc.field IS set → JSON-wrap + base64: parse JSON, extract
+             field value, base64-decode it, then decrypt.
+        """
         enc = self._transport.encryption
         if not enc:
             return raw.decode("utf-8", errors="replace")
 
         try:
-            if enc.algorithm == "sm4_ecb":
-                key = hex_to_bytes(enc.key) if enc.key_encoding == "hex" else enc.key.encode("utf-8")
-                plain = sm4_ecb_decrypt(raw, key)
-                return plain.decode(enc.encoding, errors="replace").strip()
-
-            elif enc.algorithm == "aes_256_cbc":
-                key = hex_to_bytes(enc.key) if enc.key_encoding == "hex" else enc.key.encode("utf-8")
-                iv = hex_to_bytes(enc.iv) if enc.key_encoding == "hex" else enc.iv.encode("utf-8")
-                plain = aes_cbc_decrypt(raw, key, iv)
-                return plain.decode(enc.encoding, errors="replace").strip()
-
+            # --- Pattern B: JSON-wrapped + base64 (ggzyfw) ---
+            if getattr(enc, "field", None):
+                text = raw.decode("utf-8", errors="replace")
+                try:
+                    wrapper = json.loads(text)
+                except json.JSONDecodeError:
+                    # Not JSON? Try pattern A as fallback
+                    logging.warning("EncryptedApiAdapter: enc.field set but response is not JSON")
+                    return self._decrypt_raw(raw)
+                field_val = wrapper.get(enc.field)
+                if not field_val:
+                    logging.warning("EncryptedApiAdapter: field '%s' not found in response, keys=%s",
+                                    enc.field, list(wrapper.keys()) if isinstance(wrapper, dict) else "?")
+                    return None
+                ciphertext = base64.b64decode(field_val)
             else:
-                logging.warning("EncryptedApiAdapter: unknown algorithm '%s'", enc.algorithm)
-                return raw.decode(enc.encoding, errors="replace")
+                # --- Pattern A: raw binary ---
+                ciphertext = raw
+
+            return self._decrypt_raw(ciphertext)
+
         except Exception as e:
             logging.error("EncryptedApiAdapter: decryption failed: %s", e)
             return None
+
+    def _decrypt_raw(self, ciphertext: bytes) -> Optional[str]:
+        """Decrypt raw ciphertext bytes using the configured algorithm."""
+        enc = self._transport.encryption
+
+        if enc.algorithm == "sm4_ecb":
+            key = hex_to_bytes(enc.key) if enc.key_encoding == "hex" else enc.key.encode("utf-8")
+            plain = sm4_ecb_decrypt(ciphertext, key)
+            return plain.decode(enc.encoding, errors="replace").strip()
+
+        elif enc.algorithm == "aes_256_cbc":
+            key = hex_to_bytes(enc.key) if enc.key_encoding == "hex" else enc.key.encode("utf-8")
+            iv = hex_to_bytes(enc.iv) if enc.key_encoding == "hex" else enc.iv.encode("utf-8")
+            plain = aes_cbc_decrypt(ciphertext, key, iv)
+            return plain.decode(enc.encoding, errors="replace").strip()
+
+        else:
+            logging.warning("EncryptedApiAdapter: unknown algorithm '%s'", enc.algorithm)
+            return ciphertext.decode(enc.encoding, errors="replace")
+
+    # ------------------------------------------------------------------
+    # JSON parsing
+    # ------------------------------------------------------------------
 
     def _parse_json(self, raw: bytes) -> List[Dict[str, Any]]:
         """Parse raw bytes as JSON and extract items."""
@@ -168,7 +253,7 @@ class EncryptedApiAdapter(BaseAdapter):
             if items_field and items_field in data:
                 items = data[items_field]
                 return items if isinstance(items, list) else []
-            for key in ("rows", "data", "list", "records", "result"):
+            for key in ("rows", "data", "list", "records", "result", "Table"):
                 if key in data and isinstance(data[key], list):
                     return data[key]
         return []
@@ -180,6 +265,10 @@ class EncryptedApiAdapter(BaseAdapter):
         except json.JSONDecodeError:
             logging.warning("EncryptedApiAdapter: decrypted text is not valid JSON")
             return [{"raw_text": text}]
+
+    # ------------------------------------------------------------------
+    # Detail fetch
+    # ------------------------------------------------------------------
 
     def fetch_detail(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Fetch detail page for encrypted API sites."""
@@ -193,22 +282,49 @@ class EncryptedApiAdapter(BaseAdapter):
         for key, val in item.items():
             url = url.replace("{" + key + "}", str(val))
 
+        body_type = detail_cfg.body_type or "form"
         params = dict(detail_cfg.params)
+        # Resolve {field_name} templates in param values
+        for pkey, pval in list(params.items()):
+            if isinstance(pval, str) and "{" in pval:
+                for key, val in item.items():
+                    pval = pval.replace("{" + key + "}", str(val))
+                params[pkey] = pval
+
+        # Build sign + extra headers for detail
+        extra_headers = {}
         if self._transport.signing:
-            params["sign"] = md5_sign(params, self._transport.signing.secret)
+            params["ts"] = int(time.time() * 1000)
+            sign_val = md5_sign(params, self._transport.signing.secret)
+            header_name = self._transport.signing.header_name or "sign"
+            extra_headers[header_name] = sign_val
 
         for attempt in range(3):
             try:
                 if self._use_playwright:
-                    raw = self._fetch_via_playwright(url, params, detail_cfg.method)
+                    raw = self._fetch_via_playwright(url, params, detail_cfg.method,
+                                                     body_type, extra_headers)
                 else:
-                    raw = self._fetch_via_urllib(url, params, detail_cfg.method)
+                    raw = self._fetch_via_urllib(url, params, detail_cfg.method,
+                                                 body_type, extra_headers)
 
                 if raw:
                     if self._transport.encryption:
                         decrypted = self._decrypt(raw)
                         if decrypted:
-                            item["content"] = decrypted
+                            # Extract content_field from decrypted JSON if specified
+                            cf = detail_cfg.content_field
+                            if cf:
+                                try:
+                                    inner = json.loads(decrypted)
+                                    if isinstance(inner, dict) and cf in inner:
+                                        item["content"] = str(inner[cf])
+                                    else:
+                                        item["content"] = decrypted
+                                except json.JSONDecodeError:
+                                    item["content"] = decrypted
+                            else:
+                                item["content"] = decrypted
                     else:
                         item["content"] = raw.decode("utf-8", errors="replace")
                 return item

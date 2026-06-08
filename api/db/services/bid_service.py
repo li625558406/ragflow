@@ -163,6 +163,7 @@ class BidProjectDetailService(CommonService):
             existing.save()
             return existing
         else:
+            data["id"] = project_id
             data["project_id"] = project_id
             data["created_at"] = datetime.now()
             return cls.model(**data).save(force_insert=True)
@@ -181,6 +182,7 @@ class BidProjectStructureService(CommonService):
             existing.save()
             return existing
         else:
+            data["id"] = project_id
             data["project_id"] = project_id
             data["created_at"] = datetime.now()
             return cls.model(**data).save(force_insert=True)

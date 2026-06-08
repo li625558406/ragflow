@@ -50,6 +50,18 @@ class RestApiAdapter(BaseAdapter):
 
         params.update(page_params)
 
+        # Resolve {{ page }} / {{ page_size }} templates that weren't
+        # overwritten by params.update() due to key name mismatches
+        # (e.g. paginator yields page_size, but listing uses pageSize).
+        pag_cfg = self._config.pagination
+        page_val = str(page_params.get(pag_cfg.page_param, ""))
+        size_val = str(page_params.get(pag_cfg.page_size_param, ""))
+        for key, val in list(params.items()):
+            if isinstance(val, str) and "{{" in val:
+                val = val.replace("{{ page }}", page_val)
+                val = val.replace("{{ page_size }}", size_val)
+                params[key] = val
+
         for attempt in range(self._config.anti_crawler.max_retries):
             try:
                 if method == "POST":
@@ -76,15 +88,24 @@ class RestApiAdapter(BaseAdapter):
                     time.sleep(2 + attempt * 2)
                     continue
 
-                # Try JSON first, fall back to HTML/BeautifulSoup
+                # Try JSON first, fall back to HTML/BeautifulSoup.
+                # Some APIs return JSON with wrong Content-Type (text/html).
+                # Sniff the body: if it starts with { or [, treat as JSON.
                 content_type = resp.headers.get("Content-Type", "")
-                if "application/json" in content_type or url.endswith(".regx"):
-                    data = resp.json()
+                text = resp.text
+                if "application/json" in content_type or \
+                   (text and text.strip()[:1] in ("{", "[")):
+                    try:
+                        data = resp.json()
+                    except Exception:
+                        # Not valid JSON despite looking like it — fall through to HTML
+                        self._last_raw = text
+                        return self._parse_html_response(text)
                     self._last_raw = data
                     return self._parse_json_response(data)
                 else:
-                    self._last_raw = resp.text
-                    return self._parse_html_response(resp.text)
+                    self._last_raw = text
+                    return self._parse_html_response(text)
 
             except Exception as e:
                 logging.warning("RestApiAdapter: attempt %d failed: %s", attempt + 1, e)
@@ -94,22 +115,55 @@ class RestApiAdapter(BaseAdapter):
         return None
 
     def _parse_json_response(self, data: Any) -> List[Dict[str, Any]]:
-        """Extract items from JSON response."""
+        """Extract items from JSON response.
+
+        Handles both flat and nested structures:
+          Flat:  {"resultList": [...]}
+          Nested: {"code":200, "data": {"resultList": [...]}}
+          Deep:   {"success":true, "result": {"data": {"list": [...]}}}
+          Dotted: items_field="custom.infodata" for {"custom":{"infodata":[...]}}
+        """
         if isinstance(data, list):
             return data
         if isinstance(data, dict):
             items_field = self._config.pagination.items_field
-            if items_field and items_field in data:
-                items = data[items_field]
-                if isinstance(items, list):
-                    return items
-            # Try common keys
-            for key in ("rows", "data", "list", "records", "result", "results"):
-                if key in data and isinstance(data[key], list):
-                    return data[key]
+            if items_field:
+                # Support dot notation: "custom.infodata" → data["custom"]["infodata"]
+                val = self._get_nested(data, items_field)
+                if isinstance(val, list):
+                    return val
+            # Try common keys at root level
+            for key in ("rows", "data", "list", "records", "result", "results", "custom"):
+                if key in data:
+                    val = data[key]
+                    if isinstance(val, list):
+                        return val
+                    # Key exists but is a dict — recurse into it (handles nested responses)
+                    if isinstance(val, dict):
+                        nested = self._parse_json_response(val)
+                        # Must check isinstance(list), not truthiness —
+                        # empty list [] is a valid result (no items on page).
+                        if isinstance(nested, list) and not (len(nested) == 1 and nested[0] is val):
+                            return nested
             # If no list found, wrap the dict itself
             return [data]
         return []
+
+    @staticmethod
+    def _get_nested(data: dict, field: str) -> Any:
+        """Extract a value from nested dict using dot notation.
+        E.g., _get_nested(data, "custom.infodata") → data["custom"]["infodata"].
+        """
+        if not isinstance(data, dict) or not field:
+            return None
+        keys = field.split(".")
+        for key in keys:
+            if not isinstance(data, dict):
+                return None
+            data = data.get(key)
+            if data is None:
+                return None
+        return data
 
     def _parse_html_response(self, html: str) -> List[Dict[str, Any]]:
         """Pass raw HTML through — the engine's CSS extractor handles parsing.

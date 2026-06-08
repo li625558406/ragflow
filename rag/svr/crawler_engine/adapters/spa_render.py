@@ -103,7 +103,10 @@ class SpaRenderAdapter(BaseAdapter):
         return None
 
     def _extract_from_api_captures(self) -> List[Dict[str, Any]]:
-        """Extract items from captured API responses."""
+        """Extract items from captured API responses.
+
+        Handles nested structures like {"code":200, "data": {"resultList": [...]}}.
+        """
         for capture in self._api_captures:
             data = capture["data"]
             items_field = self._config.pagination.items_field
@@ -111,9 +114,31 @@ class SpaRenderAdapter(BaseAdapter):
                 items = data[items_field]
                 if isinstance(items, list):
                     return items
-            for key in ("rows", "data", "list", "records"):
-                if key in data and isinstance(data[key], list):
-                    return data[key]
+            # Try common keys; recurse into dict values for nested responses
+            for key in ("rows", "data", "list", "records", "result", "results"):
+                if key in data:
+                    val = data[key]
+                    if isinstance(val, list):
+                        return val
+                    if isinstance(val, dict):
+                        nested = self._extract_from_dict(val, items_field)
+                        if nested:
+                            return nested
+        return []
+
+    def _extract_from_dict(self, data: dict, items_field: str) -> list:
+        """Recursively extract items from a nested dict."""
+        if items_field and items_field in data:
+            items = data[items_field]
+            if isinstance(items, list):
+                return items
+        for key in ("rows", "data", "list", "records", "result", "results"):
+            if key in data:
+                val = data[key]
+                if isinstance(val, list):
+                    return val
+                if isinstance(val, dict):
+                    return self._extract_from_dict(val, items_field)
         return []
 
     def _extract_from_dom(self, page) -> List[Dict[str, Any]]:
@@ -139,10 +164,18 @@ class SpaRenderAdapter(BaseAdapter):
             return []
 
     def fetch_detail(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Fetch detail by clicking on item or navigating to detail URL."""
+        """Fetch detail by navigating to detail URL with Playwright.
+
+        - css_selector: use Playwright to get rendered HTML, then BS4 extraction
+        - api_request: navigate to API URL and extract content via page.evaluate()
+        - inline / none: delegate to base class
+        """
         detail_cfg = self._config.detail
 
-        # css_selector / inline / none handled by base class
+        if detail_cfg.type == "css_selector":
+            return self._fetch_detail_css(item)
+
+        # inline / none handled by base class
         if detail_cfg.type != "api_request" or not detail_cfg.url:
             return super().fetch_detail(item)
 
@@ -169,6 +202,78 @@ class SpaRenderAdapter(BaseAdapter):
                 return item
             except Exception as e:
                 logging.warning("SpaRenderAdapter: detail fetch failed: %s", e)
+                time.sleep(1 + attempt)
+
+        return item
+
+    def _fetch_detail_css(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """Override base class: use Playwright instead of requests.get().
+
+        Navigates to the detail page with Playwright (renders SPA JS),
+        then applies the same BeautifulSoup content extraction as the base.
+        """
+        detail_cfg = self._config.detail
+        content_field = detail_cfg.content_field
+
+        detail_url = item.get("url") or item.get("href") or item.get("link") or item.get("id")
+        if not detail_url:
+            logging.warning("SpaRenderAdapter: no URL in item for css_selector detail")
+            return item
+
+        from urllib.parse import urljoin
+        if not detail_url.startswith("http"):
+            base_url = self._config.listing.url or self._config.site_url
+            detail_url = urljoin(base_url, detail_url)
+
+        page = self._get_page()
+        for attempt in range(3):
+            try:
+                page.goto(detail_url, wait_until="networkidle",
+                          timeout=self._transport.timeout * 1000)
+                time.sleep(1)
+                html = page.content()
+
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(html, "lxml")
+
+                # Build candidate list: configured selector first, then fallbacks
+                candidates = []
+                if content_field:
+                    candidates.append(content_field)
+                candidates.extend(self._CONTENT_SELECTORS)
+                seen = set()
+                unique_candidates = []
+                for s in candidates:
+                    if s not in seen:
+                        seen.add(s)
+                        unique_candidates.append(s)
+
+                container = None
+                for sel in unique_candidates:
+                    el = soup.select_one(sel)
+                    if el and len(el.get_text(strip=True)) > 50:
+                        if sel != content_field:
+                            logging.info(
+                                "SpaRenderAdapter: fallback selector '%s' matched in %s",
+                                sel, detail_url,
+                            )
+                        container = el
+                        break
+
+                if container:
+                    item["content"] = self._html_to_text(container)
+                else:
+                    logging.warning(
+                        "SpaRenderAdapter: no content selector matched in %s",
+                        detail_url,
+                    )
+                    item["content"] = self._strip_and_extract(soup)
+
+                item["detail_html"] = html
+                return item
+
+            except Exception as e:
+                logging.warning("SpaRenderAdapter: detail css fetch failed: %s", e)
                 time.sleep(1 + attempt)
 
         return item

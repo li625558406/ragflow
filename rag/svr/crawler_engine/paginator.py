@@ -35,6 +35,24 @@ class BasePaginator(ABC):
         """Extract total record count from API response. Returns total_count."""
         ...
 
+    def _get_nested(self, data: Any, field: str) -> Any:
+        """Extract a value from potentially nested dict using dot notation.
+
+        E.g., _get_nested(data, "data.total") returns data["data"]["total"].
+        If the field has no dots, works like dict.get(field).
+        Returns 0 for any missing keys or non-dict intermediate values.
+        """
+        if not isinstance(data, dict) or not field:
+            return 0
+        keys = field.split(".")
+        for key in keys:
+            if not isinstance(data, dict):
+                return 0
+            data = data.get(key)
+            if data is None:
+                return 0
+        return data
+
     def total_pages_from_count(self, total_count: int) -> int:
         """Calculate total pages from record count."""
         ps = self._config.page_size or 20
@@ -60,7 +78,7 @@ class PageNoPaginator(BasePaginator):
 
     def update_total(self, response_data: Any) -> int:
         if isinstance(response_data, dict):
-            return int(response_data.get(self._config.total_field, 0) or 0)
+            return int(self._get_nested(response_data, self._config.total_field) or 0)
         return 0
 
 
@@ -82,7 +100,7 @@ class OffsetPaginator(BasePaginator):
 
     def update_total(self, response_data: Any) -> int:
         if isinstance(response_data, dict):
-            return int(response_data.get(self._config.total_field, 0) or 0)
+            return int(self._get_nested(response_data, self._config.total_field) or 0)
         return 0
 
 
@@ -108,7 +126,7 @@ class TotalCountPaginator(BasePaginator):
 
     def update_total(self, response_data: Any) -> int:
         if isinstance(response_data, dict):
-            total = int(response_data.get(self._config.total_field, 0) or 0)
+            total = int(self._get_nested(response_data, self._config.total_field) or 0)
             self._total_pages = self.total_pages_from_count(total)
             max_p = self._config.max_pages
             if max_p > 0 and self._total_pages > max_p:
@@ -144,6 +162,8 @@ class HtmlRegexPaginator(BasePaginator):
         page = max(start_at, self._config.start)
         max_p = self._config.max_pages if self._config.max_pages > 0 else self._SAFETY_MAX
         pattern = self._config.page_pattern
+        start = self._config.start
+        first_page_no_suffix = getattr(self._config, "first_page_no_suffix", False)
         i = 0
         while i < max_p:
             current_page = page + i
@@ -152,14 +172,17 @@ class HtmlRegexPaginator(BasePaginator):
                 self._config.page_size_param: self._config.page_size,
             }
             if pattern:
-                url_suffix = pattern.replace("{}", str(current_page))
-                params["_page_url_suffix"] = url_suffix
+                # Skip suffix for start page when first_page_no_suffix is set,
+                # so the adapter uses listing.url for page 1 and pattern for later pages.
+                if not (first_page_no_suffix and current_page == start):
+                    url_suffix = pattern.replace("{}", str(current_page))
+                    params["_page_url_suffix"] = url_suffix
             yield params
             i += 1
 
     def update_total(self, response_data: Any) -> int:
         if isinstance(response_data, dict):
-            return int(response_data.get(self._config.total_field, 0) or 0)
+            return int(self._get_nested(response_data, self._config.total_field) or 0)
         return 0
 
 
@@ -185,7 +208,7 @@ class ClickNextPaginator(BasePaginator):
 
     def update_total(self, response_data: Any) -> int:
         if isinstance(response_data, dict):
-            return int(response_data.get(self._config.total_field, 0) or 0)
+            return int(self._get_nested(response_data, self._config.total_field) or 0)
         if isinstance(response_data, list):
             return len(response_data)
         return 0

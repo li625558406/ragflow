@@ -6,6 +6,7 @@ headers, cookies, proxies, and SSL settings per transport config.
 """
 
 import logging
+import random
 from typing import Optional
 
 import requests
@@ -13,6 +14,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from .config import TransportConfig, ProxyConfig
+from .anti_crawler import get_random_ua
 
 
 class SessionManager:
@@ -23,13 +25,9 @@ class SessionManager:
         """Create a session from transport configuration."""
         sess = requests.Session()
 
-        # Headers
+        # Headers — random UA per session unless YAML overrides it
         default_headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
+            "User-Agent": get_random_ua(),
             "Accept": "application/json, text/html, */*; q=0.01",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         }

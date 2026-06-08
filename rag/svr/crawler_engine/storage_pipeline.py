@@ -17,6 +17,10 @@ from typing import Any, Dict, List, Optional
 
 from .models import NormalizedItem, AttachmentMeta
 
+# Minimum content length to upload to KB.
+# Items with shorter content are title-only stubs that waste parsing resources.
+MIN_CONTENT_LENGTH_FOR_KB = 50
+
 
 class StoragePipeline:
     """Storage pipeline — write crawled items to all targets.
@@ -79,9 +83,14 @@ class StoragePipeline:
         result["project_id"] = project_id
 
         # 2. Upload content to KB + parse (knowledge base)
-        if not self._skip_kb:
+        #    Skip items with too little content — they are title-only stubs.
+        has_content = len(item.content or "") >= MIN_CONTENT_LENGTH_FOR_KB
+        if not self._skip_kb and has_content:
             doc_id = self._upload_content_to_kb(item)
             result["doc_id"] = doc_id
+        elif not has_content:
+            logging.debug("StoragePipeline: skipping KB upload for '%s' (content < %d chars)",
+                         item.title[:60], MIN_CONTENT_LENGTH_FOR_KB)
 
         # 3. Handle attachments (download + KB + link)
         if not self._skip_attachments and item.has_attachments():
@@ -190,10 +199,13 @@ class StoragePipeline:
             lines.append(f"**栏目:** {item.section}")
             lines.append("")
 
-        # Main content
+        # Main content (cleaned)
         if item.content:
-            lines.append(item.content)
-            lines.append("")
+            from .content_converter import clean_content
+            cleaned = clean_content(item.content)
+            if cleaned:
+                lines.append(cleaned)
+                lines.append("")
 
         # Attachment links (as references)
         if item.attachments:
