@@ -1,0 +1,77 @@
+.statusChip {
+  border-radius: 8px;
+  margin-bottom: 8px;
+  user-select: none;
+
+  &.running {
+    background: linear-gradient(
+      135deg,
+      rgba(59, 130, 246, 0.08),
+      rgba(99, 102, 241, 0.06)
+    );
+    border: 1px solid rgba(59, 130, 246, 0.2);
+  }
+
+  &.completed {
+    background: rgba(34, 197, 94, 0.04);
+    border: 1px solid rgba(34, 197, 94, 0.12);
+  }
+}
+
+.statusRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: inherit;
+  font-size: inherit;
+  border-radius: 8px;
+  transition: background-color 0.15s ease;
+
+  &:hover {
+    background: rgba(0, 0, 0, 0.04);
+  }
+}
+
+.icon {
+  flex-shrink: 0;
+}
+
+.checkIcon {
+  color: rgba(34, 197, 94, 0.8);
+}
+
+.actionText {
+  font-size: 13px;
+  color: rgba(59, 130, 246, 0.9);
+  font-weight: 500;
+}
+
+.stepCount {
+  font-size: 11px;
+  color: rgba(100, 116, 139, 0.6);
+}
+
+.summaryText {
+  font-size: 12px;
+  color: rgba(100, 116, 139, 0.7);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.expandBtn {
+  margin-left: auto;
+  padding: 2px;
+  border-radius: 4px;
+  color: rgba(100, 116, 139, 0.5);
+  flex-shrink: 0;
+
+  &:hover {
+    color: rgba(100, 116, 139, 0.9);
+  }
+}

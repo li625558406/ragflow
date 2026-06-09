@@ -9,9 +9,11 @@ import {
 } from '@/components/ui/breadcrumb';
 import { useNavigatePage } from '@/hooks/logic-hooks/navigate-hooks';
 import { useFetchSessionManually } from '@/hooks/use-agent-request';
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useParams } from 'react-router';
+import { AgentChatLogContext } from '../context';
+import { useCacheChatLog } from '../hooks/use-cache-chat-log';
 import { useFetchDataOnMount } from '../hooks/use-fetch-data';
 import { SessionChat } from './components/session-chat';
 import { SessionList } from './components/session-list';
@@ -24,6 +26,16 @@ export default function AgentExplore() {
   const { id } = useParams();
   const { flowDetail: agentDetail } = useFetchDataOnMount();
   const { fetchSessionManually, data: session } = useFetchSessionManually();
+  const {
+    addEventList,
+    setCurrentMessageId,
+    currentEventListWithoutMessageById,
+  } = useCacheChatLog();
+
+  const chatLogContextValue = useMemo(
+    () => ({ addEventList, setCurrentMessageId }),
+    [addEventList, setCurrentMessageId],
+  );
 
   const handleBackToAgent = useCallback(() => {
     const navigateFn = navigateToAgent(id as string);
@@ -67,7 +79,15 @@ export default function AgentExplore() {
         </div>
 
         <div className="flex-1 min-w-0">
-          <SessionChat session={session} />
+          <AgentChatLogContext.Provider value={chatLogContextValue}>
+            <SessionChat
+              session={session}
+              currentEventListWithoutMessageById={
+                currentEventListWithoutMessageById
+              }
+              setCurrentMessageId={setCurrentMessageId}
+            />
+          </AgentChatLogContext.Provider>
         </div>
       </section>
     </section>

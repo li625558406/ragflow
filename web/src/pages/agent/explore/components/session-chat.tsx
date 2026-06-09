@@ -5,6 +5,7 @@ import PdfSheet from '@/components/pdf-drawer';
 import { useClickDrawer } from '@/components/pdf-drawer/hooks';
 import { MessageType } from '@/constants/chat';
 import { useUploadAgentFileWithProgress } from '@/hooks/use-agent-request';
+import { INodeEvent } from '@/hooks/use-send-message';
 import { useFetchUserInfo } from '@/hooks/use-user-setting-request';
 import { IAgentLogResponse } from '@/interfaces/database/agent';
 import { IMessage } from '@/interfaces/database/chat';
@@ -18,9 +19,15 @@ import { useSendSessionMessage } from '../hooks/use-send-session-message';
 
 interface SessionChatProps {
   session?: IAgentLogResponse;
+  currentEventListWithoutMessageById?: (messageId: string) => INodeEvent[];
+  setCurrentMessageId?: (messageId: string) => void;
 }
 
-export function SessionChat({ session }: SessionChatProps) {
+export function SessionChat({
+  session,
+  currentEventListWithoutMessageById,
+  setCurrentMessageId,
+}: SessionChatProps) {
   const { t } = useTranslation();
   const { data: userInfo } = useFetchUserInfo();
   const { sessionId, isNew } = useExploreUrlParams();
@@ -140,6 +147,10 @@ export function SessionChat({ session }: SessionChatProps) {
                     showLikeButton={false}
                     sendLoading={sendLoading}
                     showLog={false}
+                    currentEventListWithoutMessageById={
+                      currentEventListWithoutMessageById
+                    }
+                    setCurrentMessageId={setCurrentMessageId}
                   />
                 ))}
               </div>

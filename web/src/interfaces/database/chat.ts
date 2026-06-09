@@ -103,6 +103,7 @@ export interface IConversation {
 export interface Message {
   content: string;
   role: MessageType;
+  thinking?: string;
   doc_ids?: string[];
   prompt?: string;
   id?: string;

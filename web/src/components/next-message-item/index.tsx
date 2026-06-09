@@ -26,6 +26,7 @@ import { getStaticAsset } from '@/utils/common-util';
 import { getDirAttribute } from '@/utils/text-direction';
 import { isEmpty } from 'lodash';
 import { Atom, ChevronDown, ChevronUp } from 'lucide-react';
+import { AgentStatusChip } from '../agent-status-chip';
 import { DocumentDownloadButton } from '../document-download-button';
 import MarkdownContent from '../next-markdown-content';
 import { RAGFlowAvatar } from '../ragflow-avatar';
@@ -216,6 +217,7 @@ function MessageItem({
                   </div>
                 </Button>
               )}
+
               <div className="space-x-1">
                 {isAssistant ? (
                   <>
@@ -258,6 +260,15 @@ function MessageItem({
                 )}
               </div>
             </div>
+
+            {isAssistant && currentEventListWithoutMessageById && (
+              <AgentStatusChip
+                eventList={currentEventListWithoutMessageById(item.id)}
+                isRunning={startedNodeList(item)}
+                expanded={showThinking}
+                onToggleExpand={() => setShowThinking((t) => !t)}
+              />
+            )}
 
             {isAssistant &&
               currentEventListWithoutMessageById &&

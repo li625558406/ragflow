@@ -1,3 +1,5 @@
+import { AgentStatusChip } from '@/components/agent-status-chip';
+import { deriveStatus } from '@/components/agent-status-chip/utils';
 import BidPanel from '@/components/bid';
 import ChapteredMarkdown from '@/components/chaptered-markdown';
 import CollaborationPanel from '@/components/collaboration';
@@ -27,6 +29,7 @@ import { useClickDrawer } from '@/components/pdf-drawer/hooks';
 import { RAGFlowAvatar } from '@/components/ragflow-avatar';
 import ToolsPanel from '@/components/tools';
 import { Textarea } from '@/components/ui/textarea';
+import { CheckCircle2, ChevronRight, Loader2, XCircle } from 'lucide-react';
 
 import { RealtimeAudioButton } from '@/components/realtime-audio-button';
 import { MessageType } from '@/constants/chat';
@@ -248,10 +251,16 @@ export default function CChat() {
   const { cancelConversation } = useCancelConversation();
   const taskId = answerList[0]?.task_id;
 
+  // Cache node events so they persist after stream completion clears answerList
+  const cachedNodeEventsRef = useRef<Record<string, Array<any>>>({});
+
   // Extract node events from answerList for thinking timeline
   const nodeEventsByMsgId = useMemo(() => {
     const map: Record<string, Array<any>> = {};
-    if (!answerList.length) return map;
+    if (!answerList.length) {
+      // Return cached events when answerList is empty (stream completed)
+      return { ...cachedNodeEventsRef.current };
+    }
     for (const evt of answerList) {
       if (
         evt.event !== MessageEventType.Message &&
@@ -264,8 +273,11 @@ export default function CChat() {
         }
       }
     }
+    // Update cache with fresh events
+    cachedNodeEventsRef.current = map;
     return map;
   }, [answerList]);
+
   const stopConversation = useCallback(() => {
     stopOutputMessage();
     if (taskId) {
@@ -290,6 +302,18 @@ export default function CChat() {
     setDerivedMessages,
     scrollToBottom,
   } = useSelectDerivedMessages();
+
+  // Get node events for the latest message that has them (for input-area chip)
+  const latestNodeEvents = useMemo(() => {
+    for (let i = derivedMessages.length - 1; i >= 0; i--) {
+      const msg = derivedMessages[i];
+      const events = nodeEventsByMsgId[msg.id || ''];
+      if (events && events.length > 0) {
+        return { messageId: msg.id || '', events };
+      }
+    }
+    return null;
+  }, [derivedMessages, nodeEventsByMsgId]);
 
   const sendLoading = !done;
 
@@ -618,9 +642,9 @@ export default function CChat() {
         if (result.code !== 0) throw new Error(result.message);
         const data = result.data;
 
-        const rawMessages: any[] = data.message || [];
+        const rawMessages: any[] = data.messages || data.message || [];
 
-        const mapped: IMessage[] = rawMessages.map((m: any) => {
+        const mapped = rawMessages.map((m: any) => {
           let content = m.content || m.answer || '';
           let thinking = '';
 
@@ -684,7 +708,7 @@ export default function CChat() {
             reference,
             data: m.data,
           };
-        });
+        }) as IMessage[];
 
         // Handle top-level reference (raw to_dict() format)
         // reference can be: array [{chunks, doc_aggs}, ...], dict with chunks key,
@@ -2017,110 +2041,6 @@ export default function CChat() {
                                     </div>
                                   )}
                                 </div>
-                                {/* Thinking timeline toggle */}
-                                {nodeEventsByMsgId[msg.id || ''] && (
-                                  <button
-                                    className={`flex items-center gap-1 text-[11px] text-[#525252] hover:text-[#000000] transition-colors mt-1.5 ${thinkingMsgId === msg.id ? 'text-[#000000]' : ''}`}
-                                    onClick={() =>
-                                      setThinkingMsgId((prev) =>
-                                        prev === msg.id ? null : msg.id,
-                                      )
-                                    }
-                                  >
-                                    <svg
-                                      className={`w-3 h-3 transition-transform ${thinkingMsgId === msg.id ? 'animate-spin' : ''}`}
-                                      viewBox="0 0 24 24"
-                                      fill="none"
-                                      stroke="currentColor"
-                                    >
-                                      <circle
-                                        cx="12"
-                                        cy="12"
-                                        r="10"
-                                        strokeWidth="2.5"
-                                        opacity="0.3"
-                                      />
-                                      <path
-                                        d="M12 2a10 10 0 019.95 9"
-                                        strokeLinecap="round"
-                                        strokeWidth="2.5"
-                                      />
-                                    </svg>
-                                    <span>思考过程</span>
-                                    <svg
-                                      className={`w-2.5 h-2.5 transition-transform ${thinkingMsgId === msg.id ? 'rotate-180' : ''}`}
-                                      viewBox="0 0 24 24"
-                                      fill="none"
-                                      stroke="currentColor"
-                                      strokeWidth="2"
-                                    >
-                                      <polyline points="6 9 12 15 18 9" />
-                                    </svg>
-                                  </button>
-                                )}
-                                {thinkingMsgId === msg.id && (
-                                  <div className="mt-2 space-y-1.5 py-2 border-t border-[#EAEAEA]">
-                                    {(nodeEventsByMsgId[msg.id || ''] || [])
-                                      .filter(
-                                        (e) =>
-                                          e.event ===
-                                            MessageEventType.NodeStarted ||
-                                          e.event ===
-                                            MessageEventType.NodeFinished,
-                                      )
-                                      .reduce<
-                                        Array<{
-                                          id: string;
-                                          name: string;
-                                          status: string;
-                                          elapsed: number;
-                                        }>
-                                      >((acc, e) => {
-                                        const d = (e as any).data;
-                                        if (
-                                          acc.some(
-                                            (x) => x.id === d.component_id,
-                                          )
-                                        )
-                                          return acc;
-                                        acc.push({
-                                          id: d.component_id,
-                                          name: d.component_name,
-                                          status:
-                                            e.event ===
-                                            MessageEventType.NodeFinished
-                                              ? d.error
-                                                ? 'error'
-                                                : 'done'
-                                              : 'running',
-                                          elapsed: d.elapsed_time || 0,
-                                        });
-                                        return acc;
-                                      }, [])
-                                      .map((node) => (
-                                        <div
-                                          key={node.id}
-                                          className="flex items-center gap-2 text-[11px] text-[#1a1a1a] px-1"
-                                        >
-                                          <div
-                                            className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                                              node.status === 'running'
-                                                ? 'bg-[#A3A3A3] animate-pulse'
-                                                : node.status === 'done'
-                                                  ? 'bg-[#22c55e]'
-                                                  : 'bg-red-400'
-                                            }`}
-                                          />
-                                          <span className="truncate flex-1">
-                                            {node.name}
-                                          </span>
-                                          <span className="text-[#525252] shrink-0 tabular-nums">
-                                            {(node.elapsed / 1000).toFixed(1)}s
-                                          </span>
-                                        </div>
-                                      ))}
-                                  </div>
-                                )}
                                 {/* Reference sources */}
                                 {!streaming && refs && (
                                   <div className="mt-3 space-y-2">
@@ -2221,7 +2141,7 @@ export default function CChat() {
                                       className="flex items-center gap-1 px-2.5 py-1 text-xs text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA] rounded-lg transition-colors"
                                       onClick={async () => {
                                         const ok = await copyToClipboard(
-                                          cleanContent || msg.content || '',
+                                          msg.content || '',
                                         );
                                         if (ok) {
                                           setCopiedIndex(i);
@@ -2370,6 +2290,76 @@ export default function CChat() {
                       <div ref={scrollRef} />
                     </div>
                   </div>
+
+                  {/* Agent status chip above input */}
+                  {latestNodeEvents && (
+                    <div className="px-4 lg:px-6 py-2 shrink-0">
+                      <div className="max-w-[80rem] mx-auto">
+                        <AgentStatusChip
+                          eventList={latestNodeEvents.events}
+                          isRunning={sendLoading}
+                          expanded={
+                            thinkingMsgId === latestNodeEvents.messageId
+                          }
+                          onToggleExpand={() =>
+                            setThinkingMsgId((prev) =>
+                              prev === latestNodeEvents.messageId
+                                ? null
+                                : latestNodeEvents.messageId,
+                            )
+                          }
+                        />
+                        {thinkingMsgId === latestNodeEvents.messageId && (
+                          <div className="mt-2 flex items-center gap-1.5 text-xs overflow-x-auto">
+                            {deriveStatus(latestNodeEvents.events).steps.map(
+                              (step, i) => {
+                                // When stream ended, treat unfinished non-error steps as done
+                                const isDone = step.error
+                                  ? false
+                                  : !!step.finishedAt || !sendLoading;
+                                return (
+                                  <span
+                                    key={step.id}
+                                    className="flex items-center gap-1 shrink-0"
+                                  >
+                                    {i > 0 && (
+                                      <ChevronRight
+                                        size={12}
+                                        className="text-[#D4D4D4]"
+                                      />
+                                    )}
+                                    <span
+                                      className={`flex items-center gap-1 px-2 py-0.5 rounded-full ${
+                                        step.error
+                                          ? 'bg-red-50 text-red-600'
+                                          : isDone
+                                            ? 'bg-green-50 text-green-600'
+                                            : 'bg-blue-50 text-blue-600'
+                                      }`}
+                                    >
+                                      {step.error ? (
+                                        <XCircle size={12} />
+                                      ) : isDone ? (
+                                        <CheckCircle2 size={12} />
+                                      ) : (
+                                        <Loader2
+                                          size={12}
+                                          className="animate-spin"
+                                        />
+                                      )}
+                                      <span className="font-medium">
+                                        {step.name}
+                                      </span>
+                                    </span>
+                                  </span>
+                                );
+                              },
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
 
                   {/* Input Area (bottom) */}
                   <div className="bg-white border-t border-[#D4D4D4] p-3 lg:p-4 shrink-0">

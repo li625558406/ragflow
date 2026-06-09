@@ -121,6 +121,12 @@ def _normalize_agent_session(conv):
         messages = [message for i, message in enumerate(conv["messages"]) if i != 0 and message["role"] != "user"]
         for message, reference in zip(messages, conv["reference"]):
             chunks = reference["chunks"]
+            if isinstance(chunks, dict):
+                chunk_list = list(chunks.values())
+            elif isinstance(chunks, list):
+                chunk_list = chunks
+            else:
+                chunk_list = list(chunks) if hasattr(chunks, '__iter__') else []
             message["reference"] = [
                 {
                     "id": chunk.get("chunk_id", chunk.get("id")),
@@ -131,7 +137,8 @@ def _normalize_agent_session(conv):
                     "image_id": chunk.get("image_id", chunk.get("img_id")),
                     "positions": chunk.get("positions", chunk.get("position_int")),
                 }
-                for chunk in chunks
+                for chunk in chunk_list
+                if isinstance(chunk, dict)
             ]
     del conv["reference"]
     return conv
@@ -281,10 +288,10 @@ async def _iter_session_completion_events(tenant_id, agent_id, req, return_trace
                     }
                 )
                 ans.setdefault("data", {})["trace"] = trace_items
-                yield ans
+            yield ans
             continue
 
-        if event in ["message", "message_end"]:
+        if event in ["message", "message_end", "workflow_started", "node_started", "workflow_finished"]:
             yield ans
 
 
