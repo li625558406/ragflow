@@ -24,6 +24,9 @@ import { useIsDarkTheme } from './theme-provider';
 //   routeList = [];
 // }
 
+// Eagerly load all SVGs in assets/svg/. The 3 dead large files
+// (next-login-bg.svg, login-background.svg, login-avatars.svg) have been
+// deleted from disk and will no longer appear in the glob results.
 const svgModules = import.meta.glob('@/assets/svg/**/*.svg', {
   eager: true,
   query: '?url',

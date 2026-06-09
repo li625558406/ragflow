@@ -249,27 +249,43 @@ export default defineConfig(({ mode }) => {
             }
 
             if (id.includes('node_modules')) {
-              if (id.includes('node_modules/d3')) {
-                return 'd3';
+              // Large standalone libs — keep separate
+              if (id.includes('node_modules/d3')) return 'd3';
+              if (id.includes('node_modules/ajv')) return 'ajv';
+              if (id.includes('node_modules/@antv')) return 'antv';
+              if (id.includes('node_modules/monaco-editor')) return 'monaco';
+              if (id.includes('node_modules/@ant-design')) return 'antd';
+
+              // Core utils — bundle together
+              if (
+                id.includes('node_modules/lodash') ||
+                id.includes('node_modules/dayjs') ||
+                id.includes('node_modules/date-fns') ||
+                id.includes('node_modules/axios')
+              ) {
+                return 'vendor-utils';
               }
-              if (id.includes('node_modules/ajv')) {
-                return 'ajv';
+
+              // React ecosystem
+              if (
+                id.includes('node_modules/react') ||
+                id.includes('node_modules/react-dom') ||
+                id.includes('node_modules/react-router') ||
+                id.includes('node_modules/scheduler')
+              ) {
+                return 'vendor-react';
               }
-              if (id.includes('node_modules/@antv')) {
-                return 'antv';
-              }
-              const name = id
-                .toString()
-                .split('node_modules/')[1]
-                .split('/')[0]
-                .toString();
-              if (['lodash', 'dayjs', 'date-fns', 'axios'].includes(name)) {
-                return 'utils';
-              }
-              if (['@xmldom', 'xmlbuilder '].includes(name)) {
+
+              // XML tools
+              if (
+                id.includes('node_modules/@xmldom') ||
+                id.includes('node_modules/xmlbuilder')
+              ) {
                 return 'xml-js';
               }
-              return name;
+
+              // All other node_modules → single shared vendor chunk
+              return 'vendor';
             }
           },
           chunkFileNames: 'chunk/js/[name]-[hash].js',
