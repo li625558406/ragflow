@@ -34,7 +34,7 @@ class ExeSQLParam(ToolParamBase):
     def __init__(self):
         self.meta:ToolMeta = {
             "name": "execute_sql",
-            "description": "This is a tool that can execute SQL.",
+            "description": "执行 SQL 查询语句。支持 MySQL、PostgreSQL、SQL Server 等数据库。用于直接查询数据库获取结构化数据。需提前配置好数据库连接信息。",
             "parameters": {
                 "sql": {
                     "type": "string",

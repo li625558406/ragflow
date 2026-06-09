@@ -378,6 +378,7 @@ class LLM(ComponentBase):
 
             yield delta(ans)
 
+        logging.info(f"[LLM.DEBUG] _stream_output_async finished: answer_len={len(answer)} answer_preview={answer[:200] if answer else 'EMPTY'}")
         self.set_output("content", answer)
 
     @timeout(int(os.environ.get("COMPONENT_EXEC_TIMEOUT", 10*60)))

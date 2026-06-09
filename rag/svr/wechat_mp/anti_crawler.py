@@ -472,24 +472,156 @@ console.log('[Anti-Detection] Enhanced fingerprint protection enabled (21 items)
 """
 
 _BEHAVIOR_SCRIPT = """
-// 随机延迟点击事件
-const originalAddEventListener = EventTarget.prototype.addEventListener;
-EventTarget.prototype.addEventListener = function(type, listener, options) {
-    if (type === 'click') {
-        const wrappedListener = function(...args) {
-            setTimeout(() => listener.apply(this, args), Math.random() * 100 + 50);
-        };
-        return originalAddEventListener.call(this, type, wrappedListener, options);
-    }
-    return originalAddEventListener.call(this, type, listener, options);
-};
+// ============================================================
+// Human behavior simulation — adapted from we-mp-rss
+// Simulates: reading patterns, mouse movement, scrolling, visibility changes
+// ============================================================
 
-// 随机化鼠标移动
-document.addEventListener('mousemove', (e) => {
-    if (Math.random() > 0.7) {
-        e.stopImmediatePropagation();
+(function() {
+    'use strict';
+
+    // ── 1. Random click delay (50-200ms human reaction time) ──
+    const originalAddEventListener = EventTarget.prototype.addEventListener;
+    EventTarget.prototype.addEventListener = function(type, listener, options) {
+        if (type === 'click' || type === 'mousedown' || type === 'touchstart') {
+            const wrappedListener = function(...args) {
+                const delay = Math.random() * 150 + 50;
+                setTimeout(() => listener.apply(this, args), delay);
+            };
+            return originalAddEventListener.call(this, type, wrappedListener, options);
+        }
+        return originalAddEventListener.call(this, type, listener, options);
+    };
+
+    // ── 2. Mouse movement tracking with human-like jitter ──
+    let mouseHistory = [];
+    let lastMouseMove = Date.now();
+
+    document.addEventListener('mousemove', function(e) {
+        const now = Date.now();
+        const dt = now - lastMouseMove;
+        lastMouseMove = now;
+
+        // Simulate natural jitter — small random offset
+        const jitterX = e.clientX + (Math.random() - 0.5) * 2;
+        const jitterY = e.clientY + (Math.random() - 0.5) * 2;
+
+        mouseHistory.push({
+            x: Math.round(jitterX),
+            y: Math.round(jitterY),
+            t: now,
+            dt: Math.round(dt)
+        });
+
+        // Keep last 200 positions
+        if (mouseHistory.length > 200) mouseHistory.shift();
+    }, { passive: true });
+
+    // ── 3. Simulated reading behavior via progressive scroll ──
+    let scrollTimer = null;
+    let scrollPaused = false;
+    let totalScrollDistance = 0;
+
+    function simulateReading() {
+        if (scrollPaused || document.hidden) return;
+
+        const scrollHeight = document.documentElement.scrollHeight;
+        const clientHeight = document.documentElement.clientHeight;
+        const currentScroll = window.pageYOffset || document.documentElement.scrollTop;
+        const maxScroll = scrollHeight - clientHeight;
+
+        if (currentScroll >= maxScroll - 50) {
+            // Reached bottom — occasional scroll back up (re-reading)
+            if (Math.random() < 0.1) {
+                window.scrollTo({ top: Math.max(0, currentScroll - clientHeight * 0.3), behavior: 'smooth' });
+            }
+            totalScrollDistance += maxScroll - currentScroll;
+            return;
+        }
+
+        // Human reading speed: ~200-600px per 2-3 seconds
+        const scrollAmount = Math.floor(Math.random() * 400 + 200);
+        const newPos = Math.min(currentScroll + scrollAmount, maxScroll);
+        totalScrollDistance += scrollAmount;
+
+        window.scrollTo({ top: newPos, behavior: 'smooth' });
+
+        // Vary reading speed: 2-5 seconds between scrolls
+        const nextInterval = Math.random() * 3000 + 2000;
+        scrollTimer = setTimeout(simulateReading, nextInterval);
     }
-}, true);
+
+    // Start reading simulation after page load settles
+    setTimeout(function() {
+        scrollTimer = setTimeout(simulateReading, Math.random() * 2000 + 1000);
+    }, 2000);
+
+    // ── 4. Pause simulation when user is inactive (tab hidden) ──
+    document.addEventListener('visibilitychange', function() {
+        scrollPaused = document.hidden;
+        if (!document.hidden && !scrollTimer) {
+            scrollTimer = setTimeout(simulateReading, Math.random() * 1000 + 500);
+        }
+    });
+
+    // ── 5. Random mouse hover on links (hesitation before click) ──
+    document.addEventListener('mouseover', function(e) {
+        const target = e.target.closest('a, button, [role="button"]');
+        if (!target) return;
+
+        // 30% chance to simulate hesitation
+        if (Math.random() < 0.3) {
+            const originalTitle = target.title || '';
+            // Brief pseudo-hover state
+            target.style.transition = 'none';
+        }
+    }, true);
+
+    // ── 6. Periodic random micro-movements (prevent "frozen" detection) ──
+    setInterval(function() {
+        if (document.hidden) return;
+
+        // Small random scroll adjustment (±5px)
+        const microScroll = (Math.random() - 0.5) * 10;
+        window.scrollBy({ top: microScroll, behavior: 'auto' });
+
+        // Random mouse-style touch event at viewport center area
+        const cx = window.innerWidth / 2 + (Math.random() - 0.5) * 200;
+        const cy = window.innerHeight / 2 + (Math.random() - 0.5) * 200;
+        const event = new MouseEvent('mousemove', {
+            clientX: cx, clientY: cy,
+            movementX: (Math.random() - 0.5) * 5,
+            movementY: (Math.random() - 0.5) * 5,
+            bubbles: true
+        });
+        document.dispatchEvent(event);
+    }, 10000 + Math.random() * 5000);  // Every 10-15 seconds
+
+    // ── 7. Suppress automation-related console messages ──
+    const _origConsole = {
+        log: console.log.bind(console),
+        warn: console.warn.bind(console),
+        error: console.error.bind(console),
+        debug: console.debug.bind(console)
+    };
+
+    const blockedPatterns = [
+        'webdriver', 'selenium', 'playwright', 'puppeteer',
+        'automation', 'chromedriver', 'cdp', 'devtools',
+        '__proto__', 'phantom', 'nightmare'
+    ];
+
+    function shouldBlock(args) {
+        const str = Array.from(args).map(a => String(a)).join(' ').toLowerCase();
+        return blockedPatterns.some(p => str.includes(p));
+    }
+
+    console.log = function() { if (!shouldBlock(arguments)) _origConsole.log(...arguments); };
+    console.warn = function() { if (!shouldBlock(arguments)) _origConsole.warn(...arguments); };
+    console.debug = function() { if (!shouldBlock(arguments)) _origConsole.debug(...arguments); };
+
+    console.log('[Behavior] Human behavior simulation active');
+})();
 """
 
 # Global instance

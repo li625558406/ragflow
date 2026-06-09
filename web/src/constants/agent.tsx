@@ -137,6 +137,7 @@ export enum Operator {
   LoopStart = 'LoopItem',
   ExitLoop = 'ExitLoop',
   ExcelProcessor = 'ExcelProcessor',
+  CrawlFetch = 'CrawlFetch',
 }
 
 export enum ComparisonOperator {

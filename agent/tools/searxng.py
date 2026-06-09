@@ -31,7 +31,7 @@ class SearXNGParam(ToolParamBase):
     def __init__(self):
         self.meta: ToolMeta = {
             "name": "searxng_search",
-            "description": "SearXNG is a privacy-focused metasearch engine that aggregates results from multiple search engines without tracking users. It provides comprehensive web search capabilities.",
+            "description": "SearXNG 是一个注重隐私的聚合搜索引擎，能同时从多个搜索引擎（Google、Bing 等）汇总结果，不追踪用户。需要自建 SearXNG 服务并配置 searxng_url 后使用。",
             "parameters": {
                 "query": {
                     "type": "string",

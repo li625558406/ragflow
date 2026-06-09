@@ -35,7 +35,7 @@ class EmailParam(ToolParamBase):
     def __init__(self):
         self.meta:ToolMeta = {
             "name": "email",
-            "description": "The email is a method of electronic communication for sending and receiving information through the Internet. This tool helps users to send emails to one person or to multiple recipients with support for CC, BCC, file attachments, and markdown-to-HTML conversion.",
+            "description": "发送电子邮件。支持发送给多个收件人，可设置抄送（CC）、密送（BCC）、文件附件，并自动将 Markdown 格式内容转换为 HTML。用于将分析结果、报告等通过邮件发送给指定人员。",
             "parameters": {
                 "to_email": {
                     "type": "string",

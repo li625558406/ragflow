@@ -227,4 +227,7 @@ export const FormConfigMap = {
   [Operator.BidConstructionSearch]: {
     component: () => <></>,
   },
+  [Operator.CrawlFetch]: {
+    component: () => <></>,
+  },
 };

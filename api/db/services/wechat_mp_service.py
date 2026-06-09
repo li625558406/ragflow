@@ -58,8 +58,9 @@ class WechatMpAccountService(CommonService):
         """Add a new MP account for a tenant. Returns the created record as dict."""
         existing = cls.get_by_faker_id(tenant_id, faker_id)
         if existing:
-            # Update existing
+            # Update existing and reactivate if previously soft-deleted
             existing.mp_name = mp_name
+            existing.status = 1
             if mp_cover:
                 existing.mp_cover = mp_cover
             if mp_intro:

@@ -31,12 +31,12 @@ class TavilySearchParam(ToolParamBase):
         self.meta:ToolMeta = {
             "name": "tavily_search",
             "description": """
-Tavily is a search engine optimized for LLMs, aimed at efficient, quick and persistent search results.
-When searching:
-   - Start with specific query which should focus on just a single aspect.
-   - Number of keywords in query should be less than 5.
-   - Broaden search terms if needed
-   - Cross-reference information from multiple sources
+Tavily 是一个专为 AI 优化的搜索引擎，能高效返回结构化的搜索结果。
+使用建议：
+   - 搜索词应聚焦单一主题，关键词数量控制在5个以内
+   - 优先使用具体明确的搜索词
+   - 如结果不理想，可尝试扩大搜索范围或换用同义词
+   - 建议结合多个信息源交叉验证
              """,
             "parameters": {
                 "query": {
@@ -161,7 +161,7 @@ class TavilyExtractParam(ToolParamBase):
     def __init__(self):
         self.meta:ToolMeta = {
             "name": "tavily_extract",
-            "description": "Extract web page content from one or more specified URLs using Tavily Extract.",
+            "description": "使用 Tavily Extract 从指定 URL 提取网页正文内容。适用于需要读取某个网页详细内容但知识库中没有的场景。支持提取正文文本，自动去除广告和导航等无关内容。",
             "parameters": {
                 "urls": {
                     "type": "array",

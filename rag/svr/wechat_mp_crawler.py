@@ -62,7 +62,7 @@ def load_state(task_name: str) -> dict:
                 return json.load(f)
         except (json.JSONDecodeError, IOError) as e:
             logger.warning("Failed to load state file %s: %s", state_file, e)
-    return {"processed_aids": [], "mp_articles": {}}
+    return {"processed_aids": [], "pending_aids": [], "mp_articles": {}}
 
 
 def save_state(task_name: str, state: dict):
@@ -86,13 +86,15 @@ def upload_articles_to_kb(articles: list, kb_id: str, tenant_id: str) -> list:
     """
     _setup_path()
 
+    from common import settings
+    settings.init_settings()
+
     from api.db.services.knowledgebase_service import KnowledgebaseService
     from api.db.services.document_service import DocumentService
     from api.db.services.file_service import FileService
     from api.db import FileType, KNOWLEDGEBASE_FOLDER_NAME
     from common.constants import FileSource, ParserType
     from common.misc_utils import get_uuid
-    from api import settings
 
     # Validate KB exists
     ok, kb = KnowledgebaseService.get_by_id(kb_id)
@@ -109,7 +111,12 @@ def upload_articles_to_kb(articles: list, kb_id: str, tenant_id: str) -> list:
         tenant_id, kb.name, kb_root_folder["id"]
     )
 
+    from api.db.services.task_service import TaskService
+    from common.constants import TaskStatus
+
     uploaded = []
+    doc_ids = []
+    kb_table_num_map = {}
     for art in articles:
         try:
             title = art.get("title", "Untitled")
@@ -146,8 +153,9 @@ def upload_articles_to_kb(articles: list, kb_id: str, tenant_id: str) -> list:
             settings.STORAGE_IMPL.put(kb_id, location, blob)
 
             # Build and insert Document record
+            doc_id = get_uuid()
             doc = {
-                "id": get_uuid(),
+                "id": doc_id,
                 "kb_id": kb.id,
                 "parser_id": kb.parser_id,
                 "pipeline_id": kb.pipeline_id,
@@ -163,11 +171,23 @@ def upload_articles_to_kb(articles: list, kb_id: str, tenant_id: str) -> list:
             DocumentService.insert(doc)
             FileService.add_file_from_kb(doc, kb_folder["id"], tenant_id)
 
-            logger.info("Uploaded: %s -> %s/%s", title, kb.name, filename)
-            uploaded.append({"title": title, "doc_id": doc["id"], "kb_name": kb.name})
+            # Trigger parsing
+            doc["tenant_id"] = tenant_id
+            DocumentService.update_by_id(doc_id, {
+                "run": str(TaskStatus.RUNNING.value),
+                "progress": 0,
+            })
+            DocumentService.run(tenant_id, doc, kb_table_num_map)
+
+            logger.info("Uploaded + queued parse: %s -> %s/%s", title, kb.name, filename)
+            uploaded.append({"title": title, "doc_id": doc_id, "kb_name": kb.name})
+            doc_ids.append(doc_id)
 
         except Exception as e:
             logger.error("Failed to upload article '%s': %s", title, e)
+
+    if doc_ids:
+        logger.info("Parsing queued for %d documents in KB %s", len(doc_ids), kb_id)
 
     return uploaded
 
@@ -284,6 +304,8 @@ def main():
                         help="Max pages per MP for first-time full crawl (0 = use --max-page)")
     parser.add_argument("--interval", type=int, default=10, help="Max delay between pages (seconds)")
     parser.add_argument("--script-args", default="", help="JSON string with mp_ids, gather_content, first_max_page, etc.")
+    parser.add_argument("--output-json", default="", help="Save articles to JSON file (for offline content fetch)")
+    parser.add_argument("--input-json", default="", help="Read articles with content from JSON file and upload to KB")
     args = parser.parse_args()
 
     # Parse --script-args JSON (used by task_executor for wechat_mp tasks)
@@ -315,16 +337,58 @@ def main():
         "articles_collected": 0,
         "articles_new": 0,
         "articles_uploaded": 0,
+        "articles_exported": 0,
         "error": None,
     }
 
     try:
+        # ── INPUT-JSON mode: read articles (with content) from file, upload to KB ──
+        if args.input_json:
+            with open(args.input_json, "r", encoding="utf-8") as f:
+                input_articles = json.load(f)
+            logger.info("Loaded %d articles from %s", len(input_articles), args.input_json)
+
+            # Filter out articles without content or with errors
+            valid = []
+            uploaded_ids = []
+            for a in input_articles:
+                content = a.get("content", "")
+                error = a.get("fetch_error", "")
+                if not content or "DELETED" in str(error) or "CAPTCHA" in str(error):
+                    logger.info("Skipping '%s': no content (error=%s)", a.get("title", "")[:50], error)
+                    continue
+                valid.append(a)
+
+            if valid and args.kb_id:
+                uploaded = upload_articles_to_kb(valid, args.kb_id, args.tenant_id)
+                summary["articles_uploaded"] = len(uploaded)
+                uploaded_ids = [a.get("id", "") for a in valid]
+
+            # Update state: move successfully uploaded articles from pending → processed
+            state = load_state(args.task_name)
+            processed_aids = set(state.get("processed_aids", []))
+            pending_aids = set(state.get("pending_aids", []))
+            for aid in uploaded_ids:
+                processed_aids.add(aid)
+                pending_aids.discard(aid)
+            state["processed_aids"] = list(processed_aids)
+            state["pending_aids"] = list(pending_aids)
+            state["last_run"] = datetime.now().isoformat()
+            save_state(args.task_name, state)
+
+            summary["articles_total"] = len(input_articles)
+            summary["articles_with_content"] = len(valid)
+            summary["finished_at"] = datetime.now().isoformat()
+            print(json.dumps(summary, ensure_ascii=False))
+            return
+
         # Load state for dedup
         state = load_state(args.task_name)
         processed_aids = set(state.get("processed_aids", []))
+        pending_aids = set(state.get("pending_aids", []))
 
         # Determine effective max_page: first run → full crawl, subsequent → incremental
-        is_first_run = len(processed_aids) == 0
+        is_first_run = len(processed_aids) == 0 and len(pending_aids) == 0
         first_max_page = args.first_max_page if args.first_max_page > 0 else args.max_page
         effective_max_page = first_max_page if is_first_run else args.max_page
         if is_first_run and first_max_page > args.max_page:
@@ -345,15 +409,44 @@ def main():
         )
         summary["articles_collected"] = len(all_articles)
 
-        # Dedup: filter out already-processed articles
-        new_articles = [a for a in all_articles if a.get("id") not in processed_aids]
+        # Dedup: filter out already-processed or pending articles
+        new_articles = [a for a in all_articles
+                        if a.get("id") not in processed_aids
+                        and a.get("id") not in pending_aids]
         summary["articles_new"] = len(new_articles)
 
         if new_articles:
             logger.info("%d new articles found", len(new_articles))
 
-            # Upload to KB if configured
-            if args.kb_id:
+            # ── OUTPUT-JSON mode: save articles to file, skip KB upload ──
+            if args.output_json:
+                output_path = args.output_json
+                # Build mp_id → faker_id lookup (ext_data only has mp_title/mp_id)
+                mp_faker_map = {m["mp_id"]: m["faker_id"] for m in mp_info_list}
+                output_data = []
+                for a in new_articles:
+                    output_data.append({
+                        "id": a.get("id", ""),
+                        "title": a.get("title", ""),
+                        "url": a.get("url", ""),
+                        "description": a.get("description", ""),
+                        "cover": a.get("pic_url", ""),
+                        "publish_time": a.get("publish_time", ""),
+                        "mp_id": a.get("mp_id", ""),
+                        "mp_title": a.get("ext", {}).get("mp_title", ""),
+                        "faker_id": mp_faker_map.get(a.get("mp_id", ""), ""),
+                        "content": "",
+                        "content_html": "",
+                        "fetch_error": "",
+                    })
+                Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+                with open(output_path, "w", encoding="utf-8") as f:
+                    json.dump(output_data, f, ensure_ascii=False, indent=2)
+                logger.info("Saved %d articles to %s (for local content fetch)", len(output_data), output_path)
+                summary["articles_exported"] = len(output_data)
+
+            # Upload to KB if configured (skip when output-json mode — no content yet)
+            if args.kb_id and not args.output_json:
                 logger.info("Uploading to KB %s...", args.kb_id)
                 uploaded = upload_articles_to_kb(
                     new_articles, args.kb_id, args.tenant_id
@@ -361,16 +454,30 @@ def main():
                 summary["articles_uploaded"] = len(uploaded)
 
             # Update state
-            for a in new_articles:
-                processed_aids.add(a.get("id", ""))
-            state["processed_aids"] = list(processed_aids)
+            if args.output_json:
+                # Phase 1: articles exported but content not yet fetched — track as pending
+                for a in new_articles:
+                    pending_aids.add(a.get("id", ""))
+                state["pending_aids"] = list(pending_aids)
+            else:
+                # Phase 3 (or direct upload): articles fully uploaded to KB
+                for a in new_articles:
+                    processed_aids.add(a.get("id", ""))
+                    pending_aids.discard(a.get("id", ""))  # clear pending if present
+                state["processed_aids"] = list(processed_aids)
+                state["pending_aids"] = list(pending_aids)
             state["last_run"] = datetime.now().isoformat()
-            if new_articles:
-                mp_id = new_articles[0].get("mp_id", "")
-                art_id = new_articles[0].get("id", "")
+            # Track per-MP stats
+            mp_counts = {}
+            for a in new_articles:
+                mp_id = a.get("mp_id", "")
+                if mp_id:
+                    mp_counts[mp_id] = mp_counts.get(mp_id, 0) + 1
+            for mp_id, count in mp_counts.items():
+                last_art = next(a for a in new_articles if a.get("mp_id") == mp_id)
                 state["mp_articles"][mp_id] = {
-                    "last_aid": art_id,
-                    "count": len([a for a in new_articles if a.get("mp_id") == mp_id]),
+                    "last_aid": last_art.get("id", ""),
+                    "count": count,
                 }
             save_state(args.task_name, state)
         else:

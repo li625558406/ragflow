@@ -250,51 +250,28 @@ class CodeExecParam(ToolParamBase):
         self.meta: ToolMeta = {
             "name": "execute_code",
             "description": """
-This tool has a sandbox that can execute code written in 'Python'/'Javascript'. It receives a piece of code and return a Json string.
+代码沙箱工具，可安全执行 Python 或 JavaScript 代码并返回结果。
 
-Here's a code example for Python(`main` function MUST be included):
+Python 代码示例（必须包含 main 函数）：
 def main() -> dict:
-    \"\"\"
-    Generate Fibonacci numbers within 100.
-    \"\"\"
     def fibonacci_recursive(n):
         if n <= 1:
             return n
         else:
             return fibonacci_recursive(n-1) + fibonacci_recursive(n-2)
-    return {
-        "result": fibonacci_recursive(100),
-    }
+    return {"result": fibonacci_recursive(100)}
 
-To generate charts or files (images, PDFs, CSVs, etc.), save them to the `artifacts/` directory (relative to the working directory). The sandbox will automatically collect these files and return them. Example:
-def main() -> dict:
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    import pandas as pd
+如需生成图表或文件（图片、PDF、CSV 等），保存到 artifacts/ 目录即可自动收集返回。
+可用 Python 库：pandas, numpy, matplotlib, requests。
+支持的输出文件类型：.png, .jpg, .jpeg, .svg, .pdf, .csv, .json, .html。
 
-    df = pd.DataFrame({"x": [1, 2, 3, 4], "y": [10, 20, 25, 30]})
-    fig, ax = plt.subplots()
-    ax.plot(df["x"], df["y"])
-    ax.set_title("Sample Chart")
-    fig.savefig("artifacts/chart.png", dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    return {"summary": "Chart saved to artifacts/chart.png"}
+沙箱会自动解析收集到的附件，附加到文本输出 content 中，下游节点可直接使用。
 
-Available Python packages: pandas, numpy, matplotlib, requests.
-Supported artifact file types: .png, .jpg, .jpeg, .svg, .pdf, .csv, .json, .html
-
-Collected artifacts are also parsed automatically and appended to the stable text output `content`. The content includes sections like `attachment1 (image): ...`, `attachment2 (pdf): ...`, so downstream nodes can consume a single text output without depending on unstable attachment-specific variables.
-
-Here's a code example for Javascript(`main` function MUST be included and exported):
-const axios = require('axios');
+JavaScript 代码示例（必须包含并导出 main 函数）：
+const axios = require("axios");
 async function main(args) {
-  try {
-    const response = await axios.get('https://github.com/infiniflow/ragflow');
-    console.log('Body:', response.data);
-  } catch (error) {
-    console.error('Error:', error.message);
-  }
+  const response = await axios.get("https://example.com/api");
+  console.log("Body:", response.data);
 }
 module.exports = { main };
             """,

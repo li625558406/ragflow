@@ -112,6 +112,10 @@ class MpsApi(WxGather):
                     time.sleep(random.randint(1, 3))
                     if gather_content and not self.has_gathered(item["aid"]):
                         item["content"] = self.content_extract(item["link"])
+                        # Fallback: use article digest/summary when full content extraction fails
+                        if not item["content"] and item.get("digest"):
+                            item["content"] = f"<p>{item['digest']}</p>"
+                            logger.info("%s using digest fallback (%d chars)", item.get("title", ""), len(item["digest"]))
                         # Shorter wait when using shared Playwright browser
                         if self._pw_controller:
                             time.sleep(random.randint(1, 3))

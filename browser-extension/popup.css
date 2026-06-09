@@ -1,0 +1,145 @@
+/* RAGFlow Web Clipper — Popup Styles */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  width: 320px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+}
+
+/* Dark theme */
+body.dark {
+  background: #1a1a2e;
+  color: #e0e0e0;
+}
+
+.container {
+  padding: 14px;
+}
+
+header {
+  margin-bottom: 12px;
+  border-bottom: 1px solid #2a2a4a;
+  padding-bottom: 10px;
+}
+
+h1 {
+  font-size: 15px;
+  font-weight: 600;
+  color: #f0f0f0;
+}
+
+.section {
+  margin-bottom: 10px;
+}
+
+label {
+  display: block;
+  font-size: 11px;
+  color: #888;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+select {
+  width: 100%;
+  padding: 7px 8px;
+  border-radius: 6px;
+  border: 1px solid #3a3a5a;
+  background: #16213e;
+  color: #e0e0e0;
+  font-size: 12px;
+  outline: none;
+  cursor: pointer;
+}
+
+select:focus {
+  border-color: #6366f1;
+}
+
+.btn {
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-primary {
+  background: #6366f1;
+  color: #fff;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #818cf8;
+}
+
+.btn-primary:disabled {
+  background: #3a3a5a;
+  color: #666;
+  cursor: not-allowed;
+}
+
+.actions {
+  margin-top: 14px;
+  margin-bottom: 10px;
+}
+
+.result {
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  margin-top: 8px;
+}
+
+.result.success {
+  background: #064e3b;
+  color: #6ee7b7;
+  border: 1px solid #065f46;
+}
+
+.result.error {
+  background: #450a0a;
+  color: #fca5a5;
+  border: 1px solid #7f1d1d;
+}
+
+.result.loading {
+  background: #1e3a5f;
+  color: #93c5fd;
+  border: 1px solid #1e40af;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.status {
+  font-size: 10px;
+  margin-top: 3px;
+}
+
+footer {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #2a2a4a;
+  text-align: center;
+}
+
+footer a {
+  color: #818cf8;
+  text-decoration: none;
+  font-size: 11px;
+}
+
+footer a:hover {
+  color: #a5b4fc;
+}

@@ -293,10 +293,14 @@ class Base(ABC):
         return msg
 
     def _verbose_tool_use(self, name, args, res):
+        _TOOL_RESULT_MAX = 2000
+        res_str = json.dumps(res, ensure_ascii=False) if not isinstance(res, str) else res
+        if len(res_str) > _TOOL_RESULT_MAX:
+            res_str = res_str[:_TOOL_RESULT_MAX] + f"... (truncated, {len(res_str)} chars)"
         try:
-            body = json.dumps({"name": name, "args": args, "result": res}, ensure_ascii=False, indent=2)
+            body = json.dumps({"name": name, "args": args, "result": res_str}, ensure_ascii=False, indent=2)
         except TypeError:
-            body = json.dumps({"name": name, "args": args, "result": str(res)}, ensure_ascii=False, indent=2)
+            body = json.dumps({"name": name, "args": args, "result": str(res_str)}, ensure_ascii=False, indent=2)
         return "<tool_call>" + body + "</tool_call>"
 
     def _append_history(self, hist, tool_call, tool_res):
@@ -1471,10 +1475,14 @@ class LiteLLMBase(ABC):
         return msg
 
     def _verbose_tool_use(self, name, args, res):
+        _TOOL_RESULT_MAX = 2000
+        res_str = json.dumps(res, ensure_ascii=False) if not isinstance(res, str) else res
+        if len(res_str) > _TOOL_RESULT_MAX:
+            res_str = res_str[:_TOOL_RESULT_MAX] + f"... (truncated, {len(res_str)} chars)"
         try:
-            body = json.dumps({"name": name, "args": args, "result": res}, ensure_ascii=False, indent=2)
+            body = json.dumps({"name": name, "args": args, "result": res_str}, ensure_ascii=False, indent=2)
         except TypeError:
-            body = json.dumps({"name": name, "args": args, "result": str(res)}, ensure_ascii=False, indent=2)
+            body = json.dumps({"name": name, "args": args, "result": str(res_str)}, ensure_ascii=False, indent=2)
         return "<tool_call>" + body + "</tool_call>"
 
     def _append_history(self, hist, tool_call, tool_res, reasoning_content=None):
@@ -1689,6 +1697,10 @@ class LiteLLMBase(ABC):
                         if finish_reason == "length":
                             yield self._length_stop("")
 
+                    # [DEBUG] Log answer/reasoning state after each round
+                    logging.info(f"[ToolLoop.DEBUG] round={_round} answer_len={len(answer)} has_tool_calls={bool(final_tool_calls)} reasoning_len={len(reasoning_content)}")
+                    if not answer and not final_tool_calls:
+                        logging.warning(f"[ToolLoop.DEBUG] round={_round} EMPTY answer AND no tool_calls! Model returned neither content nor tools.")
                     if answer and not final_tool_calls:
                         logging.info(f"[ToolLoop] round={_round} completed with text response, exiting")
                         yield total_tokens
@@ -1725,6 +1737,7 @@ class LiteLLMBase(ABC):
                         yield self._verbose_tool_use(name, args, err if err else result)
 
                 logging.warning(f"Exceed max rounds: {self.max_rounds}")
+                logging.warning("[ToolLoop.DEBUG] Exceed max rounds, entering fallback (tools=True — model may return tool_calls or empty content)")
                 history.append({"role": "user", "content": f"Exceed max rounds: {self.max_rounds}"})
 
                 completion_args = self._construct_completion_args(history=history, stream=True, tools=True, **gen_conf)

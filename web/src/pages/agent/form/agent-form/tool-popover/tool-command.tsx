@@ -62,6 +62,7 @@ const Menus = [
       Operator.BidIndustryTag,
       Operator.BidEnterpriseProfile,
       Operator.BidConstructionSearch,
+      Operator.CrawlFetch,
     ],
   },
 ];

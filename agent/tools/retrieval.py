@@ -47,7 +47,7 @@ class RetrievalParam(ToolParamBase):
     def __init__(self):
         self.meta:ToolMeta = {
             "name": "search_my_dateset",
-            "description": "This tool can be utilized for relevant content searching in the datasets.",
+            "description": "在知识库中检索与用户问题相关的内容。当用户询问知识库中已有的信息时使用此工具。返回最相关的文档片段，可直接用于回答用户问题。",
             "parameters": {
                 "query": {
                     "type": "string",

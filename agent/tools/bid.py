@@ -21,6 +21,26 @@ from agent.tools.base import ToolParamBase, ToolBase, ToolMeta
 from common.connection_utils import timeout
 
 
+def _batch_fill_source_urls(items: list, client) -> None:
+    """Batch fetch collect_url for items that don't have a source_url yet.
+
+    Modifies items in-place, setting 'source_url' for each item.
+    Fails silently for individual items to avoid breaking the whole response.
+    """
+    for item in items:
+        if item.get("source_url"):
+            continue
+        pid = item.get("id")
+        pub_time = item.get("publish_time") or ""
+        if not pid:
+            continue
+        try:
+            url = client.get_collect_url(int(pid), str(pub_time))
+            item["source_url"] = url or ""
+        except Exception:
+            pass
+
+
 class BidLookupCodeParam(ToolParamBase):
     """
     Define the BidLookupCode component parameters.
@@ -30,17 +50,16 @@ class BidLookupCodeParam(ToolParamBase):
         self.meta: ToolMeta = {
             "name": "lookup_bid_code",
             "description": """
-Look up Chinese administrative area codes or GB/T 4754-2017 industry codes by Chinese name.
-Use the returned codes as input for subsequent searches.
+根据中文名称查询行政区划代码或 GB/T 4754-2017 行业分类代码。返回的代码可用于后续的标讯搜索。
 
-Examples:
-  - "广东" → area code "44" (广东省)
-  - "广州" → area code "440100" (广州市)
-  - "建筑" → industry code "E" (建筑业)
-  - "土木工程" → industry code "E48" (土木工程建筑业)
+示例：
+  - "广东" → 行政区划代码 "44"（广东省）
+  - "广州" → 行政区划代码 "440100"（广州市）
+  - "建筑" → 行业代码 "E"（建筑业）
+  - "土木工程" → 行业代码 "E48"（土木工程建筑业）
 
-Supports fuzzy matching — "广州" matches "广州市", "建筑" matches "建筑业".
-Returns a list of matching codes with full names, so you can pick the right one.
+支持模糊匹配——"广州"可匹配"广州市"，"建筑"可匹配"建筑业"。
+返回匹配的代码列表及完整名称，可从中选择最合适的代码。
             """,
             "parameters": {
                 "keyword": {
@@ -113,15 +132,15 @@ class BidSearchParam(ToolParamBase):
         self.meta: ToolMeta = {
             "name": "bid_search",
             "description": """
-Search Chinese government procurement bid projects from the bidding database.
-Use this tool when the user asks about bid/procurement/tender projects, such as:
-  - "find recent construction bids in Guangdong"
-  - "search for IT procurement projects"
-  - "show me bid projects about medical equipment"
-  - "what bidding opportunities exist for environmental protection"
+从标讯数据库中搜索全国政府采购、招投标项目。
+当用户询问招标/采购/标讯相关内容时使用，例如：
+  - "广东省最近的建设工程招标"
+  - "搜索信息化采购项目"
+  - "医疗器械相关的标讯"
+  - "环保领域有哪些招标机会"
 
-The search returns project id, title, publish_time, project_money, has_file, and other metadata.
-IMPORTANT: Save the returned 'id' and 'publish_time' fields — they uniquely identify a project for detail retrieval.
+返回项目 id、标题、发布时间、金额、是否有附件等元数据。
+重要提示：请保存返回结果中的 'id' 和 'publish_time' 字段——它们是获取项目详情的唯一标识。
             """,
             "parameters": {
                 "keyword": {
@@ -260,7 +279,16 @@ class BidSearch(ToolBase, ABC):
                     "part_a_names": p.get("part_a_names"),
                     "part_b_names": p.get("part_b_names"),
                     "source_type": p.get("source_type"),
+                    "source_url": p.get("collect_url") or "",
                 })
+
+            # Batch fetch source URLs for results that don't have one yet
+            try:
+                from api.utils.bid_api_client import BidApiClient
+                client = BidApiClient()
+                _batch_fill_source_urls(simplified, client)
+            except Exception:
+                pass
 
             output = {
                 "total": total,
@@ -294,16 +322,15 @@ class BidGetDetailParam(ToolParamBase):
         self.meta: ToolMeta = {
             "name": "bid_get_detail",
             "description": """
-Get full detail of a specific bid project AND automatically trigger async import into the knowledge base.
-This is the PRIMARY tool to use when a user wants to see or analyze a specific bid project.
+获取指定标讯项目的完整详情，并自动触发异步导入知识库。
+当用户需要查看或分析某个具体标讯项目时，这是最主要的工具。
 
-What it does (all in one call):
-  1. Fetches full project detail SYNCHRONOUSLY (content HTML, structured data, attached files)
-  2. Triggers ASYNC background import: combined text + all attached files → KB → parse
-  3. Returns IMMEDIATELY with detail summary + kb_import status ("parsing" = background thread working)
+一次调用完成以下操作：
+  1. 同步获取项目完整详情（正文 HTML、结构化数据、附件列表）
+  2. 异步后台导入：正文+所有附件 → 知识库 → 自动解析
+  3. 立即返回详情摘要 + kb_import 状态（"parsing" 表示后台正在处理）
 
-The import runs in the background — no need to wait. The kb_import status field shows the current import progress.
-
+导入在后台运行，无需等待。kb_import 字段显示当前导入进度。
             """,
             "parameters": {
                 "project_id": {
@@ -446,16 +473,16 @@ class BidImportToKbParam(ToolParamBase):
         self.meta: ToolMeta = {
             "name": "bid_import_to_kb",
             "description": """
-Import a bid project's detail content and attached files into a RAGFlow knowledge base, then trigger document parsing.
-This tool returns IMMEDIATELY with status "parsing" — the download, upload and parsing happen in the background.
+将标讯项目的正文内容和附件文件导入 RAGFlow 知识库，并触发文档解析。
+此工具立即返回状态 "parsing"——下载、上传和解析在后台完成。
 
-Use this tool when the user wants to:
-  - "import this project to my knowledge base"
-  - "analyze this bid and help me write a response"
-  - "generate a bid document based on this project"
+当用户要求以下操作时使用：
+  - "把这个项目导入知识库"
+  - "帮我分析这个标书并写投标方案"
+  - "基于这个项目生成投标文件"
 
-Dedup: If the project was already imported, returns the existing status directly.
-Provide the project_id and publish_time of the project to import.
+去重：如果项目已导入过，直接返回现有状态。
+需要提供项目的 project_id 和 publish_time。
             """,
             "parameters": {
                 "project_id": {
@@ -579,14 +606,14 @@ class BidCheckImportStatusParam(ToolParamBase):
         self.meta: ToolMeta = {
             "name": "bid_check_import_status",
             "description": """
-Check the import/parsing progress of a bid project in the knowledge base.
-Use this to poll until parsing is complete.
+查询标讯项目在知识库中的导入和解析进度。
+当项目正在导入时，可反复调用此工具轮询状态直到完成。
 
-Returns the current status: "parsing" (still in progress), "done" (complete), or "fail".
-When status is "parsing", doc_progress shows detailed per-document progress (done/fail/running counts).
-When status is "done", the KB is ready and you can answer user questions based on the imported content.
+返回当前状态："parsing"（解析中）、"done"（完成）或 "fail"（失败）。
+状态为 "parsing" 时，doc_progress 字段显示每个文档的详细进度（完成/失败/进行中数量）。
+状态为 "done" 时，知识库已就绪，可基于导入内容回答用户问题。
 
-Poll repeatedly (every few seconds) until status becomes "done".
+建议每隔几秒轮询一次，直到状态变为 "done"。
             """,
             "parameters": {
                 "project_id": {
@@ -659,11 +686,11 @@ class BidGetSourceParam(ToolParamBase):
         self.meta: ToolMeta = {
             "name": "bid_get_source",
             "description": """
-Get the original source URL (collect URL) of a bid project.
-This is the original government website where the bid was published.
-Use this when the user wants to see the original announcement page.
+获取标讯项目的原始来源网址（采集地址）。
+这是该标讯最初发布的政府网站链接。
+当用户想查看原始公告页面时使用。
 
-Requires project_id and publish_time (same as bid_get_detail).
+需要提供 project_id 和 publish_time（与 bid_get_detail 相同）。
             """,
             "parameters": {
                 "project_id": {
@@ -726,16 +753,15 @@ class BidSearchAIParam(ToolParamBase):
         self.meta: ToolMeta = {
             "name": "bid_search_ai",
             "description": """
-AI-friendly lightweight bid project search.
-Returns richer structured data (party info, bid dates, areas) in a single call.
-Ideal for AI agents that need structured project overview without separate detail calls.
+面向 AI 的轻量级标讯搜索，一次调用返回丰富的结构化数据（参与方信息、投标日期、地区等）。
+适合需要结构化项目概览而不需要单独调用详情接口的场景。
 
-Use this when you need:
-  - Quick project overview with structured party information
-  - Natural language area/industry filtering (pass area_name like '广东省')
-  - Category filtering (e.g., className='招标信息,中标信息')
+使用场景：
+  - 快速获取项目概览及参与方信息
+  - 自然语言地区/行业筛选（传入 area_name 如"广东省"）
+  - 分类筛选（如 className='招标信息,中标信息'）
 
-Returns up to 20 results per page.
+每页最多返回 20 条结果。
             """,
             "parameters": {
                 "keyword": {
@@ -826,6 +852,7 @@ class BidSearchAI(ToolBase, ABC):
                     "bid_start_date": item.get("bidStartDate", ""),
                     "bid_start_address": item.get("bidStartAddress", ""),
                     "sign_up_stop_date": item.get("siginUpStopDate", ""),
+                    "source_url": item.get("collectUrl") or item.get("sbkjBidUrl") or "",
                 })
 
             output = {
@@ -858,11 +885,11 @@ class BidSearchContractParam(ToolParamBase):
         self.meta: ToolMeta = {
             "name": "bid_search_contract",
             "description": """
-Search contract/bid-result data from the bidding database.
-Returns projects with contract details: contract dates, project cycle, party info with contacts.
-Use this when the user asks about contracts, bid results, or winners.
+从标讯数据库中搜索合同/中标结果数据。
+返回包含合同详情的项目：合同日期、项目周期、参与方信息及联系人。
+当用户询问合同、中标结果或中标企业时使用。
 
-Parameters are similar to bid_search but results include contractStartDate, contractEndDate, projectCycle.
+参数与 bid_search 类似，但返回结果包含 contractStartDate（合同开始日期）、contractEndDate（合同结束日期）、projectCycle（项目周期）等字段。
             """,
             "parameters": {
                 "keyword": {
@@ -976,7 +1003,11 @@ class BidSearchContract(ToolBase, ABC):
                     "part_b_info": item.get("partBInfo", []),
                     "contract_start_date": item.get("contractStartDate", ""),
                     "contract_end_date": item.get("contractEndDate", ""),
+                    "source_url": "",
                 })
+
+            # Batch fetch source URLs for all results
+            _batch_fill_source_urls(simplified, client)
 
             output = {
                 "total": data.get("total", 0),
@@ -1008,18 +1039,17 @@ class BidRewriteQueryParam(ToolParamBase):
         self.meta: ToolMeta = {
             "name": "bid_rewrite_query",
             "description": """
-Rewrite a natural language query into structured search conditions for bid search.
-This is an AI-powered tool that extracts: search phrases, synonyms, party names,
-area codes, and industry codes from a natural language description.
+将自然语言查询重写为结构化的标讯搜索条件。
+这是一个 AI 驱动的工具，能从自然语言描述中提取：搜索关键词、同义词、参与方名称、地区代码和行业代码。
 
-Example: "军队采购网 病床 北京" → {
+示例："军队采购网 病床 北京" → {
   searchPhrase: "病床",
   partyANames: ["军队采购网"],
   areaCode: {proviceCodeList: ["110000"]},
   industryCodes: [{thirdCodeList: ["C277", "Q831"]}]
 }
 
-After getting the rewritten conditions, use bid_search with the extracted parameters.
+获取重写后的条件后，使用 bid_search 进行正式搜索。
             """,
             "parameters": {
                 "query": {
@@ -1084,16 +1114,16 @@ class BidIndustryTagParam(ToolParamBase):
         self.meta: ToolMeta = {
             "name": "bid_industry_tag",
             "description": """
-Infer industry classification codes from a keyword or phrase.
-Returns a list of candidate industry codes with full path titles.
+根据关键词或短语推理行业分类代码。
+返回候选行业代码列表及完整分类路径。
 
-Example: "教育" → [
+示例："教育" → [
   {thirdCodeList: ["P824"], fullTitle: "教育-教育-高等教育", minTitle: "高等教育"},
   {thirdCodeList: ["P823"], fullTitle: "教育-教育-中等教育", minTitle: "中等教育"},
   ...
 ]
 
-Use the returned codes as industry_code parameter in bid_search.
+返回的代码可作为 bid_search 的 industry_code 参数使用。
             """,
             "parameters": {
                 "keyword": {
@@ -1150,13 +1180,11 @@ class BidEnterpriseProfileParam(ToolParamBase):
         self.meta: ToolMeta = {
             "name": "bid_enterprise_profile",
             "description": """
-Get comprehensive enterprise profile from the bidding database.
-Returns: basic info (registration, capital, legal rep, business scope),
-project insights (bid/win statistics by industry), relationship summary
-(customer/supplier counts).
+从标讯数据库获取企业综合画像。
+返回：基本信息（注册信息、注册资本、法定代表人、经营范围）、
+项目洞察（按行业的投标/中标统计）、关系概览（客户/供应商数量）。
 
-Use this when the user asks about a company's background, capabilities,
-bidding history, or business relationships.
+当用户询问企业背景、资质能力、招投标历史或商业关系时使用。
             """,
             "parameters": {
                 "company_name": {
@@ -1246,12 +1274,10 @@ class BidConstructionSearchParam(ToolParamBase):
         self.meta: ToolMeta = {
             "name": "bid_construction_search",
             "description": """
-Search 'under-construction' (拟在建) project information.
-These are projects in planning, approval, or early construction stages.
-Returns project title, summary, construction company, and publish time.
+搜索拟在建项目信息（处于规划、审批或早期施工阶段的项目）。
+返回项目标题、摘要、建设单位和发布时间。
 
-Use this when the user asks about upcoming construction projects,
-infrastructure plans, or projects still in the approval process.
+当用户询问即将开工的建设项目、基础设施规划或仍在审批流程中的项目时使用。
             """,
             "parameters": {
                 "keyword": {
@@ -1336,7 +1362,11 @@ class BidConstructionSearch(ToolBase, ABC):
                     "county_code": item.get("countyCode", ""),
                     "has_file": bool(item.get("hasFile")),
                     "score": item.get("score"),
+                    "source_url": "",
                 })
+
+            # Batch fetch source URLs for all results
+            _batch_fill_source_urls(simplified, client)
 
             output = {
                 "total": data.get("total", 0),

@@ -32,7 +32,7 @@ _CHROME_PATHS = [
 class PlaywrightController:
     """Async Playwright controller with anti-detection integration."""
 
-    def __init__(self, headless: bool = None, browser_type: str = "chromium",
+    def __init__(self, headless: bool = None, browser_type: str = "webkit",
                  proxy_url: Optional[str] = None, user_agent: Optional[str] = None,
                  mobile_mode: bool = False):
         self.headless = os.environ.get("HEADLESS", "true").lower() == "true" if headless is None else headless
@@ -93,9 +93,18 @@ class PlaywrightController:
 
     async def _apply_anti_crawler_scripts(self, page) -> None:
         try:
+            from playwright_stealth import Stealth
+            stealth = Stealth()
+            await stealth.apply_stealth_async(page)
+            logger.debug("playwright-stealth injected")
+        except Exception as e:
+            logger.warning("playwright-stealth injection failed: %s", e)
+        try:
             init_script = AntiCrawlerConfig.get_init_script()
             await page.add_init_script(init_script)
-            logger.debug("Anti-detection scripts injected")
+            behavior_script = AntiCrawlerConfig.get_behavior_script()
+            await page.add_init_script(behavior_script)
+            logger.debug("Anti-detection scripts injected (21 protection + behavior)")
         except Exception as e:
             logger.warning("Anti-detection script injection failed: %s", e)
 

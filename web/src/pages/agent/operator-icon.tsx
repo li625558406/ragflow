@@ -64,6 +64,7 @@ export const SVGIconMap = {
   [Operator.BidIndustryTag]: 'bid-lookup-code',
   [Operator.BidEnterpriseProfile]: 'bid-get-detail',
   [Operator.BidConstructionSearch]: 'bid-search',
+  [Operator.CrawlFetch]: 'crawler',
 };
 export const LucideIconMap = {
   [Operator.DataOperations]: FileCode,

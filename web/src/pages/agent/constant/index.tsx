@@ -707,6 +707,22 @@ export const initialPlaceholderValues = {
   // It's just a visual placeholder
 };
 
+export const initialCrawlFetchValues = {
+  site_id: '',
+  max_pages: 1,
+  force: false,
+  outputs: {
+    formalized_content: {
+      value: '',
+      type: 'string',
+    },
+    json: {
+      value: [],
+      type: 'Array<Object>',
+    },
+  },
+};
+
 export enum Operations {
   SelectKeys = 'select_keys',
   LiteralEval = 'literal_eval',
@@ -838,6 +854,7 @@ export const RestrictedUpstreamMap = {
   [Operator.BidIndustryTag]: [Operator.Begin],
   [Operator.BidEnterpriseProfile]: [Operator.Begin],
   [Operator.BidConstructionSearch]: [Operator.Begin],
+  [Operator.CrawlFetch]: [Operator.Begin],
   [Operator.StringTransform]: [Operator.Begin],
   [Operator.UserFillUp]: [Operator.Begin],
   [Operator.Tool]: [Operator.Begin],
@@ -901,6 +918,7 @@ export const NodeMap = {
   [Operator.BidIndustryTag]: 'ragNode',
   [Operator.BidEnterpriseProfile]: 'ragNode',
   [Operator.BidConstructionSearch]: 'ragNode',
+  [Operator.CrawlFetch]: 'ragNode',
   [Operator.UserFillUp]: 'ragNode',
   [Operator.StringTransform]: 'ragNode',
   [Operator.TavilyExtract]: 'ragNode',

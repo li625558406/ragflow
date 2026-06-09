@@ -495,6 +495,24 @@ Example: A 1 KB message with 1024-dim embedding uses ~9 KB. The 5 MB default lim
       localFiles: 'Local files',
       emptyFiles: 'Create empty file',
       webCrawl: 'Web crawl',
+      clip: {
+        button: 'Clip',
+        title: 'Web Clip — Save pages to KB in one click',
+        description:
+          'Clip web content to this knowledge base with a bookmarklet or browser extension.',
+        kbName: 'KB Name',
+        bookmarkletTitle: 'Bookmarklet',
+        bookmarkletDesc:
+          'Drag the button below to your bookmarks bar, then click it on any page to clip.',
+        dragToBookmarks: 'Drag to bookmarks bar',
+        clipToKB: 'Clip to KB',
+        replaceTokenHint:
+          'Before first use, replace YOUR_API_TOKEN in the bookmarklet code with your API key (Avatar → API key).',
+        extensionTitle: 'Browser Extension',
+        extensionDesc:
+          'For a better experience, download the extension, then go to chrome://extensions, enable "Developer mode", and click "Load unpacked" to select the extension folder.',
+        curlTitle: 'cURL',
+      },
       chunkNumber: 'Chunks',
       uploadDate: 'Upload date',
       chunkMethod: 'Chunking method',
@@ -2404,6 +2422,9 @@ This process aggregates variables from multiple branches into a single variable 
       bidConstructionSearch: 'Construction project search',
       bidConstructionSearchDescription:
         'Search planned and under-construction projects.',
+      crawlFetch: 'Site Crawler',
+      crawlFetchDescription:
+        'Crawl government/procurement websites for latest announcements.',
       log: 'Log',
       management: 'Management',
       import: 'Import',

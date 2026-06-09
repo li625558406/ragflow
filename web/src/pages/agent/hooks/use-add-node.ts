@@ -27,6 +27,7 @@ import {
   initialBingValues,
   initialCategorizeValues,
   initialCodeValues,
+  initialCrawlFetchValues,
   initialCrawlerValues,
   initialDataOperationsValues,
   initialDocGeneratorValues,
@@ -208,6 +209,7 @@ export const useInitializeOperatorParams = () => {
       [Operator.BidIndustryTag]: initialBidIndustryTagValues,
       [Operator.BidEnterpriseProfile]: initialBidEnterpriseProfileValues,
       [Operator.BidConstructionSearch]: initialBidConstructionSearchValues,
+      [Operator.CrawlFetch]: initialCrawlFetchValues,
     };
   }, [llmId]);
 

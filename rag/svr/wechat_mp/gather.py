@@ -6,6 +6,7 @@ Article collection framework with token management, proxy support, and dedup.
 import asyncio
 import json
 import logging
+import os
 import random
 import re
 import time
@@ -37,7 +38,7 @@ class WxGather:
     """
 
     def __init__(self, tenant_id: str = "", gather_content: bool = False,
-                 proxy_enabled: bool = False, http_proxy_url: str = "",
+                 proxy_enabled: bool = None, http_proxy_url: str = "",
                  deno_proxy_url: str = ""):
         self.tenant_id = tenant_id
         self.articles: List[Dict] = []
@@ -47,9 +48,12 @@ class WxGather:
 
         # Config
         self.gather_content = gather_content
+        # Proxy: explicit args take precedence, then env vars, then defaults
+        if proxy_enabled is None:
+            proxy_enabled = os.environ.get("WECHAT_PROXY_ENABLED", "").lower() in ("1", "true", "yes")
         self.proxy_enabled = proxy_enabled
-        self.http_proxy_url = http_proxy_url
-        self.deno_proxy_url = deno_proxy_url
+        self.http_proxy_url = http_proxy_url or os.environ.get("WECHAT_HTTP_PROXY_URL", "")
+        self.deno_proxy_url = deno_proxy_url or os.environ.get("WECHAT_PROXY_RELAY_URL", "")
 
         # HTTP session
         session = requests.Session()
@@ -110,19 +114,34 @@ class WxGather:
         return {"http": self.http_proxy_url, "https": self.http_proxy_url}
 
     def _proxy_request(self, url: str) -> str:
-        """Request URL through Deno proxy or direct HTTP proxy."""
+        """Request URL through relay proxy (Deno/Python) or HTTP proxy."""
         import urllib.parse
 
         if self.proxy_enabled and self.deno_proxy_url:
-            proxy_url = f"{self.deno_proxy_url}?url={urllib.parse.quote(url, safe='')}"
-            logger.info("Using Deno proxy: %s", proxy_url)
+            # Build proxy URL — handle both formats:
+            # 1. Deno Deploy: {base}?url={target}
+            # 2. Python relay: {base}/proxy?url={target}
+            base = self.deno_proxy_url.rstrip("/")
+            encoded = urllib.parse.quote(url, safe='')
+            if "/proxy" in base or base.endswith("/proxy"):
+                proxy_url = f"{base}?url={encoded}"
+            else:
+                proxy_url = f"{base}?url={encoded}"
+            logger.info("Using relay proxy: %s...", proxy_url[:120])
+            # Forward WeChat cookies to proxy so Cloudflare Worker can relay them
+            proxy_headers = dict(self.headers)
+            wechat_cookies = self.session.cookies.get_dict()
+            if wechat_cookies:
+                proxy_headers["Cookie"] = "; ".join(
+                    f"{k}={v}" for k, v in wechat_cookies.items()
+                )
             try:
-                resp = self.session.get(proxy_url, headers=self.headers, timeout=(10, 30))
+                resp = self.session.get(proxy_url, headers=proxy_headers, timeout=(10, 30))
                 if resp.status_code == 200:
                     return resp.text
-                logger.warning("Deno proxy returned %s", resp.status_code)
+                logger.warning("Relay proxy returned %s", resp.status_code)
             except Exception as e:
-                logger.error("Deno proxy error: %s", e)
+                logger.error("Relay proxy error: %s", e)
 
         proxies = self._get_proxies()
         try:
@@ -312,21 +331,55 @@ class WxGather:
         return text
 
     def _clean_html(self, html_content: str) -> str:
-        """Remove common noise elements from article HTML."""
+        """Extract article text from WeChat MP HTML, return empty if CAPTCHA."""
+        if not html_content:
+            return ""
+
+        # Detect anti-bot pages
         if "当前环境异常，完成验证后即可继续访问" in html_content:
             logger.warning("Anti-bot verification page detected")
+            return ""
+        if "secitptpage/template/verify.js" in html_content:
+            logger.warning("Anti-bot CAPTCHA page detected (verify.js)")
             return ""
 
         try:
             from bs4 import BeautifulSoup
             soup = BeautifulSoup(html_content, 'html.parser')
+
+            # Remove noise
             for tag_name in ['script', 'style', 'nav', 'footer', 'iframe', 'noscript']:
                 for tag in soup.find_all(tag_name):
                     tag.decompose()
-            for attr in ['style', 'onclick', 'onload', 'onerror']:
-                for tag in soup.find_all(attrs={attr: True}):
-                    del tag[attr]
-            return str(soup)
+
+            # Find article body — WeChat MP specific
+            article = (
+                soup.find(id="js_content")
+                or soup.find(class_="rich_media_content")
+                or soup.find("article")
+            )
+            if not article:
+                # Fallback: use body, removing header/footer noise
+                for noise_id in ['js_pc_qr_code', 'content_bottom_interaction', 'js_article_bottom_bar']:
+                    el = soup.find(id=noise_id)
+                    if el:
+                        el.decompose()
+                article = soup.find('body') or soup
+
+            # Extract text with paragraph structure
+            for tag in article.find_all(['p', 'section', 'div', 'h1', 'h2', 'h3', 'h4', 'li', 'blockquote', 'br']):
+                tag.insert_before('\n')
+
+            text = article.get_text(separator='\n', strip=True)
+            lines = [l.strip() for l in text.split('\n')]
+            lines = [l for l in lines if l and len(l) > 2]
+
+            if not lines:
+                logger.warning("No text content extracted from article HTML")
+                return ""
+
+            return '\n\n'.join(lines)
+
         except Exception:
             return html_content
 

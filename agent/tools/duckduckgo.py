@@ -30,7 +30,7 @@ class DuckDuckGoParam(ToolParamBase):
     def __init__(self):
         self.meta:ToolMeta = {
             "name": "duckduckgo_search",
-            "description": "DuckDuckGo is a search engine focused on privacy. It offers search capabilities for web pages, images, and provides translation services. DuckDuckGo also features a private AI chat interface, providing users with an AI assistant that prioritizes data protection.",
+            "description": "DuckDuckGo 是一个注重隐私保护的搜索引擎，可搜索网页、新闻等内容。无需 API 密钥即可使用，适合快速检索互联网上的公开信息。当 Tavily 不可用或需要备选搜索时使用。",
             "parameters": {
                 "query": {
                     "type": "string",

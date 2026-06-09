@@ -24,6 +24,7 @@ import { MetadataType } from '../components/metedata/constant';
 import { useManageMetadata } from '../components/metedata/hooks/use-manage-modal';
 import { ManageMetadataModal } from '../components/metedata/manage-modal';
 import { useKnowledgeBaseContext } from '../contexts/knowledge-base-context';
+import ClipDialog from './clip-dialog';
 import { DatasetTable } from './dataset-table';
 import Generate from './generate-button/generate';
 import { ReparseDialog } from './reparse-dialog';
@@ -189,23 +190,33 @@ export default function Dataset() {
           //   </Button>
           // }
         >
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button size="default">
-                <LucidePlus />
-                {t('knowledgeDetails.addFile')}
+          <div className="flex items-center gap-2">
+            <ClipDialog
+              kbId={knowledgeBase?.id ?? ''}
+              kbName={knowledgeBase?.name ?? ''}
+            >
+              <Button variant="outline" size="default">
+                {t('knowledgeDetails.clip.button')}
               </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent className="w-auto min-w-40" align="end">
-              <DropdownMenuItem onClick={showDocumentUploadModal}>
-                {t('fileManager.uploadFile')}
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={showCreateModal}>
-                {t('knowledgeDetails.emptyFiles')}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+            </ClipDialog>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="default">
+                  <LucidePlus />
+                  {t('knowledgeDetails.addFile')}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent className="w-auto min-w-40" align="end">
+                <DropdownMenuItem onClick={showDocumentUploadModal}>
+                  {t('fileManager.uploadFile')}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={showCreateModal}>
+                  {t('knowledgeDetails.emptyFiles')}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </ListFilterBar>
 
         {rowSelectionIsEmpty || (

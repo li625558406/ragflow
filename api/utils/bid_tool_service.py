@@ -377,10 +377,29 @@ def search_bid_projects(
                         "se_keywords": api_data.get("seKeyWords", ""),
                         "score": item.get("score"),
                         "source_type": str(item.get("sourceType")) if item.get("sourceType") else None,
+                        "collect_url": item.get("collectUrl") or item.get("sbkjBidUrl") or "",
                     }
                     BidProjectService.upsert_project(project_data)
                 except Exception as e:
                     logging.warning("Failed to cache project %s: %s", item.get("id"), e)
+
+            # Batch fetch collect_url for cached items that lack it
+            try:
+                for item in items:
+                    pid = item.get("id")
+                    pub_time = item.get("publishTime", "")
+                    if pid and not item.get("collectUrl") and not item.get("sbkjBidUrl"):
+                        try:
+                            url = client.get_collect_url(int(pid), str(pub_time))
+                            if url:
+                                item["collectUrl"] = url
+                                BidProjectService.upsert_project({
+                                    "id": pid, "collect_url": url,
+                                })
+                        except Exception:
+                            pass
+            except Exception as e:
+                logging.warning("Tool service: batch collect_url fill failed: %s", e)
 
             # Re-query DB after caching API results
             objs, total = BidProjectService.get_list(

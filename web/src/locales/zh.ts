@@ -554,6 +554,24 @@ export default {
       metaData: '元数据',
       deleteDocumentConfirmContent:
         '该文档与知识图谱相关联。删除后，相关节点和关系信息将被删除，但图不会立即更新。更新图动作是在解析承载知识图谱提取任务的新文档的过程中执行的。',
+      clip: {
+        button: '动态采集',
+        title: '动态采集 — 一键保存网页到知识库',
+        description:
+          '通过浏览器书签或插件，在任何网页上一键采集内容到当前知识库。',
+        kbName: '知识库名称',
+        bookmarkletTitle: '书签工具',
+        bookmarkletDesc:
+          '将下方按钮拖拽到浏览器书签栏，在任意网页点击书签即可采集。',
+        dragToBookmarks: '拖拽到书签栏',
+        clipToKB: '采集到知识库',
+        replaceTokenHint:
+          '首次使用前，请将书签代码中的 YOUR_API_TOKEN 替换为你的 API 密钥（右上角头像 → API 密钥）。',
+        extensionTitle: '浏览器插件',
+        extensionDesc:
+          '需要更强大的采集体验？下载浏览器插件后解压，在 Chrome 扩展管理页面 (chrome://extensions) 开启"开发者模式"，点击"加载已解压的扩展程序"选择插件目录即可。',
+        curlTitle: '命令行 (curl)',
+      },
       plainText: 'Naive',
       reRankModelWaring: '重排序模型非常耗时。',
       theDocumentBeingParsedCannotBeDeleted: '正在解析的文档不能被删除',
@@ -2109,6 +2127,8 @@ General：实体和关系提取提示来自 GitHub - microsoft/graphrag：基于
       bidEnterpriseProfileDescription: '查询企业画像与招投标关系',
       bidConstructionSearch: '拟在建项目搜索',
       bidConstructionSearchDescription: '搜索规划审批中的建设项目',
+      crawlFetch: '网站爬取',
+      crawlFetchDescription: '爬取政府/招投标网站获取最新公告',
       log: '日志',
       management: '管理',
       import: '导入',

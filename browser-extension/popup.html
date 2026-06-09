@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RAGFlow Web Clipper</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body class="dark">
+  <div class="container">
+    <header>
+      <h1>RAGFlow Web Clipper</h1>
+    </header>
+
+    <!-- KB Selector -->
+    <div class="section">
+      <label for="kbSelect">知识库</label>
+      <select id="kbSelect">
+        <option value="">-- 选择知识库 --</option>
+      </select>
+      <div id="kbStatus" class="status hidden"></div>
+    </div>
+
+    <!-- Parse Mode -->
+    <div class="section">
+      <label for="parseMode">解析方式</label>
+      <select id="parseMode">
+        <option value="naive">纯文本</option>
+        <option value="llm">LLM 结构化</option>
+      </select>
+    </div>
+
+    <!-- Action Buttons -->
+    <div class="section actions">
+      <button id="clipBtn" class="btn btn-primary" disabled>
+        采集到知识库
+      </button>
+    </div>
+
+    <!-- Status -->
+    <div id="result" class="result hidden"></div>
+
+    <!-- Settings link -->
+    <footer>
+      <a href="#" id="optionsLink">⚙ 设置服务器地址和 API Key</a>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

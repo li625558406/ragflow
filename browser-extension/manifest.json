@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "RAGFlow Web Clipper",
+  "version": "1.0.0",
+  "description": "一键采集网页内容到 RAGFlow 知识库",
+  "permissions": ["activeTab", "storage", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "采集到 RAGFlow"
+  },
+  "options_page": "options.html",
+  "background": {
+    "service_worker": "background.js"
+  }
+}

@@ -511,9 +511,28 @@ class Canvas(Graph):
                 await asyncio.gather(*tasks)
 
         def _node_finished(cpn_obj):
+            inputs = cpn_obj.get_input_values()
+            outputs = cpn_obj.output()
+            # Truncate large inputs/outputs to prevent massive SSE payloads that crash the frontend.
+            # The full data is already stored server-side; the frontend only needs a preview.
+            _MAX_EVENT_SIZE = 50000
+            try:
+                inp_str = json.dumps(inputs, ensure_ascii=False, default=str)
+                if len(inp_str) > _MAX_EVENT_SIZE:
+                    inputs = {"_truncated": True, "_original_bytes": len(inp_str),
+                              "_preview": inp_str[:_MAX_EVENT_SIZE]}
+            except Exception:
+                pass
+            try:
+                out_str = json.dumps(outputs, ensure_ascii=False, default=str)
+                if len(out_str) > _MAX_EVENT_SIZE:
+                    outputs = {"_truncated": True, "_original_bytes": len(out_str),
+                               "_preview": out_str[:_MAX_EVENT_SIZE]}
+            except Exception:
+                pass
             return decorate("node_finished",{
-                           "inputs": cpn_obj.get_input_values(),
-                           "outputs": cpn_obj.output(),
+                           "inputs": inputs,
+                           "outputs": outputs,
                            "component_id": cpn_obj._id,
                            "component_name": self.get_component_name(cpn_obj._id),
                            "component_type": self.get_component_type(cpn_obj._id),

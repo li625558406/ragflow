@@ -78,7 +78,18 @@ def _get_user_nickname(user_id: str) -> str:
 
 
 def _build_sse_response(body):
-    resp = Response(body, mimetype="text/event-stream")
+    async def _body_counter(inner):
+        _total = 0
+        _chunks = 0
+        async for chunk in inner:
+            if isinstance(chunk, str):
+                chunk = chunk.encode("utf-8")
+            _total += len(chunk)
+            _chunks += 1
+            yield chunk
+        logging.info("[SSE.RESP_BODY] chunks=%d total_bytes=%d", _chunks, _total)
+    wrapped = _body_counter(body)
+    resp = Response(wrapped, mimetype="text/event-stream")
     # Cloudflare-compatible headers for SSE streaming
     # no-transform prevents Cloudflare from modifying the response
     resp.headers["Cache-Control"] = "no-cache, no-store, no-transform"
@@ -997,8 +1008,26 @@ async def agent_chat_completion(tenant_id):
         async def sse():
             nonlocal canvas
             try:
+                _event_bytes = {}
+                _event_count = {}
+                _total_bytes = 0
+                _total_events = 0
                 async for ans in canvas.run(query=query, files=files, user_id=user_id, inputs=inputs):
-                    yield "data:" + json.dumps(ans, ensure_ascii=False, cls=CustomJSONEncoder) + "\n\n"
+                    line = "data:" + json.dumps(ans, ensure_ascii=False, cls=CustomJSONEncoder) + "\n\n"
+                    evt = ans.get("event", "unknown") if isinstance(ans, dict) else "unknown"
+                    lb = len(line.encode("utf-8"))
+                    _event_bytes[evt] = _event_bytes.get(evt, 0) + lb
+                    _event_count[evt] = _event_count.get(evt, 0) + 1
+                    _total_bytes += lb
+                    _total_events += 1
+                    yield line
+
+                top_events = sorted(_event_bytes.items(), key=lambda x: -x[1])[:8]
+                logging.info(
+                    "[SSE.SIZE.NO_SESSION] agent=%s TOTAL bytes=%d events=%d top=%s",
+                    agent_id, _total_bytes, _total_events,
+                    [(e, b, _event_count[e]) for e, b in top_events]
+                )
 
                 commit_ok = CanvasReplicaService.commit_after_run(
                     canvas_id=agent_id,
@@ -1030,11 +1059,31 @@ async def agent_chat_completion(tenant_id):
     if req.get("stream", True):
 
         async def generate():
+            _req_id = session_id or "no-session"
+            _event_bytes = {}
+            _event_count = {}
+            _total_bytes = 0
+            _total_events = 0
             logging.info(f"[generate] Starting session completion stream: session_id={session_id}, agent_id={agent_id}")
             async for ans in _iter_session_completion_events(tenant_id, agent_id, req, return_trace):
-                yield "data:" + json.dumps(ans, ensure_ascii=False) + "\n\n"
+                line = "data:" + json.dumps(ans, ensure_ascii=False) + "\n\n"
+                evt = ans.get("event", "unknown") if isinstance(ans, dict) else "unknown"
+                lb = len(line.encode("utf-8"))
+                _event_bytes[evt] = _event_bytes.get(evt, 0) + lb
+                _event_count[evt] = _event_count.get(evt, 0) + 1
+                _total_bytes += lb
+                _total_events += 1
+                yield line
             logging.info(f"[generate] Stream iteration complete, yielding [DONE]")
-            yield "data:[DONE]\n\n"
+            done_line = "data:[DONE]\n\n"
+            _total_bytes += len(done_line.encode("utf-8"))
+            top_events = sorted(_event_bytes.items(), key=lambda x: -x[1])[:8]
+            logging.info(
+                "[SSE.SIZE.SESSION] req=%s TOTAL bytes=%d events=%d top=%s",
+                _req_id, _total_bytes, _total_events,
+                [(e, b, _event_count[e]) for e, b in top_events]
+            )
+            yield done_line
 
         return _build_sse_response(generate())
 

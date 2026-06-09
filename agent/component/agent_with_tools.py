@@ -302,6 +302,7 @@ class Agent(LLM, ToolBase):
 
         # Re-check: chunks may have been populated by retrieval tools during streaming
         if not self._canvas.get_reference()["chunks"]:
+            yield answer
             self.set_output("content", answer)
             return
 
@@ -319,7 +320,27 @@ class Agent(LLM, ToolBase):
         self.callback("gen_citations", {}, cited_answer, elapsed_time=timer() - st)
         self.set_output("content", cited_answer)
 
+    @staticmethod
+    def _strip_internal_tags(text: str) -> str:
+        """Strip think/reasoning blocks and tool-call verbose output.
+
+        Some LLMs wrap reasoning in `` tags; some don't.
+        Tool-call sessions emit `` blocks for each invocation.
+        Both are meaningless for citation generation and must be removed
+        so the citation agent only sees the final answer text.
+        """
+        # 1. Strip thinking/reasoning blocks (safe no-op when absent)
+        text = re.sub(r"<think[^>]*>.*?</think[^>]*>", "", text, flags=re.DOTALL)
+        # 2. Strip tool-call verbose blocks (safe no-op when absent)
+        text = re.sub(r"<tool_call.*?</tool_call\s*>", "", text, flags=re.DOTALL)
+        # 3. Collapse excessive blank lines left after stripping
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
     async def _gen_citations_async(self, text):
+        text = self._strip_internal_tags(text)
+        if not text:
+            return
         retrievals = self._canvas.get_reference()
         retrievals = {"chunks": list(retrievals["chunks"].values()), "doc_aggs": list(retrievals["doc_aggs"].values())}
         formated_refer = kb_prompt(retrievals, self.chat_mdl.max_length, True)
