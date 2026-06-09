@@ -19,10 +19,13 @@ Endpoints:
     GET  /kb_list             — list current user's knowledge bases
     POST /kb/{kb_id}/clip     — upload clipped web content to a KB
 """
+import io
 import logging
+import os
 import re
+import zipfile
 
-from quart import Blueprint, request
+from quart import Blueprint, request, send_file
 
 from api.apps import current_user, login_required
 from api.db.services.knowledgebase_service import KnowledgebaseService
@@ -138,6 +141,40 @@ async def kb_clip(kb_id):
         return get_data_error_result(message="Upload failed")
 
     return get_json_result(data={"doc_id": doc_id, "status": "parsing"})
+
+
+@manager.route("/extension/download", methods=["GET"])
+async def extension_download():
+    """Download the browser extension as a zip file.
+
+    Zips the browser-extension/ directory at the repo root on-the-fly
+    and returns it as a downloadable attachment.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    # Try api/browser-extension first (server bind-mount), fall back to repo root (local dev)
+    ext_dir = os.path.join(root, "browser-extension")
+    if not os.path.isdir(ext_dir):
+        ext_dir = os.path.join(root, "..", "browser-extension")
+        ext_dir = os.path.abspath(ext_dir)
+
+    if not os.path.isdir(ext_dir):
+        return get_data_error_result(message="Extension directory not found")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for dirpath, dirnames, filenames in os.walk(ext_dir):
+            for fname in filenames:
+                full = os.path.join(dirpath, fname)
+                arcname = os.path.relpath(full, ext_dir)
+                zf.write(full, arcname)
+    buf.seek(0)
+
+    return await send_file(
+        buf,
+        mimetype="application/zip",
+        as_attachment=True,
+        attachment_filename="ragflow-web-clipper.zip",
+    )
 
 
 # ---------------------------------------------------------------------------

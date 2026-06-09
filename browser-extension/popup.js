@@ -2,6 +2,7 @@
 'use strict';
 
 const DEFAULT_SERVER = 'http://47.98.102.55:9380';
+const FETCH_TIMEOUT = 10000; // 10 seconds
 
 // UI elements
 const kbSelect = document.getElementById('kbSelect');
@@ -16,15 +17,37 @@ let serverUrl = DEFAULT_SERVER;
 let apiKey = '';
 let kbs = [];
 
+// --- Helpers ---
+async function apiFetch(path, options = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
+  try {
+    const resp = await fetch(`${serverUrl}/api/v1${path}`, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        'Authorization': apiKey,
+        'Content-Type': 'application/json',
+        ...(options.headers || {}),
+      },
+    });
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+    }
+    return await resp.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // --- Init ---
 document.addEventListener('DOMContentLoaded', init);
 clipBtn.addEventListener('click', handleClip);
 optionsLink.addEventListener('click', () => chrome.runtime.openOptionsPage());
 
 async function init() {
-  // Load settings
-  const stored = await chrome.storage.sync.get(['serverUrl', 'apiKey']);
-  serverUrl = stored.serverUrl || DEFAULT_SERVER;
+  const stored = await chrome.storage.local.get(['serverUrl', 'apiKey']);
+  serverUrl = (stored.serverUrl || DEFAULT_SERVER).replace(/\/+$/, '');
   apiKey = stored.apiKey || '';
 
   if (!apiKey) {
@@ -32,7 +55,6 @@ async function init() {
     return;
   }
 
-  // Load KB list
   await loadKbList();
 }
 
@@ -40,21 +62,16 @@ async function loadKbList() {
   showKbStatus('loading', '加载中...');
 
   try {
-    const response = await chrome.runtime.sendMessage({
-      type: 'FETCH_KB_LIST',
-      serverUrl,
-      apiKey,
-    });
+    const result = await apiFetch('/kb_list');
 
-    if (response.error) {
-      showKbStatus('error', response.error);
+    if (result.code !== 0) {
+      showKbStatus('error', result.message || 'Unknown error');
       return;
     }
 
-    kbs = response.data || [];
-    const suffix = response.cached ? ' (缓存)' : '';
+    kbs = result.data || [];
     renderKbOptions();
-    showKbStatus('success', `${kbs.length} 个知识库${suffix}`);
+    showKbStatus('success', `${kbs.length} 个知识库`);
     clipBtn.disabled = false;
   } catch (err) {
     showKbStatus('error', `加载失败: ${err.message}`);
@@ -62,7 +79,6 @@ async function loadKbList() {
 }
 
 function renderKbOptions() {
-  // Keep first option ("-- 选择 --")
   kbSelect.innerHTML = '<option value="">-- 选择知识库 --</option>';
   kbs.forEach(kb => {
     const opt = document.createElement('option');
@@ -71,7 +87,6 @@ function renderKbOptions() {
     kbSelect.appendChild(opt);
   });
 
-  // Restore last selected KB
   chrome.storage.local.get(['lastKbId'], (result) => {
     if (result.lastKbId && kbSelect.querySelector(`option[value="${result.lastKbId}"]`)) {
       kbSelect.value = result.lastKbId;
@@ -86,22 +101,20 @@ async function handleClip() {
     return;
   }
 
-  // Save selection
   chrome.storage.local.set({ lastKbId: kbId });
 
   showResult('loading', '正在提取页面内容...');
   clipBtn.disabled = true;
 
   try {
-    // Get current tab
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab) {
       throw new Error('无法获取当前页面');
     }
 
-    // Extract content
     const contentData = await chrome.runtime.sendMessage({
       type: 'EXTRACT_CONTENT',
+      tabId: tab.id,
     });
 
     if (!contentData || contentData.error) {
@@ -114,7 +127,6 @@ async function handleClip() {
 
     showResult('loading', '正在上传...');
 
-    // Upload to KB
     const mode = parseMode.value;
     const payload = {
       title: contentData.title || '(无标题)',
@@ -123,26 +135,21 @@ async function handleClip() {
     };
 
     if (mode === 'llm') {
-      // For LLM mode, send raw HTML for better parsing
       payload.html = contentData.html;
     } else {
-      // For naive mode, send cleaned text
       payload.content = contentData.content;
     }
 
-    const result = await chrome.runtime.sendMessage({
-      type: 'CLIP_TO_KB',
-      serverUrl,
-      apiKey,
-      kbId,
-      payload,
+    const result = await apiFetch(`/kb/${kbId}/clip`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
     });
 
-    if (result.error) {
-      throw new Error(result.error);
+    if (result.code !== 0) {
+      throw new Error(result.message || '上传失败');
     }
 
-    showResult('success', `采集成功 | doc_id: ${result.docId}`);
+    showResult('success', `采集成功 | doc_id: ${result.data.doc_id}`);
   } catch (err) {
     showResult('error', err.message);
   } finally {
@@ -157,20 +164,14 @@ function showResult(type, message) {
 }
 
 function showKbStatus(type, message) {
+  kbStatus.className = 'status';
+  kbStatus.textContent = message;
+  kbStatus.classList.remove('hidden');
   if (type === 'loading') {
-    kbStatus.className = 'status';
-    kbStatus.textContent = message;
-    kbStatus.classList.remove('hidden');
-    kbStatus.style.color = '#888';
+    kbStatus.style.color = '#6b7280';
   } else if (type === 'success') {
-    kbStatus.className = 'status';
-    kbStatus.textContent = message;
-    kbStatus.classList.remove('hidden');
-    kbStatus.style.color = '#6ee7b7';
+    kbStatus.style.color = '#065f46';
   } else {
-    kbStatus.className = 'status';
-    kbStatus.textContent = message;
-    kbStatus.classList.remove('hidden');
-    kbStatus.style.color = '#fca5a5';
+    kbStatus.style.color = '#dc2626';
   }
 }

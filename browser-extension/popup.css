@@ -1,4 +1,4 @@
-/* RAGFlow Web Clipper — Popup Styles */
+/* RAGFlow Web Clipper — Popup Styles (Light Theme) */
 * {
   margin: 0;
   padding: 0;
@@ -9,12 +9,8 @@ body {
   width: 320px;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   font-size: 13px;
-}
-
-/* Dark theme */
-body.dark {
-  background: #1a1a2e;
-  color: #e0e0e0;
+  background: #ffffff;
+  color: #1a1a1a;
 }
 
 .container {
@@ -23,14 +19,14 @@ body.dark {
 
 header {
   margin-bottom: 12px;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid #e5e7eb;
   padding-bottom: 10px;
 }
 
 h1 {
   font-size: 15px;
   font-weight: 600;
-  color: #f0f0f0;
+  color: #111827;
 }
 
 .section {
@@ -40,7 +36,7 @@ h1 {
 label {
   display: block;
   font-size: 11px;
-  color: #888;
+  color: #6b7280;
   margin-bottom: 4px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -50,9 +46,9 @@ select {
   width: 100%;
   padding: 7px 8px;
   border-radius: 6px;
-  border: 1px solid #3a3a5a;
-  background: #16213e;
-  color: #e0e0e0;
+  border: 1px solid #d1d5db;
+  background: #f9fafb;
+  color: #1a1a1a;
   font-size: 12px;
   outline: none;
   cursor: pointer;
@@ -60,6 +56,7 @@ select {
 
 select:focus {
   border-color: #6366f1;
+  ring: 1px solid #6366f1;
 }
 
 .btn {
@@ -79,12 +76,12 @@ select:focus {
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #818cf8;
+  background: #4f46e5;
 }
 
 .btn-primary:disabled {
-  background: #3a3a5a;
-  color: #666;
+  background: #e5e7eb;
+  color: #9ca3af;
   cursor: not-allowed;
 }
 
@@ -101,21 +98,21 @@ select:focus {
 }
 
 .result.success {
-  background: #064e3b;
-  color: #6ee7b7;
-  border: 1px solid #065f46;
+  background: #ecfdf5;
+  color: #065f46;
+  border: 1px solid #a7f3d0;
 }
 
 .result.error {
-  background: #450a0a;
-  color: #fca5a5;
-  border: 1px solid #7f1d1d;
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
 }
 
 .result.loading {
-  background: #1e3a5f;
-  color: #93c5fd;
-  border: 1px solid #1e40af;
+  background: #eff6ff;
+  color: #1e40af;
+  border: 1px solid #bfdbfe;
 }
 
 .hidden {
@@ -130,16 +127,16 @@ select:focus {
 footer {
   margin-top: 12px;
   padding-top: 10px;
-  border-top: 1px solid #2a2a4a;
+  border-top: 1px solid #e5e7eb;
   text-align: center;
 }
 
 footer a {
-  color: #818cf8;
+  color: #6366f1;
   text-decoration: none;
   font-size: 11px;
 }
 
 footer a:hover {
-  color: #a5b4fc;
+  color: #4f46e5;
 }

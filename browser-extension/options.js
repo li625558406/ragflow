@@ -12,13 +12,13 @@ document.addEventListener('DOMContentLoaded', init);
 saveBtn.addEventListener('click', save);
 
 async function init() {
-  const stored = await chrome.storage.sync.get(['serverUrl', 'apiKey']);
+  const stored = await chrome.storage.local.get(['serverUrl', 'apiKey']);
   serverEl.value = stored.serverUrl || DEFAULT_SERVER;
   apiKeyEl.value = stored.apiKey || '';
 }
 
 async function save() {
-  const serverUrl = serverEl.value.trim();
+  const serverUrl = serverEl.value.trim().replace(/\/+$/, '');
   const apiKey = apiKeyEl.value.trim();
 
   if (!serverUrl) {
@@ -30,7 +30,7 @@ async function save() {
     return;
   }
 
-  await chrome.storage.sync.set({ serverUrl, apiKey });
+  await chrome.storage.local.set({ serverUrl, apiKey });
   showMsg('已保存', true);
 }
 

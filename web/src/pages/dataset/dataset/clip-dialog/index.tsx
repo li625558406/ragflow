@@ -6,6 +6,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
+import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
 interface IClipDialogProps {
@@ -50,11 +51,18 @@ export default function ClipDialog({
   const { t } = useTranslation();
 
   const bookmarklet = buildBookmarklet(kbId);
+  const bookmarkletRef = useRef<HTMLAnchorElement>(null);
+
+  useEffect(() => {
+    if (bookmarkletRef.current) {
+      bookmarkletRef.current.href = bookmarklet;
+    }
+  }, [bookmarklet]);
 
   return (
     <Dialog>
       <DialogTrigger asChild>{children}</DialogTrigger>
-      <DialogContent className="sm:max-w-[540px]">
+      <DialogContent className="sm:max-w-[540px] max-h-[85vh] overflow-y-auto overflow-x-hidden">
         <DialogHeader>
           <DialogTitle>{t('knowledgeDetails.clip.title')}</DialogTitle>
           <DialogDescription>
@@ -67,7 +75,7 @@ export default function ClipDialog({
           <div className="rounded-md bg-muted p-3 text-sm space-y-1">
             <div className="flex justify-between">
               <span className="text-muted-foreground">API</span>
-              <code className="text-xs">
+              <code className="text-xs break-all">
                 {API_BASE}/kb/{kbId}/clip
               </code>
             </div>
@@ -92,7 +100,8 @@ export default function ClipDialog({
               {t('knowledgeDetails.clip.bookmarkletDesc')}
             </p>
             <a
-              href={bookmarklet}
+              ref={bookmarkletRef}
+              href="#"
               className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 no-underline"
               title={t('knowledgeDetails.clip.dragToBookmarks')}
             >
@@ -111,19 +120,15 @@ export default function ClipDialog({
             <p className="text-xs text-muted-foreground mb-2">
               {t('knowledgeDetails.clip.extensionDesc')}
             </p>
-          </div>
-
-          {/* CURL example */}
-          <div>
-            <h4 className="font-medium mb-2">
-              {t('knowledgeDetails.clip.curlTitle')}
-            </h4>
-            <pre className="rounded-md bg-muted p-3 text-xs overflow-x-auto">
-              {`curl -X POST '${API_BASE}/kb/${kbId}/clip' \\
-  -H 'Authorization: YOUR_API_TOKEN' \\
-  -H 'Content-Type: application/json' \\
-  -d '{"title":"My Page","url":"https://...","content":"..."}'`}
-            </pre>
+            <a
+              href={`${API_BASE}/extension/download`}
+              className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 no-underline"
+            >
+              {t('knowledgeDetails.clip.downloadExtension')}
+            </a>
+            <p className="text-xs text-muted-foreground mt-2">
+              {t('knowledgeDetails.clip.unzipHint')}
+            </p>
           </div>
         </div>
       </DialogContent>

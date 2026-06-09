@@ -352,8 +352,57 @@ def get_articles_from_api(tenant_id: str, faker_ids: list, max_page: int = 2,
 
 # ── Main ────────────────────────────────────────────────────
 
+def _load_checkpoint(output_path: str, input_articles: list) -> tuple:
+    """Load checkpoint file and return (articles_base, completed_ids).
+
+    If checkpoint exists, articles already fetched successfully are used as-is.
+    Input articles that don't appear in the checkpoint are used as starting point.
+    """
+    completed_ids = set()
+    if not Path(output_path).exists():
+        return input_articles, completed_ids
+
+    try:
+        with open(output_path, "r", encoding="utf-8") as f:
+            checkpoint = json.load(f)
+    except (json.JSONDecodeError, IOError):
+        logger.warning("Corrupt checkpoint, starting fresh")
+        return input_articles, completed_ids
+
+    # Build lookup of checkpoint articles by URL+id
+    cp_map = {}
+    for a in checkpoint:
+        aid = a.get("id", "")
+        url = a.get("url", "")
+        if aid:
+            cp_map[aid] = a
+        if url:
+            cp_map[url] = a
+
+    merged = []
+    for art in input_articles:
+        aid = art.get("id", "")
+        url = art.get("url", "")
+        cp_entry = cp_map.get(aid) or cp_map.get(url)
+        if cp_entry and cp_entry.get("content") and cp_entry.get("fetch_error", "") == "":
+            # Use checkpoint version with content
+            merged.append(cp_entry)
+            completed_ids.add(aid or url)
+        elif cp_entry:
+            # Checkpoint has this article but it failed — retry
+            merged.append(art)
+        else:
+            # Not in checkpoint — needs fetching
+            merged.append(art)
+
+    logger.info("Checkpoint loaded: %d articles, %d already fetched",
+                len(merged), len(completed_ids))
+    return merged, completed_ids
+
+
 async def main_async(args):
     fetcher = LocalContentFetcher()
+    output_path = args.output or "articles_with_content.json"
 
     # Determine input articles
     if args.input:
@@ -376,11 +425,26 @@ async def main_async(args):
         await fetcher.close()
         return
 
+    total_input = len(articles)
+
+    # Load checkpoint for crash recovery (unless --force clears it)
+    if args.force and Path(output_path).exists():
+        logger.info("--force: removing existing checkpoint to re-fetch all")
+        Path(output_path).unlink()
+    articles, completed_ids = _load_checkpoint(output_path, articles)
     total = len(articles)
+
+    if completed_ids:
+        logger.info("Resuming: %d/%d already fetched, %d remaining",
+                    len(completed_ids), total, total - len(completed_ids))
     logger.info("Found %d articles, fetching content...", total)
 
     try:
         for i, art in enumerate(articles):
+            art_id = art.get("id", "") or art.get("url", "")
+            if art_id in completed_ids:
+                continue
+
             url = art.get("url", "")
             if not url:
                 logger.warning("[%d/%d] Skipping article without URL: %s", i+1, total, art.get("title", ""))
@@ -403,16 +467,25 @@ async def main_async(args):
             if result["mp_name"]:
                 art["mp_title"] = result["mp_name"]
 
+            # ── Incremental save: write after EACH article ──
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = output_path + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(articles, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, output_path)  # atomic on Windows
+
             # Delay between articles
             delay = 2 + __import__("random").randint(0, args.interval)
             await asyncio.sleep(delay)
     finally:
         await fetcher.close()
 
-    # Write output
-    output_path = args.output or "articles_with_content.json"
-    with open(output_path, "w", encoding="utf-8") as f:
+    # Final write (already saved incrementally, but ensure clean state)
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = output_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(articles, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, output_path)
 
     # Summary
     success = sum(1 for a in articles if a.get("content") and a.get("fetch_error", "") == "")

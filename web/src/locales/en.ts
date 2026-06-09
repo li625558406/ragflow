@@ -510,7 +510,10 @@ Example: A 1 KB message with 1024-dim embedding uses ~9 KB. The 5 MB default lim
           'Before first use, replace YOUR_API_TOKEN in the bookmarklet code with your API key (Avatar → API key).',
         extensionTitle: 'Browser Extension',
         extensionDesc:
-          'For a better experience, download the extension, then go to chrome://extensions, enable "Developer mode", and click "Load unpacked" to select the extension folder.',
+          'Install the browser extension to clip web content to your KB in one click, with LLM-powered smart parsing.',
+        downloadExtension: 'Download Extension (.zip)',
+        unzipHint:
+          'After downloading, extract the zip file. Then go to chrome://extensions, enable "Developer mode", click "Load unpacked", and select the extracted folder.',
         curlTitle: 'cURL',
       },
       chunkNumber: 'Chunks',

@@ -569,7 +569,10 @@ export default {
           '首次使用前，请将书签代码中的 YOUR_API_TOKEN 替换为你的 API 密钥（右上角头像 → API 密钥）。',
         extensionTitle: '浏览器插件',
         extensionDesc:
-          '需要更强大的采集体验？下载浏览器插件后解压，在 Chrome 扩展管理页面 (chrome://extensions) 开启"开发者模式"，点击"加载已解压的扩展程序"选择插件目录即可。',
+          '安装浏览器插件后，可在任意网页上一键采集内容到知识库，支持 LLM 智能解析。',
+        downloadExtension: '下载插件 (.zip)',
+        unzipHint:
+          '下载后解压 zip 文件，在 chrome://extensions 开启"开发者模式"，点击"加载已解压的扩展程序"选择解压后的文件夹即可。',
         curlTitle: '命令行 (curl)',
       },
       plainText: 'Naive',
