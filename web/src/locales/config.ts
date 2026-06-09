@@ -68,6 +68,7 @@ i18n
     },
     supportedLngs: supportedLanguageCodes,
     resources,
+    lng: DEFAULT_LANGUAGE_CODE,
     fallbackLng: DEFAULT_LANGUAGE_CODE,
     interpolation: {
       escapeValue: false,
