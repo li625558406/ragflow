@@ -254,6 +254,14 @@ export default function CChat() {
   // Cache node events so they persist after stream completion clears answerList
   const cachedNodeEventsRef = useRef<Record<string, Array<any>>>({});
 
+  // Debounce timers for session list / message loading
+  const sessionLoadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const messageLoadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+
   // Extract node events from answerList for thinking timeline
   const nodeEventsByMsgId = useMemo(() => {
     const map: Record<string, Array<any>> = {};
@@ -602,191 +610,205 @@ export default function CChat() {
     async (agentId?: string) => {
       const aid = agentId || currentAgentId;
       if (!aid) return;
-      try {
-        const userId =
-          userInfo?.id || userInfo?.user_id || userInfo?.email || 'current';
-        const resp = await apiFetch(
-          `/api/v1/agents/${aid}/sessions?exp_user_id=${userId}&orderby=update_time&desc=true`,
-        );
-        const result = await resp.json();
-        if (result.code === 0 && result.data) {
-          setSessions(
-            (result.data || []).map((s: any) => ({
-              id: s.id,
-              name: s.name || '新对话',
-              update_time: s.update_time || s.create_date || Date.now(),
-            })),
-          );
-        }
-      } catch (e) {
-        console.warn('加载会话列表失败:', e);
+
+      if (sessionLoadTimerRef.current) {
+        clearTimeout(sessionLoadTimerRef.current);
       }
+
+      sessionLoadTimerRef.current = setTimeout(async () => {
+        sessionLoadTimerRef.current = null;
+        try {
+          const userId =
+            userInfo?.id || userInfo?.user_id || userInfo?.email || 'current';
+          const resp = await apiFetch(
+            `/api/v1/agents/${aid}/sessions?exp_user_id=${userId}&orderby=update_time&desc=true`,
+          );
+          const result = await resp.json();
+          if (result.code === 0 && result.data) {
+            setSessions(
+              (result.data || []).map((s: any) => ({
+                id: s.id,
+                name: s.name || '新对话',
+                update_time: s.update_time || s.create_date || Date.now(),
+              })),
+            );
+          }
+        } catch (e) {
+          console.warn('加载会话列表失败:', e);
+        }
+      }, 300);
     },
     [currentAgentId, userInfo, apiFetch],
   );
 
   const loadSessionMessages = useCallback(
     async (sessionId: string) => {
-      try {
-        loadingSessionRef.current = sessionId;
-        setDerivedMessages([]);
-        setIsLoadingSession(true);
-        const resp = await apiFetch(
-          `/api/v1/agents/${currentAgentId}/sessions/${sessionId}`,
-        );
-        // If user clicked "new analysis" while loading, discard stale result
-        if (loadingSessionRef.current !== sessionId) {
-          return;
-        }
-        const result = await resp.json();
-        if (result.code !== 0) throw new Error(result.message);
-        const data = result.data;
+      // Clear any pending message load
+      if (messageLoadTimerRef.current) {
+        clearTimeout(messageLoadTimerRef.current);
+      }
 
-        const rawMessages: any[] = data.messages || data.message || [];
+      loadingSessionRef.current = sessionId;
+      setDerivedMessages([]);
+      setIsLoadingSession(true);
 
-        const mapped = rawMessages.map((m: any) => {
-          let content = m.content || m.answer || '';
-          let thinking = '';
-
-          // Extract thinking from ␐...⋐ delimiters
-          const thinkMatch = content.match(/⋐([\s\S]*?)⋐/);
-          if (thinkMatch) {
-            thinking = thinkMatch[1].trim();
-            content = content.replace(/⋐[\s\S]*?⋐/, '').trim();
+      messageLoadTimerRef.current = setTimeout(async () => {
+        messageLoadTimerRef.current = null;
+        try {
+          const resp = await apiFetch(
+            `/api/v1/agents/${currentAgentId}/sessions/${sessionId}`,
+          );
+          // If user clicked "new analysis" while loading, discard stale result
+          if (loadingSessionRef.current !== sessionId) {
+            return;
           }
+          const result = await resp.json();
+          if (result.code !== 0) throw new Error(result.message);
+          const data = result.data;
 
-          // Extract <think>...</think> tags
-          const thinkTagMatch = content.match(/<think>([\s\S]*?)<\/think>/i);
-          if (thinkTagMatch) {
-            thinking = thinking || thinkTagMatch[1].trim();
-            content = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-          }
+          const rawMessages: any[] = data.messages || data.message || [];
 
-          // Convert per-message reference array to IReferenceObject
-          let reference: IReferenceObject | undefined;
-          const msgRef = m.reference;
-          if (Array.isArray(msgRef) && msgRef.length > 0) {
-            const chunks: Record<string, IReferenceChunk> = {};
-            const docAggs: Record<string, Docagg> = {};
-            msgRef.forEach((chunk: any, idx: number) => {
-              chunks[idx] = {
-                id: chunk.id || String(idx),
-                content: chunk.content || '',
-                document_id: chunk.document_id || '',
-                document_name: chunk.document_name || '',
-                dataset_id: chunk.dataset_id || '',
-                image_id: chunk.image_id || '',
-                similarity: 0,
-                vector_similarity: 0,
-                term_similarity: 0,
-                positions: Array.isArray(chunk.positions)
-                  ? chunk.positions
-                  : [],
-              } as IReferenceChunk;
-              const docId = chunk.document_id;
-              if (docId) {
-                if (!docAggs[docId]) {
-                  docAggs[docId] = {
-                    doc_id: docId,
-                    doc_name: chunk.document_name || '',
-                    count: 1,
-                    url: '',
-                  };
-                } else {
-                  docAggs[docId].count++;
-                }
-              }
-            });
-            reference = { chunks, doc_aggs: docAggs };
-          }
+          const mapped = rawMessages.map((m: any) => {
+            let content = m.content || m.answer || '';
 
-          return {
-            id: m.id || uuid(),
-            role: m.role || 'assistant',
-            content,
-            thinking: thinking || undefined,
-            reference,
-            data: m.data,
-          };
-        }) as IMessage[];
+            // Convert ⋐...⋐ delimiters to <think>...</think> tags so they
+            // go through the same replaceThinkToSection pipeline as real-time
+            // streaming messages, producing identical visual output.
+            content = content.replace(/⋐([\s\S]*?)⋐/g, '<think>$1</think>');
 
-        // Handle top-level reference (raw to_dict() format)
-        // reference can be: array [{chunks, doc_aggs}, ...], dict with chunks key,
-        // or dict with numeric keys {0: {...}, 1: {...}}
-        const rawRef = data.reference;
-        if (rawRef && typeof rawRef === 'object') {
-          let refList: any[];
-          if (Array.isArray(rawRef)) {
-            refList = rawRef;
-          } else if ('chunks' in rawRef) {
-            refList = [rawRef];
-          } else {
-            refList = Object.entries(rawRef)
-              .sort(([a], [b]) => Number(a) - Number(b))
-              .map(([, v]) => v);
-          }
-          const assistantIdxs = mapped
-            .map((m, i) => (i !== 0 && m.role !== 'user' ? i : -1))
-            .filter((i) => i >= 0);
-          for (let j = 0; j < assistantIdxs.length && j < refList.length; j++) {
-            const mi = assistantIdxs[j];
-            if (!mapped[mi].reference && refList[j]?.chunks) {
+            // Convert legacy emoji think markers (🧠 ... 🤔) stored by older
+            // canvas_service.py to proper <think> tags.
+            content = content.replace(/🧠([\s\S]*?)🤔/g, '<think>$1</think>');
+
+            // Convert per-message reference array to IReferenceObject
+            let reference: IReferenceObject | undefined;
+            const msgRef = m.reference;
+            if (Array.isArray(msgRef) && msgRef.length > 0) {
               const chunks: Record<string, IReferenceChunk> = {};
               const docAggs: Record<string, Docagg> = {};
-              const rawChunks = refList[j].chunks;
-              if (typeof rawChunks === 'object') {
-                Object.values(rawChunks).forEach((val: any, idx: number) => {
-                  chunks[idx] = {
-                    id: val.chunk_id || val.id || String(idx),
-                    content: val.content_with_weight || val.content || '',
-                    document_id: val.doc_id || val.document_id || '',
-                    document_name: val.docnm_kwd || val.document_name || '',
-                    dataset_id: val.kb_id || val.dataset_id || '',
-                    image_id: val.image_id || val.img_id || '',
-                    similarity: val.similarity || 0,
-                    vector_similarity: val.vector_similarity || 0,
-                    term_similarity: val.term_similarity || 0,
-                    positions: Array.isArray(val.positions)
-                      ? val.positions
-                      : val.position_int || [],
-                  } as IReferenceChunk;
-                  const docId = val.doc_id || val.document_id;
-                  if (docId && !docAggs[docId]) {
+              msgRef.forEach((chunk: any, idx: number) => {
+                chunks[idx] = {
+                  id: chunk.id || String(idx),
+                  content: chunk.content || '',
+                  document_id: chunk.document_id || '',
+                  document_name: chunk.document_name || '',
+                  dataset_id: chunk.dataset_id || '',
+                  image_id: chunk.image_id || '',
+                  similarity: 0,
+                  vector_similarity: 0,
+                  term_similarity: 0,
+                  positions: Array.isArray(chunk.positions)
+                    ? chunk.positions
+                    : [],
+                } as IReferenceChunk;
+                const docId = chunk.document_id;
+                if (docId) {
+                  if (!docAggs[docId]) {
                     docAggs[docId] = {
                       doc_id: docId,
-                      doc_name: val.docnm_kwd || val.document_name || '',
+                      doc_name: chunk.document_name || '',
                       count: 1,
                       url: '',
                     };
+                  } else {
+                    docAggs[docId].count++;
                   }
-                });
-              }
-              if (refList[j].doc_aggs) {
-                Object.entries(refList[j].doc_aggs).forEach(
-                  ([key, val]: [string, any]) => {
-                    docAggs[key] = {
-                      doc_id: val.doc_id || key,
-                      doc_name: val.doc_name || '',
-                      count: val.count || 0,
-                      url: val.url || '',
-                    };
-                  },
-                );
-              }
-              if (Object.keys(chunks).length > 0) {
-                mapped[mi].reference = { chunks, doc_aggs: docAggs } as any;
+                }
+              });
+              reference = { chunks, doc_aggs: docAggs };
+            }
+
+            return {
+              id: m.id || uuid(),
+              role: m.role || 'assistant',
+              content,
+              reference,
+              data: m.data,
+            };
+          }) as IMessage[];
+
+          // Handle top-level reference (raw to_dict() format)
+          // reference can be: array [{chunks, doc_aggs}, ...], dict with chunks key,
+          // or dict with numeric keys {0: {...}, 1: {...}}
+          const rawRef = data.reference;
+          if (rawRef && typeof rawRef === 'object') {
+            let refList: any[];
+            if (Array.isArray(rawRef)) {
+              refList = rawRef;
+            } else if ('chunks' in rawRef) {
+              refList = [rawRef];
+            } else {
+              refList = Object.entries(rawRef)
+                .sort(([a], [b]) => Number(a) - Number(b))
+                .map(([, v]) => v);
+            }
+            const assistantIdxs = mapped
+              .map((m, i) => (i !== 0 && m.role !== 'user' ? i : -1))
+              .filter((i) => i >= 0);
+            for (
+              let j = 0;
+              j < assistantIdxs.length && j < refList.length;
+              j++
+            ) {
+              const mi = assistantIdxs[j];
+              if (!mapped[mi].reference && refList[j]?.chunks) {
+                const chunks: Record<string, IReferenceChunk> = {};
+                const docAggs: Record<string, Docagg> = {};
+                const rawChunks = refList[j].chunks;
+                if (typeof rawChunks === 'object') {
+                  Object.values(rawChunks).forEach((val: any, idx: number) => {
+                    chunks[idx] = {
+                      id: val.chunk_id || val.id || String(idx),
+                      content: val.content_with_weight || val.content || '',
+                      document_id: val.doc_id || val.document_id || '',
+                      document_name: val.docnm_kwd || val.document_name || '',
+                      dataset_id: val.kb_id || val.dataset_id || '',
+                      image_id: val.image_id || val.img_id || '',
+                      similarity: val.similarity || 0,
+                      vector_similarity: val.vector_similarity || 0,
+                      term_similarity: val.term_similarity || 0,
+                      positions: Array.isArray(val.positions)
+                        ? val.positions
+                        : val.position_int || [],
+                    } as IReferenceChunk;
+                    const docId = val.doc_id || val.document_id;
+                    if (docId && !docAggs[docId]) {
+                      docAggs[docId] = {
+                        doc_id: docId,
+                        doc_name: val.docnm_kwd || val.document_name || '',
+                        count: 1,
+                        url: '',
+                      };
+                    }
+                  });
+                }
+                if (refList[j].doc_aggs) {
+                  Object.entries(refList[j].doc_aggs).forEach(
+                    ([key, val]: [string, any]) => {
+                      docAggs[key] = {
+                        doc_id: val.doc_id || key,
+                        doc_name: val.doc_name || '',
+                        count: val.count || 0,
+                        url: val.url || '',
+                      };
+                    },
+                  );
+                }
+                if (Object.keys(chunks).length > 0) {
+                  mapped[mi].reference = { chunks, doc_aggs: docAggs } as any;
+                }
               }
             }
           }
-        }
 
-        setDerivedMessages(mapped);
-      } catch (e) {
-        console.error('加载消息失败:', e);
-        showToast('加载消息失败');
-      } finally {
-        setIsLoadingSession(false);
-      }
+          setDerivedMessages(mapped);
+        } catch (e) {
+          console.error('加载消息失败:', e);
+          showToast('加载消息失败');
+        } finally {
+          setIsLoadingSession(false);
+        }
+      }, 200);
     },
     [currentAgentId, apiFetch, setDerivedMessages],
   );

@@ -288,9 +288,9 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
             ans["session_id"] = session_id
             if ans["event"] == "message":
                 if ans["data"].get("start_to_think"):
-                    txt += "🧠"
+                    txt += "<think>"
                 elif ans["data"].get("end_to_think"):
-                    txt += "🤔"
+                    txt += "</think>"
                 else:
                     txt += ans["data"]["content"]
             yield "data:" + json.dumps(ans, ensure_ascii=False) + "\n\n"
