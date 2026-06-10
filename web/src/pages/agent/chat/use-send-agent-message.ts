@@ -258,8 +258,15 @@ export const useSendAgentMessage = ({
   const { handleInputChange, value, setValue } = useHandleMessageInputChange();
   const inputs = useSelectBeginNodeDataInputs();
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const { send, answerList, done, stopOutputMessage, resetAnswerList } =
-    useSendMessageBySSE(url || api.agentChatCompletion);
+  const {
+    send,
+    answerList,
+    streamState,
+    done,
+    wasAborted,
+    stopOutputMessage,
+    resetAnswerList,
+  } = useSendMessageBySSE(url || api.agentChatCompletion);
   const firstAnswer = answerList[0];
   const messageId = useMemo(() => {
     return firstAnswer?.message_id;
@@ -474,26 +481,41 @@ export const useSendAgentMessage = ({
     sendMessageInTaskMode();
   }, [sendMessageInTaskMode]);
 
+  // Warn the user when the SSE connection drops prematurely (e.g. proxy
+  // timeout during long FanOut operations).  The backend may still be
+  // running, but the frontend is no longer receiving new content.
   useEffect(() => {
-    // Skip stale event processing when the stream is not active
+    if (wasAborted) {
+      sonnerMessage.warning(
+        i18n.t('flow.sseConnectionLost', {
+          defaultValue:
+            'Real-time connection lost. Some content may be missing. Please check the result or retry.',
+        }),
+      );
+    }
+  }, [wasAborted]);
+
+  useEffect(() => {
+    // Skip stale event processing when the stream is not active.
+    // streamState is already RAF-throttled (O(1) incremental updates),
+    // so we can render directly without the full findMessageFromList
+    // recomputation.
     if (done) return;
 
-    const { content, id, attachment, audio_binary, downloads } =
-      findMessageFromList(answerList);
-    const inputAnswer = findInputFromList(answerList);
-    const answer = content || getLatestError(answerList);
+    const answer = streamState.content || getLatestError(answerList);
+    if (!streamState.content && answerList.length === 0) return;
 
-    if (answerList.length > 0) {
-      addNewestOneAnswer({
-        answer: answer ?? '',
-        audio_binary: audio_binary,
-        attachment: attachment as IAttachment,
-        downloads,
-        id: id,
-        ...inputAnswer,
-      });
-    }
-  }, [answerList, addNewestOneAnswer, done]);
+    const inputAnswer = findInputFromList(answerList);
+
+    addNewestOneAnswer({
+      answer: answer ?? '',
+      audio_binary: streamState.audioBinary,
+      attachment: streamState.attachment as IAttachment,
+      downloads: streamState.downloads as any,
+      id: streamState.id,
+      ...inputAnswer,
+    });
+  }, [streamState, addNewestOneAnswer, done, answerList]);
 
   useEffect(() => {
     if (isTaskMode) {

@@ -2273,6 +2273,7 @@ Best for: Documents with flowing, contextually connected content — such as boo
       iterationDescription: `A looping component that iterates over an input array and executes a defined logic for each item.`,
       fanOut: 'FanOut',
       fanOutDescription: `A parallel processing component that fans out an input array across multiple LLM calls, executing them concurrently with real-time progress feedback.`,
+      sseConnectionLost: `Real-time connection lost. Some content may be missing. Please check the result or retry.`,
       maxConcurrency: 'Max concurrency',
       errorStrategy: 'Error strategy',
       skip: 'Skip',

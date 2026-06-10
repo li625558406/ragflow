@@ -28,6 +28,7 @@ import { isEmpty } from 'lodash';
 import { Atom, ChevronDown, ChevronUp } from 'lucide-react';
 import { AgentStatusChip } from '../agent-status-chip';
 import { DocumentDownloadButton } from '../document-download-button';
+import { MarkdownErrorBoundary } from '../markdown-error-boundary';
 import MarkdownContent from '../next-markdown-content';
 import { RAGFlowAvatar } from '../ragflow-avatar';
 import { useTheme } from '../theme-provider';
@@ -146,12 +147,14 @@ function MessageItem({
         ) : sendLoading && isEmpty(messageContent) ? (
           <>{!isShare && 'running...'}</>
         ) : (
-          <MarkdownContent
-            loading={loading}
-            content={messageContent}
-            reference={reference}
-            clickDocumentButton={clickDocumentButton}
-          ></MarkdownContent>
+          <MarkdownErrorBoundary>
+            <MarkdownContent
+              loading={loading}
+              content={messageContent}
+              reference={reference}
+              clickDocumentButton={clickDocumentButton}
+            ></MarkdownContent>
+          </MarkdownErrorBoundary>
         )}
       </div>
     );

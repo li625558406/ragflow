@@ -2025,6 +2025,7 @@ General：实体和关系提取提示来自 GitHub - microsoft/graphrag：基于
       iterationDescription: `该组件负责迭代生成新的内容，对列表对象执行多次步骤直至输出所有结果。`,
       fanOut: '并行分叉',
       fanOutDescription: `并行处理组件，将输入数组分叉到多个LLM调用中并发执行，并提供实时进度反馈。`,
+      sseConnectionLost: `实时连接已断开，部分内容可能缺失。请检查结果或重试。`,
       maxConcurrency: '最大并发数',
       errorStrategy: '错误处理策略',
       skip: '跳过',

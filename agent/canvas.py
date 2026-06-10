@@ -563,27 +563,35 @@ class Canvas(Graph):
             # operations (FanOut parallel LLM calls, Agent aggregation, etc.).
             batch_task = asyncio.ensure_future(_run_batch(idx, to))
             last_yield = time.time()
-            while not batch_task.done():
-                drained = False
-                # Drain FanOut event queues — pop ALL pending events per tick
-                # so chapters appear immediately when each lane completes.
-                for i in range(idx, to):
-                    cpn_obj = self.get_component_obj(self.path[i])
-                    if cpn_obj.component_name.lower() == "fanout":
-                        eq = getattr(cpn_obj, "_event_queue", None)
-                        if eq:
-                            while not eq.empty():
-                                ev = eq.get_nowait()
-                                yield decorate(ev["event"], ev["data"])
-                                drained = True
-                now = time.time()
-                if not drained and now - last_yield > 15:
-                    yield decorate("heartbeat", {})
-                    last_yield = now
-                elif drained:
-                    last_yield = now
-                await asyncio.sleep(0.1)
-            await batch_task
+            try:
+                while not batch_task.done():
+                    drained = False
+                    # Drain FanOut event queues — pop ALL pending events per tick
+                    # so chapters appear immediately when each lane completes.
+                    for i in range(idx, to):
+                        cpn_obj = self.get_component_obj(self.path[i])
+                        if cpn_obj.component_name.lower() == "fanout":
+                            eq = getattr(cpn_obj, "_event_queue", None)
+                            if eq:
+                                while not eq.empty():
+                                    ev = eq.get_nowait()
+                                    yield decorate(ev["event"], ev["data"])
+                                    drained = True
+                    now = time.time()
+                    if not drained and now - last_yield > 15:
+                        yield decorate("heartbeat", {})
+                        last_yield = now
+                    elif drained:
+                        last_yield = now
+                    await asyncio.sleep(0.1)
+                await batch_task
+            finally:
+                # Client disconnected (GeneratorExit) or batch errored
+                # — cancel any still-running background work so we don't
+                # waste resources on results nobody will receive.
+                if not batch_task.done():
+                    batch_task.cancel()
+                    logging.info(f"Canvas batch [{idx}:{to}] cancelled due to client disconnect.")
             # Drain any remaining FanOut events.
             for i in range(idx, to):
                 cpn_obj = self.get_component_obj(self.path[i])

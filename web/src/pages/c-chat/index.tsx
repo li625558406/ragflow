@@ -22,6 +22,7 @@ import {
   FileUploadTrigger,
   type FileUploadProps,
 } from '@/components/file-upload';
+import { MarkdownErrorBoundary } from '@/components/markdown-error-boundary';
 import { ReferenceDocumentList } from '@/components/next-message-item/reference-document-list';
 import { ReferenceImageList } from '@/components/next-message-item/reference-image-list';
 import PdfSheet from '@/components/pdf-drawer';
@@ -50,7 +51,6 @@ import type {
 } from '@/interfaces/database/chat';
 import { IAnswer } from '@/interfaces/database/chat';
 import {
-  findMessageFromList,
   getLatestError,
   useFindMessageReference,
 } from '@/pages/agent/chat/use-send-agent-message';
@@ -243,6 +243,7 @@ export default function CChat() {
   const {
     send,
     answerList,
+    streamState,
     done,
     stopOutputMessage,
     setDone,
@@ -326,78 +327,23 @@ export default function CChat() {
   const sendLoading = !done;
 
   // ── Process SSE events into messages ──
-  // Throttled via requestAnimationFrame to prevent browser freeze
-  // when FanOut produces massive content (full bid documents).
-  const rafRef = useRef<number | null>(null);
-  const latestAnswerRef = useRef<any>(null);
+  // streamState is already RAF-throttled (60fps foreground / 2fps background)
+  // by useSendMessageBySSE, so we can render directly without additional
+  // throttling or findMessageFromList recomputation.
 
   useEffect(() => {
-    if (done) {
-      // Flush pending content when stream finishes
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
-      if (latestAnswerRef.current) {
-        addNewestOneAnswer(latestAnswerRef.current as IAnswer);
-        latestAnswerRef.current = null;
-      }
-      return;
-    }
+    if (done) return;
 
-    const { content, id, attachment, downloads } =
-      findMessageFromList(answerList);
-    const answer = content || getLatestError(answerList);
+    const answer = streamState.content || getLatestError(answerList);
+    if (!streamState.content && answerList.length === 0) return;
 
-    if (answerList.length > 0) {
-      latestAnswerRef.current = {
-        answer: answer ?? '',
-        attachment: attachment as any,
-        downloads,
-        id,
-      };
-
-      if (document.hidden) {
-        // requestAnimationFrame is paused when the tab is in the
-        // background / minimized, so update directly — rendering
-        // won't happen anyway until the user switches back.
-        addNewestOneAnswer(latestAnswerRef.current as IAnswer);
-        latestAnswerRef.current = null;
-      } else if (rafRef.current === null) {
-        rafRef.current = requestAnimationFrame(() => {
-          rafRef.current = null;
-          if (latestAnswerRef.current) {
-            addNewestOneAnswer(latestAnswerRef.current as IAnswer);
-          }
-        });
-      }
-    }
-
-    return () => {
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
-    };
-  }, [answerList, addNewestOneAnswer, done]);
-
-  // When the user returns to the tab, flush any content accumulated
-  // while requestAnimationFrame was paused (background / minimized).
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (!document.hidden && latestAnswerRef.current) {
-        if (rafRef.current !== null) {
-          cancelAnimationFrame(rafRef.current);
-          rafRef.current = null;
-        }
-        addNewestOneAnswer(latestAnswerRef.current as IAnswer);
-        latestAnswerRef.current = null;
-      }
-    };
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () =>
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [addNewestOneAnswer]);
+    addNewestOneAnswer({
+      answer: answer ?? '',
+      attachment: streamState.attachment as any,
+      downloads: streamState.downloads,
+      id: streamState.id,
+    } as IAnswer);
+  }, [streamState, addNewestOneAnswer, done, answerList]);
 
   // ── Prologue is shown as intro text in the welcome screen, not auto-added as a message
   // This keeps the input centered until the user explicitly starts a conversation.
@@ -2040,12 +1986,16 @@ export default function CChat() {
                               <div className="max-w-[85%]">
                                 <div className="bg-white border border-[#D4D4D4] px-4 py-2.5 rounded-2xl rounded-bl-md text-[15px] leading-relaxed tracking-wider text-[#000000]">
                                   <div className="msg-content text-[#000000]">
-                                    <ChapteredMarkdown
-                                      content={msg.content || ''}
-                                      loading={streaming}
-                                      reference={refs}
-                                      clickDocumentButton={clickDocumentButton}
-                                    />
+                                    <MarkdownErrorBoundary>
+                                      <ChapteredMarkdown
+                                        content={msg.content || ''}
+                                        loading={streaming}
+                                        reference={refs}
+                                        clickDocumentButton={
+                                          clickDocumentButton
+                                        }
+                                      />
+                                    </MarkdownErrorBoundary>
                                   </div>
                                   {streaming && (
                                     <span className="inline-block w-2 h-4 bg-[#000000] ml-1 animate-pulse rounded-sm" />
