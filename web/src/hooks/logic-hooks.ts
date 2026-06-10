@@ -376,6 +376,13 @@ export const useScrollToBottom = (
   const ref = useRef<HTMLDivElement>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const isAtBottomRef = useRef(true);
+  // Track user explicitly scrolling up to prevent auto-scroll from
+  // pulling them back down while streaming content is still arriving.
+  const userScrolledUpRef = useRef(false);
+  const pendingScrollRef = useRef<{
+    raf: number;
+    timeout: ReturnType<typeof setTimeout>;
+  } | null>(null);
 
   useEffect(() => {
     isAtBottomRef.current = isAtBottom;
@@ -384,7 +391,7 @@ export const useScrollToBottom = (
   const checkIfUserAtBottom = useCallback(() => {
     if (!containerRef?.current) return true;
     const { scrollTop, scrollHeight, clientHeight } = containerRef.current;
-    return Math.abs(scrollTop + clientHeight - scrollHeight) < 25;
+    return scrollTop + clientHeight >= scrollHeight - 50;
   }, [containerRef]);
 
   useEffect(() => {
@@ -392,15 +399,20 @@ export const useScrollToBottom = (
     const container = containerRef.current;
 
     const handleScroll = () => {
-      setIsAtBottom(checkIfUserAtBottom());
+      const atBottom = checkIfUserAtBottom();
+      setIsAtBottom(atBottom);
+      // User scrolled to bottom — re-enable auto-scroll
+      if (atBottom) {
+        userScrolledUpRef.current = false;
+      }
     };
 
-    container.addEventListener('scroll', handleScroll);
+    container.addEventListener('scroll', handleScroll, { passive: true });
     handleScroll();
     return () => container.removeEventListener('scroll', handleScroll);
   }, [containerRef, checkIfUserAtBottom]);
 
-  // Imperative scroll function
+  // Imperative scroll function — also marks auto-scroll as active
   const scrollToBottom = useCallback(() => {
     if (containerRef?.current) {
       const container = containerRef.current;
@@ -408,20 +420,62 @@ export const useScrollToBottom = (
         top: container.scrollHeight - container.clientHeight,
         behavior: 'auto',
       });
+      userScrolledUpRef.current = false;
     }
   }, [containerRef]);
 
   useEffect(() => {
     if (!messages) return;
     if (!containerRef?.current) return;
-    requestAnimationFrame(() => {
-      setTimeout(() => {
-        if (isAtBottomRef.current) {
+
+    // Cancel any previously pending scroll
+    if (pendingScrollRef.current) {
+      cancelAnimationFrame(pendingScrollRef.current.raf);
+      clearTimeout(pendingScrollRef.current.timeout);
+      pendingScrollRef.current = null;
+    }
+
+    const raf = requestAnimationFrame(() => {
+      const timeout = setTimeout(() => {
+        pendingScrollRef.current = null;
+        if (isAtBottomRef.current && !userScrolledUpRef.current) {
           scrollToBottom();
         }
-      }, 100);
+      }, 80);
+
+      pendingScrollRef.current = { raf, timeout };
     });
+
+    // Store initial RAF id for cleanup before the inner callback runs
+    const cleanup = () => {
+      cancelAnimationFrame(raf);
+      if (pendingScrollRef.current) {
+        clearTimeout(pendingScrollRef.current.timeout);
+        pendingScrollRef.current = null;
+      }
+    };
+
+    return cleanup;
   }, [messages, containerRef, scrollToBottom]);
+
+  // When user explicitly scrolls up (wheel/keyboard above the fold),
+  // lock out auto-scroll until they scroll back to the bottom themselves.
+  useEffect(() => {
+    if (!containerRef?.current) return;
+    const container = containerRef.current;
+
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) {
+        // Scrolling up
+        if (!checkIfUserAtBottom()) {
+          userScrolledUpRef.current = true;
+        }
+      }
+    };
+
+    container.addEventListener('wheel', onWheel, { passive: true });
+    return () => container.removeEventListener('wheel', onWheel);
+  }, [containerRef, checkIfUserAtBottom]);
 
   return { scrollRef: ref, isAtBottom, scrollToBottom };
 };

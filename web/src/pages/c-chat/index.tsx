@@ -914,6 +914,16 @@ export default function CChat() {
     setUploadedFiles((prev) => prev.filter((f) => f.name !== file.name));
   }, []);
 
+  const handleFileReject = useCallback((_file: File, message: string) => {
+    showToast(
+      message === 'File too large'
+        ? '文件超过50MB限制'
+        : message === 'Maximum 10 files allowed'
+          ? '最多上传10个文件'
+          : message,
+    );
+  }, []);
+
   // ── Send message (B-side hooks based) ──
   const sendMessage = useCallback(
     async (query: string, sessionId: string | null, _msgId?: string) => {
@@ -1569,6 +1579,9 @@ export default function CChat() {
                         className="w-full"
                         disabled={sendLoading}
                         multiple
+                        maxFiles={10}
+                        maxSize={50 * 1024 * 1024}
+                        onFileReject={handleFileReject}
                       >
                         <FileUploadDropzone
                           tabIndex={-1}
@@ -1583,7 +1596,7 @@ export default function CChat() {
                               拖拽文件到此处上传
                             </p>
                             <p className="text-muted-foreground text-xs">
-                              最多上传5个文件，每个不超过5MB
+                              最多上传10个文件，每个不超过50MB
                             </p>
                           </div>
                         </FileUploadDropzone>
@@ -1675,7 +1688,7 @@ export default function CChat() {
                               <button
                                 disabled={sendLoading}
                                 className="shrink-0 w-9 h-9 flex items-center justify-center text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-                                title="上传文件"
+                                title="上传文件（最多10个，每个不超过50MB）"
                               >
                                 <svg
                                   className="w-4 h-4"
@@ -2371,6 +2384,9 @@ export default function CChat() {
                         className="w-full"
                         disabled={sendLoading}
                         multiple
+                        maxFiles={10}
+                        maxSize={50 * 1024 * 1024}
+                        onFileReject={handleFileReject}
                       >
                         <FileUploadDropzone
                           tabIndex={-1}
@@ -2385,7 +2401,7 @@ export default function CChat() {
                               拖拽文件到此处上传
                             </p>
                             <p className="text-muted-foreground text-xs">
-                              最多上传5个文件，每个不超过5MB
+                              最多上传10个文件，每个不超过50MB
                             </p>
                           </div>
                         </FileUploadDropzone>
@@ -2484,7 +2500,7 @@ export default function CChat() {
                                   <button
                                     disabled={sendLoading}
                                     className="shrink-0 w-9 h-9 flex items-center justify-center text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-                                    title="上传文件"
+                                    title="上传文件（最多10个，每个不超过50MB）"
                                   >
                                     <svg
                                       className="w-4 h-4"

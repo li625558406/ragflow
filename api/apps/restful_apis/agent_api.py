@@ -108,34 +108,69 @@ def _build_sse_response(body):
 def _normalize_agent_session(conv):
     conv["messages"] = conv.pop("message")
     for info in conv["messages"]:
-        if "prompt" in info:
+        if isinstance(info, dict) and "prompt" in info:
             info.pop("prompt")
     conv["agent_id"] = conv.pop("dialog_id")
-    if isinstance(conv["reference"], dict):
-        if "chunks" in conv["reference"]:
-            conv["reference"] = [conv["reference"]]
+
+    ref = conv.get("reference")
+    if isinstance(ref, dict):
+        if "chunks" in ref:
+            conv["reference"] = [ref]
         else:
-            conv["reference"] = [value for _, value in sorted(conv["reference"].items(), key=lambda item: int(item[0]))]
+            try:
+                conv["reference"] = [
+                    value
+                    for _, value in sorted(
+                        ref.items(), key=lambda item: int(item[0])
+                    )
+                ]
+            except (ValueError, TypeError, AttributeError):
+                # reference dict has non-integer keys — wrap as-is
+                conv["reference"] = [ref]
+    elif isinstance(ref, list):
+        conv["reference"] = ref
+    else:
+        conv["reference"] = []
 
     if conv["reference"]:
-        messages = [message for i, message in enumerate(conv["messages"]) if i != 0 and message["role"] != "user"]
+        messages = [
+            message
+            for i, message in enumerate(conv["messages"])
+            if i != 0
+            and isinstance(message, dict)
+            and message.get("role") != "user"
+        ]
         for message, reference in zip(messages, conv["reference"]):
-            chunks = reference["chunks"]
+            if not isinstance(reference, dict):
+                continue
+            chunks = reference.get("chunks", {})
             if isinstance(chunks, dict):
                 chunk_list = list(chunks.values())
             elif isinstance(chunks, list):
                 chunk_list = chunks
             else:
-                chunk_list = list(chunks) if hasattr(chunks, '__iter__') else []
+                chunk_list = []
             message["reference"] = [
                 {
                     "id": chunk.get("chunk_id", chunk.get("id")),
-                    "content": chunk.get("content_with_weight", chunk.get("content")),
-                    "document_id": chunk.get("doc_id", chunk.get("document_id")),
-                    "document_name": chunk.get("docnm_kwd", chunk.get("document_name")),
-                    "dataset_id": chunk.get("kb_id", chunk.get("dataset_id")),
-                    "image_id": chunk.get("image_id", chunk.get("img_id")),
-                    "positions": chunk.get("positions", chunk.get("position_int")),
+                    "content": chunk.get(
+                        "content_with_weight", chunk.get("content")
+                    ),
+                    "document_id": chunk.get(
+                        "doc_id", chunk.get("document_id")
+                    ),
+                    "document_name": chunk.get(
+                        "docnm_kwd", chunk.get("document_name")
+                    ),
+                    "dataset_id": chunk.get(
+                        "kb_id", chunk.get("dataset_id")
+                    ),
+                    "image_id": chunk.get(
+                        "image_id", chunk.get("img_id")
+                    ),
+                    "positions": chunk.get(
+                        "positions", chunk.get("position_int")
+                    ),
                 }
                 for chunk in chunk_list
                 if isinstance(chunk, dict)
@@ -242,7 +277,18 @@ def get_agent_session(agent_id, session_id, tenant_id):
             code=RetCode.OPERATING_ERROR,
         )
     _, conv = API4ConversationService.get_by_id(session_id)
-    return get_json_result(data=_normalize_agent_session(conv.to_dict()))
+    try:
+        result = _normalize_agent_session(conv.to_dict())
+    except Exception as e:
+        logging.exception(
+            "Failed to normalize session %s for agent %s", session_id, agent_id
+        )
+        return get_json_result(
+            data=False,
+            message=f"Failed to load session data: {e}",
+            code=RetCode.EXCEPTION_ERROR,
+        )
+    return get_json_result(data=result)
 
 
 @manager.route("/agents/<agent_id>/sessions/<session_id>", methods=["DELETE"])  # noqa: F821
