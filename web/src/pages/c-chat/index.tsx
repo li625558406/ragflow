@@ -33,6 +33,11 @@ import { Textarea } from '@/components/ui/textarea';
 import { CheckCircle2, ChevronRight, Loader2, XCircle } from 'lucide-react';
 
 import { RealtimeAudioButton } from '@/components/realtime-audio-button';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { MessageType } from '@/constants/chat';
 import {
   useHandleMessageInputChange,
@@ -255,6 +260,9 @@ export default function CChat() {
   // Cache node events so they persist after stream completion clears answerList
   const cachedNodeEventsRef = useRef<Record<string, Array<any>>>({});
 
+  // Prevent double-send: lock acquired synchronously before async state updates
+  const sendingLockRef = useRef(false);
+
   // Debounce timers for session list / message loading
   const sessionLoadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
@@ -285,7 +293,7 @@ export default function CChat() {
     // Update cache with fresh events
     cachedNodeEventsRef.current = map;
     return map;
-  }, [answerList]);
+  }, [answerList, newSessionKey]);
 
   const stopConversation = useCallback(() => {
     stopOutputMessage();
@@ -312,7 +320,11 @@ export default function CChat() {
     scrollToBottom,
   } = useSelectDerivedMessages();
 
-  // Get node events for the latest message that has them (for input-area chip)
+  const sendLoading = !done;
+
+  // Get node events for the latest message that has them (for input-area chip).
+  // During the window between the first NodeStarted and the first Message event,
+  // the answer hasn't been created yet — fall back to any node events in the map.
   const latestNodeEvents = useMemo(() => {
     for (let i = derivedMessages.length - 1; i >= 0; i--) {
       const msg = derivedMessages[i];
@@ -321,10 +333,17 @@ export default function CChat() {
         return { messageId: msg.id || '', events };
       }
     }
+    // Answer not created yet (no content), but node events exist for the
+    // current stream — surface them anyway so the task bar shows early.
+    // Only active during streaming; when idle (sendLoading=false) a new
+    // session may have cleared cachedNodeEventsRef without the useMemo
+    // re-running, so we must not surface stale events.
+    const ids = Object.keys(nodeEventsByMsgId);
+    if (ids.length > 0 && sendLoading) {
+      return { messageId: ids[0], events: nodeEventsByMsgId[ids[0]] };
+    }
     return null;
-  }, [derivedMessages, nodeEventsByMsgId]);
-
-  const sendLoading = !done;
+  }, [derivedMessages, nodeEventsByMsgId, sendLoading]);
 
   // ── Process SSE events into messages ──
   // streamState is already RAF-throttled (60fps foreground / 2fps background)
@@ -335,7 +354,7 @@ export default function CChat() {
     if (done) return;
 
     const answer = streamState.content || getLatestError(answerList);
-    if (!streamState.content && answerList.length === 0) return;
+    if (!answer) return;
 
     addNewestOneAnswer({
       answer: answer ?? '',
@@ -793,6 +812,8 @@ export default function CChat() {
     stopOutputMessage();
     setDone(true);
     resetAnswerList();
+    cachedNodeEventsRef.current = {}; // clear stale node events from previous session
+    setThinkingMsgId(null);
     setNewSessionKey((k) => k + 1);
     setDerivedMessages(
       currentAgentPrologue
@@ -927,7 +948,13 @@ export default function CChat() {
 
   const handlePressEnter = useCallback(async () => {
     const query = value.trim();
-    if (!query || sendLoading) return;
+    if (sendingLockRef.current || !query || sendLoading) return;
+    sendingLockRef.current = true;
+    // Auto-release after 1s in case send() fails synchronously
+    // (normal path: sendLoading→true→false resets it via the effect below)
+    setTimeout(() => {
+      sendingLockRef.current = false;
+    }, 1000);
 
     let sessionId = currentSessionId;
     if (!sessionId) {
@@ -990,6 +1017,14 @@ export default function CChat() {
     sendMessage,
     scrollToBottom,
   ]);
+
+  // Once send() starts (sendLoading→true), release the debounce lock —
+  // the sendLoading guard in handlePressEnter will block re-entry from here.
+  useEffect(() => {
+    if (sendLoading) {
+      sendingLockRef.current = false;
+    }
+  }, [sendLoading]);
 
   // Fill textarea with transcribed text (no auto-send)
   useEffect(() => {
@@ -1653,25 +1688,31 @@ export default function CChat() {
                               />
                             </div>
                             <FileUploadTrigger asChild>
-                              <button
-                                disabled={sendLoading}
-                                className="shrink-0 w-9 h-9 flex items-center justify-center text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-                                title="上传文件（最多10个，每个不超过50MB）"
-                              >
-                                <svg
-                                  className="w-4 h-4"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  viewBox="0 0 24 24"
-                                >
-                                  <path
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                    strokeWidth={2}
-                                    d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
-                                  />
-                                </svg>
-                              </button>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button
+                                    disabled={sendLoading}
+                                    className="shrink-0 w-9 h-9 flex items-center justify-center text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                                  >
+                                    <svg
+                                      className="w-4 h-4"
+                                      fill="none"
+                                      stroke="currentColor"
+                                      viewBox="0 0 24 24"
+                                    >
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        strokeWidth={2}
+                                        d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
+                                      />
+                                    </svg>
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent side="top">
+                                  <p>上传文件（最多10个，每个不超过50MB）</p>
+                                </TooltipContent>
+                              </Tooltip>
                             </FileUploadTrigger>
                             {!sendLoading ? (
                               <button
@@ -2469,25 +2510,33 @@ export default function CChat() {
                                   />
                                 </div>
                                 <FileUploadTrigger asChild>
-                                  <button
-                                    disabled={sendLoading}
-                                    className="shrink-0 w-9 h-9 flex items-center justify-center text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-                                    title="上传文件（最多10个，每个不超过50MB）"
-                                  >
-                                    <svg
-                                      className="w-4 h-4"
-                                      fill="none"
-                                      stroke="currentColor"
-                                      viewBox="0 0 24 24"
-                                    >
-                                      <path
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        strokeWidth={2}
-                                        d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
-                                      />
-                                    </svg>
-                                  </button>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <button
+                                        disabled={sendLoading}
+                                        className="shrink-0 w-9 h-9 flex items-center justify-center text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                                      >
+                                        <svg
+                                          className="w-4 h-4"
+                                          fill="none"
+                                          stroke="currentColor"
+                                          viewBox="0 0 24 24"
+                                        >
+                                          <path
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
+                                            strokeWidth={2}
+                                            d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
+                                          />
+                                        </svg>
+                                      </button>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="top">
+                                      <p>
+                                        上传文件（最多10个，每个不超过50MB）
+                                      </p>
+                                    </TooltipContent>
+                                  </Tooltip>
                                 </FileUploadTrigger>
                                 <button
                                   onClick={handlePressEnter}

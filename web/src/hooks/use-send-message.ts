@@ -57,6 +57,8 @@ export interface IMessageData {
   lane_index?: number;
   lane_label?: string;
   lane_total?: number;
+  finished?: boolean;
+  error?: boolean;
 }
 
 export interface IMessageEndData {
@@ -108,6 +110,36 @@ export interface IStreamState {
     mime_type: string;
     size?: number;
   }>;
+  /** FanOut multi-lane streaming slots (pre-allocated on fanout_meta). */
+  fanOutLanes?: {
+    total: number;
+    labels: string[];
+    contents: string[];
+    finished: boolean[];
+    errored: boolean[];
+  };
+}
+
+/**
+ * Build an ordered markdown string from FanOut lane slots.
+ * Chapters are rendered in 0..n-1 order regardless of which lane
+ * produced its content first.
+ */
+function buildFanOutContent(
+  lanes: NonNullable<IStreamState['fanOutLanes']>,
+): string {
+  const parts: string[] = [];
+  for (let i = 0; i < lanes.total; i++) {
+    const content = lanes.contents[i];
+    const isFinished = lanes.finished[i];
+    // Don't show chapters that haven't produced any content yet.
+    if (!content && !isFinished) continue;
+
+    const label = lanes.labels[i] || `Chapter ${i + 1}`;
+    const header = `### 📄 ${label}`;
+    parts.push(`${header}\n\n${content}`);
+  }
+  return parts.join('\n\n---\n\n');
 }
 
 export const useSendMessageBySSE = (url: string) => {
@@ -179,6 +211,7 @@ export const useSendMessageBySSE = (url: string) => {
       audioBinary: undefined,
       attachment: undefined,
       downloads: [],
+      fanOutLanes: undefined,
     };
     if (rafRef.current !== null) {
       cancelAnimationFrame(rafRef.current);
@@ -209,6 +242,7 @@ export const useSendMessageBySSE = (url: string) => {
           audioBinary: undefined,
           attachment: undefined,
           downloads: [],
+          fanOutLanes: undefined,
         };
 
         const response = await fetch(url, {
@@ -271,29 +305,75 @@ export const useSendMessageBySSE = (url: string) => {
                 // re-scans the entire event list on every tick, we mirror
                 // the same logic here so the content string is always
                 // up-to-date in streamAccRef without any recomputation.
+
+                // Capture message_id from the first event of any type
+                // (NodeStarted often arrives before the first Message),
+                // so downstream consumers like AgentStatusChip can match
+                // node events to the streaming answer immediately.
+                if (!streamAccRef.current.id && val.message_id) {
+                  streamAccRef.current.id = val.message_id;
+                }
+
+                // FanOut meta: pre-allocate ordered chapter slots so
+                // content streams into the correct position regardless
+                // of which lane finishes first.
+                if (val?.event === 'fanout_meta') {
+                  const d = val.data;
+                  streamAccRef.current.fanOutLanes = {
+                    total: d.lane_total,
+                    labels: d.lanes.map((l: any) => l.label),
+                    contents: new Array(d.lane_total).fill(''),
+                    finished: new Array(d.lane_total).fill(false),
+                    errored: new Array(d.lane_total).fill(false),
+                  };
+                  streamAccRef.current.content = buildFanOutContent(
+                    streamAccRef.current.fanOutLanes,
+                  );
+                }
+
                 if (val?.event === MessageEventType.Message) {
                   const d = val.data as IMessageData;
-                  if (!streamAccRef.current.id && val.message_id) {
-                    streamAccRef.current.id = val.message_id;
-                  }
+
                   if (d.audio_binary) {
                     streamAccRef.current.audioBinary = d.audio_binary;
                   }
-                  if (d.start_to_think) {
-                    streamAccRef.current.content += '<think>';
-                  } else if (d.end_to_think) {
-                    streamAccRef.current.content += '</think>';
-                  } else {
-                    const laneIdx = d.lane_index;
-                    const laneTotal = d.lane_total;
-                    if (
-                      laneIdx !== undefined &&
-                      laneTotal !== undefined &&
-                      laneTotal > 1
-                    ) {
-                      streamAccRef.current.content += `\n\n---\n\n### ${d.lane_label || `Chapter ${laneIdx + 1}`}\n\n`;
+
+                  // FanOut streaming: write each chunk into the correct
+                  // lane slot, then rebuild ordered markdown from all slots.
+                  if (
+                    d.lane_index !== undefined &&
+                    streamAccRef.current.fanOutLanes
+                  ) {
+                    const lanes = streamAccRef.current.fanOutLanes;
+                    const li = d.lane_index;
+                    if (d.finished) {
+                      lanes.finished[li] = true;
+                      if (d.error) {
+                        lanes.errored[li] = true;
+                        lanes.contents[li] += d.content || '';
+                      }
+                    } else {
+                      lanes.contents[li] += d.content || '';
                     }
-                    streamAccRef.current.content += d.content || '';
+                    streamAccRef.current.content = buildFanOutContent(lanes);
+                  } else {
+                    // Non-FanOut: existing behavior
+                    if (d.start_to_think) {
+                      streamAccRef.current.content += '<think>';
+                    } else if (d.end_to_think) {
+                      streamAccRef.current.content += '</think>';
+                    } else {
+                      const laneIdx = d.lane_index;
+                      const laneTotal = d.lane_total;
+                      if (
+                        laneIdx !== undefined &&
+                        laneTotal !== undefined &&
+                        laneTotal > 1
+                      ) {
+                        streamAccRef.current.content += `\n\n---\n\n### ${d.lane_label || `Chapter ${laneIdx + 1}`}\n\n`;
+                      }
+                      streamAccRef.current.content += d.content || '';
+                    }
                   }
                 } else if (val?.event === MessageEventType.WorkflowFinished) {
                   const outputs = val.data?.outputs || {};

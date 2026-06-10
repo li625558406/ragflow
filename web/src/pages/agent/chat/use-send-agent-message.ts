@@ -503,7 +503,7 @@ export const useSendAgentMessage = ({
     if (done) return;
 
     const answer = streamState.content || getLatestError(answerList);
-    if (!streamState.content && answerList.length === 0) return;
+    if (!answer) return;
 
     const inputAnswer = findInputFromList(answerList);
 

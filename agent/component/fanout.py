@@ -133,10 +133,25 @@ class FanOut(ComponentBase, ABC):
             self.set_output("_ERROR", f"Failed to get LLM config for {self._param.llm_id}: {e}")
             return
 
+        # Push meta event so the frontend can pre-allocate ordered chapter
+        # slots before any content arrives — this keeps chapters in 0..n-1
+        # order regardless of which lane finishes first.
+        await self._event_queue.put({
+            "event": "fanout_meta",
+            "data": {
+                "lane_total": n,
+                "lanes": [
+                    {"index": i, "label": self._item_label(v, i)}
+                    for i, v in enumerate(items)
+                ],
+            },
+        })
+
         self._progress = {i: {"status": "pending"} for i in range(n)}
         self._cancel_event.clear()
         sem = asyncio.Semaphore(max(1, int(self._param.max_concurrency)))
         completed_count = [0]
+
         gather_started = time.perf_counter()
         logging.info(f"FanOut START: {n} items, max_concurrency={self._param.max_concurrency}")
 
@@ -152,7 +167,7 @@ class FanOut(ComponentBase, ABC):
 
                 try:
                     rendered = self._render_prompt(item_value, idx)
-                    chunks: list[str] = []
+                    accumulated: list[str] = []
                     in_think = False
                     async for chunk in chat_mdl.async_chat_streamly_delta(
                         self._param.system_prompt,
@@ -189,35 +204,65 @@ class FanOut(ComponentBase, ABC):
                                 in_think = True
                                 pos = start + len("<think>")
                         if clean:
-                            chunks.append(clean)
+                            accumulated.append(clean)
+                            # Stream this chunk immediately so the
+                            # frontend can render per-chapter progress
+                            # in real time, ordered by lane_index.
+                            await self._event_queue.put({
+                                "event": "message",
+                                "data": {
+                                    "content": clean,
+                                    "lane_index": idx,
+                                    "lane_label": label,
+                                    "lane_total": n,
+                                },
+                            })
 
-                    result = re.sub(r"<think>.*?</think>", "", "".join(chunks), flags=re.DOTALL)
+                    # Safety-net cleanup for any remaining <think> tags
+                    # that survived the streaming strip above.
+                    result = re.sub(r"<think>.*?</think>", "", "".join(accumulated), flags=re.DOTALL)
                     result = re.sub(r"</?think>", "", result)
+
                     elapsed = time.perf_counter() - started
                     self._progress[idx] = {"status": "completed", "result": result, "elapsed": elapsed}
                     completed_count[0] += 1
                     logging.info(f"FanOut lane {idx}/{n} DONE: {label} ({elapsed:.1f}s) [{completed_count[0]}/{n}]")
-                    # Send the complete chapter content with lane metadata
-                    # so the frontend can render per-chapter progress.
+
+                    # Signal this lane is finished so the frontend can stop
+                    # showing the loading indicator for this chapter.
                     await self._event_queue.put({
                         "event": "message",
                         "data": {
-                            "content": result,
+                            "content": "",
                             "lane_index": idx,
                             "lane_label": label,
                             "lane_total": n,
+                            "finished": True,
                         },
                     })
                     return result
 
                 except Exception as e:
                     logging.exception(f"FanOut item {idx} failed: {e}")
-                    self._progress[idx] = {"status": "error", "error": str(e)}
                     completed_count[0] += 1
                     logging.error(f"FanOut lane {idx}/{n} ERROR: {self._item_label(item_value, idx)} — {e} [{completed_count[0]}/{n}]")
                     if self._param.error_strategy == "stop":
                         self._cancel_event.set()
                         raise
+
+                    # skip: signal error for this lane and continue
+                    self._progress[idx] = {"status": "error", "error": str(e)}
+                    await self._event_queue.put({
+                        "event": "message",
+                        "data": {
+                            "content": f"[Error: {e}]",
+                            "lane_index": idx,
+                            "lane_label": self._item_label(item_value, idx),
+                            "lane_total": n,
+                            "finished": True,
+                            "error": True,
+                        },
+                    })
                     return None
 
         tasks = [asyncio.create_task(_process_one(i, v)) for i, v in enumerate(items)]
