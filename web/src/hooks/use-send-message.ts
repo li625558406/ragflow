@@ -132,9 +132,7 @@ function buildFanOutContent(
   for (let i = 0; i < lanes.total; i++) {
     const content = lanes.contents[i];
     const isFinished = lanes.finished[i];
-    // Don't show chapters that haven't produced any content yet.
     if (!content && !isFinished) continue;
-
     const label = lanes.labels[i] || `Chapter ${i + 1}`;
     const header = `### 📄 ${label}`;
     parts.push(`${header}\n\n${content}`);
@@ -142,7 +140,11 @@ function buildFanOutContent(
   return parts.join('\n\n---\n\n');
 }
 
-export const useSendMessageBySSE = (url: string) => {
+export const useSendMessageBySSE = (
+  url: string,
+  opts?: { excludeFanOutFromContent?: boolean },
+) => {
+  const excludeFanOutFromContent = opts?.excludeFanOutFromContent ?? true;
   const [answerList, setAnswerList] = useState<IEventList>([]);
   const [done, setDone] = useState(true);
   const [wasAborted, setWasAborted] = useState(false);
@@ -166,14 +168,33 @@ export const useSendMessageBySSE = (url: string) => {
   });
   const rafRef = useRef<number | null>(null);
 
+  // Buffer SSE events so answerList is also throttled (not updated per-event).
+  // Without this, setAnswerList spread-copying on every event creates O(N²)
+  // pressure, and React re-renders keep recomputing useMemo(…, [answerList])
+  // even in background tabs — causing a freeze when the user returns.
+  const eventBufferRef = useRef<any[]>([]);
+
+  const flushEventBuffer = useCallback(() => {
+    const batch = eventBufferRef.current;
+    if (batch.length === 0) return;
+    eventBufferRef.current = [];
+    setAnswerList((list) => {
+      const nextList = [...list];
+      nextList.push(...batch);
+      return nextList;
+    });
+  }, []);
+
   const flushStreamState = useCallback(() => {
+    flushEventBuffer();
     if (rafRef.current !== null) {
       cancelAnimationFrame(rafRef.current);
       clearTimeout(rafRef.current);
       rafRef.current = null;
     }
-    setStreamState({ ...streamAccRef.current });
-  }, []);
+    const acc = streamAccRef.current;
+    setStreamState({ ...acc });
+  }, [flushEventBuffer]);
 
   const scheduleStreamFlush = useCallback(() => {
     if (document.hidden) {
@@ -183,6 +204,7 @@ export const useSendMessageBySSE = (url: string) => {
       if (rafRef.current !== null) return;
       rafRef.current = window.setTimeout(() => {
         rafRef.current = null;
+        flushEventBuffer();
         setStreamState({ ...streamAccRef.current });
       }, 500);
       return;
@@ -191,9 +213,10 @@ export const useSendMessageBySSE = (url: string) => {
     if (rafRef.current !== null) return;
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = null;
+      flushEventBuffer();
       setStreamState({ ...streamAccRef.current });
     });
-  }, []);
+  }, [flushEventBuffer]);
 
   const initializeSseRef = useCallback(() => {
     sseRef.current = new AbortController();
@@ -204,6 +227,7 @@ export const useSendMessageBySSE = (url: string) => {
       clearTimeout(timer.current);
     }
     setAnswerList([]);
+    eventBufferRef.current = [];
     // Also reset the incremental accumulator so the next run starts clean.
     streamAccRef.current = {
       content: '',
@@ -234,6 +258,7 @@ export const useSendMessageBySSE = (url: string) => {
         setDone(false);
         setWasAborted(false);
         workflowFinishedRef.current = false;
+        eventBufferRef.current = [];
 
         // Reset accumulator for the new stream.
         streamAccRef.current = {
@@ -317,6 +342,9 @@ export const useSendMessageBySSE = (url: string) => {
                 // FanOut meta: pre-allocate ordered chapter slots so
                 // content streams into the correct position regardless
                 // of which lane finishes first.
+                // FanOut chapters are progress-only — do NOT write to
+                // `content` (that field is reserved for the final Reply
+                // output shown in the chat bubble).
                 if (val?.event === 'fanout_meta') {
                   const d = val.data;
                   streamAccRef.current.fanOutLanes = {
@@ -326,9 +354,11 @@ export const useSendMessageBySSE = (url: string) => {
                     finished: new Array(d.lane_total).fill(false),
                     errored: new Array(d.lane_total).fill(false),
                   };
-                  streamAccRef.current.content = buildFanOutContent(
-                    streamAccRef.current.fanOutLanes,
-                  );
+                  if (!excludeFanOutFromContent) {
+                    streamAccRef.current.content = buildFanOutContent(
+                      streamAccRef.current.fanOutLanes,
+                    );
+                  }
                 }
 
                 if (val?.event === MessageEventType.Message) {
@@ -339,39 +369,40 @@ export const useSendMessageBySSE = (url: string) => {
                   }
 
                   // FanOut streaming: write each chunk into the correct
-                  // lane slot, then rebuild ordered markdown from all slots.
-                  if (
-                    d.lane_index !== undefined &&
-                    streamAccRef.current.fanOutLanes
-                  ) {
+                  // lane slot for task-panel progress display.
+                  // Do NOT update `content` — that field is reserved for
+                  // the final Reply output rendered in the chat bubble.
+                  // lane_index is ONLY set by the FanOut backend (no other
+                  // component sets it), so it's a reliable discriminator.
+                  if (d.lane_index !== undefined) {
                     const lanes = streamAccRef.current.fanOutLanes;
-                    const li = d.lane_index;
-                    if (d.finished) {
-                      lanes.finished[li] = true;
-                      if (d.error) {
-                        lanes.errored[li] = true;
+                    if (lanes) {
+                      const li = d.lane_index;
+                      if (d.finished) {
+                        lanes.finished[li] = true;
+                        if (d.error) {
+                          lanes.errored[li] = true;
+                          lanes.contents[li] += d.content || '';
+                        }
+                      } else {
                         lanes.contents[li] += d.content || '';
                       }
-                    } else {
-                      lanes.contents[li] += d.content || '';
+                      if (!excludeFanOutFromContent) {
+                        streamAccRef.current.content =
+                          buildFanOutContent(lanes);
+                      }
                     }
-                    streamAccRef.current.content = buildFanOutContent(lanes);
+                    // FanOut content goes into fanOutLanes for task-panel
+                    // display.  When excludeFanOutFromContent is false (B-end
+                    // agent canvas), it is also mirrored into `content` so the
+                    // chat bubble shows per-chapter streaming progress.
                   } else {
-                    // Non-FanOut: existing behavior
+                    // Non-FanOut: final Reply (or other non-FanOut LLM) output
                     if (d.start_to_think) {
                       streamAccRef.current.content += '<think>';
                     } else if (d.end_to_think) {
                       streamAccRef.current.content += '</think>';
                     } else {
-                      const laneIdx = d.lane_index;
-                      const laneTotal = d.lane_total;
-                      if (
-                        laneIdx !== undefined &&
-                        laneTotal !== undefined &&
-                        laneTotal > 1
-                      ) {
-                        streamAccRef.current.content += `\n\n---\n\n### ${d.lane_label || `Chapter ${laneIdx + 1}`}\n\n`;
-                      }
                       streamAccRef.current.content += d.content || '';
                     }
                   }
@@ -392,11 +423,11 @@ export const useSendMessageBySSE = (url: string) => {
                   workflowFinishedRef.current = true;
                 }
 
-                setAnswerList((list) => {
-                  const nextList = [...list];
-                  nextList.push(val);
-                  return nextList;
-                });
+                // Push event into buffer — answerList is throttled
+                // together with streamState via scheduleStreamFlush /
+                // flushStreamState so it doesn't cause O(N²) re-renders
+                // while the tab is hidden.
+                eventBufferRef.current.push(val);
 
                 // Schedule a throttled flush so the UI picks up the
                 // latest accumulator content without rendering on
@@ -445,21 +476,22 @@ export const useSendMessageBySSE = (url: string) => {
   );
 
   // When the user returns to the tab after it was hidden, flush any
-  // pending content immediately instead of waiting for the background
-  // timer (which could be up to 500 ms away).
+  // pending content AND buffered events immediately instead of waiting for
+  // the background timer (which could be up to 500 ms away).
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (!document.hidden && rafRef.current !== null) {
         clearTimeout(rafRef.current);
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
+        flushEventBuffer();
         setStreamState({ ...streamAccRef.current });
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () =>
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, []);
+  }, [flushEventBuffer]);
 
   const stopOutputMessage = useCallback(() => {
     sseRef.current?.abort();

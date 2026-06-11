@@ -956,6 +956,24 @@ export default function CChat() {
       sendingLockRef.current = false;
     }, 1000);
 
+    // ── Instant feedback: show user message + loading skeleton before
+    // any async work (session creation can take 1-2 seconds) ──
+    const msgId = uuid();
+    const currentFiles = [...uploadedFiles];
+
+    addNewestOneQuestion({
+      id: msgId,
+      content: query,
+      role: MessageType.User,
+      files: currentFiles.length > 0 ? currentFiles : undefined,
+    } as IMessage);
+
+    setValue('');
+    setUploadedFiles([]);
+    setFiles([]);
+    setDone(false); // triggers sendLoading → loading skeleton appears
+    scrollToBottom();
+
     let sessionId = currentSessionId;
     if (!sessionId) {
       try {
@@ -983,27 +1001,14 @@ export default function CChat() {
         ]);
       } catch (e: any) {
         showToast('创建对话失败: ' + e.message);
+        setDone(true); // hide loading skeleton
+        setDerivedMessages((prev) => prev.filter((m) => m.id !== msgId));
+        setValue(query); // restore input so user can retry
         return;
       }
     }
 
-    const msgId = uuid();
-    const currentFiles = [...uploadedFiles];
-
-    addNewestOneQuestion({
-      id: msgId,
-      content: query,
-      role: MessageType.User,
-      files: currentFiles.length > 0 ? currentFiles : undefined,
-    } as IMessage);
-
-    setValue('');
-    setUploadedFiles([]);
-    setFiles([]);
-
     sendMessage(query, sessionId, msgId);
-
-    scrollToBottom();
   }, [
     value,
     sendLoading,
@@ -1016,6 +1021,8 @@ export default function CChat() {
     setValue,
     sendMessage,
     scrollToBottom,
+    setDone,
+    setDerivedMessages,
   ]);
 
   // Once send() starts (sendLoading→true), release the debounce lock —

@@ -287,7 +287,9 @@ class FanOut(ComponentBase, ABC):
             c = entry.get("content")
             if c:
                 parts.append(c)
-        self.set_output("results", "\n\n---\n\n".join(parts))
+
+        results_str = "\n\n---\n\n".join(parts)
+        self.set_output("results", results_str)
 
     def get_start(self) -> str:
         for cid in self._canvas.components.keys():
@@ -395,27 +397,12 @@ class FanOut(ComponentBase, ABC):
             logging.info(f"FanOut items_ref={self._param.items_ref!r}, resolved type={type(arr).__name__}, len={len(arr) if isinstance(arr, (list, tuple)) else '?'}")
 
             if not isinstance(arr, (list, tuple)):
-                # Diagnostic: dump the upstream component's output to find the root cause
-                parts = (self._param.items_ref or "").split("@")
-                if len(parts) >= 1:
-                    upstream_id = parts[0]
-                    upstream = self._canvas.get_component(upstream_id)
-                    if upstream:
-                        upstream_outputs = upstream["obj"].output()
-                        logging.error(
-                            f"FanOut DIAGNOSTIC: upstream '{upstream_id}' "
-                            f"output keys={list(upstream_outputs.keys()) if isinstance(upstream_outputs, dict) else type(upstream_outputs).__name__}, "
-                            f"structured={upstream['obj'].output('structured')!r}"
-                        )
-                    else:
-                        logging.error(f"FanOut DIAGNOSTIC: upstream '{upstream_id}' NOT FOUND in components")
                 msg = f"{self._param.items_ref} must be an array, but got {type(arr).__name__}: {arr!r}"
                 logging.error(f"FanOut: {msg}")
                 self.set_output("_ERROR", msg)
                 return
             arr = list(arr)
 
-        logging.info(f"FanOut processing {len(arr)} items, max_concurrency={self._param.max_concurrency}")
         await self._invoke_async_with_items(arr)
 
     def thoughts(self) -> str:

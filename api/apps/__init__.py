@@ -38,6 +38,10 @@ from common.misc_utils import get_uuid
 
 settings.init_settings()
 
+# Suppress verbose LiteLLM INFO logs that dump full API request/response
+# payloads (including reasoning_content, tool_call messages, etc.).
+logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+
 __all__ = ["app"]
 
 UNAUTHORIZED_MESSAGE = "<Unauthorized '401: Unauthorized'>"

@@ -266,7 +266,9 @@ export const useSendAgentMessage = ({
     wasAborted,
     stopOutputMessage,
     resetAnswerList,
-  } = useSendMessageBySSE(url || api.agentChatCompletion);
+  } = useSendMessageBySSE(url || api.agentChatCompletion, {
+    excludeFanOutFromContent: false,
+  });
   const firstAnswer = answerList[0];
   const messageId = useMemo(() => {
     return firstAnswer?.message_id;
@@ -500,10 +502,18 @@ export const useSendAgentMessage = ({
     // streamState is already RAF-throttled (O(1) incremental updates),
     // so we can render directly without the full findMessageFromList
     // recomputation.
+    //
+    // B-end passes excludeFanOutFromContent=false so FanOut lane content
+    // IS included in streamState.content via buildFanOutContent().  The
+    // C-end (c-chat) uses the default (true) to keep FanOut out of the
+    // chat bubble.
     if (done) return;
 
     const answer = streamState.content || getLatestError(answerList);
-    if (!answer) return;
+    // Allow rendering when we have a message_id but no content yet
+    // (e.g. NodeStarted arrived before the first Message), so that
+    // canvas node status effects can activate immediately.
+    if (!answer && !streamState.id) return;
 
     const inputAnswer = findInputFromList(answerList);
 

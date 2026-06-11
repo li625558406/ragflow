@@ -548,7 +548,8 @@ class Canvas(Graph):
         while idx < len(self.path):
             to = len(self.path)
             batch_names = [self.get_component_name(self.path[i]) for i in range(idx, to)]
-            logging.info(f"Canvas batch [{idx}:{to}]: {batch_names}")
+            batch_ids = [self.path[i] for i in range(idx, to)]
+            logging.info(f"Canvas BATCH [{idx}:{to}]: names={batch_names}, ids={batch_ids}")
             for i in range(idx, to):
                 yield decorate("node_started", {
                     "inputs": None, "created_at": int(time.time()),
@@ -615,6 +616,7 @@ class Canvas(Graph):
                         _m = ""
                         buff_m = ""
                         stream = cpn_obj.output("content")()
+                        cpn_name = self.get_component_name(cpn_obj._id)
                         async def _process_stream(m):
                             nonlocal buff_m, _m, tts_mdl
                             if not m:
@@ -641,21 +643,25 @@ class Canvas(Graph):
 
                             return decorate("message", {"content": m})
 
+                        chunk_idx = [0]
                         if inspect.isasyncgen(stream):
                             async for m in stream:
                                 ev= await _process_stream(m)
                                 if ev:
+                                    chunk_idx[0] += 1
                                     yield ev
                         else:
                             for m in stream:
                                 ev= await _process_stream(m)
                                 if ev:
+                                    chunk_idx[0] += 1
                                     yield ev
                         if buff_m:
                             yield decorate("message", {"content": "", "audio_binary": self.tts(tts_mdl, buff_m)})
                             buff_m = ""
                         cpn_obj.set_output("content", _m)
                     else:
+                        cpn_name = self.get_component_name(cpn_obj._id)
                         yield decorate("message", {"content": cpn_obj.output("content")})
 
                     message_end = self._build_message_end(cpn_obj)

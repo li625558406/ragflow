@@ -23,7 +23,7 @@ import { ITraceData } from '@/interfaces/database/agent';
 import { cn } from '@/lib/utils';
 import { t } from 'i18next';
 import { get, isEmpty } from 'lodash';
-import { useCallback, useEffect, useMemo } from 'react';
+import { Fragment, useCallback, useEffect, useMemo } from 'react';
 import { Operator } from '../constant';
 import { JsonViewer } from '../form/components/json-viewer';
 import { useCacheChatLog } from '../hooks/use-cache-chat-log';
@@ -201,7 +201,7 @@ export const WorkFlowTimeline = ({
         const outputs = getInputsOrOutputs(nodeDataList, 'outputs');
         const nodeLabel = x.data.component_type;
         return (
-          <>
+          <Fragment key={idx}>
             <TimelineItem
               key={idx}
               step={idx}
@@ -329,7 +329,7 @@ export const WorkFlowTimeline = ({
                 isShare={isShare}
               ></ToolTimelineItem>
             )}
-          </>
+          </Fragment>
         );
       })}
     </Timeline>

@@ -374,7 +374,8 @@ class Base(ABC):
             history = deepcopy(hist)
             try:
                 for _ in range(self.max_rounds + 1):
-                    logging.info(f"{self.tools=}")
+                    tool_names = [t.get("function", {}).get("name", "?") for t in (self.tools or [])]
+                    logging.info(f"tools: {tool_names}")
                     response = await self.async_client.chat.completions.create(model=self.model_name, messages=history, tools=self.tools, tool_choice="auto", **gen_conf)
                     tk_count += total_token_count_from_response(response)
                     if any([not response.choices, not response.choices[0].message]):
@@ -404,7 +405,8 @@ class Base(ABC):
                             logging.exception(f"Tool call failed: {tc}")
                             return tc, name, {}, None, str(e)
 
-                    logging.info(f"Response tool_calls={response.choices[0].message.tool_calls}")
+                    tc_names = [tc.function.name for tc in response.choices[0].message.tool_calls]
+                    logging.info(f"Response tool_calls names: {tc_names}")
                     results = await asyncio.gather(*[_exec_tool(tc) for tc in response.choices[0].message.tool_calls])
                     history = self._append_history_batch(history, results)
                     for tc, name, args, result, err in results:
@@ -550,7 +552,8 @@ class Base(ABC):
         assert False, "Shouldn't be here."
 
     async def _async_chat(self, history, gen_conf, **kwargs):
-        logging.info("[HISTORY]" + json.dumps(history, ensure_ascii=False, indent=2))
+        hist_summary = [{"role": m.get("role"), "len": len(str(m.get("content",""))) if m.get("content") else 0} for m in history]
+        logging.info(f"[HISTORY] {len(history)} msgs: {hist_summary}")
         if self.model_name.lower().find("qwq") >= 0:
             logging.info(f"[INFO] {self.model_name} detected as reasoning model, using async_chat_streamly")
 
@@ -1349,7 +1352,8 @@ class LiteLLMBase(ABC):
             if not hist or hist[0].get("role") != "system":
                 hist.insert(0, {"role": "system", "content": system})
 
-        logging.info("[HISTORY]" + json.dumps(hist, ensure_ascii=False, indent=2))
+        hist_summary = [{"role": m.get("role"), "len": len(str(m.get("content",""))) if m.get("content") else 0} for m in hist]
+        logging.info(f"[HISTORY] {len(hist)} msgs: {hist_summary}")
         gen_conf = self._clean_conf(gen_conf)
         _, kwargs = _apply_model_family_policies(
             self.model_name,
@@ -1560,7 +1564,8 @@ class LiteLLMBase(ABC):
             history = deepcopy(hist)
             try:
                 for _ in range(self.max_rounds + 1):
-                    logging.info(f"{self.tools=}")
+                    tool_names = [t.get("function", {}).get("name", "?") for t in (self.tools or [])]
+                    logging.info(f"tools: {tool_names}")
 
                     completion_args = self._construct_completion_args(history=history, stream=False, tools=True, **gen_conf)
                     response = await litellm.acompletion(
@@ -1600,7 +1605,8 @@ class LiteLLMBase(ABC):
                             logging.exception(f"Tool call failed: {tc}")
                             return tc, name, {}, None, str(e)
 
-                    logging.info(f"Response tool_calls={message.tool_calls}")
+                    tc_names = [tc.function.name for tc in message.tool_calls]
+                    logging.info(f"Response tool_calls names: {tc_names}")
                     results = await asyncio.gather(*[_exec_tool(tc) for tc in message.tool_calls])
                     history = self._append_history_batch(
                         history,

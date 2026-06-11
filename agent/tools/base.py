@@ -81,7 +81,10 @@ class LLMToolPluginCallSession(ToolCallSession):
                 logging.warning(f"[ToolCall] resp is None and output fallback failed name={name} err={e}")
 
         elapsed = timer() - st
-        logging.info(f"[ToolCall] done name={name} elapsed={elapsed:.2f}s result={str(resp)[:200]}")
+        resp_str = str(resp) if resp else ""
+        if len(resp_str) > 120:
+            resp_str = resp_str[:120] + "..."
+        logging.info(f"[ToolCall] done name={name} elapsed={elapsed:.2f}s result_len={len(str(resp))} preview={resp_str}")
         self.callback(name, arguments, resp, elapsed_time=elapsed)
         return resp
 
