@@ -19,11 +19,10 @@ import {
   INodeEvent,
   MessageEventType,
 } from '@/hooks/use-send-message';
-import { ITraceData } from '@/interfaces/database/agent';
 import { cn } from '@/lib/utils';
 import { t } from 'i18next';
 import { get, isEmpty } from 'lodash';
-import { Fragment, useCallback, useEffect, useMemo } from 'react';
+import { Fragment, useEffect, useMemo } from 'react';
 import { Operator } from '../constant';
 import { JsonViewer } from '../form/components/json-viewer';
 import { useCacheChatLog } from '../hooks/use-cache-chat-log';
@@ -151,55 +150,69 @@ export const WorkFlowTimeline = ({
     return data?.data.elapsed_time || '';
   };
 
-  const hasTrace = useCallback(
-    (componentId: string) => {
-      if (Array.isArray(traceData)) {
-        return traceData?.some((x) => x.component_id === componentId);
+  // Precompute per-node data in one pass instead of calling
+  // filterFinishedNodeList (O(events)) inside .map() for each node,
+  // which was O(nodes × events) per render. Now it's O(events) total.
+  const finishedNodeDataMap = useMemo(() => {
+    const map: Record<
+      string,
+      {
+        nodeDataList: INodeData[];
+        inputs: Record<string, any>;
+        outputs: Record<string, any>;
+        finished: boolean;
       }
-      return false;
-    },
-    [traceData],
-  );
+    > = {};
 
-  const filterTrace = useCallback(
-    (componentId: string) => {
-      const trace = traceData
-        ?.filter((x) => x.component_id === componentId)
-        .reduce<ITraceData['trace']>((pre, cur) => {
-          pre.push(...cur.trace);
+    // Group NodeFinished events by component_id in one pass
+    const byComponent: Record<string, INodeData[]> = {};
+    for (const event of currentEventListWithoutMessage) {
+      if (event.event === MessageEventType.NodeFinished) {
+        const data = event.data as INodeData;
+        const cid = data.component_id;
+        if (!byComponent[cid]) {
+          byComponent[cid] = [];
+        }
+        byComponent[cid].push(data);
+      }
+    }
 
-          return pre;
-        }, []);
-      return Array.isArray(trace) ? trace : [{}];
-    },
-    [traceData],
-  );
+    for (const [cid, nodeDataList] of Object.entries(byComponent)) {
+      map[cid] = {
+        nodeDataList,
+        inputs: getInputsOrOutputs(nodeDataList, 'inputs'),
+        outputs: getInputsOrOutputs(nodeDataList, 'outputs'),
+        finished: true,
+      };
+    }
 
-  const filterFinishedNodeList = useCallback(
-    (componentId: string) => {
-      const nodeEventList = currentEventListWithoutMessage
-        .filter(
-          (x) =>
-            x.event === MessageEventType.NodeFinished &&
-            (x.data as INodeData)?.component_id === componentId,
-        )
-        .map((x) => x.data);
+    return map;
+  }, [currentEventListWithoutMessage]);
 
-      return nodeEventList;
-    },
-    [currentEventListWithoutMessage],
-  );
+  // Precompute trace data per component to avoid O(trace) scans per node
+  const traceDataMap = useMemo(() => {
+    if (!Array.isArray(traceData)) return {};
+    const map: Record<string, any[]> = {};
+    for (const t of traceData) {
+      const cid = t.component_id;
+      if (!map[cid]) {
+        map[cid] = [];
+      }
+      map[cid].push(...t.trace);
+    }
+    return map;
+  }, [traceData]);
 
   return (
     <Timeline>
       {startedNodeList?.map((x, idx) => {
-        const nodeDataList = filterFinishedNodeList(x.data.component_id);
-        const finishNodeIds = nodeDataList.map(
-          (x: INodeData) => x.component_id,
-        );
-        const inputs = getInputsOrOutputs(nodeDataList, 'inputs');
-        const outputs = getInputsOrOutputs(nodeDataList, 'outputs');
+        const cid = x.data.component_id;
+        const nodeInfo = finishedNodeDataMap[cid];
+        const inputs = nodeInfo?.inputs ?? {};
+        const outputs = nodeInfo?.outputs ?? {};
+        const isFinished = !!nodeInfo?.finished;
         const nodeLabel = x.data.component_type;
+        const traceTools = traceDataMap[cid];
         return (
           <Fragment key={idx}>
             <TimelineItem
@@ -222,9 +235,7 @@ export const WorkFlowTimeline = ({
                   className={cn(
                     ' group-data-completed/timeline-item:bg-primary group-data-completed/timeline-item:text-primary-foreground flex size-6 p-1  items-center justify-center group-data-[orientation=vertical]/timeline:-left-7',
                     {
-                      'border border-blue-500': finishNodeIds.includes(
-                        x.data.component_id,
-                      ),
+                      'border border-blue-500': isFinished,
                     },
                   )}
                 >
@@ -233,8 +244,7 @@ export const WorkFlowTimeline = ({
                       <div
                         className={cn('rounded-full w-6 h-6', {
                           ' border-muted-foreground border-2 border-t-transparent animate-spin ':
-                            !finishNodeIds.includes(x.data.component_id) &&
-                            sendLoading,
+                            !isFinished && sendLoading,
                         })}
                       ></div>
                     </div>
@@ -321,10 +331,10 @@ export const WorkFlowTimeline = ({
                 </section>
               </TimelineContent>
             </TimelineItem>
-            {hasTrace(x.data.component_id) && (
+            {traceTools && (
               <ToolTimelineItem
                 key={'tool_' + idx}
-                tools={filterTrace(x.data.component_id)}
+                tools={traceTools}
                 sendLoading={sendLoading}
                 isShare={isShare}
               ></ToolTimelineItem>

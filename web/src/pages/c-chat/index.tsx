@@ -253,7 +253,9 @@ export default function CChat() {
     stopOutputMessage,
     setDone,
     resetAnswerList,
-  } = useSendMessageBySSE(api.agentChatCompletion);
+  } = useSendMessageBySSE(api.agentChatCompletion, {
+    excludeFanOutFromContent: false,
+  });
   const { cancelConversation } = useCancelConversation();
   const taskId = answerList[0]?.task_id;
 

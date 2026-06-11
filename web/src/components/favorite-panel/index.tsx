@@ -123,20 +123,90 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function cleanTextToWordHtml(text: string, title: string): string {
-  const lines = text.split('\n');
+/* ── Markdown table parsing (tables pass through stripMarkdown as-is) ── */
+
+/** Extract headers, rows, and alignments from a markdown table string. */
+function parseMarkdownTable(tableText: string): {
+  headers: string[];
+  rows: string[][];
+  aligns: string[];
+} | null {
+  const lines = tableText.trim().split('\n');
+  if (lines.length < 2) return null;
+
+  const parseRow = (line: string) =>
+    line
+      .replace(/^\|/, '')
+      .replace(/\|$/, '')
+      .split('|')
+      .map((c) => c.trim());
+
+  const headers = parseRow(lines[0]);
+  if (headers.length === 0) return null;
+
+  const aligns = parseRow(lines[1]).map((cell) => {
+    const left = cell.startsWith(':');
+    const right = cell.endsWith(':');
+    if (left && right) return 'center';
+    if (right) return 'right';
+    return 'left';
+  });
+
+  const rows = lines.slice(2).map(parseRow);
+
+  return { headers, rows, aligns };
+}
+
+/** Render a parsed table as Word-compatible HTML. */
+function renderWordTable(
+  headers: string[],
+  rows: string[][],
+  aligns: string[],
+): string {
+  const border = 'border:1px solid #999;';
+  const td = (a: string) =>
+    `padding:3pt 6pt;${border}font-size:10pt;text-align:${a};`;
+  const th = (a: string) =>
+    `padding:3pt 6pt;${border}font-size:10pt;font-weight:bold;text-align:${a};background-color:#f5f5f5;`;
+
+  const thead = `<tr>${headers
+    .map(
+      (h, i) => `<th style="${th(aligns[i] || 'left')}">${escapeHtml(h)}</th>`,
+    )
+    .join('')}</tr>`;
+
+  const tbody = rows
+    .map(
+      (row) =>
+        `<tr>${row
+          .map(
+            (cell, i) =>
+              `<td style="${td(aligns[i] || 'left')}">${escapeHtml(cell)}</td>`,
+          )
+          .join('')}</tr>`,
+    )
+    .join('');
+
+  return `<table style="border-collapse:collapse;margin:10pt 0;width:100%;${border}">
+<thead>${thead}</thead>
+<tbody>${tbody}</tbody>
+</table>`;
+}
+
+/* ── Process a block of non-table text lines → HTML ── */
+
+const TABLE_BLOCK_RE = /\|.+\|\r?\n\|[-:| ]+\|\r?\n(?:\|.+\|\r?\n?)+/g;
+
+function processTextLines(lines: string[]): string[] {
   const parts: string[] = [];
-
-  parts.push(
-    `<h1 style="font-size:18pt;font-weight:bold;margin-bottom:12pt;color:#1a1a1a;">${escapeHtml(title)}</h1>`,
-  );
-
   let paraLines: string[] = [];
 
   function flushPara() {
     if (paraLines.length > 0) {
       parts.push(
-        `<p style="font-size:11pt;line-height:1.8;margin:0 0 8pt 0;text-align:justify;">${paraLines.map(escapeHtml).join('<br/>')}</p>`,
+        `<p style="font-size:11pt;line-height:1.8;margin:0 0 8pt 0;text-align:justify;">${paraLines
+          .map(escapeHtml)
+          .join('<br/>')}</p>`,
       );
       paraLines = [];
     }
@@ -145,16 +215,16 @@ function cleanTextToWordHtml(text: string, title: string): string {
   for (const line of lines) {
     const trimmed = line.trim();
 
-    // Role heading
     if (/^【(?:用户|助手)】$/.test(trimmed)) {
       flushPara();
       parts.push(
-        `<h2 style="font-size:14pt;font-weight:bold;margin-top:14pt;margin-bottom:6pt;color:#1a1a1a;">${escapeHtml(trimmed.replace(/【(.+)】/, '$1'))}</h2>`,
+        `<h2 style="font-size:14pt;font-weight:bold;margin-top:14pt;margin-bottom:6pt;color:#1a1a1a;">${escapeHtml(
+          trimmed.replace(/【(.+)】/, '$1'),
+        )}</h2>`,
       );
       continue;
     }
 
-    // Horizontal rule
     if (/^─{8,}$/.test(trimmed)) {
       flushPara();
       parts.push(
@@ -163,16 +233,52 @@ function cleanTextToWordHtml(text: string, title: string): string {
       continue;
     }
 
-    // Empty line → paragraph break
     if (!trimmed) {
       flushPara();
       continue;
     }
 
-    // Regular text line
     paraLines.push(line);
   }
   flushPara();
+
+  return parts;
+}
+
+function cleanTextToWordHtml(text: string, title: string): string {
+  // Normalize line endings
+  text = text.replace(/\r\n/g, '\n');
+
+  const parts: string[] = [];
+  parts.push(
+    `<h1 style="font-size:18pt;font-weight:bold;margin-bottom:12pt;color:#1a1a1a;">${escapeHtml(title)}</h1>`,
+  );
+
+  // Split into table / non-table blocks so markdown tables become Word tables
+  TABLE_BLOCK_RE.lastIndex = 0;
+  let cursor = 0;
+  let m: RegExpExecArray | null;
+  while ((m = TABLE_BLOCK_RE.exec(text)) !== null) {
+    // Text before this table
+    if (m.index > cursor) {
+      const before = text.slice(cursor, m.index).split('\n');
+      parts.push(...processTextLines(before));
+    }
+    // Table
+    const table = parseMarkdownTable(m[0]);
+    if (table) {
+      parts.push(renderWordTable(table.headers, table.rows, table.aligns));
+    } else {
+      // Fallback: render as regular text
+      parts.push(...processTextLines(m[0].split('\n')));
+    }
+    cursor = m.index + m[0].length;
+  }
+  // Remaining text after last table
+  if (cursor < text.length) {
+    const after = text.slice(cursor).split('\n');
+    parts.push(...processTextLines(after));
+  }
 
   return `<!DOCTYPE html>
 <html xmlns:o="urn:schemas-microsoft-com:office:office"

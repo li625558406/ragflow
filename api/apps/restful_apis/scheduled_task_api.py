@@ -59,6 +59,43 @@ def _get_state_file_path(task_name):
     return os.path.join(get_project_base_directory(), "rag", task_name.strip(), "_crawler_state.json")
 
 
+def _get_effective_tenant_id():
+    """Get the effective tenant_id for the current user.
+
+    If the user is a member of a team (via UserTenant), returns the team's
+    tenant_id so that scheduled tasks are shared among team members.
+    Otherwise falls back to the user's own ID.
+    """
+    from api.db.db_models import UserTenant
+    from common.constants import StatusEnum
+
+    membership = UserTenant.select().where(
+        (UserTenant.user_id == current_user.id) &
+        (UserTenant.status == StatusEnum.VALID.value)
+    ).first()
+
+    if membership:
+        return membership.tenant_id
+    return current_user.id
+
+
+def _check_task_ownership(task_id):
+    """Fetch a scheduled task and verify tenant ownership.
+
+    Returns (ok, obj, error_message).  When ok is False the caller should
+    return the error_message to the client.
+    """
+    e, obj = ScheduledTaskService.get_by_id(task_id)
+    if not e:
+        return False, None, "Task not found."
+
+    tenant_id = _get_effective_tenant_id()
+    if obj.tenant_id != tenant_id:
+        return False, None, "No authorization."
+
+    return True, obj, None
+
+
 @manager.route("/scheduled-tasks", methods=["POST"])  # noqa: F821
 @login_required
 async def create_scheduled_task():
@@ -67,7 +104,7 @@ async def create_scheduled_task():
         return get_data_error_result(message="Request body is required.")
 
     req["id"] = get_uuid()
-    req["tenant_id"] = current_user.id
+    req["tenant_id"] = _get_effective_tenant_id()
 
     # Compute initial next_run_time (in milliseconds, matching current_timestamp())
     if req.get("schedule_type") == "cron" and req.get("cron_expression"):
@@ -105,7 +142,7 @@ def list_scheduled_tasks():
         enabled = enabled_str.lower() == "true"
 
     objs, total = ScheduledTaskService.get_list(
-        tenant_id=current_user.id,
+        tenant_id=_get_effective_tenant_id(),
         page_number=page_number,
         items_per_page=items_per_page,
         name=name,
@@ -117,9 +154,9 @@ def list_scheduled_tasks():
 @manager.route("/scheduled-tasks/<task_id>", methods=["GET"])  # noqa: F821
 @login_required
 def get_scheduled_task(task_id):
-    e, obj = ScheduledTaskService.get_by_id(task_id)
-    if not e:
-        return get_data_error_result(message="Task not found.")
+    ok, obj, err = _check_task_ownership(task_id)
+    if not ok:
+        return get_data_error_result(message=err)
     return get_json_result(data=obj.to_dict())
 
 
@@ -130,9 +167,9 @@ async def update_scheduled_task(task_id):
     if not req:
         return get_data_error_result(message="Request body is required.")
 
-    e, obj = ScheduledTaskService.get_by_id(task_id)
-    if not e:
-        return get_data_error_result(message="Task not found.")
+    ok, obj, err = _check_task_ownership(task_id)
+    if not ok:
+        return get_data_error_result(message=err)
 
     # Migrate crawler state file if task name changed
     new_name = req.get("name")
@@ -180,39 +217,40 @@ async def update_scheduled_task(task_id):
 @manager.route("/scheduled-tasks/<task_id>", methods=["DELETE"])  # noqa: F821
 @login_required
 def delete_scheduled_task(task_id):
-    e, obj = ScheduledTaskService.get_by_id(task_id)
-    if e:
-        # New unified crawler: delete from crawler_state DB table
-        if _uses_unified_crawler(obj):
-            site_id = _resolve_site_id(obj)
-            if site_id:
-                try:
-                    from api.db.db_models import CrawlerState
-                    CrawlerState.delete().where(
-                        (CrawlerState.site_id == site_id) &
-                        (CrawlerState.tenant_id == obj.tenant_id)
-                    ).execute()
-                except Exception as ex:
-                    logging.error("Failed to delete crawler_state for %s: %s", site_id, ex)
-
-        # Legacy: delete file-based state
-        state_path = _get_state_file_path(obj.name)
-        if os.path.exists(state_path):
+    ok, obj, err = _check_task_ownership(task_id)
+    if not ok:
+        return get_data_error_result(message=err)
+    # New unified crawler: delete from crawler_state DB table
+    if _uses_unified_crawler(obj):
+        site_id = _resolve_site_id(obj)
+        if site_id:
             try:
-                os.remove(state_path)
-            except Exception:
-                pass
+                from api.db.db_models import CrawlerState
+                CrawlerState.delete().where(
+                    (CrawlerState.site_id == site_id) &
+                    (CrawlerState.tenant_id == obj.tenant_id)
+                ).execute()
+            except Exception as ex:
+                logging.error("Failed to delete crawler_state for %s: %s", site_id, ex)
 
-        # Migrate task name directory if name changed
-        new_name = obj.name
-        old_dir = os.path.dirname(state_path)
-        if os.path.isdir(old_dir) and not any(
-            f for f in os.listdir(old_dir) if f != "_crawler_state.json"
-        ):
-            try:
-                shutil.rmtree(old_dir)
-            except Exception:
-                pass
+    # Legacy: delete file-based state
+    state_path = _get_state_file_path(obj.name)
+    if os.path.exists(state_path):
+        try:
+            os.remove(state_path)
+        except Exception:
+            pass
+
+    # Migrate task name directory if name changed
+    new_name = obj.name
+    old_dir = os.path.dirname(state_path)
+    if os.path.isdir(old_dir) and not any(
+        f for f in os.listdir(old_dir) if f != "_crawler_state.json"
+    ):
+        try:
+            shutil.rmtree(old_dir)
+        except Exception:
+            pass
 
     ScheduledTaskService.delete_by_id(task_id)
     ScheduledTaskLogService.filter_delete(
@@ -224,23 +262,25 @@ def delete_scheduled_task(task_id):
 @manager.route("/scheduled-tasks/<task_id>/toggle", methods=["POST"])  # noqa: F821
 @login_required
 async def toggle_scheduled_task(task_id):
+    ok, obj, err = _check_task_ownership(task_id)
+    if not ok:
+        return get_data_error_result(message=err)
+
     req = await get_request_json()
     enabled = req.get("enabled", True)
     data = {"enabled": enabled}
 
     if enabled:
-        e, obj = ScheduledTaskService.get_by_id(task_id)
-        if e:
-            if obj.schedule_type == "cron" and obj.cron_expression:
-                try:
-                    from croniter import croniter
+        if obj.schedule_type == "cron" and obj.cron_expression:
+            try:
+                from croniter import croniter
 
-                    cron = croniter(obj.cron_expression, datetime.now().astimezone())
-                    data["next_run_time"] = int(cron.get_next() * 1000)
-                except (ValueError, ImportError):
-                    pass
-            elif obj.schedule_type == "interval" and obj.interval_seconds:
-                data["next_run_time"] = current_timestamp() + obj.interval_seconds * 1000
+                cron = croniter(obj.cron_expression, datetime.now().astimezone())
+                data["next_run_time"] = int(cron.get_next() * 1000)
+            except (ValueError, ImportError):
+                pass
+        elif obj.schedule_type == "interval" and obj.interval_seconds:
+            data["next_run_time"] = current_timestamp() + obj.interval_seconds * 1000
 
     ScheduledTaskService.update_by_id(task_id, data)
     return get_json_result(data=data)
@@ -249,9 +289,9 @@ async def toggle_scheduled_task(task_id):
 @manager.route("/scheduled-tasks/<task_id>/state", methods=["GET"])  # noqa: F821
 @login_required
 def get_scheduled_task_state(task_id):
-    e, obj = ScheduledTaskService.get_by_id(task_id)
-    if not e:
-        return get_data_error_result(message="Task not found.")
+    ok, obj, err = _check_task_ownership(task_id)
+    if not ok:
+        return get_data_error_result(message=err)
 
     # New unified crawler: read from crawler_state DB table (all sections)
     if _uses_unified_crawler(obj):
@@ -299,9 +339,9 @@ def get_scheduled_task_state(task_id):
 @manager.route("/scheduled-tasks/<task_id>/state", methods=["PUT"])  # noqa: F821
 @login_required
 async def update_scheduled_task_state(task_id):
-    e, obj = ScheduledTaskService.get_by_id(task_id)
-    if not e:
-        return get_data_error_result(message="Task not found.")
+    ok, obj, err = _check_task_ownership(task_id)
+    if not ok:
+        return get_data_error_result(message=err)
 
     req = await get_request_json()
     if req is None:
@@ -348,9 +388,9 @@ async def update_scheduled_task_state(task_id):
 @login_required
 async def run_scheduled_task_now(task_id):
     """Enqueue a scheduled task to Redis for immediate execution by task_executor."""
-    e, obj = ScheduledTaskService.get_by_id(task_id)
-    if not e:
-        return get_data_error_result(message="Task not found.")
+    ok, obj, err = _check_task_ownership(task_id)
+    if not ok:
+        return get_data_error_result(message=err)
 
     # Clear any stale cancel flag from a previous stop, so a new
     # execution is not immediately rejected by the pre-start check.
@@ -390,6 +430,10 @@ async def run_scheduled_task_now(task_id):
 @manager.route("/scheduled-tasks/<task_id>/logs", methods=["GET"])  # noqa: F821
 @login_required
 def list_scheduled_task_logs(task_id):
+    _, _, err = _check_task_ownership(task_id)
+    if err:
+        return get_data_error_result(message=err)
+
     page_number = int(request.args.get("page", 1))
     items_per_page = int(request.args.get("items_per_page", 15))
 
@@ -405,9 +449,9 @@ def stop_scheduled_task(task_id):
     """Cancel a running scheduled task execution."""
     from api.db.services.task_service import has_canceled
 
-    e, obj = ScheduledTaskService.get_by_id(task_id)
-    if not e:
-        return get_data_error_result(message="Task not found.")
+    ok, obj, err = _check_task_ownership(task_id)
+    if not ok:
+        return get_data_error_result(message=err)
 
     REDIS_CONN.set(f"{task_id}-cancel", "x", 3600)
 

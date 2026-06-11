@@ -61,16 +61,24 @@ class FavoriteService(CommonService):
         page_number: int = 1,
         items_per_page: int = 20,
     ) -> Tuple[List[dict], int]:
-        query = (
-            cls.model.select()
+        list_fields = (
+            cls.model.id,
+            cls.model.title,
+            cls.model.message_ids,
+            cls.model.created_at,
+            cls.model.updated_at,
+        )
+        base_query = (
+            cls.model.select(*list_fields)
             .where(
                 (cls.model.tenant_id == tenant_id)
                 & (cls.model.user_id == user_id)
             )
-            .order_by(cls.model.updated_at.desc())
         )
-        total = query.count()
-        query = query.paginate(page_number, items_per_page)
+        total = base_query.count()
+        query = base_query.order_by(cls.model.updated_at.desc()).paginate(
+            page_number, items_per_page
+        )
         return list(query.dicts()), total
 
     @classmethod
