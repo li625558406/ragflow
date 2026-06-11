@@ -19,12 +19,15 @@ import logging
 import os
 import re
 import tempfile
+import time
 from copy import deepcopy
 from types import SimpleNamespace
 
 from quart import Blueprint, Response, request
 
 from api.apps import current_user, login_required
+
+from rag.utils.redis_conn import REDIS_CONN
 
 manager = Blueprint("rest_chat_api", __name__)
 from api.db.joint_services.tenant_model_service import (
@@ -1025,31 +1028,127 @@ async def recommendation():
     return get_json_result(data=[re.sub(r"^[0-9]\. ", "", a) for a in ans.split("\n") if re.match(r"^[0-9]\. ", a)])
 
 
+# ---------------------------------------------------------------------------
+# C-end chat API 高并发防护: per-user rate limiting + concurrent SSE slot control
+# ---------------------------------------------------------------------------
+
+# Token bucket 配置: (capacity, rate_per_second)
+# 60 burst, 3/s 恢复 → 稳态 ~180次/分钟，突发支持 60 并发请求
+CHAT_RATE_LIMIT = (60, 3)
+
+# 单用户最大并发 SSE 连接数
+MAX_CONCURRENT_SSE_PER_USER = 10
+
+
+def _check_chat_rate_limit(user_id: str):
+    """per-user token bucket 限流。
+
+    Redis 不可用时自动放行（不阻塞业务）。
+    返回 None 表示通过，返回 Response 表示被限流。
+    """
+    if not REDIS_CONN.is_alive():
+        return None
+
+    capacity, rate = CHAT_RATE_LIMIT
+    key = f"chat_rl:{user_id}"
+    now = time.time()
+
+    try:
+        result = REDIS_CONN.lua_token_bucket(
+            keys=[key], args=[capacity, rate, now, 1],
+        )
+    except Exception:
+        return None
+
+    if result and int(result[0]) == 1:
+        return None
+
+    return get_data_error_result(
+        message="Too many requests. Please slow down.",
+        code=RetCode.TOO_MANY_REQUESTS,
+    )
+
+
+def _acquire_concurrent_slot(user_id: str) -> bool:
+    """尝试获取一个并发 SSE 槽位。
+
+    Redis 不可用时自动放行。
+    返回 True 表示获取成功，False 表示已达上限。
+    """
+    if not REDIS_CONN.is_alive():
+        return True
+
+    key = f"chat_sses:{user_id}"
+
+    try:
+        # SET NX 保证 key 从创建起就带 TTL，防止进程崩溃后计数泄漏
+        REDIS_CONN.REDIS.set(key, 0, ex=300, nx=True)
+        count = REDIS_CONN.REDIS.incr(key)
+
+        if count > MAX_CONCURRENT_SSE_PER_USER:
+            REDIS_CONN.REDIS.decr(key)
+            return False
+        return True
+    except Exception:
+        return True
+
+
+def _release_concurrent_slot(user_id: str):
+    """释放一个并发 SSE 槽位。"""
+    if not REDIS_CONN.is_alive():
+        return
+
+    key = f"chat_sses:{user_id}"
+
+    try:
+        # 仅在计数 > 0 时才递减，防止异常双调导致负数
+        count = REDIS_CONN.REDIS.get(key)
+        if count and int(count) > 0:
+            REDIS_CONN.REDIS.decr(key)
+    except Exception:
+        pass
+
+
 @manager.route("/chat/completions", methods=["POST"])  # noqa: F821
 @login_required
 @validate_request("messages")
 async def session_completion(chat_id_in_arg=""):
-    req = await get_request_json()
-    msg = []
-    for m in req["messages"]:
-        if m["role"] == "system":
-            continue
-        if m["role"] == "assistant" and not msg:
-            continue
-        msg.append(m)
-    message_id = msg[-1].get("id") if msg else None
-    chat_id = req.pop("chat_id", "") or ""
-    chat_id = chat_id or chat_id_in_arg
-    session_id = req.pop("session_id", "") or ""
-    chat_model_id = req.pop("llm_id", "")
+    user_id = current_user.id
 
-    chat_model_config = {}
-    for model_config in ["temperature", "top_p", "frequency_penalty", "presence_penalty", "max_tokens"]:
-        config = req.get(model_config)
-        if config:
-            chat_model_config[model_config] = config
+    # ── per-user rate limit ──
+    rate_limit_error = _check_chat_rate_limit(user_id)
+    if rate_limit_error:
+        return rate_limit_error
+
+    # ── concurrent SSE slot ──
+    if not _acquire_concurrent_slot(user_id):
+        return get_data_error_result(
+            message="Too many concurrent requests. Please wait for existing requests to complete.",
+            code=RetCode.TOO_MANY_REQUESTS,
+        )
+    slot_held = True
 
     try:
+        req = await get_request_json()
+        msg = []
+        for m in req["messages"]:
+            if m["role"] == "system":
+                continue
+            if m["role"] == "assistant" and not msg:
+                continue
+            msg.append(m)
+        message_id = msg[-1].get("id") if msg else None
+        chat_id = req.pop("chat_id", "") or ""
+        chat_id = chat_id or chat_id_in_arg
+        session_id = req.pop("session_id", "") or ""
+        chat_model_id = req.pop("llm_id", "")
+
+        chat_model_config = {}
+        for model_config in ["temperature", "top_p", "frequency_penalty", "presence_penalty", "max_tokens"]:
+            config = req.get(model_config)
+            if config:
+                chat_model_config[model_config] = config
+
         conv = None
         if session_id and not chat_id:
             return get_data_error_result(message="`chat_id` is required when `session_id` is provided.")
@@ -1111,9 +1210,12 @@ async def session_completion(chat_id_in_arg=""):
             except Exception as ex:
                 logging.exception(ex)
                 yield "data:" + json.dumps({"code": 500, "message": str(ex), "data": {"answer": "**ERROR**: " + str(ex), "reference": []}}, ensure_ascii=False) + "\n\n"
+            finally:
+                _release_concurrent_slot(user_id)
             yield "data:" + json.dumps({"code": 0, "message": "", "data": True}, ensure_ascii=False) + "\n\n"
 
         if stream_mode:
+            slot_held = False
             resp = Response(stream(), mimetype="text/event-stream")
             resp.headers.add_header("Cache-control", "no-cache")
             resp.headers.add_header("Connection", "keep-alive")
@@ -1127,6 +1229,11 @@ async def session_completion(chat_id_in_arg=""):
             if conv is not None:
                 ConversationService.update_by_id(conv.id, conv.to_dict())
             break
+        _release_concurrent_slot(user_id)
+        slot_held = False
         return get_json_result(data=answer)
     except Exception as ex:
         return server_error_response(ex)
+    finally:
+        if slot_held:
+            _release_concurrent_slot(user_id)
