@@ -31,7 +31,7 @@ class ScheduledTaskService(CommonService):
     @DB.connection_context()
     def get_list(
         cls,
-        tenant_id: str,
+        tenant_id: str | list = None,
         page_number: int = 1,
         items_per_page: int = 15,
         orderby: str = "create_time",
@@ -39,7 +39,10 @@ class ScheduledTaskService(CommonService):
         name: str = None,
         enabled: bool = None,
     ) -> Tuple[List[dict], int]:
-        query = cls.model.select().where(cls.model.tenant_id == tenant_id)
+        if isinstance(tenant_id, list):
+            query = cls.model.select().where(cls.model.tenant_id.in_(tenant_id))
+        else:
+            query = cls.model.select().where(cls.model.tenant_id == tenant_id)
         if name:
             query = query.where(cls.model.name ** f"%{name}%")
         if enabled is not None:

@@ -84,13 +84,17 @@ def _check_task_ownership(task_id):
 
     Returns (ok, obj, error_message).  When ok is False the caller should
     return the error_message to the client.
+
+    A task is accessible if its tenant_id matches either the effective
+    team tenant_id (for tasks shared across the team) OR the user's own
+    ID (for legacy tasks created before team-level sharing was enabled).
     """
     e, obj = ScheduledTaskService.get_by_id(task_id)
     if not e:
         return False, None, "Task not found."
 
-    tenant_id = _get_effective_tenant_id()
-    if obj.tenant_id != tenant_id:
+    effective_tid = _get_effective_tenant_id()
+    if obj.tenant_id not in (effective_tid, current_user.id):
         return False, None, "No authorization."
 
     return True, obj, None
@@ -141,8 +145,12 @@ def list_scheduled_tasks():
     if enabled_str is not None:
         enabled = enabled_str.lower() == "true"
 
+    # Query both team-scoped tasks (created after this fix) and
+    # personal tasks (created before the fix, so none are orphaned).
+    effective_tid = _get_effective_tenant_id()
+    tenant_ids = [effective_tid] if effective_tid == current_user.id else [effective_tid, current_user.id]
     objs, total = ScheduledTaskService.get_list(
-        tenant_id=_get_effective_tenant_id(),
+        tenant_id=tenant_ids,
         page_number=page_number,
         items_per_page=items_per_page,
         name=name,
