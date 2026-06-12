@@ -8,6 +8,7 @@ import {
   ConfirmDeleteDialog,
   ConfirmDeleteDialogNode,
 } from '@/components/confirm-delete-dialog';
+import DynamicIcon from '@/components/dynamic-icon';
 import FavoriteDialog from '@/components/favorite-dialog';
 import FavoritePanel from '@/components/favorite-panel';
 import {
@@ -30,7 +31,29 @@ import { useClickDrawer } from '@/components/pdf-drawer/hooks';
 import { RAGFlowAvatar } from '@/components/ragflow-avatar';
 import ToolsPanel from '@/components/tools';
 import { Textarea } from '@/components/ui/textarea';
-import { CheckCircle2, ChevronRight, Loader2, XCircle } from 'lucide-react';
+import {
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  Download,
+  FileText,
+  Loader2,
+  LogOut,
+  Menu,
+  MessageSquare,
+  Paperclip,
+  Plus,
+  RefreshCw,
+  Send,
+  Square,
+  Star,
+  Trash2,
+  Upload,
+  X,
+  XCircle,
+} from 'lucide-react';
 
 import { RealtimeAudioButton } from '@/components/realtime-audio-button';
 import {
@@ -61,7 +84,7 @@ import {
 } from '@/pages/agent/chat/use-send-agent-message';
 import { AgentChatContext } from '@/pages/agent/context';
 import api from '@/utils/api';
-import { Upload, X } from 'lucide-react';
+
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { v4 as uuid } from 'uuid';
@@ -1090,19 +1113,7 @@ export default function CChat() {
           {/* Left: Logo */}
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-[#14B8A6] flex items-center justify-center">
-              <svg
-                className="w-4 h-4 text-white"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                />
-              </svg>
+              <FileText className="w-4 h-4 text-white" strokeWidth={2} />
             </div>
             <span className="text-sm font-bold text-[#000000] hidden sm:inline">
               标书分析助手
@@ -1117,27 +1128,27 @@ export default function CChat() {
                   {
                     key: 'chat',
                     label: '对话',
-                    icon: 'M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z',
+                    icon: 'message-circle',
                   },
                   {
                     key: 'collaboration',
                     label: '协作',
-                    icon: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z',
+                    icon: 'users',
                   },
                   {
                     key: 'tools',
                     label: '工具',
-                    icon: 'M11.42 15.17l-5.658 3.286a1 1 0 01-1.414-.386l-1.894-3.28a1 1 0 01.386-1.364l5.658-3.286a1 1 0 011.414.386l1.894 3.28a1 1 0 01-.386 1.364zM21.758 8.59l-5.658 3.286a1 1 0 01-1.414-.386l-1.894-3.28a1 1 0 01.386-1.364l5.658-3.286a1 1 0 011.414.386l1.894 3.28a1 1 0 01-.386 1.364z',
+                    icon: 'wrench',
                   },
                   {
                     key: 'favorites',
                     label: '收藏',
-                    icon: 'M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z',
+                    icon: 'bookmark',
                   },
                   {
                     key: 'bid',
                     label: '标书',
-                    icon: 'M9 2a1 1 0 000 2h2v2.1A7 7 0 005.1 11H3a1 1 0 100 2h2.1A7 7 0 0011 17.9V20H9a1 1 0 100 2h6a1 1 0 100-2h-2v-2.1A7 7 0 0018.9 13H21a1 1 0 100-2h-2.1A7 7 0 0013 6.1V4h2a1 1 0 100-2H9zm2 16.9V19h2v-.1a5 5 0 004.9-4.9H18a1 1 0 100-2h-.1A5 5 0 0013 7.1V7h-2v.1A5 5 0 007.1 12H7a1 1 0 100 2h.1A5 5 0 0011 18.9z',
+                    icon: 'scroll-text',
                   },
                 ] as const
               ).map((tab) => (
@@ -1150,19 +1161,11 @@ export default function CChat() {
                       : 'text-[#333333] hover:text-[#000000]'
                   }`}
                 >
-                  <svg
+                  <DynamicIcon
+                    name={tab.icon}
                     className="w-4 h-4"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={1.5}
-                      d={tab.icon}
-                    />
-                  </svg>
+                    strokeWidth={1.5}
+                  />
                   <span className="hidden sm:inline">{tab.label}</span>
                 </button>
               ))}
@@ -1184,19 +1187,7 @@ export default function CChat() {
               className="text-[#525252] hover:text-[#000000] transition-colors p-1.5 rounded-lg hover:bg-[#EAEAEA]"
               title="退出登录"
             >
-              <svg
-                className="w-4 h-4"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={1.5}
-                  d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
-                />
-              </svg>
+              <LogOut className="w-4 h-4" strokeWidth={1.5} />
             </button>
           </div>
         </header>
@@ -1225,19 +1216,7 @@ export default function CChat() {
                   className="text-[#333333] hover:text-[#000000]"
                   onClick={() => setSidebarOpen(false)}
                 >
-                  <svg
-                    className="w-5 h-5"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M6 18L18 6M6 6l12 12"
-                    />
-                  </svg>
+                  <X className="w-5 h-5" strokeWidth={2} />
                 </button>
               </div>
 
@@ -1251,80 +1230,61 @@ export default function CChat() {
                   }}
                   className="w-full flex items-center justify-center gap-2 bg-[#000000] hover:bg-[#000000] text-white py-2 rounded-lg transition-colors font-medium text-sm"
                 >
-                  <svg
-                    className="w-4 h-4"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M12 4v16m8-8H4"
-                    />
-                  </svg>
-                  新建分析
+                  <Plus className="w-4 h-4" strokeWidth={2} />
+                  新对话
                 </button>
               </div>
 
-              {/* Agent selector */}
-              <div className="px-3 pb-2">
-                <div className="relative">
-                  <button
-                    onClick={() => setAgentDropdownOpen(!agentDropdownOpen)}
-                    className="w-full flex items-center justify-between bg-[#EAEAEA] text-[#000000] text-sm rounded-lg px-3 py-1.5 border border-[#D4D4D4] hover:border-[#000000] transition truncate"
-                  >
-                    <span className="truncate">
-                      {agents.find((a) => a.id === currentAgentId)?.title ||
-                        '选择智能体...'}
-                    </span>
-                    <svg
-                      className={`w-3.5 h-3.5 shrink-0 ml-1.5 transition-transform ${agentDropdownOpen ? 'rotate-180' : ''}`}
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
+              {/* Agent selector - hidden */}
+              {false && (
+                <div className="px-3 pb-2">
+                  <div className="relative">
+                    <button
+                      onClick={() => setAgentDropdownOpen(!agentDropdownOpen)}
+                      className="w-full flex items-center justify-between bg-[#EAEAEA] text-[#000000] text-sm rounded-lg px-3 py-1.5 border border-[#D4D4D4] hover:border-[#000000] transition truncate"
                     >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
+                      <span className="truncate">
+                        {agents.find((a) => a.id === currentAgentId)?.title ||
+                          '选择智能体...'}
+                      </span>
+                      <ChevronDown
+                        className={`w-3.5 h-3.5 shrink-0 ml-1.5 transition-transform ${agentDropdownOpen ? 'rotate-180' : ''}`}
                         strokeWidth={2}
-                        d="M19 9l-7 7-7-7"
                       />
-                    </svg>
-                  </button>
-                  {agentDropdownOpen && (
-                    <>
-                      <div
-                        className="fixed inset-0 z-10"
-                        onClick={() => setAgentDropdownOpen(false)}
-                      />
-                      <div
-                        className="absolute top-full left-0 right-0 mt-1 bg-white border border-[#D4D4D4] rounded-lg shadow-[0_4px_16px_rgba(0,0,0,0.08)] z-20 max-h-52 overflow-y-auto py-1"
-                        style={{ scrollbarWidth: 'thin' }}
-                      >
-                        {agents.map((a) => (
-                          <button
-                            key={a.id}
-                            onClick={() => {
-                              switchAgent(a.id);
-                              loadSessions(a.id);
-                              setAgentDropdownOpen(false);
-                            }}
-                            className={`w-full text-left px-3 py-2 text-sm transition-colors truncate ${
-                              a.id === currentAgentId
-                                ? 'bg-[#EAEAEA] text-[#000000] font-medium'
-                                : 'text-[#333333] hover:bg-[#EAEAEA] hover:text-[#000000]'
-                            }`}
-                          >
-                            {a.title || '未命名智能体'}
-                          </button>
-                        ))}
-                      </div>
-                    </>
-                  )}
+                    </button>
+                    {agentDropdownOpen && (
+                      <>
+                        <div
+                          className="fixed inset-0 z-10"
+                          onClick={() => setAgentDropdownOpen(false)}
+                        />
+                        <div
+                          className="absolute top-full left-0 right-0 mt-1 bg-white border border-[#D4D4D4] rounded-lg shadow-[0_4px_16px_rgba(0,0,0,0.08)] z-20 max-h-52 overflow-y-auto py-1"
+                          style={{ scrollbarWidth: 'thin' }}
+                        >
+                          {agents.map((a) => (
+                            <button
+                              key={a.id}
+                              onClick={() => {
+                                switchAgent(a.id);
+                                loadSessions(a.id);
+                                setAgentDropdownOpen(false);
+                              }}
+                              className={`w-full text-left px-3 py-2 text-sm transition-colors truncate ${
+                                a.id === currentAgentId
+                                  ? 'bg-[#EAEAEA] text-[#000000] font-medium'
+                                  : 'text-[#333333] hover:bg-[#EAEAEA] hover:text-[#000000]'
+                              }`}
+                            >
+                              {a.title || '未命名智能体'}
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
                 </div>
-              </div>
+              )}
 
               {/* Session list header */}
               <div className="px-4 pb-2">
@@ -1361,19 +1321,10 @@ export default function CChat() {
                             : 'bg-[#EAEAEA]'
                         }`}
                       >
-                        <svg
+                        <MessageSquare
                           className={`w-4 h-4 ${s.id === currentSessionId ? 'text-[#000000]' : 'text-[#525252]'}`}
-                          fill="none"
-                          stroke="currentColor"
                           strokeWidth={1.5}
-                          viewBox="0 0 24 24"
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"
-                          />
-                        </svg>
+                        />
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center justify-between">
@@ -1393,19 +1344,7 @@ export default function CChat() {
                                 e.stopPropagation();
                               }}
                             >
-                              <svg
-                                className="w-3 h-3"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  strokeWidth={2}
-                                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                                />
-                              </svg>
+                              <Trash2 className="w-3 h-3" strokeWidth={2} />
                             </button>
                           </ConfirmDeleteDialog>
                         </div>
@@ -1425,33 +1364,9 @@ export default function CChat() {
               title={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
             >
               {sidebarCollapsed ? (
-                <svg
-                  className="size-3.5"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M9 5l7 7-7 7"
-                  />
-                </svg>
+                <ChevronRight className="size-3.5" strokeWidth={2} />
               ) : (
-                <svg
-                  className="size-3.5"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M15 19l-7-7 7-7"
-                  />
-                </svg>
+                <ChevronRight className="size-3.5 rotate-180" strokeWidth={2} />
               )}
             </button>
           )}
@@ -1472,19 +1387,7 @@ export default function CChat() {
                   className="md:hidden mr-2 p-1.5 rounded-lg hover:bg-[#EAEAEA] transition"
                   onClick={() => setSidebarOpen(true)}
                 >
-                  <svg
-                    className="w-5 h-5 text-[#333333]"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M4 6h16M4 12h16M4 18h16"
-                    />
-                  </svg>
+                  <Menu className="w-5 h-5 text-[#333333]" strokeWidth={2} />
                 </button>
                 <div className="flex items-center gap-2">
                   <h2 className="text-sm font-semibold text-[#000000]">
@@ -1501,19 +1404,10 @@ export default function CChat() {
                   <div className="w-full max-w-2xl cs-input-enter">
                     <div className="text-center mb-6">
                       <div className="w-14 h-14 bg-[#EAEAEA] rounded-2xl mx-auto flex items-center justify-center mb-4">
-                        <svg
+                        <MessageSquare
                           className="w-7 h-7 text-[#000000]"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth={1.5}
-                            d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"
-                          />
-                        </svg>
+                          strokeWidth={1.5}
+                        />
                       </div>
                       <p className="text-[#333333] text-sm">
                         选择或创建一个对话开始分析
@@ -1529,25 +1423,25 @@ export default function CChat() {
                       <div className="grid grid-cols-2 gap-2.5 mt-5 max-w-sm mx-auto">
                         {[
                           {
-                            icon: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z',
+                            icon: 'file-search-2',
                             label: '招标文件解析',
                             color: '#2ec4b6',
                             bg: '#e6f9f7',
                           },
                           {
-                            icon: 'M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z',
+                            icon: 'bar-chart-3',
                             label: '智能评分分析',
                             color: '#f59e0b',
                             bg: '#fef9e7',
                           },
                           {
-                            icon: 'M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z',
+                            icon: 'file-search-2',
                             label: '关键信息提取',
                             color: '#4f8ce8',
                             bg: '#eef4ff',
                           },
                           {
-                            icon: 'M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z',
+                            icon: 'shield-check',
                             label: '合规性检查',
                             color: '#8b5cf6',
                             bg: '#f3f0ff',
@@ -1561,19 +1455,12 @@ export default function CChat() {
                               className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors"
                               style={{ backgroundColor: card.bg }}
                             >
-                              <svg
+                              <DynamicIcon
+                                name={card.icon}
                                 className="w-4 h-4"
-                                fill="none"
-                                stroke={card.color}
                                 strokeWidth={1.5}
-                                viewBox="0 0 24 24"
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  d={card.icon}
-                                />
-                              </svg>
+                                color={card.color}
+                              />
                             </div>
                             <span className="text-xs font-medium text-[#1a1a1a] group-hover:text-[#000000] transition-colors">
                               {card.label}
@@ -1631,6 +1518,31 @@ export default function CChat() {
                               const dt = new DataTransfer();
                               for (const f of e.dataTransfer.files)
                                 dt.items.add(f);
+                              fileInput.files = dt.files;
+                              fileInput.dispatchEvent(
+                                new Event('change', { bubbles: true }),
+                              );
+                            }
+                          }}
+                          onPaste={(e) => {
+                            const items = e.clipboardData?.items;
+                            if (!items) return;
+                            const fileItems: File[] = [];
+                            for (let i = 0; i < items.length; i++) {
+                              const file = items[i].getAsFile?.();
+                              if (file) fileItems.push(file);
+                            }
+                            if (!fileItems.length) return;
+                            e.preventDefault();
+                            e.stopPropagation();
+                            const fileInput = e.currentTarget
+                              .closest('[data-slot="file-upload"]')
+                              ?.querySelector(
+                                'input[type="file"]',
+                              ) as HTMLInputElement;
+                            if (fileInput) {
+                              const dt = new DataTransfer();
+                              for (const f of fileItems) dt.items.add(f);
                               fileInput.files = dt.files;
                               fileInput.dispatchEvent(
                                 new Event('change', { bubbles: true }),
@@ -1703,19 +1615,10 @@ export default function CChat() {
                                     disabled={sendLoading}
                                     className="shrink-0 w-9 h-9 flex items-center justify-center text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
                                   >
-                                    <svg
+                                    <Paperclip
                                       className="w-4 h-4"
-                                      fill="none"
-                                      stroke="currentColor"
-                                      viewBox="0 0 24 24"
-                                    >
-                                      <path
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        strokeWidth={2}
-                                        d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
-                                      />
-                                    </svg>
+                                      strokeWidth={2}
+                                    />
                                   </button>
                                 </FileUploadTrigger>
                               </TooltipTrigger>
@@ -1729,38 +1632,18 @@ export default function CChat() {
                                 disabled={!value.trim()}
                                 className="shrink-0 w-9 h-9 flex items-center justify-center bg-[#000000] hover:bg-[#1a1a1a] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
                               >
-                                <svg
-                                  className="w-4 h-4"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  viewBox="0 0 24 24"
-                                >
-                                  <path
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                    strokeWidth={2}
-                                    d="M5 12h14M12 5l7 7-7 7"
-                                  />
-                                </svg>
+                                <Send className="w-4 h-4" strokeWidth={2} />
                               </button>
                             ) : (
                               <button
                                 onClick={stopConversation}
                                 className="shrink-0 w-9 h-9 flex items-center justify-center bg-red-400 text-white rounded-lg hover:bg-red-500 transition active:scale-95"
                               >
-                                <svg
+                                <Square
                                   className="w-3.5 h-3.5"
                                   fill="currentColor"
-                                  viewBox="0 0 24 24"
-                                >
-                                  <rect
-                                    x="6"
-                                    y="6"
-                                    width="12"
-                                    height="12"
-                                    rx="2"
-                                  />
-                                </svg>
+                                  stroke="none"
+                                />
                               </button>
                             )}
                           </div>
@@ -1783,26 +1666,10 @@ export default function CChat() {
                     >
                       {isLoadingSession ? (
                         <div className="flex flex-col items-center justify-center py-20">
-                          <svg
+                          <Loader2
                             className="w-7 h-7 animate-spin text-[#000000] mb-4"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                          >
-                            <circle
-                              cx="12"
-                              cy="12"
-                              r="10"
-                              stroke="currentColor"
-                              strokeWidth="3"
-                              opacity="0.25"
-                            />
-                            <path
-                              d="M12 2a10 10 0 019.95 9"
-                              stroke="currentColor"
-                              strokeWidth="3"
-                              strokeLinecap="round"
-                            />
-                          </svg>
+                            strokeWidth={3}
+                          />
                           <p className="text-[#333333] text-sm">
                             加载对话中...
                           </p>
@@ -1845,19 +1712,10 @@ export default function CChat() {
                                         }}
                                       >
                                         {selectedMessageIds.has(msg.id) && (
-                                          <svg
+                                          <Check
                                             className="w-3 h-3"
-                                            fill="none"
-                                            stroke="currentColor"
-                                            viewBox="0 0 24 24"
-                                          >
-                                            <path
-                                              strokeLinecap="round"
-                                              strokeLinejoin="round"
-                                              strokeWidth={3}
-                                              d="M5 13l4 4L19 7"
-                                            />
-                                          </svg>
+                                            strokeWidth={3}
+                                          />
                                         )}
                                       </button>
                                     </div>
@@ -1873,19 +1731,10 @@ export default function CChat() {
                                                 key={f.id}
                                                 className="inline-flex items-center gap-1 px-2 py-0.5 bg-white/15 rounded-md text-[11px] text-white/90"
                                               >
-                                                <svg
+                                                <FileText
                                                   className="w-3 h-3 shrink-0"
-                                                  fill="none"
-                                                  stroke="currentColor"
-                                                  viewBox="0 0 24 24"
-                                                >
-                                                  <path
-                                                    strokeLinecap="round"
-                                                    strokeLinejoin="round"
-                                                    strokeWidth={2}
-                                                    d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                                                  />
-                                                </svg>
+                                                  strokeWidth={2}
+                                                />
                                                 {f.name}
                                               </span>
                                             ),
@@ -1911,33 +1760,15 @@ export default function CChat() {
                                         }}
                                       >
                                         {copiedIndex === i ? (
-                                          <svg
+                                          <Check
                                             className="w-3.5 h-3.5"
-                                            fill="none"
-                                            stroke="currentColor"
-                                            viewBox="0 0 24 24"
-                                          >
-                                            <path
-                                              strokeLinecap="round"
-                                              strokeLinejoin="round"
-                                              strokeWidth={2}
-                                              d="M5 13l4 4L19 7"
-                                            />
-                                          </svg>
+                                            strokeWidth={2}
+                                          />
                                         ) : (
-                                          <svg
+                                          <Copy
                                             className="w-3.5 h-3.5"
-                                            fill="none"
-                                            stroke="currentColor"
-                                            viewBox="0 0 24 24"
-                                          >
-                                            <path
-                                              strokeLinecap="round"
-                                              strokeLinejoin="round"
-                                              strokeWidth={2}
-                                              d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
-                                            />
-                                          </svg>
+                                            strokeWidth={2}
+                                          />
                                         )}
                                         {copiedIndex === i ? '已复制' : '复制'}
                                       </button>
@@ -1954,19 +1785,10 @@ export default function CChat() {
                                         }}
                                         title="重新生成"
                                       >
-                                        <svg
+                                        <RefreshCw
                                           className="w-3.5 h-3.5"
-                                          fill="none"
-                                          stroke="currentColor"
-                                          viewBox="0 0 24 24"
-                                        >
-                                          <path
-                                            strokeLinecap="round"
-                                            strokeLinejoin="round"
-                                            strokeWidth={2}
-                                            d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182"
-                                          />
-                                        </svg>
+                                          strokeWidth={2}
+                                        />
                                         重新生成
                                       </button>
                                     </div>
@@ -2012,19 +1834,10 @@ export default function CChat() {
                                   }}
                                 >
                                   {isSelected && (
-                                    <svg
+                                    <Check
                                       className="w-3 h-3"
-                                      fill="none"
-                                      stroke="currentColor"
-                                      viewBox="0 0 24 24"
-                                    >
-                                      <path
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        strokeWidth={3}
-                                        d="M5 13l4 4L19 7"
-                                      />
-                                    </svg>
+                                      strokeWidth={3}
+                                    />
                                   )}
                                 </button>
                               )}
@@ -2052,26 +1865,10 @@ export default function CChat() {
                                   )}
                                   {streaming && isCurrentlyThinking && (
                                     <div className="flex items-center gap-2 text-[#525252] text-xs py-1">
-                                      <svg
+                                      <Loader2
                                         className="w-3.5 h-3.5 animate-spin text-[#A3A3A3]"
-                                        viewBox="0 0 24 24"
-                                        fill="none"
-                                      >
-                                        <circle
-                                          cx="12"
-                                          cy="12"
-                                          r="10"
-                                          stroke="currentColor"
-                                          strokeWidth="3"
-                                          opacity="0.25"
-                                        />
-                                        <path
-                                          d="M12 2a10 10 0 019.95 9"
-                                          stroke="currentColor"
-                                          strokeWidth="3"
-                                          strokeLinecap="round"
-                                        />
-                                      </svg>
+                                        strokeWidth={3}
+                                      />
                                       <span>正在思考中...</span>
                                     </div>
                                   )}
@@ -2100,7 +1897,7 @@ export default function CChat() {
                                             });
                                           }}
                                         >
-                                          <svg
+                                          <ChevronRight
                                             className="w-3 h-3 transition-transform"
                                             style={{
                                               transform: expandedSections.has(
@@ -2109,13 +1906,8 @@ export default function CChat() {
                                                 ? 'rotate(90deg)'
                                                 : 'rotate(0deg)',
                                             }}
-                                            viewBox="0 0 24 24"
-                                            fill="none"
-                                            stroke="currentColor"
-                                            strokeWidth="2"
-                                          >
-                                            <polyline points="9 18 15 12 9 6" />
-                                          </svg>
+                                            strokeWidth={2}
+                                          />
                                           引用来源 (
                                           {
                                             Object.values(refs.doc_aggs || {})
@@ -2148,19 +1940,10 @@ export default function CChat() {
                                             rel="noopener noreferrer"
                                             className="flex items-center gap-2 px-3 py-2 bg-[#F5F5F5] border border-[#E5E5E5] rounded-lg text-xs text-[#000000] hover:bg-[#EAEAEA] transition-colors"
                                           >
-                                            <svg
+                                            <Download
                                               className="w-3.5 h-3.5 shrink-0"
-                                              fill="none"
-                                              stroke="currentColor"
-                                              viewBox="0 0 24 24"
-                                            >
-                                              <path
-                                                strokeLinecap="round"
-                                                strokeLinejoin="round"
-                                                strokeWidth={2}
-                                                d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                                              />
-                                            </svg>
+                                              strokeWidth={2}
+                                            />
                                             <span className="truncate">
                                               {dl.name || '下载文件'}
                                             </span>
@@ -2188,33 +1971,15 @@ export default function CChat() {
                                       }}
                                     >
                                       {copiedIndex === i ? (
-                                        <svg
+                                        <Check
                                           className="w-3.5 h-3.5"
-                                          fill="none"
-                                          stroke="currentColor"
-                                          viewBox="0 0 24 24"
-                                        >
-                                          <path
-                                            strokeLinecap="round"
-                                            strokeLinejoin="round"
-                                            strokeWidth={2}
-                                            d="M5 13l4 4L19 7"
-                                          />
-                                        </svg>
+                                          strokeWidth={2}
+                                        />
                                       ) : (
-                                        <svg
+                                        <Copy
                                           className="w-3.5 h-3.5"
-                                          fill="none"
-                                          stroke="currentColor"
-                                          viewBox="0 0 24 24"
-                                        >
-                                          <path
-                                            strokeLinecap="round"
-                                            strokeLinejoin="round"
-                                            strokeWidth={2}
-                                            d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
-                                          />
-                                        </svg>
+                                          strokeWidth={2}
+                                        />
                                       )}
                                       {copiedIndex === i ? '已复制' : '复制'}
                                     </button>
@@ -2225,19 +1990,10 @@ export default function CChat() {
                                         setCollabDialogOpen(true);
                                       }}
                                     >
-                                      <svg
+                                      <FileText
                                         className="w-3.5 h-3.5"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        viewBox="0 0 24 24"
-                                      >
-                                        <path
-                                          strokeLinecap="round"
-                                          strokeLinejoin="round"
-                                          strokeWidth={2}
-                                          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                                        />
-                                      </svg>
+                                        strokeWidth={2}
+                                      />
                                       协作
                                     </button>
                                     <button
@@ -2258,21 +2014,13 @@ export default function CChat() {
                                         }
                                       }}
                                     >
-                                      <svg
+                                      <Star
                                         className="w-3.5 h-3.5"
                                         fill={
                                           favoriteMode ? 'currentColor' : 'none'
                                         }
-                                        stroke="currentColor"
-                                        viewBox="0 0 24 24"
-                                      >
-                                        <path
-                                          strokeLinecap="round"
-                                          strokeLinejoin="round"
-                                          strokeWidth={2}
-                                          d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"
-                                        />
-                                      </svg>
+                                        strokeWidth={2}
+                                      />
                                       收藏
                                     </button>
                                   </div>
@@ -2296,26 +2044,10 @@ export default function CChat() {
                             <div className="max-w-[85%]">
                               <div className="bg-white border border-[#D4D4D4] px-4 py-2.5 rounded-2xl rounded-bl-md">
                                 <div className="flex items-center gap-2 text-[#525252] text-sm py-1">
-                                  <svg
+                                  <Loader2
                                     className="w-4 h-4 animate-spin text-[#A3A3A3]"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                  >
-                                    <circle
-                                      cx="12"
-                                      cy="12"
-                                      r="10"
-                                      stroke="currentColor"
-                                      strokeWidth="3"
-                                      opacity="0.25"
-                                    />
-                                    <path
-                                      d="M12 2a10 10 0 019.95 9"
-                                      stroke="currentColor"
-                                      strokeWidth="3"
-                                      strokeLinecap="round"
-                                    />
-                                  </svg>
+                                    strokeWidth={3}
+                                  />
                                   <span>正在生成中...</span>
                                 </div>
                               </div>
@@ -2452,6 +2184,31 @@ export default function CChat() {
                               );
                             }
                           }}
+                          onPaste={(e) => {
+                            const items = e.clipboardData?.items;
+                            if (!items) return;
+                            const fileItems: File[] = [];
+                            for (let i = 0; i < items.length; i++) {
+                              const file = items[i].getAsFile?.();
+                              if (file) fileItems.push(file);
+                            }
+                            if (!fileItems.length) return;
+                            e.preventDefault();
+                            e.stopPropagation();
+                            const fileInput = e.currentTarget
+                              .closest('[data-slot="file-upload"]')
+                              ?.querySelector(
+                                'input[type="file"]',
+                              ) as HTMLInputElement;
+                            if (fileInput) {
+                              const dt = new DataTransfer();
+                              for (const f of fileItems) dt.items.add(f);
+                              fileInput.files = dt.files;
+                              fileInput.dispatchEvent(
+                                new Event('change', { bubbles: true }),
+                              );
+                            }
+                          }}
                         >
                           {files.length > 0 && (
                             <FileUploadList
@@ -2525,19 +2282,10 @@ export default function CChat() {
                                         disabled={sendLoading}
                                         className="shrink-0 w-9 h-9 flex items-center justify-center text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
                                       >
-                                        <svg
+                                        <Paperclip
                                           className="w-4 h-4"
-                                          fill="none"
-                                          stroke="currentColor"
-                                          viewBox="0 0 24 24"
-                                        >
-                                          <path
-                                            strokeLinecap="round"
-                                            strokeLinejoin="round"
-                                            strokeWidth={2}
-                                            d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
-                                          />
-                                        </svg>
+                                          strokeWidth={2}
+                                        />
                                       </button>
                                     </FileUploadTrigger>
                                   </TooltipTrigger>
@@ -2550,19 +2298,7 @@ export default function CChat() {
                                   disabled={!value.trim()}
                                   className="shrink-0 w-9 h-9 flex items-center justify-center bg-[#000000] hover:bg-[#1a1a1a] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
                                 >
-                                  <svg
-                                    className="w-4 h-4"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    viewBox="0 0 24 24"
-                                  >
-                                    <path
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth={2}
-                                      d="M5 12h14M12 5l7 7-7 7"
-                                    />
-                                  </svg>
+                                  <Send className="w-4 h-4" strokeWidth={2} />
                                 </button>
                               </>
                             ) : (
@@ -2570,19 +2306,11 @@ export default function CChat() {
                                 onClick={stopConversation}
                                 className="shrink-0 w-9 h-9 flex items-center justify-center bg-red-400 text-white rounded-xl hover:bg-red-500 transition active:scale-95"
                               >
-                                <svg
+                                <Square
                                   className="w-3.5 h-3.5"
                                   fill="currentColor"
-                                  viewBox="0 0 24 24"
-                                >
-                                  <rect
-                                    x="6"
-                                    y="6"
-                                    width="12"
-                                    height="12"
-                                    rx="1"
-                                  />
-                                </svg>
+                                  stroke="none"
+                                />
                               </button>
                             )}
                           </div>

@@ -1,4 +1,15 @@
-import { ExternalLink } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { ExternalLink, Plus, Trash2 } from 'lucide-react';
+import { useCallback, useState } from 'react';
 
 interface LinkItem {
   name: string;
@@ -8,6 +19,46 @@ interface LinkItem {
 interface LinkGroup {
   title: string;
   items: LinkItem[];
+}
+
+interface CustomLink {
+  name: string;
+  url: string;
+  group: string;
+}
+
+const STORAGE_KEY = 'bid_custom_sites';
+const HIDDEN_KEY = 'bid_hidden_builtins';
+
+function loadCustomSites(): CustomLink[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveCustomSites(links: CustomLink[]) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(links));
+}
+
+function loadHiddenBuiltins(): string[] {
+  try {
+    const raw = localStorage.getItem(HIDDEN_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveHiddenBuiltins(keys: string[]) {
+  localStorage.setItem(HIDDEN_KEY, JSON.stringify(keys));
+}
+
+/** Stable key for a link (name+url) to identify built-in items. */
+function linkKey(name: string, url: string) {
+  return `${name}||${url}`;
 }
 
 const GROUPS: LinkGroup[] = [
@@ -184,39 +235,256 @@ const GROUPS: LinkGroup[] = [
 ];
 
 export default function BidHome() {
+  const [customSites, setCustomSites] = useState<CustomLink[]>(loadCustomSites);
+  const [hiddenBuiltins, setHiddenBuiltins] =
+    useState<string[]>(loadHiddenBuiltins);
+  const hiddenSet = new Set(hiddenBuiltins);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newUrl, setNewUrl] = useState('');
+  const [newGroup, setNewGroup] = useState(GROUPS[0].title);
+  const [customGroupName, setCustomGroupName] = useState('');
+  const [isNewGroup, setIsNewGroup] = useState(false);
+  const [formError, setFormError] = useState('');
+
+  const mergedGroups = (() => {
+    const groupMap = new Map<string, LinkItem[]>();
+    for (const g of GROUPS) {
+      const visible = g.items.filter(
+        (it) => !hiddenSet.has(linkKey(it.name, it.url)),
+      );
+      if (visible.length) {
+        groupMap.set(g.title, visible);
+      }
+    }
+    for (const site of customSites) {
+      const items = groupMap.get(site.group) || [];
+      items.push({ name: site.name, url: site.url });
+      if (!groupMap.has(site.group)) {
+        groupMap.set(site.group, items);
+      }
+    }
+    return Array.from(groupMap, ([title, items]) => ({ title, items }));
+  })();
+
+  const groupNames = GROUPS.map((g) => g.title);
+
+  const resetForm = useCallback(() => {
+    setNewName('');
+    setNewUrl('');
+    setNewGroup(GROUPS[0].title);
+    setCustomGroupName('');
+    setIsNewGroup(false);
+    setFormError('');
+  }, []);
+
+  const handleAdd = () => {
+    const name = newName.trim();
+    const url = newUrl.trim();
+    if (!name || !url) {
+      setFormError('网站名称和网址不能为空');
+      return;
+    }
+    if (!/^https?:\/\//i.test(url)) {
+      setFormError('网址需以 http:// 或 https:// 开头');
+      return;
+    }
+    const group = isNewGroup ? customGroupName.trim() : newGroup;
+    if (!group) {
+      setFormError('请选择或输入所属分组');
+      return;
+    }
+
+    const updated = [...customSites, { name, url, group }];
+    saveCustomSites(updated);
+    setCustomSites(updated);
+    setDialogOpen(false);
+    resetForm();
+  };
+
+  const handleDelete = useCallback(
+    (name: string, url: string, groupTitle: string) => {
+      // Built-in link → hide via hidden set
+      const isBuiltin = GROUPS.some(
+        (g) =>
+          g.title === groupTitle &&
+          g.items.some((it) => it.name === name && it.url === url),
+      );
+      if (isBuiltin) {
+        const key = linkKey(name, url);
+        const updated = [...hiddenBuiltins, key];
+        saveHiddenBuiltins(updated);
+        setHiddenBuiltins(updated);
+        return;
+      }
+      // Custom link → remove from customSites
+      const updated = customSites.filter(
+        (s) => !(s.name === name && s.url === url && s.group === groupTitle),
+      );
+      saveCustomSites(updated);
+      setCustomSites(updated);
+    },
+    [customSites, hiddenBuiltins],
+  );
+
   return (
-    <div className="flex-1 overflow-auto">
-      <div className="px-6 py-6 space-y-8 max-w-[1400px] mx-auto">
-        {GROUPS.map((group) => (
-          <section key={group.title}>
-            <h2 className="text-sm font-semibold text-[#333333] mb-3 pb-2 border-b border-[#F0F0F0]">
-              {group.title}
-              <span className="ml-2 text-xs font-normal text-[#A3A3A3]">
-                {group.items.length}
-              </span>
-            </h2>
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-              {group.items.map((item) => (
-                <a
-                  key={item.url}
-                  href={item.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="group/card flex items-start gap-2 p-3 rounded-xl border border-[#E8E8E8] bg-white hover:shadow-[0_2px_12px_rgba(0,0,0,0.06)] hover:border-[#D4D4D4] transition-all"
-                >
-                  <ExternalLink
-                    className="size-3.5 shrink-0 mt-0.5 text-[#A3A3A3] group-hover/card:text-[#2563EB] transition-colors"
-                    style={{ color: undefined }}
-                  />
-                  <span className="text-xs text-[#333333] leading-relaxed line-clamp-2 group-hover/card:text-[#000000] transition-colors">
-                    {item.name}
-                  </span>
-                </a>
-              ))}
-            </div>
-          </section>
-        ))}
+    <>
+      <div className="flex-1 overflow-auto">
+        <div className="px-6 py-6 space-y-8 max-w-[1400px] mx-auto">
+          {/* Header */}
+          <div className="flex items-center justify-between">
+            <h1 className="text-base font-bold text-[#000000]">常用网站导航</h1>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                resetForm();
+                setDialogOpen(true);
+              }}
+              className="gap-1.5"
+            >
+              <Plus className="size-3.5" />
+              新增网站
+            </Button>
+          </div>
+
+          {mergedGroups.map((group) => (
+            <section key={group.title}>
+              <h2 className="text-sm font-semibold text-[#333333] mb-3 pb-2 border-b border-[#F0F0F0]">
+                {group.title}
+                <span className="ml-2 text-xs font-normal text-[#A3A3A3]">
+                  {group.items.length}
+                </span>
+              </h2>
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                {group.items.map((item) => (
+                  <div
+                    key={item.url}
+                    className="group/card relative flex items-start gap-2 p-3 rounded-xl border border-[#E8E8E8] bg-white hover:shadow-[0_2px_12px_rgba(0,0,0,0.06)] hover:border-[#D4D4D4] transition-all"
+                  >
+                    <a
+                      href={item.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex items-start gap-2 flex-1 min-w-0"
+                    >
+                      <ExternalLink
+                        className="size-3.5 shrink-0 mt-0.5 text-[#A3A3A3] group-hover/card:text-[#2563EB] transition-colors"
+                        style={{ color: undefined }}
+                      />
+                      <span className="text-xs text-[#333333] leading-relaxed line-clamp-2 group-hover/card:text-[#000000] transition-colors">
+                        {item.name}
+                      </span>
+                    </a>
+                    <button
+                      onClick={() =>
+                        handleDelete(item.name, item.url, group.title)
+                      }
+                      className="shrink-0 size-5 flex items-center justify-center rounded text-[#A3A3A3] hover:text-red-500 hover:bg-red-50 transition-colors"
+                      title="删除"
+                    >
+                      <Trash2 className="size-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
       </div>
-    </div>
+
+      {/* Add dialog */}
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle>新增网站</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="site-name">网站名称</Label>
+              <Input
+                id="site-name"
+                value={newName}
+                onChange={(e) => {
+                  setNewName(e.target.value);
+                  setFormError('');
+                }}
+                placeholder="例如：住房和城乡建设部"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="site-url">网址</Label>
+              <Input
+                id="site-url"
+                value={newUrl}
+                onChange={(e) => {
+                  setNewUrl(e.target.value);
+                  setFormError('');
+                }}
+                placeholder="https://www.example.com"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="site-group">所属分组</Label>
+              {!isNewGroup ? (
+                <div className="flex gap-2">
+                  <select
+                    id="site-group"
+                    value={newGroup}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val === '__new__') {
+                        setIsNewGroup(true);
+                        setCustomGroupName('');
+                      } else {
+                        setNewGroup(val);
+                      }
+                      setFormError('');
+                    }}
+                    className="flex-1 h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    {groupNames.map((g) => (
+                      <option key={g} value={g}>
+                        {g}
+                      </option>
+                    ))}
+                    <option value="__new__">+ 新建分组...</option>
+                  </select>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <Input
+                    value={customGroupName}
+                    onChange={(e) => {
+                      setCustomGroupName(e.target.value);
+                      setFormError('');
+                    }}
+                    placeholder="输入新分组名称"
+                    className="flex-1"
+                  />
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setIsNewGroup(false);
+                      setNewGroup(GROUPS[0].title);
+                    }}
+                  >
+                    取消
+                  </Button>
+                </div>
+              )}
+            </div>
+            {formError && <p className="text-sm text-red-500">{formError}</p>}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDialogOpen(false)}>
+              取消
+            </Button>
+            <Button onClick={handleAdd}>确定添加</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

@@ -1,4 +1,5 @@
 import JSEncrypt from 'jsencrypt';
+import { Loader2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router';
 
@@ -255,26 +256,7 @@ export default function CLogin() {
                 className="login-btn-cs w-full bg-[#000000] hover:bg-[#000000] text-white py-3 font-medium text-sm disabled:opacity-50 flex items-center justify-center gap-2"
               >
                 {loginLoading && (
-                  <svg
-                    className="w-4 h-4 animate-spin"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                  >
-                    <circle
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="3"
-                      opacity="0.25"
-                    />
-                    <path
-                      d="M12 2a10 10 0 019.95 9"
-                      stroke="currentColor"
-                      strokeWidth="3"
-                      strokeLinecap="round"
-                    />
-                  </svg>
+                  <Loader2 className="w-4 h-4 animate-spin" strokeWidth={3} />
                 )}
                 {loginLoading ? '正在登录...' : '登录系统'}
               </button>
@@ -360,26 +342,10 @@ export default function CLogin() {
       {/* Login success full-screen overlay */}
       {loginSuccess && (
         <div className="fixed inset-0 bg-white flex flex-col items-center justify-center z-50">
-          <svg
+          <Loader2
             className="w-8 h-8 animate-spin text-[#000000] mb-4"
-            viewBox="0 0 24 24"
-            fill="none"
-          >
-            <circle
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              strokeWidth="3"
-              opacity="0.25"
-            />
-            <path
-              d="M12 2a10 10 0 019.95 9"
-              stroke="currentColor"
-              strokeWidth="3"
-              strokeLinecap="round"
-            />
-          </svg>
+            strokeWidth={3}
+          />
           <p className="text-sm text-[#333333] font-medium">
             登录成功，正在进入...
           </p>

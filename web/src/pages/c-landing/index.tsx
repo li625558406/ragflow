@@ -1,3 +1,5 @@
+import DynamicIcon from '@/components/dynamic-icon';
+import { ArrowRight, ChevronDown, Menu, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 
 export default function CLanding() {
@@ -88,28 +90,11 @@ export default function CLanding() {
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
             aria-label="菜单"
           >
-            <svg
-              className="w-6 h-6"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              {mobileMenuOpen ? (
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M6 18L18 6M6 6l12 12"
-                />
-              ) : (
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M4 6h16M4 12h16M4 18h16"
-                />
-              )}
-            </svg>
+            {mobileMenuOpen ? (
+              <X className="w-6 h-6" strokeWidth={2} />
+            ) : (
+              <Menu className="w-6 h-6" strokeWidth={2} />
+            )}
           </button>
         </div>
         {mobileMenuOpen && (
@@ -195,19 +180,7 @@ export default function CLanding() {
                 className="ds-btn-hover inline-flex items-center gap-2 bg-[#000000] hover:bg-[#171717] text-white text-sm font-semibold px-6 py-3 rounded-lg cursor-pointer"
               >
                 立即体验
-                <svg
-                  className="w-4 h-4"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M13 7l5 5m0 0l-5-5m5 5H6"
-                  />
-                </svg>
+                <ArrowRight className="w-4 h-4" strokeWidth={2} />
               </a>
               <a
                 href="#features"
@@ -267,19 +240,11 @@ export default function CLanding() {
                 <div
                   className={`w-10 h-10 rounded-lg flex items-center justify-center mb-5 ${f.bg}`}
                 >
-                  <svg
+                  <DynamicIcon
+                    name={f.icon}
                     className={`w-5 h-5 ${f.color}`}
-                    fill="none"
-                    stroke="currentColor"
                     strokeWidth={1.5}
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d={f.icon}
-                    />
-                  </svg>
+                  />
                 </div>
                 <h3 className="text-base font-semibold text-[#000000] mb-2">
                   {f.title}
@@ -355,19 +320,11 @@ export default function CLanding() {
                 className={`${i % 2 === 0 ? 'ds-slide-left' : 'ds-slide-right'} ds-reveal-d${Math.min(i + 1, 6)} ds-card-lift bg-white rounded-xl p-7 border border-[#D4D4D4] hover:border-[#000000]`}
               >
                 <div className="w-10 h-10 rounded-lg bg-[#EAEAEA] flex items-center justify-center mb-5">
-                  <svg
+                  <DynamicIcon
+                    name={s.icon}
                     className="w-5 h-5 text-[#000000]"
-                    fill="none"
-                    stroke="currentColor"
                     strokeWidth={1.5}
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d={s.icon}
-                    />
-                  </svg>
+                  />
                 </div>
                 <h3 className="text-base font-semibold text-[#000000] mb-2">
                   {s.title}
@@ -406,19 +363,11 @@ export default function CLanding() {
                 <div
                   className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 ${a.bg}`}
                 >
-                  <svg
+                  <DynamicIcon
+                    name={a.icon}
                     className={`w-5 h-5 ${a.color}`}
-                    fill="none"
-                    stroke="currentColor"
                     strokeWidth={1.5}
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d={a.icon}
-                    />
-                  </svg>
+                  />
                 </div>
                 <div>
                   <h3 className="text-base font-semibold text-[#000000] mb-1.5">
@@ -471,19 +420,7 @@ export default function CLanding() {
             className="ds-btn-hover inline-flex items-center gap-2 bg-white hover:bg-[#EAEAEA] text-[#000000] text-sm font-semibold px-8 py-3.5 rounded-lg cursor-pointer"
           >
             进入分析平台
-            <svg
-              className="w-4 h-4"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={2.5}
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M13 7l5 5m0 0l-5-5m5 5H6"
-              />
-            </svg>
+            <ArrowRight className="w-4 h-4" strokeWidth={2.5} />
           </a>
         </div>
       </section>
@@ -509,42 +446,42 @@ const features = [
   {
     title: '智能问答',
     desc: '基于知识库内容的精准问答，自动关联招标文件原文并标注出处页码，确保信息准确可溯源。',
-    icon: 'M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z',
+    icon: 'messages-square',
     bg: 'bg-[#EAEAEA]',
     color: 'text-[#000000]',
   },
   {
     title: '关键信息提取',
     desc: '自动提炼预算金额、评分标准、技术要求、商务条款等核心维度，结构化呈现。',
-    icon: 'M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z',
+    icon: 'file-search-2',
     bg: 'bg-[#DCFCE7]',
     color: 'text-[#059669]',
   },
   {
     title: '多采购包对比',
     desc: '支持同一标书中多个采购包的横向对比分析，快速发现差异与优劣。',
-    icon: 'M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5',
+    icon: 'arrow-left-right',
     bg: 'bg-[#FEF9C3]',
     color: 'text-[#CA8A04]',
   },
   {
     title: '评审规则解析',
     desc: '自动识别评审方法、权重分配、评分标准，帮助制定最优投标策略。',
-    icon: 'M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z',
+    icon: 'gavel',
     bg: 'bg-[#FEE2E2]',
     color: 'text-[#DC2626]',
   },
   {
     title: '合规性检查',
     desc: '自动标注实质性要求和禁止项，避免因疏忽导致废标。',
-    icon: 'M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z',
+    icon: 'shield-check',
     bg: 'bg-[#EAEAEA]',
     color: 'text-[#1a1a1a]',
   },
   {
     title: '来源精准标注',
     desc: '每条分析结果均标注文件来源和页码，支持原文追溯验证。',
-    icon: 'M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244',
+    icon: 'bookmark-check',
     bg: 'bg-[#F3E8FF]',
     color: 'text-[#7C3AED]',
   },
@@ -572,32 +509,32 @@ const scenarios = [
   {
     title: '政府采购',
     desc: '自动解析政府公开招标文件，提取预算金额、资质要求、评分标准等关键信息，助力企业高效参与政府采购项目。',
-    icon: 'M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0h5m-4 0a2 2 0 01-2-2V6a2 2 0 012-2 2 2v2m0 0h2a2 2 0 012 2v2m0 0h2a2 2 0 012 2v2',
+    icon: 'landmark',
   },
   {
     title: '工程建设',
     desc: '解析技术规范、施工要求、验收标准等专业条款，帮助施工单位快速理解招标要求。',
-    icon: 'M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2M8 10h.01M12 10h.01M16 10h.01M9 16h.01M13 16h.01M16 16h.01',
+    icon: 'hard-hat',
   },
   {
     title: 'IT 信息化',
     desc: '解析技术指标、服务级别要求、运维条款等内容，辅助企业进行精准报价和方案设计。',
-    icon: 'M9.75 17L9 20l-1 1h8l-1-1-.75-.75M12 12.75a.75.75 0 111.5 0 .75.75 0 01-1.5 0zM9.75 9a.75.75 0 100-1.5.75.75 0 000 1.5z',
+    icon: 'monitor',
   },
   {
     title: '医疗器械',
     desc: '解析注册资质要求、技术参数指标、售后服务条款，确保投标响应完整合规。',
-    icon: 'M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z',
+    icon: 'heart-pulse',
   },
   {
     title: '教育采购',
     desc: '智能解析教育装备、教学服务类招标文件，提取评分细则和技术要求。',
-    icon: 'M12 14l9-5-9-5-9 5 9 5zM12 14l6.16-3.422a12.083 12.083 0 01.665 6.479A11.952 11.952 0 0012 20.055a11.952 11.952 0 00-6.824-2.998 12.078 12.078 0 01.665-6.479L12 14z',
+    icon: 'graduation-cap',
   },
   {
     title: '物业服务',
     desc: '解析合同条款、人员配置要求、服务标准与考核细则，辅助物业公司精准投标。',
-    icon: 'M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2-2m-2 2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6',
+    icon: 'building-2',
   },
 ];
 
@@ -605,28 +542,28 @@ const advantages = [
   {
     title: 'RAG 检索增强生成',
     desc: '采用先进的 RAG 技术，AI 回答基于招标文件原文，避免幻觉，确保分析结果准确可信。',
-    icon: 'M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z',
+    icon: 'sparkles',
     bg: 'bg-[#EAEAEA]',
     color: 'text-[#000000]',
   },
   {
     title: '深度文档理解',
     desc: '支持 PDF、Word 等多种格式，自动识别表格、章节、附件等复杂结构，精准提取关键信息。',
-    icon: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z',
+    icon: 'file-search-2',
     bg: 'bg-[#EAEAEA]',
     color: 'text-[#1a1a1a]',
   },
   {
     title: '企业级数据安全',
     desc: '支持私有化部署，数据全程加密存储与传输，满足政企客户对数据安全的严格要求。',
-    icon: 'M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z',
+    icon: 'lock',
     bg: 'bg-[#DCFCE7]',
     color: 'text-[#059669]',
   },
   {
     title: '灵活可扩展',
     desc: '基于 RAGFlow 开源引擎构建，支持自定义知识库、智能体配置，可根据业务需求灵活扩展。',
-    icon: 'M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z',
+    icon: 'blocks',
     bg: 'bg-[#FEF9C3]',
     color: 'text-[#CA8A04]',
   },
@@ -668,19 +605,10 @@ function FAQItem({ question, answer }: { question: string; answer: string }) {
         <span className="text-base font-medium text-[#000000] pr-4">
           {question}
         </span>
-        <svg
+        <ChevronDown
           className={`w-5 h-5 text-[#000000] shrink-0 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M19 9l-7 7-7-7"
-          />
-        </svg>
+          strokeWidth={2}
+        />
       </button>
       {open && (
         <div className="px-7 pb-5 text-[#333333] text-sm leading-relaxed border-t border-[#D4D4D4] pt-4">
