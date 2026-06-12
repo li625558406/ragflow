@@ -239,24 +239,43 @@ export const useSendMessageBySSE = (
 
   const scheduleStreamFlush = useCallback(() => {
     if (document.hidden) {
+      // rAF is paused in background tabs, so fall back to a low-frequency
+      // timer to prevent unbounded accumulation without rendering.
+      if (rafRef.current !== null) return;
+      rafRef.current = window.setTimeout(() => {
+        rafRef.current = null;
+        flushNextFanOutLane();
+        flushEventBuffer();
+        setStreamState({ ...streamAccRef.current });
+      }, 500);
       return;
     }
 
     if (rafRef.current !== null) return;
 
-    // Adaptive debounce based on TOTAL content size, not delta.
-    // When content is still light (< 30KB), render at ~16fps (60ms).
-    // As it grows, back off to ~10fps (100ms) to keep react-markdown
-    // parsing + React reconciliation from blocking the main thread.
+    // Tiered debounce — keeps streaming smooth for short responses while
+    // backing off react-markdown rendering pressure for large documents:
+    //   < 10KB  → requestAnimationFrame (~16 fps, smooth incremental feel)
+    //   10-30KB → 40 ms (~25 fps)
+    //   > 30KB  → 100 ms (~10 fps, keeps UI responsive)
     const contentLen = streamAccRef.current.content?.length || 0;
-    const interval = contentLen > 30000 ? 100 : 60;
 
-    rafRef.current = window.setTimeout(() => {
-      rafRef.current = null;
-      flushNextFanOutLane();
-      flushEventBuffer();
-      setStreamState({ ...streamAccRef.current });
-    }, interval);
+    if (contentLen <= 10000) {
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = null;
+        flushNextFanOutLane();
+        flushEventBuffer();
+        setStreamState({ ...streamAccRef.current });
+      });
+    } else {
+      const interval = contentLen > 30000 ? 100 : 40;
+      rafRef.current = window.setTimeout(() => {
+        rafRef.current = null;
+        flushNextFanOutLane();
+        flushEventBuffer();
+        setStreamState({ ...streamAccRef.current });
+      }, interval);
+    }
   }, [flushEventBuffer, flushNextFanOutLane]);
 
   const initializeSseRef = useCallback(() => {
@@ -278,6 +297,10 @@ export const useSendMessageBySSE = (
       fanOutLanes: undefined,
       fanOutDirty: false,
     };
+    // Must also clear the React state so that consumers (e.g. c-chat) that
+    // read streamState.content directly don't pick up stale text from a
+    // previous conversation when `done` toggles from true → false.
+    setStreamState({ content: '', id: '' });
     if (rafRef.current !== null) {
       cancelAnimationFrame(rafRef.current);
       clearTimeout(rafRef.current);

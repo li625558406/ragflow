@@ -59,24 +59,24 @@ def _get_state_file_path(task_name):
     return os.path.join(get_project_base_directory(), "rag", task_name.strip(), "_crawler_state.json")
 
 
-def _get_effective_tenant_id():
-    """Get the effective tenant_id for the current user.
+def _get_authorized_tenant_ids() -> set:
+    """Return the set of tenant_ids the current user can access.
 
-    If the user is a member of a team (via UserTenant), returns the team's
-    tenant_id so that scheduled tasks are shared among team members.
-    Otherwise falls back to the user's own ID.
+    Follows the same pattern used by agents (agent_api.py) and knowledge
+    bases (knowledgebase_service.py): uses TenantService to look up all
+    tenants where the user is a NORMAL member, then adds the user's own ID.
+
+    TenantService.get_joined_tenants_by_user_id joins Tenant ← UserTenant
+    (Tenant.id == UserTenant.tenant_id), which correctly finds team tenants.
+    This is NOT the same as UserTenantService.get_tenants_by_user_id, which
+    joins UserTenant → User and only finds tenants that are also User records.
     """
-    from api.db.db_models import UserTenant
-    from common.constants import StatusEnum
+    from api.db.services.user_service import TenantService
 
-    membership = UserTenant.select().where(
-        (UserTenant.user_id == current_user.id) &
-        (UserTenant.status == StatusEnum.VALID.value)
-    ).first()
-
-    if membership:
-        return membership.tenant_id
-    return current_user.id
+    tenants = TenantService.get_joined_tenants_by_user_id(current_user.id)
+    ids = {t["tenant_id"] for t in tenants}
+    ids.add(current_user.id)
+    return ids
 
 
 def _check_task_ownership(task_id):
@@ -85,16 +85,14 @@ def _check_task_ownership(task_id):
     Returns (ok, obj, error_message).  When ok is False the caller should
     return the error_message to the client.
 
-    A task is accessible if its tenant_id matches either the effective
-    team tenant_id (for tasks shared across the team) OR the user's own
-    ID (for legacy tasks created before team-level sharing was enabled).
+    A task is accessible if its tenant_id is in the set of authorized
+    tenant IDs (all tenants the user belongs to + the user's own ID).
     """
     e, obj = ScheduledTaskService.get_by_id(task_id)
     if not e:
         return False, None, "Task not found."
 
-    effective_tid = _get_effective_tenant_id()
-    if obj.tenant_id not in (effective_tid, current_user.id):
+    if obj.tenant_id not in _get_authorized_tenant_ids():
         return False, None, "No authorization."
 
     return True, obj, None
@@ -108,7 +106,7 @@ async def create_scheduled_task():
         return get_data_error_result(message="Request body is required.")
 
     req["id"] = get_uuid()
-    req["tenant_id"] = _get_effective_tenant_id()
+    req["tenant_id"] = current_user.id
 
     # Compute initial next_run_time (in milliseconds, matching current_timestamp())
     if req.get("schedule_type") == "cron" and req.get("cron_expression"):
@@ -145,10 +143,7 @@ def list_scheduled_tasks():
     if enabled_str is not None:
         enabled = enabled_str.lower() == "true"
 
-    # Query both team-scoped tasks (created after this fix) and
-    # personal tasks (created before the fix, so none are orphaned).
-    effective_tid = _get_effective_tenant_id()
-    tenant_ids = [effective_tid] if effective_tid == current_user.id else [effective_tid, current_user.id]
+    tenant_ids = list(_get_authorized_tenant_ids())
     objs, total = ScheduledTaskService.get_list(
         tenant_id=tenant_ids,
         page_number=page_number,

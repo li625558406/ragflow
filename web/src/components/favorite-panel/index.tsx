@@ -15,6 +15,7 @@ import {
   Download,
   FileText,
   MessageSquare,
+  RefreshCw,
   Save,
   Star,
   Trash2,
@@ -535,6 +536,17 @@ export default function FavoritePanel({ apiFetch }: Props) {
           {total > 0 && (
             <span className="text-xs text-[#A3A3A3]">共 {total} 条</span>
           )}
+          <div className="flex-1" />
+          <button
+            onClick={() => loadFavorites()}
+            disabled={loading}
+            className="flex items-center justify-center size-6 rounded hover:bg-[#F3F3F3] disabled:opacity-50"
+            title="刷新列表"
+          >
+            <RefreshCw
+              className={`size-3.5 text-[#A3A3A3] ${loading ? 'animate-spin' : ''}`}
+            />
+          </button>
         </div>
 
         <div className="flex-1 overflow-y-auto">

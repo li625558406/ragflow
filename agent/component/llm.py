@@ -460,9 +460,12 @@ class LLM(ComponentBase):
 
         downstreams = self._canvas.get_component(self._id)["downstream"] if self._canvas.get_component(self._id) else []
         ex = self.exception_handler()
-        if any([self._canvas.get_component_obj(cid).component_name.lower() == "message" for cid in downstreams]) and not (
-            ex and ex["goto"]
-        ):
+
+        # Always stream so downstream Message components get incremental content,
+        # regardless of whether there are intermediate Tool/FanOut components.
+        # Non-Message consumers (Tool, Agent, etc.) consume the generator fully
+        # and get the same full string as before — no behaviour change for them.
+        if not (ex and ex["goto"]):
             self.set_output("content", partial(self._stream_output_async, prompt, deepcopy(msg)))
             return
 
