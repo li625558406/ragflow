@@ -1696,9 +1696,9 @@ export default function CChat() {
                                 testId="c-chat-audio-toggle"
                               />
                             </div>
-                            <FileUploadTrigger asChild>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <FileUploadTrigger asChild>
                                   <button
                                     disabled={sendLoading}
                                     className="shrink-0 w-9 h-9 flex items-center justify-center text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
@@ -1717,12 +1717,12 @@ export default function CChat() {
                                       />
                                     </svg>
                                   </button>
-                                </TooltipTrigger>
-                                <TooltipContent side="top">
-                                  <p>上传文件（最多10个，每个不超过50MB）</p>
-                                </TooltipContent>
-                              </Tooltip>
-                            </FileUploadTrigger>
+                                </FileUploadTrigger>
+                              </TooltipTrigger>
+                              <TooltipContent side="top">
+                                <p>上传文件（最多10个，每个不超过50MB）</p>
+                              </TooltipContent>
+                            </Tooltip>
                             {!sendLoading ? (
                               <button
                                 onClick={handlePressEnter}
@@ -2518,9 +2518,9 @@ export default function CChat() {
                                     testId="c-chat-audio-toggle"
                                   />
                                 </div>
-                                <FileUploadTrigger asChild>
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <FileUploadTrigger asChild>
                                       <button
                                         disabled={sendLoading}
                                         className="shrink-0 w-9 h-9 flex items-center justify-center text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
@@ -2539,14 +2539,12 @@ export default function CChat() {
                                           />
                                         </svg>
                                       </button>
-                                    </TooltipTrigger>
-                                    <TooltipContent side="top">
-                                      <p>
-                                        上传文件（最多10个，每个不超过50MB）
-                                      </p>
-                                    </TooltipContent>
-                                  </Tooltip>
-                                </FileUploadTrigger>
+                                    </FileUploadTrigger>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="top">
+                                    <p>上传文件（最多10个，每个不超过50MB）</p>
+                                  </TooltipContent>
+                                </Tooltip>
                                 <button
                                   onClick={handlePressEnter}
                                   disabled={!value.trim()}
