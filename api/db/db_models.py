@@ -1998,13 +1998,29 @@ def migrate_db():
     # bid_enterprise_cache table — ensure id column has AUTO_INCREMENT
     if BidEnterpriseCache.table_exists():
         try:
-            DB.execute_sql(
-                "ALTER TABLE bid_enterprise_cache MODIFY COLUMN id INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY"
-            )
-        except Exception:
-            pass  # already correct or safe to ignore
+            # Check if the table has a working AUTO_INCREMENT by inserting a test row
+            test_ok = True
+            try:
+                DB.execute_sql(
+                    "INSERT INTO bid_enterprise_cache (company_name, cache_type, page_no, page_size, response_json, fetched_at, cache_expires_at, created_at) "
+                    "VALUES ('__migration_test__', 'profile', 99, 99, '{}', NOW(), NOW(), NOW())"
+                )
+                test_id = DB.execute_sql("SELECT LAST_INSERT_ID()").fetchone()[0]
+                DB.execute_sql("DELETE FROM bid_enterprise_cache WHERE company_name = '__migration_test__'")
+                logging.info("bid_enterprise_cache AUTO_INCREMENT test OK, last_insert_id=%s", test_id)
+            except Exception as e:
+                test_ok = False
+                logging.warning("bid_enterprise_cache AUTO_INCREMENT test failed: %s", e)
+            if not test_ok:
+                logging.warning("bid_enterprise_cache: dropping and recreating table (cache data loss is acceptable)")
+                BidEnterpriseCache.drop_table(safe=True)
+                BidEnterpriseCache.create_table(safe=True)
+                logging.info("bid_enterprise_cache: table recreated with AUTO_INCREMENT")
+        except Exception as e:
+            logging.error("bid_enterprise_cache migration error: %s", e)
     else:
         BidEnterpriseCache.create_table(safe=True)
+        logging.info("bid_enterprise_cache: table created")
     logging.disable(logging.NOTSET)
     # this is after re-enabling logging to allow logging changed user emails
     migrate_add_unique_email(migrator)

@@ -406,12 +406,16 @@ class BidEnterpriseCacheService(CommonService):
             & (cls.model.page_size == page_size)
         )
         if existing:
+            logging.debug("BidEnterpriseCache: update existing id=%s for %s/%s p%d",
+                          existing.id, company_name, cache_type, page_no)
             existing.response_json = response_data
             existing.fetched_at = now
             existing.cache_expires_at = expires_at
             existing.save()
             return existing
         else:
+            logging.debug("BidEnterpriseCache: insert new for %s/%s p%d",
+                          company_name, cache_type, page_no)
             return cls.model(
                 company_name=company_name,
                 cache_type=cache_type,
