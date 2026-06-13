@@ -1208,9 +1208,8 @@ class BidEnterpriseProfile(ToolBase, ABC):
                 self.set_output("_ERROR", "company_name is required")
                 return "Error: company_name is required"
 
-            from api.utils.bid_api_client import BidApiClient
-            client = BidApiClient()
-            result = client.get_company_profile_summary(company_name)
+            from api.utils.bid_tool_service import get_enterprise_profile_cached
+            result = get_enterprise_profile_cached(company_name)
             raw_data = result.get("data", {})
 
             # Extract key fields for a readable summary
@@ -1560,10 +1559,23 @@ class BidEnterpriseContacts(ToolBase, ABC):
             )
 
             data = result.get("data", {})
+            records = data.get("records", []) or []
+            contacts_cn = []
+            for r in records:
+                contacts_cn.append({
+                    "姓名": r.get("contactName", ""),
+                    "电话": r.get("contactPhone", []),
+                    "邮箱": r.get("contactEmail", []),
+                    "部门": r.get("department", ""),
+                    "职位": r.get("position", ""),
+                })
+
             output = {
-                "company_name": company_name,
-                "contacts": data.get("data", data.get("contacts", [])),
-                "total": data.get("total", 0),
+                "企业名称": data.get("companyName", company_name),
+                "联系人列表": contacts_cn,
+                "总数": data.get("total", len(contacts_cn)),
+                "当前页": data.get("pageNo", 1),
+                "每页条数": data.get("pageSize", len(contacts_cn)),
             }
 
             self.set_output("json", output)
@@ -1642,26 +1654,27 @@ class BidEnterpriseCustomers(ToolBase, ABC):
             )
 
             data = result.get("data", {})
-            items = data.get("data", []) or []
-            simplified = []
-            for item in items:
-                simplified.append({
-                    "id": item.get("id"),
-                    "title": item.get("title", ""),
-                    "publish_time": item.get("publishTime", ""),
-                    "project_money": item.get("projectMoney", ""),
-                    "part_a_name": item.get("partAName", ""),
-                    "industry_name": item.get("industryName", ""),
-                    "contract_end_date": item.get("contractEndDate", ""),
+            records = data.get("records", []) or []
+            customers_cn = []
+            for r in records:
+                customers_cn.append({
+                    "客户名称": r.get("partnerCompanyName", ""),
+                    "项目数量": r.get("projectCount", ""),
+                    "总金额(万元)": r.get("totalAmountWan", ""),
+                    "首次合作日期": r.get("firstProjectDate", ""),
+                    "最近合作日期": r.get("lastProjectDate", ""),
+                    "项目名称": r.get("projectTitles", []),
                 })
 
             output = {
-                "company_name": company_name,
-                "total": data.get("total", 0),
-                "projects": simplified,
+                "企业名称": data.get("companyName", company_name),
+                "客户项目列表": customers_cn,
+                "总数": data.get("total", len(customers_cn)),
+                "当前页": data.get("pageNo", 1),
+                "每页条数": data.get("pageSize", len(customers_cn)),
             }
 
-            self.set_output("json", simplified)
+            self.set_output("json", output)
             self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
             return self.output("formalized_content")
         except Exception as e:
@@ -1737,26 +1750,27 @@ class BidEnterpriseSuppliers(ToolBase, ABC):
             )
 
             data = result.get("data", {})
-            items = data.get("data", []) or []
-            simplified = []
-            for item in items:
-                simplified.append({
-                    "id": item.get("id"),
-                    "title": item.get("title", ""),
-                    "publish_time": item.get("publishTime", ""),
-                    "project_money": item.get("projectMoney", ""),
-                    "part_b_name": item.get("partBName", ""),
-                    "industry_name": item.get("industryName", ""),
-                    "contract_end_date": item.get("contractEndDate", ""),
+            records = data.get("records", []) or []
+            suppliers_cn = []
+            for r in records:
+                suppliers_cn.append({
+                    "供应商名称": r.get("partnerCompanyName", ""),
+                    "项目数量": r.get("projectCount", ""),
+                    "总金额(万元)": r.get("totalAmountWan", ""),
+                    "首次合作日期": r.get("firstProjectDate", ""),
+                    "最近合作日期": r.get("lastProjectDate", ""),
+                    "项目名称": r.get("projectTitles", []),
                 })
 
             output = {
-                "company_name": company_name,
-                "total": data.get("total", 0),
-                "projects": simplified,
+                "企业名称": data.get("companyName", company_name),
+                "供应商项目列表": suppliers_cn,
+                "总数": data.get("total", len(suppliers_cn)),
+                "当前页": data.get("pageNo", 1),
+                "每页条数": data.get("pageSize", len(suppliers_cn)),
             }
 
-            self.set_output("json", simplified)
+            self.set_output("json", output)
             self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
             return self.output("formalized_content")
         except Exception as e:

@@ -42,6 +42,12 @@ from api.utils.api_utils import (
     get_json_result,
 )
 from api.utils.bid_api_client import BidApiClient, BidApiError
+from api.utils.bid_tool_service import (
+    get_enterprise_contacts_cached,
+    get_enterprise_customers_cached,
+    get_enterprise_profile_cached,
+    get_enterprise_suppliers_cached,
+)
 
 manager = Blueprint("rest_bid_app", __name__)
 
@@ -1224,8 +1230,7 @@ async def get_enterprise_profile():
     if not company_name:
         return get_data_error_result(message="company_name is required")
     try:
-        client = BidApiClient()
-        result = client.get_company_profile_summary(company_name)
+        result = get_enterprise_profile_cached(company_name)
         return get_json_result(data=result.get("data", {}))
     except Exception as e:
         return get_data_error_result(message=f"Failed to fetch enterprise profile: {e}")
@@ -1241,8 +1246,7 @@ async def get_enterprise_contacts():
     if not company_name:
         return get_data_error_result(message="company_name is required")
     try:
-        client = BidApiClient()
-        result = client.get_company_profile_contacts(company_name, page_no, min(page_size, 5))
+        result = get_enterprise_contacts_cached(company_name, page_no, min(page_size, 5))
         return get_json_result(data=result.get("data", {}))
     except Exception as e:
         return get_data_error_result(message=f"Failed to fetch enterprise contacts: {e}")
@@ -1258,8 +1262,7 @@ async def get_enterprise_customers():
     if not company_name:
         return get_data_error_result(message="company_name is required")
     try:
-        client = BidApiClient()
-        result = client.get_company_profile_customers(company_name, page_no, min(page_size, 20))
+        result = get_enterprise_customers_cached(company_name, page_no, min(page_size, 20))
         return get_json_result(data=result.get("data", {}))
     except Exception as e:
         return get_data_error_result(message=f"Failed to fetch enterprise customers: {e}")
@@ -1275,8 +1278,7 @@ async def get_enterprise_suppliers():
     if not company_name:
         return get_data_error_result(message="company_name is required")
     try:
-        client = BidApiClient()
-        result = client.get_company_profile_suppliers(company_name, page_no, min(page_size, 20))
+        result = get_enterprise_suppliers_cached(company_name, page_no, min(page_size, 20))
         return get_json_result(data=result.get("data", {}))
     except Exception as e:
         return get_data_error_result(message=f"Failed to fetch enterprise suppliers: {e}")

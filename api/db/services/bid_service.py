@@ -19,7 +19,7 @@ from typing import Tuple, List, Optional
 
 from peewee import fn
 
-from api.db.db_models import DB, BidProject, BidProjectDetail, BidProjectStructure, BidProjectFile, BidProjectParse, BidSyncLog
+from api.db.db_models import DB, BidEnterpriseCache, BidProject, BidProjectDetail, BidProjectStructure, BidProjectFile, BidProjectParse, BidSyncLog
 from api.db.services.common_service import CommonService
 
 
@@ -330,3 +330,95 @@ class BidProjectParseService(CommonService):
         else:
             data.setdefault("created_at", datetime.now())
             return cls.model(**data).save(force_insert=True)
+
+
+class BidEnterpriseCacheService(CommonService):
+    model = BidEnterpriseCache
+
+    # TTL strategy (in hours): profile changes slowly, lists change moderately
+    TTL_MAP = {
+        "profile": 168,     # 7 days
+        "contacts": 72,     # 3 days
+        "customers": 24,    # 1 day
+        "suppliers": 24,    # 1 day
+    }
+
+    @classmethod
+    @DB.connection_context()
+    def get_cached(
+        cls,
+        company_name: str,
+        cache_type: str,
+        page_no: int = 1,
+        page_size: int = 20,
+        allow_stale: bool = False,
+    ) -> Optional[dict]:
+        """Get cached enterprise data. Returns None on miss.
+
+        By default only returns non-expired records. Set allow_stale=True
+        to get the most recent cache regardless of expiry (for API failure fallback).
+        """
+        now = datetime.now()
+        if allow_stale:
+            obj = (cls.model
+                   .select()
+                   .where(
+                       (cls.model.company_name == company_name)
+                       & (cls.model.cache_type == cache_type)
+                       & (cls.model.page_no == page_no)
+                       & (cls.model.page_size == page_size)
+                   )
+                   .order_by(cls.model.fetched_at.desc())
+                   .first())
+        else:
+            obj = cls.model.get_or_none(
+                (cls.model.company_name == company_name)
+                & (cls.model.cache_type == cache_type)
+                & (cls.model.page_no == page_no)
+                & (cls.model.page_size == page_size)
+                & (cls.model.cache_expires_at > now)
+            )
+        if obj:
+            return obj.to_dict()
+        return None
+
+    @classmethod
+    @DB.connection_context()
+    def upsert_cache(
+        cls,
+        company_name: str,
+        cache_type: str,
+        response_data: dict,
+        page_no: int = 1,
+        page_size: int = 20,
+        ttl_hours: int = None,
+    ) -> object:
+        """Insert or update cached enterprise API response. Returns the row."""
+        now = datetime.now()
+        if ttl_hours is None:
+            ttl_hours = cls.TTL_MAP.get(cache_type, 1)
+        expires_at = now + timedelta(hours=ttl_hours)
+
+        existing = cls.model.get_or_none(
+            (cls.model.company_name == company_name)
+            & (cls.model.cache_type == cache_type)
+            & (cls.model.page_no == page_no)
+            & (cls.model.page_size == page_size)
+        )
+        if existing:
+            existing.response_json = response_data
+            existing.fetched_at = now
+            existing.cache_expires_at = expires_at
+            existing.save()
+            return existing
+        else:
+            return cls.model(
+                company_name=company_name,
+                cache_type=cache_type,
+                page_no=page_no,
+                page_size=page_size,
+                response_json=response_data,
+                fetched_at=now,
+                cache_expires_at=expires_at,
+                created_at=now,
+            ).save(force_insert=True)

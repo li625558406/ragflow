@@ -1579,6 +1579,24 @@ class BidProjectParse(DataBaseModel):
         db_table = "bid_project_parse"
 
 
+class BidEnterpriseCache(DataBaseModel):
+    id = BigIntegerField(primary_key=True)
+    company_name = CharField(max_length=200, null=False, index=True, help_text="企业名称")
+    cache_type = CharField(max_length=20, null=False, index=True, help_text="缓存类型: profile/contacts/customers/suppliers")
+    page_no = IntegerField(default=1, help_text="页码")
+    page_size = IntegerField(default=20, help_text="每页条数")
+    response_json = JSONField(null=True, help_text="API返回的data字段JSON")
+    fetched_at = DateTimeField(null=True, help_text="获取时间")
+    cache_expires_at = DateTimeField(null=True, help_text="缓存过期时间")
+    created_at = DateTimeField(null=True)
+
+    class Meta:
+        db_table = "bid_enterprise_cache"
+        indexes = (
+            (("company_name", "cache_type", "page_no", "page_size"), True),
+        )
+
+
 class BidSyncLog(DataBaseModel):
     id = BigIntegerField(primary_key=True)
     batch_id = CharField(max_length=36, unique=True, help_text="同步批次ID")
@@ -1978,6 +1996,9 @@ def migrate_db():
     alter_db_column_type(migrator, "file", "size", BigIntegerField(default=0, index=True))
     alter_db_add_column(migrator, "bid_project", "fetched_at", DateTimeField(null=True, help_text="搜索缓存获取时间"))
     alter_db_add_column(migrator, "bid_project", "cache_expires_at", DateTimeField(null=True, help_text="缓存过期时间"))
+    # bid_enterprise_cache table (if it doesn't exist)
+    if not BidEnterpriseCache.table_exists():
+        BidEnterpriseCache.create_table(safe=True)
     logging.disable(logging.NOTSET)
     # this is after re-enabling logging to allow logging changed user emails
     migrate_add_unique_email(migrator)

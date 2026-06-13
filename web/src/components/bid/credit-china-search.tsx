@@ -211,9 +211,9 @@ function SearchView({ tab }: { tab: SubTab }) {
           </a>
           <button
             onClick={handleBackToSearch}
-            className="inline-flex items-center gap-1 h-8 px-3 text-xs font-medium text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-colors shrink-0"
+            className="inline-flex items-center gap-1 h-8 px-4 text-xs font-medium bg-[#000000] hover:bg-[#171717] text-white rounded-lg transition-all shrink-0"
           >
-            修改条件
+            返回
           </button>
         </div>
       </div>
@@ -294,7 +294,7 @@ function SearchView({ tab }: { tab: SubTab }) {
               onClick={handleBackToSearch}
               className="h-9 px-4 bg-[#000000] hover:bg-[#171717] text-white text-sm rounded-lg"
             >
-              修改条件
+              返回
             </Button>
           </div>
         )}

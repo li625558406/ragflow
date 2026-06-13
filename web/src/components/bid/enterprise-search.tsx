@@ -11,7 +11,7 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 const INPUT_CLASS =
   'h-9 px-3 text-xs text-[#000000] border border-[#D4D4D4] bg-white hover:border-[#A3A3A3] focus:border-[#000000] focus:ring-2 focus:ring-[#000000]/10 rounded-lg transition-all';
@@ -145,6 +145,41 @@ export default function EnterpriseSearch() {
   const [tabLoading, setTabLoading] = useState(false);
   const [tabError, setTabError] = useState<string | null>(null);
   const [tabPage, setTabPage] = useState(1);
+
+  // Infinite scroll sentinel
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const tabPageRef = useRef(tabPage);
+  tabPageRef.current = tabPage;
+  const tabLoadingRef = useRef(tabLoading);
+  tabLoadingRef.current = tabLoading;
+
+  const hasMore = () => {
+    if (activeTab === 'contacts' && contacts)
+      return contacts.total > (contacts.records || []).length;
+    if (activeTab === 'customers' && customers)
+      return customers.total > (customers.records || []).length;
+    if (activeTab === 'suppliers' && suppliers)
+      return suppliers.total > (suppliers.records || []).length;
+    return false;
+  };
+
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry.isIntersecting || tabLoadingRef.current || !hasMore())
+          return;
+        const nextPage = tabPageRef.current + 1;
+        if (activeTab === 'contacts') fetchContacts(nextPage);
+        else if (activeTab === 'customers') fetchCustomers(nextPage);
+        else if (activeTab === 'suppliers') fetchSuppliers(nextPage);
+      },
+      { rootMargin: '200px' },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [activeTab]);
 
   const handleSearch = async () => {
     if (!companyName.trim()) return;
@@ -542,19 +577,15 @@ export default function EnterpriseSearch() {
               </div>
             </div>
           ))}
-          {contacts.total > contacts.records.length && (
-            <div className="py-3 flex items-center justify-center">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => fetchContacts(tabPage + 1)}
-                disabled={tabLoading}
-                className="h-9 text-xs"
-              >
-                {tabLoading
-                  ? '加载中...'
-                  : `加载更多 (${contacts.records.length}/${contacts.total})`}
-              </Button>
+          {contacts.total > (contacts.records || []).length && (
+            <div
+              ref={sentinelRef}
+              className="py-4 flex items-center justify-center"
+            >
+              <Loader2 className="size-5 animate-spin text-[#A3A3A3]" />
+              <span className="text-xs text-[#A3A3A3] ml-2">
+                {contacts.records?.length || 0} / {contacts.total}
+              </span>
             </div>
           )}
         </>
@@ -606,22 +637,15 @@ export default function EnterpriseSearch() {
               )}
             </div>
           ))}
-          {records.total > records.records.length && (
-            <div className="py-3 flex items-center justify-center">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => {
-                  if (activeTab === 'customers') fetchCustomers(tabPage + 1);
-                  else fetchSuppliers(tabPage + 1);
-                }}
-                disabled={tabLoading}
-                className="h-9 text-xs"
-              >
-                {tabLoading
-                  ? '加载中...'
-                  : `加载更多 (${records.records.length}/${records.total})`}
-              </Button>
+          {records.total > (records.records || []).length && (
+            <div
+              ref={sentinelRef}
+              className="py-4 flex items-center justify-center"
+            >
+              <Loader2 className="size-5 animate-spin text-[#A3A3A3]" />
+              <span className="text-xs text-[#A3A3A3] ml-2">
+                {records.records?.length || 0} / {records.total}
+              </span>
             </div>
           )}
         </>
@@ -646,9 +670,9 @@ export default function EnterpriseSearch() {
           </span>
           <button
             onClick={handleBackToSearch}
-            className="inline-flex items-center gap-1 h-8 px-3 text-xs font-medium text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-colors shrink-0"
+            className="inline-flex items-center gap-1 h-8 px-4 text-xs font-medium bg-[#000000] hover:bg-[#171717] text-white rounded-lg transition-all shrink-0"
           >
-            修改条件
+            返回
           </button>
         </div>
       </div>

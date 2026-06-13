@@ -35,6 +35,7 @@ from werkzeug.datastructures import FileStorage
 from common.constants import TaskStatus
 from api.db.db_models import DB
 from api.db.services.bid_service import (
+    BidEnterpriseCacheService,
     BidProjectService,
     BidProjectDetailService,
     BidProjectStructureService,
@@ -1198,22 +1199,234 @@ def get_bid_detail_v2_cached(project_id: int, publish_time: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Enterprise drill-down — contacts / customers / suppliers
+# Data normalization — transform v2 API responses to frontend TypeScript shapes
+# ---------------------------------------------------------------------------
+
+def _normalize_contacts(raw: dict) -> dict:
+    """Normalize v2 contacts API response to match frontend ContactRecord interface.
+
+    API returns: {companyName, pagination: {total, pageNo, pageSize, ...}, records: [...]}
+    Frontend expects: {companyName, records, total, pageNo, pageSize}
+    """
+    pagination = raw.get("pagination", {}) or {}
+    records = raw.get("records", []) or []
+    normalized_records = []
+    for r in records:
+        normalized_records.append({
+            "contactName": r.get("contactName", ""),
+            "contactPhone": r.get("contactPhones", []) or [],
+            "contactEmail": r.get("contactEmails", []) or [],
+            "department": r.get("department", ""),
+            "position": r.get("position", ""),
+        })
+    return {
+        "companyName": raw.get("companyName", ""),
+        "records": normalized_records,
+        "total": int(pagination.get("total", 0)),
+        "pageNo": int(pagination.get("pageNo", 1)),
+        "pageSize": int(pagination.get("pageSize", len(records))),
+    }
+
+
+def _normalize_partners(raw: dict) -> dict:
+    """Normalize v2 customers/suppliers API response to match frontend PartnerRecord interface.
+
+    API returns: {companyName, pagination: {total, pageNo, pageSize, ...}, records: [...]}
+    Frontend expects: {companyName, records, total, pageNo, pageSize}
+    Record mapping: relatedProjectName→partnerCompanyName, projectTitles=[relatedProjectName]
+    """
+    pagination = raw.get("pagination", {}) or {}
+    records = raw.get("records", []) or []
+    normalized_records = []
+    for r in records:
+        partner_name = r.get("relatedProjectName", "") or ""
+        normalized_records.append({
+            "partnerCompanyName": partner_name,
+            "projectCount": str(r.get("projectCount", "1") or "1"),
+            "totalAmountWan": str(r.get("totalAmountWan", "") or ""),
+            "firstProjectDate": r.get("projectPublishTime", "") or "",
+            "lastProjectDate": r.get("projectPublishTime", "") or "",
+            "projectTitles": [partner_name] if partner_name else [],
+        })
+    return {
+        "companyName": raw.get("companyName", ""),
+        "records": normalized_records,
+        "total": int(pagination.get("total", 0)),
+        "pageNo": int(pagination.get("pageNo", 1)),
+        "pageSize": int(pagination.get("pageSize", len(records))),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Enterprise cache-first — profile / contacts / customers / suppliers
+# ---------------------------------------------------------------------------
+
+def get_enterprise_profile_cached(company_name: str) -> dict:
+    """Get enterprise profile with cache-first strategy.
+
+    1. Check local DB cache (free)
+    2. Cache miss → call v2 API → upsert → return (paid)
+    3. API failure → return stale cache if available
+
+    TTL: 7 days.
+    """
+    # Check cache
+    cached = BidEnterpriseCacheService.get_cached(company_name, "profile")
+    if cached:
+        logging.info("Bid tool: enterprise profile cache hit for '%s'", company_name)
+        return {
+            "data": cached["response_json"],
+            "from_cache": True,
+        }
+
+    # Call API
+    logging.info("Bid tool: enterprise profile cache miss for '%s', calling API", company_name)
+    try:
+        client = BidApiClient()
+        result = client.get_company_profile_summary(company_name)
+        data = result.get("data", {})
+
+        # Cache the response
+        BidEnterpriseCacheService.upsert_cache(
+            company_name=company_name,
+            cache_type="profile",
+            response_data=data,
+        )
+        return {"data": data, "from_cache": False}
+    except Exception as e:
+        # Fallback to stale cache
+        stale = BidEnterpriseCacheService.get_cached(company_name, "profile", allow_stale=True)
+        if stale:
+            logging.warning("Bid tool: enterprise profile API failed, using stale cache. error=%s", e)
+            return {"data": stale["response_json"], "from_cache": True, "stale": True}
+        raise
+
+
+def get_enterprise_contacts_cached(
+    company_name: str, page_no: int = 1, page_size: int = 5,
+) -> dict:
+    """Get enterprise contacts with cache-first strategy.
+
+    TTL: 3 days.
+    """
+    cached = BidEnterpriseCacheService.get_cached(company_name, "contacts", page_no, page_size)
+    if cached:
+        logging.info("Bid tool: enterprise contacts cache hit for '%s' p%d", company_name, page_no)
+        return {
+            "data": _normalize_contacts(cached["response_json"]),
+            "from_cache": True,
+        }
+
+    logging.info("Bid tool: enterprise contacts cache miss for '%s', calling API", company_name)
+    try:
+        client = BidApiClient()
+        result = client.get_company_profile_contacts(company_name, page_no, page_size)
+        data = result.get("data", {})
+
+        BidEnterpriseCacheService.upsert_cache(
+            company_name=company_name,
+            cache_type="contacts",
+            response_data=data,
+            page_no=page_no,
+            page_size=page_size,
+        )
+        return {"data": _normalize_contacts(data), "from_cache": False}
+    except Exception as e:
+        stale = BidEnterpriseCacheService.get_cached(company_name, "contacts", page_no, page_size, allow_stale=True)
+        if stale:
+            logging.warning("Bid tool: enterprise contacts API failed, using stale cache. error=%s", e)
+            return {"data": _normalize_contacts(stale["response_json"]), "from_cache": True, "stale": True}
+        raise
+
+
+def get_enterprise_customers_cached(
+    company_name: str, page_no: int = 1, page_size: int = 20,
+) -> dict:
+    """Get enterprise customer projects with cache-first strategy.
+
+    TTL: 1 day.
+    """
+    cached = BidEnterpriseCacheService.get_cached(company_name, "customers", page_no, page_size)
+    if cached:
+        logging.info("Bid tool: enterprise customers cache hit for '%s' p%d", company_name, page_no)
+        return {
+            "data": _normalize_partners(cached["response_json"]),
+            "from_cache": True,
+        }
+
+    logging.info("Bid tool: enterprise customers cache miss for '%s', calling API", company_name)
+    try:
+        client = BidApiClient()
+        result = client.get_company_profile_customers(company_name, page_no, page_size)
+        data = result.get("data", {})
+
+        BidEnterpriseCacheService.upsert_cache(
+            company_name=company_name,
+            cache_type="customers",
+            response_data=data,
+            page_no=page_no,
+            page_size=page_size,
+        )
+        return {"data": _normalize_partners(data), "from_cache": False}
+    except Exception as e:
+        stale = BidEnterpriseCacheService.get_cached(company_name, "customers", page_no, page_size, allow_stale=True)
+        if stale:
+            logging.warning("Bid tool: enterprise customers API failed, using stale cache. error=%s", e)
+            return {"data": _normalize_partners(stale["response_json"]), "from_cache": True, "stale": True}
+        raise
+
+
+def get_enterprise_suppliers_cached(
+    company_name: str, page_no: int = 1, page_size: int = 20,
+) -> dict:
+    """Get enterprise supplier projects with cache-first strategy.
+
+    TTL: 1 day.
+    """
+    cached = BidEnterpriseCacheService.get_cached(company_name, "suppliers", page_no, page_size)
+    if cached:
+        logging.info("Bid tool: enterprise suppliers cache hit for '%s' p%d", company_name, page_no)
+        return {
+            "data": _normalize_partners(cached["response_json"]),
+            "from_cache": True,
+        }
+
+    logging.info("Bid tool: enterprise suppliers cache miss for '%s', calling API", company_name)
+    try:
+        client = BidApiClient()
+        result = client.get_company_profile_suppliers(company_name, page_no, page_size)
+        data = result.get("data", {})
+
+        BidEnterpriseCacheService.upsert_cache(
+            company_name=company_name,
+            cache_type="suppliers",
+            response_data=data,
+            page_no=page_no,
+            page_size=page_size,
+        )
+        return {"data": _normalize_partners(data), "from_cache": False}
+    except Exception as e:
+        stale = BidEnterpriseCacheService.get_cached(company_name, "suppliers", page_no, page_size, allow_stale=True)
+        if stale:
+            logging.warning("Bid tool: enterprise suppliers API failed, using stale cache. error=%s", e)
+            return {"data": _normalize_partners(stale["response_json"]), "from_cache": True, "stale": True}
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Legacy passthrough functions (keep for backward compatibility)
 # ---------------------------------------------------------------------------
 
 def get_enterprise_contacts(company_name: str, page_no: int = 1, page_size: int = 5) -> dict:
-    """Get enterprise contacts list (v2 API, no caching)."""
-    client = BidApiClient()
-    return client.get_company_profile_contacts(company_name, page_no, page_size)
+    """Get enterprise contacts list (cached)."""
+    return get_enterprise_contacts_cached(company_name, page_no, page_size)
 
 
 def get_enterprise_customers(company_name: str, page_no: int = 1, page_size: int = 20) -> dict:
-    """Get enterprise customer project list (v2 API, no caching)."""
-    client = BidApiClient()
-    return client.get_company_profile_customers(company_name, page_no, page_size)
+    """Get enterprise customer project list (cached)."""
+    return get_enterprise_customers_cached(company_name, page_no, page_size)
 
 
 def get_enterprise_suppliers(company_name: str, page_no: int = 1, page_size: int = 20) -> dict:
-    """Get enterprise supplier project list (v2 API, no caching)."""
-    client = BidApiClient()
-    return client.get_company_profile_suppliers(company_name, page_no, page_size)
+    """Get enterprise supplier project list (cached)."""
+    return get_enterprise_suppliers_cached(company_name, page_no, page_size)

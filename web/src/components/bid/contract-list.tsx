@@ -445,7 +445,7 @@ export default function ContractList() {
               onClick={handleBackToSearch}
               className="h-9 px-4 bg-[#000000] hover:bg-[#171717] text-white text-sm rounded-lg"
             >
-              修改条件
+              返回
             </Button>
           </div>
         )}
