@@ -23,7 +23,7 @@ import json
 import logging
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from quart import Blueprint, request
 
@@ -578,6 +578,37 @@ async def get_bid_project_files(project_id):
 
 
 # ---------------------------------------------------------------------------
+# 项目详情 v2（世舶直连网关，适用于合同/标讯/中标等所有类型）
+# ---------------------------------------------------------------------------
+@manager.route("/bid/projects/<int:project_id>/detail-v2", methods=["GET"])  # noqa: F821
+@login_required
+@bid_rate_limit("detail")
+async def get_bid_project_detail_v2(project_id):
+    """获取项目详情（v2网关，同时返回正文+结构化+附件）
+
+    query params:
+        publish_time: 发布时间（必填，格式 YYYY-MM-DD HH:mm:ss）
+    """
+    publish_time = request.args.get("publish_time", "")
+    if not publish_time:
+        return get_data_error_result(message="publish_time is required")
+
+    try:
+        client = BidApiClient()
+        content = client.get_detail_v2(project_id, publish_time)
+        structure = client.get_structure_v2(project_id, publish_time)
+        return get_json_result(data={
+            "content": content.get("data", {}),
+            "structure": structure.get("data", {}),
+        })
+    except BidApiError as e:
+        return get_data_error_result(message=f"API error: {e}")
+    except Exception as e:
+        logging.exception("Failed to get bid detail v2: %s", e)
+        return get_data_error_result(message=f"Failed to get detail: {e}")
+
+
+# ---------------------------------------------------------------------------
 # 同步日志
 # ---------------------------------------------------------------------------
 @manager.route("/bid/sync-logs", methods=["GET"])  # noqa: F821
@@ -872,6 +903,9 @@ async def list_bid_contracts():
     city_code = request.args.get("city_code", "") or None
     start_date = request.args.get("start_date", "") or None
     end_date = request.args.get("end_date", "") or None
+    # 外部 API 要求 startDate 必填，未提供时默认最近 30 天
+    if not start_date:
+        start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
     contract_end_min = request.args.get("contract_end_min", "") or None
     contract_end_max = request.args.get("contract_end_max", "") or None
     part_a_name = request.args.get("part_a_name", "") or None

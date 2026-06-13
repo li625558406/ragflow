@@ -491,6 +491,43 @@ class BidApiClient:
         )
         return result.get("data", {})
 
+    # ------------------------------------------------------------------
+    # V2 详情接口（世舶直连网关，适用于合同/标讯等所有类型项目）
+    # ------------------------------------------------------------------
+
+    def get_structure_v2(self, project_id: int, publish_time: str) -> dict:
+        """获取结构化详情（v2 JSON POST → /bid/getZTBStructreDetail）
+
+        返回: projectName, projectNumber, budgetMoney, bidMoney,
+              partyAInfo/BInfo/agencyInfo (含联系人/电话/地址/邮箱),
+              bidCompany, sbkjBidUrl, collectUrl 等
+        """
+        return self._v2_post_json("/bid/getZTBStructreDetail", {
+            "id": str(project_id),
+            "publishTime": publish_time,
+        })
+
+    def get_detail_v2(self, project_id: int, publish_time: str) -> dict:
+        """获取正文详情（v2 JSON POST → /bid/getZTBProjectDetail）
+
+        返回: title, content (HTML正文), projectMoney, partAName/BName,
+              agentName, projectFiles 列表, industryName 等
+        """
+        return self._v2_post_json("/bid/getZTBProjectDetail", {
+            "id": str(project_id),
+            "publishTime": publish_time,
+        })
+
+    def get_files_v2(self, project_id: int, publish_time: str) -> dict:
+        """获取附件列表（v2 JSON POST → /bid/getZTBProjectFiles）
+
+        返回: 附件列表（含 projectFileID, name, publishTime）
+        """
+        return self._v2_post_json("/bid/getZTBProjectFiles", {
+            "projectId": str(project_id),
+            "publishTime": publish_time,
+        })
+
     def get_project_by_number(
         self, project_number: str, publish_time: str = "",
     ) -> list:

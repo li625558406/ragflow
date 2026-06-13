@@ -52,6 +52,15 @@ server {
         }
     }
 
+    # Mobile App Downloads (APK / IPA / iOS install guide)
+    location /downloads/ {
+        alias /ragflow/downloads/;
+        add_header Content-Disposition "";
+        # APK MIME type
+        types { application/vnd.android.package-archive apk; }
+        default_type application/octet-stream;
+    }
+
     # All other routes -> React SPA (C-end pages handled by React Router)
     location / {
         try_files $uri $uri/ /index.html;

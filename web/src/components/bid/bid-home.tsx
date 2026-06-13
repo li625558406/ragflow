@@ -8,7 +8,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { ExternalLink, Plus, Trash2 } from 'lucide-react';
+import { ExternalLink, Pencil, Plus, Trash2 } from 'lucide-react';
 import { useCallback, useState } from 'react';
 
 interface LinkItem {
@@ -240,12 +240,23 @@ export default function BidHome() {
     useState<string[]>(loadHiddenBuiltins);
   const hiddenSet = new Set(hiddenBuiltins);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editingBuiltinKey, setEditingBuiltinKey] = useState<string | null>(
+    null,
+  );
   const [newName, setNewName] = useState('');
   const [newUrl, setNewUrl] = useState('');
   const [newGroup, setNewGroup] = useState(GROUPS[0].title);
   const [customGroupName, setCustomGroupName] = useState('');
   const [isNewGroup, setIsNewGroup] = useState(false);
   const [formError, setFormError] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<{
+    name: string;
+    url: string;
+    groupTitle: string;
+  } | null>(null);
+
+  const isEditing = editId !== null || editingBuiltinKey !== null;
 
   const mergedGroups = (() => {
     const groupMap = new Map<string, LinkItem[]>();
@@ -276,9 +287,11 @@ export default function BidHome() {
     setCustomGroupName('');
     setIsNewGroup(false);
     setFormError('');
+    setEditId(null);
+    setEditingBuiltinKey(null);
   }, []);
 
-  const handleAdd = () => {
+  const handleSave = () => {
     const name = newName.trim();
     const url = newUrl.trim();
     if (!name || !url) {
@@ -295,37 +308,85 @@ export default function BidHome() {
       return;
     }
 
-    const updated = [...customSites, { name, url, group }];
-    saveCustomSites(updated);
-    setCustomSites(updated);
+    if (isEditing) {
+      if (editingBuiltinKey) {
+        // Editing a built-in item: hide original + save as custom
+        const updatedHidden = [...hiddenBuiltins, editingBuiltinKey];
+        saveHiddenBuiltins(updatedHidden);
+        setHiddenBuiltins(updatedHidden);
+        const updated = [...customSites, { name, url, group }];
+        saveCustomSites(updated);
+        setCustomSites(updated);
+      } else {
+        // Update existing custom site
+        const updated = customSites.map((s, i) =>
+          i.toString() === editId ? { name, url, group } : s,
+        );
+        saveCustomSites(updated);
+        setCustomSites(updated);
+      }
+    } else {
+      // Add new
+      const updated = [...customSites, { name, url, group }];
+      saveCustomSites(updated);
+      setCustomSites(updated);
+    }
     setDialogOpen(false);
     resetForm();
   };
 
-  const handleDelete = useCallback(
-    (name: string, url: string, groupTitle: string) => {
-      // Built-in link → hide via hidden set
-      const isBuiltin = GROUPS.some(
-        (g) =>
-          g.title === groupTitle &&
-          g.items.some((it) => it.name === name && it.url === url),
-      );
-      if (isBuiltin) {
-        const key = linkKey(name, url);
-        const updated = [...hiddenBuiltins, key];
-        saveHiddenBuiltins(updated);
-        setHiddenBuiltins(updated);
-        return;
+  const openEdit = (
+    name: string,
+    url: string,
+    groupTitle: string,
+    isBuiltin: boolean,
+    customIndex?: number,
+  ) => {
+    if (isBuiltin) {
+      setEditId(null);
+      setEditingBuiltinKey(linkKey(name, url));
+      setNewGroup(groupTitle);
+      setIsNewGroup(false);
+    } else {
+      setEditId(customIndex!.toString());
+      setEditingBuiltinKey(null);
+      const builtinGroup = GROUPS.some((g) => g.title === groupTitle);
+      if (builtinGroup) {
+        setNewGroup(groupTitle);
+        setIsNewGroup(false);
+      } else {
+        setCustomGroupName(groupTitle);
+        setIsNewGroup(true);
       }
-      // Custom link → remove from customSites
+    }
+    setNewName(name);
+    setNewUrl(url);
+    setFormError('');
+    setDialogOpen(true);
+  };
+
+  const confirmDelete = useCallback(() => {
+    if (!deleteTarget) return;
+    const { name, url, groupTitle } = deleteTarget;
+    const isBuiltin = GROUPS.some(
+      (g) =>
+        g.title === groupTitle &&
+        g.items.some((it) => it.name === name && it.url === url),
+    );
+    if (isBuiltin) {
+      const key = linkKey(name, url);
+      const updated = [...hiddenBuiltins, key];
+      saveHiddenBuiltins(updated);
+      setHiddenBuiltins(updated);
+    } else {
       const updated = customSites.filter(
         (s) => !(s.name === name && s.url === url && s.group === groupTitle),
       );
       saveCustomSites(updated);
       setCustomSites(updated);
-    },
-    [customSites, hiddenBuiltins],
-  );
+    }
+    setDeleteTarget(null);
+  }, [deleteTarget, customSites, hiddenBuiltins]);
 
   return (
     <>
@@ -335,15 +396,14 @@ export default function BidHome() {
           <div className="flex items-center justify-between">
             <h1 className="text-base font-bold text-[#000000]">常用网站导航</h1>
             <Button
-              size="sm"
-              variant="outline"
+              size="default"
               onClick={() => {
                 resetForm();
                 setDialogOpen(true);
               }}
-              className="gap-1.5"
+              className="gap-1.5 bg-[#000000] hover:bg-[#171717] text-white text-sm font-medium rounded-lg"
             >
-              <Plus className="size-3.5" />
+              <Plus className="size-4" />
               新增网站
             </Button>
           </div>
@@ -376,15 +436,54 @@ export default function BidHome() {
                         {item.name}
                       </span>
                     </a>
-                    <button
-                      onClick={() =>
-                        handleDelete(item.name, item.url, group.title)
-                      }
-                      className="shrink-0 size-5 flex items-center justify-center rounded text-[#A3A3A3] hover:text-red-500 hover:bg-red-50 transition-colors"
-                      title="删除"
-                    >
-                      <Trash2 className="size-3" />
-                    </button>
+                    <div className="flex items-center gap-0.5">
+                      <button
+                        onClick={() => {
+                          const isBuiltin = GROUPS.some(
+                            (g) =>
+                              g.title === group.title &&
+                              g.items.some(
+                                (it) =>
+                                  it.name === item.name && it.url === item.url,
+                              ),
+                          );
+                          if (isBuiltin) {
+                            openEdit(item.name, item.url, group.title, true);
+                          } else {
+                            const idx = customSites.findIndex(
+                              (s) =>
+                                s.name === item.name &&
+                                s.url === item.url &&
+                                s.group === group.title,
+                            );
+                            openEdit(
+                              item.name,
+                              item.url,
+                              group.title,
+                              false,
+                              idx,
+                            );
+                          }
+                        }}
+                        className="shrink-0 size-5 flex items-center justify-center rounded text-[#A3A3A3] hover:text-[#2563EB] hover:bg-blue-50 transition-colors"
+                        title="编辑"
+                      >
+                        <Pencil className="size-3" />
+                      </button>
+                      <button
+                        onClick={() =>
+                          setDeleteTarget({
+                            name: item.name,
+                            url: item.url,
+                            groupTitle: group.title,
+                          })
+                        }
+                        className="shrink-0 size-5 flex items-center justify-center rounded text-[#A3A3A3] hover:text-red-500 hover:bg-red-50 transition-colors"
+                        title="删除"
+                      >
+                        <Trash2 className="size-3" />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -393,11 +492,39 @@ export default function BidHome() {
         </div>
       </div>
 
-      {/* Add dialog */}
+      {/* Delete confirm dialog */}
+      <Dialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-[360px]">
+          <DialogHeader>
+            <DialogTitle>确认删除</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-[#525252]">
+            确定要删除「{deleteTarget?.name}」吗？此操作不可撤销。
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>
+              取消
+            </Button>
+            <Button
+              onClick={confirmDelete}
+              className="bg-red-500 hover:bg-red-600 text-white"
+            >
+              确认删除
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add / Edit dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="sm:max-w-[420px]">
           <DialogHeader>
-            <DialogTitle>新增网站</DialogTitle>
+            <DialogTitle>{isEditing ? '修改网站' : '新增网站'}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-1.5">
@@ -481,7 +608,9 @@ export default function BidHome() {
             <Button variant="outline" onClick={() => setDialogOpen(false)}>
               取消
             </Button>
-            <Button onClick={handleAdd}>确定添加</Button>
+            <Button onClick={handleSave}>
+              {isEditing ? '保存修改' : '确定添加'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

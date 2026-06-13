@@ -7,9 +7,16 @@ import {
 import { Smartphone } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 
-// TODO: Replace with actual App Store / download URLs after publishing
-const ANDROID_DOWNLOAD_URL = 'https://www.ragflow.com/app/android';
-const IOS_DOWNLOAD_URL = 'https://apps.apple.com/cn/app/id0000000000';
+// Server-configurable download URLs via env variables.
+// Update .env.production after server migration:
+//   VITE_ANDROID_DOWNLOAD_URL  — direct APK download link
+//   VITE_IOS_DOWNLOAD_URL      — iOS install guide page (or itms-services:// OTA manifest)
+const ANDROID_DOWNLOAD_URL =
+  import.meta.env.VITE_ANDROID_DOWNLOAD_URL ||
+  'http://47.98.102.55/downloads/bidding-app.apk';
+const IOS_DOWNLOAD_URL =
+  import.meta.env.VITE_IOS_DOWNLOAD_URL ||
+  'http://47.98.102.55/downloads/ios-install.html';
 
 interface AppDownloadDialogProps {
   open: boolean;
@@ -67,14 +74,14 @@ export default function AppDownloadDialog({
               <span className="text-sm font-semibold text-[#0F172A]">iOS</span>
             </div>
             <p className="text-xs text-[#64748B] text-center leading-relaxed">
-              扫描二维码跳转
+              扫描二维码查看
               <br />
-              App Store 下载
+              iOS 安装说明
             </p>
           </div>
         </div>
         <p className="text-xs text-[#A3A3A3] text-center">
-          使用手机相机扫描二维码即可下载
+          使用手机相机扫描二维码即可
         </p>
       </DialogContent>
     </Dialog>

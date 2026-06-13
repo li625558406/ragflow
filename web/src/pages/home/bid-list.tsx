@@ -578,7 +578,7 @@ export function BidList({
         {/* Compact search bar */}
         <div className="shrink-0 px-6 py-3">
           <div className="flex items-center gap-3">
-            {/* Keyword summary */}
+            {/* Keyword summary + return button */}
             <div className="flex items-center gap-2 flex-1 min-w-0">
               <span className="text-sm font-semibold text-[#000000] truncate">
                 {appliedKeyword || '全部标讯'}
@@ -588,18 +588,17 @@ export function BidList({
                   {activeFilterCount}个筛选
                 </span>
               )}
+              <Button
+                onClick={handleBackToSearch}
+                className="h-8 px-3 bg-[#000000] hover:bg-[#171717] text-white text-xs font-medium rounded-lg transition-colors shrink-0"
+              >
+                返回
+              </Button>
             </div>
 
             <span className="text-xs text-[#A3A3A3] shrink-0">
               共 <b className="text-[#000000]">{total}</b> 条结果
             </span>
-
-            <button
-              onClick={handleBackToSearch}
-              className="inline-flex items-center gap-1 h-8 px-3 text-xs font-medium text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-colors shrink-0"
-            >
-              修改条件
-            </button>
           </div>
         </div>
 
@@ -707,7 +706,7 @@ export function BidList({
                 onClick={handleBackToSearch}
                 className="h-9 px-4 bg-[#000000] hover:bg-[#171717] text-white text-sm rounded-lg"
               >
-                修改条件
+                返回
               </Button>
             </div>
           )}

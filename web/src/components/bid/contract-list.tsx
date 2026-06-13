@@ -21,6 +21,51 @@ interface ContractItem {
   contractEndDate: string;
 }
 
+interface ContractDetail {
+  content: {
+    title?: string;
+    content?: string;
+    projectMoney?: string;
+    partAName?: string;
+    partBName?: string;
+    agentName?: string;
+    industryName?: string;
+    publishTime?: string;
+    projectFiles?: { projectFileID: number; name: string }[];
+  };
+  structure: {
+    projectName?: string;
+    projectNumber?: string[];
+    budgetMoney?: string[];
+    bidMoney?: string[];
+    partyAInfo?: {
+      name: string;
+      contactName: string[];
+      contactPhone: string[];
+      address: string[];
+      email: string[];
+    }[];
+    partyBInfo?: {
+      name: string;
+      contactName: string[];
+      contactPhone: string[];
+      address: string[];
+      email: string[];
+    }[];
+    agencyInfo?: {
+      name: string;
+      contactName: string[];
+      contactPhone: string[];
+      address: string[];
+      email: string[];
+    }[];
+    bidCompany?: { name: string }[];
+    siginUpStopDate?: string;
+    bidStartDate?: string;
+    bidStartAddress?: string[];
+  };
+}
+
 function fmtDate(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -56,10 +101,20 @@ export default function ContractList() {
   const [error, setError] = useState<string | null>(null);
   const pageRef = useRef(1);
   const [keyword, setKeyword] = useState('');
-  const [dateRange, setDateRange] = useState<{ from?: Date; to?: Date }>();
+  const [dateRange, setDateRange] = useState<{ from?: Date; to?: Date }>(() => {
+    const to = new Date();
+    const from = new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
+    return { from, to };
+  });
   const [partAName, setPartAName] = useState('');
   const [partBName, setPartBName] = useState('');
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+
+  // Detail modal state
+  const [detailItem, setDetailItem] = useState<ContractItem | null>(null);
+  const [detail, setDetail] = useState<ContractDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
 
   const doFetch = useCallback(
     async (page: number) => {
@@ -109,6 +164,29 @@ export default function ContractList() {
 
   const handleBackToSearch = () => setHasSearched(false);
 
+  const openDetail = async (item: ContractItem) => {
+    setDetailItem(item);
+    setDetail(null);
+    setDetailError(null);
+    setDetailLoading(true);
+    try {
+      const json = await contractFetch(`projects/${item.id}/detail-v2`, {
+        publish_time: item.publishTime,
+      });
+      setDetail(json.data || null);
+    } catch (e: any) {
+      setDetailError(e.message);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const closeDetail = () => {
+    setDetailItem(null);
+    setDetail(null);
+    setDetailError(null);
+  };
+
   // ================================================================
   // STATE 1: Search Hero (centered card)
   // ================================================================
@@ -129,6 +207,27 @@ export default function ContractList() {
                 搜索中标结果和合同公告
               </p>
             </div>
+
+            {/* Error banner (State 1) */}
+            {error && (
+              <div className="mb-4 bg-[#FFF2F0] border border-[#FFCCC7] rounded-lg px-4 py-3 flex items-start gap-3">
+                <span className="text-sm text-[#FF4D4F] shrink-0 mt-0.5">
+                  !
+                </span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-[#FF4D4F]">查询失败</p>
+                  <p className="text-xs text-[#8C8C8C] mt-0.5 break-all">
+                    {error}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setError(null)}
+                  className="shrink-0 text-[#A3A3A3] hover:text-[#000000] transition-colors"
+                >
+                  <X className="size-3.5" />
+                </button>
+              </div>
+            )}
 
             {/* Search card */}
             <div className="cs-card-enter cs-card-d2 bg-white rounded-xl border border-[#E8E8E8] shadow-[0_4px_24px_rgba(0,0,0,0.04)] p-6">
@@ -277,6 +376,7 @@ export default function ContractList() {
             {items.map((item, idx) => (
               <div
                 key={`${item.id}-${idx}`}
+                onClick={() => openDetail(item)}
                 className="rounded-xl border border-[#E8E8E8] bg-[#FAFAFA] p-5 cursor-pointer hover:border-[#A3A3A3] transition"
               >
                 <div
@@ -336,6 +436,234 @@ export default function ContractList() {
           </div>
         )}
       </div>
+
+      {/* ================================================================ */}
+      {/* Detail Modal */}
+      {/* ================================================================ */}
+      {detailItem && (
+        <div
+          className="fixed inset-0 z-50 bg-black/50 flex items-start justify-center pt-12 pb-12 overflow-auto"
+          onClick={closeDetail}
+        >
+          <div
+            className="bg-white rounded-xl shadow-2xl w-full max-w-3xl mx-4 max-h-[85vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal header */}
+            <div className="shrink-0 flex items-center justify-between px-6 py-4 border-b border-[#E8E8E8]">
+              <div className="flex-1 min-w-0 mr-4">
+                <h2
+                  className="text-sm font-semibold text-[#000000] leading-snug line-clamp-2"
+                  dangerouslySetInnerHTML={{ __html: detailItem.title }}
+                />
+                <p className="text-xs text-[#A3A3A3] mt-1">
+                  {detailItem.publishTime}
+                  {detailItem.projectMoney && ` · ${detailItem.projectMoney}`}
+                </p>
+              </div>
+              <button
+                onClick={closeDetail}
+                className="shrink-0 size-8 flex items-center justify-center rounded-lg text-[#A3A3A3] hover:text-[#000000] hover:bg-[#F5F5F5] transition-colors"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+
+            {/* Modal body */}
+            <div className="flex-1 min-h-0 overflow-auto px-6 py-4">
+              {detailLoading ? (
+                <div className="flex items-center justify-center py-16">
+                  <Loader2 className="size-6 animate-spin text-[#A3A3A3]" />
+                </div>
+              ) : detailError ? (
+                <div className="bg-[#FFF2F0] border border-[#FFCCC7] rounded-lg px-4 py-3">
+                  <p className="text-sm font-medium text-[#FF4D4F]">
+                    获取详情失败
+                  </p>
+                  <p className="text-xs text-[#8C8C8C] mt-1">{detailError}</p>
+                </div>
+              ) : detail ? (
+                <div className="space-y-4">
+                  {/* Structured info */}
+                  {detail.structure && (
+                    <div className="rounded-xl border border-[#E8E8E8] bg-[#FAFAFA] p-5">
+                      <div className="text-sm font-semibold mb-3">
+                        结构化信息
+                      </div>
+                      <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs">
+                        {detail.structure.projectName && (
+                          <div className="col-span-2 py-1">
+                            <span className="text-[#999]">项目名称：</span>
+                            <span className="text-[#333]">
+                              {detail.structure.projectName}
+                            </span>
+                          </div>
+                        )}
+                        {detail.structure.projectNumber?.length > 0 && (
+                          <div className="col-span-2 py-1">
+                            <span className="text-[#999]">项目编号：</span>
+                            <span className="text-[#333]">
+                              {detail.structure.projectNumber.join(' / ')}
+                            </span>
+                          </div>
+                        )}
+                        {detail.structure.budgetMoney?.length > 0 && (
+                          <div className="py-1">
+                            <span className="text-[#999]">预算金额：</span>
+                            <span className="text-[#333]">
+                              {detail.structure.budgetMoney.join(' / ')}
+                            </span>
+                          </div>
+                        )}
+                        {detail.structure.bidMoney?.length > 0 && (
+                          <div className="py-1">
+                            <span className="text-[#999]">中标金额：</span>
+                            <span className="text-[#1a1a1a] font-medium">
+                              {detail.structure.bidMoney.join(' / ')}
+                            </span>
+                          </div>
+                        )}
+                        {detail.structure.siginUpStopDate && (
+                          <div className="py-1">
+                            <span className="text-[#999]">报名截止：</span>
+                            <span className="text-[#333]">
+                              {detail.structure.siginUpStopDate}
+                            </span>
+                          </div>
+                        )}
+                        {detail.structure.bidStartDate && (
+                          <div className="py-1">
+                            <span className="text-[#999]">开标日期：</span>
+                            <span className="text-[#333]">
+                              {detail.structure.bidStartDate}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Party A */}
+                      {detail.structure.partyAInfo?.length > 0 && (
+                        <div className="mt-3 pt-3 border-t border-[#E8E8E8]">
+                          <span className="text-xs font-medium text-[#333]">
+                            甲方信息
+                          </span>
+                          {detail.structure.partyAInfo.map((p, i) => (
+                            <div key={i} className="mt-1 text-xs text-[#666]">
+                              <span className="font-medium">{p.name}</span>
+                              {p.contactName?.length > 0 && (
+                                <span>
+                                  {' '}
+                                  · 联系人: {p.contactName.join(', ')}
+                                </span>
+                              )}
+                              {p.contactPhone?.length > 0 && (
+                                <span> · {p.contactPhone.join(', ')}</span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Party B */}
+                      {detail.structure.partyBInfo?.length > 0 && (
+                        <div className="mt-2 pt-2 border-t border-[#E8E8E8]">
+                          <span className="text-xs font-medium text-[#333]">
+                            乙方/中标方
+                          </span>
+                          {detail.structure.partyBInfo.map((p, i) => (
+                            <div key={i} className="mt-1 text-xs text-[#666]">
+                              <span className="font-medium">{p.name}</span>
+                              {p.contactName?.length > 0 && (
+                                <span>
+                                  {' '}
+                                  · 联系人: {p.contactName.join(', ')}
+                                </span>
+                              )}
+                              {p.contactPhone?.length > 0 && (
+                                <span> · {p.contactPhone.join(', ')}</span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Agency */}
+                      {detail.structure.agencyInfo?.length > 0 && (
+                        <div className="mt-2 pt-2 border-t border-[#E8E8E8]">
+                          <span className="text-xs font-medium text-[#333]">
+                            代理机构
+                          </span>
+                          {detail.structure.agencyInfo.map((p, i) => (
+                            <div key={i} className="mt-1 text-xs text-[#666]">
+                              <span className="font-medium">{p.name}</span>
+                              {p.contactName?.length > 0 && (
+                                <span>
+                                  {' '}
+                                  · 联系人: {p.contactName.join(', ')}
+                                </span>
+                              )}
+                              {p.contactPhone?.length > 0 && (
+                                <span> · {p.contactPhone.join(', ')}</span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Bid companies */}
+                      {detail.structure.bidCompany?.length > 0 && (
+                        <div className="mt-2 pt-2 border-t border-[#E8E8E8]">
+                          <span className="text-xs font-medium text-[#333]">
+                            投标企业
+                          </span>
+                          <div className="mt-1 text-xs text-[#666]">
+                            {detail.structure.bidCompany
+                              .map((c) => c.name)
+                              .join(' / ')}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Content body */}
+                  {detail.content?.content && (
+                    <div className="rounded-xl border border-[#E8E8E8] bg-[#FAFAFA] p-5">
+                      <div className="text-sm font-semibold mb-3">正文内容</div>
+                      <div
+                        className="text-xs text-[#333] leading-relaxed max-h-[500px] overflow-auto bid-content-html"
+                        dangerouslySetInnerHTML={{
+                          __html: detail.content.content,
+                        }}
+                      />
+                    </div>
+                  )}
+
+                  {/* Files */}
+                  {detail.content?.projectFiles?.length > 0 && (
+                    <div className="rounded-xl border border-[#E8E8E8] bg-[#FAFAFA] p-5">
+                      <div className="text-sm font-semibold mb-3">
+                        附件列表 ({detail.content.projectFiles.length})
+                      </div>
+                      <div className="space-y-1">
+                        {detail.content.projectFiles.map((f, i) => (
+                          <div
+                            key={i}
+                            className="text-xs text-[#525252] py-1 flex items-center gap-2"
+                          >
+                            <FileText className="size-3 text-[#A3A3A3] shrink-0" />
+                            {f.name}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
