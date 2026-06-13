@@ -146,6 +146,166 @@ def _http_post_sse(path: str, api_key: str, body: dict | None = None, timeout: i
 # Tool implementations
 # ═══════════════════════════════════════════════════════════════
 
+
+def tool_search_contracts(api_key: str, keyword: str = "",
+                          start_date: str = "", end_date: str = "",
+                          contract_end_min: str = "", contract_end_max: str = "",
+                          part_a_name: str = "", part_b_name: str = "",
+                          provice_code: str = "",
+                          page: str = "1", items_per_page: str = "20") -> str:
+    """Search contracts from the RAGFlow bidding database (cache-first).
+
+    Args:
+        api_key: RAGFlow API key (format: ragflow-xxx)
+        keyword: Search keyword
+        start_date: Publish date lower bound (YYYY-MM-DD)
+        end_date: Publish date upper bound (YYYY-MM-DD)
+        contract_end_min: Contract end date minimum (YYYY-MM-DD)
+        contract_end_max: Contract end date maximum (YYYY-MM-DD)
+        part_a_name: Party A (buyer) name filter
+        part_b_name: Party B (supplier) name filter
+        provice_code: Province administrative code
+        page: Page number (default 1)
+        items_per_page: Results per page (default 20)
+    """
+    params = {}
+    for name, value in [
+        ("keyword", keyword),
+        ("start_date", start_date),
+        ("end_date", end_date),
+        ("contract_end_min", contract_end_min),
+        ("contract_end_max", contract_end_max),
+        ("part_a_name", part_a_name),
+        ("part_b_name", part_b_name),
+        ("provice_code", provice_code),
+        ("page", page),
+        ("items_per_page", items_per_page),
+    ]:
+        if value:
+            params[name] = value
+
+    result = _http_get("/bid/contracts", api_key, params)
+
+    if result.get("code") != 0:
+        return json.dumps({"error": result.get("message", "Unknown error")},
+                          ensure_ascii=False)
+
+    data = result.get("data", result)
+    contracts = data.get("contracts", [])
+    total = data.get("total", len(contracts))
+
+    simplified = []
+    for c in contracts:
+        simplified.append({
+            "id": c.get("id"),
+            "title": c.get("title", ""),
+            "publish_time": str(c.get("publish_time", "")),
+            "project_money": c.get("project_money"),
+            "has_file": bool(c.get("has_file")),
+            "contract_end_date": c.get("contract_end_date"),
+        })
+
+    return json.dumps({
+        "total": total,
+        "shown": len(simplified),
+        "page": int(page),
+        "contracts": simplified,
+        "from_cache": data.get("from_cache", False),
+    }, ensure_ascii=False, indent=2)
+
+
+def tool_get_bid_detail_v2(api_key: str, project_id: str, publish_time: str = "") -> str:
+    """Get full detail of a bid project via v2 gateway (cache-first).
+
+    Args:
+        api_key: RAGFlow API key (format: ragflow-xxx)
+        project_id: Bid project ID from search results
+        publish_time: Publish time from search results (required for first fetch)
+    """
+    pid = int(project_id)
+    params = {}
+    if publish_time:
+        params["publish_time"] = publish_time
+    result = _http_get(f"/bid/projects/{pid}/detail-v2", api_key, params if params else None)
+
+    if result.get("code") != 0:
+        return json.dumps({"error": result.get("message", "Unknown error")},
+                          ensure_ascii=False)
+
+    data = result.get("data", {})
+    content = data.get("content", {})
+    structure = data.get("structure", {})
+
+    return json.dumps({
+        "project_id": pid,
+        "content": {
+            "title": content.get("title", ""),
+            "content_length": len(content.get("content", "")),
+            "project_money": content.get("projectMoney", ""),
+            "part_a_name": content.get("partAName", ""),
+            "part_b_name": content.get("partBName", ""),
+            "agent_name": content.get("agentName", ""),
+            "industry_name": content.get("industryName", ""),
+            "files": content.get("projectFiles", []),
+        },
+        "structure": structure,
+        "from_cache": data.get("from_cache", False),
+    }, ensure_ascii=False, indent=2)
+
+
+def tool_enterprise_contacts(api_key: str, company_name: str,
+                              page_no: str = "1", page_size: str = "5") -> str:
+    """Get enterprise contacts list.
+
+    Args:
+        api_key: RAGFlow API key (format: ragflow-xxx)
+        company_name: Company name to look up
+        page_no: Page number (default 1)
+        page_size: Results per page (default 5)
+    """
+    result = _http_get("/bid/enterprises/contacts", api_key, {
+        "company_name": company_name,
+        "page_no": page_no,
+        "page_size": page_size,
+    })
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+def tool_enterprise_customers(api_key: str, company_name: str,
+                               page_no: str = "1", page_size: str = "20") -> str:
+    """Get enterprise customer projects list.
+
+    Args:
+        api_key: RAGFlow API key (format: ragflow-xxx)
+        company_name: Company name to look up
+        page_no: Page number (default 1)
+        page_size: Results per page (default 20)
+    """
+    result = _http_get("/bid/enterprises/customers", api_key, {
+        "company_name": company_name,
+        "page_no": page_no,
+        "page_size": page_size,
+    })
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+def tool_enterprise_suppliers(api_key: str, company_name: str,
+                               page_no: str = "1", page_size: str = "20") -> str:
+    """Get enterprise supplier projects list.
+
+    Args:
+        api_key: RAGFlow API key (format: ragflow-xxx)
+        company_name: Company name to look up
+        page_no: Page number (default 1)
+        page_size: Results per page (default 20)
+    """
+    result = _http_get("/bid/enterprises/suppliers", api_key, {
+        "company_name": company_name,
+        "page_no": page_no,
+        "page_size": page_size,
+    })
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
 def tool_ask_agent(api_key: str, agent_id: str, question: str,
                    session_id: str = "") -> str:
     """Ask a RAGFlow agent a question and get the answer.
@@ -598,6 +758,160 @@ TOOLS = [
             "required": ["api_key", "project_id"],
         },
     },
+    {
+        "name": "search_contracts",
+        "description": "Search contract/winning-bid data from the bidding database. Cache-first: returns cached results when available (free), only calls external API on cache miss. Supports filtering by keyword, date range, contract end date, party names, and region.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": {
+                    "type": "string",
+                    "description": "RAGFlow API key for authentication (format: ragflow-xxx).",
+                },
+                "keyword": {
+                    "type": "string",
+                    "description": "Search keyword (matches title, content, party names).",
+                },
+                "start_date": {
+                    "type": "string",
+                    "description": "Publish date lower bound (format: YYYY-MM-DD).",
+                },
+                "end_date": {
+                    "type": "string",
+                    "description": "Publish date upper bound (format: YYYY-MM-DD).",
+                },
+                "contract_end_min": {
+                    "type": "string",
+                    "description": "Contract end date minimum (YYYY-MM-DD).",
+                },
+                "contract_end_max": {
+                    "type": "string",
+                    "description": "Contract end date maximum (YYYY-MM-DD).",
+                },
+                "part_a_name": {
+                    "type": "string",
+                    "description": "Party A (buyer) name filter.",
+                },
+                "part_b_name": {
+                    "type": "string",
+                    "description": "Party B (supplier) name filter.",
+                },
+                "provice_code": {
+                    "type": "string",
+                    "description": "Province administrative code filter.",
+                },
+                "page": {
+                    "type": "string",
+                    "description": "Page number (default: 1).",
+                },
+                "items_per_page": {
+                    "type": "string",
+                    "description": "Results per page (default: 20).",
+                },
+            },
+            "required": ["api_key"],
+        },
+    },
+    {
+        "name": "get_bid_detail_v2",
+        "description": "Get full detail of a bid project via v2 gateway (cache-first, 30-day TTL). Returns content (HTML body + attached files) and structure (project name, budget, parties, dates, etc.). Use after search_contracts or search_bid_projects to drill into a specific project.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": {
+                    "type": "string",
+                    "description": "RAGFlow API key for authentication (format: ragflow-xxx).",
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": "Bid project ID from search results.",
+                },
+                "publish_time": {
+                    "type": "string",
+                    "description": "Publish time from search results. Required when data is not yet cached.",
+                },
+            },
+            "required": ["api_key", "project_id"],
+        },
+    },
+    {
+        "name": "enterprise_contacts",
+        "description": "Get contact person list for a company from the bidding database. Returns names, positions, phone numbers, and email addresses.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": {
+                    "type": "string",
+                    "description": "RAGFlow API key for authentication (format: ragflow-xxx).",
+                },
+                "company_name": {
+                    "type": "string",
+                    "description": "Company name to look up contacts for.",
+                },
+                "page_no": {
+                    "type": "string",
+                    "description": "Page number (default: 1).",
+                },
+                "page_size": {
+                    "type": "string",
+                    "description": "Results per page (default: 5).",
+                },
+            },
+            "required": ["api_key", "company_name"],
+        },
+    },
+    {
+        "name": "enterprise_customers",
+        "description": "Get customer project list for a company (projects where this company was the supplier/Party B). Shows who this company has served.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": {
+                    "type": "string",
+                    "description": "RAGFlow API key for authentication (format: ragflow-xxx).",
+                },
+                "company_name": {
+                    "type": "string",
+                    "description": "Company name to look up customers for.",
+                },
+                "page_no": {
+                    "type": "string",
+                    "description": "Page number (default: 1).",
+                },
+                "page_size": {
+                    "type": "string",
+                    "description": "Results per page (default: 20).",
+                },
+            },
+            "required": ["api_key", "company_name"],
+        },
+    },
+    {
+        "name": "enterprise_suppliers",
+        "description": "Get supplier project list for a company (projects where this company was the buyer/Party A). Shows who has supplied this company.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": {
+                    "type": "string",
+                    "description": "RAGFlow API key for authentication (format: ragflow-xxx).",
+                },
+                "company_name": {
+                    "type": "string",
+                    "description": "Company name to look up suppliers for.",
+                },
+                "page_no": {
+                    "type": "string",
+                    "description": "Page number (default: 1).",
+                },
+                "page_size": {
+                    "type": "string",
+                    "description": "Results per page (default: 20).",
+                },
+            },
+            "required": ["api_key", "company_name"],
+        },
+    },
 ]
 
 
@@ -734,6 +1048,97 @@ def handle_request(req: dict) -> dict | None:
                 result_text = tool_check_bid_import_status(
                     api_key=arguments.get("api_key", ""),
                     project_id=str(arguments.get("project_id", "")),
+                )
+                return _jsonrpc_result(rid, {
+                    "content": [{"type": "text", "text": result_text}]
+                })
+            except Exception as e:
+                return _jsonrpc_result(rid, {
+                    "content": [{"type": "text", "text": f"Error: {e}"}],
+                    "isError": True,
+                })
+
+        elif tool_name == "search_contracts":
+            try:
+                result_text = tool_search_contracts(
+                    api_key=arguments.get("api_key", ""),
+                    keyword=arguments.get("keyword", ""),
+                    start_date=arguments.get("start_date", ""),
+                    end_date=arguments.get("end_date", ""),
+                    contract_end_min=arguments.get("contract_end_min", ""),
+                    contract_end_max=arguments.get("contract_end_max", ""),
+                    part_a_name=arguments.get("part_a_name", ""),
+                    part_b_name=arguments.get("part_b_name", ""),
+                    provice_code=arguments.get("provice_code", ""),
+                    page=arguments.get("page", "1"),
+                    items_per_page=arguments.get("items_per_page", "20"),
+                )
+                return _jsonrpc_result(rid, {
+                    "content": [{"type": "text", "text": result_text}]
+                })
+            except Exception as e:
+                return _jsonrpc_result(rid, {
+                    "content": [{"type": "text", "text": f"Error: {e}"}],
+                    "isError": True,
+                })
+
+        elif tool_name == "get_bid_detail_v2":
+            try:
+                result_text = tool_get_bid_detail_v2(
+                    api_key=arguments.get("api_key", ""),
+                    project_id=str(arguments.get("project_id", "")),
+                    publish_time=arguments.get("publish_time", ""),
+                )
+                return _jsonrpc_result(rid, {
+                    "content": [{"type": "text", "text": result_text}]
+                })
+            except Exception as e:
+                return _jsonrpc_result(rid, {
+                    "content": [{"type": "text", "text": f"Error: {e}"}],
+                    "isError": True,
+                })
+
+        elif tool_name == "enterprise_contacts":
+            try:
+                result_text = tool_enterprise_contacts(
+                    api_key=arguments.get("api_key", ""),
+                    company_name=arguments.get("company_name", ""),
+                    page_no=arguments.get("page_no", "1"),
+                    page_size=arguments.get("page_size", "5"),
+                )
+                return _jsonrpc_result(rid, {
+                    "content": [{"type": "text", "text": result_text}]
+                })
+            except Exception as e:
+                return _jsonrpc_result(rid, {
+                    "content": [{"type": "text", "text": f"Error: {e}"}],
+                    "isError": True,
+                })
+
+        elif tool_name == "enterprise_customers":
+            try:
+                result_text = tool_enterprise_customers(
+                    api_key=arguments.get("api_key", ""),
+                    company_name=arguments.get("company_name", ""),
+                    page_no=arguments.get("page_no", "1"),
+                    page_size=arguments.get("page_size", "20"),
+                )
+                return _jsonrpc_result(rid, {
+                    "content": [{"type": "text", "text": result_text}]
+                })
+            except Exception as e:
+                return _jsonrpc_result(rid, {
+                    "content": [{"type": "text", "text": f"Error: {e}"}],
+                    "isError": True,
+                })
+
+        elif tool_name == "enterprise_suppliers":
+            try:
+                result_text = tool_enterprise_suppliers(
+                    api_key=arguments.get("api_key", ""),
+                    company_name=arguments.get("company_name", ""),
+                    page_no=arguments.get("page_no", "1"),
+                    page_size=arguments.get("page_size", "20"),
                 )
                 return _jsonrpc_result(rid, {
                     "content": [{"type": "text", "text": result_text}]

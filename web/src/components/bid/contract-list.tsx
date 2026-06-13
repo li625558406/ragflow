@@ -73,6 +73,20 @@ function fmtDate(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+function extractFileLinks(html: string): { name: string; href: string }[] {
+  if (!html) return [];
+  const re = /<a\s[^>]*href=["']([^"']+)["'][^>]*>([^<]*)<\/a>/gi;
+  const links: { name: string; href: string }[] = [];
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    const href = m[1];
+    const name =
+      m[2].replace(/<[^>]*>/g, '').trim() || href.split('/').pop() || href;
+    links.push({ name, href });
+  }
+  return links;
+}
+
 async function contractFetch(url: string, params?: Record<string, any>) {
   const qs = params
     ? '?' +
@@ -331,9 +345,9 @@ export default function ContractList() {
           </span>
           <button
             onClick={handleBackToSearch}
-            className="inline-flex items-center gap-1 h-8 px-3 text-xs font-medium text-[#525252] hover:text-[#000000] hover:bg-[#F5F5F5] rounded-lg transition-colors shrink-0"
+            className="inline-flex items-center gap-1 h-8 px-4 text-xs font-semibold bg-[#000000] hover:bg-[#171717] text-white rounded-lg transition-all shrink-0"
           >
-            修改条件
+            返回
           </button>
         </div>
       </div>
@@ -623,39 +637,71 @@ export default function ContractList() {
                           </div>
                         </div>
                       )}
+
+                      {/* Attachments — inside structured info, visually prominent */}
+                      {((): JSX.Element | null => {
+                        const projectFiles = detail.content?.projectFiles || [];
+                        const contentLinks = extractFileLinks(
+                          detail.content?.content || '',
+                        );
+                        // Dedupe: prefer projectFiles
+                        const pfNames = new Set(
+                          projectFiles.map((f: any) => f.name),
+                        );
+                        const extraLinks = contentLinks.filter(
+                          (l) => !pfNames.has(l.name),
+                        );
+                        if (
+                          projectFiles.length === 0 &&
+                          extraLinks.length === 0
+                        )
+                          return null;
+                        return (
+                          <div className="mt-3 pt-3 border-t-2 border-[#000000]">
+                            <div className="text-xs font-bold mb-2 flex items-center gap-1.5 text-[#000000]">
+                              <FileText className="size-3.5" />
+                              附件列表 (
+                              {projectFiles.length + extraLinks.length})
+                            </div>
+                            <div className="space-y-0.5">
+                              {projectFiles.map((f: any, i: number) => (
+                                <div
+                                  key={`pf-${i}`}
+                                  className="text-xs text-[#333] py-0.5 flex items-center gap-2 font-medium"
+                                >
+                                  <FileText className="size-3 text-[#000000] shrink-0" />
+                                  {f.name}
+                                </div>
+                              ))}
+                              {extraLinks.map((l, i) => (
+                                <a
+                                  key={`cl-${i}`}
+                                  href={l.href}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-xs text-[#333] py-0.5 flex items-center gap-2 font-medium hover:text-[#000000] hover:underline transition-colors"
+                                >
+                                  <FileText className="size-3 text-[#000000] shrink-0" />
+                                  {l.name}
+                                </a>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </div>
                   )}
 
-                  {/* Content body */}
+                  {/* Content body — full height, no scrollbar */}
                   {detail.content?.content && (
                     <div className="rounded-xl border border-[#E8E8E8] bg-[#FAFAFA] p-5">
                       <div className="text-sm font-semibold mb-3">正文内容</div>
                       <div
-                        className="text-xs text-[#333] leading-relaxed max-h-[500px] overflow-auto bid-content-html"
+                        className="text-xs text-[#333] leading-relaxed bid-content-html"
                         dangerouslySetInnerHTML={{
                           __html: detail.content.content,
                         }}
                       />
-                    </div>
-                  )}
-
-                  {/* Files */}
-                  {detail.content?.projectFiles?.length > 0 && (
-                    <div className="rounded-xl border border-[#E8E8E8] bg-[#FAFAFA] p-5">
-                      <div className="text-sm font-semibold mb-3">
-                        附件列表 ({detail.content.projectFiles.length})
-                      </div>
-                      <div className="space-y-1">
-                        {detail.content.projectFiles.map((f, i) => (
-                          <div
-                            key={i}
-                            className="text-xs text-[#525252] py-1 flex items-center gap-2"
-                          >
-                            <FileText className="size-3 text-[#A3A3A3] shrink-0" />
-                            {f.name}
-                          </div>
-                        ))}
-                      </div>
                     </div>
                   )}
                 </div>

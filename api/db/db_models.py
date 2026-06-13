@@ -1489,6 +1489,8 @@ class BidProject(DataBaseModel):
     sync_batch_id = CharField(max_length=36, null=True, help_text="同步批次ID")
     created_at = DateTimeField(null=True, index=True)
     updated_at = DateTimeField(null=True, index=True)
+    fetched_at = DateTimeField(null=True, help_text="搜索缓存获取时间")
+    cache_expires_at = DateTimeField(null=True, help_text="缓存过期时间")
 
     class Meta:
         db_table = "bid_project"
@@ -1974,6 +1976,8 @@ def migrate_db():
     alter_db_add_column(migrator, "collaboration_format_rule", "permission", CharField(max_length=16, null=False, help_text="me|team", default="me", index=True))
     alter_db_column_type(migrator, "document", "size", BigIntegerField(default=0, index=True))
     alter_db_column_type(migrator, "file", "size", BigIntegerField(default=0, index=True))
+    alter_db_add_column(migrator, "bid_project", "fetched_at", DateTimeField(null=True, help_text="搜索缓存获取时间"))
+    alter_db_add_column(migrator, "bid_project", "cache_expires_at", DateTimeField(null=True, help_text="缓存过期时间"))
     logging.disable(logging.NOTSET)
     # this is after re-enabling logging to allow logging changed user emails
     migrate_add_unique_email(migrator)

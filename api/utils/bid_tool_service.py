@@ -924,3 +924,296 @@ def import_bid_to_kb(
         "progress": 0,
         "message": "Import started. Poll check_import_status for progress.",
     }
+
+
+# ---------------------------------------------------------------------------
+# Contract search — cache-first (DB → API → upsert → return)
+# ---------------------------------------------------------------------------
+
+def search_contracts_cached(
+    keyword: str = "",
+    start_date: str = "",
+    end_date: str = "",
+    contract_end_min: str = "",
+    contract_end_max: str = "",
+    part_a_name: str = "",
+    part_b_name: str = "",
+    provice_code: str = "",
+    page: int = 1,
+    page_number: int = 20,
+) -> dict:
+    """Search contracts with cache-first strategy.
+
+    1. Query local DB (news_type_id=3, non-expired cache)
+    2. If enough results → return directly (free)
+    3. Otherwise → call external API → upsert by ID → return (paid)
+    4. API failure → degrade to stale DB data
+    """
+    import re
+    from datetime import datetime, timedelta
+
+    if not start_date:
+        start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+
+    def _db_to_contract(row: dict) -> dict:
+        raw = row.get("raw_json") or {}
+        if raw:
+            return raw
+        return {
+            "id": row["id"],
+            "title": row.get("title_html") or row.get("title", ""),
+            "publishTime": str(row.get("publish_time") or ""),
+            "projectMoney": row.get("project_money") or "",
+            "hasFile": row.get("has_file") or 0,
+            "projectCycle": [],
+            "partAInfo": [{"name": n, "contactPhone": []} for n in (row.get("part_a_names") or [])],
+            "partBInfo": [{"name": n, "contactPhone": []} for n in (row.get("part_b_names") or [])],
+            "contractStartDate": "",
+            "contractEndDate": row.get("contract_end_date") or "",
+        }
+
+    # Step 1: Query DB
+    db_objs, db_total = BidProjectService.get_list(
+        page_number=page,
+        items_per_page=page_number,
+        keyword=keyword,
+        provice_code=provice_code,
+        start_date=start_date,
+        end_date=end_date,
+        contract_end_min=contract_end_min,
+        contract_end_max=contract_end_max,
+        part_a_name=part_a_name,
+        part_b_name=part_b_name,
+        news_type_id=3,
+    )
+
+    now = datetime.now()
+    valid_objs = [o for o in db_objs
+                  if not o.get("cache_expires_at") or o["cache_expires_at"] > now]
+    valid_total = len(valid_objs)
+
+    # Step 2: DB sufficient → return
+    if valid_total >= page_number:
+        logging.info("Bid tool: contract cache hit, returning %d results", valid_total)
+        return {
+            "contracts": [_db_to_contract(o) for o in valid_objs[:page_number]],
+            "total": db_total,
+            "from_cache": True,
+        }
+
+    # Step 3: Call API
+    logging.info("Bid tool: contract cache insufficient (%d < %d), calling API", valid_total, page_number)
+    try:
+        client = BidApiClient()
+        api_area_code = {
+            "proviceCodeList": [provice_code] if provice_code else ["0"],
+            "cityCodeList": [],
+            "countyCodeList": [],
+        }
+        resp = client.search_contract(
+            keyword=keyword,
+            area_code=api_area_code,
+            start_date=start_date,
+            end_date=end_date,
+            contract_end_min=contract_end_min,
+            contract_end_max=contract_end_max,
+            part_a_name=part_a_name,
+            part_b_name=part_b_name,
+            page_id=page,
+            page_number=page_number,
+        )
+        data = resp.get("data", {})
+        items = data.get("data", []) or []
+        api_total = data.get("total", 0)
+
+        # Upsert each item to DB
+        for item in items:
+            try:
+                BidProjectService.upsert_contract(item, keyword=keyword)
+            except Exception as e:
+                logging.warning("Bid tool: failed to upsert contract %s: %s", item.get("id"), e)
+
+        return {"contracts": items, "total": api_total, "from_cache": False}
+
+    except Exception as e:
+        if valid_objs:
+            logging.warning("Bid tool: contract API failed, falling back to DB. error=%s", e)
+            return {
+                "contracts": [_db_to_contract(o) for o in valid_objs[:page_number]],
+                "total": len(valid_objs),
+                "from_cache": True,
+                "stale": True,
+            }
+        raise
+
+
+# ---------------------------------------------------------------------------
+# v2 Detail — cache-first (DB → v2 API → upsert → return)
+# ---------------------------------------------------------------------------
+
+def get_bid_detail_v2_cached(project_id: int, publish_time: str) -> dict:
+    """Get project detail via v2 gateway with cache-first strategy.
+
+    Returns both content (HTML body + files) and structure (parsed fields).
+    Caches to bid_project_detail, bid_project_structure, bid_project_file.
+    TTL: 30 days.
+    """
+    from datetime import datetime, timedelta
+
+    now = datetime.now()
+
+    # Check cache
+    cached_detail = BidProjectDetailService.get_or_none(project_id=project_id)
+    cached_structure = BidProjectStructureService.get_or_none(project_id=project_id)
+
+    detail_valid = (cached_detail and cached_detail.cache_expires_at
+                    and cached_detail.cache_expires_at > now)
+    structure_valid = (cached_structure and cached_structure.cache_expires_at
+                       and cached_structure.cache_expires_at > now)
+
+    def _detail_to_api(row) -> dict:
+        if not row:
+            return {}
+        d = row.to_dict() if hasattr(row, 'to_dict') else row
+        return {
+            "title": d.get("part_a_name", ""),
+            "content": d.get("content_html", ""),
+            "projectMoney": d.get("project_money", ""),
+            "partAName": d.get("part_a_name", ""),
+            "partBName": d.get("part_b_name", ""),
+            "agentName": d.get("agent_name", ""),
+            "industryName": d.get("industry_name", ""),
+        }
+
+    def _structure_to_api(row) -> dict:
+        if not row:
+            return {}
+        d = row.to_dict() if hasattr(row, 'to_dict') else row
+        return {
+            "projectName": d.get("project_name", ""),
+            "projectNumber": d.get("project_numbers", []),
+            "budgetMoney": d.get("budget_money", []),
+            "bidMoney": d.get("bid_money", []),
+            "bidStartDate": d.get("bid_start_date"),
+            "bidStartAddress": d.get("bid_start_address", []),
+            "siginUpStopDate": d.get("sign_up_stop_date"),
+            "partyAInfo": d.get("party_a_info", []),
+            "partyBInfo": d.get("party_b_info", []),
+            "agencyInfo": d.get("agency_info", []),
+            "bidCompany": d.get("bid_companies", []),
+            "sbkjBidUrl": d.get("sbkj_bid_url", ""),
+            "collectUrl": d.get("collect_url", ""),
+        }
+
+    if detail_valid and structure_valid:
+        logging.info("Bid tool: detail-v2 cache hit for project %s", project_id)
+        cached_files = BidProjectFileService.get_by_project(project_id)
+        return {
+            "content": {
+                **_detail_to_api(cached_detail),
+                "projectFiles": [{"projectFileID": f["project_file_id"], "name": f["file_name"]}
+                                 for f in cached_files],
+            },
+            "structure": _structure_to_api(cached_structure),
+            "from_cache": True,
+        }
+
+    # Call v2 API
+    try:
+        client = BidApiClient()
+        content = client.get_detail_v2(project_id, publish_time)
+        structure = client.get_structure_v2(project_id, publish_time)
+    except Exception as e:
+        # Fallback to stale cache
+        if cached_detail:
+            cached_files = BidProjectFileService.get_by_project(project_id)
+            return {
+                "content": {
+                    **_detail_to_api(cached_detail),
+                    "projectFiles": [{"projectFileID": f["project_file_id"], "name": f["file_name"]}
+                                     for f in cached_files],
+                },
+                "structure": _structure_to_api(cached_structure),
+                "from_cache": True,
+                "stale": True,
+            }
+        raise
+
+    content_data = content.get("data", {})
+    structure_data = structure.get("data", {})
+
+    # Upsert detail
+    try:
+        BidProjectDetailService.upsert_detail(project_id, {
+            "content_html": content_data.get("content", ""),
+            "project_class_name": content_data.get("industryName", ""),
+            "industry_name": content_data.get("industryName", ""),
+            "part_a_name": content_data.get("partAName", ""),
+            "part_b_name": content_data.get("partBName", ""),
+            "agent_name": content_data.get("agentName", ""),
+            "project_money": content_data.get("projectMoney", ""),
+        })
+    except Exception as e:
+        logging.warning("Bid tool: failed to cache detail %s: %s", project_id, e)
+
+    # Upsert structure
+    try:
+        BidProjectStructureService.upsert_structure(project_id, {
+            "project_name": structure_data.get("projectName", ""),
+            "project_numbers": structure_data.get("projectNumber", []),
+            "budget_money": structure_data.get("budgetMoney", []),
+            "bid_money": structure_data.get("bidMoney", []),
+            "bid_start_date": structure_data.get("bidStartDate"),
+            "bid_start_address": structure_data.get("bidStartAddress", []),
+            "sign_up_stop_date": structure_data.get("siginUpStopDate"),
+            "party_a_info": structure_data.get("partyAInfo", []),
+            "party_b_info": structure_data.get("partyBInfo", []),
+            "agency_info": structure_data.get("agencyInfo", []),
+            "bid_companies": structure_data.get("bidCompany", []),
+            "sbkj_bid_url": structure_data.get("sbkjBidUrl", ""),
+            "collect_url": structure_data.get("collectUrl", ""),
+        })
+    except Exception as e:
+        logging.warning("Bid tool: failed to cache structure %s: %s", project_id, e)
+
+    # Upsert files
+    files_raw = content_data.get("projectFiles") or content_data.get("files") or []
+    for f in files_raw:
+        try:
+            BidProjectFileService.upsert_file({
+                "project_file_id": f.get("projectFileID") or f.get("projectFileId"),
+                "project_id": project_id,
+                "file_name": f.get("name", "") or f.get("fileName", ""),
+                "file_url": f.get("fileUrl", "") or f.get("url", ""),
+                "publish_time": f.get("publishTime", ""),
+            })
+        except Exception as e:
+            logging.warning("Bid tool: failed to cache file for %s: %s", project_id, e)
+
+    return {
+        "content": content_data,
+        "structure": structure_data,
+        "from_cache": False,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Enterprise drill-down — contacts / customers / suppliers
+# ---------------------------------------------------------------------------
+
+def get_enterprise_contacts(company_name: str, page_no: int = 1, page_size: int = 5) -> dict:
+    """Get enterprise contacts list (v2 API, no caching)."""
+    client = BidApiClient()
+    return client.get_company_profile_contacts(company_name, page_no, page_size)
+
+
+def get_enterprise_customers(company_name: str, page_no: int = 1, page_size: int = 20) -> dict:
+    """Get enterprise customer project list (v2 API, no caching)."""
+    client = BidApiClient()
+    return client.get_company_profile_customers(company_name, page_no, page_size)
+
+
+def get_enterprise_suppliers(company_name: str, page_no: int = 1, page_size: int = 20) -> dict:
+    """Get enterprise supplier project list (v2 API, no caching)."""
+    client = BidApiClient()
+    return client.get_company_profile_suppliers(company_name, page_no, page_size)

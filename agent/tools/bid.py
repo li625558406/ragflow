@@ -962,34 +962,22 @@ class BidSearchContract(ToolBase, ABC):
         if self.check_if_canceled("BidSearchContract processing"):
             return
         try:
-            from datetime import datetime, timedelta
-            from api.utils.bid_api_client import BidApiClient
+            from api.utils.bid_tool_service import search_contracts_cached
 
-            client = BidApiClient()
-            default_start = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d 00:00:00")
-            default_end = datetime.now().strftime("%Y-%m-%d 23:59:59")
-
-            api_area_code = {
-                "proviceCodeList": [kwargs.get("provice_code")] if kwargs.get("provice_code") else ["0"],
-                "cityCodeList": [],
-                "countyCodeList": [],
-            }
-
-            result = client.search_contract(
+            result = search_contracts_cached(
                 keyword=kwargs.get("keyword", ""),
-                area_code=api_area_code,
-                start_date=kwargs.get("start_date", "") or default_start,
-                end_date=kwargs.get("end_date", "") or default_end,
+                start_date=kwargs.get("start_date", ""),
+                end_date=kwargs.get("end_date", ""),
                 contract_end_min=kwargs.get("contract_end_min", ""),
                 contract_end_max=kwargs.get("contract_end_max", ""),
                 part_a_name=kwargs.get("part_a_name", ""),
                 part_b_name=kwargs.get("part_b_name", ""),
-                page_id=kwargs.get("page", 1),
+                provice_code=kwargs.get("provice_code", ""),
+                page=kwargs.get("page", 1),
                 page_number=20,
             )
 
-            data = result.get("data", {})
-            items = data.get("data", []) or []
+            items = result.get("contracts", [])
             simplified = []
             for item in items:
                 simplified.append({
@@ -1007,13 +995,20 @@ class BidSearchContract(ToolBase, ABC):
                 })
 
             # Batch fetch source URLs for all results
-            _batch_fill_source_urls(simplified, client)
+            try:
+                from api.utils.bid_api_client import BidApiClient
+                client = BidApiClient()
+                _batch_fill_source_urls(simplified, client)
+            except Exception:
+                pass
 
             output = {
-                "total": data.get("total", 0),
+                "total": result.get("total", 0),
                 "shown": len(simplified),
                 "page": kwargs.get("page", 1),
                 "contracts": simplified,
+                "from_cache": result.get("from_cache", False),
+                "stale": result.get("stale", False),
             }
 
             self.set_output("json", simplified)
@@ -1386,4 +1381,390 @@ class BidConstructionSearch(ToolBase, ABC):
     def thoughts(self) -> str:
         return "Searching construction projects: '{}'...".format(
             self.get_input().get("keyword", "-")
+        )
+
+
+# =============================================================================
+# BidGetContractDetail — v2 合同详情（缓存优先）
+# =============================================================================
+
+class BidGetContractDetailParam(ToolParamBase):
+    def __init__(self):
+        self.meta: ToolMeta = {
+            "name": "bid_get_contract_detail",
+            "description": """
+获取合同/中标项目的完整详情（v2 网关——缓存优先）。
+与 bid_get_detail 类似，但通过 v2 接口获取内容正文和结构化数据。
+当用户需要查看合同项目的详细正文、结构化的项目信息和附件列表时使用。
+
+一次调用返回：
+  - content: 正文 HTML（含附件文件链接）
+  - structure: 结构化数据（项目名称、编号、金额、日期、参与方、代理机构等）
+  - from_cache: 是否来自本地缓存
+
+数据缓存 30 天，重复查询免费。
+            """,
+            "parameters": {
+                "project_id": {
+                    "type": "integer",
+                    "description": "Contract/project ID from search results.",
+                    "required": True,
+                },
+                "publish_time": {
+                    "type": "string",
+                    "description": "Publish time of the project (YYYY-MM-DD or YYYY-MM-DD HH:mm:ss). Used for API authentication on first fetch.",
+                    "required": True,
+                },
+            },
+        }
+        super().__init__()
+
+    def get_input_form(self) -> dict[str, dict]:
+        return {"project_id": {"name": "Project ID", "type": "line"}}
+
+
+class BidGetContractDetail(ToolBase, ABC):
+    component_name = "BidGetContractDetail"
+
+    @timeout(int(os.environ.get("COMPONENT_EXEC_TIMEOUT", 60)))
+    def _invoke(self, **kwargs):
+        if self.check_if_canceled("BidGetContractDetail processing"):
+            return
+
+        from api.utils.bid_tool_service import get_bid_detail_v2_cached
+        import re
+
+        try:
+            project_id = kwargs.get("project_id")
+            publish_time = kwargs.get("publish_time", "")
+
+            if not project_id:
+                self.set_output("_ERROR", "project_id is required")
+                return "Error: project_id is required"
+
+            result = get_bid_detail_v2_cached(int(project_id), str(publish_time))
+
+            content = result.get("content", {})
+            structure = result.get("structure", {})
+
+            # Build readable summary
+            content_html = content.get("content", "")
+            text_preview = re.sub(r'<[^>]+>', '', content_html)[:2000] if content_html else ""
+
+            # Extract files
+            project_files = content.get("projectFiles") or []
+            file_list = []
+            for f in project_files:
+                file_list.append({
+                    "project_file_id": f.get("projectFileID") or f.get("projectFileId"),
+                    "name": f.get("name") or f.get("fileName", ""),
+                    "url": f.get("fileUrl") or f.get("url", ""),
+                })
+
+            output = {
+                "project_id": project_id,
+                "content_preview": text_preview,
+                "content_length": len(content_html) if content_html else 0,
+                "structure": {
+                    "project_name": structure.get("projectName"),
+                    "project_number": structure.get("projectNumber"),
+                    "budget_money": structure.get("budgetMoney"),
+                    "bid_money": structure.get("bidMoney"),
+                    "bid_start_date": structure.get("bidStartDate"),
+                    "bid_start_address": structure.get("bidStartAddress"),
+                    "sign_up_stop_date": structure.get("siginUpStopDate"),
+                    "party_a_info": structure.get("partyAInfo"),
+                    "party_b_info": structure.get("partyBInfo"),
+                    "agency_info": structure.get("agencyInfo"),
+                    "bid_company": structure.get("bidCompany"),
+                },
+                "files": file_list,
+                "from_cache": result.get("from_cache", False),
+                "stale": result.get("stale", False),
+            }
+
+            self.set_output("json", output)
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+            return self.output("formalized_content")
+
+        except Exception as e:
+            logging.exception("BidGetContractDetail error: %s", e)
+            self.set_output("_ERROR", str(e))
+            return f"BidGetContractDetail error: {e}"
+
+    def thoughts(self) -> str:
+        return "Fetching contract detail v2 for #{}...".format(
+            self.get_input().get("project_id", "-")
+        )
+
+
+# =============================================================================
+# BidEnterpriseContacts — 企业联系人
+# =============================================================================
+
+class BidEnterpriseContactsParam(ToolParamBase):
+    def __init__(self):
+        self.meta: ToolMeta = {
+            "name": "bid_enterprise_contacts",
+            "description": """
+获取企业的联系人信息（v2 API）。
+返回企业的联系人列表，包括姓名、职位、电话、邮箱等。
+
+当用户询问某家企业的联系人、谁可以联系时使用。
+            """,
+            "parameters": {
+                "company_name": {
+                    "type": "string",
+                    "description": "Company name to look up.",
+                    "required": True,
+                },
+                "page_no": {
+                    "type": "integer",
+                    "description": "Page number. Default: 1.",
+                    "default": 1,
+                    "required": False,
+                },
+                "page_size": {
+                    "type": "integer",
+                    "description": "Results per page. Default: 5.",
+                    "default": 5,
+                    "required": False,
+                },
+            },
+        }
+        super().__init__()
+
+    def get_input_form(self) -> dict[str, dict]:
+        return {"company_name": {"name": "Company Name", "type": "line"}}
+
+
+class BidEnterpriseContacts(ToolBase, ABC):
+    component_name = "BidEnterpriseContacts"
+
+    @timeout(int(os.environ.get("COMPONENT_EXEC_TIMEOUT", 30)))
+    def _invoke(self, **kwargs):
+        if self.check_if_canceled("BidEnterpriseContacts processing"):
+            return
+        try:
+            company_name = kwargs.get("company_name", "")
+            if not company_name:
+                self.set_output("_ERROR", "company_name is required")
+                return "Error: company_name is required"
+
+            from api.utils.bid_tool_service import get_enterprise_contacts
+
+            result = get_enterprise_contacts(
+                company_name=company_name,
+                page_no=kwargs.get("page_no", 1),
+                page_size=kwargs.get("page_size", 5),
+            )
+
+            data = result.get("data", {})
+            output = {
+                "company_name": company_name,
+                "contacts": data.get("data", data.get("contacts", [])),
+                "total": data.get("total", 0),
+            }
+
+            self.set_output("json", output)
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+            return self.output("formalized_content")
+        except Exception as e:
+            logging.exception("BidEnterpriseContacts error: %s", e)
+            self.set_output("_ERROR", str(e))
+            return f"BidEnterpriseContacts error: {e}"
+
+    def thoughts(self) -> str:
+        return "Fetching contacts for '{}'...".format(
+            self.get_input().get("company_name", "-")
+        )
+
+
+# =============================================================================
+# BidEnterpriseCustomers — 企业客户
+# =============================================================================
+
+class BidEnterpriseCustomersParam(ToolParamBase):
+    def __init__(self):
+        self.meta: ToolMeta = {
+            "name": "bid_enterprise_customers",
+            "description": """
+获取企业的客户项目列表（v2 API）。
+返回该企业作为供应商/乙方的项目记录，即该企业服务过哪些客户。
+
+当用户询问某家企业的客户、中标过哪些项目、为谁提供服务时使用。
+            """,
+            "parameters": {
+                "company_name": {
+                    "type": "string",
+                    "description": "Company name to look up.",
+                    "required": True,
+                },
+                "page_no": {
+                    "type": "integer",
+                    "description": "Page number. Default: 1.",
+                    "default": 1,
+                    "required": False,
+                },
+                "page_size": {
+                    "type": "integer",
+                    "description": "Results per page. Default: 20.",
+                    "default": 20,
+                    "required": False,
+                },
+            },
+        }
+        super().__init__()
+
+    def get_input_form(self) -> dict[str, dict]:
+        return {"company_name": {"name": "Company Name", "type": "line"}}
+
+
+class BidEnterpriseCustomers(ToolBase, ABC):
+    component_name = "BidEnterpriseCustomers"
+
+    @timeout(int(os.environ.get("COMPONENT_EXEC_TIMEOUT", 30)))
+    def _invoke(self, **kwargs):
+        if self.check_if_canceled("BidEnterpriseCustomers processing"):
+            return
+        try:
+            company_name = kwargs.get("company_name", "")
+            if not company_name:
+                self.set_output("_ERROR", "company_name is required")
+                return "Error: company_name is required"
+
+            from api.utils.bid_tool_service import get_enterprise_customers
+
+            result = get_enterprise_customers(
+                company_name=company_name,
+                page_no=kwargs.get("page_no", 1),
+                page_size=kwargs.get("page_size", 20),
+            )
+
+            data = result.get("data", {})
+            items = data.get("data", []) or []
+            simplified = []
+            for item in items:
+                simplified.append({
+                    "id": item.get("id"),
+                    "title": item.get("title", ""),
+                    "publish_time": item.get("publishTime", ""),
+                    "project_money": item.get("projectMoney", ""),
+                    "part_a_name": item.get("partAName", ""),
+                    "industry_name": item.get("industryName", ""),
+                    "contract_end_date": item.get("contractEndDate", ""),
+                })
+
+            output = {
+                "company_name": company_name,
+                "total": data.get("total", 0),
+                "projects": simplified,
+            }
+
+            self.set_output("json", simplified)
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+            return self.output("formalized_content")
+        except Exception as e:
+            logging.exception("BidEnterpriseCustomers error: %s", e)
+            self.set_output("_ERROR", str(e))
+            return f"BidEnterpriseCustomers error: {e}"
+
+    def thoughts(self) -> str:
+        return "Fetching customers for '{}'...".format(
+            self.get_input().get("company_name", "-")
+        )
+
+
+# =============================================================================
+# BidEnterpriseSuppliers — 企业供应商
+# =============================================================================
+
+class BidEnterpriseSuppliersParam(ToolParamBase):
+    def __init__(self):
+        self.meta: ToolMeta = {
+            "name": "bid_enterprise_suppliers",
+            "description": """
+获取企业的供应商项目列表（v2 API）。
+返回该企业作为采购方/甲方的项目记录，即该企业采购了哪些供应商的服务。
+
+当用户询问某家企业的供应商、采购过哪些服务、与哪些公司合作时使用。
+            """,
+            "parameters": {
+                "company_name": {
+                    "type": "string",
+                    "description": "Company name to look up.",
+                    "required": True,
+                },
+                "page_no": {
+                    "type": "integer",
+                    "description": "Page number. Default: 1.",
+                    "default": 1,
+                    "required": False,
+                },
+                "page_size": {
+                    "type": "integer",
+                    "description": "Results per page. Default: 20.",
+                    "default": 20,
+                    "required": False,
+                },
+            },
+        }
+        super().__init__()
+
+    def get_input_form(self) -> dict[str, dict]:
+        return {"company_name": {"name": "Company Name", "type": "line"}}
+
+
+class BidEnterpriseSuppliers(ToolBase, ABC):
+    component_name = "BidEnterpriseSuppliers"
+
+    @timeout(int(os.environ.get("COMPONENT_EXEC_TIMEOUT", 30)))
+    def _invoke(self, **kwargs):
+        if self.check_if_canceled("BidEnterpriseSuppliers processing"):
+            return
+        try:
+            company_name = kwargs.get("company_name", "")
+            if not company_name:
+                self.set_output("_ERROR", "company_name is required")
+                return "Error: company_name is required"
+
+            from api.utils.bid_tool_service import get_enterprise_suppliers
+
+            result = get_enterprise_suppliers(
+                company_name=company_name,
+                page_no=kwargs.get("page_no", 1),
+                page_size=kwargs.get("page_size", 20),
+            )
+
+            data = result.get("data", {})
+            items = data.get("data", []) or []
+            simplified = []
+            for item in items:
+                simplified.append({
+                    "id": item.get("id"),
+                    "title": item.get("title", ""),
+                    "publish_time": item.get("publishTime", ""),
+                    "project_money": item.get("projectMoney", ""),
+                    "part_b_name": item.get("partBName", ""),
+                    "industry_name": item.get("industryName", ""),
+                    "contract_end_date": item.get("contractEndDate", ""),
+                })
+
+            output = {
+                "company_name": company_name,
+                "total": data.get("total", 0),
+                "projects": simplified,
+            }
+
+            self.set_output("json", simplified)
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+            return self.output("formalized_content")
+        except Exception as e:
+            logging.exception("BidEnterpriseSuppliers error: %s", e)
+            self.set_output("_ERROR", str(e))
+            return f"BidEnterpriseSuppliers error: {e}"
+
+    def thoughts(self) -> str:
+        return "Fetching suppliers for '{}'...".format(
+            self.get_input().get("company_name", "-")
         )

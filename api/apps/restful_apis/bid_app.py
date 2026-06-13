@@ -41,7 +41,7 @@ from api.utils.api_utils import (
     get_data_error_result,
     get_json_result,
 )
-from api.utils.bid_api_client import BidApiClient
+from api.utils.bid_api_client import BidApiClient, BidApiError
 
 manager = Blueprint("rest_bid_app", __name__)
 
@@ -584,7 +584,7 @@ async def get_bid_project_files(project_id):
 @login_required
 @bid_rate_limit("detail")
 async def get_bid_project_detail_v2(project_id):
-    """获取项目详情（v2网关，同时返回正文+结构化+附件）
+    """获取项目详情（v2网关，缓存优先：DB → API → 存DB → 返回）
 
     query params:
         publish_time: 发布时间（必填，格式 YYYY-MM-DD HH:mm:ss）
@@ -593,19 +593,161 @@ async def get_bid_project_detail_v2(project_id):
     if not publish_time:
         return get_data_error_result(message="publish_time is required")
 
+    # Step 1: 查DB缓存
+    cached_detail = BidProjectDetailService.get_or_none(project_id=project_id)
+    cached_structure = BidProjectStructureService.get_or_none(project_id=project_id)
+    now = datetime.now()
+
+    detail_valid = (cached_detail and cached_detail.cache_expires_at
+                    and cached_detail.cache_expires_at > now)
+    structure_valid = (cached_structure and cached_structure.cache_expires_at
+                       and cached_structure.cache_expires_at > now)
+
+    # Helper: convert DB row → API-compatible dict for frontend
+    def _detail_to_api(row) -> dict:
+        if not row:
+            return {}
+        d = row.to_dict() if hasattr(row, 'to_dict') else row
+        return {
+            "title": d.get("part_a_name", "") or d.get("project_class_name", ""),
+            "content": d.get("content_html", ""),
+            "projectMoney": d.get("project_money", ""),
+            "partAName": d.get("part_a_name", ""),
+            "partBName": d.get("part_b_name", ""),
+            "agentName": d.get("agent_name", ""),
+            "industryName": d.get("industry_name", ""),
+        }
+
+    def _structure_to_api(row) -> dict:
+        if not row:
+            return {}
+        d = row.to_dict() if hasattr(row, 'to_dict') else row
+        return {
+            "projectName": d.get("project_name", ""),
+            "projectNumber": d.get("project_numbers", []),
+            "budgetMoney": d.get("budget_money", []),
+            "bidMoney": d.get("bid_money", []),
+            "bidStartDate": d.get("bid_start_date"),
+            "bidStartAddress": d.get("bid_start_address", []),
+            "siginUpStopDate": d.get("sign_up_stop_date"),
+            "partyAInfo": d.get("party_a_info", []),
+            "partyBInfo": d.get("party_b_info", []),
+            "agencyInfo": d.get("agency_info", []),
+            "bidCompany": d.get("bid_companies", []),
+            "sbkjBidUrl": d.get("sbkj_bid_url", ""),
+            "collectUrl": d.get("collect_url", ""),
+        }
+
+    if detail_valid and structure_valid:
+        logging.info("Bid detail-v2: cache hit for project %s", project_id)
+        cached_files = BidProjectFileService.get_by_project(project_id)
+        return get_json_result(data={
+            "content": {
+                **_detail_to_api(cached_detail),
+                "projectFiles": [{"projectFileID": f["project_file_id"], "name": f["file_name"]}
+                                 for f in cached_files],
+            },
+            "structure": _structure_to_api(cached_structure),
+            "from_cache": True,
+        })
+
+    # Step 2: 调v2 API
     try:
         client = BidApiClient()
         content = client.get_detail_v2(project_id, publish_time)
         structure = client.get_structure_v2(project_id, publish_time)
-        return get_json_result(data={
-            "content": content.get("data", {}),
-            "structure": structure.get("data", {}),
-        })
     except BidApiError as e:
+        # API失败 → 降级返回DB中已有数据（即使过期）
+        if cached_detail:
+            logging.warning("Bid detail-v2: API failed, falling back to stale cache for %s", project_id)
+            cached_files = BidProjectFileService.get_by_project(project_id)
+            return get_json_result(data={
+                "content": {
+                    **_detail_to_api(cached_detail),
+                    "projectFiles": [{"projectFileID": f["project_file_id"], "name": f["file_name"]}
+                                     for f in cached_files],
+                },
+                "structure": _structure_to_api(cached_structure),
+                "from_cache": True,
+                "stale": True,
+            })
         return get_data_error_result(message=f"API error: {e}")
     except Exception as e:
+        if cached_detail:
+            cached_files = BidProjectFileService.get_by_project(project_id)
+            return get_json_result(data={
+                "content": {
+                    **_detail_to_api(cached_detail),
+                    "projectFiles": [{"projectFileID": f["project_file_id"], "name": f["file_name"]}
+                                     for f in cached_files],
+                },
+                "structure": _structure_to_api(cached_structure),
+                "from_cache": True,
+                "stale": True,
+            })
         logging.exception("Failed to get bid detail v2: %s", e)
         return get_data_error_result(message=f"Failed to get detail: {e}")
+
+    # Step 3: 存入DB
+    content_data = content.get("data", {})
+    structure_data = structure.get("data", {})
+
+    # Upsert detail
+    detail_row = {
+        "content_html": content_data.get("content", ""),
+        "project_class_name": content_data.get("industryName", ""),
+        "industry_name": content_data.get("industryName", ""),
+        "part_a_name": content_data.get("partAName", ""),
+        "part_b_name": content_data.get("partBName", ""),
+        "agent_name": content_data.get("agentName", ""),
+        "project_money": content_data.get("projectMoney", ""),
+    }
+    try:
+        BidProjectDetailService.upsert_detail(project_id, detail_row)
+    except Exception as e:
+        logging.warning("Bid detail-v2: failed to cache detail for %s: %s", project_id, e)
+
+    # Upsert structure
+    struct_row = {
+        "project_name": structure_data.get("projectName", ""),
+        "project_numbers": structure_data.get("projectNumber", []),
+        "budget_money": structure_data.get("budgetMoney", []),
+        "bid_money": structure_data.get("bidMoney", []),
+        "bid_start_date": structure_data.get("bidStartDate"),
+        "bid_start_address": structure_data.get("bidStartAddress", []),
+        "sign_up_stop_date": structure_data.get("siginUpStopDate"),
+        "party_a_info": structure_data.get("partyAInfo", []),
+        "party_b_info": structure_data.get("partyBInfo", []),
+        "agency_info": structure_data.get("agencyInfo", []),
+        "bid_companies": structure_data.get("bidCompany", []),
+        "sbkj_bid_url": structure_data.get("sbkjBidUrl", ""),
+        "collect_url": structure_data.get("collectUrl", ""),
+    }
+    try:
+        BidProjectStructureService.upsert_structure(project_id, struct_row)
+    except Exception as e:
+        logging.warning("Bid detail-v2: failed to cache structure for %s: %s", project_id, e)
+
+    # Upsert files
+    files_raw = (content_data.get("projectFiles") or
+                 content_data.get("files") or [])
+    for f in files_raw:
+        try:
+            BidProjectFileService.upsert_file({
+                "project_file_id": f.get("projectFileID") or f.get("projectFileId"),
+                "project_id": project_id,
+                "file_name": f.get("name", "") or f.get("fileName", ""),
+                "file_url": f.get("fileUrl", "") or f.get("url", ""),
+                "publish_time": f.get("publishTime", ""),
+            })
+        except Exception as e:
+            logging.warning("Bid detail-v2: failed to cache file for %s: %s", project_id, e)
+
+    return get_json_result(data={
+        "content": content_data,
+        "structure": structure_data,
+        "from_cache": False,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -894,6 +1036,14 @@ async def search_project_by_number():
 @login_required
 @bid_rate_limit("search")
 async def list_bid_contracts():
+    """合同搜索（v2网关，缓存优先：DB → API补充 → 存DB → 返回）
+
+    策略：
+      1. 先查DB（news_type_id=3，缓存未过期）
+      2. DB够 → 直接返回（免费）
+      3. DB不够 → 调API → id去重upsert → 再查DB → 返回
+      4. API失败 → 降级返回DB已有数据
+    """
     page_id = int(request.args.get("page", 1))
     page_number = int(request.args.get("items_per_page", 20))
     keyword = request.args.get("keyword", "") or None
@@ -903,7 +1053,6 @@ async def list_bid_contracts():
     city_code = request.args.get("city_code", "") or None
     start_date = request.args.get("start_date", "") or None
     end_date = request.args.get("end_date", "") or None
-    # 外部 API 要求 startDate 必填，未提供时默认最近 30 天
     if not start_date:
         start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
     contract_end_min = request.args.get("contract_end_min", "") or None
@@ -916,6 +1065,77 @@ async def list_bid_contracts():
     file_flag = request.args.get("file_flag", type=int) or None
     industry_code = request.args.get("industry_code", "") or None
     purchase_type_id = request.args.get("purchase_type_id", "") or None
+
+    def _db_to_contract(row: dict) -> dict:
+        """Convert bid_project DB row → contract API response format."""
+        raw = row.get("raw_json") or {}
+        if raw:
+            return raw
+        # Fallback: reconstruct from DB fields
+        return {
+            "id": row["id"],
+            "title": row.get("title_html") or row.get("title", ""),
+            "publishTime": str(row.get("publish_time") or ""),
+            "projectMoney": row.get("project_money") or "",
+            "hasFile": row.get("has_file") or 0,
+            "projectCycle": [],
+            "partAInfo": [{"name": n, "contactPhone": []} for n in (row.get("part_a_names") or [])],
+            "partBInfo": [{"name": n, "contactPhone": []} for n in (row.get("part_b_names") or [])],
+            "contractStartDate": "",
+            "contractEndDate": row.get("contract_end_date") or "",
+        }
+
+    # Step 1: 查DB缓存
+    db_objs, db_total = BidProjectService.get_list(
+        page_number=page_id,
+        items_per_page=page_number,
+        keyword=keyword,
+        include_keyword=include_kw,
+        exclude_keyword=exclude_kw,
+        purchase_type_id=purchase_type_id,
+        provice_code=provice_code,
+        city_code=city_code,
+        start_date=start_date,
+        end_date=end_date,
+        contract_end_min=contract_end_min,
+        contract_end_max=contract_end_max,
+        part_a_name=part_a_name,
+        part_b_name=part_b_name,
+        has_file=file_flag if file_flag is not None else None,
+        industry_code=industry_code,
+        news_type_id=3,  # 合同类型
+    )
+
+    # 过滤过期缓存
+    now = datetime.now()
+    valid_objs = [o for o in db_objs
+                  if not o.get("cache_expires_at") or o["cache_expires_at"] > now]
+    valid_total = len(valid_objs)
+
+    # Step 2: DB够 → 直接返回
+    if valid_total >= page_number:
+        logging.info("Bid contracts: cache hit, returning %d results", valid_total)
+        return get_json_result(data={
+            "contracts": [_db_to_contract(o) for o in valid_objs[:page_number]],
+            "total": db_total,  # DB total 作为近似值
+        })
+
+    # Step 3: DB不够 → 调API补充
+    logging.info("Bid contracts: cache insufficient (%d < %d), calling API", valid_total, page_number)
+
+    # Rate limit
+    rl = check_bid_rate_limit("search")
+    if rl:
+        if valid_total > 0:
+            return get_json_result(data={
+                "contracts": [_db_to_contract(o) for o in valid_objs],
+                "total": valid_total,
+                "from_cache": True,
+            })
+        return get_data_error_result(
+            message=f"请求过于频繁，请 {rl['retry_after']} 秒后重试",
+            code=429,
+        )
 
     try:
         client = BidApiClient()
@@ -955,10 +1175,41 @@ async def list_bid_contracts():
         )
         data = resp.get("data", {})
         items = data.get("data", []) or []
-        total = data.get("total", 0)
-        return get_json_result(data={"contracts": items, "total": total})
+        api_total = data.get("total", 0)
+
+        # Step 4: 逐条upsert到DB（id去重）
+        upserted = 0
+        for item in items:
+            try:
+                BidProjectService.upsert_contract(item, keyword=keyword or "")
+                upserted += 1
+            except Exception as e:
+                logging.warning("Bid contracts: failed to upsert item %s: %s", item.get("id"), e)
+        logging.info("Bid contracts: upserted %d/%d items to DB", upserted, len(items))
+
+        return get_json_result(data={"contracts": items, "total": api_total})
+
+    except BidApiError as e:
+        # API失败 → 降级返回DB数据
+        if valid_objs:
+            logging.warning("Bid contracts: API failed, falling back to DB cache. error=%s", e)
+            return get_json_result(data={
+                "contracts": [_db_to_contract(o) for o in valid_objs[:page_number]],
+                "total": len(valid_objs),
+                "from_cache": True,
+                "stale": True,
+            })
+        return get_data_error_result(message=f"API error: {e}")
     except Exception as e:
-        logging.warning("Bid contracts search failed: %s", e)
+        if valid_objs:
+            logging.warning("Bid contracts: unexpected error, falling back to DB. error=%s", e)
+            return get_json_result(data={
+                "contracts": [_db_to_contract(o) for o in valid_objs[:page_number]],
+                "total": len(valid_objs),
+                "from_cache": True,
+                "stale": True,
+            })
+        logging.exception("Bid contracts search failed: %s", e)
         return get_data_error_result(message=f"Failed to search contracts: {e}")
 
 

@@ -14,7 +14,7 @@
 #  limitations under the License.
 #
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Tuple, List, Optional
 
 from peewee import fn
@@ -149,6 +149,72 @@ class BidProjectService(CommonService):
             return obj.to_dict()
         return None
 
+    @staticmethod
+    def _map_contract_api_to_project(item: dict, keyword: str = "") -> dict:
+        """Map v2 search_contract API response item → bid_project fields."""
+        import re
+        title_html = item.get("title", "")
+        title_plain = re.sub(r"<[^>]*>", "", title_html) if title_html else ""
+
+        part_a_names = []
+        for a in (item.get("partAInfo") or []):
+            if a.get("name"):
+                part_a_names.append(a["name"])
+
+        part_b_names = []
+        for b in (item.get("partBInfo") or []):
+            if b.get("name"):
+                part_b_names.append(b["name"])
+
+        now = datetime.now()
+        return {
+            "id": item["id"],
+            "title": title_plain,
+            "title_html": title_html,
+            "content": item.get("content", ""),
+            "publish_time": item.get("publishTime"),
+            "news_type_id": 3,  # 合同
+            "project_class_id": item.get("projectClassID", ""),
+            "project_money": item.get("projectMoney", ""),
+            "part_a_names": part_a_names,
+            "part_b_names": part_b_names,
+            "has_file": item.get("hasFile", 0),
+            "contract_end_date": item.get("contractEndDate", ""),
+            "source_type": "api",
+            "raw_json": item,
+            "se_keywords": keyword,
+            "updated_at": now,
+            "fetched_at": now,
+            "cache_expires_at": datetime.fromtimestamp(now.timestamp() + 3600),  # 1h TTL
+        }
+
+    @classmethod
+    @DB.connection_context()
+    def upsert_contract(cls, item: dict, keyword: str = "") -> Tuple[bool, object]:
+        """Upsert a contract search result into bid_project. Returns (is_new, obj)."""
+        data = cls._map_contract_api_to_project(item, keyword)
+        pid = data["id"]
+        existing = cls.model.get_or_none(cls.model.id == pid)
+        if existing:
+            for k, v in data.items():
+                setattr(existing, k, v)
+            existing.save()
+            return False, existing
+        else:
+            data["created_at"] = data.get("updated_at", datetime.now())
+            obj = cls.model(**data).save(force_insert=True)
+            return True, obj
+
+    @classmethod
+    @DB.connection_context()
+    def filter_valid_cache(cls, query):
+        """Filter query to only include non-expired cached records."""
+        now = datetime.now()
+        return query.where(
+            (cls.model.cache_expires_at.is_null()) |
+            (cls.model.cache_expires_at > now)
+        )
+
 
 class BidProjectDetailService(CommonService):
     model = BidProjectDetail
@@ -157,15 +223,19 @@ class BidProjectDetailService(CommonService):
     @DB.connection_context()
     def upsert_detail(cls, project_id: int, data: dict) -> object:
         existing = cls.model.get_or_none(cls.model.project_id == project_id)
+        now = datetime.now()
+        defaults = {
+            "fetched_at": now,
+            "cache_expires_at": now + timedelta(days=30),
+        }
         if existing:
-            for k, v in data.items():
+            for k, v in {**defaults, **data}.items():
                 setattr(existing, k, v)
             existing.save()
             return existing
         else:
-            data["id"] = project_id
-            data["project_id"] = project_id
-            data["created_at"] = datetime.now()
+            data = {**defaults, **data, "id": project_id, "project_id": project_id}
+            data.setdefault("created_at", now)
             return cls.model(**data).save(force_insert=True)
 
 
@@ -176,15 +246,19 @@ class BidProjectStructureService(CommonService):
     @DB.connection_context()
     def upsert_structure(cls, project_id: int, data: dict) -> object:
         existing = cls.model.get_or_none(cls.model.project_id == project_id)
+        now = datetime.now()
+        defaults = {
+            "fetched_at": now,
+            "cache_expires_at": now + timedelta(days=30),
+        }
         if existing:
-            for k, v in data.items():
+            for k, v in {**defaults, **data}.items():
                 setattr(existing, k, v)
             existing.save()
             return existing
         else:
-            data["id"] = project_id
-            data["project_id"] = project_id
-            data["created_at"] = datetime.now()
+            data = {**defaults, **data, "id": project_id, "project_id": project_id}
+            data.setdefault("created_at", now)
             return cls.model(**data).save(force_insert=True)
 
 
@@ -201,14 +275,17 @@ class BidProjectFileService(CommonService):
     @DB.connection_context()
     def upsert_file(cls, data: dict) -> object:
         fid = data.get("project_file_id")
+        now = datetime.now()
+        defaults = {"fetched_at": now}
         existing = cls.model.get_or_none(cls.model.project_file_id == fid)
         if existing:
-            for k, v in data.items():
+            for k, v in {**defaults, **data}.items():
                 setattr(existing, k, v)
             existing.save()
             return existing
         else:
-            data["created_at"] = datetime.now()
+            data = {**defaults, **data}
+            data.setdefault("created_at", now)
             return cls.model(**data).save(force_insert=True)
 
 
