@@ -1580,7 +1580,6 @@ class BidProjectParse(DataBaseModel):
 
 
 class BidEnterpriseCache(DataBaseModel):
-    id = BigIntegerField(primary_key=True)
     company_name = CharField(max_length=200, null=False, index=True, help_text="企业名称")
     cache_type = CharField(max_length=20, null=False, index=True, help_text="缓存类型: profile/contacts/customers/suppliers")
     page_no = IntegerField(default=1, help_text="页码")
@@ -1996,8 +1995,15 @@ def migrate_db():
     alter_db_column_type(migrator, "file", "size", BigIntegerField(default=0, index=True))
     alter_db_add_column(migrator, "bid_project", "fetched_at", DateTimeField(null=True, help_text="搜索缓存获取时间"))
     alter_db_add_column(migrator, "bid_project", "cache_expires_at", DateTimeField(null=True, help_text="缓存过期时间"))
-    # bid_enterprise_cache table (if it doesn't exist)
-    if not BidEnterpriseCache.table_exists():
+    # bid_enterprise_cache table — ensure id column has AUTO_INCREMENT
+    if BidEnterpriseCache.table_exists():
+        try:
+            DB.execute_sql(
+                "ALTER TABLE bid_enterprise_cache MODIFY COLUMN id INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY"
+            )
+        except Exception:
+            pass  # already correct or safe to ignore
+    else:
         BidEnterpriseCache.create_table(safe=True)
     logging.disable(logging.NOTSET)
     # this is after re-enabling logging to allow logging changed user emails
