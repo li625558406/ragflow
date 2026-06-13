@@ -1,5 +1,6 @@
 import { AgentStatusChip } from '@/components/agent-status-chip';
 import { deriveStatus } from '@/components/agent-status-chip/utils';
+import AppDownloadDialog from '@/components/app-download-dialog';
 import BidPanel from '@/components/bid';
 import ChapteredMarkdown from '@/components/chaptered-markdown';
 import CollaborationPanel from '@/components/collaboration';
@@ -47,6 +48,7 @@ import {
   Plus,
   RefreshCw,
   Send,
+  Smartphone,
   Square,
   Star,
   Trash2,
@@ -406,6 +408,7 @@ export default function CChat() {
     new Set(),
   );
   const [favoriteDialogOpen, setFavoriteDialogOpen] = useState(false);
+  const [downloadOpen, setDownloadOpen] = useState(false);
 
   // Typewriter placeholder
   const FULL_PLACEHOLDER =
@@ -1172,8 +1175,16 @@ export default function CChat() {
             </div>
           </div>
 
-          {/* Right: User */}
+          {/* Right: Download + User */}
           <div className="flex items-center gap-3">
+            <button
+              onClick={() => setDownloadOpen(true)}
+              className="flex items-center gap-1.5 text-sm font-medium text-[#0F172A] hover:text-[#0369A1] px-3 py-1.5 rounded-lg border border-[#E2E8F0] hover:border-[#0369A1] bg-white transition-colors cursor-pointer"
+              title="下载App"
+            >
+              <Smartphone className="size-4" />
+              <span className="hidden sm:inline">下载App</span>
+            </button>
             <div className="w-8 h-8 rounded-lg bg-[#F59E0B] text-white flex items-center justify-center text-sm font-bold">
               {(userInfo?.nickname || userInfo?.email || 'U')[0].toUpperCase()}
             </div>
@@ -2469,6 +2480,8 @@ export default function CChat() {
           />
         )}
       </div>
+
+      <AppDownloadDialog open={downloadOpen} onOpenChange={setDownloadOpen} />
     </AgentChatContext.Provider>
   );
 }

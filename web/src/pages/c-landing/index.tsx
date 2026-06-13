@@ -1,9 +1,11 @@
+import AppDownloadDialog from '@/components/app-download-dialog';
 import DynamicIcon from '@/components/dynamic-icon';
-import { ArrowRight, ChevronDown, Menu, X } from 'lucide-react';
+import { ArrowRight, ChevronDown, Menu, Smartphone, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 
 export default function CLanding() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [downloadOpen, setDownloadOpen] = useState(false);
 
   useEffect(() => {
     const observer = new IntersectionObserver(
@@ -79,12 +81,21 @@ export default function CLanding() {
               常见问题
             </a>
           </div>
-          <a
-            href="/home"
-            className="hidden md:inline-flex bg-[#000000] hover:bg-[#171717] text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors cursor-pointer"
-          >
-            开始使用
-          </a>
+          <div className="hidden md:flex items-center gap-3">
+            <button
+              onClick={() => setDownloadOpen(true)}
+              className="flex items-center gap-1.5 text-sm font-medium text-[#0F172A] hover:text-[#0369A1] px-4 py-2 rounded-lg border border-[#E2E8F0] hover:border-[#0369A1] bg-white transition-colors cursor-pointer"
+            >
+              <Smartphone className="size-4" />
+              下载App
+            </button>
+            <a
+              href="/home"
+              className="bg-[#000000] hover:bg-[#171717] text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors cursor-pointer"
+            >
+              开始使用
+            </a>
+          </div>
           <button
             className="md:hidden text-[#333333]"
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
@@ -127,6 +138,16 @@ export default function CLanding() {
             >
               常见问题
             </a>
+            <button
+              onClick={() => {
+                setMobileMenuOpen(false);
+                setDownloadOpen(true);
+              }}
+              className="flex items-center gap-1.5 text-sm font-medium text-[#0F172A] hover:text-[#0369A1] py-2"
+            >
+              <Smartphone className="size-4" />
+              下载App
+            </button>
             <a
               href="/home"
               className="block bg-[#000000] text-white text-center px-5 py-2.5 rounded-lg text-sm font-medium"
@@ -436,6 +457,8 @@ export default function CLanding() {
       </footer>
 
       <LandingStyles />
+
+      <AppDownloadDialog open={downloadOpen} onOpenChange={setDownloadOpen} />
     </div>
   );
 }
