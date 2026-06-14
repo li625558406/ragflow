@@ -1261,11 +1261,12 @@ def bid_crawler_stats():
         if latest_row and latest_row.publish_time:
             latest_publish = latest_row.publish_time.strftime("%Y-%m-%d %H:%M")
 
-        # Per-site: total count + 24h count + latest publish_time
+        # Per-site: total count + 24h count + latest publish_time + last crawl
         rows = (BidProject.select(
             fn.JSON_UNQUOTE(fn.JSON_EXTRACT(BidProject.raw_json, "$.crawler_site_id")).alias("sid"),
             fn.COUNT(BidProject.id).alias("cnt"),
             fn.MAX(BidProject.publish_time).alias("latest_pub"),
+            fn.MAX(BidProject.created_at).alias("last_crawl"),
         ).where(
             BidProject.raw_json.is_null(False),
             BidProject.raw_json.contains("crawler_site_id"),
@@ -1277,6 +1278,7 @@ def bid_crawler_stats():
             per_site_stats[sid] = {
                 "total_items": r.cnt,
                 "latest_publish": r.latest_pub.strftime("%Y-%m-%d %H:%M") if r.latest_pub else None,
+                "last_crawl": r.last_crawl.isoformat() if r.last_crawl else None,
             }
 
         # Per-site 24h counts
@@ -1305,29 +1307,49 @@ def bid_crawler_stats():
     for site_id, cfg in site_configs.items():
         last_check_ts = detector_checks.get(site_id)
         interval = cfg.get("detect_interval", 300)
-        last_check_ago = int(now_ts - last_check_ts) if last_check_ts else None
+
+        # Inject per-site item stats
+        site_stat = per_site_stats.get(site_id, {})
+        last_crawl = site_stat.get("last_crawl")
+
+        # Derive last check time: prefer detector, fallback to data timestamp
+        last_check_ago = None
+        effective_last_check = last_check_ts
+        if last_check_ts:
+            last_check_ago = int(now_ts - last_check_ts)
+        elif last_crawl:
+            # No detector check yet, but data exists — use crawl time as fallback
+            try:
+                crawl_dt = datetime.fromisoformat(last_crawl)
+                if crawl_dt.tzinfo:
+                    crawl_dt = crawl_dt.replace(tzinfo=None)
+                last_check_ago = int((datetime.now() - crawl_dt).total_seconds())
+                effective_last_check = crawl_dt.timestamp()
+            except Exception:
+                pass
+
         is_crawling = site_id in crawling_sites
 
         # Determine status
-        if last_check_ts is None:
+        if effective_last_check is None:
             status = "never"
         elif is_crawling:
             status = "crawling"
-        elif last_check_ago > interval * 3:
+        elif last_check_ago and last_check_ago > interval * 3:
             status = "stale"
+        elif last_check_ts is None and last_crawl:
+            # Data exists, crawled but never probed by detector
+            status = "ok"
         else:
             status = "ok"
         if status == "stale":
             stale_count += 1
 
-        # Inject per-site item stats
-        site_stat = per_site_stats.get(site_id, {})
-
         sites_list.append({
             "site_id": site_id,
             "name": cfg.get("name", site_id),
             "detect_interval": interval,
-            "last_check": last_check_ts,
+            "last_check": effective_last_check,
             "last_check_ago": last_check_ago,
             "status": status,
             "is_crawling": is_crawling,
