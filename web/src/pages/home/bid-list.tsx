@@ -666,7 +666,10 @@ export function BidList({
         )}
 
         {/* Card list */}
-        <div className="flex-1 min-h-0 px-6 pb-4 overflow-auto">
+        <div
+          ref={listContainerRef}
+          className="flex-1 min-h-0 px-6 pb-4 overflow-auto"
+        >
           {localLoading ? (
             <div className="space-y-3">
               {Array.from({ length: 5 }).map((_, i) => (

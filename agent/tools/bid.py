@@ -1512,9 +1512,14 @@ class BidGetContractDetail(ToolBase, ABC):
                 user_id = ""
                 if hasattr(self, '_canvas'):
                     user_id = self._canvas.get_tenant_id() or ""
+                # Inject files into pre_fetched_detail for re-trigger detection
+                detail_for_import = dict(result) if result else {}
+                content_obj = detail_for_import.get("content") or {}
+                if content_obj.get("projectFiles") and "files" not in detail_for_import:
+                    detail_for_import["files"] = content_obj["projectFiles"]
                 import_result = import_contract_to_kb(
                     project_id=int(project_id), publish_time=str(publish_time),
-                    kb_id=None, user_id=user_id, pre_fetched_detail=result,
+                    kb_id=None, user_id=user_id, pre_fetched_detail=detail_for_import,
                 )
                 output["kb_import"] = import_result
                 self.set_output("json", output)
