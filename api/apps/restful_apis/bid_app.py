@@ -29,6 +29,9 @@ from quart import Blueprint, request
 
 from api.apps import current_user, login_required
 from api.db.services.bid_service import (
+    BidConstructionParseService,
+    BidContractParseService,
+    BidEnterpriseParseService,
     BidProjectService,
     BidProjectDetailService,
     BidProjectStructureService,
@@ -242,8 +245,9 @@ def list_bid_projects():
     industry_code = request.args.get("industry_code", "") or None
     news_type_id = request.args.get("news_type_id", type=int) or None
     source_type = request.args.get("source_type", "") or None
+    data_source = request.args.get("data_source", "auto")
 
-    # Step 1: 查本地 DB
+    # Step 1: 查本地 DB（供 API-first 降级及非 api 模式使用）
     objs, total = BidProjectService.get_list(
         page_number=page_number,
         items_per_page=items_per_page,
@@ -270,7 +274,80 @@ def list_bid_projects():
         source_type=source_type,
     )
 
-    # Step 2: 本地不足 20 条 → 调第三方 API 补充
+    # Step 2 (API-first): data_source=api 时直接调 API 返回，异步缓存 DB
+    if data_source == "api":
+        if source_type == 'crawler':
+            return get_json_result(data={"projects": objs, "total": total})
+
+        rl = check_bid_rate_limit("search")
+        if rl:
+            return get_data_error_result(
+                message=f"请求过于频繁，请 {rl['retry_after']} 秒后重试",
+                code=429,
+            )
+
+        try:
+            client = BidApiClient()
+
+            # 行业编码映射
+            api_industry_code = {"firstCodeList": ["0"], "secondCodeList": [], "thirdCodeList": []}
+            if industry_code:
+                if len(industry_code) == 1:
+                    api_industry_code["firstCodeList"] = [industry_code]
+                else:
+                    api_industry_code["secondCodeList"] = [industry_code]
+
+            # 地区编码映射
+            api_area_code = {
+                "proviceCodeList": [provice_code] if provice_code else ["0"],
+                "cityCodeList": [city_code] if city_code else [],
+                "countyCodeList": [county_code] if county_code else [],
+            }
+
+            api_resp = client.search_project(
+                keyword=keyword or "",
+                exclude_kw=exclude_keyword or "",
+                include_kw=include_keyword or "",
+                source_type=source_type or "",
+                class_id=str(news_type_id) if news_type_id else "-100",
+                project_class_id=project_class_id or "",
+                search_mode=1,
+                area_code=api_area_code,
+                industry_code=api_industry_code,
+                start_date=start_date or "",
+                end_date=end_date or "",
+                contract_end_min=contract_end_min or "",
+                contract_end_max=contract_end_max or "",
+                part_a_name=part_a_name or "",
+                part_b_name=part_b_name or "",
+                agent_name=agent_name or "",
+                project_money_min=project_money_min,
+                project_money_max=project_money_max,
+                file_flag=file_flag if file_flag is not None else -1,
+                purchase_type_id=purchase_type_id or "",
+                page_id=page_number,
+                page_number=items_per_page,
+            )
+
+            data = api_resp.get("data", {})
+            items = data.get("data", [])
+            api_total = data.get("total", 0)
+            logging.info("Bid list [api-first]: page=%d, API returned %d items, total=%d",
+                         page_number, len(items), api_total)
+
+            # 异步缓存到 DB（fire-and-forget，不阻塞返回）
+            threading.Thread(target=_cache_api_results, args=(items, data), daemon=True).start()
+
+            return get_json_result(data={
+                "projects": [_api_item_to_project(item, data) for item in items],
+                "total": api_total,
+            })
+        except Exception as e:
+            logging.warning("Bid list [api-first]: API failed (%s), fallback to DB cache: %s",
+                             type(e).__name__, e)
+            return get_json_result(data={"projects": objs, "total": total})
+
+    # Step 3 (DB-first): 本地不足 20 条 → 调第三方 API 补充
     # 爬虫数据不需要外部 API 补充（source_type='crawler' 时跳过）
     if total < 20 and source_type != 'crawler':
         rl = check_bid_rate_limit("search")
@@ -329,41 +406,9 @@ def list_bid_projects():
             data = api_resp.get("data", {})
             items = data.get("data", [])
             logging.info("Bid list: API returned %d items, total=%s", len(items), data.get("total", "?"))
-            batch_id = str(datetime.now().timestamp())
+            _cache_api_results(items, data)
 
-            for item in items:
-                try:
-                    project_id = item.get("id")
-                    if not project_id:
-                        continue
-                    project_data = {
-                        "id": project_id,
-                        "title": _strip_html(item.get("title", "")),
-                        "title_html": item.get("title", ""),
-                        "content": item.get("content", ""),
-                        "publish_time": _parse_dt(item.get("publishTime")),
-                        "news_type_id": item.get("newsTypeID"),
-                        "project_class_id": str(item.get("projectClassID")) if item.get("projectClassID") else None,
-                        "purchase_type_id": str(item.get("purchaseTypeID")) if item.get("purchaseTypeID") else None,
-                        "project_money": item.get("projectMoney", ""),
-                        "provice_code": item.get("proviceCode", ""),
-                        "city_code": item.get("cityCode", ""),
-                        "county_code": item.get("countyCode", ""),
-                        "industry_codes": _safe_json(item.get("industryCodeList", [])),
-                        "part_a_names": _safe_json(item.get("partANameList", [])),
-                        "part_b_names": _safe_json(item.get("partBNameList", [])),
-                        "has_file": item.get("hasFile", 0),
-                        "contract_end_date": item.get("contractEndDate", ""),
-                        "se_keywords": data.get("seKeyWords", ""),
-                        "score": item.get("score"),
-                        "source_type": str(item.get("sourceType")) if item.get("sourceType") else None,
-                        "sync_batch_id": batch_id,
-                    }
-                    BidProjectService.upsert_project(project_data)
-                except Exception as e:
-                    logging.warning("Failed to cache project %s: %s", item.get("id"), e)
-
-            # Step 3: 重新查 DB
+            # Step 4: 重新查 DB（DB-first 模式：API 补充后用 DB 排序返回）
             objs, total = BidProjectService.get_list(
                 page_number=page_number,
                 items_per_page=items_per_page,
@@ -455,14 +500,17 @@ async def get_bid_project_detail(project_id):
     except Exception as e:
         logging.warning("Failed to cache project detail: %s", e)
 
-    # 缓存附件
+    # 缓存附件（完整字段）
     for f in files_raw:
         try:
             BidProjectFileService.upsert_file({
-                "project_file_id": f.get("projectFileID"),
+                "project_file_id": f.get("projectFileID") or f.get("projectFileId"),
                 "project_id": project_id,
-                "file_name": f.get("name", ""),
-                "publish_time": f.get("publishTime", ""),
+                "file_name": f.get("name", "") or f.get("fileName", ""),
+                "file_url": f.get("url") or f.get("fileUrl") or "",
+                "file_suffix": f.get("suffix", "") or f.get("fileSuffix", ""),
+                "file_size": f.get("size") or f.get("fileSize"),
+                "publish_time": _parse_dt(f.get("publishTime", "")),
             })
         except Exception as e:
             logging.warning("Failed to cache file: %s", e)
@@ -544,6 +592,9 @@ async def get_bid_project_files(project_id):
 
     # Step 1: 查缓存（需有 file_url 才算有效缓存）
     cached = BidProjectFileService.get_by_project(project_id)
+    logging.info("[files-endpoint] project=%s, cached count=%d, has_file_url=%s",
+                 project_id, len(cached),
+                 [{k: v for k, v in f.items() if k in ("file_name", "file_url")} for f in cached[:3]] if cached else [])
     if cached and any(f.get("file_url") for f in cached):
         return get_json_result(data={"files": cached})
 
@@ -559,6 +610,10 @@ async def get_bid_project_files(project_id):
     try:
         client = BidApiClient()
         files_raw = client.get_files(project_id, publish_time)
+        logging.info("[files-endpoint] API files_raw count=%d, keys=%s, sample=%s",
+                      len(files_raw),
+                      list(files_raw[0].keys()) if files_raw else [],
+                      [{k: v for k, v in f.items() if k in ("name", "url", "fileUrl", "suffix")} for f in files_raw[:3]] if files_raw else [])
     except Exception as e:
         return get_data_error_result(message=f"Failed to fetch files: {e}")
 
@@ -566,21 +621,36 @@ async def get_bid_project_files(project_id):
     for f in files_raw:
         try:
             BidProjectFileService.upsert_file({
-                "project_file_id": f.get("projectFileID"),
+                "project_file_id": f.get("projectFileID") or f.get("projectFileId"),
                 "project_id": project_id,
-                "file_name": f.get("name", ""),
-                "file_url": f.get("url", ""),
-                "file_suffix": f.get("suffix", ""),
-                "file_size": f.get("size"),
+                "file_name": f.get("name", "") or f.get("fileName", ""),
+                "file_url": f.get("url") or f.get("fileUrl") or "",
+                "file_suffix": f.get("suffix", "") or f.get("fileSuffix", ""),
+                "file_size": f.get("size") or f.get("fileSize"),
                 "state": f.get("state", "0"),
-                "publish_time": f.get("publishTime", ""),
-                "create_time": f.get("createTime", ""),
+                "publish_time": _parse_dt(f.get("publishTime", "")),
+                "create_time": _parse_dt(f.get("createTime", "")),
                 "fetched_at": datetime.now(),
             })
         except Exception as e:
             logging.warning("Failed to cache file: %s", e)
 
-    return get_json_result(data={"files": files_raw})
+    # 统一转为 snake_case，与 DB 缓存格式一致
+    files_normalized = []
+    for f in files_raw:
+        files_normalized.append({
+            "project_file_id": f.get("projectFileID") or f.get("projectFileId"),
+            "project_id": project_id,
+            "file_name": f.get("name", "") or f.get("fileName", ""),
+            "file_url": f.get("url") or f.get("fileUrl") or "",
+            "file_suffix": f.get("suffix", "") or f.get("fileSuffix", ""),
+            "file_size": f.get("size") or f.get("fileSize"),
+            "state": f.get("state", "0"),
+            "publish_time": f.get("publishTime", ""),
+            "create_time": f.get("createTime", ""),
+        })
+
+    return get_json_result(data={"files": files_normalized})
 
 
 # ---------------------------------------------------------------------------
@@ -647,11 +717,15 @@ async def get_bid_project_detail_v2(project_id):
     if detail_valid and structure_valid:
         logging.info("Bid detail-v2: cache hit for project %s", project_id)
         cached_files = BidProjectFileService.get_by_project(project_id)
+        logging.info("[detail-v2] cached_files count=%d, sample=%s", len(cached_files),
+                      [{k: v for k, v in f.items() if k in ("project_file_id", "file_name", "file_url")} for f in cached_files[:3]] if cached_files else [])
         return get_json_result(data={
             "content": {
                 **_detail_to_api(cached_detail),
-                "projectFiles": [{"projectFileID": f["project_file_id"], "name": f["file_name"]}
-                                 for f in cached_files],
+                "projectFiles": [
+                    {"projectFileID": f["project_file_id"], "name": f["file_name"], "url": f.get("file_url") or ""}
+                    for f in cached_files
+                ],
             },
             "structure": _structure_to_api(cached_structure),
             "from_cache": True,
@@ -670,8 +744,10 @@ async def get_bid_project_detail_v2(project_id):
             return get_json_result(data={
                 "content": {
                     **_detail_to_api(cached_detail),
-                    "projectFiles": [{"projectFileID": f["project_file_id"], "name": f["file_name"]}
-                                     for f in cached_files],
+                    "projectFiles": [
+                        {"projectFileID": f["project_file_id"], "name": f["file_name"], "url": f.get("file_url") or ""}
+                        for f in cached_files
+                    ],
                 },
                 "structure": _structure_to_api(cached_structure),
                 "from_cache": True,
@@ -684,8 +760,10 @@ async def get_bid_project_detail_v2(project_id):
             return get_json_result(data={
                 "content": {
                     **_detail_to_api(cached_detail),
-                    "projectFiles": [{"projectFileID": f["project_file_id"], "name": f["file_name"]}
-                                     for f in cached_files],
+                    "projectFiles": [
+                        {"projectFileID": f["project_file_id"], "name": f["file_name"], "url": f.get("file_url") or ""}
+                        for f in cached_files
+                    ],
                 },
                 "structure": _structure_to_api(cached_structure),
                 "from_cache": True,
@@ -734,9 +812,32 @@ async def get_bid_project_detail_v2(project_id):
     except Exception as e:
         logging.warning("Bid detail-v2: failed to cache structure for %s: %s", project_id, e)
 
-    # Upsert files
+    # Upsert files — v2 projectFiles 可能不含 url，补调 v1 获取下载链接
     files_raw = (content_data.get("projectFiles") or
                  content_data.get("files") or [])
+    _needs_v1_urls = files_raw and not any(f.get("url") or f.get("fileUrl") for f in files_raw)
+    if _needs_v1_urls:
+        try:
+            v1_files = client.get_files(project_id, publish_time)
+            v1_url_map = {}
+            for vf in v1_files:
+                vf_name = vf.get("name", "") or vf.get("fileName", "")
+                vf_url = vf.get("url") or vf.get("fileUrl") or ""
+                if vf_name and vf_url:
+                    v1_url_map[vf_name] = vf_url
+            if v1_url_map:
+                for f in files_raw:
+                    f_name = f.get("name", "") or f.get("fileName", "")
+                    if f_name in v1_url_map:
+                        f["url"] = v1_url_map[f_name]
+                logging.info("[detail-v2] patched %d files with v1 urls", len(v1_url_map))
+        except Exception as e:
+            logging.warning("[detail-v2] v1 files fallback failed: %s", e)
+
+    logging.info("[detail-v2] API files_raw count=%d, keys=%s, sample=%s",
+                  len(files_raw),
+                  list(files_raw[0].keys()) if files_raw else [],
+                  [{k: v for k, v in f.items() if k in ("projectFileID", "name", "url", "fileUrl")} for f in files_raw[:3]] if files_raw else [])
     for f in files_raw:
         try:
             BidProjectFileService.upsert_file({
@@ -744,7 +845,7 @@ async def get_bid_project_detail_v2(project_id):
                 "project_id": project_id,
                 "file_name": f.get("name", "") or f.get("fileName", ""),
                 "file_url": f.get("fileUrl", "") or f.get("url", ""),
-                "publish_time": f.get("publishTime", ""),
+                "publish_time": _parse_dt(f.get("publishTime", "")),
             })
         except Exception as e:
             logging.warning("Bid detail-v2: failed to cache file for %s: %s", project_id, e)
@@ -815,6 +916,69 @@ def _strip_html(html: str) -> str:
     text = re.sub(r'[ \t]+', ' ', text)
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
+
+
+def _cache_api_results(items: list, api_data: dict, batch_id: str = None):
+    """将 API 搜索结果异步缓存到 bid_project 表（fire-and-forget）"""
+    if not items:
+        return
+    batch_id = batch_id or str(datetime.now().timestamp())
+    for item in items:
+        try:
+            project_id = item.get("id")
+            if not project_id:
+                continue
+            project_data = {
+                "id": project_id,
+                "title": _strip_html(item.get("title", "")),
+                "title_html": item.get("title", ""),
+                "content": item.get("content", ""),
+                "publish_time": _parse_dt(item.get("publishTime")),
+                "news_type_id": item.get("newsTypeID"),
+                "project_class_id": str(item.get("projectClassID")) if item.get("projectClassID") else None,
+                "purchase_type_id": str(item.get("purchaseTypeID")) if item.get("purchaseTypeID") else None,
+                "project_money": item.get("projectMoney", ""),
+                "provice_code": item.get("proviceCode", ""),
+                "city_code": item.get("cityCode", ""),
+                "county_code": item.get("countyCode", ""),
+                "industry_codes": _safe_json(item.get("industryCodeList", [])),
+                "part_a_names": _safe_json(item.get("partANameList", [])),
+                "part_b_names": _safe_json(item.get("partBNameList", [])),
+                "has_file": item.get("hasFile", 0),
+                "contract_end_date": item.get("contractEndDate", ""),
+                "se_keywords": api_data.get("seKeyWords", ""),
+                "score": item.get("score"),
+                "source_type": str(item.get("sourceType")) if item.get("sourceType") else None,
+                "sync_batch_id": batch_id,
+            }
+            BidProjectService.upsert_project(project_data)
+        except Exception as e:
+            logging.warning("Failed to cache project %s: %s", item.get("id"), e)
+
+
+def _api_item_to_project(item: dict, api_data: dict) -> dict:
+    """将 API 搜索结果 item 转为 DB 格式（snake_case 字段名），与前端 BidProject 类型对齐"""
+    return {
+        "id": item.get("id"),
+        "title": _strip_html(item.get("title", "")),
+        "content": item.get("content", ""),
+        "project_money": item.get("projectMoney", ""),
+        "publish_time": _parse_dt(item.get("publishTime")),
+        "part_a_names": _safe_json(item.get("partANameList", [])),
+        "part_b_names": _safe_json(item.get("partBNameList", [])),
+        "provice_code": item.get("proviceCode", ""),
+        "city_code": item.get("cityCode", ""),
+        "county_code": item.get("countyCode", ""),
+        "project_class_id": str(item.get("projectClassID")) if item.get("projectClassID") else None,
+        "purchase_type_id": str(item.get("purchaseTypeID")) if item.get("purchaseTypeID") else None,
+        "news_type_id": item.get("newsTypeID"),
+        "has_file": item.get("hasFile", 0),
+        "contract_end_date": item.get("contractEndDate", ""),
+        "se_keywords": api_data.get("seKeyWords", ""),
+        "industry_codes": _safe_json(item.get("industryCodeList", [])),
+        "source_type": str(item.get("sourceType")) if item.get("sourceType") else None,
+        "score": item.get("score"),
+    }
 
 
 def _run_parse_task(project_id: int, kb_id: str, user_id: str):
@@ -1333,8 +1497,338 @@ async def get_construction_project_detail(project_id):
     if not publish_time:
         return get_data_error_result(message="publish_time is required")
     try:
-        client = BidApiClient()
-        data = client.get_nzj_project_detail(project_id, publish_time)
+        from api.utils.bid_tool_service import get_construction_detail_cached
+        data = get_construction_detail_cached(project_id, publish_time)
         return get_json_result(data=data)
     except Exception as e:
         return get_data_error_result(message=f"Failed to fetch construction project detail: {e}")
+
+
+_CONSTRUCTION_KB_ID = "30eb6240679b11f1a8f13fb025dd68"
+
+
+@manager.route("/bid/construction/projects/<int:project_id>/parse", methods=["POST"])  # noqa: F821
+@login_required
+async def construction_project_parse(project_id):
+    """触发拟在建项目解析——正文+附件导入知识库"""
+    req = await request.get_json()
+    publish_time = req.get("publish_time", "") if req else ""
+    user_id = current_user.id
+
+    existing = BidConstructionParseService.get_by_project(project_id)
+    if existing and existing.get("status") == "parsing":
+        return get_data_error_result(message="该项目已在进行解析，请等待完成")
+
+    def _task():
+        from api.utils.bid_tool_service import import_construction_to_kb
+        import_construction_to_kb(
+            project_id=project_id,
+            publish_time=publish_time,
+            kb_id=_CONSTRUCTION_KB_ID,
+            user_id=user_id,
+        )
+
+    thread = threading.Thread(target=_task, daemon=True)
+    thread.start()
+
+    return get_json_result(data={
+        "project_id": project_id,
+        "kb_id": _CONSTRUCTION_KB_ID,
+        "status": "pending",
+    })
+
+
+@manager.route("/bid/construction/projects/<int:project_id>/parse-status", methods=["GET"])  # noqa: F821
+@login_required
+def construction_project_parse_status(project_id):
+    """查询拟在建项目的解析进度"""
+    record = BidConstructionParseService.get_by_project(project_id)
+
+    if not record:
+        return get_json_result(data={
+            "project_id": project_id,
+            "status": "none",
+            "progress": 0,
+            "progress_msg": "",
+            "kb_id": "",
+            "combined_doc_id": "",
+        })
+
+    status = record.get("status", "pending")
+    progress = record.get("progress", 0)
+    progress_msg = record.get("progress_msg", "")
+
+    if status == "parsing" and record.get("kb_id"):
+        try:
+            queued_doc_ids_str = record.get("queued_doc_ids")
+            if queued_doc_ids_str:
+                try:
+                    doc_ids = json.loads(queued_doc_ids_str)
+                except (json.JSONDecodeError, TypeError):
+                    doc_ids = []
+            else:
+                doc_ids = []
+
+            if doc_ids:
+                done_count = 0
+                fail_count = 0
+                running_count = 0
+                for doc_id in doc_ids:
+                    e, doc_model = DocumentService.get_by_id(doc_id)
+                    if e and doc_model:
+                        r = doc_model.run
+                        if r == "3" or r == 3:
+                            done_count += 1
+                        elif r == "4" or r == 4:
+                            fail_count += 1
+                        else:
+                            running_count += 1
+                    else:
+                        fail_count += 1
+                total = len(doc_ids)
+                if running_count > 0:
+                    progress = 0.9 + 0.1 * (done_count + fail_count) / max(total, 1)
+                    progress_msg = f"解析中 ({done_count}/{total} 已完成)"
+                elif fail_count > 0 and running_count == 0:
+                    progress = 0.9 + 0.1 * (done_count + fail_count) / max(total, 1)
+                    progress_msg = f"部分文档解析失败 ({fail_count}/{total})"
+                    if done_count == 0:
+                        status = "fail"
+                elif done_count >= total and total > 0:
+                    status = "done"
+                    progress = 1
+                    progress_msg = f"全部解析完成 ({total} 个文档)"
+        except Exception as e:
+            logging.warning("Failed to query construction KB doc status: %s", e)
+
+    return get_json_result(data={
+        "project_id": project_id,
+        "status": status,
+        "progress": progress,
+        "progress_msg": progress_msg,
+        "kb_id": record.get("kb_id", ""),
+        "combined_doc_id": record.get("combined_doc_id", ""),
+    })
+
+
+# ---------------------------------------------------------------------------
+# Contract parse endpoints
+# ---------------------------------------------------------------------------
+
+_CONTRACT_KB_ID = "c1afe066679c11f1a8f13fbdf025dd68"
+
+
+@manager.route("/bid/contracts/<int:project_id>/parse", methods=["POST"])
+@login_required
+async def contract_project_parse(project_id):
+    """触发合同项目解析——正文+附件导入知识库"""
+    user_id = current_user.id
+    body = await request.get_json() or {}
+    publish_time = body.get("publish_time", "")
+
+    existing = BidContractParseService.get_by_project(project_id)
+    if existing and existing.get("status") == "parsing":
+        return get_data_error_result(message="该项目已在进行解析，请等待完成")
+
+    def _task():
+        from api.utils.bid_tool_service import import_contract_to_kb
+        import_contract_to_kb(
+            project_id=project_id,
+            publish_time=publish_time,
+            kb_id=_CONTRACT_KB_ID,
+            user_id=user_id,
+        )
+
+    threading.Thread(target=_task, daemon=True).start()
+    return get_json_result(data={
+        "project_id": project_id,
+        "kb_id": _CONTRACT_KB_ID,
+        "status": "pending",
+    })
+
+
+@manager.route("/bid/contracts/<int:project_id>/parse-status", methods=["GET"])
+@login_required
+def contract_project_parse_status(project_id):
+    """查询合同项目的解析进度"""
+    record = BidContractParseService.get_by_project(project_id)
+
+    if not record:
+        return get_json_result(data={
+            "project_id": project_id,
+            "status": "none",
+            "progress": 0,
+            "progress_msg": "",
+            "kb_id": "",
+            "combined_doc_id": "",
+        })
+
+    status = record.get("status", "pending")
+    progress = record.get("progress", 0)
+    progress_msg = record.get("progress_msg", "")
+
+    if status == "parsing" and record.get("kb_id"):
+        try:
+            queued_doc_ids_str = record.get("queued_doc_ids")
+            if queued_doc_ids_str:
+                try:
+                    doc_ids = json.loads(queued_doc_ids_str)
+                except (json.JSONDecodeError, TypeError):
+                    doc_ids = []
+            else:
+                doc_ids = []
+
+            if doc_ids:
+                done_count = 0
+                fail_count = 0
+                running_count = 0
+                for doc_id in doc_ids:
+                    e, doc_model = DocumentService.get_by_id(doc_id)
+                    if e and doc_model:
+                        r = doc_model.run
+                        if r == "3" or r == 3:
+                            done_count += 1
+                        elif r == "4" or r == 4:
+                            fail_count += 1
+                        else:
+                            running_count += 1
+                    else:
+                        fail_count += 1
+                total = len(doc_ids)
+                if running_count > 0:
+                    progress = 0.9 + 0.1 * (done_count + fail_count) / max(total, 1)
+                    progress_msg = f"解析中 ({done_count}/{total} 已完成)"
+                elif fail_count > 0 and running_count == 0:
+                    progress = 0.9 + 0.1 * (done_count + fail_count) / max(total, 1)
+                    progress_msg = f"部分文档解析失败 ({fail_count}/{total})"
+                    if done_count == 0:
+                        status = "fail"
+                elif done_count >= total and total > 0:
+                    status = "done"
+                    progress = 1
+                    progress_msg = f"全部解析完成 ({total} 个文档)"
+        except Exception as e:
+            logging.warning("Failed to query contract KB doc status: %s", e)
+
+    return get_json_result(data={
+        "project_id": project_id,
+        "status": status,
+        "progress": progress,
+        "progress_msg": progress_msg,
+        "kb_id": record.get("kb_id", ""),
+        "combined_doc_id": record.get("combined_doc_id", ""),
+    })
+
+
+# ---------------------------------------------------------------------------
+# Enterprise parse endpoints
+# ---------------------------------------------------------------------------
+
+_ENTERPRISE_KB_ID = "afd3e892679c11f1a8f13fbdf025dd68"
+
+
+@manager.route("/bid/enterprises/parse", methods=["POST"])
+@login_required
+async def enterprise_parse():
+    """触发企业档案解析——导入知识库"""
+    user_id = current_user.id
+    body = await request.get_json() or {}
+    company_name = body.get("company_name", "")
+    if not company_name:
+        return get_data_error_result(message="company_name is required")
+
+    existing = BidEnterpriseParseService.get_by_company(company_name)
+    if existing and existing.get("status") == "parsing":
+        return get_data_error_result(message="该企业已在进行解析，请等待完成")
+
+    def _task():
+        from api.utils.bid_tool_service import import_enterprise_to_kb
+        import_enterprise_to_kb(
+            company_name=company_name,
+            kb_id=_ENTERPRISE_KB_ID,
+            user_id=user_id,
+        )
+
+    threading.Thread(target=_task, daemon=True).start()
+    return get_json_result(data={
+        "company_name": company_name,
+        "kb_id": _ENTERPRISE_KB_ID,
+        "status": "pending",
+    })
+
+
+@manager.route("/bid/enterprises/parse-status", methods=["GET"])
+@login_required
+def enterprise_parse_status():
+    """查询企业档案的解析进度"""
+    company_name = request.args.get("company_name", "")
+    if not company_name:
+        return get_data_error_result(message="company_name is required")
+
+    record = BidEnterpriseParseService.get_by_company(company_name)
+
+    if not record:
+        return get_json_result(data={
+            "company_name": company_name,
+            "status": "none",
+            "progress": 0,
+            "progress_msg": "",
+            "kb_id": "",
+            "combined_doc_id": "",
+        })
+
+    status = record.get("status", "pending")
+    progress = record.get("progress", 0)
+    progress_msg = record.get("progress_msg", "")
+
+    if status == "parsing" and record.get("kb_id"):
+        try:
+            queued_doc_ids_str = record.get("queued_doc_ids")
+            if queued_doc_ids_str:
+                try:
+                    doc_ids = json.loads(queued_doc_ids_str)
+                except (json.JSONDecodeError, TypeError):
+                    doc_ids = []
+            else:
+                doc_ids = []
+
+            if doc_ids:
+                done_count = 0
+                fail_count = 0
+                running_count = 0
+                for doc_id in doc_ids:
+                    e, doc_model = DocumentService.get_by_id(doc_id)
+                    if e and doc_model:
+                        r = doc_model.run
+                        if r == "3" or r == 3:
+                            done_count += 1
+                        elif r == "4" or r == 4:
+                            fail_count += 1
+                        else:
+                            running_count += 1
+                    else:
+                        fail_count += 1
+                total = len(doc_ids)
+                if running_count > 0:
+                    progress = 0.5 + 0.5 * (done_count + fail_count) / max(total, 1)
+                    progress_msg = f"解析中 ({done_count}/{total} 已完成)"
+                elif fail_count > 0 and running_count == 0:
+                    progress = 0.5 + 0.5 * (done_count + fail_count) / max(total, 1)
+                    progress_msg = f"部分文档解析失败 ({fail_count}/{total})"
+                    if done_count == 0:
+                        status = "fail"
+                elif done_count >= total and total > 0:
+                    status = "done"
+                    progress = 1
+                    progress_msg = f"全部解析完成 ({total} 个文档)"
+        except Exception as e:
+            logging.warning("Failed to query enterprise KB doc status: %s", e)
+
+    return get_json_result(data={
+        "company_name": company_name,
+        "status": status,
+        "progress": progress,
+        "progress_msg": progress_msg,
+        "kb_id": record.get("kb_id", ""),
+        "combined_doc_id": record.get("combined_doc_id", ""),
+    })

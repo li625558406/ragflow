@@ -98,7 +98,10 @@ export function BidList({
 
   // --- Form state ---
   const [keyword, setKeyword] = useState('');
-  const [dateRange, setDateRange] = useState<DateRange | undefined>();
+  const [dateRange, setDateRange] = useState<DateRange | undefined>(() => {
+    const today = new Date();
+    return { from: today, to: today };
+  });
   const [selectedProvince, setSelectedProvince] = useState<string>('');
   const [selectedCity, setSelectedCity] = useState<string>('');
   const [selectedIndustryCategory, setSelectedIndustryCategory] =
@@ -171,6 +174,7 @@ export function BidList({
       const params: Record<string, any> = {
         page: p,
         items_per_page: PAGE_SIZE,
+        data_source: 'api',
       };
       if (appliedKeyword) params.keyword = appliedKeyword;
       if (appliedDateRange?.from)

@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { DiscountBar } from './discount-bar';
+import { DiscountSelector } from './discount-bar';
 
 // 费率分档表: [上限(万元), 货物招标%, 服务招标%, 工程招标%]
 const TIERS: [number, number, number, number][] = [
@@ -96,12 +96,14 @@ export default function AgencyFeeCalculator() {
   const [amount, setAmount] = useState<number | null>(null);
   const [error, setError] = useState('');
   const [expanded, setExpanded] = useState(false);
+  const [discountRate, setDiscountRate] = useState(1.0);
 
   const handleReset = () => {
     setInput('');
     setAmount(null);
     setError('');
     setExpanded(false);
+    setDiscountRate(1.0);
   };
 
   const handleCalc = useCallback(() => {
@@ -213,6 +215,15 @@ export default function AgencyFeeCalculator() {
             {error && <p className="mt-1.5 text-xs text-red-500">{error}</p>}
           </div>
 
+          {/* Discount selector */}
+          <div className="py-2">
+            <DiscountSelector
+              rate={discountRate}
+              onRateChange={setDiscountRate}
+              label="费用折扣："
+            />
+          </div>
+
           {/* Results */}
           {results && traces && (
             <div className="bg-white rounded-2xl border border-[#D4D4D4] p-5">
@@ -244,8 +255,17 @@ export default function AgencyFeeCalculator() {
                         {formatYuan(r.fee)}
                       </span>
                       <span className="text-xs text-[#1a1a1a] ml-1">元</span>
-                      <div className="text-[11px] text-[#1a1a1a] mt-0.5">
-                        {formatYuan(r.lower)} ~ {formatYuan(r.upper)} 元
+                      {discountRate < 1.0 && (
+                        <div className="text-sm font-medium text-[#000000] mt-0.5">
+                          折扣后：{formatYuan(r.fee * discountRate)} 元
+                        </div>
+                      )}
+                      <div
+                        className={`text-[11px] text-[#1a1a1a] ${discountRate < 1.0 ? 'text-[#A3A3A3]' : 'mt-0.5'}`}
+                      >
+                        {discountRate < 1.0
+                          ? `${formatYuan(r.fee * discountRate * 0.8)} ~ ${formatYuan(r.fee * discountRate * 1.2)} 元`
+                          : `${formatYuan(r.lower)} ~ ${formatYuan(r.upper)} 元`}
                       </div>
                     </div>
                   </div>
@@ -342,19 +362,6 @@ export default function AgencyFeeCalculator() {
                   </div>
                 )}
               </div>
-            </div>
-          )}
-
-          {/* Discount bars for each bid type */}
-          {results && (
-            <div className="space-y-3 mt-4">
-              {results.map((r) => (
-                <DiscountBar
-                  key={r.label}
-                  baseFee={r.fee}
-                  label={`${r.label}折扣`}
-                />
-              ))}
             </div>
           )}
         </div>

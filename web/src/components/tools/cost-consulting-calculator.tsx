@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { DiscountBar } from './discount-bar';
+import { DiscountSelector } from './discount-bar';
 
 const TIERS = [500, 1000, 5000, 10000, 30000, 50000];
 
@@ -165,12 +165,14 @@ function ResultCard({
   detail,
   coef,
   trace,
+  discountRate,
 }: {
   title: string;
   total: number;
   detail?: { label: string; value: string }[];
   coef?: number;
   trace?: React.ReactNode;
+  discountRate?: number;
 }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -194,9 +196,30 @@ function ResultCard({
         </span>
         <span className="text-sm text-[#1a1a1a]">元</span>
       </div>
+      {discountRate !== undefined && discountRate < 1.0 && (
+        <div className="flex items-baseline gap-1 mt-1">
+          <span className="text-lg font-bold text-[#000000]">
+            {formatYuan(total * discountRate)}
+          </span>
+          <span className="text-xs text-[#A3A3A3]">元（折扣后）</span>
+        </div>
+      )}
       <div className="flex gap-5 mt-2 text-[11px] text-[#1a1a1a]">
-        <span>浮动下限 -20%：{formatYuan(total * 0.8)} 元</span>
-        <span>浮动上限 +20%：{formatYuan(total * 1.2)} 元</span>
+        {discountRate !== undefined && discountRate < 1.0 ? (
+          <>
+            <span>
+              浮动下限 -20%：{formatYuan(total * discountRate * 0.8)} 元
+            </span>
+            <span>
+              浮动上限 +20%：{formatYuan(total * discountRate * 1.2)} 元
+            </span>
+          </>
+        ) : (
+          <>
+            <span>浮动下限 -20%：{formatYuan(total * 0.8)} 元</span>
+            <span>浮动上限 +20%：{formatYuan(total * 1.2)} 元</span>
+          </>
+        )}
       </div>
       {coef && coef !== 1.0 && (
         <p className="mt-2 text-[11px] text-[#1a1a1a]">
@@ -373,6 +396,7 @@ export default function CostConsultingCalculator() {
   } | null>(null);
   const [error, setError] = useState('');
   const [traceData, setTraceData] = useState<React.ReactNode>(null);
+  const [discountRate, setDiscountRate] = useState(1.0);
 
   const handleReset = () => {
     setProjectId(1);
@@ -391,6 +415,7 @@ export default function CostConsultingCalculator() {
     setResultData(null);
     setError('');
     setTraceData(null);
+    setDiscountRate(1.0);
   };
 
   const parseNum = (v: string) => parseFloat(v.replace(/[,，\s]/g, ''));
@@ -1046,6 +1071,15 @@ export default function CostConsultingCalculator() {
             计算
           </button>
 
+          {/* Discount selector */}
+          <div className="pt-2">
+            <DiscountSelector
+              rate={discountRate}
+              onRateChange={setDiscountRate}
+              label="费用折扣："
+            />
+          </div>
+
           {/* Result */}
           {resultData && (
             <div>
@@ -1055,10 +1089,8 @@ export default function CostConsultingCalculator() {
                 detail={resultData.detail}
                 coef={resultData.coef}
                 trace={traceData}
+                discountRate={discountRate}
               />
-              <div className="mt-4">
-                <DiscountBar baseFee={resultData.total} />
-              </div>
             </div>
           )}
         </div>

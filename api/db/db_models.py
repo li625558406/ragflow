@@ -1579,6 +1579,73 @@ class BidProjectParse(DataBaseModel):
         db_table = "bid_project_parse"
 
 
+class BidConstructionProject(DataBaseModel):
+    id = BigIntegerField(primary_key=True, help_text="拟在建项目ID(API返回)")
+    title = TextField(null=True, help_text="项目标题")
+    summary = TextField(null=True, help_text="项目摘要")
+    publish_time = DateTimeField(null=True, index=True, help_text="发布时间")
+    provice_code = CharField(max_length=20, null=True, help_text="省代码")
+    city_code = CharField(max_length=20, null=True, help_text="市代码")
+    county_code = CharField(max_length=20, null=True, help_text="区/县代码")
+    has_file = IntegerField(null=True, help_text="是否有附件")
+    score = IntegerField(null=True, help_text="匹配分数")
+    raw_json = JSONField(null=True, help_text="搜索API原始JSON")
+    detail_json = JSONField(null=True, help_text="详情API原始JSON")
+    se_keywords = CharField(max_length=200, null=True, help_text="搜索关键词")
+    fetched_at = DateTimeField(null=True, help_text="缓存获取时间")
+    cache_expires_at = DateTimeField(null=True, help_text="缓存过期时间")
+    created_at = DateTimeField(null=True)
+    updated_at = DateTimeField(null=True)
+
+    class Meta:
+        db_table = "bid_construction_project"
+
+
+class BidConstructionParse(DataBaseModel):
+    project_id = BigIntegerField(primary_key=True, help_text="关联 bid_construction_project.id")
+    kb_id = CharField(max_length=64, null=False, help_text="知识库ID")
+    status = CharField(max_length=20, default="pending", help_text="pending/parsing/done/fail")
+    progress = FloatField(default=0, help_text="解析进度 0-1")
+    progress_msg = TextField(null=True, help_text="进度消息")
+    combined_doc_id = CharField(max_length=64, null=True, help_text="拼接文档的KB doc ID")
+    queued_doc_ids = TextField(null=True, help_text="JSON list of all KB doc IDs queued for parsing")
+    created_at = DateTimeField(null=True)
+    updated_at = DateTimeField(null=True)
+
+    class Meta:
+        db_table = "bid_construction_parse"
+
+
+class BidContractParse(DataBaseModel):
+    project_id = BigIntegerField(primary_key=True, help_text="关联 bid_project.id (news_type_id=3)")
+    kb_id = CharField(max_length=64, null=False, help_text="知识库ID")
+    status = CharField(max_length=20, default="pending", help_text="pending/parsing/done/fail")
+    progress = FloatField(default=0, help_text="解析进度 0-1")
+    progress_msg = TextField(null=True, help_text="进度消息")
+    combined_doc_id = CharField(max_length=64, null=True, help_text="拼接文档的KB doc ID")
+    queued_doc_ids = TextField(null=True, help_text="JSON list of all KB doc IDs queued for parsing")
+    created_at = DateTimeField(null=True)
+    updated_at = DateTimeField(null=True)
+
+    class Meta:
+        db_table = "bid_contract_parse"
+
+
+class BidEnterpriseParse(DataBaseModel):
+    company_name = CharField(max_length=256, primary_key=True, help_text="企业名称(唯一标识)")
+    kb_id = CharField(max_length=64, null=False, help_text="知识库ID")
+    status = CharField(max_length=20, default="pending", help_text="pending/parsing/done/fail")
+    progress = FloatField(default=0, help_text="解析进度 0-1")
+    progress_msg = TextField(null=True, help_text="进度消息")
+    combined_doc_id = CharField(max_length=64, null=True, help_text="拼接文档的KB doc ID")
+    queued_doc_ids = TextField(null=True, help_text="JSON list of all KB doc IDs queued for parsing")
+    created_at = DateTimeField(null=True)
+    updated_at = DateTimeField(null=True)
+
+    class Meta:
+        db_table = "bid_enterprise_parse"
+
+
 class BidEnterpriseCache(DataBaseModel):
     company_name = CharField(max_length=200, null=False, index=True, help_text="企业名称")
     cache_type = CharField(max_length=20, null=False, index=True, help_text="缓存类型: profile/contacts/customers/suppliers")
@@ -2021,6 +2088,22 @@ def migrate_db():
     else:
         BidEnterpriseCache.create_table(safe=True)
         logging.info("bid_enterprise_cache: table created")
+    # bid_construction_project table
+    if not BidConstructionProject.table_exists():
+        BidConstructionProject.create_table(safe=True)
+        logging.info("bid_construction_project: table created")
+    # bid_construction_parse table
+    if not BidConstructionParse.table_exists():
+        BidConstructionParse.create_table(safe=True)
+        logging.info("bid_construction_parse: table created")
+    # bid_contract_parse table
+    if not BidContractParse.table_exists():
+        BidContractParse.create_table(safe=True)
+        logging.info("bid_contract_parse: table created")
+    # bid_enterprise_parse table
+    if not BidEnterpriseParse.table_exists():
+        BidEnterpriseParse.create_table(safe=True)
+        logging.info("bid_enterprise_parse: table created")
     logging.disable(logging.NOTSET)
     # this is after re-enabling logging to allow logging changed user emails
     migrate_add_unique_email(migrator)

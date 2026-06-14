@@ -2,8 +2,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { DatePickerWithRange } from '@/components/ui/range-picker';
 import { getAuthorization } from '@/utils/authorization-util';
-import { FileText, Loader2, Search, X } from 'lucide-react';
-import { useCallback, useRef, useState } from 'react';
+import { CheckCircle2, FileText, Loader2, Search, X } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 const INPUT_CLASS =
   'h-9 px-3 text-xs text-[#000000] border border-[#D4D4D4] bg-white hover:border-[#A3A3A3] focus:border-[#000000] focus:ring-2 focus:ring-[#000000]/10 rounded-lg transition-all';
@@ -31,7 +31,7 @@ interface ContractDetail {
     agentName?: string;
     industryName?: string;
     publishTime?: string;
-    projectFiles?: { projectFileID: number; name: string }[];
+    projectFiles?: { projectFileID: number; name: string; url?: string }[];
   };
   structure: {
     projectName?: string;
@@ -130,6 +130,14 @@ export default function ContractList() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
 
+  // KB import state
+  const [parseStatus, setParseStatus] = useState<{
+    status: string;
+    progress: number;
+    progress_msg: string;
+  } | null>(null);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout>>();
+
   const doFetch = useCallback(
     async (page: number) => {
       setLoading(true);
@@ -187,7 +195,18 @@ export default function ContractList() {
       const json = await contractFetch(`projects/${item.id}/detail-v2`, {
         publish_time: item.publishTime,
       });
-      setDetail(json.data || null);
+      const respData = json.data || null;
+      console.log(
+        '[ContractDetail] from_cache:',
+        respData?.from_cache,
+        'projectFiles:',
+        respData?.content?.projectFiles?.map((f: any) => ({
+          id: f.projectFileID,
+          name: f.name,
+          url: f.url,
+        })),
+      );
+      setDetail(respData);
     } catch (e: any) {
       setDetailError(e.message);
     } finally {
@@ -199,7 +218,55 @@ export default function ContractList() {
     setDetailItem(null);
     setDetail(null);
     setDetailError(null);
+    if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+    setParseStatus(null);
   };
+
+  const triggerContractParse = async (
+    projectId: number,
+    publishTime: string,
+  ) => {
+    try {
+      await contractFetch(`contracts/${projectId}/parse`, {
+        publish_time: publishTime,
+      });
+      setParseStatus({
+        status: 'parsing',
+        progress: 0,
+        progress_msg: '准备导入...',
+      });
+      pollContractParseStatus(projectId);
+    } catch {
+      // silent
+    }
+  };
+
+  const pollContractParseStatus = (projectId: number) => {
+    const poll = async () => {
+      try {
+        const json = await contractFetch(`contracts/${projectId}/parse-status`);
+        const data = json.data;
+        setParseStatus({
+          status: data.status,
+          progress: data.progress ?? 0,
+          progress_msg: data.progress_msg || '',
+        });
+        if (data.status === 'parsing') {
+          pollTimerRef.current = setTimeout(poll, 3000);
+        }
+      } catch {
+        // stop polling
+      }
+    };
+    poll();
+  };
+
+  // Auto-trigger parse when detail loads successfully
+  useEffect(() => {
+    if (detail && detailItem && !parseStatus) {
+      triggerContractParse(detailItem.id, detailItem.publishTime);
+    }
+  }, [detail, detailItem]);
 
   // ================================================================
   // STATE 1: Search Hero (centered card)
@@ -483,6 +550,39 @@ export default function ContractList() {
               </button>
             </div>
 
+            {/* KB import progress bar */}
+            {parseStatus?.status === 'parsing' && (
+              <div className="shrink-0 px-6 py-3 border-b border-[#E8E8E8] bg-[#FAFAFA]">
+                <div className="flex items-center gap-3">
+                  <Loader2 className="size-4 animate-spin text-[#000000]" />
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-medium text-[#333]">
+                        正在导入知识库并解析...
+                      </span>
+                      <span className="text-xs text-[#A3A3A3]">
+                        {Math.round(parseStatus.progress * 100)}%
+                      </span>
+                    </div>
+                    <div className="h-1.5 bg-[#E8E8E8] rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-[#000000] rounded-full transition-all duration-500"
+                        style={{ width: `${parseStatus.progress * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+            {parseStatus?.status === 'done' && (
+              <div className="shrink-0 px-6 py-2.5 border-b border-[#E8E8E8] bg-[#F0FFF0] flex items-center gap-2">
+                <CheckCircle2 className="size-4 text-[#16A34A]" />
+                <span className="text-xs font-medium text-[#16A34A]">
+                  已导入知识库
+                </span>
+              </div>
+            )}
+
             {/* Modal body */}
             <div className="flex-1 min-h-0 overflow-auto px-6 py-4">
               {detailLoading ? (
@@ -664,15 +764,28 @@ export default function ContractList() {
                               {projectFiles.length + extraLinks.length})
                             </div>
                             <div className="space-y-0.5">
-                              {projectFiles.map((f: any, i: number) => (
-                                <div
-                                  key={`pf-${i}`}
-                                  className="text-xs text-[#333] py-0.5 flex items-center gap-2 font-medium"
-                                >
-                                  <FileText className="size-3 text-[#000000] shrink-0" />
-                                  {f.name}
-                                </div>
-                              ))}
+                              {projectFiles.map((f: any, i: number) =>
+                                f.url ? (
+                                  <a
+                                    key={`pf-${i}`}
+                                    href={f.url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-xs text-[#333] py-0.5 flex items-center gap-2 font-medium hover:text-[#000000] hover:underline transition-colors"
+                                  >
+                                    <FileText className="size-3 text-[#000000] shrink-0" />
+                                    {f.name}
+                                  </a>
+                                ) : (
+                                  <div
+                                    key={`pf-${i}`}
+                                    className="text-xs text-[#333] py-0.5 flex items-center gap-2 font-medium"
+                                  >
+                                    <FileText className="size-3 text-[#000000] shrink-0" />
+                                    {f.name}
+                                  </div>
+                                ),
+                              )}
                               {extraLinks.map((l, i) => (
                                 <a
                                   key={`cl-${i}`}

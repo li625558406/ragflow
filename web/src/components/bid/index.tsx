@@ -115,7 +115,7 @@ export default function BidPanel() {
                 <div className="text-[15px] font-medium truncate">
                   {mod.name}
                 </div>
-                <div className="text-[11px] text-[#333333] truncate">
+                <div className="text-[11px] text-[#A3A3A3] truncate">
                   {mod.description}
                 </div>
               </div>

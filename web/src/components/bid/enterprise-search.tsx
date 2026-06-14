@@ -3,6 +3,7 @@ import { Input } from '@/components/ui/input';
 import { getAuthorization } from '@/utils/authorization-util';
 import {
   Building2,
+  CheckCircle2,
   Globe,
   Loader2,
   Mail,
@@ -146,6 +147,14 @@ export default function EnterpriseSearch() {
   const [tabError, setTabError] = useState<string | null>(null);
   const [tabPage, setTabPage] = useState(1);
 
+  // KB import state
+  const [parseStatus, setParseStatus] = useState<{
+    status: string;
+    progress: number;
+    progress_msg: string;
+  } | null>(null);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout>>();
+
   // Infinite scroll sentinel
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const tabPageRef = useRef(tabPage);
@@ -183,6 +192,8 @@ export default function EnterpriseSearch() {
 
   const handleSearch = async () => {
     if (!companyName.trim()) return;
+    clearTimeout(pollTimerRef.current);
+    setParseStatus(null);
     setLoading(true);
     setError(null);
     setData(null);
@@ -198,12 +209,60 @@ export default function EnterpriseSearch() {
       });
       setData(result);
       setHasSearched(true);
+      // Auto-trigger KB import
+      triggerEnterpriseParse(companyName);
     } catch (e: any) {
       setError(e.message);
       setHasSearched(true);
     } finally {
       setLoading(false);
     }
+  };
+
+  const triggerEnterpriseParse = async (name: string) => {
+    try {
+      const resp = await fetch('/api/v1/bid/enterprises/parse', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: getAuthorization(),
+        },
+        body: JSON.stringify({ company_name: name }),
+      });
+      if (!resp.ok) return;
+      const json = await resp.json();
+      if (json.code === 0) {
+        setParseStatus({
+          status: 'parsing',
+          progress: 0,
+          progress_msg: '准备导入...',
+        });
+        pollEnterpriseParseStatus(name);
+      }
+    } catch {
+      /* silent */
+    }
+  };
+
+  const pollEnterpriseParseStatus = (name: string) => {
+    const poll = async () => {
+      try {
+        const json = await fetchJSON('enterprises/parse-status', {
+          company_name: name,
+        });
+        setParseStatus({
+          status: json.status,
+          progress: json.progress ?? 0,
+          progress_msg: json.progress_msg || '',
+        });
+        if (json.status === 'parsing') {
+          pollTimerRef.current = setTimeout(poll, 3000);
+        }
+      } catch {
+        /* stop polling */
+      }
+    };
+    poll();
   };
 
   const fetchContacts = async (page: number) => {
@@ -693,6 +752,39 @@ export default function EnterpriseSearch() {
               <X className="size-3.5" />
             </button>
           </div>
+        </div>
+      )}
+
+      {/* KB import progress */}
+      {parseStatus?.status === 'parsing' && (
+        <div className="shrink-0 px-6 py-3 border-b border-[#E8E8E8] bg-[#FAFAFA]">
+          <div className="flex items-center gap-3">
+            <Loader2 className="size-4 animate-spin text-[#000000]" />
+            <div className="flex-1">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-medium text-[#333]">
+                  正在导入知识库并解析...
+                </span>
+                <span className="text-xs text-[#A3A3A3]">
+                  {Math.round(parseStatus.progress * 100)}%
+                </span>
+              </div>
+              <div className="h-1.5 bg-[#E8E8E8] rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-[#000000] rounded-full transition-all duration-500"
+                  style={{ width: `${parseStatus.progress * 100}%` }}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {parseStatus?.status === 'done' && (
+        <div className="shrink-0 px-6 py-2.5 border-b border-[#E8E8E8] bg-[#F0FFF0] flex items-center gap-2">
+          <CheckCircle2 className="size-4 text-[#16A34A]" />
+          <span className="text-xs font-medium text-[#16A34A]">
+            已导入知识库
+          </span>
         </div>
       )}
 

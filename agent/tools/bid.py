@@ -433,6 +433,7 @@ class BidGetDetail(ToolBase, ABC):
                     publish_time=str(publish_time),
                     kb_id=None,
                     user_id=user_id,
+                    pre_fetched_detail=result,
                 )
 
                 output["kb_import"] = {
@@ -1247,6 +1248,24 @@ class BidEnterpriseProfile(ToolBase, ABC):
 
             self.set_output("json", output)
             self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+
+            # Auto-import to KB (best-effort, async)
+            try:
+                from api.utils.bid_tool_service import import_enterprise_to_kb
+                user_id = self._canvas.get_tenant_id() or ""
+                import_result = import_enterprise_to_kb(
+                    company_name=company_name, kb_id=None, user_id=user_id,
+                    pre_fetched_profile=raw_data,
+                )
+                output["kb_import"] = import_result
+                self.set_output("json", output)
+                self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+            except Exception as kb_err:
+                logging.warning("BidEnterpriseProfile: auto KB import failed: %s", kb_err)
+                output["kb_import"] = {"status": "fail", "message": str(kb_err)}
+                self.set_output("json", output)
+                self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+
             return self.output("formalized_content")
         except Exception as e:
             logging.exception("BidEnterpriseProfile error: %s", e)
@@ -1321,29 +1340,22 @@ class BidConstructionSearch(ToolBase, ABC):
             return
         try:
             from datetime import datetime, timedelta
-            from api.utils.bid_api_client import BidApiClient
+            from api.utils.bid_tool_service import search_construction_cached
 
-            client = BidApiClient()
-            default_start = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d 00:00:00")
-            default_end = datetime.now().strftime("%Y-%m-%d 23:59:59")
+            today = datetime.now().strftime("%Y-%m-%d")
+            default_start = f"{today} 00:00:00"
+            default_end = f"{today} 23:59:59"
 
-            api_area_code = {
-                "proviceCodeList": [kwargs.get("provice_code")] if kwargs.get("provice_code") else ["0"],
-                "cityCodeList": [],
-                "countyCodeList": [],
-            }
-
-            result = client.search_nzj_project(
+            result = search_construction_cached(
                 keyword=kwargs.get("keyword", ""),
-                area_code=api_area_code,
+                provice_code=kwargs.get("provice_code", ""),
                 start_date=kwargs.get("start_date", "") or default_start,
                 end_date=kwargs.get("end_date", "") or default_end,
                 page_id=kwargs.get("page", 1),
                 page_number=20,
             )
 
-            data = result.get("data", {})
-            items = data.get("data", []) or []
+            items = result.get("projects", [])
             simplified = []
             for item in items:
                 simplified.append({
@@ -1360,13 +1372,20 @@ class BidConstructionSearch(ToolBase, ABC):
                 })
 
             # Batch fetch source URLs for all results
-            _batch_fill_source_urls(simplified, client)
+            try:
+                from api.utils.bid_api_client import BidApiClient
+                client = BidApiClient()
+                _batch_fill_source_urls(simplified, client)
+            except Exception:
+                pass
 
             output = {
-                "total": data.get("total", 0),
+                "total": result.get("total", 0),
                 "shown": len(simplified),
                 "page": kwargs.get("page", 1),
                 "projects": simplified,
+                "from_cache": result.get("from_cache", False),
+                "stale": result.get("stale", False),
             }
 
             self.set_output("json", simplified)
@@ -1484,6 +1503,24 @@ class BidGetContractDetail(ToolBase, ABC):
 
             self.set_output("json", output)
             self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+
+            # Auto-import to KB (best-effort, async)
+            try:
+                from api.utils.bid_tool_service import import_contract_to_kb
+                user_id = self._canvas.get_tenant_id() or ""
+                import_result = import_contract_to_kb(
+                    project_id=int(project_id), publish_time=str(publish_time),
+                    kb_id=None, user_id=user_id, pre_fetched_detail=result,
+                )
+                output["kb_import"] = import_result
+                self.set_output("json", output)
+                self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+            except Exception as kb_err:
+                logging.warning("BidGetContractDetail: auto KB import failed: %s", kb_err)
+                output["kb_import"] = {"status": "fail", "message": str(kb_err)}
+                self.set_output("json", output)
+                self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+
             return self.output("formalized_content")
 
         except Exception as e:
@@ -1780,5 +1817,591 @@ class BidEnterpriseSuppliers(ToolBase, ABC):
 
     def thoughts(self) -> str:
         return "Fetching suppliers for '{}'...".format(
+            self.get_input().get("company_name", "-")
+        )
+
+
+# =============================================================================
+# BidConstructionGetDetail — 拟在建项目详情（缓存优先）
+# =============================================================================
+
+class BidConstructionGetDetailParam(ToolParamBase):
+    def __init__(self):
+        self.meta: ToolMeta = {
+            "name": "bid_construction_get_detail",
+            "description": """
+获取拟在建项目的完整详情（缓存优先）。
+返回项目正文内容、建设单位及附件列表。
+
+数据缓存 30 天，重复查询免费。
+            """,
+            "parameters": {
+                "project_id": {
+                    "type": "integer",
+                    "description": "Construction project ID from search results.",
+                    "required": True,
+                },
+                "publish_time": {
+                    "type": "string",
+                    "description": "Publish time of the project (YYYY-MM-DD or YYYY-MM-DD HH:mm:ss).",
+                    "required": True,
+                },
+            },
+        }
+        super().__init__()
+
+    def get_input_form(self) -> dict[str, dict]:
+        return {"project_id": {"name": "Project ID", "type": "line"}}
+
+
+class BidConstructionGetDetail(ToolBase, ABC):
+    component_name = "BidConstructionGetDetail"
+
+    @timeout(int(os.environ.get("COMPONENT_EXEC_TIMEOUT", 60)))
+    def _invoke(self, **kwargs):
+        if self.check_if_canceled("BidConstructionGetDetail processing"):
+            return
+
+        from api.utils.bid_tool_service import get_construction_detail_cached
+        import re
+
+        try:
+            project_id = kwargs.get("project_id")
+            publish_time = kwargs.get("publish_time", "")
+
+            if not project_id:
+                self.set_output("_ERROR", "project_id is required")
+                return "Error: project_id is required"
+
+            result = get_construction_detail_cached(int(project_id), str(publish_time))
+
+            content_html = result.get("content", "")
+            text_preview = re.sub(r'<[^>]+>', '', content_html)[:2000] if content_html else ""
+
+            project_files = result.get("projectFiles") or []
+            file_list = []
+            for f in project_files:
+                file_list.append({
+                    "name": f.get("name") or f.get("fileName", ""),
+                    "url": f.get("fileUrl") or f.get("url", ""),
+                })
+
+            output = {
+                "project_id": project_id,
+                "construction_company": result.get("constructionCompany", ""),
+                "content_preview": text_preview,
+                "content_length": len(content_html) if content_html else 0,
+                "files": file_list,
+                "from_cache": result.get("from_cache", False),
+                "stale": result.get("stale", False),
+            }
+
+            self.set_output("json", output)
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+            return self.output("formalized_content")
+
+        except Exception as e:
+            logging.exception("BidConstructionGetDetail error: %s", e)
+            self.set_output("_ERROR", str(e))
+            return f"BidConstructionGetDetail error: {e}"
+
+    def thoughts(self) -> str:
+        return "Fetching construction detail for #{}...".format(
+            self.get_input().get("project_id", "-")
+        )
+
+
+class ConstructionImportToKbParam(ToolParamBase):
+    """
+    Define the ConstructionImportToKb component parameters.
+    """
+
+    def __init__(self):
+        self.meta: ToolMeta = {
+            "name": "construction_import_to_kb",
+            "description": """
+将拟在建项目（construction project）的正文内容和附件文件导入 RAGFlow 知识库，并触发文档解析。
+此工具立即返回状态 "parsing"——下载、上传和解析在后台完成。
+
+当用户要求以下操作时使用：
+  - "把这个拟在建项目导入知识库"
+  - "分析这个建设项目的详情"
+  - "基于这个工程项目生成方案"
+
+去重：如果项目已导入过，直接返回现有状态。
+需要提供项目的 project_id 和 publish_time。
+            """,
+            "parameters": {
+                "project_id": {
+                    "type": "integer",
+                    "description": "Construction project ID.",
+                    "required": True,
+                },
+                "publish_time": {
+                    "type": "string",
+                    "description": "Publish time of the construction project.",
+                    "required": True,
+                },
+            },
+        }
+        super().__init__()
+
+    def get_input_form(self) -> dict[str, dict]:
+        return {
+            "project_id": {
+                "name": "Project ID",
+                "type": "line",
+            }
+        }
+
+
+class ConstructionImportToKb(ToolBase, ABC):
+    component_name = "ConstructionImportToKb"
+
+    @timeout(int(os.environ.get("COMPONENT_EXEC_TIMEOUT", 30)))
+    def _invoke(self, **kwargs):
+        if self.check_if_canceled("ConstructionImportToKb processing"):
+            return
+
+        from api.utils.bid_tool_service import (
+            import_construction_to_kb,
+            check_construction_import_status,
+        )
+
+        try:
+            project_id = kwargs.get("project_id")
+            publish_time = kwargs.get("publish_time", "")
+
+            if not project_id:
+                self.set_output("_ERROR", "project_id is required")
+                return "Error: project_id is required"
+
+            user_id = ""
+            if hasattr(self, '_canvas'):
+                user_id = self._canvas.get_tenant_id() or ""
+
+            # Check existing status first
+            status = check_construction_import_status(int(project_id))
+            if status.get("status") == "done":
+                output = {
+                    "project_id": int(project_id),
+                    "kb_id": status.get("kb_id"),
+                    "status": "done",
+                    "progress": 1.0,
+                    "message": "Project was already imported to KB.",
+                }
+                self.set_output("json", output)
+                self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+                return self.output("formalized_content")
+
+            if status.get("status") == "parsing":
+                output = {
+                    "project_id": int(project_id),
+                    "kb_id": status.get("kb_id"),
+                    "status": "parsing",
+                    "progress": status.get("progress", 0),
+                    "message": "Project is currently being imported/parsed.",
+                }
+                self.set_output("json", output)
+                self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+                return self.output("formalized_content")
+
+            # Execute import
+            result = import_construction_to_kb(
+                project_id=int(project_id),
+                publish_time=str(publish_time),
+                user_id=user_id,
+            )
+
+            output = {
+                "project_id": int(project_id),
+                "kb_id": result.get("kb_id"),
+                "combined_doc_id": result.get("combined_doc_id"),
+                "status": result.get("status"),
+                "progress": result.get("progress", 0),
+                "message": result.get("message"),
+            }
+
+            self.set_output("json", output)
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+            return self.output("formalized_content")
+
+        except Exception as e:
+            logging.exception("ConstructionImportToKb error: %s", e)
+            self.set_output("_ERROR", str(e))
+            return f"ConstructionImportToKb error: {e}"
+
+    def thoughts(self) -> str:
+        return "Importing construction project #{} to knowledge base...".format(
+            self.get_input().get("project_id", "-")
+        )
+
+
+class ConstructionCheckImportStatusParam(ToolParamBase):
+    """
+    Define the ConstructionCheckImportStatus component parameters.
+    """
+
+    def __init__(self):
+        self.meta: ToolMeta = {
+            "name": "construction_check_import_status",
+            "description": """
+查询拟在建项目在知识库中的导入和解析进度。
+当项目正在导入时，可反复调用此工具轮询状态直到完成。
+
+返回当前状态："parsing"（解析中）、"done"（完成）或 "fail"（失败）。
+状态为 "done" 时，知识库已就绪，可基于导入内容回答用户问题。
+            """,
+            "parameters": {
+                "project_id": {
+                    "type": "integer",
+                    "description": "Construction project ID.",
+                    "required": True,
+                },
+            },
+        }
+        super().__init__()
+
+    def get_input_form(self) -> dict[str, dict]:
+        return {
+            "project_id": {
+                "name": "Project ID",
+                "type": "line",
+            }
+        }
+
+
+class ConstructionCheckImportStatus(ToolBase, ABC):
+    component_name = "ConstructionCheckImportStatus"
+
+    @timeout(int(os.environ.get("COMPONENT_EXEC_TIMEOUT", 30)))
+    def _invoke(self, **kwargs):
+        if self.check_if_canceled("ConstructionCheckImportStatus processing"):
+            return
+
+        from api.utils.bid_tool_service import check_construction_import_status
+
+        try:
+            project_id = kwargs.get("project_id")
+            if not project_id:
+                self.set_output("_ERROR", "project_id is required")
+                return "Error: project_id is required"
+
+            result = check_construction_import_status(int(project_id))
+            output = {
+                "project_id": int(project_id),
+                "imported": result.get("imported", False),
+                "kb_id": result.get("kb_id"),
+                "status": result.get("status"),
+                "progress": result.get("progress", 0),
+                "combined_doc_id": result.get("combined_doc_id"),
+                "message": result.get("message"),
+            }
+
+            self.set_output("json", output)
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+            return self.output("formalized_content")
+
+        except Exception as e:
+            logging.exception("ConstructionCheckImportStatus error: %s", e)
+            self.set_output("_ERROR", str(e))
+            return f"ConstructionCheckImportStatus error: {e}"
+
+    def thoughts(self) -> str:
+        return "Checking import status for construction project #{}...".format(
+            self.get_input().get("project_id", "-")
+        )
+
+
+# =============================================================================
+# ContractImportToKb — 合同项目导入知识库
+# =============================================================================
+
+class ContractImportToKbParam(ToolParamBase):
+    def __init__(self):
+        self.meta: ToolMeta = {
+            "name": "contract_import_to_kb",
+            "description": """
+将中标/合同项目的详情正文和附件导入知识库并进行解析。
+返回导入状态（parsing/done/fail）和进度信息。
+如果项目已经导入过，会返回已有的状态而不重复导入。
+
+当用户需要将合同内容存入知识库以便后续检索或分析时使用。
+            """,
+            "parameters": {
+                "project_id": {
+                    "type": "integer",
+                    "description": "合同项目ID",
+                    "required": True,
+                },
+                "publish_time": {
+                    "type": "string",
+                    "description": "合同发布时间（YYYY-MM-DD）",
+                    "required": False,
+                },
+            },
+        }
+        super().__init__()
+
+    def get_input_form(self) -> dict[str, dict]:
+        return {
+            "project_id": {"name": "Project ID", "type": "line"},
+            "publish_time": {"name": "Publish Time", "type": "line"},
+        }
+
+
+class ContractImportToKb(ToolBase, ABC):
+    component_name = "ContractImportToKb"
+
+    @timeout(int(os.environ.get("COMPONENT_EXEC_TIMEOUT", 60)))
+    def _invoke(self, **kwargs):
+        if self.check_if_canceled("ContractImportToKb processing"):
+            return
+
+        from api.utils.bid_tool_service import import_contract_to_kb
+
+        try:
+            project_id = kwargs.get("project_id")
+            publish_time = kwargs.get("publish_time", "")
+            if not project_id:
+                self.set_output("_ERROR", "project_id is required")
+                return "Error: project_id is required"
+
+            user_id = self._canvas.get_tenant_id() or ""
+            result = import_contract_to_kb(
+                project_id=int(project_id),
+                publish_time=str(publish_time),
+                kb_id=None,
+                user_id=user_id,
+            )
+
+            output = {
+                "project_id": int(project_id),
+                **result,
+            }
+
+            self.set_output("json", output)
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+            return self.output("formalized_content")
+
+        except Exception as e:
+            logging.exception("ContractImportToKb error: %s", e)
+            self.set_output("_ERROR", str(e))
+            return f"ContractImportToKb error: {e}"
+
+    def thoughts(self) -> str:
+        return "Importing contract project #{} to knowledge base...".format(
+            self.get_input().get("project_id", "-")
+        )
+
+
+# =============================================================================
+# ContractCheckImportStatus — 检查合同导入状态
+# =============================================================================
+
+class ContractCheckImportStatusParam(ToolParamBase):
+    def __init__(self):
+        self.meta: ToolMeta = {
+            "name": "contract_check_import_status",
+            "description": """
+查询合同项目导入知识库的状态和进度。
+返回 status（none/parsing/done/fail）、progress（0-1）、message。
+
+当用户想知道合同是否已成功导入知识库或检查导入进度时使用。
+            """,
+            "parameters": {
+                "project_id": {
+                    "type": "integer",
+                    "description": "合同项目ID",
+                    "required": True,
+                },
+            },
+        }
+        super().__init__()
+
+    def get_input_form(self) -> dict[str, dict]:
+        return {"project_id": {"name": "Project ID", "type": "line"}}
+
+
+class ContractCheckImportStatus(ToolBase, ABC):
+    component_name = "ContractCheckImportStatus"
+
+    @timeout(int(os.environ.get("COMPONENT_EXEC_TIMEOUT", 30)))
+    def _invoke(self, **kwargs):
+        if self.check_if_canceled("ContractCheckImportStatus processing"):
+            return
+
+        from api.utils.bid_tool_service import check_contract_import_status
+
+        try:
+            project_id = kwargs.get("project_id")
+            if not project_id:
+                self.set_output("_ERROR", "project_id is required")
+                return "Error: project_id is required"
+
+            result = check_contract_import_status(int(project_id))
+            output = {
+                "project_id": int(project_id),
+                "imported": result.get("imported", False),
+                "kb_id": result.get("kb_id"),
+                "status": result.get("status"),
+                "progress": result.get("progress", 0),
+                "combined_doc_id": result.get("combined_doc_id"),
+                "message": result.get("message"),
+            }
+
+            self.set_output("json", output)
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+            return self.output("formalized_content")
+
+        except Exception as e:
+            logging.exception("ContractCheckImportStatus error: %s", e)
+            self.set_output("_ERROR", str(e))
+            return f"ContractCheckImportStatus error: {e}"
+
+    def thoughts(self) -> str:
+        return "Checking import status for contract project #{}...".format(
+            self.get_input().get("project_id", "-")
+        )
+
+
+# =============================================================================
+# EnterpriseImportToKb — 企业档案导入知识库
+# =============================================================================
+
+class EnterpriseImportToKbParam(ToolParamBase):
+    def __init__(self):
+        self.meta: ToolMeta = {
+            "name": "enterprise_import_to_kb",
+            "description": """
+将企业综合档案（工商信息、经营范围、联系方式、中标/投标统计）导入知识库并进行解析。
+返回导入状态（parsing/done/fail）和进度信息。
+如果企业已经导入过，会返回已有的状态而不重复导入。
+
+当用户需要将企业信息存入知识库以便后续检索或分析时使用。
+            """,
+            "parameters": {
+                "company_name": {
+                    "type": "string",
+                    "description": "企业名称",
+                    "required": True,
+                },
+            },
+        }
+        super().__init__()
+
+    def get_input_form(self) -> dict[str, dict]:
+        return {"company_name": {"name": "Company Name", "type": "line"}}
+
+
+class EnterpriseImportToKb(ToolBase, ABC):
+    component_name = "EnterpriseImportToKb"
+
+    @timeout(int(os.environ.get("COMPONENT_EXEC_TIMEOUT", 60)))
+    def _invoke(self, **kwargs):
+        if self.check_if_canceled("EnterpriseImportToKb processing"):
+            return
+
+        from api.utils.bid_tool_service import import_enterprise_to_kb
+
+        try:
+            company_name = kwargs.get("company_name", "")
+            if not company_name:
+                self.set_output("_ERROR", "company_name is required")
+                return "Error: company_name is required"
+
+            user_id = self._canvas.get_tenant_id() or ""
+            result = import_enterprise_to_kb(
+                company_name=company_name,
+                kb_id=None,
+                user_id=user_id,
+            )
+
+            output = {
+                "company_name": company_name,
+                **result,
+            }
+
+            self.set_output("json", output)
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+            return self.output("formalized_content")
+
+        except Exception as e:
+            logging.exception("EnterpriseImportToKb error: %s", e)
+            self.set_output("_ERROR", str(e))
+            return f"EnterpriseImportToKb error: {e}"
+
+    def thoughts(self) -> str:
+        return "Importing enterprise profile for '{}' to knowledge base...".format(
+            self.get_input().get("company_name", "-")
+        )
+
+
+# =============================================================================
+# EnterpriseCheckImportStatus — 检查企业导入状态
+# =============================================================================
+
+class EnterpriseCheckImportStatusParam(ToolParamBase):
+    def __init__(self):
+        self.meta: ToolMeta = {
+            "name": "enterprise_check_import_status",
+            "description": """
+查询企业档案导入知识库的状态和进度。
+返回 status（none/parsing/done/fail）、progress（0-1）、message。
+
+当用户想知道企业是否已成功导入知识库或检查导入进度时使用。
+            """,
+            "parameters": {
+                "company_name": {
+                    "type": "string",
+                    "description": "企业名称",
+                    "required": True,
+                },
+            },
+        }
+        super().__init__()
+
+    def get_input_form(self) -> dict[str, dict]:
+        return {"company_name": {"name": "Company Name", "type": "line"}}
+
+
+class EnterpriseCheckImportStatus(ToolBase, ABC):
+    component_name = "EnterpriseCheckImportStatus"
+
+    @timeout(int(os.environ.get("COMPONENT_EXEC_TIMEOUT", 30)))
+    def _invoke(self, **kwargs):
+        if self.check_if_canceled("EnterpriseCheckImportStatus processing"):
+            return
+
+        from api.utils.bid_tool_service import check_enterprise_import_status
+
+        try:
+            company_name = kwargs.get("company_name", "")
+            if not company_name:
+                self.set_output("_ERROR", "company_name is required")
+                return "Error: company_name is required"
+
+            result = check_enterprise_import_status(company_name)
+            output = {
+                "company_name": company_name,
+                "imported": result.get("imported", False),
+                "kb_id": result.get("kb_id"),
+                "status": result.get("status"),
+                "progress": result.get("progress", 0),
+                "combined_doc_id": result.get("combined_doc_id"),
+                "message": result.get("message"),
+            }
+
+            self.set_output("json", output)
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+            return self.output("formalized_content")
+
+        except Exception as e:
+            logging.exception("EnterpriseCheckImportStatus error: %s", e)
+            self.set_output("_ERROR", str(e))
+            return f"EnterpriseCheckImportStatus error: {e}"
+
+    def thoughts(self) -> str:
+        return "Checking import status for enterprise '{}'...".format(
             self.get_input().get("company_name", "-")
         )

@@ -87,8 +87,43 @@ function StructTable({ data }: { data: StructureData }) {
   );
 }
 
-function FilesList({ files }: { files: any[] }) {
-  if (!files || files.length === 0) {
+function extractFileLinks(html: string): { name: string; href: string }[] {
+  if (!html) return [];
+  const re = /<a\s[^>]*href=["']([^"']+)["'][^>]*>([^<]*)<\/a>/gi;
+  const links: { name: string; href: string }[] = [];
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    const href = m[1];
+    const name =
+      m[2].replace(/<[^>]*>/g, '').trim() || href.split('/').pop() || href;
+    links.push({ name, href });
+  }
+  return links;
+}
+
+function FilesList({
+  files,
+  contentHtml,
+}: {
+  files: any[];
+  contentHtml?: string;
+}) {
+  // 从 HTML 正文提取附件链接，按文件名与 API 文件匹配
+  const htmlLinks = extractFileLinks(contentHtml || '');
+  const htmlMap = new Map(htmlLinks.map((l) => [l.name, l.href]));
+
+  const matchedFiles = files.map((f: any) => {
+    const name = f.file_name || f.name || '';
+    // 优先用 file_url，其次从 HTML 链接匹配
+    const url = f.file_url || htmlMap.get(name) || '';
+    return { ...f, _downloadUrl: url };
+  });
+
+  // 去掉已匹配的，剩余作为额外链接
+  const apiFileNames = new Set(files.map((f: any) => f.file_name || f.name));
+  const extraLinks = htmlLinks.filter((l) => !apiFileNames.has(l.name));
+
+  if (matchedFiles.length === 0 && extraLinks.length === 0) {
     return (
       <div className="py-12 text-center text-sm text-[#A3A3A3]">暂无附件</div>
     );
@@ -108,9 +143,10 @@ function FilesList({ files }: { files: any[] }) {
 
   return (
     <div className="space-y-2">
-      {files.map((f: any, idx: number) => {
+      {matchedFiles.map((f: any, idx: number) => {
         const suffix = f.file_suffix || f.suffix || '';
         const size = f.file_size || f.size;
+        const downloadUrl = f._downloadUrl;
         return (
           <div
             key={f.project_file_id || f.file_name || f.file_url || idx}
@@ -141,13 +177,13 @@ function FilesList({ files }: { files: any[] }) {
                 预览
               </button>
             )}
-            {f.file_url && (
+            {downloadUrl && (
               <a
-                href={f.file_url}
+                href={downloadUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex items-center gap-1 text-xs text-[#000000] hover:text-[#000000] shrink-0"
-                title="下载原始文件"
+                title="下载文件"
               >
                 <Download className="size-3.5" />
                 下载
@@ -156,6 +192,34 @@ function FilesList({ files }: { files: any[] }) {
           </div>
         );
       })}
+      {/* HTML 正文提取的附件链接（无 API 文件匹配的） */}
+      {extraLinks.length > 0 && (
+        <>
+          {matchedFiles.length > 0 && (
+            <div className="text-xs text-[#A3A3A3] pt-2">正文附件链接</div>
+          )}
+          {extraLinks.map((l, i) => (
+            <a
+              key={`hl-${i}`}
+              href={l.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-3 p-3.5 rounded-xl border border-[#F0F0F0] hover:border-[#D4D4D4] hover:shadow-[0_2px_8px_rgba(0,0,0,0.04)] transition-all group bg-white"
+            >
+              <span className="text-lg">📎</span>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm text-[#000000] truncate group-hover:text-[#000000]">
+                  {l.name}
+                </div>
+              </div>
+              <span className="flex items-center gap-1 text-xs text-[#525252] shrink-0">
+                <Download className="size-3.5" />
+                打开
+              </span>
+            </a>
+          ))}
+        </>
+      )}
     </div>
   );
 }
@@ -210,9 +274,24 @@ export function BidDetailView({
     if (activeTab !== 'files' || !projectId || files.length > 0) return;
     setFilesLoading(true);
     fetchBidProjectFiles(projectId, publishTime)
-      .then((res: any) =>
-        setFiles(res?.data?.data?.files ?? res?.data?.files ?? []),
-      )
+      .then((res: any) => {
+        const filesData = res?.data?.data?.files ?? res?.data?.files ?? [];
+        console.log(
+          '[BidFiles] projectId=%s count=%d sample=%s',
+          projectId,
+          filesData.length,
+          JSON.stringify(
+            filesData
+              .slice(0, 3)
+              .map((f: any) => ({
+                name: f.file_name || f.name,
+                file_url: f.file_url,
+                file_suffix: f.file_suffix,
+              })),
+          ),
+        );
+        setFiles(filesData);
+      })
       .catch(() => {})
       .finally(() => setFilesLoading(false));
   }, [activeTab, projectId, publishTime, files.length]);
@@ -414,7 +493,9 @@ export function BidDetailView({
                 <span className="ml-2 text-sm text-[#333333]">加载中...</span>
               </div>
             )}
-            {!filesLoading && <FilesList files={files} />}
+            {!filesLoading && (
+              <FilesList files={files} contentHtml={detail?.content_html} />
+            )}
           </div>
         )}
       </div>

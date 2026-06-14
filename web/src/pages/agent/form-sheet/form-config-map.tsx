@@ -203,6 +203,24 @@ export const FormConfigMap = {
   [Operator.BidCheckImportStatus]: {
     component: () => <></>,
   },
+  [Operator.ConstructionImportToKb]: {
+    component: () => <></>,
+  },
+  [Operator.ConstructionCheckImportStatus]: {
+    component: () => <></>,
+  },
+  [Operator.ContractImportToKb]: {
+    component: () => <></>,
+  },
+  [Operator.ContractCheckImportStatus]: {
+    component: () => <></>,
+  },
+  [Operator.EnterpriseImportToKb]: {
+    component: () => <></>,
+  },
+  [Operator.EnterpriseCheckImportStatus]: {
+    component: () => <></>,
+  },
   [Operator.BidLookupCode]: {
     component: () => <></>,
   },

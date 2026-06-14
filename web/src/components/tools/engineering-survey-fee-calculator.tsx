@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
-import { DiscountBar } from './discount-bar';
+import { DiscountSelector } from './discount-bar';
 
 /* ═══════════════════════════════════════════════════════════
    工程勘察设计费计算器
@@ -312,9 +312,11 @@ const TABS: { id: TabId; label: string }[] = [
 export default function EngineeringSurveyFeeCalculator() {
   const [tab, setTab] = useState<TabId>('design');
   const [resetKey, setResetKey] = useState(0);
+  const [discountRate, setDiscountRate] = useState(1.0);
 
   const handleReset = () => {
     setResetKey((k) => k + 1);
+    setDiscountRate(1.0);
   };
 
   return (
@@ -387,9 +389,24 @@ export default function EngineeringSurveyFeeCalculator() {
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto" key={resetKey}>
-        {tab === 'design' && <DesignTab />}
-        {tab === 'survey' && <SurveyTab />}
-        {tab === 'water' && <WaterTab />}
+        {tab === 'design' && (
+          <DesignTab
+            discountRate={discountRate}
+            onDiscountChange={setDiscountRate}
+          />
+        )}
+        {tab === 'survey' && (
+          <SurveyTab
+            discountRate={discountRate}
+            onDiscountChange={setDiscountRate}
+          />
+        )}
+        {tab === 'water' && (
+          <WaterTab
+            discountRate={discountRate}
+            onDiscountChange={setDiscountRate}
+          />
+        )}
       </div>
     </div>
   );
@@ -398,7 +415,13 @@ export default function EngineeringSurveyFeeCalculator() {
 /* ═══════════════════════════════════════════
    工程设计收费 Tab
    ═══════════════════════════════════════════ */
-function DesignTab() {
+function DesignTab({
+  discountRate,
+  onDiscountChange,
+}: {
+  discountRate: number;
+  onDiscountChange: (r: number) => void;
+}) {
   const [amount, setAmount] = useState('');
   const [profIdx, setProfIdx] = useState(6 + 1); // 默认"建筑、市政、电信工程"
   const [complexIdx, setComplexIdx] = useState(1); // 默认II级
@@ -488,6 +511,15 @@ function DesignTab() {
             </button>
           </div>
           {error && <p className="mt-1.5 text-xs text-red-500">{error}</p>}
+        </div>
+
+        {/* Discount selector */}
+        <div className="py-1">
+          <DiscountSelector
+            rate={discountRate}
+            onRateChange={onDiscountChange}
+            label="费用折扣："
+          />
         </div>
 
         {/* 专业调整系数 */}
@@ -650,13 +682,35 @@ function DesignTab() {
                   {fmtWan(result.benchmark)} 万元
                 </span>
               </div>
+              {discountRate < 1.0 && (
+                <div className="flex justify-between py-1.5">
+                  <span className="text-[#000000] font-medium">折扣后价格</span>
+                  <span className="text-lg font-bold text-[#000000]">
+                    {fmtWan(result.benchmark * discountRate)} 万元
+                  </span>
+                </div>
+              )}
               <div className="flex justify-between py-1.5 text-xs text-[#333333]">
                 <span>浮动下限（-20%）</span>
-                <span>{fmtWan(result.benchmark * 0.8)} 万元</span>
+                <span>
+                  {fmtWan(
+                    result.benchmark *
+                      (discountRate < 1 ? discountRate : 1) *
+                      0.8,
+                  )}{' '}
+                  万元
+                </span>
               </div>
               <div className="flex justify-between py-1.5 text-xs text-[#333333]">
                 <span>浮动上限（+20%）</span>
-                <span>{fmtWan(result.benchmark * 1.2)} 万元</span>
+                <span>
+                  {fmtWan(
+                    result.benchmark *
+                      (discountRate < 1 ? discountRate : 1) *
+                      1.2,
+                  )}{' '}
+                  万元
+                </span>
               </div>
             </div>
             {/* 参数回显 */}
@@ -823,11 +877,6 @@ function DesignTab() {
         )}
       </div>
 
-      {result && (
-        <div className="mt-4">
-          <DiscountBar baseFee={result.benchmark * 10000} label="设计费折扣" />
-        </div>
-      )}
       {/* Right: Reference table */}
       <div className="w-72 shrink-0 border-l border-[#D4D4D4] bg-white/50 overflow-y-auto p-5">
         <div className="bg-white rounded-2xl border border-[#D4D4D4] p-4">
@@ -887,7 +936,13 @@ function DesignTab() {
 /* ═══════════════════════════════════════════
    通用工程勘察收费 Tab
    ═══════════════════════════════════════════ */
-function SurveyTab() {
+function SurveyTab({
+  discountRate,
+  onDiscountChange,
+}: {
+  discountRate: number;
+  onDiscountChange: (r: number) => void;
+}) {
   const [basePrice, setBasePrice] = useState('');
   const [quantity, setQuantity] = useState('1');
   const [techIdx, setTechIdx] = useState(1); // 默认岩土工程勘察
@@ -1062,6 +1117,15 @@ function SurveyTab() {
         </button>
         {error && <p className="text-xs text-red-500">{error}</p>}
 
+        {/* Discount selector */}
+        <div className="py-1">
+          <DiscountSelector
+            rate={discountRate}
+            onRateChange={onDiscountChange}
+            label="费用折扣："
+          />
+        </div>
+
         {/* Results */}
         {result && (
           <div className="bg-white rounded-2xl border border-[#D4D4D4] p-5 space-y-3">
@@ -1096,17 +1160,39 @@ function SurveyTab() {
                   {fmtYuan(result.benchmark)} 元
                 </span>
               </div>
+              {discountRate < 1.0 && (
+                <div className="flex justify-between py-1.5">
+                  <span className="text-[#000000] font-medium">折扣后价格</span>
+                  <span className="text-lg font-bold text-[#000000]">
+                    {fmtYuan(result.benchmark * discountRate)} 元
+                  </span>
+                </div>
+              )}
               <div className="flex justify-between py-1.5 text-xs text-[#333333]">
                 <span>主体勘察协调费（基准价×5%）</span>
                 <span>{fmtYuan(result.benchmark * 0.05)} 元</span>
               </div>
               <div className="flex justify-between py-1.5 text-xs text-[#333333]">
                 <span>浮动下限（-20%）</span>
-                <span>{fmtYuan(result.benchmark * 0.8)} 元</span>
+                <span>
+                  {fmtYuan(
+                    result.benchmark *
+                      (discountRate < 1 ? discountRate : 1) *
+                      0.8,
+                  )}{' '}
+                  元
+                </span>
               </div>
               <div className="flex justify-between py-1.5 text-xs text-[#333333]">
                 <span>浮动上限（+20%）</span>
-                <span>{fmtYuan(result.benchmark * 1.2)} 元</span>
+                <span>
+                  {fmtYuan(
+                    result.benchmark *
+                      (discountRate < 1 ? discountRate : 1) *
+                      1.2,
+                  )}{' '}
+                  元
+                </span>
               </div>
             </div>
 
@@ -1208,14 +1294,6 @@ function SurveyTab() {
             )}
           </div>
         )}
-        {result && (
-          <div className="mt-4">
-            <DiscountBar
-              baseFee={result.benchmark * 10000}
-              label="通用勘察费折扣"
-            />
-          </div>
-        )}
       </div>
       <div className="w-72 shrink-0 border-l border-[#D4D4D4] bg-white/50 overflow-y-auto p-5">
         <div className="bg-white rounded-2xl border border-[#D4D4D4] p-4">
@@ -1263,7 +1341,13 @@ function SurveyTab() {
 /* ═══════════════════════════════════════════
    水利水电工程勘察收费 Tab
    ═══════════════════════════════════════════ */
-function WaterTab() {
+function WaterTab({
+  discountRate,
+  onDiscountChange,
+}: {
+  discountRate: number;
+  onDiscountChange: (r: number) => void;
+}) {
   const [amount, setAmount] = useState('');
   const [profIdx, setProfIdx] = useState(0);
   const [complexIdx, setComplexIdx] = useState(1);
@@ -1401,6 +1485,15 @@ function WaterTab() {
           />
         </div>
 
+        {/* Discount selector */}
+        <div className="py-1">
+          <DiscountSelector
+            rate={discountRate}
+            onRateChange={onDiscountChange}
+            label="费用折扣："
+          />
+        </div>
+
         {/* Results */}
         {result && (
           <div className="bg-white rounded-2xl border border-[#D4D4D4] p-5 space-y-3">
@@ -1426,6 +1519,14 @@ function WaterTab() {
                   {fmtWan(result.basicFee)} 万元
                 </span>
               </div>
+              {discountRate < 1.0 && (
+                <div className="flex justify-between py-1.5">
+                  <span className="text-[#000000] font-medium">折扣后价格</span>
+                  <span className="text-lg font-bold text-[#000000]">
+                    {fmtWan(result.basicFee * discountRate)} 万元
+                  </span>
+                </div>
+              )}
               <div className="flex justify-between py-1.5 text-xs text-[#333333]">
                 <span>作业准备费（基准价×15%~20%）</span>
                 <span>
@@ -1435,11 +1536,25 @@ function WaterTab() {
               </div>
               <div className="flex justify-between py-1.5 text-xs text-[#333333]">
                 <span>浮动下限（-20%）</span>
-                <span>{fmtWan(result.basicFee * 0.8)} 万元</span>
+                <span>
+                  {fmtWan(
+                    result.basicFee *
+                      (discountRate < 1 ? discountRate : 1) *
+                      0.8,
+                  )}{' '}
+                  万元
+                </span>
               </div>
               <div className="flex justify-between py-1.5 text-xs text-[#333333]">
                 <span>浮动上限（+20%）</span>
-                <span>{fmtWan(result.basicFee * 1.2)} 万元</span>
+                <span>
+                  {fmtWan(
+                    result.basicFee *
+                      (discountRate < 1 ? discountRate : 1) *
+                      1.2,
+                  )}{' '}
+                  万元
+                </span>
               </div>
             </div>
             <div className="flex flex-wrap gap-1.5 mt-2">
@@ -1556,14 +1671,6 @@ function WaterTab() {
                 )}
               </div>
             )}
-          </div>
-        )}
-        {result && (
-          <div className="mt-4">
-            <DiscountBar
-              baseFee={result.benchmark * 10000}
-              label="水利勘察费折扣"
-            />
           </div>
         )}
       </div>

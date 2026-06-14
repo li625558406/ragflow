@@ -55,3 +55,21 @@ The folder `src/components/ui/` is the project's **shared UI library** — it co
 - Extract complex logic into hooks or utils; keep components lean.
 - Use `PascalCase` for constants and component names.
 - Avoid duplicating component structures in JSX; favor render props or reusable components.
+
+## 投标系统前端
+
+### 关键文件
+- `src/services/bid-service.ts` — 所有投标 API 调用（15+ endpoints）
+- `src/pages/home/bid-detail-view.tsx` — 投标详情页（正文/结构化/附件三页签）
+- `src/components/bid/contract-list.tsx` — 中标/合同列表 + 详情面板
+
+### 字段名兼容
+后端 API 返回的投件字段可能来自第三方 API (camelCase: `fileUrl`, `url`) 或数据库 (snake_case: `file_url`, `file_name`)。前端组件**必须同时兼容两种命名**:
+
+```tsx
+const fileUrl = f.fileUrl || f.file_url || f.url || '';
+const fileName = f.name || f.file_name || '';
+```
+
+### 热部署
+Vite 开发服务器 bind mount 到 Docker，TypeScript/TSX 修改一般自动生效。若修改未生效或涉及 `node_modules` 变更，才需 `npm run build`。

@@ -626,6 +626,84 @@ export const initialBidCheckImportStatusValues = {
   },
 };
 
+export const initialConstructionImportToKbValues = {
+  outputs: {
+    formalized_content: {
+      value: '',
+      type: 'string',
+    },
+    json: {
+      value: {},
+      type: 'Object',
+    },
+  },
+};
+
+export const initialConstructionCheckImportStatusValues = {
+  outputs: {
+    formalized_content: {
+      value: '',
+      type: 'string',
+    },
+    json: {
+      value: {},
+      type: 'Object',
+    },
+  },
+};
+
+export const initialContractImportToKbValues = {
+  outputs: {
+    formalized_content: {
+      value: '',
+      type: 'string',
+    },
+    json: {
+      value: {},
+      type: 'Object',
+    },
+  },
+};
+
+export const initialContractCheckImportStatusValues = {
+  outputs: {
+    formalized_content: {
+      value: '',
+      type: 'string',
+    },
+    json: {
+      value: {},
+      type: 'Object',
+    },
+  },
+};
+
+export const initialEnterpriseImportToKbValues = {
+  outputs: {
+    formalized_content: {
+      value: '',
+      type: 'string',
+    },
+    json: {
+      value: {},
+      type: 'Object',
+    },
+  },
+};
+
+export const initialEnterpriseCheckImportStatusValues = {
+  outputs: {
+    formalized_content: {
+      value: '',
+      type: 'string',
+    },
+    json: {
+      value: {},
+      type: 'Object',
+    },
+  },
+};
+
 export const initialBidLookupCodeValues = {
   outputs: {
     formalized_content: {
@@ -846,6 +924,12 @@ export const RestrictedUpstreamMap = {
   [Operator.BidGetDetail]: [Operator.Begin],
   [Operator.BidImportToKb]: [Operator.Begin],
   [Operator.BidCheckImportStatus]: [Operator.Begin],
+  [Operator.ConstructionImportToKb]: [Operator.Begin],
+  [Operator.ConstructionCheckImportStatus]: [Operator.Begin],
+  [Operator.ContractImportToKb]: [Operator.Begin],
+  [Operator.ContractCheckImportStatus]: [Operator.Begin],
+  [Operator.EnterpriseImportToKb]: [Operator.Begin],
+  [Operator.EnterpriseCheckImportStatus]: [Operator.Begin],
   [Operator.BidLookupCode]: [Operator.Begin],
   [Operator.BidGetSource]: [Operator.Begin],
   [Operator.BidSearchAI]: [Operator.Begin],
@@ -910,6 +994,12 @@ export const NodeMap = {
   [Operator.BidGetDetail]: 'ragNode',
   [Operator.BidImportToKb]: 'ragNode',
   [Operator.BidCheckImportStatus]: 'ragNode',
+  [Operator.ConstructionImportToKb]: 'ragNode',
+  [Operator.ConstructionCheckImportStatus]: 'ragNode',
+  [Operator.ContractImportToKb]: 'ragNode',
+  [Operator.ContractCheckImportStatus]: 'ragNode',
+  [Operator.EnterpriseImportToKb]: 'ragNode',
+  [Operator.EnterpriseCheckImportStatus]: 'ragNode',
   [Operator.BidLookupCode]: 'ragNode',
   [Operator.BidGetSource]: 'ragNode',
   [Operator.BidSearchAI]: 'ragNode',

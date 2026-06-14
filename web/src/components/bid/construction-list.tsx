@@ -2,8 +2,17 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { DatePickerWithRange } from '@/components/ui/range-picker';
 import { getAuthorization } from '@/utils/authorization-util';
-import { HardHat, Loader2, Search, X } from 'lucide-react';
-import { useCallback, useRef, useState } from 'react';
+import {
+  CheckCircle2,
+  Download,
+  FileText,
+  HardHat,
+  Loader2,
+  Paperclip,
+  Search,
+  X,
+} from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 const INPUT_CLASS =
   'h-9 px-3 text-xs text-[#000000] border border-[#D4D4D4] bg-white hover:border-[#A3A3A3] focus:border-[#000000] focus:ring-2 focus:ring-[#000000]/10 rounded-lg transition-all';
@@ -29,7 +38,10 @@ export default function ConstructionList() {
   const [error, setError] = useState<string | null>(null);
   const pageRef = useRef(1);
   const [keyword, setKeyword] = useState('');
-  const [dateRange, setDateRange] = useState<{ from?: Date; to?: Date }>();
+  const [dateRange, setDateRange] = useState<{ from?: Date; to?: Date }>(() => {
+    const today = new Date();
+    return { from: today, to: today };
+  });
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
   function fmtDate(d: Date): string {
@@ -106,6 +118,146 @@ export default function ConstructionList() {
   };
 
   const handleBackToSearch = () => setHasSearched(false);
+
+  // --- Detail ---
+  const [detailItem, setDetailItem] = useState<ConstructionItem | null>(null);
+  const [detail, setDetail] = useState<Record<string, any> | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+
+  const openDetail = async (item: ConstructionItem) => {
+    setDetailItem(item);
+    setDetail(null);
+    setDetailError(null);
+    setDetailLoading(true);
+    setParseStatus(null);
+    try {
+      const json = await constructionFetch(
+        `construction/projects/${item.id}/detail`,
+        { publish_time: item.publishTime },
+      );
+      setDetail(json.data || null);
+      // Auto-trigger KB import after detail loaded
+      triggerParse(item.id, item.publishTime);
+    } catch (e: any) {
+      setDetailError(e.message);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const closeDetail = () => {
+    if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+    setDetailItem(null);
+    setDetail(null);
+    setDetailError(null);
+    setParseStatus(null);
+  };
+
+  function extractFileLinks(html: string): { name: string; href: string }[] {
+    if (!html) return [];
+    const re = /<a\s[^>]*href=["']([^"']+)["'][^>]*>([^<]*)<\/a>/gi;
+    const links: { name: string; href: string }[] = [];
+    let m;
+    while ((m = re.exec(html)) !== null) {
+      links.push({
+        name:
+          m[2].replace(/<[^>]*>/g, '').trim() || m[1].split('/').pop() || m[1],
+        href: m[1],
+      });
+    }
+    return links;
+  }
+
+  function getFileSuffix(name: string): string {
+    const parts = name.split('.');
+    return parts.length > 1 ? parts.pop()!.toLowerCase() : '';
+  }
+
+  function formatFileSize(size: number): string {
+    if (!size) return '';
+    if (size < 1024) return `${size} B`;
+    if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  const SUFFIX_COLORS: Record<string, string> = {
+    pdf: 'bg-red-50 text-red-700',
+    doc: 'bg-blue-50 text-blue-700',
+    docx: 'bg-blue-50 text-blue-700',
+    xls: 'bg-green-50 text-green-700',
+    xlsx: 'bg-green-50 text-green-700',
+    zip: 'bg-amber-50 text-amber-700',
+    rar: 'bg-amber-50 text-amber-700',
+    jpg: 'bg-purple-50 text-purple-700',
+    jpeg: 'bg-purple-50 text-purple-700',
+    png: 'bg-purple-50 text-purple-700',
+  };
+
+  // --- KB Import ---
+  const [parseStatus, setParseStatus] = useState<{
+    status: string;
+    progress: number;
+    progress_msg: string;
+  } | null>(null);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout>>();
+
+  useEffect(() => {
+    return () => {
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+    };
+  }, []);
+
+  const triggerParse = useCallback(
+    async (projectId: number, publishTime: string) => {
+      try {
+        const resp = await constructionFetch(
+          `construction/projects/${projectId}/parse`,
+          {
+            publish_time: publishTime,
+          },
+        );
+        const data = resp.data || resp;
+        if (data.status === 'done') {
+          setParseStatus({
+            status: 'done',
+            progress: 1,
+            progress_msg: '已导入知识库',
+          });
+          return;
+        }
+        setParseStatus({
+          status: 'parsing',
+          progress: 0,
+          progress_msg: '准备导入...',
+        });
+        pollParseStatus(projectId);
+      } catch {
+        // silent — don't block detail viewing
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  const pollParseStatus = useCallback(async (projectId: number) => {
+    try {
+      const json = await constructionFetch(
+        `construction/projects/${projectId}/parse-status`,
+      );
+      const data = json.data || json;
+      setParseStatus(data);
+      if (data.status === 'parsing') {
+        pollTimerRef.current = setTimeout(
+          () => pollParseStatus(projectId),
+          3000,
+        );
+      }
+    } catch {
+      // stop polling on error
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ================================================================
   // STATE 1: Search Hero (centered card)
@@ -250,6 +402,7 @@ export default function ConstructionList() {
               <div
                 key={`${item.id}-${idx}`}
                 className="rounded-xl border border-[#E8E8E8] bg-[#FAFAFA] p-5 cursor-pointer hover:border-[#A3A3A3] transition"
+                onClick={() => openDetail(item)}
               >
                 <div
                   className="text-sm font-semibold text-[#000000] leading-snug line-clamp-2 mb-2"
@@ -302,6 +455,286 @@ export default function ConstructionList() {
           </div>
         )}
       </div>
+
+      {/* Detail Modal */}
+      {detailItem && (
+        <div
+          className="fixed inset-0 z-50 bg-black/50 flex items-start justify-center pt-12 pb-12 overflow-auto"
+          onClick={closeDetail}
+        >
+          <div
+            className="bg-white rounded-xl shadow-2xl w-full max-w-3xl mx-4 max-h-[85vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal header */}
+            <div className="shrink-0 flex items-center justify-between px-6 py-4 border-b border-[#E8E8E8]">
+              <div className="flex-1 min-w-0 mr-4">
+                <h2
+                  className="text-sm font-semibold text-[#000000] leading-snug line-clamp-2"
+                  dangerouslySetInnerHTML={{ __html: detailItem.title }}
+                />
+                <p className="text-xs text-[#A3A3A3] mt-1">
+                  {detailItem.publishTime}
+                  {detailItem.hasFile === 1 && ' \u00B7 有附件'}
+                </p>
+              </div>
+              <button
+                onClick={closeDetail}
+                className="shrink-0 size-8 flex items-center justify-center rounded-lg text-[#A3A3A3] hover:text-[#000000] hover:bg-[#F5F5F5] transition-colors"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+
+            {/* KB import progress bar */}
+            {parseStatus?.status === 'parsing' && (
+              <div className="shrink-0 px-6 py-3 border-b border-[#E8E8E8] bg-[#FAFAFA]">
+                <div className="flex items-center gap-3">
+                  <Loader2 className="size-4 animate-spin text-[#000000]" />
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-medium text-[#333]">
+                        正在导入知识库并解析...
+                      </span>
+                      <span className="text-xs text-[#A3A3A3]">
+                        {Math.round(parseStatus.progress * 100)}%
+                      </span>
+                    </div>
+                    <div className="h-1.5 bg-[#E8E8E8] rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-[#000000] rounded-full transition-all duration-500"
+                        style={{ width: `${parseStatus.progress * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* KB import done banner */}
+            {parseStatus?.status === 'done' && (
+              <div className="shrink-0 px-6 py-2.5 border-b border-[#E8E8E8] bg-[#F0FFF4]">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="size-4 text-[#16A34A]" />
+                  <span className="text-xs font-medium text-[#16A34A]">
+                    已导入知识库
+                  </span>
+                  <span className="text-xs text-[#A3A3A3]">
+                    {parseStatus.progress_msg}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Modal body */}
+            <div className="flex-1 min-h-0 overflow-auto px-6 py-4">
+              {detailLoading ? (
+                <div className="flex items-center justify-center py-16">
+                  <Loader2 className="size-6 animate-spin text-[#A3A3A3]" />
+                </div>
+              ) : detailError ? (
+                <div className="bg-[#FFF2F0] border border-[#FFCCC7] rounded-lg px-4 py-3">
+                  <p className="text-sm font-medium text-[#FF4D4F]">
+                    获取详情失败
+                  </p>
+                  <p className="text-xs text-[#8C8C8C] mt-1">{detailError}</p>
+                </div>
+              ) : detail ? (
+                <div className="space-y-4">
+                  {/* Pre-compute HTML file links once */}
+                  {(() => {
+                    const htmlLinks = extractFileLinks(detail.content || '');
+                    const hasHtmlLinks = htmlLinks.length > 0;
+                    const projectFiles = detail.projectFiles || [];
+                    const hasProjectFiles = projectFiles.length > 0;
+
+                    return (
+                      <>
+                        {/* Construction company info */}
+                        {detail.constructionCompany && (
+                          <div className="rounded-xl border border-[#E8E8E8] bg-[#FAFAFA] p-5">
+                            <div className="text-sm font-semibold mb-3">
+                              建设单位
+                            </div>
+                            <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs">
+                              {detail.constructionCompany.name && (
+                                <div className="col-span-2 py-1">
+                                  <span className="text-[#999]">名称：</span>
+                                  <span className="text-[#333]">
+                                    {detail.constructionCompany.name}
+                                  </span>
+                                </div>
+                              )}
+                              {detail.constructionCompany.contactPerson && (
+                                <div className="py-1">
+                                  <span className="text-[#999]">联系人：</span>
+                                  <span className="text-[#333]">
+                                    {detail.constructionCompany.contactPerson}
+                                  </span>
+                                </div>
+                              )}
+                              {detail.constructionCompany.contactPhone && (
+                                <div className="py-1">
+                                  <span className="text-[#999]">电话：</span>
+                                  <span className="text-[#333]">
+                                    {detail.constructionCompany.contactPhone}
+                                  </span>
+                                </div>
+                              )}
+                              {detail.constructionCompany.address && (
+                                <div className="col-span-2 py-1">
+                                  <span className="text-[#999]">地址：</span>
+                                  <span className="text-[#333]">
+                                    {detail.constructionCompany.address}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Content HTML */}
+                        {detail.content && (
+                          <div className="rounded-xl border border-[#E8E8E8] bg-[#FAFAFA] p-5">
+                            <div className="text-sm font-semibold mb-3">
+                              正文内容
+                            </div>
+                            <div
+                              className="text-xs leading-relaxed text-[#333333] [&_h1]:text-base [&_h1]:font-semibold [&_h1]:mt-3 [&_h1]:mb-1.5 [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:mt-3 [&_h2]:mb-1 [&_p]:my-1 [&_table]:w-full [&_table]:text-xs [&_table]:border-collapse [&_td]:border [&_td]:border-[#D4D4D4] [&_td]:p-1.5 [&_th]:border [&_th]:border-[#D4D4D4] [&_th]:p-1.5 [&_th]:bg-[#FAFAFA] [&_a]:text-[#000000] [&_a]:underline"
+                              dangerouslySetInnerHTML={{
+                                __html: detail.content,
+                              }}
+                            />
+                          </div>
+                        )}
+
+                        {/* Project files from API — prominent display */}
+                        {hasProjectFiles && (
+                          <div className="rounded-xl border-2 border-[#000000]/10 bg-[#FAFAFA] p-5">
+                            <div className="flex items-center gap-2 mb-4">
+                              <Paperclip className="size-4 text-[#000000]" />
+                              <div className="text-sm font-semibold text-[#000000]">
+                                项目附件
+                              </div>
+                              <span className="text-xs bg-[#000000] text-white px-2 py-0.5 rounded-full">
+                                {projectFiles.length} 个文件
+                              </span>
+                            </div>
+                            <div className="space-y-2">
+                              {projectFiles.map((f: any, i: number) => {
+                                const suffix = getFileSuffix(f.name || '');
+                                const suffixColor =
+                                  SUFFIX_COLORS[suffix] ||
+                                  'bg-gray-50 text-gray-700';
+                                const fileUrl =
+                                  f.url || f.fileUrl || f.file_url || '';
+                                return (
+                                  <div
+                                    key={
+                                      f.projectFileID ||
+                                      f.project_file_id ||
+                                      f.name ||
+                                      i
+                                    }
+                                    className="flex items-center justify-between p-3 rounded-lg border border-[#E8E8E8] hover:border-[#000000]/20 hover:bg-white transition"
+                                  >
+                                    <div className="flex items-center gap-3 min-w-0">
+                                      <FileText className="size-4 text-[#525252] shrink-0" />
+                                      <div className="min-w-0">
+                                        <div className="text-sm font-medium text-[#333] truncate">
+                                          {f.name}
+                                        </div>
+                                        <div className="flex items-center gap-2 mt-0.5">
+                                          {suffix && (
+                                            <span
+                                              className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${suffixColor}`}
+                                            >
+                                              {suffix.toUpperCase()}
+                                            </span>
+                                          )}
+                                          {f.size && (
+                                            <span className="text-xs text-[#A3A3A3]">
+                                              {formatFileSize(f.size)}
+                                            </span>
+                                          )}
+                                        </div>
+                                      </div>
+                                    </div>
+                                    {fileUrl && (
+                                      <a
+                                        href={fileUrl}
+                                        download
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="shrink-0 inline-flex items-center gap-1 h-8 px-3 text-xs font-medium bg-[#000000] hover:bg-[#171717] text-white rounded-lg transition"
+                                      >
+                                        <Download className="size-3.5" />
+                                        下载
+                                      </a>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* File links extracted from HTML content */}
+                        {hasHtmlLinks && (
+                          <div className="rounded-xl border border-[#E8E8E8] bg-[#FAFAFA] p-5">
+                            <div className="flex items-center gap-2 mb-3">
+                              <FileText className="size-4 text-[#525252]" />
+                              <div className="text-sm font-semibold">
+                                正文附件链接
+                              </div>
+                              <span className="text-xs bg-[#F5F5F5] text-[#525252] px-2 py-0.5 rounded-full">
+                                {htmlLinks.length} 个
+                              </span>
+                            </div>
+                            <div className="space-y-2">
+                              {htmlLinks.map((link, i) => (
+                                <a
+                                  key={i}
+                                  href={link.href}
+                                  download
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="flex items-center justify-between p-3 rounded-lg border border-[#E8E8E8] hover:border-[#000000]/20 hover:bg-white transition text-xs"
+                                >
+                                  <div className="flex items-center gap-3 min-w-0">
+                                    <FileText className="size-4 text-[#525252] shrink-0" />
+                                    <span className="truncate text-[#333] font-medium">
+                                      {link.name}
+                                    </span>
+                                  </div>
+                                  <Download className="size-3.5 text-[#525252] shrink-0" />
+                                </a>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Fallback: no content at all */}
+                        {!detail.content &&
+                          !detail.constructionCompany &&
+                          !hasProjectFiles && (
+                            <div className="py-8 text-center text-sm text-[#A3A3A3]">
+                              暂无详情数据
+                            </div>
+                          )}
+                      </>
+                    );
+                  })()}
+                </div>
+              ) : (
+                <div className="py-8 text-center text-sm text-[#A3A3A3]">
+                  暂无详情数据
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

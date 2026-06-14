@@ -19,7 +19,8 @@ from typing import Tuple, List, Optional
 
 from peewee import fn
 
-from api.db.db_models import DB, BidEnterpriseCache, BidProject, BidProjectDetail, BidProjectStructure, BidProjectFile, BidProjectParse, BidSyncLog
+from api.db.db_models import DB, BidConstructionParse, BidConstructionProject, BidContractParse, BidEnterpriseCache, BidEnterpriseParse, BidProject, BidProjectDetail, BidProjectStructure, BidProjectFile, BidProjectParse, BidSyncLog
+from peewee import DateTimeField
 from api.db.services.common_service import CommonService
 
 
@@ -271,6 +272,16 @@ class BidProjectFileService(CommonService):
         objs = cls.model.select().where(cls.model.project_id == project_id)
         return list(objs.dicts())
 
+    @staticmethod
+    def _sanitize_datetime(val):
+        """过滤零值日期，避免 _normalize_data 的 timestamp_to_date 崩溃。"""
+        if val is None:
+            return None
+        s = str(val)
+        if s.startswith("0000-00-00") or s == "":
+            return None
+        return val
+
     @classmethod
     @DB.connection_context()
     def upsert_file(cls, data: dict) -> object:
@@ -280,11 +291,22 @@ class BidProjectFileService(CommonService):
         existing = cls.model.get_or_none(cls.model.project_file_id == fid)
         if existing:
             for k, v in {**defaults, **data}.items():
+                # 过滤零值日期字段
+                if isinstance(getattr(cls.model, k, None), DateTimeField):
+                    v = cls._sanitize_datetime(v)
                 setattr(existing, k, v)
+            # 修复已有记录中的零值日期
+            for field_name in ("create_time", "publish_time"):
+                val = getattr(existing, field_name, None)
+                if val and str(val).startswith("0000-00-00"):
+                    setattr(existing, field_name, None)
             existing.save()
             return existing
         else:
             data = {**defaults, **data}
+            for k in list(data.keys()):
+                if isinstance(getattr(cls.model, k, None), DateTimeField):
+                    data[k] = cls._sanitize_datetime(data[k])
             data.setdefault("created_at", now)
             return cls.model(**data).save(force_insert=True)
 
@@ -406,16 +428,12 @@ class BidEnterpriseCacheService(CommonService):
             & (cls.model.page_size == page_size)
         )
         if existing:
-            logging.debug("BidEnterpriseCache: update existing id=%s for %s/%s p%d",
-                          existing.id, company_name, cache_type, page_no)
             existing.response_json = response_data
             existing.fetched_at = now
             existing.cache_expires_at = expires_at
             existing.save()
             return existing
         else:
-            logging.debug("BidEnterpriseCache: insert new for %s/%s p%d",
-                          company_name, cache_type, page_no)
             return cls.model(
                 company_name=company_name,
                 cache_type=cache_type,
@@ -426,3 +444,142 @@ class BidEnterpriseCacheService(CommonService):
                 cache_expires_at=expires_at,
                 created_at=now,
             ).save(force_insert=True)
+
+
+class BidConstructionProjectService(CommonService):
+    model = BidConstructionProject
+
+    @classmethod
+    @DB.connection_context()
+    def get_list(
+        cls,
+        page_number: int = 1,
+        items_per_page: int = 20,
+        keyword: str = None,
+        provice_code: str = None,
+        city_code: str = None,
+        start_date: str = None,
+        end_date: str = None,
+    ) -> Tuple[List[dict], int]:
+        query = cls.model.select()
+        if keyword:
+            query = query.where(
+                (cls.model.title ** f"%{keyword}%")
+                | (cls.model.summary ** f"%{keyword}%")
+            )
+        if provice_code:
+            query = query.where(cls.model.provice_code == provice_code)
+        if city_code:
+            query = query.where(cls.model.city_code == city_code)
+        if start_date:
+            query = query.where(cls.model.publish_time >= start_date)
+        if end_date:
+            end_dt = end_date if " " in end_date else f"{end_date} 23:59:59"
+            query = query.where(cls.model.publish_time <= end_dt)
+
+        total = query.count()
+        query = query.order_by(cls.model.publish_time.desc())
+        query = query.paginate(page_number, items_per_page)
+        return list(query.dicts()), total
+
+    @classmethod
+    @DB.connection_context()
+    def upsert(cls, data: dict) -> Tuple[bool, object]:
+        pid = data.get("id")
+        if not pid:
+            return False, None
+        existing = cls.model.get_or_none(cls.model.id == pid)
+        now = datetime.now()
+        if existing:
+            for k, v in data.items():
+                setattr(existing, k, v)
+            existing.updated_at = now
+            existing.save()
+            return False, existing
+        else:
+            data.setdefault("created_at", now)
+            data.setdefault("updated_at", now)
+            return True, cls.model(**data).save(force_insert=True)
+
+    @classmethod
+    @DB.connection_context()
+    def get_by_id(cls, project_id: int) -> Optional[dict]:
+        obj = cls.model.get_or_none(cls.model.id == project_id)
+        if obj:
+            return obj.to_dict()
+        return None
+
+
+class BidConstructionParseService(CommonService):
+    model = BidConstructionParse
+
+    @classmethod
+    @DB.connection_context()
+    def get_by_project(cls, project_id: int) -> Optional[dict]:
+        obj = cls.model.get_or_none(cls.model.project_id == project_id)
+        return obj.dicts() if obj else None
+
+    @classmethod
+    @DB.connection_context()
+    def upsert(cls, data: dict):
+        project_id = data.get("project_id")
+        existing = cls.model.get_or_none(cls.model.project_id == project_id)
+        data["updated_at"] = datetime.now()
+        if existing:
+            for k, v in data.items():
+                setattr(existing, k, v)
+            existing.save()
+            return existing
+        else:
+            data.setdefault("created_at", datetime.now())
+            return cls.model(**data).save(force_insert=True)
+
+
+class BidContractParseService(CommonService):
+    model = BidContractParse
+
+    @classmethod
+    @DB.connection_context()
+    def get_by_project(cls, project_id: int) -> Optional[dict]:
+        obj = cls.model.get_or_none(cls.model.project_id == project_id)
+        return obj.dicts() if obj else None
+
+    @classmethod
+    @DB.connection_context()
+    def upsert(cls, data: dict):
+        project_id = data.get("project_id")
+        existing = cls.model.get_or_none(cls.model.project_id == project_id)
+        data["updated_at"] = datetime.now()
+        if existing:
+            for k, v in data.items():
+                setattr(existing, k, v)
+            existing.save()
+            return existing
+        else:
+            data.setdefault("created_at", datetime.now())
+            return cls.model(**data).save(force_insert=True)
+
+
+class BidEnterpriseParseService(CommonService):
+    model = BidEnterpriseParse
+
+    @classmethod
+    @DB.connection_context()
+    def get_by_company(cls, company_name: str) -> Optional[dict]:
+        obj = cls.model.get_or_none(cls.model.company_name == company_name)
+        return obj.dicts() if obj else None
+
+    @classmethod
+    @DB.connection_context()
+    def upsert(cls, data: dict):
+        company_name = data.get("company_name")
+        existing = cls.model.get_or_none(cls.model.company_name == company_name)
+        data["updated_at"] = datetime.now()
+        if existing:
+            for k, v in data.items():
+                setattr(existing, k, v)
+            existing.save()
+            return existing
+        else:
+            data.setdefault("created_at", datetime.now())
+            return cls.model(**data).save(force_insert=True)

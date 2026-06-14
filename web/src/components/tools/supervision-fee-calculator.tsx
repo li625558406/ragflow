@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
-import { DiscountBar } from './discount-bar';
+import { DiscountSelector } from './discount-bar';
 
 /* ═══════════════════════════════════════════════════════════
    建设工程监理费计算器
@@ -175,9 +175,11 @@ const TABS: { id: TabId; label: string }[] = [
 export default function SupervisionFeeCalculator() {
   const [tab, setTab] = useState<TabId>('supervision');
   const [resetKey, setResetKey] = useState(0);
+  const [discountRate, setDiscountRate] = useState(1.0);
 
   const handleReset = () => {
     setResetKey((k) => k + 1);
+    setDiscountRate(1.0);
   };
 
   return (
@@ -250,8 +252,18 @@ export default function SupervisionFeeCalculator() {
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto" key={resetKey}>
-        {tab === 'supervision' && <SupervisionTab />}
-        {tab === 'daily' && <DailyTab />}
+        {tab === 'supervision' && (
+          <SupervisionTab
+            discountRate={discountRate}
+            onDiscountChange={setDiscountRate}
+          />
+        )}
+        {tab === 'daily' && (
+          <DailyTab
+            discountRate={discountRate}
+            onDiscountChange={setDiscountRate}
+          />
+        )}
       </div>
     </div>
   );
@@ -260,7 +272,13 @@ export default function SupervisionFeeCalculator() {
 /* ═══════════════════════════════════════════
    施工监理服务收费 Tab
    ═══════════════════════════════════════════ */
-function SupervisionTab() {
+function SupervisionTab({
+  discountRate,
+  onDiscountChange,
+}: {
+  discountRate: number;
+  onDiscountChange: (r: number) => void;
+}) {
   const [amount, setAmount] = useState('');
   const [profIdx, setProfIdx] = useState(
     ALL_PROF.findIndex((p) => p.name === '建筑、人防、市政公用工程'),
@@ -373,6 +391,15 @@ function SupervisionTab() {
           {error && <p className="mt-1.5 text-xs text-red-500">{error}</p>}
         </div>
 
+        {/* Discount selector */}
+        <div className="py-1">
+          <DiscountSelector
+            rate={discountRate}
+            onRateChange={onDiscountChange}
+            label="费用折扣："
+          />
+        </div>
+
         {/* 专业调整系数 */}
         <div>
           <label className="block text-xs font-normal text-[#1a1a1a] mb-1.5">
@@ -468,13 +495,35 @@ function SupervisionTab() {
                   {fmt(result.benchmark)} 万元
                 </span>
               </div>
+              {discountRate < 1.0 && (
+                <div className="flex justify-between py-1.5">
+                  <span className="text-[#000000] font-medium">折扣后价格</span>
+                  <span className="text-lg font-bold text-[#000000]">
+                    {fmt(result.benchmark * discountRate)} 万元
+                  </span>
+                </div>
+              )}
               <div className="flex justify-between py-1.5 text-xs text-[#333333]">
                 <span>浮动下限（-20%）</span>
-                <span>{fmt(result.benchmark * 0.8)} 万元</span>
+                <span>
+                  {fmt(
+                    result.benchmark *
+                      (discountRate < 1 ? discountRate : 1) *
+                      0.8,
+                  )}{' '}
+                  万元
+                </span>
               </div>
               <div className="flex justify-between py-1.5 text-xs text-[#333333]">
                 <span>浮动上限（+20%）</span>
-                <span>{fmt(result.benchmark * 1.2)} 万元</span>
+                <span>
+                  {fmt(
+                    result.benchmark *
+                      (discountRate < 1 ? discountRate : 1) *
+                      1.2,
+                  )}{' '}
+                  万元
+                </span>
               </div>
             </div>
             {/* 参数回显 */}
@@ -593,14 +642,6 @@ function SupervisionTab() {
             )}
           </div>
         )}
-        {result && (
-          <div className="mt-4">
-            <DiscountBar
-              baseFee={result.benchmark * 10000}
-              label="监理费折扣"
-            />
-          </div>
-        )}
       </div>
 
       {/* Right: Reference table */}
@@ -658,7 +699,13 @@ function SupervisionTab() {
 /* ═══════════════════════════════════════════
    人工日费用 Tab
    ═══════════════════════════════════════════ */
-function DailyTab() {
+function DailyTab({
+  discountRate,
+  onDiscountChange,
+}: {
+  discountRate: number;
+  onDiscountChange: (r: number) => void;
+}) {
   const [rows, setRows] = useState<
     { level: string; days: string; rate: string }[]
   >([
@@ -693,6 +740,16 @@ function DailyTab() {
           <h4 className="text-sm font-normal text-[#000000] mb-4">
             人工日费用计算
           </h4>
+
+          {/* Discount selector */}
+          <div className="mb-3">
+            <DiscountSelector
+              rate={discountRate}
+              onRateChange={onDiscountChange}
+              label="费用折扣："
+            />
+          </div>
+
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-[#D4D4D4]">
@@ -757,15 +814,24 @@ function DailyTab() {
             </tbody>
           </table>
 
-          <div className="mt-4 pt-3 border-t border-[#D4D4D4] flex justify-between items-center">
-            <span className="text-sm font-normal text-[#000000]">合计</span>
-            <span className="text-lg font-normal text-[#000000]">
-              {total > 0 ? `${fmt(total)} 元` : '-'}
-            </span>
+          <div className="mt-4 pt-3 border-t border-[#D4D4D4]">
+            <div className="flex justify-between items-center">
+              <span className="text-sm font-normal text-[#000000]">合计</span>
+              <span className="text-lg font-normal text-[#000000]">
+                {total > 0 ? `${fmt(total)} 元` : '-'}
+              </span>
+            </div>
+            {discountRate < 1.0 && total > 0 && (
+              <div className="flex justify-between items-center mt-1">
+                <span className="text-sm font-medium text-[#000000]">
+                  折扣后
+                </span>
+                <span className="text-lg font-bold text-[#000000]">
+                  {fmt(total * discountRate)} 元
+                </span>
+              </div>
+            )}
           </div>
-        </div>
-        <div className="mt-4">
-          <DiscountBar baseFee={total} label="人工日费用折扣" />
         </div>
       </div>
 
