@@ -31,7 +31,21 @@ interface CustomLink {
   group: string;
 }
 
+const STORAGE_KEY = 'bid_custom_sites';
 const HIDDEN_KEY = 'bid_hidden_builtins';
+
+function loadCustomSites(): CustomLink[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveCustomSites(links: CustomLink[]) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(links));
+}
 
 function loadHiddenBuiltins(): string[] {
   try {
@@ -237,23 +251,31 @@ const GROUP_COLORS: Record<string, string> = {
 const STAR_COLOR = '#EC4899';
 
 export default function BidHome() {
-  const [customSites, setCustomSites] = useState<CustomLink[]>([]);
+  // ---- localStorage custom sites (with custom groups) ----
+  const [customSites, setCustomSites] = useState<CustomLink[]>(loadCustomSites);
+  // ---- API starred sites (常用模块) ----
+  const [starredSites, setStarredSites] = useState<CustomLink[]>([]);
   const [hiddenBuiltins, setHiddenBuiltins] =
     useState<string[]>(loadHiddenBuiltins);
   const hiddenSet = new Set(hiddenBuiltins);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
+  const [starredEditId, setStarredEditId] = useState<string | null>(null);
   const [editingBuiltinKey, setEditingBuiltinKey] = useState<string | null>(
     null,
   );
   const [newName, setNewName] = useState('');
   const [newUrl, setNewUrl] = useState('');
+  const [newGroup, setNewGroup] = useState(GROUPS[0].title);
+  const [customGroupName, setCustomGroupName] = useState('');
+  const [isNewGroup, setIsNewGroup] = useState(false);
   const [formError, setFormError] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<{
     id?: string;
     name: string;
     url: string;
     groupTitle: string;
+    isStarred?: boolean;
   } | null>(null);
 
   // ---- Fetch starred sites from API ----
@@ -271,7 +293,7 @@ export default function BidHome() {
             group: '常用模块',
           }),
         );
-        setCustomSites(items);
+        setStarredSites(items);
       })
       .catch(() => {
         /* silent */
@@ -281,10 +303,10 @@ export default function BidHome() {
     };
   }, []);
 
-  const starredUrlSet = new Set(customSites.map((s) => s.url));
+  const starredUrlSet = new Set(starredSites.map((s) => s.url));
 
   const toggleStar = async (name: string, url: string) => {
-    const existing = customSites.find((s) => s.url === url);
+    const existing = starredSites.find((s) => s.url === url);
     if (existing?.id) {
       // Unstar
       try {
@@ -292,7 +314,7 @@ export default function BidHome() {
       } catch {
         /* silent */
       }
-      setCustomSites((prev) => prev.filter((s) => s.url !== url));
+      setStarredSites((prev) => prev.filter((s) => s.url !== url));
     } else {
       // Star
       try {
@@ -301,7 +323,7 @@ export default function BidHome() {
           site_url: url,
         });
         const newItem = res?.data || res;
-        setCustomSites((prev) => [
+        setStarredSites((prev) => [
           ...prev,
           {
             id: newItem.id,
@@ -316,10 +338,13 @@ export default function BidHome() {
     }
   };
 
-  const isEditing = editId !== null || editingBuiltinKey !== null;
+  const isEditing =
+    editId !== null || editingBuiltinKey !== null || starredEditId !== null;
 
+  // Merge built-in + localStorage custom + API starred
   const mergedGroups = (() => {
     const groupMap = new Map<string, LinkItem[]>();
+
     // Built-in groups (filter hidden)
     for (const g of GROUPS) {
       const visible = g.items.filter(
@@ -329,14 +354,25 @@ export default function BidHome() {
         groupMap.set(g.title, visible);
       }
     }
-    // API-starred sites in their own group (shown first)
-    if (customSites.length > 0) {
+
+    // localStorage custom sites — placed in their chosen groups
+    for (const site of customSites) {
+      const items = groupMap.get(site.group) || [];
+      items.push({ name: site.name, url: site.url });
+      if (!groupMap.has(site.group)) {
+        groupMap.set(site.group, items);
+      }
+    }
+
+    // API starred sites — "常用模块" group
+    if (starredSites.length > 0) {
       groupMap.set(
         '常用模块',
-        customSites.map((s) => ({ name: s.name, url: s.url })),
+        starredSites.map((s) => ({ name: s.name, url: s.url })),
       );
     }
-    // Reorder: "常用模块" group first
+
+    // Reorder: "常用模块" first
     const entries = Array.from(groupMap, ([title, items]) => ({
       title,
       items,
@@ -349,11 +385,17 @@ export default function BidHome() {
     return entries;
   })();
 
+  const groupNames = GROUPS.map((g) => g.title);
+
   const resetForm = useCallback(() => {
     setNewName('');
     setNewUrl('');
+    setNewGroup(GROUPS[0].title);
+    setCustomGroupName('');
+    setIsNewGroup(false);
     setFormError('');
     setEditId(null);
+    setStarredEditId(null);
     setEditingBuiltinKey(null);
   }, []);
 
@@ -368,20 +410,36 @@ export default function BidHome() {
       setFormError('网址需以 http:// 或 https:// 开头');
       return;
     }
+    const group = isNewGroup ? customGroupName.trim() : newGroup;
+    if (!group) {
+      setFormError('请选择或输入所属分组');
+      return;
+    }
 
     if (isEditing) {
       if (editingBuiltinKey) {
-        // Editing built-in → hide original + star via API
+        // Editing a built-in item: hide original + save as custom
         const updatedHidden = [...hiddenBuiltins, editingBuiltinKey];
         saveHiddenBuiltins(updatedHidden);
         setHiddenBuiltins(updatedHidden);
+        const updated = [...customSites, { name, url, group }];
+        saveCustomSites(updated);
+        setCustomSites(updated);
+      } else if (starredEditId) {
+        // Editing a starred site — delete old API record + create new one
+        try {
+          await deleteStarredSite(starredEditId);
+        } catch {
+          /* silent */
+        }
+        setStarredSites((prev) => prev.filter((s) => s.id !== starredEditId));
         try {
           const res = await starredSiteService.createStarredSite({
             site_name: name,
             site_url: url,
           });
           const newItem = res?.data || res;
-          setCustomSites((prev) => [
+          setStarredSites((prev) => [
             ...prev,
             {
               id: newItem.id,
@@ -394,57 +452,19 @@ export default function BidHome() {
           /* silent */
         }
       } else {
-        // Update existing starred site: delete old + create new
-        const old = customSites.find((s) => s.id === editId);
-        if (old?.id) {
-          try {
-            await deleteStarredSite(old.id);
-          } catch {
-            /* silent */
-          }
-        }
-        try {
-          const res = await starredSiteService.createStarredSite({
-            site_name: name,
-            site_url: url,
-          });
-          const newItem = res?.data || res;
-          setCustomSites((prev) =>
-            prev.map((s) =>
-              s.id === editId
-                ? {
-                    id: newItem.id,
-                    name: newItem.site_name || name,
-                    url: newItem.site_url || url,
-                    group: '常用模块',
-                  }
-                : s,
-            ),
-          );
-        } catch {
-          /* silent */
-        }
+        // Update existing custom site (by index stored in editId)
+        const idx = parseInt(editId || '0', 10);
+        const updated = customSites.map((s, i) =>
+          i === idx ? { ...s, name, url, group } : s,
+        );
+        saveCustomSites(updated);
+        setCustomSites(updated);
       }
     } else {
-      // Add new starred site
-      try {
-        const res = await starredSiteService.createStarredSite({
-          site_name: name,
-          site_url: url,
-        });
-        const newItem = res?.data || res;
-        setCustomSites((prev) => [
-          ...prev,
-          {
-            id: newItem.id,
-            name: newItem.site_name || name,
-            url: newItem.site_url || url,
-            group: '常用模块',
-          },
-        ]);
-      } catch {
-        /* silent */
-      }
+      // Add new custom site
+      const updated = [...customSites, { name, url, group }];
+      saveCustomSites(updated);
+      setCustomSites(updated);
     }
     setDialogOpen(false);
     resetForm();
@@ -455,14 +475,33 @@ export default function BidHome() {
     url: string,
     groupTitle: string,
     isBuiltin: boolean,
-    customId?: string,
+    customIndex?: number,
+    starredApiId?: string,
   ) => {
     if (isBuiltin) {
       setEditId(null);
+      setStarredEditId(null);
       setEditingBuiltinKey(linkKey(name, url));
-    } else {
-      setEditId(customId || null);
+      setNewGroup(groupTitle);
+      setIsNewGroup(false);
+    } else if (starredApiId) {
+      setEditId(null);
+      setStarredEditId(starredApiId);
       setEditingBuiltinKey(null);
+      setNewGroup(GROUPS[0].title);
+      setIsNewGroup(false);
+    } else {
+      setEditId(customIndex!.toString());
+      setStarredEditId(null);
+      setEditingBuiltinKey(null);
+      const builtinGroup = GROUPS.some((g) => g.title === groupTitle);
+      if (builtinGroup) {
+        setNewGroup(groupTitle);
+        setIsNewGroup(false);
+      } else {
+        setCustomGroupName(groupTitle);
+        setIsNewGroup(true);
+      }
     }
     setNewName(name);
     setNewUrl(url);
@@ -472,7 +511,21 @@ export default function BidHome() {
 
   const confirmDelete = useCallback(async () => {
     if (!deleteTarget) return;
-    const { id, name, url, groupTitle } = deleteTarget;
+    const { id, name, url, groupTitle, isStarred } = deleteTarget;
+
+    // API starred site
+    if (isStarred && id) {
+      try {
+        await deleteStarredSite(id);
+      } catch {
+        /* silent */
+      }
+      setStarredSites((prev) => prev.filter((s) => s.id !== id));
+      setDeleteTarget(null);
+      return;
+    }
+
+    // Built-in item
     const isBuiltin = GROUPS.some(
       (g) =>
         g.title === groupTitle &&
@@ -483,22 +536,16 @@ export default function BidHome() {
       const updated = [...hiddenBuiltins, key];
       saveHiddenBuiltins(updated);
       setHiddenBuiltins(updated);
-    } else if (id) {
-      // Delete from API
-      try {
-        await deleteStarredSite(id);
-      } catch {
-        /* silent */
-      }
-      setCustomSites((prev) => prev.filter((s) => s.id !== id));
     } else {
-      // Fallback: match by name+url
-      setCustomSites((prev) =>
-        prev.filter((s) => !(s.name === name && s.url === url)),
+      // localStorage custom site
+      const updated = customSites.filter(
+        (s) => !(s.name === name && s.url === url && s.group === groupTitle),
       );
+      saveCustomSites(updated);
+      setCustomSites(updated);
     }
     setDeleteTarget(null);
-  }, [deleteTarget, hiddenBuiltins]);
+  }, [deleteTarget, hiddenBuiltins, customSites]);
 
   return (
     <>
@@ -556,7 +603,7 @@ export default function BidHome() {
                       : groupColor || '#D4D4D4';
                     return (
                       <div
-                        key={item.url}
+                        key={linkKey(item.name, item.url)}
                         className="group/card relative flex items-start gap-2 p-3 rounded-xl border border-[#E8E8E8] bg-white hover:shadow-[0_2px_12px_rgba(0,0,0,0.06)] hover:border-[#D4D4D4] transition-all"
                         style={{
                           borderLeftColor: accentColor,
@@ -603,78 +650,85 @@ export default function BidHome() {
                               stroke="currentColor"
                             />
                           </button>
-                          {/* Edit & Delete for starred items */}
-                          {isStarred && (
-                            <>
-                              <button
-                                onClick={() => {
-                                  const site = customSites.find(
-                                    (s) => s.url === item.url,
-                                  );
-                                  openEdit(
-                                    item.name,
-                                    item.url,
-                                    group.title,
-                                    false,
-                                    site?.id,
-                                  );
-                                }}
-                                className="shrink-0 size-5 flex items-center justify-center rounded text-[#A3A3A3] hover:text-[#2563EB] hover:bg-blue-50 transition-colors"
-                                title="编辑"
-                              >
-                                <Pencil className="size-3" />
-                              </button>
-                              <button
-                                onClick={() => {
-                                  const site = customSites.find(
-                                    (s) => s.url === item.url,
-                                  );
-                                  setDeleteTarget({
-                                    id: site?.id,
-                                    name: item.name,
-                                    url: item.url,
-                                    groupTitle: group.title,
-                                  });
-                                }}
-                                className="shrink-0 size-5 flex items-center justify-center rounded text-[#A3A3A3] hover:text-red-500 hover:bg-red-50 transition-colors"
-                                title="删除"
-                              >
-                                <Trash2 className="size-3" />
-                              </button>
-                            </>
-                          )}
-                          {/* Edit & Hide for built-in items (not starred) */}
-                          {!isStarred && !isStarGroup && (
-                            <>
-                              <button
-                                onClick={() =>
-                                  openEdit(
-                                    item.name,
-                                    item.url,
-                                    group.title,
-                                    true,
-                                  )
-                                }
-                                className="shrink-0 size-5 flex items-center justify-center rounded text-[#A3A3A3] hover:text-[#2563EB] hover:bg-blue-50 transition-colors opacity-0 group-hover/card:opacity-100"
-                                title="编辑"
-                              >
-                                <Pencil className="size-3" />
-                              </button>
-                              <button
-                                onClick={() =>
-                                  setDeleteTarget({
-                                    name: item.name,
-                                    url: item.url,
-                                    groupTitle: group.title,
-                                  })
-                                }
-                                className="shrink-0 size-5 flex items-center justify-center rounded text-[#A3A3A3] hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover/card:opacity-100"
-                                title="隐藏"
-                              >
-                                <Trash2 className="size-3" />
-                              </button>
-                            </>
-                          )}
+                          {/* Edit button */}
+                          <button
+                            onClick={() => {
+                              const isBuiltin = GROUPS.some(
+                                (g) =>
+                                  g.title === group.title &&
+                                  g.items.some(
+                                    (it) =>
+                                      it.name === item.name &&
+                                      it.url === item.url,
+                                  ),
+                              );
+                              if (isBuiltin) {
+                                openEdit(
+                                  item.name,
+                                  item.url,
+                                  group.title,
+                                  true,
+                                );
+                              } else if (isStarGroup) {
+                                const ss = starredSites.find(
+                                  (s) => s.url === item.url,
+                                );
+                                openEdit(
+                                  item.name,
+                                  item.url,
+                                  group.title,
+                                  false,
+                                  undefined,
+                                  ss?.id,
+                                );
+                              } else {
+                                const idx = customSites.findIndex(
+                                  (s) =>
+                                    s.name === item.name &&
+                                    s.url === item.url &&
+                                    s.group === group.title,
+                                );
+                                openEdit(
+                                  item.name,
+                                  item.url,
+                                  group.title,
+                                  false,
+                                  idx,
+                                );
+                              }
+                            }}
+                            className="shrink-0 size-5 flex items-center justify-center rounded text-[#A3A3A3] hover:text-[#2563EB] hover:bg-blue-50 transition-colors"
+                            title="编辑"
+                          >
+                            <Pencil className="size-3" />
+                          </button>
+                          {/* Delete button */}
+                          <button
+                            onClick={() => {
+                              if (isStarGroup) {
+                                const ss = starredSites.find(
+                                  (s) => s.url === item.url,
+                                );
+                                setDeleteTarget({
+                                  id: ss?.id,
+                                  name: item.name,
+                                  url: item.url,
+                                  groupTitle: group.title,
+                                  isStarred: true,
+                                });
+                              } else {
+                                setDeleteTarget({
+                                  name: item.name,
+                                  url: item.url,
+                                  groupTitle: group.title,
+                                });
+                              }
+                            }}
+                            className="shrink-0 size-5 flex items-center justify-center rounded text-[#A3A3A3] hover:text-red-500 hover:bg-red-50 transition-colors"
+                            title="删除"
+                          >
+                            <Trash2 className="size-3" />
+                          </button>
                         </div>
                       </div>
                     );
@@ -744,6 +798,55 @@ export default function BidHome() {
                 }}
                 placeholder="https://www.example.com"
               />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="site-group">所属分组</Label>
+              {!isNewGroup ? (
+                <select
+                  id="site-group"
+                  value={newGroup}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (val === '__new__') {
+                      setIsNewGroup(true);
+                      setCustomGroupName('');
+                    } else {
+                      setNewGroup(val);
+                    }
+                    setFormError('');
+                  }}
+                  className="flex-1 h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  {groupNames.map((g) => (
+                    <option key={g} value={g}>
+                      {g}
+                    </option>
+                  ))}
+                  <option value="__new__">+ 新建分组...</option>
+                </select>
+              ) : (
+                <div className="flex gap-2">
+                  <Input
+                    value={customGroupName}
+                    onChange={(e) => {
+                      setCustomGroupName(e.target.value);
+                      setFormError('');
+                    }}
+                    placeholder="输入新分组名称"
+                    className="flex-1"
+                  />
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setIsNewGroup(false);
+                      setNewGroup(GROUPS[0].title);
+                    }}
+                  >
+                    取消
+                  </Button>
+                </div>
+              )}
             </div>
             {formError && <p className="text-sm text-red-500">{formError}</p>}
           </div>

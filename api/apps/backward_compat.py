@@ -376,16 +376,22 @@ async def deprecated_file_upload_info():
     return await document_api.upload_info(tenant_id=tenant_id)
 
 
-def register_backward_compat_routes(app_instance):
-    """
-    Register all backward compatibility routes with the app.
-    """
+def _safe_register(app_instance, blueprint, url_prefix, name_hint=""):
+    """Register a blueprint, ignoring ValueError if already registered."""
     try:
-        app_instance.register_blueprint(manager, url_prefix="/api/v1")
-        app_instance.register_blueprint(chat_api.manager, url_prefix="/api/v1")
-        from api.apps.restful_apis import bid_app, starred_site_app
-        app_instance.register_blueprint(bid_app.manager, url_prefix="/api/v1")
-        app_instance.register_blueprint(starred_site_app.manager, url_prefix="/api/v1")
-        logging.info("Backward compatibility routes registered successfully.")
+        app_instance.register_blueprint(blueprint, url_prefix=url_prefix)
     except ValueError:
-        pass  # already registered (retry loop)
+        pass  # already registered (e.g. hot reload / worker fork)
+
+
+def register_backward_compat_routes(app_instance):
+    """Register all backward compatibility routes with the app."""
+    _safe_register(app_instance, manager, "/api/v1")
+    _safe_register(app_instance, chat_api.manager, "/api/v1")
+
+    from api.apps.restful_apis import bid_app, starred_site_app
+
+    _safe_register(app_instance, bid_app.manager, "/api/v1")
+    _safe_register(app_instance, starred_site_app.manager, "/api/v1")
+
+    logging.info("Backward compatibility routes registered successfully.")
