@@ -27,15 +27,15 @@ def download_file(url: str, dest_dir: str) -> str:
 
     # 尝试从 Content-Disposition 或 URL 提取文件名
     filename = None
+    from urllib.parse import unquote
     cd = resp.headers.get("Content-Disposition", "")
     if "filename=" in cd:
         import re
         match = re.search(r'filename[^;=\n]*=["\']?([^"\'\n]*)["\']?', cd)
         if match:
-            filename = match.group(1)
+            filename = unquote(match.group(1))
 
     if not filename:
-        from urllib.parse import unquote
         filename = unquote(os.path.basename(url.split("?")[0]))
     if not filename or "." not in filename:
         # 从 Content-Type 推导后缀

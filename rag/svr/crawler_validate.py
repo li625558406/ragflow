@@ -174,14 +174,18 @@ def main():
                 continue
 
             # Engine returned ok/partial — extract stats
-            total_new = summary.get("total_new_items", 0)
+            # Handle both single-section ({new_items}) and multi-section ({total_new_items}) formats
+            total_new = summary.get("total_new_items", summary.get("new_items", 0))
             section_stats = summary.get("sections", {})
 
-            # Aggregate scraped count from all sections
-            total_scraped = sum(
-                s.get("scanned_items", 0)
-                for s in section_stats.values()
-            )
+            # Aggregate scraped count from all sections, or use top-level if single-section
+            if section_stats:
+                total_scraped = sum(
+                    s.get("scanned_items", 0)
+                    for s in section_stats.values()
+                )
+            else:
+                total_scraped = summary.get("scanned_items", 0)
 
             # Attachment check
             att_count = _count_attachments(sid)

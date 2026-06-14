@@ -296,9 +296,18 @@ export default function ContractList() {
     publishTime: string,
   ) => {
     try {
-      await contractFetch(`contracts/${projectId}/parse`, {
-        publish_time: publishTime,
+      const resp = await fetch(`/api/v1/bid/contracts/${projectId}/parse`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: getAuthorization(),
+        },
+        body: JSON.stringify({ publish_time: publishTime }),
       });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const json = await resp.json();
+      if (json.code !== 0)
+        throw new Error(json.message || `API error code=${json.code}`);
       setParseStatus({
         status: 'parsing',
         progress: 0,
