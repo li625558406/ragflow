@@ -338,8 +338,17 @@ def list_bid_projects():
             # 异步缓存到 DB（fire-and-forget，不阻塞返回）
             threading.Thread(target=_cache_api_results, args=(items, data), daemon=True).start()
 
+            # 按 id 去重（第三方 API 可能返回重复项）
+            seen_ids = set()
+            unique_items = []
+            for item in items:
+                pid = item.get("id")
+                if pid and pid not in seen_ids:
+                    seen_ids.add(pid)
+                    unique_items.append(item)
+
             return get_json_result(data={
-                "projects": [_api_item_to_project(item, data) for item in items],
+                "projects": [_api_item_to_project(item, data) for item in unique_items],
                 "total": api_total,
             })
         except Exception as e:
@@ -1230,11 +1239,12 @@ def bid_crawler_stats():
     except Exception as e:
         logging.warning("crawler-stats: Redis scan failed: %s", e)
 
-    # 3. DB aggregate stats
+    # 3. DB aggregate stats + per-site item counts
     total_items = 0
     items_24h = 0
     items_7d = 0
     latest_publish = None
+    per_site_stats = {}
     try:
         total_items = BidProject.select().count()
         since_24h = datetime.now() - timedelta(hours=24)
@@ -1250,6 +1260,42 @@ def bid_crawler_stats():
         ).order_by(BidProject.publish_time.desc()).first()
         if latest_row and latest_row.publish_time:
             latest_publish = latest_row.publish_time.strftime("%Y-%m-%d %H:%M")
+
+        # Per-site: total count + 24h count + latest publish_time
+        rows = (BidProject.select(
+            fn.JSON_UNQUOTE(fn.JSON_EXTRACT(BidProject.raw_json, "$.crawler_site_id")).alias("sid"),
+            fn.COUNT(BidProject.id).alias("cnt"),
+            fn.MAX(BidProject.publish_time).alias("latest_pub"),
+        ).where(
+            BidProject.raw_json.is_null(False),
+            BidProject.raw_json.contains("crawler_site_id"),
+        ).group_by(
+            fn.JSON_UNQUOTE(fn.JSON_EXTRACT(BidProject.raw_json, "$.crawler_site_id")),
+        ))
+        for r in rows:
+            sid = r.sid or "unknown"
+            per_site_stats[sid] = {
+                "total_items": r.cnt,
+                "latest_publish": r.latest_pub.strftime("%Y-%m-%d %H:%M") if r.latest_pub else None,
+            }
+
+        # Per-site 24h counts
+        rows_24h = (BidProject.select(
+            fn.JSON_UNQUOTE(fn.JSON_EXTRACT(BidProject.raw_json, "$.crawler_site_id")).alias("sid"),
+            fn.COUNT(BidProject.id).alias("cnt"),
+        ).where(
+            BidProject.raw_json.is_null(False),
+            BidProject.raw_json.contains("crawler_site_id"),
+            BidProject.created_at >= since_24h,
+        ).group_by(
+            fn.JSON_UNQUOTE(fn.JSON_EXTRACT(BidProject.raw_json, "$.crawler_site_id")),
+        ))
+        for r in rows_24h:
+            sid = r.sid or "unknown"
+            if sid in per_site_stats:
+                per_site_stats[sid]["items_24h"] = r.cnt
+            else:
+                per_site_stats[sid] = {"total_items": 0, "items_24h": r.cnt, "latest_publish": None}
     except Exception as e:
         logging.warning("crawler-stats: DB aggregate failed: %s", e)
 
@@ -1274,6 +1320,9 @@ def bid_crawler_stats():
         if status == "stale":
             stale_count += 1
 
+        # Inject per-site item stats
+        site_stat = per_site_stats.get(site_id, {})
+
         sites_list.append({
             "site_id": site_id,
             "name": cfg.get("name", site_id),
@@ -1282,12 +1331,16 @@ def bid_crawler_stats():
             "last_check_ago": last_check_ago,
             "status": status,
             "is_crawling": is_crawling,
+            "total_items": site_stat.get("total_items", 0),
+            "items_24h": site_stat.get("items_24h", 0),
+            "latest_publish": site_stat.get("latest_publish"),
         })
 
-    # Sort: crawling first, then by detect_interval asc (high-freq first)
+    # Sort: crawling first, then by detect_interval asc, then by total_items desc
     sites_list.sort(key=lambda s: (
         0 if s["status"] == "crawling" else 1,
         s["detect_interval"],
+        -s.get("total_items", 0),
     ))
 
     # 5. Recent scheduled_task_log entries for detector/nightly

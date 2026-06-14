@@ -673,9 +673,9 @@ export function BidList({
           ) : projects.length > 0 ? (
             <>
               <div className="space-y-3">
-                {projects.map((project) => (
+                {projects.map((project, idx) => (
                   <BidCard
-                    key={project.id}
+                    key={project.id ?? idx}
                     project={project}
                     areaNameMap={areaNameMap}
                     industryNameMap={industryNameMap}

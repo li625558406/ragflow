@@ -14,6 +14,9 @@ interface SiteRow {
   last_check_ago: number | null;
   status: 'ok' | 'stale' | 'crawling' | 'never' | 'error';
   is_crawling: boolean;
+  total_items: number;
+  items_24h: number;
+  latest_publish: string | null;
 }
 
 interface DetectorInfo {
@@ -302,6 +305,15 @@ export default function CrawlerMonitor() {
                 <th className="text-center px-3 py-2.5 font-medium w-16">
                   间隔
                 </th>
+                <th className="text-center px-3 py-2.5 font-medium w-20">
+                  数据量
+                </th>
+                <th className="text-center px-3 py-2.5 font-medium w-20">
+                  24h新增
+                </th>
+                <th className="text-center px-3 py-2.5 font-medium w-28">
+                  最新发布
+                </th>
                 <th className="text-center px-3 py-2.5 font-medium w-24">
                   上次探测
                 </th>
@@ -331,6 +343,29 @@ export default function CrawlerMonitor() {
                     </td>
                     <td className="text-center px-3 py-2.5 text-xs text-[#6B7280]">
                       {formatInterval(site.detect_interval)}
+                    </td>
+                    <td className="text-center px-3 py-2.5 text-xs">
+                      {site.total_items > 0 ? (
+                        <span className="font-semibold text-[#2E365A]">
+                          {formatNumber(site.total_items)}
+                        </span>
+                      ) : (
+                        <span className="text-neutral-400">-</span>
+                      )}
+                    </td>
+                    <td className="text-center px-3 py-2.5 text-xs">
+                      {site.items_24h > 0 ? (
+                        <span className="font-medium text-emerald-600">
+                          +{formatNumber(site.items_24h)}
+                        </span>
+                      ) : (
+                        <span className="text-neutral-400">-</span>
+                      )}
+                    </td>
+                    <td className="text-center px-3 py-2.5 text-xs text-[#6B7280]">
+                      {site.latest_publish || (
+                        <span className="text-neutral-400">-</span>
+                      )}
                     </td>
                     <td className="text-center px-3 py-2.5 text-xs text-[#6B7280]">
                       {site.last_check_ago != null ? (
