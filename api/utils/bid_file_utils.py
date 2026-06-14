@@ -22,7 +22,8 @@ def download_file(url: str, dest_dir: str) -> str:
             filename = match.group(1)
 
     if not filename:
-        filename = os.path.basename(url.split("?")[0])
+        from urllib.parse import unquote
+        filename = unquote(os.path.basename(url.split("?")[0]))
     if not filename or "." not in filename:
         # 从 Content-Type 推导后缀
         ct = resp.headers.get("Content-Type", "")

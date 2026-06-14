@@ -285,7 +285,7 @@ export default function BidHome() {
       .listStarredSites()
       .then((res) => {
         if (cancelled) return;
-        const items = (res?.data?.items || []).map(
+        const items = (res?.data?.data?.items || []).map(
           (item: { id: string; site_name: string; site_url: string }) => ({
             id: item.id,
             name: item.site_name,
@@ -322,7 +322,7 @@ export default function BidHome() {
           site_name: name,
           site_url: url,
         });
-        const newItem = res?.data || res;
+        const newItem = res?.data?.data || res?.data;
         setStarredSites((prev) => [
           ...prev,
           {
@@ -358,7 +358,12 @@ export default function BidHome() {
     // localStorage custom sites — placed in their chosen groups
     for (const site of customSites) {
       const items = groupMap.get(site.group) || [];
-      items.push({ name: site.name, url: site.url });
+      const exists = items.some(
+        (it) => it.name === site.name && it.url === site.url,
+      );
+      if (!exists) {
+        items.push({ name: site.name, url: site.url });
+      }
       if (!groupMap.has(site.group)) {
         groupMap.set(site.group, items);
       }
@@ -438,7 +443,7 @@ export default function BidHome() {
             site_name: name,
             site_url: url,
           });
-          const newItem = res?.data || res;
+          const newItem = res?.data?.data || res?.data;
           setStarredSites((prev) => [
             ...prev,
             {

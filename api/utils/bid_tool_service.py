@@ -26,6 +26,7 @@ import logging
 import os
 import tempfile
 import threading
+from urllib.parse import unquote
 import time
 from datetime import datetime, timedelta
 from io import BytesIO
@@ -99,7 +100,7 @@ def _extract_file_urls_from_html(html: str) -> list:
         r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>([^<]*)</a>', html, re.IGNORECASE
     ):
         url = match.group(1).strip()
-        text = match.group(2).strip() or url.rsplit("/", 1)[-1]
+        text = match.group(2).strip() or unquote(url.rsplit("/", 1)[-1])
         url_lower = url.lower()
         if re.search(file_ext_pattern, url_lower) or re.search(file_ext_pattern, text.lower()):
             if url not in seen_urls:
@@ -890,21 +891,55 @@ def import_bid_to_kb(
     # --- Dedup check ---
     existing = BidProjectParseService.get_by_project(project_id)
     if existing and existing.get("status") == "done":
-        return {
-            "kb_id": existing["kb_id"],
-            "combined_doc_id": existing.get("combined_doc_id"),
-            "status": "done",
-            "progress": 1.0,
-            "message": "Project already imported to KB.",
-        }
+        # 验证附件是否已成功上传到KB。若仅正文被解析但附件缺失，
+        # 重置状态并重新导入（处理首次导入时文件下载失败的情况）。
+        queued_ids = json.loads(existing.get("queued_doc_ids") or "[]")
+        files = (pre_fetched_detail or {}).get("files") or BidProjectFileService.get_by_project(project_id) or []
+        files_with_urls = [f for f in files if f.get("file_url")]
+        files_missing_kb = [f for f in files_with_urls if not f.get("kb_document_id")]
+        if files_missing_kb and len(queued_ids) <= 1:
+            logging.info(
+                "Tool service: project %d status=done but %d files missing kb_document_id (queued=%d), re-importing",
+                project_id, len(files_missing_kb), len(queued_ids),
+            )
+            # 继续往下走，触发重新导入
+        else:
+            return {
+                "kb_id": existing["kb_id"],
+                "combined_doc_id": existing.get("combined_doc_id"),
+                "status": "done",
+                "progress": 1.0,
+                "message": "Project already imported to KB.",
+            }
     if existing and existing.get("status") == "parsing":
-        return {
-            "kb_id": existing["kb_id"],
-            "combined_doc_id": existing.get("combined_doc_id"),
-            "status": "parsing",
-            "progress": existing.get("progress", 0),
-            "message": existing.get("progress_msg", "Project is currently being imported/parsed."),
-        }
+        updated_at = existing.get("updated_at")
+        if updated_at:
+            if isinstance(updated_at, str):
+                try:
+                    updated_at = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+                except Exception:
+                    updated_at = None
+            if updated_at and (datetime.now() - updated_at).total_seconds() > 600:
+                logging.info(
+                    "Tool service: project %d stuck in parsing for >10min, re-importing",
+                    project_id,
+                )
+            else:
+                return {
+                    "kb_id": existing["kb_id"],
+                    "combined_doc_id": existing.get("combined_doc_id"),
+                    "status": "parsing",
+                    "progress": existing.get("progress", 0),
+                    "message": existing.get("progress_msg", "Project is currently being imported/parsed."),
+                }
+        else:
+            return {
+                "kb_id": existing["kb_id"],
+                "combined_doc_id": existing.get("combined_doc_id"),
+                "status": "parsing",
+                "progress": existing.get("progress", 0),
+                "message": existing.get("progress_msg", "Project is currently being imported/parsed."),
+            }
 
     # --- Mark as parsing and start background thread ---
     BidProjectParseService.upsert({
@@ -2260,21 +2295,52 @@ def import_contract_to_kb(
     # --- Dedup check ---
     existing = BidContractParseService.get_by_project(project_id)
     if existing and existing.get("status") == "done":
-        return {
-            "kb_id": existing["kb_id"],
-            "combined_doc_id": existing.get("combined_doc_id"),
-            "status": "done",
-            "progress": 1.0,
-            "message": "Project already imported to KB.",
-        }
+        queued_ids = json.loads(existing.get("queued_doc_ids") or "[]")
+        files = (pre_fetched_detail or {}).get("files") or BidProjectFileService.get_by_project(project_id) or []
+        files_with_urls = [f for f in files if f.get("file_url")]
+        files_missing_kb = [f for f in files_with_urls if not f.get("kb_document_id")]
+        if files_missing_kb and len(queued_ids) <= 1:
+            logging.info(
+                "Tool service: contract %d status=done but %d files missing kb_document_id (queued=%d), re-importing",
+                project_id, len(files_missing_kb), len(queued_ids),
+            )
+        else:
+            return {
+                "kb_id": existing["kb_id"],
+                "combined_doc_id": existing.get("combined_doc_id"),
+                "status": "done",
+                "progress": 1.0,
+                "message": "Project already imported to KB.",
+            }
     if existing and existing.get("status") == "parsing":
-        return {
-            "kb_id": existing["kb_id"],
-            "combined_doc_id": existing.get("combined_doc_id"),
-            "status": "parsing",
-            "progress": existing.get("progress", 0),
-            "message": existing.get("progress_msg", "Project is currently being imported/parsed."),
-        }
+        updated_at = existing.get("updated_at")
+        if updated_at:
+            if isinstance(updated_at, str):
+                try:
+                    updated_at = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+                except Exception:
+                    updated_at = None
+            if updated_at and (datetime.now() - updated_at).total_seconds() > 600:
+                logging.info(
+                    "Tool service: contract %d stuck in parsing for >10min, re-importing",
+                    project_id,
+                )
+            else:
+                return {
+                    "kb_id": existing["kb_id"],
+                    "combined_doc_id": existing.get("combined_doc_id"),
+                    "status": "parsing",
+                    "progress": existing.get("progress", 0),
+                    "message": existing.get("progress_msg", "Project is currently being imported/parsed."),
+                }
+        else:
+            return {
+                "kb_id": existing["kb_id"],
+                "combined_doc_id": existing.get("combined_doc_id"),
+                "status": "parsing",
+                "progress": existing.get("progress", 0),
+                "message": existing.get("progress_msg", "Project is currently being imported/parsed."),
+            }
 
     # --- Mark as parsing and start background thread ---
     BidContractParseService.upsert({

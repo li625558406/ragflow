@@ -6,7 +6,14 @@ import { SearchHero } from '@/pages/home/search-hero';
 import { getAuthorization } from '@/utils/authorization-util';
 import { format } from 'date-fns';
 import { X } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { DateRange } from 'react-day-picker';
 
 export type BidProject = {
@@ -320,6 +327,7 @@ export function BidList({
     setAppliedFilters(advFilters);
 
     pageRef.current = 1;
+    scrollPositionRef.current = 0; // reset scroll position on new search
 
     const params: Record<string, any> = { page: 1, items_per_page: PAGE_SIZE };
     if (keyword) params.keyword = keyword;
@@ -354,6 +362,21 @@ export function BidList({
   // --- Infinite scroll ---
   const sentinelRef = useRef<HTMLDivElement>(null);
   const loadingMoreRef = useRef(false);
+
+  // --- Scroll position preservation ---
+  const listContainerRef = useRef<HTMLDivElement>(null);
+  const scrollPositionRef = useRef(0);
+
+  // Restore scroll position when returning from detail view (fires before paint)
+  useLayoutEffect(() => {
+    if (selectedProject !== null) return; // still in detail view
+    if (!hasSearched) return; // search hero, no list to restore
+    const saved = scrollPositionRef.current;
+    if (!saved) return; // nothing to restore
+    if (listContainerRef.current) {
+      listContainerRef.current.scrollTop = saved;
+    }
+  }, [selectedProject, hasSearched]);
 
   useEffect(() => {
     loadingMoreRef.current = loadingMore;
@@ -465,6 +488,10 @@ export function BidList({
 
   // --- Actions ---
   const handleView = (project: BidProject) => {
+    // Save scroll position before switching to detail
+    if (listContainerRef.current) {
+      scrollPositionRef.current = listContainerRef.current.scrollTop;
+    }
     setSelectedProject({
       id: project.id,
       publish_time: project.publish_time || '',
