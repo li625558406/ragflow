@@ -419,4 +419,5 @@ export default {
   bidProjectParse: (id: number) => `${restAPIv1}/bid/projects/${id}/parse`,
   bidProjectParseStatus: (id: number) =>
     `${restAPIv1}/bid/projects/${id}/parse-status`,
+  bidCrawlerStats: `${restAPIv1}/bid/crawler-stats`,
 };

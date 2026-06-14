@@ -6,6 +6,7 @@ import BidHome from './bid-home';
 import CcgpSearch from './ccgp-search';
 import ConstructionList from './construction-list';
 import ContractList from './contract-list';
+import CrawlerMonitor from './crawler-monitor';
 import CreditChinaSearch from './credit-china-search';
 import EnterpriseSearch from './enterprise-search';
 import ShixinSearch from './shixin-search';
@@ -65,6 +66,12 @@ const modules: ModuleItem[] = [
     name: '政府采购违法失信',
     description: '查询政府采购严重违法失信记录',
     icon: 'alert-triangle',
+  },
+  {
+    id: 'crawler-monitor',
+    name: '爬虫监控',
+    description: '实时监控爬虫运行状态与数据采集',
+    icon: 'activity',
   },
 ];
 
@@ -138,7 +145,7 @@ export default function BidPanel() {
       </button>
 
       {/* Right: Module content */}
-      <div className="flex-1 overflow-y-auto bg-[#FFFFFF] min-w-0">
+      <div className="flex-1 flex flex-col min-h-0 overflow-hidden bg-[#FFFFFF] min-w-0 relative">
         {selectedModule?.id === 'bid-home' && <BidHome />}
         {selectedModule?.id === 'bid-search' && (
           <BidList setListLength={() => {}} />
@@ -149,6 +156,7 @@ export default function BidPanel() {
         {selectedModule?.id === 'shixin-search' && <ShixinSearch />}
         {selectedModule?.id === 'credit-china-search' && <CreditChinaSearch />}
         {selectedModule?.id === 'ccgp-search' && <CcgpSearch />}
+        {selectedModule?.id === 'crawler-monitor' && <CrawlerMonitor />}
       </div>
     </div>
   );

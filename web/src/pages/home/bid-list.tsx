@@ -6,14 +6,7 @@ import { SearchHero } from '@/pages/home/search-hero';
 import { getAuthorization } from '@/utils/authorization-util';
 import { format } from 'date-fns';
 import { X } from 'lucide-react';
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DateRange } from 'react-day-picker';
 
 export type BidProject = {
@@ -327,7 +320,7 @@ export function BidList({
     setAppliedFilters(advFilters);
 
     pageRef.current = 1;
-    scrollPositionRef.current = 0; // reset scroll position on new search
+    if (listContainerRef.current) listContainerRef.current.scrollTop = 0;
 
     const params: Record<string, any> = { page: 1, items_per_page: PAGE_SIZE };
     if (keyword) params.keyword = keyword;
@@ -363,20 +356,8 @@ export function BidList({
   const sentinelRef = useRef<HTMLDivElement>(null);
   const loadingMoreRef = useRef(false);
 
-  // --- Scroll position preservation ---
+  // --- Scroll container ref ---
   const listContainerRef = useRef<HTMLDivElement>(null);
-  const scrollPositionRef = useRef(0);
-
-  // Restore scroll position when returning from detail view (fires before paint)
-  useLayoutEffect(() => {
-    if (selectedProject !== null) return; // still in detail view
-    if (!hasSearched) return; // search hero, no list to restore
-    const saved = scrollPositionRef.current;
-    if (!saved) return; // nothing to restore
-    if (listContainerRef.current) {
-      listContainerRef.current.scrollTop = saved;
-    }
-  }, [selectedProject, hasSearched]);
 
   useEffect(() => {
     loadingMoreRef.current = loadingMore;
@@ -488,10 +469,6 @@ export function BidList({
 
   // --- Actions ---
   const handleView = (project: BidProject) => {
-    // Save scroll position before switching to detail
-    if (listContainerRef.current) {
-      scrollPositionRef.current = listContainerRef.current.scrollTop;
-    }
     setSelectedProject({
       id: project.id,
       publish_time: project.publish_time || '',
@@ -537,24 +514,12 @@ export function BidList({
     appliedFilters,
   ]);
 
-  // --- Detail sub-page ---
-  if (selectedProject) {
-    return (
-      <BidDetailView
-        projectId={selectedProject.id}
-        publishTime={selectedProject.publish_time}
-        projectTitle={selectedProject.title}
-        onBack={() => setSelectedProject(null)}
-      />
-    );
-  }
-
   // ================================================================
   // STATE 1: Search Hero (no search performed yet)
   // ================================================================
   if (!hasSearched) {
     return (
-      <>
+      <div className="flex-1 flex flex-col min-h-0 overflow-auto">
         <SearchHero
           keyword={keyword}
           setKeyword={setKeyword}
@@ -596,7 +561,7 @@ export function BidList({
           projectTitle={configProject?.title}
           onClose={() => setConfigProject(null)}
         />
-      </>
+      </div>
     );
   }
 
@@ -604,8 +569,19 @@ export function BidList({
   // STATE 2: Search Results (card list + infinite scroll)
   // ================================================================
   return (
-    <>
-      <div className="flex-1 flex flex-col min-h-0 bg-[#F8F9FB] overflow-hidden">
+    <div className="flex-1 flex flex-col min-h-0">
+      <div
+        className="flex-1 flex flex-col min-h-0 bg-[#F8F9FB] overflow-hidden"
+        style={{
+          visibility: selectedProject ? 'hidden' : 'visible',
+          position: selectedProject ? 'absolute' : undefined,
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          pointerEvents: selectedProject ? 'none' : undefined,
+        }}
+      >
         {/* Compact search bar */}
         <div className="shrink-0 px-6 py-3">
           <div className="flex items-center gap-3">
@@ -747,12 +723,23 @@ export function BidList({
         </div>
       </div>
 
+      {selectedProject && (
+        <div className="flex-1 flex flex-col min-h-0">
+          <BidDetailView
+            projectId={selectedProject.id}
+            publishTime={selectedProject.publish_time}
+            projectTitle={selectedProject.title}
+            onBack={() => setSelectedProject(null)}
+          />
+        </div>
+      )}
+
       <BidConfigDialog
         visible={configProject !== null}
         projectId={configProject?.id ?? 0}
         projectTitle={configProject?.title}
         onClose={() => setConfigProject(null)}
       />
-    </>
+    </div>
   );
 }

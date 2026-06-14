@@ -1168,6 +1168,190 @@ def bid_stats():
 
 
 # ---------------------------------------------------------------------------
+# 爬虫监控统计
+# ---------------------------------------------------------------------------
+@manager.route("/bid/crawler-stats", methods=["GET"])  # noqa: F821
+@login_required
+def bid_crawler_stats():
+    import time
+    import os as _os
+    from api.db.db_models import (
+        BidProject, ScheduledTask, ScheduledTaskLog, CrawlerState, DB,
+    )
+    from peewee import fn
+
+    tenant_id = getattr(current_user, "id", "")
+
+    # 1. Load site configs from YAML
+    yaml_path = _os.path.join(
+        _os.path.dirname(_os.path.abspath(__file__)),
+        "..", "..", "..", "rag", "svr", "crawler_sites.yaml",
+    )
+    site_configs = {}
+    try:
+        from rag.svr.crawler_engine.config import ConfigLoader
+        loader = ConfigLoader(yaml_path)
+        for site_id, cfg in loader.load().items():
+            site_configs[site_id] = {
+                "name": cfg.name,
+                "detect_interval": cfg.detect_interval,
+                "detect_enabled": cfg.detect_enabled,
+            }
+    except Exception as e:
+        logging.warning("crawler-stats: failed to load YAML: %s", e)
+
+    # 2. Redis: detector:last_check:* + crawler_engine:* locks
+    now_ts = time.time()
+    detector_checks = {}
+    crawling_sites = set()
+    try:
+        from rag.utils.redis_conn import REDIS_CONN
+        if REDIS_CONN and REDIS_CONN.is_alive():
+            cursor = 0
+            while True:
+                cursor, keys = REDIS_CONN.REDIS.scan(
+                    cursor=cursor, match="detector:last_check:*", count=200,
+                )
+                for k in keys:
+                    # k = "detector:last_check:{site_id}:{tenant_id}"
+                    parts = k.split(":")
+                    if len(parts) >= 4:
+                        sid = parts[2]
+                        val = REDIS_CONN.get(k)
+                        if val:
+                            detector_checks[sid] = float(val)
+                if cursor == 0:
+                    break
+            # Check active crawl locks
+            for sid in site_configs:
+                lock_key = f"crawler_engine:{tenant_id}:{sid}"
+                if REDIS_CONN.exist(lock_key):
+                    crawling_sites.add(sid)
+    except Exception as e:
+        logging.warning("crawler-stats: Redis scan failed: %s", e)
+
+    # 3. DB aggregate stats
+    total_items = 0
+    items_24h = 0
+    items_7d = 0
+    latest_publish = None
+    try:
+        total_items = BidProject.select().count()
+        since_24h = datetime.now() - timedelta(hours=24)
+        items_24h = BidProject.select().where(
+            BidProject.created_at >= since_24h
+        ).count()
+        since_7d = datetime.now() - timedelta(days=7)
+        items_7d = BidProject.select().where(
+            BidProject.created_at >= since_7d
+        ).count()
+        latest_row = BidProject.select(
+            BidProject.publish_time
+        ).order_by(BidProject.publish_time.desc()).first()
+        if latest_row and latest_row.publish_time:
+            latest_publish = latest_row.publish_time.strftime("%Y-%m-%d %H:%M")
+    except Exception as e:
+        logging.warning("crawler-stats: DB aggregate failed: %s", e)
+
+    # 4. Build per-site list
+    sites_list = []
+    stale_count = 0
+    for site_id, cfg in site_configs.items():
+        last_check_ts = detector_checks.get(site_id)
+        interval = cfg.get("detect_interval", 300)
+        last_check_ago = int(now_ts - last_check_ts) if last_check_ts else None
+        is_crawling = site_id in crawling_sites
+
+        # Determine status
+        if last_check_ts is None:
+            status = "never"
+        elif is_crawling:
+            status = "crawling"
+        elif last_check_ago > interval * 3:
+            status = "stale"
+        else:
+            status = "ok"
+        if status == "stale":
+            stale_count += 1
+
+        sites_list.append({
+            "site_id": site_id,
+            "name": cfg.get("name", site_id),
+            "detect_interval": interval,
+            "last_check": last_check_ts,
+            "last_check_ago": last_check_ago,
+            "status": status,
+            "is_crawling": is_crawling,
+        })
+
+    # Sort: crawling first, then by detect_interval asc (high-freq first)
+    sites_list.sort(key=lambda s: (
+        0 if s["status"] == "crawling" else 1,
+        s["detect_interval"],
+    ))
+
+    # 5. Recent scheduled_task_log entries for detector/nightly
+    recent_runs = []
+    try:
+        detector_task = ScheduledTask.select().where(
+            ScheduledTask.script_path.contains("crawler_detector")
+        ).first()
+        nightly_task = ScheduledTask.select().where(
+            ScheduledTask.script_path.contains("crawler_nightly_full")
+        ).first()
+
+        for task in [detector_task, nightly_task]:
+            if not task:
+                continue
+            run_type = "detector" if "detector" in task.script_path else "nightly"
+            logs = (ScheduledTaskLog.select()
+                    .where(ScheduledTaskLog.task_id == task.id)
+                    .order_by(ScheduledTaskLog.start_time.desc())
+                    .limit(5))
+            for log in logs:
+                st = log.start_time
+                recent_runs.append({
+                    "type": run_type,
+                    "start_time": datetime.fromtimestamp(st).isoformat() if st else None,
+                    "status": log.status,
+                    "duration": round(log.duration or 0, 1),
+                })
+    except Exception as e:
+        logging.warning("crawler-stats: recent_runs failed: %s", e)
+
+    recent_runs.sort(key=lambda r: r.get("start_time") or "", reverse=True)
+    recent_runs = recent_runs[:10]
+
+    # 6. Detector summary
+    detector_last_run = None
+    detector_triggered = 0
+    detector_errors = 0
+    if detector_checks:
+        max_ts = max(detector_checks.values())
+        detector_last_run = datetime.fromtimestamp(max_ts).strftime("%Y-%m-%d %H:%M:%S")
+
+    return get_json_result(data={
+        "detector": {
+            "last_run": detector_last_run,
+            "total_sites": len(site_configs),
+            "enabled_sites": sum(1 for c in site_configs.values() if c.get("detect_enabled")),
+            "triggered": detector_triggered,
+            "errors": detector_errors,
+        },
+        "sites": sites_list,
+        "recent_runs": recent_runs,
+        "summary": {
+            "total_items": total_items,
+            "items_24h": items_24h,
+            "items_7d": items_7d,
+            "latest_publish": latest_publish,
+            "crawling_now": len(crawling_sites),
+            "stale_sites": stale_count,
+        },
+    })
+
+
+# ---------------------------------------------------------------------------
 # 采集源网址
 # ---------------------------------------------------------------------------
 @manager.route("/bid/projects/<int:project_id>/collect-url", methods=["GET"])  # noqa: F821

@@ -2,7 +2,7 @@ import api from '@/utils/api';
 import { registerNextServer } from '@/utils/register-server';
 import request from '@/utils/request';
 
-const { bidProjects, bidProject, bidSyncLogs, bidStats } = api;
+const { bidProjects, bidProject, bidSyncLogs, bidStats, bidCrawlerStats } = api;
 
 const methods = {
   listBidProjects: {
@@ -15,6 +15,10 @@ const methods = {
   },
   bidStats: {
     url: bidStats,
+    method: 'get',
+  },
+  bidCrawlerStats: {
+    url: bidCrawlerStats,
     method: 'get',
   },
 } as const;

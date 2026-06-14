@@ -169,6 +169,8 @@ class SiteConfig:
     name: str = ""
     site_url: str = ""
     enabled: bool = True
+    detect_interval: int = 300       # detection check interval in seconds (default 5 min)
+    detect_enabled: bool = True     # whether this site participates in detection
     transport: TransportConfig = field(default_factory=TransportConfig)
     listing: ListingConfig = field(default_factory=ListingConfig)
     pagination: PaginationConfig = field(default_factory=PaginationConfig)
@@ -189,6 +191,7 @@ class ConfigLoader:
     def __init__(self, config_path: str):
         self.config_path = config_path
         self._sites: Dict[str, SiteConfig] = {}
+        self._defaults: Dict[str, Any] = {}
         self._loaded = False
 
     def load(self) -> Dict[str, SiteConfig]:
@@ -201,6 +204,9 @@ class ConfigLoader:
 
         if not raw or "sites" not in raw:
             raise ValueError(f"No 'sites' key in {self.config_path}")
+
+        # Extract global defaults if present
+        self._defaults = raw.get("defaults", {})
 
         self._sites = {}
         for site_id, site_data in raw["sites"].items():
@@ -237,6 +243,8 @@ class ConfigLoader:
             name=data.get("name", site_id),
             site_url=data.get("site_url", ""),
             enabled=data.get("enabled", True),
+            detect_interval=data.get("detect_interval", self._defaults.get("detect_interval", 300)),
+            detect_enabled=data.get("detect_enabled", self._defaults.get("detect_enabled", True)),
             transport=self._parse_transport(data.get("transport", {})),
             listing=self._parse_listing(data.get("listing", {})),
             pagination=self._parse_pagination(data.get("pagination", {})),

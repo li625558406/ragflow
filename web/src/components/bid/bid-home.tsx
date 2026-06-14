@@ -11,8 +11,8 @@ import { Label } from '@/components/ui/label';
 import starredSiteService, {
   deleteStarredSite,
 } from '@/services/starred-site-service';
-import { ExternalLink, Heart, Pencil, Plus, Trash2 } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { Heart, Pencil, Plus, Trash2 } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 interface LinkItem {
   name: string;
@@ -250,6 +250,25 @@ const GROUP_COLORS: Record<string, string> = {
 
 const STAR_COLOR = '#EC4899';
 
+function getDomain(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
+}
+
+function SiteInitial({ name, size = 16 }: { name: string; size?: number }) {
+  return (
+    <div
+      className="flex items-center justify-center rounded shrink-0 bg-[#EAEAEA] text-[#525252] font-bold"
+      style={{ width: size, height: size, fontSize: size * 0.55 }}
+    >
+      {name.charAt(0)}
+    </div>
+  );
+}
+
 export default function BidHome() {
   // ---- localStorage custom sites (with custom groups) ----
   const [customSites, setCustomSites] = useState<CustomLink[]>(loadCustomSites);
@@ -277,6 +296,59 @@ export default function BidHome() {
     groupTitle: string;
     isStarred?: boolean;
   } | null>(null);
+
+  // ---- Hover preview state ----
+  const [hoveredItem, setHoveredItem] = useState<{
+    name: string;
+    url: string;
+    group: string;
+    isStarred: boolean;
+  } | null>(null);
+  const [previewPos, setPreviewPos] = useState({ x: 0, y: 0 });
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // CSS injection for preview animation
+  useEffect(() => {
+    const styleId = 'bid-home-preview-style';
+    if (document.getElementById(styleId)) return;
+    const style = document.createElement('style');
+    style.id = styleId;
+    style.textContent = `
+      @keyframes bid-preview-in {
+        from { opacity: 0; transform: translateY(4px) scale(0.98); }
+        to { opacity: 1; transform: translateY(0) scale(1); }
+      }
+    `;
+    document.head.appendChild(style);
+    return () => {
+      document.getElementById(styleId)?.remove();
+    };
+  }, []);
+
+  const handleCardHoverStart = useCallback(
+    (
+      item: { name: string; url: string; group: string; isStarred: boolean },
+      e: React.MouseEvent,
+    ) => {
+      if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = setTimeout(() => {
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        let x = e.clientX + 16;
+        let y = e.clientY + 8;
+        if (x + 320 > vw) x = e.clientX - 336;
+        if (y + 150 > vh) y = vh - 166;
+        setHoveredItem(item);
+        setPreviewPos({ x, y });
+      }, 350);
+    },
+    [],
+  );
+
+  const handleCardHoverEnd = useCallback(() => {
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    setHoveredItem(null);
+  }, []);
 
   // ---- Fetch starred sites from API ----
   useEffect(() => {
@@ -614,6 +686,18 @@ export default function BidHome() {
                           borderLeftColor: accentColor,
                           borderLeftWidth: 3,
                         }}
+                        onMouseEnter={(e) =>
+                          handleCardHoverStart(
+                            {
+                              name: item.name,
+                              url: item.url,
+                              group: group.title,
+                              isStarred,
+                            },
+                            e,
+                          )
+                        }
+                        onMouseLeave={handleCardHoverEnd}
                       >
                         <a
                           href={item.url}
@@ -621,7 +705,7 @@ export default function BidHome() {
                           rel="noreferrer"
                           className="flex items-start gap-2 flex-1 min-w-0"
                         >
-                          <ExternalLink className="size-3.5 shrink-0 mt-0.5 text-[#A3A3A3] group-hover/card:text-[#2563EB] transition-colors" />
+                          <SiteInitial name={item.name} size={16} />
                           <span className="text-xs text-[#333333] leading-relaxed line-clamp-2 group-hover/card:text-[#000000] transition-colors">
                             {item.name}
                           </span>
@@ -744,6 +828,51 @@ export default function BidHome() {
           })}
         </div>
       </div>
+
+      {/* Floating hover preview card */}
+      {hoveredItem && (
+        <div
+          className="fixed z-[100] bg-white rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.12)] border border-[#E8E8E8] p-4 pointer-events-none"
+          style={{
+            left: previewPos.x,
+            top: previewPos.y,
+            width: 320,
+            animation: 'bid-preview-in 0.2s ease-out both',
+          }}
+        >
+          <div className="flex items-start gap-3">
+            <SiteInitial name={hoveredItem.name} size={36} />
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-semibold text-[#000000] leading-snug">
+                {hoveredItem.name}
+              </div>
+              <div className="text-xs text-[#525252] mt-1">
+                {getDomain(hoveredItem.url)}
+              </div>
+              <div className="text-[11px] text-[#A3A3A3] mt-0.5 truncate">
+                {hoveredItem.url}
+              </div>
+            </div>
+          </div>
+          <div className="mt-3 pt-2 border-t border-[#F0F0F0] flex items-center gap-1.5 flex-wrap">
+            <span
+              className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium"
+              style={{
+                backgroundColor: `${GROUP_COLORS[hoveredItem.group]}15`,
+                color: GROUP_COLORS[hoveredItem.group],
+              }}
+            >
+              {hoveredItem.group}
+            </span>
+            {hoveredItem.isStarred && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium bg-[#FCE7F3] text-[#EC4899]">
+                <Heart className="size-2.5" fill="#EC4899" stroke="#EC4899" />
+                已收藏
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Delete confirm dialog */}
       <Dialog

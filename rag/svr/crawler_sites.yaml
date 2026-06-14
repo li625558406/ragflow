@@ -13,7 +13,12 @@
 #   page_no, offset, total_count, html_regex, click_next, single_page
 # ============================================================================
 
-version: "1.0"
+version: "1.1"
+
+# Global defaults for detection mode
+defaults:
+  detect_interval: 300      # 5 minutes (default for all sites)
+  detect_enabled: true     # all sites participate in detection
 
 sites:
 
@@ -28,6 +33,7 @@ sites:
   ccgp_agency:
     name: "政府采购代理机构名单"
     site_url: "http://www.ccgp.gov.cn/agency/md/"
+    detect_interval: 30
     enabled: true
     transport:
       type: rest_api
@@ -282,6 +288,7 @@ sites:
     name: "中国招标投标公共服务平台"
     site_url: "https://bulletin.cebpubservice.com/"
     enabled: true
+    detect_interval: 10
     transport:
       type: rest_api
       engine: requests
@@ -809,6 +816,7 @@ sites:
   fgw_zwgk:
     name: "发改委新闻发布"
     site_url: "https://www.ndrc.gov.cn/"
+    detect_interval: 120
     enabled: true
     transport:
       type: rest_api
@@ -1222,6 +1230,7 @@ sites:
   zhangzhou_fgw:
     name: "漳州市发改委"
     site_url: "https://fgw.zhangzhou.gov.cn/"
+    detect_interval: 30
     enabled: true
     transport:
       type: rest_api
@@ -2111,6 +2120,7 @@ sites:
     name: "全国公共资源交易-政策法规"
     site_url: "https://www.ggzy.gov.cn/"
     enabled: true
+    detect_interval: 120
     transport:
       type: rest_api
       engine: requests
@@ -3052,6 +3062,7 @@ sites:
     name: "工采通-竞价公告"
     site_url: "https://easy-prt.com/"
     enabled: true
+    detect_interval: 60
     transport:
       type: encrypted_api
       engine: urllib

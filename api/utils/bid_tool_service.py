@@ -531,7 +531,7 @@ def get_bid_detail(project_id: int, publish_time: str) -> dict:
 
     # -- Files --
     files = BidProjectFileService.get_by_project(project_id)
-    if (not files or not any(f.get("file_url") for f in files)) and publish_time:
+    if publish_time:
         try:
             client = BidApiClient()
             files_raw = client.get_files(project_id, publish_time)
@@ -553,6 +553,9 @@ def get_bid_detail(project_id: int, publish_time: str) -> dict:
                 except Exception as e:
                     logging.warning("Tool service: cache file failed: %s", e)
             files = BidProjectFileService.get_by_project(project_id)
+            logging.info("Tool service: project %d files from API+DB, count=%d, with_url=%d",
+                         project_id, len(files),
+                         len([f for f in files if f.get("file_url")]))
         except Exception as e:
             logging.warning("Tool service: fetch files failed for %d: %s", project_id, e)
 
