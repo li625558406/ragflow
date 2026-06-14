@@ -250,20 +250,20 @@ export default function SupervisionFeeCalculator() {
         </div>
       </div>
 
-      {/* Content */}
+      {/* Content — keep all sub-tabs mounted to preserve input state */}
       <div className="flex-1 overflow-y-auto" key={resetKey}>
-        {tab === 'supervision' && (
+        <div className={tab === 'supervision' ? '' : 'hidden'}>
           <SupervisionTab
             discountRate={discountRate}
             onDiscountChange={setDiscountRate}
           />
-        )}
-        {tab === 'daily' && (
+        </div>
+        <div className={tab === 'daily' ? '' : 'hidden'}>
           <DailyTab
             discountRate={discountRate}
             onDiscountChange={setDiscountRate}
           />
-        )}
+        </div>
       </div>
     </div>
   );
@@ -496,12 +496,22 @@ function SupervisionTab({
                 </span>
               </div>
               {discountRate < 1.0 && (
-                <div className="flex justify-between py-1.5">
-                  <span className="text-[#000000] font-medium">折扣后价格</span>
-                  <span className="text-lg font-bold text-[#000000]">
-                    {fmt(result.benchmark * discountRate)} 万元
-                  </span>
-                </div>
+                <>
+                  <div className="flex justify-between py-1.5">
+                    <span className="text-[#000000] font-medium">
+                      折扣后价格
+                    </span>
+                    <span className="text-lg font-bold text-[#000000]">
+                      {fmt(result.benchmark * discountRate)} 万元
+                    </span>
+                  </div>
+                  <div className="flex justify-between py-1 text-xs text-[#1a1a1a]">
+                    <span>节省</span>
+                    <span>
+                      {fmt(result.benchmark * (1 - discountRate))} 万元
+                    </span>
+                  </div>
+                </>
               )}
               <div className="flex justify-between py-1.5 text-xs text-[#333333]">
                 <span>浮动下限（-20%）</span>
@@ -822,14 +832,22 @@ function DailyTab({
               </span>
             </div>
             {discountRate < 1.0 && total > 0 && (
-              <div className="flex justify-between items-center mt-1">
-                <span className="text-sm font-medium text-[#000000]">
-                  折扣后
-                </span>
-                <span className="text-lg font-bold text-[#000000]">
-                  {fmt(total * discountRate)} 元
-                </span>
-              </div>
+              <>
+                <div className="flex justify-between items-center mt-1">
+                  <span className="text-sm font-medium text-[#000000]">
+                    折扣后
+                  </span>
+                  <span className="text-lg font-bold text-[#000000]">
+                    {fmt(total * discountRate)} 元
+                  </span>
+                </div>
+                <div className="flex justify-between items-center mt-0.5">
+                  <span className="text-xs text-[#1a1a1a]">节省</span>
+                  <span className="text-xs text-[#1a1a1a]">
+                    {fmt(total * (1 - discountRate))} 元
+                  </span>
+                </div>
+              </>
             )}
           </div>
         </div>

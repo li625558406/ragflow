@@ -383,8 +383,9 @@ def register_backward_compat_routes(app_instance):
     try:
         app_instance.register_blueprint(manager, url_prefix="/api/v1")
         app_instance.register_blueprint(chat_api.manager, url_prefix="/api/v1")
-        from api.apps.restful_apis import bid_app
+        from api.apps.restful_apis import bid_app, starred_site_app
         app_instance.register_blueprint(bid_app.manager, url_prefix="/api/v1")
+        app_instance.register_blueprint(starred_site_app.manager, url_prefix="/api/v1")
         logging.info("Backward compatibility routes registered successfully.")
     except ValueError:
         pass  # already registered (retry loop)

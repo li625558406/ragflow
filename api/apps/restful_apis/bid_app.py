@@ -694,22 +694,36 @@ async def get_bid_project_detail_v2(project_id):
             "industryName": d.get("industry_name", ""),
         }
 
+    def _parse_json_field(val):
+        """防御性解析：db 缓存可能由不同端点写入（json.dumps 字符串 vs 原始列表），
+        统一返回 Python 列表/字典供 JSON 序列化。"""
+        if val is None:
+            return []
+        if isinstance(val, (list, dict)):
+            return val
+        if isinstance(val, str):
+            try:
+                return json.loads(val)
+            except (json.JSONDecodeError, TypeError):
+                return val
+        return val
+
     def _structure_to_api(row) -> dict:
         if not row:
             return {}
         d = row.to_dict() if hasattr(row, 'to_dict') else row
         return {
             "projectName": d.get("project_name", ""),
-            "projectNumber": d.get("project_numbers", []),
-            "budgetMoney": d.get("budget_money", []),
-            "bidMoney": d.get("bid_money", []),
+            "projectNumber": _parse_json_field(d.get("project_numbers")),
+            "budgetMoney": _parse_json_field(d.get("budget_money")),
+            "bidMoney": _parse_json_field(d.get("bid_money")),
             "bidStartDate": d.get("bid_start_date"),
-            "bidStartAddress": d.get("bid_start_address", []),
+            "bidStartAddress": _parse_json_field(d.get("bid_start_address")),
             "siginUpStopDate": d.get("sign_up_stop_date"),
-            "partyAInfo": d.get("party_a_info", []),
-            "partyBInfo": d.get("party_b_info", []),
-            "agencyInfo": d.get("agency_info", []),
-            "bidCompany": d.get("bid_companies", []),
+            "partyAInfo": _parse_json_field(d.get("party_a_info")),
+            "partyBInfo": _parse_json_field(d.get("party_b_info")),
+            "agencyInfo": _parse_json_field(d.get("agency_info")),
+            "bidCompany": _parse_json_field(d.get("bid_companies")),
             "sbkjBidUrl": d.get("sbkj_bid_url", ""),
             "collectUrl": d.get("collect_url", ""),
         }
@@ -800,10 +814,10 @@ async def get_bid_project_detail_v2(project_id):
         "bid_start_date": structure_data.get("bidStartDate"),
         "bid_start_address": structure_data.get("bidStartAddress", []),
         "sign_up_stop_date": structure_data.get("siginUpStopDate"),
-        "party_a_info": structure_data.get("partyAInfo", []),
-        "party_b_info": structure_data.get("partyBInfo", []),
-        "agency_info": structure_data.get("agencyInfo", []),
-        "bid_companies": structure_data.get("bidCompany", []),
+        "party_a_info": json.dumps(structure_data.get("partyAInfo", []), ensure_ascii=False),
+        "party_b_info": json.dumps(structure_data.get("partyBInfo", []), ensure_ascii=False),
+        "agency_info": json.dumps(structure_data.get("agencyInfo", []), ensure_ascii=False),
+        "bid_companies": json.dumps(structure_data.get("bidCompany", []), ensure_ascii=False),
         "sbkj_bid_url": structure_data.get("sbkjBidUrl", ""),
         "collect_url": structure_data.get("collectUrl", ""),
     }
@@ -996,15 +1010,14 @@ def _run_parse_task(project_id: int, kb_id: str, user_id: str):
     )
 
 
+_DEFAULT_BID_KB_ID = "d23e0644578211f19c3bed5c593fe4c9"
+
 @manager.route("/bid/projects/<int:project_id>/parse", methods=["POST"])  # noqa: F821
 @login_required
 async def bid_project_parse(project_id):
     """触发标书项目解析——正文+附件导入知识库"""
-    req = await request.get_json()
-    kb_id = req.get("kb_id") if req else None
-    if not kb_id:
-        return get_data_error_result(message="kb_id is required")
-
+    body = await request.get_json() or {}
+    kb_id = body.get("kb_id") or _DEFAULT_BID_KB_ID
     user_id = current_user.id
 
     # 检查是否已有解析进行中
@@ -1504,7 +1517,7 @@ async def get_construction_project_detail(project_id):
         return get_data_error_result(message=f"Failed to fetch construction project detail: {e}")
 
 
-_CONSTRUCTION_KB_ID = "30eb6240679b11f1a8f13fb025dd68"
+_CONSTRUCTION_KB_ID = "30eb6240679b11f1a8f13fbdf025dd68"
 
 
 @manager.route("/bid/construction/projects/<int:project_id>/parse", methods=["POST"])  # noqa: F821
@@ -1519,22 +1532,22 @@ async def construction_project_parse(project_id):
     if existing and existing.get("status") == "parsing":
         return get_data_error_result(message="该项目已在进行解析，请等待完成")
 
-    def _task():
-        from api.utils.bid_tool_service import import_construction_to_kb
-        import_construction_to_kb(
-            project_id=project_id,
-            publish_time=publish_time,
-            kb_id=_CONSTRUCTION_KB_ID,
-            user_id=user_id,
-        )
+    from api.utils.bid_tool_service import import_construction_to_kb
 
-    thread = threading.Thread(target=_task, daemon=True)
-    thread.start()
+    result = import_construction_to_kb(
+        project_id=project_id,
+        publish_time=publish_time,
+        kb_id=_CONSTRUCTION_KB_ID,
+        user_id=user_id,
+    )
+
+    if result.get("status") == "fail":
+        return get_data_error_result(message=result.get("message", "Import failed"))
 
     return get_json_result(data={
         "project_id": project_id,
         "kb_id": _CONSTRUCTION_KB_ID,
-        "status": "pending",
+        "status": result.get("status", "pending"),
     })
 
 
@@ -1630,20 +1643,22 @@ async def contract_project_parse(project_id):
     if existing and existing.get("status") == "parsing":
         return get_data_error_result(message="该项目已在进行解析，请等待完成")
 
-    def _task():
-        from api.utils.bid_tool_service import import_contract_to_kb
-        import_contract_to_kb(
-            project_id=project_id,
-            publish_time=publish_time,
-            kb_id=_CONTRACT_KB_ID,
-            user_id=user_id,
-        )
+    from api.utils.bid_tool_service import import_contract_to_kb
 
-    threading.Thread(target=_task, daemon=True).start()
+    result = import_contract_to_kb(
+        project_id=project_id,
+        publish_time=publish_time,
+        kb_id=_CONTRACT_KB_ID,
+        user_id=user_id,
+    )
+
+    if result.get("status") == "fail":
+        return get_data_error_result(message=result.get("message", "Import failed"))
+
     return get_json_result(data={
         "project_id": project_id,
         "kb_id": _CONTRACT_KB_ID,
-        "status": "pending",
+        "status": result.get("status", "pending"),
     })
 
 
@@ -1741,19 +1756,21 @@ async def enterprise_parse():
     if existing and existing.get("status") == "parsing":
         return get_data_error_result(message="该企业已在进行解析，请等待完成")
 
-    def _task():
-        from api.utils.bid_tool_service import import_enterprise_to_kb
-        import_enterprise_to_kb(
-            company_name=company_name,
-            kb_id=_ENTERPRISE_KB_ID,
-            user_id=user_id,
-        )
+    from api.utils.bid_tool_service import import_enterprise_to_kb
 
-    threading.Thread(target=_task, daemon=True).start()
+    result = import_enterprise_to_kb(
+        company_name=company_name,
+        kb_id=_ENTERPRISE_KB_ID,
+        user_id=user_id,
+    )
+
+    if result.get("status") == "fail":
+        return get_data_error_result(message=result.get("message", "Import failed"))
+
     return get_json_result(data={
         "company_name": company_name,
         "kb_id": _ENTERPRISE_KB_ID,
-        "status": "pending",
+        "status": result.get("status", "pending"),
     })
 
 

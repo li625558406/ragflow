@@ -3,24 +3,27 @@ import {
   fetchBidProjectFiles,
   fetchBidProjectStructure,
 } from '@/services/bid-service';
+import { getAuthorization } from '@/utils/authorization-util';
 import {
   ArrowLeft,
+  CheckCircle2,
   Database,
   Download,
   Eye,
   FileText,
   Loader2,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 type DetailData = Record<string, any>;
 type StructureData = Record<string, any>;
 type TabKey = 'content' | 'structure' | 'files';
 
-function formatJsonField(raw: string | null | undefined): string {
+function formatJsonField(raw: any): string {
   if (!raw || raw === '""') return '-';
   try {
-    const parsed = JSON.parse(raw);
+    // 防御：db 缓存写入不一致可能导致数据已是解析后的对象/数组
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
     if (Array.isArray(parsed)) {
       return parsed
         .map((item: any) => {
@@ -45,7 +48,7 @@ function formatJsonField(raw: string | null | undefined): string {
     if (typeof parsed === 'object') return JSON.stringify(parsed, null, 2);
     return String(parsed);
   } catch {
-    return raw;
+    return typeof raw === 'string' ? raw : JSON.stringify(raw, null, 2);
   }
 }
 
@@ -150,7 +153,12 @@ function FilesList({
         return (
           <div
             key={f.project_file_id || f.file_name || f.file_url || idx}
-            className="flex items-center gap-3 p-3.5 rounded-xl border border-[#F0F0F0] hover:border-[#D4D4D4] hover:shadow-[0_2px_8px_rgba(0,0,0,0.04)] transition-all group bg-white"
+            onClick={() => {
+              if (downloadUrl) {
+                window.open(downloadUrl, '_blank', 'noopener,noreferrer');
+              }
+            }}
+            className={`flex items-center gap-3 p-3.5 rounded-xl border border-[#F0F0F0] hover:border-[#D4D4D4] hover:shadow-[0_2px_8px_rgba(0,0,0,0.04)] transition-all group bg-white ${downloadUrl ? 'cursor-pointer' : ''}`}
           >
             <span className="text-lg">
               {suffixIcon[suffix.toLowerCase()] || '📎'}
@@ -167,27 +175,19 @@ function FilesList({
             </div>
             {f.kb_document_id && (
               <button
-                onClick={() =>
-                  window.open(`/web/document/get/${f.kb_document_id}`, '_blank')
-                }
+                onClick={(e) => {
+                  e.stopPropagation();
+                  window.open(
+                    `/web/document/get/${f.kb_document_id}`,
+                    '_blank',
+                  );
+                }}
                 className="flex items-center gap-1 text-xs text-[#000000] hover:text-[#000000] shrink-0"
                 title="预览知识库文档"
               >
                 <Eye className="size-3.5" />
                 预览
               </button>
-            )}
-            {downloadUrl && (
-              <a
-                href={downloadUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1 text-xs text-[#000000] hover:text-[#000000] shrink-0"
-                title="下载文件"
-              >
-                <Download className="size-3.5" />
-                下载
-              </a>
             )}
           </div>
         );
@@ -244,20 +244,99 @@ export function BidDetailView({
   const [files, setFiles] = useState<any[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
 
+  // --- KB Import ---
+  const [parseStatus, setParseStatus] = useState<{
+    status: string;
+    progress: number;
+    progress_msg: string;
+  } | null>(null);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout>>();
+
+  useEffect(() => {
+    return () => {
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+    };
+  }, []);
+
+  const triggerParse = useCallback(
+    async (projectId: number) => {
+      try {
+        const resp = await fetch(`/api/v1/bid/projects/${projectId}/parse`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: getAuthorization(),
+          },
+          body: JSON.stringify({}),
+        });
+        if (!resp.ok) return;
+        const json = await resp.json();
+        if (json.code !== 0) return;
+        const data = json.data;
+        if (data.status === 'done') {
+          setParseStatus({
+            status: 'done',
+            progress: 1,
+            progress_msg: '已导入知识库',
+          });
+          return;
+        }
+        setParseStatus({
+          status: 'parsing',
+          progress: 0,
+          progress_msg: '准备导入...',
+        });
+        pollParseStatus(projectId);
+      } catch {
+        // silent — don't block detail viewing
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  const pollParseStatus = useCallback(async (projectId: number) => {
+    try {
+      const resp = await fetch(
+        `/api/v1/bid/projects/${projectId}/parse-status`,
+        { headers: { Authorization: getAuthorization() } },
+      );
+      if (!resp.ok) return;
+      const json = await resp.json();
+      const data = json.data || json;
+      setParseStatus(data);
+      if (data.status === 'parsing') {
+        pollTimerRef.current = setTimeout(
+          () => pollParseStatus(projectId),
+          3000,
+        );
+      }
+    } catch {
+      // stop polling on error
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Fetch detail
   useEffect(() => {
     if (!projectId) return;
     setDetailLoading(true);
     setDetailError('');
+    setParseStatus(null);
     fetchBidProjectDetail(projectId, publishTime)
-      .then((res: any) => setDetail(res?.data?.data ?? res?.data ?? null))
+      .then((res: any) => {
+        const data = res?.data?.data ?? res?.data ?? null;
+        setDetail(data);
+        // Auto-trigger KB import after detail loaded
+        if (data) triggerParse(projectId);
+      })
       .catch((err: any) =>
         setDetailError(
           err?.response?.data?.message || err?.message || '加载失败',
         ),
       )
       .finally(() => setDetailLoading(false));
-  }, [projectId, publishTime]);
+  }, [projectId, publishTime, triggerParse]);
 
   // Fetch structure when tab switches
   useEffect(() => {
@@ -281,13 +360,11 @@ export function BidDetailView({
           projectId,
           filesData.length,
           JSON.stringify(
-            filesData
-              .slice(0, 3)
-              .map((f: any) => ({
-                name: f.file_name || f.name,
-                file_url: f.file_url,
-                file_suffix: f.file_suffix,
-              })),
+            filesData.slice(0, 3).map((f: any) => ({
+              name: f.file_name || f.name,
+              file_url: f.file_url,
+              file_suffix: f.file_suffix,
+            })),
           ),
         );
         setFiles(filesData);
@@ -370,6 +447,46 @@ export function BidDetailView({
           )}
         </h1>
       </div>
+
+      {/* KB import progress bar */}
+      {parseStatus?.status === 'parsing' && (
+        <div className="shrink-0 px-6 py-3 border-b border-[#E8E8E8] bg-[#FAFAFA]">
+          <div className="flex items-center gap-3">
+            <Loader2 className="size-4 animate-spin text-[#000000]" />
+            <div className="flex-1">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-medium text-[#333]">
+                  正在导入知识库并解析...
+                </span>
+                <span className="text-xs text-[#A3A3A3]">
+                  {Math.round(parseStatus.progress * 100)}%
+                </span>
+              </div>
+              <div className="h-1.5 bg-[#E8E8E8] rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-[#000000] rounded-full transition-all duration-500"
+                  style={{ width: `${parseStatus.progress * 100}%` }}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* KB import done banner */}
+      {parseStatus?.status === 'done' && (
+        <div className="shrink-0 px-6 py-2.5 border-b border-[#E8E8E8] bg-[#F0FFF4]">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="size-4 text-[#16A34A]" />
+            <span className="text-xs font-medium text-[#16A34A]">
+              已导入知识库
+            </span>
+            <span className="text-xs text-[#A3A3A3]">
+              {parseStatus.progress_msg}
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="shrink-0 px-6 pt-4 pb-0">

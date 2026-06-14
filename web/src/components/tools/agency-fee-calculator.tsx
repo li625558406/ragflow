@@ -260,6 +260,11 @@ export default function AgencyFeeCalculator() {
                           折扣后：{formatYuan(r.fee * discountRate)} 元
                         </div>
                       )}
+                      {discountRate < 1.0 && (
+                        <div className="text-xs text-[#1a1a1a] mt-0.5">
+                          节省：{formatYuan(r.fee * (1 - discountRate))} 元
+                        </div>
+                      )}
                       <div
                         className={`text-[11px] text-[#1a1a1a] ${discountRate < 1.0 ? 'text-[#A3A3A3]' : 'mt-0.5'}`}
                       >

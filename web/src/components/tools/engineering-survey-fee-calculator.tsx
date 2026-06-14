@@ -387,26 +387,26 @@ export default function EngineeringSurveyFeeCalculator() {
         </div>
       </div>
 
-      {/* Content */}
+      {/* Content — keep all sub-tabs mounted to preserve input state */}
       <div className="flex-1 overflow-y-auto" key={resetKey}>
-        {tab === 'design' && (
+        <div className={tab === 'design' ? '' : 'hidden'}>
           <DesignTab
             discountRate={discountRate}
             onDiscountChange={setDiscountRate}
           />
-        )}
-        {tab === 'survey' && (
+        </div>
+        <div className={tab === 'survey' ? '' : 'hidden'}>
           <SurveyTab
             discountRate={discountRate}
             onDiscountChange={setDiscountRate}
           />
-        )}
-        {tab === 'water' && (
+        </div>
+        <div className={tab === 'water' ? '' : 'hidden'}>
           <WaterTab
             discountRate={discountRate}
             onDiscountChange={setDiscountRate}
           />
-        )}
+        </div>
       </div>
     </div>
   );
@@ -683,12 +683,22 @@ function DesignTab({
                 </span>
               </div>
               {discountRate < 1.0 && (
-                <div className="flex justify-between py-1.5">
-                  <span className="text-[#000000] font-medium">折扣后价格</span>
-                  <span className="text-lg font-bold text-[#000000]">
-                    {fmtWan(result.benchmark * discountRate)} 万元
-                  </span>
-                </div>
+                <>
+                  <div className="flex justify-between py-1.5">
+                    <span className="text-[#000000] font-medium">
+                      折扣后价格
+                    </span>
+                    <span className="text-lg font-bold text-[#000000]">
+                      {fmtWan(result.benchmark * discountRate)} 万元
+                    </span>
+                  </div>
+                  <div className="flex justify-between py-1 text-xs text-[#1a1a1a]">
+                    <span>节省</span>
+                    <span>
+                      {fmtWan(result.benchmark * (1 - discountRate))} 万元
+                    </span>
+                  </div>
+                </>
               )}
               <div className="flex justify-between py-1.5 text-xs text-[#333333]">
                 <span>浮动下限（-20%）</span>
@@ -1161,12 +1171,22 @@ function SurveyTab({
                 </span>
               </div>
               {discountRate < 1.0 && (
-                <div className="flex justify-between py-1.5">
-                  <span className="text-[#000000] font-medium">折扣后价格</span>
-                  <span className="text-lg font-bold text-[#000000]">
-                    {fmtYuan(result.benchmark * discountRate)} 元
-                  </span>
-                </div>
+                <>
+                  <div className="flex justify-between py-1.5">
+                    <span className="text-[#000000] font-medium">
+                      折扣后价格
+                    </span>
+                    <span className="text-lg font-bold text-[#000000]">
+                      {fmtYuan(result.benchmark * discountRate)} 元
+                    </span>
+                  </div>
+                  <div className="flex justify-between py-1 text-xs text-[#1a1a1a]">
+                    <span>节省</span>
+                    <span>
+                      {fmtYuan(result.benchmark * (1 - discountRate))} 元
+                    </span>
+                  </div>
+                </>
               )}
               <div className="flex justify-between py-1.5 text-xs text-[#333333]">
                 <span>主体勘察协调费（基准价×5%）</span>
@@ -1520,12 +1540,22 @@ function WaterTab({
                 </span>
               </div>
               {discountRate < 1.0 && (
-                <div className="flex justify-between py-1.5">
-                  <span className="text-[#000000] font-medium">折扣后价格</span>
-                  <span className="text-lg font-bold text-[#000000]">
-                    {fmtWan(result.basicFee * discountRate)} 万元
-                  </span>
-                </div>
+                <>
+                  <div className="flex justify-between py-1.5">
+                    <span className="text-[#000000] font-medium">
+                      折扣后价格
+                    </span>
+                    <span className="text-lg font-bold text-[#000000]">
+                      {fmtWan(result.basicFee * discountRate)} 万元
+                    </span>
+                  </div>
+                  <div className="flex justify-between py-1 text-xs text-[#1a1a1a]">
+                    <span>节省</span>
+                    <span>
+                      {fmtWan(result.basicFee * (1 - discountRate))} 万元
+                    </span>
+                  </div>
+                </>
               )}
               <div className="flex justify-between py-1.5 text-xs text-[#333333]">
                 <span>作业准备费（基准价×15%~20%）</span>

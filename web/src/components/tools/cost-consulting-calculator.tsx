@@ -197,12 +197,17 @@ function ResultCard({
         <span className="text-sm text-[#1a1a1a]">元</span>
       </div>
       {discountRate !== undefined && discountRate < 1.0 && (
-        <div className="flex items-baseline gap-1 mt-1">
-          <span className="text-lg font-bold text-[#000000]">
-            {formatYuan(total * discountRate)}
-          </span>
-          <span className="text-xs text-[#A3A3A3]">元（折扣后）</span>
-        </div>
+        <>
+          <div className="flex items-baseline gap-1 mt-1">
+            <span className="text-lg font-bold text-[#000000]">
+              {formatYuan(total * discountRate)}
+            </span>
+            <span className="text-xs text-[#A3A3A3]">元（折扣后）</span>
+          </div>
+          <div className="text-xs text-[#1a1a1a] mt-0.5">
+            节省：{formatYuan(total * (1 - discountRate))} 元
+          </div>
+        </>
       )}
       <div className="flex gap-5 mt-2 text-[11px] text-[#1a1a1a]">
         {discountRate !== undefined && discountRate < 1.0 ? (

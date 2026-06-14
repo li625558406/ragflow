@@ -4,6 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 【核心注意：新增的数据库要放到ragflow项目的初始化脚本中，要考虑到迁移部署，不会导致问题】
 
+【核心注意：禁止构建前端代码】
+
 修改存量代码时需要先查看存量代码逻辑，判断修改是否造成存量逻辑漏洞，首选增量修改，不改变存量代码逻辑；如果不涉及存量代码逻辑，新增的代码需要符合设计模式的七大原则：1. 开闭原则	Open-Closed Principle (OCP)	对扩展开放，对修改关闭	用抽象构建框架，用实现扩展细节；2. 里氏替换原则	Liskov Substitution Principle (LSP)	子类可以替换父类	继承必须确保父类的性质在子类中仍然成立；3. 依赖倒置原则	Dependency Inversion Principle (DIP)	依赖抽象，不依赖具体	面向接口编程，而非实现编程；4. 单一职责原则	Single Responsibility Principle (SRP)	一个类只做一件事	只有一个引起它变化的原因；5. 接口隔离原则	Interface Segregation Principle (ISP)	接口要小而专一	胖接口拆分成多个小接口；6. 迪米特法则	Law of Demeter (LoD)	只和朋友说话，不和陌生人说话	最少知道原则，降低耦合；7. 合成复用原则	Composite/Aggregate Reuse Principle (CARP)	优先使用组合/聚合，而非继承	组合/聚合 vs 继承
 
 ## Project Overview

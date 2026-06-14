@@ -1252,7 +1252,9 @@ class BidEnterpriseProfile(ToolBase, ABC):
             # Auto-import to KB (best-effort, async)
             try:
                 from api.utils.bid_tool_service import import_enterprise_to_kb
-                user_id = self._canvas.get_tenant_id() or ""
+                user_id = ""
+                if hasattr(self, '_canvas'):
+                    user_id = self._canvas.get_tenant_id() or ""
                 import_result = import_enterprise_to_kb(
                     company_name=company_name, kb_id=None, user_id=user_id,
                     pre_fetched_profile=raw_data,
@@ -1507,7 +1509,9 @@ class BidGetContractDetail(ToolBase, ABC):
             # Auto-import to KB (best-effort, async)
             try:
                 from api.utils.bid_tool_service import import_contract_to_kb
-                user_id = self._canvas.get_tenant_id() or ""
+                user_id = ""
+                if hasattr(self, '_canvas'):
+                    user_id = self._canvas.get_tenant_id() or ""
                 import_result = import_contract_to_kb(
                     project_id=int(project_id), publish_time=str(publish_time),
                     kb_id=None, user_id=user_id, pre_fetched_detail=result,
@@ -1898,6 +1902,26 @@ class BidConstructionGetDetail(ToolBase, ABC):
 
             self.set_output("json", output)
             self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+
+            # Auto-import to KB (best-effort, async)
+            try:
+                from api.utils.bid_tool_service import import_construction_to_kb
+                user_id = ""
+                if hasattr(self, '_canvas'):
+                    user_id = self._canvas.get_tenant_id() or ""
+                import_result = import_construction_to_kb(
+                    project_id=int(project_id), publish_time=str(publish_time),
+                    user_id=user_id, pre_fetched_detail=result,
+                )
+                output["kb_import"] = import_result
+                self.set_output("json", output)
+                self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+            except Exception as kb_err:
+                logging.warning("BidConstructionGetDetail: auto KB import failed: %s", kb_err)
+                output["kb_import"] = {"status": "fail", "message": str(kb_err)}
+                self.set_output("json", output)
+                self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+
             return self.output("formalized_content")
 
         except Exception as e:
@@ -2158,7 +2182,10 @@ class ContractImportToKb(ToolBase, ABC):
         if self.check_if_canceled("ContractImportToKb processing"):
             return
 
-        from api.utils.bid_tool_service import import_contract_to_kb
+        from api.utils.bid_tool_service import (
+            import_contract_to_kb,
+            check_contract_import_status,
+        )
 
         try:
             project_id = kwargs.get("project_id")
@@ -2167,7 +2194,37 @@ class ContractImportToKb(ToolBase, ABC):
                 self.set_output("_ERROR", "project_id is required")
                 return "Error: project_id is required"
 
-            user_id = self._canvas.get_tenant_id() or ""
+            user_id = ""
+            if hasattr(self, '_canvas'):
+                user_id = self._canvas.get_tenant_id() or ""
+
+            # Check existing status first
+            status = check_contract_import_status(int(project_id))
+            if status.get("status") == "done":
+                output = {
+                    "project_id": int(project_id),
+                    "kb_id": status.get("kb_id"),
+                    "status": "done",
+                    "progress": 1.0,
+                    "message": "Project was already imported to KB.",
+                }
+                self.set_output("json", output)
+                self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+                return self.output("formalized_content")
+
+            if status.get("status") == "parsing":
+                output = {
+                    "project_id": int(project_id),
+                    "kb_id": status.get("kb_id"),
+                    "status": "parsing",
+                    "progress": status.get("progress", 0),
+                    "message": "Project is currently being imported/parsed.",
+                }
+                self.set_output("json", output)
+                self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+                return self.output("formalized_content")
+
+            # Execute import
             result = import_contract_to_kb(
                 project_id=int(project_id),
                 publish_time=str(publish_time),
@@ -2302,7 +2359,10 @@ class EnterpriseImportToKb(ToolBase, ABC):
         if self.check_if_canceled("EnterpriseImportToKb processing"):
             return
 
-        from api.utils.bid_tool_service import import_enterprise_to_kb
+        from api.utils.bid_tool_service import (
+            import_enterprise_to_kb,
+            check_enterprise_import_status,
+        )
 
         try:
             company_name = kwargs.get("company_name", "")
@@ -2310,7 +2370,37 @@ class EnterpriseImportToKb(ToolBase, ABC):
                 self.set_output("_ERROR", "company_name is required")
                 return "Error: company_name is required"
 
-            user_id = self._canvas.get_tenant_id() or ""
+            user_id = ""
+            if hasattr(self, '_canvas'):
+                user_id = self._canvas.get_tenant_id() or ""
+
+            # Check existing status first
+            status = check_enterprise_import_status(company_name)
+            if status.get("status") == "done":
+                output = {
+                    "company_name": company_name,
+                    "kb_id": status.get("kb_id"),
+                    "status": "done",
+                    "progress": 1.0,
+                    "message": "Enterprise was already imported to KB.",
+                }
+                self.set_output("json", output)
+                self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+                return self.output("formalized_content")
+
+            if status.get("status") == "parsing":
+                output = {
+                    "company_name": company_name,
+                    "kb_id": status.get("kb_id"),
+                    "status": "parsing",
+                    "progress": status.get("progress", 0),
+                    "message": "Enterprise is currently being imported/parsed.",
+                }
+                self.set_output("json", output)
+                self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+                return self.output("formalized_content")
+
+            # Execute import
             result = import_enterprise_to_kb(
                 company_name=company_name,
                 kb_id=None,

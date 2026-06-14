@@ -403,6 +403,10 @@ export default {
   collaborationFormatRule: (ruleId: string) =>
     `${restAPIv1}/collaboration/format-rules/${ruleId}`,
 
+  // starred sites
+  starredSites: `${restAPIv1}/starred_sites`,
+  starredSite: (id: string) => `${restAPIv1}/starred_sites/${id}`,
+
   // bid
   bidProjects: `${restAPIv1}/bid/projects`,
   bidProject: (id: number) => `${restAPIv1}/bid/projects/${id}`,

@@ -401,6 +401,7 @@ export default function CChat() {
   const [mainView, setMainView] = useState<
     'chat' | 'collaboration' | 'tools' | 'bid' | 'favorites'
   >('chat');
+  const [tabResetKeys, setTabResetKeys] = useState<Record<string, number>>({});
   const [collabDialogOpen, setCollabDialogOpen] = useState(false);
   const [collabMessage, setCollabMessage] = useState('');
   const [favoriteMode, setFavoriteMode] = useState(false);
@@ -409,6 +410,20 @@ export default function CChat() {
   );
   const [favoriteDialogOpen, setFavoriteDialogOpen] = useState(false);
   const [downloadOpen, setDownloadOpen] = useState(false);
+
+  // Reset the current tab's content when re-clicking the active tab
+  const handleTabClick = (tabKey: typeof mainView) => {
+    if (mainView === tabKey) {
+      setTabResetKeys((prev) => ({
+        ...prev,
+        [tabKey]: (prev[tabKey] || 0) + 1,
+      }));
+    }
+    setMainView(tabKey);
+  };
+
+  const getTabResetKey = (tabKey: string) =>
+    `${tabKey}-${tabResetKeys[tabKey] || 0}`;
 
   // Typewriter placeholder
   const FULL_PLACEHOLDER =
@@ -1157,7 +1172,7 @@ export default function CChat() {
               ).map((tab) => (
                 <button
                   key={tab.key}
-                  onClick={() => setMainView(tab.key)}
+                  onClick={() => handleTabClick(tab.key)}
                   className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
                     mainView === tab.key
                       ? 'bg-white text-[#000000]'
@@ -1386,6 +1401,7 @@ export default function CChat() {
           <div className="flex-1 flex flex-col min-w-0">
             {/* Chat View */}
             <div
+              key={getTabResetKey('chat')}
               className={
                 mainView === 'chat'
                   ? 'cs-page-enter flex-1 flex flex-col min-h-0'
@@ -2359,6 +2375,7 @@ export default function CChat() {
 
             {/* Collaboration View */}
             <div
+              key={getTabResetKey('collaboration')}
               className={
                 mainView === 'collaboration'
                   ? 'cs-page-enter flex-1 flex flex-col min-h-0'
@@ -2370,6 +2387,7 @@ export default function CChat() {
 
             {/* Tools View */}
             <div
+              key={getTabResetKey('tools')}
               className={
                 mainView === 'tools'
                   ? 'cs-page-enter flex-1 flex flex-col min-h-0'
@@ -2381,6 +2399,7 @@ export default function CChat() {
 
             {/* Bid View */}
             <div
+              key={getTabResetKey('bid')}
               className={
                 mainView === 'bid'
                   ? 'cs-page-enter flex-1 flex flex-col min-h-0'
@@ -2392,6 +2411,7 @@ export default function CChat() {
 
             {/* Favorites View */}
             <div
+              key={getTabResetKey('favorites')}
               className={
                 mainView === 'favorites'
                   ? 'cs-page-enter flex-1 flex flex-col min-h-0'

@@ -21,7 +21,7 @@ import os
 import sys
 import time
 import typing
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from enum import Enum
 from functools import wraps
 
@@ -247,7 +247,11 @@ class BaseModel(Model):
 
         for f_n in AUTO_DATE_TIMESTAMP_FIELD_PREFIX:
             if {f"{f_n}_time", f"{f_n}_date"}.issubset(cls._meta.combined.keys()) and cls._meta.combined[f"{f_n}_time"] in normalized and normalized[cls._meta.combined[f"{f_n}_time"]] is not None:
-                normalized[cls._meta.combined[f"{f_n}_date"]] = timestamp_to_date(normalized[cls._meta.combined[f"{f_n}_time"]])
+                ts_val = normalized[cls._meta.combined[f"{f_n}_time"]]
+                if isinstance(ts_val, (datetime, date)):
+                    normalized[cls._meta.combined[f"{f_n}_date"]] = ts_val.strftime("%Y-%m-%d %H:%M:%S") if isinstance(ts_val, datetime) else ts_val.strftime("%Y-%m-%d")
+                else:
+                    normalized[cls._meta.combined[f"{f_n}_date"]] = timestamp_to_date(ts_val)
 
         return normalized
 
@@ -1735,6 +1739,19 @@ class Favorite(DataBaseModel):
 
     class Meta:
         db_table = "favorite"
+
+
+class StarredSite(DataBaseModel):
+    id = CharField(max_length=32, primary_key=True)
+    tenant_id = CharField(max_length=32, null=False, index=True)
+    user_id = CharField(max_length=32, null=False, index=True)
+    site_name = CharField(max_length=255, null=False, help_text="网站名称")
+    site_url = CharField(max_length=1024, null=False, help_text="网站URL")
+    created_at = DateTimeField(null=True)
+    updated_at = DateTimeField(null=True)
+
+    class Meta:
+        db_table = "starred_site"
 
 
 def alter_db_add_column(migrator, table_name, column_name, column_type):

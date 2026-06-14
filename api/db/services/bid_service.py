@@ -295,11 +295,16 @@ class BidProjectFileService(CommonService):
                 if isinstance(getattr(cls.model, k, None), DateTimeField):
                     v = cls._sanitize_datetime(v)
                 setattr(existing, k, v)
-            # 修复已有记录中的零值日期
-            for field_name in ("create_time", "publish_time"):
-                val = getattr(existing, field_name, None)
-                if val and str(val).startswith("0000-00-00"):
-                    setattr(existing, field_name, None)
+            # 修复已有记录中的零值日期（遍历所有DateTimeField）
+            from peewee import DateTimeField as PeeweeDTF
+            for field_name, field_obj in cls.model._meta.fields.items():
+                if isinstance(field_obj, PeeweeDTF):
+                    try:
+                        val = getattr(existing, field_name, None)
+                        if val is not None and str(val).startswith("0000-00-00"):
+                            setattr(existing, field_name, None)
+                    except Exception:
+                        setattr(existing, field_name, None)
             existing.save()
             return existing
         else:
@@ -517,7 +522,7 @@ class BidConstructionParseService(CommonService):
     @DB.connection_context()
     def get_by_project(cls, project_id: int) -> Optional[dict]:
         obj = cls.model.get_or_none(cls.model.project_id == project_id)
-        return obj.dicts() if obj else None
+        return obj.to_dict() if obj else None
 
     @classmethod
     @DB.connection_context()
@@ -542,7 +547,7 @@ class BidContractParseService(CommonService):
     @DB.connection_context()
     def get_by_project(cls, project_id: int) -> Optional[dict]:
         obj = cls.model.get_or_none(cls.model.project_id == project_id)
-        return obj.dicts() if obj else None
+        return obj.to_dict() if obj else None
 
     @classmethod
     @DB.connection_context()
@@ -567,7 +572,7 @@ class BidEnterpriseParseService(CommonService):
     @DB.connection_context()
     def get_by_company(cls, company_name: str) -> Optional[dict]:
         obj = cls.model.get_or_none(cls.model.company_name == company_name)
-        return obj.dicts() if obj else None
+        return obj.to_dict() if obj else None
 
     @classmethod
     @DB.connection_context()

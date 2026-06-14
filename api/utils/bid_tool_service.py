@@ -27,7 +27,7 @@ import os
 import tempfile
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
 
 from werkzeug.datastructures import FileStorage
@@ -53,9 +53,22 @@ from api.utils.bid_api_client import BidApiClient
 from api.utils.bid_file_utils import download_file, extract_archive
 
 DEFAULT_KB_ID = os.environ.get("BID_DEFAULT_KB_ID", "d23e0644578211f19c3bed5c593fe4c9")
-CONSTRUCTION_KB_ID = "30eb6240679b11f1a8f13fb025dd68"
+CONSTRUCTION_KB_ID = "30eb6240679b11f1a8f13fbdf025dd68"
 CONTRACT_KB_ID = "c1afe066679c11f1a8f13fbdf025dd68"
 ENTERPRISE_KB_ID = "afd3e892679c11f1a8f13fbdf025dd68"
+
+
+def _lookup_kb(kb_id: str, tenant_id: str):
+    """Look up a Knowledgebase row, returning the model instance or None."""
+    from api.db.db_models import Knowledgebase
+    try:
+        kb = Knowledgebase.get_or_none(Knowledgebase.id == kb_id)
+        if kb:
+            # Attach files placeholder (set before upload_document calls)
+            kb.files = None
+        return kb
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -673,7 +686,7 @@ def _run_import_async(project_id: int, publish_time: str, kb_id: str, user_id: s
                 structure_data,
             )
 
-            kb = KnowledgebaseService.get_or_none(id=kb_id, tenant_id=user_id)
+            kb = _lookup_kb(kb_id, user_id)
             if not kb:
                 BidProjectParseService.upsert({
                     "project_id": project_id,
@@ -689,10 +702,11 @@ def _run_import_async(project_id: int, publish_time: str, kb_id: str, user_id: s
                     content_type="text/plain",
                 )
                 kb.files = [file_obj]
-                FileService.upload_document(kb, [file_obj], user_id, parent_path=parent_path)
-                if hasattr(file_obj, "id"):
-                    combined_doc_id = file_obj.id
-                    queued_doc_ids.append(combined_doc_id)
+                err, uploaded_files = FileService.upload_document(kb, [file_obj], user_id, parent_path=parent_path)
+                for doc_dict, _ in uploaded_files:
+                    queued_doc_ids.append(doc_dict["id"])
+                    if not combined_doc_id:
+                        combined_doc_id = doc_dict["id"]
             except Exception as e:
                 logging.warning("Tool service: upload combined text failed for %d: %s", project_id, e)
 
@@ -714,10 +728,14 @@ def _run_import_async(project_id: int, publish_time: str, kb_id: str, user_id: s
                         })
 
                         local_path = download_file(url, tmpdir)
-                        BidProjectFileService.upsert_file({
-                            "project_file_id": f["project_file_id"],
-                            "local_path": local_path,
-                        })
+                        try:
+                            BidProjectFileService.upsert_file({
+                                "project_file_id": f["project_file_id"],
+                                "local_path": local_path,
+                            })
+                        except Exception as meta_err:
+                            logging.warning("Tool service: upsert_file metadata for %s failed (non-fatal): %s",
+                                          f.get("file_name"), meta_err)
 
                         to_upload = [local_path]
                         if local_path.lower().endswith((".zip", ".rar")):
@@ -731,9 +749,9 @@ def _run_import_async(project_id: int, publish_time: str, kb_id: str, user_id: s
                                     stream=open(path, "rb"),
                                     filename=fname,
                                 )
-                                FileService.upload_document(kb, [file_obj2], user_id, parent_path=parent_path)
-                                doc_id = getattr(file_obj2, "id", None)
-                                if doc_id:
+                                err2, uploaded_files2 = FileService.upload_document(kb, [file_obj2], user_id, parent_path=parent_path)
+                                for doc_dict2, _ in uploaded_files2:
+                                    doc_id = doc_dict2["id"]
                                     queued_doc_ids.append(doc_id)
                                     if path == local_path:
                                         BidProjectFileService.upsert_file({
@@ -817,6 +835,14 @@ def _run_import_async(project_id: int, publish_time: str, kb_id: str, user_id: s
                         })
                 except Exception as e:
                     logging.warning("Tool service: poll doc status failed for %d: %s", project_id, e)
+        else:
+            with DB.connection_context():
+                BidProjectParseService.upsert({
+                    "project_id": project_id,
+                    "status": "done",
+                    "progress": 1.0,
+                    "progress_msg": "Import complete: no documents to parse.",
+                })
 
     except Exception as e:
         logging.exception("Tool service: async import failed for project %d", project_id)
@@ -828,6 +854,7 @@ def _run_import_async(project_id: int, publish_time: str, kb_id: str, user_id: s
                     "progress_msg": str(e),
                 })
         except Exception:
+            pass
             pass
 
 
@@ -877,17 +904,6 @@ def import_bid_to_kb(
             "status": "parsing",
             "progress": existing.get("progress", 0),
             "message": existing.get("progress_msg", "Project is currently being imported/parsed."),
-        }
-
-    # --- Validate KB ---
-    kb = KnowledgebaseService.get_or_none(id=kb_id, tenant_id=user_id)
-    if not kb:
-        return {
-            "kb_id": kb_id,
-            "combined_doc_id": None,
-            "status": "fail",
-            "progress": 0,
-            "message": f"Knowledge base '{kb_id}' not found or access denied for user '{user_id}'.",
         }
 
     # --- Mark as parsing and start background thread ---
@@ -1000,7 +1016,7 @@ def _run_construction_import_async(
 
             combined_text = _build_construction_combined_text(detail, company, title, publish_time)
 
-            kb = KnowledgebaseService.get_or_none(id=kb_id, tenant_id=user_id)
+            kb = _lookup_kb(kb_id, user_id)
             if not kb:
                 BidConstructionParseService.upsert({
                     "project_id": project_id,
@@ -1016,10 +1032,11 @@ def _run_construction_import_async(
                     content_type="text/plain",
                 )
                 kb.files = [file_obj]
-                FileService.upload_document(kb, [file_obj], user_id, parent_path=parent_path)
-                if hasattr(file_obj, "id"):
-                    combined_doc_id = file_obj.id
-                    queued_doc_ids.append(combined_doc_id)
+                err, uploaded_files = FileService.upload_document(kb, [file_obj], user_id, parent_path=parent_path)
+                for doc_dict, _ in uploaded_files:
+                    queued_doc_ids.append(doc_dict["id"])
+                    if not combined_doc_id:
+                        combined_doc_id = doc_dict["id"]
             except Exception as e:
                 logging.warning("Construction import: upload combined text failed for %d: %s", project_id, e)
 
@@ -1053,10 +1070,9 @@ def _run_construction_import_async(
                                     stream=open(path, "rb"),
                                     filename=fname,
                                 )
-                                FileService.upload_document(kb, [file_obj2], user_id, parent_path=parent_path)
-                                doc_id = getattr(file_obj2, "id", None)
-                                if doc_id:
-                                    queued_doc_ids.append(doc_id)
+                                err2, uploaded_files2 = FileService.upload_document(kb, [file_obj2], user_id, parent_path=parent_path)
+                                for doc_dict2, _ in uploaded_files2:
+                                    queued_doc_ids.append(doc_dict2["id"])
                             except Exception as e:
                                 logging.warning("Construction import: upload attachment %s failed: %s", fname, e)
 
@@ -1134,6 +1150,14 @@ def _run_construction_import_async(
                         })
                 except Exception as e:
                     logging.warning("Construction import: poll doc status failed for %d: %s", project_id, e)
+        else:
+            with DB.connection_context():
+                BidConstructionParseService.upsert({
+                    "project_id": project_id,
+                    "status": "done",
+                    "progress": 1.0,
+                    "progress_msg": "Import complete: no documents to parse.",
+                })
 
     except Exception as e:
         logging.exception("Construction import: async import failed for project %d", project_id)
@@ -1182,17 +1206,6 @@ def import_construction_to_kb(
             "status": "parsing",
             "progress": existing.get("progress", 0),
             "message": existing.get("progress_msg", "Project is currently being imported/parsed."),
-        }
-
-    # --- Validate KB ---
-    kb = KnowledgebaseService.get_or_none(id=kb_id, tenant_id=user_id)
-    if not kb:
-        return {
-            "kb_id": kb_id,
-            "combined_doc_id": None,
-            "status": "fail",
-            "progress": 0,
-            "message": f"Knowledge base '{kb_id}' not found or access denied for user '{user_id}'.",
         }
 
     # --- Mark as parsing and start background thread ---
@@ -2072,7 +2085,7 @@ def _run_contract_import_async(
                 structure,
             )
 
-            kb = KnowledgebaseService.get_or_none(id=kb_id, tenant_id=user_id)
+            kb = _lookup_kb(kb_id, user_id)
             if not kb:
                 BidContractParseService.upsert({
                     "project_id": project_id,
@@ -2087,10 +2100,11 @@ def _run_contract_import_async(
                     filename=f"contract_{project_id}_content.txt",
                     content_type="text/plain",
                 )
-                FileService.upload_document(kb, [file_obj], user_id, parent_path=parent_path)
-                if hasattr(file_obj, "id"):
-                    combined_doc_id = file_obj.id
-                    queued_doc_ids.append(combined_doc_id)
+                err, uploaded_files = FileService.upload_document(kb, [file_obj], user_id, parent_path=parent_path)
+                for doc_dict, _ in uploaded_files:
+                    queued_doc_ids.append(doc_dict["id"])
+                    if not combined_doc_id:
+                        combined_doc_id = doc_dict["id"]
             except Exception as e:
                 logging.warning("Contract import: upload combined text failed for %d: %s", project_id, e)
 
@@ -2124,10 +2138,9 @@ def _run_contract_import_async(
                                     stream=open(path, "rb"),
                                     filename=fname,
                                 )
-                                FileService.upload_document(kb, [file_obj2], user_id, parent_path=parent_path)
-                                doc_id = getattr(file_obj2, "id", None)
-                                if doc_id:
-                                    queued_doc_ids.append(doc_id)
+                                err2, uploaded_files2 = FileService.upload_document(kb, [file_obj2], user_id, parent_path=parent_path)
+                                for doc_dict2, _ in uploaded_files2:
+                                    queued_doc_ids.append(doc_dict2["id"])
                             except Exception as e:
                                 logging.warning("Contract import: upload attachment %s failed: %s", fname, e)
 
@@ -2205,6 +2218,14 @@ def _run_contract_import_async(
                         })
                 except Exception as e:
                     logging.warning("Contract import: poll doc status failed for %d: %s", project_id, e)
+        else:
+            with DB.connection_context():
+                BidContractParseService.upsert({
+                    "project_id": project_id,
+                    "status": "done",
+                    "progress": 1.0,
+                    "progress_msg": "Import complete: no documents to parse.",
+                })
 
     except Exception as e:
         logging.exception("Contract import: async import failed for project %d", project_id)
@@ -2253,17 +2274,6 @@ def import_contract_to_kb(
             "status": "parsing",
             "progress": existing.get("progress", 0),
             "message": existing.get("progress_msg", "Project is currently being imported/parsed."),
-        }
-
-    # --- Validate KB ---
-    kb = KnowledgebaseService.get_or_none(id=kb_id, tenant_id=user_id)
-    if not kb:
-        return {
-            "kb_id": kb_id,
-            "combined_doc_id": None,
-            "status": "fail",
-            "progress": 0,
-            "message": f"Knowledge base '{kb_id}' not found or access denied for user '{user_id}'.",
         }
 
     # --- Mark as parsing and start background thread ---
@@ -2412,7 +2422,7 @@ def _run_enterprise_import_async(
 
             combined_text = _build_enterprise_combined_text(profile)
 
-            kb = KnowledgebaseService.get_or_none(id=kb_id, tenant_id=user_id)
+            kb = _lookup_kb(kb_id, user_id)
             if not kb:
                 BidEnterpriseParseService.upsert({
                     "company_name": company_name,
@@ -2428,10 +2438,11 @@ def _run_enterprise_import_async(
                     filename=f"enterprise_{safe_name}_profile.txt",
                     content_type="text/plain",
                 )
-                FileService.upload_document(kb, [file_obj], user_id, parent_path=parent_path)
-                if hasattr(file_obj, "id"):
-                    combined_doc_id = file_obj.id
-                    queued_doc_ids.append(combined_doc_id)
+                err, uploaded_files = FileService.upload_document(kb, [file_obj], user_id, parent_path=parent_path)
+                for doc_dict, _ in uploaded_files:
+                    queued_doc_ids.append(doc_dict["id"])
+                    if not combined_doc_id:
+                        combined_doc_id = doc_dict["id"]
             except Exception as e:
                 logging.warning("Enterprise import: upload combined text failed for '%s': %s", company_name, e)
 
@@ -2503,6 +2514,14 @@ def _run_enterprise_import_async(
                         })
                 except Exception as e:
                     logging.warning("Enterprise import: poll doc status failed for '%s': %s", company_name, e)
+        else:
+            with DB.connection_context():
+                BidEnterpriseParseService.upsert({
+                    "company_name": company_name,
+                    "status": "done",
+                    "progress": 1.0,
+                    "progress_msg": "Import complete: no documents to parse.",
+                })
 
     except Exception as e:
         logging.exception("Enterprise import: async import failed for '%s'", company_name)
@@ -2550,17 +2569,6 @@ def import_enterprise_to_kb(
             "status": "parsing",
             "progress": existing.get("progress", 0),
             "message": existing.get("progress_msg", "Enterprise is currently being imported/parsed."),
-        }
-
-    # --- Validate KB ---
-    kb = KnowledgebaseService.get_or_none(id=kb_id, tenant_id=user_id)
-    if not kb:
-        return {
-            "kb_id": kb_id,
-            "combined_doc_id": None,
-            "status": "fail",
-            "progress": 0,
-            "message": f"Knowledge base '{kb_id}' not found or access denied for user '{user_id}'.",
         }
 
     # --- Mark as parsing and start background thread ---

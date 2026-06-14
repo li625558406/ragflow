@@ -838,7 +838,10 @@ interface FileUploadTriggerProps extends React.ComponentPropsWithoutRef<'button'
   asChild?: boolean;
 }
 
-function FileUploadTrigger(props: FileUploadTriggerProps) {
+const FileUploadTrigger = React.forwardRef<
+  HTMLButtonElement,
+  FileUploadTriggerProps
+>((props, forwardedRef) => {
   const { asChild, onClick: onClickProp, ...triggerProps } = props;
   const context = useFileUploadContext(TRIGGER_NAME);
 
@@ -862,11 +865,13 @@ function FileUploadTrigger(props: FileUploadTriggerProps) {
       data-disabled={context.disabled ? '' : undefined}
       data-slot="file-upload-trigger"
       {...triggerProps}
+      ref={forwardedRef}
       disabled={context.disabled}
       onClick={onClick}
     />
   );
-}
+});
+FileUploadTrigger.displayName = TRIGGER_NAME;
 
 interface FileUploadListProps extends React.ComponentPropsWithoutRef<'div'> {
   orientation?: 'horizontal' | 'vertical';

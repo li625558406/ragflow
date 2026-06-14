@@ -111,9 +111,12 @@ export default function ContractList() {
   const [items, setItems] = useState<ContractItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const pageRef = useRef(1);
+  const loadingMoreRef = useRef(false);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
   const [keyword, setKeyword] = useState('');
   const [dateRange, setDateRange] = useState<{ from?: Date; to?: Date }>(() => {
     const to = new Date();
@@ -164,6 +167,7 @@ export default function ContractList() {
         setError(e.message);
       } finally {
         setLoading(false);
+        setLoadingMore(false);
       }
     },
     [keyword, dateRange, partAName, partBName],
@@ -179,10 +183,35 @@ export default function ContractList() {
     }, 300);
   }, [loading, doFetch]);
 
-  const loadMore = () => {
+  const loadMore = useCallback(() => {
+    if (loadingMoreRef.current) return;
+    if (items.length >= total) return;
+    setLoadingMore(true);
     pageRef.current += 1;
     doFetch(pageRef.current);
-  };
+  }, [items.length, total, doFetch]);
+
+  useEffect(() => {
+    loadingMoreRef.current = loadingMore;
+  }, [loadingMore]);
+
+  useEffect(() => {
+    if (!hasSearched) return;
+    const sentinel = sentinelRef.current;
+    if (!sentinel) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          loadMore();
+        }
+      },
+      { threshold: 0.1 },
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasSearched, loadMore]);
 
   const handleBackToSearch = () => setHasSearched(false);
 
@@ -458,7 +487,7 @@ export default function ContractList() {
               <div
                 key={`${item.id}-${idx}`}
                 onClick={() => openDetail(item)}
-                className="rounded-xl border border-[#E8E8E8] bg-[#FAFAFA] p-5 cursor-pointer hover:border-[#A3A3A3] transition"
+                className="rounded-xl border border-[#E8E8E8] bg-white p-5 cursor-pointer hover:border-[#D4D4D4] hover:shadow-md transition-all border-l-[3px] border-l-[#1a1a1a]"
               >
                 <div
                   className="text-sm font-semibold text-[#000000] leading-snug line-clamp-2 mb-2"
@@ -483,21 +512,21 @@ export default function ContractList() {
               </div>
             ))}
 
-            {items.length < total && (
-              <div className="py-4 flex items-center justify-center">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={loadMore}
-                  disabled={loading}
-                  className="h-9 text-xs"
-                >
-                  {loading
-                    ? '加载中...'
-                    : `加载更多 (已显示 ${items.length}/${total})`}
-                </Button>
-              </div>
-            )}
+            {/* Infinite scroll sentinel */}
+            <div
+              ref={sentinelRef}
+              className="py-6 flex items-center justify-center"
+            >
+              {loadingMore ? (
+                <span className="text-xs text-[#A3A3A3]">加载中...</span>
+              ) : items.length >= total ? (
+                <span className="text-xs text-[#A3A3A3]">已显示全部结果</span>
+              ) : (
+                <span className="text-xs text-[#A3A3A3]">
+                  已加载 {items.length}/{total}
+                </span>
+              )}
+            </div>
           </div>
         ) : (
           <div className="flex flex-col items-center justify-center py-20">
@@ -604,53 +633,65 @@ export default function ContractList() {
                       <div className="text-sm font-semibold mb-3">
                         结构化信息
                       </div>
-                      <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs">
+                      <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">
                         {detail.structure.projectName && (
-                          <div className="col-span-2 py-1">
-                            <span className="text-[#999]">项目名称：</span>
-                            <span className="text-[#333]">
+                          <div className="col-span-2">
+                            <div className="text-[11px] text-[#A3A3A3] mb-0.5">
+                              项目名称
+                            </div>
+                            <div className="text-[13px] text-[#1a1a1a] font-semibold leading-snug">
                               {detail.structure.projectName}
-                            </span>
+                            </div>
                           </div>
                         )}
                         {detail.structure.projectNumber?.length > 0 && (
-                          <div className="col-span-2 py-1">
-                            <span className="text-[#999]">项目编号：</span>
-                            <span className="text-[#333]">
+                          <div className="col-span-2">
+                            <div className="text-[11px] text-[#A3A3A3] mb-0.5">
+                              项目编号
+                            </div>
+                            <div className="text-[13px] text-[#1a1a1a] font-medium">
                               {detail.structure.projectNumber.join(' / ')}
-                            </span>
+                            </div>
                           </div>
                         )}
                         {detail.structure.budgetMoney?.length > 0 && (
-                          <div className="py-1">
-                            <span className="text-[#999]">预算金额：</span>
-                            <span className="text-[#333]">
+                          <div>
+                            <div className="text-[11px] text-[#A3A3A3] mb-0.5">
+                              预算金额
+                            </div>
+                            <div className="text-[13px] text-[#1a1a1a] font-medium">
                               {detail.structure.budgetMoney.join(' / ')}
-                            </span>
+                            </div>
                           </div>
                         )}
                         {detail.structure.bidMoney?.length > 0 && (
-                          <div className="py-1">
-                            <span className="text-[#999]">中标金额：</span>
-                            <span className="text-[#1a1a1a] font-medium">
+                          <div>
+                            <div className="text-[11px] text-[#A3A3A3] mb-0.5">
+                              中标金额
+                            </div>
+                            <div className="text-[15px] text-[#1a1a1a] font-bold">
                               {detail.structure.bidMoney.join(' / ')}
-                            </span>
+                            </div>
                           </div>
                         )}
                         {detail.structure.siginUpStopDate && (
-                          <div className="py-1">
-                            <span className="text-[#999]">报名截止：</span>
-                            <span className="text-[#333]">
+                          <div>
+                            <div className="text-[11px] text-[#A3A3A3] mb-0.5">
+                              报名截止
+                            </div>
+                            <div className="text-[13px] text-[#1a1a1a] font-medium">
                               {detail.structure.siginUpStopDate}
-                            </span>
+                            </div>
                           </div>
                         )}
                         {detail.structure.bidStartDate && (
-                          <div className="py-1">
-                            <span className="text-[#999]">开标日期：</span>
-                            <span className="text-[#333]">
+                          <div>
+                            <div className="text-[11px] text-[#A3A3A3] mb-0.5">
+                              开标日期
+                            </div>
+                            <div className="text-[13px] text-[#1a1a1a] font-medium">
                               {detail.structure.bidStartDate}
-                            </span>
+                            </div>
                           </div>
                         )}
                       </div>
@@ -658,20 +699,24 @@ export default function ContractList() {
                       {/* Party A */}
                       {detail.structure.partyAInfo?.length > 0 && (
                         <div className="mt-3 pt-3 border-t border-[#E8E8E8]">
-                          <span className="text-xs font-medium text-[#333]">
+                          <div className="text-[11px] text-[#A3A3A3] mb-1.5 uppercase tracking-wide">
                             甲方信息
-                          </span>
+                          </div>
                           {detail.structure.partyAInfo.map((p, i) => (
-                            <div key={i} className="mt-1 text-xs text-[#666]">
-                              <span className="font-medium">{p.name}</span>
+                            <div
+                              key={i}
+                              className="text-[13px] text-[#1a1a1a] font-semibold"
+                            >
+                              {p.name}
                               {p.contactName?.length > 0 && (
-                                <span>
-                                  {' '}
-                                  · 联系人: {p.contactName.join(', ')}
+                                <span className="font-normal text-[#525252] ml-2 text-xs">
+                                  联系人: {p.contactName.join(', ')}
                                 </span>
                               )}
                               {p.contactPhone?.length > 0 && (
-                                <span> · {p.contactPhone.join(', ')}</span>
+                                <span className="font-normal text-[#525252] ml-1 text-xs">
+                                  {p.contactPhone.join(', ')}
+                                </span>
                               )}
                             </div>
                           ))}
@@ -680,21 +725,25 @@ export default function ContractList() {
 
                       {/* Party B */}
                       {detail.structure.partyBInfo?.length > 0 && (
-                        <div className="mt-2 pt-2 border-t border-[#E8E8E8]">
-                          <span className="text-xs font-medium text-[#333]">
+                        <div className="mt-3 pt-3 border-t border-[#E8E8E8]">
+                          <div className="text-[11px] text-[#A3A3A3] mb-1.5 uppercase tracking-wide">
                             乙方/中标方
-                          </span>
+                          </div>
                           {detail.structure.partyBInfo.map((p, i) => (
-                            <div key={i} className="mt-1 text-xs text-[#666]">
-                              <span className="font-medium">{p.name}</span>
+                            <div
+                              key={i}
+                              className="text-[13px] text-[#1a1a1a] font-semibold"
+                            >
+                              {p.name}
                               {p.contactName?.length > 0 && (
-                                <span>
-                                  {' '}
-                                  · 联系人: {p.contactName.join(', ')}
+                                <span className="font-normal text-[#525252] ml-2 text-xs">
+                                  联系人: {p.contactName.join(', ')}
                                 </span>
                               )}
                               {p.contactPhone?.length > 0 && (
-                                <span> · {p.contactPhone.join(', ')}</span>
+                                <span className="font-normal text-[#525252] ml-1 text-xs">
+                                  {p.contactPhone.join(', ')}
+                                </span>
                               )}
                             </div>
                           ))}
@@ -703,21 +752,25 @@ export default function ContractList() {
 
                       {/* Agency */}
                       {detail.structure.agencyInfo?.length > 0 && (
-                        <div className="mt-2 pt-2 border-t border-[#E8E8E8]">
-                          <span className="text-xs font-medium text-[#333]">
+                        <div className="mt-3 pt-3 border-t border-[#E8E8E8]">
+                          <div className="text-[11px] text-[#A3A3A3] mb-1.5 uppercase tracking-wide">
                             代理机构
-                          </span>
+                          </div>
                           {detail.structure.agencyInfo.map((p, i) => (
-                            <div key={i} className="mt-1 text-xs text-[#666]">
-                              <span className="font-medium">{p.name}</span>
+                            <div
+                              key={i}
+                              className="text-[13px] text-[#1a1a1a] font-semibold"
+                            >
+                              {p.name}
                               {p.contactName?.length > 0 && (
-                                <span>
-                                  {' '}
-                                  · 联系人: {p.contactName.join(', ')}
+                                <span className="font-normal text-[#525252] ml-2 text-xs">
+                                  联系人: {p.contactName.join(', ')}
                                 </span>
                               )}
                               {p.contactPhone?.length > 0 && (
-                                <span> · {p.contactPhone.join(', ')}</span>
+                                <span className="font-normal text-[#525252] ml-1 text-xs">
+                                  {p.contactPhone.join(', ')}
+                                </span>
                               )}
                             </div>
                           ))}
@@ -726,11 +779,11 @@ export default function ContractList() {
 
                       {/* Bid companies */}
                       {detail.structure.bidCompany?.length > 0 && (
-                        <div className="mt-2 pt-2 border-t border-[#E8E8E8]">
-                          <span className="text-xs font-medium text-[#333]">
+                        <div className="mt-3 pt-3 border-t border-[#E8E8E8]">
+                          <div className="text-[11px] text-[#A3A3A3] mb-1.5 uppercase tracking-wide">
                             投标企业
-                          </span>
-                          <div className="mt-1 text-xs text-[#666]">
+                          </div>
+                          <div className="text-[13px] text-[#1a1a1a] font-medium">
                             {detail.structure.bidCompany
                               .map((c) => c.name)
                               .join(' / ')}
