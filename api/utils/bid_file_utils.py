@@ -8,9 +8,22 @@ from pathlib import Path
 
 
 def download_file(url: str, dest_dir: str) -> str:
-    """从URL下载文件到指定目录，返回本地路径"""
+    """从URL下载文件到指定目录，返回本地路径
+
+    Raises:
+        RuntimeError: 下载内容被替换为 HTML 页面（CDN 反爬/预览壳），非真实附件
+    """
     resp = requests.get(url, timeout=120, stream=True)
     resp.raise_for_status()
+
+    # 先读一小段检查是否被替换为 HTML 预览页面
+    # CDN 可能对非浏览器请求返回 PDF.js viewer 壳而非真实文件
+    peek = resp.iter_content(chunk_size=256, decode_unicode=False).__next__()
+    if peek[:15] == b"<!DOCTYPE html>" or peek[:9] == b"<!DOCTYPE" or peek[:6] == b"<html>" or peek[:5] == b"<html":
+        raise RuntimeError(
+            f"Downloaded content is a web page, not a real file. "
+            f"URL may be behind a CDN or PDF preview wrapper: {url}"
+        )
 
     # 尝试从 Content-Disposition 或 URL 提取文件名
     filename = None
@@ -44,6 +57,7 @@ def download_file(url: str, dest_dir: str) -> str:
 
     local_path = os.path.join(dest_dir, filename)
     with open(local_path, "wb") as f:
+        f.write(peek)
         for chunk in resp.iter_content(chunk_size=8192):
             f.write(chunk)
     logging.info("Downloaded: %s -> %s", url, local_path)
