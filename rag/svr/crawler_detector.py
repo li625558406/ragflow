@@ -57,6 +57,9 @@ def parse_args():
     p.add_argument("--task-name", required=True, help="Task name")
     p.add_argument("--config", default=DEFAULT_CONFIG_PATH,
                    help="Path to crawler_sites.yaml")
+    # Compatibility: task_executor always passes --script-args; detector ignores it
+    p.add_argument("--script-args", default="{}",
+                   help="JSON args (ignored by detector)")
     return p.parse_args()
 
 

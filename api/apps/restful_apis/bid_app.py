@@ -1511,9 +1511,26 @@ async def list_bid_contracts():
     def _db_to_contract(row: dict) -> dict:
         """Convert bid_project DB row → contract API response format."""
         raw = row.get("raw_json") or {}
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                raw = {}
         if raw:
             return raw
+
         # Fallback: reconstruct from DB fields
+        def _safe_names(val):
+            """Parse part_a_names / part_b_names — may be JSON string or list."""
+            if isinstance(val, str):
+                try:
+                    val = json.loads(val)
+                except (json.JSONDecodeError, TypeError):
+                    return []
+            if isinstance(val, list):
+                return val
+            return []
+
         return {
             "id": row["id"],
             "title": row.get("title_html") or row.get("title", ""),
@@ -1521,8 +1538,8 @@ async def list_bid_contracts():
             "projectMoney": row.get("project_money") or "",
             "hasFile": row.get("has_file") or 0,
             "projectCycle": [],
-            "partAInfo": [{"name": n, "contactPhone": []} for n in (row.get("part_a_names") or [])],
-            "partBInfo": [{"name": n, "contactPhone": []} for n in (row.get("part_b_names") or [])],
+            "partAInfo": [{"name": n, "contactPhone": []} for n in _safe_names(row.get("part_a_names"))],
+            "partBInfo": [{"name": n, "contactPhone": []} for n in _safe_names(row.get("part_b_names"))],
             "contractStartDate": "",
             "contractEndDate": row.get("contract_end_date") or "",
         }

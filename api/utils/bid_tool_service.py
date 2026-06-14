@@ -768,7 +768,6 @@ def _run_import_async(project_id: int, publish_time: str, kb_id: str, user_id: s
                         uploaded += 1
                     except Exception as e:
                         logging.warning("Tool service: process attachment %s failed: %s", f.get("file_name"), e)
-                        uploaded += 1
 
             # Phase 4: Trigger parse for all uploaded docs
             BidProjectParseService.upsert({
@@ -1518,8 +1517,8 @@ def get_bid_detail_v2_cached(project_id: int, publish_time: str) -> dict:
         logging.info("Bid tool: detail-v2 cache hit for project %s", project_id)
         cached_files = BidProjectFileService.get_by_project(project_id)
 
-        # 缓存的附件缺少 file_url 时，尝试从附件接口补充
-        if cached_files and not any(f.get("file_url") for f in cached_files):
+        # 始终从附件接口刷新文件列表，避免错过新文件
+        if cached_files:
             try:
                 client = BidApiClient()
                 files_api_resp = client.get_files_v2(project_id, publish_time)
@@ -2195,7 +2194,6 @@ def _run_contract_import_async(
                 for f in project_files:
                     url = (f.get("url") or f.get("fileUrl") or f.get("file_url", ""))
                     if not url:
-                        uploaded += 1
                         continue
                     try:
                         BidContractParseService.upsert({
@@ -2227,7 +2225,6 @@ def _run_contract_import_async(
                     except Exception as e:
                         logging.warning("Contract import: process attachment %s failed: %s",
                                        f.get("name", "unknown"), e)
-                        uploaded += 1
 
             # Phase 4: Trigger parse for all uploaded docs
             BidContractParseService.upsert({

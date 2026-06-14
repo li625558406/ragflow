@@ -2,7 +2,14 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { DatePickerWithRange } from '@/components/ui/range-picker';
 import { getAuthorization } from '@/utils/authorization-util';
-import { CheckCircle2, FileText, Loader2, Search, X } from 'lucide-react';
+import {
+  CheckCircle2,
+  FileText,
+  Loader2,
+  Paperclip,
+  Search,
+  X,
+} from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 const INPUT_CLASS =
@@ -85,6 +92,39 @@ function extractFileLinks(html: string): { name: string; href: string }[] {
     links.push({ name, href });
   }
   return links;
+}
+
+/** Safely extract name from partAInfo/partBInfo entry — may be a JSON string or array */
+function safeName(val: unknown): string {
+  if (!val) return '';
+  if (typeof val === 'string') {
+    if (val.startsWith('[')) {
+      try {
+        const arr = JSON.parse(val);
+        return Array.isArray(arr) ? arr.join('、') : val;
+      } catch {
+        return val;
+      }
+    }
+    return val;
+  }
+  if (Array.isArray(val))
+    return val
+      .map((v) => (typeof v === 'string' ? v : ''))
+      .filter(Boolean)
+      .join('、');
+  return String(val);
+}
+
+/** Collect all partA/partB names into a display string */
+function joinPartyNames(
+  list: { name: unknown; contactPhone?: unknown }[] | undefined,
+): string {
+  if (!list || !Array.isArray(list)) return '';
+  return list
+    .map((p) => safeName(p?.name))
+    .filter(Boolean)
+    .join('、');
 }
 
 async function contractFetch(url: string, params?: Record<string, any>) {
@@ -487,26 +527,54 @@ export default function ContractList() {
               <div
                 key={`${item.id}-${idx}`}
                 onClick={() => openDetail(item)}
-                className="rounded-xl border border-[#E8E8E8] bg-white p-5 cursor-pointer hover:border-[#D4D4D4] hover:shadow-md transition-all border-l-[3px] border-l-[#1a1a1a]"
+                className="group bg-white rounded-xl border border-[#E8E8E8] p-5 transition-all duration-200 hover:shadow-[0_4px_20px_rgba(0,0,0,0.06)] hover:-translate-y-0.5 cursor-pointer"
               >
-                <div
-                  className="text-sm font-semibold text-[#000000] leading-snug line-clamp-2 mb-2"
+                {/* Top row: badges + date */}
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium text-[#A3A3A3] bg-[#F5F5F5]">
+                      合同
+                    </span>
+                    {item.hasFile === 1 && (
+                      <span className="inline-flex items-center gap-1 text-xs text-[#525252]">
+                        <Paperclip className="size-3" />
+                        有附件
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-xs text-[#A3A3A3]">
+                    {item.publishTime ? item.publishTime.substring(0, 10) : ''}
+                  </span>
+                </div>
+
+                {/* Title */}
+                <h3
+                  className="text-[15px] font-semibold text-[#000000] leading-snug mb-3 group-hover:text-[#2563EB] transition-colors line-clamp-2"
                   dangerouslySetInnerHTML={{ __html: item.title }}
                 />
-                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-[#525252]">
-                  {item.projectMoney && <span>{item.projectMoney}</span>}
-                  {item.publishTime && <span>{item.publishTime}</span>}
-                  {item.partAInfo?.[0]?.name && (
-                    <span>甲方: {item.partAInfo[0].name}</span>
-                  )}
-                  {item.partBInfo?.[0]?.name && (
-                    <span>乙方: {item.partBInfo[0].name}</span>
+
+                {/* Info row */}
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[#525252] mb-4">
+                  {item.projectMoney && (
+                    <span className="font-medium text-[#000000]">
+                      {item.projectMoney}
+                    </span>
                   )}
                   {item.contractStartDate && (
                     <span>
-                      合同期: {item.contractStartDate} ~{' '}
-                      {item.contractEndDate || '未知'}
+                      合同期: {item.contractStartDate}
+                      {item.contractEndDate ? ` ~ ${item.contractEndDate}` : ''}
                     </span>
+                  )}
+                </div>
+
+                {/* Party info */}
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[#525252]">
+                  {joinPartyNames(item.partAInfo) && (
+                    <span>甲方: {joinPartyNames(item.partAInfo)}</span>
+                  )}
+                  {joinPartyNames(item.partBInfo) && (
+                    <span>乙方: {joinPartyNames(item.partBInfo)}</span>
                   )}
                 </div>
               </div>
