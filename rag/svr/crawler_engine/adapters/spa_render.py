@@ -21,6 +21,28 @@ from ..browser_pool import get_browser_pool
 from .base import BaseAdapter
 
 
+# JavaScript snippet that calls Vue.__vue__.$http to bypass signature/csrf checks.
+# The zfcg API requires requests to go through Vue's axios interceptors which
+# add crypto signatures — plain fetch() returns "验签比对失败".
+_VUE_HTTP_JS = """
+([url, opts]) => {
+    return new Promise((resolve) => {
+        try {
+            const vm = document.querySelector('#app').__vue__;
+            const http = vm.$http;
+            http.get(url, opts).then(resp => {
+                resolve(JSON.stringify(resp.data));
+            }).catch(err => {
+                resolve(JSON.stringify({error: err.message}));
+            });
+        } catch(e) {
+            resolve(JSON.stringify({error: e.message}));
+        }
+    });
+}
+"""
+
+
 class SpaRenderAdapter(BaseAdapter):
     """Adapter for Vue/React SPA sites requiring full JavaScript rendering."""
 
@@ -29,6 +51,7 @@ class SpaRenderAdapter(BaseAdapter):
         self._pool = get_browser_pool()
         self._api_captures: List[Dict[str, Any]] = []
         self._page = None
+        self._vue_ready = False
 
     def _get_page(self):
         """Get or create a page with API interception."""
@@ -61,7 +84,14 @@ class SpaRenderAdapter(BaseAdapter):
 
     def fetch_items(self, page_params: Dict[str, Any],
                     listing_override=None) -> Optional[List[Dict[str, Any]]]:
-        """Navigate to listing page and capture API responses."""
+        """Navigate to listing page and capture API responses.
+
+        When transport.vue_http is True, uses Vue.__vue__.$http proxy to
+        call APIs directly (bypasses signature/CSRF checks on sites like zfcg).
+        """
+        if getattr(self._transport, "vue_http", False):
+            return self._fetch_via_vue_http(page_params, listing_override)
+
         page = self._get_page()
         listing = listing_override if listing_override else self._config.listing
         url = listing.url
@@ -141,6 +171,161 @@ class SpaRenderAdapter(BaseAdapter):
                     return self._extract_from_dict(val, items_field)
         return []
 
+    # ------------------------------------------------------------------
+    # Vue $http mode — for sites whose API requires Vue's axios interceptors
+    # (e.g. zfcg — plain fetch() returns "验签比对失败")
+    # ------------------------------------------------------------------
+
+    def _ensure_vue_context(self) -> None:
+        """Navigate to site homepage and wait for Vue app to mount.
+
+        The Vue $http proxy is only available after the SPA has booted on
+        the origin domain.  We navigate once and reuse the page across
+        paginated API calls so that cookies / csrf tokens stay valid.
+        """
+        if self._vue_ready:
+            return
+        page = self._get_page()
+        site_url = self._config.site_url
+        if not site_url:
+            # Fall back to origin derived from the listing URL
+            from urllib.parse import urlparse
+            parts = urlparse(self._config.listing.url)
+            site_url = f"{parts.scheme}://{parts.netloc}"
+        logging.info("SpaRenderAdapter: navigating to %s for Vue context", site_url)
+        page.goto(site_url, wait_until="networkidle",
+                  timeout=self._transport.timeout * 1000)
+        time.sleep(3)
+        # Verify Vue $http is reachable
+        try:
+            page.evaluate("() => document.querySelector('#app').__vue__.$http")
+        except Exception as e:
+            raise RuntimeError(
+                f"Vue $http not found on {site_url}: {e}"
+            ) from e
+        self._vue_ready = True
+        logging.info("SpaRenderAdapter: Vue $http context ready")
+
+    def _fetch_via_vue_http(self, page_params: Dict[str, Any],
+                            listing_override=None) -> Optional[List[Dict[str, Any]]]:
+        """Fetch listing data via Vue.__vue__.$http proxy.
+
+        Navigates to the site homepage once (for Vue context + cookies), then
+        calls the listing API through Vue's axios instance on every page.
+        """
+        listing = listing_override if listing_override else self._config.listing
+        url = listing.url
+        params = dict(listing.params)
+
+        # Merge page_params (from paginator) into listing params
+        params.update(page_params)
+
+        # Resolve any remaining {{ page }} / {{ page_size }} templates
+        pag_cfg = self._config.pagination
+        page_val = str(page_params.get(pag_cfg.page_param, ""))
+        size_val = str(page_params.get(pag_cfg.page_size_param, ""))
+        for key, val in list(params.items()):
+            if isinstance(val, str) and "{{" in val:
+                val = val.replace("{{ page }}", page_val)
+                val = val.replace("{{ page_size }}", size_val)
+                params[key] = val
+
+        self._ensure_vue_context()
+        page = self._get_page()
+        max_retries = self._config.anti_crawler.max_retries
+
+        for attempt in range(max_retries):
+            try:
+                result_json = page.evaluate(
+                    _VUE_HTTP_JS,
+                    [url, {"params": params}],
+                )
+                data = json.loads(result_json)
+
+                if isinstance(data, dict) and "error" in data:
+                    logging.warning(
+                        "SpaRenderAdapter: Vue $http error: %s", data["error"]
+                    )
+                    time.sleep(2 ** attempt)
+                    continue
+
+                self._last_raw = data
+                self._api_captures = [{"url": url, "data": data}]
+                items = self._extract_from_api_captures()
+                return items if items else []
+
+            except Exception as e:
+                logging.warning(
+                    "SpaRenderAdapter: Vue $http attempt %d failed: %s",
+                    attempt + 1, e,
+                )
+                time.sleep(2 ** attempt)
+
+        return None
+
+    def _fetch_detail_via_vue_http(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """Fetch detail content via Vue $http proxy.
+
+        Calls the detail API through Vue's axios instance and extracts content
+        from the JSON response using content_field path (e.g. "data.content").
+        """
+        detail_cfg = self._config.detail
+        detail_url = detail_cfg.url
+        params = dict(detail_cfg.params)
+        for key, val in item.items():
+            detail_url = detail_url.replace("{" + key + "}", str(val))
+            for pkey, pval in params.items():
+                if isinstance(pval, str):
+                    params[pkey] = pval.replace("{" + key + "}", str(val))
+
+        self._ensure_vue_context()
+        page = self._get_page()
+
+        for attempt in range(3):
+            try:
+                result_json = page.evaluate(
+                    _VUE_HTTP_JS,
+                    [detail_url, {"params": params}],
+                )
+                data = json.loads(result_json)
+
+                if isinstance(data, dict) and "error" in data:
+                    logging.warning(
+                        "SpaRenderAdapter: Vue $http detail error: %s",
+                        data["error"],
+                    )
+                    time.sleep(1 + attempt)
+                    continue
+
+                # Extract content using content_field path (e.g. "data.content")
+                content = self._get_nested_value(data, detail_cfg.content_field)
+                if content:
+                    item["content"] = str(content)
+                else:
+                    item["content"] = json.dumps(data, ensure_ascii=False)
+                return item
+
+            except Exception as e:
+                logging.warning(
+                    "SpaRenderAdapter: Vue $http detail attempt %d failed: %s",
+                    attempt + 1, e,
+                )
+                time.sleep(1 + attempt)
+
+        return item
+
+    @staticmethod
+    def _get_nested_value(data: dict, path: str) -> Any:
+        """Get a nested dict value by dot-separated path (e.g. "data.content")."""
+        if not path:
+            return None
+        for key in path.split("."):
+            if isinstance(data, dict):
+                data = data.get(key)
+            else:
+                return None
+        return data
+
     def _extract_from_dom(self, page) -> List[Dict[str, Any]]:
         """Extract items from rendered DOM."""
         try:
@@ -169,6 +354,9 @@ class SpaRenderAdapter(BaseAdapter):
         - css_selector: use Playwright to get rendered HTML, then BS4 extraction
         - api_request: navigate to API URL and extract content via page.evaluate()
         - inline / none: delegate to base class
+
+        When transport.vue_http is True, api_request calls use Vue $http proxy
+        and extract content from JSON response directly.
         """
         detail_cfg = self._config.detail
 
@@ -178,6 +366,10 @@ class SpaRenderAdapter(BaseAdapter):
         # inline / none handled by base class
         if detail_cfg.type != "api_request" or not detail_cfg.url:
             return super().fetch_detail(item)
+
+        # Vue $http detail path — call API through Vue's axios proxy
+        if getattr(self._transport, "vue_http", False):
+            return self._fetch_detail_via_vue_http(item)
 
         page = self._get_page()
         detail_url = detail_cfg.url
@@ -286,6 +478,7 @@ class SpaRenderAdapter(BaseAdapter):
             except Exception:
                 pass
             self._page = None
+            self._vue_ready = False
 
     def cleanup(self) -> None:
         self._recreate_page()

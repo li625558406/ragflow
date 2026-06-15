@@ -158,16 +158,29 @@ class EncryptedApiAdapter(BaseAdapter):
         from rag.svr.crawler_utils import PlaywrightHttpClient
 
         if self._pw_client is None:
-            self._pw_client = PlaywrightHttpClient(headers=extra_headers)
+            # Fix: sync_playwright conflicts with a running asyncio event loop.
+            try:
+                import asyncio
+                asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+            else:
+                try:
+                    import nest_asyncio
+                    nest_asyncio.apply()
+                except ImportError:
+                    logging.warning("EncryptedApiAdapter: asyncio loop detected but "
+                                    "nest_asyncio not installed.")
+            self._pw_client = PlaywrightHttpClient()
 
         try:
             if method.upper() == "POST":
                 if body_type == "json":
-                    resp = self._pw_client.post(url, json=params)
+                    resp = self._pw_client.post(url, json_body=params, headers=extra_headers)
                 else:
-                    resp = self._pw_client.post(url, data=params)
+                    resp = self._pw_client.post(url, data=params, headers=extra_headers)
             else:
-                resp = self._pw_client.get(url, params=params)
+                resp = self._pw_client.get(url, headers=extra_headers)
 
             if resp.status_code != 200:
                 return None

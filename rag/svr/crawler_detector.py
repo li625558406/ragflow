@@ -159,6 +159,9 @@ def main():
         logging.info("Detector: probing site=%s ...", site.site_id)
 
         try:
+            # Detector is a fast probe — cap retries and timeout to avoid getting stuck
+            site.anti_crawler.max_retries = 1
+            site.transport.timeout = 10
             detector = SiteDetector(site, args.tenant_id)
             result = detector.detect()
 

@@ -3238,8 +3238,8 @@ sites:
     site_url: "http://zjfw.zhangzhou.gov.cn"
     enabled: true
     transport:
-      type: playwright_http
-      engine: playwright_http
+      type: spa_render
+      engine: playwright_spa
       headers:
         User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
         Content-Type: "application/json;charset=UTF-8"
@@ -3345,8 +3345,8 @@ sites:
     site_url: "http://zjfw.zhangzhou.gov.cn"
     enabled: true
     transport:
-      type: playwright_http
-      engine: playwright_http
+      type: spa_render
+      engine: playwright_spa
       headers:
         User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
       verify_ssl: false
@@ -3396,14 +3396,26 @@ sites:
     transport:
       type: spa_render
       engine: playwright_spa
+      vue_http: true
       headers:
         User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
-      captcha:
-        type: ocr
-        input_selector: "#captchaInput"
-        image_selector: "#captchaImage"
       verify_ssl: false
       timeout: 90
+    listing:
+      url: "https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/selectInfoForIndex"
+      method: GET
+      params:
+        currPage: "{{ page }}"
+        pageSize: "{{ page_size }}"
+        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+    pagination:
+      type: page_no
+      page_param: "currPage"
+      page_size_param: "pageSize"
+      page_size: 20
+      start: 1
+      max_pages: 100
+      items_field: "data"
     anti_crawler:
       delay_min: 2.0
       delay_max: 5.0
@@ -3423,24 +3435,6 @@ sites:
     format:
       parser_id: "naive"
       upload_batch_size: 10
-    sections:
-      - label: "kbdt"
-        listing:
-          url: "https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/selectInfoForIndex"
-          method: POST
-          body_type: json
-          params:
-            currPage: "{{ page }}"
-            pageSize: "20"
-            siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
-        pagination:
-          type: page_no
-          page_param: "currPage"
-          page_size_param: "pageSize"
-          page_size: 20
-          start: 1
-          max_pages: 100
-          items_field: "data"
 
   # --------------------------------------------------------------------------
   # zfcg sub-sections
@@ -3452,17 +3446,17 @@ sites:
     transport:
       type: spa_render
       engine: playwright_spa
+      vue_http: true
       headers:
         User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
       verify_ssl: false
       timeout: 90
     listing:
       url: "https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/selectInfoForIndex"
-      method: POST
-      body_type: json
+      method: GET
       params:
         currPage: "{{ page }}"
-        pageSize: "20"
+        pageSize: "{{ page_size }}"
         channel: "268f9bf1-c144-4526-b3cd-0ace493d31d8"
         siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
     pagination:
@@ -3499,17 +3493,17 @@ sites:
     transport:
       type: spa_render
       engine: playwright_spa
+      vue_http: true
       headers:
         User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
       verify_ssl: false
       timeout: 90
     listing:
       url: "https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/selectInfoMoreChannel"
-      method: POST
-      body_type: json
+      method: GET
       params:
         currPage: "{{ page }}"
-        pageSize: "20"
+        pageSize: "{{ page_size }}"
         channel: "47bbf186-5544-4537-bef5-158d0c0923fa"
         siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
     pagination:
@@ -3546,6 +3540,7 @@ sites:
     transport:
       type: spa_render
       engine: playwright_spa
+      vue_http: true
       headers:
         User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
       captcha:
@@ -3556,12 +3551,10 @@ sites:
       timeout: 90
     listing:
       url: "https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/selectInfoForIndex"
-      method: POST
-      body_type: json
+      method: GET
       params:
         currPage: "{{ page }}"
-        pageSize: "20"
-        channel: "f582600e-065d-4f35-8966-48a33fa93863"
+        pageSize: "{{ page_size }}"
         siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
     pagination:
       type: page_no
@@ -3936,8 +3929,8 @@ sites:
     site_url: "https://xzfwzx.pingtan.gov.cn:9999/"
     enabled: true
     transport:
-      type: playwright_http
-      engine: playwright_http
+      type: spa_render
+      engine: playwright_spa
       headers:
         User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
       verify_ssl: false

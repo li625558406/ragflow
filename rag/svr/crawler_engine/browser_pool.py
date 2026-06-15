@@ -6,6 +6,7 @@ overhead.  Each subprocess crawler gets a singleton browser via
 this module.
 """
 
+import asyncio
 import logging
 import os
 from contextlib import contextmanager
@@ -59,7 +60,33 @@ class BrowserPool:
                 "Install with: pip install playwright && python -m playwright install chromium"
             )
 
-        self._playwright = sync_playwright().start()
+        # Fix: sync_playwright conflicts with a running asyncio event loop.
+        # Playwright checks loop.is_running() and raises before calling run_until_complete().
+        # nest_asyncio alone isn't enough — we must also temporarily patch is_running().
+        _loop = None
+        try:
+            _loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+
+        if _loop is not None and _loop.is_running():
+            try:
+                import nest_asyncio
+                nest_asyncio.apply()
+            except ImportError:
+                logging.warning("BrowserPool: asyncio loop detected but nest_asyncio "
+                                "not installed. Run: pip install nest_asyncio")
+
+            # Temporarily make is_running() return False so Playwright's check passes.
+            _original_is_running = _loop.is_running
+            _loop.is_running = lambda: False
+
+            try:
+                self._playwright = sync_playwright().start()
+            finally:
+                _loop.is_running = _original_is_running
+        else:
+            self._playwright = sync_playwright().start()
         chrome_path = self._find_chrome()
 
         launch_args = {

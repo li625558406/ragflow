@@ -116,15 +116,36 @@ export default function DocumentList({
       }`}
     >
       {/* Header */}
-      <div className="px-4 pt-4 pb-2 whitespace-nowrap">
+      <div className="flex items-center gap-2 px-4 pt-4 pb-2 whitespace-nowrap">
         <span className="text-[#333333] text-[15px] font-semibold tracking-widest uppercase">
           文档列表
         </span>
+        <div className="flex-1" />
+        <button
+          onClick={onRefresh}
+          disabled={loading}
+          className="flex items-center justify-center size-6 rounded hover:bg-[#F3F3F3] disabled:opacity-50"
+          title="刷新列表"
+        >
+          <svg
+            className={`size-3.5 text-[#A3A3A3] ${loading ? 'animate-spin' : ''}`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+            />
+          </svg>
+        </button>
       </div>
 
       {/* Document List */}
       <div className="flex-1 overflow-y-auto px-2 space-y-0.5 pb-4">
-        {loading ? (
+        {loading && documents.length === 0 ? (
           <div className="flex items-center justify-center py-8">
             <div className="w-5 h-5 border-2 border-[#A3A3A3] border-t-[#000000] rounded-full animate-spin" />
           </div>
@@ -279,7 +300,7 @@ export default function DocumentList({
                     </div>
                   )}
                   <div className="flex items-center gap-1 mt-0.5">
-                    <span className="text-[11px] text-[#333333] truncate">
+                    <span className="text-[11px] text-[#A3A3A3] truncate">
                       {doc.file_type.toUpperCase()}
                     </span>
                     {doc.permission === 'team' && (

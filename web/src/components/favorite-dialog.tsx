@@ -8,7 +8,14 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { Lightbulb } from 'lucide-react';
 import { useState } from 'react';
+
+function generateTitle(): string {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `收藏_${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}:${pad(now.getMinutes())}`;
+}
 
 interface FavoriteDialogProps {
   open: boolean;
@@ -24,25 +31,18 @@ export default function FavoriteDialog({
   messageCount,
 }: FavoriteDialogProps) {
   const [title, setTitle] = useState('');
-  const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   const handleConfirm = () => {
     const trimmed = title.trim();
-    if (!trimmed) {
-      setError('标题不能为空');
-      return;
-    }
     setSubmitting(true);
-    onConfirm(trimmed);
+    onConfirm(trimmed || generateTitle());
     setTitle('');
-    setError('');
   };
 
   const handleOpenChange = (open: boolean) => {
     if (!open) {
       setTitle('');
-      setError('');
       setSubmitting(false);
     }
     onOpenChange(open);
@@ -57,21 +57,22 @@ export default function FavoriteDialog({
             已选择 {messageCount} 条消息，请输入收藏标题
           </DialogDescription>
         </DialogHeader>
-        <div className="py-4">
+        <div className="py-4 space-y-3">
           <Input
             placeholder="输入收藏标题..."
             value={title}
-            onChange={(e) => {
-              setTitle(e.target.value);
-              if (error) setError('');
-            }}
+            onChange={(e) => setTitle(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') handleConfirm();
             }}
-            className={error ? 'border-red-500' : ''}
             autoFocus
           />
-          {error && <p className="mt-1.5 text-xs text-red-500">{error}</p>}
+          <div className="flex items-start gap-2 px-1">
+            <Lightbulb className="size-3.5 text-[#A3A3A3] shrink-0 mt-px" />
+            <p className="text-xs text-[#A3A3A3] leading-relaxed">
+              留空将自动生成标题，如：{generateTitle()}
+            </p>
+          </div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => handleOpenChange(false)}>

@@ -64,6 +64,7 @@ class TransportConfig:
     cookies: Dict[str, str] = field(default_factory=dict)
     verify_ssl: bool = True
     timeout: int = 60
+    vue_http: bool = False          # Use Vue.__vue__.$http proxy for API calls (bypasses signature verification)
     encryption: Optional[EncryptionConfig] = None
     signing: Optional[SigningConfig] = None
     captcha: Optional[CaptchaConfig] = None
@@ -272,6 +273,7 @@ class ConfigLoader:
             timeout=data.get("timeout", 60),
             encryption=EncryptionConfig(**enc) if enc else None,
             signing=SigningConfig(**sig) if sig else None,
+            vue_http=data.get("vue_http", False),
             captcha=CaptchaConfig(**cap) if cap else None,
             proxy=ProxyConfig(**prx) if prx else None,
         )

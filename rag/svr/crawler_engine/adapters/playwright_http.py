@@ -32,6 +32,20 @@ class PlaywrightHttpAdapter(BaseAdapter):
     def _get_client(self):
         """Lazy-init the PlaywrightHttpClient."""
         if self._client is None:
+            # Fix: sync_playwright conflicts with a running asyncio event loop.
+            try:
+                import asyncio
+                asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+            else:
+                try:
+                    import nest_asyncio
+                    nest_asyncio.apply()
+                except ImportError:
+                    logging.warning("PlaywrightHttpAdapter: asyncio loop detected but "
+                                    "nest_asyncio not installed.")
+
             from rag.svr.crawler_utils import PlaywrightHttpClient
             self._client = PlaywrightHttpClient()
         return self._client
@@ -61,9 +75,17 @@ class PlaywrightHttpAdapter(BaseAdapter):
         for attempt in range(self._config.anti_crawler.max_retries):
             try:
                 if method == "POST":
-                    resp = client.post(url, data=params, timeout=self._transport.timeout)
+                    body_type = getattr(listing, "body_type", None) or "form"
+                    if body_type == "json":
+                        resp = client.post(url, json_body=params, timeout=self._transport.timeout)
+                    else:
+                        resp = client.post(url, data=params, timeout=self._transport.timeout)
                 else:
-                    resp = client.get(url, params=params, timeout=self._transport.timeout)
+                    # Build query string and use fetch_get for proper response body
+                    from urllib.parse import urlencode
+                    qs = urlencode(params)
+                    full_url = f"{url}?{qs}" if qs else url
+                    resp = client.fetch_get(full_url, timeout=self._transport.timeout)
 
                 if resp.status_code == 429:
                     time.sleep((2 ** attempt) + 1)

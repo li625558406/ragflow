@@ -127,6 +127,26 @@ function joinPartyNames(
     .join('、');
 }
 
+/** Force-download an attachment via fetch+blob, falling back to window.open */
+async function downloadAttachment(url: string, filename: string) {
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const blob = await resp.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(blobUrl);
+  } catch {
+    // CORS blocked or network error — fallback to opening in new tab
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+}
+
 async function contractFetch(url: string, params?: Record<string, any>) {
   const qs = params
     ? '?' +
@@ -899,9 +919,11 @@ export default function ContractList() {
                                   <a
                                     key={`pf-${i}`}
                                     href={f.url}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="text-xs text-[#333] py-0.5 flex items-center gap-2 font-medium hover:text-[#000000] hover:underline transition-colors"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      downloadAttachment(f.url, f.name);
+                                    }}
+                                    className="text-xs text-[#333] py-0.5 flex items-center gap-2 font-medium hover:text-[#000000] hover:underline transition-colors cursor-pointer"
                                   >
                                     <FileText className="size-3 text-[#000000] shrink-0" />
                                     {f.name}
@@ -920,9 +942,11 @@ export default function ContractList() {
                                 <a
                                   key={`cl-${i}`}
                                   href={l.href}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="text-xs text-[#333] py-0.5 flex items-center gap-2 font-medium hover:text-[#000000] hover:underline transition-colors"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    downloadAttachment(l.href, l.name);
+                                  }}
+                                  className="text-xs text-[#333] py-0.5 flex items-center gap-2 font-medium hover:text-[#000000] hover:underline transition-colors cursor-pointer"
                                 >
                                   <FileText className="size-3 text-[#000000] shrink-0" />
                                   {l.name}

@@ -12,7 +12,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
   Check,
-  Clock,
+  ChevronLeft,
+  ChevronRight,
   Download,
   FileText,
   MessageSquare,
@@ -339,6 +340,7 @@ export default function FavoritePanel({ apiFetch }: Props) {
   const [editingTitle, setEditingTitle] = useState(false);
   const [editTitle, setEditTitle] = useState('');
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{
     id: string;
     title: string;
@@ -351,10 +353,13 @@ export default function FavoritePanel({ apiFetch }: Props) {
 
   const ITEMS_PER_PAGE = 20;
 
+  const apiFetchRef = useRef(apiFetch);
+  apiFetchRef.current = apiFetch;
+
   const loadFavorites = useCallback(async () => {
     setLoading(true);
     try {
-      const resp = await apiFetch(
+      const resp = await apiFetchRef.current(
         `/api/v1/favorite/list?page=${page}&items_per_page=${ITEMS_PER_PAGE}`,
       );
       const result = await resp.json();
@@ -367,34 +372,31 @@ export default function FavoritePanel({ apiFetch }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [apiFetch, page]);
+  }, [page]);
 
   useEffect(() => {
     loadFavorites();
   }, [loadFavorites]);
 
-  const handleSelect = useCallback(
-    async (id: string) => {
-      setDetailLoading(true);
-      try {
-        const resp = await apiFetch(`/api/v1/favorite/${id}`);
-        const result = await resp.json();
-        if (result.code === 0) {
-          const fav = result.data;
-          setSelectedFavorite(fav);
-          setEditTitle(fav.title);
-          const content = extractContent(fav.messages_data || []);
-          setEditContent(content);
-          setSavedContent(content);
-        }
-      } catch (e) {
-        console.error('加载收藏详情失败:', e);
-      } finally {
-        setDetailLoading(false);
+  const handleSelect = useCallback(async (id: string) => {
+    setDetailLoading(true);
+    try {
+      const resp = await apiFetchRef.current(`/api/v1/favorite/${id}`);
+      const result = await resp.json();
+      if (result.code === 0) {
+        const fav = result.data;
+        setSelectedFavorite(fav);
+        setEditTitle(fav.title);
+        const content = extractContent(fav.messages_data || []);
+        setEditContent(content);
+        setSavedContent(content);
       }
-    },
-    [apiFetch],
-  );
+    } catch (e) {
+      console.error('加载收藏详情失败:', e);
+    } finally {
+      setDetailLoading(false);
+    }
+  }, []);
 
   const handleSaveTitle = async () => {
     if (!selectedFavorite || !editTitle.trim()) return;
@@ -530,10 +532,15 @@ export default function FavoritePanel({ apiFetch }: Props) {
   return (
     <div className="flex-1 flex min-h-0 bg-white">
       {/* ── Left Sidebar ── */}
-      <div className="shrink-0 w-56 border-r border-[#D4D4D4] flex flex-col">
-        <div className="flex items-center gap-2 px-4 py-3 border-b border-[#D4D4D4] shrink-0">
-          <Star className="size-4 text-[#6366f1] fill-[#6366f1]" />
-          <h2 className="text-sm font-bold text-[#000000]">收藏</h2>
+      <div
+        className={`shrink-0 border-r border-[#D4D4D4] bg-white flex flex-col transition-[width] duration-300 ease-in-out overflow-hidden ${
+          collapsed ? 'w-0 border-r-0' : 'w-56'
+        }`}
+      >
+        <div className="flex items-center gap-2 px-4 pt-4 pb-2 whitespace-nowrap">
+          <span className="text-[#333333] text-[15px] font-semibold tracking-widest uppercase">
+            收藏列表
+          </span>
           {total > 0 && (
             <span className="text-xs text-[#A3A3A3]">共 {total} 条</span>
           )}
@@ -551,7 +558,7 @@ export default function FavoritePanel({ apiFetch }: Props) {
         </div>
 
         <div className="flex-1 overflow-y-auto">
-          {loading ? (
+          {loading && favorites.length === 0 ? (
             <div className="flex items-center justify-center py-20">
               <div className="flex flex-col items-center gap-3">
                 <div className="size-8 border-2 border-[#D4D4D4] border-t-[#000] rounded-full animate-spin" />
@@ -569,72 +576,58 @@ export default function FavoritePanel({ apiFetch }: Props) {
               </div>
             </div>
           ) : (
-            <div className="divide-y divide-[#EAEAEA]">
-              {favorites.map((fav) => (
-                <div
+            <div className="px-2 space-y-0.5">
+              {favorites.map((fav, idx) => (
+                <button
                   key={fav.id}
-                  role="button"
-                  tabIndex={0}
                   onClick={() => handleSelect(fav.id)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleSelect(fav.id);
-                  }}
-                  className={`w-full text-left px-3 py-2.5 transition-colors group ${
+                  className={`cs-list-enter cs-list-d${Math.min(idx, 7)} w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer transition text-left group whitespace-nowrap ${
                     selectedFavorite?.id === fav.id
-                      ? 'bg-[#EAEAEA]'
-                      : 'hover:bg-[#F8F9FB]'
+                      ? 'bg-[#EAEAEA] text-[#000000]'
+                      : 'text-[#333333] hover:bg-[#EAEAEA] hover:text-[#000000]'
                   }`}
                 >
-                  <div className="flex items-start gap-2">
-                    <Star
-                      className={`size-3.5 shrink-0 mt-0.5 ${
-                        selectedFavorite?.id === fav.id
-                          ? 'text-[#6366f1] fill-[#6366f1]'
-                          : 'text-[#A3A3A3]'
-                      }`}
-                    />
-                    <div className="flex-1 min-w-0">
-                      <h3 className="text-sm font-medium text-[#000000] truncate">
-                        {fav.title}
-                      </h3>
-                      <div className="flex items-center gap-2 mt-0.5 text-xs text-[#A3A3A3]">
-                        <span className="flex items-center gap-0.5">
-                          <MessageSquare className="size-3" />
-                          {(fav.message_ids || []).length} 条
-                        </span>
-                        <span className="flex items-center gap-0.5">
-                          <Clock className="size-3" />
-                          {formatTime(fav.updated_at || fav.created_at)}
-                        </span>
-                      </div>
+                  <div
+                    className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${
+                      selectedFavorite?.id === fav.id
+                        ? 'bg-white'
+                        : 'bg-[#EAEAEA]'
+                    }`}
+                  >
+                    <MessageSquare className="w-4 h-4" strokeWidth={1.5} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[15px] font-medium truncate">
+                      {fav.title}
+                    </div>
+                    <div className="text-[11px] text-[#A3A3A3] truncate">
+                      {formatTime(fav.updated_at || fav.created_at)}
                     </div>
                   </div>
-                  {/* Hover actions */}
-                  <div className="flex items-center gap-0.5 mt-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button
+                  <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <span
                       onClick={(e) => {
                         e.stopPropagation();
                         handleDownload(fav.id, fav.title);
                       }}
-                      disabled={downloadingId === fav.id}
-                      className="flex items-center gap-0.5 px-1.5 py-0.5 text-xs text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA] rounded transition-colors"
+                      className="size-6 flex items-center justify-center rounded text-[#A3A3A3] hover:text-[#2563EB] hover:bg-blue-50 transition-colors"
+                      title="下载"
                     >
-                      <Download className="size-3" />
-                      {downloadingId === fav.id ? '下载中...' : '下载'}
-                    </button>
-                    <button
+                      <Download className="size-3.5" />
+                    </span>
+                    <span
                       onClick={(e) => {
                         e.stopPropagation();
                         setDeleteTarget({ id: fav.id, title: fav.title });
                         setDeleteDialogOpen(true);
                       }}
-                      className="flex items-center gap-0.5 px-1.5 py-0.5 text-xs text-red-500 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                      className="size-6 flex items-center justify-center rounded text-[#A3A3A3] hover:text-red-500 hover:bg-red-50 transition-colors"
+                      title="删除"
                     >
-                      <Trash2 className="size-3" />
-                      删除
-                    </button>
+                      <Trash2 className="size-3.5" />
+                    </span>
                   </div>
-                </div>
+                </button>
               ))}
             </div>
           )}
@@ -663,6 +656,19 @@ export default function FavoritePanel({ apiFetch }: Props) {
           </div>
         )}
       </div>
+
+      {/* Toggle button — floats on sidebar edge */}
+      <button
+        onClick={() => setCollapsed((c) => !c)}
+        className="shrink-0 self-start mt-6 -ml-3.5 z-10 size-7 flex items-center justify-center rounded-full border-2 border-[#D4D4D4] bg-white text-[#525252] hover:text-[#000000] hover:border-[#A3A3A3] hover:shadow-[0_2px_8px_rgba(0,0,0,0.12)] transition-all cursor-pointer"
+        title={collapsed ? '展开侧边栏' : '收起侧边栏'}
+      >
+        {collapsed ? (
+          <ChevronRight className="size-3.5" />
+        ) : (
+          <ChevronLeft className="size-3.5" />
+        )}
+      </button>
 
       {/* ── Right Content ── */}
       <div className="flex-1 flex min-w-0">

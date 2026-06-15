@@ -34,9 +34,12 @@ export default function ConstructionList() {
   const [items, setItems] = useState<ConstructionItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const pageRef = useRef(1);
+  const loadingMoreRef = useRef(false);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
   const [keyword, setKeyword] = useState('');
   const [dateRange, setDateRange] = useState<{ from?: Date; to?: Date }>(() => {
     const today = new Date();
@@ -71,7 +74,11 @@ export default function ConstructionList() {
 
   const doFetch = useCallback(
     async (page: number) => {
-      setLoading(true);
+      if (page === 1) {
+        setLoading(true);
+      } else {
+        setLoadingMore(true);
+      }
       setError(null);
       try {
         const json = await constructionFetch('construction/projects', {
@@ -97,6 +104,7 @@ export default function ConstructionList() {
         setError(e.message);
       } finally {
         setLoading(false);
+        setLoadingMore(false);
       }
     },
     [keyword, dateRange],
@@ -112,10 +120,32 @@ export default function ConstructionList() {
     }, 300);
   }, [loading, doFetch]);
 
-  const loadMore = () => {
+  const loadMore = useCallback(() => {
+    if (loadingMoreRef.current) return;
+    if (items.length >= total) return;
+    loadingMoreRef.current = true;
     pageRef.current += 1;
     doFetch(pageRef.current);
-  };
+  }, [items.length, total, doFetch]);
+
+  useEffect(() => {
+    loadingMoreRef.current = loadingMore;
+  }, [loadingMore]);
+
+  // Infinite scroll observer
+  useEffect(() => {
+    if (!hasSearched) return;
+    const sentinel = sentinelRef.current;
+    if (!sentinel) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) loadMore();
+      },
+      { threshold: 0.1 },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasSearched, loadMore]);
 
   const handleBackToSearch = () => setHasSearched(false);
 
@@ -169,6 +199,25 @@ export default function ConstructionList() {
     return links;
   }
 
+  /** Force-download an attachment via fetch+blob, falling back to window.open */
+  async function downloadAttachment(url: string, filename: string) {
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const blob = await resp.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(blobUrl);
+    } catch {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    }
+  }
+
   function getFileSuffix(name: string): string {
     const parts = name.split('.');
     return parts.length > 1 ? parts.pop()!.toLowerCase() : '';
@@ -211,14 +260,22 @@ export default function ConstructionList() {
   const triggerParse = useCallback(
     async (projectId: number, publishTime: string) => {
       try {
-        const resp = await constructionFetch(
-          `construction/projects/${projectId}/parse`,
+        const resp = await fetch(
+          `/api/v1/bid/construction/projects/${projectId}/parse`,
           {
-            publish_time: publishTime,
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: getAuthorization(),
+            },
+            body: JSON.stringify({ publish_time: publishTime }),
           },
         );
-        const data = resp.data || resp;
-        if (data.status === 'done') {
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const json = await resp.json();
+        if (json.code !== 0)
+          throw new Error(json.message || `API error code=${json.code}`);
+        if (json.data?.status === 'done') {
           setParseStatus({
             status: 'done',
             progress: 1,
@@ -401,41 +458,58 @@ export default function ConstructionList() {
             {items.map((item, idx) => (
               <div
                 key={`${item.id}-${idx}`}
-                className="rounded-xl border border-[#E8E8E8] bg-[#FAFAFA] p-5 cursor-pointer hover:border-[#A3A3A3] transition"
                 onClick={() => openDetail(item)}
+                className="group bg-white rounded-xl border border-[#E8E8E8] p-5 transition-all duration-200 hover:shadow-[0_4px_20px_rgba(0,0,0,0.06)] hover:-translate-y-0.5 cursor-pointer"
               >
-                <div
-                  className="text-sm font-semibold text-[#000000] leading-snug line-clamp-2 mb-2"
+                {/* Top row: badges + date */}
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium text-[#D97706] bg-[#FFFBEB]">
+                      拟在建
+                    </span>
+                    {item.hasFile === 1 && (
+                      <span className="inline-flex items-center gap-1 text-xs text-[#525252]">
+                        <Paperclip className="size-3" />
+                        有附件
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-xs text-[#A3A3A3]">
+                    {item.publishTime ? item.publishTime.substring(0, 10) : ''}
+                  </span>
+                </div>
+
+                {/* Title */}
+                <h3
+                  className="text-[15px] font-semibold text-[#000000] leading-snug mb-2 group-hover:text-[#2563EB] transition-colors line-clamp-2"
                   dangerouslySetInnerHTML={{ __html: item.title }}
                 />
+
+                {/* Summary */}
                 {item.summary && (
-                  <div
-                    className="text-xs text-[#525252] leading-relaxed line-clamp-2 mb-2"
+                  <p
+                    className="text-xs text-[#525252] leading-relaxed line-clamp-2"
                     dangerouslySetInnerHTML={{ __html: item.summary }}
                   />
                 )}
-                <div className="flex gap-x-3 text-xs text-[#525252]">
-                  {item.publishTime && <span>{item.publishTime}</span>}
-                  {item.hasFile === 1 && <span>有附件</span>}
-                </div>
               </div>
             ))}
 
-            {items.length < total && (
-              <div className="py-4 flex items-center justify-center">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={loadMore}
-                  disabled={loading}
-                  className="h-9 text-xs"
-                >
-                  {loading
-                    ? '加载中...'
-                    : `加载更多 (已显示 ${items.length}/${total})`}
-                </Button>
-              </div>
-            )}
+            {/* Infinite scroll sentinel */}
+            <div
+              ref={sentinelRef}
+              className="py-6 flex items-center justify-center"
+            >
+              {loadingMore ? (
+                <span className="text-xs text-[#A3A3A3]">加载中...</span>
+              ) : items.length >= total ? (
+                <span className="text-xs text-[#A3A3A3]">已显示全部结果</span>
+              ) : (
+                <span className="text-xs text-[#A3A3A3]">
+                  已加载 {items.length}/{total}
+                </span>
+              )}
+            </div>
           </div>
         ) : (
           <div className="flex flex-col items-center justify-center py-20">
@@ -663,10 +737,14 @@ export default function ConstructionList() {
                                     {fileUrl && (
                                       <a
                                         href={fileUrl}
-                                        download
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="shrink-0 inline-flex items-center gap-1 h-8 px-3 text-xs font-medium bg-[#000000] hover:bg-[#171717] text-white rounded-lg transition"
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          downloadAttachment(
+                                            fileUrl,
+                                            f.name || '',
+                                          );
+                                        }}
+                                        className="shrink-0 inline-flex items-center gap-1 h-8 px-3 text-xs font-medium bg-[#000000] hover:bg-[#171717] text-white rounded-lg transition cursor-pointer"
                                       >
                                         <Download className="size-3.5" />
                                         下载
@@ -696,10 +774,11 @@ export default function ConstructionList() {
                                 <a
                                   key={i}
                                   href={link.href}
-                                  download
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="flex items-center justify-between p-3 rounded-lg border border-[#E8E8E8] hover:border-[#000000]/20 hover:bg-white transition text-xs"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    downloadAttachment(link.href, link.name);
+                                  }}
+                                  className="flex items-center justify-between p-3 rounded-lg border border-[#E8E8E8] hover:border-[#000000]/20 hover:bg-white transition text-xs cursor-pointer"
                                 >
                                   <div className="flex items-center gap-3 min-w-0">
                                     <FileText className="size-4 text-[#525252] shrink-0" />

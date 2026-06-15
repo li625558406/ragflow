@@ -1084,14 +1084,13 @@ def _run_construction_import_async(
                 logging.warning("Construction import: upload combined text failed for %d: %s", project_id, e)
 
             # Phase 3: Download and upload attachments
-            total = len(project_files)
+            total = len([f for f in project_files if f.get("url") or f.get("fileUrl") or f.get("file_url")])
             uploaded = 0
 
             with tempfile.TemporaryDirectory() as tmpdir:
                 for f in project_files:
                     url = f.get("url") or f.get("fileUrl") or f.get("file_url", "")
                     if not url:
-                        uploaded += 1
                         continue
                     try:
                         BidConstructionParseService.upsert({
@@ -1123,7 +1122,6 @@ def _run_construction_import_async(
                     except Exception as e:
                         logging.warning("Construction import: process attachment %s failed: %s",
                                        f.get("name", "unknown"), e)
-                        uploaded += 1
 
             # Phase 4: Trigger parse for all uploaded docs
             BidConstructionParseService.upsert({
@@ -2187,7 +2185,7 @@ def _run_contract_import_async(
                 logging.warning("Contract import: upload combined text failed for %d: %s", project_id, e)
 
             # Phase 3: Download and upload attachments
-            total = len(project_files)
+            total = len([f for f in project_files if f.get("url") or f.get("fileUrl") or f.get("file_url")])
             uploaded = 0
 
             with tempfile.TemporaryDirectory() as tmpdir:

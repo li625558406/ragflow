@@ -304,7 +304,11 @@ export default function BidHome() {
     group: string;
     isStarred: boolean;
   } | null>(null);
-  const [previewPos, setPreviewPos] = useState({ x: 0, y: 0 });
+  const [previewPos, setPreviewPos] = useState<{
+    x: number;
+    top?: number;
+    bottom?: number;
+  }>({ x: 0, top: 0 });
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // CSS injection for preview animation
@@ -330,17 +334,22 @@ export default function BidHome() {
       item: { name: string; url: string; group: string; isStarred: boolean },
       e: React.MouseEvent,
     ) => {
+      const card = e.currentTarget as HTMLElement;
+      const rect = card.getBoundingClientRect();
       if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
       hoverTimerRef.current = setTimeout(() => {
         const vw = window.innerWidth;
         const vh = window.innerHeight;
-        let x = e.clientX + 16;
-        let y = e.clientY + 8;
-        if (x + 320 > vw) x = e.clientX - 336;
-        if (y + 150 > vh) y = vh - 166;
+        let x = rect.left;
+        if (x + 320 > vw) x = vw - 326;
+        // Prefer above the card with bottom-pinned; fallback below
+        if (rect.top > 140) {
+          setPreviewPos({ x, bottom: vh - rect.top + 6 });
+        } else {
+          setPreviewPos({ x, top: rect.bottom + 6 });
+        }
         setHoveredItem(item);
-        setPreviewPos({ x, y });
-      }, 350);
+      }, 200);
     },
     [],
   );
@@ -835,7 +844,9 @@ export default function BidHome() {
           className="fixed z-[100] bg-white rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.12)] border border-[#E8E8E8] p-4 pointer-events-none"
           style={{
             left: previewPos.x,
-            top: previewPos.y,
+            ...(previewPos.bottom !== undefined
+              ? { bottom: previewPos.bottom }
+              : { top: previewPos.top }),
             width: 320,
             animation: 'bid-preview-in 0.2s ease-out both',
           }}

@@ -47,10 +47,13 @@ export default function CollaborationPanel({ apiFetch }: Props) {
   const appliedRuleConfigRef = useRef<Record<string, unknown> | null>(null);
   const [collapsed, setCollapsed] = useState(false);
 
+  const apiFetchRef = useRef(apiFetch);
+  apiFetchRef.current = apiFetch;
+
   const loadDocuments = useCallback(async () => {
     setLoading(true);
     try {
-      const resp = await apiFetch('/api/v1/collaboration/documents');
+      const resp = await apiFetchRef.current('/api/v1/collaboration/documents');
       const result = await resp.json();
       if (result.code === 0) {
         setDocuments(result.data || []);
@@ -60,37 +63,34 @@ export default function CollaborationPanel({ apiFetch }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [apiFetch]);
+  }, []);
 
   useEffect(() => {
     loadDocuments();
   }, [loadDocuments]);
 
-  const handleSelect = useCallback(
-    async (doc: DocumentItem | null) => {
-      if (!doc) {
-        setSelectedId(null);
-        setSelectedDoc(null);
-        return;
+  const handleSelect = useCallback(async (doc: DocumentItem | null) => {
+    if (!doc) {
+      setSelectedId(null);
+      setSelectedDoc(null);
+      return;
+    }
+    setSelectedId(doc.id);
+    setDocLoading(true);
+    try {
+      const resp = await apiFetchRef.current(
+        `/api/v1/collaboration/documents/${doc.id}`,
+      );
+      const result = await resp.json();
+      if (result.code === 0) {
+        setSelectedDoc(result.data);
       }
-      setSelectedId(doc.id);
-      setDocLoading(true);
-      try {
-        const resp = await apiFetch(
-          `/api/v1/collaboration/documents/${doc.id}`,
-        );
-        const result = await resp.json();
-        if (result.code === 0) {
-          setSelectedDoc(result.data);
-        }
-      } catch (e) {
-        console.error('加载文档详情失败:', e);
-      } finally {
-        setDocLoading(false);
-      }
-    },
-    [apiFetch],
-  );
+    } catch (e) {
+      console.error('加载文档详情失败:', e);
+    } finally {
+      setDocLoading(false);
+    }
+  }, []);
 
   const handleDocUpdate = useCallback(() => {
     loadDocuments();

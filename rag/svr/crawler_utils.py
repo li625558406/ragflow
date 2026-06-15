@@ -125,7 +125,30 @@ class PlaywrightHttpClient:
         """Launch the browser.  Call once before making requests."""
         if self._browser is not None:
             return
-        self._pw = sync_playwright().start()
+        # Fix: sync_playwright conflicts with a running asyncio event loop.
+        # Playwright checks loop.is_running() and raises before run_until_complete().
+        import asyncio
+        _loop = None
+        try:
+            _loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+
+        if _loop is not None and _loop.is_running():
+            try:
+                import nest_asyncio
+                nest_asyncio.apply()
+            except ImportError:
+                logging.warning("PlaywrightHttpClient: asyncio loop detected but nest_asyncio "
+                                "not installed. Run: pip install nest_asyncio")
+            _original_is_running = _loop.is_running
+            _loop.is_running = lambda: False
+            try:
+                self._pw = sync_playwright().start()
+            finally:
+                _loop.is_running = _original_is_running
+        else:
+            self._pw = sync_playwright().start()
         self._browser = self._pw.chromium.launch(
             headless=self._headless,
             executable_path=self._chrome_path,

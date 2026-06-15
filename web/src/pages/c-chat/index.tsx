@@ -33,6 +33,7 @@ import { RAGFlowAvatar } from '@/components/ragflow-avatar';
 import ToolsPanel from '@/components/tools';
 import { Textarea } from '@/components/ui/textarea';
 import {
+  Bookmark,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -409,6 +410,22 @@ export default function CChat() {
     new Set(),
   );
   const [favoriteDialogOpen, setFavoriteDialogOpen] = useState(false);
+  const [isSaveAllFavorites, setIsSaveAllFavorites] = useState(false);
+
+  const msgSelectKey = (msg: { role: string; id: string }) =>
+    `${msg.role}_${msg.id}`;
+
+  const toggleMessagePair = (msgIndex: number) => {
+    setSelectedMessageIds((prev) => {
+      const next = new Set(prev);
+      const msg = derivedMessages[msgIndex];
+      if (!msg?.id) return prev;
+      const key = msgSelectKey(msg);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
   const [downloadOpen, setDownloadOpen] = useState(false);
 
   // Reset the current tab's content when re-clicking the active tab
@@ -1422,6 +1439,19 @@ export default function CChat() {
                   </h2>
                   <span className="w-1.5 h-1.5 rounded-full bg-[#2ec4b6] animate-pulse" />
                 </div>
+                <div className="flex-1" />
+                {derivedMessages.length > 0 && (
+                  <button
+                    onClick={() => {
+                      setIsSaveAllFavorites(true);
+                      setFavoriteDialogOpen(true);
+                    }}
+                    className="flex items-center gap-1.5 text-sm font-semibold text-[#525252] hover:text-[#000000] px-2 py-1 rounded-lg hover:bg-[#EAEAEA] transition-colors cursor-pointer"
+                  >
+                    <Bookmark className="size-4" strokeWidth={2} />
+                    收藏对话
+                  </button>
+                )}
               </div>
 
               {/* Messages Area + Input */}
@@ -1722,23 +1752,17 @@ export default function CChat() {
                                     <div className="flex justify-end mb-1.5">
                                       <button
                                         className={`shrink-0 size-5 rounded border-2 flex items-center justify-center transition-colors ${
-                                          selectedMessageIds.has(msg.id)
+                                          selectedMessageIds.has(
+                                            msgSelectKey(msg),
+                                          )
                                             ? 'bg-[#6366f1] border-[#6366f1] text-white'
                                             : 'border-[#A3A3A3] bg-white hover:border-[#6366f1]'
                                         }`}
-                                        onClick={() => {
-                                          setSelectedMessageIds((prev) => {
-                                            const next = new Set(prev);
-                                            if (next.has(msg.id)) {
-                                              next.delete(msg.id);
-                                            } else {
-                                              next.add(msg.id);
-                                            }
-                                            return next;
-                                          });
-                                        }}
+                                        onClick={() => toggleMessagePair(i)}
                                       >
-                                        {selectedMessageIds.has(msg.id) && (
+                                        {selectedMessageIds.has(
+                                          msgSelectKey(msg),
+                                        ) && (
                                           <Check
                                             className="w-3 h-3"
                                             strokeWidth={3}
@@ -1835,7 +1859,8 @@ export default function CChat() {
                             !/<\/think>/.test(msg.content || '');
 
                           const isSelected =
-                            favoriteMode && selectedMessageIds.has(msg.id);
+                            favoriteMode &&
+                            selectedMessageIds.has(msgSelectKey(msg));
                           return (
                             <div
                               key={msg.id || i}
@@ -1848,17 +1873,7 @@ export default function CChat() {
                                       ? 'bg-[#6366f1] border-[#6366f1] text-white'
                                       : 'border-[#A3A3A3] bg-white hover:border-[#6366f1]'
                                   }`}
-                                  onClick={() => {
-                                    setSelectedMessageIds((prev) => {
-                                      const next = new Set(prev);
-                                      if (next.has(msg.id)) {
-                                        next.delete(msg.id);
-                                      } else {
-                                        next.add(msg.id);
-                                      }
-                                      return next;
-                                    });
-                                  }}
+                                  onClick={() => toggleMessagePair(i)}
                                 >
                                   {isSelected && (
                                     <Check
@@ -2357,9 +2372,12 @@ export default function CChat() {
                 </span>
                 <button
                   className="px-4 py-1.5 text-sm font-medium text-white bg-[#6366f1] hover:bg-[#4F46E5] rounded-lg transition-colors"
-                  onClick={() => setFavoriteDialogOpen(true)}
+                  onClick={() => {
+                    setIsSaveAllFavorites(false);
+                    setFavoriteDialogOpen(true);
+                  }}
                 >
-                  保存收藏
+                  保存选中
                 </button>
                 <button
                   className="px-4 py-1.5 text-sm text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA] rounded-lg transition-colors"
@@ -2434,12 +2452,21 @@ export default function CChat() {
 
         <FavoriteDialog
           open={favoriteDialogOpen}
-          onOpenChange={setFavoriteDialogOpen}
-          messageCount={selectedMessageIds.size}
+          onOpenChange={(open) => {
+            if (!open) setIsSaveAllFavorites(false);
+            setFavoriteDialogOpen(open);
+          }}
+          messageCount={
+            isSaveAllFavorites
+              ? derivedMessages.length
+              : selectedMessageIds.size
+          }
           onConfirm={(title) => {
-            const selectedMsgs = derivedMessages.filter((m) =>
-              selectedMessageIds.has(m.id || ''),
-            );
+            const msgs = isSaveAllFavorites
+              ? derivedMessages
+              : derivedMessages.filter((m) =>
+                  selectedMessageIds.has(msgSelectKey(m as any)),
+                );
             const stripMd = (t: string) => {
               let s = t.replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '');
               s = s.replace(
@@ -2457,7 +2484,7 @@ export default function CChat() {
               s = s.replace(/^(\s*)[-*+]\s+/gm, '$1• ');
               return s.trim();
             };
-            const mergedContent = selectedMsgs
+            const mergedContent = msgs
               .map((m) => {
                 const roleLabel = m.role === 'user' ? '【用户】' : '【助手】';
                 return `${roleLabel}\n\n${stripMd(m.content || '')}\n`;
@@ -2468,7 +2495,7 @@ export default function CChat() {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 title,
-                message_ids: Array.from(selectedMessageIds),
+                message_ids: msgs.map((m) => m.id || ''),
                 messages_data: [{ role: 'merged', content: mergedContent }],
                 agent_id: currentAgentId || null,
                 conversation_id: currentSessionId || null,
@@ -2479,6 +2506,7 @@ export default function CChat() {
                 if (result.code === 0) {
                   setFavoriteMode(false);
                   setSelectedMessageIds(new Set());
+                  setIsSaveAllFavorites(false);
                   setFavoriteDialogOpen(false);
                   showToast('收藏已保存');
                 } else {
