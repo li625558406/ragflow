@@ -118,7 +118,8 @@ const URL_RE = /(https?:\/\/[^\s<>\[\]{}|"'`\u3000-\u303F\uFF00-\uFFFF]+)/g;
 
 function highlightSegment(text: string, query: string) {
   if (!query.trim()) return text;
-  const escaped = query.replace(/[].*+?^${}()|[\]\\]/g, '\\$&');
+  // eslint-disable-next-line no-useless-escape
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const parts = text.split(new RegExp(`(${escaped})`, 'gi'));
   return parts.map((part, i) =>
     i % 2 === 1 ? (
