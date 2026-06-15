@@ -1028,3 +1028,151 @@ async def search(dataset_id: str, tenant_id: str, req: dict):
     ranks["labels"] = labels
 
     return True, ranks
+
+
+async def search_all(tenant_id: str, req: dict):
+    """
+    Search across all knowledge bases belonging to a tenant.
+
+    :param tenant_id: tenant ID
+    :param req: search request
+    :return: (success, result) or (success, error_message)
+    """
+    from api.db.joint_services.tenant_model_service import (
+        get_model_config_by_id,
+        get_model_config_by_type_and_name,
+        get_tenant_default_model_by_type,
+    )
+    from api.db.services.llm_service import LLMBundle
+    from api.db.services.user_service import UserTenantService
+    from common.constants import LLMType
+    from rag.app.tag import label_question
+    from rag.prompts.generator import keyword_extraction
+
+    logging.debug(
+        "search_all(tenant=%s, question_len=%s, kb_ids=%s)",
+        tenant_id,
+        len(req.get("question", "")),
+        req.get("kb_ids"),
+    )
+
+    page = int(req.get("page", 1))
+    size = int(req.get("size", 30))
+    question = req.get("question", "")
+    use_kg = req.get("use_kg", False)
+    top = max(1, min(int(req.get("top_k", 1024)), 2048))
+
+    # Resolve all accessible KBs for this tenant
+    requested_kb_ids = req.get("kb_ids") or []
+    tenants = UserTenantService.query(user_id=tenant_id)
+    tenant_ids = [t.tenant_id for t in tenants]
+
+    if not tenant_ids:
+        return True, {"chunks": [], "total": 0, "doc_aggs": [], "kb_names": {}}
+
+    # Get all permitted KB IDs (team KBs from joined tenants + owned KBs)
+    all_kb_records, _ = KnowledgebaseService.get_by_tenant_ids(
+        tenant_ids, tenant_id,
+        page_number=None, items_per_page=None,
+        orderby="create_time", desc=True, keywords=""
+    )
+    all_kb_ids = [kb["id"] for kb in all_kb_records]
+
+    # Filter to requested KBs if specified, otherwise use all
+    if requested_kb_ids:
+        invalid_ids = set(requested_kb_ids) - set(all_kb_ids)
+        if invalid_ids:
+            return False, f"KB IDs not accessible: {', '.join(list(invalid_ids)[:5])}"
+        kb_ids = requested_kb_ids
+    else:
+        kb_ids = all_kb_ids
+
+    if not kb_ids:
+        return True, {"chunks": [], "total": 0, "doc_aggs": [], "kb_names": {}}
+
+    # Build kb_name mapping from all_kb_records
+    kb_records_map = {kb["id"]: kb for kb in all_kb_records}
+
+    # Resolve embedding model from first KB that has one
+    kb_objects = list(KnowledgebaseService.get_by_ids(kb_ids))
+    first_kb = kb_objects[0] if kb_objects else None
+    if not first_kb:
+        return True, {"chunks": [], "total": 0, "doc_aggs": [], "kb_names": {}}
+
+    if first_kb.tenant_embd_id:
+        embd_model_config = get_model_config_by_id(first_kb.tenant_embd_id)
+    elif first_kb.embd_id:
+        embd_model_config = get_model_config_by_type_and_name(first_kb.tenant_id, LLMType.EMBEDDING, first_kb.embd_id)
+    else:
+        embd_model_config = get_tenant_default_model_by_type(first_kb.tenant_id, LLMType.EMBEDDING)
+    embd_mdl = LLMBundle(first_kb.tenant_id, embd_model_config)
+
+    # Resolve rerank model
+    rerank_mdl = None
+    if req.get("tenant_rerank_id"):
+        rerank_model_config = get_model_config_by_id(req["tenant_rerank_id"])
+        rerank_mdl = LLMBundle(first_kb.tenant_id, rerank_model_config)
+    elif req.get("rerank_id"):
+        rerank_model_config = get_model_config_by_type_and_name(first_kb.tenant_id, LLMType.RERANK.value, req["rerank_id"])
+        rerank_mdl = LLMBundle(first_kb.tenant_id, rerank_model_config)
+
+    # Keyword extraction
+    _question = question
+    if req.get("keyword", False):
+        default_chat_model_config = get_tenant_default_model_by_type(first_kb.tenant_id, LLMType.CHAT)
+        chat_mdl = LLMBundle(first_kb.tenant_id, default_chat_model_config)
+        _question += await keyword_extraction(chat_mdl, _question)
+
+    # Build KB objects list for label_question
+    labels = label_question(_question, kb_objects)
+
+    # Core retrieval — Dealer.retrieval natively supports multiple kb_ids
+    ranks = await settings.retriever.retrieval(
+        _question,
+        embd_mdl,
+        tenant_ids,
+        kb_ids,
+        page,
+        size,
+        float(req.get("similarity_threshold", 0.0)),
+        float(req.get("vector_similarity_weight", 0.3)),
+        top=top,
+        rerank_mdl=rerank_mdl,
+        rank_feature=labels,
+    )
+
+    # Knowledge graph retrieval
+    if use_kg:
+        try:
+            default_chat_model_config = get_tenant_default_model_by_type(tenant_id, LLMType.CHAT)
+            for kb_id in kb_ids:
+                try:
+                    ck = await settings.kg_retriever.retrieval(
+                        _question, tenant_ids, [kb_id], embd_mdl,
+                        LLMBundle(first_kb.tenant_id, default_chat_model_config)
+                    )
+                    if ck["content_with_weight"]:
+                        ranks["chunks"].insert(0, ck)
+                except Exception:
+                    logging.warning("search_all KG retrieval failed for kb=%s", kb_id, exc_info=True)
+        except Exception:
+            logging.warning("search_all KG retrieval failed", exc_info=True)
+
+    total = ranks.get("total", 0)
+    ranks["chunks"] = settings.retriever.retrieval_by_children(ranks["chunks"], tenant_ids)
+    ranks["total"] = total
+
+    # Remove vectors, attach kb_name to each chunk
+    kb_names = {}
+    for c in ranks["chunks"]:
+        c.pop("vector", None)
+        ckb_id = c.get("kb_id", "")
+        if ckb_id and ckb_id not in kb_names:
+            rec = kb_records_map.get(ckb_id)
+            kb_names[ckb_id] = rec["name"] if rec else ""
+        c["kb_name"] = kb_names.get(ckb_id, "")
+
+    ranks["kb_names"] = kb_names
+    ranks["labels"] = labels
+
+    return True, ranks

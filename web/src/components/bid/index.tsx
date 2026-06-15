@@ -9,6 +9,7 @@ import ContractList from './contract-list';
 import CrawlerMonitor from './crawler-monitor';
 import CreditChinaSearch from './credit-china-search';
 import EnterpriseSearch from './enterprise-search';
+import KbSearch from './kb-search';
 import ShixinSearch from './shixin-search';
 
 interface ModuleItem {
@@ -30,6 +31,12 @@ const modules: ModuleItem[] = [
     name: '标讯搜索',
     description: '搜索、浏览招投标标讯信息',
     icon: 'search',
+  },
+  {
+    id: 'kb-search',
+    name: '知识库搜索',
+    description: '搜索所有知识库中的文档内容',
+    icon: 'book-open',
   },
   {
     id: 'contracts',
@@ -75,7 +82,11 @@ const modules: ModuleItem[] = [
   },
 ];
 
-export default function BidPanel() {
+interface Props {
+  apiFetch?: (url: string, options?: RequestInit) => Promise<Response>;
+}
+
+export default function BidPanel({ apiFetch }: Props) {
   const [selectedId, setSelectedId] = useState<string>('bid-home');
   const [collapsed, setCollapsed] = useState(false);
 
@@ -149,6 +160,9 @@ export default function BidPanel() {
         {selectedModule?.id === 'bid-home' && <BidHome />}
         {selectedModule?.id === 'bid-search' && (
           <BidList setListLength={() => {}} />
+        )}
+        {selectedModule?.id === 'kb-search' && apiFetch && (
+          <KbSearch apiFetch={apiFetch} />
         )}
         {selectedModule?.id === 'contracts' && <ContractList />}
         {selectedModule?.id === 'enterprises' && <EnterpriseSearch />}

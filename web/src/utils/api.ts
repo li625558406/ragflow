@@ -111,6 +111,7 @@ export default {
     `${restAPIv1}/datasets/${datasetId}/documents/${documentId}/chunks/${chunkId}`,
   retrievalTest: (datasetId: string) =>
     `${restAPIv1}/datasets/${datasetId}/search`,
+  searchAllDatasets: `${restAPIv1}/datasets/search`,
 
   // document
   getDocumentList: (datasetId: string) =>

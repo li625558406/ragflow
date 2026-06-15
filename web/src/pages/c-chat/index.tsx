@@ -2424,7 +2424,7 @@ export default function CChat() {
                   : 'hidden'
               }
             >
-              <BidPanel />
+              <BidPanel apiFetch={apiFetch} />
             </div>
 
             {/* Favorites View */}

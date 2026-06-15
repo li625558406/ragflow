@@ -24,6 +24,7 @@ from api.utils.validation_utils import (
     CreateDatasetReq,
     DeleteDatasetReq,
     ListDatasetReq,
+    SearchAllDatasetsReq,
     SearchDatasetReq,
     UpdateDatasetReq,
     validate_and_parse_json_request,
@@ -474,6 +475,35 @@ async def rename_tag(tenant_id, dataset_id):
         return get_error_argument_result(str(e))
     except Exception as e:
         logging.exception(e)
+        return get_error_data_result(message="Internal server error")
+
+
+@manager.route("/datasets/search", methods=["POST"])  # noqa: F821
+@login_required
+@add_tenant_id_to_kwargs
+async def search_all(tenant_id):
+    """Search across all knowledge bases of the current tenant.
+
+    POST /api/v1/datasets/search
+    JSON body: {"question": str (required), "kb_ids": list[str] (optional, empty = all),
+               "page": int, "size": int, "top_k": int, "similarity_threshold": float,
+               "vector_similarity_weight": float, "use_kg": bool, "keyword": bool,
+               "rerank_id": str, "tenant_rerank_id": str}
+    Success: {"code": 0, "data": {"chunks": [...], "total": int, "doc_aggs": [...], "kb_names": {...}}}
+    """
+    req, err = await validate_and_parse_json_request(request, SearchAllDatasetsReq)
+    if err is not None:
+        return get_error_argument_result(err)
+    try:
+        success, result = await dataset_api_service.search_all(tenant_id, req)
+        if success:
+            return get_result(data=result)
+        else:
+            return get_error_data_result(message=result)
+    except Exception as e:
+        logging.exception(e)
+        if "not_found" in str(e):
+            return get_error_data_result(message="No chunk found! Check the chunk status please!")
         return get_error_data_result(message="Internal server error")
 
 
