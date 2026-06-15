@@ -22,6 +22,24 @@ export class VariableNode extends DecoratorNode<ReactNode> {
     );
   }
 
+  static importJSON(json: Record<string, unknown>): VariableNode {
+    return new VariableNode(
+      json.value as string,
+      json.label as string,
+      undefined,
+      json.parentLabel as string | ReactNode | undefined,
+    );
+  }
+
+  exportJSON(): Record<string, unknown> {
+    return {
+      type: 'variable',
+      version: 1,
+      value: this.__value,
+      label: this.__label,
+    };
+  }
+
   constructor(
     value: string,
     label: string,

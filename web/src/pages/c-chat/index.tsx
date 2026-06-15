@@ -1278,8 +1278,8 @@ export default function CChat() {
                 </button>
               </div>
 
-              {/* Agent selector - hidden */}
-              {false && (
+              {/* Agent selector */}
+              {agents.length > 0 && (
                 <div className="px-3 pb-2">
                   <div className="relative">
                     <button

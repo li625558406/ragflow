@@ -15,11 +15,11 @@ import weekYear from 'dayjs/plugin/weekYear';
 import weekday from 'dayjs/plugin/weekday';
 import React, { useEffect, useMemo } from 'react';
 import { RouterProvider } from 'react-router';
+import { cRouters } from './c-routes';
 import { ThemeProvider } from './components/theme-provider';
 import { TooltipProvider } from './components/ui/tooltip';
 import { ThemeEnum } from './constants/common';
-import { routers, ADMIN_PREFIX } from './routes';
-import { cRouters } from './c-routes';
+import { ADMIN_PREFIX, routers } from './routes';
 import storage from './utils/authorization-util';
 
 import 'react-photo-view/dist/react-photo-view.css';
@@ -40,20 +40,6 @@ dayjs.extend(weekday);
 dayjs.extend(localeData);
 dayjs.extend(weekOfYear);
 dayjs.extend(weekYear);
-
-if (process.env.NODE_ENV === 'development') {
-  import('@welldone-software/why-did-you-render').then(
-    (whyDidYouRenderModule) => {
-      const whyDidYouRender = whyDidYouRenderModule.default;
-      whyDidYouRender(React, {
-        trackAllPureComponents: true,
-        trackExtraHooks: [],
-        logOnDifferentValues: false,
-        exclude: [/^RouterProvider$/],
-      });
-    },
-  );
-}
 
 const queryClient = new QueryClient({
   defaultOptions: {

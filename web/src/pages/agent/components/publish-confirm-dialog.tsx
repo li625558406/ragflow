@@ -3,7 +3,6 @@ import { Button, ButtonLoading } from '@/components/ui/button';
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -101,43 +100,41 @@ export function PublishConfirmDialog({
         <DialogHeader>
           <DialogTitle>{t('flow.confirmPublish')}</DialogTitle>
         </DialogHeader>
-        <DialogDescription>
-          <div className="space-y-3">
-            <div className="text-sm text-text-secondary">
-              {t(
-                `flow.${isPipeline ? 'publishIngestionPipeline' : 'publishAgent'}`,
-              )}
-            </div>
-
-            <section className="bg-bg-input px-2.5 py-4 rounded border border-border-default">
-              <div className="flex gap-2.5 items-center">
-                <RAGFlowAvatar
-                  avatar={agentDetail.avatar}
-                  name={agentDetail.title}
-                  className="size-8"
-                />
-                <span className="text-text-primary text-lg">
-                  {agentDetail.title}
-                </span>
-              </div>
-
-              {isPipeline && (
-                <AssociatedDataset
-                  associatedDatasets={associatedDatasets}
-                ></AssociatedDataset>
-              )}
-            </section>
-
-            <div className="flex flex-col gap-2">
-              {lastPublished && (
-                <div className="flex items-center text-sm text-text-secondary gap-2">
-                  <span>{t('flow.lastPublished')}:</span>
-                  <span>{lastPublished}</span>
-                </div>
-              )}
-            </div>
+        <div className="space-y-3">
+          <div className="text-sm text-text-secondary">
+            {t(
+              `flow.${isPipeline ? 'publishIngestionPipeline' : 'publishAgent'}`,
+            )}
           </div>
-        </DialogDescription>
+
+          <section className="bg-bg-input px-2.5 py-4 rounded border border-border-default">
+            <div className="flex gap-2.5 items-center">
+              <RAGFlowAvatar
+                avatar={agentDetail.avatar}
+                name={agentDetail.title}
+                className="size-8"
+              />
+              <span className="text-text-primary text-lg">
+                {agentDetail.title}
+              </span>
+            </div>
+
+            {isPipeline && (
+              <AssociatedDataset
+                associatedDatasets={associatedDatasets}
+              ></AssociatedDataset>
+            )}
+          </section>
+
+          <div className="flex flex-col gap-2">
+            {lastPublished && (
+              <div className="flex items-center text-sm text-text-secondary gap-2">
+                <span>{t('flow.lastPublished')}:</span>
+                <span>{lastPublished}</span>
+              </div>
+            )}
+          </div>
+        </div>
         <DialogFooter className="gap-2 mt-4">
           <Button variant="outline" onClick={() => setOpen(false)}>
             {t('common.cancel')}

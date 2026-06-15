@@ -24,7 +24,9 @@ export function SchemaDialog({
   pattern,
 }: IModalProps<any> & KeyInputProps) {
   const { t } = useTranslation();
-  const [schema, setSchema] = useState<JSONSchema>(initialValues);
+  const [schema, setSchema] = useState<JSONSchema>(
+    initialValues ?? { type: 'object', properties: {} },
+  );
 
   const handleOk = useCallback(() => {
     onOk?.(schema);

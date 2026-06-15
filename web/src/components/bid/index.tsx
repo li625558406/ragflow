@@ -161,8 +161,14 @@ export default function BidPanel({ apiFetch }: Props) {
         {selectedModule?.id === 'bid-search' && (
           <BidList setListLength={() => {}} />
         )}
-        {selectedModule?.id === 'kb-search' && apiFetch && (
-          <KbSearch apiFetch={apiFetch} />
+        {apiFetch && (
+          <div
+            className={
+              selectedModule?.id === 'kb-search' ? 'contents' : 'hidden'
+            }
+          >
+            <KbSearch apiFetch={apiFetch} />
+          </div>
         )}
         {selectedModule?.id === 'contracts' && <ContractList />}
         {selectedModule?.id === 'enterprises' && <EnterpriseSearch />}

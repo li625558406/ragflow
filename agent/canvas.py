@@ -420,6 +420,11 @@ class Canvas(Graph):
         if not self.globals["sys.conversation_turns"] :
             self.globals["sys.conversation_turns"] = 0
         self.globals["sys.conversation_turns"] += 1
+        logging.info(
+            f"[Canvas.run] turn={self.globals['sys.conversation_turns']} "
+            f"query={repr(kwargs.get('query', '')[:80]} "
+            f"history_len={len(self.history)} sys.history_len={len(self.globals.get('sys.history', []))}"
+        )
 
         def decorate(event, dt):
             nonlocal created_at

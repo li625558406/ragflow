@@ -37,6 +37,7 @@ const DialogContent = React.forwardRef<
     <DialogOverlay />
     <DialogPrimitive.Content
       ref={ref}
+      aria-describedby={undefined}
       className={cn(
         'outline-none outline-0 fixed left-[50%] top-[50%] rounded-lg z-50 grid w-full max-w-xl translate-x-[-50%] translate-y-[-50%]',
         // TODO: to keep scrollbar perfectly aligned to header bottom and/or footer top,
