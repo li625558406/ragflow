@@ -210,10 +210,8 @@ class CrawlFetch(ToolBase, ABC):
                 ),
             )
         else:
-            # Status-only output (skipped/empty) with tool-origin marker
-            self.set_output("formalized_content",
-                f"【工具返回：crawl_fetch —— 网站爬取结果】\n\n"
-                f"{json.dumps(output, ensure_ascii=False, indent=2)}")
+            # Status-only output (skipped/empty)
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
 
         return self.output("formalized_content")
 

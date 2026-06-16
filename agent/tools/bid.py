@@ -91,16 +91,6 @@ def _build_bid_search_content(p: dict) -> str:
     return "\n".join(parts)
 
 
-def _format_utility_output(tool_name: str, description: str, data) -> str:
-    """Format utility/status tool output with a clear origin marker.
-
-    The prefix separates tool-sourced data from user input so the LLM
-    never confuses tool results with user-provided material.
-    """
-    prefix = f"【工具返回：{tool_name} —— {description}】\n\n"
-    content = json.dumps(data, ensure_ascii=False, indent=2) if not isinstance(data, str) else data
-    return prefix + content
-
 
 def _batch_fill_source_urls(items: list, client) -> None:
     """Batch fetch collect_url for items that don't have a source_url yet.
@@ -187,8 +177,7 @@ class BidLookupCode(ToolBase, ABC):
             result = lookup_bid_code(keyword=str(keyword), code_type=str(code_type))
 
             self.set_output("json", result)
-            self.set_output("formalized_content", _format_utility_output(
-                "lookup_bid_code", "行政区划/行业编码查询结果", result))
+            self.set_output("formalized_content", json.dumps(result, ensure_ascii=False, indent=2))
             return self.output("formalized_content")
 
         except Exception as e:
@@ -374,7 +363,7 @@ class BidSearch(ToolBase, ABC):
 
             self.set_output("json", simplified)
 
-            header = f"【工具返回：bid_search —— 标讯搜索】\n共找到 {total} 条结果，当前显示 {len(simplified)} 条，第 {kwargs.get('page', 1)} 页。\n\n"
+            header = f"共找到 {total} 条结果，当前显示 {len(simplified)} 条，第 {kwargs.get('page', 1)} 页。\n\n"
             formatted = header
             if simplified:
                 formatted += _retrieve_bid_chunks(
@@ -566,7 +555,7 @@ class BidGetDetail(ToolBase, ABC):
 
             detail_content = "\n\n".join(detail_parts)
             kb_status = output.get("kb_import", {})
-            header = f"【工具返回：bid_get_detail —— 招标项目详情】\n项目: {proj_name}\n"
+            header = f"项目: {proj_name}\n"
             if kb_status:
                 header += f"知识库导入: {kb_status.get('status', '?')} — {kb_status.get('message', '')}\n"
             header += "\n"
@@ -679,7 +668,7 @@ class BidImportToKb(ToolBase, ABC):
                     "message": "Project was already imported to KB.",
                 }
                 self.set_output("json", output)
-                self.set_output("formalized_content", _format_utility_output("bid_import_to_kb", "知识库导入结果", output))
+                self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
                 return self.output("formalized_content")
 
             if status.get("status") == "parsing":
@@ -691,7 +680,7 @@ class BidImportToKb(ToolBase, ABC):
                     "message": "Project is currently being imported/parsed.",
                 }
                 self.set_output("json", output)
-                self.set_output("formalized_content", _format_utility_output("bid_import_to_kb", "知识库导入结果", output))
+                self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
                 return self.output("formalized_content")
 
             # Execute import
@@ -712,7 +701,7 @@ class BidImportToKb(ToolBase, ABC):
             }
 
             self.set_output("json", output)
-            self.set_output("formalized_content", _format_utility_output("bid_import_to_kb", "知识库导入结果", output))
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
             return self.output("formalized_content")
 
         except Exception as e:
@@ -792,7 +781,7 @@ class BidCheckImportStatus(ToolBase, ABC):
             }
 
             self.set_output("json", output)
-            self.set_output("formalized_content", _format_utility_output("bid_check_import_status", "知识库导入状态查询结果", output))
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
             return self.output("formalized_content")
 
         except Exception as e:
@@ -860,8 +849,7 @@ class BidGetSource(ToolBase, ABC):
 
             output = {"project_id": project_id, "source_url": url}
             self.set_output("json", output)
-            self.set_output("formalized_content", _format_utility_output(
-                "bid_get_source", "原始来源网址", output))
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
             return self.output("formalized_content")
         except Exception as e:
             logging.exception("BidGetSource error: %s", e)
@@ -987,7 +975,7 @@ class BidSearchAI(ToolBase, ABC):
 
             self.set_output("json", simplified)
 
-            header = f"【工具返回：bid_search_ai —— AI智能标讯搜索】\n共找到 {data.get('total', 0)} 条结果，当前显示 {len(simplified)} 条，第 {kwargs.get('page', 1)} 页。\n\n"
+            header = f"共找到 {data.get('total', 0)} 条结果，当前显示 {len(simplified)} 条，第 {kwargs.get('page', 1)} 页。\n\n"
             formatted = header
             if simplified:
                 formatted += _retrieve_bid_chunks(
@@ -1150,7 +1138,7 @@ class BidSearchContract(ToolBase, ABC):
             elif from_cache:
                 cache_note = " (来自缓存)"
 
-            header = f"【工具返回：bid_search_contract —— 中标/合同搜索】\n共找到 {result.get('total', 0)} 条结果，当前显示 {len(simplified)} 条，第 {kwargs.get('page', 1)} 页{cache_note}。\n\n"
+            header = f"共找到 {result.get('total', 0)} 条结果，当前显示 {len(simplified)} 条，第 {kwargs.get('page', 1)} 页{cache_note}。\n\n"
             formatted = header
             if simplified:
                 def _build_contract_content(p: dict) -> str:
@@ -1254,8 +1242,7 @@ class BidRewriteQuery(ToolBase, ABC):
             }
 
             self.set_output("json", output)
-            self.set_output("formalized_content", _format_utility_output(
-                "bid_rewrite_query", "AI搜索条件重写", output))
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
             return self.output("formalized_content")
         except Exception as e:
             logging.exception("BidRewriteQuery error: %s", e)
@@ -1321,8 +1308,7 @@ class BidIndustryTag(ToolBase, ABC):
 
             output = {"keyword": keyword, "candidates": codes}
             self.set_output("json", codes)
-            self.set_output("formalized_content", _format_utility_output(
-                "bid_industry_tag", "行业标签推理结果", output))
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
             return self.output("formalized_content")
         except Exception as e:
             logging.exception("BidIndustryTag error: %s", e)
@@ -1459,7 +1445,7 @@ class BidEnterpriseProfile(ToolBase, ABC):
                 profile_lines.append(f"邮箱: {', '.join(str(e) for e in output['contact_emails'][:5])}")
             profile_content = "\n".join(profile_lines)
 
-            header = f"【工具返回：bid_enterprise_profile —— 企业综合画像】\n企业: {company_name}\n"
+            header = f"企业: {company_name}\n"
             kb_status = output.get("kb_import", {})
             if kb_status:
                 header += f"知识库导入: {kb_status.get('status', '?')} — {kb_status.get('message', '')}\n"
@@ -1599,7 +1585,7 @@ class BidConstructionSearch(ToolBase, ABC):
             elif from_cache:
                 cache_note = " (来自缓存)"
 
-            header = f"【工具返回：bid_construction_search —— 拟在建项目搜索】\n共找到 {result.get('total', 0)} 条结果，当前显示 {len(simplified)} 条，第 {kwargs.get('page', 1)} 页{cache_note}。\n\n"
+            header = f"共找到 {result.get('total', 0)} 条结果，当前显示 {len(simplified)} 条，第 {kwargs.get('page', 1)} 页{cache_note}。\n\n"
             formatted = header
             if simplified:
                 formatted += _retrieve_bid_chunks(
@@ -1774,7 +1760,7 @@ class BidGetContractDetail(ToolBase, ABC):
             if stale:
                 cache_note = " ⚠️ 缓存可能已过期"
 
-            header = f"【工具返回：bid_get_contract_detail —— 合同/中标项目详情】\n项目: {proj_name}{cache_note}\n"
+            header = f"项目: {proj_name}{cache_note}\n"
             kb_status = output.get("kb_import", {})
             if kb_status:
                 header += f"知识库导入: {kb_status.get('status', '?')} — {kb_status.get('message', '')}\n"
@@ -1884,7 +1870,7 @@ class BidEnterpriseContacts(ToolBase, ABC):
             }
 
             self.set_output("json", output)
-            self.set_output("formalized_content", _format_utility_output("bid_enterprise_contacts", "企业联系人", output))
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
             return self.output("formalized_content")
         except Exception as e:
             logging.exception("BidEnterpriseContacts error: %s", e)
@@ -1980,7 +1966,7 @@ class BidEnterpriseCustomers(ToolBase, ABC):
             }
 
             self.set_output("json", output)
-            self.set_output("formalized_content", _format_utility_output("bid_enterprise_customers", "企业客户项目", output))
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
             return self.output("formalized_content")
         except Exception as e:
             logging.exception("BidEnterpriseCustomers error: %s", e)
@@ -2076,7 +2062,7 @@ class BidEnterpriseSuppliers(ToolBase, ABC):
             }
 
             self.set_output("json", output)
-            self.set_output("formalized_content", _format_utility_output("bid_enterprise_suppliers", "企业供应商项目", output))
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
             return self.output("formalized_content")
         except Exception as e:
             logging.exception("BidEnterpriseSuppliers error: %s", e)
@@ -2203,7 +2189,7 @@ class BidConstructionGetDetail(ToolBase, ABC):
             elif from_cache:
                 cache_note = " (缓存)"
 
-            header = f"【工具返回：bid_construction_get_detail —— 拟在建项目详情】\n项目: {proj_name}{cache_note}\n"
+            header = f"项目: {proj_name}{cache_note}\n"
             kb_status = output.get("kb_import", {})
             if kb_status:
                 header += f"知识库导入: {kb_status.get('status', '?')} — {kb_status.get('message', '')}\n"
@@ -2311,7 +2297,7 @@ class ConstructionImportToKb(ToolBase, ABC):
                     "message": "Project was already imported to KB.",
                 }
                 self.set_output("json", output)
-                self.set_output("formalized_content", _format_utility_output("construction_import_to_kb", "拟在建项目导入结果", output))
+                self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
                 return self.output("formalized_content")
 
             if status.get("status") == "parsing":
@@ -2323,7 +2309,7 @@ class ConstructionImportToKb(ToolBase, ABC):
                     "message": "Project is currently being imported/parsed.",
                 }
                 self.set_output("json", output)
-                self.set_output("formalized_content", _format_utility_output("construction_import_to_kb", "拟在建项目导入结果", output))
+                self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
                 return self.output("formalized_content")
 
             # Execute import
@@ -2343,7 +2329,7 @@ class ConstructionImportToKb(ToolBase, ABC):
             }
 
             self.set_output("json", output)
-            self.set_output("formalized_content", _format_utility_output("construction_import_to_kb", "拟在建项目导入结果", output))
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
             return self.output("formalized_content")
 
         except Exception as e:
@@ -2419,7 +2405,7 @@ class ConstructionCheckImportStatus(ToolBase, ABC):
             }
 
             self.set_output("json", output)
-            self.set_output("formalized_content", _format_utility_output("construction_check_import_status", "拟在建项目导入状态查询", output))
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
             return self.output("formalized_content")
 
         except Exception as e:
@@ -2505,7 +2491,7 @@ class ContractImportToKb(ToolBase, ABC):
                     "message": "Project was already imported to KB.",
                 }
                 self.set_output("json", output)
-                self.set_output("formalized_content", _format_utility_output("contract_import_to_kb", "合同导入结果", output))
+                self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
                 return self.output("formalized_content")
 
             if status.get("status") == "parsing":
@@ -2517,7 +2503,7 @@ class ContractImportToKb(ToolBase, ABC):
                     "message": "Project is currently being imported/parsed.",
                 }
                 self.set_output("json", output)
-                self.set_output("formalized_content", _format_utility_output("contract_import_to_kb", "合同导入结果", output))
+                self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
                 return self.output("formalized_content")
 
             # Execute import
@@ -2534,7 +2520,7 @@ class ContractImportToKb(ToolBase, ABC):
             }
 
             self.set_output("json", output)
-            self.set_output("formalized_content", _format_utility_output("contract_import_to_kb", "合同导入结果", output))
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
             return self.output("formalized_content")
 
         except Exception as e:
@@ -2604,7 +2590,7 @@ class ContractCheckImportStatus(ToolBase, ABC):
             }
 
             self.set_output("json", output)
-            self.set_output("formalized_content", _format_utility_output("contract_check_import_status", "合同导入状态查询", output))
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
             return self.output("formalized_content")
 
         except Exception as e:
@@ -2681,7 +2667,7 @@ class EnterpriseImportToKb(ToolBase, ABC):
                     "message": "Enterprise was already imported to KB.",
                 }
                 self.set_output("json", output)
-                self.set_output("formalized_content", _format_utility_output("enterprise_import_to_kb", "企业档案导入结果", output))
+                self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
                 return self.output("formalized_content")
 
             if status.get("status") == "parsing":
@@ -2693,7 +2679,7 @@ class EnterpriseImportToKb(ToolBase, ABC):
                     "message": "Enterprise is currently being imported/parsed.",
                 }
                 self.set_output("json", output)
-                self.set_output("formalized_content", _format_utility_output("enterprise_import_to_kb", "企业档案导入结果", output))
+                self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
                 return self.output("formalized_content")
 
             # Execute import
@@ -2709,7 +2695,7 @@ class EnterpriseImportToKb(ToolBase, ABC):
             }
 
             self.set_output("json", output)
-            self.set_output("formalized_content", _format_utility_output("enterprise_import_to_kb", "企业档案导入结果", output))
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
             return self.output("formalized_content")
 
         except Exception as e:
@@ -2779,7 +2765,7 @@ class EnterpriseCheckImportStatus(ToolBase, ABC):
             }
 
             self.set_output("json", output)
-            self.set_output("formalized_content", _format_utility_output("enterprise_check_import_status", "企业档案导入状态查询", output))
+            self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
             return self.output("formalized_content")
 
         except Exception as e:

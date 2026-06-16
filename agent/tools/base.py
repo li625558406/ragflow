@@ -80,6 +80,13 @@ class LLMToolPluginCallSession(ToolCallSession):
             except Exception as e:
                 logging.warning(f"[ToolCall] resp is None and output fallback failed name={name} err={e}")
 
+        # Unified source-attribution: single choke point wrapping ALL tool outputs
+        # so the LLM never confuses tool-returned data with user-provided content.
+        if resp:
+            if not isinstance(resp, str):
+                resp = str(resp)
+            resp = f"【工具返回：{name}】\n{resp}"
+
         elapsed = timer() - st
         resp_str = str(resp) if resp else ""
         if len(resp_str) > 120:
