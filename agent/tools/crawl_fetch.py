@@ -194,7 +194,27 @@ class CrawlFetch(ToolBase, ABC):
         output = self._format_result(config.name, site_id, result, items)
 
         self.set_output("json", output)
-        self.set_output("formalized_content", json.dumps(output, ensure_ascii=False, indent=2))
+
+        if items and output.get("status") == "completed":
+            # Format items as retrieval chunks (same pattern as bid search tools)
+            self._retrieve_chunks(
+                items,
+                get_title=lambda r: r.get("title", ""),
+                get_url=lambda r: "",
+                get_content=lambda r: (
+                    f"标题: {r.get('title', '')}\n"
+                    f"发布时间: {r.get('publish_time', '')}\n"
+                    f"正文: {r.get('content', '')}\n"
+                    f"附件: {'有' if r.get('has_attachment') else '无'}\n"
+                    f"金额: {r.get('money', '')}"
+                ),
+            )
+        else:
+            # Status-only output (skipped/empty) with tool-origin marker
+            self.set_output("formalized_content",
+                f"【工具返回：crawl_fetch —— 网站爬取结果】\n\n"
+                f"{json.dumps(output, ensure_ascii=False, indent=2)}")
+
         return self.output("formalized_content")
 
     def _query_recent_items(self, site_id: str) -> list:
