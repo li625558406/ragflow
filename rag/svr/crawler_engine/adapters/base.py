@@ -210,5 +210,8 @@ class AdapterFactory:
         elif transport_type == "playwright_http":
             from .playwright_http import PlaywrightHttpAdapter
             return PlaywrightHttpAdapter(config)
+        elif transport_type == "scrapling_stealth":
+            from .scrapling_stealth import ScraplingStealthAdapter
+            return ScraplingStealthAdapter(config)
         else:
             raise ValueError(f"Unknown transport type: {transport_type}")

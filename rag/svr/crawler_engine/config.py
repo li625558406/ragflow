@@ -57,8 +57,8 @@ class ProxyConfig:
 @dataclass
 class TransportConfig:
     """Transport layer configuration."""
-    type: str = "rest_api"         # rest_api | encrypted_api | spa_render | playwright_http
-    engine: str = "requests"       # requests | urllib | playwright_http | playwright_spa
+    type: str = "rest_api"         # rest_api | encrypted_api | spa_render | playwright_http | scrapling_stealth
+    engine: str = "requests"       # requests | urllib | playwright_http | playwright_spa | scrapling
     headers: Dict[str, str] = field(default_factory=dict)
     session_init_url: str = ""
     cookies: Dict[str, str] = field(default_factory=dict)
@@ -69,6 +69,13 @@ class TransportConfig:
     signing: Optional[SigningConfig] = None
     captcha: Optional[CaptchaConfig] = None
     proxy: Optional[ProxyConfig] = None
+    # ── Scrapling / browser settings ──
+    headless: bool = True           # headless browser mode
+    solve_cloudflare: bool = False  # auto-solve Cloudflare Turnstile
+    network_idle: bool = True       # wait for network idle before extracting
+    impersonate: str = ""           # browser fingerprint (e.g. "chrome", "firefox135")
+    adaptive: bool = False          # enable self-healing selectors (auto_save + adaptive)
+    block_resources: bool = True    # block images/fonts/media for speed
 
 
 @dataclass
@@ -276,6 +283,12 @@ class ConfigLoader:
             vue_http=data.get("vue_http", False),
             captcha=CaptchaConfig(**cap) if cap else None,
             proxy=ProxyConfig(**prx) if prx else None,
+            headless=data.get("headless", True),
+            solve_cloudflare=data.get("solve_cloudflare", False),
+            network_idle=data.get("network_idle", True),
+            impersonate=data.get("impersonate", ""),
+            adaptive=data.get("adaptive", False),
+            block_resources=data.get("block_resources", True),
         )
 
     def _parse_listing(self, data: dict) -> ListingConfig:

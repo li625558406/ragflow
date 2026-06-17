@@ -94,7 +94,7 @@ sites:
   ccgp_jdcf_gg_cr:
     name: "中国政府采购网-监督处罚+公告+严重违法失信"
     site_url: "http://www.ccgp.gov.cn/"
-    enabled: true
+    enabled: true  # Re-enabled: sections verified from old crawler scripts
     transport:
       type: rest_api
       engine: requests
@@ -149,7 +149,7 @@ sites:
   ccgp_zcfg:
     name: "中国政府采购网-政策法规"
     site_url: "http://www.ccgp.gov.cn/zcfg/"
-    enabled: true
+    enabled: true  # Re-enabled: sections verified from old crawler scripts
     transport:
       type: rest_api
       engine: requests
@@ -334,16 +334,17 @@ sites:
   cebpubservice_consult:
     name: "中国招标投标公共服务平台-咨询"
     site_url: "https://www.cebpubservice.com/"
-    enabled: true
+    enabled: true  # WAF-bypass via scrapling_stealth (was 502 with plain requests)
     transport:
-      type: rest_api
-      engine: requests
+      type: scrapling_stealth
       headers:
         User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
       verify_ssl: true
       timeout: 30
+      headless: true
+      network_idle: true
     listing:
-      url: "https://www.cebpubservice.com/consult/"
+      url: "https://www.cebpubservice.com/consult.html"
       method: GET
     pagination:
       type: html_regex
@@ -400,14 +401,14 @@ sites:
       page_size: 20
       start: 1
       max_pages: 50
-      items_field: "hits"
+      items_field: "result.records"
     anti_crawler:
       delay_min: 0.3
       delay_max: 0.8
       max_retries: 3
     extract:
       type: json_path
-      items_path: "hits"
+      items_path: "result.records"
       fields:
         id: "infoid"
         title: "title"
@@ -482,15 +483,24 @@ sites:
       method: POST
       body_type: json
       params:
-        pageNo: "{{ page }}"
-        pageSize: "{{ page_size }}"
+        site: "00"
+        bidName: ""
+        bidType: ""
         dateType: "fbDate"
-        startDate: "{{ 3_days_ago }}"
-        endDate: "{{ today }}"
+        startDate: "{{ 3_days_ago }} 00:00:00"
+        endDate: "{{ today }} 23:59:59"
+        isProvince: ""
+        page:
+          current: "{{ page }}"
+          size: "{{ page_size }}"
+        address: ""
+        isEffective: 1
+        purchaseMode: ""
+        title: ""
     pagination:
       type: page_no
-      page_param: "pageNo"
-      page_size_param: "pageSize"
+      page_param: "page.current"
+      page_size_param: "page.size"
       page_size: 20
       start: 1
       total_field: "total"
@@ -523,7 +533,7 @@ sites:
   jdhy:
     name: "福建省发改委-解读回应"
     site_url: "http://fgw.fujian.gov.cn/jdhy/"
-    enabled: true
+    enabled: true  # Re-enabled: sections verified from old crawler scripts
     transport:
       type: rest_api
       engine: requests
@@ -584,17 +594,17 @@ sites:
   # --------------------------------------------------------------------------
   jdhy_zhangzhou:
     name: "漳州发改委-解读回应"
-    site_url: "http://fgw.zhangzhou.gov.cn/jdhy/"
-    enabled: true
+    site_url: "https://www.zhangzhou.gov.cn/"
+    enabled: true  # Fixed: old YAML had wrong URL (fgw.zhangzhou.gov.cn/jdhy → 418), correct URL from old script verified 200
     transport:
       type: rest_api
       engine: requests
       headers:
         User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
-      verify_ssl: true
+      verify_ssl: false
       timeout: 30
     listing:
-      url: "http://fgw.zhangzhou.gov.cn/jdhy/"
+      url: "https://www.zhangzhou.gov.cn/cms/html/zzsrmzf/bszcjd/index.html"
       method: GET
     pagination:
       type: html_regex
@@ -626,7 +636,7 @@ sites:
   mohurd:
     name: "住建部政策法规"
     site_url: "https://www.mohurd.gov.cn/"
-    enabled: true
+    enabled: true  # Re-enabled: sections verified from old crawler scripts
     transport:
       type: rest_api
       engine: requests
@@ -855,28 +865,20 @@ sites:
       upload_batch_size: 10
 
   ndrc_fzggwl:
-    name: "发改委发展改革委"
-    site_url: "https://www.ndrc.gov.cn/fzggwl/"
-    enabled: true
+    name: "发改委-政策文件"
+    site_url: "https://www.ndrc.gov.cn/"
+    enabled: true  # Fixed: correct URL is /xxgk/zcfb/fzggwl/ (old YAML had /fzggwl/ which was 404)
     transport:
       type: rest_api
       engine: requests
       headers:
         User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
-      verify_ssl: true
+      verify_ssl: false
       timeout: 30
-    listing:
-      url: "https://www.ndrc.gov.cn/fzggwl/"
-      method: GET
-    pagination:
-      type: html_regex
-      page_size: 20
-      start: 1
     anti_crawler:
       delay_min: 2.0
       delay_max: 4.0
       max_retries: 3
-      eight_am_check: true
     extract:
       type: css_selector
       items_path: "ul.u-list li"
@@ -890,6 +892,52 @@ sites:
     format:
       parser_id: "naive"
       upload_batch_size: 10
+    sections:
+      - label: "fzggwl"
+        listing:
+          url: "https://www.ndrc.gov.cn/xxgk/zcfb/fzggwl/"
+          method: GET
+        pagination:
+          type: html_regex
+          page_pattern: "index_{}.html"
+          start: 1
+          max_pages: 50
+      - label: "ghxwj"
+        listing:
+          url: "https://www.ndrc.gov.cn/xxgk/zcfb/ghxwj/"
+          method: GET
+        pagination:
+          type: html_regex
+          page_pattern: "index_{}.html"
+          start: 1
+          max_pages: 50
+      - label: "ghwb"
+        listing:
+          url: "https://www.ndrc.gov.cn/xxgk/zcfb/ghwb/"
+          method: GET
+        pagination:
+          type: html_regex
+          page_pattern: "index_{}.html"
+          start: 1
+          max_pages: 50
+      - label: "gg"
+        listing:
+          url: "https://www.ndrc.gov.cn/xxgk/zcfb/gg/"
+          method: GET
+        pagination:
+          type: html_regex
+          page_pattern: "index_{}.html"
+          start: 1
+          max_pages: 50
+      - label: "tz"
+        listing:
+          url: "https://www.ndrc.gov.cn/xxgk/zcfb/tz/"
+          method: GET
+        pagination:
+          type: html_regex
+          page_pattern: "index_{}.html"
+          start: 1
+          max_pages: 50
 
   # --------------------------------------------------------------------------
   # Government department portals — TRS CMS pattern
@@ -1265,7 +1313,7 @@ sites:
   zz_zhangzhou:
     name: "漳州市人民政府-政务公开"
     site_url: "https://www.zhangzhou.gov.cn/"
-    enabled: true
+    enabled: true  # Re-enabled: sections verified from old crawler scripts
     transport:
       type: rest_api
       engine: urllib
@@ -1314,7 +1362,7 @@ sites:
   jsj_zhangzhou:
     name: "漳州市住建局-政务公开"
     site_url: "http://jsj.zhangzhou.gov.cn/"
-    enabled: true
+    enabled: true  # Re-enabled: sections verified from old crawler scripts
     transport:
       type: rest_api
       engine: urllib
@@ -1439,7 +1487,7 @@ sites:
   putian_zcwj:
     name: "莆田市公共资源交易中心-政策文件"
     site_url: "https://ggzyjy.xzfwzx.putian.gov.cn/"
-    enabled: true
+    enabled: true  # Re-enabled: sections verified from old crawler scripts
     transport:
       type: rest_api
       engine: requests
@@ -1495,7 +1543,7 @@ sites:
   putian_fwzx:
     name: "莆田市公共资源交易中心-工程交易"
     site_url: "https://ggzyjy.xzfwzx.putian.gov.cn/"
-    enabled: true
+    enabled: true  # Re-enabled: sections verified from old crawler scripts
     transport:
       type: rest_api
       engine: requests
@@ -1557,7 +1605,7 @@ sites:
   quanzhou:
     name: "泉州市公共资源交易中心-工程交易"
     site_url: "https://ggzyjy.quanzhou.gov.cn/"
-    enabled: true
+    enabled: true  # Re-enabled: sections verified from old crawler scripts
     transport:
       type: rest_api
       engine: urllib
@@ -1732,7 +1780,7 @@ sites:
   smzcfg:
     name: "三明市公共资源交易中心-政策法规"
     site_url: "https://smggzy.sm.gov.cn/"
-    enabled: true
+    enabled: true  # Re-enabled: sections verified from old crawler scripts
     transport:
       type: rest_api
       engine: requests
@@ -1789,7 +1837,7 @@ sites:
   smjy:
     name: "三明市公共资源交易中心-交易信息"
     site_url: "https://smggzy.sm.gov.cn/"
-    enabled: true
+    enabled: true  # Re-enabled: sections verified from old crawler scripts
     transport:
       type: rest_api
       engine: requests
@@ -3061,7 +3109,7 @@ sites:
   easy_prt_bidding:
     name: "工采通-竞价公告"
     site_url: "https://easy-prt.com/"
-    enabled: true
+    enabled: true  # Re-enabled: sections verified from old crawler scripts
     detect_interval: 60
     transport:
       type: encrypted_api
@@ -3236,7 +3284,7 @@ sites:
   zjfw:
     name: "漳州工程项目中介服务平台"
     site_url: "http://zjfw.zhangzhou.gov.cn"
-    enabled: true
+    enabled: false  # BLOCKED: needs __signature token extraction from homepage + API signing, not yet supported by spa_render adapter
     transport:
       type: spa_render
       engine: playwright_spa
@@ -3627,22 +3675,32 @@ sites:
   enjoy5191_policy:
     name: "中招联合招标采购平台-政策法规"
     site_url: "https://www.enjoy5191.com/"
-    enabled: true
+    enabled: true  # Fixed: API /api/GetDataHandler.ashx verified 200 (old YAML had wrong /policy URL)
     transport:
-      type: spa_render
-      engine: playwright_spa
+      type: rest_api
+      engine: requests
       headers:
         User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+        X-Requested-With: "XMLHttpRequest"
+        Content-Type: "application/json"
       verify_ssl: true
-      timeout: 90
+      timeout: 30
     listing:
-      url: "https://www.enjoy5191.com/policy"
-      method: GET
+      url: "https://www.enjoy5191.com/api/GetDataHandler.ashx"
+      method: POST
+      body_type: json
+      params:
+        method: "Web.GetNewsList"
+        type: "2B866807-C73A-4934-8740-6569E3CD5926"
+        page: "{{ page }}"
+        rows: "{{ page_size }}"
     pagination:
-      type: click_next
-      next_page_selector: ".pagination .next:not(.disabled)"
+      type: page_no
+      page_param: "page"
+      page_size_param: "rows"
       page_size: 20
       start: 1
+      items_field: "data"
     anti_crawler:
       delay_min: 2.0
       delay_max: 4.0
@@ -3655,8 +3713,14 @@ sites:
         title: "title"
         date: "publishDate"
     detail:
-      type: css_selector
-      content_field: ".article_content"
+      type: api_request
+      url: "https://www.enjoy5191.com/api/GetDataHandler.ashx"
+      method: POST
+      body_type: json
+      params:
+        method: "Web.GetTopOneArticle"
+        id: "{{ id }}"
+      content_field: "data"
     format:
       parser_id: "naive"
       upload_batch_size: 10
@@ -3706,7 +3770,7 @@ sites:
   ggzyfw_guide:
     name: "福建省公共资源交易平台-办事指南"
     site_url: "https://ggzyfw.fujian.gov.cn/"
-    enabled: true
+    enabled: true  # Re-enabled: sections verified from old crawler scripts
     transport:
       type: spa_render
       engine: playwright_spa
@@ -3809,7 +3873,7 @@ sites:
   longyan:
     name: "龙岩市公共资源交易中心-工程建设"
     site_url: "https://ggzy.longyan.gov.cn/"
-    enabled: true
+    enabled: true  # Re-enabled: sections verified from old crawler scripts
     transport:
       type: rest_api
       engine: urllib
@@ -3971,14 +4035,10 @@ sites:
     site_url: "https://ygcg.fjcqjy.com/"
     enabled: true
     transport:
-      type: spa_render
-      engine: playwright_spa
-      headers:
-        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        X-Requested-With: "XMLHttpRequest"
-        Referer: "https://ygcg.fjcqjy.com/"
-      proxy:
-        url: "socks5h://172.18.0.1:1080"
+      type: scrapling_stealth
+      headless: true
+      network_idle: false
+      block_resources: true
       verify_ssl: false
       timeout: 60
     listing:
@@ -4006,7 +4066,7 @@ sites:
         url: "URL"
     detail:
       type: css_selector
-      url: "https://qtgcztb.enjoy5191.com/views/ebid/combine/v1/entp-view.html?type=tp&tpId={{ SOURCE_ID }}&flag=true&name=LogOn_GUOZI"
+      url: "https://qtgcztb.enjoy5191.com/views/ebid/combine/v1/entp-view.html?type=tp&tpId={id}&flag=true&name=LogOn_GUOZI"
       content_field: ".detail-content, .article-content, .project-detail, .bid-content, .el-main, main, article"
     format:
       parser_id: "naive"

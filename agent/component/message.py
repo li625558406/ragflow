@@ -204,6 +204,7 @@ class Message(ComponentBase):
                         cnt += t
                         yield t
                 self.set_input_value(exp, cnt)
+                self._canvas.set_variable_value(exp, cnt)
                 continue
             elif inspect.isawaitable(v):
                 v = await v

@@ -31,6 +31,7 @@ from ..crypto_utils import (
     md5_sign,
     hex_to_bytes,
 )
+from .. import resolve_params
 from .base import BaseAdapter
 
 
@@ -57,15 +58,11 @@ class EncryptedApiAdapter(BaseAdapter):
         params = dict(listing.params)
         params.update(page_params)
 
-        # Resolve {{ page }} / {{ page_size }} templates
+        # Resolve {{ page }} / {{ page_size }} / {{ today }} / {{ N_days_ago }} templates
         pag_cfg = self._config.pagination
         page_val = str(page_params.get(pag_cfg.page_param, ""))
         size_val = str(page_params.get(pag_cfg.page_size_param, ""))
-        for key, val in list(params.items()):
-            if isinstance(val, str) and "{{" in val:
-                val = val.replace("{{ page }}", page_val)
-                val = val.replace("{{ page_size }}", size_val)
-                params[key] = val
+        params = resolve_params(params, page_val, size_val)
 
         # Build sign + extra headers
         extra_headers = {}

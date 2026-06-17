@@ -17,6 +17,7 @@ import requests
 
 from ..config import SiteConfig
 from ..session_manager import SessionManager
+from .. import resolve_params, resolve_url
 from .base import BaseAdapter
 
 
@@ -25,7 +26,10 @@ class RestApiAdapter(BaseAdapter):
 
     def __init__(self, config: SiteConfig):
         super().__init__(config)
-        self._session = SessionManager.create(config.transport)
+        if config.transport.engine == "scrapling":
+            self._session = SessionManager.create_scrapling(config.transport)
+        else:
+            self._session = SessionManager.create(config.transport)
 
     def fetch_items(self, page_params: Dict[str, Any],
                     listing_override=None) -> Optional[List[Dict[str, Any]]]:
@@ -50,17 +54,12 @@ class RestApiAdapter(BaseAdapter):
 
         params.update(page_params)
 
-        # Resolve {{ page }} / {{ page_size }} templates that weren't
-        # overwritten by params.update() due to key name mismatches
-        # (e.g. paginator yields page_size, but listing uses pageSize).
+        # Resolve {{ page }} / {{ page_size }} / {{ today }} / {{ N_days_ago }} templates
         pag_cfg = self._config.pagination
         page_val = str(page_params.get(pag_cfg.page_param, ""))
         size_val = str(page_params.get(pag_cfg.page_size_param, ""))
-        for key, val in list(params.items()):
-            if isinstance(val, str) and "{{" in val:
-                val = val.replace("{{ page }}", page_val)
-                val = val.replace("{{ page_size }}", size_val)
-                params[key] = val
+        params = resolve_params(params, page_val, size_val)
+        url = resolve_url(url, page_val, size_val)
 
         for attempt in range(self._config.anti_crawler.max_retries):
             try:

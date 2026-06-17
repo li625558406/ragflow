@@ -17,6 +17,64 @@ from .config import TransportConfig, ProxyConfig
 from .anti_crawler import get_random_ua
 
 
+class ScraplingSession:
+    """Thin wrapper around scrapling.Fetcher that mimics requests.Session.
+
+    Only supports GET requests to HTML pages — JSON API endpoints should
+    continue using the default requests.Session.
+    """
+
+    def __init__(self, config: TransportConfig):
+        try:
+            from scrapling.fetchers import Fetcher  # noqa: F401
+        except ImportError:
+            raise ImportError(
+                "scrapling is required when transport.engine is 'scrapling'. "
+                "Install it with: pip install 'scrapling[fetchers]' && scrapling install"
+            )
+        self._config = config
+        self._timeout = config.timeout
+
+    def get(self, url: str, **kwargs):
+        """Mimic requests.Session.get() — returns a response-like object."""
+        from scrapling.fetchers import Fetcher
+        params = kwargs.get("params")
+        page = Fetcher.get(
+            url,
+            params=params,
+            timeout=self._timeout,
+            impersonate=self._config.impersonate or None,
+            headless=False,  # Fetcher is HTTP-only, no browser
+        )
+        return _ScraplingResponse(page)
+
+    def post(self, url: str, **kwargs):
+        """NOT supported — scrapling.Fetcher is GET-only. Raise clear error."""
+        raise NotImplementedError(
+            "scrapling.Fetcher does not support POST. "
+            "Use transport.engine='requests' for POST APIs."
+        )
+
+
+class _ScraplingResponse:
+    """Response-like object wrapping a scrapling Selector."""
+
+    def __init__(self, page):
+        self._page = page
+        self.text = getattr(page, "text", "") or ""
+        # For JSON API responses, scrapling puts raw bytes in page.body
+        if not self.text and hasattr(page, "body"):
+            body = page.body
+            self.text = body.decode("utf-8") if isinstance(body, bytes) else str(body)
+        self.status_code = getattr(page, "status", 200)
+        self.headers = {}
+
+    def json(self):
+        """Attempt JSON decode of page text."""
+        import json
+        return json.loads(self.text)
+
+
 class SessionManager:
     """Create and configure requests.Session objects."""
 
@@ -64,6 +122,15 @@ class SessionManager:
                                 config.session_init_url, e)
 
         return sess
+
+    @staticmethod
+    def create_scrapling(config: TransportConfig) -> "ScraplingSession":
+        """Create a scrapling-based session for HTML scraping sites.
+
+        Only use this for sites that return HTML (not JSON APIs).
+        For JSON API endpoints, use the default `create()` with requests.
+        """
+        return ScraplingSession(config)
 
     @staticmethod
     def reset(sess: requests.Session, config: TransportConfig) -> None:

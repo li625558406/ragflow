@@ -35,6 +35,25 @@ class BasePaginator(ABC):
         """Extract total record count from API response. Returns total_count."""
         ...
 
+    @staticmethod
+    def _set_nested(d: Dict[str, Any], key_path: str, value: Any) -> None:
+        """Set a value in dict by dot-separated key path (e.g. 'page.current')."""
+        parts = key_path.split(".")
+        for part in parts[:-1]:
+            if part not in d or not isinstance(d[part], dict):
+                d[part] = {}
+            d = d[part]
+        d[parts[-1]] = value
+
+    @staticmethod
+    def _build_page_params(page_param: str, page_val: int,
+                           size_param: str, size_val: int) -> Dict[str, Any]:
+        """Build page params dict, supporting dot-path keys like 'page.current'."""
+        result: Dict[str, Any] = {}
+        BasePaginator._set_nested(result, page_param, page_val)
+        BasePaginator._set_nested(result, size_param, size_val)
+        return result
+
     def _get_nested(self, data: Any, field: str) -> Any:
         """Extract a value from potentially nested dict using dot notation.
 
@@ -70,10 +89,10 @@ class PageNoPaginator(BasePaginator):
         max_p = self._config.max_pages if self._config.max_pages > 0 else self._SAFETY_MAX
         i = 0
         while i < max_p:
-            yield {
-                self._config.page_param: page + i,
-                self._config.page_size_param: self._config.page_size,
-            }
+            yield self._build_page_params(
+                self._config.page_param, page + i,
+                self._config.page_size_param, self._config.page_size,
+            )
             i += 1
 
     def update_total(self, response_data: Any) -> int:
@@ -92,10 +111,10 @@ class OffsetPaginator(BasePaginator):
         max_p = self._config.max_pages if self._config.max_pages > 0 else self._SAFETY_MAX
         i = 0
         while i < max_p:
-            yield {
-                self._config.page_param: offset + i * self._config.page_size,
-                self._config.page_size_param: self._config.page_size,
-            }
+            yield self._build_page_params(
+                self._config.page_param, offset + i * self._config.page_size,
+                self._config.page_size_param, self._config.page_size,
+            )
             i += 1
 
     def update_total(self, response_data: Any) -> int:
@@ -113,16 +132,16 @@ class TotalCountPaginator(BasePaginator):
 
     def pages(self, start_at: int = 0) -> Generator[Dict[str, Any], None, None]:
         if self._total_pages is None:
-            yield {
-                self._config.page_param: start_at,
-                self._config.page_size_param: self._config.page_size,
-            }
+            yield self._build_page_params(
+                self._config.page_param, start_at,
+                self._config.page_size_param, self._config.page_size,
+            )
             return
         for p in range(start_at, self._total_pages + 1):
-            yield {
-                self._config.page_param: p,
-                self._config.page_size_param: self._config.page_size,
-            }
+            yield self._build_page_params(
+                self._config.page_param, p,
+                self._config.page_size_param, self._config.page_size,
+            )
 
     def update_total(self, response_data: Any) -> int:
         if isinstance(response_data, dict):
@@ -167,10 +186,10 @@ class HtmlRegexPaginator(BasePaginator):
         i = 0
         while i < max_p:
             current_page = page + i
-            params: Dict[str, Any] = {
-                self._config.page_param: current_page,
-                self._config.page_size_param: self._config.page_size,
-            }
+            params: Dict[str, Any] = self._build_page_params(
+                self._config.page_param, current_page,
+                self._config.page_size_param, self._config.page_size,
+            )
             if pattern:
                 # Skip suffix for start page when first_page_no_suffix is set,
                 # so the adapter uses listing.url for page 1 and pattern for later pages.

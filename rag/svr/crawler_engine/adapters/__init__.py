@@ -5,6 +5,7 @@ from .rest_api import RestApiAdapter
 from .encrypted_api import EncryptedApiAdapter
 from .spa_render import SpaRenderAdapter
 from .playwright_http import PlaywrightHttpAdapter
+from .scrapling_stealth import ScraplingStealthAdapter
 
 __all__ = [
     "BaseAdapter",
@@ -12,4 +13,5 @@ __all__ = [
     "EncryptedApiAdapter",
     "SpaRenderAdapter",
     "PlaywrightHttpAdapter",
+    "ScraplingStealthAdapter",
 ]
