@@ -1,5 +1,4 @@
 import { AgentStatusChip } from '@/components/agent-status-chip';
-import { deriveStatus } from '@/components/agent-status-chip/utils';
 import AppDownloadDialog from '@/components/app-download-dialog';
 import BidPanel from '@/components/bid';
 import ChapteredMarkdown from '@/components/chaptered-markdown';
@@ -35,7 +34,6 @@ import { Textarea } from '@/components/ui/textarea';
 import {
   Bookmark,
   Check,
-  CheckCircle2,
   ChevronDown,
   ChevronRight,
   Copy,
@@ -55,7 +53,6 @@ import {
   Trash2,
   Upload,
   X,
-  XCircle,
 } from 'lucide-react';
 
 import { RealtimeAudioButton } from '@/components/realtime-audio-button';
@@ -2102,7 +2099,7 @@ export default function CChat() {
 
                   {/* Agent status chip above input */}
                   {latestNodeEvents && (
-                    <div className="px-4 lg:px-6 py-2 shrink-0">
+                    <div className="px-4 lg:px-6 pt-2 shrink-0">
                       <div className="max-w-[80rem] mx-auto">
                         <AgentStatusChip
                           eventList={latestNodeEvents.events}
@@ -2118,54 +2115,6 @@ export default function CChat() {
                             )
                           }
                         />
-                        {thinkingMsgId === latestNodeEvents.messageId && (
-                          <div className="mt-2 flex items-center gap-1.5 text-xs overflow-x-auto">
-                            {deriveStatus(latestNodeEvents.events).steps.map(
-                              (step, i) => {
-                                // When stream ended, treat unfinished non-error steps as done
-                                const isDone = step.error
-                                  ? false
-                                  : !!step.finishedAt || !sendLoading;
-                                return (
-                                  <span
-                                    key={step.id}
-                                    className="flex items-center gap-1 shrink-0"
-                                  >
-                                    {i > 0 && (
-                                      <ChevronRight
-                                        size={12}
-                                        className="text-[#D4D4D4]"
-                                      />
-                                    )}
-                                    <span
-                                      className={`flex items-center gap-1 px-2 py-0.5 rounded-full ${
-                                        step.error
-                                          ? 'bg-red-50 text-red-600'
-                                          : isDone
-                                            ? 'bg-green-50 text-green-600'
-                                            : 'bg-blue-50 text-blue-600'
-                                      }`}
-                                    >
-                                      {step.error ? (
-                                        <XCircle size={12} />
-                                      ) : isDone ? (
-                                        <CheckCircle2 size={12} />
-                                      ) : (
-                                        <Loader2
-                                          size={12}
-                                          className="animate-spin"
-                                        />
-                                      )}
-                                      <span className="font-medium">
-                                        {step.name}
-                                      </span>
-                                    </span>
-                                  </span>
-                                );
-                              },
-                            )}
-                          </div>
-                        )}
                       </div>
                     </div>
                   )}

@@ -34,6 +34,7 @@ import classNames from 'classnames';
 import { omit } from 'lodash';
 import { pipe } from 'lodash/fp';
 import reactStringReplace from 'react-string-replace';
+import ThinkBlock from '../think-block';
 import {
   HoverCard,
   HoverCardContent,
@@ -158,9 +159,10 @@ function MarkdownContent({
   reference,
   clickDocumentButton,
   content,
+  loading,
 }: {
   content: string;
-  loading: boolean;
+  loading?: boolean;
   reference?: IReferenceObject;
   clickDocumentButton?: (documentId: string, chunk: IReferenceChunk) => void;
 }) {
@@ -435,6 +437,16 @@ function MarkdownContent({
                 >
                   {children}
                 </code>
+              );
+            },
+            section({ className, children, ...props }: any) {
+              if (className === 'think') {
+                return <ThinkBlock loading={loading}>{children}</ThinkBlock>;
+              }
+              return (
+                <section className={className} {...omit(props, 'node')}>
+                  {children}
+                </section>
               );
             },
           } as any

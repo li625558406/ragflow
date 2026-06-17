@@ -132,7 +132,16 @@ class CrawlerEngine:
         self._log_header(kb_id)
 
         if full:
-            self._state.reset()
+            # Re-scan from page 1 to catch items the detector may have missed,
+            # but keep processed_ids so the memory dedup layer still works.
+            # DB-layer dedup (bid_project table) is always active regardless.
+            self._state.last_page = 0
+            self._state.last_offset = 0
+            logging.info(
+                "Engine: full crawl mode — resetting page to 1, "
+                "keeping %d processed IDs for dedup",
+                self._state.processed_count,
+            )
 
         # 8 AM check
         if not self._anti_crawler.check_eight_am():
