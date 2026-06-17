@@ -46,7 +46,7 @@ class RetrievalParam(ToolParamBase):
 
     def __init__(self):
         self.meta:ToolMeta = {
-            "name": "search_my_dateset",
+            "name": "search_my_dataset",
             "description": "在知识库中检索与用户问题相关的内容。当用户询问知识库中已有的信息时使用此工具。返回最相关的文档片段，可直接用于回答用户问题。",
             "parameters": {
                 "query": {
@@ -58,7 +58,7 @@ class RetrievalParam(ToolParamBase):
             }
         }
         super().__init__()
-        self.function_name = "search_my_dateset"
+        self.function_name = "search_my_dataset"
         self.description = "This tool can be utilized for relevant content searching in the datasets."
         self.similarity_threshold = 0.2
         self.keywords_similarity_weight = 0.5
@@ -429,6 +429,26 @@ class Retrieval(ToolBase, ABC):
 
         return form_cnt
 
+    @staticmethod
+    def _clean_memory_content(content: str) -> str:
+        """Strip self-referential artifacts from memory messages.
+
+        Old agent responses stored in memory contain <think> reasoning blocks
+        and [ID:xxx] citation markers that confuse the LLM into believing
+        the memory content is user-provided input rather than retrieved history.
+        """
+        # 1. Strip <think>...</think> blocks (case-insensitive, with attributes)
+        content = re.sub(r"<think[^>]*>.*?</think\s*>", "", content, flags=re.DOTALL | re.IGNORECASE)
+        # 2. Strip unclosed <think> without matching </think>
+        content = re.sub(r"<think[^>]*>", "", content, flags=re.IGNORECASE)
+        content = re.sub(r"</think\s*>", "", content, flags=re.IGNORECASE)
+        # 3. Strip [ID:...] and [ID：...] citation markers
+        content = re.sub(r"\[ID[:：]\s*\d+\]", "", content)
+        # 4. Collapse excessive blank lines
+        content = re.sub(r"\n{3,}", "\n\n", content)
+        content = re.sub(r"^\s*\n", "", content)
+        return content.strip()
+
     async def _retrieve_memory(self, query_text: str):
         memory_ids: list[str] = [memory_id for memory_id in self._param.memory_ids]
         user_id: str = self._param.user_id if hasattr(self._param, "user_id") else None
@@ -445,11 +465,11 @@ class Retrieval(ToolBase, ABC):
         # query message
         filter_dict: dict = {"memory_id": memory_ids}
         if user_id:
-            import re
             # is variable
             if re.match(r"^{.*}$", user_id):
                 user_id = self._canvas.get_variable_value(user_id)
             filter_dict["user_id"] = user_id
+        logging.info("[MEMORY-RETRIEVAL] memory_ids=%s query=%s", memory_ids, query[:120])
         message_list = memory_message_service.query_message(filter_dict, {
             "query": query,
             "similarity_threshold": self._param.similarity_threshold,
@@ -459,6 +479,31 @@ class Retrieval(ToolBase, ABC):
         if not message_list:
             self.set_output("formalized_content", self._param.empty_response)
             return ""
+
+        # ── Clean memory content of self-referential artifacts ──
+        for msg in message_list:
+            if isinstance(msg, dict) and "content" in msg:
+                original_len = len(msg["content"])
+                msg["content"] = self._clean_memory_content(msg["content"])
+                if len(msg["content"]) != original_len:
+                    logging.info(
+                        "[MEMORY-CLEAN] id=%s before=%d after=%d removed=%d",
+                        str(msg.get("id", "?")), original_len, len(msg["content"]),
+                        original_len - len(msg["content"])
+                    )
+
+        # ── [DIAGNOSTIC] Log memory retrieval results ──
+        for i, msg in enumerate(message_list):
+            content = str(msg.get("content", "")) if isinstance(msg, dict) else str(msg)
+            has_citation = "[ID:" in content or "[ID：" in content
+            has_think = "<think>" in content.lower()
+            logging.info(
+                "[MEMORY-CHUNK #%d] id=%s len=%d has_citation=%s has_think=%s preview=%s",
+                i, str(msg.get("id", "?")) if isinstance(msg, dict) else "?", len(content),
+                has_citation, has_think, content[:150].replace("\n", "\\n")
+            )
+        logging.info("[MEMORY-TOTAL] chunks=%d", len(message_list))
+        # ── END DIAGNOSTIC ──
         formated_content = "\n".join(memory_prompt(message_list, 200000))
         # set formalized_content output
         self.set_output("formalized_content", formated_content)
@@ -474,6 +519,18 @@ class Retrieval(ToolBase, ABC):
             return
 
         query = kwargs["query"]
+
+        # ── [DIAGNOSTIC] Log retrieval source ──
+        from_source = getattr(self._param, "retrieval_from", None) or (
+            "memory" if (hasattr(self._param, "memory_ids") and self._param.memory_ids) else
+            "dataset" if self._dataset_ids else "unknown"
+        )
+        memory_ids = getattr(self._param, "memory_ids", []) or []
+        logging.info("[RETRIEVAL-PATH] tool=%s source=%s dataset_ids=%s memory_ids=%s",
+                     self._param.meta.get("name", "?"), from_source,
+                     self._dataset_ids[:3] if self._dataset_ids else [],
+                     memory_ids[:3] if memory_ids else [])
+        # ── END DIAGNOSTIC ──
 
         # 原有逻辑保持不变 - 根据 retrieval_from 和 dataset_ids/memory_ids 决定检索源
         if hasattr(self._param, "retrieval_from") and self._param.retrieval_from == "dataset":

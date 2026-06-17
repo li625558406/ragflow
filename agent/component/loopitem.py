@@ -15,6 +15,7 @@
 #
 from abc import ABC
 import json
+import logging
 from agent.component.base import ComponentBase, ComponentParamBase
 
 
@@ -39,12 +40,16 @@ class LoopItem(ComponentBase, ABC):
         parent = self.get_parent()
         maximum_loop_count = parent._param.maximum_loop_count
         if self._idx >= maximum_loop_count:
+            logging.info("[LOOP-ITEM] %s MAX_COUNT reached (_idx=%d >= max=%d) → exit",
+                         self._id, self._idx, maximum_loop_count)
             self._idx = -1
             return
         if self._idx > 0:
             if self.check_if_canceled("LoopItem processing"):
                 return
             self.output_collation()
+        logging.info("[LOOP-ITEM] %s iteration=%d (idx: %d→%d)",
+                     self._id, self._idx + 1, self._idx, self._idx + 1)
         self._idx += 1
 
     def output_collation(self):
@@ -56,6 +61,9 @@ class LoopItem(ComponentBase, ABC):
             # Use canvas get_variable_value which supports dot notation
             # (e.g. "Agent:xxx@structured.chapters")
             val = self._canvas.get_variable_value(o["ref"])
+            logging.info("[LOOP-COLLATE] %s output=%s ref=%s val_type=%s val_is_none=%s val_preview=%s",
+                         self._id, k, o["ref"], type(val).__name__, val is None,
+                         str(val)[:200] if val is not None else "NONE")
             # Auto-parse JSON string into actual Python type
             if isinstance(val, str) and val.strip():
                 try:
@@ -158,7 +166,12 @@ class LoopItem(ComponentBase, ABC):
                 value = item.get("value", "")
             else:
                 raise ValueError("Invalid input mode.")
-            conditions.append(self.evaluate_condition(var, operator, value))
+            result = self.evaluate_condition(var, operator, value)
+            logging.info("[LOOP-COND] %s var=%s val_type=%s val_is_none=%s val_preview=%s op=%s expect=%s result=%s",
+                         self._id, item["variable"], type(var).__name__, var is None,
+                         str(var)[:150] if var is not None else "NONE",
+                         operator, str(value)[:50], result)
+            conditions.append(result)
         should_end = (
             all(conditions) if logical_operator == "and"
             else any(conditions) if logical_operator == "or"
@@ -166,7 +179,8 @@ class LoopItem(ComponentBase, ABC):
         )
         if should_end is None:
             raise ValueError("Invalid logical operator,should be 'and' or 'or'.")
-
+        logging.info("[LOOP-END] %s should_end=%s _idx=%d",
+                     self._id, should_end, self._idx)
         if should_end:
             # Collate the last iteration's output before exiting
             self.output_collation()

@@ -191,16 +191,18 @@ class Agent(LLM, ToolBase):
             return
 
         if kwargs.get("user_prompt"):
-            usr_pmt = ""
+            # Build supervisor context into system prompt, NOT role=user.
+            # Upstream RAGFlow wraps reasoning+context+query into a single
+            # role=user message, causing the LLM to confuse supervisor-provided
+            # analysis with user-submitted content ("您已自行完成了分析").
+            supervisor_ctx = ""
             if kwargs.get("reasoning"):
-                usr_pmt += "\nREASONING:\n{}\n".format(kwargs["reasoning"])
+                supervisor_ctx += "\n\n【监督者指令】\n{}".format(kwargs["reasoning"])
             if kwargs.get("context"):
-                usr_pmt += "\nCONTEXT:\n{}\n".format(kwargs["context"])
-            if usr_pmt:
-                usr_pmt += "\nQUERY:\n{}\n".format(str(kwargs["user_prompt"]))
-            else:
-                usr_pmt = str(kwargs["user_prompt"])
-            self._param.prompts = [{"role": "user", "content": usr_pmt}]
+                supervisor_ctx += "\n\n【监督者提供的背景信息】\n{}".format(kwargs["context"])
+            if supervisor_ctx:
+                self._param.sys_prompt = (self._param.sys_prompt or "") + supervisor_ctx
+            self._param.prompts = [{"role": "user", "content": str(kwargs["user_prompt"])}]
 
         if not self.tools:
             if self.check_if_canceled("Agent processing"):
@@ -235,18 +237,31 @@ class Agent(LLM, ToolBase):
             return
 
         if output_schema:
+            logging.info("[STRUCTURED-OUTPUT] agent=%s has_schema=True max_retries=%d raw_ans_len=%d preview=%s",
+                         self._id, self._param.max_retries, len(ans or ""), (ans or "")[:300].replace("\n", "\\n"))
             error = ""
-            for _ in range(self._param.max_retries + 1):
+            for attempt in range(self._param.max_retries + 1):
                 try:
-                    obj = json_repair.loads(self._clean_formatted_answer(ans))
+                    cleaned = self._clean_formatted_answer(ans)
+                    logging.info("[STRUCTURED-OUTPUT] agent=%s attempt=%d cleaned_len=%d cleaned_preview=%s",
+                                 self._id, attempt, len(cleaned), cleaned[:300].replace("\n", "\\n"))
+                    obj = json_repair.loads(cleaned)
                     self.set_output("structured", obj)
+                    logging.info("[STRUCTURED-OUTPUT] agent=%s SUCCESS attempt=%d keys=%s",
+                                 self._id, attempt, list(obj.keys()) if isinstance(obj, dict) else type(obj).__name__)
                     return obj
-                except Exception:
-                    error = "The answer cannot be parsed as JSON"
+                except Exception as e:
+                    logging.warning("[STRUCTURED-OUTPUT] agent=%s attempt=%d PARSE_FAILED: %s  raw_ans_tail=%s",
+                                    self._id, attempt, str(e)[:200], (ans or "")[-200:].replace("\n", "\\n"))
+                    error = f"The answer cannot be parsed as JSON: {e}"
                     ans = await self._force_format_to_schema_async(ans, schema_prompt)
                     if ans.find("**ERROR**") >= 0:
+                        logging.warning("[STRUCTURED-OUTPUT] agent=%s force_format got ERROR on attempt=%d",
+                                        self._id, attempt)
                         continue
 
+            logging.error("[STRUCTURED-OUTPUT] agent=%s ALL_RETRIES_FAILED final_error=%s",
+                          self._id, error)
             self.set_output("_ERROR", error)
             return
 

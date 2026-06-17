@@ -14,6 +14,7 @@
 #  limitations under the License.
 #
 import logging
+import re
 from typing import List
 
 from common import settings
@@ -33,6 +34,26 @@ from memory.services.query import MsgTextQuery, get_vector
 from memory.utils.prompt_util import PromptAssembler
 from memory.utils.msg_util import get_json_result_from_llm_response
 from rag.utils.redis_conn import REDIS_CONN
+
+
+def _clean_agent_response(text: str) -> str:
+    """清洗 Agent 响应中的自引用污染，防止记忆污染 LLM 上下文。
+
+    存储到记忆库之前，删除 <think> 推理块和 [ID:xxx] 引用标记。
+    这些是 Agent 内部产物，不应重新喂给 LLM。
+    """
+    if not text or not isinstance(text, str):
+        return text
+    # 1. 删除 <think>...</think> 块（不区分大小写，支持属性变体如 <think xmlns=...>）
+    text = re.sub(r"<think[^>]*>.*?</think\s*>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    # 2. 删除不成对的 <think> / </think> 标签
+    text = re.sub(r"<think[^>]*>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"</think\s*>", "", text, flags=re.IGNORECASE)
+    # 3. 删除 [ID:...] / [ID：...] 引用标记
+    text = re.sub(r"\[ID[:：]\s*\d+\]", "", text)
+    # 4. 合并多余空白行
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 async def save_to_memory(memory_id: str, message_dict: dict):
@@ -69,7 +90,7 @@ async def save_to_memory(memory_id: str, message_dict: dict):
         "user_id": message_dict.get("user_id", ""),
         "agent_id": message_dict["agent_id"],
         "session_id": message_dict["session_id"],
-        "content": f"User Input: {message_dict.get('user_input')}\nAgent Response: {message_dict.get('agent_response')}",
+        "content": f"User Input: {message_dict.get('user_input')}\nAgent Response: {_clean_agent_response(message_dict.get('agent_response', ''))}",
         "valid_at": timestamp_to_date(current_timestamp()),
         "invalid_at": None,
         "forget_at": None,
@@ -378,7 +399,7 @@ async def queue_save_to_memory_task(memory_ids: list[str], message_dict: dict):
             "user_id": message_dict.get("user_id", ""),
             "agent_id": message_dict["agent_id"],
             "session_id": message_dict["session_id"],
-            "content": f"User Input: {message_dict.get('user_input')}\nAgent Response: {message_dict.get('agent_response')}",
+            "content": f"User Input: {message_dict.get('user_input')}\nAgent Response: {_clean_agent_response(message_dict.get('agent_response', ''))}",
             "valid_at": timestamp_to_date(current_timestamp()),
             "invalid_at": None,
             "forget_at": None,
