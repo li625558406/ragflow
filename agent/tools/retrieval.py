@@ -405,6 +405,18 @@ class Retrieval(ToolBase, ABC):
             self.set_output("formalized_content", self._param.empty_response)
             return
 
+        # ── [DIAGNOSTIC] Log retrieval results to detect self-referential context ──
+        for i, ck in enumerate(kbinfos["chunks"]):
+            doc_id = ck.get("doc_id", "?")[:24]
+            doc_name = ck.get("docnm_kwd", ck.get("doc_name", "?"))
+            content_preview = (ck.get("content_with_weight", ck.get("content", "")) or "")[:150]
+            logger.info(
+                "[RETRIEVAL-CHUNK #%d] doc_id=%s name=%s content_preview=%s",
+                i, doc_id, doc_name, content_preview
+            )
+        logger.info("[RETRIEVAL-TOTAL] chunks=%d kb_ids=%s query=%s", len(kbinfos["chunks"]), filtered_kb_ids, query)
+        # ── END DIAGNOSTIC ──
+
         # Format the chunks for JSON output (similar to how other tools do it)
         json_output = kbinfos["chunks"].copy()
 

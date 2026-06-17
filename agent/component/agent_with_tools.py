@@ -265,6 +265,21 @@ class Agent(LLM, ToolBase):
 
         msg = self._fit_messages(prompt, msg)
 
+        # ── [DIAGNOSTIC] Log LLM context to detect self-referential content ──
+        for i, m in enumerate(msg):
+            content = str(m.get("content", ""))
+            role = m.get("role", "?")
+            # Look for signs of old agent output in the context
+            has_citation_ids = "[ID:" in content or "[ID：" in content
+            is_large = len(content) > 5000
+            logging.info(
+                "[LLM-CONTEXT msg#%d] role=%s len=%d has_citation_ids=%s is_large=%s preview=%s",
+                i, role, len(content), has_citation_ids, is_large,
+                content[:200].replace("\n", "\\n")
+            )
+        logging.info("[LLM-CONTEXT-TOTAL] msgs=%d total_chars=%d", len(msg), sum(len(str(m.get("content",""))) for m in msg))
+        # ── END DIAGNOSTIC ──
+
         # need2cite checks cite param and that this is not a sub-agent (no "-->" in id).
         # We intentionally do NOT check get_reference()["chunks"] here because when the
         # LLM calls retrieval as a tool, chunks are populated mid-generation (after this

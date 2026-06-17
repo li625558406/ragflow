@@ -1,6 +1,6 @@
 import { INodeEvent } from '@/hooks/use-send-message';
 import { cn } from '@/lib/utils';
-import { CheckCircle2, ChevronUp, Loader2, XCircle } from 'lucide-react';
+import { CheckCircle2, Loader2, XCircle } from 'lucide-react';
 import { useMemo } from 'react';
 import styles from './index.module.less';
 import { deriveStatus, getNodeAction } from './utils';
@@ -8,8 +8,6 @@ import { deriveStatus, getNodeAction } from './utils';
 interface IProps {
   eventList: INodeEvent[];
   isRunning: boolean;
-  expanded: boolean;
-  onToggleExpand: () => void;
 }
 
 /** Single step dot on the timeline */
@@ -64,12 +62,7 @@ function TimelineStep({
   );
 }
 
-export function AgentStatusChip({
-  eventList,
-  isRunning,
-  expanded,
-  onToggleExpand,
-}: IProps) {
+export function AgentStatusChip({ eventList, isRunning }: IProps) {
   const status = useMemo(() => deriveStatus(eventList), [eventList]);
 
   const isActive = isRunning;
@@ -91,6 +84,28 @@ export function AgentStatusChip({
     ? getNodeAction(status.currentStep.type)
     : null;
 
+  const MAX_VISIBLE = 6;
+  const { displaySteps, hiddenCount } = useMemo(() => {
+    if (resolvedSteps.length <= MAX_VISIBLE) {
+      return { displaySteps: resolvedSteps, hiddenCount: 0 };
+    }
+    // Trim earliest completed steps from the front.
+    // When running, never trim past the current step.
+    // When all done, all steps can be trimmed.
+    const trimEnd = currentStepIdx >= 0 ? currentStepIdx : resolvedSteps.length;
+    const keepCount = MAX_VISIBLE - 1; // leave 1 slot for "+N" indicator
+    const toTrim = resolvedSteps.length - keepCount;
+    const actualTrim = Math.min(toTrim, trimEnd);
+
+    if (actualTrim <= 0) {
+      return { displaySteps: resolvedSteps, hiddenCount: 0 };
+    }
+    return {
+      displaySteps: resolvedSteps.slice(actualTrim),
+      hiddenCount: actualTrim,
+    };
+  }, [resolvedSteps, currentStepIdx]);
+
   // Don't render if there's nothing to show
   if (status.steps.length === 0 && !isRunning) {
     return null;
@@ -107,7 +122,7 @@ export function AgentStatusChip({
       })}
     >
       {/* Summary row — always visible */}
-      <button className={styles.summaryRow} onClick={onToggleExpand}>
+      <div className={styles.summaryRow}>
         <div className={styles.summaryLeft}>
           {isActive ? (
             <>
@@ -127,50 +142,49 @@ export function AgentStatusChip({
                 className={cn(styles.icon, styles.iconDone)}
                 size={15}
               />
-              <span className={styles.actionTextDone}>
-                {resolvedSteps
-                  .map((s) => getNodeAction(s.type).done)
-                  .filter((v, i, a) => a.indexOf(v) === i)
-                  .join(' · ')}
-              </span>
+              <span className={styles.actionTextDone}>完成</span>
             </>
           )}
         </div>
+      </div>
 
-        <div className={styles.summaryRight}>
-          {/* Mini progress bar when running */}
+      {/* Timeline — always visible */}
+      {displaySteps.length > 0 && (
+        <div className={styles.timeline}>
+          {/* Vertical progress bar on the left */}
           {isActive && totalCount > 1 && (
-            <div className={styles.miniProgress}>
+            <div className={styles.timelineProgress}>
               <div
-                className={styles.miniProgressFill}
+                className={styles.timelineProgressFill}
                 style={{
-                  width: `${totalCount > 0 ? (completedCount / totalCount) * 100 : 0}%`,
+                  height: `${totalCount > 0 ? (completedCount / totalCount) * 100 : 0}%`,
                 }}
               />
             </div>
           )}
-          <span className={styles.expandBtn}>
-            <ChevronUp
-              size={14}
-              className={cn(styles.chevron, expanded && styles.chevronOpen)}
-            />
-          </span>
-        </div>
-      </button>
-
-      {/* Expanded timeline */}
-      {expanded && resolvedSteps.length > 0 && (
-        <div className={styles.timeline}>
           <div className={styles.timelineTrack}>
-            {resolvedSteps.map((step, i) => (
-              <TimelineStep
-                key={step.id}
-                step={step}
-                isDone={step.isDone}
-                isCurrent={i === currentStepIdx}
-                isLast={i === resolvedSteps.length - 1}
-              />
-            ))}
+            {hiddenCount > 0 && (
+              <div className={styles.timelineStep}>
+                <div className={styles.timelineDot}>
+                  <div className={styles.dotEmpty} />
+                </div>
+                <span className={styles.timelineLabelMuted}>
+                  +{hiddenCount} 已完成
+                </span>
+              </div>
+            )}
+            {displaySteps.map((step, i) => {
+              const globalIdx = hiddenCount + i;
+              return (
+                <TimelineStep
+                  key={step.id}
+                  step={step}
+                  isDone={step.isDone}
+                  isCurrent={globalIdx === currentStepIdx}
+                  isLast={globalIdx === resolvedSteps.length - 1}
+                />
+              );
+            })}
           </div>
         </div>
       )}

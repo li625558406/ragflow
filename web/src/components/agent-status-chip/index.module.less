@@ -32,15 +32,9 @@
   padding: 10px 14px;
   border: none;
   background: transparent;
-  cursor: pointer;
   color: inherit;
   font-size: inherit;
   gap: 10px;
-  transition: background-color 0.15s ease;
-
-  &:hover {
-    background: rgba(0, 0, 0, 0.03);
-  }
 }
 
 .summaryLeft {
@@ -48,13 +42,6 @@
   align-items: center;
   gap: 8px;
   min-width: 0;
-}
-
-.summaryRight {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-shrink: 0;
 }
 
 .icon {
@@ -91,58 +78,19 @@
   border-radius: 8px;
 }
 
-/* === Mini progress bar (in summary row) === */
-.miniProgress {
-  width: 48px;
-  height: 3px;
-  background: rgba(63, 91, 141, 0.1);
-  border-radius: 2px;
-  overflow: hidden;
-}
-
-.miniProgressFill {
-  height: 100%;
-  background: linear-gradient(90deg, #3f5b8d, #6b597f);
-  border-radius: 2px;
-  transition: width 0.4s ease;
-}
-
-.expandBtn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 2px;
-  border-radius: 4px;
-  color: #92a1c2;
-  flex-shrink: 0;
-  transition:
-    color 0.15s ease,
-    background-color 0.15s ease;
-
-  &:hover {
-    color: #3f5b8d;
-    background: rgba(63, 91, 141, 0.06);
-  }
-}
-
-.chevron {
-  transition: transform 0.25s ease;
-  transform: rotate(0deg);
-
-  &.chevronOpen {
-    transform: rotate(180deg);
-  }
-}
-
 /* === Expanded Timeline === */
 .timeline {
-  padding: 4px 20px 16px;
-  overflow-x: auto;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  padding: 4px 14px 12px;
+  overflow-y: auto;
+  max-height: 280px;
   scrollbar-width: thin;
   scrollbar-color: rgba(146, 161, 194, 0.3) transparent;
 
   &::-webkit-scrollbar {
-    height: 3px;
+    width: 3px;
   }
 
   &::-webkit-scrollbar-track {
@@ -155,41 +103,62 @@
   }
 }
 
+/* Vertical progress bar alongside timeline */
+.timelineProgress {
+  width: 3px;
+  background: rgba(63, 91, 141, 0.1);
+  border-radius: 2px;
+  overflow: hidden;
+  flex-shrink: 0;
+  margin-right: 10px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+}
+
+.timelineProgressFill {
+  width: 100%;
+  background: linear-gradient(0deg, #3f5b8d, #6b597f);
+  border-radius: 2px;
+  transition: height 0.4s ease;
+}
+
 .timelineTrack {
   display: flex;
-  align-items: flex-start;
-  min-width: max-content;
+  flex-direction: column;
+  align-items: stretch;
   padding-top: 2px;
 }
 
 /* === Individual Step === */
 .timelineStep {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
   position: relative;
   flex-shrink: 0;
-  width: 72px;
+  width: auto;
+  padding: 4px 0;
 
-  /* Connector line to the right */
+  /* Connector line down */
   .timelineConnector {
     position: absolute;
-    top: 9px; /* center of dot */
-    left: calc(50% + 9px); /* right edge of dot */
-    right: calc(-50% + 9px);
-    height: 2px;
+    top: 24px; /* bottom of dot */
+    left: 10px; /* center of dot */
+    bottom: 0;
+    width: 2px;
     border-radius: 1px;
     background: #e5e7eb;
     transition: background-color 0.4s ease;
   }
 
   .timelineConnectorDone {
-    background: linear-gradient(90deg, #16a34a, #4ade80);
+    background: linear-gradient(180deg, #16a34a, #4ade80);
   }
 
   .timelineConnectorActive {
     background: linear-gradient(
-      90deg,
+      180deg,
       #3f5b8d 0%,
       rgba(63, 91, 141, 0.3) 60%,
       #e5e7eb 100%
@@ -245,10 +214,10 @@
   font-size: 11px;
   font-weight: 500;
   color: #6b597f;
-  margin-top: 6px;
-  text-align: center;
+  margin-left: 10px;
+  text-align: left;
   line-height: 1.3;
-  max-width: 72px;
+  max-width: 140px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -270,6 +239,17 @@
 
 .timelineStepPending .timelineLabel {
   color: #a3a3a3;
+}
+
+/* Muted label for hidden steps indicator */
+.timelineLabelMuted {
+  font-size: 11px;
+  font-weight: 500;
+  color: #92a1c2;
+  margin-left: 10px;
+  text-align: left;
+  line-height: 1.3;
+  white-space: nowrap;
 }
 
 /* === Animations === */

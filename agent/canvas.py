@@ -841,6 +841,17 @@ class Canvas(Graph):
                 convs.append({"role": role, "content": obj.get("content", "")})
             else:
                 convs.append({"role": role, "content": str(obj)})
+        # ── [DIAGNOSTIC] Log history being passed to LLM ──
+        for i, c in enumerate(convs):
+            content = c.get("content", "")
+            has_citation_ids = "[ID:" in content or "[ID：" in content
+            logging.info(
+                "[HISTORY msg#%d] role=%s len=%d has_citation_ids=%s preview=%s",
+                i, c.get("role", "?"), len(content), has_citation_ids,
+                content[:150].replace("\n", "\\n")
+            )
+        logging.info("[HISTORY TOTAL] msgs=%d window_size=%d", len(convs), window_size)
+        # ── END DIAGNOSTIC ──
         return convs
 
     def add_user_input(self, question):

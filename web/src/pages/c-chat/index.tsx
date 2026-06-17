@@ -244,8 +244,6 @@ export default function CChat() {
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
     new Set(),
   );
-  const [thinkingMsgId, setThinkingMsgId] = useState<string | null>(null);
-
   const pendingSendRef = useRef(false);
   const loadingSessionRef = useRef<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -870,7 +868,6 @@ export default function CChat() {
     setDone(true);
     resetAnswerList();
     cachedNodeEventsRef.current = {}; // clear stale node events from previous session
-    setThinkingMsgId(null);
     setNewSessionKey((k) => k + 1);
     setDerivedMessages(
       currentAgentPrologue
@@ -1418,7 +1415,7 @@ export default function CChat() {
               key={getTabResetKey('chat')}
               className={
                 mainView === 'chat'
-                  ? 'cs-page-enter flex-1 flex flex-col min-h-0'
+                  ? 'cs-page-enter flex-1 flex flex-col min-h-0 relative'
                   : 'hidden'
               }
             >
@@ -1684,14 +1681,14 @@ export default function CChat() {
                               <button
                                 onClick={handlePressEnter}
                                 disabled={!value.trim()}
-                                className="shrink-0 w-9 h-9 flex items-center justify-center bg-[#000000] hover:bg-[#1a1a1a] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
+                                className="shrink-0 w-9 h-9 flex items-center justify-center bg-gradient-to-br from-[#3F5B8D] to-[#6B597F] hover:from-[#364f7a] hover:to-[#5d4d6f] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95 shadow-[0_2px_8px_rgba(63,91,141,0.25)]"
                               >
                                 <Send className="w-4 h-4" strokeWidth={2} />
                               </button>
                             ) : (
                               <button
                                 onClick={stopConversation}
-                                className="shrink-0 w-9 h-9 flex items-center justify-center bg-red-400 text-white rounded-lg hover:bg-red-500 transition active:scale-95"
+                                className="shrink-0 w-9 h-9 flex items-center justify-center bg-gradient-to-br from-[#BD6C73] to-[#c97d7d] text-white rounded-lg hover:from-[#a85d64] hover:to-[#b96e6e] transition active:scale-95 shadow-[0_2px_8px_rgba(189,108,115,0.25)]"
                               >
                                 <Square
                                   className="w-3.5 h-3.5"
@@ -2097,30 +2094,17 @@ export default function CChat() {
                     </div>
                   </div>
 
-                  {/* Agent status chip above input */}
+                  {/* Floating agent status chip — overlays messages on the left */}
                   {latestNodeEvents && (
-                    <div className="px-4 lg:px-6 pt-2 shrink-0">
-                      <div className="max-w-[80rem] mx-auto">
-                        <AgentStatusChip
-                          eventList={latestNodeEvents.events}
-                          isRunning={sendLoading}
-                          expanded={
-                            thinkingMsgId === latestNodeEvents.messageId
-                          }
-                          onToggleExpand={() =>
-                            setThinkingMsgId((prev) =>
-                              prev === latestNodeEvents.messageId
-                                ? null
-                                : latestNodeEvents.messageId,
-                            )
-                          }
-                        />
-                      </div>
+                    <div className="absolute left-1 top-1/2 -translate-y-1/2 z-50 max-w-[200px]">
+                      <AgentStatusChip
+                        eventList={latestNodeEvents.events}
+                        isRunning={sendLoading}
+                      />
                     </div>
                   )}
 
-                  {/* Input Area (bottom) */}
-                  <div className="bg-white border-t border-[#D4D4D4] p-3 lg:p-4 shrink-0">
+                  <div className="px-3 lg:px-4 pb-3 lg:pb-4 shrink-0">
                     <div className="max-w-3xl mx-auto">
                       <FileUpload
                         value={files}
@@ -2152,7 +2136,7 @@ export default function CChat() {
                         </FileUploadDropzone>
 
                         <div
-                          className="cs-input-ring relative flex flex-col gap-2 bg-[#FFFFFF] border border-[#D4D4D4] rounded-2xl px-3 py-2"
+                          className="cs-input-ring relative flex flex-col gap-2 bg-white border border-[#E8E8E8] rounded-2xl px-3 py-2 shadow-[0_1px_6px_rgba(63,91,141,0.04)] transition-all duration-200 hover:border-[#D0D0D0] hover:shadow-[0_2px_12px_rgba(63,91,141,0.06)]"
                           onDragOver={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
@@ -2287,7 +2271,7 @@ export default function CChat() {
                                 <button
                                   onClick={handlePressEnter}
                                   disabled={!value.trim()}
-                                  className="shrink-0 w-9 h-9 flex items-center justify-center bg-[#000000] hover:bg-[#1a1a1a] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
+                                  className="shrink-0 w-9 h-9 flex items-center justify-center bg-gradient-to-br from-[#3F5B8D] to-[#6B597F] hover:from-[#364f7a] hover:to-[#5d4d6f] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95 shadow-[0_2px_8px_rgba(63,91,141,0.25)]"
                                 >
                                   <Send className="w-4 h-4" strokeWidth={2} />
                                 </button>
@@ -2295,7 +2279,7 @@ export default function CChat() {
                             ) : (
                               <button
                                 onClick={stopConversation}
-                                className="shrink-0 w-9 h-9 flex items-center justify-center bg-red-400 text-white rounded-xl hover:bg-red-500 transition active:scale-95"
+                                className="shrink-0 w-9 h-9 flex items-center justify-center bg-gradient-to-br from-[#BD6C73] to-[#c97d7d] text-white rounded-xl hover:from-[#a85d64] hover:to-[#b96e6e] transition active:scale-95 shadow-[0_2px_8px_rgba(189,108,115,0.25)]"
                               >
                                 <Square
                                   className="w-3.5 h-3.5"

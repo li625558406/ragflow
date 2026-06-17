@@ -92,6 +92,19 @@ class LLMToolPluginCallSession(ToolCallSession):
         if len(resp_str) > 120:
             resp_str = resp_str[:120] + "..."
         logging.info(f"[ToolCall] done name={name} elapsed={elapsed:.2f}s result_len={len(str(resp))} preview={resp_str}")
+
+        # ── [DIAGNOSTIC] Detect self-referential context: old agent reports in tool results ──
+        if resp and isinstance(resp, str) and len(resp) > 1000:
+            has_citation = "[ID:" in resp or "[ID：" in resp
+            has_think = "<think>" in resp.lower()
+            has_verification = "引用准确" in resp or "审定" in resp or "核实" in resp
+            if has_citation or has_think or has_verification:
+                logging.warning(
+                    "[ToolCall SELF-REF-DETECT] name=%s result_len=%d has_citation=%s has_think=%s has_verification=%s "
+                    "— tool result may contain old agent output, LLM may confuse it as user input!",
+                    name, len(resp), has_citation, has_think, has_verification
+                )
+        # ── END DIAGNOSTIC ──
         self.callback(name, arguments, resp, elapsed_time=elapsed)
         return resp
 
