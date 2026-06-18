@@ -641,6 +641,7 @@ class Canvas(Graph):
             # Drain any remaining tool events.
             while not self._tool_event_queue.empty():
                 ev = self._tool_event_queue.get_nowait()
+                logging.info(f"[TOOL-FINALLY-DRAIN] component_id={ev['data'].get('component_id')} tool={ev['data'].get('tool_name')}")
                 yield decorate(ev["event"], ev["data"])
 
             to = len(self.path)
@@ -700,6 +701,7 @@ class Canvas(Graph):
                                 # after the heartbeat loop has already stopped.
                                 while not self._tool_event_queue.empty():
                                     tev = self._tool_event_queue.get_nowait()
+                                    logging.info(f"[TOOL-STREAM-DRAIN] component_id={tev['data'].get('component_id')} tool={tev['data'].get('tool_name')}")
                                     yield decorate(tev["event"], tev["data"])
                         else:
                             for m in stream:
@@ -709,6 +711,7 @@ class Canvas(Graph):
                                     yield ev
                                 while not self._tool_event_queue.empty():
                                     tev = self._tool_event_queue.get_nowait()
+                                    logging.info(f"[TOOL-STREAM-DRAIN] component_id={tev['data'].get('component_id')} tool={tev['data'].get('tool_name')}")
                                     yield decorate(tev["event"], tev["data"])
                         if buff_m:
                             yield decorate("message", {"content": "", "audio_binary": self.tts(tts_mdl, buff_m)})

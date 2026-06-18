@@ -342,7 +342,7 @@ async def _iter_session_completion_events(tenant_id, agent_id, req, return_trace
             yield ans
             continue
 
-        if event in ["message", "message_end", "workflow_started", "node_started", "workflow_finished"]:
+        if event in ["message", "message_end", "workflow_started", "node_started", "node_logs", "workflow_finished"]:
             yield ans
         else:
             filtered_count += 1
