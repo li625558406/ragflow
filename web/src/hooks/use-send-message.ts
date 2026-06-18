@@ -26,6 +26,11 @@ export interface IAnswerEvent<T> {
   data: T;
 }
 
+export interface IToolUsage {
+  tool_name: string;
+  elapsed_time?: number;
+}
+
 export interface INodeData {
   inputs: Record<string, any>;
   outputs: Record<string, any>;
@@ -36,6 +41,7 @@ export interface INodeData {
   elapsed_time: number;
   created_at: number;
   thoughts: string;
+  tool_usage?: IToolUsage[] | null;
 }
 
 export interface IInputData {

@@ -468,23 +468,23 @@ export default function DocumentEditor({
                   ? 'text-amber-600 bg-amber-50'
                   : saveStatus === 'error'
                     ? 'text-red-600 bg-red-50'
-                    : 'text-indigo-600 hover:bg-indigo-50'
+                    : 'text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4]'
             }`}
             onClick={handleSave}
             disabled={saveStatus === 'saving'}
           >
             {saveLabel}
           </button>
-          <div className="w-px h-4 bg-stone-200" />
+          <div className="w-px h-4 bg-[#E8E8E6]" />
           <button
-            className="px-3 py-1.5 text-xs font-medium text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors disabled:opacity-50"
+            className="px-3 py-1.5 text-xs font-medium text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4] rounded-lg transition-colors disabled:opacity-50"
             onClick={() => handleDownload('docx')}
             disabled={downloading}
           >
             .docx
           </button>
           <button
-            className="px-3 py-1.5 text-xs font-medium text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors disabled:opacity-50"
+            className="px-3 py-1.5 text-xs font-medium text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4] rounded-lg transition-colors disabled:opacity-50"
             onClick={() => handleDownload('pdf')}
             disabled={downloading}
           >
@@ -498,12 +498,12 @@ export default function DocumentEditor({
         <LexicalComposer initialConfig={initialConfig}>
           {/* Sticky toolbar — full width, outside max-w constraint */}
           <div className="sticky top-0 z-10 bg-white border-b border-stone-200">
-            <div className="max-w-3xl mx-auto px-6">
+            <div className="max-w-5xl mx-auto px-6">
               <ToolbarPlugin />
             </div>
           </div>
           {/* Content — white paper card on gray background */}
-          <div className="max-w-3xl mx-auto px-6 py-5">
+          <div className="max-w-5xl mx-auto px-6 py-5">
             <div className="bg-white rounded-xl border border-stone-200 shadow-sm p-6 relative">
               <RichTextPlugin
                 contentEditable={

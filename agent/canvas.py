@@ -535,6 +535,25 @@ class Canvas(Graph):
                                "_preview": out_str[:_MAX_EVENT_SIZE]}
             except Exception:
                 pass
+            # Extract tool usage trace from Redis for this component
+            tool_usage = None
+            try:
+                bin = REDIS_CONN.get(f"{self.task_id}-{self.message_id}-logs")
+                if bin:
+                    obj = json.loads(bin.encode("utf-8"))
+                    for entry in obj:
+                        if entry.get("component_id") == cpn_obj._id:
+                            tool_usage = [
+                                {
+                                    "tool_name": t["tool_name"],
+                                    "elapsed_time": t.get("elapsed_time"),
+                                }
+                                for t in entry.get("trace", [])
+                            ]
+                            break
+            except Exception:
+                pass
+
             return decorate("node_finished",{
                            "inputs": inputs,
                            "outputs": outputs,
@@ -544,6 +563,7 @@ class Canvas(Graph):
                            "error": cpn_obj.error(),
                            "elapsed_time": time.perf_counter() - cpn_obj.output("_created_time"),
                            "created_at": cpn_obj.output("_created_time"),
+                           "tool_usage": tool_usage,
                        })
 
         self.error = ""

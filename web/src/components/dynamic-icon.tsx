@@ -99,14 +99,17 @@ export default function DynamicIcon({
   className,
   strokeWidth = 1.5,
   color,
-}: DynamicIconProps) {
+  style,
+  ...rest
+}: DynamicIconProps & React.SVGProps<SVGSVGElement>) {
   const Icon = iconMap[name];
   if (!Icon) return null;
   return (
     <Icon
       className={className}
       strokeWidth={strokeWidth}
-      style={color ? { color } : undefined}
+      style={color ? { color, ...style } : style}
+      {...rest}
     />
   );
 }

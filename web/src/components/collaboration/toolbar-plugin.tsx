@@ -1,3 +1,4 @@
+import { CendTooltip } from '@/components/ui/tooltip';
 import {
   INSERT_ORDERED_LIST_COMMAND,
   INSERT_UNORDERED_LIST_COMMAND,
@@ -288,44 +289,46 @@ export default function ToolbarPlugin() {
   return (
     <div className="flex items-center gap-1 px-3 py-2 border-b border-black/[0.06] bg-black/[0.02]/80 overflow-x-auto flex-wrap select-none">
       {/* Undo / Redo */}
-      <button
-        className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
-        title="撤销 (Ctrl+Z)"
-        onClick={() => editor.dispatchCommand(UNDO_COMMAND, undefined)}
-      >
-        <svg
-          className="w-3.5 h-3.5"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
+      <CendTooltip title="撤销 (Ctrl+Z)">
+        <button
+          className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
+          onClick={() => editor.dispatchCommand(UNDO_COMMAND, undefined)}
         >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"
-          />
-        </svg>
-      </button>
-      <button
-        className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
-        title="重做 (Ctrl+Y)"
-        onClick={() => editor.dispatchCommand(REDO_COMMAND, undefined)}
-      >
-        <svg
-          className="w-3.5 h-3.5"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
+          <svg
+            className="w-3.5 h-3.5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"
+            />
+          </svg>
+        </button>
+      </CendTooltip>
+      <CendTooltip title="重做 (Ctrl+Y)">
+        <button
+          className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
+          onClick={() => editor.dispatchCommand(REDO_COMMAND, undefined)}
         >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M21 10H11a8 8 0 00-8 8v2m18-10l-6 6m6-6l-6-6"
-          />
-        </svg>
-      </button>
+          <svg
+            className="w-3.5 h-3.5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M21 10H11a8 8 0 00-8 8v2m18-10l-6 6m6-6l-6-6"
+            />
+          </svg>
+        </button>
+      </CendTooltip>
 
       <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
 
@@ -382,411 +385,432 @@ export default function ToolbarPlugin() {
       <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
 
       {/* Bold */}
-      <button
-        className={btn(isBold, '加粗 (Ctrl+B)')}
-        title="加粗 (Ctrl+B)"
-        onMouseDown={(e) => {
-          e.preventDefault();
-          editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'bold');
-        }}
-      >
-        <span className="font-normal">B</span>
-      </button>
+      <CendTooltip title="加粗 (Ctrl+B)">
+        <button
+          className={btn(isBold, '加粗 (Ctrl+B)')}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'bold');
+          }}
+        >
+          <span className="font-normal">B</span>
+        </button>
+      </CendTooltip>
 
       {/* Italic */}
-      <button
-        className={btn(isItalic, '斜体 (Ctrl+I)')}
-        title="斜体 (Ctrl+I)"
-        onMouseDown={(e) => {
-          e.preventDefault();
-          editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'italic');
-        }}
-      >
-        <span className="italic">I</span>
-      </button>
+      <CendTooltip title="斜体 (Ctrl+I)">
+        <button
+          className={btn(isItalic, '斜体 (Ctrl+I)')}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'italic');
+          }}
+        >
+          <span className="italic">I</span>
+        </button>
+      </CendTooltip>
 
       {/* Underline */}
-      <button
-        className={btn(isUnderline, '下划线 (Ctrl+U)')}
-        title="下划线 (Ctrl+U)"
-        onMouseDown={(e) => {
-          e.preventDefault();
-          editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'underline');
-        }}
-      >
-        <span className="underline">U</span>
-      </button>
+      <CendTooltip title="下划线 (Ctrl+U)">
+        <button
+          className={btn(isUnderline, '下划线 (Ctrl+U)')}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'underline');
+          }}
+        >
+          <span className="underline">U</span>
+        </button>
+      </CendTooltip>
 
       {/* Strikethrough */}
-      <button
-        className={btn(isStrikethrough, '删除线')}
-        title="删除线"
-        onMouseDown={(e) => {
-          e.preventDefault();
-          editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'strikethrough');
-        }}
-      >
-        <span className="line-through">S</span>
-      </button>
+      <CendTooltip title="删除线">
+        <button
+          className={btn(isStrikethrough, '删除线')}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'strikethrough');
+          }}
+        >
+          <span className="line-through">S</span>
+        </button>
+      </CendTooltip>
 
       {/* Subscript */}
-      <button
-        className={btn(isSubscript, '下标')}
-        title="下标"
-        onMouseDown={(e) => {
-          e.preventDefault();
-          editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'subscript');
-        }}
-      >
-        X<span className="text-[8px]">2</span>
-      </button>
+      <CendTooltip title="下标">
+        <button
+          className={btn(isSubscript, '下标')}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'subscript');
+          }}
+        >
+          X<span className="text-[8px]">2</span>
+        </button>
+      </CendTooltip>
 
       {/* Superscript */}
-      <button
-        className={btn(isSuperscript, '上标')}
-        title="上标"
-        onMouseDown={(e) => {
-          e.preventDefault();
-          editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'superscript');
-        }}
-      >
-        X<span className="text-[8px]">2</span>
-      </button>
+      <CendTooltip title="上标">
+        <button
+          className={btn(isSuperscript, '上标')}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'superscript');
+          }}
+        >
+          X<span className="text-[8px]">2</span>
+        </button>
+      </CendTooltip>
 
       <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
 
       {/* Text Color */}
-      <div className="relative flex items-center" title="字体颜色">
-        <button
-          className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
-          onClick={() => colorInputRef.current?.click()}
-        >
-          <svg
-            className="w-3.5 h-3.5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
+      <CendTooltip title="字体颜色">
+        <div className="relative flex items-center">
+          <button
+            className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
+            onClick={() => colorInputRef.current?.click()}
           >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"
+            <svg
+              className="w-3.5 h-3.5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"
+              />
+            </svg>
+            <span
+              className="absolute bottom-1 left-1/2 -translate-x-1/2 w-2.5 h-0.5 rounded"
+              style={{ backgroundColor: textColor }}
             />
-          </svg>
-          <span
-            className="absolute bottom-1 left-1/2 -translate-x-1/2 w-2.5 h-0.5 rounded"
-            style={{ backgroundColor: textColor }}
+          </button>
+          <input
+            ref={colorInputRef}
+            type="color"
+            className="absolute opacity-0 w-0 h-0"
+            value={textColor}
+            onChange={(e) => applyTextColor(e.target.value)}
           />
-        </button>
-        <input
-          ref={colorInputRef}
-          type="color"
-          className="absolute opacity-0 w-0 h-0"
-          value={textColor}
-          onChange={(e) => applyTextColor(e.target.value)}
-        />
-      </div>
+        </div>
+      </CendTooltip>
 
       {/* Highlight Color */}
-      <div className="relative flex items-center" title="高亮底色">
-        <button
-          className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
-          onClick={() => bgColorInputRef.current?.click()}
-        >
-          <svg
-            className="w-3.5 h-3.5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
+      <CendTooltip title="高亮底色">
+        <div className="relative flex items-center">
+          <button
+            className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
+            onClick={() => bgColorInputRef.current?.click()}
           >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
+            <svg
+              className="w-3.5 h-3.5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
+              />
+            </svg>
+            <span
+              className="absolute bottom-1 left-1/2 -translate-x-1/2 w-2.5 h-0.5 rounded"
+              style={{
+                backgroundColor:
+                  bgColor === 'transparent' ? 'transparent' : bgColor,
+              }}
             />
-          </svg>
-          <span
-            className="absolute bottom-1 left-1/2 -translate-x-1/2 w-2.5 h-0.5 rounded"
-            style={{
-              backgroundColor:
-                bgColor === 'transparent' ? 'transparent' : bgColor,
-            }}
+          </button>
+          <input
+            ref={bgColorInputRef}
+            type="color"
+            className="absolute opacity-0 w-0 h-0"
+            value={bgColor === 'transparent' ? '#FFFFFF' : bgColor}
+            onChange={(e) => applyBgColor(e.target.value)}
           />
-        </button>
-        <input
-          ref={bgColorInputRef}
-          type="color"
-          className="absolute opacity-0 w-0 h-0"
-          value={bgColor === 'transparent' ? '#FFFFFF' : bgColor}
-          onChange={(e) => applyBgColor(e.target.value)}
-        />
-      </div>
+        </div>
+      </CendTooltip>
 
       <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
 
       {/* Inline Code */}
-      <button
-        className={btn(isCode, '行内代码')}
-        title="行内代码"
-        onMouseDown={(e) => {
-          e.preventDefault();
-          editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'code');
-        }}
-      >
-        <svg
-          className="w-3.5 h-3.5"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
+      <CendTooltip title="行内代码">
+        <button
+          className={btn(isCode, '行内代码')}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'code');
+          }}
         >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"
-          />
-        </svg>
-      </button>
+          <svg
+            className="w-3.5 h-3.5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"
+            />
+          </svg>
+        </button>
+      </CendTooltip>
 
       <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
 
       {/* Align Left */}
-      <button
-        className={btn(alignment === 'left', '左对齐')}
-        title="左对齐"
-        onMouseDown={(e) => {
-          e.preventDefault();
-          editor.dispatchCommand(FORMAT_ELEMENT_COMMAND, 'left');
-        }}
-      >
-        <svg
-          className="w-3.5 h-3.5"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
+      <CendTooltip title="左对齐">
+        <button
+          className={btn(alignment === 'left', '左对齐')}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            editor.dispatchCommand(FORMAT_ELEMENT_COMMAND, 'left');
+          }}
         >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M4 6h16M4 10h12M4 14h16M4 18h12"
-          />
-        </svg>
-      </button>
+          <svg
+            className="w-3.5 h-3.5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M4 6h16M4 10h12M4 14h16M4 18h12"
+            />
+          </svg>
+        </button>
+      </CendTooltip>
 
       {/* Align Center */}
-      <button
-        className={btn(alignment === 'center', '居中')}
-        title="居中"
-        onMouseDown={(e) => {
-          e.preventDefault();
-          editor.dispatchCommand(FORMAT_ELEMENT_COMMAND, 'center');
-        }}
-      >
-        <svg
-          className="w-3.5 h-3.5"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
+      <CendTooltip title="居中">
+        <button
+          className={btn(alignment === 'center', '居中')}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            editor.dispatchCommand(FORMAT_ELEMENT_COMMAND, 'center');
+          }}
         >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M4 6h16M8 10h8M4 14h16M8 18h8"
-          />
-        </svg>
-      </button>
+          <svg
+            className="w-3.5 h-3.5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M4 6h16M8 10h8M4 14h16M8 18h8"
+            />
+          </svg>
+        </button>
+      </CendTooltip>
 
       {/* Align Right */}
-      <button
-        className={btn(alignment === 'right', '右对齐')}
-        title="右对齐"
-        onMouseDown={(e) => {
-          e.preventDefault();
-          editor.dispatchCommand(FORMAT_ELEMENT_COMMAND, 'right');
-        }}
-      >
-        <svg
-          className="w-3.5 h-3.5"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
+      <CendTooltip title="右对齐">
+        <button
+          className={btn(alignment === 'right', '右对齐')}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            editor.dispatchCommand(FORMAT_ELEMENT_COMMAND, 'right');
+          }}
         >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M4 6h16M8 10h12M4 14h16M8 18h12"
-          />
-        </svg>
-      </button>
+          <svg
+            className="w-3.5 h-3.5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M4 6h16M8 10h12M4 14h16M8 18h12"
+            />
+          </svg>
+        </button>
+      </CendTooltip>
 
       {/* Align Justify */}
-      <button
-        className={btn(alignment === 'justify', '两端对齐')}
-        title="两端对齐"
-        onMouseDown={(e) => {
-          e.preventDefault();
-          editor.dispatchCommand(FORMAT_ELEMENT_COMMAND, 'justify');
-        }}
-      >
-        <svg
-          className="w-3.5 h-3.5"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
+      <CendTooltip title="两端对齐">
+        <button
+          className={btn(alignment === 'justify', '两端对齐')}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            editor.dispatchCommand(FORMAT_ELEMENT_COMMAND, 'justify');
+          }}
         >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M4 6h16M4 10h16M4 14h16M4 18h16"
-          />
-        </svg>
-      </button>
+          <svg
+            className="w-3.5 h-3.5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M4 6h16M4 10h16M4 14h16M4 18h16"
+            />
+          </svg>
+        </button>
+      </CendTooltip>
 
       <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
 
       {/* Indent / Outdent */}
-      <button
-        className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
-        title="减少缩进"
-        onMouseDown={(e) => {
-          e.preventDefault();
-          editor.dispatchCommand(FORMAT_ELEMENT_COMMAND, 'outdent');
-        }}
-      >
-        <svg
-          className="w-3.5 h-3.5"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
+      <CendTooltip title="减少缩进">
+        <button
+          className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            editor.dispatchCommand(FORMAT_ELEMENT_COMMAND, 'outdent');
+          }}
         >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M7 6H21M7 12H21M3 12L7 9m-4 3l4 3m-4 3h18"
-          />
-        </svg>
-      </button>
-      <button
-        className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
-        title="增加缩进"
-        onMouseDown={(e) => {
-          e.preventDefault();
-          editor.dispatchCommand(FORMAT_ELEMENT_COMMAND, 'indent');
-        }}
-      >
-        <svg
-          className="w-3.5 h-3.5"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
+          <svg
+            className="w-3.5 h-3.5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M7 6H21M7 12H21M3 12L7 9m-4 3l4 3m-4 3h18"
+            />
+          </svg>
+        </button>
+      </CendTooltip>
+      <CendTooltip title="增加缩进">
+        <button
+          className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            editor.dispatchCommand(FORMAT_ELEMENT_COMMAND, 'indent');
+          }}
         >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M17 6h4m-4 6h4m-4 6h4M3 12l4-3m-4 3l4 3m4 3h11"
-          />
-        </svg>
-      </button>
+          <svg
+            className="w-3.5 h-3.5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M17 6h4m-4 6h4m-4 6h4M3 12l4-3m-4 3l4 3m4 3h11"
+            />
+          </svg>
+        </button>
+      </CendTooltip>
 
       <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
 
       {/* Line Spacing */}
-      <div className="relative">
-        <select
-          className="h-7 px-1 text-xs border border-[#D4D4D4] rounded bg-[#EAEAEA] text-[#000000] w-[70px] focus:outline-none focus:border-[#000000] appearance-none cursor-pointer"
-          value={lineSpacing}
-          onChange={(e) => applyLineSpacing(e.target.value)}
-          title="行距"
-        >
-          {LINE_SPACINGS.map((l) => (
-            <option key={l.value} value={l.value}>
-              {l.label}
-            </option>
-          ))}
-        </select>
-        <SelectArrow />
-      </div>
+      <CendTooltip title="行距">
+        <div className="relative">
+          <select
+            className="h-7 px-1 text-xs border border-[#D4D4D4] rounded bg-[#EAEAEA] text-[#000000] w-[70px] focus:outline-none focus:border-[#000000] appearance-none cursor-pointer"
+            value={lineSpacing}
+            onChange={(e) => applyLineSpacing(e.target.value)}
+          >
+            {LINE_SPACINGS.map((l) => (
+              <option key={l.value} value={l.value}>
+                {l.label}
+              </option>
+            ))}
+          </select>
+          <SelectArrow />
+        </div>
+      </CendTooltip>
 
       <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
 
       {/* Bullet List */}
-      <button
-        className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
-        title="无序列表"
-        onMouseDown={(e) => {
-          e.preventDefault();
-          editor.dispatchCommand(INSERT_UNORDERED_LIST_COMMAND, undefined);
-        }}
-      >
-        <svg
-          className="w-3.5 h-3.5"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
+      <CendTooltip title="无序列表">
+        <button
+          className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            editor.dispatchCommand(INSERT_UNORDERED_LIST_COMMAND, undefined);
+          }}
         >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M4 6h16M4 6h.01M4 12h16M4 12h.01M4 18h16M4 18h.01"
-          />
-        </svg>
-      </button>
+          <svg
+            className="w-3.5 h-3.5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M4 6h16M4 6h.01M4 12h16M4 12h.01M4 18h16M4 18h.01"
+            />
+          </svg>
+        </button>
+      </CendTooltip>
 
       {/* Numbered List */}
-      <button
-        className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
-        title="有序列表"
-        onMouseDown={(e) => {
-          e.preventDefault();
-          editor.dispatchCommand(INSERT_ORDERED_LIST_COMMAND, undefined);
-        }}
-      >
-        <svg
-          className="w-3.5 h-3.5"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
+      <CendTooltip title="有序列表">
+        <button
+          className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            editor.dispatchCommand(INSERT_ORDERED_LIST_COMMAND, undefined);
+          }}
         >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M7 6h14M7 12h14M7 18h14M4 6h.01M4 12h.01M4 18h.01"
-          />
-        </svg>
-      </button>
+          <svg
+            className="w-3.5 h-3.5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M7 6h14M7 12h14M7 18h14M4 6h.01M4 12h.01M4 18h.01"
+            />
+          </svg>
+        </button>
+      </CendTooltip>
 
       <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
 
       {/* Apply Body Format */}
-      <button
-        className="h-7 w-7 flex items-center justify-center rounded text-black/30 hover:text-black/60 hover:bg-black/[0.04] transition-colors"
-        title="正文格式"
-        onClick={applyBodyFormat}
-      >
-        <svg
-          className="w-3.5 h-3.5"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
+      <CendTooltip title="正文格式">
+        <button
+          className="h-7 w-7 flex items-center justify-center rounded text-black/30 hover:text-black/60 hover:bg-black/[0.04] transition-colors"
+          onClick={applyBodyFormat}
         >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M6 18L18 6M6 6l12 12"
-          />
-        </svg>
-      </button>
+          <svg
+            className="w-3.5 h-3.5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M6 18L18 6M6 6l12 12"
+            />
+          </svg>
+        </button>
+      </CendTooltip>
 
       {/* Spacer */}
       <div className="flex-1" />

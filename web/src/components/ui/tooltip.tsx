@@ -52,6 +52,29 @@ export const FormTooltip = ({ tooltip }: { tooltip: React.ReactNode }) => {
   );
 };
 
+/** C-end styled tooltip — dark background matching the chat UI palette */
+export function CendTooltip({
+  children,
+  title,
+  side = 'top',
+}: {
+  children: React.ReactNode;
+  title: React.ReactNode;
+  side?: 'top' | 'bottom' | 'left' | 'right';
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent
+        side={side}
+        className="bg-[#1A1A1A] text-[#F5F5F4] border-[#333333] text-xs px-3 py-1.5 rounded-lg shadow-lg"
+      >
+        {title}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 export function RAGFlowTooltip({
   children,
   tooltip,

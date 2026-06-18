@@ -4,10 +4,6 @@ import BidPanel from '@/components/bid';
 import ChapteredMarkdown from '@/components/chaptered-markdown';
 import CollaborationPanel from '@/components/collaboration';
 import CreateDocumentDialog from '@/components/collaboration/create-document-dialog';
-import {
-  ConfirmDeleteDialog,
-  ConfirmDeleteDialogNode,
-} from '@/components/confirm-delete-dialog';
 import DynamicIcon from '@/components/dynamic-icon';
 import FavoriteDialog from '@/components/favorite-dialog';
 import FavoritePanel from '@/components/favorite-panel';
@@ -57,6 +53,7 @@ import {
 
 import { RealtimeAudioButton } from '@/components/realtime-audio-button';
 import {
+  CendTooltip,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -84,6 +81,7 @@ import {
 } from '@/pages/agent/chat/use-send-agent-message';
 import { AgentChatContext } from '@/pages/agent/context';
 import api from '@/utils/api';
+import { markdownToBodyHtml } from '@/utils/markdown-to-word';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
@@ -244,6 +242,9 @@ export default function CChat() {
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
     new Set(),
   );
+  const [collapsedMessages, setCollapsedMessages] = useState<Set<string>>(
+    new Set(),
+  );
   const pendingSendRef = useRef(false);
   const loadingSessionRef = useRef<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -400,15 +401,72 @@ export default function CChat() {
   const [tabResetKeys, setTabResetKeys] = useState<Record<string, number>>({});
   const [collabDialogOpen, setCollabDialogOpen] = useState(false);
   const [collabMessage, setCollabMessage] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [favoriteMode, setFavoriteMode] = useState(false);
   const [selectedMessageIds, setSelectedMessageIds] = useState<Set<string>>(
     new Set(),
   );
   const [favoriteDialogOpen, setFavoriteDialogOpen] = useState(false);
   const [isSaveAllFavorites, setIsSaveAllFavorites] = useState(false);
+  const [panelRefreshToken, setPanelRefreshToken] = useState(0);
+
+  // ── Click outside agent dropdown ──
+  const agentDropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!agentDropdownOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (
+        agentDropdownRef.current &&
+        !agentDropdownRef.current.contains(e.target as Node)
+      ) {
+        setAgentDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [agentDropdownOpen]);
 
   const msgSelectKey = (msg: { role: string; id: string }) =>
     `${msg.role}_${msg.id}`;
+
+  const collapseScrollTargetRef = useRef<string | null>(null);
+
+  const toggleMessageCollapse = (msgId: string) => {
+    setCollapsedMessages((prev) => {
+      const next = new Set(prev);
+      if (next.has(msgId)) {
+        next.delete(msgId);
+        collapseScrollTargetRef.current = null;
+      } else {
+        next.add(msgId);
+        collapseScrollTargetRef.current = msgId;
+      }
+      return next;
+    });
+  };
+
+  // After collapse, scroll to the collapsed message row
+  useEffect(() => {
+    const targetId = collapseScrollTargetRef.current;
+    if (!targetId || !messageContainerRef.current) return;
+    const container = messageContainerRef.current;
+    requestAnimationFrame(() => {
+      const el = container.querySelector(`[data-msg-id="${targetId}"]`);
+      if (el) {
+        const containerRect = container.getBoundingClientRect();
+        const elRect = el.getBoundingClientRect();
+        const offset =
+          elRect.top - containerRect.top + container.scrollTop - 80;
+        container.scrollTo({ top: offset, behavior: 'smooth' });
+      }
+      collapseScrollTargetRef.current = null;
+    });
+  }, [collapsedMessages]);
 
   const toggleMessagePair = (msgIndex: number) => {
     setSelectedMessageIds((prev) => {
@@ -868,6 +926,7 @@ export default function CChat() {
     setDone(true);
     resetAnswerList();
     cachedNodeEventsRef.current = {}; // clear stale node events from previous session
+    setCollapsedMessages(new Set());
     setNewSessionKey((k) => k + 1);
     setDerivedMessages(
       currentAgentPrologue
@@ -1203,14 +1262,15 @@ export default function CChat() {
 
           {/* Right: Download + User */}
           <div className="flex items-center gap-3">
-            <button
-              onClick={() => setDownloadOpen(true)}
-              className="flex items-center gap-1.5 text-sm font-medium text-[#0F172A] hover:text-[#0369A1] px-3 py-1.5 rounded-lg border border-[#E2E8F0] hover:border-[#0369A1] bg-white transition-colors cursor-pointer"
-              title="下载App"
-            >
-              <Smartphone className="size-4" />
-              <span className="hidden sm:inline">下载App</span>
-            </button>
+            <CendTooltip title="下载App">
+              <button
+                onClick={() => setDownloadOpen(true)}
+                className="flex items-center gap-1.5 text-sm font-medium text-[#0F172A] hover:text-[#0369A1] px-3 py-1.5 rounded-lg border border-[#E2E8F0] hover:border-[#0369A1] bg-white transition-colors cursor-pointer"
+              >
+                <Smartphone className="size-4" />
+                <span className="hidden sm:inline">下载App</span>
+              </button>
+            </CendTooltip>
             <div className="w-8 h-8 rounded-lg bg-[#F59E0B] text-white flex items-center justify-center text-sm font-bold">
               {(userInfo?.nickname || userInfo?.email || 'U')[0].toUpperCase()}
             </div>
@@ -1219,13 +1279,14 @@ export default function CChat() {
                 {userInfo?.nickname || userInfo?.email || ''}
               </div>
             </div>
-            <button
-              onClick={handleLogout}
-              className="text-[#525252] hover:text-[#000000] transition-colors p-1.5 rounded-lg hover:bg-[#EAEAEA]"
-              title="退出登录"
-            >
-              <LogOut className="w-4 h-4" strokeWidth={1.5} />
-            </button>
+            <CendTooltip title="退出登录">
+              <button
+                onClick={handleLogout}
+                className="text-[#525252] hover:text-[#000000] transition-colors p-1.5 rounded-lg hover:bg-[#EAEAEA]"
+              >
+                <LogOut className="w-4 h-4" strokeWidth={1.5} />
+              </button>
+            </CendTooltip>
           </div>
         </header>
 
@@ -1275,7 +1336,7 @@ export default function CChat() {
               {/* Agent selector */}
               {agents.length > 0 && (
                 <div className="px-3 pb-2">
-                  <div className="relative">
+                  <div className="relative" ref={agentDropdownRef}>
                     <button
                       onClick={() => setAgentDropdownOpen(!agentDropdownOpen)}
                       className="w-full flex items-center justify-between bg-[#EAEAEA] text-[#000000] text-sm rounded-lg px-3 py-1.5 border border-[#D4D4D4] hover:border-[#000000] transition truncate"
@@ -1290,34 +1351,28 @@ export default function CChat() {
                       />
                     </button>
                     {agentDropdownOpen && (
-                      <>
-                        <div
-                          className="fixed inset-0 z-10"
-                          onClick={() => setAgentDropdownOpen(false)}
-                        />
-                        <div
-                          className="absolute top-full left-0 right-0 mt-1 bg-white border border-[#D4D4D4] rounded-lg shadow-[0_4px_16px_rgba(0,0,0,0.08)] z-20 max-h-52 overflow-y-auto py-1"
-                          style={{ scrollbarWidth: 'thin' }}
-                        >
-                          {agents.map((a) => (
-                            <button
-                              key={a.id}
-                              onClick={() => {
-                                switchAgent(a.id);
-                                loadSessions(a.id);
-                                setAgentDropdownOpen(false);
-                              }}
-                              className={`w-full text-left px-3 py-2 text-sm transition-colors truncate ${
-                                a.id === currentAgentId
-                                  ? 'bg-[#EAEAEA] text-[#000000] font-medium'
-                                  : 'text-[#333333] hover:bg-[#EAEAEA] hover:text-[#000000]'
-                              }`}
-                            >
-                              {a.title || '未命名智能体'}
-                            </button>
-                          ))}
-                        </div>
-                      </>
+                      <div
+                        className="absolute top-full left-0 right-0 mt-1 bg-white border border-[#D4D4D4] rounded-lg shadow-[0_4px_16px_rgba(0,0,0,0.08)] z-20 max-h-52 overflow-y-auto py-1"
+                        style={{ scrollbarWidth: 'thin' }}
+                      >
+                        {agents.map((a) => (
+                          <button
+                            key={a.id}
+                            onClick={() => {
+                              switchAgent(a.id);
+                              loadSessions(a.id);
+                              setAgentDropdownOpen(false);
+                            }}
+                            className={`w-full text-left px-3 py-2 text-sm transition-colors truncate ${
+                              a.id === currentAgentId
+                                ? 'bg-[#EAEAEA] text-[#000000] font-medium'
+                                : 'text-[#333333] hover:bg-[#EAEAEA] hover:text-[#000000]'
+                            }`}
+                          >
+                            {a.title || '未命名智能体'}
+                          </button>
+                        ))}
+                      </div>
                     )}
                   </div>
                 </div>
@@ -1368,22 +1423,16 @@ export default function CChat() {
                           <span className="text-sm font-medium truncate">
                             {s.name}
                           </span>
-                          <ConfirmDeleteDialog
-                            onOk={() => deleteSession(s.id)}
-                            content={{
-                              title: '确认删除此对话？',
-                              node: <ConfirmDeleteDialogNode name={s.name} />,
+                          <button
+                            className="hidden items-center justify-center w-5 h-5 rounded text-[#525252] hover:text-red-500 shrink-0 group-hover:flex"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDeleteTarget({ id: s.id, name: s.name });
+                              setDeleteDialogOpen(true);
                             }}
                           >
-                            <button
-                              className="hidden items-center justify-center w-5 h-5 rounded text-[#525252] hover:text-red-500 shrink-0 group-hover:flex"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                              }}
-                            >
-                              <Trash2 className="w-3 h-3" strokeWidth={2} />
-                            </button>
-                          </ConfirmDeleteDialog>
+                            <Trash2 className="w-3 h-3" strokeWidth={2} />
+                          </button>
                         </div>
                       </div>
                     </div>
@@ -1393,19 +1442,64 @@ export default function CChat() {
             </aside>
           )}
 
+          {/* Delete session confirmation */}
+          {deleteDialogOpen && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center">
+              <div
+                className="fixed inset-0 bg-black/40"
+                onClick={() => setDeleteDialogOpen(false)}
+              />
+              <div className="relative z-10 bg-white border border-[#E8E8E6] rounded-2xl shadow-[0_20px_60px_-12px_rgba(0,0,0,0.08)] p-6 max-w-md w-full mx-4">
+                <h2 className="text-lg font-semibold text-[#1A1A1A]">
+                  确认删除此对话？
+                </h2>
+                <p className="text-sm text-[#8A8A8A] mt-2">
+                  确定要删除对话「{deleteTarget?.name}」吗？此操作不可撤销。
+                </p>
+                <div className="flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2 mt-6">
+                  <button
+                    onClick={() => {
+                      setDeleteTarget(null);
+                      setDeleteDialogOpen(false);
+                    }}
+                    className="inline-flex items-center justify-center whitespace-nowrap rounded-lg text-sm font-medium transition-colors h-10 px-4 py-2 border border-[#E8E8E6] text-[#555555] hover:bg-[#F5F5F4] hover:text-[#1A1A1A] mt-2 sm:mt-0"
+                  >
+                    取消
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (deleteTarget) {
+                        deleteSession(deleteTarget.id);
+                        setDeleteTarget(null);
+                        setDeleteDialogOpen(false);
+                      }
+                    }}
+                    className="inline-flex items-center justify-center whitespace-nowrap rounded-lg text-sm font-medium transition-colors h-10 px-4 py-2 bg-red-700 hover:bg-red-800 text-white"
+                  >
+                    确认删除
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Sidebar toggle (desktop only) */}
           {mainView === 'chat' && (
-            <button
-              onClick={() => setSidebarCollapsed((c) => !c)}
-              className="shrink-0 self-start mt-6 -ml-3.5 z-10 size-7 hidden md:flex items-center justify-center rounded-full border-2 border-[#D4D4D4] bg-white text-[#525252] hover:text-[#000000] hover:border-[#A3A3A3] hover:shadow-[0_2px_8px_rgba(0,0,0,0.12)] transition-all cursor-pointer"
-              title={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
-            >
-              {sidebarCollapsed ? (
-                <ChevronRight className="size-3.5" strokeWidth={2} />
-              ) : (
-                <ChevronRight className="size-3.5 rotate-180" strokeWidth={2} />
-              )}
-            </button>
+            <CendTooltip title={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}>
+              <button
+                onClick={() => setSidebarCollapsed((c) => !c)}
+                className="shrink-0 self-start mt-6 -ml-3.5 z-10 size-7 hidden md:flex items-center justify-center rounded-full border-2 border-[#D4D4D4] bg-white text-[#525252] hover:text-[#000000] hover:border-[#A3A3A3] hover:shadow-[0_2px_8px_rgba(0,0,0,0.12)] transition-all cursor-pointer"
+              >
+                {sidebarCollapsed ? (
+                  <ChevronRight className="size-3.5" strokeWidth={2} />
+                ) : (
+                  <ChevronRight
+                    className="size-3.5 rotate-180"
+                    strokeWidth={2}
+                  />
+                )}
+              </button>
+            </CendTooltip>
           )}
 
           {/* Main Content Area */}
@@ -1673,7 +1767,10 @@ export default function CChat() {
                                   </button>
                                 </FileUploadTrigger>
                               </TooltipTrigger>
-                              <TooltipContent side="top">
+                              <TooltipContent
+                                side="top"
+                                className="bg-[#1A1A1A] text-[#F5F5F4] border-[#333333] text-xs px-3 py-1.5 rounded-lg shadow-lg"
+                              >
                                 <p>上传文件（最多10个，每个不超过50MB）</p>
                               </TooltipContent>
                             </Tooltip>
@@ -1681,17 +1778,17 @@ export default function CChat() {
                               <button
                                 onClick={handlePressEnter}
                                 disabled={!value.trim()}
-                                className="shrink-0 w-9 h-9 flex items-center justify-center bg-gradient-to-br from-[#3F5B8D] to-[#6B597F] hover:from-[#364f7a] hover:to-[#5d4d6f] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95 shadow-[0_2px_8px_rgba(63,91,141,0.25)]"
+                                className="shrink-0 size-9 flex items-center justify-center bg-[#1A1A1A] hover:bg-[#333333] text-white rounded-full transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
                               >
                                 <Send className="w-4 h-4" strokeWidth={2} />
                               </button>
                             ) : (
                               <button
                                 onClick={stopConversation}
-                                className="shrink-0 w-9 h-9 flex items-center justify-center bg-gradient-to-br from-[#BD6C73] to-[#c97d7d] text-white rounded-lg hover:from-[#a85d64] hover:to-[#b96e6e] transition active:scale-95 shadow-[0_2px_8px_rgba(189,108,115,0.25)]"
+                                className="shrink-0 size-9 flex items-center justify-center bg-white border-2 border-[#1A1A1A] text-[#1A1A1A] hover:bg-[#F5F5F4] rounded-full transition-all active:scale-95"
                               >
                                 <Square
-                                  className="w-3.5 h-3.5"
+                                  className="w-3 h-3"
                                   fill="currentColor"
                                   stroke="none"
                                 />
@@ -1817,25 +1914,26 @@ export default function CChat() {
                                         )}
                                         {copiedIndex === i ? '已复制' : '复制'}
                                       </button>
-                                      <button
-                                        className="flex items-center gap-1 px-2.5 py-1 text-xs text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA] rounded-lg transition-colors"
-                                        disabled={sendLoading}
-                                        onClick={() => {
-                                          setValue(msg.content);
-                                          // Remove this and later messages, then re-send
-                                          setDerivedMessages((prev) =>
-                                            prev.slice(0, i),
-                                          );
-                                          pendingSendRef.current = true;
-                                        }}
-                                        title="重新生成"
-                                      >
-                                        <RefreshCw
-                                          className="w-3.5 h-3.5"
-                                          strokeWidth={2}
-                                        />
-                                        重新生成
-                                      </button>
+                                      <CendTooltip title="重新生成">
+                                        <button
+                                          className="flex items-center gap-1 px-2.5 py-1 text-xs text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA] rounded-lg transition-colors"
+                                          disabled={sendLoading}
+                                          onClick={() => {
+                                            setValue(msg.content);
+                                            // Remove this and later messages, then re-send
+                                            setDerivedMessages((prev) =>
+                                              prev.slice(0, i),
+                                            );
+                                            pendingSendRef.current = true;
+                                          }}
+                                        >
+                                          <RefreshCw
+                                            className="w-3.5 h-3.5"
+                                            strokeWidth={2}
+                                          />
+                                          重新生成
+                                        </button>
+                                      </CendTooltip>
                                     </div>
                                   )}
                                 </div>
@@ -1858,6 +1956,7 @@ export default function CChat() {
                           return (
                             <div
                               key={msg.id || i}
+                              data-msg-id={msg.id}
                               className="flex justify-start cs-msg-enter gap-2 items-start"
                             >
                               {favoriteMode && (
@@ -1884,18 +1983,34 @@ export default function CChat() {
                               />
                               <div className="max-w-[85%]">
                                 <div className="bg-white border border-[#D4D4D4] px-4 py-2.5 rounded-2xl rounded-bl-md text-[15px] leading-relaxed tracking-wider text-[#000000]">
-                                  <div className="msg-content text-[#000000]">
-                                    <MarkdownErrorBoundary>
-                                      <ChapteredMarkdown
-                                        content={msg.content || ''}
-                                        loading={streaming}
-                                        reference={refs}
-                                        clickDocumentButton={
-                                          clickDocumentButton
-                                        }
-                                      />
-                                    </MarkdownErrorBoundary>
-                                  </div>
+                                  {collapsedMessages.has(msg.id || '') &&
+                                  !streaming ? (
+                                    <div className="text-[#555555]">
+                                      {(msg.content || '')
+                                        .replace(
+                                          /<think\b[^>]*>[\s\S]*?<\/think>/gi,
+                                          '',
+                                        )
+                                        // eslint-disable-next-line no-useless-escape
+                                        .replace(/[#*`>_~\[\]]/g, '')
+                                        .split('\n')[0]
+                                        .slice(0, 120)}
+                                      ...
+                                    </div>
+                                  ) : (
+                                    <div className="msg-content text-[#000000]">
+                                      <MarkdownErrorBoundary>
+                                        <ChapteredMarkdown
+                                          content={msg.content || ''}
+                                          loading={streaming}
+                                          reference={refs}
+                                          clickDocumentButton={
+                                            clickDocumentButton
+                                          }
+                                        />
+                                      </MarkdownErrorBoundary>
+                                    </div>
+                                  )}
                                   {streaming && (
                                     <span className="inline-block w-2 h-4 bg-[#000000] ml-1 animate-pulse rounded-sm" />
                                   )}
@@ -1993,6 +2108,24 @@ export default function CChat() {
                                   <div className="mt-2 flex justify-end gap-1">
                                     <button
                                       className="flex items-center gap-1 px-2.5 py-1 text-xs text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA] rounded-lg transition-colors"
+                                      onClick={() =>
+                                        toggleMessageCollapse(msg.id || '')
+                                      }
+                                    >
+                                      <ChevronDown
+                                        className={`w-3.5 h-3.5 transition-transform ${
+                                          collapsedMessages.has(msg.id || '')
+                                            ? ''
+                                            : 'rotate-180'
+                                        }`}
+                                        strokeWidth={2}
+                                      />
+                                      {collapsedMessages.has(msg.id || '')
+                                        ? '展开'
+                                        : '收起'}
+                                    </button>
+                                    <button
+                                      className="flex items-center gap-1 px-2.5 py-1 text-xs text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA] rounded-lg transition-colors"
                                       onClick={async () => {
                                         const ok = await copyToClipboard(
                                           msg.content || '',
@@ -2033,28 +2166,18 @@ export default function CChat() {
                                       协作
                                     </button>
                                     <button
-                                      className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded-lg transition-colors ${
-                                        favoriteMode
-                                          ? 'text-[#6366f1] bg-[#EEF2FF]'
-                                          : 'text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA]'
-                                      }`}
+                                      className="flex items-center gap-1 px-2.5 py-1 text-xs rounded-lg transition-colors text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA]"
                                       onClick={() => {
-                                        if (!favoriteMode) {
-                                          setFavoriteMode(true);
-                                          setSelectedMessageIds(
-                                            new Set([msg.id]),
-                                          );
-                                        } else {
-                                          setFavoriteMode(false);
-                                          setSelectedMessageIds(new Set());
-                                        }
+                                        setSelectedMessageIds(
+                                          new Set([msgSelectKey(msg)]),
+                                        );
+                                        setIsSaveAllFavorites(false);
+                                        setFavoriteDialogOpen(true);
                                       }}
                                     >
                                       <Star
                                         className="w-3.5 h-3.5"
-                                        fill={
-                                          favoriteMode ? 'currentColor' : 'none'
-                                        }
+                                        fill="none"
                                         strokeWidth={2}
                                       />
                                       收藏
@@ -2264,14 +2387,17 @@ export default function CChat() {
                                       </button>
                                     </FileUploadTrigger>
                                   </TooltipTrigger>
-                                  <TooltipContent side="top">
+                                  <TooltipContent
+                                    side="top"
+                                    className="bg-[#1A1A1A] text-[#F5F5F4] border-[#333333] text-xs px-3 py-1.5 rounded-lg shadow-lg"
+                                  >
                                     <p>上传文件（最多10个，每个不超过50MB）</p>
                                   </TooltipContent>
                                 </Tooltip>
                                 <button
                                   onClick={handlePressEnter}
                                   disabled={!value.trim()}
-                                  className="shrink-0 w-9 h-9 flex items-center justify-center bg-gradient-to-br from-[#3F5B8D] to-[#6B597F] hover:from-[#364f7a] hover:to-[#5d4d6f] text-white rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95 shadow-[0_2px_8px_rgba(63,91,141,0.25)]"
+                                  className="shrink-0 size-9 flex items-center justify-center bg-[#1A1A1A] hover:bg-[#333333] text-white rounded-full transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
                                 >
                                   <Send className="w-4 h-4" strokeWidth={2} />
                                 </button>
@@ -2279,10 +2405,10 @@ export default function CChat() {
                             ) : (
                               <button
                                 onClick={stopConversation}
-                                className="shrink-0 w-9 h-9 flex items-center justify-center bg-gradient-to-br from-[#BD6C73] to-[#c97d7d] text-white rounded-xl hover:from-[#a85d64] hover:to-[#b96e6e] transition active:scale-95 shadow-[0_2px_8px_rgba(189,108,115,0.25)]"
+                                className="shrink-0 size-9 flex items-center justify-center bg-white border-2 border-[#1A1A1A] text-[#1A1A1A] hover:bg-[#F5F5F4] rounded-full transition-all active:scale-95"
                               >
                                 <Square
-                                  className="w-3.5 h-3.5"
+                                  className="w-3 h-3"
                                   fill="currentColor"
                                   stroke="none"
                                 />
@@ -2333,7 +2459,10 @@ export default function CChat() {
                   : 'hidden'
               }
             >
-              <CollaborationPanel apiFetch={apiFetch} />
+              <CollaborationPanel
+                apiFetch={apiFetch}
+                refreshToken={panelRefreshToken}
+              />
             </div>
 
             {/* Tools View */}
@@ -2369,7 +2498,10 @@ export default function CChat() {
                   : 'hidden'
               }
             >
-              <FavoritePanel apiFetch={apiFetch} />
+              <FavoritePanel
+                apiFetch={apiFetch}
+                refreshToken={panelRefreshToken}
+              />
             </div>
           </div>
         </div>
@@ -2380,7 +2512,10 @@ export default function CChat() {
           messageContent={collabMessage}
           agentId={currentAgentId || undefined}
           apiFetch={apiFetch}
-          onCreated={() => {}}
+          onCreated={() => {
+            setPanelRefreshToken((t) => t + 1);
+            showToast('文档已创建');
+          }}
         />
 
         <FavoriteDialog
@@ -2400,36 +2535,23 @@ export default function CChat() {
               : derivedMessages.filter((m) =>
                   selectedMessageIds.has(msgSelectKey(m as any)),
                 );
-            const stripMd = (t: string) => {
-              let s = t.replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '');
-              s = s.replace(
-                /```\w*\n([\s\S]*?)```/g,
-                (_, c: string) => '\n' + c.trim() + '\n',
-              );
-              s = s.replace(/`([^`]+)`/g, '$1');
-              s = s.replace(/\*\*\*(.+?)\*\*\*/g, '$1');
-              s = s.replace(/\*\*(.+?)\*\*/g, '$1');
-              s = s.replace(/\*(.+?)\*/g, '$1');
-              s = s.replace(/~~(.+?)~~/g, '$1');
-              s = s.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
-              s = s.replace(/!\[[^\]]*\]\([^)]+\)/g, '');
-              s = s.replace(/^#{1,6}\s+/gm, '');
-              s = s.replace(/^(\s*)[-*+]\s+/gm, '$1• ');
-              return s.trim();
-            };
+            // Strip <think> tags then convert markdown → Word body HTML for storage
+            const stripThink = (t: string) =>
+              t.replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '');
             const mergedContent = msgs
               .map((m) => {
                 const roleLabel = m.role === 'user' ? '【用户】' : '【助手】';
-                return `${roleLabel}\n\n${stripMd(m.content || '')}\n`;
+                return `${roleLabel}\n\n${stripThink(m.content || '')}\n`;
               })
               .join('\n');
+            const wordHtml = markdownToBodyHtml(mergedContent);
             apiFetch('/api/v1/favorite/save', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 title,
                 message_ids: msgs.map((m) => m.id || ''),
-                messages_data: [{ role: 'merged', content: mergedContent }],
+                messages_data: [{ role: 'merged', content: wordHtml }],
                 agent_id: currentAgentId || null,
                 conversation_id: currentSessionId || null,
               }),
@@ -2441,6 +2563,7 @@ export default function CChat() {
                   setSelectedMessageIds(new Set());
                   setIsSaveAllFavorites(false);
                   setFavoriteDialogOpen(false);
+                  setPanelRefreshToken((t) => t + 1);
                   showToast('收藏已保存');
                 } else {
                   showToast(result.message || '保存失败');
@@ -2473,7 +2596,7 @@ export default function CChat() {
 function showToast(message: string) {
   const toast = document.createElement('div');
   toast.className =
-    'fixed top-4 right-4 bg-[#000000] text-white px-5 py-3 rounded-lg text-sm z-[9999] transition-all font-medium';
+    'fixed top-6 left-1/2 -translate-x-1/2 bg-[#F0FDF4] text-[#16A34A] px-5 py-3 rounded-xl text-sm z-[9999] transition-all font-medium border border-[#BBF7D0] shadow-[0_4px_24px_rgba(22,163,74,0.1)]';
   toast.textContent = message;
   document.body.appendChild(toast);
   setTimeout(() => {

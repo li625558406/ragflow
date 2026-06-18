@@ -1,6 +1,7 @@
 import {
   INodeData,
   INodeEvent,
+  IToolUsage,
   MessageEventType,
 } from '@/hooks/use-send-message';
 
@@ -12,6 +13,7 @@ export interface StepInfo {
   finishedAt?: number;
   error?: string | null;
   elapsedTime?: number;
+  tools: IToolUsage[];
 }
 
 export interface StatusInfo {
@@ -51,6 +53,7 @@ export function deriveStatus(eventList: INodeEvent[]): StatusInfo {
         name: data.component_name,
         type: data.component_type,
         startedAt: evt.created_at,
+        tools: [],
       });
     }
 
@@ -60,6 +63,7 @@ export function deriveStatus(eventList: INodeEvent[]): StatusInfo {
         step.finishedAt = evt.created_at;
         step.error = data.error;
         step.elapsedTime = data.elapsed_time;
+        step.tools = data.tool_usage || [];
       } else {
         // Node finished without a corresponding started event (race condition)
         stepMap.set(data.component_id, {
@@ -70,6 +74,7 @@ export function deriveStatus(eventList: INodeEvent[]): StatusInfo {
           finishedAt: evt.created_at,
           error: data.error,
           elapsedTime: data.elapsed_time,
+          tools: data.tool_usage || [],
         });
       }
     }

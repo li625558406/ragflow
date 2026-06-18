@@ -1,13 +1,41 @@
-import { INodeEvent } from '@/hooks/use-send-message';
+import { IToolUsage } from '@/hooks/use-send-message';
 import { cn } from '@/lib/utils';
-import { CheckCircle2, Loader2, XCircle } from 'lucide-react';
+import { CheckCircle2, Loader2, Wrench, XCircle } from 'lucide-react';
 import { useMemo } from 'react';
 import styles from './index.module.less';
-import { deriveStatus, getNodeAction } from './utils';
+import { deriveStatus, formatDuration, getNodeAction } from './utils';
 
 interface IProps {
   eventList: INodeEvent[];
   isRunning: boolean;
+}
+
+/** Single tool chip below a timeline step */
+function ToolChip({
+  tool,
+  isDone,
+  isCurrent,
+}: {
+  tool: IToolUsage;
+  isDone: boolean;
+  isCurrent: boolean;
+}) {
+  return (
+    <div
+      className={cn(styles.toolChip, {
+        [styles.toolChipDone]: isDone,
+        [styles.toolChipActive]: isCurrent,
+      })}
+    >
+      <Wrench size={9} />
+      <span className={styles.toolChipName}>{tool.tool_name}</span>
+      {tool.elapsed_time !== undefined && tool.elapsed_time !== null && (
+        <span className={styles.toolChipTime}>
+          {formatDuration(tool.elapsed_time)}
+        </span>
+      )}
+    </div>
+  );
 }
 
 /** Single step dot on the timeline */
@@ -56,8 +84,22 @@ function TimelineStep({
         )}
       </div>
 
-      {/* Label */}
-      <span className={styles.timelineLabel}>{label}</span>
+      {/* Label + tools */}
+      <div className={styles.timelineStepBody}>
+        <span className={styles.timelineLabel}>{label}</span>
+        {step.tools.length > 0 && (
+          <div className={styles.toolChipList}>
+            {step.tools.map((t, i) => (
+              <ToolChip
+                key={`${t.tool_name}-${i}`}
+                tool={t}
+                isDone={isDone}
+                isCurrent={isCurrent}
+              />
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

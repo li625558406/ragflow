@@ -1,3 +1,4 @@
+import { CendTooltip } from '@/components/ui/tooltip';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import DocumentEditor from './document-editor';
@@ -35,9 +36,10 @@ interface FormatRule {
 
 interface Props {
   apiFetch: (url: string, options?: RequestInit) => Promise<Response>;
+  refreshToken?: number;
 }
 
-export default function CollaborationPanel({ apiFetch }: Props) {
+export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -68,6 +70,13 @@ export default function CollaborationPanel({ apiFetch }: Props) {
   useEffect(() => {
     loadDocuments();
   }, [loadDocuments]);
+
+  // Refresh when parent signals (e.g. after creating a doc from chat)
+  useEffect(() => {
+    if (refreshToken !== undefined && refreshToken > 0) {
+      loadDocuments();
+    }
+  }, [refreshToken]);
 
   const handleSelect = useCallback(async (doc: DocumentItem | null) => {
     if (!doc) {
@@ -109,7 +118,7 @@ export default function CollaborationPanel({ apiFetch }: Props) {
   }, []);
 
   return (
-    <div className="flex-1 flex min-h-0 bg-[#FFFFFF]">
+    <div className="flex-1 flex min-h-0 bg-white">
       <DocumentList
         selectedId={selectedId}
         onSelect={handleSelect}
@@ -121,17 +130,18 @@ export default function CollaborationPanel({ apiFetch }: Props) {
         applyingRuleId={applyingRuleId}
         collapsed={collapsed}
       />
-      <button
-        onClick={() => setCollapsed((c) => !c)}
-        className="shrink-0 self-start mt-6 -ml-3.5 z-10 size-7 flex items-center justify-center rounded-full border-2 border-[#D4D4D4] bg-white text-[#525252] hover:text-[#000000] hover:border-[#A3A3A3] hover:shadow-[0_2px_8px_rgba(0,0,0,0.12)] transition-all cursor-pointer"
-        title={collapsed ? '展开侧边栏' : '收起侧边栏'}
-      >
-        {collapsed ? (
-          <ChevronRight className="size-3.5" />
-        ) : (
-          <ChevronLeft className="size-3.5" />
-        )}
-      </button>
+      <CendTooltip title={collapsed ? '展开侧边栏' : '收起侧边栏'}>
+        <button
+          onClick={() => setCollapsed((c) => !c)}
+          className="shrink-0 self-start mt-6 -ml-3.5 z-10 size-7 flex items-center justify-center rounded-full border-2 border-[#D4D4D4] bg-white text-[#525252] hover:text-[#000000] hover:border-[#A3A3A3] hover:shadow-[0_2px_8px_rgba(0,0,0,0.12)] transition-all cursor-pointer"
+        >
+          {collapsed ? (
+            <ChevronRight className="size-3.5" />
+          ) : (
+            <ChevronLeft className="size-3.5" />
+          )}
+        </button>
+      </CendTooltip>
       <div className="flex-1 flex min-w-0">
         {docLoading ? (
           <div className="flex-1 flex items-center justify-center">
@@ -152,7 +162,7 @@ export default function CollaborationPanel({ apiFetch }: Props) {
             onRuleApplied={handleRuleApplied}
           />
         ) : (
-          <div className="flex-1 flex items-center justify-center bg-black/[0.02]">
+          <div className="flex-1 flex items-center justify-center">
             <div className="text-center text-black/30">
               <svg
                 className="w-12 h-12 mx-auto mb-3 text-black/20"

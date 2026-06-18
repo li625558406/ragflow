@@ -1,10 +1,21 @@
 import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
+  CDialog,
+  CDialogContent,
+  CDialogFooter,
+  CDialogHeader,
+  CDialogTitle,
+} from '@/components/c-dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { CendTooltip } from '@/components/ui/tooltip';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 interface FormatRule {
@@ -130,12 +141,12 @@ function StyleRuleEditor({
   const canRemove = !isLast; // Last rule is always the fallback "正文"
 
   return (
-    <div className="border border-[#D4D4D4] rounded-xl p-3 bg-white space-y-2">
+    <div className="border border-[#E8E8E6] rounded-xl p-3 bg-white space-y-2">
       {/* Row 1: Name + Pattern + Remove */}
       <div className="flex items-center gap-2">
         <input
           type="text"
-          className="flex-1 px-2.5 py-1.5 bg-[#EAEAEA] border border-[#D4D4D4] rounded-lg text-xs text-[#000000] placeholder:text-[#A3A3A3] focus:outline-none focus:border-[#000000] focus:bg-white transition disabled:opacity-60"
+          className="flex-1 px-2.5 py-1.5 bg-[#F5F5F4] border border-[#E8E8E6] rounded-lg text-xs text-[#000000] placeholder:text-[#A3A3A3] focus:outline-none focus:border-[#000000] focus:bg-white transition disabled:opacity-60"
           value={rule.name}
           onChange={(e) => onChange('name', e.target.value)}
           placeholder="样式名称"
@@ -143,32 +154,33 @@ function StyleRuleEditor({
         />
         <input
           type="text"
-          className="flex-[2] px-2.5 py-1.5 bg-[#EAEAEA] border border-[#D4D4D4] rounded-lg text-xs text-[#000000] placeholder:text-[#A3A3A3] font-mono focus:outline-none focus:border-[#000000] focus:bg-white transition disabled:opacity-60"
+          className="flex-[2] px-2.5 py-1.5 bg-[#F5F5F4] border border-[#E8E8E6] rounded-lg text-xs text-[#000000] placeholder:text-[#A3A3A3] font-mono focus:outline-none focus:border-[#000000] focus:bg-white transition disabled:opacity-60"
           value={rule.pattern}
           onChange={(e) => onChange('pattern', e.target.value)}
           placeholder={isLast ? '.* (匹配所有)' : '正则匹配，如 ^[一二三]+[、]'}
           disabled={disabled}
         />
         {canRemove && !disabled && (
-          <button
-            className="shrink-0 w-6 h-6 flex items-center justify-center rounded text-[#A3A3A3] hover:text-red-500 hover:bg-red-50 transition-colors"
-            onClick={onRemove}
-            title="删除此样式"
-          >
-            <svg
-              className="w-3.5 h-3.5"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
+          <CendTooltip title="删除此样式">
+            <button
+              className="shrink-0 w-6 h-6 flex items-center justify-center rounded text-[#A3A3A3] hover:text-red-500 hover:bg-red-50 transition-colors"
+              onClick={onRemove}
             >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M6 18L18 6M6 6l12 12"
-              />
-            </svg>
-          </button>
+              <svg
+                className="w-3.5 h-3.5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M6 18L18 6M6 6l12 12"
+                />
+              </svg>
+            </button>
+          </CendTooltip>
         )}
       </div>
 
@@ -177,7 +189,7 @@ function StyleRuleEditor({
         {/* Font */}
         <div className="relative">
           <select
-            className="h-7 px-1.5 pr-6 text-[11px] border border-[#D4D4D4] rounded-lg bg-[#EAEAEA] text-[#000000] focus:outline-none focus:border-[#000000] disabled:opacity-60 appearance-none cursor-pointer"
+            className="h-7 px-1.5 pr-6 text-[11px] border border-[#E8E8E6] rounded-lg bg-[#F5F5F4] text-[#000000] focus:outline-none focus:border-[#000000] disabled:opacity-60 appearance-none cursor-pointer"
             value={rule.fontFamily}
             onChange={(e) => onChange('fontFamily', e.target.value)}
             disabled={disabled}
@@ -204,7 +216,7 @@ function StyleRuleEditor({
         {/* Size */}
         <div className="relative">
           <select
-            className="h-7 px-1 pr-6 text-[11px] border border-[#D4D4D4] rounded-lg bg-[#EAEAEA] text-[#000000] focus:outline-none focus:border-[#000000] disabled:opacity-60 appearance-none cursor-pointer"
+            className="h-7 px-1 pr-6 text-[11px] border border-[#E8E8E6] rounded-lg bg-[#F5F5F4] text-[#000000] focus:outline-none focus:border-[#000000] disabled:opacity-60 appearance-none cursor-pointer"
             value={rule.fontSize}
             onChange={(e) => onChange('fontSize', Number(e.target.value))}
             disabled={disabled}
@@ -221,57 +233,59 @@ function StyleRuleEditor({
         <div className="w-px h-5 bg-[#D4D4D4]" />
 
         {/* Bold */}
-        <button
-          className={`h-7 w-7 flex items-center justify-center rounded-lg text-[11px] font-bold transition-colors ${
-            rule.bold
-              ? 'bg-black/[0.04] text-[#000000]'
-              : 'bg-[#EAEAEA] text-[#525252] hover:bg-[#EAEAEA]'
-          } disabled:opacity-50`}
-          onClick={() => !disabled && onChange('bold', !rule.bold)}
-          title="加粗"
-          disabled={disabled}
-        >
-          B
-        </button>
+        <CendTooltip title="加粗">
+          <button
+            className={`h-7 w-7 flex items-center justify-center rounded-lg text-[11px] font-bold transition-colors ${
+              rule.bold
+                ? 'bg-black/[0.04] text-[#000000]'
+                : 'bg-[#F5F5F4] text-[#525252] hover:bg-[#F5F5F4]'
+            } disabled:opacity-50`}
+            onClick={() => !disabled && onChange('bold', !rule.bold)}
+            disabled={disabled}
+          >
+            B
+          </button>
+        </CendTooltip>
 
         {/* Color */}
-        <button
-          className="h-7 w-7 flex items-center justify-center rounded-lg bg-[#EAEAEA] border border-[#D4D4D4] hover:border-[#000000] transition-colors disabled:opacity-50"
-          title="字体颜色"
-          onClick={() => !disabled && colorInputRef.current?.click()}
-          disabled={disabled}
-        >
-          <span
-            className="w-3.5 h-3.5 rounded-full border border-[#D4D4D4]"
-            style={{ backgroundColor: rule.fontColor }}
-          />
-          <input
-            ref={colorInputRef}
-            type="color"
-            className="absolute opacity-0 w-0 h-0"
-            value={rule.fontColor}
-            onChange={(e) => onChange('fontColor', e.target.value)}
+        <CendTooltip title="字体颜色">
+          <button
+            className="h-7 w-7 flex items-center justify-center rounded-lg bg-[#F5F5F4] border border-[#E8E8E6] hover:border-[#000000] transition-colors disabled:opacity-50"
+            onClick={() => !disabled && colorInputRef.current?.click()}
             disabled={disabled}
-          />
-        </button>
+          >
+            <span
+              className="w-3.5 h-3.5 rounded-full border border-[#E8E8E6]"
+              style={{ backgroundColor: rule.fontColor }}
+            />
+            <input
+              ref={colorInputRef}
+              type="color"
+              className="absolute opacity-0 w-0 h-0"
+              value={rule.fontColor}
+              onChange={(e) => onChange('fontColor', e.target.value)}
+              disabled={disabled}
+            />
+          </button>
+        </CendTooltip>
 
         <div className="w-px h-5 bg-[#D4D4D4]" />
 
         {/* Alignment */}
         {ALIGNMENT_OPTIONS.map((a) => (
-          <button
-            key={a.value}
-            className={`h-7 px-1.5 text-[10px] rounded-lg transition-colors ${
-              rule.alignment === a.value
-                ? 'bg-black/[0.04] text-[#000000]'
-                : 'bg-[#EAEAEA] text-[#525252] hover:bg-[#EAEAEA]'
-            } disabled:opacity-50`}
-            onClick={() => !disabled && onChange('alignment', a.value)}
-            title={a.label + '对齐'}
-            disabled={disabled}
-          >
-            {a.label}
-          </button>
+          <CendTooltip key={a.value} title={a.label + '对齐'}>
+            <button
+              className={`h-7 px-1.5 text-[10px] rounded-lg transition-colors ${
+                rule.alignment === a.value
+                  ? 'bg-black/[0.04] text-[#000000]'
+                  : 'bg-[#F5F5F4] text-[#525252] hover:bg-[#F5F5F4]'
+              } disabled:opacity-50`}
+              onClick={() => !disabled && onChange('alignment', a.value)}
+              disabled={disabled}
+            >
+              {a.label}
+            </button>
+          </CendTooltip>
         ))}
 
         <div className="w-px h-5 bg-[#D4D4D4]" />
@@ -279,7 +293,7 @@ function StyleRuleEditor({
         {/* Heading level */}
         <div className="relative">
           <select
-            className="h-7 px-1.5 pr-6 text-[10px] border border-[#D4D4D4] rounded-lg bg-[#EAEAEA] text-[#000000] focus:outline-none focus:border-[#000000] disabled:opacity-60 appearance-none cursor-pointer"
+            className="h-7 px-1.5 pr-6 text-[10px] border border-[#E8E8E6] rounded-lg bg-[#F5F5F4] text-[#000000] focus:outline-none focus:border-[#000000] disabled:opacity-60 appearance-none cursor-pointer"
             value={rule.heading}
             onChange={(e) => onChange('heading', e.target.value)}
             disabled={disabled}
@@ -314,6 +328,9 @@ export default function FormatRulePanel({
   const [formStyleRules, setFormStyleRules] = useState<StyleRule[]>([]);
   const [formPermission, setFormPermission] = useState<'me' | 'team'>('me');
   const [readonly, setReadonly] = useState(false);
+  const [deleteRuleTarget, setDeleteRuleTarget] = useState<FormatRule | null>(
+    null,
+  );
   const currentUserId = getCurrentUserId();
 
   const loadRules = useCallback(async () => {
@@ -435,12 +452,16 @@ export default function FormatRulePanel({
     setFormStyleRules((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const handleDelete = async (ruleId: string) => {
-    if (!window.confirm('确定删除此格式规则？')) return;
+  const handleDelete = async () => {
+    if (!deleteRuleTarget) return;
     try {
-      await apiFetch(`/api/v1/collaboration/format-rules/${ruleId}`, {
-        method: 'DELETE',
-      });
+      await apiFetch(
+        `/api/v1/collaboration/format-rules/${deleteRuleTarget.id}`,
+        {
+          method: 'DELETE',
+        },
+      );
+      setDeleteRuleTarget(null);
       loadRules();
     } catch (e) {
       console.error('删除格式规则失败:', e);
@@ -450,9 +471,9 @@ export default function FormatRulePanel({
   return (
     <>
       {/* Collapsible Rules Panel */}
-      <div className="border-t border-[#D4D4D4]">
+      <div className="border-t border-[#E8E8E6]">
         <button
-          className="w-full px-3 py-2 text-xs text-[#333333] hover:text-[#000000] hover:bg-[#EAEAEA] flex items-center gap-1.5 transition-colors"
+          className="w-full px-3 py-2 text-xs text-[#333333] hover:text-[#000000] hover:bg-[#F5F5F4] flex items-center gap-1.5 transition-colors"
           onClick={() => setCollapsed(!collapsed)}
         >
           <svg
@@ -503,26 +524,27 @@ export default function FormatRulePanel({
                 {rules.map((rule) => (
                   <div
                     key={rule.id}
-                    className="flex items-center justify-between px-1 py-1 rounded hover:bg-[#EAEAEA] group"
+                    className="flex items-center justify-between px-1 py-1 rounded hover:bg-[#F5F5F4] group"
                   >
-                    <span
-                      className="text-xs text-[#1a1a1a] truncate flex-1"
+                    <CendTooltip
                       title={`${rule.name}${rule.description ? ` — ${rule.description}` : ''}`}
                     >
-                      {rule.name}
-                      {rule.permission === 'team' && (
-                        <span className="ml-1 text-[9px] px-1 py-px rounded bg-[#fef3c7] text-[#d97706] border border-[#fde68a]">
-                          团队
-                        </span>
-                      )}
-                      {currentUserId &&
-                        rule.created_by &&
-                        rule.created_by !== currentUserId && (
-                          <span className="ml-1 text-[9px] px-1 py-px rounded bg-[#EAEAEA] text-[#000000] border border-[#D4D4D4]">
-                            共享
+                      <span className="text-xs text-[#1a1a1a] truncate flex-1">
+                        {rule.name}
+                        {rule.permission === 'team' && (
+                          <span className="ml-1 text-[9px] px-1 py-px rounded bg-[#fef3c7] text-[#d97706] border border-[#fde68a]">
+                            团队
                           </span>
                         )}
-                    </span>
+                        {currentUserId &&
+                          rule.created_by &&
+                          rule.created_by !== currentUserId && (
+                            <span className="ml-1 text-[9px] px-1 py-px rounded bg-[#F5F5F4] text-[#000000] border border-[#E8E8E6]">
+                              共享
+                            </span>
+                          )}
+                      </span>
+                    </CendTooltip>
                     <div className="hidden group-hover:flex items-center gap-0.5">
                       {selectedDocId && onApplyRule && (
                         <button
@@ -543,7 +565,7 @@ export default function FormatRulePanel({
                           </button>
                           <button
                             className="text-[10px] text-[#333333] hover:text-[#ef4444] px-1"
-                            onClick={() => handleDelete(rule.id)}
+                            onClick={() => setDeleteRuleTarget(rule)}
                           >
                             删除
                           </button>
@@ -566,17 +588,17 @@ export default function FormatRulePanel({
       </div>
 
       {/* Create/Edit Dialog */}
-      <Dialog open={showDialog} onOpenChange={setShowDialog}>
-        <DialogContent className="sm:max-w-md !bg-white !border-[#D4D4D4] !shadow-[0_24px_80px_-12px_rgba(0,0,0,0.08)] !rounded-3xl">
-          <DialogHeader className="!-mx-6 !-mt-6 !p-5 !border-b !border-[#D4D4D4]">
-            <DialogTitle className="!text-base !font-bold !text-[#000000]">
+      <CDialog open={showDialog} onOpenChange={setShowDialog}>
+        <CDialogContent className="sm:max-w-md">
+          <CDialogHeader>
+            <CDialogTitle>
               {readonly
                 ? '查看格式规则'
                 : editingRule
                   ? '编辑格式规则'
                   : '新建格式规则'}
-            </DialogTitle>
-          </DialogHeader>
+            </CDialogTitle>
+          </CDialogHeader>
           <div className="space-y-4 py-4 max-h-[60vh] overflow-y-auto">
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -585,7 +607,7 @@ export default function FormatRulePanel({
                 </label>
                 <input
                   type="text"
-                  className="w-full px-3 py-2.5 bg-[#FFFFFF] border border-[#D4D4D4] rounded-xl text-sm text-[#000000] placeholder:text-[#A3A3A3] focus:outline-none focus:border-[#000000] focus:bg-white focus:ring-2 focus:ring-[#D4D4D4] transition disabled:opacity-60"
+                  className="w-full px-3 py-2.5 bg-[#FFFFFF] border border-[#E8E8E6] rounded-xl text-sm text-[#000000] placeholder:text-[#A3A3A3] focus:outline-none focus:border-[#000000] focus:bg-white focus:ring-2 focus:ring-[#D4D4D4] transition disabled:opacity-60"
                   value={formName}
                   onChange={(e) => setFormName(e.target.value)}
                   placeholder="例如：招标文件标准格式"
@@ -598,7 +620,7 @@ export default function FormatRulePanel({
                 </label>
                 <input
                   type="text"
-                  className="w-full px-3 py-2.5 bg-[#FFFFFF] border border-[#D4D4D4] rounded-xl text-sm text-[#000000] placeholder:text-[#A3A3A3] focus:outline-none focus:border-[#000000] focus:bg-white focus:ring-2 focus:ring-[#D4D4D4] transition disabled:opacity-60"
+                  className="w-full px-3 py-2.5 bg-[#FFFFFF] border border-[#E8E8E6] rounded-xl text-sm text-[#000000] placeholder:text-[#A3A3A3] focus:outline-none focus:border-[#000000] focus:bg-white focus:ring-2 focus:ring-[#D4D4D4] transition disabled:opacity-60"
                   value={formDesc}
                   onChange={(e) => setFormDesc(e.target.value)}
                   placeholder="描述此规则的用途"
@@ -617,8 +639,8 @@ export default function FormatRulePanel({
                   <button
                     className={`flex-1 px-3 py-2 rounded-xl text-sm font-medium border transition-colors ${
                       formPermission === 'me'
-                        ? 'bg-[#EAEAEA] border-[#A3A3A3] text-[#000000]'
-                        : 'border-[#D4D4D4] text-[#333333] hover:bg-[#EAEAEA]'
+                        ? 'bg-[#F5F5F4] border-[#A3A3A3] text-[#000000]'
+                        : 'border-[#E8E8E6] text-[#333333] hover:bg-[#F5F5F4]'
                     }`}
                     onClick={() => setFormPermission('me')}
                   >
@@ -627,8 +649,8 @@ export default function FormatRulePanel({
                   <button
                     className={`flex-1 px-3 py-2 rounded-xl text-sm font-medium border transition-colors ${
                       formPermission === 'team'
-                        ? 'bg-[#EAEAEA] border-[#A3A3A3] text-[#000000]'
-                        : 'border-[#D4D4D4] text-[#333333] hover:bg-[#EAEAEA]'
+                        ? 'bg-[#F5F5F4] border-[#A3A3A3] text-[#000000]'
+                        : 'border-[#E8E8E6] text-[#333333] hover:bg-[#F5F5F4]'
                     }`}
                     onClick={() => setFormPermission('team')}
                   >
@@ -674,7 +696,7 @@ export default function FormatRulePanel({
             </div>
 
             {/* Preview hint */}
-            <div className="bg-[#EAEAEA] rounded-xl p-3 text-xs text-[#333333]">
+            <div className="bg-[#F5F5F4] rounded-xl p-3 text-xs text-[#333333]">
               <span className="font-medium">匹配示例：</span>
               {formStyleRules.map((sr, i) => (
                 <span key={i} className="ml-2">
@@ -687,25 +709,53 @@ export default function FormatRulePanel({
               ))}
             </div>
           </div>
-          <DialogFooter className="!-mx-6 !-mb-6 !p-5 !border-t !border-[#D4D4D4]">
+          <CDialogFooter>
             <button
-              className="px-4 py-2.5 text-sm text-[#333333] hover:text-[#333333] transition-colors"
+              className="px-4 py-2.5 text-sm text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4] rounded-lg transition-colors"
               onClick={() => setShowDialog(false)}
             >
               {readonly ? '关闭' : '取消'}
             </button>
             {!readonly && (
               <button
-                className="px-5 py-2.5 text-sm font-medium bg-[#000000] text-white rounded-lg hover:bg-[#000000] disabled:opacity-50 transition-colors"
+                className="px-5 py-2.5 text-sm font-medium bg-[#1A1A1A] text-white rounded-lg hover:bg-[#333333] disabled:opacity-50 transition-colors"
                 onClick={handleSave}
                 disabled={!formName.trim()}
               >
                 保存
               </button>
             )}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </CDialogFooter>
+        </CDialogContent>
+      </CDialog>
+
+      {/* Delete confirmation */}
+      <AlertDialog
+        open={!!deleteRuleTarget}
+        onOpenChange={() => setDeleteRuleTarget(null)}
+      >
+        <AlertDialogContent className="!bg-white !border-[#E8E8E6] !shadow-[0_20px_60px_-12px_rgba(0,0,0,0.08)] !rounded-2xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="!text-[#1A1A1A]">
+              确认删除
+            </AlertDialogTitle>
+            <AlertDialogDescription className="!text-[#8A8A8A]">
+              确定要删除格式规则「{deleteRuleTarget?.name}」吗？此操作不可撤销。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="!border-[#E8E8E6] !text-[#555555] hover:!bg-[#F5F5F4] hover:!text-[#1A1A1A] !rounded-lg">
+              取消
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDelete}
+              className="!bg-red-500 hover:!bg-red-600 !text-white !rounded-lg"
+            >
+              确认删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

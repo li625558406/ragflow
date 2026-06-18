@@ -1,24 +1,14 @@
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { CendTooltip } from '@/components/ui/tooltip';
+import { downloadWord, markdownToBodyHtml } from '@/utils/markdown-to-word';
 import {
-  Check,
   ChevronLeft,
   ChevronRight,
   Download,
   FileText,
   MessageSquare,
-  RefreshCw,
-  Save,
+  Pencil,
   Star,
   Trash2,
 } from 'lucide-react';
@@ -46,290 +36,46 @@ interface FavoriteDetail extends FavoriteItem {
 
 interface Props {
   apiFetch: (url: string, options?: RequestInit) => Promise<Response>;
+  refreshToken?: number;
 }
 
-/* ── Content sanitization ── */
+/* ── Content extraction ── */
 
 function stripThinkTags(text: string): string {
   return text.replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '');
 }
 
-/** Convert markdown to clean plain text. */
-function stripMarkdown(text: string): string {
-  let s = text;
-
-  // <think> tags
-  s = stripThinkTags(s);
-
-  // Code blocks — remove ``` fences, keep code content
-  s = s.replace(
-    /```\w*\n([\s\S]*?)```/g,
-    (_, code) => '\n' + code.trim() + '\n',
-  );
-
-  // Inline code
-  s = s.replace(/`([^`]+)`/g, '$1');
-
-  // Bold + italic
-  s = s.replace(/\*\*\*(.+?)\*\*\*/g, '$1');
-  s = s.replace(/___(.+?)___/g, '$1');
-
-  // Bold
-  s = s.replace(/\*\*(.+?)\*\*/g, '$1');
-  s = s.replace(/__(.+?)__/g, '$1');
-
-  // Italic
-  s = s.replace(/\*(.+?)\*/g, '$1');
-  s = s.replace(/_(.+?)_/g, '$1');
-
-  // Strikethrough
-  s = s.replace(/~~(.+?)~~/g, '$1');
-
-  // Links: [text](url) → text
-  s = s.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
-
-  // Images: ![alt](url) → remove
-  s = s.replace(/!\[[^\]]*\]\([^)]+\)/g, '');
-
-  // Headings: remove # markers, keep text
-  s = s.replace(/^#{1,6}\s+/gm, '');
-
-  // Unordered list markers → bullet
-  s = s.replace(/^(\s*)[-*+]\s+/gm, '$1• ');
-
-  // Numbered list: keep numbering as-is
-  s = s.replace(/^(\s*\d+)\.\s+/gm, '$1. ');
-
-  // Horizontal rules
-  s = s.replace(/^(-{3,}|\*{3,}|_{3,})\s*$/gm, '────────────────');
-
-  return s.trim();
+/** Check if content looks like HTML (has tags). */
+function isHtmlContent(content: string): boolean {
+  return /<[a-zA-Z][^>]*>/.test(content);
 }
 
-/** Merge messages array into a single clean text string. */
+/**
+ * Extract Word HTML from stored messages.
+ * New favorites: stored as Word HTML directly.
+ * Old favorites (migrated): raw markdown → converted to Word HTML on load.
+ */
 function extractContent(messages: FavoriteMessage[]): string {
   if (!messages || messages.length === 0) return '';
   if (messages.length === 1 && messages[0].role === 'merged') {
-    return stripMarkdown(messages[0].content || '');
+    const raw = stripThinkTags(messages[0].content || '');
+    if (!raw) return '';
+    // If already Word HTML, return as-is; otherwise convert from markdown
+    return isHtmlContent(raw) ? raw : markdownToBodyHtml(raw);
   }
-  return messages
+  // Multi-message old format: merge with role labels then convert
+  const merged = messages
     .map((m) => {
       const roleLabel = m.role === 'user' ? '【用户】' : '【助手】';
-      return `${roleLabel}\n\n${stripMarkdown(m.content || '')}\n`;
+      return `${roleLabel}\n\n${stripThinkTags(m.content || '')}\n`;
     })
     .join('\n');
-}
-
-/* ── Word download (from already-clean text) ── */
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-/* ── Markdown table parsing (tables pass through stripMarkdown as-is) ── */
-
-/** Extract headers, rows, and alignments from a markdown table string. */
-function parseMarkdownTable(tableText: string): {
-  headers: string[];
-  rows: string[][];
-  aligns: string[];
-} | null {
-  const lines = tableText.trim().split('\n');
-  if (lines.length < 2) return null;
-
-  const parseRow = (line: string) =>
-    line
-      .replace(/^\|/, '')
-      .replace(/\|$/, '')
-      .split('|')
-      .map((c) => c.trim());
-
-  const headers = parseRow(lines[0]);
-  if (headers.length === 0) return null;
-
-  const aligns = parseRow(lines[1]).map((cell) => {
-    const left = cell.startsWith(':');
-    const right = cell.endsWith(':');
-    if (left && right) return 'center';
-    if (right) return 'right';
-    return 'left';
-  });
-
-  const rows = lines.slice(2).map(parseRow);
-
-  return { headers, rows, aligns };
-}
-
-/** Render a parsed table as Word-compatible HTML. */
-function renderWordTable(
-  headers: string[],
-  rows: string[][],
-  aligns: string[],
-): string {
-  const border = 'border:1px solid #999;';
-  const td = (a: string) =>
-    `padding:3pt 6pt;${border}font-size:10pt;text-align:${a};`;
-  const th = (a: string) =>
-    `padding:3pt 6pt;${border}font-size:10pt;font-weight:bold;text-align:${a};background-color:#f5f5f5;`;
-
-  const thead = `<tr>${headers
-    .map(
-      (h, i) => `<th style="${th(aligns[i] || 'left')}">${escapeHtml(h)}</th>`,
-    )
-    .join('')}</tr>`;
-
-  const tbody = rows
-    .map(
-      (row) =>
-        `<tr>${row
-          .map(
-            (cell, i) =>
-              `<td style="${td(aligns[i] || 'left')}">${escapeHtml(cell)}</td>`,
-          )
-          .join('')}</tr>`,
-    )
-    .join('');
-
-  return `<table style="border-collapse:collapse;margin:10pt 0;width:100%;${border}">
-<thead>${thead}</thead>
-<tbody>${tbody}</tbody>
-</table>`;
-}
-
-/* ── Process a block of non-table text lines → HTML ── */
-
-const TABLE_BLOCK_RE = /\|.+\|\r?\n\|[-:| ]+\|\r?\n(?:\|.+\|\r?\n?)+/g;
-
-function processTextLines(lines: string[]): string[] {
-  const parts: string[] = [];
-  let paraLines: string[] = [];
-
-  function flushPara() {
-    if (paraLines.length > 0) {
-      parts.push(
-        `<p style="font-size:11pt;line-height:1.8;margin:0 0 8pt 0;text-align:justify;">${paraLines
-          .map(escapeHtml)
-          .join('<br/>')}</p>`,
-      );
-      paraLines = [];
-    }
-  }
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-
-    if (/^【(?:用户|助手)】$/.test(trimmed)) {
-      flushPara();
-      parts.push(
-        `<h2 style="font-size:14pt;font-weight:bold;margin-top:14pt;margin-bottom:6pt;color:#1a1a1a;">${escapeHtml(
-          trimmed.replace(/【(.+)】/, '$1'),
-        )}</h2>`,
-      );
-      continue;
-    }
-
-    if (/^─{8,}$/.test(trimmed)) {
-      flushPara();
-      parts.push(
-        '<hr style="border:none;border-top:1px solid #ccc;margin:12pt 0;" />',
-      );
-      continue;
-    }
-
-    if (!trimmed) {
-      flushPara();
-      continue;
-    }
-
-    paraLines.push(line);
-  }
-  flushPara();
-
-  return parts;
-}
-
-function cleanTextToWordHtml(text: string, title: string): string {
-  // Normalize line endings
-  text = text.replace(/\r\n/g, '\n');
-
-  const parts: string[] = [];
-  parts.push(
-    `<h1 style="font-size:18pt;font-weight:bold;margin-bottom:12pt;color:#1a1a1a;">${escapeHtml(title)}</h1>`,
-  );
-
-  // Split into table / non-table blocks so markdown tables become Word tables
-  TABLE_BLOCK_RE.lastIndex = 0;
-  let cursor = 0;
-  let m: RegExpExecArray | null;
-  while ((m = TABLE_BLOCK_RE.exec(text)) !== null) {
-    // Text before this table
-    if (m.index > cursor) {
-      const before = text.slice(cursor, m.index).split('\n');
-      parts.push(...processTextLines(before));
-    }
-    // Table
-    const table = parseMarkdownTable(m[0]);
-    if (table) {
-      parts.push(renderWordTable(table.headers, table.rows, table.aligns));
-    } else {
-      // Fallback: render as regular text
-      parts.push(...processTextLines(m[0].split('\n')));
-    }
-    cursor = m.index + m[0].length;
-  }
-  // Remaining text after last table
-  if (cursor < text.length) {
-    const after = text.slice(cursor).split('\n');
-    parts.push(...processTextLines(after));
-  }
-
-  return `<!DOCTYPE html>
-<html xmlns:o="urn:schemas-microsoft-com:office:office"
-      xmlns:w="urn:schemas-microsoft-com:office:word"
-      xmlns="http://www.w3.org/TR/REC-html40">
-<head>
-<meta charset="utf-8">
-<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-<title>${escapeHtml(title)}</title>
-<!--[if gte mso 9]><xml>
-<w:WordDocument>
-  <w:View>Print</w:View>
-  <w:Zoom>100</w:Zoom>
-  <w:DoNotOptimizeForBrowser/>
-</w:WordDocument>
-</xml><![endif]-->
-<style>
-@page { size: A4; margin: 2cm; }
-body {
-  font-family: "Microsoft YaHei", "宋体", SimSun, sans-serif;
-  font-size: 11pt;
-  color: #333;
-  line-height: 1.8;
-}
-</style>
-</head>
-<body>${parts.join('\n')}</body>
-</html>`;
-}
-
-function downloadWord(title: string, content: string) {
-  const html = cleanTextToWordHtml(content, title);
-  const blob = new Blob(['\ufeff' + html], {
-    type: 'application/msword;charset=utf-8',
-  });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${title}.doc`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  return markdownToBodyHtml(merged);
 }
 
 /* ── Component ── */
 
-export default function FavoritePanel({ apiFetch }: Props) {
+export default function FavoritePanel({ apiFetch, refreshToken }: Props) {
   const [favorites, setFavorites] = useState<FavoriteItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [total, setTotal] = useState(0);
@@ -341,14 +87,14 @@ export default function FavoritePanel({ apiFetch }: Props) {
   const [editTitle, setEditTitle] = useState('');
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<{
     id: string;
     title: string;
   } | null>(null);
 
-  const [editContent, setEditContent] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [savedContent, setSavedContent] = useState('');
+  const [content, setContent] = useState('');
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
   const ITEMS_PER_PAGE = 20;
@@ -378,6 +124,13 @@ export default function FavoritePanel({ apiFetch }: Props) {
     loadFavorites();
   }, [loadFavorites]);
 
+  // Refresh when parent signals (e.g. after save from chat)
+  useEffect(() => {
+    if (refreshToken !== undefined && refreshToken > 0) {
+      loadFavorites();
+    }
+  }, [refreshToken]);
+
   const handleSelect = useCallback(async (id: string) => {
     setDetailLoading(true);
     try {
@@ -387,9 +140,7 @@ export default function FavoritePanel({ apiFetch }: Props) {
         const fav = result.data;
         setSelectedFavorite(fav);
         setEditTitle(fav.title);
-        const content = extractContent(fav.messages_data || []);
-        setEditContent(content);
-        setSavedContent(content);
+        setContent(extractContent(fav.messages_data || []));
       }
     } catch (e) {
       console.error('加载收藏详情失败:', e);
@@ -417,31 +168,29 @@ export default function FavoritePanel({ apiFetch }: Props) {
     }
   };
 
-  const handleSaveContent = async () => {
-    if (!selectedFavorite) return;
-    setSaving(true);
+  const handleRename = async (id: string) => {
+    if (!renameValue.trim()) {
+      setRenamingId(null);
+      return;
+    }
     try {
-      const clean = stripMarkdown(editContent);
-      const resp = await apiFetch(`/api/v1/favorite/${selectedFavorite.id}`, {
+      const resp = await apiFetch(`/api/v1/favorite/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages_data: [{ role: 'merged', content: clean }],
-        }),
+        body: JSON.stringify({ title: renameValue.trim() }),
       });
       const result = await resp.json();
       if (result.code === 0) {
-        setEditContent(clean);
-        setSavedContent(clean);
-        setSelectedFavorite({
-          ...selectedFavorite,
-          messages_data: [{ role: 'merged', content: clean }],
-        });
+        setRenamingId(null);
+        loadFavorites();
+        if (selectedFavorite?.id === id) {
+          setSelectedFavorite((prev) =>
+            prev ? { ...prev, title: renameValue.trim() } : null,
+          );
+        }
       }
     } catch (e) {
-      console.error('保存内容失败:', e);
-    } finally {
-      setSaving(false);
+      console.error('重命名失败:', e);
     }
   };
 
@@ -484,38 +233,6 @@ export default function FavoritePanel({ apiFetch }: Props) {
     [apiFetch],
   );
 
-  // ── Auto-save ──
-  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const isSwitchingRef = useRef(false);
-
-  useEffect(() => {
-    if (isSwitchingRef.current) {
-      isSwitchingRef.current = false;
-      return;
-    }
-    if (!selectedFavorite || editContent === savedContent) return;
-
-    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
-    autoSaveTimerRef.current = setTimeout(() => {
-      handleSaveContent();
-    }, 1500);
-
-    return () => {
-      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
-    };
-  }, [editContent]);
-
-  // Clear timer when switching favorites
-  useEffect(() => {
-    isSwitchingRef.current = true;
-    if (autoSaveTimerRef.current) {
-      clearTimeout(autoSaveTimerRef.current);
-      autoSaveTimerRef.current = null;
-    }
-  }, [selectedFavorite?.id]);
-
-  const hasUnsavedChanges = editContent !== savedContent;
-
   const formatTime = (ts: string) => {
     if (!ts) return '';
     const d = new Date(ts);
@@ -533,41 +250,30 @@ export default function FavoritePanel({ apiFetch }: Props) {
     <div className="flex-1 flex min-h-0 bg-white">
       {/* ── Left Sidebar ── */}
       <div
-        className={`shrink-0 border-r border-[#D4D4D4] bg-white flex flex-col transition-[width] duration-300 ease-in-out overflow-hidden ${
+        className={`shrink-0 border-r border-[#E8E8E6] bg-white flex flex-col transition-[width] duration-300 ease-in-out overflow-hidden ${
           collapsed ? 'w-0 border-r-0' : 'w-56'
         }`}
       >
         <div className="flex items-center gap-2 px-4 pt-4 pb-2 whitespace-nowrap">
-          <span className="text-[#333333] text-[15px] font-semibold tracking-widest uppercase">
+          <span className="text-[#555555] text-[15px] font-semibold tracking-widest uppercase">
             收藏列表
           </span>
           {total > 0 && (
-            <span className="text-xs text-[#A3A3A3]">共 {total} 条</span>
+            <span className="text-xs text-[#8A8A8A]">共 {total} 条</span>
           )}
-          <div className="flex-1" />
-          <button
-            onClick={() => loadFavorites()}
-            disabled={loading}
-            className="flex items-center justify-center size-6 rounded hover:bg-[#F3F3F3] disabled:opacity-50"
-            title="刷新列表"
-          >
-            <RefreshCw
-              className={`size-3.5 text-[#A3A3A3] ${loading ? 'animate-spin' : ''}`}
-            />
-          </button>
         </div>
 
         <div className="flex-1 overflow-y-auto">
           {loading && favorites.length === 0 ? (
             <div className="flex items-center justify-center py-20">
               <div className="flex flex-col items-center gap-3">
-                <div className="size-8 border-2 border-[#D4D4D4] border-t-[#000] rounded-full animate-spin" />
-                <span className="text-sm text-[#A3A3A3]">加载中...</span>
+                <div className="size-8 border-2 border-[#E8E8E6] border-t-[#000] rounded-full animate-spin" />
+                <span className="text-sm text-[#8A8A8A]">加载中...</span>
               </div>
             </div>
           ) : favorites.length === 0 ? (
             <div className="flex items-center justify-center py-20 px-4">
-              <div className="flex flex-col items-center gap-3 text-[#A3A3A3]">
+              <div className="flex flex-col items-center gap-3 text-[#8A8A8A]">
                 <Star className="size-10" />
                 <p className="text-sm text-center">暂无收藏内容</p>
                 <p className="text-xs text-center">
@@ -583,49 +289,73 @@ export default function FavoritePanel({ apiFetch }: Props) {
                   onClick={() => handleSelect(fav.id)}
                   className={`cs-list-enter cs-list-d${Math.min(idx, 7)} w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer transition text-left group whitespace-nowrap ${
                     selectedFavorite?.id === fav.id
-                      ? 'bg-[#EAEAEA] text-[#000000]'
-                      : 'text-[#333333] hover:bg-[#EAEAEA] hover:text-[#000000]'
+                      ? 'bg-[#F5F5F4] text-[#1A1A1A]'
+                      : 'text-[#555555] hover:bg-[#F5F5F4] hover:text-[#1A1A1A]'
                   }`}
                 >
                   <div
                     className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${
                       selectedFavorite?.id === fav.id
                         ? 'bg-white'
-                        : 'bg-[#EAEAEA]'
+                        : 'bg-[#F5F5F4]'
                     }`}
                   >
                     <MessageSquare className="w-4 h-4" strokeWidth={1.5} />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <div className="text-[15px] font-medium truncate">
-                      {fav.title}
-                    </div>
-                    <div className="text-[11px] text-[#A3A3A3] truncate">
+                    {renamingId === fav.id ? (
+                      <input
+                        type="text"
+                        className="w-full px-2 py-1 text-xs border border-[#1A1A1A] rounded focus:outline-none text-[#1A1A1A] bg-white"
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onBlur={() => handleRename(fav.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleRename(fav.id);
+                          if (e.key === 'Escape') setRenamingId(null);
+                        }}
+                        autoFocus
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    ) : (
+                      <div className="flex items-center justify-between">
+                        <span className="text-[15px] font-medium truncate">
+                          {fav.title}
+                        </span>
+                        <div className="opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto transition-opacity flex items-center gap-0.5 ml-1">
+                          <CendTooltip title="重命名">
+                            <button
+                              className="w-7 h-7 flex items-center justify-center rounded text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4] transition-colors"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setRenamingId(fav.id);
+                                setRenameValue(fav.title);
+                              }}
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                          </CendTooltip>
+                          <CendTooltip title="删除">
+                            <button
+                              className="w-7 h-7 flex items-center justify-center rounded text-[#555555] hover:text-red-500 hover:bg-red-50 transition-colors"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDeleteTarget({
+                                  id: fav.id,
+                                  title: fav.title,
+                                });
+                                setDeleteDialogOpen(true);
+                              }}
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </CendTooltip>
+                        </div>
+                      </div>
+                    )}
+                    <div className="text-[11px] text-[#8A8A8A] truncate">
                       {formatTime(fav.updated_at || fav.created_at)}
                     </div>
-                  </div>
-                  <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <span
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDownload(fav.id, fav.title);
-                      }}
-                      className="size-6 flex items-center justify-center rounded text-[#A3A3A3] hover:text-[#2563EB] hover:bg-blue-50 transition-colors"
-                      title="下载"
-                    >
-                      <Download className="size-3.5" />
-                    </span>
-                    <span
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setDeleteTarget({ id: fav.id, title: fav.title });
-                        setDeleteDialogOpen(true);
-                      }}
-                      className="size-6 flex items-center justify-center rounded text-[#A3A3A3] hover:text-red-500 hover:bg-red-50 transition-colors"
-                      title="删除"
-                    >
-                      <Trash2 className="size-3.5" />
-                    </span>
                   </div>
                 </button>
               ))}
@@ -635,21 +365,21 @@ export default function FavoritePanel({ apiFetch }: Props) {
 
         {/* Pagination */}
         {totalPages > 1 && (
-          <div className="flex items-center justify-center gap-2 px-4 py-3 border-t border-[#D4D4D4] shrink-0">
+          <div className="flex items-center justify-center gap-2 px-4 py-3 border-t border-[#E8E8E6] shrink-0">
             <button
               onClick={() => setPage((p) => Math.max(1, p - 1))}
               disabled={page <= 1}
-              className="px-3 py-1 text-xs text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA] rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              className="px-3 py-1 text-xs text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4] rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
             >
               上一页
             </button>
-            <span className="text-xs text-[#A3A3A3]">
+            <span className="text-xs text-[#8A8A8A]">
               {page} / {totalPages}
             </span>
             <button
               onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
               disabled={page >= totalPages}
-              className="px-3 py-1 text-xs text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA] rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              className="px-3 py-1 text-xs text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4] rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
             >
               下一页
             </button>
@@ -658,30 +388,31 @@ export default function FavoritePanel({ apiFetch }: Props) {
       </div>
 
       {/* Toggle button — floats on sidebar edge */}
-      <button
-        onClick={() => setCollapsed((c) => !c)}
-        className="shrink-0 self-start mt-6 -ml-3.5 z-10 size-7 flex items-center justify-center rounded-full border-2 border-[#D4D4D4] bg-white text-[#525252] hover:text-[#000000] hover:border-[#A3A3A3] hover:shadow-[0_2px_8px_rgba(0,0,0,0.12)] transition-all cursor-pointer"
-        title={collapsed ? '展开侧边栏' : '收起侧边栏'}
-      >
-        {collapsed ? (
-          <ChevronRight className="size-3.5" />
-        ) : (
-          <ChevronLeft className="size-3.5" />
-        )}
-      </button>
+      <CendTooltip title={collapsed ? '展开侧边栏' : '收起侧边栏'}>
+        <button
+          onClick={() => setCollapsed((c) => !c)}
+          className="shrink-0 self-start mt-6 -ml-3.5 z-10 size-7 flex items-center justify-center rounded-full border-2 border-[#E8E8E6] bg-white text-[#555555] hover:text-[#1A1A1A] hover:border-[#A3A3A3] hover:shadow-[0_2px_8px_rgba(0,0,0,0.12)] transition-all cursor-pointer"
+        >
+          {collapsed ? (
+            <ChevronRight className="size-3.5" />
+          ) : (
+            <ChevronLeft className="size-3.5" />
+          )}
+        </button>
+      </CendTooltip>
 
       {/* ── Right Content ── */}
       <div className="flex-1 flex min-w-0">
         {detailLoading ? (
           <div className="flex-1 flex items-center justify-center">
             <div className="flex flex-col items-center gap-3">
-              <div className="size-8 border-2 border-[#D4D4D4] border-t-[#000] rounded-full animate-spin" />
-              <span className="text-sm text-[#A3A3A3]">加载中...</span>
+              <div className="size-8 border-2 border-[#E8E8E6] border-t-[#000] rounded-full animate-spin" />
+              <span className="text-sm text-[#8A8A8A]">加载中...</span>
             </div>
           </div>
         ) : !selectedFavorite ? (
           <div className="flex-1 flex items-center justify-center">
-            <div className="flex flex-col items-center gap-3 text-[#A3A3A3]">
+            <div className="flex flex-col items-center gap-3 text-[#8A8A8A]">
               <FileText className="size-12" />
               <p className="text-sm">请从左侧选择一个收藏</p>
             </div>
@@ -689,8 +420,8 @@ export default function FavoritePanel({ apiFetch }: Props) {
         ) : (
           <div className="flex-1 flex flex-col min-h-0">
             {/* Header */}
-            <div className="flex items-center gap-3 px-4 py-3 border-b border-[#D4D4D4] shrink-0">
-              <Star className="size-4 text-[#6366f1] fill-[#6366f1] shrink-0" />
+            <div className="flex items-center gap-3 px-4 py-3 border-b border-[#E8E8E6] shrink-0">
+              <Star className="size-4 text-[#1A1A1A] fill-[#1A1A1A] shrink-0" />
               {editingTitle ? (
                 <div className="flex items-center gap-2 flex-1">
                   <Input
@@ -720,54 +451,27 @@ export default function FavoritePanel({ apiFetch }: Props) {
                   </Button>
                 </div>
               ) : (
-                <h2
-                  className="text-sm font-bold text-[#000000] truncate flex-1 cursor-pointer hover:text-[#6366f1] transition-colors"
-                  onClick={() => {
-                    setEditTitle(selectedFavorite.title);
-                    setEditingTitle(true);
-                  }}
-                  title="点击编辑标题"
-                >
-                  {selectedFavorite.title}
-                </h2>
+                <CendTooltip title="点击编辑标题">
+                  <h2
+                    className="text-sm font-bold text-[#1A1A1A] truncate flex-1 cursor-pointer hover:text-[#1A1A1A] transition-colors"
+                    onClick={() => {
+                      setEditTitle(selectedFavorite.title);
+                      setEditingTitle(true);
+                    }}
+                  >
+                    {selectedFavorite.title}
+                  </h2>
+                </CendTooltip>
               )}
               <div className="flex items-center gap-1 ml-auto">
-                <button
-                  onClick={handleSaveContent}
-                  disabled={saving || !hasUnsavedChanges}
-                  className="flex items-center gap-1 px-2.5 py-1.5 text-xs rounded-lg transition-colors disabled:opacity-100"
-                  style={{
-                    backgroundColor:
-                      saving || hasUnsavedChanges ? '#6366f1' : '#10b981',
-                    color: '#fff',
-                    opacity: saving || hasUnsavedChanges ? undefined : 0.85,
-                  }}
-                >
-                  {saving ? (
-                    <>
-                      <span className="size-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                      保存中...
-                    </>
-                  ) : hasUnsavedChanges ? (
-                    <>
-                      <Save className="size-3.5" />
-                      保存
-                    </>
-                  ) : (
-                    <>
-                      <Check className="size-3.5" strokeWidth={3} />
-                      已保存
-                    </>
-                  )}
-                </button>
                 <button
                   onClick={() =>
                     handleDownload(selectedFavorite.id, selectedFavorite.title)
                   }
                   disabled={downloadingId === selectedFavorite.id}
-                  className="flex items-center gap-1 px-2.5 py-1.5 text-xs text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA] rounded-lg transition-colors"
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4] rounded-lg transition-colors"
                 >
-                  <Download className="size-3.5" />
+                  <Download className="size-4" />
                   {downloadingId === selectedFavorite.id ? '下载中...' : '下载'}
                 </button>
                 <button
@@ -778,21 +482,19 @@ export default function FavoritePanel({ apiFetch }: Props) {
                     });
                     setDeleteDialogOpen(true);
                   }}
-                  className="flex items-center gap-1 px-2.5 py-1.5 text-xs text-red-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-red-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                 >
-                  <Trash2 className="size-3.5" />
+                  <Trash2 className="size-4" />
                   删除
                 </button>
               </div>
             </div>
 
-            {/* Always-editable textarea */}
+            {/* Content area: Word HTML preview */}
             <div className="flex-1 overflow-y-auto">
-              <textarea
-                value={editContent}
-                onChange={(e) => setEditContent(e.target.value)}
-                className="w-full max-w-3xl mx-auto block h-full p-6 text-base leading-relaxed resize-none focus:outline-none border-x border-[#EAEAEA] text-[#333333] bg-white"
-                placeholder="编辑内容..."
+              <div
+                className="word-preview w-full max-w-5xl mx-auto p-6 text-[#555555] text-[11pt] leading-relaxed"
+                dangerouslySetInnerHTML={{ __html: content }}
               />
             </div>
           </div>
@@ -800,25 +502,40 @@ export default function FavoritePanel({ apiFetch }: Props) {
       </div>
 
       {/* Delete confirmation */}
-      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>确认删除</AlertDialogTitle>
-            <AlertDialogDescription>
+      {deleteDialogOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="fixed inset-0 bg-black/40"
+            onClick={() => {
+              setDeleteTarget(null);
+              setDeleteDialogOpen(false);
+            }}
+          />
+          <div className="relative z-10 bg-white border border-[#E8E8E6] rounded-2xl shadow-[0_20px_60px_-12px_rgba(0,0,0,0.08)] p-6 max-w-md w-full mx-4">
+            <h2 className="text-lg font-semibold text-[#1A1A1A]">确认删除</h2>
+            <p className="text-sm text-[#8A8A8A] mt-2">
               确定要删除收藏「{deleteTarget?.title}」吗？此操作不可撤销。
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDeleteConfirm}
-              className="bg-red-500 hover:bg-red-600"
-            >
-              确认删除
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+            </p>
+            <div className="flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2 mt-6">
+              <button
+                onClick={() => {
+                  setDeleteTarget(null);
+                  setDeleteDialogOpen(false);
+                }}
+                className="inline-flex items-center justify-center whitespace-nowrap rounded-lg text-sm font-medium transition-colors h-10 px-4 py-2 border border-[#E8E8E6] text-[#555555] hover:bg-[#F5F5F4] hover:text-[#1A1A1A] mt-2 sm:mt-0"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleDeleteConfirm}
+                className="inline-flex items-center justify-center whitespace-nowrap rounded-lg text-sm font-medium transition-colors h-10 px-4 py-2 bg-red-700 hover:bg-red-800 text-white"
+              >
+                确认删除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,11 +1,18 @@
 import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
+  CDialog,
+  CDialogContent,
+  CDialogFooter,
+  CDialogHeader,
+  CDialogTitle,
+} from '@/components/c-dialog';
+import { Lightbulb } from 'lucide-react';
 import { useState } from 'react';
+
+function generateTitle(): string {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `文档_${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}:${pad(now.getMinutes())}`;
+}
 
 interface Props {
   open: boolean;
@@ -14,6 +21,10 @@ interface Props {
   agentId?: string;
   apiFetch: (url: string, options?: RequestInit) => Promise<Response>;
   onCreated: () => void;
+}
+
+function cn(...classes: (string | boolean | undefined)[]) {
+  return classes.filter(Boolean).join(' ');
 }
 
 export default function CreateDocumentDialog({
@@ -25,11 +36,9 @@ export default function CreateDocumentDialog({
   onCreated,
 }: Props) {
   const [name, setName] = useState('');
-  const [fileType, setFileType] = useState<'docx' | 'pdf'>('docx');
   const [permission, setPermission] = useState<'me' | 'team'>('me');
   const [creating, setCreating] = useState(false);
 
-  // Pre-fill name from first line or first 30 chars of content
   const handleOpen = (isOpen: boolean) => {
     if (isOpen) {
       const firstLine = messageContent
@@ -42,16 +51,20 @@ export default function CreateDocumentDialog({
   };
 
   const handleCreate = async () => {
-    if (!name.trim() || creating) return;
+    if (creating) return;
+    const finalName = name.trim() || generateTitle();
     setCreating(true);
     try {
       const resp = await apiFetch('/api/v1/collaboration/documents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: name.trim(),
-          markdown_content: messageContent,
-          file_type: fileType,
+          name: finalName,
+          markdown_content: messageContent.replace(
+            /<think\b[^>]*>[\s\S]*?<\/think>/gi,
+            '',
+          ),
+          file_type: 'docx',
           agent_id: agentId || '',
           permission,
         }),
@@ -70,75 +83,52 @@ export default function CreateDocumentDialog({
     }
   };
 
+  const segClasses = (selected: boolean) =>
+    cn(
+      'flex-1 px-3 py-2 rounded-xl text-sm font-medium border transition-colors',
+      selected
+        ? 'bg-[#F5F5F4] border-[#B0B0B0] text-[#1A1A1A]'
+        : 'border-[#E8E8E6] text-[#555555] hover:bg-[#F5F5F4]',
+    );
+
   return (
-    <Dialog open={open} onOpenChange={handleOpen}>
-      <DialogContent className="sm:max-w-md !bg-white !border-[#D4D4D4] !shadow-[0_20px_60px_-12px_rgba(0,0,0,0.06)] !rounded-2xl">
-        <DialogHeader className="!-mx-6 !-mt-6 !p-5 !border-b !border-[#D4D4D4]">
-          <DialogTitle className="!text-base !font-semibold !text-[#000000]">
-            创建协作文档
-          </DialogTitle>
-        </DialogHeader>
+    <CDialog open={open} onOpenChange={handleOpen}>
+      <CDialogContent className="sm:max-w-md">
+        <CDialogHeader>
+          <CDialogTitle>创建协作文档</CDialogTitle>
+        </CDialogHeader>
         <div className="space-y-4 py-4">
           <div>
-            <label className="block text-sm font-medium text-[#333333] mb-1.5">
+            <label className="block text-sm font-medium text-[#1A1A1A] mb-1.5">
               文档名称
             </label>
             <input
               type="text"
-              className="w-full px-3 py-2.5 bg-[#FFFFFF] border border-[#D4D4D4] rounded-xl text-sm text-[#000000] placeholder:text-[#A3A3A3] focus:outline-none focus:border-[#000000] focus:bg-white transition"
+              className="w-full px-3 py-2.5 bg-white border border-[#E8E8E6] rounded-xl text-sm text-[#1A1A1A] placeholder:text-[#B0B0B0] focus:outline-none focus:border-[#1A1A1A] transition"
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="输入文档名称"
             />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-[#333333] mb-1.5">
-              文件格式
-            </label>
-            <div className="flex gap-2">
-              <button
-                className={`flex-1 px-3 py-2 rounded-xl text-sm font-medium border transition-colors ${
-                  fileType === 'docx'
-                    ? 'bg-[#EAEAEA] border-[#A3A3A3] text-[#000000]'
-                    : 'border-[#D4D4D4] text-[#333333] hover:bg-[#EAEAEA]'
-                }`}
-                onClick={() => setFileType('docx')}
-              >
-                DOCX
-              </button>
-              <button
-                className={`flex-1 px-3 py-2 rounded-xl text-sm font-medium border transition-colors ${
-                  fileType === 'pdf'
-                    ? 'bg-[#EAEAEA] border-[#A3A3A3] text-[#000000]'
-                    : 'border-[#D4D4D4] text-[#333333] hover:bg-[#EAEAEA]'
-                }`}
-                onClick={() => setFileType('pdf')}
-              >
-                PDF
-              </button>
+            <div className="flex items-start gap-2 px-1 mt-2">
+              <Lightbulb className="size-3.5 text-[#B0B0B0] shrink-0 mt-px" />
+              <p className="text-xs text-[#8A8A8A] leading-relaxed">
+                留空将自动生成标题，如：{generateTitle()}
+              </p>
             </div>
           </div>
           <div>
-            <label className="block text-sm font-medium text-[#333333] mb-1.5">
+            <label className="block text-sm font-medium text-[#1A1A1A] mb-1.5">
               可见范围
             </label>
             <div className="flex gap-2">
               <button
-                className={`flex-1 px-3 py-2 rounded-xl text-sm font-medium border transition-colors ${
-                  permission === 'me'
-                    ? 'bg-[#EAEAEA] border-[#A3A3A3] text-[#000000]'
-                    : 'border-[#D4D4D4] text-[#333333] hover:bg-[#EAEAEA]'
-                }`}
+                className={segClasses(permission === 'me')}
                 onClick={() => setPermission('me')}
               >
                 仅自己
               </button>
               <button
-                className={`flex-1 px-3 py-2 rounded-xl text-sm font-medium border transition-colors ${
-                  permission === 'team'
-                    ? 'bg-[#EAEAEA] border-[#A3A3A3] text-[#000000]'
-                    : 'border-[#D4D4D4] text-[#333333] hover:bg-[#EAEAEA]'
-                }`}
+                className={segClasses(permission === 'team')}
                 onClick={() => setPermission('team')}
               >
                 团队共享
@@ -146,22 +136,22 @@ export default function CreateDocumentDialog({
             </div>
           </div>
         </div>
-        <DialogFooter className="!-mx-6 !-mb-6 !p-5 !border-t !border-[#D4D4D4]">
+        <CDialogFooter>
           <button
-            className="px-4 py-2.5 text-sm text-[#333333] hover:text-[#000000] transition-colors"
+            className="px-4 py-2.5 text-sm text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4] rounded-lg transition-colors"
             onClick={() => onOpenChange(false)}
           >
             取消
           </button>
           <button
-            className="px-5 py-2.5 text-sm font-medium bg-[#000000] text-white rounded-lg hover:bg-[#000000] transition-colors disabled:opacity-50"
+            className="px-5 py-2.5 text-sm font-medium bg-[#1A1A1A] text-white rounded-lg hover:bg-[#333333] disabled:opacity-50 transition-colors"
             onClick={handleCreate}
-            disabled={!name.trim() || creating}
+            disabled={creating}
           >
             {creating ? '创建中...' : '创建文档'}
           </button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </CDialogFooter>
+      </CDialogContent>
+    </CDialog>
   );
 }

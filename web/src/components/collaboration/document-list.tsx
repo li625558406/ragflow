@@ -1,3 +1,4 @@
+import { CendTooltip } from '@/components/ui/tooltip';
 import { useCallback, useState } from 'react';
 import FormatRulePanel from './format-rule-panel';
 
@@ -53,6 +54,7 @@ export default function DocumentList({
 }: Props) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<DocumentItem | null>(null);
   const currentUserId = getCurrentUserId();
 
   const handleRename = async (docId: string) => {
@@ -73,15 +75,16 @@ export default function DocumentList({
     }
   };
 
-  const handleDelete = async (docId: string) => {
-    if (!window.confirm('确定删除此文档？')) return;
+  const handleDeleteConfirm = async () => {
+    if (!deleteTarget) return;
     try {
-      await apiFetch(`/api/v1/collaboration/documents/${docId}`, {
+      await apiFetch(`/api/v1/collaboration/documents/${deleteTarget.id}`, {
         method: 'DELETE',
       });
-      if (selectedId === docId) {
+      if (selectedId === deleteTarget.id) {
         onSelect(null as unknown as DocumentItem);
       }
+      setDeleteTarget(null);
       onRefresh();
     } catch (e) {
       console.error('删除失败:', e);
@@ -120,27 +123,11 @@ export default function DocumentList({
         <span className="text-[#333333] text-[15px] font-semibold tracking-widest uppercase">
           文档列表
         </span>
-        <div className="flex-1" />
-        <button
-          onClick={onRefresh}
-          disabled={loading}
-          className="flex items-center justify-center size-6 rounded hover:bg-[#F3F3F3] disabled:opacity-50"
-          title="刷新列表"
-        >
-          <svg
-            className={`size-3.5 text-[#A3A3A3] ${loading ? 'animate-spin' : ''}`}
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-            />
-          </svg>
-        </button>
+        {documents.length > 0 && (
+          <span className="text-xs text-[#8A8A8A]">
+            共 {documents.length} 条
+          </span>
+        )}
       </div>
 
       {/* Document List */}
@@ -209,91 +196,96 @@ export default function DocumentList({
                       <span className="text-[15px] font-medium truncate">
                         {doc.name}
                       </span>
-                      <div className="hidden group-hover:flex items-center gap-0.5 ml-1">
+                      <div className="opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto transition-opacity flex items-center gap-0.5 ml-1">
                         {doc.created_by === currentUserId && (
                           <>
-                            <button
-                              className={`p-0.5 ${
-                                doc.permission === 'team'
-                                  ? 'text-amber-500 hover:text-amber-600'
-                                  : 'text-stone-300 hover:text-stone-500'
-                              }`}
+                            <CendTooltip
                               title={
                                 doc.permission === 'team'
                                   ? '团队共享中'
                                   : '仅自己可见'
                               }
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleTogglePermission(
-                                  doc.id,
-                                  doc.permission || 'me',
-                                );
-                              }}
                             >
-                              {doc.permission === 'team' ? (
+                              <button
+                                className={`w-7 h-7 flex items-center justify-center rounded ${
+                                  doc.permission === 'team'
+                                    ? 'text-amber-500 hover:text-amber-600 hover:bg-amber-50'
+                                    : 'text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4]'
+                                }`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleTogglePermission(
+                                    doc.id,
+                                    doc.permission || 'me',
+                                  );
+                                }}
+                              >
+                                {doc.permission === 'team' ? (
+                                  <svg
+                                    className="w-4 h-4"
+                                    fill="currentColor"
+                                    viewBox="0 0 24 24"
+                                  >
+                                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zM7.07 18.28c.43-.9 3.05-1.78 4.93-1.78s4.51.88 4.93 1.78C15.57 19.36 13.86 20 12 20s-3.57-.64-4.93-1.72zm11.29-1.45c-1.43-1.74-4.9-2.33-6.36-2.33s-4.93.59-6.36 2.33C4.62 15.49 4 13.82 4 12c0-4.41 3.59-8 8-8s8 3.59 8 8c0 1.82-.62 3.49-1.64 4.83zM12 6c-1.94 0-3.5 1.56-3.5 3.5S10.06 13 12 13s3.5-1.56 3.5-3.5S13.94 6 12 6zm0 5c-.83 0-1.5-.67-1.5-1.5S11.17 8 12 8s1.5.67 1.5 1.5S12.83 11 12 11z" />
+                                  </svg>
+                                ) : (
+                                  <svg
+                                    className="w-4 h-4"
+                                    fill="currentColor"
+                                    viewBox="0 0 24 24"
+                                  >
+                                    <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM12 17c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z" />
+                                  </svg>
+                                )}
+                              </button>
+                            </CendTooltip>
+                            <CendTooltip title="重命名">
+                              <button
+                                className="w-7 h-7 flex items-center justify-center rounded text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4]"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setRenamingId(doc.id);
+                                  setRenameValue(doc.name);
+                                }}
+                              >
                                 <svg
-                                  className="w-3 h-3"
-                                  fill="currentColor"
+                                  className="w-4 h-4"
+                                  fill="none"
+                                  stroke="currentColor"
                                   viewBox="0 0 24 24"
                                 >
-                                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zM7.07 18.28c.43-.9 3.05-1.78 4.93-1.78s4.51.88 4.93 1.78C15.57 19.36 13.86 20 12 20s-3.57-.64-4.93-1.72zm11.29-1.45c-1.43-1.74-4.9-2.33-6.36-2.33s-4.93.59-6.36 2.33C4.62 15.49 4 13.82 4 12c0-4.41 3.59-8 8-8s8 3.59 8 8c0 1.82-.62 3.49-1.64 4.83zM12 6c-1.94 0-3.5 1.56-3.5 3.5S10.06 13 12 13s3.5-1.56 3.5-3.5S13.94 6 12 6zm0 5c-.83 0-1.5-.67-1.5-1.5S11.17 8 12 8s1.5.67 1.5 1.5S12.83 11 12 11z" />
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                                  />
                                 </svg>
-                              ) : (
+                              </button>
+                            </CendTooltip>
+                            <CendTooltip title="删除">
+                              <button
+                                className="w-7 h-7 flex items-center justify-center rounded text-[#555555] hover:text-red-500 hover:bg-red-50"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setDeleteTarget(doc);
+                                }}
+                              >
                                 <svg
-                                  className="w-3 h-3"
-                                  fill="currentColor"
+                                  className="w-4 h-4"
+                                  fill="none"
+                                  stroke="currentColor"
                                   viewBox="0 0 24 24"
                                 >
-                                  <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM12 17c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z" />
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                                  />
                                 </svg>
-                              )}
-                            </button>
-                            <button
-                              className="p-0.5 text-stone-400 hover:text-stone-600"
-                              title="重命名"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setRenamingId(doc.id);
-                                setRenameValue(doc.name);
-                              }}
-                            >
-                              <svg
-                                className="w-3 h-3"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  strokeWidth={2}
-                                  d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                                />
-                              </svg>
-                            </button>
-                            <button
-                              className="p-0.5 text-stone-400 hover:text-red-500"
-                              title="删除"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleDelete(doc.id);
-                              }}
-                            >
-                              <svg
-                                className="w-3 h-3"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  strokeWidth={2}
-                                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                                />
-                              </svg>
-                            </button>
+                              </button>
+                            </CendTooltip>
                           </>
                         )}
                       </div>
@@ -328,6 +320,36 @@ export default function DocumentList({
         onApplyRule={handleApplyRule}
         applyingRuleId={applyingRuleId}
       />
+
+      {/* Delete confirmation */}
+      {!!deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="fixed inset-0 bg-black/40"
+            onClick={() => setDeleteTarget(null)}
+          />
+          <div className="relative z-10 bg-white border border-[#E8E8E6] rounded-2xl shadow-[0_20px_60px_-12px_rgba(0,0,0,0.08)] p-6 max-w-md w-full mx-4">
+            <h2 className="text-lg font-semibold text-[#1A1A1A]">确认删除</h2>
+            <p className="text-sm text-[#8A8A8A] mt-2">
+              确定要删除文档「{deleteTarget?.name}」吗？此操作不可撤销。
+            </p>
+            <div className="flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2 mt-6">
+              <button
+                onClick={() => setDeleteTarget(null)}
+                className="inline-flex items-center justify-center whitespace-nowrap rounded-lg text-sm font-medium transition-colors h-10 px-4 py-2 border border-[#E8E8E6] text-[#555555] hover:bg-[#F5F5F4] hover:text-[#1A1A1A] mt-2 sm:mt-0"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleDeleteConfirm}
+                className="inline-flex items-center justify-center whitespace-nowrap rounded-lg text-sm font-medium transition-colors h-10 px-4 py-2 bg-red-700 hover:bg-red-800 text-white"
+              >
+                确认删除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
