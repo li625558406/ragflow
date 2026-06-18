@@ -791,7 +791,7 @@ export default function FavoritePanel({ apiFetch }: Props) {
               <textarea
                 value={editContent}
                 onChange={(e) => setEditContent(e.target.value)}
-                className="w-full max-w-3xl mx-auto block h-full p-6 text-base leading-relaxed resize-none focus:outline-none border-x border-[#EAEAEA]"
+                className="w-full max-w-3xl mx-auto block h-full p-6 text-base leading-relaxed resize-none focus:outline-none border-x border-[#EAEAEA] text-[#333333] bg-white"
                 placeholder="编辑内容..."
               />
             </div>
