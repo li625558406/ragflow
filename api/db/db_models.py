@@ -250,8 +250,26 @@ class BaseModel(Model):
                 ts_val = normalized[cls._meta.combined[f"{f_n}_time"]]
                 if isinstance(ts_val, (datetime, date)):
                     normalized[cls._meta.combined[f"{f_n}_date"]] = ts_val.strftime("%Y-%m-%d %H:%M:%S") if isinstance(ts_val, datetime) else ts_val.strftime("%Y-%m-%d")
-                else:
-                    normalized[cls._meta.combined[f"{f_n}_date"]] = timestamp_to_date(ts_val)
+                elif isinstance(ts_val, str) and ts_val.strip():
+                    # Handle datetime string (e.g. "2026-05-24 17:33:16" from external APIs)
+                    try:
+                        dt = datetime.strptime(ts_val.strip(), "%Y-%m-%d %H:%M:%S")
+                        normalized[cls._meta.combined[f"{f_n}_date"]] = dt.strftime("%Y-%m-%d %H:%M:%S")
+                    except ValueError:
+                        try:
+                            dt = datetime.strptime(ts_val.strip(), "%Y-%m-%d")
+                            normalized[cls._meta.combined[f"{f_n}_date"]] = dt.strftime("%Y-%m-%d")
+                        except ValueError:
+                            try:
+                                normalized[cls._meta.combined[f"{f_n}_date"]] = timestamp_to_date(ts_val)
+                            except (ValueError, TypeError):
+                                pass  # non-standard format, leave _date unset
+                elif ts_val:
+                    # Numeric timestamp (int/float) or other truthy value
+                    try:
+                        normalized[cls._meta.combined[f"{f_n}_date"]] = timestamp_to_date(ts_val)
+                    except (ValueError, TypeError):
+                        pass  # unrecognized value, leave _date unset
 
         return normalized
 

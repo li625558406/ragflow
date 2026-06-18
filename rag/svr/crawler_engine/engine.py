@@ -367,6 +367,9 @@ class CrawlerEngine:
                     if detail_result:
                         item = detail_result
 
+                # Extract file URLs from detail HTML so attachments flow to KB
+                self._extract_files_from_item(item)
+
                 # Phase 3: STORAGE — write to all targets
                 normalized = item_from_dict(item, site_id=self._config.site_id,
                                             section=section_label)
@@ -452,6 +455,61 @@ class CrawlerEngine:
             if val:
                 return str(val)
         return ""
+
+    def _extract_files_from_item(self, item: Dict[str, Any]) -> None:
+        """Extract file download URLs from detail HTML and add as 'files' key.
+
+        Crawler detail adapters only extract text content, never file/attachment
+        info. This scans the HTML for <a> links to known file types (PDF, DOC, etc.)
+        and adds them so _extract_attachments() → StoragePipeline._handle_attachments()
+        can download and upload them to KB.
+
+        Mirrors bid_tool_service._extract_file_urls_from_html().
+        """
+        # Skip if files/attachments already present (e.g. from API JSON response)
+        if item.get("files") or item.get("attachments") or item.get("fileList"):
+            return
+
+        # Look for HTML content in various keys
+        html = (item.get("content_html") or item.get("detail_html") or
+                item.get("html") or item.get("detail") or "")
+        if not html or not isinstance(html, str):
+            return
+
+        # Resolve relative URLs against the item's own URL
+        base_url = item.get("url") or ""
+
+        import re
+        from urllib.parse import unquote, urljoin
+
+        file_ext_pattern = (
+            r'\.(pdf|doc|docx|xls|xlsx|zip|rar|7z|tar|gz|ppt|pptx|'
+            r'txt|cad|dwg|jpg|jpeg|png|gif|bmp)(\?|$)'
+        )
+        results = []
+        seen_urls = set()
+        for match in re.finditer(
+            r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>([^<]*)</a>',
+            html, re.IGNORECASE,
+        ):
+            url = match.group(1).strip()
+            text = match.group(2).strip() or unquote(url.rsplit("/", 1)[-1])
+            url_lower = url.lower()
+            if (re.search(file_ext_pattern, url_lower)
+                    or re.search(file_ext_pattern, text.lower())):
+                # Resolve relative URLs against the item's base URL
+                if base_url and not url.startswith("http"):
+                    url = urljoin(base_url, url)
+                if url not in seen_urls:
+                    seen_urls.add(url)
+                    results.append({"file_name": text, "file_url": url})
+
+        if results:
+            item["files"] = results
+            logging.info(
+                "Engine: extracted %d file URLs from detail HTML for item %s",
+                len(results), item.get("title", "")[:60],
+            )
 
     def _get_active_section_label(self) -> str:
         return getattr(self, "_active_section_label", "default")
