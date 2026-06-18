@@ -622,18 +622,23 @@ class Canvas(Graph):
                         buff_m = ""
                         stream = cpn_obj.output("content")()
                         cpn_name = self.get_component_name(cpn_obj._id)
+                        think_events = 0
+                        content_events = 0
                         async def _process_stream(m):
-                            nonlocal buff_m, _m, tts_mdl
+                            nonlocal buff_m, _m, tts_mdl, think_events, content_events
                             if not m:
                                 return
                             if m == "<think>":
+                                think_events += 1
                                 return decorate("message", {"content": "", "start_to_think": True})
 
                             elif m == "</think>":
+                                think_events += 1
                                 return decorate("message", {"content": "", "end_to_think": True})
 
                             buff_m += m
                             _m += m
+                            content_events += 1
 
                             if len(buff_m) > 16:
                                 ev = decorate(
@@ -665,6 +670,9 @@ class Canvas(Graph):
                             yield decorate("message", {"content": "", "audio_binary": self.tts(tts_mdl, buff_m)})
                             buff_m = ""
                         cpn_obj.set_output("content", _m)
+                        logging.info("[CANVAS-MSG-END] cpn=%s cpn_name=%s total_content_len=%d think_events=%d content_events=%d has_think_block=%s",
+                                     cpn_obj._id, cpn_name, len(_m), think_events, content_events,
+                                     "<think>" in _m and "</think>" in _m)
                     else:
                         cpn_name = self.get_component_name(cpn_obj._id)
                         yield decorate("message", {"content": cpn_obj.output("content")})

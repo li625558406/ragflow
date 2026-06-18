@@ -283,14 +283,20 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
         "files": files
     })
     txt = ""
+    sse_msg_count = 0
+    sse_think_start_count = 0
+    sse_think_end_count = 0
     try:
         async for ans in canvas.run(query=query, files=files, user_id=user_id, inputs=inputs, internet=kwargs.get("internet")):
             ans["session_id"] = session_id
             if ans["event"] == "message":
+                sse_msg_count += 1
                 if ans["data"].get("start_to_think"):
                     txt += "<think>"
+                    sse_think_start_count += 1
                 elif ans["data"].get("end_to_think"):
                     txt += "</think>"
+                    sse_think_end_count += 1
                 else:
                     txt += ans["data"]["content"]
             yield "data:" + json.dumps(ans, ensure_ascii=False) + "\n\n"
@@ -316,6 +322,16 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
         "errors": conv.errors,
         "source": conv.source,
     }
+    # ── [SSE-DIAG] detailed diagnostics for intermittent no-output issue ──
+    has_think_block = "<think>" in txt and "</think>" in txt
+    visible_text = txt
+    if has_think_block:
+        end_pos = txt.rfind("</think>") + len("</think>")
+        visible_text = txt[end_pos:]
+    logging.info("[SSE-DIAG] session=%s sse_msg_events=%d think_start=%d think_end=%d txt_total=%d visible_after_think=%d has_think=%s visible_preview=%s",
+                 session_id, sse_msg_count, sse_think_start_count, sse_think_end_count,
+                 len(txt), len(visible_text.strip()), has_think_block,
+                 visible_text.strip()[:200].replace("\n", "\\n"))
     logging.info(f"[completion] Saving session {conv_data['id']}: {len(conv_data['message'])} messages, content length={len(txt)} chars")
     try:
         rows = API4ConversationService.append_message(conv_data["id"], conv_data)

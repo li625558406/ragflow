@@ -314,16 +314,21 @@ async def download_agent_file():
 async def _iter_session_completion_events(tenant_id, agent_id, req, return_trace):
     # Stream and non-stream session completions share the same event parsing and trace injection.
     trace_items = []
+    event_counts = {}
+    filtered_count = 0
+    session_id = req.get("session_id", "?")
     async for answer in agent_completion(tenant_id=tenant_id, agent_id=agent_id, **req):
         if isinstance(answer, str):
             try:
                 ans = json.loads(answer[5:])
             except Exception:
+                filtered_count += 1
                 continue
         else:
             ans = answer
 
-        event = ans.get("event")
+        event = ans.get("event", "?")
+        event_counts[event] = event_counts.get(event, 0) + 1
         if event == "node_finished":
             if return_trace:
                 data = ans.get("data", {})
@@ -339,6 +344,11 @@ async def _iter_session_completion_events(tenant_id, agent_id, req, return_trace
 
         if event in ["message", "message_end", "workflow_started", "node_started", "workflow_finished"]:
             yield ans
+        else:
+            filtered_count += 1
+
+    logging.info("[SSE-FILTER] session=%s events_by_type=%s filtered=%d",
+                 session_id, dict(event_counts), filtered_count)
 
 
 @manager.route("/agents/templates", methods=["GET"])  # noqa: F821

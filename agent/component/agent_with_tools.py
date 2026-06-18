@@ -274,7 +274,24 @@ class Agent(LLM, ToolBase):
     async def stream_output_with_tools_async(self, prompt, msg, user_defined_prompt={}):
         if len(msg) > 3:
             st = timer()
-            user_request = await full_question(messages=msg, chat_mdl=self.chat_mdl)
+            # Truncate assistant messages to prevent full_question LLM from
+            # confusing previous agent outputs with user-provided content.
+            truncated = []
+            for m in msg:
+                if m["role"] == "assistant" and len(m.get("content", "")) > 200:
+                    truncated.append({**m, "content": m["content"][:200] + "..."})
+                else:
+                    truncated.append(m)
+            user_request = await full_question(messages=truncated, chat_mdl=self.chat_mdl)
+            # Safety: if full_question hallucinates a huge report instead of a
+            # refined question, fall back to the original user message.
+            original = msg[-1]["content"]
+            if len(user_request) > max(len(original) * 5, 500):
+                logging.warning(
+                    "[FULL-QUESTION] output too long (%d chars vs original %d), falling back",
+                    len(user_request), len(original)
+                )
+                user_request = original
             self.callback("Multi-turn conversation optimization", {}, user_request, elapsed_time=timer() - st)
             msg = [*msg[:-1], {"role": "user", "content": user_request}]
 
@@ -307,7 +324,14 @@ class Agent(LLM, ToolBase):
             self._append_system_prompt(msg, citation_prompt())
             cited = True
 
+        logging.info("[STREAM-START] agent=%s need2cite=%s cited=%s has_chunks_before=%s msg_count=%d",
+                     self._id, need2cite, cited, has_chunks_before, len(msg))
+
         answer = ""
+        delta_count = 0
+        first_delta_yielded = False
+        think_content_len = 0
+        in_think = False
         async for delta in self._generate_streamly(msg):
             if self.check_if_canceled("Agent streaming"):
                 return
@@ -319,8 +343,33 @@ class Agent(LLM, ToolBase):
                     self.set_output("_ERROR", delta)
                 return
             if not need2cite or cited:
+                if not first_delta_yielded:
+                    logging.info("[STREAM-FIRST-YIELD] agent=%s delta_count=%d preview=%s",
+                                 self._id, delta_count, delta[:80].replace("\n", "\\n"))
+                    first_delta_yielded = True
                 yield delta
             answer += delta
+            delta_count += 1
+            # Track think block content length
+            if delta == "<think>":
+                in_think = True
+                continue
+            if delta == "</think>":
+                in_think = False
+                continue
+            if in_think:
+                think_content_len += len(delta)
+
+        # ── [STREAM-END] diagnostic: what was actually streamed ──
+        has_think_block = "<think>" in answer and "</think>" in answer
+        visible_answer = answer
+        if has_think_block:
+            # Extract visible content after </think> for length calc
+            end_think_pos = answer.rfind("</think>")
+            visible_answer = answer[end_think_pos + len("</think>"):]
+        logging.info("[STREAM-END] agent=%s delta_count=%d answer_total_len=%d think_len=%d visible_after_think_len=%d has_think_block=%s visible_preview=%s",
+                     self._id, delta_count, len(answer), think_content_len, len(visible_answer.strip()),
+                     has_think_block, visible_answer.strip()[:150].replace("\n", "\\n"))
 
         if not need2cite or cited:
             artifact_md = self._collect_tool_artifact_markdown(existing_text=answer)
@@ -328,12 +377,14 @@ class Agent(LLM, ToolBase):
                 yield "\n\n" + artifact_md
                 answer += "\n\n" + artifact_md
             self.set_output("content", answer)
+            logging.info("[STREAM-PATH] agent=%s path=direct_return answer_final_len=%d", self._id, len(answer))
             return
 
         # Re-check: chunks may have been populated by retrieval tools during streaming
         if not self._canvas.get_reference()["chunks"]:
             yield answer
             self.set_output("content", answer)
+            logging.info("[STREAM-PATH] agent=%s path=no_chunks_recheck answer_len=%d", self._id, len(answer))
             return
 
         st = timer()
@@ -349,6 +400,7 @@ class Agent(LLM, ToolBase):
             cited_answer += "\n\n" + artifact_md
         self.callback("gen_citations", {}, cited_answer, elapsed_time=timer() - st)
         self.set_output("content", cited_answer)
+        logging.info("[STREAM-PATH] agent=%s path=citations cited_answer_len=%d", self._id, len(cited_answer))
 
     @staticmethod
     def _strip_internal_tags(text: str) -> str:
