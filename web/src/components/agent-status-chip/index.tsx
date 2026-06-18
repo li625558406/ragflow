@@ -26,6 +26,7 @@ function ToolChip({
         [styles.toolChipDone]: isDone,
         [styles.toolChipActive]: isCurrent,
       })}
+      title={tool.tool_name}
     >
       <Wrench size={9} />
       <span className={styles.toolChipName}>{tool.tool_name}</span>

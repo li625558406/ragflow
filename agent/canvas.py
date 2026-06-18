@@ -554,7 +554,7 @@ class Canvas(Graph):
             except Exception:
                 pass
 
-            return decorate("node_finished",{
+            ev = {
                            "inputs": inputs,
                            "outputs": outputs,
                            "component_id": cpn_obj._id,
@@ -563,10 +563,13 @@ class Canvas(Graph):
                            "error": cpn_obj.error(),
                            "elapsed_time": time.perf_counter() - cpn_obj.output("_created_time"),
                            "created_at": cpn_obj.output("_created_time"),
-                           "tool_usage": tool_usage,
-                       })
+                       }
+            if tool_usage is not None:
+                ev["tool_usage"] = tool_usage
+            return decorate("node_finished", ev)
 
         self.error = ""
+        self._tool_event_queue = asyncio.Queue()
         idx = len(self.path) - 1
         partials = []
         tts_mdl = None
@@ -603,6 +606,11 @@ class Canvas(Graph):
                                     ev = eq.get_nowait()
                                     yield decorate(ev["event"], ev["data"])
                                     drained = True
+                    # Drain tool event queue — tool usage appears in real-time
+                    while not self._tool_event_queue.empty():
+                        ev = self._tool_event_queue.get_nowait()
+                        yield decorate(ev["event"], ev["data"])
+                        drained = True
                     now = time.time()
                     if not drained and now - last_yield > 15:
                         yield decorate("heartbeat", {})
@@ -627,6 +635,10 @@ class Canvas(Graph):
                         while not eq.empty():
                             ev = eq.get_nowait()
                             yield decorate(ev["event"], ev["data"])
+            # Drain any remaining tool events.
+            while not self._tool_event_queue.empty():
+                ev = self._tool_event_queue.get_nowait()
+                yield decorate(ev["event"], ev["data"])
 
             to = len(self.path)
             # post-processing of components invocation
@@ -936,6 +948,19 @@ class Canvas(Graph):
         agent_ids = agent_id.split("-->")
         agent_name = self.get_component_name(agent_ids[0])
         path = agent_name if len(agent_ids) < 2 else agent_name+"-->"+"-->".join(agent_ids[1:])
+        # Emit real-time tool event to SSE stream (before Redis try,
+        # so the UI updates even if Redis is temporarily unavailable).
+        q = getattr(self, "_tool_event_queue", None)
+        if q:
+            q.put_nowait({
+                "event": "node_logs",
+                "data": {
+                    "component_id": agent_ids[0],
+                    "component_name": agent_name,
+                    "tool_name": func_name,
+                    "elapsed_time": elapsed_time,
+                }
+            })
         try:
             bin = REDIS_CONN.get(f"{self.task_id}-{self.message_id}-logs")
             if bin:

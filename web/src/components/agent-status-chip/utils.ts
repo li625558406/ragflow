@@ -63,7 +63,11 @@ export function deriveStatus(eventList: INodeEvent[]): StatusInfo {
         step.finishedAt = evt.created_at;
         step.error = data.error;
         step.elapsedTime = data.elapsed_time;
-        step.tools = data.tool_usage || [];
+        // Only overwrite tools if node_finished provides the authoritative list.
+        // When Redis is unavailable the field is absent, so real-time tools survive.
+        if (data.tool_usage != null) {
+          step.tools = data.tool_usage;
+        }
       } else {
         // Node finished without a corresponding started event (race condition)
         stepMap.set(data.component_id, {
@@ -74,8 +78,24 @@ export function deriveStatus(eventList: INodeEvent[]): StatusInfo {
           finishedAt: evt.created_at,
           error: data.error,
           elapsedTime: data.elapsed_time,
-          tools: data.tool_usage || [],
+          tools: data.tool_usage != null ? data.tool_usage : [],
         });
+      }
+    }
+
+    // Real-time tool usage events (node_logs emitted during tool execution).
+    // Only accept before node_finished to prevent duplicates with the
+    // authoritative tool_usage list that node_finished provides.
+    if (evt.event === MessageEventType.NodeLogs) {
+      const logData = data as any;
+      if (logData.tool_name) {
+        const step = stepMap.get(logData.component_id);
+        if (step && !step.finishedAt) {
+          step.tools.push({
+            tool_name: logData.tool_name,
+            elapsed_time: logData.elapsed_time,
+          });
+        }
       }
     }
   }
