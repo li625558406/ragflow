@@ -58,6 +58,8 @@ class LLMToolPluginCallSession(ToolCallSession):
     async def tool_call_async(self, name: str, arguments: dict[str, Any]) -> Any:
         assert name in self.tools_map, f"LLM tool {name} does not exist"
         logging.info(f"[ToolCall] invoke name={name} arguments={str(arguments)[:200]}")
+        # Notify UI that tool execution is starting
+        self.callback(name, arguments, None, elapsed_time=None, status="running")
         st = timer()
         tool_obj = self.tools_map[name]
         if isinstance(tool_obj, MCPToolCallSession):
@@ -105,7 +107,7 @@ class LLMToolPluginCallSession(ToolCallSession):
                     name, len(resp), has_citation, has_think, has_verification
                 )
         # ── END DIAGNOSTIC ──
-        self.callback(name, arguments, resp, elapsed_time=elapsed)
+        self.callback(name, arguments, resp, elapsed_time=elapsed, status="done")
         return resp
 
     def get_tool_obj(self, name):

@@ -29,6 +29,7 @@ export interface IAnswerEvent<T> {
 export interface IToolUsage {
   tool_name: string;
   elapsed_time?: number;
+  status?: 'running' | 'done';
 }
 
 export interface INodeData {

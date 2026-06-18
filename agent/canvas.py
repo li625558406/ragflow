@@ -959,7 +959,7 @@ class Canvas(Graph):
 
         return asyncio.run(self.get_files_async(files, layout_recognize))
 
-    def tool_use_callback(self, agent_id: str, func_name: str, params: dict, result: Any, elapsed_time=None):
+    def tool_use_callback(self, agent_id: str, func_name: str, params: dict, result: Any, elapsed_time=None, status=None):
         agent_ids = agent_id.split("-->")
         agent_name = self.get_component_name(agent_ids[0])
         path = agent_name if len(agent_ids) < 2 else agent_name+"-->"+"-->".join(agent_ids[1:])
@@ -974,11 +974,15 @@ class Canvas(Graph):
                     "component_name": agent_name,
                     "tool_name": func_name,
                     "elapsed_time": elapsed_time,
+                    "status": status,
                 }
             })
-            logging.info(f"[TOOL-QUEUE-PUSH] component_id={agent_ids[0]} tool={func_name} elapsed={elapsed_time} queue_size≈{q.qsize()}")
+            logging.info(f"[TOOL-QUEUE-PUSH] component_id={agent_ids[0]} tool={func_name} elapsed={elapsed_time} status={status} queue_size≈{q.qsize()}")
         else:
             logging.warning(f"[TOOL-QUEUE-MISSING] component_id={agent_ids[0]} tool={func_name} — _tool_event_queue not found!")
+        # Only persist "done" events to Redis; "running" events are transient UI signals.
+        if status == "running":
+            return
         try:
             bin = REDIS_CONN.get(f"{self.task_id}-{self.message_id}-logs")
             if bin:

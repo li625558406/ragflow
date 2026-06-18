@@ -84,17 +84,40 @@ export function deriveStatus(eventList: INodeEvent[]): StatusInfo {
     }
 
     // Real-time tool usage events (node_logs emitted during tool execution).
-    // Only accept before node_finished to prevent duplicates with the
-    // authoritative tool_usage list that node_finished provides.
+    // "running" events add a placeholder; "done" events update it with timing.
     if (evt.event === MessageEventType.NodeLogs) {
       const logData = data as any;
       if (logData.tool_name) {
         const step = stepMap.get(logData.component_id);
         if (step && !step.finishedAt) {
-          step.tools.push({
-            tool_name: logData.tool_name,
-            elapsed_time: logData.elapsed_time,
-          });
+          if (logData.status === 'done') {
+            // Update the matching running tool or push if not found
+            const existing = step.tools.find(
+              (t) =>
+                t.tool_name === logData.tool_name && t.status === 'running',
+            );
+            if (existing) {
+              existing.status = 'done';
+              existing.elapsed_time = logData.elapsed_time;
+            } else {
+              step.tools.push({
+                tool_name: logData.tool_name,
+                elapsed_time: logData.elapsed_time,
+                status: 'done',
+              });
+            }
+          } else {
+            // "running" — add a spinner placeholder (avoid duplicates)
+            const already = step.tools.find(
+              (t) => t.tool_name === logData.tool_name,
+            );
+            if (!already) {
+              step.tools.push({
+                tool_name: logData.tool_name,
+                status: 'running',
+              });
+            }
+          }
         }
       }
     }

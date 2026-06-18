@@ -20,20 +20,32 @@ function ToolChip({
   isDone: boolean;
   isCurrent: boolean;
 }) {
+  const isRunning = tool.status === 'running';
+
   return (
     <div
       className={cn(styles.toolChip, {
-        [styles.toolChipDone]: isDone,
-        [styles.toolChipActive]: isCurrent,
+        [styles.toolChipDone]: isDone && !isRunning,
+        [styles.toolChipActive]: isCurrent || isRunning,
+        [styles.toolChipRunning]: isRunning,
       })}
       title={tool.tool_name}
     >
-      <Wrench size={9} />
+      {isRunning ? (
+        <Loader2 size={9} className="animate-spin" />
+      ) : (
+        <Wrench size={9} />
+      )}
       <span className={styles.toolChipName}>{tool.tool_name}</span>
-      {tool.elapsed_time !== undefined && tool.elapsed_time !== null && (
-        <span className={styles.toolChipTime}>
-          {formatDuration(tool.elapsed_time)}
-        </span>
+      {isRunning ? (
+        <span className={styles.toolChipTime}>执行中</span>
+      ) : (
+        tool.elapsed_time !== undefined &&
+        tool.elapsed_time !== null && (
+          <span className={styles.toolChipTime}>
+            {formatDuration(tool.elapsed_time)}
+          </span>
+        )
       )}
     </div>
   );
