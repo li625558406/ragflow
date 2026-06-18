@@ -3,7 +3,7 @@ import { cn } from '@/lib/utils';
 import { CheckCircle2, Loader2, Wrench, XCircle } from 'lucide-react';
 import { useMemo } from 'react';
 import styles from './index.module.less';
-import { deriveStatus, formatDuration, getNodeAction } from './utils';
+import { deriveStatus, getNodeAction } from './utils';
 
 interface IProps {
   eventList: INodeEvent[];
@@ -20,33 +20,16 @@ function ToolChip({
   isDone: boolean;
   isCurrent: boolean;
 }) {
-  const isRunning = tool.status === 'running';
-
   return (
     <div
       className={cn(styles.toolChip, {
-        [styles.toolChipDone]: isDone && !isRunning,
-        [styles.toolChipActive]: isCurrent || isRunning,
-        [styles.toolChipRunning]: isRunning,
+        [styles.toolChipDone]: isDone,
+        [styles.toolChipActive]: isCurrent,
       })}
       title={tool.tool_name}
     >
-      {isRunning ? (
-        <Loader2 size={9} className="animate-spin" />
-      ) : (
-        <Wrench size={9} />
-      )}
+      <Wrench size={9} />
       <span className={styles.toolChipName}>{tool.tool_name}</span>
-      {isRunning ? (
-        <span className={styles.toolChipTime}>执行中</span>
-      ) : (
-        tool.elapsed_time !== undefined &&
-        tool.elapsed_time !== null && (
-          <span className={styles.toolChipTime}>
-            {formatDuration(tool.elapsed_time)}
-          </span>
-        )
-      )}
     </div>
   );
 }

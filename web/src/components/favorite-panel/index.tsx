@@ -284,9 +284,17 @@ export default function FavoritePanel({ apiFetch, refreshToken }: Props) {
           ) : (
             <div className="px-2 space-y-0.5">
               {favorites.map((fav, idx) => (
-                <button
+                <div
                   key={fav.id}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => handleSelect(fav.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      handleSelect(fav.id);
+                    }
+                  }}
                   className={`cs-list-enter cs-list-d${Math.min(idx, 7)} w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer transition text-left group whitespace-nowrap ${
                     selectedFavorite?.id === fav.id
                       ? 'bg-[#F5F5F4] text-[#1A1A1A]'
@@ -357,7 +365,7 @@ export default function FavoritePanel({ apiFetch, refreshToken }: Props) {
                       {formatTime(fav.updated_at || fav.created_at)}
                     </div>
                   </div>
-                </button>
+                </div>
               ))}
             </div>
           )}

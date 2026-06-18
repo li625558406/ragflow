@@ -264,10 +264,28 @@
   white-space: nowrap;
   max-width: 130px;
   overflow: hidden;
+  position: relative;
   border: 1px solid rgba(146, 161, 194, 0.25);
   background: rgba(146, 161, 194, 0.06);
   color: #92a1c2;
   transition: all 0.3s ease;
+}
+
+.toolChip::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.4) 50%,
+    transparent 100%
+  );
+  transform: translateX(-100%);
+  animation: shimmer 1.5s ease-in-out infinite;
 }
 
 .toolChipDone {
@@ -276,17 +294,14 @@
   color: #15803d;
 }
 
+.toolChipDone::after {
+  display: none;
+}
+
 .toolChipActive {
   border-color: rgba(63, 91, 141, 0.2);
   background: rgba(63, 91, 141, 0.06);
   color: #3f5b8d;
-}
-
-.toolChipRunning {
-  border-color: rgba(63, 91, 141, 0.3);
-  background: rgba(63, 91, 141, 0.1);
-  color: #3f5b8d;
-  animation: toolChipPulse 1.5s ease-in-out infinite;
 }
 
 .toolChipName {
@@ -322,12 +337,11 @@
   }
 }
 
-@keyframes toolChipPulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 rgba(63, 91, 141, 0.2);
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
   }
-  50% {
-    box-shadow: 0 0 0 3px rgba(63, 91, 141, 0.08);
+  100% {
+    transform: translateX(100%);
   }
 }

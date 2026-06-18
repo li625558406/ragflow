@@ -106,8 +106,8 @@ export function deriveStatus(eventList: INodeEvent[]): StatusInfo {
                 status: 'done',
               });
             }
-          } else {
-            // "running" — add a spinner placeholder (avoid duplicates)
+          } else if (logData.status === 'running') {
+            // New backend: explicit "running" signal — add placeholder
             const already = step.tools.find(
               (t) => t.tool_name === logData.tool_name,
             );
@@ -115,6 +115,18 @@ export function deriveStatus(eventList: INodeEvent[]): StatusInfo {
               step.tools.push({
                 tool_name: logData.tool_name,
                 status: 'running',
+              });
+            }
+          } else {
+            // Old backend: no status field — add without status;
+            // ToolChip will infer running-vs-done from the step's isDone prop.
+            const already = step.tools.find(
+              (t) => t.tool_name === logData.tool_name,
+            );
+            if (!already) {
+              step.tools.push({
+                tool_name: logData.tool_name,
+                elapsed_time: logData.elapsed_time,
               });
             }
           }
