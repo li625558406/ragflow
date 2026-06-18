@@ -692,12 +692,21 @@ class Canvas(Graph):
                                 if ev:
                                     chunk_idx[0] += 1
                                     yield ev
+                                # Drain tool events produced during LLM streaming —
+                                # tools fire inside _generate_streamly, which runs
+                                # after the heartbeat loop has already stopped.
+                                while not self._tool_event_queue.empty():
+                                    tev = self._tool_event_queue.get_nowait()
+                                    yield decorate(tev["event"], tev["data"])
                         else:
                             for m in stream:
                                 ev= await _process_stream(m)
                                 if ev:
                                     chunk_idx[0] += 1
                                     yield ev
+                                while not self._tool_event_queue.empty():
+                                    tev = self._tool_event_queue.get_nowait()
+                                    yield decorate(tev["event"], tev["data"])
                         if buff_m:
                             yield decorate("message", {"content": "", "audio_binary": self.tts(tts_mdl, buff_m)})
                             buff_m = ""
