@@ -755,6 +755,25 @@ class User(DataBaseModel, AuthUser):
         db_table = "user"
 
 
+class UserToken(DataBaseModel):
+    """Multi-device token table: each device login creates a new row instead of overwriting users.access_token.
+    This allows simultaneous web + mobile sessions without kicking each other out.
+    """
+    id = CharField(max_length=32, primary_key=True)
+    user_id = CharField(max_length=32, null=False, index=True)
+    token = CharField(max_length=255, null=False, index=True, unique=True)
+    device_type = CharField(max_length=32, default="web")
+    device_name = CharField(max_length=255, null=True)
+    last_used_at = DateTimeField(null=True)
+    create_time = BigIntegerField(null=True)
+    create_date = DateTimeField(null=True)
+    update_time = BigIntegerField(null=True)
+    update_date = DateTimeField(null=True)
+
+    class Meta:
+        db_table = "user_token"
+
+
 class Tenant(DataBaseModel):
     id = CharField(max_length=32, primary_key=True)
     name = CharField(max_length=100, null=True, help_text="Tenant name", index=True)

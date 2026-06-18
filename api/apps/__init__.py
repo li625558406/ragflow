@@ -25,6 +25,7 @@ from quart_cors import cors
 from common.constants import StatusEnum, RetCode
 from api.db.db_models import close_connection, APIToken
 from api.db.services import UserService
+from api.db.services.user_token_service import UserTokenService
 from api.utils.json_encode import CustomJSONEncoder
 from api.utils import commands
 
@@ -125,11 +126,22 @@ def _load_user():
             logging.warning(f"Authentication attempt with invalid token format: {len(access_token)} chars")
             return None
 
+        # Check new multi-device UserToken table first
+        user_token = UserTokenService.find_by_token(access_token)
+        if user_token:
+            user = UserService.query(id=user_token.user_id, status=StatusEnum.VALID.value)
+            if user:
+                g.user = user[0]
+                return user[0]
+
+        # Fallback: legacy access_token in users table (auto-migrate on first use)
         user = UserService.query(access_token=access_token, status=StatusEnum.VALID.value)
         if user:
             if not user[0].access_token or not user[0].access_token.strip():
                 logging.warning(f"User {user[0].email} has empty access_token in database")
                 return None
+            # Auto-migrate legacy token to multi-device table
+            UserTokenService.migrate_legacy_token(user[0].id, user[0].access_token)
             g.user = user[0]
             return user[0]
         return None
@@ -153,11 +165,21 @@ def _load_user():
     except Exception as e_api_token:
         logging.warning(f"load_user from api token got exception {e_api_token}")
 
-    # Fallback: try raw token directly as access_token (e.g. frontend sent raw UUID instead of signed JWT)
+    # Fallback: try raw token directly (e.g. frontend sent raw UUID instead of signed JWT)
     try:
         if len(auth_token) >= 32:
+            # Check new UserToken table first
+            user_token = UserTokenService.find_by_token(auth_token)
+            if user_token:
+                user = UserService.query(id=user_token.user_id, status=StatusEnum.VALID.value)
+                if user:
+                    g.user = user[0]
+                    return user[0]
+            # Fallback: legacy access_token
             user = UserService.query(access_token=auth_token, status=StatusEnum.VALID.value)
             if user:
+                if user[0].access_token and user[0].access_token.strip():
+                    UserTokenService.migrate_legacy_token(user[0].id, user[0].access_token)
                 g.user = user[0]
                 return user[0]
     except Exception:

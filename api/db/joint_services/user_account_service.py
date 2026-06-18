@@ -100,6 +100,10 @@ def create_new_user(user_info: dict) -> dict:
         TenantLLMService.insert_many(tenant_llm)
         FileService.insert(file)
 
+        # Create UserToken for multi-device support
+        from api.db.services.user_token_service import UserTokenService as UTS
+        UTS.create_token(user_id=user_id, device_type="api", device_name="Batch Registration", token=user_info['access_token'])
+
         return {
             "success": True,
             "user_info": user_info,

@@ -253,8 +253,37 @@ ssh ... "docker exec docker-ragflow-cpu-1 nginx -s reload"
 ### 后端部署
 SCP 修改的 Python 文件到服务器对应路径 → `docker restart docker-ragflow-cpu-1`
 
+### Flutter 本地开发 (Android 模拟器)
+
+**环境变量** (已写入 `~/.bashrc`，新终端自动生效):
+
+```bash
+export ANDROID_HOME="F:/code"
+export JAVA_HOME="F:/androidstudio/jbr"      # Android Studio 自带 JDK 21
+PATH=$(echo "$PATH" | sed 's#/c/Program Files (x86)/Common Files/Oracle/Java/javapath:##')
+export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:/c/Users/lg186/flutter/bin:$PATH"
+```
+
+| 组件 | 路径 |
+|---|---|
+| Flutter 3.44.2 | `C:/Users/lg186/flutter` |
+| JDK 21 | `F:/androidstudio/jbr` |
+| Android SDK | `F:/code` |
+| AVD | `flutter_emulator` (Pixel 6, API 36) |
+
+**快速启动**:
+```bash
+emulator -avd flutter_emulator -no-snapshot-load &  # 或从 AS AVD Manager 启动
+cd D:/AI/ragflow2/bidding_app
+flutter run -d emulator-5554
+```
+
+**API 地址** (`lib/core/api/api_client.dart`):
+- 本机无 Docker: `http://47.98.102.55:9380` (远程服务器)
+- 本机有 Docker: `http://10.0.2.2:9380` (模拟器→宿主机)
+
 ### Flutter APK 构建
-需要中国镜像环境变量 + Java 17 (`C:/Program Files/ojdkbuild/java-17-openjdk-17.0.3.0.6-1`) + NDK 28.2 + lucide_icons Dart 3.12 兼容性修复。详见 `F:\投标项目\AI\本地部署服务器.md`。
+需要中国镜像环境变量 + Java 17 + NDK 28.2 + lucide_icons 兼容性修复。详见 `F:\投标项目\AI\本地部署服务器.md`。
 
 ---
 

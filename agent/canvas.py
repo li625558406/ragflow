@@ -21,6 +21,7 @@ import binascii
 import json
 import logging
 import pickle
+import queue
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -569,7 +570,8 @@ class Canvas(Graph):
             return decorate("node_finished", ev)
 
         self.error = ""
-        self._tool_event_queue = asyncio.Queue()
+        self._tool_event_queue = queue.Queue()
+        logging.info(f"[TOOL-QUEUE-INIT] queue created for canvas run")
         idx = len(self.path) - 1
         partials = []
         tts_mdl = None
@@ -609,6 +611,7 @@ class Canvas(Graph):
                     # Drain tool event queue — tool usage appears in real-time
                     while not self._tool_event_queue.empty():
                         ev = self._tool_event_queue.get_nowait()
+                        logging.info(f"[TOOL-HEARTBEAT-DRAIN] component_id={ev['data'].get('component_id')} tool={ev['data'].get('tool_name')}")
                         yield decorate(ev["event"], ev["data"])
                         drained = True
                     now = time.time()
@@ -970,6 +973,9 @@ class Canvas(Graph):
                     "elapsed_time": elapsed_time,
                 }
             })
+            logging.info(f"[TOOL-QUEUE-PUSH] component_id={agent_ids[0]} tool={func_name} elapsed={elapsed_time} queue_size≈{q.qsize()}")
+        else:
+            logging.warning(f"[TOOL-QUEUE-MISSING] component_id={agent_ids[0]} tool={func_name} — _tool_event_queue not found!")
         try:
             bin = REDIS_CONN.get(f"{self.task_id}-{self.message_id}-logs")
             if bin:

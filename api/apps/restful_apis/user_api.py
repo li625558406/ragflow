@@ -47,6 +47,8 @@ from api.utils.crypt import decrypt
 from api.utils.tenant_utils import ensure_tenant_model_id_for_params
 from rag.utils.redis_conn import REDIS_CONN
 from api.apps import login_required, current_user, login_user, logout_user
+from api.db.services.user_token_service import UserTokenService
+from itsdangerous.url_safe import URLSafeTimedSerializer as Serializer
 from api.utils.web_utils import (
     send_email_html,
     OTP_LENGTH,
@@ -122,14 +124,21 @@ async def login():
         )
     elif user:
         response_data = user.to_json()
-        user.access_token = get_uuid()
+        device_type = json_body.get("device_type", "web")
+        device_name = json_body.get("device_name", None)
+        # Create a multi-device token instead of overwriting
+        user_token = UserTokenService.create_token(user.id, device_type, device_name)
+        # Keep legacy access_token in sync for backward compatibility
+        user.access_token = user_token.token
         login_user(user)
         user.update_time = current_timestamp()
         user.update_date = datetime_format(datetime.now())
         user.save()
         msg = "Welcome back!"
 
-        return await construct_response(data=response_data, auth=user.get_id(), message=msg)
+        jwt = Serializer(secret_key=settings.SECRET_KEY)
+        auth_token = jwt.dumps(str(user_token.token))
+        return await construct_response(data=response_data, auth=auth_token, message=msg)
     else:
         return get_json_result(
             data=False,
@@ -245,8 +254,12 @@ async def oauth_callback(channel):
 
                 # Try to log in
                 user = users[0]
+                token_obj = UserTokenService.create_token(user.id, "web", f"OAuth-{channel}")
+                user.access_token = token_obj.token
+                user.save()
                 login_user(user)
-                return redirect(f"/?auth={user.get_id()}")
+                jwt = Serializer(secret_key=settings.SECRET_KEY)
+                return redirect(f"/?auth={jwt.dumps(str(token_obj.token))}")
 
             except Exception as e:
                 rollback_user_registration(user_id)
@@ -255,13 +268,15 @@ async def oauth_callback(channel):
 
         # User exists, try to log in
         user = users[0]
-        user.access_token = get_uuid()
         if user and hasattr(user, 'is_active') and user.is_active == "0":
             return redirect("/?error=user_inactive")
 
-        login_user(user)
+        token_obj = UserTokenService.create_token(user.id, "web", f"OAuth-{channel}")
+        user.access_token = token_obj.token
         user.save()
-        return redirect(f"/?auth={user.get_id()}")
+        login_user(user)
+        jwt = Serializer(secret_key=settings.SECRET_KEY)
+        return redirect(f"/?auth={jwt.dumps(str(token_obj.token))}")
     except Exception as e:
         logging.exception(e)
         return redirect(f"/?error={str(e)}")
@@ -271,7 +286,8 @@ async def oauth_callback(channel):
 @login_required
 async def log_out():
     """
-    User logout endpoint.
+    User logout endpoint. Only deletes current device's token.
+    Other devices stay logged in.
     ---
     tags:
       - User
@@ -283,8 +299,16 @@ async def log_out():
         schema:
           type: object
     """
-    current_user.access_token = f"INVALID_{secrets.token_hex(16)}"
-    current_user.save()
+    # Delete current device's UserToken
+    jwt = Serializer(secret_key=settings.SECRET_KEY)
+    authorization = request.headers.get("Authorization", "")
+    if authorization.lower().startswith("bearer "):
+        auth_token = authorization.split(maxsplit=1)[1]
+        try:
+            raw_token = str(jwt.loads(auth_token))
+            UserTokenService.delete_token(raw_token)
+        except Exception:
+            pass
     logout_user()
     return get_json_result(data=True)
 
@@ -526,10 +550,20 @@ async def user_add():
         if len(users) > 1:
             raise Exception(f"Same email: {email_address} exists!")
         user = users[0]
+        # Create UserToken record for multi-device support
+        new_token = user_dict["access_token"]
+        UserTokenService.create_token(
+            user_id=user.id,
+            device_type="web",
+            device_name="Registration Token",
+            token=new_token,
+        )
         login_user(user)
+        jwt = Serializer(secret_key=settings.SECRET_KEY)
+        auth_token = jwt.dumps(str(new_token))
         return await construct_response(
             data=user.to_json(),
-            auth=user.get_id(),
+            auth=auth_token,
             message=f"{nickname}, welcome aboard!",
         )
     except Exception as e:

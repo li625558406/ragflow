@@ -304,13 +304,23 @@ def login_or_apikey_required(func):
 
         # 2) Try login token (itsdangerous-signed access_token)
         from api.db.services.user_service import UserService, UserTenantService
+        from api.db.services.user_token_service import UserTokenService
         from common.constants import StatusEnum
         from common import settings
         from itsdangerous.url_safe import URLSafeTimedSerializer as Serializer
         try:
             jwt = Serializer(secret_key=settings.SECRET_KEY)
             raw_token = str(jwt.loads(token))
-            user = UserService.query(access_token=raw_token, status=StatusEnum.VALID.value)
+            user = None
+            # Check new multi-device UserToken table first
+            user_token = UserTokenService.find_by_token(raw_token)
+            if user_token:
+                user = UserService.query(id=user_token.user_id, status=StatusEnum.VALID.value)
+            # Fallback: legacy access_token
+            if not user:
+                user = UserService.query(access_token=raw_token, status=StatusEnum.VALID.value)
+                if user:
+                    UserTokenService.migrate_legacy_token(user[0].id, raw_token)
             if user:
                 tenants = UserTenantService.query(user_id=user[0].id)
                 if tenants:
@@ -382,13 +392,23 @@ def token_required(func):
         # Fallback: try login token (for clients that use login token as API token)
         # Login tokens are JWT-encoded (URLSafeTimedSerializer), need to decode to get raw access_token
         from api.db.services.user_service import UserService
+        from api.db.services.user_token_service import UserTokenService
         from common.constants import StatusEnum
         from common import settings
         from itsdangerous.url_safe import URLSafeTimedSerializer as Serializer
         try:
             jwt = Serializer(secret_key=settings.SECRET_KEY)
             raw_token = str(jwt.loads(token))
-            user = UserService.query(access_token=raw_token, status=StatusEnum.VALID.value)
+            user = None
+            # Check new multi-device UserToken table first
+            user_token = UserTokenService.find_by_token(raw_token)
+            if user_token:
+                user = UserService.query(id=user_token.user_id, status=StatusEnum.VALID.value)
+            # Fallback: legacy access_token
+            if not user:
+                user = UserService.query(access_token=raw_token, status=StatusEnum.VALID.value)
+                if user:
+                    UserTokenService.migrate_legacy_token(user[0].id, raw_token)
             if user:
                 # On success, inject tenant_id from user's tenant
                 from api.db.services.user_service import UserTenantService

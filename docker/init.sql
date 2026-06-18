@@ -148,3 +148,38 @@ VALUES
  '{"key_points": "请提取以下法律文书的核心条款：\n\n{content}", "scope": "请分析以下法律文书的适用范围：\n\n{content}", "risks": "请提示以下法律文书的风险注意点：\n\n{content}"}',
  '{"max_chars": 2000, "max_chunks": 10}',
  1, 1, UNIX_TIMESTAMP(), NOW(), UNIX_TIMESTAMP(), NOW());
+
+-- 多设备登录Token表（2026-06-18）
+-- 每个设备独立 token，支持 Web + Mobile + API 同时在线互不踢出
+CREATE TABLE IF NOT EXISTS user_token (
+    id VARCHAR(32) PRIMARY KEY,
+    user_id VARCHAR(32) NOT NULL,
+    token VARCHAR(255) NOT NULL UNIQUE,
+    device_type VARCHAR(32) DEFAULT 'web',
+    device_name VARCHAR(255) DEFAULT NULL,
+    last_used_at DATETIME DEFAULT NULL,
+    create_time BIGINT DEFAULT NULL,
+    create_date DATETIME DEFAULT NULL,
+    update_time BIGINT DEFAULT NULL,
+    update_date DATETIME DEFAULT NULL,
+    INDEX idx_user_id (user_id),
+    INDEX idx_token (token)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 将现有用户的 access_token 迁移到新表（幂等，已存在则跳过）
+INSERT IGNORE INTO user_token (id, user_id, token, device_type, device_name, last_used_at, create_time, create_date, update_time, update_date)
+SELECT
+    CONCAT('mt_', id) AS id,
+    id AS user_id,
+    access_token AS token,
+    'web' AS device_type,
+    'Legacy Token (auto-migrated)' AS device_name,
+    NOW() AS last_used_at,
+    UNIX_TIMESTAMP() AS create_time,
+    NOW() AS create_date,
+    UNIX_TIMESTAMP() AS update_time,
+    NOW() AS update_date
+FROM user
+WHERE access_token IS NOT NULL
+  AND access_token != ''
+  AND access_token NOT LIKE 'INVALID_%';
