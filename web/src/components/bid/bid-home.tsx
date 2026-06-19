@@ -1,11 +1,11 @@
-import { Button } from '@/components/ui/button';
 import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
+  CDialog,
+  CDialogContent,
+  CDialogFooter,
+  CDialogHeader,
+  CDialogTitle,
+} from '@/components/c-dialog';
+import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import starredSiteService, {
@@ -886,42 +886,50 @@ export default function BidHome() {
       )}
 
       {/* Delete confirm dialog */}
-      <Dialog
+      <CDialog
         open={deleteTarget !== null}
         onOpenChange={(open) => {
           if (!open) setDeleteTarget(null);
         }}
       >
-        <DialogContent className="sm:max-w-[360px]">
-          <DialogHeader>
-            <DialogTitle>确认删除</DialogTitle>
-          </DialogHeader>
+        <CDialogContent className="sm:max-w-[360px]">
+          <CDialogHeader>
+            <CDialogTitle>确认删除</CDialogTitle>
+          </CDialogHeader>
           <p className="text-sm text-[#525252]">
             确定要删除「{deleteTarget?.name}」吗？此操作不可撤销。
           </p>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteTarget(null)}>
+          <CDialogFooter>
+            <button
+              onClick={() => setDeleteTarget(null)}
+              className="px-4 py-2.5 text-sm text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4] rounded-lg transition-colors"
+            >
               取消
-            </Button>
-            <Button
+            </button>
+            <button
               onClick={confirmDelete}
-              className="bg-red-500 hover:bg-red-600 text-white"
+              className="px-5 py-2.5 text-sm font-medium bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors"
             >
               确认删除
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            </button>
+          </CDialogFooter>
+        </CDialogContent>
+      </CDialog>
 
       {/* Add / Edit dialog */}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="sm:max-w-[420px]">
-          <DialogHeader>
-            <DialogTitle>{isEditing ? '修改网站' : '新增网站'}</DialogTitle>
-          </DialogHeader>
+      <CDialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <CDialogContent className="sm:max-w-[420px]">
+          <CDialogHeader>
+            <CDialogTitle>{isEditing ? '修改网站' : '新增网站'}</CDialogTitle>
+          </CDialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-1.5">
-              <Label htmlFor="site-name">网站名称</Label>
+              <Label
+                htmlFor="site-name"
+                className="text-sm font-medium text-[#1A1A1A]"
+              >
+                网站名称
+              </Label>
               <Input
                 id="site-name"
                 value={newName}
@@ -930,10 +938,16 @@ export default function BidHome() {
                   setFormError('');
                 }}
                 placeholder="例如：住房和城乡建设部"
+                className="bg-white border-[#E8E8E6] rounded-xl h-10 text-sm text-[#1A1A1A] placeholder:text-[#B0B0B0] focus:border-[#1A1A1A] focus:ring-0"
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="site-url">网址</Label>
+              <Label
+                htmlFor="site-url"
+                className="text-sm font-medium text-[#1A1A1A]"
+              >
+                网址
+              </Label>
               <Input
                 id="site-url"
                 value={newUrl}
@@ -942,10 +956,16 @@ export default function BidHome() {
                   setFormError('');
                 }}
                 placeholder="https://www.example.com"
+                className="bg-white border-[#E8E8E6] rounded-xl h-10 text-sm text-[#1A1A1A] placeholder:text-[#B0B0B0] focus:border-[#1A1A1A] focus:ring-0"
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="site-group">所属分组</Label>
+              <Label
+                htmlFor="site-group"
+                className="text-sm font-medium text-[#1A1A1A]"
+              >
+                所属分组
+              </Label>
               {!isNewGroup ? (
                 <select
                   id="site-group"
@@ -960,7 +980,14 @@ export default function BidHome() {
                     }
                     setFormError('');
                   }}
-                  className="flex-1 h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="h-10 w-full rounded-xl border border-[#E8E8E6] bg-white px-3 py-2 text-sm text-[#1A1A1A] shadow-none transition-colors appearance-none cursor-pointer focus:outline-none focus:border-[#1A1A1A] focus:ring-0"
+                  style={{
+                    backgroundImage:
+                      'url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%2712%27 viewBox=%270 0 24 24%27 fill=%27none%27 stroke=%27%23A3A3A3%27 stroke-width=%272%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27%3E%3Cpath d=%27m6 9 6 6 6-6%27/%3E%3C/svg%3E")',
+                    backgroundRepeat: 'no-repeat',
+                    backgroundPosition: 'right 12px center',
+                    paddingRight: '2.25rem',
+                  }}
                 >
                   {groupNames.map((g) => (
                     <option key={g} value={g}>
@@ -978,33 +1005,38 @@ export default function BidHome() {
                       setFormError('');
                     }}
                     placeholder="输入新分组名称"
-                    className="flex-1"
+                    className="flex-1 bg-white border-[#E8E8E6] rounded-xl h-10 text-sm text-[#1A1A1A] placeholder:text-[#B0B0B0] focus:border-[#1A1A1A] focus:ring-0"
                   />
-                  <Button
-                    variant="ghost"
-                    size="sm"
+                  <button
                     onClick={() => {
                       setIsNewGroup(false);
                       setNewGroup(GROUPS[0].title);
                     }}
+                    className="px-3 py-1.5 text-sm text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4] rounded-lg transition-colors"
                   >
                     取消
-                  </Button>
+                  </button>
                 </div>
               )}
             </div>
             {formError && <p className="text-sm text-red-500">{formError}</p>}
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>
+          <CDialogFooter>
+            <button
+              onClick={() => setDialogOpen(false)}
+              className="px-4 py-2.5 text-sm text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4] rounded-lg transition-colors"
+            >
               取消
-            </Button>
-            <Button onClick={handleSave}>
+            </button>
+            <button
+              onClick={handleSave}
+              className="px-5 py-2.5 text-sm font-medium bg-[#1A1A1A] text-white rounded-lg hover:bg-[#333333] transition-colors"
+            >
               {isEditing ? '保存修改' : '确定添加'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            </button>
+          </CDialogFooter>
+        </CDialogContent>
+      </CDialog>
     </>
   );
 }

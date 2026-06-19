@@ -171,6 +171,12 @@ export default function CChat() {
       .cs-card-d2 { animation-delay: 0.12s; }
       .cs-card-d3 { animation-delay: 0.19s; }
       .cs-card-d4 { animation-delay: 0.26s; }
+      @keyframes cs-float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+      .cs-float { animation: cs-float 3.5s ease-in-out infinite; }
+      @keyframes cs-glow { 0%,100% { box-shadow: 0 0 0 0 rgba(0,0,0,0.05); } 50% { box-shadow: 0 0 0 14px rgba(0,0,0,0); } }
+      .cs-glow { animation: cs-glow 2.8s ease-in-out infinite; }
+      .cs-card-hover:hover .cs-card-icon { animation: cs-icon-pop 0.35s cubic-bezier(0.34,1.56,0.64,1); }
+      @keyframes cs-icon-pop { 0% { transform: scale(1); } 40% { transform: scale(1.18); } 100% { transform: scale(1); } }
       @keyframes cs-list-in { from { opacity: 0; transform: translateX(-6px); } to { opacity: 1; transform: translateX(0); } }
       .cs-list-enter { animation: cs-list-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both; }
       .cs-list-d0 { animation-delay: 0.03s; }
@@ -1546,26 +1552,26 @@ export default function CChat() {
               {derivedMessages.length === 0 && !isLoadingSession ? (
                 /* Empty state */
                 <div className="flex-1 flex items-center justify-center min-h-0 px-4">
-                  <div className="w-full max-w-2xl cs-input-enter">
-                    <div className="text-center mb-6">
-                      <div className="w-14 h-14 bg-[#EAEAEA] rounded-2xl mx-auto flex items-center justify-center mb-4">
-                        <MessageSquare
-                          className="w-7 h-7 text-[#000000]"
-                          strokeWidth={1.5}
-                        />
-                      </div>
-                      <p className="text-[#333333] text-sm">
-                        选择或创建一个对话开始分析
-                      </p>
-                      <p className="text-[#525252] text-sm mt-1">
-                        上传招标文件至知识库后，即可在此进行智能问答
-                      </p>
-                      {currentAgentPrologue && (
-                        <p className="text-[#525252] text-sm mt-2 max-w-md mx-auto leading-relaxed">
-                          {currentAgentPrologue}
+                  <div className="w-full max-w-3xl cs-input-enter">
+                    <div className="max-w-md mx-auto">
+                      {/* Floating icon with glow */}
+                      <div className="text-center mb-8">
+                        <div className="cs-float cs-glow w-16 h-16 bg-white border border-[#EBEBEB] rounded-2xl mx-auto flex items-center justify-center mb-5">
+                          <MessageSquare
+                            className="w-7 h-7 text-[#1A1A1A]"
+                            strokeWidth={1}
+                          />
+                        </div>
+                        <h2 className="text-[15px] font-semibold text-[#1A1A1A] tracking-tight">
+                          选择或创建一个对话开始分析
+                        </h2>
+                        <p className="text-[13px] text-[#8A8A8A] mt-1.5">
+                          上传招标文件至知识库后，即可在此进行智能问答
                         </p>
-                      )}
-                      <div className="grid grid-cols-2 gap-2.5 mt-5 max-w-sm mx-auto">
+                      </div>
+
+                      {/* Feature cards */}
+                      <div className="grid grid-cols-2 gap-3">
                         {[
                           {
                             icon: 'file-search-2',
@@ -1594,10 +1600,10 @@ export default function CChat() {
                         ].map((card, idx) => (
                           <div
                             key={card.label}
-                            className={`cs-card-enter cs-card-d${idx + 1} flex items-center gap-2 px-3 py-2.5 rounded-xl border border-[#E5E5E5] hover:border-[#000000] transition-colors cursor-pointer bg-white group`}
+                            className={`cs-card-enter cs-card-d${idx + 1} group flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#F0F0F0] bg-white hover:border-[#D4D4D4] hover:shadow-[0_4px_20px_rgba(0,0,0,0.05)] hover:-translate-y-0.5 transition-all duration-300 cursor-pointer`}
                           >
                             <div
-                              className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors"
+                              className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform duration-300"
                               style={{ backgroundColor: card.bg }}
                             >
                               <DynamicIcon
@@ -1607,7 +1613,7 @@ export default function CChat() {
                                 color={card.color}
                               />
                             </div>
-                            <span className="text-xs font-medium text-[#1a1a1a] group-hover:text-[#000000] transition-colors">
+                            <span className="text-xs font-medium text-[#555555] group-hover:text-[#1A1A1A] group-hover:scale-105 transition-all duration-300">
                               {card.label}
                             </span>
                           </div>
@@ -1615,7 +1621,7 @@ export default function CChat() {
                       </div>
                     </div>
                     {/* File chips + Input */}
-                    <div>
+                    <div className="mt-5">
                       <FileUpload
                         value={files}
                         onValueChange={setFiles}
