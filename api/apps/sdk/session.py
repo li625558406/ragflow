@@ -136,6 +136,34 @@ async def delete_agent_session(tenant_id, agent_id):
     return get_result()
 
 
+@manager.route("/agents/<agent_id>/sessions/<session_id>", methods=["PATCH"])  # noqa: F821
+@token_required
+async def update_agent_session(tenant_id, agent_id, session_id):
+    """Update an agent session (e.g. rename)."""
+    cvs = UserCanvasService.query(user_id=tenant_id, id=agent_id)
+    if not cvs:
+        return get_error_data_result(f"You don't own the agent {agent_id}")
+
+    if not API4ConversationService.query(id=session_id, dialog_id=agent_id):
+        return get_error_data_result(message="Session not found!")
+
+    req = await get_request_json()
+    name = req.get("name")
+    if name is not None:
+        if not isinstance(name, str) or not name.strip():
+            return get_data_error_result(message="`name` can not be empty.")
+        req["name"] = name.strip()[:255]
+
+    update_fields = {k: v for k, v in req.items() if k not in {"id", "dialog_id", "user_id"}}
+    if not API4ConversationService.update_by_id(session_id, update_fields):
+        return get_error_data_result(message="Session not found!")
+
+    ok, conv = API4ConversationService.get_by_id(session_id)
+    if not ok:
+        return get_error_data_result(message="Fail to update a session!")
+    return get_result(data=conv.to_dict())
+
+
 
 @manager.route("/chatbots/<dialog_id>/completions", methods=["POST"])  # noqa: F821
 async def chatbot_completions(dialog_id):
