@@ -335,6 +335,10 @@ export default function CChat() {
   }, [answerList, newSessionKey]);
 
   const stopConversation = useCallback(() => {
+    console.log(
+      '[STOP] stopConversation called, setting stoppedByUser=true, taskId=',
+      taskId,
+    );
     setStoppedByUser(true);
     stopOutputMessage();
     if (taskId) {
@@ -393,11 +397,29 @@ export default function CChat() {
   answerListRef.current = answerList;
 
   useEffect(() => {
-    if (done) return;
+    if (done) {
+      console.log(
+        '[EFFECT.STREAM] done=true, skipping (streamState.content.length=',
+        streamState.content?.length || 0,
+        ')',
+      );
+      return;
+    }
 
     const answer = streamState.content || getLatestError(answerListRef.current);
-    if (!answer) return;
+    if (!answer) {
+      console.log(
+        '[EFFECT.STREAM] done=false but no answer (content empty, no error)',
+      );
+      return;
+    }
 
+    console.log(
+      '[EFFECT.STREAM] updating message id=',
+      streamState.id,
+      'contentLen=',
+      answer.length,
+    );
     addNewestOneAnswer({
       answer: answer ?? '',
       attachment: streamState.attachment as any,
@@ -1079,6 +1101,14 @@ export default function CChat() {
   );
 
   const handlePressEnter = useCallback(async () => {
+    console.log(
+      '[SEND] handlePressEnter called, sendLoading=',
+      sendLoading,
+      'done=',
+      done,
+      'stoppedByUser=',
+      stoppedByUser,
+    );
     setStoppedByUser(false);
     // During IME composition, the controlled `value` hasn't been updated yet
     // — pull the real text directly from the DOM textarea
@@ -1086,7 +1116,17 @@ export default function CChat() {
       (composingRef.current
         ? textareaRef.current?.value?.trim()
         : value.trim()) || value.trim();
-    if (sendingLockRef.current || !query || sendLoading) return;
+    if (sendingLockRef.current || !query || sendLoading) {
+      console.log(
+        '[SEND] blocked: sendingLock=',
+        sendingLockRef.current,
+        'query=',
+        !!query,
+        'sendLoading=',
+        sendLoading,
+      );
+      return;
+    }
     sendingLockRef.current = true;
     // Auto-release after 1s in case send() fails synchronously
     // (normal path: sendLoading→true→false resets it via the effect below)
@@ -1253,11 +1293,28 @@ export default function CChat() {
               </div>
             </div>
           )}
+          {!sendLoading && stoppedByUser && (
+            <div className="flex justify-start gap-2 items-start max-w-[80rem] mx-auto mb-4">
+              <RAGFlowAvatar
+                name="标"
+                avatar=""
+                className="size-7 shrink-0 mt-0.5"
+              />
+              <div className="max-w-[85%]">
+                <div className="bg-white border border-[#F0F0F0] px-4 py-2.5 rounded-2xl rounded-bl-md">
+                  <div className="flex items-center gap-1.5 text-xs text-[#A3A3A3]">
+                    <CircleStop className="w-3.5 h-3.5" strokeWidth={2} />
+                    <span>已停止生成</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
           <div ref={scrollRef} />
         </>
       ),
     }),
-    [showSkeleton, scrollRef],
+    [showSkeleton, scrollRef, sendLoading, stoppedByUser],
   );
 
   // ── Render ──
@@ -2112,6 +2169,18 @@ export default function CChat() {
                                       <span>正在思考中...</span>
                                     </div>
                                   )}
+                                  {isLast &&
+                                    (console.log(
+                                      '[RENDER.INDICATOR] isLast=true streaming=',
+                                      streaming,
+                                      'stoppedByUser=',
+                                      stoppedByUser,
+                                      'sendLoading=',
+                                      sendLoading,
+                                      'msgHasContent=',
+                                      !!(msg.content || ''),
+                                    ),
+                                    null)}
                                   {!streaming && isLast && stoppedByUser && (
                                     <div className="flex items-center gap-1.5 mt-2 pt-2 border-t border-[#E5E5E5] text-xs text-[#A3A3A3]">
                                       <CircleStop

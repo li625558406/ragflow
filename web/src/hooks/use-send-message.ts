@@ -130,7 +130,7 @@ export interface IStreamState {
 // ── Debug logging for SSE stream diagnosis ──
 // Toggle this to trace event flow from SSE reader → streamState → UI.
 // Logs are prefixed with [SSE] for easy filtering in DevTools console.
-const DEBUG_SSE = false;
+const DEBUG_SSE = true;
 
 let _debugSeq = 0;
 function _debugId() {
@@ -284,6 +284,9 @@ export const useSendMessageBySSE = (
   }, []);
 
   const resetAnswerList = useCallback(() => {
+    console.log(
+      '[SSE.RESET] resetAnswerList called, clearing answerList + streamAcc + streamState',
+    );
     if (timer.current) {
       clearTimeout(timer.current);
     }
@@ -318,6 +321,10 @@ export const useSendMessageBySSE = (
       body: any,
       controller?: AbortController,
     ): Promise<{ response: Response; data: ResponseType } | undefined> => {
+      console.log(
+        '[SSE.SEND] starting new stream, clearing stale timer:',
+        !!timer.current,
+      );
       // Clear any pending resetAnswerList timer from a previous abort
       // to prevent it from clearing answerList during the new stream.
       if (timer.current) {
@@ -580,6 +587,7 @@ export const useSendMessageBySSE = (
             }
           } catch (e) {
             if (e instanceof DOMException && e.name === 'AbortError') {
+              console.log('[SSE.ABORT] inner catch, re-throwing AbortError');
               throw e; // re-throw so outer catch handles it (skips resetAnswerList)
             }
           }
@@ -610,6 +618,10 @@ export const useSendMessageBySSE = (
       } catch (e) {
         // Aborted: flush remaining content but do NOT clear the accumulator.
         // The user should see whatever was rendered before stopping.
+        console.log(
+          '[SSE.ABORT] outer catch, flushing stream state (not resetting), done was:',
+          done,
+        );
         flushStreamState();
         setDone(true);
         console.warn(e);
@@ -644,6 +656,7 @@ export const useSendMessageBySSE = (
   }, [flushEventBuffer, flushNextFanOutLane]);
 
   const stopOutputMessage = useCallback(() => {
+    console.log('[SSE.STOP] aborting SSE');
     sseRef.current?.abort();
   }, []);
 
