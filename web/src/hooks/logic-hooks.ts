@@ -570,6 +570,13 @@ export const useSelectDerivedMessages = () => {
       const idx = pre.findIndex((x) => x.id === answer.id);
 
       if (idx !== -1) {
+        const existing = pre[idx];
+        // Content unchanged: return same array so Virtuoso skips re-render.
+        // Prevents followOutput scroll jitter when node events arrive
+        // during streaming (every map() creates a new array reference).
+        if (existing.content === answer.answer) {
+          return pre;
+        }
         return pre.map((x) => {
           if (x.id === answer.id) {
             return { ...x, ...answer, content: answer.answer };

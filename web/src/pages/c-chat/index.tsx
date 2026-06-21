@@ -461,20 +461,6 @@ export default function CChat() {
     });
   };
 
-  // During streaming, Virtuoso's followOutput only reacts to new items,
-  // not in-place content updates. This effect scrolls to the last item
-  // when the user is at the bottom and content is still streaming.
-  useEffect(() => {
-    if (!sendLoading) return;
-    if (!isAtBottomVirtuosoRef.current) return;
-    if (derivedMessages.length === 0) return;
-    virtuosoRef.current?.scrollToIndex({
-      index: derivedMessages.length - 1,
-      behavior: 'auto',
-      align: 'end',
-    });
-  }, [streamState.content, sendLoading, derivedMessages.length]);
-
   // After collapse, scroll to the collapsed message row
   useEffect(() => {
     const targetId = collapseScrollTargetRef.current;
@@ -1216,6 +1202,50 @@ export default function CChat() {
     [setDerivedMessages],
   );
 
+  // Stabilize Virtuoso props: prevent unnecessary internal recalculations
+  // when latestNodeEvents changes but messages haven't.
+  const handleFollowOutput = useCallback((isAtBottom: boolean) => {
+    isAtBottomVirtuosoRef.current = isAtBottom;
+    return isAtBottom ? 'auto' : false;
+  }, []);
+
+  const lastMsgRole = derivedMessages[derivedMessages.length - 1]?.role;
+  const showSkeleton =
+    sendLoading &&
+    derivedMessages.length > 0 &&
+    lastMsgRole === MessageType.User;
+
+  const virtuosoComponents = useMemo(
+    () => ({
+      Footer: () => (
+        <div style={{ contain: 'layout style' }}>
+          {showSkeleton && (
+            <div className="flex justify-start cs-msg-enter gap-2 items-start max-w-[80rem] mx-auto mb-4">
+              <RAGFlowAvatar
+                name="标"
+                avatar=""
+                className="size-7 shrink-0 mt-0.5"
+              />
+              <div className="max-w-[85%]">
+                <div className="bg-white border border-[#D4D4D4] px-4 py-2.5 rounded-2xl rounded-bl-md">
+                  <div className="flex items-center gap-2 text-[#525252] text-sm py-1">
+                    <Loader2
+                      className="w-4 h-4 animate-spin text-[#A3A3A3]"
+                      strokeWidth={3}
+                    />
+                    <span>正在生成中...</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+          <div ref={scrollRef} />
+        </div>
+      ),
+    }),
+    [showSkeleton, scrollRef],
+  );
+
   // ── Render ──
   if (!token) {
     return null;
@@ -1847,12 +1877,9 @@ export default function CChat() {
                       ref={virtuosoRef}
                       key={newSessionKey}
                       className="flex-1 px-4 lg:px-6 py-4"
-                      style={{ overflowY: 'auto', scrollbarWidth: 'thin' }}
+                      style={{ overflowX: 'hidden', scrollbarWidth: 'thin' }}
                       data={derivedMessages}
-                      followOutput="smooth"
-                      atBottomStateChange={(atBottom) => {
-                        isAtBottomVirtuosoRef.current = atBottom;
-                      }}
+                      followOutput={handleFollowOutput}
                       initialTopMostItemIndex={Math.max(
                         0,
                         derivedMessages.length - 1,
@@ -2223,36 +2250,7 @@ export default function CChat() {
                           </div>
                         );
                       }}
-                      components={{
-                        Footer: () => (
-                          <>
-                            {sendLoading &&
-                              derivedMessages.length > 0 &&
-                              derivedMessages[derivedMessages.length - 1]
-                                ?.role === MessageType.User && (
-                                <div className="flex justify-start cs-msg-enter gap-2 items-start max-w-[80rem] mx-auto mb-4">
-                                  <RAGFlowAvatar
-                                    name="标"
-                                    avatar=""
-                                    className="size-7 shrink-0 mt-0.5"
-                                  />
-                                  <div className="max-w-[85%]">
-                                    <div className="bg-white border border-[#D4D4D4] px-4 py-2.5 rounded-2xl rounded-bl-md">
-                                      <div className="flex items-center gap-2 text-[#525252] text-sm py-1">
-                                        <Loader2
-                                          className="w-4 h-4 animate-spin text-[#A3A3A3]"
-                                          strokeWidth={3}
-                                        />
-                                        <span>正在生成中...</span>
-                                      </div>
-                                    </div>
-                                  </div>
-                                </div>
-                              )}
-                            <div ref={scrollRef} />
-                          </>
-                        ),
-                      }}
+                      components={virtuosoComponents}
                     />
                   )}
 
