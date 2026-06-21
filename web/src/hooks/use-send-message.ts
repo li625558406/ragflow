@@ -246,15 +246,9 @@ export const useSendMessageBySSE = (
 
   const scheduleStreamFlush = useCallback(() => {
     if (document.hidden) {
-      // rAF is paused in background tabs, so fall back to a low-frequency
-      // timer to prevent unbounded accumulation without rendering.
-      if (rafRef.current !== null) return;
-      rafRef.current = window.setTimeout(() => {
-        rafRef.current = null;
-        flushNextFanOutLane();
-        flushEventBuffer();
-        setStreamState({ ...streamAccRef.current });
-      }, 500);
+      // Events accumulate in streamAccRef/eventBufferRef (refs, not state).
+      // Skip setState to prevent unbounded React updates in background tabs.
+      // The visibilitychange handler flushes everything when tab becomes visible.
       return;
     }
 
