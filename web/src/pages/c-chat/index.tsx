@@ -32,6 +32,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  CircleStop,
   Copy,
   Download,
   FileText,
@@ -298,6 +299,8 @@ export default function CChat() {
   // Track IME composition so we don't block send while user is composing Chinese
   const composingRef = useRef(false);
   const [composing, setComposing] = useState(false);
+  // Track whether the user explicitly stopped generation
+  const [stoppedByUser, setStoppedByUser] = useState(false);
 
   // Debounce timers for session list / message loading
   const sessionLoadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
@@ -332,6 +335,7 @@ export default function CChat() {
   }, [answerList, newSessionKey]);
 
   const stopConversation = useCallback(() => {
+    setStoppedByUser(true);
     stopOutputMessage();
     if (taskId) {
       cancelConversation(taskId);
@@ -1075,6 +1079,7 @@ export default function CChat() {
   );
 
   const handlePressEnter = useCallback(async () => {
+    setStoppedByUser(false);
     // During IME composition, the controlled `value` hasn't been updated yet
     // — pull the real text directly from the DOM textarea
     const query =
@@ -1862,14 +1867,14 @@ export default function CChat() {
                               <button
                                 onClick={handlePressEnter}
                                 disabled={!value.trim() && !composing}
-                                className="shrink-0 size-9 flex items-center justify-center bg-[#1A1A1A] hover:bg-[#333333] text-white rounded-full transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
+                                className="shrink-0 size-9 flex items-center justify-center bg-[#1A1A1A] hover:bg-[#333333] text-white rounded-full transition-colors disabled:opacity-30 disabled:cursor-not-allowed relative z-10"
                               >
                                 <Send className="w-4 h-4" strokeWidth={2} />
                               </button>
                             ) : (
                               <button
                                 onClick={stopConversation}
-                                className="shrink-0 size-9 flex items-center justify-center bg-white border-2 border-[#1A1A1A] text-[#1A1A1A] hover:bg-[#F5F5F4] rounded-full transition-all active:scale-95"
+                                className="shrink-0 size-9 flex items-center justify-center bg-white border-2 border-[#1A1A1A] text-[#1A1A1A] hover:bg-[#F5F5F4] rounded-full transition-colors relative z-10"
                               >
                                 <Square
                                   className="w-3 h-3"
@@ -2105,6 +2110,15 @@ export default function CChat() {
                                         strokeWidth={3}
                                       />
                                       <span>正在思考中...</span>
+                                    </div>
+                                  )}
+                                  {!streaming && isLast && stoppedByUser && (
+                                    <div className="flex items-center gap-1.5 mt-2 pt-2 border-t border-[#E5E5E5] text-xs text-[#A3A3A3]">
+                                      <CircleStop
+                                        className="w-3.5 h-3.5"
+                                        strokeWidth={2}
+                                      />
+                                      <span>已停止生成</span>
                                     </div>
                                   )}
                                 </div>
@@ -2471,7 +2485,7 @@ export default function CChat() {
                                 <button
                                   onClick={handlePressEnter}
                                   disabled={!value.trim() && !composing}
-                                  className="shrink-0 size-9 flex items-center justify-center bg-[#1A1A1A] hover:bg-[#333333] text-white rounded-full transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
+                                  className="shrink-0 size-9 flex items-center justify-center bg-[#1A1A1A] hover:bg-[#333333] text-white rounded-full transition-colors disabled:opacity-30 disabled:cursor-not-allowed relative z-10"
                                 >
                                   <Send className="w-4 h-4" strokeWidth={2} />
                                 </button>
@@ -2479,7 +2493,7 @@ export default function CChat() {
                             ) : (
                               <button
                                 onClick={stopConversation}
-                                className="shrink-0 size-9 flex items-center justify-center bg-white border-2 border-[#1A1A1A] text-[#1A1A1A] hover:bg-[#F5F5F4] rounded-full transition-all active:scale-95"
+                                className="shrink-0 size-9 flex items-center justify-center bg-white border-2 border-[#1A1A1A] text-[#1A1A1A] hover:bg-[#F5F5F4] rounded-full transition-colors relative z-10"
                               >
                                 <Square
                                   className="w-3 h-3"

@@ -318,6 +318,12 @@ export const useSendMessageBySSE = (
       body: any,
       controller?: AbortController,
     ): Promise<{ response: Response; data: ResponseType } | undefined> => {
+      // Clear any pending resetAnswerList timer from a previous abort
+      // to prevent it from clearing answerList during the new stream.
+      if (timer.current) {
+        clearTimeout(timer.current);
+        timer.current = null;
+      }
       initializeSseRef();
       try {
         setDone(false);
@@ -334,6 +340,9 @@ export const useSendMessageBySSE = (
           fanOutLanes: undefined,
           fanOutDirty: false,
         };
+        // Reset streamState so stale content from a previous abort
+        // doesn't leak into the c-chat effect when done toggles to false.
+        setStreamState({ content: '', id: '' });
 
         const response = await fetch(url, {
           method: 'POST',
@@ -571,7 +580,7 @@ export const useSendMessageBySSE = (
             }
           } catch (e) {
             if (e instanceof DOMException && e.name === 'AbortError') {
-              break;
+              throw e; // re-throw so outer catch handles it (skips resetAnswerList)
             }
           }
         }

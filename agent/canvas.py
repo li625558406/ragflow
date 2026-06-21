@@ -34,7 +34,7 @@ from agent.component.base import ComponentBase
 from agent.dsl_migration import normalize_chunker_dsl
 from api.db.services.file_service import FileService
 from api.db.services.llm_service import LLMBundle
-from api.db.services.task_service import has_canceled
+from api.db.services.task_service import clear_canceled, has_canceled
 from api.db.joint_services.tenant_model_service import get_tenant_default_model_by_type
 from common.constants import LLMType
 from common.misc_utils import get_uuid, hash_str2int
@@ -441,6 +441,11 @@ class Canvas(Graph):
         if not self.path or self.path[-1].lower().find("userfillup") < 0:
             self.path.append("begin")
             self.retrieval.append({"chunks": [], "doc_aggs": []})
+
+        # Clear any stale cancel flag from a previous stop so a new run
+        # starts fresh — otherwise is_canceled() below would immediately
+        # block the new conversation with the same agent.
+        clear_canceled(self.task_id)
 
         if self.is_canceled():
             msg = f"Task {self.task_id} has been canceled before starting."

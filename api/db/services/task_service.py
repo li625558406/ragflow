@@ -524,6 +524,15 @@ def has_canceled(task_id):
     return False
 
 
+def clear_canceled(task_id):
+    """Clear the cancel flag before starting a new run so a previous
+    stop/cancel doesn't block the next conversation with the same agent."""
+    try:
+        REDIS_CONN.delete(f"{task_id}-cancel")
+    except Exception as e:
+        logging.exception(e)
+
+
 def queue_dataflow(tenant_id:str, flow_id:str, task_id:str, doc_id:str=CANVAS_DEBUG_DOC_ID, file:dict=None, priority: int=0, rerun:bool=False) -> tuple[bool, str]:
 
     task = dict(
