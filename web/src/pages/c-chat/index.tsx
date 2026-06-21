@@ -83,8 +83,6 @@ import {
 import { AgentChatContext } from '@/pages/agent/context';
 import api from '@/utils/api';
 import { markdownToBodyHtml } from '@/utils/markdown-to-word';
-import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
-
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { v4 as uuid } from 'uuid';
@@ -256,8 +254,8 @@ export default function CChat() {
   const pendingSendRef = useRef(false);
   const loadingSessionRef = useRef<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const virtuosoRef = useRef<VirtuosoHandle>(null);
-  const isAtBottomVirtuosoRef = useRef(true);
+  const messageContainerRef = useRef<HTMLDivElement>(null);
+  const isAtBottomRef = useRef(true);
   const [newSessionKey, setNewSessionKey] = useState(0);
   const [enableInternet] = useState(false);
   const [audioInputValue, setAudioInputValue] = useState<string | null>(null);
@@ -335,10 +333,6 @@ export default function CChat() {
   }, [answerList, newSessionKey]);
 
   const stopConversation = useCallback(() => {
-    console.log(
-      '[STOP] stopConversation called, setting stoppedByUser=true, taskId=',
-      taskId,
-    );
     setStoppedByUser(true);
     sendingLockRef.current = false; // release lock so re-send works immediately
     stopOutputMessage();
@@ -399,28 +393,14 @@ export default function CChat() {
 
   useEffect(() => {
     if (done) {
-      console.log(
-        '[EFFECT.STREAM] done=true, skipping (streamState.content.length=',
-        streamState.content?.length || 0,
-        ')',
-      );
       return;
     }
 
     const answer = streamState.content || getLatestError(answerListRef.current);
     if (!answer) {
-      console.log(
-        '[EFFECT.STREAM] done=false but no answer (content empty, no error)',
-      );
       return;
     }
 
-    console.log(
-      '[EFFECT.STREAM] updating message id=',
-      streamState.id,
-      'contentLen=',
-      answer.length,
-    );
     addNewestOneAnswer({
       answer: answer ?? '',
       attachment: streamState.attachment as any,
@@ -495,16 +475,15 @@ export default function CChat() {
   useEffect(() => {
     const targetId = collapseScrollTargetRef.current;
     if (!targetId) return;
-    if (virtuosoRef.current) {
+    if (messageContainerRef.current) {
       const idx = derivedMessages.findIndex((m) => m.id === targetId);
       if (idx >= 0) {
-        requestAnimationFrame(() => {
-          virtuosoRef.current?.scrollToIndex({
-            index: idx,
-            behavior: 'smooth',
-            align: 'start',
-          });
-        });
+        const el = messageContainerRef.current;
+        // Find the message element by data attribute or index
+        const msgEl = el.children[idx + 1]; // +1 for the h-6 spacer
+        if (msgEl) {
+          msgEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
       }
     }
     collapseScrollTargetRef.current = null;
@@ -1102,14 +1081,6 @@ export default function CChat() {
   );
 
   const handlePressEnter = useCallback(async () => {
-    console.log(
-      '[SEND] handlePressEnter called, sendLoading=',
-      sendLoading,
-      'done=',
-      done,
-      'stoppedByUser=',
-      stoppedByUser,
-    );
     setStoppedByUser(false);
     // During IME composition, the controlled `value` hasn't been updated yet
     // — pull the real text directly from the DOM textarea
@@ -1118,14 +1089,6 @@ export default function CChat() {
         ? textareaRef.current?.value?.trim()
         : value.trim()) || value.trim();
     if (sendingLockRef.current || !query || sendLoading) {
-      console.log(
-        '[SEND] blocked: sendingLock=',
-        sendingLockRef.current,
-        'query=',
-        !!query,
-        'sendLoading=',
-        sendLoading,
-      );
       return;
     }
     sendingLockRef.current = true;
@@ -1152,10 +1115,12 @@ export default function CChat() {
     setFiles([]);
     setDone(false); // triggers sendLoading → loading skeleton appears
     setTimeout(() => {
-      virtuosoRef.current?.scrollToIndex({
-        index: derivedMessages.length - 1,
-        behavior: 'auto',
-      });
+      if (messageContainerRef.current) {
+        messageContainerRef.current.scrollTo({
+          top: messageContainerRef.current.scrollHeight,
+          behavior: 'auto',
+        });
+      }
     }, 50);
 
     let sessionId = currentSessionId;
@@ -1256,50 +1221,31 @@ export default function CChat() {
     [setDerivedMessages],
   );
 
-  // Stabilize Virtuoso props: prevent unnecessary internal recalculations
-  // when latestNodeEvents changes but messages haven't.
-  const handleFollowOutput = useCallback((isAtBottom: boolean) => {
-    isAtBottomVirtuosoRef.current = isAtBottom;
-    return isAtBottom ? 'auto' : false;
-  }, []);
-
   const lastMsgRole = derivedMessages[derivedMessages.length - 1]?.role;
   const showSkeleton =
     sendLoading &&
     derivedMessages.length > 0 &&
     lastMsgRole === MessageType.User;
 
-  const virtuosoComponents = useMemo(
-    () => ({
-      Header: () => <div className="h-6" />,
-      Footer: () => (
-        <>
-          {showSkeleton && (
-            <div className="flex justify-start cs-msg-enter gap-2 items-start max-w-[80rem] mx-auto mb-4">
-              <RAGFlowAvatar
-                name="标"
-                avatar=""
-                className="size-7 shrink-0 mt-0.5"
-              />
-              <div className="max-w-[85%]">
-                <div className="bg-white border border-[#D4D4D4] px-4 py-2.5 rounded-2xl rounded-bl-md">
-                  <div className="flex items-center gap-2 text-[#525252] text-sm py-1">
-                    <Loader2
-                      className="w-4 h-4 animate-spin text-[#A3A3A3]"
-                      strokeWidth={3}
-                    />
-                    <span>正在生成中...</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-          <div ref={scrollRef} />
-        </>
-      ),
-    }),
-    [showSkeleton, scrollRef, sendLoading],
-  );
+  // Auto-scroll to bottom when new messages arrive (only if user was at bottom)
+  useEffect(() => {
+    if (isAtBottomRef.current && messageContainerRef.current) {
+      const el = messageContainerRef.current;
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    }
+  }, [derivedMessages]);
+
+  // Detect when user scrolls away from bottom
+  useEffect(() => {
+    const el = messageContainerRef.current;
+    if (!el) return;
+    const handleScroll = () => {
+      const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 50;
+      isAtBottomRef.current = atBottom;
+    };
+    el.addEventListener('scroll', handleScroll, { passive: true });
+    return () => el.removeEventListener('scroll', handleScroll);
+  }, [messageContainerRef]);
 
   // ── Render ──
   if (!token) {
@@ -1906,7 +1852,10 @@ export default function CChat() {
                             </Tooltip>
                             {!sendLoading ? (
                               <button
-                                onClick={handlePressEnter}
+                                onMouseDown={(e) => {
+                                  e.preventDefault();
+                                  handlePressEnter();
+                                }}
                                 disabled={!value.trim() && !composing}
                                 className="shrink-0 size-9 flex items-center justify-center bg-[#1A1A1A] hover:bg-[#333333] text-white rounded-full transition-colors disabled:opacity-30 disabled:cursor-not-allowed relative z-10"
                               >
@@ -1914,7 +1863,10 @@ export default function CChat() {
                               </button>
                             ) : (
                               <button
-                                onClick={stopConversation}
+                                onMouseDown={(e) => {
+                                  e.preventDefault();
+                                  stopConversation();
+                                }}
                                 className="shrink-0 size-9 flex items-center justify-center bg-white border-2 border-[#1A1A1A] text-[#1A1A1A] hover:bg-[#F5F5F4] rounded-full transition-colors relative z-10"
                               >
                                 <Square
@@ -1942,18 +1894,14 @@ export default function CChat() {
                       <p className="text-[#333333] text-sm">加载对话中...</p>
                     </div>
                   ) : (
-                    <Virtuoso
-                      ref={virtuosoRef}
+                    <div
+                      ref={messageContainerRef}
                       key={newSessionKey}
-                      className="flex-1 px-4 lg:px-6 pb-4"
-                      style={{ overflowX: 'hidden', scrollbarWidth: 'thin' }}
-                      data={derivedMessages}
-                      followOutput={handleFollowOutput}
-                      initialTopMostItemIndex={Math.max(
-                        0,
-                        derivedMessages.length - 1,
-                      )}
-                      itemContent={(index, msg) => {
+                      className="flex-1 overflow-y-auto overflow-x-hidden px-4 lg:px-6 pb-4"
+                      style={{ scrollbarWidth: 'thin' }}
+                    >
+                      <div className="h-6" />
+                      {derivedMessages.map((msg, index) => {
                         const i = index;
                         const isLast = i === derivedMessages.length - 1;
                         const streaming = isLast && sendLoading;
@@ -1965,7 +1913,10 @@ export default function CChat() {
                           const userName =
                             userInfo?.nickname || userInfo?.email || 'U';
                           return (
-                            <div className="max-w-[80rem] mx-auto mb-4">
+                            <div
+                              key={msg.id}
+                              className="max-w-[80rem] mx-auto mb-4"
+                            >
                               <div className="flex justify-end cs-msg-enter gap-2 items-start">
                                 <div className="max-w-[85%]">
                                   {favoriteMode && (
@@ -2084,7 +2035,10 @@ export default function CChat() {
                           favoriteMode &&
                           selectedMessageIds.has(msgSelectKey(msg));
                         return (
-                          <div className="max-w-[80rem] mx-auto mb-4">
+                          <div
+                            key={msg.id}
+                            className="max-w-[80rem] mx-auto mb-4"
+                          >
                             <div
                               data-msg-id={msg.id}
                               className="flex justify-start cs-msg-enter gap-2 items-start"
@@ -2140,9 +2094,6 @@ export default function CChat() {
                                         />
                                       </MarkdownErrorBoundary>
                                     </div>
-                                  )}
-                                  {streaming && (
-                                    <span className="inline-block w-2 h-4 bg-[#000000] ml-1 animate-pulse rounded-sm" />
                                   )}
                                   {streaming && isCurrentlyThinking && (
                                     <div className="flex items-center gap-2 text-[#525252] text-xs py-1">
@@ -2327,9 +2278,41 @@ export default function CChat() {
                             </div>
                           </div>
                         );
-                      }}
-                      components={virtuosoComponents}
-                    />
+                      })}
+                      {/* Skeleton: streaming indicator */}
+                      {showSkeleton && (
+                        <div className="flex justify-start cs-msg-enter gap-2 items-start max-w-[80rem] mx-auto mb-4">
+                          <RAGFlowAvatar
+                            name="标"
+                            avatar=""
+                            className="size-7 shrink-0 mt-0.5"
+                          />
+                          <div className="max-w-[85%]">
+                            <div className="bg-white border border-[#D4D4D4] px-4 py-2.5 rounded-2xl rounded-bl-md">
+                              <div className="flex items-center gap-2 text-[#525252] text-sm py-1">
+                                <Loader2
+                                  className="w-4 h-4 animate-spin text-[#A3A3A3]"
+                                  strokeWidth={3}
+                                />
+                                <span>正在生成中...</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      <div ref={scrollRef} />
+                    </div>
+                  )}
+
+                  {/* Stopped hint */}
+                  {!sendLoading && stoppedByUser && (
+                    <div className="text-center text-xs text-[#A3A3A3] py-1.5">
+                      <CircleStop
+                        className="w-3 h-3 inline-block mr-1 -mt-px"
+                        strokeWidth={2}
+                      />
+                      已停止生成
+                    </div>
                   )}
 
                   {/* Floating agent status chip — overlays messages on the left */}
@@ -2524,7 +2507,10 @@ export default function CChat() {
                                   </TooltipContent>
                                 </Tooltip>
                                 <button
-                                  onClick={handlePressEnter}
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    handlePressEnter();
+                                  }}
                                   disabled={!value.trim() && !composing}
                                   className="shrink-0 size-9 flex items-center justify-center bg-[#1A1A1A] hover:bg-[#333333] text-white rounded-full transition-colors disabled:opacity-30 disabled:cursor-not-allowed relative z-10"
                                 >
@@ -2533,7 +2519,10 @@ export default function CChat() {
                               </>
                             ) : (
                               <button
-                                onClick={stopConversation}
+                                onMouseDown={(e) => {
+                                  e.preventDefault();
+                                  stopConversation();
+                                }}
                                 className="shrink-0 size-9 flex items-center justify-center bg-white border-2 border-[#1A1A1A] text-[#1A1A1A] hover:bg-[#F5F5F4] rounded-full transition-colors relative z-10"
                               >
                                 <Square

@@ -3626,6 +3626,8 @@ sites:
     detail:
       type: api_request
       url: "https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/getInfoById"
+      params:
+        id: "{{ id }}"
       content_field: "data.content"
     format:
       parser_id: "naive"
