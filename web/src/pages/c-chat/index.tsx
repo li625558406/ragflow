@@ -295,6 +295,9 @@ export default function CChat() {
 
   // Prevent double-send: lock acquired synchronously before async state updates
   const sendingLockRef = useRef(false);
+  // Track IME composition so we don't block send while user is composing Chinese
+  const composingRef = useRef(false);
+  const [composing, setComposing] = useState(false);
 
   // Debounce timers for session list / message loading
   const sessionLoadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
@@ -1072,7 +1075,12 @@ export default function CChat() {
   );
 
   const handlePressEnter = useCallback(async () => {
-    const query = value.trim();
+    // During IME composition, the controlled `value` hasn't been updated yet
+    // — pull the real text directly from the DOM textarea
+    const query =
+      (composingRef.current
+        ? textareaRef.current?.value?.trim()
+        : value.trim()) || value.trim();
     if (sendingLockRef.current || !query || sendLoading) return;
     sendingLockRef.current = true;
     // Auto-release after 1s in case send() fails synchronously
@@ -1217,8 +1225,9 @@ export default function CChat() {
 
   const virtuosoComponents = useMemo(
     () => ({
+      Header: () => <div className="h-6" />,
       Footer: () => (
-        <div style={{ contain: 'layout style' }}>
+        <>
           {showSkeleton && (
             <div className="flex justify-start cs-msg-enter gap-2 items-start max-w-[80rem] mx-auto mb-4">
               <RAGFlowAvatar
@@ -1240,7 +1249,7 @@ export default function CChat() {
             </div>
           )}
           <div ref={scrollRef} />
-        </div>
+        </>
       ),
     }),
     [showSkeleton, scrollRef],
@@ -1691,7 +1700,7 @@ export default function CChat() {
                         <FileUploadDropzone
                           tabIndex={-1}
                           onClick={(event) => event.preventDefault()}
-                          className="absolute top-0 left-0 z-0 flex size-full items-center justify-center rounded-none border-none bg-background/50 p-0 opacity-0 backdrop-blur transition-opacity duration-200 ease-out data-[dragging]:z-10 data-[dragging]:opacity-100"
+                          className="absolute top-0 left-0 z-0 flex size-full items-center justify-center rounded-none border-none bg-background/50 p-0 opacity-0 pointer-events-none backdrop-blur transition-opacity duration-200 ease-out data-[dragging]:z-10 data-[dragging]:opacity-100 data-[dragging]:pointer-events-auto"
                         >
                           <div className="flex flex-col items-center gap-1 text-center">
                             <div className="flex items-center justify-center rounded-full border p-2.5">
@@ -1793,6 +1802,20 @@ export default function CChat() {
                             ref={textareaRef}
                             value={value}
                             onChange={handleInputChange}
+                            onCompositionStart={() => {
+                              composingRef.current = true;
+                              setComposing(true);
+                            }}
+                            onCompositionEnd={(
+                              e: React.CompositionEvent<HTMLTextAreaElement>,
+                            ) => {
+                              composingRef.current = false;
+                              setComposing(false);
+                              const finalValue = (
+                                e.target as HTMLTextAreaElement
+                              ).value;
+                              setValue(finalValue);
+                            }}
                             onKeyDown={(
                               e: React.KeyboardEvent<HTMLTextAreaElement>,
                             ) => {
@@ -1838,7 +1861,7 @@ export default function CChat() {
                             {!sendLoading ? (
                               <button
                                 onClick={handlePressEnter}
-                                disabled={!value.trim()}
+                                disabled={!value.trim() && !composing}
                                 className="shrink-0 size-9 flex items-center justify-center bg-[#1A1A1A] hover:bg-[#333333] text-white rounded-full transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
                               >
                                 <Send className="w-4 h-4" strokeWidth={2} />
@@ -1876,7 +1899,7 @@ export default function CChat() {
                     <Virtuoso
                       ref={virtuosoRef}
                       key={newSessionKey}
-                      className="flex-1 px-4 lg:px-6 py-4"
+                      className="flex-1 px-4 lg:px-6 pb-4"
                       style={{ overflowX: 'hidden', scrollbarWidth: 'thin' }}
                       data={derivedMessages}
                       followOutput={handleFollowOutput}
@@ -2280,7 +2303,7 @@ export default function CChat() {
                         <FileUploadDropzone
                           tabIndex={-1}
                           onClick={(event) => event.preventDefault()}
-                          className="absolute top-0 left-0 z-0 flex size-full items-center justify-center rounded-none border-none bg-background/50 p-0 opacity-0 backdrop-blur transition-opacity duration-200 ease-out data-[dragging]:z-10 data-[dragging]:opacity-100"
+                          className="absolute top-0 left-0 z-0 flex size-full items-center justify-center rounded-none border-none bg-background/50 p-0 opacity-0 pointer-events-none backdrop-blur transition-opacity duration-200 ease-out data-[dragging]:z-10 data-[dragging]:opacity-100 data-[dragging]:pointer-events-auto"
                         >
                           <div className="flex flex-col items-center gap-1 text-center">
                             <div className="flex items-center justify-center rounded-full border p-2.5">
@@ -2382,6 +2405,20 @@ export default function CChat() {
                             ref={textareaRef}
                             value={value}
                             onChange={handleInputChange}
+                            onCompositionStart={() => {
+                              composingRef.current = true;
+                              setComposing(true);
+                            }}
+                            onCompositionEnd={(
+                              e: React.CompositionEvent<HTMLTextAreaElement>,
+                            ) => {
+                              composingRef.current = false;
+                              setComposing(false);
+                              const finalValue = (
+                                e.target as HTMLTextAreaElement
+                              ).value;
+                              setValue(finalValue);
+                            }}
                             onKeyDown={(
                               e: React.KeyboardEvent<HTMLTextAreaElement>,
                             ) => {
@@ -2433,7 +2470,7 @@ export default function CChat() {
                                 </Tooltip>
                                 <button
                                   onClick={handlePressEnter}
-                                  disabled={!value.trim()}
+                                  disabled={!value.trim() && !composing}
                                   className="shrink-0 size-9 flex items-center justify-center bg-[#1A1A1A] hover:bg-[#333333] text-white rounded-full transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
                                 >
                                   <Send className="w-4 h-4" strokeWidth={2} />

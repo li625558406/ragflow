@@ -1,4 +1,5 @@
 import MarkdownContent from '@/components/next-markdown-content';
+import StreamMdContent from '@/components/stream-md-content';
 import { IReferenceChunk, IReferenceObject } from '@/interfaces/database/chat';
 import { memo, useMemo } from 'react';
 
@@ -16,13 +17,21 @@ interface ChapterSegment {
 }
 
 /**
- * Memo'd wrapper for a single MarkdownContent segment.
- * React.memo ensures that when a new chapter is appended to the parent,
- * already-rendered segments are NOT re-parsed by react-markdown.
+ * Memo'd segment renderer.
+ *
+ * During streaming (`loading === true`) the component delegates to
+ * StreamMdContent — an incremental block parser that only re-renders
+ * the currently-streaming block per token (≈300x fewer chars parsed).
+ *
+ * When the stream completes it falls back to MarkdownContent
+ * (react-markdown) for the full reference-citation / think-block UX.
  */
 const MemoMarkdownSegment = memo(function MemoMarkdownSegment(
   props: MarkdownContentProps,
 ) {
+  if (props.loading) {
+    return <StreamMdContent {...props} />;
+  }
   return <MarkdownContent {...props} />;
 });
 

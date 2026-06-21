@@ -1,0 +1,7 @@
+/* Fix missing --smd-blockquote-text in StreamMD light theme.
+   The upstream .smd-theme-light defines blockquote-border and blockquote-bg
+   but not blockquote-text, so it falls back to rgba(255,255,255,0.7) — white
+   text invisible on white backgrounds. */
+.smd-theme-light {
+  --smd-blockquote-text: #475569;
+}
