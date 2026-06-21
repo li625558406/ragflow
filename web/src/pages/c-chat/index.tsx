@@ -2360,6 +2360,28 @@ export default function CChat() {
                     />
                   )}
 
+                  {/* Stopped indicator — OUTSIDE Virtuoso so it always renders */}
+                  {!sendLoading && stoppedByUser && (
+                    <div className="flex justify-start gap-2 items-start max-w-[80rem] mx-auto mb-4 px-4 lg:px-6">
+                      <RAGFlowAvatar
+                        name="标"
+                        avatar=""
+                        className="size-7 shrink-0 mt-0.5"
+                      />
+                      <div className="max-w-[85%]">
+                        <div className="bg-white border border-[#F0F0F0] px-4 py-2.5 rounded-2xl rounded-bl-md">
+                          <div className="flex items-center gap-1.5 text-xs text-[#A3A3A3]">
+                            <CircleStop
+                              className="w-3.5 h-3.5"
+                              strokeWidth={2}
+                            />
+                            <span>已停止生成</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Floating agent status chip — overlays messages on the left */}
                   {latestNodeEvents && (
                     <div className="absolute left-1 top-1/2 -translate-y-1/2 z-50 max-w-[200px]">

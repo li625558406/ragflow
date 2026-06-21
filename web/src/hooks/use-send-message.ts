@@ -369,7 +369,8 @@ export const useSendMessageBySSE = (
             } catch {
               return { code: 0 };
             }
-          });
+          })
+          .catch(() => ({ code: 0 })); // AbortError: body stream aborted
 
         const reader = response?.body
           ?.pipeThrough(new TextDecoderStream())
