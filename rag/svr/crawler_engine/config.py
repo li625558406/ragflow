@@ -168,6 +168,7 @@ class SectionConfig:
     listing: Optional[ListingConfig] = None
     pagination: Optional[PaginationConfig] = None
     extract: Optional[ExtractConfig] = None
+    detail: Optional[DetailConfig] = None
 
 
 @dataclass
@@ -374,4 +375,5 @@ class ConfigLoader:
             listing=self._parse_listing(data.get("listing", {})),
             pagination=self._parse_pagination(data.get("pagination", {})),
             extract=self._parse_extract(data.get("extract", {})),
+            detail=self._parse_detail(data.get("detail", {})),
         )

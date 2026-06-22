@@ -80,13 +80,32 @@ function StreamMdContent(props: StreamMdContentProps) {
 
   const processed = useMemo(() => {
     if (!content) return '';
-    return preprocessForStreamMd(content);
+    const result = preprocessForStreamMd(content);
+    console.log(
+      '[RENDER.DIAG] preprocess: rawLen=',
+      content.length,
+      'processedLen=',
+      result.length,
+      'loading=',
+      loading,
+      'hasThinkOpen=',
+      /<think>/i.test(content),
+      'hasThinkClose=',
+      /<\/think>/i.test(content),
+      'tail80=',
+      content.slice(-80).replace(/\n/g, '\\n'),
+    );
+    return result;
   }, [content]);
 
   if (!processed) return null;
 
   // Stream complete → full-featured react-markdown render
   if (!loading) {
+    console.log(
+      '[RENDER.DIAG] switching to MarkdownContent, contentLen=',
+      content.length,
+    );
     return (
       <MarkdownContent
         content={content}

@@ -511,17 +511,15 @@ sites:
       max_retries: 3
     extract:
       type: json_path
-      items_path: "data"
+      items_path: "data.records"
       fields:
-        id: "projectGuid"
-        title: "projectName"
-        date: "createTime"
+        id: "bidId"
+        title: "bidName"
+        date: "pushTime"
+        content: "title"
+        news_type: "purchaseModeName"
     detail:
-      type: api_request
-      url: "https://www.fycbid.cn/fyc/fyc3/uip/mh/attachment/query"
-      method: POST
-      body_type: json
-      content_field: "content"
+      type: inline
     format:
       parser_id: "naive"
       upload_batch_size: 10
@@ -1979,6 +1977,11 @@ sites:
             date: "noticeSendTime"
             url: "id"
             news_type: "tenderTypeName"
+        detail:
+          type: api_request
+          method: GET
+          url: "https://xmzyjy.cn/prod-api/api/trade/project/getProTenderProjectDetail?uniqueId={pcodeTprojectUniqueId}"
+          content_field: "data.1.detailFileObjList.0.content"
       - label: "zfcg_cggg"
         name: "政府采购-采购公告"
         listing:
@@ -1995,6 +1998,11 @@ sites:
             title: "projname"
             date: "publishtime"
             url: "id"
+        detail:
+          type: api_request
+          method: GET
+          url: "https://xmzyjy.cn/prod-api/api/trade/purchase/getInfo?projId={projid}"
+          content_field: "data.0.detailFileObjList.0.content"
       - label: "zfcg_jggg"
         name: "政府采购-结果公告"
         listing:
@@ -2011,6 +2019,11 @@ sites:
             title: "projname"
             date: "publishtime"
             url: "id"
+        detail:
+          type: api_request
+          method: GET
+          url: "https://xmzyjy.cn/prod-api/api/trade/purchase/getInfo?projId={projid}"
+          content_field: "data.0.detailFileObjList.0.content"
       - label: "tdky_crgg"
         name: "土地矿业-出让公告"
         listing:
@@ -3604,6 +3617,18 @@ sites:
         currPage: "{{ page }}"
         pageSize: "{{ page_size }}"
         siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+        channel: "f582600e-065d-4f35-8966-48a33fa93863"
+        noticeType: "00101"
+        regionCode: "350001"
+        cityOrArea: ""
+        purchaseManner: ""
+        openTenderCode: ""
+        purchaser: ""
+        agency: ""
+        purchaseNature: ""
+        selectTimeName: ""
+        operationStartTime: ""
+        operationEndTime: ""
     pagination:
       type: page_no
       page_param: "currPage"
@@ -3612,6 +3637,7 @@ sites:
       start: 1
       max_pages: 100
       items_field: "data"
+      total_field: "data.total"
     anti_crawler:
       delay_min: 2.0
       delay_max: 4.0
@@ -3628,6 +3654,9 @@ sites:
       url: "https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/getInfoById"
       params:
         id: "{{ id }}"
+        planId: "{{ planId }}"
+        channel: "f582600e-065d-4f35-8966-48a33fa93863"
+        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
       content_field: "data.content"
     format:
       parser_id: "naive"

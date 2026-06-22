@@ -265,6 +265,7 @@ class CrawlerEngine:
         parent_listing = self._config.listing
         parent_pagination = self._config.pagination
         parent_extract = self._config.extract
+        parent_detail = self._config.detail
 
         if section:
             sl = section.listing
@@ -273,10 +274,13 @@ class CrawlerEngine:
             pag_cfg = sp if (sp and sp.type != parent_pagination.type) else parent_pagination
             se = section.extract
             extract_cfg = se if (se and se.fields and se.items_path) else parent_extract
+            sd = section.detail
+            detail_cfg = sd if (sd and sd.type) else parent_detail
         else:
             listing_cfg = parent_listing
             pag_cfg = parent_pagination
             extract_cfg = parent_extract
+            detail_cfg = parent_detail
 
         state = self._state
         dedup = self._dedup_checker
@@ -361,9 +365,9 @@ class CrawlerEngine:
                 new_in_page += 1
 
                 # Fetch detail if configured
-                if self._config.detail.type not in ("inline", "none"):
+                if detail_cfg.type not in ("inline", "none", ""):
                     detail_adapter = self._detail_adapter or self._adapter
-                    detail_result = detail_adapter.fetch_detail(item)
+                    detail_result = detail_adapter.fetch_detail(item, detail_override=detail_cfg)
                     if detail_result:
                         item = detail_result
 

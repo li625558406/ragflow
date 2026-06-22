@@ -21,6 +21,73 @@ from .. import resolve_params, resolve_url
 from .base import BaseAdapter
 
 
+def _get_json_value(data, path: str) -> Any:
+    """Get a nested value by dot-separated path.
+
+    Supports dict keys and list indices (integer segments).
+    Example: "data.0.detailFileObjList.0.content"
+    """
+    if not path:
+        return None
+    for key in path.split("."):
+        if isinstance(data, dict):
+            data = data.get(key)
+        elif isinstance(data, list):
+            try:
+                idx = int(key)
+                if 0 <= idx < len(data):
+                    data = data[idx]
+                else:
+                    return None
+            except (ValueError, TypeError):
+                return None
+        else:
+            return None
+    return data
+
+
+def _extract_tab_content(data) -> str:
+    """Extract content from tab-based responses (xmzyjy pattern).
+
+    Handles both raw tab arrays and wrapped API responses like
+    {"code": 0, "data": [...]}.
+
+    Scans tabs[].detailFileObjList[].content and tabs[].tenderPlanList[].content.
+    Returns concatenated content strings.
+    """
+    parts = []
+    # Unwrap common API response wrapper
+    if isinstance(data, dict):
+        inner = data.get("data")
+        if isinstance(inner, list):
+            tabs = inner
+        else:
+            tabs = [data]
+    elif isinstance(data, list):
+        tabs = data
+    else:
+        return ""
+    for tab in tabs:
+        if not isinstance(tab, dict):
+            continue
+        dfol = tab.get("detailFileObjList")
+        if isinstance(dfol, list):
+            for entry in dfol:
+                if isinstance(entry, dict):
+                    for ck in ("content", "freeMkrContent"):
+                        c = entry.get(ck, "")
+                        if isinstance(c, str) and len(c.strip()) > 50:
+                            parts.append(c)
+        tpl = tab.get("tenderPlanList")
+        if isinstance(tpl, list):
+            for entry in tpl:
+                if isinstance(entry, dict):
+                    c = entry.get("content", "")
+                    if isinstance(c, str) and len(c.strip()) > 20:
+                        parts.append(c)
+    return "\n\n".join(parts)
+
+
 class RestApiAdapter(BaseAdapter):
     """Adapter for standard REST API / HTML sites."""
 
@@ -172,14 +239,19 @@ class RestApiAdapter(BaseAdapter):
         """
         return [{"html": html}]
 
-    def fetch_detail(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def fetch_detail(self, item: Dict[str, Any], detail_override=None) -> Optional[Dict[str, Any]]:
         """Fetch and extract detail page content.
 
         Handles:
         - api_request: fetch from a detail API URL template
         - css_selector / inline / none: delegated to base class
+
+        Args:
+            item: The item dict to enrich with detail content.
+            detail_override: Optional DetailConfig to use instead of self._config.detail
+                            (used for section-level detail overrides).
         """
-        detail_cfg = self._config.detail
+        detail_cfg = detail_override or self._config.detail
 
         # css_selector, inline, none, and missing URL are handled by base class
         if detail_cfg.type != "api_request" or not detail_cfg.url:
@@ -198,7 +270,29 @@ class RestApiAdapter(BaseAdapter):
                 else:
                     resp = self._session.get(url_template, params=params, timeout=self._transport.timeout)
                 if resp.status_code == 200:
-                    return {"detail": resp.text, **item}
+                    result = dict(item)
+                    result["detail_html"] = resp.text
+
+                    # Extract content from JSON response using content_field
+                    try:
+                        data = resp.json()
+                        cf = detail_cfg.content_field
+                        content = _get_json_value(data, cf) if cf else ""
+                        # Fallback: tab-based responses (xmzyjy pattern)
+                        if not content:
+                            content = _extract_tab_content(data)
+                        if content:
+                            result["content"] = str(content)
+                        # Also extract common structured fields from JSON
+                        for field in ("projectClassName", "projectMoney", "partAName",
+                                      "partBName", "agentName", "newsTypeID",
+                                      "purchaseTypeID", "industryName"):
+                            if field in data and not result.get(field):
+                                result[field] = data[field]
+                    except Exception:
+                        pass  # Not JSON, keep as raw text
+
+                    return result
             except Exception as e:
                 logging.warning("RestApiAdapter: detail fetch failed: %s", e)
                 time.sleep(1 + attempt)

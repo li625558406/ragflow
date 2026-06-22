@@ -47,7 +47,7 @@ class BaseAdapter(ABC):
         """Return the raw response from the most recent fetch_items call."""
         return self._last_raw
 
-    def fetch_detail(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def fetch_detail(self, item: Dict[str, Any], detail_override=None) -> Optional[Dict[str, Any]]:
         """Fetch detail for a single item.
 
         By default, if detail type is 'inline', the item itself is

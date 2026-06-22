@@ -308,6 +308,18 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
         }, ensure_ascii=False) + "\n\n")
         return
 
+    # Auto-close unbalanced <think> tags — DeepSeek may leave them open when
+    # hitting token / max_rounds limits during tool-calling loops.
+    open_think = txt.count("<think>")
+    close_think = txt.count("</think>")
+    if open_think > close_think:
+        txt += "</think>" * (open_think - close_think)
+        logging.warning(f"[THINK-FIX] auto-closed {open_think - close_think} unclosed think tag(s) (open={open_think} close={close_think})")
+    elif close_think > open_think:
+        # Stray close tags — prepend opens so the regex still matches
+        txt = "<think>" * (close_think - open_think) + txt
+        logging.warning(f"[THINK-FIX] prepended {close_think - open_think} missing open think tag(s) (open={open_think} close={close_think})")
+
     conv.message.append({"role": "assistant", "content": txt, "created_at": time.time(), "id": message_id})
     conv.reference = canvas.get_reference()
     conv.errors = canvas.error
@@ -332,6 +344,22 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
                  session_id, sse_msg_count, sse_think_start_count, sse_think_end_count,
                  len(txt), len(visible_text.strip()), has_think_block,
                  visible_text.strip()[:200].replace("\n", "\\n"))
+    # ── [THINK-TRACE] dump all think tag positions and context ──
+    import re
+    all_think_markers = [(m.start(), m.group(), txt[max(0,m.start()-20):m.end()+30].replace("\n","\\n"))
+                         for m in re.finditer(r'</?think>', txt)]
+    logging.info("[THINK-TRACE] session=%s think_tag_count=%d markers=%s",
+                 session_id, len(all_think_markers),
+                 [(pos, tag, ctx) for pos, tag, ctx in all_think_markers])
+    # Dump first 500 and last 500 chars of full text for offline analysis
+    if len(txt) > 1000:
+        logging.info("[THINK-TRACE] session=%s txt_head=%s",
+                     session_id, txt[:500].replace("\n","\\n"))
+        logging.info("[THINK-TRACE] session=%s txt_tail=%s",
+                     session_id, txt[-500:].replace("\n","\\n"))
+    else:
+        logging.info("[THINK-TRACE] session=%s txt_full=%s",
+                     session_id, txt.replace("\n","\\n"))
     logging.info(f"[completion] Saving session {conv_data['id']}: {len(conv_data['message'])} messages, content length={len(txt)} chars")
     try:
         rows = API4ConversationService.append_message(conv_data["id"], conv_data)

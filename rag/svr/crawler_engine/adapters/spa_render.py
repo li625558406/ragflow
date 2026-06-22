@@ -9,6 +9,7 @@ Uses sync_playwright to:
 - Handle CAPTCHA via ddddocr integration
 """
 
+import base64
 import json
 import logging
 import os
@@ -21,6 +22,12 @@ from ..browser_pool import get_browser_pool
 from .. import resolve_params
 from .base import BaseAdapter
 
+try:
+    import ddddocr
+    DDDDOCR_AVAILABLE = True
+except ImportError:
+    DDDDOCR_AVAILABLE = False
+
 
 # JavaScript snippet that calls Vue.__vue__.$http to bypass signature/csrf checks.
 # The zfcg API requires requests to go through Vue's axios interceptors which
@@ -32,7 +39,14 @@ _VUE_HTTP_JS = """
             const vm = document.querySelector('#app').__vue__;
             const http = vm.$http;
             http.get(url, opts).then(resp => {
-                resolve(JSON.stringify(resp.data));
+                if (opts.responseType === 'arraybuffer') {
+                    let bytes = new Uint8Array(resp.data);
+                    let binary = '';
+                    bytes.forEach(b => binary += String.fromCharCode(b));
+                    resolve(JSON.stringify({b64: btoa(binary)}));
+                } else {
+                    resolve(JSON.stringify(resp.data));
+                }
             }).catch(err => {
                 resolve(JSON.stringify({error: err.message}));
             });
@@ -53,6 +67,8 @@ class SpaRenderAdapter(BaseAdapter):
         self._api_captures: List[Dict[str, Any]] = []
         self._page = None
         self._vue_ready = False
+        self._captcha_code: Optional[str] = None
+        self._api_base: str = ""
 
     def _get_page(self):
         """Get or create a page with API interception."""
@@ -204,8 +220,115 @@ class SpaRenderAdapter(BaseAdapter):
             raise RuntimeError(
                 f"Vue $http not found on {site_url}: {e}"
             ) from e
+
+        # Derive API base from listing URL (e.g. https://host/gpcms/rest/web/v2)
+        from urllib.parse import urlparse
+        listing_url = self._config.listing.url
+        self._api_base = listing_url.rsplit("/", 2)[0]
+
         self._vue_ready = True
         logging.info("SpaRenderAdapter: Vue $http context ready")
+
+    # ------------------------------------------------------------------
+    # CAPTCHA handling
+    # ------------------------------------------------------------------
+
+    def _solve_captcha(self) -> Optional[str]:
+        """Fetch captcha image, OCR with ddddocr, verify against listing API.
+
+        Returns the verified captcha code string, or None on failure.
+        The code is cached in ``self._captcha_code`` and reused across
+        paginated API calls.
+        """
+        captcha_cfg = self._transport.captcha
+        if not captcha_cfg or captcha_cfg.type != "ocr":
+            return None
+        if not DDDDOCR_AVAILABLE:
+            logging.warning("SpaRenderAdapter: ddddocr not installed, captcha disabled")
+            return None
+        if self._captcha_code:
+            return self._captcha_code  # cached
+
+        page = self._get_page()
+        self._ensure_vue_context()
+
+        ocr = ddddocr.DdddOcr(show_ad=False)
+        captcha_url = f"{self._api_base}/index/getVerify"
+        listing_url = self._config.listing.url
+
+        # Build base params for captcha verification (need channel + siteId)
+        listing_params = dict(self._config.listing.params)
+
+        for attempt in range(15):
+            try:
+                # 1. Fetch captcha image
+                result_json = page.evaluate(
+                    _VUE_HTTP_JS,
+                    [captcha_url, {
+                        "params": {"_t": str(int(time.time() * 1000))},
+                        "responseType": "arraybuffer",
+                    }],
+                )
+                cap = json.loads(result_json)
+                if cap.get("error") or not cap.get("b64"):
+                    logging.warning(
+                        "SpaRenderAdapter: captcha fetch failed (attempt %d): %s",
+                        attempt + 1, cap.get("error", "no b64"),
+                    )
+                    time.sleep(0.3)
+                    continue
+
+                # 2. OCR the image
+                img_bytes = base64.b64decode(cap["b64"])
+                code_val = ocr.classification(img_bytes).strip()
+                if not code_val:
+                    time.sleep(0.3)
+                    continue
+
+                # 3. Verify against listing API
+                verify_params = dict(listing_params)
+                verify_params.update({
+                    "currPage": "1",
+                    "pageSize": "1",
+                    "verifyCode": code_val,
+                })
+                verify_json = page.evaluate(
+                    _VUE_HTTP_JS,
+                    [listing_url, {"params": verify_params}],
+                )
+                verify_data = json.loads(verify_json)
+                if verify_data.get("code") == "200":
+                    self._captcha_code = code_val
+                    logging.info(
+                        "SpaRenderAdapter: captcha solved after %d attempts: %s",
+                        attempt + 1, code_val,
+                    )
+                    return code_val
+
+                logging.debug(
+                    "SpaRenderAdapter: captcha verify failed (attempt %d): "
+                    "code=%s msg=%s", attempt + 1,
+                    verify_data.get("code"), verify_data.get("msg"),
+                )
+                time.sleep(0.3)
+
+            except Exception as e:
+                logging.warning(
+                    "SpaRenderAdapter: captcha attempt %d error: %s",
+                    attempt + 1, e,
+                )
+                time.sleep(0.3)
+
+        logging.error("SpaRenderAdapter: captcha solving failed after 15 attempts")
+        return None
+
+    def _invalidate_captcha(self) -> None:
+        """Clear cached captcha code (call when API returns auth error)."""
+        self._captcha_code = None
+
+    # ------------------------------------------------------------------
+    # Vue $http listings
+    # ------------------------------------------------------------------
 
     def _fetch_via_vue_http(self, page_params: Dict[str, Any],
                             listing_override=None) -> Optional[List[Dict[str, Any]]]:
@@ -213,6 +336,9 @@ class SpaRenderAdapter(BaseAdapter):
 
         Navigates to the site homepage once (for Vue context + cookies), then
         calls the listing API through Vue's axios instance on every page.
+
+        When captcha is configured (type: ocr), solves the captcha via ddddocr
+        and injects ``verifyCode`` into every API call.
         """
         listing = listing_override if listing_override else self._config.listing
         url = listing.url
@@ -233,6 +359,13 @@ class SpaRenderAdapter(BaseAdapter):
 
         for attempt in range(max_retries):
             try:
+                # Inject captcha verifyCode if configured
+                captcha_cfg = self._transport.captcha
+                if captcha_cfg and captcha_cfg.type == "ocr":
+                    code = self._solve_captcha()
+                    if code:
+                        params["verifyCode"] = code
+
                 result_json = page.evaluate(
                     _VUE_HTTP_JS,
                     [url, {"params": params}],
@@ -245,6 +378,19 @@ class SpaRenderAdapter(BaseAdapter):
                     )
                     time.sleep(2 ** attempt)
                     continue
+
+                # Check for captcha/auth errors (4001 = captcha, 4009 = signature)
+                if isinstance(data, dict):
+                    code = data.get("code", "")
+                    if code in ("4001", "4009"):
+                        logging.warning(
+                            "SpaRenderAdapter: API auth error code=%s msg=%s",
+                            code, data.get("msg", ""),
+                        )
+                        if code == "4001":
+                            self._invalidate_captcha()
+                        time.sleep(2 ** attempt)
+                        continue
 
                 self._last_raw = data
                 self._api_captures = [{"url": url, "data": data}]
@@ -260,13 +406,18 @@ class SpaRenderAdapter(BaseAdapter):
 
         return None
 
-    def _fetch_detail_via_vue_http(self, item: Dict[str, Any]) -> Dict[str, Any]:
+    def _fetch_detail_via_vue_http(self, item: Dict[str, Any],
+                                     detail_override=None) -> Dict[str, Any]:
         """Fetch detail content via Vue $http proxy.
 
         Calls the detail API through Vue's axios instance and extracts content
         from the JSON response using content_field path (e.g. "data.content").
+
+        When captcha is configured (type: ocr), injects ``verifyCode`` into
+        every detail API call.  Also resolves ``{{ field }}`` placeholders in
+        params from the item dict (e.g. ``{{ planId }}``, ``{{ channel }}``).
         """
-        detail_cfg = self._config.detail
+        detail_cfg = detail_override or self._config.detail
         detail_url = detail_cfg.url
         params = dict(detail_cfg.params)
         for key, val in item.items():
@@ -274,12 +425,28 @@ class SpaRenderAdapter(BaseAdapter):
             for pkey, pval in params.items():
                 if isinstance(pval, str):
                     params[pkey] = pval.replace("{" + key + "}", str(val))
+                    # Also handle {{ param }} template placeholders in params
+                    params[pkey] = params[pkey].replace("{{ " + key + " }}", str(val))
+
+        # Inject channel + siteId from transport/lising config if not in params
+        listing_params = self._config.listing.params
+        if "channel" not in params and "channel" in listing_params:
+            params["channel"] = listing_params["channel"]
+        if "siteId" not in params and "siteId" in listing_params:
+            params["siteId"] = listing_params["siteId"]
 
         self._ensure_vue_context()
         page = self._get_page()
 
         for attempt in range(3):
             try:
+                # Inject captcha verifyCode if configured
+                captcha_cfg = self._transport.captcha
+                if captcha_cfg and captcha_cfg.type == "ocr":
+                    code = self._solve_captcha()
+                    if code:
+                        params["verifyCode"] = code
+
                 result_json = page.evaluate(
                     _VUE_HTTP_JS,
                     [detail_url, {"params": params}],
@@ -293,6 +460,19 @@ class SpaRenderAdapter(BaseAdapter):
                     )
                     time.sleep(1 + attempt)
                     continue
+
+                # Handle API auth errors
+                if isinstance(data, dict):
+                    code = data.get("code", "")
+                    if code in ("4001", "4009"):
+                        logging.warning(
+                            "SpaRenderAdapter: detail API auth error code=%s msg=%s",
+                            code, data.get("msg", ""),
+                        )
+                        if code == "4001":
+                            self._invalidate_captcha()
+                        time.sleep(1 + attempt)
+                        continue
 
                 # Extract content using content_field path (e.g. "data.content")
                 content = self._get_nested_value(data, detail_cfg.content_field)
@@ -345,7 +525,8 @@ class SpaRenderAdapter(BaseAdapter):
             logging.warning("SpaRenderAdapter: DOM extraction failed: %s", e)
             return []
 
-    def fetch_detail(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def fetch_detail(self, item: Dict[str, Any],
+                     detail_override=None) -> Optional[Dict[str, Any]]:
         """Fetch detail by navigating to detail URL with Playwright.
 
         - css_selector: use Playwright to get rendered HTML, then BS4 extraction
@@ -355,7 +536,7 @@ class SpaRenderAdapter(BaseAdapter):
         When transport.vue_http is True, api_request calls use Vue $http proxy
         and extract content from JSON response directly.
         """
-        detail_cfg = self._config.detail
+        detail_cfg = detail_override or self._config.detail
 
         if detail_cfg.type == "css_selector":
             return self._fetch_detail_css(item)
@@ -366,7 +547,7 @@ class SpaRenderAdapter(BaseAdapter):
 
         # Vue $http detail path — call API through Vue's axios proxy
         if getattr(self._transport, "vue_http", False):
-            return self._fetch_detail_via_vue_http(item)
+            return self._fetch_detail_via_vue_http(item, detail_override=detail_cfg)
 
         page = self._get_page()
         detail_url = detail_cfg.url
@@ -476,6 +657,7 @@ class SpaRenderAdapter(BaseAdapter):
                 pass
             self._page = None
             self._vue_ready = False
+            self._captcha_code = None
 
     def cleanup(self) -> None:
         self._recreate_page()

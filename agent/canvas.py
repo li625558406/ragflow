@@ -671,11 +671,19 @@ class Canvas(Graph):
                                 return
                             if m == "<think>":
                                 think_events += 1
+                                logging.info(f"[THINK-EV] cpn={cpn_obj._id} cpn_name={cpn_name} event=START seq=#{think_events} raw_chunk={repr(m)}")
                                 return decorate("message", {"content": "", "start_to_think": True})
 
                             elif m == "</think>":
                                 think_events += 1
+                                logging.info(f"[THINK-EV] cpn={cpn_obj._id} cpn_name={cpn_name} event=END seq=#{think_events} raw_chunk={repr(m)}")
                                 return decorate("message", {"content": "", "end_to_think": True})
+
+                            # Log suspicious chunks that contain think-like substrings but
+                            # don't match the exact-token check above — helps detect
+                            # tokenization issues (e.g. LLM emits "<think" + ">" separately)
+                            elif "<think" in m or "think>" in m or "</think" in m or "/think>" in m:
+                                logging.warning(f"[THINK-EV] cpn={cpn_obj._id} cpn_name={cpn_name} event=PARTIAL_MATCH raw_chunk={repr(m)} len={len(_m)}")
 
                             buff_m += m
                             _m += m

@@ -489,6 +489,34 @@ class Base(ABC):
                         if finish_reason == "length":
                             yield self._length_stop("")
 
+                    if not answer and not final_tool_calls:
+                        logging.warning(f"[ToolLoop.DEBUG] round={_round} EMPTY answer AND no tool_calls! Falling back to non-tool streaming.")
+                        reasoning_start = False
+                        fallback_resp = await self.async_client.chat.completions.create(model=self.model_name, messages=history, stream=True, **gen_conf)
+                        async for resp in fallback_resp:
+                            if not hasattr(resp, "choices") or not resp.choices:
+                                continue
+                            delta = resp.choices[0].delta
+                            if not hasattr(delta, "content") or delta.content is None:
+                                delta.content = ""
+                            _reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+                            if _reasoning:
+                                ans = ""
+                                if not reasoning_start:
+                                    reasoning_start = True
+                                    ans = "<think>"
+                                ans += _reasoning + "</think>"
+                                yield ans
+                            else:
+                                reasoning_start = False
+                                answer += delta.content
+                                yield delta.content
+                            tol = total_token_count_from_response(resp)
+                            if tol:
+                                total_tokens = tol
+                        yield total_tokens
+                        return
+
                     if answer and not final_tool_calls:
                         logging.info(f"[ToolLoop] round={_round} completed with text response, exiting")
                         yield total_tokens
@@ -1703,10 +1731,48 @@ class LiteLLMBase(ABC):
                         if finish_reason == "length":
                             yield self._length_stop("")
 
-                    # [DEBUG] Log answer/reasoning state after each round
-                    logging.info(f"[ToolLoop.DEBUG] round={_round} answer_len={len(answer)} has_tool_calls={bool(final_tool_calls)} reasoning_len={len(reasoning_content)}")
+                    # [DEBUG] Log answer/reasoning/stop_reason after each round
+                    last_finish_reason = getattr(resp.choices[0], "finish_reason", "") if hasattr(resp, "choices") and resp.choices else ""
+                    logging.info(f"[ToolLoop.DEBUG] round={_round} answer_len={len(answer)} has_tool_calls={bool(final_tool_calls)} reasoning_len={len(reasoning_content)} finish_reason={last_finish_reason}")
                     if not answer and not final_tool_calls:
-                        logging.warning(f"[ToolLoop.DEBUG] round={_round} EMPTY answer AND no tool_calls! Model returned neither content nor tools.")
+                        # DeepSeek may return only reasoning_content (think block) without
+                        # any answer or tool calls. Fall back to a non-tool streaming call
+                        # to force the model to produce a text response.
+                        logging.warning(f"[ToolLoop.DEBUG] round={_round} EMPTY answer AND no tool_calls! finish_reason={last_finish_reason} Falling back to non-tool streaming.")
+                        reasoning_start = False
+                        reasoning_content = ""
+                        fallback_args = self._construct_completion_args(history=history, stream=True, tools=False, **gen_conf)
+                        fallback_response = await litellm.acompletion(
+                            **fallback_args,
+                            drop_params=True,
+                            timeout=self.timeout,
+                        )
+                        async for resp in fallback_response:
+                            if not hasattr(resp, "choices") or not resp.choices:
+                                continue
+                            delta = resp.choices[0].delta
+                            if not hasattr(delta, "content") or delta.content is None:
+                                delta.content = ""
+                            _reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+                            if _reasoning:
+                                if self._need_reasoning_content_back():
+                                    reasoning_content += _reasoning
+                                ans = ""
+                                if not reasoning_start:
+                                    reasoning_start = True
+                                    ans = "<think>"
+                                ans += _reasoning + "</think>"
+                                yield ans
+                            else:
+                                reasoning_start = False
+                                answer += delta.content
+                                yield delta.content
+                            tol = total_token_count_from_response(resp)
+                            if tol:
+                                total_tokens = tol
+                        logging.info(f"[ToolLoop.DEBUG] round={_round} Fallback completed, answer_len={len(answer)}")
+                        yield total_tokens
+                        return
                     if answer and not final_tool_calls:
                         logging.info(f"[ToolLoop] round={_round} completed with text response, exiting")
                         yield total_tokens
