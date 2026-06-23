@@ -3463,7 +3463,7 @@ sites:
       verify_ssl: false
       timeout: 90
     listing:
-      url: "https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/selectInfoForIndex"
+      url: "https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/selectInfoMoreChannel"
       method: GET
       params:
         currPage: "{{ page }}"
@@ -3488,7 +3488,7 @@ sites:
       fields:
         id: "id"
         title: "title"
-        date: "releaseTime"
+        date: "noticeTime"
     detail:
       type: api_request
       url: "https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/getInfoById"
@@ -3513,7 +3513,7 @@ sites:
       verify_ssl: false
       timeout: 90
     listing:
-      url: "https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/selectInfoForIndex"
+      url: "https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/selectInfoMoreChannel"
       method: GET
       params:
         currPage: "{{ page }}"
@@ -3538,7 +3538,7 @@ sites:
       fields:
         id: "id"
         title: "title"
-        date: "releaseTime"
+        date: "noticeTime"
     detail:
       type: api_request
       url: "https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/getInfoById"
@@ -3585,7 +3585,7 @@ sites:
       fields:
         id: "id"
         title: "title"
-        date: "releaseTime"
+        date: "noticeTime"
     detail:
       type: api_request
       url: "https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/getInfoById"
@@ -3611,7 +3611,7 @@ sites:
       verify_ssl: false
       timeout: 90
     listing:
-      url: "https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/selectInfoForIndex"
+      url: "https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/selectInfoMoreChannel"
       method: GET
       params:
         currPage: "{{ page }}"
@@ -3648,7 +3648,7 @@ sites:
       fields:
         id: "id"
         title: "title"
-        date: "releaseTime"
+        date: "noticeTime"
     detail:
       type: api_request
       url: "https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/getInfoById"
@@ -3789,6 +3789,66 @@ sites:
     detail:
       type: css_selector
       content_field: ".article_content"
+    format:
+      parser_id: "naive"
+      upload_batch_size: 10
+
+  # --------------------------------------------------------------------------
+  # enjoy5191_qycg — 中招联合-企业采购及政府采购公告 (REST API, plain JSON)
+  # Listing: www.enjoy5191.com/api/GetDataHandler.ashx (no encryption)
+  # Detail:  qycg.enjoy5191.com/Search/GetData (plain JSON, no captcha)
+  # Covers:  政府采购 + 企业采购 + 工程建设公告
+  # --------------------------------------------------------------------------
+  enjoy5191_qycg:
+    name: "中招联合-采购公告"
+    site_url: "https://www.enjoy5191.com/"
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+        X-Requested-With: "XMLHttpRequest"
+        Content-Type: "application/x-www-form-urlencoded"
+      verify_ssl: true
+      timeout: 30
+    listing:
+      url: "https://www.enjoy5191.com/api/GetDataHandler.ashx"
+      method: POST
+      body_type: form
+      params:
+        method: "Web.GetJiaoYiList"
+        page: "{{ page }}"
+        rows: "{{ page_size }}"
+    pagination:
+      type: page_no
+      page_param: "page"
+      page_size_param: "rows"
+      page_size: 20
+      start: 1
+      max_pages: 5
+      items_field: "data"
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.5
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: "data"
+      fields:
+        id: "SOURCE_ID"
+        title: "NAME"
+        url: "URL"
+        date: "PUBLISHED_TIME"
+    detail:
+      type: api_request
+      url: "https://qycg.enjoy5191.com/Search/GetData"
+      method: GET
+      params:
+        method: "Search.GetProInfoRichTextByID"
+        project_id: "{{ id }}"
+        type: "PROJECT"
+      content_field: "data.data[0].VALUE"
     format:
       parser_id: "naive"
       upload_batch_size: 10

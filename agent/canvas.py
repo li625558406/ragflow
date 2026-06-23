@@ -665,18 +665,35 @@ class Canvas(Graph):
                         cpn_name = self.get_component_name(cpn_obj._id)
                         think_events = 0
                         content_events = 0
+                        think_depth = 0
                         async def _process_stream(m):
-                            nonlocal buff_m, _m, tts_mdl, think_events, content_events
+                            nonlocal buff_m, _m, tts_mdl, think_events, content_events, think_depth
                             if not m:
                                 return
                             if m == "<think>":
                                 think_events += 1
-                                logging.info(f"[THINK-EV] cpn={cpn_obj._id} cpn_name={cpn_name} event=START seq=#{think_events} raw_chunk={repr(m)}")
+                                # Prevent nested think blocks — DeepSeek sometimes
+                                # emits <think> inside an already-open think block.
+                                # Ignoring the inner tag keeps frontend depth ≤ 1.
+                                if think_depth > 0:
+                                    logging.warning(f"[THINK-EV] cpn={cpn_obj._id} cpn_name={cpn_name} event=IGNORE-NESTED-START seq=#{think_events} depth={think_depth} — treating as content")
+                                    buff_m += m
+                                    _m += m
+                                    return decorate("message", {"content": m})
+                                think_depth += 1
+                                logging.info(f"[THINK-EV] cpn={cpn_obj._id} cpn_name={cpn_name} event=START seq=#{think_events} depth={think_depth} raw_chunk={repr(m)}")
                                 return decorate("message", {"content": "", "start_to_think": True})
 
                             elif m == "</think>":
                                 think_events += 1
-                                logging.info(f"[THINK-EV] cpn={cpn_obj._id} cpn_name={cpn_name} event=END seq=#{think_events} raw_chunk={repr(m)}")
+                                # Ignore orphan close tags when not in a think block
+                                if think_depth <= 0:
+                                    logging.warning(f"[THINK-EV] cpn={cpn_obj._id} cpn_name={cpn_name} event=IGNORE-ORPHAN-END seq=#{think_events} depth={think_depth} — treating as content")
+                                    buff_m += m
+                                    _m += m
+                                    return decorate("message", {"content": m})
+                                think_depth -= 1
+                                logging.info(f"[THINK-EV] cpn={cpn_obj._id} cpn_name={cpn_name} event=END seq=#{think_events} depth={think_depth} raw_chunk={repr(m)}")
                                 return decorate("message", {"content": "", "end_to_think": True})
 
                             # Log suspicious chunks that contain think-like substrings but
@@ -729,10 +746,18 @@ class Canvas(Graph):
                         if buff_m:
                             yield decorate("message", {"content": "", "audio_binary": self.tts(tts_mdl, buff_m)})
                             buff_m = ""
+                        # Auto-close unbalanced think tags so the frontend doesn't
+                        # render visible answer content as "thinking" (collapsed).
+                        if think_depth > 0:
+                            logging.warning("[THINK-EV] cpn=%s cpn_name=%s event=AUTO-CLOSE depth=%d — model left %d unclosed think tag(s)",
+                                            cpn_obj._id, cpn_name, think_depth, think_depth)
+                            for _ in range(think_depth):
+                                yield decorate("message", {"content": "", "end_to_think": True})
+                            think_events += think_depth
                         cpn_obj.set_output("content", _m)
-                        logging.info("[CANVAS-MSG-END] cpn=%s cpn_name=%s total_content_len=%d think_events=%d content_events=%d has_think_block=%s",
+                        logging.info("[CANVAS-MSG-END] cpn=%s cpn_name=%s total_content_len=%d think_events=%d content_events=%d has_think_block=%s think_depth_remaining=%d",
                                      cpn_obj._id, cpn_name, len(_m), think_events, content_events,
-                                     "<think>" in _m and "</think>" in _m)
+                                     "<think>" in _m and "</think>" in _m, think_depth)
                     else:
                         cpn_name = self.get_component_name(cpn_obj._id)
                         yield decorate("message", {"content": cpn_obj.output("content")})

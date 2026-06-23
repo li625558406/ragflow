@@ -134,6 +134,10 @@ class ExtractConfig:
     fields: Dict[str, str] = field(default_factory=dict)  # internal_name -> source_field
     ai_fallback: bool = True
     ai_prompt: str = ""
+    # ── Client-side sorting / limiting (for APIs that don't support it server-side) ──
+    sort_field: str = ""           # field to sort extracted items by (e.g. "CREATE_TIME")
+    sort_descending: bool = True   # sort descending (newest first)
+    max_items: int = 0             # max items to keep after sorting (0 = no limit)
 
 
 @dataclass
@@ -338,6 +342,9 @@ class ConfigLoader:
             fields=data.get("fields", {}),
             ai_fallback=data.get("ai_fallback", True),
             ai_prompt=data.get("ai_prompt", ""),
+            sort_field=data.get("sort_field", ""),
+            sort_descending=data.get("sort_descending", True),
+            max_items=data.get("max_items", 0),
         )
 
     def _parse_detail(self, data: dict) -> DetailConfig:

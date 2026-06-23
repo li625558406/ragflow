@@ -190,30 +190,50 @@ class RestApiAdapter(BaseAdapter):
           Dotted: items_field="custom.infodata" for {"custom":{"infodata":[...]}}
         """
         if isinstance(data, list):
-            return data
-        if isinstance(data, dict):
+            items = data
+        elif isinstance(data, dict):
             items_field = self._config.pagination.items_field
             if items_field:
                 # Support dot notation: "custom.infodata" → data["custom"]["infodata"]
                 val = self._get_nested(data, items_field)
                 if isinstance(val, list):
+                    items = val
+                else:
+                    items = self._fallback_find_list(data)
+            else:
+                items = self._fallback_find_list(data)
+        else:
+            return []
+
+        # Client-side sort + limit (for APIs that return full dataset without pagination)
+        extr = self._config.extract
+        if extr.sort_field and items:
+            try:
+                items.sort(
+                    key=lambda x: (x.get(extr.sort_field) or ""),
+                    reverse=extr.sort_descending,
+                )
+            except Exception:
+                pass  # sorting is best-effort
+        if extr.max_items and len(items) > extr.max_items:
+            items = items[:extr.max_items]
+
+        return items
+
+    def _fallback_find_list(self, data: dict) -> List[Dict[str, Any]]:
+        """Fallback: search common keys for a list value."""
+        for key in ("rows", "data", "list", "records", "result", "results", "custom"):
+            if key in data:
+                val = data[key]
+                if isinstance(val, list):
                     return val
-            # Try common keys at root level
-            for key in ("rows", "data", "list", "records", "result", "results", "custom"):
-                if key in data:
-                    val = data[key]
-                    if isinstance(val, list):
-                        return val
-                    # Key exists but is a dict — recurse into it (handles nested responses)
-                    if isinstance(val, dict):
-                        nested = self._parse_json_response(val)
-                        # Must check isinstance(list), not truthiness —
-                        # empty list [] is a valid result (no items on page).
-                        if isinstance(nested, list) and not (len(nested) == 1 and nested[0] is val):
-                            return nested
-            # If no list found, wrap the dict itself
-            return [data]
-        return []
+                # Key exists but is a dict — recurse into it
+                if isinstance(val, dict):
+                    nested = self._parse_json_response(val)
+                    if isinstance(nested, list) and not (len(nested) == 1 and nested[0] is val):
+                        return nested
+        # If no list found, wrap the dict itself
+        return [data]
 
     @staticmethod
     def _get_nested(data: dict, field: str) -> Any:
