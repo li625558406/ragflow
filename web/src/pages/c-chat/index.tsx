@@ -368,16 +368,37 @@ export default function CChat() {
 
   // Extract review annotations from node_finished events for the latest message
   const reviewAnnotations = useMemo<Annotation[]>(() => {
-    if (!reviewMode) return [];
+    // Always compute so we can detect when annotations exist even if panel is closed
     // Scan all node events for outputs.structured.annotations
-    for (const events of Object.values(nodeEventsByMsgId)) {
+    for (const [msgId, events] of Object.entries(nodeEventsByMsgId)) {
       for (const evt of events as any[]) {
         const outputs = evt?.data?.outputs;
-        if (outputs?.structured?.annotations) {
-          return outputs.structured.annotations as Annotation[];
+        const structured = outputs?.structured;
+        if (structured) {
+          console.log('[reviewAnnotations] Found structured output', {
+            msgId,
+            hasAnnotations: !!structured.annotations,
+            annotationCount: structured.annotations?.length || 0,
+            structuredKeys: Object.keys(structured),
+            summaryPreview: structured.summary?.substring?.(0, 100),
+          });
+        }
+        if (structured?.annotations) {
+          console.log(
+            '[reviewAnnotations] Returning annotations',
+            structured.annotations,
+          );
+          return structured.annotations as Annotation[];
         }
       }
     }
+    console.log(
+      '[reviewAnnotations] No structured output found in node events',
+      {
+        eventCount: Object.keys(nodeEventsByMsgId).length,
+        reviewMode,
+      },
+    );
     // Fallback: try parsing the last assistant message content for annotations JSON
     for (let i = derivedMessages.length - 1; i >= 0; i--) {
       const msg = derivedMessages[i];
@@ -669,6 +690,10 @@ export default function CChat() {
       resetAnswerList();
       setDerivedMessages([]);
       setSessions([]);
+      setReviewMode(false);
+      setReviewFileId('');
+      setReviewFileName('');
+      setSidebarCollapsed(false);
       localStorage.setItem('ragflow_agent_id', agentId);
 
       apiFetch(`/api/v1/agents/${agentId}`)
@@ -1639,6 +1664,21 @@ export default function CChat() {
                   <span className="w-1.5 h-1.5 rounded-full bg-[#2ec4b6] animate-pulse" />
                 </div>
                 <div className="flex-1" />
+                {derivedMessages.length > 0 &&
+                  !reviewMode &&
+                  reviewFileId &&
+                  reviewAnnotations.length > 0 && (
+                    <button
+                      onClick={() => {
+                        setReviewMode(true);
+                        setSidebarCollapsed(true);
+                      }}
+                      className="flex items-center gap-1.5 text-sm font-semibold text-[#3F5B8D] hover:text-[#2E365A] px-2 py-1 rounded-lg hover:bg-[#F0F3FA] transition-colors cursor-pointer mr-1"
+                    >
+                      <FileText className="size-4" strokeWidth={2} />
+                      审核结果 ({reviewAnnotations.length})
+                    </button>
+                  )}
                 {derivedMessages.length > 0 && (
                   <button
                     onClick={() => {
@@ -2653,8 +2693,6 @@ export default function CChat() {
                     open={true}
                     onClose={() => {
                       setReviewMode(false);
-                      setReviewFileId('');
-                      setReviewFileName('');
                     }}
                     fileId={reviewFileId}
                     fileName={reviewFileName}

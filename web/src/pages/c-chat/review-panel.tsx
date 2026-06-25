@@ -199,7 +199,20 @@ export default function ReviewPanel({
       .then((res: any) => {
         if (cancelled) return;
         if (res?.data?.code === 0) {
-          setContent(res.data.data);
+          const data = res.data.data;
+          console.log('[ReviewPanel] file content response', {
+            fileId,
+            filename: data?.filename,
+            file_type: data?.file_type,
+            paragraph_count: data?.paragraphs?.length,
+            types: data?.paragraphs?.map((p: any) => p.type),
+            first_3_paragraphs: data?.paragraphs?.slice(0, 3).map((p: any) => ({
+              index: p.index,
+              type: p.type,
+              text_preview: p.text?.substring(0, 80),
+            })),
+          });
+          setContent(data);
         } else {
           setError(res?.data?.message || 'Failed to load file content');
         }

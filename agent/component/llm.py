@@ -425,9 +425,20 @@ class LLM(ComponentBase):
             output_structure = self._param.outputs["structured"]
         except Exception:
             pass
+
         # Only activate structured JSON output when files are uploaded.
-        # Without files, fall through to normal text output (avoids forcing JSON for Q&A).
-        has_files = bool(self._canvas.globals.get("sys.files"))
+        sys_files = self._canvas.globals.get("sys.files", [])
+        has_files = bool(sys_files)
+        logging.info(
+            f"[LLM.structured] component={self._id} "
+            f"has_output_structure={output_structure is not None} "
+            f"has_properties={bool(output_structure and isinstance(output_structure, dict) and output_structure.get('properties') and len(output_structure['properties']) > 0)} "
+            f"sys_files_count={len(sys_files) if isinstance(sys_files, list) else 'NOT_LIST'} "
+            f"sys_files_type={type(sys_files).__name__} "
+            f"sys_file_content_len={len(self._canvas.globals.get('sys.file_content', ''))} "
+            f"has_files={has_files}"
+        )
+
         if output_structure and isinstance(output_structure, dict) and output_structure.get("properties") and len(output_structure["properties"]) > 0 and has_files:
             schema = json.dumps(output_structure, ensure_ascii=False, indent=2)
             prompt_with_schema = prompt + structured_output_prompt(schema)
@@ -467,6 +478,8 @@ class LLM(ComponentBase):
             if error:
                 self.set_output("_ERROR", error)
             return
+
+        logging.info(f"[LLM.normal_text] component={self._id} structured_skipped=True reason={'no_files' if not has_files else 'no_output_structure' if not output_structure else 'no_properties'}")
 
         downstreams = self._canvas.get_component(self._id)["downstream"] if self._canvas.get_component(self._id) else []
         ex = self.exception_handler()

@@ -415,9 +415,16 @@ class Canvas(Graph):
         for k in kwargs.keys():
             if k in ["query", "user_id", "files", "internet"] and kwargs[k]:
                 if k == "files":
+                    raw_files = kwargs[k]
                     self.globals[f"sys.{k}"] = await self.get_files_async(kwargs[k], layout_recognize)
                     # Also expose concatenated file content for file review prompts
                     self.globals["sys.file_content"] = "\n\n".join(self.globals[f"sys.{k}"])
+                    logging.info(
+                        f"[Canvas.run] files received: raw_count={len(raw_files) if isinstance(raw_files, list) else 'NOT_LIST'} "
+                        f"parsed_count={len(self.globals[f'sys.{k}'])} "
+                        f"file_content_len={len(self.globals['sys.file_content'])} "
+                        f"raw_files_detail={[(f.get('name', '?'), f.get('mime_type', '?'), f.get('id', '?')[:12]) for f in raw_files] if isinstance(raw_files, list) else 'N/A'}"
+                    )
                 else:
                     self.globals[f"sys.{k}"] = kwargs[k]
         if not self.globals["sys.conversation_turns"] :
