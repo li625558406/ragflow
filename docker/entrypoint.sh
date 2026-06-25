@@ -263,6 +263,23 @@ function ensure_playwright() {
     echo "Playwright ready."
 }
 
+function ensure_doc_converter() {
+    echo "Checking LibreOffice for .doc → .docx conversion..."
+    # LibreOffice for .doc → .docx conversion (file review annotation system)
+    command -v libreoffice &>/dev/null || {
+        echo "Installing LibreOffice (first run only)..."
+        apt-get update -qq && apt-get install -y -qq \
+            libreoffice-core libreoffice-writer antiword catdoc \
+            2>/dev/null || echo "WARNING: Failed to install LibreOffice, .doc support will be limited"
+    }
+    # olefile Python package for .doc fallback parsing
+    python3 -c "import olefile" 2>/dev/null || {
+        echo "Installing olefile for .doc fallback parsing..."
+        python3 -m pip install olefile -q 2>/dev/null || true
+    }
+    echo "Document converter ready."
+}
+
 function ensure_db_init() {
     echo "Initializing database tables..."
     "$PY" -c "from api.db.db_models import init_database_tables as init_web_db; init_web_db()"
@@ -294,6 +311,7 @@ ensure_docling
 ensure_ddddocr
 ensure_croniter
 ensure_playwright
+ensure_doc_converter
 ensure_db_init
 
 if [[ "${ENABLE_WEBSERVER}" -eq 1 ]]; then

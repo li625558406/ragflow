@@ -67,6 +67,7 @@ dependencies = [
     "mypy-boto3-s3==1.40.26",
     "Office365-REST-Python-Client==2.6.2",
     "ollama>=0.5.0",
+    "olefile>=0.46",
     "onnxruntime==1.23.2; sys_platform == 'darwin' or platform_machine != 'x86_64'",
     "onnxruntime-gpu==1.23.2; sys_platform != 'darwin' and platform_machine == 'x86_64'",
     "opencv-python==4.10.0.84",

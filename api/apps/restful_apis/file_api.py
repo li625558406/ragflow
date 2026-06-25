@@ -399,6 +399,44 @@ def _is_doc_file(blob: bytes, filename: str = "") -> bool:
     return False
 
 
+def _doc_to_docx_via_libreoffice(binary: bytes) -> bytes | None:
+    """Convert .doc binary to .docx binary using LibreOffice headless.
+
+    Returns the converted .docx bytes, or None if LibreOffice is unavailable
+    or conversion fails.
+    """
+    import shutil
+
+    soffice = shutil.which("libreoffice") or shutil.which("soffice")
+    if not soffice:
+        return None
+
+    tmp_in_dir = tempfile.mkdtemp(prefix="doc2docx_in_")
+    tmp_out_dir = tempfile.mkdtemp(prefix="doc2docx_out_")
+    try:
+        in_path = os.path.join(tmp_in_dir, "input.doc")
+        with open(in_path, "wb") as f:
+            f.write(binary)
+
+        result = subprocess.run(
+            [soffice, "--headless", "--norestore", "--nologo",
+             "--convert-to", "docx", "--outdir", tmp_out_dir, in_path],
+            capture_output=True, timeout=60,
+        )
+
+        out_path = os.path.join(tmp_out_dir, "input.docx")
+        if result.returncode == 0 and os.path.exists(out_path):
+            with open(out_path, "rb") as f:
+                return f.read()
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logging.warning(f"[.doc] LibreOffice conversion failed: {e}")
+    finally:
+        import shutil as shutil_mod
+        shutil_mod.rmtree(tmp_in_dir, ignore_errors=True)
+        shutil_mod.rmtree(tmp_out_dir, ignore_errors=True)
+    return None
+
+
 def _try_subprocess_extractor(binary: bytes, cmd: list[str]) -> str | None:
     """Write binary to temp file, run a text extraction command, return stdout."""
     try:
@@ -691,6 +729,18 @@ async def get_content(tenant_id: str = None, file_id: str = None):
         # Detect .doc (OLE2 compound document)
         if _is_doc_file(blob, filename):
             try:
+                # Best path: convert .doc → .docx via LibreOffice (full formatting)
+                docx_blob = await thread_pool_exec(_doc_to_docx_via_libreoffice, blob)
+                if docx_blob:
+                    from rag.app.naive import Docx
+                    d = Docx()
+                    paragraphs = await thread_pool_exec(d.to_paragraphs, binary=docx_blob)
+                    return get_result(data={
+                        "filename": filename,
+                        "file_type": "doc",
+                        "paragraphs": paragraphs,
+                    })
+                # Fallback: plain text extraction (no formatting)
                 paragraphs = await thread_pool_exec(_extract_text_from_doc, blob)
                 return get_result(data={
                     "filename": filename,
@@ -767,8 +817,8 @@ async def annotate_file(tenant_id: str = None, file_id: str = None):
             file = result
             filename = file.name
             ext = (filename or "").lower()
-            if not ext.endswith(".docx"):
-                return get_error_data_result(message="Only .docx files are supported for annotation download")
+            if not (ext.endswith(".docx") or ext.endswith(".doc")):
+                return get_error_data_result(message="Only .docx and .doc files are supported for annotation download")
             blob = await thread_pool_exec(settings.STORAGE_IMPL.get, file.parent_id, file.location)
             if not blob:
                 b, n = File2DocumentService.get_storage_address(file_id=file_id)
@@ -779,9 +829,8 @@ async def annotate_file(tenant_id: str = None, file_id: str = None):
             bname = f"{tenant_id}-downloads"
             blob = await thread_pool_exec(settings.STORAGE_IMPL.get, bname, file_id)
             if blob and blob[:2] != b'PK':
-                if _is_doc_file(blob):
-                    return get_error_data_result(message=".doc format does not support annotation download, please use .docx")
-                return get_error_data_result(message="Only .docx files are supported for annotation download")
+                if not _is_doc_file(blob):
+                    return get_error_data_result(message="Only .docx and .doc files are supported for annotation download")
             if blob:
                 filename = file_id + ".docx"
 
@@ -795,6 +844,16 @@ async def annotate_file(tenant_id: str = None, file_id: str = None):
         annotations = req_data.get("annotations", [])
         if not annotations:
             return get_error_argument_result("annotations is required and cannot be empty")
+
+        # If .doc (not ZIP/PK), convert to .docx via LibreOffice first
+        if blob[:2] != b'PK':
+            docx_blob = await thread_pool_exec(_doc_to_docx_via_libreoffice, blob)
+            if not docx_blob:
+                return get_error_data_result(
+                    message="Failed to convert .doc to .docx for annotation. "
+                            "LibreOffice may be unavailable. Please use .docx format."
+                )
+            blob = docx_blob
 
         new_docx = await thread_pool_exec(_inject_docx_comments, blob, annotations)
 
