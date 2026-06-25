@@ -426,8 +426,13 @@ async def get_content(tenant_id: str = None, file_id: str = None):
         if not blob:
             return get_error_data_result(message="File content not found in storage")
 
-        ext = (filename or "").lower()
-        if ext.endswith(".docx"):
+        # Detect docx by magic bytes (ZIP) when filename has no extension (chat uploads)
+        is_docx = (filename or "").lower().endswith(".docx")
+        if not is_docx and blob[:2] == b'PK':
+            is_docx = True
+            filename = (filename or file_id) + ".docx"
+
+        if is_docx:
             try:
                 from rag.app.naive import Docx
                 d = Docx()
@@ -518,6 +523,10 @@ async def annotate_file(tenant_id: str = None, file_id: str = None):
         if not blob:
             bname = f"{tenant_id}-downloads"
             blob = await thread_pool_exec(settings.STORAGE_IMPL.get, bname, file_id)
+            if blob and blob[:2] != b'PK':
+                return get_error_data_result(message="Only .docx files are supported for annotation download")
+            if blob:
+                filename = file_id + ".docx"
 
         if not blob:
             return get_error_data_result(message="File content not found in storage")
