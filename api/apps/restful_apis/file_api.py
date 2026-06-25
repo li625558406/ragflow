@@ -17,6 +17,10 @@ import logging
 import re
 import io
 import json
+import struct
+import subprocess
+import tempfile
+import os
 import zipfile
 
 from lxml import etree
@@ -380,6 +384,244 @@ async def ancestors(tenant_id: str = None, file_id: str = None):
         return get_error_data_result(message="Internal server error")
 
 
+
+# ── .doc (OLE2) text extraction ──
+
+OLE2_MAGIC = b'\xd0\xcf\x11\xe0'
+
+
+def _is_doc_file(blob: bytes, filename: str = "") -> bool:
+    """Check whether a file is an old-format .doc (OLE2 compound document)."""
+    if filename.lower().endswith(".doc") and not filename.lower().endswith(".docx"):
+        return True
+    if blob and blob[:4] == OLE2_MAGIC:
+        return True
+    return False
+
+
+def _try_subprocess_extractor(binary: bytes, cmd: list[str]) -> str | None:
+    """Write binary to temp file, run a text extraction command, return stdout."""
+    try:
+        fd, tmp_path = tempfile.mkstemp(suffix=".doc")
+        try:
+            os.write(fd, binary)
+            os.close(fd)
+            result = subprocess.run(
+                cmd + [tmp_path],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+    return None
+
+
+def _extract_text_from_doc(binary: bytes) -> list[dict]:
+    """Extract paragraph-level text from a .doc binary (OLE2 format).
+
+    Tries antiword, then catdoc, then olefile FIB parsing as last resort.
+    Returns list of {"index", "text", "type"} dicts.
+    """
+    text = (
+        _try_subprocess_extractor(binary, ["antiword", "-m", "UTF-8.txt"])
+        or _try_subprocess_extractor(binary, ["catdoc"])
+    )
+
+    if not text:
+        try:
+            text = _extract_text_from_doc_olefile(binary)
+        except Exception as e:
+            logging.warning(f"[.doc] olefile fallback failed: {e}")
+
+    if not text:
+        return []
+
+    # Clean and split into paragraphs
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', text)
+    lines = text.split("\n")
+    paragraphs = []
+    idx = 0
+    for ln in lines:
+        stripped = ln.strip()
+        if stripped:
+            paragraphs.append({"index": idx, "text": stripped, "type": "paragraph", "page": 0})
+            idx += 1
+    return paragraphs
+
+
+def _extract_text_from_doc_olefile(binary: bytes) -> str:
+    """Fallback .doc extraction using olefile + FIB header parsing.
+
+    Implements the key parts of [MS-DOC] to locate the document text
+    within the WordDocument OLE2 stream.
+    """
+    import olefile
+
+    ole = olefile.OleFileIO(io.BytesIO(binary))
+    try:
+        word_stream = ole.openstream("WordDocument").read()
+
+        if len(word_stream) < 0x20 or word_stream[:2] != b'\xec\xa5':
+            return ""
+
+        flags = struct.unpack_from('<H', word_stream, 0x000A)[0]
+        fComplex = bool(flags & 0x0004)
+        ccpText = struct.unpack_from('<I', word_stream, 0x0018)[0]
+
+        if ccpText == 0:
+            return ""
+
+        # Walk FIB → fibRgFcLcbBlob → fcClx
+        # Isolate FIB walk: malformed csw/cslw could push offset past buffer
+        try:
+            offset = 0x0020
+            csw = struct.unpack_from('<H', word_stream, offset)[0]
+            offset += 2 + csw * 2
+            cslw = struct.unpack_from('<H', word_stream, offset)[0]
+            offset += 2 + cslw * 4
+            cbRgFcLcb = struct.unpack_from('<H', word_stream, offset)[0]
+            offset += 2
+            blob_start = offset
+        except struct.error:
+            logging.warning("[.doc] FIB walk failed: struct.error")
+            return _doc_heuristic_fallback(word_stream, fComplex)
+
+        # fcClx is at pair index 33 in FibRgFcLcb97 (byte offset 0x01A2 in FIB,
+        # relative to blob_start 0x009A for standard csw=14/cslw=22)
+        fcClx_idx = 33
+        text_result = None
+        if cbRgFcLcb > fcClx_idx:
+            try:
+                entry_off = blob_start + fcClx_idx * 8
+                if entry_off + 8 <= len(word_stream):
+                    fcClx = struct.unpack_from('<I', word_stream, entry_off)[0]
+                    lcbClx = struct.unpack_from('<I', word_stream, entry_off + 4)[0]
+
+                    table_stream = b""
+                    try:
+                        table_stream = ole.openstream("1Table").read()
+                    except Exception:
+                        try:
+                            table_stream = ole.openstream("0Table").read()
+                        except Exception:
+                            pass
+
+                    if table_stream and fcClx + lcbClx <= len(table_stream) and lcbClx > 0:
+                        text_result = _parse_clx_to_text(
+                            table_stream[fcClx:fcClx + lcbClx],
+                            word_stream,
+                        )
+            except Exception as e:
+                logging.warning(f"[.doc] Pcdt parse error: {e}")
+
+        if text_result:
+            return text_result
+
+        return _doc_heuristic_fallback(word_stream, fComplex)
+    finally:
+        ole.close()
+
+
+def _parse_clx_to_text(clx: bytes, word_stream: bytes) -> str:
+    """Parse a Clx structure from the table stream and extract document text.
+
+    Clx = sequence of Prc (type 0x01) entries followed by one Pcdt (type 0x02).
+    Pcdt contains a PlcPcd: CP array (n+1 uint32) + Pcd array (n × 8 bytes).
+    Each Pcd has fc (FcCompressed) at byte offset 2.
+    """
+    pos = 0
+    while pos < len(clx):
+        clxt = clx[pos]
+        if clxt == 0x01:  # Prc — skip
+            if pos + 3 > len(clx):
+                break
+            cbGrpprl = struct.unpack_from('<H', clx, pos + 1)[0]
+            pos += 3 + cbGrpprl
+        elif clxt == 0x02:  # Pcdt
+            if pos + 5 > len(clx):
+                break
+            lcb_pcdt = struct.unpack_from('<I', clx, pos + 1)[0]
+            pos += 5
+            pcdt_data = clx[pos:pos + lcb_pcdt]
+            if not pcdt_data:
+                break
+
+            # PlcPcd: (n+1) CPs (uint32) + n Pcds (8 bytes each)
+            # Total size = (n+1)*4 + n*8 = 12n + 4
+            n = (len(pcdt_data) - 4) // 12
+            if n <= 0:
+                break
+
+            cp_end = (n + 1) * 4
+            pcd_start = cp_end
+
+            text_parts = []
+            for i in range(n):
+                cp_off = i * 4
+                cp_next_off = (i + 1) * 4
+                if cp_next_off + 4 > len(pcdt_data):
+                    break
+                cp_start = struct.unpack_from('<I', pcdt_data, cp_off)[0]
+                cp_end_val = struct.unpack_from('<I', pcdt_data, cp_next_off)[0]
+                char_count = cp_end_val - cp_start
+                if char_count <= 0:
+                    continue
+
+                pcd_off = pcd_start + i * 8
+                if pcd_off + 8 > len(pcdt_data):
+                    break
+                # fc (FcCompressed) at Pcd byte offset 2
+                fc_c = struct.unpack_from('<I', pcdt_data, pcd_off + 2)[0]
+                fc_raw = fc_c & 0x3FFFFFFF
+                is_compressed = (fc_c >> 30) & 1
+
+                if is_compressed:
+                    # CP1252: byte offset = fc_raw / 2, 1 byte per char
+                    byte_offset = fc_raw // 2
+                    byte_count = char_count
+                    encoding = "cp1252"
+                else:
+                    # UTF-16LE: byte offset = fc_raw, 2 bytes per char
+                    byte_offset = fc_raw
+                    byte_count = char_count * 2
+                    encoding = "utf-16-le"
+
+                if byte_offset + byte_count > len(word_stream):
+                    byte_count = max(0, len(word_stream) - byte_offset)
+                if byte_count > 0:
+                    chunk = word_stream[byte_offset:byte_offset + byte_count]
+                    text_parts.append(chunk.decode(encoding, errors="replace"))
+
+            return "".join(text_parts)
+        else:
+            break
+    return ""
+
+
+def _doc_heuristic_fallback(word_stream: bytes, fComplex: bool) -> str:
+    """Last-resort heuristic: scan WordDocument stream tail for readable text."""
+    start = min(len(word_stream), 0x800)
+    tail = word_stream[start:]
+
+    if fComplex:
+        decoded = tail.decode("utf-16-le", errors="ignore")
+    else:
+        decoded = tail.decode("cp1252", errors="ignore")
+
+    # Keep runs of printable text (Chinese, alphanumeric, common punctuation)
+    chunks = re.findall(
+        r'[\u4e00-\u9fff\u3000-\u303f\uff00-\uffefa-zA-Z0-9\s.,;:!?()\[\]{}\-\'"@#$%^&*+=/\\<>|~`]{4,}',
+        decoded,
+    )
+    return "\n".join(chunks)
+
+
 @manager.route("/files/<file_id>/content", methods=["GET"])  # noqa: F821
 @login_required
 @add_tenant_id_to_kwargs
@@ -445,22 +687,35 @@ async def get_content(tenant_id: str = None, file_id: str = None):
             except Exception as e:
                 logging.exception(e)
                 return get_error_data_result(message=f"Failed to parse docx: {e}")
-        else:
-            # Fallback: plain text split by paragraphs
+
+        # Detect .doc (OLE2 compound document)
+        if _is_doc_file(blob, filename):
             try:
-                text = blob.decode("utf-8", errors="replace")
-            except Exception:
-                text = str(blob)
-            lines = text.split("\n")
-            paragraphs = [
-                {"index": i, "text": ln.strip(), "type": "paragraph", "page": 0}
-                for i, ln in enumerate(lines) if ln.strip()
-            ]
-            return get_result(data={
-                "filename": filename,
-                "file_type": "text",
-                "paragraphs": paragraphs,
-            })
+                paragraphs = await thread_pool_exec(_extract_text_from_doc, blob)
+                return get_result(data={
+                    "filename": filename,
+                    "file_type": "doc",
+                    "paragraphs": paragraphs,
+                })
+            except Exception as e:
+                logging.exception(e)
+                return get_error_data_result(message=f"Failed to parse .doc: {e}")
+
+        # Fallback: plain text split by paragraphs
+        try:
+            text = blob.decode("utf-8", errors="replace")
+        except Exception:
+            text = str(blob)
+        lines = text.split("\n")
+        paragraphs = [
+            {"index": i, "text": ln.strip(), "type": "paragraph", "page": 0}
+            for i, ln in enumerate(lines) if ln.strip()
+        ]
+        return get_result(data={
+            "filename": filename,
+            "file_type": "text",
+            "paragraphs": paragraphs,
+        })
     except Exception as e:
         logging.exception(e)
         return get_error_data_result(message="Internal server error")
@@ -524,6 +779,8 @@ async def annotate_file(tenant_id: str = None, file_id: str = None):
             bname = f"{tenant_id}-downloads"
             blob = await thread_pool_exec(settings.STORAGE_IMPL.get, bname, file_id)
             if blob and blob[:2] != b'PK':
+                if _is_doc_file(blob):
+                    return get_error_data_result(message=".doc format does not support annotation download, please use .docx")
                 return get_error_data_result(message="Only .docx files are supported for annotation download")
             if blob:
                 filename = file_id + ".docx"

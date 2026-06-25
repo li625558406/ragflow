@@ -688,6 +688,7 @@ class Docx(DocxParser):
                 p = Paragraph(block, doc)
                 style_name = p.style.name if p.style else ""
                 text = p.text.strip()
+                text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
 
                 # Track page numbers
                 for run in p.runs:
@@ -737,7 +738,8 @@ class Docx(DocxParser):
                     for r in tb.rows:
                         row_cells = []
                         for c in r.cells:
-                            row_cells.append(c.text.strip())
+                            cell_text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', c.text.strip())
+                            row_cells.append(cell_text)
                         if row_cells:
                             rows_data.append(row_cells)
                     if rows_data:
