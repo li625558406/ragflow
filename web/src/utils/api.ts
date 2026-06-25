@@ -178,6 +178,8 @@ export default {
   connectFileToKnowledge: `${restAPIv1}/files/link-to-datasets`,
   getFile: `${restAPIv1}/files`,
   moveFile: `${restAPIv1}/files/move`,
+  getFileContent: (fileId: string) => `${restAPIv1}/files/${fileId}/content`,
+  annotateFile: (fileId: string) => `${restAPIv1}/files/${fileId}/annotate`,
 
   // system
   getSystemVersion: `${restAPIv1}/system/version`,

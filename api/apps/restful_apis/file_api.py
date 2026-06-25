@@ -15,7 +15,11 @@
 #
 import logging
 import re
+import io
+import json
+import zipfile
 
+from lxml import etree
 from quart import request, make_response
 from api.apps import login_required
 from api.db import FileType
@@ -374,3 +378,366 @@ async def ancestors(tenant_id: str = None, file_id: str = None):
     except Exception as e:
         logging.exception(e)
         return get_error_data_result(message="Internal server error")
+
+
+@manager.route("/files/<file_id>/content", methods=["GET"])  # noqa: F821
+@login_required
+@add_tenant_id_to_kwargs
+async def get_content(tenant_id: str = None, file_id: str = None):
+    """
+    Get structured content of a file (paragraph-level for docx).
+    ---
+    tags:
+      - Files
+    security:
+      - ApiKeyAuth: []
+    produces:
+      - application/json
+    parameters:
+      - in: path
+        name: file_id
+        type: string
+        required: true
+        description: File ID.
+    responses:
+      200:
+        description: Structured file content with paragraph-level detail.
+    """
+    try:
+        success, result = file_api_service.get_file_content(tenant_id, file_id)
+        if not success:
+            return get_error_data_result(message=result)
+
+        file = result
+        blob = await thread_pool_exec(settings.STORAGE_IMPL.get, file.parent_id, file.location)
+        if not blob:
+            b, n = File2DocumentService.get_storage_address(file_id=file_id)
+            blob = await thread_pool_exec(settings.STORAGE_IMPL.get, b, n)
+
+        if not blob:
+            return get_error_data_result(message="File content not found in storage")
+
+        ext = (file.name or "").lower()
+        if ext.endswith(".docx"):
+            try:
+                from rag.app.naive import Docx
+                d = Docx()
+                paragraphs = await thread_pool_exec(d.to_paragraphs, binary=blob)
+                return get_result(data={
+                    "filename": file.name,
+                    "file_type": "docx",
+                    "paragraphs": paragraphs,
+                })
+            except Exception as e:
+                logging.exception(e)
+                return get_error_data_result(message=f"Failed to parse docx: {e}")
+        else:
+            # Fallback: plain text split by paragraphs
+            try:
+                text = blob.decode("utf-8", errors="replace")
+            except Exception:
+                text = str(blob)
+            lines = text.split("\n")
+            paragraphs = [
+                {"index": i, "text": ln.strip(), "type": "paragraph", "page": 0}
+                for i, ln in enumerate(lines) if ln.strip()
+            ]
+            return get_result(data={
+                "filename": file.name,
+                "file_type": "text",
+                "paragraphs": paragraphs,
+            })
+    except Exception as e:
+        logging.exception(e)
+        return get_error_data_result(message="Internal server error")
+
+
+@manager.route("/files/<file_id>/annotate", methods=["POST"])  # noqa: F821
+@login_required
+@add_tenant_id_to_kwargs
+async def annotate_file(tenant_id: str = None, file_id: str = None):
+    """
+    Generate a .docx file with Word comments injected from structured annotations.
+    ---
+    tags:
+      - Files
+    security:
+      - ApiKeyAuth: []
+    produces:
+      - application/vnd.openxmlformats-officedocument.wordprocessingml.document
+    parameters:
+      - in: path
+        name: file_id
+        type: string
+        required: true
+        description: File ID to annotate.
+      - in: body
+        name: body
+        required: true
+        schema:
+          type: object
+          required:
+            - annotations
+          properties:
+            annotations:
+              type: array
+              items:
+                type: object
+              description: List of annotation objects with matched_text, type, severity, issue, suggestion.
+    responses:
+      200:
+        description: Annotated .docx file stream for download.
+    """
+    try:
+        success, result = file_api_service.get_file_content(tenant_id, file_id)
+        if not success:
+            return get_error_data_result(message=result)
+
+        file = result
+        ext = (file.name or "").lower()
+        if not ext.endswith(".docx"):
+            return get_error_data_result(message="Only .docx files are supported for annotation download")
+
+        blob = await thread_pool_exec(settings.STORAGE_IMPL.get, file.parent_id, file.location)
+        if not blob:
+            b, n = File2DocumentService.get_storage_address(file_id=file_id)
+            blob = await thread_pool_exec(settings.STORAGE_IMPL.get, b, n)
+
+        if not blob:
+            return get_error_data_result(message="File content not found in storage")
+
+        req_data = await request.get_json()
+        if not req_data:
+            return get_error_argument_result("Request body is required")
+
+        annotations = req_data.get("annotations", [])
+        if not annotations:
+            return get_error_argument_result("annotations is required and cannot be empty")
+
+        new_docx = await thread_pool_exec(_inject_docx_comments, blob, annotations)
+
+        response = await make_response(new_docx)
+        response.headers["Content-Type"] = (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+        safe_filename = file.name if file.name.endswith(".docx") else file.name + ".docx"
+        response.headers["Content-Disposition"] = (
+            f'attachment; filename="annotated_{safe_filename}"'
+        )
+        return response
+    except Exception as e:
+        logging.exception(e)
+        return get_error_data_result(message="Internal server error")
+
+
+# ── OOXML namespace constants ──
+_W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_CT_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
+
+
+def _inject_docx_comments(docx_bytes: bytes, annotations: list) -> bytes:
+    """
+    Inject Word comments into a .docx file based on matched_text annotations.
+
+    Opens the docx as a ZIP, finds paragraphs matching each annotation's
+    matched_text, injects commentRangeStart/End/Reference markers, creates
+    word/comments.xml with the annotation content, and updates relationships
+    and content types.
+    """
+    input_buf = io.BytesIO(docx_bytes)
+    output_buf = io.BytesIO()
+
+    with zipfile.ZipFile(input_buf, "r") as in_z, zipfile.ZipFile(output_buf, "w", zipfile.ZIP_DEFLATED) as out_z:
+        # ── Load document.xml ──
+        doc_xml_raw = in_z.read("word/document.xml")
+        if doc_xml_raw[:3] == b"\xef\xbb\xbf":
+            doc_xml_raw = doc_xml_raw[3:]
+        doc_xml = etree.fromstring(doc_xml_raw)
+
+        body = doc_xml.find(f"{{{_W_NS}}}body")
+        if body is None:
+            raise ValueError("Invalid docx: no body element found")
+
+        # ── Load or create comments.xml ──
+        next_id = 0
+        try:
+            comments_raw = in_z.read("word/comments.xml")
+            if comments_raw[:3] == b"\xef\xbb\xbf":
+                comments_raw = comments_raw[3:]
+            comments_et = etree.fromstring(comments_raw)
+            for c in comments_et.findall(f"{{{_W_NS}}}comment"):
+                cid = int(c.get(f"{{{_W_NS}}}id", 0))
+                if cid >= next_id:
+                    next_id = cid + 1
+        except KeyError:
+            comments_et = etree.Element(
+                f"{{{_W_NS}}}comments",
+                nsmap={"w": _W_NS, "r": _R_NS},
+            )
+
+        # ── Collect all paragraphs once ──
+        all_paras = body.findall(f".//{{{_W_NS}}}p")
+
+        for ann in annotations:
+            matched_text = (ann.get("matched_text") or "").strip()
+            if not matched_text:
+                continue
+
+            comment_id = next_id
+            next_id += 1
+
+            # Build comment content
+            severity = (ann.get("severity") or "").upper()
+            ann_type = ann.get("type", "")
+            issue = ann.get("issue", "")
+            suggestion = ann.get("suggestion", "")
+
+            comment_lines = []
+            if severity:
+                comment_lines.append(f"[{severity}] {ann_type}: {issue}")
+            else:
+                comment_lines.append(f"{ann_type}: {issue}")
+            if suggestion:
+                comment_lines.append(f"建议: {suggestion}")
+
+            # ── Build comment XML element ──
+            cmt = etree.SubElement(comments_et, f"{{{_W_NS}}}comment")
+            cmt.set(f"{{{_W_NS}}}id", str(comment_id))
+            cmt.set(f"{{{_W_NS}}}author", "AI Reviewer")
+
+            for line in comment_lines:
+                cp = etree.SubElement(cmt, f"{{{_W_NS}}}p")
+                cp_r = etree.SubElement(cp, f"{{{_W_NS}}}r")
+                rpr = etree.SubElement(cp_r, f"{{{_W_NS}}}rPr")
+                if severity == "HIGH":
+                    etree.SubElement(rpr, f"{{{_W_NS}}}color").set(f"{{{_W_NS}}}val", "FF0000")
+                    etree.SubElement(rpr, f"{{{_W_NS}}}b")
+                elif severity == "MEDIUM":
+                    etree.SubElement(rpr, f"{{{_W_NS}}}color").set(f"{{{_W_NS}}}val", "FF8C00")
+                cp_t = etree.SubElement(cp_r, f"{{{_W_NS}}}t")
+                cp_t.text = line
+                cp_t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+
+            # ── Find matching paragraph and inject markers ──
+            best_para = None
+            best_text = ""
+            for p in all_paras:
+                runs = p.findall(f".//{{{_W_NS}}}r")
+                p_text = "".join(
+                    "".join(t.text or "" for t in r.findall(f"{{{_W_NS}}}t"))
+                    for r in runs
+                )
+                if matched_text in p_text:
+                    # Prefer the shortest text that contains matched_text (most precise paragraph)
+                    if best_para is None or len(p_text) < len(best_text):
+                        best_para = p
+                        best_text = p_text
+
+            if best_para is not None:
+                # Inject commentRangeStart before first child
+                crs = etree.Element(f"{{{_W_NS}}}commentRangeStart")
+                crs.set(f"{{{_W_NS}}}id", str(comment_id))
+                best_para.insert(0, crs)
+
+                # Inject commentRangeEnd after last child
+                cre = etree.Element(f"{{{_W_NS}}}commentRangeEnd")
+                cre.set(f"{{{_W_NS}}}id", str(comment_id))
+                best_para.append(cre)
+
+                # Inject commentReference as a new run at end
+                ref_run = etree.SubElement(best_para, f"{{{_W_NS}}}r")
+                ref_rpr = etree.SubElement(ref_run, f"{{{_W_NS}}}rPr")
+                hl = etree.SubElement(ref_rpr, f"{{{_W_NS}}}highlight")
+                hl.set(f"{{{_W_NS}}}val", "yellow")
+                ref = etree.SubElement(ref_run, f"{{{_W_NS}}}commentReference")
+                ref.set(f"{{{_W_NS}}}id", str(comment_id))
+
+        # ── Copy all items except the ones we modify ──
+        for item in in_z.infolist():
+            if item.filename in ("word/document.xml", "word/comments.xml",
+                                 "[Content_Types].xml", "word/_rels/document.xml.rels"):
+                continue
+            out_z.writestr(item, in_z.read(item.filename))
+
+        # ── Write modified document.xml ──
+        out_z.writestr("word/document.xml",
+                       etree.tostring(doc_xml, xml_declaration=True, encoding="UTF-8", standalone=True))
+
+        # ── Write comments.xml ──
+        out_z.writestr("word/comments.xml",
+                       etree.tostring(comments_et, xml_declaration=True, encoding="UTF-8", standalone=True))
+
+        # ── Fix [Content_Types].xml ──
+        try:
+            ct_raw = in_z.read("[Content_Types].xml")
+            if ct_raw[:3] == b"\xef\xbb\xbf":
+                ct_raw = ct_raw[3:]
+        except KeyError:
+            ct_raw = (
+                b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                b'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                b'<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                b'<Default Extension="xml" ContentType="application/xml"/>'
+                b'<Override PartName="/word/document.xml" '
+                b'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+                b"</Types>"
+            )
+
+        ct_et = etree.fromstring(ct_raw)
+        ct_ns = _CT_NS
+        # Check if comments override already exists
+        comments_ct_exists = any(
+            ov.get("PartName") == "/word/comments.xml"
+            for ov in ct_et.findall(f"{{{ct_ns}}}Override")
+        )
+        if not comments_ct_exists:
+            ov = etree.SubElement(ct_et, f"{{{ct_ns}}}Override")
+            ov.set("PartName", "/word/comments.xml")
+            ov.set("ContentType",
+                   "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml")
+
+        out_z.writestr("[Content_Types].xml",
+                       etree.tostring(ct_et, xml_declaration=True, encoding="UTF-8", standalone=True))
+
+        # ── Fix word/_rels/document.xml.rels ──
+        try:
+            rels_raw = in_z.read("word/_rels/document.xml.rels")
+            if rels_raw[:3] == b"\xef\xbb\xbf":
+                rels_raw = rels_raw[3:]
+        except KeyError:
+            rels_raw = (
+                b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                b"</Relationships>"
+            )
+
+        rels_et = etree.fromstring(rels_raw)
+        rels_ns = "http://schemas.openxmlformats.org/package/2006/relationships"
+        # Check if comments relationship already exists
+        comments_rel_exists = any(
+            r.get("Type") == (_R_NS + "/comments")
+            for r in rels_et.findall(f"{{{rels_ns}}}Relationship")
+        )
+        if not comments_rel_exists:
+            # Find max existing rId number
+            max_rid = 0
+            for r in rels_et.findall(f"{{{rels_ns}}}Relationship"):
+                rid = r.get("Id", "")
+                if rid.startswith("rId"):
+                    try:
+                        num = int(rid[3:])
+                        if num > max_rid:
+                            max_rid = num
+                    except ValueError:
+                        pass
+            new_rid = f"rId{max_rid + 1}"
+            rel = etree.SubElement(rels_et, f"{{{rels_ns}}}Relationship")
+            rel.set("Id", new_rid)
+            rel.set("Type", _R_NS + "/comments")
+            rel.set("Target", "comments.xml")
+
+        out_z.writestr("word/_rels/document.xml.rels",
+                       etree.tostring(rels_et, xml_declaration=True, encoding="UTF-8", standalone=True))
+
+    return output_buf.getvalue()

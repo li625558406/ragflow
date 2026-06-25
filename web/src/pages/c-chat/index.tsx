@@ -51,6 +51,7 @@ import {
   Upload,
   X,
 } from 'lucide-react';
+import ReviewPanel, { type Annotation } from './review-panel';
 
 import { RealtimeAudioButton } from '@/components/realtime-audio-button';
 import {
@@ -272,6 +273,49 @@ export default function CChat() {
     }>
   >([]);
   const [files, setFiles] = useState<File[]>([]);
+
+  // ── Review mode state ──
+  const [reviewMode, setReviewMode] = useState(false);
+  const [reviewFileId, setReviewFileId] = useState<string>('');
+  const [reviewFileName, setReviewFileName] = useState<string>('');
+
+  // Extract annotations from node_finished events for the latest message
+  const reviewAnnotations = useMemo<Annotation[]>(() => {
+    if (!reviewMode) return [];
+    // Scan all node events for outputs.structured.annotations
+    for (const events of Object.values(nodeEventsByMsgId)) {
+      for (const evt of events as any[]) {
+        const outputs = evt?.data?.outputs;
+        if (outputs?.structured?.annotations) {
+          return outputs.structured.annotations as Annotation[];
+        }
+      }
+    }
+    // Fallback: try parsing the last assistant message content for annotations JSON
+    for (let i = derivedMessages.length - 1; i >= 0; i--) {
+      const msg = derivedMessages[i];
+      if (msg.role === 'assistant' && msg.content) {
+        try {
+          const trimmed = msg.content.trim();
+          // Check for JSON annotations embedded in markdown
+          const jsonMatch = trimmed.match(
+            /```(?:json)?\s*(\{[\s\S]*?\})\s*```/,
+          );
+          if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[1]);
+            if (parsed.annotations) return parsed.annotations as Annotation[];
+          }
+          // Try direct JSON parse
+          const direct = JSON.parse(trimmed);
+          if (direct.annotations) return direct.annotations as Annotation[];
+          // JSON.parse may fail on non-JSON content
+          // eslint-disable-next-line no-empty
+        } catch {}
+        break;
+      }
+    }
+    return [];
+  }, [reviewMode, nodeEventsByMsgId, derivedMessages]);
 
   // ── B-side chat hooks ──
   const { handleInputChange, value, setValue } = useHandleMessageInputChange();
@@ -1590,6 +1634,30 @@ export default function CChat() {
                   <span className="w-1.5 h-1.5 rounded-full bg-[#2ec4b6] animate-pulse" />
                 </div>
                 <div className="flex-1" />
+                {uploadedFiles.length > 0 && (
+                  <button
+                    onClick={() => {
+                      if (reviewMode) {
+                        setReviewMode(false);
+                        setReviewFileId('');
+                        setReviewFileName('');
+                      } else {
+                        const firstFile = uploadedFiles[0];
+                        setReviewFileId(firstFile.id);
+                        setReviewFileName(firstFile.name);
+                        setReviewMode(true);
+                      }
+                    }}
+                    className={`flex items-center gap-1.5 text-sm font-semibold px-2 py-1 rounded-lg transition-colors cursor-pointer ${
+                      reviewMode
+                        ? 'text-[#3F5B8D] bg-[#F0F3FA]'
+                        : 'text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA]'
+                    }`}
+                  >
+                    <FileText className="size-4" strokeWidth={2} />
+                    文件审核
+                  </button>
+                )}
                 {derivedMessages.length > 0 && (
                   <button
                     onClick={() => {
@@ -2701,6 +2769,18 @@ export default function CChat() {
             chunk={drawerSelectedChunk}
           />
         )}
+
+        <ReviewPanel
+          open={reviewMode && !!reviewFileId}
+          onClose={() => {
+            setReviewMode(false);
+            setReviewFileId('');
+            setReviewFileName('');
+          }}
+          fileId={reviewFileId}
+          fileName={reviewFileName}
+          annotations={reviewAnnotations}
+        />
       </div>
 
       <AppDownloadDialog open={downloadOpen} onOpenChange={setDownloadOpen} />

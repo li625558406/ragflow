@@ -14,12 +14,15 @@
 #  limitations under the License.
 #
 
+import html
 import logging
 import re
 import os
+import zipfile
 from functools import reduce
 from io import BytesIO
 from timeit import default_timer as timer
+from lxml import etree
 from docx import Document
 from docx.opc.pkgreader import _SerializedRelationships, _SerializedRelationship
 from docx.table import Table as DocxTable
@@ -309,6 +312,82 @@ PARSERS = {
     "plaintext": by_plaintext,  # default
 }
 
+# ── Word comment extraction helpers ──
+_W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+
+
+def _extract_docx_comments(binary):
+    """
+    Extract comments from word/comments.xml inside a .docx ZIP.
+    Returns dict[int, (author, date, text)]. Empty dict on any failure.
+    """
+    comments = {}
+    try:
+        with zipfile.ZipFile(io.BytesIO(binary), "r") as z:
+            target = None
+            for name in z.namelist():
+                if name.lower() == "word/comments.xml":
+                    target = name
+                    break
+            if target is None:
+                return comments
+
+            raw = z.read(target)
+            # Strip BOM if present (some .docx generators add it)
+            if raw[:3] == b'\xef\xbb\xbf':
+                raw = raw[3:]
+            root = etree.fromstring(raw)
+
+            for comment_el in root.iter(_W_NS + "comment"):
+                cid = comment_el.get(_W_NS + "id")
+                author = comment_el.get(_W_NS + "author", "")
+                date = comment_el.get(_W_NS + "date", "")
+
+                text_parts = []
+                for t_el in comment_el.iter(_W_NS + "t"):
+                    if t_el.text:
+                        text_parts.append(t_el.text)
+                comment_text = "".join(text_parts).strip()
+
+                if cid is not None:
+                    try:
+                        comments[int(cid)] = (
+                            author,
+                            date[:10] if len(date) >= 10 else date,
+                            comment_text,
+                        )
+                    except ValueError:
+                        pass
+    except Exception as e:
+        logging.warning(f"[Docx] Failed to extract comments: {e}")
+
+    return comments
+
+
+def _get_paragraph_comment_ids(p_element):
+    """Return comment IDs whose commentRangeStart appears in this <w:p>."""
+    ids = set()
+    tag_start = _W_NS + "commentRangeStart"
+    for child in p_element:
+        if child.tag == tag_start:
+            cid = child.get(_W_NS + "id")
+            if cid is not None:
+                try:
+                    ids.add(int(cid))
+                except ValueError:
+                    pass
+    return ids
+
+
+def _format_comments(comment_ids, comments_map):
+    """Format comment annotations as text block for injection into paragraph."""
+    parts = []
+    for cid in sorted(comment_ids):
+        if cid in comments_map:
+            author, date, text = comments_map[cid]
+            parts.append(f"[批注 {author} ({date}): {text}]")
+    return "\n".join(parts)
+
 
 class Docx(DocxParser):
     def __init__(self):
@@ -425,6 +504,28 @@ class Docx(DocxParser):
 
     def __call__(self, filename, binary=None, from_page=0, to_page=MAXIMUM_PAGE_NUMBER):
         self.doc = Document(filename) if not binary else Document(BytesIO(binary))
+
+        # --- Comment extraction: lazy two-phase approach ---
+        comments_map = {}
+        _comment_start_tag = _W_NS + "commentRangeStart"
+        _has_comment_markers = False
+        for blk in self.doc._element.body:
+            if any(child.tag == _comment_start_tag for child in blk.iter()):
+                _has_comment_markers = True
+                break
+
+        if _has_comment_markers:
+            try:
+                if binary:
+                    _raw = binary
+                else:
+                    with open(filename, "rb") as _f:
+                        _raw = _f.read()
+                comments_map = _extract_docx_comments(_raw)
+            except Exception as e:
+                logging.warning(f"[Docx] Failed to extract comments: {e}")
+        # --- End comment extraction ---
+
         pn = 0
         lines = []
         last_image = None
@@ -448,6 +549,13 @@ class Docx(DocxParser):
                     style_name = p.style.name if p.style else ""
 
                     if text:
+                        # Collect comment annotations for this paragraph
+                        comment_text = ""
+                        if comments_map:
+                            cids = _get_paragraph_comment_ids(block)
+                            if cids:
+                                comment_text = _format_comments(cids, comments_map)
+
                         if style_name == "Caption":
                             former_image = None
 
@@ -459,9 +567,12 @@ class Docx(DocxParser):
                                 former_image = last_image
                                 last_image = None
 
+                            cleaned = self.__clean(text)
+                            if comment_text:
+                                cleaned = (cleaned + "\n" + comment_text) if cleaned else comment_text
                             lines.append(
                                 {
-                                    "text": self.__clean(text),
+                                    "text": cleaned,
                                     "image": former_image if former_image else None,
                                     "table": None,
                                 }
@@ -469,9 +580,12 @@ class Docx(DocxParser):
 
                         else:
                             flush_last_image()
+                            cleaned = self.__clean(text)
+                            if comment_text:
+                                cleaned = (cleaned + "\n" + comment_text) if cleaned else comment_text
                             lines.append(
                                 {
-                                    "text": self.__clean(text),
+                                    "text": cleaned,
                                     "image": None,
                                     "table": None,
                                 }
@@ -488,9 +602,20 @@ class Docx(DocxParser):
                                 )
 
                     else:
+                        # Paragraph has no visible text — check for comments and images
+                        comment_text = ""
+                        if comments_map:
+                            cids = _get_paragraph_comment_ids(block)
+                            if cids:
+                                comment_text = _format_comments(cids, comments_map)
                         current_image = self.get_picture(self.doc, p)
                         if current_image is not None:
-                            last_image = current_image
+                            if comment_text:
+                                lines.append({"text": comment_text, "image": current_image, "table": None})
+                            else:
+                                last_image = current_image
+                        elif comment_text:
+                            lines.append({"text": comment_text, "image": None, "table": None})
 
                 for run in p.runs:
                     xml = run._element.xml
@@ -537,6 +662,104 @@ class Docx(DocxParser):
         new_line = [(line.get("text"), line.get("image"), line.get("table")) for line in lines]
 
         return new_line
+
+    def to_paragraphs(self, filename=None, binary=None):
+        """
+        Extract paragraph-level structure from a .docx file.
+        Returns list of dicts: [{"index": int, "text": str, "type": str, "page": int}]
+        Types: "heading", "paragraph", "table", "image"
+        """
+        doc = Document(filename) if not binary else Document(BytesIO(binary))
+        paragraphs = []
+        pn = 0
+        idx = 0
+
+        def _is_heading(style_name):
+            if not style_name:
+                return False
+            return bool(re.match(r"^Heading\s*\d+$", style_name, re.IGNORECASE))
+
+        def _heading_level(style_name):
+            m = re.match(r"(\d+)", style_name)
+            return int(m.group(1)) if m else 1
+
+        for block in doc._element.body:
+            if block.tag.endswith("p"):
+                p = Paragraph(block, doc)
+                style_name = p.style.name if p.style else ""
+                text = p.text.strip()
+
+                # Track page numbers
+                for run in p.runs:
+                    xml = run._element.xml
+                    if "lastRenderedPageBreak" in xml:
+                        pn += 1
+                    if "w:br" in xml and 'type="page"' in xml:
+                        pn += 1
+
+                if not text:
+                    # Check for image-only paragraph
+                    img = self.get_picture(doc, p)
+                    if img is not None:
+                        paragraphs.append({
+                            "index": idx,
+                            "text": "[图片]",
+                            "type": "image",
+                            "page": pn,
+                        })
+                        idx += 1
+                    continue
+
+                para_type = "heading" if _is_heading(style_name) else "paragraph"
+                paragraphs.append({
+                    "index": idx,
+                    "text": text,
+                    "type": para_type,
+                    "page": pn,
+                    "heading_level": _heading_level(style_name) if para_type == "heading" else None,
+                })
+                idx += 1
+
+            elif block.tag.endswith("tbl"):
+                for run_in_block in block.iter():
+                    if run_in_block.tag.endswith("}p"):
+                        xml_str = etree.tostring(run_in_block, encoding="unicode")
+                        if "lastRenderedPageBreak" in xml_str:
+                            pn += 1
+                        if "w:br" in xml_str and 'type="page"' in xml_str:
+                            pn += 1
+                    if run_in_block.tag == _W_NS + "br" and run_in_block.get(_W_NS + "type") == "page":
+                        pn += 1
+
+                try:
+                    tb = DocxTable(block, doc)
+                    rows_data = []
+                    for r in tb.rows:
+                        row_cells = []
+                        for c in r.cells:
+                            row_cells.append(c.text.strip())
+                        if row_cells:
+                            rows_data.append(row_cells)
+                    if rows_data:
+                        html = "<table>"
+                        for ri, row in enumerate(rows_data):
+                            html += "<tr>"
+                            for cell in row:
+                                tag = "th" if ri == 0 else "td"
+                                html += f"<{tag}>{html.escape(cell)}</{tag}>"
+                            html += "</tr>"
+                        html += "</table>"
+                        paragraphs.append({
+                            "index": idx,
+                            "text": html,
+                            "type": "table",
+                            "page": pn,
+                        })
+                        idx += 1
+                except Exception as e:
+                    logging.warning(f"[Docx.to_paragraphs] Table parse error: {e}")
+
+        return paragraphs
 
     def to_markdown(self, filename=None, binary=None, inline_images: bool = True):
         """
