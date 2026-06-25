@@ -416,6 +416,8 @@ class Canvas(Graph):
             if k in ["query", "user_id", "files", "internet"] and kwargs[k]:
                 if k == "files":
                     self.globals[f"sys.{k}"] = await self.get_files_async(kwargs[k], layout_recognize)
+                    # Also expose concatenated file content for file review prompts
+                    self.globals["sys.file_content"] = "\n\n".join(self.globals[f"sys.{k}"])
                 else:
                     self.globals[f"sys.{k}"] = kwargs[k]
         if not self.globals["sys.conversation_turns"] :

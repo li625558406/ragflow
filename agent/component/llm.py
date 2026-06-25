@@ -425,7 +425,10 @@ class LLM(ComponentBase):
             output_structure = self._param.outputs["structured"]
         except Exception:
             pass
-        if output_structure and isinstance(output_structure, dict) and output_structure.get("properties") and len(output_structure["properties"]) > 0:
+        # Only activate structured JSON output when files are uploaded.
+        # Without files, fall through to normal text output (avoids forcing JSON for Q&A).
+        has_files = bool(self._canvas.globals.get("sys.files"))
+        if output_structure and isinstance(output_structure, dict) and output_structure.get("properties") and len(output_structure["properties"]) > 0 and has_files:
             schema = json.dumps(output_structure, ensure_ascii=False, indent=2)
             prompt_with_schema = prompt + structured_output_prompt(schema)
             for _ in range(self._param.max_retries + 1):
@@ -453,6 +456,9 @@ class LLM(ComponentBase):
                     parsed = json_repair.loads(cleaned)
                     logging.info(f"[structured] parsed type={type(parsed).__name__} keys={list(parsed.keys()) if isinstance(parsed, dict) else 'N/A'}")
                     self.set_output("structured", parsed)
+                    # Also set content from summary so Message nodes work in both modes
+                    if isinstance(parsed, dict) and "summary" in parsed:
+                        self.set_output("content", str(parsed["summary"]))
                     return
                 except Exception as e:
                     logging.error(f"[structured] json_repair failed: {e}, cleaned_head={cleaned[:500]}")
