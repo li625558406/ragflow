@@ -34,7 +34,7 @@ sites:
     name: "政府采购代理机构名单"
     site_url: "http://www.ccgp.gov.cn/agency/md/"
     detect_interval: 30
-    enabled: true
+    enabled: true  # by design: agency contact info, no article content
     transport:
       type: rest_api
       engine: requests
@@ -94,7 +94,7 @@ sites:
   ccgp_jdcf_gg_cr:
     name: "中国政府采购网-监督处罚+公告+严重违法失信"
     site_url: "http://www.ccgp.gov.cn/"
-    enabled: true  # Re-enabled: sections verified from old crawler scripts
+    enabled: false  # DISABLED: listing URL empty, CSS selector broken
     transport:
       type: rest_api
       engine: requests
@@ -322,7 +322,8 @@ sites:
         region: "td:nth-child(3)"
         source: "td:nth-child(4)"
     detail:
-      type: inline
+      type: css_selector
+      content_field: "#bulletinContent, .bulletin-content, .detail-content, .TRS_Editor, article, main"
     format:
       parser_id: "naive"
       upload_batch_size: 10
@@ -469,7 +470,7 @@ sites:
   fycbid:
     name: "福易采电子交易平台"
     site_url: "https://www.fycbid.cn/"
-    enabled: true
+    enabled: false  # DISABLED: HTTP 500 + encoding issues
     transport:
       type: rest_api
       engine: requests
@@ -531,7 +532,7 @@ sites:
   jdhy:
     name: "福建省发改委-解读回应"
     site_url: "http://fgw.fujian.gov.cn/jdhy/"
-    enabled: true  # Re-enabled: sections verified from old crawler scripts
+    enabled: true
     transport:
       type: rest_api
       engine: requests
@@ -812,7 +813,8 @@ sites:
         title: "a"
         date: "span"
     detail:
-      type: inline
+      type: css_selector
+      content_field: ".Custom_UnionStyle, .TRS_Editor, .pages_content, .zoom, article, main"
     format:
       parser_id: "naive"
       upload_batch_size: 10
@@ -1254,14 +1256,14 @@ sites:
       page_param: "pageNum"
       page_size: 15
       start: 1
-      items_field: "resultList"
+      items_field: "data.resultList"
     anti_crawler:
       delay_min: 1.0
       delay_max: 2.5
       max_retries: 3
     extract:
       type: json_path
-      items_path: "resultList"
+      items_path: "data.resultList"
       fields:
         id: "infoID"
         title: "title"
@@ -1269,6 +1271,7 @@ sites:
     detail:
       type: api_request
       url: "http://ggzyjy.xzfwzx.zhangzhou.gov.cn/proxy_api/publicResource/front/projectDetail/{id}"
+      content_field: "data.content"  # detail API returns code 201 for most items — limited content
     format:
       parser_id: "naive"
       upload_batch_size: 10
@@ -1719,7 +1722,7 @@ sites:
   quanzhou_zcfg:
     name: "泉州市公共资源交易中心-政策法规"
     site_url: "https://ggzyjy.quanzhou.gov.cn/"
-    enabled: true
+    enabled: true  # fixed: title field was "title", API returns "newsTitle"
     transport:
       type: rest_api
       engine: urllib
@@ -1757,7 +1760,7 @@ sites:
       items_path: "data.dataList"
       fields:
         id: "newsId"
-        title: "title"
+        title: "newsTitle"
         date: "pubDate"
     detail:
       type: api_request
@@ -2766,7 +2769,7 @@ sites:
   ggzyfw_fujian:
     name: "福建省公共资源交易平台-新闻通知"
     site_url: "https://ggzyfw.fujian.gov.cn/"
-    enabled: true
+    enabled: false  # DISABLED: API endpoint dead (HTTP 500)
     transport:
       type: encrypted_api
       engine: playwright_http
@@ -2842,7 +2845,7 @@ sites:
   ggzyfw_policies:
     name: "福建省公共资源交易平台-政策法规"
     site_url: "https://ggzyfw.fujian.gov.cn/"
-    enabled: true
+    enabled: false  # DISABLED: API endpoint dead (HTTP 500)
     transport:
       type: encrypted_api
       engine: requests
@@ -3964,7 +3967,7 @@ sites:
   longyan:
     name: "龙岩市公共资源交易中心-工程建设"
     site_url: "https://ggzy.longyan.gov.cn/"
-    enabled: true  # Re-enabled: sections verified from old crawler scripts
+    enabled: false  # DISABLED: listing URL empty
     transport:
       type: rest_api
       engine: urllib
@@ -4082,7 +4085,7 @@ sites:
   pingtan_fjsz:
     name: "平潭综合实验区公共资源平台"
     site_url: "https://xzfwzx.pingtan.gov.cn:9999/"
-    enabled: true
+    enabled: false  # DISABLED: listing returns HTML, rest_api cannot parse
     transport:
       type: spa_render
       engine: playwright_spa

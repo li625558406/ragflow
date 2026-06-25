@@ -972,20 +972,34 @@ class Canvas(Graph):
     async def get_files_async(self, files: Union[None, list[dict]], layout_recognize: str = None) -> list[str]:
         if not files:
             return  []
-        def image_to_base64(file):
-            return "data:{};base64,{}".format(file["mime_type"],
-                                        base64.b64encode(FileService.get_blob(file["created_by"], file["id"])).decode("utf-8"))
-        def parse_file(file):
-            blob = FileService.get_blob(file["created_by"], file["id"])
-            return FileService.parse(file["name"], blob, True, file["created_by"], layout_recognize)
+
+        def _safe_image_to_base64(file):
+            try:
+                blob = FileService.get_blob(file["created_by"], file["id"])
+                return "data:{};base64,{}".format(file["mime_type"],
+                                                   base64.b64encode(blob).decode("utf-8"))
+            except Exception as e:
+                logging.warning(f"[get_files_async] Failed to convert image {file.get('name', '?')}: {e}")
+                return None
+
+        def _safe_parse_file(file):
+            try:
+                blob = FileService.get_blob(file["created_by"], file["id"])
+                return FileService.parse(file["name"], blob, True, file["created_by"], layout_recognize)
+            except Exception as e:
+                logging.warning(f"[get_files_async] Failed to parse file {file.get('name', '?')}: {e}")
+                return None
+
         loop = asyncio.get_running_loop()
         tasks = []
         for file in files:
-            if file["mime_type"].find("image") >=0:
-                tasks.append(loop.run_in_executor(self._thread_pool, image_to_base64, file))
+            if file["mime_type"].find("image") >= 0:
+                tasks.append(loop.run_in_executor(self._thread_pool, _safe_image_to_base64, file))
                 continue
-            tasks.append(loop.run_in_executor(self._thread_pool, parse_file, file))
-        return await asyncio.gather(*tasks)
+            tasks.append(loop.run_in_executor(self._thread_pool, _safe_parse_file, file))
+        results = await asyncio.gather(*tasks)
+        # Filter out None results from failed files
+        return [r for r in results if r is not None]
 
     def get_files(self, files: Union[None, list[dict]], layout_recognize: str = None) -> list[str]:
         """

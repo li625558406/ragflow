@@ -248,10 +248,14 @@ class LLM(ComponentBase):
 
         self.imgs = self._uniq_images(self.imgs + extracted_imgs)
         if self.imgs and TenantLLMService.llm_id2llm_type(self._param.llm_id) == LLMType.CHAT.value:
-            self.chat_mdl = LLMBundle(self._canvas.get_tenant_id(), LLMType.IMAGE2TEXT.value,
-                                      self._param.llm_id, max_retries=self._param.max_retries,
-                                      retry_interval=self._param.delay_after_error
-                                      )
+            img_model_config = get_model_config_by_type_and_name(self._canvas.get_tenant_id(), LLMType.IMAGE2TEXT.value, self._param.llm_id)
+            if img_model_config:
+                self.chat_mdl = LLMBundle(self._canvas.get_tenant_id(), img_model_config,
+                                          max_retries=self._param.max_retries,
+                                          retry_interval=self._param.delay_after_error
+                                          )
+            else:
+                logging.warning(f"[LLM] {len(self.imgs)} image(s) detected but no IMAGE2TEXT model configured for llm_id={self._param.llm_id}, images will be stripped from prompt")
 
         msg, sys_prompt = self._sys_prompt_and_msg(self._canvas.get_history(self._param.message_history_window_size)[:-1], args)
         user_defined_prompt, sys_prompt = self._extract_prompts(sys_prompt)
