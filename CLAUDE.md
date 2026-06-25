@@ -6,7 +6,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 【核心注意：禁止构建前端代码】
 
-修改存量代码时需要先查看存量代码逻辑，判断修改是否造成存量逻辑漏洞，首选增量修改，不改变存量代码逻辑；如果不涉及存量代码逻辑，新增的代码需要符合设计模式的七大原则：1. 开闭原则	Open-Closed Principle (OCP)	对扩展开放，对修改关闭	用抽象构建框架，用实现扩展细节；2. 里氏替换原则	Liskov Substitution Principle (LSP)	子类可以替换父类	继承必须确保父类的性质在子类中仍然成立；3. 依赖倒置原则	Dependency Inversion Principle (DIP)	依赖抽象，不依赖具体	面向接口编程，而非实现编程；4. 单一职责原则	Single Responsibility Principle (SRP)	一个类只做一件事	只有一个引起它变化的原因；5. 接口隔离原则	Interface Segregation Principle (ISP)	接口要小而专一	胖接口拆分成多个小接口；6. 迪米特法则	Law of Demeter (LoD)	只和朋友说话，不和陌生人说话	最少知道原则，降低耦合；7. 合成复用原则	Composite/Aggregate Reuse Principle (CARP)	优先使用组合/聚合，而非继承	组合/聚合 vs 继承
+修改代码和新增代码，需要注意一下规范规则：
+
+1. 原有功能是否被意外移除、更改返回值、修改核心流程。
+  2. 新增/修改的代码是否正确实现了目标功能。
+  3. 边界条件：空值、零值、极限输入、并发访问、资源耗尽等情况是否安全。
+  4. 多场景适配：是否考虑了不同角色、不同配置、不同环境、多语言等场景下的行为。
+  5. 异常处理与日志：错误路径是否有兜底，异常是否被正确处理和记录。
+  6. 安全性：SQL注入、XSS、权限绕过、敏感信息暴露等。
+  7. 性能隐患：循环内 IO、无索引查询、内存泄漏、未释放连接等。
+  8. 代码质量：可读性、重复代码、魔法值、命名规范。
 
 ## Project Overview
 

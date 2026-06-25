@@ -1,4 +1,4 @@
-import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
+import { Sheet, SheetContent } from '@/components/ui/sheet';
 import api from '@/utils/api';
 import request from '@/utils/next-request';
 import {
@@ -43,6 +43,7 @@ interface ReviewPanelProps {
   fileId: string;
   fileName: string;
   annotations: Annotation[];
+  inline?: boolean;
 }
 
 // ── Severity config ──
@@ -164,6 +165,7 @@ export default function ReviewPanel({
   fileId,
   fileName,
   annotations,
+  inline = false,
 }: ReviewPanelProps) {
   const [content, setContent] = useState<FileContent | null>(null);
   const [loading, setLoading] = useState(false);
@@ -274,6 +276,242 @@ export default function ReviewPanel({
     return { matched, total: annotations.length, bySeverity };
   }, [annotations, annotationMap]);
 
+  const innerContent = (
+    <>
+      {/* Header */}
+      <div className="flex items-center justify-between px-5 py-4 border-b border-[#F0F0F0] shrink-0">
+        <div className="flex items-center gap-2 min-w-0">
+          <FileText
+            className="w-4 h-4 text-[#525252] shrink-0"
+            strokeWidth={2}
+          />
+          <h2 className="text-sm font-semibold text-[#1A1A1A] truncate">
+            {fileName || '文件审核'}
+          </h2>
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+          {annotations.length > 0 && (
+            <button
+              onClick={handleDownload}
+              disabled={downloading}
+              className="flex items-center gap-1.5 text-xs font-medium text-[#3F5B8D] hover:text-[#2E365A] px-2.5 py-1.5 rounded-lg hover:bg-[#F0F3FA] transition-colors disabled:opacity-50"
+            >
+              {downloading ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} />
+              ) : (
+                <Download className="w-3.5 h-3.5" strokeWidth={2} />
+              )}
+              下载标注文档
+            </button>
+          )}
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg hover:bg-[#F5F5F5] transition"
+          >
+            <X className="w-4 h-4 text-[#8A8A8A]" strokeWidth={2} />
+          </button>
+        </div>
+      </div>
+
+      {/* Download error toast */}
+      {downloadError && (
+        <div className="mx-5 mt-2 flex items-center gap-2 px-3 py-2 rounded-md bg-[#FFF2F0] border border-[#FFCCC7] text-xs text-[#FF4D4F]">
+          <AlertCircle className="w-3.5 h-3.5 shrink-0" strokeWidth={2} />
+          <span className="flex-1">{downloadError}</span>
+          <button
+            onClick={() => setDownloadError(null)}
+            className="shrink-0 p-0.5 hover:opacity-70"
+          >
+            <X className="w-3 h-3" strokeWidth={2} />
+          </button>
+        </div>
+      )}
+
+      {/* Annotation stats bar */}
+      {annotations.length > 0 && (
+        <div className="flex items-center gap-3 px-5 py-2.5 text-xs border-b border-[#F0F0F0] bg-[#FAFAFA]">
+          <span className="text-[#8A8A8A]">
+            共 {stats.total} 处标注，{stats.matched} 处已定位
+          </span>
+          <span className="text-[#E8E8E8]">|</span>
+          <span
+            className="flex items-center gap-1"
+            style={{ color: SEVERITY_CONFIG.high.textColor }}
+          >
+            <AlertCircle className="w-3 h-3" strokeWidth={2} />高{' '}
+            {stats.bySeverity.high}
+          </span>
+          <span
+            className="flex items-center gap-1"
+            style={{ color: SEVERITY_CONFIG.medium.textColor }}
+          >
+            <AlertTriangle className="w-3 h-3" strokeWidth={2} />中{' '}
+            {stats.bySeverity.medium}
+          </span>
+          <span
+            className="flex items-center gap-1"
+            style={{ color: SEVERITY_CONFIG.low.textColor }}
+          >
+            <Info className="w-3 h-3" strokeWidth={2} />低{' '}
+            {stats.bySeverity.low}
+          </span>
+        </div>
+      )}
+
+      {/* Content */}
+      <div
+        className={`overflow-y-auto px-5 py-4 ${inline ? 'flex-1' : 'h-[calc(100vh-130px)]'}`}
+      >
+        {loading && (
+          <div className="flex items-center justify-center py-20">
+            <Loader2
+              className="w-6 h-6 animate-spin text-[#8A8A8A]"
+              strokeWidth={2}
+            />
+            <span className="ml-2 text-sm text-[#8A8A8A]">加载文档内容...</span>
+          </div>
+        )}
+
+        {error && (
+          <div className="flex items-center justify-center py-20">
+            <div className="text-center">
+              <AlertCircle
+                className="w-8 h-8 text-[#FF4D4F] mx-auto mb-2"
+                strokeWidth={1.5}
+              />
+              <p className="text-sm text-[#FF4D4F]">{error}</p>
+            </div>
+          </div>
+        )}
+
+        {!loading && !error && content && (
+          <div className="space-y-3">
+            {content.paragraphs.map((para) => {
+              const annotation = annotationMap.get(para.index);
+              const sevConfig = annotation
+                ? SEVERITY_CONFIG[annotation.severity] || SEVERITY_CONFIG.low
+                : null;
+
+              let paraElement: React.ReactNode;
+
+              if (para.type === 'heading') {
+                const HeadingTag =
+                  para.heading_level && para.heading_level <= 3
+                    ? (`h${para.heading_level + 1}` as keyof JSX.IntrinsicElements)
+                    : 'h3';
+                paraElement = (
+                  <HeadingTag className="text-sm font-bold text-[#1A1A1A] mt-4 mb-1">
+                    {annotation
+                      ? highlightText(para.text, annotation)
+                      : para.text}
+                  </HeadingTag>
+                );
+              } else if (para.type === 'table') {
+                paraElement = (
+                  <div
+                    className="text-xs overflow-x-auto"
+                    dangerouslySetInnerHTML={{
+                      __html: sanitizeTableHtml(para.text),
+                    }}
+                  />
+                );
+              } else if (para.type === 'image') {
+                paraElement = (
+                  <div className="text-xs text-[#8A8A8A] italic py-1">
+                    {annotation
+                      ? highlightText(para.text, annotation)
+                      : para.text}
+                  </div>
+                );
+              } else {
+                paraElement = (
+                  <p className="text-xs leading-relaxed text-[#333333]">
+                    {annotation
+                      ? highlightText(para.text, annotation)
+                      : para.text}
+                  </p>
+                );
+              }
+
+              return (
+                <div
+                  key={para.index}
+                  data-para-index={para.index}
+                  className={`relative rounded-md transition-all ${
+                    annotation ? 'border-l-4 pl-3 pr-2 py-1.5' : 'px-2'
+                  }`}
+                  style={
+                    annotation
+                      ? {
+                          backgroundColor: sevConfig!.bg,
+                          borderLeftColor: sevConfig!.border,
+                        }
+                      : undefined
+                  }
+                >
+                  {paraElement}
+
+                  {/* Annotation bubble */}
+                  {annotation &&
+                    (() => {
+                      const Icon = sevConfig!.icon;
+                      return (
+                        <div
+                          className="mt-2 rounded-md p-2.5 text-xs"
+                          style={{ backgroundColor: 'rgba(255,255,255,0.8)' }}
+                        >
+                          <div className="flex items-center gap-1.5 mb-1">
+                            <Icon
+                              className="w-3.5 h-3.5"
+                              style={{ color: sevConfig!.textColor }}
+                              strokeWidth={2}
+                            />
+                            <span
+                              className="font-semibold"
+                              style={{ color: sevConfig!.textColor }}
+                            >
+                              [{sevConfig!.label}]{' '}
+                              {TYPE_LABELS[annotation.type] || annotation.type}
+                            </span>
+                          </div>
+                          <p className="text-[#333333] leading-relaxed mb-1">
+                            {annotation.issue}
+                          </p>
+                          {annotation.suggestion && (
+                            <div className="flex items-start gap-1 mt-1 text-[#525252]">
+                              <ChevronRight
+                                className="w-3 h-3 mt-0.5 shrink-0 text-[#3F5B8D]"
+                                strokeWidth={2}
+                              />
+                              <span>{annotation.suggestion}</span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {!loading && !error && !content && (
+          <div className="flex items-center justify-center py-20">
+            <p className="text-sm text-[#8A8A8A]">暂无内容</p>
+          </div>
+        )}
+      </div>
+    </>
+  );
+
+  if (inline) {
+    return (
+      <div className="flex flex-col h-full bg-[#FAFBFC] overflow-hidden">
+        {innerContent}
+      </div>
+    );
+  }
+
   return (
     <Sheet
       open={open}
@@ -285,233 +523,7 @@ export default function ReviewPanel({
         className="max-w-full p-0"
         style={{ width: '45vw', maxWidth: '600px' }}
       >
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[#F0F0F0]">
-          <div className="flex items-center gap-2 min-w-0">
-            <FileText
-              className="w-4 h-4 text-[#525252] shrink-0"
-              strokeWidth={2}
-            />
-            <SheetTitle className="text-sm font-semibold text-[#1A1A1A] truncate">
-              {fileName || '文件审核'}
-            </SheetTitle>
-          </div>
-          <div className="flex items-center gap-1 shrink-0">
-            {annotations.length > 0 && (
-              <button
-                onClick={handleDownload}
-                disabled={downloading}
-                className="flex items-center gap-1.5 text-xs font-medium text-[#3F5B8D] hover:text-[#2E365A] px-2.5 py-1.5 rounded-lg hover:bg-[#F0F3FA] transition-colors disabled:opacity-50"
-              >
-                {downloading ? (
-                  <Loader2
-                    className="w-3.5 h-3.5 animate-spin"
-                    strokeWidth={2}
-                  />
-                ) : (
-                  <Download className="w-3.5 h-3.5" strokeWidth={2} />
-                )}
-                下载标注文档
-              </button>
-            )}
-            <button
-              onClick={onClose}
-              className="p-1.5 rounded-lg hover:bg-[#F5F5F5] transition"
-            >
-              <X className="w-4 h-4 text-[#8A8A8A]" strokeWidth={2} />
-            </button>
-          </div>
-        </div>
-
-        {/* Download error toast */}
-        {downloadError && (
-          <div className="mx-5 mt-2 flex items-center gap-2 px-3 py-2 rounded-md bg-[#FFF2F0] border border-[#FFCCC7] text-xs text-[#FF4D4F]">
-            <AlertCircle className="w-3.5 h-3.5 shrink-0" strokeWidth={2} />
-            <span className="flex-1">{downloadError}</span>
-            <button
-              onClick={() => setDownloadError(null)}
-              className="shrink-0 p-0.5 hover:opacity-70"
-            >
-              <X className="w-3 h-3" strokeWidth={2} />
-            </button>
-          </div>
-        )}
-
-        {/* Annotation stats bar */}
-        {annotations.length > 0 && (
-          <div className="flex items-center gap-3 px-5 py-2.5 text-xs border-b border-[#F0F0F0] bg-[#FAFAFA]">
-            <span className="text-[#8A8A8A]">
-              共 {stats.total} 处标注，{stats.matched} 处已定位
-            </span>
-            <span className="text-[#E8E8E8]">|</span>
-            <span
-              className="flex items-center gap-1"
-              style={{ color: SEVERITY_CONFIG.high.textColor }}
-            >
-              <AlertCircle className="w-3 h-3" strokeWidth={2} />高{' '}
-              {stats.bySeverity.high}
-            </span>
-            <span
-              className="flex items-center gap-1"
-              style={{ color: SEVERITY_CONFIG.medium.textColor }}
-            >
-              <AlertTriangle className="w-3 h-3" strokeWidth={2} />中{' '}
-              {stats.bySeverity.medium}
-            </span>
-            <span
-              className="flex items-center gap-1"
-              style={{ color: SEVERITY_CONFIG.low.textColor }}
-            >
-              <Info className="w-3 h-3" strokeWidth={2} />低{' '}
-              {stats.bySeverity.low}
-            </span>
-          </div>
-        )}
-
-        {/* Content */}
-        <div className="overflow-y-auto h-[calc(100vh-130px)] px-5 py-4">
-          {loading && (
-            <div className="flex items-center justify-center py-20">
-              <Loader2
-                className="w-6 h-6 animate-spin text-[#8A8A8A]"
-                strokeWidth={2}
-              />
-              <span className="ml-2 text-sm text-[#8A8A8A]">
-                加载文档内容...
-              </span>
-            </div>
-          )}
-
-          {error && (
-            <div className="flex items-center justify-center py-20">
-              <div className="text-center">
-                <AlertCircle
-                  className="w-8 h-8 text-[#FF4D4F] mx-auto mb-2"
-                  strokeWidth={1.5}
-                />
-                <p className="text-sm text-[#FF4D4F]">{error}</p>
-              </div>
-            </div>
-          )}
-
-          {!loading && !error && content && (
-            <div className="space-y-3">
-              {content.paragraphs.map((para) => {
-                const annotation = annotationMap.get(para.index);
-                const sevConfig = annotation
-                  ? SEVERITY_CONFIG[annotation.severity] || SEVERITY_CONFIG.low
-                  : null;
-
-                let paraElement: React.ReactNode;
-
-                if (para.type === 'heading') {
-                  const HeadingTag =
-                    para.heading_level && para.heading_level <= 3
-                      ? (`h${para.heading_level + 1}` as keyof JSX.IntrinsicElements)
-                      : 'h3';
-                  paraElement = (
-                    <HeadingTag className="text-sm font-bold text-[#1A1A1A] mt-4 mb-1">
-                      {annotation
-                        ? highlightText(para.text, annotation)
-                        : para.text}
-                    </HeadingTag>
-                  );
-                } else if (para.type === 'table') {
-                  paraElement = (
-                    <div
-                      className="text-xs overflow-x-auto"
-                      dangerouslySetInnerHTML={{
-                        __html: sanitizeTableHtml(para.text),
-                      }}
-                    />
-                  );
-                } else if (para.type === 'image') {
-                  paraElement = (
-                    <div className="text-xs text-[#8A8A8A] italic py-1">
-                      {annotation
-                        ? highlightText(para.text, annotation)
-                        : para.text}
-                    </div>
-                  );
-                } else {
-                  paraElement = (
-                    <p className="text-xs leading-relaxed text-[#333333]">
-                      {annotation
-                        ? highlightText(para.text, annotation)
-                        : para.text}
-                    </p>
-                  );
-                }
-
-                return (
-                  <div
-                    key={para.index}
-                    data-para-index={para.index}
-                    className={`relative rounded-md transition-all ${
-                      annotation ? 'border-l-4 pl-3 pr-2 py-1.5' : 'px-2'
-                    }`}
-                    style={
-                      annotation
-                        ? {
-                            backgroundColor: sevConfig!.bg,
-                            borderLeftColor: sevConfig!.border,
-                          }
-                        : undefined
-                    }
-                  >
-                    {paraElement}
-
-                    {/* Annotation bubble */}
-                    {annotation &&
-                      (() => {
-                        const Icon = sevConfig!.icon;
-                        return (
-                          <div
-                            className="mt-2 rounded-md p-2.5 text-xs"
-                            style={{ backgroundColor: 'rgba(255,255,255,0.8)' }}
-                          >
-                            <div className="flex items-center gap-1.5 mb-1">
-                              <Icon
-                                className="w-3.5 h-3.5"
-                                style={{ color: sevConfig!.textColor }}
-                                strokeWidth={2}
-                              />
-                              <span
-                                className="font-semibold"
-                                style={{ color: sevConfig!.textColor }}
-                              >
-                                [{sevConfig!.label}]{' '}
-                                {TYPE_LABELS[annotation.type] ||
-                                  annotation.type}
-                              </span>
-                            </div>
-                            <p className="text-[#333333] leading-relaxed mb-1">
-                              {annotation.issue}
-                            </p>
-                            {annotation.suggestion && (
-                              <div className="flex items-start gap-1 mt-1 text-[#525252]">
-                                <ChevronRight
-                                  className="w-3 h-3 mt-0.5 shrink-0 text-[#3F5B8D]"
-                                  strokeWidth={2}
-                                />
-                                <span>{annotation.suggestion}</span>
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })()}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {!loading && !error && !content && (
-            <div className="flex items-center justify-center py-20">
-              <p className="text-sm text-[#8A8A8A]">暂无内容</p>
-            </div>
-          )}
-        </div>
+        {innerContent}
       </SheetContent>
     </Sheet>
   );

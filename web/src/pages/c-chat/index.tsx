@@ -279,44 +279,6 @@ export default function CChat() {
   const [reviewFileId, setReviewFileId] = useState<string>('');
   const [reviewFileName, setReviewFileName] = useState<string>('');
 
-  // Extract annotations from node_finished events for the latest message
-  const reviewAnnotations = useMemo<Annotation[]>(() => {
-    if (!reviewMode) return [];
-    // Scan all node events for outputs.structured.annotations
-    for (const events of Object.values(nodeEventsByMsgId)) {
-      for (const evt of events as any[]) {
-        const outputs = evt?.data?.outputs;
-        if (outputs?.structured?.annotations) {
-          return outputs.structured.annotations as Annotation[];
-        }
-      }
-    }
-    // Fallback: try parsing the last assistant message content for annotations JSON
-    for (let i = derivedMessages.length - 1; i >= 0; i--) {
-      const msg = derivedMessages[i];
-      if (msg.role === 'assistant' && msg.content) {
-        try {
-          const trimmed = msg.content.trim();
-          // Check for JSON annotations embedded in markdown
-          const jsonMatch = trimmed.match(
-            /```(?:json)?\s*(\{[\s\S]*?\})\s*```/,
-          );
-          if (jsonMatch) {
-            const parsed = JSON.parse(jsonMatch[1]);
-            if (parsed.annotations) return parsed.annotations as Annotation[];
-          }
-          // Try direct JSON parse
-          const direct = JSON.parse(trimmed);
-          if (direct.annotations) return direct.annotations as Annotation[];
-          // JSON.parse may fail on non-JSON content
-          // eslint-disable-next-line no-empty
-        } catch {}
-        break;
-      }
-    }
-    return [];
-  }, [reviewMode, nodeEventsByMsgId, derivedMessages]);
-
   // ── B-side chat hooks ──
   const { handleInputChange, value, setValue } = useHandleMessageInputChange();
   const {
@@ -403,6 +365,41 @@ export default function CChat() {
   } = useSelectDerivedMessages();
 
   const sendLoading = !done;
+
+  // Extract review annotations from node_finished events for the latest message
+  const reviewAnnotations = useMemo<Annotation[]>(() => {
+    if (!reviewMode) return [];
+    // Scan all node events for outputs.structured.annotations
+    for (const events of Object.values(nodeEventsByMsgId)) {
+      for (const evt of events as any[]) {
+        const outputs = evt?.data?.outputs;
+        if (outputs?.structured?.annotations) {
+          return outputs.structured.annotations as Annotation[];
+        }
+      }
+    }
+    // Fallback: try parsing the last assistant message content for annotations JSON
+    for (let i = derivedMessages.length - 1; i >= 0; i--) {
+      const msg = derivedMessages[i];
+      if (msg.role === 'assistant' && msg.content) {
+        try {
+          const trimmed = msg.content.trim();
+          const jsonMatch = trimmed.match(
+            /```(?:json)?\s*(\{[\s\S]*?\})\s*```/,
+          );
+          if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[1]);
+            if (parsed.annotations) return parsed.annotations as Annotation[];
+          }
+          const direct = JSON.parse(trimmed);
+          if (direct.annotations) return direct.annotations as Annotation[];
+          // eslint-disable-next-line no-empty
+        } catch {}
+        break;
+      }
+    }
+    return [];
+  }, [reviewMode, nodeEventsByMsgId, derivedMessages]);
 
   // Get node events for the latest message that has them (for input-area chip).
   // During the window between the first NodeStarted and the first Message event,
@@ -1142,6 +1139,11 @@ export default function CChat() {
       sendingLockRef.current = false;
     }, 1000);
 
+    // ── Auto-collapse sidebar when sending in review mode ──
+    if (reviewMode) {
+      setSidebarCollapsed(true);
+    }
+
     // ── Instant feedback: show user message + loading skeleton before
     // any async work (session creation can take 1-2 seconds) ──
     const msgId = uuid();
@@ -1216,6 +1218,7 @@ export default function CChat() {
     scrollToBottom,
     setDone,
     setDerivedMessages,
+    reviewMode,
   ]);
 
   // Once send() starts (sendLoading→true), release the debounce lock —
@@ -1409,7 +1412,7 @@ export default function CChat() {
           {/* Sidebar */}
           {mainView === 'chat' && (
             <aside
-              className={`fixed md:static inset-y-0 left-0 z-50 md:z-auto flex flex-col shrink-0 bg-white border-r border-[#D4D4D4] transition-all duration-300 ease-in-out overflow-hidden ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'} ${sidebarCollapsed ? 'w-0 border-r-0' : 'w-56'}`}
+              className={`fixed md:static inset-y-0 left-0 z-50 md:z-auto flex flex-col shrink-0 bg-white border-r border-[#D4D4D4] transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] overflow-hidden ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'} ${sidebarCollapsed ? 'w-0 border-r-0' : 'w-56'}`}
             >
               {/* Mobile close */}
               <div className="md:hidden h-12 flex items-center justify-between px-4 border-b border-[#D4D4D4] shrink-0">
@@ -1609,7 +1612,9 @@ export default function CChat() {
           )}
 
           {/* Main Content Area */}
-          <div className="flex-1 flex flex-col min-w-0">
+          <div
+            className={`flex-1 flex min-w-0 ${reviewMode && derivedMessages.length > 0 ? '' : 'flex-col'}`}
+          >
             {/* Chat View */}
             <div
               key={getTabResetKey('chat')}
@@ -1634,30 +1639,6 @@ export default function CChat() {
                   <span className="w-1.5 h-1.5 rounded-full bg-[#2ec4b6] animate-pulse" />
                 </div>
                 <div className="flex-1" />
-                {uploadedFiles.length > 0 && (
-                  <button
-                    onClick={() => {
-                      if (reviewMode) {
-                        setReviewMode(false);
-                        setReviewFileId('');
-                        setReviewFileName('');
-                      } else {
-                        const firstFile = uploadedFiles[0];
-                        setReviewFileId(firstFile.id);
-                        setReviewFileName(firstFile.name);
-                        setReviewMode(true);
-                      }
-                    }}
-                    className={`flex items-center gap-1.5 text-sm font-semibold px-2 py-1 rounded-lg transition-colors cursor-pointer ${
-                      reviewMode
-                        ? 'text-[#3F5B8D] bg-[#F0F3FA]'
-                        : 'text-[#525252] hover:text-[#000000] hover:bg-[#EAEAEA]'
-                    }`}
-                  >
-                    <FileText className="size-4" strokeWidth={2} />
-                    文件审核
-                  </button>
-                )}
                 {derivedMessages.length > 0 && (
                   <button
                     onClick={() => {
@@ -1918,6 +1899,33 @@ export default function CChat() {
                                 <p>上传文件（最多10个，每个不超过50MB）</p>
                               </TooltipContent>
                             </Tooltip>
+                            {uploadedFiles.length > 0 && (
+                              <button
+                                onClick={() => {
+                                  if (reviewMode) {
+                                    setReviewMode(false);
+                                    setReviewFileId('');
+                                    setReviewFileName('');
+                                  } else {
+                                    const firstFile = uploadedFiles[0];
+                                    setReviewFileId(firstFile.id);
+                                    setReviewFileName(firstFile.name);
+                                    setReviewMode(true);
+                                  }
+                                }}
+                                className={`shrink-0 flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg border transition-all cursor-pointer ${
+                                  reviewMode
+                                    ? 'bg-[#F0F3FA] border-[#3F5B8D] text-[#3F5B8D]'
+                                    : 'bg-white border-[#E8E8E8] text-[#8A8A8A] hover:border-[#D4D4D4] hover:text-[#525252]'
+                                }`}
+                              >
+                                <FileText
+                                  className="w-3.5 h-3.5"
+                                  strokeWidth={2}
+                                />
+                                文件审核
+                              </button>
+                            )}
                             {!sendLoading ? (
                               <button
                                 onMouseDown={(e) => {
@@ -2574,6 +2582,33 @@ export default function CChat() {
                                     <p>上传文件（最多10个，每个不超过50MB）</p>
                                   </TooltipContent>
                                 </Tooltip>
+                                {uploadedFiles.length > 0 && (
+                                  <button
+                                    onClick={() => {
+                                      if (reviewMode) {
+                                        setReviewMode(false);
+                                        setReviewFileId('');
+                                        setReviewFileName('');
+                                      } else {
+                                        const firstFile = uploadedFiles[0];
+                                        setReviewFileId(firstFile.id);
+                                        setReviewFileName(firstFile.name);
+                                        setReviewMode(true);
+                                      }
+                                    }}
+                                    className={`shrink-0 flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg border transition-all cursor-pointer ${
+                                      reviewMode
+                                        ? 'bg-[#F0F3FA] border-[#3F5B8D] text-[#3F5B8D]'
+                                        : 'bg-white border-[#E8E8E8] text-[#8A8A8A] hover:border-[#D4D4D4] hover:text-[#525252]'
+                                    }`}
+                                  >
+                                    <FileText
+                                      className="w-3.5 h-3.5"
+                                      strokeWidth={2}
+                                    />
+                                    文件审核
+                                  </button>
+                                )}
                                 <button
                                   onMouseDown={(e) => {
                                     e.preventDefault();
@@ -2608,6 +2643,26 @@ export default function CChat() {
                 </>
               )}
             </div>
+
+            {/* Inline Review Panel — 50/50 split when review mode is active */}
+            {reviewMode &&
+              derivedMessages.length > 0 &&
+              mainView === 'chat' && (
+                <div className="flex-1 border-l border-[#E8E8E8] bg-[#FAFBFC] overflow-hidden transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)]">
+                  <ReviewPanel
+                    open={true}
+                    onClose={() => {
+                      setReviewMode(false);
+                      setReviewFileId('');
+                      setReviewFileName('');
+                    }}
+                    fileId={reviewFileId}
+                    fileName={reviewFileName}
+                    annotations={reviewAnnotations}
+                    inline
+                  />
+                </div>
+              )}
 
             {/* Favorite batch action bar */}
             {favoriteMode && selectedMessageIds.size > 0 && (
@@ -2771,7 +2826,7 @@ export default function CChat() {
         )}
 
         <ReviewPanel
-          open={reviewMode && !!reviewFileId}
+          open={reviewMode && !!reviewFileId && mainView !== 'chat'}
           onClose={() => {
             setReviewMode(false);
             setReviewFileId('');

@@ -404,27 +404,36 @@ async def get_content(tenant_id: str = None, file_id: str = None):
         description: Structured file content with paragraph-level detail.
     """
     try:
-        success, result = file_api_service.get_file_content(tenant_id, file_id)
-        if not success:
-            return get_error_data_result(message=result)
+        filename = file_id  # fallback
+        blob = None
+        file = None
 
-        file = result
-        blob = await thread_pool_exec(settings.STORAGE_IMPL.get, file.parent_id, file.location)
+        # Try DB lookup first (knowledge-base files)
+        success, result = file_api_service.get_file_content(tenant_id, file_id)
+        if success:
+            file = result
+            filename = file.name
+            blob = await thread_pool_exec(settings.STORAGE_IMPL.get, file.parent_id, file.location)
+            if not blob:
+                b, n = File2DocumentService.get_storage_address(file_id=file_id)
+                blob = await thread_pool_exec(settings.STORAGE_IMPL.get, b, n)
+
+        # Fallback: chat-uploaded files (stored directly in MinIO, no DB record)
         if not blob:
-            b, n = File2DocumentService.get_storage_address(file_id=file_id)
-            blob = await thread_pool_exec(settings.STORAGE_IMPL.get, b, n)
+            bname = f"{tenant_id}-downloads"
+            blob = await thread_pool_exec(settings.STORAGE_IMPL.get, bname, file_id)
 
         if not blob:
             return get_error_data_result(message="File content not found in storage")
 
-        ext = (file.name or "").lower()
+        ext = (filename or "").lower()
         if ext.endswith(".docx"):
             try:
                 from rag.app.naive import Docx
                 d = Docx()
                 paragraphs = await thread_pool_exec(d.to_paragraphs, binary=blob)
                 return get_result(data={
-                    "filename": file.name,
+                    "filename": filename,
                     "file_type": "docx",
                     "paragraphs": paragraphs,
                 })
@@ -443,7 +452,7 @@ async def get_content(tenant_id: str = None, file_id: str = None):
                 for i, ln in enumerate(lines) if ln.strip()
             ]
             return get_result(data={
-                "filename": file.name,
+                "filename": filename,
                 "file_type": "text",
                 "paragraphs": paragraphs,
             })
@@ -489,19 +498,26 @@ async def annotate_file(tenant_id: str = None, file_id: str = None):
         description: Annotated .docx file stream for download.
     """
     try:
+        blob = None
+        filename = file_id  # fallback
+
+        # Try DB lookup first (knowledge-base files)
         success, result = file_api_service.get_file_content(tenant_id, file_id)
-        if not success:
-            return get_error_data_result(message=result)
+        if success:
+            file = result
+            filename = file.name
+            ext = (filename or "").lower()
+            if not ext.endswith(".docx"):
+                return get_error_data_result(message="Only .docx files are supported for annotation download")
+            blob = await thread_pool_exec(settings.STORAGE_IMPL.get, file.parent_id, file.location)
+            if not blob:
+                b, n = File2DocumentService.get_storage_address(file_id=file_id)
+                blob = await thread_pool_exec(settings.STORAGE_IMPL.get, b, n)
 
-        file = result
-        ext = (file.name or "").lower()
-        if not ext.endswith(".docx"):
-            return get_error_data_result(message="Only .docx files are supported for annotation download")
-
-        blob = await thread_pool_exec(settings.STORAGE_IMPL.get, file.parent_id, file.location)
+        # Fallback: chat-uploaded files (stored directly in MinIO, no DB record)
         if not blob:
-            b, n = File2DocumentService.get_storage_address(file_id=file_id)
-            blob = await thread_pool_exec(settings.STORAGE_IMPL.get, b, n)
+            bname = f"{tenant_id}-downloads"
+            blob = await thread_pool_exec(settings.STORAGE_IMPL.get, bname, file_id)
 
         if not blob:
             return get_error_data_result(message="File content not found in storage")
@@ -520,7 +536,7 @@ async def annotate_file(tenant_id: str = None, file_id: str = None):
         response.headers["Content-Type"] = (
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         )
-        safe_filename = file.name if file.name.endswith(".docx") else file.name + ".docx"
+        safe_filename = filename if filename.endswith(".docx") else filename + ".docx"
         response.headers["Content-Disposition"] = (
             f'attachment; filename="annotated_{safe_filename}"'
         )
