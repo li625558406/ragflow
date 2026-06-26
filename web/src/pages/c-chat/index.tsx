@@ -2087,7 +2087,10 @@ export default function CChat() {
                       ref={messageContainerRef}
                       key={newSessionKey}
                       className="flex-1 overflow-y-auto overflow-x-hidden px-4 lg:px-6 pb-4"
-                      style={{ scrollbarWidth: 'thin' }}
+                      style={{
+                        scrollbarWidth: 'thin',
+                        contain: 'layout style paint',
+                      }}
                     >
                       <div className="h-6" />
                       {derivedMessages.map((msg, index) => {
@@ -2761,7 +2764,7 @@ export default function CChat() {
 
             {/* Inline Review Panel — fixed width with transition, doesn't affect input box */}
             <div
-              className={`shrink-0 border-l border-[#E8E8E8] bg-[#FAFBFC] overflow-hidden transition-[width,opacity] duration-700 ease-[cubic-bezier(0.25,0.1,0.25,1)] ${
+              className={`shrink-0 border-l border-[#E8E8E8] bg-[#FAFBFC] overflow-hidden will-change-[width] transition-[width,opacity] duration-700 ease-[cubic-bezier(0.25,0.1,0.25,1)] ${
                 reviewMode && derivedMessages.length > 0 && mainView === 'chat'
                   ? 'w-[55vw] max-w-[800px] opacity-100'
                   : 'w-0 opacity-0 border-l-0'
