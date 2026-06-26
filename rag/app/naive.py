@@ -743,17 +743,18 @@ class Docx(DocxParser):
                         if row_cells:
                             rows_data.append(row_cells)
                     if rows_data:
-                        html = "<table>"
+                        import html as html_mod
+                        table_html = "<table>"
                         for ri, row in enumerate(rows_data):
-                            html += "<tr>"
+                            table_html += "<tr>"
                             for cell in row:
                                 tag = "th" if ri == 0 else "td"
-                                html += f"<{tag}>{html.escape(cell)}</{tag}>"
-                            html += "</tr>"
-                        html += "</table>"
+                                table_html += f"<{tag}>{html_mod.escape(cell)}</{tag}>"
+                            table_html += "</tr>"
+                        table_html += "</table>"
                         paragraphs.append({
                             "index": idx,
-                            "text": html,
+                            "text": table_html,
                             "type": "table",
                             "page": pn,
                         })

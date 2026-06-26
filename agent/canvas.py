@@ -533,6 +533,16 @@ class Canvas(Graph):
         def _node_finished(cpn_obj):
             inputs = cpn_obj.get_input_values()
             outputs = cpn_obj.output()
+            # Diagnostic: check if structured output is present
+            out_keys = list(outputs.keys()) if isinstance(outputs, dict) else str(type(outputs))
+            has_structured = isinstance(outputs, dict) and "structured" in outputs
+            if has_structured or cpn_obj.component_name.lower() == "agent":
+                logging.info(
+                    f"[node_finished] cpn={cpn_obj._id} type={cpn_obj.component_name} "
+                    f"output_keys={out_keys} has_structured={has_structured} "
+                    f"structured_keys={list(outputs['structured'].keys()) if has_structured and isinstance(outputs['structured'], dict) else 'N/A'} "
+                    f"output_json_size={len(json.dumps(outputs, ensure_ascii=False, default=str))}"
+                )
             # Truncate large inputs/outputs to prevent massive SSE payloads that crash the frontend.
             # The full data is already stored server-side; the frontend only needs a preview.
             _MAX_EVENT_SIZE = 50000

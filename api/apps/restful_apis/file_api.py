@@ -406,34 +406,66 @@ def _doc_to_docx_via_libreoffice(binary: bytes) -> bytes | None:
     or conversion fails.
     """
     import shutil
+    import time as time_mod
 
     soffice = shutil.which("libreoffice") or shutil.which("soffice")
     if not soffice:
+        logging.warning("[doc2docx] LibreOffice not found in PATH")
         return None
+
+    logging.info(f"[doc2docx] starting conversion, binary_size={len(binary)}")
 
     tmp_in_dir = tempfile.mkdtemp(prefix="doc2docx_in_")
     tmp_out_dir = tempfile.mkdtemp(prefix="doc2docx_out_")
+    # Unique profile dir per invocation to avoid concurrent lock conflicts
+    profile_dir = tempfile.mkdtemp(prefix="lo_profile_")
     try:
         in_path = os.path.join(tmp_in_dir, "input.doc")
         with open(in_path, "wb") as f:
             f.write(binary)
 
-        result = subprocess.run(
-            [soffice, "--headless", "--norestore", "--nologo",
-             "--convert-to", "docx", "--outdir", tmp_out_dir, in_path],
-            capture_output=True, timeout=60,
-        )
+        lo_env = {
+            **os.environ,
+            "LD_LIBRARY_PATH": "/usr/lib/libreoffice/program:" + os.environ.get("LD_LIBRARY_PATH", ""),
+            "HOME": profile_dir,  # LibreOffice needs writable HOME for profile
+        }
+        cmd = [
+            soffice, "--headless", "--norestore", "--nologo",
+            f"-env:UserInstallation=file://{profile_dir}",
+            "--convert-to", "docx", "--outdir", tmp_out_dir, in_path,
+        ]
 
-        out_path = os.path.join(tmp_out_dir, "input.docx")
-        if result.returncode == 0 and os.path.exists(out_path):
-            with open(out_path, "rb") as f:
-                return f.read()
-    except (subprocess.TimeoutExpired, OSError) as e:
-        logging.warning(f"[.doc] LibreOffice conversion failed: {e}")
+        # Retry up to 2 times: first run may fail while creating profile
+        for attempt in range(2):
+            result = subprocess.run(cmd, capture_output=True, timeout=60, env=lo_env)
+            logging.info(
+                f"[doc2docx] attempt={attempt + 1} returncode={result.returncode} "
+                f"stdout={result.stdout[:200] if result.stdout else 'empty'} "
+                f"stderr={result.stderr[:200] if result.stderr else 'empty'}"
+            )
+            out_path = os.path.join(tmp_out_dir, "input.docx")
+            if result.returncode == 0 and os.path.exists(out_path):
+                with open(out_path, "rb") as f:
+                    docx_blob = f.read()
+                logging.info(f"[doc2docx] conversion OK, docx_size={len(docx_blob)}")
+                return docx_blob
+            # Clean output dir for retry
+            import shutil as shutil_mod
+            shutil_mod.rmtree(tmp_out_dir, ignore_errors=True)
+            os.makedirs(tmp_out_dir, exist_ok=True)
+            if attempt == 0:
+                time_mod.sleep(2)
+
+        logging.warning("[doc2docx] all attempts failed")
+    except subprocess.TimeoutExpired:
+        logging.warning("[doc2docx] conversion timed out (60s)")
+    except Exception as e:
+        logging.warning(f"[doc2docx] conversion error: {e}", exc_info=True)
     finally:
         import shutil as shutil_mod
         shutil_mod.rmtree(tmp_in_dir, ignore_errors=True)
         shutil_mod.rmtree(tmp_out_dir, ignore_errors=True)
+        shutil_mod.rmtree(profile_dir, ignore_errors=True)
     return None
 
 
@@ -706,17 +738,32 @@ async def get_content(tenant_id: str = None, file_id: str = None):
         if not blob:
             return get_error_data_result(message="File content not found in storage")
 
+        logging.info(
+            f"[file_content] file_id={file_id} filename={filename} "
+            f"blob_size={len(blob)} magic={blob[:4].hex() if blob else 'empty'}"
+        )
+
         # Detect docx by magic bytes (ZIP) when filename has no extension (chat uploads)
         is_docx = (filename or "").lower().endswith(".docx")
         if not is_docx and blob[:2] == b'PK':
             is_docx = True
             filename = (filename or file_id) + ".docx"
 
+        logging.info(f"[file_content] detected: is_docx={is_docx} is_doc={_is_doc_file(blob, filename)}")
+
         if is_docx:
             try:
                 from rag.app.naive import Docx
                 d = Docx()
                 paragraphs = await thread_pool_exec(d.to_paragraphs, binary=blob)
+                para_types = {}
+                for p in paragraphs:
+                    para_types[p.get("type", "?")] = para_types.get(p.get("type", "?"), 0) + 1
+                logging.info(
+                    f"[file_content] docx parsed: paragraph_count={len(paragraphs)} "
+                    f"type_counts={para_types} "
+                    f"first_text={paragraphs[0]['text'][:60] if paragraphs else 'NONE'}"
+                )
                 return get_result(data={
                     "filename": filename,
                     "file_type": "docx",
@@ -735,6 +782,14 @@ async def get_content(tenant_id: str = None, file_id: str = None):
                     from rag.app.naive import Docx
                     d = Docx()
                     paragraphs = await thread_pool_exec(d.to_paragraphs, binary=docx_blob)
+                    para_types = {}
+                    for p in paragraphs:
+                        para_types[p.get("type", "?")] = para_types.get(p.get("type", "?"), 0) + 1
+                    total_text_len = sum(len(p.get("text", "")) for p in paragraphs)
+                    logging.info(
+                        f"[file_content] .doc→.docx parsed: paragraph_count={len(paragraphs)} "
+                        f"type_counts={para_types} total_text_len={total_text_len}"
+                    )
                     return get_result(data={
                         "filename": filename,
                         "file_type": "doc",

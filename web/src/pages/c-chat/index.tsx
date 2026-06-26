@@ -289,6 +289,7 @@ export default function CChat() {
     stopOutputMessage,
     setDone,
     resetAnswerList,
+    structuredOutputRef,
   } = useSendMessageBySSE(api.agentChatCompletion, {
     excludeFanOutFromContent: false,
   });
@@ -366,61 +367,80 @@ export default function CChat() {
 
   const sendLoading = !done;
 
-  // Extract review annotations from node_finished events for the latest message
-  const reviewAnnotations = useMemo<Annotation[]>(() => {
-    // Always compute so we can detect when annotations exist even if panel is closed
-    // Scan all node events for outputs.structured.annotations
-    for (const [msgId, events] of Object.entries(nodeEventsByMsgId)) {
-      for (const evt of events as any[]) {
-        const outputs = evt?.data?.outputs;
-        const structured = outputs?.structured;
-        if (structured) {
-          console.log('[reviewAnnotations] Found structured output', {
-            msgId,
-            hasAnnotations: !!structured.annotations,
-            annotationCount: structured.annotations?.length || 0,
-            structuredKeys: Object.keys(structured),
-            summaryPreview: structured.summary?.substring?.(0, 100),
-          });
-        }
-        if (structured?.annotations) {
-          console.log(
-            '[reviewAnnotations] Returning annotations',
-            structured.annotations,
-          );
-          return structured.annotations as Annotation[];
-        }
-      }
-    }
-    console.log(
-      '[reviewAnnotations] No structured output found in node events',
-      {
-        eventCount: Object.keys(nodeEventsByMsgId).length,
-        reviewMode,
-      },
-    );
-    // Fallback: try parsing the last assistant message content for annotations JSON
-    for (let i = derivedMessages.length - 1; i >= 0; i--) {
-      const msg = derivedMessages[i];
-      if (msg.role === 'assistant' && msg.content) {
-        try {
-          const trimmed = msg.content.trim();
-          const jsonMatch = trimmed.match(
-            /```(?:json)?\s*(\{[\s\S]*?\})\s*```/,
-          );
-          if (jsonMatch) {
-            const parsed = JSON.parse(jsonMatch[1]);
-            if (parsed.annotations) return parsed.annotations as Annotation[];
+  // Collect all reviewed files from message history
+  const reviewFileList = useMemo(() => {
+    const files: Array<{ id: string; name: string }> = [];
+    const seen = new Set<string>();
+    for (const msg of derivedMessages) {
+      const msgFiles = (msg as any).files as any[];
+      if (msgFiles) {
+        for (const f of msgFiles) {
+          if (f.id && !seen.has(f.id)) {
+            seen.add(f.id);
+            files.push({ id: f.id, name: f.name || f.id });
           }
-          const direct = JSON.parse(trimmed);
-          if (direct.annotations) return direct.annotations as Annotation[];
-          // eslint-disable-next-line no-empty
-        } catch {}
-        break;
+        }
       }
     }
+    return files;
+  }, [derivedMessages]);
+
+  // Extract review annotations — from message data (persisted) or SSE ref (live)
+  const reviewAnnotations = useMemo<Annotation[]>(() => {
+    // Priority 1: Live SSE structured output (current streaming)
+    const structured = structuredOutputRef?.current;
+    if (
+      structured?.annotations &&
+      Array.isArray(structured.annotations) &&
+      structured.annotations.length > 0
+    ) {
+      return structured.annotations as Annotation[];
+    }
+
+    // Priority 2: Scan assistant messages for persisted data.annotations
+    // Filter by current reviewFileId if set
+    const allAnnotations: Annotation[] = [];
+    for (const msg of derivedMessages) {
+      if (msg.role === 'assistant' && (msg as any).data?.annotations) {
+        const anns = (msg as any).data.annotations;
+        if (!Array.isArray(anns) || anns.length === 0) continue;
+        // If we have a reviewFileId, only include annotations from that file's message
+        if (
+          reviewFileId &&
+          (msg as any).data?.fileId &&
+          (msg as any).data.fileId !== reviewFileId
+        ) {
+          continue;
+        }
+        allAnnotations.push(...anns);
+      }
+    }
+    if (allAnnotations.length > 0) {
+      return allAnnotations;
+    }
+
+    // Priority 3: Scan nodeEventsByMsgId (fallback for live events)
+    for (const events of Object.values(nodeEventsByMsgId)) {
+      for (const evt of events as any[]) {
+        const outputs = evt?.data?.outputs || evt?.outputs || {};
+        if (
+          outputs?.structured?.annotations &&
+          Array.isArray(outputs.structured.annotations) &&
+          outputs.structured.annotations.length > 0
+        ) {
+          return outputs.structured.annotations as Annotation[];
+        }
+      }
+    }
+
     return [];
-  }, [reviewMode, nodeEventsByMsgId, derivedMessages]);
+  }, [
+    structuredOutputRef,
+    derivedMessages,
+    nodeEventsByMsgId,
+    reviewFileId,
+    done,
+  ]);
 
   // Get node events for the latest message that has them (for input-area chip).
   // During the window between the first NodeStarted and the first Message event,
@@ -470,6 +490,37 @@ export default function CChat() {
       id: streamState.id,
     } as IAnswer);
   }, [streamState, addNewestOneAnswer, done]);
+
+  // ── Persist structured output (annotations) to assistant message on SSE completion ──
+  useEffect(() => {
+    if (!done) return;
+    const structured = structuredOutputRef?.current;
+    if (!structured?.annotations?.length) return;
+    const currentFileId = reviewFileId;
+    const currentFileName = reviewFileName;
+    // Find the latest assistant message and attach annotations
+    setDerivedMessages((prev) => {
+      const next = [...prev];
+      for (let i = next.length - 1; i >= 0; i--) {
+        if (next[i].role === 'assistant') {
+          next[i] = {
+            ...next[i],
+            data: {
+              ...(next[i].data || {}),
+              annotations: structured.annotations,
+              summary: structured.summary || '',
+              fileId: currentFileId,
+              fileName: currentFileName,
+            },
+          };
+          break;
+        }
+      }
+      return next;
+    });
+    // Clear ref so message-data path (which filters by reviewFileId) takes over
+    if (structuredOutputRef) structuredOutputRef.current = null;
+  }, [done]);
 
   // ── Prologue is shown as intro text in the welcome screen, not auto-added as a message
   // This keeps the input centered until the user explicitly starts a conversation.
@@ -889,7 +940,8 @@ export default function CChat() {
               content,
               reference,
               data: m.data,
-            };
+              files: m.files || undefined,
+            } as IMessage;
           }) as IMessage[];
 
           // Handle top-level reference (raw to_dict() format)
@@ -967,6 +1019,17 @@ export default function CChat() {
           }
 
           setDerivedMessages(mapped);
+
+          // Restore review file from message history
+          const firstFile = mapped.find((m: any) => m.files?.length > 0)
+            ?.files?.[0];
+          if (firstFile) {
+            setReviewFileId(firstFile.id);
+            setReviewFileName(firstFile.name || firstFile.id);
+          } else {
+            setReviewFileId('');
+            setReviewFileName('');
+          }
         } catch (e) {
           console.error('加载消息失败:', e);
           showToast('加载消息失败');
@@ -1664,21 +1727,27 @@ export default function CChat() {
                   <span className="w-1.5 h-1.5 rounded-full bg-[#2ec4b6] animate-pulse" />
                 </div>
                 <div className="flex-1" />
-                {derivedMessages.length > 0 &&
-                  !reviewMode &&
-                  reviewFileId &&
-                  reviewAnnotations.length > 0 && (
-                    <button
-                      onClick={() => {
+                {reviewFileId && (
+                  <button
+                    onClick={() => {
+                      if (reviewMode) {
+                        setReviewMode(false);
+                        setSidebarCollapsed(false);
+                      } else {
                         setReviewMode(true);
                         setSidebarCollapsed(true);
-                      }}
-                      className="flex items-center gap-1.5 text-sm font-semibold text-[#3F5B8D] hover:text-[#2E365A] px-2 py-1 rounded-lg hover:bg-[#F0F3FA] transition-colors cursor-pointer mr-1"
-                    >
-                      <FileText className="size-4" strokeWidth={2} />
-                      审核结果 ({reviewAnnotations.length})
-                    </button>
-                  )}
+                      }
+                    }}
+                    className={`flex items-center gap-1.5 text-sm font-semibold px-2 py-1 rounded-lg transition-colors cursor-pointer mr-1 ${
+                      reviewMode
+                        ? 'bg-[#F0F3FA] text-[#3F5B8D] border border-[#3F5B8D]'
+                        : 'text-[#525252] hover:text-[#3F5B8D] hover:bg-[#F0F3FA]'
+                    }`}
+                  >
+                    <FileText className="size-4" strokeWidth={2} />
+                    {reviewMode ? '收起审阅' : '审阅文档'}
+                  </button>
+                )}
                 {derivedMessages.length > 0 && (
                   <button
                     onClick={() => {
@@ -2431,9 +2500,9 @@ export default function CChat() {
                     </div>
                   )}
 
-                  {/* Floating agent status chip — overlays messages on the left */}
+                  {/* Floating agent status chip — overlays messages on the right */}
                   {latestNodeEvents && (
-                    <div className="absolute left-1 top-1/2 -translate-y-1/2 z-50 max-w-[200px]">
+                    <div className="absolute right-1 top-1/2 -translate-y-1/2 z-50 w-[160px]">
                       <AgentStatusChip
                         eventList={latestNodeEvents.events}
                         isRunning={sendLoading}
@@ -2697,6 +2766,11 @@ export default function CChat() {
                     fileId={reviewFileId}
                     fileName={reviewFileName}
                     annotations={reviewAnnotations}
+                    fileList={reviewFileList}
+                    onFileChange={(id, name) => {
+                      setReviewFileId(id);
+                      setReviewFileName(name);
+                    }}
                     inline
                   />
                 </div>
@@ -2873,6 +2947,11 @@ export default function CChat() {
           fileId={reviewFileId}
           fileName={reviewFileName}
           annotations={reviewAnnotations}
+          fileList={reviewFileList}
+          onFileChange={(id, name) => {
+            setReviewFileId(id);
+            setReviewFileName(name);
+          }}
         />
       </div>
 

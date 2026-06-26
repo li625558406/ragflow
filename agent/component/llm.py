@@ -31,6 +31,14 @@ from common.connection_utils import timeout
 from rag.prompts.generator import tool_call_summary, message_fit_in, citation_prompt, structured_output_prompt
 
 
+async def _stream_static_text(text: str):
+    """Module-level async generator that yields a single text chunk.
+    Used for structured output mode where content comes from parsed JSON, not LLM streaming.
+    """
+    if text:
+        yield text
+
+
 class LLMParam(ComponentParamBase):
     """
     Define the LLM component parameters.
@@ -427,19 +435,35 @@ class LLM(ComponentBase):
             pass
 
         # Only activate structured JSON output when files are uploaded.
+        # BUT: only gate file-review schemas (summary/annotations) on has_files.
+        # Other schemas (e.g. chapter planner) should always activate.
         sys_files = self._canvas.globals.get("sys.files", [])
         has_files = bool(sys_files)
+        is_review_schema = False
+        if output_structure and isinstance(output_structure, dict):
+            props = output_structure.get("properties", {})
+            if "summary" in props or "annotations" in props:
+                is_review_schema = True
+
+        should_use_structured = (
+            output_structure is not None
+            and isinstance(output_structure, dict)
+            and bool(output_structure.get("properties"))
+            and len(output_structure["properties"]) > 0
+        )
+        if is_review_schema and not has_files:
+            should_use_structured = False
+
         logging.info(
             f"[LLM.structured] component={self._id} "
-            f"has_output_structure={output_structure is not None} "
-            f"has_properties={bool(output_structure and isinstance(output_structure, dict) and output_structure.get('properties') and len(output_structure['properties']) > 0)} "
+            f"should_use_structured={should_use_structured} "
+            f"is_review_schema={is_review_schema} "
+            f"has_files={has_files} "
             f"sys_files_count={len(sys_files) if isinstance(sys_files, list) else 'NOT_LIST'} "
-            f"sys_files_type={type(sys_files).__name__} "
             f"sys_file_content_len={len(self._canvas.globals.get('sys.file_content', ''))} "
-            f"has_files={has_files}"
         )
 
-        if output_structure and isinstance(output_structure, dict) and output_structure.get("properties") and len(output_structure["properties"]) > 0 and has_files:
+        if should_use_structured:
             schema = json.dumps(output_structure, ensure_ascii=False, indent=2)
             prompt_with_schema = prompt + structured_output_prompt(schema)
             for _ in range(self._param.max_retries + 1):
@@ -467,9 +491,11 @@ class LLM(ComponentBase):
                     parsed = json_repair.loads(cleaned)
                     logging.info(f"[structured] parsed type={type(parsed).__name__} keys={list(parsed.keys()) if isinstance(parsed, dict) else 'N/A'}")
                     self.set_output("structured", parsed)
-                    # Also set content from summary so Message nodes work in both modes
-                    if isinstance(parsed, dict) and "summary" in parsed:
-                        self.set_output("content", str(parsed["summary"]))
+                    # Set content as a streaming-compatible callable so Message nodes
+                    # can display the summary text in chat AND structured annotations
+                    # in the review panel simultaneously.
+                    summary_text = str(parsed.get("summary", "")) if isinstance(parsed, dict) else ""
+                    self.set_output("content", partial(_stream_static_text, summary_text))
                     return
                 except Exception as e:
                     logging.error(f"[structured] json_repair failed: {e}, cleaned_head={cleaned[:500]}")
@@ -479,7 +505,7 @@ class LLM(ComponentBase):
                 self.set_output("_ERROR", error)
             return
 
-        logging.info(f"[LLM.normal_text] component={self._id} structured_skipped=True reason={'no_files' if not has_files else 'no_output_structure' if not output_structure else 'no_properties'}")
+        logging.info(f"[LLM.normal_text] component={self._id} structured_skipped=True reason={'review_no_files' if is_review_schema and not has_files else 'no_schema' if not output_structure else 'no_properties'}")
 
         downstreams = self._canvas.get_component(self._id)["downstream"] if self._canvas.get_component(self._id) else []
         ex = self.exception_handler()

@@ -25,7 +25,7 @@ from typing import Any
 
 import json_repair
 
-from agent.component.llm import LLM, LLMParam
+from agent.component.llm import LLM, LLMParam, _stream_static_text
 from agent.tools.base import LLMToolPluginCallSession, ToolBase, ToolMeta, ToolParamBase
 from api.db.joint_services.tenant_model_service import get_model_config_by_type_and_name
 from api.db.services.llm_service import LLMBundle
@@ -246,9 +246,42 @@ class Agent(LLM, ToolBase):
                     logging.info("[STRUCTURED-OUTPUT] agent=%s attempt=%d cleaned_len=%d cleaned_preview=%s",
                                  self._id, attempt, len(cleaned), cleaned[:300].replace("\n", "\\n"))
                     obj = json_repair.loads(cleaned)
+                    # Normalize annotation field names (LLM may use aliases)
+                    if isinstance(obj, dict) and isinstance(obj.get("annotations"), list):
+                        for ann_idx, ann in enumerate(obj["annotations"]):
+                            if not isinstance(ann, dict):
+                                continue
+                            # matched_text aliases
+                            if "matched_text" not in ann:
+                                ann["matched_text"] = ann.get("text") or ann.get("quote") or ann.get("content") or ""
+                            # issue aliases
+                            if "issue" not in ann:
+                                ann["issue"] = ann.get("problem") or ann.get("description") or ann.get("reason") or ""
+                            # suggestion aliases
+                            if "suggestion" not in ann:
+                                ann["suggestion"] = ann.get("recommendation") or ann.get("advice") or ann.get("fix") or ""
+                            # type aliases
+                            if "type" not in ann:
+                                ann["type"] = ann.get("category") or ann.get("issue_type") or ""
+                            # severity default
+                            if "severity" not in ann:
+                                ann["severity"] = "medium"
+                        logging.info(
+                            f"[STRUCTURED-OUTPUT] normalized annotations: count={len(obj['annotations'])} "
+                            f"sample_keys={[list(a.keys()) for a in obj['annotations'][:2] if isinstance(a, dict)]}"
+                        )
                     self.set_output("structured", obj)
-                    logging.info("[STRUCTURED-OUTPUT] agent=%s SUCCESS attempt=%d keys=%s",
-                                 self._id, attempt, list(obj.keys()) if isinstance(obj, dict) else type(obj).__name__)
+                    # Also set content from summary so Message nodes display text in chat
+                    summary_text = ""
+                    if isinstance(obj, dict):
+                        summary_text = str(obj.get("summary", ""))
+                    elif isinstance(obj, list) and obj and isinstance(obj[0], dict):
+                        summary_text = str(obj[0].get("summary", ""))
+                    self.set_output("content", partial(_stream_static_text, summary_text))
+                    logging.info("[STRUCTURED-OUTPUT] agent=%s SUCCESS attempt=%d keys=%s summary_len=%d",
+                                 self._id, attempt,
+                                 list(obj.keys()) if isinstance(obj, dict) else type(obj).__name__,
+                                 len(summary_text))
                     return obj
                 except Exception as e:
                     logging.warning("[STRUCTURED-OUTPUT] agent=%s attempt=%d PARSE_FAILED: %s  raw_ans_tail=%s",
