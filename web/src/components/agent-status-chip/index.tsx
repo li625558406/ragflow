@@ -122,7 +122,7 @@ export function AgentStatusChip({ eventList, isRunning }: IProps) {
     ? getNodeAction(status.currentStep.type)
     : null;
 
-  const MAX_VISIBLE = 6;
+  const MAX_VISIBLE = 4; // Horizontal mode: show fewer steps
   const { displaySteps, hiddenCount } = useMemo(() => {
     if (resolvedSteps.length <= MAX_VISIBLE) {
       return { displaySteps: resolvedSteps, hiddenCount: 0 };

@@ -1237,6 +1237,12 @@ export default function CChat() {
     const msgId = uuid();
     const currentFiles = [...uploadedFiles];
 
+    // Update review file reference when a new file is sent
+    if (currentFiles.length > 0) {
+      setReviewFileId(currentFiles[0].id);
+      setReviewFileName(currentFiles[0].name || currentFiles[0].id);
+    }
+
     addNewestOneQuestion({
       id: msgId,
       content: query,
@@ -1699,10 +1705,8 @@ export default function CChat() {
             </CendTooltip>
           )}
 
-          {/* Main Content Area */}
-          <div
-            className={`flex-1 flex min-w-0 ${reviewMode && derivedMessages.length > 0 ? '' : 'flex-col'}`}
-          >
+          {/* Main Content Area — always flex-row so input box stays fixed */}
+          <div className="flex-1 flex min-w-0 flex-row">
             {/* Chat View */}
             <div
               key={getTabResetKey('chat')}
@@ -1727,27 +1731,27 @@ export default function CChat() {
                   <span className="w-1.5 h-1.5 rounded-full bg-[#2ec4b6] animate-pulse" />
                 </div>
                 <div className="flex-1" />
-                {reviewFileId && (
-                  <button
-                    onClick={() => {
-                      if (reviewMode) {
-                        setReviewMode(false);
-                        setSidebarCollapsed(false);
-                      } else {
-                        setReviewMode(true);
-                        setSidebarCollapsed(true);
-                      }
-                    }}
-                    className={`flex items-center gap-1.5 text-sm font-semibold px-2 py-1 rounded-lg transition-colors cursor-pointer mr-1 ${
-                      reviewMode
-                        ? 'bg-[#F0F3FA] text-[#3F5B8D] border border-[#3F5B8D]'
-                        : 'text-[#525252] hover:text-[#3F5B8D] hover:bg-[#F0F3FA]'
-                    }`}
-                  >
-                    <FileText className="size-4" strokeWidth={2} />
-                    {reviewMode ? '收起审阅' : '审阅文档'}
-                  </button>
-                )}
+                <button
+                  onClick={() => {
+                    if (reviewMode) {
+                      setReviewMode(false);
+                      setSidebarCollapsed(false);
+                    } else if (reviewFileId) {
+                      setReviewMode(true);
+                      setSidebarCollapsed(true);
+                    }
+                  }}
+                  className={`flex items-center gap-1.5 text-sm font-semibold px-2 py-1 rounded-lg transition-colors mr-1 ${
+                    reviewMode
+                      ? 'bg-[#F0F3FA] text-[#3F5B8D] border border-[#3F5B8D]'
+                      : reviewFileId
+                        ? 'text-[#525252] hover:text-[#3F5B8D] hover:bg-[#F0F3FA] cursor-pointer'
+                        : 'text-[#A3A3A3] cursor-not-allowed'
+                  }`}
+                >
+                  <FileText className="size-4" strokeWidth={2} />
+                  {reviewMode ? '收起审阅' : '审阅文档'}
+                </button>
                 {derivedMessages.length > 0 && (
                   <button
                     onClick={() => {
@@ -1975,9 +1979,9 @@ export default function CChat() {
                               }
                             }}
                             placeholder={typewriterText}
-                            className="min-h-[72px] w-full p-0 overflow-auto !outline-none !border-transparent !bg-transparent !shadow-none !ring-transparent !ring-offset-transparent !text-[#000000] cs-typewriter-cursor"
+                            className="min-h-[40px] w-full p-0 overflow-auto !outline-none !border-transparent !bg-transparent !shadow-none !ring-transparent !ring-offset-transparent !text-[#000000] cs-typewriter-cursor"
                             style={{ color: '#000000' }}
-                            autoSize={{ minRows: 3, maxRows: 10 }}
+                            autoSize={{ minRows: 1, maxRows: 10 }}
                             autoFocus
                           />
                           <div className="flex items-center justify-end gap-2">
@@ -2500,13 +2504,15 @@ export default function CChat() {
                     </div>
                   )}
 
-                  {/* Floating agent status chip — overlays messages on the right */}
+                  {/* Task step chip — sibling of input, not inside input card */}
                   {latestNodeEvents && (
-                    <div className="absolute right-1 top-1/2 -translate-y-1/2 z-50 w-[160px]">
-                      <AgentStatusChip
-                        eventList={latestNodeEvents.events}
-                        isRunning={sendLoading}
-                      />
+                    <div className="px-3 lg:px-4 pb-1 shrink-0">
+                      <div className="max-w-3xl mx-auto flex justify-start">
+                        <AgentStatusChip
+                          eventList={latestNodeEvents.events}
+                          isRunning={sendLoading}
+                        />
+                      </div>
                     </div>
                   )}
 
@@ -2655,9 +2661,9 @@ export default function CChat() {
                                 ? '继续输入您的问题...'
                                 : typewriterText
                             }
-                            className={`min-h-[72px] w-full p-0 overflow-auto !outline-none !border-transparent !bg-transparent !shadow-none !ring-transparent !ring-offset-transparent !text-[#000000]${hasMessages ? '' : ' cs-typewriter-cursor'}`}
+                            className={`min-h-[40px] w-full p-0 overflow-auto !outline-none !border-transparent !bg-transparent !shadow-none !ring-transparent !ring-offset-transparent !text-[#000000]${hasMessages ? '' : ' cs-typewriter-cursor'}`}
                             style={{ color: '#000000' }}
-                            autoSize={{ minRows: 3, maxRows: 10 }}
+                            autoSize={{ minRows: 1, maxRows: 10 }}
                           />
                           <div className="flex items-center justify-end gap-2">
                             {!sendLoading ? (
@@ -2753,11 +2759,17 @@ export default function CChat() {
               )}
             </div>
 
-            {/* Inline Review Panel — 50/50 split when review mode is active */}
-            {reviewMode &&
-              derivedMessages.length > 0 &&
-              mainView === 'chat' && (
-                <div className="flex-1 border-l border-[#E8E8E8] bg-[#FAFBFC] overflow-hidden transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)]">
+            {/* Inline Review Panel — fixed width with transition, doesn't affect input box */}
+            <div
+              className={`shrink-0 border-l border-[#E8E8E8] bg-[#FAFBFC] overflow-hidden transition-[width,opacity] duration-700 ease-[cubic-bezier(0.25,0.1,0.25,1)] ${
+                reviewMode && derivedMessages.length > 0 && mainView === 'chat'
+                  ? 'w-[55vw] max-w-[800px] opacity-100'
+                  : 'w-0 opacity-0 border-l-0'
+              }`}
+            >
+              {reviewMode &&
+                derivedMessages.length > 0 &&
+                mainView === 'chat' && (
                   <ReviewPanel
                     open={true}
                     onClose={() => {
@@ -2773,8 +2785,8 @@ export default function CChat() {
                     }}
                     inline
                   />
-                </div>
-              )}
+                )}
+            </div>
 
             {/* Favorite batch action bar */}
             {favoriteMode && selectedMessageIds.size > 0 && (

@@ -300,6 +300,28 @@ def delete_agent_session_item(agent_id, session_id, tenant_id):
             message="Only owner of canvas authorized for this operation.",
             code=RetCode.OPERATING_ERROR,
         )
+    # Clean up uploaded files from MinIO before deleting the conversation
+    try:
+        _, conv = API4ConversationService.get_by_id(session_id)
+        if conv:
+            API4ConversationService.decompress_conv(conv)
+            messages = conv.message if isinstance(conv.message, list) else []
+            for msg in messages:
+                files = msg.get("files") if isinstance(msg, dict) else None
+                if not files:
+                    continue
+                for f in files:
+                    fid = f.get("id") if isinstance(f, dict) else None
+                    created_by = f.get("created_by") if isinstance(f, dict) else None
+                    if fid and created_by:
+                        try:
+                            bname = f"{created_by}-downloads"
+                            settings.STORAGE_IMPL.delete(bname, fid)
+                        except Exception:
+                            pass
+    except Exception as e:
+        logging.warning(f"[delete_session] file cleanup error: {e}")
+
     return get_json_result(data=API4ConversationService.delete_by_id(session_id))
 
 

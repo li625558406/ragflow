@@ -180,7 +180,7 @@ class Agent(LLM, ToolBase):
             {"role": "user", "content": text},
         ]
         _, fmt_msgs = message_fit_in(fmt_msgs, int(self.chat_mdl.max_length * 0.97))
-        return await self._generate_async(fmt_msgs)
+        return await self._generate_async(fmt_msgs, conf_override={"response_format": {"type": "json_object"}})
 
     def _invoke(self, **kwargs):
         return asyncio.run(self._invoke_async(**kwargs))
@@ -226,7 +226,8 @@ class Agent(LLM, ToolBase):
 
         msg = self._fit_messages(prompt, msg)
         self._append_system_prompt(msg, schema_prompt)
-        ans = await self._generate_async(msg)
+        conf_override = {"response_format": {"type": "json_object"}} if output_schema else None
+        ans = await self._generate_async(msg, conf_override=conf_override)
 
         if ans.find("**ERROR**") >= 0:
             logging.error(f"Agent._chat got error. response: {ans}")
@@ -277,6 +278,9 @@ class Agent(LLM, ToolBase):
                         summary_text = str(obj.get("summary", ""))
                     elif isinstance(obj, list) and obj and isinstance(obj[0], dict):
                         summary_text = str(obj[0].get("summary", ""))
+                    # Fallback: if summary extraction failed, use raw answer text
+                    if not summary_text:
+                        summary_text = ans if ans else cleaned[:500]
                     self.set_output("content", partial(_stream_static_text, summary_text))
                     logging.info("[STRUCTURED-OUTPUT] agent=%s SUCCESS attempt=%d keys=%s summary_len=%d",
                                  self._id, attempt,

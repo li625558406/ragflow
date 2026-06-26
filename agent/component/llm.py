@@ -290,13 +290,16 @@ class LLM(ComponentBase):
         except Exception:
             return False
 
-    async def _generate_async(self, msg: list[dict], **kwargs) -> str:
+    async def _generate_async(self, msg: list[dict], conf_override: dict = None, **kwargs) -> str:
         kwargs = dict(kwargs)
         if self._should_web_search():
             kwargs["web_search"] = True
+        conf = self._param.gen_conf()
+        if conf_override:
+            conf.update(conf_override)
         if not self.imgs:
-            return await self.chat_mdl.async_chat(msg[0]["content"], msg[1:], self._param.gen_conf(), **kwargs)
-        return await self.chat_mdl.async_chat(msg[0]["content"], msg[1:], self._param.gen_conf(), images=self.imgs, **kwargs)
+            return await self.chat_mdl.async_chat(msg[0]["content"], msg[1:], conf, **kwargs)
+        return await self.chat_mdl.async_chat(msg[0]["content"], msg[1:], conf, images=self.imgs, **kwargs)
 
     async def _generate_streamly(self, msg: list[dict], **kwargs) -> AsyncGenerator[str, None]:
         kwargs = dict(kwargs)
@@ -475,7 +478,7 @@ class LLM(ComponentBase):
                     int(self.chat_mdl.max_length * 0.97),
                 )
                 error = ""
-                ans = await self._generate_async(msg_fit)
+                ans = await self._generate_async(msg_fit, conf_override={"response_format": {"type": "json_object"}})
                 msg_fit.pop(0)
                 if ans.find("**ERROR**") >= 0:
                     logging.error(f"LLM response error: {ans}")

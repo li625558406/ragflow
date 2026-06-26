@@ -714,7 +714,7 @@ export default function ReviewPanel({
                           <div
                             key={`ann-${num}`}
                             id={`annotation-${num}`}
-                            className={`flex items-start gap-2 rounded-md p-2.5 text-xs transition-all duration-300 ${selectedAnn === num ? 'ring-2 ring-[#3F5B8D] shadow-md' : ''}`}
+                            className={`flex items-start gap-2 rounded-md p-2.5 text-xs transition-all duration-300 ${selectedAnn === num ? 'ring-2 ring-[#3F5B8D] shadow-lg scale-[1.02] brightness-105 z-10' : ''}`}
                             style={{
                               backgroundColor: cfg.bg,
                               borderLeft: `3px solid ${cfg.border}`,
@@ -783,7 +783,7 @@ export default function ReviewPanel({
                           <div
                             key={`unmatched-${i}`}
                             id={`annotation-${num}`}
-                            className={`flex items-start gap-2 rounded-md p-2.5 text-xs opacity-75 transition-all duration-300 ${selectedAnn === num ? 'ring-2 ring-[#3F5B8D] shadow-md opacity-100' : ''}`}
+                            className={`flex items-start gap-2 rounded-md p-2.5 text-xs opacity-75 transition-all duration-300 ${selectedAnn === num ? 'ring-2 ring-[#3F5B8D] shadow-lg scale-[1.02] brightness-105 z-10 opacity-100' : ''}`}
                             style={{
                               backgroundColor: cfg.bg,
                               borderLeft: `3px dashed ${cfg.border}`,

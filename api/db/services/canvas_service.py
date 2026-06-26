@@ -283,6 +283,7 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
         "files": files
     })
     txt = ""
+    structured_data = None  # Capture structured output for persistence
     sse_msg_count = 0
     sse_think_start_count = 0
     sse_think_end_count = 0
@@ -299,6 +300,11 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
                     sse_think_end_count += 1
                 else:
                     txt += ans["data"]["content"]
+            elif ans["event"] == "node_finished":
+                # Capture structured output (annotations) for persistence
+                outputs = ans.get("data", {}).get("outputs", {})
+                if isinstance(outputs, dict) and outputs.get("structured"):
+                    structured_data = outputs["structured"]
             yield "data:" + json.dumps(ans, ensure_ascii=False) + "\n\n"
     except TaskCanceledException:
         yield ("data:" + json.dumps({
@@ -320,7 +326,16 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
         txt = "<think>" * (close_think - open_think) + txt
         logging.warning(f"[THINK-FIX] prepended {close_think - open_think} missing open think tag(s) (open={open_think} close={close_think})")
 
-    conv.message.append({"role": "assistant", "content": txt, "created_at": time.time(), "id": message_id})
+    assistant_msg = {"role": "assistant", "content": txt, "created_at": time.time(), "id": message_id}
+    if structured_data:
+        # Associate structured output with the file from this turn's user message
+        if files and len(files) > 0:
+            first_file = files[0]
+            if isinstance(first_file, dict):
+                structured_data["fileId"] = first_file.get("id", "")
+                structured_data["fileName"] = first_file.get("name", "")
+        assistant_msg["data"] = structured_data
+    conv.message.append(assistant_msg)
     conv.reference = canvas.get_reference()
     conv.errors = canvas.error
     conv.dsl = str(canvas)
