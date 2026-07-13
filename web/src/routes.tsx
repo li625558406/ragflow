@@ -42,6 +42,7 @@ export enum Routes {
   Plan = '/plan',
   Model = '/model',
   Prompt = '/prompt',
+  UserManagement = '/user-management',
   DataSource = '/data-source',
   DataSourceDetailPage = '/data-source-detail-page',
   ProfileMcp = `${ProfileSetting}${Mcp}`,
@@ -307,6 +308,10 @@ const routeConfigOptions = [
             Component: () => import('@/pages/user-setting/mcp'),
           },
 
+          {
+            path: `${Routes.UserSetting}${Routes.UserManagement}`,
+            Component: () => import('@/pages/admin/users'),
+          },
           {
             path: `${Routes.UserSetting}${Routes.DataSource}`,
             Component: () => import('@/pages/user-setting/data-source'),

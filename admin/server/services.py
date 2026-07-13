@@ -26,7 +26,6 @@ from api.db.services import UserService
 from api.db.joint_services.user_account_service import create_new_user, delete_user_data
 from api.db.services.canvas_service import UserCanvasService
 from api.db.services.user_service import TenantService, UserTenantService
-from api.db.services.user_login_log_service import UserLoginLogService
 from api.db.services.knowledgebase_service import KnowledgebaseService
 from api.db.services.system_settings_service import SystemSettingsService
 from api.db.services.api_service import APITokenService
@@ -726,12 +725,17 @@ print("TEST_PASSED")
 
 class LoginLogMgr:
     @staticmethod
+    def _get_service():
+        from api.db.services.user_login_log_service import UserLoginLogService
+        return UserLoginLogService
+
+    @staticmethod
     def get_user_logs(username, page=1, size=20, start_date=None, end_date=None, device_type=None):
         users = UserService.query(email=username)
         if not users:
             raise AdminException(f"User {username} not found", 404)
         user_id = users[0].id
-        return UserLoginLogService.get_user_logs(
+        return LoginLogMgr._get_service().get_user_logs(
             user_id=user_id, page=page, size=size,
             start_date=start_date, end_date=end_date, device_type=device_type,
         )
@@ -742,4 +746,4 @@ class LoginLogMgr:
         if not users:
             raise AdminException(f"User {username} not found", 404)
         user_id = users[0].id
-        return UserLoginLogService.get_user_stats(user_id)
+        return LoginLogMgr._get_service().get_user_stats(user_id)

@@ -1175,6 +1175,7 @@ General：实体和关系提取提示来自 GitHub - microsoft/graphrag：基于
       systemModelDescription: '请在开始之前完成这些设置',
       dataSources: '数据源',
       analysisTemplates: '分析模板',
+      userManagement: '用户管理',
       team: '团队',
       system: '系统',
       logout: '登出',
