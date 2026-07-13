@@ -215,4 +215,27 @@ declare namespace AdminService {
     provider_type: string;
     config: Record<string, unknown>;
   };
+
+  export type LoginLogItem = {
+    id: string;
+    login_time: string;
+    ip: string | null;
+    device_type: string;
+    device_name: string | null;
+    login_channel: string | null;
+  };
+
+  export type LoginLogList = {
+    logs: LoginLogItem[];
+    total: number;
+    page: number;
+    size: number;
+  };
+
+  export type LoginLogStats = {
+    total: number;
+    recent_7d: number;
+    last_login_time: string | null;
+    common_device: string | null;
+  };
 }

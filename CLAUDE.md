@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 【核心注意：新增的数据库要放到ragflow项目的初始化脚本中，要考虑到迁移部署，不会导致问题】
 
-【核心注意：禁止构建前端代码】
+
 
 修改代码和新增代码，需要注意一下规范规则：
 
@@ -16,6 +16,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   6. 安全性：SQL注入、XSS、权限绕过、敏感信息暴露等。
   7. 性能隐患：循环内 IO、无索引查询、内存泄漏、未释放连接等。
   8. 代码质量：可读性、重复代码、魔法值、命名规范。
+
+
+
+### 参考文档（需要时读取原文）
+
+| 文档 | 路径 | 包含内容 |
+|------|------|----------|
+| 部署服务器 | `D:\AI\ragflow2\本地部署服务器.md` | 服务器SSH连接、Docker部署、前端/后端/Flutter热更新、Nginx配置、常见问题排查 |
+| 第三方接口 | `D:\AI\ragflow2\接口文档_2026-06-04.md` | 标讯API、企业画像API、合同API等第三方接口的请求/响应字段定义和鉴权方式 |
+| 项目架构 | `D:\AI\ragflow2\项目架构.md` | 系统整体架构、模块间调用关系、数据流、技术选型决策背景 |
+
+
 
 ## Project Overview
 
@@ -338,4 +350,14 @@ docker logs -f ragflow-server
 ```
 
 ### 环境要求
-Python 3.10–3.12, Node.js >=18.20.4, Docker & Docker Compose, uv, 16GB+ RAM
+Python 3.12–3.14, Node.js >=18.20.4, Docker & Docker Compose, uv, 16GB+ RAM
+
+### 单个测试 & 覆盖率
+```bash
+uv run pytest test/path/test_file.py::TestClass::test_method -v   # 单个测试
+uv run pytest -k "test_name" -v                                    # 按名称匹配
+uv run pytest --cov=api/db/services --cov-report=html              # 覆盖率报告
+```
+
+### Ruff 配置 (pyproject.toml)
+line-length=200, lint: ASYNC/ASYNC1 enabled, E402 ignored

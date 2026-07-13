@@ -178,6 +178,24 @@ export const listUserAgents = (email: string) =>
   request.get<ResponseData<AdminService.ListUserAgentItem[]>>(
     adminListUserAgents(email),
   );
+export const getUserLoginLogs = (
+  email: string,
+  params: {
+    page?: number;
+    size?: number;
+    start_date?: string;
+    end_date?: string;
+    device_type?: string;
+  } = {},
+) =>
+  request.get<ResponseData<AdminService.LoginLogList>>(
+    api.adminUserLoginLogs(email),
+    { params },
+  );
+export const getUserLoginStats = (email: string) =>
+  request.get<ResponseData<AdminService.LoginLogStats>>(
+    api.adminUserLoginStats(email),
+  );
 export const updateUserStatus = (email: string, status: 'on' | 'off') =>
   request.put(adminUpdateUserStatus(email), { activate_status: status });
 export const updateUserPassword = (email: string, password: string) =>

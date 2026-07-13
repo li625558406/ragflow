@@ -1724,6 +1724,23 @@ class BidSyncLog(DataBaseModel):
         db_table = "bid_sync_log"
 
 
+class UserLoginLog(DataBaseModel):
+    id = CharField(max_length=32, primary_key=True)
+    user_id = CharField(max_length=32, null=False, index=True)
+    email = CharField(max_length=255, null=False, index=True)
+    nickname = CharField(max_length=100, null=True)
+    login_time = DateTimeField(null=False, index=True)
+    ip = CharField(max_length=45, null=True)
+    device_type = CharField(max_length=32, default="web")
+    device_name = CharField(max_length=255, null=True)
+    login_channel = CharField(max_length=32, null=True)
+    user_agent = TextField(null=True)
+    status = CharField(max_length=1, default="1")
+
+    class Meta:
+        db_table = "user_login_log"
+
+
 class AreaCode(DataBaseModel):
     code = CharField(max_length=12, primary_key=True, help_text="行政区划编码")
     name = CharField(max_length=50, null=False, help_text="区划名称")

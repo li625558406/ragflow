@@ -25,7 +25,7 @@ from flask_login import current_user, login_required, logout_user
 
 from auth import login_verify, login_admin, check_admin_auth
 from responses import success_response, error_response
-from services import UserMgr, ServiceMgr, UserServiceMgr, SettingsMgr, ConfigMgr, EnvironmentsMgr, SandboxMgr
+from services import UserMgr, ServiceMgr, UserServiceMgr, SettingsMgr, ConfigMgr, EnvironmentsMgr, SandboxMgr, LoginLogMgr
 from roles import RoleMgr
 from api.common.exceptions import AdminException
 from common.versions import get_ragflow_version
@@ -231,6 +231,43 @@ def get_user_agents(username):
     try:
         agents_list = UserServiceMgr.get_user_agents(username)
         return success_response(agents_list)
+
+    except AdminException as e:
+        return error_response(e.message, e.code)
+    except Exception as e:
+        return error_response(str(e), 500)
+
+
+@admin_bp.route("/users/<username>/login-logs", methods=["GET"])
+@login_required
+@check_admin_auth
+def get_user_login_logs(username):
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+        size = max(1, min(int(request.args.get("size", 20)), 100))
+        start_date = request.args.get("start_date")
+        end_date = request.args.get("end_date")
+        device_type = request.args.get("device_type")
+
+        result = LoginLogMgr.get_user_logs(
+            username=username, page=page, size=size,
+            start_date=start_date, end_date=end_date, device_type=device_type,
+        )
+        return success_response(result)
+
+    except AdminException as e:
+        return error_response(e.message, e.code)
+    except Exception as e:
+        return error_response(str(e), 500)
+
+
+@admin_bp.route("/users/<username>/login-stats", methods=["GET"])
+@login_required
+@check_admin_auth
+def get_user_login_stats(username):
+    try:
+        stats = LoginLogMgr.get_user_stats(username)
+        return success_response(stats)
 
     except AdminException as e:
         return error_response(e.message, e.code)

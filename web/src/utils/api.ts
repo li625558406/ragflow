@@ -294,6 +294,10 @@ export default {
     `${restAPIv1}/admin/users/${username}/datasets`,
   adminListUserAgents: (username: string) =>
     `${restAPIv1}/admin/users/${username}/agents`,
+  adminUserLoginLogs: (username: string) =>
+    `${restAPIv1}/admin/users/${username}/login-logs`,
+  adminUserLoginStats: (username: string) =>
+    `${restAPIv1}/admin/users/${username}/login-stats`,
 
   adminListServices: `${restAPIv1}/admin/services`,
   adminShowServiceDetails: (serviceId: string) =>

@@ -48,6 +48,7 @@ from api.utils.tenant_utils import ensure_tenant_model_id_for_params
 from rag.utils.redis_conn import REDIS_CONN
 from api.apps import login_required, current_user, login_user, logout_user
 from api.db.services.user_token_service import UserTokenService
+from api.db.services.user_login_log_service import UserLoginLogService
 from itsdangerous.url_safe import URLSafeTimedSerializer as Serializer
 from api.utils.web_utils import (
     send_email_html,
@@ -131,6 +132,10 @@ async def login():
         # Keep legacy access_token in sync for backward compatibility
         user.access_token = user_token.token
         login_user(user)
+        try:
+            UserLoginLogService.create_log(user, request, login_channel="password", device_type=device_type, device_name=device_name)
+        except Exception as e:
+            logging.warning(f"Failed to write login log: {e}")
         user.update_time = current_timestamp()
         user.update_date = datetime_format(datetime.now())
         user.save()
@@ -258,6 +263,10 @@ async def oauth_callback(channel):
                 user.access_token = token_obj.token
                 user.save()
                 login_user(user)
+                try:
+                    UserLoginLogService.create_log(user, request, login_channel=channel, device_type="web", device_name=f"OAuth-{channel}")
+                except Exception as e:
+                    logging.warning(f"Failed to write login log: {e}")
                 jwt = Serializer(secret_key=settings.SECRET_KEY)
                 return redirect(f"/?auth={jwt.dumps(str(token_obj.token))}")
 
@@ -275,6 +284,10 @@ async def oauth_callback(channel):
         user.access_token = token_obj.token
         user.save()
         login_user(user)
+        try:
+            UserLoginLogService.create_log(user, request, login_channel=channel, device_type="web", device_name=f"OAuth-{channel}")
+        except Exception as e:
+            logging.warning(f"Failed to write login log: {e}")
         jwt = Serializer(secret_key=settings.SECRET_KEY)
         return redirect(f"/?auth={jwt.dumps(str(token_obj.token))}")
     except Exception as e:

@@ -21,11 +21,14 @@ import {
 
 import {
   LucideClipboardList,
+  LucideClock,
   LucideDot,
   LucideTrash2,
   LucideUserLock,
   LucideUserPlus,
 } from 'lucide-react';
+
+import LoginLogsDrawer from './login-logs-drawer';
 
 import { rsaPsw } from '@/utils';
 
@@ -131,6 +134,9 @@ function AdminUserManagement() {
   const [passwordModalOpen, setPasswordModalOpen] = useState(false);
   const [createUserModalOpen, setCreateUserModalOpen] = useState(false);
   const [userToMakeAction, setUserToMakeAction] =
+    useState<AdminService.ListUsersItem | null>(null);
+  const [loginLogsOpen, setLoginLogsOpen] = useState(false);
+  const [loginLogsUser, setLoginLogsUser] =
     useState<AdminService.ListUsersItem | null>(null);
 
   const changePasswordForm = useChangePasswordForm();
@@ -398,6 +404,18 @@ function AdminUserManagement() {
                 variant="transparent"
                 size="icon"
                 className="border-0"
+                onClick={() => {
+                  setLoginLogsUser(row.original);
+                  setLoginLogsOpen(true);
+                }}
+              >
+                <LucideClock />
+              </Button>
+
+              <Button
+                variant="transparent"
+                size="icon"
+                className="border-0"
                 onClick={() =>
                   navigate(
                     `${Routes.AdminUserManagement}/${row.original.email}`,
@@ -660,6 +678,15 @@ function AdminUserManagement() {
           </CardFooter>
         </ScrollArea>
       </Card>
+
+      {loginLogsUser && (
+        <LoginLogsDrawer
+          open={loginLogsOpen}
+          onOpenChange={setLoginLogsOpen}
+          email={loginLogsUser.email}
+          nickname={loginLogsUser.nickname}
+        />
+      )}
 
       {/* Delete Confirmation Modal */}
       <Dialog open={deleteModalOpen} onOpenChange={setDeleteModalOpen}>

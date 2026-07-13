@@ -1,0 +1,3885 @@
+version: '1.1'
+defaults:
+  detect_interval: 300
+  detect_enabled: true
+sites:
+  ccgp_agency:
+    name: 政府采购代理机构名单
+    site_url: http://www.ccgp.gov.cn/agency/md/
+    detect_interval: 30
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      session_init_url: http://jczy.ccgp.gov.cn/gs1/gs1agentreg/pubListIndex.regx
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+        Referer: http://jczy.ccgp.gov.cn/gs1/gs1agentreg/pubListIndex.regx
+        Accept: application/json, text/javascript, */*; q=0.01
+        X-Requested-With: XMLHttpRequest
+      verify_ssl: true
+      timeout: 60
+    listing:
+      url: http://jczy.ccgp.gov.cn/gs1/gs1agentreg/getPubList.regx
+      method: GET
+      body_type: query
+      params:
+        provinceCode: ''
+        page: '{{ page }}'
+        rows: '{{ page_size }}'
+    pagination:
+      type: page_no
+      page_param: page
+      page_size_param: rows
+      page_size: 30
+      start: 1
+      max_pages: 5
+      total_field: total
+      items_field: rows
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.5
+      max_retries: 4
+      session_reset_on_429: true
+    extract:
+      type: json_path
+      items_path: rows
+      fields:
+        id: uuid
+        title: agentNm
+        orgCode: orgCode
+        contactNm: contactNm
+        corpTel: corpTel
+        regAddr: regAddr
+        regValidDateStr: regValidDateStr
+        auditPlace: auditPlace
+        publicRemark: publicRemark
+    detail:
+      type: inline
+    format:
+      parser_id: naive
+      upload_batch_size: 500
+  ccgp_jdcf_gg_cr:
+    name: 中国政府采购网-监督处罚+公告+严重违法失信
+    site_url: http://www.ccgp.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: true
+      timeout: 60
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: ''
+      fields:
+        id: a@href
+        title: title
+        date: date
+    detail:
+      type: css_selector
+      content_field: content
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+    sections:
+    - label: jdcf
+      listing:
+        url: http://www.ccgp.gov.cn/jdjc/jdcf/
+        method: GET
+      pagination:
+        type: html_regex
+        next_page_regex: index_(\d+)\.htm
+        page_size: 20
+        start: 1
+    - label: gg
+      listing:
+        url: http://www.ccgp.gov.cn/gg/
+        method: GET
+      pagination:
+        type: single_page
+    - label: cr
+      listing:
+        url: http://www.ccgp.gov.cn/search/cr/
+        method: GET
+      pagination:
+        type: single_page
+  ccgp_zcfg:
+    name: 中国政府采购网-政策法规
+    site_url: http://www.ccgp.gov.cn/zcfg/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: true
+      timeout: 60
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: ul.c_list_zcfg li, ul.c_list_tat li
+      fields:
+        id: a@href
+        title: a
+        date: span
+    detail:
+      type: css_selector
+      content_field: .TRS_Editor
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+    sections:
+    - label: mofgz
+      listing:
+        url: http://www.ccgp.gov.cn/zcfg/mofgz/
+        method: GET
+      pagination:
+        type: html_regex
+        next_page_regex: index_(\d+)\.htm
+        page_size: 20
+        start: 1
+    - label: mof
+      listing:
+        url: http://www.ccgp.gov.cn/zcfg/mof/
+        method: GET
+      pagination:
+        type: html_regex
+        next_page_regex: index_(\d+)\.htm
+        page_size: 20
+        start: 1
+    - label: gwywj
+      listing:
+        url: http://www.ccgp.gov.cn/zcfg/gwywj/
+        method: GET
+      pagination:
+        type: html_regex
+        next_page_regex: index_(\d+)\.htm
+        page_size: 20
+        start: 1
+    - label: bwfile
+      listing:
+        url: http://www.ccgp.gov.cn/zcfg/bwfile/
+        method: GET
+      pagination:
+        type: html_regex
+        next_page_regex: index_(\d+)\.htm
+        page_size: 20
+        start: 1
+    - label: dffg
+      listing:
+        url: http://www.ccgp.gov.cn/zcfg/dffg/
+        method: GET
+      pagination:
+        type: html_regex
+        next_page_regex: index_(\d+)\.htm
+        page_size: 20
+        start: 1
+    - label: gjfg
+      listing:
+        url: http://www.ccgp.gov.cn/zcfg/gjfg/
+        method: GET
+      pagination:
+        type: html_regex
+        next_page_regex: index_(\d+)\.htm
+        page_size: 20
+        start: 1
+    - label: guojifg
+      listing:
+        url: http://www.ccgp.gov.cn/zcfg/guojifg/
+        method: GET
+      pagination:
+        type: html_regex
+        next_page_regex: index_(\d+)\.htm
+        page_size: 20
+        start: 1
+  ccgp_zjlwbcbz:
+    name: 中国政府采购网-专家库
+    site_url: http://www.ccgp.gov.cn/zjlwbcbz/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: true
+      timeout: 60
+    listing:
+      url: http://www.ccgp.gov.cn/zjlwbcbz/
+      method: GET
+    pagination:
+      type: single_page
+      page_size: 20
+      start: 1
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: table tr
+      fields:
+        id: a@href
+        title: a
+        date: td:last-child
+    detail:
+      type: css_selector
+      content_field: .TRS_Editor
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  cebpubservice:
+    name: 中国招标投标公共服务平台
+    site_url: https://bulletin.cebpubservice.com/
+    enabled: true
+    detect_interval: 10
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: true
+      timeout: 30
+    listing:
+      url: https://bulletin.cebpubservice.com/xxfbcmses/search/bulletin.html
+      method: GET
+      params:
+        searchDate: '{{ today }}'
+        dates: '1'
+    pagination:
+      type: page_no
+      page_param: page
+      page_size: 20
+      start: 1
+      max_pages: 5
+    anti_crawler:
+      delay_min: 0.5
+      delay_max: 1.5
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: table.table_text tr
+      fields:
+        id: td:first-child a@href
+        title: td:first-child a
+        date: td:nth-child(5)
+        region: td:nth-child(3)
+        source: td:nth-child(4)
+    detail:
+      type: inline
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  cebpubservice_consult:
+    name: 中国招标投标公共服务平台-咨询
+    site_url: https://www.cebpubservice.com/
+    enabled: true
+    transport:
+      type: scrapling_stealth
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: true
+      timeout: 30
+      headless: true
+      network_idle: true
+    listing:
+      url: https://www.cebpubservice.com/consult.html
+      method: GET
+    pagination:
+      type: html_regex
+      page_size: 20
+      start: 1
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: ul.list li
+      fields:
+        id: a@href
+        title: a
+        date: span
+    detail:
+      type: css_selector
+      content_field: .content
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  etrading:
+    name: 福建电子交易平台-采购公告
+    site_url: https://fujian.etrading.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
+          like Gecko) Chrome/120.0.0.0 Safari/537.36
+        Content-Type: application/json; charset=utf-8
+      verify_ssl: false
+      timeout: 60
+    listing:
+      url: https://fujian.etrading.cn/inteligentsearch/rest/esinteligentsearch/getFullTextDataNew
+      method: POST
+      body_type: json
+      params:
+        siteGuid: 0c486005-4998-475c-8147-891741aeefb3
+        categorynum: '002003001'
+        pn: '{{ page }}'
+        rn: '{{ page_size }}'
+    pagination:
+      type: page_no
+      page_param: pn
+      page_size_param: rn
+      page_size: 20
+      start: 1
+      max_pages: 50
+      items_field: result.records
+    anti_crawler:
+      delay_min: 0.3
+      delay_max: 0.8
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: result.records
+      fields:
+        id: infoid
+        title: title
+        date: youxiaodate
+        url: linkurl
+        content: content
+    detail:
+      type: css_selector
+      url: https://fujian.etrading.cn{{ linkurl }}
+      content_field: '#infoContent, #content, .info-content, .article-content, .main-content,
+        #main'
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  etrading_statute:
+    name: 福建电子交易平台-规章制度
+    site_url: https://fujian.etrading.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
+          like Gecko) Chrome/120.0.0.0 Safari/537.36
+        Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8
+        Accept-Language: zh-CN,zh;q=0.9,en;q=0.8
+      verify_ssl: false
+      timeout: 60
+    listing:
+      url: https://fujian.etrading.cn/zcfg/statute.html
+      method: GET
+    pagination:
+      type: single_page
+    anti_crawler:
+      delay_min: 0.3
+      delay_max: 1.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: a[href*='/zcfg/'][href*='statute.html']
+      fields:
+        id: '@href'
+        title: text
+    detail:
+      type: css_selector
+      content_field: .content, .article-content, .detail-content, [class*='content'],
+        article, main
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  fycbid:
+    name: 福易采电子交易平台
+    site_url: https://www.fycbid.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+        Content-Type: application/json;charset=UTF-8
+      verify_ssl: true
+      timeout: 30
+    listing:
+      url: https://www.fycbid.cn/fyc/fyc3/uip/mh/project/query
+      method: POST
+      body_type: json
+      params:
+        site: '00'
+        bidName: ''
+        bidType: ''
+        dateType: fbDate
+        startDate: '{{ 3_days_ago }} 00:00:00'
+        endDate: '{{ today }} 23:59:59'
+        isProvince: ''
+        page:
+          current: '{{ page }}'
+          size: '{{ page_size }}'
+        address: ''
+        isEffective: 1
+        purchaseMode: ''
+        title: ''
+    pagination:
+      type: page_no
+      page_param: page.current
+      page_size_param: page.size
+      page_size: 20
+      start: 1
+      total_field: total
+      items_field: data
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: data.records
+      fields:
+        id: bidId
+        title: bidName
+        date: pushTime
+        content: title
+        news_type: purchaseModeName
+    detail:
+      type: inline
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  jdhy:
+    name: 福建省发改委-解读回应
+    site_url: http://fgw.fujian.gov.cn/jdhy/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: true
+      timeout: 30
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: div.list_base ul li
+      fields:
+        id: a@href
+        title: a
+        date: span.date
+    detail:
+      type: css_selector
+      content_field: .TRS_Editor, .article_content
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+    sections:
+    - label: xwfbh
+      listing:
+        url: http://fgw.fujian.gov.cn/jdhy/xwfbh/
+        method: GET
+      pagination:
+        type: html_regex
+        start: 1
+    - label: msgg
+      listing:
+        url: http://fgw.fujian.gov.cn/jdhy/msgg/
+        method: GET
+      pagination:
+        type: html_regex
+        start: 1
+    - label: zcjd
+      listing:
+        url: http://fgw.fujian.gov.cn/jdhy/zcjd/
+        method: GET
+      pagination:
+        type: html_regex
+        start: 1
+    - label: zcwd
+      listing:
+        url: http://fgw.fujian.gov.cn/jdhy/zcwd/
+        method: GET
+      pagination:
+        type: html_regex
+        start: 1
+  jdhy_zhangzhou:
+    name: 漳州发改委-解读回应
+    site_url: https://www.zhangzhou.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: https://www.zhangzhou.gov.cn/cms/html/zzsrmzf/bszcjd/index.html
+      method: GET
+    pagination:
+      type: html_regex
+      page_size: 20
+      start: 1
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: div.list_base ul li
+      fields:
+        id: a@href
+        title: a
+        date: span.date
+    detail:
+      type: css_selector
+      content_field: .TRS_Editor
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  mohurd:
+    name: 住建部政策法规
+    site_url: https://www.mohurd.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+        Content-Type: application/json;charset=UTF-8
+      verify_ssl: false
+      timeout: 30
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 3.0
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: data.list
+      fields:
+        id: id
+        title: title
+        date: publishDate
+    detail:
+      type: css_selector
+      content_field: .TRS_Editor
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+    sections:
+    - label: xzgfxwjk
+      listing:
+        url: https://www.mohurd.gov.cn/api-gateway/jpaas-publish-server/front/page/build/unit
+        method: POST
+        body_type: json
+        params:
+          pageNo: '{{ page }}'
+          pageSize: '{{ page_size }}'
+      pagination:
+        type: page_no
+        page_param: pageNo
+        page_size_param: pageSize
+        page_size: 15
+        start: 1
+        total_field: data.total
+    - label: wjk
+      listing:
+        url: https://www.mohurd.gov.cn/api-gateway/jpaas-publish-server/front/page/build/unit
+        method: POST
+        body_type: json
+        params:
+          pageNo: '{{ page }}'
+          pageSize: '{{ page_size }}'
+      pagination:
+        type: page_no
+        page_param: pageNo
+        page_size_param: pageSize
+        page_size: 15
+        start: 1
+        total_field: data.total
+  mwr:
+    name: 水利部政策法规
+    site_url: http://www.mwr.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: http://www.mwr.gov.cn/zw/zcfg/gfxwj/index.html
+      method: GET
+    pagination:
+      type: html_regex
+      page_pattern: /zw/zcfg/gfxwj/index_{}.html
+      page_size: 20
+      start: 1
+      first_page_no_suffix: true
+      max_pages: 20
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: ul.slnewsconlist li
+      fields:
+        url: a@href
+        title: a
+        date: span
+    detail:
+      type: css_selector
+      content_field: '.view.TRS_UEDITOR, .TRS_Editor, #detailCont, .article-content'
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  ncha:
+    name: 国家文物局政策法规
+    site_url: http://www.ncha.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: true
+      timeout: 30
+    listing:
+      url: http://www.ncha.gov.cn/col/col2262/index.html
+      method: GET
+    pagination:
+      type: html_regex
+      page_size: 20
+      start: 1
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: ul.list li, table tr
+      fields:
+        id: a@href
+        title: a
+        date: span.date
+    detail:
+      type: css_selector
+      content_field: .TRS_Editor
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  slbgb:
+    name: 水利部公报
+    site_url: http://www.mwr.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: http://www.mwr.gov.cn/zw/slbgb/index.html
+      method: GET
+    pagination:
+      type: html_regex
+      page_pattern: /zw/slbgb/index_{}.html
+      page_size: 20
+      start: 1
+      first_page_no_suffix: true
+      max_pages: 10
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: ul.slnewsconlist li
+      fields:
+        url: a@href
+        title: a
+        date: span
+    detail:
+      type: inline
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  fgw_zwgk:
+    name: 发改委新闻发布
+    site_url: https://www.ndrc.gov.cn/
+    detect_interval: 120
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: true
+      timeout: 30
+    listing:
+      url: https://www.ndrc.gov.cn/xwdt/
+      method: GET
+    pagination:
+      type: single_page
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 3
+      eight_am_check: true
+    extract:
+      type: css_selector
+      items_path: ul.u-list li
+      fields:
+        id: a@href
+        title: a
+        date: span
+    detail:
+      type: css_selector
+      transport:
+        type: spa_render
+        engine: playwright_spa
+        timeout: 60
+        headers:
+          User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
+            Chrome/120.0.0.0 Safari/537.36
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  ndrc_fzggwl:
+    name: 发改委-政策文件
+    site_url: https://www.ndrc.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: false
+      timeout: 30
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: ul.u-list li
+      fields:
+        id: a@href
+        title: a
+        date: span.date
+    detail:
+      type: css_selector
+      content_field: .TRS_Editor
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+    sections:
+    - label: fzggwl
+      listing:
+        url: https://www.ndrc.gov.cn/xxgk/zcfb/fzggwl/
+        method: GET
+      pagination:
+        type: html_regex
+        page_pattern: index_{}.html
+        start: 1
+        max_pages: 50
+    - label: ghxwj
+      listing:
+        url: https://www.ndrc.gov.cn/xxgk/zcfb/ghxwj/
+        method: GET
+      pagination:
+        type: html_regex
+        page_pattern: index_{}.html
+        start: 1
+        max_pages: 50
+    - label: ghwb
+      listing:
+        url: https://www.ndrc.gov.cn/xxgk/zcfb/ghwb/
+        method: GET
+      pagination:
+        type: html_regex
+        page_pattern: index_{}.html
+        start: 1
+        max_pages: 50
+    - label: gg
+      listing:
+        url: https://www.ndrc.gov.cn/xxgk/zcfb/gg/
+        method: GET
+      pagination:
+        type: html_regex
+        page_pattern: index_{}.html
+        start: 1
+        max_pages: 50
+    - label: tz
+      listing:
+        url: https://www.ndrc.gov.cn/xxgk/zcfb/tz/
+        method: GET
+      pagination:
+        type: html_regex
+        page_pattern: index_{}.html
+        start: 1
+        max_pages: 50
+  czt:
+    name: 福建省财政厅
+    site_url: https://czt.fujian.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: true
+      timeout: 30
+    listing:
+      url: https://czt.fujian.gov.cn/zwgk/
+      method: GET
+    pagination:
+      type: html_regex
+      page_size: 20
+      start: 1
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: ul.list li, .TRS_Editor
+      fields:
+        id: a@href
+        title: a
+        date: span.date
+    detail:
+      type: css_selector
+      content_field: .TRS_Editor
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  czt_jdhy:
+    name: 福建省财政厅-解读回应
+    site_url: https://czt.fujian.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      verify_ssl: true
+      timeout: 30
+    listing:
+      url: https://czt.fujian.gov.cn/jdhy/zcjd/
+      method: GET
+    pagination:
+      type: single_page
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: div.list_base ul li
+      fields:
+        id: a@href
+        title: a
+        url: a@href
+        date: span
+    detail:
+      type: css_selector
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+    sections:
+    - label: zcjd
+      listing:
+        url: https://czt.fujian.gov.cn/jdhy/zcjd/
+        method: GET
+    - label: hygq
+      listing:
+        url: https://czt.fujian.gov.cn/jdhy/hygq/
+        method: GET
+  zjt_xxgk:
+    name: 福建省住建厅-信息公开
+    site_url: https://zjt.fujian.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      verify_ssl: true
+      timeout: 30
+    listing:
+      url: https://zjt.fujian.gov.cn/xxgk/
+      method: GET
+    pagination:
+      type: single_page
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: div[role='viewlist'] .bd li
+      fields:
+        id: a@href
+        title: a
+        url: a@href
+        date: span
+    detail:
+      type: css_selector
+    format:
+      template: '# {{ title }}
+
+        **日期:** {{ date }}
+
+        **页面地址:** {{ url }}
+
+        {{ content }}
+
+        '
+      parser_id: naive
+      upload_batch_size: 10
+  zjt_jdhy:
+    name: 福建省住建厅-解读回应
+    site_url: https://zjt.fujian.gov.cn/jdhy/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      verify_ssl: true
+      timeout: 30
+    listing:
+      url: https://zjt.fujian.gov.cn/jdhy/
+      method: GET
+    pagination:
+      type: single_page
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: div[role='viewlist'] .bd li
+      fields:
+        id: a@href
+        title: a
+        url: a@href
+        date: span
+    detail:
+      type: css_selector
+      content_field: .TRS_Editor
+    format:
+      template: '# {{ title }}
+
+        **日期:** {{ date }}
+
+        **页面地址:** {{ url }}
+
+        {{ content }}
+
+        '
+      parser_id: naive
+      upload_batch_size: 10
+  jtyst_zwgk:
+    name: 福建省交通厅-政务公开
+    site_url: https://jtyst.fujian.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      verify_ssl: true
+      timeout: 30
+    listing:
+      url: https://jtyst.fujian.gov.cn/zwgk/
+      method: GET
+    pagination:
+      type: html_regex
+      page_size: 20
+      start: 1
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: ul.list li
+      fields:
+        id: a@href
+        title: a
+        date: span.date
+    detail:
+      type: css_selector
+      content_field: .TRS_Editor
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  jtyst_jdhy:
+    name: 福建省交通厅-解读回应
+    site_url: https://jtyst.fujian.gov.cn/jdhy/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      verify_ssl: true
+      timeout: 30
+    listing:
+      url: https://jtyst.fujian.gov.cn/jdhy/
+      method: GET
+    pagination:
+      type: html_regex
+      page_size: 20
+      start: 1
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: ul.list li
+      fields:
+        id: a@href
+        title: a
+        date: span.date
+    detail:
+      type: css_selector
+      content_field: .TRS_Editor
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  slt_xxgk:
+    name: 福建省水利厅-信息公开
+    site_url: https://slt.fujian.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      verify_ssl: true
+      timeout: 30
+    listing:
+      url: https://slt.fujian.gov.cn/xxgk/
+      method: GET
+    pagination:
+      type: html_regex
+      page_size: 20
+      start: 1
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: ul.list li
+      fields:
+        id: a@href
+        title: a
+        date: span.date
+    detail:
+      type: css_selector
+      content_field: .TRS_Editor
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  slt_zcjd:
+    name: 福建省水利厅-政策解读
+    site_url: https://slt.fujian.gov.cn
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      verify_ssl: true
+      timeout: 30
+    listing:
+      url: https://slt.fujian.gov.cn/xxgk/zcjd/
+      method: GET
+    pagination:
+      type: single_page
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: ul.xw-list-1 li
+      fields:
+        id: a@href
+        title: a
+        date: span.date
+    detail:
+      type: css_selector
+      content_field: .TRS_Editor
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  zhangzhou:
+    name: 漳州公共资源交易中心-工程建设
+    site_url: http://ggzyjy.xzfwzx.zhangzhou.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      verify_ssl: false
+      timeout: 30
+      session_init_url: http://ggzyjy.xzfwzx.zhangzhou.gov.cn/cms/sitemanage/index.shtml?siteId=40669965560550000&templateId=10671863355640000&cateNum=001001008
+    listing:
+      url: http://ggzyjy.xzfwzx.zhangzhou.gov.cn/proxy_api/publicResource/front/viewProjects
+      method: POST
+      body_type: json
+      params:
+        pageNum: '{{ page }}'
+        pageSize: '{{ page_size }}'
+        dateType: '0'
+    pagination:
+      type: page_no
+      page_param: pageNum
+      page_size: 15
+      start: 1
+      items_field: resultList
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.5
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: resultList
+      fields:
+        id: infoID
+        title: title
+        date: infoDate
+    detail:
+      type: api_request
+      url: http://ggzyjy.xzfwzx.zhangzhou.gov.cn/proxy_api/publicResource/front/projectDetail/{id}
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  zhangzhou_fgw:
+    name: 漳州市发改委
+    site_url: https://fgw.zhangzhou.gov.cn/
+    detect_interval: 30
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: https://fgw.zhangzhou.gov.cn/zwgk/
+      method: GET
+    pagination:
+      type: html_regex
+      page_size: 20
+      start: 1
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: ul.list li
+      fields:
+        id: a@href
+        title: a
+        date: span.date
+    detail:
+      type: css_selector
+      content_field: .TRS_Editor
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  zz_zhangzhou:
+    name: 漳州市人民政府-政务公开
+    site_url: https://www.zhangzhou.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: urllib
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
+          like Gecko) Chrome/120.0.0.0 Safari/537.36
+        Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+      verify_ssl: false
+      timeout: 30
+    anti_crawler:
+      delay_min: 0.2
+      delay_max: 0.8
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: ul#resources li, ul#infos li
+      fields:
+        id: a@href
+        title: a
+        date: span
+    detail:
+      type: css_selector
+      content_field: div#Content, div.article_con, div.content
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+    sections:
+    - label: zfwj
+      listing:
+        url: https://www.zhangzhou.gov.cn/cms/html/zzsrmzf/zfxxgk/zfwj/index.html
+        method: GET
+      pagination:
+        type: html_regex
+        page_size: 20
+        start: 1
+        max_pages: 50
+    - label: gsbg
+      listing:
+        url: https://www.zhangzhou.gov.cn/cms/html/zzsrmzf/zfxxgk/gsgg/index.html
+        method: GET
+      pagination:
+        type: html_regex
+        page_size: 20
+        start: 1
+        max_pages: 50
+  jsj_zhangzhou:
+    name: 漳州市住建局-政务公开
+    site_url: http://jsj.zhangzhou.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: urllib
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
+          like Gecko) Chrome/120.0.0.0 Safari/537.36
+        Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+      verify_ssl: false
+      timeout: 30
+    anti_crawler:
+      delay_min: 0.2
+      delay_max: 0.8
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: ul#resources li, ul#infos li
+      fields:
+        id: a@href
+        title: a
+        date: span
+    detail:
+      type: css_selector
+      content_field: div#Content, div.article_con, div.content
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+    sections:
+    - label: gzdt
+      listing:
+        url: http://jsj.zhangzhou.gov.cn/cms/html/zzszfhcxjsj/zwgk/gzdt/index.html
+        method: GET
+      pagination:
+        type: html_regex
+        page_size: 20
+        start: 1
+        max_pages: 50
+    - label: tzgg
+      listing:
+        url: http://jsj.zhangzhou.gov.cn/cms/html/zzszfhcxjsj/zwgk/tzgg/index.html
+        method: GET
+      pagination:
+        type: html_regex
+        page_size: 20
+        start: 1
+        max_pages: 50
+  fjnj:
+    name: 南靖县公共资源交易
+    site_url: https://www.fjnj.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: https://www.fjnj.gov.cn/ggzyjy/
+      method: GET
+    pagination:
+      type: html_regex
+      page_size: 20
+      start: 1
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: ul.list li
+      fields:
+        id: a@href
+        title: a
+        date: span.date
+    detail:
+      type: css_selector
+      content_field: .TRS_Editor
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  fjnj_jdhy:
+    name: 南靖县-解读回应
+    site_url: https://www.fjnj.gov.cn/jdhy/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: https://www.fjnj.gov.cn/jdhy/
+      method: GET
+    pagination:
+      type: html_regex
+      page_size: 20
+      start: 1
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: ul.list li
+      fields:
+        id: a@href
+        title: a
+        date: span.date
+    detail:
+      type: css_selector
+      content_field: .TRS_Editor
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  putian_zcwj:
+    name: 莆田市公共资源交易中心-政策文件
+    site_url: https://ggzyjy.xzfwzx.putian.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
+          like Gecko) Chrome/120.0.0.0 Safari/537.36
+        Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8
+        Accept-Language: zh-CN,zh;q=0.9,en;q=0.8
+      verify_ssl: false
+      timeout: 60
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.5
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: .ewb-article li, .list-content li, ul.list li
+      fields:
+        id: a@href
+        title: a
+        date: span, .date, .fr
+    detail:
+      type: css_selector
+      content_field: .TRS_Editor, .ewb-article, .article-content, .detail-content
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+    sections:
+    - label: gcjy
+      listing:
+        url: https://ggzyjy.xzfwzx.putian.gov.cn/zcwj/014001/subPage.html
+        method: GET
+      pagination:
+        type: single_page
+    - label: zfcg
+      listing:
+        url: https://ggzyjy.xzfwzx.putian.gov.cn/zcwj/014002/subPage.html
+        method: GET
+      pagination:
+        type: single_page
+    - label: gtzy
+      listing:
+        url: https://ggzyjy.xzfwzx.putian.gov.cn/zcwj/014003/subPage.html
+        method: GET
+      pagination:
+        type: single_page
+    - label: cqjy
+      listing:
+        url: https://ggzyjy.xzfwzx.putian.gov.cn/zcwj/014004/subPage.html
+        method: GET
+      pagination:
+        type: single_page
+  putian_fwzx:
+    name: 莆田市公共资源交易中心-工程交易
+    site_url: https://ggzyjy.xzfwzx.putian.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
+          like Gecko) Chrome/120.0.0.0 Safari/537.36
+        Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8
+        Accept-Language: zh-CN,zh;q=0.9,en;q=0.8
+      verify_ssl: false
+      timeout: 60
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.5
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: .ewb-article li, .list-content li, ul.list li
+      fields:
+        id: a@href
+        title: a
+        date: span, .date, .fr
+    detail:
+      type: css_selector
+      content_field: .ewb-article, .article-content, .detail-content
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+    sections:
+    - label: zbjh
+      listing:
+        url: https://ggzyjy.xzfwzx.putian.gov.cn/ptsq/005001/005001021/guidetyright.html
+        method: GET
+      pagination:
+        type: single_page
+    - label: zbysgs
+      listing:
+        url: https://ggzyjy.xzfwzx.putian.gov.cn/ptsq/005001/005001022/guidetyright.html
+        method: GET
+      pagination:
+        type: single_page
+    - label: zbxx
+      listing:
+        url: https://ggzyjy.xzfwzx.putian.gov.cn/ptsq/005001/005001006/guidetyright.html
+        method: GET
+      pagination:
+        type: single_page
+    - label: zbhxrgs
+      listing:
+        url: https://ggzyjy.xzfwzx.putian.gov.cn/ptsq/005001/005001012/guidetyright.html
+        method: GET
+      pagination:
+        type: single_page
+    - label: zbjg
+      listing:
+        url: https://ggzyjy.xzfwzx.putian.gov.cn/ptsq/005001/005001011/guidetyright.html
+        method: GET
+      pagination:
+        type: single_page
+  quanzhou:
+    name: 泉州市公共资源交易中心-工程交易
+    site_url: https://ggzyjy.quanzhou.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: urllib
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
+          like Gecko) Chrome/120.0.0.0 Safari/537.36
+        Content-Type: application/json;charset=UTF-8
+        X-Requested-With: XMLHttpRequest
+      verify_ssl: false
+      timeout: 30
+    anti_crawler:
+      delay_min: 0.3
+      delay_max: 1.0
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: data.dataList
+      fields:
+        id: projId
+        title: projName
+        date: createTime
+    detail:
+      type: api_request
+      url: https://ggzyjy.quanzhou.gov.cn/project/getProjBulletin_project.do
+      method: POST
+      body_type: json
+      content_field: data.0.fileContent
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+    sections:
+    - label: projectList
+      listing:
+        url: https://ggzyjy.quanzhou.gov.cn/project/getProjPage_project.do
+        method: POST
+        body_type: json
+        params:
+          pageIndex: '{{ page }}'
+          pageSize: '10'
+          classId: 0
+          centerId: 0
+          projNo: ''
+          projName: ''
+          ownerDeptName: ''
+      pagination:
+        type: page_no
+        page_param: pageIndex
+        page_size_param: pageSize
+        page_size: 10
+        start: 1
+        max_pages: 50
+        total_field: data.totalRecord
+        items_field: data.dataList
+    - label: winBulletin
+      listing:
+        url: https://ggzyjy.quanzhou.gov.cn/project/getwinBulletinPage_project.do
+        method: POST
+        body_type: json
+        params:
+          pageIndex: '{{ page }}'
+          pageSize: '10'
+          keyword: ''
+          centerId: 0
+      pagination:
+        type: page_no
+        page_param: pageIndex
+        page_size_param: pageSize
+        page_size: 10
+        start: 1
+        max_pages: 50
+        total_field: data.totalRecord
+        items_field: data.dataList
+    - label: anQuestion
+      listing:
+        url: https://ggzyjy.quanzhou.gov.cn/project/getAnQuestionPage_project.do
+        method: POST
+        body_type: json
+        params:
+          pageIndex: '{{ page }}'
+          pageSize: '10'
+          keyword: ''
+          centerId: 0
+      pagination:
+        type: page_no
+        page_param: pageIndex
+        page_size_param: pageSize
+        page_size: 10
+        start: 1
+        max_pages: 50
+        total_field: data.totalRecord
+        items_field: data.dataList
+    - label: biddingPlan
+      listing:
+        url: https://ggzyjy.quanzhou.gov.cn/project/getBiddingjPage_project.do
+        method: POST
+        body_type: json
+        params:
+          pageIndex: '{{ page }}'
+          pageSize: '10'
+          classId: 0
+          centerId: 0
+          projName: ''
+          ownerDeptName: ''
+      pagination:
+        type: page_no
+        page_param: pageIndex
+        page_size_param: pageSize
+        page_size: 10
+        start: 1
+        max_pages: 50
+        total_field: data.totalRecord
+        items_field: data.dataList
+  quanzhou_zcfg:
+    name: 泉州市公共资源交易中心-政策法规
+    site_url: https://ggzyjy.quanzhou.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: urllib
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
+          like Gecko) Chrome/120.0.0.0 Safari/537.36
+        Content-Type: application/json;charset=UTF-8
+        X-Requested-With: XMLHttpRequest
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: https://ggzyjy.quanzhou.gov.cn/articleList/getZcfgList.do
+      method: POST
+      body_type: json
+      params:
+        pageIndex: '{{ page }}'
+        pageSize: '10'
+        major_id: 0
+        type: 1
+        keyword: ''
+    pagination:
+      type: page_no
+      page_param: pageIndex
+      page_size_param: pageSize
+      page_size: 10
+      start: 1
+      max_pages: 50
+      total_field: data.totalRecord
+      items_field: data.dataList
+    anti_crawler:
+      delay_min: 0.3
+      delay_max: 1.0
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: data.dataList
+      fields:
+        id: newsId
+        title: title
+        date: pubDate
+    detail:
+      type: api_request
+      url: https://ggzyjy.quanzhou.gov.cn/articleList/getZcfgDetail.do
+      method: POST
+      body_type: json
+      params:
+        newsId: '{{ newsId }}'
+      content_field: data.content
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  smzcfg:
+    name: 三明市公共资源交易中心-政策法规
+    site_url: https://smggzy.sm.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
+          like Gecko) Chrome/120.0.0.0 Safari/537.36
+      verify_ssl: false
+      timeout: 60
+    anti_crawler:
+      delay_min: 0.8
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: a[href*='InfoID=']
+      fields:
+        id: '@href'
+        title: text
+    detail:
+      type: css_selector
+      url: https://smggzy.sm.gov.cn/smwz/InfoDetail/?InfoID={{ id }}
+      content_field: .ewb-article, .article-content, .detail-content
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+    sections:
+    - label: zhl
+      listing:
+        url: https://smggzy.sm.gov.cn/smwz/zcfg/003001/
+        method: GET
+      pagination:
+        type: html_regex
+        page_pattern: ?pageing={}
+        start: 1
+        max_pages: 50
+    - label: gcjs
+      listing:
+        url: https://smggzy.sm.gov.cn/smwz/zcfg/003002/
+        method: GET
+      pagination:
+        type: html_regex
+        page_pattern: ?pageing={}
+        start: 1
+        max_pages: 50
+    - label: zfcg
+      listing:
+        url: https://smggzy.sm.gov.cn/smwz/zcfg/003003/
+        method: GET
+      pagination:
+        type: html_regex
+        page_pattern: ?pageing={}
+        start: 1
+        max_pages: 50
+  smjy:
+    name: 三明市公共资源交易中心-交易信息
+    site_url: https://smggzy.sm.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
+          like Gecko) Chrome/120.0.0.0 Safari/537.36
+      verify_ssl: false
+      timeout: 60
+    anti_crawler:
+      delay_min: 0.8
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: a[href*='InfoID=']
+      fields:
+        id: '@href'
+        title: text
+    detail:
+      type: css_selector
+      url: https://smggzy.sm.gov.cn/smwz/InfoDetail/?InfoID={{ id }}
+      content_field: .ewb-article, .article-content, .detail-content
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+    sections:
+    - label: gcjs_zbgg
+      listing:
+        url: https://smggzy.sm.gov.cn/smwz/jyxx/022001/001/
+        method: GET
+      pagination:
+        type: html_regex
+        page_pattern: ?pageing={}
+        start: 1
+        max_pages: 50
+    - label: gcjs_zbhb
+      listing:
+        url: https://smggzy.sm.gov.cn/smwz/jyxx/022001/005/
+        method: GET
+      pagination:
+        type: html_regex
+        page_pattern: ?pageing={}
+        start: 1
+        max_pages: 50
+    - label: zfcg_zbgg
+      listing:
+        url: https://smggzy.sm.gov.cn/smwz/jyxx/022002/001/
+        method: GET
+      pagination:
+        type: html_regex
+        page_pattern: ?pageing={}
+        start: 1
+        max_pages: 50
+    - label: zfcg_zbjg
+      listing:
+        url: https://smggzy.sm.gov.cn/smwz/jyxx/022002/005/
+        method: GET
+      pagination:
+        type: html_regex
+        page_pattern: ?pageing={}
+        start: 1
+        max_pages: 50
+  smzx_notice:
+    name: 福建省水利建设市场-通知公告
+    site_url: http://27.156.118.74:18001/
+    enabled: true
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: false
+      timeout: 90
+    listing:
+      url: http://27.156.118.74:18001/#/regulation
+      method: GET
+    pagination:
+      type: click_next
+      next_page_selector: .btn-next
+      page_size: 12
+      start: 1
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 4
+    extract:
+      type: css_selector
+      items_path: .el-table__body tr
+      fields:
+        id: '@data-id'
+        title: .title-col
+        date: .date-col
+    detail:
+      type: css_selector
+      content_field: .detail-content
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  xmzyjy:
+    name: 厦门市公共资源交易
+    site_url: https://xmzyjy.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+        Content-Type: application/json
+        Referer: https://xmzyjy.cn/transactionInfo.html
+        Origin: https://xmzyjy.cn
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: https://xmzyjy.cn/prod-api/api/trade/purchase/purchaseList
+      method: POST
+      body_type: json
+      params:
+        dataType: quali_inquery_ann
+    sections:
+    - label: gcjs_gg
+      name: 工程建设-资格预审
+      listing:
+        url: https://xmzyjy.cn/prod-api/api/trade/project/quaInqueryAnnList
+        method: POST
+        body_type: json
+        params:
+          isXmStrack: ''
+      extract:
+        type: json_path
+        items_path: data
+        fields:
+          id: pcodeTprojectUniqueId
+          title: tenderProjectName
+          date: noticeSendTime
+          url: id
+          news_type: tenderTypeName
+      detail:
+        type: api_request
+        method: GET
+        url: https://xmzyjy.cn/prod-api/api/trade/project/getProTenderProjectDetail?uniqueId={pcodeTprojectUniqueId}
+        content_field: data.1.detailFileObjList.0.content
+    - label: zfcg_cggg
+      name: 政府采购-采购公告
+      listing:
+        url: https://xmzyjy.cn/prod-api/api/trade/purchase/purchaseList
+        method: POST
+        body_type: json
+        params:
+          dataType: quali_inquery_ann
+      extract:
+        type: json_path
+        items_path: data
+        fields:
+          id: noticeId
+          title: projname
+          date: publishtime
+          url: id
+      detail:
+        type: api_request
+        method: GET
+        url: https://xmzyjy.cn/prod-api/api/trade/purchase/getInfo?projId={projid}
+        content_field: data.0.detailFileObjList.0.content
+    - label: zfcg_jggg
+      name: 政府采购-结果公告
+      listing:
+        url: https://xmzyjy.cn/prod-api/api/trade/purchase/purchaseList
+        method: POST
+        body_type: json
+        params:
+          dataType: bid_deal_announce
+      extract:
+        type: json_path
+        items_path: data
+        fields:
+          id: noticeId
+          title: projname
+          date: publishtime
+          url: id
+      detail:
+        type: api_request
+        method: GET
+        url: https://xmzyjy.cn/prod-api/api/trade/purchase/getInfo?projId={projid}
+        content_field: data.0.detailFileObjList.0.content
+    - label: tdky_crgg
+      name: 土地矿业-出让公告
+      listing:
+        url: https://xmzyjy.cn/prod-api/api/trade/land/dealBehaviorInfoList
+        method: POST
+        body_type: json
+      extract:
+        type: json_path
+        items_path: data
+        fields:
+          id: guid
+          title: announcementTitle
+          date: publishingTime
+          url: id
+    pagination:
+      type: page_no
+      page_param: pageNum
+      page_size_param: pageSize
+      page_size: 20
+      start: 1
+      max_pages: 5
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.5
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: data
+      fields:
+        id: pcodeTprojectUniqueId
+        title: tenderProjectName
+        date: noticeSendTime
+        url: id
+        news_type: tenderTypeName
+    detail:
+      type: inline
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  xmzyjy_zcfg:
+    name: 厦门市公共资源交易-政策法规
+    site_url: https://zyjy.as.xm.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      verify_ssl: true
+      timeout: 30
+    listing:
+      url: https://zyjy.as.xm.gov.cn/zwgk/zcfg/index.htm
+      method: GET
+    pagination:
+      type: html_regex
+      page_param: '{{ page }}'
+      page_pattern: /zwgk/zcfg/index_{}.htm
+      page_size: 10
+      start: 1
+    anti_crawler:
+      delay_min: 1.5
+      delay_max: 3.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: li
+      fields:
+        id: a@href
+        title: a
+        date: span
+    detail:
+      type: css_selector
+      content_field: .TRS_Editor
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  zjk_zffg:
+    name: 福建省综合评标专家库-政府法规
+    site_url: https://zjk.ggzyfw.fujian.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: https://zjk.ggzyfw.fujian.gov.cn/zffg/notice.html
+      method: GET
+    pagination:
+      type: html_regex
+      page_pattern: /zffg/{}.html
+      page_size: 10
+      start: 2
+      max_pages: 10
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: li
+      fields:
+        url: a@href
+        title: a
+    detail:
+      type: css_selector
+      content_field: .detail-content
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  zjk_notice:
+    name: 浙江政府采购-公告
+    site_url: https://zfcg.czt.zj.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: https://zfcg.czt.zj.gov.cn/notice/
+      method: GET
+    pagination:
+      type: html_regex
+      page_size: 20
+      start: 1
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: ul.list li
+      fields:
+        id: a@href
+        title: a
+        date: span.date
+    detail:
+      type: css_selector
+      content_field: .content
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  ggzy_policy:
+    name: 全国公共资源交易-政策法规
+    site_url: https://www.ggzy.gov.cn/
+    enabled: true
+    detect_interval: 120
+    transport:
+      type: rest_api
+      engine: requests
+      session_init_url: https://www.ggzy.gov.cn/SIC/web/policyFileList.po
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+        Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+        Accept-Language: zh-CN,zh;q=0.9,en;q=0.8
+        Cache-Control: no-cache
+      verify_ssl: true
+      timeout: 60
+    listing:
+      url: https://www.ggzy.gov.cn/SIC/web/policyFileList.po
+      method: GET
+    pagination:
+      type: page_no
+      page_param: pageNum
+      page_size: 20
+      start: 1
+    anti_crawler:
+      delay_min: 1.5
+      delay_max: 3.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: ul#contextId li
+      fields:
+        id: a@href
+        title: a
+        date: span
+    detail:
+      type: css_selector
+      content_field: .article_content
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  ggzy_deal:
+    name: 全国公共资源交易-中标公告
+    site_url: https://www.ggzy.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      session_init_url: https://www.ggzy.gov.cn/deal/dealList.html
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+        Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+        Accept-Language: zh-CN,zh;q=0.9,en;q=0.8
+        Cache-Control: no-cache
+        Referer: https://www.ggzy.gov.cn/deal/dealList.html
+      verify_ssl: true
+      timeout: 90
+    listing:
+      url: https://www.ggzy.gov.cn/information/pubTradingInfo/getTradList
+      method: POST
+      body_type: form
+      params:
+        SOURCE_TYPE: '1'
+        DEAL_TIME: '01'
+    pagination:
+      type: page_no
+      page_param: PAGENUMBER
+      page_size: 20
+      start: 1
+      max_pages: 15
+      total_field: data.total
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 4
+    extract:
+      type: json_path
+      items_path: records
+      fields:
+        id: id
+        title: title
+        date: publishTime
+    detail:
+      type: css_selector
+      content_field: .detail
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  zycg_notice:
+    name: 政采云-公告
+    site_url: https://www.zycg.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      session_init_url: https://www.zycg.gov.cn/freecms/site/zygjjgzfcgzx/zdfg/index.html
+      verify_ssl: true
+      timeout: 30
+    listing:
+      url: https://www.zycg.gov.cn/freecms/rest/v1/notice/selectInfoMore.do
+      method: GET
+      body_type: query
+      params:
+        siteId: 6f5243ee-d4d9-4b69-abbd-1e40576ccd7d
+        channel: d0e7c5f4-b93e-4478-b7fe-61110bb47fd5
+        noticeType: 57,1,2,3,61
+        implementWay: '1'
+        currPage: '{{ page }}'
+        pageSize: '{{ page_size }}'
+    pagination:
+      type: page_no
+      page_param: currPage
+      page_size_param: pageSize
+      page_size: 20
+      start: 1
+      total_field: total
+      items_field: rows
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: rows
+      fields:
+        id: id
+        title: title
+        date: publishDate
+    detail:
+      type: css_selector
+      content_field: .content
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+    sections:
+    - label: ddwtxm
+      listing:
+        params:
+          channel: d0e7c5f4-b93e-4478-b7fe-61110bb47fd5
+          noticeType: 57,1,2,3,61
+          implementWay: '1'
+    - label: dzmc
+      listing:
+        params:
+          channel: d0e7c5f4-b93e-4478-b7fe-61110bb47fd5
+          noticeType: 59,2,61,3,31,32
+          implementWay: '1'
+    - label: xj
+      listing:
+        params:
+          channel: d0e7c5f4-b93e-4478-b7fe-61110bb47fd5
+          noticeType: 59,2,61,40
+          implementWay: '21'
+    - label: gcjz
+      listing:
+        params:
+          channel: 2d8d9acf-8c1c-4d29-952d-e31927f4c5c7,31d01f79-9245-42cf-8d1a-fd1e8f414afc,614fe3a4-d550-4316-a126-7c909291415f
+          noticeType: 78,79,80
+          implementWay: '7'
+  zycg_zdfg:
+    name: 政采云-制度法规
+    site_url: https://www.zycg.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      verify_ssl: true
+      timeout: 30
+    listing:
+      url: https://www.zycg.gov.cn/freecms/site/zygjjgzfcgzx/zdfg/index.html
+      method: GET
+    pagination:
+      type: html_regex
+      page_pattern: /freecms/site/zygjjgzfcgzx/zdfg/index_{}.html
+      page_size: 20
+      start: 2
+      max_pages: 50
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: ul.list li
+      fields:
+        id: a@href
+        title: a
+        date: span.date
+    detail:
+      type: css_selector
+      content_field: .content
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  hwdms_policy:
+    name: 交通运输行业标准-政策法规
+    site_url: https://hwdms.mot.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
+          like Gecko) Chrome/120.0.0.0 Safari/537.36
+        X-Requested-With: XMLHttpRequest
+        Content-Type: application/x-www-form-urlencoded
+      verify_ssl: false
+      timeout: 60
+      session_init_url: https://hwdms.mot.gov.cn/BMWebSite/Policy/index.do
+    listing:
+      url: https://hwdms.mot.gov.cn/BMWebSite/Policy/getPolicyList.do
+      method: POST
+      body_type: form
+      params:
+        page: '{{ page }}'
+        rows: '15'
+        type: '0'
+        name: ''
+    pagination:
+      type: page_no
+      page_param: page
+      page_size_param: rows
+      page_size: 15
+      start: 1
+      max_pages: 50
+      total_field: pageObj.countSize
+      items_field: rows
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.5
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: rows
+      fields:
+        id: id
+        title: name
+        date: dispatchTime
+        content_html: content
+    detail:
+      type: inline
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  fjtba:
+    name: 福建省招标投标协会-政策法规
+    site_url: http://www.fjtba.com/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: urllib
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
+          like Gecko) Chrome/120.0.0.0 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded
+        X-Requested-With: XMLHttpRequest
+        Referer: http://www.fjtba.com/PortalPage/ISDInfo.aspx?type=2
+      verify_ssl: false
+      timeout: 30
+      session_init_url: http://www.fjtba.com/PortalPage/ISDInfo.aspx?type=2
+    listing:
+      url: http://www.fjtba.com/PortalPage/AjaxHandler/DataHandler.ashx
+      method: POST
+      body_type: form
+      params:
+        OPtype: GetArticleList
+        type: '2'
+        pageNo: '{{ page }}'
+        pageSize: '10'
+    pagination:
+      type: page_no
+      page_param: pageNo
+      page_size_param: pageSize
+      page_size: 10
+      start: 1
+      max_pages: 100
+    anti_crawler:
+      delay_min: 0.2
+      delay_max: 0.8
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: ds.ds
+      fields:
+        id: ID
+        title: TITLE
+        date: TM
+        content_html: CONTENTS
+    detail:
+      type: inline
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  fjtba_wfwg:
+    name: 福建省招标投标协会-违法违规公告
+    site_url: http://www.fjtba.com/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: urllib
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
+          like Gecko) Chrome/120.0.0.0 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded
+        X-Requested-With: XMLHttpRequest
+        Referer: http://www.fjtba.com/PortalPage/ISDInfo.aspx?type=3
+      verify_ssl: false
+      timeout: 30
+      session_init_url: http://www.fjtba.com/PortalPage/ISDInfo.aspx?type=3
+    listing:
+      url: http://www.fjtba.com/PortalPage/AjaxHandler/DataHandler.ashx
+      method: POST
+      body_type: form
+      params:
+        OPtype: GetArticleList
+        type: '3'
+        pageNo: '{{ page }}'
+        pageSize: '10'
+    pagination:
+      type: page_no
+      page_param: pageNo
+      page_size_param: pageSize
+      page_size: 10
+      start: 1
+      max_pages: 100
+    anti_crawler:
+      delay_min: 0.2
+      delay_max: 0.8
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: ds.ds
+      fields:
+        id: ID
+        title: TITLE
+        date: TM
+        content_html: CONTENTS
+    detail:
+      type: inline
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  fjtba_pxzx:
+    name: 福建省招标投标协会-培训与咨询
+    site_url: http://www.fjtba.com/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: urllib
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
+          like Gecko) Chrome/120.0.0.0 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded
+        X-Requested-With: XMLHttpRequest
+        Referer: http://www.fjtba.com/PortalPage/ISDInfo.aspx?type=7
+      verify_ssl: false
+      timeout: 30
+      session_init_url: http://www.fjtba.com/PortalPage/ISDInfo.aspx?type=7
+    listing:
+      url: http://www.fjtba.com/PortalPage/AjaxHandler/DataHandler.ashx
+      method: POST
+      body_type: form
+      params:
+        OPtype: GetArticleList
+        type: '7'
+        pageNo: '{{ page }}'
+        pageSize: '10'
+    pagination:
+      type: page_no
+      page_param: pageNo
+      page_size_param: pageSize
+      page_size: 10
+      start: 1
+      max_pages: 100
+    anti_crawler:
+      delay_min: 0.2
+      delay_max: 0.8
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: ds.ds
+      fields:
+        id: ID
+        title: TITLE
+        date: TM
+        content_html: CONTENTS
+    detail:
+      type: inline
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  fjcia_edu:
+    name: 福建省建筑业协会-教育培训
+    site_url: http://www.fjcia.org/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
+          like Gecko) Chrome/120.0.0.0 Safari/537.36
+        Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8
+        Accept-Language: zh-CN,zh;q=0.9,en;q=0.8
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: http://www.fjcia.org/education
+      method: GET
+    pagination:
+      type: single_page
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: nuxt_ssr
+      items_path: infolist.list
+      fields:
+        id: newsCode
+        title: newsTitle
+        date: publishTimeWeb
+        content_html: newsContent
+        content_pdf: contentPdf
+        content_word: contentWord
+    detail:
+      type: inline
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  gcjyzx_jyxx:
+    name: 漳州工程交易中心-交易信息
+    site_url: https://gcjyzx.zhangzhou.gov.cn
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+        Referer: https://gcjyzx.zhangzhou.gov.cn/gcxx/jyxx.html
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: https://gcjyzx.zhangzhou.gov.cn/EpointWebBuilder/rest/secaction/getSecInfoListYzm
+      method: POST
+      body_type: form
+      params:
+        siteGuid: 7eb5f7f1-9041-43ad-8e13-8fcb82ea831a
+        categoryNum: ''
+        pageIndex: '{{ page }}'
+        pageSize: '{{ page_size }}'
+        startdate: '2026-05-08'
+        enddate: '2026-06-07'
+        projectaddress: ''
+        bdsecondtype: ''
+    pagination:
+      type: page_no
+      page_param: pageIndex
+      page_size_param: pageSize
+      page_size: 20
+      start: 0
+      items_field: custom.infodata
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.5
+      max_retries: 4
+    extract:
+      type: json_path
+      items_path: custom.infodata
+      fields:
+        id: infoid
+        title: title
+        url: infourl
+        date: infodate
+    detail:
+      type: css_selector
+      content_field: '#infoContentM'
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  gcjyzx_zcfg:
+    name: 漳州工程交易中心-政策法规
+    site_url: https://gcjyzx.zhangzhou.gov.cn
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: https://gcjyzx.zhangzhou.gov.cn/zcfg/moreinfo.html
+      method: GET
+    pagination:
+      type: html_regex
+      page_param: page
+      page_size: 20
+      start: 1
+      page_pattern: /zcfg/{}.html
+      first_page_no_suffix: true
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: li.list-item
+      fields:
+        id: a@href
+        url: a@href
+        title: p.name
+        date: span.date
+    detail:
+      type: css_selector
+      content_field: .content-main
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  gcjyzx_wgtb:
+    name: 漳州工程交易中心-违规通报
+    site_url: https://gcjyzx.zhangzhou.gov.cn
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: https://gcjyzx.zhangzhou.gov.cn/wgtb/moreinfo.html
+      method: GET
+    pagination:
+      type: single_page
+      page_size: 20
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: li.list-item
+      fields:
+        id: a@href
+        url: a@href
+        title: p.name
+        date: span.date
+    detail:
+      type: css_selector
+      content_field: .content-main
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  ggzyfw_fujian:
+    name: 福建省公共资源交易平台-新闻通知
+    site_url: https://ggzyfw.fujian.gov.cn/
+    enabled: true
+    transport:
+      type: encrypted_api
+      engine: playwright_http
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+        Content-Type: application/json;charset=UTF-8
+        Origin: https://ggzyfw.fujian.gov.cn
+        Referer: https://ggzyfw.fujian.gov.cn/
+      encryption:
+        algorithm: aes_256_cbc
+        key: EB444973714E4A40876CE66BE45D5930
+        iv: B5A8904209931867
+        key_encoding: utf8
+        field: Data
+        encoding: utf-8
+      signing:
+        algorithm: md5
+        secret: B3978D054A72A7002063637CCDF6B2E5
+        header_name: portal-sign
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: https://ggzyfw.fj.gov.cn/FwPortalApi/Article/PageList
+      method: POST
+      body_type: json
+    pagination:
+      type: page_no
+      page_param: pageNo
+      page_size_param: pageSize
+      page_size: 50
+      start: 1
+      total_field: total
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.5
+      max_retries: 4
+      exponential_backoff: true
+    extract:
+      type: json_path
+      items_path: rows
+      fields:
+        id: ID
+        title: TITLE
+        date: TM
+        type: TYPE
+    detail:
+      type: api_request
+      url: https://ggzyfw.fj.gov.cn/FwPortalApi/Article/Detail
+      method: POST
+      body_type: json
+      content_field: CONTENTS
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+    sections:
+    - label: xwdt
+      listing:
+        params:
+          type: '11'
+    - label: tzgg
+      listing:
+        params:
+          type: '12'
+    - label: hydt
+      listing:
+        params:
+          type: '13'
+  ggzyfw_policies:
+    name: 福建省公共资源交易平台-政策法规
+    site_url: https://ggzyfw.fujian.gov.cn/
+    enabled: true
+    transport:
+      type: encrypted_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+        Content-Type: application/json;charset=UTF-8
+        Origin: https://ggzyfw.fujian.gov.cn
+        Referer: https://ggzyfw.fujian.gov.cn/
+      encryption:
+        algorithm: aes_256_cbc
+        key: EB444973714E4A40876CE66BE45D5930
+        iv: B5A8904209931867
+        key_encoding: utf8
+        field: Data
+        encoding: utf-8
+      signing:
+        algorithm: md5
+        secret: B3978D054A72A7002063637CCDF6B2E5
+        header_name: portal-sign
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: https://ggzyfw.fj.gov.cn/FwPortalApi/Article/PageList
+      method: POST
+      body_type: json
+      params:
+        type: 92,93,94,96,97,98,922
+    pagination:
+      type: page_no
+      page_param: pageNo
+      page_size_param: pageSize
+      page_size: 20
+      start: 1
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.5
+      max_retries: 4
+      exponential_backoff: true
+    extract:
+      type: json_path
+      items_path: rows
+      fields:
+        id: ID
+        title: TITLE
+        date: TM
+    detail:
+      type: api_request
+      url: https://ggzyfw.fj.gov.cn/FwPortalApi/Article/Detail
+      method: POST
+      body_type: json
+      content_field: CONTENTS
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  ggzyfw_business:
+    name: 福建省公共资源交易平台-交易信息
+    site_url: https://ggzyfw.fujian.gov.cn/
+    enabled: true
+    transport:
+      type: encrypted_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+        Content-Type: application/json;charset=UTF-8
+        Origin: https://ggzyfw.fujian.gov.cn
+        Referer: https://ggzyfw.fujian.gov.cn/
+      encryption:
+        algorithm: aes_256_cbc
+        key: EB444973714E4A40876CE66BE45D5930
+        iv: B5A8904209931867
+        key_encoding: utf8
+        field: Data
+        encoding: utf-8
+      signing:
+        algorithm: md5
+        secret: B3978D054A72A7002063637CCDF6B2E5
+        header_name: portal-sign
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: https://ggzyfw.fj.gov.cn/FwPortalApi/Trade/TradeInfo
+      method: POST
+      body_type: json
+      params:
+        AREACODE: ''
+        M_PROJECT_TYPE: ''
+        KIND: GCJS
+        GGTYPE: ''
+        PROTYPE: ''
+        BeginTime: '2026-05-08'
+        EndTime: '2026-06-07'
+        NAME: ''
+    pagination:
+      type: page_no
+      page_param: pageNo
+      page_size_param: pageSize
+      page_size: 20
+      start: 1
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.5
+      max_retries: 4
+      exponential_backoff: true
+    extract:
+      type: json_path
+      items_path: Table
+      fields:
+        id: M_ID
+        title: TITLE
+        date: TM
+        kind: KIND
+    detail:
+      type: api_request
+      url: https://ggzyfw.fj.gov.cn/FwPortalApi/Trade/TradeInfoContent
+      method: POST
+      body_type: json
+      content_field: Contents
+      params:
+        type: '1'
+        m_id: '{M_ID}'
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  ggzyfw_fujian_business:
+    name: 福建省公共资源交易平台-交易信息(商机)
+    site_url: https://ggzyfw.fujian.gov.cn/
+    enabled: true
+    transport:
+      type: encrypted_api
+      engine: playwright_http
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+        Content-Type: application/json;charset=UTF-8
+        Origin: https://ggzyfw.fujian.gov.cn
+        Referer: https://ggzyfw.fujian.gov.cn/
+      encryption:
+        algorithm: aes_256_cbc
+        key: EB444973714E4A40876CE66BE45D5930
+        iv: B5A8904209931867
+        key_encoding: utf8
+        field: Data
+        encoding: utf-8
+      signing:
+        algorithm: md5
+        secret: B3978D054A72A7002063637CCDF6B2E5
+        header_name: portal-sign
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: https://ggzyfw.fj.gov.cn/FwPortalApi/Trade/TradeInfo
+      method: POST
+      body_type: json
+    pagination:
+      type: page_no
+      page_param: pageNo
+      page_size_param: pageSize
+      page_size: 20
+      start: 1
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.5
+      max_retries: 4
+      exponential_backoff: true
+    extract:
+      type: json_path
+      items_path: Table
+      fields:
+        id: M_ID
+        title: TITLE
+        date: TM
+        kind: KIND
+    detail:
+      type: css_selector
+      content_field: .detail_content
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  ggzyjd:
+    name: 福建省工程领域招投标在线监管平台
+    site_url: https://ggzyjd.fj.gov.cn/
+    enabled: true
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: false
+      timeout: 60
+    listing:
+      url: https://ggzyjd.fj.gov.cn/dissentResult/list/
+      method: GET
+    sections:
+    - label: dissent
+      name: 异议结果
+      listing:
+        url: https://ggzyjd.fj.gov.cn/dissentResult/list/
+        method: GET
+    - label: case
+      name: 有关案例
+      listing:
+        url: https://ggzyjd.fj.gov.cn/case/index/
+        method: GET
+    pagination:
+      type: click_next
+      next_page_selector: .el-pagination .btn-next:not(.disabled)
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 4
+    extract:
+      type: css_selector
+      items_path: .el-table__body tr
+    detail:
+      type: css_selector
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  ggzyjd_policies:
+    name: 福建省公共资源交易监督平台-政策法规
+    site_url: https://ggzyjd.fj.gov.cn/
+    enabled: true
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: false
+      timeout: 60
+    listing:
+      url: https://ggzyjd.fj.gov.cn/policies/list/
+      method: GET
+    sections:
+    - label: national
+      name: 国家政策法规
+    - label: fujian
+      name: 福建省政策法规
+    - label: interpretation
+      name: 政策解读
+    - label: interface
+      name: 接口规范
+    pagination:
+      type: click_next
+      next_page_selector: .el-pagination .btn-next:not(.disabled)
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 4
+    extract:
+      type: css_selector
+      items_path: div.list-list a.title
+    detail:
+      type: css_selector
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  easy_prt_bidding:
+    name: 工采通-竞价公告
+    site_url: https://easy-prt.com/
+    enabled: true
+    detect_interval: 60
+    transport:
+      type: encrypted_api
+      engine: urllib
+      headers:
+        Content-Type: application/json
+        X-Platform-Id: gct
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      encryption:
+        algorithm: sm4_ecb
+        key: 90bdd291004611ef87fc52540023e781
+        key_encoding: hex
+        field: data
+        encoding: utf-8
+      verify_ssl: true
+      timeout: 30
+    anti_crawler:
+      delay_min: 1.5
+      delay_max: 3.0
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: data
+      fields:
+        id: id
+        title: projectName
+        date: createTime
+    detail:
+      type: api_request
+      content_field: content
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+    sections:
+    - label: bidprice
+      listing:
+        url: https://easy-prt.com/gykjbid/gykj-bidding/bidding/portal/project/list
+        method: POST
+        body_type: json
+        params:
+          pageNo: '{{ page }}'
+          pageSize: '{{ page_size }}'
+      pagination:
+        type: page_no
+        page_param: pageNo
+        page_size_param: pageSize
+        page_size: 20
+        start: 1
+    - label: enquiry
+      listing:
+        url: https://easy-prt.com/gykjbid/gykj-bid/bid/portal/getProjectList
+        method: POST
+        body_type: json
+        params:
+          pageNo: '{{ page }}'
+          pageSize: '{{ page_size }}'
+          bidStatus: '02'
+      pagination:
+        type: page_no
+        page_param: pageNo
+        page_size_param: pageSize
+        page_size: 20
+        start: 1
+  easy_prt_policy:
+    name: 工采通-政策法规
+    site_url: https://easy-prt.com/
+    enabled: true
+    transport:
+      type: encrypted_api
+      engine: urllib
+      headers:
+        Content-Type: application/json
+        X-Platform-Id: gct
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      encryption:
+        algorithm: sm4_ecb
+        key: 90bdd291004611ef87fc52540023e781
+        key_encoding: hex
+        field: data
+        encoding: utf-8
+      verify_ssl: true
+      timeout: 30
+    listing:
+      url: https://easy-prt.com/gykjbid/gykj-bidding/bidding/portal/policy/list
+      method: POST
+      body_type: json
+      params:
+        pageNo: '{{ page }}'
+        pageSize: '{{ page_size }}'
+    pagination:
+      type: page_no
+      page_param: pageNo
+      page_size_param: pageSize
+      page_size: 20
+      start: 1
+    anti_crawler:
+      delay_min: 1.5
+      delay_max: 3.0
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: data
+      fields:
+        id: id
+        title: title
+        date: publishDate
+    detail:
+      type: api_request
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  easy_prt_trading:
+    name: 工采通-交易公告
+    site_url: https://easy-prt.com/
+    enabled: true
+    transport:
+      type: encrypted_api
+      engine: urllib
+      headers:
+        Content-Type: application/json
+        X-Platform-Id: gct
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      encryption:
+        algorithm: sm4_ecb
+        key: 90bdd291004611ef87fc52540023e781
+        key_encoding: hex
+        field: data
+        encoding: utf-8
+      verify_ssl: true
+      timeout: 30
+    listing:
+      url: https://easy-prt.com/gykjbid/gykj-bidding/bidding/portal/trading/list
+      method: POST
+      body_type: json
+      params:
+        pageNo: '{{ page }}'
+        pageSize: '{{ page_size }}'
+    pagination:
+      type: page_no
+      page_param: pageNo
+      page_size_param: pageSize
+      page_size: 20
+      start: 1
+    anti_crawler:
+      delay_min: 1.5
+      delay_max: 3.0
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: data
+      fields:
+        id: id
+        title: title
+        date: publishDate
+    detail:
+      type: api_request
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  zjfw:
+    name: 漳州工程项目中介服务平台
+    site_url: http://zjfw.zhangzhou.gov.cn
+    enabled: false
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+        Content-Type: application/json;charset=UTF-8
+        Accept: application/json, text/plain, */*
+      verify_ssl: false
+      timeout: 60
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: data
+      fields:
+        id: ID
+        title: TITLE
+        date: DISPLAYTIME
+    detail:
+      type: api_request
+      content_field: CONTENT
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+    sections:
+    - label: tzgg
+      listing:
+        url: http://zjfw.zhangzhou.gov.cn/imng/api-v2
+        method: POST
+        body_type: json
+        params:
+          action: fujian.zhangzhougaoxin.app.icity.policy.PolicyCmd
+          method: getList
+          start: '{{ offset }}'
+          limit: '{{ page_size }}'
+      pagination:
+        type: offset
+        page_param: start
+        page_size_param: limit
+        page_size: 20
+        start: 0
+    - label: cggg
+      listing:
+        url: http://zjfw.zhangzhou.gov.cn/imng/api-v2
+        method: POST
+        body_type: json
+        params:
+          action: fujian.zhangzhougaoxin.app.icity.browse.bidNotice.BidNoticeCmd
+          method: queryBidNoticeList
+          notice_type: '1'
+          reg_code: '350600000000'
+      pagination:
+        type: offset
+        page_param: start
+        page_size_param: limit
+        page_size: 20
+        start: 0
+    - label: zxgg
+      listing:
+        url: http://zjfw.zhangzhou.gov.cn/imng/api-v2
+        method: POST
+        body_type: json
+        params:
+          action: fujian.zhangzhougaoxin.app.icity.browse.dealInfo.DealInfoCmd
+          method: queryDealInfoNoticeList
+      pagination:
+        type: offset
+        page_param: start
+        page_size_param: limit
+        page_size: 20
+        start: 0
+    - label: zzgg
+      listing:
+        url: http://zjfw.zhangzhou.gov.cn/imng/api-v2
+        method: POST
+        body_type: json
+        params:
+          action: fujian.zhangzhou.app.icity.notificationAnnounce.NotificationAnnounceCmd
+          method: getNotificationAnnounceList
+      pagination:
+        type: offset
+        page_param: start
+        page_size_param: limit
+        page_size: 20
+        start: 0
+    - label: zcwj
+      listing:
+        url: http://zjfw.zhangzhou.gov.cn/imng/api-v2
+        method: POST
+        body_type: json
+        params:
+          action: fujian.zhangzhougaoxin.app.icity.policy.PolicyCmd
+          method: getList
+          type: ZCWJ
+      pagination:
+        type: offset
+        page_param: start
+        page_size_param: limit
+        page_size: 20
+        start: 0
+  zjfw_score_sort:
+    name: 漳州工程项目中介服务平台-评分排序
+    site_url: http://zjfw.zhangzhou.gov.cn
+    enabled: true
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: false
+      timeout: 60
+    listing:
+      url: http://zjfw.zhangzhou.gov.cn/imng/api-v2
+      method: POST
+      body_type: json
+      params:
+        action: fujian.zhangzhougaoxin.app.icity.service.ScoreSortCmd
+        method: getScoreSortList
+    pagination:
+      type: offset
+      page_param: start
+      page_size_param: limit
+      page_size: 20
+      start: 0
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 4
+    extract:
+      type: json_path
+      items_path: data
+      fields:
+        id: ID
+        title: TITLE
+        date: DATE
+    detail:
+      type: inline
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  zfcg:
+    name: 福建省政府采购网
+    site_url: https://zfcg.czt.fujian.gov.cn
+    enabled: true
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      vue_http: true
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: false
+      timeout: 90
+    listing:
+      url: https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/selectInfoForIndex
+      method: GET
+      params:
+        currPage: '{{ page }}'
+        pageSize: '{{ page_size }}'
+        siteId: d36a6e8b-4363-4b52-a00b-79ca47033923
+    pagination:
+      type: page_no
+      page_param: currPage
+      page_size_param: pageSize
+      page_size: 20
+      start: 1
+      max_pages: 100
+      items_field: data
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 5.0
+      max_retries: 4
+      exponential_backoff: true
+    extract:
+      type: json_path
+      items_path: data
+      fields:
+        id: id
+        title: title
+        date: releaseTime
+    detail:
+      type: api_request
+      url: https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/getInfoById
+      content_field: data.content
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  zfcg_zcfg:
+    name: 福建省政府采购网-政策法规
+    site_url: https://zfcg.czt.fujian.gov.cn/
+    enabled: true
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      vue_http: true
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: false
+      timeout: 90
+    listing:
+      url: https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/selectInfoForIndex
+      method: GET
+      params:
+        currPage: '{{ page }}'
+        pageSize: '{{ page_size }}'
+        channel: 268f9bf1-c144-4526-b3cd-0ace493d31d8
+        siteId: d36a6e8b-4363-4b52-a00b-79ca47033923
+    pagination:
+      type: page_no
+      page_param: currPage
+      page_size_param: pageSize
+      page_size: 20
+      start: 1
+      max_pages: 100
+      items_field: data
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: data
+      fields:
+        id: id
+        title: title
+        date: releaseTime
+    detail:
+      type: api_request
+      url: https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/getInfoById
+      content_field: data.content
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  zfcg_jdgl:
+    name: 福建省政府采购网-监督管理
+    site_url: https://zfcg.czt.fujian.gov.cn/
+    enabled: true
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      vue_http: true
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: false
+      timeout: 90
+    listing:
+      url: https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/selectInfoMoreChannel
+      method: GET
+      params:
+        currPage: '{{ page }}'
+        pageSize: '{{ page_size }}'
+        channel: 47bbf186-5544-4537-bef5-158d0c0923fa
+        siteId: d36a6e8b-4363-4b52-a00b-79ca47033923
+    pagination:
+      type: page_no
+      page_param: currPage
+      page_size_param: pageSize
+      page_size: 20
+      start: 1
+      max_pages: 200
+      items_field: data
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: data
+      fields:
+        id: id
+        title: title
+        date: releaseTime
+    detail:
+      type: api_request
+      url: https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/getInfoById
+      content_field: data.content
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  zfcg_xmgg:
+    name: 福建省政府采购网-公告信息
+    site_url: https://zfcg.czt.fujian.gov.cn/
+    enabled: true
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      vue_http: true
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      captcha:
+        type: ocr
+        input_selector: '#captchaInput'
+        image_selector: '#captchaImage'
+      verify_ssl: false
+      timeout: 90
+    listing:
+      url: https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/selectInfoForIndex
+      method: GET
+      params:
+        currPage: '{{ page }}'
+        pageSize: '{{ page_size }}'
+        siteId: d36a6e8b-4363-4b52-a00b-79ca47033923
+        channel: f582600e-065d-4f35-8966-48a33fa93863
+        noticeType: '00101'
+        regionCode: '350001'
+        cityOrArea: ''
+        purchaseManner: ''
+        openTenderCode: ''
+        purchaser: ''
+        agency: ''
+        purchaseNature: ''
+        selectTimeName: ''
+        operationStartTime: ''
+        operationEndTime: ''
+    pagination:
+      type: page_no
+      page_param: currPage
+      page_size_param: pageSize
+      page_size: 20
+      start: 1
+      max_pages: 100
+      items_field: data
+      total_field: data.total
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: data
+      fields:
+        id: id
+        title: title
+        date: releaseTime
+    detail:
+      type: api_request
+      url: https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/getInfoById
+      params:
+        id: '{{ id }}'
+        planId: '{{ planId }}'
+        channel: f582600e-065d-4f35-8966-48a33fa93863
+        siteId: d36a6e8b-4363-4b52-a00b-79ca47033923
+      content_field: data.content
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  enjoy5191:
+    name: 中招联合招标采购平台-招标范本
+    site_url: https://www.enjoy5191.com/
+    enabled: true
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: true
+      timeout: 90
+    listing:
+      url: https://www.enjoy5191.com/views/public/news.html?pid=067CF385-AD64-43FD-AFC4-D1D3FB41D726&typeid=6C4073D7-8C93-4FAC-9E3D-937D975A5BC0
+      method: GET
+    pagination:
+      type: click_next
+      next_page_selector: .pagination .next:not(.disabled)
+      page_size: 20
+      start: 1
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: data
+      fields:
+        id: id
+        title: title
+        date: publishDate
+    detail:
+      type: css_selector
+      content_field: .article_content
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  enjoy5191_policy:
+    name: 中招联合招标采购平台-政策法规
+    site_url: https://www.enjoy5191.com/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+        X-Requested-With: XMLHttpRequest
+        Content-Type: application/json
+      verify_ssl: true
+      timeout: 30
+    listing:
+      url: https://www.enjoy5191.com/api/GetDataHandler.ashx
+      method: POST
+      body_type: json
+      params:
+        method: Web.GetNewsList
+        type: 2B866807-C73A-4934-8740-6569E3CD5926
+        page: '{{ page }}'
+        rows: '{{ page_size }}'
+    pagination:
+      type: page_no
+      page_param: page
+      page_size_param: rows
+      page_size: 20
+      start: 1
+      items_field: data
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: data
+      fields:
+        id: id
+        title: title
+        date: publishDate
+    detail:
+      type: api_request
+      url: https://www.enjoy5191.com/api/GetDataHandler.ashx
+      method: POST
+      body_type: json
+      params:
+        method: Web.GetTopOneArticle
+        id: '{{ id }}'
+      content_field: data
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  enjoy5191_trade:
+    name: 中招联合招标采购平台-交易公告
+    site_url: https://www.enjoy5191.com/
+    enabled: true
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: true
+      timeout: 90
+    listing:
+      url: https://www.enjoy5191.com/views/public/news.html?pid=067CF385-AD64-43FD-AFC4-D1D3FB41D726&typeid=BIDDING
+      method: GET
+    pagination:
+      type: click_next
+      next_page_selector: .pagination .next:not(.disabled)
+      page_size: 20
+      start: 1
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: data
+      fields:
+        id: id
+        title: title
+        date: publishDate
+    detail:
+      type: css_selector
+      content_field: .article_content
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  ggzyfw_guide:
+    name: 福建省公共资源交易平台-办事指南
+    site_url: https://ggzyfw.fujian.gov.cn/
+    enabled: true
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: false
+      timeout: 90
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: .guide_list li, .list_item
+      fields:
+        id: a@href
+        title: a
+        date: span.date
+    detail:
+      type: css_selector
+      content_field: .guide_content
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+    sections:
+    - label: guide_fanben
+      listing:
+        url: https://ggzyfw.fujian.gov.cn/guide/index?type=53
+        method: GET
+      pagination:
+        type: click_next
+        next_page_selector: .pagination .next:not(.disabled)
+    - label: guide_guifan
+      listing:
+        url: https://ggzyfw.fujian.gov.cn/guide/index?type=54
+        method: GET
+      pagination:
+        type: click_next
+        next_page_selector: .pagination .next:not(.disabled)
+    - label: guide_peixun
+      listing:
+        url: https://ggzyfw.fujian.gov.cn/guide/index?type=59
+        method: GET
+      pagination:
+        type: click_next
+        next_page_selector: .pagination .next:not(.disabled)
+    - label: policies
+      listing:
+        url: https://ggzyfw.fujian.gov.cn/policies/list?type=92,93,94,96,97,98,922
+        method: GET
+      pagination:
+        type: click_next
+        next_page_selector: .pagination .next:not(.disabled)
+  ggzyfw_guide_trade:
+    name: 福建省公共资源交易平台-交易流程
+    site_url: https://ggzyfw.fujian.gov.cn/
+    enabled: true
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: false
+      timeout: 90
+    listing:
+      url: https://ggzyfw.fujian.gov.cn/guide/list?type=54
+      method: GET
+    pagination:
+      type: click_next
+      next_page_selector: .pagination .next:not(.disabled)
+      page_size: 20
+      start: 1
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: .guide_list li
+      fields:
+        id: a@href
+        title: a
+        date: span.date
+    detail:
+      type: css_selector
+      content_field: .guide_detail
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  longyan:
+    name: 龙岩市公共资源交易中心-工程建设
+    site_url: https://ggzy.longyan.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: urllib
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
+          like Gecko) Chrome/120.0.0.0 Safari/537.36
+      verify_ssl: false
+      timeout: 60
+      token_url: https://ggzy.longyan.gov.cn/EpointWebBuilder/rest/getOauthInfoAction/getNoUserAccessToken
+      token_method: POST
+      token_body: ''
+      token_field: custom.access_token
+      token_header_prefix: Bearer
+      site_guid: 7eb5f7f1-9041-43ad-8e13-8fcb82ea831a
+    anti_crawler:
+      delay_min: 0.3
+      delay_max: 1.2
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: a[href*='/lyztb/'][href*='.html']
+      fields:
+        id: '@href'
+        title: '@title'
+    detail:
+      type: css_selector
+      content_field: '#mainContent'
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+    sections:
+    - label: gcjs_zbgg
+      listing:
+        url: https://ggzy.longyan.gov.cn/lyztb/gcjs/007001/007001001/moreinfo.html
+        method: GET
+      pagination:
+        type: single_page
+    - label: gcjs_zbhxr
+      listing:
+        url: https://ggzy.longyan.gov.cn/lyztb/gcjs/007001/007001005/moreinfo.html
+        method: GET
+      pagination:
+        type: single_page
+    - label: gcjs_zbjg
+      listing:
+        url: https://ggzy.longyan.gov.cn/lyztb/gcjs/007001/007001006/moreinfo.html
+        method: GET
+      pagination:
+        type: single_page
+  ningde_gcjs:
+    name: 宁德市工程建设
+    site_url: https://ggzyjy.xgw.ningde.gov.cn/
+    enabled: true
+    transport:
+      type: rest_api
+      engine: urllib
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+        Content-Type: application/x-www-form-urlencoded
+        X-Requested-With: XMLHttpRequest
+      verify_ssl: false
+      timeout: 60
+      token_url: https://ggzyjy.xgw.ningde.gov.cn/EpointWebBuilder/rest/getOauthInfoAction/getNoUserAccessToken
+      token_method: POST
+      token_body: ''
+      token_field: custom.access_token
+      token_header_prefix: Bearer
+      site_guid: 7eb5f7f1-9041-43ad-8e13-8fcb82ea831a
+      app_url_flag: TP001
+    listing:
+      url: https://ggzyjy.xgw.ningde.gov.cn/EpointWebBuilder/rest/frontAppCustomAction/getPageInfoListNew2
+      method: POST
+      body_type: form
+      params:
+        siteGuid: 7eb5f7f1-9041-43ad-8e13-8fcb82ea831a
+        appUrlFlag: TP001
+        pageIndex: '{{ page }}'
+        pageSize: 30
+    pagination:
+      type: page_no
+      page_param: pageIndex
+      page_size: 30
+      start: 0
+      max_pages: 50
+      items_field: data
+    anti_crawler:
+      delay_min: 0.5
+      delay_max: 1.5
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: data
+      fields:
+        id: infoId
+        title: title
+        date: infodate
+        category: categoryname
+        url: visiturl
+    detail:
+      type: css_selector
+      url: https://ggzyjy.xgw.ningde.gov.cn{{ visiturl }}
+      content_field: .notice-content, .article-content, .TRS_Editor, .ewb-article,
+        .detail-content
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  pingtan_fjsz:
+    name: 平潭综合实验区公共资源平台
+    site_url: https://xzfwzx.pingtan.gov.cn:9999/
+    enabled: true
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0
+          Safari/537.36
+      verify_ssl: false
+      timeout: 60
+    listing:
+      url: https://xzfwzx.pingtan.gov.cn:9999/fjsz/index.jhtml
+      method: GET
+    pagination:
+      type: html_regex
+      page_param: page
+      page_pattern: /fjsz/index_{}.jhtml
+      page_size: 20
+      start: 1
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.5
+      max_retries: 4
+    extract:
+      type: css_selector
+      items_path: table.table_list tr
+      fields:
+        id: a@href
+        title: a
+        date: td:last-child
+    detail:
+      type: playwright_http
+      url: https://xzfwzx.pingtan.gov.cn:9998/
+    format:
+      parser_id: naive
+      upload_batch_size: 10
+  ygcg_engineering:
+    name: 阳光采购工程公告
+    site_url: https://ygcg.fjcqjy.com/
+    enabled: true
+    transport:
+      type: scrapling_stealth
+      headless: true
+      network_idle: false
+      block_resources: true
+      verify_ssl: false
+      timeout: 60
+    listing:
+      url: https://www.enjoy5191.com/api/GetDataHandler.ashx?method=Web.GZCG_GetJiaoYiList&BIG_TYPE=A&pageindex={{
+        page }}&pagesize={{ page_size }}
+      method: GET
+    pagination:
+      type: page_no
+      page_param: pageindex
+      page_size_param: pagesize
+      page_size: 20
+      start: 1
+      max_pages: 50
+      items_field: Data
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.5
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: Data
+      fields:
+        id: SOURCE_ID
+        title: NAME
+        date: PUBLISHED_TIME
+        url: URL
+    detail:
+      type: css_selector
+      url: https://qtgcztb.enjoy5191.com/views/ebid/combine/v1/entp-view.html?type=tp&tpId={id}&flag=true&name=LogOn_GUOZI
+      content_field: .detail-content, .article-content, .project-detail, .bid-content,
+        .el-main, main, article
+    format:
+      parser_id: naive
+      upload_batch_size: 10
