@@ -48,6 +48,7 @@ class UserMgr:
                     "email": user.email,
                     "nickname": user.nickname,
                     "create_date": user.create_date,
+                    "last_login_time": user.last_login_time,
                     "is_active": user.is_active,
                     "is_superuser": user.is_superuser,
                 }

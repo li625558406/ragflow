@@ -27,6 +27,7 @@ from flask import Flask
 from flask_login import LoginManager
 from werkzeug.serving import run_simple
 from routes import admin_bp
+from api.common.exceptions import AdminException
 from common.log_utils import init_root_logger
 from common.constants import SERVICE_CONF
 from common.config_utils import show_configs
@@ -51,6 +52,12 @@ if __name__ == '__main__':
 
     app = Flask(__name__)
     app.register_blueprint(admin_bp)
+
+    @app.errorhandler(AdminException)
+    def handle_admin_exception(e):
+        from responses import error_response
+        return error_response(e.message, e.code)
+
     app.config["SESSION_PERMANENT"] = False
     app.config["SESSION_TYPE"] = "filesystem"
     app.config["MAX_CONTENT_LENGTH"] = int(

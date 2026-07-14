@@ -1,5 +1,12 @@
 # CLAUDE.md
 
+可用账号：lg18629285296@163.com
+密码：12345678
+
+
+核心注意点：
+1、新增和修改的代码，禁止私自部署服务器
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 【核心注意：新增的数据库要放到ragflow项目的初始化脚本中，要考虑到迁移部署，不会导致问题】

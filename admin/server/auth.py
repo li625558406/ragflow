@@ -183,6 +183,16 @@ def login_admin(email: str, password: str):
     user.update_date = (datetime_format(datetime.now()),)
     user.last_login_time = get_format_time()
     user.save()
+
+    # Record login log
+    try:
+        from api.db.services.user_login_log_service import UserLoginLogService
+        UserLoginLogService.create_log(
+            user, request, login_channel="password", device_type="web", device_name="Admin Panel",
+        )
+    except Exception as e:
+        logging.warning(f"Failed to write admin login log: {e}")
+
     msg = "Welcome back!"
     return sync_construct_response(data=resp, auth=user.get_id(), message=msg)
 

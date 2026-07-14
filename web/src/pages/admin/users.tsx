@@ -32,6 +32,19 @@ import LoginLogsDrawer from './login-logs-drawer';
 
 import { rsaPsw } from '@/utils';
 
+function formatLoginTime(raw: string): string {
+  try {
+    // raw is like "2026-07-13 20:53:56"
+    if (/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw;
+    const d = new Date(raw);
+    if (isNaN(d.getTime())) return raw;
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  } catch {
+    return raw;
+  }
+}
+
 import Spotlight from '@/components/spotlight';
 import { TableEmpty } from '@/components/table-skeleton';
 import { Badge } from '@/components/ui/badge';
@@ -397,9 +410,15 @@ function AdminUserManagement() {
         header: t('admin.actions'),
         cell: ({ row }) => {
           const isMe = row.original.email === userInfo?.email;
+          const lastLogin = row.original.last_login_time;
 
           return (
             <div className="opacity-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100 transition-opacity">
+              {lastLogin && (
+                <div className="text-xs text-text-tertiary whitespace-nowrap mb-1">
+                  {formatLoginTime(lastLogin)}
+                </div>
+              )}
               <Button
                 variant="transparent"
                 size="icon"
