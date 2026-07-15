@@ -1704,6 +1704,74 @@ class BidEnterpriseCache(DataBaseModel):
         )
 
 
+class BidEnterpriseBusiness(DataBaseModel):
+    keyword = CharField(max_length=256, primary_key=True, help_text="查询关键词(公司名或统一社会信用代码)")
+    response_json = JSONField(null=True, help_text="企业工商信息API完整响应data字段")
+    fetched_at = DateTimeField(null=True, help_text="获取时间")
+    cache_expires_at = DateTimeField(null=True, help_text="缓存过期时间")
+    created_at = DateTimeField(null=True)
+
+    class Meta:
+        db_table = "bid_enterprise_business"
+
+
+class BidTenderSearch(DataBaseModel):
+    id = CharField(max_length=64, primary_key=True, help_text="sha256(projectNumber|title)")
+    keyword_hash = CharField(max_length=64, null=False, index=True, help_text="sha256(keyword)")
+    keyword = CharField(max_length=500, null=False, help_text="搜索关键词")
+
+    title = TextField(null=True, help_text="公告标题")
+    project_name = TextField(null=True, help_text="项目名称")
+    project_number = CharField(max_length=200, null=True, help_text="项目编号")
+    publish_time = DateTimeField(null=True, index=True, help_text="公告发布时间")
+    announcement_type = CharField(max_length=50, null=True, help_text="公告类型")
+    announcement_type_code = IntegerField(null=True, help_text="公告类型编码")
+    bidding_stage = CharField(max_length=50, null=True, help_text="招投标阶段")
+    bidding_stage_code = IntegerField(null=True, help_text="招投标阶段编码")
+    procurement_method = CharField(max_length=50, null=True, help_text="采购方式")
+    procurement_method_code = IntegerField(null=True, help_text="采购方式编码")
+    industry_type = CharField(max_length=100, null=True, help_text="行业分类")
+    target_item_type = CharField(max_length=100, null=True, help_text="标的物类型")
+    project_region_province = CharField(max_length=50, null=True, help_text="项目区域-省份")
+    project_region_province_code = CharField(max_length=20, null=True, help_text="省份行政区划代码")
+    project_region_city = CharField(max_length=50, null=True, help_text="项目区域-城市")
+    project_region_city_code = CharField(max_length=20, null=True, help_text="城市行政区划代码")
+    content_url = CharField(max_length=1000, null=True, help_text="招投标公告原文链接")
+
+    project_budget_amount = CharField(max_length=50, null=True, help_text="项目预算-金额")
+    project_budget_amount_unit = CharField(max_length=10, null=True, help_text="项目预算-金额单位")
+    total_amount = CharField(max_length=50, null=True, help_text="中标总金额")
+    total_amount_unit = CharField(max_length=10, null=True, help_text="中标总金额单位")
+
+    bid_document_start_time = CharField(max_length=30, null=True, help_text="标书获取开始时间")
+    bid_document_end_time = CharField(max_length=30, null=True, help_text="标书获取截止时间")
+    bidding_start_time = CharField(max_length=30, null=True, help_text="投标开始时间")
+    bidding_end_time = CharField(max_length=30, null=True, help_text="投标结束时间")
+    opening_bid_time = CharField(max_length=30, null=True, help_text="开标时间")
+    contract_num = CharField(max_length=200, null=True, help_text="合同编号")
+
+    purchase_agency = JSONField(null=True, help_text="采购单位&代理机构")
+    win_candidate = JSONField(null=True, help_text="中标企业&候选单位")
+    contacts_purchase_agency = JSONField(null=True, help_text="联系方式-采购单位&代理机构")
+    contacts_win_candidate = JSONField(null=True, help_text="联系方式-中标企业&候选单位")
+
+    search_mode = IntegerField(null=True, help_text="搜索模式: 1-精准 2-模糊")
+    announcement_type_filter = CharField(max_length=50, null=True, help_text="搜索时传入的公告类型")
+    province_code_filter = CharField(max_length=20, null=True, help_text="搜索时传入的省份代码")
+    city_code_filter = CharField(max_length=20, null=True, help_text="搜索时传入的城市代码")
+
+    raw_json = JSONField(null=True, help_text="API原始返回JSON")
+    fetched_at = DateTimeField(null=True, help_text="缓存获取时间")
+    cache_expires_at = DateTimeField(null=True, help_text="缓存过期时间")
+    created_at = DateTimeField(null=True)
+
+    class Meta:
+        db_table = "bid_tender_search"
+        indexes = (
+            (("keyword_hash", "cache_expires_at"), False),
+        )
+
+
 class BidSyncLog(DataBaseModel):
     id = BigIntegerField(primary_key=True)
     batch_id = CharField(max_length=36, unique=True, help_text="同步批次ID")
@@ -2175,6 +2243,14 @@ def migrate_db():
     if not BidEnterpriseParse.table_exists():
         BidEnterpriseParse.create_table(safe=True)
         logging.info("bid_enterprise_parse: table created")
+    # bid_enterprise_business table
+    if not BidEnterpriseBusiness.table_exists():
+        BidEnterpriseBusiness.create_table(safe=True)
+        logging.info("bid_enterprise_business: table created")
+    # bid_tender_search table
+    if not BidTenderSearch.table_exists():
+        BidTenderSearch.create_table(safe=True)
+        logging.info("bid_tender_search: table created")
     logging.disable(logging.NOTSET)
     # this is after re-enabling logging to allow logging changed user emails
     migrate_add_unique_email(migrator)

@@ -13,13 +13,14 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
+import hashlib
 import logging
 from datetime import datetime, timedelta
 from typing import Tuple, List, Optional
 
 from peewee import fn
 
-from api.db.db_models import DB, BidConstructionParse, BidConstructionProject, BidContractParse, BidEnterpriseCache, BidEnterpriseParse, BidProject, BidProjectDetail, BidProjectStructure, BidProjectFile, BidProjectParse, BidSyncLog
+from api.db.db_models import DB, BidConstructionParse, BidConstructionProject, BidContractParse, BidEnterpriseBusiness, BidEnterpriseCache, BidEnterpriseParse, BidProject, BidProjectDetail, BidProjectStructure, BidProjectFile, BidProjectParse, BidSyncLog, BidTenderSearch
 from peewee import DateTimeField
 from api.db.services.common_service import CommonService
 
@@ -451,6 +452,58 @@ class BidEnterpriseCacheService(CommonService):
             ).save(force_insert=True)
 
 
+class BidEnterpriseBusinessService(CommonService):
+    """企业工商信息全量缓存服务 — 新接口 /enterprise/business/all
+
+    TTL: 7 天。
+    """
+
+    model = BidEnterpriseBusiness
+
+    @classmethod
+    @DB.connection_context()
+    def get_cached(cls, keyword: str, allow_stale: bool = False) -> Optional[dict]:
+        """查询缓存。默认只返回未过期的；allow_stale=True 返回最新一条（含过期）。"""
+        now = datetime.now()
+        if allow_stale:
+            obj = (cls.model
+                   .select()
+                   .where(cls.model.keyword == keyword)
+                   .order_by(cls.model.fetched_at.desc())
+                   .first())
+        else:
+            obj = cls.model.get_or_none(
+                (cls.model.keyword == keyword)
+                & (cls.model.cache_expires_at > now)
+            )
+        if obj:
+            return obj.to_dict()
+        return None
+
+    @classmethod
+    @DB.connection_context()
+    def upsert_cache(cls, keyword: str, response_data: dict, ttl_hours: int = 168) -> object:
+        """覆盖写入缓存，默认 TTL=168h (7天)。"""
+        now = datetime.now()
+        expires_at = now + timedelta(hours=ttl_hours)
+
+        existing = cls.model.get_or_none(cls.model.keyword == keyword)
+        if existing:
+            existing.response_json = response_data
+            existing.fetched_at = now
+            existing.cache_expires_at = expires_at
+            existing.save()
+            return existing
+        else:
+            return cls.model(
+                keyword=keyword,
+                response_json=response_data,
+                fetched_at=now,
+                cache_expires_at=expires_at,
+                created_at=now,
+            ).save(force_insert=True)
+
+
 class BidConstructionProjectService(CommonService):
     model = BidConstructionProject
 
@@ -588,3 +641,119 @@ class BidEnterpriseParseService(CommonService):
         else:
             data.setdefault("created_at", datetime.now())
             return cls.model(**data).save(force_insert=True)
+
+
+class BidTenderSearchService(CommonService):
+    model = BidTenderSearch
+
+    @classmethod
+    @DB.connection_context()
+    def get_list(
+        cls,
+        keyword: str,
+        page_number: int = 1,
+        items_per_page: int = 10,
+        announcement_type: str = None,
+        province_code: str = None,
+        city_code: str = None,
+        start_date: str = None,
+        end_date: str = None,
+    ) -> Tuple[List[dict], int]:
+        query = cls.model.select().where(
+            cls.model.keyword_hash == cls._hash_key(keyword)
+        )
+        if announcement_type:
+            query = query.where(cls.model.announcement_type_filter == announcement_type)
+        if province_code:
+            query = query.where(cls.model.province_code_filter == province_code)
+        if city_code:
+            query = query.where(cls.model.city_code_filter == city_code)
+        if start_date:
+            query = query.where(cls.model.publish_time >= start_date)
+        if end_date:
+            query = query.where(cls.model.publish_time <= f"{end_date} 23:59:59")
+        query = cls.filter_valid_cache(query)
+        total = query.count()
+        query = query.order_by(cls.model.publish_time.desc())
+        query = query.paginate(page_number, items_per_page)
+        return list(query.dicts()), total
+
+    @classmethod
+    @DB.connection_context()
+    def upsert_item(cls, item: dict, keyword: str, search_params: dict) -> Tuple[bool, object]:
+        item_id = cls._item_id(item)
+        now = datetime.now()
+        existing = cls.model.get_or_none(cls.model.id == item_id)
+        mapped = cls._map_api_item(item, keyword, search_params, now)
+        if existing:
+            # 更新时保留原始 keyword_hash/keyword，避免 item 在不同搜索词之间漂移
+            mapped.pop("keyword_hash", None)
+            mapped.pop("keyword", None)
+            mapped.pop("created_at", None)
+            for k, v in mapped.items():
+                setattr(existing, k, v)
+            existing.save()
+            return False, existing
+        else:
+            mapped["created_at"] = now
+            return True, cls.model(**mapped).save(force_insert=True)
+
+    @classmethod
+    def filter_valid_cache(cls, query):
+        now = datetime.now()
+        return query.where(cls.model.cache_expires_at > now)
+
+    @staticmethod
+    def _hash_key(keyword: str) -> str:
+        return hashlib.sha256(keyword.strip().lower().encode()).hexdigest()
+
+    @staticmethod
+    def _item_id(item: dict) -> str:
+        raw = f"{item.get('projectNumber', '')}|{item.get('title', '')}"
+        return hashlib.sha256(raw.encode()).hexdigest()
+
+    @staticmethod
+    def _map_api_item(item: dict, keyword: str, search_params: dict, now: datetime) -> dict:
+        return {
+            "id": BidTenderSearchService._item_id(item),
+            "keyword_hash": BidTenderSearchService._hash_key(keyword),
+            "keyword": keyword,
+            "title": item.get("title", ""),
+            "project_name": item.get("projectName", ""),
+            "project_number": item.get("projectNumber", ""),
+            "publish_time": item.get("publishTime"),
+            "announcement_type": item.get("announcementType", ""),
+            "announcement_type_code": item.get("announcementTypeCode"),
+            "bidding_stage": item.get("biddingStage", ""),
+            "bidding_stage_code": item.get("biddingStageCode"),
+            "procurement_method": item.get("procurementMethod", ""),
+            "procurement_method_code": item.get("procurementMethodCode"),
+            "industry_type": item.get("industryType", ""),
+            "target_item_type": item.get("targetItemType", ""),
+            "project_region_province": item.get("projectRegionProvince", ""),
+            "project_region_province_code": item.get("projectRegionProvinceCode", ""),
+            "project_region_city": item.get("projectRegionCity", ""),
+            "project_region_city_code": item.get("projectRegionCityCode", ""),
+            "content_url": item.get("contentUrl", ""),
+            "project_budget_amount": item.get("projectBudgetAmount", ""),
+            "project_budget_amount_unit": item.get("projectBudgetAmountUnit", ""),
+            "total_amount": item.get("totalAmount", ""),
+            "total_amount_unit": item.get("totalAmountUnit", ""),
+            "bid_document_start_time": item.get("bidDocumentStartTime", ""),
+            "bid_document_end_time": item.get("bidDocumentEndTime", ""),
+            "bidding_start_time": item.get("biddingStartTime", ""),
+            "bidding_end_time": item.get("biddingEndTime", ""),
+            "opening_bid_time": item.get("openingBidTime", ""),
+            "contract_num": item.get("contractNum", ""),
+            "purchase_agency": item.get("purchaseAgency", []),
+            "win_candidate": item.get("winCandidate", []),
+            "contacts_purchase_agency": item.get("contactsPurchaseAgency"),
+            "contacts_win_candidate": item.get("contactsWinCandidate"),
+            "search_mode": search_params.get("searchMode", 2),
+            "announcement_type_filter": str(search_params.get("announcementType") or ""),
+            "province_code_filter": search_params.get("projectRegionProvinceCode") or "",
+            "city_code_filter": search_params.get("projectRegionCityCode") or "",
+            "raw_json": item,
+            "fetched_at": now,
+            "cache_expires_at": now + timedelta(hours=24),
+        }

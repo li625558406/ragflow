@@ -1,5 +1,4 @@
 import DynamicIcon from '@/components/dynamic-icon';
-import { BidList } from '@/pages/home/bid-list';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useState } from 'react';
 import BidHome from './bid-home';
@@ -11,6 +10,7 @@ import CreditChinaSearch from './credit-china-search';
 import EnterpriseSearch from './enterprise-search';
 import KbSearch from './kb-search';
 import ShixinSearch from './shixin-search';
+import TenderSearch from './tender-search';
 
 interface ModuleItem {
   id: string;
@@ -158,9 +158,7 @@ export default function BidPanel({ apiFetch }: Props) {
       {/* Right: Module content */}
       <div className="flex-1 flex flex-col min-h-0 overflow-hidden bg-[#FFFFFF] min-w-0 relative">
         {selectedModule?.id === 'bid-home' && <BidHome />}
-        {selectedModule?.id === 'bid-search' && (
-          <BidList setListLength={() => {}} />
-        )}
+        {selectedModule?.id === 'bid-search' && <TenderSearch />}
         {apiFetch && (
           <div
             className={

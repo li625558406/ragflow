@@ -33,6 +33,9 @@ import requests
 
 BID_API_BASE_URL = os.getenv("BID_API_BASE_URL", "https://gov.market.alicloudapi.com")
 BID_API_BASE_URL_V2 = os.getenv("BID_API_BASE_URL_V2", "https://gate.gov-bid.com/outer-gateway")
+ENTERPRISE_API_BASE_URL = os.getenv("ENTERPRISE_API_BASE_URL", "https://juccvvn.market.alicloudapi.com")
+TENDER_SEARCH_BASE_URL = os.getenv("TENDER_SEARCH_BASE_URL", "https://jmzbxxjs.market.alicloudapi.com")
+TENDER_SEARCH_APP_CODE = os.getenv("TENDER_SEARCH_APP_CODE", "fba98d6069f94ca4948387cfbe0265ac")
 BID_APP_CODE = os.getenv("BID_APP_CODE", "")
 BID_API_KEY = os.getenv("BID_API_KEY", "") or BID_APP_CODE  # 默认复用 APPCODE
 
@@ -446,6 +449,107 @@ class BidApiClient:
             "pageSize": page_size,
         })
 
+    def get_enterprise_business_all(self, keyword: str) -> dict:
+        """企业工商信息全量查询（阿里云API市场 → /enterprise/business/all）
+
+        一次返回: 工商基本信息、股东、高管、变更、行政处罚、失信、被执行、
+        经营异常、行政许可、税务信用、知识产权等全量数据。
+
+        使用 form-encoded POST，独立 host (juccvvn.market.alicloudapi.com)。
+        """
+        url = f"{ENTERPRISE_API_BASE_URL}/enterprise/business/all"
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Authorization": f"APPCODE {self.app_code}",
+        }
+        try:
+            resp = requests.post(url, data={"keyword": keyword}, headers=headers, timeout=self.timeout)
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.exceptions.Timeout:
+            raise BidApiError(f"Request timeout ({self.timeout}s): /enterprise/business/all")
+        except requests.exceptions.RequestException as e:
+            raise BidApiError(f"Request failed: {e}")
+        except json.JSONDecodeError as e:
+            raise BidApiError(f"Invalid JSON response: {e}")
+
+        code = data.get("code", -1)
+        if code != 200:
+            raise BidApiError(
+                data.get("msg", "Unknown error"),
+                code=code,
+                raw=data,
+            )
+        return data
+
+    def search_tender_v4(
+        self,
+        keyword: str,
+        search_mode: int = 2,
+        page_size: int = 10,
+        page_index: int = 1,
+        publish_start_time: str = "",
+        publish_end_time: str = "",
+        announcement_type: str = "",
+        target_item_type: str = "",
+        procurement_method: str = "",
+        project_region_province_code: str = "",
+        project_region_city_code: str = "",
+        search_type: str = "",
+    ) -> dict:
+        """招标信息搜索 v4（阿里云API市场 → /enterprise/search/bid/v4）
+
+        使用 form-encoded POST，独立 host (jmzbxxjs.market.alicloudapi.com)。
+        每个 APPCODE 仅有 10 次调用额度，必须通过 DB 缓存控制调用频率。
+        """
+        url = f"{TENDER_SEARCH_BASE_URL}/enterprise/search/bid/v4"
+        app_code = TENDER_SEARCH_APP_CODE or self.app_code
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Authorization": f"APPCODE {app_code}",
+        }
+        body = {
+            "keyword": keyword,
+            "searchMode": search_mode,
+            "pageSize": min(page_size, 10),
+            "pageIndex": page_index,
+        }
+        if publish_start_time:
+            body["publishStartTime"] = publish_start_time
+        if publish_end_time:
+            body["publishEndTime"] = publish_end_time
+        if announcement_type:
+            body["announcementType"] = announcement_type
+        if target_item_type:
+            body["targetItemType"] = target_item_type
+        if procurement_method:
+            body["procurementMethod"] = procurement_method
+        if project_region_province_code:
+            body["projectRegionProvinceCode"] = project_region_province_code
+        if project_region_city_code:
+            body["projectRegionCityCode"] = project_region_city_code
+        if search_type:
+            body["searchType"] = search_type
+
+        if os.getenv("TENDER_API_MOCK", "").lower() == "true":
+            return _mock_tender_search_response()
+
+        try:
+            resp = requests.post(url, data=body, headers=headers, timeout=self.timeout)
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.exceptions.Timeout:
+            raise BidApiError(f"Request timeout ({self.timeout}s): /enterprise/search/bid/v4")
+        except requests.exceptions.RequestException as e:
+            raise BidApiError(f"Request failed: {e}")
+        except json.JSONDecodeError as e:
+            raise BidApiError(f"Invalid JSON response: {e}")
+
+        code = data.get("code", -1)
+        if code != 200:
+            raise BidApiError(data.get("msg", "Unknown error"), code=code, raw=data)
+        return data
+
     def search_nzj_project(
         self,
         keyword: str = "",
@@ -535,8 +639,107 @@ class BidApiClient:
 
         返回: 匹配的项目列表
         """
-        result = self._v2_post_form(
-            "/bid/getProjectByProjectNumber",
             data={"projectNumber": project_number, "publishTime": publish_time},
         )
         return result.get("data", [])
+
+
+def _mock_tender_search_response() -> dict:
+    """Mock response for tender search v4 API (no quota consumption during dev)."""
+    return {
+        "code": 200,
+        "msg": "成功 (mock)",
+        "taskNo": "mock-task-001",
+        "data": {
+            "total": 3,
+            "items": [
+                {
+                    "title": "【Mock】某中学教学楼施工招标公告",
+                    "projectName": "某中学教学楼建设项目",
+                    "projectNumber": "MOCK-ZB-2026001",
+                    "publishTime": "2026-07-10",
+                    "announcementType": "招标公告",
+                    "announcementTypeCode": 1,
+                    "biddingStage": "招标",
+                    "biddingStageCode": 4,
+                    "procurementMethod": "公开招标",
+                    "procurementMethodCode": 8,
+                    "industryType": "建筑工程",
+                    "targetItemType": "工程",
+                    "projectRegionProvince": "北京市",
+                    "projectRegionProvinceCode": "110000",
+                    "projectRegionCity": "海淀区",
+                    "projectRegionCityCode": "110108",
+                    "projectBudgetAmount": "500",
+                    "projectBudgetAmountUnit": "万元",
+                    "totalAmount": "",
+                    "totalAmountUnit": "",
+                    "contentUrl": "https://mock.example.com/info-001.html",
+                    "purchaseAgency": [
+                        {"companyName": "Mock招标代理有限公司", "relateType": "2", "creditNo": "91110000MA0000001X"}
+                    ],
+                    "winCandidate": [],
+                    "contactsPurchaseAgency": [],
+                    "contactsWinCandidate": [],
+                },
+                {
+                    "title": "【Mock】市中心医院医疗设备采购中标公告",
+                    "projectName": "市中心医院医疗设备采购",
+                    "projectNumber": "MOCK-ZB-2026002",
+                    "publishTime": "2026-07-08",
+                    "announcementType": "招标结果",
+                    "announcementTypeCode": 2,
+                    "biddingStage": "中标成交",
+                    "biddingStageCode": 7,
+                    "procurementMethod": "竞争性磋商",
+                    "procurementMethodCode": 6,
+                    "industryType": "医疗卫生",
+                    "targetItemType": "货物",
+                    "projectRegionProvince": "广东省",
+                    "projectRegionProvinceCode": "440000",
+                    "projectRegionCity": "深圳市",
+                    "projectRegionCityCode": "440300",
+                    "projectBudgetAmount": "",
+                    "projectBudgetAmountUnit": "",
+                    "totalAmount": "328.5",
+                    "totalAmountUnit": "万元",
+                    "contentUrl": "https://mock.example.com/info-002.html",
+                    "purchaseAgency": [],
+                    "winCandidate": [
+                        {"companyName": "Mock医疗科技有限公司", "relateType": "4", "amount": "328.5", "amountUnit": "万元", "creditNo": "91110000MA0000002Y"}
+                    ],
+                    "contactsPurchaseAgency": [],
+                    "contactsWinCandidate": [],
+                },
+                {
+                    "title": "【Mock】智慧交通系统升级改造项目招标公告",
+                    "projectName": "智慧交通系统升级改造",
+                    "projectNumber": "MOCK-ZB-2026003",
+                    "publishTime": "2026-07-05",
+                    "announcementType": "招标公告",
+                    "announcementTypeCode": 1,
+                    "biddingStage": "招标",
+                    "biddingStageCode": 4,
+                    "procurementMethod": "公开招标",
+                    "procurementMethodCode": 8,
+                    "industryType": "信息技术",
+                    "targetItemType": "服务",
+                    "projectRegionProvince": "浙江省",
+                    "projectRegionProvinceCode": "330000",
+                    "projectRegionCity": "杭州市",
+                    "projectRegionCityCode": "330100",
+                    "projectBudgetAmount": "1200",
+                    "projectBudgetAmountUnit": "万元",
+                    "totalAmount": "",
+                    "totalAmountUnit": "",
+                    "contentUrl": "https://mock.example.com/info-003.html",
+                    "purchaseAgency": [
+                        {"companyName": "Mock科技发展有限公司", "relateType": "1", "creditNo": "91110000MA0000003Z"}
+                    ],
+                    "winCandidate": [],
+                    "contactsPurchaseAgency": [],
+                    "contactsWinCandidate": [],
+                },
+            ],
+        },
+    }

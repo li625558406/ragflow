@@ -38,6 +38,7 @@ from api.db.services.bid_service import (
     BidProjectFileService,
     BidProjectParseService,
     BidSyncLogService,
+    BidTenderSearchService,
 )
 from api.db.services.document_service import DocumentService
 from api.utils.api_utils import (
@@ -46,10 +47,7 @@ from api.utils.api_utils import (
 )
 from api.utils.bid_api_client import BidApiClient, BidApiError
 from api.utils.bid_tool_service import (
-    get_enterprise_contacts_cached,
-    get_enterprise_customers_cached,
-    get_enterprise_profile_cached,
-    get_enterprise_suppliers_cached,
+    get_enterprise_business_cached,
 )
 
 manager = Blueprint("rest_bid_app", __name__)
@@ -1673,68 +1671,20 @@ async def list_bid_contracts():
 
 
 # ---------------------------------------------------------------------------
-# 企业画像（v2 网关）
+# 企业工商信息全量查询（阿里云API市场）
 # ---------------------------------------------------------------------------
-@manager.route("/bid/enterprises/profile", methods=["GET"])  # noqa: F821
+@manager.route("/bid/enterprises/business", methods=["GET"])  # noqa: F821
 @login_required
 @bid_rate_limit("enterprise")
-async def get_enterprise_profile():
-    company_name = request.args.get("company_name", "")
-    if not company_name:
-        return get_data_error_result(message="company_name is required")
+async def get_enterprise_business():
+    keyword = request.args.get("keyword", "").strip()
+    if not keyword:
+        return get_data_error_result(message="keyword is required")
     try:
-        result = get_enterprise_profile_cached(company_name)
+        result = get_enterprise_business_cached(keyword)
         return get_json_result(data=result.get("data", {}))
     except Exception as e:
-        return get_data_error_result(message=f"Failed to fetch enterprise profile: {e}")
-
-
-@manager.route("/bid/enterprises/contacts", methods=["GET"])  # noqa: F821
-@login_required
-@bid_rate_limit("enterprise")
-async def get_enterprise_contacts():
-    company_name = request.args.get("company_name", "")
-    page_no = int(request.args.get("page", 1))
-    page_size = int(request.args.get("page_size", 5))
-    if not company_name:
-        return get_data_error_result(message="company_name is required")
-    try:
-        result = get_enterprise_contacts_cached(company_name, page_no, min(page_size, 5))
-        return get_json_result(data=result.get("data", {}))
-    except Exception as e:
-        return get_data_error_result(message=f"Failed to fetch enterprise contacts: {e}")
-
-
-@manager.route("/bid/enterprises/customers", methods=["GET"])  # noqa: F821
-@login_required
-@bid_rate_limit("enterprise")
-async def get_enterprise_customers():
-    company_name = request.args.get("company_name", "")
-    page_no = int(request.args.get("page", 1))
-    page_size = int(request.args.get("page_size", 20))
-    if not company_name:
-        return get_data_error_result(message="company_name is required")
-    try:
-        result = get_enterprise_customers_cached(company_name, page_no, min(page_size, 20))
-        return get_json_result(data=result.get("data", {}))
-    except Exception as e:
-        return get_data_error_result(message=f"Failed to fetch enterprise customers: {e}")
-
-
-@manager.route("/bid/enterprises/suppliers", methods=["GET"])  # noqa: F821
-@login_required
-@bid_rate_limit("enterprise")
-async def get_enterprise_suppliers():
-    company_name = request.args.get("company_name", "")
-    page_no = int(request.args.get("page", 1))
-    page_size = int(request.args.get("page_size", 20))
-    if not company_name:
-        return get_data_error_result(message="company_name is required")
-    try:
-        result = get_enterprise_suppliers_cached(company_name, page_no, min(page_size, 20))
-        return get_json_result(data=result.get("data", {}))
-    except Exception as e:
-        return get_data_error_result(message=f"Failed to fetch enterprise suppliers: {e}")
+        return get_data_error_result(message=f"Failed to fetch enterprise business: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -2124,4 +2074,146 @@ def enterprise_parse_status():
         "progress_msg": progress_msg,
         "kb_id": record.get("kb_id", ""),
         "combined_doc_id": record.get("combined_doc_id", ""),
+    })
+
+
+# ---------------------------------------------------------------------------
+# 招标信息搜索 v4（新第三方API，缓存优先）
+# ---------------------------------------------------------------------------
+@manager.route("/bid/tender-search", methods=["POST"])  # noqa: F821
+@login_required
+@bid_rate_limit("search")
+async def tender_search():
+    """招标信息搜索 v4（新第三方API，缓存优先）
+
+    策略（10 次 API 调用额度，激进缓存 24h）：
+      1. DB 查询（keyword_hash 匹配 + 非过期）
+      2. DB 结果 >= 5 → 直接返回
+      3. DB 结果 < 5 → 调第三方 API → 逐条 upsert → 重查 DB → 返回
+      4. API 失败 → 降级返回 DB 已有数据（即使 < 5 条）
+    """
+    body = await request.get_json() or {}
+
+    keyword = (body.get("keyword") or "").strip()
+    if not keyword or len(keyword) < 2:
+        return get_data_error_result(message="keyword is required (>= 2 characters)")
+
+    search_mode = body.get("searchMode", 2)
+    try:
+        page = max(1, int(body.get("page", 1)))
+        page_size = max(1, min(int(body.get("pageSize", 10)), 10))
+        search_mode = int(search_mode)
+    except (TypeError, ValueError):
+        return get_data_error_result(message="Invalid parameter: page/pageSize/searchMode must be integers")
+    announcement_type = body.get("announcementType") or None
+    publish_start_time = body.get("publishStartTime") or None
+    publish_end_time = body.get("publishEndTime") or None
+    target_item_type = body.get("targetItemType") or None
+    procurement_method = body.get("procurementMethod") or None
+    province_code = body.get("projectRegionProvinceCode") or None
+    city_code = body.get("projectRegionCityCode") or None
+    search_type = body.get("searchType") or None
+
+    # Step 1: Query DB cache
+    db_items, db_total = BidTenderSearchService.get_list(
+        keyword=keyword,
+        page_number=page,
+        items_per_page=page_size,
+        announcement_type=announcement_type,
+        province_code=province_code,
+        city_code=city_code,
+        start_date=publish_start_time,
+        end_date=publish_end_time,
+    )
+
+    # Step 2: DB has enough → return
+    if db_total >= 5:
+        logging.info(
+            "Tender search: cache hit for keyword='%s', total=%d", keyword, db_total
+        )
+        return get_json_result(data={
+            "items": db_items,
+            "total": db_total,
+            "from_cache": True,
+        })
+
+    # Step 3: DB insufficient → call external API
+    logging.info(
+        "Tender search: cache insufficient (%d < 5) for keyword='%s', calling API",
+        db_total, keyword,
+    )
+
+    try:
+        client = BidApiClient()
+        api_resp = client.search_tender_v4(
+            keyword=keyword,
+            search_mode=search_mode,
+            page_size=page_size,
+            page_index=page,
+            publish_start_time=publish_start_time or "",
+            publish_end_time=publish_end_time or "",
+            announcement_type=announcement_type or "",
+            target_item_type=target_item_type or "",
+            procurement_method=procurement_method or "",
+            project_region_province_code=province_code or "",
+            project_region_city_code=city_code or "",
+            search_type=search_type or "",
+        )
+    except BidApiError as e:
+        logging.warning("Tender search: API error: %s", e)
+        if db_items:
+            return get_json_result(data={
+                "items": db_items,
+                "total": len(db_items),
+                "from_cache": True,
+                "stale": True,
+            })
+        return get_data_error_result(message=f"API error: {e}")
+    except Exception as e:
+        logging.exception("Tender search: unexpected error: %s", e)
+        if db_items:
+            return get_json_result(data={
+                "items": db_items,
+                "total": len(db_items),
+                "from_cache": True,
+                "stale": True,
+            })
+        return get_data_error_result(message=f"Search failed: {e}")
+
+    # Step 4: Upsert each item to DB
+    data = api_resp.get("data", {})
+    items = data.get("items", []) or []
+    search_params = {
+        "searchMode": search_mode,
+        "announcementType": announcement_type,
+        "projectRegionProvinceCode": province_code,
+        "projectRegionCityCode": city_code,
+    }
+    upserted = 0
+    for item in items:
+        try:
+            BidTenderSearchService.upsert_item(item, keyword=keyword, search_params=search_params)
+            upserted += 1
+        except Exception as e:
+            logging.warning("Tender search: failed to upsert item %s: %s", item.get("projectNumber"), e)
+
+    logging.info("Tender search: upserted %d/%d items to DB", upserted, len(items))
+
+    # Step 5: Re-query DB to get freshly cached results
+    db_items, db_total = BidTenderSearchService.get_list(
+        keyword=keyword,
+        page_number=page,
+        items_per_page=page_size,
+        announcement_type=announcement_type,
+        province_code=province_code,
+        city_code=city_code,
+        start_date=publish_start_time,
+        end_date=publish_end_time,
+    )
+
+    return get_json_result(data={
+        "items": db_items,
+        "total": db_total or data.get("total", 0),
+        "from_cache": False,
+        "api_task_no": api_resp.get("taskNo"),
     })

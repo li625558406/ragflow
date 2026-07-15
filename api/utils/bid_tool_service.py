@@ -1953,6 +1953,54 @@ def get_enterprise_suppliers(company_name: str, page_no: int = 1, page_size: int
 
 
 # ---------------------------------------------------------------------------
+# 企业工商信息全量查询（新接口 /enterprise/business/all）
+# 缓存优先: DB → API → stale fallback
+# TTL: 7天
+# ---------------------------------------------------------------------------
+
+def get_enterprise_business_cached(keyword: str) -> dict:
+    """企业工商信息全量查询（缓存优先）。
+
+    1. Check DB cache (free)
+    2. Cache miss → call AliCloud API → save → return
+    3. API failure → return stale cache if available
+    """
+    from api.db.services.bid_service import BidEnterpriseBusinessService
+
+    keyword = keyword.strip()
+
+    # 1. Check cache
+    cached = BidEnterpriseBusinessService.get_cached(keyword)
+    if cached:
+        logging.info("Enterprise business: cache hit for '%s'", keyword)
+        return {
+            "data": cached["response_json"],
+            "from_cache": True,
+        }
+
+    # 2. Call API
+    logging.info("Enterprise business: cache miss for '%s', calling API", keyword)
+    try:
+        client = BidApiClient()
+        result = client.get_enterprise_business_all(keyword)
+        data = result.get("data", {})
+
+        # Save to cache
+        BidEnterpriseBusinessService.upsert_cache(
+            keyword=keyword,
+            response_data=data,
+        )
+        return {"data": data, "from_cache": False}
+    except Exception as e:
+        # 3. Fallback to stale cache
+        stale = BidEnterpriseBusinessService.get_cached(keyword, allow_stale=True)
+        if stale:
+            logging.warning("Enterprise business: API failed, using stale cache. error=%s", e)
+            return {"data": stale["response_json"], "from_cache": True, "stale": True}
+        raise
+
+
+# ---------------------------------------------------------------------------
 # 拟在建项目 — cache-first + detail
 # ---------------------------------------------------------------------------
 

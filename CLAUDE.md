@@ -33,6 +33,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 部署服务器 | `D:\AI\ragflow2\本地部署服务器.md` | 服务器SSH连接、Docker部署、前端/后端/Flutter热更新、Nginx配置、常见问题排查 |
 | 第三方接口 | `D:\AI\ragflow2\接口文档_2026-06-04.md` | 标讯API、企业画像API、合同API等第三方接口的请求/响应字段定义和鉴权方式 |
 | 项目架构 | `D:\AI\ragflow2\项目架构.md` | 系统整体架构、模块间调用关系、数据流、技术选型决策背景 |
+| 二次开发功能汇总 | `D:\AI\ragflow2\二次开发功能汇总.md` | 全部二次开发功能清单：标讯系统、企业查询、Agent画布、爬虫引擎、MCP Server等 |
 
 
 
@@ -117,7 +118,10 @@ ragflow2/
 | `bid_project_structure` | `id`=project_id | 结构化数据 (JSON) | 30天 |
 | `bid_project_file` | auto id | 附件元数据 | 永久(覆盖) |
 | `bid_project_parse` | `project_id` | 知识库解析状态 | 永久 |
-| `bid_enterprise_cache` | (company_name, cache_type) | 企业画像/联系人/客户/供应商 | 7天/3天/1天 |
+| `bid_enterprise_cache` | (company_name, cache_type) | 企业画像/联系人/客户/供应商 (旧, Agent工具用) | 7天/3天/1天 |
+| `bid_enterprise_business` | `keyword` | ★ 企业工商信息全量缓存 (新接口, 阿里云API市场) | 7天 |
+| `bid_tender_search` | `id`=sha256(projectNumber\|title) | ★ 标讯搜索 v4 缓存 (新接口, 10次API额度) | 24h |
+| `bid_enterprise_parse` | `company_name` | 企业知识库解析状态 | 永久 |
 | `bid_sync_log` | `id` | API同步日志 | 永久 |
 
 ### 缓存优先策略
@@ -155,10 +159,8 @@ POST   /bid/trigger-sync                      # 手动触发同步
 GET    /bid/areas                             # 省市联动
 GET    /bid/industries                        # 行业分类
 GET    /bid/contracts                         # ★ 合同/中标搜索 (1h缓存)
-GET    /bid/enterprises/profile               # ★ 企业画像
-GET    /bid/enterprises/contacts               # ★ 企业联系人
-GET    /bid/enterprises/customers              # ★ 企业客户
-GET    /bid/enterprises/suppliers              # ★ 企业供应商
+GET    /bid/enterprises/business              # ★ 企业工商信息全量查询 (新, 阿里云API市场, 7天缓存)
+POST   /bid/tender-search                     # ★ 标讯搜索 v4 (新, 10次API额度, 24h缓存, 缓存优先)
 GET    /bid/construction/projects              # ★ 拟在建项目搜索
 GET    /bid/construction/projects/{id}/detail  # ★ 拟在建项目详情
 ```
@@ -245,6 +247,8 @@ C端和B端是完全独立的两套代码，修改前务必确认路由归属。
 ### 标讯前端关键文件
 - `web/src/pages/home/bid-detail-view.tsx` — 详情页 (正文/结构化/附件三页签)
 - `web/src/components/bid/contract-list.tsx` — 中标/合同列表 + 详情面板
+- `web/src/components/bid/enterprise-search.tsx` — ★ 企业查询 (5 Tab: 工商信息/股东高管/变更记录/经营风险/资质信息)
+- `web/src/components/bid/tender-search.tsx` — ★ 标讯搜索 v4 (搜索表单 + 无限滚动结果列表, 详情见 `D:\AI\ragflow2\二次开发功能汇总.md` 第3节)
 - `web/src/services/bid-service.ts` — 所有标讯 API 调用
 
 ### 前端字段名兼容
@@ -252,6 +256,14 @@ C端和B端是完全独立的两套代码，修改前务必确认路由归属。
 const fileUrl = f.fileUrl || f.file_url || f.url || '';
 const fileName = f.name || f.file_name || '';
 ```
+
+### 企业查询 (Enterprise Query)
+- **新接口**: `GET /bid/enterprises/business?keyword=xxx` — 阿里云API市场全量工商信息
+- **缓存**: `bid_enterprise_business` 表, keyword 主键, TTL=7天
+- **缓存**: DB优先, TTL=7天
+- **前端**: 页面初始化只展示搜索表单, 输入查询条件后触发查询
+- **旧端点已移除**: `/bid/enterprises/profile`, `/contacts`, `/customers`, `/suppliers`
+- **Agent工具保留**: `agent/tools/bid.py` 中旧企业画像工具继续使用 v2 API (项目关系数据)
 
 ---
 
