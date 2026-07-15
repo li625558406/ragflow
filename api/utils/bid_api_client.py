@@ -639,6 +639,8 @@ class BidApiClient:
 
         返回: 匹配的项目列表
         """
+        result = self._v2_post_form(
+            "/bid/getProjectByProjectNumber",
             data={"projectNumber": project_number, "publishTime": publish_time},
         )
         return result.get("data", [])
