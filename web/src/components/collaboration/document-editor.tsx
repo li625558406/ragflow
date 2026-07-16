@@ -34,9 +34,6 @@ import {
 import { $getRoot, $isTextNode, ElementNode } from 'lexical';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as Y from 'yjs';
-import AttachmentPanel from './attachment-panel';
-import AuditLogPanel from './audit-log-panel';
-import CommentPanel from './comment-panel';
 import MemberAvatars from './member-avatars';
 import MentionPlugin from './mention-plugin';
 import { $isCalloutNode, CalloutNode } from './nodes/callout-node';
@@ -550,15 +547,11 @@ export default function DocumentEditor({
 }: Props) {
   const [downloading, setDownloading] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
-  const [showComments, setShowComments] = useState(false);
-  const [showAttachments, setShowAttachments] = useState(false);
-  const [showAuditLog, setShowAuditLog] = useState(false);
   const [showShareLink, setShowShareLink] = useState(false);
   const [collabProvider, setCollabProvider] =
     useState<CollaborationWebSocketProvider | null>(null);
   const triggerSaveRef = useRef<(() => void) | null>(null);
   const [version, setVersion] = useState<number | null>(null);
-  const [restoring, setRestoring] = useState(false);
   const apiFetchRef = useRef(apiFetch);
   apiFetchRef.current = apiFetch;
 
@@ -620,26 +613,6 @@ export default function DocumentEditor({
   const handleSave = useCallback(() => {
     triggerSaveRef.current?.();
   }, []);
-
-  const handleRestore = useCallback(async () => {
-    if (!document || restoring) return;
-    if (!window.confirm('确认恢复到此版本？当前未保存的更改将丢失。')) return;
-    setRestoring(true);
-    try {
-      const resp = await apiFetch(
-        `/api/v1/collaboration/documents/${document.id}/versions/${version || 0}/restore`,
-        { method: 'POST' },
-      );
-      const result = await resp.json();
-      if (result.code === 0) {
-        window.location.reload();
-      }
-    } catch (e) {
-      console.error('Restore failed:', e);
-    } finally {
-      setRestoring(false);
-    }
-  }, [document, version, restoring, apiFetch]);
 
   const handleProviderReady = useCallback(
     (p: CollaborationWebSocketProvider | null) => {
@@ -729,48 +702,8 @@ export default function DocumentEditor({
             <>
               <div className="w-px h-4 bg-[#E8E8E6]" />
               <span className="text-[10px] text-stone-400">v{version}</span>
-              <button
-                className="text-[10px] text-stone-400 hover:text-stone-700 transition-colors disabled:opacity-50"
-                onClick={handleRestore}
-                disabled={restoring}
-              >
-                {restoring ? '恢复中...' : '恢复'}
-              </button>
             </>
           )}
-          <div className="w-px h-4 bg-[#E8E8E6]" />
-          <button
-            className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-              showComments
-                ? 'text-stone-900 bg-stone-100'
-                : 'text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4]'
-            }`}
-            onClick={() => setShowComments((v) => !v)}
-          >
-            评论
-          </button>
-          <div className="w-px h-4 bg-[#E8E8E6]" />
-          <button
-            className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-              showAttachments
-                ? 'text-stone-900 bg-stone-100'
-                : 'text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4]'
-            }`}
-            onClick={() => setShowAttachments((v) => !v)}
-          >
-            附件
-          </button>
-          <div className="w-px h-4 bg-[#E8E8E6]" />
-          <button
-            className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-              showAuditLog
-                ? 'text-stone-900 bg-stone-100'
-                : 'text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4]'
-            }`}
-            onClick={() => setShowAuditLog((v) => !v)}
-          >
-            审计日志
-          </button>
           <div className="w-px h-4 bg-[#E8E8E6]" />
           <button
             className="px-3 py-1.5 text-xs font-medium text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4] rounded-lg transition-colors"
@@ -860,24 +793,6 @@ export default function DocumentEditor({
             </div>
           </LexicalComposer>
         </div>
-        <CommentPanel
-          docId={document.id}
-          apiFetch={apiFetch}
-          open={showComments}
-          onToggle={() => setShowComments(false)}
-        />
-        <AttachmentPanel
-          docId={document.id}
-          apiFetch={apiFetch}
-          open={showAttachments}
-          onToggle={() => setShowAttachments(false)}
-        />
-        <AuditLogPanel
-          docId={document.id}
-          apiFetch={apiFetch}
-          open={showAuditLog}
-          onToggle={() => setShowAuditLog(false)}
-        />
         <ShareLinkDialog
           docId={document.id}
           apiFetch={apiFetch}

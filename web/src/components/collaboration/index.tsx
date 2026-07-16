@@ -6,6 +6,7 @@ import DocumentEditor from './document-editor';
 import DocumentList from './document-list';
 import type { DocumentNode, FolderNode } from './folder-tree';
 import ShareDialog from './share-dialog';
+import SidePanelBar, { PanelKey } from './side-panel-bar';
 
 interface DocumentData {
   id: string;
@@ -42,6 +43,22 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
   const appliedRuleConfigRef = useRef<Record<string, unknown> | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   const [shareTarget, setShareTarget] = useState<DocumentNode | null>(null);
+  const [activePanel, setActivePanel] = useState<PanelKey | null>(null);
+
+  const currentUserId = useMemo(() => {
+    try {
+      const userInfo = JSON.parse(localStorage.getItem('userInfo') || 'null');
+      return userInfo?.id || userInfo?.user_id || null;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const isOwner = useMemo(() => {
+    if (!selectedId) return false;
+    const doc = documents.find((d) => d.id === selectedId);
+    return !!doc?.created_by && doc.created_by === currentUserId;
+  }, [documents, selectedId, currentUserId]);
 
   // Extract raw JWT token (strip "Bearer " prefix) for WebSocket auth
   const wsToken = useMemo(() => {
@@ -188,8 +205,6 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
         }}
         onCreateFolder={handleCreateFolder}
         onDeleteFolder={handleDeleteFolder}
-        onApplyFormatRule={handleApplyFormatRule}
-        applyingRuleId={applyingRuleId}
         onShare={setShareTarget}
         collapsed={collapsed}
       />
@@ -246,6 +261,17 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
           </div>
         )}
       </div>
+      {selectedDoc && (
+        <SidePanelBar
+          docId={selectedDoc.id}
+          apiFetch={apiFetch}
+          activePanel={activePanel}
+          onChange={setActivePanel}
+          isOwner={isOwner}
+          onApplyFormatRule={handleApplyFormatRule}
+          applyingRuleId={applyingRuleId}
+        />
+      )}
       {shareTarget && (
         <ShareDialog
           open={!!shareTarget}

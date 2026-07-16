@@ -1,16 +1,8 @@
 import { CendTooltip } from '@/components/ui/tooltip';
 import { FileUp, FolderPlus } from 'lucide-react';
-import { useCallback, useState } from 'react';
+import { useState } from 'react';
 import DocxImportDialog from './docx-import-dialog';
 import FolderTree, { DocumentNode, FolderNode } from './folder-tree';
-import FormatRulePanel from './format-rule-panel';
-
-interface FormatRule {
-  id: string;
-  name: string;
-  description: string;
-  config: Record<string, unknown>;
-}
 
 interface Props {
   selectedId: string | null;
@@ -23,8 +15,6 @@ interface Props {
   onCreateFolder: (name: string, parentId: string | null) => Promise<void>;
   onDeleteFolder: (folderId: string) => Promise<void>;
   onShare: (doc: DocumentNode) => void;
-  onApplyFormatRule?: (rule: FormatRule) => void;
-  applyingRuleId?: string | null;
   collapsed?: boolean;
 }
 
@@ -48,8 +38,6 @@ export default function DocumentList({
   onCreateFolder,
   onDeleteFolder,
   onShare,
-  onApplyFormatRule,
-  applyingRuleId,
   collapsed = false,
 }: Props) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -129,13 +117,6 @@ export default function DocumentList({
     setNewFolderName('');
     setShowNewFolder(false);
   };
-
-  const handleApplyRule = useCallback(
-    (rule: FormatRule) => {
-      onApplyFormatRule?.(rule);
-    },
-    [onApplyFormatRule],
-  );
 
   return (
     <div
@@ -243,14 +224,6 @@ export default function DocumentList({
           onClose={() => setShowImport(false)}
         />
       )}
-
-      {/* Format Rules Section */}
-      <FormatRulePanel
-        apiFetch={apiFetch}
-        selectedDocId={selectedId}
-        onApplyRule={handleApplyRule}
-        applyingRuleId={applyingRuleId}
-      />
 
       {/* Delete confirmation */}
       {!!deleteTarget && (
