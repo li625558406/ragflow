@@ -305,7 +305,7 @@ export default function CommentPanel({
   if (!open) return null;
 
   return (
-    <div className="w-72 shrink-0 border-l border-stone-200 flex flex-col bg-white h-full">
+    <div className="w-full flex flex-col bg-white h-full">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2.5 border-b border-stone-100">
         <div className="flex items-center gap-1.5">

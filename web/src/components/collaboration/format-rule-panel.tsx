@@ -52,6 +52,7 @@ interface Props {
   selectedDocId?: string | null;
   onApplyRule?: (rule: FormatRule) => void;
   applyingRuleId?: string | null;
+  onClose?: () => void;
 }
 
 const DEFAULT_STYLE_RULES: StyleRule[] = [
@@ -315,12 +316,12 @@ export default function FormatRulePanel({
   selectedDocId,
   onApplyRule,
   applyingRuleId,
+  onClose,
 }: Props) {
   const [rules, setRules] = useState<FormatRule[]>([]);
   const [loading, setLoading] = useState(false);
   const [editingRule, setEditingRule] = useState<FormatRule | null>(null);
   const [showDialog, setShowDialog] = useState(false);
-  const [collapsed, setCollapsed] = useState(true);
 
   // Form state
   const [formName, setFormName] = useState('');
@@ -470,121 +471,127 @@ export default function FormatRulePanel({
 
   return (
     <>
-      {/* Collapsible Rules Panel */}
-      <div className="border-t border-[#E8E8E6]">
-        <button
-          className="w-full px-3 py-2 text-xs text-[#333333] hover:text-[#000000] hover:bg-[#F5F5F4] flex items-center gap-1.5 transition-colors"
-          onClick={() => setCollapsed(!collapsed)}
-        >
-          <svg
-            className="w-3.5 h-3.5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M4 6h16M4 12h16M4 18h7"
-            />
-          </svg>
-          格式规则
-          <svg
-            className={`w-3 h-3 ml-auto transition-transform ${collapsed ? '' : 'rotate-180'}`}
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M19 9l-7 7-7-7"
-            />
-          </svg>
-        </button>
-        {!collapsed && (
-          <div className="px-2 pb-2">
-            <div className="flex items-center justify-between px-1 mb-1">
-              <span className="text-[10px] text-[#333333]">
-                {rules.length === 0 ? '暂无规则' : `${rules.length} 条规则`}
-              </span>
+      <div className="w-full h-full flex flex-col bg-white">
+        {/* Header with title + close button */}
+        <div className="flex items-center justify-between px-3 py-2.5 border-b border-stone-100">
+          <div className="flex items-center gap-1.5 text-stone-700">
+            <svg
+              className="w-3.5 h-3.5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M4 6h16M4 12h16M4 18h7"
+              />
+            </svg>
+            <span className="text-xs font-semibold">格式规则</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              className="text-[10px] text-[#000000] hover:text-[#000000] font-medium px-1"
+              onClick={openCreate}
+            >
+              + 新建
+            </button>
+            {onClose && (
               <button
-                className="text-[10px] text-[#000000] hover:text-[#000000] font-medium"
-                onClick={openCreate}
+                className="size-6 flex items-center justify-center rounded text-stone-400 hover:text-stone-700 hover:bg-stone-100"
+                onClick={onClose}
               >
-                + 新建
+                <svg
+                  className="w-3.5 h-3.5"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M6 18L18 6M6 6l12 12"
+                  />
+                </svg>
               </button>
-            </div>
-            {loading ? (
-              <div className="px-1 text-[10px] text-[#525252]">加载中...</div>
-            ) : (
-              <div className="space-y-0.5">
-                {rules.map((rule) => (
-                  <div
-                    key={rule.id}
-                    className="flex items-center justify-between px-1 py-1 rounded hover:bg-[#F5F5F4] group"
-                  >
-                    <CendTooltip
-                      title={`${rule.name}${rule.description ? ` — ${rule.description}` : ''}`}
-                    >
-                      <span className="text-xs text-[#1a1a1a] truncate flex-1">
-                        {rule.name}
-                        {rule.permission === 'team' && (
-                          <span className="ml-1 text-[9px] px-1 py-px rounded bg-[#fef3c7] text-[#d97706] border border-[#fde68a]">
-                            团队
-                          </span>
-                        )}
-                        {currentUserId &&
-                          rule.created_by &&
-                          rule.created_by !== currentUserId && (
-                            <span className="ml-1 text-[9px] px-1 py-px rounded bg-[#F5F5F4] text-[#000000] border border-[#E8E8E6]">
-                              共享
-                            </span>
-                          )}
-                      </span>
-                    </CendTooltip>
-                    <div className="hidden group-hover:flex items-center gap-0.5">
-                      {selectedDocId && onApplyRule && (
-                        <button
-                          className="text-[10px] text-[#000000] hover:text-[#000000] disabled:opacity-30 px-1"
-                          disabled={applyingRuleId === rule.id}
-                          onClick={() => onApplyRule(rule)}
-                        >
-                          {applyingRuleId === rule.id ? '...' : '应用'}
-                        </button>
-                      )}
-                      {rule.created_by === currentUserId ? (
-                        <>
-                          <button
-                            className="text-[10px] text-[#333333] hover:text-[#333333] px-1"
-                            onClick={() => openEdit(rule)}
-                          >
-                            编辑
-                          </button>
-                          <button
-                            className="text-[10px] text-[#333333] hover:text-[#ef4444] px-1"
-                            onClick={() => setDeleteRuleTarget(rule)}
-                          >
-                            删除
-                          </button>
-                        </>
-                      ) : (
-                        <button
-                          className="text-[10px] text-[#333333] hover:text-[#333333] px-1"
-                          onClick={() => openEdit(rule, true)}
-                        >
-                          查看
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
             )}
           </div>
-        )}
+        </div>
+        {/* Body — rules list */}
+        <div className="flex-1 overflow-y-auto px-2 py-2">
+          {loading ? (
+            <div className="text-[10px] text-[#525252]">加载中...</div>
+          ) : rules.length === 0 ? (
+            <div className="text-center py-4 text-xs text-stone-400">
+              暂无规则
+            </div>
+          ) : (
+            <div className="space-y-0.5">
+              {rules.map((rule) => (
+                <div
+                  key={rule.id}
+                  className="flex items-center justify-between px-1 py-1 rounded hover:bg-[#F5F5F4] group"
+                >
+                  <CendTooltip
+                    title={`${rule.name}${rule.description ? ` — ${rule.description}` : ''}`}
+                  >
+                    <span className="text-xs text-[#1a1a1a] truncate flex-1">
+                      {rule.name}
+                      {rule.permission === 'team' && (
+                        <span className="ml-1 text-[9px] px-1 py-px rounded bg-[#fef3c7] text-[#d97706] border border-[#fde68a]">
+                          团队
+                        </span>
+                      )}
+                      {currentUserId &&
+                        rule.created_by &&
+                        rule.created_by !== currentUserId && (
+                          <span className="ml-1 text-[9px] px-1 py-px rounded bg-[#F5F5F4] text-[#000000] border border-[#E8E8E6]">
+                            共享
+                          </span>
+                        )}
+                    </span>
+                  </CendTooltip>
+                  <div className="hidden group-hover:flex items-center gap-0.5">
+                    {selectedDocId && onApplyRule && (
+                      <button
+                        className="text-[10px] text-[#000000] hover:text-[#000000] disabled:opacity-30 px-1"
+                        disabled={applyingRuleId === rule.id}
+                        onClick={() => onApplyRule(rule)}
+                      >
+                        {applyingRuleId === rule.id ? '...' : '应用'}
+                      </button>
+                    )}
+                    {rule.created_by === currentUserId ? (
+                      <>
+                        <button
+                          className="text-[10px] text-[#333333] hover:text-[#333333] px-1"
+                          onClick={() => openEdit(rule)}
+                        >
+                          编辑
+                        </button>
+                        <button
+                          className="text-[10px] text-[#333333] hover:text-[#ef4444] px-1"
+                          onClick={() => setDeleteRuleTarget(rule)}
+                        >
+                          删除
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        className="text-[10px] text-[#333333] hover:text-[#333333] px-1"
+                        onClick={() => openEdit(rule, true)}
+                      >
+                        查看
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Create/Edit Dialog */}
