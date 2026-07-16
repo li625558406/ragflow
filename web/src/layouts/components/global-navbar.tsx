@@ -16,6 +16,7 @@ const PathMap = {
   [Routes.Memories]: [Routes.Memories, Routes.Memory, Routes.MemoryMessage],
   [Routes.Files]: [Routes.Files],
   [Routes.ScheduledTasks]: [Routes.ScheduledTasks, Routes.ScheduledTaskLogs],
+  [Routes.Crawl4ai]: [Routes.Crawl4ai],
 } as const;
 const menuItems = [
   { path: Routes.Root, name: 'header.Root', icon: LucideHouse },
@@ -38,6 +39,7 @@ const menuItems = [
   { path: Routes.Memories, name: 'header.memories' /* icon: Cpu, */ },
   { path: Routes.Files, name: 'header.fileManager' /* icon: File, */ },
   { path: Routes.ScheduledTasks, name: 'header.scheduledTasks' },
+  { path: Routes.Crawl4ai, name: 'header.crawl4ai' },
 ];
 
 const GlobalNavbar = supportsCssAnchor

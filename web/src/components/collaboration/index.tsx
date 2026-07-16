@@ -1,19 +1,11 @@
 import { CendTooltip } from '@/components/ui/tooltip';
+import { getAuthorization } from '@/utils/authorization-util';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import DocumentEditor from './document-editor';
 import DocumentList from './document-list';
-
-interface DocumentItem {
-  id: string;
-  name: string;
-  file_type: string;
-  agent_id: string;
-  create_time: string;
-  update_time: string;
-  created_by?: string;
-  permission?: string;
-}
+import type { DocumentNode, FolderNode } from './folder-tree';
+import ShareDialog from './share-dialog';
 
 interface DocumentData {
   id: string;
@@ -40,7 +32,8 @@ interface Props {
 }
 
 export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
-  const [documents, setDocuments] = useState<DocumentItem[]>([]);
+  const [documents, setDocuments] = useState<DocumentNode[]>([]);
+  const [folders, setFolders] = useState<FolderNode[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedDoc, setSelectedDoc] = useState<DocumentData | null>(null);
@@ -48,6 +41,14 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
   const [applyingRuleId, setApplyingRuleId] = useState<string | null>(null);
   const appliedRuleConfigRef = useRef<Record<string, unknown> | null>(null);
   const [collapsed, setCollapsed] = useState(false);
+  const [shareTarget, setShareTarget] = useState<DocumentNode | null>(null);
+
+  // Extract raw JWT token (strip "Bearer " prefix) for WebSocket auth
+  const wsToken = useMemo(() => {
+    const auth = getAuthorization();
+    if (!auth) return undefined;
+    return auth.startsWith('Bearer ') ? auth.slice(7) : auth;
+  }, []);
 
   const apiFetchRef = useRef(apiFetch);
   apiFetchRef.current = apiFetch;
@@ -67,18 +68,73 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
     }
   }, []);
 
+  const loadFolders = useCallback(async () => {
+    try {
+      const resp = await apiFetchRef.current('/api/v1/collaboration/folders');
+      const result = await resp.json();
+      if (result.code === 0) {
+        setFolders(result.data || []);
+      }
+    } catch (e) {
+      console.error('加载文件夹列表失败:', e);
+    }
+  }, []);
+
   useEffect(() => {
     loadDocuments();
-  }, [loadDocuments]);
+    loadFolders();
+  }, [loadDocuments, loadFolders]);
 
   // Refresh when parent signals (e.g. after creating a doc from chat)
   useEffect(() => {
     if (refreshToken !== undefined && refreshToken > 0) {
       loadDocuments();
+      loadFolders();
     }
   }, [refreshToken]);
 
-  const handleSelect = useCallback(async (doc: DocumentItem | null) => {
+  const handleCreateFolder = useCallback(
+    async (name: string, parentId: string | null) => {
+      try {
+        const resp = await apiFetchRef.current(
+          '/api/v1/collaboration/folders',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, parent_id: parentId }),
+          },
+        );
+        const result = await resp.json();
+        if (result.code === 0) {
+          loadFolders();
+        }
+      } catch (e) {
+        console.error('创建文件夹失败:', e);
+      }
+    },
+    [loadFolders],
+  );
+
+  const handleDeleteFolder = useCallback(
+    async (folderId: string) => {
+      try {
+        const resp = await apiFetchRef.current(
+          `/api/v1/collaboration/folders/${folderId}`,
+          { method: 'DELETE' },
+        );
+        const result = await resp.json();
+        if (result.code === 0) {
+          loadFolders();
+          loadDocuments();
+        }
+      } catch (e) {
+        console.error('删除文件夹失败:', e);
+      }
+    },
+    [loadFolders, loadDocuments],
+  );
+
+  const handleSelect = useCallback(async (doc: DocumentNode | null) => {
     if (!doc) {
       setSelectedId(null);
       setSelectedDoc(null);
@@ -123,11 +179,18 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
         selectedId={selectedId}
         onSelect={handleSelect}
         documents={documents}
+        folders={folders}
         loading={loading}
         apiFetch={apiFetch}
-        onRefresh={loadDocuments}
+        onRefresh={() => {
+          loadDocuments();
+          loadFolders();
+        }}
+        onCreateFolder={handleCreateFolder}
+        onDeleteFolder={handleDeleteFolder}
         onApplyFormatRule={handleApplyFormatRule}
         applyingRuleId={applyingRuleId}
+        onShare={setShareTarget}
         collapsed={collapsed}
       />
       <CendTooltip title={collapsed ? '展开侧边栏' : '收起侧边栏'}>
@@ -160,6 +223,7 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
             onUpdate={handleDocUpdate}
             appliedRuleConfig={appliedRuleConfigRef.current}
             onRuleApplied={handleRuleApplied}
+            token={wsToken}
           />
         ) : (
           <div className="flex-1 flex items-center justify-center">
@@ -182,6 +246,15 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
           </div>
         )}
       </div>
+      {shareTarget && (
+        <ShareDialog
+          open={!!shareTarget}
+          docId={shareTarget.id}
+          docName={shareTarget.name}
+          apiFetch={apiFetch}
+          onClose={() => setShareTarget(null)}
+        />
+      )}
     </div>
   );
 }

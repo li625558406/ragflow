@@ -14,13 +14,46 @@
 #  limitations under the License.
 #
 
-from api.db.db_models import CollaborationDocument, CollaborationFormatRule
+from api.db.db_models import (
+    CollaborationAttachment,
+    CollaborationAuditLog,
+    CollaborationComment,
+    CollaborationDocument,
+    CollaborationDocumentACL,
+    CollaborationFolder,
+    CollaborationFormatRule,
+    CollaborationShareLink,
+)
 from api.db.services.common_service import CommonService
+
+
+class CollaborationCommentService(CommonService):
+    model = CollaborationComment
 
 
 class CollaborationDocumentService(CommonService):
     model = CollaborationDocument
 
 
+class CollaborationFolderService(CommonService):
+    model = CollaborationFolder
+
+
 class CollaborationFormatRuleService(CommonService):
     model = CollaborationFormatRule
+
+
+class CollaborationDocumentACLService(CommonService):
+    model = CollaborationDocumentACL
+
+
+class CollaborationShareLinkService(CommonService):
+    model = CollaborationShareLink
+
+
+class CollaborationAttachmentService(CommonService):
+    model = CollaborationAttachment
+
+
+class CollaborationAuditLogService(CommonService):
+    model = CollaborationAuditLog

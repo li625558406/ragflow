@@ -33,6 +33,7 @@ from peewee import (
     OperationalError,
     ProgrammingError,
     BigIntegerField,
+    BlobField,
     BooleanField,
     CharField,
     CompositeKey,
@@ -1476,6 +1477,53 @@ class CrawlerState(DataBaseModel):
         )
 
 
+class CrawlerTask(DataBaseModel):
+    """crawl4ai 独立爬虫任务定义 (crawl4ai-service 体系, 区别于旧 scheduled_task)"""
+    id = CharField(max_length=32, primary_key=True)
+    tenant_id = CharField(max_length=32, null=False, index=True)
+    name = CharField(max_length=255, null=False, help_text="task display name")
+    description = TextField(null=True, default="", help_text="task description")
+    site_id = CharField(max_length=128, null=False, index=True, help_text="site identifier, e.g. ccgp_zygg")
+    target_url = TextField(null=False, help_text="listing page URL of the target section/tab")
+    page_url_template = TextField(null=True, default="", help_text="pagination URL template containing {page}, empty = single page")
+    start_page = IntegerField(default=1, help_text="first page number")
+    max_pages = IntegerField(default=1, help_text="max pages to crawl per run")
+    extraction_schema = JSONField(null=False, default={}, help_text="JsonCssExtractionStrategy schema for listing page: {baseSelector, fields}")
+    detail_config = JSONField(null=False, default={}, help_text="detail page config: {enabled, url_field, base_url, content_selector, attachment_extensions}")
+    headers = JSONField(null=False, default={}, help_text="custom request headers")
+    output_targets = JSONField(null=False, default=["db"], help_text='["db","kb"]')
+    kb_id = CharField(max_length=32, null=True, index=True, default="", help_text="target knowledge base ID")
+    parser_id = CharField(max_length=32, null=True, default="naive", help_text="KB parser for uploaded docs")
+    enabled = BooleanField(default=True)
+    last_run_time = BigIntegerField(null=True, help_text="timestamp of last execution")
+    last_run_status = CharField(max_length=16, null=True, default="", help_text="running|success|fail")
+    last_run_summary = JSONField(null=False, default={}, help_text="last run stats: pages/items_found/items_new/errors")
+
+    class Meta:
+        db_table = "crawler_task"
+
+
+class CrawlerResult(DataBaseModel):
+    """crawl4ai 采集结果 (正文 markdown + 结构化 JSON + 附件 + KB 关联)"""
+    id = CharField(max_length=32, primary_key=True, help_text="md5(site_id|source_url) for dedup")
+    task_id = CharField(max_length=32, null=False, index=True)
+    tenant_id = CharField(max_length=32, null=False, index=True)
+    site_id = CharField(max_length=128, null=False, index=True)
+    title = CharField(max_length=1024, null=False, default="")
+    source_url = TextField(null=False)
+    publish_date = CharField(max_length=64, null=True, index=True, default="", help_text="publish date string from listing")
+    markdown = LongTextField(null=True, default="", help_text="detail page content as markdown")
+    extracted_json = JSONField(null=False, default={}, help_text="structured fields extracted from listing/detail")
+    attachments = JSONField(null=False, default=[], help_text="[{file_name, file_url, kb_doc_id, status}]")
+    status = CharField(max_length=16, null=False, index=True, default="raw", help_text="raw|kb_uploaded|failed")
+    kb_doc_id = CharField(max_length=32, null=True, default="", help_text="RAGFlow KB document ID of uploaded markdown")
+    error_msg = TextField(null=True, default="")
+    crawled_at = BigIntegerField(null=True, index=True, help_text="crawl timestamp (ms)")
+
+    class Meta:
+        db_table = "crawler_result"
+
+
 class CollaborationDocument(DataBaseModel):
     id = CharField(max_length=32, primary_key=True)
     name = CharField(max_length=255, null=False, index=True, help_text="document name")
@@ -1487,9 +1535,101 @@ class CollaborationDocument(DataBaseModel):
     created_by = CharField(max_length=32, null=False, index=True)
     agent_id = CharField(max_length=32, null=True, index=True)
     permission = CharField(max_length=16, null=False, help_text="me|team", default="me", index=True)
+    folder_id = CharField(max_length=32, null=True, index=True, help_text="parent folder id")
+    sort_order = IntegerField(default=0, help_text="sort order within folder")
+    ydoc = BlobField(null=True, help_text="Yjs binary state for real-time collaboration sync")
+    version = IntegerField(default=0, help_text="monotonic version counter for snapshot history")
 
     class Meta:
         db_table = "collaboration_document"
+
+
+class CollaborationFolder(DataBaseModel):
+    id = CharField(max_length=32, primary_key=True)
+    name = CharField(max_length=255, null=False, help_text="folder name")
+    parent_id = CharField(max_length=32, null=True, index=True, help_text="parent folder id, null for root")
+    tenant_id = CharField(max_length=32, null=False, index=True)
+    created_by = CharField(max_length=32, null=False, index=True)
+    sort_order = IntegerField(default=0, help_text="sort order among siblings")
+    create_time = BigIntegerField(null=False, default=0)
+
+    class Meta:
+        db_table = "collaboration_folder"
+
+
+class CollaborationDocumentACL(DataBaseModel):
+    id = CharField(max_length=32, primary_key=True)
+    document_id = CharField(max_length=32, null=False, index=True, help_text="document id")
+    user_id = CharField(max_length=32, null=False, index=True, help_text="collaborator user/tenant id")
+    role = CharField(max_length=16, null=False, default="viewer", help_text="owner|editor|viewer|commenter", index=True)
+    granted_by = CharField(max_length=32, null=False, help_text="who granted this access")
+    create_time = BigIntegerField(null=False, default=0)
+
+    class Meta:
+        db_table = "collaboration_document_acl"
+        indexes = (
+            (("document_id", "user_id"), True),  # UNIQUE
+        )
+
+
+class CollaborationComment(DataBaseModel):
+    id = CharField(max_length=32, primary_key=True)
+    document_id = CharField(max_length=32, null=False, index=True)
+    user_id = CharField(max_length=32, null=False, index=True)
+    parent_comment_id = CharField(max_length=32, null=True, index=True)
+    anchor_block_key = CharField(max_length=64, null=True)
+    anchor_offset_start = IntegerField(null=True)
+    anchor_offset_end = IntegerField(null=True)
+    content = TextField(null=False)
+    resolved = BooleanField(default=False, index=True)
+    deleted_at = BigIntegerField(null=True)
+    create_time = BigIntegerField(null=False, default=0)
+    update_time = BigIntegerField(null=False, default=0)
+
+    class Meta:
+        db_table = "collaboration_comment"
+
+
+class CollaborationShareLink(DataBaseModel):
+    id = CharField(max_length=32, primary_key=True)
+    document_id = CharField(max_length=32, null=False, index=True, unique=True)
+    token = CharField(max_length=32, null=False, unique=True, index=True)
+    permission = CharField(max_length=16, null=False, default="view")
+    password_hash = CharField(max_length=256, null=True)
+    expires_at = BigIntegerField(null=True)
+    created_by = CharField(max_length=32, null=False)
+    create_time = BigIntegerField(null=False, default=0)
+    update_time = BigIntegerField(null=False, default=0)
+
+    class Meta:
+        db_table = "collaboration_share_link"
+
+
+class CollaborationAttachment(DataBaseModel):
+    id = CharField(max_length=32, primary_key=True)
+    document_id = CharField(max_length=32, null=False, index=True)
+    file_name = CharField(max_length=256, null=False)
+    file_size = BigIntegerField(null=False, default=0)
+    mime_type = CharField(max_length=128, null=False)
+    storage_key = CharField(max_length=512, null=False)
+    uploader_id = CharField(max_length=32, null=False, index=True)
+    create_time = BigIntegerField(null=False, default=0)
+
+    class Meta:
+        db_table = "collaboration_attachment"
+
+
+class CollaborationAuditLog(DataBaseModel):
+    id = CharField(max_length=32, primary_key=True)
+    user_id = CharField(max_length=32, null=False, index=True)
+    document_id = CharField(max_length=32, null=True, index=True)
+    action = CharField(max_length=32, null=False, index=True)
+    detail = JSONField(null=True)
+    ip_address = CharField(max_length=64, null=True)
+    create_time = BigIntegerField(null=False, default=0)
+
+    class Meta:
+        db_table = "collaboration_audit_log"
 
 
 class CollaborationFormatRule(DataBaseModel):
@@ -2197,6 +2337,15 @@ def migrate_db():
     alter_db_add_column(migrator, "scheduled_task", "access_token", TextField(null=True, help_text="access token for authenticated crawling", default=""))
     alter_db_add_column(migrator, "collaboration_document", "permission", CharField(max_length=16, null=False, help_text="me|team", default="me", index=True))
     alter_db_add_column(migrator, "collaboration_format_rule", "permission", CharField(max_length=16, null=False, help_text="me|team", default="me", index=True))
+    alter_db_add_column(migrator, "collaboration_document", "folder_id", CharField(max_length=32, null=True, index=True, help_text="parent folder id"))
+    alter_db_add_column(migrator, "collaboration_document", "sort_order", IntegerField(default=0, help_text="sort order within folder"))
+    alter_db_add_column(migrator, "collaboration_document", "ydoc", BlobField(null=True, help_text="Yjs binary state for real-time sync"))
+    alter_db_add_column(migrator, "collaboration_document", "version", IntegerField(default=0, help_text="monotonic version for snapshot history"))
+    migrator.create_table(CollaborationDocumentACL, safe=True)
+    migrator.create_table(CollaborationComment, safe=True)
+    migrator.create_table(CollaborationShareLink, safe=True)
+    migrator.create_table(CollaborationAttachment, safe=True)
+    migrator.create_table(CollaborationAuditLog, safe=True)
     alter_db_column_type(migrator, "document", "size", BigIntegerField(default=0, index=True))
     alter_db_column_type(migrator, "file", "size", BigIntegerField(default=0, index=True))
     alter_db_add_column(migrator, "bid_project", "fetched_at", DateTimeField(null=True, help_text="搜索缓存获取时间"))

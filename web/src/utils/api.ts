@@ -388,6 +388,20 @@ export default {
   updateCrawlerState: (id: string) =>
     `${restAPIv1}/scheduled-tasks/${id}/state`,
 
+  // crawl4ai crawler
+  listCrawl4aiTasks: `${restAPIv1}/crawl4ai/tasks`,
+  createCrawl4aiTask: `${restAPIv1}/crawl4ai/tasks`,
+  getCrawl4aiTask: (id: string) => `${restAPIv1}/crawl4ai/tasks/${id}`,
+  updateCrawl4aiTask: (id: string) => `${restAPIv1}/crawl4ai/tasks/${id}`,
+  deleteCrawl4aiTask: (id: string) => `${restAPIv1}/crawl4ai/tasks/${id}`,
+  triggerCrawl4aiTask: (id: string) =>
+    `${restAPIv1}/crawl4ai/tasks/${id}/trigger`,
+  getCrawl4aiTaskStatus: (id: string) =>
+    `${restAPIv1}/crawl4ai/tasks/${id}/status`,
+  listCrawl4aiResults: `${restAPIv1}/crawl4ai/results`,
+  getCrawl4aiResult: (id: string) => `${restAPIv1}/crawl4ai/results/${id}`,
+  listCrawl4aiSites: `${restAPIv1}/crawl4ai/sites`,
+
   // WeChat MP
   listWechatMpAccounts: `${restAPIv1}/wechat-mp/accounts`,
   addWechatMpAccount: `${restAPIv1}/wechat-mp/accounts`,

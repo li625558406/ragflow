@@ -1,17 +1,9 @@
 import { CendTooltip } from '@/components/ui/tooltip';
+import { FileUp, FolderPlus } from 'lucide-react';
 import { useCallback, useState } from 'react';
+import DocxImportDialog from './docx-import-dialog';
+import FolderTree, { DocumentNode, FolderNode } from './folder-tree';
 import FormatRulePanel from './format-rule-panel';
-
-interface DocumentItem {
-  id: string;
-  name: string;
-  file_type: string;
-  agent_id: string;
-  create_time: string;
-  update_time: string;
-  created_by?: string;
-  permission?: string;
-}
 
 interface FormatRule {
   id: string;
@@ -22,11 +14,15 @@ interface FormatRule {
 
 interface Props {
   selectedId: string | null;
-  onSelect: (doc: DocumentItem) => void;
-  documents: DocumentItem[];
+  onSelect: (doc: DocumentNode) => void;
+  documents: DocumentNode[];
+  folders: FolderNode[];
   loading: boolean;
   apiFetch: (url: string, options?: RequestInit) => Promise<Response>;
   onRefresh: () => void;
+  onCreateFolder: (name: string, parentId: string | null) => Promise<void>;
+  onDeleteFolder: (folderId: string) => Promise<void>;
+  onShare: (doc: DocumentNode) => void;
   onApplyFormatRule?: (rule: FormatRule) => void;
   applyingRuleId?: string | null;
   collapsed?: boolean;
@@ -45,19 +41,34 @@ export default function DocumentList({
   selectedId,
   onSelect,
   documents,
+  folders,
   loading,
   apiFetch,
   onRefresh,
+  onCreateFolder,
+  onDeleteFolder,
+  onShare,
   onApplyFormatRule,
   applyingRuleId,
   collapsed = false,
 }: Props) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
-  const [deleteTarget, setDeleteTarget] = useState<DocumentItem | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<DocumentNode | null>(null);
+  const [showImport, setShowImport] = useState(false);
+  const [showNewFolder, setShowNewFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
   const currentUserId = getCurrentUserId();
 
-  const handleRename = async (docId: string) => {
+  const handleRenameStart = (docId: string) => {
+    const doc = documents.find((d) => d.id === docId);
+    if (doc) {
+      setRenamingId(docId);
+      setRenameValue(doc.name);
+    }
+  };
+
+  const handleRenameSubmit = async (docId: string) => {
     if (!renameValue.trim()) {
       setRenamingId(null);
       return;
@@ -75,6 +86,10 @@ export default function DocumentList({
     }
   };
 
+  const handleRenameCancel = () => {
+    setRenamingId(null);
+  };
+
   const handleDeleteConfirm = async () => {
     if (!deleteTarget) return;
     try {
@@ -82,7 +97,7 @@ export default function DocumentList({
         method: 'DELETE',
       });
       if (selectedId === deleteTarget.id) {
-        onSelect(null as unknown as DocumentItem);
+        onSelect(null as unknown as DocumentNode);
       }
       setDeleteTarget(null);
       onRefresh();
@@ -105,6 +120,16 @@ export default function DocumentList({
     }
   };
 
+  const handleCreateFolder = async () => {
+    if (!newFolderName.trim()) {
+      setShowNewFolder(false);
+      return;
+    }
+    await onCreateFolder(newFolderName.trim(), null);
+    setNewFolderName('');
+    setShowNewFolder(false);
+  };
+
   const handleApplyRule = useCallback(
     (rule: FormatRule) => {
       onApplyFormatRule?.(rule);
@@ -115,203 +140,109 @@ export default function DocumentList({
   return (
     <div
       className={`shrink-0 border-r border-[#D4D4D4] bg-white flex flex-col transition-[width] duration-300 ease-in-out overflow-hidden ${
-        collapsed ? 'w-0 border-r-0' : 'w-56'
+        collapsed ? 'w-0 border-r-0' : 'w-60'
       }`}
     >
       {/* Header */}
-      <div className="flex items-center gap-2 px-4 pt-4 pb-2 whitespace-nowrap">
-        <span className="text-[#333333] text-[15px] font-semibold tracking-widest uppercase">
-          文档列表
-        </span>
-        {documents.length > 0 && (
-          <span className="text-xs text-[#8A8A8A]">
-            共 {documents.length} 条
+      <div className="flex items-center justify-between px-4 pt-4 pb-2 whitespace-nowrap">
+        <div className="flex items-center gap-2">
+          <span className="text-[#333333] text-[13px] font-semibold tracking-widest uppercase">
+            文档
           </span>
-        )}
+          {(documents.length > 0 || folders.length > 0) && (
+            <span className="text-[10px] text-[#8A8A8A]">
+              {documents.length + folders.length}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-0.5">
+          <CendTooltip title="导入 Word">
+            <button
+              className="w-6 h-6 flex items-center justify-center rounded text-black/40 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
+              onClick={() => setShowImport(true)}
+            >
+              <FileUp className="size-3.5" />
+            </button>
+          </CendTooltip>
+          <CendTooltip title="新建文件夹">
+            <button
+              className="w-6 h-6 flex items-center justify-center rounded text-black/40 hover:text-amber-500 hover:bg-amber-50 transition-colors"
+              onClick={() => setShowNewFolder(true)}
+            >
+              <FolderPlus className="size-3.5" />
+            </button>
+          </CendTooltip>
+        </div>
       </div>
 
-      {/* Document List */}
-      <div className="flex-1 overflow-y-auto px-2 space-y-0.5 pb-4">
-        {loading && documents.length === 0 ? (
-          <div className="flex items-center justify-center py-8">
-            <div className="w-5 h-5 border-2 border-[#A3A3A3] border-t-[#000000] rounded-full animate-spin" />
-          </div>
-        ) : documents.length === 0 ? (
-          <div className="text-center py-8 text-xs text-[#333333]">
-            暂无文档
-          </div>
-        ) : (
-          <>
-            {documents.map((doc, idx) => (
-              <div
-                key={doc.id}
-                role="button"
-                tabIndex={0}
-                className={`cs-list-enter cs-list-d${Math.min(idx, 7)} w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer transition text-left group whitespace-nowrap ${
-                  selectedId === doc.id
-                    ? 'bg-[#EAEAEA] text-[#000000]'
-                    : 'text-[#333333] hover:bg-[#EAEAEA] hover:text-[#000000]'
-                }`}
-                onClick={() => onSelect(doc)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') onSelect(doc);
-                }}
-              >
-                <div
-                  className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${
-                    selectedId === doc.id ? 'bg-white' : 'bg-[#EAEAEA]'
-                  }`}
-                >
-                  <svg
-                    className={`w-4 h-4 ${selectedId === doc.id ? 'text-[#000000]' : 'text-[#333333]'}`}
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={1.5}
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"
-                    />
-                  </svg>
-                </div>
-                <div className="min-w-0 flex-1">
-                  {renamingId === doc.id ? (
-                    <input
-                      type="text"
-                      className="w-full px-2 py-1 text-xs border border-indigo-300 rounded focus:outline-none text-stone-900"
-                      value={renameValue}
-                      onChange={(e) => setRenameValue(e.target.value)}
-                      onBlur={() => handleRename(doc.id)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') handleRename(doc.id);
-                        if (e.key === 'Escape') setRenamingId(null);
-                      }}
-                      autoFocus
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                  ) : (
-                    <div className="flex items-center justify-between">
-                      <span className="text-[15px] font-medium truncate">
-                        {doc.name}
-                      </span>
-                      <div className="opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto transition-opacity flex items-center gap-0.5 ml-1">
-                        {doc.created_by === currentUserId && (
-                          <>
-                            <CendTooltip
-                              title={
-                                doc.permission === 'team'
-                                  ? '团队共享中'
-                                  : '仅自己可见'
-                              }
-                            >
-                              <button
-                                className={`w-7 h-7 flex items-center justify-center rounded ${
-                                  doc.permission === 'team'
-                                    ? 'text-amber-500 hover:text-amber-600 hover:bg-amber-50'
-                                    : 'text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4]'
-                                }`}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleTogglePermission(
-                                    doc.id,
-                                    doc.permission || 'me',
-                                  );
-                                }}
-                              >
-                                {doc.permission === 'team' ? (
-                                  <svg
-                                    className="w-4 h-4"
-                                    fill="currentColor"
-                                    viewBox="0 0 24 24"
-                                  >
-                                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zM7.07 18.28c.43-.9 3.05-1.78 4.93-1.78s4.51.88 4.93 1.78C15.57 19.36 13.86 20 12 20s-3.57-.64-4.93-1.72zm11.29-1.45c-1.43-1.74-4.9-2.33-6.36-2.33s-4.93.59-6.36 2.33C4.62 15.49 4 13.82 4 12c0-4.41 3.59-8 8-8s8 3.59 8 8c0 1.82-.62 3.49-1.64 4.83zM12 6c-1.94 0-3.5 1.56-3.5 3.5S10.06 13 12 13s3.5-1.56 3.5-3.5S13.94 6 12 6zm0 5c-.83 0-1.5-.67-1.5-1.5S11.17 8 12 8s1.5.67 1.5 1.5S12.83 11 12 11z" />
-                                  </svg>
-                                ) : (
-                                  <svg
-                                    className="w-4 h-4"
-                                    fill="currentColor"
-                                    viewBox="0 0 24 24"
-                                  >
-                                    <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM12 17c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z" />
-                                  </svg>
-                                )}
-                              </button>
-                            </CendTooltip>
-                            <CendTooltip title="重命名">
-                              <button
-                                className="w-7 h-7 flex items-center justify-center rounded text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4]"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setRenamingId(doc.id);
-                                  setRenameValue(doc.name);
-                                }}
-                              >
-                                <svg
-                                  className="w-4 h-4"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  viewBox="0 0 24 24"
-                                >
-                                  <path
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                    strokeWidth={2}
-                                    d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                                  />
-                                </svg>
-                              </button>
-                            </CendTooltip>
-                            <CendTooltip title="删除">
-                              <button
-                                className="w-7 h-7 flex items-center justify-center rounded text-[#555555] hover:text-red-500 hover:bg-red-50"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setDeleteTarget(doc);
-                                }}
-                              >
-                                <svg
-                                  className="w-4 h-4"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  viewBox="0 0 24 24"
-                                >
-                                  <path
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                    strokeWidth={2}
-                                    d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                                  />
-                                </svg>
-                              </button>
-                            </CendTooltip>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                  <div className="flex items-center gap-1 mt-0.5">
-                    <span className="text-[11px] text-[#A3A3A3] truncate">
-                      {doc.file_type.toUpperCase()}
-                    </span>
-                    {doc.permission === 'team' && (
-                      <span className="text-[9px] px-1 py-px rounded bg-[#fef3c7] text-[#d97706] border border-[#fde68a]">
-                        团队
-                      </span>
-                    )}
-                    {currentUserId && doc.created_by !== currentUserId && (
-                      <span className="text-[9px] px-1 py-px rounded bg-[#EAEAEA] text-[#000000] border border-[#D4D4D4]">
-                        共享
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </>
-        )}
-      </div>
+      {/* New folder input */}
+      {showNewFolder && (
+        <div className="px-3 pb-2">
+          <input
+            type="text"
+            className="w-full px-2 py-1 text-xs border border-amber-300 rounded focus:outline-none focus:border-amber-400"
+            placeholder="文件夹名称..."
+            value={newFolderName}
+            autoFocus
+            onChange={(e) => setNewFolderName(e.target.value)}
+            onBlur={handleCreateFolder}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleCreateFolder();
+              if (e.key === 'Escape') setShowNewFolder(false);
+            }}
+          />
+        </div>
+      )}
+
+      {/* Tree / Document List */}
+      {loading && documents.length === 0 && folders.length === 0 ? (
+        <div className="flex items-center justify-center py-8">
+          <div className="w-5 h-5 border-2 border-[#A3A3A3] border-t-[#000000] rounded-full animate-spin" />
+        </div>
+      ) : documents.length === 0 && folders.length === 0 ? (
+        <div className="text-center py-8 text-xs text-[#333333]">暂无文档</div>
+      ) : (
+        <FolderTree
+          folders={folders}
+          documents={documents}
+          selectedId={selectedId}
+          onSelect={onSelect}
+          onRename={handleRenameStart}
+          onDelete={setDeleteTarget}
+          onTogglePermission={handleTogglePermission}
+          onShare={onShare}
+          onCreateFolder={(parentId) => {
+            const name = prompt('文件夹名称:');
+            if (name?.trim()) {
+              onCreateFolder(name.trim(), parentId);
+            }
+          }}
+          onDeleteFolder={(folderId) => {
+            if (confirm('确定要删除此文件夹吗？其中的文档将移至根目录。')) {
+              onDeleteFolder(folderId);
+            }
+          }}
+          renamingId={renamingId}
+          renameValue={renameValue}
+          onRenameValueChange={setRenameValue}
+          onRenameSubmit={handleRenameSubmit}
+          onRenameCancel={handleRenameCancel}
+          currentUserId={currentUserId}
+          collapsed={collapsed}
+        />
+      )}
+
+      {/* Import dialog */}
+      {showImport && (
+        <DocxImportDialog
+          apiFetch={apiFetch}
+          onImported={() => {
+            setShowImport(false);
+            onRefresh();
+          }}
+          onClose={() => setShowImport(false)}
+        />
+      )}
 
       {/* Format Rules Section */}
       <FormatRulePanel

@@ -1,9 +1,14 @@
+import storage from '@/utils/authorization-util';
+import { CodeHighlightNode, CodeNode } from '@lexical/code';
+import { AutoLinkNode, LinkNode } from '@lexical/link';
 import { $isListNode, ListItemNode, ListNode } from '@lexical/list';
+import { CheckListPlugin } from '@lexical/react/LexicalCheckListPlugin';
 import { LexicalComposer } from '@lexical/react/LexicalComposer';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { ContentEditable } from '@lexical/react/LexicalContentEditable';
 import LexicalErrorBoundary from '@lexical/react/LexicalErrorBoundary';
 import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin';
+import { LinkPlugin } from '@lexical/react/LexicalLinkPlugin';
 import { ListPlugin } from '@lexical/react/LexicalListPlugin';
 import { RichTextPlugin } from '@lexical/react/LexicalRichTextPlugin';
 import { TablePlugin } from '@lexical/react/LexicalTablePlugin';
@@ -11,6 +16,7 @@ import {
   $createHeadingNode,
   $isHeadingNode,
   HeadingNode,
+  QuoteNode,
 } from '@lexical/rich-text';
 import {
   $isTableCellNode,
@@ -20,9 +26,29 @@ import {
   TableNode,
   TableRowNode,
 } from '@lexical/table';
-import { $getRoot, $isTextNode } from 'lexical';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  createBinding,
+  initLocalState,
+  syncCursorPositions,
+} from '@lexical/yjs';
+import { $getRoot, $isTextNode, ElementNode } from 'lexical';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import * as Y from 'yjs';
+import AttachmentPanel from './attachment-panel';
+import AuditLogPanel from './audit-log-panel';
+import CommentPanel from './comment-panel';
+import MemberAvatars from './member-avatars';
+import MentionPlugin from './mention-plugin';
+import { $isCalloutNode, CalloutNode } from './nodes/callout-node';
+import { $isImageNode, ImageNode } from './nodes/image-node';
+import { MathNode } from './nodes/math-node';
+import { MentionNode } from './nodes/mention-node';
+import ShareLinkDialog from './share-link-dialog';
 import ToolbarPlugin from './toolbar-plugin';
+import {
+  CollaborationWebSocketProvider,
+  uint8ArrayToBase64,
+} from './yjs-provider';
 
 interface DocumentData {
   id: string;
@@ -38,12 +64,17 @@ interface Props {
   onUpdate: () => void;
   appliedRuleConfig?: Record<string, unknown> | null;
   onRuleApplied?: () => void;
+  /** Raw JWT token for WebSocket auth (enables real-time collab) */
+  token?: string;
+  /** Called with the provider instance for external awareness access */
+  onProviderReady?: (provider: CollaborationWebSocketProvider | null) => void;
 }
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 
 const theme = {
   paragraph: 'mb-2 text-stone-900 text-sm leading-relaxed',
+  quote: 'border-l-2 border-stone-300 pl-4 italic text-stone-600 my-2 text-sm',
   heading: {
     h1: 'text-xl font-bold text-stone-900 mb-3 mt-4',
     h2: 'text-lg font-semibold text-stone-900 mb-2 mt-3',
@@ -53,6 +84,9 @@ const theme = {
     ul: 'list-disc ml-4 mb-2 text-sm text-stone-900',
     ol: 'list-decimal ml-4 mb-2 text-sm text-stone-900',
     listitem: 'mb-1',
+    checklist: 'list-none ml-4 mb-2 text-sm text-stone-900',
+    listitemChecked: 'line-through text-stone-400',
+    listitemUnchecked: '',
   },
   text: {
     bold: 'font-bold',
@@ -68,10 +102,113 @@ const theme = {
   tableCell: 'border border-stone-300 px-2 py-1 align-top',
   tableCellHeader:
     'border border-stone-300 px-2 py-1 align-top bg-stone-100 font-bold',
+  code: 'bg-stone-900 text-green-300 px-3 py-2 rounded-lg my-2 text-sm font-mono block overflow-x-auto whitespace-pre-wrap',
+  link: 'text-blue-600 underline cursor-pointer hover:text-blue-800',
+  image: 'max-w-full h-auto rounded-lg my-2',
 };
 
 function onError(error: Error) {
   console.error('Lexical error:', error);
+}
+
+interface YjsPluginProps {
+  docId: string;
+  token: string;
+  apiFetch: (url: string, options?: RequestInit) => Promise<Response>;
+  onUpdate: () => void;
+  onSaveStatus: (status: SaveStatus) => void;
+  onProviderReady?: (provider: CollaborationWebSocketProvider | null) => void;
+}
+
+function YjsPlugin({
+  docId,
+  token,
+  apiFetch,
+  onUpdate,
+  onSaveStatus,
+  onProviderReady,
+}: YjsPluginProps) {
+  const [editor] = useLexicalComposerContext();
+  const saveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const savingRef = useRef(false);
+
+  // One Y.Doc + one provider per editor instance
+  const { doc, provider } = useMemo(() => {
+    const doc = new Y.Doc();
+    const provider = new CollaborationWebSocketProvider(doc, docId, token);
+    return { doc, provider };
+  }, [docId, token]);
+
+  useEffect(() => {
+    onProviderReady?.(provider);
+
+    // Bind to Lexical
+    const binding = createBinding(editor, provider, docId, doc, new Map());
+
+    // Init local awareness state (name, color for cursor display)
+    const userInfo = storage.getUserInfoObject();
+    const userName = userInfo?.nickname || userInfo?.email || '';
+    initLocalState(provider, userName, '#958DF1', true, {});
+
+    // Render remote cursors when awareness changes
+    const removeAwarenessListener = provider.awareness.on('update', () => {
+      syncCursorPositions(binding, provider);
+    });
+
+    // Connect WebSocket
+    provider.connect();
+
+    // Periodic HTTP persistence: save Yjs binary + Lexical JSON every 30s
+    saveTimerRef.current = setInterval(() => {
+      if (savingRef.current) return;
+      savingRef.current = true;
+      onSaveStatus('saving');
+
+      const ydocState = Y.encodeStateAsUpdate(doc);
+      const ydocB64 = uint8ArrayToBase64(ydocState);
+
+      // Get current Lexical JSON for backward compatibility
+      const editorState = editor.getEditorState();
+      const json = editorState.toJSON();
+
+      apiFetch(`/api/v1/collaboration/documents/${docId}/ydoc`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ydoc_state: ydocB64,
+          content: json,
+        }),
+      })
+        .then(() => {
+          onSaveStatus('saved');
+          onUpdate();
+          if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+          statusTimerRef.current = setTimeout(() => onSaveStatus('idle'), 2000);
+        })
+        .catch((e) => {
+          console.error('Collab save failed:', e);
+          onSaveStatus('error');
+          if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+          statusTimerRef.current = setTimeout(() => onSaveStatus('idle'), 3000);
+        })
+        .finally(() => {
+          savingRef.current = false;
+        });
+    }, 30000);
+
+    return () => {
+      removeAwarenessListener();
+      if (saveTimerRef.current) clearInterval(saveTimerRef.current);
+      if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+      provider.disconnect();
+      binding.destroy?.();
+      doc.destroy();
+      onProviderReady?.(null);
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return null;
 }
 
 interface AutoSavePluginProps {
@@ -111,13 +248,26 @@ function AutoSavePlugin({
           const text = child.getTextContent();
           if ($isHeadingNode(child)) {
             const tag = child.getTag();
-            const prefix = { h1: '# ', h2: '## ', h3: '### ' }[tag] || '';
+            const prefix =
+              ({ h1: '# ', h2: '## ', h3: '### ' } as Record<string, string>)[
+                tag
+              ] || '';
             lines.push(prefix + text);
           } else if ($isListNode(child)) {
-            const isBullet = child.getListType() === 'bullet';
+            const listType = child.getListType();
             const listItems = child.getChildren();
             for (const item of listItems) {
-              lines.push((isBullet ? '- ' : '1. ') + item.getTextContent());
+              if (listType === 'check') {
+                const checked = (item as ListItemNode).getChecked?.() ?? false;
+                lines.push(
+                  (checked ? '- [x] ' : '- [ ] ') + item.getTextContent(),
+                );
+              } else {
+                lines.push(
+                  (listType === 'bullet' ? '- ' : '1. ') +
+                    item.getTextContent(),
+                );
+              }
             }
           } else if ($isTableNode(child)) {
             const rows = child.getChildren();
@@ -147,6 +297,29 @@ function AutoSavePlugin({
                 lines.push(mdRows[i]);
               }
             }
+          } else if ($isCalloutNode(child)) {
+            const calloutType = child.__calloutType;
+            const emoji =
+              { info: '💡', warning: '⚠️', tip: '✅', danger: '🚫' }[
+                calloutType
+              ] || '';
+            lines.push(`:::${calloutType} ${emoji}`);
+            lines.push(text);
+            lines.push(':::');
+          } else if ($isImageNode(child)) {
+            lines.push(`![${child.__altText || ''}](${child.__src})`);
+          } else if (child.getType() === 'code') {
+            const codeChildren = (child as ElementNode).getChildren();
+            const codeLines: string[] = [];
+            for (const codeChild of codeChildren) {
+              codeLines.push(codeChild.getTextContent());
+            }
+            const language =
+              ((child as unknown as Record<string, unknown>)
+                .__language as string) || '';
+            lines.push('```' + language);
+            lines.push(codeLines.join('\n'));
+            lines.push('```');
           } else {
             lines.push(text);
           }
@@ -306,7 +479,7 @@ function FormatApplyPlugin({
         const alignment = matched?.alignment;
 
         // Snapshot text children — append() moves nodes between parents
-        const textNodes = [...paragraph.getChildren()];
+        const textNodes = [...(paragraph as ElementNode).getChildren()];
         for (const node of textNodes) {
           if ($isTextNode(node)) {
             let style = node.getStyle();
@@ -319,11 +492,8 @@ function FormatApplyPlugin({
             if (fontColor) {
               style = setCssProperty(style, 'color', String(fontColor));
             }
-            if (typeof bold === 'boolean') {
-              if (bold) {
-                const fmt = node.getFormat();
-                node.setFormat(fmt === '' ? 'bold' : `${fmt} bold`);
-              }
+            if (typeof bold === 'boolean' && bold) {
+              node.setFormat(node.getFormat() | 1); // IS_BOLD bitmask
             }
             node.setStyle(style);
           }
@@ -346,7 +516,9 @@ function FormatApplyPlugin({
           if (needsConvert) {
             const headingNode = $createHeadingNode(heading);
             // Snapshot children before moving — append() removes from source
-            const childrenToMove = [...paragraph.getChildren()];
+            const childrenToMove = [
+              ...(paragraph as ElementNode).getChildren(),
+            ];
             for (const child of childrenToMove) {
               headingNode.append(child);
             }
@@ -373,10 +545,51 @@ export default function DocumentEditor({
   onUpdate,
   appliedRuleConfig,
   onRuleApplied,
+  token,
+  onProviderReady,
 }: Props) {
   const [downloading, setDownloading] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
+  const [showComments, setShowComments] = useState(false);
+  const [showAttachments, setShowAttachments] = useState(false);
+  const [showAuditLog, setShowAuditLog] = useState(false);
+  const [showShareLink, setShowShareLink] = useState(false);
+  const [collabProvider, setCollabProvider] =
+    useState<CollaborationWebSocketProvider | null>(null);
   const triggerSaveRef = useRef<(() => void) | null>(null);
+  const [version, setVersion] = useState<number | null>(null);
+  const [restoring, setRestoring] = useState(false);
+  const apiFetchRef = useRef(apiFetch);
+  apiFetchRef.current = apiFetch;
+
+  // Fetch version info
+  useEffect(() => {
+    if (!document) return;
+    apiFetchRef
+      .current(`/api/v1/collaboration/documents/${document.id}/versions`)
+      .then((r) => r.json())
+      .then((result) => {
+        if (result.code === 0 && result.data) {
+          setVersion(result.data.current_version);
+        }
+      })
+      .catch(() => {});
+  }, [document]);
+
+  // Refresh version after save
+  useEffect(() => {
+    if (saveStatus === 'saved') {
+      apiFetchRef
+        .current(`/api/v1/collaboration/documents/${document.id}/versions`)
+        .then((r) => r.json())
+        .then((result) => {
+          if (result.code === 0 && result.data) {
+            setVersion(result.data.current_version);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [saveStatus]);
 
   const handleDownload = useCallback(
     async (type: 'docx' | 'pdf') => {
@@ -408,6 +621,34 @@ export default function DocumentEditor({
     triggerSaveRef.current?.();
   }, []);
 
+  const handleRestore = useCallback(async () => {
+    if (!document || restoring) return;
+    if (!window.confirm('确认恢复到此版本？当前未保存的更改将丢失。')) return;
+    setRestoring(true);
+    try {
+      const resp = await apiFetch(
+        `/api/v1/collaboration/documents/${document.id}/versions/${version || 0}/restore`,
+        { method: 'POST' },
+      );
+      const result = await resp.json();
+      if (result.code === 0) {
+        window.location.reload();
+      }
+    } catch (e) {
+      console.error('Restore failed:', e);
+    } finally {
+      setRestoring(false);
+    }
+  }, [document, version, restoring, apiFetch]);
+
+  const handleProviderReady = useCallback(
+    (p: CollaborationWebSocketProvider | null) => {
+      setCollabProvider(p);
+      onProviderReady?.(p);
+    },
+    [onProviderReady],
+  );
+
   if (!document) {
     return (
       <div className="flex-1 flex items-center justify-center bg-stone-50">
@@ -437,11 +678,20 @@ export default function DocumentEditor({
     onError,
     nodes: [
       HeadingNode,
+      QuoteNode,
       ListNode,
       ListItemNode,
       TableNode,
       TableCellNode,
       TableRowNode,
+      CalloutNode,
+      CodeNode,
+      CodeHighlightNode,
+      LinkNode,
+      AutoLinkNode,
+      ImageNode,
+      MathNode,
+      MentionNode,
     ],
   };
 
@@ -475,6 +725,61 @@ export default function DocumentEditor({
           >
             {saveLabel}
           </button>
+          {version !== null && (
+            <>
+              <div className="w-px h-4 bg-[#E8E8E6]" />
+              <span className="text-[10px] text-stone-400">v{version}</span>
+              <button
+                className="text-[10px] text-stone-400 hover:text-stone-700 transition-colors disabled:opacity-50"
+                onClick={handleRestore}
+                disabled={restoring}
+              >
+                {restoring ? '恢复中...' : '恢复'}
+              </button>
+            </>
+          )}
+          <div className="w-px h-4 bg-[#E8E8E6]" />
+          <button
+            className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+              showComments
+                ? 'text-stone-900 bg-stone-100'
+                : 'text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4]'
+            }`}
+            onClick={() => setShowComments((v) => !v)}
+          >
+            评论
+          </button>
+          <div className="w-px h-4 bg-[#E8E8E6]" />
+          <button
+            className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+              showAttachments
+                ? 'text-stone-900 bg-stone-100'
+                : 'text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4]'
+            }`}
+            onClick={() => setShowAttachments((v) => !v)}
+          >
+            附件
+          </button>
+          <div className="w-px h-4 bg-[#E8E8E6]" />
+          <button
+            className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+              showAuditLog
+                ? 'text-stone-900 bg-stone-100'
+                : 'text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4]'
+            }`}
+            onClick={() => setShowAuditLog((v) => !v)}
+          >
+            审计日志
+          </button>
+          <div className="w-px h-4 bg-[#E8E8E6]" />
+          <button
+            className="px-3 py-1.5 text-xs font-medium text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4] rounded-lg transition-colors"
+            onClick={() => setShowShareLink(true)}
+          >
+            分享
+          </button>
+          <div className="w-px h-4 bg-[#E8E8E6]" />
+          {token && <MemberAvatars provider={collabProvider} />}
           <div className="w-px h-4 bg-[#E8E8E6]" />
           <button
             className="px-3 py-1.5 text-xs font-medium text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4] rounded-lg transition-colors disabled:opacity-50"
@@ -493,52 +798,92 @@ export default function DocumentEditor({
         </div>
       </div>
 
-      {/* Editor */}
-      <div className="flex-1 overflow-y-auto bg-stone-100/60">
-        <LexicalComposer initialConfig={initialConfig}>
-          {/* Sticky toolbar — full width, outside max-w constraint */}
-          <div className="sticky top-0 z-10 bg-white border-b border-stone-200">
-            <div className="max-w-5xl mx-auto px-6">
-              <ToolbarPlugin />
+      {/* Editor + Comment Panel side by side */}
+      <div className="flex-1 flex min-h-0">
+        <div className="flex-1 overflow-y-auto bg-stone-100/60 min-w-0">
+          <LexicalComposer initialConfig={initialConfig}>
+            {/* Sticky toolbar — full width, outside max-w constraint */}
+            <div className="sticky top-0 z-10 bg-white border-b border-stone-200">
+              <div className="max-w-5xl mx-auto px-6">
+                <ToolbarPlugin />
+              </div>
             </div>
-          </div>
-          {/* Content — white paper card on gray background */}
-          <div className="max-w-5xl mx-auto px-6 py-5">
-            <div className="bg-white rounded-xl border border-stone-200 shadow-sm p-6 relative">
-              <RichTextPlugin
-                contentEditable={
-                  <ContentEditable className="min-h-[400px] outline-none" />
-                }
-                placeholder={
-                  <div className="absolute top-6 left-6 text-stone-400 text-sm pointer-events-none">
-                    开始编辑文档内容...
-                  </div>
-                }
-                ErrorBoundary={LexicalErrorBoundary}
-              />
-              <HistoryPlugin />
-              <ListPlugin />
-              <TablePlugin
-                hasCellMerge={false}
-                hasCellBackgroundColor={false}
-                hasTabHandler
-                hasHorizontalScroll
-              />
-              <AutoSavePlugin
-                docId={document.id}
-                apiFetch={apiFetch}
-                onUpdate={onUpdate}
-                onSaveStatus={setSaveStatus}
-                triggerSaveRef={triggerSaveRef}
-              />
-              <SetInitialStatePlugin content={document.content} />
-              <FormatApplyPlugin
-                config={appliedRuleConfig}
-                onApplied={onRuleApplied}
-              />
+            {/* Content — white paper card on gray background */}
+            <div className="max-w-5xl mx-auto px-6 py-5">
+              <div className="bg-white rounded-xl border border-stone-200 shadow-sm p-6 relative">
+                <RichTextPlugin
+                  contentEditable={
+                    <ContentEditable className="min-h-[400px] outline-none" />
+                  }
+                  placeholder={
+                    <div className="absolute top-6 left-6 text-stone-400 text-sm pointer-events-none">
+                      开始编辑文档内容...
+                    </div>
+                  }
+                  ErrorBoundary={LexicalErrorBoundary}
+                />
+                <HistoryPlugin />
+                <ListPlugin />
+                <CheckListPlugin />
+                <TablePlugin
+                  hasCellMerge={false}
+                  hasCellBackgroundColor={false}
+                  hasTabHandler
+                  hasHorizontalScroll
+                />
+                <LinkPlugin />
+                <MentionPlugin apiFetch={apiFetch} />
+                {token ? (
+                  <YjsPlugin
+                    docId={document.id}
+                    token={token}
+                    apiFetch={apiFetch}
+                    onUpdate={onUpdate}
+                    onSaveStatus={setSaveStatus}
+                    onProviderReady={handleProviderReady}
+                  />
+                ) : (
+                  <AutoSavePlugin
+                    docId={document.id}
+                    apiFetch={apiFetch}
+                    onUpdate={onUpdate}
+                    onSaveStatus={setSaveStatus}
+                    triggerSaveRef={triggerSaveRef}
+                  />
+                )}
+                {!token && <SetInitialStatePlugin content={document.content} />}
+                <FormatApplyPlugin
+                  config={appliedRuleConfig}
+                  onApplied={onRuleApplied}
+                />
+              </div>
             </div>
-          </div>
-        </LexicalComposer>
+          </LexicalComposer>
+        </div>
+        <CommentPanel
+          docId={document.id}
+          apiFetch={apiFetch}
+          open={showComments}
+          onToggle={() => setShowComments(false)}
+        />
+        <AttachmentPanel
+          docId={document.id}
+          apiFetch={apiFetch}
+          open={showAttachments}
+          onToggle={() => setShowAttachments(false)}
+        />
+        <AuditLogPanel
+          docId={document.id}
+          apiFetch={apiFetch}
+          open={showAuditLog}
+          onToggle={() => setShowAuditLog(false)}
+        />
+        <ShareLinkDialog
+          docId={document.id}
+          apiFetch={apiFetch}
+          open={showShareLink}
+          onClose={() => setShowShareLink(false)}
+        />
       </div>
     </div>
   );

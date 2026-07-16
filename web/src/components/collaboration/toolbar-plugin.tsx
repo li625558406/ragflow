@@ -1,10 +1,18 @@
 import { CendTooltip } from '@/components/ui/tooltip';
+import { $createCodeNode } from '@lexical/code';
+import { TOGGLE_LINK_COMMAND } from '@lexical/link';
 import {
+  INSERT_CHECK_LIST_COMMAND,
   INSERT_ORDERED_LIST_COMMAND,
   INSERT_UNORDERED_LIST_COMMAND,
 } from '@lexical/list';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
-import { $createHeadingNode, $isHeadingNode } from '@lexical/rich-text';
+import {
+  $createHeadingNode,
+  $createQuoteNode,
+  $isHeadingNode,
+  $isQuoteNode,
+} from '@lexical/rich-text';
 import { $patchStyleText, $setBlocksType } from '@lexical/selection';
 import {
   $createParagraphNode,
@@ -12,12 +20,21 @@ import {
   $getSelection,
   $isRangeSelection,
   $isTextNode,
+  ElementFormatType,
   FORMAT_ELEMENT_COMMAND,
   FORMAT_TEXT_COMMAND,
   REDO_COMMAND,
   UNDO_COMMAND,
 } from 'lexical';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import EmojiPicker from './emoji-picker';
+import {
+  $createCalloutNode,
+  $isCalloutNode,
+  CalloutType,
+} from './nodes/callout-node';
+import { $createImageNode } from './nodes/image-node';
+import { $createMathNode } from './nodes/math-node';
 
 const FONT_FAMILIES = [
   { label: '宋体', value: 'SimSun' },
@@ -99,6 +116,18 @@ export default function ToolbarPlugin() {
   const [isSubscript, setIsSubscript] = useState(false);
   const [isSuperscript, setIsSuperscript] = useState(false);
   const [isCode, setIsCode] = useState(false);
+  const [isQuote, setIsQuote] = useState(false);
+  const [isCallout, setIsCallout] = useState(false);
+  const [linkUrl, setLinkUrl] = useState('');
+  const [showLinkInput, setShowLinkInput] = useState(false);
+  const [showMathInput, setShowMathInput] = useState(false);
+  const [mathFormula, setMathFormula] = useState('');
+  const [showImageInput, setShowImageInput] = useState(false);
+  const [imageUrl, setImageUrl] = useState('');
+  const [showEmoji, setShowEmoji] = useState(false);
+  const linkInputRef = useRef<HTMLInputElement>(null);
+  const mathInputRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const [fontFamily, setFontFamily] = useState('SimSun');
   const [fontSize, setFontSize] = useState('12pt');
   const [alignment, setAlignment] = useState('left');
@@ -149,14 +178,22 @@ export default function ToolbarPlugin() {
       const anchorBlock = selection.anchor
         .getNode()
         .getTopLevelElementOrThrow();
-      const align = anchorBlock.getFormat();
-      if (align) setAlignment(align);
+      const alignFmt = anchorBlock.getFormat();
+      const alignMap: Record<number, string> = {
+        0: 'left',
+        1: 'center',
+        2: 'right',
+        3: 'justify',
+      };
+      if (alignFmt !== undefined) setAlignment(alignMap[alignFmt] || 'left');
 
       if ($isHeadingNode(anchorBlock)) {
         setHeading(anchorBlock.getTag());
       } else {
         setHeading('paragraph');
       }
+      setIsQuote($isQuoteNode(anchorBlock));
+      setIsCallout($isCalloutNode(anchorBlock));
     });
   }, [editor]);
 
@@ -240,6 +277,101 @@ export default function ToolbarPlugin() {
     setHeading(value);
   };
 
+  const toggleQuote = () => {
+    editor.update(() => {
+      const selection = $getSelection();
+      if (!$isRangeSelection(selection)) return;
+      const anchorBlock = selection.anchor
+        .getNode()
+        .getTopLevelElementOrThrow();
+      if ($isQuoteNode(anchorBlock)) {
+        $setBlocksType(selection, () => $createParagraphNode());
+      } else {
+        $setBlocksType(selection, () => $createQuoteNode());
+      }
+    });
+  };
+
+  const insertCallout = (type: CalloutType = 'info') => {
+    editor.update(() => {
+      const selection = $getSelection();
+      if ($isRangeSelection(selection)) {
+        const callout = $createCalloutNode(type);
+        const anchorBlock = selection.anchor
+          .getNode()
+          .getTopLevelElementOrThrow();
+        if ($isCalloutNode(anchorBlock)) {
+          // If already in a callout, convert back to paragraph
+          $setBlocksType(selection, () => $createParagraphNode());
+          return;
+        }
+        // Wrap current block in callout
+        anchorBlock.insertBefore(callout);
+        callout.append(anchorBlock);
+        // Insert an empty paragraph after callout for continuation
+        const after = $createParagraphNode();
+        callout.insertAfter(after);
+      }
+    });
+  };
+
+  const insertLink = (url: string) => {
+    if (url) {
+      editor.dispatchCommand(TOGGLE_LINK_COMMAND, url);
+    } else {
+      editor.dispatchCommand(TOGGLE_LINK_COMMAND, null);
+    }
+    setShowLinkInput(false);
+    setLinkUrl('');
+  };
+
+  const insertCodeBlock = () => {
+    editor.update(() => {
+      const selection = $getSelection();
+      if ($isRangeSelection(selection)) {
+        $setBlocksType(selection, () => $createCodeNode());
+      }
+    });
+  };
+
+  const insertImage = (url: string) => {
+    const trimmed = url.trim();
+    if (!trimmed) return;
+    editor.update(() => {
+      const selection = $getSelection();
+      if ($isRangeSelection(selection)) {
+        const imageNode = $createImageNode(trimmed);
+        selection.insertNodes([imageNode]);
+      }
+    });
+    setShowImageInput(false);
+    setImageUrl('');
+  };
+
+  const insertMath = (formula: string) => {
+    const trimmed = formula.trim();
+    if (!trimmed) return;
+    editor.update(() => {
+      const selection = $getSelection();
+      if ($isRangeSelection(selection)) {
+        const mathNode = $createMathNode(trimmed);
+        selection.insertNodes([mathNode]);
+      }
+    });
+    setShowMathInput(false);
+    setMathFormula('');
+  };
+
+  const insertEmoji = (emoji: string) => {
+    editor.update(() => {
+      const selection = $getSelection();
+      if ($isRangeSelection(selection)) {
+        selection.insertRawText(emoji);
+      }
+    });
+    setShowEmoji(false);
+  };
+
   const applyBodyFormat = () => {
     editor.update(() => {
       const selection = $getSelection();
@@ -261,7 +393,7 @@ export default function ToolbarPlugin() {
       const nodes = selection.getNodes();
       for (const node of nodes) {
         if ($isTextNode(node)) {
-          node.setFormat('');
+          node.setFormat(0);
         }
       }
     });
@@ -674,7 +806,10 @@ export default function ToolbarPlugin() {
           className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
           onMouseDown={(e) => {
             e.preventDefault();
-            editor.dispatchCommand(FORMAT_ELEMENT_COMMAND, 'outdent');
+            editor.dispatchCommand(
+              FORMAT_ELEMENT_COMMAND,
+              'outdent' as ElementFormatType,
+            );
           }}
         >
           <svg
@@ -697,7 +832,10 @@ export default function ToolbarPlugin() {
           className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
           onMouseDown={(e) => {
             e.preventDefault();
-            editor.dispatchCommand(FORMAT_ELEMENT_COMMAND, 'indent');
+            editor.dispatchCommand(
+              FORMAT_ELEMENT_COMMAND,
+              'indent' as ElementFormatType,
+            );
           }}
         >
           <svg
@@ -787,6 +925,280 @@ export default function ToolbarPlugin() {
           </svg>
         </button>
       </CendTooltip>
+
+      <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
+
+      {/* Quote */}
+      <CendTooltip title="引用">
+        <button
+          className={btn(isQuote)}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            toggleQuote();
+          }}
+        >
+          <svg
+            className="w-3.5 h-3.5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M10 11V8.99c0-.88.59-1.64 1.44-1.86h.05A1.99 1.99 0 0114 9.05V12m-4 4v-3m-4 4v-3m-4 4v-3m16-4v3m-4-4v3"
+            />
+          </svg>
+        </button>
+      </CendTooltip>
+
+      {/* Todo List */}
+      <CendTooltip title="待办列表">
+        <button
+          className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            editor.dispatchCommand(INSERT_CHECK_LIST_COMMAND, undefined);
+          }}
+        >
+          <svg
+            className="w-3.5 h-3.5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"
+            />
+          </svg>
+        </button>
+      </CendTooltip>
+
+      {/* Callout Dropdown */}
+      <div className="relative">
+        <select
+          className="h-7 px-1 text-xs border border-[#D4D4D4] rounded bg-[#EAEAEA] text-[#000000] w-[72px] focus:outline-none focus:border-[#000000] appearance-none cursor-pointer"
+          value={isCallout ? 'in' : ''}
+          onChange={(e) => {
+            if (e.target.value) insertCallout(e.target.value as CalloutType);
+          }}
+        >
+          <option value="">标注 ▾</option>
+          <option value="info">💡 信息</option>
+          <option value="warning">⚠️ 警告</option>
+          <option value="tip">✅ 提示</option>
+          <option value="danger">🚫 重要</option>
+        </select>
+        <SelectArrow />
+      </div>
+
+      <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
+
+      {/* Link */}
+      <div className="relative">
+        <CendTooltip title="超链接">
+          <button
+            className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              setShowLinkInput((prev) => !prev);
+              setTimeout(() => linkInputRef.current?.focus(), 50);
+            }}
+          >
+            <svg
+              className="w-3.5 h-3.5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"
+              />
+            </svg>
+          </button>
+        </CendTooltip>
+        {showLinkInput && (
+          <div className="absolute top-full left-0 mt-1 flex items-center gap-1 bg-white border border-stone-200 rounded-lg shadow-lg p-1.5 z-50">
+            <input
+              ref={linkInputRef}
+              className="h-7 px-2 text-xs border border-stone-200 rounded outline-none focus:border-indigo-400 w-44"
+              placeholder="输入链接URL..."
+              value={linkUrl}
+              onChange={(e) => setLinkUrl(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') insertLink(linkUrl);
+                if (e.key === 'Escape') setShowLinkInput(false);
+              }}
+            />
+            <button
+              className="h-7 px-2 text-xs bg-indigo-500 text-white rounded hover:bg-indigo-600"
+              onClick={() => insertLink(linkUrl)}
+            >
+              确定
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Code Block */}
+      <CendTooltip title="代码块">
+        <button
+          className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            insertCodeBlock();
+          }}
+        >
+          <svg
+            className="w-3.5 h-3.5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+            />
+          </svg>
+        </button>
+      </CendTooltip>
+
+      {/* Image */}
+      <div className="relative">
+        <CendTooltip title="图片">
+          <button
+            className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              setShowImageInput((prev) => !prev);
+              setTimeout(() => imageInputRef.current?.focus(), 50);
+            }}
+          >
+            <svg
+              className="w-3.5 h-3.5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
+              />
+            </svg>
+          </button>
+        </CendTooltip>
+        {showImageInput && (
+          <div className="absolute top-full left-0 mt-1 flex items-center gap-1 bg-white border border-stone-200 rounded-lg shadow-lg p-1.5 z-50">
+            <input
+              ref={imageInputRef}
+              className="h-7 px-2 text-xs border border-stone-200 rounded outline-none focus:border-indigo-400 w-52"
+              placeholder="输入图片URL..."
+              value={imageUrl}
+              onChange={(e) => setImageUrl(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') insertImage(imageUrl);
+                if (e.key === 'Escape') setShowImageInput(false);
+              }}
+            />
+            <button
+              className="h-7 px-2 text-xs bg-indigo-500 text-white rounded hover:bg-indigo-600"
+              onClick={() => insertImage(imageUrl)}
+            >
+              确定
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Math Formula */}
+      <div className="relative">
+        <CendTooltip title="数学公式 (LaTeX)">
+          <button
+            className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              setShowMathInput((prev) => !prev);
+              setTimeout(() => mathInputRef.current?.focus(), 50);
+            }}
+          >
+            <svg
+              className="w-3.5 h-3.5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M7 4h10M7 8h10M7 12h10M7 16h10M7 20h10"
+              />
+              <text
+                x="12"
+                y="16"
+                textAnchor="middle"
+                className="text-[6px] fill-current stroke-none"
+                fontStyle="italic"
+              >
+                fx
+              </text>
+            </svg>
+          </button>
+        </CendTooltip>
+        {showMathInput && (
+          <div className="absolute top-full left-0 mt-1 flex items-center gap-1 bg-white border border-stone-200 rounded-lg shadow-lg p-1.5 z-50">
+            <input
+              ref={mathInputRef}
+              className="h-7 px-2 text-xs border border-stone-200 rounded outline-none focus:border-indigo-400 w-44 font-mono"
+              placeholder="x^2 + y^2 = 1"
+              value={mathFormula}
+              onChange={(e) => setMathFormula(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') insertMath(mathFormula);
+                if (e.key === 'Escape') setShowMathInput(false);
+              }}
+            />
+            <button
+              className="h-7 px-2 text-xs bg-indigo-500 text-white rounded hover:bg-indigo-600"
+              onClick={() => insertMath(mathFormula)}
+            >
+              确定
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Emoji */}
+      <div className="relative">
+        <CendTooltip title="表情符号">
+          <button
+            className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors text-sm"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              setShowEmoji((prev) => !prev);
+            }}
+          >
+            😊
+          </button>
+        </CendTooltip>
+        {showEmoji && (
+          <EmojiPicker
+            onSelect={insertEmoji}
+            onClose={() => setShowEmoji(false)}
+          />
+        )}
+      </div>
 
       <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
 

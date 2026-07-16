@@ -341,6 +341,10 @@ client_urls_prefix = [
 from api.apps.backward_compat import register_backward_compat_routes
 register_backward_compat_routes(app)
 
+# Register WebSocket routes for real-time collaboration
+from api.apps.collaboration_ws import register_ws_routes
+register_ws_routes(app)
+
 
 @app.errorhandler(404)
 async def not_found(error):

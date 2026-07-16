@@ -14,14 +14,38 @@
 #  limitations under the License.
 #
 
+import base64
+import html
 import io
 import logging
+import os
 import re
 
+from werkzeug.security import generate_password_hash, check_password_hash
+
 import settings
-from api.db import TenantPermission
-from api.db.db_models import CollaborationDocument, CollaborationFormatRule, UserTenant
-from api.db.services.collaboration_service import CollaborationDocumentService, CollaborationFormatRuleService
+from api.db import DB, TenantPermission
+from api.db.db_models import (
+    CollaborationAttachment,
+    CollaborationAuditLog,
+    CollaborationComment,
+    CollaborationDocument,
+    CollaborationDocumentACL,
+    CollaborationFolder,
+    CollaborationFormatRule,
+    CollaborationShareLink,
+    UserTenant,
+)
+from api.db.services.collaboration_service import (
+    CollaborationAttachmentService,
+    CollaborationAuditLogService,
+    CollaborationCommentService,
+    CollaborationDocumentACLService,
+    CollaborationDocumentService,
+    CollaborationFolderService,
+    CollaborationFormatRuleService,
+    CollaborationShareLinkService,
+)
 from api.db.services.user_service import UserTenantService
 from common.misc_utils import get_uuid
 from common.time_utils import current_timestamp
@@ -45,14 +69,124 @@ def _get_shared_tenant_user_ids(user_id: str) -> set:
     return {m.user_id for m in members}
 
 
+# ── Security Utilities ──
+
+def sanitize_html(text: str) -> str:
+    """Escape HTML + strip dangerous attributes. For comment/document content."""
+    text = html.escape(text, quote=True)
+    text = re.sub(r'javascript\s*:', '', text, flags=re.IGNORECASE)
+    return text
+
+
+def sanitize_filename(filename: str) -> str:
+    """Keep only safe chars, prevent path traversal."""
+    name = os.path.basename(filename)
+    name = re.sub(r'[^\w\.\-]', '_', name)
+    return name or 'untitled'
+
+
+ALLOWED_UPLOAD_MIMES = {
+    'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+    'application/pdf', 'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'text/plain', 'text/csv',
+}
+MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
+
+
+def validate_upload(file_obj) -> tuple[bytes, str, str]:
+    """Validate uploaded file: MIME whitelist, size limit, filename sanitization.
+
+    Returns (data, safe_filename, mime_type).
+    Raises ValueError on validation failure.
+    """
+    mime_type = file_obj.content_type or 'application/octet-stream'
+    if mime_type not in ALLOWED_UPLOAD_MIMES:
+        raise ValueError(f"Unsupported file type: {mime_type}")
+
+    # Pre-check Content-Length to reject oversize files before reading
+    cl = file_obj.content_length
+    if cl is not None and cl > MAX_UPLOAD_SIZE:
+        raise ValueError(f"File too large (max 50MB)")
+
+    data = file_obj.read()
+    if len(data) > MAX_UPLOAD_SIZE:
+        raise ValueError(f"File too large (max 50MB)")
+
+    safe_name = sanitize_filename(file_obj.filename or 'untitled')
+    return data, safe_name, mime_type
+
+
+async def log_audit(user_id: str, document_id: str | None, action: str, detail: dict = None, ip_address: str = None):
+    """Record an audit log entry. Fire-and-forget — failures are logged but not raised."""
+    try:
+        CollaborationAuditLogService.save(
+            id=get_uuid(),
+            user_id=user_id,
+            document_id=document_id,
+            action=action,
+            detail=detail or {},
+            ip_address=ip_address,
+            create_time=current_timestamp(),
+        )
+    except Exception as e:
+        logging.warning(f"Audit log failed for {action}: {e}")
+ROLE_HIERARCHY = {
+    "owner": 4,
+    "editor": 3,
+    "viewer": 2,
+    "commenter": 1,
+}
+
+
+def _get_user_role(doc_id: str, user_id: str) -> str | None:
+    """Get the effective role of a user on a document, or None if no access.
+
+    Priority: ACL entry > owner by created_by > team permission fallback
+    """
+    e, doc = CollaborationDocumentService.get_by_id(doc_id)
+    if not e:
+        return None
+
+    # Owner always has owner role
+    if doc.created_by == user_id:
+        return "owner"
+
+    # Check ACL for explicit grant
+    acl = CollaborationDocumentACLService.query(document_id=doc_id, user_id=user_id)
+    if acl:
+        return acl[0].role
+
+    # Team permission fallback: team-visible docs → viewer role
+    if doc.permission == TenantPermission.TEAM.value:
+        team_user_ids = _get_shared_tenant_user_ids(user_id)
+        if doc.created_by in team_user_ids:
+            return "viewer"
+
+    return None
+
+
 def _check_access(obj, user_id: str) -> bool:
-    """Check if user has access to a document/format-rule, following agent team permission model."""
+    """Check if user has access to a document/format-rule/folder, following agent team permission model.
+
+    For objects with a 'permission' field (documents, format rules), respects the permission setting.
+    For objects without a 'permission' field (folders), allows team members access.
+    """
     if obj.created_by == user_id:
         return True
-    if obj.permission != TenantPermission.TEAM.value:
+    perm = getattr(obj, 'permission', None)
+    if perm is not None and perm != TenantPermission.TEAM.value:
         return False
     team_user_ids = _get_shared_tenant_user_ids(user_id)
     return obj.created_by in team_user_ids
+
+
+def _check_role(doc_id: str, user_id: str, required_role: str) -> bool:
+    """Check if user has at least the required role on a document."""
+    role = _get_user_role(doc_id, user_id)
+    if role is None:
+        return False
+    return ROLE_HIERARCHY.get(role, 0) >= ROLE_HIERARCHY.get(required_role, 0)
 
 
 def _cell_text_children(cell_text: str) -> list[dict]:
@@ -109,8 +243,8 @@ def _build_lexical_table(rows: list[list[str]]) -> dict:
 def _markdown_to_lexical_json(markdown_content: str) -> dict:
     """Convert markdown content to Lexical editor JSON state.
 
-    Parses block-level (headings, lists, tables) and inline formatting
-    (bold, italic, code, strikethrough) into Lexical nodes.
+    Parses block-level (headings, lists, tables, quotes, callouts) and
+    inline formatting (bold, italic, code, strikethrough) into Lexical nodes.
     """
     if not markdown_content:
         return {"root": {"children": [{"children": [{"detail": 0, "format": 0, "mode": "normal", "style": "", "text": "", "type": "text", "version": 1}], "direction": "ltr", "format": "", "indent": 0, "type": "paragraph", "version": 1}], "direction": "ltr", "format": "", "indent": 0, "type": "root", "version": 1}}
@@ -118,9 +252,45 @@ def _markdown_to_lexical_json(markdown_content: str) -> dict:
     lines = markdown_content.strip().split("\n")
     children = []
     table_buffer = []
+    callout_type = None
+    callout_lines = []
+    code_block_lang = None
+    code_block_lines = []
 
     for line in lines:
         stripped = line.strip()
+
+        # ── Callout: inside a callout block ──
+        if callout_type is not None:
+            if stripped == ":::":
+                _flush_callout(children, callout_type, callout_lines)
+                callout_type = None
+                callout_lines = []
+                continue
+            callout_lines.append(stripped)
+            continue
+
+        # ── Code block: inside a code block ──
+        if code_block_lang is not None:
+            if stripped == "```":
+                _flush_code_block(children, code_block_lang, code_block_lines)
+                code_block_lang = None
+                code_block_lines = []
+                continue
+            code_block_lines.append(line)
+            continue
+
+        # ── Callout: start detection (:::type emoji) ──
+        m = re.match(r'^:::(info|warning|tip|danger)\s', stripped)
+        if m:
+            callout_type = m.group(1)
+            continue
+
+        # ── Code block: start detection ``` ──
+        cm = re.match(r'^```(\w*)$', stripped)
+        if cm:
+            code_block_lang = cm.group(1) or ''
+            continue
 
         # ── Table detection ──
         if _is_md_table_row(stripped):
@@ -142,6 +312,16 @@ def _markdown_to_lexical_json(markdown_content: str) -> dict:
             })
             continue
 
+        # ── Image detection (standalone image block) ──
+        img_m = re.match(r'^!\[(.*)\]\((.+)\)$', stripped)
+        if img_m:
+            children.append({
+                "altText": img_m.group(1), "src": img_m.group(2),
+                "width": 0, "height": 0,
+                "type": "image", "version": 1,
+            })
+            continue
+
         # Check for heading
         heading_tag = None
         body = stripped
@@ -152,10 +332,21 @@ def _markdown_to_lexical_json(markdown_content: str) -> dict:
         elif stripped.startswith("# "):
             heading_tag, body = "h1", stripped[2:]
 
+        # Check for quote
+        is_quote = False
+        if not heading_tag and stripped.startswith("> "):
+            is_quote = True
+            body = stripped[2:]
+
         # Check for list items
         list_type = None
-        if not heading_tag:
-            if stripped.startswith("- "):
+        list_checked = None
+        if not heading_tag and not is_quote:
+            if stripped.startswith("- [x] ") or stripped.startswith("- [X] "):
+                list_type, list_checked, body = "check", True, stripped[6:]
+            elif stripped.startswith("- [ ] "):
+                list_type, list_checked, body = "check", False, stripped[6:]
+            elif stripped.startswith("- "):
                 list_type, body = "bullet", stripped[2:]
             elif stripped.startswith("1. "):
                 list_type, body = "number", stripped[3:]
@@ -170,16 +361,23 @@ def _markdown_to_lexical_json(markdown_content: str) -> dict:
                 "tag": heading_tag, "type": "heading", "version": 1,
             })
         elif list_type:
+            listitem = {
+                "children": text_children,
+                "direction": "ltr", "format": "", "indent": 0,
+                "type": "listitem", "version": 1,
+            }
+            if list_checked is not None:
+                listitem["checked"] = list_checked
             children.append({
-                "children": [
-                    {
-                        "children": text_children,
-                        "direction": "ltr", "format": "", "indent": 0,
-                        "type": "listitem", "version": 1,
-                    }
-                ],
+                "children": [listitem],
                 "direction": "ltr", "format": "", "indent": 0,
                 "listType": list_type, "type": "list", "version": 1,
+            })
+        elif is_quote:
+            children.append({
+                "children": text_children,
+                "direction": "ltr", "format": "", "indent": 0,
+                "type": "quote", "version": 1,
             })
         else:
             children.append({
@@ -188,10 +386,68 @@ def _markdown_to_lexical_json(markdown_content: str) -> dict:
                 "type": "paragraph", "version": 1,
             })
 
+    # Flush remaining buffers
+    if callout_type is not None:
+        _flush_callout(children, callout_type, callout_lines)
+    if code_block_lang is not None:
+        _flush_code_block(children, code_block_lang, code_block_lines)
     if table_buffer:
         children.append(_build_lexical_table(table_buffer))
 
     return {"root": {"children": children, "direction": "ltr", "format": "", "indent": 0, "type": "root", "version": 1}}
+
+
+def _flush_code_block(children: list, language: str, code_lines: list):
+    """Build a Lexical code node from accumulated lines and append to children."""
+    code_children = []
+    for cl in code_lines:
+        code_children.append({
+            "detail": 0, "format": 0, "mode": "normal",
+            "style": "", "text": cl + "\n", "type": "code-highlight", "version": 1,
+        })
+    if not code_children:
+        code_children.append({
+            "detail": 0, "format": 0, "mode": "normal",
+            "style": "", "text": "", "type": "code-highlight", "version": 1,
+        })
+    children.append({
+        "children": code_children,
+        "direction": "ltr", "format": "", "indent": 0,
+        "type": "code",
+        "language": language,
+        "version": 1,
+    })
+
+
+def _flush_callout(children: list, callout_type: str, callout_lines: list):
+    """Build a Lexical callout node from accumulated lines and append to children."""
+    callout_children = []
+    for cl in callout_lines:
+        txt = cl.strip()
+        if not txt:
+            callout_children.append({
+                "children": [{"detail": 0, "format": 0, "mode": "normal", "style": "", "text": "\u00A0", "type": "text", "version": 1}],
+                "direction": "ltr", "format": "", "indent": 0, "type": "paragraph", "version": 1,
+            })
+        else:
+            callout_children.append({
+                "children": _cell_text_children(txt),
+                "direction": "ltr", "format": "", "indent": 0,
+                "type": "paragraph", "version": 1,
+            })
+    # Always have at least one paragraph child
+    if not callout_children:
+        callout_children.append({
+            "children": [{"detail": 0, "format": 0, "mode": "normal", "style": "", "text": "", "type": "text", "version": 1}],
+            "direction": "ltr", "format": "", "indent": 0, "type": "paragraph", "version": 1,
+        })
+    children.append({
+        "children": callout_children,
+        "direction": "ltr", "format": "", "indent": 0,
+        "type": "callout",
+        "calloutType": callout_type,
+        "version": 1,
+    })
 
 
 def _parse_css_style(style_str: str) -> dict:
@@ -286,24 +542,40 @@ def _iter_lexical_blocks(root_children: list):
                     texts = [c for c in cell_node.get("children", []) if c.get("type") == "text"]
                     cells.append(texts)
                 rows.append(cells)
-            yield ("table", None, None, rows)
+            yield ("table", None, None, rows, None)
         elif block_type == "list":
             list_type = block.get("listType", "bullet")
             for item in block.get("children", []):
                 if item.get("type") != "listitem":
                     continue
+                checked = item.get("checked", None)
                 texts = [c for c in item.get("children", []) if c.get("type") == "text"]
-                yield ("listitem", list_type, alignment, texts)
+                yield ("listitem", list_type, alignment, texts, checked)
+        elif block_type == "callout":
+            # Callout has paragraph children; flatten all text nodes
+            all_texts = []
+            for child in block.get("children", []):
+                all_texts.extend([c for c in child.get("children", []) if c.get("type") == "text"])
+            yield ("callout", block.get("calloutType", "info"), alignment, all_texts, None)
+        elif block_type == "code":
+            # Code block: collect text from code-highlight children
+            code_texts = []
+            for child in block.get("children", []):
+                if child.get("type") == "code-highlight":
+                    code_texts.append(child)
+            yield ("code", block.get("language", ""), alignment, code_texts, None)
+        elif block_type == "image":
+            yield ("image", None, alignment, [{"text": block.get("altText", ""), "src": block.get("src", "")}], None)
         else:
             texts = [c for c in block.get("children", []) if c.get("type") == "text"]
-            yield (block_type, tag, alignment, texts)
+            yield (block_type, tag, alignment, texts, None)
 
 
 def _generate_docx(content, format_config: dict = None) -> bytes:
     """Generate a .docx file from Lexical JSON content (or markdown string fallback)."""
     try:
         from docx import Document as DocxDocument
-        from docx.shared import Pt, Inches
+        from docx.shared import Pt, Inches, RGBColor
         from docx.enum.text import WD_ALIGN_PARAGRAPH
     except ImportError:
         logging.error("python-docx not installed")
@@ -351,7 +623,7 @@ def _generate_docx(content, format_config: dict = None) -> bytes:
     }
     heading_style_map = {"h1": "Heading 1", "h2": "Heading 2", "h3": "Heading 3"}
 
-    for block_type, tag_or_listtype, alignment, texts in _iter_lexical_blocks(root_children):
+    for block_type, tag_or_listtype, alignment, texts, checked in _iter_lexical_blocks(root_children):
         # ── Table ──
         if block_type == "table":
             rows_data = texts  # list[list[list[dict]]]: rows × cells × text_nodes
@@ -381,7 +653,13 @@ def _generate_docx(content, format_config: dict = None) -> bytes:
 
         # ── Paragraphs / Headings / Lists ──
         if block_type == "listitem":
-            if tag_or_listtype == "bullet":
+            if tag_or_listtype == "check":
+                # Checklist items with checkmark prefix
+                p = doc.add_paragraph(style="List Bullet")
+                prefix = "☑ " if checked else "☐ "
+                run = p.add_run(prefix)
+                run.font.name = "Segoe UI Symbol"
+            elif tag_or_listtype == "bullet":
                 p = doc.add_paragraph(style="List Bullet")
             else:
                 p = doc.add_paragraph(style="List Number")
@@ -389,6 +667,45 @@ def _generate_docx(content, format_config: dict = None) -> bytes:
             style_name = heading_style_map.get(tag_or_listtype, "Heading 2")
             p = doc.add_paragraph()
             p.style = doc.styles[style_name]
+        elif block_type == "quote":
+            p = doc.add_paragraph()
+            p.paragraph_format.left_indent = Inches(0.5)
+            # Quote text in italic
+            for text_node in texts:
+                run = p.add_run(text_node.get("text", ""))
+                run.italic = True
+            continue
+        elif block_type == "callout":
+            p = doc.add_paragraph()
+            emoji_map = {"info": "\U0001F4A1", "warning": "\u26A0\uFE0F", "tip": "\u2705", "danger": "\U0001F6AB"}
+            prefix = emoji_map.get(tag_or_listtype, "")
+            if prefix:
+                p.add_run(prefix + " ")
+            for text_node in texts:
+                _add_styled_docx_run(p, text_node)
+            continue
+        elif block_type == "code":
+            # Render code block in monospace font with light background
+            p = doc.add_paragraph()
+            lang_label = f"[{tag_or_listtype}] " if tag_or_listtype else ""
+            if lang_label:
+                run = p.add_run(lang_label)
+                run.bold = True
+                run.font.size = Pt(8)
+            for text_node in texts:
+                run = p.add_run(text_node.get("text", ""))
+                run.font.name = "Courier New"
+                run.font.size = Pt(9)
+            continue
+        elif block_type == "image":
+            # Image: add a placeholder paragraph
+            alt = texts[0].get("text", "") if texts else ""
+            src = texts[0].get("src", "") if texts else ""
+            p = doc.add_paragraph()
+            run = p.add_run(f"[Image: {alt or src}]")
+            run.italic = True
+            run.font.color.rgb = RGBColor(150, 150, 150)
+            continue
         else:
             p = doc.add_paragraph()
 
@@ -553,11 +870,15 @@ def _add_markdown_paragraph(doc, text: str, style_name: str = None):
 
 
 def _generate_docx_markdown(markdown_content: str, cfg: dict) -> bytes:
-    """Generate .docx from plain markdown string with inline formatting."""
+    """Generate .docx from plain markdown string with inline formatting.
+
+    Handles: headings, lists, tables, quotes, checklists,
+             code blocks, callouts, and images.
+    """
 
     try:
         from docx import Document as DocxDocument
-        from docx.shared import Pt, Inches
+        from docx.shared import Pt, Inches, RGBColor
     except ImportError:
         return b""
 
@@ -586,6 +907,11 @@ def _generate_docx_markdown(markdown_content: str, cfg: dict) -> bytes:
 
     lines = markdown_content.strip().split("\n")
     table_buffer = []
+    code_block_lang = None
+    code_block_lines = []
+    callout_type = None
+    callout_lines = []
+    emoji_map = {"info": "\U0001F4A1", "warning": "\u26A0\uFE0F", "tip": "\u2705", "danger": "\U0001F6AB"}
 
     def _flush_table():
         nonlocal table_buffer
@@ -593,10 +919,68 @@ def _generate_docx_markdown(markdown_content: str, cfg: dict) -> bytes:
             _flush_docx_table(doc, table_buffer)
             table_buffer = []
 
+    def _flush_code_block():
+        nonlocal code_block_lang, code_block_lines
+        if not code_block_lines:
+            code_block_lang = None
+            code_block_lines = []
+            return
+        for cl in code_block_lines:
+            p = doc.add_paragraph()
+            p.clear()
+            run = p.add_run(cl)
+            run.font.name = "Courier New"
+            run.font.size = Pt(9)
+        code_block_lang = None
+        code_block_lines = []
+
+    def _flush_callout():
+        nonlocal callout_type, callout_lines
+        if not callout_lines:
+            callout_type = None
+            callout_lines = []
+            return
+        emoji = emoji_map.get(callout_type or "", "")
+        for cl in callout_lines:
+            p = doc.add_paragraph()
+            p.clear()
+            run = p.add_run(emoji + " " + cl)
+        callout_type = None
+        callout_lines = []
+
     for line in lines:
         stripped = line.strip()
 
+        # ── Inside callout block ──
+        if callout_type is not None:
+            if stripped == ":::":
+                _flush_callout()
+                continue
+            callout_lines.append(stripped)
+            continue
+
+        # ── Inside code block ──
+        if code_block_lang is not None:
+            if stripped == "```":
+                _flush_code_block()
+                continue
+            code_block_lines.append(line)
+            continue
+
+        # ── Callout start ──
+        if re.match(r'^:::(info|warning|tip|danger)\s', stripped):
+            callout_type = re.match(r'^:::(info|warning|tip|danger)', stripped).group(1)
+            continue
+
+        # ── Code block start ──
+        cm = re.match(r'^```(\w*)$', stripped)
+        if cm:
+            code_block_lang = cm.group(1) or ''
+            continue
+
+        # ── Table ──
         if _is_md_table_row(stripped):
+            _flush_table()
             if _is_md_table_separator(stripped):
                 continue
             table_buffer.append(_parse_md_table_row(stripped))
@@ -607,12 +991,52 @@ def _generate_docx_markdown(markdown_content: str, cfg: dict) -> bytes:
         if not stripped:
             doc.add_paragraph("")
             continue
+
+        # ── Image ──
+        img_m = re.match(r'^!\[(.*)\]\((.+)\)$', stripped)
+        if img_m:
+            p = doc.add_paragraph()
+            run = p.add_run(f"[Image: {img_m.group(1) or img_m.group(2)}]")
+            run.italic = True
+            run.font.color.rgb = RGBColor(150, 150, 150)
+            continue
+
+        # ── Headings ──
         if stripped.startswith("### "):
             _add_markdown_paragraph(doc, stripped[4:], "Heading 3")
         elif stripped.startswith("## "):
             _add_markdown_paragraph(doc, stripped[3:], "Heading 2")
         elif stripped.startswith("# "):
             _add_markdown_paragraph(doc, stripped[2:], "Heading 1")
+        # ── Quote ──
+        elif stripped.startswith("> "):
+            p = doc.add_paragraph()
+            p.paragraph_format.left_indent = Inches(0.5)
+            for seg in _parse_inline_markdown(stripped[2:]):
+                run = p.add_run(seg["text"])
+                run.italic = True
+                if seg["bold"]:
+                    run.bold = True
+        # ── Checklist ──
+        elif stripped.startswith("- [x] ") or stripped.startswith("- [X] "):
+            p = doc.add_paragraph(style="List Bullet")
+            prefix = "\u2611 "  # ☑
+            run = p.add_run(prefix)
+            run.font.name = "Segoe UI Symbol"
+            for seg in _parse_inline_markdown(stripped[6:]):
+                run2 = p.add_run(seg["text"])
+                if seg["bold"]: run2.bold = True
+                if seg["italic"]: run2.italic = True
+        elif stripped.startswith("- [ ] "):
+            p = doc.add_paragraph(style="List Bullet")
+            prefix = "\u2610 "  # ☐
+            run = p.add_run(prefix)
+            run.font.name = "Segoe UI Symbol"
+            for seg in _parse_inline_markdown(stripped[6:]):
+                run2 = p.add_run(seg["text"])
+                if seg["bold"]: run2.bold = True
+                if seg["italic"]: run2.italic = True
+        # ── Lists ──
         elif stripped.startswith("- "):
             _add_markdown_paragraph(doc, stripped[2:], "List Bullet")
         elif stripped.startswith("1. "):
@@ -620,7 +1044,10 @@ def _generate_docx_markdown(markdown_content: str, cfg: dict) -> bytes:
         else:
             _add_markdown_paragraph(doc, stripped)
 
+    # Flush remaining buffers
     _flush_table()
+    _flush_code_block()
+    _flush_callout()
 
     buf = io.BytesIO()
     doc.save(buf)
@@ -728,7 +1155,7 @@ def _generate_pdf(content, format_config: dict = None) -> bytes:
             "justify": TA_JUSTIFY,
         }
 
-        for block_type, tag_or_listtype, alignment, texts in _iter_lexical_blocks(root_children):
+        for block_type, tag_or_listtype, alignment, texts, checked in _iter_lexical_blocks(root_children):
             para_alignment = alignment_map.get(alignment, TA_LEFT) if alignment else TA_LEFT
 
             # ── Table ──
@@ -762,7 +1189,12 @@ def _generate_pdf(content, format_config: dict = None) -> bytes:
 
             # ── Paragraphs / Headings / Lists ──
             if block_type == "listitem":
-                bullet = "\u2022 " if tag_or_listtype == "bullet" else "1. "
+                if tag_or_listtype == "check":
+                    bullet = "\u2611 " if checked else "\u2610 "  # ☑ or ☐
+                elif tag_or_listtype == "bullet":
+                    bullet = "\u2022 "
+                else:
+                    bullet = "1. "
                 markup_parts = [bullet] + [_build_pdf_inline_markup(t) for t in texts]
                 para_style = _make_style("CustomList", "Normal")
                 story.append(Paragraph("".join(markup_parts), para_style))
@@ -774,6 +1206,28 @@ def _generate_pdf(content, format_config: dict = None) -> bytes:
                                          fontSize=heading_size, alignment=para_alignment)
                 markup = "".join(_build_pdf_inline_markup(t) for t in texts)
                 story.append(Paragraph(markup, para_style))
+            elif block_type == "quote":
+                para_style = _make_style("CustomQuote", "Normal", alignment=para_alignment)
+                para_style.leftIndent = 20
+                markup = "".join(_build_pdf_inline_markup(t) for t in texts)
+                story.append(Paragraph(f"<i>{markup}</i>", para_style))
+            elif block_type == "callout":
+                emoji_map = {"info": "\U0001F4A1", "warning": "\u26A0\uFE0F", "tip": "\u2705", "danger": "\U0001F6AB"}
+                prefix = emoji_map.get(tag_or_listtype, "")
+                para_style = _make_style("CustomCallout", "Normal", alignment=para_alignment)
+                markup = prefix + " " + "".join(_build_pdf_inline_markup(t) for t in texts)
+                story.append(Paragraph(markup, para_style))
+            elif block_type == "code":
+                code_style = _make_style("CustomCode", "Normal",
+                                         fontName="Courier", fontSize=font_size - 2)
+                for text_node in texts:
+                    code_text = _escape_xml(text_node.get("text", ""))
+                    story.append(Paragraph(f"<font face='Courier' size='{font_size - 2}'>{code_text}</font>", code_style))
+            elif block_type == "image":
+                alt = texts[0].get("text", "") if texts else ""
+                src = texts[0].get("src", "") if texts else ""
+                para_style = _make_style("CustomImage", "Normal", alignment=para_alignment)
+                story.append(Paragraph(f"<i>[Image: {_escape_xml(alt or src)}]</i>", para_style))
             else:
                 para_style = _make_style("CustomNormal", "Normal", alignment=para_alignment)
                 if texts:
@@ -788,11 +1242,16 @@ def _generate_pdf(content, format_config: dict = None) -> bytes:
 
 
 def _generate_pdf_markdown(markdown_content: str, cfg: dict) -> bytes:
-    """Legacy: generate PDF from plain markdown string (no inline styles)."""
+    """Generate PDF from plain markdown string (no inline styles).
+
+    Handles: headings, lists, tables, quotes, checklists,
+             code blocks, callouts, and images.
+    """
     try:
         from reportlab.lib.pagesizes import A4
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from reportlab.lib.units import inch
+        from reportlab.lib.enums import TA_LEFT
         from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
         from reportlab.lib import colors
     except ImportError:
@@ -817,6 +1276,11 @@ def _generate_pdf_markdown(markdown_content: str, cfg: dict) -> bytes:
 
     story = []
     table_buffer: list[list[str]] = []
+    code_block_lang = None
+    code_block_lines = []
+    callout_type = None
+    callout_lines = []
+    emoji_map = {"info": "\U0001F4A1", "warning": "\u26A0\uFE0F", "tip": "\u2705", "danger": "\U0001F6AB"}
 
     def _flush_pdf_table():
         nonlocal table_buffer
@@ -826,7 +1290,6 @@ def _generate_pdf_markdown(markdown_content: str, cfg: dict) -> bytes:
         data = table_buffer[1:] if len(table_buffer) > 1 else []
         table_data = [headers] + data
         n_cols = len(headers)
-        # Estimate column widths; use narrow default for tables with many cols
         page_width = A4[0] - inch * (margins.get("left", 1.0) + margins.get("right", 1.0))
         col_w = min(page_width / n_cols, inch * 2.0)
         tbl = Table(table_data, colWidths=[col_w] * n_cols)
@@ -840,13 +1303,70 @@ def _generate_pdf_markdown(markdown_content: str, cfg: dict) -> bytes:
         story.append(Spacer(1, font_size * 0.5))
         table_buffer = []
 
+    def _flush_code_block_pdf():
+        nonlocal code_block_lang, code_block_lines
+        if not code_block_lines:
+            code_block_lang = None
+            code_block_lines = []
+            return
+        code_style = ParagraphStyle("MarkdownCode", parent=styles["Normal"],
+                                    fontName="Courier", fontSize=font_size - 2,
+                                    leading=(font_size - 1) * 1.2)
+        for cl in code_block_lines:
+            escaped = _escape_xml(cl)
+            story.append(Paragraph(f"<font face='Courier' size='{font_size - 2}'>{escaped}</font>", code_style))
+        code_block_lang = None
+        code_block_lines = []
+
+    def _flush_callout_pdf():
+        nonlocal callout_type, callout_lines
+        if not callout_lines:
+            callout_type = None
+            callout_lines = []
+            return
+        emoji = emoji_map.get(callout_type or "", "")
+        for cl in callout_lines:
+            escaped = _escape_xml(cl)
+            story.append(Paragraph(f"{emoji} {escaped}", normal_style))
+        callout_type = None
+        callout_lines = []
+
     if not markdown_content:
         story.append(Paragraph("", normal_style))
     else:
         for line in markdown_content.strip().split("\n"):
             stripped = line.strip()
 
+            # ── Inside callout block ──
+            if callout_type is not None:
+                if stripped == ":::":
+                    _flush_callout_pdf()
+                    continue
+                callout_lines.append(stripped)
+                continue
+
+            # ── Inside code block ──
+            if code_block_lang is not None:
+                if stripped == "```":
+                    _flush_code_block_pdf()
+                    continue
+                code_block_lines.append(line)
+                continue
+
+            # ── Callout start ──
+            if re.match(r'^:::(info|warning|tip|danger)\s', stripped):
+                callout_type = re.match(r'^:::(info|warning|tip|danger)', stripped).group(1)
+                continue
+
+            # ── Code block start ──
+            cm = re.match(r'^```(\w*)$', stripped)
+            if cm:
+                code_block_lang = cm.group(1) or ''
+                continue
+
+            # ── Table ──
             if _is_md_table_row(stripped):
+                _flush_pdf_table()
                 if _is_md_table_separator(stripped):
                     continue
                 table_buffer.append(_parse_md_table_row(stripped))
@@ -857,6 +1377,16 @@ def _generate_pdf_markdown(markdown_content: str, cfg: dict) -> bytes:
             if not stripped:
                 story.append(Spacer(1, font_size * 0.5))
                 continue
+
+            # ── Image ──
+            img_m = re.match(r'^!\[(.*)\]\((.+)\)$', stripped)
+            if img_m:
+                image_style = ParagraphStyle("CustomImage", parent=styles["Normal"],
+                                             fontName=font_name, fontSize=font_size - 2)
+                story.append(Paragraph(f"<i>[Image: {_escape_xml(img_m.group(1) or img_m.group(2))}]</i>", image_style))
+                continue
+
+            # ── Headings ──
             if stripped.startswith("### "):
                 hs = ParagraphStyle("CustomH3", parent=styles["Heading3"],
                                     fontName=font_name, fontSize=font_size + 2)
@@ -869,17 +1399,40 @@ def _generate_pdf_markdown(markdown_content: str, cfg: dict) -> bytes:
                 hs = ParagraphStyle("CustomH1", parent=styles["Heading1"],
                                     fontName=font_name, fontSize=font_size + 6)
                 story.append(Paragraph(stripped[2:], hs))
+            # ── Quote ──
+            elif stripped.startswith("> "):
+                qs = ParagraphStyle("CustomQuote", parent=styles["Normal"],
+                                    fontName=font_name, fontSize=font_size,
+                                    leftIndent=20, alignment=TA_LEFT)
+                story.append(Paragraph(f"<i>{_escape_xml(stripped[2:])}</i>", qs))
+            # ── Checklist ──
+            elif stripped.startswith("- [x] ") or stripped.startswith("- [X] "):
+                ls = ParagraphStyle("CheckChecked", parent=styles["Normal"],
+                                    fontName=font_name, fontSize=font_size)
+                story.append(Paragraph(f"\u2611 {_escape_xml(stripped[6:])}", ls))
+            elif stripped.startswith("- [ ] "):
+                ls = ParagraphStyle("CheckUnchecked", parent=styles["Normal"],
+                                    fontName=font_name, fontSize=font_size)
+                story.append(Paragraph(f"\u2610 {_escape_xml(stripped[6:])}", ls))
+            # ── Lists ──
+            elif stripped.startswith("- "):
+                story.append(Paragraph(f"\u2022 {_escape_xml(stripped[2:])}", normal_style))
+            elif stripped.startswith("1. "):
+                story.append(Paragraph(f"1. {_escape_xml(stripped[3:])}", normal_style))
             else:
                 story.append(Paragraph(stripped, normal_style))
 
+        # Flush remaining buffers
         _flush_pdf_table()
+        _flush_code_block_pdf()
+        _flush_callout_pdf()
 
     doc.build(story)
     buf.seek(0)
     return buf.read()
 
 
-async def create_document(tenant_id: str, user_id: str, name: str, markdown_content: str, agent_id: str = None, permission: str = "me") -> dict:
+async def create_document(tenant_id: str, user_id: str, name: str, markdown_content: str, agent_id: str = None, permission: str = "me", folder_id: str = None) -> dict:
     """Create a collaboration document from chat message content."""
     doc_id = get_uuid()
     content = _markdown_to_lexical_json(markdown_content)
@@ -893,22 +1446,31 @@ async def create_document(tenant_id: str, user_id: str, name: str, markdown_cont
         created_by=user_id,
         agent_id=agent_id,
         permission=permission,
+        folder_id=folder_id,
     )
-    return {"id": doc_id, "name": name, "file_type": "docx", "permission": permission}
+    return {"id": doc_id, "name": name, "file_type": "docx", "permission": permission, "folder_id": folder_id}
 
 
 async def list_documents(tenant_id: str, user_id: str) -> list:
-    """List collaboration documents visible to the current user (own + team-shared)."""
+    """List collaboration documents visible to the current user (own + team-shared + ACL)."""
     team_user_ids = _get_shared_tenant_user_ids(user_id)
+    # Get document IDs where user has explicit ACL grant
+    acl_doc_ids = [
+        a.document_id
+        for a in CollaborationDocumentACLService.query(user_id=user_id)
+    ]
+    base_condition = (
+        (
+            (CollaborationDocument.created_by.in_(team_user_ids))
+            & (CollaborationDocument.permission == TenantPermission.TEAM.value)
+        )
+        | (CollaborationDocument.created_by == user_id)
+    )
+    if acl_doc_ids:
+        base_condition |= CollaborationDocument.id.in_(acl_doc_ids)
     docs = (
         CollaborationDocument.select()
-        .where(
-            (
-                (CollaborationDocument.created_by.in_(team_user_ids))
-                & (CollaborationDocument.permission == TenantPermission.TEAM.value)
-            )
-            | (CollaborationDocument.created_by == user_id)
-        )
+        .where(base_condition)
         .order_by(CollaborationDocument.create_time.desc())
     )
     result = []
@@ -918,6 +1480,8 @@ async def list_documents(tenant_id: str, user_id: str) -> list:
             "name": d.name,
             "file_type": d.file_type,
             "agent_id": d.agent_id,
+            "folder_id": d.folder_id,
+            "sort_order": d.sort_order,
             "create_time": d.create_time,
             "update_time": d.update_time,
             "created_by": d.created_by,
@@ -931,7 +1495,8 @@ async def get_document(doc_id: str, tenant_id: str) -> dict:
     e, doc = CollaborationDocumentService.get_by_id(doc_id)
     if not e:
         raise LookupError("Document not found")
-    if not _check_access(doc, tenant_id):
+    user_role = _get_user_role(doc_id, tenant_id)
+    if not user_role:
         raise PermissionError("Access denied")
     return {
         "id": doc.id,
@@ -943,17 +1508,20 @@ async def get_document(doc_id: str, tenant_id: str) -> dict:
         "agent_id": doc.agent_id,
         "created_by": doc.created_by,
         "permission": doc.permission,
+        "role": user_role,
         "create_time": doc.create_time,
         "update_time": doc.update_time,
+        "ydoc": base64.b64encode(doc.ydoc).decode("ascii") if doc.ydoc else None,
+        "version": doc.version or 0,
     }
 
 
 async def update_document(doc_id: str, tenant_id: str, data: dict) -> dict:
-    """Update document name and/or content."""
+    """Update document name and/or content. Requires editor role or higher."""
     e, doc = CollaborationDocumentService.get_by_id(doc_id)
     if not e:
         raise LookupError("Document not found")
-    if not _check_access(doc, tenant_id):
+    if not _check_role(doc_id, tenant_id, "editor"):
         raise PermissionError("Access denied")
 
     update_data = {}
@@ -966,18 +1534,51 @@ async def update_document(doc_id: str, tenant_id: str, data: dict) -> dict:
         update_data["file_path"] = None  # invalidate cached file so download regenerates
     if "permission" in data:
         update_data["permission"] = data["permission"]
+    if "folder_id" in data:
+        update_data["folder_id"] = data["folder_id"]
+    if "sort_order" in data:
+        update_data["sort_order"] = data["sort_order"]
+    if "ydoc_state" in data:
+        update_data["ydoc"] = base64.b64decode(data["ydoc_state"])
+        update_data["version"] = (doc.version or 0) + 1
 
     if update_data:
         CollaborationDocumentService.update_by_id(doc_id, update_data)
+        await log_audit(tenant_id, doc_id, "document.update", {"fields": list(update_data.keys())})
     return {"id": doc_id, "updated": list(update_data.keys())}
 
 
-async def delete_document(doc_id: str, tenant_id: str) -> bool:
-    """Delete a collaboration document and its stored file."""
+async def save_ydoc_state(doc_id: str, tenant_id: str, data: dict) -> dict:
+    """Save Yjs binary state from the frontend (periodic persistence)."""
     e, doc = CollaborationDocumentService.get_by_id(doc_id)
     if not e:
         raise LookupError("Document not found")
-    if not _check_access(doc, tenant_id):
+    if not _check_role(doc_id, tenant_id, "editor"):
+        raise PermissionError("Access denied")
+
+    update_data = {}
+    ydoc_state_b64 = data.get("ydoc_state")
+    if ydoc_state_b64:
+        update_data["ydoc"] = base64.b64decode(ydoc_state_b64)
+        update_data["version"] = (doc.version or 0) + 1
+    if "content" in data:
+        update_data["content"] = data["content"]
+    if "markdown_content" in data:
+        update_data["markdown_content"] = data["markdown_content"]
+        update_data["file_path"] = None
+
+    if update_data:
+        CollaborationDocumentService.update_by_id(doc_id, update_data)
+
+    return {"id": doc_id, "version": update_data.get("version", doc.version or 0)}
+
+
+async def delete_document(doc_id: str, tenant_id: str) -> bool:
+    """Delete a collaboration document and its stored file. Requires owner role."""
+    e, doc = CollaborationDocumentService.get_by_id(doc_id)
+    if not e:
+        raise LookupError("Document not found")
+    if not _check_role(doc_id, tenant_id, "owner"):
         raise PermissionError("Access denied")
 
     # Delete stored file if exists
@@ -988,6 +1589,7 @@ async def delete_document(doc_id: str, tenant_id: str) -> bool:
             logging.warning(f"Failed to delete file {doc.file_path}: {ex}")
 
     CollaborationDocumentService.delete_by_id(doc_id)
+    await log_audit(tenant_id, doc_id, "document.delete", {"name": doc.name})
     return True
 
 
@@ -999,7 +1601,7 @@ async def download_document(doc_id: str, tenant_id: str, file_type: str = "docx"
     e, doc = CollaborationDocumentService.get_by_id(doc_id)
     if not e:
         raise LookupError("Document not found")
-    if not _check_access(doc, tenant_id):
+    if not _get_user_role(doc_id, tenant_id):
         raise PermissionError("Access denied")
 
     # Prefer Lexical JSON (has inline styles), fall back to markdown
@@ -1036,7 +1638,7 @@ async def apply_format_rule(doc_id: str, tenant_id: str, rule_id: str) -> tuple:
     e, doc = CollaborationDocumentService.get_by_id(doc_id)
     if not e:
         raise LookupError("Document not found")
-    if not _check_access(doc, tenant_id):
+    if not _get_user_role(doc_id, tenant_id):
         raise PermissionError("Access denied")
 
     e, rule = CollaborationFormatRuleService.get_by_id(rule_id)
@@ -1143,3 +1745,776 @@ async def delete_format_rule(rule_id: str, tenant_id: str) -> bool:
         raise PermissionError("Access denied")
     CollaborationFormatRuleService.delete_by_id(rule_id)
     return True
+
+
+# ── Folder CRUD ──
+
+async def create_folder(tenant_id: str, user_id: str, name: str, parent_id: str = None) -> dict:
+    """Create a collaboration folder."""
+    folder_id = get_uuid()
+    CollaborationFolderService.save(
+        id=folder_id,
+        name=name,
+        parent_id=parent_id,
+        tenant_id=tenant_id,
+        created_by=user_id,
+        create_time=current_timestamp(),
+    )
+    return {"id": folder_id, "name": name, "parent_id": parent_id}
+
+
+async def list_folders(tenant_id: str, user_id: str) -> list:
+    """List folders visible to the current user, returned as flat list with tree data."""
+    team_user_ids = _get_shared_tenant_user_ids(user_id)
+    folders = (
+        CollaborationFolder.select()
+        .where(CollaborationFolder.created_by.in_(team_user_ids))
+        .order_by(CollaborationFolder.sort_order)
+    )
+    return [
+        {
+            "id": f.id,
+            "name": f.name,
+            "parent_id": f.parent_id,
+            "created_by": f.created_by,
+            "sort_order": f.sort_order,
+            "create_time": f.create_time,
+        }
+        for f in folders
+    ]
+
+
+async def update_folder(folder_id: str, tenant_id: str, data: dict) -> dict:
+    """Update folder name or parent."""
+    e, folder = CollaborationFolderService.get_by_id(folder_id)
+    if not e:
+        raise LookupError("Folder not found")
+    if not _check_access(folder, tenant_id):
+        raise PermissionError("Access denied")
+    update_data = {}
+    for key in ("name", "parent_id", "sort_order"):
+        if key in data:
+            update_data[key] = data[key]
+    if update_data:
+        CollaborationFolderService.update_by_id(folder_id, update_data)
+    return {"id": folder_id, "updated": list(update_data.keys())}
+
+
+async def delete_folder(folder_id: str, tenant_id: str) -> bool:
+    """Delete a folder. Documents in the folder become root-level."""
+    e, folder = CollaborationFolderService.get_by_id(folder_id)
+    if not e:
+        raise LookupError("Folder not found")
+    if not _check_access(folder, tenant_id):
+        raise PermissionError("Access denied")
+    # Move child documents to root and child folders to root atomically
+    with DB.atomic():
+        CollaborationDocument.update(folder_id=None).where(
+            CollaborationDocument.folder_id == folder_id
+        ).execute()
+        CollaborationFolder.update(parent_id=None).where(
+            CollaborationFolder.parent_id == folder_id
+        ).execute()
+        CollaborationFolderService.delete_by_id(folder_id)
+    return True
+
+
+async def move_document(doc_id: str, tenant_id: str, folder_id: str | None) -> dict:
+    """Move a document to a folder (or root if folder_id is None)."""
+    e, doc = CollaborationDocumentService.get_by_id(doc_id)
+    if not e:
+        raise LookupError("Document not found")
+    if not _check_role(doc_id, tenant_id, "editor"):
+        raise PermissionError("Access denied")
+    CollaborationDocumentService.update_by_id(doc_id, {"folder_id": folder_id})
+    return {"id": doc_id, "folder_id": folder_id}
+
+
+# ── ACL Management ──
+
+async def list_collaborators(doc_id: str, tenant_id: str) -> list[dict]:
+    """List all collaborators for a document. Requires owner role."""
+    if not _check_role(doc_id, tenant_id, "owner"):
+        raise PermissionError("Access denied")
+    acls = CollaborationDocumentACLService.query(document_id=doc_id)
+    return [
+        {"id": a.id, "user_id": a.user_id, "role": a.role, "granted_by": a.granted_by, "create_time": a.create_time}
+        for a in acls
+    ]
+
+
+async def add_collaborator(doc_id: str, tenant_id: str, user_id: str, role: str) -> dict:
+    """Add a collaborator to a document. Requires owner role."""
+    if not _check_role(doc_id, tenant_id, "owner"):
+        raise PermissionError("Access denied")
+    if role not in ROLE_HIERARCHY:
+        raise ValueError(f"Invalid role: {role}. Must be one of: {', '.join(ROLE_HIERARCHY.keys())}")
+    acl_id = get_uuid()
+    CollaborationDocumentACLService.save(
+        id=acl_id,
+        document_id=doc_id,
+        user_id=user_id,
+        role=role,
+        granted_by=tenant_id,
+        create_time=current_timestamp(),
+    )
+    return {"id": acl_id, "document_id": doc_id, "user_id": user_id, "role": role}
+
+
+async def update_collaborator_role(doc_id: str, tenant_id: str, collaborator_user_id: str, role: str) -> dict:
+    """Update a collaborator's role. Requires owner role."""
+    if not _check_role(doc_id, tenant_id, "owner"):
+        raise PermissionError("Access denied")
+    if role not in ROLE_HIERARCHY:
+        raise ValueError(f"Invalid role: {role}. Must be one of: {', '.join(ROLE_HIERARCHY.keys())}")
+    acls = CollaborationDocumentACLService.query(document_id=doc_id, user_id=collaborator_user_id)
+    if not acls:
+        raise LookupError("Collaborator not found")
+    CollaborationDocumentACLService.update_by_id(acls[0].id, {"role": role})
+    return {"document_id": doc_id, "user_id": collaborator_user_id, "role": role}
+
+
+async def remove_collaborator(doc_id: str, tenant_id: str, collaborator_user_id: str) -> bool:
+    """Remove a collaborator from a document. Requires owner role."""
+    if not _check_role(doc_id, tenant_id, "owner"):
+        raise PermissionError("Access denied")
+    acls = CollaborationDocumentACLService.query(document_id=doc_id, user_id=collaborator_user_id)
+    if not acls:
+        raise LookupError("Collaborator not found")
+    CollaborationDocumentACLService.delete_by_id(acls[0].id)
+    return True
+
+
+# ── Word Import ──
+
+async def import_docx(tenant_id: str, user_id: str, file_obj, folder_id: str = None) -> dict:
+    """Parse a .docx file and create a collaboration document.
+
+    Extracts headings, paragraphs, tables, and inline formatting,
+    converting them into Lexical JSON editor state.
+    """
+    try:
+        from docx import Document as DocxDocument
+    except ImportError:
+        raise RuntimeError("python-docx not installed")
+
+    doc = DocxDocument(file_obj)
+    doc_id = get_uuid()
+    name = (file_obj.filename or "imported").rsplit(".", 1)[0]
+
+    heading_map = {
+        0: ("h1", "# "),
+        1: ("h2", "## "),
+        2: ("h3", "### "),
+    }
+
+    lexical_children = []
+    markdown_lines = []
+
+    for para in doc.paragraphs:
+        text = para.text.strip()
+        if not text:
+            lexical_children.append({
+                "children": [{"detail": 0, "format": 0, "mode": "normal", "style": "", "text": "\u00A0", "type": "text", "version": 1}],
+                "direction": "ltr", "format": "", "indent": 0, "type": "paragraph", "version": 1,
+            })
+            markdown_lines.append("")
+            continue
+
+        # Detect heading by outline level or style name
+        outline_level = para.paragraph_format.outline_level if para.style else None
+        heading_tag = None
+        heading_prefix = ""
+        if outline_level is not None and 0 <= outline_level <= 2:
+            heading_tag, heading_prefix = heading_map.get(outline_level, (None, ""))
+        elif para.style and para.style.name:
+            style_name = para.style.name.lower()
+            if "heading 1" in style_name:
+                heading_tag, heading_prefix = "h1", "# "
+            elif "heading 2" in style_name:
+                heading_tag, heading_prefix = "h2", "## "
+            elif "heading 3" in style_name:
+                heading_tag, heading_prefix = "h3", "### "
+
+        # Build text children with inline formatting from runs
+        text_children = []
+        md_parts = []
+        for run in para.runs:
+            run_text = run.text or ""
+            if not run_text:
+                continue
+            fmt = 0
+            if run.bold:
+                fmt |= 1
+            if run.italic:
+                fmt |= 2
+            if run.underline:
+                fmt |= 8
+            if run.font and run.font.strike:
+                fmt |= 4
+            # Markdown generation
+            if run.bold and run.italic:
+                md_parts.append(f"***{run_text}***")
+            elif run.bold:
+                md_parts.append(f"**{run_text}**")
+            elif run.italic:
+                md_parts.append(f"*{run_text}*")
+            elif run.font and run.font.strike:
+                md_parts.append(f"~~{run_text}~~")
+            else:
+                md_parts.append(run_text)
+            style_str = ""
+            if run.font and run.font.name:
+                style_str = f"font-family: {run.font.name};"
+            if run.font and run.font.size:
+                size_pt = run.font.size.pt
+                style_str += f"font-size: {size_pt}pt;"
+            text_children.append({
+                "detail": 0, "format": fmt, "mode": "normal",
+                "style": style_str, "text": run_text, "type": "text", "version": 1,
+            })
+
+        if not text_children:
+            text_children = [{"detail": 0, "format": 0, "mode": "normal", "style": "", "text": text, "type": "text", "version": 1}]
+            md_parts.append(text)
+
+        # Build the Lexical block
+        if heading_tag:
+            lexical_children.append({
+                "children": text_children,
+                "direction": "ltr", "format": "", "indent": 0,
+                "tag": heading_tag, "type": "heading", "version": 1,
+            })
+            markdown_lines.append(heading_prefix + "".join(md_parts))
+        else:
+            lexical_children.append({
+                "children": text_children,
+                "direction": "ltr", "format": "", "indent": 0,
+                "type": "paragraph", "version": 1,
+            })
+            markdown_lines.append("".join(md_parts))
+
+    # Handle tables
+    for table in doc.tables:
+        row_nodes = []
+        table_md_rows = []
+        for i, row in enumerate(table.rows):
+            cell_nodes = []
+            md_cells = []
+            for cell in row.cells:
+                cell_text = cell.text.replace("\n", " ").strip()
+                md_cells.append(cell_text)
+                cell_nodes.append({
+                    "type": "tablecell",
+                    "children": [{
+                        "children": [{"detail": 0, "format": 0, "mode": "normal", "style": "", "text": cell_text, "type": "text", "version": 1}],
+                        "direction": "ltr", "format": "", "indent": 0,
+                        "type": "paragraph", "version": 1,
+                    }],
+                    "direction": "ltr", "format": "", "indent": 0,
+                    "headerState": 0, "colSpan": 1, "rowSpan": 1, "version": 1,
+                })
+            table_md_rows.append("| " + " | ".join(md_cells) + " |")
+            row_nodes.append({
+                "type": "tablerow",
+                "children": cell_nodes,
+                "direction": "ltr", "format": "", "indent": 0, "version": 1,
+            })
+        if row_nodes:
+            if len(table_md_rows) > 0:
+                md_full = table_md_rows[0] + "\n"
+                if len(table_md_rows) > 0:
+                    col_count = table_md_rows[0].count("|") - 1
+                    if col_count > 0:
+                        md_full += "|" + " --- |" * col_count + "\n"
+                for r in table_md_rows[1:]:
+                    md_full += r + "\n"
+                markdown_lines.append(md_full.strip())
+            lexical_children.append({
+                "type": "table",
+                "children": row_nodes,
+                "direction": "ltr", "format": "", "indent": 0, "version": 1,
+            })
+
+    content = {"root": {"children": lexical_children, "direction": "ltr", "format": "", "indent": 0, "type": "root", "version": 1}}
+    markdown_content = "\n".join(markdown_lines)
+
+    CollaborationDocumentService.save(
+        id=doc_id,
+        name=name,
+        file_type="docx",
+        folder_id=folder_id,
+        content=content,
+        markdown_content=markdown_content,
+        tenant_id=tenant_id,
+        created_by=user_id,
+        permission="me",
+    )
+    return {"id": doc_id, "name": name, "file_type": "docx"}
+
+
+# ── Comment CRUD ──
+
+async def list_comments(doc_id: str, tenant_id: str) -> list[dict]:
+    """List all non-deleted comments for a document."""
+    if not _get_user_role(doc_id, tenant_id):
+        raise PermissionError("Access denied")
+
+    comments = (
+        CollaborationComment.select()
+        .where(
+            (CollaborationComment.document_id == doc_id)
+            & (CollaborationComment.deleted_at.is_null())
+        )
+        .order_by(CollaborationComment.create_time.asc())
+    )
+    return [
+        {
+            "id": c.id,
+            "document_id": c.document_id,
+            "user_id": c.user_id,
+            "parent_comment_id": c.parent_comment_id,
+            "anchor_block_key": c.anchor_block_key,
+            "anchor_offset_start": c.anchor_offset_start,
+            "anchor_offset_end": c.anchor_offset_end,
+            "content": c.content,
+            "resolved": c.resolved,
+            "create_time": c.create_time,
+            "update_time": c.update_time,
+        }
+        for c in comments
+    ]
+
+
+async def create_comment(
+    doc_id: str,
+    tenant_id: str,
+    content: str,
+    parent_comment_id: str | None = None,
+    anchor_block_key: str | None = None,
+    anchor_offset_start: int | None = None,
+    anchor_offset_end: int | None = None,
+) -> dict:
+    """Create a comment on a document."""
+    role = _get_user_role(doc_id, tenant_id)
+    if not role or ROLE_HIERARCHY.get(role, 0) < ROLE_HIERARCHY.get("commenter", 1):
+        raise PermissionError("Access denied")
+
+    if not content or not content.strip():
+        raise ValueError("Comment content is required")
+
+    safe_content = sanitize_html(content.strip())
+
+    comment_id = get_uuid()
+    now = current_timestamp()
+    CollaborationCommentService.save(
+        id=comment_id,
+        document_id=doc_id,
+        user_id=tenant_id,
+        parent_comment_id=parent_comment_id,
+        anchor_block_key=anchor_block_key,
+        anchor_offset_start=anchor_offset_start,
+        anchor_offset_end=anchor_offset_end,
+        content=safe_content,
+        create_time=now,
+        update_time=now,
+    )
+    return {
+        "id": comment_id,
+        "document_id": doc_id,
+        "user_id": tenant_id,
+        "parent_comment_id": parent_comment_id,
+        "content": safe_content,
+        "resolved": False,
+        "create_time": now,
+        "update_time": now,
+    }
+
+
+async def update_comment(doc_id: str, comment_id: str, tenant_id: str, content: str) -> dict:
+    """Edit own comment content."""
+    e, comment = CollaborationCommentService.get_by_id(comment_id)
+    if not e:
+        raise LookupError("Comment not found")
+    if comment.document_id != doc_id:
+        raise LookupError("Comment not found")
+    if comment.user_id != tenant_id:
+        raise PermissionError("Can only edit own comments")
+    if comment.deleted_at is not None:
+        raise LookupError("Comment has been deleted")
+    if not content or not content.strip():
+        raise ValueError("Comment content is required")
+
+    safe_content = sanitize_html(content.strip())
+
+    CollaborationCommentService.update_by_id(comment_id, {
+        "content": safe_content,
+        "update_time": current_timestamp(),
+    })
+    return {"id": comment_id, "content": safe_content}
+
+
+async def delete_comment(doc_id: str, comment_id: str, tenant_id: str) -> bool:
+    """Soft-delete own comment. Also soft-deletes all child comments."""
+    e, comment = CollaborationCommentService.get_by_id(comment_id)
+    if not e:
+        raise LookupError("Comment not found")
+    if comment.document_id != doc_id:
+        raise LookupError("Comment not found")
+    if comment.user_id != tenant_id:
+        raise PermissionError("Can only delete own comments")
+
+    now = current_timestamp()
+    # Collect all descendant IDs iteratively, avoiding circular references
+    ids_to_delete = {comment_id}
+    child_ids = [comment_id]
+    while child_ids:
+        children = CollaborationComment.select().where(
+            (CollaborationComment.parent_comment_id.in_(child_ids))
+            & (CollaborationComment.deleted_at.is_null())
+        )
+        child_ids = []
+        for c in children:
+            if c.id not in ids_to_delete:
+                child_ids.append(c.id)
+                ids_to_delete.add(c.id)
+
+    for cid in ids_to_delete:
+        CollaborationCommentService.update_by_id(cid, {"deleted_at": now})
+    return True
+
+
+async def resolve_comment(doc_id: str, comment_id: str, tenant_id: str) -> dict:
+    """Mark a comment as resolved."""
+    e, comment = CollaborationCommentService.get_by_id(comment_id)
+    if not e:
+        raise LookupError("Comment not found")
+    if comment.document_id != doc_id:
+        raise LookupError("Comment not found")
+    if comment.deleted_at is not None:
+        raise LookupError("Comment has been deleted")
+
+    CollaborationCommentService.update_by_id(comment_id, {"resolved": True})
+    return {"id": comment_id, "resolved": True}
+
+
+async def unresolve_comment(doc_id: str, comment_id: str, tenant_id: str) -> dict:
+    """Reopen a resolved comment."""
+    e, comment = CollaborationCommentService.get_by_id(comment_id)
+    if not e:
+        raise LookupError("Comment not found")
+    if comment.document_id != doc_id:
+        raise LookupError("Comment not found")
+    if comment.deleted_at is not None:
+        raise LookupError("Comment has been deleted")
+
+    CollaborationCommentService.update_by_id(comment_id, {"resolved": False})
+    return {"id": comment_id, "resolved": False}
+
+
+# ── Version History ──
+
+async def list_versions(doc_id: str, tenant_id: str) -> dict:
+    """Get document version info for the version dropdown.
+
+    Returns the current version counter and whether a restorable ydoc state exists.
+    Each save_ydoc_state() call increments version, so the counter reflects save count.
+    """
+    e, doc = CollaborationDocumentService.get_by_id(doc_id)
+    if not e:
+        raise LookupError("Document not found")
+    if not _get_user_role(doc_id, tenant_id):
+        raise PermissionError("Access denied")
+
+    return {
+        "current_version": doc.version or 0,
+        "has_ydoc": bool(doc.ydoc),
+        "update_time": doc.update_time,
+    }
+
+
+async def restore_version(doc_id: str, tenant_id: str) -> dict:
+    """Restore document to the latest saved ydoc state.
+
+    Tells the frontend to reload from ydoc, discarding any unsaved local changes.
+    """
+    e, doc = CollaborationDocumentService.get_by_id(doc_id)
+    if not e:
+        raise LookupError("Document not found")
+    if not _check_role(doc_id, tenant_id, "editor"):
+        raise PermissionError("Access denied")
+    if not doc.ydoc:
+        raise ValueError("No saved state to restore")
+
+    await log_audit(tenant_id, doc_id, "version.restore", {"version": doc.version or 0})
+
+    return {
+        "id": doc_id,
+        "version": doc.version or 0,
+        "ydoc": base64.b64encode(doc.ydoc).decode("ascii"),
+    }
+
+
+# ── Share Link ──
+
+async def create_or_update_share(doc_id: str, tenant_id: str, permission: str = "view", password: str = None, expires_at: int = None) -> dict:
+    """Create or update a share link for a document. One share per document."""
+    e, doc = CollaborationDocumentService.get_by_id(doc_id)
+    if not e:
+        raise LookupError("Document not found")
+    if not _check_role(doc_id, tenant_id, "owner"):
+        raise PermissionError("Access denied")
+
+    if permission not in ("view", "edit"):
+        raise ValueError("Permission must be 'view' or 'edit'")
+
+    password_hash = generate_password_hash(password) if password else None
+
+    # Check if share already exists
+    existing = CollaborationShareLinkService.query(document_id=doc_id)
+    if existing:
+        share = existing[0]
+        update_data = {"permission": permission, "update_time": current_timestamp()}
+        if password is not None:
+            # password="" means clear password, password="xxx" means set new password
+            update_data["password_hash"] = generate_password_hash(password) if password else None
+        if expires_at is not None:
+            update_data["expires_at"] = expires_at
+        CollaborationShareLinkService.update_by_id(share.id, update_data)
+        token = share.token
+        await log_audit(tenant_id, doc_id, "share.update", {"permission": permission})
+    else:
+        token = get_uuid()
+        CollaborationShareLinkService.save(
+            id=get_uuid(),
+            document_id=doc_id,
+            token=token,
+            permission=permission,
+            password_hash=generate_password_hash(password) if password else None,
+            expires_at=expires_at,
+            created_by=tenant_id,
+            create_time=current_timestamp(),
+            update_time=current_timestamp(),
+        )
+        await log_audit(tenant_id, doc_id, "share.create", {"permission": permission})
+
+    return {
+        "document_id": doc_id,
+        "token": token,
+        "permission": permission,
+        "has_password": bool(password),
+        "expires_at": expires_at,
+    }
+
+
+async def get_share(doc_id: str, tenant_id: str) -> dict | None:
+    """Get current share link info for a document."""
+    if not _check_role(doc_id, tenant_id, "owner"):
+        raise PermissionError("Access denied")
+
+    existing = CollaborationShareLinkService.query(document_id=doc_id)
+    if not existing:
+        return None
+
+    share = existing[0]
+    return {
+        "document_id": share.document_id,
+        "token": share.token,
+        "permission": share.permission,
+        "has_password": bool(share.password_hash),
+        "expires_at": share.expires_at,
+    }
+
+
+async def delete_share(doc_id: str, tenant_id: str) -> bool:
+    """Delete the share link for a document."""
+    e, doc = CollaborationDocumentService.get_by_id(doc_id)
+    if not e:
+        raise LookupError("Document not found")
+    if not _check_role(doc_id, tenant_id, "owner"):
+        raise PermissionError("Access denied")
+
+    existing = CollaborationShareLinkService.query(document_id=doc_id)
+    if not existing:
+        raise LookupError("Share link not found")
+
+    CollaborationShareLinkService.delete_by_id(existing[0].id)
+    await log_audit(tenant_id, doc_id, "share.delete")
+
+    return True
+
+
+async def access_shared_doc(token: str, password: str = None) -> dict:
+    """Access a shared document by token. Returns document data if access is granted."""
+    existing = CollaborationShareLinkService.query(token=token)
+    if not existing:
+        raise LookupError("Share link not found or expired")
+
+    share = existing[0]
+
+    # Check expiry
+    if share.expires_at and share.expires_at < current_timestamp():
+        raise PermissionError("Share link has expired")
+
+    # Check password
+    if share.password_hash:
+        if not password:
+            raise PermissionError("Password required")
+        if not check_password_hash(share.password_hash, password):
+            raise PermissionError("Incorrect password")
+
+    e, doc = CollaborationDocumentService.get_by_id(share.document_id)
+    if not e:
+        raise LookupError("Document not found")
+
+    return {
+        "id": doc.id,
+        "name": doc.name,
+        "content": doc.content,
+        "markdown_content": doc.markdown_content,
+        "permission": share.permission,
+        "has_password": bool(share.password_hash),
+    }
+
+
+# ── Attachment CRUD ──
+
+async def upload_attachment(doc_id: str, tenant_id: str, file_obj) -> dict:
+    """Upload an attachment to a document. Stored in MinIO via STORAGE_IMPL."""
+    e, doc = CollaborationDocumentService.get_by_id(doc_id)
+    if not e:
+        raise LookupError("Document not found")
+    if not _check_role(doc_id, tenant_id, "editor"):
+        raise PermissionError("Access denied")
+
+    data, safe_name, mime_type = validate_upload(file_obj)
+
+    attachment_id = get_uuid()
+    ext = f".{safe_name.rsplit('.', 1)[-1].lower()}" if "." in safe_name else ""
+    storage_key = f"attachments/{doc_id}/{attachment_id}{ext}"
+
+    try:
+        settings.STORAGE_IMPL.put("collaboration", storage_key, data)
+    except Exception as e:
+        logging.error(f"Failed to upload attachment to storage: {e}")
+        raise RuntimeError("Failed to store attachment")
+
+    CollaborationAttachmentService.save(
+        id=attachment_id,
+        document_id=doc_id,
+        file_name=safe_name,
+        file_size=len(data),
+        mime_type=mime_type,
+        storage_key=storage_key,
+        uploader_id=tenant_id,
+        create_time=current_timestamp(),
+    )
+
+    await log_audit(tenant_id, doc_id, "attachment.upload", {"file_name": safe_name, "file_size": len(data)})
+
+    return {
+        "id": attachment_id,
+        "document_id": doc_id,
+        "file_name": safe_name,
+        "file_size": len(data),
+        "mime_type": mime_type,
+    }
+
+
+async def list_attachments(doc_id: str, tenant_id: str) -> list[dict]:
+    """List all attachments for a document."""
+    if not _get_user_role(doc_id, tenant_id):
+        raise PermissionError("Access denied")
+
+    attachments = CollaborationAttachmentService.query(document_id=doc_id)
+    return [
+        {
+            "id": a.id,
+            "document_id": a.document_id,
+            "file_name": a.file_name,
+            "file_size": a.file_size,
+            "mime_type": a.mime_type,
+            "uploader_id": a.uploader_id,
+            "create_time": a.create_time,
+        }
+        for a in attachments
+    ]
+
+
+async def download_attachment(doc_id: str, attachment_id: str, tenant_id: str) -> tuple[bytes, str, str]:
+    """Download an attachment. Returns (data, filename, mime_type)."""
+    e, attachment = CollaborationAttachmentService.get_by_id(attachment_id)
+    if not e:
+        raise LookupError("Attachment not found")
+    if attachment.document_id != doc_id:
+        raise LookupError("Attachment not found")
+
+    if not _get_user_role(doc_id, tenant_id):
+        raise PermissionError("Access denied")
+
+    try:
+        data = settings.STORAGE_IMPL.get("collaboration", attachment.storage_key)
+    except Exception as e:
+        logging.error(f"Failed to download attachment: {e}")
+        raise RuntimeError("Failed to retrieve attachment")
+
+    return data, attachment.file_name, attachment.mime_type
+
+
+async def delete_attachment(doc_id: str, attachment_id: str, tenant_id: str) -> bool:
+    """Delete an attachment."""
+    e, attachment = CollaborationAttachmentService.get_by_id(attachment_id)
+    if not e:
+        raise LookupError("Attachment not found")
+    if attachment.document_id != doc_id:
+        raise LookupError("Attachment not found")
+    if not _check_role(doc_id, tenant_id, "editor"):
+        raise PermissionError("Access denied")
+
+    # Delete DB record first (source of truth), then best-effort storage cleanup
+    CollaborationAttachmentService.delete_by_id(attachment_id)
+
+    try:
+        settings.STORAGE_IMPL.rm("collaboration", attachment.storage_key)
+    except Exception as e:
+        logging.warning(f"Failed to delete attachment from storage (orphaned): {e}")
+
+    await log_audit(tenant_id, doc_id, "attachment.delete", {"file_name": attachment.file_name})
+
+    return True
+
+
+# ── Audit Log ──
+
+async def list_audit_logs(doc_id: str, tenant_id: str, limit: int = 50, offset: int = 0) -> dict:
+    """List audit logs for a document. Owner only."""
+    if not _check_role(doc_id, tenant_id, "owner"):
+        raise PermissionError("Access denied")
+
+    logs = (
+        CollaborationAuditLog.select()
+        .where(CollaborationAuditLog.document_id == doc_id)
+        .order_by(CollaborationAuditLog.create_time.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    total = (
+        CollaborationAuditLog.select()
+        .where(CollaborationAuditLog.document_id == doc_id)
+        .count()
+    )
+
+    return {
+        "total": total,
+        "logs": [
+            {
+                "id": log.id,
+                "user_id": log.user_id,
+                "action": log.action,
+                "detail": log.detail,
+                "ip_address": log.ip_address,
+                "create_time": log.create_time,
+            }
+            for log in logs
+        ],
+    }

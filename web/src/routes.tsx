@@ -79,6 +79,7 @@ export enum Routes {
   AnalysisTemplateEdit = '/analysis-template',
   ScheduledTasks = '/scheduled-tasks',
   ScheduledTaskLogs = '/scheduled-task-logs',
+  Crawl4ai = '/crawl4ai',
   Bids = '/bids',
 }
 
@@ -144,6 +145,11 @@ const routeConfigOptions = [
   {
     path: '/document/:id',
     Component: () => import('@/pages/document-viewer'),
+    layout: false,
+  },
+  {
+    path: '/share/doc/:token',
+    Component: () => import('@/pages/share-doc'),
     layout: false,
   },
   {
@@ -265,6 +271,10 @@ const routeConfigOptions = [
       {
         path: `${Routes.ScheduledTaskLogs}/:taskId`,
         Component: () => import('@/pages/scheduled-tasks/logs'),
+      },
+      {
+        path: Routes.Crawl4ai,
+        Component: () => import('@/pages/crawl4ai'),
       },
       {
         path: Routes.Skills,
