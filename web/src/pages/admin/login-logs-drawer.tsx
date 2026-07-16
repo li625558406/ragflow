@@ -26,7 +26,7 @@ interface LoginLogsDrawerProps {
 }
 
 const DATE_PRESETS = [
-  { value: '', label: 'admin.loginLogsAllTime' },
+  { value: 'all', label: 'admin.loginLogsAllTime' },
   { value: '7', label: 'admin.loginLogs7Days' },
   { value: '30', label: 'admin.loginLogs30Days' },
 ];
@@ -48,11 +48,12 @@ export default function LoginLogsDrawer({
   }, [email]);
 
   const now = new Date();
-  const startDate = datePreset
-    ? new Date(now.getTime() - parseInt(datePreset) * 86400000)
-        .toISOString()
-        .split('T')[0]
-    : undefined;
+  const startDate =
+    datePreset && datePreset !== 'all'
+      ? new Date(now.getTime() - parseInt(datePreset) * 86400000)
+          .toISOString()
+          .split('T')[0]
+      : undefined;
 
   const { data: statsData, isLoading: statsLoading } = useQuery({
     queryKey: ['user-login-stats', email],

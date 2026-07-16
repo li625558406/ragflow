@@ -536,10 +536,24 @@ class BidApiClient:
 
         try:
             resp = requests.post(url, data=body, headers=headers, timeout=self.timeout)
+            if resp.status_code == 400:
+                # Alibaba Cloud returns 400 for invalid params (keyword too short / restricted words)
+                try:
+                    detail = resp.json()
+                except Exception:
+                    detail = {}
+                msg = detail.get("msg") or resp.text or "Bad Request"
+                raise BidApiError(
+                    f"搜索条件不符合要求，请修改关键词（避免通用词如'上海''科技'）或调整筛选条件后重试（原始信息：{msg}）",
+                    code=400,
+                    raw=detail
+                )
             resp.raise_for_status()
             data = resp.json()
         except requests.exceptions.Timeout:
             raise BidApiError(f"Request timeout ({self.timeout}s): /enterprise/search/bid/v4")
+        except BidApiError:
+            raise
         except requests.exceptions.RequestException as e:
             raise BidApiError(f"Request failed: {e}")
         except json.JSONDecodeError as e:
