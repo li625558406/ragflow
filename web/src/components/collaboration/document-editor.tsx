@@ -40,7 +40,6 @@ import { $isCalloutNode, CalloutNode } from './nodes/callout-node';
 import { $isImageNode, ImageNode } from './nodes/image-node';
 import { MathNode } from './nodes/math-node';
 import { MentionNode } from './nodes/mention-node';
-import ShareLinkDialog from './share-link-dialog';
 import ToolbarPlugin from './toolbar-plugin';
 import {
   CollaborationWebSocketProvider,
@@ -549,7 +548,6 @@ export default function DocumentEditor({
 }: Props) {
   const [downloading, setDownloading] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
-  const [showShareLink, setShowShareLink] = useState(false);
   const [collabProvider, setCollabProvider] =
     useState<CollaborationWebSocketProvider | null>(null);
   const triggerSaveRef = useRef<(() => void) | null>(null);
@@ -749,12 +747,6 @@ export default function DocumentEditor({
             </div>
           </LexicalComposer>
         </div>
-        <ShareLinkDialog
-          docId={document.id}
-          apiFetch={apiFetch}
-          open={showShareLink}
-          onClose={() => setShowShareLink(false)}
-        />
       </div>
     </div>
   );
