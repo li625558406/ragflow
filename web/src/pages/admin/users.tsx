@@ -23,6 +23,7 @@ import {
   LucideClipboardList,
   LucideClock,
   LucideDot,
+  LucideGlobe,
   LucideTrash2,
   LucideUserLock,
   LucideUserPlus,
@@ -516,6 +517,15 @@ function AdminUserManagement() {
             <CardTitle>{t('admin.userManagement')}</CardTitle>
 
             <div className="ml-auto flex justify-end gap-4">
+              <Button
+                variant="outline"
+                className="h-10 px-4"
+                onClick={() => navigate(Routes.Crawl4ai)}
+              >
+                <LucideGlobe className="size-4" />
+                {t('header.crawl4ai')}
+              </Button>
+
               <Popover>
                 <PopoverTrigger asChild>
                   <Button size="icon-lg" variant="outline">

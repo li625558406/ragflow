@@ -79,7 +79,7 @@ export enum Routes {
   AnalysisTemplateEdit = '/analysis-template',
   ScheduledTasks = '/scheduled-tasks',
   ScheduledTaskLogs = '/scheduled-task-logs',
-  Crawl4ai = '/crawl4ai',
+  Crawl4ai = '/smart-crawler',
   Bids = '/bids',
 }
 

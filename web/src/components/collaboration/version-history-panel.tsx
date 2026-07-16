@@ -43,6 +43,7 @@ export default function VersionHistoryPanel({
       const resp = await apiFetch(
         `/api/v1/collaboration/documents/${docId}/versions`,
       );
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const result = await resp.json();
       if (result.code === 0 && result.data) {
         setInfo(result.data);
@@ -68,6 +69,7 @@ export default function VersionHistoryPanel({
         `/api/v1/collaboration/documents/${docId}/versions/${info.current_version || 0}/restore`,
         { method: 'POST' },
       );
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const result = await resp.json();
       if (result.code === 0) {
         window.location.reload();

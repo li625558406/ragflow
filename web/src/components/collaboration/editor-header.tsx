@@ -53,11 +53,17 @@ export default function EditorHeader({
   const [renaming, setRenaming] = useState(false);
   const [nameValue, setNameValue] = useState(docName);
   const [displayName, setDisplayName] = useState(docName);
+  const [renameError, setRenameError] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
+  const renamingRef = useRef(false);
 
+  // Sync external docName changes, but skip during active rename to avoid
+  // overwriting the user's in-progress input.
   useEffect(() => {
+    if (renamingRef.current) return;
     setDisplayName(docName);
     setNameValue(docName);
+    setRenameError(false);
   }, [docName]);
 
   useEffect(() => {
@@ -71,20 +77,33 @@ export default function EditorHeader({
     return () => window.document.removeEventListener('mousedown', handler);
   }, [showMore]);
 
+  const startRename = () => {
+    renamingRef.current = true;
+    setNameValue(displayName);
+    setRenameError(false);
+    setRenaming(true);
+  };
+
   const submitRename = async () => {
+    // Guard: if Escape already cleared renaming, do nothing.
+    if (!renamingRef.current) return;
     const name = nameValue.trim();
+    renamingRef.current = false;
     setRenaming(false);
     if (!name || name === displayName) return;
     try {
-      await apiFetch(`/api/v1/collaboration/documents/${docId}`, {
+      const resp = await apiFetch(`/api/v1/collaboration/documents/${docId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name }),
       });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       setDisplayName(name);
+      setRenameError(false);
       onRenamed();
     } catch (e) {
       console.error('重命名失败:', e);
+      setRenameError(true);
     }
   };
 
@@ -96,16 +115,26 @@ export default function EditorHeader({
       <div className="flex items-center gap-2 min-w-0 flex-1">
         {renaming ? (
           <input
-            className="text-sm font-semibold text-stone-900 border border-stone-300 rounded px-1.5 py-0.5 outline-none focus:border-stone-500 max-w-xs"
+            className={`text-sm font-semibold text-stone-900 border rounded px-1.5 py-0.5 outline-none focus:border-stone-500 max-w-xs ${
+              renameError ? 'border-red-400' : 'border-stone-300'
+            }`}
             value={nameValue}
             autoFocus
-            onChange={(e) => setNameValue(e.target.value)}
+            onChange={(e) => {
+              setNameValue(e.target.value);
+              setRenameError(false);
+            }}
             onBlur={submitRename}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') submitRename();
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                submitRename();
+              }
               if (e.key === 'Escape') {
+                renamingRef.current = false;
                 setNameValue(displayName);
                 setRenaming(false);
+                setRenameError(false);
               }
             }}
           />
@@ -113,7 +142,7 @@ export default function EditorHeader({
           <h2
             className="text-sm font-semibold text-stone-900 truncate cursor-text hover:bg-stone-50 rounded px-1 -mx-1"
             title="点击重命名"
-            onClick={() => setRenaming(true)}
+            onClick={startRename}
           >
             {displayName}
           </h2>

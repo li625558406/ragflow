@@ -1,5 +1,5 @@
 import { FileText, FileUp, FolderPlus, Plus, Search } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import DocxImportDialog from './docx-import-dialog';
 import FolderTree, { DocumentNode, FolderNode } from './folder-tree';
 
@@ -49,7 +49,23 @@ export default function DocumentList({
   const [showCreateMenu, setShowCreateMenu] = useState(false);
   const [showNewDoc, setShowNewDoc] = useState(false);
   const [newDocName, setNewDocName] = useState('');
+  const createMenuRef = useRef<HTMLDivElement>(null);
   const currentUserId = getCurrentUserId();
+
+  // Close create menu on outside click
+  useEffect(() => {
+    if (!showCreateMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (
+        createMenuRef.current &&
+        !createMenuRef.current.contains(e.target as Node)
+      ) {
+        setShowCreateMenu(false);
+      }
+    };
+    window.document.addEventListener('mousedown', handler);
+    return () => window.document.removeEventListener('mousedown', handler);
+  }, [showCreateMenu]);
 
   const handleRenameStart = (docId: string) => {
     const doc = documents.find((d) => d.id === docId);
@@ -138,7 +154,17 @@ export default function DocumentList({
       setShowNewDoc(false);
       onRefresh();
       if (result.code === 0 && result.data?.id) {
-        onSelect(result.data as DocumentNode);
+        const node: DocumentNode = {
+          id: result.data.id,
+          name: result.data.name || '',
+          file_type: result.data.file_type || '',
+          folder_id: result.data.folder_id || null,
+          created_by: result.data.created_by,
+          update_time: result.data.update_time,
+          create_time: result.data.create_time,
+          permission: result.data.permission,
+        };
+        onSelect(node);
       }
     } catch (e) {
       console.error('创建文档失败:', e);
@@ -162,9 +188,9 @@ export default function DocumentList({
           <span className="text-[#333333] text-[13px] font-semibold tracking-widest uppercase">
             文档
           </span>
-          {(documents.length > 0 || folders.length > 0) && (
+          {(filteredDocuments.length > 0 || folders.length > 0) && (
             <span className="text-[10px] text-[#8A8A8A]">
-              {documents.length + folders.length}
+              {filteredDocuments.length + folders.length}
             </span>
           )}
         </div>
@@ -262,7 +288,10 @@ export default function DocumentList({
           />
         )}
         {showCreateMenu && (
-          <div className="absolute bottom-full left-2 right-2 mb-1 bg-white border border-stone-200 rounded-lg shadow-lg py-1 z-50">
+          <div
+            ref={createMenuRef}
+            className="absolute bottom-full left-2 right-2 mb-1 bg-white border border-stone-200 rounded-lg shadow-lg py-1 z-50"
+          >
             <button
               className="w-full px-3 py-1.5 text-left text-xs text-stone-700 hover:bg-stone-50 flex items-center gap-2"
               onClick={() => {
