@@ -464,10 +464,23 @@ class BidApiClient:
         }
         try:
             resp = requests.post(url, data={"keyword": keyword}, headers=headers, timeout=self.timeout)
+            if resp.status_code == 400:
+                try:
+                    detail = resp.json()
+                except Exception:
+                    detail = {}
+                msg = detail.get("msg") or resp.text or "Bad Request"
+                raise BidApiError(
+                    f"查询条件不符合要求，请检查企业名称或统一社会信用代码是否正确（原始信息：{msg}）",
+                    code=400,
+                    raw=detail,
+                )
             resp.raise_for_status()
             data = resp.json()
         except requests.exceptions.Timeout:
             raise BidApiError(f"Request timeout ({self.timeout}s): /enterprise/business/all")
+        except BidApiError:
+            raise
         except requests.exceptions.RequestException as e:
             raise BidApiError(f"Request failed: {e}")
         except json.JSONDecodeError as e:

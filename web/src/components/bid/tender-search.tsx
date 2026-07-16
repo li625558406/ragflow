@@ -522,7 +522,7 @@ export default function TenderSearch() {
                   </div>
                   {keywordError && (
                     <p className="text-[11px] text-[#FF4D4F] mt-1">
-                      请输入至少2个字符的关键词，避免使用过于通用的词（如"上海""科技"）
+                      请输入至少2个字符的关键词，避免使用过于通用的词（如&ldquo;上海&rdquo;&ldquo;科技&rdquo;）
                     </p>
                   )}
                 </div>
@@ -720,12 +720,9 @@ export default function TenderSearch() {
               <TableHeader>
                 <TableRow>
                   <TableHead className="whitespace-nowrap text-xs">
-                    项目编号
-                  </TableHead>
-                  <TableHead className="whitespace-nowrap text-xs">
                     公告标题
                   </TableHead>
-                  <TableHead className="whitespace-nowrap text-xs w-[80px]">
+                  <TableHead className="whitespace-nowrap text-xs w-[160px]">
                     公告类型
                   </TableHead>
                   <TableHead className="whitespace-nowrap text-xs w-[90px]">
@@ -734,11 +731,14 @@ export default function TenderSearch() {
                   <TableHead className="whitespace-nowrap text-xs w-[80px]">
                     采购方式
                   </TableHead>
-                  <TableHead className="whitespace-nowrap text-xs w-[100px]">
+                  <TableHead className="whitespace-nowrap text-xs w-[200px]">
                     项目区域
                   </TableHead>
                   <TableHead className="whitespace-nowrap text-xs w-[90px]">
                     发布时间
+                  </TableHead>
+                  <TableHead className="whitespace-nowrap text-xs w-[60px]">
+                    原文地址
                   </TableHead>
                   <TableHead className="whitespace-nowrap text-xs w-[60px]">
                     操作
@@ -759,9 +759,6 @@ export default function TenderSearch() {
 
                   return (
                     <TableRow key={item.id}>
-                      <TableCell className="text-xs font-mono text-[#A3A3A3] whitespace-nowrap">
-                        {item.project_number || '-'}
-                      </TableCell>
                       <TableCell className="text-xs max-w-[300px] truncate">
                         {item.title || item.project_name || '-'}
                       </TableCell>
@@ -788,6 +785,20 @@ export default function TenderSearch() {
                       </TableCell>
                       <TableCell className="text-xs text-[#A3A3A3] whitespace-nowrap">
                         {pubDate || '-'}
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        {item.content_url ? (
+                          <a
+                            href={item.content_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-[#1677FF] hover:underline inline-flex items-center gap-1"
+                          >
+                            <span className="truncate max-w-[80px]">原文</span>
+                          </a>
+                        ) : (
+                          <span className="text-[#D4D4D4]">-</span>
+                        )}
                       </TableCell>
                       <TableCell>
                         <Button

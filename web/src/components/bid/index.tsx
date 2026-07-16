@@ -3,12 +3,10 @@ import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useState } from 'react';
 import BidHome from './bid-home';
 import CcgpSearch from './ccgp-search';
-import ConstructionList from './construction-list';
 import ContractList from './contract-list';
 import CrawlerMonitor from './crawler-monitor';
 import CreditChinaSearch from './credit-china-search';
 import EnterpriseSearch from './enterprise-search';
-import KbSearch from './kb-search';
 import ShixinSearch from './shixin-search';
 import TenderSearch from './tender-search';
 
@@ -33,12 +31,6 @@ const modules: ModuleItem[] = [
     icon: 'search',
   },
   {
-    id: 'kb-search',
-    name: '知识库搜索',
-    description: '搜索所有知识库中的文档内容',
-    icon: 'book-open',
-  },
-  {
     id: 'contracts',
     name: '中标/合同',
     description: '搜索中标结果和合同公告',
@@ -49,12 +41,6 @@ const modules: ModuleItem[] = [
     name: '企业查询',
     description: '查询企业画像与招投标关系',
     icon: 'building-2',
-  },
-  {
-    id: 'construction',
-    name: '拟在建项目',
-    description: '搜索规划审批中的建设项目',
-    icon: 'hammer',
   },
   {
     id: 'shixin-search',
@@ -82,11 +68,7 @@ const modules: ModuleItem[] = [
   },
 ];
 
-interface Props {
-  apiFetch?: (url: string, options?: RequestInit) => Promise<Response>;
-}
-
-export default function BidPanel({ apiFetch }: Props) {
+export default function BidPanel() {
   const [selectedId, setSelectedId] = useState<string>('bid-home');
   const [collapsed, setCollapsed] = useState(false);
 
@@ -159,18 +141,8 @@ export default function BidPanel({ apiFetch }: Props) {
       <div className="flex-1 flex flex-col min-h-0 overflow-hidden bg-[#FFFFFF] min-w-0 relative">
         {selectedModule?.id === 'bid-home' && <BidHome />}
         {selectedModule?.id === 'bid-search' && <TenderSearch />}
-        {apiFetch && (
-          <div
-            className={
-              selectedModule?.id === 'kb-search' ? 'contents' : 'hidden'
-            }
-          >
-            <KbSearch apiFetch={apiFetch} />
-          </div>
-        )}
         {selectedModule?.id === 'contracts' && <ContractList />}
         {selectedModule?.id === 'enterprises' && <EnterpriseSearch />}
-        {selectedModule?.id === 'construction' && <ConstructionList />}
         {selectedModule?.id === 'shixin-search' && <ShixinSearch />}
         {selectedModule?.id === 'credit-china-search' && <CreditChinaSearch />}
         {selectedModule?.id === 'ccgp-search' && <CcgpSearch />}
