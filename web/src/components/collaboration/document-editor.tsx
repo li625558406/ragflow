@@ -34,7 +34,7 @@ import {
 import { $getRoot, $isTextNode, ElementNode } from 'lexical';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as Y from 'yjs';
-import MemberAvatars from './member-avatars';
+import EditorHeader from './editor-header';
 import MentionPlugin from './mention-plugin';
 import { $isCalloutNode, CalloutNode } from './nodes/callout-node';
 import { $isImageNode, ImageNode } from './nodes/image-node';
@@ -63,6 +63,7 @@ interface Props {
   onRuleApplied?: () => void;
   /** Raw JWT token for WebSocket auth (enables real-time collab) */
   token?: string;
+  onOpenShare: () => void;
   /** Called with the provider instance for external awareness access */
   onProviderReady?: (provider: CollaborationWebSocketProvider | null) => void;
 }
@@ -543,6 +544,7 @@ export default function DocumentEditor({
   appliedRuleConfig,
   onRuleApplied,
   token,
+  onOpenShare,
   onProviderReady,
 }: Props) {
   const [downloading, setDownloading] = useState(false);
@@ -668,68 +670,22 @@ export default function DocumentEditor({
     ],
   };
 
-  const saveLabel = {
-    idle: '保存',
-    saving: '保存中...',
-    saved: '已保存 ✓',
-    error: '保存失败',
-  }[saveStatus];
-
   return (
     <div className="flex-1 flex flex-col min-h-0 bg-white">
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-stone-100">
-        <h2 className="text-sm font-semibold text-stone-900 truncate">
-          {document.name}
-        </h2>
-        <div className="flex items-center gap-1.5">
-          <button
-            className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors disabled:opacity-50 ${
-              saveStatus === 'saved'
-                ? 'text-emerald-600 bg-emerald-50'
-                : saveStatus === 'saving'
-                  ? 'text-amber-600 bg-amber-50'
-                  : saveStatus === 'error'
-                    ? 'text-red-600 bg-red-50'
-                    : 'text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4]'
-            }`}
-            onClick={handleSave}
-            disabled={saveStatus === 'saving'}
-          >
-            {saveLabel}
-          </button>
-          {version !== null && (
-            <>
-              <div className="w-px h-4 bg-[#E8E8E6]" />
-              <span className="text-[10px] text-stone-400">v{version}</span>
-            </>
-          )}
-          <div className="w-px h-4 bg-[#E8E8E6]" />
-          <button
-            className="px-3 py-1.5 text-xs font-medium text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4] rounded-lg transition-colors"
-            onClick={() => setShowShareLink(true)}
-          >
-            分享
-          </button>
-          <div className="w-px h-4 bg-[#E8E8E6]" />
-          {token && <MemberAvatars provider={collabProvider} />}
-          <div className="w-px h-4 bg-[#E8E8E6]" />
-          <button
-            className="px-3 py-1.5 text-xs font-medium text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4] rounded-lg transition-colors disabled:opacity-50"
-            onClick={() => handleDownload('docx')}
-            disabled={downloading}
-          >
-            .docx
-          </button>
-          <button
-            className="px-3 py-1.5 text-xs font-medium text-[#555555] hover:text-[#1A1A1A] hover:bg-[#F5F5F4] rounded-lg transition-colors disabled:opacity-50"
-            onClick={() => handleDownload('pdf')}
-            disabled={downloading}
-          >
-            .pdf
-          </button>
-        </div>
-      </div>
+      <EditorHeader
+        docId={document.id}
+        docName={document.name}
+        saveStatus={saveStatus}
+        version={version}
+        provider={collabProvider}
+        showManualSave={!token}
+        onManualSave={handleSave}
+        onDownload={handleDownload}
+        downloading={downloading}
+        onOpenShare={onOpenShare}
+        apiFetch={apiFetch}
+        onRenamed={onUpdate}
+      />
 
       {/* Editor + Comment Panel side by side */}
       <div className="flex-1 flex min-h-0">

@@ -239,6 +239,10 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
             appliedRuleConfig={appliedRuleConfigRef.current}
             onRuleApplied={handleRuleApplied}
             token={wsToken}
+            onOpenShare={() => {
+              const node = documents.find((d) => d.id === selectedDoc.id);
+              if (node) setShareTarget(node);
+            }}
           />
         ) : (
           <div className="flex-1 flex items-center justify-center">
