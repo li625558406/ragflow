@@ -1,5 +1,4 @@
-import { CendTooltip } from '@/components/ui/tooltip';
-import { FileUp, FolderPlus } from 'lucide-react';
+import { FileText, FileUp, FolderPlus, Plus, Search } from 'lucide-react';
 import { useState } from 'react';
 import DocxImportDialog from './docx-import-dialog';
 import FolderTree, { DocumentNode, FolderNode } from './folder-tree';
@@ -46,6 +45,10 @@ export default function DocumentList({
   const [showImport, setShowImport] = useState(false);
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
+  const [query, setQuery] = useState('');
+  const [showCreateMenu, setShowCreateMenu] = useState(false);
+  const [showNewDoc, setShowNewDoc] = useState(false);
+  const [newDocName, setNewDocName] = useState('');
   const currentUserId = getCurrentUserId();
 
   const handleRenameStart = (docId: string) => {
@@ -118,6 +121,35 @@ export default function DocumentList({
     setShowNewFolder(false);
   };
 
+  const handleCreateDoc = async () => {
+    const name = newDocName.trim();
+    if (!name) {
+      setShowNewDoc(false);
+      return;
+    }
+    try {
+      const resp = await apiFetch('/api/v1/collaboration/documents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, markdown_content: '' }),
+      });
+      const result = await resp.json();
+      setNewDocName('');
+      setShowNewDoc(false);
+      onRefresh();
+      if (result.code === 0 && result.data?.id) {
+        onSelect(result.data as DocumentNode);
+      }
+    } catch (e) {
+      console.error('创建文档失败:', e);
+    }
+  };
+
+  const q = query.trim().toLowerCase();
+  const filteredDocuments = q
+    ? documents.filter((d) => d.name.toLowerCase().includes(q))
+    : documents;
+
   return (
     <div
       className={`shrink-0 border-r border-[#D4D4D4] bg-white flex flex-col transition-[width] duration-300 ease-in-out overflow-hidden ${
@@ -135,24 +167,6 @@ export default function DocumentList({
               {documents.length + folders.length}
             </span>
           )}
-        </div>
-        <div className="flex items-center gap-0.5">
-          <CendTooltip title="导入 Word">
-            <button
-              className="w-6 h-6 flex items-center justify-center rounded text-black/40 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
-              onClick={() => setShowImport(true)}
-            >
-              <FileUp className="size-3.5" />
-            </button>
-          </CendTooltip>
-          <CendTooltip title="新建文件夹">
-            <button
-              className="w-6 h-6 flex items-center justify-center rounded text-black/40 hover:text-amber-500 hover:bg-amber-50 transition-colors"
-              onClick={() => setShowNewFolder(true)}
-            >
-              <FolderPlus className="size-3.5" />
-            </button>
-          </CendTooltip>
         </div>
       </div>
 
@@ -175,43 +189,120 @@ export default function DocumentList({
         </div>
       )}
 
-      {/* Tree / Document List */}
-      {loading && documents.length === 0 && folders.length === 0 ? (
-        <div className="flex items-center justify-center py-8">
-          <div className="w-5 h-5 border-2 border-[#A3A3A3] border-t-[#000000] rounded-full animate-spin" />
+      {/* Search box */}
+      <div className="px-3 pb-2">
+        <div className="relative">
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 size-3.5 text-stone-300 pointer-events-none" />
+          <input
+            className="w-full pl-7 pr-2 py-1.5 text-xs bg-stone-50 border border-stone-200 rounded-lg outline-none focus:border-stone-400 placeholder:text-stone-300"
+            placeholder="搜索文档..."
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
         </div>
-      ) : documents.length === 0 && folders.length === 0 ? (
-        <div className="text-center py-8 text-xs text-[#333333]">暂无文档</div>
-      ) : (
-        <FolderTree
-          folders={folders}
-          documents={documents}
-          selectedId={selectedId}
-          onSelect={onSelect}
-          onRename={handleRenameStart}
-          onDelete={setDeleteTarget}
-          onTogglePermission={handleTogglePermission}
-          onShare={onShare}
-          onCreateFolder={(parentId) => {
-            const name = prompt('文件夹名称:');
-            if (name?.trim()) {
-              onCreateFolder(name.trim(), parentId);
-            }
-          }}
-          onDeleteFolder={(folderId) => {
-            if (confirm('确定要删除此文件夹吗？其中的文档将移至根目录。')) {
-              onDeleteFolder(folderId);
-            }
-          }}
-          renamingId={renamingId}
-          renameValue={renameValue}
-          onRenameValueChange={setRenameValue}
-          onRenameSubmit={handleRenameSubmit}
-          onRenameCancel={handleRenameCancel}
-          currentUserId={currentUserId}
-          collapsed={collapsed}
-        />
-      )}
+      </div>
+
+      {/* Tree / Document List */}
+      <div className="flex-1 overflow-y-auto min-h-0">
+        {loading && filteredDocuments.length === 0 && folders.length === 0 ? (
+          <div className="flex items-center justify-center py-8">
+            <div className="w-5 h-5 border-2 border-[#A3A3A3] border-t-[#000000] rounded-full animate-spin" />
+          </div>
+        ) : filteredDocuments.length === 0 && folders.length === 0 ? (
+          <div className="text-center py-8 text-xs text-[#333333]">
+            暂无文档
+          </div>
+        ) : (
+          <FolderTree
+            folders={folders}
+            documents={filteredDocuments}
+            selectedId={selectedId}
+            onSelect={onSelect}
+            onRename={handleRenameStart}
+            onDelete={setDeleteTarget}
+            onTogglePermission={handleTogglePermission}
+            onShare={onShare}
+            onCreateFolder={(parentId) => {
+              const name = prompt('文件夹名称:');
+              if (name?.trim()) {
+                onCreateFolder(name.trim(), parentId);
+              }
+            }}
+            onDeleteFolder={(folderId) => {
+              if (confirm('确定要删除此文件夹吗？其中的文档将移至根目录。')) {
+                onDeleteFolder(folderId);
+              }
+            }}
+            renamingId={renamingId}
+            renameValue={renameValue}
+            onRenameValueChange={setRenameValue}
+            onRenameSubmit={handleRenameSubmit}
+            onRenameCancel={handleRenameCancel}
+            currentUserId={currentUserId}
+            collapsed={collapsed}
+          />
+        )}
+      </div>
+
+      {/* Bottom create entry */}
+      <div className="relative border-t border-stone-100 p-2 mt-auto">
+        {showNewDoc && (
+          <input
+            type="text"
+            className="w-full mb-1.5 px-2 py-1 text-xs border border-stone-300 rounded focus:outline-none focus:border-stone-500"
+            placeholder="文档名称..."
+            value={newDocName}
+            autoFocus
+            onChange={(e) => setNewDocName(e.target.value)}
+            onBlur={handleCreateDoc}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleCreateDoc();
+              if (e.key === 'Escape') setShowNewDoc(false);
+            }}
+          />
+        )}
+        {showCreateMenu && (
+          <div className="absolute bottom-full left-2 right-2 mb-1 bg-white border border-stone-200 rounded-lg shadow-lg py-1 z-50">
+            <button
+              className="w-full px-3 py-1.5 text-left text-xs text-stone-700 hover:bg-stone-50 flex items-center gap-2"
+              onClick={() => {
+                setShowCreateMenu(false);
+                setShowNewDoc(true);
+              }}
+            >
+              <FileText className="size-3.5" />
+              新建文档
+            </button>
+            <button
+              className="w-full px-3 py-1.5 text-left text-xs text-stone-700 hover:bg-stone-50 flex items-center gap-2"
+              onClick={() => {
+                setShowCreateMenu(false);
+                setShowNewFolder(true);
+              }}
+            >
+              <FolderPlus className="size-3.5" />
+              新建文件夹
+            </button>
+            <button
+              className="w-full px-3 py-1.5 text-left text-xs text-stone-700 hover:bg-stone-50 flex items-center gap-2"
+              onClick={() => {
+                setShowCreateMenu(false);
+                setShowImport(true);
+              }}
+            >
+              <FileUp className="size-3.5" />
+              导入 Word
+            </button>
+          </div>
+        )}
+        <button
+          className="w-full flex items-center justify-center gap-1 px-3 py-1.5 text-xs font-medium text-stone-600 border border-dashed border-stone-300 rounded-lg hover:border-stone-400 hover:text-stone-900 transition-colors"
+          onClick={() => setShowCreateMenu((v) => !v)}
+        >
+          <Plus className="size-3.5" />
+          新建
+        </button>
+      </div>
 
       {/* Import dialog */}
       {showImport && (
