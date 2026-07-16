@@ -24,7 +24,7 @@ import re
 from werkzeug.security import generate_password_hash, check_password_hash
 
 import settings
-from api.db import DB, TenantPermission
+from api.db import TenantPermission
 from api.db.db_models import (
     CollaborationAttachment,
     CollaborationAuditLog,
@@ -34,6 +34,7 @@ from api.db.db_models import (
     CollaborationFolder,
     CollaborationFormatRule,
     CollaborationShareLink,
+    DB,
     UserTenant,
 )
 from api.db.services.collaboration_service import (
