@@ -107,6 +107,26 @@ function SelectArrow() {
   );
 }
 
+function InsertMenuItem({
+  label,
+  onClick,
+}: {
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      className="w-full px-3 py-1.5 text-left text-xs text-stone-700 hover:bg-stone-50"
+      onMouseDown={(e) => {
+        e.preventDefault();
+        onClick();
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
 export default function ToolbarPlugin() {
   const [editor] = useLexicalComposerContext();
   const [isBold, setIsBold] = useState(false);
@@ -117,7 +137,6 @@ export default function ToolbarPlugin() {
   const [isSuperscript, setIsSuperscript] = useState(false);
   const [isCode, setIsCode] = useState(false);
   const [isQuote, setIsQuote] = useState(false);
-  const [isCallout, setIsCallout] = useState(false);
   const [linkUrl, setLinkUrl] = useState('');
   const [showLinkInput, setShowLinkInput] = useState(false);
   const [showMathInput, setShowMathInput] = useState(false);
@@ -136,6 +155,7 @@ export default function ToolbarPlugin() {
   const [textColor, setTextColor] = useState('#1C1917');
   const [bgColor, setBgColor] = useState('transparent');
   const [wordCount, setWordCount] = useState(0);
+  const [showInsertMenu, setShowInsertMenu] = useState(false);
   const colorInputRef = useRef<HTMLInputElement>(null);
   const bgColorInputRef = useRef<HTMLInputElement>(null);
 
@@ -193,7 +213,6 @@ export default function ToolbarPlugin() {
         setHeading('paragraph');
       }
       setIsQuote($isQuoteNode(anchorBlock));
-      setIsCallout($isCalloutNode(anchorBlock));
     });
   }, [editor]);
 
@@ -978,39 +997,19 @@ export default function ToolbarPlugin() {
         </button>
       </CendTooltip>
 
-      {/* Callout Dropdown */}
+      {/* 插入 下拉 */}
       <div className="relative">
-        <select
-          className="h-7 px-1 text-xs border border-[#D4D4D4] rounded bg-[#EAEAEA] text-[#000000] w-[72px] focus:outline-none focus:border-[#000000] appearance-none cursor-pointer"
-          value={isCallout ? 'in' : ''}
-          onChange={(e) => {
-            if (e.target.value) insertCallout(e.target.value as CalloutType);
-          }}
-        >
-          <option value="">标注 ▾</option>
-          <option value="info">💡 信息</option>
-          <option value="warning">⚠️ 警告</option>
-          <option value="tip">✅ 提示</option>
-          <option value="danger">🚫 重要</option>
-        </select>
-        <SelectArrow />
-      </div>
-
-      <div className="w-px h-5 bg-black/[0.06] mx-0.5" />
-
-      {/* Link */}
-      <div className="relative">
-        <CendTooltip title="超链接">
+        <CendTooltip title="插入">
           <button
-            className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
+            className="h-7 px-2 flex items-center gap-1 rounded text-xs text-black/60 hover:bg-black/[0.04] transition-colors whitespace-nowrap"
             onMouseDown={(e) => {
               e.preventDefault();
-              setShowLinkInput((prev) => !prev);
-              setTimeout(() => linkInputRef.current?.focus(), 50);
+              setShowInsertMenu((v) => !v);
             }}
           >
+            + 插入
             <svg
-              className="w-3.5 h-3.5"
+              className="w-2.5 h-2.5"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -1019,11 +1018,83 @@ export default function ToolbarPlugin() {
                 strokeLinecap="round"
                 strokeLinejoin="round"
                 strokeWidth={2}
-                d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"
+                d="M19 9l-7 7-7-7"
               />
             </svg>
           </button>
         </CendTooltip>
+        {showInsertMenu && (
+          <div className="absolute top-full left-0 mt-1 w-40 bg-white border border-stone-200 rounded-lg shadow-lg py-1 z-50">
+            <InsertMenuItem
+              label="🔗 链接"
+              onClick={() => {
+                setShowInsertMenu(false);
+                setShowLinkInput(true);
+                setTimeout(() => linkInputRef.current?.focus(), 50);
+              }}
+            />
+            <InsertMenuItem
+              label="🖼️ 图片"
+              onClick={() => {
+                setShowInsertMenu(false);
+                setShowImageInput(true);
+                setTimeout(() => imageInputRef.current?.focus(), 50);
+              }}
+            />
+            <InsertMenuItem
+              label="⌨️ 代码块"
+              onClick={() => {
+                setShowInsertMenu(false);
+                insertCodeBlock();
+              }}
+            />
+            <InsertMenuItem
+              label="fx 数学公式"
+              onClick={() => {
+                setShowInsertMenu(false);
+                setShowMathInput(true);
+                setTimeout(() => mathInputRef.current?.focus(), 50);
+              }}
+            />
+            <InsertMenuItem
+              label="😊 表情符号"
+              onClick={() => {
+                setShowInsertMenu(false);
+                setShowEmoji(true);
+              }}
+            />
+            <div className="my-1 border-t border-stone-100" />
+            <InsertMenuItem
+              label="💡 信息标注"
+              onClick={() => {
+                setShowInsertMenu(false);
+                insertCallout('info');
+              }}
+            />
+            <InsertMenuItem
+              label="⚠️ 警告标注"
+              onClick={() => {
+                setShowInsertMenu(false);
+                insertCallout('warning');
+              }}
+            />
+            <InsertMenuItem
+              label="✅ 提示标注"
+              onClick={() => {
+                setShowInsertMenu(false);
+                insertCallout('tip');
+              }}
+            />
+            <InsertMenuItem
+              label="🚫 重要标注"
+              onClick={() => {
+                setShowInsertMenu(false);
+                insertCallout('danger');
+              }}
+            />
+          </div>
+        )}
+        {/* Popovers: link, image, math, emoji — anchored to this container */}
         {showLinkInput && (
           <div className="absolute top-full left-0 mt-1 flex items-center gap-1 bg-white border border-stone-200 rounded-lg shadow-lg p-1.5 z-50">
             <input
@@ -1045,59 +1116,6 @@ export default function ToolbarPlugin() {
             </button>
           </div>
         )}
-      </div>
-
-      {/* Code Block */}
-      <CendTooltip title="代码块">
-        <button
-          className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
-          onMouseDown={(e) => {
-            e.preventDefault();
-            insertCodeBlock();
-          }}
-        >
-          <svg
-            className="w-3.5 h-3.5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
-            />
-          </svg>
-        </button>
-      </CendTooltip>
-
-      {/* Image */}
-      <div className="relative">
-        <CendTooltip title="图片">
-          <button
-            className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              setShowImageInput((prev) => !prev);
-              setTimeout(() => imageInputRef.current?.focus(), 50);
-            }}
-          >
-            <svg
-              className="w-3.5 h-3.5"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
-              />
-            </svg>
-          </button>
-        </CendTooltip>
         {showImageInput && (
           <div className="absolute top-full left-0 mt-1 flex items-center gap-1 bg-white border border-stone-200 rounded-lg shadow-lg p-1.5 z-50">
             <input
@@ -1119,43 +1137,6 @@ export default function ToolbarPlugin() {
             </button>
           </div>
         )}
-      </div>
-
-      {/* Math Formula */}
-      <div className="relative">
-        <CendTooltip title="数学公式 (LaTeX)">
-          <button
-            className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              setShowMathInput((prev) => !prev);
-              setTimeout(() => mathInputRef.current?.focus(), 50);
-            }}
-          >
-            <svg
-              className="w-3.5 h-3.5"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M7 4h10M7 8h10M7 12h10M7 16h10M7 20h10"
-              />
-              <text
-                x="12"
-                y="16"
-                textAnchor="middle"
-                className="text-[6px] fill-current stroke-none"
-                fontStyle="italic"
-              >
-                fx
-              </text>
-            </svg>
-          </button>
-        </CendTooltip>
         {showMathInput && (
           <div className="absolute top-full left-0 mt-1 flex items-center gap-1 bg-white border border-stone-200 rounded-lg shadow-lg p-1.5 z-50">
             <input
@@ -1177,21 +1158,6 @@ export default function ToolbarPlugin() {
             </button>
           </div>
         )}
-      </div>
-
-      {/* Emoji */}
-      <div className="relative">
-        <CendTooltip title="表情符号">
-          <button
-            className="h-7 w-7 flex items-center justify-center rounded text-black/50 hover:bg-black/[0.04] transition-colors text-sm"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              setShowEmoji((prev) => !prev);
-            }}
-          >
-            😊
-          </button>
-        </CendTooltip>
         {showEmoji && (
           <EmojiPicker
             onSelect={insertEmoji}
