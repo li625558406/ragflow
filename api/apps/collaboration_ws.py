@@ -191,11 +191,10 @@ async def handle_ws(doc_id: str):
                 if read_only:
                     continue  # Drop edits from read-only users
 
-                # Accumulate state — client sends FULL state after each edit
-                # (this keeps the relay simple: no need to merge deltas)
+                # Relay incremental deltas — do NOT overwrite full_state
+                # full_state is only updated via 'save' messages (full snapshots)
                 try:
                     update_bytes = base64.b64decode(msg_data)
-                    room["full_state"] = update_bytes
                     room["buffer"].append(update_bytes)
                 except Exception:
                     continue

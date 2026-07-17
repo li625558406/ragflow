@@ -129,43 +129,6 @@ export default function MentionPlugin({ apiFetch }: Props) {
     });
   }, [editor, loadUsers]);
 
-  // Keyboard navigation — uses refs to avoid re-registering on every keystroke
-  useEffect(() => {
-    return editor.registerCommand(
-      KEY_DOWN_COMMAND,
-      (event: KeyboardEvent) => {
-        if (!showMenu) return false;
-
-        const users = filteredUsersRef.current;
-        const idx = selectedIndexRef.current;
-
-        if (event.key === 'ArrowDown') {
-          event.preventDefault();
-          setSelectedIndex((prev) => (prev >= users.length - 1 ? 0 : prev + 1));
-          return true;
-        }
-        if (event.key === 'ArrowUp') {
-          event.preventDefault();
-          setSelectedIndex((prev) => (prev <= 0 ? users.length - 1 : prev - 1));
-          return true;
-        }
-        if (event.key === 'Enter') {
-          event.preventDefault();
-          if (users[idx]) {
-            insertMention(users[idx]);
-          }
-          return true;
-        }
-        if (event.key === 'Escape') {
-          setShowMenu(false);
-          return true;
-        }
-        return false;
-      },
-      COMMAND_PRIORITY_LOW,
-    );
-  }, [editor, showMenu, insertMention]);
-
   const insertMention = useCallback(
     (user: UserItem) => {
       editor.update(() => {
@@ -233,6 +196,43 @@ export default function MentionPlugin({ apiFetch }: Props) {
     },
     [editor],
   );
+
+  // Keyboard navigation — uses refs to avoid re-registering on every keystroke
+  useEffect(() => {
+    return editor.registerCommand(
+      KEY_DOWN_COMMAND,
+      (event: KeyboardEvent) => {
+        if (!showMenu) return false;
+
+        const users = filteredUsersRef.current;
+        const idx = selectedIndexRef.current;
+
+        if (event.key === 'ArrowDown') {
+          event.preventDefault();
+          setSelectedIndex((prev) => (prev >= users.length - 1 ? 0 : prev + 1));
+          return true;
+        }
+        if (event.key === 'ArrowUp') {
+          event.preventDefault();
+          setSelectedIndex((prev) => (prev <= 0 ? users.length - 1 : prev - 1));
+          return true;
+        }
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          if (users[idx]) {
+            insertMention(users[idx]);
+          }
+          return true;
+        }
+        if (event.key === 'Escape') {
+          setShowMenu(false);
+          return true;
+        }
+        return false;
+      },
+      COMMAND_PRIORITY_LOW,
+    );
+  }, [editor, showMenu, insertMention]);
 
   const handleUserClick = useCallback(
     (user: UserItem) => {

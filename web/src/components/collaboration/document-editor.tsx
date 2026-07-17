@@ -180,6 +180,9 @@ function YjsPlugin({
         .then(() => {
           onSaveStatus('saved');
           onUpdate();
+          // After HTTP save, send full state via WebSocket so the server
+          // has a correct snapshot for future joiners
+          provider.sendFullState();
           if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
           statusTimerRef.current = setTimeout(() => onSaveStatus('idle'), 2000);
         })
@@ -198,6 +201,9 @@ function YjsPlugin({
       removeAwarenessListener();
       if (saveTimerRef.current) clearInterval(saveTimerRef.current);
       if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+      // Flush: send full state snapshot before disconnecting so the server
+      // persists the latest content for future joiners
+      provider.sendFullState();
       provider.disconnect();
       binding.destroy?.();
       doc.destroy();
@@ -738,7 +744,7 @@ export default function DocumentEditor({
                     triggerSaveRef={triggerSaveRef}
                   />
                 )}
-                {!token && <SetInitialStatePlugin content={document.content} />}
+                <SetInitialStatePlugin content={document.content} />
                 <FormatApplyPlugin
                   config={appliedRuleConfig}
                   onApplied={onRuleApplied}

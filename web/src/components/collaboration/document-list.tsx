@@ -182,8 +182,8 @@ export default function DocumentList({
         collapsed ? 'w-0 border-r-0' : 'w-60'
       }`}
     >
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 pt-4 pb-2 whitespace-nowrap">
+      {/* Header + New button */}
+      <div className="flex items-center justify-between px-3 pt-3 pb-1 whitespace-nowrap">
         <div className="flex items-center gap-2">
           <span className="text-[#333333] text-[13px] font-semibold tracking-widest uppercase">
             文档
@@ -193,6 +193,52 @@ export default function DocumentList({
               {filteredDocuments.length + folders.length}
             </span>
           )}
+        </div>
+        <div className="relative">
+          {showCreateMenu && (
+            <div
+              ref={createMenuRef}
+              className="absolute top-full right-0 mt-1 w-36 bg-white border border-stone-200 rounded-lg shadow-lg py-1 z-50"
+            >
+              <button
+                className="w-full px-3 py-1.5 text-left text-xs text-stone-700 hover:bg-stone-50 flex items-center gap-2"
+                onClick={() => {
+                  setShowCreateMenu(false);
+                  setShowNewDoc(true);
+                }}
+              >
+                <FileText className="size-3.5" />
+                新建文档
+              </button>
+              <button
+                className="w-full px-3 py-1.5 text-left text-xs text-stone-700 hover:bg-stone-50 flex items-center gap-2"
+                onClick={() => {
+                  setShowCreateMenu(false);
+                  setShowNewFolder(true);
+                }}
+              >
+                <FolderPlus className="size-3.5" />
+                新建文件夹
+              </button>
+              <button
+                className="w-full px-3 py-1.5 text-left text-xs text-stone-700 hover:bg-stone-50 flex items-center gap-2"
+                onClick={() => {
+                  setShowCreateMenu(false);
+                  setShowImport(true);
+                }}
+              >
+                <FileUp className="size-3.5" />
+                导入 Word
+              </button>
+            </div>
+          )}
+          <button
+            className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-white bg-stone-900 hover:bg-stone-700 rounded-lg transition-colors"
+            onClick={() => setShowCreateMenu((v) => !v)}
+          >
+            <Plus className="size-3" />
+            新建
+          </button>
         </div>
       </div>
 
@@ -210,6 +256,25 @@ export default function DocumentList({
             onKeyDown={(e) => {
               if (e.key === 'Enter') handleCreateFolder();
               if (e.key === 'Escape') setShowNewFolder(false);
+            }}
+          />
+        </div>
+      )}
+
+      {/* New doc input */}
+      {showNewDoc && (
+        <div className="px-3 pb-1">
+          <input
+            type="text"
+            className="w-full px-2 py-1 text-xs border border-stone-300 rounded focus:outline-none focus:border-stone-500"
+            placeholder="文档名称..."
+            value={newDocName}
+            autoFocus
+            onChange={(e) => setNewDocName(e.target.value)}
+            onBlur={handleCreateDoc}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleCreateDoc();
+              if (e.key === 'Escape') setShowNewDoc(false);
             }}
           />
         </div>
@@ -268,69 +333,6 @@ export default function DocumentList({
             collapsed={collapsed}
           />
         )}
-      </div>
-
-      {/* Bottom create entry */}
-      <div className="relative border-t border-stone-100 p-2 mt-auto">
-        {showNewDoc && (
-          <input
-            type="text"
-            className="w-full mb-1.5 px-2 py-1 text-xs border border-stone-300 rounded focus:outline-none focus:border-stone-500"
-            placeholder="文档名称..."
-            value={newDocName}
-            autoFocus
-            onChange={(e) => setNewDocName(e.target.value)}
-            onBlur={handleCreateDoc}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') handleCreateDoc();
-              if (e.key === 'Escape') setShowNewDoc(false);
-            }}
-          />
-        )}
-        {showCreateMenu && (
-          <div
-            ref={createMenuRef}
-            className="absolute bottom-full left-2 right-2 mb-1 bg-white border border-stone-200 rounded-lg shadow-lg py-1 z-50"
-          >
-            <button
-              className="w-full px-3 py-1.5 text-left text-xs text-stone-700 hover:bg-stone-50 flex items-center gap-2"
-              onClick={() => {
-                setShowCreateMenu(false);
-                setShowNewDoc(true);
-              }}
-            >
-              <FileText className="size-3.5" />
-              新建文档
-            </button>
-            <button
-              className="w-full px-3 py-1.5 text-left text-xs text-stone-700 hover:bg-stone-50 flex items-center gap-2"
-              onClick={() => {
-                setShowCreateMenu(false);
-                setShowNewFolder(true);
-              }}
-            >
-              <FolderPlus className="size-3.5" />
-              新建文件夹
-            </button>
-            <button
-              className="w-full px-3 py-1.5 text-left text-xs text-stone-700 hover:bg-stone-50 flex items-center gap-2"
-              onClick={() => {
-                setShowCreateMenu(false);
-                setShowImport(true);
-              }}
-            >
-              <FileUp className="size-3.5" />
-              导入 Word
-            </button>
-          </div>
-        )}
-        <button
-          className="w-full flex items-center justify-center gap-1 px-3 py-1.5 text-xs font-medium text-stone-600 border border-dashed border-stone-300 rounded-lg hover:border-stone-400 hover:text-stone-900 transition-colors"
-          onClick={() => setShowCreateMenu((v) => !v)}
-        >
-          <Plus className="size-3.5" />
-          新建
-        </button>
       </div>
 
       {/* Import dialog */}

@@ -26,7 +26,7 @@ export interface ProviderAwareness {
   getLocalState: () => UserState | null;
   getStates: () => Map<number, UserState>;
   off: (type: 'update', cb: () => void) => void;
-  on: (type: 'update', cb: () => void) => void;
+  on: (type: 'update', cb: () => void) => () => void;
   setLocalState: (arg0: UserState) => void;
   setLocalStateField: (field: string, value: unknown) => void;
 }
@@ -106,8 +106,11 @@ class AwarenessStore implements ProviderAwareness {
     this._emit();
   }
 
-  on(_type: 'update', cb: () => void): void {
+  on(_type: 'update', cb: () => void): () => void {
     this.listeners.push(cb);
+    return () => {
+      this.listeners = this.listeners.filter((l) => l !== cb);
+    };
   }
 
   off(_type: 'update', cb: () => void): void {
@@ -165,6 +168,8 @@ export class CollaborationWebSocketProvider {
 
   // Awareness broadcast throttle
   private awThrottleTimer: ReturnType<typeof setTimeout> | null = null;
+  // Awareness heartbeat — re-send local awareness periodically so late joiners see us
+  private awHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   // Event listeners
   private syncListeners: Array<(isSynced: boolean) => void> = [];
@@ -202,6 +207,14 @@ export class CollaborationWebSocketProvider {
   disconnect(): void {
     this.closed = true;
     this._cleanup();
+  }
+
+  /** Send full Yjs document state as a save snapshot to the server. */
+  sendFullState(): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    const fullState = Y.encodeStateAsUpdate(this.doc);
+    const b64 = uint8ArrayToBase64(fullState);
+    this.ws.send(JSON.stringify({ t: 'save', d: b64 }));
   }
 
   on(type: 'sync', cb: (isSynced: boolean) => void): void;
@@ -259,6 +272,14 @@ export class CollaborationWebSocketProvider {
       if (encoded) {
         ws.send(JSON.stringify({ t: 'aw', d: encoded }));
       }
+      // Start awareness heartbeat — re-send every 5s so late joiners see us
+      if (this.awHeartbeatTimer) clearInterval(this.awHeartbeatTimer);
+      this.awHeartbeatTimer = setInterval(() => {
+        const enc = this.awareness.encodeLocalState();
+        if (enc && this.ws?.readyState === WebSocket.OPEN) {
+          this.ws.send(JSON.stringify({ t: 'aw', d: enc }));
+        }
+      }, 5000);
     };
 
     ws.onmessage = (event: MessageEvent) => {
@@ -343,8 +364,27 @@ export class CollaborationWebSocketProvider {
       }
 
       case 'presence': {
-        // Server broadcasts online member list —
-        // could use this to clean up stale awareness states
+        // Server broadcasts online member list — use it to clean up stale awareness
+        try {
+          const onlineList = msg.d as Array<{ uid: string; name: string }>;
+          // Get all remote client IDs currently in awareness
+          const remoteIDs: number[] = [];
+          this.awareness.getStates().forEach((_state, clientID) => {
+            if (clientID !== this.doc.clientID) {
+              remoteIDs.push(clientID);
+            }
+          });
+          // We cannot directly map uid→clientID, so we skip cleanup here.
+          // The presence data is logged for debugging awareness sync issues.
+          if (onlineList.length === 0 && remoteIDs.length > 0) {
+            // Only self left — remove all remote states
+            for (const cid of remoteIDs) {
+              this.awareness.removeRemoteState(cid);
+            }
+          }
+        } catch {
+          // ignore invalid presence data
+        }
         break;
       }
 
@@ -391,6 +431,10 @@ export class CollaborationWebSocketProvider {
     if (this.awThrottleTimer) {
       clearTimeout(this.awThrottleTimer);
       this.awThrottleTimer = null;
+    }
+    if (this.awHeartbeatTimer) {
+      clearInterval(this.awHeartbeatTimer);
+      this.awHeartbeatTimer = null;
     }
     this.doc.off('update', this._onDocUpdate);
     if (this.ws) {
