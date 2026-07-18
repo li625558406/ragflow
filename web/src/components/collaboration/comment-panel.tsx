@@ -5,6 +5,7 @@ interface CommentData {
   id: string;
   document_id: string;
   user_id: string;
+  user_name: string;
   parent_comment_id: string | null;
   anchor_block_key: string | null;
   anchor_offset_start: number | null;
@@ -187,12 +188,12 @@ export default function CommentPanel({
         >
           <div className="flex items-start gap-2">
             <div className="size-6 rounded-full bg-stone-200 flex items-center justify-center text-[10px] font-semibold text-stone-600 shrink-0">
-              {getInitials('', comment.user_id)}
+              {getInitials('', comment.user_name)}
             </div>
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2">
                 <span className="text-xs font-medium text-stone-700">
-                  {comment.user_id}
+                  {comment.user_name}
                 </span>
                 <span className="text-[10px] text-stone-400">
                   {formatTime(comment.create_time)}

@@ -8,20 +8,31 @@ interface Props {
   folderId?: string | null;
 }
 
+interface FileImportDialogProps {
+  accept?: string; // e.g. ".docx,.xlsx"
+  title?: string;
+  description?: string;
+  fileLabel?: string;
+}
+
 export default function DocxImportDialog({
+  accept = '.docx,.xlsx',
+  title = '导入文档',
+  description = '上传文件，自动转换为可编辑文档',
+  fileLabel = '文件',
   apiFetch,
   onImported,
   onClose,
   folderId,
-}: Props) {
+}: FileImportDialogProps & Props) {
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [error, setError] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
 
   const handleFile = async (file: File) => {
-    if (!file.name.toLowerCase().endsWith('.docx')) {
-      setError('仅支持 .docx 格式文件');
+    if (!file.name.toLowerCase().match(/\.(docx|xlsx|xls)$/)) {
+      setError('仅支持 .docx / .xlsx 格式文件');
       return;
     }
     setUploading(true);
@@ -54,10 +65,8 @@ export default function DocxImportDialog({
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="fixed inset-0 bg-black/40" onClick={onClose} />
       <div className="relative z-10 bg-white border border-[#E8E8E6] rounded-2xl shadow-[0_20px_60px_-12px_rgba(0,0,0,0.08)] p-6 max-w-md w-full mx-4">
-        <h2 className="text-lg font-semibold text-[#1A1A1A]">导入 Word 文档</h2>
-        <p className="text-sm text-[#8A8A8A] mt-1">
-          上传 .docx 文件，自动转换为可编辑文档
-        </p>
+        <h2 className="text-lg font-semibold text-[#1A1A1A]">{title}</h2>
+        <p className="text-sm text-[#8A8A8A] mt-1">{description}</p>
 
         {/* Drop zone */}
         <div
@@ -87,7 +96,7 @@ export default function DocxImportDialog({
             <>
               <Upload className="size-8 text-[#A3A3A3] mx-auto mb-2" />
               <p className="text-sm text-[#555555]">
-                拖拽 .docx 文件到此处，或点击选择
+                拖拽 {fileLabel} 文件到此处，或点击选择
               </p>
               <button
                 className="mt-2 text-xs text-indigo-600 hover:text-indigo-700 font-medium"
@@ -100,7 +109,7 @@ export default function DocxImportDialog({
           <input
             ref={fileRef}
             type="file"
-            accept=".docx"
+            accept={accept}
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0];

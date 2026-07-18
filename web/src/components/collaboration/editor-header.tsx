@@ -21,11 +21,12 @@ interface Props {
   /** 非协同模式(无 token)时展示手动保存入口 */
   showManualSave: boolean;
   onManualSave: () => void;
-  onDownload: (type: 'docx' | 'pdf') => void;
+  onDownload: (type: 'docx' | 'pdf' | 'xlsx') => void | Promise<void>;
   downloading: boolean;
   onOpenShare: () => void;
   apiFetch: (url: string, options?: RequestInit) => Promise<Response>;
   onRenamed: () => void;
+  fileType?: string;
 }
 
 const STATUS_META: Record<SaveStatus, { label: string; cls: string }> = {
@@ -48,6 +49,7 @@ export default function EditorHeader({
   onOpenShare,
   apiFetch,
   onRenamed,
+  fileType,
 }: Props) {
   const [showMore, setShowMore] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -194,28 +196,44 @@ export default function EditorHeader({
           </button>
           {showMore && (
             <div className="absolute top-full right-0 mt-1 w-40 bg-white border border-stone-200 rounded-lg shadow-lg py-1 z-50">
-              <button
-                className="w-full px-3 py-1.5 text-left text-xs text-stone-700 hover:bg-stone-50 flex items-center gap-2 disabled:opacity-50"
-                disabled={downloading}
-                onClick={() => {
-                  setShowMore(false);
-                  onDownload('docx');
-                }}
-              >
-                <Download className="size-3.5" />
-                导出 Word (.docx)
-              </button>
-              <button
-                className="w-full px-3 py-1.5 text-left text-xs text-stone-700 hover:bg-stone-50 flex items-center gap-2 disabled:opacity-50"
-                disabled={downloading}
-                onClick={() => {
-                  setShowMore(false);
-                  onDownload('pdf');
-                }}
-              >
-                <Download className="size-3.5" />
-                导出 PDF (.pdf)
-              </button>
+              {fileType === 'xlsx' ? (
+                <button
+                  className="w-full px-3 py-1.5 text-left text-xs text-stone-700 hover:bg-stone-50 flex items-center gap-2 disabled:opacity-50"
+                  disabled={downloading}
+                  onClick={() => {
+                    setShowMore(false);
+                    onDownload('xlsx');
+                  }}
+                >
+                  <Download className="size-3.5" />
+                  导出 Excel (.xlsx)
+                </button>
+              ) : (
+                <>
+                  <button
+                    className="w-full px-3 py-1.5 text-left text-xs text-stone-700 hover:bg-stone-50 flex items-center gap-2 disabled:opacity-50"
+                    disabled={downloading}
+                    onClick={() => {
+                      setShowMore(false);
+                      onDownload('docx');
+                    }}
+                  >
+                    <Download className="size-3.5" />
+                    导出 Word (.docx)
+                  </button>
+                  <button
+                    className="w-full px-3 py-1.5 text-left text-xs text-stone-700 hover:bg-stone-50 flex items-center gap-2 disabled:opacity-50"
+                    disabled={downloading}
+                    onClick={() => {
+                      setShowMore(false);
+                      onDownload('pdf');
+                    }}
+                  >
+                    <Download className="size-3.5" />
+                    导出 PDF (.pdf)
+                  </button>
+                </>
+              )}
             </div>
           )}
         </div>

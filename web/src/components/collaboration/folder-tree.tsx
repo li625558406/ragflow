@@ -2,6 +2,7 @@ import { CendTooltip } from '@/components/ui/tooltip';
 import {
   ChevronDown,
   ChevronRight,
+  FileSpreadsheet,
   FileText,
   Folder,
   FolderPlus,
@@ -255,9 +256,15 @@ function DocRow({
           selectedId === doc.id ? 'bg-white' : 'bg-[#EAEAEA]'
         }`}
       >
-        <FileText
-          className={`size-3.5 ${selectedId === doc.id ? 'text-[#000000]' : 'text-[#333333]'}`}
-        />
+        {doc.file_type === 'xlsx' ? (
+          <FileSpreadsheet
+            className={`size-3.5 ${selectedId === doc.id ? 'text-[#000000]' : 'text-emerald-600'}`}
+          />
+        ) : (
+          <FileText
+            className={`size-3.5 ${selectedId === doc.id ? 'text-[#000000]' : 'text-[#333333]'}`}
+          />
+        )}
       </div>
       <div className="min-w-0 flex-1">
         {renamingId === doc.id ? (

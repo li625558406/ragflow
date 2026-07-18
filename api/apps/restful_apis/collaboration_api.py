@@ -15,6 +15,7 @@
 #
 
 import logging
+from urllib.parse import quote
 
 from quart import Response, request
 from api.apps import login_required, current_user
@@ -45,6 +46,30 @@ async def create_document():
             markdown_content=markdown_content,
             agent_id=agent_id,
             permission=permission,
+        )
+        return get_json_result(data=doc)
+    except Exception as e:
+        logging.error(e)
+        return get_json_result(message=str(e), code=RetCode.SERVER_ERROR)
+
+
+@manager.route("/collaboration/documents/spreadsheet", methods=["POST"])  # noqa: F821
+@login_required
+@validate_request("name")
+async def create_spreadsheet():
+    req = await get_request_json()
+    name = req.get("name", "").strip()
+    permission = req.get("permission", "me")
+    folder_id = req.get("folder_id")
+    if not name:
+        return get_error_argument_result("name is required")
+    try:
+        doc = await collaboration_api_service.create_spreadsheet(
+            tenant_id=current_user.id,
+            user_id=current_user.id,
+            name=name,
+            permission=permission,
+            folder_id=folder_id,
         )
         return get_json_result(data=doc)
     except Exception as e:
@@ -156,7 +181,7 @@ async def download_document(doc_id):
         return Response(
             blob,
             mimetype=mimetype,
-            headers={"Content-Disposition": f"attachment; filename={filename}"},
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
         )
     except ValueError as e:
         return get_error_argument_result(str(e))
@@ -183,7 +208,7 @@ async def apply_format_rule(doc_id):
         return Response(
             blob,
             mimetype=mimetype,
-            headers={"Content-Disposition": f"attachment; filename={filename}"},
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
         )
     except LookupError as e:
         return get_json_result(message=str(e), code=RetCode.NOT_FOUND)
@@ -361,7 +386,7 @@ async def move_document(doc_id):
         return get_json_result(message=str(e), code=RetCode.SERVER_ERROR)
 
 
-# ── Word Import API ──
+# ── Document Import API ──
 
 @manager.route("/collaboration/documents/import", methods=["POST"])  # noqa: F821
 @login_required
@@ -372,12 +397,21 @@ async def import_document():
         return get_error_argument_result("file is required")
     folder_id = (await request.form).get("folder_id")
     try:
-        doc = await collaboration_api_service.import_docx(
-            tenant_id=current_user.id,
-            user_id=current_user.id,
-            file_obj=file_obj,
-            folder_id=folder_id,
-        )
+        filename = (file_obj.filename or "").lower()
+        if filename.endswith(('.xlsx', '.xls')):
+            doc = await collaboration_api_service.import_xlsx(
+                tenant_id=current_user.id,
+                user_id=current_user.id,
+                file_obj=file_obj,
+                folder_id=folder_id,
+            )
+        else:
+            doc = await collaboration_api_service.import_docx(
+                tenant_id=current_user.id,
+                user_id=current_user.id,
+                file_obj=file_obj,
+                folder_id=folder_id,
+            )
         return get_json_result(data=doc)
     except ValueError as e:
         return get_error_argument_result(str(e))
@@ -748,7 +782,7 @@ async def download_attachment(doc_id, attachment_id):
         return Response(
             data,
             mimetype=mimetype,
-            headers={"Content-Disposition": f"attachment; filename={filename}"},
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
         )
     except LookupError as e:
         return get_json_result(message=str(e), code=RetCode.NOT_FOUND)

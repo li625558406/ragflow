@@ -1,4 +1,11 @@
-import { FileText, FileUp, FolderPlus, Plus, Search } from 'lucide-react';
+import {
+  FileSpreadsheet,
+  FileText,
+  FileUp,
+  FolderPlus,
+  Plus,
+  Search,
+} from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import DocxImportDialog from './docx-import-dialog';
 import FolderTree, { DocumentNode, FolderNode } from './folder-tree';
@@ -49,6 +56,8 @@ export default function DocumentList({
   const [showCreateMenu, setShowCreateMenu] = useState(false);
   const [showNewDoc, setShowNewDoc] = useState(false);
   const [newDocName, setNewDocName] = useState('');
+  const [showNewSheet, setShowNewSheet] = useState(false);
+  const [newSheetName, setNewSheetName] = useState('');
   const createMenuRef = useRef<HTMLDivElement>(null);
   const currentUserId = getCurrentUserId();
 
@@ -171,6 +180,43 @@ export default function DocumentList({
     }
   };
 
+  const handleCreateSheet = async () => {
+    const name = newSheetName.trim();
+    if (!name) {
+      setShowNewSheet(false);
+      return;
+    }
+    try {
+      const resp = await apiFetch(
+        '/api/v1/collaboration/documents/spreadsheet',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        },
+      );
+      const result = await resp.json();
+      setNewSheetName('');
+      setShowNewSheet(false);
+      onRefresh();
+      if (result.code === 0 && result.data?.id) {
+        const node: DocumentNode = {
+          id: result.data.id,
+          name: result.data.name || '',
+          file_type: result.data.file_type || '',
+          folder_id: result.data.folder_id || null,
+          created_by: result.data.created_by,
+          update_time: result.data.update_time,
+          create_time: result.data.create_time,
+          permission: result.data.permission,
+        };
+        onSelect(node);
+      }
+    } catch (e) {
+      console.error('创建表格失败:', e);
+    }
+  };
+
   const q = query.trim().toLowerCase();
   const filteredDocuments = q
     ? documents.filter((d) => d.name.toLowerCase().includes(q))
@@ -230,6 +276,26 @@ export default function DocumentList({
                 <FileUp className="size-3.5" />
                 导入 Word
               </button>
+              <button
+                className="w-full px-3 py-1.5 text-left text-xs text-stone-700 hover:bg-stone-50 flex items-center gap-2"
+                onClick={() => {
+                  setShowCreateMenu(false);
+                  setShowNewSheet(true);
+                }}
+              >
+                <FileSpreadsheet className="size-3.5" />
+                新建表格
+              </button>
+              <button
+                className="w-full px-3 py-1.5 text-left text-xs text-stone-700 hover:bg-stone-50 flex items-center gap-2"
+                onClick={() => {
+                  setShowCreateMenu(false);
+                  setShowImport(true);
+                }}
+              >
+                <FileSpreadsheet className="size-3.5" />
+                导入 Excel
+              </button>
             </div>
           )}
           <button
@@ -275,6 +341,25 @@ export default function DocumentList({
             onKeyDown={(e) => {
               if (e.key === 'Enter') handleCreateDoc();
               if (e.key === 'Escape') setShowNewDoc(false);
+            }}
+          />
+        </div>
+      )}
+
+      {/* New spreadsheet input */}
+      {showNewSheet && (
+        <div className="px-3 pb-1">
+          <input
+            type="text"
+            className="w-full px-2 py-1 text-xs border border-stone-300 rounded focus:outline-none focus:border-stone-500"
+            placeholder="表格名称..."
+            value={newSheetName}
+            autoFocus
+            onChange={(e) => setNewSheetName(e.target.value)}
+            onBlur={handleCreateSheet}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleCreateSheet();
+              if (e.key === 'Escape') setShowNewSheet(false);
             }}
           />
         </div>

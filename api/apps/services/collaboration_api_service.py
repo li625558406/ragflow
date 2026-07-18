@@ -30,6 +30,7 @@ from api.db.db_models import (
     CollaborationAuditLog,
     CollaborationComment,
     CollaborationDocument,
+    User,
     CollaborationDocumentACL,
     CollaborationFolder,
     CollaborationFormatRule,
@@ -90,6 +91,7 @@ ALLOWED_UPLOAD_MIMES = {
     'image/jpeg', 'image/png', 'image/gif', 'image/webp',
     'application/pdf', 'application/msword',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     'text/plain', 'text/csv',
 }
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
@@ -1452,6 +1454,117 @@ async def create_document(tenant_id: str, user_id: str, name: str, markdown_cont
     return {"id": doc_id, "name": name, "file_type": "docx", "permission": permission, "folder_id": folder_id}
 
 
+async def create_spreadsheet(tenant_id: str, user_id: str, name: str, permission: str = "me", folder_id: str = None) -> dict:
+    """Create a blank collaboration spreadsheet document."""
+    doc_id = get_uuid()
+    default_content = {
+        "sheets": [{"name": "Sheet1", "data": [[""]], "colWidths": [100]}],
+        "activeSheet": 0,
+    }
+    CollaborationDocumentService.save(
+        id=doc_id,
+        name=name,
+        file_type="xlsx",
+        content=default_content,
+        markdown_content="",
+        tenant_id=tenant_id,
+        created_by=user_id,
+        permission=permission,
+        folder_id=folder_id,
+    )
+    return {"id": doc_id, "name": name, "file_type": "xlsx", "permission": permission, "folder_id": folder_id}
+
+
+def _generate_xlsx(content: dict) -> bytes:
+    """Generate .xlsx bytes from spreadsheet JSON content."""
+    import io
+    from openpyxl import Workbook
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    sheets = content.get("sheets", [])
+
+    for i, sheet_def in enumerate(sheets):
+        if i == 0:
+            ws = wb.active
+            ws.title = sheet_def.get("name", "Sheet1")
+        else:
+            ws = wb.create_sheet(title=sheet_def.get("name", f"Sheet{i+1}"))
+
+        rows = sheet_def.get("data", [])
+        for r_idx, row in enumerate(rows):
+            for c_idx, cell_value in enumerate(row):
+                if cell_value is None:
+                    continue
+                # Try to convert numeric strings back to numbers for Excel
+                val = cell_value
+                if isinstance(val, str):
+                    try:
+                        val = int(val)
+                    except ValueError:
+                        try:
+                            val = float(val)
+                        except ValueError:
+                            pass
+                ws.cell(row=r_idx + 1, column=c_idx + 1, value=val)
+
+        col_widths = sheet_def.get("colWidths", [])
+        for c_idx, width in enumerate(col_widths):
+            ws.column_dimensions[get_column_letter(c_idx + 1)].width = max(8, width / 7)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+async def import_xlsx(tenant_id: str, user_id: str, file_obj, folder_id: str = None) -> dict:
+    """Parse a .xlsx file and create a collaboration spreadsheet document."""
+    import io
+    from openpyxl import load_workbook
+
+    doc_id = get_uuid()
+    name = (file_obj.filename or "imported").rsplit(".", 1)[0]
+
+    data = file_obj.read()
+    wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+
+    sheets = []
+    MAX_ROWS = 10000
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        rows = []
+        for idx, row in enumerate(ws.iter_rows(values_only=True)):
+            if idx >= MAX_ROWS:
+                break
+            rows.append([str(cell) if cell is not None else "" for cell in row])
+        if not rows:
+            rows = [[""]]
+        max_cols = max((len(r) for r in rows), default=1)
+        col_widths = [100] * max_cols
+        sheets.append({"name": sheet_name, "data": rows, "colWidths": col_widths})
+
+    wb.close()
+    if not sheets:
+        sheets = [{"name": "Sheet1", "data": [[""]], "colWidths": [100]}]
+
+    content = {"sheets": sheets, "activeSheet": 0}
+
+    CollaborationDocumentService.save(
+        id=doc_id,
+        name=name,
+        file_type="xlsx",
+        content=content,
+        markdown_content="",
+        tenant_id=tenant_id,
+        created_by=user_id,
+        permission="me",
+        folder_id=folder_id,
+    )
+    await log_audit(tenant_id, doc_id, "document.import_xlsx", {"name": name})
+
+    return {"id": doc_id, "name": name, "file_type": "xlsx", "folder_id": folder_id}
+
+
 async def list_documents(tenant_id: str, user_id: str) -> list:
     """List collaboration documents visible to the current user (own + team-shared + ACL)."""
     team_user_ids = _get_shared_tenant_user_ids(user_id)
@@ -1610,7 +1723,12 @@ async def download_document(doc_id: str, tenant_id: str, file_type: str = "docx"
     blob = b""
     filename = f"{doc.name}.{file_type}"
 
-    if file_type == "docx":
+    # xlsx documents: generate from grid JSON content
+    if doc.file_type == "xlsx":
+        grid_content = doc.content if isinstance(doc.content, dict) else {}
+        blob = _generate_xlsx(grid_content)
+        mimetype = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    elif file_type == "docx":
         blob = _generate_docx(content)
         mimetype = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     elif file_type == "pdf":
@@ -2069,11 +2187,20 @@ async def list_comments(doc_id: str, tenant_id: str) -> list[dict]:
         )
         .order_by(CollaborationComment.create_time.asc())
     )
+
+    # Batch-fetch user names for all commenters
+    user_ids = list({c.user_id for c in comments})
+    user_map: dict[str, str] = {}
+    if user_ids:
+        users = User.select(User.id, User.nickname).where(User.id.in_(user_ids))
+        user_map = {u.id: u.nickname for u in users}
+
     return [
         {
             "id": c.id,
             "document_id": c.document_id,
             "user_id": c.user_id,
+            "user_name": user_map.get(c.user_id, c.user_id),
             "parent_comment_id": c.parent_comment_id,
             "anchor_block_key": c.anchor_block_key,
             "anchor_offset_start": c.anchor_offset_start,
@@ -2120,10 +2247,20 @@ async def create_comment(
         create_time=now,
         update_time=now,
     )
+    # Fetch user name for the creator
+    user_name = tenant_id
+    try:
+        users = User.select(User.id, User.nickname).where(User.id == tenant_id)
+        if users:
+            user_name = users[0].nickname
+    except Exception:
+        pass
+
     return {
         "id": comment_id,
         "document_id": doc_id,
         "user_id": tenant_id,
+        "user_name": user_name,
         "parent_comment_id": parent_comment_id,
         "content": safe_content,
         "resolved": False,

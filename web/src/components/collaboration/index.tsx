@@ -7,6 +7,7 @@ import DocumentList from './document-list';
 import type { DocumentNode, FolderNode } from './folder-tree';
 import ShareDialog from './share-dialog';
 import SidePanelBar, { PanelKey } from './side-panel-bar';
+import SpreadsheetEditor from './spreadsheet-editor';
 
 interface DocumentData {
   id: string;
@@ -231,19 +232,33 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
             </div>
           </div>
         ) : selectedDoc ? (
-          <DocumentEditor
-            key={selectedDoc.id}
-            document={selectedDoc}
-            apiFetch={apiFetch}
-            onUpdate={handleDocUpdate}
-            appliedRuleConfig={appliedRuleConfigRef.current}
-            onRuleApplied={handleRuleApplied}
-            token={wsToken}
-            onOpenShare={() => {
-              const node = documents.find((d) => d.id === selectedDoc.id);
-              if (node) setShareTarget(node);
-            }}
-          />
+          selectedDoc.file_type === 'xlsx' ? (
+            <SpreadsheetEditor
+              key={selectedDoc.id}
+              document={selectedDoc}
+              apiFetch={apiFetch}
+              onUpdate={handleDocUpdate}
+              token={wsToken}
+              onOpenShare={() => {
+                const node = documents.find((d) => d.id === selectedDoc.id);
+                if (node) setShareTarget(node);
+              }}
+            />
+          ) : (
+            <DocumentEditor
+              key={selectedDoc.id}
+              document={selectedDoc}
+              apiFetch={apiFetch}
+              onUpdate={handleDocUpdate}
+              appliedRuleConfig={appliedRuleConfigRef.current}
+              onRuleApplied={handleRuleApplied}
+              token={wsToken}
+              onOpenShare={() => {
+                const node = documents.find((d) => d.id === selectedDoc.id);
+                if (node) setShareTarget(node);
+              }}
+            />
+          )
         ) : (
           <div className="flex-1 flex items-center justify-center">
             <div className="text-center text-black/30">

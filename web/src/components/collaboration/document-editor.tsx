@@ -707,7 +707,7 @@ export default function DocumentEditor({
   }, [saveStatus]);
 
   const handleDownload = useCallback(
-    async (type: 'docx' | 'pdf') => {
+    async (type: 'docx' | 'pdf' | 'xlsx') => {
       if (!document || downloading) return;
       setDownloading(true);
       try {
