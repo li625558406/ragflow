@@ -32,17 +32,18 @@ export default function MemberAvatars({ provider }: Props) {
 
     const update = () => {
       const states = provider.awareness.getStates();
-      const list: Member[] = [];
+      // Deduplicate by clientID (latest Yjs state wins)
+      const seen = new Map<number, Member>();
       states.forEach((state, clientID) => {
         if (state.name) {
-          list.push({
+          seen.set(clientID, {
             clientID,
             name: state.name,
             color: state.color || '#958DF1',
           });
         }
       });
-      setMembers(list);
+      setMembers(Array.from(seen.values()));
     };
 
     update();

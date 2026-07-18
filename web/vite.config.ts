@@ -146,6 +146,7 @@ export default defineConfig(({ mode }) => {
     define: {
       // Expose to client code via import.meta.env
       'import.meta.env.API_PROXY_SCHEME': JSON.stringify(proxyScheme),
+      'import.meta.env.VITE_WS_HOST': JSON.stringify(env.VITE_WS_HOST || ''),
       // Keep backward compatibility
       __API_PROXY_SCHEME__: JSON.stringify(proxyScheme),
     },

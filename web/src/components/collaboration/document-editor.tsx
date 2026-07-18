@@ -1,8 +1,10 @@
 import storage from '@/utils/authorization-util';
+import notification from '@/utils/notification';
 import { CodeHighlightNode, CodeNode } from '@lexical/code';
 import { AutoLinkNode, LinkNode } from '@lexical/link';
 import { $isListNode, ListItemNode, ListNode } from '@lexical/list';
 import { CheckListPlugin } from '@lexical/react/LexicalCheckListPlugin';
+import { CollaborationPlugin } from '@lexical/react/LexicalCollaborationPlugin';
 import { LexicalComposer } from '@lexical/react/LexicalComposer';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { ContentEditable } from '@lexical/react/LexicalContentEditable';
@@ -26,13 +28,8 @@ import {
   TableNode,
   TableRowNode,
 } from '@lexical/table';
-import {
-  createBinding,
-  initLocalState,
-  syncCursorPositions,
-} from '@lexical/yjs';
 import { $getRoot, $isTextNode, ElementNode } from 'lexical';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import * as Y from 'yjs';
 import EditorHeader from './editor-header';
 import MentionPlugin from './mention-plugin';
@@ -108,108 +105,223 @@ function onError(error: Error) {
   console.error('Lexical error:', error);
 }
 
-interface YjsPluginProps {
+/** Convert Lexical editor state to markdown text. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function lexicalStateToMarkdown(editorState: any): string {
+  const lines: string[] = [];
+  editorState.read(() => {
+    const root = $getRoot();
+    for (const child of root.getChildren()) {
+      const text = child.getTextContent();
+      if ($isHeadingNode(child)) {
+        const tag = child.getTag();
+        const prefix =
+          ({ h1: '# ', h2: '## ', h3: '### ' } as Record<string, string>)[
+            tag
+          ] || '';
+        lines.push(prefix + text);
+      } else if ($isListNode(child)) {
+        const listType = child.getListType();
+        const listItems = child.getChildren();
+        for (const item of listItems) {
+          if (listType === 'check') {
+            const checked = (item as ListItemNode).getChecked?.() ?? false;
+            lines.push((checked ? '- [x] ' : '- [ ] ') + item.getTextContent());
+          } else {
+            lines.push(
+              (listType === 'bullet' ? '- ' : '1. ') + item.getTextContent(),
+            );
+          }
+        }
+      } else if ($isTableNode(child)) {
+        const rows = child.getChildren();
+        const mdRows: string[] = [];
+        for (const row of rows) {
+          if ($isTableRowNode(row)) {
+            const cells = row.getChildren();
+            const cellTexts = cells.map((cell) => {
+              if ($isTableCellNode(cell)) {
+                return cell.getTextContent().replace(/\n/g, ' ').trim();
+              }
+              return '';
+            });
+            mdRows.push('| ' + cellTexts.join(' | ') + ' |');
+          }
+        }
+        if (mdRows.length > 0) {
+          lines.push(mdRows[0]);
+          const colCount = (mdRows[0].match(/\|/g) || []).length - 1;
+          if (colCount > 0) {
+            lines.push('|' + ' --- |'.repeat(colCount));
+          }
+          for (let i = 1; i < mdRows.length; i++) {
+            lines.push(mdRows[i]);
+          }
+        }
+      } else if ($isCalloutNode(child)) {
+        const calloutType = child.__calloutType;
+        const emoji =
+          { info: '💡', warning: '⚠️', tip: '✅', danger: '🚫' }[calloutType] ||
+          '';
+        lines.push(`:::${calloutType} ${emoji}`);
+        lines.push(text);
+        lines.push(':::');
+      } else if ($isImageNode(child)) {
+        lines.push(`![${child.__altText || ''}](${child.__src})`);
+      } else if (child.getType() === 'code') {
+        const codeChildren = (child as ElementNode).getChildren();
+        const codeLines: string[] = [];
+        for (const codeChild of codeChildren) {
+          codeLines.push(codeChild.getTextContent());
+        }
+        const language =
+          ((child as unknown as Record<string, unknown>)
+            .__language as string) || '';
+        lines.push('```' + language);
+        lines.push(codeLines.join('\n'));
+        lines.push('```');
+      } else {
+        lines.push(text);
+      }
+    }
+  });
+  return lines.join('\n');
+}
+
+/**
+ * CollabSavePlugin — handles periodic HTTP persistence + sendFullState for collab mode.
+ * The actual real-time sync + cursors are handled by CollaborationPlugin (from @lexical/react).
+ * This plugin only manages saving to the server.
+ */
+interface CollabSavePluginProps {
+  providerRef: React.MutableRefObject<CollaborationWebSocketProvider | null>;
   docId: string;
-  token: string;
   apiFetch: (url: string, options?: RequestInit) => Promise<Response>;
   onUpdate: () => void;
   onSaveStatus: (status: SaveStatus) => void;
   onProviderReady?: (provider: CollaborationWebSocketProvider | null) => void;
+  triggerSaveRef: React.MutableRefObject<(() => void) | null>;
 }
 
-function YjsPlugin({
+function CollabSavePlugin({
+  providerRef,
   docId,
-  token,
   apiFetch,
   onUpdate,
   onSaveStatus,
   onProviderReady,
-}: YjsPluginProps) {
+  triggerSaveRef,
+}: CollabSavePluginProps) {
   const [editor] = useLexicalComposerContext();
   const saveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savingRef = useRef(false);
+  const apiFetchRef = useRef(apiFetch);
+  apiFetchRef.current = apiFetch;
+  const onUpdateRef = useRef(onUpdate);
+  onUpdateRef.current = onUpdate;
 
-  // One Y.Doc + one provider per editor instance
-  const { doc, provider } = useMemo(() => {
-    const doc = new Y.Doc();
-    const provider = new CollaborationWebSocketProvider(doc, docId, token);
-    return { doc, provider };
-  }, [docId, token]);
+  const doSave = useCallback(() => {
+    const provider = providerRef.current;
+    if (!provider || savingRef.current) {
+      console.log(
+        '[CollabSave] skip save: provider=',
+        !!provider,
+        'saving=',
+        savingRef.current,
+      );
+      return;
+    }
+    savingRef.current = true;
+    onSaveStatus('saving');
 
-  useEffect(() => {
-    onProviderReady?.(provider);
+    // Access the Y.Doc from the provider
+    const doc = provider.doc;
+    const ydocState = Y.encodeStateAsUpdate(doc);
+    const ydocB64 = uint8ArrayToBase64(ydocState);
 
-    // Bind to Lexical
-    const binding = createBinding(editor, provider, docId, doc, new Map());
+    const editorState = editor.getEditorState();
+    const json = editorState.toJSON();
+    const markdownContent = lexicalStateToMarkdown(editorState);
+    console.log(
+      '[CollabSave] content keys:',
+      Object.keys(json),
+      'root children:',
+      json.root?.children?.length,
+      'first child type:',
+      json.root?.children?.[0]?.type,
+    );
 
-    // Init local awareness state (name, color for cursor display)
-    const userInfo = storage.getUserInfoObject();
-    const userName = userInfo?.nickname || userInfo?.email || '';
-    initLocalState(provider, userName, '#958DF1', true, {});
-
-    // Render remote cursors when awareness changes
-    const removeAwarenessListener = provider.awareness.on('update', () => {
-      syncCursorPositions(binding, provider);
-    });
-
-    // Connect WebSocket
-    provider.connect();
-
-    // Periodic HTTP persistence: save Yjs binary + Lexical JSON every 30s
-    saveTimerRef.current = setInterval(() => {
-      if (savingRef.current) return;
-      savingRef.current = true;
-      onSaveStatus('saving');
-
-      const ydocState = Y.encodeStateAsUpdate(doc);
-      const ydocB64 = uint8ArrayToBase64(ydocState);
-
-      // Get current Lexical JSON for backward compatibility
-      const editorState = editor.getEditorState();
-      const json = editorState.toJSON();
-
-      apiFetch(`/api/v1/collaboration/documents/${docId}/ydoc`, {
+    apiFetchRef
+      .current(`/api/v1/collaboration/documents/${docId}/ydoc`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ydoc_state: ydocB64,
           content: json,
+          markdown_content: markdownContent,
         }),
       })
-        .then(() => {
-          onSaveStatus('saved');
-          onUpdate();
-          // After HTTP save, send full state via WebSocket so the server
-          // has a correct snapshot for future joiners
-          provider.sendFullState();
-          if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
-          statusTimerRef.current = setTimeout(() => onSaveStatus('idle'), 2000);
-        })
-        .catch((e) => {
-          console.error('Collab save failed:', e);
-          onSaveStatus('error');
-          if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
-          statusTimerRef.current = setTimeout(() => onSaveStatus('idle'), 3000);
-        })
-        .finally(() => {
-          savingRef.current = false;
-        });
+      .then(() => {
+        console.log(
+          '[CollabSave] save success, docId=',
+          docId,
+          'ydocB64 len=',
+          ydocB64.length,
+        );
+        onSaveStatus('saved');
+        onUpdateRef.current();
+        provider.sendFullState();
+        if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+        statusTimerRef.current = setTimeout(() => onSaveStatus('idle'), 2000);
+      })
+      .catch((e) => {
+        console.error('[CollabSave] save FAILED:', e);
+        onSaveStatus('error');
+        if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+        statusTimerRef.current = setTimeout(() => onSaveStatus('idle'), 3000);
+      })
+      .finally(() => {
+        savingRef.current = false;
+      });
+  }, [docId, editor, onSaveStatus, providerRef]);
+
+  // Expose doSave to parent via ref
+  useEffect(() => {
+    triggerSaveRef.current = doSave;
+  }, [doSave, triggerSaveRef]);
+
+  useEffect(() => {
+    // Notify parent when provider is ready
+    const checkInterval = setInterval(() => {
+      if (providerRef.current) {
+        onProviderReady?.(providerRef.current);
+        clearInterval(checkInterval);
+      }
+    }, 100);
+    return () => clearInterval(checkInterval);
+  }, [onProviderReady, providerRef]);
+
+  useEffect(() => {
+    // Start periodic save
+    saveTimerRef.current = setInterval(() => {
+      doSave();
     }, 30000);
 
     return () => {
-      removeAwarenessListener();
       if (saveTimerRef.current) clearInterval(saveTimerRef.current);
       if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
-      // Flush: send full state snapshot before disconnecting so the server
-      // persists the latest content for future joiners
-      provider.sendFullState();
-      provider.disconnect();
-      binding.destroy?.();
-      doc.destroy();
-      onProviderReady?.(null);
+      // Flush before unmount
+      const provider = providerRef.current;
+      if (provider) {
+        provider.sendFullState();
+      }
+      // Don't null providerRef or call onProviderReady(null) here —
+      // the provider lifecycle is owned by CollaborationPlugin.
+      // Nulling the ref breaks React StrictMode double-invoke (mount→cleanup→remount)
+      // because CollaborationPlugin's isProviderInitialized guard skips the factory on remount.
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [doSave, providerRef, onProviderReady]);
 
   return null;
 }
@@ -241,94 +353,7 @@ function AutoSavePlugin({
     try {
       const editorState = editor.getEditorState();
       const json = editorState.toJSON();
-
-      // Convert Lexical state to markdown text for file generation
-      let markdownContent = '';
-      editorState.read(() => {
-        const root = $getRoot();
-        const lines: string[] = [];
-        for (const child of root.getChildren()) {
-          const text = child.getTextContent();
-          if ($isHeadingNode(child)) {
-            const tag = child.getTag();
-            const prefix =
-              ({ h1: '# ', h2: '## ', h3: '### ' } as Record<string, string>)[
-                tag
-              ] || '';
-            lines.push(prefix + text);
-          } else if ($isListNode(child)) {
-            const listType = child.getListType();
-            const listItems = child.getChildren();
-            for (const item of listItems) {
-              if (listType === 'check') {
-                const checked = (item as ListItemNode).getChecked?.() ?? false;
-                lines.push(
-                  (checked ? '- [x] ' : '- [ ] ') + item.getTextContent(),
-                );
-              } else {
-                lines.push(
-                  (listType === 'bullet' ? '- ' : '1. ') +
-                    item.getTextContent(),
-                );
-              }
-            }
-          } else if ($isTableNode(child)) {
-            const rows = child.getChildren();
-            const mdRows: string[] = [];
-            for (const row of rows) {
-              if ($isTableRowNode(row)) {
-                const cells = row.getChildren();
-                const cellTexts = cells.map((cell) => {
-                  if ($isTableCellNode(cell)) {
-                    return cell.getTextContent().replace(/\n/g, ' ').trim();
-                  }
-                  return '';
-                });
-                mdRows.push('| ' + cellTexts.join(' | ') + ' |');
-              }
-            }
-            if (mdRows.length > 0) {
-              // Header row
-              lines.push(mdRows[0]);
-              // Separator row
-              const colCount = (mdRows[0].match(/\|/g) || []).length - 1;
-              if (colCount > 0) {
-                lines.push('|' + ' --- |'.repeat(colCount));
-              }
-              // Data rows
-              for (let i = 1; i < mdRows.length; i++) {
-                lines.push(mdRows[i]);
-              }
-            }
-          } else if ($isCalloutNode(child)) {
-            const calloutType = child.__calloutType;
-            const emoji =
-              { info: '💡', warning: '⚠️', tip: '✅', danger: '🚫' }[
-                calloutType
-              ] || '';
-            lines.push(`:::${calloutType} ${emoji}`);
-            lines.push(text);
-            lines.push(':::');
-          } else if ($isImageNode(child)) {
-            lines.push(`![${child.__altText || ''}](${child.__src})`);
-          } else if (child.getType() === 'code') {
-            const codeChildren = (child as ElementNode).getChildren();
-            const codeLines: string[] = [];
-            for (const codeChild of codeChildren) {
-              codeLines.push(codeChild.getTextContent());
-            }
-            const language =
-              ((child as unknown as Record<string, unknown>)
-                .__language as string) || '';
-            lines.push('```' + language);
-            lines.push(codeLines.join('\n'));
-            lines.push('```');
-          } else {
-            lines.push(text);
-          }
-        }
-        markdownContent = lines.join('\n');
-      });
+      const markdownContent = lexicalStateToMarkdown(editorState);
 
       await apiFetch(`/api/v1/collaboration/documents/${docId}`, {
         method: 'PUT',
@@ -561,6 +586,9 @@ export default function DocumentEditor({
   const apiFetchRef = useRef(apiFetch);
   apiFetchRef.current = apiFetch;
 
+  // Ref to hold provider instance created by providerFactory (shared with CollabSavePlugin)
+  const collabProviderRef = useRef<CollaborationWebSocketProvider | null>(null);
+
   // Fetch version info
   useEffect(() => {
     if (!document) return;
@@ -577,17 +605,16 @@ export default function DocumentEditor({
 
   // Refresh version after save
   useEffect(() => {
-    if (saveStatus === 'saved') {
-      apiFetchRef
-        .current(`/api/v1/collaboration/documents/${document.id}/versions`)
-        .then((r) => r.json())
-        .then((result) => {
-          if (result.code === 0 && result.data) {
-            setVersion(result.data.current_version);
-          }
-        })
-        .catch(() => {});
-    }
+    if (!document || saveStatus !== 'saved') return;
+    apiFetchRef
+      .current(`/api/v1/collaboration/documents/${document.id}/versions`)
+      .then((r) => r.json())
+      .then((result) => {
+        if (result.code === 0 && result.data) {
+          setVersion(result.data.current_version);
+        }
+      })
+      .catch(() => {});
   }, [saveStatus]);
 
   const handleDownload = useCallback(
@@ -617,6 +644,13 @@ export default function DocumentEditor({
   );
 
   const handleSave = useCallback(() => {
+    if (!collabProviderRef.current) {
+      notification.warning({
+        message: '协同连接未就绪，无法保存',
+        duration: 3,
+      });
+      return;
+    }
     triggerSaveRef.current?.();
   }, []);
 
@@ -627,6 +661,77 @@ export default function DocumentEditor({
     },
     [onProviderReady],
   );
+
+  // Listen for remote save notifications from other collaborators
+  // Poll for provider readiness (same pattern as CollabSavePlugin's onProviderReady)
+  const savedListenerRef = useRef<((...args: unknown[]) => void) | null>(null);
+  useEffect(() => {
+    const checkInterval = setInterval(() => {
+      const provider = collabProviderRef.current;
+      if (!provider) return;
+      // Already registered
+      if (savedListenerRef.current) return;
+      clearInterval(checkInterval);
+      const onRemoteSaved = (({ userName }: { userName: string }) => {
+        notification.info({
+          message: `${userName} 已保存文档`,
+          duration: 3,
+        });
+      }) as (...args: unknown[]) => void;
+      savedListenerRef.current = onRemoteSaved;
+      provider.on('saved', onRemoteSaved);
+    }, 200);
+    return () => {
+      clearInterval(checkInterval);
+      if (savedListenerRef.current && collabProviderRef.current) {
+        collabProviderRef.current.off('saved', savedListenerRef.current);
+        savedListenerRef.current = null;
+      }
+    };
+  }, []);
+
+  // Factory for CollaborationPlugin: creates Y.Doc + WebSocketProvider
+  const providerFactory = useCallback(
+    (id: string, yjsDocMap: Map<string, Y.Doc>) => {
+      console.log(
+        '[DocEditor] providerFactory called, id=',
+        id,
+        'token=',
+        token ? '***' : 'undefined',
+      );
+      const doc = new Y.Doc();
+      yjsDocMap.set(id, doc);
+      const provider = new CollaborationWebSocketProvider(doc, id, token!);
+      collabProviderRef.current = provider;
+      console.log(
+        '[DocEditor] providerFactory done, collabProviderRef.current set =',
+        !!collabProviderRef.current,
+      );
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return provider as any;
+    },
+    [token],
+  );
+
+  // User info for cursor display
+  const userInfo = storage.getUserInfoObject();
+  const userName = userInfo?.nickname || userInfo?.email || '';
+
+  // Debug: log document content on mount
+  useEffect(() => {
+    if (document && token) {
+      console.log(
+        '[DocEditor] mount with token, doc.id=',
+        document.id,
+        'content keys:',
+        Object.keys(document.content || {}),
+        'root children:',
+        document.content?.root?.children?.length,
+        'first child type:',
+        document.content?.root?.children?.[0]?.type,
+      );
+    }
+  }, [document?.id, token]);
 
   if (!document) {
     return (
@@ -682,7 +787,7 @@ export default function DocumentEditor({
         saveStatus={saveStatus}
         version={version}
         provider={collabProvider}
-        showManualSave={!token}
+        showManualSave={true}
         onManualSave={handleSave}
         onDownload={handleDownload}
         downloading={downloading}
@@ -727,24 +832,41 @@ export default function DocumentEditor({
                 <LinkPlugin />
                 <MentionPlugin apiFetch={apiFetch} />
                 {token ? (
-                  <YjsPlugin
-                    docId={document.id}
-                    token={token}
-                    apiFetch={apiFetch}
-                    onUpdate={onUpdate}
-                    onSaveStatus={setSaveStatus}
-                    onProviderReady={handleProviderReady}
-                  />
+                  <>
+                    <CollaborationPlugin
+                      id={document.id}
+                      providerFactory={providerFactory}
+                      shouldBootstrap={true}
+                      username={userName}
+                      cursorColor="#958DF1"
+                      initialEditorState={
+                        document.content
+                          ? JSON.stringify(document.content)
+                          : undefined
+                      }
+                    />
+                    <CollabSavePlugin
+                      providerRef={collabProviderRef}
+                      docId={document.id}
+                      apiFetch={apiFetch}
+                      onUpdate={onUpdate}
+                      onSaveStatus={setSaveStatus}
+                      onProviderReady={handleProviderReady}
+                      triggerSaveRef={triggerSaveRef}
+                    />
+                  </>
                 ) : (
-                  <AutoSavePlugin
-                    docId={document.id}
-                    apiFetch={apiFetch}
-                    onUpdate={onUpdate}
-                    onSaveStatus={setSaveStatus}
-                    triggerSaveRef={triggerSaveRef}
-                  />
+                  <>
+                    <AutoSavePlugin
+                      docId={document.id}
+                      apiFetch={apiFetch}
+                      onUpdate={onUpdate}
+                      onSaveStatus={setSaveStatus}
+                      triggerSaveRef={triggerSaveRef}
+                    />
+                    <SetInitialStatePlugin content={document.content} />
+                  </>
                 )}
-                <SetInitialStatePlugin content={document.content} />
                 <FormatApplyPlugin
                   config={appliedRuleConfig}
                   onApplied={onRuleApplied}

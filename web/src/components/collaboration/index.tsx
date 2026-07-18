@@ -43,7 +43,7 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
   const appliedRuleConfigRef = useRef<Record<string, unknown> | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   const [shareTarget, setShareTarget] = useState<DocumentNode | null>(null);
-  const [activePanel, setActivePanel] = useState<PanelKey | null>(null);
+  const [activePanel, setActivePanel] = useState<PanelKey | null>('comments');
 
   const currentUserId = useMemo(() => {
     try {

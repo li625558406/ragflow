@@ -164,6 +164,20 @@ export default function EditorHeader({
       {/* 右侧：成员头像 + 分享 + 更多 */}
       <div className="flex items-center gap-2 shrink-0">
         {provider && <MemberAvatars provider={provider} />}
+        {showManualSave && (
+          <button
+            className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-stone-700 bg-white border border-stone-200 hover:bg-stone-50 rounded-lg transition-colors"
+            onClick={onManualSave}
+            disabled={saveStatus === 'saving'}
+          >
+            {saveStatus === 'saving' ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Save className="size-3.5" />
+            )}
+            保存
+          </button>
+        )}
         <button
           className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-white bg-stone-900 hover:bg-stone-700 rounded-lg transition-colors"
           onClick={onOpenShare}
@@ -180,18 +194,6 @@ export default function EditorHeader({
           </button>
           {showMore && (
             <div className="absolute top-full right-0 mt-1 w-40 bg-white border border-stone-200 rounded-lg shadow-lg py-1 z-50">
-              {showManualSave && (
-                <button
-                  className="w-full px-3 py-1.5 text-left text-xs text-stone-700 hover:bg-stone-50 flex items-center gap-2"
-                  onClick={() => {
-                    setShowMore(false);
-                    onManualSave();
-                  }}
-                >
-                  <Save className="size-3.5" />
-                  手动保存
-                </button>
-              )}
               <button
                 className="w-full px-3 py-1.5 text-left text-xs text-stone-700 hover:bg-stone-50 flex items-center gap-2 disabled:opacity-50"
                 disabled={downloading}

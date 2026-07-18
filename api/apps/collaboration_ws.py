@@ -97,7 +97,8 @@ async def _broadcast(doc_id: str, message: str, exclude_client_id: str | None = 
         try:
             await client["ws"].send(message)
         except Exception:
-            pass  # Client may have disconnected
+            # Remove dead connection
+            room["clients"].pop(cid, None)
 
 
 async def _build_presence(doc_id: str) -> list[dict]:
@@ -131,10 +132,11 @@ def _get_token_from_request(req) -> str | None:
 
 async def handle_ws(doc_id: str):
     """Quart WebSocket handler for /api/v1/collaboration/ws/<doc_id>"""
-    from quart import websocket, request
+    from quart import websocket
 
     # ── Auth ─────────────────────────────────────────────────────────
-    token = _get_token_from_request(request)
+    # In Quart, use websocket (not request) to access args/headers in WS context
+    token = _get_token_from_request(websocket)
     if not token:
         await websocket.accept()
         await websocket.send(json.dumps({"t": "error", "d": "Missing token"}))
@@ -155,11 +157,18 @@ async def handle_ws(doc_id: str):
     logging.info(f"[WS] {user['name']} (role={role}, ro={read_only}) connected to doc {doc_id}")
 
     # ── Join room ────────────────────────────────────────────────────
+    # IMPORTANT: websocket is a werkzeug LocalProxy that resolves to the
+    # currently active websocket context. Storing the proxy directly would
+    # cause _broadcast to send to the SENDER's websocket (since the proxy
+    # resolves at call time, not at store time). We must store the
+    # resolved actual WebSocket object.
+    actual_ws = websocket._get_current_object()
+
     if doc_id not in _rooms:
         full_state = await _load_full_state(doc_id)
         _rooms[doc_id] = {"clients": {}, "buffer": [], "full_state": full_state}
     room = _rooms[doc_id]
-    room["clients"][client_id] = {"ws": websocket, "user_id": user["id"], "user_name": user["name"]}
+    room["clients"][client_id] = {"ws": actual_ws, "user_id": user["id"], "user_name": user["name"], "aw_client_id": None}
 
     # ── Send initial state ───────────────────────────────────────────
     init_msg = {
@@ -203,7 +212,14 @@ async def handle_ws(doc_id: str):
                 await _broadcast(doc_id, raw, exclude_client_id=client_id)
 
             elif msg_type == "aw":
-                # Awareness — broadcast to all others
+                # Awareness — track the Yjs clientID for cleanup on disconnect
+                try:
+                    aw_data = json.loads(msg_data) if isinstance(msg_data, str) else msg_data
+                    if isinstance(aw_data, dict) and "clientID" in aw_data:
+                        room["clients"][client_id]["aw_client_id"] = aw_data["clientID"]
+                except Exception:
+                    pass
+                # Broadcast to all others
                 await _broadcast(doc_id, raw, exclude_client_id=client_id)
 
             elif msg_type == "save":
@@ -214,6 +230,9 @@ async def handle_ws(doc_id: str):
                         room["full_state"] = save_bytes
                         await _persist_full_state(doc_id, save_bytes)
                         room["buffer"].clear()
+                        # Broadcast save notification to other clients
+                        save_notify = json.dumps({"t": "saved", "d": {"name": user["name"]}})
+                        await _broadcast(doc_id, save_notify, exclude_client_id=client_id)
                     except Exception:
                         pass
 
@@ -223,7 +242,7 @@ async def handle_ws(doc_id: str):
         logging.error(f"[WS] Error for doc {doc_id}, user {user['name']}: {e}")
     finally:
         # ── Leave room ───────────────────────────────────────────
-        room["clients"].pop(client_id, None)
+        client_info = room["clients"].pop(client_id, None)
         if not room["clients"]:
             # Last client left — persist and clean up
             if room["full_state"]:
@@ -232,6 +251,10 @@ async def handle_ws(doc_id: str):
             logging.info(f"[WS] Room {doc_id} closed (no clients)")
         else:
             await _broadcast_presence(doc_id)
+            # Notify remaining clients to remove this user's awareness entry
+            if client_info and client_info.get("aw_client_id") is not None:
+                remove_msg = json.dumps({"t": "aw-remove", "d": client_info["aw_client_id"]})
+                await _broadcast(doc_id, remove_msg)
 
         logging.info(f"[WS] {user['name']} disconnected from doc {doc_id}")
 

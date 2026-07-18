@@ -154,8 +154,8 @@ class AwarenessStore implements ProviderAwareness {
 
 export class CollaborationWebSocketProvider {
   public awareness: AwarenessStore;
+  public readonly doc: Doc;
 
-  private doc: Doc;
   private docId: string;
   private token: string;
   private baseUrl: string;
@@ -166,6 +166,9 @@ export class CollaborationWebSocketProvider {
   private synced = false;
   private closed = false;
 
+  // Local buffer for edits while WebSocket is disconnected
+  private offlineBuffer: Array<string> = [];
+
   // Awareness broadcast throttle
   private awThrottleTimer: ReturnType<typeof setTimeout> | null = null;
   // Awareness heartbeat — re-send local awareness periodically so late joiners see us
@@ -175,6 +178,7 @@ export class CollaborationWebSocketProvider {
   private syncListeners: Array<(isSynced: boolean) => void> = [];
   private statusListeners: Array<(arg0: { status: string }) => void> = [];
   private updateListeners: Array<(arg0: unknown) => void> = [];
+  private savedListeners: Array<(arg0: { userName: string }) => void> = [];
 
   constructor(doc: Doc, docId: string, token: string, baseUrl?: string) {
     this.doc = doc;
@@ -217,9 +221,6 @@ export class CollaborationWebSocketProvider {
     this.ws.send(JSON.stringify({ t: 'save', d: b64 }));
   }
 
-  on(type: 'sync', cb: (isSynced: boolean) => void): void;
-  on(type: 'status', cb: (arg0: { status: string }) => void): void;
-  on(type: 'update', cb: (arg0: unknown) => void): void;
   on(type: string, cb: (...args: unknown[]) => void): void {
     switch (type) {
       case 'sync':
@@ -231,12 +232,16 @@ export class CollaborationWebSocketProvider {
       case 'update':
         this.updateListeners.push(cb as (arg0: unknown) => void);
         break;
+      case 'saved':
+        this.savedListeners.push(cb as (arg0: { userName: string }) => void);
+        break;
+      case 'reload':
+        // Supported for @lexical/react CollaborationPlugin compatibility
+        // No-op: we don't trigger doc reloads
+        break;
     }
   }
 
-  off(type: 'sync', cb: (isSynced: boolean) => void): void;
-  off(type: 'status', cb: (arg0: { status: string }) => void): void;
-  off(type: 'update', cb: (arg0: unknown) => void): void;
   off(type: string, cb: (...args: unknown[]) => void): void {
     switch (type) {
       case 'sync':
@@ -247,6 +252,11 @@ export class CollaborationWebSocketProvider {
         break;
       case 'update':
         this.updateListeners = this.updateListeners.filter((l) => l !== cb);
+        break;
+      case 'saved':
+        this.savedListeners = this.savedListeners.filter((l) => l !== cb);
+        break;
+      case 'reload':
         break;
     }
   }
@@ -267,6 +277,8 @@ export class CollaborationWebSocketProvider {
     ws.onopen = () => {
       this.reconnectDelay = 1000;
       this._emitStatus('connected');
+      // Flush any edits buffered while offline
+      this._flushOfflineBuffer();
       // Send initial awareness state
       const encoded = this.awareness.encodeLocalState();
       if (encoded) {
@@ -277,7 +289,7 @@ export class CollaborationWebSocketProvider {
       this.awHeartbeatTimer = setInterval(() => {
         const enc = this.awareness.encodeLocalState();
         if (enc && this.ws?.readyState === WebSocket.OPEN) {
-          this.ws.send(JSON.stringify({ t: 'aw', d: enc }));
+          ws.send(JSON.stringify({ t: 'aw', d: enc }));
         }
       }, 5000);
     };
@@ -308,7 +320,10 @@ export class CollaborationWebSocketProvider {
 
   private _buildUrl = (): string => {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = this.baseUrl || location.host;
+    // Use dedicated WS host if set (bypasses Vite proxy which breaks WebSocket for remote backends)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const wsHost = (import.meta as any).env?.VITE_WS_HOST || '';
+    const host = this.baseUrl || wsHost || location.host;
     return `${proto}//${host}/api/v1/collaboration/ws/${this.docId}?token=${encodeURIComponent(this.token)}`;
   };
 
@@ -319,14 +334,24 @@ export class CollaborationWebSocketProvider {
   }): void => {
     switch (msg.t) {
       case 'init': {
+        console.log(
+          '[YjsProvider] init received, data:',
+          msg.d ? `len=${(msg.d as string).length}` : 'null',
+        );
         if (msg.d) {
           try {
             const update = base64ToUint8Array(msg.d as string);
             Y.applyUpdate(this.doc, update, 'ws-init');
+            console.log(
+              '[YjsProvider] init applied, doc keys:',
+              Array.from(this.doc.share.keys()),
+            );
           } catch (e) {
             console.error('[YjsProvider] Failed to apply init state:', e);
           }
         }
+        // Server state is now authoritative — discard stale offline edits
+        this.offlineBuffer.length = 0;
         if (!this.synced) {
           this.synced = true;
           for (const cb of this.syncListeners) {
@@ -356,6 +381,7 @@ export class CollaborationWebSocketProvider {
             anchorPos?: unknown;
             focusPos?: unknown;
           };
+          console.log('[Collab] recv aw from client', data.clientID, data.name);
           this.awareness.setRemoteState(data);
         } catch {
           // ignore invalid awareness data
@@ -367,23 +393,40 @@ export class CollaborationWebSocketProvider {
         // Server broadcasts online member list — use it to clean up stale awareness
         try {
           const onlineList = msg.d as Array<{ uid: string; name: string }>;
-          // Get all remote client IDs currently in awareness
-          const remoteIDs: number[] = [];
-          this.awareness.getStates().forEach((_state, clientID) => {
-            if (clientID !== this.doc.clientID) {
-              remoteIDs.push(clientID);
-            }
-          });
-          // We cannot directly map uid→clientID, so we skip cleanup here.
-          // The presence data is logged for debugging awareness sync issues.
-          if (onlineList.length === 0 && remoteIDs.length > 0) {
-            // Only self left — remove all remote states
-            for (const cid of remoteIDs) {
-              this.awareness.removeRemoteState(cid);
-            }
+          if (onlineList.length === 0) {
+            // No one else online — remove all remote states
+            this.awareness.getStates().forEach((_state, clientID) => {
+              if (clientID !== this.doc.clientID) {
+                this.awareness.removeRemoteState(clientID);
+              }
+            });
           }
         } catch {
           // ignore invalid presence data
+        }
+        break;
+      }
+
+      case 'aw-remove': {
+        // Server tells us a specific client disconnected — remove their awareness
+        try {
+          const removedClientID = msg.d as number;
+          this.awareness.removeRemoteState(removedClientID);
+        } catch {
+          // ignore
+        }
+        break;
+      }
+
+      case 'saved': {
+        // Another client saved the document — notify listeners
+        try {
+          const data = msg.d as { name: string };
+          for (const cb of this.savedListeners) {
+            cb({ userName: data.name || 'Unknown' });
+          }
+        } catch {
+          // ignore
         }
         break;
       }
@@ -400,10 +443,33 @@ export class CollaborationWebSocketProvider {
     if (origin === 'ws-init' || origin === 'ws-remote') return;
 
     const b64 = uint8ArrayToBase64(update);
+    const msg = JSON.stringify({ t: 'update', d: b64 });
     if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ t: 'update', d: b64 }));
+      this.ws.send(msg);
+    } else {
+      // Buffer locally when WebSocket is disconnected
+      this.offlineBuffer.push(msg);
+      if (this.offlineBuffer.length > 500) {
+        // Prevent unbounded growth — drop oldest
+        this.offlineBuffer = this.offlineBuffer.slice(-200);
+      }
     }
   };
+
+  /** Flush buffered edits after WebSocket reconnects. */
+  private _flushOfflineBuffer(): void {
+    if (this.offlineBuffer.length === 0) return;
+    const pending = this.offlineBuffer.splice(0);
+    for (const msg of pending) {
+      try {
+        if (this.ws?.readyState === WebSocket.OPEN) {
+          this.ws.send(msg);
+        }
+      } catch {
+        // Connection may have closed between check and send — discard
+      }
+    }
+  }
 
   private _scheduleReconnect = (): void => {
     if (this.closed || this.reconnectTimer) return;
@@ -423,7 +489,7 @@ export class CollaborationWebSocketProvider {
     }
   };
 
-  private _cleanup(): void {
+  private _cleanup = (): void => {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -441,7 +507,7 @@ export class CollaborationWebSocketProvider {
       this.ws.close();
       this.ws = null;
     }
-  }
+  };
 }
 
 // ── Base64 helpers (pure JS, zero dependencies) ─────────────────────────
