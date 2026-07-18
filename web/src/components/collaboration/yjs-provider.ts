@@ -205,16 +205,19 @@ export class CollaborationWebSocketProvider {
 
   connect(): void {
     this.closed = false;
-    // Fix stale binding children from React StrictMode remount.
-    // The CollaborationPlugin's root.destroy() clears collabNodeMap but NOT
-    // root._children, leaving stale CollabNodes that cause:
-    //   - root.isEmpty() → false → bootstrap skipped → editor stays empty
-    //   - sync uses this._children[index] → wrong stale child → text lost
+    // Fix stale binding from React StrictMode remount.
+    // CollaborationPlugin's root.destroy() clears collabNodeMap but does NOT
+    // clear _collabNode references on child shared types (Y.Map / Y.XmlText).
+    // Stale _collabNode pointers cause $syncEvent to use destroyed CollabNodes
+    // whose _children array is out of sync with the Yjs state, so incremental
+    // remote edits fail to propagate to the Lexical tree while the initial
+    // full-state init appears to work.
     try {
       const rootXmlText = this.doc.get('root', Y.XmlText);
-      const collabNode = rootXmlText._collabNode;
-      if (collabNode && collabNode._children.length > 0) {
-        collabNode._children.length = 0;
+      for (const [, sharedType] of this.doc.share.entries()) {
+        if (sharedType === rootXmlText) continue; // root is re-assigned by createBinding
+        // @ts-expect-error accessing Yjs internal property
+        sharedType._collabNode = undefined;
       }
     } catch {
       // Non-critical — binding may not be created yet
@@ -351,9 +354,23 @@ export class CollaborationWebSocketProvider {
         console.log(
           '[YjsProvider] init received, data:',
           msg.d ? `len=${(msg.d as string).length}` : 'null',
+          'ro=' + (msg.ro === true ? 'READ_ONLY' : 'editable'),
         );
         if (msg.d) {
           try {
+            // Clear stale _collabNode refs before applying server state.
+            // On reconnection (e.g. after HMR or tab refocus), the binding may
+            // hold destroyed CollabNodes whose _children are out of sync.
+            try {
+              const rootXmlText = this.doc.get('root', Y.XmlText);
+              for (const [, sharedType] of this.doc.share.entries()) {
+                if (sharedType === rootXmlText) continue;
+                // @ts-expect-error accessing Yjs internal property
+                sharedType._collabNode = undefined;
+              }
+            } catch {
+              // Non-critical
+            }
             const update = base64ToUint8Array(msg.d as string);
             Y.applyUpdate(this.doc, update, 'ws-init');
             console.log(

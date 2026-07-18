@@ -28,7 +28,7 @@ import {
   TableNode,
   TableRowNode,
 } from '@lexical/table';
-import { $getRoot, $isTextNode, ElementNode } from 'lexical';
+import { $getRoot, $isElementNode, $isTextNode, ElementNode } from 'lexical';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as Y from 'yjs';
 import EditorHeader from './editor-header';
@@ -49,6 +49,7 @@ interface DocumentData {
   file_type: string;
   content: Record<string, unknown>;
   markdown_content: string;
+  ydoc?: string | null; // base64-encoded Yjs document state from server
 }
 
 interface Props {
@@ -457,10 +458,27 @@ function BindingFixPlugin({
             const parsed = editor.parseEditorState(
               JSON.stringify(document.content),
             );
-            editor.setEditorState(parsed, { tag: 'history-merge' });
-            console.log(
-              '[BindingFix] Restored editor state from document.content',
-            );
+            // Temporarily disconnect provider to bypass Yjs binding.
+            // The binding's collabNodeMap is empty (cleared by StrictMode destroy)
+            // but stale Lexical nodes remain in root, so splice fails with
+            // "could not find collab element node". Disconnecting lets us set
+            // state without binding interference; reconnect syncs to server.
+            provider.disconnect();
+            setTimeout(() => {
+              try {
+                editor.setEditorState(parsed, { tag: 'history-merge' });
+                console.log(
+                  '[BindingFix] Restored editor state (provider disconnected)',
+                );
+              } catch (e2) {
+                console.error(
+                  '[BindingFix] Failed to restore after disconnect:',
+                  e2,
+                );
+              } finally {
+                provider.connect();
+              }
+            }, 50);
           } catch (e) {
             console.error('[BindingFix] Failed to restore editor state:', e);
           }
@@ -911,9 +929,16 @@ export default function DocumentEditor({
                       username={userName}
                       cursorColor="#958DF1"
                       initialEditorState={
-                        document.content
-                          ? JSON.stringify(document.content)
-                          : undefined
+                        // Only bootstrap from REST content when there is no
+                        // server-side ydoc. When ydoc exists the WebSocket
+                        // 'init' message carries the authoritative state;
+                        // using initialEditorState would inject stale REST
+                        // data and overwrite other users' live edits.
+                        document.ydoc
+                          ? undefined
+                          : document.content
+                            ? JSON.stringify(document.content)
+                            : undefined
                       }
                     />
                     <BindingFixPlugin

@@ -158,11 +158,11 @@ def _get_user_role(doc_id: str, user_id: str) -> str | None:
     if acl:
         return acl[0].role
 
-    # Team permission fallback: team-visible docs → viewer role
+    # Team permission fallback: team-visible docs → editor role (full CRUD)
     if doc.permission == TenantPermission.TEAM.value:
         team_user_ids = _get_shared_tenant_user_ids(user_id)
         if doc.created_by in team_user_ids:
-            return "viewer"
+            return "editor"
 
     return None
 
