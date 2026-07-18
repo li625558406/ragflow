@@ -205,6 +205,20 @@ export class CollaborationWebSocketProvider {
 
   connect(): void {
     this.closed = false;
+    // Fix stale binding children from React StrictMode remount.
+    // The CollaborationPlugin's root.destroy() clears collabNodeMap but NOT
+    // root._children, leaving stale CollabNodes that cause:
+    //   - root.isEmpty() → false → bootstrap skipped → editor stays empty
+    //   - sync uses this._children[index] → wrong stale child → text lost
+    try {
+      const rootXmlText = this.doc.get('root', Y.XmlText);
+      const collabNode = rootXmlText._collabNode;
+      if (collabNode && collabNode._children.length > 0) {
+        collabNode._children.length = 0;
+      }
+    } catch {
+      // Non-critical — binding may not be created yet
+    }
     this._connect();
   }
 

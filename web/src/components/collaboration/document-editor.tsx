@@ -250,6 +250,12 @@ function CollabSavePlugin({
       json.root?.children?.length,
       'first child type:',
       json.root?.children?.[0]?.type,
+      'first child text:',
+      json.root?.children?.[0]?.children
+        ?.map(
+          (c: Record<string, unknown>) => (c as { text?: string }).text || '',
+        )
+        .join(''),
     );
 
     apiFetchRef
@@ -400,6 +406,71 @@ function AutoSavePlugin({
       if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
     };
   }, [docId, editor, doSave]);
+
+  return null;
+}
+
+/**
+ * BindingFixPlugin — ensures the Lexical editor has document content
+ * even when CollaborationPlugin's bootstrap fails due to React StrictMode.
+ *
+ * Problem: In StrictMode, CollaborationPlugin's binding root.destroy() clears
+ * collabNodeMap but NOT root._children, leaving stale CollabNodes. On remount,
+ * root.isEmpty() returns false → bootstrap skipped → editor stays empty.
+ *
+ * Fix: Poll for an empty editor after provider sync, then force-set from
+ * document.content (the REST API source of truth).
+ */
+function BindingFixPlugin({
+  document,
+  providerRef,
+}: {
+  document: DocumentData;
+  providerRef: React.MutableRefObject<CollaborationWebSocketProvider | null>;
+}) {
+  const [editor] = useLexicalComposerContext();
+  const fixedRef = useRef(false);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (fixedRef.current) return;
+      const provider = providerRef.current;
+      if (!provider) return;
+
+      // Wait until the provider has synced (received init from server)
+      const doc = provider.doc;
+      const rootXmlText = doc.get('root', Y.XmlText);
+      if (!rootXmlText._collabNode) return;
+
+      // Check if the editor root is empty (no text content)
+      const editorState = editor.getEditorState();
+      editorState.read(() => {
+        const root = $getRoot();
+        const hasContent = root.getChildren().some((child) => {
+          if ($isTextNode(child)) return child.getTextContent().length > 0;
+          if ($isElementNode(child)) return child.getTextContent().length > 0;
+          return false;
+        });
+
+        if (!hasContent && document.content?.root?.children?.length > 0) {
+          try {
+            const parsed = editor.parseEditorState(
+              JSON.stringify(document.content),
+            );
+            editor.setEditorState(parsed, { tag: 'history-merge' });
+            console.log(
+              '[BindingFix] Restored editor state from document.content',
+            );
+          } catch (e) {
+            console.error('[BindingFix] Failed to restore editor state:', e);
+          }
+        }
+        fixedRef.current = true;
+      });
+    }, 200);
+
+    return () => clearInterval(timer);
+  }, [editor, document, providerRef]);
 
   return null;
 }
@@ -844,6 +915,10 @@ export default function DocumentEditor({
                           ? JSON.stringify(document.content)
                           : undefined
                       }
+                    />
+                    <BindingFixPlugin
+                      document={document}
+                      providerRef={collabProviderRef}
                     />
                     <CollabSavePlugin
                       providerRef={collabProviderRef}
