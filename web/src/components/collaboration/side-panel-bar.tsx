@@ -12,6 +12,7 @@ import AuditLogPanel from './audit-log-panel';
 import CommentPanel from './comment-panel';
 import FormatRulePanel from './format-rule-panel';
 import VersionHistoryPanel from './version-history-panel';
+import type { CollaborationWebSocketProvider } from './yjs-provider';
 
 export type PanelKey =
   | 'comments'
@@ -35,6 +36,7 @@ interface Props {
   isOwner: boolean;
   onApplyFormatRule?: (rule: FormatRule) => void;
   applyingRuleId?: string | null;
+  provider?: CollaborationWebSocketProvider | null;
 }
 
 const PANEL_ICONS: {
@@ -58,6 +60,7 @@ export default function SidePanelBar({
   isOwner,
   onApplyFormatRule,
   applyingRuleId,
+  provider,
 }: Props) {
   const close = () => onChange(null);
 
@@ -72,6 +75,7 @@ export default function SidePanelBar({
               apiFetch={apiFetch}
               open
               onToggle={close}
+              provider={provider}
             />
           )}
           {activePanel === 'attachments' && (

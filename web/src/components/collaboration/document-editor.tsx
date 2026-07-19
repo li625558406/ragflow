@@ -751,34 +751,6 @@ export default function DocumentEditor({
     [onProviderReady],
   );
 
-  // Listen for remote save notifications from other collaborators
-  // Poll for provider readiness (same pattern as CollabSavePlugin's onProviderReady)
-  const savedListenerRef = useRef<((...args: unknown[]) => void) | null>(null);
-  useEffect(() => {
-    const checkInterval = setInterval(() => {
-      const provider = collabProviderRef.current;
-      if (!provider) return;
-      // Already registered
-      if (savedListenerRef.current) return;
-      clearInterval(checkInterval);
-      const onRemoteSaved = (({ userName }: { userName: string }) => {
-        notification.info({
-          message: `${userName} 已保存文档`,
-          duration: 3,
-        });
-      }) as (...args: unknown[]) => void;
-      savedListenerRef.current = onRemoteSaved;
-      provider.on('saved', onRemoteSaved);
-    }, 200);
-    return () => {
-      clearInterval(checkInterval);
-      if (savedListenerRef.current && collabProviderRef.current) {
-        collabProviderRef.current.off('saved', savedListenerRef.current);
-        savedListenerRef.current = null;
-      }
-    };
-  }, []);
-
   // Factory for CollaborationPlugin: creates Y.Doc + WebSocketProvider
   const providerFactory = useCallback(
     (id: string, yjsDocMap: Map<string, Y.Doc>) => {

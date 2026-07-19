@@ -1,5 +1,6 @@
 import { MessageSquare, X } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { CollaborationWebSocketProvider } from './yjs-provider';
 
 interface CommentData {
   id: string;
@@ -21,6 +22,7 @@ interface Props {
   apiFetch: (url: string, options?: RequestInit) => Promise<Response>;
   open: boolean;
   onToggle: () => void;
+  provider?: CollaborationWebSocketProvider | null;
 }
 
 function getInitials(name: string, defaultName: string): string {
@@ -46,6 +48,7 @@ export default function CommentPanel({
   apiFetch,
   open,
   onToggle,
+  provider,
 }: Props) {
   const [comments, setComments] = useState<CommentData[]>([]);
   const [loading, setLoading] = useState(false);
@@ -78,6 +81,22 @@ export default function CommentPanel({
     }
   }, [docId, open]);
 
+  // Real-time: when another client mutates comments, server relays a
+  // 'comment-changed' message → provider emits → we reload.
+  // Skip if the open panel is closed (no point fetching then).
+  const providerRef = useRef(provider);
+  providerRef.current = provider;
+  useEffect(() => {
+    if (!provider || !open) return;
+    const onRemoteChanged = () => {
+      loadComments();
+    };
+    provider.on('comment-changed', onRemoteChanged);
+    return () => {
+      provider.off('comment-changed', onRemoteChanged);
+    };
+  }, [provider, open, loadComments]);
+
   const handleCreate = async (parentId: string | null, content: string) => {
     if (!content.trim()) return;
     try {
@@ -101,6 +120,7 @@ export default function CommentPanel({
           setNewContent('');
         }
         loadComments();
+        providerRef.current?.notifyCommentChanged();
       }
     } catch (e) {
       console.error('Failed to create comment:', e);
@@ -122,6 +142,7 @@ export default function CommentPanel({
       if (result.code === 0) {
         setEditingId(null);
         loadComments();
+        providerRef.current?.notifyCommentChanged();
       }
     } catch (e) {
       console.error('Failed to edit comment:', e);
@@ -137,6 +158,7 @@ export default function CommentPanel({
       const result = await resp.json();
       if (result.code === 0) {
         loadComments();
+        providerRef.current?.notifyCommentChanged();
       }
     } catch (e) {
       console.error('Failed to delete comment:', e);
@@ -153,6 +175,7 @@ export default function CommentPanel({
       const result = await resp.json();
       if (result.code === 0) {
         loadComments();
+        providerRef.current?.notifyCommentChanged();
       }
     } catch (e) {
       console.error('Failed to toggle resolve:', e);

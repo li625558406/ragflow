@@ -179,6 +179,7 @@ export class CollaborationWebSocketProvider {
   private statusListeners: Array<(arg0: { status: string }) => void> = [];
   private updateListeners: Array<(arg0: unknown) => void> = [];
   private savedListeners: Array<(arg0: { userName: string }) => void> = [];
+  private commentChangedListeners: Array<() => void> = [];
 
   constructor(doc: Doc, docId: string, token: string, baseUrl?: string) {
     this.doc = doc;
@@ -238,6 +239,16 @@ export class CollaborationWebSocketProvider {
     this.ws.send(JSON.stringify({ t: 'save', d: b64 }));
   }
 
+  /**
+   * Notify other clients that comments changed so they reload.
+   * Server relays this to all other clients in the room (excludes sender).
+   * Receiver re-fetches via REST /comments endpoint — keeps server authoritative.
+   */
+  notifyCommentChanged(): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ t: 'comment-changed' }));
+  }
+
   on(type: string, cb: (...args: unknown[]) => void): void {
     switch (type) {
       case 'sync':
@@ -251,6 +262,9 @@ export class CollaborationWebSocketProvider {
         break;
       case 'saved':
         this.savedListeners.push(cb as (arg0: { userName: string }) => void);
+        break;
+      case 'comment-changed':
+        this.commentChangedListeners.push(cb as () => void);
         break;
       case 'reload':
         // Supported for @lexical/react CollaborationPlugin compatibility
@@ -272,6 +286,11 @@ export class CollaborationWebSocketProvider {
         break;
       case 'saved':
         this.savedListeners = this.savedListeners.filter((l) => l !== cb);
+        break;
+      case 'comment-changed':
+        this.commentChangedListeners = this.commentChangedListeners.filter(
+          (l) => l !== cb,
+        );
         break;
       case 'reload':
         break;
@@ -470,6 +489,15 @@ export class CollaborationWebSocketProvider {
           }
         } catch {
           // ignore
+        }
+        break;
+      }
+
+      case 'comment-changed': {
+        // Another client added/edited/deleted a comment — notify CommentPanel
+        // to reload via REST. cb has no args; receiver decides what to fetch.
+        for (const cb of this.commentChangedListeners) {
+          cb();
         }
         break;
       }

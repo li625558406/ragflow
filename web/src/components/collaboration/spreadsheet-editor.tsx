@@ -6,7 +6,7 @@
  * Collaboration via Yjs CRDT (document-level) through useSpreadsheetCollab hook.
  */
 import storage from '@/utils/authorization-util';
-import type { ICellData, Univer } from '@univerjs/core';
+import type { ICellData, IWorkbookData, Univer } from '@univerjs/core';
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core';
 import '@univerjs/preset-sheets-core/lib/index.css';
 import UniverPresetSheetsCoreZhCN from '@univerjs/preset-sheets-core/locales/zh-CN';
@@ -15,6 +15,7 @@ import { createUniver, LocaleType } from '@univerjs/presets';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import EditorHeader from './editor-header';
 import useSpreadsheetCollab from './use-spreadsheet-collab';
+import type { CollaborationWebSocketProvider } from './yjs-provider';
 
 interface DocumentData {
   id: string;
@@ -35,6 +36,7 @@ interface Props {
   onUpdate: () => void;
   token?: string;
   onOpenShare: () => void;
+  onProviderReady?: (provider: CollaborationWebSocketProvider | null) => void;
 }
 
 const EXT_MAP: Record<string, string> = {
@@ -49,8 +51,31 @@ export default function SpreadsheetEditor({
   onUpdate,
   token,
   onOpenShare,
+  onProviderReady,
 }: Props) {
   const content = document.content;
+
+  // Commit any in-progress cell edit and return a fresh workbook snapshot.
+  // Univer keeps in-progress edits in an editor overlay (NOT in cellData)
+  // until the cell loses focus or Enter is pressed. Without this, saving
+  // while a cell is focused would persist a snapshot missing that edit.
+  const getLatestSnapshot = useCallback(async () => {
+    const api = univerAPIRef.current;
+    if (!api) return null;
+    const fWorkbook = api.getActiveWorkbook();
+    if (!fWorkbook) return null;
+    try {
+      // Pass true to commit (vs false to cancel). Awaits Univer's commit pipeline.
+      await fWorkbook.endEditingAsync(true);
+    } catch {
+      // ignore — snapshot below is still the best we have
+    }
+    try {
+      return fWorkbook.save() as IWorkbookData;
+    } catch {
+      return null;
+    }
+  }, []);
 
   const {
     workbookData,
@@ -66,6 +91,7 @@ export default function SpreadsheetEditor({
     token,
     apiFetch,
     onUpdate,
+    getLatestSnapshot,
     userName: useMemo(() => {
       const userInfo = storage.getUserInfoObject();
       return userInfo?.nickname || userInfo?.email || '';
@@ -77,9 +103,22 @@ export default function SpreadsheetEditor({
   const univerRef = useRef<Univer | null>(null);
   const univerAPIRef = useRef<FUniver | null>(null);
 
-  // Track the epoch at the time we start applying a remote update,
-  // so CommandExecuted events during createWorkbook() can be gated.
+  // Report provider readiness to parent so side panels can subscribe to events.
+  const onProviderReadyRef = useRef(onProviderReady);
+  onProviderReadyRef.current = onProviderReady;
+  useEffect(() => {
+    onProviderReadyRef.current?.(provider ?? null);
+  }, [provider]);
+
+  // Track whether we're currently applying a remote update to Univer.
+  // Set to the remote epoch during apply; reset to -1 after apply completes.
+  // CommandExecuted events that fire during apply are skipped to avoid echo.
   const applyEpochRef = useRef<number>(-1);
+  // Last remote epoch we processed in useEffect — used to distinguish
+  // remote-driven workbookData changes (observer bumped epoch) from local
+  // pushSnapshot changes (epoch unchanged). Without this, every useEffect
+  // run would set applyEpochRef and silently drop all subsequent local edits.
+  const lastSeenEpochRef = useRef<number>(0);
 
   // Initialize Univer instance (runs once on mount)
   useEffect(() => {
@@ -141,13 +180,27 @@ export default function SpreadsheetEditor({
   }, []);
 
   // Apply remote workbook data changes to Univer incrementally.
-  // Only runs when workbookData changes from a remote Yjs update.
+  // Only applies when workbookData changes from a REMOTE Yjs update —
+  // local pushSnapshot changes are skipped because Univer is already
+  // the source of truth for those.
   useEffect(() => {
     const api = univerAPIRef.current;
     if (!api) return;
 
-    // Record epoch so CommandExecuted handler knows to skip
-    applyEpochRef.current = remoteEpoch.current;
+    const currentEpoch = remoteEpoch.current;
+    const isRemoteUpdate = currentEpoch !== lastSeenEpochRef.current;
+    lastSeenEpochRef.current = currentEpoch;
+
+    if (!isRemoteUpdate) {
+      // Local pushSnapshot triggered this re-render — Univer is already
+      // up to date. Skip apply AND skip setting applyEpochRef (otherwise
+      // every subsequent local CommandExecuted would be dropped).
+      return;
+    }
+
+    // We're applying remote data. Set applyEpoch so synchronous
+    // CommandExecuted events from setValue/setRange get skipped.
+    applyEpochRef.current = currentEpoch;
 
     try {
       const fWorkbook = api.getActiveWorkbook();
@@ -309,30 +362,28 @@ export default function SpreadsheetEditor({
       if (msg.includes('same unit id')) return;
       console.error('[SpreadsheetEditor] Failed to apply remote data:', e);
     }
-    // NOTE: We intentionally do NOT reset applyEpochRef here.
-    // It stays set until the next local edit changes the epoch naturally.
-    // This prevents any delayed CommandExecuted from re-pushing.
+    // Reset applyEpoch after Univer's command queue drains. Synchronous
+    // CommandExecuted events have already fired and been skipped via the
+    // epoch check; the small delay also catches any queued microtasks.
+    // This is CRITICAL — without the reset, applyEpoch would stay set and
+    // block ALL subsequent local edits from being pushed to collaborators.
+    setTimeout(() => {
+      applyEpochRef.current = -1;
+    }, 50);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workbookData]);
 
-  // Manual save — grab the latest workbook snapshot directly from Univer API
-  const handleManualSave = useCallback(() => {
-    const api = univerAPIRef.current;
-    if (api) {
-      try {
-        const fWorkbook = api.getActiveWorkbook();
-        if (fWorkbook) {
-          const latestSnapshot = fWorkbook.save();
-          saveToServer(latestSnapshot);
-          return;
-        }
-      } catch (e) {
-        console.error('[SpreadsheetEditor] Failed to save for manual save:', e);
-      }
+  // Manual save — commit any focused cell first, then grab a fresh snapshot.
+  // MUST be async because endEditingAsync awaits Univer's commit pipeline.
+  const handleManualSave = useCallback(async () => {
+    const fresh = await getLatestSnapshot();
+    if (fresh) {
+      saveToServer(fresh);
+      return;
     }
     // Fallback: use hook's workbookData (may be stale)
     saveToServer(workbookData);
-  }, [saveToServer, workbookData]);
+  }, [getLatestSnapshot, saveToServer, workbookData]);
 
   // Download handler
   const handleDownload = useCallback(

@@ -177,6 +177,14 @@ interface Options {
   userName?: string;
   apiFetch: (url: string, options?: RequestInit) => Promise<Response>;
   onUpdate: () => void;
+  /** Commits any in-progress cell edit (e.g. user typing in a cell that hasn't
+   *  lost focus) and returns a fresh workbook snapshot. Without this, auto-save
+   *  / flushSave would persist a snapshot missing the cell the user is actively
+   *  editing — Univer only writes to cellData on blur/Enter.
+   *
+   *  Implementation in the editor: `await fWorkbook.endEditingAsync(true); return fWorkbook.save();`
+   */
+  getLatestSnapshot?: () => Promise<IWorkbookData | null>;
 }
 
 interface Return {
@@ -203,6 +211,7 @@ export default function useSpreadsheetCollab({
   userName,
   apiFetch,
   onUpdate,
+  getLatestSnapshot,
 }: Options): Return {
   // Resolve initial data: legacy format → migrate, null → blank
   const [workbookData, setWorkbookData] = useState<IWorkbookData>(() => {
@@ -223,35 +232,103 @@ export default function useSpreadsheetCollab({
   const providerRef = useRef<CollaborationWebSocketProvider | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Debounced server save after local edits — ensures edits are persisted
+  // within a few seconds instead of waiting for the 30s auto-save interval.
+  // Without this, clearing the browser cache could lose up to 30s of edits.
+  const saveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const statusResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cancelledRef = useRef(false);
   const workbookDataRef = useRef(workbookData);
   workbookDataRef.current = workbookData;
   const apiFetchRef = useRef(apiFetch);
   apiFetchRef.current = apiFetch;
+  const getLatestSnapshotRef = useRef(getLatestSnapshot);
+  getLatestSnapshotRef.current = getLatestSnapshot;
 
   // Epoch counter: incremented each time remote data arrives.
   // pushSnapshot captures the epoch; if it changed when debounce fires, skip.
   const remoteEpochRef = useRef(0);
 
   // Push snapshot to Yjs (debounced, epoch-gated)
-  const pushSnapshot = useCallback((data: IWorkbookData) => {
-    setWorkbookData(data);
-    workbookDataRef.current = data;
-    const map = yMapRef.current;
-    if (!map) return;
-    // Collab mode: sync to Yjs with debounce
-    const epochAtPush = remoteEpochRef.current;
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      if (remoteEpochRef.current !== epochAtPush) return;
-      const m = yMapRef.current;
-      if (m) {
-        m.set('data', JSON.stringify(stripUIState(data)));
-      }
-      debounceRef.current = null;
-    }, 300);
-  }, []);
+  const pushSnapshot = useCallback(
+    (data: IWorkbookData) => {
+      setWorkbookData(data);
+      workbookDataRef.current = data;
+      const map = yMapRef.current;
+      if (!map) return;
+      // Collab mode: sync to Yjs with debounce
+      const epochAtPush = remoteEpochRef.current;
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      debounceRef.current = setTimeout(() => {
+        if (remoteEpochRef.current !== epochAtPush) return;
+        const m = yMapRef.current;
+        if (m) {
+          m.set('data', JSON.stringify(stripUIState(data)));
+          // Schedule a debounced server save so edits persist within ~5s
+          // instead of waiting for the 30s interval. Skipped if no token
+          // (non-collab mode uses saveToServer directly).
+          if (yDocRef.current && providerRef.current?.doc) {
+            if (saveDebounceRef.current) clearTimeout(saveDebounceRef.current);
+            saveDebounceRef.current = setTimeout(() => {
+              saveDebounceRef.current = null;
+              if (cancelledRef.current || !yDocRef.current) return;
+              (async () => {
+                try {
+                  // Re-fetch snapshot in case the user has started editing
+                  // another cell since the last pushSnapshot fired (those edits
+                  // aren't committed yet, so they're missing from `data`).
+                  let dataToSave: IWorkbookData = data;
+                  const fresh = await getLatestSnapshotRef.current?.();
+                  if (fresh) {
+                    dataToSave = fresh;
+                    // Sync yMap so ydoc_state includes the just-committed edit
+                    const mm = yMapRef.current;
+                    if (mm) mm.set('data', JSON.stringify(stripUIState(fresh)));
+                  }
+                  const ydocState = Y.encodeStateAsUpdate(yDocRef.current);
+                  const b64 = uint8ArrayToBase64(ydocState);
+                  setSaveStatus('saving');
+                  apiFetchRef
+                    .current(`/api/v1/collaboration/documents/${docId}/ydoc`, {
+                      method: 'PUT',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        ydoc_state: b64,
+                        content: dataToSave,
+                        markdown_content: '',
+                      }),
+                    })
+                    .then((r) => r.json())
+                    .then((result) => {
+                      if (cancelledRef.current) return;
+                      if (result.code === 0) {
+                        providerRef.current?.sendFullState();
+                        setSaveStatus('saved');
+                        onUpdate();
+                        if (statusResetRef.current)
+                          clearTimeout(statusResetRef.current);
+                        statusResetRef.current = setTimeout(() => {
+                          if (!cancelledRef.current) setSaveStatus('idle');
+                        }, 1500);
+                      } else {
+                        setSaveStatus('error');
+                      }
+                    })
+                    .catch(() => {
+                      if (!cancelledRef.current) setSaveStatus('error');
+                    });
+                } catch {
+                  // ignore encode errors
+                }
+              })();
+            }, 5000);
+          }
+        }
+        debounceRef.current = null;
+      }, 300);
+    },
+    [docId, onUpdate],
+  );
 
   // Save workbook data to server (accepts fresh data from caller)
   const saveToServer = useCallback(
@@ -265,6 +342,16 @@ export default function useSpreadsheetCollab({
         let ydocB64: string | undefined;
 
         if (isCollab) {
+          // Sync yMap with the data BEFORE encoding ydoc_state.
+          // Why: when saveToServer is called right after endEditingAsync (manual
+          // save with a focused cell), pushSnapshot's yMap.set is still in its
+          // 300ms debounce — yDoc doesn't yet contain the committed edit, so
+          // encoding ydoc_state now would produce stale bytes and lose the edit
+          // on next page load.
+          const m = yMapRef.current;
+          if (m) {
+            m.set('data', JSON.stringify(stripUIState(data)));
+          }
           const ydocState = Y.encodeStateAsUpdate(yDocRef.current!);
           ydocB64 = uint8ArrayToBase64(ydocState);
         }
@@ -388,9 +475,20 @@ export default function useSpreadsheetCollab({
               if (cancelledRef.current) return;
               setSaveStatus('saving');
               try {
+                // Commit any pending cell edit (user typing in a focused cell)
+                // before saving — otherwise the edit lives only in Univer's
+                // editor overlay and the persisted snapshot is missing it.
+                let parsed: unknown;
+                const fresh = await getLatestSnapshotRef.current?.();
+                if (fresh) {
+                  parsed = fresh;
+                  // Sync yMap so ydoc_state encoding includes the committed edit
+                  currentMap.set('data', JSON.stringify(stripUIState(fresh)));
+                } else {
+                  parsed = JSON.parse(currentData);
+                }
                 const ydocState = Y.encodeStateAsUpdate(yDocRef.current!);
                 const b64 = uint8ArrayToBase64(ydocState);
-                const parsed = JSON.parse(currentData);
                 const resp = await apiFetchRef.current(
                   `/api/v1/collaboration/documents/${docId}/ydoc`,
                   {
@@ -429,10 +527,65 @@ export default function useSpreadsheetCollab({
       }
     }, 30000);
 
+    // Flush pending edits to server when tab is hidden or page is being closed.
+    // visibilitychange fires when user switches tab / minimizes browser.
+    // pagehide fires on actual page close (more reliable than beforeunload
+    // for async fetches on mobile Safari).
+    const flushSave = async () => {
+      if (cancelledRef.current) return;
+      if (!yDocRef.current || !providerRef.current?.doc) return;
+      const currentMap = yMapRef.current;
+      if (!currentMap) return;
+      try {
+        // Commit pending cell edit first so it's included in the snapshot
+        let parsed: unknown = null;
+        const fresh = await getLatestSnapshotRef.current?.();
+        if (fresh) {
+          parsed = fresh;
+          currentMap.set('data', JSON.stringify(stripUIState(fresh)));
+        } else {
+          const currentData = currentMap.get('data');
+          if (!currentData) return;
+          parsed = JSON.parse(currentData);
+        }
+        const ydocState = Y.encodeStateAsUpdate(yDocRef.current);
+        const b64 = uint8ArrayToBase64(ydocState);
+        // Fire-and-forget; browser may not await full completion on pagehide
+        // but the request typically completes for visibilitychange.
+        apiFetchRef
+          .current(`/api/v1/collaboration/documents/${docId}/ydoc`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              ydoc_state: b64,
+              content: parsed,
+              markdown_content: '',
+            }),
+          })
+          .catch(() => {});
+        // Also broadcast via WS 'save' — server updates room.full_state and
+        // persists on room close, providing a second safety net.
+        providerRef.current?.sendFullState();
+      } catch {
+        // ignore
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') flushSave();
+    };
+    const onPageHide = () => flushSave();
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pagehide', onPageHide);
+
     return () => {
       cancelledRef.current = true;
+      // Best-effort flush on unmount too
+      flushSave();
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pagehide', onPageHide);
       if (saveTimerRef.current) clearInterval(saveTimerRef.current);
       if (debounceRef.current) clearTimeout(debounceRef.current);
+      if (saveDebounceRef.current) clearTimeout(saveDebounceRef.current);
       if (statusResetRef.current) clearTimeout(statusResetRef.current);
       yMap.unobserve(observer);
       wsProvider.disconnect();

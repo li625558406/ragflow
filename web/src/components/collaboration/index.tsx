@@ -8,6 +8,7 @@ import type { DocumentNode, FolderNode } from './folder-tree';
 import ShareDialog from './share-dialog';
 import SidePanelBar, { PanelKey } from './side-panel-bar';
 import SpreadsheetEditor from './spreadsheet-editor';
+import type { CollaborationWebSocketProvider } from './yjs-provider';
 
 interface DocumentData {
   id: string;
@@ -45,6 +46,10 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
   const [collapsed, setCollapsed] = useState(false);
   const [shareTarget, setShareTarget] = useState<DocumentNode | null>(null);
   const [activePanel, setActivePanel] = useState<PanelKey | null>('comments');
+  // Collaboration provider shared with side panels (CommentPanel etc.) so they
+  // can subscribe to real-time events (comment-changed) and broadcast notifications.
+  const [collabProvider, setCollabProvider] =
+    useState<CollaborationWebSocketProvider | null>(null);
 
   const currentUserId = useMemo(() => {
     try {
@@ -70,6 +75,12 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
 
   const apiFetchRef = useRef(apiFetch);
   apiFetchRef.current = apiFetch;
+
+  // Reset shared provider when the selected document changes — a fresh one is
+  // created by the editor on mount and reported back via onProviderReady.
+  useEffect(() => {
+    setCollabProvider(null);
+  }, [selectedId]);
 
   const loadDocuments = useCallback(async () => {
     setLoading(true);
@@ -152,28 +163,39 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
     [loadFolders, loadDocuments],
   );
 
-  const handleSelect = useCallback(async (doc: DocumentNode | null) => {
-    if (!doc) {
-      setSelectedId(null);
-      setSelectedDoc(null);
-      return;
-    }
-    setSelectedId(doc.id);
-    setDocLoading(true);
-    try {
-      const resp = await apiFetchRef.current(
-        `/api/v1/collaboration/documents/${doc.id}`,
-      );
-      const result = await resp.json();
-      if (result.code === 0) {
-        setSelectedDoc(result.data);
+  const handleSelect = useCallback(
+    async (doc: DocumentNode | null) => {
+      if (!doc) {
+        setSelectedId(null);
+        setSelectedDoc(null);
+        return;
       }
-    } catch (e) {
-      console.error('加载文档详情失败:', e);
-    } finally {
-      setDocLoading(false);
-    }
-  }, []);
+      // Skip clicks on the already-selected doc. The docLoading toggle below
+      // unmounts/remounts the editor (DocumentEditor / SpreadsheetEditor),
+      // which closes and reopens the WebSocket. The WS close handshake is
+      // async — under rapid reconnects the server can register the new
+      // connection before the old client_id is popped from the room, causing
+      // the online-user count to increment each click. Treating same-doc
+      // clicks as no-ops avoids the unmount/remount entirely.
+      if (doc.id === selectedId) return;
+      setSelectedId(doc.id);
+      setDocLoading(true);
+      try {
+        const resp = await apiFetchRef.current(
+          `/api/v1/collaboration/documents/${doc.id}`,
+        );
+        const result = await resp.json();
+        if (result.code === 0) {
+          setSelectedDoc(result.data);
+        }
+      } catch (e) {
+        console.error('加载文档详情失败:', e);
+      } finally {
+        setDocLoading(false);
+      }
+    },
+    [selectedId],
+  );
 
   const handleDocUpdate = useCallback(() => {
     loadDocuments();
@@ -239,6 +261,7 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
               apiFetch={apiFetch}
               onUpdate={handleDocUpdate}
               token={wsToken}
+              onProviderReady={setCollabProvider}
               onOpenShare={() => {
                 const node = documents.find((d) => d.id === selectedDoc.id);
                 if (node) setShareTarget(node);
@@ -253,6 +276,7 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
               appliedRuleConfig={appliedRuleConfigRef.current}
               onRuleApplied={handleRuleApplied}
               token={wsToken}
+              onProviderReady={setCollabProvider}
               onOpenShare={() => {
                 const node = documents.find((d) => d.id === selectedDoc.id);
                 if (node) setShareTarget(node);
@@ -289,6 +313,7 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
           isOwner={isOwner}
           onApplyFormatRule={handleApplyFormatRule}
           applyingRuleId={applyingRuleId}
+          provider={collabProvider}
         />
       )}
       {shareTarget && (

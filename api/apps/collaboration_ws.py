@@ -273,6 +273,11 @@ async def handle_ws(doc_id: str):
                     except Exception:
                         pass
 
+            elif msg_type == "comment-changed":
+                # Comment mutation happened on another client — relay to others
+                # so they reload via REST. No state to persist/buffer here.
+                await _broadcast(doc_id, raw, exclude_client_id=client_id)
+
     except asyncio.CancelledError:
         pass
     except Exception as e:
