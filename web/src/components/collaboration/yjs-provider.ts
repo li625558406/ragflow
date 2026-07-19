@@ -298,6 +298,10 @@ export class CollaborationWebSocketProvider {
       this._flushOfflineBuffer();
       // Send initial awareness state
       const encoded = this.awareness.encodeLocalState();
+      console.log(
+        '[YjsProvider] onopen, local awareness encoded =',
+        encoded ? encoded.slice(0, 100) : 'null',
+      );
       if (encoded) {
         ws.send(JSON.stringify({ t: 'aw', d: encoded }));
       }

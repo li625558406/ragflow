@@ -2639,7 +2639,14 @@ async def list_audit_logs(doc_id: str, tenant_id: str, limit: int = 50, offset: 
         raise PermissionError("Access denied")
 
     logs = (
-        CollaborationAuditLog.select()
+        CollaborationAuditLog.select(
+            CollaborationAuditLog.id,
+            CollaborationAuditLog.user_id,
+            CollaborationAuditLog.action,
+            CollaborationAuditLog.detail,
+            CollaborationAuditLog.ip_address,
+            CollaborationAuditLog.create_time,
+        )
         .where(CollaborationAuditLog.document_id == doc_id)
         .order_by(CollaborationAuditLog.create_time.desc())
         .offset(offset)
@@ -2651,12 +2658,24 @@ async def list_audit_logs(doc_id: str, tenant_id: str, limit: int = 50, offset: 
         .count()
     )
 
+    # Collect unique user_ids and resolve nicknames
+    user_ids = list({log.user_id for log in logs if log.user_id})
+    nickname_map = {}
+    if user_ids:
+        rows = (
+            User.select(UserTenant.user_id, User.nickname)
+            .join(UserTenant, on=(User.id == UserTenant.user_id))
+            .where(UserTenant.tenant_id.in_(user_ids))
+        )
+        nickname_map = {row.user_id: row.nickname for row in rows}
+
     return {
         "total": total,
         "logs": [
             {
                 "id": log.id,
                 "user_id": log.user_id,
+                "user_name": nickname_map.get(log.user_id, log.user_id),
                 "action": log.action,
                 "detail": log.detail,
                 "ip_address": log.ip_address,

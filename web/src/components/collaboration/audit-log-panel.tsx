@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 interface AuditLogEntry {
   id: string;
   user_id: string;
+  user_name: string;
   action: string;
   detail: Record<string, unknown>;
   ip_address: string | null;
@@ -139,7 +140,7 @@ export default function AuditLogPanel({
                 <div>
                   <div className="flex items-center gap-1.5">
                     <span className="text-xs font-medium text-stone-700">
-                      {log.user_id}
+                      {log.user_name}
                     </span>
                     <span className="text-[10px] text-stone-400">
                       {ACTION_LABELS[log.action] || log.action}

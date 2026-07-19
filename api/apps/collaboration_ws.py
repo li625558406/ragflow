@@ -96,6 +96,7 @@ async def _broadcast(doc_id: str, message: str, exclude_client_id: str | None = 
             continue
         try:
             await client["ws"].send(message)
+            logging.info(f"[WS] broadcast msg_type={json.loads(message).get('t', '?')} to {cid}")
         except Exception:
             # Remove dead connection
             room["clients"].pop(cid, None)
@@ -168,7 +169,13 @@ async def handle_ws(doc_id: str):
         full_state = await _load_full_state(doc_id)
         _rooms[doc_id] = {"clients": {}, "buffer": [], "full_state": full_state}
     room = _rooms[doc_id]
-    room["clients"][client_id] = {"ws": actual_ws, "user_id": user["id"], "user_name": user["name"], "aw_client_id": None}
+    room["clients"][client_id] = {
+        "ws": actual_ws,
+        "user_id": user["id"],
+        "user_name": user["name"],
+        "aw_client_id": None,
+        "last_aw": None,  # last raw aw message — replayed to future joiners
+    }
 
     # ── Send initial state ───────────────────────────────────────────
     init_msg = {
@@ -183,6 +190,19 @@ async def handle_ws(doc_id: str):
         await websocket.send(json.dumps({"t": "update", "d": base64.b64encode(update).decode("ascii")}))
 
     await _broadcast_presence(doc_id)
+
+    # Replay existing clients' awareness so the newcomer sees them immediately.
+    # Without this, B would only learn about A when A's next 5s heartbeat fires.
+    for other_cid, other_client in list(room["clients"].items()):
+        if other_cid == client_id:
+            continue
+        last_aw = other_client.get("last_aw")
+        if last_aw:
+            try:
+                await websocket.send(last_aw)
+                logging.info(f"[WS] replay aw from {other_cid} to newcomer {client_id}")
+            except Exception:
+                pass
 
     # ── Message loop ─────────────────────────────────────────────────
     try:
@@ -217,8 +237,12 @@ async def handle_ws(doc_id: str):
                     aw_data = json.loads(msg_data) if isinstance(msg_data, str) else msg_data
                     if isinstance(aw_data, dict) and "clientID" in aw_data:
                         room["clients"][client_id]["aw_client_id"] = aw_data["clientID"]
+                        logging.info(f"[WS] aw from {user['name']} clientID={aw_data['clientID']}, room has {len(room['clients'])} clients")
                 except Exception:
                     pass
+                # Cache raw message so future joiners can be replayed it
+                if client_id in room["clients"]:
+                    room["clients"][client_id]["last_aw"] = raw
                 # Broadcast to all others
                 await _broadcast(doc_id, raw, exclude_client_id=client_id)
 

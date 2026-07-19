@@ -1,6 +1,10 @@
 /**
  * Hook: bridge Univer spreadsheet state ↔ Yjs CRDT ↔ WebSocket.
  *
+ * Two modes:
+ *   - Collab mode (token): Yjs CRDT sync via WebSocket, 30s auto-save to /ydoc endpoint
+ *   - Non-collab mode (no token): 2s debounce auto-save on edit to plain /documents endpoint
+ *
  * Uses an epoch counter to prevent dead loops:
  *   - Local edit → Univer command → save() → epoch captured → debounce → Y.Map.set()
  *   - Remote edit → Y.Map.observe() → epoch incremented → setWorkbookData
@@ -168,6 +172,7 @@ interface Options {
   content: Record<string, unknown> | null;
   ydoc: string | null;
   token: string | undefined;
+  userName?: string;
   apiFetch: (url: string, options?: RequestInit) => Promise<Response>;
   onUpdate: () => void;
 }
@@ -182,7 +187,8 @@ interface Return {
   pushSnapshot: (data: IWorkbookData) => void;
   saveStatus: 'idle' | 'saving' | 'saved' | 'error';
   provider: CollaborationWebSocketProvider | null;
-  handleManualSave: () => void;
+  /** Save arbitrary workbook data directly to server (bypasses workbookDataRef) */
+  saveToServer: (data: IWorkbookData) => void;
 }
 
 /* ── Hook ── */
@@ -192,6 +198,7 @@ export default function useSpreadsheetCollab({
   content,
   ydoc,
   token,
+  userName,
   apiFetch,
   onUpdate,
 }: Options): Return {
@@ -228,13 +235,13 @@ export default function useSpreadsheetCollab({
   // Push snapshot to Yjs (debounced, epoch-gated)
   const pushSnapshot = useCallback((data: IWorkbookData) => {
     setWorkbookData(data);
+    workbookDataRef.current = data;
     const map = yMapRef.current;
     if (!map) return;
-    // Capture current epoch so we can check it in the debounce callback
+    // Collab mode: sync to Yjs with debounce
     const epochAtPush = remoteEpochRef.current;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      // If a remote update arrived since we started this edit, discard
       if (remoteEpochRef.current !== epochAtPush) return;
       const m = yMapRef.current;
       if (m) {
@@ -244,41 +251,53 @@ export default function useSpreadsheetCollab({
     }, 300);
   }, []);
 
-  // Manual save
-  const handleManualSave = useCallback(async () => {
-    if (!token || !yDocRef.current || cancelledRef.current) return;
-    setSaveStatus('saving');
-    try {
-      const ydocState = Y.encodeStateAsUpdate(yDocRef.current);
-      const b64 = uint8ArrayToBase64(ydocState);
-      const resp = await apiFetchRef.current(
-        `/api/v1/collaboration/documents/${docId}/ydoc`,
-        {
+  // Save workbook data to server (accepts fresh data from caller)
+  const saveToServer = useCallback(
+    async (data: IWorkbookData) => {
+      if (cancelledRef.current) return;
+      setSaveStatus('saving');
+      try {
+        // Collab mode: use /ydoc endpoint with ydoc_state
+        // Non-collab mode: use plain /documents endpoint without ydoc_state
+        const isCollab = !!yDocRef.current;
+        let ydocB64: string | undefined;
+
+        if (isCollab) {
+          const ydocState = Y.encodeStateAsUpdate(yDocRef.current!);
+          ydocB64 = uint8ArrayToBase64(ydocState);
+        }
+
+        const endpoint = isCollab
+          ? `/api/v1/collaboration/documents/${docId}/ydoc`
+          : `/api/v1/collaboration/documents/${docId}`;
+
+        const resp = await apiFetchRef.current(endpoint, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            ydoc_state: b64,
-            content: workbookDataRef.current,
+            ...(ydocB64 ? { ydoc_state: ydocB64 } : {}),
+            content: data,
             markdown_content: '',
           }),
-        },
-      );
-      const result = await resp.json();
-      if (result.code === 0) {
-        setSaveStatus('saved');
-        providerRef.current?.sendFullState();
-        onUpdate();
-      } else {
+        });
+        const result = await resp.json();
+        if (result.code === 0) {
+          setSaveStatus('saved');
+          providerRef.current?.sendFullState();
+          onUpdate();
+        } else {
+          setSaveStatus('error');
+        }
+      } catch {
         setSaveStatus('error');
       }
-    } catch {
-      setSaveStatus('error');
-    }
-    if (statusResetRef.current) clearTimeout(statusResetRef.current);
-    statusResetRef.current = setTimeout(() => {
-      if (!cancelledRef.current) setSaveStatus('idle');
-    }, 2000);
-  }, [token, docId, onUpdate]);
+      if (statusResetRef.current) clearTimeout(statusResetRef.current);
+      statusResetRef.current = setTimeout(() => {
+        if (!cancelledRef.current) setSaveStatus('idle');
+      }, 2000);
+    },
+    [docId, onUpdate],
+  );
 
   // Initialize Yjs + Provider
   useEffect(() => {
@@ -342,6 +361,18 @@ export default function useSpreadsheetCollab({
     });
 
     wsProvider.connect();
+
+    // Set awareness (user name + color) so other collaborators see this user.
+    // Always set even if userName is empty — otherwise onopen heartbeat sends nothing
+    // and other clients won't see this user online.
+    wsProvider.awareness.setLocalState({
+      anchorPos: null,
+      color: '#958DF1',
+      focusPos: null,
+      focusing: false,
+      name: userName || '匿名用户',
+      awarenessData: {},
+    });
 
     // Auto-save every 30s
     saveTimerRef.current = setInterval(() => {
@@ -418,6 +449,6 @@ export default function useSpreadsheetCollab({
     pushSnapshot,
     saveStatus,
     provider,
-    handleManualSave,
+    saveToServer,
   };
 }

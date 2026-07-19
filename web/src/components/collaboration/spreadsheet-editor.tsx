@@ -5,16 +5,14 @@
  * 400+ formulas, formatting, freeze panes, sort/filter, undo/redo, multi-sheet.
  * Collaboration via Yjs CRDT (document-level) through useSpreadsheetCollab hook.
  */
-import type { Univer } from '@univerjs/core';
-import { UniverSheetsAdvancedPreset } from '@univerjs/preset-sheets-advanced';
-import '@univerjs/preset-sheets-advanced/lib/index.css';
-import UniverPresetSheetsAdvancedZhCN from '@univerjs/preset-sheets-advanced/locales/zh-CN';
+import storage from '@/utils/authorization-util';
+import type { ICellData, Univer } from '@univerjs/core';
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core';
 import '@univerjs/preset-sheets-core/lib/index.css';
 import UniverPresetSheetsCoreZhCN from '@univerjs/preset-sheets-core/locales/zh-CN';
 import type { FUniver } from '@univerjs/presets';
-import { createUniver, LocaleType, mergeLocales } from '@univerjs/presets';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { createUniver, LocaleType } from '@univerjs/presets';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import EditorHeader from './editor-header';
 import useSpreadsheetCollab from './use-spreadsheet-collab';
 
@@ -60,7 +58,7 @@ export default function SpreadsheetEditor({
     pushSnapshot,
     saveStatus,
     provider,
-    handleManualSave,
+    saveToServer,
   } = useSpreadsheetCollab({
     docId: document.id,
     content,
@@ -68,16 +66,16 @@ export default function SpreadsheetEditor({
     token,
     apiFetch,
     onUpdate,
+    userName: useMemo(() => {
+      const userInfo = storage.getUserInfoObject();
+      return userInfo?.nickname || userInfo?.email || '';
+    }, []),
   });
 
   const [downloading, setDownloading] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const univerRef = useRef<Univer | null>(null);
   const univerAPIRef = useRef<FUniver | null>(null);
-
-  // Epoch captured at Univer init — CommandExecuted events from the initial
-  // createWorkbook() should NOT be pushed to Yjs.
-  const initEpochRef = useRef<number>(-1);
 
   // Track the epoch at the time we start applying a remote update,
   // so CommandExecuted events during createWorkbook() can be gated.
@@ -90,35 +88,28 @@ export default function SpreadsheetEditor({
     const { univer, univerAPI } = createUniver({
       locale: LocaleType.ZH_CN,
       locales: {
-        [LocaleType.ZH_CN]: mergeLocales(
-          UniverPresetSheetsCoreZhCN,
-          UniverPresetSheetsAdvancedZhCN,
-        ),
+        [LocaleType.ZH_CN]: UniverPresetSheetsCoreZhCN,
       },
       presets: [
         UniverSheetsCorePreset({
           container: containerRef.current,
         }),
-        UniverSheetsAdvancedPreset(),
       ],
     });
 
     univerRef.current = univer;
     univerAPIRef.current = univerAPI;
 
-    // Capture the epoch so we can skip CommandExecuted from initial createWorkbook
-    initEpochRef.current = remoteEpoch.current;
-
     // Create initial workbook with data
     univerAPI.createWorkbook(workbookData);
 
     // Listen for command events to detect local edits → push to Yjs.
-    // Epoch-gated: only push if no remote update arrived since the last render.
+    // applyEpoch guard: only skip events from a remote-update-triggered createWorkbook.
+    // No initEpoch check needed — the listener is registered AFTER createWorkbook,
+    // so initial workbook creation won't trigger it.
     const disposable = univerAPI.addEvent(
       univerAPI.Event.CommandExecuted,
       () => {
-        // Skip events from initial createWorkbook
-        if (remoteEpoch.current === initEpochRef.current) return;
         // Skip events from a remote-update-triggered createWorkbook
         if (remoteEpoch.current === applyEpochRef.current) return;
 
@@ -136,18 +127,20 @@ export default function SpreadsheetEditor({
 
     return () => {
       disposable.dispose();
-      univer.dispose();
-      // Clean up DOM in case Univer didn't fully remove its elements
-      if (containerRef.current) {
-        containerRef.current.innerHTML = '';
-      }
+      // Do NOT call univer.dispose() here.
+      // Univer's internal React root shares the same React reconciler as our
+      // app. Calling univer.dispose() triggers root.unmount(), which removes
+      // DOM nodes that React's own deletion walk (commitDeletionEffectsOnFiber)
+      // will later try to remove — causing a NotFoundError race condition.
+      // The old instance is GC'd when refs are nulled; each createUniver()
+      // creates an independent UniverInstanceService, so no global state leaks.
       univerRef.current = null;
       univerAPIRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Apply remote workbook data changes to Univer.
+  // Apply remote workbook data changes to Univer incrementally.
   // Only runs when workbookData changes from a remote Yjs update.
   useEffect(() => {
     const api = univerAPIRef.current;
@@ -157,15 +150,163 @@ export default function SpreadsheetEditor({
     applyEpochRef.current = remoteEpoch.current;
 
     try {
-      // Dispose current workbook and recreate with new data.
-      // This loses scroll position / selection / undo history, which is an
-      // acceptable trade-off for document-level CRDT sync.
-      const activeWorkbook = api.getActiveWorkbook();
-      if (activeWorkbook) {
-        activeWorkbook.dispose();
+      const fWorkbook = api.getActiveWorkbook();
+      if (!fWorkbook) return;
+
+      const currentSnapshot = fWorkbook.save();
+      const remoteSnapshot = workbookData;
+
+      // Check for structural changes (sheet add/remove/reorder) — fall back to full recreate
+      const currentSheets = Object.keys(currentSnapshot.sheets)
+        .sort()
+        .join(',');
+      const remoteSheets = Object.keys(remoteSnapshot.sheets).sort().join(',');
+      if (currentSheets !== remoteSheets) {
+        fWorkbook.dispose();
+        api.createWorkbook(remoteSnapshot);
+        return;
       }
-      api.createWorkbook(workbookData);
+
+      // Incremental cell-level update per sheet
+      for (const sheetId of remoteSnapshot.sheetOrder) {
+        const remoteSheet = remoteSnapshot.sheets[sheetId];
+        if (!remoteSheet) continue;
+
+        const currentSheet = currentSnapshot.sheets[sheetId];
+        const fWorksheet = fWorkbook.getSheetBySheetId(sheetId);
+        if (!fWorksheet || !currentSheet) continue;
+
+        // Handle column width changes
+        const remoteColData = remoteSheet.columnData;
+        const currentColData = currentSheet.columnData;
+        if (remoteColData) {
+          for (const colStr of Object.keys(remoteColData)) {
+            const col = Number(colStr);
+            const remoteW = (remoteColData as Record<string, { w?: number }>)[
+              colStr
+            ]?.w;
+            const currentW = (currentColData as Record<string, { w?: number }>)[
+              colStr
+            ]?.w;
+            if (remoteW !== undefined && remoteW !== currentW) {
+              try {
+                fWorksheet.setColumnWidth(col, remoteW);
+              } catch {
+                // ignore
+              }
+            }
+          }
+        }
+
+        // Handle row height changes
+        const remoteRowData = remoteSheet.rowData;
+        const currentRowData = currentSheet.rowData;
+        if (remoteRowData) {
+          for (const rowStr of Object.keys(remoteRowData)) {
+            const row = Number(rowStr);
+            const remoteH = (remoteRowData as Record<string, { h?: number }>)[
+              rowStr
+            ]?.h;
+            const currentH = (currentRowData as Record<string, { h?: number }>)[
+              rowStr
+            ]?.h;
+            if (remoteH !== undefined && remoteH !== currentH) {
+              try {
+                fWorksheet.setRowHeight(row, remoteH);
+              } catch {
+                // ignore
+              }
+            }
+          }
+        }
+
+        // Handle sheet name changes
+        if (
+          remoteSheet.name &&
+          currentSheet.name &&
+          remoteSheet.name !== currentSheet.name
+        ) {
+          try {
+            fWorksheet.setName(remoteSheet.name);
+          } catch {
+            // ignore
+          }
+        }
+
+        // Diff cellData: compare nested { [row]: { [col]: ICellData } }
+        const remoteCells = remoteSheet.cellData as
+          | Record<string, Record<string, ICellData>>
+          | undefined;
+        const currentCells = currentSheet.cellData as
+          | Record<string, Record<string, ICellData>>
+          | undefined;
+
+        if (remoteCells) {
+          // Collect all row keys from both remote and current
+          const allRows = new Set([
+            ...Object.keys(remoteCells),
+            ...(currentCells ? Object.keys(currentCells) : []),
+          ]);
+
+          for (const rowStr of allRows) {
+            const row = Number(rowStr);
+            const remoteRow = remoteCells[rowStr];
+            const currentRow = currentCells?.[rowStr];
+
+            // If remote has a row that current doesn't, all cells are new
+            // If current has a row that remote doesn't, cells were deleted
+            const allCols = new Set([
+              ...(remoteRow ? Object.keys(remoteRow) : []),
+              ...(currentRow ? Object.keys(currentRow) : []),
+            ]);
+
+            for (const colStr of allCols) {
+              const col = Number(colStr);
+              const remoteCell = remoteRow?.[colStr];
+              const currentCell = currentRow?.[colStr];
+
+              // Check if cell changed or was added/removed
+              const remoteJson = remoteCell ? JSON.stringify(remoteCell) : '';
+              const currentJson = currentCell
+                ? JSON.stringify(currentCell)
+                : '';
+
+              if (remoteJson !== currentJson) {
+                try {
+                  if (remoteJson === '') {
+                    // Cell was deleted — clear it
+                    api.syncExecuteCommand(
+                      'sheet.command.set-range-values',
+                      {
+                        range: {
+                          startRow: row,
+                          startColumn: col,
+                          endRow: row + 1,
+                          endColumn: col + 1,
+                        },
+                        value: null,
+                      },
+                      { onlyLocal: true } as never,
+                    );
+                  } else {
+                    // Cell changed or added — set value
+                    const range = fWorksheet.getRange(row, col, 1, 1);
+                    range.setValue(remoteCell as ICellData);
+                  }
+                } catch (e) {
+                  console.error(
+                    `[SpreadsheetEditor] Failed to apply cell [${row},${col}]:`,
+                    e,
+                  );
+                }
+              }
+            }
+          }
+        }
+      }
     } catch (e) {
+      const msg = (e as Error).message ?? '';
+      if (msg.includes('same unit id')) return;
       console.error('[SpreadsheetEditor] Failed to apply remote data:', e);
     }
     // NOTE: We intentionally do NOT reset applyEpochRef here.
@@ -173,6 +314,25 @@ export default function SpreadsheetEditor({
     // This prevents any delayed CommandExecuted from re-pushing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workbookData]);
+
+  // Manual save — grab the latest workbook snapshot directly from Univer API
+  const handleManualSave = useCallback(() => {
+    const api = univerAPIRef.current;
+    if (api) {
+      try {
+        const fWorkbook = api.getActiveWorkbook();
+        if (fWorkbook) {
+          const latestSnapshot = fWorkbook.save();
+          saveToServer(latestSnapshot);
+          return;
+        }
+      } catch (e) {
+        console.error('[SpreadsheetEditor] Failed to save for manual save:', e);
+      }
+    }
+    // Fallback: use hook's workbookData (may be stale)
+    saveToServer(workbookData);
+  }, [saveToServer, workbookData]);
 
   // Download handler
   const handleDownload = useCallback(
@@ -208,7 +368,7 @@ export default function SpreadsheetEditor({
         saveStatus={saveStatus}
         version={null}
         provider={provider}
-        showManualSave={!token}
+        showManualSave={true}
         onManualSave={handleManualSave}
         onDownload={handleDownload}
         downloading={downloading}
