@@ -1,31 +1,171 @@
 /**
- * Hook: bridge spreadsheet grid state ↔ Yjs CRDT ↔ WebSocket.
+ * Hook: bridge Univer spreadsheet state ↔ Yjs CRDT ↔ WebSocket.
  *
- * Stores the entire grid JSON as a string inside a Y.Map.
- * Local edits → debounce → yMap.set() → doc.on('update') → provider sends.
- * Remote edits → Y.applyUpdate → yMap.observe() → grid updates.
+ * Uses an epoch counter to prevent dead loops:
+ *   - Local edit → Univer command → save() → epoch captured → debounce → Y.Map.set()
+ *   - Remote edit → Y.Map.observe() → epoch incremented → setWorkbookData
+ *   - pushSnapshot checks epoch: if changed, the trigger was remote, skip
+ *
+ * UI state (scrollTop, scrollLeft, zoomRatio) is stripped before syncing
+ * to avoid broadcasting each user's viewport to all collaborators.
  */
+import type { IWorkbookData } from '@univerjs/core';
+import { LocaleType } from '@univerjs/core';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as Y from 'yjs';
 import {
+  base64ToUint8Array,
   CollaborationWebSocketProvider,
   uint8ArrayToBase64,
 } from './yjs-provider';
 
-export interface SheetData {
+/* ── Legacy data types (for migration from old HTML table format) ── */
+
+interface LegacySheetData {
   name: string;
   data: string[][];
   colWidths: number[];
 }
 
-export interface SpreadsheetContent {
-  sheets: SheetData[];
+interface LegacySpreadsheetContent {
+  sheets: LegacySheetData[];
   activeSheet: number;
 }
 
+/* ── Helpers ── */
+
+function isLegacyContent(content: Record<string, unknown>): boolean {
+  return Array.isArray((content as Record<string, unknown>).sheets);
+}
+
+const APP_VERSION = '0.10.2';
+
+/** Convert old SpreadsheetContent format to IWorkbookData */
+function convertLegacyToWorkbookData(
+  content: LegacySpreadsheetContent,
+): IWorkbookData {
+  const sheets: IWorkbookData['sheets'] = {};
+  const sheetOrder: string[] = [];
+
+  (content.sheets ?? []).forEach((sheet, idx) => {
+    const sheetId = `sheet_${idx}`;
+    sheetOrder.push(sheetId);
+
+    // Build cellData: key format "{row},{col}"
+    const cellData: Record<string, { v: string; t: 1 }> = {};
+    (sheet.data ?? []).forEach((row, r) => {
+      row.forEach((val, c) => {
+        if (val !== '' && val != null) {
+          cellData[`${r},${c}`] = { v: val, t: 1 };
+        }
+      });
+    });
+
+    // Build columnData from colWidths
+    const columnData: Record<number, { w: number }> = {};
+    (sheet.colWidths ?? []).forEach((w, cIdx) => {
+      columnData[cIdx] = { w };
+    });
+
+    sheets[sheetId] = {
+      id: sheetId,
+      name: sheet.name || `Sheet${idx + 1}`,
+      tabColor: '',
+      hidden: 0,
+      rowCount: Math.max((sheet.data ?? []).length, 50),
+      columnCount: Math.max(
+        (sheet.data ?? []).reduce((max, row) => Math.max(max, row.length), 0),
+        26,
+      ),
+      zoomRatio: 1,
+      scrollTop: 0,
+      scrollLeft: 0,
+      defaultColumnWidth: 100,
+      defaultRowHeight: 23,
+      freeze: { startRow: -1, startColumn: -1, ySplit: 0, xSplit: 0 },
+      mergeData: [],
+      cellData,
+      rowData: {},
+      columnData,
+      showGridlines: 1,
+      rowHeader: { width: 46 },
+      columnHeader: { height: 20 },
+      rightToLeft: 0,
+    };
+  });
+
+  return {
+    id: 'workbook',
+    name: 'Workbook',
+    appVersion: APP_VERSION,
+    locale: LocaleType.ZH_CN,
+    styles: {},
+    sheetOrder,
+    sheets,
+    resources: [],
+  };
+}
+
+/** Generate a blank IWorkbookData */
+function createBlankWorkbookData(): IWorkbookData {
+  const sheetId = 'sheet_0';
+  return {
+    id: 'workbook',
+    name: 'Workbook',
+    appVersion: APP_VERSION,
+    locale: LocaleType.ZH_CN,
+    styles: {},
+    sheetOrder: [sheetId],
+    sheets: {
+      [sheetId]: {
+        id: sheetId,
+        name: 'Sheet1',
+        tabColor: '',
+        hidden: 0,
+        rowCount: 50,
+        columnCount: 26,
+        zoomRatio: 1,
+        scrollTop: 0,
+        scrollLeft: 0,
+        defaultColumnWidth: 100,
+        defaultRowHeight: 23,
+        freeze: { startRow: -1, startColumn: -1, ySplit: 0, xSplit: 0 },
+        mergeData: [],
+        cellData: {},
+        rowData: {},
+        columnData: {},
+        showGridlines: 1,
+        rowHeader: { width: 46 },
+        columnHeader: { height: 20 },
+        rightToLeft: 0,
+      },
+    },
+    resources: [],
+  };
+}
+
+/** Strip UI-only state before syncing to Yjs (avoids broadcasting scroll/zoom) */
+function stripUIState(snapshot: IWorkbookData): IWorkbookData {
+  const cleaned = {
+    ...snapshot,
+    sheets: {} as IWorkbookData['sheets'],
+  };
+  for (const [id, sheet] of Object.entries(snapshot.sheets)) {
+    cleaned.sheets[id] = {
+      ...sheet,
+      // These fields are per-user viewport state, not shared data
+      scrollTop: 0,
+      scrollLeft: 0,
+    };
+  }
+  return cleaned;
+}
+
+/* ── Hook interface ── */
+
 interface Options {
   docId: string;
-  content: SpreadsheetContent | null;
+  content: Record<string, unknown> | null;
   ydoc: string | null;
   token: string | undefined;
   apiFetch: (url: string, options?: RequestInit) => Promise<Response>;
@@ -33,17 +173,19 @@ interface Options {
 }
 
 interface Return {
-  gridData: SpreadsheetContent;
-  setGridData: (data: SpreadsheetContent) => void;
+  /** Current workbook data snapshot (IWorkbookData) */
+  workbookData: IWorkbookData;
+  /** Current epoch — incremented each time remote data arrives. Used by
+   *  the editor to detect whether a CommandExecuted is from a local or remote edit. */
+  remoteEpoch: React.MutableRefObject<number>;
+  /** Push a new workbook data snapshot into the Yjs CRDT layer */
+  pushSnapshot: (data: IWorkbookData) => void;
   saveStatus: 'idle' | 'saving' | 'saved' | 'error';
   provider: CollaborationWebSocketProvider | null;
   handleManualSave: () => void;
 }
 
-const DEFAULT_CONTENT: SpreadsheetContent = {
-  sheets: [{ name: 'Sheet1', data: [['']], colWidths: [100] }],
-  activeSheet: 0,
-};
+/* ── Hook ── */
 
 export default function useSpreadsheetCollab({
   docId,
@@ -53,41 +195,58 @@ export default function useSpreadsheetCollab({
   apiFetch,
   onUpdate,
 }: Options): Return {
-  const [gridData, setGridDataState] = useState<SpreadsheetContent>(
-    content || DEFAULT_CONTENT,
-  );
+  // Resolve initial data: legacy format → migrate, null → blank
+  const [workbookData, setWorkbookData] = useState<IWorkbookData>(() => {
+    if (!content) return createBlankWorkbookData();
+    if (isLegacyContent(content))
+      return convertLegacyToWorkbookData(
+        content as unknown as LegacySpreadsheetContent,
+      );
+    return content as unknown as IWorkbookData;
+  });
+
   const [saveStatus, setSaveStatus] = useState<Return['saveStatus']>('idle');
+  const [provider, setProvider] =
+    useState<CollaborationWebSocketProvider | null>(null);
 
   const yDocRef = useRef<Y.Doc | null>(null);
   const yMapRef = useRef<Y.Map<string> | null>(null);
   const providerRef = useRef<CollaborationWebSocketProvider | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const isRemoteUpdate = useRef(false);
-  const gridDataRef = useRef(gridData);
-  gridDataRef.current = gridData;
+  const statusResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelledRef = useRef(false);
+  const workbookDataRef = useRef(workbookData);
+  workbookDataRef.current = workbookData;
   const apiFetchRef = useRef(apiFetch);
   apiFetchRef.current = apiFetch;
 
-  // Wrap setGridData to also push to Yjs
-  const setGridData = useCallback((data: SpreadsheetContent) => {
-    setGridDataState(data);
-    if (!isRemoteUpdate.current && yMapRef.current) {
-      // Debounce: batch rapid edits into one Yjs update
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-      debounceRef.current = setTimeout(() => {
-        const map = yMapRef.current;
-        if (map) {
-          map.set('data', JSON.stringify(data));
-        }
-        debounceRef.current = null;
-      }, 300);
-    }
+  // Epoch counter: incremented each time remote data arrives.
+  // pushSnapshot captures the epoch; if it changed when debounce fires, skip.
+  const remoteEpochRef = useRef(0);
+
+  // Push snapshot to Yjs (debounced, epoch-gated)
+  const pushSnapshot = useCallback((data: IWorkbookData) => {
+    setWorkbookData(data);
+    const map = yMapRef.current;
+    if (!map) return;
+    // Capture current epoch so we can check it in the debounce callback
+    const epochAtPush = remoteEpochRef.current;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      // If a remote update arrived since we started this edit, discard
+      if (remoteEpochRef.current !== epochAtPush) return;
+      const m = yMapRef.current;
+      if (m) {
+        m.set('data', JSON.stringify(stripUIState(data)));
+      }
+      debounceRef.current = null;
+    }, 300);
   }, []);
 
   // Manual save
   const handleManualSave = useCallback(async () => {
-    if (!token || !yDocRef.current) return;
+    if (!token || !yDocRef.current || cancelledRef.current) return;
     setSaveStatus('saving');
     try {
       const ydocState = Y.encodeStateAsUpdate(yDocRef.current);
@@ -99,7 +258,7 @@ export default function useSpreadsheetCollab({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             ydoc_state: b64,
-            content: gridData,
+            content: workbookDataRef.current,
             markdown_content: '',
           }),
         },
@@ -115,26 +274,26 @@ export default function useSpreadsheetCollab({
     } catch {
       setSaveStatus('error');
     }
-    setTimeout(() => setSaveStatus('idle'), 2000);
-  }, [token, docId, gridData, onUpdate]);
+    if (statusResetRef.current) clearTimeout(statusResetRef.current);
+    statusResetRef.current = setTimeout(() => {
+      if (!cancelledRef.current) setSaveStatus('idle');
+    }, 2000);
+  }, [token, docId, onUpdate]);
 
   // Initialize Yjs + Provider
   useEffect(() => {
     if (!token) return;
+    cancelledRef.current = false;
 
     const yDoc = new Y.Doc();
     const yMap = yDoc.getMap<string>('grid');
     yDocRef.current = yDoc;
     yMapRef.current = yMap;
 
-    // Apply server ydoc state if available
+    // Apply server ydoc state if available (reusing shared helper)
     if (ydoc) {
       try {
-        const binary = atob(ydoc);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) {
-          bytes[i] = binary.charCodeAt(i);
-        }
+        const bytes = base64ToUint8Array(ydoc);
         Y.applyUpdate(yDoc, bytes, 'ws-init');
       } catch (e) {
         console.error('[SpreadsheetCollab] Failed to apply server ydoc:', e);
@@ -145,16 +304,15 @@ export default function useSpreadsheetCollab({
     const existingData = yMap.get('data');
     if (existingData) {
       try {
-        const parsed = JSON.parse(existingData);
-        isRemoteUpdate.current = true;
-        setGridDataState(parsed);
-        isRemoteUpdate.current = false;
+        const parsed = JSON.parse(existingData) as IWorkbookData;
+        remoteEpochRef.current++;
+        setWorkbookData(parsed);
       } catch {
         // ignore
       }
     } else {
-      // Initialize Y.Map with current grid data (use ref to avoid stale closure)
-      yMap.set('data', JSON.stringify(gridDataRef.current));
+      // Initialize Y.Map with current data
+      yMap.set('data', JSON.stringify(workbookDataRef.current));
     }
 
     // Observe remote changes
@@ -162,9 +320,8 @@ export default function useSpreadsheetCollab({
       const data = yMap.get('data');
       if (data) {
         try {
-          isRemoteUpdate.current = true;
-          setGridDataState(JSON.parse(data));
-          isRemoteUpdate.current = false;
+          remoteEpochRef.current++;
+          setWorkbookData(JSON.parse(data) as IWorkbookData);
         } catch {
           // ignore
         }
@@ -173,32 +330,33 @@ export default function useSpreadsheetCollab({
     yMap.observe(observer);
 
     // Create provider and connect
-    const provider = new CollaborationWebSocketProvider(yDoc, docId, token);
-    providerRef.current = provider;
+    const wsProvider = new CollaborationWebSocketProvider(yDoc, docId, token);
+    providerRef.current = wsProvider;
+    setProvider(wsProvider); // trigger re-render so EditorHeader sees provider
 
-    provider.on('sync', (...args: unknown[]) => {
+    wsProvider.on('sync', (...args: unknown[]) => {
       const isSynced = args[0] as boolean;
       if (isSynced) {
         console.log('[SpreadsheetCollab] synced');
       }
     });
 
-    provider.connect();
+    wsProvider.connect();
 
     // Auto-save every 30s
     saveTimerRef.current = setInterval(() => {
+      if (cancelledRef.current) return;
       if (yDocRef.current && providerRef.current?.doc) {
         const currentMap = yMapRef.current;
         if (currentMap) {
           const currentData = currentMap.get('data');
           if (currentData) {
             (async () => {
+              if (cancelledRef.current) return;
               setSaveStatus('saving');
               try {
                 const ydocState = Y.encodeStateAsUpdate(yDocRef.current!);
-                const b64 = btoa(
-                  String.fromCharCode(...new Uint8Array(ydocState)),
-                );
+                const b64 = uint8ArrayToBase64(ydocState);
                 const parsed = JSON.parse(currentData);
                 const resp = await apiFetchRef.current(
                   `/api/v1/collaboration/documents/${docId}/ydoc`,
@@ -213,14 +371,24 @@ export default function useSpreadsheetCollab({
                   },
                 );
                 const result = await resp.json();
+                if (cancelledRef.current) return;
                 if (result.code === 0) {
                   providerRef.current?.sendFullState();
                   setSaveStatus('saved');
-                  setTimeout(() => setSaveStatus('idle'), 1500);
+                  if (statusResetRef.current)
+                    clearTimeout(statusResetRef.current);
+                  statusResetRef.current = setTimeout(() => {
+                    if (!cancelledRef.current) setSaveStatus('idle');
+                  }, 1500);
                 }
               } catch {
+                if (cancelledRef.current) return;
                 setSaveStatus('error');
-                setTimeout(() => setSaveStatus('idle'), 2000);
+                if (statusResetRef.current)
+                  clearTimeout(statusResetRef.current);
+                statusResetRef.current = setTimeout(() => {
+                  if (!cancelledRef.current) setSaveStatus('idle');
+                }, 2000);
               }
             })();
           }
@@ -229,23 +397,27 @@ export default function useSpreadsheetCollab({
     }, 30000);
 
     return () => {
+      cancelledRef.current = true;
       if (saveTimerRef.current) clearInterval(saveTimerRef.current);
       if (debounceRef.current) clearTimeout(debounceRef.current);
+      if (statusResetRef.current) clearTimeout(statusResetRef.current);
       yMap.unobserve(observer);
-      provider.disconnect();
+      wsProvider.disconnect();
       yDoc.destroy();
       yDocRef.current = null;
       yMapRef.current = null;
       providerRef.current = null;
+      setProvider(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, docId]);
 
   return {
-    gridData,
-    setGridData,
+    workbookData,
+    remoteEpoch: remoteEpochRef,
+    pushSnapshot,
     saveStatus,
-    provider: providerRef.current,
+    provider,
     handleManualSave,
   };
 }
