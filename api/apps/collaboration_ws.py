@@ -11,6 +11,7 @@ import asyncio
 import base64
 import json
 import logging
+import uuid
 from itsdangerous.url_safe import URLSafeTimedSerializer as Serializer
 
 from common import settings
@@ -66,8 +67,16 @@ async def _authenticate(token: str, doc_id: str) -> tuple:
     }, role, not can_edit
 
 
-def _make_client_id(user_id: str, ws_id: int) -> str:
-    return f"{user_id}:{ws_id}"
+def _make_client_id(user_id: str, ws_uid: str) -> str:
+    """Build a room-unique client_id.
+
+    Uses a per-connection UUID rather than id(websocket) — Python's id() is the
+    object's memory address, which CPython can reuse immediately after GC. Under
+    React StrictMode double-mount, ws1 is GC'd before ws2 is created, so both
+    can map to the same client_id, causing the second to overwrite the first in
+    the room map and corrupting presence tracking.
+    """
+    return f"{user_id}:{ws_uid}"
 
 
 async def _load_full_state(doc_id: str) -> bytes | None:
@@ -154,7 +163,11 @@ async def handle_ws(doc_id: str):
 
     await websocket.accept()
 
-    client_id = _make_client_id(user["id"], id(websocket))
+    # Generate a fresh UUID per WebSocket connection — NEVER reuse id(websocket)
+    # because CPython may recycle the memory address after GC, causing
+    # StrictMode double-mount connections to collide on client_id.
+    ws_uid = uuid.uuid4().hex
+    client_id = _make_client_id(user["id"], ws_uid)
     logging.info(f"[WS] {user['name']} (role={role}, ro={read_only}) connected to doc {doc_id}")
 
     # ── Join room ────────────────────────────────────────────────────
