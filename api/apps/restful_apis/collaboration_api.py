@@ -398,7 +398,13 @@ async def import_document():
     folder_id = (await request.form).get("folder_id")
     try:
         filename = (file_obj.filename or "").lower()
-        if filename.endswith(('.xlsx', '.xls')):
+        content_type = file_obj.content_type or ""
+        is_excel = (
+            filename.endswith(('.xlsx', '.xls'))
+            or 'spreadsheet' in content_type
+            or 'excel' in content_type
+        )
+        if is_excel:
             doc = await collaboration_api_service.import_xlsx(
                 tenant_id=current_user.id,
                 user_id=current_user.id,

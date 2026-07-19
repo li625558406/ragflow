@@ -2017,7 +2017,16 @@ async def import_docx(tenant_id: str, user_id: str, file_obj, folder_id: str = N
     except ImportError:
         raise RuntimeError("python-docx not installed")
 
-    doc = DocxDocument(file_obj)
+    try:
+        doc = DocxDocument(file_obj)
+    except Exception as e:
+        err_msg = str(e).lower()
+        if "not a word file" in err_msg or "spreadsheet" in err_msg:
+            raise ValueError(
+                "该文件不是 Word 文档(.docx)。如果导入 Excel 文件，请确保文件扩展名为 .xlsx。"
+            )
+        raise
+
     doc_id = get_uuid()
     name = (file_obj.filename or "imported").rsplit(".", 1)[0]
 
