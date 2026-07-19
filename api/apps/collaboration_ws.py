@@ -222,9 +222,27 @@ async def handle_ws(doc_id: str):
                 pass
 
     # ── Message loop ─────────────────────────────────────────────────
+    # NOTE: receive() is wrapped in a timeout. When a JS client calls
+    # ws.close(), Quart's receive() does NOT always wake up — the close
+    # frame from the browser isn't reliably propagated, so the coroutine
+    # blocks indefinitely on a dead socket. Without the timeout, the
+    # finally block never runs, the client_id stays in room["clients"],
+    # and each doc click leaks one zombie entry. The awareness heartbeat
+    # is 5s on the client; 45s here is generous (covers missed heartbeats
+    # during backpressure) and re-arms every loop iteration.
+    CLIENT_RECV_TIMEOUT = 45
     try:
         while True:
-            raw = await websocket.receive()
+            try:
+                raw = await asyncio.wait_for(
+                    websocket.receive(), timeout=CLIENT_RECV_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                logging.info(
+                    f"[WS] recv timeout ({CLIENT_RECV_TIMEOUT}s no message) "
+                    f"doc={doc_id} client={client_id} ({user['name']}) — treating as dead"
+                )
+                break
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
