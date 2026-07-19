@@ -431,8 +431,19 @@ function BindingFixPlugin({
 }) {
   const [editor] = useLexicalComposerContext();
   const fixedRef = useRef(false);
+  // Track pending reconnect-setTimeout and unmount state.
+  // Without this, switching docs can leak a WebSocket:
+  //   1. setInterval detects empty editor → provider.disconnect() → setTimeout(50, reconnect)
+  //   2. User clicks another doc → DocumentEditor unmounts → lexical cleanup calls provider.disconnect() (closed=true)
+  //   3. 50ms later the setTimeout fires anyway → provider.connect() (closed=false) → zombie WS reopens
+  // That zombie never closes; server keeps its client_id in the room, so the online count
+  // increments every doc switch. We cancel the pending timer on cleanup AND guard the
+  // callback with mountedRef as defense in depth.
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
 
   useEffect(() => {
+    mountedRef.current = true;
     const timer = setInterval(() => {
       if (fixedRef.current) return;
       const provider = providerRef.current;
@@ -464,7 +475,12 @@ function BindingFixPlugin({
             // "could not find collab element node". Disconnecting lets us set
             // state without binding interference; reconnect syncs to server.
             provider.disconnect();
-            setTimeout(() => {
+            if (reconnectTimerRef.current) {
+              clearTimeout(reconnectTimerRef.current);
+            }
+            reconnectTimerRef.current = setTimeout(() => {
+              reconnectTimerRef.current = null;
+              if (!mountedRef.current) return; // unmounted before fire — don't reopen WS
               try {
                 editor.setEditorState(parsed, { tag: 'history-merge' });
                 console.log(
@@ -487,7 +503,14 @@ function BindingFixPlugin({
       });
     }, 200);
 
-    return () => clearInterval(timer);
+    return () => {
+      mountedRef.current = false;
+      clearInterval(timer);
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    };
   }, [editor, document, providerRef]);
 
   return null;
@@ -678,6 +701,43 @@ export default function DocumentEditor({
   // Ref to hold provider instance created by providerFactory (shared with CollabSavePlugin)
   const collabProviderRef = useRef<CollaborationWebSocketProvider | null>(null);
 
+  // Force-disconnect the WS provider on unmount.
+  // Why this is needed: @lexical/react's CollaborationPlugin has an
+  // `isProviderInitialized` ref guard that skips the effect body on StrictMode
+  // remount (mount → cleanup → remount). The first mount registers a cleanup
+  // that calls provider.disconnect(); the StrictMode remount early-returns and
+  // registers NOTHING. So when the component truly unmounts (user clicks
+  // another doc → docLoading=true → spinner replaces DocumentEditor), no
+  // lexical cleanup runs, the WS stays open, and the server keeps the
+  // client_id in its room map. Each doc click leaks one Y.Doc clientID and
+  // inflates the online count. This mount-once effect with `[]` deps
+  // re-registers its cleanup on every mount (including StrictMode remount),
+  // guaranteeing the WS closes on real unmount. StrictMode's intermediate
+  // unmount also disconnects, but BindingFixPlugin reconnects it on remount.
+  useEffect(() => {
+    console.log('[DocEditor][mount] useEffect[] mounted, docId=', document?.id);
+    return () => {
+      const provider = collabProviderRef.current;
+      console.log(
+        '[DocEditor][unmount] useEffect[] cleanup fired, docId=',
+        document?.id,
+        'hasProvider=',
+        !!provider,
+        'wsState=',
+        provider ? (provider as any)._debugWsState() : 'no-provider',
+      );
+      if (provider) {
+        try {
+          provider.disconnect();
+          console.log('[DocEditor][unmount] provider.disconnect() called');
+        } catch (e) {
+          console.error('[DocEditor][unmount] disconnect failed:', e);
+        }
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Fetch version info
   useEffect(() => {
     if (!document) return;
@@ -754,19 +814,15 @@ export default function DocumentEditor({
   // Factory for CollaborationPlugin: creates Y.Doc + WebSocketProvider
   const providerFactory = useCallback(
     (id: string, yjsDocMap: Map<string, Y.Doc>) => {
-      console.log(
-        '[DocEditor] providerFactory called, id=',
-        id,
-        'token=',
-        token ? '***' : 'undefined',
-      );
       const doc = new Y.Doc();
       yjsDocMap.set(id, doc);
       const provider = new CollaborationWebSocketProvider(doc, id, token!);
       collabProviderRef.current = provider;
       console.log(
-        '[DocEditor] providerFactory done, collabProviderRef.current set =',
-        !!collabProviderRef.current,
+        '[DocEditor][factory] docId=',
+        id,
+        'yjsClientID=',
+        doc.clientID,
       );
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return provider as any;

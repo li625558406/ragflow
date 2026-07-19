@@ -163,39 +163,28 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
     [loadFolders, loadDocuments],
   );
 
-  const handleSelect = useCallback(
-    async (doc: DocumentNode | null) => {
-      if (!doc) {
-        setSelectedId(null);
-        setSelectedDoc(null);
-        return;
+  const handleSelect = useCallback(async (doc: DocumentNode | null) => {
+    if (!doc) {
+      setSelectedId(null);
+      setSelectedDoc(null);
+      return;
+    }
+    setSelectedId(doc.id);
+    setDocLoading(true);
+    try {
+      const resp = await apiFetchRef.current(
+        `/api/v1/collaboration/documents/${doc.id}`,
+      );
+      const result = await resp.json();
+      if (result.code === 0) {
+        setSelectedDoc(result.data);
       }
-      // Skip clicks on the already-selected doc. The docLoading toggle below
-      // unmounts/remounts the editor (DocumentEditor / SpreadsheetEditor),
-      // which closes and reopens the WebSocket. The WS close handshake is
-      // async — under rapid reconnects the server can register the new
-      // connection before the old client_id is popped from the room, causing
-      // the online-user count to increment each click. Treating same-doc
-      // clicks as no-ops avoids the unmount/remount entirely.
-      if (doc.id === selectedId) return;
-      setSelectedId(doc.id);
-      setDocLoading(true);
-      try {
-        const resp = await apiFetchRef.current(
-          `/api/v1/collaboration/documents/${doc.id}`,
-        );
-        const result = await resp.json();
-        if (result.code === 0) {
-          setSelectedDoc(result.data);
-        }
-      } catch (e) {
-        console.error('加载文档详情失败:', e);
-      } finally {
-        setDocLoading(false);
-      }
-    },
-    [selectedId],
-  );
+    } catch (e) {
+      console.error('加载文档详情失败:', e);
+    } finally {
+      setDocLoading(false);
+    }
+  }, []);
 
   const handleDocUpdate = useCallback(() => {
     loadDocuments();

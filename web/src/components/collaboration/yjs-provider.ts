@@ -205,6 +205,14 @@ export class CollaborationWebSocketProvider {
   // ── Public API (compatible with @lexical/yjs Provider) ────────────
 
   connect(): void {
+    console.log(
+      '[YjsProvider] connect() called, docId=',
+      this.docId,
+      'yjsClientID=',
+      this.doc.clientID,
+      'wasClosed=',
+      this.closed,
+    );
     this.closed = false;
     // Fix stale binding from React StrictMode remount.
     // CollaborationPlugin's root.destroy() clears collabNodeMap but does NOT
@@ -227,8 +235,22 @@ export class CollaborationWebSocketProvider {
   }
 
   disconnect(): void {
+    console.log(
+      '[YjsProvider] disconnect() called, docId=',
+      this.docId,
+      'yjsClientID=',
+      this.doc.clientID,
+      'wasClosed=',
+      this.closed,
+      'wsState=',
+      this._debugWsState(),
+    );
     this.closed = true;
     this._cleanup();
+    console.log(
+      '[YjsProvider] disconnect() done, wsState after=',
+      this._debugWsState(),
+    );
   }
 
   /** Send full Yjs document state as a save snapshot to the server. */
@@ -237,6 +259,23 @@ export class CollaborationWebSocketProvider {
     const fullState = Y.encodeStateAsUpdate(this.doc);
     const b64 = uint8ArrayToBase64(fullState);
     this.ws.send(JSON.stringify({ t: 'save', d: b64 }));
+  }
+
+  /** Debug helper: returns the current WebSocket state as a readable string. */
+  _debugWsState(): string {
+    if (!this.ws) return 'no-ws';
+    switch (this.ws.readyState) {
+      case WebSocket.CONNECTING:
+        return 'CONNECTING';
+      case WebSocket.OPEN:
+        return 'OPEN';
+      case WebSocket.CLOSING:
+        return 'CLOSING';
+      case WebSocket.CLOSED:
+        return 'CLOSED';
+      default:
+        return `UNKNOWN(${this.ws.readyState})`;
+    }
   }
 
   /**
@@ -309,18 +348,26 @@ export class CollaborationWebSocketProvider {
     const wsUrl = this._buildUrl();
     const ws = new WebSocket(wsUrl);
     this.ws = ws;
+    console.log(
+      '[YjsProvider] new WebSocket created, docId=',
+      this.docId,
+      'yjsClientID=',
+      this.doc.clientID,
+    );
 
     ws.onopen = () => {
+      console.log(
+        '[YjsProvider] ws.onopen, docId=',
+        this.docId,
+        'yjsClientID=',
+        this.doc.clientID,
+      );
       this.reconnectDelay = 1000;
       this._emitStatus('connected');
       // Flush any edits buffered while offline
       this._flushOfflineBuffer();
       // Send initial awareness state
       const encoded = this.awareness.encodeLocalState();
-      console.log(
-        '[YjsProvider] onopen, local awareness encoded =',
-        encoded ? encoded.slice(0, 100) : 'null',
-      );
       if (encoded) {
         ws.send(JSON.stringify({ t: 'aw', d: encoded }));
       }
@@ -348,6 +395,14 @@ export class CollaborationWebSocketProvider {
     };
 
     ws.onclose = () => {
+      console.log(
+        '[YjsProvider] ws.onclose, docId=',
+        this.docId,
+        'yjsClientID=',
+        this.doc.clientID,
+        'closed=',
+        this.closed,
+      );
       this.ws = null;
       this._emitStatus('disconnected');
       this._scheduleReconnect();
@@ -575,8 +630,27 @@ export class CollaborationWebSocketProvider {
     }
     this.doc.off('update', this._onDocUpdate);
     if (this.ws) {
-      this.ws.close();
+      console.log(
+        '[YjsProvider] _cleanup calling ws.close(), docId=',
+        this.docId,
+        'yjsClientID=',
+        this.doc.clientID,
+        'wsState=',
+        this._debugWsState(),
+      );
+      try {
+        this.ws.close();
+      } catch (e) {
+        console.error('[YjsProvider] ws.close() threw:', e);
+      }
       this.ws = null;
+    } else {
+      console.log(
+        '[YjsProvider] _cleanup no ws to close, docId=',
+        this.docId,
+        'yjsClientID=',
+        this.doc.clientID,
+      );
     }
   };
 }

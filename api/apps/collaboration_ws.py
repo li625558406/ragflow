@@ -189,6 +189,10 @@ async def handle_ws(doc_id: str):
         "aw_client_id": None,
         "last_aw": None,  # last raw aw message — replayed to future joiners
     }
+    logging.info(
+        f"[WS] JOIN doc={doc_id} client={client_id} ({user['name']}) "
+        f"total={len(room['clients'])} clients={list(room['clients'].keys())}"
+    )
 
     # ── Send initial state ───────────────────────────────────────────
     init_msg = {
@@ -279,12 +283,18 @@ async def handle_ws(doc_id: str):
                 await _broadcast(doc_id, raw, exclude_client_id=client_id)
 
     except asyncio.CancelledError:
+        logging.info(f"[WS]CancelledError doc={doc_id} client={client_id} ({user['name']})")
         pass
     except Exception as e:
         logging.error(f"[WS] Error for doc {doc_id}, user {user['name']}: {e}")
     finally:
         # ── Leave room ───────────────────────────────────────────
         client_info = room["clients"].pop(client_id, None)
+        logging.info(
+            f"[WS] LEAVE doc={doc_id} client={client_id} ({user['name']}) "
+            f"popped={client_info is not None} remaining={len(room['clients'])} "
+            f"clients={list(room['clients'].keys())}"
+        )
         if not room["clients"]:
             # Last client left — persist and clean up
             if room["full_state"]:
