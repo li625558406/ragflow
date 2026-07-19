@@ -2823,7 +2823,7 @@ export default function CChat() {
               key={getTabResetKey('collaboration')}
               className={
                 mainView === 'collaboration'
-                  ? 'cs-page-enter flex-1 flex flex-col min-h-0'
+                  ? 'collab-root cs-page-enter flex-1 flex flex-col min-h-0'
                   : 'hidden'
               }
             >

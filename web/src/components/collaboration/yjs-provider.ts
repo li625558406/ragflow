@@ -435,6 +435,14 @@ export class CollaborationWebSocketProvider {
                 this.awareness.removeRemoteState(clientID);
               }
             });
+          } else if (this.ws?.readyState === WebSocket.OPEN) {
+            // Other users present — immediately re-broadcast own awareness so
+            // they see us without waiting for the 5s heartbeat. This closes the
+            // race where our last_aw wasn't cached on server when they joined.
+            const enc = this.awareness.encodeLocalState();
+            if (enc) {
+              this.ws.send(JSON.stringify({ t: 'aw', d: enc }));
+            }
           }
         } catch {
           // ignore invalid presence data

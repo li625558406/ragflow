@@ -55,12 +55,14 @@ function convertLegacyToWorkbookData(
     const sheetId = `sheet_${idx}`;
     sheetOrder.push(sheetId);
 
-    // Build cellData: key format "{row},{col}"
-    const cellData: Record<string, { v: string; t: 1 }> = {};
+    // Build cellData: Univer expects nested format { [row]: { [col]: ICellData } }
+    const cellData: Record<string, Record<string, { v: string; t: 1 }>> = {};
     (sheet.data ?? []).forEach((row, r) => {
       row.forEach((val, c) => {
         if (val !== '' && val != null) {
-          cellData[`${r},${c}`] = { v: val, t: 1 };
+          const rowKey = String(r);
+          if (!cellData[rowKey]) cellData[rowKey] = {};
+          cellData[rowKey][String(c)] = { v: val, t: 1 };
         }
       });
     });
