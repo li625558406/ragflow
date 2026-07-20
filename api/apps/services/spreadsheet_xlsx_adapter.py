@@ -558,7 +558,9 @@ def _anchor_to_transform(img, width: int, height: int) -> dict:
     have_to = False
 
     if anchor is not None:
-        frm = getattr(anchor, "from", None)
+        # openpyxl exposes `xdr:from` as `_from` (Python keyword conflict).
+        # Using `anchor.from` always returns None → all images collapse to (0,0).
+        frm = getattr(anchor, "_from", None) or getattr(anchor, "from", None)
         to = getattr(anchor, "to", None)
         ext = getattr(anchor, "ext", None)
         if frm is not None:
@@ -662,7 +664,10 @@ def _build_image_drawing(
     """
     return {
         "drawingId": drawing_id,
-        "drawingType": 1,  # DrawingTypeEnum.DRAWING_IMAGE
+        # DrawingTypeEnum: DRAWING_IMAGE=0, DRAWING_SHAPE=1, DRAWING_CHART=2.
+        # Previously was 1 (SHAPE) which silently failed to render — the image
+        # renderer (c_e.renderImages) only fires when drawingType === DRAWING_IMAGE.
+        "drawingType": 0,
         "unitId": "workbook",
         "subUnitId": sheet_id,
         "imageSourceType": "URL",
@@ -674,6 +679,15 @@ def _build_image_drawing(
         "sheetTransform": transform["sheetTransform"],
         "axisAlignSheetTransform": transform["axisAlignSheetTransform"],
         "transform": transform["transform"],
+        # SheetDrawingAnchorType (Univer sheets-drawing):
+        #   "0" = Position  — moves with cell insert/delete, size fixed (default)
+        #   "1" = Both      — moves AND resizes with cell changes
+        #   "2" = None      — fully fixed position/size
+        # Without this field Univer defaults to "0", so images keep their
+        # initial pixel size even when the user resizes the anchor columns or
+        # rows. We emit "1" so twoCellAnchor images stretch with the cell range,
+        # matching Excel's default twoCell behavior.
+        "anchorType": "1",
     }
 
 
@@ -1326,6 +1340,13 @@ def _read_row_dimensions(ws) -> dict[int, dict]:
         entry: dict[str, Any] = {}
         if dim.height:
             entry["h"] = max(_MIN_ROW_H, int(dim.height * _PX_PER_POINT))
+            # CRITICAL: mark height as explicit (not auto). Univer's default for
+            # `ha` is true (auto-height), which means a column-width resize
+            # triggers content-based recalculation and discards the imported `h`.
+            # Symptom without this flag: drag a column border → all custom row
+            # heights reset to default text height. Dragging row height directly
+            # works only because Univer's UI sets `ha: false` on user drag.
+            entry["ha"] = False
         if dim.hidden:
             entry["hd"] = 1
         if entry:

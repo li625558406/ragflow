@@ -24,6 +24,22 @@ import {
   uint8ArrayToBase64,
 } from './yjs-provider';
 
+/**
+ * Transaction origin tag for local Y.Map.set calls pushed from pushSnapshot /
+ * saveToServer / auto-save. The yMap observer checks this origin to distinguish
+ * genuine remote updates (origin 'ws-remote', set by the WS provider when it
+ * applies incoming update bytes) from local echoes.
+ *
+ * Without this tag, every local `yMap.set('data', ...)` triggers the observer
+ * on the SAME client, which bumps remoteEpoch and routes the change through the
+ * useEffect apply path. That apply path then calls `fWorkbook.save()` and diffs
+ * it against our own just-pushed snapshot — racing against Univer's in-flight
+ * auto-row-height / auto-column-width recomputation and reverting legitimate
+ * state (manifesting as "row heights reset to default text height on column
+ * resize").
+ */
+const LOCAL_PUSH_ORIGIN = 'local-push';
+
 /* ── Spreadsheet image asset URL handling (P4) ──────────────────────────
  * The xlsx adapter stores image source URLs as
  *   /api/v1/collaboration/documents/{docId}/assets/{assetId}
@@ -384,8 +400,14 @@ export default function useSpreadsheetCollab({
       debounceRef.current = setTimeout(() => {
         if (remoteEpochRef.current !== epochAtPush) return;
         const m = yMapRef.current;
-        if (m) {
-          m.set('data', JSON.stringify(stripUIState(data)));
+        const doc = yDocRef.current;
+        if (m && doc) {
+          // Tag the transaction with LOCAL_PUSH_ORIGIN so the yMap observer
+          // (registered below) treats this as a local echo, not a remote
+          // update, and does NOT re-apply it through the useEffect apply path.
+          doc.transact(() => {
+            m.set('data', JSON.stringify(stripUIState(data)));
+          }, LOCAL_PUSH_ORIGIN);
           // Schedule a debounced server save so edits persist within ~5s
           // instead of waiting for the 30s interval. Skipped if no token
           // (non-collab mode uses saveToServer directly).
@@ -405,7 +427,12 @@ export default function useSpreadsheetCollab({
                     dataToSave = fresh;
                     // Sync yMap so ydoc_state includes the just-committed edit
                     const mm = yMapRef.current;
-                    if (mm) mm.set('data', JSON.stringify(stripUIState(fresh)));
+                    const dd = yDocRef.current;
+                    if (mm && dd) {
+                      dd.transact(() => {
+                        mm.set('data', JSON.stringify(stripUIState(fresh)));
+                      }, LOCAL_PUSH_ORIGIN);
+                    }
                   }
                   const ydocState = Y.encodeStateAsUpdate(yDocRef.current);
                   const b64 = uint8ArrayToBase64(ydocState);
@@ -473,8 +500,11 @@ export default function useSpreadsheetCollab({
           // encoding ydoc_state now would produce stale bytes and lose the edit
           // on next page load.
           const m = yMapRef.current;
-          if (m) {
-            m.set('data', JSON.stringify(stripUIState(data)));
+          const doc = yDocRef.current;
+          if (m && doc) {
+            doc.transact(() => {
+              m.set('data', JSON.stringify(stripUIState(data)));
+            }, LOCAL_PUSH_ORIGIN);
           }
           const ydocState = Y.encodeStateAsUpdate(yDocRef.current!);
           ydocB64 = uint8ArrayToBase64(ydocState);
@@ -556,8 +586,13 @@ export default function useSpreadsheetCollab({
       );
     }
 
-    // Observe remote changes
-    const observer = () => {
+    // Observe remote changes. Skip echoes from our own LOCAL_PUSH_ORIGIN
+    // transactions — those changes are already in Univer (we just pushed them
+    // from pushSnapshot) and routing them through the apply path would fight
+    // Univer's in-flight layout recomputation (root cause of row-height loss
+    // on column resize).
+    const observer = (event: Y.YMapEvent<string>) => {
+      if (event.transaction.origin === LOCAL_PUSH_ORIGIN) return;
       const data = yMap.get('data');
       if (data) {
         try {
@@ -620,7 +655,9 @@ export default function useSpreadsheetCollab({
                 if (fresh) {
                   parsed = fresh;
                   // Sync yMap so ydoc_state encoding includes the committed edit
-                  currentMap.set('data', JSON.stringify(stripUIState(fresh)));
+                  yDocRef.current!.transact(() => {
+                    currentMap.set('data', JSON.stringify(stripUIState(fresh)));
+                  }, LOCAL_PUSH_ORIGIN);
                 } else {
                   parsed = JSON.parse(currentData);
                 }
@@ -679,7 +716,9 @@ export default function useSpreadsheetCollab({
         const fresh = await getLatestSnapshotRef.current?.();
         if (fresh) {
           parsed = fresh;
-          currentMap.set('data', JSON.stringify(stripUIState(fresh)));
+          yDocRef.current!.transact(() => {
+            currentMap.set('data', JSON.stringify(stripUIState(fresh)));
+          }, LOCAL_PUSH_ORIGIN);
         } else {
           const currentData = currentMap.get('data');
           if (!currentData) return;

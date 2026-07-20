@@ -175,6 +175,31 @@ export default function SpreadsheetEditor({
     univerRef.current = univer;
     univerAPIRef.current = univerAPI;
 
+    // Register a URL image downloader so Univer can actually fetch images
+    // referenced by drawing.source (imageSourceType: URL). Without this, the
+    // drawing plugin silently skips rendering URL-backed images — there is no
+    // default downloader. We fetch the bytes (the URL already carries the
+    // injected ?token=<jwt> for asset proxy endpoints) and return a blob URL
+    // that can be assigned to <img src>.
+    if (typeof univerAPI.registerURLImageDownloader === 'function') {
+      try {
+        univerAPI.registerURLImageDownloader(
+          async (url: string): Promise<string> => {
+            const res = await fetch(url, { credentials: 'include' });
+            if (!res.ok)
+              throw new Error(`Failed to load image (${res.status}): ${url}`);
+            const blob = await res.blob();
+            return URL.createObjectURL(blob);
+          },
+        );
+      } catch (e) {
+        console.error(
+          '[SpreadsheetEditor] registerURLImageDownloader failed:',
+          e,
+        );
+      }
+    }
+
     // Create initial workbook with data
     univerAPI.createWorkbook(workbookData);
 

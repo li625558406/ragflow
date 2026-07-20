@@ -23,7 +23,7 @@ import re
 
 from werkzeug.security import generate_password_hash, check_password_hash
 
-import settings
+from common import settings
 from api.db import TenantPermission
 from api.db.db_models import (
     CollaborationAttachment,
@@ -2590,7 +2590,6 @@ def list_doc_asset_ids(doc_id: str) -> list[str]:
 
     Used by document delete to clean up orphaned images in MinIO.
     """
-    import settings as _settings_module  # local alias to avoid confusion
     # The STORAGE_IMPL interface has no list() method; we rely on callers
     # tracking assets via the workbook's SHEET_DRAWING_PLUGIN resource.
     return []
