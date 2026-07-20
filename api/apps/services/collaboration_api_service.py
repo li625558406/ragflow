@@ -1476,78 +1476,37 @@ async def create_spreadsheet(tenant_id: str, user_id: str, name: str, permission
 
 
 def _generate_xlsx(content: dict) -> bytes:
-    """Generate .xlsx bytes from spreadsheet JSON content."""
-    import io
-    from openpyxl import Workbook
-    from openpyxl.utils import get_column_letter
+    """Generate .xlsx bytes from spreadsheet content.
 
-    wb = Workbook()
-    sheets = content.get("sheets", [])
+    Supports both the new native IWorkbookData format (preferred) and the
+    legacy `{sheets:[{name,data,colWidths}]}` grid format for documents
+    created before the M1 spreadsheet upgrade. Conversion is delegated to
+    spreadsheet_xlsx_adapter so all openpyxl↔Univer mapping lives in one place.
+    """
+    from api.apps.services.spreadsheet_xlsx_adapter import workbook_data_to_xlsx
 
-    for i, sheet_def in enumerate(sheets):
-        if i == 0:
-            ws = wb.active
-            ws.title = sheet_def.get("name", "Sheet1")
-        else:
-            ws = wb.create_sheet(title=sheet_def.get("name", f"Sheet{i+1}"))
-
-        rows = sheet_def.get("data", [])
-        for r_idx, row in enumerate(rows):
-            for c_idx, cell_value in enumerate(row):
-                if cell_value is None:
-                    continue
-                # Try to convert numeric strings back to numbers for Excel
-                val = cell_value
-                if isinstance(val, str):
-                    try:
-                        val = int(val)
-                    except ValueError:
-                        try:
-                            val = float(val)
-                        except ValueError:
-                            pass
-                ws.cell(row=r_idx + 1, column=c_idx + 1, value=val)
-
-        col_widths = sheet_def.get("colWidths", [])
-        for c_idx, width in enumerate(col_widths):
-            ws.column_dimensions[get_column_letter(c_idx + 1)].width = max(8, width / 7)
-
-    buf = io.BytesIO()
-    wb.save(buf)
-    return buf.getvalue()
+    return workbook_data_to_xlsx(content or {})
 
 
 async def import_xlsx(tenant_id: str, user_id: str, file_obj, folder_id: str = None) -> dict:
-    """Parse a .xlsx file and create a collaboration spreadsheet document."""
-    import io
-    from openpyxl import load_workbook
+    """Parse a .xlsx file and create a collaboration spreadsheet document.
+
+    Storage format: native Univer IWorkbookData (since M1). Legacy documents
+    continue to render via the frontend's convertLegacyToWorkbookData fallback.
+    """
+    from api.apps.services.spreadsheet_xlsx_adapter import (
+        XlsxTooLargeError,
+        xlsx_to_workbook_data,
+    )
 
     doc_id = get_uuid()
     name = (file_obj.filename or "imported").rsplit(".", 1)[0]
 
     data = file_obj.read()
-    wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
-
-    sheets = []
-    MAX_ROWS = 10000
-    for sheet_name in wb.sheetnames:
-        ws = wb[sheet_name]
-        rows = []
-        for idx, row in enumerate(ws.iter_rows(values_only=True)):
-            if idx >= MAX_ROWS:
-                break
-            rows.append([str(cell) if cell is not None else "" for cell in row])
-        if not rows:
-            rows = [[""]]
-        max_cols = max((len(r) for r in rows), default=1)
-        col_widths = [100] * max_cols
-        sheets.append({"name": sheet_name, "data": rows, "colWidths": col_widths})
-
-    wb.close()
-    if not sheets:
-        sheets = [{"name": "Sheet1", "data": [[""]], "colWidths": [100]}]
-
-    content = {"sheets": sheets, "activeSheet": 0}
+    # xlsx_to_workbook_data enforces MAX_XLSX_SIZE / MAX_ROWS / MAX_COLS
+    # and raises XlsxTooLargeError (a ValueError subclass) — the API layer
+    # maps that to a 4xx for the frontend to render a friendly Toast.
+    content = xlsx_to_workbook_data(data, doc_id)
 
     CollaborationDocumentService.save(
         id=doc_id,

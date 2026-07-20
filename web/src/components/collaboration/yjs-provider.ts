@@ -638,6 +638,19 @@ export class CollaborationWebSocketProvider {
         'wsState=',
         this._debugWsState(),
       );
+      // Send explicit leave notice BEFORE closing so the server removes this
+      // client from the room immediately. Quart's WS close-frame propagation
+      // is flaky — without this, the server's recv-timeout (45s) is the only
+      // way it learns we're gone. Meanwhile the client thinks the timeout-
+      // closed WS was unexpected (closed=false) and reconnects, creating a
+      // zombie that permanently inflates the online count.
+      try {
+        if (this.ws.readyState === WebSocket.OPEN) {
+          this.ws.send(JSON.stringify({ t: 'leave' }));
+        }
+      } catch {
+        // Best-effort — if send throws, the close below still works
+      }
       try {
         this.ws.close();
       } catch (e) {

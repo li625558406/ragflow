@@ -170,6 +170,11 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
       return;
     }
     setSelectedId(doc.id);
+    // Show loading spinner for EVERY click (same-doc refresh included).
+    // The spinner is rendered as an OVERLAY (see JSX below), not a
+    // replacement, so the editor instance stays mounted and its WS
+    // provider survives — no StrictMode churn, no zombie connections,
+    // no online-count leak.
     setDocLoading(true);
     try {
       const resp = await apiFetchRef.current(
@@ -232,46 +237,55 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
           )}
         </button>
       </CendTooltip>
-      <div className="flex-1 flex min-w-0">
-        {docLoading ? (
-          <div className="flex-1 flex items-center justify-center">
-            <div className="flex flex-col items-center gap-3">
-              <div className="w-6 h-6 border-2 border-[#D4D4D4] border-t-[#000000] rounded-full animate-spin" />
-              <span className="text-xs text-[#A3A3A3]">
-                文档内容过大，耐心等待加载
-              </span>
-            </div>
-          </div>
-        ) : selectedDoc ? (
-          selectedDoc.file_type === 'xlsx' ? (
-            <SpreadsheetEditor
-              key={selectedDoc.id}
-              document={selectedDoc}
-              apiFetch={apiFetch}
-              onUpdate={handleDocUpdate}
-              token={wsToken}
-              onProviderReady={setCollabProvider}
-              onOpenShare={() => {
-                const node = documents.find((d) => d.id === selectedDoc.id);
-                if (node) setShareTarget(node);
-              }}
-            />
-          ) : (
-            <DocumentEditor
-              key={selectedDoc.id}
-              document={selectedDoc}
-              apiFetch={apiFetch}
-              onUpdate={handleDocUpdate}
-              appliedRuleConfig={appliedRuleConfigRef.current}
-              onRuleApplied={handleRuleApplied}
-              token={wsToken}
-              onProviderReady={setCollabProvider}
-              onOpenShare={() => {
-                const node = documents.find((d) => d.id === selectedDoc.id);
-                if (node) setShareTarget(node);
-              }}
-            />
-          )
+      <div className="flex-1 flex min-w-0 relative">
+        {selectedDoc ? (
+          <>
+            {selectedDoc.file_type === 'xlsx' ? (
+              <SpreadsheetEditor
+                key={selectedDoc.id}
+                document={selectedDoc}
+                apiFetch={apiFetch}
+                onUpdate={handleDocUpdate}
+                token={wsToken}
+                onProviderReady={setCollabProvider}
+                onOpenShare={() => {
+                  const node = documents.find((d) => d.id === selectedDoc.id);
+                  if (node) setShareTarget(node);
+                }}
+              />
+            ) : (
+              <DocumentEditor
+                key={selectedDoc.id}
+                document={selectedDoc}
+                apiFetch={apiFetch}
+                onUpdate={handleDocUpdate}
+                appliedRuleConfig={appliedRuleConfigRef.current}
+                onRuleApplied={handleRuleApplied}
+                token={wsToken}
+                onProviderReady={setCollabProvider}
+                onOpenShare={() => {
+                  const node = documents.find((d) => d.id === selectedDoc.id);
+                  if (node) setShareTarget(node);
+                }}
+              />
+            )}
+            {/* Loading overlay — covers the editor WITHOUT unmounting it.
+                This is the key fix for the online-count leak: previously
+                `docLoading ? spinner : editor` swapped the spinner in,
+                which unmounted DocumentEditor, which killed the WS provider.
+                StrictMode doubled the churn. Each click leaked zombie
+                connections until the 45s server timeout caught up. */}
+            {docLoading && (
+              <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/70 backdrop-blur-sm">
+                <div className="flex flex-col items-center gap-3">
+                  <div className="w-6 h-6 border-2 border-[#D4D4D4] border-t-[#000000] rounded-full animate-spin" />
+                  <span className="text-xs text-[#A3A3A3]">
+                    文档内容过大，耐心等待加载
+                  </span>
+                </div>
+              </div>
+            )}
+          </>
         ) : (
           <div className="flex-1 flex items-center justify-center">
             <div className="text-center text-black/30">

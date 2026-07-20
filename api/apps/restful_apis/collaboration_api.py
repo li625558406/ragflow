@@ -420,6 +420,9 @@ async def import_document():
             )
         return get_json_result(data=doc)
     except ValueError as e:
+        # XlsxTooLargeError is a ValueError subclass — surface its friendly
+        # Chinese message (size/rows/cols exceeded) so the frontend can show
+        # it as a Toast rather than a generic "invalid argument".
         return get_error_argument_result(str(e))
     except RuntimeError as e:
         return get_json_result(message=str(e), code=RetCode.SERVER_ERROR)

@@ -300,6 +300,19 @@ async def handle_ws(doc_id: str):
                 # so they reload via REST. No state to persist/buffer here.
                 await _broadcast(doc_id, raw, exclude_client_id=client_id)
 
+            elif msg_type == "leave":
+                # Client is explicitly leaving — break out of the loop so the
+                # finally block immediately removes it from the room.
+                # Quart's WS close-frame propagation from browser is flaky, so
+                # relying on receive() to return / timeout leaves zombie entries
+                # in room["clients"] for up to 45s. The explicit leave lets us
+                # clean up synchronously. Without this, online-user count grows
+                # by one per doc click until the 45s timeout catches up.
+                logging.info(
+                    f"[WS] explicit leave from {user['name']} doc={doc_id} client={client_id}"
+                )
+                break
+
     except asyncio.CancelledError:
         logging.info(f"[WS]CancelledError doc={doc_id} client={client_id} ({user['name']})")
         pass

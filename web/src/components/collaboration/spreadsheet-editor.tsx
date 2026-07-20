@@ -7,9 +7,21 @@
  */
 import storage from '@/utils/authorization-util';
 import type { ICellData, IWorkbookData, Univer } from '@univerjs/core';
+import { UniverSheetsConditionalFormattingPreset } from '@univerjs/preset-sheets-conditional-formatting';
+import UniverSheetsConditionalFormattingZhCN from '@univerjs/preset-sheets-conditional-formatting/locales/zh-CN';
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core';
 import '@univerjs/preset-sheets-core/lib/index.css';
 import UniverPresetSheetsCoreZhCN from '@univerjs/preset-sheets-core/locales/zh-CN';
+import { UniverSheetsDataValidationPreset } from '@univerjs/preset-sheets-data-validation';
+import UniverSheetsDataValidationZhCN from '@univerjs/preset-sheets-data-validation/locales/zh-CN';
+import { UniverSheetsDrawingPreset } from '@univerjs/preset-sheets-drawing';
+import UniverSheetsDrawingZhCN from '@univerjs/preset-sheets-drawing/locales/zh-CN';
+import { UniverSheetsFilterPreset } from '@univerjs/preset-sheets-filter';
+import UniverSheetsFilterZhCN from '@univerjs/preset-sheets-filter/locales/zh-CN';
+import { UniverSheetsNotePreset } from '@univerjs/preset-sheets-note';
+import UniverSheetsNoteZhCN from '@univerjs/preset-sheets-note/locales/zh-CN';
+import { UniverSheetsThreadCommentPreset } from '@univerjs/preset-sheets-thread-comment';
+import UniverSheetsThreadCommentZhCN from '@univerjs/preset-sheets-thread-comment/locales/zh-CN';
 import type { FUniver } from '@univerjs/presets';
 import { createUniver, LocaleType } from '@univerjs/presets';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -127,12 +139,36 @@ export default function SpreadsheetEditor({
     const { univer, univerAPI } = createUniver({
       locale: LocaleType.ZH_CN,
       locales: {
-        [LocaleType.ZH_CN]: UniverPresetSheetsCoreZhCN,
+        [LocaleType.ZH_CN]: {
+          ...UniverPresetSheetsCoreZhCN,
+          ...UniverSheetsDrawingZhCN,
+          ...UniverSheetsConditionalFormattingZhCN,
+          ...UniverSheetsDataValidationZhCN,
+          ...UniverSheetsFilterZhCN,
+          ...UniverSheetsNoteZhCN,
+          ...UniverSheetsThreadCommentZhCN,
+        },
       },
       presets: [
         UniverSheetsCorePreset({
           container: containerRef.current,
         }),
+        // ── Free preset suite (Apache-2.0) ───────────────────────────
+        // Registered together so newly-imported xlsx features (images,
+        // formulas, data validation, comments) have their UI available.
+        // Chart is NOT here — Univer's chart plugin is Pro-only.
+        // Drawing covers: floating images, image insertion UI.
+        UniverSheetsDrawingPreset(),
+        // Filter/sort: auto-filter dropdown on header cells.
+        UniverSheetsFilterPreset(),
+        // Conditional formatting: color scales / data bars / rule-based.
+        UniverSheetsConditionalFormattingPreset(),
+        // Data validation: dropdowns, number/date/list constraints.
+        UniverSheetsDataValidationPreset(),
+        // Note: cell hover notes (legacy Excel comment style).
+        UniverSheetsNotePreset(),
+        // Thread comment: modern threaded comments panel.
+        UniverSheetsThreadCommentPreset(),
       ],
     });
 
