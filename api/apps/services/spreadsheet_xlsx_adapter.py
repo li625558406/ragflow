@@ -164,14 +164,19 @@ def _apply_style_to_cell(cell, style: dict) -> None:
     if isinstance(st, dict) and st.get("s"):
         font_kwargs["strike"] = True
     if isinstance(style.get("cl"), dict) and style["cl"].get("rgb"):
-        font_kwargs["color"] = "FF" + style["cl"]["rgb"]
+        # Univer stores "#RRGGBB"; openpyxl wants aRGB "FFRRGGBB"
+        hex_part = str(style["cl"]["rgb"]).lstrip("#").upper()
+        if len(hex_part) == 6:
+            font_kwargs["color"] = "FF" + hex_part
     if font_kwargs:
         cell.font = Font(**font_kwargs)
 
     # Fill
     bg = style.get("bg")
     if isinstance(bg, dict) and bg.get("rgb"):
-        cell.fill = PatternFill(fill_type="solid", fgColor="FF" + bg["rgb"])
+        hex_part = str(bg["rgb"]).lstrip("#").upper()
+        if len(hex_part) == 6:
+            cell.fill = PatternFill(fill_type="solid", fgColor="FF" + hex_part)
 
     # Border — Univer uses t/b/l/r; openpyxl uses top/bottom/left/right
     bd = style.get("bd")
@@ -185,7 +190,9 @@ def _apply_style_to_cell(cell, style: dict) -> None:
             s_color = None
             c = side_data.get("c")
             if isinstance(c, dict) and c.get("rgb"):
-                s_color = "FF" + c["rgb"]
+                hex_part = str(c["rgb"]).lstrip("#").upper()
+                if len(hex_part) == 6:
+                    s_color = "FF" + hex_part
             side_kwargs[opx_key] = Side(style=s_style, color=s_color)
         if side_kwargs:
             cell.border = Border(**side_kwargs)
@@ -925,10 +932,10 @@ def _convert_color_scale(rule) -> list:
             color = colors[idx] if idx < len(colors) else None
             value = values[idx] if idx < len(values) else None
             vtype = types[idx] if idx < len(types) else "num"
-            rgb = _argb_to_rgb(color) if color is not None else "FFFFFF"
+            rgb = _argb_to_rgb(color) if color is not None else "#FFFFFF"
             config.append({
                 "index": idx,
-                "color": rgb or "FFFFFF",
+                "color": rgb or "#FFFFFF",
                 "value": {"type": vtype, "value": value if value is not None else 0},
             })
         except Exception:
@@ -942,8 +949,8 @@ def _convert_data_bar(rule) -> dict:
         "min": {"type": "auto"},
         "max": {"type": "auto"},
         "isGradient": True,
-        "positiveColor": "638EC6",
-        "nativeColor": "F8696B",
+        "positiveColor": "#638EC6",
+        "nativeColor": "#F8696B",
     }
 
 
@@ -1207,7 +1214,10 @@ def _build_style(cell, registry: _StyleRegistry) -> str | None:
 
 
 def _argb_to_rgb(color) -> str | None:
-    """Convert openpyxl Color → Univer-style {rgb:"RRGGBB"} hex.
+    """Convert openpyxl Color → Univer-style "#RRGGBB" hex.
+
+    Univer's `IColorData.rgb` expects a leading `#` (e.g. `"#FF0000"`).
+    Without it, Univer fails to parse the color and falls back to black.
 
     openpyxl colors come in three flavors:
       1. .rgb = "FFRRGGBB" (aRGB with alpha) — most common, strip leading FF
@@ -1220,9 +1230,9 @@ def _argb_to_rgb(color) -> str | None:
     # RGB hex (preferred)
     rgb = getattr(color, "rgb", None)
     if isinstance(rgb, str) and len(rgb) == 8:
-        return rgb[2:].upper()  # strip alpha
+        return "#" + rgb[2:].upper()  # strip alpha, add # for Univer
     if isinstance(rgb, str) and len(rgb) == 6:
-        return rgb.upper()
+        return "#" + rgb.upper()
 
     # Indexed palette (legacy xlsx)
     indexed = getattr(color, "indexed", None)
@@ -1231,7 +1241,7 @@ def _argb_to_rgb(color) -> str | None:
         # The well-known first 16 are usable for legacy files.
         palette = _LEGACY_PALETTE
         if 0 <= indexed < len(palette):
-            return palette[indexed]
+            return "#" + palette[indexed]
 
     # Theme color — would require parsing workbook theme XML.
     # P3 MVP: return None so the cell renders with default color.
