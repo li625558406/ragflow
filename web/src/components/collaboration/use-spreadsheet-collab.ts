@@ -244,7 +244,7 @@ function stripUIState(snapshot: IWorkbookData): IWorkbookData {
     ...snapshot,
     sheets: {} as IWorkbookData['sheets'],
   };
-  for (const [id, sheet] of Object.entries(snapshot.sheets)) {
+  for (const [id, sheet] of Object.entries(snapshot.sheets ?? {})) {
     cleaned.sheets[id] = {
       ...sheet,
       // These fields are per-user viewport state, not shared data
@@ -306,13 +306,23 @@ export default function useSpreadsheetCollab({
   // Resolve initial data: legacy format → migrate, null → blank.
   // Inject ?token=<jwt> into asset URLs so <img src> requests authenticate.
   const [workbookData, setWorkbookData] = useState<IWorkbookData>(() => {
-    const baseWb: IWorkbookData = !content
-      ? createBlankWorkbookData()
-      : isLegacyContent(content)
-        ? convertLegacyToWorkbookData(
-            content as unknown as LegacySpreadsheetContent,
-          )
-        : (content as unknown as IWorkbookData);
+    let baseWb: IWorkbookData;
+    if (!content) {
+      baseWb = createBlankWorkbookData();
+    } else if (isLegacyContent(content)) {
+      baseWb = convertLegacyToWorkbookData(
+        content as unknown as LegacySpreadsheetContent,
+      );
+    } else {
+      // Cast first, then validate — content from server may be a partial
+      // IWorkbookData missing required `sheets` / `sheetOrder` fields.
+      const wb = content as unknown as IWorkbookData;
+      if (!wb.sheets || !wb.sheetOrder) {
+        baseWb = createBlankWorkbookData();
+      } else {
+        baseWb = wb;
+      }
+    }
     return injectAssetTokens(baseWb, getAuthorization() ?? undefined);
   });
 
@@ -506,10 +516,12 @@ export default function useSpreadsheetCollab({
     if (existingData) {
       try {
         const parsed = JSON.parse(existingData) as IWorkbookData;
-        remoteEpochRef.current++;
-        setWorkbookData(
-          injectAssetTokens(parsed, getAuthorization() ?? undefined),
-        );
+        if (parsed?.sheets) {
+          remoteEpochRef.current++;
+          setWorkbookData(
+            injectAssetTokens(parsed, getAuthorization() ?? undefined),
+          );
+        }
       } catch {
         // ignore
       }
@@ -523,12 +535,11 @@ export default function useSpreadsheetCollab({
       const data = yMap.get('data');
       if (data) {
         try {
+          const parsed = JSON.parse(data) as IWorkbookData;
+          if (!parsed?.sheets) return; // skip malformed remote snapshots
           remoteEpochRef.current++;
           setWorkbookData(
-            injectAssetTokens(
-              JSON.parse(data) as IWorkbookData,
-              getAuthorization() ?? undefined,
-            ),
+            injectAssetTokens(parsed, getAuthorization() ?? undefined),
           );
         } catch {
           // ignore

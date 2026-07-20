@@ -245,6 +245,14 @@ export default function SpreadsheetEditor({
       const currentSnapshot = fWorkbook.save();
       const remoteSnapshot = workbookData;
 
+      // Guard against malformed snapshots (Univer may return minimal data
+      // during init/dispose) — fall back to full recreate.
+      if (!currentSnapshot?.sheets || !remoteSnapshot?.sheets) {
+        fWorkbook.dispose();
+        api.createWorkbook(remoteSnapshot);
+        return;
+      }
+
       // Check for structural changes (sheet add/remove/reorder) — fall back to full recreate
       const currentSheets = Object.keys(currentSnapshot.sheets)
         .sort()
