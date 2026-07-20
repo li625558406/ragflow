@@ -262,14 +262,18 @@ def _workbook_to_univer(wb, doc_id: str) -> dict:
         sheets_univer[sid] = _blank_sheet(sid, "Sheet1")
 
     # Pack drawings into SHEET_DRAWING_PLUGIN resource.
-    # Univer's drawing plugin reads from workbook.resources[<name>].data as a
-    # JSON string. parseJson: JSON.parse(data) → { sheetId: { drawingId: param } }.
+    # Univer's runtime stores drawings as drawingManagerData[unitId][subUnitId].data[drawingId],
+    # so the persisted JSON must match that shape: { sheetId: { "data": { drawId: param } } }.
+    # Wrapping in ".data" is critical — Univer's removeDrawingDataForUnit and
+    # initializeNotification access subUnit.data directly and crash with
+    # Object.keys(null) if the wrapper is missing.
     resources: list[dict] = []
     if all_drawings:
         import json
+        wrapped = {sid: {"data": d} for sid, d in all_drawings.items()}
         resources.append({
             "name": "SHEET_DRAWING_PLUGIN",
-            "data": json.dumps(all_drawings, ensure_ascii=False),
+            "data": json.dumps(wrapped, ensure_ascii=False),
         })
 
     # Pack cell notes (P5) into SHEET_NOTE_PLUGIN resource.
@@ -380,20 +384,16 @@ def _read_drawings(ws, doc_id: str, sheet_id: str) -> tuple[dict[str, dict], int
             url = (
                 f"/api/v1/collaboration/documents/{doc_id}/assets/{asset_id}"
             )
-            drawings[drawing_id] = {
-                "unitId": "workbook",
-                "subUnitId": sheet_id,
-                "drawingId": drawing_id,
-                "drawingType": 1,  # Univer DrawingType.IMAGE
-                "transform": transform,
-                "title": "",
-                "image": {
-                    "imageId": image_id,
-                    "source": url,
-                    "width": width,
-                    "height": height,
-                },
-            }
+            drawings[drawing_id] = _build_image_drawing(
+                drawing_id=drawing_id,
+                image_id=image_id,
+                sheet_id=sheet_id,
+                source=url,
+                width=width,
+                height=height,
+                transform=transform,
+                title="",
+            )
             count += 1
         except Exception as e:
             logger.warning("skip image on sheet %s: %s", sheet_id, e)
@@ -446,20 +446,16 @@ def _read_charts(ws, doc_id: str, sheet_id: str) -> tuple[dict[str, dict], int]:
             url = (
                 f"/api/v1/collaboration/documents/{doc_id}/assets/{asset_id}"
             )
-            drawings[drawing_id] = {
-                "unitId": "workbook",
-                "subUnitId": sheet_id,
-                "drawingId": drawing_id,
-                "drawingType": 1,  # IMAGE — Univer free has no CHART type
-                "transform": transform,
-                "title": f"[图表占位] {chart_kind}: {title}" if title else f"[图表占位] {chart_kind}",
-                "image": {
-                    "imageId": image_id,
-                    "source": url,
-                    "width": width,
-                    "height": height,
-                },
-            }
+            drawings[drawing_id] = _build_image_drawing(
+                drawing_id=drawing_id,
+                image_id=image_id,
+                sheet_id=sheet_id,
+                source=url,
+                width=width,
+                height=height,
+                transform=transform,
+                title=f"[图表占位] {chart_kind}: {title}" if title else f"[图表占位] {chart_kind}",
+            )
             count += 1
         except Exception as e:
             logger.warning("skip chart on sheet %s: %s", sheet_id, e)
@@ -526,12 +522,6 @@ def _render_chart_placeholder(chart_kind: str, title: str, series_count: int) ->
 
 def _chart_anchor_to_transform(anchor, width: int, height: int) -> dict:
     """Charts use OneCellAnchor or TwoCellAnchor like images — reuse the image path."""
-    if anchor is None:
-        return {
-            "from": {"col": 0, "row": 0, "colOffset": 0, "rowOffset": 0},
-            "to": _to_anchor(0, 0, width, height),
-            "rotation": 0,
-        }
     # Build a fake-image wrapper so _anchor_to_transform can read its attrs
     class _ChartImgStub:
         pass
@@ -553,82 +543,137 @@ def _image_natural_size(data_bytes: bytes, ext: str) -> tuple[int, int]:
 
 
 def _anchor_to_transform(img, width: int, height: int) -> dict:
-    """Convert openpyxl anchor → Univer ITransformState.
+    """Convert openpyxl anchor → Univer sheet drawing position dicts.
 
-    Univer transform cells use 0-indexed col/row, with colOffset/rowOffset
-    in pixels relative to the cell's top-left corner.
+    Returns { sheetTransform, axisAlignSheetTransform, transform }.
+    - sheetTransform: { from:{column,columnOffset,row,rowOffset}, to:{...} }
+    - transform: absolute { left, top, width, height, angle } — estimated
+      using default cell sizes (Univer recomputes precisely on interaction).
     """
     anchor = getattr(img, "anchor", None)
-    if anchor is None:
-        # No anchor → place at origin with natural size
-        return {
-            "from": {"col": 0, "row": 0, "colOffset": 0, "rowOffset": 0},
-            "to": _to_anchor(0, 0, width, height),
-            "rotation": 0,
-        }
+    frm_col = frm_row = 0
+    frm_col_off = frm_row_off = 0
+    to_col = to_row = 0
+    to_col_off = to_row_off = 0
+    have_to = False
 
-    frm = getattr(anchor, "from", None)
-    to = getattr(anchor, "to", None)
-    ext = getattr(anchor, "ext", None)
+    if anchor is not None:
+        frm = getattr(anchor, "from", None)
+        to = getattr(anchor, "to", None)
+        ext = getattr(anchor, "ext", None)
+        if frm is not None:
+            frm_col = frm.col or 0
+            frm_row = frm.row or 0
+            frm_col_off = int((frm.colOff or 0) / _EMU_PER_PX)
+            frm_row_off = int((frm.rowOff or 0) / _EMU_PER_PX)
+        if to is not None:
+            to_col = to.col or 0
+            to_row = to.row or 0
+            to_col_off = int((to.colOff or 0) / _EMU_PER_PX)
+            to_row_off = int((to.rowOff or 0) / _EMU_PER_PX)
+            have_to = True
+        elif ext is not None:
+            ext_cx = getattr(ext, "cx", 0) or 0
+            ext_cy = getattr(ext, "cy", 0) or 0
+            w_px = int(ext_cx / _EMU_PER_PX) if ext_cx else width
+            h_px = int(ext_cy / _EMU_PER_PX) if ext_cy else height
+            to_col, to_row, to_col_off, to_row_off = _anchor_end_from_size(
+                frm_col, frm_row, frm_col_off, frm_row_off, w_px, h_px
+            )
+            have_to = True
 
-    if frm is None:
-        # AbsoluteAnchor — rare, no cell coords
-        return {
-            "from": {"col": 0, "row": 0, "colOffset": 0, "rowOffset": 0},
-            "to": _to_anchor(0, 0, width, height),
-            "rotation": 0,
-        }
+    if not have_to:
+        to_col, to_row, to_col_off, to_row_off = _anchor_end_from_size(
+            frm_col, frm_row, frm_col_off, frm_row_off, width, height
+        )
 
-    frm_col = frm.col or 0
-    frm_row = frm.row or 0
-    frm_col_off = int((frm.colOff or 0) / _EMU_PER_PX)
-    frm_row_off = int((frm.rowOff or 0) / _EMU_PER_PX)
-
-    if to is not None:
-        # TwoCellAnchor — image stretches from 'from' cell to 'to' cell.
-        to_col = to.col or 0
-        to_row = to.row or 0
-        to_col_off = int((to.colOff or 0) / _EMU_PER_PX)
-        to_row_off = int((to.rowOff or 0) / _EMU_PER_PX)
-        to_dict = {
-            "col": to_col,
-            "row": to_row,
-            "colOffset": to_col_off,
-            "rowOffset": to_row_off,
-        }
-    elif ext is not None:
-        # OneCellAnchor — from + ext size (in EMUs)
-        ext_cx = getattr(ext, "cx", 0) or 0
-        ext_cy = getattr(ext, "cy", 0) or 0
-        width_px = int(ext_cx / _EMU_PER_PX) if ext_cx else width
-        height_px = int(ext_cy / _EMU_PER_PX) if ext_cy else height
-        to_dict = _to_anchor(frm_col, frm_row, width_px, height_px)
-    else:
-        to_dict = _to_anchor(frm_col, frm_row, width, height)
-
-    return {
+    sheet_transform = {
         "from": {
-            "col": frm_col,
+            "column": frm_col,
+            "columnOffset": frm_col_off,
             "row": frm_row,
-            "colOffset": frm_col_off,
             "rowOffset": frm_row_off,
         },
-        "to": to_dict,
-        "rotation": 0,
+        "to": {
+            "column": to_col,
+            "columnOffset": to_col_off,
+            "row": to_row,
+            "rowOffset": to_row_off,
+        },
+    }
+    # Estimate absolute position using default column width 100px / row 23px.
+    # Univer recomputes precisely on first interaction via the sheet skeleton.
+    abs_left = frm_col * 100 + frm_col_off
+    abs_top = frm_row * 23 + frm_row_off
+    abs_w = max(width, (to_col * 100 + to_col_off) - abs_left)
+    abs_h = max(height, (to_row * 23 + to_row_off) - abs_top)
+    absolute_transform = {
+        "left": abs_left,
+        "top": abs_top,
+        "width": abs_w,
+        "height": abs_h,
+        "angle": 0,
+        "flipX": False,
+        "flipY": False,
+    }
+    return {
+        "sheetTransform": sheet_transform,
+        "axisAlignSheetTransform": sheet_transform,
+        "transform": absolute_transform,
     }
 
 
-def _to_anchor(from_col: int, from_row: int, width_px: int, height_px: int) -> dict:
-    """Compute a 'to' anchor that places the image at (from_col, from_row) with
-    the given pixel size. Assumes default column width 100px and row height 23px;
-    the Univer layout engine will adjust when actually rendered."""
-    cols_span = max(1, width_px // 100)
-    rows_span = max(1, height_px // 23)
+def _anchor_end_from_size(frm_col, frm_row, frm_col_off, frm_row_off, w_px, h_px):
+    """Compute a 'to' cell+offset that gives the desired pixel size."""
+    start_x = frm_col * 100 + frm_col_off
+    start_y = frm_row * 23 + frm_row_off
+    end_x = start_x + w_px
+    end_y = start_y + h_px
+    to_col = end_x // 100
+    to_row = end_y // 23
+    to_col_off = end_x - to_col * 100
+    to_row_off = end_y - to_row * 23
+    return to_col, to_row, to_col_off, to_row_off
+
+
+def _build_image_drawing(
+    *,
+    drawing_id: str,
+    image_id: str,
+    sheet_id: str,
+    source: str,
+    width: int,
+    height: int,
+    transform: dict,
+    title: str,
+) -> dict:
+    """Build a Univer IImageData-compatible drawing dict.
+
+    Univer's renderer (engine-render + sheets-drawing-ui) reads these fields
+    DIRECTLY from the top-level drawing object:
+      - imageSourceType / source  → image lookup
+      - width / height            → image size
+      - transform                 → absolute {left, top, width, height, angle}
+      - sheetTransform             → cell-bound anchor for the sheet UI
+
+    The nested {"image": {...}} shape used by an earlier adapter draft does NOT
+    match what Univer's `drawingManagerData[unitId][subUnitId].data[drawingId]`
+    expects and caused `Object.keys(null)` errors + non-rendering images.
+    """
     return {
-        "col": from_col + cols_span,
-        "row": from_row + rows_span,
-        "colOffset": width_px - cols_span * 100,
-        "rowOffset": height_px - rows_span * 23,
+        "drawingId": drawing_id,
+        "drawingType": 1,  # DrawingTypeEnum.DRAWING_IMAGE
+        "unitId": "workbook",
+        "subUnitId": sheet_id,
+        "imageSourceType": "URL",
+        "source": source,
+        "imageId": image_id,
+        "width": width,
+        "height": height,
+        "title": title,
+        "sheetTransform": transform["sheetTransform"],
+        "axisAlignSheetTransform": transform["axisAlignSheetTransform"],
+        "transform": transform["transform"],
     }
 
 

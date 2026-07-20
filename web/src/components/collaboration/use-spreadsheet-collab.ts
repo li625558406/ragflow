@@ -48,13 +48,21 @@ function rewriteAssetUrls(
       const parsed = JSON.parse(r.data) as Record<string, unknown> | null;
       if (!parsed || typeof parsed !== 'object') return r;
       let innerMutated = false;
-      for (const drawingsMap of Object.values(parsed)) {
-        if (!drawingsMap || typeof drawingsMap !== 'object') continue;
+      // Persisted shape: { sheetId: { "data": { drawId: { source, ... } } } }
+      // Iterate the .data wrapper of each sheet; older shape ({ drawId: ... })
+      // is also tolerated.
+      for (const sheetEntry of Object.values(parsed)) {
+        if (!sheetEntry || typeof sheetEntry !== 'object') continue;
+        const dataMap =
+          (sheetEntry as { data?: unknown }).data &&
+          typeof (sheetEntry as { data?: unknown }).data === 'object'
+            ? (sheetEntry as { data: Record<string, unknown> }).data
+            : (sheetEntry as Record<string, unknown>);
         for (const drawing of Object.values(
-          drawingsMap as Record<string, { image?: { source?: string } }>,
+          dataMap as Record<string, { source?: string }>,
         )) {
-          if (!drawing?.image?.source) continue;
-          const url = drawing.image.source;
+          if (!drawing?.source) continue;
+          const url = drawing.source;
           // Only touch our asset proxy URLs
           if (!url.includes('/collaboration/documents/')) continue;
           let newUrl: string;
@@ -93,7 +101,7 @@ function rewriteAssetUrls(
             }
           }
           if (newUrl !== url) {
-            drawing.image!.source = newUrl;
+            drawing.source = newUrl;
             innerMutated = true;
           }
         }
