@@ -192,6 +192,67 @@ async def download_document(doc_id):
         return get_json_result(message=str(e), code=RetCode.SERVER_ERROR)
 
 
+@manager.route("/collaboration/documents/<doc_id>/assets/<asset_id>", methods=["GET"])  # noqa: F821
+async def get_document_asset(doc_id, asset_id):
+    """Serve a spreadsheet image asset from MinIO.
+
+    Auth via ?token=<jwt> query param (not @login_required) because the URL
+    is consumed by Univer's <img src>, which cannot carry Authorization
+    headers. The token is the same JWT used everywhere else.
+    """
+    from itsdangerous.url_safe import URLSafeTimedSerializer as Serializer
+    from common import settings
+    from api.db.services.user_token_service import UserTokenService
+    from api.db.services import UserService
+    from common.constants import StatusEnum
+
+    # Resolve tenant_id from token — query param first, Authorization header second
+    token = request.args.get("token")
+    if not token:
+        auth = request.headers.get("Authorization", "")
+        if auth.lower().startswith("bearer "):
+            token = auth[7:]
+    if not token:
+        return get_json_result(message="Missing token", code=RetCode.UNAUTHORIZED)
+
+    try:
+        jwt = Serializer(secret_key=settings.SECRET_KEY)
+        access_token = str(jwt.loads(token))
+    except Exception:
+        access_token = token  # raw token fallback
+
+    user_token = UserTokenService.find_by_token(access_token)
+    if user_token:
+        users = UserService.query(id=user_token.user_id, status=StatusEnum.VALID.value)
+    else:
+        users = UserService.query(access_token=access_token, status=StatusEnum.VALID.value)
+    if not users:
+        return get_json_result(message="Invalid token", code=RetCode.UNAUTHORIZED)
+
+    try:
+        data, mimetype = collaboration_api_service.get_doc_asset(
+            doc_id=doc_id,
+            asset_id=asset_id,
+            tenant_id=users[0].id,
+        )
+        # Cache-Control: immutable + 1 day so repeated <img> renders don't re-fetch.
+        return Response(
+            data,
+            mimetype=mimetype,
+            headers={
+                "Cache-Control": "private, max-age=86400, immutable",
+                "Content-Length": str(len(data)),
+            },
+        )
+    except LookupError as e:
+        return get_json_result(message=str(e), code=RetCode.NOT_FOUND)
+    except PermissionError as e:
+        return get_json_result(message=str(e), code=RetCode.UNAUTHORIZED)
+    except Exception as e:
+        logging.error(e)
+        return get_json_result(message=str(e), code=RetCode.SERVER_ERROR)
+
+
 @manager.route("/collaboration/documents/<doc_id>/apply-rule", methods=["POST"])  # noqa: F821
 @login_required
 async def apply_format_rule(doc_id):

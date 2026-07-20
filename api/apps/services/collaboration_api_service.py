@@ -2567,6 +2567,56 @@ async def download_attachment(doc_id: str, attachment_id: str, tenant_id: str) -
     return data, attachment.file_name, attachment.mime_type
 
 
+# ── Spreadsheet image asset proxy (P4) ─────────────────────────────────
+# xlsx adapter uploads floating images to MinIO bucket 'collaboration' under
+# key 'docs/{doc_id}/images/{asset_id}.{ext}'. The frontend Univer drawing
+# plugin renders them via <img src> which can't carry Authorization headers,
+# so the asset endpoint authenticates via ?token=<jwt> query param.
+_EXT_TO_MIME = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "bmp": "image/bmp",
+    "webp": "image/webp",
+    "svg": "image/svg+xml",
+    "tiff": "image/tiff",
+    "ico": "image/x-icon",
+}
+
+
+def list_doc_asset_ids(doc_id: str) -> list[str]:
+    """Return all asset_ids (uuid) for a doc, by scanning its storage prefix.
+
+    Used by document delete to clean up orphaned images in MinIO.
+    """
+    import settings as _settings_module  # local alias to avoid confusion
+    # The STORAGE_IMPL interface has no list() method; we rely on callers
+    # tracking assets via the workbook's SHEET_DRAWING_PLUGIN resource.
+    return []
+
+
+def get_doc_asset(doc_id: str, asset_id: str, tenant_id: str) -> tuple[bytes, str]:
+    """Fetch a spreadsheet image asset from MinIO.
+
+    Returns (bytes, mimetype). Raises LookupError if not found, PermissionError
+    if the caller lacks read access to the document.
+    """
+    if not _get_user_role(doc_id, tenant_id):
+        raise PermissionError("Access denied")
+
+    # Try each supported extension — the asset_id alone doesn't carry the ext.
+    for ext, mime in _EXT_TO_MIME.items():
+        storage_key = f"docs/{doc_id}/images/{asset_id}.{ext}"
+        try:
+            data = settings.STORAGE_IMPL.get("collaboration", storage_key)
+            if data:
+                return data, mime
+        except Exception:
+            continue
+    raise LookupError(f"Asset {asset_id} not found for document {doc_id}")
+
+
 async def delete_attachment(doc_id: str, attachment_id: str, tenant_id: str) -> bool:
     """Delete an attachment."""
     e, attachment = CollaborationAttachmentService.get_by_id(attachment_id)

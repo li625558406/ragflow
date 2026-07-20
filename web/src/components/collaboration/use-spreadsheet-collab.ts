@@ -13,6 +13,7 @@
  * UI state (scrollTop, scrollLeft, zoomRatio) is stripped before syncing
  * to avoid broadcasting each user's viewport to all collaborators.
  */
+import { getAuthorization } from '@/utils/authorization-util';
 import type { IWorkbookData } from '@univerjs/core';
 import { LocaleType } from '@univerjs/core';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -22,6 +23,92 @@ import {
   CollaborationWebSocketProvider,
   uint8ArrayToBase64,
 } from './yjs-provider';
+
+/* ── Spreadsheet image asset URL handling (P4) ──────────────────────────
+ * The xlsx adapter stores image source URLs as
+ *   /api/v1/collaboration/documents/{docId}/assets/{assetId}
+ * (no host, no auth). Univer renders them via <img src> which can't send
+ * Authorization headers, so we append ?token=<jwt> on read and strip it
+ * on save. Without the strip, the token would leak into the shared ydoc
+ * (each peer would see the first peer's JWT).
+ */
+
+const SHEET_DRAWING_RESOURCE = 'SHEET_DRAWING_PLUGIN';
+
+function rewriteAssetUrls(
+  wb: IWorkbookData,
+  mode: 'inject' | 'strip',
+  token?: string,
+): IWorkbookData {
+  if (!wb.resources) return wb;
+  let mutated = false;
+  const newResources = wb.resources.map((r) => {
+    if (r.name !== SHEET_DRAWING_RESOURCE || !r.data) return r;
+    try {
+      const parsed = JSON.parse(r.data) as Record<string, unknown>;
+      let innerMutated = false;
+      for (const drawingsMap of Object.values(parsed)) {
+        if (!drawingsMap || typeof drawingsMap !== 'object') continue;
+        for (const drawing of Object.values(
+          drawingsMap as Record<string, { image?: { source?: string } }>,
+        )) {
+          if (!drawing?.image?.source) continue;
+          const url = drawing.image.source;
+          // Only touch our asset proxy URLs
+          if (!url.includes('/collaboration/documents/')) continue;
+          let newUrl: string;
+          if (mode === 'inject' && token) {
+            if (url.includes('token=')) continue; // already injected
+            newUrl =
+              url +
+              (url.includes('?') ? '&' : '?') +
+              'token=' +
+              encodeURIComponent(token);
+          } else {
+            // strip — handle token as first param (?token=...&foo=)
+            // vs subsequent param (&token=...)
+            const hasQ = url.includes('?');
+            newUrl = url.replace(/[?&]token=[^&]*/g, '');
+            // After strip, fix malformed URLs:
+            // 1) "/x&foo=bar" (token was first) → "/x?foo=bar"
+            // 2) "/x?&foo=bar" → "/x?foo=bar"
+            // 3) trailing ? or &
+            if (hasQ && !newUrl.includes('?') && newUrl.includes('&')) {
+              newUrl = newUrl.replace('&', '?');
+            }
+            newUrl = newUrl.replace(/[?]&/, '?').replace(/&&/g, '&');
+            if (newUrl.endsWith('?') || newUrl.endsWith('&')) {
+              newUrl = newUrl.slice(0, -1);
+            }
+          }
+          if (newUrl !== url) {
+            drawing.image!.source = newUrl;
+            innerMutated = true;
+          }
+        }
+      }
+      if (!innerMutated) return r;
+      mutated = true;
+      return { ...r, data: JSON.stringify(parsed) };
+    } catch {
+      return r;
+    }
+  });
+  if (!mutated) return wb;
+  return { ...wb, resources: newResources };
+}
+
+function injectAssetTokens(
+  wb: IWorkbookData,
+  token: string | undefined,
+): IWorkbookData {
+  if (!token) return wb;
+  return rewriteAssetUrls(wb, 'inject', token);
+}
+
+function stripAssetTokens(wb: IWorkbookData): IWorkbookData {
+  return rewriteAssetUrls(wb, 'strip', undefined);
+}
 
 /* ── Legacy data types (for migration from old HTML table format) ── */
 
@@ -150,7 +237,8 @@ function createBlankWorkbookData(): IWorkbookData {
   };
 }
 
-/** Strip UI-only state before syncing to Yjs (avoids broadcasting scroll/zoom) */
+/** Strip UI-only state before syncing to Yjs (avoids broadcasting scroll/zoom
+ *  AND leaking per-session JWT via image asset URLs). */
 function stripUIState(snapshot: IWorkbookData): IWorkbookData {
   const cleaned = {
     ...snapshot,
@@ -164,7 +252,9 @@ function stripUIState(snapshot: IWorkbookData): IWorkbookData {
       scrollLeft: 0,
     };
   }
-  return cleaned;
+  // Remove ?token=<jwt> from asset URLs so the session token doesn't
+  // leak into the shared ydoc / persisted content.
+  return stripAssetTokens(cleaned);
 }
 
 /* ── Hook interface ── */
@@ -213,14 +303,17 @@ export default function useSpreadsheetCollab({
   onUpdate,
   getLatestSnapshot,
 }: Options): Return {
-  // Resolve initial data: legacy format → migrate, null → blank
+  // Resolve initial data: legacy format → migrate, null → blank.
+  // Inject ?token=<jwt> into asset URLs so <img src> requests authenticate.
   const [workbookData, setWorkbookData] = useState<IWorkbookData>(() => {
-    if (!content) return createBlankWorkbookData();
-    if (isLegacyContent(content))
-      return convertLegacyToWorkbookData(
-        content as unknown as LegacySpreadsheetContent,
-      );
-    return content as unknown as IWorkbookData;
+    const baseWb: IWorkbookData = !content
+      ? createBlankWorkbookData()
+      : isLegacyContent(content)
+        ? convertLegacyToWorkbookData(
+            content as unknown as LegacySpreadsheetContent,
+          )
+        : (content as unknown as IWorkbookData);
+    return injectAssetTokens(baseWb, getAuthorization() ?? undefined);
   });
 
   const [saveStatus, setSaveStatus] = useState<Return['saveStatus']>('idle');
@@ -414,7 +507,9 @@ export default function useSpreadsheetCollab({
       try {
         const parsed = JSON.parse(existingData) as IWorkbookData;
         remoteEpochRef.current++;
-        setWorkbookData(parsed);
+        setWorkbookData(
+          injectAssetTokens(parsed, getAuthorization() ?? undefined),
+        );
       } catch {
         // ignore
       }
@@ -429,7 +524,12 @@ export default function useSpreadsheetCollab({
       if (data) {
         try {
           remoteEpochRef.current++;
-          setWorkbookData(JSON.parse(data) as IWorkbookData);
+          setWorkbookData(
+            injectAssetTokens(
+              JSON.parse(data) as IWorkbookData,
+              getAuthorization() ?? undefined,
+            ),
+          );
         } catch {
           // ignore
         }
