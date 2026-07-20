@@ -1340,13 +1340,18 @@ def _read_row_dimensions(ws) -> dict[int, dict]:
         entry: dict[str, Any] = {}
         if dim.height:
             entry["h"] = max(_MIN_ROW_H, int(dim.height * _PX_PER_POINT))
-            # CRITICAL: mark height as explicit (not auto). Univer's default for
-            # `ha` is true (auto-height), which means a column-width resize
-            # triggers content-based recalculation and discards the imported `h`.
-            # Symptom without this flag: drag a column border → all custom row
-            # heights reset to default text height. Dragging row height directly
-            # works only because Univer's UI sets `ha: false` on user drag.
-            entry["ha"] = False
+            # CRITICAL: mark row as NOT auto-height. Univer's IRowData uses:
+            #   h  — explicit pixel height
+            #   ia — BooleanNumber (0/1) "is auto-height" flag
+            #   ah — auto-computed height (only used when ia === 1)
+            # When `ia` is unset/1, SetColWidthCommand triggers
+            # generateMutationsOfAutoHeight which overwrites display height
+            # with content-based recalculation, discarding the imported `h`.
+            # Symptom: drag a column border → all custom row heights collapse
+            # to default text height. (Dragging row height directly works
+            # because the row-height UI command sets ia=0 itself.)
+            # BooleanNumber.FALSE === 0 in Univer's enum.
+            entry["ia"] = 0
         if dim.hidden:
             entry["hd"] = 1
         if entry:
