@@ -212,6 +212,10 @@ async def get_document_asset(doc_id, asset_id):
         auth = request.headers.get("Authorization", "")
         if auth.lower().startswith("bearer "):
             token = auth[7:]
+    # Frontend may pass the full "Bearer <jwt>" string in the query string;
+    # strip the prefix so jwt.loads / DB lookup match.
+    if token and token.lower().startswith("bearer "):
+        token = token[7:]
     if not token:
         return get_json_result(message="Missing token", code=RetCode.UNAUTHORIZED)
 

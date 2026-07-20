@@ -45,7 +45,8 @@ function rewriteAssetUrls(
   const newResources = wb.resources.map((r) => {
     if (r.name !== SHEET_DRAWING_RESOURCE || !r.data) return r;
     try {
-      const parsed = JSON.parse(r.data) as Record<string, unknown>;
+      const parsed = JSON.parse(r.data) as Record<string, unknown> | null;
+      if (!parsed || typeof parsed !== 'object') return r;
       let innerMutated = false;
       for (const drawingsMap of Object.values(parsed)) {
         if (!drawingsMap || typeof drawingsMap !== 'object') continue;
@@ -58,10 +59,20 @@ function rewriteAssetUrls(
           if (!url.includes('/collaboration/documents/')) continue;
           let newUrl: string;
           if (mode === 'inject' && token) {
-            if (url.includes('token=')) continue; // already injected
+            // Always strip any existing token first — could be stale from a
+            // previous session (the token is a JWT that expires). Without this,
+            // a stored URL with an old token would keep failing 401 forever.
+            const stripped = url
+              .replace(/[?&]token=[^&]*/g, '')
+              .replace(/[?]&/, '?')
+              .replace(/&&/g, '&');
+            const clean =
+              stripped.endsWith('?') || stripped.endsWith('&')
+                ? stripped.slice(0, -1)
+                : stripped;
             newUrl =
-              url +
-              (url.includes('?') ? '&' : '?') +
+              clean +
+              (clean.includes('?') ? '&' : '?') +
               'token=' +
               encodeURIComponent(token);
           } else {
@@ -391,13 +402,15 @@ export default function useSpreadsheetCollab({
                   const ydocState = Y.encodeStateAsUpdate(yDocRef.current);
                   const b64 = uint8ArrayToBase64(ydocState);
                   setSaveStatus('saving');
+                  // stripAssetTokens on `content` so the per-session JWT in
+                  // image URLs doesn't leak into the persisted DB row.
                   apiFetchRef
                     .current(`/api/v1/collaboration/documents/${docId}/ydoc`, {
                       method: 'PUT',
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({
                         ydoc_state: b64,
-                        content: dataToSave,
+                        content: stripAssetTokens(dataToSave),
                         markdown_content: '',
                       }),
                     })
@@ -468,7 +481,7 @@ export default function useSpreadsheetCollab({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             ...(ydocB64 ? { ydoc_state: ydocB64 } : {}),
-            content: data,
+            content: stripAssetTokens(data),
             markdown_content: '',
           }),
         });
@@ -526,8 +539,13 @@ export default function useSpreadsheetCollab({
         // ignore
       }
     } else {
-      // Initialize Y.Map with current data
-      yMap.set('data', JSON.stringify(workbookDataRef.current));
+      // Initialize Y.Map with current data — STRIPPED of asset tokens so
+      // the per-session JWT doesn't leak into the shared ydoc / DB. The
+      // React state keeps the injected version for Univer rendering.
+      yMap.set(
+        'data',
+        JSON.stringify(stripAssetTokens(workbookDataRef.current)),
+      );
     }
 
     // Observe remote changes
@@ -607,7 +625,7 @@ export default function useSpreadsheetCollab({
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                       ydoc_state: b64,
-                      content: parsed,
+                      content: stripAssetTokens(parsed as IWorkbookData),
                       markdown_content: '',
                     }),
                   },
@@ -669,7 +687,7 @@ export default function useSpreadsheetCollab({
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               ydoc_state: b64,
-              content: parsed,
+              content: stripAssetTokens(parsed as IWorkbookData),
               markdown_content: '',
             }),
           })
