@@ -6,9 +6,7 @@ import DocumentEditor from './document-editor';
 import DocumentList from './document-list';
 import type { DocumentNode, FolderNode } from './folder-tree';
 import ShareDialog from './share-dialog';
-import SidePanelBar, { PanelKey } from './side-panel-bar';
 import SpreadsheetEditor from './spreadsheet-editor';
-import type { CollaborationWebSocketProvider } from './yjs-provider';
 
 interface DocumentData {
   id: string;
@@ -36,26 +34,6 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
   const [docLoading, setDocLoading] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [shareTarget, setShareTarget] = useState<DocumentNode | null>(null);
-  const [activePanel, setActivePanel] = useState<PanelKey | null>('comments');
-  // Collaboration provider shared with side panels (CommentPanel etc.) so they
-  // can subscribe to real-time events (comment-changed) and broadcast notifications.
-  const [collabProvider, setCollabProvider] =
-    useState<CollaborationWebSocketProvider | null>(null);
-
-  const currentUserId = useMemo(() => {
-    try {
-      const userInfo = JSON.parse(localStorage.getItem('userInfo') || 'null');
-      return userInfo?.id || userInfo?.user_id || null;
-    } catch {
-      return null;
-    }
-  }, []);
-
-  const isOwner = useMemo(() => {
-    if (!selectedId) return false;
-    const doc = documents.find((d) => d.id === selectedId);
-    return !!doc?.created_by && doc.created_by === currentUserId;
-  }, [documents, selectedId, currentUserId]);
 
   // Extract raw JWT token (strip "Bearer " prefix) for WebSocket auth
   const wsToken = useMemo(() => {
@@ -66,12 +44,6 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
 
   const apiFetchRef = useRef(apiFetch);
   apiFetchRef.current = apiFetch;
-
-  // Reset shared provider when the selected document changes — a fresh one is
-  // created by the editor on mount and reported back via onProviderReady.
-  useEffect(() => {
-    setCollabProvider(null);
-  }, [selectedId]);
 
   const loadDocuments = useCallback(async () => {
     setLoading(true);
@@ -226,7 +198,6 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
                 apiFetch={apiFetch}
                 onUpdate={handleDocUpdate}
                 token={wsToken}
-                onProviderReady={setCollabProvider}
                 onOpenShare={() => {
                   const node = documents.find((d) => d.id === selectedDoc.id);
                   if (node) setShareTarget(node);
@@ -239,7 +210,6 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
                 apiFetch={apiFetch}
                 onUpdate={handleDocUpdate}
                 token={wsToken}
-                onProviderReady={setCollabProvider}
                 onOpenShare={() => {
                   const node = documents.find((d) => d.id === selectedDoc.id);
                   if (node) setShareTarget(node);
@@ -284,18 +254,6 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
           </div>
         )}
       </div>
-      {selectedDoc && (
-        <SidePanelBar
-          docId={selectedDoc.id}
-          apiFetch={apiFetch}
-          activePanel={activePanel}
-          onChange={setActivePanel}
-          isOwner={isOwner}
-          onApplyFormatRule={() => {}}
-          applyingRuleId={null}
-          provider={collabProvider}
-        />
-      )}
       {shareTarget && (
         <ShareDialog
           open={!!shareTarget}

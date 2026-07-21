@@ -1,13 +1,11 @@
 import {
   FileSpreadsheet,
   FileText,
-  FileUp,
   FolderPlus,
   Plus,
   Search,
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import DocxImportDialog from './docx-import-dialog';
 import FolderTree, { DocumentNode, FolderNode } from './folder-tree';
 
 interface Props {
@@ -49,7 +47,6 @@ export default function DocumentList({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<DocumentNode | null>(null);
-  const [showImport, setShowImport] = useState(false);
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [query, setQuery] = useState('');
@@ -270,31 +267,11 @@ export default function DocumentList({
                 className="w-full px-3 py-1.5 text-left text-xs text-stone-700 hover:bg-stone-50 flex items-center gap-2"
                 onClick={() => {
                   setShowCreateMenu(false);
-                  setShowImport(true);
-                }}
-              >
-                <FileUp className="size-3.5" />
-                导入 Word
-              </button>
-              <button
-                className="w-full px-3 py-1.5 text-left text-xs text-stone-700 hover:bg-stone-50 flex items-center gap-2"
-                onClick={() => {
-                  setShowCreateMenu(false);
                   setShowNewSheet(true);
                 }}
               >
                 <FileSpreadsheet className="size-3.5" />
                 新建表格
-              </button>
-              <button
-                className="w-full px-3 py-1.5 text-left text-xs text-stone-700 hover:bg-stone-50 flex items-center gap-2"
-                onClick={() => {
-                  setShowCreateMenu(false);
-                  setShowImport(true);
-                }}
-              >
-                <FileSpreadsheet className="size-3.5" />
-                导入 Excel
               </button>
             </div>
           )}
@@ -419,18 +396,6 @@ export default function DocumentList({
           />
         )}
       </div>
-
-      {/* Import dialog */}
-      {showImport && (
-        <DocxImportDialog
-          apiFetch={apiFetch}
-          onImported={() => {
-            setShowImport(false);
-            onRefresh();
-          }}
-          onClose={() => setShowImport(false)}
-        />
-      )}
 
       {/* Delete confirmation */}
       {!!deleteTarget && (
