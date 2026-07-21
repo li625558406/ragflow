@@ -244,3 +244,105 @@
 - 抽公用 `use-collab-common.ts`，Docs/Sheets 共享 epoch gate、debounce、auto-save、visibilitychange flush
 - 删除 `collaboration_format_rule` 表的 migration
 - 评估是否升级到 Univer 官方 collab plugin（替换自写 Yjs Provider）
+
+---
+
+## 9. 需求功能点总结（实施完成清单）
+
+本次需求围绕 **C 端协作页签 Word 风格文档编辑器** 从 Lexical 全量替换为 Univer Docs 官方 JS SDK，并保证功能不丢失。按"功能点 → 当前状态 → 验证位置"组织，便于回归对照。
+
+### 9.1 核心编辑能力
+
+| # | 功能点 | 实现状态 | 实现位置 |
+|---|---|---|---|
+| F1 | Univer Docs 富文本编辑（段落/标题/列表/加粗斜体等） | ✅ 已完成 | `document-editor.tsx` + `univer-docs-presets.ts`（DocsCorePreset） |
+| F2 | Drawing 能力（插入图片/浮动元素） | ✅ 已完成 | `univer-docs-presets.ts`（DocsDrawingPreset） |
+| F3 | Thread Comment 现代批注 | ✅ 已完成 | `univer-docs-presets.ts`（DocsThreadCommentPreset） |
+| F4 | zh-CN 本地化 | ✅ 已完成 | `DOCS_LOCALES` 合集导出 |
+| F5 | Univer Docs JSON 结构持久化到 `collaboration_document.content` | ✅ 已完成 | `create_document` 服务端默认结构 + hook 初始化校验 `content.document === true` |
+
+### 9.2 多账号实时协同
+
+| # | 功能点 | 实现状态 | 实现位置 |
+|---|---|---|---|
+| F6 | 多账号 CRDT 实时同步（无冲突合并） | ✅ 已完成 | `use-document-collab.ts` 照搬表格范式，Yjs + WebSocket 盲中继 |
+| F7 | 本地编辑 → debounce 300ms → Yjs → WS 广播 → 远端 apply | ✅ 已完成 | `pushSnapshot` + `yMap.observe` + `useEffect` apply 路径 |
+| F8 | epoch gate 防回环（本地/远端编辑区分） | ✅ 已完成 | `LOCAL_PUSH_ORIGIN` + `remoteEpochRef` + `lastSeenEpochRef` + `applyEpochRef` |
+| F9 | StrictMode safe（WS uid 用 UUID） | ✅ 已继承 | `yjs-provider.ts` 未改动 |
+| F10 | 协同模式下 30s 自动保存 `PUT /ydoc` | ✅ 已完成 | `saveTimerRef` setInterval |
+| F11 | 5s debounce 落库（避免丢 30s 编辑） | ✅ 已完成 | `saveDebounceRef` |
+| F12 | visibilitychange=hidden / pagehide / unmount 强制 flush | ✅ 已完成 | `flushSave` + 事件监听 |
+| F13 | 首次连接从 server ydoc 恢复状态 | ✅ 已完成 | `base64ToUint8Array` + `Y.applyUpdate(yDoc, bytes, 'ws-init')` |
+
+### 9.3 在线人数 / Presence
+
+| # | 功能点 | 实现状态 | 实现位置 |
+|---|---|---|---|
+| F14 | 实时在线用户列表（engine-agnostic，Docs/Sheets 共用） | ✅ 已完成 | `use-online-users.ts` 订阅 `awareness.on('update')` |
+| F15 | 头像组 UI 渲染在线人数 | ✅ 已完成 | `member-avatars.tsx` 改用 `useOnlineUsers` hook |
+| F16 | awareness.setLocalState（name/color/anchorPos） | ✅ 已完成 | hook 内固定 color `#958DF1`，name 从 `storage.getUserInfoObject()` |
+
+### 9.4 导入导出
+
+| # | 功能点 | 实现状态 | 实现位置 |
+|---|---|---|---|
+| F17 | 导出 docx：浏览器跑 `FUniver.exportDocument` → POST blob 到后端 → 浏览器下载 | ✅ 已完成 | `use-univer-export.ts:exportDocx` + `POST /exported-file?format=docx` |
+| F18 | 导出 docx 退化：SDK 不支持时上传 JSON 快照 | ✅ 已完成 | `use-univer-export.ts:40-50` |
+| F19 | 导出 PDF：SDK 直出失败时弹窗提示用 Word/LibreOffice 转换 | ✅ 已完成 | `use-univer-export.ts:exportPdf` |
+| F20 | 后端 `save_exported_file` / `get_exported_file` | ✅ 已完成 | `collaboration_api_service.py:1136-1175` + REST 端点 |
+| F21 | 导入 Word（从 DocumentList "导入 Word" 按钮） | ❌ **已移除** | 按用户决策："Drop historical data + 全量替换" |
+| F22 | 导入 Excel（从 DocumentList "导入 Excel" 按钮） | ❌ **已移除** | 保留后端 `/documents/import` 端点，前端按钮移除 |
+
+### 9.5 删除/裁剪项
+
+| # | 功能点 | 实施状态 | 说明 |
+|---|---|---|---|
+| F23 | 删除 Lexical 前端代码（toolbar/nodes/mention/emoji/comment/version/attachment/audit/format-rule-panel/docx-import-dialog） | ✅ 已完成 | 9 个文件全量删除 |
+| F24 | 删除 FormatRule 系统（前后端 + REST 端点 apply-rule、format-rules CRUD） | ✅ 已完成 | 后端 5 个端点删除，服务函数删除 |
+| F25 | 删除 Lexical↔markdown 转换、python-docx 生成、format rule 业务 | ✅ 已完成 | `collaboration_api_service.py` 瘦身（2694L → ~1175L） |
+| F26 | 删除 SidePanelBar 侧边面板挂载（评论/版本/附件/审计） | ✅ 已完成 | `index.tsx` 清理 + `collabProvider` 状态移除 |
+| F27 | 卸载 `@lexical/*` 依赖 | ⚠️ **未卸载** | `agent/form/components/prompt-editor/` 仍在用 Lexical（Agent 画布的提示词编辑器），无法卸载 |
+| F28 | 删除 `collaboration_format_rule` DB 表 | ❌ **本次不做** | 避免迁移风险，标注"后续清理" |
+
+### 9.6 保留项（不动）
+
+| # | 功能点 | 说明 |
+|---|---|---|
+| F29 | `collaboration_ws.py`（WS 盲中继 350L） | 完全不改，Docs/Sheets 共用 |
+| F30 | `yjs-provider.ts`（自写 Provider 689L） | 完全不改 |
+| F31 | `spreadsheet-editor.tsx` + `use-spreadsheet-collab.ts` | 表格侧不动，后续阶段再适配通用 hook |
+| F32 | 后端 ACL / Collaborator / Share / Folder / Audit Log 端点 | 全保留（移动端/API 复用） |
+| F33 | `collaboration_document` 表结构 | 不新增字段，`markdown_content` 标 deprecated |
+
+### 9.7 已知缺陷与待修复（来自对抗式代码审查 2026-07-21）
+
+> 详见 `docs/superpowers/plans/2026-07-21-univer-docs-replace-lexical.md` 审查报告小节。摘要：
+
+| # | 缺陷 | 严重度 | 修复优先级 |
+|---|---|---|---|
+| B1 | `download_document` 不再生成 xlsx → spreadsheet 下载链路整体失效 | CRITICAL | P0 |
+| B2 | `save_exported_file` 越权覆写 `file_type`（xlsx → docx） | CRITICAL | P0 |
+| B3 | exported-file 上传无大小/类型校验 → 内存 OOM 风险 | CRITICAL | P0 |
+| B4 | Docs `getLatestSnapshot` 未调 `endEditingAsync` → 边打字边保存丢字 | HIGH | P1 |
+| B5 | applyEpoch 用 `queueMicrotask` 重置过早 → 远端同步可能 echo | HIGH | P1 |
+| B6 | `replaceDocument` API 存在性未验证 → 退化路径 dispose 坑 | HIGH | P1 |
+| B7 | 旧 Lexical 文档静默丢内容（检测到非 Docs 结构直接空白） | HIGH | P1 |
+
+---
+
+## 10. 验收用例（最小测试单元）
+
+每个功能点至少一条手工验证步骤，用于回归。
+
+| 用例 | 步骤 | 预期 | 关联功能点 |
+|---|---|---|---|
+| TC-01 | 打开任一 Docs 文档 → 输入文字、加粗、改段落样式 | 实时生效，工具栏可用 | F1-F4 |
+| TC-02 | 两账号同时打开同一 Docs → A 输入文字 | B 端 1s 内看到，A 端不抖动 | F6-F8 |
+| TC-03 | 修改后等 5s / 30s → 刷新页面 → 内容仍在 | 内容不丢 | F10-F13 |
+| TC-04 | 切换浏览器 Tab 再回来 → 检查 DB ydoc 字段 | 切走时已 flush | F12 |
+| TC-05 | 两账号同时打开 → 看右上角头像组 | 显示双方头像 + 在线人数一致 | F14-F16 |
+| TC-06 | 点击导出 Word → 浏览器下载 .docx | 文件能在 Word 打开 | F17 |
+| TC-07 | 点击导出 PDF → 若 SDK 不支持应弹提示 | 不报错卡死 | F19 |
+| TC-08 | 打开 spreadsheet 文档 → 点下载 xlsx | **当前会失败（B1）** | 回归用 |
+| TC-09 | 边打字边点手动保存 → 刷新 | **当前会丢最后一段（B4）** | 回归用 |
+| TC-10 | 打开 v0.25.1 之前创建的 Lexical 文档 | **当前静默空白（B7）** | 回归用 |
