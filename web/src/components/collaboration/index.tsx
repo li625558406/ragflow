@@ -22,13 +22,6 @@ interface DocumentData {
   update_time: string;
 }
 
-interface FormatRule {
-  id: string;
-  name: string;
-  description: string;
-  config: Record<string, unknown>;
-}
-
 interface Props {
   apiFetch: (url: string, options?: RequestInit) => Promise<Response>;
   refreshToken?: number;
@@ -41,8 +34,6 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedDoc, setSelectedDoc] = useState<DocumentData | null>(null);
   const [docLoading, setDocLoading] = useState(false);
-  const [applyingRuleId, setApplyingRuleId] = useState<string | null>(null);
-  const appliedRuleConfigRef = useRef<Record<string, unknown> | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   const [shareTarget, setShareTarget] = useState<DocumentNode | null>(null);
   const [activePanel, setActivePanel] = useState<PanelKey | null>('comments');
@@ -195,18 +186,6 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
     loadDocuments();
   }, [loadDocuments]);
 
-  const handleApplyFormatRule = useCallback((rule: FormatRule) => {
-    setApplyingRuleId(rule.id);
-    appliedRuleConfigRef.current = rule.config;
-    // Force re-render of DocumentEditor with a new key to trigger the plugin
-    setSelectedDoc((prev) => (prev ? { ...prev } : prev));
-  }, []);
-
-  const handleRuleApplied = useCallback(() => {
-    setApplyingRuleId(null);
-    appliedRuleConfigRef.current = null;
-  }, []);
-
   return (
     <div className="flex-1 flex min-h-0 bg-white">
       <DocumentList
@@ -259,8 +238,6 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
                 document={selectedDoc}
                 apiFetch={apiFetch}
                 onUpdate={handleDocUpdate}
-                appliedRuleConfig={appliedRuleConfigRef.current}
-                onRuleApplied={handleRuleApplied}
                 token={wsToken}
                 onProviderReady={setCollabProvider}
                 onOpenShare={() => {
@@ -314,8 +291,8 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
           activePanel={activePanel}
           onChange={setActivePanel}
           isOwner={isOwner}
-          onApplyFormatRule={handleApplyFormatRule}
-          applyingRuleId={applyingRuleId}
+          onApplyFormatRule={() => {}}
+          applyingRuleId={null}
           provider={collabProvider}
         />
       )}
