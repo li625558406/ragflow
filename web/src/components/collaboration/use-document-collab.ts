@@ -38,10 +38,24 @@ const LOCAL_PUSH_ORIGIN = 'local-push';
 /* ── Helpers ── */
 
 function createBlankDocsContent(): Record<string, unknown> {
-  // Univer Docs 最小空白文档结构 — createDocument 会补全其他字段
+  // Univer Docs IDocumentData 最小空白结构。DocumentDataModelSimple 会用
+  // DEFAULT_DOC ({ id: 'default_doc', documentStyle: {} }) 兜底缺失字段，
+  // 但 body.dataStream 必须存在 —— 否则渲染层访问 dataStream.length 抛错。
+  // DEFAULT_EMPTY_DOCUMENT_VALUE = "\r\n"（一个段落分隔符）。
+  //
+  // documentFlavor: 1 = TRADITIONAL（A4 分页，Word 风格）。
+  // 不设默认会走 MODERN(2) —— 灰色背景、连续无分页。
   return {
-    document: true,
-    body: { blockType: 'paragraph', children: [] },
+    id: 'default_doc',
+    documentStyle: {
+      pageSize: { width: 794, height: 1124 }, // PAGE_SIZE.A4 (96dpi)
+      documentFlavor: 1, // DocumentFlavor.TRADITIONAL
+      marginTop: 50,
+      marginBottom: 50,
+      marginLeft: 90,
+      marginRight: 90,
+    },
+    body: { dataStream: '\r\n' },
   };
 }
 
@@ -88,10 +102,11 @@ export default function useDocumentCollab({
   // Resolve initial data: null → blank. Docs has no legacy format to migrate.
   const [docsData, setDocsData] = useState<Record<string, unknown>>(() => {
     if (!content) return createBlankDocsContent();
-    // 判断是否是合法的 Docs content
+    // Univer IDocumentData 合法性判断：必须有 documentStyle 字段（DEFAULT_DOC 兜底）。
+    // 旧的 Lexical 格式 { document: true, body: {...} } 不再适用，会被当作非法数据丢弃。
     if (
       typeof content === 'object' &&
-      (content as { document?: boolean }).document
+      Object.prototype.hasOwnProperty.call(content, 'documentStyle')
     ) {
       return content;
     }

@@ -1,11 +1,13 @@
 import {
   FileSpreadsheet,
   FileText,
+  FileUp,
   FolderPlus,
   Plus,
   Search,
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import DocxImportDialog from './docx-import-dialog';
 import FolderTree, { DocumentNode, FolderNode } from './folder-tree';
 
 interface Props {
@@ -55,6 +57,7 @@ export default function DocumentList({
   const [newDocName, setNewDocName] = useState('');
   const [showNewSheet, setShowNewSheet] = useState(false);
   const [newSheetName, setNewSheetName] = useState('');
+  const [showImport, setShowImport] = useState(false);
   const createMenuRef = useRef<HTMLDivElement>(null);
   const currentUserId = getCurrentUserId();
 
@@ -273,6 +276,16 @@ export default function DocumentList({
                 <FileSpreadsheet className="size-3.5" />
                 新建表格
               </button>
+              <button
+                className="w-full px-3 py-1.5 text-left text-xs text-stone-700 hover:bg-stone-50 flex items-center gap-2"
+                onClick={() => {
+                  setShowCreateMenu(false);
+                  setShowImport(true);
+                }}
+              >
+                <FileUp className="size-3.5" />
+                导入文件
+              </button>
             </div>
           )}
           <button
@@ -425,6 +438,19 @@ export default function DocumentList({
             </div>
           </div>
         </div>
+      )}
+
+      {/* 导入文件弹窗 (.xlsx 走后端转换; .docx 暂不支持,需在 Univer 内手动重建) */}
+      {showImport && (
+        <DocxImportDialog
+          apiFetch={apiFetch}
+          folderId={null}
+          onImported={() => {
+            setShowImport(false);
+            onRefresh();
+          }}
+          onClose={() => setShowImport(false)}
+        />
       )}
     </div>
   );

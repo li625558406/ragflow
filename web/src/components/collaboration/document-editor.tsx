@@ -7,12 +7,33 @@ import storage from '@/utils/authorization-util';
 import type { Univer } from '@univerjs/core';
 import type { FUniver } from '@univerjs/presets';
 import { createUniver, LocaleType } from '@univerjs/presets';
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import EditorHeader from './editor-header';
+import SidePanelBar, { type PanelKey } from './side-panel-bar';
 import { DOCS_LOCALES, DOCS_PRESETS } from './univer-docs-presets';
 import useDocumentCollab from './use-document-collab';
 import { useUniverExport } from './use-univer-export';
 import type { CollaborationWebSocketProvider } from './yjs-provider';
+
+// DocumentFlavor.TRADITIONAL = 1 —— A4 分页 / Word 风格。
+// 不设默认会走 MODERN(2) —— 灰色背景、连续无分页。
+// 旧文档如果没有这个字段，强制按 Traditional 渲染。
+const TRADITIONAL_FLAVOR = 1;
+const A4_PAGE_SIZE = { width: 794, height: 1124 }; // PAGE_SIZE.A4 @ 96dpi
+
+function normalizeDocsData(
+  data: Record<string, unknown>,
+): Record<string, unknown> {
+  const style =
+    (data.documentStyle as Record<string, unknown> | undefined) ?? {};
+  if (style.documentFlavor == null) style.documentFlavor = TRADITIONAL_FLAVOR;
+  if (!style.pageSize) style.pageSize = A4_PAGE_SIZE;
+  if (style.marginTop == null) style.marginTop = 50;
+  if (style.marginBottom == null) style.marginBottom = 50;
+  if (style.marginLeft == null) style.marginLeft = 90;
+  if (style.marginRight == null) style.marginRight = 90;
+  return { ...data, documentStyle: style };
+}
 
 interface DocumentData {
   id: string;
@@ -47,6 +68,9 @@ export default function DocumentEditor({
   const containerRef = useRef<HTMLDivElement>(null);
   const univerRef = useRef<Univer | null>(null);
   const univerAPIRef = useRef<FUniver | null>(null);
+
+  // 右侧侧边栏激活面板 (评论/附件/版本/审计) —— 互斥,同一时间只开一个。
+  const [activePanel, setActivePanel] = useState<PanelKey | null>(null);
 
   // Commit any in-progress edit and return a fresh document snapshot.
   // Univer Docs may keep pending edits in an overlay until the region loses
@@ -124,9 +148,10 @@ export default function DocumentEditor({
     univerRef.current = univer;
     univerAPIRef.current = univerAPI;
 
-    // any cast: Univer Docs createDocument expects IDocumentData; docsData is
-    // resolved by the hook (valid content or blank docs).
-    (univerAPI as any).createDocument(docsData as any);
+    // FUniverDocsUIMixin (from @univerjs/docs-ui) registers createUniverDoc on
+    // FUniver. docsData is resolved by the hook (valid content or blank docs).
+    // 对历史文档做 documentFlavor 兜底（旧数据没有此字段时默认 Traditional A4）。
+    (univerAPI as any).createUniverDoc(normalizeDocsData(docsData) as any);
 
     // Listen for command events to detect local edits → push to Yjs.
     // applyEpoch guard: skip events from a remote-update-triggered
@@ -176,20 +201,36 @@ export default function DocumentEditor({
     try {
       const fDoc = api.getActiveDocument?.();
       if (!fDoc) {
-        api.createDocument(docsData);
+        api.createUniverDoc(docsData);
         return;
       }
-      // Docs 版本：直接替换文档内容。Univer Docs 的 replaceDocument API
-      // 若存在则用，否则退化到销毁重建（dispose + createDocument）。
-      if (typeof fDoc.replaceDocument === 'function') {
-        fDoc.replaceDocument(docsData);
-      } else {
+      // FDocument 没有 replaceDocument/dispose 方法。直接 disposeUnit 会
+      // 破坏渲染上下文（this._context.unit 变 null，后续 DocZoomRenderController
+      // 等监听器读 unit.zoomRatio 抛 NPE）。
+      // 正确做法：调用 doc.command-replace-snapshot 命令，它走 mutation 路径
+      // 在原 unit 上替换 body / documentStyle / resources 等。
+      const unitId =
+        typeof fDoc.getId === 'function'
+          ? fDoc.getId()
+          : (fDoc as { id?: string }).id;
+      try {
+        api.executeCommand?.('doc.command-replace-snapshot', {
+          unitId,
+          snapshot: normalizeDocsData(docsData),
+          segmentId: '',
+        });
+      } catch (e) {
+        console.warn(
+          '[DocumentEditor] replace-snapshot failed, falling back to recreate:',
+          e,
+        );
+        // 兜底：实在不行再走 disposeUnit + 重建（有 NPE 风险但至少能更新）
         try {
-          fDoc.dispose?.();
+          api.disposeUnit?.(unitId);
         } catch {
           /* ignore */
         }
-        api.createDocument(docsData);
+        api.createUniverDoc(normalizeDocsData(docsData));
       }
     } catch (e) {
       console.error('[DocumentEditor] apply remote update failed:', e);
@@ -231,7 +272,18 @@ export default function DocumentEditor({
         onRenamed={onUpdate}
         fileType="docx"
       />
-      <div ref={containerRef} className="flex-1 min-h-0" />
+      {/* 主体区:Univer Docs canvas + 右侧侧边栏 (评论/附件/版本/审计) 水平排布 */}
+      <div className="flex-1 flex min-h-0">
+        <div ref={containerRef} className="flex-1 min-w-0 min-h-0" />
+        <SidePanelBar
+          docId={doc.id}
+          apiFetch={apiFetch}
+          activePanel={activePanel}
+          onChange={setActivePanel}
+          isOwner
+          provider={provider ?? null}
+        />
+      </div>
     </div>
   );
 }

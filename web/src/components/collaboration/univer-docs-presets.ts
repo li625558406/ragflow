@@ -13,7 +13,9 @@ export const DOCS_LOCALES = {
   ...UniverDocsThreadCommentZhCN,
 };
 
-/** Docs 场景下挂载的 preset 清单 */
+/**
+ * Docs 场景下挂载的 preset 清单。
+ */
 export const DOCS_PRESETS = (container: HTMLElement) => [
   UniverDocsCorePreset({ container }),
   UniverDocsDrawingPreset(),

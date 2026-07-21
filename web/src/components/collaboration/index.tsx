@@ -1,12 +1,27 @@
 import { CendTooltip } from '@/components/ui/tooltip';
 import { getAuthorization } from '@/utils/authorization-util';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import DocumentEditor from './document-editor';
 import DocumentList from './document-list';
 import type { DocumentNode, FolderNode } from './folder-tree';
 import ShareDialog from './share-dialog';
-import SpreadsheetEditor from './spreadsheet-editor';
+
+// Lazy-load SpreadsheetEditor so the sheets-ui facade chunk (and its
+// `FUniver.extend(FUniverSheetsUIMixin)` global side-effect) is NOT evaluated
+// when only a doc is opened. Without this, every FUniver instance — including
+// docs-only ones — runs FUniverSheetsUIMixin._initialize, which subscribes to
+// lifecycle.Rendered and tries `injector.get(HoverManagerService)`. Docs
+// presets don't register that service, so redi throws.
+const SpreadsheetEditor = lazy(() => import('./spreadsheet-editor'));
 
 interface DocumentData {
   id: string;
@@ -192,17 +207,25 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
         {selectedDoc ? (
           <>
             {selectedDoc.file_type === 'xlsx' ? (
-              <SpreadsheetEditor
-                key={selectedDoc.id}
-                document={selectedDoc}
-                apiFetch={apiFetch}
-                onUpdate={handleDocUpdate}
-                token={wsToken}
-                onOpenShare={() => {
-                  const node = documents.find((d) => d.id === selectedDoc.id);
-                  if (node) setShareTarget(node);
-                }}
-              />
+              <Suspense
+                fallback={
+                  <div className="flex-1 flex items-center justify-center">
+                    <div className="w-6 h-6 border-2 border-[#D4D4D4] border-t-[#000000] rounded-full animate-spin" />
+                  </div>
+                }
+              >
+                <SpreadsheetEditor
+                  key={selectedDoc.id}
+                  document={selectedDoc}
+                  apiFetch={apiFetch}
+                  onUpdate={handleDocUpdate}
+                  token={wsToken}
+                  onOpenShare={() => {
+                    const node = documents.find((d) => d.id === selectedDoc.id);
+                    if (node) setShareTarget(node);
+                  }}
+                />
+              </Suspense>
             ) : (
               <DocumentEditor
                 key={selectedDoc.id}
