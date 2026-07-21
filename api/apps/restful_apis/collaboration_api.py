@@ -173,11 +173,17 @@ async def delete_document(doc_id):
 async def download_document(doc_id):
     file_type = request.args.get("type", "docx")
     try:
-        blob, filename, mimetype = await collaboration_api_service.download_document(
+        result = await collaboration_api_service.download_document(
             doc_id=doc_id,
             tenant_id=current_user.id,
             file_type=file_type,
         )
+        if not result:
+            return get_json_result(
+                message="No exported file yet. Please export from editor first.",
+                code=RetCode.NOT_FOUND,
+            )
+        blob, filename, mimetype = result
         return Response(
             blob,
             mimetype=mimetype,
@@ -309,106 +315,6 @@ async def get_document_asset(doc_id, asset_id):
         return get_json_result(message=str(e), code=RetCode.SERVER_ERROR)
 
 
-@manager.route("/collaboration/documents/<doc_id>/apply-rule", methods=["POST"])  # noqa: F821
-@login_required
-async def apply_format_rule(doc_id):
-    req = await get_request_json()
-    rule_id = req.get("rule_id")
-    if not rule_id:
-        return get_error_argument_result("rule_id is required")
-    try:
-        blob, filename, mimetype = await collaboration_api_service.apply_format_rule(
-            doc_id=doc_id,
-            tenant_id=current_user.id,
-            rule_id=rule_id,
-        )
-        return Response(
-            blob,
-            mimetype=mimetype,
-            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
-        )
-    except LookupError as e:
-        return get_json_result(message=str(e), code=RetCode.NOT_FOUND)
-    except PermissionError as e:
-        return get_json_result(message=str(e), code=RetCode.OPERATING_ERROR)
-    except Exception as e:
-        logging.error(e)
-        return get_json_result(message=str(e), code=RetCode.SERVER_ERROR)
-
-
-@manager.route("/collaboration/format-rules", methods=["POST"])  # noqa: F821
-@login_required
-@validate_request("name")
-async def create_format_rule():
-    req = await get_request_json()
-    permission = req.get("permission", "me")
-    try:
-        rule = await collaboration_api_service.create_format_rule(
-            tenant_id=current_user.id,
-            user_id=current_user.id,
-            name=req.get("name", "").strip(),
-            description=req.get("description", ""),
-            config=req.get("config"),
-            permission=permission,
-        )
-        return get_json_result(data=rule)
-    except Exception as e:
-        logging.error(e)
-        return get_json_result(message=str(e), code=RetCode.SERVER_ERROR)
-
-
-@manager.route("/collaboration/format-rules", methods=["GET"])  # noqa: F821
-@login_required
-async def list_format_rules():
-    try:
-        rules = await collaboration_api_service.list_format_rules(
-            tenant_id=current_user.id,
-            user_id=current_user.id,
-        )
-        return get_json_result(data=rules)
-    except Exception as e:
-        logging.error(e)
-        return get_json_result(message=str(e), code=RetCode.SERVER_ERROR)
-
-
-@manager.route("/collaboration/format-rules/<rule_id>", methods=["PUT"])  # noqa: F821
-@login_required
-async def update_format_rule(rule_id):
-    req = await get_request_json()
-    try:
-        rule = await collaboration_api_service.update_format_rule(
-            rule_id=rule_id,
-            tenant_id=current_user.id,
-            data=req,
-        )
-        return get_json_result(data=rule)
-    except LookupError as e:
-        return get_json_result(message=str(e), code=RetCode.NOT_FOUND)
-    except PermissionError as e:
-        return get_json_result(message=str(e), code=RetCode.OPERATING_ERROR)
-    except Exception as e:
-        logging.error(e)
-        return get_json_result(message=str(e), code=RetCode.SERVER_ERROR)
-
-
-@manager.route("/collaboration/format-rules/<rule_id>", methods=["DELETE"])  # noqa: F821
-@login_required
-async def delete_format_rule(rule_id):
-    try:
-        await collaboration_api_service.delete_format_rule(
-            rule_id=rule_id,
-            tenant_id=current_user.id,
-        )
-        return get_json_result(data=True)
-    except LookupError as e:
-        return get_json_result(message=str(e), code=RetCode.NOT_FOUND)
-    except PermissionError as e:
-        return get_json_result(message=str(e), code=RetCode.OPERATING_ERROR)
-    except Exception as e:
-        logging.error(e)
-        return get_json_result(message=str(e), code=RetCode.SERVER_ERROR)
-
-
 # ── Folder API ──
 
 @manager.route("/collaboration/folders", methods=["POST"])  # noqa: F821
@@ -521,20 +427,16 @@ async def import_document():
             or 'spreadsheet' in content_type
             or 'excel' in content_type
         )
-        if is_excel:
-            doc = await collaboration_api_service.import_xlsx(
-                tenant_id=current_user.id,
-                user_id=current_user.id,
-                file_obj=file_obj,
-                folder_id=folder_id,
+        if not is_excel:
+            return get_error_argument_result(
+                "Only Excel files are supported via this endpoint. Use Univer Docs editor import instead."
             )
-        else:
-            doc = await collaboration_api_service.import_docx(
-                tenant_id=current_user.id,
-                user_id=current_user.id,
-                file_obj=file_obj,
-                folder_id=folder_id,
-            )
+        doc = await collaboration_api_service.import_xlsx(
+            tenant_id=current_user.id,
+            user_id=current_user.id,
+            file_obj=file_obj,
+            folder_id=folder_id,
+        )
         return get_json_result(data=doc)
     except ValueError as e:
         # XlsxTooLargeError is a ValueError subclass — surface its friendly
