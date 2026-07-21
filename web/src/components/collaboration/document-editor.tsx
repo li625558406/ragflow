@@ -1,1009 +1,158 @@
-import storage from '@/utils/authorization-util';
-import notification from '@/utils/notification';
-import { CodeHighlightNode, CodeNode } from '@lexical/code';
-import { AutoLinkNode, LinkNode } from '@lexical/link';
-import { $isListNode, ListItemNode, ListNode } from '@lexical/list';
-import { CheckListPlugin } from '@lexical/react/LexicalCheckListPlugin';
-import { CollaborationPlugin } from '@lexical/react/LexicalCollaborationPlugin';
-import { LexicalComposer } from '@lexical/react/LexicalComposer';
-import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
-import { ContentEditable } from '@lexical/react/LexicalContentEditable';
-import LexicalErrorBoundary from '@lexical/react/LexicalErrorBoundary';
-import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin';
-import { LinkPlugin } from '@lexical/react/LexicalLinkPlugin';
-import { ListPlugin } from '@lexical/react/LexicalListPlugin';
-import { RichTextPlugin } from '@lexical/react/LexicalRichTextPlugin';
-import { TablePlugin } from '@lexical/react/LexicalTablePlugin';
-import {
-  $createHeadingNode,
-  $isHeadingNode,
-  HeadingNode,
-  QuoteNode,
-} from '@lexical/rich-text';
-import {
-  $isTableCellNode,
-  $isTableNode,
-  $isTableRowNode,
-  TableCellNode,
-  TableNode,
-  TableRowNode,
-} from '@lexical/table';
-import { $getRoot, $isElementNode, $isTextNode, ElementNode } from 'lexical';
+/**
+ * Document editor powered by Univer Docs.
+ * Replaces the old Lexical implementation.
+ * Phase 2: local-only — load/save content JSON via /documents PUT.
+ * Phase 3 will attach Yjs + WebSocket via useDocumentCollab.
+ */
+import type { Univer } from '@univerjs/core';
+import type { FUniver } from '@univerjs/presets';
+import { createUniver, LocaleType } from '@univerjs/presets';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import * as Y from 'yjs';
 import EditorHeader from './editor-header';
-import MentionPlugin from './mention-plugin';
-import { $isCalloutNode, CalloutNode } from './nodes/callout-node';
-import { $isImageNode, ImageNode } from './nodes/image-node';
-import { MathNode } from './nodes/math-node';
-import { MentionNode } from './nodes/mention-node';
-import ToolbarPlugin from './toolbar-plugin';
-import {
-  CollaborationWebSocketProvider,
-  uint8ArrayToBase64,
-} from './yjs-provider';
+import { DOCS_LOCALES, DOCS_PRESETS } from './univer-docs-presets';
+import type { CollaborationWebSocketProvider } from './yjs-provider';
 
 interface DocumentData {
   id: string;
   name: string;
   file_type: string;
+  file_path?: string;
   content: Record<string, unknown>;
-  markdown_content: string;
-  ydoc?: string | null; // base64-encoded Yjs document state from server
+  markdown_content?: string;
+  agent_id?: string;
+  create_time?: string;
+  update_time?: string;
+  ydoc?: string | null;
 }
 
 interface Props {
-  document: DocumentData | null;
+  document: DocumentData;
   apiFetch: (url: string, options?: RequestInit) => Promise<Response>;
   onUpdate: () => void;
-  appliedRuleConfig?: Record<string, unknown> | null;
-  onRuleApplied?: () => void;
-  /** Raw JWT token for WebSocket auth (enables real-time collab) */
   token?: string;
   onOpenShare: () => void;
-  /** Called with the provider instance for external awareness access */
   onProviderReady?: (provider: CollaborationWebSocketProvider | null) => void;
 }
 
-type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
-
-const theme = {
-  paragraph: 'mb-2 text-stone-900 text-sm leading-relaxed',
-  quote: 'border-l-2 border-stone-300 pl-4 italic text-stone-600 my-2 text-sm',
-  heading: {
-    h1: 'text-xl font-bold text-stone-900 mb-3 mt-4',
-    h2: 'text-lg font-semibold text-stone-900 mb-2 mt-3',
-    h3: 'text-base font-medium text-stone-900 mb-2 mt-3',
-  },
-  list: {
-    ul: 'list-disc ml-4 mb-2 text-sm text-stone-900',
-    ol: 'list-decimal ml-4 mb-2 text-sm text-stone-900',
-    listitem: 'mb-1',
-    checklist: 'list-none ml-4 mb-2 text-sm text-stone-900',
-    listitemChecked: 'line-through text-stone-400',
-    listitemUnchecked: '',
-  },
-  text: {
-    bold: 'font-bold',
-    italic: 'italic',
-    underline: 'underline',
-    strikethrough: 'line-through',
-    code: 'bg-stone-100 text-amber-700 px-1 py-0.5 rounded text-xs font-mono',
-    subscript: 'text-[0.7em] align-sub',
-    superscript: 'text-[0.7em] align-super',
-  },
-  table: 'w-full border-collapse border border-stone-300 my-2 text-sm',
-  tableRow: '',
-  tableCell: 'border border-stone-300 px-2 py-1 align-top',
-  tableCellHeader:
-    'border border-stone-300 px-2 py-1 align-top bg-stone-100 font-bold',
-  code: 'bg-stone-900 text-green-300 px-3 py-2 rounded-lg my-2 text-sm font-mono block overflow-x-auto whitespace-pre-wrap',
-  link: 'text-blue-600 underline cursor-pointer hover:text-blue-800',
-  image: 'max-w-full h-auto rounded-lg my-2',
-};
-
-function onError(error: Error) {
-  console.error('Lexical error:', error);
+/** Univer Docs content snapshot shape (minimal guard). */
+function isDocsContent(c: unknown): c is { document?: boolean } {
+  return !!c && typeof c === 'object';
 }
 
-/** Convert Lexical editor state to markdown text. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function lexicalStateToMarkdown(editorState: any): string {
-  const lines: string[] = [];
-  editorState.read(() => {
-    const root = $getRoot();
-    for (const child of root.getChildren()) {
-      const text = child.getTextContent();
-      if ($isHeadingNode(child)) {
-        const tag = child.getTag();
-        const prefix =
-          ({ h1: '# ', h2: '## ', h3: '### ' } as Record<string, string>)[
-            tag
-          ] || '';
-        lines.push(prefix + text);
-      } else if ($isListNode(child)) {
-        const listType = child.getListType();
-        const listItems = child.getChildren();
-        for (const item of listItems) {
-          if (listType === 'check') {
-            const checked = (item as ListItemNode).getChecked?.() ?? false;
-            lines.push((checked ? '- [x] ' : '- [ ] ') + item.getTextContent());
-          } else {
-            lines.push(
-              (listType === 'bullet' ? '- ' : '1. ') + item.getTextContent(),
-            );
-          }
-        }
-      } else if ($isTableNode(child)) {
-        const rows = child.getChildren();
-        const mdRows: string[] = [];
-        for (const row of rows) {
-          if ($isTableRowNode(row)) {
-            const cells = row.getChildren();
-            const cellTexts = cells.map((cell) => {
-              if ($isTableCellNode(cell)) {
-                return cell.getTextContent().replace(/\n/g, ' ').trim();
-              }
-              return '';
-            });
-            mdRows.push('| ' + cellTexts.join(' | ') + ' |');
-          }
-        }
-        if (mdRows.length > 0) {
-          lines.push(mdRows[0]);
-          const colCount = (mdRows[0].match(/\|/g) || []).length - 1;
-          if (colCount > 0) {
-            lines.push('|' + ' --- |'.repeat(colCount));
-          }
-          for (let i = 1; i < mdRows.length; i++) {
-            lines.push(mdRows[i]);
-          }
-        }
-      } else if ($isCalloutNode(child)) {
-        const calloutType = child.__calloutType;
-        const emoji =
-          { info: '💡', warning: '⚠️', tip: '✅', danger: '🚫' }[calloutType] ||
-          '';
-        lines.push(`:::${calloutType} ${emoji}`);
-        lines.push(text);
-        lines.push(':::');
-      } else if ($isImageNode(child)) {
-        lines.push(`![${child.__altText || ''}](${child.__src})`);
-      } else if (child.getType() === 'code') {
-        const codeChildren = (child as ElementNode).getChildren();
-        const codeLines: string[] = [];
-        for (const codeChild of codeChildren) {
-          codeLines.push(codeChild.getTextContent());
-        }
-        const language =
-          ((child as unknown as Record<string, unknown>)
-            .__language as string) || '';
-        lines.push('```' + language);
-        lines.push(codeLines.join('\n'));
-        lines.push('```');
-      } else {
-        lines.push(text);
-      }
-    }
-  });
-  return lines.join('\n');
-}
-
-/**
- * CollabSavePlugin — handles periodic HTTP persistence + sendFullState for collab mode.
- * The actual real-time sync + cursors are handled by CollaborationPlugin (from @lexical/react).
- * This plugin only manages saving to the server.
- */
-interface CollabSavePluginProps {
-  providerRef: React.MutableRefObject<CollaborationWebSocketProvider | null>;
-  docId: string;
-  apiFetch: (url: string, options?: RequestInit) => Promise<Response>;
-  onUpdate: () => void;
-  onSaveStatus: (status: SaveStatus) => void;
-  onProviderReady?: (provider: CollaborationWebSocketProvider | null) => void;
-  triggerSaveRef: React.MutableRefObject<(() => void) | null>;
-}
-
-function CollabSavePlugin({
-  providerRef,
-  docId,
-  apiFetch,
-  onUpdate,
-  onSaveStatus,
-  onProviderReady,
-  triggerSaveRef,
-}: CollabSavePluginProps) {
-  const [editor] = useLexicalComposerContext();
-  const saveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const savingRef = useRef(false);
-  const apiFetchRef = useRef(apiFetch);
-  apiFetchRef.current = apiFetch;
-  const onUpdateRef = useRef(onUpdate);
-  onUpdateRef.current = onUpdate;
-
-  const doSave = useCallback(() => {
-    const provider = providerRef.current;
-    if (!provider || savingRef.current) {
-      console.log(
-        '[CollabSave] skip save: provider=',
-        !!provider,
-        'saving=',
-        savingRef.current,
-      );
-      return;
-    }
-    savingRef.current = true;
-    onSaveStatus('saving');
-
-    // Access the Y.Doc from the provider
-    const doc = provider.doc;
-    const ydocState = Y.encodeStateAsUpdate(doc);
-    const ydocB64 = uint8ArrayToBase64(ydocState);
-
-    const editorState = editor.getEditorState();
-    const json = editorState.toJSON();
-    const markdownContent = lexicalStateToMarkdown(editorState);
-    console.log(
-      '[CollabSave] content keys:',
-      Object.keys(json),
-      'root children:',
-      json.root?.children?.length,
-      'first child type:',
-      json.root?.children?.[0]?.type,
-      'first child text:',
-      json.root?.children?.[0]?.children
-        ?.map(
-          (c: Record<string, unknown>) => (c as { text?: string }).text || '',
-        )
-        .join(''),
-    );
-
-    apiFetchRef
-      .current(`/api/v1/collaboration/documents/${docId}/ydoc`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ydoc_state: ydocB64,
-          content: json,
-          markdown_content: markdownContent,
-        }),
-      })
-      .then(() => {
-        console.log(
-          '[CollabSave] save success, docId=',
-          docId,
-          'ydocB64 len=',
-          ydocB64.length,
-        );
-        onSaveStatus('saved');
-        onUpdateRef.current();
-        provider.sendFullState();
-        if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
-        statusTimerRef.current = setTimeout(() => onSaveStatus('idle'), 2000);
-      })
-      .catch((e) => {
-        console.error('[CollabSave] save FAILED:', e);
-        onSaveStatus('error');
-        if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
-        statusTimerRef.current = setTimeout(() => onSaveStatus('idle'), 3000);
-      })
-      .finally(() => {
-        savingRef.current = false;
-      });
-  }, [docId, editor, onSaveStatus, providerRef]);
-
-  // Expose doSave to parent via ref
-  useEffect(() => {
-    triggerSaveRef.current = doSave;
-  }, [doSave, triggerSaveRef]);
-
-  useEffect(() => {
-    // Notify parent when provider is ready
-    const checkInterval = setInterval(() => {
-      if (providerRef.current) {
-        onProviderReady?.(providerRef.current);
-        clearInterval(checkInterval);
-      }
-    }, 100);
-    return () => clearInterval(checkInterval);
-  }, [onProviderReady, providerRef]);
-
-  useEffect(() => {
-    // Start periodic save
-    saveTimerRef.current = setInterval(() => {
-      doSave();
-    }, 30000);
-
-    return () => {
-      if (saveTimerRef.current) clearInterval(saveTimerRef.current);
-      if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
-      // Flush before unmount
-      const provider = providerRef.current;
-      if (provider) {
-        provider.sendFullState();
-      }
-      // Don't null providerRef or call onProviderReady(null) here —
-      // the provider lifecycle is owned by CollaborationPlugin.
-      // Nulling the ref breaks React StrictMode double-invoke (mount→cleanup→remount)
-      // because CollaborationPlugin's isProviderInitialized guard skips the factory on remount.
-    };
-  }, [doSave, providerRef, onProviderReady]);
-
-  return null;
-}
-
-interface AutoSavePluginProps {
-  docId: string;
-  apiFetch: (url: string, options?: RequestInit) => Promise<Response>;
-  onUpdate: () => void;
-  onSaveStatus: (status: SaveStatus) => void;
-  triggerSaveRef: React.MutableRefObject<(() => void) | null>;
-}
-
-function AutoSavePlugin({
-  docId,
-  apiFetch,
-  onUpdate,
-  onSaveStatus,
-  triggerSaveRef,
-}: AutoSavePluginProps) {
-  const [editor] = useLexicalComposerContext();
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const savingRef = useRef(false);
-  const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const doSave = useCallback(async () => {
-    if (savingRef.current) return;
-    savingRef.current = true;
-    onSaveStatus('saving');
-    try {
-      const editorState = editor.getEditorState();
-      const json = editorState.toJSON();
-      const markdownContent = lexicalStateToMarkdown(editorState);
-
-      await apiFetch(`/api/v1/collaboration/documents/${docId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          content: json,
-          markdown_content: markdownContent,
-        }),
-      });
-      onSaveStatus('saved');
-      onUpdate();
-      // Reset to idle after 2s
-      if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
-      statusTimerRef.current = setTimeout(() => onSaveStatus('idle'), 2000);
-    } catch (e) {
-      console.error('Save failed:', e);
-      onSaveStatus('error');
-      if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
-      statusTimerRef.current = setTimeout(() => onSaveStatus('idle'), 3000);
-    } finally {
-      savingRef.current = false;
-    }
-  }, [docId, editor, apiFetch, onUpdate, onSaveStatus]);
-
-  useEffect(() => {
-    triggerSaveRef.current = doSave;
-  }, [doSave, triggerSaveRef]);
-
-  useEffect(() => {
-    if (!docId) return;
-
-    const unregister = editor.registerUpdateListener(() => {
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-      }
-      timerRef.current = setTimeout(() => {
-        doSave();
-      }, 2000);
-    });
-
-    return () => {
-      unregister();
-      if (timerRef.current) clearTimeout(timerRef.current);
-      if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
-    };
-  }, [docId, editor, doSave]);
-
-  return null;
-}
-
-/**
- * BindingFixPlugin — ensures the Lexical editor has document content
- * even when CollaborationPlugin's bootstrap fails due to React StrictMode.
- *
- * Problem: In StrictMode, CollaborationPlugin's binding root.destroy() clears
- * collabNodeMap but NOT root._children, leaving stale CollabNodes. On remount,
- * root.isEmpty() returns false → bootstrap skipped → editor stays empty.
- *
- * Fix: Poll for an empty editor after provider sync, then force-set from
- * document.content (the REST API source of truth).
- */
-function BindingFixPlugin({
-  document,
-  providerRef,
-}: {
-  document: DocumentData;
-  providerRef: React.MutableRefObject<CollaborationWebSocketProvider | null>;
-}) {
-  const [editor] = useLexicalComposerContext();
-  const fixedRef = useRef(false);
-  // Track pending reconnect-setTimeout and unmount state.
-  // Without this, switching docs can leak a WebSocket:
-  //   1. setInterval detects empty editor → provider.disconnect() → setTimeout(50, reconnect)
-  //   2. User clicks another doc → DocumentEditor unmounts → lexical cleanup calls provider.disconnect() (closed=true)
-  //   3. 50ms later the setTimeout fires anyway → provider.connect() (closed=false) → zombie WS reopens
-  // That zombie never closes; server keeps its client_id in the room, so the online count
-  // increments every doc switch. We cancel the pending timer on cleanup AND guard the
-  // callback with mountedRef as defense in depth.
-  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const mountedRef = useRef(true);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    const timer = setInterval(() => {
-      if (fixedRef.current) return;
-      const provider = providerRef.current;
-      if (!provider) return;
-
-      // Wait until the provider has synced (received init from server)
-      const doc = provider.doc;
-      const rootXmlText = doc.get('root', Y.XmlText);
-      if (!rootXmlText._collabNode) return;
-
-      // Check if the editor root is empty (no text content)
-      const editorState = editor.getEditorState();
-      editorState.read(() => {
-        const root = $getRoot();
-        const hasContent = root.getChildren().some((child) => {
-          if ($isTextNode(child)) return child.getTextContent().length > 0;
-          if ($isElementNode(child)) return child.getTextContent().length > 0;
-          return false;
-        });
-
-        if (!hasContent && document.content?.root?.children?.length > 0) {
-          try {
-            const parsed = editor.parseEditorState(
-              JSON.stringify(document.content),
-            );
-            // Temporarily disconnect provider to bypass Yjs binding.
-            // The binding's collabNodeMap is empty (cleared by StrictMode destroy)
-            // but stale Lexical nodes remain in root, so splice fails with
-            // "could not find collab element node". Disconnecting lets us set
-            // state without binding interference; reconnect syncs to server.
-            provider.disconnect();
-            if (reconnectTimerRef.current) {
-              clearTimeout(reconnectTimerRef.current);
-            }
-            reconnectTimerRef.current = setTimeout(() => {
-              reconnectTimerRef.current = null;
-              if (!mountedRef.current) return; // unmounted before fire — don't reopen WS
-              try {
-                editor.setEditorState(parsed, { tag: 'history-merge' });
-                console.log(
-                  '[BindingFix] Restored editor state (provider disconnected)',
-                );
-              } catch (e2) {
-                console.error(
-                  '[BindingFix] Failed to restore after disconnect:',
-                  e2,
-                );
-              } finally {
-                provider.connect();
-              }
-            }, 50);
-          } catch (e) {
-            console.error('[BindingFix] Failed to restore editor state:', e);
-          }
-        }
-        fixedRef.current = true;
-      });
-    }, 200);
-
-    return () => {
-      mountedRef.current = false;
-      clearInterval(timer);
-      if (reconnectTimerRef.current) {
-        clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = null;
-      }
-    };
-  }, [editor, document, providerRef]);
-
-  return null;
-}
-
-function SetInitialStatePlugin({
-  content,
-}: {
-  content: Record<string, unknown> | undefined;
-}) {
-  const [editor] = useLexicalComposerContext();
-
-  useEffect(() => {
-    if (content && content.root) {
-      try {
-        const editorState = editor.parseEditorState(JSON.stringify(content));
-        editor.setEditorState(editorState);
-      } catch (e) {
-        console.error('Failed to set initial editor state:', e);
-      }
-    }
-  }, [editor, content]);
-
-  return null;
-}
-
-function setCssProperty(
-  style: string,
-  property: string,
-  value: string,
-): string {
-  const regex = new RegExp(`${property}:\\s*[^;]+;?`, 'i');
-  const newEntry = `${property}: ${value};`;
-  if (regex.test(style)) {
-    return style.replace(regex, newEntry);
-  }
-  const sep = style && !style.endsWith(';') ? ';' : '';
-  return style + sep + newEntry;
-}
-
-interface StyleRuleConfig {
-  name: string;
-  pattern: string;
-  fontFamily: string;
-  fontSize: number;
-  fontColor: string;
-  alignment: string;
-  bold: boolean;
-  heading: string;
-}
-
-function matchParagraphStyle(
-  text: string,
-  rules: StyleRuleConfig[],
-): StyleRuleConfig | null {
-  for (const rule of rules) {
-    try {
-      if (new RegExp(rule.pattern).test(text)) {
-        return rule;
-      }
-    } catch {
-      // Invalid regex, skip
-    }
-  }
-  return null;
-}
-
-function FormatApplyPlugin({
-  config,
-  onApplied,
-}: {
-  config: Record<string, unknown> | undefined | null;
-  onApplied?: () => void;
-}) {
-  const [editor] = useLexicalComposerContext();
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    if (!config) return;
-
-    const styleRules: StyleRuleConfig[] | undefined = Array.isArray(
-      config.rules,
-    )
-      ? (config.rules as StyleRuleConfig[])
-      : undefined;
-
-    editor.update(() => {
-      const root = $getRoot();
-      // Snapshot paragraph list before mutation — replace() modifies the tree
-      const paragraphs = [...root.getChildren()];
-      for (const paragraph of paragraphs) {
-        // Skip table nodes — they have a different internal structure
-        if ($isTableNode(paragraph)) {
-          continue;
-        }
-        const text = paragraph.getTextContent();
-        const matched = styleRules
-          ? matchParagraphStyle(text, styleRules)
-          : null;
-
-        const fontFamily = matched?.fontFamily || (config.font_name as string);
-        const fontSize = matched?.fontSize || (config.font_size as number);
-        const fontColor = matched?.fontColor;
-        const bold = matched?.bold;
-        const heading = matched?.heading;
-        const alignment = matched?.alignment;
-
-        // Snapshot text children — append() moves nodes between parents
-        const textNodes = [...(paragraph as ElementNode).getChildren()];
-        for (const node of textNodes) {
-          if ($isTextNode(node)) {
-            let style = node.getStyle();
-            if (fontFamily) {
-              style = setCssProperty(style, 'font-family', String(fontFamily));
-            }
-            if (fontSize) {
-              style = setCssProperty(style, 'font-size', `${fontSize}pt`);
-            }
-            if (fontColor) {
-              style = setCssProperty(style, 'color', String(fontColor));
-            }
-            if (typeof bold === 'boolean' && bold) {
-              node.setFormat(node.getFormat() | 1); // IS_BOLD bitmask
-            }
-            node.setStyle(style);
-          }
-        }
-
-        // Set alignment on paragraph
-        if (alignment && 'setFormat' in paragraph) {
-          (paragraph as { setFormat: (f: string) => void }).setFormat(
-            alignment as string,
-          );
-        }
-
-        // Convert to heading if needed
-        if (
-          heading &&
-          (heading === 'h1' || heading === 'h2' || heading === 'h3')
-        ) {
-          const needsConvert =
-            !$isHeadingNode(paragraph) || paragraph.getTag() !== heading;
-          if (needsConvert) {
-            const headingNode = $createHeadingNode(heading);
-            // Snapshot children before moving — append() removes from source
-            const childrenToMove = [
-              ...(paragraph as ElementNode).getChildren(),
-            ];
-            for (const child of childrenToMove) {
-              headingNode.append(child);
-            }
-            paragraph.replace(headingNode);
-          }
-        }
-      }
-    });
-
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => onApplied?.(), 300);
-
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, [config, editor, onApplied]);
-
-  return null;
+function createBlankDocsContent(): Record<string, unknown> {
+  // Univer Docs 最小空白文档结构 — createDocument 会补全其他字段
+  return { document: true, body: { blockType: 'paragraph', children: [] } };
 }
 
 export default function DocumentEditor({
-  document,
+  document: doc,
   apiFetch,
   onUpdate,
-  appliedRuleConfig,
-  onRuleApplied,
   token,
   onOpenShare,
   onProviderReady,
 }: Props) {
-  const [downloading, setDownloading] = useState(false);
-  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
-  const [collabProvider, setCollabProvider] =
-    useState<CollaborationWebSocketProvider | null>(null);
-  const triggerSaveRef = useRef<(() => void) | null>(null);
-  const [version, setVersion] = useState<number | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const univerRef = useRef<Univer | null>(null);
+  const univerAPIRef = useRef<FUniver | null>(null);
   const apiFetchRef = useRef(apiFetch);
   apiFetchRef.current = apiFetch;
+  const [saveStatus, setSaveStatus] = useState<
+    'idle' | 'saving' | 'saved' | 'error'
+  >('idle');
+  const [downloading, setDownloading] = useState(false);
 
-  // Ref to hold provider instance created by providerFactory (shared with CollabSavePlugin)
-  const collabProviderRef = useRef<CollaborationWebSocketProvider | null>(null);
-
-  // Force-disconnect the WS provider on unmount.
-  // Why this is needed: @lexical/react's CollaborationPlugin has an
-  // `isProviderInitialized` ref guard that skips the effect body on StrictMode
-  // remount (mount → cleanup → remount). The first mount registers a cleanup
-  // that calls provider.disconnect(); the StrictMode remount early-returns and
-  // registers NOTHING. So when the component truly unmounts (user clicks
-  // another doc → docLoading=true → spinner replaces DocumentEditor), no
-  // lexical cleanup runs, the WS stays open, and the server keeps the
-  // client_id in its room map. Each doc click leaks one Y.Doc clientID and
-  // inflates the online count. This mount-once effect with `[]` deps
-  // re-registers its cleanup on every mount (including StrictMode remount),
-  // guaranteeing the WS closes on real unmount. StrictMode's intermediate
-  // unmount also disconnects, but BindingFixPlugin reconnects it on remount.
+  // Phase 2: 占位 provider（Phase 3 替换为真实 useDocumentCollab 返回值）
+  const provider: CollaborationWebSocketProvider | null = null;
+  const onProviderReadyRef = useRef(onProviderReady);
+  onProviderReadyRef.current = onProviderReady;
   useEffect(() => {
-    console.log('[DocEditor][mount] useEffect[] mounted, docId=', document?.id);
+    onProviderReadyRef.current?.(null);
+  }, []);
+
+  // 初始化 Univer Docs 实例（仅挂载时跑一次）
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const { univer, univerAPI } = createUniver({
+      locale: LocaleType.ZH_CN,
+      locales: { [LocaleType.ZH_CN]: DOCS_LOCALES },
+      presets: DOCS_PRESETS(containerRef.current),
+    });
+    univerRef.current = univer;
+    univerAPIRef.current = univerAPI;
+
+    const initialContent =
+      isDocsContent(doc.content) && doc.content.document
+        ? doc.content
+        : createBlankDocsContent();
+    // any cast: Univer Docs 的 createDocument 期望 IDocumentData，这里用宽松类型
+    (univerAPI as any).createDocument(initialContent);
+
     return () => {
-      const provider = collabProviderRef.current;
-      console.log(
-        '[DocEditor][unmount] useEffect[] cleanup fired, docId=',
-        document?.id,
-        'hasProvider=',
-        !!provider,
-        'wsState=',
-        provider ? (provider as any)._debugWsState() : 'no-provider',
-      );
-      if (provider) {
-        try {
-          provider.disconnect();
-          console.log('[DocEditor][unmount] provider.disconnect() called');
-        } catch (e) {
-          console.error('[DocEditor][unmount] disconnect failed:', e);
-        }
-      }
+      // 注意：不要调用 univer.dispose() —— 会触发与 React reconciler 的竞争
+      // （见同目录 spreadsheet-editor.tsx 的踩坑说明）。靠 GC 回收即可。
+      univerRef.current = null;
+      univerAPIRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Fetch version info
-  useEffect(() => {
-    if (!document) return;
-    apiFetchRef
-      .current(`/api/v1/collaboration/documents/${document.id}/versions`)
-      .then((r) => r.json())
-      .then((result) => {
-        if (result.code === 0 && result.data) {
-          setVersion(result.data.current_version);
-        }
-      })
-      .catch(() => {});
-  }, [document]);
-
-  // Refresh version after save
-  useEffect(() => {
-    if (!document || saveStatus !== 'saved') return;
-    apiFetchRef
-      .current(`/api/v1/collaboration/documents/${document.id}/versions`)
-      .then((r) => r.json())
-      .then((result) => {
-        if (result.code === 0 && result.data) {
-          setVersion(result.data.current_version);
-        }
-      })
-      .catch(() => {});
-  }, [saveStatus]);
-
-  const handleDownload = useCallback(
-    async (type: 'docx' | 'pdf' | 'xlsx') => {
-      if (!document || downloading) return;
-      setDownloading(true);
-      try {
-        const resp = await apiFetch(
-          `/api/v1/collaboration/documents/${document.id}/download?type=${type}`,
-        );
-        if (resp.ok) {
-          const blob = await resp.blob();
-          const url = URL.createObjectURL(blob);
-          const a = window.document.createElement('a');
-          a.href = url;
-          a.download = `${document.name}.${type}`;
-          a.click();
-          URL.revokeObjectURL(url);
-        }
-      } catch (e) {
-        console.error('下载失败:', e);
-      } finally {
-        setDownloading(false);
-      }
-    },
-    [document, downloading, apiFetch],
-  );
-
-  const handleSave = useCallback(() => {
-    if (!collabProviderRef.current) {
-      notification.warning({
-        message: '协同连接未就绪，无法保存',
-        duration: 3,
-      });
-      return;
+  // Phase 2 最小保存：手动按钮触发，把当前 JSON PUT 回 /documents/<id>
+  const saveToServer = useCallback(async () => {
+    const api = univerAPIRef.current as any;
+    if (!api) return;
+    setSaveStatus('saving');
+    try {
+      const fDoc = api.getActiveDocument?.();
+      const snapshot = fDoc?.save?.() ?? fDoc?.getSnapshot?.();
+      if (!snapshot) throw new Error('save() returned empty');
+      const resp = await apiFetchRef.current(
+        `/api/v1/collaboration/documents/${doc.id}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: snapshot }),
+        },
+      );
+      const result = await resp.json();
+      if (result.code !== 0) throw new Error(result.message || 'save failed');
+      setSaveStatus('saved');
+      onUpdate();
+    } catch (e) {
+      console.error('[DocumentEditor] save failed:', e);
+      setSaveStatus('error');
     }
-    triggerSaveRef.current?.();
+  }, [doc.id, onUpdate]);
+
+  // 下载占位（Phase 5 实现）
+  const handleDownload = useCallback(async (type: 'docx' | 'pdf') => {
+    setDownloading(true);
+    try {
+      console.log('[DocumentEditor] download placeholder', type);
+      window.alert('导出功能将在 Phase 5 实现');
+    } finally {
+      setDownloading(false);
+    }
   }, []);
 
-  const handleProviderReady = useCallback(
-    (p: CollaborationWebSocketProvider | null) => {
-      setCollabProvider(p);
-      onProviderReady?.(p);
-    },
-    [onProviderReady],
-  );
-
-  // Factory for CollaborationPlugin: creates Y.Doc + WebSocketProvider
-  const providerFactory = useCallback(
-    (id: string, yjsDocMap: Map<string, Y.Doc>) => {
-      const doc = new Y.Doc();
-      yjsDocMap.set(id, doc);
-      const provider = new CollaborationWebSocketProvider(doc, id, token!);
-      collabProviderRef.current = provider;
-      console.log(
-        '[DocEditor][factory] docId=',
-        id,
-        'yjsClientID=',
-        doc.clientID,
-      );
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return provider as any;
-    },
-    [token],
-  );
-
-  // User info for cursor display
-  const userInfo = storage.getUserInfoObject();
-  const userName = userInfo?.nickname || userInfo?.email || '';
-
-  // Debug: log document content on mount
-  useEffect(() => {
-    if (document && token) {
-      console.log(
-        '[DocEditor] mount with token, doc.id=',
-        document.id,
-        'content keys:',
-        Object.keys(document.content || {}),
-        'root children:',
-        document.content?.root?.children?.length,
-        'first child type:',
-        document.content?.root?.children?.[0]?.type,
-      );
-    }
-  }, [document?.id, token]);
-
-  if (!document) {
-    return (
-      <div className="flex-1 flex items-center justify-center bg-stone-50">
-        <div className="text-center text-stone-400">
-          <svg
-            className="w-12 h-12 mx-auto mb-3 text-stone-300"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={1.5}
-              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-            />
-          </svg>
-          <p className="text-sm">请从左侧选择一个文档</p>
-        </div>
-      </div>
-    );
-  }
-
-  const initialConfig = {
-    namespace: `collab-doc-${document.id}`,
-    theme,
-    onError,
-    nodes: [
-      HeadingNode,
-      QuoteNode,
-      ListNode,
-      ListItemNode,
-      TableNode,
-      TableCellNode,
-      TableRowNode,
-      CalloutNode,
-      CodeNode,
-      CodeHighlightNode,
-      LinkNode,
-      AutoLinkNode,
-      ImageNode,
-      MathNode,
-      MentionNode,
-    ],
-  };
-
   return (
-    <div className="flex-1 flex flex-col min-h-0 bg-white">
+    <div className="flex-1 flex flex-col min-w-0 h-full">
       <EditorHeader
-        docId={document.id}
-        docName={document.name}
+        docId={doc.id}
+        docName={doc.name}
         saveStatus={saveStatus}
-        version={version}
-        provider={collabProvider}
-        showManualSave={true}
-        onManualSave={handleSave}
+        version={null}
+        provider={provider}
+        showManualSave={!token}
+        onManualSave={saveToServer}
         onDownload={handleDownload}
         downloading={downloading}
         onOpenShare={onOpenShare}
         apiFetch={apiFetch}
         onRenamed={onUpdate}
+        fileType="docx"
       />
-
-      {/* Editor + Comment Panel side by side */}
-      <div className="flex-1 flex min-h-0">
-        <div className="flex-1 overflow-y-auto bg-stone-100/60 min-w-0">
-          <LexicalComposer initialConfig={initialConfig}>
-            {/* Sticky toolbar — full width, outside max-w constraint */}
-            <div className="sticky top-0 z-10 bg-white border-b border-stone-200">
-              <div className="max-w-5xl mx-auto px-6">
-                <ToolbarPlugin />
-              </div>
-            </div>
-            {/* Content — white paper card on gray background */}
-            <div className="max-w-5xl mx-auto px-6 py-5">
-              <div className="bg-white rounded-xl border border-stone-200 shadow-sm p-6 relative">
-                <RichTextPlugin
-                  contentEditable={
-                    <ContentEditable className="min-h-[400px] outline-none" />
-                  }
-                  placeholder={
-                    <div className="absolute top-6 left-6 text-stone-400 text-sm pointer-events-none">
-                      开始编辑文档内容...
-                    </div>
-                  }
-                  ErrorBoundary={LexicalErrorBoundary}
-                />
-                <HistoryPlugin />
-                <ListPlugin />
-                <CheckListPlugin />
-                <TablePlugin
-                  hasCellMerge={false}
-                  hasCellBackgroundColor={false}
-                  hasTabHandler
-                  hasHorizontalScroll
-                />
-                <LinkPlugin />
-                <MentionPlugin apiFetch={apiFetch} />
-                {token ? (
-                  <>
-                    <CollaborationPlugin
-                      id={document.id}
-                      providerFactory={providerFactory}
-                      shouldBootstrap={true}
-                      username={userName}
-                      cursorColor="#958DF1"
-                      initialEditorState={
-                        // Only bootstrap from REST content when there is no
-                        // server-side ydoc. When ydoc exists the WebSocket
-                        // 'init' message carries the authoritative state;
-                        // using initialEditorState would inject stale REST
-                        // data and overwrite other users' live edits.
-                        document.ydoc
-                          ? undefined
-                          : document.content
-                            ? JSON.stringify(document.content)
-                            : undefined
-                      }
-                    />
-                    <BindingFixPlugin
-                      document={document}
-                      providerRef={collabProviderRef}
-                    />
-                    <CollabSavePlugin
-                      providerRef={collabProviderRef}
-                      docId={document.id}
-                      apiFetch={apiFetch}
-                      onUpdate={onUpdate}
-                      onSaveStatus={setSaveStatus}
-                      onProviderReady={handleProviderReady}
-                      triggerSaveRef={triggerSaveRef}
-                    />
-                  </>
-                ) : (
-                  <>
-                    <AutoSavePlugin
-                      docId={document.id}
-                      apiFetch={apiFetch}
-                      onUpdate={onUpdate}
-                      onSaveStatus={setSaveStatus}
-                      triggerSaveRef={triggerSaveRef}
-                    />
-                    <SetInitialStatePlugin content={document.content} />
-                  </>
-                )}
-                <FormatApplyPlugin
-                  config={appliedRuleConfig}
-                  onApplied={onRuleApplied}
-                />
-              </div>
-            </div>
-          </LexicalComposer>
-        </div>
-      </div>
+      <div ref={containerRef} className="flex-1 min-h-0" />
     </div>
   );
 }
