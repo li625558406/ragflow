@@ -2692,3 +2692,45 @@ async def list_audit_logs(doc_id: str, tenant_id: str, limit: int = 50, offset: 
             for log in logs
         ],
     }
+
+
+async def save_exported_file(doc_id: str, tenant_id: str, blob: bytes, fmt: str) -> dict:
+    """前端导出 docx/pdf 后上传 blob，存到 STORAGE_IMPL，更新 file_path。
+
+    后端不做任何格式生成，只存文件。Univer Docs 的导出在前端浏览器跑。
+    """
+    e, doc = CollaborationDocumentService.get_by_id(doc_id)
+    if not e:
+        raise LookupError("Document not found")
+    if not _get_user_role(doc_id, tenant_id):
+        raise PermissionError("Access denied")
+    if fmt not in ("docx", "pdf"):
+        raise ValueError(f"Unsupported format: {fmt}")
+    storage_key = f"{doc_id}.{fmt}"
+    settings.STORAGE_IMPL.put("collaboration", storage_key, blob)
+    CollaborationDocumentService.update_by_id(
+        doc_id, {"file_path": storage_key, "file_type": fmt}
+    )
+    return {"file_path": storage_key, "size": len(blob)}
+
+
+async def get_exported_file(doc_id: str, tenant_id: str) -> tuple | None:
+    """返回最近一次导出的 (blob_bytes, filename, mimetype)，无则 None。"""
+    e, doc = CollaborationDocumentService.get_by_id(doc_id)
+    if not e:
+        raise LookupError("Document not found")
+    if not _get_user_role(doc_id, tenant_id):
+        raise PermissionError("Access denied")
+    storage_key = doc.file_path
+    if not storage_key:
+        return None
+    ext = storage_key.rsplit(".", 1)[-1].lower()
+    if ext == "docx":
+        mimetype = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    elif ext == "pdf":
+        mimetype = "application/pdf"
+    else:
+        mimetype = "application/octet-stream"
+    blob = settings.STORAGE_IMPL.get("collaboration", storage_key)
+    filename = f"{doc.name}.{ext}"
+    return blob, filename, mimetype

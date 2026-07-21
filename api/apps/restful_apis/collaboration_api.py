@@ -192,6 +192,58 @@ async def download_document(doc_id):
         return get_json_result(message=str(e), code=RetCode.SERVER_ERROR)
 
 
+@manager.route("/collaboration/documents/<doc_id>/exported-file", methods=["POST"])  # noqa: F821
+@login_required
+async def upload_exported_file(doc_id):
+    """前端导出 docx/pdf 后上传，后端只存文件不生成。"""
+    tenant_id = current_user.id
+    fmt = (request.args.get("format") or "docx").lower()
+    blob = await request.get_data()
+    try:
+        result = await collaboration_api_service.save_exported_file(
+            doc_id, tenant_id, blob, fmt
+        )
+        return get_json_result(data=result)
+    except LookupError as ex:
+        return get_json_result(message=str(ex), code=RetCode.NOT_FOUND)
+    except PermissionError as ex:
+        return get_json_result(message=str(ex), code=RetCode.FORBIDDEN)
+    except ValueError as ex:
+        return get_json_result(message=str(ex), code=RetCode.ARGUMENT_ERROR)
+    except Exception as ex:
+        logging.error(ex)
+        return get_json_result(message=str(ex), code=RetCode.SERVER_ERROR)
+
+
+@manager.route("/collaboration/documents/<doc_id>/exported-file", methods=["GET"])  # noqa: F821
+@login_required
+async def download_exported_file(doc_id):
+    """下载最近一次导出的文件。无则返回 404 JSON。"""
+    tenant_id = current_user.id
+    try:
+        result = await collaboration_api_service.get_exported_file(doc_id, tenant_id)
+    except LookupError as ex:
+        return get_json_result(message=str(ex), code=RetCode.NOT_FOUND)
+    except PermissionError as ex:
+        return get_json_result(message=str(ex), code=RetCode.FORBIDDEN)
+    except Exception as ex:
+        logging.error(ex)
+        return get_json_result(message=str(ex), code=RetCode.SERVER_ERROR)
+    if not result:
+        return get_json_result(
+            message="No exported file yet. Please export from editor first.",
+            code=RetCode.NOT_FOUND,
+        )
+    blob, filename, mimetype = result
+    quoted_filename = quote(filename)
+    response = Response(blob, mimetype=mimetype)
+    response.headers.add(
+        "Content-Disposition",
+        f"attachment; filename*=UTF-8''{quoted_filename}",
+    )
+    return response
+
+
 @manager.route("/collaboration/documents/<doc_id>/assets/<asset_id>", methods=["GET"])  # noqa: F821
 async def get_document_asset(doc_id, asset_id):
     """Serve a spreadsheet image asset from MinIO.
