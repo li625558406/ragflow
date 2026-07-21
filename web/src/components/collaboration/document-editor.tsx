@@ -7,10 +7,11 @@ import storage from '@/utils/authorization-util';
 import type { Univer } from '@univerjs/core';
 import type { FUniver } from '@univerjs/presets';
 import { createUniver, LocaleType } from '@univerjs/presets';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import EditorHeader from './editor-header';
 import { DOCS_LOCALES, DOCS_PRESETS } from './univer-docs-presets';
 import useDocumentCollab from './use-document-collab';
+import { useUniverExport } from './use-univer-export';
 import type { CollaborationWebSocketProvider } from './yjs-provider';
 
 interface DocumentData {
@@ -46,7 +47,6 @@ export default function DocumentEditor({
   const containerRef = useRef<HTMLDivElement>(null);
   const univerRef = useRef<Univer | null>(null);
   const univerAPIRef = useRef<FUniver | null>(null);
-  const [downloading, setDownloading] = useState(false);
 
   // Commit any in-progress edit and return a fresh document snapshot.
   // Univer Docs may keep pending edits in an overlay until the region loses
@@ -84,6 +84,16 @@ export default function DocumentEditor({
     apiFetch,
     onUpdate,
     getLatestSnapshot,
+  });
+
+  const {
+    busy: exportBusy,
+    exportDocx,
+    exportPdf,
+  } = useUniverExport({
+    docId: doc.id,
+    apiFetch,
+    univerAPIRef,
   });
 
   // Report provider readiness to parent so side panels can subscribe to events.
@@ -193,16 +203,16 @@ export default function DocumentEditor({
     }
   }, [docsData, remoteEpoch, pushSnapshot]);
 
-  // 下载占位（Phase 5 实现）
-  const handleDownload = useCallback(async (type: 'docx' | 'pdf') => {
-    setDownloading(true);
-    try {
-      console.log('[DocumentEditor] download placeholder', type);
-      window.alert('导出功能将在 Phase 5 实现');
-    } finally {
-      setDownloading(false);
-    }
-  }, []);
+  const handleDownload = useCallback(
+    async (type: 'docx' | 'pdf') => {
+      if (type === 'docx') {
+        await exportDocx();
+      } else {
+        await exportPdf();
+      }
+    },
+    [exportDocx, exportPdf],
+  );
 
   return (
     <div className="flex-1 flex flex-col min-w-0 h-full">
@@ -215,7 +225,7 @@ export default function DocumentEditor({
         showManualSave={!token}
         onManualSave={saveToServer}
         onDownload={handleDownload}
-        downloading={downloading}
+        downloading={exportBusy}
         onOpenShare={onOpenShare}
         apiFetch={apiFetch}
         onRenamed={onUpdate}
