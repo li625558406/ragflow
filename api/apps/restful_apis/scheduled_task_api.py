@@ -80,21 +80,17 @@ def _get_authorized_tenant_ids() -> set:
 
 
 def _check_task_ownership(task_id):
-    """Fetch a scheduled task and verify tenant ownership.
+    """Fetch a scheduled task.
 
     Returns (ok, obj, error_message).  When ok is False the caller should
     return the error_message to the client.
 
-    A task is accessible if its tenant_id is in the set of authorized
-    tenant IDs (all tenants the user belongs to + the user's own ID).
+    权限策略（2026-07-22 调整）: 采集任务列表对所有登录用户开放——任意账号登录
+    即可查看/操作所有任务，不再按 tenant 过滤。create 仍按 current_user.id 归属。
     """
     e, obj = ScheduledTaskService.get_by_id(task_id)
     if not e:
         return False, None, "Task not found."
-
-    if obj.tenant_id not in _get_authorized_tenant_ids():
-        return False, None, "No authorization."
-
     return True, obj, None
 
 
@@ -143,9 +139,8 @@ def list_scheduled_tasks():
     if enabled_str is not None:
         enabled = enabled_str.lower() == "true"
 
-    tenant_ids = list(_get_authorized_tenant_ids())
+    # 权限策略（2026-07-22）: 所有登录用户可见全部采集任务，不再按 tenant 过滤
     objs, total = ScheduledTaskService.get_list(
-        tenant_id=tenant_ids,
         page_number=page_number,
         items_per_page=items_per_page,
         name=name,

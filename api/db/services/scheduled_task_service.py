@@ -40,9 +40,15 @@ class ScheduledTaskService(CommonService):
         enabled: bool = None,
     ) -> Tuple[List[dict], int]:
         if isinstance(tenant_id, list):
-            query = cls.model.select().where(cls.model.tenant_id.in_(tenant_id))
-        else:
+            if tenant_id:  # 非空列表才过滤
+                query = cls.model.select().where(cls.model.tenant_id.in_(tenant_id))
+            else:
+                query = cls.model.select()
+        elif tenant_id:
             query = cls.model.select().where(cls.model.tenant_id == tenant_id)
+        else:
+            # tenant_id 为空 → 不按租户过滤（全局可见模式）
+            query = cls.model.select()
         if name:
             query = query.where(cls.model.name ** f"%{name}%")
         if enabled is not None:
