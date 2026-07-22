@@ -19,6 +19,11 @@ interface Props {
   onChange: (key: PanelKey | null) => void;
   isOwner: boolean;
   provider?: CollaborationWebSocketProvider | null;
+  /**
+   * 传给 VersionHistoryPanel 决定 content_snapshot 的解析与渲染路径。
+   * 默认 'docx'。
+   */
+  fileType?: 'docx' | 'xlsx';
 }
 
 const PANEL_ICONS: {
@@ -40,6 +45,7 @@ export default function SidePanelBar({
   onChange,
   isOwner,
   provider,
+  fileType = 'docx',
 }: Props) {
   const close = () => onChange(null);
 
@@ -71,6 +77,7 @@ export default function SidePanelBar({
               apiFetch={apiFetch}
               open
               onToggle={close}
+              fileType={fileType}
             />
           )}
           {activePanel === 'audit' && isOwner && (

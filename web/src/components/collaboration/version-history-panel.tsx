@@ -7,6 +7,7 @@ import {
   X,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import UniverSpreadsheetVersionPreview from './univer-spreadsheet-version-preview';
 import UniverVersionPreview from './univer-version-preview';
 
 interface VersionEntry {
@@ -29,6 +30,12 @@ interface Props {
   apiFetch: (url: string, options?: RequestInit) => Promise<Response>;
   open: boolean;
   onToggle: () => void;
+  /**
+   * 文件类型 — 决定 content_snapshot 的解析方式和完整预览渲染器。
+   * 默认 'docx' (Univer IDocumentData) 以保持向后兼容。
+   * 'xlsx' 走 IWorkbookData 解析路径。
+   */
+  fileType?: 'docx' | 'xlsx';
 }
 
 function formatTime(t: number | string | null): string {
@@ -57,11 +64,88 @@ function relativeTime(t: number): string {
   return '';
 }
 
+/**
+ * 从 Univer IWorkbookData 快照中提取纯文本预览。
+ *
+ * 结构: { sheetOrder: string[], sheets: { [id]: { name, cellData: { [row]: { [col]: { v, t } } } } } }
+ * 策略: 按 sheetOrder 依次遍历，每张表用 "【Sheet名】" 打头，行内单元格用 " | " 分隔，
+ * 空行保留为空串。最多渲染前 100 行避免超长文本拖垮面板。
+ */
+function extractSpreadsheetText(workbook: Record<string, unknown>): string {
+  const sheetOrder = workbook.sheetOrder as string[] | undefined;
+  const sheets = workbook.sheets as
+    | Record<
+        string,
+        {
+          name?: string;
+          cellData?: Record<string, Record<string, { v?: unknown }>>;
+        }
+      >
+    | undefined;
+  if (!sheetOrder || !sheets) return '(无法解析表格内容)';
+
+  const MAX_ROWS_PER_SHEET = 100;
+  const sections: string[] = [];
+
+  for (const sheetId of sheetOrder) {
+    const sheet = sheets[sheetId];
+    if (!sheet) continue;
+    const sheetName = sheet.name || sheetId;
+    const cellData = sheet.cellData;
+    if (!cellData) {
+      sections.push(`【${sheetName}】(空表)`);
+      continue;
+    }
+    // 收集所有行号并按数字升序，保证阅读顺序符合直觉。
+    const rowKeys = Object.keys(cellData)
+      .map((k) => Number(k))
+      .filter((n) => Number.isFinite(n))
+      .sort((a, b) => a - b);
+    if (rowKeys.length === 0) {
+      sections.push(`【${sheetName}】(空表)`);
+      continue;
+    }
+    const trimmed = rowKeys.slice(0, MAX_ROWS_PER_SHEET);
+    const lines = trimmed.map((rowNum) => {
+      const row = cellData[String(rowNum)];
+      if (!row) return '';
+      const colKeys = Object.keys(row)
+        .map((k) => Number(k))
+        .filter((n) => Number.isFinite(n))
+        .sort((a, b) => a - b);
+      return colKeys
+        .map((colNum) => formatCellValue(row[String(colNum)]?.v))
+        .join(' | ');
+    });
+    const truncatedNote =
+      rowKeys.length > MAX_ROWS_PER_SHEET
+        ? `\n…(仅显示前 ${MAX_ROWS_PER_SHEET} 行)`
+        : '';
+    sections.push(`【${sheetName}】\n${lines.join('\n')}${truncatedNote}`);
+  }
+
+  const text = sections.join('\n\n').trim();
+  return text || '(空表格)';
+}
+
+function formatCellValue(v: unknown): string {
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  // 复杂类型 (公式对象、富文本等) 退化成 JSON 以免丢信息。
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return '';
+  }
+}
+
 export default function VersionHistoryPanel({
   docId,
   apiFetch,
   open,
   onToggle,
+  fileType = 'docx',
 }: Props) {
   const [info, setInfo] = useState<VersionInfo | null>(null);
   const [loading, setLoading] = useState(false);
@@ -123,20 +207,27 @@ export default function VersionHistoryPanel({
     setPreviewLoadingId(null);
   }, [docId]);
 
-  // Extract a plain-text summary from an Univer IDocumentData snapshot.
-  // body.dataStream holds the full text with \r\n paragraph separators —
-  // sufficient for a quick preview without spinning up a full Univer instance.
-  const extractPlainText = useCallback((content: unknown): string => {
-    if (!content || typeof content !== 'object') return '(空文档)';
-    const body = (content as { body?: { dataStream?: unknown } }).body;
-    const ds = body?.dataStream;
-    if (typeof ds !== 'string') return '(无法解析内容)';
-    const text = ds
-      .replace(/\r/g, '\n')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim();
-    return text || '(空文档)';
-  }, []);
+  // Extract a plain-text summary from a Univer snapshot.
+  // - docx (IDocumentData): body.dataStream 是带 \r\n 的全文文本
+  // - xlsx (IWorkbookData): 遍历 sheetOrder → 每张表的 cellData，按行拼接
+  //   单元格值。不渲染完整表格，只给"能看到这版本大致写了什么"的概览。
+  const extractPlainText = useCallback(
+    (content: unknown): string => {
+      if (!content || typeof content !== 'object') return '(空文档)';
+      if (fileType === 'xlsx') {
+        return extractSpreadsheetText(content as Record<string, unknown>);
+      }
+      const body = (content as { body?: { dataStream?: unknown } }).body;
+      const ds = body?.dataStream;
+      if (typeof ds !== 'string') return '(无法解析内容)';
+      const text = ds
+        .replace(/\r/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+      return text || '(空文档)';
+    },
+    [fileType],
+  );
 
   const togglePreview = useCallback(
     async (entry: VersionEntry) => {
@@ -477,7 +568,11 @@ export default function VersionHistoryPanel({
             </div>
             <div className="flex-1 min-h-0">
               {fullViewContent ? (
-                <UniverVersionPreview content={fullViewContent} />
+                fileType === 'xlsx' ? (
+                  <UniverSpreadsheetVersionPreview content={fullViewContent} />
+                ) : (
+                  <UniverVersionPreview content={fullViewContent} />
+                )
               ) : (
                 <div className="w-full h-full flex items-center justify-center text-sm text-stone-400">
                   该版本无内容快照

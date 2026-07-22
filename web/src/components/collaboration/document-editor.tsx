@@ -283,6 +283,7 @@ export default function DocumentEditor({
           onChange={setActivePanel}
           isOwner
           provider={provider ?? null}
+          fileType="docx"
         />
       </div>
     </div>
