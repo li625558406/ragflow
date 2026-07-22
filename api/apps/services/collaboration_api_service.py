@@ -290,6 +290,182 @@ async def import_xlsx(tenant_id: str, user_id: str, file_obj, folder_id: str = N
     return {"id": doc_id, "name": name, "file_type": "xlsx", "folder_id": folder_id}
 
 
+async def import_docx(tenant_id: str, user_id: str, file_obj, folder_id: str = None) -> dict:
+    """Parse a .docx file → Univer Docs IDocumentData snapshot.
+
+    python-docx caveat: `ParagraphFormat.outline_level` does NOT exist in the
+    public API (it raises AttributeError). Heading level must be detected via
+    `para.style.name` ("Heading 1" / "Heading 2" / ...) — that is the only
+    stable public path.
+
+    Output: Univer IDocumentData with body.dataStream / textRuns / paragraphs.
+    Tables are rendered as tab-separated rows (Univer Docs preset we loaded
+    doesn't include a native table block).
+    """
+    try:
+        from docx import Document as DocxDocument
+    except ImportError:
+        raise RuntimeError("python-docx not installed")
+
+    try:
+        doc = DocxDocument(file_obj)
+    except Exception as e:
+        err_msg = str(e).lower()
+        if "not a word file" in err_msg or "spreadsheet" in err_msg:
+            raise ValueError(
+                "该文件不是 Word 文档(.docx)。如果要导入 Excel 文件，请使用 .xlsx 扩展名。"
+            )
+        raise
+
+    doc_id = get_uuid()
+    name = (file_obj.filename or "imported").rsplit(".", 1)[0]
+
+    # Univer IDocumentBody uses "\r\n" between paragraphs. Each paragraph
+    # entry in `paragraphs[]` points at its first character via startIndex.
+    data_stream_parts: list[str] = []
+    text_runs: list[dict] = []
+    paragraphs_meta: list[dict] = []
+    markdown_lines: list[str] = []
+    cursor = 0
+
+    def _emit_runs(runs) -> int:
+        nonlocal cursor
+        added = 0
+        for run in runs:
+            run_text = run.text or ""
+            if not run_text:
+                continue
+            ts: dict = {}
+            if run.bold:
+                ts["bl"] = 1
+            if run.italic:
+                ts["it"] = 1
+            if run.underline:
+                ts["ul"] = {"s": 1}
+            if run.font and run.font.strike:
+                ts["st"] = {"s": 1}
+            text_runs.append({
+                "st": cursor,
+                "ed": cursor + len(run_text),
+                "ts": ts,
+            })
+            data_stream_parts.append(run_text)
+            cursor += len(run_text)
+            added += len(run_text)
+        return added
+
+    for para in doc.paragraphs:
+        para_start = cursor
+
+        # Heading detection via style name (the only public API path).
+        # DO NOT use para.paragraph_format.outline_level — that attribute
+        # does not exist and will throw AttributeError mid-import.
+        heading_level: int | None = None
+        if para.style and para.style.name:
+            style_name = para.style.name.lower()
+            if style_name == "title" or "heading 1" in style_name:
+                heading_level = 1
+            elif "heading 2" in style_name:
+                heading_level = 2
+            elif "heading 3" in style_name:
+                heading_level = 3
+            elif "heading 4" in style_name:
+                heading_level = 4
+            elif "heading 5" in style_name:
+                heading_level = 5
+            elif "heading 6" in style_name:
+                heading_level = 6
+
+        added = _emit_runs(para.runs)
+        # Fallback: if runs produced nothing but para.text has content (e.g.
+        # field codes, form fields), emit the visible text as a single run.
+        if added == 0 and para.text:
+            text_runs.append({
+                "st": cursor,
+                "ed": cursor + len(para.text),
+                "ts": {},
+            })
+            data_stream_parts.append(para.text)
+            cursor += len(para.text)
+
+        # Markdown mirror (used for full-text search / list preview)
+        text_md = para.text.strip()
+        if heading_level and text_md:
+            markdown_lines.append("#" * heading_level + " " + text_md)
+        else:
+            markdown_lines.append(text_md)
+
+        paragraph_style: dict = {}
+        if heading_level is not None:
+            paragraph_style["headingLevel"] = heading_level
+        paragraphs_meta.append({
+            "startIndex": para_start,
+            "paragraphStyle": paragraph_style,
+        })
+        data_stream_parts.append("\r\n")
+        cursor += 2
+
+    # Tables → one paragraph per row, cells joined by tab.
+    for table in doc.tables:
+        for row in table.rows:
+            row_start = cursor
+            cells = [c.text.replace("\n", " ").strip() for c in row.cells]
+            row_text = "\t".join(cells)
+            if row_text:
+                text_runs.append({
+                    "st": row_start,
+                    "ed": row_start + len(row_text),
+                    "ts": {},
+                })
+                data_stream_parts.append(row_text)
+                cursor += len(row_text)
+            paragraphs_meta.append({
+                "startIndex": row_start,
+                "paragraphStyle": {},
+            })
+            data_stream_parts.append("\r\n")
+            cursor += 2
+            markdown_lines.append("| " + " | ".join(cells) + " |")
+
+    # Body must contain at least one paragraph or Univer's renderer throws.
+    if not data_stream_parts:
+        data_stream_parts.append("\r\n")
+        paragraphs_meta.append({"startIndex": 0, "paragraphStyle": {}})
+
+    content = {
+        "id": "default_doc",
+        "documentStyle": {
+            "pageSize": {"width": 794, "height": 1124},  # A4 @ 96dpi
+            "documentFlavor": 1,  # DocumentFlavor.TRADITIONAL (A4 paged)
+            "marginTop": 50,
+            "marginBottom": 50,
+            "marginLeft": 90,
+            "marginRight": 90,
+        },
+        "body": {
+            "dataStream": "".join(data_stream_parts),
+            "textRuns": text_runs,
+            "paragraphs": paragraphs_meta,
+        },
+    }
+    markdown_content = "\n".join(markdown_lines)
+
+    CollaborationDocumentService.save(
+        id=doc_id,
+        name=name,
+        file_type="docx",
+        folder_id=folder_id,
+        content=content,
+        markdown_content=markdown_content,
+        tenant_id=tenant_id,
+        created_by=user_id,
+        permission="me",
+    )
+    await log_audit(tenant_id, doc_id, "document.import_docx", {"name": name})
+
+    return {"id": doc_id, "name": name, "file_type": "docx", "folder_id": folder_id}
+
+
 async def list_documents(tenant_id: str, user_id: str) -> list:
     """List collaboration documents visible to the current user (own + team-shared + ACL)."""
     team_user_ids = _get_shared_tenant_user_ids(user_id)

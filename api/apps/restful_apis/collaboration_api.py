@@ -427,16 +427,29 @@ async def import_document():
             or 'spreadsheet' in content_type
             or 'excel' in content_type
         )
-        if not is_excel:
-            return get_error_argument_result(
-                "Only Excel files are supported via this endpoint. Use Univer Docs editor import instead."
-            )
-        doc = await collaboration_api_service.import_xlsx(
-            tenant_id=current_user.id,
-            user_id=current_user.id,
-            file_obj=file_obj,
-            folder_id=folder_id,
+        is_word = (
+            filename.endswith('.docx')
+            or 'wordprocessingml' in content_type
+            or 'msword' in content_type
         )
+        if is_excel:
+            doc = await collaboration_api_service.import_xlsx(
+                tenant_id=current_user.id,
+                user_id=current_user.id,
+                file_obj=file_obj,
+                folder_id=folder_id,
+            )
+        elif is_word:
+            doc = await collaboration_api_service.import_docx(
+                tenant_id=current_user.id,
+                user_id=current_user.id,
+                file_obj=file_obj,
+                folder_id=folder_id,
+            )
+        else:
+            return get_error_argument_result(
+                "仅支持 .xlsx / .docx 格式文件"
+            )
         return get_json_result(data=doc)
     except ValueError as e:
         # XlsxTooLargeError is a ValueError subclass — surface its friendly
