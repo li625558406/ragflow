@@ -92,8 +92,12 @@ def _load_sites_from_yaml() -> List[Dict[str, Any]]:
 
 
 def _build_script_args(site_id: str, category: str, full: bool,
-                       section: str = "") -> str:
-    """构造 unified_crawler.py 的 --script-args JSON。"""
+                       section: str = "", date_filter: str = "") -> str:
+    """构造 unified_crawler.py 的 --script-args JSON。
+
+    date_filter: "" 不过滤；"today" 只保当天；"YYYY-MM-DD" 只保指定日期。
+    传入 "today" 时由 CLI/writer 在运行时解析为当天日期，适合定时任务。
+    """
     args: Dict[str, Any] = {
         "site_id": site_id,
         "writer": "collection",
@@ -103,12 +107,53 @@ def _build_script_args(site_id: str, category: str, full: bool,
         args["full"] = True
     if section:
         args["section"] = section
+    if date_filter:
+        args["date_filter"] = date_filter
     return json.dumps(args, ensure_ascii=False)
+
+
+_SITE_META_CACHE: Optional[Dict[str, Dict[str, str]]] = None
+_SITE_META_CACHE_MTIME: float = 0.0
+
+
+def _build_site_metadata_map() -> Dict[str, Dict[str, str]]:
+    """读取 YAML 构建 site_id → {name, domain} 查询表。
+
+    domain 取 site_url 的 netloc（如 https://xx.gov.cn → xx.gov.cn），
+    site_url 缺失或解析失败时 domain 为空串。按 YAML mtime 做模块级缓存。
+    """
+    global _SITE_META_CACHE, _SITE_META_CACHE_MTIME
+    try:
+        mtime = os.path.getmtime(_CRAWLER_SITES_YAML)
+    except OSError:
+        return {}
+    if _SITE_META_CACHE is not None and _SITE_META_CACHE_MTIME == mtime:
+        return _SITE_META_CACHE
+
+    sites = _load_sites_from_yaml()
+    mapping: Dict[str, Dict[str, str]] = {}
+    for s in sites:
+        url = s.get("site_url", "") or ""
+        domain = ""
+        if url:
+            try:
+                from urllib.parse import urlparse
+                domain = urlparse(url).netloc
+            except Exception:
+                domain = ""
+        mapping[s["site_id"]] = {
+            "site_name": s.get("name", s["site_id"]),
+            "site_domain": domain,
+        }
+    _SITE_META_CACHE = mapping
+    _SITE_META_CACHE_MTIME = mtime
+    return mapping
 
 
 def _enqueue_one_shot_task(tenant_id: str, name: str, site_id: str,
                            category: str, kb_id: str,
-                           full: bool = False) -> Dict[str, Any]:
+                           full: bool = False,
+                           date_filter: str = "") -> Dict[str, Any]:
     """创建一次性 ScheduledTask 记录并立即投递到 Redis 队列。
 
     返回 {"task_id", "log_id"} 或抛异常。
@@ -118,7 +163,8 @@ def _enqueue_one_shot_task(tenant_id: str, name: str, site_id: str,
 
     task_id = get_uuid()
     log_id = get_uuid()
-    script_args = _build_script_args(site_id, category, full)
+    script_args = _build_script_args(site_id, category, full,
+                                     date_filter=date_filter)
 
     # 1. 创建 ScheduledTask（enabled=False 防止被定时调度器重复拾起）
     ScheduledTaskService.insert({
@@ -208,7 +254,8 @@ async def trigger_run():
             "category": "policy",    # 可选，默认从 YAML 读
             "kb_id":   "xxx",        # 可选
             "full":    false,        # 可选，是否全量重扫
-            "section": ""            # 可选
+            "section": "",           # 可选
+            "date_filter": ""        # 可选, "today" 或 "YYYY-MM-DD"
         }
     """
     body = await request.get_json() or {}
@@ -226,6 +273,7 @@ async def trigger_run():
     kb_id = (body.get("kb_id") or "").strip()
     full = bool(body.get("full", False))
     section = (body.get("section") or "").strip()
+    date_filter = (body.get("date_filter") or "").strip()
 
     try:
         result = _enqueue_one_shot_task(
@@ -235,6 +283,7 @@ async def trigger_run():
             category=category,
             kb_id=kb_id,
             full=full,
+            date_filter=date_filter,
         )
     except Exception as e:
         logging.exception("collection_api: trigger failed: %s", e)
@@ -282,7 +331,8 @@ async def create_scheduled():
             "interval_seconds": 86400,            # schedule_type=interval 时必填
             "kb_id": "xxx",
             "enabled": true,
-            "name": "..."                         # 可选
+            "name": "...",                        # 可选
+            "date_filter": "today"                # 可选, 推荐每日任务用 "today"
         }
     """
     body = await request.get_json() or {}
@@ -305,6 +355,15 @@ async def create_scheduled():
     kb_id = (body.get("kb_id") or "").strip()
     name = (body.get("name") or f"[collection] {site_id}").strip()
     enabled = bool(body.get("enabled", True))
+    date_filter = (body.get("date_filter") or "").strip()
+    if date_filter and date_filter.lower() != "today":
+        # 校验 YYYY-MM-DD 格式
+        from datetime import datetime as _dt
+        try:
+            _dt.strptime(date_filter.replace("/", "-"), "%Y-%m-%d")
+        except ValueError:
+            return get_data_error_result(
+                message='date_filter must be "today" or "YYYY-MM-DD"')
 
     # 计算首次 next_run_time
     if schedule_type == "interval":
@@ -324,7 +383,8 @@ async def create_scheduled():
         "name": name,
         "description": f"Scheduled collection: {site_id} ({category})",
         "script_path": _UNIFIED_CRAWLER_SCRIPT,
-        "script_args": _build_script_args(site_id, category, full=False),
+        "script_args": _build_script_args(site_id, category, full=False,
+                                          date_filter=date_filter),
         "schedule_type": schedule_type,
         "cron_expression": cron_expr,
         "interval_seconds": interval if schedule_type == "interval" else None,
@@ -442,6 +502,13 @@ async def list_results():
             d.pop("markdown", None)  # 列表不返回大字段
             items.append(d)
 
+        # 附加站点中文名 + 域名 (读 YAML 元数据, 按 site_id 查)
+        site_map = _build_site_metadata_map() if items else {}
+        for it in items:
+            meta = site_map.get(it.get("site_id", ""), {})
+            it["site_name"] = meta.get("site_name", "") or it.get("site_id", "")
+            it["site_domain"] = meta.get("site_domain", "")
+
         # 批量补充扩展字段
         if with_ext and category in ("policy", "personnel") and items:
             result_ids = [it["id"] for it in items]
@@ -474,6 +541,11 @@ async def get_result(result_id: str):
         if not row:
             return None
         d = row.to_dict()
+        # 附加站点中文名 + 域名
+        site_map = _build_site_metadata_map()
+        meta = site_map.get(d.get("site_id", ""), {})
+        d["site_name"] = meta.get("site_name", "") or d.get("site_id", "")
+        d["site_domain"] = meta.get("site_domain", "")
         category = d.get("category", "bid")
         if category == "policy":
             ext = CollectionPolicyExtService.get_by_result_ids([result_id])
