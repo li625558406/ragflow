@@ -350,6 +350,14 @@ async def import_docx(tenant_id: str, user_id: str, file_obj, folder_id: str = N
         added = 0
         for run in runs:
             run_text = run.text or ""
+            # Strip Univer control chars that would create unintended
+            # paragraph / section / page / column breaks inside a run.
+            # Common source: .docx soft line breaks (<w:br/>) surface as
+            # "\n" inside run.text — Univer interprets that as SECTION_BREAK
+            # and splits the doc mid-paragraph, producing phantom blank
+            # pages. Tabs are also stripped (Univer treats "\t" specially).
+            for ch in ("\r", "\n", "\v", "\f", "\t"):
+                run_text = run_text.replace(ch, "")
             if not run_text:
                 continue
             ts: dict = {}
@@ -383,9 +391,14 @@ async def import_docx(tenant_id: str, user_id: str, file_obj, folder_id: str = N
         data_stream_parts.append("\r")
         cursor += 1
 
-    for para in doc.paragraphs:
-        para_start = cursor
+    # Track whether we've emitted any real content yet, to skip leading
+    # empty paragraphs (which would push the first heading to page 2).
+    # Also collapse consecutive empty paragraphs into one to avoid stacks
+    # of blank lines (a common artifact of .docx export tools).
+    seen_content = False
+    last_was_empty = False
 
+    for para in doc.paragraphs:
         # Heading detection via style name (the only public API path).
         # DO NOT use para.paragraph_format.outline_level — that attribute
         # does not exist and will throw AttributeError mid-import.
@@ -405,17 +418,39 @@ async def import_docx(tenant_id: str, user_id: str, file_obj, folder_id: str = N
             elif "heading 6" in style_name:
                 heading_level = 6
 
+        para_start = cursor
         added = _emit_runs(para.runs)
         # Fallback: if runs produced nothing but para.text has content (e.g.
         # field codes, form fields), emit the visible text as a single run.
+        # Same control-char sanitization as _emit_runs.
         if added == 0 and para.text:
-            text_runs.append({
-                "st": cursor,
-                "ed": cursor + len(para.text),
-                "ts": {},
-            })
-            data_stream_parts.append(para.text)
-            cursor += len(para.text)
+            fallback_text = para.text
+            for ch in ("\r", "\n", "\v", "\f", "\t"):
+                fallback_text = fallback_text.replace(ch, "")
+            if fallback_text:
+                text_runs.append({
+                    "st": cursor,
+                    "ed": cursor + len(fallback_text),
+                    "ts": {},
+                })
+                data_stream_parts.append(fallback_text)
+                cursor += len(fallback_text)
+                added = len(fallback_text)
+
+        is_empty = added == 0
+        # Skip leading empty paragraphs (before any content) and collapse
+        # consecutive empties into one. Trailing empties are stripped by
+        # the "last_was_empty && is_empty" rule and the absence of further
+        # content.
+        if is_empty:
+            if not seen_content:
+                continue  # leading blank — drop
+            if last_was_empty:
+                continue  # collapse stack of blanks — keep only one
+            last_was_empty = True
+        else:
+            seen_content = True
+            last_was_empty = False
 
         # Markdown mirror (used for full-text search / list preview)
         text_md = para.text.strip()
