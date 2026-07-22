@@ -118,14 +118,41 @@ class SpaRenderAdapter(BaseAdapter):
                 # Clear previous captures
                 self._api_captures = []
 
-                # Navigate and wait for network idle
-                page.goto(url, wait_until="networkidle", timeout=self._transport.timeout * 1000)
-
-                # Wait for data container to appear
+                # Navigate and wait for network idle (or DOMContentLoaded if
+                # network_idle is disabled).  Some sites have long-polling /
+                # analytics scripts (hm.baidu.com) that prevent the "load"
+                # event from ever firing, so we use "domcontentloaded" which
+                # fires as soon as the DOM is parsed and then rely on
+                # wait_for_selector below to confirm the SPA has rendered.
+                wait_until = "networkidle" if getattr(self._transport, "network_idle", True) else "domcontentloaded"
                 try:
-                    page.wait_for_selector("table, .list, .el-table, .ant-table", timeout=15000)
-                except Exception:
-                    pass  # table may not exist; rely on API captures
+                    page.goto(url, wait_until=wait_until, timeout=self._transport.timeout * 1000)
+                except Exception as goto_err:
+                    # goto may time out even when the page has fully rendered
+                    # (e.g. analytics scripts block the load event).  Log and
+                    # continue — the wait_for_selector / extraction phase will
+                    # decide whether the page actually has data.
+                    logging.warning(
+                        "SpaRenderAdapter: page.goto(%s, wait_until=%s) failed: %s — continuing to check DOM",
+                        url, wait_until, goto_err,
+                    )
+
+                # Wait for data container to appear.
+                # Prefer this site's own extract.items_path (knows what to wait for),
+                # then fall back to common container selectors.
+                wait_selectors = []
+                if self._config.extract and self._config.extract.items_path:
+                    wait_selectors.append(self._config.extract.items_path)
+                wait_selectors.extend([
+                    "table, .list, .el-table, .ant-table",
+                    ".list-item, .case-list a, a[href*='detail']",
+                ])
+                for sel in wait_selectors:
+                    try:
+                        page.wait_for_selector(sel, timeout=10000)
+                        break
+                    except Exception:
+                        continue
 
                 # Additional wait for async rendering
                 time.sleep(3)
@@ -135,6 +162,14 @@ class SpaRenderAdapter(BaseAdapter):
                     items = self._extract_from_api_captures()
                     if items:
                         self._last_raw = self._api_captures
+                        return items
+
+                # JS extraction (custom snippet from YAML extract.js_extract)
+                if (self._config.extract
+                        and getattr(self._config.extract, "js_extract", "")):
+                    items = self._extract_via_js(page, self._config.extract.js_extract)
+                    if items:
+                        self._last_raw = items
                         return items
 
                 # Fall back to DOM extraction
@@ -503,10 +538,44 @@ class SpaRenderAdapter(BaseAdapter):
                 return None
         return data
 
-    def _extract_from_dom(self, page) -> List[Dict[str, Any]]:
-        """Extract items from rendered DOM."""
+    def _extract_via_js(self, page, js_source: str) -> List[Dict[str, Any]]:
+        """Run a YAML-supplied JS snippet on the page and return its result.
+
+        The snippet is passed to ``page.evaluate`` and must return a list of
+        plain dicts.  Use this when CSS selectors can't express the extraction
+        (e.g. an ``<a>`` element's own text with a date suffix stripped).
+        """
         try:
-            # Try to get table or list data via JavaScript
+            result = page.evaluate(js_source)
+            if isinstance(result, list):
+                return result
+            logging.warning("SpaRenderAdapter: js_extract returned %s, expected list",
+                            type(result).__name__)
+        except Exception as e:
+            logging.warning("SpaRenderAdapter: js_extract failed: %s", e)
+        return []
+
+    def _extract_from_dom(self, page) -> List[Dict[str, Any]]:
+        """Extract items from rendered DOM.
+
+        If the site is configured with ``extract.type == css_selector``, return
+        the full rendered HTML as a single-item list so the engine's CSS
+        extractor pipeline (``_maybe_extract_from_html``) can apply the
+        configured ``items_path`` and ``fields``.  Otherwise fall back to
+        generic JS-based extraction.
+        """
+        # CSS-extractor mode: hand the rendered HTML back to the engine.
+        if self._config.extract and self._config.extract.type == "css_selector":
+            try:
+                html = page.content()
+                self._last_raw = html
+                return [{"html": html}]
+            except Exception as e:
+                logging.warning("SpaRenderAdapter: HTML capture failed: %s", e)
+                return []
+
+        # Generic JS extraction for sites without explicit CSS config.
+        try:
             items = page.evaluate("""() => {
                 const rows = document.querySelectorAll('table tbody tr, .list-item, .el-table__row');
                 const result = [];
@@ -556,8 +625,14 @@ class SpaRenderAdapter(BaseAdapter):
 
         for attempt in range(3):
             try:
-                page.goto(detail_url, wait_until="networkidle",
-                          timeout=self._transport.timeout * 1000)
+                _wu = "networkidle" if getattr(self._transport, "network_idle", True) else "domcontentloaded"
+                try:
+                    page.goto(detail_url, wait_until=_wu,
+                              timeout=self._transport.timeout * 1000)
+                except Exception as goto_err:
+                    logging.warning(
+                        "SpaRenderAdapter: detail goto failed (continuing): %s", goto_err,
+                    )
                 time.sleep(1)
 
                 # Try to extract content
@@ -598,8 +673,14 @@ class SpaRenderAdapter(BaseAdapter):
         page = self._get_page()
         for attempt in range(3):
             try:
-                page.goto(detail_url, wait_until="networkidle",
-                          timeout=self._transport.timeout * 1000)
+                _wu = "networkidle" if getattr(self._transport, "network_idle", True) else "domcontentloaded"
+                try:
+                    page.goto(detail_url, wait_until=_wu,
+                              timeout=self._transport.timeout * 1000)
+                except Exception as goto_err:
+                    logging.warning(
+                        "SpaRenderAdapter: detail css goto failed (continuing): %s", goto_err,
+                    )
                 time.sleep(1)
                 html = page.content()
 

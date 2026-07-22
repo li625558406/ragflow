@@ -37,6 +37,7 @@ from peewee import (
     BooleanField,
     CharField,
     CompositeKey,
+    DateField,
     DateTimeField,
     Field,
     FloatField,

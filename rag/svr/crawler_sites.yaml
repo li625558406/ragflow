@@ -3149,7 +3149,7 @@ sites:
         User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"
       verify_ssl: false
       timeout: 60
-      network_idle: true
+      network_idle: false             # networkidle 对该站持续活动会超时,改用 domcontentloaded
     listing:
       url: "https://ggzyjd.fj.gov.cn/case/index/"
       method: GET
@@ -3163,12 +3163,44 @@ sites:
       max_retries: 4
       max_consecutive_empty: 3
     extract:
+      # SPA 列表是 <a class="list-item">…<em>日期</em></a> 结构, BS4 CSS
+      # 取不到 <a> 自身的 text, 用 js_extract 直接在页面上跑 JS 提取
+      # (与旧脚本 ggzyjd_crawler.py::_extract_list_items 一致)。
       type: css_selector
-      items_path: "a[href*='case/detail']"
-      fields:
-        title: "::text"
-        url: "::attr(href)"
-        date: "em::text"
+      items_path: "a.list-item"
+      js_extract: |
+        () => {
+          const results = [];
+          const seen = new Set();
+          const links = document.querySelectorAll(
+            'a.list-item, .case-list a, a[href*="case/detail"]');
+          for (const a of links) {
+            const href = a.href || '';
+            const text = (a.textContent || '').trim();
+            if (!href || !text || text.length < 2) continue;
+            if (seen.has(href)) continue;
+            seen.add(href);
+            let dateStr = '';
+            const em = a.querySelector('em, .time, [class*=time]');
+            if (em) dateStr = (em.textContent || '').trim();
+            if (!dateStr) {
+              const m = text.match(/\d{4}[-/]\d{1,2}[-/]\d{1,2}/);
+              if (m) dateStr = m[0];
+            }
+            let mguid = '';
+            try {
+              const url = new URL(href);
+              mguid = url.searchParams.get('MGUID') || '';
+            } catch (e) {}
+            results.push({
+              title: text.replace(/\d{4}[-/]\d{1,2}[-/]\d{1,2}/g, '').trim(),
+              url: href,
+              date: dateStr,
+              id: mguid || href.split('=').pop() || '',
+            });
+          }
+          return results;
+        }
     detail:
       type: css_selector
       content_field: ".detail-content"

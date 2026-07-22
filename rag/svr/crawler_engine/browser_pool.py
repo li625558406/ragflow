@@ -105,6 +105,10 @@ class BrowserPool:
         self._context = self._browser.new_context(
             viewport={"width": 1920, "height": 1080},
             locale="zh-CN",
+            # Default Chromium UA contains "HeadlessChrome" which is trivially
+            # detected by anti-bot systems. Override with a realistic UA.
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
         )
         logging.info("BrowserPool: started Chromium at %s", chrome_path or "default")
 

@@ -138,6 +138,11 @@ class ExtractConfig:
     sort_field: str = ""           # field to sort extracted items by (e.g. "CREATE_TIME")
     sort_descending: bool = True   # sort descending (newest first)
     max_items: int = 0             # max items to keep after sorting (0 = no limit)
+    # ── SPA-only: custom JavaScript to evaluate on the rendered page ──
+    # When set, spa_render adapter runs this JS via page.evaluate and uses
+    # the returned list[dict] directly.  Use when CSS selectors can't express
+    # the extraction (e.g. element's own text minus a child date span).
+    js_extract: str = ""
 
 
 @dataclass
@@ -347,6 +352,7 @@ class ConfigLoader:
             sort_field=data.get("sort_field", ""),
             sort_descending=data.get("sort_descending", True),
             max_items=data.get("max_items", 0),
+            js_extract=data.get("js_extract", ""),
         )
 
     def _parse_detail(self, data: dict) -> DetailConfig:
