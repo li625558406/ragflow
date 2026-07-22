@@ -2076,6 +2076,31 @@ class CollectionPersonnelExt(DataBaseModel):
         db_table = "collection_personnel_ext"
 
 
+class CollectionObjectionExt(DataBaseModel):
+    """异议结果类采集扩展字段（category=objection）。"""
+    result_id = CharField(max_length=32, primary_key=True, help_text="FK -> crawler_result.id")
+    record_no = CharField(max_length=100, null=True, default="", index=True, help_text="编号，如 A02202607001306")
+    publication_time = CharField(max_length=64, null=True, default="", help_text="公示时间")
+    tender_no = CharField(max_length=100, null=True, default="", index=True, help_text="招标编号")
+    owner_unit = CharField(max_length=200, null=True, default="", index=True, help_text="业主单位")
+    tender_agency = CharField(max_length=200, null=True, default="", help_text="招标代理机构")
+    related_sections = CharField(max_length=500, null=True, default="", help_text="相关标段(包)")
+    objector_name = CharField(max_length=200, null=True, default="", index=True, help_text="异议人名称")
+    objected_party_name = CharField(max_length=200, null=True, default="", index=True, help_text="被异议人名称")
+    objection_time = CharField(max_length=64, null=True, default="", index=True, help_text="异议时间")
+    objection_type = CharField(max_length=100, null=True, default="", index=True, help_text="异议类型")
+    objection_content = TextField(null=True, default="", help_text="异议内容")
+    basis_and_reasons = TextField(null=True, default="", help_text="依据和理由")
+    acceptance_time = CharField(max_length=64, null=True, default="", help_text="受理时间")
+    processing_time = CharField(max_length=64, null=True, default="", help_text="处理时间")
+    handling_opinion = TextField(null=True, default="", help_text="异议处理意见")
+    processing_result = TextField(null=True, default="", help_text="处理结果")
+    processing_basis = TextField(null=True, default="", help_text="处理依据")
+
+    class Meta:
+        db_table = "collection_objection_ext"
+
+
 def alter_db_add_column(migrator, table_name, column_name, column_type):
     try:
         migrate(migrator.add_column(table_name, column_name, column_type))
@@ -2477,6 +2502,10 @@ def migrate_db():
     if not CollectionPersonnelExt.table_exists():
         CollectionPersonnelExt.create_table(safe=True)
         logging.info("collection_personnel_ext: table created")
+    # 异议结果扩展表
+    if not CollectionObjectionExt.table_exists():
+        CollectionObjectionExt.create_table(safe=True)
+        logging.info("collection_objection_ext: table created")
 
     logging.disable(logging.NOTSET)
     # this is after re-enabling logging to allow logging changed user emails

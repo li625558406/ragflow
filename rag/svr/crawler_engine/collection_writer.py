@@ -2,7 +2,7 @@
 CollectionWriter — 智能采集（新系统）的数据库写入器。
 
 与 BidWriter 完全独立：
-- 写入目标：crawler_result（共用主表）+ collection_policy_ext / collection_personnel_ext（按类别）
+- 写入目标：crawler_result（共用主表）+ collection_policy_ext / collection_personnel_ext / collection_objection_ext（按类别）
 - 不读 bid_* 任何表，不复用 BidProjectService
 - id 生成策略：md5(site_id|source_url)，与 CrawlerResultService.gen_result_id 一致
 
@@ -14,6 +14,7 @@ CollectionWriter — 智能采集（新系统）的数据库写入器。
 """
 import hashlib
 import logging
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -32,20 +33,89 @@ try:
     from api.db.services.collection_ext_service import (
         CollectionPolicyExtService,
         CollectionPersonnelExtService,
+        CollectionObjectionExtService,
     )
 except ImportError:
     CrawlerResultService = None  # type: ignore
     CollectionPolicyExtService = None  # type: ignore
     CollectionPersonnelExtService = None  # type: ignore
+    CollectionObjectionExtService = None  # type: ignore
 
 
 # 合法的 category 值
-VALID_CATEGORIES = ("bid", "policy", "personnel", "news", "other")
+VALID_CATEGORIES = ("bid", "policy", "personnel", "news", "other", "objection")
 
 
 def gen_result_id(site_id: str, source_url: str) -> str:
     """与 crawler_service.gen_result_id 一致：md5(site_id|source_url)。"""
     return hashlib.md5(f"{site_id}|{source_url}".encode("utf-8")).hexdigest()
+
+
+# 异议结果字段：中文标签 → 英文字段名（顺序敏感：长标签须在短标签之前，避免被部分匹配抢占）
+_OBJECTION_FIELD_LABELS: List[tuple] = [
+    ("异议处理意见", "handling_opinion"),
+    ("被异议人名称", "objected_party_name"),
+    ("公示时间", "publication_time"),
+    ("招标代理机构", "tender_agency"),
+    ("招标编号", "tender_no"),
+    ("相关标段(包)", "related_sections"),
+    ("业主单位", "owner_unit"),
+    ("异议人名称", "objector_name"),
+    ("异议时间", "objection_time"),
+    ("异议类型", "objection_type"),
+    ("异议内容", "objection_content"),
+    ("依据和理由", "basis_and_reasons"),
+    ("受理时间", "acceptance_time"),
+    ("处理时间", "processing_time"),
+    ("处理结果", "processing_result"),
+    ("处理依据", "processing_basis"),
+    ("编号", "record_no"),
+]
+_OBJECTION_FIELD_KEYS: List[str] = [en for _, en in _OBJECTION_FIELD_LABELS]
+
+
+def _parse_objection_fields(content: str) -> Dict[str, str]:
+    """从异议详情正文中按 'Label：value' 模式抽取结构化字段。
+
+    支持中英文冒号 + 任意空白；字段值延伸到下一个 'xxx：' 标签或段落结尾。
+    多行值（如异议内容）会被压缩为单行空格分隔，便于 CharField 存储。
+
+    关键：用否定逆向断言 `(?<![\\u4e00-\\u9fff])` 防止短标签匹配到
+    长标签的子串（如 `编号` 不能匹配 `招标编号` 内部的 `编号`）。
+    用 `(?=\\n\\s*[^：：\\n]{1,20}[：:])` 限定下一标签长度 ≤20 字符，
+    避免跨过无冒号的章节标题（如孤立的 `异议` 行）。
+    """
+    if not content:
+        return {}
+    fields: Dict[str, str] = {}
+    # 非原始字符串让 \u 转义生效；lookbehind 防子串抢占；lookahead 限标签长度
+    pattern_tpl = (
+        r"(?<![\u4e00-\u9fff])"      # 标签前不能是汉字
+        "{label}"
+        r"\s*[：:]\s*"                # 中英文冒号 + 空白
+        r"(.+?)"                      # 懒匹配值
+        r"(?=\n\s*[^\n：:]{1,20}[：:]|\Z)"  # 下一行 ≤20 字符的标签 或 文本末尾
+    )
+    # 已知章节标题（无冒号的孤立行），会在懒匹配中被吸入值末尾，需 strip
+    _CHAPTER_TRAILERS = ("异议处理", "异议")
+    for cn_label, en_key in _OBJECTION_FIELD_LABELS:
+        pattern = pattern_tpl.format(label=re.escape(cn_label))
+        m = re.search(pattern, content, re.DOTALL)
+        if not m:
+            continue
+        val = m.group(1).strip()
+        # 压缩多余空白（含换行），保留可读性
+        val = re.sub(r"\s+", " ", val).strip()
+        # 去除末尾被吸入的章节标题（如 "福建广誉...公司 异议"）
+        for trailer in _CHAPTER_TRAILERS:
+            if val == trailer:
+                val = ""
+                break
+            if val.endswith(" " + trailer):
+                val = val[: -(len(trailer) + 1)].strip()
+        if val:
+            fields[en_key] = val
+    return fields
 
 
 class CollectionWriter:
@@ -55,6 +125,7 @@ class CollectionWriter:
       - 共用：crawler_result（所有类别）
       - policy:    crawler_result + collection_policy_ext
       - personnel: crawler_result + collection_personnel_ext
+      - objection: crawler_result + collection_objection_ext
       - bid/news/other: 仅 crawler_result（结构化字段放 extracted_json）
     """
 
@@ -72,6 +143,8 @@ class CollectionWriter:
             "policy_ext_failed": 0,
             "personnel_ext_written": 0,
             "personnel_ext_failed": 0,
+            "objection_ext_written": 0,
+            "objection_ext_failed": 0,
         }
 
     # ------------------------------------------------------------------
@@ -128,6 +201,8 @@ class CollectionWriter:
             self._write_policy_ext(result_id, item)
         elif category == "personnel":
             self._write_personnel_ext(result_id, item)
+        elif category == "objection":
+            self._write_objection_ext(result_id, item)
 
         return result_id
 
@@ -304,6 +379,32 @@ class CollectionWriter:
         except Exception as e:
             logging.error("CollectionWriter: personnel_ext failed (id=%s): %s", result_id, e)
             self._stats["personnel_ext_failed"] += 1
+            return False
+
+    def _write_objection_ext(self, result_id: str, item: Dict[str, Any]) -> bool:
+        if CollectionObjectionExtService is None:
+            return False
+
+        # 从详情正文按中文标签解析 17 个字段
+        content = (item.get("content") or item.get("detail") or
+                   item.get("text") or item.get("body") or "")
+        parsed = _parse_objection_fields(content) if content else {}
+
+        # 兜底：若 item 已预先携带英文字段（YAML extract 映射过），优先取 item 值
+        fields = {}
+        for en_key in _OBJECTION_FIELD_KEYS:
+            val = self._first_of(item, en_key)
+            if val in (None, "", [], {}):
+                val = parsed.get(en_key, "")
+            fields[en_key] = val
+
+        try:
+            CollectionObjectionExtService.upsert(result_id, fields)
+            self._stats["objection_ext_written"] += 1
+            return True
+        except Exception as e:
+            logging.error("CollectionWriter: objection_ext failed (id=%s): %s", result_id, e)
+            self._stats["objection_ext_failed"] += 1
             return False
 
     # ------------------------------------------------------------------

@@ -3210,6 +3210,96 @@ sites:
       parser_id: "naive"
       upload_batch_size: 10
 
+  # --------------------------------------------------------------------------
+  # ggzyjd_dissent — 福建省工程领域招投标在线监管平台 · 异议结果
+  # Source: https://ggzyjd.fj.gov.cn/dissentResult/list/
+  # SPA (Vue 2.6 + Element UI) + ASP.NET AES-128-CBC encrypted backend API.
+  # Reference: rag/svr/ggzyjd_crawler.py::_crawl_dissent_result (verified)
+  # Category: objection (写入 crawler_result 主表 + collection_objection_ext 扩展表)
+  # Detail: https://ggzyjd.fj.gov.cn/dissentResult/detail?id=<ID>
+  # Typical run: date_filter=today → 只抓当天新增异议
+  # 17 个结构化字段由 CollectionWriter._parse_objection_fields 从详情正文按中文标签自动解析
+  # --------------------------------------------------------------------------
+  ggzyjd_dissent:
+    name: "福建省工程领域招投标在线监管平台-异议结果"
+    site_url: "https://ggzyjd.fj.gov.cn/"
+    category: objection
+    enabled: true
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"
+      verify_ssl: false
+      timeout: 60
+      network_idle: false             # networkidle 对该站持续活动会超时,改用 domcontentloaded
+    listing:
+      url: "https://ggzyjd.fj.gov.cn/dissentResult/list/"
+      method: GET
+    pagination:
+      type: click_next
+      next_page_selector: ".el-pagination .btn-next:not(.disabled)"
+      max_pages: 5                    # 当天数据通常集中在前几页
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 4
+      max_consecutive_empty: 3
+    extract:
+      # 列表是 Element UI el-table 表格 (非 <a> 列表), 用 js_extract 遍历
+      # .el-table__body-wrapper tbody tr, 取 td.cell 文本 + a[href*=detail] 链接
+      # (与老脚本 ggzyjd_crawler.py::_extract_table_rows 选择器一致)
+      type: css_selector
+      items_path: ".el-table__body-wrapper tbody tr"
+      js_extract: |
+        () => {
+          const results = [];
+          const seen = new Set();
+          const trs = document.querySelectorAll(
+            '.el-table__body-wrapper tbody tr');
+          for (const tr of trs) {
+            const cells = tr.querySelectorAll('td .cell');
+            const row = {};
+            cells.forEach((c, i) => {
+              const t = (c.textContent || '').trim();
+              if (t) row['col_' + i] = t;
+            });
+            const link = tr.querySelector('a[href*="detail"]');
+            let url = link ? link.href : '';
+            let id = '';
+            if (url) {
+              try { id = new URL(url).searchParams.get('id') || ''; } catch (e) {}
+            }
+            if (!id) {
+              // 兜底:从单元格中找纯数字 ID
+              for (const k in row) {
+                if (/^\d+$/.test(row[k])) { id = row[k]; break; }
+              }
+            }
+            if (!id || seen.has(id)) continue;
+            seen.add(id);
+            const dateMatch = Object.values(row).join(' ')
+              .match(/\d{4}[-/]\d{1,2}[-/]\d{1,2}/);
+            results.push({
+              title: row.col_1 || row.col_2 || row.col_0 || '',
+              url: url || `https://ggzyjd.fj.gov.cn/dissentResult/detail?id=${id}`,
+              date: dateMatch ? dateMatch[0] : '',
+              id: id,
+            });
+          }
+          return results;
+        }
+    detail:
+      type: css_selector
+      content_field: ".detail-content"
+      # Fallback selectors built into SpaRenderAdapter._CONTENT_SELECTORS
+      # will be tried automatically if .detail-content does not match.
+      # 17 个结构化字段 (编号/招标编号/异议人名称 等) 由 CollectionWriter
+      # ._parse_objection_fields 从渲染后的详情正文按 'Label：value' 模式解析
+    format:
+      parser_id: "naive"
+      upload_batch_size: 10
+
   ggzyjd_policies:
     name: "福建省公共资源交易监督平台-政策法规"
     site_url: "https://ggzyjd.fj.gov.cn/"
