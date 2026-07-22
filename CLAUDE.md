@@ -230,6 +230,146 @@ Storage Layer: bid_writer (标讯入库) + kb_uploader (KB上传) + attachment_h
 
 三层通过 `NormalizedItem` 数据结构传递，每层可独立测试。支持4种HTTP适配器 (REST API, SM4/AES加密, SPA渲染, Playwright HTTP) + 6种分页策略 + 3种数据提取器 (JSONPath, CSS, AI)。
 
+### SPA 爬虫开发调试流程（必读）
+
+接入 Vue/React SPA 站点（如政府标讯平台）时，按此顺序排查，避免反复试错。详细踩坑案例见 `D:\AI\ragflow2\踩坑问题清单.md` #23-#28。
+
+**Step 0 — 先看老脚本**：搜索 `rag/svr/*_crawler.py` 同域脚本，复用其选择器/加密/字段映射，不要重新逆向。
+
+**Step 1 — 独立 debug 脚本验证页面是否真的渲染**（在容器内执行）：
+```python
+# rag/svr/_debug_xxx.py
+from playwright.sync_api import sync_playwright
+with sync_playwright() as pw:
+    browser = pw.chromium.launch(headless=True, executable_path="/opt/chrome/chrome",
+                                  args=["--disable-blink-features=AutomationControlled", "--no-sandbox"])
+    page = browser.new_context(user_agent="Mozilla/5.0 ... Chrome/125.0.0.0 Safari/537.36",
+                                locale="zh-CN").new_page()
+    try:
+        page.goto(URL, wait_until="load", timeout=30000)
+    except Exception as e:
+        print(f"goto failed: {e}")  # ← 超时不代表页面没渲染
+    page.wait_for_timeout(5000)
+    print("HTML len:", len(page.content()))
+    for sel in ["a.list-item", ".case-list a", "a[href*='detail']"]:
+        print(f"  {sel}: {len(page.query_selector_all(sel))} hits")
+```
+若 HTML 长度 >30KB 且选择器命中 → DOM 已就绪，问题在 Playwright 等待策略或 extractor，而不是站点本身。
+
+**Step 2 — 三选一排查 Playwright 等待策略**：
+- `wait_until="load"` 超时 → 站点有 analytics/长连接（hm.baidu.com）阻止 load 事件
+- `wait_until="networkidle"` 超时 → 同上，网络永不空闲
+- ✅ 改用 `wait_until="domcontentloaded"` + YAML 配置 `transport.network_idle: false` + spa_render.py goto try/except 容错
+
+**Step 3 — User-Agent 检查**：
+- Chromium headless 默认 UA 含 "HeadlessChrome" → 被反爬识别
+- `BrowserPool.new_context()` 必须显式设真实 UA（已硬编码）
+- YAML `transport.headers.User-Agent` 只作用 HTTP 请求头，**不影响** `navigator.userAgent`
+
+**Step 4 — 数据提取策略选择**：
+
+| 场景 | 用什么 |
+|------|--------|
+| API 返回 JSON | `extract.type: json_path` + `fields` 映射 |
+| 列表项是 `<tr>` / `<li>` 等容器，字段在后代元素 | `extract.type: css_selector` + BS4 语法 (`"a@href"` / `"@data-id"` / `".title-col"`) |
+| **列表项就是 `<a>` 本身，需取自身 text + 子元素 date** | ✅ `extract.js_extract` (JS evaluate，本项目专属) |
+| 详情正文用 Markdown | `detail.type: css_selector` + `content_field` |
+
+**❌ 不要用** Scrapy 语法 `::text` / `::attr(href)` — 本项目 BS4 extractor 不支持（见踩坑 #25）。
+
+`js_extract` 模板（参考 `rag/svr/ggzyjd_crawler.py::_extract_list_items`）：
+```yaml
+extract:
+  type: css_selector
+  items_path: "a.list-item"     # 仅用于 wait_for_selector 提示
+  js_extract: |
+    () => {
+      const results = [];
+      for (const a of document.querySelectorAll('a.list-item')) {
+        const text = (a.textContent || '').trim();
+        const em = a.querySelector('em, .time');
+        results.push({
+          title: text.replace(/\d{4}[-/]\d{1,2}[-/]\d{1,2}/g, '').trim(),
+          url: a.href,
+          date: em ? (em.textContent || '').trim() : '',
+          id: new URL(a.href).searchParams.get('MGUID') || '',
+        });
+      }
+      return results;
+    }
+```
+spa_render 优先级：API captures → `js_extract` → `_extract_from_dom`。
+
+**Step 5 — 容器内单站测试 + 入库验证**（详见下方"部署流程"）：
+```bash
+docker exec docker-ragflow-cpu-1 python /ragflow/rag/svr/unified_crawler.py \
+  --tenant-id <TID> --kb-id <KID> --task-name test_xxx \
+  --writer collection --category news \
+  --date-filter 2026-07-16 \
+  --script-args '{"site_id":"xxx"}'
+```
+验证三件事：① `[CRAWLER] Done: N new items` ② `SELECT COUNT(*) FROM crawler_result WHERE site_id='xxx'` 行数对得上 ③ KB 上传数 ≥ DB 写入数 × 80%。
+
+**Step 6 — 开发完成后必须调用 `konus-code-review` 审查。**
+
+### 智能采集系统部署清单（成套 SCP，不能单文件）
+
+智能采集系统横跨 8+ 文件，部署时**必须成套 SCP**，否则会连环报错（见踩坑 #28）。改动任一文件，以下相关文件一起部署：
+
+| 类型 | 路径 |
+|------|------|
+| ORM 模型 | `api/db/db_models.py`（末尾 CollectionPolicyExt / CollectionPersonnelExt + migrate_db） |
+| 主表 Service | `api/db/services/crawler_service.py` |
+| 扩展表 Service | `api/db/services/collection_ext_service.py` |
+| REST API | `api/apps/restful_apis/collection_app.py` |
+| Writer | `rag/svr/crawler_engine/collection_writer.py` |
+| Storage 管道 | `rag/svr/crawler_engine/storage_pipeline.py` |
+| Engine | `rag/svr/crawler_engine/engine.py` |
+| Config | `rag/svr/crawler_engine/config.py` |
+| Adapter | `rag/svr/crawler_engine/adapters/spa_render.py` |
+| BrowserPool | `rag/svr/crawler_engine/browser_pool.py` |
+| CLI 入口 | `rag/svr/unified_crawler.py` |
+| YAML 配置 | `rag/svr/crawler_sites.yaml` |
+
+**部署后冒烟测试**（所有改动文件必须能 import）：
+```bash
+docker exec docker-ragflow-cpu-1 python -c '
+from api.db.db_models import CollectionPolicyExt, CollectionPersonnelExt, CrawlerResult
+from api.db.services.crawler_service import CrawlerResultService
+from api.db.services.collection_ext_service import CollectionPolicyExtService
+from rag.svr.crawler_engine.collection_writer import CollectionWriter
+print("all imports OK")
+'
+```
+冒烟通过后再跑单站测试。`collection_writer.py` 顶层 try/except import 拖累问题（踩坑 #26）：若见 `CrawlerResultService not available`，单独 import 每个模块定位真正失败点。
+
+### Worktree ↔ 主仓同步流程
+
+默认在 `.worktrees/crawler-dev` 开发并 commit；"同步到主仓"指在主仓 `D:/AI/ragflow2/` 把 worktree 分支 merge 进当前分支。
+
+```bash
+# 1. Worktree 内提交
+cd D:/AI/ragflow2/.worktrees/crawler-dev
+git add <files> && git commit -m "..."
+
+# 2. 主仓 fast-forward merge（worktree 分支 base 与主仓 HEAD 相同时）
+cd D:/AI/ragflow2
+# 2a. 若主仓 WT 有与即将 merge 的文件冲突的残留改动 (内容一致也算冲突):
+git checkout HEAD -- <overlapping files>
+# 2b. Fast-forward
+git merge --ff-only feat/crawler-dev
+
+# 3. 若有 doc 改动只在主仓 WT (如 D:\AI\ragflow2\踩坑问题清单.md):
+cd D:/AI/ragflow2
+git add <doc files> && git commit -m "docs: ..."
+
+# 4. 反向同步 worktree 分支 (doc commit 在主仓产生)
+cd D:/AI/ragflow2/.worktrees/crawler-dev
+git merge --ff-only feat/unified-crawler-framework
+```
+
+最终 `feat/unified-crawler-framework` 与 `feat/crawler-dev` 指向同一 HEAD，worktree 与主仓工作树（除未跟踪文件）一致。**禁止自动 push、禁止自动重启 Docker。**
+
 ---
 
 ## 前端架构
