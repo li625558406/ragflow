@@ -35,6 +35,7 @@ from api.db.db_models import DB
 from api.db.services.collection_ext_service import (
     CollectionPolicyExtService,
     CollectionPersonnelExtService,
+    CollectionObjectionExtService,
 )
 from api.db.services.common_service import CommonService
 from api.db.services.crawler_service import CrawlerResult, CrawlerResultService
@@ -502,20 +503,35 @@ async def list_results():
             d.pop("markdown", None)  # 列表不返回大字段
             items.append(d)
 
-        # 附加站点中文名 + 域名 (读 YAML 元数据, 按 site_id 查)
+        # 附加站点中文名 + 域名 (优先用 DB 存的 site_display, 回退到 YAML 派生)
         site_map = _build_site_metadata_map() if items else {}
         for it in items:
-            meta = site_map.get(it.get("site_id", ""), {})
-            it["site_name"] = meta.get("site_name", "") or it.get("site_id", "")
-            it["site_domain"] = meta.get("site_domain", "")
+            stored_display = (it.get("site_display") or "").strip()
+            if stored_display:
+                # DB 已存 "名称 域名" 拼接串, 拆开填充 site_name + site_domain
+                if " " in stored_display:
+                    name_part, domain_part = stored_display.split(" ", 1)
+                    it["site_name"] = name_part
+                    it["site_domain"] = domain_part
+                else:
+                    it["site_name"] = stored_display
+                    it["site_domain"] = ""
+                it["site_display"] = stored_display
+            else:
+                meta = site_map.get(it.get("site_id", ""), {})
+                it["site_name"] = meta.get("site_name", "") or it.get("site_id", "")
+                it["site_domain"] = meta.get("site_domain", "")
+                it["site_display"] = f"{it['site_name']} {it['site_domain']}".strip()
 
         # 批量补充扩展字段
-        if with_ext and category in ("policy", "personnel") and items:
+        if with_ext and category in ("policy", "personnel", "objection") and items:
             result_ids = [it["id"] for it in items]
             if category == "policy":
                 ext_map = CollectionPolicyExtService.get_by_result_ids(result_ids)
-            else:
+            elif category == "personnel":
                 ext_map = CollectionPersonnelExtService.get_by_result_ids(result_ids)
+            else:  # objection
+                ext_map = CollectionObjectionExtService.get_by_result_ids(result_ids)
             for it in items:
                 it["ext"] = ext_map.get(it["id"], {})
         return {"list": items, "total": total}
@@ -541,17 +557,32 @@ async def get_result(result_id: str):
         if not row:
             return None
         d = row.to_dict()
-        # 附加站点中文名 + 域名
-        site_map = _build_site_metadata_map()
-        meta = site_map.get(d.get("site_id", ""), {})
-        d["site_name"] = meta.get("site_name", "") or d.get("site_id", "")
-        d["site_domain"] = meta.get("site_domain", "")
+        # 附加站点中文名 + 域名 (优先用 DB 存的 site_display, 回退到 YAML 派生)
+        stored_display = (d.get("site_display") or "").strip()
+        if stored_display:
+            if " " in stored_display:
+                name_part, domain_part = stored_display.split(" ", 1)
+                d["site_name"] = name_part
+                d["site_domain"] = domain_part
+            else:
+                d["site_name"] = stored_display
+                d["site_domain"] = ""
+            d["site_display"] = stored_display
+        else:
+            site_map = _build_site_metadata_map()
+            meta = site_map.get(d.get("site_id", ""), {})
+            d["site_name"] = meta.get("site_name", "") or d.get("site_id", "")
+            d["site_domain"] = meta.get("site_domain", "")
+            d["site_display"] = f"{d['site_name']} {d['site_domain']}".strip()
         category = d.get("category", "bid")
         if category == "policy":
             ext = CollectionPolicyExtService.get_by_result_ids([result_id])
             d["ext"] = ext.get(result_id, {})
         elif category == "personnel":
             ext = CollectionPersonnelExtService.get_by_result_ids([result_id])
+            d["ext"] = ext.get(result_id, {})
+        elif category == "objection":
+            ext = CollectionObjectionExtService.get_by_result_ids([result_id])
             d["ext"] = ext.get(result_id, {})
         else:
             d["ext"] = {}

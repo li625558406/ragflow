@@ -160,15 +160,17 @@ class CollectionWriter:
         category: str = "bid",
         task_id: str = "",
         url: Optional[str] = None,
+        site_display: str = "",
     ) -> Optional[str]:
         """写入一条采集结果到所有目标表。
 
         Args:
             item: 归一化后的采集项字典（含 title/url/date/content 等）
-            site_id: YAML 站点 id
-            category: bid|policy|personnel|news|other
+            site_id: YAML 站点 id（内部 key，用于 result_id 生成/状态跟踪）
+            category: bid|policy|personnel|news|other|objection
             task_id: 关联的 CrawlerTask.id（可空）
             url: 覆盖 item.url，用于 ID 生成
+            site_display: 展示用站点串（"中文名称 域名"），由调用方从 YAML 拼接传入
 
         Returns:
             result_id 写入成功；None 写入失败或被日期过滤掉。
@@ -195,7 +197,7 @@ class CollectionWriter:
         result_id = gen_result_id(site_id, source_url)
 
         # 2. 写 crawler_result（共用主表）
-        if not self._write_result(result_id, item, site_id, category, task_id, source_url):
+        if not self._write_result(result_id, item, site_id, category, task_id, source_url, site_display):
             return None
 
         # 3. 按 category 路由扩展表
@@ -266,6 +268,7 @@ class CollectionWriter:
         category: str,
         task_id: str,
         source_url: str,
+        site_display: str = "",
     ) -> bool:
         if CrawlerResultService is None:
             logging.warning("CollectionWriter: CrawlerResultService not available, skipping")
@@ -293,6 +296,7 @@ class CollectionWriter:
                 "task_id": task_id,
                 "tenant_id": self._tenant_id,
                 "site_id": site_id,
+                "site_display": site_display,
                 "title": (item.get("title") or item.get("name") or "Untitled")[:1024],
                 "source_url": source_url,
                 "publish_date": self._normalize_date(item),

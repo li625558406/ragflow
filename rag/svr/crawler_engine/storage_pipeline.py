@@ -44,11 +44,13 @@ class StoragePipeline:
                  writer_mode: str = "bid",
                  category: str = "bid",
                  task_id: str = "",
-                 date_filter: str = ""):
+                 date_filter: str = "",
+                 site_display: str = ""):
         self._kb_id = kb_id
         self._tenant_id = tenant_id
         self._parser_id = parser_id
         self._site_id = site_id
+        self._site_display = site_display
         self._task_name = task_name
         self._output_dir = output_dir or os.path.join(
             tempfile.gettempdir(), "crawler_output", site_id
@@ -187,6 +189,7 @@ class StoragePipeline:
                 category=self._category,
                 task_id=self._task_id,
                 url=item.url,
+                site_display=self._site_display,
             )
             if result_id:
                 self._stats["bid_written"] += 1

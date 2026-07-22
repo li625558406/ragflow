@@ -234,6 +234,7 @@ class CrawlerEngine:
             category=getattr(self, "_category", "bid"),
             task_id=getattr(self, "_task_id", ""),
             date_filter=getattr(self, "_date_filter", ""),
+            site_display=self._build_site_display(),
         )
 
         self._batch_counter = 0
@@ -560,6 +561,26 @@ class CrawlerEngine:
         print(f"[CRAWLER] Total: {total} records, {total_pages} pages "
               f"(resuming from page {start_page})")
         sys.stdout.flush()
+
+    def _build_site_display(self) -> str:
+        """从 YAML 配置派生展示用站点串: '中文名称 域名'.
+
+        - 名称取 self._config.name, 缺失时回退到 site_id
+        - 域名从 self._config.site_url 的 netloc 提取 (如 https://x.gov.cn/ → x.gov.cn)
+        - 两者拼接用单空格分隔；任一缺失时只返回另一部分
+        """
+        name = (getattr(self._config, "name", "") or self._config.site_id).strip()
+        site_url = (getattr(self._config, "site_url", "") or "").strip()
+        domain = ""
+        if site_url:
+            try:
+                from urllib.parse import urlparse
+                domain = urlparse(site_url).netloc
+            except Exception:
+                domain = ""
+        if name and domain:
+            return f"{name} {domain}"
+        return name or domain
 
     def _log_progress(self, page: int, new_in_page: int, scanned: int,
                       stale: int) -> None:

@@ -1510,6 +1510,8 @@ class CrawlerResult(DataBaseModel):
     task_id = CharField(max_length=32, null=False, index=True)
     tenant_id = CharField(max_length=32, null=False, index=True)
     site_id = CharField(max_length=128, null=False, index=True)
+    site_display = CharField(max_length=256, null=True, default="", index=True,
+                             help_text="展示用站点串: '{中文名称} {域名}'，由 YAML name+site_url 在采集时拼接")
     title = CharField(max_length=1024, null=False, default="")
     source_url = TextField(null=False)
     publish_date = CharField(max_length=64, null=True, index=True, default="", help_text="publish date string from listing")
@@ -2493,6 +2495,12 @@ def migrate_db():
         migrator, "crawler_result", "category",
         CharField(max_length=32, null=False, default="bid",
                    help_text="bid|policy|personnel|news|other", index=True),
+    )
+    # CrawlerResult 加 site_display 列（展示用 "中文名称 域名" 拼接串，YAML 派生）
+    alter_db_add_column(
+        migrator, "crawler_result", "site_display",
+        CharField(max_length=256, null=True, default="", index=True,
+                   help_text="展示用站点串: '{中文名称} {域名}'"),
     )
     # 政策法规扩展表（新表，IF NOT EXISTS 自动创建）
     if not CollectionPolicyExt.table_exists():

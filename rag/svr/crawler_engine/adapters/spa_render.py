@@ -124,7 +124,7 @@ class SpaRenderAdapter(BaseAdapter):
                 # event from ever firing, so we use "domcontentloaded" which
                 # fires as soon as the DOM is parsed and then rely on
                 # wait_for_selector below to confirm the SPA has rendered.
-                wait_until = "networkidle" if getattr(self._transport, "network_idle", True) else "domcontentloaded"
+                wait_until = "networkidle" if getattr(self._transport, "network_idle", True) else "commit"
                 try:
                     page.goto(url, wait_until=wait_until, timeout=self._transport.timeout * 1000)
                 except Exception as goto_err:
@@ -625,7 +625,7 @@ class SpaRenderAdapter(BaseAdapter):
 
         for attempt in range(3):
             try:
-                _wu = "networkidle" if getattr(self._transport, "network_idle", True) else "domcontentloaded"
+                _wu = "networkidle" if getattr(self._transport, "network_idle", True) else "commit"
                 try:
                     page.goto(detail_url, wait_until=_wu,
                               timeout=self._transport.timeout * 1000)
@@ -673,7 +673,7 @@ class SpaRenderAdapter(BaseAdapter):
         page = self._get_page()
         for attempt in range(3):
             try:
-                _wu = "networkidle" if getattr(self._transport, "network_idle", True) else "domcontentloaded"
+                _wu = "networkidle" if getattr(self._transport, "network_idle", True) else "commit"
                 try:
                     page.goto(detail_url, wait_until=_wu,
                               timeout=self._transport.timeout * 1000)
