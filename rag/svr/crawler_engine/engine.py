@@ -73,12 +73,19 @@ class CrawlerEngine:
         force: bool = False,
         skip_kb: bool = False,
         skip_attachments: bool = False,
+        writer_mode: str = "bid",
+        category: str = "",
+        task_id: str = "",
     ) -> Dict[str, Any]:
         """Run a full crawl cycle for the configured site.
 
         Returns a summary dict with statistics.
         """
         self._task_name = task_name
+        # Resolve effective category: explicit override > site config default
+        self._writer_mode = writer_mode
+        self._category = category or getattr(self._config, "category", "") or "bid"
+        self._task_id = task_id
         os.makedirs(self._output_dir, exist_ok=True)
 
         # Acquire distributed lock to prevent concurrent execution of the
@@ -221,6 +228,9 @@ class CrawlerEngine:
             output_dir=self._output_dir,
             skip_kb=skip_kb,
             skip_attachments=skip_attachments,
+            writer_mode=getattr(self, "_writer_mode", "bid"),
+            category=getattr(self, "_category", "bid"),
+            task_id=getattr(self, "_task_id", ""),
         )
 
         self._batch_counter = 0
