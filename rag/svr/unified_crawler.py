@@ -64,6 +64,8 @@ def parse_args():
                    help="storage writer mode: bid (legacy bid_*) | collection (new crawler_result)")
     p.add_argument("--category", default="",
                    help="override site category: bid|policy|personnel|news|other (default: use YAML)")
+    p.add_argument("--date-filter", default="",
+                   help="only store items whose date matches: today | YYYY-MM-DD (collection writer only)")
     # Compatibility arguments (ignored but accepted)
     for opt in ("--section", "--max-articles", "--max-days", "--hours",
                 "--llm-id", "--llm-model", "--access-token", "--full"):
@@ -94,6 +96,7 @@ def main():
     writer_mode = script_args.get("writer", args.writer) or "bid"
     category = script_args.get("category", args.category) or ""
     task_id = script_args.get("task_id", "") or ""
+    date_filter = script_args.get("date_filter", args.date_filter) or ""
 
     _safe_print("\n" + "=" * 60)
     _safe_print(f"[UNIFIED] Unified Crawler v1.0")
@@ -102,6 +105,8 @@ def main():
     _safe_print(f"[UNIFIED] Writer: {writer_mode}")
     if category or writer_mode == "collection":
         _safe_print(f"[UNIFIED] Category: {category or '(from YAML)'}")
+    if date_filter:
+        _safe_print(f"[UNIFIED] Date filter: {date_filter}")
     if section:
         _safe_print(f"[UNIFIED] Section: {section}")
     _safe_print("=" * 60 + "\n")
@@ -145,6 +150,7 @@ def main():
             writer_mode=writer_mode,
             category=category,
             task_id=task_id,
+            date_filter=date_filter,
         )
         status = summary.get("status", "unknown")
         if status == "error":

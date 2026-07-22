@@ -43,7 +43,8 @@ class StoragePipeline:
                  skip_attachments: bool = False,
                  writer_mode: str = "bid",
                  category: str = "bid",
-                 task_id: str = ""):
+                 task_id: str = "",
+                 date_filter: str = ""):
         self._kb_id = kb_id
         self._tenant_id = tenant_id
         self._parser_id = parser_id
@@ -57,6 +58,7 @@ class StoragePipeline:
         self._writer_mode = writer_mode  # bid | collection
         self._category = category        # bid|policy|personnel|news|other
         self._task_id = task_id          # CrawlerTask.id for collection writer
+        self._date_filter = date_filter  # "" | "today" | "YYYY-MM-DD"
 
         # Lazy-initialized components
         self._bid_writer = None
@@ -300,6 +302,7 @@ class StoragePipeline:
             from .collection_writer import CollectionWriter
             self._collection_writer = CollectionWriter(
                 kb_id=self._kb_id, tenant_id=self._tenant_id,
+                date_filter=self._date_filter,
             )
         return self._collection_writer
 

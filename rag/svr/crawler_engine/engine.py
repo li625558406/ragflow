@@ -76,6 +76,7 @@ class CrawlerEngine:
         writer_mode: str = "bid",
         category: str = "",
         task_id: str = "",
+        date_filter: str = "",
     ) -> Dict[str, Any]:
         """Run a full crawl cycle for the configured site.
 
@@ -86,6 +87,7 @@ class CrawlerEngine:
         self._writer_mode = writer_mode
         self._category = category or getattr(self._config, "category", "") or "bid"
         self._task_id = task_id
+        self._date_filter = date_filter
         os.makedirs(self._output_dir, exist_ok=True)
 
         # Acquire distributed lock to prevent concurrent execution of the
@@ -231,6 +233,7 @@ class CrawlerEngine:
             writer_mode=getattr(self, "_writer_mode", "bid"),
             category=getattr(self, "_category", "bid"),
             task_id=getattr(self, "_task_id", ""),
+            date_filter=getattr(self, "_date_filter", ""),
         )
 
         self._batch_counter = 0

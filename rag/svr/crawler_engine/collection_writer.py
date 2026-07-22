@@ -58,13 +58,16 @@ class CollectionWriter:
       - bid/news/other: 仅 crawler_result（结构化字段放 extracted_json）
     """
 
-    def __init__(self, kb_id: str = "", tenant_id: str = ""):
+    def __init__(self, kb_id: str = "", tenant_id: str = "", date_filter: str = ""):
         self._kb_id = kb_id
         self._tenant_id = tenant_id
+        # date_filter: "" 不过滤；"today" 只保当天；"YYYY-MM-DD" 只保指定日期
+        self._date_filter = self._normalize_date_filter(date_filter)
         self._stats = {
             "results_new": 0,
             "results_updated": 0,
             "results_failed": 0,
+            "results_filtered_out": 0,
             "policy_ext_written": 0,
             "policy_ext_failed": 0,
             "personnel_ext_written": 0,
@@ -93,11 +96,16 @@ class CollectionWriter:
             url: 覆盖 item.url，用于 ID 生成
 
         Returns:
-            result_id 写入成功；None 写入失败。
+            result_id 写入成功；None 写入失败或被日期过滤掉。
         """
         if category not in VALID_CATEGORIES:
             logging.warning("CollectionWriter: invalid category=%s, fallback to 'bid'", category)
             category = "bid"
+
+        # 0. 日期过滤（可选）— 不匹配则直接跳过，不写库不报警
+        if self._date_filter and not self._item_matches_date(item):
+            self._stats["results_filtered_out"] += 1
+            return None
 
         # 1. 生成 result_id
         source_url = url or item.get("url") or item.get("href") or ""
@@ -122,6 +130,52 @@ class CollectionWriter:
             self._write_personnel_ext(result_id, item)
 
         return result_id
+
+    # ------------------------------------------------------------------
+    # Internal: date filter
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize_date_filter(val: str) -> str:
+        """规整 date_filter 为 YYYY-MM-DD 或空字符串。"""
+        if not val:
+            return ""
+        val = val.strip().lower()
+        if val == "today":
+            from datetime import date
+            return date.today().isoformat()
+        # 接受 YYYY-MM-DD / YYYY/MM/DD
+        try:
+            from datetime import datetime as _dt
+            return _dt.strptime(val.replace("/", "-"), "%Y-%m-%d").date().isoformat()
+        except ValueError:
+            logging.warning("CollectionWriter: invalid date_filter=%r, ignored", val)
+            return ""
+
+    def _item_matches_date(self, item: Dict[str, Any]) -> bool:
+        """判断 item 的日期是否匹配 self._date_filter。
+
+        尝试多种常见日期字段（date/publishDate/pubDate/date_str 等），
+        解析失败或无日期字段视为不匹配（严格模式）。
+        """
+        from datetime import datetime as _dt
+        candidate_keys = (
+            "date", "publishDate", "publishTime", "pubDate", "pub_date",
+            "publish_date", "date_str", "effective_date",
+        )
+        for k in candidate_keys:
+            v = item.get(k)
+            if not v:
+                continue
+            try:
+                # 兼容 "2024-07-22"、"2024/07/22"、"2024-07-22 10:30:00" 等
+                text = str(v).strip()[:10].replace("/", "-")
+                parsed = _dt.strptime(text, "%Y-%m-%d").date().isoformat()
+                return parsed == self._date_filter
+            except (ValueError, TypeError):
+                continue
+        # 无可用日期字段 → 不匹配
+        return False
 
     # ------------------------------------------------------------------
     # Internal: crawler_result 主表写入

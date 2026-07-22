@@ -3129,6 +3129,55 @@ sites:
       parser_id: "naive"
       upload_batch_size: 10
 
+  # --------------------------------------------------------------------------
+  # ggzyjd_cases — 福建省工程领域招投标在线监管平台 · 有关案例
+  # Source: https://ggzyjd.fj.gov.cn/case/index/
+  # SPA (Vue 2.6 + Element UI) + ASP.NET AES-128-CBC encrypted backend API.
+  # Reference: rag/svr/ggzyjd_crawler.py (old script, verified working)
+  # Category: news (违规案例 · 入 crawler_result 主表, 不写扩展表)
+  # Typical run: date_filter=today → 只抓当天新增案例
+  # --------------------------------------------------------------------------
+  ggzyjd_cases:
+    name: "福建省工程领域招投标在线监管平台-有关案例"
+    site_url: "https://ggzyjd.fj.gov.cn/"
+    category: news
+    enabled: true
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"
+      verify_ssl: false
+      timeout: 60
+      network_idle: true
+    listing:
+      url: "https://ggzyjd.fj.gov.cn/case/index/"
+      method: GET
+    pagination:
+      type: click_next
+      next_page_selector: ".el-pagination .btn-next:not(.disabled)"
+      max_pages: 5                    # 当天数据通常集中在前几页
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 4
+      max_consecutive_empty: 3
+    extract:
+      type: css_selector
+      items_path: "a[href*='case/detail']"
+      fields:
+        title: "::text"
+        url: "::attr(href)"
+        date: "em::text"
+    detail:
+      type: css_selector
+      content_field: ".detail-content"
+      # Fallback selectors built into SpaRenderAdapter._CONTENT_SELECTORS
+      # will be tried automatically if .detail-content does not match.
+    format:
+      parser_id: "naive"
+      upload_batch_size: 10
+
   ggzyjd_policies:
     name: "福建省公共资源交易监督平台-政策法规"
     site_url: "https://ggzyjd.fj.gov.cn/"
