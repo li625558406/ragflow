@@ -91,8 +91,8 @@ async def list_tasks():
     enabled = request.args.get("enabled")
     enabled_val = None if enabled in (None, "") else enabled.lower() == "true"
 
+    # 权限策略（2026-07-22）: 采集任务列表对所有登录用户开放，不按 tenant 过滤
     rows, total = CrawlerTaskService.get_list(
-        tenant_id=current_user.id,
         page_number=page,
         items_per_page=page_size,
         keyword=keyword,
@@ -105,7 +105,7 @@ async def list_tasks():
 @login_required
 async def get_task(task_id):
     ok, task = CrawlerTaskService.get_by_id(task_id)
-    if not ok or task.tenant_id != current_user.id:
+    if not ok:
         return get_data_error_result(message="task not found")
     return get_json_result(data=task.to_dict())
 
@@ -114,7 +114,7 @@ async def get_task(task_id):
 @login_required
 async def update_task(task_id):
     ok, task = CrawlerTaskService.get_by_id(task_id)
-    if not ok or task.tenant_id != current_user.id:
+    if not ok:
         return get_data_error_result(message="task not found")
 
     body = await request.get_json() or {}
@@ -132,7 +132,7 @@ async def update_task(task_id):
 @login_required
 async def delete_task(task_id):
     ok, task = CrawlerTaskService.get_by_id(task_id)
-    if not ok or task.tenant_id != current_user.id:
+    if not ok:
         return get_data_error_result(message="task not found")
     CrawlerTaskService.delete_by_id(task_id)
     return get_json_result(data=True)
@@ -146,7 +146,7 @@ async def delete_task(task_id):
 @login_required
 async def trigger_task(task_id):
     ok, task = CrawlerTaskService.get_by_id(task_id)
-    if not ok or task.tenant_id != current_user.id:
+    if not ok:
         return get_data_error_result(message="task not found")
 
     with _running_lock:
@@ -173,7 +173,7 @@ async def trigger_task(task_id):
 @login_required
 async def task_status(task_id):
     ok, task = CrawlerTaskService.get_by_id(task_id)
-    if not ok or task.tenant_id != current_user.id:
+    if not ok:
         return get_data_error_result(message="task not found")
     with _running_lock:
         running = task_id in _running_tasks
@@ -195,8 +195,8 @@ async def list_results():
     page = int(request.args.get("page", 1))
     page_size = min(int(request.args.get("page_size", 20)), 100)
 
+    # 权限策略（2026-07-22）: 采集结果列表对所有登录用户开放
     rows, total = CrawlerResultService.get_list(
-        tenant_id=current_user.id,
         page_number=page,
         items_per_page=page_size,
         task_id=request.args.get("task_id") or None,
@@ -213,7 +213,7 @@ async def list_results():
 @login_required
 async def get_result(result_id):
     ok, result = CrawlerResultService.get_by_id(result_id)
-    if not ok or result.tenant_id != current_user.id:
+    if not ok:
         return get_data_error_result(message="result not found")
     return get_json_result(data=result.to_dict())
 
@@ -221,7 +221,8 @@ async def get_result(result_id):
 @manager.route("/crawl4ai/sites", methods=["GET"])  # noqa: F821
 @login_required
 async def list_sites():
-    return get_json_result(data=CrawlerResultService.site_options(current_user.id))
+    # 权限策略（2026-07-22）: 所有登录用户可见全部站点的下拉选项
+    return get_json_result(data=CrawlerResultService.site_options())
 
 
 # ---------------------------------------------------------------------------

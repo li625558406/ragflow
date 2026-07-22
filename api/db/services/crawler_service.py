@@ -33,13 +33,17 @@ class CrawlerTaskService(CommonService):
     @DB.connection_context()
     def get_list(
         cls,
-        tenant_id: str,
+        tenant_id: str = "",
         page_number: int = 1,
         items_per_page: int = 20,
         keyword: Optional[str] = None,
         enabled: Optional[bool] = None,
     ) -> Tuple[List[dict], int]:
-        query = cls.model.select().where(cls.model.tenant_id == tenant_id)
+        # tenant_id 为空 → 全局可见模式（团队共享，不按租户隔离）
+        if tenant_id:
+            query = cls.model.select().where(cls.model.tenant_id == tenant_id)
+        else:
+            query = cls.model.select()
         if keyword:
             query = query.where(
                 (cls.model.name ** f"%{keyword}%") | (cls.model.site_id ** f"%{keyword}%")
@@ -61,7 +65,7 @@ class CrawlerResultService(CommonService):
     @DB.connection_context()
     def get_list(
         cls,
-        tenant_id: str,
+        tenant_id: str = "",
         page_number: int = 1,
         items_per_page: int = 20,
         task_id: Optional[str] = None,
@@ -71,7 +75,11 @@ class CrawlerResultService(CommonService):
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
     ) -> Tuple[List[dict], int]:
-        query = cls.model.select().where(cls.model.tenant_id == tenant_id)
+        # tenant_id 为空 → 全局可见模式
+        if tenant_id:
+            query = cls.model.select().where(cls.model.tenant_id == tenant_id)
+        else:
+            query = cls.model.select()
         if task_id:
             query = query.where(cls.model.task_id == task_id)
         if site_id:
@@ -119,11 +127,10 @@ class CrawlerResultService(CommonService):
 
     @classmethod
     @DB.connection_context()
-    def site_options(cls, tenant_id: str) -> List[str]:
+    def site_options(cls, tenant_id: str = "") -> List[str]:
         """Distinct site_id values, for frontend filter dropdown."""
-        rows = (
-            cls.model.select(cls.model.site_id)
-            .where(cls.model.tenant_id == tenant_id)
-            .distinct()
-        )
+        q = cls.model.select(cls.model.site_id)
+        if tenant_id:
+            q = q.where(cls.model.tenant_id == tenant_id)
+        rows = q.distinct()
         return [r.site_id for r in rows]
