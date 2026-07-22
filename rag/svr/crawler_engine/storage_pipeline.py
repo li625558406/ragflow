@@ -30,13 +30,20 @@ class StoragePipeline:
                                    parser_id="general", site_id="mohurd",
                                    task_name="mohurd_爬取")
         result = pipeline.store(item)
+
+    writer_mode:
+        - "bid" (default):        写 bid_* 表族（老系统，BidWriter）
+        - "collection":           写 crawler_result + 扩展表（新系统，CollectionWriter）
     """
 
     def __init__(self, kb_id: str, tenant_id: str, parser_id: str = "naive",
                  site_id: str = "", task_name: str = "",
                  output_dir: Optional[str] = None,
                  skip_kb: bool = False,
-                 skip_attachments: bool = False):
+                 skip_attachments: bool = False,
+                 writer_mode: str = "bid",
+                 category: str = "bid",
+                 task_id: str = ""):
         self._kb_id = kb_id
         self._tenant_id = tenant_id
         self._parser_id = parser_id
@@ -47,9 +54,13 @@ class StoragePipeline:
         )
         self._skip_kb = skip_kb
         self._skip_attachments = skip_attachments
+        self._writer_mode = writer_mode  # bid | collection
+        self._category = category        # bid|policy|personnel|news|other
+        self._task_id = task_id          # CrawlerTask.id for collection writer
 
         # Lazy-initialized components
         self._bid_writer = None
+        self._collection_writer = None
         self._kb_uploader = None
         self._attach_handler = None
         self._formatter = None
@@ -93,7 +104,14 @@ class StoragePipeline:
                          item.title[:60], MIN_CONTENT_LENGTH_FOR_KB)
 
         # 3. Handle attachments (download + KB + link)
-        if not self._skip_attachments and item.has_attachments():
+        # NOTE: AttachmentHandler._link_to_project() writes to legacy bid_project_file
+        # table, which would break decoupling in collection mode (project_id is a str
+        # result_id there, not an int).  Collection mode records attachment URLs in
+        # CrawlerResult.attachments JSON via CollectionWriter; KB upload of attachment
+        # files for the new system is a future enhancement.
+        if (not self._skip_attachments
+                and self._writer_mode != "collection"
+                and item.has_attachments()):
             attach_results = self._handle_attachments(item, project_id)
             result["attachment_results"] = attach_results
 
@@ -130,8 +148,18 @@ class StoragePipeline:
     # Internal: bid table writes
     # ------------------------------------------------------------------
 
-    def _write_to_bid(self, item: NormalizedItem) -> Optional[int]:
-        """Write item to bid_* database tables."""
+    def _write_to_bid(self, item: NormalizedItem) -> Optional[str]:
+        """Write item to database tables.
+
+        writer_mode='bid' (default)        → BidWriter → bid_* 表
+        writer_mode='collection'           → CollectionWriter → crawler_result + 扩展表
+        """
+        if self._writer_mode == "collection":
+            return self._write_to_collection(item)
+        return self._write_to_bid_legacy(item)
+
+    def _write_to_bid_legacy(self, item: NormalizedItem) -> Optional[int]:
+        """Legacy writer: bid_* tables via BidWriter."""
         writer = self._get_bid_writer()
         try:
             project_id = writer.write_all(item.raw_data, self._site_id,
@@ -143,6 +171,28 @@ class StoragePipeline:
             return project_id
         except Exception as e:
             logging.error("StoragePipeline: bid write failed for %s: %s",
+                          item.title[:60], e)
+            self._stats["bid_failed"] += 1
+            return None
+
+    def _write_to_collection(self, item: NormalizedItem) -> Optional[str]:
+        """New system writer: crawler_result + extension tables via CollectionWriter."""
+        writer = self._get_collection_writer()
+        try:
+            result_id = writer.write_all(
+                item.raw_data,
+                site_id=self._site_id,
+                category=self._category,
+                task_id=self._task_id,
+                url=item.url,
+            )
+            if result_id:
+                self._stats["bid_written"] += 1
+            else:
+                self._stats["bid_failed"] += 1
+            return result_id
+        except Exception as e:
+            logging.error("StoragePipeline: collection write failed for %s: %s",
                           item.title[:60], e)
             self._stats["bid_failed"] += 1
             return None
@@ -244,6 +294,14 @@ class StoragePipeline:
             from .bid_writer import BidWriter
             self._bid_writer = BidWriter(self._kb_id, self._tenant_id)
         return self._bid_writer
+
+    def _get_collection_writer(self):
+        if self._collection_writer is None:
+            from .collection_writer import CollectionWriter
+            self._collection_writer = CollectionWriter(
+                kb_id=self._kb_id, tenant_id=self._tenant_id,
+            )
+        return self._collection_writer
 
     def _get_kb_uploader(self):
         if self._kb_uploader is None:

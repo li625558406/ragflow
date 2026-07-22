@@ -11,6 +11,55 @@
 #
 # Pagination types:
 #   page_no, offset, total_count, html_regex, click_next, single_page
+#
+# ── category 字段（新智能采集系统使用）───────────────────────────────────
+# 每个站点可声明 category 决定采集结果归属：
+#   bid        — 招投标类（默认，写 crawler_result + extracted_json）
+#   policy     — 政策法规类（写 crawler_result + collection_policy_ext 扩展字段）
+#   personnel  — 人员信息类（写 crawler_result + collection_personnel_ext 扩展字段）
+#   news       — 新闻资讯类（写 crawler_result + extracted_json）
+#   other      — 其他类型（写 crawler_result + extracted_json）
+#
+# 触发方式：
+#   手动：POST /api/v1/collection/trigger {site_id, category, kb_id, full}
+#   定时：POST /api/v1/collection/scheduled {site_id, category, schedule_type, ...}
+# 旧 bid_* 表族不受影响（writer=bid 模式不读 category 字段）。
+#
+# 政策类 YAML 示例（policy 专用字段会自动映射到 collection_policy_ext）：
+#   some_policy_site:
+#     category: policy
+#     name: "..."
+#     transport: { type: rest_api }
+#     listing: { url: "...", method: GET }
+#     pagination: { type: page_no, page_size: 20 }
+#     extract:
+#       type: json_path
+#       items_path: "data.rows"
+#       fields:
+#         title: "title"
+#         url: "url"
+#         date: "publishDate"
+#         # ── 政策扩展字段（写入 collection_policy_ext）──
+#         doc_number: "wenhao"                # 发文字号
+#         issuing_authority: "fawenjigou"     # 发文机构
+#         authority_level: "xiaoli"           # 效力级别
+#         topic_category: "zhuti"             # 主题分类
+#         effective_date: "shixingri"         # 实施日期
+#         expiry_date: "shixiaori"            # 失效日期
+#         status: "zhuangtai"                 # 有效/废止
+#         legal_basis: "yiju"                 # 依据上位法
+#
+# 人员类 YAML 示例（personnel 专用字段映射到 collection_personnel_ext）：
+#   some_personnel_site:
+#     category: personnel
+#     extract:
+#       fields:
+#         person_name: "xm"           # 姓名
+#         cert_no: "zsh"              # 证书编号
+#         cert_type: "zslx"           # 证书类型
+#         employer: "danwei"          # 所属单位
+#         specialty: "zhuanye"        # 注册专业
+#         valid_until: "yxq"          # 有效期
 # ============================================================================
 
 version: "1.1"
@@ -19,6 +68,7 @@ version: "1.1"
 defaults:
   detect_interval: 300      # 5 minutes (default for all sites)
   detect_enabled: true     # all sites participate in detection
+  category: bid            # default category for sites that don't specify (legacy compat)
 
 sites:
 

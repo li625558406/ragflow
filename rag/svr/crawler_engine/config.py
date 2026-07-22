@@ -184,6 +184,7 @@ class SiteConfig:
     enabled: bool = True
     detect_interval: int = 300       # detection check interval in seconds (default 5 min)
     detect_enabled: bool = True     # whether this site participates in detection
+    category: str = "bid"           # bid|policy|personnel|news|other (for new collection system)
     transport: TransportConfig = field(default_factory=TransportConfig)
     listing: ListingConfig = field(default_factory=ListingConfig)
     pagination: PaginationConfig = field(default_factory=PaginationConfig)
@@ -258,6 +259,7 @@ class ConfigLoader:
             enabled=data.get("enabled", True),
             detect_interval=data.get("detect_interval", self._defaults.get("detect_interval", 300)),
             detect_enabled=data.get("detect_enabled", self._defaults.get("detect_enabled", True)),
+            category=data.get("category", self._defaults.get("category", "bid")),
             transport=self._parse_transport(data.get("transport", {})),
             listing=self._parse_listing(data.get("listing", {})),
             pagination=self._parse_pagination(data.get("pagination", {})),

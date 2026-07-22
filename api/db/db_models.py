@@ -2030,6 +2030,51 @@ class StarredSite(DataBaseModel):
         db_table = "starred_site"
 
 
+# ---------------------------------------------------------------------------
+# 智能采集（新系统）扩展表
+#
+# 与 CrawlerResult 一对一关联，按 category 路由写入：
+#   - category=bid        → 不写扩展表，字段放 CrawlerResult.extracted_json
+#   - category=policy     → CollectionPolicyExt
+#   - category=personnel  → CollectionPersonnelExt
+#   - category=news/other → 不写扩展表
+# 与旧 bid_* 表族完全解耦，由 CollectionWriter 写入。
+# ---------------------------------------------------------------------------
+
+
+class CollectionPolicyExt(DataBaseModel):
+    """政策法规类采集扩展字段（category=policy）。"""
+    result_id = CharField(max_length=32, primary_key=True, help_text="FK -> crawler_result.id")
+    doc_number = CharField(max_length=200, null=True, default="", help_text="发文字号，如 国发〔2024〕12号", index=True)
+    issuing_authority = CharField(max_length=200, null=True, default="", help_text="发文机构")
+    authority_level = CharField(max_length=50, null=True, default="", help_text="效力级别: 法律|行政法规|部门规章|地方性法规|规范性文件", index=True)
+    topic_category = CharField(max_length=100, null=True, default="", help_text="主题分类，如 招投标|建筑工程|安全生产")
+    effective_date = DateField(null=True, help_text="实施日期")
+    expiry_date = DateField(null=True, help_text="失效日期")
+    status = CharField(max_length=20, null=True, default="有效", help_text="有效|废止|修订中")
+    legal_basis = CharField(max_length=500, null=True, default="", help_text="依据上位法")
+
+    class Meta:
+        db_table = "collection_policy_ext"
+
+
+class CollectionPersonnelExt(DataBaseModel):
+    """人员信息类采集扩展字段（category=personnel）。"""
+    result_id = CharField(max_length=32, primary_key=True, help_text="FK -> crawler_result.id")
+    person_name = CharField(max_length=100, null=True, default="", index=True, help_text="姓名")
+    id_card_masked = CharField(max_length=50, null=True, default="", help_text="身份证号（脱敏）")
+    cert_no = CharField(max_length=100, null=True, default="", index=True, help_text="证书编号")
+    cert_type = CharField(max_length=100, null=True, default="", help_text="证书类型：一级建造师|监理工程师|造价工程师等")
+    employer = CharField(max_length=200, null=True, default="", index=True, help_text="所属单位")
+    specialty = CharField(max_length=200, null=True, default="", help_text="注册专业")
+    position = CharField(max_length=100, null=True, default="", help_text="职务")
+    valid_until = DateField(null=True, help_text="证书有效期")
+    status = CharField(max_length=20, null=True, default="注册", help_text="注册|注销|转注")
+
+    class Meta:
+        db_table = "collection_personnel_ext"
+
+
 def alter_db_add_column(migrator, table_name, column_name, column_type):
     try:
         migrate(migrator.add_column(table_name, column_name, column_type))
@@ -2415,6 +2460,23 @@ def migrate_db():
     if not BidTenderSearch.table_exists():
         BidTenderSearch.create_table(safe=True)
         logging.info("bid_tender_search: table created")
+
+    # ── 智能采集（新系统）扩展表 ──────────────────────────────────────────
+    # CrawlerResult 加 category 列（老库自动加列，默认 bid 保证历史数据兼容）
+    alter_db_add_column(
+        migrator, "crawler_result", "category",
+        CharField(max_length=32, null=False, default="bid",
+                   help_text="bid|policy|personnel|news|other", index=True),
+    )
+    # 政策法规扩展表（新表，IF NOT EXISTS 自动创建）
+    if not CollectionPolicyExt.table_exists():
+        CollectionPolicyExt.create_table(safe=True)
+        logging.info("collection_policy_ext: table created")
+    # 人员信息扩展表
+    if not CollectionPersonnelExt.table_exists():
+        CollectionPersonnelExt.create_table(safe=True)
+        logging.info("collection_personnel_ext: table created")
+
     logging.disable(logging.NOTSET)
     # this is after re-enabling logging to allow logging changed user emails
     migrate_add_unique_email(migrator)
