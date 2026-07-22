@@ -320,8 +320,25 @@ async def import_docx(tenant_id: str, user_id: str, file_obj, folder_id: str = N
     doc_id = get_uuid()
     name = (file_obj.filename or "imported").rsplit(".", 1)[0]
 
-    # Univer IDocumentBody uses "\r\n" between paragraphs. Each paragraph
-    # entry in `paragraphs[]` points at its first character via startIndex.
+    # Univer IDocumentBody dataStream character semantics (see
+    # @univerjs/core i-document-data.d.ts):
+    #   \r  PARAGRAPH    (paragraph terminator)
+    #   \n  SECTION_BREAK (section break — NOT a paragraph separator!)
+    #   \t  TAB
+    #   \v  COLUMN_BREAK
+    #   \f  PAGE_BREAK
+    #
+    # Earlier version of this code used "\r\n" between every paragraph,
+    # which inserted an unintended SECTION_BREAK after each paragraph and
+    # shattered the document into N empty sections → Univer rendered blank.
+    # Correct pattern: terminate each paragraph with "\r", and add a single
+    # trailing "\n" at end-of-document so the body has one valid section.
+    #
+    # paragraphStyle uses namedStyleType (NamedStyleType enum):
+    #   HEADING_1=4, HEADING_2=5, HEADING_3=6, HEADING_4=7, HEADING_5=8
+    # There is NO `headingLevel` field on IParagraphStyle.
+    HEADING_TO_NAMED = {1: 4, 2: 5, 3: 6, 4: 7, 5: 8, 6: 9}
+
     data_stream_parts: list[str] = []
     text_runs: list[dict] = []
     paragraphs_meta: list[dict] = []
@@ -353,6 +370,18 @@ async def import_docx(tenant_id: str, user_id: str, file_obj, folder_id: str = N
             cursor += len(run_text)
             added += len(run_text)
         return added
+
+    def _close_paragraph(para_start: int, named_style_type: int | None) -> None:
+        nonlocal cursor
+        paragraph_style: dict = {}
+        if named_style_type is not None:
+            paragraph_style["namedStyleType"] = named_style_type
+        paragraphs_meta.append({
+            "startIndex": para_start,
+            "paragraphStyle": paragraph_style,
+        })
+        data_stream_parts.append("\r")
+        cursor += 1
 
     for para in doc.paragraphs:
         para_start = cursor
@@ -395,15 +424,7 @@ async def import_docx(tenant_id: str, user_id: str, file_obj, folder_id: str = N
         else:
             markdown_lines.append(text_md)
 
-        paragraph_style: dict = {}
-        if heading_level is not None:
-            paragraph_style["headingLevel"] = heading_level
-        paragraphs_meta.append({
-            "startIndex": para_start,
-            "paragraphStyle": paragraph_style,
-        })
-        data_stream_parts.append("\r\n")
-        cursor += 2
+        _close_paragraph(para_start, HEADING_TO_NAMED.get(heading_level))
 
     # Tables → one paragraph per row, cells joined by tab.
     for table in doc.tables:
@@ -419,18 +440,17 @@ async def import_docx(tenant_id: str, user_id: str, file_obj, folder_id: str = N
                 })
                 data_stream_parts.append(row_text)
                 cursor += len(row_text)
-            paragraphs_meta.append({
-                "startIndex": row_start,
-                "paragraphStyle": {},
-            })
-            data_stream_parts.append("\r\n")
-            cursor += 2
+            _close_paragraph(row_start, None)
             markdown_lines.append("| " + " | ".join(cells) + " |")
 
     # Body must contain at least one paragraph or Univer's renderer throws.
+    # Minimal valid body = empty paragraph + section break.
     if not data_stream_parts:
-        data_stream_parts.append("\r\n")
         paragraphs_meta.append({"startIndex": 0, "paragraphStyle": {}})
+        data_stream_parts.append("\r")
+
+    # Trailing section break — Univer expects body to end with a section.
+    data_stream_parts.append("\n")
 
     content = {
         "id": "default_doc",
