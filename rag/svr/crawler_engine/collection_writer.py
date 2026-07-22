@@ -88,18 +88,20 @@ def _parse_objection_fields(content: str) -> Dict[str, str]:
     if not content:
         return {}
     fields: Dict[str, str] = {}
-    # 非原始字符串让 \u 转义生效；lookbehind 防子串抢占；lookahead 限标签长度
-    pattern_tpl = (
-        r"(?<![\u4e00-\u9fff])"      # 标签前不能是汉字
-        "{label}"
-        r"\s*[：:]\s*"                # 中英文冒号 + 空白
-        r"(.+?)"                      # 懒匹配值
-        r"(?=\n\s*[^\n：:]{1,20}[：:]|\Z)"  # 下一行 ≤20 字符的标签 或 文本末尾
+    # 注意：不能用 str.format()，因为正则中的 {1,20} 会被当成格式占位符
+    # lookbehind 防子串抢占（编号 不匹配 招标编号 内部的 编号）
+    # lookahead 用已知标签列表交替，能识别同一行内紧挨的下一个标签
+    # （如 "异议内容：详见异议函 依据和理由：" — 两个标签在同一行无换行分隔）
+    _labels_alt = "|".join(re.escape(lbl) for lbl, _ in _OBJECTION_FIELD_LABELS)
+    pattern_suffix = (
+        r"\s*[：:]\s*"
+        r"(.+?)"
+        rf"(?=\s*(?:{_labels_alt})\s*[：:]|\Z)"
     )
     # 已知章节标题（无冒号的孤立行），会在懒匹配中被吸入值末尾，需 strip
     _CHAPTER_TRAILERS = ("异议处理", "异议")
     for cn_label, en_key in _OBJECTION_FIELD_LABELS:
-        pattern = pattern_tpl.format(label=re.escape(cn_label))
+        pattern = r"(?<![\u4e00-\u9fff])" + re.escape(cn_label) + pattern_suffix
         m = re.search(pattern, content, re.DOTALL)
         if not m:
             continue

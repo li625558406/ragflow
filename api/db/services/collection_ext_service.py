@@ -41,16 +41,22 @@ class CollectionPolicyExtService(CommonService):
     @classmethod
     @DB.connection_context()
     def upsert(cls, result_id: str, fields: Dict[str, Any]) -> bool:
-        """按 result_id 主键 upsert。返回 True=新插入。"""
+        """按 result_id 主键 upsert。返回 True=新插入。
+
+        注意：不能用 CommonService.insert()（会自动加 id 列）和 update_by_id()
+        （用 cls.model.id 过滤），因为本表主键是 result_id 而非 id。直接用
+        Peewee Model.create / Model.update 绕过 CommonService 的 id 假设。
+        """
         data = {k: v for k, v in fields.items() if hasattr(cls.model, k)}
         data["result_id"] = result_id
         try:
             if cls._exists(result_id):
                 update_data = {k: v for k, v in data.items() if k != "result_id"}
                 if update_data:
-                    cls.update_by_id(result_id, update_data)
+                    cls.model.update(update_data).where(
+                        cls.model.result_id == result_id).execute()
                 return False
-            cls.insert(**data)
+            cls.model.create(**data)
             return True
         except Exception as e:
             logging.error("CollectionPolicyExtService.upsert failed (result=%s): %s",
@@ -89,9 +95,10 @@ class CollectionPersonnelExtService(CommonService):
             if cls._exists(result_id):
                 update_data = {k: v for k, v in data.items() if k != "result_id"}
                 if update_data:
-                    cls.update_by_id(result_id, update_data)
+                    cls.model.update(update_data).where(
+                        cls.model.result_id == result_id).execute()
                 return False
-            cls.insert(**data)
+            cls.model.create(**data)
             return True
         except Exception as e:
             logging.error("CollectionPersonnelExtService.upsert failed (result=%s): %s",
@@ -129,9 +136,10 @@ class CollectionObjectionExtService(CommonService):
             if cls._exists(result_id):
                 update_data = {k: v for k, v in data.items() if k != "result_id"}
                 if update_data:
-                    cls.update_by_id(result_id, update_data)
+                    cls.model.update(update_data).where(
+                        cls.model.result_id == result_id).execute()
                 return False
-            cls.insert(**data)
+            cls.model.create(**data)
             return True
         except Exception as e:
             logging.error("CollectionObjectionExtService.upsert failed (result=%s): %s",

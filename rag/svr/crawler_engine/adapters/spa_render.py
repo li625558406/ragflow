@@ -681,7 +681,16 @@ class SpaRenderAdapter(BaseAdapter):
                     logging.warning(
                         "SpaRenderAdapter: detail css goto failed (continuing): %s", goto_err,
                     )
-                time.sleep(1)
+                # Wait for the content container to render before extracting.
+                # SPA detail pages fetch values via XHR after initial render;
+                # without this wait, labels appear but values are still empty.
+                # Mirrors the list path's wait_for_selector + sleep(3) strategy.
+                if content_field:
+                    try:
+                        page.wait_for_selector(content_field, timeout=10000)
+                    except Exception:
+                        pass
+                time.sleep(3)
                 html = page.content()
 
                 from bs4 import BeautifulSoup

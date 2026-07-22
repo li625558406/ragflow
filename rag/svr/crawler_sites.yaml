@@ -3231,7 +3231,7 @@ sites:
       headers:
         User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"
       verify_ssl: false
-      timeout: 60
+      timeout: 15                     # 站点 domcontentloaded 长时间不触发,用短超时让 goto 早失败,后续 wait_for_selector+sleep 完成渲染
       network_idle: false             # networkidle 对该站持续活动会超时,改用 domcontentloaded
     listing:
       url: "https://ggzyjd.fj.gov.cn/dissentResult/list/"
@@ -3291,9 +3291,8 @@ sites:
         }
     detail:
       type: css_selector
-      content_field: ".detail-content"
-      # Fallback selectors built into SpaRenderAdapter._CONTENT_SELECTORS
-      # will be tried automatically if .detail-content does not match.
+      content_field: ".dissentResult-detail"
+      # 详情页 DOM: div.dissentResult-detail > {div.header.business-header, div.dissent, div.handle}
       # 17 个结构化字段 (编号/招标编号/异议人名称 等) 由 CollectionWriter
       # ._parse_objection_fields 从渲染后的详情正文按 'Label：value' 模式解析
     format:
