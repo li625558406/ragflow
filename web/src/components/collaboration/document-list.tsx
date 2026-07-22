@@ -1,8 +1,8 @@
 import {
   FileSpreadsheet,
-  FileText,
   FileUp,
   FolderPlus,
+  NotebookText,
   Plus,
   Search,
 } from 'lucide-react';
@@ -253,7 +253,7 @@ export default function DocumentList({
                   setShowNewDoc(true);
                 }}
               >
-                <FileText className="size-3.5" />
+                <NotebookText className="size-3.5 text-blue-600" />
                 新建文档
               </button>
               <button
@@ -273,7 +273,7 @@ export default function DocumentList({
                   setShowNewSheet(true);
                 }}
               >
-                <FileSpreadsheet className="size-3.5" />
+                <FileSpreadsheet className="size-3.5 text-emerald-600" />
                 新建表格
               </button>
               <button

@@ -684,6 +684,26 @@ async def list_versions(doc_id):
         return get_json_result(message=str(e), code=RetCode.SERVER_ERROR)
 
 
+@manager.route("/collaboration/documents/<doc_id>/versions/<version>", methods=["GET"])  # noqa: F821
+@login_required
+async def get_version(doc_id, version):
+    """返回某个历史版本的完整内容快照 (Univer IDocumentData JSON)。"""
+    try:
+        result = await collaboration_api_service.get_version_content(
+            doc_id=doc_id,
+            version_id=version,
+            tenant_id=current_user.id,
+        )
+        return get_json_result(data=result)
+    except LookupError as e:
+        return get_json_result(message=str(e), code=RetCode.NOT_FOUND)
+    except PermissionError as e:
+        return get_json_result(message=str(e), code=RetCode.OPERATING_ERROR)
+    except Exception as e:
+        logging.error(e)
+        return get_json_result(message=str(e), code=RetCode.SERVER_ERROR)
+
+
 @manager.route("/collaboration/documents/<doc_id>/versions/<version>/restore", methods=["POST"])  # noqa: F821
 @login_required
 async def restore_version(doc_id, version):

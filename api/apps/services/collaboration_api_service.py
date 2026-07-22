@@ -674,9 +674,13 @@ async def save_ydoc_state(doc_id: str, tenant_id: str, data: dict) -> dict:
 
 
 def _trim_document_versions(doc_id: str) -> None:
-    """保留最新 MAX_DOCUMENT_VERSIONS_KEEP 条快照，其余删除。"""
+    """保留最新 MAX_DOCUMENT_VERSIONS_KEEP 条快照，其余删除。
+
+    MySQL 不支持 `DELETE ... WHERE id NOT IN (SELECT ... LIMIT n)` (Error 1235)，
+    所以先物化为 Python list 再传入 IN 子句（IN 后跟字面量列表是合法的）。
+    """
     try:
-        keep_ids = (
+        keep_rows = list(
             CollaborationDocumentVersion
             .select(CollaborationDocumentVersion.id)
             .where(CollaborationDocumentVersion.document_id == doc_id)
@@ -686,6 +690,9 @@ def _trim_document_versions(doc_id: str) -> None:
             )
             .limit(MAX_DOCUMENT_VERSIONS_KEEP)
         )
+        keep_ids = [r.id for r in keep_rows]
+        if not keep_ids:
+            return  # 调用方一定刚插入过一条，理论不会到这里
         CollaborationDocumentVersion.delete().where(
             (CollaborationDocumentVersion.document_id == doc_id)
             & (~(CollaborationDocumentVersion.id.in_(keep_ids)))
@@ -1098,6 +1105,53 @@ async def list_versions(doc_id: str, tenant_id: str) -> dict:
     }
 
 
+async def get_version_content(doc_id: str, version_id: str, tenant_id: str) -> dict:
+    """返回某个历史版本的完整内容快照 (Univer IDocumentData JSON)。
+
+    用于前端版本历史面板的「查看完整内容」预览。content_snapshot 体积
+    可能很大 (几十 KB ~ 数 MB)，所以单独提供接口而不是塞进 list_versions。
+    """
+    e, doc = CollaborationDocumentService.get_by_id(doc_id)
+    if not e:
+        raise LookupError("Document not found")
+    if not _get_user_role(doc_id, tenant_id):
+        raise PermissionError("Access denied")
+
+    snap = (
+        CollaborationDocumentVersion
+        .select(
+            CollaborationDocumentVersion.id,
+            CollaborationDocumentVersion.version,
+            CollaborationDocumentVersion.created_by,
+            CollaborationDocumentVersion.create_time,
+            CollaborationDocumentVersion.content_snapshot,
+        )
+        .where(
+            (CollaborationDocumentVersion.document_id == doc_id)
+            & (CollaborationDocumentVersion.id == version_id)
+        )
+        .first()
+    )
+    if snap is None:
+        raise LookupError(f"Version {version_id} not found")
+
+    user_name = snap.created_by
+    try:
+        u = User.get(User.id == snap.created_by)
+        user_name = u.nickname or user_name
+    except Exception:
+        pass
+
+    return {
+        "id": snap.id,
+        "version": snap.version,
+        "created_by": snap.created_by,
+        "user_name": user_name,
+        "create_time": snap.create_time,
+        "content": snap.content_snapshot,
+    }
+
+
 async def restore_version(doc_id: str, tenant_id: str, version_id: str | None) -> dict:
     """恢复到指定历史版本。
 
@@ -1178,6 +1232,19 @@ async def restore_version(doc_id: str, tenant_id: str, version_id: str | None) -
         "version": new_version,
         "restored_from_version": target.version,
     })
+
+    # Notify the WS layer to drop its cached room state. restore_version
+    # bypasses the normal WS update flow, so without this the reconnecting
+    # editor would receive the stale pre-restore ydoc and the next save
+    # would overwrite the restore result.
+    try:
+        from api.apps.collaboration_ws import invalidate_room
+
+        await invalidate_room(doc_id, {"t": "force-reload"})
+    except Exception as exc:
+        logging.warning(
+            f"[restore_version] invalidate_room failed for doc {doc_id}: {exc}"
+        )
 
     return {
         "id": doc_id,

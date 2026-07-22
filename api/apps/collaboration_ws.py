@@ -342,6 +342,50 @@ async def handle_ws(doc_id: str):
         logging.info(f"[WS] {user['name']} disconnected from doc {doc_id}")
 
 
+async def invalidate_room(doc_id: str, payload: dict | None = None):
+    """Invalidate in-memory room state so the next join reloads from MySQL.
+
+    Called after server-side mutations that bypass the WS update flow —
+    e.g. version restore overwrites the persisted `ydoc` directly, but the
+    room still holds the pre-restore `full_state` and `buffer` in memory.
+    Without this, reconnecting clients receive the stale state and the
+    next `save` overwrites the restore result.
+
+    Behavior:
+    1. Broadcast `force-reload` to every online client in the room so they
+       drop their in-memory Yjs doc and reload from the server.
+    2. Clear the room's cached `full_state` and `buffer` so any subsequent
+       join (including our own reconnect) pulls the fresh state from MySQL.
+    """
+    room = _rooms.get(doc_id)
+    if not room:
+        return
+    msg = json.dumps(payload) if payload is not None else json.dumps({"t": "force-reload"})
+    for cid, client in list(room["clients"].items()):
+        try:
+            await client["ws"].send(msg)
+        except Exception:
+            # Sending may fail if the client is mid-close; drop the zombie entry.
+            room["clients"].pop(cid, None)
+    # Two-step cleanup, both required:
+    #   1) Null full_state + clear buffer on the old room object so that
+    #      in-flight handle_ws coroutines holding this reference don't
+    #      run their finally branch (`if room["full_state"]: await
+    #      _persist_full_state(...)`) and overwrite the freshly-restored
+    #      DB ydoc with the pre-restore state.
+    #   2) Pop _rooms[doc_id] so the next incoming connection rebuilds
+    #      the room via _load_full_state (pulling the restored ydoc from
+    #      MySQL) instead of reusing the emptied room and serving
+    #      `init d=null`, which would boot an empty doc on the client
+    #      and the next save would clobber the restore result.
+    room["full_state"] = None
+    room["buffer"].clear()
+    _rooms.pop(doc_id, None)
+    logging.info(
+        f"[WS] invalidate_room doc={doc_id} clients_notified={len(room['clients'])}"
+    )
+
+
 def register_ws_routes(app):
     """Register WebSocket route on the Quart app."""
 

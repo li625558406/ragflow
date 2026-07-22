@@ -561,6 +561,15 @@ export class CollaborationWebSocketProvider {
         console.error('[YjsProvider] Server error:', msg.d);
         break;
       }
+
+      case 'force-reload': {
+        // Server-side mutation (e.g. version restore) overwrote the persisted
+        // ydoc. The server has already dropped its in-memory room state, so a
+        // plain page reload will pick up the fresh content on reconnect.
+        console.log('[YjsProvider] force-reload received, reloading page');
+        window.location.reload();
+        break;
+      }
     }
   };
 
