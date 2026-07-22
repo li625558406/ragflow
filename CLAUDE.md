@@ -36,6 +36,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 二次开发功能汇总 | `D:\AI\ragflow2\二次开发功能汇总.md` | 全部二次开发功能清单：标讯系统、企业查询、Agent画布、爬虫引擎、MCP Server等 |
 | 协作功能二开方案 | `D:\AI\ragflow2\协作功能二开方案.md` | 协作页签25个功能的现状分析、差距评估、适配方案、数据库/前端组件清单、分4个Phase的优先级规划 |
 | Crawl4AI 独立爬虫服务方案 | `D:\AI\ragflow2\crawl4ai-service-独立部署方案.md` | ★ 下一代爬虫架构：独立部署 crawl4ai Docker + FastAPI调度服务 + RAGFlow KB/DB适配器，替代现有定时任务爬虫体系 |
+| 智能采集系统设计 | `D:\AI\ragflow2\智能采集系统设计.md` | ★ 新智能采集系统：基于 crawler_result + 扩展表的多类别采集（bid/policy/personnel/news/other），与 bid_* 解耦，手动触发+定时调度，YAML category 字段驱动 |
+| 反爬能力等级 | `D:\AI\ragflow2\反爬能力等级.md` | 爬虫三级反爬能力清单：🟢 一级(rest_api基础) / 🟡 二级(加密/浏览器指纹) / 🔴 三级(SPA/Stealth)，含 YAML 配置模板、选型决策树、排查流程 |
 | 踩坑问题清单 | `D:\AI\ragflow2\踩坑问题清单.md` | Docker/Nginx/sub-path部署实战踩坑：CRLF、Volume权限、proxy_redirect、SPA API路径、nginx热更新等7个问题及解决方案 |
 
 
