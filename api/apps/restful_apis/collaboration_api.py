@@ -691,6 +691,7 @@ async def restore_version(doc_id, version):
         result = await collaboration_api_service.restore_version(
             doc_id=doc_id,
             tenant_id=current_user.id,
+            version_id=version,
         )
         return get_json_result(data=result)
     except ValueError as e:

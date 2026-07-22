@@ -20,6 +20,7 @@ from api.db.db_models import (
     CollaborationComment,
     CollaborationDocument,
     CollaborationDocumentACL,
+    CollaborationDocumentVersion,
     CollaborationFolder,
     CollaborationFormatRule,
     CollaborationShareLink,
@@ -57,3 +58,7 @@ class CollaborationAttachmentService(CommonService):
 
 class CollaborationAuditLogService(CommonService):
     model = CollaborationAuditLog
+
+
+class CollaborationDocumentVersionService(CommonService):
+    model = CollaborationDocumentVersion

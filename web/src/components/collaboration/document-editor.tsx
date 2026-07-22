@@ -70,7 +70,8 @@ export default function DocumentEditor({
   const univerAPIRef = useRef<FUniver | null>(null);
 
   // 右侧侧边栏激活面板 (评论/附件/版本/审计) —— 互斥,同一时间只开一个。
-  const [activePanel, setActivePanel] = useState<PanelKey | null>(null);
+  // 默认打开评论面板。
+  const [activePanel, setActivePanel] = useState<PanelKey | null>('comments');
 
   // Commit any in-progress edit and return a fresh document snapshot.
   // Univer Docs may keep pending edits in an overlay until the region loses
@@ -263,7 +264,7 @@ export default function DocumentEditor({
         saveStatus={collabSaveStatus}
         version={null}
         provider={provider}
-        showManualSave={!token}
+        showManualSave
         onManualSave={saveToServer}
         onDownload={handleDownload}
         downloading={exportBusy}

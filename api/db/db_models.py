@@ -1632,6 +1632,20 @@ class CollaborationAuditLog(DataBaseModel):
         db_table = "collaboration_audit_log"
 
 
+class CollaborationDocumentVersion(DataBaseModel):
+    """历史版本快照表。每次 save_ydoc_state 写入一条，保留最新 20 条。"""
+    id = CharField(max_length=32, primary_key=True)
+    document_id = CharField(max_length=32, null=False, index=True)
+    version = IntegerField(null=False, index=True, help_text="对应 CollaborationDocument.version 快照时刻的值")
+    ydoc_snapshot = BlobField(null=True, help_text="Yjs binary state snapshot")
+    content_snapshot = JSONField(null=True, help_text="Univer IDocumentData JSON snapshot")
+    created_by = CharField(max_length=32, null=False, index=True)
+    create_time = BigIntegerField(null=False, default=0)
+
+    class Meta:
+        db_table = "collaboration_document_version"
+
+
 class CollaborationFormatRule(DataBaseModel):
     id = CharField(max_length=32, primary_key=True)
     name = CharField(max_length=128, null=False, help_text="rule name")
@@ -2346,6 +2360,7 @@ def migrate_db():
     CollaborationShareLink.create_table(safe=True)
     CollaborationAttachment.create_table(safe=True)
     CollaborationAuditLog.create_table(safe=True)
+    CollaborationDocumentVersion.create_table(safe=True)
     alter_db_column_type(migrator, "document", "size", BigIntegerField(default=0, index=True))
     alter_db_column_type(migrator, "file", "size", BigIntegerField(default=0, index=True))
     alter_db_add_column(migrator, "bid_project", "fetched_at", DateTimeField(null=True, help_text="搜索缓存获取时间"))

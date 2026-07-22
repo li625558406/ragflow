@@ -30,6 +30,7 @@ from api.db.db_models import (
     CollaborationAuditLog,
     CollaborationComment,
     CollaborationDocument,
+    CollaborationDocumentVersion,
     User,
     CollaborationDocumentACL,
     CollaborationFolder,
@@ -44,6 +45,7 @@ from api.db.services.collaboration_service import (
     CollaborationCommentService,
     CollaborationDocumentACLService,
     CollaborationDocumentService,
+    CollaborationDocumentVersionService,
     CollaborationFolderService,
     CollaborationFormatRuleService,
     CollaborationShareLinkService,
@@ -51,6 +53,9 @@ from api.db.services.collaboration_service import (
 from api.db.services.user_service import UserTenantService
 from common.misc_utils import get_uuid
 from common.time_utils import current_timestamp
+
+# 历史版本保留条数：超过则删除最旧的。
+MAX_DOCUMENT_VERSIONS_KEEP = 20
 
 
 def _get_shared_tenant_user_ids(user_id: str) -> set:
@@ -619,7 +624,11 @@ async def update_document(doc_id: str, tenant_id: str, data: dict) -> dict:
 
 
 async def save_ydoc_state(doc_id: str, tenant_id: str, data: dict) -> dict:
-    """Save Yjs binary state from the frontend (periodic persistence)."""
+    """Save Yjs binary state from the frontend (periodic persistence).
+
+    每次内容保存都会在 CollaborationDocumentVersion 表里写一条快照，
+    保留最新 MAX_DOCUMENT_VERSIONS_KEEP 条，用于真正的历史版本回滚。
+    """
     e, doc = CollaborationDocumentService.get_by_id(doc_id)
     if not e:
         raise LookupError("Document not found")
@@ -628,9 +637,11 @@ async def save_ydoc_state(doc_id: str, tenant_id: str, data: dict) -> dict:
 
     update_data = {}
     ydoc_state_b64 = data.get("ydoc_state")
+    new_version = None
     if ydoc_state_b64:
         update_data["ydoc"] = base64.b64decode(ydoc_state_b64)
-        update_data["version"] = (doc.version or 0) + 1
+        new_version = (doc.version or 0) + 1
+        update_data["version"] = new_version
     if "content" in data:
         update_data["content"] = data["content"]
     if "markdown_content" in data:
@@ -640,7 +651,47 @@ async def save_ydoc_state(doc_id: str, tenant_id: str, data: dict) -> dict:
     if update_data:
         CollaborationDocumentService.update_by_id(doc_id, update_data)
 
-    return {"id": doc_id, "version": update_data.get("version", doc.version or 0)}
+    # 写入版本快照（只在确实有 ydoc_state 时才记，元数据修改不入版本库）。
+    if new_version is not None:
+        try:
+            snapshot_id = get_uuid()
+            now_ms = current_timestamp()
+            CollaborationDocumentVersionService.save(
+                id=snapshot_id,
+                document_id=doc_id,
+                version=new_version,
+                ydoc_snapshot=update_data.get("ydoc"),
+                content_snapshot=update_data.get("content"),
+                created_by=tenant_id,
+                create_time=now_ms,
+            )
+            _trim_document_versions(doc_id)
+        except Exception as exc:
+            # 快照失败不能影响保存主流程。
+            logging.warning(f"[save_ydoc_state] snapshot failed for doc {doc_id}: {exc}")
+
+    return {"id": doc_id, "version": new_version if new_version is not None else (doc.version or 0)}
+
+
+def _trim_document_versions(doc_id: str) -> None:
+    """保留最新 MAX_DOCUMENT_VERSIONS_KEEP 条快照，其余删除。"""
+    try:
+        keep_ids = (
+            CollaborationDocumentVersion
+            .select(CollaborationDocumentVersion.id)
+            .where(CollaborationDocumentVersion.document_id == doc_id)
+            .order_by(
+                CollaborationDocumentVersion.create_time.desc(),
+                CollaborationDocumentVersion.version.desc(),
+            )
+            .limit(MAX_DOCUMENT_VERSIONS_KEEP)
+        )
+        CollaborationDocumentVersion.delete().where(
+            (CollaborationDocumentVersion.document_id == doc_id)
+            & (~(CollaborationDocumentVersion.id.in_(keep_ids)))
+        ).execute()
+    except Exception as exc:
+        logging.warning(f"[save_ydoc_state] trim failed for doc {doc_id}: {exc}")
 
 
 async def delete_document(doc_id: str, tenant_id: str) -> bool:
@@ -991,10 +1042,12 @@ async def unresolve_comment(doc_id: str, comment_id: str, tenant_id: str) -> dic
 # ── Version History ──
 
 async def list_versions(doc_id: str, tenant_id: str) -> dict:
-    """Get document version info for the version dropdown.
+    """返回文档的版本历史。
 
-    Returns the current version counter and whether a restorable ydoc state exists.
-    Each save_ydoc_state() call increments version, so the counter reflects save count.
+    - current_version: 当前文档版本号
+    - has_ydoc: 是否存在可恢复的 ydoc 状态
+    - update_time: 主表最后一次更新时间
+    - versions: 历史快照列表 (按时间倒序，最多 MAX_DOCUMENT_VERSIONS_KEEP 条)
     """
     e, doc = CollaborationDocumentService.get_by_id(doc_id)
     if not e:
@@ -1002,32 +1055,136 @@ async def list_versions(doc_id: str, tenant_id: str) -> dict:
     if not _get_user_role(doc_id, tenant_id):
         raise PermissionError("Access denied")
 
+    snapshots = (
+        CollaborationDocumentVersion
+        .select(
+            CollaborationDocumentVersion.id,
+            CollaborationDocumentVersion.version,
+            CollaborationDocumentVersion.created_by,
+            CollaborationDocumentVersion.create_time,
+        )
+        .where(CollaborationDocumentVersion.document_id == doc_id)
+        .order_by(
+            CollaborationDocumentVersion.create_time.desc(),
+            CollaborationDocumentVersion.version.desc(),
+        )
+        .limit(MAX_DOCUMENT_VERSIONS_KEEP)
+    )
+    snap_list = list(snapshots)
+
+    user_ids = list({s.created_by for s in snap_list if s.created_by})
+    nickname_map = {}
+    if user_ids:
+        try:
+            rows = User.select(User.id, User.nickname).where(User.id.in_(user_ids))
+            nickname_map = {row.id: row.nickname for row in rows}
+        except Exception:
+            pass
+
     return {
         "current_version": doc.version or 0,
         "has_ydoc": bool(doc.ydoc),
         "update_time": doc.update_time,
+        "versions": [
+            {
+                "id": s.id,
+                "version": s.version,
+                "created_by": s.created_by,
+                "user_name": nickname_map.get(s.created_by, s.created_by),
+                "create_time": s.create_time,
+            }
+            for s in snap_list
+        ],
     }
 
 
-async def restore_version(doc_id: str, tenant_id: str) -> dict:
-    """Restore document to the latest saved ydoc state.
+async def restore_version(doc_id: str, tenant_id: str, version_id: str | None) -> dict:
+    """恢复到指定历史版本。
 
-    Tells the frontend to reload from ydoc, discarding any unsaved local changes.
+    语义：恢复 ≠ 回滚。把目标快照的 ydoc + content 作为新版本写入文档
+    (version 继续递增)，并写一条快照代表「恢复后的新当前状态」。
+    反悔路径：上一次 save 的快照仍然在表里，用户点它即可回到恢复前。
+    恢复后前端通过 reload 重新加载。
     """
     e, doc = CollaborationDocumentService.get_by_id(doc_id)
     if not e:
         raise LookupError("Document not found")
     if not _check_role(doc_id, tenant_id, "editor"):
         raise PermissionError("Access denied")
-    if not doc.ydoc:
-        raise ValueError("No saved state to restore")
 
-    await log_audit(tenant_id, doc_id, "version.restore", {"version": doc.version or 0})
+    snapshots = (
+        CollaborationDocumentVersion
+        .select(
+            CollaborationDocumentVersion.id,
+            CollaborationDocumentVersion.version,
+            CollaborationDocumentVersion.ydoc_snapshot,
+            CollaborationDocumentVersion.content_snapshot,
+        )
+        .where(CollaborationDocumentVersion.document_id == doc_id)
+        .order_by(
+            CollaborationDocumentVersion.create_time.desc(),
+            CollaborationDocumentVersion.version.desc(),
+        )
+        .limit(MAX_DOCUMENT_VERSIONS_KEEP)
+    )
+    snap_list = list(snapshots)
+
+    if not snap_list:
+        raise ValueError("No saved version to restore")
+
+    target = None
+    if version_id:
+        target = next((s for s in snap_list if s.id == version_id), None)
+        if target is None:
+            # 严格匹配：前端指定的版本可能已被 trim 掉，静默回退到最新
+            # 会让用户误以为恢复了目标版本。显式报错让前端 refresh 后重试。
+            raise LookupError(f"Version {version_id} not found (may have been trimmed)")
+    else:
+        # 未指定 → 取最新一条 (旧行为兼容)
+        target = snap_list[0]
+
+    now_ms = current_timestamp()
+    new_version = (doc.version or 0) + 1
+
+    target_ydoc = target.ydoc_snapshot
+    target_content = target.content_snapshot
+
+    # 1) 把目标快照写入主表。target 的 ydoc/content 始终来自历史 save，
+    #    save 时刻保证 ydoc 非空 (save_ydoc_state 只在 ydoc_state 存在时写快照)。
+    update_data = {
+        "ydoc": target_ydoc,
+        "content": target_content,
+        "version": new_version,
+    }
+    CollaborationDocumentService.update_by_id(doc_id, update_data)
+
+    # 2) 写一条快照代表「恢复后的当前状态」，与主表 version 对齐，
+    #    前端 list_versions 据此显示"当前版本"标记。
+    try:
+        CollaborationDocumentVersionService.save(
+            id=get_uuid(),
+            document_id=doc_id,
+            version=new_version,
+            ydoc_snapshot=target_ydoc,
+            content_snapshot=target_content,
+            created_by=tenant_id,
+            create_time=now_ms,
+        )
+        _trim_document_versions(doc_id)
+    except Exception as exc:
+        logging.warning(f"[restore_version] post-restore snapshot failed for doc {doc_id}: {exc}")
+
+    await log_audit(tenant_id, doc_id, "version.restore", {
+        "version": new_version,
+        "restored_from_version": target.version,
+    })
 
     return {
         "id": doc_id,
-        "version": doc.version or 0,
-        "ydoc": base64.b64encode(doc.ydoc).decode("ascii"),
+        "version": new_version,
+        "restored_from_version": target.version,
+        "ydoc": base64.b64encode(target_ydoc).decode("ascii") if target_ydoc else None,
+        "content": target_content,
     }
 
 
