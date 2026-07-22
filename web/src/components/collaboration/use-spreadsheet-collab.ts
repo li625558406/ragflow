@@ -447,6 +447,11 @@ export default function useSpreadsheetCollab({
                         ydoc_state: b64,
                         content: stripAssetTokens(dataToSave),
                         markdown_content: '',
+                        // 编辑 debounce 触发的高频保存，跳过版本快照写入。
+                        // 否则用户编辑期间每 ~5s 就生成一条几乎无差异的快照，
+                        // 污染版本历史并迅速耗尽 20 条 trim 额度。
+                        // 快照改由 30s 自动保存 / 手动保存 / 页面隐藏 flush 写入。
+                        write_snapshot: false,
                       }),
                     })
                     .then((r) => r.json())
