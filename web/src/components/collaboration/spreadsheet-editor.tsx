@@ -26,6 +26,7 @@ import type { FUniver } from '@univerjs/presets';
 import { createUniver, LocaleType } from '@univerjs/presets';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import EditorHeader from './editor-header';
+import SidePanelBar, { type PanelKey } from './side-panel-bar';
 import useSpreadsheetCollab from './use-spreadsheet-collab';
 import type { CollaborationWebSocketProvider } from './yjs-provider';
 
@@ -114,6 +115,10 @@ export default function SpreadsheetEditor({
   const containerRef = useRef<HTMLDivElement>(null);
   const univerRef = useRef<Univer | null>(null);
   const univerAPIRef = useRef<FUniver | null>(null);
+
+  // 右侧侧边栏激活面板 (评论/附件/版本/审计) —— 互斥,同一时间只开一个。
+  // 与 DocumentEditor 一致，默认打开评论面板。
+  const [activePanel, setActivePanel] = useState<PanelKey | null>('comments');
 
   // Report provider readiness to parent so side panels can subscribe to events.
   const onProviderReadyRef = useRef(onProviderReady);
@@ -498,8 +503,21 @@ export default function SpreadsheetEditor({
         fileType="xlsx"
       />
 
-      {/* Univer container — renders its own toolbar, formula bar, sheet tabs, grid */}
-      <div ref={containerRef} className="flex-1 min-h-0" />
+      {/* 主体区:Univer Sheets canvas + 右侧侧边栏 (评论/附件/版本/审计) 水平排布。
+          与 DocumentEditor 保持一致布局，让表格和文档拥有相同的协作面板体验。
+          所有面板走文档级 REST API，与 file_type 无关，后端已对 xlsx 透明支持。 */}
+      <div className="flex-1 flex min-h-0">
+        <div ref={containerRef} className="flex-1 min-w-0 min-h-0" />
+        <SidePanelBar
+          docId={document.id}
+          apiFetch={apiFetch}
+          activePanel={activePanel}
+          onChange={setActivePanel}
+          isOwner
+          provider={provider ?? null}
+          fileType="xlsx"
+        />
+      </div>
     </div>
   );
 }
