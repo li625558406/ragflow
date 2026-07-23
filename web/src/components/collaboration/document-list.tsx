@@ -172,6 +172,7 @@ export default function DocumentList({
           update_time: result.data.update_time,
           create_time: result.data.create_time,
           permission: result.data.permission,
+          is_owner: true,
         };
         onSelect(node);
       }
@@ -209,6 +210,7 @@ export default function DocumentList({
           update_time: result.data.update_time,
           create_time: result.data.create_time,
           permission: result.data.permission,
+          is_owner: true,
         };
         onSelect(node);
       }

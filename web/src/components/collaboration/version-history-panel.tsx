@@ -42,6 +42,8 @@ interface Props {
    * 不传时退化为「打开面板/切换文档时加载一次」。
    */
   provider?: CollaborationWebSocketProvider | null;
+  /** 恢复完成后回调 —— 父组件重新拉取文档并强制编辑器重新挂载。 */
+  onRestored: () => void;
 }
 
 function formatTime(t: number | string | null): string {
@@ -153,6 +155,7 @@ export default function VersionHistoryPanel({
   onToggle,
   fileType = 'docx',
   provider,
+  onRestored,
 }: Props) {
   const [info, setInfo] = useState<VersionInfo | null>(null);
   const [loading, setLoading] = useState(false);
@@ -322,8 +325,9 @@ export default function VersionHistoryPanel({
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const result = await resp.json();
       if (result.code === 0) {
-        // 恢复后主表内容已被覆盖，reload 是最稳妥的热更新方式。
-        window.location.reload();
+        // 通知父组件重新拉取文档详情并强制编辑器重新挂载。
+        // 避免 window.location.reload() 把整个页面刷新（浪费网络 + 丢失 UI 状态）。
+        onRestored();
       } else {
         setErrorMsg(result.message || '恢复失败');
       }

@@ -144,6 +144,14 @@ export default function CChat() {
       }
     },
   );
+  // 展示名：优先 nickname；若为空或本身就是邮箱，退回邮箱 @ 前缀，避免暴露完整邮箱账号
+  const userDisplayName = (() => {
+    const nick = userInfo?.nickname?.trim();
+    if (nick && !nick.includes('@')) return nick;
+    const email = userInfo?.email?.trim();
+    if (email) return email.split('@')[0];
+    return 'U';
+  })();
 
   // ── CSS injection (C-side) ──
   useEffect(() => {
@@ -1475,11 +1483,11 @@ export default function CChat() {
               </button>
             </CendTooltip>
             <div className="w-8 h-8 rounded-lg bg-[#F59E0B] text-white flex items-center justify-center text-sm font-bold">
-              {(userInfo?.nickname || userInfo?.email || 'U')[0].toUpperCase()}
+              {userDisplayName[0].toUpperCase()}
             </div>
             <div className="hidden md:block">
               <div className="text-sm font-medium text-[#000000]">
-                {userInfo?.nickname || userInfo?.email || ''}
+                {userDisplayName}
               </div>
             </div>
             <CendTooltip title="退出登录">
@@ -2102,8 +2110,7 @@ export default function CChat() {
                           (msg.reference as any);
 
                         if (msg.role === MessageType.User) {
-                          const userName =
-                            userInfo?.nickname || userInfo?.email || 'U';
+                          const userName = userDisplayName;
                           return (
                             <div
                               key={msg.id}

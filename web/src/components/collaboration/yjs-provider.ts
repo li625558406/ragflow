@@ -183,6 +183,7 @@ export class CollaborationWebSocketProvider {
   private versionAddedListeners: Array<
     (arg0: { version: number; createdBy: string; createTime: number }) => void
   > = [];
+  private forceReloadListeners: Array<() => void> = [];
 
   constructor(doc: Doc, docId: string, token: string, baseUrl?: string) {
     this.doc = doc;
@@ -317,6 +318,9 @@ export class CollaborationWebSocketProvider {
           }) => void,
         );
         break;
+      case 'force-reload':
+        this.forceReloadListeners.push(cb as () => void);
+        break;
       case 'reload':
         // Supported for @lexical/react CollaborationPlugin compatibility
         // No-op: we don't trigger doc reloads
@@ -345,6 +349,11 @@ export class CollaborationWebSocketProvider {
         break;
       case 'version-added':
         this.versionAddedListeners = this.versionAddedListeners.filter(
+          (l) => l !== cb,
+        );
+        break;
+      case 'force-reload':
+        this.forceReloadListeners = this.forceReloadListeners.filter(
           (l) => l !== cb,
         );
         break;
@@ -604,10 +613,13 @@ export class CollaborationWebSocketProvider {
 
       case 'force-reload': {
         // Server-side mutation (e.g. version restore) overwrote the persisted
-        // ydoc. The server has already dropped its in-memory room state, so a
-        // plain page reload will pick up the fresh content on reconnect.
-        console.log('[YjsProvider] force-reload received, reloading page');
-        window.location.reload();
+        // ydoc. The server has already dropped its in-memory room state.
+        // Instead of a full page reload, emit to subscribed editors so they
+        // can re-fetch content and remount cleanly via the remountKey pattern.
+        console.log('[YjsProvider] force-reload received, notifying listeners');
+        for (const cb of this.forceReloadListeners) {
+          cb();
+        }
         break;
       }
     }

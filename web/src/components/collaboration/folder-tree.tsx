@@ -32,6 +32,8 @@ export interface DocumentNode {
   update_time?: string;
   created_by?: string;
   permission?: string;
+  /** 服务端直出的 owner 标识，比前端 UUID 比对更可靠 */
+  is_owner?: boolean;
 }
 
 interface Props {
@@ -203,7 +205,6 @@ function TreeNode({
               onRenameValueChange={onRenameValueChange}
               onRenameSubmit={onRenameSubmit}
               onRenameCancel={onRenameCancel}
-              currentUserId={currentUserId}
             />
           ))}
         </div>
@@ -226,7 +227,6 @@ function DocRow({
   onRenameValueChange,
   onRenameSubmit,
   onRenameCancel,
-  currentUserId,
 }: {
   doc: DocumentNode;
   depth: number;
@@ -241,9 +241,9 @@ function DocRow({
   onRenameValueChange: (val: string) => void;
   onRenameSubmit: (docId: string) => void;
   onRenameCancel: () => void;
-  currentUserId: string | null;
 }) {
-  const isOwner = doc.created_by === currentUserId;
+  // 用服务端返回的 is_owner 替代客户端 UUID 比对，避免多账号/team sharing 场景误判
+  const isOwner = doc.is_owner === true;
   const isSelected = selectedId === doc.id;
   // 按钮渐变蒙版起点色：与行 hover/选中态背景色一致，保证视觉无缝
   const fadeFromColor = '#EAEAEA';
@@ -306,7 +306,7 @@ function DocRow({
                   团队
                 </span>
               )}
-              {currentUserId && !isOwner && (
+              {!isOwner && (
                 <span className="text-[9px] px-1 py-px rounded bg-[#EAEAEA] text-[#000000] border border-[#D4D4D4]">
                   共享
                 </span>
@@ -473,7 +473,6 @@ export default function FolderTree({
           onRenameValueChange={onRenameValueChange}
           onRenameSubmit={onRenameSubmit}
           onRenameCancel={onRenameCancel}
-          currentUserId={currentUserId}
         />
       ))}
     </div>

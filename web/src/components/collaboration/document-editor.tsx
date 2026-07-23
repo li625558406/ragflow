@@ -55,6 +55,8 @@ interface Props {
   token?: string;
   onOpenShare: () => void;
   onProviderReady?: (provider: CollaborationWebSocketProvider | null) => void;
+  /** 恢复完成后回调，从头透传到 VersionHistoryPanel */
+  onRestored: () => void;
 }
 
 export default function DocumentEditor({
@@ -64,6 +66,7 @@ export default function DocumentEditor({
   token,
   onOpenShare,
   onProviderReady,
+  onRestored,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const univerRef = useRef<Univer | null>(null);
@@ -127,6 +130,21 @@ export default function DocumentEditor({
   onProviderReadyRef.current = onProviderReady;
   useEffect(() => {
     onProviderReadyRef.current?.(provider ?? null);
+  }, [provider]);
+
+  // When another collaborator restores a version, the server sends force-reload
+  // to all room clients. Instead of a full page reload, re-fetch content and
+  // remount the editor cleanly via the same onRestored callback used by the
+  // restorer's own version-history panel.
+  const onRestoredRef = useRef(onRestored);
+  onRestoredRef.current = onRestored;
+  useEffect(() => {
+    if (!provider) return;
+    const handler = () => onRestoredRef.current();
+    provider.on('force-reload', handler);
+    return () => {
+      provider.off('force-reload', handler);
+    };
   }, [provider]);
 
   // Track whether we're currently applying a remote update to Univer.
@@ -301,6 +319,7 @@ export default function DocumentEditor({
           isOwner
           provider={provider ?? null}
           fileType="docx"
+          onRestored={onRestored}
         />
       </div>
     </div>

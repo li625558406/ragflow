@@ -49,6 +49,9 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
   const [docLoading, setDocLoading] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [shareTarget, setShareTarget] = useState<DocumentNode | null>(null);
+  // 每次恢复版本后递增，迫使编辑器 key 变化 → 完全卸载再挂载 →
+  // Y.Doc + Univer 用服务器端最新的 content/ydoc 重建，替代全页面刷新。
+  const [remountKey, setRemountKey] = useState(0);
 
   // Extract raw JWT token (strip "Bearer " prefix) for WebSocket auth
   const wsToken = useMemo(() => {
@@ -173,6 +176,29 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
     loadDocuments();
   }, [loadDocuments]);
 
+  // 恢复后处理：重新拉取文档详情（新 content / ydoc / version），
+  // 然后递增 remountKey 强制编辑器 key 变化 —— 同一 key 下
+  // useDocumentCollab / useSpreadsheetCollab 的 useEffect deps 是
+  // [token, docId]（不含 content），不换 key 无法重置 Y.Doc 状态。
+  const handleRestored = useCallback(async () => {
+    if (!selectedId) return;
+    setDocLoading(true);
+    try {
+      const resp = await apiFetchRef.current(
+        `/api/v1/collaboration/documents/${selectedId}`,
+      );
+      const result = await resp.json();
+      if (result.code === 0) {
+        setSelectedDoc(result.data);
+        setRemountKey((k) => k + 1);
+      }
+    } catch (e) {
+      console.error('恢复后刷新失败:', e);
+    } finally {
+      setDocLoading(false);
+    }
+  }, [selectedId]);
+
   return (
     <div className="flex-1 flex min-h-0 bg-white">
       <DocumentList
@@ -215,7 +241,7 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
                 }
               >
                 <SpreadsheetEditor
-                  key={selectedDoc.id}
+                  key={`${selectedDoc.id}-${remountKey}`}
                   document={selectedDoc}
                   apiFetch={apiFetch}
                   onUpdate={handleDocUpdate}
@@ -224,11 +250,12 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
                     const node = documents.find((d) => d.id === selectedDoc.id);
                     if (node) setShareTarget(node);
                   }}
+                  onRestored={handleRestored}
                 />
               </Suspense>
             ) : (
               <DocumentEditor
-                key={selectedDoc.id}
+                key={`${selectedDoc.id}-${remountKey}`}
                 document={selectedDoc}
                 apiFetch={apiFetch}
                 onUpdate={handleDocUpdate}
@@ -237,6 +264,7 @@ export default function CollaborationPanel({ apiFetch, refreshToken }: Props) {
                   const node = documents.find((d) => d.id === selectedDoc.id);
                   if (node) setShareTarget(node);
                 }}
+                onRestored={handleRestored}
               />
             )}
             {/* Loading overlay — covers the editor WITHOUT unmounting it.

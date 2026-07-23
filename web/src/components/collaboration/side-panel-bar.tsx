@@ -24,6 +24,8 @@ interface Props {
    * 默认 'docx'。
    */
   fileType?: 'docx' | 'xlsx';
+  /** 恢复完成后回调，从头透传到 VersionHistoryPanel */
+  onRestored: () => void;
 }
 
 const PANEL_ICONS: {
@@ -46,6 +48,7 @@ export default function SidePanelBar({
   isOwner,
   provider,
   fileType = 'docx',
+  onRestored,
 }: Props) {
   const close = () => onChange(null);
 
@@ -79,6 +82,7 @@ export default function SidePanelBar({
               onToggle={close}
               fileType={fileType}
               provider={provider ?? null}
+              onRestored={onRestored}
             />
           )}
           {activePanel === 'audit' && isOwner && (

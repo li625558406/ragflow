@@ -561,6 +561,7 @@ async def list_documents(tenant_id: str, user_id: str) -> list:
             "update_time": d.update_time,
             "created_by": d.created_by,
             "permission": d.permission,
+            "is_owner": d.created_by == user_id,
         })
     return result
 
