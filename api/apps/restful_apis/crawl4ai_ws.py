@@ -29,7 +29,7 @@ import threading
 from typing import Any, Dict
 
 from quart import websocket
-from itsdangerous import Serializer
+from itsdangerous.url_safe import URLSafeTimedSerializer as Serializer
 
 from common import settings
 from api.db.services.user_token_service import UserTokenService

@@ -23,6 +23,7 @@ import logging
 import os
 import subprocess
 import threading
+import time
 
 from quart import Blueprint, request
 
@@ -67,7 +68,8 @@ def _is_yaml_site(site_id: str) -> tuple[bool, str]:
 
 
 def _pull_summary_from_redis(task_id: str) -> dict:
-    """Read the last `done` summary from Redis history list for a task.
+    """Read the last `done` summary from Redis history list and flatten it
+    into the frontend-expected shape.
 
     Returns {} if Redis unavailable or no done message found.
     """
@@ -83,12 +85,19 @@ def _pull_summary_from_redis(task_id: str) -> dict:
                 if isinstance(raw, bytes):
                     raw = raw.decode("utf-8", errors="replace")
                 msg = json.loads(raw)
-                if msg.get("type") == "done":
-                    return {
-                        "status": msg.get("status", ""),
-                        "summary": msg.get("summary", {}),
-                        "ts": msg.get("ts"),
-                    }
+                if msg.get("type") != "done":
+                    continue
+                inner = msg.get("summary") or {}
+                bid_stats = inner.get("bid_stats") or {}
+                return {
+                    "status": msg.get("status", ""),
+                    "pages": int(inner.get("scanned_pages", 0) or 0),
+                    "items_found": int(inner.get("scanned_items", 0) or 0),
+                    "items_new": int(inner.get("new_items", 0) or 0),
+                    "kb_uploaded": int(bid_stats.get("kb_uploaded", 0) or 0),
+                    "attachments_uploaded": int(bid_stats.get("attachments_uploaded", 0) or 0),
+                    "errors": [] if msg.get("status") == "success" else [],
+                }
             except Exception:
                 continue
     except Exception as e:
@@ -259,10 +268,24 @@ async def trigger_task(task_id):
                 status = "success" if proc.returncode == 0 else "fail"
                 # Pull structured summary from Redis history (written by ProgressReporter)
                 summary = _pull_summary_from_redis(task_id)
-                update_payload: dict = {"last_run_status": status}
-                if summary:
-                    update_payload["last_run_summary"] = summary
-                CrawlerTaskService.update_by_id(task_id, update_payload)
+                if not summary:
+                    # Crawler crashed before publishing done — synthesize a minimal fail summary
+                    summary = {
+                        "status": status,
+                        "pages": 0,
+                        "items_found": 0,
+                        "items_new": 0,
+                        "kb_uploaded": 0,
+                        "attachments_uploaded": 0,
+                        "errors": [] if status == "success" else [
+                            (proc.stderr or "crawler failed")[-300:]
+                        ],
+                    }
+                CrawlerTaskService.update_by_id(task_id, {
+                    "last_run_status": status,
+                    "last_run_time": int(time.time() * 1000),
+                    "last_run_summary": summary,
+                })
             else:
                 # 非 YAML 站点 → crawl4ai executor (LLM-based)
                 from api.utils.crawl4ai_executor import run_task
@@ -270,7 +293,19 @@ async def trigger_task(task_id):
                 logging.info("crawl4ai task %s finished: %s", task_id, summary)
         except Exception:
             logging.exception("crawl4ai task %s crashed", task_id)
-            CrawlerTaskService.update_by_id(task_id, {"last_run_status": "fail"})
+            CrawlerTaskService.update_by_id(task_id, {
+                "last_run_status": "fail",
+                "last_run_time": int(time.time() * 1000),
+                "last_run_summary": {
+                    "status": "fail",
+                    "pages": 0,
+                    "items_found": 0,
+                    "items_new": 0,
+                    "kb_uploaded": 0,
+                    "attachments_uploaded": 0,
+                    "errors": ["internal error"],
+                },
+            })
         finally:
             with _running_lock:
                 _running_tasks.discard(task_id)
