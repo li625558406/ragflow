@@ -5,11 +5,23 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Crawl4aiResult, getCrawl4aiResult } from '@/services/crawl4ai-service';
+import {
+  CollectionResult,
+  getCollectionResult,
+} from '@/services/collection-service';
 import { useQuery } from '@tanstack/react-query';
 import { ExternalLink, FileText } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { CATEGORY_COLORS, EXT_FIELD_LABELS } from './field-labels';
 
 interface ResultDetailDialogProps {
   resultId: string;
@@ -22,13 +34,35 @@ export function ResultDetailDialog({
 }: ResultDetailDialogProps) {
   const { t } = useTranslation();
 
-  const { data: result, isFetching } = useQuery<Crawl4aiResult | null>({
-    queryKey: ['crawl4aiResult', resultId],
+  const { data: result, isFetching } = useQuery<CollectionResult | null>({
+    queryKey: ['collectionResult', resultId],
     queryFn: async () => {
-      const { data: res } = await getCrawl4aiResult(resultId);
+      const { data: res } = await getCollectionResult(resultId);
       return res?.code === 0 ? res.data : null;
     },
   });
+
+  // 按 category 取扩展字段标签映射；遍历 ext 渲染键值对表格
+  const category = result?.category ?? '';
+  const extLabels = EXT_FIELD_LABELS[category] ?? {};
+  const extEntries = Object.entries(result?.ext ?? {})
+    .filter(([k, v]) => {
+      // 跳过空值 + 跳过内部字段
+      if (
+        [
+          'result_id',
+          'create_time',
+          'create_date',
+          'update_time',
+          'update_date',
+          'id',
+        ].includes(k)
+      ) {
+        return false;
+      }
+      return v !== null && v !== '' && v !== undefined;
+    })
+    .map(([k, v]) => [extLabels[k] ?? k, v as string]);
 
   return (
     <Dialog open onOpenChange={(open) => !open && hideModal()}>
@@ -48,7 +82,15 @@ export function ResultDetailDialog({
         {result && (
           <div className="flex-1 min-h-0 flex flex-col gap-3">
             <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-              <span>{result.site_id}</span>
+              {result.category_label && (
+                <Badge
+                  variant="secondary"
+                  className={CATEGORY_COLORS[result.category] ?? ''}
+                >
+                  {result.category_label}
+                </Badge>
+              )}
+              <span>{result.site_display || result.site_id}</span>
               <span>·</span>
               <span>{result.publish_date || '-'}</span>
               <span>·</span>
@@ -85,6 +127,14 @@ export function ResultDetailDialog({
                 </TabsTrigger>
                 <TabsTrigger value="structured">
                   {t('crawl4ai.structuredData')}
+                  {extEntries.length > 0 && (
+                    <Badge
+                      variant="secondary"
+                      className="ml-1.5 bg-purple-500/15 text-purple-600"
+                    >
+                      {extEntries.length}
+                    </Badge>
+                  )}
                 </TabsTrigger>
               </TabsList>
 
@@ -148,9 +198,46 @@ export function ResultDetailDialog({
                 value="structured"
                 className="flex-1 min-h-0 overflow-auto mt-3"
               >
-                <pre className="text-xs p-4 rounded-lg border bg-card overflow-auto">
-                  {JSON.stringify(result.extracted_json ?? {}, null, 2)}
-                </pre>
+                {/* 已识别的结构化扩展字段（带中文标签） */}
+                {extEntries.length > 0 && (
+                  <section className="mb-4">
+                    <h3 className="text-sm font-medium mb-2 text-muted-foreground">
+                      {t('crawl4ai.structuredData')}
+                    </h3>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="w-40">
+                            {t('crawl4ai.fieldName')}
+                          </TableHead>
+                          <TableHead>{t('crawl4ai.fieldValue')}</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {extEntries.map(([label, value]) => (
+                          <TableRow key={label}>
+                            <TableCell className="font-medium bg-muted/40 align-top">
+                              {label}
+                            </TableCell>
+                            <TableCell className="whitespace-pre-wrap break-words">
+                              {String(value)}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </section>
+                )}
+
+                {/* 原始 extracted_json dump（兜底，供调试） */}
+                <section>
+                  <h3 className="text-sm font-medium mb-2 text-muted-foreground">
+                    {t('crawl4ai.rawExtractedJson')}
+                  </h3>
+                  <pre className="text-xs p-4 rounded-lg border bg-card overflow-auto">
+                    {JSON.stringify(result.extracted_json ?? {}, null, 2)}
+                  </pre>
+                </section>
               </TabsContent>
             </Tabs>
           </div>

@@ -49,6 +49,23 @@ from common.time_utils import current_timestamp
 
 manager = Blueprint("rest_collection_app", __name__)
 
+# category 英文 code → 中文展示名（英文 code 保留用于 DB 过滤/统计）
+CATEGORY_LABELS: Dict[str, str] = {
+    "bid": "标讯",
+    "policy": "政策法规",
+    "personnel": "人员",
+    "news": "新闻资讯",
+    "other": "其他",
+    "objection": "异议结果",
+}
+
+
+def _category_label(code: str) -> str:
+    """英文 category code 转中文展示名；空值返回空串；未知 code 原样返回。"""
+    if not code:
+        return ""
+    return CATEGORY_LABELS.get(code, code)
+
 
 # YAML 配置路径（容器内）
 _CRAWLER_SITES_YAML = os.environ.get(
@@ -534,6 +551,9 @@ async def list_results():
                 ext_map = CollectionObjectionExtService.get_by_result_ids(result_ids)
             for it in items:
                 it["ext"] = ext_map.get(it["id"], {})
+        # 附加 category 中文展示名（英文 code 保留用于过滤）
+        for it in items:
+            it["category_label"] = _category_label(it.get("category", ""))
         return {"list": items, "total": total}
 
     return get_json_result(data=_query())
@@ -586,6 +606,7 @@ async def get_result(result_id: str):
             d["ext"] = ext.get(result_id, {})
         else:
             d["ext"] = {}
+        d["category_label"] = _category_label(d.get("category", ""))
         return d
 
     data = _query()
@@ -608,6 +629,8 @@ async def collection_stats():
             .where(CrawlerResult.tenant_id == current_user.id)
             .group_by(CrawlerResult.category)
         )
-        return [{"category": r.category, "count": r.count} for r in rows]
+        return [{"category": r.category or "",
+                 "category_label": _category_label(r.category or ""),
+                 "count": r.count} for r in rows]
 
     return get_json_result(data={"list": _query()})

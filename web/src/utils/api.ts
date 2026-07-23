@@ -441,4 +441,9 @@ export default {
   bidProjectParseStatus: (id: number) =>
     `${restAPIv1}/bid/projects/${id}/parse-status`,
   bidCrawlerStats: `${restAPIv1}/bid/crawler-stats`,
+
+  // collection (YAML crawler results)
+  collectionResults: `${restAPIv1}/collection/results`,
+  collectionResult: (id: string) => `${restAPIv1}/collection/results/${id}`,
+  collectionStats: `${restAPIv1}/collection/stats`,
 };

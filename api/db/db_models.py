@@ -1512,6 +1512,8 @@ class CrawlerResult(DataBaseModel):
     site_id = CharField(max_length=128, null=False, index=True)
     site_display = CharField(max_length=256, null=True, default="", index=True,
                              help_text="展示用站点串: '{中文名称} {域名}'，由 YAML name+site_url 在采集时拼接")
+    category = CharField(max_length=32, null=False, default="bid", index=True,
+                         help_text="bid|policy|personnel|news|other|objection")
     title = CharField(max_length=1024, null=False, default="")
     source_url = TextField(null=False)
     publish_date = CharField(max_length=64, null=True, index=True, default="", help_text="publish date string from listing")

@@ -18,15 +18,18 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import {
-  Crawl4aiResult,
-  listCrawl4aiResults,
-  listCrawl4aiSites,
-} from '@/services/crawl4ai-service';
+  CollectionCategoryStat,
+  CollectionResult,
+  fetchCollectionStats,
+  listCollectionResults,
+} from '@/services/collection-service';
+import { listCrawl4aiSites } from '@/services/crawl4ai-service';
 import { useQuery } from '@tanstack/react-query';
 import { useDebounce } from 'ahooks';
 import { RotateCcw, Search } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { CATEGORY_COLORS } from './field-labels';
 import { ResultDetailDialog } from './result-detail-dialog';
 
 const ALL = '__all__';
@@ -41,6 +44,7 @@ export function ResultsTab() {
   const { t } = useTranslation();
 
   const [keyword, setKeyword] = useState('');
+  const [category, setCategory] = useState(ALL);
   const [siteId, setSiteId] = useState(ALL);
   const [status, setStatus] = useState(ALL);
   const [startDate, setStartDate] = useState('');
@@ -51,7 +55,7 @@ export function ResultsTab() {
 
   const debouncedKeyword = useDebounce(keyword, { wait: 500 });
 
-  const { data: sites = [] } = useQuery({
+  const { data: sites = [] } = useQuery<string[]>({
     queryKey: ['crawl4aiSites'],
     queryFn: async () => {
       const { data: res } = await listCrawl4aiSites();
@@ -59,17 +63,36 @@ export function ResultsTab() {
     },
   });
 
+  // 分类统计（用于类型下拉 + Badge 显示）
+  const { data: stats = [] } = useQuery<CollectionCategoryStat[]>({
+    queryKey: ['collectionStats'],
+    queryFn: async () => {
+      const { data: res } = await fetchCollectionStats();
+      return res?.code === 0 ? (res.data?.list ?? []) : [];
+    },
+  });
+
   const { data, isFetching } = useQuery({
     queryKey: [
-      'crawl4aiResults',
-      { debouncedKeyword, siteId, status, startDate, endDate, page, pageSize },
+      'collectionResults',
+      {
+        debouncedKeyword,
+        category,
+        siteId,
+        status,
+        startDate,
+        endDate,
+        page,
+        pageSize,
+      },
     ],
     initialData: { list: [], total: 0 },
     queryFn: async () => {
-      const { data: res } = await listCrawl4aiResults({
+      const { data: res } = await listCollectionResults({
         page,
         page_size: pageSize,
         keyword: debouncedKeyword || undefined,
+        category: category === ALL ? undefined : category,
         site_id: siteId === ALL ? undefined : siteId,
         status: status === ALL ? undefined : status,
         start_date: startDate || undefined,
@@ -79,11 +102,12 @@ export function ResultsTab() {
     },
   });
 
-  const results: Crawl4aiResult[] = data?.list ?? [];
+  const results: CollectionResult[] = data?.list ?? [];
   const total = data?.total ?? 0;
 
   const resetFilters = useCallback(() => {
     setKeyword('');
+    setCategory(ALL);
     setSiteId(ALL);
     setStatus(ALL);
     setStartDate('');
@@ -110,6 +134,28 @@ export function ResultsTab() {
           />
         </div>
         <Select
+          value={category}
+          onValueChange={(v) => {
+            setCategory(v);
+            setPage(1);
+          }}
+        >
+          <SelectTrigger className="w-40">
+            <SelectValue placeholder={t('crawl4ai.category')} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>{t('crawl4ai.allCategories')}</SelectItem>
+            {stats.map((s) => (
+              <SelectItem
+                key={s.category || 'empty'}
+                value={s.category || 'empty'}
+              >
+                {s.category_label || s.category || '-'} ({s.count})
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
           value={siteId}
           onValueChange={(v) => {
             setSiteId(v);
@@ -135,7 +181,7 @@ export function ResultsTab() {
             setPage(1);
           }}
         >
-          <SelectTrigger className="w-40">
+          <SelectTrigger className="w-36">
             <SelectValue placeholder={t('crawl4ai.status')} />
           </SelectTrigger>
           <SelectContent>
@@ -149,7 +195,7 @@ export function ResultsTab() {
         </Select>
         <Input
           type="date"
-          className="w-40"
+          className="w-36"
           value={startDate}
           onChange={(e) => {
             setStartDate(e.target.value);
@@ -159,7 +205,7 @@ export function ResultsTab() {
         <span className="text-muted-foreground text-sm">-</span>
         <Input
           type="date"
-          className="w-40"
+          className="w-36"
           value={endDate}
           onChange={(e) => {
             setEndDate(e.target.value);
@@ -176,12 +222,14 @@ export function ResultsTab() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead className="min-w-[280px]">
+              <TableHead className="min-w-[100px]">
+                {t('crawl4ai.category')}
+              </TableHead>
+              <TableHead className="min-w-[300px]">
                 {t('crawl4ai.resultTitle')}
               </TableHead>
               <TableHead>{t('crawl4ai.site')}</TableHead>
               <TableHead>{t('crawl4ai.publishDate')}</TableHead>
-              <TableHead>{t('crawl4ai.attachmentCount')}</TableHead>
               <TableHead>{t('crawl4ai.status')}</TableHead>
               <TableHead>{t('crawl4ai.crawledAt')}</TableHead>
             </TableRow>
@@ -203,12 +251,25 @@ export function ResultsTab() {
                 className="cursor-pointer"
                 onClick={() => setDetailId(r.id)}
               >
+                <TableCell>
+                  {r.category_label && (
+                    <Badge
+                      variant="secondary"
+                      className={CATEGORY_COLORS[r.category] ?? ''}
+                    >
+                      {r.category_label}
+                    </Badge>
+                  )}
+                </TableCell>
                 <TableCell className="font-medium max-w-[420px] truncate">
                   {r.title}
                 </TableCell>
-                <TableCell>{r.site_id}</TableCell>
-                <TableCell>{r.publish_date || '-'}</TableCell>
-                <TableCell>{r.attachments?.length ?? 0}</TableCell>
+                <TableCell className="max-w-[200px] truncate text-muted-foreground">
+                  {r.site_display || r.site_id}
+                </TableCell>
+                <TableCell className="whitespace-nowrap">
+                  {r.publish_date || '-'}
+                </TableCell>
                 <TableCell>
                   <Badge
                     variant="secondary"
@@ -217,7 +278,9 @@ export function ResultsTab() {
                     {t(`crawl4ai.status_${r.status}`, r.status)}
                   </Badge>
                 </TableCell>
-                <TableCell>{formatTs(r.crawled_at)}</TableCell>
+                <TableCell className="whitespace-nowrap text-muted-foreground">
+                  {formatTs(r.crawled_at)}
+                </TableCell>
               </TableRow>
             ))}
           </TableBody>

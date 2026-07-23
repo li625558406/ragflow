@@ -297,6 +297,7 @@ class CollectionWriter:
                 "tenant_id": self._tenant_id,
                 "site_id": site_id,
                 "site_display": site_display,
+                "category": category,
                 "title": (item.get("title") or item.get("name") or "Untitled")[:1024],
                 "source_url": source_url,
                 "publish_date": self._normalize_date(item),
