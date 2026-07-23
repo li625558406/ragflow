@@ -18,7 +18,10 @@
 任务管理 + 手动触发 + 结果查询（列表展示/过滤）。
 采集执行在后台线程中运行，调用 crawl4ai Docker 引擎。
 """
+import json
 import logging
+import os
+import subprocess
 import threading
 
 from quart import Blueprint, request
@@ -29,6 +32,38 @@ from api.utils.api_utils import get_data_error_result, get_json_result
 from common.misc_utils import get_uuid
 
 manager = Blueprint("rest_crawl4ai_app", __name__)
+
+# YAML 站点配置路径（用于判断 task 是否走 YAML unified_crawler）
+_CRAWLER_SITES_YAML = os.environ.get(
+    "CRAWLER_SITES_YAML",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))))),
+        "rag", "svr", "crawler_sites.yaml"),
+)
+_UNIFIED_CRAWLER_SCRIPT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))))),
+    "rag", "svr", "unified_crawler.py",
+)
+
+
+def _is_yaml_site(site_id: str) -> tuple[bool, str]:
+    """Check if site_id is configured in crawler_sites.yaml.
+    Returns (is_yaml, category).
+    """
+    if not os.path.exists(_CRAWLER_SITES_YAML):
+        return False, ""
+    try:
+        import yaml
+        with open(_CRAWLER_SITES_YAML, "r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+        sites = raw.get("sites") or {}
+        if site_id in sites:
+            cfg = sites[site_id] or {}
+            return True, cfg.get("category", "bid")
+    except Exception as e:
+        logging.warning("crawl4ai_app: load YAML failed: %s", e)
+    return False, ""
 
 # 进程内运行锁: 防止同一任务并发触发
 _running_tasks: set = set()
@@ -154,13 +189,53 @@ async def trigger_task(task_id):
             return get_data_error_result(message="task is already running")
         _running_tasks.add(task_id)
 
+    # 判断是否走 YAML unified_crawler（如 ggzyjd_dissent / ggzyjd_cases 等配置在 YAML 的站点）
+    is_yaml, yaml_category = _is_yaml_site(task.site_id)
+    if is_yaml and yaml_category and yaml_category != "bid":
+        writer_mode = "collection"
+    elif is_yaml:
+        writer_mode = "bid"
+    else:
+        writer_mode = ""  # 非 YAML → 走 crawl4ai_executor
+
     def _run():
         try:
-            from api.utils.crawl4ai_executor import run_task
-            summary = run_task(task_id)
-            logging.info("crawl4ai task %s finished: %s", task_id, summary)
+            if writer_mode:
+                # YAML 站点 → unified_crawler 子进程
+                script_args = json.dumps({
+                    "site_id": task.site_id,
+                    "writer": writer_mode,
+                    "category": yaml_category or "bid",
+                    "task_id": task_id,
+                    "date_filter": "today",
+                }, ensure_ascii=False)
+                cmd = [
+                    "python", _UNIFIED_CRAWLER_SCRIPT,
+                    "--tenant-id", task.tenant_id,
+                    "--kb-id", task.kb_id or "",
+                    "--task-name", f"manual-{task.site_id}",
+                    "--writer", writer_mode,
+                    "--script-args", script_args,
+                ]
+                logging.info("task %s dispatch → unified_crawler (site=%s writer=%s)",
+                             task_id, task.site_id, writer_mode)
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+                if proc.returncode != 0:
+                    logging.error("unified_crawler %s failed rc=%d: %s",
+                                  task.site_id, proc.returncode, proc.stderr[-2000:])
+                else:
+                    logging.info("unified_crawler %s done: %s",
+                                 task.site_id, proc.stdout[-500:])
+                status = "success" if proc.returncode == 0 else "fail"
+                CrawlerTaskService.update_by_id(task_id, {"last_run_status": status})
+            else:
+                # 非 YAML 站点 → crawl4ai executor (LLM-based)
+                from api.utils.crawl4ai_executor import run_task
+                summary = run_task(task_id)
+                logging.info("crawl4ai task %s finished: %s", task_id, summary)
         except Exception:
             logging.exception("crawl4ai task %s crashed", task_id)
+            CrawlerTaskService.update_by_id(task_id, {"last_run_status": "fail"})
         finally:
             with _running_lock:
                 _running_tasks.discard(task_id)
