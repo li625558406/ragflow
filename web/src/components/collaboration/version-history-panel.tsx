@@ -9,6 +9,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import UniverSpreadsheetVersionPreview from './univer-spreadsheet-version-preview';
 import UniverVersionPreview from './univer-version-preview';
+import type { CollaborationWebSocketProvider } from './yjs-provider';
 
 interface VersionEntry {
   id: string;
@@ -36,6 +37,11 @@ interface Props {
    * 'xlsx' 走 IWorkbookData 解析路径。
    */
   fileType?: 'docx' | 'xlsx';
+  /**
+   * 协作 WebSocket provider —— 用于订阅 version-added 推送，实现版本历史的实时刷新。
+   * 不传时退化为「打开面板/切换文档时加载一次」。
+   */
+  provider?: CollaborationWebSocketProvider | null;
 }
 
 function formatTime(t: number | string | null): string {
@@ -146,6 +152,7 @@ export default function VersionHistoryPanel({
   open,
   onToggle,
   fileType = 'docx',
+  provider,
 }: Props) {
   const [info, setInfo] = useState<VersionInfo | null>(null);
   const [loading, setLoading] = useState(false);
@@ -193,6 +200,23 @@ export default function VersionHistoryPanel({
   useEffect(() => {
     if (open) load();
   }, [docId, open, load]);
+
+  // 实时刷新：后端写入新版本快照时，通过 WS 广播 'version-added'。
+  // 收到后立即 reload，让协作者（和保存者自己）的版本面板同步出现新条目。
+  // 仅在面板打开时生效 —— 关闭时 reload 是浪费请求。
+  // provider 不在线 / 未传时退化为一次性加载（见上方 useEffect）。
+  useEffect(() => {
+    if (!open || !provider) return;
+    const handler = () => {
+      // 避免与正在进行的 load 竞争：load 内部有 setLoading 保护，
+      // 这里再次 load 会覆盖 in-flight 请求的结果，但最后一次总能拿到最新数据。
+      load();
+    };
+    provider.on('version-added', handler);
+    return () => {
+      provider.off('version-added', handler);
+    };
+  }, [open, provider, load]);
 
   // 切换文档时重置预览相关 state。entry.id 虽然全局唯一不会错乱，
   // 但保留旧文档的 expandedId/fullViewTarget 会让状态不干净
@@ -461,7 +485,7 @@ export default function VersionHistoryPanel({
 
         {!loading && versions.length > 0 && (
           <p className="text-[10px] text-stone-400 leading-relaxed mt-3 pt-3 border-t border-stone-100">
-            每次保存会生成一条快照，系统最多保留最新 20
+            点击顶部「生成版本」按钮才会留下快照，系统最多保留最新 20
             条。恢复时当前状态会自动存档，便于反悔。
           </p>
         )}
@@ -566,7 +590,7 @@ export default function VersionHistoryPanel({
                 <X className="size-4" />
               </button>
             </div>
-            <div className="flex-1 min-h-0">
+            <div className="flex-1 min-h-0 flex flex-col">
               {fullViewContent ? (
                 fileType === 'xlsx' ? (
                   <UniverSpreadsheetVersionPreview content={fullViewContent} />

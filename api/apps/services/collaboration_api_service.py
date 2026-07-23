@@ -626,13 +626,13 @@ async def update_document(doc_id: str, tenant_id: str, data: dict) -> dict:
 async def save_ydoc_state(doc_id: str, tenant_id: str, data: dict) -> dict:
     """Save Yjs binary state from the frontend (periodic persistence).
 
-    每次内容保存「默认」都会在 CollaborationDocumentVersion 表里写一条快照，
-    保留最新 MAX_DOCUMENT_VERSIONS_KEEP 条，用于真正的历史版本回滚。
+    默认只更新主表（ydoc / content / version），**不写** CollaborationDocumentVersion
+    快照。所有常规保存路径（编辑 debounce / 手动保存 / 30s 自动保存 / 页面隐藏 flush）
+    都走这条默认分支 —— 它们只是持久化"当前草稿"，不应该留下版本历史条目。
 
-    调用方可通过 body 中 `write_snapshot: false` 跳过写快照，仅更新主表。
-    用于高频 debounce 保存场景（编辑期间每 5s 自动保存）—— 那种场景写快照
-    会污染版本历史（相邻版本几乎无差异），让用户在版本面板里看到的都是
-    细微修改。低频路径（30s 自动保存 / 手动保存 / 页面隐藏 flush）仍写快照。
+    只有前端「生成版本」按钮显式传 `write_snapshot: true` 时才写入快照表，
+    保留最新 MAX_DOCUMENT_VERSIONS_KEEP 条，用于真正的历史版本回滚。
+    `restore_version` 也会写一条（恢复后状态），用于反悔。
     """
     e, doc = CollaborationDocumentService.get_by_id(doc_id)
     if not e:
@@ -640,10 +640,12 @@ async def save_ydoc_state(doc_id: str, tenant_id: str, data: dict) -> dict:
     if not _check_role(doc_id, tenant_id, "editor"):
         raise PermissionError("Access denied")
 
-    # 默认写快照；只有显式传 False 才跳过。容错：非 bool 值按 True 处理。
-    write_snapshot = data.get("write_snapshot", True)
+    # 默认不写快照；只有「生成版本」按钮显式传 True 才写。
+    # 这样"忘记传"的保存路径（debounce / 手动保存 / 30s 自动保存 / flush）
+    # 天然不污染版本历史，服务端兜底实现"只有按钮能触发版本生成"的不变量。
+    write_snapshot = data.get("write_snapshot", False)
     if not isinstance(write_snapshot, bool):
-        write_snapshot = True
+        write_snapshot = False
 
     update_data = {}
     ydoc_state_b64 = data.get("ydoc_state")
@@ -664,6 +666,7 @@ async def save_ydoc_state(doc_id: str, tenant_id: str, data: dict) -> dict:
     # 写入版本快照（只在确实有 ydoc_state 且 write_snapshot=True 时才记）。
     # 跳过快照时主表 version 仍递增（保留恢复时主表 version 单调），
     # 但不占用 CollaborationDocumentVersion 表的 trim 额度。
+    snapshot_written = False
     if new_version is not None and write_snapshot:
         try:
             snapshot_id = get_uuid()
@@ -678,9 +681,33 @@ async def save_ydoc_state(doc_id: str, tenant_id: str, data: dict) -> dict:
                 create_time=now_ms,
             )
             _trim_document_versions(doc_id)
+            snapshot_written = True
         except Exception as exc:
             # 快照失败不能影响保存主流程。
             logging.warning(f"[save_ydoc_state] snapshot failed for doc {doc_id}: {exc}")
+
+    # 通知在线协作者：版本历史有新增。前端面板收到后自动 reload。
+    # 注意 broadcast 是 async，但本函数也是 async —— 直接 await。
+    # 失败不影响主流程（前端下次打开面板时仍会 load）。
+    if snapshot_written:
+        try:
+            from api.apps.collaboration_ws import broadcast_version_added
+
+            await broadcast_version_added(
+                doc_id,
+                {
+                    "t": "version-added",
+                    "d": {
+                        "version": new_version,
+                        "created_by": tenant_id,
+                        "create_time": now_ms,
+                    },
+                },
+            )
+        except Exception as exc:
+            logging.warning(
+                f"[save_ydoc_state] broadcast_version_added failed for doc {doc_id}: {exc}"
+            )
 
     return {"id": doc_id, "version": new_version if new_version is not None else (doc.version or 0)}
 

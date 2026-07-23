@@ -78,6 +78,7 @@ export default function SidePanelBar({
               open
               onToggle={close}
               fileType={fileType}
+              provider={provider ?? null}
             />
           )}
           {activePanel === 'audit' && isOwner && (

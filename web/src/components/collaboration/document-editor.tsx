@@ -100,6 +100,7 @@ export default function DocumentEditor({
     saveStatus: collabSaveStatus,
     provider,
     saveToServer,
+    createVersion,
   } = useDocumentCollab({
     docId: doc.id,
     content: doc.content,
@@ -256,6 +257,20 @@ export default function DocumentEditor({
     [exportDocx, exportPdf],
   );
 
+  // 生成版本按钮：触发 createVersion（唯一写快照的入口）。
+  // loading 状态独立于 saveStatus —— createVersion 内部会复用 saveStatus 显示
+  // "saving/saved"，但按钮自身的 disabled 需要单独的 flag 防止重复点击。
+  const [generatingVersion, setGeneratingVersion] = useState(false);
+  const handleGenerateVersion = useCallback(async () => {
+    if (generatingVersion) return;
+    setGeneratingVersion(true);
+    try {
+      await createVersion();
+    } finally {
+      setGeneratingVersion(false);
+    }
+  }, [generatingVersion, createVersion]);
+
   return (
     <div className="flex-1 flex flex-col min-w-0 h-full">
       <EditorHeader
@@ -266,6 +281,8 @@ export default function DocumentEditor({
         provider={provider}
         showManualSave
         onManualSave={saveToServer}
+        onGenerateVersion={handleGenerateVersion}
+        generatingVersion={generatingVersion}
         onDownload={handleDownload}
         downloading={exportBusy}
         onOpenShare={onOpenShare}

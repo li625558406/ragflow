@@ -180,6 +180,9 @@ export class CollaborationWebSocketProvider {
   private updateListeners: Array<(arg0: unknown) => void> = [];
   private savedListeners: Array<(arg0: { userName: string }) => void> = [];
   private commentChangedListeners: Array<() => void> = [];
+  private versionAddedListeners: Array<
+    (arg0: { version: number; createdBy: string; createTime: number }) => void
+  > = [];
 
   constructor(doc: Doc, docId: string, token: string, baseUrl?: string) {
     this.doc = doc;
@@ -305,6 +308,15 @@ export class CollaborationWebSocketProvider {
       case 'comment-changed':
         this.commentChangedListeners.push(cb as () => void);
         break;
+      case 'version-added':
+        this.versionAddedListeners.push(
+          cb as (arg0: {
+            version: number;
+            createdBy: string;
+            createTime: number;
+          }) => void,
+        );
+        break;
       case 'reload':
         // Supported for @lexical/react CollaborationPlugin compatibility
         // No-op: we don't trigger doc reloads
@@ -328,6 +340,11 @@ export class CollaborationWebSocketProvider {
         break;
       case 'comment-changed':
         this.commentChangedListeners = this.commentChangedListeners.filter(
+          (l) => l !== cb,
+        );
+        break;
+      case 'version-added':
+        this.versionAddedListeners = this.versionAddedListeners.filter(
           (l) => l !== cb,
         );
         break;
@@ -553,6 +570,29 @@ export class CollaborationWebSocketProvider {
         // to reload via REST. cb has no args; receiver decides what to fetch.
         for (const cb of this.commentChangedListeners) {
           cb();
+        }
+        break;
+      }
+
+      case 'version-added': {
+        // Server persisted a new CollaborationDocumentVersion row (manual save,
+        // 30s auto-save, or page-hide flush). Notify the version-history panel
+        // to reload so the new entry shows up without user action.
+        try {
+          const data = msg.d as {
+            version: number;
+            created_by: string;
+            create_time: number;
+          };
+          for (const cb of this.versionAddedListeners) {
+            cb({
+              version: data.version,
+              createdBy: data.created_by,
+              createTime: data.create_time,
+            });
+          }
+        } catch {
+          // ignore malformed payload
         }
         break;
       }

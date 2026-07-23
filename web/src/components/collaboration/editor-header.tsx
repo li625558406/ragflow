@@ -1,6 +1,7 @@
 import {
   Check,
   Download,
+  History,
   Loader2,
   MoreHorizontal,
   Save,
@@ -21,6 +22,9 @@ interface Props {
   /** 非协同模式(无 token)时展示手动保存入口 */
   showManualSave: boolean;
   onManualSave: () => void;
+  /** 「生成版本」按钮：唯一触发写 CollaborationDocumentVersion 的入口 */
+  onGenerateVersion: () => void;
+  generatingVersion: boolean;
   onDownload: (type: 'docx' | 'pdf' | 'xlsx') => void | Promise<void>;
   downloading: boolean;
   onOpenShare: () => void;
@@ -44,6 +48,8 @@ export default function EditorHeader({
   provider,
   showManualSave,
   onManualSave,
+  onGenerateVersion,
+  generatingVersion,
   onDownload,
   downloading,
   onOpenShare,
@@ -180,6 +186,21 @@ export default function EditorHeader({
             保存
           </button>
         )}
+        {/* 生成版本 —— 唯一会写入版本历史 (CollaborationDocumentVersion) 的入口。
+            常规保存 (手动 / debounce / 30s / flush) 只更主表，不留版本快照。 */}
+        <button
+          className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-stone-700 bg-white border border-stone-200 hover:bg-stone-50 rounded-lg transition-colors disabled:opacity-50"
+          onClick={onGenerateVersion}
+          disabled={generatingVersion || saveStatus === 'saving'}
+          title="把当前内容存为一条历史版本（可恢复）"
+        >
+          {generatingVersion ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <History className="size-3.5" />
+          )}
+          {generatingVersion ? '生成中...' : '生成版本'}
+        </button>
         <button
           className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-white bg-stone-900 hover:bg-stone-700 rounded-lg transition-colors"
           onClick={onOpenShare}

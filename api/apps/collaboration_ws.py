@@ -386,6 +386,34 @@ async def invalidate_room(doc_id: str, payload: dict | None = None):
     )
 
 
+async def broadcast_version_added(doc_id: str, payload: dict | None = None):
+    """Broadcast a `version-added` notice to all online clients in the room.
+
+    Unlike `invalidate_room`, this does NOT clear room state — the Yjs doc
+    and buffer stay intact. It's a lightweight "ping" telling clients a new
+    historical snapshot was just persisted, so the version-history panel
+    can reload without bothering the user.
+
+    Used after `save_ydoc_state` writes a new CollaborationDocumentVersion
+    row. Online collaborators receive this and refresh their panels; the
+    originator also receives it (no exclude) — their own panel may have
+    been open too, and a redundant refresh is harmless (GET is cached
+    server-side via Peewee + the response is small).
+    """
+    room = _rooms.get(doc_id)
+    if not room:
+        return
+    msg = json.dumps(payload) if payload is not None else json.dumps({"t": "version-added"})
+    for cid, client in list(room["clients"].items()):
+        try:
+            await client["ws"].send(msg)
+        except Exception:
+            room["clients"].pop(cid, None)
+    logging.info(
+        f"[WS] broadcast_version_added doc={doc_id} clients_notified={len(room['clients'])}"
+    )
+
+
 def register_ws_routes(app):
     """Register WebSocket route on the Quart app."""
 

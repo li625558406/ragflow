@@ -324,6 +324,8 @@ interface Return {
   provider: CollaborationWebSocketProvider | null;
   /** Save arbitrary workbook data directly to server (bypasses workbookDataRef) */
   saveToServer: (data: IWorkbookData) => void;
+  /** 主动生成一条版本快照（写 CollaborationDocumentVersion）。只有这个入口写快照。 */
+  createVersion: (data: IWorkbookData) => Promise<{ ok: boolean }>;
 }
 
 /* ── Hook ── */
@@ -526,6 +528,9 @@ export default function useSpreadsheetCollab({
             ...(ydocB64 ? { ydoc_state: ydocB64 } : {}),
             content: stripAssetTokens(data),
             markdown_content: '',
+            // 手动保存只更主表，不写版本快照。版本只能由
+            // 「生成版本」按钮 (createVersion) 显式触发。
+            write_snapshot: false,
           }),
         });
         const result = await resp.json();
@@ -543,6 +548,69 @@ export default function useSpreadsheetCollab({
       statusResetRef.current = setTimeout(() => {
         if (!cancelledRef.current) setSaveStatus('idle');
       }, 2000);
+    },
+    [docId, onUpdate],
+  );
+
+  // 主动生成一条版本快照。这是唯一会触发后端写 CollaborationDocumentVersion
+  // 的前端入口 —— saveToServer / 30s 自动保存 / flushSave 全部 write_snapshot:false。
+  // 流程与 saveToServer 完全一致，唯一区别是 body 带 write_snapshot: true。
+  const createVersion = useCallback(
+    async (data: IWorkbookData): Promise<{ ok: boolean }> => {
+      if (cancelledRef.current) return { ok: false };
+      setSaveStatus('saving');
+      try {
+        const isCollab = !!yDocRef.current;
+        let ydocB64: string | undefined;
+
+        if (isCollab) {
+          const m = yMapRef.current;
+          const doc = yDocRef.current;
+          if (m && doc) {
+            doc.transact(() => {
+              m.set('data', JSON.stringify(stripUIState(data)));
+            }, LOCAL_PUSH_ORIGIN);
+          }
+          const ydocState = Y.encodeStateAsUpdate(yDocRef.current!);
+          ydocB64 = uint8ArrayToBase64(ydocState);
+        }
+
+        const endpoint = isCollab
+          ? `/api/v1/collaboration/documents/${docId}/ydoc`
+          : `/api/v1/collaboration/documents/${docId}`;
+
+        const resp = await apiFetchRef.current(endpoint, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...(ydocB64 ? { ydoc_state: ydocB64 } : {}),
+            content: stripAssetTokens(data),
+            markdown_content: '',
+            // ★ 关键：这是唯一写快照的入口
+            write_snapshot: true,
+          }),
+        });
+        const result = await resp.json();
+        if (result.code === 0) {
+          setSaveStatus('saved');
+          providerRef.current?.sendFullState();
+          onUpdate();
+          if (statusResetRef.current) clearTimeout(statusResetRef.current);
+          statusResetRef.current = setTimeout(() => {
+            if (!cancelledRef.current) setSaveStatus('idle');
+          }, 2000);
+          return { ok: true };
+        }
+        setSaveStatus('error');
+        return { ok: false };
+      } catch {
+        setSaveStatus('error');
+        if (statusResetRef.current) clearTimeout(statusResetRef.current);
+        statusResetRef.current = setTimeout(() => {
+          if (!cancelledRef.current) setSaveStatus('idle');
+        }, 2000);
+        return { ok: false };
+      }
     },
     [docId, onUpdate],
   );
@@ -677,6 +745,8 @@ export default function useSpreadsheetCollab({
                       ydoc_state: b64,
                       content: stripAssetTokens(parsed as IWorkbookData),
                       markdown_content: '',
+                      // 30s 自动保存只是定时持久化草稿，不写版本快照。
+                      write_snapshot: false,
                     }),
                   },
                 );
@@ -741,6 +811,8 @@ export default function useSpreadsheetCollab({
               ydoc_state: b64,
               content: stripAssetTokens(parsed as IWorkbookData),
               markdown_content: '',
+              // 页面隐藏 flush 只保证草稿不丢，不写版本快照。
+              write_snapshot: false,
             }),
           })
           .catch(() => {});
@@ -786,5 +858,6 @@ export default function useSpreadsheetCollab({
     saveStatus,
     provider,
     saveToServer,
+    createVersion,
   };
 }

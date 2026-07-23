@@ -97,6 +97,7 @@ export default function SpreadsheetEditor({
     saveStatus,
     provider,
     saveToServer,
+    createVersion,
   } = useSpreadsheetCollab({
     docId: document.id,
     content,
@@ -459,6 +460,23 @@ export default function SpreadsheetEditor({
     saveToServer(workbookData);
   }, [getLatestSnapshot, saveToServer, workbookData]);
 
+  // 生成版本 —— 与 handleManualSave 同样的 snapshot 获取逻辑，只是改调 createVersion。
+  const [generatingVersion, setGeneratingVersion] = useState(false);
+  const handleGenerateVersion = useCallback(async () => {
+    if (generatingVersion) return;
+    setGeneratingVersion(true);
+    try {
+      const fresh = await getLatestSnapshot();
+      if (fresh) {
+        await createVersion(fresh);
+      } else {
+        await createVersion(workbookData);
+      }
+    } finally {
+      setGeneratingVersion(false);
+    }
+  }, [generatingVersion, getLatestSnapshot, createVersion, workbookData]);
+
   // Download handler
   const handleDownload = useCallback(
     async (type: 'docx' | 'pdf' | 'xlsx') => {
@@ -495,6 +513,8 @@ export default function SpreadsheetEditor({
         provider={provider}
         showManualSave={true}
         onManualSave={handleManualSave}
+        onGenerateVersion={handleGenerateVersion}
+        generatingVersion={generatingVersion}
         onDownload={handleDownload}
         downloading={downloading}
         onOpenShare={onOpenShare}
