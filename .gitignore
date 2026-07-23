@@ -246,8 +246,8 @@ rag/[0-9]*
 .gstack/
 .playwright-mcp/
 bidding_app/
-crawl4ai/
-crawl4ai_service/
+/crawl4ai/
+/crawl4ai_service/
 data/
 static/
 rag/.agents/

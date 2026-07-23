@@ -31,6 +31,7 @@ from common import settings
 from common.log_utils import init_root_logger
 from rag.svr.crawler_engine.config import ConfigLoader
 from rag.svr.crawler_engine.engine import CrawlerEngine
+from rag.svr.crawler_engine.progress_reporter import ProgressReporter
 
 
 # Default config path
@@ -140,7 +141,9 @@ def main():
 
     # Run the engine
     try:
-        engine = CrawlerEngine(site_config, output_dir=output_dir)
+        reporter = ProgressReporter(task_id) if task_id else None
+        engine = CrawlerEngine(site_config, output_dir=output_dir,
+                               progress_reporter=reporter)
         summary = engine.run(
             tenant_id=args.tenant_id,
             kb_id=args.kb_id,

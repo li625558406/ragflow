@@ -65,6 +65,36 @@ def _is_yaml_site(site_id: str) -> tuple[bool, str]:
         logging.warning("crawl4ai_app: load YAML failed: %s", e)
     return False, ""
 
+
+def _pull_summary_from_redis(task_id: str) -> dict:
+    """Read the last `done` summary from Redis history list for a task.
+
+    Returns {} if Redis unavailable or no done message found.
+    """
+    try:
+        from rag.utils.redis_conn import REDIS_CONN
+        client = getattr(REDIS_CONN, "REDIS", None)
+        if client is None:
+            return {}
+        history_key = f"crawler:task:{task_id}:history"
+        raw_items = client.lrange(history_key, -50, -1)  # last 50 messages
+        for raw in reversed(raw_items):
+            try:
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8", errors="replace")
+                msg = json.loads(raw)
+                if msg.get("type") == "done":
+                    return {
+                        "status": msg.get("status", ""),
+                        "summary": msg.get("summary", {}),
+                        "ts": msg.get("ts"),
+                    }
+            except Exception:
+                continue
+    except Exception as e:
+        logging.warning("crawl4ai_app: pull summary from redis failed: %s", e)
+    return {}
+
 # 进程内运行锁: 防止同一任务并发触发
 _running_tasks: set = set()
 _running_lock = threading.Lock()
@@ -227,7 +257,12 @@ async def trigger_task(task_id):
                     logging.info("unified_crawler %s done: %s",
                                  task.site_id, proc.stdout[-500:])
                 status = "success" if proc.returncode == 0 else "fail"
-                CrawlerTaskService.update_by_id(task_id, {"last_run_status": status})
+                # Pull structured summary from Redis history (written by ProgressReporter)
+                summary = _pull_summary_from_redis(task_id)
+                update_payload: dict = {"last_run_status": status}
+                if summary:
+                    update_payload["last_run_summary"] = summary
+                CrawlerTaskService.update_by_id(task_id, update_payload)
             else:
                 # 非 YAML 站点 → crawl4ai executor (LLM-based)
                 from api.utils.crawl4ai_executor import run_task

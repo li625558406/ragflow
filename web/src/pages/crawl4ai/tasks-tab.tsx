@@ -17,9 +17,10 @@ import {
   updateCrawl4aiTask,
 } from '@/services/crawl4ai-service';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Pencil, Play, Plus, Trash2 } from 'lucide-react';
+import { Activity, Pencil, Play, Plus, Trash2 } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { ProgressDialog } from './progress-dialog';
 import { TaskDialog } from './task-dialog';
 
 export function TasksTab() {
@@ -28,6 +29,8 @@ export function TasksTab() {
 
   const [dialogVisible, setDialogVisible] = useState(false);
   const [editingTask, setEditingTask] = useState<Crawl4aiTask | null>(null);
+  const [progressTaskId, setProgressTaskId] = useState<string | null>(null);
+  const [progressTaskName, setProgressTaskName] = useState<string>('');
 
   const { data, isFetching } = useQuery({
     queryKey: ['crawl4aiTasks'],
@@ -198,6 +201,17 @@ export function TasksTab() {
                         variant="ghost"
                         size="icon"
                         onClick={() => {
+                          setProgressTaskId(task.id);
+                          setProgressTaskName(task.name);
+                        }}
+                        title={t('crawl4ai.viewProgress')}
+                      >
+                        <Activity className="size-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => {
                           setEditingTask(task);
                           setDialogVisible(true);
                         }}
@@ -230,6 +244,18 @@ export function TasksTab() {
             setEditingTask(null);
           }}
           onSaved={refresh}
+        />
+      )}
+
+      {progressTaskId && (
+        <ProgressDialog
+          taskId={progressTaskId}
+          taskName={progressTaskName}
+          hideModal={() => {
+            setProgressTaskId(null);
+            setProgressTaskName('');
+            refresh();
+          }}
         />
       )}
     </div>

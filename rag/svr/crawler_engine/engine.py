@@ -29,6 +29,7 @@ from .anti_crawler import AntiCrawlerManager
 from .adapters.base import BaseAdapter, AdapterFactory
 from .extractors.base import ExtractorFactory
 from .models import NormalizedItem, item_from_dict
+from .progress_reporter import ProgressReporter
 
 OUTPUT_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "..", "output"
@@ -44,7 +45,8 @@ DEFAULT_MAX_PAGES = 20
 class CrawlerEngine:
     """Main engine that orchestrates a complete crawl cycle for one site."""
 
-    def __init__(self, config: SiteConfig, output_dir: Optional[str] = None):
+    def __init__(self, config: SiteConfig, output_dir: Optional[str] = None,
+                 progress_reporter: Optional[ProgressReporter] = None):
         self._config = config
         self._output_dir = output_dir or os.path.join(OUTPUT_DIR, config.site_id)
         self._task_name: str = ""
@@ -59,6 +61,8 @@ class CrawlerEngine:
         self._storage_pipeline = None
         self._state = None
         self._batch_counter: int = 0
+        # Progress reporting (WebSocket front-end)
+        self._reporter = progress_reporter
 
     # ------------------------------------------------------------------
     # Public API
@@ -155,11 +159,20 @@ class CrawlerEngine:
         # 8 AM check
         if not self._anti_crawler.check_eight_am():
             logging.info("Engine: waiting until 8 AM for site %s", self._config.site_id)
-            return {"status": "skipped", "reason": "before_8am"}
+            skipped_summary = {"status": "skipped", "reason": "before_8am"}
+            if self._reporter is not None and self._reporter.enabled:
+                self._reporter.publish_done("skipped", skipped_summary)
+            return skipped_summary
 
         # Main crawl loop
         try:
             summary = self._crawl_sections()
+        except Exception as e:
+            logging.exception("Engine: crawl_sections crashed for site=%s: %s",
+                              self._config.site_id, e)
+            if self._reporter is not None and self._reporter.enabled:
+                self._reporter.publish_done("fail", {"error": str(e), "site_id": self._config.site_id})
+            raise
         finally:
             self._cleanup()
 
@@ -408,6 +421,9 @@ class CrawlerEngine:
 
             # Checkpoint: save state every page
             state.last_page = page
+            # Reporter: per-page progress to WebSocket (print stays 10-page to avoid stdout spam)
+            if self._reporter is not None and self._reporter.enabled:
+                self._reporter.publish_progress(page, total_pages, new_in_page, all_scanned)
             if page % 10 == 0:
                 self._log_progress(page, new_in_page, all_scanned, anti_crawler.consecutive_empty)
             if page % 10 == 0 or new_in_page > 0:
@@ -556,11 +572,13 @@ class CrawlerEngine:
         print(f"[CRAWLER] KB: {kb_id}")
         print("=" * 60 + "\n")
         sys.stdout.flush()
+        self._report(f"[CRAWLER] {cfg.name} ({cfg.site_id}) · transport={cfg.transport.type} · kb={kb_id}")
 
     def _log_site_info(self, total: int, total_pages: int, start_page: int) -> None:
         print(f"[CRAWLER] Total: {total} records, {total_pages} pages "
               f"(resuming from page {start_page})")
         sys.stdout.flush()
+        self._report(f"共 {total} 条 / {total_pages} 页，从第 {start_page} 页续爬")
 
     def _build_site_display(self) -> str:
         """从 YAML 配置派生展示用站点串: '中文名称 域名'.
@@ -608,3 +626,13 @@ class CrawlerEngine:
                       f"{dedup_stats.get('db_hits', 0)} DB hits")
         print("=" * 60 + "\n")
         sys.stdout.flush()
+        # Publish done event to WebSocket subscribers
+        if self._reporter is not None and self._reporter.enabled:
+            done_status = "skipped" if status == "skipped" else "success"
+            self._reporter.publish_done(done_status, summary)
+            self._report(f"[CRAWLER] Done · status={done_status} · summary={summary}")
+
+    def _report(self, text: str, level: str = "info") -> None:
+        """Forward a log line to the progress reporter (no-op if absent)."""
+        if self._reporter is not None and self._reporter.enabled:
+            self._reporter.publish_log(text, level)

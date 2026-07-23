@@ -6,6 +6,7 @@
 
 核心注意点：
 1、新增和修改的代码，禁止私自部署服务器
+2、前端文案只用中文，不做 i18n 多语言翻译（新增 key 只在 zh.ts 加，不同步 en.ts）
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 

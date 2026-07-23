@@ -345,6 +345,10 @@ register_backward_compat_routes(app)
 from api.apps.collaboration_ws import register_ws_routes
 register_ws_routes(app)
 
+# Register WebSocket routes for crawler task real-time progress
+from api.apps.restful_apis.crawl4ai_ws import register_ws_routes as register_crawler_ws_routes
+register_crawler_ws_routes(app)
+
 
 @app.errorhandler(404)
 async def not_found(error):
