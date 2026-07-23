@@ -206,7 +206,16 @@ class SpaRenderAdapter(BaseAdapter):
                     # Pre-extraction UI interaction (e.g. click "当天" date filter)
                     if pre_click:
                         try:
-                            page.click(pre_click, timeout=5000)
+                            # Wait for loading mask to disappear, then click.
+                            # Element UI shows el-loading-mask during data fetch
+                            # which intercepts pointer events.
+                            try:
+                                page.wait_for_selector(
+                                    ".el-loading-mask", state="hidden", timeout=8000,
+                                )
+                            except Exception:
+                                pass  # mask may have already disappeared
+                            page.click(pre_click, timeout=5000, force=True)
                             logging.info(
                                 "SpaRenderAdapter: pre_click '%s' clicked, waiting",
                                 pre_click,
