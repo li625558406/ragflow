@@ -387,8 +387,8 @@ class ConfigLoader:
     def _parse_section(self, data: dict) -> SectionConfig:
         return SectionConfig(
             label=data.get("label", ""),
-            listing=self._parse_listing(data.get("listing", {})),
-            pagination=self._parse_pagination(data.get("pagination", {})),
-            extract=self._parse_extract(data.get("extract", {})),
-            detail=self._parse_detail(data.get("detail", {})),
+            listing=self._parse_listing(data.get("listing", {})) if "listing" in data else None,
+            pagination=self._parse_pagination(data.get("pagination", {})) if "pagination" in data else None,
+            extract=self._parse_extract(data.get("extract", {})) if "extract" in data else None,
+            detail=self._parse_detail(data.get("detail", {})) if "detail" in data else None,
         )

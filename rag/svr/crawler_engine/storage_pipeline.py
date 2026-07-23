@@ -98,9 +98,10 @@ class StoragePipeline:
         result["project_id"] = project_id
 
         # 2. Upload content to KB + parse (knowledge base)
-        #    Skip items with too little content — they are title-only stubs.
+        #    Only upload if the DB write succeeded — this ties KB upload
+        #    to the writer's date filter, dedup, and other checks.
         has_content = len(item.content or "") >= MIN_CONTENT_LENGTH_FOR_KB
-        if not self._skip_kb and has_content:
+        if not self._skip_kb and has_content and project_id:
             doc_id = self._upload_content_to_kb(item)
             result["doc_id"] = doc_id
         elif not has_content:

@@ -3299,41 +3299,104 @@ sites:
       parser_id: "naive"
       upload_batch_size: 10
 
+  # ── ggzyjd_policies — 福建省工程领域招投标在线监管平台 · 政策法规 ──
+  # Source: https://ggzyjd.fj.gov.cn/policies/index
+  # SPA (Vue 2.6 + Element UI) + ASP.NET AES-128-CBC encrypted backend API.
+  # Reference: rag/svr/ggzyjd_policies_crawler.py (old script, verified working)
+  # Category: policy (写入 crawler_result + collection_policy_ext)
+  # Detail URL: /policies/detail?id=<ID> or /index/newDetail?id=<ID>
+  # 4 sections: 国家政策法规 / 福建省政策法规 / 政策解读 / 接口规范
+  # Typical run: date_filter="" (首次全量采集，爬3页)
+  # ─────────────────────────────────────────────────────────────────
   ggzyjd_policies:
-    name: "福建省公共资源交易监督平台-政策法规"
+    name: "福建省工程领域招投标在线监管平台-政策法规"
     site_url: "https://ggzyjd.fj.gov.cn/"
+    category: policy
     enabled: true
     transport:
       type: spa_render
       engine: playwright_spa
       headers:
-        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"
       verify_ssl: false
       timeout: 60
+      network_idle: false             # 该站持续活动会阻止 networkidle, 用 domcontentloaded
     listing:
-      url: "https://ggzyjd.fj.gov.cn/policies/list/"
+      url: "https://ggzyjd.fj.gov.cn/policies/list/?type=国家政策法规&title="
       method: GET
     sections:
       - label: "national"
         name: "国家政策法规"
+        listing:
+          url: "https://ggzyjd.fj.gov.cn/policies/list/?type=国家政策法规&title="
+          method: GET
       - label: "fujian"
         name: "福建省政策法规"
+        listing:
+          url: "https://ggzyjd.fj.gov.cn/policies/list/?type=福建省政策法规&title="
+          method: GET
       - label: "interpretation"
         name: "政策解读"
+        listing:
+          url: "https://ggzyjd.fj.gov.cn/policies/list/?type=政策解读&title="
+          method: GET
       - label: "interface"
         name: "接口规范"
+        listing:
+          url: "https://ggzyjd.fj.gov.cn/policies/list/?type=接口规范&title="
+          method: GET
     pagination:
       type: click_next
       next_page_selector: ".el-pagination .btn-next:not(.disabled)"
+      max_pages: 3                    # 一次性当前数据采集, 3页足够
     anti_crawler:
       delay_min: 2.0
       delay_max: 4.0
       max_retries: 4
+      max_consecutive_empty: 3
     extract:
+      # 列表 DOM: div.list-list > div.list-item > a.title + 尾部日期文本
+      # BS4 无法取到 <a> 自身的 textContent (不含子元素), 用 js_extract 直接提取
+      # (与旧脚本 ggzyjd_policies_crawler.py::_extract_list_items 一致)
       type: css_selector
-      items_path: "div.list-list a.title"
+      items_path: "div.list-list div.list-item"
+      js_extract: |
+        () => {
+          const results = [];
+          const seen = new Set();
+          const items = document.querySelectorAll('div.list-list div.list-item');
+          for (const item of items) {
+            const a = item.querySelector('a.title');
+            if (!a || !a.href) continue;
+            const href = a.href;
+            const title = (a.textContent || '').trim();
+            if (!title || title.length < 2) continue;
+            if (seen.has(href)) continue;
+            seen.add(href);
+
+            // Date: 在父容器 div.list-item 的文本尾部 (标题+空格+YYYY-MM-DD)
+            const parentText = (item.textContent || '').trim();
+            const dateMatches = parentText.match(/\d{4}[-/]\d{1,2}[-/]\d{1,2}/g);
+            const dateStr = dateMatches ? dateMatches[dateMatches.length - 1] : '';
+
+            // ID: 从 URL query param 提取
+            let artId = '';
+            try { const url = new URL(href); artId = url.searchParams.get('id') || ''; } catch(e) {}
+
+            results.push({
+              title: title,
+              url: href,
+              date: dateStr,
+              id: artId || '',
+            });
+          }
+          return results;
+        }
     detail:
       type: css_selector
+      content_field: ".new-detail"
+      # 详情页内容在 body 区域 (h1标题 + 信息来源/发布日期元数据 + 正文段落)
+      # spa_render 的内置 _CONTENT_SELECTORS 会逐级尝试更精确的选择器做 fallback
     format:
       parser_id: "naive"
       upload_batch_size: 10

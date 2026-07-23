@@ -76,6 +76,8 @@ class BaseAdapter(ABC):
         "main .content",
         ".post_content",
         ".rich_media_content",
+        ".new-detail",
+        ".new-detail-content",
     ]
 
     def _fetch_detail_css(self, item: Dict[str, Any]) -> Dict[str, Any]:

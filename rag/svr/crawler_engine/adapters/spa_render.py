@@ -109,11 +109,11 @@ class SpaRenderAdapter(BaseAdapter):
         if getattr(self._transport, "vue_http", False):
             return self._fetch_via_vue_http(page_params, listing_override)
 
-        page = self._get_page()
         listing = listing_override if listing_override else self._config.listing
         url = listing.url
 
         for attempt in range(self._config.anti_crawler.max_retries):
+            page = self._get_page()
             try:
                 # Clear previous captures
                 self._api_captures = []
@@ -149,7 +149,7 @@ class SpaRenderAdapter(BaseAdapter):
                 ])
                 for sel in wait_selectors:
                     try:
-                        page.wait_for_selector(sel, timeout=10000)
+                        page.wait_for_selector(sel, state="attached", timeout=10000)
                         break
                     except Exception:
                         continue
@@ -164,15 +164,39 @@ class SpaRenderAdapter(BaseAdapter):
                         self._last_raw = self._api_captures
                         return items
 
-                # JS extraction (custom snippet from YAML extract.js_extract)
+                # JS extraction (custom snippet from YAML extract.js_extract).
+                # SPA rendering is intermittent — poll a few times with delays.
+                # When js_extract is configured, it is the ONLY reliable path;
+                # DOM fallback would only see the unrendered HTML shell.
+                # If all polls come up empty, reload the page and retry instead
+                # of falling through to DOM extraction or recreating the page
+                # (which can leave the new page in a broken state).
                 if (self._config.extract
                         and getattr(self._config.extract, "js_extract", "")):
-                    items = self._extract_via_js(page, self._config.extract.js_extract)
-                    if items:
-                        self._last_raw = items
-                        return items
+                    for reload_cycle in range(3):
+                        for js_attempt in range(5):
+                            items = self._extract_via_js(page, self._config.extract.js_extract)
+                            if items:
+                                self._last_raw = items
+                                return items
+                            if js_attempt < 4:
+                                time.sleep(3)
+                        # All 5 polls empty — reload the page and retry
+                        if reload_cycle < 2:
+                            logging.info(
+                                "SpaRenderAdapter: js_extract empty, reloading page (cycle %d/3)",
+                                reload_cycle + 1,
+                            )
+                            try:
+                                page.goto(url, wait_until=wait_until,
+                                          timeout=self._transport.timeout * 1000)
+                            except Exception:
+                                pass
+                            time.sleep(3)
+                    # All reload cycles exhausted — let outer retry handle it
+                    raise RuntimeError("js_extract returned empty after 3 reload cycles")
 
-                # Fall back to DOM extraction
+                # Fall back to DOM extraction (only when no js_extract configured)
                 result = self._extract_from_dom(page)
                 self._last_raw = result
                 return result
@@ -180,7 +204,18 @@ class SpaRenderAdapter(BaseAdapter):
             except Exception as e:
                 logging.warning("SpaRenderAdapter: attempt %d failed: %s", attempt + 1, e)
                 time.sleep(2 ** attempt)
-                self._recreate_page()
+                # Prefer a fresh page over full recreation — closing the old
+                # page can leave the browser context in a broken state where
+                # subsequent new_page() calls produce unusable pages.
+                try:
+                    if self._page:
+                        try:
+                            self._page.close()
+                        except Exception:
+                            pass
+                    self._page = None
+                except Exception:
+                    pass
 
         return None
 

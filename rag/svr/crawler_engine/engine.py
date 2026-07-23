@@ -264,6 +264,8 @@ class CrawlerEngine:
 
         total_stats = {"site_id": self._config.site_id, "sections": {}}
         all_new = 0
+        acc_bid_stats: Dict[str, int] = {}
+        acc_dedup_stats: Dict[str, int] = {}
         for section in sections:
             self._set_active_section(section)
             # Re-init dedup for the new section
@@ -278,7 +280,14 @@ class CrawlerEngine:
             stats = self._crawl_one_section(section)
             total_stats["sections"][section.label] = stats
             all_new += stats.get("new_items", 0)
+            # Accumulate pipeline + dedup stats across sections
+            for k, v in stats.get("bid_stats", {}).items():
+                acc_bid_stats[k] = acc_bid_stats.get(k, 0) + v
+            for k, v in stats.get("dedup_stats", {}).items():
+                acc_dedup_stats[k] = acc_dedup_stats.get(k, 0) + v
         total_stats["total_new_items"] = all_new
+        total_stats["bid_stats"] = acc_bid_stats
+        total_stats["dedup_stats"] = acc_dedup_stats
         return total_stats
 
     def _crawl_one_section(self, section: Optional[SectionConfig]) -> Dict[str, Any]:
