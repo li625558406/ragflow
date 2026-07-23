@@ -76,6 +76,7 @@ class TransportConfig:
     impersonate: str = ""           # browser fingerprint (e.g. "chrome", "firefox135")
     adaptive: bool = False          # enable self-healing selectors (auto_save + adaptive)
     block_resources: bool = True    # block images/fonts/media for speed
+    pre_click: str = ""             # CSS/text selector to click before extraction (e.g. "text=当天")
 
 
 @dataclass
@@ -301,6 +302,7 @@ class ConfigLoader:
             impersonate=data.get("impersonate", ""),
             adaptive=data.get("adaptive", False),
             block_resources=data.get("block_resources", True),
+            pre_click=data.get("pre_click", ""),
         )
 
     def _parse_listing(self, data: dict) -> ListingConfig:

@@ -3301,12 +3301,14 @@ sites:
 
   # ── ggzyjd_policies — 福建省工程领域招投标在线监管平台 · 政策法规 ──
   # Source: https://ggzyjd.fj.gov.cn/policies/index
-  # SPA (Vue 2.6 + Element UI) + ASP.NET AES-128-CBC encrypted backend API.
-  # Reference: rag/svr/ggzyjd_policies_crawler.py (old script, verified working)
+  # SPA (Vue 2.6 + Element UI) + portal-sign MD5 API signing.
+  # API (POST /JdPortalApi/Article/PageTable) requires portal-sign header
+  # which can't be generated outside the browser.  Solution: click the page's
+  # own "当天" date filter button (transport.pre_click) to trigger the API
+  # call with proper signing, then extract results from DOM via js_extract.
   # Category: policy (写入 crawler_result + collection_policy_ext)
   # Detail URL: /policies/detail?id=<ID> or /index/newDetail?id=<ID>
   # 4 sections: 国家政策法规 / 福建省政策法规 / 政策解读 / 接口规范
-  # Typical run: date_filter="" (首次全量采集，爬3页)
   # ─────────────────────────────────────────────────────────────────
   ggzyjd_policies:
     name: "福建省工程领域招投标在线监管平台-政策法规"
@@ -3321,6 +3323,7 @@ sites:
       verify_ssl: false
       timeout: 60
       network_idle: false             # 该站持续活动会阻止 networkidle, 用 domcontentloaded
+      pre_click: "text=当天"           # 点击日期筛选"当天", 触发页面内部 API (带 portal-sign) 再渲染
     listing:
       url: "https://ggzyjd.fj.gov.cn/policies/list/?type=国家政策法规&title="
       method: GET
@@ -3348,7 +3351,9 @@ sites:
     pagination:
       type: click_next
       next_page_selector: ".el-pagination .btn-next:not(.disabled)"
-      max_pages: 3                    # 一次性当前数据采集, 3页足够
+      max_pages: 5                    # 单日数据量少, 5页足够覆盖
+      items_field: "data.Rows"        # API 响应数据路径 (用于 total 读取)
+      total_field: "data.Total"
     anti_crawler:
       delay_min: 2.0
       delay_max: 4.0

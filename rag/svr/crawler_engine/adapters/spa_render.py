@@ -37,8 +37,22 @@ _VUE_HTTP_JS = """
     return new Promise((resolve) => {
         try {
             const vm = document.querySelector('#app').__vue__;
-            const http = vm.$http;
-            http.get(url, opts).then(resp => {
+            // Try $http first (vue-resource / custom wrapper), fall back to
+            // $axios (Vue.prototype.$axios = axios.create() pattern).
+            const http = vm.$http || vm.$axios;
+            if (!http) {
+                resolve(JSON.stringify({error: 'No $http or $axios on Vue instance'}));
+                return;
+            }
+            const method = (opts.method || 'GET').toLowerCase();
+            const config = opts.params ? {params: opts.params} : {};
+            if (opts.responseType) config.responseType = opts.responseType;
+
+            const request = method === 'post'
+                ? http.post(url, opts.body || {}, config)
+                : http.get(url, config);
+
+            request.then(resp => {
                 if (opts.responseType === 'arraybuffer') {
                     let bytes = new Uint8Array(resp.data);
                     let binary = '';
@@ -69,6 +83,8 @@ class SpaRenderAdapter(BaseAdapter):
         self._vue_ready = False
         self._captcha_code: Optional[str] = None
         self._api_base: str = ""
+        self._click_next_active: bool = False  # True during a click_next sequence
+        self._last_listing_url: str = ""       # Track listing URL for section changes
 
     def _get_page(self):
         """Get or create a page with API interception."""
@@ -105,57 +121,104 @@ class SpaRenderAdapter(BaseAdapter):
 
         When transport.vue_http is True, uses Vue.__vue__.$http proxy to
         call APIs directly (bypasses signature/CSRF checks on sites like zfcg).
+
+        Supports click_next pagination: first page does full navigation +
+        pre_click; subsequent pages click the "next page" button in the
+        already-rendered SPA (which triggers an API call with proper signing).
         """
         if getattr(self._transport, "vue_http", False):
             return self._fetch_via_vue_http(page_params, listing_override)
 
         listing = listing_override if listing_override else self._config.listing
         url = listing.url
+        pag_cfg = self._config.pagination
+        is_click_next = page_params.get("_click_next", False)
+        page_num = page_params.get("_page", 0)
+        wait_until = "networkidle" if getattr(self._transport, "network_idle", True) else "commit"
+        pre_click = getattr(self._transport, "pre_click", None)
+
+        # Reset click_next state when the listing URL changes (new section / site)
+        if self._last_listing_url and self._last_listing_url != url:
+            self._click_next_active = False
+        self._last_listing_url = url
+
+        if not is_click_next:
+            self._click_next_active = False
 
         for attempt in range(self._config.anti_crawler.max_retries):
             page = self._get_page()
             try:
-                # Clear previous captures
                 self._api_captures = []
 
-                # Navigate and wait for network idle (or DOMContentLoaded if
-                # network_idle is disabled).  Some sites have long-polling /
-                # analytics scripts (hm.baidu.com) that prevent the "load"
-                # event from ever firing, so we use "domcontentloaded" which
-                # fires as soon as the DOM is parsed and then rely on
-                # wait_for_selector below to confirm the SPA has rendered.
-                wait_until = "networkidle" if getattr(self._transport, "network_idle", True) else "commit"
-                try:
-                    page.goto(url, wait_until=wait_until, timeout=self._transport.timeout * 1000)
-                except Exception as goto_err:
-                    # goto may time out even when the page has fully rendered
-                    # (e.g. analytics scripts block the load event).  Log and
-                    # continue — the wait_for_selector / extraction phase will
-                    # decide whether the page actually has data.
-                    logging.warning(
-                        "SpaRenderAdapter: page.goto(%s, wait_until=%s) failed: %s — continuing to check DOM",
-                        url, wait_until, goto_err,
-                    )
-
-                # Wait for data container to appear.
-                # Prefer this site's own extract.items_path (knows what to wait for),
-                # then fall back to common container selectors.
-                wait_selectors = []
-                if self._config.extract and self._config.extract.items_path:
-                    wait_selectors.append(self._config.extract.items_path)
-                wait_selectors.extend([
-                    "table, .list, .el-table, .ant-table",
-                    ".list-item, .case-list a, a[href*='detail']",
-                ])
-                for sel in wait_selectors:
-                    try:
-                        page.wait_for_selector(sel, state="attached", timeout=10000)
+                # ── Phase 1: get to the right page state ──
+                if is_click_next and self._click_next_active:
+                    # Subsequent pages — click the "next page" button.
+                    next_sel = pag_cfg.next_page_selector
+                    if not next_sel:
+                        logging.warning(
+                            "SpaRenderAdapter: click_next without next_page_selector"
+                        )
                         break
+                    try:
+                        page.click(next_sel, timeout=5000)
+                        logging.info(
+                            "SpaRenderAdapter: clicked next page (page %d)", page_num
+                        )
+                        time.sleep(3)
                     except Exception:
-                        continue
+                        # Button not found or not clickable — likely end of pages
+                        logging.info(
+                            "SpaRenderAdapter: next page button not found, "
+                            "end of pages (page %d)", page_num,
+                        )
+                        return []
+                else:
+                    # First page (or non-click-next) — full navigation
+                    if is_click_next:
+                        self._click_next_active = True
+                    try:
+                        page.goto(url, wait_until=wait_until,
+                                  timeout=self._transport.timeout * 1000)
+                    except Exception as goto_err:
+                        logging.warning(
+                            "SpaRenderAdapter: page.goto(%s, wait_until=%s) failed: %s"
+                            " — continuing to check DOM",
+                            url, wait_until, goto_err,
+                        )
 
-                # Additional wait for async rendering
-                time.sleep(3)
+                    # Wait for data container to appear
+                    wait_selectors = []
+                    if self._config.extract and self._config.extract.items_path:
+                        wait_selectors.append(self._config.extract.items_path)
+                    wait_selectors.extend([
+                        "table, .list, .el-table, .ant-table",
+                        ".list-item, .case-list a, a[href*='detail']",
+                    ])
+                    for sel in wait_selectors:
+                        try:
+                            page.wait_for_selector(sel, state="attached", timeout=10000)
+                            break
+                        except Exception:
+                            continue
+
+                    time.sleep(3)
+
+                    # Pre-extraction UI interaction (e.g. click "当天" date filter)
+                    if pre_click:
+                        try:
+                            page.click(pre_click, timeout=5000)
+                            logging.info(
+                                "SpaRenderAdapter: pre_click '%s' clicked, waiting",
+                                pre_click,
+                            )
+                            time.sleep(3)
+                        except Exception as e:
+                            logging.warning(
+                                "SpaRenderAdapter: pre_click '%s' failed: %s",
+                                pre_click, e,
+                            )
+
+                # ── Phase 2: extract data ──
 
                 # Try API captures first
                 if self._api_captures:
@@ -165,36 +228,51 @@ class SpaRenderAdapter(BaseAdapter):
                         return items
 
                 # JS extraction (custom snippet from YAML extract.js_extract).
-                # SPA rendering is intermittent — poll a few times with delays.
-                # When js_extract is configured, it is the ONLY reliable path;
-                # DOM fallback would only see the unrendered HTML shell.
-                # If all polls come up empty, reload the page and retry instead
-                # of falling through to DOM extraction or recreating the page
-                # (which can leave the new page in a broken state).
+                # When pre_click is used, the SPA has already made a fresh API
+                # call with date filtering — if items are empty after polling,
+                # there are genuinely no items today.  Don't waste time on
+                # reload cycles.
                 if (self._config.extract
                         and getattr(self._config.extract, "js_extract", "")):
-                    for reload_cycle in range(3):
+                    max_cycles = 1 if pre_click else 3
+                    for reload_cycle in range(max_cycles):
                         for js_attempt in range(5):
-                            items = self._extract_via_js(page, self._config.extract.js_extract)
+                            items = self._extract_via_js(
+                                page, self._config.extract.js_extract,
+                            )
                             if items:
                                 self._last_raw = items
                                 return items
                             if js_attempt < 4:
                                 time.sleep(3)
-                        # All 5 polls empty — reload the page and retry
-                        if reload_cycle < 2:
+                        if reload_cycle < max_cycles - 1:
                             logging.info(
-                                "SpaRenderAdapter: js_extract empty, reloading page (cycle %d/3)",
-                                reload_cycle + 1,
+                                "SpaRenderAdapter: js_extract empty, reloading"
+                                " (cycle %d/%d)", reload_cycle + 1, max_cycles,
                             )
                             try:
                                 page.goto(url, wait_until=wait_until,
                                           timeout=self._transport.timeout * 1000)
+                                if pre_click:
+                                    try:
+                                        page.click(pre_click, timeout=5000)
+                                        time.sleep(3)
+                                    except Exception:
+                                        pass
                             except Exception:
                                 pass
                             time.sleep(3)
-                    # All reload cycles exhausted — let outer retry handle it
-                    raise RuntimeError("js_extract returned empty after 3 reload cycles")
+                    # No items found — return empty list (normal for date-filtered
+                    # pages where no items match the filter).
+                    if pre_click:
+                        logging.info(
+                            "SpaRenderAdapter: no items after pre_click — "
+                            "date filter returned 0 results"
+                        )
+                        return []
+                    raise RuntimeError(
+                        "js_extract returned empty after reload cycles"
+                    )
 
                 # Fall back to DOM extraction (only when no js_extract configured)
                 result = self._extract_from_dom(page)
@@ -202,11 +280,11 @@ class SpaRenderAdapter(BaseAdapter):
                 return result
 
             except Exception as e:
-                logging.warning("SpaRenderAdapter: attempt %d failed: %s", attempt + 1, e)
+                logging.warning(
+                    "SpaRenderAdapter: attempt %d failed: %s", attempt + 1, e,
+                )
                 time.sleep(2 ** attempt)
-                # Prefer a fresh page over full recreation — closing the old
-                # page can leave the browser context in a broken state where
-                # subsequent new_page() calls produce unusable pages.
+                self._click_next_active = False  # reset on failure
                 try:
                     if self._page:
                         try:
@@ -222,17 +300,18 @@ class SpaRenderAdapter(BaseAdapter):
     def _extract_from_api_captures(self) -> List[Dict[str, Any]]:
         """Extract items from captured API responses.
 
-        Handles nested structures like {"code":200, "data": {"resultList": [...]}}.
+        Handles nested structures like {"code":200, "data": {"Rows": [...]}}.
         """
         for capture in self._api_captures:
             data = capture["data"]
             items_field = self._config.pagination.items_field
-            if items_field and items_field in data:
-                items = data[items_field]
+            # Dot-path lookup (e.g. "data.Rows")
+            if items_field:
+                items = self._get_nested_value(data, items_field)
                 if isinstance(items, list):
                     return items
             # Try common keys; recurse into dict values for nested responses
-            for key in ("rows", "data", "list", "records", "result", "results"):
+            for key in ("rows", "Rows", "data", "Data", "list", "records", "result", "results"):
                 if key in data:
                     val = data[key]
                     if isinstance(val, list):
@@ -245,11 +324,11 @@ class SpaRenderAdapter(BaseAdapter):
 
     def _extract_from_dict(self, data: dict, items_field: str) -> list:
         """Recursively extract items from a nested dict."""
-        if items_field and items_field in data:
-            items = data[items_field]
+        if items_field:
+            items = self._get_nested_value(data, items_field)
             if isinstance(items, list):
                 return items
-        for key in ("rows", "data", "list", "records", "result", "results"):
+        for key in ("rows", "Rows", "data", "Data", "list", "records", "result", "results"):
             if key in data:
                 val = data[key]
                 if isinstance(val, list):
@@ -283,12 +362,12 @@ class SpaRenderAdapter(BaseAdapter):
         page.goto(site_url, wait_until="networkidle",
                   timeout=self._transport.timeout * 1000)
         time.sleep(3)
-        # Verify Vue $http is reachable
+        # Verify Vue $http / $axios is reachable
         try:
-            page.evaluate("() => document.querySelector('#app').__vue__.$http")
+            page.evaluate("() => { const vm = document.querySelector('#app').__vue__; return !!(vm.$http || vm.$axios); }")
         except Exception as e:
             raise RuntimeError(
-                f"Vue $http not found on {site_url}: {e}"
+                f"Vue $http/$axios not found on {site_url}: {e}"
             ) from e
 
         # Derive API base from listing URL (e.g. https://host/gpcms/rest/web/v2)
@@ -407,21 +486,35 @@ class SpaRenderAdapter(BaseAdapter):
         Navigates to the site homepage once (for Vue context + cookies), then
         calls the listing API through Vue's axios instance on every page.
 
+        Supports GET (params) and POST (JSON body).  For POST, merges page_params
+        and resolves ``{{ today }}`` / ``{{ N_days_ago }}`` templates in the body.
+
         When captcha is configured (type: ocr), solves the captcha via ddddocr
         and injects ``verifyCode`` into every API call.
         """
         listing = listing_override if listing_override else self._config.listing
         url = listing.url
         params = dict(listing.params)
-
-        # Merge page_params (from paginator) into listing params
-        params.update(page_params)
-
-        # Resolve any remaining {{ page }} / {{ page_size }} / {{ today }} / {{ N_days_ago }} templates
+        method = (listing.method or "GET").upper()
         pag_cfg = self._config.pagination
-        page_val = str(page_params.get(pag_cfg.page_param, ""))
-        size_val = str(page_params.get(pag_cfg.page_size_param, ""))
-        params = resolve_params(params, page_val, size_val)
+
+        if method == "POST":
+            # POST: build body from listing.body, merge page_params, resolve templates
+            body = dict(listing.body)
+            body.update(page_params)
+            page_val = str(page_params.get(pag_cfg.page_param, ""))
+            size_val = str(page_params.get(pag_cfg.page_size_param, ""))
+            body = resolve_params(body, page_val, size_val)
+            # Auto-generate ts (timestamp) if present with value 0
+            if "ts" in body and (body["ts"] == 0 or body["ts"] == "0"):
+                body["ts"] = int(time.time() * 1000)
+        else:
+            # GET: merge page_params into query params
+            body = {}
+            params.update(page_params)
+            page_val = str(page_params.get(pag_cfg.page_param, ""))
+            size_val = str(page_params.get(pag_cfg.page_size_param, ""))
+            params = resolve_params(params, page_val, size_val)
 
         self._ensure_vue_context()
         page = self._get_page()
@@ -434,11 +527,22 @@ class SpaRenderAdapter(BaseAdapter):
                 if captcha_cfg and captcha_cfg.type == "ocr":
                     code = self._solve_captcha()
                     if code:
-                        params["verifyCode"] = code
+                        if method == "POST":
+                            body["verifyCode"] = code
+                        else:
+                            params["verifyCode"] = code
+
+                # Build opts dict for JS snippet
+                http_opts: Dict[str, Any] = {}
+                if method == "POST":
+                    http_opts["method"] = "POST"
+                    http_opts["body"] = body
+                else:
+                    http_opts["params"] = params
 
                 result_json = page.evaluate(
                     _VUE_HTTP_JS,
-                    [url, {"params": params}],
+                    [url, http_opts],
                 )
                 data = json.loads(result_json)
 
@@ -483,22 +587,31 @@ class SpaRenderAdapter(BaseAdapter):
         Calls the detail API through Vue's axios instance and extracts content
         from the JSON response using content_field path (e.g. "data.content").
 
+        Supports GET (params) and POST (JSON body).  Resolves ``{key}`` and
+        ``{{ key }}`` placeholders in both URL and body from item fields.
+
         When captcha is configured (type: ocr), injects ``verifyCode`` into
-        every detail API call.  Also resolves ``{{ field }}`` placeholders in
-        params from the item dict (e.g. ``{{ planId }}``, ``{{ channel }}``).
+        every detail API call.
         """
         detail_cfg = detail_override or self._config.detail
         detail_url = detail_cfg.url
+        detail_method = (detail_cfg.method or "GET").upper()
         params = dict(detail_cfg.params)
+        body = dict(detail_cfg.body)
+
+        # Resolve {key} and {{ key }} placeholders in URL, params, and body
         for key, val in item.items():
             detail_url = detail_url.replace("{" + key + "}", str(val))
             for pkey, pval in params.items():
                 if isinstance(pval, str):
                     params[pkey] = pval.replace("{" + key + "}", str(val))
-                    # Also handle {{ param }} template placeholders in params
                     params[pkey] = params[pkey].replace("{{ " + key + " }}", str(val))
+            for bkey, bval in body.items():
+                if isinstance(bval, str):
+                    body[bkey] = bval.replace("{" + key + "}", str(val))
+                    body[bkey] = body[bkey].replace("{{ " + key + " }}", str(val))
 
-        # Inject channel + siteId from transport/lising config if not in params
+        # Inject channel + siteId from transport/listing config if not in params
         listing_params = self._config.listing.params
         if "channel" not in params and "channel" in listing_params:
             params["channel"] = listing_params["channel"]
@@ -515,11 +628,22 @@ class SpaRenderAdapter(BaseAdapter):
                 if captcha_cfg and captcha_cfg.type == "ocr":
                     code = self._solve_captcha()
                     if code:
-                        params["verifyCode"] = code
+                        if detail_method == "POST":
+                            body["verifyCode"] = code
+                        else:
+                            params["verifyCode"] = code
+
+                # Build opts dict for JS snippet
+                http_opts: Dict[str, Any] = {}
+                if detail_method == "POST":
+                    http_opts["method"] = "POST"
+                    http_opts["body"] = body
+                else:
+                    http_opts["params"] = params
 
                 result_json = page.evaluate(
                     _VUE_HTTP_JS,
-                    [detail_url, {"params": params}],
+                    [detail_url, http_opts],
                 )
                 data = json.loads(result_json)
 

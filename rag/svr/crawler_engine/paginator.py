@@ -228,8 +228,19 @@ class ClickNextPaginator(BasePaginator):
     def update_total(self, response_data: Any) -> int:
         if isinstance(response_data, dict):
             return int(self._get_nested(response_data, self._config.total_field) or 0)
-        if isinstance(response_data, list):
-            return len(response_data)
+        if isinstance(response_data, list) and response_data:
+            # If items are API capture dicts (have "data" key), try total_field
+            if isinstance(response_data[0], dict) and "data" in response_data[0]:
+                for capture in reversed(response_data):
+                    total = self._get_nested(
+                        capture.get("data", {}), self._config.total_field,
+                    )
+                    if total:
+                        return int(total)
+            # js_extract returns item dicts — len(items) is page size, not total.
+            # Return a permissive value; max_pages + empty-page detection control
+            # the loop for click_next.
+            return (self._config.max_pages or 5) * (self._config.page_size or 20)
         return 0
 
 
