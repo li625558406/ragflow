@@ -280,9 +280,10 @@ class EncryptedApiAdapter(BaseAdapter):
     # Detail fetch
     # ------------------------------------------------------------------
 
-    def fetch_detail(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def fetch_detail(self, item: Dict[str, Any],
+                     detail_override=None) -> Optional[Dict[str, Any]]:
         """Fetch detail page for encrypted API sites."""
-        detail_cfg = self._config.detail
+        detail_cfg = detail_override or self._config.detail
 
         # css_selector / inline / none handled by base class
         if detail_cfg.type not in ("api_request",) or not detail_cfg.url:

@@ -54,6 +54,17 @@ class BaseExtractor(ABC):
         for k, v in item.items():
             if k not in mapped:
                 mapped[k] = v
+
+        # Optional URL synthesis: if url_template is configured, build a
+        # clickable URL from the raw item fields (e.g. "https://x/detail?id={ID}").
+        # Only overrides when the mapped url is empty, so sources that already
+        # provide a URL are unaffected.
+        tpl = getattr(self._config, "url_template", "")
+        if tpl and not mapped.get("url"):
+            try:
+                mapped["url"] = tpl.format(**item)
+            except (KeyError, IndexError, ValueError):
+                pass
         return mapped
 
     @staticmethod

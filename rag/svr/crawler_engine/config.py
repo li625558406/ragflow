@@ -135,6 +135,12 @@ class ExtractConfig:
     fields: Dict[str, str] = field(default_factory=dict)  # internal_name -> source_field
     ai_fallback: bool = True
     ai_prompt: str = ""
+    # ── Optional URL template for listing APIs that don't return a URL ──
+    # When set, each extracted item's "url" field is synthesized by formatting
+    # this template with the RAW (source-field) row dict, e.g.
+    #     url_template: "https://example.com/detail?id={ID}"
+    # Useful for JSON APIs that return only an ID (no clickable link).
+    url_template: str = ""
     # ── Client-side sorting / limiting (for APIs that don't support it server-side) ──
     sort_field: str = ""           # field to sort extracted items by (e.g. "CREATE_TIME")
     sort_descending: bool = True   # sort descending (newest first)
@@ -352,6 +358,7 @@ class ConfigLoader:
             fields=data.get("fields", {}),
             ai_fallback=data.get("ai_fallback", True),
             ai_prompt=data.get("ai_prompt", ""),
+            url_template=data.get("url_template", ""),
             sort_field=data.get("sort_field", ""),
             sort_descending=data.get("sort_descending", True),
             max_items=data.get("max_items", 0),

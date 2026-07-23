@@ -143,6 +143,9 @@ class CrawlerEngine:
         self._init_components(kb_id, tenant_id,
                               skip_kb, skip_attachments)
         self._log_header(kb_id)
+        # Stash flags so per-section _crawl_sections can re-apply state resets
+        # after each section reloads its own StateManager.
+        self._full_crawl = bool(full)
 
         if full:
             # Re-scan from page 1 to catch items the detector may have missed,
@@ -287,6 +290,12 @@ class CrawlerEngine:
                 section=section.label or "default",
             )
             self._state.load()
+            # Per-section reset: full / date_filter reset must apply to EACH
+            # section's state, not just the first one. Otherwise sections after
+            # the first resume from a stale last_page and skip today's data.
+            if getattr(self, "_full_crawl", False) or getattr(self, "_date_filter", ""):
+                self._state.last_page = 0
+                self._state.last_offset = 0
             self._dedup_checker = DedupChecker(self._state, self._state.tenant_id)
             stats = self._crawl_one_section(section)
             total_stats["sections"][section.label] = stats

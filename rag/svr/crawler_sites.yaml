@@ -4159,6 +4159,123 @@ sites:
       upload_batch_size: 10
 
   # --------------------------------------------------------------------------
+  # ggzyfw_fujian_news — 福建省公共资源交易平台 · 新闻/通知/行业动态
+  # Source: https://ggzyfw.fujian.gov.cn/index/newList/
+  # API:    https://ggzyfw.fujian.gov.cn/FwPortalApi/Article/PageList (AES-256-CBC + MD5 portal-sign)
+  # Sections: xwdt(11)=新闻动态, tzgg(12)=通知公告, hydt(13)=行业动态
+  # 时间过滤: timeType=1 即"当天"，每次定时调度只抓今日新增
+  # Category: news — 仅写 crawler_result，结构化字段 (id/news_type/SOURCES 等) 入 extracted_json
+  # --------------------------------------------------------------------------
+  ggzyfw_fujian_news:
+    name: "福建省公共资源交易平台-新闻通知行业动态"
+    site_url: "https://ggzyfw.fujian.gov.cn/"
+    category: news
+    enabled: true
+    transport:
+      type: encrypted_api
+      engine: requests
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+        Content-Type: "application/json;charset=UTF-8"
+        Origin: "https://ggzyfw.fujian.gov.cn"
+        Referer: "https://ggzyfw.fujian.gov.cn/"
+      encryption:
+        algorithm: aes_256_cbc
+        key: "EB444973714E4A40876CE66BE45D5930"
+        iv: "B5A8904209931867"
+        key_encoding: utf8
+        field: "Data"
+        encoding: utf-8
+      signing:
+        algorithm: md5
+        secret: "B3978D054A72A7002063637CCDF6B2E5"
+        header_name: "portal-sign"
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: "https://ggzyfw.fujian.gov.cn/FwPortalApi/Article/PageList"
+      method: POST
+      body_type: json
+    pagination:
+      type: page_no
+      page_param: pageNo
+      page_size_param: pageSize
+      page_size: 50
+      start: 1
+      total_field: Total
+      total_pages_field: PageTotal
+      items_field: Table
+      max_pages: 5
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.5
+      max_retries: 4
+      exponential_backoff: true
+      max_consecutive_empty: 3
+    extract:
+      type: json_path
+      items_path: "Table"
+      fields:
+        id: "ID"
+        title: "TITLE"
+        date: "TM"
+        news_type: "TYPE"
+      # 列表 API 不返回 URL，由模板用 ID 拼出详情页地址（写入 source_url，供前端跳转）
+      url_template: "https://ggzyfw.fujian.gov.cn/index/newDetail?id={ID}"
+    detail:
+      type: api_request
+      url: "https://ggzyfw.fujian.gov.cn/FwPortalApi/Article/Detail"
+      method: POST
+      body_type: json
+      params:
+        id: "{id}"
+        type: "{news_type}"
+      content_field: "CONTENTS"
+    format:
+      parser_id: "naive"
+      upload_batch_size: 10
+    sections:
+      - label: "xwdt"
+        name: "新闻动态"
+        listing:
+          url: "https://ggzyfw.fujian.gov.cn/FwPortalApi/Article/PageList"
+          method: POST
+          body_type: json
+          params:
+            type: "11"
+            timeType: "1"
+            total: 0
+            createTime: []
+            BeginTime: "{{ today }} 00:00:00"
+            EndTime: "{{ today }} 23:59:59"
+      - label: "tzgg"
+        name: "通知公告"
+        listing:
+          url: "https://ggzyfw.fujian.gov.cn/FwPortalApi/Article/PageList"
+          method: POST
+          body_type: json
+          params:
+            type: "12"
+            timeType: "1"
+            total: 0
+            createTime: []
+            BeginTime: "{{ today }} 00:00:00"
+            EndTime: "{{ today }} 23:59:59"
+      - label: "hydt"
+        name: "行业动态"
+        listing:
+          url: "https://ggzyfw.fujian.gov.cn/FwPortalApi/Article/PageList"
+          method: POST
+          body_type: json
+          params:
+            type: "13"
+            timeType: "1"
+            total: 0
+            createTime: []
+            BeginTime: "{{ today }} 00:00:00"
+            EndTime: "{{ today }} 23:59:59"
+
+  # --------------------------------------------------------------------------
   # ggzyfw_guide — 福建公共资源交易-办事指南 (Playwright SPA)
   # Old script: ggzyfw_guide_crawler.py
   # Tabs: 示范文本(type=53), 行业规范(type=54), 培训资料(type=59)
