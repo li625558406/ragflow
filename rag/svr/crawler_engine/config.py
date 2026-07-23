@@ -158,6 +158,7 @@ class DetailConfig:
     content_field: str = "content"  # field that contains the main content
     attachment_fields: List[str] = field(default_factory=list)
     transport: Optional["TransportConfig"] = None  # override transport for detail (e.g. spa_render)
+    metadata_js: str = ""           # JS to extract structured metadata dict from rendered detail page
 
 
 @dataclass
@@ -372,6 +373,7 @@ class ConfigLoader:
             content_field=data.get("content_field", "content"),
             attachment_fields=data.get("attachment_fields", []),
             transport=self._parse_transport(transport) if transport else None,
+            metadata_js=data.get("metadata_js", ""),
         )
 
     def _parse_format(self, data: dict) -> FormatConfig:

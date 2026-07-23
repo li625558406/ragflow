@@ -898,6 +898,23 @@ class SpaRenderAdapter(BaseAdapter):
                     item["content"] = self._strip_and_extract(soup)
 
                 item["detail_html"] = html
+
+                # Extract structured metadata via JS if configured
+                metadata_js = getattr(detail_cfg, "metadata_js", "")
+                if metadata_js:
+                    try:
+                        metadata = page.evaluate(metadata_js)
+                        if isinstance(metadata, dict) and metadata:
+                            item.update(metadata)
+                            logging.info(
+                                "SpaRenderAdapter: extracted metadata fields: %s",
+                                list(metadata.keys()),
+                            )
+                    except Exception as meta_err:
+                        logging.warning(
+                            "SpaRenderAdapter: metadata_js failed: %s", meta_err,
+                        )
+
                 return item
 
             except Exception as e:

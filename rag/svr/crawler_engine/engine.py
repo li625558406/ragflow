@@ -155,6 +155,17 @@ class CrawlerEngine:
                 "keeping %d processed IDs for dedup",
                 self._state.processed_count,
             )
+        elif getattr(self, "_date_filter", ""):
+            # date_filter (e.g. "today") changes the data set each run —
+            # today's items always start at page 1, so last_page must reset.
+            # Keep processed_ids so already-stored items are deduped within the day.
+            self._state.last_page = 0
+            self._state.last_offset = 0
+            logging.info(
+                "Engine: date_filter='%s' — resetting to page 1 "
+                "(keeping %d processed IDs for dedup)",
+                self._date_filter, self._state.processed_count,
+            )
 
         # 8 AM check
         if not self._anti_crawler.check_eight_am():

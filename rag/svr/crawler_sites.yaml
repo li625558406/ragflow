@@ -3399,9 +3399,23 @@ sites:
         }
     detail:
       type: css_selector
-      content_field: ".new-detail"
-      # 详情页内容在 body 区域 (h1标题 + 信息来源/发布日期元数据 + 正文段落)
-      # spa_render 的内置 _CONTENT_SELECTORS 会逐级尝试更精确的选择器做 fallback
+      content_field: ".new-detail .content"
+      # 详情页结构: .new-detail > .header (h1 + .info 元数据) + .content (正文)
+      # content_field 改为 .content 只抓正文, 元数据由 metadata_js 提取为结构化字段
+      metadata_js: |
+        () => {
+          const result = {};
+          const spans = document.querySelectorAll('.new-detail .info span');
+          for (const span of spans) {
+            const label = span.querySelector('label');
+            if (!label) continue;
+            const key = label.textContent.replace(/[:：]/g, '').trim();
+            const value = span.textContent.replace(label.textContent, '').trim();
+            if (key === '信息来源') result.issuing_authority = value;
+            if (key === '发布日期') result.publish_datetime = value;
+          }
+          return result;
+        }
     format:
       parser_id: "naive"
       upload_batch_size: 10
