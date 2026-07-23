@@ -67,6 +67,25 @@ def _category_label(code: str) -> str:
     return CATEGORY_LABELS.get(code, code)
 
 
+# category 英文 code → 中文展示标签
+# 用于 list/detail 接口返回 category_label 字段；category 本身保持英文 code 不变（用于过滤）
+CATEGORY_LABELS: Dict[str, str] = {
+    "bid": "标讯",
+    "policy": "政策法规",
+    "personnel": "人员",
+    "news": "新闻资讯",
+    "other": "其他",
+    "objection": "异议结果",
+}
+
+
+def _category_label(code: str) -> str:
+    """返回 category 的中文展示标签；未知 code 原样返回。"""
+    if not code:
+        return ""
+    return CATEGORY_LABELS.get(code, code)
+
+
 # YAML 配置路径（容器内）
 _CRAWLER_SITES_YAML = os.environ.get(
     "CRAWLER_SITES_YAML",
@@ -523,6 +542,7 @@ async def list_results():
         # 附加站点中文名 + 域名 (优先用 DB 存的 site_display, 回退到 YAML 派生)
         site_map = _build_site_metadata_map() if items else {}
         for it in items:
+            it["category_label"] = _category_label(it.get("category", ""))
             stored_display = (it.get("site_display") or "").strip()
             if stored_display:
                 # DB 已存 "名称 域名" 拼接串, 拆开填充 site_name + site_domain
@@ -577,6 +597,7 @@ async def get_result(result_id: str):
         if not row:
             return None
         d = row.to_dict()
+        d["category_label"] = _category_label(d.get("category", ""))
         # 附加站点中文名 + 域名 (优先用 DB 存的 site_display, 回退到 YAML 派生)
         stored_display = (d.get("site_display") or "").strip()
         if stored_display:
