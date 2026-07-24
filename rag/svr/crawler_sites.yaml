@@ -4391,7 +4391,7 @@ sites:
   # Source: https://ggzyfw.fujian.gov.cn/business/list
   # API:    https://ggzyfw.fujian.gov.cn/FwPortalApi/Trade/TradeInfo (AES-256-CBC + MD5 portal-sign)
   # Detail: https://ggzyfw.fj.gov.cn/FwPortalApi/Trade/TradeInfoContent (Contents 字段为 HTML 正文)
-  # Category: other — 7 个行业栏目各自 section，section_name 流入前端「类型」列
+  # Category: bid — 统一归类为标讯,不按行业栏目细分 (7 个 section 仅用于分页拉取)
   # 时间过滤: 由前端 trigger 注入 date_filter=today；首次回溯时全量
   # 附件: detail HTML 中的 <a href> 由 _extract_files_from_item 自动识别，
   #       AttachmentHandler 负责下载 + ZIP 解压 + 上传 KB
@@ -4399,7 +4399,7 @@ sites:
   ggzyfw_fujian_trade:
     name: "福建省公共资源交易平台-交易信息"
     site_url: "https://ggzyfw.fujian.gov.cn/"
-    category: other
+    category: bid
     enabled: true
     transport:
       type: encrypted_api
