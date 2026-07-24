@@ -703,6 +703,28 @@ def _detect_redis():
         return None
 
 
+def _active_site_ids(tenant_id: str) -> Optional[set]:
+    """返回当前租户 crawler_task 表 enabled=1 的 site_id 集合.
+
+    用于探测监控面板过滤 —— 只展示真正在采的站点,而不是 YAML 里全部 84 个.
+    查询失败时返回 None (调用方应理解为"不过滤", 避免面板变空).
+    """
+    from api.db.db_models import DB
+    from api.db.services.crawler_service import CrawlerTaskService
+    try:
+        @DB.connection_context()
+        def _q() -> set:
+            q = (CrawlerTaskService.model
+                 .select(CrawlerTaskService.model.site_id)
+                 .where((CrawlerTaskService.model.tenant_id == tenant_id)
+                        & (CrawlerTaskService.model.enabled == True)))  # noqa: E712
+            return {row.site_id for row in q}
+        return _q()
+    except Exception as e:
+        logging.error("collection_api: _active_site_ids query failed: %s", e)
+        return None
+
+
 def _detect_state(tenant_id: str, site_id: str) -> Dict[str, Any]:
     rc = _detect_redis()
     if rc is None:
@@ -779,6 +801,9 @@ def _yaml_site_map() -> Dict[str, Dict[str, Any]]:
 async def detect_list_state():
     """所有站点的探测状态 (合并 YAML 元数据 + Redis 运行时 state).
 
+    只列出当前租户在 ``crawler_task`` 表里配置过 (enabled=1) 的站点 ——
+    YAML 里其他站点不会被探测, 也不展示到监控面板.
+
     Query:
         category, enabled_only, status (changed|unchanged|auto_disabled|never_probed)
         page, page_size
@@ -791,9 +816,16 @@ async def detect_list_state():
     if not site_map:
         return get_json_result(data={"list": [], "total": 0})
 
+    # 过滤: 只显示当前租户 crawler_task 表里 enabled=1 的 site_id
+    # 没配置 crawler_task 的站点,探测器即使发现新内容也没用 (unified_crawler 找不到 kb_id),
+    # 所以这类站点不应出现在监控面板.
+    active_ids = _active_site_ids(current_user.id)
+
     now = int(time.time())
     rows = []
     for sid, meta in site_map.items():
+        if active_ids is not None and sid not in active_ids:
+            continue
         if category and meta["category"] != category:
             continue
         st = _detect_state(current_user.id, sid)
@@ -959,7 +991,11 @@ async def detect_stats():
     }
     intervals = []
     now = int(time.time())
+    # 同 /detect/state: 只统计当前租户 crawler_task 启用的站点
+    active_ids = _active_site_ids(current_user.id)
     for sid in site_map:
+        if active_ids is not None and sid not in active_ids:
+            continue
         st = _detect_state(current_user.id, sid)
         if st.get("auto_disabled"):
             counts["auto_disabled"] += 1
