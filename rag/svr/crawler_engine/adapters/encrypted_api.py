@@ -323,13 +323,20 @@ class EncryptedApiAdapter(BaseAdapter):
                     if self._transport.encryption:
                         decrypted = self._decrypt(raw)
                         if decrypted:
-                            # Extract content_field from decrypted JSON if specified
+                            # Extract content_field from decrypted JSON if specified.
+                            # Also merge the rest of the detail JSON into the item
+                            # so structured metadata (e.g. SOURCES/WRITER/etc.) is
+                            # available downstream for extract.fields mapping and
+                            # for CollectionWriter.extracted_json capture.
                             cf = detail_cfg.content_field
                             if cf:
                                 try:
                                     inner = json.loads(decrypted)
-                                    if isinstance(inner, dict) and cf in inner:
-                                        item["content"] = str(inner[cf])
+                                    if isinstance(inner, dict):
+                                        item["content"] = str(inner.get(cf, ""))
+                                        for k, v in inner.items():
+                                            if k != cf and k not in item:
+                                                item[k] = v
                                     else:
                                         item["content"] = decrypted
                                 except json.JSONDecodeError:

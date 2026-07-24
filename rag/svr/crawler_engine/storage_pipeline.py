@@ -108,16 +108,21 @@ class StoragePipeline:
             logging.debug("StoragePipeline: skipping KB upload for '%s' (content < %d chars)",
                          item.title[:60], MIN_CONTENT_LENGTH_FOR_KB)
 
-        # 3. Handle attachments (download + KB + link)
-        # NOTE: AttachmentHandler._link_to_project() writes to legacy bid_project_file
-        # table, which would break decoupling in collection mode (project_id is a str
-        # result_id there, not an int).  Collection mode records attachment URLs in
-        # CrawlerResult.attachments JSON via CollectionWriter; KB upload of attachment
-        # files for the new system is a future enhancement.
+        # 3. Handle attachments (download + KB upload)
+        # Skipped when project_id is None — that means the writer filtered the
+        # item out (e.g. collection mode's date_filter dropped it).  Uploading
+        # attachments for an item that wasn't stored to DB would orphan the KB
+        # docs (no crawler_result row to anchor them).
+        # - bid mode:        download → upload → link to bid_project_file
+        # - collection mode: download → upload only (no bid_project_file coupling;
+        #                    URLs are already in CrawlerResult.attachments JSON)
         if (not self._skip_attachments
-                and self._writer_mode != "collection"
+                and project_id
                 and item.has_attachments()):
-            attach_results = self._handle_attachments(item, project_id)
+            attach_results = self._handle_attachments(
+                item, project_id,
+                link_to_bid=(self._writer_mode != "collection"),
+            )
             result["attachment_results"] = attach_results
 
         self._stats["items_stored"] += 1
@@ -280,12 +285,17 @@ class StoragePipeline:
     # ------------------------------------------------------------------
 
     def _handle_attachments(self, item: NormalizedItem,
-                            project_id: Optional[int]) -> List[Dict[str, Any]]:
-        """Process all attachments for an item."""
+                            project_id: Any,
+                            link_to_bid: bool = True) -> List[Dict[str, Any]]:
+        """Process all attachments for an item.
+
+        link_to_bid=False (collection mode) skips the bid_project_file upsert.
+        """
         handler = self._get_attach_handler()
         prev_uploaded = handler.stats.get("uploaded", 0)
         prev_failed = handler.stats.get("failed", 0)
-        results = handler.handle(item.attachments, project_id)
+        results = handler.handle(item.attachments, project_id,
+                                 link_to_bid=link_to_bid)
         self._stats["attachments_processed"] += len(results)
         self._stats["attachments_uploaded"] += handler.stats.get("uploaded", 0) - prev_uploaded
         self._stats["attachments_failed"] += handler.stats.get("failed", 0) - prev_failed

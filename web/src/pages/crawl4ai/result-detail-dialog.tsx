@@ -21,7 +21,7 @@ import {
 import { useQuery } from '@tanstack/react-query';
 import { ExternalLink, FileText } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { CATEGORY_COLORS, EXT_FIELD_LABELS } from './field-labels';
+import { EXT_FIELD_LABELS, badgeColorFor } from './field-labels';
 
 interface ResultDetailDialogProps {
   resultId: string;
@@ -82,12 +82,15 @@ export function ResultDetailDialog({
         {result && (
           <div className="flex-1 min-h-0 flex flex-col gap-3">
             <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-              {result.category_label && (
+              {(result.section_name || result.category_label) && (
                 <Badge
                   variant="secondary"
-                  className={CATEGORY_COLORS[result.category] ?? ''}
+                  className={badgeColorFor(
+                    result.category,
+                    result.section_name,
+                  )}
                 >
-                  {result.category_label}
+                  {result.section_name || result.category_label}
                 </Badge>
               )}
               <span>{result.site_display || result.site_id}</span>

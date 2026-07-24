@@ -60,8 +60,21 @@ class AttachmentHandler:
         self._kb_uploader = None  # lazy init
 
     def handle(self, attachments: List[AttachmentMeta],
-               project_id: int) -> List[Dict[str, Any]]:
+               project_id: Any,
+               link_to_bid: bool = True) -> List[Dict[str, Any]]:
         """Process all attachments for a project.
+
+        Args:
+            attachments: List of attachment metadata.
+            project_id: Identifier of the owning record. In bid mode this is an
+                int bid_project id; in collection mode it is a str result_id.
+                Only used for logging and (when link_to_bid=True) linking to
+                the bid_project_file table.
+            link_to_bid: When True (default, bid mode), call _link_to_project
+                to upsert bid_project_file. When False (collection mode),
+                skip the linking step — collection mode has no
+                bid_project_file counterpart; attachments are tracked via
+                CrawlerResult.attachments JSON.
 
         Returns list of result dicts, one per attachment.
         """
@@ -77,7 +90,7 @@ class AttachmentHandler:
                 })
                 continue
             try:
-                result = self._process_one(att, project_id)
+                result = self._process_one(att, project_id, link_to_bid=link_to_bid)
                 results.append(result)
             except Exception as e:
                 logging.error("AttachmentHandler: failed %s: %s", att.file_name, e)
@@ -108,7 +121,8 @@ class AttachmentHandler:
         return True
 
     def _process_one(self, att: AttachmentMeta,
-                     project_id: int) -> Dict[str, Any]:
+                     project_id: Any,
+                     link_to_bid: bool = True) -> Dict[str, Any]:
         """Process a single attachment: download → extract(ZIP) → upload → link."""
         # 1. Download
         local_path = self._download(att.file_url, att.file_name)
@@ -119,7 +133,8 @@ class AttachmentHandler:
 
         # 2. ZIP extraction
         if att.file_suffix.lower() == ".zip":
-            return self._handle_zip(local_path, att.file_name, project_id)
+            return self._handle_zip(local_path, att.file_name, project_id,
+                                    link_to_bid=link_to_bid)
 
         # 3. Upload to KB
         doc_id = self._upload_to_kb(local_path, att.file_name)
@@ -128,8 +143,9 @@ class AttachmentHandler:
         else:
             return {"file_name": att.file_name, "status": "upload_failed"}
 
-        # 4. Link to bid_project_file
-        self._link_to_project(project_id, att, doc_id)
+        # 4. Link to bid_project_file (bid mode only)
+        if link_to_bid:
+            self._link_to_project(project_id, att, doc_id)
 
         # 5. Clean up temp file
         try:
@@ -188,7 +204,8 @@ class AttachmentHandler:
             return None
 
     def _handle_zip(self, zip_path: str, zip_name: str,
-                    project_id: int) -> Dict[str, Any]:
+                    project_id: Any,
+                    link_to_bid: bool = True) -> Dict[str, Any]:
         """Extract ZIP and upload each contained file to KB."""
         self._stats["extracted_zips"] += 1
         doc_ids = []

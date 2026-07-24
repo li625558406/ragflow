@@ -153,6 +153,30 @@ export default function CChat() {
     return 'U';
   })();
 
+  // userInfo 兜底刷新：旧会话 localStorage 可能没有 nickname，进入页面时拉一次 /users/me 补全
+  useEffect(() => {
+    if (userInfo?.nickname?.trim() && !userInfo.nickname.includes('@')) return;
+    const auth = localStorage.getItem('Authorization') || '';
+    if (!auth) return;
+    fetch('/api/v1/users/me', { headers: { Authorization: auth } })
+      .then((r) => r.json())
+      .then((result) => {
+        const data = result?.data;
+        const nick = data?.nickname?.trim();
+        if (!nick || nick.includes('@')) return;
+        const next = {
+          id: data?.id || userInfo?.id || '',
+          email: data?.email || userInfo?.email || '',
+          nickname: nick,
+          avatar: data?.avatar || userInfo?.avatar,
+        };
+        localStorage.setItem('userInfo', JSON.stringify(next));
+        setUserInfo(next);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ── CSS injection (C-side) ──
   useEffect(() => {
     const styleId = 'c-chat-styles';

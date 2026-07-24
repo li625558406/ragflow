@@ -29,7 +29,7 @@ import { useDebounce } from 'ahooks';
 import { Loader2, RotateCcw, Search } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { CATEGORY_COLORS } from './field-labels';
+import { badgeColorFor } from './field-labels';
 import { ResultDetailDialog } from './result-detail-dialog';
 
 const ALL = '__all__';
@@ -261,12 +261,12 @@ export function ResultsTab() {
                 onClick={() => setDetailId(r.id)}
               >
                 <TableCell>
-                  {r.category_label && (
+                  {(r.section_name || r.category_label) && (
                     <Badge
                       variant="secondary"
-                      className={CATEGORY_COLORS[r.category] ?? ''}
+                      className={badgeColorFor(r.category, r.section_name)}
                     >
-                      {r.category_label}
+                      {r.section_name || r.category_label}
                     </Badge>
                   )}
                 </TableCell>

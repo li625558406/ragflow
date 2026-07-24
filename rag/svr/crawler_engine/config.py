@@ -182,6 +182,7 @@ class FormatConfig:
 class SectionConfig:
     """A subsection/section within a site (e.g. different site columns)."""
     label: str = ""
+    name: str = ""                # Chinese display name (e.g. "示范文本"), surfaced to frontend
     listing: Optional[ListingConfig] = None
     pagination: Optional[PaginationConfig] = None
     extract: Optional[ExtractConfig] = None
@@ -398,6 +399,7 @@ class ConfigLoader:
     def _parse_section(self, data: dict) -> SectionConfig:
         return SectionConfig(
             label=data.get("label", ""),
+            name=data.get("name", ""),
             listing=self._parse_listing(data.get("listing", {})) if "listing" in data else None,
             pagination=self._parse_pagination(data.get("pagination", {})) if "pagination" in data else None,
             extract=self._parse_extract(data.get("extract", {})) if "extract" in data else None,

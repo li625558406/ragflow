@@ -241,13 +241,21 @@ async def trigger_task(task_id):
         try:
             if writer_mode:
                 # YAML 站点 → unified_crawler 子进程
-                script_args = json.dumps({
+                # 首次运行（last_run_status 为空）不做日期过滤，全量回溯；
+                # 后续运行注入 date_filter=today，只抓当日增量。
+                is_first_run = not (task.last_run_status or "").strip()
+                script_args_dict = {
                     "site_id": task.site_id,
                     "writer": writer_mode,
                     "category": yaml_category or "bid",
                     "task_id": task_id,
-                    "date_filter": "today",
-                }, ensure_ascii=False)
+                }
+                if not is_first_run:
+                    script_args_dict["date_filter"] = "today"
+                script_args = json.dumps(script_args_dict, ensure_ascii=False)
+                if is_first_run:
+                    logging.info("task %s first-run detected — backfill mode (no date_filter)",
+                                 task_id)
                 cmd = [
                     "python", _UNIFIED_CRAWLER_SCRIPT,
                     "--tenant-id", task.tenant_id,

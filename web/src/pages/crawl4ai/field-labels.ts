@@ -59,3 +59,44 @@ export const CATEGORY_COLORS: Record<string, string> = {
   other: 'bg-gray-500/15 text-gray-600',
   objection: 'bg-purple-500/15 text-purple-600',
 };
+
+/**
+ * 多栏目站点的 section 染色调色板。
+ * 当结果带 section_name（如 "示范文本"/"行业规范"/"培训资料"）时，
+ * 按字符串哈希稳定取色，让同站不同栏目视觉上区分；
+ * 不需要为每个站点硬编码颜色映射。
+ */
+const SECTION_COLOR_PALETTE: string[] = [
+  'bg-blue-500/15 text-blue-600',
+  'bg-emerald-500/15 text-emerald-600',
+  'bg-amber-500/15 text-amber-600',
+  'bg-purple-500/15 text-purple-600',
+  'bg-pink-500/15 text-pink-600',
+  'bg-cyan-500/15 text-cyan-600',
+  'bg-indigo-500/15 text-indigo-600',
+  'bg-rose-500/15 text-rose-600',
+  'bg-teal-500/15 text-teal-600',
+  'bg-orange-500/15 text-orange-600',
+];
+
+function _hashString(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = (h * 31 + s.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h);
+}
+
+/**
+ * 给定 category + section_name，返回 Badge 染色。
+ * - 有 section_name：按 section_name 哈希到调色板（同站同栏目颜色稳定）
+ * - 无 section_name：回退到 CATEGORY_COLORS[category]
+ */
+export function badgeColorFor(category: string, sectionName?: string): string {
+  if (sectionName && sectionName.trim()) {
+    return SECTION_COLOR_PALETTE[
+      _hashString(sectionName.trim()) % SECTION_COLOR_PALETTE.length
+    ];
+  }
+  return CATEGORY_COLORS[category] ?? '';
+}

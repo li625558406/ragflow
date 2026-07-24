@@ -430,6 +430,12 @@ class CrawlerEngine:
                 # Extract file URLs from detail HTML so attachments flow to KB
                 self._extract_files_from_item(item)
 
+                # Inject section metadata so CollectionWriter can surface it
+                # to extracted_json (frontend 类型 column reads section_name).
+                if section:
+                    item["section_label"] = section.label
+                    item["section_name"] = section.name or section.label
+
                 # Phase 3: STORAGE — write to all targets
                 normalized = item_from_dict(item, site_id=self._config.site_id,
                                             section=section_label)
@@ -533,9 +539,14 @@ class CrawlerEngine:
         if item.get("files") or item.get("attachments") or item.get("fileList"):
             return
 
-        # Look for HTML content in various keys
+        # Look for HTML content in various keys.
+        # `content` is included because most API adapters (encrypted_api,
+        # rest_api) store the decrypted HTML payload under this key, and
+        # for many government sites that HTML embeds <a> file download
+        # links (PDF/DOC/ZIP) which we want to pick up here.
         html = (item.get("content_html") or item.get("detail_html") or
-                item.get("html") or item.get("detail") or "")
+                item.get("html") or item.get("detail") or
+                item.get("content") or "")
         if not html or not isinstance(html, str):
             return
 

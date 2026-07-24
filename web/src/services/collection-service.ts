@@ -11,6 +11,7 @@ export interface CollectionResult {
   site_domain: string;
   category: string;
   category_label: string;
+  section_name?: string;
   title: string;
   source_url: string;
   publish_date: string;

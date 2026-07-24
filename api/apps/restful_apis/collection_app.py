@@ -86,6 +86,23 @@ def _category_label(code: str) -> str:
     return CATEGORY_LABELS.get(code, code)
 
 
+def _extract_section_name(extracted_json: Any) -> str:
+    """从 extracted_json 中取 section_name（多栏目站点的子分类展示名）。
+
+    extracted_json 可能是 dict、JSON string 或 None。
+    """
+    if not extracted_json:
+        return ""
+    if isinstance(extracted_json, str):
+        try:
+            extracted_json = json.loads(extracted_json)
+        except (ValueError, TypeError):
+            return ""
+    if isinstance(extracted_json, dict):
+        return str(extracted_json.get("section_name") or "").strip()
+    return ""
+
+
 # YAML 配置路径（容器内）
 _CRAWLER_SITES_YAML = os.environ.get(
     "CRAWLER_SITES_YAML",
@@ -571,9 +588,10 @@ async def list_results():
                 ext_map = CollectionObjectionExtService.get_by_result_ids(result_ids)
             for it in items:
                 it["ext"] = ext_map.get(it["id"], {})
-        # 附加 category 中文展示名（英文 code 保留用于过滤）
+        # 附加 category 中文展示名（英文 code 保留用于过滤）+ section_name（多栏目站点的子分类）
         for it in items:
             it["category_label"] = _category_label(it.get("category", ""))
+            it["section_name"] = _extract_section_name(it.get("extracted_json"))
         return {"list": items, "total": total}
 
     return get_json_result(data=_query())
@@ -628,6 +646,7 @@ async def get_result(result_id: str):
         else:
             d["ext"] = {}
         d["category_label"] = _category_label(d.get("category", ""))
+        d["section_name"] = _extract_section_name(d.get("extracted_json"))
         return d
 
     data = _query()
