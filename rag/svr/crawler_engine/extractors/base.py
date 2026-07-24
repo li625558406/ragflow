@@ -5,7 +5,9 @@ Extractors transform raw API/HTML responses into structured item dicts
 with consistent field names.
 """
 
+import re
 from abc import ABC, abstractmethod
+from urllib.parse import quote
 from typing import Any, Dict, List, Optional
 
 from ..config import ExtractConfig
@@ -59,10 +61,16 @@ class BaseExtractor(ABC):
         # clickable URL from the raw item fields (e.g. "https://x/detail?id={ID}").
         # Only overrides when the mapped url is empty, so sources that already
         # provide a URL are unaffected.
+        # 模板中 {field} 的值会做 URL quote, 保证中文/特殊字符生成合法 URL.
+        # 朴素 str.format 不支持 urlencode, 这里用自定义 {field} 占位替换.
         tpl = getattr(self._config, "url_template", "")
         if tpl and not mapped.get("url"):
             try:
-                mapped["url"] = tpl.format(**item)
+                def _replace(m):
+                    key = m.group(1)
+                    val = item.get(key, "")
+                    return quote(str(val), safe="")
+                mapped["url"] = re.sub(r"\{(\w+)\}", _replace, tpl)
             except (KeyError, IndexError, ValueError):
                 pass
         return mapped

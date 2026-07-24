@@ -4459,7 +4459,7 @@ sites:
         area_name: "AREANAME"
         protype_text: "PROTYPE_TEXT"
         platform_name: "PLATFORM_NAME"
-      url_template: "https://ggzyfw.fujian.gov.cn/business/detail?cid={M_ID}&type={KIND}"
+      url_template: "https://ggzyfw.fujian.gov.cn/business/detail?name={NAME}&cid={PROCODE}&type={KIND}"
     detail:
       type: api_request
       url: "https://ggzyfw.fj.gov.cn/FwPortalApi/Trade/TradeInfoContent"
