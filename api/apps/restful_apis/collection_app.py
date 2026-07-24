@@ -703,11 +703,14 @@ def _detect_redis():
         return None
 
 
-def _active_site_ids(tenant_id: str) -> Optional[set]:
-    """返回当前租户 crawler_task 表 enabled=1 的 site_id 集合.
+def _active_site_ids() -> Optional[set]:
+    """返回 crawler_task 表 enabled=1 的 site_id 集合（全局，与采集任务列表一致）.
 
-    用于探测监控面板过滤 —— 只展示真正在采的站点,而不是 YAML 里全部 84 个.
-    查询失败时返回 None (调用方应理解为"不过滤", 避免面板变空).
+    采集任务列表 /crawl4ai/tasks 是全局共享模式 (不按 tenant 过滤,
+    见 crawl4ai_app.py 中 CrawlerTaskService.get_list 的调用), 探测监控
+    必须用相同的数据源策略, 否则会出现"任务列表里有但监控面板没有"或反向的偏差.
+
+    查询失败时返回 None (调用方应理解为"不过滤", 避免面板因 DB 异常变空).
     """
     from api.db.db_models import DB
     from api.db.services.crawler_service import CrawlerTaskService
@@ -716,8 +719,7 @@ def _active_site_ids(tenant_id: str) -> Optional[set]:
         def _q() -> set:
             q = (CrawlerTaskService.model
                  .select(CrawlerTaskService.model.site_id)
-                 .where((CrawlerTaskService.model.tenant_id == tenant_id)
-                        & (CrawlerTaskService.model.enabled == True)))  # noqa: E712
+                 .where(CrawlerTaskService.model.enabled == True))  # noqa: E712
             return {row.site_id for row in q}
         return _q()
     except Exception as e:
@@ -801,8 +803,8 @@ def _yaml_site_map() -> Dict[str, Dict[str, Any]]:
 async def detect_list_state():
     """所有站点的探测状态 (合并 YAML 元数据 + Redis 运行时 state).
 
-    只列出当前租户在 ``crawler_task`` 表里配置过 (enabled=1) 的站点 ——
-    YAML 里其他站点不会被探测, 也不展示到监控面板.
+    只列出 ``crawler_task`` 表里 enabled=1 的站点 (全局共享, 与采集任务列表
+    数据源策略一致) —— YAML 里其他站点不会被探测, 也不展示到监控面板.
 
     Query:
         category, enabled_only, status (changed|unchanged|auto_disabled|never_probed)
@@ -816,10 +818,10 @@ async def detect_list_state():
     if not site_map:
         return get_json_result(data={"list": [], "total": 0})
 
-    # 过滤: 只显示当前租户 crawler_task 表里 enabled=1 的 site_id
-    # 没配置 crawler_task 的站点,探测器即使发现新内容也没用 (unified_crawler 找不到 kb_id),
+    # 过滤: 只显示 crawler_task 表里 enabled=1 的 site_id (全局, 与采集任务列表一致)
+    # 没配置 crawler_task 的站点, 探测器即使发现新内容也没用 (unified_crawler 找不到 kb_id),
     # 所以这类站点不应出现在监控面板.
-    active_ids = _active_site_ids(current_user.id)
+    active_ids = _active_site_ids()
 
     now = int(time.time())
     rows = []
@@ -991,8 +993,8 @@ async def detect_stats():
     }
     intervals = []
     now = int(time.time())
-    # 同 /detect/state: 只统计当前租户 crawler_task 启用的站点
-    active_ids = _active_site_ids(current_user.id)
+    # 同 /detect/state: 只统计 crawler_task 表 enabled=1 的站点 (全局)
+    active_ids = _active_site_ids()
     for sid in site_map:
         if active_ids is not None and sid not in active_ids:
             continue

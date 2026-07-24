@@ -6,7 +6,8 @@ for new content.
 Designed to run as a meta scheduled task (interval=60s) that is picked up by
 ``scheduled_task_executor``.  Each invocation:
 
-  1. Loads all enabled + detect_enabled sites from crawler_sites.yaml
+  1. Loads YAML site configs + filters to sites that are enabled in the
+     ``crawler_task`` table (same source of truth as the 采集任务列表 UI)
   2. For each site whose ``next_run_at`` has arrived (stored in Redis):
      a. Skip on quiet_hours / auto_disabled / already-probing lock
      b. Call SiteDetector.detect() — fetches page-1 only, computes signature
@@ -132,6 +133,34 @@ def _clear_force(tenant_id: str, site_id: str) -> None:
         REDIS_CONN.delete(FORCE_KEY.format(tenant=tenant_id, site=site_id))
     except Exception:
         pass
+
+
+def _get_crawler_task_site_ids() -> Optional[set]:
+    """读取 ``crawler_task`` 表 enabled=1 的 site_id 集合（全局，不过滤 tenant）.
+
+    与采集任务列表 (``/crawl4ai/tasks`` → ``CrawlerTaskService.get_list``) 及
+    前端监控面板 (``collection_app._active_site_ids``) 完全对齐 ——
+    探测器只探用户真正配置过采集任务的站点，避免对 YAML 里 84 个站点
+    无差别探测后写回 Redis state, 造成监控面板数据漂移.
+
+    Returns:
+        set[str]: enabled=1 的 site_id 集合；DB 异常时返回 None (调用方
+        应理解为"查询失败", 通常跳过本轮探测).
+    """
+    try:
+        from api.db.db_models import DB
+        from api.db.services.crawler_service import CrawlerTaskService
+
+        @DB.connection_context()
+        def _q() -> set:
+            q = (CrawlerTaskService.model
+                 .select(CrawlerTaskService.model.site_id)
+                 .where(CrawlerTaskService.model.enabled == True))  # noqa: E712
+            return {row.site_id for row in q}
+        return _q()
+    except Exception as e:
+        logging.error("crawler_detector: query crawler_task failed: %s", e)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -364,14 +393,28 @@ def main():
 
     try:
         loader = ConfigLoader(args.config)
-        sites = loader.get_enabled()
+        all_sites = loader.load()  # Dict[str, SiteConfig] — 全量 YAML, 不预过滤
     except Exception as e:
         _safe_print(f"[DETECTOR] ERROR: Failed to load config: {e}")
         sys.exit(1)
 
-    detectable = [s for s in sites if s.detect_enabled]
-    logging.info("detector: %d enabled sites, %d with detection enabled",
-                 len(sites), len(detectable))
+    # 以 crawler_task 表为真相源: 只探用户真正配置过采集任务的站点.
+    # 与采集任务列表 /crawl4ai/tasks 及前端监控面板 _active_site_ids 完全对齐.
+    # YAML 只提供站点元数据 (URL/selector/interval), 不再单独决定是否探测.
+    active_site_ids = _get_crawler_task_site_ids()
+    if active_site_ids is None:
+        _safe_print("[DETECTOR] WARN: crawler_task query failed; skipping this run")
+        detectable = []
+    else:
+        detectable = [all_sites[sid] for sid in active_site_ids if sid in all_sites]
+        missing_in_yaml = sorted(active_site_ids - set(all_sites.keys()))
+        if missing_in_yaml:
+            _safe_print(
+                f"[DETECTOR] WARN: crawler_task site_ids not in YAML (skipped): "
+                f"{missing_in_yaml}"
+            )
+    logging.info("detector: %d YAML sites loaded, %d active in crawler_task",
+                 len(all_sites), len(detectable))
 
     triggered = 0
     unchanged = 0
