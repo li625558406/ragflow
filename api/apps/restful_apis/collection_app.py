@@ -1021,8 +1021,10 @@ async def detect_stats():
             counts["active"] += 1
 
     avg_interval = int(_stats.mean(intervals)) if intervals else 0
+    # total 必须是过滤后实际进入 buckets 的站点数 (与 /detect/state 的 total 对齐),
+    # 不能用 len(site_map) —— 那是 YAML 全量 (84), 会让前端"总站点"显示与列表条数不符.
     return get_json_result(data={
-        "total": len(site_map),
+        "total": sum(counts.values()),
         "buckets": counts,
         "avg_interval": avg_interval,
         "now": now,
