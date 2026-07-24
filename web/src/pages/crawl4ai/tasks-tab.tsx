@@ -17,7 +17,7 @@ import {
   updateCrawl4aiTask,
 } from '@/services/crawl4ai-service';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, Pencil, Play, Plus, Trash2 } from 'lucide-react';
+import { Activity, Loader2, Pencil, Play, Plus, Trash2 } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ProgressDialog } from './progress-dialog';
@@ -109,7 +109,13 @@ export function TasksTab() {
 
   return (
     <div className="size-full flex flex-col gap-4">
-      <section className="flex justify-end">
+      <section className="flex justify-end items-center gap-3">
+        {isFetching && (
+          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Loader2 className="size-3.5 animate-spin" />
+            {t('crawl4ai.refreshing')}
+          </span>
+        )}
         <Button
           onClick={() => {
             setEditingTask(null);
@@ -121,7 +127,10 @@ export function TasksTab() {
         </Button>
       </section>
 
-      <section className="flex-1 overflow-auto rounded-lg border">
+      <section className="flex-1 overflow-auto rounded-lg border relative">
+        {isFetching && tasks.length > 0 && (
+          <div className="absolute top-0 left-0 right-0 h-0.5 bg-primary/80 animate-pulse z-10" />
+        )}
         <Table>
           <TableHeader>
             <TableRow>

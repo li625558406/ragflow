@@ -26,7 +26,7 @@ import {
 import { listCrawl4aiSites } from '@/services/crawl4ai-service';
 import { useQuery } from '@tanstack/react-query';
 import { useDebounce } from 'ahooks';
-import { RotateCcw, Search } from 'lucide-react';
+import { Loader2, RotateCcw, Search } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { CATEGORY_COLORS } from './field-labels';
@@ -215,10 +215,19 @@ export function ResultsTab() {
         <Button variant="ghost" size="icon" onClick={resetFilters}>
           <RotateCcw className="size-4" />
         </Button>
+        {isFetching && (
+          <span className="flex items-center gap-1.5 text-xs text-muted-foreground ml-auto">
+            <Loader2 className="size-3.5 animate-spin" />
+            {t('crawl4ai.refreshing')}
+          </span>
+        )}
       </section>
 
       {/* 结果表格 */}
-      <section className="flex-1 overflow-auto rounded-lg border">
+      <section className="flex-1 overflow-auto rounded-lg border relative">
+        {isFetching && results.length > 0 && (
+          <div className="absolute top-0 left-0 right-0 h-0.5 bg-primary/80 animate-pulse z-10" />
+        )}
         <Table>
           <TableHeader>
             <TableRow>
