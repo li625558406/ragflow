@@ -7,12 +7,17 @@ module idempotently inserts a single row pointing to crawler_detector.py.
 Run it once per tenant after deploy (or call ``ensure_detector_task`` from
 code).
 
-Identification: rows created here carry a fixed ``DETECTOR_TASK_ID_SUFFIX``
+Identification: rows created here carry a fixed ``DETECTOR_TASK_ID_PREFIX``
 so re-runs upsert instead of duplicating.
+
+设计原则 (2026-07-24 重构):
+    探测器只负责"侦察 + 触发",不碰 kb_id / 业务参数.
+    kb_id 由 unified_crawler.py 按 site_id 查 crawler_task 表自动获取.
+    因此本模块的 ``kb_id`` 参数已废弃 (保留仅为向后兼容, 实际不再写入).
 
 CLI:
     python rag/svr/crawler_engine/register_detector_task.py \\
-        --tenant-id <TID> --kb-id <KID> [--interval 60] [--enable/--disable]
+        --tenant-id <TID> [--interval 60] [--enable/--disable]
 """
 
 import argparse
@@ -37,12 +42,17 @@ DETECTOR_TASK_ID_PREFIX = "detector-meta-"
 
 def ensure_detector_task(
     tenant_id: str,
-    kb_id: str,
+    kb_id: str = "",
     interval_seconds: int = 60,
     enabled: bool = True,
     timeout: int = 300,
 ) -> dict:
-    """Idempotently insert or update the detector meta-task. Returns the row dict."""
+    """Idempotently insert or update the detector meta-task. Returns the row dict.
+
+    ``kb_id`` 保留参数仅为向后兼容,实际不再写入数据库.
+    探测器不消费 kb_id; 爬虫脚本 (unified_crawler.py) 会按 site_id
+    查 crawler_task 表自动获取.
+    """
     from api.db.db_models import DB
     from api.db.services.scheduled_task_service import ScheduledTaskService
 
@@ -70,13 +80,13 @@ def ensure_detector_task(
             "interval_seconds": interval_seconds,
             "enabled": enabled,
             "timeout": timeout,
-            "kb_id": kb_id,
+            "kb_id": "",
             "target_url": "",
             "next_run_time": next_run,
         }
         if existing:
             ScheduledTaskService.update_by_id(task_id, {
-                "kb_id": kb_id,
+                "kb_id": "",
                 "interval_seconds": interval_seconds,
                 "enabled": enabled,
                 "timeout": timeout,
@@ -123,8 +133,8 @@ def main():
 
     p = argparse.ArgumentParser(description="Register crawler_detector meta-task")
     p.add_argument("--tenant-id", required=True)
-    p.add_argument("--kb-id", required=True,
-                   help="KB id passed through to unified_crawler on enqueue")
+    p.add_argument("--kb-id", default="",
+                   help="(deprecated, kept for backward compat) — 探测器不再消费 kb_id")
     p.add_argument("--interval", type=int, default=60,
                    help="Detector meta-task interval in seconds (default 60)")
     p.add_argument("--disable", action="store_true",
@@ -138,7 +148,6 @@ def main():
 
     row = ensure_detector_task(
         tenant_id=args.tenant_id,
-        kb_id=args.kb_id,
         interval_seconds=args.interval,
         enabled=True,
     )

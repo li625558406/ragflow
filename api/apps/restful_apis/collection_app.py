@@ -1101,12 +1101,10 @@ async def detect_activity():
 async def detect_install():
     """注册/更新 detector meta-task (调用 ensure_detector_task 幂等).
 
-    Body: {"kb_id": "xxx", "interval_seconds": 60}
+    Body: {"interval_seconds": 60}
+    kb_id 已废弃 —— 探测器不再消费 kb_id,爬虫脚本会按 site_id 查 crawler_task 表自动获取.
     """
     body = await request.get_json() or {}
-    kb_id = (body.get("kb_id") or "").strip()
-    if not kb_id:
-        return get_data_error_result(message="kb_id is required")
     interval_seconds = int(body.get("interval_seconds", 60))
     if interval_seconds < 30:
         return get_data_error_result(message="interval_seconds must be >= 30")
@@ -1115,7 +1113,6 @@ async def detect_install():
         from rag.svr.crawler_engine.register_detector_task import ensure_detector_task
         row = ensure_detector_task(
             tenant_id=current_user.id,
-            kb_id=kb_id,
             interval_seconds=interval_seconds,
             enabled=True,
         )

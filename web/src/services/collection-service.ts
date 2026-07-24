@@ -141,5 +141,6 @@ export const enableDetect = (site_id: string) =>
 export const triggerDetect = (site_id: string) =>
   request.post(api.collectionDetectTrigger, { site_id });
 
-export const installDetect = (kb_id: string, interval_seconds = 60) =>
-  request.post(api.collectionDetectInstall, { kb_id, interval_seconds });
+export const installDetect = (interval_seconds = 60) =>
+  // kb_id 已废弃 —— 探测器不再消费 kb_id,爬虫脚本按 site_id 查 crawler_task 表自动获取
+  request.post(api.collectionDetectInstall, { interval_seconds });

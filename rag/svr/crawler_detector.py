@@ -172,16 +172,16 @@ def _next_interval(miss_count: int, base: int, cap: int) -> int:
 # ---------------------------------------------------------------------------
 
 def _enqueue_full_crawl(site_id: str, category: str,
-                        tenant_id: str, kb_id: str) -> bool:
+                        tenant_id: str) -> bool:
+    """探测器发现新内容后,投递一条全量采集任务到 Redis 队列.
+
+    设计原则(2026-07-24 重构):
+      探测器只负责"判断 + 触发",不碰 kb_id / 业务参数.
+      kb_id 由 unified_crawler.py 按 site_id 查 crawler_task 表自动获取.
+      入队消息里不带 kb_id 字段,task_executor 相应不会传 --kb-id 给子进程.
+    """
     if REDIS_CONN is None:
         logging.error("detector: cannot enqueue — Redis not available")
-        return False
-    if not kb_id:
-        logging.error(
-            "detector: cannot enqueue crawl for site=%s — meta-task kb_id is "
-            "empty. Re-register via /collection/detect/install.",
-            site_id,
-        )
         return False
 
     msg = {
@@ -201,13 +201,15 @@ def _enqueue_full_crawl(site_id: str, category: str,
         "target_url": "",
         "llm_id": "",
         "llm_model_name": "",
-        "kb_id": kb_id,
+        # 注意: 不带 kb_id. task_executor 在 kb_id 空时不会传 --kb-id 给子进程,
+        # unified_crawler 会按 site_id 查 crawler_task 表自动补 kb_id.
         "access_token": "",
     }
     try:
         ok = REDIS_CONN.queue_product(settings.get_svr_queue_name(0), message=msg)
         if ok:
-            logging.info("detector: enqueued collection crawl for site=%s", site_id)
+            logging.info("detector: enqueued collection crawl for site=%s (kb_id will be resolved by crawler)",
+                         site_id)
         else:
             logging.error("detector: enqueue failed for site=%s", site_id)
         return ok
@@ -220,7 +222,7 @@ def _enqueue_full_crawl(site_id: str, category: str,
 # Per-site probe
 # ---------------------------------------------------------------------------
 
-def probe_one_site(site, tenant_id: str, kb_id: str) -> Dict[str, Any]:
+def probe_one_site(site, tenant_id: str) -> Dict[str, Any]:
     """Probe a single site end-to-end: load state → probe → save state."""
     site_id = site.site_id
     now = int(time.time())
@@ -304,7 +306,7 @@ def probe_one_site(site, tenant_id: str, kb_id: str) -> Dict[str, Any]:
 
     if has_new:
         category = (getattr(site, "category", "") or "bid").strip()
-        enq_ok = _enqueue_full_crawl(site_id, category, tenant_id, kb_id)
+        enq_ok = _enqueue_full_crawl(site_id, category, tenant_id)
     else:
         enq_ok = False
 
@@ -347,7 +349,7 @@ def main():
 
     _safe_print("\n" + "=" * 60)
     _safe_print("[DETECTOR] Crawler Detector v2.0 (collection mode)")
-    _safe_print(f"[DETECTOR] KB: {args.kb_id}")
+    _safe_print("[DETECTOR] kb_id: <unset; resolved per-site from crawler_task>")
     _safe_print("=" * 60 + "\n")
     sys.stdout.flush()
 
@@ -377,7 +379,7 @@ def main():
 
     for site in detectable:
         try:
-            r = probe_one_site(site, args.tenant_id, args.kb_id)
+            r = probe_one_site(site, args.tenant_id)
         except Exception as e:
             errors += 1
             logging.error("detector: unexpected error for %s: %s",

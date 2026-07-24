@@ -211,12 +211,10 @@ export function DetectTab() {
 
   const installMutation = useMutation({
     mutationFn: async () => {
-      const kbId = window.prompt(t('crawl4ai.detect.installPrompt'), '');
-      if (!kbId) return null;
-      return installDetect(kbId.trim(), 60);
+      // kb_id 已废弃 —— 探测器不再消费 kb_id, 爬虫脚本按 site_id 查 crawler_task 表自动获取
+      return installDetect(60);
     },
     onSuccess: (res: any) => {
-      if (!res) return;
       if (res?.code === 0) message.success(t('crawl4ai.detect.installSuccess'));
       else message.error(res?.message ?? t('crawl4ai.detect.installFailed'));
       refresh();
