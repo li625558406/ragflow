@@ -198,6 +198,9 @@ class SiteConfig:
     enabled: bool = True
     detect_interval: int = 300       # detection check interval in seconds (default 5 min)
     detect_enabled: bool = True     # whether this site participates in detection
+    detect_max_interval: int = 3600  # backoff cap: when miss_count rises, interval caps here (1h)
+    detect_min_interval: int = 0     # backoff floor on reset: 0 means use detect_interval
+    detect_quiet_hours: str = ""     # e.g. "0-7" — skip probing during 00:00-07:00 local time
     category: str = "bid"           # bid|policy|personnel|news|other (for new collection system)
     transport: TransportConfig = field(default_factory=TransportConfig)
     listing: ListingConfig = field(default_factory=ListingConfig)
@@ -273,6 +276,18 @@ class ConfigLoader:
             enabled=data.get("enabled", True),
             detect_interval=data.get("detect_interval", self._defaults.get("detect_interval", 300)),
             detect_enabled=data.get("detect_enabled", self._defaults.get("detect_enabled", True)),
+            detect_max_interval=data.get(
+                "detect_max_interval",
+                self._defaults.get("detect_max_interval", 3600),
+            ),
+            detect_min_interval=data.get(
+                "detect_min_interval",
+                self._defaults.get("detect_min_interval", 0),
+            ),
+            detect_quiet_hours=data.get(
+                "detect_quiet_hours",
+                self._defaults.get("detect_quiet_hours", ""),
+            ),
             category=data.get("category", self._defaults.get("category", "bid")),
             transport=self._parse_transport(data.get("transport", {})),
             listing=self._parse_listing(data.get("listing", {})),

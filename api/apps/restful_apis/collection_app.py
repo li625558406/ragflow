@@ -26,8 +26,10 @@
 import json
 import logging
 import os
+import time
 from typing import Any, Dict, List, Optional
 
+import peewee
 from quart import Blueprint, request
 
 from api.apps import current_user, login_required
@@ -674,3 +676,450 @@ async def collection_stats():
                  "count": r.count} for r in rows]
 
     return get_json_result(data={"list": _query()})
+
+
+# ---------------------------------------------------------------------------
+# 探测监控 (Detect monitor)
+# ---------------------------------------------------------------------------
+
+# Redis key patterns — must mirror crawler_detector.py
+_DETECT_STATE_KEY = "detector:state:{tenant}:{site}"
+_DETECT_LOCK_KEY = "detector:lock:{tenant}:{site}"
+_DETECT_FORCE_KEY = "detector:force:{tenant}:{site}"
+_DETECT_STATE_TTL = 30 * 86400
+
+
+def _detect_redis():
+    """Lazy import — avoid Redis dependency at module load."""
+    try:
+        from rag.utils.redis_conn import REDIS_CONN
+        return REDIS_CONN
+    except Exception:
+        return None
+
+
+def _detect_state(tenant_id: str, site_id: str) -> Dict[str, Any]:
+    rc = _detect_redis()
+    if rc is None:
+        return {}
+    try:
+        import json as _json
+        raw = rc.get(_DETECT_STATE_KEY.format(tenant=tenant_id, site=site_id))
+        if not raw:
+            return {}
+        return _json.loads(raw) or {}
+    except Exception:
+        return {}
+
+
+def _detect_save(tenant_id: str, site_id: str, state: Dict[str, Any]) -> bool:
+    rc = _detect_redis()
+    if rc is None:
+        return False
+    try:
+        return bool(rc.set_obj(
+            _DETECT_STATE_KEY.format(tenant=tenant_id, site=site_id),
+            state, exp=_DETECT_STATE_TTL,
+        ))
+    except Exception:
+        return False
+
+
+_YAML_SITE_MAP_CACHE: Optional[Dict[str, Dict[str, Any]]] = None
+_YAML_SITE_MAP_MTIME: float = 0.0
+
+
+def _yaml_site_map() -> Dict[str, Dict[str, Any]]:
+    """Return site_id → metadata dict, cached by YAML mtime.
+
+    Re-parsing the YAML on every ``/detect/state`` request is wasteful (84+
+    sites, ~5k LOC).  Cache the derived map keyed on file mtime so hot-reload
+    still works (next request after edit re-parses).
+    """
+    global _YAML_SITE_MAP_CACHE, _YAML_SITE_MAP_MTIME
+    try:
+        mtime = os.path.getmtime(_CRAWLER_SITES_YAML)
+    except OSError:
+        return {}
+    if _YAML_SITE_MAP_CACHE is not None and _YAML_SITE_MAP_MTIME == mtime:
+        return _YAML_SITE_MAP_CACHE
+
+    from rag.svr.crawler_engine.config import ConfigLoader
+    try:
+        loader = ConfigLoader(_CRAWLER_SITES_YAML)
+        sites = loader.load()
+    except Exception as e:
+        logging.error("collection_api: failed to load YAML for detect: %s", e)
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for sid, cfg in sites.items():
+        out[sid] = {
+            "site_id": sid,
+            "name": cfg.name or sid,
+            "site_url": cfg.site_url,
+            "category": cfg.category,
+            "enabled": cfg.enabled,
+            "detect_interval": cfg.detect_interval,
+            "detect_max_interval": cfg.detect_max_interval,
+            "detect_min_interval": cfg.detect_min_interval,
+            "detect_quiet_hours": cfg.detect_quiet_hours,
+        }
+    _YAML_SITE_MAP_CACHE = out
+    _YAML_SITE_MAP_MTIME = mtime
+    return out
+
+
+@manager.route("/collection/detect/state", methods=["GET"])  # noqa: F821
+@login_required
+async def detect_list_state():
+    """所有站点的探测状态 (合并 YAML 元数据 + Redis 运行时 state).
+
+    Query:
+        category, enabled_only, status (changed|unchanged|auto_disabled|never_probed)
+        page, page_size
+    """
+    category = request.args.get("category", "").strip() or None
+    page = int(request.args.get("page", 1))
+    page_size = min(int(request.args.get("page_size", 50)), 500)
+
+    site_map = _yaml_site_map()
+    if not site_map:
+        return get_json_result(data={"list": [], "total": 0})
+
+    now = int(time.time())
+    rows = []
+    for sid, meta in site_map.items():
+        if category and meta["category"] != category:
+            continue
+        st = _detect_state(current_user.id, sid)
+        next_run_at = int(st.get("next_run_at") or 0)
+        last_check = int(st.get("last_check") or 0)
+
+        # Status classification for filter / display
+        if st.get("auto_disabled"):
+            status = "auto_disabled"
+        elif st.get("manual_disabled"):
+            status = "manual_disabled"
+        elif not st:
+            status = "never_probed"
+        elif next_run_at <= now:
+            status = "due"
+        elif int(st.get("consecutive_errors", 0)) > 0:
+            status = "error"
+        elif int(st.get("miss_count", 0)) >= 4:
+            status = "cold"
+        else:
+            status = "active"
+
+        rows.append({
+            **meta,
+            "next_run_at": next_run_at,
+            "next_run_in_sec": max(0, next_run_at - now),
+            "last_check": last_check,
+            "last_check_ago_sec": (now - last_check) if last_check else 0,
+            "miss_count": int(st.get("miss_count", 0)),
+            "cur_interval": int(st.get("cur_interval", 0)),
+            "last_sig": st.get("last_sig", ""),
+            "last_new_count": int(st.get("last_new_count", 0)),
+            "consecutive_errors": int(st.get("consecutive_errors", 0)),
+            "last_reason": st.get("last_reason", ""),
+            "last_error": st.get("last_error", ""),
+            "last_enqueue_ok": st.get("last_enqueue_ok"),
+            "status": status,
+        })
+
+    # Optional status filter (post-compute)
+    status_filter = request.args.get("status", "").strip() or None
+    if status_filter:
+        rows = [r for r in rows if r["status"] == status_filter]
+
+    rows.sort(key=lambda r: (r["status"] != "due", r["next_run_at"] or 0))
+    total = len(rows)
+    start = (page - 1) * page_size
+    return get_json_result(data={
+        "list": rows[start:start + page_size],
+        "total": total,
+        "now": now,
+    })
+
+
+@manager.route("/collection/detect/reset", methods=["POST"])  # noqa: F821
+@login_required
+async def detect_reset():
+    """重置某站点 backoff: miss_count=0, cur_interval=detect_interval, next_run_at=now.
+
+    Body: {"site_id": "xxx"}
+    """
+    body = await request.get_json() or {}
+    site_id = (body.get("site_id") or "").strip()
+    if not site_id:
+        return get_data_error_result(message="site_id is required")
+
+    site_map = _yaml_site_map()
+    if site_id not in site_map:
+        return get_data_error_result(message=f"unknown site_id: {site_id}")
+
+    base = site_map[site_id]["detect_min_interval"] or site_map[site_id]["detect_interval"]
+    now = int(time.time())
+    st = _detect_state(current_user.id, site_id)
+    st.update({
+        "miss_count": 0,
+        "cur_interval": base,
+        "next_run_at": now,
+        "consecutive_errors": 0,
+        "auto_disabled": False,
+        "manual_disabled": False,
+        "reset_at": now,
+    })
+    ok = _detect_save(current_user.id, site_id, st)
+    return get_json_result(data={"site_id": site_id, "reset": ok,
+                                 "next_interval": base})
+
+
+@manager.route("/collection/detect/disable", methods=["POST"])  # noqa: F821
+@login_required
+async def detect_disable():
+    """关闭某站点探测 (manual_disabled=true).
+
+    Body: {"site_id": "xxx"}
+    """
+    body = await request.get_json() or {}
+    site_id = (body.get("site_id") or "").strip()
+    if not site_id:
+        return get_data_error_result(message="site_id is required")
+
+    st = _detect_state(current_user.id, site_id)
+    st["manual_disabled"] = True
+    st["auto_disabled"] = False
+    ok = _detect_save(current_user.id, site_id, st)
+    return get_json_result(data={"site_id": site_id, "disabled": ok})
+
+
+@manager.route("/collection/detect/enable", methods=["POST"])  # noqa: F821
+@login_required
+async def detect_enable():
+    """启用某站点探测 (清除 manual_disabled / auto_disabled).
+
+    Body: {"site_id": "xxx"}
+    """
+    body = await request.get_json() or {}
+    site_id = (body.get("site_id") or "").strip()
+    if not site_id:
+        return get_data_error_result(message="site_id is required")
+
+    st = _detect_state(current_user.id, site_id)
+    st["manual_disabled"] = False
+    st["auto_disabled"] = False
+    st["consecutive_errors"] = 0
+    st["next_run_at"] = int(time.time())
+    ok = _detect_save(current_user.id, site_id, st)
+    return get_json_result(data={"site_id": site_id, "enabled": ok})
+
+
+@manager.route("/collection/detect/trigger", methods=["POST"])  # noqa: F821
+@login_required
+async def detect_trigger():
+    """立即触发探测 (写 force key, 下次 meta-task 拾起时无视 next_run_at).
+
+    Body: {"site_id": "xxx"}
+    """
+    body = await request.get_json() or {}
+    site_id = (body.get("site_id") or "").strip()
+    if not site_id:
+        return get_data_error_result(message="site_id is required")
+
+    rc = _detect_redis()
+    if rc is None:
+        return get_data_error_result(message="Redis not available")
+    try:
+        rc.set(_DETECT_FORCE_KEY.format(tenant=current_user.id, site=site_id),
+               "1", exp=300)
+    except Exception as e:
+        return get_data_error_result(message=f"set force flag failed: {e}")
+    return get_json_result(data={"site_id": site_id, "forced": True})
+
+
+@manager.route("/collection/detect/stats", methods=["GET"])  # noqa: F821
+@login_required
+async def detect_stats():
+    """探测统计: active/cold/due/error/disabled/never_probed 计数 + 平均 interval."""
+    import statistics as _stats
+    site_map = _yaml_site_map()
+    if not site_map:
+        return get_json_result(data={"total": 0, "buckets": {}, "avg_interval": 0})
+
+    counts = {
+        "active": 0, "cold": 0, "due": 0, "error": 0,
+        "auto_disabled": 0, "manual_disabled": 0, "never_probed": 0,
+    }
+    intervals = []
+    now = int(time.time())
+    for sid in site_map:
+        st = _detect_state(current_user.id, sid)
+        if st.get("auto_disabled"):
+            counts["auto_disabled"] += 1
+            continue
+        if st.get("manual_disabled"):
+            counts["manual_disabled"] += 1
+            continue
+        if not st:
+            counts["never_probed"] += 1
+            continue
+        iv = int(st.get("cur_interval", 0))
+        if iv > 0:
+            intervals.append(iv)
+        if int(st.get("consecutive_errors", 0)) > 0:
+            counts["error"] += 1
+        elif int(st.get("next_run_at", 0)) <= now:
+            counts["due"] += 1
+        elif int(st.get("miss_count", 0)) >= 4:
+            counts["cold"] += 1
+        else:
+            counts["active"] += 1
+
+    avg_interval = int(_stats.mean(intervals)) if intervals else 0
+    return get_json_result(data={
+        "total": len(site_map),
+        "buckets": counts,
+        "avg_interval": avg_interval,
+        "now": now,
+    })
+
+
+@manager.route("/collection/detect/activity", methods=["GET"])  # noqa: F821
+@login_required
+async def detect_activity():
+    """近 N 秒内每个站点新增的 crawler_result 条数 (活动流).
+
+    Query:
+        window (int, default 3600): 回看窗口秒数, 限制 [60, 86400]
+        limit  (int, default 20): 最多返回多少站点, 限制 [1, 100]
+
+    Returns:
+        {
+            "now_ms": int,
+            "window": int,
+            "items": [
+                {"site_id": str, "site_name": str, "category": str,
+                 "count": int, "first_at_ms": int, "last_at_ms": int,
+                 "last_title": str}
+            ],
+            "total_count": int  # 所有站点合计新增
+        }
+    """
+    window = max(60, min(int(request.args.get("window", 3600)), 86400))
+    limit = max(1, min(int(request.args.get("limit", 20)), 100))
+    now_ms = int(time.time() * 1000)
+    since_ms = now_ms - window * 1000
+
+    site_map = _yaml_site_map()
+
+    try:
+        rows = (
+            CrawlerResult
+            .select(
+                CrawlerResult.site_id,
+                peewee.fn.COUNT(CrawlerResult.id).alias("cnt"),
+                peewee.fn.MIN(CrawlerResult.crawled_at).alias("first_at"),
+                peewee.fn.MAX(CrawlerResult.crawled_at).alias("last_at"),
+            )
+            .where(
+                (CrawlerResult.tenant_id == current_user.id)
+                & (CrawlerResult.crawled_at.is_null(False))
+                & (CrawlerResult.crawled_at >= since_ms)
+            )
+            .group_by(CrawlerResult.site_id)
+            .order_by(peewee.SQL("last_at").desc())
+            .limit(limit)
+        )
+        items = []
+        total = 0
+        for r in rows:
+            cnt = int(r.cnt or 0)
+            total += cnt
+            meta = site_map.get(r.site_id, {})
+            items.append({
+                "site_id": r.site_id,
+                "site_name": meta.get("name") or r.site_id,
+                "category": meta.get("category") or "",
+                "count": cnt,
+                "first_at_ms": int(r.first_at or 0),
+                "last_at_ms": int(r.last_at or 0),
+            })
+    except Exception as e:
+        logging.exception("collection_api: detect_activity failed: %s", e)
+        return get_data_error_result(message=f"activity query failed: {e}")
+
+    # 每个 site 的最新 title: 用单条 SQL 一次性取所有 site 的 last_at 对应行
+    # 子查询取每个 site 在窗口内的 max(crawled_at) 对应的 id, 再 JOIN 回主表拿 title.
+    if items:
+        try:
+            site_ids = [it["site_id"] for it in items]
+            # 子查询: 按 site_id 分组取最大 crawled_at 对应的 (site_id, id)
+            sub = (
+                CrawlerResult
+                .select(
+                    CrawlerResult.site_id.alias("sid"),
+                    peewee.fn.MAX(CrawlerResult.id).alias("max_id"),
+                )
+                .where(
+                    (CrawlerResult.tenant_id == current_user.id)
+                    & (CrawlerResult.site_id.in_(site_ids))
+                    & (CrawlerResult.crawled_at.is_null(False))
+                    & (CrawlerResult.crawled_at >= since_ms)
+                )
+                .group_by(CrawlerResult.site_id)
+                .alias("sub")
+            )
+            last_title_map: Dict[str, str] = {}
+            for r in (
+                CrawlerResult
+                .select(CrawlerResult.site_id, CrawlerResult.title)
+                .join(
+                    sub,
+                    on=(CrawlerResult.id == sub.c.max_id),
+                )
+            ):
+                last_title_map[r.site_id] = r.title or ""
+            for it in items:
+                it["last_title"] = last_title_map.get(it["site_id"], "")
+        except Exception as e:
+            logging.warning("collection_api: detect_activity title fetch failed: %s", e)
+            for it in items:
+                it.setdefault("last_title", "")
+
+    return get_json_result(data={
+        "now_ms": now_ms,
+        "window": window,
+        "items": items,
+        "total_count": total,
+    })
+
+
+@manager.route("/collection/detect/install", methods=["POST"])  # noqa: F821
+@login_required
+async def detect_install():
+    """注册/更新 detector meta-task (调用 ensure_detector_task 幂等).
+
+    Body: {"kb_id": "xxx", "interval_seconds": 60}
+    """
+    body = await request.get_json() or {}
+    kb_id = (body.get("kb_id") or "").strip()
+    if not kb_id:
+        return get_data_error_result(message="kb_id is required")
+    interval_seconds = int(body.get("interval_seconds", 60))
+    if interval_seconds < 30:
+        return get_data_error_result(message="interval_seconds must be >= 30")
+
+    try:
+        from rag.svr.crawler_engine.register_detector_task import ensure_detector_task
+        row = ensure_detector_task(
+            tenant_id=current_user.id,
+            kb_id=kb_id,
+            interval_seconds=interval_seconds,
+            enabled=True,
+        )
+    except Exception as e:
+        logging.exception("collection_api: detect_install failed: %s", e)
+        return get_data_error_result(message=f"install failed: {e}")
+    return get_json_result(data={"task": row})

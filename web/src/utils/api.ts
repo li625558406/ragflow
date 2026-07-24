@@ -446,4 +446,14 @@ export default {
   collectionResults: `${restAPIv1}/collection/results`,
   collectionResult: (id: string) => `${restAPIv1}/collection/results/${id}`,
   collectionStats: `${restAPIv1}/collection/stats`,
+
+  // collection detector monitor
+  collectionDetectState: `${restAPIv1}/collection/detect/state`,
+  collectionDetectReset: `${restAPIv1}/collection/detect/reset`,
+  collectionDetectDisable: `${restAPIv1}/collection/detect/disable`,
+  collectionDetectEnable: `${restAPIv1}/collection/detect/enable`,
+  collectionDetectTrigger: `${restAPIv1}/collection/detect/trigger`,
+  collectionDetectStats: `${restAPIv1}/collection/detect/stats`,
+  collectionDetectActivity: `${restAPIv1}/collection/detect/activity`,
+  collectionDetectInstall: `${restAPIv1}/collection/detect/install`,
 };
