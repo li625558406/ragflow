@@ -93,7 +93,7 @@ def ensure_detector_task(
                 "next_run_time": next_run,
             })
         else:
-            ScheduledTaskService.insert(payload)
+            ScheduledTaskService.insert(**payload)
 
         row = (
             ScheduledTaskService.model
