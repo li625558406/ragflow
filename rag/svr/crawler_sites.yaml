@@ -4276,6 +4276,308 @@ sites:
             EndTime: "{{ today }} 23:59:59"
 
   # --------------------------------------------------------------------------
+  # ggzyfw_fujian_guide — 福建省公共资源交易平台 · 示范文本/行业规范/培训资料
+  # Source: https://ggzyfw.fujian.gov.cn/guide/list?type=53|54|59
+  # API:    https://ggzyfw.fujian.gov.cn/FwPortalApi/Article/PageList (AES-256-CBC + MD5 portal-sign)
+  # Sections: fanben(53)=示范文本, guifan(54,55)=行业规范, peixun(59)=培训资料
+  # 时间过滤: timeType=0 全量回溯（首次）；定时调度时由前端 trigger 注入 date_filter=today
+  # Category: other — 结构化字段入 extracted_json；附件由 _extract_files_from_item 自动正则
+  # --------------------------------------------------------------------------
+  ggzyfw_fujian_guide:
+    name: "福建省公共资源交易平台-示范文本行业规范培训资料"
+    site_url: "https://ggzyfw.fujian.gov.cn/"
+    category: other
+    enabled: true
+    transport:
+      type: encrypted_api
+      engine: requests
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+        Content-Type: "application/json;charset=UTF-8"
+        Origin: "https://ggzyfw.fujian.gov.cn"
+        Referer: "https://ggzyfw.fujian.gov.cn/"
+      encryption:
+        algorithm: aes_256_cbc
+        key: "EB444973714E4A40876CE66BE45D5930"
+        iv: "B5A8904209931867"
+        key_encoding: utf8
+        field: "Data"
+        encoding: utf-8
+      signing:
+        algorithm: md5
+        secret: "B3978D054A72A7002063637CCDF6B2E5"
+        header_name: "portal-sign"
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: "https://ggzyfw.fujian.gov.cn/FwPortalApi/Article/PageList"
+      method: POST
+      body_type: json
+    pagination:
+      type: page_no
+      page_param: pageNo
+      page_size_param: pageSize
+      page_size: 50
+      start: 1
+      total_field: Total
+      total_pages_field: PageTotal
+      items_field: Table
+      max_pages: 10
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.5
+      max_retries: 4
+      exponential_backoff: true
+      max_consecutive_empty: 3
+    extract:
+      type: json_path
+      items_path: "Table"
+      fields:
+        id: "ID"
+        title: "TITLE"
+        date: "TM"
+        news_type: "TYPE"
+        source_org: "SOURCES"
+      url_template: "https://ggzyfw.fujian.gov.cn/guide/detail?id={ID}"
+    detail:
+      type: api_request
+      url: "https://ggzyfw.fujian.gov.cn/FwPortalApi/Article/Detail"
+      method: POST
+      body_type: json
+      params:
+        id: "{id}"
+        type: "{news_type}"
+      content_field: "CONTENTS"
+    format:
+      parser_id: "naive"
+      upload_batch_size: 10
+    sections:
+      - label: "fanben"
+        name: "示范文本"
+        listing:
+          url: "https://ggzyfw.fujian.gov.cn/FwPortalApi/Article/PageList"
+          method: POST
+          body_type: json
+          params:
+            type: "53"
+            timeType: "0"
+            total: 0
+            createTime: []
+      - label: "guifan"
+        name: "行业规范"
+        listing:
+          url: "https://ggzyfw.fujian.gov.cn/FwPortalApi/Article/PageList"
+          method: POST
+          body_type: json
+          params:
+            type: "54,55"
+            timeType: "0"
+            total: 0
+            createTime: []
+      - label: "peixun"
+        name: "培训资料"
+        listing:
+          url: "https://ggzyfw.fujian.gov.cn/FwPortalApi/Article/PageList"
+          method: POST
+          body_type: json
+          params:
+            type: "59"
+            timeType: "0"
+            total: 0
+            createTime: []
+
+  # --------------------------------------------------------------------------
+  # ggzyfw_fujian_trade — 福建省公共资源交易平台 · 交易信息（全行业）
+  # Source: https://ggzyfw.fujian.gov.cn/business/list
+  # API:    https://ggzyfw.fujian.gov.cn/FwPortalApi/Trade/TradeInfo (AES-256-CBC + MD5 portal-sign)
+  # Detail: https://ggzyfw.fj.gov.cn/FwPortalApi/Trade/TradeInfoContent (Contents 字段为 HTML 正文)
+  # Category: other — 7 个行业栏目各自 section，section_name 流入前端「类型」列
+  # 时间过滤: 由前端 trigger 注入 date_filter=today；首次回溯时全量
+  # 附件: detail HTML 中的 <a href> 由 _extract_files_from_item 自动识别，
+  #       AttachmentHandler 负责下载 + ZIP 解压 + 上传 KB
+  # --------------------------------------------------------------------------
+  ggzyfw_fujian_trade:
+    name: "福建省公共资源交易平台-交易信息"
+    site_url: "https://ggzyfw.fujian.gov.cn/"
+    category: other
+    enabled: true
+    transport:
+      type: encrypted_api
+      engine: requests
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+        Content-Type: "application/json;charset=UTF-8"
+        Origin: "https://ggzyfw.fujian.gov.cn"
+        Referer: "https://ggzyfw.fujian.gov.cn/"
+      encryption:
+        algorithm: aes_256_cbc
+        key: "EB444973714E4A40876CE66BE45D5930"
+        iv: "B5A8904209931867"
+        key_encoding: utf8
+        field: "Data"
+        encoding: utf-8
+      signing:
+        algorithm: md5
+        secret: "B3978D054A72A7002063637CCDF6B2E5"
+        header_name: "portal-sign"
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: "https://ggzyfw.fj.gov.cn/FwPortalApi/Trade/TradeInfo"
+      method: POST
+      body_type: json
+    pagination:
+      type: page_no
+      page_param: pageNo
+      page_size_param: pageSize
+      page_size: 20
+      start: 1
+      total_field: Total
+      total_pages_field: PageTotal
+      items_field: Table
+      max_pages: 10
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.5
+      max_retries: 4
+      exponential_backoff: true
+      max_consecutive_empty: 3
+    extract:
+      type: json_path
+      items_path: "Table"
+      fields:
+        id: "M_ID"
+        title: "NAME"
+        date: "TM"
+        kind: "KIND"
+        ggtype: "GGTYPE"
+        news_type: "TITLE"
+        project_name: "NAME"
+        project_code: "PROCODE"
+        area_name: "AREANAME"
+        protype_text: "PROTYPE_TEXT"
+        platform_name: "PLATFORM_NAME"
+      url_template: "https://ggzyfw.fujian.gov.cn/business/detail?cid={M_ID}&type={KIND}"
+    detail:
+      type: api_request
+      url: "https://ggzyfw.fj.gov.cn/FwPortalApi/Trade/TradeInfoContent"
+      method: POST
+      body_type: json
+      params:
+        type: "1"
+        m_id: "{M_ID}"
+      content_field: "Contents"
+    format:
+      parser_id: "naive"
+      upload_batch_size: 10
+    sections:
+      - label: "gcjs"
+        name: "工程建设"
+        listing:
+          url: "https://ggzyfw.fj.gov.cn/FwPortalApi/Trade/TradeInfo"
+          method: POST
+          body_type: json
+          params:
+            KIND: "GCJS"
+            AREACODE: ""
+            M_PROJECT_TYPE: ""
+            GGTYPE: ""
+            PROTYPE: ""
+            timeType: "1"
+            total: 0
+            createTime: []
+      - label: "zfcg"
+        name: "政府采购"
+        listing:
+          url: "https://ggzyfw.fj.gov.cn/FwPortalApi/Trade/TradeInfo"
+          method: POST
+          body_type: json
+          params:
+            KIND: "ZFCG"
+            AREACODE: ""
+            M_PROJECT_TYPE: ""
+            GGTYPE: ""
+            PROTYPE: ""
+            timeType: "1"
+            total: 0
+            createTime: []
+      - label: "td"
+        name: "土地使用权"
+        listing:
+          url: "https://ggzyfw.fj.gov.cn/FwPortalApi/Trade/TradeInfo"
+          method: POST
+          body_type: json
+          params:
+            KIND: "TDSYQ"
+            AREACODE: ""
+            M_PROJECT_TYPE: ""
+            GGTYPE: ""
+            PROTYPE: ""
+            timeType: "1"
+            total: 0
+            createTime: []
+      - label: "ky"
+        name: "矿业权"
+        listing:
+          url: "https://ggzyfw.fj.gov.cn/FwPortalApi/Trade/TradeInfo"
+          method: POST
+          body_type: json
+          params:
+            KIND: "KYQ"
+            AREACODE: ""
+            M_PROJECT_TYPE: ""
+            GGTYPE: ""
+            PROTYPE: ""
+            timeType: "1"
+            total: 0
+            createTime: []
+      - label: "gycq"
+        name: "国有产权"
+        listing:
+          url: "https://ggzyfw.fj.gov.cn/FwPortalApi/Trade/TradeInfo"
+          method: POST
+          body_type: json
+          params:
+            KIND: "GYCQ"
+            AREACODE: ""
+            M_PROJECT_TYPE: ""
+            GGTYPE: ""
+            PROTYPE: ""
+            timeType: "1"
+            total: 0
+            createTime: []
+      - label: "yp"
+        name: "医疗药品"
+        listing:
+          url: "https://ggzyfw.fj.gov.cn/FwPortalApi/Trade/TradeInfo"
+          method: POST
+          body_type: json
+          params:
+            KIND: "YLYP"
+            AREACODE: ""
+            M_PROJECT_TYPE: ""
+            GGTYPE: ""
+            PROTYPE: ""
+            timeType: "1"
+            total: 0
+            createTime: []
+      - label: "qt"
+        name: "其他交易"
+        listing:
+          url: "https://ggzyfw.fj.gov.cn/FwPortalApi/Trade/TradeInfo"
+          method: POST
+          body_type: json
+          params:
+            KIND: "QT"
+            AREACODE: ""
+            M_PROJECT_TYPE: ""
+            GGTYPE: ""
+            PROTYPE: ""
+            timeType: "1"
+            total: 0
+            createTime: []
+
+  # --------------------------------------------------------------------------
   # ggzyfw_guide — 福建公共资源交易-办事指南 (Playwright SPA)
   # Old script: ggzyfw_guide_crawler.py
   # Tabs: 示范文本(type=53), 行业规范(type=54), 培训资料(type=59)
