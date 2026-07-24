@@ -130,17 +130,17 @@ export const fetchDetectActivity = (window_sec = 3600, limit = 20) =>
   });
 
 export const resetDetect = (site_id: string) =>
-  request.post(api.collectionDetectReset, { site_id });
+  request.post(api.collectionDetectReset, { data: { site_id } });
 
 export const disableDetect = (site_id: string) =>
-  request.post(api.collectionDetectDisable, { site_id });
+  request.post(api.collectionDetectDisable, { data: { site_id } });
 
 export const enableDetect = (site_id: string) =>
-  request.post(api.collectionDetectEnable, { site_id });
+  request.post(api.collectionDetectEnable, { data: { site_id } });
 
 export const triggerDetect = (site_id: string) =>
-  request.post(api.collectionDetectTrigger, { site_id });
+  request.post(api.collectionDetectTrigger, { data: { site_id } });
 
 export const installDetect = (interval_seconds = 60) =>
   // kb_id 已废弃 —— 探测器不再消费 kb_id,爬虫脚本按 site_id 查 crawler_task 表自动获取
-  request.post(api.collectionDetectInstall, { interval_seconds });
+  request.post(api.collectionDetectInstall, { data: { interval_seconds } });

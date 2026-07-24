@@ -76,7 +76,9 @@ def parse_args():
         description="Crawler Detector — checks collection sites for new content"
     )
     p.add_argument("--tenant-id", required=True, help="Tenant ID")
-    p.add_argument("--kb-id", required=True, help="Knowledge base ID")
+    p.add_argument("--kb-id", default="",
+                   help="(deprecated, kept for backward compat) 探测器不再消费 kb_id, "
+                        "爬虫脚本 (unified_crawler.py) 按 site_id 查 crawler_task 自动解析")
     p.add_argument("--task-name", required=True, help="Task name")
     p.add_argument("--config", default=DEFAULT_CONFIG_PATH,
                    help="Path to crawler_sites.yaml")

@@ -887,7 +887,7 @@ async def detect_reset():
 
     Body: {"site_id": "xxx"}
     """
-    body = await request.get_json() or {}
+    body = await request.get_json(silent=True) or {}
     site_id = (body.get("site_id") or "").strip()
     if not site_id:
         return get_data_error_result(message="site_id is required")
