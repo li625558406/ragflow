@@ -8,6 +8,7 @@ Handles:
 - Rate limiting and retry
 """
 
+import json
 import logging
 import random
 import time
@@ -282,11 +283,24 @@ class RestApiAdapter(BaseAdapter):
         for key, val in item.items():
             url_template = url_template.replace("{" + key + "}", str(val))
 
+        body_type = detail_cfg.body_type or "query"
         params = dict(detail_cfg.params)
+        # Resolve {field_name} placeholders in param values (e.g. bulletinId)
+        for pkey, pval in list(params.items()):
+            if isinstance(pval, str) and "{" in pval:
+                for key, val in item.items():
+                    pval = pval.replace("{" + key + "}", str(val))
+                params[pkey] = pval
+
         for attempt in range(3):
             try:
                 if detail_cfg.method.upper() == "POST":
-                    resp = self._session.post(url_template, data=params, timeout=self._transport.timeout)
+                    if body_type == "json":
+                        resp = self._session.post(url_template, json=params, timeout=self._transport.timeout)
+                    elif body_type == "form":
+                        resp = self._session.post(url_template, data=params, timeout=self._transport.timeout)
+                    else:  # query
+                        resp = self._session.post(url_template, params=params, timeout=self._transport.timeout)
                 else:
                     resp = self._session.get(url_template, params=params, timeout=self._transport.timeout)
                 if resp.status_code == 200:
@@ -309,6 +323,41 @@ class RestApiAdapter(BaseAdapter):
                                       "purchaseTypeID", "industryName"):
                             if field in data and not result.get(field):
                                 result[field] = data[field]
+                        # Merge inner data dict (commonly: response.data contains
+                        # content + structured metadata we want downstream).
+                        inner = data.get("data") if isinstance(data, dict) else None
+                        if isinstance(inner, dict):
+                            for k, v in inner.items():
+                                if k in result:
+                                    continue
+                                if v in (None, "", [], {}):
+                                    continue
+                                result[k] = v
+                        # Parse attachment_fields — JSON string or list of file dicts.
+                        # Many sites (e.g. fycbid) return a JSON-encoded string of
+                        # file list under a field like "fileUrls".
+                        collected: List[Dict[str, Any]] = []
+                        for fld in detail_cfg.attachment_fields:
+                            raw = _get_json_value(data, fld)
+                            if isinstance(raw, str) and raw.strip():
+                                try:
+                                    parsed = json.loads(raw)
+                                except json.JSONDecodeError:
+                                    parsed = None
+                                if isinstance(parsed, list):
+                                    collected.extend([f for f in parsed if isinstance(f, dict)])
+                                elif isinstance(parsed, dict):
+                                    collected.append(parsed)
+                            elif isinstance(raw, list):
+                                collected.extend([f for f in raw if isinstance(f, dict)])
+                            elif isinstance(raw, dict):
+                                collected.append(raw)
+                        if collected:
+                            existing = result.get("files")
+                            if isinstance(existing, list):
+                                result["files"] = existing + collected
+                            else:
+                                result["files"] = collected
                     except Exception:
                         pass  # Not JSON, keep as raw text
 

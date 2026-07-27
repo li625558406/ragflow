@@ -48,12 +48,12 @@ _UNIFIED_CRAWLER_SCRIPT = os.path.join(
 )
 
 
-def _is_yaml_site(site_id: str) -> tuple[bool, str]:
+def _is_yaml_site(site_id: str) -> tuple[bool, str, bool]:
     """Check if site_id is configured in crawler_sites.yaml.
-    Returns (is_yaml, category).
+    Returns (is_yaml, category, bypass_date_filter).
     """
     if not os.path.exists(_CRAWLER_SITES_YAML):
-        return False, ""
+        return False, "", False
     try:
         import yaml
         with open(_CRAWLER_SITES_YAML, "r", encoding="utf-8") as f:
@@ -61,10 +61,10 @@ def _is_yaml_site(site_id: str) -> tuple[bool, str]:
         sites = raw.get("sites") or {}
         if site_id in sites:
             cfg = sites[site_id] or {}
-            return True, cfg.get("category", "bid")
+            return True, cfg.get("category", "bid"), bool(cfg.get("bypass_date_filter", False))
     except Exception as e:
         logging.warning("crawl4ai_app: load YAML failed: %s", e)
-    return False, ""
+    return False, "", False
 
 
 def _pull_summary_from_redis(task_id: str) -> dict:
@@ -229,7 +229,7 @@ async def trigger_task(task_id):
         _running_tasks.add(task_id)
 
     # 判断是否走 YAML unified_crawler（如 ggzyjd_dissent / ggzyjd_cases 等配置在 YAML 的站点）
-    is_yaml, yaml_category = _is_yaml_site(task.site_id)
+    is_yaml, yaml_category, bypass_date_filter = _is_yaml_site(task.site_id)
     if is_yaml and yaml_category and yaml_category != "bid":
         writer_mode = "collection"
     elif is_yaml:
@@ -242,7 +242,10 @@ async def trigger_task(task_id):
             if writer_mode:
                 # YAML 站点 → unified_crawler 子进程
                 # 首次运行（last_run_status 为空）不做日期过滤，全量回溯；
-                # 后续运行注入 date_filter=today，只抓当日增量。
+                # 后续运行注入 date_filter=today，只抓当日增量；
+                # 但 YAML 标记 bypass_date_filter=true 的站点（如 easy_prt_bidprice，
+                # API 自带 inRecentDays=N 相对窗口）始终不注入 date_filter，
+                # 每次都按 API 自身的相对时间窗采集。
                 is_first_run = not (task.last_run_status or "").strip()
                 script_args_dict = {
                     "site_id": task.site_id,
@@ -250,7 +253,16 @@ async def trigger_task(task_id):
                     "category": yaml_category or "bid",
                     "task_id": task_id,
                 }
-                if not is_first_run:
+                if bypass_date_filter:
+                    # 滚动窗口站点（如 easy_prt_bidprice, inRecentDays=7）：
+                    # 每次 trigger 都按 full crawl 重置 last_page 到 1，
+                    # 让站点 API 的相对时间窗决定数据范围；DB upsert 负责去重，
+                    # processed_ids 内存去重依然生效（见 engine.py full 分支）。
+                    # 不这样会导致第二次 trigger 从 state.last_page+1=page 2 开始 → 0 items。
+                    script_args_dict["full"] = True
+                    logging.info("task %s bypass_date_filter=true → full crawl mode",
+                                 task_id)
+                elif not is_first_run:
                     script_args_dict["date_filter"] = "today"
                 script_args = json.dumps(script_args_dict, ensure_ascii=False)
                 if is_first_run:

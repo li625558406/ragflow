@@ -216,11 +216,31 @@ class CssSelectorExtractor(BaseExtractor):
         - ``"a@href"`` — get an attribute of a child element
         - ``"@data-id"`` — get an attribute of the container element itself
         - ``"td:last-child"`` — CSS pseudo-classes work on the selector part
+        - ``"<selector>|<regex>"`` — apply regex post-processing; if regex has
+          groups, returns group(1), else group(0). Useful for extracting IDs
+          from ``javascript:urlOpen('XXX')`` style hrefs.
 
         Returns the extracted value (stripped), or None if not found.
         """
         if not source_field:
             return None
+
+        # Optional regex post-processing: "selector|regex_pattern"
+        regex_pattern = None
+        if "|" in source_field:
+            source_field, regex_pattern = source_field.split("|", 1)
+
+        def _apply_regex(value):
+            """Apply optional regex post-processing to an extracted value."""
+            if not value or not regex_pattern:
+                return value
+            try:
+                m = re.search(regex_pattern, str(value))
+                if m:
+                    return m.group(1) if m.groups() else m.group(0)
+                return value  # regex didn't match — keep original
+            except re.error:
+                return value
 
         if '@' in source_field:
             # Attribute extraction
@@ -236,15 +256,16 @@ class CssSelectorExtractor(BaseExtractor):
                     if val and attr in ("href", "src") and base_url and not val.startswith("http"):
                         from urllib.parse import urljoin
                         val = urljoin(base_url, val)
-                    return val
+                    return _apply_regex(val)
             else:
                 # "@attr" means attribute on the container element itself
                 val = el.get(attr, '')
-                return val.strip() if isinstance(val, str) else str(val) if val else ''
+                val = val.strip() if isinstance(val, str) else str(val) if val else ''
+                return _apply_regex(val)
             return None
         else:
             # Text content extraction
             found = el.select_one(source_field)
             if found:
-                return found.get_text(strip=True)
+                return _apply_regex(found.get_text(strip=True))
             return None

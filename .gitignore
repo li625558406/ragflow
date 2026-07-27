@@ -284,3 +284,14 @@ rag/随行易交易电子招标投标交易平台/
 
 # Worktree workspaces (local only)
 .worktrees/
+
+# Local-only service config override (contains server credentials)
+conf/local.service_conf.yaml
+
+# Throwaway dev artifacts (probe / one-shot task SQL)
+rag/svr/_probe_*.py
+rag/svr/_test_*.py
+rag/svr/_create_*.sql
+rag/svr/_verify_*.sql
+rag/svr/_trigger_*.py
+logs/

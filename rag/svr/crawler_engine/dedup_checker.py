@@ -21,15 +21,22 @@ class DedupChecker:
     # Max cached DB query results — prevents unbounded memory growth
     _MAX_DB_CACHE = 50000
 
-    def __init__(self, state_manager, tenant_id: str = ""):
+    def __init__(self, state_manager, tenant_id: str = "",
+                 skip_db_check: bool = False):
         """Initialize dedup checker.
 
         Args:
             state_manager: StateManager instance for in-memory ID tracking.
             tenant_id: Tenant ID (used for DB queries).
+            skip_db_check: When True, only Layer 1 (memory) check is performed.
+                Used by collection writer mode — those items live in
+                ``crawler_result`` (not ``bid_project``), so Layer 2's
+                bid_project lookup would false-positive on URLs that an
+                unrelated bid-mode site already wrote.
         """
         self._state = state_manager
         self._tenant_id = tenant_id
+        self._skip_db_check = skip_db_check
         self._db_checked: Set[int] = set()   # cached project_ids already queried
         self._db_hits: int = 0                # count of DB-layer dedup hits
         self._memory_hits: int = 0             # count of memory-layer dedup hits
@@ -52,7 +59,13 @@ class DedupChecker:
             self._memory_hits += 1
             return True
 
-        # Layer 2: DB check (covers historical data)
+        # Layer 2: DB check (covers historical data) — bid mode only.
+        # Collection mode writes to crawler_result, not bid_project, so
+        # checking bid_project against the same URL (gen_bid_id only hashes
+        # the URL, not site_id) would mark unrelated URLs as duplicates.
+        if self._skip_db_check:
+            return False
+
         if url:
             project_id = gen_bid_id(url)
             if project_id not in self._db_checked:

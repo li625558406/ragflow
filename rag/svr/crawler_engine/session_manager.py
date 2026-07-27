@@ -34,17 +34,27 @@ class ScraplingSession:
             )
         self._config = config
         self._timeout = config.timeout
+        # requests-compatible attributes used by adapter (cookies.clear, etc.)
+        self.cookies = {}
 
     def get(self, url: str, **kwargs):
         """Mimic requests.Session.get() — returns a response-like object."""
         from scrapling.fetchers import Fetcher
         params = kwargs.get("params")
+        # Forward configured headers (User-Agent/Referer/X-Requested-With, etc.)
+        # to scrapling. Without this, scrapling defaults Referer to
+        # https://www.google.com and sites with referer-based filtering reject us.
+        headers = dict(self._config.headers or {})
+        # Caller can still override per-call
+        caller_headers = kwargs.get("headers")
+        if caller_headers:
+            headers.update(caller_headers)
         page = Fetcher.get(
             url,
             params=params,
             timeout=self._timeout,
             impersonate=self._config.impersonate or None,
-            headless=False,  # Fetcher is HTTP-only, no browser
+            headers=headers or None,
         )
         return _ScraplingResponse(page)
 
@@ -55,19 +65,45 @@ class ScraplingSession:
             "Use transport.engine='requests' for POST APIs."
         )
 
+    def close(self):
+        """No-op — scrapling.Fetcher is stateless per request."""
+        pass
+
 
 class _ScraplingResponse:
     """Response-like object wrapping a scrapling Selector."""
 
     def __init__(self, page):
         self._page = page
-        self.text = getattr(page, "text", "") or ""
-        # For JSON API responses, scrapling puts raw bytes in page.body
-        if not self.text and hasattr(page, "body"):
-            body = page.body
-            self.text = body.decode("utf-8") if isinstance(body, bytes) else str(body)
+        # For JSON API responses, scrapling leaves page.text empty and puts
+        # raw bytes in page.body (often without charset hint, causing mojibake
+        # for Chinese content). Prefer page.body for JSON endpoints so we can
+        # honor Content-Type charset, then fall back to page.text for HTML.
+        self.text = ""
+        body = getattr(page, "body", None)
+        if isinstance(body, bytes) and body:
+            ctype = ""
+            try:
+                ctype = (getattr(page, "headers", {}) or {}).get("Content-Type", "")
+            except Exception:
+                pass
+            if "charset=" in ctype.lower():
+                # e.g. "application/json;charset=utf-8"
+                enc = ctype.lower().split("charset=", 1)[1].split(";")[0].strip()
+                try:
+                    self.text = body.decode(enc)
+                except (LookupError, UnicodeDecodeError):
+                    self.text = body.decode("utf-8", errors="replace")
+            else:
+                # Try utf-8 first (correct for nearly all CN gov sites), fall back gracefully
+                try:
+                    self.text = body.decode("utf-8")
+                except UnicodeDecodeError:
+                    self.text = body.decode("gbk", errors="replace")
+        if not self.text:
+            self.text = getattr(page, "text", "") or ""
         self.status_code = getattr(page, "status", 200)
-        self.headers = {}
+        self.headers = getattr(page, "headers", {}) or {}
 
     def json(self):
         """Attempt JSON decode of page text."""
@@ -125,10 +161,16 @@ class SessionManager:
 
     @staticmethod
     def create_scrapling(config: TransportConfig) -> "ScraplingSession":
-        """Create a scrapling-based session for HTML scraping sites.
+        """Create a scrapling-based (curl_cffi) session that bypasses TLS fingerprint checks.
 
-        Only use this for sites that return HTML (not JSON APIs).
-        For JSON API endpoints, use the default `create()` with requests.
+        Use this for any site whose WAF blocks the default urllib3/requests
+        TLS fingerprint — applies to BOTH HTML pages and JSON APIs (e.g.
+        zycg.gov.cn family). `_ScraplingResponse` handles JSON bodies with
+        charset-aware decoding, so JSON APIs work transparently.
+
+        Limitations vs `create()`: scrapling.Fetcher is GET-only and stateless
+        per request (cookies don't persist between calls). For POST APIs or
+        sites requiring sticky cookies, use `create()` with `engine='requests'`.
         """
         return ScraplingSession(config)
 

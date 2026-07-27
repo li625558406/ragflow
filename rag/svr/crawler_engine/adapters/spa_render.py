@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional
 
 from ..config import SiteConfig
 from ..browser_pool import get_browser_pool
-from .. import resolve_params
+from .. import resolve_params, resolve_url
 from .base import BaseAdapter
 
 try:
@@ -90,12 +90,24 @@ class SpaRenderAdapter(BaseAdapter):
         """Get or create a page with API interception."""
         if self._page is None:
             self._page = self._pool.get_page()
-            self._setup_api_capture()
+            # vue_http 模式通过 page.evaluate(Vue.$http) 直接调 API，不依赖
+            # response 捕获；且 _on_response 对每个 JSON response 调 body() 是
+            # 同步阻塞，会拖慢 page 加载，导致部分站点（如三明）Vue app 来不及
+            # mount（has_app=True 但 has_vue=False）。故 vue_http 模式跳过捕获。
+            if not getattr(self._transport, "vue_http", False):
+                self._setup_api_capture()
         return self._page
 
     def _setup_api_capture(self) -> None:
         """Setup response interception to capture API JSON data."""
         self._api_captures = []
+
+        # NEW: route interception — amend POST body of SPA's natural XHR
+        # before it fires (e.g. inject publish_start_time/end_time for date
+        # filtering). Only triggers when transport.route_override configured.
+        route_cfg = getattr(self._transport, "route_override", None)
+        if route_cfg and isinstance(route_cfg, dict) and route_cfg:
+            self._setup_route_override(route_cfg)
 
         def _on_response(response):
             try:
@@ -115,6 +127,72 @@ class SpaRenderAdapter(BaseAdapter):
 
         self._page.on("response", _on_response)
 
+    def _setup_route_override(self, cfg: Dict[str, Any]) -> None:
+        """Intercept outgoing POST requests and merge keys into the body.
+
+        Resolves ``{{ today }}`` / ``{{ N_days_ago }}`` templates once at setup
+        (dates don't change mid-crawl). The handler amends only requests whose
+        original body contains ``body_has_key`` (default ``publish_start_time``)
+        to avoid touching unrelated api-v2 calls (e.g. getConfigInfo).
+
+        Config schema (YAML):
+            transport:
+              route_override:
+                url_match: "api-v2"          # substring, required
+                method: POST                 # default POST
+                body_has_key: "publish_start_time"  # gate: only amend if body has this key
+                merge_body:                  # keys to merge into original body
+                  publish_start_time: "{{ 1_days_ago }}"
+                  publish_end_time: "{{ today }}"
+                  limit: 50
+        """
+        url_match = cfg.get("url_match", "")
+        method = (cfg.get("method", "POST") or "POST").upper()
+        body_has_key = cfg.get("body_has_key", "publish_start_time")
+        merge_body = cfg.get("merge_body", {}) or {}
+
+        # Pre-resolve date templates once
+        from .. import resolve_params
+        merge_resolved = resolve_params(dict(merge_body), "", "")
+
+        logging.info(
+            "SpaRenderAdapter: route_override active (url_match='%s', merge keys=%s)",
+            url_match, list(merge_resolved.keys()),
+        )
+
+        def _handler(route, request):
+            try:
+                if request.method.upper() != method:
+                    route.continue_()
+                    return
+                if url_match and url_match not in request.url:
+                    route.continue_()
+                    return
+                post = request.post_data
+                if not post:
+                    route.continue_()
+                    return
+                try:
+                    body = json.loads(post)
+                except Exception:
+                    route.continue_()
+                    return
+                if not isinstance(body, dict) or body_has_key not in body:
+                    route.continue_()
+                    return
+                body.update(merge_resolved)
+                route.continue_(post_data=json.dumps(body, ensure_ascii=False))
+            except Exception as e:
+                logging.warning("SpaRenderAdapter: route_override handler err: %s", e)
+                try:
+                    route.continue_()
+                except Exception:
+                    pass
+
+        # page.route glob — use url_match substring; if empty, fall back to '*'
+        pattern = url_match if url_match else "*"
+        self._page.route(pattern, _handler)
+
     def fetch_items(self, page_params: Dict[str, Any],
                     listing_override=None) -> Optional[List[Dict[str, Any]]]:
         """Navigate to listing page and capture API responses.
@@ -131,7 +209,11 @@ class SpaRenderAdapter(BaseAdapter):
 
         listing = listing_override if listing_override else self._config.listing
         url = listing.url
+        # Resolve {{ today }} / {{ today_colon }} / {{ N_days_ago }} templates in URL
         pag_cfg = self._config.pagination
+        page_val = str(page_params.get(pag_cfg.page_param, ""))
+        size_val = str(page_params.get(pag_cfg.page_size_param, ""))
+        url = resolve_url(url, page_val, size_val)
         is_click_next = page_params.get("_click_next", False)
         page_num = page_params.get("_page", 0)
         wait_until = "networkidle" if getattr(self._transport, "network_idle", True) else "commit"
@@ -310,26 +392,63 @@ class SpaRenderAdapter(BaseAdapter):
         """Extract items from captured API responses.
 
         Handles nested structures like {"code":200, "data": {"Rows": [...]}}.
+
+        When multiple captures contain a list under the items_field, picks the
+        one whose items contain the most expected source-field names from
+        ``extract.fields`` (e.g. ID/TITLE/DATE). This filters out setup XHRs
+        that fire on SPA boot (``getConfigInfo``, ``getInAreas_fb``) which also
+        return JSON lists but with completely different schemas.
         """
+        items_field = self._config.pagination.items_field
+        # Expected source field names from extract.fields config
+        expected_keys = set(self._config.extract.fields.values()) if self._config.extract.fields else set()
+        # Drop empties
+        expected_keys = {k for k in expected_keys if k}
+
+        candidates: List[tuple] = []  # (score, items, capture)
         for capture in self._api_captures:
-            data = capture["data"]
-            items_field = self._config.pagination.items_field
-            # Dot-path lookup (e.g. "data.Rows")
+            data = capture.get("data")
+            if not isinstance(data, dict):
+                continue
+            # Resolve list of items from this capture
+            items = None
             if items_field:
-                items = self._get_nested_value(data, items_field)
-                if isinstance(items, list):
-                    return items
-            # Try common keys; recurse into dict values for nested responses
-            for key in ("rows", "Rows", "data", "Data", "list", "records", "result", "results"):
-                if key in data:
-                    val = data[key]
-                    if isinstance(val, list):
-                        return val
-                    if isinstance(val, dict):
-                        nested = self._extract_from_dict(val, items_field)
-                        if nested:
-                            return nested
-        return []
+                v = self._get_nested_value(data, items_field)
+                if isinstance(v, list):
+                    items = v
+            if items is None:
+                for key in ("rows", "Rows", "data", "Data", "list", "records", "result", "results"):
+                    if key in data:
+                        val = data[key]
+                        if isinstance(val, list):
+                            items = val
+                            break
+                        if isinstance(val, dict):
+                            nested = self._extract_from_dict(val, items_field or "")
+                            if nested:
+                                items = nested
+                                break
+            if not items:
+                continue
+            # Score: how many expected source keys appear in the first item?
+            score = 0
+            if expected_keys and items and isinstance(items[0], dict):
+                first_keys = set(items[0].keys())
+                score = len(expected_keys & first_keys)
+            candidates.append((score, items, capture))
+
+        if not candidates:
+            return []
+
+        # If any candidate has score>0 (matches expected fields), pick highest.
+        # Otherwise fall back to the last capture (heuristic: listing API
+        # usually fires last after setup XHRs).
+        max_score = max(s for s, _, _ in candidates)
+        if max_score > 0:
+            best = max(candidates, key=lambda c: c[0])
+            return best[1]
+        # No field match — return last candidate's items (most recent XHR)
+        return candidates[-1][1]
 
     def _extract_from_dict(self, data: dict, items_field: str) -> list:
         """Recursively extract items from a nested dict."""
@@ -368,16 +487,28 @@ class SpaRenderAdapter(BaseAdapter):
             parts = urlparse(self._config.listing.url)
             site_url = f"{parts.scheme}://{parts.netloc}"
         logging.info("SpaRenderAdapter: navigating to %s for Vue context", site_url)
-        page.goto(site_url, wait_until="networkidle",
-                  timeout=self._transport.timeout * 1000)
-        time.sleep(3)
-        # Verify Vue $http / $axios is reachable
+        # network_idle=false 时用 domcontentloaded：政府站 analytics/长连接使
+        # networkidle 永不空闲，goto 会超时 → Vue app 未初始化 → $http not found crash（如三明）
+        wait_until = "networkidle" if getattr(self._transport, "network_idle", True) else "domcontentloaded"
         try:
-            page.evaluate("() => { const vm = document.querySelector('#app').__vue__; return !!(vm.$http || vm.$axios); }")
+            page.goto(site_url, wait_until=wait_until,
+                      timeout=self._transport.timeout * 1000)
         except Exception as e:
-            raise RuntimeError(
-                f"Vue $http/$axios not found on {site_url}: {e}"
-            ) from e
+            logging.warning("SpaRenderAdapter: vue context goto %s failed (continuing): %s",
+                            wait_until, e)
+        # 政府站 Vue 初始化慢，轮询等待 $http 就绪（最多 ~15s），避免 sleep(3) 太短误判
+        ready = False
+        for _ in range(6):
+            time.sleep(2)
+            try:
+                ready = page.evaluate(
+                    "() => { const app = document.querySelector('#app'); const vm = app && app.__vue__; return !!(vm && (vm.$http || vm.$axios)); }")
+            except Exception:
+                ready = False
+            if ready:
+                break
+        if not ready:
+            raise RuntimeError(f"Vue $http/$axios not found on {site_url}")
 
         # Derive API base from listing URL (e.g. https://host/gpcms/rest/web/v2)
         from urllib.parse import urlparse
@@ -444,12 +575,16 @@ class SpaRenderAdapter(BaseAdapter):
                     continue
 
                 # 3. Verify against listing API
+                # 注意：listing_params 可能含 {{ today }} / {{ N_days_ago }} 等日期模板，
+                # 必须先 resolve，否则传给 API 的是字面模板串（如 operationStartTime 无效），
+                # API 返回非 200 → 误判验证码错误（code=4009）。
                 verify_params = dict(listing_params)
                 verify_params.update({
                     "currPage": "1",
                     "pageSize": "1",
                     "verifyCode": code_val,
                 })
+                verify_params = resolve_params(verify_params, "1", "1")
                 verify_json = page.evaluate(
                     _VUE_HTTP_JS,
                     [listing_url, {"params": verify_params}],
@@ -683,6 +818,39 @@ class SpaRenderAdapter(BaseAdapter):
                     item["content"] = str(content)
                 else:
                     item["content"] = json.dumps(data, ensure_ascii=False)
+                # 归一化结构化附件列表（gpcms 站点详情返回 attchList，元素 {fileName, fileUrl, fileExt}）。
+                # 转成 item["files"] 命中 engine._extract_files_from_item 白名单（files/attachments/fileList），
+                # 跳过 HTML 扫描，直接进入 NormalizedItem.attachments → CollectionWriter 存 attachments JSON +
+                # AttachmentHandler 下载。否则 attchList 会被丢弃（content_field 只取正文）。
+                attch_list = (self._get_nested_value(data, "data.attchList")
+                              or self._get_nested_value(data, "data.attachList")
+                              or self._get_nested_value(data, "data.fileList"))
+                if isinstance(attch_list, list) and attch_list:
+                    files = []
+                    for a in attch_list:
+                        if not isinstance(a, dict):
+                            continue
+                        furl = a.get("fileUrl") or a.get("url") or ""
+                        if not furl:
+                            continue
+                        furl = self._normalize_freecms_url(furl)
+                        fname = a.get("fileName") or a.get("name") or "attachment"
+                        fext = a.get("fileExt") or ""
+                        # 标准化后缀：确保带前导点（防御 fileExt 无点的情况，
+                        # 否则 _process_one 的 ".zip" 判断 + RAGFlow parser 选型会失败）
+                        if fext and not fext.startswith("."):
+                            fext = "." + fext
+                        # gpcms attchList 的 fileName 常不带后缀，用 fileExt 补全：
+                        # RAGFlow 按后缀选 parser；ZIP 需 .zip 后缀 AttachmentHandler 才解压
+                        if fext and not fname.lower().endswith(fext.lower()):
+                            fname = fname + fext
+                        files.append({
+                            "file_name": fname,
+                            "file_url": furl,
+                            "file_suffix": fext,
+                        })
+                    if files:
+                        item["files"] = files
                 return item
 
             except Exception as e:
@@ -705,6 +873,53 @@ class SpaRenderAdapter(BaseAdapter):
             else:
                 return None
         return data
+
+    def _normalize_freecms_url(self, file_url: str) -> str:
+        """归一化 freecms/gpcms 下载 URL：去掉 /freecms/download/ 代理前缀。
+
+        老脚本 zfcg_crawler.py 证实：attchList 里的 fileUrl 形如
+        ``https://host/freecms/download/gpx-public-file?accessCode=...``，
+        直接下载返回 404；必须去掉 ``/freecms/download/`` 代理前缀，变成
+        ``https://host/gpx-public-file?accessCode=...`` 才返回真实文件（带
+        accessCode 自包含令牌，无需 cookies/签名）。
+
+        新版 gpcms（如 zfcg.czj.ningde.gov.cn 政策法规栏目）的 fileUrl 是
+        相对存储路径 ``/usr/local/jdyj/202507/<UUID>.pdf``，浏览器渲染时前
+        端会自动加 ``/gpcms`` 前缀拼成 ``/gpcms/usr/local/jdyj/...``。本函
+        数对相对路径补全站点 host + ``/gpcms`` 前缀，否则返回
+        ``https:///usr/local/...``（无 host）导致下载 404。
+        """
+        if not file_url:
+            return file_url
+        from urllib.parse import urlparse
+        parsed = urlparse(file_url)
+        norm = parsed.path
+        if parsed.query:
+            norm += "?" + parsed.query
+        for prefix in (
+            "/freecms/download/gateway/gpx-document-zc/common/v3/base/download/",
+            "/freecms/download/",
+        ):
+            if norm.startswith(prefix):
+                norm = norm[len(prefix):]
+                break
+        norm = re.sub(r"^/?downloadPublicFile(\?)", r"/gpx-public-file\1", norm)
+        if not norm.startswith("/"):
+            norm = "/" + norm
+
+        # 相对路径（无 host）→ 补全 site_url 的 scheme + netloc
+        # 新版 gpcms 存储路径（/usr/local/...）需追加 /gpcms 前缀（前端行为）
+        if not parsed.netloc:
+            site_parsed = urlparse(self._config.site_url or "")
+            host = site_parsed.netloc or ""
+            # 已含 /gpcms 或 /freecms 前缀的不再追加
+            if not (norm.startswith("/gpcms/") or norm.startswith("/freecms/")):
+                norm = "/gpcms" + norm
+            scheme = site_parsed.scheme or "https"
+            return f"{scheme}://{host}{norm}"
+
+        scheme = parsed.scheme or "https"
+        return f"{scheme}://{parsed.netloc}{norm}"
 
     def _extract_via_js(self, page, js_source: str) -> List[Dict[str, Any]]:
         """Run a YAML-supplied JS snippet on the page and return its result.
@@ -776,7 +991,7 @@ class SpaRenderAdapter(BaseAdapter):
         detail_cfg = detail_override or self._config.detail
 
         if detail_cfg.type == "css_selector":
-            return self._fetch_detail_css(item)
+            return self._fetch_detail_css(item, detail_cfg=detail_cfg)
 
         # inline / none handled by base class
         if detail_cfg.type != "api_request" or not detail_cfg.url:
@@ -819,13 +1034,13 @@ class SpaRenderAdapter(BaseAdapter):
 
         return item
 
-    def _fetch_detail_css(self, item: Dict[str, Any]) -> Dict[str, Any]:
+    def _fetch_detail_css(self, item: Dict[str, Any], detail_cfg=None) -> Dict[str, Any]:
         """Override base class: use Playwright instead of requests.get().
 
         Navigates to the detail page with Playwright (renders SPA JS),
         then applies the same BeautifulSoup content extraction as the base.
         """
-        detail_cfg = self._config.detail
+        detail_cfg = detail_cfg or self._config.detail
         content_field = detail_cfg.content_field
 
         detail_url = item.get("url") or item.get("href") or item.get("link") or item.get("id")
@@ -887,6 +1102,13 @@ class SpaRenderAdapter(BaseAdapter):
                             )
                         container = el
                         break
+                    else:
+                        logging.warning(
+                            "SpaRenderAdapter: selector '%s' sel_one=%s text_len=%s (html_len=%d) in %s",
+                            sel, bool(el),
+                            len(el.get_text(strip=True)) if el else 0,
+                            len(html), detail_url,
+                        )
 
                 if container:
                     item["content"] = self._html_to_text(container)

@@ -330,50 +330,137 @@ sites:
       upload_batch_size: 10
 
   # --------------------------------------------------------------------------
-  # cebpubservice — 中国招标投标公共服务平台 bulletin listing (SSR HTML)
-  # Old script: cebpubservice_crawler.py
-  # NOTE: Listing only — detail pages on ctbpsp.com are WAF-protected.
+  # ccgp_bxsearch — 中国政府采购网-采购公告搜索 (智能采集新接入, 2026-07-26)
+  # Source: http://search.ccgp.gov.cn/bxsearch?searchtype=1&dbselect=bidx
+  # 每日触发：date_filter=today 自动注入，只采当天发布的所有公告
+  # 类型分布：招标公告/更正公告/中标公告/竞争性谈判公告 等 (由 li 内 <strong> 文本决定)
+  #
+  # 为什么用 spa_render 而不是 rest_api:
+  #   该站点对 requests/urllib 直连做 IP 级频率限制 (返回"您的访问过于频繁"页)
+  #   换用 Playwright (含浏览器指纹/cookie) 即可绕过该限速
+  # 分页：gopage(N) 通过 pager 上的 a.next 链接触发 form 提交，URL 自动变成 page_index=N
   # --------------------------------------------------------------------------
-  cebpubservice:
-    name: "中国招标投标公共服务平台"
-    site_url: "https://bulletin.cebpubservice.com/"
+  ccgp_bxsearch:
+    name: "中国政府采购网-采购公告搜索"
+    site_url: "http://search.ccgp.gov.cn/"
+    category: bid
     enabled: true
-    detect_interval: 10
     transport:
-      type: rest_api
-      engine: requests
+      type: spa_render
+      engine: playwright_spa
       headers:
-        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
-      verify_ssl: true
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"
+      verify_ssl: false
       timeout: 30
+      network_idle: false             # hm.baidu.com 长连接, networkidle 会超时
     listing:
-      url: "https://bulletin.cebpubservice.com/xxfbcmses/search/bulletin.html"
+      # {{ today_colon }} → YYYY:MM:DD (该站约定的时间格式)
+      # {{ page }} → 页码 (page_no 分页, resolve_url 每页重新解析)
+      url: "http://search.ccgp.gov.cn/bxsearch?searchtype=1&page_index={{ page }}&bidSort=&buyerName=&projectId=&pinMu=&bidType=&dbselect=bidx&kw=&start_time={{ today_colon }}&end_time={{ today_colon }}&timeType=0&displayZone=&zoneId=&pppStatus=0&agentName="
       method: GET
-      params:
-        searchDate: "{{ today }}"
-        dates: "1"
     pagination:
+      # 用 page_no (URL 直跳 page_index=N) 而非 click_next:
+      # 原因 — 详情页 fetch 复用同一 Playwright page, click_next 的列表页状态会被覆盖,
+      # 导致点击下一页时 .next 选择器已不在 DOM, 提前结束分页.
       type: page_no
       page_param: "page"
       page_size: 20
+      page_size_param: ""
       start: 1
-      max_pages: 5
+      max_pages: 5                # 当天公告 ~30-80 条 → 最多 5 页 × 20 条/页
     anti_crawler:
-      delay_min: 0.5
-      delay_max: 1.5
-      max_retries: 3
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 4
+      max_consecutive_empty: 3
     extract:
+      # 列表结构: ul.vT-srch-result-list-bid > li > a + p > span
+      # js_extract 直接在 DOM 上遍历 li, 提取 标题/链接/日期/采购人/代理/类型/地区/品目
       type: css_selector
-      items_path: "table.table_text tr"
-      fields:
-        id: "td:first-child a@href"
-        title: "td:first-child a"
-        date: "td:nth-child(5)"
-        region: "td:nth-child(3)"
-        source: "td:nth-child(4)"
+      items_path: "ul.vT-srch-result-list-bid li"
+      js_extract: |
+        () => {
+          const results = [];
+          const seen = new Set();
+          const ul = document.querySelector("ul.vT-srch-result-list-bid");
+          if (!ul) return results;
+          const lis = ul.querySelectorAll("li");
+          for (const li of lis) {
+            const a = li.querySelector("a[href]");
+            if (!a) continue;
+            const url = a.href;
+            if (!url || seen.has(url)) continue;
+            seen.add(url);
+            const title = (a.textContent || '').trim();
+            const spanText = (li.querySelector("span")?.textContent || '')
+              .replace(/\s+/g, ' ').trim();
+            // date: 第一个 YYYY.MM.DD HH:MM:SS
+            const dateMatch = spanText.match(/\d{4}\.\d{1,2}\.\d{1,2}\s+\d{1,2}:\d{2}(:\d{2})?/);
+            const dateStr = dateMatch ? dateMatch[0].replace(/\./g, '-').substring(0, 19) : '';
+            // buyer (采购人:xxx)
+            const buyerMatch = spanText.match(/采购人[：:]\s*([^|]+)/);
+            const buyer = buyerMatch ? buyerMatch[1].trim() : '';
+            // agent (代理机构:xxx)
+            const agentMatch = spanText.match(/代理机构[：:]\s*([^|]+)/);
+            const agent = agentMatch ? agentMatch[1].trim() : '';
+            // subtype: 第一个 <strong> 的文本 (招标公告/更正公告/中标公告/...)
+            const strong = li.querySelector("strong");
+            const subtype = strong ? (strong.textContent || '').trim() : '';
+            // region: 类型后 |  地区  | 品目
+            const parts = spanText.split('|').map(s => s.trim());
+            let region = '';
+            let category = '';
+            if (parts.length >= 4) region = parts[3];
+            if (parts.length >= 5) category = parts[4];
+            // id from URL: tYYYYMMDD_NNNNNN.htm → NNNNNN
+            const idMatch = url.match(/t\d{8}_(\d+)\.htm/);
+            const id = idMatch ? idMatch[1] : url;
+            results.push({
+              title: title,
+              url: url,
+              date: dateStr,
+              id: id,
+              buyer_name: buyer,
+              agency_name: agent,
+              announcement_type: subtype,
+              region: region,
+              procurement_category: category,
+              section_name: subtype || '信息公告',
+              news_type: subtype,
+            });
+          }
+          return results;
+        }
     detail:
       type: css_selector
-      content_field: "#bulletinContent, .bulletin-content, .detail-content, .TRS_Editor, article, main"
+      # 详情页主正文容器
+      content_field: ".vF_detail_content"
+      # 元数据 (来源/发布时间/ArticleTitle 等) 已在 <meta> 标签, 通过 metadata_js 提取
+      metadata_js: |
+        () => {
+          const result = {};
+          const getMeta = (name) => {
+            const m = document.querySelector(`meta[name="${name}"]`);
+            return m ? (m.getAttribute('content') || '').trim() : '';
+          };
+          const articleTitle = getMeta('ArticleTitle');
+          const pubDate = getMeta('PubDate');
+          const source = getMeta('ContentSource');
+          if (articleTitle) result.detail_title = articleTitle;
+          if (pubDate) result.publish_datetime = pubDate;
+          if (source) result.source_org = source;
+          // 提取附件 (PDF/DOC/ZIP 等), 附件 handler 会自动从 content_field 扫 <a>,
+          // 这里冗余记录便于排查
+          const atts = [];
+          for (const a of document.querySelectorAll('a[href]')) {
+            const h = a.href;
+            if (/\.(zip|rar|7z|pdf|doc|docx|xls|xlsx|ppt|pptx|wps|et|dps)(\?|$)/i.test(h)) {
+              atts.push({file_name: a.textContent.trim(), file_url: h});
+            }
+          }
+          if (atts.length) result.ccgp_attachments = atts;
+          return result;
+        }
     format:
       parser_id: "naive"
       upload_batch_size: 10
@@ -574,6 +661,94 @@ sites:
     format:
       parser_id: "naive"
       upload_batch_size: 10
+
+  # --------------------------------------------------------------------------
+  # zz_fycbid — 福易采(漳州)交易信息 (zz.fycbid.cn, site=20)
+  # Old script: fycbid_crawler.py (parent site, www.fycbid.cn)
+  # Listing: POST /fyc/fyc3/uip/mh/project/query  (JSON body)
+  # Detail:  POST /fyc/fyc3/uip/mh/attachment/query {site,bulletinId}
+  # Attachments: data.fileUrls is a JSON-encoded string of [{fileName,fileUrl}]
+  # URL pattern verified 2026-07-26 — opens correctly in browser.
+  # --------------------------------------------------------------------------
+  zz_fycbid:
+    name: "福易采(漳州)交易信息"
+    site_url: "https://zz.fycbid.cn/"
+    enabled: true
+    detect_enabled: true
+    detect_interval: 300
+    category: bid
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+        Content-Type: "application/json;charset=UTF-8"
+      verify_ssl: true
+      timeout: 30
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: "data.records"
+      fields:
+        id:           "bulletinId"
+        title:        "title"
+        date:         "pushTime"
+        news_type:    "bidType"
+        bid_code:     "bidCode"
+        tender_name:  "tenderName"
+        purchase_mode: "purchaseModeName"
+        city:         "city"
+        province:     "province"
+        project_stage: "projectStageName"
+        bulletin_type: "bulletinType"
+        bid_id:       "bidId"
+      url_template: "https://zz.fycbid.cn/#/notice/detail-upgrade?bidId={bidId}&bulletinId={bulletinId}&noticeType=notice"
+    detail:
+      type: api_request
+      url: "https://zz.fycbid.cn/fyc/fyc3/uip/mh/attachment/query"
+      method: POST
+      body_type: json
+      params:
+        site: "20"
+        bulletinId: "{bulletinId}"
+      content_field: "data.content"
+      attachment_fields:
+        - "data.fileUrls"
+    format:
+      parser_id: "naive"
+      upload_batch_size: 10
+    pagination:
+      type: page_no
+      page_param: "page.current"
+      page_size_param: "page.size"
+      page_size: 20
+      start: 1
+      max_pages: 5
+      total_field: "total"
+      items_field: "data.records"
+    listing:
+      url: "https://zz.fycbid.cn/fyc/fyc3/uip/mh/project/query"
+      method: POST
+      body_type: json
+      params:
+        site: "20"
+        bidName: ""
+        bidType: ""
+        dateType: 2
+        isProvince: ""
+        page:
+          current: "{{ page }}"
+          size: "{{ page_size }}"
+        address: ""
+        isEffective: 1
+        purchaseMode: ""
+        title: ""
+    sections:
+      - label: "upgrade"
+        name: "交易信息"
 
   # --------------------------------------------------------------------------
   # jdhy — 福建省发改委解读回应 (SSR HTML, 4 modules + sub-tabs)
@@ -2017,41 +2192,196 @@ sites:
             noticeType: "78,79,80"
             implementWay: "7"
 
+  # --------------------------------------------------------------------------
+  # zycg_zdfg — 中央政府采购网-政策法规 (FreeCMS 静态 HTML, 2 sections)
+  # Listing 1: /zygjjgzfcgzx/zdfg/index.html   制度法规栏目
+  # Listing 2: /zygjjgzfcgzfcgzx/czbfg/index.html  财政部法规栏目
+  # Detail  : /zygjjgzfcgzx/{channel}/info/YYYY/ID.html
+  # Files   : /freecms/upload/{uuid}/{date}/{filename}.{doc|docx|pdf|...}
+  # Old script: zycg_zdfg_crawler.py (FreeCMS, no JS, URLEncoder not needed)
+  # Note    : 列表 <li><a class=titleHiding href title><span>title</span></a>
+  #           + <span style="float:right;color:#999;">YYYY-MM-DD</span>
+  #           详情页 .info-content 容器 + <a href> 附件链 (engine 自动扫描)
+  # Sections 共享一份 extract/detail 配置, 仅 listing.url 不同。
+  # --------------------------------------------------------------------------
   zycg_zdfg:
-    name: "政采云-制度法规"
+    name: "中央政府采购网-政策法规"
     site_url: "https://www.zycg.gov.cn/"
+    category: policy                         # ★ 写 crawler_result + collection_policy_ext
     enabled: true
+    detect_enabled: false                    # 服务器IP被屏蔽, 探测器无法探测, 改由本地Win任务每日09:00执行
+    detect_interval: 600                     # 政策类更新慢, 10 分钟一轮
     transport:
       type: rest_api
       engine: requests
       verify_ssl: true
       timeout: 30
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        Accept-Language: "zh-CN,zh;q=0.9"
     listing:
       url: "https://www.zycg.gov.cn/freecms/site/zygjjgzfcgzx/zdfg/index.html"
       method: GET
     pagination:
-      type: html_regex
-      page_pattern: "/freecms/site/zygjjgzfcgzx/zdfg/index_{}.html"
-      page_size: 20
-      start: 2
-      max_pages: 50
+      type: single_page                      # 仅抓 index.html; 历史存量由首次回溯一次性消化, 后续 trigger 走 today 过滤
     anti_crawler:
       delay_min: 1.0
       delay_max: 2.0
       max_retries: 3
+      max_consecutive_empty: 2
     extract:
+      # 列表 li 结构: a.titleHiding[href][title] > span 标题, 同级 span 日期
+      # BS4 取 <a> 自身 text 不可靠 (含子元素), 用 js_extract 直接遍历
       type: css_selector
-      items_path: "ul.list li"
-      fields:
-        id: "a@href"
-        title: "a"
-        date: "span.date"
+      items_path: "li"
+      js_extract: |
+        () => {
+          const results = [];
+          const seen = new Set();
+          // 只匹配info详情链接, 跳过导航/频道切换
+          const anchors = document.querySelectorAll('li a.titleHiding[href*="/info/"][href$=".html"]');
+          for (const a of anchors) {
+            const href = a.href || a.getAttribute('href') || '';
+            if (!href) continue;
+            const title = (a.getAttribute('title') || a.textContent || '').trim();
+            if (!title || title.length < 3) continue;
+            if (seen.has(href)) continue;
+            seen.add(href);
+            // 日期在同级 <span style="color:#999;"> 内
+            const li = a.closest('li');
+            let date = '';
+            if (li) {
+              const span = li.querySelector('span[style*="color: #999"], span[style*="color:#999"]');
+              if (span) date = (span.textContent || '').trim();
+            }
+            // ID 从 URL 提取 (info/YYYY/XXXXX.html → YYYY/XXXXX)
+            let artId = '';
+            const m = href.match(/\/info\/(\d{4}\/[^\/]+)\.html/);
+            if (m) artId = m[1];
+            results.push({
+              id: artId,
+              title: title,
+              url: href,
+              date: date,
+            });
+          }
+          return results;
+        }
     detail:
       type: css_selector
-      content_field: ".content"
+      content_field: ".info-content"         # 详情正文容器 (FreeCMS 标准结构)
+      # metadata_js 仅 spa_render 支持; rest_api 走 _fetch_detail_css 不解析
+      # 政策扩展字段 (doc_number/issuing_authority/...) 留空, 由 LLM 解析或后续补
     format:
       parser_id: "naive"
       upload_batch_size: 10
+    sections:
+      - label: "zdfg"
+        name: "制度法规"
+        listing:
+          url: "https://www.zycg.gov.cn/freecms/site/zygjjgzfcgzx/zdfg/index.html"
+          method: GET
+        pagination:
+          type: single_page
+      - label: "czbfg"
+        name: "财政部法规"
+        listing:
+          url: "https://www.zycg.gov.cn/freecms/site/zygjjgzfcgzx/czbfg/index.html"
+          method: GET
+        pagination:
+          type: single_page
+
+  # --------------------------------------------------------------------------
+  # zycg_cggg — 中央政府采购网-公告 (招标标讯类, JSON API)
+  # Old script: 无 (新建). 服务器IP被屏蔽, 与 zycg_zdfg 同样本地执行
+  # --------------------------------------------------------------------------
+  zycg_cggg:
+    name: "中央政府采购网-公告"
+    site_url: "https://www.zycg.gov.cn/"
+    category: bid                          # ★ 主类型: 招标标讯 (走 crawler_result + bid_writer)
+    enabled: true
+    detect_enabled: false                  # 服务器IP被屏蔽, 由本地Win任务每日执行
+    detect_interval: 600
+    transport:
+      type: rest_api
+      engine: scrapling                       # ★ scrapling (curl_cffi) 绕过 TLS 指纹检测, 不依赖系统代理
+      impersonate: chrome120
+      verify_ssl: false
+      timeout: 30
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"
+        Accept: "application/json, text/plain, */*"
+        Accept-Language: "zh-CN,zh;q=0.9"
+        Referer: "https://www.zycg.gov.cn/freecms/site/zygjjgzfcgzx/cggg/index.html"
+        X-Requested-With: "XMLHttpRequest"
+    session_init_url: "https://www.zycg.gov.cn/freecms/site/zygjjgzfcgzx/cggg/index.html"
+    listing:
+      url: "https://www.zycg.gov.cn/freecms/rest/v1/notice/selectInfoMore.do"
+      method: GET
+      params:
+        siteId: "6f5243ee-d4d9-4b69-abbd-1e40576ccd7d"
+        channel: "d0e7c5f4-b93e-4478-b7fe-61110bb47fd5"
+        currPage: "{{ page }}"
+        pageSize: "{{ page_size }}"
+        title: ""
+        implementWay: "1"
+        noticeType: "2"                    # 父级默认 (API 不接受逗号分隔, 必须单值)
+    pagination:
+      type: page_no
+      page_param: "currPage"
+      page_size: 15
+      page_size_param: "pageSize"
+      start_page: 1
+      max_pages: 3                         # 每子栏目最多3页=45条
+      total_field: "total"
+      items_field: "data"
+    extract:
+      type: json_path
+      items_path: "data"
+      fields:
+        id: "id"                           # UUID 主键
+        title: "title"
+        url: "pageurl"                     # 相对路径, 引擎 urljoin 拼绝对地址
+        date: "addtimeStr"                 # "2026-07-24 18:04:09"
+    detail:
+      type: css_selector
+      content_field: ".info-content"       # 详情正文容器 (FreeCMS 标准结构, 与 zycg_zdfg 一致)
+    format:
+      parser_id: "naive"
+      upload_batch_size: 10
+    anti_crawler:
+      delay_min: 1.5
+      delay_max: 3.0
+      max_retries: 3
+      max_consecutive_empty: 2
+    # API 仅支持单 noticeType, 用 sections 拆 5 个有效子栏目
+    sections:
+      - label: "nt2"
+        name: "公告-类型2"
+        listing:
+          params:
+            noticeType: "2"
+      - label: "nt31"
+        name: "公告-类型31"
+        listing:
+          params:
+            noticeType: "31"
+      - label: "nt32"
+        name: "公告-类型32"
+        listing:
+          params:
+            noticeType: "32"
+      - label: "nt57"
+        name: "公告-单独委托"
+        listing:
+          params:
+            noticeType: "57"
+      - label: "nt61"
+        name: "公告-类型61"
+        listing:
+          params:
+            noticeType: "61"
 
   # --------------------------------------------------------------------------
   # hwdms_policy — 华为DMS政策
@@ -2302,8 +2632,9 @@ sites:
   # Verified: urllib.request, EpointWebBuilder REST API
   # --------------------------------------------------------------------------
   gcjyzx_jyxx:
-    name: "漳州工程交易中心-交易信息"
+    name: "漳州市工程项目交易中心-工程信息"
     site_url: "https://gcjyzx.zhangzhou.gov.cn"
+    category: other                    # 路由 collection 模式 → crawler_result 表
     enabled: true
     transport:
       type: rest_api
@@ -2319,11 +2650,11 @@ sites:
       body_type: form
       params:
         siteGuid: "7eb5f7f1-9041-43ad-8e13-8fcb82ea831a"
-        categoryNum: ""
+        categoryNum: "001"             # 工程信息大类
         pageIndex: "{{ page }}"
         pageSize: "{{ page_size }}"
-        startdate: "2026-05-08"
-        enddate: "2026-06-07"
+        startdate: ""                  # 留空：API 返回近期全量，CollectionWriter 按 date_filter 过滤
+        enddate: ""
         projectaddress: ""
         bdsecondtype: ""
     pagination:
@@ -2332,11 +2663,14 @@ sites:
       page_size_param: "pageSize"
       page_size: 20
       start: 0
+      max_pages: 30
+      total_field: "custom.count"
       items_field: "custom.infodata"
     anti_crawler:
       delay_min: 1.0
       delay_max: 2.5
       max_retries: 4
+      max_consecutive_empty: 3
     extract:
       type: json_path
       items_path: "custom.infodata"
@@ -2345,9 +2679,14 @@ sites:
         title: "title"
         url: "infourl"
         date: "infodate"
+        news_type: "categorynum"       # 001001001=招标公告 等，落入 extracted_json 供前端展示
+        project_address: "projectaddressname"
     detail:
       type: css_selector
       content_field: "#infoContentM"
+    sections:
+      - label: "jyxx"
+        name: "漳州市工程项目-工程信息"   # 前端类型列展示（section_name 优先于 category_label）
     format:
       parser_id: "naive"
       upload_batch_size: 10
@@ -3070,7 +3409,12 @@ sites:
   easy_prt_policy:
     name: "工采通-政策法规"
     site_url: "https://easy-prt.com/"
+    category: policy                           # ★ 写 collection_policy_ext 扩展表
     enabled: true
+    detect_enabled: true                       # ★ 进入探测器轮询
+    detect_interval: 600                       # 政策更新慢，10 分钟一轮
+    bypass_date_filter: false                  # 走标准 today 过滤（首次 trigger 自动跳过 is_first_run）
+    attachment_host: "https://files.easy-prt.com"   # ★ annexes.fileUrl 是相对路径，需补全文件主机
     transport:
       type: encrypted_api
       engine: urllib
@@ -3082,12 +3426,15 @@ sites:
         algorithm: sm4_ecb
         key: "90bdd291004611ef87fc52540023e781"
         key_encoding: hex
-        field: "data"
         encoding: utf-8
+        # 请求体/查询串都要 SM4 加密；响应体是 JSON 字面量 "<hex>"
+        encrypt_request: true
+        request_format: json_string
+        request_param_name: encryptParams
       verify_ssl: true
       timeout: 30
     listing:
-      url: "https://easy-prt.com/gykjbid/gykj-bidding/bidding/portal/policy/list"
+      url: "https://easy-prt.com/gykjbid/jeecg-system/cms/content/portal/list"
       method: POST
       body_type: json
       params:
@@ -3099,27 +3446,43 @@ sites:
       page_size_param: "pageSize"
       page_size: 20
       start: 1
+      max_pages: 3                             # 27 条 → 2 页（max_pages=3 留余量）
+      items_field: "result.records"
+      total_field: "result.total"
     anti_crawler:
       delay_min: 1.5
       delay_max: 3.0
       max_retries: 3
+      max_consecutive_empty: 3
     extract:
       type: json_path
-      items_path: "data"
+      items_path: "result.records"
       fields:
         id: "id"
         title: "title"
-        date: "publishDate"
+        date: "releaseTime"
+      url_template: "https://easy-prt.com/policy?id={id}"   # ★ SPA 路由，新窗口可打开
     detail:
       type: api_request
+      url: "https://easy-prt.com/gykjbid/jeecg-system/cms/content/portal/detail"
+      method: GET
+      body_type: json
+      params:
+        id: "{id}"
+      content_field: "result.content"          # HTML 正文
+      attachment_fields:
+        - "result.annexes"                      # [{fileId, fileUrl, fileName, md5}]，fileUrl 相对路径
     format:
       parser_id: "naive"
-      upload_batch_size: 10
+      upload_batch_size: 5
 
   easy_prt_trading:
     name: "工采通-交易公告"
     site_url: "https://easy-prt.com/"
+    category: tender
     enabled: true
+    detect_enabled: true
+    detect_interval: 300
     transport:
       type: encrypted_api
       engine: urllib
@@ -3131,39 +3494,292 @@ sites:
         algorithm: sm4_ecb
         key: "90bdd291004611ef87fc52540023e781"
         key_encoding: hex
-        field: "data"
         encoding: utf-8
+        # ★ Request-side encryption: easy-prt requires SM4-encrypted params
+        # both for request body (POST JSON-string of hex) and query string
+        # (GET ?encryptParams=<hex>).  Response is a JSON string-literal "<hex>".
+        encrypt_request: true
+        request_format: json_string
+        request_param_name: encryptParams
       verify_ssl: true
       timeout: 30
+    anti_crawler:
+      delay_min: 1.5
+      delay_max: 3.0
+      max_retries: 3
+      max_consecutive_empty: 3
     listing:
-      url: "https://easy-prt.com/gykjbid/gykj-bidding/bidding/portal/trading/list"
+      url: "https://easy-prt.com/gykjbid/gykj-bid/bid/portal/getProjectList"
       method: POST
       body_type: json
       params:
         pageNo: "{{ page }}"
         pageSize: "{{ page_size }}"
+        announcementType: ""
+        areaCode: ""
+        bidStatus: ""
+        cityCode: ""
+        industryCategories: ""
+        industrySegmentation: ""
+        industrySubCategories: ""
+        keyword: ""
+        provinceCode: ""
+        releaseBeginTime: ""
+        releaseEndTime: ""
+        releaseTimeType: "today"              # ★ 站点原生「当天」过滤，返回 15 条/天
+        showTop: 0
+        tenderOpenType: ""
+        tenderType: ""
     pagination:
       type: page_no
       page_param: "pageNo"
       page_size_param: "pageSize"
       page_size: 20
       start: 1
+      max_pages: 5
+      items_field: "result.records"
+      total_field: "result.total"
+    extract:
+      type: json_path
+      items_path: "result.records"
+      fields:
+        id: "id"
+        title: "projectName"
+        date: "releaseTime"
+        section_name: "bidStatusText"          # ★ 类型列按列表主题显示（招标公告/中标公示 等）
+        news_type: "announcementTypeText"
+        project_num: "projectNum"
+        province: "provinceName"
+        city: "cityName"
+        tender_type: "tenderTypeText"
+      url_template: "https://easy-prt.com/project?id={id}&type=01"
+    detail:
+      type: api_request
+      url: "https://easy-prt.com/gykjbid/gykj-bid/bid/portal/getProjectDetail"
+      method: GET
+      body_type: json
+      params:
+        projectPackageId: "{id}"
+      content_field: ""                        # detail 不直接返回正文 HTML
+      attachment_fields:
+        - "result.preQualAnnexes"              # 资格预审附件
+      content_endpoint:                        # ★ 链式第二次调用拿正文 HTML
+        url: "https://easy-prt.com/gykjbid/gykj-bid/bid/portal/getProjectContent"
+        method: GET
+        body_type: json
+        params:
+          # contentId 来自列表项的 announcementList[0].contentId
+          contentId: "{announcementList.0.contentId}"
+        content_field: "result.content"        # 正文 HTML
+        attachment_fields:
+          - "result.annexes"                   # 正文附带的附件
+    format:
+      parser_id: "naive"
+      upload_batch_size: 5
+
+  # --------------------------------------------------------------------------
+  # easy_prt_bidprice — 工采通-网上竞价 (SM4-ECB 双向加密 + inRecentDays=7 滚动窗口)
+  # 目标页: https://easy-prt.com/bid-price
+  # Old script: easy_prt_bidding_crawler.py (竞价公告 section)
+  # 与 easy_prt_trading 不同:
+  #   1) 列表 endpoint /gykj-bidding/bidding/portal/project/list, 参数 pageIndex/pageSize/inRecentDays
+  #   2) 详情 endpoint /gykj-bidding/bidding/portal/project/detail (GET ?id=)
+  #   3) URL 模板 /project-bidprice?id={id}&type=01
+  #   4) bypass_date_filter=true: API 自带 inRecentDays=7 相对窗口, 跳过 CollectionWriter 的 today 过滤
+  # --------------------------------------------------------------------------
+  easy_prt_bidprice:
+    name: "工采通-网上竞价"
+    site_url: "https://easy-prt.com/"
+    category: tender
+    enabled: true
+    detect_enabled: true
+    detect_interval: 300
+    bypass_date_filter: true            # ★ API 自带 inRecentDays=7, 不要叠加 today 过滤
+    transport:
+      type: encrypted_api
+      engine: urllib
+      headers:
+        Content-Type: "application/json"
+        X-Platform-Id: "gct"
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+      encryption:
+        algorithm: sm4_ecb
+        key: "90bdd291004611ef87fc52540023e781"
+        key_encoding: hex
+        encoding: utf-8
+        # 请求体/查询串都要 SM4 加密; 响应体是 JSON 字面量 "<hex>"
+        encrypt_request: true
+        request_format: json_string
+        request_param_name: encryptParams
+      verify_ssl: true
+      timeout: 30
     anti_crawler:
       delay_min: 1.5
       delay_max: 3.0
       max_retries: 3
+      max_consecutive_empty: 3
+    listing:
+      url: "https://easy-prt.com/gykjbid/gykj-bidding/bidding/portal/project/list"
+      method: POST
+      body_type: json
+      params:
+        announcementType: ""
+        areaCode: ""
+        biddingStatus: ""
+        cityCode: ""
+        inRecentDays: 7                  # ★ 近 7 天滚动窗口 (相对当前时间)
+        industrySegmentation: ""
+        keyword: ""
+        pageIndex: "{{ page }}"
+        pageSize: "{{ page_size }}"
+        provinceCode: ""
+        releaseBeginTime: ""
+        releaseEndTime: ""
+    pagination:
+      type: page_no
+      page_param: "pageIndex"
+      page_size_param: "pageSize"
+      page_size: 20
+      start: 1
+      max_pages: 2                       # 7 天约 8 条, 1-2 页足够
+      items_field: "result.records"
+      total_field: "result.total"
     extract:
       type: json_path
-      items_path: "data"
+      items_path: "result.records"
       fields:
         id: "id"
-        title: "title"
-        date: "publishDate"
+        title: "projectName"
+        date: "releaseTime"
+        news_type: "announcementTypeText"
+        project_num: "projectNum"
+        province: "provinceName"
+        city: "cityName"
+      url_template: "https://easy-prt.com/project-bidprice?id={id}&type=01"
     detail:
       type: api_request
+      url: "https://easy-prt.com/gykjbid/gykj-bidding/bidding/portal/project/detail"
+      method: GET
+      body_type: json
+      params:
+        id: "{id}"
+      content_field: "result.additionHtml"     # HTML 正文 (补充说明)
+      attachment_fields:
+        - "result.annexes"                      # 详情附件 [{fileName, url}]
     format:
       parser_id: "naive"
-      upload_batch_size: 10
+      upload_batch_size: 5
+    sections:
+      - label: "bidprice"
+        name: "网上竞价"                         # ★ 前端「类型」列展示
+
+  # --------------------------------------------------------------------------
+  # easy_prt_enquiry — 工采通-正在询价 (SM4-ECB 双向加密 + bidStatus=02 + 7 天内 ~6 条)
+  # 目标页: https://easy-prt.com/enquiry
+  # Old script: easy_prt_bidding_crawler.py (正在询价 section)
+  # 列表 /gykj-bid/bid/portal/getProjectList
+  #   - bidStatus=02 (正在询价), tenderType=06, industryCategories=good_service
+  # 详情 /gykj-bid/bid/portal/getProjectDetail?projectPackageId={id}
+  # 正文 /gykj-bid/bid/portal/getProjectContent?contentId={announcementList[0].contentId}
+  # URL 模板 /project?id={id}&type=01
+  # --------------------------------------------------------------------------
+  easy_prt_enquiry:
+    name: "工采通-正在询价"
+    site_url: "https://easy-prt.com/"
+    category: tender                       # 招标标讯 (collection_app.py::CATEGORY_LABELS)
+    enabled: true
+    detect_enabled: true
+    detect_interval: 300
+    bypass_date_filter: true               # API 已按 bidStatus=02 过滤，不叠加 today 过滤
+    transport:
+      type: encrypted_api
+      engine: urllib
+      headers:
+        Content-Type: "application/json"
+        X-Platform-Id: "gct"
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+      encryption:
+        algorithm: sm4_ecb
+        key: "90bdd291004611ef87fc52540023e781"
+        key_encoding: hex
+        encoding: utf-8
+        encrypt_request: true
+        request_format: json_string
+        request_param_name: encryptParams
+      verify_ssl: true
+      timeout: 30
+    anti_crawler:
+      delay_min: 1.5
+      delay_max: 3.0
+      max_retries: 3
+      max_consecutive_empty: 3
+    listing:
+      url: "https://easy-prt.com/gykjbid/gykj-bid/bid/portal/getProjectList"
+      method: POST
+      body_type: json
+      params:
+        announcementType: ""
+        areaCode: ""
+        bidStatus: "02"                    # 正在询价
+        cityCode: ""
+        industryCategories: "good_service"
+        industrySegmentation: ""
+        industrySubCategories: ""
+        keyword: ""
+        pageNo: "{{ page }}"
+        pageSize: "{{ page_size }}"
+        provinceCode: ""
+        quotationSubmitForm: ""
+        releaseBeginTime: ""
+        releaseEndTime: ""
+        showTop: 0
+        tenderType: "06"
+    pagination:
+      type: page_no
+      page_param: "pageNo"
+      page_size_param: "pageSize"
+      page_size: 20
+      start: 1
+      max_pages: 2                         # 7 天约 6 条，1-2 页足够
+      items_field: "result.records"
+      total_field: "result.total"
+    extract:
+      type: json_path
+      items_path: "result.records"
+      fields:
+        id: "id"
+        title: "projectName"
+        date: "releaseTime"
+        news_type: "announcementTypeText"
+        project_num: "projectNum"
+        province: "provinceName"
+        city: "cityName"
+      url_template: "https://easy-prt.com/project?id={id}&type=01"
+    detail:
+      type: api_request
+      url: "https://easy-prt.com/gykjbid/gykj-bid/bid/portal/getProjectDetail"
+      method: GET
+      body_type: json
+      params:
+        projectPackageId: "{id}"
+      content_field: ""                    # detail 无正文；正文走 content_endpoint
+      attachment_fields:
+        - "result.preQualAnnexes"
+      content_endpoint:
+        url: "https://easy-prt.com/gykjbid/gykj-bid/bid/portal/getProjectContent"
+        method: GET
+        body_type: json
+        params:
+          contentId: "{announcementList.0.contentId}"   # adapter _substitute 支持 dot-path+index
+        content_field: "result.content"
+        attachment_fields:
+          - "result.annexes"
+    format:
+      parser_id: "naive"
+      upload_batch_size: 5
+    sections:
+      - label: "enquiry"
+        name: "招标标讯"                     # ★ 前端「类型」列展示
 
 # ============================================================================
 # PLAYWRIGHT HTTP SITES — PlaywrightHttpClient for browser fingerprint (≈2 sites)
@@ -3281,6 +3897,99 @@ sites:
           page_size: 20
           start: 0
 
+  # --------------------------------------------------------------------------
+  # zjfw_zhangzhou_zcwj — 漳州市工程项目网上中介服务平台-政策法规
+  # Target: http://zjfw.zhangzhou.gov.cn/imng/zjfw/index/serviceGuide/serviceGuide?name=ZCWJ
+  # Adapter: spa_render (api-v2 REST endpoint requires s/t signature tokens that
+  #          are generated client-side; navigating to the SPA page auto-fires
+  #          the XHR which _setup_api_capture intercepts — same approach used
+  #          by zjfw_score_sort)
+  # Total: 3 historical policies (2024-07 / 2023-11); detail body is empty,
+  #        real content lives in the PDF attachment.
+  # --------------------------------------------------------------------------
+  zjfw_zhangzhou_zcwj:
+    name: "漳州市工程项目网上中介服务平台-政策法规"
+    site_url: "http://zjfw.zhangzhou.gov.cn"
+    category: policy                       # ★ 写 crawler_result + collection_policy_ext
+    enabled: true
+    detect_enabled: true                   # ★ 探测器自动增量
+    detect_interval: 600
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      network_idle: false                  # 政府站 analytics 让 networkidle 永不空闲
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"
+        Accept: "application/json, text/plain, */*"
+      verify_ssl: false
+      timeout: 60
+    listing:
+      url: "http://zjfw.zhangzhou.gov.cn/imng/zjfw/index/serviceGuide/serviceGuide?name=ZCWJ"
+      method: GET
+    pagination:
+      type: single_page                    # 历史共 3 条，无分页
+      items_field: "data"                  # XHR 响应 {"total":3,"data":[...]}
+    anti_crawler:
+      delay_min: 1.5
+      delay_max: 3.0
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: "data"
+      fields:
+        id:    "ID"
+        title: "TITLE"
+        date:  "DISPLAYTIME"               # 格式 "YYYY-MM-DD" 或 "YYYY-MM-DD HH:mm:ss"
+        # 政策扩展字段（→ collection_policy_ext）
+        issuing_authority: "SOURCE"        # API 字段 SOURCE（多为空，attachment name 兜底）
+        topic_category:    "TYPE_NAME"     # 政策文件
+        doc_number:        "ATTACHMENT_NAME"  # 文件名常含文号 "漳建审改[2024]3号"
+      url_template: "http://zjfw.zhangzhou.gov.cn/imng/zjfw/index/policy/policyDetail_view?id={ID}&tagName=%25E6%2594%25BF%25E7%25AD%2596%25E6%2596%2587%25E4%25BB%25B6&typeName=ZCWJ"
+    sections:
+      - label: "zcwj"
+        name: "漳州市-政策法规"             # ★ 前端「类型」列展示 (engine 注入 section_name)
+    detail:
+      type: css_selector
+      content_field: "#policies_regulations_tab"   # 详情主容器：header + meta + 正文 + 附件
+      metadata_js: |
+        () => {
+          const result = {};
+          // 发布时间: <li>发布时间：2024-07-02 09:09:34</li>
+          document.querySelectorAll('li, span, p').forEach(el => {
+            const t = (el.textContent || '').trim();
+            const m = t.match(/发布时间[：:]\s*([\d\-/: ]+)/);
+            if (m && !result.publish_datetime) result.publish_datetime = m[1].trim();
+            const m2 = t.match(/信息来源[：:]\s*(.+)/);
+            if (m2 && !result.issuing_authority) result.issuing_authority = m2[1].trim();
+          });
+          // 附件: 抓所有 .pdf/.doc/.docx/.xls/.xlsx/.zip/.rar 链接
+          const files = [];
+          document.querySelectorAll('a').forEach(a => {
+            const href = a.href || '';
+            const name = (a.textContent || '').trim();
+            if (/\.(pdf|docx?|xlsx?|zip|rar|7z)(\?|$)/i.test(href) || href.includes('downloadagent')) {
+              files.push({ file_url: href, file_name: name || href.split('/').pop() });
+            }
+          });
+          if (files.length) result.files = files;
+          // 文号从附件名解析 "漳建审改[2024]3号" 等
+          const allText = document.body.innerText || '';
+          const dn = allText.match(/(?:漳建|闽建|国发|国办发|政办|建审改|建设|市政府|省)?〔\s*\d{4}\s*〕\s*\d+\s*号|[\u4e00-\u9fa5]{2,10}\[\d{4}\]\d+\s*号/);
+          if (dn) result.doc_number = dn[0];
+          return result;
+        }
+    format:
+      parser_id: "naive"
+      template: |
+        # {{ title }}
+
+        **发布时间:** {{ date }}
+        **来源:** 漳州市工程项目网上中介服务平台
+        **原文链接:** {{ url }}
+
+        {{ content }}
+      upload_batch_size: 5
+
   zjfw_score_sort:
     name: "漳州工程项目中介服务平台-评分排序"
     site_url: "http://zjfw.zhangzhou.gov.cn"
@@ -3321,6 +4030,327 @@ sites:
     format:
       parser_id: "naive"
       upload_batch_size: 10
+
+  # --------------------------------------------------------------------------
+  # zjfw_zhangzhou_notice — 漳州市工程项目网上中介服务平台-公告（7 栏目）
+  # Target: http://zjfw.zhangzhou.gov.cn/imng/zjfw/browse/...
+  # Adapter: spa_render + api_capture + route_override
+  #   - api-v2 端点 ?s=&t= 签名由 SPA 自然 XHR 时生成，浏览器直接 fetch 会失败
+  #   - 导航到 SPA 列表页让 SPA 自己触发 XHR，_on_response 捕获
+  #   - route_override 拦截 POST body 注入 publish_start_time/end_time (昨天→今天)
+  #     + limit:50，单次 XHR 拿足够当天数据，无需 click_next 翻页
+  #   - 详情页 URL 模式：bid_view(id,type) → /imng/zjfw/browse/<module>/<module>Detail?id={ID}&type={TYPE}
+  # Sections: 7 个公告类型（采购/澄清/重发/终止/流标/中选/中选变更）
+  # --------------------------------------------------------------------------
+  zjfw_zhangzhou_notice:
+    name: "漳州市工程项目网上中介服务平台-公告"
+    site_url: "http://zjfw.zhangzhou.gov.cn"
+    category: tender
+    enabled: true
+    detect_enabled: true
+    detect_interval: 600
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      network_idle: false               # 政府站 analytics 让 networkidle 永不空闲
+      route_override:                   # ★ 拦截 SPA XHR 注入日期 + limit
+        url_match: "api-v2"
+        method: POST
+        body_has_key: "publish_start_time"   # 只 amend 列表查询 body，不动 getConfigInfo 等
+        merge_body:
+          publish_start_time: "{{ 1_days_ago }}"
+          publish_end_time: "{{ today }}"
+          start: 0
+          limit: 50                     # 单次拉 50 条覆盖当天数据
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"
+        Accept: "application/json, text/plain, */*"
+      verify_ssl: false
+      timeout: 60
+    pagination:
+      type: single_page                # route_override 已把 limit 改 50，单页足够
+      items_field: "data"
+    anti_crawler:
+      delay_min: 1.5
+      delay_max: 3.0
+      max_retries: 3
+      max_consecutive_empty: 3
+    extract:
+      type: json_path
+      items_path: "data"               # 响应 {total: N, data: [...]}
+      fields:
+        id:    "ID"
+        title: "TITLE"
+        date:  "AUDIT_DATE_CHAR"       # 审核通过时间（发布时间）
+        region: "NAME"                 # 区域名（如"龙海区"）
+        owner: "CROP_NAME"             # 业主单位
+        item_type: "TYPE"              # 公告子类型（用于详情 URL type 参数）
+        create_date: "CREATDATE"
+    format:
+      parser_id: "naive"
+      template: |
+        # {{ title }}
+
+        **发布时间:** {{ date }}
+        **区域:** {{ region }}
+        **业主单位:** {{ owner }}
+        **来源:** 漳州市工程项目网上中介服务平台
+        **原文链接:** {{ url }}
+
+        {{ content }}
+      upload_batch_size: 5
+    sections:
+      - label: cggg
+        name: "漳州市-采购公告"
+        listing:
+          url: "http://zjfw.zhangzhou.gov.cn/imng/zjfw/browse/bidNotice/bidNotice"
+          method: GET
+        extract:
+          type: json_path
+          items_path: "data"
+          fields:
+            id:    "ID"
+            title: "TITLE"
+            date:  "AUDIT_DATE_CHAR"
+            region: "NAME"
+            owner: "CROP_NAME"
+            item_type: "TYPE"
+            create_date: "CREATDATE"
+          url_template: "http://zjfw.zhangzhou.gov.cn/imng/zjfw/browse/bidNotice/bidNoticeDetail?id={ID}&type={TYPE}"
+        detail:
+          type: css_selector
+          content_field: "#div_continer, .its-page, .tab-content"
+          metadata_js: |
+            () => {
+              const result = {};
+              document.querySelectorAll('li, span, p, .info-item, td').forEach(el => {
+                const t = (el.textContent || '').trim();
+                if (t.length > 200) return;
+                const m1 = t.match(/发布时间[：:]\s*([\d\-/: ]+)/);
+                if (m1 && !result.publish_datetime) result.publish_datetime = m1[1].trim();
+                const m2 = t.match(/信息来源[：:]\s*(.+)/);
+                if (m2 && !result.issuing_authority) result.issuing_authority = m2[1].trim();
+                const m3 = t.match(/项目编号[：:]\s*(.+)/);
+                if (m3 && !result.project_no) result.project_no = m3[1].trim();
+                const m4 = t.match(/业主单位[：:]\s*(.+)/);
+                if (m4 && !result.owner) result.owner = m4[1].trim();
+              });
+              const files = [];
+              document.querySelectorAll('a').forEach(a => {
+                const href = a.href || '';
+                const name = (a.textContent || '').trim();
+                if (/\.(pdf|docx?|xlsx?|zip|rar|7z)(\?|$)/i.test(href) || href.includes('downloadagent') || href.includes('/download')) {
+                  files.push({ file_url: href, file_name: name || href.split('/').pop() });
+                }
+              });
+              if (files.length) result.files = files;
+              return result;
+            }
+      - label: cggg_clarify
+        name: "漳州市-澄清公告"
+        listing:
+          url: "http://zjfw.zhangzhou.gov.cn/imng/zjfw/browse/clarifyBidNotice/bidNotice"
+          method: GET
+        extract:
+          type: json_path
+          items_path: "data"
+          fields:
+            id:    "ID"
+            title: "TITLE"
+            date:  "AUDIT_DATE_CHAR"
+            region: "NAME"
+            owner: "CROP_NAME"
+            item_type: "TYPE"
+            create_date: "CREATDATE"
+          url_template: "http://zjfw.zhangzhou.gov.cn/imng/zjfw/browse/bidNotice/bidNoticeDetail?id={ID}&type={TYPE}"
+        detail:
+          type: css_selector
+          content_field: "#div_continer, .its-page, .tab-content"
+          metadata_js: |
+            () => {
+              const result = {};
+              document.querySelectorAll('li, span, p, .info-item, td').forEach(el => {
+                const t = (el.textContent || '').trim();
+                if (t.length > 200) return;
+                const m1 = t.match(/发布时间[：:]\s*([\d\-/: ]+)/);
+                if (m1 && !result.publish_datetime) result.publish_datetime = m1[1].trim();
+                const m2 = t.match(/信息来源[：:]\s*(.+)/);
+                if (m2 && !result.issuing_authority) result.issuing_authority = m2[1].trim();
+              });
+              const files = [];
+              document.querySelectorAll('a').forEach(a => {
+                const href = a.href || '';
+                const name = (a.textContent || '').trim();
+                if (/\.(pdf|docx?|xlsx?|zip|rar|7z)(\?|$)/i.test(href) || href.includes('downloadagent') || href.includes('/download')) {
+                  files.push({ file_url: href, file_name: name || href.split('/').pop() });
+                }
+              });
+              if (files.length) result.files = files;
+              return result;
+            }
+      - label: cggg_resend
+        name: "漳州市-重发公告"
+        listing:
+          url: "http://zjfw.zhangzhou.gov.cn/imng/zjfw/browse/resendBidNotice/bidNotice"
+          method: GET
+        extract:
+          type: json_path
+          items_path: "data"
+          fields:
+            id:    "ID"
+            title: "TITLE"
+            date:  "CREATDATE"                  # resend 接口无 AUDIT_DATE_CHAR，用 CREATDATE
+            region: "NAME"
+            owner: "CROP_NAME"
+            item_type: "TYPE"
+            create_date: "CREATDATE"
+          url_template: "http://zjfw.zhangzhou.gov.cn/imng/zjfw/browse/bidNotice/bidNoticeDetail?id={ID}&type={TYPE}"
+        detail:
+          type: css_selector
+          content_field: "#div_continer, .its-page, .tab-content"
+          metadata_js: |
+            () => {
+              const result = {};
+              document.querySelectorAll('li, span, p, .info-item, td').forEach(el => {
+                const t = (el.textContent || '').trim();
+                if (t.length > 200) return;
+                const m1 = t.match(/发布时间[：:]\s*([\d\-/: ]+)/);
+                if (m1 && !result.publish_datetime) result.publish_datetime = m1[1].trim();
+                const m2 = t.match(/信息来源[：:]\s*(.+)/);
+                if (m2 && !result.issuing_authority) result.issuing_authority = m2[1].trim();
+              });
+              const files = [];
+              document.querySelectorAll('a').forEach(a => {
+                const href = a.href || '';
+                const name = (a.textContent || '').trim();
+                if (/\.(pdf|docx?|xlsx?|zip|rar|7z)(\?|$)/i.test(href) || href.includes('downloadagent') || href.includes('/download')) {
+                  files.push({ file_url: href, file_name: name || href.split('/').pop() });
+                }
+              });
+              if (files.length) result.files = files;
+              return result;
+            }
+      - label: zggg
+        name: "漳州市-终止公告"
+        listing:
+          url: "http://zjfw.zhangzhou.gov.cn/imng/zjfw/index/notification/notification?name=qxgg"
+          method: GET
+        extract:
+          type: json_path
+          items_path: "data"
+          fields:
+            id:    "ID"
+            title: "TITLE"
+            date:  "DISPLAYTIME"                  # 终止公告用 DISPLAYTIME 作发布时间
+            region: "NAME"
+            news_type: "TYPE_NAME"
+            source: "SOURCE"
+          url_template: "http://zjfw.zhangzhou.gov.cn/imng/zjfw/index/notification/notification?name=qxgg"
+        detail:
+          type: inline                            # notificationDetail 路由已下线 (404)，仅用列表数据入库
+      - label: lbgg
+        name: "漳州市-流标公告"
+        listing:
+          url: "http://zjfw.zhangzhou.gov.cn/imng/zjfw/index/notification/notification_lb"
+          method: GET
+        extract:
+          type: json_path
+          items_path: "data"
+          fields:
+            id:    "BID_ID"                       # 流标公告接口主键是 BID_ID 不是 ID
+            title: "TITLE"
+            date:  "CREATE_DATE"
+            reason: "REASON"
+            news_type: "TYPE"
+          url_template: "http://zjfw.zhangzhou.gov.cn/imng/zjfw/index/notification/notification_lb"
+        detail:
+          type: inline                            # notificationDetail 路由已下线 (404)，仅用列表数据入库
+      - label: zxgg
+        name: "漳州市-中选公告"
+        listing:
+          url: "http://zjfw.zhangzhou.gov.cn/imng/zjfw/browse/dealInfo/dealInfo"
+          method: GET
+        extract:
+          type: json_path
+          items_path: "data"
+          fields:
+            id:    "ID"
+            title: "TITLE"
+            date:  "CONFIRM_TIME"                 # 中选公告用 CONFIRM_TIME 作发布时间
+            region: "NAME"
+            owner: "CROP_NAME"
+            winner: "CONAME"
+            item_type: "TYPE"
+            typechar: "TYPECHAR"
+          url_template: "http://zjfw.zhangzhou.gov.cn/imng/zjfw/browse/dealInfo/dealInfoDetail?id={ID}&type={TYPE}"
+        detail:
+          type: css_selector
+          content_field: "#div_continer, .its-page, .tab-content"
+          metadata_js: |
+            () => {
+              const result = {};
+              document.querySelectorAll('li, span, p, .info-item, td').forEach(el => {
+                const t = (el.textContent || '').trim();
+                if (t.length > 200) return;
+                const m1 = t.match(/发布时间[：:]\s*([\d\-/: ]+)/);
+                if (m1 && !result.publish_datetime) result.publish_datetime = m1[1].trim();
+                const m2 = t.match(/信息来源[：:]\s*(.+)/);
+                if (m2 && !result.issuing_authority) result.issuing_authority = m2[1].trim();
+                const m3 = t.match(/中选人[：:]\s*(.+)/);
+                if (m3 && !result.winner) result.winner = m3[1].trim();
+              });
+              const files = [];
+              document.querySelectorAll('a').forEach(a => {
+                const href = a.href || '';
+                const name = (a.textContent || '').trim();
+                if (/\.(pdf|docx?|xlsx?|zip|rar|7z)(\?|$)/i.test(href) || href.includes('downloadagent') || href.includes('/download')) {
+                  files.push({ file_url: href, file_name: name || href.split('/').pop() });
+                }
+              });
+              if (files.length) result.files = files;
+              return result;
+            }
+      - label: zxgbgg
+        name: "漳州市-中选变更公告"
+        listing:
+          url: "http://zjfw.zhangzhou.gov.cn/imng/zjfw/browse/bid_change_info/bid_change_info"
+          method: GET
+        extract:
+          type: json_path
+          items_path: "data"
+          fields:
+            id:    "ID"
+            title: "TITLE"
+            date:  "CONFIRM_TIME"                 # 中选变更公告同样用 CONFIRM_TIME
+            region: "NAME"
+            owner: "CROP_NAME"
+            main_dep: "MAIN_DEP_NAME"
+          url_template: "http://zjfw.zhangzhou.gov.cn/imng/zjfw/browse/dealInfo/dealInfoDetail?id={ID}&type={TYPE}"
+        detail:
+          type: css_selector
+          content_field: "#div_continer, .its-page, .tab-content"
+          metadata_js: |
+            () => {
+              const result = {};
+              document.querySelectorAll('li, span, p, .info-item, td').forEach(el => {
+                const t = (el.textContent || '').trim();
+                if (t.length > 200) return;
+                const m1 = t.match(/发布时间[：:]\s*([\d\-/: ]+)/);
+                if (m1 && !result.publish_datetime) result.publish_datetime = m1[1].trim();
+                const m2 = t.match(/信息来源[：:]\s*(.+)/);
+                if (m2 && !result.issuing_authority) result.issuing_authority = m2[1].trim();
+              });
+              const files = [];
+              document.querySelectorAll('a').forEach(a => {
+                const href = a.href || '';
+                const name = (a.textContent || '').trim();
+                if (/\.(pdf|docx?|xlsx?|zip|rar|7z)(\?|$)/i.test(href) || href.includes('downloadagent') || href.includes('/download')) {
+                  files.push({ file_url: href, file_name: name || href.split('/').pop() });
+                }
+              });
+              if (files.length) result.files = files;
+              return result;
+            }
 
 # ============================================================================
 # SPA RENDER SITES — sync_playwright for Vue/React SPAs (≈10 sites)
@@ -3851,18 +4881,15 @@ sites:
             EndTime: "{{ today }} 23:59:59"
 
   # --------------------------------------------------------------------------
-  # ggzyfw_fujian_guide — 福建省公共资源交易平台 · 示范文本/行业规范/培训资料
-  # Source: https://ggzyfw.fujian.gov.cn/guide/list?type=53|54|59
-  # API:    https://ggzyfw.fujian.gov.cn/FwPortalApi/Article/PageList (AES-256-CBC + MD5 portal-sign)
-  # Sections: fanben(53)=示范文本, guifan(54,55)=行业规范, peixun(59)=培训资料
-  # 时间过滤: timeType=0 全量回溯（首次）；定时调度时由前端 trigger 注入 date_filter=today
-  # Category: other — 结构化字段入 extracted_json；附件由 _extract_files_from_item 自动正则
+  # ggzyfw_fujian_guide — [DISABLED 2026-07-25] 已被 ggzyfw_fujian_guide_txn 替换
+  # 保留配置供历史数据溯源；不再参与采集与探测器轮询
   # --------------------------------------------------------------------------
   ggzyfw_fujian_guide:
-    name: "福建省公共资源交易平台-示范文本行业规范培训资料"
+    name: "福建省公共资源交易平台-示范文本行业规范培训资料(已停用)"
     site_url: "https://ggzyfw.fujian.gov.cn/"
     category: other
-    enabled: true
+    enabled: false
+    detect_enabled: false
     transport:
       type: encrypted_api
       engine: requests
@@ -3957,6 +4984,114 @@ sites:
           body_type: json
           params:
             type: "59"
+            timeType: "0"
+            total: 0
+            createTime: []
+
+  # --------------------------------------------------------------------------
+  # ggzyfw_fujian_guide_txn — 福建省公共资源交易平台 · 交易指南
+  # Source: https://ggzyfw.fujian.gov.cn/guide/list?type=53  (交易指南 = 53/54/55)
+  # API:    https://ggzyfw.fujian.gov.cn/FwPortalApi/Article/PageList (AES-256-CBC + MD5 portal-sign)
+  # Detail: https://ggzyfw.fujian.gov.cn/FwPortalApi/Article/Detail (CONTENTS 字段为 HTML 正文)
+  # Sections: fanben(53)=示范文本, guifan(54,55)=行业规范
+  # 时间过滤: timeType=0 全量回溯（首次）；后续 trigger 注入 date_filter=today 由 CollectionWriter 过滤
+  # Category: other — 结构化字段(ID/SOURCES/TM/CREATE_TM 等)入 extracted_json；
+  #          正文 HTML 内 <a href> 由 _extract_files_from_item 自动扫描，AttachmentHandler 下载+解压+上传KB
+  # 探测器: detect_enabled=true，签名变化自动入队 unified_crawler 全量采集
+  # --------------------------------------------------------------------------
+  ggzyfw_fujian_guide_txn:
+    name: "福建省公共资源交易平台-交易指南"
+    site_url: "https://ggzyfw.fujian.gov.cn/"
+    category: other
+    enabled: true
+    detect_enabled: true
+    detect_interval: 300
+    detect_max_interval: 3600
+    transport:
+      type: encrypted_api
+      engine: requests
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+        Content-Type: "application/json;charset=UTF-8"
+        Origin: "https://ggzyfw.fujian.gov.cn"
+        Referer: "https://ggzyfw.fujian.gov.cn/"
+      encryption:
+        algorithm: aes_256_cbc
+        key: "EB444973714E4A40876CE66BE45D5930"
+        iv: "B5A8904209931867"
+        key_encoding: utf8
+        field: "Data"
+        encoding: utf-8
+      signing:
+        algorithm: md5
+        secret: "B3978D054A72A7002063637CCDF6B2E5"
+        header_name: "portal-sign"
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: "https://ggzyfw.fujian.gov.cn/FwPortalApi/Article/PageList"
+      method: POST
+      body_type: json
+    pagination:
+      type: page_no
+      page_param: pageNo
+      page_size_param: pageSize
+      page_size: 50
+      start: 1
+      total_field: Total
+      total_pages_field: PageTotal
+      items_field: Table
+      max_pages: 10
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.5
+      max_retries: 4
+      exponential_backoff: true
+      max_consecutive_empty: 3
+    extract:
+      type: json_path
+      items_path: "Table"
+      fields:
+        id: "ID"
+        title: "TITLE"
+        date: "TM"
+        news_type: "TYPE"
+        source_org: "SOURCES"
+        create_time: "CREATE_TM"
+        read_num: "READ_NUM"
+      url_template: "https://ggzyfw.fujian.gov.cn/guide/detail?id={ID}"
+    detail:
+      type: api_request
+      url: "https://ggzyfw.fujian.gov.cn/FwPortalApi/Article/Detail"
+      method: POST
+      body_type: json
+      params:
+        id: "{id}"
+        type: "{news_type}"
+      content_field: "CONTENTS"
+    format:
+      parser_id: "naive"
+      upload_batch_size: 10
+    sections:
+      - label: "fanben"
+        name: "示范文本"
+        listing:
+          url: "https://ggzyfw.fujian.gov.cn/FwPortalApi/Article/PageList"
+          method: POST
+          body_type: json
+          params:
+            type: "53"
+            timeType: "0"
+            total: 0
+            createTime: []
+      - label: "guifan"
+        name: "行业规范"
+        listing:
+          url: "https://ggzyfw.fujian.gov.cn/FwPortalApi/Article/PageList"
+          method: POST
+          body_type: json
+          params:
+            type: "54,55"
             timeType: "0"
             total: 0
             createTime: []
@@ -4551,3 +5686,1279 @@ sites:
     format:
       parser_id: "naive"
       upload_batch_size: 10
+
+  # ==========================================================================
+  # 福建省政府采购网 - 公告信息（省级 + 9 地级市）  category=announcement
+  # 接口：/gpcms/rest/web/v2/info/selectInfoForIndex（需 verifyCode 验证码）
+  # 验证码：/gpcms/rest/web/v2/index/getVerify（ddddocr OCR，spa_render 内置）
+  # 详情：/gpcms/rest/web/v2/info/getInfoById（data.content 正文 + data.attchList 附件）
+  # 架构：spa_render + vue_http（绕过 nsssjss 签名）+ captcha(ocr)
+  # siteId 全省统一 d36a6e8b-4363-4b52-a00b-79ca47033923；regionCode 按地市
+  # channel 统一 f582600e-065d-4f35-8966-48a33fa93863（公告信息频道）
+  # 附件 URL 带 accessCode 自包含令牌，AttachmentHandler 裸 requests 可下载
+  # ==========================================================================
+  fujian_zfcg_prov:
+    name: "福建省政府采购网-公告信息（省级）"
+    site_url: "https://zfcg.czt.fujian.gov.cn"
+    category: announcement
+    enabled: true
+    detect_enabled: true
+    detect_interval: 600
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      vue_http: true
+      network_idle: false
+      captcha: { type: ocr }
+      verify_ssl: false
+      timeout: 90
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    listing:
+      url: "https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/selectInfoForIndex"
+      method: GET
+      params:
+        currPage: "{{ page }}"
+        pageSize: "{{ page_size }}"
+        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+        channel: "f582600e-065d-4f35-8966-48a33fa93863"
+        noticeType: "59,001056,00101,001062,001051,001031,001032,001021,001022,001023,001024,001025,001026,001029,001004,001006,001054,001033,00105K"
+        regionCode: "350001"
+        operationStartTime: "{{ today }} 00:00:00"
+        operationEndTime: "{{ today }} 23:59:59"
+        organizationForm: "!4"
+        selectTimeName: ""
+    pagination:
+      type: page_no
+      page_param: currPage
+      page_size_param: pageSize
+      page_size: 20
+      start: 1
+      max_pages: 10
+      items_field: "data.rows"
+      total_field: "data.total"
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 4
+      max_consecutive_empty: 3
+    extract:
+      type: json_path
+      items_path: "data.rows"
+      fields:
+        id: "id"
+        title: "title"
+        date: "noticeTime"
+        url: "url"
+        openTenderTime: "openTenderTime"
+        regionName: "regionName"
+        purchaser: "purchaser"
+        agency: "agency"
+        openTenderCode: "openTenderCode"
+        budget: "budget"
+        purchaseManner: "purchaseManner"
+        catalogueNameList: "catalogueNameList"
+        noticeTypeName: "noticeTypeName"
+        publishTime: "publishTime"
+        planId: "planId"
+        channel: "channel"
+      url_template: "https://zfcg.czt.fujian.gov.cn/maincms-web/articleDetail?id={noticeId}"
+    detail:
+      type: api_request
+      url: "https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/getInfoById"
+      method: GET
+      params:
+        id: "{id}"
+        planId: "{planId}"
+        channel: "{channel}"
+        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+      content_field: "data.content"
+    sections:
+      - label: ggnr
+        name: "公告信息-省级"
+
+  fujian_zfcg_ningde_jdgl:
+    name: "宁德市政府采购网-监督管理"
+    site_url: "https://zfcg.czj.ningde.gov.cn"
+    category: other
+    enabled: true
+    detect_enabled: true
+    detect_interval: 600
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      vue_http: true
+      network_idle: false
+      captcha: { type: ocr }
+      verify_ssl: false
+      timeout: 90
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    listing:
+      url: "https://zfcg.czj.ningde.gov.cn/gpcms/rest/web/v2/info/selectInfoForIndex"
+      method: GET
+      params:
+        currPage: "{{ page }}"
+        pageSize: "{{ page_size }}"
+        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+        channel: "47bbf186-5544-4537-bef5-158d0c0923fa"
+        noticeType: ""
+        operationStartTime: "{{ today }} 00:00:00"
+        operationEndTime: "{{ today }} 23:59:59"
+        selectTimeName: ""
+    pagination:
+      type: page_no
+      page_param: currPage
+      page_size_param: pageSize
+      page_size: 20
+      start: 1
+      max_pages: 3
+      items_field: "data.rows"
+      total_field: "data.total"
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 4
+      max_consecutive_empty: 3
+    extract:
+      type: json_path
+      items_path: "data.rows"
+      fields:
+        id: "id"
+        title: "title"
+        date: "noticeTime"
+        url: "url"
+        openTenderTime: "openTenderTime"
+        regionName: "regionName"
+        purchaser: "purchaser"
+        agency: "agency"
+        openTenderCode: "openTenderCode"
+        budget: "budget"
+        purchaseManner: "purchaseManner"
+        catalogueNameList: "catalogueNameList"
+        noticeTypeName: "noticeTypeName"
+        publishTime: "publishTime"
+        planId: "planId"
+        channel: "channel"
+        channelName: "channelName"
+      url_template: "https://zfcg.czj.ningde.gov.cn/maincms-web/articleDetail?id={id}"
+    detail:
+      type: api_request
+      url: "https://zfcg.czj.ningde.gov.cn/gpcms/rest/web/v2/info/getInfoById"
+      method: GET
+      params:
+        id: "{id}"
+        planId: "{planId}"
+        channel: "{channel}"
+        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+      content_field: "data.content"
+    sections:
+      - label: jdgl
+        name: "监督管理"
+
+  fujian_zfcg_fuzhou:
+    name: "福建省政府采购网-公告信息（福州）"
+    site_url: "https://zfcg.fuzhou.gov.cn"
+    category: announcement
+    enabled: true
+    detect_enabled: true
+    detect_interval: 600
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      vue_http: true
+      network_idle: false
+      captcha: { type: ocr }
+      verify_ssl: false
+      timeout: 90
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    listing:
+      url: "https://zfcg.fuzhou.gov.cn/gpcms/rest/web/v2/info/selectInfoForIndex"
+      method: GET
+      params:
+        currPage: "{{ page }}"
+        pageSize: "{{ page_size }}"
+        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+        channel: "f582600e-065d-4f35-8966-48a33fa93863"
+        noticeType: "59,001056,00101,001062,001051,001031,001032,001021,001022,001023,001024,001025,001026,001029,001004,001006,001054,001033,00105K"
+        regionCode: "350101"
+        operationStartTime: "{{ today }} 00:00:00"
+        operationEndTime: "{{ today }} 23:59:59"
+        organizationForm: "!4"
+        selectTimeName: ""
+    pagination:
+      type: page_no
+      page_param: currPage
+      page_size_param: pageSize
+      page_size: 20
+      start: 1
+      max_pages: 10
+      items_field: "data.rows"
+      total_field: "data.total"
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 4
+      max_consecutive_empty: 3
+    extract:
+      type: json_path
+      items_path: "data.rows"
+      fields:
+        id: "id"
+        title: "title"
+        date: "noticeTime"
+        url: "url"
+        openTenderTime: "openTenderTime"
+        regionName: "regionName"
+        purchaser: "purchaser"
+        agency: "agency"
+        openTenderCode: "openTenderCode"
+        budget: "budget"
+        purchaseManner: "purchaseManner"
+        catalogueNameList: "catalogueNameList"
+        noticeTypeName: "noticeTypeName"
+        publishTime: "publishTime"
+        planId: "planId"
+        channel: "channel"
+      url_template: "https://zfcg.fuzhou.gov.cn/maincms-web/articleDetail?id={noticeId}"
+    detail:
+      type: api_request
+      url: "https://zfcg.fuzhou.gov.cn/gpcms/rest/web/v2/info/getInfoById"
+      method: GET
+      params:
+        id: "{id}"
+        planId: "{planId}"
+        channel: "{channel}"
+        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+      content_field: "data.content"
+    sections:
+      - label: ggnr
+        name: "公告信息-福州"
+
+  fujian_zfcg_xiamen:
+    name: "厦门市政府采购网-公告信息"
+    site_url: "https://ccgp-xiamen.gov.cn"
+    category: announcement
+    enabled: true
+    detect_enabled: true
+    detect_interval: 600
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      vue_http: true
+      network_idle: false
+      captcha: { type: ocr }
+      verify_ssl: false
+      timeout: 90
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    listing:
+      url: "https://ccgp-xiamen.gov.cn/gpcms/rest/web/v2/info/selectInfoForIndex"
+      method: GET
+      params:
+        currPage: "{{ page }}"
+        pageSize: "{{ page_size }}"
+        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+        channel: "f582600e-065d-4f35-8966-48a33fa93863"
+        noticeType: "59,001056,00101,001062,001051,001031,001032,001021,001022,001023,001024,001025,001026,001029,001004,001006,001054,001033,00105K"
+        regionCode: "350201"
+        operationStartTime: "{{ today }} 00:00:00"
+        operationEndTime: "{{ today }} 23:59:59"
+        organizationForm: "!4"
+        selectTimeName: ""
+    pagination:
+      type: page_no
+      page_param: currPage
+      page_size_param: pageSize
+      page_size: 20
+      start: 1
+      max_pages: 10
+      items_field: "data.rows"
+      total_field: "data.total"
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 4
+      max_consecutive_empty: 3
+    extract:
+      type: json_path
+      items_path: "data.rows"
+      fields:
+        id: "id"
+        title: "title"
+        date: "noticeTime"
+        url: "url"
+        openTenderTime: "openTenderTime"
+        regionName: "regionName"
+        purchaser: "purchaser"
+        agency: "agency"
+        openTenderCode: "openTenderCode"
+        budget: "budget"
+        purchaseManner: "purchaseManner"
+        catalogueNameList: "catalogueNameList"
+        noticeTypeName: "noticeTypeName"
+        publishTime: "publishTime"
+        planId: "planId"
+        channel: "channel"
+      url_template: "https://ccgp-xiamen.gov.cn/maincms-web/articleDetail?id={noticeId}"
+    detail:
+      type: api_request
+      url: "https://ccgp-xiamen.gov.cn/gpcms/rest/web/v2/info/getInfoById"
+      method: GET
+      params:
+        id: "{id}"
+        planId: "{planId}"
+        channel: "{channel}"
+        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+      content_field: "data.content"
+    sections:
+      - label: ggnr
+        name: "公告信息-厦门"
+
+  fujian_zfcg_putian:
+    name: "莆田市政府采购网-公告信息"
+    site_url: "http://zfcg.putian.gov.cn"
+    category: announcement
+    enabled: true
+    detect_enabled: true
+    detect_interval: 600
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      vue_http: true
+      network_idle: false
+      captcha: { type: ocr }
+      verify_ssl: false
+      timeout: 90
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    listing:
+      url: "http://zfcg.putian.gov.cn/gpcms/rest/web/v2/info/selectInfoForIndex"
+      method: GET
+      params:
+        currPage: "{{ page }}"
+        pageSize: "{{ page_size }}"
+        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+        channel: "f582600e-065d-4f35-8966-48a33fa93863"
+        noticeType: "59,001056,00101,001062,001051,001031,001032,001021,001022,001023,001024,001025,001026,001029,001004,001006,001054,001033,00105K"
+        regionCode: "350301"
+        operationStartTime: "{{ today }} 00:00:00"
+        operationEndTime: "{{ today }} 23:59:59"
+        organizationForm: "!4"
+        selectTimeName: ""
+    pagination:
+      type: page_no
+      page_param: currPage
+      page_size_param: pageSize
+      page_size: 20
+      start: 1
+      max_pages: 10
+      items_field: "data.rows"
+      total_field: "data.total"
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 4
+      max_consecutive_empty: 3
+    extract:
+      type: json_path
+      items_path: "data.rows"
+      fields:
+        id: "id"
+        title: "title"
+        date: "noticeTime"
+        url: "url"
+        openTenderTime: "openTenderTime"
+        regionName: "regionName"
+        purchaser: "purchaser"
+        agency: "agency"
+        openTenderCode: "openTenderCode"
+        budget: "budget"
+        purchaseManner: "purchaseManner"
+        catalogueNameList: "catalogueNameList"
+        noticeTypeName: "noticeTypeName"
+        publishTime: "publishTime"
+        planId: "planId"
+        channel: "channel"
+      url_template: "http://zfcg.putian.gov.cn/maincms-web/articleDetail?id={noticeId}"
+    detail:
+      type: api_request
+      url: "http://zfcg.putian.gov.cn/gpcms/rest/web/v2/info/getInfoById"
+      method: GET
+      params:
+        id: "{id}"
+        planId: "{planId}"
+        channel: "{channel}"
+        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+      content_field: "data.content"
+    sections:
+      - label: ggnr
+        name: "公告信息-莆田"
+
+  fujian_zfcg_sanming:
+    name: "三明市政府采购网-公告信息"
+    site_url: "http://zfcg.cz.sm.gov.cn"
+    category: announcement
+    enabled: true
+    detect_enabled: true
+    detect_interval: 600
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      vue_http: true
+      network_idle: false
+      captcha: { type: ocr }
+      verify_ssl: false
+      timeout: 90
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    listing:
+      url: "http://zfcg.cz.sm.gov.cn/gpcms/rest/web/v2/info/selectInfoForIndex"
+      method: GET
+      params:
+        currPage: "{{ page }}"
+        pageSize: "{{ page_size }}"
+        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+        channel: "f582600e-065d-4f35-8966-48a33fa93863"
+        noticeType: "59,001056,00101,001062,001051,001031,001032,001021,001022,001023,001024,001025,001026,001029,001004,001006,001054,001033,00105K"
+        regionCode: "350401"
+        operationStartTime: "{{ today }} 00:00:00"
+        operationEndTime: "{{ today }} 23:59:59"
+        organizationForm: "!4"
+        selectTimeName: ""
+    pagination:
+      type: page_no
+      page_param: currPage
+      page_size_param: pageSize
+      page_size: 20
+      start: 1
+      max_pages: 10
+      items_field: "data.rows"
+      total_field: "data.total"
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 4
+      max_consecutive_empty: 3
+    extract:
+      type: json_path
+      items_path: "data.rows"
+      fields:
+        id: "id"
+        title: "title"
+        date: "noticeTime"
+        url: "url"
+        openTenderTime: "openTenderTime"
+        regionName: "regionName"
+        purchaser: "purchaser"
+        agency: "agency"
+        openTenderCode: "openTenderCode"
+        budget: "budget"
+        purchaseManner: "purchaseManner"
+        catalogueNameList: "catalogueNameList"
+        noticeTypeName: "noticeTypeName"
+        publishTime: "publishTime"
+        planId: "planId"
+        channel: "channel"
+      url_template: "http://zfcg.cz.sm.gov.cn/maincms-web/articleDetail?id={noticeId}"
+    detail:
+      type: api_request
+      url: "http://zfcg.cz.sm.gov.cn/gpcms/rest/web/v2/info/getInfoById"
+      method: GET
+      params:
+        id: "{id}"
+        planId: "{planId}"
+        channel: "{channel}"
+        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+      content_field: "data.content"
+    sections:
+      - label: ggnr
+        name: "公告信息-三明"
+
+  fujian_zfcg_quanzhou:
+    name: "泉州市政府采购网-公告信息"
+    site_url: "https://zfcg.quanzhou.gov.cn"
+    category: announcement
+    enabled: true
+    detect_enabled: true
+    detect_interval: 600
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      vue_http: true
+      network_idle: false
+      captcha: { type: ocr }
+      verify_ssl: false
+      timeout: 90
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    listing:
+      url: "https://zfcg.quanzhou.gov.cn/gpcms/rest/web/v2/info/selectInfoForIndex"
+      method: GET
+      params:
+        currPage: "{{ page }}"
+        pageSize: "{{ page_size }}"
+        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+        channel: "f582600e-065d-4f35-8966-48a33fa93863"
+        noticeType: "59,001056,00101,001062,001051,001031,001032,001021,001022,001023,001024,001025,001026,001029,001004,001006,001054,001033,00105K"
+        regionCode: "350501"
+        operationStartTime: "{{ today }} 00:00:00"
+        operationEndTime: "{{ today }} 23:59:59"
+        organizationForm: "!4"
+        selectTimeName: ""
+    pagination:
+      type: page_no
+      page_param: currPage
+      page_size_param: pageSize
+      page_size: 20
+      start: 1
+      max_pages: 10
+      items_field: "data.rows"
+      total_field: "data.total"
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 4
+      max_consecutive_empty: 3
+    extract:
+      type: json_path
+      items_path: "data.rows"
+      fields:
+        id: "id"
+        title: "title"
+        date: "noticeTime"
+        url: "url"
+        openTenderTime: "openTenderTime"
+        regionName: "regionName"
+        purchaser: "purchaser"
+        agency: "agency"
+        openTenderCode: "openTenderCode"
+        budget: "budget"
+        purchaseManner: "purchaseManner"
+        catalogueNameList: "catalogueNameList"
+        noticeTypeName: "noticeTypeName"
+        publishTime: "publishTime"
+        planId: "planId"
+        channel: "channel"
+      url_template: "https://zfcg.quanzhou.gov.cn/maincms-web/articleDetail?id={noticeId}"
+    detail:
+      type: api_request
+      url: "https://zfcg.quanzhou.gov.cn/gpcms/rest/web/v2/info/getInfoById"
+      method: GET
+      params:
+        id: "{id}"
+        planId: "{planId}"
+        channel: "{channel}"
+        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+      content_field: "data.content"
+    sections:
+      - label: ggnr
+        name: "公告信息-泉州"
+
+  fujian_zfcg_zhangzhou:
+    name: "漳州市政府采购网-公告信息"
+    site_url: "https://zfcg.czj.zhangzhou.gov.cn"
+    category: announcement
+    enabled: true
+    detect_enabled: true
+    detect_interval: 600
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      vue_http: true
+      network_idle: false
+      captcha: { type: ocr }
+      verify_ssl: false
+      timeout: 90
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    listing:
+      url: "https://zfcg.czj.zhangzhou.gov.cn/gpcms/rest/web/v2/info/selectInfoForIndex"
+      method: GET
+      params:
+        currPage: "{{ page }}"
+        pageSize: "{{ page_size }}"
+        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+        channel: "f582600e-065d-4f35-8966-48a33fa93863"
+        noticeType: "59,001056,00101,001062,001051,001031,001032,001021,001022,001023,001024,001025,001026,001029,001004,001006,001054,001033,00105K"
+        regionCode: "350601"
+        operationStartTime: "{{ today }} 00:00:00"
+        operationEndTime: "{{ today }} 23:59:59"
+        organizationForm: "!4"
+        selectTimeName: ""
+    pagination:
+      type: page_no
+      page_param: currPage
+      page_size_param: pageSize
+      page_size: 20
+      start: 1
+      max_pages: 10
+      items_field: "data.rows"
+      total_field: "data.total"
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 4
+      max_consecutive_empty: 3
+    extract:
+      type: json_path
+      items_path: "data.rows"
+      fields:
+        id: "id"
+        title: "title"
+        date: "noticeTime"
+        url: "url"
+        openTenderTime: "openTenderTime"
+        regionName: "regionName"
+        purchaser: "purchaser"
+        agency: "agency"
+        openTenderCode: "openTenderCode"
+        budget: "budget"
+        purchaseManner: "purchaseManner"
+        catalogueNameList: "catalogueNameList"
+        noticeTypeName: "noticeTypeName"
+        publishTime: "publishTime"
+        planId: "planId"
+        channel: "channel"
+      url_template: "https://zfcg.czj.zhangzhou.gov.cn/maincms-web/articleDetail?id={noticeId}"
+    detail:
+      type: api_request
+      url: "https://zfcg.czj.zhangzhou.gov.cn/gpcms/rest/web/v2/info/getInfoById"
+      method: GET
+      params:
+        id: "{id}"
+        planId: "{planId}"
+        channel: "{channel}"
+        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+      content_field: "data.content"
+    sections:
+      - label: ggnr
+        name: "公告信息-漳州"
+
+  fujian_zfcg_nanping:
+    name: "南平市政府采购网-公告信息"
+    site_url: "https://zfcg.np.gov.cn"
+    category: announcement
+    enabled: true
+    detect_enabled: true
+    detect_interval: 600
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      vue_http: true
+      network_idle: false
+      captcha: { type: ocr }
+      verify_ssl: false
+      timeout: 90
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    listing:
+      url: "https://zfcg.np.gov.cn/gpcms/rest/web/v2/info/selectInfoForIndex"
+      method: GET
+      params:
+        currPage: "{{ page }}"
+        pageSize: "{{ page_size }}"
+        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+        channel: "f582600e-065d-4f35-8966-48a33fa93863"
+        noticeType: "59,001056,00101,001062,001051,001031,001032,001021,001022,001023,001024,001025,001026,001029,001004,001006,001054,001033,00105K"
+        regionCode: "350701"
+        operationStartTime: "{{ today }} 00:00:00"
+        operationEndTime: "{{ today }} 23:59:59"
+        organizationForm: "!4"
+        selectTimeName: ""
+    pagination:
+      type: page_no
+      page_param: currPage
+      page_size_param: pageSize
+      page_size: 20
+      start: 1
+      max_pages: 10
+      items_field: "data.rows"
+      total_field: "data.total"
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 4
+      max_consecutive_empty: 3
+    extract:
+      type: json_path
+      items_path: "data.rows"
+      fields:
+        id: "id"
+        title: "title"
+        date: "noticeTime"
+        url: "url"
+        openTenderTime: "openTenderTime"
+        regionName: "regionName"
+        purchaser: "purchaser"
+        agency: "agency"
+        openTenderCode: "openTenderCode"
+        budget: "budget"
+        purchaseManner: "purchaseManner"
+        catalogueNameList: "catalogueNameList"
+        noticeTypeName: "noticeTypeName"
+        publishTime: "publishTime"
+        planId: "planId"
+        channel: "channel"
+      url_template: "https://zfcg.np.gov.cn/maincms-web/articleDetail?id={noticeId}"
+    detail:
+      type: api_request
+      url: "https://zfcg.np.gov.cn/gpcms/rest/web/v2/info/getInfoById"
+      method: GET
+      params:
+        id: "{id}"
+        planId: "{planId}"
+        channel: "{channel}"
+        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+      content_field: "data.content"
+    sections:
+      - label: ggnr
+        name: "公告信息-南平"
+
+  fujian_zfcg_longyan:
+    name: "龙岩市政府采购网-公告信息"
+    site_url: "https://zfcg.longyan.gov.cn"
+    category: announcement
+    enabled: true
+    detect_enabled: true
+    detect_interval: 600
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      vue_http: true
+      network_idle: false
+      captcha: { type: ocr }
+      verify_ssl: false            # 龙岩 SSL 证书过期，browser_pool 已全局 ignore_https_errors
+      timeout: 90
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    listing:
+      url: "https://zfcg.longyan.gov.cn/gpcms/rest/web/v2/info/selectInfoForIndex"
+      method: GET
+      params:
+        currPage: "{{ page }}"
+        pageSize: "{{ page_size }}"
+        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+        channel: "f582600e-065d-4f35-8966-48a33fa93863"
+        noticeType: "59,001056,00101,001062,001051,001031,001032,001021,001022,001023,001024,001025,001026,001029,001004,001006,001054,001033,00105K"
+        regionCode: "350801"
+        operationStartTime: "{{ today }} 00:00:00"
+        operationEndTime: "{{ today }} 23:59:59"
+        organizationForm: "!4"
+        selectTimeName: ""
+    pagination:
+      type: page_no
+      page_param: currPage
+      page_size_param: pageSize
+      page_size: 20
+      start: 1
+      max_pages: 10
+      items_field: "data.rows"
+      total_field: "data.total"
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 4
+      max_consecutive_empty: 3
+    extract:
+      type: json_path
+      items_path: "data.rows"
+      fields:
+        id: "id"
+        title: "title"
+        date: "noticeTime"
+        url: "url"
+        openTenderTime: "openTenderTime"
+        regionName: "regionName"
+        purchaser: "purchaser"
+        agency: "agency"
+        openTenderCode: "openTenderCode"
+        budget: "budget"
+        purchaseManner: "purchaseManner"
+        catalogueNameList: "catalogueNameList"
+        noticeTypeName: "noticeTypeName"
+        publishTime: "publishTime"
+        planId: "planId"
+        channel: "channel"
+      url_template: "https://zfcg.longyan.gov.cn/maincms-web/articleDetail?id={noticeId}"
+    detail:
+      type: api_request
+      url: "https://zfcg.longyan.gov.cn/gpcms/rest/web/v2/info/getInfoById"
+      method: GET
+      params:
+        id: "{id}"
+        planId: "{planId}"
+        channel: "{channel}"
+        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+      content_field: "data.content"
+    sections:
+      - label: ggnr
+        name: "公告信息-龙岩"
+
+  fujian_zfcg_ningde:
+    name: "宁德市政府采购网-公告信息"
+    site_url: "https://zfcg.czj.ningde.gov.cn"
+    category: announcement
+    enabled: true
+    detect_enabled: true
+    detect_interval: 600
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      vue_http: true
+      network_idle: false
+      captcha: { type: ocr }
+      verify_ssl: false
+      timeout: 90
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    listing:
+      url: "https://zfcg.czj.ningde.gov.cn/gpcms/rest/web/v2/info/selectInfoForIndex"
+      method: GET
+      params:
+        currPage: "{{ page }}"
+        pageSize: "{{ page_size }}"
+        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+        channel: "f582600e-065d-4f35-8966-48a33fa93863"
+        noticeType: "59,001056,00101,001062,001051,001031,001032,001021,001022,001023,001024,001025,001026,001029,001004,001006,001054,001033,00105K"
+        regionCode: "350901"
+        operationStartTime: "{{ today }} 00:00:00"
+        operationEndTime: "{{ today }} 23:59:59"
+        organizationForm: "!4"
+        selectTimeName: ""
+    pagination:
+      type: page_no
+      page_param: currPage
+      page_size_param: pageSize
+      page_size: 20
+      start: 1
+      max_pages: 10
+      items_field: "data.rows"
+      total_field: "data.total"
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 4
+      max_consecutive_empty: 3
+    extract:
+      type: json_path
+      items_path: "data.rows"
+      fields:
+        id: "id"
+        title: "title"
+        date: "noticeTime"
+        url: "url"
+        openTenderTime: "openTenderTime"
+        regionName: "regionName"
+        purchaser: "purchaser"
+        agency: "agency"
+        openTenderCode: "openTenderCode"
+        budget: "budget"
+        purchaseManner: "purchaseManner"
+        catalogueNameList: "catalogueNameList"
+        noticeTypeName: "noticeTypeName"
+        publishTime: "publishTime"
+        planId: "planId"
+        channel: "channel"
+      url_template: "https://zfcg.czj.ningde.gov.cn/maincms-web/articleDetail?id={noticeId}"
+    detail:
+      type: api_request
+      url: "https://zfcg.czj.ningde.gov.cn/gpcms/rest/web/v2/info/getInfoById"
+      method: GET
+      params:
+        id: "{id}"
+        planId: "{planId}"
+        channel: "{channel}"
+        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+      content_field: "data.content"
+    sections:
+      - label: ggnr
+        name: "公告信息-宁德"
+
+  fujian_zfcg_ningde_zcfg:
+    name: "福建省政府采购网-政策法规"
+    site_url: "https://zfcg.czj.ningde.gov.cn"
+    category: policy
+    enabled: true
+    detect_enabled: true
+    detect_interval: 600
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      vue_http: true
+      network_idle: false
+      captcha: { type: ocr }
+      verify_ssl: false
+      timeout: 90
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    listing:
+      url: "https://zfcg.czj.ningde.gov.cn/gpcms/rest/web/v2/info/selectInfoForIndex"
+      method: GET
+      params:
+        currPage: "{{ page }}"
+        pageSize: "{{ page_size }}"
+        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+        channel: "268f9bf1-c144-4526-b3cd-0ace493d31d8"
+        title: ""
+        region: ""
+        noticeType: ""
+        cityOrArea: ""
+        purchaseManner: ""
+        openTenderCode: ""
+        purchaser: ""
+        agency: ""
+        purchaseNature: ""
+        operationStartTime: ""
+        operationEndTime: ""
+        verifyCode: ""
+        selectTimeName: ""
+        lawCategory: ""
+        dictName: "政策法规"
+    pagination:
+      type: page_no
+      page_param: currPage
+      page_size_param: pageSize
+      page_size: 20
+      start: 1
+      max_pages: 5
+      items_field: "data.rows"
+      total_field: "data.total"
+    anti_crawler:
+      delay_min: 2.0
+      delay_max: 4.0
+      max_retries: 4
+      max_consecutive_empty: 3
+    extract:
+      type: json_path
+      items_path: "data.rows"
+      fields:
+        id: "id"
+        title: "title"
+        date: "noticeTime"
+        url: "url"
+        # ── 政策扩展字段（→ collection_policy_ext）──
+        doc_number: "publishNumber"
+        issuing_authority: "author"
+        topic_category: "lawCategoryName"
+        # ── 详情 API 调用所需字段 ──
+        channel: "channel"
+        planId: "planId"
+      url_template: "https://zfcg.czj.ningde.gov.cn/maincms-web/articleDetail?id={id}"
+    detail:
+      type: api_request
+      url: "https://zfcg.czj.ningde.gov.cn/gpcms/rest/web/v2/info/getInfoById"
+      method: GET
+      params:
+        id: "{id}"
+        planId: "{planId}"
+        channel: "{channel}"
+        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+      content_field: "data.content"
+    sections:
+      - label: zcfg
+        name: "政策法规"
+
+  # --------------------------------------------------------------------------
+  # ccgp_search_zcfg — 中国政府采购网 政策法规搜索 (search.ccgp.gov.cn)
+  # Source: http://search.ccgp.gov.cn/zcfgsearch (POST 表单，HTML 响应)
+  # 全量 ~741 条，按 lawvalid=有效 过滤；每日增量由 date_filter=today 触发
+  # 老站点 ccgp_zcfg 走静态分页(/zcfg/mof/, /zcfg/gwywj/...)，本站走搜索接口
+  # --------------------------------------------------------------------------
+  ccgp_search_zcfg:
+    name: "中国政府采购网-政策法规搜索"
+    site_url: "http://search.ccgp.gov.cn/"
+    category: policy
+    enabled: true
+    detect_enabled: true
+    detect_interval: 600
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        Referer: "http://search.ccgp.gov.cn/zcfgsearch"
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: "http://search.ccgp.gov.cn/zcfgsearch"
+      method: POST
+      body_type: form
+      params:
+        page_index: "{{ page }}"
+        searchtype: 1
+        searchparam: ""
+        filedep: ""
+        fileyear: ""
+        filenum: ""
+        dateissuestart: ""
+        dateissueend: ""
+        datematerialstart: ""
+        datematerialend: ""
+        issuedep: ""
+        lawtype: ""
+        lawlevle: ""
+        lawvalid: "有效"
+    pagination:
+      type: page_no
+      page_param: page_index
+      page_size: 20
+      page_size_param: page_size      # 服务端不消费此字段，仅占位避免默认 rows 污染表单
+      start: 1
+      max_pages: 38                   # 741 条 / 20 = 37.05 → 38 页
+    anti_crawler:
+      delay_min: 1.5
+      delay_max: 3.0
+      max_retries: 3
+      max_consecutive_empty: 3
+    extract:
+      type: css_selector
+      items_path: "ul.vT-srch-result-list-nr li"
+      fields:
+        title: "a"
+        url:   "a@href"
+        date:  "em"
+        # ── 政策扩展字段（→ collection_policy_ext）──
+        # 列表页未暴露 发文字号/发文机构 等字段，详情页通过 meta 标签或正文嵌 入；
+        # CollectionWriter._write_policy_ext 的 _first_of 找不到时跳过，扩展表对应字段为空
+        # status 默认 "有效"（_write_policy_ext 兜底）
+    detail:
+      type: css_selector
+      content_field: "div.rh_content"   # 含 <b>发文字号</b> + TRS_Editor 正文
+    format:
+      parser_id: "naive"
+      upload_batch_size: 10
+    sections:
+      - label: zcfg
+        name: "政策法规"
+
+  # --------------------------------------------------------------------------
+  # cebpubservice — 中国招标投标公共服务平台 (招标公告列表)
+  # Listing: SSR HTML at /xxfbcmses/search/bulletin.html (categoryId=88 招标公告)
+  # Detail: ctbpsp.com SPA + VAPTCHA WAF (slider CAPTCHA) — 不可程序化抓取
+  #         原文地址用 ctbpsp.com URL（浏览器可访问），正文仅用列表元数据生成
+  # 日期过滤: startcheckDate/endcheckDate 限定当天，每日重复触发只采当日数据
+  # --------------------------------------------------------------------------
+  cebpubservice:
+    name: "中国招标投标公共服务平台-招标公告"
+    site_url: "https://bulletin.cebpubservice.com/"
+    category: bid
+    enabled: true
+    detect_enabled: true
+    detect_interval: 300
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        Accept-Language: "zh-CN,zh;q=0.9"
+        Referer: "https://bulletin.cebpubservice.com/"
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: "https://bulletin.cebpubservice.com/xxfbcmses/search/bulletin.html"
+      method: GET
+      params:
+        searchDate: "2001-07-26"
+        dates: "300"
+        categoryId: "88"
+        industryName: ""
+        area: ""
+        status: ""
+        publishMedia: ""
+        sourceInfo: ""
+        showStatus: "0"
+        word: ""
+        page: "{{ page }}"
+        startcheckDate: "{{ today }}"
+        endcheckDate: "{{ today }} 23:59:59"
+    pagination:
+      type: page_no
+      page_param: "page"
+      page_size: 15
+      page_size_param: "page_size"
+      start: 1
+      max_pages: 20
+    extract:
+      type: css_selector
+      items_path: "table.table_text tr"
+      fields:
+        id:               'td:nth-child(1) a@href|urlOpen\(''([a-f0-9]{32})''\)'
+        title:            "td:nth-child(1) a@title"
+        industry:         "td:nth-child(2) span@title"
+        region:           "td:nth-child(3) span@title"
+        publishing_media: "td:nth-child(4)"
+        date:             "td:nth-child(5)"
+        publish_datetime: "td:nth-child(1)@id"
+        bid_opening:      "td:nth-child(6)@id"
+        news_type:        "td:nth-child(4)"
+      url_template: "https://ctbpsp.com/#/bulletinDetail?uuid={id}&inpvalue=&dataSource=0&tenderAgency="
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+      max_consecutive_empty: 2
+    format:
+      parser_id: "naive"
+      upload_batch_size: 10
+
+  # --------------------------------------------------------------------------
+  # zjfw_zhangzhou_zxjx — 漳州市工程项目网上中介服务平台-通知公告
+  # Target: http://zjfw.zhangzhou.gov.cn/imng/zjfw/index/serviceGuide/serviceGuide?name=ZXJX
+  # List API: POST /imng/api-v2/fujian.zhangzhougaoxin.app.icity.policy.PolicyCmd/getList
+  #           body: {"type":"ZXJX","TITLE@like":"","start":0,"limit":10}
+  # Adapter: spa_render — api-v2 REST 端点需 s/t 客户端签名 token，导航到 SPA
+  #          页面后由前端 JS 自动发起 XHR，_setup_api_capture 拦截响应。
+  # anti_crawler: 站点无强反爬；签名 token 由 SPA 自动生成，无需逆向。
+  # --------------------------------------------------------------------------
+  zjfw_zhangzhou_zxjx:
+    name: "漳州市工程项目网上中介服务平台-通知公告"
+    site_url: "http://zjfw.zhangzhou.gov.cn"
+    category: news                        # 通知公告 → 新闻资讯；section_name 覆盖前端「类型」列
+    enabled: true
+    detect_enabled: true                  # ★ 探测器自动增量（对齐 §15.6 crawler_task 数据源）
+    detect_interval: 600
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      network_idle: false                 # 政府站 analytics 让 networkidle 永不空闲
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"
+        Accept: "application/json, text/plain, */*"
+      verify_ssl: false
+      timeout: 60
+    listing:
+      url: "http://zjfw.zhangzhou.gov.cn/imng/zjfw/index/serviceGuide/serviceGuide?name=ZXJX"
+      method: GET
+    pagination:
+      type: single_page                   # 仅抓首页（用户需求 #4：首页全量 + 后续按 date_filter=today）
+      items_field: "data"                 # XHR 响应 {"total":N,"data":[...]}
+    anti_crawler:
+      delay_min: 1.5
+      delay_max: 3.0
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: "data"
+      fields:
+        id:    "ID"
+        title: "TITLE"
+        date:  "DISPLAYTIME"              # "YYYY-MM-DD" 或 "YYYY-MM-DD HH:mm:ss"
+        # 扩展字段（落入 extracted_json + collection_*_ext 视 category 决定）
+        issuing_authority: "SOURCE"       # 信息来源（多为空，metadata_js 兜底）
+        topic_category:    "TYPE_NAME"    # 主题分类
+        doc_number:        "ATTACHMENT_NAME"  # 附件名常含文号
+      # 详情 URL：tagName=通知公告 (UTF-8 双重 percent-encode)，typeName=ZXJX
+      # 服务端实际接收 ?id=xxx&tagName=%E9%80%9A%E7%9F%A5%E5%85%AC%E5%91%8A&typeName=ZXJX
+      # 双重编码：% → %25，浏览器解码一次后保留单次编码传给服务端
+      url_template: "http://zjfw.zhangzhou.gov.cn/imng/zjfw/index/policy/policyDetail_view?id={ID}&tagName=%25E9%2580%259A%25E7%259F%25A5%25E5%2585%25AC%25E5%2591%258A&typeName=ZXJX"
+    sections:
+      - label: "zxjx"
+        name: "漳州市-通知公告"            # ★ 前端「类型」列展示 (engine 注入 section_name 到 extracted_json)
+    detail:
+      type: css_selector
+      content_field: "#policies_regulations_tab"   # 详情主容器：header + meta + 正文 + 附件
+      metadata_js: |
+        () => {
+          const result = {};
+          // 发布时间 / 信息来源 — 元数据 <li> 标签
+          document.querySelectorAll('li, span, p').forEach(el => {
+            const t = (el.textContent || '').trim();
+            const m = t.match(/发布时间[：:]\s*([\d\-/: ]+)/);
+            if (m && !result.publish_datetime) result.publish_datetime = m[1].trim();
+            const m2 = t.match(/信息来源[：:]\s*(.+)/);
+            if (m2 && !result.issuing_authority) result.issuing_authority = m2[1].trim();
+          });
+          // 附件：抓所有文档/压缩包链接（含 downloadagent 路径）
+          // 压缩包由 AttachmentHandler 下载后自动解压上传 KB
+          const files = [];
+          document.querySelectorAll('a').forEach(a => {
+            const href = a.href || '';
+            const name = (a.textContent || '').trim();
+            if (/\.(pdf|docx?|xlsx?|zip|rar|7z)(\?|$)/i.test(href) || href.includes('downloadagent')) {
+              files.push({ file_url: href, file_name: name || href.split('/').pop() });
+            }
+          });
+          if (files.length) result.files = files;
+          // 文号兜底解析 "漳建审改〔2024〕3号" / "闽建[2024]3号" 等
+          const allText = document.body.innerText || '';
+          const dn = allText.match(/(?:漳建|闽建|国发|国办发|政办|建审改|建设|市政府|省)?〔\s*\d{4}\s*〕\s*\d+\s*号|[\u4e00-\u9fa5]{2,10}\[\d{4}\]\d+\s*号/);
+          if (dn) result.doc_number = dn[0];
+          return result;
+        }
+    format:
+      parser_id: "naive"
+      template: |
+        # {{ title }}
+
+        **发布时间:** {{ date }}
+        **来源:** 漳州市工程项目网上中介服务平台
+        **原文链接:** {{ url }}
+
+        {{ content }}
+      upload_batch_size: 5
+
+  # --------------------------------------------------------------------------
+  # zhangzhou_gcjyzx_wgtb — 漳州市工程项目交易中心-违规通报
+  # Target: https://gcjyzx.zhangzhou.gov.cn/wgtb/moreinfo.html
+  # List:  静态 HTML，ul>li.list-item>a>p.name+span.date（共 11 条，无分页）
+  # Detail:静态 HTML，#infoContentM 含正文；detail_html 供附件扫描（PDF/DOC/ZIP）
+  # Anti:  政府站无强反爬，仅需 UA + Referer
+  # --------------------------------------------------------------------------
+  zhangzhou_gcjyzx_wgtb:
+    name: "漳州市工程项目交易中心-违规通报"
+    site_url: "https://gcjyzx.zhangzhou.gov.cn"
+    category: news                                  # 违规通报 → 新闻资讯；section_name 覆盖前端「类型」列
+    enabled: true
+    detect_enabled: true                            # ★ 探测器自动增量（对齐 §12 + §15.6）
+    detect_interval: 600
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        Accept-Language: "zh-CN,zh;q=0.9"
+        Referer: "https://gcjyzx.zhangzhou.gov.cn/wgtb/moreinfo.html"
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: "https://gcjyzx.zhangzhou.gov.cn/wgtb/moreinfo.html"
+      method: GET
+    pagination:
+      type: single_page                             # 列表只有 1 页 11 条
+      page_size: 20
+      start: 1
+    anti_crawler:
+      delay_min: 1.5
+      delay_max: 3.0
+      max_retries: 3
+      max_consecutive_empty: 3
+    extract:
+      type: css_selector
+      items_path: "div.content ul li.list-item"
+      fields:
+        id:    "a@href"                             # /wgtb/YYYYMMDD/<uuid>.html → md5(site|url) 主键去重
+        title: "p.name"
+        date:  "span.date"                          # YYYY-MM-DD（与 date_filter=today 比对）
+        url:   "a@href"
+    sections:
+      - label: "wgtb"
+        name: "漳州市工程项目-违规通报"               # ★ 前端「类型」列展示（engine 注入 section_name）
+    detail:
+      type: css_selector
+      content_field: "#infoContentM"                # 仅正文容器，不含 toolbar/标题；附件由 _extract_files_from_item 扫 detail_html
+    format:
+      parser_id: "naive"
+      template: |
+        # {{ title }}
+
+        **发布时间:** {{ date }}
+        **来源:** 漳州市工程项目交易中心-违规通报
+        **原文链接:** {{ url }}
+
+        {{ content }}
+      upload_batch_size: 5

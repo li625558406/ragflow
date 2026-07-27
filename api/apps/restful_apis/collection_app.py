@@ -59,6 +59,8 @@ CATEGORY_LABELS: Dict[str, str] = {
     "news": "新闻资讯",
     "other": "其他",
     "objection": "异议结果",
+    "announcement": "公告",
+    "tender": "招标标讯",
 }
 
 
@@ -78,6 +80,8 @@ CATEGORY_LABELS: Dict[str, str] = {
     "news": "新闻资讯",
     "other": "其他",
     "objection": "异议结果",
+    "announcement": "公告",
+    "tender": "招标标讯",
 }
 
 
@@ -551,12 +555,8 @@ async def list_results():
             q = q.where(CrawlerResult.publish_date <= end_dt)
 
         total = q.count()
-        # 排序: publish_date DESC 优先, crawled_at DESC 次之
-        # 原因: 多 section 站点 (如 ggzyfw_fujian_trade) 串行抓取时, 同一 section 的
-        # crawled_at 相近, 按 crawled_at 排序会让首页全是最后爬的 section, 造成
-        # "数据都是同一类型"的视觉错觉. 改用 publish_date 让不同 section 按发布时间交错.
-        rows = q.order_by(CrawlerResult.publish_date.desc(),
-                          CrawlerResult.crawled_at.desc()).paginate(page, page_size)
+        # 排序: crawled_at DESC (采集时间倒序) — 最新抓到的排最前
+        rows = q.order_by(CrawlerResult.crawled_at.desc()).paginate(page, page_size)
         items = []
         for r in rows:
             d = r.to_dict()

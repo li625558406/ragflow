@@ -26,6 +26,12 @@ class EncryptionConfig:
     key_encoding: str = "hex"      # hex | utf8
     field: str = ""                # which field to decrypt
     encoding: str = "utf-8"        # output encoding
+    # ── Request-side encryption (optional, for portals that reject plaintext) ──
+    # When True, the adapter encrypts the outgoing params with the same
+    # algorithm before sending.  Required by easy-prt.com (SM4-ECB).
+    encrypt_request: bool = False
+    request_format: str = "json_string"  # json_string (body = json.dumps(hex)) | raw_hex
+    request_param_name: str = "encryptParams"  # for GET: ?<name>=<hex>
 
 
 @dataclass
@@ -77,6 +83,7 @@ class TransportConfig:
     adaptive: bool = False          # enable self-healing selectors (auto_save + adaptive)
     block_resources: bool = True    # block images/fonts/media for speed
     pre_click: str = ""             # CSS/text selector to click before extraction (e.g. "text=当天")
+    route_override: Dict[str, Any] = field(default_factory=dict)  # page.route() body override (see spa_render._setup_route_override)
 
 
 @dataclass
@@ -153,6 +160,28 @@ class ExtractConfig:
 
 
 @dataclass
+class ContentEndpointConfig:
+    """Optional chained content fetch (second API call after primary detail).
+
+    Some encrypted portals (e.g. easy-prt.com 工采通) split detail metadata and
+    full-text HTML across two endpoints:
+      1) Detail endpoint returns metadata + preQualAnnexes + announcementList
+      2) Content endpoint (this config) returns HTML body + extra annexes,
+         parameterised by a contentId sourced from the detail response.
+
+    The adapter resolves this config *after* the primary detail call, using
+    `{path.to.field}` templates that reference keys merged from the detail
+    response.
+    """
+    url: str = ""
+    method: str = "GET"
+    body_type: str = "query"      # query | json | form
+    params: Dict[str, Any] = field(default_factory=dict)
+    content_field: str = ""       # dot path in decrypted JSON for HTML body (e.g. "result.content")
+    attachment_fields: List[str] = field(default_factory=list)  # dot paths for attachment arrays
+
+
+@dataclass
 class DetailConfig:
     """Detail page fetching configuration."""
     type: str = "inline"           # inline | api_request | css_selector | none
@@ -160,11 +189,13 @@ class DetailConfig:
     method: str = "GET"
     body_type: str = "query"
     params: Dict[str, Any] = field(default_factory=dict)
+    body: Dict[str, Any] = field(default_factory=dict)  # POST body (spa_render vue_http detail 支持 POST)
     extract: Optional[ExtractConfig] = None
     content_field: str = "content"  # field that contains the main content
     attachment_fields: List[str] = field(default_factory=list)
     transport: Optional["TransportConfig"] = None  # override transport for detail (e.g. spa_render)
     metadata_js: str = ""           # JS to extract structured metadata dict from rendered detail page
+    content_endpoint: Optional[ContentEndpointConfig] = None  # optional 2nd call for HTML body + annexes
 
 
 @dataclass
@@ -202,6 +233,8 @@ class SiteConfig:
     detect_min_interval: int = 0     # backoff floor on reset: 0 means use detect_interval
     detect_quiet_hours: str = ""     # e.g. "0-7" — skip probing during 00:00-07:00 local time
     category: str = "bid"           # bid|policy|personnel|news|other (for new collection system)
+    bypass_date_filter: bool = False  # true: trigger/detector 不注入 date_filter=today，由站点 API 自身做日期过滤（如 inRecentDays=N）
+    attachment_host: str = ""        # 当附件 fileUrl 是相对路径时（如 "/business/..."），补全此 host（含协议，无尾斜杠）
     transport: TransportConfig = field(default_factory=TransportConfig)
     listing: ListingConfig = field(default_factory=ListingConfig)
     pagination: PaginationConfig = field(default_factory=PaginationConfig)
@@ -289,6 +322,10 @@ class ConfigLoader:
                 self._defaults.get("detect_quiet_hours", ""),
             ),
             category=data.get("category", self._defaults.get("category", "bid")),
+            bypass_date_filter=bool(data.get(
+                "bypass_date_filter", self._defaults.get("bypass_date_filter", False))),
+            attachment_host=str(data.get(
+                "attachment_host", self._defaults.get("attachment_host", ""))).rstrip("/"),
             transport=self._parse_transport(data.get("transport", {})),
             listing=self._parse_listing(data.get("listing", {})),
             pagination=self._parse_pagination(data.get("pagination", {})),
@@ -326,6 +363,7 @@ class ConfigLoader:
             adaptive=data.get("adaptive", False),
             block_resources=data.get("block_resources", True),
             pre_click=data.get("pre_click", ""),
+            route_override=data.get("route_override", {}) or {},
         )
 
     def _parse_listing(self, data: dict) -> ListingConfig:
@@ -392,11 +430,25 @@ class ConfigLoader:
             method=data.get("method", "GET"),
             body_type=data.get("body_type", "query"),
             params=data.get("params", {}),
+            body=data.get("body", {}),
             extract=self._parse_extract(extract) if extract else None,
             content_field=data.get("content_field", "content"),
             attachment_fields=data.get("attachment_fields", []),
             transport=self._parse_transport(transport) if transport else None,
             metadata_js=data.get("metadata_js", ""),
+            content_endpoint=self._parse_content_endpoint(data.get("content_endpoint")),
+        )
+
+    def _parse_content_endpoint(self, data: dict) -> Optional[ContentEndpointConfig]:
+        if not data:
+            return None
+        return ContentEndpointConfig(
+            url=data.get("url", ""),
+            method=data.get("method", "GET"),
+            body_type=data.get("body_type", "query"),
+            params=data.get("params", {}),
+            content_field=data.get("content_field", ""),
+            attachment_fields=data.get("attachment_fields", []),
         )
 
     def _parse_format(self, data: dict) -> FormatConfig:

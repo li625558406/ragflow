@@ -169,6 +169,11 @@ class CrawlerEngine:
                 "(keeping %d processed IDs for dedup)",
                 self._date_filter, self._state.processed_count,
             )
+            # Inject date_filter into listing params when the site declares
+            # startdate / enddate keys (e.g. EpointWebBuilder CMS). Without this
+            # many APIs return unordered history data and date_filter on the
+            # writer side rejects everything in the first N pages.
+            self._inject_date_filter_to_listing(self._date_filter)
 
         # 8 AM check
         if not self._anti_crawler.check_eight_am():
@@ -244,7 +249,14 @@ class CrawlerEngine:
         self._state.load()
 
         from .dedup_checker import DedupChecker
-        self._dedup_checker = DedupChecker(self._state, tenant_id)
+        # Collection mode writes to crawler_result (not bid_project), so
+        # Layer 2's bid_project DB check must be skipped — otherwise URLs
+        # that any bid-mode site already wrote are incorrectly flagged as
+        # duplicates (gen_bid_id only hashes the URL, ignoring site_id).
+        self._dedup_checker = DedupChecker(
+            self._state, tenant_id,
+            skip_db_check=(self._writer_mode != "bid"),
+        )
 
         # Layer 3: Storage
         from .storage_pipeline import StoragePipeline
@@ -296,7 +308,10 @@ class CrawlerEngine:
             if getattr(self, "_full_crawl", False) or getattr(self, "_date_filter", ""):
                 self._state.last_page = 0
                 self._state.last_offset = 0
-            self._dedup_checker = DedupChecker(self._state, self._state.tenant_id)
+            self._dedup_checker = DedupChecker(
+                self._state, self._state.tenant_id,
+                skip_db_check=(self._writer_mode != "bid"),
+            )
             stats = self._crawl_one_section(section)
             total_stats["sections"][section.label] = stats
             all_new += stats.get("new_items", 0)
@@ -325,7 +340,27 @@ class CrawlerEngine:
 
         if section:
             sl = section.listing
-            listing_cfg = sl if (sl and sl.url) else parent_listing
+            # Section can override URL alone, or just params/body (e.g. change
+            # noticeType while keeping parent's URL). Build a merged config so
+            # section-level params are honored even without a section URL.
+            if sl and (sl.url or sl.params or sl.body or sl.method):
+                from dataclasses import replace as _dc_replace
+                merged_params = dict(parent_listing.params or {})
+                if sl.params:
+                    merged_params.update(sl.params)
+                merged_body = dict(parent_listing.body or {})
+                if sl.body:
+                    merged_body.update(sl.body)
+                listing_cfg = _dc_replace(
+                    parent_listing,
+                    url=sl.url or parent_listing.url,
+                    method=sl.method or parent_listing.method,
+                    body_type=sl.body_type or parent_listing.body_type,
+                    params=merged_params,
+                    body=merged_body,
+                )
+            else:
+                listing_cfg = parent_listing
             sp = section.pagination
             pag_cfg = sp if (sp and sp.type != parent_pagination.type) else parent_pagination
             se = section.extract
@@ -352,6 +387,12 @@ class CrawlerEngine:
         section_extractor = ExtractorFactory.create(extract_cfg) if extract_cfg else None
 
         start_page = state.last_page + 1
+        # paginator.start 是站点首PageIndex 的权威值（1-based 站点=1，
+        # 0-based 站点=0，例如 EpointWebBuilder）。last_page=0 表示
+        # 首次扫描或被 date_filter/full 重置，应用 config.start；
+        # last_page>0 表示已扫到该页，从下一页继续。
+        if state.last_page == 0:
+            start_page = pag_cfg.start
 
         # --- Phase 1: CRAWL ---
         # Fetch first page to get total count
@@ -410,6 +451,19 @@ class CrawlerEngine:
                 # Apply field mapping from extractor
                 if section_extractor:
                     item = section_extractor.extract_fields(item)
+
+                # Normalize relative URL to absolute using site_url.
+                # Many listing APIs (EpointWebBuilder, TRS, custom CMS) return
+                # relative paths like "/gcxx/001001/.../uuid.html"; storing
+                # these directly causes frontend "原文链接" to 404 (需求: source
+                # URL must be clickable). Only absolutize when site_url is set
+                # and the URL is relative.
+                raw_url = item.get("url") or item.get("href") or ""
+                if raw_url and not raw_url.startswith(("http://", "https://")):
+                    site_root = self._config.site_url or ""
+                    if site_root:
+                        from urllib.parse import urljoin
+                        item["url"] = urljoin(site_root, raw_url)
 
                 item_id = self._get_item_id(item)
                 url = item.get("url") or item.get("href") or ""
@@ -578,6 +632,66 @@ class CrawlerEngine:
                     seen_urls.add(url)
                     results.append({"file_name": text, "file_url": url})
 
+        # Fallback: when no href-based file links are found, scan onclick handlers.
+        # Many Chinese gov CMS (EpointWebBuilder, TRS) hide attachment downloads
+        # behind JS handlers like <a onclick="ztbfjyz('/zzggzy/...')">name</a>
+        # where the <a> tag has NO href attribute. Without this fallback all
+        # attachments on such sites are silently dropped.
+        if not results:
+            onclick_patterns = [
+                r"""ztbfjyz\s*\(\s*['"]([^'"]+)['"]""",        # EpointWebBuilder (漳州 etc.)
+                r"""window\.open\s*\(\s*['"]([^'"]+)['"]""",   # 通用 window.open
+                r"""location\.href\s*=\s*['"]([^'"]+)['"]""",  # 通用 location.href
+                r"""downloadFile\s*\(\s*['"]([^'"]+)['"]""",   # 通用 downloadFile
+            ]
+            # 用 DOTALL 的内层 capture：允许 <a onclick="..."> 内部嵌套 <div> 等子元素
+            # （EpointWebBuilder 模板：<a class="item" onclick="ztbfjyz(...)"><div
+            # class="item-name">filename.pdf</div></a>）。原 `([^<]*)` 会因 <div> 失配。
+            # 用 backreference 捕获 onclick 属性值：双引号属性里可嵌单引号
+            # （EpointWebBuilder: onclick="ztbfjyz('/path','1','1')"）。
+            # 简单的 `["']([^"']+)["']` 会因内层 ' 而截断。
+            for a_match in re.finditer(
+                r'<a\b([^>]*?)onclick=(["\'])(.*?)\2([^>]*)>(.*?)</a>',
+                html, re.IGNORECASE | re.DOTALL,
+            ):
+                pre_attrs, _q, onclick_code, post_attrs, inner_html = a_match.groups()
+                # 链接文本：先剥嵌套标签，再清空白
+                link_text = re.sub(r"<[^>]+>", "", inner_html).strip()
+                # fallback 到 <a title="..."> 属性（EpointWebBuilder 在该属性里放文件名）
+                if not link_text:
+                    m_title = re.search(r'title=["\']([^"\']+)["\']',
+                                        pre_attrs + post_attrs, re.IGNORECASE)
+                    if m_title:
+                        link_text = m_title.group(1).strip()
+                if not link_text:
+                    link_text = f"attachment_{len(results) + 1}"
+                path = ""
+                for pattern in onclick_patterns:
+                    m = re.search(pattern, onclick_code)
+                    if m:
+                        path = m.group(1)
+                        break
+                if not path:
+                    continue
+                fname = link_text or unquote(path.rsplit("/", 1)[-1])
+                # Resolve relative path against the item's base URL
+                if base_url and not path.startswith("http"):
+                    path = urljoin(base_url, path)
+                path_lower = path.lower()
+                # Accept only file-like links: either has a file extension, or
+                # matches a known CMS attachment path prefix (avoids treating
+                # JS navigation handlers like ztbfjyz('/xx/jump') as files).
+                # EpointWebBuilder 实际下载 URL：
+                #   /EpointWebBuilder/pages/webbuildermis/attach/downloadztbattach?attachGuid=...
+                if (re.search(file_ext_pattern, path_lower)
+                        or re.search(file_ext_pattern, fname.lower())
+                        or "/zzggzy/" in path
+                        or "/attach/download" in path_lower
+                        or "attachguid=" in path_lower):
+                    if path not in seen_urls:
+                        seen_urls.add(path)
+                        results.append({"file_name": fname, "file_url": path})
+
         if results:
             item["files"] = results
             logging.info(
@@ -587,6 +701,42 @@ class CrawlerEngine:
 
     def _get_active_section_label(self) -> str:
         return getattr(self, "_active_section_label", "default")
+
+    def _inject_date_filter_to_listing(self, date_filter: str) -> None:
+        """When date_filter is set, inject it into listing.params.startdate / enddate
+        if the site declares those keys (empty string or absent value).
+
+        Many Chinese gov CMS APIs (EpointWebBuilder, TRS) accept a date window
+        in the listing request. Without it, they return unordered history data,
+        causing the CollectionWriter's per-item date_filter to reject everything
+        in the first N pages — observed on gcjyzx.zhangzhou.gov.cn where 600
+        recent items contained 0 matching the target day.
+
+        Behavior:
+        - Only inject if listing.params already has 'startdate' / 'enddate' keys
+          (i.e. site opted in by declaring them, even with empty value).
+        - Range: [date_filter 00:00:00, date_filter 23:59:59]
+        - Falls back to '{date} 00:00:00' / '{date} 23:59:59' format which most
+          EpointWebBuilder endpoints accept.
+        """
+        if not date_filter:
+            return
+        params = self._config.listing.params or {}
+        # Also consider section-level listing override (sections may declare
+        # their own params dict).
+        targets = [params]
+        for sec in (self._config.sections or []):
+            if sec.listing and sec.listing.params:
+                targets.append(sec.listing.params)
+        for p in targets:
+            if "startdate" in p or "enddate" in p:
+                p["startdate"] = f"{date_filter} 00:00:00"
+                p["enddate"] = f"{date_filter} 23:59:59"
+                logging.info(
+                    "Engine: date_filter injected into listing params "
+                    "(startdate=%s, enddate=%s)",
+                    p["startdate"], p["enddate"],
+                )
 
     def _set_active_section(self, section: SectionConfig) -> None:
         self._active_section_label = section.label or "default"

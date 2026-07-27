@@ -21,9 +21,9 @@ import { Textarea } from '@/components/ui/textarea';
 import {
   Crawl4aiTask,
   createCrawl4aiTask,
+  fetchKnowledgeBases,
   updateCrawl4aiTask,
 } from '@/services/crawl4ai-service';
-import { fetchKnowledgeBases } from '@/services/scheduled-task-service';
 import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';

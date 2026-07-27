@@ -2908,8 +2908,6 @@ Important structured information may include: names, dates, locations, events, k
       notFoundMemory: 'Memory not found',
       skillsTitle: 'No skill space created yet',
       notFoundSkills: 'Skill space not found',
-      scheduledTaskTitle: 'No scheduled task created yet',
-      notFoundScheduledTask: 'Scheduled task not found',
       bidTitle: 'No bid data',
       notFoundBid: 'No bid data found',
       addNow: 'Add Now',

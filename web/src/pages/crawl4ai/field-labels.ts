@@ -46,6 +46,27 @@ export const EXT_FIELD_LABELS: Record<string, Record<string, string>> = {
     valid_until: '有效期至',
     status: '状态',
   },
+  announcement: {
+    purchaser: '采购人',
+    agency: '代理机构',
+    openTenderCode: '项目编号',
+    openTenderTime: '开标时间',
+    budget: '预算金额',
+    purchaseManner: '采购方式',
+    catalogueNameList: '采购品目',
+    regionName: '区域',
+    noticeTypeName: '公告类型',
+    publishTime: '发布时间',
+    noticeTime: '公告时间',
+    planId: '计划ID',
+  },
+  tender: {
+    project_num: '项目编号',
+    province: '省份',
+    city: '城市',
+    tender_type: '招标类型',
+    news_type: '公告类型',
+  },
 };
 
 /**
@@ -58,6 +79,8 @@ export const CATEGORY_COLORS: Record<string, string> = {
   news: 'bg-amber-500/15 text-amber-600',
   other: 'bg-gray-500/15 text-gray-600',
   objection: 'bg-purple-500/15 text-purple-600',
+  announcement: 'bg-orange-500/15 text-orange-600',
+  tender: 'bg-teal-500/15 text-teal-600',
 };
 
 /**

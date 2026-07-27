@@ -105,6 +105,9 @@ class BrowserPool:
         self._context = self._browser.new_context(
             viewport={"width": 1920, "height": 1080},
             locale="zh-CN",
+            # 政府站点 SSL 证书过期常见（如龙岩 zfcg.longyan.gov.cn ERR_CERT_DATE_INVALID）。
+            # 忽略 HTTPS 错误避免采集中断；对正常证书站点无副作用。
+            ignore_https_errors=True,
             # Default Chromium UA contains "HeadlessChrome" which is trivially
             # detected by anti-bot systems. Override with a realistic UA.
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

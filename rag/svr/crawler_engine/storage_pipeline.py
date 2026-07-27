@@ -100,13 +100,22 @@ class StoragePipeline:
         # 2. Upload content to KB + parse (knowledge base)
         #    Only upload if the DB write succeeded — this ties KB upload
         #    to the writer's date filter, dedup, and other checks.
+        #
+        #    Gate: upload when EITHER
+        #      (a) content >= MIN_CONTENT_LENGTH_FOR_KB chars (detail page scraped), OR
+        #      (b) title is present and non-trivial (listing-only sites where detail
+        #          is WAF-blocked; the metadata-only markdown still carries value).
+        #    Sites that want to skip KB upload entirely should set
+        #    output_targets=["db"] (no "kb") which flips self._skip_kb.
         has_content = len(item.content or "") >= MIN_CONTENT_LENGTH_FOR_KB
-        if not self._skip_kb and has_content and project_id:
+        has_title = bool(item.title and item.title.strip()
+                         and item.title != "Untitled")
+        if not self._skip_kb and (has_content or has_title) and project_id:
             doc_id = self._upload_content_to_kb(item)
             result["doc_id"] = doc_id
-        elif not has_content:
-            logging.debug("StoragePipeline: skipping KB upload for '%s' (content < %d chars)",
-                         item.title[:60], MIN_CONTENT_LENGTH_FOR_KB)
+        elif not (has_content or has_title):
+            logging.debug("StoragePipeline: skipping KB upload for '%s' (no content and no title)",
+                         item.title[:60])
 
         # 3. Handle attachments (download + KB upload)
         # Skipped when project_id is None — that means the writer filtered the

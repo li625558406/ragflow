@@ -163,6 +163,28 @@ def _get_crawler_task_site_ids() -> Optional[set]:
         return None
 
 
+def _site_bypass_date_filter(site_id: str) -> bool:
+    """读取 YAML 中该站点的 ``bypass_date_filter`` 字段.
+
+    Returns:
+        True 表示该站点 API 自带相对日期过滤(如 inRecentDays=N),
+        detector 入队时应跳过 ``date_filter=today`` 注入;
+        YAML 缺失/读失败时返回 False (沿用默认行为).
+    """
+    try:
+        from rag.svr.crawler_engine.config import ConfigLoader
+        loader = ConfigLoader(DEFAULT_CONFIG_PATH)
+        loader.load()
+        site = loader.get(site_id)
+        return bool(getattr(site, "bypass_date_filter", False))
+    except KeyError:
+        return False
+    except Exception as e:
+        logging.warning("crawler_detector: read bypass_date_filter for %s failed: %s",
+                        site_id, e)
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Quiet hours
 # ---------------------------------------------------------------------------
@@ -210,10 +232,29 @@ def _enqueue_full_crawl(site_id: str, category: str,
       探测器只负责"判断 + 触发",不碰 kb_id / 业务参数.
       kb_id 由 unified_crawler.py 按 site_id 查 crawler_task 表自动获取.
       入队消息里不带 kb_id 字段,task_executor 相应不会传 --kb-id 给子进程.
+
+    YAML bypass_date_filter=true 的站点(如 easy_prt_bidprice, API 自带
+    inRecentDays=N 相对窗口),不注入 date_filter=today, 让 API 自己负责日期过滤.
     """
     if REDIS_CONN is None:
         logging.error("detector: cannot enqueue — Redis not available")
         return False
+
+    script_args = {
+        "site_id": site_id,
+        "writer": "collection",     # ★ route to new collection pipeline
+        "category": category,        # ★ from YAML, drives crawler_result.category
+        "date_filter": "today",      # ★ only store today's items (dedup-friendly)
+    }
+    if _site_bypass_date_filter(site_id):
+        # 滚动窗口站点（如 easy_prt_bidprice, inRecentDays=7）：
+        # 不注入 date_filter=today；改为 full=true 让 engine 重置 last_page，
+        # 否则第二次探测触发会从 state.last_page+1=page 2 开始 → 0 items。
+        # 站点 API 自身的相对日期窗决定数据范围，DB upsert + processed_ids 去重依然生效。
+        script_args.pop("date_filter", None)
+        script_args["full"] = True
+        logging.info("detector: site=%s bypass_date_filter=true → full crawl mode",
+                     site_id)
 
     msg = {
         "id": get_uuid(),
@@ -221,12 +262,7 @@ def _enqueue_full_crawl(site_id: str, category: str,
         "tenant_id": tenant_id,
         "name": f"detect:{site_id}",
         "script_path": "rag/svr/unified_crawler.py",
-        "script_args": json.dumps({
-            "site_id": site_id,
-            "writer": "collection",     # ★ route to new collection pipeline
-            "category": category,        # ★ from YAML, drives crawler_result.category
-            "date_filter": "today",      # ★ only store today's items (dedup-friendly)
-        }, ensure_ascii=False),
+        "script_args": json.dumps(script_args, ensure_ascii=False),
         "timeout": 3600,
         "task_id_ref": "",
         "target_url": "",

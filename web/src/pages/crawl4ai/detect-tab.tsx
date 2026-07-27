@@ -15,18 +15,18 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import {
+  disableDetect,
+  enableDetect,
+  fetchDetectActivity,
+  fetchDetectStats,
   installDetect,
   listDetectState,
   resetDetect,
-  disableDetect,
-  enableDetect,
   triggerDetect,
-  fetchDetectStats,
-  fetchDetectActivity,
-  type DetectStateRow,
-  type DetectStateList,
-  type DetectStats,
   type DetectActivityItem,
+  type DetectStateList,
+  type DetectStateRow,
+  type DetectStats,
 } from '@/services/collection-service';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -50,53 +50,90 @@ const REASON_KEY_MAP: Record<string, string> = {
   error: 'crawl4ai.detect.reasonError',
 };
 
-function formatDuration(sec: number, t: (k: string, opts?: any) => string): string {
+function formatDuration(
+  sec: number,
+  t: (k: string, opts?: any) => string,
+): string {
   if (sec <= 0) return t('crawl4ai.detect.justNow');
-  if (sec < 60) return t('crawl4ai.detect.inTime', {
-    n: sec, unit: t('crawl4ai.detect.seconds'),
-  });
+  if (sec < 60)
+    return t('crawl4ai.detect.inTime', {
+      n: sec,
+      unit: t('crawl4ai.detect.seconds'),
+    });
   if (sec < 3600) {
     const m = Math.round(sec / 60);
     return t('crawl4ai.detect.inTime', {
-      n: m, unit: t('crawl4ai.detect.minutes'),
+      n: m,
+      unit: t('crawl4ai.detect.minutes'),
     });
   }
   const h = Math.round(sec / 3600);
   return t('crawl4ai.detect.inTime', {
-    n: h, unit: t('crawl4ai.detect.hours'),
+    n: h,
+    unit: t('crawl4ai.detect.hours'),
   });
 }
 
 function formatAgo(sec: number, t: (k: string, opts?: any) => string): string {
   if (sec <= 0) return t('crawl4ai.detect.justNow');
-  if (sec < 60) return t('crawl4ai.detect.agoTime', {
-    n: sec, unit: t('crawl4ai.detect.seconds'),
-  });
+  if (sec < 60)
+    return t('crawl4ai.detect.agoTime', {
+      n: sec,
+      unit: t('crawl4ai.detect.seconds'),
+    });
   if (sec < 3600) {
     const m = Math.round(sec / 60);
     return t('crawl4ai.detect.agoTime', {
-      n: m, unit: t('crawl4ai.detect.minutes'),
+      n: m,
+      unit: t('crawl4ai.detect.minutes'),
     });
   }
   const h = Math.round(sec / 3600);
   return t('crawl4ai.detect.agoTime', {
-    n: h, unit: t('crawl4ai.detect.hours'),
+    n: h,
+    unit: t('crawl4ai.detect.hours'),
   });
 }
 
 function StatusBadge({ status, t }: { status: string; t: any }) {
   const map: Record<string, { label: string; cls: string }> = {
-    due: { label: t('crawl4ai.detect.statusDue'), cls: 'bg-blue-100 text-blue-700' },
-    active: { label: t('crawl4ai.detect.statusActive'), cls: 'bg-green-100 text-green-700' },
-    cold: { label: t('crawl4ai.detect.statusCold'), cls: 'bg-gray-100 text-gray-600' },
-    error: { label: t('crawl4ai.detect.statusError'), cls: 'bg-amber-100 text-amber-700' },
-    auto_disabled: { label: t('crawl4ai.detect.statusAutoDisabled'), cls: 'bg-red-100 text-red-700' },
-    manual_disabled: { label: t('crawl4ai.detect.statusManualDisabled'), cls: 'bg-red-100 text-red-700' },
-    never_probed: { label: t('crawl4ai.detect.statusNeverProbed'), cls: 'bg-gray-100 text-gray-500' },
+    due: {
+      label: t('crawl4ai.detect.statusDue'),
+      cls: 'bg-blue-100 text-blue-700',
+    },
+    active: {
+      label: t('crawl4ai.detect.statusActive'),
+      cls: 'bg-green-100 text-green-700',
+    },
+    cold: {
+      label: t('crawl4ai.detect.statusCold'),
+      cls: 'bg-gray-100 text-gray-600',
+    },
+    error: {
+      label: t('crawl4ai.detect.statusError'),
+      cls: 'bg-amber-100 text-amber-700',
+    },
+    auto_disabled: {
+      label: t('crawl4ai.detect.statusAutoDisabled'),
+      cls: 'bg-red-100 text-red-700',
+    },
+    manual_disabled: {
+      label: t('crawl4ai.detect.statusManualDisabled'),
+      cls: 'bg-red-100 text-red-700',
+    },
+    never_probed: {
+      label: t('crawl4ai.detect.statusNeverProbed'),
+      cls: 'bg-gray-100 text-gray-500',
+    },
   };
-  const meta = map[status] || { label: status, cls: 'bg-gray-100 text-gray-600' };
+  const meta = map[status] || {
+    label: status,
+    cls: 'bg-gray-100 text-gray-600',
+  };
   return (
-    <span className={`inline-flex items-center rounded px-2 py-0.5 text-xs font-medium ${meta.cls}`}>
+    <span
+      className={`inline-flex items-center rounded px-2 py-0.5 text-xs font-medium ${meta.cls}`}
+    >
       {meta.label}
     </span>
   );
@@ -132,14 +169,20 @@ export function DetectTab() {
   });
 
   // 近 1h 活动流 — 10s 轮询; 新出现的 site_id 触发 2s 绿色高亮淡出
-  const { data: activityData } = useQuery<{ items: DetectActivityItem[]; total_count: number }>({
+  const { data: activityData } = useQuery<{
+    items: DetectActivityItem[];
+    total_count: number;
+  }>({
     queryKey: ['detectActivity'],
     initialData: { items: [], total_count: 0 },
     refetchInterval: 10000,
     queryFn: async () => {
       const { data: res } = await fetchDetectActivity(3600, 20);
       return res?.code === 0
-        ? { items: res.data?.items ?? [], total_count: res.data?.total_count ?? 0 }
+        ? {
+            items: res.data?.items ?? [],
+            total_count: res.data?.total_count ?? 0,
+          }
         : { items: [], total_count: 0 };
     },
   });
@@ -174,7 +217,7 @@ export function DetectTab() {
   }, [queryClient]);
 
   const resetMutation = useMutation({
-    mutationFn: (site_id: string) => resetDetect(site_id),
+    mutationFn: async (site_id: string) => (await resetDetect(site_id)).data,
     onSuccess: (res: any) => {
       if (res?.code === 0) message.success(t('crawl4ai.detect.resetSuccess'));
       else message.error(res?.message ?? t('crawl4ai.detect.opFailed'));
@@ -183,7 +226,7 @@ export function DetectTab() {
   });
 
   const triggerMutation = useMutation({
-    mutationFn: (site_id: string) => triggerDetect(site_id),
+    mutationFn: async (site_id: string) => (await triggerDetect(site_id)).data,
     onSuccess: (res: any) => {
       if (res?.code === 0) message.success(t('crawl4ai.detect.triggerSuccess'));
       else message.error(res?.message ?? t('crawl4ai.detect.opFailed'));
@@ -192,7 +235,7 @@ export function DetectTab() {
   });
 
   const disableMutation = useMutation({
-    mutationFn: (site_id: string) => disableDetect(site_id),
+    mutationFn: async (site_id: string) => (await disableDetect(site_id)).data,
     onSuccess: (res: any) => {
       if (res?.code === 0) message.success(t('crawl4ai.detect.disableSuccess'));
       else message.error(res?.message ?? t('crawl4ai.detect.opFailed'));
@@ -201,7 +244,7 @@ export function DetectTab() {
   });
 
   const enableMutation = useMutation({
-    mutationFn: (site_id: string) => enableDetect(site_id),
+    mutationFn: async (site_id: string) => (await enableDetect(site_id)).data,
     onSuccess: (res: any) => {
       if (res?.code === 0) message.success(t('crawl4ai.detect.enableSuccess'));
       else message.error(res?.message ?? t('crawl4ai.detect.opFailed'));
@@ -212,7 +255,7 @@ export function DetectTab() {
   const installMutation = useMutation({
     mutationFn: async () => {
       // kb_id 已废弃 —— 探测器不再消费 kb_id, 爬虫脚本按 site_id 查 crawler_task 表自动获取
-      return installDetect(60);
+      return (await installDetect(60)).data;
     },
     onSuccess: (res: any) => {
       if (res?.code === 0) message.success(t('crawl4ai.detect.installSuccess'));
@@ -241,14 +284,62 @@ export function DetectTab() {
   const activityTotal = activityData?.total_count ?? 0;
 
   const stats = [
-    { key: 'total', label: t('crawl4ai.detect.statsTotal'), val: statsData?.total ?? 0, cls: 'text-gray-700', alert: false },
-    { key: 'due', label: t('crawl4ai.detect.statsDue'), val: buckets.due ?? 0, cls: 'text-blue-600', alert: false },
-    { key: 'active', label: t('crawl4ai.detect.statsActive'), val: buckets.active ?? 0, cls: 'text-green-600', alert: false },
-    { key: 'cold', label: t('crawl4ai.detect.statsCold'), val: buckets.cold ?? 0, cls: 'text-gray-500', alert: false },
-    { key: 'error', label: t('crawl4ai.detect.statsError'), val: buckets.error ?? 0, cls: 'text-amber-600', alert: (buckets.error ?? 0) > 0 },
-    { key: 'auto_disabled', label: t('crawl4ai.detect.statsAutoDisabled'), val: buckets.auto_disabled ?? 0, cls: 'text-red-600', alert: (buckets.auto_disabled ?? 0) > 0 },
-    { key: 'manual_disabled', label: t('crawl4ai.detect.statsManualDisabled'), val: buckets.manual_disabled ?? 0, cls: 'text-red-600', alert: (buckets.manual_disabled ?? 0) > 0 },
-    { key: 'never_probed', label: t('crawl4ai.detect.statsNeverProbed'), val: buckets.never_probed ?? 0, cls: 'text-gray-400', alert: false },
+    {
+      key: 'total',
+      label: t('crawl4ai.detect.statsTotal'),
+      val: statsData?.total ?? 0,
+      cls: 'text-gray-700',
+      alert: false,
+    },
+    {
+      key: 'due',
+      label: t('crawl4ai.detect.statsDue'),
+      val: buckets.due ?? 0,
+      cls: 'text-blue-600',
+      alert: false,
+    },
+    {
+      key: 'active',
+      label: t('crawl4ai.detect.statsActive'),
+      val: buckets.active ?? 0,
+      cls: 'text-green-600',
+      alert: false,
+    },
+    {
+      key: 'cold',
+      label: t('crawl4ai.detect.statsCold'),
+      val: buckets.cold ?? 0,
+      cls: 'text-gray-500',
+      alert: false,
+    },
+    {
+      key: 'error',
+      label: t('crawl4ai.detect.statsError'),
+      val: buckets.error ?? 0,
+      cls: 'text-amber-600',
+      alert: (buckets.error ?? 0) > 0,
+    },
+    {
+      key: 'auto_disabled',
+      label: t('crawl4ai.detect.statsAutoDisabled'),
+      val: buckets.auto_disabled ?? 0,
+      cls: 'text-red-600',
+      alert: (buckets.auto_disabled ?? 0) > 0,
+    },
+    {
+      key: 'manual_disabled',
+      label: t('crawl4ai.detect.statsManualDisabled'),
+      val: buckets.manual_disabled ?? 0,
+      cls: 'text-red-600',
+      alert: (buckets.manual_disabled ?? 0) > 0,
+    },
+    {
+      key: 'never_probed',
+      label: t('crawl4ai.detect.statsNeverProbed'),
+      val: buckets.never_probed ?? 0,
+      cls: 'text-gray-400',
+      alert: false,
+    },
   ];
 
   return (
@@ -267,12 +358,21 @@ export function DetectTab() {
           </div>
         ))}
         <div className="flex items-center gap-1.5 rounded border bg-card px-2.5 py-1.5">
-          <span className="text-muted-foreground">{t('crawl4ai.detect.statsAvgInterval')}</span>
+          <span className="text-muted-foreground">
+            {t('crawl4ai.detect.statsAvgInterval')}
+          </span>
           <span className="font-semibold text-purple-600">{avgInterval}s</span>
         </div>
         <div className="ml-auto flex gap-2">
-          <Button variant="outline" size="sm" onClick={refresh} disabled={isFetching}>
-            <RefreshCw className={`w-4 h-4 mr-1 ${isFetching ? 'animate-spin' : ''}`} />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={refresh}
+            disabled={isFetching}
+          >
+            <RefreshCw
+              className={`w-4 h-4 mr-1 ${isFetching ? 'animate-spin' : ''}`}
+            />
             刷新
           </Button>
           <Button
@@ -297,7 +397,9 @@ export function DetectTab() {
           <Activity className="w-3.5 h-3.5" />
           <span>最近 1 小时活动</span>
           {activityTotal > 0 && (
-            <span className="text-green-600 font-medium">合计 +{activityTotal} 条</span>
+            <span className="text-green-600 font-medium">
+              合计 +{activityTotal} 条
+            </span>
           )}
         </div>
         {activityItems.length === 0 ? (
@@ -317,7 +419,9 @@ export function DetectTab() {
                             : 'bg-green-50 border-green-200 text-green-700'
                         } transition-colors duration-500`}
                       >
-                        <span className="font-medium">{it.site_name || it.site_id}</span>
+                        <span className="font-medium">
+                          {it.site_name || it.site_id}
+                        </span>
                         <span className="font-semibold">+{it.count}</span>
                       </span>
                     </TooltipTrigger>
@@ -339,36 +443,60 @@ export function DetectTab() {
         <Table>
           <TableHeader className="sticky top-0 bg-card z-10">
             <TableRow>
-              <TableHead className="min-w-[200px]">{t('crawl4ai.detect.site')}</TableHead>
-              <TableHead className="w-[90px]">{t('crawl4ai.detect.category')}</TableHead>
-              <TableHead className="w-[110px]">{t('crawl4ai.detect.status')}</TableHead>
-              <TableHead className="w-[80px] text-right">{t('crawl4ai.detect.missCount')}</TableHead>
-              <TableHead className="w-[90px] text-right">{t('crawl4ai.detect.curInterval')}</TableHead>
-              <TableHead className="w-[110px]">{t('crawl4ai.detect.nextRunIn')}</TableHead>
-              <TableHead className="w-[110px]">{t('crawl4ai.detect.lastCheck')}</TableHead>
-              <TableHead className="w-[80px] text-right">{t('crawl4ai.detect.lastNewCount')}</TableHead>
-              <TableHead className="w-[100px]">{t('crawl4ai.detect.lastReason')}</TableHead>
+              <TableHead className="min-w-[200px]">
+                {t('crawl4ai.detect.site')}
+              </TableHead>
+              <TableHead className="w-[90px]">
+                {t('crawl4ai.detect.category')}
+              </TableHead>
+              <TableHead className="w-[110px]">
+                {t('crawl4ai.detect.status')}
+              </TableHead>
+              <TableHead className="w-[80px] text-right">
+                {t('crawl4ai.detect.missCount')}
+              </TableHead>
+              <TableHead className="w-[90px] text-right">
+                {t('crawl4ai.detect.curInterval')}
+              </TableHead>
+              <TableHead className="w-[110px]">
+                {t('crawl4ai.detect.nextRunIn')}
+              </TableHead>
+              <TableHead className="w-[110px]">
+                {t('crawl4ai.detect.lastCheck')}
+              </TableHead>
+              <TableHead className="w-[80px] text-right">
+                {t('crawl4ai.detect.lastNewCount')}
+              </TableHead>
+              <TableHead className="w-[100px]">
+                {t('crawl4ai.detect.lastReason')}
+              </TableHead>
               <TableHead className="w-[200px] text-right">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {rows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={10} className="text-center text-muted-foreground py-8">
-                  暂无探测数据。点击右上角 "{t('crawl4ai.detect.install')}" 注册探测器 meta-task。
+                <TableCell
+                  colSpan={10}
+                  className="text-center text-muted-foreground py-8"
+                >
+                  暂无探测数据。点击右上角 "{t('crawl4ai.detect.install')}"
+                  注册探测器 meta-task。
                 </TableCell>
               </TableRow>
             )}
             {rows.map((r) => {
-              const reasonKey = REASON_KEY_MAP[r.last_reason] || r.last_reason || '';
+              const reasonKey =
+                REASON_KEY_MAP[r.last_reason] || r.last_reason || '';
               const disabled =
                 r.status === 'auto_disabled' || r.status === 'manual_disabled';
               const isError = r.consecutive_errors > 0 || r.status === 'error';
-              const rowCls = r.status === 'auto_disabled'
-                ? 'bg-red-50'
-                : isError
-                  ? 'bg-amber-50'
-                  : '';
+              const rowCls =
+                r.status === 'auto_disabled'
+                  ? 'bg-red-50'
+                  : isError
+                    ? 'bg-amber-50'
+                    : '';
               return (
                 <TableRow key={r.site_id} className={rowCls}>
                   <TableCell>
@@ -377,8 +505,12 @@ export function DetectTab() {
                         <AlertTriangle className="w-3.5 h-3.5 text-red-600 flex-shrink-0" />
                       )}
                       <div className="min-w-0">
-                        <div className="font-medium truncate max-w-[280px]">{r.name}</div>
-                        <div className="text-xs text-muted-foreground font-mono">{r.site_id}</div>
+                        <div className="font-medium truncate max-w-[280px]">
+                          {r.name}
+                        </div>
+                        <div className="text-xs text-muted-foreground font-mono">
+                          {r.site_id}
+                        </div>
                       </div>
                     </div>
                   </TableCell>
@@ -386,20 +518,30 @@ export function DetectTab() {
                   <TableCell>
                     <StatusBadge status={r.status} t={t} />
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">{r.miss_count}</TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {r.miss_count}
+                  </TableCell>
                   <TableCell className="text-right tabular-nums text-xs">
                     {r.cur_interval > 0 ? `${r.cur_interval}s` : '-'}
                   </TableCell>
                   <TableCell className="text-xs">
-                    {r.next_run_at > 0 ? formatDuration(r.next_run_in_sec, t) : '-'}
+                    {r.next_run_at > 0
+                      ? formatDuration(r.next_run_in_sec, t)
+                      : '-'}
                   </TableCell>
                   <TableCell className="text-xs">
-                    {r.last_check > 0 ? formatAgo(r.last_check_ago_sec, t) : t('crawl4ai.detect.neverChecked')}
+                    {r.last_check > 0
+                      ? formatAgo(r.last_check_ago_sec, t)
+                      : t('crawl4ai.detect.neverChecked')}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
                     {r.last_new_count > 0 ? (
-                      <span className="text-green-600">+{r.last_new_count}</span>
-                    ) : '0'}
+                      <span className="text-green-600">
+                        +{r.last_new_count}
+                      </span>
+                    ) : (
+                      '0'
+                    )}
                   </TableCell>
                   <TableCell className="text-xs">
                     {reasonKey ? t(reasonKey) : '-'}
@@ -408,11 +550,14 @@ export function DetectTab() {
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <span className="ml-1 inline-flex items-center text-amber-600">
-                              <AlertTriangle className="w-3 h-3" />×{r.consecutive_errors}
+                              <AlertTriangle className="w-3 h-3" />×
+                              {r.consecutive_errors}
                             </span>
                           </TooltipTrigger>
                           <TooltipContent>
-                            <p className="max-w-[300px] text-xs">{r.last_error || '-'}</p>
+                            <p className="max-w-[300px] text-xs">
+                              {r.last_error || '-'}
+                            </p>
                           </TooltipContent>
                         </Tooltip>
                       </TooltipProvider>

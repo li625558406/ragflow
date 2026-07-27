@@ -68,3 +68,11 @@ export const getCrawl4aiResult = (id: string) =>
   request.get(api.getCrawl4aiResult(id));
 
 export const listCrawl4aiSites = () => request.get(api.listCrawl4aiSites);
+
+export const fetchKnowledgeBases = async (): Promise<any[]> => {
+  const { data: res } = await request.get(api.kbList, {
+    params: { page: 1, page_size: 9999 },
+  });
+  if (res?.code !== 0) return [];
+  return res.data ?? [];
+};

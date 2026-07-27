@@ -39,6 +39,7 @@ class AttachmentHandler:
 
     _MAX_FILE_SIZE = 200 * 1024 * 1024  # 200MB
     _DOWNLOAD_TIMEOUT = 120  # seconds
+    _MAX_ZIP_DEPTH = 2  # 嵌套 ZIP 递归解压最大深度（文件集.zip 内的附件.zip）
 
     def __init__(self, kb_id: str, tenant_id: str,
                  parser_id: str = "general",
@@ -205,11 +206,15 @@ class AttachmentHandler:
 
     def _handle_zip(self, zip_path: str, zip_name: str,
                     project_id: Any,
-                    link_to_bid: bool = True) -> Dict[str, Any]:
-        """Extract ZIP and upload each contained file to KB."""
+                    link_to_bid: bool = True,
+                    depth: int = 0) -> Dict[str, Any]:
+        """Extract ZIP and upload each contained file to KB.
+
+        嵌套 ZIP（文件集.zip 里又有附件.zip）递归解压，最多 _MAX_ZIP_DEPTH 层。
+        """
         self._stats["extracted_zips"] += 1
         doc_ids = []
-        extract_dir = zip_path.replace(".zip", "_extracted")
+        extract_dir = zip_path.replace(".zip", "_extracted", 1)
         os.makedirs(extract_dir, exist_ok=True)
 
         try:
@@ -230,12 +235,29 @@ class AttachmentHandler:
                     with zf.open(name) as src, open(extracted_path, "wb") as dst:
                         dst.write(src.read())
 
-                    # Upload extracted file
                     base_name = os.path.basename(name)
-                    doc_id = self._upload_to_kb(extracted_path, base_name)
-                    if doc_id:
-                        doc_ids.append(doc_id)
-                        self._stats["uploaded"] += 1
+                    if suffix == ".zip":
+                        # 嵌套 ZIP：KBUploader 不支持 .zip 直传，递归解压取内层文件
+                        if depth < self._MAX_ZIP_DEPTH:
+                            logging.info(
+                                "AttachmentHandler: 递归解压嵌套 ZIP (depth=%d): %s",
+                                depth + 1, base_name,
+                            )
+                            inner = self._handle_zip(
+                                extracted_path, base_name, project_id,
+                                link_to_bid=link_to_bid, depth=depth + 1,
+                            )
+                            doc_ids.extend(inner.get("doc_ids", []))
+                        else:
+                            logging.warning(
+                                "AttachmentHandler: 嵌套 ZIP 超过最大深度 %d，跳过: %s",
+                                self._MAX_ZIP_DEPTH, base_name,
+                            )
+                    else:
+                        doc_id = self._upload_to_kb(extracted_path, base_name)
+                        if doc_id:
+                            doc_ids.append(doc_id)
+                            self._stats["uploaded"] += 1
 
                     # Clean up extracted file
                     try:

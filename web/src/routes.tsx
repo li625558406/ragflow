@@ -77,8 +77,6 @@ export enum Routes {
   DocumentAnalysis = '/document-analysis',
   AnalysisTemplates = '/analysis-templates',
   AnalysisTemplateEdit = '/analysis-template',
-  ScheduledTasks = '/scheduled-tasks',
-  ScheduledTaskLogs = '/scheduled-task-logs',
   Crawl4ai = '/smart-crawler',
   Bids = '/bids',
 }
@@ -263,14 +261,6 @@ const routeConfigOptions = [
       {
         path: Routes.Files,
         Component: () => import('@/pages/files'),
-      },
-      {
-        path: Routes.ScheduledTasks,
-        Component: () => import('@/pages/scheduled-tasks'),
-      },
-      {
-        path: `${Routes.ScheduledTaskLogs}/:taskId`,
-        Component: () => import('@/pages/scheduled-tasks/logs'),
       },
       {
         path: Routes.Crawl4ai,

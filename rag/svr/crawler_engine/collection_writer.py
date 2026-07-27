@@ -43,7 +43,7 @@ except ImportError:
 
 
 # 合法的 category 值
-VALID_CATEGORIES = ("bid", "policy", "personnel", "news", "other", "objection")
+VALID_CATEGORIES = ("bid", "policy", "personnel", "news", "other", "objection", "announcement", "tender")
 
 
 def gen_result_id(site_id: str, source_url: str) -> str:
@@ -334,7 +334,8 @@ class CollectionWriter:
             "doc_number": self._first_of(item, "doc_number", "wenhao", "documentNumber",
                                          "document_number", "fwh"),
             "issuing_authority": self._first_of(item, "issuing_authority", "fawenjigou",
-                                                "issuer", "publishOrg"),
+                                                "issuer", "publishOrg", "SOURCES",
+                                                "source_org"),
             "authority_level": self._first_of(item, "authority_level", "xiaoli",
                                               "effectLevel", "level"),
             "topic_category": self._first_of(item, "topic_category", "category",
