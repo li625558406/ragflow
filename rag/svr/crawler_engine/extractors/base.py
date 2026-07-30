@@ -5,6 +5,7 @@ Extractors transform raw API/HTML responses into structured item dicts
 with consistent field names.
 """
 
+import logging
 import re
 from abc import ABC, abstractmethod
 from urllib.parse import quote
@@ -73,6 +74,18 @@ class BaseExtractor(ABC):
                 mapped["url"] = re.sub(r"\{(\w+)\}", _replace, tpl)
             except (KeyError, IndexError, ValueError):
                 pass
+
+        # Optional URL transform: regex search/replace on the extracted url.
+        # Generic feature — useful when the listing API returns a "summary" URL
+        # (e.g. /deal/html/a/...) but the actual content body lives at a sibling
+        # path (/deal/html/b/...). Applied AFTER url_template so both can compose.
+        url_search = getattr(self._config, "url_search", "")
+        url_replace = getattr(self._config, "url_replace", "")
+        if url_search and mapped.get("url"):
+            try:
+                mapped["url"] = re.sub(url_search, url_replace, mapped["url"])
+            except re.error as e:
+                logging.warning("Extractor: invalid url_search regex %r: %s", url_search, e)
         return mapped
 
     @staticmethod

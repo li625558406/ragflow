@@ -34,16 +34,18 @@ try:
         CollectionPolicyExtService,
         CollectionPersonnelExtService,
         CollectionObjectionExtService,
+        CollectionZdgksxmlExtService,
     )
 except ImportError:
     CrawlerResultService = None  # type: ignore
     CollectionPolicyExtService = None  # type: ignore
     CollectionPersonnelExtService = None  # type: ignore
     CollectionObjectionExtService = None  # type: ignore
+    CollectionZdgksxmlExtService = None  # type: ignore
 
 
 # 合法的 category 值
-VALID_CATEGORIES = ("bid", "policy", "personnel", "news", "other", "objection", "announcement", "tender")
+VALID_CATEGORIES = ("bid", "policy", "personnel", "news", "other", "objection", "announcement", "tender", "zdgksxml", "漳州市人民政府-解读回应")
 
 
 def gen_result_id(site_id: str, source_url: str) -> str:
@@ -147,6 +149,8 @@ class CollectionWriter:
             "personnel_ext_failed": 0,
             "objection_ext_written": 0,
             "objection_ext_failed": 0,
+            "zdgksxml_ext_written": 0,
+            "zdgksxml_ext_failed": 0,
         }
 
     # ------------------------------------------------------------------
@@ -207,6 +211,8 @@ class CollectionWriter:
             self._write_personnel_ext(result_id, item)
         elif category == "objection":
             self._write_objection_ext(result_id, item)
+        elif category == "zdgksxml":
+            self._write_zdgksxml_ext(result_id, item)
 
         return result_id
 
@@ -415,6 +421,37 @@ class CollectionWriter:
             self._stats["objection_ext_failed"] += 1
             return False
 
+    def _write_zdgksxml_ext(self, result_id: str, item: Dict[str, Any]) -> bool:
+        """重点公开事项扩展表写入（福建省交通运输-公开事项目录）。"""
+        if CollectionZdgksxmlExtService is None:
+            return False
+
+        fields = {
+            "seq_no": self._parse_int(self._first_of(item, "seq_no", "序号")),
+            "category_l1": self._first_of(item, "category_l1", "公开类别"),
+            "category_l2": self._first_of(item, "category_l2", "二级公开类别", "二级类别"),
+            "matter": self._first_of(item, "matter", "公开事项", "事项"),
+            "disclosure_content": self._first_of(item, "disclosure_content", "公开内容"),
+            "legal_doc_title": self._first_of(item, "legal_doc_title", "公开依据文件", "依据文件"),
+            "legal_doc_url": self._first_of(item, "legal_doc_url", "依据文件url", "legal_doc_link"),
+            "legal_doc_clause": self._first_of(item, "legal_doc_clause", "公开依据文件条款", "条款"),
+            "disclosure_deadline": self._first_of(item, "disclosure_deadline", "公开时限"),
+            "disclosure_period": self._first_of(item, "disclosure_period", "公开期限"),
+            "disclosure_subject": self._first_of(item, "disclosure_subject", "公开主体"),
+            "disclosure_duty": self._first_of(item, "disclosure_duty", "公开责任"),
+            "disclosure_method": self._first_of(item, "disclosure_method", "公开方式"),
+            "disclosure_channel": self._first_of(item, "disclosure_channel", "公开渠道"),
+        }
+
+        try:
+            CollectionZdgksxmlExtService.upsert(result_id, fields)
+            self._stats["zdgksxml_ext_written"] += 1
+            return True
+        except Exception as e:
+            logging.error("CollectionWriter: zdgksxml_ext failed (id=%s): %s", result_id, e)
+            self._stats["zdgksxml_ext_failed"] += 1
+            return False
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -462,6 +499,16 @@ class CollectionWriter:
         return s[:6] + "*" * 8 + s[-4:]
 
     @staticmethod
+    def _parse_int(val: Any) -> Optional[int]:
+        """容错把 val 转 int；失败返回 None（DB 字段是 IntegerField null=True）。"""
+        if val in (None, "", []):
+            return None
+        try:
+            return int(float(str(val).strip()))
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
     def _build_markdown(item: Dict[str, Any]) -> str:
         """把采集项格式化为 markdown，供 KB 上传使用。"""
         lines = []
@@ -469,19 +516,36 @@ class CollectionWriter:
         lines.append(f"# {title}")
         lines.append("")
 
-        date_val = CollectionWriter._normalize_date(item)
-        if date_val:
-            lines.append(f"**日期:** {date_val}")
-            lines.append("")
+        # 元数据字段（由 js_extract / metadata_js 注入 item）
+        section = item.get("section_name") or ""
+        if section:
+            lines.append(f"**栏目:** {section}")
+        sub = item.get("subsection_name") or ""
+        if sub:
+            lines.append(f"**子栏目:** {sub}")
+
+        issuer = item.get("issuing_authority") or ""
+        if issuer:
+            lines.append(f"**发布机构:** {issuer}")
+
+        pub_dt = item.get("publish_datetime") or ""
+        if pub_dt:
+            lines.append(f"**发布日期:** {pub_dt}")
+
+        doc_no = item.get("doc_number") or ""
+        if doc_no:
+            lines.append(f"**发文字号:** {doc_no}")
+
+        source = item.get("source") or ""
+        if source:
+            lines.append(f"**来源:** {source}")
 
         url = item.get("url") or item.get("href") or ""
         if url:
-            lines.append(f"**来源:** {url}")
-            lines.append("")
+            lines.append(f"**原文链接:** {url}")
 
-        source_site = item.get("source_site") or item.get("site_id") or ""
-        if source_site:
-            lines.append(f"**站点:** {source_site}")
+        # 当元数据较轻时不带空行，反之加空行分割
+        if section or sub or issuer or pub_dt or doc_no or source or url:
             lines.append("")
 
         # 正文（清洗后）
@@ -523,12 +587,16 @@ class CollectionWriter:
                 for f in val:
                     if isinstance(f, dict):
                         url = (f.get("file_url") or f.get("fileUrl") or
-                               f.get("url") or f.get("downloadUrl") or "")
+                               f.get("url") or f.get("downloadUrl") or
+                               f.get("attUrl") or
+                               f.get("_href") or "")   # TRS CMS fjdzapp API
                         if not url:
                             continue
                         results.append({
                             "file_name": (f.get("file_name") or f.get("fileName") or
-                                          f.get("name") or "attachment")[:500],
+                                          f.get("name") or f.get("attFileName") or
+                                          f.get("appdesc") or     # TRS CMS fjdzapp API
+                                          "attachment")[:500],
                             "file_url": url[:1000],
                             "file_suffix": (f.get("file_suffix") or f.get("fileSuffix") or
                                             CollectionWriter._guess_suffix(url))[:20],

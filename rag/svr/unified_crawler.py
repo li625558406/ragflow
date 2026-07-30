@@ -292,6 +292,43 @@ def main():
         _PROJECT_ROOT, "rag", args.task_name.strip()
     )
 
+    # ── Custom runner dispatch ──────────────────────────────────────────
+    # 站点结构无法用 YAML 描述时（如嵌套树 JSON），YAML 配 custom_runner 字段
+    # 指向一个 Python 模块，本进程会 import 并调用其 run() 函数。
+    # run() 签名见 fujian_jtyst_zdgksxml_crawler.py。
+    custom_runner = (getattr(site_config, "custom_runner", "") or "").strip()
+    if custom_runner:
+        _safe_print(f"[UNIFIED] Dispatching to custom runner: {custom_runner}")
+        try:
+            import importlib
+            mod = importlib.import_module(custom_runner)
+            summary = mod.run(
+                tenant_id=args.tenant_id,
+                kb_id=kb_id,
+                task_name=args.task_name,
+                task_id=task_id,
+                writer_mode=writer_mode,
+                category=category or getattr(site_config, "category", "") or "other",
+                date_filter=date_filter,
+                full_crawl=full_crawl,
+                force_run=force_run,
+                site_config=site_config,
+                output_dir=output_dir,
+            )
+            status = summary.get("status", "unknown")
+            fe_status = "fail" if status == "error" else "success"
+            logging.info("=== Custom runner finished: site=%s, status=%s ===", site_id, status)
+            _writeback_task_run_result(task_id, fe_status, summary)
+            if fe_status == "fail":
+                sys.exit(1)
+            return
+        except Exception as e:
+            _safe_print(f"[UNIFIED] ERROR: Custom runner crashed: {e}")
+            traceback.print_exc()
+            logging.error("=== Custom runner crashed: site=%s, error=%s ===", site_id, e)
+            _writeback_task_run_result(task_id, "fail", {"error": str(e)})
+            sys.exit(1)
+
     # Run the engine
     try:
         reporter = ProgressReporter(task_id) if task_id else None

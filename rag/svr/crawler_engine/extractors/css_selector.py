@@ -43,12 +43,15 @@ class CssSelectorExtractor(BaseExtractor):
         container_sel = self._config.items_path
         containers = soup.select(container_sel) if container_sel else []
 
-        # Fallback: if configured selector found nothing, auto-discover
-        if not containers:
+        # Fallback: auto-discover ONLY when user gave no explicit items_path.
+        # If items_path was specified but matched 0, the page genuinely has no
+        # list (e.g. pagination walked past the last page) — fallback would
+        # wrongly capture navigation menus as list items.
+        if not containers and not container_sel:
             containers = self._auto_discover_items(soup)
             if containers:
-                logging.info("CssExtractor: items_path '%s' matched 0, "
-                             "fallback found %d items", container_sel, len(containers))
+                logging.info("CssExtractor: no items_path configured, "
+                             "auto-discover found %d items", len(containers))
 
         for el in containers:
             item = self._extract_item(el)

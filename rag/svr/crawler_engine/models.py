@@ -181,8 +181,11 @@ def _extract_attachments(data: Dict[str, Any]) -> List[AttachmentMeta]:
 def _dict_to_attachment(f: Dict[str, Any]) -> AttachmentMeta:
     """Convert a file dict to AttachmentMeta."""
     file_url = (f.get("url") or f.get("fileUrl") or f.get("file_url") or
-                f.get("downloadUrl") or "")
+                f.get("downloadUrl") or f.get("attUrl") or
+                f.get("_href") or "")           # TRS CMS fjdzapp API uses _href
     file_name = (f.get("name") or f.get("fileName") or f.get("file_name") or
+                 f.get("attFileName") or
+                 f.get("appdesc") or            # TRS CMS fjdzapp API uses appdesc
                  "attachment")
     file_suffix = (f.get("suffix") or f.get("fileSuffix") or
                    f.get("file_suffix") or _guess_suffix(file_url))

@@ -751,66 +751,198 @@ sites:
         name: "交易信息"
 
   # --------------------------------------------------------------------------
-  # jdhy — 福建省发改委解读回应 (SSR HTML, 4 modules + sub-tabs)
-  # Old script: jdhy_crawler.py
+  # jdhy — 福建省发改委 · 解读回应 (TRS CMS + Avalon/MVVM SPA)
+  # Source: http://fgw.fujian.gov.cn/jdhy/
+  #   民生关注  /jdhy/msgz/   (Avalon 渲染, 540 条, pageSize=15)
+  #   政策解读  /jdhy/zcjd/   (SSR 静态, 同页 3 个 list_base 块: bmzcwjjd/szfzcwjjd/qtzcwjjd)
+  #   政策问答  /jdhy/zcwd/   (Avalon 渲染)
+  # 详情页结构：.article_content 正文 + .article_attachment 附件(Avalon fLinks) +
+  #   .article_time / .article_source 元数据 + meta[PubDate/ContentSource/ArticleTitle]
+  # 反爬：常规 UA + Referer 即可，无加密/验证码；SPA 必须用 spa_render 让 JS 执行
   # --------------------------------------------------------------------------
   jdhy:
     name: "福建省发改委-解读回应"
-    site_url: "http://fgw.fujian.gov.cn/jdhy/"
+    site_url: "http://fgw.fujian.gov.cn"
+    category: policy
     enabled: true
+    detect_enabled: true
+    detect_interval: 600              # 10 分钟轮询一次
     transport:
-      type: rest_api
-      engine: requests
+      type: spa_render
+      engine: playwright_spa
       headers:
-        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
-      verify_ssl: true
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        Referer: "http://fgw.fujian.gov.cn/jdhy/"
+        Accept-Language: "zh-CN,zh;q=0.9"
+      verify_ssl: false
       timeout: 30
+      network_idle: false            # gov 站长连接(hm.baidu.com)使 networkidle 永不触发
+    pagination:
+      type: single_page              # 每栏目首页列表，不做分页（trigger 默认 date_filter=today）
     anti_crawler:
-      delay_min: 1.0
-      delay_max: 2.0
+      delay_min: 1.5
+      delay_max: 3.0
       max_retries: 3
+      max_consecutive_empty: 3
     extract:
       type: css_selector
-      items_path: "div.list_base ul li"
+      items_path: ".list_base li"    # 兜底选择器，实际靠 js_extract 出数据
       fields:
-        id: "a@href"
-        title: "a"
-        date: "span.date"
+        id:    "a@href"
+        title: "a@title"
+        url:   "a@href"
+        date:  "span"
+      # 统一 js_extract：根据当前 URL 路径（msgz/zcjd/zcwd）分发到不同提取逻辑。
+      # 必须放在父级 extract 而非 section extract，因为 spa_render adapter 只读父级
+      # extract.js_extract（section.js_extract 会被 _maybe_extract_from_html 覆盖）。
+      js_extract: |
+        () => {
+          const results = [];
+          const seen = new Set();
+          const path = location.pathname;
+          // 子栏目映射：URL 子目录 → 中文名
+          const ZCJD_SUB = {
+            bmzcwjjd: '我委政策文件解读',
+            szfzcwjjd: '省政府政策文件解读',
+            qtzcwjjd: '其他政策文件解读',
+          };
+          // 决定主栏目名（按 URL 路径）
+          let mainSection = '政策解读';
+          let defaultSub = '政策解读';
+          if (/\/msgz\//i.test(path)) { mainSection = '民生关注'; defaultSub = '民生关注'; }
+          else if (/\/zcwd\//i.test(path)) { mainSection = '政策问答'; defaultSub = '政策问答'; }
+          else if (/\/zcjd\//i.test(path)) { mainSection = '政策解读'; defaultSub = '政策解读'; }
+
+          // 遍历所有列表 li（兼容 .list_base / .zcwd_cjwt / .news_list）
+          const lis = document.querySelectorAll(
+            '.list_base li, .zcwd_cjwt li, .news_list li'
+          );
+          for (const li of lis) {
+            const a = li.querySelector('a[href]');
+            if (!a) continue;
+            let href = a.href || a.getAttribute('href') || '';
+            if (!href) continue;
+            try { href = new URL(href, location.href).href; } catch (e) { continue; }
+            // 严格限制：仅采 fgw.fujian.gov.cn/jdhy/ 下的 .htm（避免跨栏目采到 zwgk）
+            if (!/fgw\.fujian\.gov\.cn\/jdhy\/.*\.htm/i.test(href)) continue;
+            const title = (a.getAttribute('title') || a.textContent || '').trim();
+            if (!title || title.length < 4) continue;
+            if (seen.has(href)) continue;
+            seen.add(href);
+            const span = li.querySelector('span');
+            let date = '';
+            if (span) {
+              const txt = (span.textContent || '').trim();
+              // 只接受 YYYY-MM-DD / YYYY.MM.DD / YYYY/MM/DD 格式
+              if (/\d{4}[-./]\d{1,2}[-./]\d{1,2}/.test(txt)) date = txt;
+            }
+            const m = href.match(/t(\d{8})_(\d+)\.htm/i);
+            // 子栏目名（仅 zcjd 有子目录 bmzcwjjd/szfzcwjjd/qtzcwjjd）
+            let subName = defaultSub;
+            const urlSub = href.match(/\/zcjd\/([a-z_]+)\//i);
+            if (urlSub && ZCJD_SUB[urlSub[1]]) subName = ZCJD_SUB[urlSub[1]];
+            results.push({
+              title: title,
+              url: href,
+              date: date || (m ? `${m[1].slice(0,4)}-${m[1].slice(4,6)}-${m[1].slice(6,8)}` : ''),
+              id: (m && m[2]) ? m[2] : href,
+              section_name: '福建省发改委-解读回应',
+              subsection_name: subName,
+              main_section: mainSection,
+              issuing_authority: '福建省发展和改革委员会',
+            });
+          }
+          return results;
+        }
     detail:
       type: css_selector
-      content_field: ".TRS_Editor, .article_content"
+      content_field: ".article_content"
+      metadata_js: |
+        () => {
+          const result = {
+            publish_datetime: '',
+            source: '',
+            doc_number: '',
+            issuing_authority: '福建省发展和改革委员会',
+            topic_category: '',
+            files: [],
+          };
+          // 发布时间：meta PubDate 优先，回退 .article_time
+          const meta = document.querySelector('meta[name="PubDate"]');
+          if (meta && meta.content) {
+            result.publish_datetime = meta.content.trim();
+          } else {
+            const t = document.querySelector('.article_time');
+            if (t) {
+              const m = (t.textContent || '').match(/(\d{4}-\d{1,2}-\d{1,2}(?:\s+\d{1,2}:\d{1,2})?)/);
+              if (m) result.publish_datetime = m[1];
+            }
+          }
+          // 来源
+          const cmeta = document.querySelector('meta[name="ContentSource"]');
+          if (cmeta && cmeta.content) {
+            result.source = cmeta.content.trim();
+          } else {
+            const s = document.querySelector('.article_source');
+            if (s) result.source = (s.textContent || '').replace(/^来源[:：]/, '').trim();
+          }
+          // 栏目名（topic_category）：面包屑最后一段
+          const crumbs = document.querySelectorAll('.CurrChnlCls, .crumb a');
+          if (crumbs.length) {
+            result.topic_category = (crumbs[crumbs.length - 1].textContent || '').trim();
+          }
+          // 附件：.article_attachment 区域 Avalon fLinks 渲染后的 <a href>
+          const attachLinks = document.querySelectorAll('.article_attachment li a[href]');
+          for (const a of attachLinks) {
+            const href = a.href || '';
+            if (!href) continue;
+            if (!/\.(pdf|docx?|xlsx?|pptx?|ofd|zip|rar|7z|wps|et|dps|txt|jpe?g|png|tif{1,2})(\?|$)/i.test(href) &&
+                !/P0\d{15,}/i.test(href)) continue;
+            result.files.push({
+              file_name: (a.textContent || '').trim() || href.split('/').pop(),
+              file_url: href,
+            });
+          }
+          // 发文字号：从正文首位匹配「X〔YYYY〕N号」
+          const bodyText = (document.querySelector('.article_content')?.textContent || '').slice(0, 500);
+          const dn = bodyText.match(/(?:闽|国|发改|建设|交通|财政)[\u4e00-\u9fa5]{0,15}〔\d{4}〕\s*\d+\s*号/);
+          if (dn) result.doc_number = dn[0].trim();
+          return result;
+        }
     format:
       parser_id: "naive"
-      upload_batch_size: 10
+      upload_batch_size: 5
+      template: |
+        # {{ title }}
+
+        **栏目:** {{ section_name }}
+        **子栏目:** {{ subsection_name }}
+        **发布机构:** {{ issuing_authority }}
+        **发布日期:** {{ publish_datetime }}
+        **发文字号:** {{ doc_number }}
+        **来源:** {{ source }}
+        **原文链接:** {{ url }}
+
+        {{ content }}
     sections:
-      - label: "xwfbh"
+      # 民生关注 — Avalon 动态列表，统一 js_extract（在父级 extract）按 URL 分发
+      - label: "msgz"
+        name: "福建省发改委-解读回应"
         listing:
-          url: "http://fgw.fujian.gov.cn/jdhy/xwfbh/"
+          url: "http://fgw.fujian.gov.cn/jdhy/msgz/"
           method: GET
-        pagination:
-          type: html_regex
-          start: 1
-      - label: "msgg"
-        listing:
-          url: "http://fgw.fujian.gov.cn/jdhy/msgg/"
-          method: GET
-        pagination:
-          type: html_regex
-          start: 1
+      # 政策解读 — SSR 静态同页 3 个 list_base 块（bmzcwjjd/szfzcwjjd/qtzcwjjd）
       - label: "zcjd"
+        name: "福建省发改委-解读回应"
         listing:
           url: "http://fgw.fujian.gov.cn/jdhy/zcjd/"
           method: GET
-        pagination:
-          type: html_regex
-          start: 1
+      # 政策问答 — Avalon 动态列表
       - label: "zcwd"
+        name: "福建省发改委-解读回应"
         listing:
           url: "http://fgw.fujian.gov.cn/jdhy/zcwd/"
           method: GET
-        pagination:
-          type: html_regex
-          start: 1
   # --------------------------------------------------------------------------
   # mohurd — 住建部 (TRS WCM unitbuild API)
   # Old script: mohurd_crawler.py
@@ -1153,43 +1285,179 @@ sites:
       parser_id: "naive"
       upload_batch_size: 10
 
+  # --------------------------------------------------------------------------
+  # zjt_jdhy — 福建省住房和城乡建设厅 · 解读回应 (TRS WCM + Avalon MVVM SPA)
+  # Source: https://zjt.fujian.gov.cn/jdhy/
+  #   回应关切  /jdhy/hygq/   (Avalon SSR, ~70 条/页)
+  #   政策解读  /jdhy/zcjd/   (Avalon SSR，混合 4 个子栏目)
+  #     子栏目（按 URL 子目录区分）:
+  #       wz/   文字解读
+  #       tj/   图解读解   ← 图文一体，KB 端 OCR 处理
+  #       mtbd/ 媒体报道
+  #       ft/   访谈
+  # 详情页结构：
+  #   <h1 class="xl_tit">标题</h1> +
+  #   .xl_con1.detailCont 正文容器（含 TRS_Editor 或微信迁移的 <html> 片段）+
+  #   .myzj_xl_list 附件区 +
+  #   meta[PubDate|ContentSource|ArticleTitle|ColumnName|DocId|ColumnType] 元数据
+  # 反爬：常规 UA + Referer 即可，无加密/验证码；Avalon SSR 已含可采列表
+  # --------------------------------------------------------------------------
   zjt_jdhy:
     name: "福建省住建厅-解读回应"
     site_url: "https://zjt.fujian.gov.cn/jdhy/"
+    category: policy
     enabled: true
+    detect_enabled: true
+    detect_interval: 600              # 10 分钟轮询一次
     transport:
-      type: rest_api
-      engine: requests
-      verify_ssl: true
+      type: spa_render
+      engine: playwright_spa
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        Referer: "https://zjt.fujian.gov.cn/jdhy/"
+        Accept-Language: "zh-CN,zh;q=0.9"
+      verify_ssl: false
       timeout: 30
-    listing:
-      url: "https://zjt.fujian.gov.cn/jdhy/"
-      method: GET
+      network_idle: false            # gov 站长连接使 networkidle 永不触发
     pagination:
-      type: single_page
+      type: single_page              # 每栏目首页列表（trigger 默认 date_filter=today）
     anti_crawler:
-      delay_min: 1.0
-      delay_max: 2.0
+      delay_min: 1.5
+      delay_max: 3.0
       max_retries: 3
+      max_consecutive_empty: 3
     extract:
       type: css_selector
-      items_path: "div[role='viewlist'] .bd li"
+      items_path: "ul li"            # 兜底选择器，实际靠 js_extract 出数据
       fields:
-        id: "a@href"
-        title: "a"
-        url: "a@href"
-        date: "span"
+        id:    "a@href"
+        title: "a@title"
+        url:   "a@href"
+        date:  "span"
+      # 父级统一 js_extract：按 URL 路径（hygq / zcjd）分发主栏目，
+      # 按 zcjd 子目录（wz/tj/mtbd/ft）分子栏目。section.js_extract 会被
+      # spa_render adapter 忽略，必须放在父级 extract。
+      js_extract: |
+        () => {
+          const results = [];
+          const seen = new Set();
+          const path = location.pathname;
+          let mainSection = '解读回应';
+          if (/\/hygq\//i.test(path)) mainSection = '回应关切';
+          else if (/\/zcjd\//i.test(path)) mainSection = '政策解读';
+          const SUB = {
+            wz:   '文字解读',
+            tj:   '图解读解',
+            mtbd: '媒体报道',
+            ft:   '访谈',
+          };
+          // 列表项可能出现在 .jdhy_list .bd / ul.changeWj / .gl_list1 ul
+          const lis = document.querySelectorAll(
+            '.jdhy_list .bd li, ul.changeWj li, .gl_list1 li, ul li'
+          );
+          for (const li of lis) {
+            const a = li.querySelector('a[href]');
+            if (!a) continue;
+            let href = a.href || a.getAttribute('href') || '';
+            if (!href) continue;
+            try { href = new URL(href, location.href).href; } catch (e) { continue; }
+            // 严格限制：仅采 zjt.fujian.gov.cn/jdhy/ 下的 .htm
+            if (!/zjt\.fujian\.gov\.cn\/jdhy\/.*\.htm/i.test(href)) continue;
+            const title = (a.getAttribute('title') || a.textContent || '').trim();
+            if (!title || title.length < 4) continue;
+            if (seen.has(href)) continue;
+            seen.add(href);
+            const span = li.querySelector('span');
+            let date = '';
+            if (span) {
+              const txt = (span.textContent || '').trim();
+              if (/\d{4}[-./]\d{1,2}[-./]\d{1,2}/.test(txt)) date = txt;
+            }
+            const m = href.match(/t(\d{8})_(\d+)\.htm/i);
+            // 子栏目（仅 zcjd 有子目录 wz/tj/mtbd/ft）
+            let subName = mainSection;
+            const sm = href.match(/\/zcjd\/([a-z]+)\//i);
+            if (sm && SUB[sm[1]]) subName = SUB[sm[1]];
+            results.push({
+              title: title,
+              url: href,
+              date: date || (m ? `${m[1].slice(0,4)}-${m[1].slice(4,6)}-${m[1].slice(6,8)}` : ''),
+              id: (m && m[2]) ? m[2] : href,
+              section_name: '福建省住建厅-解读回应',
+              subsection_name: subName,
+              main_section: mainSection,
+              issuing_authority: '福建省住房和城乡建设厅',
+            });
+          }
+          return results;
+        }
     detail:
       type: css_selector
-      content_field: ".TRS_Editor"
+      content_field: ".xl_con1.detailCont"
+      metadata_js: |
+        () => {
+          const result = {
+            publish_datetime: '',
+            source: '',
+            doc_number: '',
+            issuing_authority: '福建省住房和城乡建设厅',
+            topic_category: '',
+            doc_id: '',
+            files: [],
+          };
+          const gm = (n) => {
+            const m = document.querySelector(`meta[name="${n}"]`);
+            return (m && m.content) ? m.content.trim() : '';
+          };
+          result.publish_datetime = gm('PubDate');
+          result.source = gm('ContentSource');
+          result.topic_category = gm('ColumnName');
+          result.doc_id = gm('DocId');
+          // 附件：.myzj_xl_list 区域 <a href>
+          for (const a of document.querySelectorAll('.myzj_xl_list a[href]')) {
+            const href = a.href || '';
+            if (!href) continue;
+            if (!/\.(pdf|docx?|xlsx?|pptx?|ofd|zip|rar|7z|wps|et|dps|txt|jpe?g|png|tif{1,2})(\?|$)/i.test(href) &&
+                !/P0\d{15,}/i.test(href)) continue;
+            result.files.push({
+              file_name: (a.textContent || '').trim() || href.split('/').pop(),
+              file_url: href,
+            });
+          }
+          // 发文字号：从正文首位匹配「X〔YYYY〕N号」（闽/国/住建/建设/发改/财政等）
+          const bodyText = (document.querySelector('.xl_con1.detailCont')?.textContent || '').slice(0, 800);
+          const dn = bodyText.match(/(?:闽|国|住建|建设|发改|财政)[\u4e00-\u9fa5]{0,15}〔\d{4}〕\s*\d+\s*号/);
+          if (dn) result.doc_number = dn[0].trim();
+          return result;
+        }
     format:
+      parser_id: "naive"
+      upload_batch_size: 5
       template: |
         # {{ title }}
-        **日期:** {{ date }}
-        **页面地址:** {{ url }}
+
+        **栏目:** {{ section_name }}
+        **子栏目:** {{ subsection_name }}
+        **发布机构:** {{ issuing_authority }}
+        **发布日期:** {{ publish_datetime }}
+        **发文字号:** {{ doc_number }}
+        **来源:** {{ source }}
+        **原文链接:** {{ url }}
+
         {{ content }}
-      parser_id: "naive"
-      upload_batch_size: 10
+    sections:
+      # 回应关切 — Avalon SSR 列表
+      - label: "hygq"
+        name: "福建省住建厅-解读回应"
+        listing:
+          url: "https://zjt.fujian.gov.cn/jdhy/hygq/"
+          method: GET
+      # 政策解读 — 4 个子栏目混合 SSR 列表（由 js_extract 按 URL 分发 subName）
+      - label: "zcjd"
+        name: "福建省住建厅-解读回应"
+        listing:
+          url: "https://zjt.fujian.gov.cn/jdhy/zcjd/"
+          method: GET
   jtyst_jdhy:
     name: "福建省交通厅-解读回应"
     site_url: "https://jtyst.fujian.gov.cn/jdhy/"
@@ -2075,44 +2343,56 @@ sites:
   # ggzy_policy / ggzy_deal — 全国公共资源交易 (ggzy.gov.cn)
   # Old scripts: ggzy_policy_crawler.py, ggzy_deal_crawler.py
   # --------------------------------------------------------------------------
+  # --------------------------------------------------------------------------
+  # ggzy_policy — 全国公共资源交易平台-政策法规 (智能采集 policy 类)
+  # Source: https://www.ggzy.gov.cn/SIC/web/policyFileList.po
+  # List  : UL#contextId > LI > A.details.po?id=UUID + SPAN(date)
+  # Detail: H4#txtCaption (title) / SPAN#txtPublishTime (date) / #divContent (body)
+  #         .attachment_r A href (*.pdf / *.ofd / *.doc) 同级容器
+  # Note  : transport.session_init_url 先打一次拿 JSESSIONID cookie，后续请求带 cookie，
+  #         服务器就不再做 URL 重写 (不在 href 里嵌 ;jsessionid)，存库 URL 自然干净稳定。
+  # --------------------------------------------------------------------------
   ggzy_policy:
     name: "全国公共资源交易-政策法规"
     site_url: "https://www.ggzy.gov.cn/"
+    category: policy                          # ★ 写 crawler_result + collection_policy_ext
     enabled: true
-    detect_interval: 120
+    detect_enabled: true                      # ★ 加入探测器轮询
+    detect_interval: 600                      # 政策类更新慢，10 分钟一轮
+    detect_max_interval: 3600
     transport:
       type: rest_api
       engine: requests
       session_init_url: "https://www.ggzy.gov.cn/SIC/web/policyFileList.po"
       headers:
-        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"
         Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         Accept-Language: "zh-CN,zh;q=0.9,en;q=0.8"
-        Cache-Control: "no-cache"
+        Referer: "https://www.ggzy.gov.cn/SIC/web/policyFileList.po"
       verify_ssl: true
-      timeout: 60
+      timeout: 30
     listing:
       url: "https://www.ggzy.gov.cn/SIC/web/policyFileList.po"
       method: GET
     pagination:
       type: page_no
       page_param: "pageNum"
-      page_size: 20
       start: 1
+      max_pages: 60                           # 实测约 49 页 ~980 条，留余量
     anti_crawler:
       delay_min: 1.5
       delay_max: 3.0
       max_retries: 3
+      empty_page_stop: 2                      # 连续 2 页空即停（越界保护）
     extract:
       type: css_selector
       items_path: "ul#contextId li"
-      fields:
-        id: "a@href"
-        title: "a"
-        date: "span"
+      # 无 fields 配置 → _extract_item 默认取 a[href]/text + span 日期；
+      # session_init_url 已让服务器返回干净 URL，无需 js_extract (rest_api 也不执行 js_extract)
     detail:
       type: css_selector
-      content_field: ".article_content"
+      # .cmsdiv 同时包含 #divContent 正文 + .attachment_r 附件，便于 _extract_files_from_item 扫 <a href>
+      content_field: ".cmsdiv"
     format:
       parser_id: "naive"
       upload_batch_size: 10
@@ -6962,3 +7242,1804 @@ sites:
 
         {{ content }}
       upload_batch_size: 5
+
+  # ── ggzy_quanguo — 全国公共资源交易平台 · 交易公开（当日全量） ──
+  # Source: https://www.ggzy.gov.cn/deal/dealList.html
+  # API:    POST /information/pubTradingInfo/getTradList  (form: SOURCE_TYPE/DEAL_TIME/TIMEBEGIN/TIMEEND/PAGENUMBER)
+  # Detail: API 列表返回的是 '/deal/html/a/...' 摘要页（含 4 个子栏目 tab）；
+  #         真正的正文在 '/deal/html/b/...' 兄弟路径下，容器 #mycontent；
+  #         b 页同时含"原文链接地址"指向省级原始平台。
+  # 通过 extract.url_search/url_replace 把 a 链接改写成 b 链接后用于详情抓取。
+  # Category: bid（招标标讯），扩展字段 province/business_type/information_type 写入 extracted_json。
+  # ─────────────────────────────────────────────────────────────────
+  ggzy_quanguo:
+    name: "全国公共资源交易平台-交易公开"
+    site_url: "https://www.ggzy.gov.cn"
+    category: bid
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        Content-Type: "application/x-www-form-urlencoded"
+        Accept: "application/json, text/plain, */*"
+        Origin: "https://www.ggzy.gov.cn"
+        Referer: "https://www.ggzy.gov.cn/deal/dealList.html"
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: "https://www.ggzy.gov.cn/information/pubTradingInfo/getTradList"
+      method: POST
+      body_type: form
+      params:
+        SOURCE_TYPE: "1"
+        DEAL_TIME: "01"
+        TIMEBEGIN: "{{ today }}"
+        TIMEEND: "{{ today }}"
+        PAGENUMBER: "{{ page }}"
+    pagination:
+      type: page_no
+      page_param: "PAGENUMBER"
+      page_size: 20
+      # 注意: 不能把 page_size_param 也设成 PAGENUMBER（与 page_param 重名会让
+      # paginator._build_page_params 中 size 把 page 覆盖，每次请求都是 PAGENUMBER=20）。
+      # 该 API 不消费 size 参数（服务端固定 20 条/页），给个被忽略的名字即可。
+      page_size_param: "ROWS_IGNORED"
+      start: 1
+      max_pages: 50                    # API 上限 total=1000, pages=50
+      total_field: "data.total"
+      total_pages_field: "data.pages"
+    anti_crawler:
+      delay_min: 1.5
+      delay_max: 3.0
+      max_retries: 3
+      max_consecutive_empty: 2
+    extract:
+      type: json_path
+      items_path: "data.records"
+      # 把列表返回的 'a' 摘要 URL 改写为 'b' 正文 URL（同 id/同 path）
+      url_search: "/deal/html/a/"
+      url_replace: "/deal/html/b/"
+      fields:
+        id: "id"
+        title: "title"
+        url: "url"
+        date: "publishTime"
+        # ── 扩展结构化字段（写入 extracted_json，前端可按 province 过滤） ──
+        province: "provinceText"
+        province_code: "province"
+        city: "cityText"
+        city_code: "city"
+        business_type: "businessTypeText"
+        information_type: "informationTypeText"
+        information_code: "informationType"
+        industry_type: "industryTypeText"
+        source_platform: "transactionSourcesPlatformText"
+        tender_project_code: "tenderProjectCode"
+    detail:
+      type: css_selector
+      content_field: "#mycontent"
+    format:
+      parser_id: "naive"
+      upload_batch_size: 5
+      template: |
+        # {{ title }}
+
+        **发布日期:** {{ date }}
+        **省份:** {{ province }}
+        **业务类型:** {{ business_type }}
+        **信息类型:** {{ information_type }}
+        **行业类型:** {{ industry_type }}
+        **信息来源:** {{ source_platform }}
+        **原文链接:** {{ url }}
+
+        {{ content }}
+
+  # --------------------------------------------------------------------------
+  # zhangzhou_gcjs_trade — 漳州市公共资源交易中心-工程建设交易信息（智能采集）
+  # 列表 POST /proxy_api/publicResource/front/viewProjects 当天数据
+  # 详情 GET /proxy_api/publicResource/front/projectDetail/{infoID}
+  # 附件在 attachFiles[].attUrl / attFileName，外链 gcjyzx.zhangzhou.gov.cn
+  # --------------------------------------------------------------------------
+  zhangzhou_gcjs_trade:
+    name: "漳州市公共资源交易中心-交易信息"
+    site_url: "http://ggzyjy.xzfwzx.zhangzhou.gov.cn/"
+    category: tender
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      verify_ssl: false
+      timeout: 30
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        Referer: "http://ggzyjy.xzfwzx.zhangzhou.gov.cn/cms/sitemanage/index.shtml?siteId=40669965560550000&templateId=10671863355640000&projectType=sg&cateNum=001001001"
+        Content-Type: "application/json"
+    listing:
+      url: "http://ggzyjy.xzfwzx.zhangzhou.gov.cn/proxy_api/publicResource/front/viewProjects"
+      method: POST
+      body_type: json
+      params:
+        pageNum: "{{ page }}"
+        pageSize: "{{ page_size }}"
+        projectType: null
+        cateNum: null
+        jurisdictionCode: null
+        # {{ today }} 在每次运行时解析为运行当天，满足"重复触发自动取当天"的语义
+        startDate: "{{ today }} 00:00:00"
+        endDate: "{{ today }} 23:59:59"
+    pagination:
+      type: page_no
+      page_param: "pageNum"
+      page_size_param: "pageSize"
+      page_size: 50
+      start: 1
+      max_pages: 5
+      items_field: "data.resultList"
+      total_field: "data.totalSize"
+    sections:
+      - label: "default"
+        name: "招标标讯-交易信息"
+    anti_crawler:
+      delay_min: 1.5
+      delay_max: 3.0
+      max_retries: 3
+      empty_page_stop: 2
+    extract:
+      type: json_path
+      items_path: "data.resultList"
+      url_template: "http://ggzyjy.xzfwzx.zhangzhou.gov.cn/cms/sitemanage/index.shtml?siteId=40669965560550000&templateId=10671870564930000&infoId={infoID}&relationguid={relationguid}"
+      fields:
+        id: "infoID"
+        title: "title"
+        date: "infoDate"
+        url: "url"
+        news_type: "infoType"
+        cate_num: "cateNum"
+        bd_second_type: "bdsecondtype"
+        project_address: "projectaddress"
+        project_address_name: "projectaddressname"
+        relationguid: "relationguid"
+    detail:
+      type: api_request
+      url: "http://ggzyjy.xzfwzx.zhangzhou.gov.cn/proxy_api/publicResource/front/projectDetail/{id}"
+      method: GET
+      body_type: query
+      # 详情 JSON 直接返回对象（无 data 包装），正文 / 附件字段名如下
+      content_field: "infoContent"
+      attachment_fields:
+        - "attachFiles"
+    format:
+      parser_id: "naive"
+      upload_batch_size: 5
+      template: |
+        # {{ title }}
+
+        **发布日期:** {{ date }}
+        **所属地区:** {{ project_address_name }}
+        **栏目代码:** {{ cate_num }}
+        **原文链接:** {{ url }}
+
+        {{ content }}
+
+  # --------------------------------------------------------------------------
+  # fujian_jtyst_dt — 福建省交通运输厅-交通动态（智能采集）
+  # 列表 GET /was5/web/search?channelid=295080&classsql=(chnlid=8700,8701,8702,8703)
+  # 一次拉取 4 个栏目（交通要闻/工作动态/政策文件/媒体视点）当天数据
+  # 详情页 .TRS_Editor 静态 HTML，附件由 engine._extract_files_from_item 扫描
+  # --------------------------------------------------------------------------
+  fujian_jtyst_dt:
+    name: "福建省交通运输厅-交通动态"
+    site_url: "https://jtyst.fujian.gov.cn"
+    category: news
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      verify_ssl: false
+      timeout: 30
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        Referer: "https://jtyst.fujian.gov.cn/zwgk/ztyw/"
+        Accept: "application/json, text/plain, */*"
+    listing:
+      url: "https://jtyst.fujian.gov.cn/was5/web/search"
+      method: GET
+      body_type: query
+      params:
+        channelid: "295080"
+        templet: "advsch.jsp"
+        sortfield: "-docorderpri,-docreltime"
+        classsql: "(chnlid=8700,8701,8702,8703)"
+        prepage: "{{ page_size }}"
+        page: "{{ page }}"
+    pagination:
+      type: page_no
+      page_param: "page"
+      page_size_param: "prepage"
+      page_size: 150
+      start: 1
+      max_pages: 3        # 当天数据一般 1 页足矣，留 3 页 buffer 兜底
+      items_field: "docs"
+      total_field: "count"
+    sections:
+      - label: "default"
+        name: "福建省交通运输动态"   # 主类型（用户需求 #10），子栏目 chnl 作为 news_type 扩展字段
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+      empty_page_stop: 1
+    extract:
+      type: json_path
+      items_path: "docs"
+      fields:
+        id: "docid"          # 列表唯一 ID（7192756）
+        title: "title"
+        url: "chnldocurl"    # 比 url 字段稳定（部分 item url 是"链接"占位符）
+        date: "pubtime"      # 2026-07-27 19:11:30 完整时间戳
+        content: "content"   # 列表 API 返回的摘要 HTML（详情页会覆盖为完整正文）
+        news_type: "chnl"    # 子栏目：交通要闻/工作动态/媒体视点
+        source: "src"        # 来源（福建日报/福建省交通运输厅）
+        recid: "recid"
+        chnlid: "chnlid"
+    detail:
+      type: css_selector
+      content_field: ".TRS_Editor"   # 详情页正文容器（与老 jtyst_crawler.py 一致）
+    format:
+      parser_id: "naive"
+      upload_batch_size: 5
+      template: |
+        # {{ title }}
+
+        **发布日期:** {{ date }}
+        **栏目:** {{ news_type }}
+        **来源:** {{ source }}
+        **原文链接:** {{ url }}
+
+        {{ content }}
+
+  # --------------------------------------------------------------------------
+  # fujian_jtyst_zwgk — 福建省交通运输厅-政务公开（智能采集）
+  # 6 个栏目分别对应独立 URL，统一用 .jtt-gl_list li 提取列表
+  # 详情页 .TRS_Editor 取正文，detail_html 由 engine._extract_files_from_item 扫附件
+  # 旧脚本参考：rag/svr/jtyst_crawler.py（已弃用，仅作字段映射参考）
+  # --------------------------------------------------------------------------
+  fujian_jtyst_zwgk:
+    name: "福建省交通运输厅-政务公开"
+    site_url: "https://jtyst.fujian.gov.cn"
+    category: news
+    enabled: true
+    transport:
+      type: rest_api
+      engine: requests
+      verify_ssl: false
+      timeout: 30
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        Accept-Language: "zh-CN,zh;q=0.9"
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+      empty_page_stop: 1
+    extract:
+      type: css_selector
+      items_path: ".jtt-gl_list li"
+      fields:
+        id:    "a@href"
+        title: "a@title"
+        url:   "a@href"
+        date:  "span"
+    detail:
+      type: css_selector
+      content_field: ".TRS_Editor"
+    format:
+      parser_id: "naive"
+      upload_batch_size: 5
+      template: |
+        # {{ title }}
+
+        **发布日期:** {{ date }}
+        **栏目:** {{ section_name }}
+        **原文链接:** {{ url }}
+
+        {{ content }}
+    pagination:
+      type: single_page
+    sections:
+      - label: "jtyw"
+        name: "福建省交通运输-政务公开-交通要闻"
+        listing:
+          url: "https://jtyst.fujian.gov.cn/zwgk/jtyw/"
+          method: GET
+      - label: "tzgg"
+        name: "福建省交通运输-政务公开-公告通告"
+        listing:
+          url: "https://jtyst.fujian.gov.cn/zwgk/tzgg/"
+          method: GET
+      - label: "zcfg"
+        name: "福建省交通运输-政务公开-政策法规"
+        listing:
+          url: "https://jtyst.fujian.gov.cn/zwgk/zcfg/"
+          method: GET
+      - label: "czzj"
+        name: "福建省交通运输-政务公开-财政资金"
+        listing:
+          url: "https://jtyst.fujian.gov.cn/zwgk/czzj/"
+          method: GET
+      - label: "ghjh"
+        name: "福建省交通运输-政务公开-发展规划"
+        listing:
+          url: "https://jtyst.fujian.gov.cn/zwgk/ghjh/"
+          method: GET
+      - label: "xyzz"
+        name: "福建省交通运输-政务公开-信用资质"
+        listing:
+          url: "https://jtyst.fujian.gov.cn/zwgk/xyzz/"
+          method: GET
+
+  # --------------------------------------------------------------------------
+  # fujian_jtyst_xzgfxwj — 福建省交通运输厅-行政规范性文件（智能采集 / policy）
+  # 目标页：https://jtyst.fujian.gov.cn/zwgk/zfxxgkzl/zc/xzgfxwj/
+  # 列表 API：POST https://jtyst.fujian.gov.cn/fjdzapp/search
+  #   channelid=229105, classsql=(chnlid=8758*EFFTYPE!='02'*EFFTYPE !='03')
+  #   排序 sortfield=-pubdate, 每页 prepage=15（用户需求 #4：首页 15 条）
+  # 详情：.TRS_Editor 静态 HTML（与 fujian_jtyst_zwgk 一致），
+  #       正文文本来自详情；附件来自 .article_attachment 块 <a href>，
+  #       engine._extract_files_from_item 扫描 detail_html 自动拾取。
+  # 反爬：常规 User-Agent + Referer；测试中无指纹/验证码/频控异常。
+  # --------------------------------------------------------------------------
+  fujian_jtyst_xzgfxwj:
+    name: "福建省交通运输-政策法规-行政规范性文件"
+    site_url: "https://jtyst.fujian.gov.cn"
+    category: policy
+    enabled: true
+    detect_enabled: true
+    detect_interval: 600          # 10 分钟轮询一次（规范性文件发布频率低）
+    transport:
+      type: rest_api
+      engine: requests
+      verify_ssl: false
+      timeout: 30
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        Referer: "https://jtyst.fujian.gov.cn/zwgk/zfxxgkzl/zc/xzgfxwj/"
+        X-Requested-With: "XMLHttpRequest"
+        Accept: "application/json, text/plain, */*"
+    listing:
+      url: "https://jtyst.fujian.gov.cn/fjdzapp/search"
+      method: POST
+      body_type: form
+      params:
+        channelid: "229105"
+        sortfield: "-pubdate"
+        classsql: "(chnlid=8758*EFFTYPE!='02'*EFFTYPE !='03')"
+        classcol: "publishyear"
+        classnum: "100"
+        classsort: "0"
+        cache: "true"
+        page: "{{ page }}"
+        prepage: "{{ page_size }}"
+    pagination:
+      type: page_no
+      page_param: "page"
+      page_size_param: "prepage"
+      page_size: 15
+      start: 1
+      max_pages: 1                # 仅取第 1 页 15 条（用户需求 #4）
+      items_field: "data"
+      total_field: "recordCount"
+      total_pages_field: "pageCount"
+    sections:
+      - label: "default"
+        name: "福建省交通运输-政策法规"   # 用户需求 #10：列表类型字段
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+      empty_page_stop: 1
+    extract:
+      type: json_path
+      items_path: "data"
+      fields:
+        id:                   "idxid"           # 索引号 FJ00117-0101-2026-0150（稳定唯一键）
+        title:                "doctitle"
+        url:                  "docpuburl"        # 详情 URL（http://，引擎会跟随重定向到 https）
+        date:                 "pubdate"          # 成文/发布日期
+        content:              "docabstract"      # 列表摘要（详情页 .TRS_Editor 会覆盖）
+        news_type:            "chnlname"         # "规范性文件"
+        source:               "docsourcename"
+        # ── 政策扩展字段（→ collection_policy_ext）──
+        doc_number:           "fileno"           # 闽交〔2026〕9号
+        issuing_authority:    "puborg"           # 福建省交通运输厅
+        topic_category:       "chnlname"         # 主题分类
+        # status 留空 → collection_writer 默认 "有效"（API 已过滤 02 废止 / 03 修订中）
+        # 辅助字段：录入 extracted_json 便于检索
+        idxid:                "idxid"
+        efftype:              "efftype"          # 01 有效 / 02 废止 / 03 修订中（仅 01 会进入）
+        docid2:               "docid2"
+        subdoctitle:          "subdoctitle"
+        dockeywords:          "dockeywords"
+    detail:
+      type: css_selector
+      content_field: ".TRS_Editor"   # 详情页正文容器（与 fujian_jtyst_zwgk 一致）
+    format:
+      parser_id: "naive"
+      upload_batch_size: 5
+      template: |
+        # {{ title }}
+
+        **发文字号:** {{ doc_number }}
+        **发布机构:** {{ issuing_authority }}
+        **主题分类:** {{ news_type }}
+        **索引号:** {{ idxid }}
+        **发布日期:** {{ date }}
+        **来源:** {{ source }}
+        **原文链接:** {{ url }}
+
+        {{ content }}
+
+  # --------------------------------------------------------------------------
+  # fujian_jtyst_zwgkml — 福建省交通运输-公告通知（智能采集 / announcement）
+  # 目标页：https://jtyst.fujian.gov.cn/zwgk/zfxxgkzl/zfxxgkml/  （政府信息公开目录）
+  # 列表 API：POST https://jtyst.fujian.gov.cn/fjdzapp/search
+  #   channelid=229105, classsql=(parentid=8754)
+  #   ⚠ EFFTYPE 字段在该 channel 下不存在（"18027,不存在给定的字段 SERVER@1$EFFTYPE!"），
+  #     classsql 中加 EFFTYPE 过滤会触发 TRSSERVER 检索异常；过滤逻辑交由数据本身（仅 01 有效）。
+  #   排序 sortfield=-docreltime（按发布时间倒序），每页 prepage=50
+  # 详情：.TRS_Editor 静态 HTML；附件来自列表 files[]._href + 详情页 .article_attachment a（两者互备）
+  # 反爬：常规 User-Agent + Referer；探测中无指纹/验证码/频控异常。
+  # --------------------------------------------------------------------------
+  fujian_jtyst_zwgkml:
+    name: "福建省交通运输-公告通知"
+    site_url: "https://jtyst.fujian.gov.cn"
+    category: announcement
+    enabled: true
+    detect_enabled: true
+    detect_interval: 600           # 10 分钟轮询（公告更新频率较高）
+    transport:
+      type: rest_api
+      engine: requests
+      verify_ssl: false
+      timeout: 30
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        Referer: "https://jtyst.fujian.gov.cn/zwgk/zfxxgkzl/zfxxgkml/"
+        X-Requested-With: "XMLHttpRequest"
+        Accept: "application/json, text/plain, */*"
+    listing:
+      url: "https://jtyst.fujian.gov.cn/fjdzapp/search"
+      method: POST
+      body_type: form
+      params:
+        channelid: "229105"
+        sortfield: "-docreltime"
+        classsql: "(parentid=8754)"
+        classcol: "publishyear"
+        classnum: "100"
+        classsort: "0"
+        cache: "true"
+        page: "{{ page }}"
+        prepage: "{{ page_size }}"
+    pagination:
+      type: page_no
+      page_param: "page"
+      page_size_param: "prepage"
+      page_size: 50
+      start: 1
+      max_pages: 1                # 仅取第 1 页（用户需求 #4：首页 50 条全量）
+      items_field: "data"
+      total_field: "recordCount"
+      total_pages_field: "pageCount"
+    sections:
+      - label: "default"
+        name: "福建省交通运输-公告通知"   # 用户需求 #10：类型字段
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+      empty_page_stop: 1
+    extract:
+      type: json_path
+      items_path: "data"
+      fields:
+        id:                   "idxid"             # 索引号 FJ00117-0101-2026-0150（稳定唯一键）
+        title:                "doctitle"
+        url:                  "docpuburl"          # 详情 URL（http://，引擎跟随重定向到 https）
+        date:                 "docreltime"          # 发布时间（用户需求 #4：按当天过滤）
+        content:              "docabstract"         # 列表摘要（详情 .TRS_Editor 覆盖）
+        news_type:            "chnlname"            # 子栏目名（规范性文件/规划计划/...）
+        source:               "docsourcename"
+        # ── 结构化扩展字段（→ extracted_json，用于检索/展示）──
+        doc_number:           "fileno"              # 闽交〔2026〕9号
+        issuing_authority:    "puborg"              # 发文机构
+        sub_channel:          "chnlname"            # 子栏目（同 news_type，便于兼容查询）
+        idxid:                "idxid"
+        efftype:              "efftype"             # 01 有效 / 02 废止 / 03 修订中
+        docid2:               "docid2"              # 数字 docid（可用于关联）
+        subdoctitle:          "subdoctitle"
+        dockeywords:          "dockeywords"
+        pubdate:              "pubdate"             # 成文日期（与 docreltime 区分）
+    detail:
+      type: css_selector
+      content_field: ".TRS_Editor"   # 详情页正文容器（与 fujian_jtyst_zwgk/xzgfxwj 一致）
+    format:
+      parser_id: "naive"
+      upload_batch_size: 5
+      template: |
+        # {{ title }}
+
+        **发文字号:** {{ doc_number }}
+        **发布机构:** {{ issuing_authority }}
+        **子栏目:** {{ news_type }}
+        **索引号:** {{ idxid }}
+        **发布日期:** {{ date }}
+        **成文日期:** {{ pubdate }}
+        **来源:** {{ source }}
+        **原文链接:** {{ url }}
+
+        {{ content }}
+
+  # ==========================================================================
+  # fujian_jtyst_zdgksxml — 福建省交通运输-公开事项（智能采集 / other）
+  # 目标页：https://jtyst.fujian.gov.cn/zwgk/zfxxgkzl/zdgksxml/  （重点公开事项）
+  # 列表 API：GET https://jtyst.fujian.gov.cn/matterData/4028918175536a3b0175536f92043058.json
+  #   返回嵌套树（matterList → children → children，3 层），共 ~82 个叶子节点
+  #   ⚠ 标准 json_path extractor 无法递归展开嵌套树，故启用 custom_runner：
+  #     实际抓取/解析逻辑在 rag/svr/fujian_jtyst_zdgksxml_crawler.py 的 run() 函数里。
+  #     unified_crawler.py 加载到本站点时会 import 该模块并调度 run()，本 YAML 中的
+  #     listing/extract 字段仅作元数据占位，不被引擎执行。
+  # 叶子结构：data.description / dutyUnit / timeLimits / channelInfo / clauseInfo（法条依据）
+  # 详情页（仅 jtyst 本域 /tYYYYMMDD_xxx.htm 形式）：.TRS_Editor + .article_attachment a
+  # 反爬：常规 User-Agent + Referer；探测中无指纹/验证码/频控异常（一级）。
+  # --------------------------------------------------------------------------
+  fujian_jtyst_zdgksxml:
+    name: "福建省交通运输-公开事项"
+    site_url: "https://jtyst.fujian.gov.cn"
+    category: zdgksxml
+    enabled: true
+    detect_enabled: true
+    detect_interval: 3600            # 1 小时轮询（事项清单变更低频）
+    custom_runner: "rag.svr.fujian_jtyst_zdgksxml_crawler"
+    transport:
+      type: rest_api
+      engine: requests
+      verify_ssl: false
+      timeout: 30
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        Referer: "https://jtyst.fujian.gov.cn/zwgk/zfxxgkzl/zdgksxml/"
+        Accept: "application/json, text/plain, */*"
+    listing:
+      url: "https://jtyst.fujian.gov.cn/matterData/4028918175536a3b0175536f92043058.json"
+      method: GET
+    pagination:
+      type: single_page
+    extract:
+      type: json_path
+      items_path: "matterList"       # 占位：实际展开在 custom_runner 里
+      fields:
+        title: "name"
+        url: "url"
+        id: "matterId"
+    anti_crawler:
+      delay_min: 0.5
+      delay_max: 1.5
+      max_retries: 3
+      empty_page_stop: 1
+    sections:
+      - label: "default"
+        name: "福建省交通运输-公开事项"
+
+  # --------------------------------------------------------------------------
+  # fujian_jtyst_jdhy — 福建省交通运输-互动-解读回应/回应关切（智能采集 / news）
+  # 目标页：
+  #   解读回应  https://jtyst.fujian.gov.cn/jdhy/zcjd/   （5 条列表，无分页）
+  #   回应关切  https://jtyst.fujian.gov.cn/jdhy/hygq/   （18 条列表，无分页）
+  # 列表 HTML 由 TRS WCM 渲染，与 fujian_jtyst_zwgk 同构（.jtt-gl_list li + a@title + span 日期）
+  # 详情：.TRS_Editor 取正文（zcjd 部分为图解新闻，正文以图片为主，文本可空；
+  #       hygq 跳转到 /zwgk/jtyw/... 等媒体声音类页面，正文文本正常）
+  # 附件：detail_html 由 engine._extract_files_from_item 扫描 <a href> 自动拾取，
+  #       ZIP/RAR 由 attachment_handler 解压后上传 KB。
+  # 反爬：常规 User-Agent；探测中无指纹/验证码/频控异常。GB2312 编码（meta charset=gbk）。
+  # 重复触发：依靠 crawler_result 主键 upsert（id=md5(site_id|source_url)），
+  #          trigger 自动注入 date_filter=today 只采当天数据。
+  # --------------------------------------------------------------------------
+  fujian_jtyst_jdhy:
+    name: "福建省交通运输-互动栏目"
+    site_url: "https://jtyst.fujian.gov.cn"
+    category: news
+    enabled: true
+    detect_enabled: true
+    detect_interval: 600             # 10 分钟轮询一次
+    transport:
+      type: rest_api
+      engine: requests
+      verify_ssl: false
+      timeout: 30
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        Accept-Language: "zh-CN,zh;q=0.9"
+        Referer: "https://jtyst.fujian.gov.cn/jdhy/"
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+      empty_page_stop: 1
+    pagination:
+      type: single_page
+    extract:
+      type: css_selector
+      items_path: ".jtt-gl_list li"
+      fields:
+        id:    "a@href"              # 用作 md5 主键的稳定 URL
+        title: "a@title"             # <a title="..."> 完整标题（list text 含「图解：」前缀也 OK）
+        url:   "a@href"              # 相对路径 ../../zwgk/... 由 requests adapter urljoin 处理
+        date:  "span"                # 2026-07-22
+    detail:
+      type: css_selector
+      content_field: ".TRS_Editor"
+    format:
+      parser_id: "naive"
+      upload_batch_size: 5
+      template: |
+        # {{ title }}
+
+        **栏目:** {{ section_name }}
+        **发布日期:** {{ date }}
+        **原文链接:** {{ url }}
+
+        {{ content }}
+    sections:
+      - label: "zcjd"
+        name: "福建省交通运输-解读回应"
+        listing:
+          url: "https://jtyst.fujian.gov.cn/jdhy/zcjd/"
+          method: GET
+      - label: "hygq"
+        name: "福建省交通运输-回应关切"
+        listing:
+          url: "https://jtyst.fujian.gov.cn/jdhy/hygq/"
+          method: GET
+
+  # --------------------------------------------------------------------------
+  # fujian_fgw_zwgk — 福建省发展和改革委员会 · 政务公开首页聚合页
+  # Source: http://fgw.fujian.gov.cn/zwgk/  (TRS CMS + Avalon + jQuery)
+  # 用户需求：采集政务公开首页多个列表（公示公告 / 政策文件 / 财政资金 / 规划计划 / 人事信息）
+  #   - 政策文件列表每条包含「原文」+「相关解读/相关链接」两个超链接（.wj-a 通过
+  #     getRelDoc AJAX 异步填充 href），spa_render 让 JS 执行完后用 js_extract 抓取
+  #   - 详情页结构：.TRS_Editor 正文 + .article_attachment（附件，Avalon 渲染）+
+  #     .article_relalinks（相关链接）+ .article_time/.article_source 元数据
+  # 反爬：常规 UA + Referer 即可，无指纹/验证码；SPA 选择因 JS 必须执行
+  # --------------------------------------------------------------------------
+  fujian_fgw_zwgk:
+    name: "福建省发改委-政务公开"
+    site_url: "http://fgw.fujian.gov.cn"
+    category: policy
+    enabled: true
+    detect_enabled: true
+    detect_interval: 600              # 10 分钟轮询（首页聚合，更新频率中等）
+    transport:
+      type: spa_render
+      engine: playwright_spa
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        Referer: "http://fgw.fujian.gov.cn/zwgk/"
+        Accept-Language: "zh-CN,zh;q=0.9"
+      verify_ssl: false
+      timeout: 30
+      network_idle: false            # gov 站长连接(hm.baidu.com)使 networkidle 永不触发
+    listing:
+      url: "http://fgw.fujian.gov.cn/zwgk/"
+      method: GET
+    pagination:
+      type: single_page              # 仅首页聚合（每栏目 ~6 条），不做分页
+    anti_crawler:
+      delay_min: 1.5
+      delay_max: 3.0
+      max_retries: 3
+      max_consecutive_empty: 3
+    extract:
+      type: css_selector
+      items_path: ".zwgk_con li"
+      js_extract: |
+        () => {
+          // 等待 getRelDoc AJAX 填充 .wj-a[href]，未填充则返空触发 spa_render 重试
+          const needRel = document.querySelectorAll('.zwgk_con .wj-a');
+          const populated = document.querySelectorAll('.zwgk_con .wj-a[href]');
+          if (needRel.length > 0 && populated.length === 0) {
+            return [];  // 触发 spa_render 5×3s 重试，等 AJAX 完成
+          }
+
+          // 栏目 header 名（"公示公告" / "政策文件" / ...）映射：每个 tab 区块
+          // 结构为 div.tabs > div.tabs_header > ul > li > a > 「文本」
+          // 通过 DOM 位置回溯找到所属栏目标题。
+          const sectionTitle = (el) => {
+            let node = el.closest('.tabs, .list_base');
+            while (node) {
+              const hdr = node.querySelector && node.querySelector('.tabs_header a, .tabs_header2 a');
+              if (hdr) {
+                const t = (hdr.textContent || '').replace(/更多>*/g, '').trim();
+                if (t) return t;
+              }
+              node = node.parentElement;
+            }
+            return '';
+          };
+
+          const results = [];
+          const seen = new Set();
+          // 只采 .zwgk_con 顶层 5 个聚合区块（公示公告/政策文件/财政资金/规划计划/人事信息）
+          // 每个 li 含 1 个主超链接 <a href="...tYYYYMMDD_<id>.htm"> + 可选 <a class="wj-a">
+          const lis = document.querySelectorAll('.zwgk_con li');
+          for (const li of lis) {
+            // 主链接：跳过 .wj-a 自身
+            const mainA = li.querySelector('a:not(.wj-a)');
+            if (!mainA) continue;
+            let href = mainA.href || mainA.getAttribute('href') || '';
+            if (!href) continue;
+            // 标准化为绝对 URL
+            try { href = new URL(href, location.href).href; } catch (e) { continue; }
+            // 仅保留站内 .htm 详情页，跳过 PDF/外部链接
+            if (!/fgw\.fujian\.gov\.cn\/.*\.htm$/i.test(href)) continue;
+            const title = (mainA.getAttribute('title') || mainA.textContent || '').trim();
+            if (!title || title.length < 4) continue;
+            if (seen.has(href)) continue;
+            seen.add(href);
+
+            // 从 URL 解析 docid 与日期：t20260722_7190957.htm → [2026-07-22, 7190957]
+            const m = href.match(/t(\d{8})_(\d+)\.htm/i);
+            const date = m ? `${m[1].slice(0,4)}-${m[1].slice(4,6)}-${m[1].slice(6,8)}` : '';
+            const docid = m ? m[2] : '';
+
+            // 相关解读 / 相关链接（.wj-a 在 li 内，与主 a 同级）
+            const wjA = li.querySelector('.wj-a[href]');
+            let relatedUrl = '', relatedTitle = '', relatedType = '';
+            if (wjA && wjA.getAttribute('href')) {
+              relatedUrl = wjA.href || new URL(wjA.getAttribute('href'), location.href).href;
+              relatedTitle = (wjA.getAttribute('title') || '').trim();
+              relatedType = (wjA.textContent || '').replace(/[|｜]/g, '').trim();
+            }
+
+            results.push({
+              title: title,
+              url: href,
+              date: date,
+              id: docid || href,
+              docid: docid,
+              section_name: sectionTitle(li) || '福建省发改委-政务公开',
+              related_url: relatedUrl,
+              related_title: relatedTitle,
+              related_type: relatedType,
+              issuing_authority: '福建省发展和改革委员会',
+            });
+          }
+          return results;
+        }
+    detail:
+      type: css_selector
+      content_field: ".TRS_Editor"
+      metadata_js: |
+        () => {
+          const result = {
+            publish_datetime: '',
+            source: '',
+            doc_number: '',
+            issuing_authority: '福建省发展和改革委员会',
+            topic_category: '',
+            files: [],
+            related_links: [],
+          };
+          // 发布时间：.article_time 显示「时间： 2026-07-22 15:33」
+          const time = document.querySelector('.article_time');
+          if (time) {
+            const m = (time.textContent || '').match(/(\d{4}-\d{1,2}-\d{1,2}(?:\s+\d{1,2}:\d{1,2})?)/);
+            if (m) result.publish_datetime = m[1];
+          }
+          // 来源：.article_source「来源:福建省发展和改革委员会网站」
+          const src = document.querySelector('.article_source');
+          if (src) result.source = (src.textContent || '').replace(/^来源[:：]/, '').trim();
+          // 栏目名（topic_category）：面包屑最后一段
+          const crumbs = document.querySelectorAll('.CurrChnlCls, .crumb a');
+          if (crumbs.length) {
+            result.topic_category = (crumbs[crumbs.length - 1].textContent || '').trim();
+          }
+          // 附件：.article_attachment 区域渲染后的 <a href>（Avalon 把 fLinks 数组渲染到 DOM）
+          const attachLinks = document.querySelectorAll('.article_attachment li a[href]');
+          for (const a of attachLinks) {
+            const href = a.href || '';
+            if (!href) continue;
+            // 站内相对链接转绝对，仅保留附件特征 URL
+            if (!/\.(pdf|docx?|xlsx?|pptx?|ofd|zip|rar|wps|et|dps)(\?|$)/i.test(href) &&
+                !/P0\d{15,}/i.test(href)) continue;
+            result.files.push({
+              file_name: (a.textContent || '').trim() || href.split('/').pop(),
+              file_url: href,
+            });
+          }
+          // 相关链接：.article_relalinks 区域（与 .wj-a 互补，详情页 Avalon 渲染）
+          const relAs = document.querySelectorAll('.article_relalinks li a[href]');
+          for (const a of relAs) {
+            result.related_links.push({
+              title: (a.getAttribute('title') || a.textContent || '').trim(),
+              url: a.href,
+            });
+          }
+          // 发文字号：从正文首位匹配「X〔YYYY〕N号」「X规〔YYYY〕N号」等模式
+          const bodyText = (document.querySelector('.TRS_Editor')?.textContent || '').slice(0, 500);
+          const dn = bodyText.match(/(?:闽|国|发改|建设|交通|财政)[\u4e00-\u9fa5]{0,15}〔\d{4}〕\s*\d+\s*号/);
+          if (dn) result.doc_number = dn[0].trim();
+          return result;
+        }
+    format:
+      parser_id: "naive"
+      upload_batch_size: 5
+      template: |
+        # {{ title }}
+
+        **栏目:** {{ section_name }}
+        **发布机构:** {{ issuing_authority }}
+        **发布日期:** {{ publish_datetime }}
+        **发文字号:** {{ doc_number }}
+        **来源:** {{ source }}
+        **原文链接:** {{ url }}
+        **相关类型:** {{ related_type }}
+        **相关标题:** {{ related_title }}
+        **相关链接:** {{ related_url }}
+
+        {{ content }}
+
+  # ==========================================================================
+  # fujian_slt_xxgk — 福建省水利厅·政务公开（智能采集 / news）
+  # 入口：https://slt.fujian.gov.cn/xxgk/  （TRS WCM + Avalon 静态列表）
+  # 11 个栏目分别对应独立 URL，统一用 .gl_list li 提取列表（zcjd 栏目用 ul.xw-list-1 li）
+  # 详情页 .TRS_Editor 取正文，附件由 engine._extract_files_from_item 扫描 detail_html
+  # 旧脚本参考：rag/svr/crawler_sites.yaml 中已弃用的 slt_xxgk / slt_zcjd（仍保留）
+  # 反爬：常规 User-Agent + Referer；探测中无指纹/验证码/频控异常（一级）。
+  # --------------------------------------------------------------------------
+  fujian_slt_xxgk:
+    name: "福建省水利厅-政务公开"
+    site_url: "https://slt.fujian.gov.cn"
+    category: news
+    enabled: true
+    detect_enabled: true
+    detect_interval: 600             # 10 分钟轮询（政务公开更新频率较高）
+    transport:
+      type: rest_api
+      engine: requests
+      verify_ssl: false
+      timeout: 30
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        Accept-Language: "zh-CN,zh;q=0.9"
+        Referer: "https://slt.fujian.gov.cn/xxgk/"
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+      empty_page_stop: 1
+    pagination:
+      type: single_page
+    extract:
+      type: css_selector
+      items_path: ".gl_list li"
+      fields:
+        id:              "a@href"
+        title:           "a@title"
+        url:             "a@href"
+        date:            "span"
+    detail:
+      type: css_selector
+      content_field: ".TRS_Editor"   # 详情页正文容器（TRS WCM 标准）
+    format:
+      parser_id: "naive"
+      upload_batch_size: 5
+      template: |
+        # {{ title }}
+
+        **栏目:** {{ section_name }}
+        **发布日期:** {{ date }}
+        **原文链接:** {{ url }}
+
+        {{ content }}
+    sections:
+      - label: "tzgg"
+        name: "福建省水利厅-政务公开-通知公告"
+        listing:
+          url: "https://slt.fujian.gov.cn/wzsy/tzgg/"
+          method: GET
+      - label: "jsgl"
+        name: "福建省水利厅-政务公开-建设管理"
+        listing:
+          url: "https://slt.fujian.gov.cn/xxgk/jsgl/"
+          method: GET
+      - label: "ghjh"
+        name: "福建省水利厅-政务公开-规划计划"
+        listing:
+          url: "https://slt.fujian.gov.cn/xxgk/ghjh/"
+          method: GET
+      - label: "fggw"
+        name: "福建省水利厅-政务公开-法规公文"
+        listing:
+          url: "https://slt.fujian.gov.cn/xxgk/fggw/"
+          method: GET
+      - label: "zjxx"
+        name: "福建省水利厅-政务公开-资金信息"
+        listing:
+          url: "https://slt.fujian.gov.cn/xxgk/zjxx/"
+          method: GET
+      - label: "djgz"
+        name: "福建省水利厅-政务公开-党建工作"
+        listing:
+          url: "https://slt.fujian.gov.cn/xxgk/djgz/"
+          method: GET
+      - label: "zcjd"
+        name: "福建省水利厅-政务公开-解读回应"
+        listing:
+          url: "https://slt.fujian.gov.cn/xxgk/zcjd/"
+          method: GET
+        extract:                     # zcjd 用 xw-list-1（卡片样式），覆盖父级
+          type: css_selector
+          items_path: "ul.xw-list-1 li"
+          fields:
+            id:              "a@href"
+            title:           "a@title"
+            url:             "a@href"
+            date:            "span"
+      - label: "jjjc"
+        name: "福建省水利厅-政务公开-纪检监察"
+        listing:
+          url: "https://slt.fujian.gov.cn/xxgk/jjjc/"
+          method: GET
+      - label: "rsxx"
+        name: "福建省水利厅-政务公开-人事信息"
+        listing:
+          url: "https://slt.fujian.gov.cn/xxgk/rsxx/"
+          method: GET
+      - label: "zcps"
+        name: "福建省水利厅-政务公开-职称评审"
+        listing:
+          url: "https://slt.fujian.gov.cn/xxgk/rsxx/zcps/"
+          method: GET
+      - label: "tjxx"
+        name: "福建省水利厅-政务公开-统计信息"
+        listing:
+          url: "https://slt.fujian.gov.cn/xxgk/tjxx/"
+          method: GET
+
+  # --------------------------------------------------------------------------
+  # fujian_slt_zcjd — 福建省水利厅·解读回应（智能采集 / news）
+  # 入口：https://slt.fujian.gov.cn/xxgk/zcjd/  （TRS WCM + Avalon 静态列表）
+  # 4 个子栏目（列表类型 = 福建省水利局-解读回应-<子栏目>）：
+  #   回应关切          https://slt.fujian.gov.cn/xxgk/zcjd/hygq/
+  #   部门政策解读      https://slt.fujian.gov.cn/xxgk/zcjd/zcjd/bmzcjd/
+  #   省级政府政策解读  https://slt.fujian.gov.cn/xxgk/zcjd/zcjd/szfzcjd/
+  #   其他政策解读      https://slt.fujian.gov.cn/xxgk/zcjd/zcjd/qtzcjd/
+  # 列表静态 HTML，items_path=ul.xw-list-1 li + a@title + span 日期（YYYY-MM-DD）
+  # 详情：#detailCont 正文 + .myzj_xl_list 附件（attachment_handler 自动解压 ZIP）
+  # 相对路径（./  ../../  ../../../）由 rest_api adapter 用 urljoin 归一化为绝对 URL
+  # 反爬：常规 UA + Referer；老脚本 slt_zcjd_crawler.py 已验证无指纹/验证码/频控（一级）
+  # 重复触发：crawler_result 主键 upsert（id=md5(site_id|source_url)），trigger 自动注入
+  #          date_filter=today 只采当天数据；首次部署可传 --date-filter "" 全量入库
+  # --------------------------------------------------------------------------
+  fujian_slt_zcjd:
+    name: "福建省水利局-解读回应"
+    site_url: "https://slt.fujian.gov.cn"
+    category: news
+    enabled: true
+    detect_enabled: true
+    detect_interval: 600               # 10 分钟轮询（4 个栏目，单栏目约 30-80 条）
+    transport:
+      type: rest_api
+      engine: requests
+      verify_ssl: false
+      timeout: 30
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        Accept-Language: "zh-CN,zh;q=0.9"
+        Referer: "https://slt.fujian.gov.cn/xxgk/zcjd/"
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+      empty_page_stop: 1
+    pagination:
+      type: single_page               # 4 个栏目均为首页聚合（无分页）
+    extract:
+      type: css_selector
+      items_path: ".xw-list-1 li"
+      fields:
+        id:              "a@href"      # 详情 URL 作为稳定主键
+        title:           "a@title"     # <a title="..."> 完整标题
+        url:             "a@href"      # 相对路径，adapter 自动 urljoin
+        date:            "span"        # 2026-07-10
+    detail:
+      type: css_selector
+      content_field: "#detailCont"     # 详情正文容器（含 .smgb-article 兜底）
+    format:
+      parser_id: "naive"
+      upload_batch_size: 5
+      template: |
+        # {{ title }}
+
+        **栏目:** {{ section_name }}
+        **发布日期:** {{ date }}
+        **原文链接:** {{ url }}
+
+        {{ content }}
+    sections:
+      - label: "hygq"
+        name: "福建省水利局-解读回应-回应关切"
+        listing:
+          url: "https://slt.fujian.gov.cn/xxgk/zcjd/hygq/"
+          method: GET
+      - label: "bmzcjd"
+        name: "福建省水利局-解读回应-部门政策解读"
+        listing:
+          url: "https://slt.fujian.gov.cn/xxgk/zcjd/zcjd/bmzcjd/"
+          method: GET
+      - label: "szfzcjd"
+        name: "福建省水利局-解读回应-省级政府政策解读"
+        listing:
+          url: "https://slt.fujian.gov.cn/xxgk/zcjd/zcjd/szfzcjd/"
+          method: GET
+      - label: "qtzcjd"
+        name: "福建省水利局-解读回应-其他政策解读"
+        listing:
+          url: "https://slt.fujian.gov.cn/xxgk/zcjd/zcjd/qtzcjd/"
+          method: GET
+
+  # ==========================================================================
+  # fujian_czt_zwgk — 福建省财政厅·政务公开（智能采集 / policy）
+  # 入口: https://czt.fujian.gov.cn/zwgk/  (TRS CMS + Avalon，静态 HTML)
+  # 6 栏目: 政策文件(zcfg) / 通知公告(tzgg) / 统计数据(tjsj) /
+  #         财政资金(czzj) / 规划计划(ghjh) / 代表委员之声(srdzxjyhtabl_60587)
+  # 列表条目混合两类:
+  #   - HTML 详情页 tYYYYMMDD_xxx.htm  (.article_title/.article_time/
+  #     .article_source/.TRS_Editor/.article_attachment/.article_relalinks)
+  #   - 直链文件 P0xxx.{pdf,docx,zip}  (无 HTML 正文，URL 即文件)
+  # 因条目类型分流逻辑超出 YAML 表达力，用 custom_runner Python 脚本精细处理。
+  # 反爬: 常规 UA + Referer，无指纹/验证码（一级）。
+  # --------------------------------------------------------------------------
+  fujian_czt_zwgk:
+    name: "福建省财政厅-政务公开"
+    site_url: "https://czt.fujian.gov.cn"
+    category: policy
+    enabled: true
+    detect_enabled: true
+    detect_interval: 600              # 10 分钟轮询（政务公开首页，更新频率中等）
+    custom_runner: "rag.svr.fujian_czt_zwgk_crawler"
+    transport:
+      type: rest_api                 # 占位（实际抓取由 custom_runner 完成）
+    listing:
+      url: "https://czt.fujian.gov.cn/zwgk/"
+      method: GET
+    pagination:
+      type: single_page
+    extract:
+      type: css_selector
+      items_path: "li"
+    detail:
+      type: none                     # custom_runner 内部完成详情抓取
+    format:
+      parser_id: "naive"
+      upload_batch_size: 5
+
+  # --------------------------------------------------------------------------
+  # mohurd_mlxz — 国家住建部 · 信息公开目录下载 (PDF 解析 + 详情页抓取)
+  # Source: https://www.mohurd.gov.cn/gongkai/mlxz/index.html
+  #   列表页: 静态 HTML, 20 个年份 PDF 下载链接 (2004-2023)
+  #   数据流: 下载 PDF → PyMuPDF 提取超链接 → 逐条抓取详情页
+  #   详情页: 静态 HTML, 元数据区 + 正文 + 附件
+  #   类型: 国家住建部-公开 (category=policy, 写 collection_policy_ext)
+  #   去重: crawler_result PK upsert (id=md5(site_id|source_url))
+  #   增量: 首次全量回溯, 后续仅下载最新年份 PDF + date_filter=today
+  #   反爬: 无明显反爬, 常规 UA + Referer + 1-3s 延迟即可
+  # --------------------------------------------------------------------------
+  mohurd_mlxz:
+    name: "国家住建部-公开"
+    site_url: "https://www.mohurd.gov.cn"
+    category: policy
+    enabled: true
+    detect_enabled: true
+    detect_interval: 86400            # 每天轮询一次 (最新年份 PDF)
+    detect_max_interval: 172800
+    custom_runner: "rag.svr.mohurd_mlxz_crawler"
+    transport:
+      type: rest_api                   # 占位（实际抓取由 custom_runner 完成）
+    listing:
+      url: "https://www.mohurd.gov.cn/gongkai/mlxz/index.html"
+      method: GET
+    pagination:
+      type: single_page
+    extract:
+      type: css_selector
+      items_path: "a[href$=.pdf]"
+    detail:
+      type: none                       # custom_runner 内部完成详情抓取
+    format:
+      parser_id: "naive"
+      upload_batch_size: 10
+
+  # --------------------------------------------------------------------------
+  # ndrc_xxgk — 国家发改委 · 政务公开 (服务器渲染 HTML, 9 栏目, custom_runner)
+  # Source: https://www.ndrc.gov.cn/xxgk/
+  #   发展改革委令    /xxgk/zcfb/fzggwl/
+  #   规范性文件      /xxgk/zcfb/ghxwj/
+  #   规划文本        /xxgk/zcfb/ghwb/
+  #   公告            /xxgk/zcfb/gg/
+  #   通知            /xxgk/zcfb/tz/
+  #   解读            /xxgk/jd/jd/
+  #   政策图解        /xxgk/jd/zctj/
+  #   全国人大代表建议复文公开  /xxgk/jianyitianfuwen/qgrddbjyfwgk/
+  #   全国政协委员提案复文公开  /xxgk/jianyitianfuwen/qgzxwytafwgk/
+  ndrc_xxgk:
+    name: "国家发改委-政务公开"
+    site_url: "https://www.ndrc.gov.cn"
+    category: policy
+    enabled: true
+    detect_enabled: true
+    detect_interval: 86400            # 每天轮询一次
+    detect_max_interval: 172800
+    custom_runner: "rag.svr.ndrc_xxgk_crawler"
+    transport:
+      type: rest_api                   # 占位（实际抓取由 custom_runner 完成）
+    listing:
+      url: "https://www.ndrc.gov.cn/xxgk/"
+      method: GET
+    pagination:
+      type: single_page
+    extract:
+      type: css_selector
+      items_path: ".u-list > li"
+    detail:
+      type: none                       # custom_runner 内部完成详情抓取
+    format:
+      parser_id: "naive"
+      upload_batch_size: 10
+
+  # --------------------------------------------------------------------------
+  # fujian_czt_jdhy — 福建省财政厅 · 解读回应 (TRS CMS + Avalon, SSR 列表全量渲染)
+  # Source: https://czt.fujian.gov.cn/jdhy/
+  #   回应关切            /jdhy/hygq/             (SSR, 21 个分页 list_base 块 × 5 ≈ 104 条)
+  #   省财政厅政策文件解读 /jdhy/zcjd/             (portal, 仅子栏目入口)
+  #     ├─ 本厅政策文件解读 /jdhy/zcjd/bmzcwjjd/  (SSR, 105 条)
+  #     ├─ 图片解读         /jdhy/zcjd/tpjd/      (SSR, 102 条)
+  #     └─ 视频解读         /jdhy/zcjd/spjd/      (SSR, 22 条)
+  # 列表 HTML：.list_base_date_01 li > a[href][title] + span (日期)
+  # 详情页：.article_content / .TRS_Editor 正文 + meta[PubDate/ContentSource/ArticleTitle]
+  #         附件 SSR 内嵌于 .article_attachment <ul>（多数为空，Avalon 异步填充），
+  #         正文 <a href> 由 engine._extract_files_from_item 自动扫描；
+  #         ZIP/RAR 由 attachment_handler 解压后上传 KB。
+  # 反爬：常规 UA + Referer，无指纹/验证码/IP 限速；SSR 列表全量返回，rest_api 即可。
+  # 去重：crawler_result 主键 upsert (id=md5(site_id|source_url))；
+  #       trigger 首次回溯全量、后续注入 date_filter=today 仅采当天。
+  # --------------------------------------------------------------------------
+  fujian_czt_jdhy:
+    name: "福建省财政厅-解读回应"
+    site_url: "https://czt.fujian.gov.cn"
+    category: news
+    enabled: true
+    detect_enabled: true
+    detect_interval: 600              # 10 分钟轮询一次
+    transport:
+      type: rest_api
+      engine: requests
+      verify_ssl: false
+      timeout: 30
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        Accept-Language: "zh-CN,zh;q=0.9"
+        Referer: "https://czt.fujian.gov.cn/jdhy/"
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+      empty_page_stop: 1
+    pagination:
+      type: single_page              # SSR 一次返回全部，无需分页
+    extract:
+      type: css_selector
+      items_path: ".list_base_date_01 li"
+      fields:
+        id:    "a@href"              # ./202607/t20260716_7178991.htm → engine urljoin 后绝对 URL
+        title: "a@title"
+        url:   "a@href"
+        date:  "span"                # 2026-07-16
+    detail:
+      type: css_selector
+      content_field: ".article_content"
+    format:
+      parser_id: "naive"
+      upload_batch_size: 5
+      template: |
+        # {{ title }}
+
+        **栏目:** {{ section_name }}
+        **子栏目:** {{ subsection_name }}
+        **发布机构:** 福建省财政厅
+        **发布日期:** {{ date }}
+        **原文链接:** {{ url }}
+
+        {{ content }}
+    sections:
+      - label: "hygq"
+        name: "福建省财政厅-解读回应"
+        listing:
+          url: "https://czt.fujian.gov.cn/jdhy/hygq/"
+          method: GET
+      - label: "bmzcwjjd"
+        name: "福建省财政厅-解读回应"
+        listing:
+          url: "https://czt.fujian.gov.cn/jdhy/zcjd/bmzcwjjd/"
+          method: GET
+      - label: "tpjd"
+        name: "福建省财政厅-解读回应"
+        listing:
+          url: "https://czt.fujian.gov.cn/jdhy/zcjd/tpjd/"
+          method: GET
+      - label: "spjd"
+        name: "福建省财政厅-解读回应"
+        listing:
+          url: "https://czt.fujian.gov.cn/jdhy/zcjd/spjd/"
+          method: GET
+
+  # ==========================================================================
+  # fujian_zjt_xxgk — 福建省住房和城乡建设厅 · 政务公开首页聚合（智能采集 / news）
+  # Source: https://zjt.fujian.gov.cn/xxgk/
+  #   10 个子栏目（用户需求 #4）：
+  #     新闻动态               /xxgk/gzdt/
+  #     通知公告               /xxgk/tzgg/
+  #     最新文件               /xxgk/zxwj/
+  #     资金信息（财政资金）   /xxgk/zjxx/
+  #     人事信息               /xxgk/rsxx/
+  #     规划计划               /xxgk/ghjh/
+  #     资格管理               /xxgk/zggl/
+  #     资质管理               /xxgk/zzgl/
+  #     人大建议和政协提案办理 /xxgk/rdjyhzxtabl/
+  #     数据图解（统计信息）   /xxgk/tjxx/         （正文为 <img>，附件下载后由 KB OCR）
+  # 列表 HTML：SSR 静态 + Avalon 控件（barrier-free-idx/leaf 由 JS 注入）
+  #           ul/li 包含 a[href*="tYYYYMMDD_ID.htm"][title] + .longdate
+  # 详情 HTML：.myzj_con > h1.xl_tit（标题）+ .xl_tit2_l（日期/来源/浏览量）+ #detailCont（正文）
+  #           正文内嵌 <img src> （数据图解）和 <a href="*.pdf|docx|...">（附件）
+  #           由 engine._extract_files_from_item 自动扫描；ZIP/RAR 由 attachment_handler 解压
+  # 反爬：常规 UA + Referer；探测无指纹/验证码/IP 限速；SSR 已渲染，spa_render 主要用于 js_extract。
+  # 去重：crawler_result 主键 upsert (id=md5(site_id|source_url))；
+  #       trigger 首次回溯全量、后续注入 date_filter=today 仅采当天（设计文档 §11.1）。
+  # --------------------------------------------------------------------------
+  fujian_zjt_xxgk:
+    name: "福建省住建厅-政务公开"
+    site_url: "https://zjt.fujian.gov.cn"
+    category: news
+    enabled: true
+    detect_enabled: true
+    detect_interval: 600              # 10 分钟轮询
+    transport:
+      type: spa_render                # js_extract 需 spa_render 适配器（rest_api 不支持）
+      engine: playwright_spa
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        Referer: "https://zjt.fujian.gov.cn/xxgk/"
+        Accept-Language: "zh-CN,zh;q=0.9"
+      verify_ssl: false
+      timeout: 30
+      network_idle: false             # gov 站长连接使 networkidle 永不触发
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+      empty_page_stop: 1
+    pagination:
+      type: single_page              # 栏目首页列表，一次返回全部（无翻页 UI）
+    extract:
+      type: css_selector
+      items_path: "body"             # 占位（实际由 js_extract 全页扫描）
+      js_extract: |
+        () => {
+          const results = [];
+          const seen = new Set();
+          // 全页扫描所有 zjt.fujian.gov.cn 域下的 tYYYYMMDD_<id>.htm 详情链接
+          const linkPattern = /\/(?:xxgk|zfxxgkzl|gzdt|bmdt|wjzx|jdhy|gzcy)[^?]*?\/t\d{8}_\d+\.htm$/i;
+          const anchors = document.querySelectorAll('a[href]');
+          for (const a of anchors) {
+            let href = a.href || '';
+            if (!href) continue;
+            try { href = new URL(href, location.href).href; } catch (e) { continue; }
+            if (!linkPattern.test(href)) continue;
+            if (!/zjt\.fujian\.gov\.cn/i.test(href)) continue;
+            if (seen.has(href)) continue;
+
+            const title = (a.getAttribute('title') || (a.textContent || '').trim() || '').trim();
+            if (!title || title.length < 4) continue;
+
+            // 找最近的 .longdate（YYYY-MM-DD）或 .shortdate（MM-DD）取日期
+            let dateStr = '';
+            let parent = a.closest('li, tr, div');
+            for (let i = 0; i < 3 && parent && !dateStr; i++) {
+              const ld = parent.querySelector('.longdate, .shortdate, .shortdate2, span.date, em.date');
+              if (ld) dateStr = (ld.textContent || '').replace(/[\[\]]/g, '').trim();
+              parent = parent.parentElement;
+            }
+            // URL 兜底：t20260727_7192536.htm → 2026-07-27
+            if (!dateStr) {
+              const m = href.match(/t(\d{4})(\d{2})(\d{2})_\d+\.htm/i);
+              if (m) dateStr = `${m[1]}-${m[2]}-${m[3]}`;
+            }
+            // shortdate MM-DD → 补当前年份（防止跨年场景丢日期）
+            if (dateStr && /^\d{2}-\d{2}$/.test(dateStr)) {
+              const year = (new Date()).getFullYear();
+              dateStr = `${year}-${dateStr}`;
+            }
+
+            // docid：URL 末尾数字（主键来源），稳定唯一
+            const docidMatch = href.match(/t\d{8}_(\d+)\.htm/i);
+            const docid = docidMatch ? docidMatch[1] : '';
+
+            seen.add(href);
+            results.push({
+              id: docid || href,             // 主键（dedup 用）
+              docid: docid,
+              title: title,
+              url: href,
+              date: dateStr,
+              issuing_authority: '福建省住房和城乡建设厅',
+            });
+          }
+          return results;
+        }
+    detail:
+      type: css_selector
+      content_field: "#detailCont"
+      metadata_js: |
+        () => {
+          const result = {
+            publish_datetime: '',
+            source: '',
+            doc_number: '',
+            issuing_authority: '福建省住房和城乡建设厅',
+            topic_category: '',
+            browse_count: '',
+            files: [],
+            images: [],
+          };
+          // 布局 A: .xl_tit2_l 内含 日期：/来源：/浏览量：（旧版详情页）
+          const meta = document.querySelector('.xl_tit2_l');
+          if (meta) {
+            const txt = meta.textContent || '';
+            const tm = txt.match(/日期[:：]\s*(\d{4}-\d{1,2}-\d{1,2}(?:\s+\d{1,2}:\d{1,2})?)/);
+            if (tm) result.publish_datetime = tm[1].trim();
+            const sm = txt.match(/来源[:：]\s*([^\s\u4e00-\u9fa5]?[\u4e00-\u9fa5A-Za-z（）()][^\n]{0,40})/);
+            if (sm) result.source = sm[1].trim();
+            const bc = txt.match(/浏览量[:：]\s*(\d+)/);
+            if (bc) result.browse_count = bc[1];
+          }
+          // 布局 B: TRS CMS .trt-row 行（新版详情页）— 索引号/发文字号/发布机构/生成日期
+          // + .article_source 来源 / .article_time 发布时间
+          if (!result.publish_datetime || !result.source || !result.doc_number) {
+            const trtTxt = (document.querySelector('.trt-row') || {}).textContent || '';
+            if (!result.doc_number) {
+              // textContent 折叠后，发文字号值与下一个字段（发布机构）在同一行流。
+              // 用 [\s\S] 跨行匹配直到下一字段标签。
+              const dn = trtTxt.match(/发文字号[:：]\s*([\s\S]{1,60}?)(?:发布机构|生成日期|索引号|有效|来源|标题)/);
+              if (dn) result.doc_number = dn[1].replace(/<[^>]+>/g, '').trim();
+            }
+            if (!result.publish_datetime) {
+              const tm2 = trtTxt.match(/生成日期[:：]\s*(\d{4}-\d{1,2}-\d{1,2})/);
+              if (tm2) result.publish_datetime = tm2[1].trim();
+            }
+            const ia = trtTxt.match(/发布机构[:：]\s*([\u4e00-\u9fa5A-Za-z（）()][^\n]{0,40})/);
+            if (ia && ia[1].trim()) result.issuing_authority = ia[1].trim();
+          }
+          if (!result.publish_datetime) {
+            const at = document.querySelector('.article_time, .bf-pass');
+            if (at) {
+              const tm3 = (at.textContent || '').match(/(\d{4}-\d{1,2}-\d{1,2}(?:\s+\d{1,2}:\d{1,2})?)/);
+              if (tm3) result.publish_datetime = tm3[1].trim();
+            }
+          }
+          if (!result.source) {
+            const as = document.querySelector('.article_source');
+            if (as) {
+              const sm2 = (as.textContent || '').match(/来源[:：]\s*([\u4e00-\u9fa5A-Za-z（）()][^\n]{0,40})/);
+              if (sm2) result.source = sm2[1].trim();
+            }
+          }
+          // 面包屑（topic_category）
+          const crumbs = document.querySelectorAll('.crumb a, .CurrChnlCls, .xl_bread a');
+          if (crumbs.length) {
+            result.topic_category = (crumbs[crumbs.length - 1].textContent || '').trim();
+          }
+          // 正文内的附件（PDF/DOC/ZIP/...），engine 会再扫一次，这里同步落 extracted_json
+          const detail = document.querySelector('#detailCont');
+          if (detail) {
+            const fileExt = /\.(pdf|docx?|xlsx?|pptx?|zip|rar|7z|ofd|wps|et|dps)(\?|$)/i;
+            const p0Pattern = /P0\d{15,}/i;
+            detail.querySelectorAll('a[href]').forEach(a => {
+              const h = a.href || '';
+              if (!h) return;
+              if (!fileExt.test(h) && !p0Pattern.test(h)) return;
+              result.files.push({
+                file_name: (a.textContent || '').trim() || h.split('/').pop(),
+                file_url: h,
+              });
+            });
+            // 数据图解：正文是 <img src>（用户需求 #4 / #10 OCR 解析图片）
+            detail.querySelectorAll('img[src]').forEach(img => {
+              const src = img.src || '';
+              if (!src) return;
+              // 过滤 logo / 系统图标（< 100x100 由样式 width/height 蔽之）
+              const w = parseInt(img.getAttribute('width') || '0', 10);
+              const h = parseInt(img.getAttribute('height') || '0', 10);
+              if (w && w < 100) return;
+              if (h && h < 100) return;
+              if (/logo|icon|spacer|blank/i.test(src)) return;
+              result.images.push({
+                file_name: (img.getAttribute('alt') || '').trim() || src.split('/').pop(),
+                file_url: src,
+              });
+            });
+          }
+          // 发文字号：从正文首位匹配「闽〔YYYY〕N号」「闽XX〔YYYY〕N号」等
+          const bodyText = (detail ? detail.textContent : '').slice(0, 800);
+          const dn = bodyText.match(/(?:闽|国|住建|建设|发改|财政|交通)[\u4e00-\u9fa5]{0,15}〔\d{4}〕\s*\d+\s*号/);
+          if (dn) result.doc_number = dn[0].trim();
+          return result;
+        }
+    format:
+      parser_id: "naive"
+      upload_batch_size: 5
+      template: |
+        # {{ title }}
+
+        **栏目:** {{ section_name }}
+        **发布机构:** {{ issuing_authority }}
+        **发布日期:** {{ publish_datetime }}
+        **发文字号:** {{ doc_number }}
+        **来源:** {{ source }}
+        **原文链接:** {{ url }}
+
+        {{ content }}
+    sections:
+      - label: "gzdt"
+        name: "福建省住建厅-政务公开-新闻动态"
+        listing:
+          url: "https://zjt.fujian.gov.cn/xxgk/gzdt/"
+          method: GET
+      - label: "tzgg"
+        name: "福建省住建厅-政务公开-通知公告"
+        listing:
+          url: "https://zjt.fujian.gov.cn/xxgk/tzgg/"
+          method: GET
+      - label: "zxwj"
+        name: "福建省住建厅-政务公开-最新文件"
+        listing:
+          url: "https://zjt.fujian.gov.cn/xxgk/zxwj/"
+          method: GET
+      - label: "zjxx"
+        name: "福建省住建厅-政务公开-资金信息"
+        listing:
+          url: "https://zjt.fujian.gov.cn/xxgk/zjxx/"
+          method: GET
+      - label: "rsxx"
+        name: "福建省住建厅-政务公开-人事信息"
+        listing:
+          url: "https://zjt.fujian.gov.cn/xxgk/rsxx/"
+          method: GET
+      - label: "ghjh"
+        name: "福建省住建厅-政务公开-规划计划"
+        listing:
+          url: "https://zjt.fujian.gov.cn/xxgk/ghjh/"
+          method: GET
+      - label: "zggl"
+        name: "福建省住建厅-政务公开-资格管理"
+        listing:
+          url: "https://zjt.fujian.gov.cn/xxgk/zggl/"
+          method: GET
+      - label: "zzgl"
+        name: "福建省住建厅-政务公开-资质管理"
+        listing:
+          url: "https://zjt.fujian.gov.cn/xxgk/zzgl/"
+          method: GET
+      - label: "rdjyhzxtabl"
+        name: "福建省住建厅-政务公开-人大建议和政协提案办理"
+        listing:
+          url: "https://zjt.fujian.gov.cn/xxgk/rdjyhzxtabl/"
+          method: GET
+      - label: "tjxx"
+        name: "福建省住建厅-政务公开-数据图解"
+        listing:
+          url: "https://zjt.fujian.gov.cn/xxgk/tjxx/"
+          method: GET
+
+  # --------------------------------------------------------------------------
+  # zhangzhou_fgw_zwgk — 漳州市发改委-政务公开 (custom crawler script)
+  # 覆盖 6 个页签：政策文件/政策解读/通知公告/规划计划/人事信息/专题专栏
+  # Crawler: rag/svr/zhangzhou_fgw_zwgk_crawler.py
+  # --------------------------------------------------------------------------
+  zhangzhou_fgw_zwgk:
+    name: "漳州市发改委-政务公开"
+    site_url: "http://fgw.zhangzhou.gov.cn/cms/html/zzsfzhggwyh/zwgk/index.html"
+    category: news
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+      verify_ssl: false
+      timeout: 60
+    anti_crawler:
+      delay_min: 0.3
+      delay_max: 1.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: "a[href*='/cms/html/']"
+      fields:
+        title: "a"
+        url: "a@href"
+        date: "span"
+    detail:
+      type: css_selector
+      content_field: "div.TRS_Editor, div.article-content, div.content"
+    format:
+      parser_id: "naive"
+      upload_batch_size: 10
+    # 此站点使用自定义爬虫脚本 zhangzhou_fgw_zwgk_crawler.py
+    # unified_crawler.py 检测到此 site_id 时会调用自定义脚本
+    custom_runner: "rag.svr.zhangzhou_fgw_zwgk_crawler"
+    sections:
+      - label: "zcwj"
+        name: "漳州市发改委-政务公开-政策文件"
+        listing:
+          url: "http://fgw.zhangzhou.gov.cn/cms/html/zzsfzhggwyh/zcwj/index.html"
+          method: GET
+      - label: "zcjd"
+        name: "漳州市发改委-政务公开-政策解读"
+        listing:
+          url: "http://fgw.zhangzhou.gov.cn/cms/html/zzsfzhggwyh/zcjd/index.html"
+          method: GET
+      - label: "tzgg"
+        name: "漳州市发改委-政务公开-通知公告"
+        listing:
+          url: "http://fgw.zhangzhou.gov.cn/cms/html/zzsfzhggwyh/tzgg/index.html"
+          method: GET
+      - label: "ghjh"
+        name: "漳州市发改委-政务公开-规划计划"
+        listing:
+          url: "http://fgw.zhangzhou.gov.cn/cms/html/zzsfzhggwyh/ghjh/index.html"
+          method: GET
+      - label: "rsxx"
+        name: "漳州市发改委-政务公开-人事信息"
+        listing:
+          url: "http://fgw.zhangzhou.gov.cn/cms/html/zzsfzhggwyh/rsxx/index.html"
+          method: GET
+      - label: "ztzl"
+        name: "漳州市发改委-政务公开-专题专栏"
+        listing:
+          url: "http://fgw.zhangzhou.gov.cn/cms/html/zzsfzhggwyh/ztzl/index.html"
+          method: GET
+
+  # --------------------------------------------------------------------------
+  # zhangzhou_zwgk — 漳州市人民政府 · 政务公开 (TRS CMS 静态 HTML, 7 栏目, custom_runner)
+  # Source: https://www.zhangzhou.gov.cn/cms/html/zzsrmzf/zwgk/index.html
+  #   政府文件、公示公告、规划计划、人事信息（奖励表彰/人事任免）、
+  #   人大建议政协提案答复（人大代表/政协委员）、财政预算（预决算/部门预算）、
+  #   行政事业性收费（价费信息/民生价格）
+  # 详情页: 标准文章 /cms/html/.../YYYY-MM-DD/XXXX.html
+  #         信息公开 /cms/infopublic/publicInfo.shtml?id=...&siteId=...
+  # 反爬: 常规 UA，无指纹/验证码（一级）
+  # --------------------------------------------------------------------------
+  zhangzhou_zwgk:
+    name: "漳州市人民政府-政务公开"
+    site_url: "https://www.zhangzhou.gov.cn/cms/html/zzsrmzf/zwgk/index.html"
+    category: "漳州市人民政府-政务公开"
+    enabled: true
+    detect_enabled: true
+    detect_interval: 3600             # 1 小时轮询（政务公开首页更新频率中等）
+    custom_runner: "rag.svr.zhangzhou_zwgk_crawler"
+    transport:
+      type: rest_api                  # 占位（实际抓取由 custom_runner 完成）
+      engine: requests
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+      verify_ssl: false
+      timeout: 60
+    listing:
+      url: "https://www.zhangzhou.gov.cn/cms/html/zzsrmzf/zwgk/index.html"
+      method: GET
+    pagination:
+      type: single_page               # 占位（custom_runner 内部翻页）
+    anti_crawler:
+      delay_min: 0.3
+      delay_max: 1.0
+      max_retries: 3
+    extract:
+      type: css_selector
+      items_path: "a[href*='/cms/html/']"
+      fields:
+        title: "a"
+        url: "a@href"
+        date: "span"
+    detail:
+      type: none                      # custom_runner 内部完成详情抓取
+    format:
+      parser_id: "naive"
+      upload_batch_size: 10
+    sections:
+      - label: "zfwj"
+        name: "漳州市人民政府-政务公开-政府文件"
+        listing:
+          url: "https://www.zhangzhou.gov.cn/cms/html/zzsrmzf/zfwj/index.html"
+          method: GET
+      - label: "gsgg"
+        name: "漳州市人民政府-政务公开-公示公告"
+        listing:
+          url: "https://www.zhangzhou.gov.cn/cms/html/zzsrmzf/gsgg/index.html"
+          method: GET
+      - label: "ghjh"
+        name: "漳州市人民政府-政务公开-规划计划"
+        listing:
+          url: "https://www.zhangzhou.gov.cn/cms/html/zzsrmzf/ghjh/index.html"
+          method: GET
+      - label: "rsxx"
+        name: "漳州市人民政府-政务公开-人事信息"
+        listing:
+          url: "https://www.zhangzhou.gov.cn/cms/html/zzsrmzf/rsxx/index.html"
+          method: GET
+      - label: "rdjyzxtadf"
+        name: "漳州市人民政府-政务公开-人大建议政协提案答复"
+        listing:
+          url: "https://www.zhangzhou.gov.cn/cms/html/zzsrmzf/rdjyzxtadf/index.html"
+          method: GET
+      - label: "czzj"
+        name: "漳州市人民政府-政务公开-财政预算"
+        listing:
+          url: "https://www.zhangzhou.gov.cn/cms/html/zzsrmzf/czzj/index.html"
+          method: GET
+      - label: "jgysf"
+        name: "漳州市人民政府-政务公开-行政事业性收费"
+        listing:
+          url: "https://www.zhangzhou.gov.cn/cms/html/zzsrmzf/jgysf/index.html"
+          method: GET
+
+  # --------------------------------------------------------------------------
+  # zhangzhou_zzjsj — 漳州市住建局 · 政务公开 (TRS CMS 静态 HTML, 17 栏目, custom_runner)
+  # Source: http://jsj.zhangzhou.gov.cn/cms/html/zzszfhcxjsj/zwgk/index.html
+  #   工作动态、通知公告、最新文件、财政资金、人事信息、规划计划、
+  #   建筑工程、消防工程、资质管理、城市建设、村镇建设、安全管理、
+  #   科技设计、房屋交易、统计信息、重点项目、电子刊物
+  # 详情页: 标准文章 /cms/html/.../YYYY-MM-DD/XXXX.html
+  #         信息公开 /cms/infopublic/publicInfo.shtml?id=...&siteId=...
+  # 反爬: 常规 UA + Referer，无需 SPA 渲染（一级）
+  # --------------------------------------------------------------------------
+  zhangzhou_zzjsj:
+    name: "漳州市住建局-政务公开"
+    site_url: "http://jsj.zhangzhou.gov.cn/cms/html/zzszfhcxjsj/zwgk/index.html"
+    category: news
+    enabled: true
+    detect_enabled: true
+    detect_interval: 3600             # 1 小时轮询（政务公开首页更新频率高）
+    custom_runner: "rag.svr.zhangzhou_zzjsj_crawler"
+    transport:
+      type: rest_api                  # 占位（实际抓取由 custom_runner 完成）
+    listing:
+      url: "http://jsj.zhangzhou.gov.cn/cms/html/zzszfhcxjsj/zwgk/index.html"
+      method: GET
+    pagination:
+      type: single_page               # 占位（custom_runner 内部翻页）
+    extract:
+      type: css_selector
+      items_path: "li"
+    detail:
+      type: none                      # custom_runner 内部完成详情抓取
+    format:
+      parser_id: "naive"
+      upload_batch_size: 10
+
+  # --------------------------------------------------------------------------
+  # nanjing_county_jdhy — 南靖县人民政府·解读回应 (TRS CMS 自定义爬虫, 5 栏目)
+  # Source: http://www.fjnj.gov.cn/cms/html/njxrmzf/jdhy/index.html
+  #   政策解读(zcjd) / 图说图解(tstj) / H5解读(h5jd) /
+  #   音频解读(ypjd) / 回应关切(hygq1)
+  # 列表: /cms/sitemanage/index.shtml?siteId={siteId}&page={page}
+  # 详情页: /cms/html/njxrmzf/YYYY-MM-DD/ID.html (标准文章)
+  # 图说图解内容以图片为主，需 OCR 识别提取文字
+  # 反爬: 常规 UA，无验证码（一级）。
+  # --------------------------------------------------------------------------
+  nanjing_county_jdhy:
+    name: "南靖县-解读回应"
+    site_url: "http://www.fjnj.gov.cn"
+    category: news
+    enabled: true
+    detect_enabled: true
+    detect_interval: 3600             # 1 小时轮询（解读回应首页更新频率中等）
+    custom_runner: "rag.svr.nanjing_county_jdhy_crawler"
+    transport:
+      type: rest_api                  # 占位（实际抓取由 custom_runner 完成）
+    listing:
+      url: "http://www.fjnj.gov.cn/cms/html/njxrmzf/jdhy/index.html"
+      method: GET
+    pagination:
+      type: single_page               # 占位（custom_runner 内部翻页）
+    extract:
+      type: css_selector
+      items_path: "li"
+    detail:
+      type: none                      # custom_runner 内部完成详情抓取
+    format:
+      parser_id: "naive"
+      upload_batch_size: 10
+
+  # --------------------------------------------------------------------------
+  # nanjing_county_zwgk — 南靖县人民政府·政务公开 (TRS CMS 自定义爬虫, 5 栏目)
+  # Source: http://www.fjnj.gov.cn/cms/html/njxrmzf/zwgk/index.html
+  #   政府文件(zfwj) / 三农服务(snfw) / 财政资金(czzj) /
+  #   人事信息(rsxx) / 规划计划(ghjh)
+  # 列表: /cms/sitemanage/index.shtml?siteId={siteId}&page={page}
+  # 详情页两类: publicInfo.shtml (政府公文含元数据) / /cms/html/... (普通文章)
+  # 反爬: 常规 UA，无验证码（一级）。
+  # --------------------------------------------------------------------------
+  nanjing_county_zwgk:
+    name: "南靖县-政务公开"
+    site_url: "http://www.fjnj.gov.cn"
+    category: news
+    enabled: true
+    detect_enabled: true
+    detect_interval: 3600             # 1 小时轮询（政务公开首页更新频率中等）
+    custom_runner: "rag.svr.nanjing_county_crawler"
+    transport:
+      type: rest_api                  # 占位（实际抓取由 custom_runner 完成）
+    listing:
+      url: "http://www.fjnj.gov.cn/cms/html/njxrmzf/zwgk/index.html"
+      method: GET
+    pagination:
+      type: single_page               # 占位（custom_runner 内部翻页）
+    extract:
+      type: css_selector
+      items_path: "li"
+    detail:
+      type: none                      # custom_runner 内部完成详情抓取
+    format:
+      parser_id: "naive"
+      upload_batch_size: 10
+
+  # --------------------------------------------------------------------------
+  # zhangzhou_rmzf_jdhy — 漳州市人民政府·解读回应 (TRS CMS 自定义爬虫, 9 栏目)
+  # Source: https://www.zhangzhou.gov.cn/cms/html/zzsrmzf/jdhy1/index.html
+  #   本市政策解读(bszcjd) / 图说图解(tstj) / 媒体解读(jdbd) /
+  #   广播解读(gbjd) / 动漫及H5解读(dmjh5jd) / 视频解读(spjd) /
+  #   会议解读(hytj) / 新闻发布会(xwfbh) / 回应关切(hygq)
+  # 列表: TRS CMS 静态 HTML, sitemanage 分页
+  # 详情页: /cms/html/zzsrmzf/YYYY-MM-DD/XXXX.html
+  # 反爬: 常规 UA + Referer，无验证码/SPA（一级）
+  # --------------------------------------------------------------------------
+  zhangzhou_rmzf_jdhy:
+    name: "漳州市人民政府-解读回应"
+    site_url: "https://www.zhangzhou.gov.cn/cms/html/zzsrmzf/jdhy1/index.html"
+    category: "漳州市人民政府-解读回应"
+    enabled: true
+    detect_enabled: true
+    detect_interval: 3600             # 1 小时轮询
+    custom_runner: "rag.svr.zhangzhou_rmzf_jdhy_crawler"
+    transport:
+      type: rest_api                  # 占位（实际抓取由 custom_runner 完成）
+    listing:
+      url: "https://www.zhangzhou.gov.cn/cms/html/zzsrmzf/jdhy1/index.html"
+      method: GET
+    pagination:
+      type: single_page               # 占位（custom_runner 内部翻页）
+    extract:
+      type: css_selector
+      items_path: "li"
+    detail:
+      type: none                      # custom_runner 内部完成详情抓取
+    format:
+      parser_id: "naive"
+      upload_batch_size: 10

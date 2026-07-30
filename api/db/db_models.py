@@ -91,7 +91,11 @@ class JSONField(LongTextField):
     def python_value(self, value):
         if not value:
             return self.default_value
-        return json_loads(value, object_hook=self._object_hook, object_pairs_hook=self._object_pairs_hook)
+        try:
+            return json_loads(value, object_hook=self._object_hook, object_pairs_hook=self._object_pairs_hook)
+        except Exception:
+            logging.warning("JSONField.python_value: failed to decode JSON, returning default. raw=%s", value[:200] if value else value)
+            return self.default_value
 
 
 class ListField(JSONField):
@@ -2105,6 +2109,28 @@ class CollectionObjectionExt(DataBaseModel):
         db_table = "collection_objection_ext"
 
 
+class CollectionZdgksxmlExt(DataBaseModel):
+    """重点公开事项类采集扩展字段（category=zdgksxml，福建省交通运输厅公开事项目录）。"""
+    result_id = CharField(max_length=32, primary_key=True, help_text="FK -> crawler_result.id")
+    seq_no = IntegerField(null=True, help_text="序号")
+    category_l1 = CharField(max_length=64, null=True, default="", index=True, help_text="公开类别（一级）")
+    category_l2 = CharField(max_length=64, null=True, default="", help_text="二级公开类别")
+    matter = CharField(max_length=128, null=True, default="", index=True, help_text="公开事项")
+    disclosure_content = TextField(null=True, default="", help_text="公开内容")
+    legal_doc_title = CharField(max_length=255, null=True, default="", help_text="公开依据文件名")
+    legal_doc_url = CharField(max_length=512, null=True, default="", index=True, help_text="依据文件超链接")
+    legal_doc_clause = TextField(null=True, default="", help_text="公开依据文件条款（多条以空行分隔）")
+    disclosure_deadline = CharField(max_length=255, null=True, default="", help_text="公开时限")
+    disclosure_period = CharField(max_length=64, null=True, default="", help_text="公开期限")
+    disclosure_subject = CharField(max_length=128, null=True, default="", help_text="公开主体")
+    disclosure_duty = CharField(max_length=255, null=True, default="", help_text="公开责任")
+    disclosure_method = CharField(max_length=128, null=True, default="", help_text="公开方式")
+    disclosure_channel = CharField(max_length=255, null=True, default="", help_text="公开渠道")
+
+    class Meta:
+        db_table = "collection_zdgksxml_ext"
+
+
 def alter_db_add_column(migrator, table_name, column_name, column_type):
     try:
         migrate(migrator.add_column(table_name, column_name, column_type))
@@ -2516,6 +2542,10 @@ def migrate_db():
     if not CollectionObjectionExt.table_exists():
         CollectionObjectionExt.create_table(safe=True)
         logging.info("collection_objection_ext: table created")
+    # 重点公开事项扩展表
+    if not CollectionZdgksxmlExt.table_exists():
+        CollectionZdgksxmlExt.create_table(safe=True)
+        logging.info("collection_zdgksxml_ext: table created")
 
     logging.disable(logging.NOTSET)
     # this is after re-enabling logging to allow logging changed user emails

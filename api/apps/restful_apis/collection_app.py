@@ -61,6 +61,7 @@ CATEGORY_LABELS: Dict[str, str] = {
     "objection": "异议结果",
     "announcement": "公告",
     "tender": "招标标讯",
+    "zdgksxml": "重点公开事项",
 }
 
 
@@ -82,6 +83,7 @@ CATEGORY_LABELS: Dict[str, str] = {
     "objection": "异议结果",
     "announcement": "公告",
     "tender": "招标标讯",
+    "zdgksxml": "重点公开事项",
 }
 
 

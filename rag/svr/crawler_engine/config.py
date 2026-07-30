@@ -148,6 +148,12 @@ class ExtractConfig:
     #     url_template: "https://example.com/detail?id={ID}"
     # Useful for JSON APIs that return only an ID (no clickable link).
     url_template: str = ""
+    # ── Optional regex transform applied to the extracted url ──
+    # Runs re.sub(url_search, url_replace, url) AFTER url_template synthesis.
+    # Useful when listing API returns a summary URL but the actual content
+    # lives at a sibling path (e.g. /deal/html/a/... → /deal/html/b/...).
+    url_search: str = ""
+    url_replace: str = ""
     # ── Client-side sorting / limiting (for APIs that don't support it server-side) ──
     sort_field: str = ""           # field to sort extracted items by (e.g. "CREATE_TIME")
     sort_descending: bool = True   # sort descending (newest first)
@@ -235,6 +241,7 @@ class SiteConfig:
     category: str = "bid"           # bid|policy|personnel|news|other (for new collection system)
     bypass_date_filter: bool = False  # true: trigger/detector 不注入 date_filter=today，由站点 API 自身做日期过滤（如 inRecentDays=N）
     attachment_host: str = ""        # 当附件 fileUrl 是相对路径时（如 "/business/..."），补全此 host（含协议，无尾斜杠）
+    custom_runner: str = ""         # 当站点结构无法用 YAML 描述（如嵌套树 JSON）时，指定 Python 模块路径，unified_crawler 会调度该模块的 run()
     transport: TransportConfig = field(default_factory=TransportConfig)
     listing: ListingConfig = field(default_factory=ListingConfig)
     pagination: PaginationConfig = field(default_factory=PaginationConfig)
@@ -326,6 +333,8 @@ class ConfigLoader:
                 "bypass_date_filter", self._defaults.get("bypass_date_filter", False))),
             attachment_host=str(data.get(
                 "attachment_host", self._defaults.get("attachment_host", ""))).rstrip("/"),
+            custom_runner=str(data.get(
+                "custom_runner", self._defaults.get("custom_runner", ""))).strip(),
             transport=self._parse_transport(data.get("transport", {})),
             listing=self._parse_listing(data.get("listing", {})),
             pagination=self._parse_pagination(data.get("pagination", {})),
@@ -413,6 +422,8 @@ class ConfigLoader:
             ai_fallback=data.get("ai_fallback", True),
             ai_prompt=data.get("ai_prompt", ""),
             url_template=data.get("url_template", ""),
+            url_search=data.get("url_search", ""),
+            url_replace=data.get("url_replace", ""),
             sort_field=data.get("sort_field", ""),
             sort_descending=data.get("sort_descending", True),
             max_items=data.get("max_items", 0),

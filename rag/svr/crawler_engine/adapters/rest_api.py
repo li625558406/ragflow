@@ -165,9 +165,16 @@ class RestApiAdapter(BaseAdapter):
                     try:
                         data = resp.json()
                     except Exception:
-                        # Not valid JSON despite looking like it — fall through to HTML
-                        self._last_raw = text
-                        return self._parse_html_response(text)
+                        # resp.json() uses strict parsing; many government CMS
+                        # APIs (e.g. TRS/WAS5) return JSON with unescaped control
+                        # chars inside string values (literal \n in content HTML).
+                        # Fall back to lenient parsing before giving up.
+                        try:
+                            data = json.loads(text, strict=False)
+                        except Exception:
+                            # Still invalid JSON — fall through to HTML
+                            self._last_raw = text
+                            return self._parse_html_response(text)
                     self._last_raw = data
                     return self._parse_json_response(data)
                 else:
@@ -309,7 +316,12 @@ class RestApiAdapter(BaseAdapter):
 
                     # Extract content from JSON response using content_field
                     try:
-                        data = resp.json()
+                        try:
+                            data = resp.json()
+                        except Exception:
+                            # Lenient fallback for gov CMS APIs that emit
+                            # unescaped control chars in string values.
+                            data = json.loads(resp.text, strict=False)
                         cf = detail_cfg.content_field
                         content = _get_json_value(data, cf) if cf else ""
                         # Fallback: tab-based responses (xmzyjy pattern)

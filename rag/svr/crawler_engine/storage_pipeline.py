@@ -113,6 +113,9 @@ class StoragePipeline:
         if not self._skip_kb and (has_content or has_title) and project_id:
             doc_id = self._upload_content_to_kb(item)
             result["doc_id"] = doc_id
+            # Write kb_doc_id back to crawler_result row (collection mode)
+            if doc_id and self._writer_mode == "collection":
+                self._update_result_kb_doc(project_id, doc_id)
         elif not (has_content or has_title):
             logging.debug("StoragePipeline: skipping KB upload for '%s' (no content and no title)",
                          item.title[:60])
@@ -220,6 +223,17 @@ class StoragePipeline:
     # ------------------------------------------------------------------
     # Internal: KB content upload
     # ------------------------------------------------------------------
+
+    def _update_result_kb_doc(self, result_id: str, doc_id: str) -> None:
+        """Update crawler_result row with kb_doc_id after successful KB upload."""
+        try:
+            from api.db.services.crawler_service import CrawlerResultService
+            CrawlerResultService.update_by_id(result_id, {
+                "kb_doc_id": doc_id,
+                "status": "done",
+            })
+        except Exception as e:
+            logging.warning("StoragePipeline: update kb_doc failed for %s: %s", result_id, e)
 
     def _upload_content_to_kb(self, item: NormalizedItem) -> Optional[str]:
         """Upload item content to KB as markdown."""
