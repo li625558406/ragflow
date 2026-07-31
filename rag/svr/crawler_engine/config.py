@@ -202,6 +202,14 @@ class DetailConfig:
     transport: Optional["TransportConfig"] = None  # override transport for detail (e.g. spa_render)
     metadata_js: str = ""           # JS to extract structured metadata dict from rendered detail page
     content_endpoint: Optional[ContentEndpointConfig] = None  # optional 2nd call for HTML body + annexes
+    file_url_template: str = ""    # 从文件 ID 构建下载 URL，如 "https://...?linkId={id}"
+    # ── 通用元数据提取（css_selector detail 路径，无需 Playwright）──
+    metadata_css: Dict[str, str] = field(default_factory=dict)
+    # {field_name: css_selector} — 简单选择器提取，例 {"publish_datetime": "span.dna"}
+    metadata_table_selector: str = ""
+    # 键值对表格选择器（如 "table.tska"），遍历 tr→td 配对提取
+    metadata_table_mapping: Dict[str, str] = field(default_factory=dict)
+    # {中文标签: 英文字段名}，例 {"发文机构": "issuing_authority"}
 
 
 @dataclass
@@ -448,6 +456,10 @@ class ConfigLoader:
             transport=self._parse_transport(transport) if transport else None,
             metadata_js=data.get("metadata_js", ""),
             content_endpoint=self._parse_content_endpoint(data.get("content_endpoint")),
+            file_url_template=data.get("file_url_template", ""),
+            metadata_css=data.get("metadata_css", {}),
+            metadata_table_selector=data.get("metadata_table_selector", ""),
+            metadata_table_mapping=data.get("metadata_table_mapping", {}),
         )
 
     def _parse_content_endpoint(self, data: dict) -> Optional[ContentEndpointConfig]:

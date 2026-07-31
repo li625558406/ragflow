@@ -362,7 +362,13 @@ class CrawlerEngine:
             else:
                 listing_cfg = parent_listing
             sp = section.pagination
-            pag_cfg = sp if (sp and sp.type != parent_pagination.type) else parent_pagination
+            # Use section pagination when type differs OR items_field differs
+            # (e.g. jrkb section: same single_page type but items_field="data"
+            # vs parent's "result.records" — must override to parse correctly).
+            pag_cfg = sp if (sp and (
+                sp.type != parent_pagination.type
+                or (sp.items_field and sp.items_field != parent_pagination.items_field)
+            )) else parent_pagination
             se = section.extract
             extract_cfg = se if (se and se.fields and se.items_path) else parent_extract
             sd = section.detail
@@ -383,6 +389,14 @@ class CrawlerEngine:
         if pag_cfg is not parent_pagination:
             paginator = PaginatorFactory.create(pag_cfg)
 
+        # When a section uses a different items_field (e.g. jrkb "data" vs
+        # parent "result.records"), inject it into page_params so the adapter
+        # parses the JSON response with the correct path.
+        _items_field_ovr = ""
+        if pag_cfg is not parent_pagination and pag_cfg.items_field and \
+                pag_cfg.items_field != parent_pagination.items_field:
+            _items_field_ovr = pag_cfg.items_field
+
         # Create section-specific extractor
         section_extractor = ExtractorFactory.create(extract_cfg) if extract_cfg else None
 
@@ -401,6 +415,8 @@ class CrawlerEngine:
         if first_params is None:
             return {"status": "empty", "new_items": 0}
 
+        if _items_field_ovr:
+            first_params["_items_field_override"] = _items_field_ovr
         items = self._adapter.fetch_items(first_params, listing_override=listing_cfg)
         if not items:
             logging.warning("Engine: [CRAWL] no data on first page, stopping.")
@@ -436,6 +452,8 @@ class CrawlerEngine:
                 if page_params is None:
                     break
                 anti_crawler.delay()
+                if _items_field_ovr:
+                    page_params["_items_field_override"] = _items_field_ovr
                 items = self._adapter.fetch_items(page_params, listing_override=listing_cfg)
                 if not items:
                     logging.info("Engine: [CRAWL] page %d empty, stopping.", page)

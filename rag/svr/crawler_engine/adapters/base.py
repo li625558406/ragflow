@@ -154,6 +154,35 @@ class BaseAdapter(ABC):
                     item["content"] = self._strip_and_extract(soup)
 
                 item["detail_html"] = resp.text
+
+                # ── 通用元数据提取（metadata_css + metadata_table）──
+                if detail_cfg.metadata_css:
+                    for field_name, selector in detail_cfg.metadata_css.items():
+                        try:
+                            el = soup.select_one(selector)
+                            if el:
+                                val = el.get_text(strip=True)
+                                if val:
+                                    item[field_name] = val
+                        except Exception as e:
+                            logging.warning("BaseAdapter: metadata_css '%s' failed: %s", selector, e)
+
+                if detail_cfg.metadata_table_selector and detail_cfg.metadata_table_mapping:
+                    try:
+                        table = soup.select_one(detail_cfg.metadata_table_selector)
+                        if table:
+                            for row in table.find_all("tr"):
+                                cells = row.find_all("td")
+                                for i in range(0, len(cells) - 1, 2):
+                                    key = cells[i].get_text(strip=True).rstrip("：:")
+                                    val = cells[i + 1].get_text(strip=True)
+                                    en_key = detail_cfg.metadata_table_mapping.get(key)
+                                    if en_key and val:
+                                        item[en_key] = val
+                    except Exception as e:
+                        logging.warning("BaseAdapter: metadata_table '%s' failed: %s",
+                                        detail_cfg.metadata_table_selector, e)
+
                 return item
 
             except Exception as e:

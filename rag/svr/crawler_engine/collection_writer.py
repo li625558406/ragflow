@@ -45,7 +45,7 @@ except ImportError:
 
 
 # 合法的 category 值
-VALID_CATEGORIES = ("bid", "policy", "personnel", "news", "other", "objection", "announcement", "tender", "zdgksxml", "漳州市人民政府-解读回应")
+VALID_CATEGORIES = ("bid", "policy", "personnel", "news", "other", "objection", "announcement", "tender", "zdgksxml", "漳州市人民政府-解读回应", "国家文物局-政务公开", "福建省文物局-政务公开")
 
 
 def gen_result_id(site_id: str, source_url: str) -> str:
@@ -213,6 +213,8 @@ class CollectionWriter:
             self._write_objection_ext(result_id, item)
         elif category == "zdgksxml":
             self._write_zdgksxml_ext(result_id, item)
+        elif category == "国家文物局-政务公开":
+            self._write_policy_ext(result_id, item)
 
         return result_id
 
@@ -338,14 +340,14 @@ class CollectionWriter:
         # 字段映射：YAML extract.fields 映射的目标 key（标准名）+ 原始字段兜底
         fields = {
             "doc_number": self._first_of(item, "doc_number", "wenhao", "documentNumber",
-                                         "document_number", "fwh"),
+                                         "document_number", "fwh", "article_no"),
             "issuing_authority": self._first_of(item, "issuing_authority", "fawenjigou",
                                                 "issuer", "publishOrg", "SOURCES",
-                                                "source_org"),
+                                                "source_org", "agency"),
             "authority_level": self._first_of(item, "authority_level", "xiaoli",
                                               "effectLevel", "level"),
             "topic_category": self._first_of(item, "topic_category", "category",
-                                             "topic", "zhuti"),
+                                             "topic", "zhuti", "typename"),
             "effective_date": self._parse_date(self._first_of(
                 item, "effective_date", "implementation_date", "effectiveDate")),
             "expiry_date": self._parse_date(self._first_of(

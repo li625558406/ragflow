@@ -114,6 +114,8 @@ class RestApiAdapter(BaseAdapter):
 
         # Handle html_regex pagination: _page_url_suffix overrides the URL path
         url_suffix = page_params.pop("_page_url_suffix", "")
+        # Section-level items_field override (e.g. jrkb "data" vs parent "result.records")
+        self._items_field_override = page_params.pop("_items_field_override", "")
         if url_suffix:
             from urllib.parse import urlparse, urljoin
             parsed = urlparse(url)
@@ -200,12 +202,22 @@ class RestApiAdapter(BaseAdapter):
         if isinstance(data, list):
             items = data
         elif isinstance(data, dict):
-            items_field = self._config.pagination.items_field
+            items_field = getattr(self, "_items_field_override", "") or \
+                self._config.pagination.items_field
             if items_field:
                 # Support dot notation: "custom.infodata" → data["custom"]["infodata"]
                 val = self._get_nested(data, items_field)
+                # Handle double-encoded JSON: some sites (e.g. Putian todaykaib.json)
+                # return a JSON string that needs secondary parsing
+                if isinstance(val, str) and val.strip()[:1] in ("{", "["):
+                    try:
+                        val = json.loads(val)
+                    except (json.JSONDecodeError, ValueError):
+                        pass
                 if isinstance(val, list):
                     items = val
+                elif isinstance(val, dict):
+                    items = self._fallback_find_list(val)
                 else:
                     items = self._fallback_find_list(data)
             else:
@@ -364,6 +376,14 @@ class RestApiAdapter(BaseAdapter):
                                 collected.extend([f for f in raw if isinstance(f, dict)])
                             elif isinstance(raw, dict):
                                 collected.append(raw)
+                        # Apply file_url_template: construct download URL for files that only have an ID
+                        if detail_cfg.file_url_template and collected:
+                            for f in collected:
+                                has_url = any(f.get(k) for k in ("file_url", "fileUrl", "url", "downloadUrl", "attUrl", "_href"))
+                                if not has_url:
+                                    file_id = f.get("id") or f.get("fileId") or f.get("file_id") or ""
+                                    if file_id:
+                                        f["file_url"] = detail_cfg.file_url_template.replace("{id}", str(file_id))
                         if collected:
                             existing = result.get("files")
                             if isinstance(existing, list):

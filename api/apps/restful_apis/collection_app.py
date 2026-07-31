@@ -51,6 +51,11 @@ from common.time_utils import current_timestamp
 
 manager = Blueprint("rest_collection_app", __name__)
 
+# 全局共享租户标识 — 采集数据对所有登录用户可见，不按用户隔离。
+# 探测器 Redis state key 和 crawler_task 均使用此固定值，
+# 保证任何用户登录都能看到相同的采集结果 / 任务列表 / 探测监控。
+_SHARED_TENANT = "system"
+
 # category 英文 code → 中文展示名（英文 code 保留用于 DB 过滤/统计）
 CATEGORY_LABELS: Dict[str, str] = {
     "bid": "标讯",
@@ -62,6 +67,8 @@ CATEGORY_LABELS: Dict[str, str] = {
     "announcement": "公告",
     "tender": "招标标讯",
     "zdgksxml": "重点公开事项",
+    "国家文物局-政务公开": "国家文物局-政务公开",
+    "福建省文物局-政务公开": "福建省文物局-政务公开",
 }
 
 
@@ -84,6 +91,8 @@ CATEGORY_LABELS: Dict[str, str] = {
     "announcement": "公告",
     "tender": "招标标讯",
     "zdgksxml": "重点公开事项",
+    "国家文物局-政务公开": "国家文物局-政务公开",
+    "福建省文物局-政务公开": "福建省文物局-政务公开",
 }
 
 
@@ -476,8 +485,7 @@ async def list_scheduled():
             ScheduledTaskService.model
             .select()
             .where(
-                (ScheduledTaskService.model.tenant_id == current_user.id)
-                & (ScheduledTaskService.model.script_path == _UNIFIED_CRAWLER_SCRIPT)
+                (ScheduledTaskService.model.script_path == _UNIFIED_CRAWLER_SCRIPT)
                 & (ScheduledTaskService.model.script_args ** '%"writer": "collection"%')
             )
         )
@@ -506,7 +514,7 @@ async def list_scheduled():
 async def delete_scheduled(task_id: str):
     """删除定时采集任务。"""
     ok, task = ScheduledTaskService.get_by_id(task_id)
-    if not ok or task.tenant_id != current_user.id:
+    if not ok:
         return get_data_error_result(message="task not found")
     ScheduledTaskService.delete_by_id(task_id)
     return get_json_result(data={"id": task_id})
@@ -539,7 +547,7 @@ async def list_results():
 
     @DB.connection_context()
     def _query() -> Dict[str, Any]:
-        q = CrawlerResult.select().where(CrawlerResult.tenant_id == current_user.id)
+        q = CrawlerResult.select()
         if category:
             q = q.where(CrawlerResult.category == category)
         if site_id:
@@ -587,12 +595,14 @@ async def list_results():
                 it["site_display"] = f"{it['site_name']} {it['site_domain']}".strip()
 
         # 批量补充扩展字段
-        if with_ext and category in ("policy", "personnel", "objection") and items:
+        if with_ext and category in ("policy", "personnel", "objection", "国家文物局-政务公开") and items:
             result_ids = [it["id"] for it in items]
             if category == "policy":
                 ext_map = CollectionPolicyExtService.get_by_result_ids(result_ids)
             elif category == "personnel":
                 ext_map = CollectionPersonnelExtService.get_by_result_ids(result_ids)
+            elif category == "国家文物局-政务公开":
+                ext_map = CollectionPolicyExtService.get_by_result_ids(result_ids)
             else:  # objection
                 ext_map = CollectionObjectionExtService.get_by_result_ids(result_ids)
             for it in items:
@@ -615,10 +625,7 @@ async def get_result(result_id: str):
         row = (
             CrawlerResult
             .select()
-            .where(
-                (CrawlerResult.id == result_id)
-                & (CrawlerResult.tenant_id == current_user.id)
-            )
+            .where(CrawlerResult.id == result_id)
             .first()
         )
         if not row:
@@ -652,6 +659,9 @@ async def get_result(result_id: str):
         elif category == "objection":
             ext = CollectionObjectionExtService.get_by_result_ids([result_id])
             d["ext"] = ext.get(result_id, {})
+        elif category == "国家文物局-政务公开":
+            ext = CollectionPolicyExtService.get_by_result_ids([result_id])
+            d["ext"] = ext.get(result_id, {})
         else:
             d["ext"] = {}
         d["category_label"] = _category_label(d.get("category", ""))
@@ -675,7 +685,6 @@ async def collection_stats():
         rows = (
             CrawlerResult
             .select(CrawlerResult.category, fn.COUNT(CrawlerResult.id).alias("count"))
-            .where(CrawlerResult.tenant_id == current_user.id)
             .group_by(CrawlerResult.category)
         )
         return [{"category": r.category or "",
@@ -832,7 +841,7 @@ async def detect_list_state():
             continue
         if category and meta["category"] != category:
             continue
-        st = _detect_state(current_user.id, sid)
+        st = _detect_state(_SHARED_TENANT, sid)
         next_run_at = int(st.get("next_run_at") or 0)
         last_check = int(st.get("last_check") or 0)
 
@@ -902,7 +911,7 @@ async def detect_reset():
 
     base = site_map[site_id]["detect_min_interval"] or site_map[site_id]["detect_interval"]
     now = int(time.time())
-    st = _detect_state(current_user.id, site_id)
+    st = _detect_state(_SHARED_TENANT, site_id)
     st.update({
         "miss_count": 0,
         "cur_interval": base,
@@ -912,7 +921,7 @@ async def detect_reset():
         "manual_disabled": False,
         "reset_at": now,
     })
-    ok = _detect_save(current_user.id, site_id, st)
+    ok = _detect_save(_SHARED_TENANT, site_id, st)
     return get_json_result(data={"site_id": site_id, "reset": ok,
                                  "next_interval": base})
 
@@ -929,10 +938,10 @@ async def detect_disable():
     if not site_id:
         return get_data_error_result(message="site_id is required")
 
-    st = _detect_state(current_user.id, site_id)
+    st = _detect_state(_SHARED_TENANT, site_id)
     st["manual_disabled"] = True
     st["auto_disabled"] = False
-    ok = _detect_save(current_user.id, site_id, st)
+    ok = _detect_save(_SHARED_TENANT, site_id, st)
     return get_json_result(data={"site_id": site_id, "disabled": ok})
 
 
@@ -948,12 +957,12 @@ async def detect_enable():
     if not site_id:
         return get_data_error_result(message="site_id is required")
 
-    st = _detect_state(current_user.id, site_id)
+    st = _detect_state(_SHARED_TENANT, site_id)
     st["manual_disabled"] = False
     st["auto_disabled"] = False
     st["consecutive_errors"] = 0
     st["next_run_at"] = int(time.time())
-    ok = _detect_save(current_user.id, site_id, st)
+    ok = _detect_save(_SHARED_TENANT, site_id, st)
     return get_json_result(data={"site_id": site_id, "enabled": ok})
 
 
@@ -973,7 +982,7 @@ async def detect_trigger():
     if rc is None:
         return get_data_error_result(message="Redis not available")
     try:
-        rc.set(_DETECT_FORCE_KEY.format(tenant=current_user.id, site=site_id),
+        rc.set(_DETECT_FORCE_KEY.format(tenant=_SHARED_TENANT, site=site_id),
                "1", exp=300)
     except Exception as e:
         return get_data_error_result(message=f"set force flag failed: {e}")
@@ -1000,7 +1009,7 @@ async def detect_stats():
     for sid in site_map:
         if active_ids is not None and sid not in active_ids:
             continue
-        st = _detect_state(current_user.id, sid)
+        st = _detect_state(_SHARED_TENANT, sid)
         if st.get("auto_disabled"):
             counts["auto_disabled"] += 1
             continue
@@ -1071,8 +1080,7 @@ async def detect_activity():
                 peewee.fn.MAX(CrawlerResult.crawled_at).alias("last_at"),
             )
             .where(
-                (CrawlerResult.tenant_id == current_user.id)
-                & (CrawlerResult.crawled_at.is_null(False))
+                (CrawlerResult.crawled_at.is_null(False))
                 & (CrawlerResult.crawled_at >= since_ms)
             )
             .group_by(CrawlerResult.site_id)
@@ -1110,8 +1118,7 @@ async def detect_activity():
                     peewee.fn.MAX(CrawlerResult.id).alias("max_id"),
                 )
                 .where(
-                    (CrawlerResult.tenant_id == current_user.id)
-                    & (CrawlerResult.site_id.in_(site_ids))
+                    (CrawlerResult.site_id.in_(site_ids))
                     & (CrawlerResult.crawled_at.is_null(False))
                     & (CrawlerResult.crawled_at >= since_ms)
                 )
@@ -1159,7 +1166,7 @@ async def detect_install():
     try:
         from rag.svr.crawler_engine.register_detector_task import ensure_detector_task
         row = ensure_detector_task(
-            tenant_id=current_user.id,
+            tenant_id=_SHARED_TENANT,
             interval_seconds=interval_seconds,
             enabled=True,
         )

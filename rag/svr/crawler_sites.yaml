@@ -1093,6 +1093,89 @@ sites:
       upload_batch_size: 10
 
   # --------------------------------------------------------------------------
+  # ncha_zwgk — 国家文物局-政务公开 (POST search form → HTML)
+  # Old script: ncha_crawler.py
+  # --------------------------------------------------------------------------
+  ncha_zwgk:
+    name: "国家文物局-政务公开"
+    site_url: "http://www.ncha.gov.cn"
+    category: "国家文物局-政务公开"
+    enabled: true
+    detect_enabled: true
+    detect_interval: 600
+    detect_max_interval: 3600
+
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        Referer: "http://www.ncha.gov.cn/col/col2445/index.html"
+      verify_ssl: true
+      timeout: 30
+
+    session_init_url: "http://www.ncha.gov.cn/"
+
+    listing:
+      url: "http://www.ncha.gov.cn/module/search/index.jsp"
+      method: POST
+      body_type: form
+      params:
+        vc_name: ""
+        field_908: ""
+        field_855: ""
+        field_856: ""
+        field_857: ""
+        field_858: ""
+        c_createtime_start: ""
+        c_createtime_end: ""
+        i_columnid: "style_10"
+        field: "vc_name:1,c_createtime:3,field_855:1,field_856:12,field_857:7,field_858:1,field_908:1"
+        fullpath: "0"
+        splitflag: ""
+        currentplace: ""
+        currpage: "{{ page }}"
+
+    pagination:
+      type: page_no
+      page_param: currpage
+      page_size: 25
+      start_page: 1
+      max_pages: 1
+
+    extract:
+      type: css_selector
+      items_path: "li"
+      fields:
+        title: "a@title"
+        url: "a@href"
+        date: "b"
+
+    detail:
+      type: css_selector
+      content_field: ".scroll_cont"
+      metadata_css:
+        title: "h1"
+        publish_datetime: "span.dna"
+      metadata_table_selector: "table.tska"
+      metadata_table_mapping:
+        "发文机构": "issuing_authority"
+        "信息分类": "topic_category"
+        "发文字号": "doc_number"
+        "成文日期": "effective_date"
+        "发布日期": "publish_datetime"
+        "标题": "detail_title"
+
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.5
+      max_retries: 3
+
+    format:
+      parser_id: "naive"
+      upload_batch_size: 10
+
+  # --------------------------------------------------------------------------
   # slbgb — 水利部公报 (HTML scraping)
   # Old script: slbgb_crawler.py
   # --------------------------------------------------------------------------
@@ -1932,6 +2015,243 @@ sites:
         pagination:
           type: single_page
 
+  # =========================================================================
+  # 莆田市公共资源交易中心-服务中心 (智能采集 collection 模式)
+  # 12 个分类栏目 via getFullTextDataNew ES API + 1 个今日开标 JSON
+  # 参考: etrading 站点 (同 Epoint/Newpoint inteligentsearch API)
+  # 老脚本: putian_fwzx_crawler.py (字段映射/选择器)
+  # =========================================================================
+  putian_ggzyjy_fwzx:
+    name: "莆田市公共资源交易中心-服务中心"
+    site_url: "http://ggzyjy.xzfwzx.putian.gov.cn"
+    enabled: true
+    category: bid
+    detect_interval: 600
+    detect_max_interval: 3600
+    detect_quiet_hours: "0-7"
+    transport:
+      type: rest_api
+      engine: requests
+      verify_ssl: false
+      timeout: 60
+      headers:
+        Content-Type: "application/json; charset=utf-8"
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        Referer: "http://ggzyjy.xzfwzx.putian.gov.cn/fwzx/"
+    listing:
+      url: "http://ggzyjy.xzfwzx.putian.gov.cn/inteligentsearch/rest/esinteligentsearch/getFullTextDataNew"
+      method: POST
+      body_type: json
+      params:
+        esdsid: "1"
+        token: ""
+        pn: 0
+        rn: 50
+        sdt: ""
+        edt: ""
+        wd: " "
+        inc_wd: ""
+        exc_wd: ""
+        fields: "title"
+        cnum: "001"
+        sort: '{"istop":"0","ordernum":"0","webdate":"0"}'
+        ssort: "title"
+        cl: 1000
+        cutIngore: "title;linkurl"
+        terminal: ""
+        condition:
+          - fieldName: "categorynum"
+            equal: "005001006"
+            notEqual: null
+            equalList: null
+            notEqualList: null
+            isLike: true
+            likeType: 2
+        time: []
+        highlights: "title"
+        statistics: null
+        unionCondition: null
+        accuracy: ""
+        noParticiple: "1"
+        searchRange: []
+        isBusiness: "1"
+    pagination:
+      type: single_page
+      items_field: "result.records"
+    extract:
+      type: json_path
+      items_path: "result.records"
+      fields:
+        title: "title"
+        url: "linkurl"
+        date: "webdate"
+        id: "infoid"
+    detail:
+      type: css_selector
+      url: "http://ggzyjy.xzfwzx.putian.gov.cn{url}"
+      content_field: ".ewb-article, .article-content, .detail-content, .TRS_Editor"
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.5
+      max_retries: 3
+      max_consecutive_empty: 3
+    format:
+      parser_id: "naive"
+      upload_batch_size: 10
+      template: |
+        # {{ title }}
+        **发布日期:** {{ date }}
+        **来源:** 莆田市公共资源交易中心
+        **原文链接:** {{ source_url }}
+        {{ content }}
+    sections:
+      # === 工程交易 (5个) ===
+      - label: "zbjh"
+        name: "莆田市-工程交易-招标计划"
+        listing:
+          method: POST
+          body_type: json
+          params:
+            condition:
+              - fieldName: "categorynum"
+                equal: "005001021"
+                isLike: true
+                likeType: 2
+      - label: "zbysgs"
+        name: "莆田市-工程交易-招标文件预公示"
+        listing:
+          method: POST
+          body_type: json
+          params:
+            condition:
+              - fieldName: "categorynum"
+                equal: "005001022"
+                isLike: true
+                likeType: 2
+      - label: "zbxx"
+        name: "莆田市-工程交易-招标信息"
+        listing:
+          method: POST
+          body_type: json
+          params:
+            condition:
+              - fieldName: "categorynum"
+                equal: "005001006"
+                isLike: true
+                likeType: 2
+      - label: "zbhxrgs"
+        name: "莆田市-工程交易-中标候选人公示"
+        listing:
+          method: POST
+          body_type: json
+          params:
+            condition:
+              - fieldName: "categorynum"
+                equal: "005001012"
+                isLike: true
+                likeType: 2
+      - label: "zbjg"
+        name: "莆田市-工程交易-中标结果公示"
+        listing:
+          method: POST
+          body_type: json
+          params:
+            condition:
+              - fieldName: "categorynum"
+                equal: "005001011"
+                isLike: true
+                likeType: 2
+      # === 政府采购 (2个) ===
+      - label: "cggg"
+        name: "莆田市-政府采购-采购公告"
+        listing:
+          method: POST
+          body_type: json
+          params:
+            condition:
+              - fieldName: "categorynum"
+                equal: "005002003"
+                isLike: true
+                likeType: 2
+      - label: "cgzbjg"
+        name: "莆田市-政府采购-中标（成交）结果公告"
+        listing:
+          method: POST
+          body_type: json
+          params:
+            condition:
+              - fieldName: "categorynum"
+                equal: "005002005"
+                isLike: true
+                likeType: 2
+      # === 国土资源 (2个) ===
+      - label: "gtjyxx"
+        name: "莆田市-国土资源-交易信息"
+        listing:
+          method: POST
+          body_type: json
+          params:
+            condition:
+              - fieldName: "categorynum"
+                equal: "005003003"
+                isLike: true
+                likeType: 2
+      - label: "gtcjgs"
+        name: "莆田市-国土资源-出让结果公示"
+        listing:
+          method: POST
+          body_type: json
+          params:
+            condition:
+              - fieldName: "categorynum"
+                equal: "005003004"
+                isLike: true
+                likeType: 2
+      # === 产权交易 (2个) ===
+      - label: "cqjyxx"
+        name: "莆田市-产权交易-交易信息"
+        listing:
+          method: POST
+          body_type: json
+          params:
+            condition:
+              - fieldName: "categorynum"
+                equal: "005004006"
+                isLike: true
+                likeType: 2
+      - label: "cqjggs"
+        name: "莆田市-产权交易-交易结果公示"
+        listing:
+          method: POST
+          body_type: json
+          params:
+            condition:
+              - fieldName: "categorynum"
+                equal: "005004007"
+                isLike: true
+                likeType: 2
+      # === 今日开标 (1个，不同数据源) ===
+      - label: "jrkb"
+        name: "莆田市-今日开标"
+        listing:
+          url: "http://ggzyjy.xzfwzx.putian.gov.cn/json/todaykaib.json"
+          method: GET
+          body: {}
+        pagination:
+          type: single_page
+          items_field: "data"
+        extract:
+          type: json_path
+          items_path: "data"
+          fields:
+            title: "projectname"
+            url: "projectguid"
+            date: "showkaibiao"
+            id: "projectguid"
+            news_type: "projecttype"
+        detail:
+          type: none
+
   quanzhou:
     name: "泉州市公共资源交易中心-工程交易"
     site_url: "https://ggzyjy.quanzhou.gov.cn/"
@@ -2050,8 +2370,11 @@ sites:
 
   quanzhou_zcfg:
     name: "泉州市公共资源交易中心-政策法规"
-    site_url: "https://ggzyjy.quanzhou.gov.cn/"
-    enabled: true  # fixed: title field was "title", API returns "newsTitle"
+    site_url: "http://ggzyjy.quanzhou.gov.cn/"
+    category: policy
+    enabled: true
+    detect_enabled: true
+    detect_interval: 300
     transport:
       type: rest_api
       engine: urllib
@@ -2062,12 +2385,12 @@ sites:
       verify_ssl: false
       timeout: 30
     listing:
-      url: "https://ggzyjy.quanzhou.gov.cn/articleList/getZcfgList.do"
+      url: "http://ggzyjy.quanzhou.gov.cn/articleList/getZcfgList.do"
       method: POST
       body_type: json
       params:
         pageIndex: "{{ page }}"
-        pageSize: "10"
+        pageSize: "15"
         major_id: 0
         type: 1
         keyword: ""
@@ -2075,10 +2398,10 @@ sites:
       type: page_no
       page_param: "pageIndex"
       page_size_param: "pageSize"
-      page_size: 10
+      page_size: 15
       start: 1
       max_pages: 50
-      total_field: "data.totalRecord"
+      total_field: "data.totalPage"
       items_field: "data.dataList"
     anti_crawler:
       delay_min: 0.3
@@ -2087,17 +2410,18 @@ sites:
     extract:
       type: json_path
       items_path: "data.dataList"
+      url_template: "http://ggzyjy.quanzhou.gov.cn/articleList/ZcfgDetail.do?newsId={newsId}"
       fields:
         id: "newsId"
         title: "newsTitle"
         date: "pubDate"
     detail:
       type: api_request
-      url: "https://ggzyjy.quanzhou.gov.cn/articleList/getZcfgDetail.do"
+      url: "http://ggzyjy.quanzhou.gov.cn/articleList/getZcfgDetail.do"
       method: POST
       body_type: json
       params:
-        newsId: "{{ newsId }}"
+        newsId: "{newsId}"
       content_field: "data.content"
     format:
       parser_id: "naive"
@@ -2664,12 +2988,14 @@ sites:
             noticeType: "61"
 
   # --------------------------------------------------------------------------
-  # hwdms_policy — 华为DMS政策
+  # hwdms_policy — 全国公路建设市场监督管理系统 政策法规
   # Old script: hwdms_policy_crawler.py
+  # 反爬等级: 🟢 一级 (rest_api 基础, 无WAF/验证码, Session-based JSESSIONID)
   # --------------------------------------------------------------------------
   hwdms_policy:
-    name: "交通运输行业标准-政策法规"
+    name: "全国公路建设市场监督管理系统 -政策法规"
     site_url: "https://hwdms.mot.gov.cn/"
+    category: policy
     enabled: true
     transport:
       type: rest_api
@@ -2680,7 +3006,7 @@ sites:
         Content-Type: "application/x-www-form-urlencoded"
       verify_ssl: false
       timeout: 60
-      session_init_url: "https://hwdms.mot.gov.cn/BMWebSite/Policy/index.do"
+      session_init_url: "https://hwdms.mot.gov.cn/BMWebSite/Policy/index.do?type=0"
     listing:
       url: "https://hwdms.mot.gov.cn/BMWebSite/Policy/getPolicyList.do"
       method: POST
@@ -2696,7 +3022,7 @@ sites:
       page_size_param: "rows"
       page_size: 15
       start: 1
-      max_pages: 50
+      max_pages: 1
       total_field: "pageObj.countSize"
       items_field: "rows"
     anti_crawler:
@@ -2706,13 +3032,24 @@ sites:
     extract:
       type: json_path
       items_path: "rows"
+      url_template: "https://hwdms.mot.gov.cn/BMWebSite/Policy/info.do?id={id}"
       fields:
         id: "id"
         title: "name"
         date: "dispatchTime"
         content_html: "content"
+        doc_number: "dispatchNumber"
+        issuing_authority: "recordUnit"
+        topic_category: "dispatchType"
     detail:
-      type: inline
+      type: api_request
+      url: "https://hwdms.mot.gov.cn/BMWebSite/Policy/getPolicy.do?id={id}"
+      method: POST
+      body_type: query
+      content_field: "data.content"
+      attachment_fields:
+        - "data.fileList"
+      file_url_template: "https://hwdms.mot.gov.cn/otcredit-webapp/rest/companyfile/BMWebSiteDownload?linkId={id}"
     format:
       parser_id: "naive"
       upload_batch_size: 10
@@ -2774,6 +3111,9 @@ sites:
     name: "福建省招标投标协会-违法违规公告"
     site_url: "http://www.fjtba.com/"
     enabled: true
+    category: other
+    detect_enabled: true
+    detect_interval: 600
     transport:
       type: rest_api
       engine: urllib
@@ -2800,7 +3140,9 @@ sites:
       page_size_param: "pageSize"
       page_size: 10
       start: 1
-      max_pages: 100
+      max_pages: 1
+      items_field: "ds.ds"
+      total_field: "count"
     anti_crawler:
       delay_min: 0.2
       delay_max: 0.8
@@ -2812,17 +3154,24 @@ sites:
         id: "ID"
         title: "TITLE"
         date: "TM"
-        content_html: "CONTENTS"
+        content: "CONTENTS"
+      url_template: "http://www.fjtba.com/PortalPage/ISDInfoDetail.aspx?type=3&id={ID}"
     detail:
       type: inline
     format:
       parser_id: "naive"
       upload_batch_size: 10
+    sections:
+      - label: "wfwg"
+        name: "福建省招标投标协会-违法违规公告"
 
   fjtba_pxzx:
     name: "福建省招标投标协会-培训与咨询"
     site_url: "http://www.fjtba.com/"
     enabled: true
+    category: other
+    detect_enabled: true
+    detect_interval: 600
     transport:
       type: rest_api
       engine: urllib
@@ -2843,13 +3192,16 @@ sites:
         type: "7"
         pageNo: "{{ page }}"
         pageSize: "10"
+        lawType: "1"
     pagination:
       type: page_no
       page_param: "pageNo"
       page_size_param: "pageSize"
       page_size: 10
       start: 1
-      max_pages: 100
+      max_pages: 1
+      items_field: "ds.ds"
+      total_field: "count"
     anti_crawler:
       delay_min: 0.2
       delay_max: 0.8
@@ -2861,12 +3213,16 @@ sites:
         id: "ID"
         title: "TITLE"
         date: "TM"
-        content_html: "CONTENTS"
+        content: "CONTENTS"
+      url_template: "http://www.fjtba.com/PortalPage/ISDInfoDetail.aspx?type=7&id={ID}"
     detail:
       type: inline
     format:
       parser_id: "naive"
       upload_batch_size: 10
+    sections:
+      - label: "pxzx"
+        name: "福建省招标投标协会-培训与咨询"
 
   fjcia_edu:
     name: "福建省建筑业协会-教育培训"
@@ -9043,3 +9399,345 @@ sites:
     format:
       parser_id: "naive"
       upload_batch_size: 10
+
+  # --------------------------------------------------------------------------
+  # fujian_wwj_zwgk — 福建省文物局 · 政务公开（4 栏目聚合）
+  # Source: http://wwj.wlt.fujian.gov.cn/zwgk/
+  #   通知公告(tzgg) / 政策法规(zcfg) / 行政权力运行(xzqlyx) /
+  #   政府信息公开专栏(zfxxgkzl)
+  # CMS: TRS CMS（服务端渲染 HTML，与福建省发改委同模板）
+  # 列表: div.list_base > ul > li > a[href$=".htm"] + span(日期)
+  # 详情: .article_title(标题) + .article_time(来源/日期) + .TRS_Editor(正文)
+  #       + .article_attachment(附件，可能为空)
+  # 反爬: 无（标准政府站，常规 UA + Referer 即可，一级）
+  # 分页: JavaScript 客户端分页，但只取第一页，无影响
+  # URL: 相对路径 ./YYYYMM/tYYYYMMDD_ID.htm，框架自动 urljoin
+  # --------------------------------------------------------------------------
+  fujian_wwj_zwgk:
+    name: "福建省文物局-政务公开"
+    site_url: "http://wwj.wlt.fujian.gov.cn"
+    category: "福建省文物局-政务公开"
+    enabled: true
+    detect_enabled: true
+    detect_interval: 600              # 10 分钟轮询（政务公开更新频率中等）
+
+    transport:
+      type: rest_api
+      engine: requests
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        Referer: "http://wwj.wlt.fujian.gov.cn/zwgk/"
+        Accept-Language: "zh-CN,zh;q=0.9"
+      verify_ssl: false
+      timeout: 30
+
+    listing:
+      url: "http://wwj.wlt.fujian.gov.cn/zwgk/tzgg/"
+      method: GET
+
+    pagination:
+      type: single_page               # 只取第一页，重复触发获取当天数据
+
+    anti_crawler:
+      delay_min: 1.0
+      delay_max: 2.0
+      max_retries: 3
+      max_consecutive_empty: 3
+
+    extract:
+      type: css_selector
+      items_path: ".list_base li"     # 列表项容器（每个栏目页共享此结构）
+      fields:
+        title: "a@title"             # <a title="完整标题"> 属性
+        url: "a@href"                # 相对路径，框架自动 urljoin 为绝对 URL
+        date: "span"                 # 日期 <span>2026-07-27</span>
+
+    detail:
+      type: css_selector
+      content_field: ".TRS_Editor"    # TRS CMS 标准正文容器
+      metadata_css:
+        title: ".article_title"                          # 详情页标题
+        source: ".article_time:first-of-type"            # "来源：福建省文物局"
+        publish_datetime: ".article_time:last-of-type"   # "发布时间：2026-07-27 18:43"
+
+    format:
+      parser_id: "naive"
+      upload_batch_size: 10
+
+    sections:
+      - label: "tzgg"
+        name: "通知公告"
+        listing:
+          url: "http://wwj.wlt.fujian.gov.cn/zwgk/tzgg/"
+      - label: "zcfg"
+        name: "政策法规"
+        listing:
+          url: "http://wwj.wlt.fujian.gov.cn/zwgk/zcfg/"
+      - label: "xzqlyx"
+        name: "行政权力运行"
+        listing:
+          url: "http://wwj.wlt.fujian.gov.cn/zwgk/xzqlyx/"
+      - label: "zfxxgkzl"
+        name: "政府信息公开专栏"
+        listing:
+          url: "http://wwj.wlt.fujian.gov.cn/zwgk/zfxxgkzl/"
+
+  # ═══════════════════════════════════════════════════════════
+  # 泉州市公共资源交易信息网 — 智能采集（collection writer）
+  # 6 个栏目：产权交易招标/中标、工程建设招标、土地矿产、其他招标、小规模工程
+  # 详情正文 API: POST getProjBulletin_project.do {projId, fileType}
+  #   fileType: F001=招标公告, F004=中标公示
+  #   响应: data[0].fileContent (HTML), data[0].files (附件)
+  # ═══════════════════════════════════════════════════════════
+  quanzhou_ggzy:
+    name: "泉州市公共资源交易信息网"
+    site_url: "http://ggzyjy.quanzhou.gov.cn/"
+    category: tender
+    enabled: true
+    detect_enabled: true
+    detect_interval: 600
+    transport:
+      type: rest_api
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        Content-Type: "application/json;charset=UTF-8"
+        X-Requested-With: "XMLHttpRequest"
+        Referer: "http://ggzyjy.quanzhou.gov.cn/"
+      verify_ssl: false
+      timeout: 30
+    anti_crawler:
+      delay_min: 0.5
+      delay_max: 1.5
+      max_retries: 3
+    extract:
+      type: json_path
+      items_path: "data.dataList"
+      fields:
+        id: "bltId"
+        title: "bltTitle"
+        date: "pubDate"
+    detail:
+      type: api_request
+      url: "http://ggzyjy.quanzhou.gov.cn/project/getProjBulletin_project.do"
+      method: POST
+      body_type: json
+      params:
+        projId: "{id}"
+        fileType: "F001"
+      content_field: "data.0.fileContent"
+      attachment_fields:
+        - "data.0.files"
+    format:
+      parser_id: "naive"
+      upload_batch_size: 10
+    pagination:
+      type: page_no
+      page_param: "pageIndex"
+      page_size_param: "pageSize"
+      page_size: 15
+      items_field: "data.dataList"
+      start: 1
+      max_pages: 1
+    sections:
+      - label: property_blt
+        name: "泉州市-产权交易-招标公告"
+        listing:
+          url: "http://ggzyjy.quanzhou.gov.cn/property/getBltPage.do"
+          method: POST
+          body_type: json
+          params:
+            pageIndex: "{{ page }}"
+            pageSize: "15"
+            projType: ""
+            projArea: ""
+            keyword: ""
+            centerId: 0
+        extract:
+          type: json_path
+          items_path: "data.dataList"
+          fields:
+            id: "bltId"
+            title: "bltTitle"
+            date: "pubDate"
+          url_template: "http://ggzyjy.quanzhou.gov.cn/project/projectInfo.do?projId={bltId}&leftIndex=1&bullId={bullId}"
+        detail:
+          type: api_request
+          url: "http://ggzyjy.quanzhou.gov.cn/project/getProjBulletin_project.do"
+          method: POST
+          body_type: json
+          params:
+            projId: "{id}"
+            fileType: "F001"
+          content_field: "data.0.fileContent"
+          attachment_fields:
+            - "data.0.files"
+
+      - label: property_win
+        name: "泉州市-产权交易-中标公示"
+        listing:
+          url: "http://ggzyjy.quanzhou.gov.cn/property/getWinBltPage.do"
+          method: POST
+          body_type: json
+          params:
+            pageIndex: "{{ page }}"
+            pageSize: "15"
+            projType: ""
+            projArea: ""
+            keyword: ""
+            centerId: 0
+        extract:
+          type: json_path
+          items_path: "data.dataList"
+          fields:
+            id: "bltId"
+            title: "bltTitle"
+            date: "pubDate"
+          url_template: "http://ggzyjy.quanzhou.gov.cn/project/projectInfo.do?projId={bltId}&leftIndex=3&bullId={bullId}"
+        detail:
+          type: api_request
+          url: "http://ggzyjy.quanzhou.gov.cn/project/getProjBulletin_project.do"
+          method: POST
+          body_type: json
+          params:
+            projId: "{id}"
+            fileType: "F004"
+          content_field: "data.0.fileContent"
+          attachment_fields:
+            - "data.0.files"
+
+      - label: project_bid
+        name: "泉州市-工程建设-招标信息"
+        listing:
+          url: "http://ggzyjy.quanzhou.gov.cn/project/getProjPage_project.do"
+          method: POST
+          body_type: json
+          params:
+            pageIndex: "{{ page }}"
+            pageSize: "10"
+            classId: 0
+            centerId: 0
+            projNo: ""
+            projName: ""
+            ownerDeptName: ""
+        pagination:
+          type: page_no
+          page_param: "pageIndex"
+          page_size_param: "pageSize"
+          page_size: 10
+          start: 1
+          max_pages: 1
+        extract:
+          type: json_path
+          items_path: "data.dataList"
+          fields:
+            id: "projId"
+            title: "projName"
+            date: "auditDate"
+          url_template: "http://ggzyjy.quanzhou.gov.cn/project/projectInfo.do?projId={projId}"
+        detail:
+          type: api_request
+          url: "http://ggzyjy.quanzhou.gov.cn/project/getProjBulletin_project.do"
+          method: POST
+          body_type: json
+          params:
+            projId: "{id}"
+            fileType: "F001"
+          content_field: "data.0.fileContent"
+          attachment_fields:
+            - "data.0.files"
+
+      - label: land
+        name: "泉州市-土地矿产"
+        listing:
+          url: "http://ggzyjy.quanzhou.gov.cn/land/landBidBulletin.do"
+          method: POST
+          body_type: json
+          params:
+            pageIndex: "{{ page }}"
+            pageSize: "15"
+            bltType: "B001"
+            keyword: ""
+            centerId: 0
+        extract:
+          type: json_path
+          items_path: "data.dataList"
+          fields:
+            id: "bltId"
+            title: "bltTitle"
+            date: "pubDate"
+          url_template: "http://ggzyjy.quanzhou.gov.cn/project/projectInfo.do?projId={bltId}&leftIndex=1&bullId=undefined"
+        detail:
+          type: api_request
+          url: "http://ggzyjy.quanzhou.gov.cn/project/getProjBulletin_project.do"
+          method: POST
+          body_type: json
+          params:
+            projId: "{id}"
+            fileType: "F001"
+          content_field: "data.0.fileContent"
+          attachment_fields:
+            - "data.0.files"
+
+      - label: other_bid
+        name: "泉州市-其他招标"
+        listing:
+          url: "http://ggzyjy.quanzhou.gov.cn/project/getOtherBidInfo.do"
+          method: POST
+          body_type: json
+          params:
+            pageIndex: "{{ page }}"
+            pageSize: "10"
+            classId: 0
+            centerId: 0
+            projNo: ""
+            projName: ""
+            ownerDeptName: ""
+        pagination:
+          type: page_no
+          page_param: "pageIndex"
+          page_size_param: "pageSize"
+          page_size: 10
+          start: 1
+          max_pages: 1
+        extract:
+          type: json_path
+          items_path: "data.dataList"
+          fields:
+            id: "projId"
+            title: "projName"
+            date: "auditDate"
+          url_template: "http://ggzyjy.quanzhou.gov.cn/project/projectInfo.do?projId={projId}"
+        detail:
+          type: api_request
+          url: "http://ggzyjy.quanzhou.gov.cn/project/getProjBulletin_project.do"
+          method: POST
+          body_type: json
+          params:
+            projId: "{id}"
+            fileType: "F001"
+          content_field: "data.0.fileContent"
+          attachment_fields:
+            - "data.0.files"
+
+      - label: small_project
+        name: "泉州市-小规模工程"
+        listing:
+          url: "http://ggzyjy.quanzhou.gov.cn/small/getDetailList.do"
+          method: POST
+          body_type: json
+          params:
+            pageIndex: "{{ page }}"
+            pageSize: "15"
+            noticeType: 1
+            projType: ""
+            keyword: ""
+        extract:
+          type: json_path
+          items_path: "data.dataList"
+          fields:
+            id: "notice_id"
+            title: "notice_title"
+            date: "publish_time"
+            url: "source_url"
+        detail:
+          type: inline

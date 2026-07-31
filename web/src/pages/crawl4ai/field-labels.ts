@@ -67,6 +67,21 @@ export const EXT_FIELD_LABELS: Record<string, Record<string, string>> = {
     tender_type: '招标类型',
     news_type: '公告类型',
   },
+  '国家文物局-政务公开': {
+    doc_number: '文号',
+    issuing_authority: '发文机关',
+    authority_level: '效力级别',
+    topic_category: '主题分类',
+    effective_date: '生效日期',
+    expiry_date: '失效日期',
+    status: '状态',
+    legal_basis: '法律依据',
+  },
+  '福建省文物局-政务公开': {
+    source: '来源',
+    publish_datetime: '发布时间',
+    section_name: '栏目',
+  },
 };
 
 /**
@@ -81,6 +96,8 @@ export const CATEGORY_COLORS: Record<string, string> = {
   objection: 'bg-purple-500/15 text-purple-600',
   announcement: 'bg-orange-500/15 text-orange-600',
   tender: 'bg-teal-500/15 text-teal-600',
+  '国家文物局-政务公开': 'bg-red-500/15 text-red-600',
+  '福建省文物局-政务公开': 'bg-rose-500/15 text-rose-600',
 };
 
 /**
