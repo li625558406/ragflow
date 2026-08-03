@@ -321,3 +321,141 @@ def _fetch_tab_rows(category_num: str, page_index: int) -> List[dict]:
         )
         return []
     return [r for r in rows if isinstance(r, dict)]
+
+
+# ---------------------------------------------------------------------------
+# Detail page
+# ---------------------------------------------------------------------------
+
+def _html_to_text(html_str: str) -> str:
+    """Strip HTML tags and decode entities, return clean text."""
+    if not html_str:
+        return ""
+    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html_str, flags=re.DOTALL | re.I)
+    text = re.sub(
+        r"</?(?:div|p|tr|li|h[1-6]|table|hr|section|article|header|footer)[^>]*>",
+        "\n", text, flags=re.I,
+    )
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.I)
+    text = re.sub(r"</td>", " ", text, flags=re.I)
+    text = re.sub(r"</tr>", "\n", text, flags=re.I)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html_mod.unescape(text)
+    text = text.replace("\xa0", " ").replace("　", " ")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _extract_attachments_from_html(html_str: str, page_url: str) -> List[dict]:
+    """Extract attachment links from detail page HTML.
+
+    两种来源:
+      1. ztbfjyz('...downloadztbattach?attachGuid=<guid>...') onclick —
+         构造 ztbAttachDownloadAction 直连 URL (appUrlFlag=ztb001)
+      2. 直接文件链接 (.pdf/.doc/.xls/.zip/.rar/.ppt)
+    Returns [{name, guid, url}] — url 均为绝对地址(需求#13: 原文链接完整可访问)。
+    """
+    attachments: List[dict] = []
+    seen: set = set()
+
+    for m in re.finditer(
+        r"ztbfjyz\('([^']+/downloadztbattach\?attachGuid="
+        r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[^']*)'",
+        html_str, re.I,
+    ):
+        guid = m.group(2)
+        if guid in seen:
+            continue
+        seen.add(guid)
+        name = "{}.unknown".format(guid)
+        post_context = html_str[m.end():m.end() + 500]
+        name_m = re.search(r'title="([^"]+)"', post_context)
+        if not name_m:
+            name_m = re.search(r'>([^<]{3,120})</a>', post_context)
+        if name_m:
+            name = name_m.group(1).strip()
+        real_url = (
+            "{}?cmd=getContent&attachGuid={}&appUrlFlag={}&siteGuid={}".format(
+                _API_ATTACH, guid, _APP_URL_FLAG, _SITE_GUID
+            )
+        )
+        attachments.append({
+            "name": _sanitize_filename(name),
+            "guid": guid,
+            "url": real_url,
+        })
+
+    for m in re.finditer(
+        r'<a[^>]*href=["\']([^"\']*(?:\.pdf|\.doc[x]?|\.xls[x]?|\.rar|\.zip|\.ppt[x]?)'
+        r'[^"\']*)["\'][^>]*>([^<]*)</a>',
+        html_str, re.I,
+    ):
+        href = m.group(1).strip()
+        link_text = html_mod.unescape(m.group(2).strip())
+        if not href:
+            continue
+        if not href.startswith("http"):
+            if href.startswith("//"):
+                href = "https:" + href
+            elif href.startswith("/"):
+                href = _SITE_ROOT + href
+            else:
+                href = page_url.rsplit("/", 1)[0] + "/" + href
+        if href in seen:
+            continue
+        seen.add(href)
+        fname = link_text or os.path.basename(
+            urllib.parse.urlparse(href).path.split("?")[0]
+        ) or "attachment"
+        attachments.append({"name": _sanitize_filename(fname), "guid": "", "url": href})
+
+    return attachments
+
+
+def _fetch_detail(full_url: str) -> Optional[dict]:
+    """Fetch + parse one detail page. Returns None on network failure.
+
+    Returns {title, info_time, source, content_text, attachments}.
+    """
+    html = _http_get_html(full_url, referer=_SITE_ROOT + "/lyztb/")
+    if not html:
+        return None
+
+    result: Dict[str, Any] = {
+        "title": "", "info_time": "", "source": "",
+        "content_text": "", "attachments": [],
+    }
+
+    m = re.search(r'<h3\s+class="bigtitle">(.+?)</h3>', html, re.DOTALL)
+    if m:
+        result["title"] = html_mod.unescape(re.sub(r"<[^>]+>", "", m.group(1))).strip()
+
+    m = re.search(r"信息时间：(\d{4}-\d{2}-\d{2})", html)
+    if m:
+        result["info_time"] = m.group(1)
+
+    m = re.search(r'<p\s+class="sub-cp">(.*?)</p>', html, re.DOTALL)
+    if m:
+        src_m = re.search(r'信息来源：<span[^>]*>([^<]*)</span>', m.group(1))
+        if src_m:
+            result["source"] = src_m.group(1).strip()
+
+    idx = html.find('id="mainContent"')
+    if idx >= 0:
+        content_start = html.find(">", idx) + 1
+        content_end = len(html)
+        for marker in ("ewb-page-lookup", "footrt", "subfooter"):
+            marker_idx = html.find(marker, content_start)
+            if marker_idx > 0:
+                content_end = marker_idx
+                break
+        content_html = html[content_start:content_end].strip()
+        content_html = re.sub(
+            r'<div\s+class="chain"[^>]*>.*?</div>\s*</div>\s*</div>\s*</div>\s*</div>',
+            "", content_html, flags=re.DOTALL,
+        )
+        result["content_text"] = _html_to_text(content_html)
+
+    result["attachments"] = _extract_attachments_from_html(html, full_url)
+    return result
