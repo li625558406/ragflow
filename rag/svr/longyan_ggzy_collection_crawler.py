@@ -173,3 +173,86 @@ _HEADERS_DOWNLOAD = {
 _SSL_CTX = ssl.create_default_context()
 _SSL_CTX.check_hostname = False
 _SSL_CTX.verify_mode = ssl.CERT_NONE
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _safe_print(msg: str) -> None:
+    try:
+        print(msg)
+    except UnicodeEncodeError:
+        print(msg.encode("gbk", errors="replace").decode("gbk"))
+
+
+def _request_delay() -> None:
+    time.sleep(random.uniform(_REQUEST_DELAY_MIN, _REQUEST_DELAY_MAX))
+
+
+def _sanitize_filename(name: str, max_len: int = 120) -> str:
+    if not name:
+        return "unnamed"
+    safe = re.sub(r'[\\/:*?"<>|\r\n\t]+', "_", name)
+    safe = re.sub(r"_+", "_", safe)
+    safe = safe.strip("._ ")
+    if len(safe) > max_len:
+        base, ext = os.path.splitext(safe)
+        safe = base[: max_len - len(ext)] + (ext or "")
+    return safe or "unnamed"
+
+
+def _normalize_date(date_str: str) -> str:
+    if not date_str:
+        return ""
+    m = re.search(r"(\d{4}-\d{1,2}-\d{1,2})", str(date_str))
+    if not m:
+        return str(date_str)[:10]
+    y, mo, d = m.group(1).split("-")
+    return "{}-{:02d}-{:02d}".format(y, int(mo), int(d))
+
+
+# ---------------------------------------------------------------------------
+# HTTP helpers
+# ---------------------------------------------------------------------------
+
+def _http_post_form(url: str, form: dict, extra_headers: Optional[dict] = None) -> Optional[str]:
+    """form-urlencoded POST. Returns response text or None."""
+    hdrs = dict(_HEADERS_JSON)
+    if extra_headers:
+        hdrs.update(extra_headers)
+    body = urllib.parse.urlencode(form).encode("utf-8")
+    req = urllib.request.Request(url, data=body, headers=hdrs)
+    try:
+        with urllib.request.urlopen(req, timeout=30, context=_SSL_CTX) as resp:
+            return resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        logging.warning("POST %s failed: %s", url, e)
+        return None
+
+
+def _http_get_html(url: str, referer: Optional[str] = None) -> Optional[str]:
+    """GET HTML page. Returns response text or None."""
+    hdrs = dict(_HEADERS_HTML)
+    if referer:
+        hdrs["Referer"] = referer
+    req = urllib.request.Request(url, headers=hdrs)
+    try:
+        with urllib.request.urlopen(req, timeout=30, context=_SSL_CTX) as resp:
+            return resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        logging.warning("GET %s failed: %s", url, e)
+        return None
+
+
+def _http_download(url: str, referer: Optional[str] = None) -> Optional[bytes]:
+    """GET binary download. Returns bytes or None."""
+    hdrs = dict(_HEADERS_DOWNLOAD)
+    if referer:
+        hdrs["Referer"] = referer
+    req = urllib.request.Request(url, headers=hdrs)
+    try:
+        with urllib.request.urlopen(req, timeout=60, context=_SSL_CTX) as resp:
+            return resp.read()
+    except Exception as e:
+        logging.warning("Download %s failed: %s", url, e)
+        return None
