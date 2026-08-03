@@ -18,8 +18,9 @@ infodate,zhuanzai,strcomment,index}]}, 按 infodate 倒序, 无 id 字段。
   正文 div#mainContent / 附件 ztbfjyz('...downloadztbattach?attachGuid=<guid>...')
 
 附件直连: ztbAttachDownloadAction.action?cmd=getContent&attachGuid=..&
-appUrlFlag=ztb001&siteGuid=.. — 可能被 pageVerify 验证码拦截, 代码优雅降级
-(记录 captcha_blocked_count, 附件 URL 仍写入 markdown/extracted_json)。
+appUrlFlag=ztb001&siteGuid=.. — 可能被 pageVerify 验证码拦截(实测拦截体为
+117 字节小 JSON 而非 HTML 网关页), 代码优雅降级(记录 captcha_blocked_count,
+附件 URL 仍写入 markdown/extracted_json)。
 
 反爬: WAF 短时 ~30 快速请求→403(~20s 自愈); 深分页(8+)出验证码。
 策略: 请求间隔 0.8-2.0s; 无论 full 还是日常(date_filter)模式, 每个页签均只抓
@@ -91,6 +92,9 @@ _USER_AGENT = (
 _SITE_GUID = "7eb5f7f1-9041-43ad-8e13-8fcb82ea831a"
 _PROJECT_NAME = "/EpointWebBuilder"
 _APP_URL_FLAG = "ztb001"
+
+# WAF 验证码拦截标记 — 拦截体字段名/文案 (JSON 拦截体与网关 HTML 均可能出现)
+_CAPTCHA_MARKERS = ("pageVerify", "validateVerificationCode", "验证码")
 
 _API_LISTING = _SITE_ROOT + _PROJECT_NAME + "/rest/GgSearchAction/getInfoMationList"
 _API_ATTACH = _SITE_ROOT + _PROJECT_NAME + "/webbuildermis/attach/ztbAttachDownloadAction.action"
@@ -475,11 +479,41 @@ def _fetch_detail(full_url: str) -> Optional[dict]:
 # Attachment download
 # ---------------------------------------------------------------------------
 
+def _classify_downloaded_head(data: bytes) -> Tuple[bool, str]:
+    """对下载到的字节做类型判定: 真实附件 or WAF/网关拦截页。纯函数, 无网络 IO。
+
+    真实附件必为二进制 (PDF/ZIP/DOC/XLS...), 绝不会是 JSON/HTML 文本。
+    WAF 验证码拦截实测返回 117 字节 JSON:
+      {"custom":{"validateVerificationCode":"false","pageVerify":"true",
+                 "content":"验证码验证失败！","status":"1"}}
+
+    Returns (is_real_file, reason), reason ∈
+      captcha_json / json_error / captcha_html / html_page / file
+    """
+    head = data.lstrip()
+    # JSON 响应 = 验证码拦截体或接口报错, 都不是真实文件
+    if head[:1] in (b"{", b"["):
+        low = head.decode("utf-8", errors="replace").lower()
+        if any(mk.lower() in low for mk in _CAPTCHA_MARKERS):
+            return False, "captcha_json"
+        return False, "json_error"
+    # HTML 响应 = 网关页或验证码页, 不是真实文件
+    low_head = head.lower()
+    if low_head.startswith(b"<!doctype") or low_head.startswith(b"<html"):
+        text = head.decode("utf-8", errors="replace")
+        low = text.lower()
+        if "pageverify" in low or "验证码" in text:
+            return False, "captcha_html"
+        return False, "html_page"
+    return True, "file"
+
+
 def _download_attachments(attachments: List[dict], download_dir: str) -> Tuple[List[str], int]:
     """Download attachments to local dir.
 
     Returns (local_file_paths, captcha_blocked_count).
-    网关/验证码 HTML 响应 → 计数跳过(附件 URL 仍保留在 markdown/extracted_json)。
+    WAF 验证码拦截(实测为 117 字节 JSON)或网关/验证码 HTML 响应 → 写入后校验,
+    发现即删除垃圾文件并计数跳过(附件 URL 仍保留在 markdown/extracted_json)。
     """
     os.makedirs(download_dir, exist_ok=True)
     local_files: List[str] = []
@@ -509,37 +543,6 @@ def _download_attachments(attachments: List[dict], download_dir: str) -> Tuple[L
         if not data:
             continue
 
-        # HTML 响应 = 网关页或验证码页, 不是真实文件
-        head = data.lstrip()
-        if head[:15].lower().startswith(b"<!doctype") or head[:6].lower().startswith(b"<html"):
-            gateway = data.decode("utf-8", errors="replace")
-            low = gateway.lower()
-            if "pageverify" in low or "验证码" in gateway:
-                logging.warning("Attachment captcha-blocked: %s", url[:100])
-                captcha_blocked += 1
-                continue
-            # 宁德同款网关: 从 form action 提取真实下载地址再试一次
-            action_m = re.search(
-                r'action\s*=\s*["\']([^"\']*ztbAttachDownloadAction[^"\']*)["\']',
-                gateway, re.I,
-            )
-            if action_m:
-                action = action_m.group(1)
-                if not action.startswith("http"):
-                    action = (_SITE_ROOT + _PROJECT_NAME +
-                              "/webbuildermis/attach/" + action.lstrip("/"))
-                data = _http_download(action, referer=url)
-                if not data:
-                    continue
-                head = data.lstrip()
-                if head[:15].lower().startswith(b"<!doctype") or \
-                   head[:6].lower().startswith(b"<html"):
-                    captcha_blocked += 1
-                    continue
-            else:
-                captcha_blocked += 1
-                continue
-
         # magic bytes 修正扩展名
         if data[:4] == b"%PDF" and not fname.lower().endswith(".pdf"):
             fname += ".pdf"
@@ -555,6 +558,32 @@ def _download_attachments(attachments: List[dict], download_dir: str) -> Tuple[L
             n += 1
         with open(filepath, "wb") as f:
             f.write(data)
+
+        # ▶ 写入后校验内容: 真实附件必为二进制; 验证码拦截 JSON / 接口报错 JSON /
+        #   网关 HTML 均不是真实文件 — 删除垃圾文件并计数, 继续下一个附件
+        is_real, reason = _classify_downloaded_head(data)
+        if not is_real:
+            try:
+                os.remove(filepath)
+            except OSError:
+                pass
+            captcha_blocked += 1
+            if reason == "captcha_json":
+                logging.info("Attachment captcha-blocked (JSON): %s | %s", url[:100], fname)
+            elif reason == "captcha_html":
+                logging.warning("Attachment captcha-blocked: %s | %s", url[:100], fname)
+            elif reason == "json_error":
+                logging.warning(
+                    "Attachment download returned JSON error, discarded: %s | %s | head=%r",
+                    url[:100], fname, data.lstrip()[:200],
+                )
+            else:  # html_page — 真实附件绝不会是全页 HTML
+                logging.warning(
+                    "Attachment download returned HTML page, discarded: %s | %s",
+                    url[:100], fname,
+                )
+            continue
+
         claimed.add(filepath)
         local_files.append(filepath)
         _request_delay()
