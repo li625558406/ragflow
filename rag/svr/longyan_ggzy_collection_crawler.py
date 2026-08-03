@@ -77,6 +77,9 @@ _PAGE_SIZE = 30
 _MAX_DAILY_PAGES = 5                  # date_filter 模式每页签最大翻页数(深分页有验证码)
 _REQUEST_DELAY_MIN = 0.8
 _REQUEST_DELAY_MAX = 2.0
+_LISTING_RETRIES = 2          # 列表请求重试次数 (WAF 瞬时 403 自愈约 20s)
+_RETRY_BACKOFF_MIN = 15       # 重试退避下限 (秒)
+_RETRY_BACKOFF_MAX = 25       # 重试退避上限 (秒)
 _LOCK_TIMEOUT = 10800                 # 3h: 首次全量 51 页签耗时可能超 30min 默认 TTL
 
 _USER_AGENT = (
@@ -278,19 +281,23 @@ def _fetch_tab_rows(category_num: str, page_index: int) -> List[dict]:
         "ImgGuid": "",
     }
     text = None
-    for _attempt in range(2):
+    for attempt in range(_LISTING_RETRIES):
         text = _http_post_form(
             _API_LISTING, form, extra_headers={"Referer": _SITE_ROOT + "/lyztb/"}
         )
         if text:
             break
-        if _attempt == 0:
+        if attempt == 0:
             logging.warning(
                 "longyan listing empty response, retrying: cat=%s page=%d",
                 category_num, page_index,
             )
-            time.sleep(random.uniform(15, 25))
+            time.sleep(random.uniform(_RETRY_BACKOFF_MIN, _RETRY_BACKOFF_MAX))
     if not text:
+        logging.warning(
+            "longyan listing still empty after %d attempts, treating as empty page: cat=%s page=%d",
+            _LISTING_RETRIES, category_num, page_index,
+        )
         return []
     try:
         data = json.loads(text)
@@ -300,7 +307,17 @@ def _fetch_tab_rows(category_num: str, page_index: int) -> List[dict]:
             category_num, page_index, text[:80],
         )
         return []
+    if not isinstance(data, dict):
+        logging.warning(
+            "longyan listing JSON root not object: cat=%s page=%d type=%s",
+            category_num, page_index, type(data).__name__,
+        )
+        return []
     rows = data.get("custom")
     if not isinstance(rows, list):
+        logging.warning(
+            "longyan listing missing 'custom' list: cat=%s page=%d keys=%s",
+            category_num, page_index, sorted(data.keys()),
+        )
         return []
     return [r for r in rows if isinstance(r, dict)]
