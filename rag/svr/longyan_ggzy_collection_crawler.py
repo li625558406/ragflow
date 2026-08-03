@@ -256,3 +256,51 @@ def _http_download(url: str, referer: Optional[str] = None) -> Optional[bytes]:
     except Exception as e:
         logging.warning("Download %s failed: %s", url, e)
         return None
+
+
+# ---------------------------------------------------------------------------
+# Listing API
+# ---------------------------------------------------------------------------
+
+def _fetch_tab_rows(category_num: str, page_index: int) -> List[dict]:
+    """Fetch one page (0-based) of a tab listing. Returns row dicts.
+
+    验证码/反爬响应不是 JSON → 返回 [] (上层按空页处理, 不崩)。
+    网络/WAF 瞬时失败(text 为空)重试一次: WAF 约 20s 自愈, 退避 15-25s。
+    """
+    form = {
+        "siteGuid": _SITE_GUID,
+        "categoryNum": category_num,
+        "kw": "",
+        "pageIndex": str(page_index),
+        "pageSize": str(_PAGE_SIZE),
+        "YZM": "",
+        "ImgGuid": "",
+    }
+    text = None
+    for _attempt in range(2):
+        text = _http_post_form(
+            _API_LISTING, form, extra_headers={"Referer": _SITE_ROOT + "/lyztb/"}
+        )
+        if text:
+            break
+        if _attempt == 0:
+            logging.warning(
+                "longyan listing empty response, retrying: cat=%s page=%d",
+                category_num, page_index,
+            )
+            time.sleep(random.uniform(15, 25))
+    if not text:
+        return []
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        logging.warning(
+            "longyan listing not JSON (captcha/WAF?) cat=%s page=%d head=%r",
+            category_num, page_index, text[:80],
+        )
+        return []
+    rows = data.get("custom")
+    if not isinstance(rows, list):
+        return []
+    return [r for r in rows if isinstance(r, dict)]
