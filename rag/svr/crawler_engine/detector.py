@@ -51,13 +51,13 @@ def compute_signature(items: List[dict]) -> str:
             continue
         item_id = (
             it.get("id") or it.get("uuid") or it.get("article_id")
-            or it.get("infoid") or it.get("noticenumber") or it.get("bulletinID")
+            or it.get("infoid") or it.get("infourl") or it.get("noticenumber") or it.get("bulletinID")
             or it.get("guid") or it.get("_id") or it.get("url")
             or it.get("href") or it.get("source_url") or it.get("link") or ""
         )
         pub = (
             it.get("publish_date") or it.get("date")
-            or it.get("publishTime") or it.get("CREATE_TIME") or ""
+            or it.get("publishTime") or it.get("CREATE_TIME") or it.get("infodate") or ""
         )
         parts.append(f"{item_id}|{pub}")
     if not parts:
