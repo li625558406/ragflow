@@ -96,6 +96,12 @@ _APP_URL_FLAG = "ztb001"
 # WAF 验证码拦截标记 — 拦截体字段名/文案 (JSON 拦截体与网关 HTML 均可能出现)
 _CAPTCHA_MARKERS = ("pageVerify", "validateVerificationCode", "验证码")
 
+# 下载内容分类器 (_classify_downloaded_head) 用:
+# BOM 前缀 — 按精确前缀移除 (不能用 lstrip 字节集, 会过度剥掉合法二进制首字节)
+_BOM_PREFIXES = (b"\xef\xbb\xbf", b"\xff\xfe", b"\xfe\xff")
+# 只检查头部字节数 — 100MB PDF 不会被 strip/lower 整体拷贝
+_HEAD_INSPECT_BYTES = 512
+
 _API_LISTING = _SITE_ROOT + _PROJECT_NAME + "/rest/GgSearchAction/getInfoMationList"
 _API_ATTACH = _SITE_ROOT + _PROJECT_NAME + "/webbuildermis/attach/ztbAttachDownloadAction.action"
 
@@ -482,27 +488,41 @@ def _fetch_detail(full_url: str) -> Optional[dict]:
 def _classify_downloaded_head(data: bytes) -> Tuple[bool, str]:
     """对下载到的字节做类型判定: 真实附件 or WAF/网关拦截页。纯函数, 无网络 IO。
 
-    真实附件必为二进制 (PDF/ZIP/DOC/XLS...), 绝不会是 JSON/HTML 文本。
-    WAF 验证码拦截实测返回 117 字节 JSON:
+    不变式: 真实附件必为二进制 (PDF/ZIP/DOC/XLS...) 或纯文本, 绝不会是
+    JSON/markup 文本 — 因此头部为 JSON ({ 或 [) 或 markup (<) 的响应一律判为
+    非文件。WAF 验证码拦截实测返回 117 字节 JSON:
       {"custom":{"validateVerificationCode":"false","pageVerify":"true",
                  "content":"验证码验证失败！","status":"1"}}
 
+    只检查头部小段 data[:_HEAD_INSPECT_BYTES] (512B): 100MB 的 PDF 不会被
+    strip/lower 整体拷贝。BOM (UTF-8 / UTF-16 LE/BE) 按精确前缀移除 — 不能
+    用 lstrip 字节集, 那会过度剥掉合法二进制的首字节。
+
+    接受的残余风险: 无 JSON/markup 包装的裸纯文本 WAF 拦截文案与合法的
+    .txt 附件无法区分 — 此类响应按真实文件保留。
+
     Returns (is_real_file, reason), reason ∈
-      captcha_json / json_error / captcha_html / html_page / file
+      empty_body / captcha_json / json_error / captcha_html / html_page / file
     """
-    head = data.lstrip()
+    head = data[:_HEAD_INSPECT_BYTES]
+    for bom in _BOM_PREFIXES:
+        if head.startswith(bom):
+            head = head[len(bom):]
+            break
+    head = head.strip()
+    if not head:
+        return False, "empty_body"
     # JSON 响应 = 验证码拦截体或接口报错, 都不是真实文件
     if head[:1] in (b"{", b"["):
         low = head.decode("utf-8", errors="replace").lower()
         if any(mk.lower() in low for mk in _CAPTCHA_MARKERS):
             return False, "captcha_json"
         return False, "json_error"
-    # HTML 响应 = 网关页或验证码页, 不是真实文件
-    low_head = head.lower()
-    if low_head.startswith(b"<!doctype") or low_head.startswith(b"<html"):
-        text = head.decode("utf-8", errors="replace")
-        low = text.lower()
-        if "pageverify" in low or "验证码" in text:
+    # markup 响应 (<!doctype / <html / <?xml / <script / 裸 <div> 片段等) =
+    # 网关页或验证码页, 不是真实文件
+    if head[:1] == b"<":
+        low = head.decode("utf-8", errors="replace").lower()
+        if any(mk.lower() in low for mk in _CAPTCHA_MARKERS):
             return False, "captcha_html"
         return False, "html_page"
     return True, "file"
@@ -512,8 +532,9 @@ def _download_attachments(attachments: List[dict], download_dir: str) -> Tuple[L
     """Download attachments to local dir.
 
     Returns (local_file_paths, captcha_blocked_count).
-    WAF 验证码拦截(实测为 117 字节 JSON)或网关/验证码 HTML 响应 → 写入后校验,
-    发现即删除垃圾文件并计数跳过(附件 URL 仍保留在 markdown/extracted_json)。
+    下载返回后立即分类: WAF 验证码拦截(实测为 117 字节 JSON)、网关/验证码 HTML、
+    其他 JSON 报错、HTML 页、空响应均不落盘直接丢弃并计数; 判定为真实附件才写盘
+    (消除 write→os.remove 失败窗口)。附件 URL 仍保留在 markdown/extracted_json。
     """
     os.makedirs(download_dir, exist_ok=True)
     local_files: List[str] = []
@@ -537,16 +558,45 @@ def _download_attachments(attachments: List[dict], download_dir: str) -> Tuple[L
         if os.path.exists(filepath) and os.path.getsize(filepath) > 0 and filepath not in claimed:
             local_files.append(filepath)
             claimed.add(filepath)
-            continue
+            continue  # 磁盘缓存命中 — 未发起请求, 不计延迟
 
         data = _http_download(url, referer=_SITE_ROOT + "/lyztb/")
-        if not data:
+        # I-1: 每个实际发起的下载请求必须恰好付出一次延迟 — 无论结果是保留/丢弃/空。
+        # 被拦截的附件恰恰是 WAF 最热的时候(模块头注: ~30 快速请求→403), 禁止背靠背。
+        _request_delay()
+
+        # M-2: 先分类再落盘 — 只有真实附件才写文件 (无 write→remove 失败窗口)
+        body = data or b""
+        is_real, reason = _classify_downloaded_head(body)
+        if not is_real:
+            # 计数器统计所有被丢弃的非文件响应 (captcha JSON/HTML、其他 JSON 报错、
+            # HTML 页、空响应), 不仅是 captcha
+            captcha_blocked += 1
+            if reason == "captcha_json":
+                logging.info("Attachment captcha-blocked (JSON): %s | %s", url[:160], fname)
+            elif reason == "captcha_html":
+                logging.warning("Attachment captcha-blocked (HTML): %s | %s", url[:160], fname)
+            elif reason == "json_error":
+                logging.warning(
+                    "Attachment download returned JSON error, discarded: %s | %s | head=%r",
+                    url[:160], fname, body[:240].lstrip()[:200],
+                )
+            elif reason == "empty_body":
+                logging.warning(
+                    "Attachment download returned empty body, discarded: %s | %s",
+                    url[:160], fname,
+                )
+            else:  # html_page — 真实附件绝不会是全页 HTML
+                logging.warning(
+                    "Attachment download returned HTML page, discarded: %s | %s",
+                    url[:160], fname,
+                )
             continue
 
-        # magic bytes 修正扩展名
-        if data[:4] == b"%PDF" and not fname.lower().endswith(".pdf"):
+        # magic bytes 修正扩展名 (已判定为真实附件)
+        if body[:4] == b"%PDF" and not fname.lower().endswith(".pdf"):
             fname += ".pdf"
-        elif data[:4] == b"PK\x03\x04" and \
+        elif body[:4] == b"PK\x03\x04" and \
                 not any(fname.lower().endswith(e) for e in (".zip", ".docx", ".xlsx", ".pptx", ".doc", ".ppt", ".xls")):
             fname += ".zip"
 
@@ -557,36 +607,10 @@ def _download_attachments(attachments: List[dict], download_dir: str) -> Tuple[L
             filepath = os.path.join(download_dir, "{}_{}{}".format(base, n, f_ext))
             n += 1
         with open(filepath, "wb") as f:
-            f.write(data)
-
-        # ▶ 写入后校验内容: 真实附件必为二进制; 验证码拦截 JSON / 接口报错 JSON /
-        #   网关 HTML 均不是真实文件 — 删除垃圾文件并计数, 继续下一个附件
-        is_real, reason = _classify_downloaded_head(data)
-        if not is_real:
-            try:
-                os.remove(filepath)
-            except OSError:
-                pass
-            captcha_blocked += 1
-            if reason == "captcha_json":
-                logging.info("Attachment captcha-blocked (JSON): %s | %s", url[:100], fname)
-            elif reason == "captcha_html":
-                logging.warning("Attachment captcha-blocked: %s | %s", url[:100], fname)
-            elif reason == "json_error":
-                logging.warning(
-                    "Attachment download returned JSON error, discarded: %s | %s | head=%r",
-                    url[:100], fname, data.lstrip()[:200],
-                )
-            else:  # html_page — 真实附件绝不会是全页 HTML
-                logging.warning(
-                    "Attachment download returned HTML page, discarded: %s | %s",
-                    url[:100], fname,
-                )
-            continue
+            f.write(body)
 
         claimed.add(filepath)
         local_files.append(filepath)
-        _request_delay()
 
     return local_files, captcha_blocked
 
@@ -1032,3 +1056,78 @@ def run(
                 lock.release()
             except Exception:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# Self-test entry point (test-only — the dispatcher normally imports this
+# module, it is never run directly).
+# NOTE: the module-level redis import is guarded by try/except ImportError.
+# If an external test script importing this module trips the known redis
+# circular-import in its context, neutralize it BEFORE the import with:
+#   import sys, unittest.mock
+#   sys.modules['rag.utils.redis_conn'] = unittest.mock.MagicMock()
+#   sys.path.insert(0, <project_root>)
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    # 对抗性自测 _classify_downloaded_head — 只打印用例名(原始字节会破坏 GBK
+    # 控制台), 任一失败退出码非零。
+    _waf_payload = (
+        '{"custom":{"validateVerificationCode":"false","pageVerify":"true",'
+        '"content":"\u9a8c\u8bc1\u7801\u9a8c\u8bc1\u5931\u8d25\uff01","status":"1"}}'
+    ).encode("utf-8")
+
+    def _expect_discard(reason):
+        return lambda real, why: (not real) and why == reason
+
+    def _expect_file(real, why):
+        return real and why == "file"
+
+    _CASES = [
+        # 1. 实测 117 字节 WAF 验证码拦截体 → captcha_json (长度一并校验)
+        ("waf_117b_captcha_json", _waf_payload,
+         lambda real, why: (not real) and why == "captcha_json" and len(_waf_payload) == 117),
+        # 2. 同一拦截体前置 UTF-8 BOM → 仍为 captcha_json
+        ("waf_117b_captcha_json_utf8_bom", b"\xef\xbb\xbf" + _waf_payload,
+         _expect_discard("captcha_json")),
+        # 3. 普通 JSON 报错 → json_error
+        ("json_error_plain", b'{"error":"not found"}', _expect_discard("json_error")),
+        # 4. UTF-16 BOM + UTF-16 JSON — BOM 精确剥离后不得误判为 file
+        ("utf16_bom_json_not_file", '{"error":"not found"}'.encode("utf-16"),
+         lambda real, why: not real),
+        # 5. 纯空白 → empty_body
+        ("whitespace_only_empty_body", b"  \r\n\t ", _expect_discard("empty_body")),
+        # 6. 空响应 → empty_body
+        ("empty_body", b"", _expect_discard("empty_body")),
+        # 7. 含验证码文案的 DOCTYPE 页 → captcha_html
+        ("doctype_captcha_html",
+         ("<!DOCTYPE html><html><body>\u9a8c\u8bc1\u7801\u9a8c\u8bc1\u5931\u8d25"
+          "</body></html>").encode("utf-8"),
+         _expect_discard("captcha_html")),
+        # 8. 大写 <HTML> 无拦截标记 → html_page
+        ("uppercase_html_page", b"<HTML><BODY>Gateway busy</BODY></HTML>",
+         _expect_discard("html_page")),
+        # 9. <?xml 片段 → markup 分支 html_page
+        ("xml_fragment_html_page", b'<?xml version="1.0"?><error>not found</error>',
+         _expect_discard("html_page")),
+        # 10. 裸 <script> 片段 → html_page
+        ("script_fragment_html_page", b"<script>alert(1)</script>",
+         _expect_discard("html_page")),
+        # 11-14. 真实附件: PDF/ZIP/OLE 魔数 + 纯文本 → file
+        ("pdf_magic_file", b"%PDF-1.5\n1 0 obj\n<<>>\nendobj\n", _expect_file),
+        ("zip_pk_magic_file", b"PK\x03\x04\x14\x00\x00\x00" + b"\x00" * 22, _expect_file),
+        ("ole_cfb_magic_file", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 24, _expect_file),
+        ("plain_text_file", b"plain text attachment", _expect_file),
+    ]
+
+    _failures = 0
+    for _name, _data, _check in _CASES:
+        _real, _reason = _classify_downloaded_head(_data)
+        _ok = bool(_check(_real, _reason))
+        if not _ok:
+            _failures += 1
+        # FAIL 诊断仅含 ASCII (real/reason), 不打印原始字节
+        print(("PASS " if _ok else "FAIL ") + _name +
+              ("" if _ok else " (got real={} reason={})".format(_real, _reason)))
+    print("self-test: {}/{} passed".format(len(_CASES) - _failures, len(_CASES)))
+    sys.exit(1 if _failures else 0)
