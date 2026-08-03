@@ -469,3 +469,149 @@ def _fetch_detail(full_url: str) -> Optional[dict]:
             result["title"][:40], len(result["content_text"]), full_url,
         )
     return result
+
+
+# ---------------------------------------------------------------------------
+# Attachment download
+# ---------------------------------------------------------------------------
+
+def _download_attachments(attachments: List[dict], download_dir: str) -> Tuple[List[str], int]:
+    """Download attachments to local dir.
+
+    Returns (local_file_paths, captcha_blocked_count).
+    网关/验证码 HTML 响应 → 计数跳过(附件 URL 仍保留在 markdown/extracted_json)。
+    """
+    os.makedirs(download_dir, exist_ok=True)
+    local_files: List[str] = []
+    captcha_blocked = 0
+
+    for att in attachments:
+        url = att.get("url", "")
+        if not url:
+            continue
+
+        fname = _sanitize_filename(att.get("name", "attachment"), max_len=120)
+        ext = os.path.splitext(urllib.parse.urlparse(url).path.split("?")[0])[1].lower()
+        if ext and not fname.lower().endswith(ext):
+            fname += ext
+
+        filepath = os.path.join(download_dir, fname)
+        if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+            local_files.append(filepath)
+            continue
+
+        data = _http_download(url, referer=_SITE_ROOT + "/lyztb/")
+        if not data:
+            continue
+
+        # HTML 响应 = 网关页或验证码页, 不是真实文件
+        if data[:15].lower().startswith(b"<!doctype") or data[:6].lower().startswith(b"<html"):
+            gateway = data.decode("utf-8", errors="replace")
+            low = gateway.lower()
+            if "pageverify" in low or "验证码" in gateway:
+                logging.warning("Attachment captcha-blocked: %s", url[:100])
+                captcha_blocked += 1
+                continue
+            # 宁德同款网关: 从 form action 提取真实下载地址再试一次
+            action_m = re.search(
+                r'action\s*=\s*["\']([^"\']*ztbAttachDownloadAction[^"\']*)["\']',
+                gateway, re.I,
+            )
+            if action_m:
+                action = action_m.group(1)
+                if not action.startswith("http"):
+                    action = (_SITE_ROOT + _PROJECT_NAME +
+                              "/webbuildermis/attach/" + action.lstrip("/"))
+                data = _http_download(action, referer=url)
+                if not data:
+                    continue
+                if data[:15].lower().startswith(b"<!doctype") or \
+                   data[:6].lower().startswith(b"<html"):
+                    captcha_blocked += 1
+                    continue
+            else:
+                captcha_blocked += 1
+                continue
+
+        # magic bytes 修正扩展名
+        if data[:4] == b"%PDF" and not fname.lower().endswith(".pdf"):
+            fname += ".pdf"
+        elif data[:4] == b"PK\x03\x04" and \
+                not any(fname.lower().endswith(e) for e in (".zip", ".docx", ".xlsx", ".pptx")):
+            fname += ".zip"
+
+        filepath = os.path.join(download_dir, fname)
+        with open(filepath, "wb") as f:
+            f.write(data)
+        local_files.append(filepath)
+        _request_delay()
+
+    return local_files, captcha_blocked
+
+
+def _extract_zip(filepath: str) -> List[str]:
+    """Extract ZIP members (需求#9: ZIP 解压后入库/入KB)。返回解压文件路径列表。"""
+    extracted: List[str] = []
+    extract_dir = os.path.splitext(filepath)[0] + "_extracted"
+    os.makedirs(extract_dir, exist_ok=True)
+    try:
+        with zipfile.ZipFile(filepath, "r") as zf:
+            for name in zf.namelist():
+                if name.endswith("/"):
+                    continue
+                safe_name = _sanitize_filename(os.path.basename(name), max_len=120)
+                out_path = os.path.join(extract_dir, safe_name)
+                # 同名冲突加序号, 避免覆盖
+                n = 1
+                while os.path.exists(out_path):
+                    base, ext = os.path.splitext(safe_name)
+                    out_path = os.path.join(extract_dir, "{}_{}{}".format(base, n, ext))
+                    n += 1
+                with zf.open(name) as src, open(out_path, "wb") as dst:
+                    dst.write(src.read())
+                extracted.append(out_path)
+    except Exception as e:
+        logging.warning("ZIP extraction failed for %s: %s", filepath, e)
+    return extracted
+
+
+def _extract_text_from_file(filepath: str) -> str:
+    """Extract text from TXT/PDF/DOCX/XLSX for the markdown appendix.
+
+    扫描件 PDF 由 KB naive parser 的 OCR 兜底(需求 ocr 口径)。
+    """
+    ext = os.path.splitext(filepath)[1].lower()
+    try:
+        if ext == ".txt":
+            with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+                return f.read()
+        elif ext == ".pdf":
+            import pdfplumber
+
+            parts: List[str] = []
+            with pdfplumber.open(filepath) as pdf:
+                for pg in pdf.pages:
+                    text = pg.extract_text()
+                    if text:
+                        parts.append(text)
+            return "\n\n".join(parts)
+        elif ext in (".docx", ".doc"):
+            import docx
+
+            doc = docx.Document(filepath)
+            return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        elif ext in (".xlsx", ".xls"):
+            import openpyxl
+
+            wb = openpyxl.load_workbook(filepath, read_only=True)
+            parts = []
+            for ws in wb.worksheets:
+                rows: List[str] = []
+                for row in ws.iter_rows(values_only=True):
+                    rows.append(" | ".join(str(c) if c is not None else "" for c in row))
+                if rows:
+                    parts.append("### {}\n".format(ws.title) + "\n".join(rows))
+            return "\n\n".join(parts)
+    except Exception as e:
+        logging.warning("Text extraction failed for %s: %s", filepath, e)
+    return ""
