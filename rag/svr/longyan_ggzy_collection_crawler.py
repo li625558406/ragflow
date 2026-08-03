@@ -22,8 +22,9 @@ appUrlFlag=ztb001&siteGuid=.. — 可能被 pageVerify 验证码拦截, 代码�
 (记录 captcha_blocked_count, 附件 URL 仍写入 markdown/extracted_json)。
 
 反爬: WAF 短时 ~30 快速请求→403(~20s 自愈); 深分页(8+)出验证码。
-策略: 请求间隔 0.8-2.0s; full 模式每页签只取第 1 页(pageSize=30);
-日常(date_filter)模式每页签最多翻 5 页且遇日期早于目标日即停。
+策略: 请求间隔 0.8-2.0s; 无论 full 还是日常(date_filter)模式, 每个页签均只抓
+列表第 1 页(pageSize=30, 按日期倒序); 日常模式仅保留目标日条目,
+遇早于目标日的条目即停止本页签。
 
 Call entry: unified_crawler.py dispatches via custom_runner → run()
 """
@@ -730,9 +731,10 @@ def _process_item(row: dict, category_num: str, section_name: str, tab_path: str
                         is_zip = f.read(4) == b"PK\x03\x04"
                 if is_zip:
                     extracted = _extract_zip(fp)
-                    if fp in local_files:
-                        local_files.remove(fp)
-                    local_files.extend(extracted)
+                    if extracted:
+                        if fp in local_files:
+                            local_files.remove(fp)
+                        local_files.extend(extracted)
         except Exception as e:
             errors.append("attachment stage failed for {}: {}".format(full_url, e))
 
@@ -840,6 +842,7 @@ def _run_locked(tenant_id: str, kb_id: str, task_name: str, task_id: str,
         site_display=SITE_DISPLAY,
         task_name=task_name,
         output_dir=output_dir or None,
+        skip_attachments=True,
         writer_mode="collection",
         category=category,
         task_id=task_id,
@@ -893,7 +896,7 @@ def _run_locked(tenant_id: str, kb_id: str, task_name: str, task_id: str,
             seen_urls.add(infourl)
 
             _safe_print("{}   -> {}".format(_TAG_PREFIX,
-                                            html_mod.unescape(row.get("title", ""))[:60]))
+                                            html_mod.unescape(row.get("title") or "")[:60]))
             sys.stdout.flush()
             _request_delay()
             try:
@@ -966,10 +969,11 @@ def run(
     _safe_print("=" * 60)
     sys.stdout.flush()
 
-    # ── 分布式锁: 防止本站采集并发运行 (CLI 直跑 / 手动触发 / task_executor 重入) ──
-    # ▶ 注意: detector 使用独立的 detector:lock:{tenant}:{site} 锁, 并不检查 crawler_engine:*
-    #   key, 所以本锁不会阻止探测探针 — 探针只读第一页(约 6 req/h), 与全量采集不冲突。
-    #   TTL 3h 覆盖一次全量 (1-2.5h); 进程中途崩溃时锁残留至 TTL, 用 --force 清除。
+    # ── 分布式锁: 与 engine/detector 共用 key ──
+    # SiteDetector.detect() 启动时检查 crawler_engine:{tenant}:{site}, 持锁期间探针
+    # 直接跳过 (reason="locked"), 避免采集进行中造成签名抖动; 探测器调度器
+    # (crawler_detector.py) 另有独立的探针并发锁 detector:lock:{tenant}:{site}。
+    # TTL 3h 覆盖一次全量采集 (1-2.5h); 进程中途崩溃时锁残留至 TTL, 用 --force 清除。
     lock = None
     lock_key = "crawler_engine:{}:{}".format(tenant_id, SITE_ID)
     if RedisDistributedLock is not None:
