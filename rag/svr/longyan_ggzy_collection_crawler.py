@@ -628,3 +628,62 @@ def _extract_text_from_file(filepath: str) -> str:
     except Exception as e:
         logging.warning("Text extraction failed for %s: %s", filepath, e)
     return ""
+
+
+# ---------------------------------------------------------------------------
+# Markdown builder
+# ---------------------------------------------------------------------------
+
+def _build_markdown(title: str, detail_url: str, section_name: str, tab_path: str,
+                    info_date: str, info_time: str, source: str,
+                    content_text: str, attachments: List[dict]) -> str:
+    """Build the KB markdown document for one item."""
+    lines: List[str] = [
+        "# {}".format(title or "无标题"),
+        "",
+        "**数据来源:** 龙岩市公共资源交易中心",
+        "**栏目:** {} — {}".format(section_name, tab_path),
+        "**页面地址:** {}".format(detail_url),
+        "**抓取时间:** {}".format(datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+    ]
+    if info_time or info_date:
+        lines.append("**信息时间:** {}".format(info_time or info_date))
+    if source:
+        lines.append("**信息来源:** {}".format(source))
+    lines += ["", "---", ""]
+
+    if content_text:
+        content_clean = re.sub(r"\n{3,}", "\n\n", content_text)
+        if len(content_clean) > 100000:
+            content_clean = content_clean[:100000] + "\n\n（内容过长，已截断）"
+        lines.append(content_clean)
+    else:
+        lines.append("*(本文无文字内容)*")
+
+    if attachments:
+        lines += ["", "---", "", "## 附件", ""]
+        for att in attachments:
+            lines.append("- [{}]({})".format(att.get("name", "附件"), att.get("url", "")))
+
+    return "\n".join(lines)
+
+
+def _build_attachment_appendix(local_files: List[str]) -> str:
+    """Appendix markdown: extracted text of each downloaded attachment file."""
+    if not local_files:
+        return ""
+    lines: List[str] = ["### 附件内容", ""]
+    for fp in local_files:
+        if not os.path.exists(fp) or os.path.getsize(fp) == 0:
+            continue
+        lines.append("#### {}".format(os.path.basename(fp)))
+        lines.append("")
+        extracted_text = _extract_text_from_file(fp)
+        if extracted_text and extracted_text.strip():
+            if len(extracted_text) > 50000:
+                extracted_text = extracted_text[:50000] + "\n\n（内容过长，已截断）"
+            lines.append(extracted_text)
+        else:
+            lines.append("（无法提取文本内容）")
+        lines.append("")
+    return "\n".join(lines) if len(lines) > 2 else ""
