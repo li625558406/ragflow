@@ -74,7 +74,6 @@ _SITE_ROOT = "https://ggzy.longyan.gov.cn"
 _TAG_PREFIX = "[LY-GGZY]"
 
 _PAGE_SIZE = 30
-_MAX_DAILY_PAGES = 5                  # date_filter 模式每页签最大翻页数(深分页有验证码)
 _REQUEST_DELAY_MIN = 0.8
 _REQUEST_DELAY_MAX = 2.0
 _LISTING_RETRIES = 2          # 列表请求重试次数 (WAF 瞬时 403 自愈约 20s)
@@ -544,7 +543,7 @@ def _download_attachments(attachments: List[dict], download_dir: str) -> Tuple[L
         if data[:4] == b"%PDF" and not fname.lower().endswith(".pdf"):
             fname += ".pdf"
         elif data[:4] == b"PK\x03\x04" and \
-                not any(fname.lower().endswith(e) for e in (".zip", ".docx", ".xlsx", ".pptx", ".doc", ".ppt")):
+                not any(fname.lower().endswith(e) for e in (".zip", ".docx", ".xlsx", ".pptx", ".doc", ".ppt", ".xls")):
             fname += ".zip"
 
         filepath = os.path.join(download_dir, fname)
@@ -687,3 +686,316 @@ def _build_attachment_appendix(local_files: List[str]) -> str:
             lines.append("（无法提取文本内容）")
         lines.append("")
     return "\n".join(lines) if len(lines) > 2 else ""
+
+
+# ---------------------------------------------------------------------------
+# Per-item processing
+# ---------------------------------------------------------------------------
+
+def _process_item(row: dict, category_num: str, section_name: str, tab_path: str,
+                  writer, pipeline, tenant_id: str, kb_id: str,
+                  category: str, task_id: str, errors: List[str]) -> Tuple[int, int, int]:
+    """Fetch detail + attachments, write DB + KB for one listing row.
+
+    Returns (stored_count, kb_doc_count, attachment_upload_count).
+    """
+    infourl = (row.get("infourl") or "").strip()
+    full_url = _SITE_ROOT + infourl
+    list_title = html_mod.unescape(re.sub(r"<[^>]+>", "", row.get("title", "") or "")).strip()
+    infodate = _normalize_date(row.get("infodate", ""))
+
+    detail = _fetch_detail(full_url)
+    if detail is None:
+        errors.append("detail fetch failed: {}".format(full_url))
+        return 0, 0, 0
+
+    title = detail.get("title") or list_title or "(no title)"
+    attachments = detail.get("attachments", [])
+
+    # ── Download attachments + unzip ────────────────────────────────
+    local_files: List[str] = []
+    captcha_blocked = 0
+    tmp_dir = ""
+    if attachments:
+        tmp_dir = tempfile.mkdtemp(prefix="lyggzy_")
+        try:
+            local_files, captcha_blocked = _download_attachments(attachments, tmp_dir)
+            for fp in list(local_files):
+                is_zip = fp.lower().endswith(".zip")
+                # ▶ docx/xlsx/pptx/doc/xls/ppt 同为 PK 魔数, 不能按 zip 解压(会碎成 XML)
+                if (not is_zip and os.path.exists(fp) and os.path.getsize(fp) >= 4
+                        and not any(fp.lower().endswith(e) for e in
+                                    (".docx", ".xlsx", ".pptx", ".doc", ".xls", ".ppt"))):
+                    with open(fp, "rb") as f:
+                        is_zip = f.read(4) == b"PK\x03\x04"
+                if is_zip:
+                    extracted = _extract_zip(fp)
+                    if fp in local_files:
+                        local_files.remove(fp)
+                    local_files.extend(extracted)
+        except Exception as e:
+            errors.append("attachment stage failed for {}: {}".format(full_url, e))
+
+    try:
+        # ── Build markdown ───────────────────────────────────────────
+        md_content = _build_markdown(
+            title, full_url, section_name, tab_path, infodate,
+            detail.get("info_time", ""), detail.get("source", ""),
+            (detail.get("content_text", "") or "").replace("\r\n", "\n"),  # ▶ CRLF 归一
+            attachments,
+        )
+        if local_files:
+            appendix = _build_attachment_appendix(local_files)
+            if appendix:
+                md_content += "\n" + appendix + "\n"
+
+        item_dict: Dict[str, Any] = {
+            "title": title,
+            "url": full_url,
+            "date": infodate or detail.get("info_time", ""),
+            "content": md_content,
+            "content_markdown": md_content,
+            "site_id": SITE_ID,
+            "site_display": SITE_DISPLAY,
+            "section_name": section_name,
+            "info_type": INFO_TYPE,
+            "tab_path": tab_path,
+            "category_num": category_num,
+            "info_source": detail.get("source", ""),
+            "zhuanzai": row.get("zhuanzai", ""),
+            "strcomment": row.get("strcomment", ""),
+            "attachment_count": len(local_files),
+            "captcha_blocked_count": captcha_blocked,
+            "attachments": [
+                {"file_name": a.get("name", ""), "file_url": a.get("url", "")}
+                for a in attachments
+            ],
+        }
+
+        # ── 1. crawler_result via CollectionWriter (去重+日期过滤) ───
+        result_id = writer.write_all(
+            item=item_dict,
+            site_id=SITE_ID,
+            category=category,
+            task_id=task_id,
+            site_display=SITE_DISPLAY,
+        )
+        if not result_id:
+            return 0, 0, 0
+
+        # ── 2. KB markdown upload via StoragePipeline ───────────────
+        kb_docs = 0
+        try:
+            store_result = pipeline.store(item_from_dict(item_dict, site_id=SITE_ID))
+            if store_result.get("doc_id"):
+                kb_docs += 1
+        except Exception as e:
+            logger.warning("Pipeline store failed for %s: %s", full_url[:80], e)
+
+        # ── 3. Local attachment files → KB (网关下载, pipeline 无法走 URL) ──
+        att_docs = 0
+        if local_files and kb_id:
+            try:
+                from rag.svr.crawler_engine.kb_uploader import KBUploader
+
+                kb_uploader = KBUploader(kb_id, tenant_id)
+                for fp in local_files:
+                    if os.path.exists(fp) and os.path.getsize(fp) > 0:
+                        try:
+                            doc_ids = kb_uploader.upload_file(fp)
+                            if doc_ids:
+                                att_docs += 1
+                        except Exception as e:
+                            logger.warning(
+                                "Attachment KB upload failed for %s: %s",
+                                os.path.basename(fp), e,
+                            )
+            except Exception as e:
+                logger.warning("KBUploader init failed: %s", e)
+
+        _safe_print("{}   OK ({} chars, {} files, captcha_blocked={})".format(
+            _TAG_PREFIX, len(md_content), len(local_files), captcha_blocked))
+        sys.stdout.flush()
+        return 1, kb_docs, att_docs
+    finally:
+        if tmp_dir and os.path.isdir(tmp_dir):
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# run() — custom_runner entry point
+# ---------------------------------------------------------------------------
+
+def _run_locked(tenant_id: str, kb_id: str, task_name: str, task_id: str,
+                category: str, date_filter: str, full_crawl: bool,
+                output_dir: str) -> dict:
+    from rag.svr.crawler_engine.collection_writer import CollectionWriter
+    from rag.svr.crawler_engine.storage_pipeline import StoragePipeline
+
+    writer = CollectionWriter(kb_id=kb_id, tenant_id=tenant_id, date_filter=date_filter)
+    pipeline = StoragePipeline(
+        kb_id=kb_id,
+        tenant_id=tenant_id,
+        site_id=SITE_ID,
+        site_display=SITE_DISPLAY,
+        task_name=task_name,
+        output_dir=output_dir or None,
+        writer_mode="collection",
+        category=category,
+        task_id=task_id,
+        date_filter=date_filter,
+    )
+
+    # 目标日期: date_filter=today/具体日期 → 只保留该日条目; 无 date_filter(full) → 不过滤
+    # ▶ 用户口径: 无论 full/daily, 每个页签只抓列表第 1 页 (按日期倒序, 第一页即覆盖当日)
+    target_date = ""
+    if date_filter:
+        df = date_filter.strip().lower()
+        if df == "today":
+            target_date = datetime.now().strftime("%Y-%m-%d")
+        else:
+            target_date = _normalize_date(date_filter)
+
+    total_items = 0
+    total_kb = 0
+    total_att = 0
+    pages_scanned = 0
+    errors: List[str] = []
+    seen_urls: set = set()
+
+    _safe_print("{} Mode: {} | target_date={!r} | tabs={} (first page only)".format(
+        _TAG_PREFIX, "full(first-page-per-tab)" if full_crawl else "daily(first-page-per-tab)",
+        target_date, len(TABS)))
+    sys.stdout.flush()
+
+    for tab_idx, (category_num, section_name, tab_path) in enumerate(TABS, 1):
+        _safe_print("{} [{}/{}] {} {} ...".format(_TAG_PREFIX, tab_idx, len(TABS),
+                                                  section_name, tab_path))
+        sys.stdout.flush()
+
+        rows = _fetch_tab_rows(category_num, 0)
+        pages_scanned += 1
+        if not rows:
+            continue
+
+        for row in rows:
+            infourl = (row.get("infourl") or "").strip()
+            if not infourl:
+                continue
+            infodate = _normalize_date(row.get("infodate", ""))
+            # 列表按日期倒序: 早于目标日 → 本页剩余条目必然更旧, 直接结束本页签
+            if target_date and infodate and infodate < target_date:
+                break
+            if target_date and infodate and infodate != target_date:
+                continue
+            if infourl in seen_urls:
+                continue
+            seen_urls.add(infourl)
+
+            _safe_print("{}   -> {}".format(_TAG_PREFIX,
+                                            html_mod.unescape(row.get("title", ""))[:60]))
+            sys.stdout.flush()
+            _request_delay()
+            try:
+                stored, kb_n, att_n = _process_item(
+                    row, category_num, section_name, tab_path,
+                    writer, pipeline, tenant_id, kb_id, category, task_id, errors,
+                )
+                total_items += stored
+                total_kb += kb_n
+                total_att += att_n
+            except Exception as e:
+                msg = "Error processing {}: {}".format(infourl, e)
+                logger.exception(msg)
+                errors.append(msg)
+
+    wstats = writer.stats
+    total_new = wstats.get("results_new", 0)
+
+    _safe_print("\n" + "=" * 60)
+    _safe_print("DONE  pages={}  items_stored={}  new={}  kb={}  att={}  errors={}".format(
+        pages_scanned, total_items, total_new, total_kb, total_att, len(errors)))
+    _safe_print("=" * 60)
+    sys.stdout.flush()
+
+    try:
+        pipeline.cleanup()
+    except Exception:
+        pass
+
+    # status 契约: unified_crawler 仅在 status=="error" 时判 fail
+    if errors and total_items == 0:
+        status = "error"
+    elif errors:
+        status = "partial"
+    else:
+        status = "success"
+
+    return {
+        "status": status,
+        "pages": pages_scanned,
+        "items_found": len(seen_urls),
+        "items_new": total_new,
+        "kb_uploaded": total_kb,
+        "attachments_uploaded": total_att,
+        "errors": errors,
+    }
+
+
+def run(
+    tenant_id: str = "",
+    kb_id: str = "",
+    task_name: str = "",
+    task_id: str = "",
+    writer_mode: str = "collection",
+    category: str = CATEGORY,
+    date_filter: str = "",
+    full_crawl: bool = False,
+    force_run: bool = False,
+    site_config: Any = None,
+    output_dir: str = "",
+) -> dict:
+    """Custom runner entry point called by unified_crawler.py."""
+    _kb_id = kb_id or KB_ID_DEFAULT
+
+    _safe_print("=" * 60)
+    _safe_print("龙岩市公共资源交易中心 — 交易信息采集 (custom_runner)")
+    _safe_print("Tenant: {}  KB: {}".format(tenant_id, _kb_id))
+    _safe_print("Date filter: {}  Category: {}".format(date_filter or "none", category))
+    _safe_print("Full crawl: {}  Force run: {}".format(full_crawl, force_run))
+    _safe_print("=" * 60)
+    sys.stdout.flush()
+
+    # ── 分布式锁: 防止本站采集并发运行 (CLI 直跑 / 手动触发 / task_executor 重入) ──
+    # ▶ 注意: detector 使用独立的 detector:lock:{tenant}:{site} 锁, 并不检查 crawler_engine:*
+    #   key, 所以本锁不会阻止探测探针 — 探针只读第一页(约 6 req/h), 与全量采集不冲突。
+    #   TTL 3h 覆盖一次全量 (1-2.5h); 进程中途崩溃时锁残留至 TTL, 用 --force 清除。
+    lock = None
+    lock_key = "crawler_engine:{}:{}".format(tenant_id, SITE_ID)
+    if RedisDistributedLock is not None:
+        if force_run and REDIS_CONN is not None:
+            try:
+                REDIS_CONN.delete(lock_key)
+                logging.info("longyan_ggzy: force mode, cleared lock %s", lock_key)
+            except Exception:
+                pass
+        lock = RedisDistributedLock(lock_key, timeout=_LOCK_TIMEOUT, blocking_timeout=0)
+        if not lock.acquire():
+            msg = "another crawl is running (lock {})".format(lock_key)
+            _safe_print("{} SKIPPED: {}".format(_TAG_PREFIX, msg))
+            return {
+                "status": "skipped",
+                "pages": 0, "items_found": 0, "items_new": 0,
+                "kb_uploaded": 0, "attachments_uploaded": 0,
+                "errors": [msg],
+            }
+
+    try:
+        return _run_locked(tenant_id, _kb_id, task_name, task_id,
+                           category or CATEGORY, date_filter, full_crawl, output_dir)
+    finally:
+        if lock is not None:
+            try:
+                lock.release()
+            except Exception:
+                pass
