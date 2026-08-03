@@ -6118,6 +6118,147 @@ sites:
       upload_batch_size: 10
 
   # --------------------------------------------------------------------------
+  # longyan_ggzy — 龙岩市公共资源交易中心 (Epoint WebBuilder, custom_runner)
+  # 采集主体: rag/svr/longyan_ggzy_collection_crawler.py (51 个页签 TABS 矩阵)
+  # 列表 API: getInfoMationList form POST, 无需 token; 行字段 title/infourl/infodate
+  # 下列 listing/sections 仅供探测器探针使用(每个 section 用本栏目的聚合根 categoryNum,
+  # 列表按日期倒序, 根聚合页首页即可感知全栏目新增)
+  # 反爬: WAF ~30 快速请求→403(~20s 自愈); 深分页(8+)出验证码 → 日常模式每页签≤5页
+  # --------------------------------------------------------------------------
+  longyan_ggzy:
+    name: "龙岩市公共资源交易中心"
+    site_url: "https://ggzy.longyan.gov.cn/lyztb/"
+    category: bid
+    enabled: true
+    detect_enabled: true
+    detect_interval: 3600
+    custom_runner: "rag.svr.longyan_ggzy_collection_crawler"
+    transport:
+      type: rest_api
+      headers:
+        User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        Referer: "https://ggzy.longyan.gov.cn/lyztb/"
+        X-Requested-With: "XMLHttpRequest"
+      verify_ssl: false
+      timeout: 30
+    listing:
+      url: "https://ggzy.longyan.gov.cn/EpointWebBuilder/rest/GgSearchAction/getInfoMationList"
+      method: POST
+      body_type: form
+      params:
+        siteGuid: "7eb5f7f1-9041-43ad-8e13-8fcb82ea831a"
+        categoryNum: "007"
+        kw: ""
+        pageIndex: "0"
+        pageSize: "30"
+        YZM: ""
+        ImgGuid: ""
+    pagination:
+      type: single_page
+      items_field: "custom"
+    extract:
+      type: json_path
+      items_path: "custom"
+      fields:
+        title: "title"
+        url: "infourl"
+        date: "infodate"
+    detail:
+      type: none                       # custom_runner 内部完成详情抓取
+    anti_crawler:
+      delay_min: 0.8
+      delay_max: 2.0
+      max_retries: 2
+    format:
+      parser_id: "naive"
+      upload_batch_size: 10
+    sections:
+      - label: gcjs
+        name: "龙岩市-工程建设"
+        listing:
+          url: "https://ggzy.longyan.gov.cn/EpointWebBuilder/rest/GgSearchAction/getInfoMationList"
+          method: POST
+          body_type: form
+          params:
+            siteGuid: "7eb5f7f1-9041-43ad-8e13-8fcb82ea831a"
+            categoryNum: "007"
+            kw: ""
+            pageIndex: "0"
+            pageSize: "30"
+            YZM: ""
+            ImgGuid: ""
+      - label: zfcg
+        name: "龙岩市-政府采购"
+        listing:
+          url: "https://ggzy.longyan.gov.cn/EpointWebBuilder/rest/GgSearchAction/getInfoMationList"
+          method: POST
+          body_type: form
+          params:
+            siteGuid: "7eb5f7f1-9041-43ad-8e13-8fcb82ea831a"
+            categoryNum: "008"
+            kw: ""
+            pageIndex: "0"
+            pageSize: "30"
+            YZM: ""
+            ImgGuid: ""
+      - label: qycg
+        name: "龙岩市-企业采购"
+        listing:
+          url: "https://ggzy.longyan.gov.cn/EpointWebBuilder/rest/GgSearchAction/getInfoMationList"
+          method: POST
+          body_type: form
+          params:
+            siteGuid: "7eb5f7f1-9041-43ad-8e13-8fcb82ea831a"
+            categoryNum: "008005"
+            kw: ""
+            pageIndex: "0"
+            pageSize: "30"
+            YZM: ""
+            ImgGuid: ""
+      - label: cqjy
+        name: "龙岩市-产权交易"
+        listing:
+          url: "https://ggzy.longyan.gov.cn/EpointWebBuilder/rest/GgSearchAction/getInfoMationList"
+          method: POST
+          body_type: form
+          params:
+            siteGuid: "7eb5f7f1-9041-43ad-8e13-8fcb82ea831a"
+            categoryNum: "011006"
+            kw: ""
+            pageIndex: "0"
+            pageSize: "30"
+            YZM: ""
+            ImgGuid: ""
+      - label: tdky
+        name: "龙岩市-土地矿业"
+        listing:
+          url: "https://ggzy.longyan.gov.cn/EpointWebBuilder/rest/GgSearchAction/getInfoMationList"
+          method: POST
+          body_type: form
+          params:
+            siteGuid: "7eb5f7f1-9041-43ad-8e13-8fcb82ea831a"
+            categoryNum: "011007"
+            kw: ""
+            pageIndex: "0"
+            pageSize: "30"
+            YZM: ""
+            ImgGuid: ""
+      - label: lqsq
+        name: "龙岩市-林权水权交易"
+        listing:
+          url: "https://ggzy.longyan.gov.cn/EpointWebBuilder/rest/GgSearchAction/getInfoMationList"
+          method: POST
+          body_type: form
+          params:
+            siteGuid: "7eb5f7f1-9041-43ad-8e13-8fcb82ea831a"
+            categoryNum: "011010"
+            kw: ""
+            pageIndex: "0"
+            pageSize: "30"
+            YZM: ""
+            ImgGuid: ""
+
+  # --------------------------------------------------------------------------
   # longyan — 龙岩市政府采购 (OAuth2 token SPA)
   # Old script: longyan_crawler.py
   # --------------------------------------------------------------------------
