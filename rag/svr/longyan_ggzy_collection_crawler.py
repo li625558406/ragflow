@@ -484,6 +484,7 @@ def _download_attachments(attachments: List[dict], download_dir: str) -> Tuple[L
     os.makedirs(download_dir, exist_ok=True)
     local_files: List[str] = []
     captcha_blocked = 0
+    claimed: set = set()  # 本批次已占用的文件路径 — 同名附件加序号, 防覆盖/防重复路径
 
     for att in attachments:
         url = att.get("url", "")
@@ -492,12 +493,16 @@ def _download_attachments(attachments: List[dict], download_dir: str) -> Tuple[L
 
         fname = _sanitize_filename(att.get("name", "attachment"), max_len=120)
         ext = os.path.splitext(urllib.parse.urlparse(url).path.split("?")[0])[1].lower()
+        # API 端点 URL 的伪扩展名不能追加到文件名 (ztbAttachDownloadAction.action)
+        if ext in (".action", ".do", ".aspx", ".jsp", ".php", ".html", ".htm"):
+            ext = ""
         if ext and not fname.lower().endswith(ext):
             fname += ext
 
         filepath = os.path.join(download_dir, fname)
-        if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+        if os.path.exists(filepath) and os.path.getsize(filepath) > 0 and filepath not in claimed:
             local_files.append(filepath)
+            claimed.add(filepath)
             continue
 
         data = _http_download(url, referer=_SITE_ROOT + "/lyztb/")
@@ -505,7 +510,8 @@ def _download_attachments(attachments: List[dict], download_dir: str) -> Tuple[L
             continue
 
         # HTML 响应 = 网关页或验证码页, 不是真实文件
-        if data[:15].lower().startswith(b"<!doctype") or data[:6].lower().startswith(b"<html"):
+        head = data.lstrip()
+        if head[:15].lower().startswith(b"<!doctype") or head[:6].lower().startswith(b"<html"):
             gateway = data.decode("utf-8", errors="replace")
             low = gateway.lower()
             if "pageverify" in low or "验证码" in gateway:
@@ -525,8 +531,9 @@ def _download_attachments(attachments: List[dict], download_dir: str) -> Tuple[L
                 data = _http_download(action, referer=url)
                 if not data:
                     continue
-                if data[:15].lower().startswith(b"<!doctype") or \
-                   data[:6].lower().startswith(b"<html"):
+                head = data.lstrip()
+                if head[:15].lower().startswith(b"<!doctype") or \
+                   head[:6].lower().startswith(b"<html"):
                     captcha_blocked += 1
                     continue
             else:
@@ -537,12 +544,18 @@ def _download_attachments(attachments: List[dict], download_dir: str) -> Tuple[L
         if data[:4] == b"%PDF" and not fname.lower().endswith(".pdf"):
             fname += ".pdf"
         elif data[:4] == b"PK\x03\x04" and \
-                not any(fname.lower().endswith(e) for e in (".zip", ".docx", ".xlsx", ".pptx")):
+                not any(fname.lower().endswith(e) for e in (".zip", ".docx", ".xlsx", ".pptx", ".doc", ".ppt")):
             fname += ".zip"
 
         filepath = os.path.join(download_dir, fname)
+        n = 1
+        while filepath in claimed:
+            base, f_ext = os.path.splitext(fname)
+            filepath = os.path.join(download_dir, "{}_{}{}".format(base, n, f_ext))
+            n += 1
         with open(filepath, "wb") as f:
             f.write(data)
+        claimed.add(filepath)
         local_files.append(filepath)
         _request_delay()
 
