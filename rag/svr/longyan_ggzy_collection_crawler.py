@@ -374,7 +374,7 @@ def _extract_attachments_from_html(html_str: str, page_url: str) -> List[dict]:
         if not name_m:
             name_m = re.search(r'>([^<]{3,120})</a>', post_context)
         if name_m:
-            name = name_m.group(1).strip()
+            name = html_mod.unescape(name_m.group(1).strip())
         real_url = (
             "{}?cmd=getContent&attachGuid={}&appUrlFlag={}&siteGuid={}".format(
                 _API_ATTACH, guid, _APP_URL_FLAG, _SITE_GUID
@@ -446,16 +446,26 @@ def _fetch_detail(full_url: str) -> Optional[dict]:
         content_start = html.find(">", idx) + 1
         content_end = len(html)
         for marker in ("ewb-page-lookup", "footrt", "subfooter"):
-            marker_idx = html.find(marker, content_start)
-            if marker_idx > 0:
-                content_end = marker_idx
+            tag_m = re.search(
+                r"<[^>]*" + re.escape(marker) + r"[^>]*>", html[content_start:]
+            )
+            if tag_m:
+                content_end = content_start + tag_m.start()
                 break
         content_html = html[content_start:content_end].strip()
-        content_html = re.sub(
+        content_html = re.sub(r"<[^>]*\Z", "", content_html)
+        no_chain = re.sub(
             r'<div\s+class="chain"[^>]*>.*?</div>\s*</div>\s*</div>\s*</div>\s*</div>',
             "", content_html, flags=re.DOTALL,
         )
+        if no_chain.strip():
+            content_html = no_chain
         result["content_text"] = _html_to_text(content_html)
 
     result["attachments"] = _extract_attachments_from_html(html, full_url)
+    if not result["title"] or not result["content_text"]:
+        logging.warning(
+            "longyan detail parse incomplete (title=%r content_len=%d): %s",
+            result["title"][:40], len(result["content_text"]), full_url,
+        )
     return result
