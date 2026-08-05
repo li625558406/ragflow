@@ -2,6 +2,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { DetectTab } from './detect-tab';
+import { ParseMonitorTab } from './parse-monitor-tab';
 import { ResultsTab } from './results-tab';
 import { TasksTab } from './tasks-tab';
 
@@ -23,6 +24,9 @@ export default function Crawl4aiPage() {
           <TabsTrigger value="results">{t('crawl4ai.results')}</TabsTrigger>
           <TabsTrigger value="tasks">{t('crawl4ai.tasks')}</TabsTrigger>
           <TabsTrigger value="detect">{t('crawl4ai.detect.tab')}</TabsTrigger>
+          <TabsTrigger value="parse-monitor">
+            {t('crawl4ai.parseMonitor.tab')}
+          </TabsTrigger>
         </TabsList>
         <TabsContent value="results" className="flex-1 min-h-0 mt-4">
           <ResultsTab />
@@ -32,6 +36,9 @@ export default function Crawl4aiPage() {
         </TabsContent>
         <TabsContent value="detect" className="flex-1 min-h-0 mt-4">
           <DetectTab />
+        </TabsContent>
+        <TabsContent value="parse-monitor" className="flex-1 min-h-0 mt-4">
+          <ParseMonitorTab />
         </TabsContent>
       </Tabs>
     </article>
