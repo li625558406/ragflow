@@ -30,6 +30,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 import peewee
+from peewee import fn
 from quart import Blueprint, request
 
 from api.apps import current_user, login_required
@@ -448,23 +449,23 @@ async def create_scheduled():
             return get_data_error_result(message=f"invalid cron_expression: {e}")
 
     task_id = get_uuid()
-    ScheduledTaskService.insert({
-        "id": task_id,
-        "tenant_id": current_user.id,
-        "name": name,
-        "description": f"Scheduled collection: {site_id} ({category})",
-        "script_path": _UNIFIED_CRAWLER_SCRIPT,
-        "script_args": _build_script_args(site_id, category, full=False,
-                                          date_filter=date_filter),
-        "schedule_type": schedule_type,
-        "cron_expression": cron_expr,
-        "interval_seconds": interval if schedule_type == "interval" else None,
-        "enabled": enabled,
-        "timeout": 3600,
-        "kb_id": kb_id,
-        "target_url": "",
-        "next_run_time": next_run,
-    })
+    ScheduledTaskService.insert(
+        id=task_id,
+        tenant_id=current_user.id,
+        name=name,
+        description=f"Scheduled collection: {site_id} ({category})",
+        script_path=_UNIFIED_CRAWLER_SCRIPT,
+        script_args=_build_script_args(site_id, category, full=False,
+                                       date_filter=date_filter),
+        schedule_type=schedule_type,
+        cron_expression=cron_expr,
+        interval_seconds=interval if schedule_type == "interval" else None,
+        enabled=enabled,
+        timeout=3600,
+        kb_id=kb_id,
+        target_url="",
+        next_run_time=next_run,
+    )
     return get_json_result(data={"id": task_id, "next_run_time": next_run})
 
 
@@ -1174,3 +1175,102 @@ async def detect_install():
         logging.exception("collection_api: detect_install failed: %s", e)
         return get_data_error_result(message=f"install failed: {e}")
     return get_json_result(data={"task": row})
+
+
+# ---------------------------------------------------------------------------
+# 解析监控 (Parse monitor)
+# ---------------------------------------------------------------------------
+
+_PARSE_MONITOR_OVERVIEW_KEY = "parse_monitor:overview"
+_PARSE_MONITOR_OVERVIEW_TTL = 60  # 与前端轮询节奏一致
+_PARSE_MONITOR_BATCHES_KEY = "parse_monitor:batches"
+_PARSE_MONITOR_BATCHES_MAX = 20
+
+
+def _compute_parse_overview() -> Dict[str, Any]:
+    """聚合 Document.run 分布 + 最近 1h 完成数 + 吞吐 + ETA."""
+    from api.db.db_models import Document, TaskStatus
+
+    @DB.connection_context()
+    def _q() -> Dict[str, Any]:
+        now_ms = int(time.time() * 1000)
+        cutoff_30min_ms = now_ms - 30 * 60 * 1000
+        cutoff_1h_ms = now_ms - 60 * 60 * 1000
+
+        # run 分布
+        state_counts: Dict[str, int] = {s.value: 0 for s in TaskStatus}
+        for row in (Document
+                    .select(Document.run, fn.COUNT(Document.id).alias("n"))
+                    .group_by(Document.run)):
+            state_counts[row.run] = int(row.n)
+
+        total = sum(state_counts.values())
+        running = state_counts.get(TaskStatus.RUNNING.value, 0)
+        done = state_counts.get(TaskStatus.DONE.value, 0)
+        failed = state_counts.get(TaskStatus.FAIL.value, 0)
+
+        # 积压: run=1 且 30 分钟未更新 (与 _bulk_reparse_zombies 筛选一致)
+        backlog = (Document
+                   .select(fn.COUNT(Document.id))
+                   .where((Document.run == TaskStatus.RUNNING.value)
+                          & (Document.update_time < cutoff_30min_ms))
+                   .scalar()) or 0
+
+        # 最近 1h 完成数
+        done_last_1h = (Document
+                        .select(fn.COUNT(Document.id))
+                        .where((Document.run == TaskStatus.DONE.value)
+                               & (Document.update_time > cutoff_1h_ms))
+                        .scalar()) or 0
+
+        rate_per_min = round(done_last_1h / 60.0, 2)
+        eta_sec = int(backlog / (rate_per_min / 60.0)) if rate_per_min > 0 else 0
+
+        return {
+            "now": int(now_ms / 1000),
+            "states": state_counts,
+            "total": total,
+            "running": running,
+            "done": done,
+            "failed": failed,
+            "backlog": int(backlog),
+            "done_last_1h": int(done_last_1h),
+            "rate_per_min": rate_per_min,
+            "eta_sec": eta_sec,
+        }
+
+    return _q()
+
+
+def _get_parse_overview() -> Dict[str, Any]:
+    """带 60s Redis 缓存的 overview; Redis 异常时直查 DB."""
+    rc = _detect_redis()  # 复用现有 lazy import
+    if rc is not None:
+        try:
+            raw = rc.get(_PARSE_MONITOR_OVERVIEW_KEY)
+            if raw:
+                return json.loads(raw)
+        except Exception as e:
+            logging.warning("parse_monitor: overview cache read failed: %s", e)
+
+    data = _compute_parse_overview()
+    data["cached_at"] = data["now"]
+
+    if rc is not None:
+        try:
+            rc.set_obj(_PARSE_MONITOR_OVERVIEW_KEY, data, exp=_PARSE_MONITOR_OVERVIEW_TTL)
+        except Exception as e:
+            logging.warning("parse_monitor: overview cache write failed: %s", e)
+    return data
+
+
+@manager.route("/collection/parse-monitor/overview", methods=["GET"])  # noqa: F821
+@login_required
+async def parse_monitor_overview():
+    """文档解析状态分布 + 吞吐 + ETA."""
+    try:
+        data = _get_parse_overview()
+        return get_json_result(data=data)
+    except Exception as e:
+        logging.error("parse_monitor: overview failed: %s", e, exc_info=True)
+        return get_data_error_result(message=f"overview failed: {e}")
