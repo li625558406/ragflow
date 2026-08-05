@@ -2131,6 +2131,62 @@ class CollectionZdgksxmlExt(DataBaseModel):
         db_table = "collection_zdgksxml_ext"
 
 
+# ── 智能采集通知系统 ──────────────────────────────────────────────
+class Notification(DataBaseModel):
+    """采集通知主体：一个 site 一轮新增聚合 = 1 条记录。"""
+    id = CharField(max_length=64, primary_key=True)
+    tenant_id = CharField(max_length=32, null=False, default="system", index=True,
+                          help_text="沿用 collection_app _SHARED_TENANT='system' 模型，全局共享")
+    site_id = CharField(max_length=128, null=False, index=True)
+    site_display = CharField(max_length=256, null=True, default="")
+    category = CharField(max_length=32, null=False, default="news", index=True)
+    batch_key = CharField(max_length=160, null=False, unique=True,
+                          help_text="{site_id}::{minute_ts} 幂等键")
+    title = CharField(max_length=256, null=False, default="")
+    summary = TextField(null=True, default="")
+    result_ids = JSONField(null=False, default=list)
+    result_count = IntegerField(null=False, default=0)
+    publish_range = CharField(max_length=64, null=True, default="")
+    created_at = BigIntegerField(null=False, default=0, index=True)
+
+    class Meta:
+        db_table = "notification"
+
+
+class NotificationUser(DataBaseModel):
+    """用户维度未读记录（已阅状态）。"""
+    id = CharField(max_length=64, primary_key=True)
+    notification_id = CharField(max_length=64, null=False, index=True)
+    user_id = CharField(max_length=64, null=False, index=True)
+    tenant_id = CharField(max_length=32, null=False, default="system", index=True)
+    is_read = BooleanField(null=False, default=False, index=True)
+    read_at = BigIntegerField(null=True, default=None)
+
+    class Meta:
+        db_table = "notification_user"
+        indexes = (
+            (("user_id", "notification_id"), True),  # 复合唯一
+            (("user_id", "is_read"), False),  # 未读列表查询索引
+        )
+
+
+class NotificationSubscription(DataBaseModel):
+    """用户订阅偏好（site_ids/categories 为空 = 全订阅）。"""
+    id = CharField(max_length=64, primary_key=True)
+    user_id = CharField(max_length=64, null=False, index=True)
+    tenant_id = CharField(max_length=32, null=False, default="system", index=True)
+    site_ids = JSONField(null=False, default=list, help_text="[] = 全订阅")
+    categories = JSONField(null=False, default=list, help_text="[] = 全订阅")
+    browser_push = BooleanField(null=False, default=True)
+    force_modal = BooleanField(null=False, default=True)
+
+    class Meta:
+        db_table = "notification_subscription"
+        indexes = (
+            (("user_id", "tenant_id"), True),
+        )
+
+
 def alter_db_add_column(migrator, table_name, column_name, column_type):
     try:
         migrate(migrator.add_column(table_name, column_name, column_type))
@@ -2546,6 +2602,16 @@ def migrate_db():
     if not CollectionZdgksxmlExt.table_exists():
         CollectionZdgksxmlExt.create_table(safe=True)
         logging.info("collection_zdgksxml_ext: table created")
+    # ── 智能采集通知系统（新表） ──────────────────────────────────
+    if not Notification.table_exists():
+        Notification.create_table(safe=True)
+        logging.info("notification: table created")
+    if not NotificationUser.table_exists():
+        NotificationUser.create_table(safe=True)
+        logging.info("notification_user: table created")
+    if not NotificationSubscription.table_exists():
+        NotificationSubscription.create_table(safe=True)
+        logging.info("notification_subscription: table created")
 
     logging.disable(logging.NOTSET)
     # this is after re-enabling logging to allow logging changed user emails
