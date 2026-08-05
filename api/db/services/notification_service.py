@@ -12,19 +12,12 @@ from typing import List, Optional, Tuple
 from peewee import IntegrityError, fn
 
 from api.db.db_models import (
-    DB, Notification, NotificationUser, NotificationSubscription,
+    CrawlerResult, DB, Notification, NotificationUser, NotificationSubscription,
 )
 from api.db.services.common_service import CommonService
 from common.misc_utils import get_uuid
 
 _logger = logging.getLogger(__name__)
-
-_DEFAULT_SUB = {
-    "site_ids": [],
-    "categories": [],
-    "browser_push": True,
-    "force_modal": True,
-}
 
 
 class NotificationService(CommonService):
@@ -57,6 +50,37 @@ class NotificationService(CommonService):
     def get_by_id(cls, notification_id: str) -> Optional[dict]:
         row = cls.model.select().where(cls.model.id == notification_id).first()
         return row.to_dict() if row else None
+
+    @classmethod
+    @DB.connection_context()
+    def get_detail_with_source(cls, notification_id: str) -> Optional[dict]:
+        """Return notification dict enriched with source_url / markdown from the
+        first CrawlerResult referenced by ``result_ids``.
+
+        Notification 本身不存 source_url / markdown，二者位于 crawler_result 表。
+        result_ids 指向 crawler_result.id；这里 JOIN 第一条取原文信息。
+        """
+        n = cls.get_by_id(notification_id)
+        if not n:
+            return None
+        result_ids = n.get("result_ids") or []
+        if result_ids:
+            try:
+                cr = (
+                    CrawlerResult
+                    .select()
+                    .where(CrawlerResult.id == result_ids[0])
+                    .first()
+                )
+                if cr:
+                    n["source_url"] = getattr(cr, "source_url", "") or ""
+                    n["markdown"] = getattr(cr, "markdown", "") or ""
+            except Exception as e:
+                _logger.warning(
+                    "enrich source for notification %s failed: %s",
+                    notification_id, e,
+                )
+        return n
 
     @classmethod
     @DB.connection_context()

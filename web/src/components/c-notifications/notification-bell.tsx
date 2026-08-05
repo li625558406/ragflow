@@ -1,5 +1,8 @@
 import { useNotificationPermission } from '@/hooks/use-notification-permission';
-import { useUnreadNotifications } from '@/hooks/use-unread-notifications';
+import {
+  loadDelivered,
+  useUnreadNotifications,
+} from '@/hooks/use-unread-notifications';
 import {
   getUnreadList,
   type NotificationItem,
@@ -30,6 +33,7 @@ export function NotificationBell() {
       if (cancelled) return;
       const latest = list[0];
       if (!latest) return;
+      if (loadDelivered().has(latest.id)) return; // 已在本会话送达过，不再重复弹窗
       if (isGranted) {
         showNotification(
           `${latest.site_display} 检测到 ${latest.result_count} 条新结果`,

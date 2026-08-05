@@ -110,7 +110,7 @@ async def unread_list():
 @manager.route("/notifications/<notification_id>", methods=["GET"])
 @login_required
 async def get_notification(notification_id: str):
-    n = NotificationService.get_by_id(notification_id)
+    n = NotificationService.get_detail_with_source(notification_id)
     if not n:
         return get_data_error_result(message="not found")
     return get_json_result(data=n)
@@ -233,7 +233,7 @@ async def admin_list():
 async def admin_get(notification_id: str):
     if not _is_admin():
         return get_data_error_result(message="forbidden")
-    n = NotificationService.get_by_id(notification_id)
+    n = NotificationService.get_detail_with_source(notification_id)
     if not n:
         return get_data_error_result(message="not found")
     return get_json_result(data=n)
