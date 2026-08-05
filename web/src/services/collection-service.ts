@@ -144,3 +144,68 @@ export const triggerDetect = (site_id: string) =>
 export const installDetect = (interval_seconds = 60) =>
   // kb_id 已废弃 —— 探测器不再消费 kb_id,爬虫脚本按 site_id 查 crawler_task 表自动获取
   request.post(api.collectionDetectInstall, { data: { interval_seconds } });
+
+// ---------------------------------------------------------------------------
+// 解析监控 (Parse monitor)
+// ---------------------------------------------------------------------------
+
+export interface ParseMonitorOverview {
+  now: number;
+  cached_at: number;
+  states: Record<string, number>;
+  total: number;
+  running: number;
+  done: number;
+  failed: number;
+  backlog: number;
+  done_last_1h: number;
+  rate_per_min: number;
+  eta_sec: number;
+}
+
+export interface ReparseBatchItem {
+  ts: number;
+  total: number;
+  success: number;
+  failed: number;
+  skipped: number;
+  duration_sec: number;
+  first_errors: Array<{ doc_id: string; msg: string }>;
+}
+
+export interface ReparseBatchList {
+  list: ReparseBatchItem[];
+  now: number;
+}
+
+export interface FailedDocRow {
+  id: string;
+  kb_id: string;
+  kb_name: string;
+  name: string;
+  run: string;
+  progress: number;
+  progress_msg: string;
+  update_time: number;
+  process_begin_at: number;
+}
+
+export interface FailedDocList {
+  list: FailedDocRow[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export const fetchParseMonitorOverview = () =>
+  request.get(api.collectionParseMonitorOverview);
+
+export const fetchReparseBatches = () =>
+  request.get(api.collectionParseMonitorBatches);
+
+export const listFailedDocs = (params: {
+  page?: number;
+  page_size?: number;
+  status?: string; // 'fail' | 'stuck' | '' (all)
+  kb_id?: string;
+}) => request.get(api.collectionParseMonitorFailedDocs, { params });

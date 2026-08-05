@@ -439,4 +439,8 @@ export default {
   collectionDetectStats: `${restAPIv1}/collection/detect/stats`,
   collectionDetectActivity: `${restAPIv1}/collection/detect/activity`,
   collectionDetectInstall: `${restAPIv1}/collection/detect/install`,
+  // parse monitor
+  collectionParseMonitorOverview: `${restAPIv1}/collection/parse-monitor/overview`,
+  collectionParseMonitorBatches: `${restAPIv1}/collection/parse-monitor/reparse-batches`,
+  collectionParseMonitorFailedDocs: `${restAPIv1}/collection/parse-monitor/failed-docs`,
 };
