@@ -17,7 +17,7 @@
 
 路由前缀：/api/v1（由 register_page 自动注册）
 
-C 端端点（鉴权：login_required，user_id 取 query/current_user）：
+C 端端点（鉴权：login_required，user_id 以 current_user.id 为准；query.user_id 仅作防御性兜底）：
   GET  /notifications/unread/count
   GET  /notifications/unread
   GET  /notifications/{id}
@@ -27,7 +27,7 @@ C 端端点（鉴权：login_required，user_id 取 query/current_user）：
   GET  /notifications/subscription
   PUT  /notifications/subscription
 
-B 端 admin 端点（鉴权：管理员 is_superuser/role=owner）：
+B 端 admin 端点（鉴权：admin = is_superuser；User.role 字段不存在，租户级 owner 角色不参与此 admin 门控）：
   GET    /admin/notifications
   GET    /admin/notifications/{id}
   DELETE /admin/notifications/{id}
@@ -59,23 +59,23 @@ manager = Blueprint("rest_notification_app", __name__)
 
 
 def _get_user_id() -> str:
-    """C 端：优先取 query.user_id，否则取 current_user.id。"""
-    uid = (request.args.get("user_id") or "").strip()
+    """C 端：以服务端鉴权 current_user.id 为准；仅在 current_user 不可用时
+    回退到 query.user_id（防御性兜底，绝不信任客户端超过服务端鉴权）。"""
+    uid = getattr(current_user, "id", None) if current_user else None
     if uid:
-        return uid
-    u = current_user if current_user else None
-    return getattr(u, "id", "") if u else ""
+        return str(uid)
+    # defensive fallback only; do NOT trust client over server auth
+    return (request.args.get("user_id") or "").strip()
 
 
 def _is_admin() -> bool:
-    """B 端：is_superuser 或 role=owner 视为管理员。"""
+    """B 端：admin = is_superuser。
+    注意：User 模型无 role 字段（role 位于 UserTenant），
+    租户级 owner 角色不参与此 admin 门控。"""
     u = current_user if current_user else None
     if not u:
         return False
-    if getattr(u, "is_superuser", False):
-        return True
-    role = getattr(u, "role", None) or ""
-    return str(role) == "owner"
+    return bool(getattr(u, "is_superuser", False))
 
 
 # ---------------------------------------------------------------------------

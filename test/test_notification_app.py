@@ -133,6 +133,53 @@ def test_all_routes_on_manager_blueprint():
         )
 
 
+def _function_defs():
+    """返回 {func_name: ast.FunctionDef} for top-level defs in notification_app.py."""
+    source = _APP_FILE.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    return {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+
+
+def _attr_names(node):
+    """递归收集一个 AST 节点子树中被引用的属性/字段名称。
+
+    涵盖两种形式：
+    - ast.Attribute.attr：直接属性访问 u.is_superuser
+    - getattr(obj, "name", ...) 中第二个位置参数的字符串常量：
+      getattr(u, "is_superuser", False)
+    这覆盖本项目中 _is_admin 的两种等价写法。
+    """
+    names = []
+    for child in ast.walk(node):
+        if isinstance(child, ast.Attribute):
+            names.append(child.attr)
+        elif (
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Name)
+            and child.func.id == "getattr"
+            and len(child.args) >= 2
+            and isinstance(child.args[1], ast.Constant)
+            and isinstance(child.args[1].value, str)
+        ):
+            names.append(child.args[1].value)
+    return names
+
+
+def test_is_admin_uses_is_superuser_only():
+    """_is_admin 必须依据 is_superuser；User 上不存在 role 字段（role 位于 UserTenant），
+    因此 _is_admin 函数体不允许引用 'role' 属性，且必须引用 'is_superuser'。"""
+    funcs = _function_defs()
+    assert "_is_admin" in funcs, "missing _is_admin definition"
+    body_names = set(_attr_names(funcs["_is_admin"]))
+    assert "is_superuser" in body_names, (
+        "_is_admin must reference is_superuser for admin gating"
+    )
+    assert "role" not in body_names, (
+        "_is_admin must NOT reference User.role (field does not exist on User; "
+        "tenant-scoped owner role lives on UserTenant and is not consulted here)"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 服务层：被端点调用的核心行为
 # ---------------------------------------------------------------------------
