@@ -1189,7 +1189,8 @@ _PARSE_MONITOR_BATCHES_MAX = 20
 
 def _compute_parse_overview() -> Dict[str, Any]:
     """聚合 Document.run 分布 + 最近 1h 完成数 + 吞吐 + ETA."""
-    from api.db.db_models import Document, TaskStatus
+    from api.db.db_models import Document
+    from common.constants import TaskStatus
 
     @DB.connection_context()
     def _q() -> Dict[str, Any]:
@@ -1307,7 +1308,8 @@ async def parse_monitor_failed_docs():
     查询条件: run='4' (FAIL) OR (run='1' AND update_time < now-30min)
     不返回 content_hash / location 等内容字段.
     """
-    from api.db.db_models import Document, Knowledgebase, TaskStatus
+    from api.db.db_models import Document, Knowledgebase
+    from common.constants import TaskStatus
 
     page = max(int(request.args.get("page", 1)), 1)
     page_size = min(max(int(request.args.get("page_size", 20)), 1), 100)
