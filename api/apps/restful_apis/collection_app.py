@@ -1297,3 +1297,75 @@ async def parse_monitor_reparse_batches():
         except Exception as e:
             logging.warning("parse_monitor: batches read failed: %s", e)
     return get_json_result(data={"list": items, "now": int(time.time())})
+
+
+@manager.route("/collection/parse-monitor/failed-docs", methods=["GET"])  # noqa: F821
+@login_required
+async def parse_monitor_failed_docs():
+    """失败/卡死文档分页列表.
+
+    查询条件: run='4' (FAIL) OR (run='1' AND update_time < now-30min)
+    不返回 content_hash / location 等内容字段.
+    """
+    from api.db.db_models import Document, Knowledgebase, TaskStatus
+
+    page = max(int(request.args.get("page", 1)), 1)
+    page_size = min(max(int(request.args.get("page_size", 20)), 1), 100)
+    status_filter = (request.args.get("status", "") or "").strip()
+    kb_filter = (request.args.get("kb_id", "") or "").strip()
+
+    now_ms = int(time.time() * 1000)
+    cutoff_30min_ms = now_ms - 30 * 60 * 1000
+
+    @DB.connection_context()
+    def _q() -> Dict[str, Any]:
+        fail_cond = (Document.run == TaskStatus.FAIL.value)
+        stuck_cond = ((Document.run == TaskStatus.RUNNING.value)
+                      & (Document.update_time < cutoff_30min_ms))
+
+        if status_filter == "fail":
+            base_where = fail_cond
+        elif status_filter == "stuck":
+            base_where = stuck_cond
+        else:
+            base_where = fail_cond | stuck_cond
+
+        if kb_filter:
+            base_where = base_where & (Document.kb_id == kb_filter)
+
+        total = (Document
+                 .select(fn.COUNT(Document.id))
+                 .where(base_where)
+                 .scalar()) or 0
+
+        query = (Document
+                 .select(Document.id, Document.kb_id, Document.name,
+                         Document.run, Document.progress, Document.progress_msg,
+                         Document.update_time, Document.process_begin_at,
+                         Knowledgebase.name.alias("kb_name"))
+                 .join(Knowledgebase, on=(Document.kb_id == Knowledgebase.id), join_type="LEFT")
+                 .where(base_where)
+                 .order_by(Document.update_time.asc())
+                 .limit(page_size)
+                 .offset((page - 1) * page_size))
+
+        rows = []
+        for r in query:
+            rows.append({
+                "id": r.id,
+                "kb_id": r.kb_id,
+                "kb_name": getattr(r, "kb_name", "") or "",
+                "name": r.name,
+                "run": r.run,
+                "progress": r.progress or 0,
+                "progress_msg": (r.progress_msg or "")[:200],
+                "update_time": r.update_time,
+                "process_begin_at": r.process_begin_at,
+            })
+        return {"list": rows, "total": int(total), "page": page, "page_size": page_size}
+
+    try:
+        return get_json_result(data=_q())
+    except Exception as e:
+        logging.error("parse_monitor: failed-docs failed: %s", e, exc_info=True)
+        return get_data_error_result(message=f"failed-docs failed: {e}")
