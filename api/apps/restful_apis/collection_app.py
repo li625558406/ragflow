@@ -1308,6 +1308,7 @@ async def parse_monitor_failed_docs():
     查询条件: run='4' (FAIL) OR (run='1' AND update_time < now-30min)
     不返回 content_hash / location 等内容字段.
     """
+    from peewee import JOIN
     from api.db.db_models import Document, Knowledgebase
     from common.constants import TaskStatus
 
@@ -1345,24 +1346,25 @@ async def parse_monitor_failed_docs():
                          Document.run, Document.progress, Document.progress_msg,
                          Document.update_time, Document.process_begin_at,
                          Knowledgebase.name.alias("kb_name"))
-                 .join(Knowledgebase, on=(Document.kb_id == Knowledgebase.id), join_type="LEFT")
+                 .join(Knowledgebase, on=(Document.kb_id == Knowledgebase.id),
+                       join_type=JOIN.LEFT_OUTER)
                  .where(base_where)
                  .order_by(Document.update_time.asc())
                  .limit(page_size)
                  .offset((page - 1) * page_size))
 
         rows = []
-        for r in query:
+        for r in query.dicts():
             rows.append({
-                "id": r.id,
-                "kb_id": r.kb_id,
-                "kb_name": getattr(r, "kb_name", "") or "",
-                "name": r.name,
-                "run": r.run,
-                "progress": r.progress or 0,
-                "progress_msg": (r.progress_msg or "")[:200],
-                "update_time": r.update_time,
-                "process_begin_at": r.process_begin_at,
+                "id": r["id"],
+                "kb_id": r["kb_id"],
+                "kb_name": r.get("kb_name") or "",
+                "name": r["name"],
+                "run": r["run"],
+                "progress": r.get("progress") or 0,
+                "progress_msg": (r.get("progress_msg") or "")[:200],
+                "update_time": r["update_time"],
+                "process_begin_at": r.get("process_begin_at"),
             })
         return {"list": rows, "total": int(total), "page": page, "page_size": page_size}
 
