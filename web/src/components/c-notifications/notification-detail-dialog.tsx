@@ -15,7 +15,7 @@ export function NotificationDetailDialog({ item, onClose }: Props) {
   >(item);
 
   useEffect(() => {
-    getNotificationDetail(item.id).then((d) => setDetail(d as any));
+    getNotificationDetail(item.id).then((d) => setDetail(d));
   }, [item.id]);
 
   return (

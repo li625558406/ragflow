@@ -11,7 +11,7 @@ import { NotificationModal } from './notification-modal';
 import { NotificationSettingsDialog } from './notification-settings-dialog';
 
 export function NotificationBell() {
-  const { count, hasNew, setPrevCount } = useUnreadNotifications();
+  const { count, hasNew, setPrevCount, refresh } = useUnreadNotifications();
   const { isGranted, showNotification } = useNotificationPermission();
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
@@ -20,8 +20,10 @@ export function NotificationBell() {
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   // 有新通知时：弹浏览器原生 + 强制 Modal
+  // setPrevCount(count) 同步执行，立刻对齐基线，避免 fetch 窗口内重复触发。
   useEffect(() => {
     if (!hasNew || count === 0) return;
+    setPrevCount(count);
     let cancelled = false;
     (async () => {
       const { list } = await getUnreadList(1, 1);
@@ -37,7 +39,6 @@ export function NotificationBell() {
       }
       setModalItem(latest);
       setModalOpen(true);
-      setPrevCount(count);
     })();
     return () => {
       cancelled = true;
@@ -80,6 +81,7 @@ export function NotificationBell() {
           setDropdownOpen(false);
           setSettingsOpen(true);
         }}
+        refresh={refresh}
       />
 
       {modalOpen && modalItem && (

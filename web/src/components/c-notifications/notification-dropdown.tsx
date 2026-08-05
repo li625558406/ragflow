@@ -11,6 +11,7 @@ interface Props {
   onClose: () => void;
   onOpenDetail: (n: NotificationItem) => void;
   onOpenSettings: () => void;
+  refresh: () => Promise<void>;
 }
 
 export function NotificationDropdown({
@@ -18,6 +19,7 @@ export function NotificationDropdown({
   onClose,
   onOpenDetail,
   onOpenSettings,
+  refresh,
 }: Props) {
   const [list, setList] = useState<NotificationItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -51,6 +53,7 @@ export function NotificationDropdown({
             className="text-xs text-blue-600 hover:text-blue-800"
             onClick={async () => {
               await markAllRead();
+              await refresh();
               setList([]);
               setTotal(0);
             }}
@@ -89,6 +92,7 @@ export function NotificationDropdown({
                   onClick={async (e) => {
                     e.stopPropagation();
                     await markOneRead(n.id);
+                    await refresh();
                     setList((p) => p.filter((x) => x.id !== n.id));
                     setTotal((t) => Math.max(0, t - 1));
                   }}

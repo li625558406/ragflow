@@ -1,6 +1,6 @@
 // web/src/hooks/use-unread-notifications.ts
 import { getUnreadCount } from '@/services/c-notification-service';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 const POLL_MS = 30_000;
 const LS_DELIVERED = 'notif:delivered';
@@ -25,26 +25,25 @@ export function useUnreadNotifications() {
   const [prevCount, setPrevCount] = useState(0);
   const timerRef = useRef<number | null>(null);
 
+  // Stable tick fn — can be called imperatively (refresh) or by the interval.
+  const tick = useCallback(async () => {
+    try {
+      const { count: c } = await getUnreadCount();
+      // prevCount is consumer-owned; the bell acknowledges via setPrevCount(count).
+      setCount(c);
+    } catch {
+      // 静默
+    }
+  }, []);
+
   useEffect(() => {
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const { count: c } = await getUnreadCount();
-        if (cancelled) return;
-        // prevCount is consumer-owned; the bell acknowledges via setPrevCount(count).
-        setCount(c);
-      } catch {
-        // 静默
-      }
-    };
     tick();
     timerRef.current = window.setInterval(tick, POLL_MS);
     return () => {
-      cancelled = true;
       if (timerRef.current) window.clearInterval(timerRef.current);
     };
-  }, []);
+  }, [tick]);
 
   const hasNew = count > prevCount;
-  return { count, prevCount, hasNew, setPrevCount };
+  return { count, prevCount, hasNew, setPrevCount, refresh: tick };
 }
