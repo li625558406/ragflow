@@ -1202,7 +1202,11 @@ def _compute_parse_overview() -> Dict[str, Any]:
         for row in (Document
                     .select(Document.run, fn.COUNT(Document.id).alias("n"))
                     .group_by(Document.run)):
-            state_counts[row.run] = int(row.n)
+            # 防御: DB 中可能存在 TaskStatus 之外的 run 值（历史脏数据/迁移残留），归入 "unknown"
+            if row.run in state_counts:
+                state_counts[row.run] = int(row.n)
+            else:
+                state_counts["unknown"] = state_counts.get("unknown", 0) + int(row.n)
 
         total = sum(state_counts.values())
         running = state_counts.get(TaskStatus.RUNNING.value, 0)
