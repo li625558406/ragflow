@@ -37,9 +37,9 @@ class NotificationService(CommonService):
         title: str, summary: str, result_ids: List[str], result_count: int,
         publish_range: str, created_at: int,
     ) -> Optional[str]:
-        """幂等创建。返回 id；batch_key 冲突返回 None。"""
+        """幂等创建。返回 id；batch_key 冲突返回 None。其他异常向上传播。"""
+        new_id = get_uuid().replace("-", "")
         try:
-            new_id = get_uuid().replace("-", "")
             cls.insert(
                 id=new_id,
                 tenant_id="system",
@@ -50,9 +50,6 @@ class NotificationService(CommonService):
             )
             return new_id
         except IntegrityError:
-            return None
-        except Exception as e:
-            _logger.exception("create_notification failed: %s", e)
             return None
 
     @classmethod
@@ -214,7 +211,12 @@ class NotificationSubscriptionService(CommonService):
     def get_or_default(cls, user_id: str) -> dict:
         row = cls.model.select().where(cls.model.user_id == user_id).first()
         if not row:
-            return dict(_DEFAULT_SUB)
+            return {
+                "site_ids": [],
+                "categories": [],
+                "browser_push": True,
+                "force_modal": True,
+            }
         d = row.to_dict()
         return {
             "site_ids": d.get("site_ids") or [],
