@@ -1278,3 +1278,22 @@ async def parse_monitor_overview():
     except Exception as e:
         logging.error("parse_monitor: overview failed: %s", e, exc_info=True)
         return get_data_error_result(message=f"overview failed: {e}")
+
+
+@manager.route("/collection/parse-monitor/reparse-batches", methods=["GET"])  # noqa: F821
+@login_required
+async def parse_monitor_reparse_batches():
+    """最近 N 次 bulk_reparse 批次摘要 (从 Redis List 读取)."""
+    rc = _detect_redis()
+    items: List[Dict[str, Any]] = []
+    if rc is not None and getattr(rc, "REDIS", None) is not None:
+        try:
+            raw_list = rc.REDIS.lrange(_PARSE_MONITOR_BATCHES_KEY, 0, _PARSE_MONITOR_BATCHES_MAX - 1)
+            for raw in raw_list:
+                try:
+                    items.append(json.loads(raw))
+                except Exception:
+                    continue
+        except Exception as e:
+            logging.warning("parse_monitor: batches read failed: %s", e)
+    return get_json_result(data={"list": items, "now": int(time.time())})
