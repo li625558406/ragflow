@@ -31,7 +31,7 @@ export function useUnreadNotifications() {
       try {
         const { count: c } = await getUnreadCount();
         if (cancelled) return;
-        setPrevCount((p) => (p === 0 && c > 0 ? 0 : p));
+        // prevCount is consumer-owned; the bell acknowledges via setPrevCount(count).
         setCount(c);
       } catch {
         // 静默

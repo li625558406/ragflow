@@ -10,12 +10,18 @@ export function useNotificationPermission() {
 
   useEffect(() => {
     if (typeof Notification === 'undefined') return;
+    let cancelled = false;
     if (
       Notification.permission === 'default' &&
       !localStorage.getItem(LS_DENIED)
     ) {
-      Notification.requestPermission().then((p) => setGranted(p));
+      Notification.requestPermission().then((p) => {
+        if (!cancelled) setGranted(p);
+      });
     }
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const isGranted = granted === 'granted';
