@@ -26,9 +26,13 @@ export function useUnreadNotifications() {
   const timerRef = useRef<number | null>(null);
 
   // Stable tick fn — can be called imperatively (refresh) or by the interval.
+  // mountedRef guards against setState-after-unmount for the in-flight fetch
+  // (clearInterval only cancels future ticks, not the current one).
+  const mountedRef = useRef(true);
   const tick = useCallback(async () => {
     try {
       const { count: c } = await getUnreadCount();
+      if (!mountedRef.current) return;
       // prevCount is consumer-owned; the bell acknowledges via setPrevCount(count).
       setCount(c);
     } catch {
@@ -37,9 +41,11 @@ export function useUnreadNotifications() {
   }, []);
 
   useEffect(() => {
+    mountedRef.current = true;
     tick();
     timerRef.current = window.setInterval(tick, POLL_MS);
     return () => {
+      mountedRef.current = false;
       if (timerRef.current) window.clearInterval(timerRef.current);
     };
   }, [tick]);
