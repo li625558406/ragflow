@@ -1,6 +1,7 @@
 import { AgentStatusChip } from '@/components/agent-status-chip';
 import AppDownloadDialog from '@/components/app-download-dialog';
 import BidPanel from '@/components/bid';
+import { NotificationBell } from '@/components/c-notifications/notification-bell';
 import ChapteredMarkdown from '@/components/chaptered-markdown';
 import CollaborationPanel from '@/components/collaboration';
 import CreateDocumentDialog from '@/components/collaboration/create-document-dialog';
@@ -1506,6 +1507,7 @@ export default function CChat() {
                 <span className="hidden sm:inline">下载App</span>
               </button>
             </CendTooltip>
+            <NotificationBell />
             <div className="w-8 h-8 rounded-lg bg-[#F59E0B] text-white flex items-center justify-center text-sm font-bold">
               {userDisplayName[0].toUpperCase()}
             </div>
