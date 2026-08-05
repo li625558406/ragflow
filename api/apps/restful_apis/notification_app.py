@@ -266,6 +266,8 @@ async def admin_stats():
     now_ms = int(time.time() * 1000)
     day_ms = 86400 * 1000
 
+    week_ms = 7 * day_ms
+
     @DB.connection_context()
     def _q():
         today_created = (
@@ -273,17 +275,27 @@ async def admin_stats():
             .where(Notification.created_at >= now_ms - day_ms)
             .count()
         )
-        total_pushed = NotificationUser.select().count()
-        total_read = (
+        week_nids = Notification.select(Notification.id).where(
+            Notification.created_at >= now_ms - week_ms
+        )
+        week_pushed = (
             NotificationUser.select()
-            .where((NotificationUser.is_read == True))  # noqa: E712
+            .where(NotificationUser.notification_id.in_(week_nids))
+            .count()
+        )
+        week_read = (
+            NotificationUser.select()
+            .where(
+                (NotificationUser.notification_id.in_(week_nids))
+                & (NotificationUser.is_read == True)  # noqa: E712
+            )
             .count()
         )
         return {
             "today_created": today_created,
-            "total_pushed": total_pushed,
-            "total_read": total_read,
-            "read_rate": round(total_read / total_pushed, 3) if total_pushed else 0,
+            "week_pushed": week_pushed,
+            "week_read": week_read,
+            "read_rate": round(week_read / week_pushed, 3) if week_pushed else 0,
         }
 
     return get_json_result(data=_q())
