@@ -1177,6 +1177,31 @@ async def detect_install():
     return get_json_result(data={"task": row})
 
 
+@manager.route("/collection/notification/install", methods=["POST"])  # noqa: F821
+@login_required
+async def notification_install():
+    """注册/更新 notification meta-task (调用 ensure_notification_task 幂等).
+
+    Body: {"interval_seconds": 120}
+    """
+    body = await request.get_json() or {}
+    interval_seconds = int(body.get("interval_seconds", 120))
+    if interval_seconds < 60:
+        return get_data_error_result(message="interval_seconds must be >= 60")
+
+    try:
+        from rag.svr.crawler_engine.register_notification_task import ensure_notification_task
+        row = ensure_notification_task(
+            tenant_id=_SHARED_TENANT,
+            interval_seconds=interval_seconds,
+            enabled=True,
+        )
+    except Exception as e:
+        logging.exception("collection_api: notification_install failed: %s", e)
+        return get_data_error_result(message=f"install failed: {e}")
+    return get_json_result(data={"task": row})
+
+
 # ---------------------------------------------------------------------------
 # 解析监控 (Parse monitor)
 # ---------------------------------------------------------------------------

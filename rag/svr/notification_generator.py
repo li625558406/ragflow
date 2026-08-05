@@ -12,6 +12,7 @@
 并发：Redis 锁 notif:scan:lock（TTL 110s）防双进程。
 """
 import logging
+import os
 import time
 from collections import Counter, defaultdict
 from typing import List
@@ -67,22 +68,47 @@ def _set_watermark(site_id: str, val: int) -> None:
         _logger.warning("set watermark failed: %s", e)
 
 
+_LOCK_TOKEN: str = None  # set when lock acquired
+
+# Lua CAS: release only if value matches token
+_RELEASE_LOCK_LUA = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+    return redis.call('del', KEYS[1])
+else
+    return 0
+end
+"""
+
+
 def _acquire_lock() -> bool:
-    """SET NX 原子抢锁。Redis 故障时退化为不锁，靠幂等保护。"""
+    """SET NX 原子抢锁，记录本进程 token 供 CAS 释放。
+
+    Redis 故障时退化为不锁（返回 True），但不设置 _LOCK_TOKEN，因此 _release_lock 为 no-op，
+    避免误删其他 scanner 持有的锁。靠 batch_key 幂等保护。
+    """
+    global _LOCK_TOKEN
     try:
+        _LOCK_TOKEN = os.urandom(8).hex()
         # 直接打 valkey 客户端拿 nx 语义（REDIS_CONN.set 不支持 nx 形参）
-        ok = REDIS_CONN.REDIS.set(LOCK_KEY, "scanner", ex=LOCK_TTL, nx=True)
+        ok = REDIS_CONN.REDIS.set(LOCK_KEY, _LOCK_TOKEN, ex=LOCK_TTL, nx=True)
+        if not ok:
+            _LOCK_TOKEN = None
         return bool(ok)
     except Exception as e:
         _logger.warning("acquire lock failed: %s", e)
+        _LOCK_TOKEN = None
         return True  # Redis 故障时退化为不锁，靠 batch_key 幂等保护
 
 
 def _release_lock() -> None:
+    """Lua CAS：仅当 lock value == 本进程 token 时才 DEL，避免误删他人锁。"""
+    tok = _LOCK_TOKEN
+    if not tok:
+        return
     try:
-        REDIS_CONN.delete(LOCK_KEY)
-    except Exception:
-        pass
+        REDIS_CONN.REDIS.eval(_RELEASE_LOCK_LUA, 1, LOCK_KEY, tok)
+    except Exception as e:
+        _logger.debug("release lock failed: %s", e)
 
 
 def _bucket_key(site_id: str, crawled_at_ms: int) -> str:
