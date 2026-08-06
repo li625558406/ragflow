@@ -20,6 +20,13 @@ export function markDelivered(id: string) {
   sessionStorage.setItem(LS_DELIVERED, JSON.stringify([...s]));
 }
 
+export function markDeliveredBatch(ids: string[]) {
+  if (!ids.length) return;
+  const s = loadDelivered();
+  ids.forEach((id) => s.add(id));
+  sessionStorage.setItem(LS_DELIVERED, JSON.stringify([...s]));
+}
+
 export function useUnreadNotifications() {
   const [count, setCount] = useState(0);
   const [prevCount, setPrevCount] = useState(0);

@@ -59,7 +59,7 @@ import exceptiongroup
 import faulthandler
 import numpy as np
 from peewee import DoesNotExist
-from common.constants import LLMType, ParserType, PipelineTaskType
+from common.constants import LLMType, ParserType, PipelineTaskType, TaskStatus
 from api.db.services.document_service import DocumentService
 from api.db.services.doc_metadata_service import DocMetadataService
 from api.db.services.llm_service import LLMBundle
@@ -217,6 +217,28 @@ async def collect():
     elif msg.get("task_type") == "scheduled_script":
         task = msg
     else:
+        # Doc-parse messages carry empty task_type. Short-circuit when the
+        # target document has already reached a terminal state (DONE/FAIL/CANCEL):
+        # ack and skip. Without this guard, task_executor re-runs the full
+        # chunking + embedding pipeline for every stale stream entry. Thousands
+        # of zombie messages accumulate after bulk KB uploads (e.g. detector-
+        # triggered collection crawls) and stall the queue, starving meta-tasks
+        # (detector / notification) from ever being scheduled.
+        doc_id = msg.get("doc_id", "")
+        if doc_id:
+            try:
+                ok, doc = DocumentService.get_by_id(doc_id)
+            except Exception:
+                ok, doc = False, None
+            if ok and doc is not None and str(doc.run) in (
+                TaskStatus.DONE, TaskStatus.FAIL, TaskStatus.CANCEL,
+            ):
+                logging.info(
+                    "collect: doc %s run=%s already terminal, ack and skip stale msg %s",
+                    doc_id, doc.run, msg.get("id"),
+                )
+                redis_msg.ack()
+                return None, None
         task = TaskService.get_task(msg["id"])
 
     if task:

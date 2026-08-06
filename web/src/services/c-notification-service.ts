@@ -28,7 +28,16 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new Error('unauthorized');
   }
   if (!resp.ok) throw new Error(`notification api ${resp.status}`);
-  return (await resp.json()) as T;
+  // Server returns RAGFlow standard envelope {code, data, message}.
+  // Unwrap to data; throw on non-zero code.
+  const body = await resp.json();
+  if (body && typeof body === 'object' && 'code' in body) {
+    if (body.code !== 0) {
+      throw new Error(body.message || `notification api code ${body.code}`);
+    }
+    return body.data as T;
+  }
+  return body as T;
 }
 
 export interface NotificationItem {
@@ -67,6 +76,21 @@ export async function getNotificationDetail(
   id: string,
 ): Promise<NotificationItem & { markdown?: string; source_url?: string }> {
   return apiFetch(`/notifications/${id}`);
+}
+
+export interface NotificationResult {
+  id: string;
+  title: string;
+  source_url: string;
+  publish_date: string;
+  markdown: string;
+  crawled_at: number;
+}
+
+export async function getNotificationResults(
+  id: string,
+): Promise<{ list: NotificationResult[]; total: number }> {
+  return apiFetch(`/notifications/${id}/results`);
 }
 
 export async function markOneRead(id: string): Promise<{ ok: boolean }> {

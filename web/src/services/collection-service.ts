@@ -186,6 +186,9 @@ export interface FailedDocRow {
   run: string;
   progress: number;
   progress_msg: string;
+  reason_key: string;
+  reason: string;
+  reason_color: 'amber' | 'gray' | 'red' | 'orange';
   update_time: number;
   process_begin_at: number;
 }
@@ -208,4 +211,20 @@ export const listFailedDocs = (params: {
   page_size?: number;
   status?: string; // 'fail' | 'stuck' | '' (all)
   kb_id?: string;
+  reason_key?: string; // 'embedding_api' | 'unsupported_filetype' | ... | 'other' | ''
 }) => request.get(api.collectionParseMonitorFailedDocs, { params });
+
+export interface RerunFailedResult {
+  total: number;
+  success: number;
+  failed: number;
+  skipped: number;
+  duration_sec: number;
+  first_errors: { doc_id: string; msg: string }[];
+}
+
+export const rerunFailedDocs = (body: {
+  reason_key?: string;
+  kb_id?: string;
+  limit?: number;
+}) => request.post(api.collectionParseMonitorRerunFailed, { data: body });

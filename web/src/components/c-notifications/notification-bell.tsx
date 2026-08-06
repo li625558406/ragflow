@@ -6,43 +6,61 @@ import {
 import {
   getUnreadList,
   type NotificationItem,
+  type NotificationResult,
 } from '@/services/c-notification-service';
 import { useEffect, useState } from 'react';
 import { NotificationDetailDialog } from './notification-detail-dialog';
-import { NotificationDropdown } from './notification-dropdown';
+import { NotificationListModal } from './notification-list-modal';
 import { NotificationModal } from './notification-modal';
+import { NotificationResultsModal } from './notification-results-modal';
 import { NotificationSettingsDialog } from './notification-settings-dialog';
+
+const FRESH_FETCH_SIZE = 50;
 
 export function NotificationBell() {
   const { count, hasNew, setPrevCount, refresh } = useUnreadNotifications();
   const { isGranted, showNotification } = useNotificationPermission();
-  const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [modalOpen, setModalOpen] = useState(false);
-  const [modalItem, setModalItem] = useState<NotificationItem | null>(null);
-  const [detailItem, setDetailItem] = useState<NotificationItem | null>(null);
+
+  // 一级：通知列表
+  const [listModalOpen, setListModalOpen] = useState(false);
+  // 二级：某通知下的结果列表
+  const [resultsNotif, setResultsNotif] = useState<NotificationItem | null>(
+    null,
+  );
+  // 三级：单条结果详情
+  const [detailResult, setDetailResult] = useState<NotificationResult | null>(
+    null,
+  );
+  // 汇总框（增量推送时弹）
+  const [newItemsModalOpen, setNewItemsModalOpen] = useState(false);
+  const [newItems, setNewItems] = useState<NotificationItem[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
-  // 有新通知时：弹浏览器原生 + 强制 Modal
-  // setPrevCount(count) 同步执行，立刻对齐基线，避免 fetch 窗口内重复触发。
+  // 增量触发：count 增加时拉全部未读，过滤本会话已 delivered 的，弹汇总框
   useEffect(() => {
     if (!hasNew || count === 0) return;
     setPrevCount(count);
     let cancelled = false;
     (async () => {
-      const { list } = await getUnreadList(1, 1);
+      const { list } = await getUnreadList(1, FRESH_FETCH_SIZE);
       if (cancelled) return;
-      const latest = list[0];
-      if (!latest) return;
-      if (loadDelivered().has(latest.id)) return; // 已在本会话送达过，不再重复弹窗
+      const delivered = loadDelivered();
+      const fresh = list.filter((n) => !delivered.has(n.id));
+      if (fresh.length === 0) return;
+      setNewItems(fresh);
+      setNewItemsModalOpen(true);
       if (isGranted) {
-        showNotification(
-          `${latest.site_display} 检测到 ${latest.result_count} 条新结果`,
-          latest.summary,
-          () => setModalOpen(true),
-        );
+        const firstSite = fresh[0].site_display || '采集结果';
+        const title =
+          fresh.length === 1
+            ? `${firstSite} 检测到 ${fresh[0].result_count} 条新结果`
+            : `${firstSite} 等 ${fresh.length} 条新通知`;
+        const body = fresh
+          .map((n) => n.title)
+          .slice(0, 3)
+          .join('\n');
+        showNotification(title, body, () => setListModalOpen(true));
       }
-      setModalItem(latest);
-      setModalOpen(true);
     })();
     return () => {
       cancelled = true;
@@ -52,7 +70,7 @@ export function NotificationBell() {
   return (
     <div className="relative">
       <button
-        onClick={() => setDropdownOpen((v) => !v)}
+        onClick={() => setListModalOpen(true)}
         className="relative p-2 rounded-full hover:bg-gray-100"
         title="采集通知"
       >
@@ -74,35 +92,44 @@ export function NotificationBell() {
         )}
       </button>
 
-      <NotificationDropdown
-        open={dropdownOpen}
-        onClose={() => setDropdownOpen(false)}
+      {newItemsModalOpen && newItems.length > 0 && (
+        <NotificationModal
+          items={newItems}
+          onClose={() => setNewItemsModalOpen(false)}
+          onViewAll={() => setListModalOpen(true)}
+        />
+      )}
+
+      {/* 一级：通知列表 */}
+      <NotificationListModal
+        open={listModalOpen}
+        onClose={() => setListModalOpen(false)}
         onOpenDetail={(n) => {
-          setDropdownOpen(false);
-          setDetailItem(n);
+          // 不关列表，二级叠开
+          setResultsNotif(n);
         }}
         onOpenSettings={() => {
-          setDropdownOpen(false);
+          setListModalOpen(false);
           setSettingsOpen(true);
         }}
         refresh={refresh}
       />
 
-      {modalOpen && modalItem && (
-        <NotificationModal
-          item={modalItem}
-          onClose={() => setModalOpen(false)}
-          onViewDetail={() => {
-            setDetailItem(modalItem);
-            setModalOpen(false);
-          }}
-        />
-      )}
+      {/* 二级：某通知下的结果列表 */}
+      <NotificationResultsModal
+        notification={resultsNotif}
+        onClose={() => setResultsNotif(null)}
+        onOpenDetail={(r) => {
+          // 不关二级，三级叠开
+          setDetailResult(r);
+        }}
+      />
 
-      {detailItem && (
+      {/* 三级：单条结果详情 */}
+      {detailResult && (
         <NotificationDetailDialog
-          item={detailItem}
-          onClose={() => setDetailItem(null)}
+          result={detailResult}
+          onClose={() => setDetailResult(null)}
         />
       )}
 

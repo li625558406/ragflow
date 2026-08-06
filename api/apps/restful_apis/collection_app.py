@@ -1211,6 +1211,54 @@ _PARSE_MONITOR_OVERVIEW_TTL = 60  # 与前端轮询节奏一致
 _PARSE_MONITOR_BATCHES_KEY = "parse_monitor:batches"
 _PARSE_MONITOR_BATCHES_MAX = 20
 
+# 失败原因分类 (key -> 中文短标签)
+# key 稳定不变，前端可基于 key 做筛选/着色
+_FAILURE_REASON_MAP = [
+    # (key, label, matcher) — 顺序即优先级
+    ("embedding_api", "Embedding 服务调用失败",
+     lambda msg: ("Access denied" in msg) or ("overdue-payment" in msg)
+                 or ("calling embedding model failed" in msg)),
+    ("unsupported_filetype", "不支持的文件类型",
+     lambda msg: "file type not supported" in msg),
+    ("ocr_error", "OCR/图片解析失败",
+     lambda msg: ("OCR" in msg) or ("image" in msg.lower() and "error" in msg.lower())),
+    ("timeout", "解析超时",
+     lambda msg: "timeout" in msg.lower() or "timed out" in msg.lower()),
+    ("internal_error", "解析内部错误",
+     lambda msg: "Internal server error" in msg),
+    ("download_failed", "文件下载失败",
+     lambda msg: ("download" in msg.lower() and "fail" in msg.lower())
+                 or ("fetch" in msg.lower() and "fail" in msg.lower())),
+]
+
+
+def _classify_failure_reason(progress_msg: str) -> tuple:
+    """根据 progress_msg 返回 (reason_key, reason_label)。
+
+    无匹配时返回 ('other', '其他错误')；空消息返回 ('empty', '无错误信息')。
+    """
+    msg = progress_msg or ""
+    if not msg.strip():
+        return ("empty", "无错误信息")
+    for key, label, matcher in _FAILURE_REASON_MAP:
+        if matcher(msg):
+            return (key, label)
+    return ("other", "其他错误")
+
+
+def _reason_color(reason_key: str) -> str:
+    """前端可选的着色提示 (与 parse-monitor-tab.tsx 配色对齐)。"""
+    return {
+        "embedding_api": "amber",
+        "unsupported_filetype": "gray",
+        "ocr_error": "amber",
+        "timeout": "orange",
+        "internal_error": "red",
+        "download_failed": "orange",
+        "other": "gray",
+        "empty": "gray",
+    }.get(reason_key, "gray")
+
 
 def _compute_parse_overview() -> Dict[str, Any]:
     """聚合 Document.run 分布 + 最近 1h 完成数 + 吞吐 + ETA."""
@@ -1341,6 +1389,7 @@ async def parse_monitor_failed_docs():
     page_size = min(max(int(request.args.get("page_size", 20)), 1), 100)
     status_filter = (request.args.get("status", "") or "").strip()
     kb_filter = (request.args.get("kb_id", "") or "").strip()
+    reason_filter = (request.args.get("reason_key", "") or "").strip()
 
     now_ms = int(time.time() * 1000)
     cutoff_30min_ms = now_ms - 30 * 60 * 1000
@@ -1361,6 +1410,29 @@ async def parse_monitor_failed_docs():
         if kb_filter:
             base_where = base_where & (Document.kb_id == kb_filter)
 
+        # 失败原因筛选 (MySQL 不支持复杂正则，这里用 LIKE 子串匹配关键短语)
+        # 每个 reason_key 对应若干 SQL OR 条件，匹配任一关键短语即可
+        reason_like_map = {
+            "embedding_api": ["Access denied", "overdue-payment", "calling embedding model failed"],
+            "unsupported_filetype": ["file type not supported"],
+            "ocr_error": ["OCR"],
+            "timeout": ["timeout", "timed out", "Timeout"],
+            "internal_error": ["Internal server error"],
+            "download_failed": ["download failed", "fetch failed"],
+        }
+        if reason_filter == "other":
+            # 「其他」= 不匹配任何已知关键短语
+            for phrases in reason_like_map.values():
+                for ph in phrases:
+                    base_where = base_where & ~(Document.progress_msg.contains(ph))
+        elif reason_filter in reason_like_map:
+            cond = None
+            for ph in reason_like_map[reason_filter]:
+                c = Document.progress_msg.contains(ph)
+                cond = c if cond is None else (cond | c)
+            if cond is not None:
+                base_where = base_where & cond
+
         total = (Document
                  .select(fn.COUNT(Document.id))
                  .where(base_where)
@@ -1380,6 +1452,8 @@ async def parse_monitor_failed_docs():
 
         rows = []
         for r in query.dicts():
+            raw_msg = (r.get("progress_msg") or "")[:200]
+            reason_key, reason_label = _classify_failure_reason(raw_msg)
             rows.append({
                 "id": r["id"],
                 "kb_id": r["kb_id"],
@@ -1387,7 +1461,10 @@ async def parse_monitor_failed_docs():
                 "name": r["name"],
                 "run": r["run"],
                 "progress": r.get("progress") or 0,
-                "progress_msg": (r.get("progress_msg") or "")[:200],
+                "progress_msg": raw_msg,
+                "reason_key": reason_key,
+                "reason": reason_label,
+                "reason_color": _reason_color(reason_key),
                 "update_time": r["update_time"],
                 "process_begin_at": r.get("process_begin_at"),
             })
@@ -1398,3 +1475,173 @@ async def parse_monitor_failed_docs():
     except Exception as e:
         logging.error("parse_monitor: failed-docs failed: %s", e, exc_info=True)
         return get_data_error_result(message=f"failed-docs failed: {e}")
+
+
+@manager.route("/collection/parse-monitor/rerun-failed", methods=["POST"])  # noqa: F821
+@login_required
+async def parse_monitor_rerun_failed():
+    """批量重新解析失败文档 (run='4')。
+
+    Body (JSON, 全可选):
+        reason_key: str   按失败原因过滤 (embedding_api/unsupported_filetype/...);
+                        不传或 'all' = 所有 run=4 失败文档
+        kb_id: str        指定知识库
+        limit: int        最多处理多少条 (默认 500，硬上限 2000)
+
+    每个 doc 走 RAGFlow 标准重新解析流程 (参考 scripts/_bulk_reparse_zombies.py)：
+      1. clear_chunk_num_when_rerun (倒计 KB token/chunk)
+      2. update run='1' progress=0 chunk_num=0 token_num=0 progress_msg=''
+      3. TaskService.filter_delete([doc_id])
+      4. docStoreConn.delete (清 ES chunks)
+      5. DocumentService.run (重新入队 Redis Stream)
+
+    返回 {total, success, failed, skipped, duration_sec, first_errors:[]}
+    """
+    from api.db.db_models import Document, Knowledgebase
+    from common.constants import TaskStatus
+    from api.db.services.document_service import DocumentService
+    from api.db.services.task_service import TaskService
+    from rag.nlp import search as rag_search
+
+    body = await request.get_json(silent=True) or {}
+    reason_key = (body.get("reason_key") or "").strip()
+    kb_filter = (body.get("kb_id") or "").strip()
+    limit = min(max(int(body.get("limit", 50) or 50), 1), 200)
+
+    # 与 failed-docs 端点一致的 LIKE 关键词
+    reason_like_map = {
+        "embedding_api": ["Access denied", "overdue-payment", "calling embedding model failed"],
+        "unsupported_filetype": ["file type not supported"],
+        "ocr_error": ["OCR"],
+        "timeout": ["timeout", "timed out", "Timeout"],
+        "internal_error": ["Internal server error"],
+        "download_failed": ["download failed", "fetch failed"],
+    }
+
+    @DB.connection_context()
+    def _scan():
+        where = (Document.run == TaskStatus.FAIL.value)
+        if kb_filter:
+            where = where & (Document.kb_id == kb_filter)
+
+        if reason_key and reason_key != "all":
+            if reason_key == "other":
+                for phrases in reason_like_map.values():
+                    for ph in phrases:
+                        where = where & ~(Document.progress_msg.contains(ph))
+            elif reason_key in reason_like_map:
+                cond = None
+                for ph in reason_like_map[reason_key]:
+                    c = Document.progress_msg.contains(ph)
+                    cond = c if cond is None else (cond | c)
+                if cond is not None:
+                    where = where & cond
+
+        return (Document
+                .select(Document.id, Document.kb_id)
+                .where(where)
+                .order_by(Document.update_time.asc())
+                .limit(limit)
+                .tuples())
+
+    @DB.connection_context()
+    def _kb_tenants():
+        m = {}
+        for kb in Knowledgebase.select(Knowledgebase.id, Knowledgebase.tenant_id):
+            m[kb.id] = kb.tenant_id
+        return m
+
+    def _reparse_one(doc_id, kb_id, tenant_id):
+        try:
+            e, doc = DocumentService.get_by_id(doc_id)
+            if not e or not doc:
+                return False, f"doc not found: {doc_id}"
+            idx_name = rag_search.index_name(tenant_id)
+            try:
+                DocumentService.clear_chunk_num_when_rerun(doc.id)
+            except Exception as ex:
+                logging.warning("rerun-failed: clear_chunk_num failed %s: %s", doc.id, ex)
+            DocumentService.update_by_id(doc.id, {
+                "run": str(TaskStatus.RUNNING.value),
+                "progress": 0,
+                "progress_msg": "",
+                "chunk_num": 0,
+                "token_num": 0,
+            })
+            TaskService.filter_delete([Task.doc_id == doc.id])  # noqa: F821
+            try:
+                if settings.docStoreConn.index_exist(idx_name, doc.kb_id):
+                    settings.docStoreConn.delete({"doc_id": doc.id}, idx_name, doc.kb_id)
+            except Exception as ex:
+                logging.warning("rerun-failed: docStore delete failed %s: %s", doc.id, ex)
+            doc_dict = doc.to_dict()
+            DocumentService.run(tenant_id, doc_dict, {})
+            return True, "ok"
+        except Exception as ex:
+            import traceback
+            tb = traceback.format_exc()[-200:]
+            return False, f"{repr(ex)[:150]} | tb={tb}"
+
+    try:
+        targets = list(_scan())
+        if not targets:
+            return get_json_result(data={
+                "total": 0, "success": 0, "failed": 0, "skipped": 0,
+                "duration_sec": 0.0, "first_errors": [],
+            })
+
+        kb_tenants = _kb_tenants()
+        t0 = time.time()
+        success = failed = skipped = 0
+        errors = []
+        for doc_id, kb_id in targets:
+            tenant_id = kb_tenants.get(kb_id)
+            if not tenant_id:
+                skipped += 1
+                errors.append((doc_id, f"no tenant for kb_id={kb_id}"))
+                continue
+            ok, msg = _reparse_one(doc_id, kb_id, tenant_id)
+            if ok:
+                success += 1
+            else:
+                failed += 1
+                errors.append((doc_id, msg))
+
+        # 写批次摘要到 Redis (前端「最近重跑批次」面板可见)
+        try:
+            from rag.utils.redis_conn import REDIS_CONN
+            if REDIS_CONN is not None and getattr(REDIS_CONN, "REDIS", None) is not None:
+                payload = {
+                    "ts": int(time.time()),
+                    "total": len(targets),
+                    "success": success,
+                    "failed": failed,
+                    "skipped": skipped,
+                    "duration_sec": round(time.time() - t0, 2),
+                    "first_errors": [
+                        {"doc_id": d[:8], "msg": m[:200]} for d, m in errors[:5]
+                    ],
+                    "trigger": "rerun-failed-api",
+                    "reason_key": reason_key or "all",
+                }
+                import json as _json
+                REDIS_CONN.REDIS.lpush(_PARSE_MONITOR_BATCHES_KEY, _json.dumps(payload, ensure_ascii=False))
+                REDIS_CONN.REDIS.ltrim(_PARSE_MONITOR_BATCHES_KEY, 0, _PARSE_MONITOR_BATCHES_MAX - 1)
+        except Exception as ex:
+            logging.warning("rerun-failed: push batch summary failed: %s", ex)
+
+        logging.info(
+            "parse_monitor rerun-failed: reason=%s total=%d ok=%d fail=%d skip=%d elapsed=%.1fs",
+            reason_key or "all", len(targets), success, failed, skipped, time.time() - t0,
+        )
+        return get_json_result(data={
+            "total": len(targets),
+            "success": success,
+            "failed": failed,
+            "skipped": skipped,
+            "duration_sec": round(time.time() - t0, 2),
+            "first_errors": [{"doc_id": d[:8], "msg": m[:200]} for d, m in errors[:5]],
+        })
+    except Exception as e:
+        logging.error("parse_monitor: rerun-failed failed: %s", e, exc_info=True)
+        return get_data_error_result(message=f"rerun-failed failed: {e}")

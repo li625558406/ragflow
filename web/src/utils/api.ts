@@ -443,4 +443,5 @@ export default {
   collectionParseMonitorOverview: `${restAPIv1}/collection/parse-monitor/overview`,
   collectionParseMonitorBatches: `${restAPIv1}/collection/parse-monitor/reparse-batches`,
   collectionParseMonitorFailedDocs: `${restAPIv1}/collection/parse-monitor/failed-docs`,
+  collectionParseMonitorRerunFailed: `${restAPIv1}/collection/parse-monitor/rerun-failed`,
 };

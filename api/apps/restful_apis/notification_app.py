@@ -116,6 +116,14 @@ async def get_notification(notification_id: str):
     return get_json_result(data=n)
 
 
+@manager.route("/notifications/<notification_id>/results", methods=["GET"])
+@login_required
+async def get_notification_results(notification_id: str):
+    """展开 notification.result_ids → 完整 CrawlerResult 列表（二级弹框数据源）。"""
+    results = NotificationService.get_results_for_notification(notification_id)
+    return get_json_result(data={"list": results, "total": len(results)})
+
+
 @manager.route("/notifications/<notification_id>/read", methods=["POST"])
 @login_required
 async def mark_one_read(notification_id: str):

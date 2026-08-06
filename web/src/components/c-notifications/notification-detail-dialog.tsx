@@ -1,59 +1,42 @@
-import {
-  getNotificationDetail,
-  type NotificationItem,
-} from '@/services/c-notification-service';
-import { useEffect, useState } from 'react';
+import type { NotificationResult } from '@/services/c-notification-service';
 
 interface Props {
-  item: NotificationItem;
+  result: NotificationResult;
   onClose: () => void;
 }
 
-export function NotificationDetailDialog({ item, onClose }: Props) {
-  const [detail, setDetail] = useState<
-    NotificationItem & { markdown?: string; source_url?: string }
-  >(item);
-
-  useEffect(() => {
-    getNotificationDetail(item.id).then((d) => setDetail(d));
-  }, [item.id]);
-
+export function NotificationDetailDialog({ result, onClose }: Props) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="w-[680px] max-h-[80vh] bg-white rounded-xl shadow-2xl flex flex-col">
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40">
+      <div className="w-[860px] max-h-[80vh] bg-white rounded-xl shadow-2xl flex flex-col">
         <div className="flex items-center justify-between px-5 py-3 border-b">
-          <span className="font-semibold text-base">{detail.title}</span>
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-gray-700"
-          >
-            ×
-          </button>
+          <span className="font-semibold text-base truncate pr-4">
+            {result.title || '(无标题)'}
+          </span>
         </div>
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
-          <div className="flex gap-3 text-sm text-gray-600">
-            <span>类型：{detail.category}</span>
-            <span>站点：{detail.site_display}</span>
-            <span>发布时间：{detail.publish_range}</span>
+          <div className="flex flex-wrap gap-3 text-sm text-gray-600">
+            {result.publish_date && (
+              <span>发布时间：{result.publish_date}</span>
+            )}
+            {result.source_url && (
+              <a
+                href={result.source_url}
+                target="_blank"
+                rel="noreferrer"
+                className="text-blue-600 hover:underline"
+              >
+                查看原文 ↗
+              </a>
+            )}
           </div>
-          {detail.source_url && (
-            <a
-              href={detail.source_url}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-block text-sm text-blue-600 hover:underline"
-            >
-              查看原文 →
-            </a>
-          )}
-          {detail.summary && (
+          {result.markdown ? (
             <pre className="bg-gray-50 p-3 rounded text-sm whitespace-pre-wrap font-sans">
-              {detail.summary}
+              {result.markdown}
             </pre>
-          )}
-          {detail.markdown && (
-            <div className="text-sm text-gray-700 whitespace-pre-wrap">
-              {detail.markdown}
+          ) : (
+            <div className="p-8 text-center text-sm text-gray-400">
+              无正文内容
             </div>
           )}
         </div>
@@ -62,7 +45,7 @@ export function NotificationDetailDialog({ item, onClose }: Props) {
             onClick={onClose}
             className="px-4 py-1.5 text-sm border rounded hover:bg-gray-50"
           >
-            关闭
+            返回
           </button>
         </div>
       </div>

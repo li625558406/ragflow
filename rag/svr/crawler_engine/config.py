@@ -241,7 +241,7 @@ class SiteConfig:
     name: str = ""
     site_url: str = ""
     enabled: bool = True
-    detect_interval: int = 300       # detection check interval in seconds (default 5 min)
+    detect_interval: int = 600       # detection check interval in seconds (default 10 min)
     detect_enabled: bool = True     # whether this site participates in detection
     detect_max_interval: int = 3600  # backoff cap: when miss_count rises, interval caps here (1h)
     detect_min_interval: int = 0     # backoff floor on reset: 0 means use detect_interval
@@ -322,7 +322,7 @@ class ConfigLoader:
             name=data.get("name", site_id),
             site_url=data.get("site_url", ""),
             enabled=data.get("enabled", True),
-            detect_interval=data.get("detect_interval", self._defaults.get("detect_interval", 300)),
+            detect_interval=data.get("detect_interval", self._defaults.get("detect_interval", 600)),
             detect_enabled=data.get("detect_enabled", self._defaults.get("detect_enabled", True)),
             detect_max_interval=data.get(
                 "detect_max_interval",

@@ -25,8 +25,10 @@ export function NotificationAdminTab() {
         page_size: 50,
         ...filter,
       });
-      setList(resp?.data?.list || []);
-      setTotal(resp?.data?.total || 0);
+      // umi-request: resp = Response, resp.data = {code, data, message} body, resp.data.data = 真正 payload
+      const payload = resp?.data?.data;
+      setList(payload?.list || []);
+      setTotal(payload?.total || 0);
     } finally {
       setLoading(false);
     }
@@ -34,7 +36,7 @@ export function NotificationAdminTab() {
 
   const loadStats = async () => {
     const resp: any = await adminStats();
-    setStats(resp?.data);
+    setStats(resp?.data?.data ?? null);
   };
 
   useEffect(() => {
@@ -44,8 +46,8 @@ export function NotificationAdminTab() {
   }, [page, filter]);
 
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-3 gap-4">
+    <div className="flex flex-col gap-4 h-full overflow-auto pr-1">
+      <div className="grid grid-cols-3 gap-4 shrink-0">
         <div className="border rounded p-3">
           <div className="text-xs text-gray-500">
             {t('notifications.admin.statsTodayCreated')}
@@ -72,7 +74,7 @@ export function NotificationAdminTab() {
         </div>
       </div>
 
-      <div className="flex gap-2 items-end">
+      <div className="flex gap-2 items-end shrink-0">
         <div>
           <label className="text-xs">
             {t('notifications.admin.filterSite')}

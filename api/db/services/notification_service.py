@@ -84,6 +84,52 @@ class NotificationService(CommonService):
 
     @classmethod
     @DB.connection_context()
+    def get_results_for_notification(cls, notification_id: str) -> List[dict]:
+        """展开 notification.result_ids → 完整 CrawlerResult 列表。
+
+        返回字段精简到前端展示所需：id / title / source_url / publish_date /
+        markdown（详情三级弹框直接用，无需再请求）。
+        """
+        n = cls.get_by_id(notification_id)
+        if not n:
+            return []
+        result_ids = n.get("result_ids") or []
+        if not result_ids:
+            return []
+        rows = []
+        for rid in result_ids:
+            try:
+                cr = (
+                    CrawlerResult
+                    .select(
+                        CrawlerResult.id,
+                        CrawlerResult.title,
+                        CrawlerResult.source_url,
+                        CrawlerResult.publish_date,
+                        CrawlerResult.markdown,
+                        CrawlerResult.crawled_at,
+                    )
+                    .where(CrawlerResult.id == rid)
+                    .first()
+                )
+                if cr:
+                    rows.append({
+                        "id": cr.id,
+                        "title": cr.title or "",
+                        "source_url": cr.source_url or "",
+                        "publish_date": cr.publish_date or "",
+                        "markdown": cr.markdown or "",
+                        "crawled_at": cr.crawled_at or 0,
+                    })
+            except Exception as e:
+                _logger.warning(
+                    "fetch result %s for notification %s failed: %s",
+                    rid, notification_id, e,
+                )
+        return rows
+
+    @classmethod
+    @DB.connection_context()
     def get_max_created_at_for_site(cls, site_id: str) -> int:
         """watermark 兜底：从 notification 表查 site_id 的最大 created_at。"""
         row = (
