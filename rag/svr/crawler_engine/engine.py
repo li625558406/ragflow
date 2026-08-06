@@ -256,6 +256,7 @@ class CrawlerEngine:
         self._dedup_checker = DedupChecker(
             self._state, tenant_id,
             skip_db_check=(self._writer_mode != "bid"),
+            site_id=self._config.site_id,
         )
 
         # Layer 3: Storage
@@ -311,6 +312,7 @@ class CrawlerEngine:
             self._dedup_checker = DedupChecker(
                 self._state, self._state.tenant_id,
                 skip_db_check=(self._writer_mode != "bid"),
+                site_id=self._config.site_id,
             )
             stats = self._crawl_one_section(section)
             total_stats["sections"][section.label] = stats
@@ -477,6 +479,9 @@ class CrawlerEngine:
                 # URL must be clickable). Only absolutize when site_url is set
                 # and the URL is relative.
                 raw_url = item.get("url") or item.get("href") or ""
+                if raw_url and not isinstance(raw_url, str):
+                    raw_url = str(raw_url)
+                    item["url"] = raw_url
                 if raw_url and not raw_url.startswith(("http://", "https://")):
                     site_root = self._config.site_url or ""
                     if site_root:

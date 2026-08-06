@@ -144,7 +144,7 @@ sites:
   ccgp_jdcf_gg_cr:
     name: "中国政府采购网-监督处罚+公告+严重违法失信"
     site_url: "http://www.ccgp.gov.cn/"
-    enabled: false  # DISABLED: listing URL empty, CSS selector broken
+    enabled: true  # Fixed 2026-08-05: items_path + fields aligned with ccgp_zcfg
     transport:
       type: rest_api
       engine: requests
@@ -158,19 +158,19 @@ sites:
       max_retries: 3
     extract:
       type: css_selector
-      items_path: ""
+      items_path: "ul.c_list_tat li"
       fields:
         id: "a@href"
-        title: "title"
-        date: "date"
+        title: "a@title"
+        date: "span"
     detail:
       type: css_selector
-      content_field: "content"
+      content_field: ".TRS_Editor"
     format:
       parser_id: "naive"
       upload_batch_size: 10
     sections:
-      - label: "jdcf"
+      - label: "监督处罚"
         listing:
           url: "http://www.ccgp.gov.cn/jdjc/jdcf/"
           method: GET
@@ -179,13 +179,13 @@ sites:
           next_page_regex: "index_(\\d+)\\.htm"
           page_size: 20
           start: 1
-      - label: "gg"
+      - label: "公告"
         listing:
           url: "http://www.ccgp.gov.cn/gg/"
           method: GET
         pagination:
           type: single_page
-      - label: "cr"
+      - label: "严重违法失信"
         listing:
           url: "http://www.ccgp.gov.cn/search/cr/"
           method: GET
@@ -3673,9 +3673,9 @@ sites:
         title: "TITLE"
         date: "TM"
         kind: "KIND"
+      url_template: "https://ggzyfw.fujian.gov.cn/trade-info/{id}.html"
     detail:
-      type: css_selector
-      content_field: ".detail_content"
+      type: inline
     format:
       parser_id: "naive"
       upload_batch_size: 10
@@ -5035,9 +5035,13 @@ sites:
         id: "id"
         title: "title"
         date: "noticeTime"
+      url_template: "https://zfcg.czt.fujian.gov.cn/site/detail.html?id={id}"
     detail:
       type: api_request
       url: "https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/getInfoById"
+      method: GET
+      params:
+        id: "{id}"
       content_field: "data.content"
     format:
       parser_id: "naive"
@@ -5085,9 +5089,13 @@ sites:
         id: "id"
         title: "title"
         date: "noticeTime"
+      url_template: "https://zfcg.czt.fujian.gov.cn/site/detail.html?id={id}"
     detail:
       type: api_request
       url: "https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/getInfoById"
+      method: GET
+      params:
+        id: "{id}"
       content_field: "data.content"
     format:
       parser_id: "naive"
@@ -5132,9 +5140,13 @@ sites:
         id: "id"
         title: "title"
         date: "noticeTime"
+      url_template: "https://zfcg.czt.fujian.gov.cn/site/detail.html?id={id}"
     detail:
       type: api_request
       url: "https://zfcg.czt.fujian.gov.cn/gpcms/rest/web/v2/info/getInfoById"
+      method: GET
+      params:
+        id: "{id}"
       content_field: "data.content"
     format:
       parser_id: "naive"
@@ -6546,9 +6558,9 @@ sites:
       method: GET
       params:
         id: "{id}"
-        planId: "{planId}"
-        channel: "{channel}"
-        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+        # channel + siteId auto-injected by spa_render vue_http (see
+        # _fetch_detail_via_vue_http). planId removed: listing API does not
+        # return it, causing literal "{planId}" to be sent → 4009 验签失败.
       content_field: "data.content"
     sections:
       - label: ggnr
@@ -6625,9 +6637,9 @@ sites:
       method: GET
       params:
         id: "{id}"
-        planId: "{planId}"
-        channel: "{channel}"
-        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+        # channel + siteId auto-injected by spa_render vue_http (see
+        # _fetch_detail_via_vue_http). planId removed: listing API does not
+        # return it, causing literal "{planId}" to be sent → 4009 验签失败.
       content_field: "data.content"
     sections:
       - label: jdgl
@@ -6705,9 +6717,9 @@ sites:
       method: GET
       params:
         id: "{id}"
-        planId: "{planId}"
-        channel: "{channel}"
-        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+        # channel + siteId auto-injected by spa_render vue_http (see
+        # _fetch_detail_via_vue_http). planId removed: listing API does not
+        # return it, causing literal "{planId}" to be sent → 4009 验签失败.
       content_field: "data.content"
     sections:
       - label: ggnr
@@ -6785,9 +6797,9 @@ sites:
       method: GET
       params:
         id: "{id}"
-        planId: "{planId}"
-        channel: "{channel}"
-        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+        # channel + siteId auto-injected by spa_render vue_http (see
+        # _fetch_detail_via_vue_http). planId removed: listing API does not
+        # return it, causing literal "{planId}" to be sent → 4009 验签失败.
       content_field: "data.content"
     sections:
       - label: ggnr
@@ -6865,9 +6877,9 @@ sites:
       method: GET
       params:
         id: "{id}"
-        planId: "{planId}"
-        channel: "{channel}"
-        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+        # channel + siteId auto-injected by spa_render vue_http (see
+        # _fetch_detail_via_vue_http). planId removed: listing API does not
+        # return it, causing literal "{planId}" to be sent → 4009 验签失败.
       content_field: "data.content"
     sections:
       - label: ggnr
@@ -6945,9 +6957,9 @@ sites:
       method: GET
       params:
         id: "{id}"
-        planId: "{planId}"
-        channel: "{channel}"
-        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+        # channel + siteId auto-injected by spa_render vue_http (see
+        # _fetch_detail_via_vue_http). planId removed: listing API does not
+        # return it, causing literal "{planId}" to be sent → 4009 验签失败.
       content_field: "data.content"
     sections:
       - label: ggnr
@@ -7025,9 +7037,9 @@ sites:
       method: GET
       params:
         id: "{id}"
-        planId: "{planId}"
-        channel: "{channel}"
-        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+        # channel + siteId auto-injected by spa_render vue_http (see
+        # _fetch_detail_via_vue_http). planId removed: listing API does not
+        # return it, causing literal "{planId}" to be sent → 4009 验签失败.
       content_field: "data.content"
     sections:
       - label: ggnr
@@ -7105,9 +7117,9 @@ sites:
       method: GET
       params:
         id: "{id}"
-        planId: "{planId}"
-        channel: "{channel}"
-        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+        # channel + siteId auto-injected by spa_render vue_http (see
+        # _fetch_detail_via_vue_http). planId removed: listing API does not
+        # return it, causing literal "{planId}" to be sent → 4009 验签失败.
       content_field: "data.content"
     sections:
       - label: ggnr
@@ -7185,9 +7197,9 @@ sites:
       method: GET
       params:
         id: "{id}"
-        planId: "{planId}"
-        channel: "{channel}"
-        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+        # channel + siteId auto-injected by spa_render vue_http (see
+        # _fetch_detail_via_vue_http). planId removed: listing API does not
+        # return it, causing literal "{planId}" to be sent → 4009 验签失败.
       content_field: "data.content"
     sections:
       - label: ggnr
@@ -7265,9 +7277,9 @@ sites:
       method: GET
       params:
         id: "{id}"
-        planId: "{planId}"
-        channel: "{channel}"
-        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+        # channel + siteId auto-injected by spa_render vue_http (see
+        # _fetch_detail_via_vue_http). planId removed: listing API does not
+        # return it, causing literal "{planId}" to be sent → 4009 验签失败.
       content_field: "data.content"
     sections:
       - label: ggnr
@@ -7345,9 +7357,9 @@ sites:
       method: GET
       params:
         id: "{id}"
-        planId: "{planId}"
-        channel: "{channel}"
-        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+        # channel + siteId auto-injected by spa_render vue_http (see
+        # _fetch_detail_via_vue_http). planId removed: listing API does not
+        # return it, causing literal "{planId}" to be sent → 4009 验签失败.
       content_field: "data.content"
     sections:
       - label: ggnr
@@ -7429,9 +7441,9 @@ sites:
       method: GET
       params:
         id: "{id}"
-        planId: "{planId}"
-        channel: "{channel}"
-        siteId: "d36a6e8b-4363-4b52-a00b-79ca47033923"
+        # channel + siteId auto-injected by spa_render vue_http (see
+        # _fetch_detail_via_vue_http). planId removed: listing API does not
+        # return it, causing literal "{planId}" to be sent → 4009 验签失败.
       content_field: "data.content"
     sections:
       - label: zcfg

@@ -13,7 +13,7 @@ import logging
 import os
 import tempfile
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .models import NormalizedItem, AttachmentMeta
 
@@ -74,6 +74,7 @@ class StoragePipeline:
             "bid_written": 0,
             "bid_failed": 0,
             "kb_uploaded": 0,
+            "kb_skipped_dedup": 0,
             "kb_failed": 0,
             "attachments_processed": 0,
             "attachments_uploaded": 0,
@@ -93,8 +94,11 @@ class StoragePipeline:
             "attachment_results": [],
         }
 
-        # 1. Write to bid_* tables (structured storage)
-        project_id = self._write_to_bid(item)
+        # 1. Write to bid_* tables / crawler_result (structured storage).
+        # Returns (project_id, existing_kb_doc_id): the second slot is
+        # non-empty only in collection mode when the item already has a
+        # KB document from a previous run.
+        project_id, existing_kb_doc_id = self._write_to_bid(item)
         result["project_id"] = project_id
 
         # 2. Upload content to KB + parse (knowledge base)
@@ -107,10 +111,28 @@ class StoragePipeline:
         #          is WAF-blocked; the metadata-only markdown still carries value).
         #    Sites that want to skip KB upload entirely should set
         #    output_targets=["db"] (no "kb") which flips self._skip_kb.
+        #
+        #    Dedup: if the crawler_result row already carries a kb_doc_id
+        #    from a prior run, skip the upload entirely and reuse the
+        #    existing doc_id.  This prevents duplicate KB documents when
+        #    a site is re-crawled (e.g. detector-triggered daily runs
+        #    hitting the same items, or a full re-run after cleanup).
         has_content = len(item.content or "") >= MIN_CONTENT_LENGTH_FOR_KB
         has_title = bool(item.title and item.title.strip()
                          and item.title != "Untitled")
-        if not self._skip_kb and (has_content or has_title) and project_id:
+        if existing_kb_doc_id and not self._skip_kb:
+            # Already uploaded in a previous run — reuse doc_id, no upload.
+            # Avoids duplicate KB documents when a site is re-crawled.
+            result["doc_id"] = existing_kb_doc_id
+            self._stats["kb_skipped_dedup"] += 1
+            # Preserve status=done on the crawler_result row (upsert_result
+            # resets it to "raw"; without this the dedup path would leave
+            # already-parsed items stuck at "raw" forever).
+            if self._writer_mode == "collection":
+                self._update_result_kb_doc(project_id, existing_kb_doc_id)
+            logging.debug("StoragePipeline: dedup skip KB upload for '%s' (existing doc=%s)",
+                          item.title[:60], existing_kb_doc_id)
+        elif not self._skip_kb and (has_content or has_title) and project_id:
             doc_id = self._upload_content_to_kb(item)
             result["doc_id"] = doc_id
             # Write kb_doc_id back to crawler_result row (collection mode)
@@ -170,15 +192,20 @@ class StoragePipeline:
     # Internal: bid table writes
     # ------------------------------------------------------------------
 
-    def _write_to_bid(self, item: NormalizedItem) -> Optional[str]:
+    def _write_to_bid(self, item: NormalizedItem) -> Tuple[Optional[str], str]:
         """Write item to database tables.
 
         writer_mode='bid' (default)        → BidWriter → bid_* 表
         writer_mode='collection'           → CollectionWriter → crawler_result + 扩展表
+
+        Returns ``(project_id, existing_kb_doc_id)``.  ``existing_kb_doc_id``
+        is "" in legacy bid mode and in collection mode when the item has
+        no prior KB upload; non-empty when the crawler_result row already
+        has a ``kb_doc_id`` from a previous run (used to dedup KB upload).
         """
         if self._writer_mode == "collection":
             return self._write_to_collection(item)
-        return self._write_to_bid_legacy(item)
+        return self._write_to_bid_legacy(item), ""
 
     def _write_to_bid_legacy(self, item: NormalizedItem) -> Optional[int]:
         """Legacy writer: bid_* tables via BidWriter."""
@@ -197,8 +224,12 @@ class StoragePipeline:
             self._stats["bid_failed"] += 1
             return None
 
-    def _write_to_collection(self, item: NormalizedItem) -> Optional[str]:
-        """New system writer: crawler_result + extension tables via CollectionWriter."""
+    def _write_to_collection(self, item: NormalizedItem) -> Tuple[Optional[str], str]:
+        """New system writer: crawler_result + extension tables via CollectionWriter.
+
+        Returns ``(result_id, existing_kb_doc_id)``.  The second slot is
+        non-empty when the item was previously uploaded to the KB.
+        """
         writer = self._get_collection_writer()
         try:
             result_id = writer.write_all(
@@ -211,14 +242,19 @@ class StoragePipeline:
             )
             if result_id:
                 self._stats["bid_written"] += 1
+                # CollectionWriter captured this before upsert; safe to
+                # read here because write_all is synchronous within the
+                # same writer instance for this item.
+                existing_kb = getattr(writer, "last_existing_kb_doc_id", "") or ""
             else:
                 self._stats["bid_failed"] += 1
-            return result_id
+                existing_kb = ""
+            return result_id, existing_kb
         except Exception as e:
             logging.error("StoragePipeline: collection write failed for %s: %s",
                           item.title[:60], e)
             self._stats["bid_failed"] += 1
-            return None
+            return None, ""
 
     # ------------------------------------------------------------------
     # Internal: KB content upload

@@ -99,6 +99,8 @@ class BaseAdapter(ABC):
         if not detail_url:
             logging.warning("BaseAdapter: no URL in item for css_selector detail")
             return item
+        if not isinstance(detail_url, str):
+            detail_url = str(detail_url)
 
         # Resolve relative URLs against the listing page URL (not site root)
         from urllib.parse import urljoin

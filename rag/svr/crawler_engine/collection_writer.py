@@ -152,6 +152,10 @@ class CollectionWriter:
             "zdgksxml_ext_written": 0,
             "zdgksxml_ext_failed": 0,
         }
+        # Last existing kb_doc_id observed during the most recent
+        # ``_write_result`` call. Read by StoragePipeline to decide
+        # whether to skip KB upload for an already-stored item.
+        self.last_existing_kb_doc_id: str = ""
 
     # ------------------------------------------------------------------
     # Public API
@@ -182,6 +186,10 @@ class CollectionWriter:
         if category not in VALID_CATEGORIES:
             logging.warning("CollectionWriter: invalid category=%s, fallback to 'bid'", category)
             category = "bid"
+
+        # Reset per-call state so callers reading last_existing_kb_doc_id
+        # never see a stale value from a previous item.
+        self.last_existing_kb_doc_id = ""
 
         # 0. 日期过滤（可选）— 不匹配则直接跳过，不写库不报警
         if self._date_filter and not self._item_matches_date(item):
@@ -317,6 +325,15 @@ class CollectionWriter:
                 "error_msg": "",
                 "crawled_at": current_timestamp(),
             }
+
+            # Capture any pre-existing KB linkage *before* upsert so the
+            # caller (StoragePipeline) can skip a duplicate KB upload.
+            # upsert_result itself preserves kb_doc_id on update, but we
+            # still need to surface the value here.
+            try:
+                self.last_existing_kb_doc_id = CrawlerResultService.get_existing_kb_doc_id(result_id)
+            except Exception:
+                self.last_existing_kb_doc_id = ""
 
             is_new = CrawlerResultService.upsert_result(data)
             if is_new:

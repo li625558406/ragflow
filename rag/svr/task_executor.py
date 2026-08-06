@@ -1065,6 +1065,44 @@ async def handle_scheduled_script_task(task: dict):
     timeout = task.get("timeout", 3600)
     task_id_ref = task.get("task_id_ref", "")
 
+    # Skip stale messages whose scheduled_task has been disabled or removed.
+    # The Redis Stream may carry a large backlog accumulated before a task
+    # was disabled; without this gate, task_executor would keep spawning
+    # subprocesses for tasks the user has explicitly turned off.
+    # Only applies when task_id_ref points to a registered scheduled_task
+    # (one-off collection runs pass task_id_ref="" or a non-registered id).
+    if task_id_ref:
+        try:
+            ref = (
+                ScheduledTaskService.model
+                .select(ScheduledTaskService.model.enabled)
+                .where(ScheduledTaskService.model.id == task_id_ref)
+                .first()
+            )
+        except Exception as e:
+            logging.warning(
+                "scheduled_script task %s: failed to look up task_id_ref=%s (%s); proceeding",
+                task_id_ref, task_id_ref, e,
+            )
+            ref = None
+        if ref is not None and not ref.enabled:
+            logging.info(
+                "scheduled_script task %s skipped: task_id_ref=%s is disabled",
+                task_id_ref, task_id_ref,
+            )
+            try:
+                ScheduledTaskLogService.update_by_id(log_id, {
+                    "status": "skipped",
+                    "end_time": int(time.time() * 1000),
+                    "duration": 0.0,
+                    "error_msg": "Scheduled task disabled; backlog message skipped",
+                })
+            except Exception:
+                # log_id may not exist (e.g., scheduler-created log rows
+                # for disabled tasks are never created in recent runs)
+                pass
+            return
+
     # Check if already canceled before starting
     if has_canceled(task_id_ref):
         logging.info("scheduled_script task %s canceled before start, skipping", task_id_ref)

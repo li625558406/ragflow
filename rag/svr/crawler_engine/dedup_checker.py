@@ -22,22 +22,23 @@ class DedupChecker:
     _MAX_DB_CACHE = 50000
 
     def __init__(self, state_manager, tenant_id: str = "",
-                 skip_db_check: bool = False):
+                 skip_db_check: bool = False, site_id: str = ""):
         """Initialize dedup checker.
 
         Args:
             state_manager: StateManager instance for in-memory ID tracking.
             tenant_id: Tenant ID (used for DB queries).
-            skip_db_check: When True, only Layer 1 (memory) check is performed.
-                Used by collection writer mode — those items live in
-                ``crawler_result`` (not ``bid_project``), so Layer 2's
-                bid_project lookup would false-positive on URLs that an
-                unrelated bid-mode site already wrote.
+            skip_db_check: When True, only Layer 1 (memory) check is performed
+                on the bid_project table. Collection mode still performs a
+                Layer 2 check against crawler_result (keyed by site_id|url).
+            site_id: Site ID, required for collection-mode Layer 2 check.
         """
         self._state = state_manager
         self._tenant_id = tenant_id
         self._skip_db_check = skip_db_check
+        self._site_id = site_id
         self._db_checked: Set[int] = set()   # cached project_ids already queried
+        self._coll_checked: Set[str] = set()  # cached crawler_result ids
         self._db_hits: int = 0                # count of DB-layer dedup hits
         self._memory_hits: int = 0             # count of memory-layer dedup hits
 
@@ -59,11 +60,27 @@ class DedupChecker:
             self._memory_hits += 1
             return True
 
-        # Layer 2: DB check (covers historical data) — bid mode only.
-        # Collection mode writes to crawler_result, not bid_project, so
-        # checking bid_project against the same URL (gen_bid_id only hashes
-        # the URL, not site_id) would mark unrelated URLs as duplicates.
+        # Layer 2: DB check.
+        # - bid mode: lookup bid_project by gen_bid_id(url)
+        # - collection mode: lookup crawler_result by md5(site_id|url)
+        #   (gen_bid_id only hashes URL without site_id, so a bid-mode site
+        #   writing the same URL would false-positive; crawler_result's PK
+        #   includes site_id, which is the correct scope for collection.)
         if self._skip_db_check:
+            # Collection mode — check crawler_result instead of bid_project.
+            if self._site_id and url:
+                result_id = self._gen_result_id(self._site_id, url)
+                if result_id in self._coll_checked:
+                    # Already verified absent; not a dup.
+                    return False
+                if self._exists_in_crawler_result(result_id):
+                    self._coll_checked.add(result_id)
+                    self._db_hits += 1
+                    self._state.mark_processed(item_id)
+                    return True
+                self._coll_checked.add(result_id)
+                if len(self._coll_checked) > self._MAX_DB_CACHE:
+                    self._coll_checked.clear()
             return False
 
         if url:
@@ -107,4 +124,20 @@ class DedupChecker:
         except Exception as e:
             logging.debug("DedupChecker: bid_project query failed for id=%d: %s",
                           project_id, e)
+            return False
+
+    @staticmethod
+    def _gen_result_id(site_id: str, source_url: str) -> str:
+        """md5(site_id|source_url) — matches CrawlerResultService.gen_result_id."""
+        import hashlib
+        return hashlib.md5(f"{site_id}|{source_url}".encode("utf-8")).hexdigest()
+
+    def _exists_in_crawler_result(self, result_id: str) -> bool:
+        """Check if crawler_result table already has a row for this PK."""
+        try:
+            from api.db.db_models import CrawlerResult
+            return CrawlerResult.select().where(CrawlerResult.id == result_id).exists()
+        except Exception as e:
+            logging.debug("DedupChecker: crawler_result query failed for id=%s: %s",
+                          result_id, e)
             return False

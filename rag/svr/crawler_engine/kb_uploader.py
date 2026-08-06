@@ -72,6 +72,11 @@ class KBUploader:
         doc_ids = self._upload_blob(kb, blob, filename)
         return doc_ids[0] if doc_ids else None
 
+    # Files larger than this are uploaded but not queued for parsing.
+    # Large attachments (PDF/ZIP/etc.) dominate parsing cost and time;
+    # users can manually trigger parsing later from the KB UI if needed.
+    PARSE_SIZE_LIMIT = 5 * 1024 * 1024  # 5 MiB
+
     def _upload_blob(self, kb, blob: bytes, display_name: str) -> List[str]:
         """Upload raw bytes to a KB. Returns list of document IDs."""
         from api.db.services.file_service import FileService
@@ -89,10 +94,20 @@ class KBUploader:
         if errs:
             logging.warning("KBUploader: upload errors for %s: %s", display_name, errs)
 
+        skip_parsing = len(blob) > self.PARSE_SIZE_LIMIT
+        if skip_parsing:
+            logging.info(
+                "KBUploader: %s size=%.1fMB exceeds %.0fMB limit, uploading without parsing",
+                display_name, len(blob) / (1024 * 1024),
+                self.PARSE_SIZE_LIMIT / (1024 * 1024),
+            )
+
         doc_ids = []
         for doc, _ in pairs:
             did = doc["id"]
             doc_ids.append(did)
+            if skip_parsing:
+                continue
             self._set_parser(did)
             self._queue_parsing(doc, did)
 

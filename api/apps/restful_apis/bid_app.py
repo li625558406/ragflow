@@ -1207,26 +1207,42 @@ def bid_crawler_stats():
     except Exception as e:
         logging.warning("crawler-stats: failed to load YAML: %s", e)
 
-    # 2. Redis: detector:last_check:* + crawler_engine:* locks
+    # 2. Redis: detector:state:* (JSON with last_check) + crawler_engine:* locks
     now_ts = time.time()
     detector_checks = {}
     crawling_sites = set()
     try:
+        import json as _json
         from rag.utils.redis_conn import REDIS_CONN
         if REDIS_CONN and REDIS_CONN.is_alive():
             cursor = 0
             while True:
                 cursor, keys = REDIS_CONN.REDIS.scan(
-                    cursor=cursor, match="detector:last_check:*", count=200,
+                    cursor=cursor, match="detector:state:*", count=200,
                 )
                 for k in keys:
-                    # k = "detector:last_check:{site_id}:{tenant_id}"
-                    parts = k.split(":")
-                    if len(parts) >= 4:
-                        sid = parts[2]
-                        val = REDIS_CONN.get(k)
-                        if val:
-                            detector_checks[sid] = float(val)
+                    # k = "detector:state:{tenant_id}:{site_id}"
+                    # site_id/tenant_id never contain colons, so split(":")
+                    # yields exactly ["detector","state","{tenant}","{site}"].
+                    k_str = k.decode() if isinstance(k, bytes) else k
+                    parts = k_str.split(":")
+                    if len(parts) < 4:
+                        continue
+                    sid = parts[3]
+                    val = REDIS_CONN.get(k)
+                    if not val:
+                        continue
+                    try:
+                        state = _json.loads(val)
+                        ts = float(state.get("last_check") or 0)
+                        # Aggregate max across tenants: detector-meta-system
+                        # (tenant="system") is the authoritative probe, but
+                        # legacy per-tenant detectors may still have fresher
+                        # data. Take whichever is latest.
+                        if ts > detector_checks.get(sid, 0):
+                            detector_checks[sid] = ts
+                    except (ValueError, TypeError):
+                        continue
                 if cursor == 0:
                     break
             # Check active crawl locks

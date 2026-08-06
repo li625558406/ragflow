@@ -69,7 +69,13 @@ class BaseExtractor(ABC):
             try:
                 def _replace(m):
                     key = m.group(1)
-                    val = item.get(key, "")
+                    # Prefer mapped (canonical field name, e.g. id mapped from
+                    # M_ID); fall back to raw item key so YAML can still use
+                    # source field names directly. Fixes ggzyfw_fujian_business
+                    # where url_template used {id} but raw API field is M_ID.
+                    val = mapped.get(key)
+                    if val is None or val == "":
+                        val = item.get(key, "")
                     return quote(str(val), safe="")
                 mapped["url"] = re.sub(r"\{(\w+)\}", _replace, tpl)
             except (KeyError, IndexError, ValueError):

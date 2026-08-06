@@ -112,18 +112,41 @@ class CrawlerResultService(CommonService):
         return cls.model.select(cls.model.id).where(cls.model.id == result_id).exists()
 
     @classmethod
+    @DB.connection_context()
     def upsert_result(cls, data: dict) -> bool:
         """Insert or update a crawler_result row by primary key id.
 
         Returns True if a new row was inserted, False if updated.
+
+        Note: ``kb_doc_id`` is excluded from the update path so that a
+        re-crawl of an already-stored item does not clobber the KB
+        linkage written by StoragePipeline after the first KB upload.
         """
         rid = data["id"]
         if cls.exists_id(rid):
-            update_data = {k: v for k, v in data.items() if k != "id"}
+            update_data = {k: v for k, v in data.items()
+                           if k not in ("id", "kb_doc_id")}
             cls.update_by_id(rid, update_data)
             return False
         cls.insert(**data)
         return True
+
+    @classmethod
+    @DB.connection_context()
+    def get_existing_kb_doc_id(cls, result_id: str) -> str:
+        """Return the current ``kb_doc_id`` for an existing row, or "".
+
+        Used by CollectionWriter to detect items already uploaded to the
+        KB so the caller can skip the duplicate upload.
+        """
+        if not result_id:
+            return ""
+        try:
+            row = cls.model.select(cls.model.kb_doc_id).where(
+                cls.model.id == result_id).first()
+            return (row.kb_doc_id or "") if row else ""
+        except Exception:
+            return ""
 
     @classmethod
     @DB.connection_context()

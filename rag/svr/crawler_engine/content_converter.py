@@ -415,6 +415,14 @@ _SPAN_TAG_RE = re.compile(r"<span[\s>]", re.IGNORECASE)
 _STYLE_ATTR_RE = re.compile(r'\s*style\s*=\s*"[^"]*"', re.IGNORECASE)
 _CLASS_ATTR_RE = re.compile(r'\s*class\s*=\s*"[^"]*"', re.IGNORECASE)
 
+# Tags whose entire content (inner text included) is noise — strip the
+# whole block. Matches <script>...</script>, <style>...</style>,
+# <head>...</head>. Used BEFORE any other cleaning.
+_DROP_BLOCK_RE = re.compile(
+    r"<(script|style|head)\b[^>]*>.*?</\1\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 def _is_structured_html(text: str) -> bool:
     """Detect whether the HTML has meaningful structure (tables, lists, headings).
@@ -486,6 +494,11 @@ def clean_content(text: str) -> str:
     """
     if not text:
         return ""
+
+    # --- Step -1: drop <script>/<style>/<head> blocks entirely ---
+    # Their inner text is CSS/JS noise that should never reach the KB.
+    # Must run BEFORE classification so span-density check isn't fooled.
+    text = _DROP_BLOCK_RE.sub("", text)
 
     # --- Step 0: classify the HTML ---
     if _is_structured_html(text):
