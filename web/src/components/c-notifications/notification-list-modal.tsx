@@ -16,6 +16,28 @@ interface Props {
 
 const PAGE_SIZE = 50;
 
+const CATEGORY_META: Record<string, { label: string; className: string }> = {
+  bid: { label: '招标采购', className: 'bg-blue-100 text-blue-700' },
+  tender: { label: '招标公告', className: 'bg-cyan-100 text-cyan-700' },
+  policy: { label: '政策法规', className: 'bg-purple-100 text-purple-700' },
+  news: { label: '新闻动态', className: 'bg-amber-100 text-amber-700' },
+  personnel: {
+    label: '人事信息',
+    className: 'bg-emerald-100 text-emerald-700',
+  },
+  objection: { label: '异议答复', className: 'bg-rose-100 text-rose-700' },
+  other: { label: '其他', className: 'bg-gray-100 text-gray-700' },
+};
+
+function categoryMeta(c: string) {
+  return (
+    CATEGORY_META[c] || {
+      label: c || '其他',
+      className: 'bg-gray-100 text-gray-700',
+    }
+  );
+}
+
 export function NotificationListModal({
   open,
   onClose,
@@ -102,8 +124,10 @@ export function NotificationListModal({
               >
                 <div className="flex items-center justify-between mb-1">
                   <div className="flex items-center gap-2">
-                    <span className="text-xs px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded">
-                      {n.category}
+                    <span
+                      className={`text-xs px-1.5 py-0.5 rounded ${categoryMeta(n.category).className}`}
+                    >
+                      {categoryMeta(n.category).label}
                     </span>
                     <span className="text-xs text-gray-500">
                       {n.site_display}
@@ -120,7 +144,11 @@ export function NotificationListModal({
                   </button>
                 </div>
                 <div className="text-sm font-medium text-gray-800 line-clamp-2">
-                  {n.title}
+                  {n.site_display} 检测到
+                  <span className="mx-0.5 text-blue-600 font-bold">
+                    {n.result_count}
+                  </span>
+                  条新结果
                 </div>
                 {n.publish_range && (
                   <div className="text-xs text-gray-400 mt-1">

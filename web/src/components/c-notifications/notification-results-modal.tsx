@@ -12,6 +12,20 @@ interface Props {
   onOpenDetail: (r: NotificationResult) => void;
 }
 
+const LS_READ = 'notif:result-read';
+
+function loadRead(): Set<string> {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(LS_READ) || '[]'));
+  } catch {
+    return new Set();
+  }
+}
+
+function saveRead(s: Set<string>) {
+  localStorage.setItem(LS_READ, JSON.stringify([...s]));
+}
+
 export function NotificationResultsModal({
   notification,
   onClose,
@@ -19,6 +33,7 @@ export function NotificationResultsModal({
 }: Props) {
   const [list, setList] = useState<NotificationResult[]>([]);
   const [loading, setLoading] = useState(false);
+  const [readSet, setReadSet] = useState<Set<string>>(() => loadRead());
 
   useEffect(() => {
     if (!notification) {
@@ -32,6 +47,27 @@ export function NotificationResultsModal({
   }, [notification]);
 
   if (!notification) return null;
+
+  const markRead = (id: string) => {
+    setReadSet((prev) => {
+      if (prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.add(id);
+      saveRead(next);
+      return next;
+    });
+  };
+
+  const handleClickItem = (r: NotificationResult) => {
+    markRead(r.id);
+    onOpenDetail(r);
+  };
+
+  const handleClickSource = (e: React.MouseEvent, r: NotificationResult) => {
+    e.stopPropagation();
+    markRead(r.id);
+    // 不阻止默认行为：让浏览器正常打开新标签
+  };
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40">
@@ -68,33 +104,51 @@ export function NotificationResultsModal({
             </div>
           )}
           {!loading &&
-            list.map((r) => (
-              <div
-                key={r.id}
-                className="px-3 py-2.5 hover:bg-gray-50 cursor-pointer rounded-lg border-b last:border-b-0"
-                onClick={() => onOpenDetail(r)}
-              >
-                <div className="text-sm font-medium text-gray-800 line-clamp-2">
-                  {r.title || '(无标题)'}
-                </div>
-                <div className="flex items-center justify-between mt-1">
-                  <span className="text-xs text-gray-400">
-                    {r.publish_date || '未知日期'}
-                  </span>
-                  {r.source_url && (
-                    <a
-                      href={r.source_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      onClick={(e) => e.stopPropagation()}
-                      className="text-xs text-blue-600 hover:underline"
+            list.map((r) => {
+              const read = readSet.has(r.id);
+              return (
+                <div
+                  key={r.id}
+                  className={`px-3 py-2.5 cursor-pointer rounded-lg border-b last:border-b-0 transition-colors ${
+                    read
+                      ? 'bg-gray-50 hover:bg-gray-100'
+                      : 'hover:bg-blue-50/50 border-l-2 border-l-blue-500'
+                  }`}
+                  onClick={() => handleClickItem(r)}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div
+                      className={`text-sm font-medium line-clamp-2 flex-1 ${
+                        read ? 'text-gray-400' : 'text-gray-800'
+                      }`}
                     >
-                      原文 ↗
-                    </a>
-                  )}
+                      {r.title || '(无标题)'}
+                    </div>
+                    {read && (
+                      <span className="text-xs px-1.5 py-0.5 bg-gray-200 text-gray-500 rounded shrink-0">
+                        已读
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between mt-1">
+                    <span className="text-xs text-gray-400">
+                      {r.publish_date || '未知日期'}
+                    </span>
+                    {r.source_url && (
+                      <a
+                        href={r.source_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        onClick={(e) => handleClickSource(e, r)}
+                        className="text-xs text-blue-600 hover:underline"
+                      >
+                        原文 ↗
+                      </a>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
         </div>
 
         <div className="flex justify-end px-5 py-3 border-t">
