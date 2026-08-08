@@ -8,7 +8,7 @@ import {
   type NotificationItem,
   type NotificationResult,
 } from '@/services/c-notification-service';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { NotificationDetailDialog } from './notification-detail-dialog';
 import { NotificationListModal } from './notification-list-modal';
 import { NotificationModal } from './notification-modal';
@@ -37,6 +37,11 @@ export function NotificationBell() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   // 新消息到达时触发铃铛摇动 + 徽章脉冲 (2s)
   const [isAnimating, setIsAnimating] = useState(false);
+
+  // 当某通知下结果被全部查看 → 后端已标 is_read → 立即拉取真实未读数同步铃铛
+  const handleAllResultsRead = useCallback(() => {
+    refresh();
+  }, [refresh]);
 
   // 增量触发：count 增加时拉全部未读，过滤本会话已 delivered 的，弹汇总框
   useEffect(() => {
@@ -144,6 +149,7 @@ export function NotificationBell() {
           // 不关二级，三级叠开
           setDetailResult(r);
         }}
+        onAllRead={handleAllResultsRead}
       />
 
       {/* 三级：单条结果详情 */}

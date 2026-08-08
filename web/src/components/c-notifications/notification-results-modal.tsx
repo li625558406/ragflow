@@ -1,15 +1,18 @@
 import {
   getNotificationResults,
+  markOneRead,
   type NotificationItem,
   type NotificationResult,
 } from '@/services/c-notification-service';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 interface Props {
   /** 当前展开的 notification；变化时重新拉结果。null 时不渲染。 */
   notification: NotificationItem | null;
   onClose: () => void;
   onOpenDetail: (r: NotificationResult) => void;
+  /** 该通知下所有 result 被查看后触发，父级用于刷新未读数 */
+  onAllRead?: (notificationId: string) => void;
 }
 
 const LS_READ = 'notif:result-read';
@@ -30,21 +33,42 @@ export function NotificationResultsModal({
   notification,
   onClose,
   onOpenDetail,
+  onAllRead,
 }: Props) {
   const [list, setList] = useState<NotificationResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [readSet, setReadSet] = useState<Set<string>>(() => loadRead());
+  // 防 markOneRead 重复调用：记录已对外标记过已读的 notification.id
+  const markedNotifRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!notification) {
       setList([]);
+      markedNotifRef.current = null;
       return;
     }
+    // 切换 notification 时重置标记，允许对新通知重新检测全读
+    markedNotifRef.current = null;
     setLoading(true);
     getNotificationResults(notification.id)
       .then(({ list }) => setList(list))
       .finally(() => setLoading(false));
   }, [notification]);
+
+  // 检测：当前 notification 下所有 result 都已查看 → 调 markOneRead + 通知父级刷新
+  useEffect(() => {
+    if (!notification || loading || list.length === 0) return;
+    if (markedNotifRef.current === notification.id) return;
+    const allRead = list.every((r) => readSet.has(r.id));
+    if (!allRead) return;
+    markedNotifRef.current = notification.id;
+    markOneRead(notification.id)
+      .then(() => onAllRead?.(notification.id))
+      .catch(() => {
+        // 失败回滚，允许后续重试
+        markedNotifRef.current = null;
+      });
+  }, [notification, list, loading, readSet, onAllRead]);
 
   if (!notification) return null;
 

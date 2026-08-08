@@ -37,6 +37,12 @@ RETENTION_MS = 30 * 86400 * 1000
 # 通知刷屏; 5 分钟桶降到 7 条, 同时不丢失任何 result_id.
 BUCKET_WINDOW_MS = 5 * 60_000
 
+# 站点级冷却 (毫秒). 同一站点在该时长内的新结果合并进最近一条通知,
+# 而不是按 5 分钟桶各建一条. 解决高频采集站点 (如 cebpubservice 一天
+# 被反复触发 10+ 次, 每次只爬 1-2 条) 导致通知列表同一站点刷屏的问题.
+# 可用环境变量 NOTIF_SITE_COOLDOWN_MS 覆盖.
+SITE_COOLDOWN_MS = int(os.environ.get("NOTIF_SITE_COOLDOWN_MS", 6 * 3600 * 1000))
+
 
 def _get_candidate_user_ids() -> List[str]:
     """所有 active 用户 id。"""
@@ -149,6 +155,7 @@ def scan_once(candidate_user_ids: List[str] = None) -> dict:
     """跑一轮扫描。返回统计字典。"""
     stats = {
         "notifications_created": 0,
+        "notifications_merged": 0,
         "skipped_lock": False,
         "sites_scanned": 0,
         "errors": 0,
@@ -199,6 +206,15 @@ def _scan_site(site_id: str, candidates: List[str], stats: dict) -> None:
     for r in rows:
         buckets[_bucket_key(site_id, r.crawled_at)].append(r)
 
+    # 站点级冷却：cooldown 内已有通知则本轮所有 buckets 都合并进它，
+    # 不新建。这避免高频采集站点 (cebpubservice 等) 一天内产 N 条通知。
+    recent = NotificationService.get_recent_for_site(site_id, SITE_COOLDOWN_MS)
+    if recent:
+        _logger.info(
+            "site %s in cooldown (last notif %s, within %ds), will merge",
+            site_id, recent.get("id"), SITE_COOLDOWN_MS // 1000,
+        )
+
     max_crawled = wm
     for bk, items in buckets.items():
         cat_counter = Counter(it.category or "other" for it in items)
@@ -206,27 +222,39 @@ def _scan_site(site_id: str, candidates: List[str], stats: dict) -> None:
         site_display = items[0].site_display or ""
         titles = [it.title for it in items[:3]]
         publish_dates = sorted({it.publish_date for it in items if it.publish_date})
-        publish_range = publish_dates[0] if publish_dates else ""
-        if len(publish_dates) > 1:
-            publish_range = f"{publish_dates[0]} ~ {publish_dates[-1]}"
+        new_result_ids = [it.id for it in items]
 
-        created_at = max(it.crawled_at for it in items)
-        nid = NotificationService.create_notification(
-            site_id=site_id, site_display=site_display, category=main_cat,
-            batch_key=bk,
-            title=f"{site_display or site_id} 检测到 {len(items)} 条新结果",
-            summary="\n".join(titles),
-            result_ids=[it.id for it in items],
-            result_count=len(items), publish_range=publish_range,
-            created_at=created_at,
-        )
-        if nid is None:
-            _logger.info("batch_key %s already exists, skip", bk)
+        if recent:
+            # 合并进 cooldown 内的最近通知：append result_ids + 重算 count
+            NotificationService.append_results(
+                recent["id"],
+                new_result_ids=new_result_ids,
+                new_publish_dates=publish_dates,
+            )
+            stats["notifications_merged"] = stats.get("notifications_merged", 0) + 1
         else:
-            stats["notifications_created"] += 1
-            matched = NotificationService.match_subscribers(site_id, main_cat, candidates)
-            if matched:
-                NotificationUserService.fan_out(nid, matched)
+            publish_range = publish_dates[0] if publish_dates else ""
+            if len(publish_dates) > 1:
+                publish_range = f"{publish_dates[0]} ~ {publish_dates[-1]}"
+            created_at = max(it.crawled_at for it in items)
+            nid = NotificationService.create_notification(
+                site_id=site_id, site_display=site_display, category=main_cat,
+                batch_key=bk,
+                title=f"{site_display or site_id} 检测到 {len(items)} 条新结果",
+                summary="\n".join(titles),
+                result_ids=new_result_ids,
+                result_count=len(items), publish_range=publish_range,
+                created_at=created_at,
+            )
+            if nid is None:
+                _logger.info("batch_key %s already exists, skip", bk)
+            else:
+                stats["notifications_created"] += 1
+                matched = NotificationService.match_subscribers(site_id, main_cat, candidates)
+                if matched:
+                    NotificationUserService.fan_out(nid, matched)
+                # 本轮该站点新建了一条，后续 buckets 合并进它而非再新建
+                recent = {"id": nid}
 
         max_crawled = max(max_crawled, max(it.crawled_at for it in items))
 

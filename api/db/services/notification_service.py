@@ -142,6 +142,69 @@ class NotificationService(CommonService):
 
     @classmethod
     @DB.connection_context()
+    def get_recent_for_site(
+        cls, site_id: str, within_ms: int,
+    ) -> Optional[dict]:
+        """返回 site_id 在最近 within_ms 毫秒内的最新一条 notification；无则 None。
+
+        用于站点级冷却合并：cooldown 内的多批新结果合并进这条通知，
+        而不是每批新建（避免高频采集站点在通知列表刷屏）。
+        """
+        cutoff = int(time.time() * 1000) - within_ms
+        row = (
+            cls.model
+            .select()
+            .where(
+                (cls.model.site_id == site_id)
+                & (cls.model.created_at >= cutoff)
+            )
+            .order_by(cls.model.created_at.desc())
+            .first()
+        )
+        return row.to_dict() if row else None
+
+    @classmethod
+    @DB.connection_context()
+    def append_results(
+        cls, notification_id: str, *,
+        new_result_ids: List[str], new_publish_dates: List[str],
+    ) -> int:
+        """把新一批 result_ids 合并进已存在的 notification。
+
+        - result_ids 保序去重 union
+        - result_count 重算为 union 长度
+        - title 用新 count 重算（"xxx 检测到 N 条新结果"）
+        - publish_range 扩展到覆盖新日期
+        - created_at 不刷新（保留首次时间，避免 watermark fallback 语义混乱）
+
+        返回合并后的 result_count；notification 不存在返回 0。
+        """
+        n = cls.model.select().where(cls.model.id == notification_id).first()
+        if not n:
+            return 0
+        existing = list(n.result_ids or [])
+        union = list(dict.fromkeys(existing + new_result_ids))
+        new_count = len(union)
+        site_display = n.site_display or n.site_id
+        # publish_range 合并：拆出原区间端点 + 新日期，重新取 min/max
+        prev_dates = [d for d in (n.publish_range or "").split(" ~ ") if d]
+        all_dates = sorted(set(prev_dates + [d for d in new_publish_dates if d]))
+        if len(all_dates) >= 2:
+            publish_range = f"{all_dates[0]} ~ {all_dates[-1]}"
+        elif all_dates:
+            publish_range = all_dates[0]
+        else:
+            publish_range = n.publish_range or ""
+        cls.model.update(
+            result_ids=union,
+            result_count=new_count,
+            title=f"{site_display} 检测到 {new_count} 条新结果",
+            publish_range=publish_range,
+        ).where(cls.model.id == notification_id).execute()
+        return new_count
+
+    @classmethod
+    @DB.connection_context()
     def match_subscribers(
         cls, site_id: str, category: str, candidate_user_ids: List[str],
     ) -> List[str]:
