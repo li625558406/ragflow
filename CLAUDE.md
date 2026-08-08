@@ -39,7 +39,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | Crawl4AI 独立爬虫服务方案 | `D:\AI\ragflow2\crawl4ai-service-独立部署方案.md` | ★ 下一代爬虫架构：独立部署 crawl4ai Docker + FastAPI调度服务 + RAGFlow KB/DB适配器，替代现有定时任务爬虫体系 |
 | 智能采集系统设计 | `D:\AI\ragflow2\智能采集系统设计.md` | ★ 新智能采集系统：基于 crawler_result + 扩展表的多类别采集（bid/policy/personnel/news/other），与 bid_* 解耦，手动触发+定时调度，YAML category 字段驱动 |
 | 反爬能力等级 | `D:\AI\ragflow2\反爬能力等级.md` | 爬虫三级反爬能力清单：🟢 一级(rest_api基础) / 🟡 二级(加密/浏览器指纹) / 🔴 三级(SPA/Stealth)，含 YAML 配置模板、选型决策树、排查流程 |
-| 踩坑问题清单 | `D:\AI\ragflow2\踩坑问题清单.md` | Docker/Nginx/sub-path部署实战踩坑：CRLF、Volume权限、proxy_redirect、SPA API路径、nginx热更新等7个问题及解决方案 |
+| 踩坑问题清单 | `D:\AI\ragflow2\踩坑问题清单.md` | 30 个实战踩坑：Docker/Nginx 部署、SPA 爬虫调试、ORM 迁移、成套 SCP 清单、队列重复任务去重（#30）等 |
+| A2 detector 旁路方案 | `D:\AI\ragflow2\A2-detector-inprocess-旁路方案.md` | ★ Detector 改为 scheduled_task_executor 进程内执行，绕过 task_executor 主队列。诊断数据、4 文件改动清单、验证流程、回滚、后续优化方向 |
+| crawl-dedup 爬虫排队去重方案 | `D:\AI\ragflow2\crawl-dedup-爬虫排队去重方案.md` | ★ crawl:queued:{site} 标记：入队前 SET NX、task_executor 跑完 DEL，每站最多一条排队/运行中爬虫。含 TTL 自愈被否决的教训、队列清理脚本、验证与回滚 |
 
 
 

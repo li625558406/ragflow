@@ -26,7 +26,7 @@ import {
 import { listCrawl4aiSites } from '@/services/crawl4ai-service';
 import { useQuery } from '@tanstack/react-query';
 import { useDebounce } from 'ahooks';
-import { Loader2, RotateCcw, Search } from 'lucide-react';
+import { Loader2, RefreshCw, RotateCcw, Search } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { badgeColorFor } from './field-labels';
@@ -72,7 +72,7 @@ export function ResultsTab() {
     },
   });
 
-  const { data, isFetching } = useQuery({
+  const { data, isFetching, refetch } = useQuery({
     queryKey: [
       'collectionResults',
       {
@@ -212,6 +212,15 @@ export function ResultsTab() {
             setPage(1);
           }}
         />
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => refetch()}
+          disabled={isFetching}
+          title={t('crawl4ai.refresh')}
+        >
+          <RefreshCw className={`size-4 ${isFetching ? 'animate-spin' : ''}`} />
+        </Button>
         <Button variant="ghost" size="icon" onClick={resetFilters}>
           <RotateCcw className="size-4" />
         </Button>

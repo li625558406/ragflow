@@ -295,3 +295,6 @@ rag/svr/_create_*.sql
 rag/svr/_verify_*.sql
 rag/svr/_trigger_*.py
 logs/
+
+# Claude Code scratch/temp files
+.claude/

@@ -70,8 +70,14 @@ export function NotificationResultsModal({
   };
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40">
-      <div className="w-[860px] max-h-[80vh] bg-white rounded-xl shadow-2xl flex flex-col">
+    <div
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40"
+      onClick={onClose}
+    >
+      <div
+        className="w-[860px] max-h-[80vh] bg-white rounded-xl shadow-2xl flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="flex items-center justify-between px-5 py-3 border-b">
           <div className="min-w-0">
             <div className="font-semibold truncate">

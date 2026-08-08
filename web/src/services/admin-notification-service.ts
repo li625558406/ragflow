@@ -47,6 +47,10 @@ export async function adminDeleteNotification(id: string) {
   return request.delete(`${PREFIX}/${id}`);
 }
 
+export async function adminBatchDeleteNotifications(ids: string[]) {
+  return request.post(`${PREFIX}/batch-delete`, { data: { ids } });
+}
+
 export async function adminStats() {
   return request.get(`${PREFIX}/stats`);
 }

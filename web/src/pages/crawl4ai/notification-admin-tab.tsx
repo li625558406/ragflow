@@ -1,4 +1,5 @@
 import {
+  adminBatchDeleteNotifications,
   adminDeleteNotification,
   adminListNotifications,
   adminStats,
@@ -16,6 +17,8 @@ export function NotificationAdminTab() {
   const [stats, setStats] = useState<AdminNotificationStats | null>(null);
   const [filter, setFilter] = useState({ site_id: '', category: '' });
   const [loading, setLoading] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [batchDeleting, setBatchDeleting] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -44,6 +47,53 @@ export function NotificationAdminTab() {
     loadStats();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, filter]);
+
+  // 列表/筛选切换时清空选择 (旧 ID 已不在视图中, 勾选状态无意义)
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [list, filter]);
+
+  const allVisibleSelected =
+    list.length > 0 && list.every((n) => selectedIds.has(n.id));
+  const someVisibleSelected =
+    list.some((n) => selectedIds.has(n.id)) && !allVisibleSelected;
+
+  const toggleAll = () => {
+    if (allVisibleSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(list.map((n) => n.id)));
+    }
+  };
+
+  const toggleOne = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleBatchDelete = async () => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    if (
+      !confirm(
+        t('notifications.admin.confirmBatchDelete', { count: ids.length }),
+      )
+    )
+      return;
+    setBatchDeleting(true);
+    try {
+      await adminBatchDeleteNotifications(ids);
+      setSelectedIds(new Set());
+      load();
+      loadStats();
+    } finally {
+      setBatchDeleting(false);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-4 h-full overflow-auto pr-1">
@@ -120,11 +170,34 @@ export function NotificationAdminTab() {
         >
           {t('notifications.admin.refresh')}
         </button>
+        <button
+          onClick={handleBatchDelete}
+          disabled={selectedIds.size === 0 || batchDeleting}
+          className="px-3 py-1 text-sm bg-red-600 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {batchDeleting
+            ? t('notifications.admin.deleting')
+            : t('notifications.admin.batchDelete')}
+          {!batchDeleting && selectedIds.size > 0
+            ? ` (${selectedIds.size})`
+            : ''}
+        </button>
       </div>
 
       <table className="w-full border text-sm">
         <thead className="bg-gray-50">
           <tr>
+            <th className="border p-2 text-left w-10">
+              <input
+                type="checkbox"
+                checked={allVisibleSelected}
+                ref={(el) => {
+                  if (el) el.indeterminate = someVisibleSelected;
+                }}
+                onChange={toggleAll}
+                aria-label={t('notifications.admin.selectAll')}
+              />
+            </th>
             <th className="border p-2 text-left">
               {t('notifications.admin.colTime')}
             </th>
@@ -148,7 +221,7 @@ export function NotificationAdminTab() {
         <tbody>
           {loading && (
             <tr>
-              <td colSpan={6} className="border p-4 text-center text-gray-400">
+              <td colSpan={7} className="border p-4 text-center text-gray-400">
                 {t('notifications.admin.loading')}
               </td>
             </tr>
@@ -156,6 +229,14 @@ export function NotificationAdminTab() {
           {!loading &&
             list.map((n) => (
               <tr key={n.id}>
+                <td className="border p-2 text-center">
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(n.id)}
+                    onChange={() => toggleOne(n.id)}
+                    aria-label={t('notifications.admin.selectRow')}
+                  />
+                </td>
                 <td className="border p-2">
                   {new Date(n.created_at).toLocaleString()}
                 </td>
@@ -183,7 +264,7 @@ export function NotificationAdminTab() {
             ))}
           {!loading && list.length === 0 && (
             <tr>
-              <td colSpan={6} className="border p-4 text-center text-gray-400">
+              <td colSpan={7} className="border p-4 text-center text-gray-400">
                 {t('notifications.admin.noData')}
               </td>
             </tr>

@@ -4,7 +4,7 @@
   1. 拉启用站点列表（从 crawler_result distinct site_id）
   2. for each site：读 Redis watermark（兜底从 notification 表 MAX(created_at) 恢复）
   3. 查 crawler_result WHERE crawled_at > watermark
-  4. 按分钟桶聚合 → 生成 notification → fan-out 给订阅用户
+  4. 按 5 分钟桶聚合 (BUCKET_WINDOW_MS) → 生成 notification → fan-out 给订阅用户
   5. 推进 watermark
   6. 清理 30 天前的 notification/notification_user
 
@@ -32,6 +32,11 @@ LOCK_KEY = "notif:scan:lock"
 LOCK_TTL = 110  # 秒
 RETENTION_MS = 30 * 86400 * 1000
 
+# 聚合窗口大小 (毫秒). 同站点在此时长内的所有新结果合并为一条通知.
+# 历史 1 分钟桶导致长爬取 (如 mohurd 35 分钟走 700 篇归档) 产生 35 条
+# 通知刷屏; 5 分钟桶降到 7 条, 同时不丢失任何 result_id.
+BUCKET_WINDOW_MS = 5 * 60_000
+
 
 def _get_candidate_user_ids() -> List[str]:
     """所有 active 用户 id。"""
@@ -45,25 +50,35 @@ def _get_candidate_user_ids() -> List[str]:
 
 
 def _get_watermark(site_id: str) -> int:
-    """Redis 取，失败/不存在则从 notification 表 MAX 恢复，写回 Redis。"""
+    """Redis 取，失败/不存在则从 notification 表 MAX 恢复，写回 Redis。
+
+    注意: 必须用 REDIS_CONN.REDIS (原生 redis-py 客户端) 而非 REDIS_CONN.set,
+    因为后者默认带 1h TTL (redis_conn.py:200 exp=3600). watermark 1h 后过期,
+    fallback 查空 notification 表 (清理/截断后) 返回 0 → 下次扫描把全量
+    crawler_result 重新打包成通知, 一次生成几十上百条刷屏.
+    """
     key = WM_KEY.format(site_id=site_id)
     try:
-        v = REDIS_CONN.get(key)
+        v = REDIS_CONN.REDIS.get(key)
         if v:
+            # 顺便去掉老 key 的 TTL (历史用 REDIS_CONN.set 写入会带 1h 过期),
+            # 防止 1h 后再次触发 fallback 全量重打包.
+            REDIS_CONN.REDIS.persist(key)
             return int(v)
     except Exception:
         pass
     wm = NotificationService.get_max_created_at_for_site(site_id)
     try:
-        REDIS_CONN.set(key, wm)
+        REDIS_CONN.REDIS.set(key, wm)  # 无 TTL, 持久进度
     except Exception:
         pass
     return wm
 
 
 def _set_watermark(site_id: str, val: int) -> None:
+    """无 TTL 写入 watermark (见 _get_watermark 注释)."""
     try:
-        REDIS_CONN.set(WM_KEY.format(site_id=site_id), val)
+        REDIS_CONN.REDIS.set(WM_KEY.format(site_id=site_id), val)
     except Exception as e:
         _logger.warning("set watermark failed: %s", e)
 
@@ -112,8 +127,8 @@ def _release_lock() -> None:
 
 
 def _bucket_key(site_id: str, crawled_at_ms: int) -> str:
-    minute_ts = crawled_at_ms // 60_000
-    return f"{site_id}::{minute_ts}"
+    window_ts = crawled_at_ms // BUCKET_WINDOW_MS
+    return f"{site_id}::{window_ts}"
 
 
 def _cleanup_old() -> int:
@@ -220,10 +235,23 @@ def _scan_site(site_id: str, candidates: List[str], stats: dict) -> None:
 
 
 def main():
-    """CLI 入口：单跑测试。"""
+    """CLI 入口：单跑测试。
+
+    兼容 task_executor 无条件追加的参数（与 crawler_detector.py 同套路），
+    避免 argparse 拒绝导致 scheduled_task 卡 running。
+    """
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true", help="跑一轮后退出")
+    # task_executor 兼容参数（此处均忽略，scanner 自己拉全量用户）
+    parser.add_argument("--tenant-id", default="", help="Compatibility (ignored)")
+    parser.add_argument("--task-name", default="", help="Compatibility (ignored)")
+    parser.add_argument("--kb-id", default="", help="Compatibility (ignored)")
+    parser.add_argument("--target-url", default="", help="Compatibility (ignored)")
+    parser.add_argument("--access-token", default="", help="Compatibility (ignored)")
+    parser.add_argument("--llm-id", default="", help="Compatibility (ignored)")
+    parser.add_argument("--llm-model", default="", help="Compatibility (ignored)")
+    parser.add_argument("--script-args", default="", help="Compatibility (ignored)")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
     if args.once:

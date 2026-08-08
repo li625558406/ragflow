@@ -31,10 +31,12 @@ B 端 admin 端点（鉴权：admin = is_superuser；User.role 字段不存在�
   GET    /admin/notifications
   GET    /admin/notifications/{id}
   DELETE /admin/notifications/{id}
+  POST   /admin/notifications/batch-delete
   GET    /admin/notifications/stats
   GET    /admin/notifications/config
   PUT    /admin/notifications/config
 """
+import datetime
 import logging
 import os
 import time
@@ -266,6 +268,57 @@ async def admin_delete(notification_id: str):
     return get_json_result(data={"ok": True})
 
 
+@manager.route("/admin/notifications/batch-delete", methods=["POST"])
+@login_required
+async def admin_batch_delete():
+    """批量删除通知: 一次清掉多条及其 NotificationUser 关联.
+
+    Request JSON: {"ids": ["uuid1", "uuid2", ...]}
+    返回 {"deleted": N, "missing": M} — missing 是 DB 里查不到的条数 (幂等删除).
+    """
+    if not _is_admin():
+        return get_data_error_result(message="forbidden")
+
+    body = await request.get_json(silent=True) or {}
+    raw_ids = body.get("ids") or []
+    if not isinstance(raw_ids, list) or not raw_ids:
+        return get_data_error_result(message="ids required")
+
+    # 防御: 去重 + 去空 + 截断长度 (避免一条 DELETE IN 万条锁表)
+    ids = list(dict.fromkeys(str(i).strip() for i in raw_ids if str(i).strip()))
+    if not ids:
+        return get_data_error_result(message="ids required")
+    if len(ids) > 500:
+        return get_data_error_result(message="batch size exceeds 500")
+
+    @DB.connection_context()
+    def _del():
+        with DB.atomic():
+            existing = (
+                Notification.select(Notification.id)
+                .where(Notification.id.in_(ids))
+                .execute()
+            )
+            existing_ids = [str(r.id) for r in existing]
+            missing = len(ids) - len(existing_ids)
+
+            if existing_ids:
+                NotificationUser.delete().where(
+                    NotificationUser.notification_id.in_(existing_ids)
+                ).execute()
+                Notification.delete().where(
+                    Notification.id.in_(existing_ids)
+                ).execute()
+            return len(existing_ids), missing
+
+    deleted, missing = _del()
+    logger.info(
+        "admin_batch_delete by %s: deleted=%d missing=%d total_req=%d",
+        _get_user_id(), deleted, missing, len(ids),
+    )
+    return get_json_result(data={"deleted": deleted, "missing": missing})
+
+
 @manager.route("/admin/notifications/stats", methods=["GET"])
 @login_required
 async def admin_stats():
@@ -276,11 +329,19 @@ async def admin_stats():
 
     week_ms = 7 * day_ms
 
+    # "今日" = 北京时间当天 00:00:00 起, 而非过去 24h 滚动窗口.
+    # created_at 是 UTC epoch ms, 需用北京时区计算当日零点对应的 epoch ms.
+    beijing_tz = datetime.timezone(datetime.timedelta(hours=8))
+    start_of_today = datetime.datetime.now(beijing_tz).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    today_start_ms = int(start_of_today.timestamp() * 1000)
+
     @DB.connection_context()
     def _q():
         today_created = (
             Notification.select()
-            .where(Notification.created_at >= now_ms - day_ms)
+            .where(Notification.created_at >= today_start_ms)
             .count()
         )
         week_nids = Notification.select(Notification.id).where(

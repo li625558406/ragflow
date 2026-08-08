@@ -282,7 +282,8 @@ def _enqueue_one_shot_task(tenant_id: str, name: str, site_id: str,
         "kb_id": kb_id,
         "access_token": "",
     }
-    if not REDIS_CONN.queue_product(settings.get_svr_queue_name(0), message=msg):
+    # prio 1: 手动触发的采集优先于解析积压, 与 detector/scheduled_task_executor 一致.
+    if not REDIS_CONN.queue_product(settings.get_svr_queue_name(1), message=msg):
         ScheduledTaskLogService.update_by_id(
             log_id, {"status": "fail", "error_msg": "Redis enqueue failed"}
         )

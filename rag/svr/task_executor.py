@@ -1071,6 +1071,33 @@ async def insert_chunks(task_id, task_tenant_id, task_dataset_id, chunks, progre
     return True
 
 
+# "该站点已有一条爬虫任务在排队/运行中" 标记。由 crawler_detector._enqueue_full_crawl
+# 在入队前 SET NX 抢占, 由本文件在 detect: 爬虫跑完后 DEL —— 保证每站最多一条待跑爬虫,
+# 挡住高频站点 + 队列积压导致的重复入队。★ 格式必须与 crawler_detector.CRAWL_QUEUED_KEY 一致。
+_CRAWL_QUEUED_KEY = "crawl:queued:{site}"
+
+
+def _release_crawl_queued_marker(task: dict) -> None:
+    """detect: 爬虫子进程跑完(成功/失败/超时)后释放 crawl:queued 标记。
+
+    只有 detector 触发的爬虫 (name 形如 ``detect:<site_id>``, task_id_ref="") 才有标记;
+    其它 scheduled_script 无此标记, DEL 不存在的 key 无害。标记被释放后, detector
+    下一轮才能为该站点再次入队 —— 此时往往确实又有新内容, 放行合理。
+    """
+    name = task.get("name", "") or ""
+    if not name.startswith("detect:"):
+        return
+    site_id = name[len("detect:"):].strip()
+    if not site_id:
+        return
+    try:
+        REDIS_CONN.delete(_CRAWL_QUEUED_KEY.format(site=site_id))
+    except Exception as e:
+        logging.warning(
+            "failed to release crawl-queued marker for site=%s: %s", site_id, e
+        )
+
+
 async def handle_scheduled_script_task(task: dict):
     """Execute a user-configured Python script via subprocess and record the result."""
     import subprocess
@@ -1124,6 +1151,44 @@ async def handle_scheduled_script_task(task: dict):
                 # for disabled tasks are never created in recent runs)
                 pass
             return
+
+    # A2 旁路: detector 现在由 scheduled_task_executor 进程内直接执行,
+    # 主队列里残留的 detector-meta 消息 (上线前 backlog) 一律跳过, 避免双跑.
+    # 识别条件: script_path 以 crawler_detector.py 结尾.
+    if script_path.endswith("rag/svr/crawler_detector.py"):
+        logging.info(
+            "scheduled_script task %s skipped: detector now runs in-process",
+            log_id,
+        )
+        try:
+            ScheduledTaskLogService.update_by_id(log_id, {
+                "status": "skipped",
+                "end_time": int(time.time() * 1000),
+                "duration": 0.0,
+                "error_msg": "Detector bypasses main queue (in-process execution)",
+            })
+        except Exception:
+            pass
+        return
+
+    # 通知旁路: notification 现由 scheduled_task_executor 进程内直接执行,
+    # 主队列里残留的 notification-meta 消息 (上线前 backlog, ~755 条) 一律跳过,
+    # 避免 spawn 无限循环的 notification_generator 子进程. 识别: script_path 结尾.
+    if script_path.endswith("rag/svr/notification_generator.py"):
+        logging.info(
+            "scheduled_script task %s skipped: notification now runs in-process",
+            log_id,
+        )
+        try:
+            ScheduledTaskLogService.update_by_id(log_id, {
+                "status": "skipped",
+                "end_time": int(time.time() * 1000),
+                "duration": 0.0,
+                "error_msg": "Notification bypasses main queue (in-process execution)",
+            })
+        except Exception:
+            pass
+        return
 
     # Check if already canceled before starting
     if has_canceled(task_id_ref):
@@ -1244,6 +1309,16 @@ async def handle_scheduled_script_task(task: dict):
             "scheduled_script task %s timed out after %ss",
             task_id_ref or log_id, timeout,
         )
+        # Kill the timed-out subprocess to prevent resource leak.
+        # Without this, the subprocess keeps running after timeout,
+        # accumulating over time (e.g., notification_generator ×4, 2.7GB RSS).
+        try:
+            proc.kill()
+            await proc.wait()
+        except ProcessLookupError:
+            pass  # Process already exited
+        except Exception as e:
+            logging.warning("Failed to kill timed out subprocess: %s", e)
         ScheduledTaskLogService.update_by_id(log_id, {
             "status": "fail",
             "end_time": int(time.time() * 1000),
@@ -1269,6 +1344,11 @@ async def handle_scheduled_script_task(task: dict):
                 "last_run_status": "fail",
             })
         logging.exception(f"scheduled_script task failed: {e}")
+    finally:
+        # detect: 爬虫无论成功/失败/超时, 都释放"排队中"标记, 放行 detector 下次入队。
+        # finally 保证三条收尾路径全覆盖; 对非 detect 任务为 no-op。若此处不释放,
+        # 该站点会被锁到 6h SAFETY_TTL 才能再采 —— 这正是本次要修的行为。
+        _release_crawl_queued_marker(task)
 
 
 @timeout(60 * 60 * 3, 1)
@@ -1618,9 +1698,12 @@ async def report_status():
         now = datetime.now()
         now_ts = now.timestamp()
 
-        group_info = REDIS_CONN.queue_info(settings.get_svr_queue_name(0), SVR_CONSUMER_GROUP_NAME) or {}
-        PENDING_TASKS = int(group_info.get("pending", 0))
-        LAG_TASKS = int(group_info.get("lag", 0))
+        # 心跳聚合 prio 0(解析) + prio 1(爬虫/scheduled_script) 两条队列的积压,
+        # 否则 prio 1 的爬虫待办不会出现在 worker 心跳的 pending/lag 里(监控盲区).
+        gi_0 = REDIS_CONN.queue_info(settings.get_svr_queue_name(0), SVR_CONSUMER_GROUP_NAME) or {}
+        gi_1 = REDIS_CONN.queue_info(settings.get_svr_queue_name(1), SVR_CONSUMER_GROUP_NAME) or {}
+        PENDING_TASKS = int(gi_0.get("pending", 0)) + int(gi_1.get("pending", 0))
+        LAG_TASKS = int(gi_0.get("lag", 0)) + int(gi_1.get("lag", 0))
 
         current = copy.deepcopy(CURRENT_TASKS)
         heartbeat = json.dumps({

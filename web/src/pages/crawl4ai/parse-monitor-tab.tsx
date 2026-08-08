@@ -273,6 +273,10 @@ export function ParseMonitorTab() {
 
   const ov = overviewQuery.data;
   const isLoading = overviewQuery.isLoading;
+  const anyFetching =
+    overviewQuery.isFetching ||
+    batchesQuery.isFetching ||
+    failedQuery.isFetching;
 
   return (
     <div className="flex flex-col gap-4 h-full overflow-auto pr-1">
@@ -287,9 +291,7 @@ export function ParseMonitorTab() {
             size="sm"
             onClick={() => setAutoRefresh((v) => !v)}
           >
-            <RefreshCw
-              className={`size-4 ${autoRefresh ? 'animate-spin' : ''}`}
-            />
+            <RefreshCw className="size-4" />
             {autoRefresh
               ? t('crawl4ai.parseMonitor.autoOn')
               : t('crawl4ai.parseMonitor.autoOff')}
@@ -297,13 +299,16 @@ export function ParseMonitorTab() {
           <Button
             variant="outline"
             size="sm"
+            disabled={anyFetching}
             onClick={() => {
               overviewQuery.refetch();
               batchesQuery.refetch();
               failedQuery.refetch();
             }}
           >
-            <RefreshCw className="size-4" />
+            <RefreshCw
+              className={`size-4 ${anyFetching ? 'animate-spin' : ''}`}
+            />
             {t('crawl4ai.parseMonitor.refreshNow')}
           </Button>
         </div>

@@ -77,8 +77,14 @@ export function NotificationListModal({
   };
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40">
-      <div className="w-[860px] max-h-[80vh] bg-white rounded-xl shadow-2xl flex flex-col">
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40"
+      onClick={onClose}
+    >
+      <div
+        className="w-[860px] max-h-[80vh] bg-white rounded-xl shadow-2xl flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="flex items-center justify-between px-5 py-3 border-b">
           <span className="font-semibold">未读通知 ({total})</span>
           <div className="flex items-center gap-3">

@@ -46,8 +46,14 @@ export function NotificationModal({ items, onClose, onViewAll }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="w-[680px] bg-white rounded-xl shadow-2xl">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={onClose}
+    >
+      <div
+        className="w-[680px] bg-white rounded-xl shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="flex items-center justify-between px-5 py-3 border-b">
           <div className="flex items-center gap-2">
             <span className="text-xl">🔔</span>

@@ -113,7 +113,36 @@ class BrowserPool:
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                        "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
         )
+        self._available = True
         logging.info("BrowserPool: started Chromium at %s", chrome_path or "default")
+
+    def is_healthy(self) -> bool:
+        """Check whether the underlying Chromium/browser context is still alive.
+
+        Used by ``get_browser_pool()`` to decide whether the singleton needs to
+        be rebuilt. After A2 (detector 旁路 in-process execution), Chromium
+        常驻 scheduled_task_executor 进程, 偶发崩溃后必须能自愈, 否则后续
+        探测全部 ``AttributeError`` / ``Connection closed``.
+        """
+        if not self._available:
+            return False
+        if self._browser is None or self._context is None:
+            return False
+        try:
+            # 触发一次属性访问; Chromium 已死时会抛 PlaywrightError
+            _ = self._context.pages
+            return True
+        except Exception as e:
+            logging.warning("BrowserPool: health check failed (%s); will reset", e)
+            return False
+
+    def force_reset(self) -> None:
+        """Force cleanup and mark for rebuild on next ``get_browser_pool()``."""
+        try:
+            self.cleanup()
+        except Exception:
+            pass
+        self._available = False
 
     def get_page(self):
         """Get a new page from the browser context."""
@@ -161,7 +190,13 @@ _browser_pool: Optional[BrowserPool] = None
 
 def get_browser_pool() -> BrowserPool:
     global _browser_pool
-    if _browser_pool is None:
+    if _browser_pool is None or not _browser_pool.is_healthy():
+        if _browser_pool is not None:
+            logging.info("BrowserPool: rebuilding unhealthy pool")
+            try:
+                _browser_pool.cleanup()
+            except Exception:
+                pass
         _browser_pool = BrowserPool()
     return _browser_pool
 

@@ -35,12 +35,24 @@ export function NotificationBell() {
   const [newItemsModalOpen, setNewItemsModalOpen] = useState(false);
   const [newItems, setNewItems] = useState<NotificationItem[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // 新消息到达时触发铃铛摇动 + 徽章脉冲 (2s)
+  const [isAnimating, setIsAnimating] = useState(false);
 
   // 增量触发：count 增加时拉全部未读，过滤本会话已 delivered 的，弹汇总框
   useEffect(() => {
-    if (!hasNew || count === 0) return;
+    // count 归零（全部已阅/清空）时立即停止动画，否则会卡在跳动状态
+    if (count === 0) {
+      setIsAnimating(false);
+      return;
+    }
+    if (!hasNew) return;
     setPrevCount(count);
+    // 立即触发铃铛动画 (即使后续 getUnreadList 还没回来, 也先吸引视线)
+    setIsAnimating(true);
     let cancelled = false;
+    const animTimer = setTimeout(() => {
+      if (!cancelled) setIsAnimating(false);
+    }, 2000);
     (async () => {
       const { list } = await getUnreadList(1, FRESH_FETCH_SIZE);
       if (cancelled) return;
@@ -64,6 +76,7 @@ export function NotificationBell() {
     })();
     return () => {
       cancelled = true;
+      clearTimeout(animTimer);
     };
   }, [hasNew, count, isGranted, showNotification, setPrevCount]);
 
@@ -81,14 +94,22 @@ export function NotificationBell() {
           fill="none"
           stroke="currentColor"
           strokeWidth="2"
+          className={`origin-top ${isAnimating ? 'animate-bounce' : ''}`}
+          style={isAnimating ? { animationDuration: '0.6s' } : undefined}
         >
           <path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
           <path d="M13.73 21a2 2 0 0 1-3.46 0" />
         </svg>
         {count > 0 && (
-          <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 flex items-center justify-center bg-red-500 text-white text-[10px] rounded-full">
-            {count > 99 ? '99+' : count}
-          </span>
+          <>
+            {/* 新消息到达时徽章外圈 ping 脉冲, 提醒用户视线 */}
+            {isAnimating && (
+              <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] rounded-full bg-red-500/70 animate-ping" />
+            )}
+            <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 flex items-center justify-center bg-red-500 text-white text-[10px] rounded-full">
+              {count > 99 ? '99+' : count}
+            </span>
+          </>
         )}
       </button>
 

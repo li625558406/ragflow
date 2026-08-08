@@ -46,7 +46,7 @@ def ensure_notification_task(
             "description": "Meta task: scan crawler_result for new items and "
                            "generate notifications every 120s",
             "script_path": NOTIF_SCRIPT,
-            "script_args": "{}",
+            "script_args": "--once",
             "schedule_type": "interval",
             "cron_expression": "",
             "interval_seconds": interval_seconds,

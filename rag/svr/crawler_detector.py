@@ -34,7 +34,7 @@ import sys
 import time
 import traceback
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", ".."))
@@ -100,6 +100,17 @@ def parse_args():
 STATE_KEY = "detector:state:{tenant}:{site}"
 LOCK_KEY = "detector:lock:{tenant}:{site}"
 FORCE_KEY = "detector:force:{tenant}:{site}"  # set by /detect/trigger API
+
+# "该站点已有一条爬虫任务在排队/运行中" 标记。防止 detector 对同一站点重复入队
+# 全量爬虫 (高频更新站点 + 队列积压时会堆出几十条重复, 每条浪费 ~8min worker)。
+# 生命周期 = 任务"排队中 + 运行中"全过程:
+#   - 入队前 SET NX (本文件 _enqueue_full_crawl), 已存在则跳过入队
+#   - task_executor.handle_scheduled_script_task 把爬虫跑完后 DEL (成功/失败/超时)
+# 因此它能扛住任意时长的队列积压 —— key 不靠短定时器清, 而是任务真跑完才清。
+# SAFETY_TTL 只是"孤儿 key"的最后保险 (如消息被手动 XTRIM 丢失), 正常不会触发。
+# ★ task_executor.py 里的 _CRAWL_QUEUED_KEY 必须与此格式完全一致。
+CRAWL_QUEUED_KEY = "crawl:queued:{site}"
+CRAWL_QUEUED_SAFETY_TTL = 6 * 3600  # 6h, >> 单条爬虫 timeout(3600s) + 合理排队时长
 
 
 def _load_state(tenant_id: str, site_id: str) -> Dict[str, Any]:
@@ -224,6 +235,20 @@ def _next_interval(miss_count: int, base: int, cap: int) -> int:
 # Enqueue full crawl
 # ---------------------------------------------------------------------------
 
+def _release_crawl_queued(site_id: str) -> None:
+    """入队失败时回收 crawl:queued 标记, 避免把该站锁到 TTL。
+
+    正常路径下标记由 task_executor 在爬虫跑完后 DEL; 此函数仅用于"抢到标记但
+    入队没成功"的异常兜底。
+    """
+    if REDIS_CONN is None:
+        return
+    try:
+        REDIS_CONN.delete(CRAWL_QUEUED_KEY.format(site=site_id))
+    except Exception as e:
+        logging.warning("detector: failed to release crawl-queued for %s: %s", site_id, e)
+
+
 def _enqueue_full_crawl(site_id: str, category: str,
                         tenant_id: str) -> bool:
     """探测器发现新内容后,投递一条全量采集任务到 Redis 队列.
@@ -238,6 +263,29 @@ def _enqueue_full_crawl(site_id: str, category: str,
     """
     if REDIS_CONN is None:
         logging.error("detector: cannot enqueue — Redis not available")
+        return False
+
+    # 去重: 每站最多一条"排队中/运行中"的爬虫任务。高频更新站点(如招标平台全天发标)
+    # 叠加队列积压时, 若无此判断会每 detect_interval 塞一条, 堆出几十条重复(每条 ~8min)。
+    # SET NX 抢占标记; 标记由 task_executor 在爬虫跑完后 DEL, 故能扛住任意队列积压 ——
+    # 不靠短 TTL 清(那会在任务仍排队时过期、放重复进来), 只在任务真正完成时清。
+    queued_key = CRAWL_QUEUED_KEY.format(site=site_id)
+    try:
+        claimed = REDIS_CONN.REDIS.set(
+            queued_key, "1", ex=CRAWL_QUEUED_SAFETY_TTL, nx=True
+        )
+    except Exception as e:
+        # Redis 异常时放行入队: 宁可偶发重复(爬虫幂等去重), 不可把站点彻底漏采。
+        logging.warning(
+            "detector: crawl-queued NX check failed for %s (%s); enqueueing anyway",
+            site_id, e,
+        )
+        claimed = True
+    if not claimed:
+        logging.info(
+            "detector: crawl already queued/running for site=%s; skip duplicate enqueue",
+            site_id,
+        )
         return False
 
     script_args = {
@@ -273,15 +321,19 @@ def _enqueue_full_crawl(site_id: str, category: str,
         "access_token": "",
     }
     try:
-        ok = REDIS_CONN.queue_product(settings.get_svr_queue_name(0), message=msg)
+        # prio 1: 爬虫优先于解析(task_executor.collect 先消费 prio 1 再 prio 0),
+        # 防解析积压(~8000 文档)把爬虫饿死、失去实时性. 解析类仍走 prio 0.
+        ok = REDIS_CONN.queue_product(settings.get_svr_queue_name(1), message=msg)
         if ok:
             logging.info("detector: enqueued collection crawl for site=%s (kb_id will be resolved by crawler)",
                          site_id)
         else:
             logging.error("detector: enqueue failed for site=%s", site_id)
+            _release_crawl_queued(site_id)  # 入队失败别留孤儿标记, 否则该站被锁到 TTL
         return ok
     except Exception as e:
         logging.error("detector: enqueue error for site=%s: %s", site_id, e)
+        _release_crawl_queued(site_id)
         return False
 
 
@@ -408,7 +460,123 @@ def probe_one_site(site, tenant_id: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Reusable entry: run_detection(tenant_id, config_path)
+# ---------------------------------------------------------------------------
+
+def run_detection(tenant_id: str,
+                  config_path: str = DEFAULT_CONFIG_PATH) -> Dict[str, Any]:
+    """探测器主逻辑的可复用入口.
+
+    供两种调用方使用:
+      1. ``main()`` (CLI 入口) —— argparse 解析后转调本函数
+      2. ``scheduled_task_executor._run_detector_inproc`` —— A2 旁路方案下,
+         detector 在调度器进程内通过 ``run_in_executor`` 调用本函数.
+
+    **不** 调用 ``settings.init_settings()`` / ``init_root_logger`` —— 调用方
+    应已初始化. ``finally`` 中调用 ``cleanup_browser_pool()`` 释放常驻 Chromium,
+    避免在 scheduled_task_executor 进程内泄漏.
+
+    Args:
+        tenant_id: 租户 ID (探测器使用的 Redis state key 命名空间).
+        config_path: ``crawler_sites.yaml`` 路径.
+
+    Returns:
+        ``{"triggered": int, "unchanged": int, "skipped": int, "errors": int,
+           "summary_lines": List[str]}``
+    """
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+
+    loader = ConfigLoader(config_path)
+    all_sites = loader.load()  # Dict[str, SiteConfig] — 全量 YAML, 不预过滤
+
+    # 以 crawler_task 表为真相源: 只探用户真正配置过采集任务的站点.
+    # 与采集任务列表 /crawl4ai/tasks 及前端监控面板 _active_site_ids 完全对齐.
+    # YAML 只提供站点元数据 (URL/selector/interval), 不再单独决定是否探测.
+    active_site_ids = _get_crawler_task_site_ids()
+    if active_site_ids is None:
+        logging.warning("detector: crawler_task query failed; skipping this run")
+        detectable: List[Any] = []
+    else:
+        detectable = [all_sites[sid] for sid in active_site_ids if sid in all_sites]
+        missing_in_yaml = sorted(active_site_ids - set(all_sites.keys()))
+        if missing_in_yaml:
+            logging.warning("detector: crawler_task site_ids not in YAML (skipped): %s",
+                            missing_in_yaml)
+    logging.info("detector: %d YAML sites loaded, %d active in crawler_task",
+                 len(all_sites), len(detectable))
+
+    triggered = 0
+    unchanged = 0
+    skipped = 0
+    errors = 0
+    summary_lines: List[str] = []
+
+    try:
+        for site in detectable:
+            try:
+                r = probe_one_site(site, tenant_id)
+            except Exception as e:
+                errors += 1
+                logging.error("detector: unexpected error for %s: %s",
+                              site.site_id, e, exc_info=True)
+                summary_lines.append(f"  {site.site_id}: FATAL — {e}")
+                continue
+
+            status = r.get("status", "")
+            if status == "ok":
+                if r.get("has_new"):
+                    triggered += 1
+                    summary_lines.append(
+                        f"  {site.site_id}: +{r.get('new_count', 0)} new → enqueued "
+                        f"(next in {r.get('next_interval', 0)}s)"
+                    )
+                else:
+                    unchanged += 1
+                    summary_lines.append(
+                        f"  {site.site_id}: unchanged (next in {r.get('next_interval', 0)}s)"
+                    )
+            elif status == "not_due":
+                skipped += 1
+            elif status == "auto_disabled":
+                skipped += 1
+                summary_lines.append(f"  {site.site_id}: AUTO-DISABLED (5+ errors)")
+            elif status == "quiet_hours":
+                skipped += 1
+            elif status == "already_probing":
+                skipped += 1
+            elif status == "error":
+                errors += 1
+                summary_lines.append(
+                    f"  {site.site_id}: ERROR ({r.get('consecutive_errors', 0)}x) "
+                    f"— {r.get('error', '')[:60]}"
+                )
+    finally:
+        # A2: detector 改为在 scheduled_task_executor 进程内常驻执行后,
+        # Chromium 实例也会常驻. 每轮探测结束主动释放, 下轮按需重建,
+        # 既避免长期持有导致内存膨胀, 又防止上一轮残留状态污染下一轮.
+        try:
+            from rag.svr.crawler_engine.browser_pool import cleanup_browser_pool
+            cleanup_browser_pool()
+        except Exception as e:
+            logging.warning("detector: cleanup_browser_pool failed: %s", e)
+
+    logging.info(
+        "=== Detector finished: triggered=%d unchanged=%d skipped=%d errors=%d ===",
+        triggered, unchanged, skipped, errors,
+    )
+
+    return {
+        "triggered": triggered,
+        "unchanged": unchanged,
+        "skipped": skipped,
+        "errors": errors,
+        "summary_lines": summary_lines,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Main (CLI entry, kept for backward compat & debugging)
 # ---------------------------------------------------------------------------
 
 def main():
@@ -423,89 +591,21 @@ def main():
     settings.init_settings()
     logging.info("=== Crawler detector started (tenant=%s) ===", args.tenant_id)
 
-    if not os.path.exists(args.config):
-        _safe_print(f"[DETECTOR] ERROR: Config file not found: {args.config}")
-        sys.exit(1)
-
     try:
-        loader = ConfigLoader(args.config)
-        all_sites = loader.load()  # Dict[str, SiteConfig] — 全量 YAML, 不预过滤
+        result = run_detection(args.tenant_id, args.config)
+    except FileNotFoundError as e:
+        _safe_print(f"[DETECTOR] ERROR: {e}")
+        sys.exit(1)
     except Exception as e:
-        _safe_print(f"[DETECTOR] ERROR: Failed to load config: {e}")
+        _safe_print(f"[DETECTOR] ERROR: {e}")
         sys.exit(1)
 
-    # 以 crawler_task 表为真相源: 只探用户真正配置过采集任务的站点.
-    # 与采集任务列表 /crawl4ai/tasks 及前端监控面板 _active_site_ids 完全对齐.
-    # YAML 只提供站点元数据 (URL/selector/interval), 不再单独决定是否探测.
-    active_site_ids = _get_crawler_task_site_ids()
-    if active_site_ids is None:
-        _safe_print("[DETECTOR] WARN: crawler_task query failed; skipping this run")
-        detectable = []
-    else:
-        detectable = [all_sites[sid] for sid in active_site_ids if sid in all_sites]
-        missing_in_yaml = sorted(active_site_ids - set(all_sites.keys()))
-        if missing_in_yaml:
-            _safe_print(
-                f"[DETECTOR] WARN: crawler_task site_ids not in YAML (skipped): "
-                f"{missing_in_yaml}"
-            )
-    logging.info("detector: %d YAML sites loaded, %d active in crawler_task",
-                 len(all_sites), len(detectable))
-
-    triggered = 0
-    unchanged = 0
-    skipped = 0
-    errors = 0
-    summary_lines = []
-
-    for site in detectable:
-        try:
-            r = probe_one_site(site, args.tenant_id)
-        except Exception as e:
-            errors += 1
-            logging.error("detector: unexpected error for %s: %s",
-                          site.site_id, e, exc_info=True)
-            summary_lines.append(f"  {site.site_id}: FATAL — {e}")
-            continue
-
-        status = r.get("status", "")
-        if status == "ok":
-            if r.get("has_new"):
-                triggered += 1
-                summary_lines.append(
-                    f"  {site.site_id}: +{r.get('new_count', 0)} new → enqueued "
-                    f"(next in {r.get('next_interval', 0)}s)"
-                )
-            else:
-                unchanged += 1
-                summary_lines.append(
-                    f"  {site.site_id}: unchanged (next in {r.get('next_interval', 0)}s)"
-                )
-        elif status == "not_due":
-            skipped += 1
-        elif status == "auto_disabled":
-            skipped += 1
-            summary_lines.append(f"  {site.site_id}: AUTO-DISABLED (5+ errors)")
-        elif status == "quiet_hours":
-            skipped += 1
-        elif status == "already_probing":
-            skipped += 1
-        elif status == "error":
-            errors += 1
-            summary_lines.append(
-                f"  {site.site_id}: ERROR ({r.get('consecutive_errors', 0)}x) — {r.get('error', '')[:60]}"
-            )
-
-    _safe_print(f"\n[DETECTOR] Summary: {triggered} triggered, "
-                f"{unchanged} unchanged, {skipped} skipped, {errors} errors")
-    for line in summary_lines:
+    _safe_print(f"\n[DETECTOR] Summary: {result['triggered']} triggered, "
+                f"{result['unchanged']} unchanged, "
+                f"{result['skipped']} skipped, {result['errors']} errors")
+    for line in result["summary_lines"]:
         _safe_print(line)
     _safe_print("")
-
-    logging.info(
-        "=== Detector finished: triggered=%d unchanged=%d skipped=%d errors=%d ===",
-        triggered, unchanged, skipped, errors,
-    )
 
 
 if __name__ == "__main__":
