@@ -61,6 +61,19 @@ export interface Subscription {
   force_modal: boolean;
 }
 
+export interface SiteInfo {
+  site_id: string;
+  site_display: string;
+  last_seen_at: number;
+}
+
+export async function getNotifSites(): Promise<{
+  list: SiteInfo[];
+  total: number;
+}> {
+  return apiFetch('/notifications/sites');
+}
+
 export async function getUnreadCount(): Promise<{ count: number }> {
   return apiFetch('/notifications/unread/count');
 }

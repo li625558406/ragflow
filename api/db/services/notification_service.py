@@ -142,6 +142,35 @@ class NotificationService(CommonService):
 
     @classmethod
     @DB.connection_context()
+    def list_sites_with_results(cls) -> List[dict]:
+        """列出 crawler_result 中实际有数据的全部站点 (distinct site_id)。
+
+        用于通知订阅设置页：只把"跑过采集"的站点给用户选择，避免把 YAML 中
+        从未运行的站点也塞进 UI。按最近采集时间倒序。
+        """
+        rows = (
+            CrawlerResult
+            .select(
+                CrawlerResult.site_id,
+                fn.MAX(CrawlerResult.site_display).alias("site_display"),
+                fn.MAX(CrawlerResult.crawled_at).alias("last_seen_at"),
+            )
+            .where((CrawlerResult.site_id.is_null(False)) & (CrawlerResult.site_id != ""))
+            .group_by(CrawlerResult.site_id)
+            .order_by(fn.MAX(CrawlerResult.crawled_at).desc())
+        )
+        return [
+            {
+                "site_id": r.site_id,
+                "site_display": r.site_display or r.site_id,
+                "last_seen_at": int(r.last_seen_at or 0),
+            }
+            for r in rows
+        ]
+
+
+    @classmethod
+    @DB.connection_context()
     def get_recent_for_site(
         cls, site_id: str, within_ms: int,
     ) -> Optional[dict]:

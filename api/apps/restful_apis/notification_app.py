@@ -160,6 +160,18 @@ async def batch_read():
     return get_json_result(data={"updated": n})
 
 
+@manager.route("/notifications/sites", methods=["GET"])
+@login_required
+async def list_notif_sites():
+    """C 端订阅设置页：列出 crawler_result 实际有数据的全部站点。
+
+    用于"订阅特定站点"复选框。只返回跑过采集的站点（distinct site_id），
+    按最近采集时间倒序，避免把 YAML 中从未运行的站点也塞进 UI。
+    """
+    sites = NotificationService.list_sites_with_results()
+    return get_json_result(data={"list": sites, "total": len(sites)})
+
+
 @manager.route("/notifications/subscription", methods=["GET"])
 @login_required
 async def get_subscription():
