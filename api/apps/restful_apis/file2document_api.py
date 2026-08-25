@@ -24,6 +24,7 @@ from api.db.services.file_service import FileService
 from api.apps import login_required, current_user
 from api.db.services.knowledgebase_service import KnowledgebaseService
 from api.utils.api_utils import get_data_error_result, get_json_result, get_request_json, server_error_response, validate_request
+from api.utils.permission_utils import permission_required
 from common.misc_utils import get_uuid
 from api.db import FileType
 from api.db.services.document_service import DocumentService
@@ -75,6 +76,7 @@ def _convert_files(file_ids, kb_ids, user_id):
 
 @manager.route('/files/link-to-datasets', methods=['POST'])  # noqa: F821
 @login_required
+@permission_required("file")
 @validate_request("file_ids", "kb_ids")
 async def convert():
     req = await get_request_json()

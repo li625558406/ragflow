@@ -36,6 +36,7 @@ from api.utils.api_utils import (
     get_result,
 )
 from common.constants import RetCode
+from api.utils.permission_utils import permission_required
 from api.utils.validation_utils import (
     CreateFolderReq,
     DeleteFileReq,
@@ -108,6 +109,7 @@ async def create_or_upload(tenant_id: str = None):
 
 @manager.route("/files", methods=["GET"])  # noqa: F821
 @login_required
+@permission_required("file")
 @add_tenant_id_to_kwargs
 async def list_files(tenant_id: str = None):
     """

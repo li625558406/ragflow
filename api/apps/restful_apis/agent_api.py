@@ -62,6 +62,7 @@ from api.utils.api_utils import (
     server_error_response,
     validate_request,
 )
+from api.utils.permission_utils import permission_required
 from common import settings
 from common.constants import RetCode
 from common.misc_utils import get_uuid, thread_pool_exec
@@ -402,6 +403,7 @@ def prompts():
 
 @manager.route("/agents", methods=["GET"])  # noqa: F821
 @login_required
+@permission_required("agent")
 @add_tenant_id_to_kwargs
 def list_agents(tenant_id):
     keywords = request.args.get("keywords", "")

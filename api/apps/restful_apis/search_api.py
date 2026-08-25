@@ -28,6 +28,7 @@ from api.db.services.user_service import TenantService, UserTenantService
 from common.misc_utils import get_uuid
 from common.constants import RetCode, StatusEnum
 from api.utils.api_utils import get_data_error_result, get_json_result, get_request_json, server_error_response, validate_request
+from api.utils.permission_utils import permission_required
 
 
 @manager.route("/searches", methods=["POST"])  # noqa: F821
@@ -66,6 +67,7 @@ async def create():
 
 @manager.route("/searches", methods=["GET"])  # noqa: F821
 @login_required
+@permission_required("search")
 def list_searches():
     keywords = request.args.get("keywords", "")
     page_number = int(request.args.get("page", 0))

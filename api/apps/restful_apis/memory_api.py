@@ -22,6 +22,7 @@ from common.constants import LLMType, RetCode
 from common.exceptions import ArgumentException, NotFoundException
 from api.apps import login_required, current_user
 from api.utils.api_utils import validate_request, get_request_json, get_error_argument_result, get_json_result
+from api.utils.permission_utils import permission_required
 from api.apps.services import memory_api_service
 from api.utils.tenant_utils import ensure_tenant_model_id_for_params
 
@@ -128,6 +129,7 @@ async def delete_memory(memory_id):
 
 @manager.route("/memories", methods=["GET"])  # noqa: F821
 @login_required
+@permission_required("memory")
 async def list_memory():
     filter_params = {
         k: request.args.get(k) for k in ["memory_type", "tenant_id", "storage_type"] if k in request.args

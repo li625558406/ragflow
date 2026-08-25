@@ -30,6 +30,7 @@ from quart import Blueprint, request
 from api.apps import current_user, login_required
 from api.db.services.crawler_service import CrawlerResultService, CrawlerTaskService
 from api.utils.api_utils import get_data_error_result, get_json_result
+from api.utils.permission_utils import permission_required
 from common.misc_utils import get_uuid
 
 manager = Blueprint("rest_crawl4ai_app", __name__)
@@ -356,6 +357,7 @@ async def task_status(task_id):
 
 @manager.route("/crawl4ai/results", methods=["GET"])  # noqa: F821
 @login_required
+@permission_required("crawler")
 async def list_results():
     page = int(request.args.get("page", 1))
     page_size = min(int(request.args.get("page_size", 20)), 100)

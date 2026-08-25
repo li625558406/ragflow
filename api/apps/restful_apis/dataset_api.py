@@ -20,6 +20,7 @@ from quart import request
 from common.constants import RetCode
 from api.apps import login_required, current_user
 from api.utils.api_utils import get_error_argument_result, get_error_data_result, get_result, add_tenant_id_to_kwargs
+from api.utils.permission_utils import permission_required
 from api.utils.validation_utils import (
     CreateDatasetReq,
     DeleteDatasetReq,
@@ -303,6 +304,7 @@ async def update(tenant_id, dataset_id):
 
 @manager.route("/datasets", methods=["GET"])  # noqa: F821
 @login_required
+@permission_required("dataset")
 @add_tenant_id_to_kwargs
 def list_datasets(tenant_id):
     """

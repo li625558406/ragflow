@@ -45,6 +45,7 @@ from api.utils.api_utils import (
     get_data_error_result,
     get_json_result,
 )
+from api.utils.permission_utils import permission_required
 from api.utils.bid_api_client import BidApiClient, BidApiError
 from api.utils.bid_tool_service import (
     get_enterprise_business_cached,
@@ -218,6 +219,7 @@ def _safe_json(val) -> str:
 
 @manager.route("/bid/projects", methods=["GET"])  # noqa: F821
 @login_required
+@permission_required("bid")
 def list_bid_projects():
     page_number = int(request.args.get("page", 1))
     items_per_page = int(request.args.get("items_per_page", 20))

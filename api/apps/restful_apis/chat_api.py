@@ -50,6 +50,7 @@ from api.utils.api_utils import (
     server_error_response,
     validate_request,
 )
+from api.utils.permission_utils import permission_required
 from api.utils.tenant_utils import ensure_tenant_model_id_for_params
 from common.constants import LLMType, RetCode, StatusEnum
 from common.misc_utils import get_uuid
@@ -340,6 +341,7 @@ async def create():
 
 @manager.route("/chats", methods=["GET"])  # noqa: F821
 @login_required
+@permission_required("chat")
 def list_chats():
     chat_id = request.args.get("id")
     name = request.args.get("name")
