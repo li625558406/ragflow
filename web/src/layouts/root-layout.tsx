@@ -1,5 +1,7 @@
-import { Outlet } from 'react-router';
+import { Outlet, useLocation } from 'react-router';
 import { Header } from './components/header';
+import PermissionGuard from '@/components/permission/permission-guard';
+import { getRequiredPermission } from '@/constants/permission';
 
 export function RootLayoutContainer({ children }: React.PropsWithChildren) {
   return (
@@ -11,10 +13,21 @@ export function RootLayoutContainer({ children }: React.PropsWithChildren) {
   );
 }
 
+function RouteGuard() {
+  const { pathname } = useLocation();
+  const required = getRequiredPermission(pathname);
+  if (!required) return <Outlet />;
+  return (
+    <PermissionGuard permission={required}>
+      <Outlet />
+    </PermissionGuard>
+  );
+}
+
 export default function RootLayout() {
   return (
     <RootLayoutContainer>
-      <Outlet />
+      <RouteGuard />
     </RootLayoutContainer>
   );
 }

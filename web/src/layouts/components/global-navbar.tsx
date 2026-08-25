@@ -2,11 +2,12 @@ import { useId, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useLocation } from 'react-router';
 
-import { LucideHouse } from 'lucide-react';
+import { LucideHouse, type LucideIcon } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import { Routes } from '@/routes';
 import { supportsCssAnchor } from '@/utils/css-support';
+import { usePermission } from '@/hooks/use-permission';
 
 const PathMap = {
   [Routes.Datasets]: [Routes.Datasets, Routes.DatasetBase],
@@ -17,32 +18,42 @@ const PathMap = {
   [Routes.Files]: [Routes.Files],
   [Routes.Crawl4ai]: [Routes.Crawl4ai],
 } as const;
-const menuItems = [
-  { path: Routes.Root, name: 'header.Root', icon: LucideHouse },
-  { path: Routes.Datasets, name: 'header.dataset' /* icon: Library, */ },
+const menuItems: Array<{
+  path: string;
+  name: string;
+  permission?: string;
+  icon?: LucideIcon;
+  'data-testid'?: string;
+}> = [
+  { path: Routes.Root, name: 'header.Root', icon: LucideHouse, permission: 'bid' },
+  { path: Routes.Datasets, name: 'header.dataset', permission: 'dataset' },
   {
     path: Routes.Chats,
     name: 'header.chat',
-    /* icon: MessageSquareText, */ 'data-testid': 'nav-chat',
+    'data-testid': 'nav-chat',
+    permission: 'chat',
   },
   {
     path: Routes.Searches,
     name: 'header.search',
-    /* icon: Search, */ 'data-testid': 'nav-search',
+    'data-testid': 'nav-search',
+    permission: 'search',
   },
   {
     path: Routes.Agents,
     name: 'header.flow',
-    /* icon: Cpu, */ 'data-testid': 'nav-agent',
+    'data-testid': 'nav-agent',
+    permission: 'agent',
   },
-  { path: Routes.Memories, name: 'header.memories' /* icon: Cpu, */ },
-  { path: Routes.Files, name: 'header.fileManager' /* icon: File, */ },
-  { path: Routes.Crawl4ai, name: 'header.crawl4ai' },
+  { path: Routes.Memories, name: 'header.memories', permission: 'memory' },
+  { path: Routes.Files, name: 'header.fileManager', permission: 'file' },
+  { path: Routes.Crawl4ai, name: 'header.crawl4ai', permission: 'crawler' },
 ];
 
 const GlobalNavbar = supportsCssAnchor
   ? () => {
       const { t } = useTranslation();
+      const { hasPermission } = usePermission();
       const { pathname } = useLocation();
       const navbarAnchorNamePrefix = useId().replace(/:/g, '');
 
@@ -66,7 +77,9 @@ const GlobalNavbar = supportsCssAnchor
       return (
         <nav>
           <ul className="relative flex items-center p-1 bg-bg-card rounded-full border border-border-button">
-            {menuItems.map(({ path, name, icon: Icon, ...props }) => {
+            {menuItems
+              .filter((it) => !it.permission || hasPermission(it.permission))
+              .map(({ path, name, icon: Icon, ...props }) => {
               const isActive = path === activePath;
               const anchorName = `--${navbarAnchorNamePrefix}${path === Routes.Root ? '-root' : path.replace('/', '-')}`;
 
@@ -110,6 +123,7 @@ const GlobalNavbar = supportsCssAnchor
     }
   : () => {
       const { t } = useTranslation();
+      const { hasPermission } = usePermission();
       const { pathname } = useLocation();
 
       const activePath = useMemo(() => {
@@ -125,7 +139,9 @@ const GlobalNavbar = supportsCssAnchor
       return (
         <nav>
           <ul className="flex items-center p-1 bg-bg-card rounded-full border border-border-button">
-            {menuItems.map(({ path, name, icon: Icon, ...props }) => {
+            {menuItems
+              .filter((it) => !it.permission || hasPermission(it.permission))
+              .map(({ path, name, icon: Icon, ...props }) => {
               const isActive = path === activePath;
 
               return (
