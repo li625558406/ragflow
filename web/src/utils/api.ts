@@ -444,4 +444,14 @@ export default {
   collectionParseMonitorBatches: `${restAPIv1}/collection/parse-monitor/reparse-batches`,
   collectionParseMonitorFailedDocs: `${restAPIv1}/collection/parse-monitor/failed-docs`,
   collectionParseMonitorRerunFailed: `${restAPIv1}/collection/parse-monitor/rerun-failed`,
+
+  // permission (RBAC)
+  permissionMe: `${restAPIv1}/permission/me`,
+  permissionRoles: `${restAPIv1}/permission/roles`,
+  permissionRole: (id: string) => `${restAPIv1}/permission/roles/${id}`,
+  permissionRolePermissions: (id: string) =>
+    `${restAPIv1}/permission/roles/${id}/permissions`,
+  permissionUsers: `${restAPIv1}/permission/users`,
+  permissionUserRoles: (userId: string) =>
+    `${restAPIv1}/permission/users/${userId}/roles`,
 };
