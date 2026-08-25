@@ -1,5 +1,5 @@
 # test/test_permission_constants.py
-from api.constants.permission import MODULE_PERMISSIONS, NORMAL_ROLE_PERMISSIONS
+from api.constants import MODULE_PERMISSIONS, NORMAL_ROLE_PERMISSIONS
 
 
 def test_module_permissions_nonempty():

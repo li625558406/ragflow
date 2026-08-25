@@ -1,7 +1,7 @@
 # api/db/services/permission_service.py
 from api.db.db_models import PermissionRole, PermissionRolePermission, PermissionUserRole
 from api.db.services.common_service import CommonService
-from api.constants.permission import NORMAL_ROLE_NAME
+from api.constants import NORMAL_ROLE_NAME
 
 
 class PermissionRoleService(CommonService):

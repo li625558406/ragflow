@@ -8,10 +8,10 @@ from common import settings  # 必须先导入 settings，避免 redis_conn 循�
 
 from rag.utils.redis_conn import REDIS_CONN
 
-from api.constants.permission import PERMISSION_CACHE_PREFIX, PERMISSION_CACHE_TTL
+from api.constants import PERMISSION_CACHE_PREFIX, PERMISSION_CACHE_TTL
 # get_user_permission_keys 必须是模块级导入（而非函数内局部导入），
 # 这样测试才能 patch("api.utils.permission_utils.get_user_permission_keys") 拦截缓存未命中时的 DB 回调。
-# 已验证 permission_service 只依赖 db_models/common_service/api.constants.permission，不形成循环导入。
+# 已验证 permission_service 只依赖 db_models/common_service/api.constants，不形成循环导入。
 from api.db.services.permission_service import get_user_permission_keys
 
 

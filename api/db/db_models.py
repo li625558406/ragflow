@@ -60,7 +60,7 @@ from common.decorator import singleton
 from common.constants import ParserType, MAXIMUM_TASK_PAGE_NUMBER
 from common import settings
 
-from api.constants.permission import (
+from api.constants import (
     NORMAL_ROLE_NAME,
     NORMAL_ROLE_PERMISSIONS,
     SUPER_ROLE_NAME,
