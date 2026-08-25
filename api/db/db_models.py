@@ -60,6 +60,12 @@ from common.decorator import singleton
 from common.constants import ParserType, MAXIMUM_TASK_PAGE_NUMBER
 from common import settings
 
+from api.constants.permission import (
+    NORMAL_ROLE_NAME,
+    NORMAL_ROLE_PERMISSIONS,
+    SUPER_ROLE_NAME,
+)
+
 
 CONTINUOUS_FIELD_TYPE = {IntegerField, FloatField, DateTimeField}
 AUTO_DATE_TIMESTAMP_FIELD_PREFIX = {"create", "start", "end", "update", "read_access", "write_access"}
@@ -2187,6 +2193,36 @@ class NotificationSubscription(DataBaseModel):
         )
 
 
+class PermissionRole(DataBaseModel):
+    id = CharField(max_length=32, primary_key=True, help_text="uuid")
+    name = CharField(max_length=100, null=False, unique=True, help_text="角色名", index=True)
+    description = TextField(null=True, help_text="角色描述")
+    builtin = BooleanField(null=False, default=False, help_text="是否内置角色（内置不可删）", index=True)
+
+    class Meta:
+        db_table = "permission_role"
+
+
+class PermissionRolePermission(DataBaseModel):
+    id = CharField(max_length=32, primary_key=True, help_text="uuid")
+    role_id = CharField(max_length=32, null=False, index=True)
+    permission_key = CharField(max_length=64, null=False, index=True)
+
+    class Meta:
+        db_table = "permission_role_permission"
+        indexes = ((("role_id", "permission_key"), True),)  # 联合唯一
+
+
+class PermissionUserRole(DataBaseModel):
+    id = CharField(max_length=32, primary_key=True, help_text="uuid")
+    user_id = CharField(max_length=32, null=False, index=True)
+    role_id = CharField(max_length=32, null=False, index=True)
+
+    class Meta:
+        db_table = "permission_user_role"
+        indexes = ((("user_id", "role_id"), True),)  # 联合唯一
+
+
 def alter_db_add_column(migrator, table_name, column_name, column_type):
     try:
         migrate(migrator.add_column(table_name, column_name, column_type))
@@ -2612,7 +2648,48 @@ def migrate_db():
     if not NotificationSubscription.table_exists():
         NotificationSubscription.create_table(safe=True)
         logging.info("notification_subscription: table created")
+    # ── 权限管控 RBAC（新表 + 初始 seed）─────────────
+    if not PermissionRole.table_exists():
+        PermissionRole.create_table(safe=True)
+        logging.info("permission_role: table created")
+    if not PermissionRolePermission.table_exists():
+        PermissionRolePermission.create_table(safe=True)
+        logging.info("permission_role_permission: table created")
+    if not PermissionUserRole.table_exists():
+        PermissionUserRole.create_table(safe=True)
+        logging.info("permission_user_role: table created")
+    seed_default_permissions()
 
     logging.disable(logging.NOTSET)
     # this is after re-enabling logging to allow logging changed user emails
     migrate_add_unique_email(migrator)
+
+
+def seed_default_permissions():
+    """幂等写入内置角色：超级管理员 + 普通用户（含默认权限点）。"""
+    # 内置超级管理员
+    super_role = PermissionRole.get_or_none(PermissionRole.name == SUPER_ROLE_NAME)
+    if not super_role:
+        super_role = PermissionRole.create(
+            name=SUPER_ROLE_NAME,
+            description="内置超级管理员，默认拥有全部模块权限（is_superuser 亦直接放行）",
+            builtin=True,
+        )
+        logging.info("permission_role: 创建内置【%s】", SUPER_ROLE_NAME)
+    # 内置普通用户
+    normal_role = PermissionRole.get_or_none(PermissionRole.name == NORMAL_ROLE_NAME)
+    if not normal_role:
+        normal_role = PermissionRole.create(
+            name=NORMAL_ROLE_NAME,
+            description="内置普通用户，默认授予基础模块",
+            builtin=True,
+        )
+        logging.info("permission_role: 创建内置【%s】", NORMAL_ROLE_NAME)
+    # 普通用户默认权限点（幂等）
+    for key in NORMAL_ROLE_PERMISSIONS:
+        exists = PermissionRolePermission.get_or_none(
+            role_id=normal_role.id, permission_key=key
+        )
+        if not exists:
+            PermissionRolePermission.create(role_id=normal_role.id, permission_key=key)
+    # 超级管理员不列为具体权限点（逻辑上视为全通过即可），这里不写入。
