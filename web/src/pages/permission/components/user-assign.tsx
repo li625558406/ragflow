@@ -26,14 +26,18 @@ export default function UserAssign() {
 
   // 后端返回的用户已有角色是「角色名」数组，这里映射成角色 id 以初始化选中态，
   // 避免管理员对已有角色的用户点一次“保存”就把其全部角色清空（初始 selected 为空数组会触发 filter_delete 全部删除）。
-  const roleIdByRoleName = roles.reduce(
-    (acc: Record<string, string>, r: any) => {
-      acc[r.name] = r.id;
-      return acc;
-    },
-    {},
-  );
+  // 注意：deps 必须用稳定的 query 结果（data / rolesQuery.data）而非 users/roles 数组字面量，
+  // 否则加载中或加载失败时 ?? [] 每次渲染都是新数组，effect 每轮都重跑并 setSelected，导致无限重渲染循环。
   useEffect(() => {
+    const users = data?.items ?? [];
+    const roles = rolesQuery.data?.items ?? [];
+    const roleIdByRoleName = roles.reduce(
+      (acc: Record<string, string>, r: any) => {
+        acc[r.name] = r.id;
+        return acc;
+      },
+      {},
+    );
     const init: Record<string, string[]> = {};
     users.forEach((u: any) => {
       init[u.id] = (u.roles ?? [])
@@ -42,7 +46,7 @@ export default function UserAssign() {
     });
     setSelected(init);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [users, roles]);
+  }, [data, rolesQuery.data]);
 
   const toggle = (userId: string, roleId: string) =>
     setSelected((prev) => {
