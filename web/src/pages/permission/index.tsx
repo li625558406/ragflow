@@ -42,7 +42,7 @@ export default function PermissionManage() {
           <tbody>
             {roles.map((r: any) => (
               <tr key={r.id} className="border-t">
-                <td>{r.name}{r.builtin ? `（${t('permission.roles')}）` : ''}</td>
+                <td>{r.name}</td>
                 <td>
                   {(r.permissions ?? []).map((k: string) => (
                     <span key={k} className="mr-1 inline-block rounded bg-bg-card px-2 py-1 text-xs">

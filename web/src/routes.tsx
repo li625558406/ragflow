@@ -79,6 +79,7 @@ export enum Routes {
   AnalysisTemplateEdit = '/analysis-template',
   Crawl4ai = '/smart-crawler',
   Bids = '/bids',
+  Permission = '/permission',
 }
 
 const defaultRouteFallback = (
@@ -267,7 +268,7 @@ const routeConfigOptions = [
         Component: () => import('@/pages/crawl4ai'),
       },
       {
-        path: '/permission',
+        path: Routes.Permission,
         Component: () => import('@/pages/permission'),
       },
       {

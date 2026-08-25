@@ -24,6 +24,7 @@ export default function RoleForm({
   const submit = async () => {
     if (!name.trim()) return;
     const { data } = await permissionService.createRole({ name, description });
+    if (!data || data.code !== 0 || !data.data?.id) return;
     await permissionService.setRolePermissions(data.data.id, { permission_keys: keys });
     setName(''); setDescription(''); setKeys([]);
     onRefresh();

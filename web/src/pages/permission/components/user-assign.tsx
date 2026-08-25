@@ -1,5 +1,5 @@
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import permissionService from '@/services/permission-service';
@@ -15,15 +15,34 @@ export default function UserAssign() {
     },
   });
   const rolesQuery = useQuery({
-    queryKey: ['permissionRolesForAssign'],
+    queryKey: ['permissionRoles'],
     queryFn: async () => {
       const { data } = await permissionService.listRoles();
       return data.data ?? { items: [] };
     },
   });
   const roles = rolesQuery.data?.items ?? [];
-
   const users = data?.items ?? [];
+
+  // 后端返回的用户已有角色是「角色名」数组，这里映射成角色 id 以初始化选中态，
+  // 避免管理员对已有角色的用户点一次“保存”就把其全部角色清空（初始 selected 为空数组会触发 filter_delete 全部删除）。
+  const roleIdByRoleName = roles.reduce(
+    (acc: Record<string, string>, r: any) => {
+      acc[r.name] = r.id;
+      return acc;
+    },
+    {},
+  );
+  useEffect(() => {
+    const init: Record<string, string[]> = {};
+    users.forEach((u: any) => {
+      init[u.id] = (u.roles ?? [])
+        .map((rn: string) => roleIdByRoleName[rn])
+        .filter(Boolean) as string[];
+    });
+    setSelected(init);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [users, roles]);
 
   const toggle = (userId: string, roleId: string) =>
     setSelected((prev) => {
@@ -48,7 +67,12 @@ export default function UserAssign() {
           </span>
           <div className="flex gap-2 items-center">
             {roles.map((r: any) => (
-              <Button key={r.id} size="sm" variant="ghost" onClick={() => toggle(u.id, r.id)}>
+              <Button
+                key={r.id}
+                size="sm"
+                variant={selected[u.id]?.includes(r.id) ? 'default' : 'ghost'}
+                onClick={() => toggle(u.id, r.id)}
+              >
                 {r.name}
               </Button>
             ))}
