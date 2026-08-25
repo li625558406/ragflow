@@ -267,6 +267,10 @@ const routeConfigOptions = [
         Component: () => import('@/pages/crawl4ai'),
       },
       {
+        path: '/permission',
+        Component: () => import('@/pages/permission'),
+      },
+      {
         path: Routes.Skills,
         Component: () => import('@/pages/skills'),
       },
