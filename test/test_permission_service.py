@@ -17,3 +17,11 @@ def test_get_user_permission_keys_fallback_to_normal():
 
 def test_roles_permission_keys_empty_ids():
     assert svc.roles_permission_keys([]) == set()
+
+
+def test_get_user_permission_keys_no_fallback_when_role_assigned_but_empty():
+    # 用户挂了角色但权限映射为空 -> 不应回退到普通用户（最小权限）
+    with patch.object(svc, "get_user_role_ids", return_value=["restricted_role"]), \
+         patch.object(svc, "get_normal_role_ids", return_value=["n1"]), \
+         patch.object(svc, "roles_permission_keys", side_effect=lambda ids: {"bid", "c_chat"} if ids == ["n1"] else set()):
+        assert svc.get_user_permission_keys("u1") == set()

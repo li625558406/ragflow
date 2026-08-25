@@ -40,11 +40,9 @@ def get_normal_role_ids() -> list[str]:
 def get_user_permission_keys(user_id: str) -> set[str]:
     """用户权限点并集；未挂角色时回退到内置「普通用户」。"""
     role_ids = get_user_role_ids(user_id)
-    keys = roles_permission_keys(role_ids)
-    if not keys:
-        role_ids = get_normal_role_ids()
-        keys = roles_permission_keys(role_ids)
-    return keys
+    if not role_ids:
+        return roles_permission_keys(get_normal_role_ids())
+    return roles_permission_keys(role_ids)
 
 
 def get_users_with_roles() -> list[dict]:
