@@ -13,7 +13,7 @@ export const useMyPermissions = (): PermissionState => {
   const { data, isLoading } = useQuery({
     queryKey: ['myPermissions'],
     staleTime: 5 * 60 * 1000,
-    refetchOnWindowFocus: false,
+    retry: 2,
     queryFn: async () => {
       const { data } = await permissionService.myPermissions();
       return data.data ?? { permissions: [], is_superuser: false };
