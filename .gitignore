@@ -298,3 +298,4 @@ logs/
 
 # Claude Code scratch/temp files
 .claude/
+.scratch/
