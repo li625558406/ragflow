@@ -2667,10 +2667,13 @@ def migrate_db():
 
 def seed_default_permissions():
     """幂等写入内置角色：超级管理员 + 普通用户（含默认权限点）。"""
+    from common.misc_utils import get_uuid
+
     # 内置超级管理员
     super_role = PermissionRole.get_or_none(PermissionRole.name == SUPER_ROLE_NAME)
     if not super_role:
         super_role = PermissionRole.create(
+            id=get_uuid(),
             name=SUPER_ROLE_NAME,
             description="内置超级管理员，默认拥有全部模块权限（is_superuser 亦直接放行）",
             builtin=True,
@@ -2680,6 +2683,7 @@ def seed_default_permissions():
     normal_role = PermissionRole.get_or_none(PermissionRole.name == NORMAL_ROLE_NAME)
     if not normal_role:
         normal_role = PermissionRole.create(
+            id=get_uuid(),
             name=NORMAL_ROLE_NAME,
             description="内置普通用户，默认授予基础模块",
             builtin=True,
@@ -2691,5 +2695,9 @@ def seed_default_permissions():
             role_id=normal_role.id, permission_key=key
         )
         if not exists:
-            PermissionRolePermission.create(role_id=normal_role.id, permission_key=key)
+            PermissionRolePermission.create(
+                id=get_uuid(),
+                role_id=normal_role.id,
+                permission_key=key,
+            )
     # 超级管理员不列为具体权限点（逻辑上视为全通过即可），这里不写入。
