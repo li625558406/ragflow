@@ -42,6 +42,7 @@ export const MODULE_PATH_PERMISSION: Array<[string, string]> = [
   ['/searches', 'search'],
   ['/search', 'search'],
   ['/agents', 'agent'],
+  ['/agent-templates', 'agent'],
   ['/agent', 'agent'],
   ['/memories', 'memory'],
   ['/memory', 'memory'],
