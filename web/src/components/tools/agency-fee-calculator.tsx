@@ -129,7 +129,7 @@ export default function AgencyFeeCalculator() {
   const traces = data?.traces;
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="flex-1 min-h-0 flex flex-col">
       {/* Title bar */}
       <div className="shrink-0 px-6 pt-5 pb-4 border-b border-[#D4D4D4] bg-white">
         <div className="flex items-center justify-between">
@@ -183,7 +183,7 @@ export default function AgencyFeeCalculator() {
       {/* Left-Right layout */}
       <div className="flex-1 flex min-h-0 overflow-hidden">
         {/* Left: Form + Results */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-4 min-w-0">
+        <div className="flex-1 min-h-0 overflow-y-auto p-6 space-y-4 min-w-0">
           {/* Input */}
           <div>
             <label className="block text-xs font-medium text-[#000000] mb-1.5">

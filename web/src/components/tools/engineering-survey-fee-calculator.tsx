@@ -320,7 +320,7 @@ export default function EngineeringSurveyFeeCalculator() {
   };
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="flex-1 min-h-0 flex flex-col">
       {/* Title bar */}
       <div className="shrink-0 px-6 pt-5 pb-4 border-b border-[#D4D4D4] bg-white">
         <div className="flex items-center justify-between">
@@ -388,7 +388,7 @@ export default function EngineeringSurveyFeeCalculator() {
       </div>
 
       {/* Content — keep all sub-tabs mounted to preserve input state */}
-      <div className="flex-1 overflow-y-auto" key={resetKey}>
+      <div className="flex-1 min-h-0 overflow-y-auto" key={resetKey}>
         <div className={tab === 'design' ? '' : 'hidden'}>
           <DesignTab
             discountRate={discountRate}

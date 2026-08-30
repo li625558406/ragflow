@@ -120,7 +120,12 @@ const DAILY_RATES = [
 
 // ── 辅助函数 ──
 function linearInterp(x: number): number {
-  if (x <= SUPERVISION_FEE_TABLE[0][0]) return SUPERVISION_FEE_TABLE[0][1];
+  if (x <= 0) return 0;
+  const [minX, minY] = SUPERVISION_FEE_TABLE[0]; // 最低档 (500, 16.5)
+  if (x < minX) {
+    // 低于最低分档：起点为 (0, 0)，向 (500, 16.5) 直线内插
+    return (x / minX) * minY;
+  }
   for (let i = 1; i < SUPERVISION_FEE_TABLE.length; i++) {
     if (x <= SUPERVISION_FEE_TABLE[i][0]) {
       const [x0, y0] = SUPERVISION_FEE_TABLE[i - 1];
@@ -183,7 +188,7 @@ export default function SupervisionFeeCalculator() {
   };
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="flex-1 min-h-0 flex flex-col">
       {/* Title bar */}
       <div className="shrink-0 px-6 pt-5 pb-4 border-b border-[#D4D4D4] bg-white">
         <div className="flex items-center justify-between">
@@ -251,7 +256,7 @@ export default function SupervisionFeeCalculator() {
       </div>
 
       {/* Content — keep all sub-tabs mounted to preserve input state */}
-      <div className="flex-1 overflow-y-auto" key={resetKey}>
+      <div className="flex-1 min-h-0 overflow-y-auto" key={resetKey}>
         <div className={tab === 'supervision' ? '' : 'hidden'}>
           <SupervisionTab
             discountRate={discountRate}
@@ -320,7 +325,7 @@ function SupervisionTab({
 
     // Build interpolation trace
     const table = SUPERVISION_FEE_TABLE;
-    if (val <= table[0][0]) {
+    if (val < table[0][0]) {
       setInterpTrace({
         x0: 0,
         x1: table[0][0],

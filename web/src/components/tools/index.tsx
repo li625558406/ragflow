@@ -110,19 +110,43 @@ export default function ToolsPanel() {
       </button>
 
       {/* Right: Tool content — keep all mounted to preserve input state across tab switches */}
-      <div className="flex-1 overflow-y-auto bg-[#FFFFFF] min-w-0">
-        <div className={selectedTool?.id === 'agency-fee' ? '' : 'hidden'}>
+      {/* flex-col chain gives each calculator a definite height so inner overflow-y-auto
+          becomes the single scroll container (fixes scroll failing for some users) */}
+      <div className="flex-1 flex flex-col min-h-0 overflow-y-auto bg-[#FFFFFF] min-w-0">
+        <div
+          className={
+            selectedTool?.id === 'agency-fee'
+              ? 'flex-1 min-h-0 flex flex-col'
+              : 'hidden'
+          }
+        >
           <AgencyFeeCalculator />
         </div>
-        <div className={selectedTool?.id === 'cost-consulting' ? '' : 'hidden'}>
+        <div
+          className={
+            selectedTool?.id === 'cost-consulting'
+              ? 'flex-1 min-h-0 flex flex-col'
+              : 'hidden'
+          }
+        >
           <CostConsultingCalculator />
         </div>
         <div
-          className={selectedTool?.id === 'engineering-survey' ? '' : 'hidden'}
+          className={
+            selectedTool?.id === 'engineering-survey'
+              ? 'flex-1 min-h-0 flex flex-col'
+              : 'hidden'
+          }
         >
           <EngineeringSurveyFeeCalculator />
         </div>
-        <div className={selectedTool?.id === 'supervision-fee' ? '' : 'hidden'}>
+        <div
+          className={
+            selectedTool?.id === 'supervision-fee'
+              ? 'flex-1 min-h-0 flex flex-col'
+              : 'hidden'
+          }
+        >
           <SupervisionFeeCalculator />
         </div>
       </div>
