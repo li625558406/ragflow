@@ -75,10 +75,11 @@ def _bucket_of(flow: dict) -> str:
 
 class _FlowServiceBase(CommonService):
     """CommonService.insert 透传 Model.save() 的返回值（受影响行数 int），
-    flow 链路需要拿新行的 id / __data__，这里重写为返回模型实例。"""
+    flow 链路需要拿新行的 id / __data__，这里重写为返回模型实例。
+    注意：与 CommonService.insert 一致不加 connection_context，
+    由调用方提供（可安全在 DB.atomic 事务内嵌套调用）。"""
 
     @classmethod
-    @DB.connection_context()
     def insert(cls, **kwargs):
         if "id" not in kwargs:
             kwargs["id"] = get_uuid()
@@ -156,11 +157,20 @@ class FlowVersionService(_FlowServiceBase):
     @DB.connection_context()
     def add_version(cls, flow: dict, object_name: str, file_name: str, file_type: str,
                     file_size: int, source: str, created_by: str) -> dict:
-        # cls.insert 自动填充 id + create/update 时间戳，model.create 不会填 id，故统一走 insert
+        # cls.insert 自动填充 id + create/update 时间戳，model.create 不会填 id，故统一走 insert。
+        # 事务内禁止再调带 connection_context 的方法（嵌套上下文会报
+        # "Attempting to close database while transaction is open"），version_no 内联计算。
         with DB.atomic():
+            last = (
+                cls.model.select()
+                .where(cls.model.flow_id == flow["id"])
+                .order_by(cls.model.version_no.desc())
+                .first()
+            )
+            version_no = (last.version_no + 1) if last else 1
             v = cls.insert(
                 flow_id=flow["id"],
-                version_no=cls.next_version_no(flow["id"]),
+                version_no=version_no,
                 file_name=file_name,
                 file_path=object_name,
                 file_type=file_type,
