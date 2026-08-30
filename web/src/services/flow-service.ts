@@ -84,6 +84,15 @@ export async function downloadVersionBlob(
   const resp = await fetch(flowVersionDownloadUrl(flowId, versionId), {
     headers: authHeaders(),
   });
+  if (resp.status === 401) throw new Error('登录已过期，请重新登录后再下载');
+  // 后端错误路径统一走 envelope（HTTP 200 + application/json），需按 content-type 识别
+  const contentType = resp.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) {
+    const body = await resp.json();
+    throw new Error(
+      body?.message || `下载失败（code ${body?.code ?? resp.status}）`,
+    );
+  }
   if (!resp.ok) throw new Error(`download failed ${resp.status}`);
   return resp.blob();
 }
