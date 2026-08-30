@@ -9,6 +9,7 @@ const {
   permissionRolePermissions,
   permissionUsers,
   permissionUserRoles,
+  permissionUser,
 } = api;
 
 // registerNextServer 仅能处理「函数式 URL 与请求体不冲突」的方法：
@@ -33,5 +34,7 @@ const permissionService = registerNextServer<keyof typeof methods>(methods);
   request.put(permissionUserRoles(userId), { ...data });
 (permissionService as any).deleteRole = (id: string) =>
   request.delete(permissionRole(id));
+(permissionService as any).deleteUser = (id: string) =>
+  request.delete(permissionUser(id));
 
 export default permissionService;

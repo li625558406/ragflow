@@ -454,4 +454,5 @@ export default {
   permissionUsers: `${restAPIv1}/permission/users`,
   permissionUserRoles: (userId: string) =>
     `${restAPIv1}/permission/users/${userId}/roles`,
+  permissionUser: (userId: string) => `${restAPIv1}/permission/users/${userId}`,
 };

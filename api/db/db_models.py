@@ -2701,6 +2701,24 @@ def seed_default_permissions():
                     role_id=normal_role.id,
                     permission_key=key,
                 )
+        # 存量回填：未配置任何角色的用户默认挂「普通用户」（幂等，每次启动执行）。
+        # 含超管：is_superuser 权限直通，挂普通角色仅为权限页展示/统计一致。
+        # 权限缓存无需失效：无角色用户的权限判定本就回退到普通角色权限点，回填前后结果一致。
+        # 注意：不能用 SQL 跨表子查询（NOT IN (SELECT user_id ...)）——
+        # user 表与 permission_user_role 表排序规则可能不一致，MySQL 报 1267 Illegal mix of collations，
+        # 故在 Python 侧做集合差。
+        having_role_ids = {r.user_id for r in PermissionUserRole.select(PermissionUserRole.user_id)}
+        backfilled = 0
+        for u in User.select(User.id):
+            if u.id in having_role_ids:
+                continue
+            try:
+                PermissionUserRole.create(id=get_uuid(), user_id=u.id, role_id=normal_role.id)
+                backfilled += 1
+            except Exception as row_err:
+                logging.warning("backfill normal role failed for user %s: %s", u.id, row_err)
+        if backfilled:
+            logging.info("permission_user_role: 存量回填【%s】角色 %d 个用户", NORMAL_ROLE_NAME, backfilled)
         # 超级管理员不列为具体权限点（逻辑上视为全通过即可），这里不写入。
     except Exception as e:
         logging.error("seed_default_permissions failed: %s", e)

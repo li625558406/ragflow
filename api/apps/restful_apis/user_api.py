@@ -27,9 +27,10 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from api.apps.auth import get_auth_client
 from api.db import FileType, UserTenantRole
-from api.db.db_models import TenantLLM
+from api.db.db_models import PermissionUserRole, TenantLLM
 from api.db.services.file_service import FileService
 from api.db.services.llm_service import get_init_tenant_llm
+from api.db.services.permission_service import assign_normal_role
 from api.db.services.tenant_llm_service import TenantLLMService
 from api.db.services.user_service import TenantService, UserService, UserTenantService
 from common.time_utils import current_timestamp, datetime_format, get_format_time
@@ -118,6 +119,15 @@ async def login():
     user = UserService.query_user(email, password)
 
     if user and hasattr(user, 'is_active') and user.is_active == "0":
+        return get_json_result(
+            data=False,
+            code=RetCode.FORBIDDEN,
+            message="This account has been disabled, please contact the administrator!",
+        )
+    elif not user and users and not any((u.status or "1") == "1" for u in users):
+        # 邮箱存在但 query_user（过滤 status=VALID）查不到，且同邮箱无任何有效记录
+        # → 已被软删除/禁用，不能落入「密码不匹配」分支误导用户；
+        # 注意：不能无条件在此返回禁用提示，否则正常用户输错密码也会被误判为禁用
         return get_json_result(
             data=False,
             code=RetCode.FORBIDDEN,
@@ -442,6 +452,10 @@ def rollback_user_registration(user_id):
         TenantLLM.delete().where(TenantLLM.tenant_id == user_id).execute()
     except Exception:
         pass
+    try:
+        PermissionUserRole.delete().where(PermissionUserRole.user_id == user_id).execute()
+    except Exception:
+        pass
 
 
 def user_register(user_id, user):
@@ -482,6 +496,11 @@ def user_register(user_id, user):
     UserTenantService.insert(**usr_tenant)
     TenantLLMService.insert_many(tenant_llm)
     FileService.insert(file)
+    # 新用户默认挂内置「普通用户」角色；失败不阻断注册（权限判定侧另有无角色回退兜底）
+    try:
+        assign_normal_role(user_id)
+    except Exception as e:
+        logging.warning("assign_normal_role failed for %s: %s", user_id, e)
     return UserService.query(email=user["email"])
 
 
@@ -871,6 +890,10 @@ async def forget_reset_password():
         return get_json_result(data=False, code=RetCode.DATA_ERROR, message="invalid email")
     
     user = users[0]
+    # 已软删除/禁用的账号不允许重置密码并自动登录
+    if getattr(user, "status", "1") != "1":
+        return get_json_result(data=False, code=RetCode.DATA_ERROR, message="invalid email")
+
     try:
         UserService.update_user_password(user.id, new_pwd_base64)
     except Exception as e:

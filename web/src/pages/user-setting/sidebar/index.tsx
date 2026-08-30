@@ -17,7 +17,6 @@ import {
   LucideServer,
   LucideUnplug,
   LucideUser,
-  LucideUserCog,
   LucideUsers,
 } from 'lucide-react';
 import { useEffect } from 'react';
@@ -50,11 +49,6 @@ const menuItems = (t: TFunction) => [
     icon: <LucideUsers className="size-[1em]" />,
     label: t('setting.team'),
     key: Routes.Team,
-  },
-  {
-    icon: <LucideUserCog className="size-[1em]" />,
-    label: t('setting.userManagement'),
-    key: Routes.UserManagement,
   },
   {
     icon: <LucideUser className="size-[1em]" />,

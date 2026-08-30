@@ -4,10 +4,10 @@ import { Link, useLocation } from 'react-router';
 
 import { LucideHouse, type LucideIcon } from 'lucide-react';
 
+import { usePermission } from '@/hooks/use-permission';
 import { cn } from '@/lib/utils';
 import { Routes } from '@/routes';
 import { supportsCssAnchor } from '@/utils/css-support';
-import { usePermission } from '@/hooks/use-permission';
 
 const PathMap = {
   [Routes.Datasets]: [Routes.Datasets, Routes.DatasetBase],
@@ -17,6 +17,7 @@ const PathMap = {
   [Routes.Memories]: [Routes.Memories, Routes.Memory, Routes.MemoryMessage],
   [Routes.Files]: [Routes.Files],
   [Routes.Crawl4ai]: [Routes.Crawl4ai],
+  [Routes.Permission]: [Routes.Permission],
 } as const;
 const menuItems: Array<{
   path: string;
@@ -25,20 +26,13 @@ const menuItems: Array<{
   icon?: LucideIcon;
   'data-testid'?: string;
 }> = [
-  { path: Routes.Root, name: 'header.Root', icon: LucideHouse, permission: 'bid' },
+  {
+    path: Routes.Root,
+    name: 'header.Root',
+    icon: LucideHouse,
+    permission: 'bid',
+  },
   { path: Routes.Datasets, name: 'header.dataset', permission: 'dataset' },
-  {
-    path: Routes.Chats,
-    name: 'header.chat',
-    'data-testid': 'nav-chat',
-    permission: 'chat',
-  },
-  {
-    path: Routes.Searches,
-    name: 'header.search',
-    'data-testid': 'nav-search',
-    permission: 'search',
-  },
   {
     path: Routes.Agents,
     name: 'header.flow',
@@ -46,8 +40,12 @@ const menuItems: Array<{
     permission: 'agent',
   },
   { path: Routes.Memories, name: 'header.memories', permission: 'memory' },
-  { path: Routes.Files, name: 'header.fileManager', permission: 'file' },
   { path: Routes.Crawl4ai, name: 'header.crawl4ai', permission: 'crawler' },
+  {
+    path: Routes.Permission,
+    name: 'header.userManagement',
+    permission: 'permission_manage',
+  },
 ];
 
 const GlobalNavbar = supportsCssAnchor
@@ -80,27 +78,27 @@ const GlobalNavbar = supportsCssAnchor
             {menuItems
               .filter((it) => !it.permission || hasPermission(it.permission))
               .map(({ path, name, icon: Icon, ...props }) => {
-              const isActive = path === activePath;
-              const anchorName = `--${navbarAnchorNamePrefix}${path === Routes.Root ? '-root' : path.replace('/', '-')}`;
+                const isActive = path === activePath;
+                const anchorName = `--${navbarAnchorNamePrefix}${path === Routes.Root ? '-root' : path.replace('/', '-')}`;
 
-              return (
-                <li key={path} className="relative" style={{ anchorName }}>
-                  <Link
-                    {...props}
-                    to={path}
-                    className={cn(
-                      'h-10 px-6 text-base inline-flex items-center justify-center',
-                      'hover:text-current focus-visible:text-current rounded-full transition-all',
-                      isActive && '!text-bg-base',
-                    )}
-                    aria-current={isActive ? 'page' : undefined}
-                  >
-                    {Icon && <Icon className="size-6 stroke-[1.5]" />}
-                    <span className={cn(Icon && 'sr-only')}>{t(name)}</span>
-                  </Link>
-                </li>
-              );
-            })}
+                return (
+                  <li key={path} className="relative" style={{ anchorName }}>
+                    <Link
+                      {...props}
+                      to={path}
+                      className={cn(
+                        'h-10 px-6 text-base inline-flex items-center justify-center',
+                        'hover:text-current focus-visible:text-current rounded-full transition-all',
+                        isActive && '!text-bg-base',
+                      )}
+                      aria-current={isActive ? 'page' : undefined}
+                    >
+                      {Icon && <Icon className="size-6 stroke-[1.5]" />}
+                      <span className={cn(Icon && 'sr-only')}>{t(name)}</span>
+                    </Link>
+                  </li>
+                );
+              })}
 
             <li
               className={cn(
@@ -142,31 +140,31 @@ const GlobalNavbar = supportsCssAnchor
             {menuItems
               .filter((it) => !it.permission || hasPermission(it.permission))
               .map(({ path, name, icon: Icon, ...props }) => {
-              const isActive = path === activePath;
+                const isActive = path === activePath;
 
-              return (
-                <li key={path}>
-                  <Link
-                    {...props}
-                    to={path}
-                    className={cn(
-                      'h-10 px-6 text-base inline-flex items-center justify-center',
-                      'hover:text-current focus-visible:text-current rounded-full transition-all',
-                      isActive &&
-                        '!text-bg-base bg-text-primary border-b-2 border-b-accent-primary',
-                    )}
-                    aria-label={t(name)}
-                    aria-current={isActive ? 'page' : undefined}
-                  >
-                    {Icon ? (
-                      <Icon className="size-6 stroke-[1.5]" />
-                    ) : (
-                      <span>{t(name)}</span>
-                    )}
-                  </Link>
-                </li>
-              );
-            })}
+                return (
+                  <li key={path}>
+                    <Link
+                      {...props}
+                      to={path}
+                      className={cn(
+                        'h-10 px-6 text-base inline-flex items-center justify-center',
+                        'hover:text-current focus-visible:text-current rounded-full transition-all',
+                        isActive &&
+                          '!text-bg-base bg-text-primary border-b-2 border-b-accent-primary',
+                      )}
+                      aria-label={t(name)}
+                      aria-current={isActive ? 'page' : undefined}
+                    >
+                      {Icon ? (
+                        <Icon className="size-6 stroke-[1.5]" />
+                      ) : (
+                        <span>{t(name)}</span>
+                      )}
+                    </Link>
+                  </li>
+                );
+              })}
           </ul>
         </nav>
       );
