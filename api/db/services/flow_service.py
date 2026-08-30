@@ -73,7 +73,27 @@ def _bucket_of(flow: dict) -> str:
     return flow["initiator_id"]
 
 
-class FlowInstanceService(CommonService):
+class _FlowServiceBase(CommonService):
+    """CommonService.insert 透传 Model.save() 的返回值（受影响行数 int），
+    flow 链路需要拿新行的 id / __data__，这里重写为返回模型实例。"""
+
+    @classmethod
+    @DB.connection_context()
+    def insert(cls, **kwargs):
+        if "id" not in kwargs:
+            kwargs["id"] = get_uuid()
+        timestamp = current_timestamp()
+        cur_datetime = datetime_format(datetime.now())
+        kwargs["create_time"] = timestamp
+        kwargs["create_date"] = cur_datetime
+        kwargs["update_time"] = timestamp
+        kwargs["update_date"] = cur_datetime
+        obj = cls.model(**kwargs)
+        obj.save(force_insert=True)
+        return obj
+
+
+class FlowInstanceService(_FlowServiceBase):
     model = FlowInstance
 
     @classmethod
@@ -108,7 +128,7 @@ class FlowInstanceService(CommonService):
         return items, len(items)
 
 
-class FlowVersionService(CommonService):
+class FlowVersionService(_FlowServiceBase):
     model = FlowVersion
 
     @classmethod
@@ -157,7 +177,7 @@ class FlowVersionService(CommonService):
         return v.__data__
 
 
-class FlowCommentService(CommonService):
+class FlowCommentService(_FlowServiceBase):
     model = FlowComment
 
     @classmethod
@@ -177,7 +197,7 @@ class FlowCommentService(CommonService):
         ]
 
 
-class FlowAiChatService(CommonService):
+class FlowAiChatService(_FlowServiceBase):
     model = FlowAiChat
 
     @classmethod
