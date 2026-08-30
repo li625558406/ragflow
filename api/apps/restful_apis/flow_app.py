@@ -223,7 +223,7 @@ async def flow_candidates():
         return get_json_result(
             data={
                 "list": [
-                    {"id": u.id, "nickname": u.nickname or u.email or u.id}
+                    {"id": u.id, "nickname": u.nickname or u.id}
                     for u in users
                 ]
             }
