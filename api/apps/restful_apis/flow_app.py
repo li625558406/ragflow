@@ -179,7 +179,7 @@ async def list_flows():
         if scope not in _SCOPES:
             return _err(f"非法 scope: {scope}，可选值 todo/initiated/joined/all", 101)
         items, total = FlowInstanceService.list_for_user(current_user.id, scope)
-        return get_json_result(data={"flows": items, "total": total})
+        return get_json_result(data={"list": items, "total": total})
     except Exception as e:
         logger.exception(e)
         return _err(str(e))
