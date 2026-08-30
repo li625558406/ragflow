@@ -8,8 +8,6 @@ import logging
 import time
 from datetime import datetime
 
-from peewee import IntegrityError
-
 from api.db.db_models import (
     DB,
     FlowAiChat,
@@ -17,9 +15,9 @@ from api.db.db_models import (
     FlowInstance,
     FlowVersion,
     Notification,
-    NotificationUser,
 )
 from api.db.services.common_service import CommonService
+from api.db.services.notification_service import NotificationUserService
 from common.misc_utils import get_uuid
 from common.time_utils import current_timestamp, datetime_format
 
@@ -129,22 +127,23 @@ class FlowVersionService(CommonService):
     def add_version(cls, flow: dict, object_name: str, file_name: str, file_type: str,
                     file_size: int, source: str, created_by: str) -> dict:
         # cls.insert 自动填充 id + create/update 时间戳，model.create 不会填 id，故统一走 insert
-        v = cls.insert(
-            flow_id=flow["id"],
-            version_no=cls.next_version_no(flow["id"]),
-            file_name=file_name,
-            file_path=object_name,
-            file_type=file_type,
-            file_size=file_size,
-            source=source,
-            created_by=created_by,
-            node_status=flow["status"],
-        )
-        FlowInstance.update(
-            current_version_id=v.id,
-            update_time=current_timestamp(),
-            update_date=datetime_format(datetime.now()),
-        ).where(FlowInstance.id == flow["id"]).execute()
+        with DB.atomic():
+            v = cls.insert(
+                flow_id=flow["id"],
+                version_no=cls.next_version_no(flow["id"]),
+                file_name=file_name,
+                file_path=object_name,
+                file_type=file_type,
+                file_size=file_size,
+                source=source,
+                created_by=created_by,
+                node_status=flow["status"],
+            )
+            FlowInstance.update(
+                current_version_id=v.id,
+                update_time=current_timestamp(),
+                update_date=datetime_format(datetime.now()),
+            ).where(FlowInstance.id == flow["id"]).execute()
         return v.__data__
 
 
@@ -202,6 +201,8 @@ class FlowActionService:
     @classmethod
     @DB.connection_context()
     def submit(cls, flow: dict, user_id: str, action: str) -> dict:
+        if flow["status"] in FlowWorkflow.TERMINAL:
+            raise ValueError("流程已结束")
         owner = FlowWorkflow.owner_of_current(flow)
         if user_id != owner:
             raise PermissionError("只有当前节点负责人可以操作")
@@ -269,25 +270,17 @@ def notify_flow_event(flow: dict, to_user_ids: list, title: str, summary: str) -
     """复用采集通知表 + fan-out，category='flow'，site_id='flow:{flow_id}'。"""
     if not to_user_ids:
         return 0
-    now = int(time.time())
+    now = int(time.time() * 1000)  # 毫秒，与存量通知体系一致
     nid = get_uuid()
-    Notification.insert(
-        id=nid, tenant_id="system",
-        site_id=f"flow:{flow['id']}", site_display=flow["title"],
-        category="flow", batch_key=f"flow:{flow['id']}::{now}::{nid}",
-        title=title, summary=summary, result_ids=[], result_count=0,
-        publish_range="", created_at=now,
-    ).execute()
-    inserted = 0
-    for uid in set(to_user_ids):
-        try:
-            NotificationUser.insert(
-                id=get_uuid(), notification_id=nid, user_id=uid,
-                tenant_id="system", is_read=False,
-            ).execute()
-            inserted += 1
-        except IntegrityError:
-            continue
+    with DB.atomic():
+        Notification.insert(
+            id=nid, tenant_id="system",
+            site_id=f"flow:{flow['id']}", site_display=flow["title"],
+            category="flow", batch_key=f"flow:{flow['id']}::{now}::{nid}",
+            title=title, summary=summary, result_ids=[], result_count=0,
+            publish_range="", created_at=now,
+        ).execute()
+        inserted = NotificationUserService.fan_out(nid, list(set(to_user_ids)))
     return inserted
 
 
