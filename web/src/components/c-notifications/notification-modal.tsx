@@ -19,6 +19,7 @@ const CATEGORY_META: Record<string, { label: string; className: string }> = {
     className: 'bg-emerald-100 text-emerald-700',
   },
   objection: { label: '异议答复', className: 'bg-rose-100 text-rose-700' },
+  flow: { label: '流程', className: 'bg-indigo-100 text-indigo-700' },
   other: { label: '其他', className: 'bg-gray-100 text-gray-700' },
 };
 
@@ -35,6 +36,7 @@ export function NotificationModal({ items, onClose, onViewAll }: Props) {
   const total = items.length;
   const preview = items.slice(0, PREVIEW_MAX);
   const moreCount = Math.max(0, total - PREVIEW_MAX);
+  const allFlow = items.length > 0 && items.every((n) => n.category === 'flow');
 
   const handleLater = () => {
     markDeliveredBatch(items.map((i) => i.id));
@@ -58,11 +60,11 @@ export function NotificationModal({ items, onClose, onViewAll }: Props) {
           <div className="flex items-center gap-2">
             <span className="text-xl">🔔</span>
             <span className="font-semibold">
-              检测到
+              {allFlow ? '你有' : '检测到'}
               <span className="mx-1 text-blue-600 font-bold text-lg">
                 {total}
               </span>
-              条新采集结果
+              条新{allFlow ? '流程通知' : '采集结果'}
             </span>
           </div>
           <button
@@ -88,13 +90,26 @@ export function NotificationModal({ items, onClose, onViewAll }: Props) {
                 </span>
                 <span className="text-xs text-gray-500">{n.site_display}</span>
               </div>
-              <div className="text-sm font-medium text-gray-800 line-clamp-1">
-                {n.site_display} 检测到
-                <span className="mx-0.5 text-blue-600 font-bold">
-                  {n.result_count}
-                </span>
-                条新结果
-              </div>
+              {n.category === 'flow' ? (
+                <>
+                  <div className="text-sm font-medium text-gray-800 line-clamp-1">
+                    {n.title}
+                  </div>
+                  {n.summary && (
+                    <div className="text-xs text-gray-500 mt-0.5 line-clamp-1">
+                      {n.summary}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="text-sm font-medium text-gray-800 line-clamp-1">
+                  {n.site_display} 检测到
+                  <span className="mx-0.5 text-blue-600 font-bold">
+                    {n.result_count}
+                  </span>
+                  条新结果
+                </div>
+              )}
               {n.publish_range && (
                 <div className="text-xs text-gray-400 mt-1">
                   发布时间：{n.publish_range}

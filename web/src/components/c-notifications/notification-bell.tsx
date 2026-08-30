@@ -67,15 +67,20 @@ export function NotificationBell() {
       setNewItems(fresh);
       setNewItemsModalOpen(true);
       if (isGranted) {
+        const firstFlow = fresh[0].category === 'flow';
         const firstSite = fresh[0].site_display || '采集结果';
         const title =
-          fresh.length === 1
-            ? `${firstSite} 检测到 ${fresh[0].result_count} 条新结果`
-            : `${firstSite} 等 ${fresh.length} 条新通知`;
-        const body = fresh
-          .map((n) => n.title)
-          .slice(0, 3)
-          .join('\n');
+          firstFlow && fresh.length === 1
+            ? fresh[0].title
+            : fresh.length === 1
+              ? `${firstSite} 检测到 ${fresh[0].result_count} 条新结果`
+              : `${firstSite} 等 ${fresh.length} 条新通知`;
+        const body = firstFlow
+          ? fresh[0].summary
+          : fresh
+              .map((n) => n.title)
+              .slice(0, 3)
+              .join('\n');
         showNotification(title, body, () => setListModalOpen(true));
       }
     })();
