@@ -124,6 +124,16 @@ class FlowVersionService(CommonService):
 
     @classmethod
     @DB.connection_context()
+    def list_by_flow(cls, flow_id: str) -> list:
+        return [
+            r.__data__
+            for r in cls.model.select()
+            .where(cls.model.flow_id == flow_id)
+            .order_by(cls.model.version_no.asc())
+        ]
+
+    @classmethod
+    @DB.connection_context()
     def add_version(cls, flow: dict, object_name: str, file_name: str, file_type: str,
                     file_size: int, source: str, created_by: str) -> dict:
         # cls.insert 自动填充 id + create/update 时间戳，model.create 不会填 id，故统一走 insert

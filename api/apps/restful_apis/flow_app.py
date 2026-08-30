@@ -29,6 +29,7 @@
   - POST   /flow/<flow_id>/archive                  归档（仅汇总节点发起人）
   - POST   /flow/<flow_id>/cancel                   作废（仅发起人）
 """
+import hashlib
 import logging
 import os
 import time
@@ -37,7 +38,7 @@ from urllib.parse import quote
 from quart import Blueprint, Response, request
 
 from api.apps import current_user, login_required
-from api.db.db_models import DB, FlowVersion
+from api.db.db_models import FlowInstance
 from api.db.services.flow_service import (
     FlowActionService,
     FlowAiChatService,
@@ -84,8 +85,16 @@ def _require_owner(flow) -> dict:
 
 
 def _safe_filename(name: str) -> str:
-    """剥掉路径分隔符，避免 object name 被前端文件名注入子目录。"""
-    return os.path.basename((name or "").replace("\\", "/")).strip() or "unnamed"
+    """剥掉路径分隔符与不可打印控制字符，避免 object name 被前端文件名注入子目录；超长时保留扩展名截断。"""
+    base = os.path.basename((name or "").replace("\\", "/"))
+    cleaned = "".join(ch for ch in base if ch.isprintable()).strip()
+    if not cleaned:
+        return "unnamed"
+    if len(cleaned) > 200:
+        root, ext = os.path.splitext(cleaned)
+        digest = hashlib.md5(cleaned.encode("utf-8")).hexdigest()[:8]
+        cleaned = f"{root[:160]}_{digest}{ext}"
+    return cleaned
 
 
 def _others_of(flow: dict, me: str) -> list:
@@ -101,16 +110,6 @@ def _action_error(e: Exception):
     if isinstance(e, ValueError):
         return _err(str(e))
     return None
-
-
-@DB.connection_context()
-def _list_versions(flow_id: str) -> list:
-    return [
-        r.__data__
-        for r in FlowVersion.select()
-        .where(FlowVersion.flow_id == flow_id)
-        .order_by(FlowVersion.version_no.asc())
-    ]
 
 
 # ── 1. 创建流程 ────────────────────────────────────────────────────
@@ -152,7 +151,12 @@ async def create_flow():
 
         file_name = _safe_filename(file.filename)
         object_name = f"flow/{flow_id}/v1_{file_name}"
-        await thread_pool_exec(settings.STORAGE_IMPL.put, _bucket_of(flow.__data__), object_name, blob)
+        try:
+            await thread_pool_exec(settings.STORAGE_IMPL.put, _bucket_of(flow.__data__), object_name, blob)
+        except Exception as e:
+            logger.exception("flow storage put failed, rollback flow row %s", flow_id)
+            FlowInstance.delete().where(FlowInstance.id == flow_id).execute()
+            return _err(f"文件存储失败: {e}")
         flow_dict = _flow_dict(flow_id)
         version = FlowVersionService.add_version(
             flow_dict, object_name, file_name, file.mimetype or "", len(blob),
@@ -189,7 +193,7 @@ async def get_flow(flow_id: str):
         flow = _require_participant(_flow_dict(flow_id))
         return get_json_result(data={
             "flow": flow,
-            "versions": _list_versions(flow_id),
+            "versions": FlowVersionService.list_by_flow(flow_id),
             "comments": FlowCommentService.list_by_flow(flow_id),
             "ai_chats": FlowAiChatService.list_by_flow(flow_id),
             "viewer": {
@@ -248,7 +252,7 @@ async def upload_version(flow_id: str):
 async def download_version(flow_id: str, version_id: str):
     try:
         flow = _require_participant(_flow_dict(flow_id))
-        version = next((v for v in _list_versions(flow_id) if v["id"] == version_id), None)
+        version = next((v for v in FlowVersionService.list_by_flow(flow_id) if v["id"] == version_id), None)
         if not version:
             return _err("版本不存在", 404)
         blob = await thread_pool_exec(settings.STORAGE_IMPL.get, _bucket_of(flow), version["file_path"])
@@ -285,11 +289,14 @@ async def add_comment(flow_id: str):
 
         comment = FlowCommentService.add_comment(flow_id, version_id, current_user.id, content)
         others = _others_of(flow, current_user.id)
-        notify_flow_event(
-            flow, others,
-            f"流程「{flow['title']}」有新批注",
-            f"{current_user.id} 添加了批注意见",
-        )
+        try:
+            notify_flow_event(
+                flow, others,
+                f"流程「{flow['title']}」有新批注",
+                f"{current_user.id} 添加了批注意见",
+            )
+        except Exception as e:
+            logger.warning("flow notify failed: %s", e)
         return get_json_result(data={"comment": comment})
     except LookupError as e:
         return _err(str(e), 404)
@@ -355,7 +362,10 @@ async def submit_flow(flow_id: str):
         if action not in ("next", "return"):
             return _err("action 必须是 next 或 return", 101)
         updated = FlowActionService.submit(flow, current_user.id, action)
-        notify_target_of(updated, action)
+        try:
+            notify_target_of(updated, action)
+        except Exception as e:
+            logger.warning("flow notify failed: %s", e)
         return get_json_result(data={"flow": updated})
     except LookupError as e:
         return _err(str(e), 404)
@@ -373,7 +383,10 @@ async def archive_flow(flow_id: str):
     try:
         flow = _require_participant(_flow_dict(flow_id))
         updated = FlowActionService.archive(flow, current_user.id)
-        notify_target_of(updated, "archive")
+        try:
+            notify_target_of(updated, "archive")
+        except Exception as e:
+            logger.warning("flow notify failed: %s", e)
         return get_json_result(data={"flow": updated})
     except LookupError as e:
         return _err(str(e), 404)
@@ -391,7 +404,10 @@ async def cancel_flow(flow_id: str):
     try:
         flow = _require_participant(_flow_dict(flow_id))
         updated = FlowActionService.cancel(flow, current_user.id)
-        notify_target_of(updated, "cancel")
+        try:
+            notify_target_of(updated, "cancel")
+        except Exception as e:
+            logger.warning("flow notify failed: %s", e)
         return get_json_result(data={"flow": updated})
     except LookupError as e:
         return _err(str(e), 404)
