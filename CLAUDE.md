@@ -7,6 +7,7 @@
 核心注意点：
 1、新增和修改的代码，禁止私自部署服务器
 2、前端文案只用中文，不做 i18n 多语言翻译（新增 key 只在 zh.ts 加，不同步 en.ts）
+3、名词约定：我说的「用户管理」一律指**顶部导航「智能采集」下一个的「用户管理」** = 路由 `/permission`（Web 权限管理页，`web/src/pages/permission/index.tsx`）。它**不是** user-setting 设置左导航里的旧「用户管理」（`/user-setting/user-management` → 旧 admin/users），也**不是** `/admin/users`。涉及该名词时按此定位，勿删改错。
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
@@ -43,6 +44,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 踩坑问题清单 | `D:\AI\ragflow2\踩坑问题清单.md` | 30 个实战踩坑：Docker/Nginx 部署、SPA 爬虫调试、ORM 迁移、成套 SCP 清单、队列重复任务去重（#30）等 |
 | A2 detector 旁路方案 | `D:\AI\ragflow2\A2-detector-inprocess-旁路方案.md` | ★ Detector 改为 scheduled_task_executor 进程内执行，绕过 task_executor 主队列。诊断数据、4 文件改动清单、验证流程、回滚、后续优化方向 |
 | crawl-dedup 爬虫排队去重方案 | `D:\AI\ragflow2\crawl-dedup-爬虫排队去重方案.md` | ★ crawl:queued:{site} 标记：入队前 SET NX、task_executor 跑完 DEL，每站最多一条排队/运行中爬虫。含 TTL 自愈被否决的教训、队列清理脚本、验证与回滚 |
+| 流程页签设计 | `D:\AI\ragflow2\docs\superpowers\specs\2026-08-30-flow-workflow-design.md` | ★ C端新增「流程」页签：文件为主视图的多角色串行工作流（发起人→领导→处理人→汇总→归档），4张 flow_* 表、文件版本时间线、复用对话智能体，设计已确认待实施 |
 
 
 
