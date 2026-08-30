@@ -13,9 +13,9 @@ import {
 } from '@/services/flow-service';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Download, FileText, MessageSquare, User } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import FlowAiPanel from './flow-ai-panel';
-import type { FlowVersionItem } from './flow-types';
+import type { FlowAiChatItem, FlowVersionItem } from './flow-types';
 
 const STATUS_TEXT: Record<string, string> = {
   initiator: '发起人处理中',
@@ -38,27 +38,6 @@ const HOLDER_FIELD: Record<
 
 const TERMINAL_STATUS = new Set(['archived', 'cancelled']);
 
-function canPreview(
-  fileType: string,
-  fileName: string,
-): 'pdf' | 'image' | 'text' | null {
-  const ft = (fileType || '').toLowerCase();
-  const fn = (fileName || '').toLowerCase();
-  if (ft.includes('pdf') || fn.endsWith('.pdf')) return 'pdf';
-  if (ft.startsWith('image/') || /\.(png|jpe?g|gif|webp|svg)$/.test(fn)) {
-    return 'image';
-  }
-  if (
-    ft.startsWith('text/') ||
-    ft.includes('json') ||
-    ft.includes('markdown') ||
-    /\.(md|txt|json|csv|log)$/.test(fn)
-  ) {
-    return 'text';
-  }
-  return null;
-}
-
 export default function FlowDetail({
   flowId,
   onChanged,
@@ -72,8 +51,6 @@ export default function FlowDetail({
   );
   const [commentText, setCommentText] = useState('');
   const [busy, setBusy] = useState(false);
-  const [previewText, setPreviewText] = useState('');
-  const [previewUrl, setPreviewUrl] = useState('');
   const [actionError, setActionError] = useState('');
   const uploadInputRef = useRef<HTMLInputElement>(null);
 
@@ -111,56 +88,6 @@ export default function FlowDetail({
       (c) => c.version_id === selectedVersion.id,
     );
   }, [data, selectedVersion]);
-
-  // 预览资源：选中版本 id 变化时加载（带 cancelled 防竞态；url 需 revoke）
-  // 注意：鉴权走 Authorization header，浏览器原生 src 请求会 401，因此
-  // pdf/image 也必须 fetch Blob 后用 objectURL 展示，不能用后端 URL 直连。
-  const selectedId = selectedVersion?.id ?? null;
-  const versionsRef = useRef<FlowVersionItem[]>([]);
-  versionsRef.current = data?.versions ?? [];
-
-  useEffect(() => {
-    if (!selectedId) return;
-    const v = versionsRef.current.find((x) => x.id === selectedId);
-    if (!v) return;
-    const kind = canPreview(v.file_type, v.file_name);
-    if (kind === 'text') {
-      setPreviewUrl('');
-      let cancelled = false;
-      setPreviewText('');
-      downloadVersionBlob(flowId, selectedId)
-        .then((b) => b.text())
-        .then((txt) => {
-          if (!cancelled) setPreviewText(txt);
-        })
-        .catch(() => {
-          if (!cancelled) setPreviewText('（文本内容加载失败）');
-        });
-      return () => {
-        cancelled = true;
-      };
-    }
-    if (kind === 'pdf' || kind === 'image') {
-      setPreviewText('');
-      let url = '';
-      let cancelled = false;
-      downloadVersionBlob(flowId, selectedId)
-        .then((b) => {
-          if (cancelled) return;
-          url = URL.createObjectURL(b);
-          setPreviewUrl(url);
-        })
-        .catch(() => {
-          if (!cancelled) setPreviewUrl('');
-        });
-      return () => {
-        cancelled = true;
-        if (url) URL.revokeObjectURL(url);
-      };
-    }
-    setPreviewText('');
-    setPreviewUrl('');
-  }, [flowId, selectedId]);
 
   if (isLoading) {
     return (
@@ -334,19 +261,9 @@ export default function FlowDetail({
       <div className="flex min-h-0 flex-1 gap-3 p-3">
         {/* 左：预览 + AI + 批注 */}
         <div className="flex min-w-0 flex-1 flex-col gap-2">
+          {/* 主区域：默认展示 AI 对话记录（文件预览收进「文件审核」抽屉） */}
           <div className="min-h-0 flex-1 overflow-auto rounded-lg bg-[#FAFAFA] p-3">
-            {selectedVersion ? (
-              <PreviewArea
-                version={selectedVersion}
-                text={previewText}
-                url={previewUrl}
-                onDownload={() => handleDownload(selectedVersion)}
-              />
-            ) : (
-              <div className="flex h-full items-center justify-center text-sm text-[#999]">
-                暂无版本文件
-              </div>
-            )}
+            <ConversationView chats={data.ai_chats ?? []} />
           </div>
 
           {isOwner && !terminal && (
@@ -475,57 +392,39 @@ export default function FlowDetail({
   );
 }
 
-function PreviewArea({
-  version,
-  text,
-  url,
-  onDownload,
-}: {
-  version: FlowVersionItem;
-  text: string;
-  url: string;
-  onDownload: () => void;
-}) {
-  const kind = canPreview(version.file_type, version.file_name);
-  if (kind === 'pdf') {
-    return url ? (
-      <iframe
-        src={url}
-        className="h-full min-h-[420px] w-full rounded-lg border border-[#EEE]"
-        title={version.file_name}
-      />
-    ) : (
+/** AI 对话记录视图：指令（右）+ 回复（左），含存版本标记 */
+function ConversationView({ chats }: { chats: FlowAiChatItem[] }) {
+  if (!chats.length) {
+    return (
       <div className="flex h-full items-center justify-center text-sm text-[#999]">
-        预览加载中…
+        暂无对话记录，可在下方「AI 处理」输入指令
       </div>
-    );
-  }
-  if (kind === 'image') {
-    return (
-      <div className="flex h-full items-center justify-center">
-        {url && (
-          <img
-            src={url}
-            alt={version.file_name}
-            className="max-h-full max-w-full rounded-lg"
-          />
-        )}
-      </div>
-    );
-  }
-  if (kind === 'text') {
-    return (
-      <pre className="whitespace-pre-wrap rounded-lg bg-white p-4 text-xs leading-5 text-[#333]">
-        {text || '加载中…'}
-      </pre>
     );
   }
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-[#999]">
-      <span>该格式不支持在线预览（{version.file_name}）</span>
-      <Button size="sm" variant="outline" onClick={onDownload}>
-        下载查看
-      </Button>
+    <div className="space-y-4">
+      {chats.map((c) => (
+        <div key={c.id} className="space-y-1.5">
+          <div className="flex justify-end">
+            <div className="max-w-[80%] whitespace-pre-wrap rounded-lg rounded-br-sm bg-[#EFF4FF] px-3 py-1.5 text-xs leading-relaxed text-[#1a3a6b]">
+              {c.instruction}
+            </div>
+          </div>
+          <div className="flex justify-start">
+            <div className="max-w-[90%] whitespace-pre-wrap rounded-lg rounded-bl-sm border border-[#ECECEC] bg-white px-3 py-1.5 text-xs leading-relaxed text-[#333]">
+              {c.response || '（无回复内容）'}
+            </div>
+          </div>
+          <div className="flex items-center gap-2 px-1 text-[10px] text-[#aaa]">
+            <span>{new Date(c.create_time).toLocaleString()}</span>
+            {c.output_version_id && (
+              <span className="rounded bg-[#EFF4FF] px-1 text-[#1a66fb]">
+                已存为新版本
+              </span>
+            )}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
