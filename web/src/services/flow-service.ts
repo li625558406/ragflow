@@ -148,3 +148,12 @@ export async function cancelFlow(
 ): Promise<{ flow: FlowInstanceItem }> {
   return apiFetch(`/flow/${flowId}/cancel`, { method: 'POST' });
 }
+
+export interface FlowCandidate {
+  id: string;
+  nickname: string;
+}
+
+export async function listCandidates(): Promise<{ list: FlowCandidate[] }> {
+  return apiFetch('/flow/candidates');
+}
