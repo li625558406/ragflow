@@ -2196,6 +2196,7 @@ class NotificationSubscription(DataBaseModel):
 # ── C端流程（文件流转工作流） ──────────────────────────────────────
 class FlowInstance(DataBaseModel):
     """流程实例：一份文件在 发起人→领导→处理人→发起人汇总 之间流转。"""
+    id = CharField(max_length=32, primary_key=True)
     title = CharField(max_length=256, null=False, default="", help_text="流程标题")
     initiator_id = CharField(max_length=32, null=False, index=True, help_text="发起人 user_id（角色1，兼汇总人）")
     leader_id = CharField(max_length=32, null=False, index=True, help_text="领导 user_id（审批人）")
@@ -2210,6 +2211,7 @@ class FlowInstance(DataBaseModel):
 
 class FlowVersion(DataBaseModel):
     """文件版本：核心表。每次人工上传 / AI 产出生成一个新版本，全历史保留。"""
+    id = CharField(max_length=32, primary_key=True)
     flow_id = CharField(max_length=32, null=False, index=True, help_text="FK -> flow_instance.id")
     version_no = IntegerField(null=False, default=1, help_text="版本号，从 1 递增")
     file_name = CharField(max_length=512, null=False, default="", help_text="展示文件名")
@@ -2224,10 +2226,12 @@ class FlowVersion(DataBaseModel):
 
     class Meta:
         db_table = "flow_version"
+        indexes = ((("flow_id", "version_no"), True),)
 
 
 class FlowComment(DataBaseModel):
     """批注意见：针对某个文件版本的文字意见。"""
+    id = CharField(max_length=32, primary_key=True)
     flow_id = CharField(max_length=32, null=False, index=True)
     version_id = CharField(max_length=32, null=False, index=True, help_text="意见针对的版本")
     user_id = CharField(max_length=32, null=False, index=True, help_text="意见人")
@@ -2239,8 +2243,9 @@ class FlowComment(DataBaseModel):
 
 class FlowAiChat(DataBaseModel):
     """AI 处理记录：某版本上的一次 AI 对话，回复可落为新版本。"""
+    id = CharField(max_length=32, primary_key=True)
     flow_id = CharField(max_length=32, null=False, index=True)
-    version_id = CharField(max_length=32, null=False, help_text="输入版本 id")
+    version_id = CharField(max_length=32, null=False, index=True, help_text="输入版本 id")
     output_version_id = CharField(max_length=32, null=False, default="", help_text="产出版本 id（存为新版本后回填，可空）")
     instruction = TextField(null=False, default="", help_text="用户指令")
     response = TextField(null=False, default="", help_text="AI 回复全文")
