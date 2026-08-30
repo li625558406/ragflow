@@ -83,6 +83,12 @@ export interface DetectStateRow {
   last_error: string;
   last_enqueue_ok: boolean | null;
   status: string;
+  independent_task?: {
+    last_crawled_at: number | null;
+    result_count: number;
+    last_status: string;
+    site_display: string;
+  };
 }
 
 export interface DetectStateList {

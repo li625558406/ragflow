@@ -740,6 +740,54 @@ def _active_site_ids() -> Optional[set]:
         return None
 
 
+def _independent_crawler_site_info(days: int = 30) -> Dict[str, Dict[str, Any]]:
+    """扫描 ``crawler_result`` 表近 N 天有采集结果的 site_id, 返回最近活动信息.
+
+    这是"该站点在产生数据"的**真实信号**, 比依赖 ``scheduled_task.enabled`` 更可靠 ——
+    用户可能在 UI 配过再禁用 (enabled=False), 或 detector 临时入队一次性采集, 这些
+    场景下 ``scheduled_task`` 看不到, 但 ``crawler_result`` 有记录.
+
+    解决"有采集结果但探测监控不可见"的盲区: 这类站点在 ``crawler_task.enabled=0``
+    时不会进入主探测器, 但只要近 N 天有数据, 就应该在监控面板可见.
+
+    Args:
+        days: 回看窗口天数 (默认 30 天, 涵盖月度低频采集站点).
+
+    Returns:
+        {site_id: {"last_crawled_at": int (ms), "result_count": int,
+                   "last_status": str, "site_display": str}}
+        查询失败时返回空 dict (降级为只看 crawler_task).
+    """
+    from api.db.db_models import DB, CrawlerResult
+    cutoff_ms = int((time.time() - days * 86400) * 1000)
+    out: Dict[str, Dict[str, Any]] = {}
+    try:
+        @DB.connection_context()
+        def _q() -> None:
+            q = (CrawlerResult
+                 .select(
+                     CrawlerResult.site_id,
+                     peewee.SQL("MAX(crawled_at) AS last_at"),
+                     peewee.SQL("COUNT(1) AS cnt"),
+                     peewee.SQL("SUBSTRING_INDEX(GROUP_CONCAT(status ORDER BY crawled_at DESC), ',', 1) AS last_status"),
+                     peewee.SQL("SUBSTRING_INDEX(GROUP_CONCAT(site_display ORDER BY crawled_at DESC), ',', 1) AS last_display"),
+                 )
+                 .where(CrawlerResult.crawled_at.is_null(False),
+                        CrawlerResult.crawled_at >= cutoff_ms)
+                 .group_by(CrawlerResult.site_id))
+            for r in q:
+                out[r.site_id] = {
+                    "last_crawled_at": int(r.last_at or 0),
+                    "result_count": int(r.cnt or 0),
+                    "last_status": r.last_status or "",
+                    "site_display": r.last_display or "",
+                }
+        _q()
+    except Exception as e:
+        logging.error("collection_api: _independent_crawler_site_info failed: %s", e)
+    return out
+
+
 def _detect_state(tenant_id: str, site_id: str) -> Dict[str, Any]:
     rc = _detect_redis()
     if rc is None:
@@ -816,11 +864,16 @@ def _yaml_site_map() -> Dict[str, Dict[str, Any]]:
 async def detect_list_state():
     """所有站点的探测状态 (合并 YAML 元数据 + Redis 运行时 state).
 
-    只列出 ``crawler_task`` 表里 enabled=1 的站点 (全局共享, 与采集任务列表
-    数据源策略一致) —— YAML 里其他站点不会被探测, 也不展示到监控面板.
+    监控面板展示范围 = ``crawler_task.enabled=1`` (主探测器路径) ∪
+    ``scheduled_task`` 表中直接调 unified_crawler 的独立任务站点 (独立采集路径).
+    后者典型场景: 反爬严重的站点只配低频全量 scheduled_task, 不走探测器, 但仍
+    需要在监控面板可见 —— 否则会出现"有采集结果但探测监控不可见"的盲区.
+
+    独立任务站点无 Redis state, 归类为 ``status="independent"``, 并附带
+    ``independent_task`` 字段显示最近一次 scheduled_task 执行信息.
 
     Query:
-        category, enabled_only, status (changed|unchanged|auto_disabled|never_probed)
+        category, enabled_only, status (changed|unchanged|auto_disabled|never_probed|independent)
         page, page_size
     """
     category = request.args.get("category", "").strip() or None
@@ -831,15 +884,16 @@ async def detect_list_state():
     if not site_map:
         return get_json_result(data={"list": [], "total": 0})
 
-    # 过滤: 只显示 crawler_task 表里 enabled=1 的 site_id (全局, 与采集任务列表一致)
-    # 没配置 crawler_task 的站点, 探测器即使发现新内容也没用 (unified_crawler 找不到 kb_id),
-    # 所以这类站点不应出现在监控面板.
+    # 数据源: 主探测器 (crawler_task.enabled=1) + 独立 unified_crawler 任务
     active_ids = _active_site_ids()
+    independent_info = _independent_crawler_site_info()
+    independent_ids = set(independent_info.keys())
 
     now = int(time.time())
     rows = []
     for sid, meta in site_map.items():
-        if active_ids is not None and sid not in active_ids:
+        # 过滤: crawler_task.enabled=1 或 存在独立 scheduled_task 二者满足其一
+        if active_ids is not None and sid not in active_ids and sid not in independent_ids:
             continue
         if category and meta["category"] != category:
             continue
@@ -847,11 +901,16 @@ async def detect_list_state():
         next_run_at = int(st.get("next_run_at") or 0)
         last_check = int(st.get("last_check") or 0)
 
+        ind = independent_info.get(sid)
+
         # Status classification for filter / display
         if st.get("auto_disabled"):
             status = "auto_disabled"
         elif st.get("manual_disabled"):
             status = "manual_disabled"
+        elif not st and ind:
+            # 独立任务站点 (未经主探测器探测), 单独标记, 与"未配置探测"区分
+            status = "independent"
         elif not st:
             status = "never_probed"
         elif next_run_at <= now:
@@ -863,12 +922,18 @@ async def detect_list_state():
         else:
             status = "active"
 
-        rows.append({
+        # 独立任务站点没有 Redis last_check 时, 用 crawler_result.last_crawled_at 兜底
+        # (crawled_at 是 ms, last_check 是 sec, 需要 /1000)
+        effective_last_check = last_check
+        if not effective_last_check and ind and ind.get("last_crawled_at"):
+            effective_last_check = int(ind["last_crawled_at"] // 1000)
+
+        row = {
             **meta,
             "next_run_at": next_run_at,
             "next_run_in_sec": max(0, next_run_at - now),
-            "last_check": last_check,
-            "last_check_ago_sec": (now - last_check) if last_check else 0,
+            "last_check": effective_last_check,
+            "last_check_ago_sec": (now - effective_last_check) if effective_last_check else 0,
             "miss_count": int(st.get("miss_count", 0)),
             "cur_interval": int(st.get("cur_interval", 0)),
             "last_sig": st.get("last_sig", ""),
@@ -878,7 +943,15 @@ async def detect_list_state():
             "last_error": st.get("last_error", ""),
             "last_enqueue_ok": st.get("last_enqueue_ok"),
             "status": status,
-        })
+        }
+        if ind:
+            row["independent_task"] = {
+                "last_crawled_at": ind.get("last_crawled_at"),
+                "result_count": ind.get("result_count", 0),
+                "last_status": ind.get("last_status", ""),
+                "site_display": ind.get("site_display", ""),
+            }
+        rows.append(row)
 
     # Optional status filter (post-compute)
     status_filter = request.args.get("status", "").strip() or None
@@ -994,7 +1067,12 @@ async def detect_trigger():
 @manager.route("/collection/detect/stats", methods=["GET"])  # noqa: F821
 @login_required
 async def detect_stats():
-    """探测统计: active/cold/due/error/disabled/never_probed 计数 + 平均 interval."""
+    """探测统计: active/cold/due/error/disabled/never_probed/independent 计数 + 平均 interval.
+
+    统计范围与 ``/detect/state`` 一致: crawler_task.enabled=1 ∪ 独立 unified_crawler
+    任务站点. ``independent`` 桶专门计那些没有 Redis state 但有独立 scheduled_task
+    在跑的站点 (反爬严重低频全量采集的典型场景).
+    """
     import statistics as _stats
     site_map = _yaml_site_map()
     if not site_map:
@@ -1003,13 +1081,16 @@ async def detect_stats():
     counts = {
         "active": 0, "cold": 0, "due": 0, "error": 0,
         "auto_disabled": 0, "manual_disabled": 0, "never_probed": 0,
+        "independent": 0,
     }
     intervals = []
     now = int(time.time())
-    # 同 /detect/state: 只统计 crawler_task 表 enabled=1 的站点 (全局)
+    # 同 /detect/state: crawler_task.enabled=1 ∪ 独立 unified_crawler 任务
     active_ids = _active_site_ids()
+    independent_info = _independent_crawler_site_info()
+    independent_ids = set(independent_info.keys())
     for sid in site_map:
-        if active_ids is not None and sid not in active_ids:
+        if active_ids is not None and sid not in active_ids and sid not in independent_ids:
             continue
         st = _detect_state(_SHARED_TENANT, sid)
         if st.get("auto_disabled"):
@@ -1019,7 +1100,11 @@ async def detect_stats():
             counts["manual_disabled"] += 1
             continue
         if not st:
-            counts["never_probed"] += 1
+            # 区分: 有独立 scheduled_task 的 → independent; 否则 → never_probed
+            if sid in independent_ids:
+                counts["independent"] += 1
+            else:
+                counts["never_probed"] += 1
             continue
         iv = int(st.get("cur_interval", 0))
         if iv > 0:

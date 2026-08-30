@@ -125,6 +125,10 @@ function StatusBadge({ status, t }: { status: string; t: any }) {
       label: t('crawl4ai.detect.statusNeverProbed'),
       cls: 'bg-gray-100 text-gray-500',
     },
+    independent: {
+      label: t('crawl4ai.detect.statusIndependent'),
+      cls: 'bg-purple-100 text-purple-700',
+    },
   };
   const meta = map[status] || {
     label: status,
@@ -273,7 +277,8 @@ export function DetectTab() {
     due: 3,
     active: 4,
     cold: 5,
-    never_probed: 6,
+    independent: 6,
+    never_probed: 7,
   };
   const rows = [...rowsRaw].sort(
     (a, b) => (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9),
@@ -338,6 +343,13 @@ export function DetectTab() {
       label: t('crawl4ai.detect.statsNeverProbed'),
       val: buckets.never_probed ?? 0,
       cls: 'text-gray-400',
+      alert: false,
+    },
+    {
+      key: 'independent',
+      label: t('crawl4ai.detect.statsIndependent'),
+      val: buckets.independent ?? 0,
+      cls: 'text-purple-600',
       alert: false,
     },
   ];
@@ -511,6 +523,13 @@ export function DetectTab() {
                         <div className="text-xs text-muted-foreground font-mono">
                           {r.site_id}
                         </div>
+                        {r.independent_task && (
+                          <div className="text-[10px] text-purple-600 truncate max-w-[280px]">
+                            📋 {r.independent_task.result_count} 条采集
+                            {r.independent_task.last_status &&
+                              ` · ${r.independent_task.last_status}`}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </TableCell>

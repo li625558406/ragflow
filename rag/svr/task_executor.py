@@ -267,11 +267,31 @@ async def get_storage_binary(bucket, name):
     return await thread_pool_exec(settings.STORAGE_IMPL.get, bucket, name)
 
 
+# Defense-in-depth: mirror of crawler_engine.kb_uploader.PARSE_SIZE_LIMIT.
+# Files above this size are not parsed by task_executor. Heavy parsers (esp.
+# DeepDOC/ONNX on large vector PDFs) can consume >10GB RAM and stall the whole
+# worker. Files are still uploaded/queued; only parsing is skipped. Users can
+# switch to a lighter parser, split the file, or raise this constant if needed.
+PARSE_SIZE_LIMIT = 5 * 1024 * 1024  # 5 MiB — keep in sync with kb_uploader
+
+
 @timeout(60 * 80, 1)
 async def build_chunks(task, progress_callback):
     if task["size"] > settings.DOC_MAXIMUM_SIZE:
         set_progress(task["id"], prog=-1, msg="File size exceeds( <= %dMb )" %
                                               (int(settings.DOC_MAXIMUM_SIZE / 1024 / 1024)))
+        return []
+
+    # Defense-in-depth: strict 5MiB parse cap. Keep in sync with
+    # crawler_engine.kb_uploader.PARSE_SIZE_LIMIT so crawler-uploaded and
+    # manually-uploaded files share the same parsing gate.
+    if task["size"] > PARSE_SIZE_LIMIT:
+        msg = "文档 %.1fMB 超过 %.0fMB 解析上限，已停止解析以避免资源耗尽。可改用 MinerU/文本提取解析器，或拆分文档后重试。" % (
+            task["size"] / 1024 / 1024, PARSE_SIZE_LIMIT / 1024 / 1024)
+        set_progress(task["id"], prog=-1, msg=msg)
+        logging.warning(
+            "build_chunks: doc %s (%.1fMB) exceeds PARSE_SIZE_LIMIT %.0fMB, skip parsing",
+            task.get("doc_id"), task["size"] / 1024 / 1024, PARSE_SIZE_LIMIT / 1024 / 1024)
         return []
 
     chunker = FACTORY[task["parser_id"].lower()]

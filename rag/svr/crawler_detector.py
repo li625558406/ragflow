@@ -30,6 +30,8 @@ import argparse
 import json
 import logging
 import os
+import signal
+import subprocess
 import sys
 import time
 import traceback
@@ -60,9 +62,31 @@ STATE_TTL = 30 * 86400
 # Consecutive probe failures before a site is auto-disabled
 AUTO_DISABLE_THRESHOLD = 5
 
-# Maximum probe duration before the per-site lock auto-expires (also serves as
-# a safety bound: a probe taking longer than this is considered stuck)
-PROBE_LOCK_TIMEOUT = 120
+# Maximum probe duration before the per-site lock auto-expires.  Must outlive the
+# subprocess timeout (PROBE_SUBPROCESS_TIMEOUT) so a slow-but-healthy probe holds
+# its lock for the whole run and a concurrent round can't slip a duplicate probe.
+PROBE_LOCK_TIMEOUT = 180
+
+# Wall-clock timeout for a single-site probe subprocess.  A wedged Playwright
+# greenlet can NOT be broken by asyncio.wait_for on a thread (see
+# scheduled_task_executor.py:335); only SIGKILL of the child works.  This bound
+# must sit ABOVE a slow-but-healthy SPA probe: multi-cycle js_extract reloads
+# were observed at ~70s for ggzyjd_dissent (two reload cycles, verified
+# 2026-08-25).  A bound lower than a healthy probe would false-timeout and
+# auto-disable every browser site.  Trade-off: a genuinely stuck site blocks the
+# detector round at most this long, then the child is SIGKILLed (whole process
+# group) and we move on — bounded, not permanent like the pre-fix greenlet wedge.
+PROBE_SUBPROCESS_TIMEOUT = 120
+
+# Transport backends that drive a browser (Playwright/Scrapling).  These are the
+# greenlet-deadlock-prone paths, so their probe gets isolated into a SIGKILL-able
+# subprocess.  Non-browser sites (urllib3/requests with socket timeouts) stay
+# in-process — cheap and cannot greenlet-deadlock.
+_BROWSER_ENGINES = {
+    "playwright_spa", "playwright_http", "playwright",
+    "scrapling", "scrapling_stealth",
+}
+_BROWSER_TYPES = {"spa_render", "playwright_http", "scrapling_stealth"}
 
 
 def _safe_print(msg):
@@ -80,12 +104,16 @@ def parse_args():
     p.add_argument("--kb-id", default="",
                    help="(deprecated, kept for backward compat) 探测器不再消费 kb_id, "
                         "爬虫脚本 (unified_crawler.py) 按 site_id 查 crawler_task 自动解析")
-    p.add_argument("--task-name", required=True, help="Task name")
+    p.add_argument("--task-name", default="", help="Task name (unused; kept for compat)")
     p.add_argument("--config", default=DEFAULT_CONFIG_PATH,
                    help="Path to crawler_sites.yaml")
     # Compatibility: task_executor always passes these; detector ignores them
     p.add_argument("--script-args", default="{}",
                    help="JSON args (parsed for force options, rest ignored)")
+    # Single-site probe subprocess mode (used by _detect_via_subprocess)
+    p.add_argument("--probe-one", action="store_true",
+                   help="Probe a single site and print one JSON line to stdout")
+    p.add_argument("--site-id", default="", help="Site id to probe when --probe-one")
     p.add_argument("--target-url", default="", help="Compatibility (ignored)")
     p.add_argument("--access-token", default="", help="Compatibility (ignored)")
     p.add_argument("--llm-id", default="", help="Compatibility (ignored)")
@@ -338,6 +366,145 @@ def _enqueue_full_crawl(site_id: str, category: str,
 
 
 # ---------------------------------------------------------------------------
+# Per-site probe isolation via subprocess
+# ---------------------------------------------------------------------------
+
+def _site_uses_browser(site) -> bool:
+    """Whether the site's transport drives a browser (greenlet-deadlock prone)."""
+    try:
+        if getattr(site.transport, "type", "") in _BROWSER_TYPES:
+            return True
+        if getattr(site.transport, "engine", "") in _BROWSER_ENGINES:
+            return True
+        return False
+    except Exception:
+        # Fail safe: if we can't tell, isolate it.
+        return True
+
+
+def _detect_via_subprocess(site, tenant_id: str) -> Dict[str, Any]:
+    """Run SiteDetector.detect() in a SIGKILL-able subprocess.
+
+    A wedged Playwright greenlet can NOT be cancelled from the parent thread
+    (asyncio.wait_for won't fire; see scheduled_task_executor.py:335).  Running
+    the risky fetch in a child subprocess with a hard wall-clock timeout means a
+    hung site only costs its own child, leaving the detector thread — and every
+    other site — untouched.
+
+    A plain ``subprocess.run(timeout=…)`` only SIGKILLs the child *python*
+    process; Playwright spawns Chromium as a grandchild that would be orphaned.
+    So we run the child in its own process group (``start_new_session=True``)
+    and kill the whole group (``os.killpg``) so Chromium dies too.
+
+    Returns:
+        The detect() result dict (same keys the parent's success path reads:
+        has_new_items / new_item_count / scanned_count / signature /
+        last_signature / reason).  Raises RuntimeError on timeout or failure so
+        probe_one_site's existing error path handles it.
+    """
+    cmd = [
+        sys.executable, "-m", "rag.svr.crawler_detector",
+        "--probe-one",
+        "--tenant-id", tenant_id,
+        "--site-id", site.site_id,
+        "--config", DEFAULT_CONFIG_PATH,
+    ]
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,  # new process group -> we can killpg Chromium.
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=PROBE_SUBPROCESS_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        # Kill the WHOLE process group (python + Playwright Chromium grandchild).
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        finally:
+            proc.wait()
+        raise RuntimeError(
+            f"probe subprocess timeout after {PROBE_SUBPROCESS_TIMEOUT}s "
+            f"(site={site.site_id}); killed process group"
+        )
+
+    payload = None
+    for line in reversed((stdout or "").splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                payload = json.loads(line)
+            except ValueError:
+                continue
+            break
+
+    if payload is None:
+        raise RuntimeError(
+            "probe subprocess produced no JSON for {0}; "
+            "stdout={1!r} stderr={2!r}".format(
+                site.site_id, (stdout or "")[-300:], (stderr or "")[-500:]
+            )
+        )
+    if payload.get("error"):
+        raise RuntimeError(f"site {site.site_id} probe error: {payload['error']}")
+    return payload
+
+
+def _probe_one(config_path: str, tenant_id: str, site_id: str) -> Dict[str, Any]:
+    """Probe a single site (worker for ``--probe-one``). Returns a JSON-able dict."""
+    # The subprocess is fresh: ensure Redis/settings are initialised so
+    # SiteDetector.detect() can read its lock/signature state.
+    try:
+        settings.init_settings()
+    except Exception as e:
+        # already initialised / settings unavailable — tolerate
+        logging.debug("probe-one: init_settings skipped or ignored: %s", e)
+
+    loader = ConfigLoader(config_path)
+    site = loader.get(site_id)  # raises KeyError if unknown
+    # Tighten probe speed, same as probe_one_site.
+    site.anti_crawler.max_retries = 1
+    site.transport.timeout = 10
+
+    detector = SiteDetector(site, tenant_id, collection_mode=True)
+    result = detector.detect()
+    try:
+        from rag.svr.crawler_engine.browser_pool import cleanup_browser_pool
+        cleanup_browser_pool()
+    except Exception:
+        pass
+
+    return {
+        "site_id": site_id,
+        "has_new_items": bool(result.get("has_new_items")),
+        "new_item_count": int(result.get("new_item_count", 0)),
+        "scanned_count": int(result.get("scanned_count", 0)),
+        "signature": result.get("signature", "") or "",
+        "last_signature": result.get("last_signature", "") or "",
+        "reason": result.get("reason", "") or "",
+    }
+
+
+def _probe_one_cli(args) -> None:
+    """CLI entry for ``--probe-one``; prints one JSON line and exits 0/1."""
+    payload = {"site_id": args.site_id, "error": ""}
+    try:
+        payload = _probe_one(args.config, args.tenant_id, args.site_id)
+    except FileNotFoundError as e:
+        payload = {"site_id": args.site_id, "error": f"config missing: {e}"}
+    except KeyError as e:
+        payload = {"site_id": args.site_id, "error": f"unknown site: {e}"}
+    except Exception as e:
+        logging.error("probe-one: site=%s failed: %s", args.site_id, e, exc_info=True)
+        payload = {"site_id": args.site_id, "error": str(e)[:500]}
+    print(json.dumps(payload, ensure_ascii=False))
+    sys.exit(0 if not payload.get("error") else 1)
+
+
+# ---------------------------------------------------------------------------
 # Per-site probe
 # ---------------------------------------------------------------------------
 
@@ -387,8 +554,13 @@ def probe_one_site(site, tenant_id: str) -> Dict[str, Any]:
         site.anti_crawler.max_retries = 1
         site.transport.timeout = 10
 
-        detector = SiteDetector(site, tenant_id, collection_mode=True)
-        result = detector.detect()
+        if _site_uses_browser(site):
+            # Isolate the Playwright fetch into a SIGKILL-able subprocess so a
+            # greenlet deadlock can't wedge the whole detector thread.
+            result = _detect_via_subprocess(site, tenant_id)
+        else:
+            detector = SiteDetector(site, tenant_id, collection_mode=True)
+            result = detector.detect()
     except Exception as e:
         logging.error("detector: probe crashed for site=%s: %s",
                       site_id, e, exc_info=True)
@@ -581,6 +753,9 @@ def run_detection(tenant_id: str,
 
 def main():
     args = parse_args()
+
+    if args.probe_one:
+        _probe_one_cli(args)
 
     _safe_print("\n" + "=" * 60)
     _safe_print("[DETECTOR] Crawler Detector v2.0 (collection mode)")
