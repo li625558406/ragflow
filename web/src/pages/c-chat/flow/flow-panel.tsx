@@ -195,8 +195,8 @@ function CreateFlowDialog({
 
   const submit = async () => {
     setError('');
-    if (!title.trim() || !leaderId || !handlerId || !file) {
-      setError('请填写完整：标题、领导、处理人、初始文件');
+    if (!title.trim() || !leaderId || !handlerId) {
+      setError('请填写完整：标题、领导、处理人');
       return;
     }
     if (leaderId === handlerId) {
@@ -207,7 +207,9 @@ function CreateFlowDialog({
     fd.append('title', title.trim());
     fd.append('leader_id', leaderId);
     fd.append('handler_id', handlerId);
-    fd.append('file', file);
+    if (file) {
+      fd.append('file', file);
+    }
     setSubmitting(true);
     try {
       const res = await createFlow(fd);
@@ -269,7 +271,12 @@ function CreateFlowDialog({
             </select>
           </div>
           <div>
-            <label className="text-sm text-[#555]">初始文件</label>
+            <label className="text-sm text-[#555]">
+              初始文件
+              <span className="ml-1 text-xs text-[#999]">
+                （可选，创建后可在详情页上传）
+              </span>
+            </label>
             <input
               type="file"
               className="mt-1 text-sm"

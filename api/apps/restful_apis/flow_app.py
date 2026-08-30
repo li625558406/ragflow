@@ -139,12 +139,15 @@ async def create_flow():
             return _err("请选择领导", 101)
         if not handler_id:
             return _err("请选择处理人", 101)
-        if file is None or not file.filename:
-            return _err("请上传文件", 101)
-        # Quart FileStorage.read() 是同步方法（返回 bytes），放线程池避免阻塞事件循环
-        blob = await thread_pool_exec(file.read)
-        if not blob:
-            return _err("文件内容为空", 101)
+        # 初始文件可选：不传则创建无版本的流程，由后续节点补传
+        blob = None
+        file_name = ""
+        if file is not None and file.filename:
+            # Quart FileStorage.read() 是同步方法（返回 bytes），放线程池避免阻塞事件循环
+            blob = await thread_pool_exec(file.read)
+            if not blob:
+                return _err("文件内容为空", 101)
+            file_name = _safe_filename(file.filename)
         if leader_id == current_user.id or handler_id == current_user.id:
             return _err("领导和处理人不能是发起人自己", 101)
         if leader_id == handler_id:
@@ -164,7 +167,9 @@ async def create_flow():
         )
         flow_id = flow.id
 
-        file_name = _safe_filename(file.filename)
+        if blob is None:
+            return get_json_result(data={"id": flow_id, "version": None})
+
         object_name = f"flow/{flow_id}/v1_{file_name}"
         try:
             await thread_pool_exec(settings.STORAGE_IMPL.put, _bucket_of(flow.__data__), object_name, blob)
