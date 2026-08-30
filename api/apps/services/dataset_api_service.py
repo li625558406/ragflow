@@ -136,17 +136,33 @@ async def delete_datasets(tenant_id: str, ids: list = None, delete_all: bool = F
     success_count = 0
     for kb_id, kb in kb_id_instance_pairs:
         for doc in DocumentService.query(kb_id=kb_id):
+            # Capture the object storage address (bucket, object) BEFORE removing the
+            # Document/File2Document rows, so the original uploaded file can still be
+            # physically removed from MinIO after the DB rows are gone.
+            try:
+                bucket, object_name = File2DocumentService.get_storage_address(doc_id=doc.id)
+            except Exception as e:
+                bucket, object_name = None, None
+                logging.warning(f"Failed to resolve storage address for document {doc.id}: {e}")
+
             if not DocumentService.remove_document(doc, tenant_id):
                 errors.append(f"Remove document '{doc.id}' error for dataset '{kb_id}'")
                 continue
             f2d = File2DocumentService.get_by_document_id(doc.id)
-            FileService.filter_delete(
+            deleted_file_count = FileService.filter_delete(
                 [
                     File.source_type == FileSource.KNOWLEDGEBASE,
                     File.id == f2d[0].file_id,
                 ]
             )
             File2DocumentService.delete_by_document_id(doc.id)
+            # Only remove the original file object when its File record was really deleted
+            # (mirrors FileService.delete_docs); empty docs have no File record and are skipped.
+            if deleted_file_count > 0 and bucket and object_name:
+                try:
+                    settings.STORAGE_IMPL.rm(bucket, object_name)
+                except Exception as e:
+                    logging.warning(f"Failed to remove original file object {bucket}/{object_name}: {e}")
         FileService.filter_delete([File.source_type == FileSource.KNOWLEDGEBASE, File.type == "folder", File.name == kb.name])
 
         # Drop index for this dataset
