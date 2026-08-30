@@ -194,7 +194,7 @@ export default function FlowDetail({
           {isInitiator && !terminal && (
             <Button
               size="sm"
-              variant="outline"
+              variant="destructive"
               disabled={busy}
               onClick={handleCancel}
             >
@@ -240,7 +240,6 @@ export default function FlowDetail({
               />
               <Button
                 size="sm"
-                variant="outline"
                 disabled={busy}
                 onClick={() => uploadInputRef.current?.click()}
               >

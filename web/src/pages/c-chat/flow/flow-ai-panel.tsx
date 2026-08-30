@@ -12,7 +12,7 @@ import {
   saveFlowAiRecord,
 } from '@/services/flow-service';
 import api from '@/utils/api';
-import { Bot } from 'lucide-react';
+import { Bot, FileText } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ChatInputBox, { type UploadedDoc } from '../chat-input-box';
 import ReviewPanel, { type Annotation } from '../review-panel';
@@ -407,6 +407,20 @@ export default function FlowAiPanel({
             附带版本文件{attachFile ? '开' : '关'}
           </button>
         )}
+        {/* 文件审核：从输入框工具栏挪出的醒目入口 */}
+        {(!!version || uploadedDocs.length > 0) && (
+          <button
+            onClick={toggleReview}
+            className={`flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+              reviewMode
+                ? 'border border-[#BFD3F5] bg-[#F0F5FF] text-[#1a66fb]'
+                : 'bg-[#1a66fb] text-white hover:bg-[#0f56e0]'
+            }`}
+          >
+            <FileText className="h-3.5 w-3.5" strokeWidth={2} />
+            {reviewMode ? '关闭审核' : '文件审核'}
+          </button>
+        )}
       </div>
 
       {/* 历史记录摘要（最近 3 条） */}
@@ -461,7 +475,8 @@ export default function FlowAiPanel({
           typewriterText={typewriterText}
           reviewMode={reviewMode}
           onToggleReview={toggleReview}
-          reviewAvailable={!!version || uploadedDocs.length > 0}
+          // 审核入口已挪到标题行醒目按钮，隐藏输入框工具栏内的入口
+          reviewAvailable={false}
           onUploadedFilesChange={handleUploadedDocsChange}
           autoFocus
         />

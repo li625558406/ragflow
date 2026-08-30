@@ -668,8 +668,7 @@ export default function ReviewPanel({
         if (!el) continue;
         const r = el.getBoundingClientRect();
         anchors[it.key] = {
-          // 批注栏在左侧：引线从锚点左边缘连到左栏右缘
-          x: r.left - wrapRect.left,
+          x: r.right - wrapRect.left,
           y: r.top - wrapRect.top + (mark ? r.height / 2 : 8),
         };
       }
@@ -986,41 +985,6 @@ export default function ReviewPanel({
 
         {!loading && !error && content && (
           <div ref={wrapRef} className="relative flex items-start gap-4">
-            {/* 左侧批注栏（Word 式标记区） */}
-            <div className="relative shrink-0" style={{ width: RAIL_W }}>
-              {railItems.map((it) => {
-                const top = layout.cards[it.key];
-                return (
-                  <div
-                    key={it.key}
-                    id={`rail-${it.key}`}
-                    data-card-key={it.key}
-                    className="absolute left-0 w-full"
-                    style={{
-                      top: top ?? 0,
-                      visibility: top === undefined ? 'hidden' : 'visible',
-                    }}
-                  >
-                    {it.kind === 'ai' ? (
-                      <AiCard
-                        num={it.num!}
-                        ann={it.ann!}
-                        selected={selectedKey === it.key}
-                        onSelect={() => handleAnchorClick(it.key)}
-                      />
-                    ) : (
-                      <CommentCard
-                        comment={it.comment!}
-                        author={commentAuthors?.[it.comment!.user_id || '']}
-                        selected={selectedKey === it.key}
-                        onSelect={() => handleAnchorClick(it.key)}
-                      />
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-
             {/* 正文列 */}
             <div
               className="min-w-0 flex-1 space-y-3"
@@ -1088,6 +1052,41 @@ export default function ReviewPanel({
               })}
             </div>
 
+            {/* 右侧批注栏 */}
+            <div className="relative shrink-0" style={{ width: RAIL_W }}>
+              {railItems.map((it) => {
+                const top = layout.cards[it.key];
+                return (
+                  <div
+                    key={it.key}
+                    id={`rail-${it.key}`}
+                    data-card-key={it.key}
+                    className="absolute left-0 w-full"
+                    style={{
+                      top: top ?? 0,
+                      visibility: top === undefined ? 'hidden' : 'visible',
+                    }}
+                  >
+                    {it.kind === 'ai' ? (
+                      <AiCard
+                        num={it.num!}
+                        ann={it.ann!}
+                        selected={selectedKey === it.key}
+                        onSelect={() => handleAnchorClick(it.key)}
+                      />
+                    ) : (
+                      <CommentCard
+                        comment={it.comment!}
+                        author={commentAuthors?.[it.comment!.user_id || '']}
+                        selected={selectedKey === it.key}
+                        onSelect={() => handleAnchorClick(it.key)}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
             {/* SVG 引线层 */}
             {layout.w > 0 && (
               <svg
@@ -1099,11 +1098,10 @@ export default function ReviewPanel({
                   const a = layout.anchors[it.key];
                   const top = layout.cards[it.key];
                   if (!a || top === undefined) return null;
-                  // 批注栏在左侧：终点 = 左栏右缘，起点 = 锚点左边缘
-                  const x2 = RAIL_W;
+                  const x2 = layout.w - RAIL_W;
                   const y2 = top + 16;
-                  const startX = Math.max(a.x - 4, x2 + 16);
-                  const d = `M ${startX} ${a.y} C ${startX - (startX - x2) * 0.4} ${a.y}, ${x2 + (startX - x2) * 0.4} ${y2}, ${x2} ${y2}`;
+                  const startX = Math.min(a.x + 4, x2 - 16);
+                  const d = `M ${startX} ${a.y} C ${startX + (x2 - startX) * 0.4} ${a.y}, ${x2 - (x2 - startX) * 0.4} ${y2}, ${x2} ${y2}`;
                   return (
                     <path
                       key={it.key}
@@ -1250,7 +1248,7 @@ export default function ReviewPanel({
       }}
     >
       <SheetContent
-        className="max-w-full p-0"
+        className="max-w-full p-0 duration-500 ease-out"
         style={{ width: '58vw', maxWidth: '860px' }}
       >
         {innerContent}
