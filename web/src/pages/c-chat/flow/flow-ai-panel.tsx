@@ -54,7 +54,8 @@ export default function FlowAiPanel({
   const busy = !done;
   const responseText = streamState.content.trim();
   const hasContent = responseText.length > 0;
-  const recentChats = aiChats.slice(0, 3);
+  // 后端按 create_time 正序返回，取最后 3 条即最近记录
+  const recentChats = aiChats.slice(-3);
 
   const handleSend = useCallback(async () => {
     const query = instruction.trim();
