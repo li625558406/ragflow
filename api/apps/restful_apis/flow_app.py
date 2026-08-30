@@ -141,7 +141,8 @@ async def create_flow():
             return _err("请选择处理人", 101)
         if file is None or not file.filename:
             return _err("请上传文件", 101)
-        blob = await file.read()
+        # Quart FileStorage.read() 是同步方法（返回 bytes），放线程池避免阻塞事件循环
+        blob = await thread_pool_exec(file.read)
         if not blob:
             return _err("文件内容为空", 101)
         if leader_id == current_user.id or handler_id == current_user.id:
@@ -264,7 +265,8 @@ async def upload_version(flow_id: str):
         file = files.get("file")
         if file is None or not file.filename:
             return _err("请上传文件", 101)
-        blob = await file.read()
+        # 同 create_flow：FileStorage.read() 同步，放线程池
+        blob = await thread_pool_exec(file.read)
         if not blob:
             return _err("文件内容为空", 101)
 
