@@ -33,6 +33,7 @@ import hashlib
 import logging
 import os
 import time
+import uuid
 from urllib.parse import quote
 
 from quart import Blueprint, Response, request
@@ -101,6 +102,15 @@ def _others_of(flow: dict, me: str) -> list:
     return [uid for uid in (flow["initiator_id"], flow["leader_id"], flow["handler_id"]) if uid != me]
 
 
+def _nickname_of(uid: str) -> str:
+    """通知文案用昵称展示，查不到时退回原始 id。"""
+    try:
+        u = User.get_or_none(User.id == uid)
+        return (u.nickname or uid) if u else uid
+    except Exception:
+        return uid
+
+
 def _action_error(e: Exception):
     """业务异常分级：PermissionError→403 / RuntimeError(乐观锁冲突)→409 / ValueError→100。"""
     if isinstance(e, PermissionError):
@@ -138,6 +148,10 @@ async def create_flow():
             return _err("领导和处理人不能是发起人自己", 101)
         if leader_id == handler_id:
             return _err("领导和处理人不能是同一个人", 101)
+        for uid, label in ((leader_id, "领导"), (handler_id, "处理人")):
+            u = User.get_or_none(User.id == uid)
+            if not u or u.status != "1":
+                return _err(f"所选{label}不存在或已停用", 101)
 
         flow = FlowInstanceService.insert(
             title=title,
@@ -158,10 +172,15 @@ async def create_flow():
             FlowInstance.delete().where(FlowInstance.id == flow_id).execute()
             return _err(f"文件存储失败: {e}")
         flow_dict = _flow_dict(flow_id)
-        version = FlowVersionService.add_version(
-            flow_dict, object_name, file_name, file.mimetype or "", len(blob),
-            "manual_upload", current_user.id,
-        )
+        try:
+            version = FlowVersionService.add_version(
+                flow_dict, object_name, file_name, file.mimetype or "", len(blob),
+                "manual_upload", current_user.id,
+            )
+        except Exception as e:
+            logger.exception("flow add_version failed, rollback flow row %s", flow_id)
+            FlowInstance.delete().where(FlowInstance.id == flow_id).execute()
+            return _err(f"版本记录失败: {e}")
         return get_json_result(data={"id": flow_id, "version": version})
     except (PermissionError, ValueError, RuntimeError) as e:
         return _action_error(e)
@@ -316,7 +335,7 @@ async def add_comment(flow_id: str):
             notify_flow_event(
                 flow, others,
                 f"流程「{flow['title']}」有新批注",
-                f"{current_user.id} 添加了批注意见",
+                f"{_nickname_of(current_user.id)} 添加了批注意见",
             )
         except Exception as e:
             logger.warning("flow notify failed: %s", e)
@@ -351,7 +370,8 @@ async def add_ai_record(flow_id: str):
 
         output_version_id = ""
         if save_as_version:
-            object_name = f"flow/{flow_id}/ai_{int(time.time())}.md"
+            # 秒级时间戳同秒多次保存会撞名覆盖，追加 8 位随机后缀兜底
+            object_name = f"flow/{flow_id}/ai_{int(time.time())}_{uuid.uuid4().hex[:8]}.md"
             blob = response.encode("utf-8")
             await thread_pool_exec(settings.STORAGE_IMPL.put, _bucket_of(flow), object_name, blob)
             version = FlowVersionService.add_version(

@@ -135,6 +135,7 @@ export default function FlowPanel() {
             flowId={activeId}
             onChanged={() => {
               qc.invalidateQueries({ queryKey: ['flow-list'] });
+              qc.invalidateQueries({ queryKey: ['flow-list-todo-badge'] });
             }}
           />
         ) : (

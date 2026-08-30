@@ -85,13 +85,17 @@ export async function downloadVersionBlob(
     headers: authHeaders(),
   });
   if (resp.status === 401) throw new Error('登录已过期，请重新登录后再下载');
-  // 后端错误路径统一走 envelope（HTTP 200 + application/json），需按 content-type 识别
+  // 后端错误路径统一走 envelope（HTTP 200 + {code, message}）。用户可能上传
+  // application/json 的正常版本文件，不能按 content-type 判错——只把「code 为
+  // 非 0 数字」的响应体当错误 envelope，正常 JSON 文件内容不会长这样。
   const contentType = resp.headers.get('content-type') || '';
   if (contentType.includes('application/json')) {
     const body = await resp.json();
-    throw new Error(
-      body?.message || `下载失败（code ${body?.code ?? resp.status}）`,
-    );
+    if (body && typeof body.code === 'number' && body.code !== 0) {
+      throw new Error(body?.message || `下载失败（code ${body.code}）`);
+    }
+    // 非 envelope 的 JSON：还原为 application/json Blob 供预览/下载
+    return new Blob([JSON.stringify(body)], { type: 'application/json' });
   }
   if (!resp.ok) throw new Error(`download failed ${resp.status}`);
   return resp.blob();

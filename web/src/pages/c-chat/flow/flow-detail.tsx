@@ -402,7 +402,7 @@ export default function FlowDetail({
                 </div>
               ))}
             </div>
-            {isOwner && selectedVersion && (
+            {!terminal && selectedVersion && (
               <div className="mt-2 flex items-end gap-2">
                 <Textarea
                   value={commentText}

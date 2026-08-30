@@ -148,14 +148,20 @@ export default function FlowAiPanel({
         }
       }
 
-      const res = await send({
-        agent_id: agentId,
-        query,
-        session_id: sessionIdRef.current,
-        stream: true,
-        files,
-        internet: false,
-      });
+      let res: any = null;
+      try {
+        res = await send({
+          agent_id: agentId,
+          query,
+          session_id: sessionIdRef.current,
+          stream: true,
+          files,
+          internet: false,
+        });
+      } catch (e: any) {
+        setError(e?.message || '发送失败，请检查网络后重试');
+        return;
+      }
 
       if (
         res &&
