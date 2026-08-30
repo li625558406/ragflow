@@ -11,5 +11,6 @@
 **遗留**
 - AI 产出仅 Markdown 版本，docx/PDF 格式保真后续迭代
 - 多文件流程、可配置模板、在线行内批注为非目标（见设计文档 §8）
+- 终审低优先级残留：JSON 文件内容恰形似错误 envelope 时会被误判（概率极低）、add_version 失败回滚可能留 MinIO 孤儿对象、发送失败不回填输入框、REST 层自动化测试缺失
 
 **状态**：代码完成，待部署联调（成套 SCP：db_models.py / flow_service.py / flow_app.py + 前端 build）
