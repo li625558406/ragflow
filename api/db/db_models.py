@@ -2193,6 +2193,63 @@ class NotificationSubscription(DataBaseModel):
         )
 
 
+# ── C端流程（文件流转工作流） ──────────────────────────────────────
+class FlowInstance(DataBaseModel):
+    """流程实例：一份文件在 发起人→领导→处理人→发起人汇总 之间流转。"""
+    title = CharField(max_length=256, null=False, default="", help_text="流程标题")
+    initiator_id = CharField(max_length=32, null=False, index=True, help_text="发起人 user_id（角色1，兼汇总人）")
+    leader_id = CharField(max_length=32, null=False, index=True, help_text="领导 user_id（审批人）")
+    handler_id = CharField(max_length=32, null=False, index=True, help_text="处理人 user_id（角色2）")
+    status = CharField(max_length=32, null=False, default="initiator", index=True,
+                       help_text="initiator|leader|handler|summary|archived|cancelled（当前文件在谁手上）")
+    current_version_id = CharField(max_length=32, null=False, default="", help_text="当前最新版本 id")
+
+    class Meta:
+        db_table = "flow_instance"
+
+
+class FlowVersion(DataBaseModel):
+    """文件版本：核心表。每次人工上传 / AI 产出生成一个新版本，全历史保留。"""
+    flow_id = CharField(max_length=32, null=False, index=True, help_text="FK -> flow_instance.id")
+    version_no = IntegerField(null=False, default=1, help_text="版本号，从 1 递增")
+    file_name = CharField(max_length=512, null=False, default="", help_text="展示文件名")
+    file_path = CharField(max_length=1024, null=False, default="", help_text="MinIO object name")
+    file_type = CharField(max_length=64, null=False, default="", help_text="MIME 或扩展名")
+    file_size = BigIntegerField(null=False, default=0, help_text="字节数")
+    source = CharField(max_length=32, null=False, default="manual_upload",
+                       help_text="manual_upload|ai_output")
+    created_by = CharField(max_length=32, null=False, default="", help_text="上传人 user_id")
+    node_status = CharField(max_length=32, null=False, default="initiator",
+                            help_text="产生该版本时的流程状态")
+
+    class Meta:
+        db_table = "flow_version"
+
+
+class FlowComment(DataBaseModel):
+    """批注意见：针对某个文件版本的文字意见。"""
+    flow_id = CharField(max_length=32, null=False, index=True)
+    version_id = CharField(max_length=32, null=False, index=True, help_text="意见针对的版本")
+    user_id = CharField(max_length=32, null=False, index=True, help_text="意见人")
+    content = TextField(null=False, default="", help_text="意见内容")
+
+    class Meta:
+        db_table = "flow_comment"
+
+
+class FlowAiChat(DataBaseModel):
+    """AI 处理记录：某版本上的一次 AI 对话，回复可落为新版本。"""
+    flow_id = CharField(max_length=32, null=False, index=True)
+    version_id = CharField(max_length=32, null=False, help_text="输入版本 id")
+    output_version_id = CharField(max_length=32, null=False, default="", help_text="产出版本 id（存为新版本后回填，可空）")
+    instruction = TextField(null=False, default="", help_text="用户指令")
+    response = TextField(null=False, default="", help_text="AI 回复全文")
+    session_id = CharField(max_length=64, null=False, default="", help_text="对话会话 id")
+
+    class Meta:
+        db_table = "flow_ai_chat"
+
+
 class PermissionRole(DataBaseModel):
     id = CharField(max_length=32, primary_key=True, help_text="uuid")
     name = CharField(max_length=100, null=False, unique=True, help_text="角色名", index=True)
