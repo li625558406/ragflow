@@ -27,6 +27,8 @@ export default function FlowAiPanel({
   const [attachFile, setAttachFile] = useState(true);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  // 发送前置阶段（建会话/传附件）期间的锁，防止并发二次发送
+  const [sending, setSending] = useState(false);
   // agent_id 与 c-chat 同源：localStorage（c-chat 发送时写入）
   const [agentId] = useState(
     () => localStorage.getItem('ragflow_agent_id') || '',
@@ -51,7 +53,49 @@ export default function FlowAiPanel({
     if (sid) sessionIdRef.current = sid;
   }, [answerList]);
 
-  const busy = !done;
+  // 卸载时中止进行中的 SSE 连接
+  useEffect(() => {
+    return () => stopOutputMessage();
+  }, [stopOutputMessage]);
+
+  // 无会话时先建会话（与 c-chat 同款：POST /agents/{id}/sessions），
+  // 否则后端走无状态 fresh run 路径，多轮对话没有上下文延续。
+  const ensureSession = useCallback(
+    async (query: string): Promise<boolean> => {
+      if (sessionIdRef.current) return true;
+      try {
+        const userInfo = JSON.parse(
+          localStorage.getItem('userInfo') || '{}',
+        ) as { id?: string; user_id?: string; email?: string };
+        const uid =
+          userInfo?.id || userInfo?.user_id || userInfo?.email || 'current';
+        const resp = await fetch(
+          `/api/v1/agents/${agentId}/sessions?user_id=${encodeURIComponent(uid)}`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: localStorage.getItem('Authorization') || '',
+            },
+            body: JSON.stringify({ name: query.slice(0, 30) }),
+          },
+        );
+        const result = await resp.json();
+        if (result.code === 0 && result.data?.id) {
+          sessionIdRef.current = result.data.id as string;
+          return true;
+        }
+        setError(result.message || '创建会话失败');
+        return false;
+      } catch {
+        setError('创建会话失败');
+        return false;
+      }
+    },
+    [agentId],
+  );
+
+  const busy = !done || sending;
   const responseText = streamState.content.trim();
   const hasContent = responseText.length > 0;
   // 后端按 create_time 正序返回，取最后 3 条即最近记录
@@ -65,52 +109,76 @@ export default function FlowAiPanel({
       return;
     }
     setError('');
-    // 保存记录时要用（发送后输入框即清空）
-    instructionRef.current = query;
-    setInstruction('');
+    setSending(true);
+    try {
+      // 保存记录时要用（发送后输入框即清空）
+      instructionRef.current = query;
+      setInstruction('');
 
-    // 附带当前版本文件：下载 blob → File → /documents/upload → 文档对象数组
-    let files: unknown[] = [];
-    if (attachFile && version) {
-      try {
-        const blob = await downloadVersionBlob(flowId, version.id);
-        const file = new File([blob], version.file_name, {
-          type: version.file_type || 'application/octet-stream',
-        });
-        const fd = new FormData();
-        fd.append('file', file);
-        const resp = await fetch('/api/v1/documents/upload', {
-          method: 'POST',
-          headers: {
-            Authorization: localStorage.getItem('Authorization') || '',
-          },
-          body: fd,
-        });
-        const result = await resp.json();
-        if (result.code === 0 && result.data) {
-          files = Array.isArray(result.data) ? result.data : [result.data];
-        }
-      } catch {
-        // 附件上传失败不阻断发送，降级为无文件提问
-        files = [];
+      const ok = await ensureSession(query);
+      if (!ok) {
+        setInstruction(query);
+        return;
       }
-    }
 
-    const res = await send({
-      agent_id: agentId,
-      query,
-      session_id: sessionIdRef.current,
-      stream: true,
-      files,
-      internet: false,
-    });
+      // 附带当前版本文件：下载 blob → File → /documents/upload → 文档对象数组
+      let files: unknown[] = [];
+      if (attachFile && version) {
+        try {
+          const blob = await downloadVersionBlob(flowId, version.id);
+          const file = new File([blob], version.file_name, {
+            type: version.file_type || 'application/octet-stream',
+          });
+          const fd = new FormData();
+          fd.append('file', file);
+          const resp = await fetch('/api/v1/documents/upload', {
+            method: 'POST',
+            headers: {
+              Authorization: localStorage.getItem('Authorization') || '',
+            },
+            body: fd,
+          });
+          const result = await resp.json();
+          if (result.code === 0 && result.data) {
+            files = Array.isArray(result.data) ? result.data : [result.data];
+          }
+        } catch {
+          // 附件上传失败不阻断发送，降级为无文件提问
+          files = [];
+        }
+      }
 
-    if (res && (res.response.status !== 200 || (res.data as any)?.code !== 0)) {
-      setError(
-        (res.data as any)?.message || `请求失败（HTTP ${res.response.status}）`,
-      );
+      const res = await send({
+        agent_id: agentId,
+        query,
+        session_id: sessionIdRef.current,
+        stream: true,
+        files,
+        internet: false,
+      });
+
+      if (
+        res &&
+        (res.response.status !== 200 || (res.data as any)?.code !== 0)
+      ) {
+        setError(
+          (res.data as any)?.message ||
+            `请求失败（HTTP ${res.response.status}）`,
+        );
+      }
+    } finally {
+      setSending(false);
     }
-  }, [agentId, attachFile, busy, flowId, instruction, send, version]);
+  }, [
+    agentId,
+    attachFile,
+    busy,
+    ensureSession,
+    flowId,
+    instruction,
+    send,
+    version,
+  ]);
 
   const handleSave = useCallback(
     async (asVersion: boolean) => {
