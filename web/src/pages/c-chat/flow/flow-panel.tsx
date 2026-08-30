@@ -11,7 +11,7 @@ import { Input } from '@/components/ui/input';
 import { createFlow, listCandidates, listFlows } from '@/services/flow-service';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import FlowDetail from './flow-detail';
 import type { FlowCandidate, FlowInstanceItem, FlowScope } from './flow-types';
 
@@ -34,21 +34,37 @@ export default function FlowPanel() {
   const [scope, setScope] = useState<FlowScope>('todo');
   const [activeId, setActiveId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  // 页签采用常驻 hidden-div 模式：不可见时暂停 todo 角标轮询
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [panelVisible, setPanelVisible] = useState(true);
   const qc = useQueryClient();
 
-  const { data, isLoading } = useQuery({
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') return;
+    const ob = new IntersectionObserver(
+      ([entry]) => setPanelVisible(entry.isIntersecting),
+      {
+        threshold: 0,
+      },
+    );
+    ob.observe(el);
+    return () => ob.disconnect();
+  }, []);
+
+  const { data, isLoading, isError } = useQuery({
     queryKey: ['flow-list', scope],
     queryFn: () => listFlows(scope),
   });
 
   const todo = useQuery({
-    queryKey: ['flow-list', 'todo'],
+    queryKey: ['flow-list-todo-badge'],
     queryFn: () => listFlows('todo'),
-    refetchInterval: 30_000,
+    refetchInterval: panelVisible ? 30_000 : false,
   });
 
   return (
-    <div className="flex h-full w-full gap-3">
+    <div ref={rootRef} className="flex h-full w-full gap-3">
       {/* 左：流程列表 */}
       <div className="flex w-80 shrink-0 flex-col rounded-xl border border-[#E5E5E5] bg-white">
         <div className="flex items-center justify-between border-b border-[#F0F0F0] px-3 py-2.5">
@@ -82,7 +98,10 @@ export default function FlowPanel() {
         </div>
         <div className="flex-1 overflow-y-auto">
           {isLoading && <div className="p-4 text-sm text-[#999]">加载中…</div>}
-          {data?.list?.length === 0 && (
+          {isError && !isLoading && (
+            <div className="p-4 text-sm text-red-500">加载失败，请稍后重试</div>
+          )}
+          {!isLoading && !isError && data?.list?.length === 0 && (
             <div className="p-4 text-sm text-[#999]">暂无流程</div>
           )}
           {data?.list?.map((f: FlowInstanceItem) => (
@@ -101,7 +120,7 @@ export default function FlowPanel() {
                   {STATUS_LABEL[f.status] ?? f.status}
                 </span>
                 <span className="text-xs text-[#aaa]">
-                  {new Date(f.update_time * 1000).toLocaleDateString()}
+                  {new Date(f.update_time).toLocaleDateString()}
                 </span>
               </div>
             </button>
@@ -157,6 +176,12 @@ function CreateFlowDialog({
 
   useEffect(() => {
     if (!open) return;
+    // 每次打开重置上次残留的表单状态
+    setTitle('');
+    setLeaderId('');
+    setHandlerId('');
+    setFile(null);
+    setError('');
     listCandidates()
       .then((res) => setUsers(res.list ?? []))
       .catch(() => setUsers([]));
