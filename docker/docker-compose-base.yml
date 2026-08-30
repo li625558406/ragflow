@@ -19,8 +19,8 @@ services:
       - cluster.routing.allocation.disk.watermark.low=5gb
       - cluster.routing.allocation.disk.watermark.high=3gb
       - cluster.routing.allocation.disk.watermark.flood_stage=2gb
-      - ES_JAVA_OPTS=-Xms8g -Xmx8g
-    mem_limit: 16g
+      - ES_JAVA_OPTS=-Xms2g -Xmx2g
+    mem_limit: 4g
     ulimits:
       memlock:
         soft: -1
@@ -179,7 +179,7 @@ services:
     environment:
       - MYSQL_ROOT_PASSWORD=${MYSQL_PASSWORD}
     command:
-      --max_connections=1000
+      --max_connections=300
       --character-set-server=utf8mb4
       --collation-server=utf8mb4_unicode_ci
       --default-authentication-plugin=mysql_native_password
@@ -199,6 +199,7 @@ services:
       timeout: 10s
       retries: 120
     restart: unless-stopped
+    mem_limit: 2g
 
   minio:
     image: pgsty/minio:RELEASE.2026-03-25T00-00-00Z
@@ -215,6 +216,7 @@ services:
     networks:
       - ragflow
     restart: unless-stopped
+    mem_limit: 3g
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 10s
