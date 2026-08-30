@@ -38,7 +38,7 @@ from urllib.parse import quote
 from quart import Blueprint, Response, request
 
 from api.apps import current_user, login_required
-from api.db.db_models import FlowInstance
+from api.db.db_models import FlowInstance, User
 from api.db.services.flow_service import (
     FlowActionService,
     FlowAiChatService,
@@ -205,6 +205,29 @@ async def get_flow(flow_id: str):
         return _err(str(e), 404)
     except PermissionError as e:
         return _err(str(e), 403)
+    except Exception as e:
+        logger.exception(e)
+        return _err(str(e))
+
+
+# ── 3.1 流程参与人候选（所有启用用户，仅登录即可；发起流程选领导/处理人用） ──
+@manager.route("/flow/candidates", methods=["GET"])  # noqa: F821
+@login_required
+async def flow_candidates():
+    try:
+        users = (
+            User.select(User.id, User.nickname, User.email)
+            .where(User.status == "1")
+            .order_by(User.create_time)
+        )
+        return get_json_result(
+            data={
+                "list": [
+                    {"id": u.id, "nickname": u.nickname or u.email or u.id}
+                    for u in users
+                ]
+            }
+        )
     except Exception as e:
         logger.exception(e)
         return _err(str(e))
