@@ -8,12 +8,17 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
-import { createFlow, listCandidates, listFlows } from '@/services/flow-service';
+import {
+  createFlow,
+  listCandidates,
+  listFlows,
+  type FlowCandidate,
+} from '@/services/flow-service';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import FlowDetail from './flow-detail';
-import type { FlowCandidate, FlowInstanceItem, FlowScope } from './flow-types';
+import type { FlowInstanceItem, FlowScope } from './flow-types';
 
 const SCOPES: { key: FlowScope; label: string }[] = [
   { key: 'todo', label: '待我处理' },
