@@ -6,8 +6,8 @@ import {
   archiveFlow,
   cancelFlow,
   downloadVersionBlob,
-  flowVersionDownloadUrl,
   getFlowDetail,
+  listCandidates,
   submitFlow,
   uploadFlowVersion,
 } from '@/services/flow-service';
@@ -79,6 +79,7 @@ export default function FlowDetail({
   const [commentText, setCommentText] = useState('');
   const [busy, setBusy] = useState(false);
   const [previewText, setPreviewText] = useState('');
+  const [previewUrl, setPreviewUrl] = useState('');
   const [actionError, setActionError] = useState('');
   const uploadInputRef = useRef<HTMLInputElement>(null);
 
@@ -86,6 +87,18 @@ export default function FlowDetail({
     queryKey: ['flow-detail', flowId],
     queryFn: () => getFlowDetail(flowId),
   });
+
+  // 参与人昵称映射（负责人/批注人展示用；与创建对话框共享候选数据）
+  const { data: candidates } = useQuery({
+    queryKey: ['flow-candidates'],
+    queryFn: listCandidates,
+    staleTime: 5 * 60_000,
+  });
+  const nicknameMap = useMemo(() => {
+    const m = new Map<string, string>();
+    (candidates?.list ?? []).forEach((u) => m.set(u.id, u.nickname));
+    return m;
+  }, [candidates]);
 
   const selectedVersion: FlowVersionItem | null = useMemo(() => {
     if (!data) return null;
@@ -105,31 +118,55 @@ export default function FlowDetail({
     );
   }, [data, selectedVersion]);
 
-  // 文本预览：选中版本变化时加载（带 cancelled 防竞态）
+  // 预览资源：选中版本 id 变化时加载（带 cancelled 防竞态；url 需 revoke）
+  // 注意：鉴权走 Authorization header，浏览器原生 src 请求会 401，因此
+  // pdf/image 也必须 fetch Blob 后用 objectURL 展示，不能用后端 URL 直连。
+  const selectedId = selectedVersion?.id ?? null;
+  const versionsRef = useRef<FlowVersionItem[]>([]);
+  versionsRef.current = data?.versions ?? [];
+
   useEffect(() => {
-    if (!selectedVersion) return;
-    const kind = canPreview(
-      selectedVersion.file_type,
-      selectedVersion.file_name,
-    );
-    if (kind !== 'text') {
+    if (!selectedId) return;
+    const v = versionsRef.current.find((x) => x.id === selectedId);
+    if (!v) return;
+    const kind = canPreview(v.file_type, v.file_name);
+    if (kind === 'text') {
+      setPreviewUrl('');
+      let cancelled = false;
       setPreviewText('');
-      return;
+      downloadVersionBlob(flowId, selectedId)
+        .then((b) => b.text())
+        .then((txt) => {
+          if (!cancelled) setPreviewText(txt);
+        })
+        .catch(() => {
+          if (!cancelled) setPreviewText('（文本内容加载失败）');
+        });
+      return () => {
+        cancelled = true;
+      };
     }
-    let cancelled = false;
+    if (kind === 'pdf' || kind === 'image') {
+      setPreviewText('');
+      let url = '';
+      let cancelled = false;
+      downloadVersionBlob(flowId, selectedId)
+        .then((b) => {
+          if (cancelled) return;
+          url = URL.createObjectURL(b);
+          setPreviewUrl(url);
+        })
+        .catch(() => {
+          if (!cancelled) setPreviewUrl('');
+        });
+      return () => {
+        cancelled = true;
+        if (url) URL.revokeObjectURL(url);
+      };
+    }
     setPreviewText('');
-    downloadVersionBlob(flowId, selectedVersion.id)
-      .then((b) => b.text())
-      .then((txt) => {
-        if (!cancelled) setPreviewText(txt);
-      })
-      .catch(() => {
-        if (!cancelled) setPreviewText('（文本内容加载失败）');
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [flowId, selectedVersion]);
+    setPreviewUrl('');
+  }, [flowId, selectedId]);
 
   if (isLoading) {
     return (
@@ -154,6 +191,23 @@ export default function FlowDetail({
   const holderId = holderField
     ? (flow[holderField] as string | undefined) || ''
     : '';
+  const holderName = holderId ? nicknameMap.get(holderId) || holderId : '';
+
+  const handleDownload = async (v: FlowVersionItem) => {
+    try {
+      const blob = await downloadVersionBlob(flowId, v.id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = v.file_name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e: any) {
+      setActionError(e?.message || '下载失败，请稍后重试');
+    }
+  };
 
   const doAction = async (fn: () => Promise<unknown>) => {
     setActionError('');
@@ -211,7 +265,7 @@ export default function FlowDetail({
           {!terminal && holderId && (
             <span className="flex shrink-0 items-center gap-1 text-xs text-[#888]">
               <User className="h-3 w-3" />
-              当前负责人：{holderId}
+              当前负责人：{holderName}
             </span>
           )}
         </div>
@@ -288,7 +342,12 @@ export default function FlowDetail({
         <div className="flex min-w-0 flex-1 flex-col gap-2">
           <div className="min-h-0 flex-1 overflow-auto rounded-lg bg-[#FAFAFA] p-3">
             {selectedVersion ? (
-              <PreviewArea version={selectedVersion} text={previewText} />
+              <PreviewArea
+                version={selectedVersion}
+                text={previewText}
+                url={previewUrl}
+                onDownload={() => handleDownload(selectedVersion)}
+              />
             ) : (
               <div className="flex h-full items-center justify-center text-sm text-[#999]">
                 暂无版本文件
@@ -330,7 +389,9 @@ export default function FlowDetail({
                   className="rounded-md bg-[#F7F8FA] px-2.5 py-1.5"
                 >
                   <div className="flex items-center justify-between text-xs text-[#888]">
-                    <span className="truncate">{c.user_id}</span>
+                    <span className="truncate">
+                      {nicknameMap.get(c.user_id) || c.user_id}
+                    </span>
                     <span className="shrink-0">
                       {new Date(c.create_time).toLocaleString()}
                     </span>
@@ -399,15 +460,17 @@ export default function FlowDetail({
                     <span>
                       {v.source === 'ai_output' ? 'AI 产出' : '人工上传'}
                     </span>
-                    <a
-                      href={flowVersionDownloadUrl(v.flow_id, v.id)}
-                      download={v.file_name}
-                      onClick={(e) => e.stopPropagation()}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDownload(v);
+                      }}
                       className="flex items-center gap-0.5 hover:text-[#1a66fb]"
                     >
                       <Download className="h-3 w-3" />
                       下载
-                    </a>
+                    </button>
                   </div>
                   <div className="mt-0.5 text-[10px] text-[#aaa]">
                     {new Date(v.create_time).toLocaleString()}
@@ -425,29 +488,38 @@ export default function FlowDetail({
 function PreviewArea({
   version,
   text,
+  url,
+  onDownload,
 }: {
   version: FlowVersionItem;
   text: string;
+  url: string;
+  onDownload: () => void;
 }) {
   const kind = canPreview(version.file_type, version.file_name);
-  const url = flowVersionDownloadUrl(version.flow_id, version.id);
   if (kind === 'pdf') {
-    return (
+    return url ? (
       <iframe
         src={url}
         className="h-full min-h-[420px] w-full rounded-lg border border-[#EEE]"
         title={version.file_name}
       />
+    ) : (
+      <div className="flex h-full items-center justify-center text-sm text-[#999]">
+        预览加载中…
+      </div>
     );
   }
   if (kind === 'image') {
     return (
       <div className="flex h-full items-center justify-center">
-        <img
-          src={url}
-          alt={version.file_name}
-          className="max-h-full max-w-full rounded-lg"
-        />
+        {url && (
+          <img
+            src={url}
+            alt={version.file_name}
+            className="max-h-full max-w-full rounded-lg"
+          />
+        )}
       </div>
     );
   }
@@ -461,11 +533,9 @@ function PreviewArea({
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-[#999]">
       <span>该格式不支持在线预览（{version.file_name}）</span>
-      <a href={url} download={version.file_name}>
-        <Button size="sm" variant="outline">
-          下载查看
-        </Button>
-      </a>
+      <Button size="sm" variant="outline" onClick={onDownload}>
+        下载查看
+      </Button>
     </div>
   );
 }
