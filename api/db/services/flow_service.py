@@ -192,8 +192,12 @@ class FlowCommentService(_FlowServiceBase):
 
     @classmethod
     @DB.connection_context()
-    def add_comment(cls, flow_id: str, version_id: str, user_id: str, content: str) -> dict:
-        c = cls.insert(flow_id=flow_id, version_id=version_id, user_id=user_id, content=content)
+    def add_comment(cls, flow_id: str, version_id: str, user_id: str, content: str,
+                    anchor_text: str = "", anchor_para: int | None = None) -> dict:
+        c = cls.insert(
+            flow_id=flow_id, version_id=version_id, user_id=user_id, content=content,
+            anchor_text=anchor_text or "", anchor_para=anchor_para,
+        )
         return c.__data__
 
     @classmethod

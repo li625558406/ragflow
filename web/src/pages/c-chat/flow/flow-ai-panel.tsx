@@ -6,13 +6,21 @@
 import { Button } from '@/components/ui/button';
 import { useHandleMessageInputChange } from '@/hooks/logic-hooks';
 import { useSendMessageBySSE } from '@/hooks/use-send-message';
-import { downloadVersionBlob, saveFlowAiRecord } from '@/services/flow-service';
+import {
+  addFlowComment,
+  downloadVersionBlob,
+  saveFlowAiRecord,
+} from '@/services/flow-service';
 import api from '@/utils/api';
 import { Bot } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ChatInputBox, { type UploadedDoc } from '../chat-input-box';
 import ReviewPanel, { type Annotation } from '../review-panel';
-import type { FlowAiChatItem, FlowVersionItem } from './flow-types';
+import type {
+  FlowAiChatItem,
+  FlowCommentItem,
+  FlowVersionItem,
+} from './flow-types';
 
 const NO_AGENT_HINT = '未配置对话智能体，请先在「对话」页签使用过智能体对话';
 
@@ -24,11 +32,15 @@ export default function FlowAiPanel({
   flowId,
   version,
   aiChats,
+  comments,
+  commentAuthors,
   onSaved,
 }: {
   flowId: string;
   version: FlowVersionItem | null;
   aiChats: FlowAiChatItem[];
+  comments: FlowCommentItem[];
+  commentAuthors: Record<string, string>;
   onSaved: () => void;
 }) {
   const [error, setError] = useState('');
@@ -352,8 +364,24 @@ export default function FlowAiPanel({
     ],
   );
 
+  // Word 式手动批注：选中审阅正文后写入 flow 评论（带锚点），经 onSaved 刷新回显
+  const handleAddAnchoredComment = useCallback(
+    async (p: {
+      content: string;
+      anchorText: string;
+      anchorPara: number | null;
+    }) => {
+      await addFlowComment(flowId, p.content, version?.id, {
+        anchorText: p.anchorText,
+        anchorPara: p.anchorPara,
+      });
+      onSaved();
+    },
+    [flowId, onSaved, version?.id],
+  );
+
   return (
-    <div className="shrink-0 border-t border-[#F0F0F0] px-4 py-3">
+    <div className="shrink-0 rounded-lg border border-[#F0F0F0] bg-white px-4 py-3">
       {/* 标题行 */}
       <div className="flex items-center gap-2">
         <Bot className="h-4 w-4 shrink-0 text-[#1668DC]" />
@@ -398,19 +426,17 @@ export default function FlowAiPanel({
       )}
       {error && <div className="mt-2 text-xs text-red-500">{error}</div>}
 
-      {/* 审阅面板（inline，与 c-chat 同一组件） */}
-      {reviewMode && reviewFileId && (
-        <div className="mt-2 h-[420px] overflow-hidden rounded-xl border border-[#E8E8E8]">
-          <ReviewPanel
-            open
-            inline
-            onClose={() => setReviewMode(false)}
-            fileId={reviewFileId}
-            fileName={reviewFileName}
-            annotations={annotations}
-          />
-        </div>
-      )}
+      {/* 审阅面板：右侧独立抽屉（Sheet），与 c-chat 同一组件；含 Word 式边栏批注 */}
+      <ReviewPanel
+        open={reviewMode}
+        onClose={() => setReviewMode(false)}
+        fileId={reviewFileId}
+        fileName={reviewFileName}
+        annotations={annotations}
+        comments={comments}
+        commentAuthors={commentAuthors}
+        onAddComment={handleAddAnchoredComment}
+      />
 
       {/* 流式输出区 */}
       {(busy || hasContent) && (

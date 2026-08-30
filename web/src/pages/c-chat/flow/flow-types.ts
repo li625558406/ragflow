@@ -38,6 +38,8 @@ export interface FlowCommentItem {
   version_id: string;
   user_id: string;
   content: string;
+  anchor_text?: string;
+  anchor_para?: number | null;
   create_time: number;
 }
 

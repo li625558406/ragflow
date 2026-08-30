@@ -335,8 +335,19 @@ async def add_comment(flow_id: str):
         version_id = body.get("version_id") or flow["current_version_id"]
         if not version_id:
             return _err("流程暂无文件版本，无法批注", 101)
+        # Word 式批注锚点：选中的原文选段 + 段落 index（均可空）
+        anchor_text = (body.get("anchor_text") or "").strip()[:500]
+        anchor_para = body.get("anchor_para")
+        if anchor_para is not None and not isinstance(anchor_para, int):
+            try:
+                anchor_para = int(anchor_para)
+            except (TypeError, ValueError):
+                anchor_para = None
 
-        comment = FlowCommentService.add_comment(flow_id, version_id, current_user.id, content)
+        comment = FlowCommentService.add_comment(
+            flow_id, version_id, current_user.id, content,
+            anchor_text=anchor_text, anchor_para=anchor_para,
+        )
         others = _others_of(flow, current_user.id)
         try:
             notify_flow_event(

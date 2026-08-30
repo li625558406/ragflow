@@ -2236,6 +2236,8 @@ class FlowComment(DataBaseModel):
     version_id = CharField(max_length=32, null=False, index=True, help_text="意见针对的版本")
     user_id = CharField(max_length=32, null=False, index=True, help_text="意见人")
     content = TextField(null=False, default="", help_text="意见内容")
+    anchor_text = TextField(null=True, help_text="Word 式批注锚点：选中的原文选段（可空则普通批注）")
+    anchor_para = IntegerField(null=True, help_text="锚点段落 index（审阅解析的 paragraph index，可空）")
 
     class Meta:
         db_table = "flow_comment"
@@ -2620,6 +2622,9 @@ def migrate_db():
     alter_db_column_type(migrator, "file", "size", BigIntegerField(default=0, index=True))
     alter_db_add_column(migrator, "bid_project", "fetched_at", DateTimeField(null=True, help_text="搜索缓存获取时间"))
     alter_db_add_column(migrator, "bid_project", "cache_expires_at", DateTimeField(null=True, help_text="缓存过期时间"))
+    # flow_comment Word 式批注锚点（2026-08-30）
+    alter_db_add_column(migrator, "flow_comment", "anchor_text", TextField(null=True, help_text="批注锚定的原文选段"))
+    alter_db_add_column(migrator, "flow_comment", "anchor_para", IntegerField(null=True, help_text="锚点段落 index"))
     # bid_enterprise_cache table — ensure id column has AUTO_INCREMENT
     if BidEnterpriseCache.table_exists():
         try:

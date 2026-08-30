@@ -1,4 +1,6 @@
+import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent } from '@/components/ui/sheet';
+import { Textarea } from '@/components/ui/textarea';
 import api from '@/utils/api';
 import request from '@/utils/next-request';
 import {
@@ -9,9 +11,18 @@ import {
   FileText,
   Info,
   Loader2,
+  MessageSquare,
+  Plus,
   X,
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 
 // ── Types ──
 
@@ -23,6 +34,16 @@ export interface Annotation {
   suggestion: string;
   // Allow extra fields from LLM (text, problem, recommendation, etc.)
   [key: string]: any;
+}
+
+/** 手动批注（flow 评论，可带 Word 式锚点） */
+export interface MarginComment {
+  id: string;
+  content: string;
+  anchor_text?: string;
+  anchor_para?: number | null;
+  user_id?: string;
+  create_time?: number;
 }
 
 interface Paragraph {
@@ -48,6 +69,16 @@ interface ReviewPanelProps {
   inline?: boolean;
   fileList?: Array<{ id: string; name: string }>;
   onFileChange?: (fileId: string, fileName: string) => void;
+  /** 手动批注列表（带锚点的 flow 评论，渲染到正文边栏） */
+  comments?: MarginComment[];
+  /** 手动批注作者映射 user_id → nickname */
+  commentAuthors?: Record<string, string>;
+  /** 提交手动批注（选中文本后写入）；不传则不启用手动批注入口 */
+  onAddComment?: (p: {
+    content: string;
+    anchorText: string;
+    anchorPara: number | null;
+  }) => Promise<void> | void;
 }
 
 // ── Severity config ──
@@ -161,14 +192,14 @@ function highlightInTableHtml(
   html: string,
   annotation: Annotation,
   color: string,
-  num?: number,
+  anchorKey?: string,
 ): string {
   const target = getMatchedText(annotation);
   if (!target) return html;
   const markStyle = `background:${color}22;border-bottom:2px solid ${color};border-radius:2px;padding:0 1px;`;
   const wrap = (text: string) =>
-    num
-      ? `<a href="#annotation-${num}" style="text-decoration:none;color:inherit;"><mark style="${markStyle}">${text}</mark></a>`
+    anchorKey
+      ? `<a href="#${anchorKey}" data-anchor-key="${anchorKey}" style="text-decoration:none;color:inherit;"><mark style="${markStyle}">${text}</mark></a>`
       : `<mark style="${markStyle}">${text}</mark>`;
 
   // Strategy 1: exact text in HTML
@@ -215,48 +246,177 @@ function highlightInTableHtml(
   return replaced ? result : html;
 }
 
-// ── Inline annotation highlight ──
+// ── Inline annotation highlight（Word 式：正文高亮 + data-anchor-key 供引线锚定） ──
 
-function highlightText(
+interface HighlightTarget {
+  text: string;
+  color: string;
+  key: string;
+}
+
+function renderHighlighted(
   text: string,
-  annotation: Annotation,
-  color: string = '#FF4D4F',
-  num?: number,
-) {
-  const target = getMatchedText(annotation);
-  if (!target || !text.includes(target)) {
-    return <span>{text}</span>;
-  }
-  const parts = text.split(target);
-  const scrollToAnn = () => {
-    if (!num) return;
-    const event = new CustomEvent('annotation-select', { detail: num });
-    window.dispatchEvent(event);
-    document
-      .getElementById(`annotation-${num}`)
-      ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  };
-  return (
-    <>
-      {parts.map((part, i) => (
-        <span key={i}>
-          {part}
-          {i < parts.length - 1 && (
+  targets: HighlightTarget[],
+  onSelect: (key: string) => void,
+): React.ReactNode {
+  if (!targets.length) return text;
+  let segments: React.ReactNode[] = [text];
+  for (const t of targets) {
+    if (!t.text) continue;
+    const next: React.ReactNode[] = [];
+    for (const seg of segments) {
+      if (typeof seg !== 'string' || !seg.includes(t.text)) {
+        next.push(seg);
+        continue;
+      }
+      const parts = seg.split(t.text);
+      parts.forEach((p, i) => {
+        next.push(p);
+        if (i < parts.length - 1) {
+          next.push(
             <mark
-              className="rounded-sm px-0.5 py-0.5 cursor-pointer"
+              key={`${t.key}-${i}`}
+              data-anchor-key={t.key}
+              className="cursor-pointer rounded-sm px-0.5"
               style={{
-                backgroundColor: color + '22',
-                borderBottom: `2px solid ${color}`,
+                backgroundColor: t.color + '22',
+                borderBottom: `2px solid ${t.color}`,
                 color: 'inherit',
               }}
-              onClick={scrollToAnn}
+              onClick={() => onSelect(t.key)}
             >
-              {target}
-            </mark>
-          )}
+              {t.text}
+            </mark>,
+          );
+        }
+      });
+    }
+    segments = next;
+  }
+  return <>{segments}</>;
+}
+
+// ── Margin rail item ──
+
+interface RailItem {
+  key: string;
+  paraIndex: number;
+  kind: 'ai' | 'comment';
+  ann?: Annotation;
+  num?: number;
+  comment?: MarginComment;
+  color: string;
+}
+
+const RAIL_W = 270;
+
+// ── Cards ──
+
+function AiCard({
+  num,
+  ann,
+  unmatched,
+  selected,
+  onSelect,
+}: {
+  num: number;
+  ann: Annotation;
+  unmatched?: boolean;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const cfg = SEVERITY_CONFIG[ann.severity] || SEVERITY_CONFIG.low;
+  const Icon = cfg.icon;
+  const issue = ann.issue || ann.problem || ann.description || '';
+  const suggestion = ann.suggestion || ann.recommendation || ann.advice || '';
+  const annType = ann.type || ann.category || '';
+  const mt = getMatchedText(ann);
+  return (
+    <div
+      id={`annotation-${num}`}
+      onClick={onSelect}
+      className={`cursor-pointer rounded-md p-2.5 text-xs transition-all duration-300 ${
+        selected ? 'ring-2 ring-[#3F5B8D] shadow-lg' : ''
+      } ${unmatched ? 'opacity-75' : ''}`}
+      style={{
+        backgroundColor: cfg.bg,
+        borderLeft: `3px ${unmatched ? 'dashed' : 'solid'} ${cfg.border}`,
+      }}
+    >
+      <div className="flex items-center gap-1.5 mb-1">
+        <span
+          className="font-bold text-[11px] shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-white"
+          style={{ backgroundColor: cfg.border, opacity: unmatched ? 0.6 : 1 }}
+        >
+          {num}
         </span>
-      ))}
-    </>
+        <Icon
+          className="w-3.5 h-3.5 shrink-0"
+          style={{ color: cfg.textColor }}
+          strokeWidth={2}
+        />
+        <span className="font-semibold" style={{ color: cfg.textColor }}>
+          {cfg.label} {TYPE_LABELS[annType] || annType || '问题'}
+          {unmatched ? '（未定位）' : ''}
+        </span>
+      </div>
+      {mt && (
+        <div className="text-[#666] mb-1 leading-relaxed border-l-2 border-[#D4D4D4] pl-2">
+          📄 {mt.substring(0, 120)}
+          {mt.length > 120 ? '...' : ''}
+        </div>
+      )}
+      {issue && <p className="text-[#333333] leading-relaxed mb-1">{issue}</p>}
+      {suggestion && (
+        <div className="flex items-start gap-1 text-[#525252]">
+          <ChevronRight
+            className="w-3 h-3 mt-0.5 shrink-0 text-[#3F5B8D]"
+            strokeWidth={2}
+          />
+          <span>{suggestion}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CommentCard({
+  comment,
+  author,
+  selected,
+  onSelect,
+}: {
+  comment: MarginComment;
+  author?: string;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <div
+      onClick={onSelect}
+      className={`cursor-pointer rounded-md bg-white p-2.5 text-xs transition-all duration-300 ${
+        selected ? 'ring-2 ring-[#1a66fb] shadow-lg' : ''
+      }`}
+      style={{ border: '1px solid #E5E5E5', borderLeft: '3px solid #1a66fb' }}
+    >
+      <div className="flex items-center gap-1.5 mb-1">
+        <MessageSquare
+          className="w-3.5 h-3.5 shrink-0 text-[#1a66fb]"
+          strokeWidth={2}
+        />
+        <span className="truncate font-semibold text-[#1a66fb]">
+          {author || comment.user_id || '批注'}
+        </span>
+        {comment.create_time ? (
+          <span className="ml-auto shrink-0 text-[10px] text-[#aaa]">
+            {new Date(comment.create_time).toLocaleDateString()}
+          </span>
+        ) : null}
+      </div>
+      <div className="whitespace-pre-wrap leading-relaxed text-[#333]">
+        {comment.content}
+      </div>
+    </div>
   );
 }
 
@@ -271,13 +431,39 @@ export default function ReviewPanel({
   inline = false,
   fileList,
   onFileChange,
+  comments,
+  commentAuthors,
+  onAddComment,
 }: ReviewPanelProps) {
   const [content, setContent] = useState<FileContent | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
-  const [selectedAnn, setSelectedAnn] = useState<number | null>(null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  // 手动批注：选中文本后的悬浮入口 + 批注输入框
+  const [pendingSel, setPendingSel] = useState<{
+    x: number;
+    y: number;
+    text: string;
+    paraIndex: number | null;
+  } | null>(null);
+  const [draft, setDraft] = useState<{
+    x: number;
+    y: number;
+    text: string;
+    paraIndex: number | null;
+    note: string;
+  } | null>(null);
+  const [submittingComment, setSubmittingComment] = useState(false);
+  // Word 式引线布局：锚点坐标 + 卡片 top + 画布尺寸
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [layout, setLayout] = useState<{
+    cards: Record<string, number>;
+    anchors: Record<string, { x: number; y: number }>;
+    w: number;
+    h: number;
+  }>({ cards: {}, anchors: {}, w: 0, h: 0 });
 
   // Build annotation set keyed by paragraph index — supports multiple per paragraph
   const annotationMap = useMemo(() => {
@@ -297,26 +483,132 @@ export default function ReviewPanel({
     return map;
   }, [content, annotations]);
 
-  // Listen for annotation selection events (from highlight clicks)
+  // 边栏锚定项：AI 标注 + 带锚点的手动批注，按段落归组
+  const railByPara = useMemo(() => {
+    const map = new Map<number, RailItem[]>();
+    const push = (idx: number, item: RailItem) => {
+      const arr = map.get(idx) || [];
+      arr.push(item);
+      map.set(idx, arr);
+    };
+    if (content) {
+      let num = 0;
+      for (const para of content.paragraphs) {
+        for (const ann of annotationMap.get(para.index) || []) {
+          num += 1;
+          push(para.index, {
+            key: `ai-${num}`,
+            paraIndex: para.index,
+            kind: 'ai',
+            ann,
+            num,
+            color: (SEVERITY_CONFIG[ann.severity] || SEVERITY_CONFIG.low)
+              .border,
+          });
+        }
+      }
+      for (const c of comments || []) {
+        const at = (c.anchor_text || '').trim();
+        if (!at) continue;
+        let idx = -1;
+        if (c.anchor_para != null) {
+          const p = content.paragraphs.find((pp) => pp.index === c.anchor_para);
+          if (p && matchAnnotation(p.text, { matched_text: at } as Annotation))
+            idx = p.index;
+        }
+        if (idx < 0) {
+          const p = content.paragraphs.find((pp) =>
+            matchAnnotation(pp.text, { matched_text: at } as Annotation),
+          );
+          if (p) idx = p.index;
+        }
+        if (idx >= 0) {
+          push(idx, {
+            key: `cm-${c.id}`,
+            paraIndex: idx,
+            kind: 'comment',
+            comment: c,
+            color: '#1a66fb',
+          });
+        }
+      }
+    }
+    return map;
+  }, [content, annotationMap, comments]);
+
+  // 边栏项扁平列表（按锚点 Y 排序前的稳定顺序 = 段落顺序）
+  const railItems = useMemo(
+    () => Array.from(railByPara.values()).flat(),
+    [railByPara],
+  );
+
+  // 段落高亮目标（首个 AI 标注 + 首个手动批注）
+  const targetsByPara = useMemo(() => {
+    const m = new Map<number, HighlightTarget[]>();
+    for (const [idx, items] of railByPara) {
+      const ts: HighlightTarget[] = [];
+      const firstAi = items.find((i) => i.kind === 'ai');
+      if (firstAi?.ann && getMatchedText(firstAi.ann)) {
+        ts.push({
+          text: getMatchedText(firstAi.ann),
+          color: firstAi.color,
+          key: firstAi.key,
+        });
+      }
+      const firstCm = items.find((i) => i.kind === 'comment');
+      if (firstCm?.comment?.anchor_text?.trim()) {
+        ts.push({
+          text: firstCm.comment.anchor_text.trim(),
+          color: firstCm.color,
+          key: firstCm.key,
+        });
+      }
+      if (ts.length) m.set(idx, ts);
+    }
+    return m;
+  }, [railByPara]);
+
+  // 未匹配到段落的项（边栏下方兜底展示）
+  const unmatched = useMemo(() => {
+    const matchedAi = new Set(
+      railItems
+        .filter((i) => i.kind === 'ai')
+        .map((i) => getMatchedText(i.ann!)),
+    );
+    const matchedCm = new Set(
+      railItems.filter((i) => i.kind === 'comment').map((i) => i.comment!.id),
+    );
+    return {
+      ai: annotations.filter((a) => !matchedAi.has(getMatchedText(a))),
+      comments: (comments || []).filter(
+        (c) => (c.anchor_text || '').trim() && !matchedCm.has(c.id),
+      ),
+      plainComments: (comments || []).filter(
+        (c) => !(c.anchor_text || '').trim(),
+      ),
+    };
+  }, [railItems, annotations, comments]);
+
+  // Listen for annotation selection events (from table-HTML highlight clicks)
   useEffect(() => {
     const handler = (e: Event) => {
       const num = (e as CustomEvent).detail as number;
-      setSelectedAnn(num);
+      const key = `ai-${num}`;
+      setSelectedKey(key);
+      document
+        .getElementById(`rail-${key}`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     };
     window.addEventListener('annotation-select', handler);
     return () => window.removeEventListener('annotation-select', handler);
   }, []);
 
-  // Debug: log annotation matching status
-  useEffect(() => {
-    if (annotations.length > 0 && content) {
-      const matchedTexts = new Set<string>();
-      content.paragraphs.forEach((p) => {
-        const matched = annotationMap.get(p.index) || [];
-        matched.forEach((a) => matchedTexts.add(getMatchedText(a)));
-      });
-    }
-  }, [annotations, content, annotationMap]);
+  const handleAnchorClick = useCallback((key: string) => {
+    setSelectedKey(key);
+    document
+      .getElementById(`rail-${key}`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, []);
 
   // Fetch file content when panel opens
   useEffect(() => {
@@ -348,6 +640,131 @@ export default function ReviewPanel({
       cancelled = true;
     };
   }, [open, fileId]);
+
+  // 关闭/切换文件时清掉选区浮层
+  useEffect(() => {
+    if (!open) {
+      setPendingSel(null);
+      setDraft(null);
+    }
+  }, [open, fileId]);
+
+  // Word 式布局测量：锚点 Y → 卡片 top（防重叠堆叠）+ 画布尺寸
+  useLayoutEffect(() => {
+    if (!content || !open) return;
+    const measure = () => {
+      const wrap = wrapRef.current;
+      if (!wrap) return;
+      const wrapRect = wrap.getBoundingClientRect();
+      const anchors: Record<string, { x: number; y: number }> = {};
+      for (const it of railItems) {
+        const mark = wrap.querySelector<HTMLElement>(
+          `[data-anchor-key="${it.key}"]`,
+        );
+        const para = wrap.querySelector<HTMLElement>(
+          `[data-para-index="${it.paraIndex}"]`,
+        );
+        const el = mark || para;
+        if (!el) continue;
+        const r = el.getBoundingClientRect();
+        anchors[it.key] = {
+          x: r.right - wrapRect.left,
+          y: r.top - wrapRect.top + (mark ? r.height / 2 : 8),
+        };
+      }
+      const tops: Record<string, number> = {};
+      let prevBottom = -Infinity;
+      const sorted = [...railItems].sort(
+        (a, b) => (anchors[a.key]?.y ?? 0) - (anchors[b.key]?.y ?? 0),
+      );
+      const wrapH = wrap.offsetHeight;
+      for (const it of sorted) {
+        const a = anchors[it.key];
+        if (!a) continue;
+        const cardEl = wrap.querySelector<HTMLElement>(
+          `[data-card-key="${it.key}"]`,
+        );
+        const h = cardEl?.offsetHeight ?? 60;
+        let top = Math.max(a.y - 8, prevBottom + 8, 0);
+        top = Math.max(0, Math.min(top, Math.max(wrapH - h - 8, 0)));
+        tops[it.key] = top;
+        prevBottom = top + h;
+      }
+      setLayout((prev) => {
+        const same =
+          JSON.stringify(prev.cards) === JSON.stringify(tops) &&
+          JSON.stringify(prev.anchors) === JSON.stringify(anchors) &&
+          prev.w === wrap.offsetWidth &&
+          prev.h === wrap.offsetHeight;
+        return same
+          ? prev
+          : { cards: tops, anchors, w: wrap.offsetWidth, h: wrap.offsetHeight };
+      });
+    };
+    const raf = requestAnimationFrame(measure);
+    const t = setTimeout(measure, 120); // 字体/图片稳定后的二次校准
+    window.addEventListener('resize', measure);
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(t);
+      window.removeEventListener('resize', measure);
+    };
+  }, [content, railItems, open, fileId, fileName, annotations, comments]);
+
+  // ── 手动批注：选中文本 → 悬浮「添加批注」→ 输入 → 提交 ──
+
+  const handleContentMouseUp = useCallback(() => {
+    if (!onAddComment) return;
+    setTimeout(() => {
+      const s = window.getSelection();
+      if (!s || s.isCollapsed || s.rangeCount === 0) {
+        setPendingSel(null);
+        return;
+      }
+      const text = s.toString().trim();
+      if (text.length < 2) {
+        setPendingSel(null);
+        return;
+      }
+      const node = s.anchorNode;
+      const el =
+        node?.nodeType === 3
+          ? node.parentElement
+          : (node as HTMLElement | null);
+      const paraEl = el?.closest('[data-para-index]') as HTMLElement | null;
+      const paraIndex = paraEl
+        ? parseInt(paraEl.dataset.paraIndex || '', 10)
+        : NaN;
+      const rect = s.getRangeAt(0).getBoundingClientRect();
+      if (!rect || (!rect.width && !rect.height)) {
+        setPendingSel(null);
+        return;
+      }
+      setPendingSel({
+        x: Math.min(rect.right, window.innerWidth - 120),
+        y: Math.min(rect.bottom, window.innerHeight - 60),
+        text: text.slice(0, 300),
+        paraIndex: Number.isFinite(paraIndex) ? paraIndex : null,
+      });
+    }, 0);
+  }, [onAddComment]);
+
+  const submitComment = useCallback(async () => {
+    if (!draft || !onAddComment || !draft.note.trim()) return;
+    setSubmittingComment(true);
+    try {
+      await onAddComment({
+        content: draft.note.trim(),
+        anchorText: draft.text,
+        anchorPara: draft.paraIndex,
+      });
+      setDraft(null);
+      setPendingSel(null);
+      window.getSelection()?.removeAllRanges();
+    } finally {
+      setSubmittingComment(false);
+    }
+  }, [draft, onAddComment]);
 
   // Download annotated docx
   const handleDownload = async () => {
@@ -404,9 +821,22 @@ export default function ReviewPanel({
         bySeverity[ann.severity as keyof typeof bySeverity]++;
       }
     }
-    const matched = annotationMap.size;
+    const matched = railItems.filter((i) => i.kind === 'ai').length;
     return { matched, total: annotations.length, bySeverity };
-  }, [annotations, annotationMap]);
+  }, [annotations, railItems]);
+
+  const handleSelectTableAnn = useCallback(
+    (e: React.MouseEvent) => {
+      const a = (e.target as HTMLElement).closest(
+        'a[data-anchor-key]',
+      ) as HTMLAnchorElement | null;
+      if (a) {
+        e.preventDefault();
+        handleAnchorClick(a.dataset.anchorKey!);
+      }
+    },
+    [handleAnchorClick],
+  );
 
   const innerContent = (
     <>
@@ -418,9 +848,6 @@ export default function ReviewPanel({
           0% { box-shadow: 0 0 0 3px rgba(63,91,141,0.6); transform: scale(1.02); }
           50% { box-shadow: 0 0 0 6px rgba(63,91,141,0.2); transform: scale(1); }
           100% { box-shadow: 0 0 0 0 transparent; transform: scale(1); }
-        }
-        :target[id^="annotation-"] {
-          animation: annFlash 1.5s ease-out;
         }
       `}</style>
       {/* Header */}
@@ -526,9 +953,10 @@ export default function ReviewPanel({
         </div>
       )}
 
-      {/* Content */}
+      {/* Content：正文列 + 右侧批注栏（Word 式）+ SVG 引线 */}
       <div
         className={`overflow-y-auto px-5 py-4 ${inline ? 'flex-1' : 'h-[calc(100vh-130px)]'}`}
+        onScroll={() => setPendingSel(null)}
       >
         {loading && (
           <div className="flex items-center justify-center py-20">
@@ -552,295 +980,183 @@ export default function ReviewPanel({
           </div>
         )}
 
+        {!loading && !error && content && (
+          <div ref={wrapRef} className="relative flex items-start gap-4">
+            {/* 正文列 */}
+            <div
+              className="min-w-0 flex-1 space-y-3"
+              onMouseUp={handleContentMouseUp}
+            >
+              {content.paragraphs.map((para) => {
+                const targets = targetsByPara.get(para.index) || [];
+                const firstAi = (railByPara.get(para.index) || []).find(
+                  (i) => i.kind === 'ai',
+                );
+
+                let paraElement: React.ReactNode;
+                if (para.type === 'heading') {
+                  const HeadingTag =
+                    para.heading_level && para.heading_level <= 3
+                      ? (`h${para.heading_level + 1}` as keyof JSX.IntrinsicElements)
+                      : 'h3';
+                  paraElement = (
+                    <HeadingTag className="text-sm font-bold text-[#1A1A1A] mt-4 mb-1">
+                      {renderHighlighted(para.text, targets, handleAnchorClick)}
+                    </HeadingTag>
+                  );
+                } else if (para.type === 'table') {
+                  let tableHtml = para.text;
+                  if (firstAi?.ann) {
+                    tableHtml = highlightInTableHtml(
+                      tableHtml,
+                      firstAi.ann,
+                      firstAi.color,
+                      firstAi.key,
+                    );
+                  }
+                  paraElement = (
+                    <div
+                      className="text-xs overflow-x-auto [&_table]:w-full [&_table]:border-collapse [&_th]:border [&_th]:border-[#D4D4D4] [&_th]:bg-[#F5F5F5] [&_th]:px-2 [&_th]:py-1 [&_th]:text-[#1A1A1A] [&_td]:border [&_td]:border-[#D4D4D4] [&_td]:px-2 [&_td]:py-1 [&_td]:text-[#333333]"
+                      onClick={handleSelectTableAnn}
+                      dangerouslySetInnerHTML={{
+                        __html: sanitizeTableHtml(tableHtml),
+                      }}
+                    />
+                  );
+                } else if (para.type === 'image') {
+                  paraElement = (
+                    <div className="text-xs text-[#8A8A8A] italic py-1">
+                      {renderHighlighted(para.text, targets, handleAnchorClick)}
+                    </div>
+                  );
+                } else {
+                  paraElement = (
+                    <p className="text-xs leading-relaxed text-[#333333]">
+                      {renderHighlighted(para.text, targets, handleAnchorClick)}
+                    </p>
+                  );
+                }
+
+                return (
+                  <div
+                    key={para.index}
+                    data-para-index={para.index}
+                    className="px-2 py-0.5"
+                  >
+                    {paraElement}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* 右侧批注栏 */}
+            <div className="relative shrink-0" style={{ width: RAIL_W }}>
+              {railItems.map((it) => {
+                const top = layout.cards[it.key];
+                return (
+                  <div
+                    key={it.key}
+                    id={`rail-${it.key}`}
+                    data-card-key={it.key}
+                    className="absolute left-0 w-full"
+                    style={{
+                      top: top ?? 0,
+                      visibility: top === undefined ? 'hidden' : 'visible',
+                    }}
+                  >
+                    {it.kind === 'ai' ? (
+                      <AiCard
+                        num={it.num!}
+                        ann={it.ann!}
+                        selected={selectedKey === it.key}
+                        onSelect={() => handleAnchorClick(it.key)}
+                      />
+                    ) : (
+                      <CommentCard
+                        comment={it.comment!}
+                        author={commentAuthors?.[it.comment!.user_id || '']}
+                        selected={selectedKey === it.key}
+                        onSelect={() => handleAnchorClick(it.key)}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* SVG 引线层 */}
+            {layout.w > 0 && (
+              <svg
+                className="pointer-events-none absolute left-0 top-0"
+                width={layout.w}
+                height={layout.h}
+              >
+                {railItems.map((it) => {
+                  const a = layout.anchors[it.key];
+                  const top = layout.cards[it.key];
+                  if (!a || top === undefined) return null;
+                  const x2 = layout.w - RAIL_W;
+                  const y2 = top + 16;
+                  const startX = Math.min(a.x + 4, x2 - 16);
+                  const d = `M ${startX} ${a.y} C ${startX + (x2 - startX) * 0.4} ${a.y}, ${x2 - (x2 - startX) * 0.4} ${y2}, ${x2} ${y2}`;
+                  return (
+                    <path
+                      key={it.key}
+                      d={d}
+                      fill="none"
+                      stroke={it.color}
+                      strokeWidth={1.2}
+                      strokeOpacity={0.65}
+                    />
+                  );
+                })}
+              </svg>
+            )}
+          </div>
+        )}
+
+        {/* 未定位 AI 标注 + 未定位/普通手动批注（边栏兜底列表） */}
         {!loading &&
           !error &&
           content &&
-          (() => {
-            let annCounter = 0;
-            const numberedByPara = new Map<
-              number,
-              Array<{ num: number; ann: Annotation }>
-            >();
-            for (const para of content.paragraphs) {
-              const anns = annotationMap.get(para.index) || [];
-              if (anns.length > 0)
-                numberedByPara.set(
-                  para.index,
-                  anns.map((a) => ({ num: ++annCounter, ann: a })),
-                );
-            }
-            const allNumbered = Array.from(numberedByPara.values()).flat();
-            const matchedSet = new Set(
-              allNumbered.map((n) => getMatchedText(n.ann)),
-            );
-            const unmatched = annotations.filter(
-              (a) => !matchedSet.has(getMatchedText(a)),
-            );
-
-            return (
-              <>
-                <div className="space-y-3">
-                  {content.paragraphs.map((para) => {
-                    const paraAnns = numberedByPara.get(para.index) || [];
-                    const firstAnn = paraAnns[0]?.ann || null;
-                    const sevConfig = firstAnn
-                      ? SEVERITY_CONFIG[firstAnn.severity] ||
-                        SEVERITY_CONFIG.low
-                      : null;
-                    const sevColor = sevConfig?.border || '#FF4D4F';
-
-                    let paraElement: React.ReactNode;
-                    if (para.type === 'heading') {
-                      const HeadingTag =
-                        para.heading_level && para.heading_level <= 3
-                          ? (`h${para.heading_level + 1}` as keyof JSX.IntrinsicElements)
-                          : 'h3';
-                      paraElement = (
-                        <HeadingTag className="text-sm font-bold text-[#1A1A1A] mt-4 mb-1">
-                          {firstAnn
-                            ? highlightText(
-                                para.text,
-                                firstAnn,
-                                sevColor,
-                                paraAnns[0].num,
-                              )
-                            : para.text}
-                        </HeadingTag>
-                      );
-                    } else if (para.type === 'table') {
-                      let tableHtml = para.text;
-                      paraAnns.forEach(({ num, ann }) => {
-                        tableHtml = highlightInTableHtml(
-                          tableHtml,
-                          ann,
-                          (SEVERITY_CONFIG[ann.severity] || SEVERITY_CONFIG.low)
-                            .border,
-                          num,
-                        );
-                      });
-                      paraElement = (
-                        <div
-                          className="text-xs overflow-x-auto [&_table]:w-full [&_table]:border-collapse [&_th]:border [&_th]:border-[#D4D4D4] [&_th]:bg-[#F5F5F5] [&_th]:px-2 [&_th]:py-1 [&_th]:text-[#1A1A1A] [&_td]:border [&_td]:border-[#D4D4D4] [&_td]:px-2 [&_td]:py-1 [&_td]:text-[#333333]"
-                          onClick={(e) => {
-                            const a = (e.target as HTMLElement).closest(
-                              'a[href^="#annotation-"]',
-                            );
-                            if (a) {
-                              e.preventDefault();
-                              const n = parseInt(
-                                a
-                                  .getAttribute('href')!
-                                  .replace('#annotation-', ''),
-                              );
-                              window.dispatchEvent(
-                                new CustomEvent('annotation-select', {
-                                  detail: n,
-                                }),
-                              );
-                              document
-                                .getElementById(`annotation-${n}`)
-                                ?.scrollIntoView({
-                                  behavior: 'smooth',
-                                  block: 'center',
-                                });
-                            }
-                          }}
-                          dangerouslySetInnerHTML={{
-                            __html: sanitizeTableHtml(tableHtml),
-                          }}
-                        />
-                      );
-                    } else if (para.type === 'image') {
-                      paraElement = (
-                        <div className="text-xs text-[#8A8A8A] italic py-1">
-                          {firstAnn
-                            ? highlightText(
-                                para.text,
-                                firstAnn,
-                                sevColor,
-                                paraAnns[0].num,
-                              )
-                            : para.text}
-                        </div>
-                      );
-                    } else {
-                      paraElement = (
-                        <p className="text-xs leading-relaxed text-[#333333]">
-                          {firstAnn
-                            ? highlightText(
-                                para.text,
-                                firstAnn,
-                                sevColor,
-                                paraAnns[0].num,
-                              )
-                            : para.text}
-                        </p>
-                      );
+          (unmatched.ai.length > 0 ||
+            unmatched.comments.length > 0 ||
+            unmatched.plainComments.length > 0) && (
+            <div className="mt-6 pt-4 border-t-2 border-[#E8E8E8]">
+              <div className="text-sm font-bold text-[#1A1A1A] mb-3">
+                📋 其他批注（
+                {unmatched.ai.length +
+                  unmatched.comments.length +
+                  unmatched.plainComments.length}{' '}
+                条）
+              </div>
+              <div className="space-y-2">
+                {unmatched.ai.map((ann, i) => (
+                  <AiCard
+                    key={`unmatched-ai-${i}`}
+                    num={
+                      railItems.filter((x) => x.kind === 'ai').length + i + 1
                     }
-
-                    return (
-                      <div
-                        key={para.index}
-                        data-para-index={para.index}
-                        className="px-2 py-0.5"
-                      >
-                        {paraElement}
-                      </div>
-                    );
-                  })}
-                </div>
-
-                {/* All annotation cards at the bottom */}
-                {(allNumbered.length > 0 || unmatched.length > 0) && (
-                  <div className="mt-6 pt-4 border-t-2 border-[#E8E8E8]">
-                    <div className="text-sm font-bold text-[#1A1A1A] mb-3">
-                      📋 批注列表（{allNumbered.length + unmatched.length} 条）
-                    </div>
-                    <div className="space-y-2">
-                      {allNumbered.map(({ num, ann }) => {
-                        const cfg =
-                          SEVERITY_CONFIG[ann.severity] || SEVERITY_CONFIG.low;
-                        const Icon = cfg.icon;
-                        const issue =
-                          ann.issue || ann.problem || ann.description || '';
-                        const suggestion =
-                          ann.suggestion ||
-                          ann.recommendation ||
-                          ann.advice ||
-                          '';
-                        const annType = ann.type || ann.category || '';
-                        const mt = getMatchedText(ann);
-                        return (
-                          <div
-                            key={`ann-${num}`}
-                            id={`annotation-${num}`}
-                            className={`flex items-start gap-2 rounded-md p-2.5 text-xs transition-all duration-300 ${selectedAnn === num ? 'ring-2 ring-[#3F5B8D] shadow-lg scale-[1.02] brightness-105 z-10' : ''}`}
-                            style={{
-                              backgroundColor: cfg.bg,
-                              borderLeft: `3px solid ${cfg.border}`,
-                            }}
-                          >
-                            <span
-                              className="font-bold text-[11px] shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-white"
-                              style={{ backgroundColor: cfg.border }}
-                            >
-                              {num}
-                            </span>
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-1.5 mb-1">
-                                <Icon
-                                  className="w-3.5 h-3.5 shrink-0"
-                                  style={{ color: cfg.textColor }}
-                                  strokeWidth={2}
-                                />
-                                <span
-                                  className="font-semibold"
-                                  style={{ color: cfg.textColor }}
-                                >
-                                  {cfg.label}{' '}
-                                  {TYPE_LABELS[annType] || annType || '问题'}
-                                </span>
-                              </div>
-                              {mt && (
-                                <div className="text-[#666] mb-1 leading-relaxed border-l-2 border-[#D4D4D4] pl-2">
-                                  📄 {mt.substring(0, 120)}
-                                  {mt.length > 120 ? '...' : ''}
-                                </div>
-                              )}
-                              {issue && (
-                                <p className="text-[#333333] leading-relaxed mb-1">
-                                  {issue}
-                                </p>
-                              )}
-                              {suggestion && (
-                                <div className="flex items-start gap-1 text-[#525252]">
-                                  <ChevronRight
-                                    className="w-3 h-3 mt-0.5 shrink-0 text-[#3F5B8D]"
-                                    strokeWidth={2}
-                                  />
-                                  <span>{suggestion}</span>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                      {unmatched.map((ann, i) => {
-                        const num = allNumbered.length + i + 1;
-                        const cfg =
-                          SEVERITY_CONFIG[ann.severity] || SEVERITY_CONFIG.low;
-                        const Icon = cfg.icon;
-                        const issue =
-                          ann.issue || ann.problem || ann.description || '';
-                        const suggestion =
-                          ann.suggestion ||
-                          ann.recommendation ||
-                          ann.advice ||
-                          '';
-                        const annType = ann.type || ann.category || '';
-                        const mt = getMatchedText(ann);
-                        return (
-                          <div
-                            key={`unmatched-${i}`}
-                            id={`annotation-${num}`}
-                            className={`flex items-start gap-2 rounded-md p-2.5 text-xs opacity-75 transition-all duration-300 ${selectedAnn === num ? 'ring-2 ring-[#3F5B8D] shadow-lg scale-[1.02] brightness-105 z-10 opacity-100' : ''}`}
-                            style={{
-                              backgroundColor: cfg.bg,
-                              borderLeft: `3px dashed ${cfg.border}`,
-                            }}
-                          >
-                            <span
-                              className="font-bold text-[11px] shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-white opacity-60"
-                              style={{ backgroundColor: cfg.border }}
-                            >
-                              {num}
-                            </span>
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-1.5 mb-1">
-                                <Icon
-                                  className="w-3.5 h-3.5 shrink-0"
-                                  style={{ color: cfg.textColor }}
-                                  strokeWidth={2}
-                                />
-                                <span
-                                  className="font-semibold"
-                                  style={{ color: cfg.textColor }}
-                                >
-                                  {cfg.label}{' '}
-                                  {TYPE_LABELS[annType] || annType || '问题'}
-                                  （未定位）
-                                </span>
-                              </div>
-                              {mt && (
-                                <div className="text-[#666] mb-1 leading-relaxed border-l-2 border-[#D4D4D4] pl-2">
-                                  📄 {mt.substring(0, 120)}
-                                  {mt.length > 120 ? '...' : ''}
-                                </div>
-                              )}
-                              {issue && (
-                                <p className="text-[#333333] leading-relaxed mb-1">
-                                  {issue}
-                                </p>
-                              )}
-                              {suggestion && (
-                                <div className="flex items-start gap-1 text-[#525252]">
-                                  <ChevronRight
-                                    className="w-3 h-3 mt-0.5 shrink-0 text-[#3F5B8D]"
-                                    strokeWidth={2}
-                                  />
-                                  <span>{suggestion}</span>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
+                    ann={ann}
+                    unmatched
+                    selected={false}
+                    onSelect={() => {}}
+                  />
+                ))}
+                {[...unmatched.comments, ...unmatched.plainComments].map(
+                  (c) => (
+                    <CommentCard
+                      key={c.id}
+                      comment={c}
+                      author={commentAuthors?.[c.user_id || '']}
+                      selected={false}
+                      onSelect={() => {}}
+                    />
+                  ),
                 )}
-              </>
-            );
-          })()}
+              </div>
+            </div>
+          )}
 
         {!loading && !error && !content && (
           <div className="flex items-center justify-center py-20">
@@ -848,6 +1164,68 @@ export default function ReviewPanel({
           </div>
         )}
       </div>
+
+      {/* 手动批注浮层（fixed，选中文字后出现） */}
+      {pendingSel && onAddComment && !draft && (
+        <div
+          className="fixed z-[9999]"
+          style={{ left: pendingSel.x, top: pendingSel.y + 4 }}
+        >
+          <button
+            onClick={() =>
+              setDraft({
+                x: Math.max(
+                  8,
+                  Math.min(pendingSel.x - 100, window.innerWidth - 310),
+                ),
+                y: Math.min(pendingSel.y + 8, window.innerHeight - 200),
+                text: pendingSel.text,
+                paraIndex: pendingSel.paraIndex,
+                note: '',
+              })
+            }
+            className="flex items-center gap-1 rounded-full border border-[#D6E2FF] bg-white px-2.5 py-1.5 text-xs font-medium text-[#1a66fb] shadow-lg hover:bg-[#F0F5FF]"
+          >
+            <Plus className="h-3 w-3" strokeWidth={2.5} />
+            添加批注
+          </button>
+        </div>
+      )}
+      {draft && (
+        <div
+          className="fixed z-[10000] w-72 rounded-xl border border-[#E5E5E5] bg-white p-2.5 shadow-xl"
+          style={{ left: draft.x, top: draft.y }}
+        >
+          <div className="mb-1.5 truncate rounded border-l-2 border-[#1a66fb] bg-[#F5F8FF] px-1.5 py-0.5 text-[10px] text-[#666]">
+            锚点：{draft.text}
+          </div>
+          <Textarea
+            autoFocus
+            value={draft.note}
+            onChange={(e) => setDraft({ ...draft, note: e.target.value })}
+            placeholder="输入批注内容…"
+            className="min-h-[60px] text-xs"
+          />
+          <div className="mt-1.5 flex justify-end gap-1.5">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 px-2.5 text-xs"
+              onClick={() => setDraft(null)}
+            >
+              取消
+            </Button>
+            <Button
+              size="sm"
+              className="h-7 px-2.5 text-xs"
+              disabled={!draft.note.trim() || submittingComment}
+              onClick={submitComment}
+            >
+              {submittingComment ? '提交中…' : '确定'}
+            </Button>
+          </div>
+        </div>
+      )}
     </>
   );
 
@@ -868,7 +1246,7 @@ export default function ReviewPanel({
     >
       <SheetContent
         className="max-w-full p-0"
-        style={{ width: '45vw', maxWidth: '600px' }}
+        style={{ width: '58vw', maxWidth: '860px' }}
       >
         {innerContent}
       </SheetContent>

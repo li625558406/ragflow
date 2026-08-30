@@ -105,11 +105,17 @@ export async function addFlowComment(
   flowId: string,
   content: string,
   versionId?: string,
+  anchor?: { anchorText?: string; anchorPara?: number | null },
 ): Promise<{ comment: unknown }> {
   return apiFetch(`/flow/${flowId}/comment`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content, version_id: versionId }),
+    body: JSON.stringify({
+      content,
+      version_id: versionId,
+      anchor_text: anchor?.anchorText || '',
+      anchor_para: anchor?.anchorPara ?? null,
+    }),
   });
 }
 

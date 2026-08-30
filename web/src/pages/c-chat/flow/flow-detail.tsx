@@ -12,13 +12,7 @@ import {
   uploadFlowVersion,
 } from '@/services/flow-service';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  Download,
-  FileText,
-  GitBranch,
-  MessageSquare,
-  User,
-} from 'lucide-react';
+import { Download, FileText, MessageSquare, User } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import FlowAiPanel from './flow-ai-panel';
 import type { FlowVersionItem } from './flow-types';
@@ -356,21 +350,17 @@ export default function FlowDetail({
           </div>
 
           {isOwner && !terminal && (
-            <div className="shrink-0 rounded-lg border border-[#F0F0F0] bg-white p-3">
-              <div className="mb-2 flex items-center gap-1 text-sm font-medium">
-                <GitBranch className="h-4 w-4 text-[#1a66fb]" />
-                AI 处理
-              </div>
-              <FlowAiPanel
-                flowId={flowId}
-                version={selectedVersion}
-                aiChats={data.ai_chats ?? []}
-                onSaved={() => {
-                  qc.invalidateQueries({ queryKey: ['flow-detail', flowId] });
-                  onChanged();
-                }}
-              />
-            </div>
+            <FlowAiPanel
+              flowId={flowId}
+              version={selectedVersion}
+              aiChats={data.ai_chats ?? []}
+              comments={commentsOf}
+              commentAuthors={Object.fromEntries(nicknameMap)}
+              onSaved={() => {
+                qc.invalidateQueries({ queryKey: ['flow-detail', flowId] });
+                onChanged();
+              }}
+            />
           )}
 
           {/* 批注区 */}
