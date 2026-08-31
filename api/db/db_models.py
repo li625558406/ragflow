@@ -2238,6 +2238,7 @@ class FlowComment(DataBaseModel):
     content = TextField(null=False, default="", help_text="意见内容")
     anchor_text = TextField(null=True, help_text="Word 式批注锚点：选中的原文选段（可空则普通批注）")
     anchor_para = IntegerField(null=True, help_text="锚点段落 index（审阅解析的 paragraph index，可空）")
+    anchor_start = IntegerField(null=True, help_text="锚点选段在段落归一化文本中的起始偏移（消歧重复文本，可空）")
 
     class Meta:
         db_table = "flow_comment"
@@ -2625,6 +2626,8 @@ def migrate_db():
     # flow_comment Word 式批注锚点（2026-08-30）
     alter_db_add_column(migrator, "flow_comment", "anchor_text", TextField(null=True, help_text="批注锚定的原文选段"))
     alter_db_add_column(migrator, "flow_comment", "anchor_para", IntegerField(null=True, help_text="锚点段落 index"))
+    # 批注锚点起始偏移：消歧表格内重复文本（2026-08-30）
+    alter_db_add_column(migrator, "flow_comment", "anchor_start", IntegerField(null=True, help_text="锚点选段在段落归一化文本中的起始偏移"))
     # bid_enterprise_cache table — ensure id column has AUTO_INCREMENT
     if BidEnterpriseCache.table_exists():
         try:
