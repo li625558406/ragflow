@@ -5,7 +5,7 @@
 """
 import json
 import logging
-from datetime import date, datetime, time, timedelta
+from datetime import datetime, time, timedelta
 
 logger = logging.getLogger(__name__)
 
