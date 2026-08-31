@@ -3,6 +3,7 @@ import { Sheet, SheetContent } from '@/components/ui/sheet';
 import { Textarea } from '@/components/ui/textarea';
 import api from '@/utils/api';
 import request from '@/utils/next-request';
+import type { LexicalEditor } from 'lexical';
 import {
   AlertCircle,
   AlertTriangle,
@@ -24,6 +25,8 @@ import {
   useRef,
   useState,
 } from 'react';
+import { diffBlocks, type EditorBlock } from './docx-diff';
+import DocxParagraphEditor, { collectEditorOps } from './docx-paragraph-editor';
 import {
   highlightInTableByAnchor,
   highlightInTableHtml,
@@ -475,9 +478,9 @@ export default function ReviewPanel({
     note: string;
   } | null>(null);
   const [submittingComment, setSubmittingComment] = useState(false);
-  // Word 式整篇编辑：纸张整体 contentEditable，保存时 DOM 与原文 diff 出
+  // Word 式整篇编辑：Lexical 编辑器承载正文，保存时按模型 diff 出
   // 改写/新增/删除三类操作；dirty 为改动处数，resetKey 用于放弃修改时重挂载
-  const paperRef = useRef<HTMLDivElement>(null);
+  const editorRef = useRef<LexicalEditor | null>(null);
   const diffTimer = useRef<number | undefined>(undefined);
   const [dirty, setDirty] = useState(0);
   const [resetKey, setResetKey] = useState(0);
@@ -850,85 +853,29 @@ export default function ReviewPanel({
     [onDeleteComment],
   );
 
-  // DOM 与原文 diff：改写（文本变化）/ 删除（段落被清空或并段消失）/
-  // 新增（回车产生的无 index 块，锚定在前一段之后）。返回 null 表示无法 diff。
-  const collectPaperOps = useCallback(() => {
-    const paper = paperRef.current;
-    if (!paper || !content) return null;
-    const byIdx = new Map(content.paragraphs.map((p) => [p.index, p]));
-    const edits: Array<{ paraIndex: number; newText: string }> = [];
-    const deletes: number[] = [];
-    const inserts: Array<{ afterParaIndex: number; newText: string }> = [];
-    const seen = new Set<number>();
-    let lastIdx: number | null = null;
-    const isBlock = (el: Element) => /^P$|^H[1-6]$|^DIV$|^LI$/.test(el.tagName);
+  // 编辑器内容变化 → 防抖后 diff 出改动处数（模型级，不碰 DOM）
+  const handleEditorDirty = useCallback(
+    (blocks: EditorBlock[]) => {
+      if (!canEdit || !content) return;
+      window.clearTimeout(diffTimer.current);
+      diffTimer.current = window.setTimeout(() => {
+        const ops = diffBlocks(blocks, content.paragraphs);
+        if ('error' in ops) {
+          setDirty(0);
+          setEditError(ops.error || '当前改动无法保存');
+          return;
+        }
+        setDirty(ops.count);
+      }, 250);
+    },
+    [canEdit, content],
+  );
 
-    for (const node of Array.from(paper.children)) {
-      const w = node as HTMLElement;
-      const idxRaw = w.dataset?.paraIndex;
-      if (idxRaw != null) {
-        const idx = Number(idxRaw);
-        const orig = byIdx.get(idx);
-        seen.add(idx);
-        lastIdx = idx;
-        // 表格/图片为只读原子块，不参与 diff
-        if (!orig || orig.type === 'table' || orig.type === 'image') continue;
-        const blocks = Array.from(w.children).filter(isBlock) as HTMLElement[];
-        const firstText = (blocks[0]?.textContent || '').trim();
-        if (!firstText) {
-          deletes.push(idx); // 文字被清空或并段
-        } else if (firstText !== orig.text.trim()) {
-          edits.push({ paraIndex: idx, newText: firstText });
-        }
-        for (const extra of blocks.slice(1)) {
-          const t = (extra.textContent || '').trim();
-          if (t) inserts.push({ afterParaIndex: idx, newText: t });
-        }
-      } else if (isBlock(w)) {
-        const t = (w.textContent || '').trim();
-        if (t) {
-          inserts.push({
-            afterParaIndex: lastIdx == null ? -1 : lastIdx,
-            newText: t,
-          });
-        }
-      }
-    }
-    // 整块被删除（wrapper 消失）
-    for (const p of content.paragraphs) {
-      if (!seen.has(p.index)) {
-        if (p.type === 'table' || p.type === 'image') {
-          return { error: '不支持删除表格/图片，请撤销该操作后保存' } as const;
-        }
-        deletes.push(p.index);
-      }
-    }
-    return {
-      edits,
-      deletes,
-      inserts,
-      count: edits.length + deletes.length + inserts.length,
-    };
-  }, [content]);
-
-  // 输入防抖后重算改动处数（不写进纸张 vdom，避免编辑中重渲染丢光标）
-  const handleDocInput = useCallback(() => {
-    if (!canEdit) return;
-    window.clearTimeout(diffTimer.current);
-    diffTimer.current = window.setTimeout(() => {
-      const ops = collectPaperOps();
-      setDirty(ops && !('error' in ops) ? ops.count : 0);
-    }, 250);
-  }, [canEdit, collectPaperOps]);
-
-  // 保存：diff 全部改动提交父级写新版本，成功后由新内容重挂载纸张
+  // 保存：模型 diff 全部改动提交父级写新版本，成功后由新内容重挂载编辑器
   const handleSaveEdits = useCallback(async () => {
-    if (!onEditDocument || savingEdits) return;
-    const ops = collectPaperOps();
-    if (!ops) {
-      setEditError('无法读取文档内容，请关闭后重试');
+    if (!onEditDocument || savingEdits || !editorRef.current || !content)
       return;
-    }
+    const ops = collectEditorOps(editorRef.current, content.paragraphs);
     if ('error' in ops) {
       setEditError(ops.error || '当前改动无法保存');
       return;
@@ -940,18 +887,14 @@ export default function ReviewPanel({
     setSavingEdits(true);
     setEditError('');
     try {
-      await onEditDocument({
-        edits: ops.edits,
-        deletes: ops.deletes,
-        inserts: ops.inserts,
-      });
+      await onEditDocument(ops);
       setDirty(0);
     } catch (e: any) {
       setEditError(e?.message || '保存失败，请稍后重试');
     } finally {
       setSavingEdits(false);
     }
-  }, [collectPaperOps, onEditDocument, savingEdits]);
+  }, [content, onEditDocument, savingEdits]);
 
   // 放弃修改：重挂载纸张，丢弃浏览器侧的 DOM 改动
   const handleDiscardEdits = useCallback(() => {
@@ -1031,6 +974,58 @@ export default function ReviewPanel({
       }
     },
     [handleAnchorClick],
+  );
+
+  // 编辑器内表格/图片原子块的渲染（与静态分支同一套高亮/批注逻辑）
+  const renderAtomicBlock = useCallback(
+    ({
+      paraIndex,
+      kind,
+      html,
+    }: {
+      paraIndex: number;
+      kind: 'table' | 'image';
+      html: string;
+    }) => {
+      if (kind === 'image') {
+        return (
+          <div className="py-1 text-[13px] italic text-[#8A8A8A]">{html}</div>
+        );
+      }
+      const firstAi = (railByPara.get(paraIndex) || []).find(
+        (i) => i.kind === 'ai',
+      );
+      let tableHtml = html;
+      if (firstAi?.ann) {
+        tableHtml = highlightInTableHtml(
+          tableHtml,
+          getMatchedText(firstAi.ann),
+          firstAi.color,
+          firstAi.key,
+        );
+      }
+      // 手动批注：表格内与正文同款 <mark> 高亮（anchor_start 消歧）
+      for (const it of railByPara.get(paraIndex) || []) {
+        if (it.kind !== 'comment') continue;
+        const at = (it.comment?.anchor_text || '').trim();
+        if (!at) continue;
+        tableHtml = highlightInTableByAnchor(
+          tableHtml,
+          at,
+          it.comment?.anchor_start,
+          it.color,
+          it.key,
+        );
+      }
+      return (
+        <div
+          className="text-xs overflow-x-auto [&_table]:w-full [&_table]:border-collapse [&_th]:border [&_th]:border-[#D4D4D4] [&_th]:bg-[#F5F5F5] [&_th]:px-2 [&_th]:py-1 [&_th]:text-[#1A1A1A] [&_td]:border [&_td]:border-[#D4D4D4] [&_td]:px-2 [&_td]:py-1 [&_td]:text-[#333333]"
+          onClick={handleSelectTableAnn}
+          dangerouslySetInnerHTML={{ __html: sanitizeTableHtml(tableHtml) }}
+        />
+      );
+    },
+    [railByPara, handleSelectTableAnn],
   );
 
   const innerContent = (
@@ -1232,110 +1227,114 @@ export default function ReviewPanel({
                 </div>
               )}
               <div
-                key={`${fileId}-${resetKey}`}
-                ref={paperRef}
-                contentEditable={canEdit || undefined}
-                suppressContentEditableWarning
-                spellCheck={false}
-                onInput={handleDocInput}
-                className="mx-auto w-full max-w-[794px] space-y-2 border border-[#C9C9C9] bg-white px-[72px] py-[64px] shadow-[0_4px_24px_rgba(0,0,0,0.14)]"
+                className="mx-auto w-full max-w-[794px] border border-[#C9C9C9] bg-white px-[72px] py-[64px] shadow-[0_4px_24px_rgba(0,0,0,0.14)]"
                 style={{
                   fontFamily: "'SimSun', '宋体', 'Times New Roman', serif",
                 }}
               >
-                {content.paragraphs.map((para) => {
-                  const targets = targetsByPara.get(para.index) || [];
-                  const firstAi = (railByPara.get(para.index) || []).find(
-                    (i) => i.kind === 'ai',
-                  );
-
-                  let paraElement: React.ReactNode;
-                  if (para.type === 'heading') {
-                    const HeadingTag = (
-                      para.heading_level && para.heading_level <= 3
-                        ? `h${para.heading_level + 1}`
-                        : 'h3'
-                    ) as 'h2' | 'h3' | 'h4';
-                    paraElement = (
-                      <HeadingTag className="text-[15px] font-bold text-[#1A1A1A] mt-5 mb-2">
-                        {renderHighlighted(
-                          para.text,
-                          targets,
-                          handleAnchorClick,
-                        )}
-                      </HeadingTag>
-                    );
-                  } else if (para.type === 'table') {
-                    let tableHtml = para.text;
-                    if (firstAi?.ann) {
-                      tableHtml = highlightInTableHtml(
-                        tableHtml,
-                        getMatchedText(firstAi.ann),
-                        firstAi.color,
-                        firstAi.key,
+                {canEdit && onEditDocument ? (
+                  <DocxParagraphEditor
+                    key={`${fileId}-${resetKey}`}
+                    paragraphs={content.paragraphs}
+                    targetsByPara={targetsByPara}
+                    onAnchorClick={handleAnchorClick}
+                    renderAtomic={renderAtomicBlock}
+                    editorRef={editorRef}
+                    onBlocksChange={handleEditorDirty}
+                  />
+                ) : (
+                  <div className="space-y-2">
+                    {content.paragraphs.map((para) => {
+                      const targets = targetsByPara.get(para.index) || [];
+                      const firstAi = (railByPara.get(para.index) || []).find(
+                        (i) => i.kind === 'ai',
                       );
-                    }
-                    // 手动批注：表格内与正文同款 <mark> 高亮（anchor_start 消歧）
-                    for (const it of railByPara.get(para.index) || []) {
-                      if (it.kind !== 'comment') continue;
-                      const at = (it.comment?.anchor_text || '').trim();
-                      if (!at) continue;
-                      tableHtml = highlightInTableByAnchor(
-                        tableHtml,
-                        at,
-                        it.comment?.anchor_start,
-                        it.color,
-                        it.key,
-                      );
-                    }
-                    paraElement = (
-                      <div
-                        className="text-xs overflow-x-auto [&_table]:w-full [&_table]:border-collapse [&_th]:border [&_th]:border-[#D4D4D4] [&_th]:bg-[#F5F5F5] [&_th]:px-2 [&_th]:py-1 [&_th]:text-[#1A1A1A] [&_td]:border [&_td]:border-[#D4D4D4] [&_td]:px-2 [&_td]:py-1 [&_td]:text-[#333333]"
-                        onClick={handleSelectTableAnn}
-                        contentEditable={canEdit ? false : undefined}
-                        dangerouslySetInnerHTML={{
-                          __html: sanitizeTableHtml(tableHtml),
-                        }}
-                      />
-                    );
-                  } else if (para.type === 'image') {
-                    paraElement = (
-                      <div
-                        className="py-1 text-[13px] italic text-[#8A8A8A]"
-                        contentEditable={canEdit ? false : undefined}
-                      >
-                        {renderHighlighted(
-                          para.text,
-                          targets,
-                          handleAnchorClick,
-                        )}
-                      </div>
-                    );
-                  } else {
-                    paraElement = (
-                      <p
-                        className="text-[14px] leading-[2] text-justify text-[#333333]"
-                        style={{ textIndent: '2em' }}
-                      >
-                        {renderHighlighted(
-                          para.text,
-                          targets,
-                          handleAnchorClick,
-                        )}
-                      </p>
-                    );
-                  }
 
-                  return (
-                    <div
-                      key={para.index}
-                      data-para-index={para.index}
-                      className="relative py-0.5"
-                    >
-                      {paraElement}
-                    </div>
-                  );
-                })}
+                      let paraElement: React.ReactNode;
+                      if (para.type === 'heading') {
+                        const HeadingTag = (
+                          para.heading_level && para.heading_level <= 3
+                            ? `h${para.heading_level + 1}`
+                            : 'h3'
+                        ) as 'h2' | 'h3' | 'h4';
+                        paraElement = (
+                          <HeadingTag className="text-[15px] font-bold text-[#1A1A1A] mt-5 mb-2">
+                            {renderHighlighted(
+                              para.text,
+                              targets,
+                              handleAnchorClick,
+                            )}
+                          </HeadingTag>
+                        );
+                      } else if (para.type === 'table') {
+                        let tableHtml = para.text;
+                        if (firstAi?.ann) {
+                          tableHtml = highlightInTableHtml(
+                            tableHtml,
+                            getMatchedText(firstAi.ann),
+                            firstAi.color,
+                            firstAi.key,
+                          );
+                        }
+                        // 手动批注：表格内与正文同款 <mark> 高亮（anchor_start 消歧）
+                        for (const it of railByPara.get(para.index) || []) {
+                          if (it.kind !== 'comment') continue;
+                          const at = (it.comment?.anchor_text || '').trim();
+                          if (!at) continue;
+                          tableHtml = highlightInTableByAnchor(
+                            tableHtml,
+                            at,
+                            it.comment?.anchor_start,
+                            it.color,
+                            it.key,
+                          );
+                        }
+                        paraElement = (
+                          <div
+                            className="text-xs overflow-x-auto [&_table]:w-full [&_table]:border-collapse [&_th]:border [&_th]:border-[#D4D4D4] [&_th]:bg-[#F5F5F5] [&_th]:px-2 [&_th]:py-1 [&_th]:text-[#1A1A1A] [&_td]:border [&_td]:border-[#D4D4D4] [&_td]:px-2 [&_td]:py-1 [&_td]:text-[#333333]"
+                            onClick={handleSelectTableAnn}
+                            dangerouslySetInnerHTML={{
+                              __html: sanitizeTableHtml(tableHtml),
+                            }}
+                          />
+                        );
+                      } else if (para.type === 'image') {
+                        paraElement = (
+                          <div className="py-1 text-[13px] italic text-[#8A8A8A]">
+                            {renderHighlighted(
+                              para.text,
+                              targets,
+                              handleAnchorClick,
+                            )}
+                          </div>
+                        );
+                      } else {
+                        paraElement = (
+                          <p
+                            className="text-[14px] leading-[2] text-justify text-[#333333]"
+                            style={{ textIndent: '2em' }}
+                          >
+                            {renderHighlighted(
+                              para.text,
+                              targets,
+                              handleAnchorClick,
+                            )}
+                          </p>
+                        );
+                      }
+
+                      return (
+                        <div
+                          key={para.index}
+                          data-para-index={para.index}
+                          className="relative py-0.5"
+                        >
+                          {paraElement}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </div>
 
