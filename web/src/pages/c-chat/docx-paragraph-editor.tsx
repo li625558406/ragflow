@@ -1,0 +1,550 @@
+import {
+  InitialConfigType,
+  LexicalComposer,
+} from '@lexical/react/LexicalComposer';
+import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
+import { ContentEditable } from '@lexical/react/LexicalContentEditable';
+import { LexicalErrorBoundary } from '@lexical/react/LexicalErrorBoundary';
+import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin';
+import { RichTextPlugin } from '@lexical/react/LexicalRichTextPlugin';
+import {
+  HeadingNode,
+  HeadingTagType,
+  SerializedHeadingNode,
+} from '@lexical/rich-text';
+import {
+  $applyNodeReplacement,
+  $createTextNode,
+  $getRoot,
+  $getSelection,
+  CLICK_COMMAND,
+  COMMAND_PRIORITY_HIGH,
+  DecoratorNode,
+  EditorConfig,
+  ElementFormatType,
+  LexicalEditor,
+  NodeKey,
+  ParagraphNode,
+  PASTE_COMMAND,
+  RangeSelection,
+  SerializedLexicalNode,
+  SerializedParagraphNode,
+  SerializedTextNode,
+  TextNode,
+} from 'lexical';
+import React, { useEffect, useMemo } from 'react';
+import {
+  diffBlocks,
+  DocxDiffOps,
+  DocxSourceParagraph,
+  EditorBlock,
+  splitIntoSegments,
+} from './docx-diff';
+
+// ── 自定义节点 ──────────────────────────────────────────────
+// paraIndex 仅在初始加载（buildInitialContent）时赋值；Lexical 内部
+// 克隆（回车分段等）走 insertNewAfter/无参构造 → 新实例 paraIndex 为
+// undefined，天然区隔「原文段落」与「新增段落」，diff 无需解析 DOM。
+
+/** 文档正文段（对应 source paragraph type=paragraph） */
+export class DocxParagraphNode extends ParagraphNode {
+  __paraIndex: number | undefined;
+
+  constructor(paraIndex?: number, key?: NodeKey) {
+    super(key);
+    this.__paraIndex = paraIndex;
+  }
+
+  static getType(): string {
+    return 'docx-paragraph';
+  }
+
+  static clone(node: DocxParagraphNode): DocxParagraphNode {
+    return new DocxParagraphNode(node.__paraIndex, node.__key);
+  }
+
+  static importJSON(json: Record<string, unknown>): DocxParagraphNode {
+    const node = new DocxParagraphNode(json.paraIndex as number | undefined);
+    node.setFormat(
+      (typeof json.format === 'number'
+        ? json.format
+        : 0) as unknown as ElementFormatType,
+    );
+    node.setIndent(typeof json.indent === 'number' ? json.indent : 0);
+    if (typeof json.direction === 'string')
+      node.setDirection(json.direction as 'ltr' | 'rtl' | null);
+    if (typeof json.style === 'string') node.setStyle(json.style);
+    return node;
+  }
+
+  exportJSON(): SerializedParagraphNode & { paraIndex: number | undefined } {
+    return {
+      ...super.exportJSON(),
+      type: 'docx-paragraph',
+      paraIndex: this.__paraIndex,
+    };
+  }
+
+  // 回车分段：新段为本类（无 paraIndex → diff 记 insert）
+  insertNewAfter(
+    _selection: RangeSelection,
+    restoreSelection = true,
+  ): DocxParagraphNode {
+    const node = $applyNodeReplacement(new DocxParagraphNode(undefined));
+    node.__indent = this.__indent;
+    node.__dir = this.__dir;
+    node.__format = this.__format;
+    node.__style = this.__style;
+    this.insertAfter(node, restoreSelection);
+    return node;
+  }
+
+  createDOM(config: EditorConfig): HTMLElement {
+    const dom = super.createDOM(config);
+    if (this.__paraIndex != null) {
+      dom.setAttribute('data-para-index', String(this.__paraIndex));
+    }
+    dom.className += ' text-[14px] leading-[2] text-justify text-[#333333]';
+    dom.style.textIndent = '2em';
+    return dom;
+  }
+}
+
+/** 文档标题段（对应 source paragraph type=heading，tag 由 heading_level 派生） */
+export class DocxHeadingNode extends HeadingNode {
+  __paraIndex: number | undefined;
+
+  constructor(tag: HeadingTagType, paraIndex?: number, key?: NodeKey) {
+    super(tag, key);
+    this.__paraIndex = paraIndex;
+  }
+
+  static getType(): string {
+    return 'docx-heading';
+  }
+
+  static clone(node: DocxHeadingNode): DocxHeadingNode {
+    return new DocxHeadingNode(node.__tag, node.__paraIndex, node.__key);
+  }
+
+  static importJSON(json: Record<string, unknown>): DocxHeadingNode {
+    const node = new DocxHeadingNode(
+      (json.tag as HeadingTagType) || 'h3',
+      json.paraIndex as number | undefined,
+    );
+    node.setFormat(
+      (typeof json.format === 'number'
+        ? json.format
+        : 0) as unknown as ElementFormatType,
+    );
+    node.setIndent(typeof json.indent === 'number' ? json.indent : 0);
+    return node;
+  }
+
+  exportJSON(): SerializedHeadingNode & { paraIndex: number | undefined } {
+    return {
+      ...super.exportJSON(),
+      type: 'docx-heading',
+      paraIndex: this.__paraIndex,
+    };
+  }
+
+  insertNewAfter(
+    _selection: RangeSelection,
+    restoreSelection = true,
+  ): DocxHeadingNode {
+    const node = $applyNodeReplacement(
+      new DocxHeadingNode(this.__tag, undefined),
+    );
+    node.__indent = this.__indent;
+    node.__dir = this.__dir;
+    node.__format = this.__format;
+    this.insertAfter(node, restoreSelection);
+    return node;
+  }
+
+  createDOM(config: EditorConfig): HTMLElement {
+    const dom = super.createDOM(config);
+    if (this.__paraIndex != null) {
+      dom.setAttribute('data-para-index', String(this.__paraIndex));
+    }
+    dom.className += ' text-[15px] font-bold text-[#1A1A1A] mt-5 mb-2';
+    return dom;
+  }
+}
+
+/** 批注/标注高亮文本片段：带 data-anchor-key 供引线锚定与点击联动 */
+export class HighlightTextNode extends TextNode {
+  __anchorKey: string;
+
+  constructor(text: string, anchorKey: string, key?: NodeKey) {
+    super(text, key);
+    this.__anchorKey = anchorKey;
+  }
+
+  static getType(): string {
+    return 'highlight-text';
+  }
+
+  static clone(node: HighlightTextNode): HighlightTextNode {
+    return new HighlightTextNode(node.__text, node.__anchorKey, node.__key);
+  }
+
+  static importJSON(json: Record<string, unknown>): HighlightTextNode {
+    return $applyNodeReplacement(
+      new HighlightTextNode(
+        (json.text as string) || '',
+        (json.anchorKey as string) || '',
+      ),
+    );
+  }
+
+  exportJSON(): SerializedTextNode & { anchorKey: string } {
+    return {
+      ...super.exportJSON(),
+      type: 'highlight-text',
+      anchorKey: this.__anchorKey,
+    };
+  }
+
+  createDOM(config: EditorConfig): HTMLElement {
+    const dom = super.createDOM(config);
+    dom.setAttribute('data-anchor-key', this.__anchorKey);
+    return dom;
+  }
+}
+
+// 表格/图片原子块的 React 渲染函数由父级经 Context 注入（闭包持有
+// review-panel 的高亮/批注状态），decorate 时从 Context 取
+const AtomicRenderContext = React.createContext<
+  (p: {
+    paraIndex: number;
+    kind: 'table' | 'image';
+    html: string;
+  }) => React.ReactNode
+>(() => null);
+
+/** 表格/图片只读原子块：contenteditable=false，不可编辑、不可改写 */
+export class AtomicBlockNode extends DecoratorNode<React.ReactNode> {
+  __paraIndex: number;
+  __kind: 'table' | 'image';
+  __html: string;
+
+  constructor(
+    paraIndex: number,
+    kind: 'table' | 'image',
+    html: string,
+    key?: NodeKey,
+  ) {
+    super(key);
+    this.__paraIndex = paraIndex;
+    this.__kind = kind;
+    this.__html = html;
+  }
+
+  static getType(): string {
+    return 'atomic-block';
+  }
+
+  static clone(node: AtomicBlockNode): AtomicBlockNode {
+    return new AtomicBlockNode(
+      node.__paraIndex,
+      node.__kind,
+      node.__html,
+      node.__key,
+    );
+  }
+
+  static importJSON(json: Record<string, unknown>): AtomicBlockNode {
+    return new AtomicBlockNode(
+      (json.paraIndex as number) ?? -1,
+      (json.kind as 'table' | 'image') || 'table',
+      (json.html as string) || '',
+    );
+  }
+
+  exportJSON(): SerializedLexicalNode & {
+    paraIndex: number;
+    kind: 'table' | 'image';
+    html: string;
+  } {
+    return {
+      type: 'atomic-block',
+      version: 1,
+      paraIndex: this.__paraIndex,
+      kind: this.__kind,
+      html: this.__html,
+    };
+  }
+
+  createDOM(): HTMLElement {
+    const div = document.createElement('div');
+    div.setAttribute('data-para-index', String(this.__paraIndex));
+    div.contentEditable = 'false';
+    div.className = 'relative py-0.5';
+    return div;
+  }
+
+  updateDOM(): false {
+    return false;
+  }
+
+  decorate(): React.ReactNode {
+    return (
+      <AtomicRenderContext.Consumer>
+        {(render) =>
+          render({
+            paraIndex: this.__paraIndex,
+            kind: this.__kind,
+            html: this.__html,
+          })
+        }
+      </AtomicRenderContext.Consumer>
+    );
+  }
+}
+
+// ── 模型抽取与 diff ─────────────────────────────────────────
+
+export function readEditorBlocks(editor: LexicalEditor): EditorBlock[] {
+  return editor.read(() =>
+    $getRoot()
+      .getChildren()
+      .map((child): EditorBlock => {
+        if (child instanceof AtomicBlockNode) {
+          return { paraIndex: child.__paraIndex, kind: child.__kind, text: '' };
+        }
+        const paraIndex =
+          child instanceof DocxParagraphNode || child instanceof DocxHeadingNode
+            ? child.__paraIndex
+            : undefined;
+        return { paraIndex, kind: 'text', text: child.getTextContent() };
+      }),
+  );
+}
+
+export function collectEditorOps(
+  editor: LexicalEditor,
+  paragraphs: DocxSourceParagraph[],
+): DocxDiffOps {
+  return diffBlocks(readEditorBlocks(editor), paragraphs);
+}
+
+// ── 插件 ────────────────────────────────────────────────────
+
+/** 批注高亮：targetsByPara 变化时（挂载/标注批注增删）重建高亮片段；
+ * 打字过程绝不重拆，避免光标跳动 */
+function HighlightPlugin({
+  targetsByPara,
+}: {
+  targetsByPara: Map<
+    number,
+    Array<{ text: string; color: string; key: string }>
+  >;
+}) {
+  const [editor] = useLexicalComposerContext();
+  useEffect(() => {
+    editor.update(
+      () => {
+        const root = $getRoot();
+        for (const child of root.getChildren()) {
+          if (
+            !(child instanceof DocxParagraphNode) &&
+            !(child instanceof DocxHeadingNode)
+          )
+            continue;
+          const paraIndex = child.__paraIndex;
+          const targets =
+            paraIndex != null ? targetsByPara.get(paraIndex) : undefined;
+          if (!targets || !targets.length) continue;
+          const segments = splitIntoSegments(child.getTextContent(), targets);
+          child.clear();
+          for (const seg of segments) {
+            if (seg.key) {
+              const node = new HighlightTextNode(seg.text, seg.key);
+              node.setStyle(`background-color:${seg.color}22;`);
+              child.append(node);
+            } else {
+              child.append($createTextNode(seg.text));
+            }
+          }
+        }
+      },
+      { tag: 'history-merge' },
+    );
+  }, [editor, targetsByPara]);
+  return null;
+}
+
+/** 点击高亮 → 联动右侧卡片（复用 review-panel 的 handleAnchorClick） */
+function ClickPlugin({
+  onAnchorClick,
+}: {
+  onAnchorClick: (key: string) => void;
+}) {
+  const [editor] = useLexicalComposerContext();
+  useEffect(() => {
+    return editor.registerCommand(
+      CLICK_COMMAND,
+      (event: MouseEvent) => {
+        const target = event.target as HTMLElement | null;
+        const el = target?.closest('[data-anchor-key]');
+        if (el) {
+          event.preventDefault();
+          onAnchorClick(el.getAttribute('data-anchor-key') || '');
+          return true;
+        }
+        return false;
+      },
+      COMMAND_PRIORITY_HIGH,
+    );
+  }, [editor, onAnchorClick]);
+  return null;
+}
+
+/** 粘贴降级纯文本：换行替换为空格（单段语义，防外部富文本破坏结构） */
+function PastePlugin() {
+  const [editor] = useLexicalComposerContext();
+  useEffect(() => {
+    return editor.registerCommand(
+      PASTE_COMMAND,
+      (event: ClipboardEvent) => {
+        const text = event.clipboardData?.getData('text/plain');
+        if (text == null) return false;
+        event.preventDefault();
+        editor.update(() => {
+          const selection = $getSelection();
+          if (selection) selection.insertText(text.replace(/\r?\n/g, ' '));
+        });
+        return true;
+      },
+      COMMAND_PRIORITY_HIGH,
+    );
+  }, [editor]);
+  return null;
+}
+
+/** 脏检查：任何编辑器更新后抽块描述抛给父级（父级防抖后 diff 计数） */
+function DirtyPlugin({
+  onBlocksChange,
+}: {
+  onBlocksChange: (blocks: EditorBlock[]) => void;
+}) {
+  const [editor] = useLexicalComposerContext();
+  useEffect(() => {
+    return editor.registerUpdateListener(() => {
+      onBlocksChange(readEditorBlocks(editor));
+    });
+  }, [editor, onBlocksChange]);
+  return null;
+}
+
+/** 把 LexicalEditor 实例抛给父级（保存时调 collectEditorOps 用） */
+function EditorRefPlugin({
+  editorRef,
+}: {
+  editorRef: { current: LexicalEditor | null };
+}) {
+  const [editor] = useLexicalComposerContext();
+  useEffect(() => {
+    editorRef.current = editor;
+    return () => {
+      editorRef.current = null;
+    };
+  }, [editor, editorRef]);
+  return null;
+}
+
+// ── 组件 ────────────────────────────────────────────────────
+
+function buildInitialContent(
+  editor: LexicalEditor,
+  paragraphs: DocxSourceParagraph[],
+) {
+  editor.update(() => {
+    const root = $getRoot();
+    for (const para of paragraphs) {
+      if (para.type === 'table' || para.type === 'image') {
+        root.append(new AtomicBlockNode(para.index, para.type, para.text));
+      } else if (para.type === 'heading') {
+        const tag = (
+          para.heading_level && para.heading_level <= 3
+            ? `h${para.heading_level + 1}`
+            : 'h3'
+        ) as HeadingTagType;
+        const h = new DocxHeadingNode(tag, para.index);
+        h.append($createTextNode(para.text));
+        root.append(h);
+      } else {
+        const p = new DocxParagraphNode(para.index);
+        p.append($createTextNode(para.text));
+        root.append(p);
+      }
+    }
+  });
+}
+
+export default function DocxParagraphEditor({
+  paragraphs,
+  targetsByPara,
+  onAnchorClick,
+  renderAtomic,
+  editorRef,
+  onBlocksChange,
+}: {
+  paragraphs: DocxSourceParagraph[];
+  targetsByPara: Map<
+    number,
+    Array<{ text: string; color: string; key: string }>
+  >;
+  onAnchorClick: (key: string) => void;
+  renderAtomic: (p: {
+    paraIndex: number;
+    kind: 'table' | 'image';
+    html: string;
+  }) => React.ReactNode;
+  editorRef: { current: LexicalEditor | null };
+  onBlocksChange: (blocks: EditorBlock[]) => void;
+}) {
+  // paragraphs/targetsByPara 固定于挂载时刻；文档刷新/放弃修改由父级换 key 重挂载
+  const initialConfig = useMemo<InitialConfigType>(
+    () => ({
+      namespace: 'docx-review-editor',
+      nodes: [
+        DocxParagraphNode,
+        DocxHeadingNode,
+        AtomicBlockNode,
+        HighlightTextNode,
+        HeadingNode,
+        ParagraphNode,
+      ],
+      theme: {},
+      onError: (error: Error) => console.error('[docx-editor]', error),
+      initialEditorState: (editor: LexicalEditor) => {
+        buildInitialContent(editor, paragraphs);
+      },
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  return (
+    <LexicalComposer initialConfig={initialConfig}>
+      <AtomicRenderContext.Provider value={renderAtomic}>
+        <RichTextPlugin
+          contentEditable={
+            <ContentEditable className="space-y-2 outline-none focus:outline-none" />
+          }
+          placeholder={null}
+          ErrorBoundary={LexicalErrorBoundary}
+        />
+        <HistoryPlugin />
+        <HighlightPlugin targetsByPara={targetsByPara} />
+        <ClickPlugin onAnchorClick={onAnchorClick} />
+        <PastePlugin />
+        <DirtyPlugin onBlocksChange={onBlocksChange} />
+        <EditorRefPlugin editorRef={editorRef} />
+      </AtomicRenderContext.Provider>
+    </LexicalComposer>
+  );
+}
