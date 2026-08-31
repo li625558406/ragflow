@@ -1,10 +1,10 @@
 """人事模块 P1 Service：员工档案 / 规则配置 / 考勤流水 / 日月汇总。"""
 import calendar
 import json
-import logging
 from datetime import date, datetime, timedelta
 
 from api.db.db_models import (
+    DB,
     HrAttendanceDay,
     HrAttendanceMonth,
     HrAttendanceRecord,
@@ -16,8 +16,6 @@ from api.db.services.common_service import CommonService
 from api.db.services.hr_calculator import derive_day_status, load_rule
 from common.misc_utils import get_uuid
 from common.time_utils import current_timestamp
-
-logger = logging.getLogger(__name__)
 
 
 class HrEmployeeService(CommonService):
@@ -137,11 +135,12 @@ class HrAttendanceMonthService(CommonService):
     def close_month(cls, month: str, operator_id: str) -> dict:
         """月度一键汇总：逐员工逐日推导落盘 → missing 转 absent → 聚合月行并锁定。
 
-        幂等：已 confirmed 的月份拒绝重跑（需先人工处理）。
+        幂等语义：已确认的员工跳过，未确认的补跑；整批包裹在事务中，失败整体回滚。
         """
-        if cls.model.select().where(cls.model.status == "confirmed",
-                                    cls.model.month == month).exists():
-            raise ValueError(f"{month} 已确认归档，不能重复汇总")
+        confirmed_ids = {
+            r.employee_id for r in cls.model.select().where(
+                cls.model.status == "confirmed", cls.model.month == month)
+        }
 
         rule = HrRuleConfigService.get_config()
         employees = list(HrEmployee.select().where(HrEmployee.status == "active"))
@@ -151,43 +150,57 @@ class HrAttendanceMonthService(CommonService):
         today = date.today()
         stats = {"employees": 0, "days": 0}
 
-        for emp in employees:
-            entry = emp.entry_date or date(year, mon, 1)
-            stats["employees"] += 1
-            agg = {"attend": 0.0, "late": 0, "late_min": 0, "absent": 0,
-                   "missing": 0, "leave": 0.0}
-            d = max(date(year, mon, 1), entry)
-            while d <= min(month_end, today):
-                records = HrAttendanceRecordService.list_day(emp.id, d)
-                derived = derive_day_status(records, d, rule)
-                if derived["status"] == "missing":
-                    derived["status"] = "absent"  # 确认时缺卡转旷工
-                    agg["missing"] += 1
-                HrAttendanceDayService.upsert_day(emp.id, d, derived, locked=True)
-                stats["days"] += 1
-                if derived["status"] in ("normal", "late"):
-                    agg["attend"] += 1
-                if derived["status"] == "late":
-                    agg["late"] += 1
-                    agg["late_min"] += derived["late_minutes"]
-                elif derived["status"] == "absent":
-                    agg["absent"] += 1
-                elif derived["status"] in ("leave", "business_trip"):
-                    agg["leave"] += 1
-                d += timedelta(days=1)
+        with DB.atomic():
+            for emp in employees:
+                if emp.id in confirmed_ids:
+                    continue
+                entry = emp.entry_date or date(year, mon, 1)
+                stats["employees"] += 1
+                agg = {"attend": 0.0, "late": 0, "late_min": 0, "absent": 0,
+                       "missing": 0, "leave": 0.0}
+                d = max(date(year, mon, 1), entry)
+                while d <= min(month_end, today):
+                    existing = HrAttendanceDayService.model.get_or_none(
+                        HrAttendanceDayService.model.employee_id == emp.id,
+                        HrAttendanceDayService.model.work_date == d)
+                    if existing and existing.locked:
+                        # 锁定行按存量值聚合，不重新推导
+                        status = existing.status
+                        late_min = existing.late_minutes
+                    else:
+                        records = HrAttendanceRecordService.list_day(emp.id, d)
+                        derived = derive_day_status(records, d, rule)
+                        if derived["status"] == "missing":
+                            derived["status"] = "absent"  # 确认时缺卡转旷工
+                            agg["missing"] += 1
+                        row = HrAttendanceDayService.upsert_day(
+                            emp.id, d, derived, locked=True)
+                        status = row.status
+                        late_min = row.late_minutes
+                    stats["days"] += 1
+                    if status in ("normal", "late"):
+                        agg["attend"] += 1
+                    if status == "late":
+                        agg["late"] += 1
+                        agg["late_min"] += late_min
+                    elif status == "absent":
+                        agg["absent"] += 1
+                    elif status in ("leave", "business_trip"):
+                        agg["leave"] += 1
+                    d += timedelta(days=1)
 
-            vals = dict(attend_days=agg["attend"], late_count=agg["late"],
-                        late_minutes=agg["late_min"], absent_days=agg["absent"],
-                        missing_days=agg["missing"], leave_days=agg["leave"],
-                        overtime_hours=0.0, status="confirmed",
-                        confirmed_by=operator_id)
-            mrow = cls.model.get_or_none(
-                cls.model.employee_id == emp.id, cls.model.month == month)
-            if mrow:
-                for k, v in vals.items():
-                    setattr(mrow, k, v)
-                mrow.update_time = current_timestamp()
-                mrow.save()
-            else:
-                cls.insert(id=get_uuid(), employee_id=emp.id, month=month, **vals)
+                vals = dict(attend_days=agg["attend"], late_count=agg["late"],
+                            late_minutes=agg["late_min"], absent_days=agg["absent"],
+                            missing_days=agg["missing"], leave_days=agg["leave"],
+                            overtime_hours=0.0, status="confirmed",
+                            confirmed_by=operator_id)
+                mrow = cls.model.get_or_none(
+                    cls.model.employee_id == emp.id, cls.model.month == month)
+                if mrow:
+                    for k, v in vals.items():
+                        setattr(mrow, k, v)
+                    mrow.update_time = current_timestamp()
+                    mrow.save()
+                else:
+                    cls.insert(id=get_uuid(), employee_id=emp.id, month=month, **vals)
         return stats
