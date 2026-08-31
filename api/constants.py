@@ -47,6 +47,8 @@ MODULE_PERMISSIONS = {
     "home": "C 端着陆页",
     "c_chat": "投标助手对话",
     "permission_manage": "权限管理",
+    "hr_manage": "人事管理",
+    "hr_finance": "薪资财务",
 }
 
 # 内置角色名

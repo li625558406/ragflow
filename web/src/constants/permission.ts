@@ -16,7 +16,9 @@ export type ModulePermissionKey =
   | 'user_setting'
   | 'home'
   | 'c_chat'
-  | 'permission_manage';
+  | 'permission_manage'
+  | 'hr_manage'
+  | 'hr_finance';
 
 export const MODULE_PERMISSIONS: Record<ModulePermissionKey, string> = {
   bid: '标讯管理',
@@ -31,6 +33,8 @@ export const MODULE_PERMISSIONS: Record<ModulePermissionKey, string> = {
   home: 'C 端着陆页',
   c_chat: '投标助手对话',
   permission_manage: '权限管理',
+  hr_manage: '人事管理',
+  hr_finance: '薪资财务',
 };
 
 // ── 前端路径前缀 → 模块权限点映射（路由守卫用；最长匹配，仅匹配完整路径段）──
