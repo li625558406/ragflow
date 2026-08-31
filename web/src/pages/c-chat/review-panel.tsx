@@ -13,6 +13,7 @@ import {
   Loader2,
   MessageSquare,
   Plus,
+  Trash2,
   X,
 } from 'lucide-react';
 import {
@@ -23,6 +24,12 @@ import {
   useRef,
   useState,
 } from 'react';
+import {
+  highlightInTableByAnchor,
+  highlightInTableHtml,
+  normalizeForMatch,
+  sanitizeTableHtml,
+} from './docx-view-utils';
 
 // ── Types ──
 
@@ -42,6 +49,8 @@ export interface MarginComment {
   content: string;
   anchor_text?: string;
   anchor_para?: number | null;
+  /** 锚点选段在段落归一化文本中的起始偏移（消歧重复文本） */
+  anchor_start?: number | null;
   user_id?: string;
   create_time?: number;
 }
@@ -78,6 +87,19 @@ interface ReviewPanelProps {
     content: string;
     anchorText: string;
     anchorPara: number | null;
+    anchorStart?: number | null;
+  }) => Promise<void> | void;
+  /** 删除手动批注（仅作者自己的批注显示删除按钮）；不传则不启用 */
+  onDeleteComment?: (commentId: string) => Promise<void> | void;
+  /** 当前登录用户 id（判断批注删除按钮可见性） */
+  currentUserId?: string;
+  /** 是否开放正文编辑（整篇 contentEditable，Word 式改字/回车分段/退格并段） */
+  canEdit?: boolean;
+  /** 提交文档改动（改写/新增/删除段落，保存为新版本后由父级刷新预览） */
+  onEditDocument?: (ops: {
+    edits: Array<{ paraIndex: number; newText: string }>;
+    deletes: number[];
+    inserts: Array<{ afterParaIndex: number; newText: string }>;
   }) => Promise<void> | void;
 }
 
@@ -124,35 +146,69 @@ const TYPE_LABELS: Record<string, string> = {
   risk_warning: '风险提示',
 };
 
-// ── Safe HTML sanitizer (defense-in-depth for table content) ──
-
-function sanitizeTableHtml(html: string): string {
-  // Strip <script>, <iframe>, <object>, <embed> tags and on* event handlers
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<iframe[\s\S]*?<\/iframe>/gi, '')
-    .replace(/<object[\s\S]*?<\/object>/gi, '')
-    .replace(/<embed[\s\S]*?>/gi, '')
-    .replace(/\s+on\w+\s*=\s*"[^"]*"/gi, '')
-    .replace(/\s+on\w+\s*=\s*'[^']*'/gi, '')
-    .replace(/<noscript[\s\S]*?<\/noscript>/gi, '');
-}
-
 // ── Paragraph matcher ──
-
-// Normalize text for fuzzy matching: strip HTML tags + remove punctuation/spaces/circled digits
-function normalizeForMatch(text: string): string {
-  return text
-    .replace(/<[^>]+>/g, '') // strip HTML tags (table paragraphs)
-    .replace(
-      /[\s\u2460-\u24ff\u3000-\u303f\uff00-\uffef.,;:!?()[\]{}'"，。、；：！？（）【】《》""''—…·•°≥≤/\\-]/g,
-      '',
-    ); // strip CJK + ASCII punctuation + circled digits ①②③
-}
 
 // Get matched_text from annotation, supporting field name aliases
 function getMatchedText(ann: Annotation): string {
   return (ann.matched_text || ann.text || ann.quote || '').trim();
+}
+
+/**
+ * 在元素内查找锚点文本（跨文本节点、忽略空白差异），返回匹配文字末尾的矩形。
+ * 用于表格段落等没有高亮标记 (data-anchor-key) 的批注定位，避免卡片堆到段落顶部。
+ * startOffset：锚点文本在段落归一化文本中的起始偏移（创建批注时记录），
+ * 用于在重复文本时命中正确的那一处；找不到时回退首个出现位置。
+ */
+function findTextEndRect(
+  root: HTMLElement,
+  text: string,
+  startOffset?: number | null,
+): DOMRect | null {
+  const norm = text.replace(/\s+/g, '');
+  if (!norm) return null;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes: { node: Text; start: number }[] = [];
+  let acc = '';
+  let n = walker.nextNode() as Text | null;
+  while (n) {
+    nodes.push({ node: n, start: acc.length });
+    acc += (n.nodeValue || '').replace(/\s+/g, '');
+    n = walker.nextNode() as Text | null;
+  }
+  // 优先按记录的起始偏移查找（容差 4 字符，吸收 trim 误差）
+  let idx =
+    startOffset != null && startOffset > 4
+      ? acc.indexOf(norm, startOffset - 4)
+      : -1;
+  if (idx < 0) idx = acc.indexOf(norm);
+  if (idx < 0) return null;
+  const endIdx = idx + norm.length;
+  // 定位归一化 endIdx 所在的文本节点，并映射回原始偏移
+  for (const { node, start } of nodes) {
+    const raw = node.nodeValue || '';
+    const len = raw.replace(/\s+/g, '').length;
+    if (endIdx > start && endIdx <= start + len) {
+      let cnt = 0;
+      let off = raw.length;
+      for (let j = 0; j < raw.length; j++) {
+        if (cnt >= endIdx - start) {
+          off = j;
+          break;
+        }
+        if (!/\s/.test(raw[j])) cnt++;
+      }
+      try {
+        const r = document.createRange();
+        r.setStart(node, Math.max(0, off - 1));
+        r.setEnd(node, off);
+        const rects = r.getClientRects();
+        if (rects.length) return rects[rects.length - 1];
+      } catch {
+        /* range 越界等异常时回退 */
+      }
+    }
+  }
+  return null;
 }
 
 function matchAnnotation(
@@ -185,65 +241,6 @@ function matchAnnotation(
   }
   if (keywords.length >= 2) return true;
   return false;
-}
-
-// Inject <mark> highlight into table HTML for matched text
-function highlightInTableHtml(
-  html: string,
-  annotation: Annotation,
-  color: string,
-  anchorKey?: string,
-): string {
-  const target = getMatchedText(annotation);
-  if (!target) return html;
-  const markStyle = `background:${color}22;border-bottom:2px solid ${color};border-radius:2px;padding:0 1px;`;
-  const wrap = (text: string) =>
-    anchorKey
-      ? `<a href="#${anchorKey}" data-anchor-key="${anchorKey}" style="text-decoration:none;color:inherit;"><mark style="${markStyle}">${text}</mark></a>`
-      : `<mark style="${markStyle}">${text}</mark>`;
-
-  // Strategy 1: exact text in HTML
-  if (html.includes(target)) {
-    return html.replace(target, wrap(target));
-  }
-
-  // Strategy 2: find longest chunk that exists in HTML
-  const chunks = target
-    .split(/[，。、；：的且在持有满足进行评价以下含\n]/)
-    .filter((c) => c.length >= 5);
-  let result = html;
-  let replaced = false;
-  // Sort by length descending — replace longest chunks first
-  chunks.sort((a, b) => b.length - a.length);
-  for (const chunk of chunks) {
-    if (result.includes(chunk)) {
-      result = result.replace(chunk, wrap(chunk));
-      replaced = true;
-    }
-  }
-  if (replaced) return result;
-
-  // Strategy 3: normalized — strip ①②③ and punctuation, find in stripped HTML
-  html.replace(/<[^>]+>/g, '');
-  const normTarget = normalizeForMatch(target);
-  if (normTarget.length >= 6) {
-    // Try first 15 chars of normalized target as substring search in clean HTML
-    const shortTarget = normTarget.substring(0, 15);
-    if (shortTarget.length >= 5) {
-      // Find the corresponding original text in the HTML
-      const chunks2 = target
-        .split(/[,，。、；：\s]/)
-        .filter((c) => c.length >= 4);
-      for (const chunk of chunks2) {
-        if (result.includes(chunk)) {
-          result = result.replace(chunk, wrap(chunk));
-          replaced = true;
-        }
-      }
-    }
-  }
-
-  return replaced ? result : html;
 }
 
 // ── Inline annotation highlight（Word 式：正文高亮 + data-anchor-key 供引线锚定） ──
@@ -336,7 +333,7 @@ function AiCard({
       id={`annotation-${num}`}
       onClick={onSelect}
       className={`cursor-pointer rounded-md p-2.5 text-xs transition-all duration-300 ${
-        selected ? 'ring-2 ring-[#3F5B8D] shadow-lg' : ''
+        selected ? 'ring-2 ring-[#1a66fb] shadow-lg' : ''
       } ${unmatched ? 'opacity-75' : ''}`}
       style={{
         backgroundColor: cfg.bg,
@@ -370,7 +367,7 @@ function AiCard({
       {suggestion && (
         <div className="flex items-start gap-1 text-[#525252]">
           <ChevronRight
-            className="w-3 h-3 mt-0.5 shrink-0 text-[#3F5B8D]"
+            className="w-3 h-3 mt-0.5 shrink-0 text-[#1a66fb]"
             strokeWidth={2}
           />
           <span>{suggestion}</span>
@@ -385,21 +382,25 @@ function CommentCard({
   author,
   selected,
   onSelect,
+  canDelete,
+  onDelete,
 }: {
   comment: MarginComment;
   author?: string;
   selected: boolean;
   onSelect: () => void;
+  canDelete?: boolean;
+  onDelete?: () => void;
 }) {
   return (
     <div
       onClick={onSelect}
-      className={`cursor-pointer rounded-md bg-white p-2.5 text-xs transition-all duration-300 ${
+      className={`group cursor-pointer rounded-md bg-white p-2.5 text-xs transition-all duration-300 ${
         selected ? 'ring-2 ring-[#1a66fb] shadow-lg' : ''
       }`}
       style={{ border: '1px solid #E5E5E5', borderLeft: '3px solid #1a66fb' }}
     >
-      <div className="flex items-center gap-1.5 mb-1">
+      <div className="mb-1 flex items-center gap-1.5">
         <MessageSquare
           className="w-3.5 h-3.5 shrink-0 text-[#1a66fb]"
           strokeWidth={2}
@@ -412,6 +413,18 @@ function CommentCard({
             {new Date(comment.create_time).toLocaleDateString()}
           </span>
         ) : null}
+        {canDelete && onDelete && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              if (window.confirm('确定删除这条批注？')) onDelete();
+            }}
+            title="删除批注"
+            className="shrink-0 rounded p-0.5 text-[#bbb] opacity-0 transition-opacity hover:bg-[#FFF2F0] hover:text-[#FF4D4F] focus:opacity-100 group-hover:opacity-100"
+          >
+            <Trash2 className="h-3 w-3" strokeWidth={2} />
+          </button>
+        )}
       </div>
       <div className="whitespace-pre-wrap leading-relaxed text-[#333]">
         {comment.content}
@@ -434,6 +447,10 @@ export default function ReviewPanel({
   comments,
   commentAuthors,
   onAddComment,
+  onDeleteComment,
+  currentUserId,
+  canEdit,
+  onEditDocument,
 }: ReviewPanelProps) {
   const [content, setContent] = useState<FileContent | null>(null);
   const [loading, setLoading] = useState(false);
@@ -447,15 +464,25 @@ export default function ReviewPanel({
     y: number;
     text: string;
     paraIndex: number | null;
+    anchorStart: number | null;
   } | null>(null);
   const [draft, setDraft] = useState<{
     x: number;
     y: number;
     text: string;
     paraIndex: number | null;
+    anchorStart: number | null;
     note: string;
   } | null>(null);
   const [submittingComment, setSubmittingComment] = useState(false);
+  // Word 式整篇编辑：纸张整体 contentEditable，保存时 DOM 与原文 diff 出
+  // 改写/新增/删除三类操作；dirty 为改动处数，resetKey 用于放弃修改时重挂载
+  const paperRef = useRef<HTMLDivElement>(null);
+  const diffTimer = useRef<number | undefined>(undefined);
+  const [dirty, setDirty] = useState(0);
+  const [resetKey, setResetKey] = useState(0);
+  const [savingEdits, setSavingEdits] = useState(false);
+  const [editError, setEditError] = useState('');
   // Word 式引线布局：锚点坐标 + 卡片 top + 画布尺寸
   const wrapRef = useRef<HTMLDivElement>(null);
   const [layout, setLayout] = useState<{
@@ -641,11 +668,13 @@ export default function ReviewPanel({
     };
   }, [open, fileId]);
 
-  // 关闭/切换文件时清掉选区浮层
+  // 关闭/切换文件时清掉选区浮层与编辑态
   useEffect(() => {
     if (!open) {
       setPendingSel(null);
       setDraft(null);
+      setDirty(0);
+      setEditError('');
     }
   }, [open, fileId]);
 
@@ -664,9 +693,20 @@ export default function ReviewPanel({
         const para = wrap.querySelector<HTMLElement>(
           `[data-para-index="${it.paraIndex}"]`,
         );
-        const el = mark || para;
-        if (!el) continue;
-        const r = el.getBoundingClientRect();
+        // 无高亮标记时（如表格内批注），按锚点文本在段落 DOM 内搜索，
+        // 锚定到匹配文字末尾而不是整个段落（表格）顶部
+        let r: DOMRect | null | undefined = mark?.getBoundingClientRect();
+        if (!r && para) {
+          const text =
+            it.kind === 'ai'
+              ? getMatchedText(it.ann!)
+              : it.comment?.anchor_text || '';
+          const start = it.kind === 'comment' ? it.comment?.anchor_start : null;
+          r =
+            (text ? findTextEndRect(para, text, start) : null) ??
+            (para.getBoundingClientRect() as DOMRect);
+        }
+        if (!r) continue;
         anchors[it.key] = {
           x: r.right - wrapRect.left,
           y: r.top - wrapRect.top + (mark ? r.height / 2 : 8),
@@ -713,41 +753,72 @@ export default function ReviewPanel({
 
   // ── 手动批注：选中文本 → 悬浮「添加批注」→ 输入 → 提交 ──
 
-  const handleContentMouseUp = useCallback(() => {
-    if (!onAddComment) return;
-    setTimeout(() => {
-      const s = window.getSelection();
-      if (!s || s.isCollapsed || s.rangeCount === 0) {
-        setPendingSel(null);
-        return;
-      }
-      const text = s.toString().trim();
-      if (text.length < 2) {
-        setPendingSel(null);
-        return;
-      }
-      const node = s.anchorNode;
-      const el =
-        node?.nodeType === 3
-          ? node.parentElement
-          : (node as HTMLElement | null);
-      const paraEl = el?.closest('[data-para-index]') as HTMLElement | null;
-      const paraIndex = paraEl
-        ? parseInt(paraEl.dataset.paraIndex || '', 10)
-        : NaN;
-      const rect = s.getRangeAt(0).getBoundingClientRect();
-      if (!rect || (!rect.width && !rect.height)) {
-        setPendingSel(null);
-        return;
-      }
-      setPendingSel({
-        x: Math.min(rect.right, window.innerWidth - 120),
-        y: Math.min(rect.bottom, window.innerHeight - 60),
-        text: text.slice(0, 300),
-        paraIndex: Number.isFinite(paraIndex) ? paraIndex : null,
-      });
-    }, 0);
-  }, [onAddComment]);
+  const handleContentMouseUp = useCallback(
+    (e: React.MouseEvent) => {
+      if (!onAddComment) return;
+      const mouseX = e.clientX;
+      const mouseY = e.clientY;
+      setTimeout(() => {
+        const s = window.getSelection();
+        if (!s || s.isCollapsed || s.rangeCount === 0) {
+          setPendingSel(null);
+          return;
+        }
+        const text = s.toString().trim();
+        if (text.length < 2) {
+          setPendingSel(null);
+          return;
+        }
+        const node = s.anchorNode;
+        const el =
+          node?.nodeType === 3
+            ? node.parentElement
+            : (node as HTMLElement | null);
+        const paraEl = el?.closest('[data-para-index]') as HTMLElement | null;
+        const paraIndex = paraEl
+          ? parseInt(paraEl.dataset.paraIndex || '', 10)
+          : NaN;
+        // 坐标换成相对正文容器（wrapRef, relative），按钮用 absolute 定位，
+        // 避免 fixed 在抽屉 transform 容器内基准偏移、被文档宽度挡住
+        const wr = wrapRef.current?.getBoundingClientRect();
+        // 锚定选区末尾的文本矩形（表格里 getClientRects 按单元格/行拆分，
+        // 最后一个即选中文案结尾），比鼠标坐标更精确
+        const range = s.getRangeAt(0);
+        const rects = Array.from(range.getClientRects()).filter(
+          (r) => r.width > 0 || r.height > 0,
+        );
+        const endRect =
+          rects[rects.length - 1] ?? range.getBoundingClientRect();
+        const anchorX = endRect?.right ?? mouseX;
+        const anchorY = endRect?.bottom ?? mouseY;
+        const x = anchorX - (wr?.left ?? 0);
+        const y = anchorY - (wr?.top ?? 0);
+        const maxX = (wr?.width ?? window.innerWidth) - 120;
+        const maxY = (wr?.height ?? window.innerHeight) - 60;
+        // 选区起点在段落归一化文本中的偏移（消歧表格内重复文本）
+        let anchorStart: number | null = null;
+        if (paraEl) {
+          try {
+            const pre = document.createRange();
+            pre.selectNodeContents(paraEl);
+            pre.setEnd(range.startContainer, range.startOffset);
+            anchorStart = pre.toString().replace(/\s+/g, '').length;
+          } catch {
+            anchorStart = null;
+          }
+        }
+        // 按钮贴着鼠标松开位置（选中文案旁边），并钳制在容器内
+        setPendingSel({
+          x: Math.max(8, Math.min(x, maxX)),
+          y: Math.max(8, Math.min(y + 12, maxY)),
+          text: text.slice(0, 300),
+          paraIndex: Number.isFinite(paraIndex) ? paraIndex : null,
+          anchorStart,
+        });
+      }, 0);
+    },
+    [onAddComment],
+  );
 
   const submitComment = useCallback(async () => {
     if (!draft || !onAddComment || !draft.note.trim()) return;
@@ -757,6 +828,7 @@ export default function ReviewPanel({
         content: draft.note.trim(),
         anchorText: draft.text,
         anchorPara: draft.paraIndex,
+        anchorStart: draft.anchorStart,
       });
       setDraft(null);
       setPendingSel(null);
@@ -765,6 +837,129 @@ export default function ReviewPanel({
       setSubmittingComment(false);
     }
   }, [draft, onAddComment]);
+
+  const handleDeleteComment = useCallback(
+    async (commentId: string) => {
+      if (!onDeleteComment) return;
+      try {
+        await onDeleteComment(commentId);
+      } catch (e: any) {
+        window.alert(e?.message || '删除失败，请稍后重试');
+      }
+    },
+    [onDeleteComment],
+  );
+
+  // DOM 与原文 diff：改写（文本变化）/ 删除（段落被清空或并段消失）/
+  // 新增（回车产生的无 index 块，锚定在前一段之后）。返回 null 表示无法 diff。
+  const collectPaperOps = useCallback(() => {
+    const paper = paperRef.current;
+    if (!paper || !content) return null;
+    const byIdx = new Map(content.paragraphs.map((p) => [p.index, p]));
+    const edits: Array<{ paraIndex: number; newText: string }> = [];
+    const deletes: number[] = [];
+    const inserts: Array<{ afterParaIndex: number; newText: string }> = [];
+    const seen = new Set<number>();
+    let lastIdx: number | null = null;
+    const isBlock = (el: Element) => /^P$|^H[1-6]$|^DIV$|^LI$/.test(el.tagName);
+
+    for (const node of Array.from(paper.children)) {
+      const w = node as HTMLElement;
+      const idxRaw = w.dataset?.paraIndex;
+      if (idxRaw != null) {
+        const idx = Number(idxRaw);
+        const orig = byIdx.get(idx);
+        seen.add(idx);
+        lastIdx = idx;
+        // 表格/图片为只读原子块，不参与 diff
+        if (!orig || orig.type === 'table' || orig.type === 'image') continue;
+        const blocks = Array.from(w.children).filter(isBlock) as HTMLElement[];
+        const firstText = (blocks[0]?.textContent || '').trim();
+        if (!firstText) {
+          deletes.push(idx); // 文字被清空或并段
+        } else if (firstText !== orig.text.trim()) {
+          edits.push({ paraIndex: idx, newText: firstText });
+        }
+        for (const extra of blocks.slice(1)) {
+          const t = (extra.textContent || '').trim();
+          if (t) inserts.push({ afterParaIndex: idx, newText: t });
+        }
+      } else if (isBlock(w)) {
+        const t = (w.textContent || '').trim();
+        if (t) {
+          inserts.push({
+            afterParaIndex: lastIdx == null ? -1 : lastIdx,
+            newText: t,
+          });
+        }
+      }
+    }
+    // 整块被删除（wrapper 消失）
+    for (const p of content.paragraphs) {
+      if (!seen.has(p.index)) {
+        if (p.type === 'table' || p.type === 'image') {
+          return { error: '不支持删除表格/图片，请撤销该操作后保存' } as const;
+        }
+        deletes.push(p.index);
+      }
+    }
+    return {
+      edits,
+      deletes,
+      inserts,
+      count: edits.length + deletes.length + inserts.length,
+    };
+  }, [content]);
+
+  // 输入防抖后重算改动处数（不写进纸张 vdom，避免编辑中重渲染丢光标）
+  const handleDocInput = useCallback(() => {
+    if (!canEdit) return;
+    window.clearTimeout(diffTimer.current);
+    diffTimer.current = window.setTimeout(() => {
+      const ops = collectPaperOps();
+      setDirty(ops && !('error' in ops) ? ops.count : 0);
+    }, 250);
+  }, [canEdit, collectPaperOps]);
+
+  // 保存：diff 全部改动提交父级写新版本，成功后由新内容重挂载纸张
+  const handleSaveEdits = useCallback(async () => {
+    if (!onEditDocument || savingEdits) return;
+    const ops = collectPaperOps();
+    if (!ops) {
+      setEditError('无法读取文档内容，请关闭后重试');
+      return;
+    }
+    if ('error' in ops) {
+      setEditError(ops.error || '当前改动无法保存');
+      return;
+    }
+    if (!ops.count) {
+      setDirty(0);
+      return;
+    }
+    setSavingEdits(true);
+    setEditError('');
+    try {
+      await onEditDocument({
+        edits: ops.edits,
+        deletes: ops.deletes,
+        inserts: ops.inserts,
+      });
+      setDirty(0);
+    } catch (e: any) {
+      setEditError(e?.message || '保存失败，请稍后重试');
+    } finally {
+      setSavingEdits(false);
+    }
+  }, [collectPaperOps, onEditDocument, savingEdits]);
+
+  // 放弃修改：重挂载纸张，丢弃浏览器侧的 DOM 改动
+  const handleDiscardEdits = useCallback(() => {
+    window.clearTimeout(diffTimer.current);
+    setDirty(0);
+    setEditError('');
+    setResetKey((k) => k + 1);
+  }, []);
 
   // Download annotated docx
   const handleDownload = async () => {
@@ -828,7 +1023,7 @@ export default function ReviewPanel({
   const handleSelectTableAnn = useCallback(
     (e: React.MouseEvent) => {
       const a = (e.target as HTMLElement).closest(
-        'a[data-anchor-key]',
+        'a[data-anchor-key], mark[data-anchor-key]',
       ) as HTMLAnchorElement | null;
       if (a) {
         e.preventDefault();
@@ -845,9 +1040,26 @@ export default function ReviewPanel({
           animation: annFlash 1.5s ease-out;
         }
         @keyframes annFlash {
-          0% { box-shadow: 0 0 0 3px rgba(63,91,141,0.6); transform: scale(1.02); }
-          50% { box-shadow: 0 0 0 6px rgba(63,91,141,0.2); transform: scale(1); }
+          0% { box-shadow: 0 0 0 3px rgba(26,102,251,0.6); transform: scale(1.02); }
+          50% { box-shadow: 0 0 0 6px rgba(26,102,251,0.2); transform: scale(1); }
           100% { box-shadow: 0 0 0 0 transparent; transform: scale(1); }
+        }
+        /* 文件审核抽屉：自定义滑入滑出动画（覆盖 tailwindcss-animate 默认） */
+        @keyframes reviewDrawerIn {
+          from { transform: translateX(102%); }
+          to { transform: translateX(0); }
+        }
+        @keyframes reviewDrawerOut {
+          from { transform: translateX(0); }
+          to { transform: translateX(102%); }
+        }
+        .review-drawer[data-state='open'] {
+          animation: reviewDrawerIn 1s cubic-bezier(0.22, 1, 0.36, 1) both;
+          will-change: transform;
+        }
+        .review-drawer[data-state='closed'] {
+          animation: reviewDrawerOut 0.6s cubic-bezier(0.55, 0, 0.55, 0.2) both;
+          will-change: transform;
         }
       `}</style>
       {/* Header */}
@@ -867,7 +1079,7 @@ export default function ReviewPanel({
               <button
                 onClick={handleDownload}
                 disabled={downloading}
-                className="flex items-center gap-1.5 text-xs font-medium text-[#3F5B8D] hover:text-[#2E365A] px-2.5 py-1.5 rounded-lg hover:bg-[#F0F3FA] transition-colors disabled:opacity-50"
+                className="flex items-center gap-1.5 text-xs font-medium text-[#1a66fb] hover:text-[#0f56e0] px-2.5 py-1.5 rounded-lg hover:bg-[#F0F5FF] transition-colors disabled:opacity-50"
               >
                 {downloading ? (
                   <Loader2
@@ -900,7 +1112,7 @@ export default function ReviewPanel({
                 onClick={() => onFileChange?.(f.id, f.name)}
                 className={`shrink-0 text-xs px-2.5 py-1 rounded-md transition-colors cursor-pointer truncate max-w-[150px] ${
                   f.id === fileId
-                    ? 'bg-[#3F5B8D] text-white'
+                    ? 'bg-[#1a66fb] text-white'
                     : 'bg-[#F5F5F5] text-[#525252] hover:bg-[#EAEAEA]'
                 }`}
               >
@@ -985,71 +1197,146 @@ export default function ReviewPanel({
 
         {!loading && !error && content && (
           <div ref={wrapRef} className="relative flex items-start gap-4">
-            {/* 正文列 */}
-            <div
-              className="min-w-0 flex-1 space-y-3"
-              onMouseUp={handleContentMouseUp}
-            >
-              {content.paragraphs.map((para) => {
-                const targets = targetsByPara.get(para.index) || [];
-                const firstAi = (railByPara.get(para.index) || []).find(
-                  (i) => i.kind === 'ai',
-                );
-
-                let paraElement: React.ReactNode;
-                if (para.type === 'heading') {
-                  const HeadingTag =
-                    para.heading_level && para.heading_level <= 3
-                      ? (`h${para.heading_level + 1}` as keyof JSX.IntrinsicElements)
-                      : 'h3';
-                  paraElement = (
-                    <HeadingTag className="text-sm font-bold text-[#1A1A1A] mt-4 mb-1">
-                      {renderHighlighted(para.text, targets, handleAnchorClick)}
-                    </HeadingTag>
+            {/* 正文列：Word 纸张式排版（A4 白纸 + 宋体 + 页边距 + 阴影） */}
+            <div className="min-w-0 flex-1" onMouseUp={handleContentMouseUp}>
+              {/* 统一保存栏：有改动时吸顶显示 */}
+              {dirty > 0 && (
+                <div className="sticky top-0 z-10 mx-auto mb-2 flex max-w-[794px] items-center justify-between rounded-lg border border-[#1a66fb] bg-[#F0F5FF] px-3 py-2 shadow-sm">
+                  <span className="text-xs text-[#1a66fb]">
+                    已修改 {dirty} 处（保存将存为新版本）
+                  </span>
+                  <div className="flex gap-1.5">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 px-2.5 text-xs"
+                      disabled={savingEdits}
+                      onClick={handleDiscardEdits}
+                    >
+                      放弃修改
+                    </Button>
+                    <Button
+                      size="sm"
+                      className="h-7 px-2.5 text-xs"
+                      disabled={savingEdits}
+                      onClick={handleSaveEdits}
+                    >
+                      {savingEdits ? '保存中…' : '保存'}
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {editError && (
+                <div className="mx-auto mb-2 max-w-[794px] text-xs text-[#FF4D4F]">
+                  {editError}
+                </div>
+              )}
+              <div
+                key={`${fileId}-${resetKey}`}
+                ref={paperRef}
+                contentEditable={canEdit || undefined}
+                suppressContentEditableWarning
+                spellCheck={false}
+                onInput={handleDocInput}
+                className="mx-auto w-full max-w-[794px] space-y-2 border border-[#C9C9C9] bg-white px-[72px] py-[64px] shadow-[0_4px_24px_rgba(0,0,0,0.14)]"
+                style={{
+                  fontFamily: "'SimSun', '宋体', 'Times New Roman', serif",
+                }}
+              >
+                {content.paragraphs.map((para) => {
+                  const targets = targetsByPara.get(para.index) || [];
+                  const firstAi = (railByPara.get(para.index) || []).find(
+                    (i) => i.kind === 'ai',
                   );
-                } else if (para.type === 'table') {
-                  let tableHtml = para.text;
-                  if (firstAi?.ann) {
-                    tableHtml = highlightInTableHtml(
-                      tableHtml,
-                      firstAi.ann,
-                      firstAi.color,
-                      firstAi.key,
+
+                  let paraElement: React.ReactNode;
+                  if (para.type === 'heading') {
+                    const HeadingTag = (
+                      para.heading_level && para.heading_level <= 3
+                        ? `h${para.heading_level + 1}`
+                        : 'h3'
+                    ) as 'h2' | 'h3' | 'h4';
+                    paraElement = (
+                      <HeadingTag className="text-[15px] font-bold text-[#1A1A1A] mt-5 mb-2">
+                        {renderHighlighted(
+                          para.text,
+                          targets,
+                          handleAnchorClick,
+                        )}
+                      </HeadingTag>
+                    );
+                  } else if (para.type === 'table') {
+                    let tableHtml = para.text;
+                    if (firstAi?.ann) {
+                      tableHtml = highlightInTableHtml(
+                        tableHtml,
+                        getMatchedText(firstAi.ann),
+                        firstAi.color,
+                        firstAi.key,
+                      );
+                    }
+                    // 手动批注：表格内与正文同款 <mark> 高亮（anchor_start 消歧）
+                    for (const it of railByPara.get(para.index) || []) {
+                      if (it.kind !== 'comment') continue;
+                      const at = (it.comment?.anchor_text || '').trim();
+                      if (!at) continue;
+                      tableHtml = highlightInTableByAnchor(
+                        tableHtml,
+                        at,
+                        it.comment?.anchor_start,
+                        it.color,
+                        it.key,
+                      );
+                    }
+                    paraElement = (
+                      <div
+                        className="text-xs overflow-x-auto [&_table]:w-full [&_table]:border-collapse [&_th]:border [&_th]:border-[#D4D4D4] [&_th]:bg-[#F5F5F5] [&_th]:px-2 [&_th]:py-1 [&_th]:text-[#1A1A1A] [&_td]:border [&_td]:border-[#D4D4D4] [&_td]:px-2 [&_td]:py-1 [&_td]:text-[#333333]"
+                        onClick={handleSelectTableAnn}
+                        contentEditable={canEdit ? false : undefined}
+                        dangerouslySetInnerHTML={{
+                          __html: sanitizeTableHtml(tableHtml),
+                        }}
+                      />
+                    );
+                  } else if (para.type === 'image') {
+                    paraElement = (
+                      <div
+                        className="py-1 text-[13px] italic text-[#8A8A8A]"
+                        contentEditable={canEdit ? false : undefined}
+                      >
+                        {renderHighlighted(
+                          para.text,
+                          targets,
+                          handleAnchorClick,
+                        )}
+                      </div>
+                    );
+                  } else {
+                    paraElement = (
+                      <p
+                        className="text-[14px] leading-[2] text-justify text-[#333333]"
+                        style={{ textIndent: '2em' }}
+                      >
+                        {renderHighlighted(
+                          para.text,
+                          targets,
+                          handleAnchorClick,
+                        )}
+                      </p>
                     );
                   }
-                  paraElement = (
+
+                  return (
                     <div
-                      className="text-xs overflow-x-auto [&_table]:w-full [&_table]:border-collapse [&_th]:border [&_th]:border-[#D4D4D4] [&_th]:bg-[#F5F5F5] [&_th]:px-2 [&_th]:py-1 [&_th]:text-[#1A1A1A] [&_td]:border [&_td]:border-[#D4D4D4] [&_td]:px-2 [&_td]:py-1 [&_td]:text-[#333333]"
-                      onClick={handleSelectTableAnn}
-                      dangerouslySetInnerHTML={{
-                        __html: sanitizeTableHtml(tableHtml),
-                      }}
-                    />
-                  );
-                } else if (para.type === 'image') {
-                  paraElement = (
-                    <div className="text-xs text-[#8A8A8A] italic py-1">
-                      {renderHighlighted(para.text, targets, handleAnchorClick)}
+                      key={para.index}
+                      data-para-index={para.index}
+                      className="relative py-0.5"
+                    >
+                      {paraElement}
                     </div>
                   );
-                } else {
-                  paraElement = (
-                    <p className="text-xs leading-relaxed text-[#333333]">
-                      {renderHighlighted(para.text, targets, handleAnchorClick)}
-                    </p>
-                  );
-                }
-
-                return (
-                  <div
-                    key={para.index}
-                    data-para-index={para.index}
-                    className="px-2 py-0.5"
-                  >
-                    {paraElement}
-                  </div>
-                );
-              })}
+                })}
+              </div>
             </div>
 
             {/* 右侧批注栏 */}
@@ -1080,6 +1367,11 @@ export default function ReviewPanel({
                         author={commentAuthors?.[it.comment!.user_id || '']}
                         selected={selectedKey === it.key}
                         onSelect={() => handleAnchorClick(it.key)}
+                        canDelete={
+                          !!onDeleteComment &&
+                          it.comment!.user_id === currentUserId
+                        }
+                        onDelete={() => handleDeleteComment(it.comment!.id)}
                       />
                     )}
                   </div>
@@ -1114,6 +1406,69 @@ export default function ReviewPanel({
                   );
                 })}
               </svg>
+            )}
+
+            {/* 手动批注浮层：挂在正文容器内（absolute），贴着选中文案 */}
+            {pendingSel && onAddComment && !draft && (
+              <div
+                className="absolute z-[9999]"
+                style={{ left: pendingSel.x, top: pendingSel.y }}
+              >
+                <button
+                  onClick={() =>
+                    setDraft({
+                      x: Math.max(
+                        8,
+                        Math.min(pendingSel.x - 100, (layout.w || 800) - 310),
+                      ),
+                      y: Math.min(pendingSel.y + 8, (layout.h || 800) - 220),
+                      text: pendingSel.text,
+                      paraIndex: pendingSel.paraIndex,
+                      anchorStart: pendingSel.anchorStart,
+                      note: '',
+                    })
+                  }
+                  className="flex items-center gap-1 rounded-full border border-[#D6E2FF] bg-white px-2.5 py-1.5 text-xs font-medium text-[#1a66fb] shadow-lg hover:bg-[#F0F5FF]"
+                >
+                  <Plus className="h-3 w-3" strokeWidth={2.5} />
+                  添加批注
+                </button>
+              </div>
+            )}
+            {draft && (
+              <div
+                className="absolute z-[10000] w-72 rounded-xl border border-[#E5E5E5] bg-white p-2.5 shadow-xl"
+                style={{ left: draft.x, top: draft.y }}
+              >
+                <div className="mb-1.5 truncate rounded border-l-2 border-[#1a66fb] bg-[#F5F8FF] px-1.5 py-0.5 text-[10px] text-[#666]">
+                  锚点：{draft.text}
+                </div>
+                <Textarea
+                  autoFocus
+                  value={draft.note}
+                  onChange={(e) => setDraft({ ...draft, note: e.target.value })}
+                  placeholder="输入批注内容…"
+                  className="min-h-[60px] text-xs"
+                />
+                <div className="mt-1.5 flex justify-end gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 px-2.5 text-xs"
+                    onClick={() => setDraft(null)}
+                  >
+                    取消
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="h-7 px-2.5 text-xs"
+                    disabled={!draft.note.trim() || submittingComment}
+                    onClick={submitComment}
+                  >
+                    {submittingComment ? '提交中…' : '确定'}
+                  </Button>
+                </div>
+              </div>
             )}
           </div>
         )}
@@ -1154,6 +1509,10 @@ export default function ReviewPanel({
                       author={commentAuthors?.[c.user_id || '']}
                       selected={false}
                       onSelect={() => {}}
+                      canDelete={
+                        !!onDeleteComment && c.user_id === currentUserId
+                      }
+                      onDelete={() => handleDeleteComment(c.id)}
                     />
                   ),
                 )}
@@ -1167,68 +1526,6 @@ export default function ReviewPanel({
           </div>
         )}
       </div>
-
-      {/* 手动批注浮层（fixed，选中文字后出现） */}
-      {pendingSel && onAddComment && !draft && (
-        <div
-          className="fixed z-[9999]"
-          style={{ left: pendingSel.x, top: pendingSel.y + 4 }}
-        >
-          <button
-            onClick={() =>
-              setDraft({
-                x: Math.max(
-                  8,
-                  Math.min(pendingSel.x - 100, window.innerWidth - 310),
-                ),
-                y: Math.min(pendingSel.y + 8, window.innerHeight - 200),
-                text: pendingSel.text,
-                paraIndex: pendingSel.paraIndex,
-                note: '',
-              })
-            }
-            className="flex items-center gap-1 rounded-full border border-[#D6E2FF] bg-white px-2.5 py-1.5 text-xs font-medium text-[#1a66fb] shadow-lg hover:bg-[#F0F5FF]"
-          >
-            <Plus className="h-3 w-3" strokeWidth={2.5} />
-            添加批注
-          </button>
-        </div>
-      )}
-      {draft && (
-        <div
-          className="fixed z-[10000] w-72 rounded-xl border border-[#E5E5E5] bg-white p-2.5 shadow-xl"
-          style={{ left: draft.x, top: draft.y }}
-        >
-          <div className="mb-1.5 truncate rounded border-l-2 border-[#1a66fb] bg-[#F5F8FF] px-1.5 py-0.5 text-[10px] text-[#666]">
-            锚点：{draft.text}
-          </div>
-          <Textarea
-            autoFocus
-            value={draft.note}
-            onChange={(e) => setDraft({ ...draft, note: e.target.value })}
-            placeholder="输入批注内容…"
-            className="min-h-[60px] text-xs"
-          />
-          <div className="mt-1.5 flex justify-end gap-1.5">
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 px-2.5 text-xs"
-              onClick={() => setDraft(null)}
-            >
-              取消
-            </Button>
-            <Button
-              size="sm"
-              className="h-7 px-2.5 text-xs"
-              disabled={!draft.note.trim() || submittingComment}
-              onClick={submitComment}
-            >
-              {submittingComment ? '提交中…' : '确定'}
-            </Button>
-          </div>
-        </div>
-      )}
     </>
   );
 
@@ -1248,8 +1545,8 @@ export default function ReviewPanel({
       }}
     >
       <SheetContent
-        className="max-w-full p-0 duration-500 ease-out"
-        style={{ width: '58vw', maxWidth: '860px' }}
+        className="review-drawer max-w-full overflow-hidden bg-white p-0 text-[#1A1A1A]"
+        style={{ width: '72vw', maxWidth: '1200px' }}
       >
         {innerContent}
       </SheetContent>
