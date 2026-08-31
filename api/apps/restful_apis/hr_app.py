@@ -5,6 +5,7 @@
 - HR 管理接口（建档/全员汇总/补卡/月度归档/规则配置写）：@permission_required("hr_manage")
 """
 import logging
+import re
 from datetime import date, datetime
 
 from quart import Blueprint, request
@@ -38,6 +39,15 @@ def _require_employee():
 def _client_ip() -> str:
     fwd = request.headers.get("X-Forwarded-For", "")
     return (fwd.split(",")[0].strip() if fwd else request.remote_addr) or ""
+
+
+_MONTH_RE = re.compile(r"^(\d{4})-(0[1-9]|1[0-2])$")
+
+
+def _parse_month(month: str):
+    """'YYYY-MM'（严格零填充）-> (year, month)；非法返回 None。"""
+    m = _MONTH_RE.match(month or "")
+    return (int(m.group(1)), int(m.group(2))) if m else None
 
 
 def _emp_dict(emp) -> dict:
@@ -89,7 +99,6 @@ async def hr_attendance_punch():
     emp, err = _require_employee()
     if err:
         return err
-    body = await request.get_json(silent=True) or {}
     try:
         rec = HrAttendanceRecordService.punch(emp.id, source="web", ip=_client_ip())
     except ValueError as e:
@@ -116,17 +125,16 @@ async def hr_attendance_calendar():
     if err:
         return err
     month = request.args.get("month", "")  # YYYY-MM
-    try:
-        year, mon = int(month[:4]), int(month[5:7])
-        if not (1 <= mon <= 12):
-            raise ValueError
-    except ValueError:
+    parsed = _parse_month(request.args.get("month", ""))
+    if not parsed:
         return get_data_error_result(message="month 格式应为 YYYY-MM")
+    year, mon = parsed
     # 已落盘行优先；今日及之前的无行日期实时推导（不落盘）
     rows = {str(r.work_date): _day_dict(r)
             for r in HrAttendanceDayService.month_days(emp.id, month)}
     import calendar as _cal
     today = date.today()
+    rule = HrRuleConfigService.get_config()
     days = []
     for d in range(1, _cal.monthrange(year, mon)[1] + 1):
         wd = date(year, mon, d)
@@ -135,7 +143,7 @@ async def hr_attendance_calendar():
             days.append(rows[key])
         elif wd <= today:
             records = HrAttendanceRecordService.list_day(emp.id, wd)
-            derived = derive_day_status(records, wd, HrRuleConfigService.get_config())
+            derived = derive_day_status(records, wd, rule)
             days.append({"work_date": key, "status": derived["status"],
                          "first_in": str(derived["first_in"] or ""),
                          "last_out": str(derived["last_out"] or ""),
@@ -171,8 +179,8 @@ async def hr_employee_list():
 @permission_required("hr_manage")
 async def hr_employee_create():
     body = await request.get_json(silent=True) or {}
-    user_id = (body.get("user_id") or "").strip()
-    emp_no = (body.get("emp_no") or "").strip()
+    user_id = str(body.get("user_id") or "").strip()
+    emp_no = str(body.get("emp_no") or "").strip()
     if not user_id or not emp_no:
         return get_data_error_result(message="user_id 和 emp_no 必填")
     entry = None
@@ -183,8 +191,8 @@ async def hr_employee_create():
             return get_data_error_result(message="entry_date 格式应为 YYYY-MM-DD")
     try:
         emp = HrEmployeeService.create_employee(
-            user_id, emp_no, department=body.get("department", ""),
-            position=body.get("position", ""), entry_date=entry)
+            user_id, emp_no, department=str(body.get("department") or ""),
+            position=str(body.get("position") or ""), entry_date=entry)
     except ValueError as e:
         return get_data_error_result(message=str(e))
     return get_json_result(data=_emp_dict(emp))
@@ -198,7 +206,7 @@ async def hr_attendance_repair():
     if not emp:
         return get_data_error_result(message="员工不存在")
     try:
-        pt = datetime.strptime(body.get("punch_time", ""), "%Y-%m-%d %H:%M:%S")
+        pt = datetime.strptime(body.get("punch_time") or "", "%Y-%m-%d %H:%M:%S")
     except ValueError:
         return get_data_error_result(message="punch_time 格式应为 YYYY-MM-DD HH:MM:SS")
     try:
@@ -215,15 +223,15 @@ async def hr_attendance_repair():
 async def hr_attendance_day_list():
     month = request.args.get("month", "")
     work_date = request.args.get("date", "")  # 可选：查某天全员
-    try:
-        year, mon = int(month[:4]), int(month[5:7])
-        if not (1 <= mon <= 12):
-            raise ValueError
-    except ValueError:
+    parsed = _parse_month(month)
+    if not parsed:
+        return get_data_error_result(message="month 格式应为 YYYY-MM")
+    year, mon = parsed
+    if year < 1:
         return get_data_error_result(message="month 格式应为 YYYY-MM")
     query = HrAttendanceDay.select().join(
         HrEmployee, on=(HrAttendanceDay.employee_id == HrEmployee.id))
-    from datetime import date as _date, timedelta as _td
+    from datetime import date as _date
     start = _date(year, mon, 1)
     nxt = _date(year + 1, 1, 1) if mon == 12 else _date(year, mon + 1, 1)
     query = query.where(HrAttendanceDay.work_date >= start,
@@ -247,12 +255,13 @@ async def hr_attendance_day_list():
 async def hr_attendance_month_close():
     body = await request.get_json(silent=True) or {}
     month = (body.get("month") or "").strip()
-    try:
-        year, mon = int(month[:4]), int(month[5:7])
-        if not (1 <= mon <= 12):
-            raise ValueError
-    except ValueError:
+    parsed = _parse_month(month)
+    if not parsed:
         return get_data_error_result(message="month 格式应为 YYYY-MM")
+    year, mon = parsed
+    if year < 1:
+        return get_data_error_result(message="month 格式应为 YYYY-MM")
+    month = f"{year:04d}-{mon:02d}"
     try:
         stats = HrAttendanceMonthService.close_month(month, current_user.id)
     except Exception as e:
@@ -280,8 +289,33 @@ async def hr_rule_config_get():
     return get_json_result(data=HrRuleConfigService.get_config())
 
 
+_NUMERIC_RULE_KEYS = {
+    "late_threshold_minutes", "late_deduction", "absent_deduction_multiplier",
+    "overtime_rate_weekday", "overtime_rate_weekend",
+    "holiday_overtime_multiplier", "pay_days",
+}
+
+
+def _sanitize_rule_payload(body: dict) -> dict:
+    """数值键强转 float（失败拒绝），其余键只接受 str，防毒化配置导致全线500。"""
+    clean = {}
+    for k, v in (body or {}).items():
+        if k in _NUMERIC_RULE_KEYS:
+            try:
+                clean[k] = float(v)
+            except (TypeError, ValueError):
+                raise ValueError(f"规则项 {k} 必须是数字")
+        else:
+            clean[k] = str(v)
+    return clean
+
+
 @manager.route("/hr/rule-config", methods=["PUT"])  # noqa: F821
 @permission_required("hr_manage")
 async def hr_rule_config_put():
     body = await request.get_json(silent=True) or {}
-    return get_json_result(data=HrRuleConfigService.save_config(body))
+    try:
+        payload = _sanitize_rule_payload(body)
+    except ValueError as e:
+        return get_data_error_result(message=str(e))
+    return get_json_result(data=HrRuleConfigService.save_config(payload))
