@@ -350,11 +350,13 @@ def _parse_runs(raw):
         return None
     if not isinstance(raw, list) or not raw:
         raise ValueError("runs 必须是非空数组或省略")
+    if len(raw) > 500:
+        raise ValueError("runs 片段数量超限（最多 500）")
     parsed = []
     for r in raw:
         if not isinstance(r, dict):
             raise ValueError("runs 项格式非法")
-        text = str(r.get("text") or "")
+        text = _CTRL_CHARS.sub("", str(r.get("text") or ""))
         if not text:
             raise ValueError("runs 片段文本不能为空")
         item = {"text": text}
@@ -385,7 +387,12 @@ def _parse_runs(raw):
 
 
 def _replace_para_text(p: DocxParagraph, new_text: str):
-    """整段替换文本：保留首 run 格式（沿用段落样式），其余 run 清空。"""
+    """整段替换文本：保留首 run 格式（沿用段落样式），其余 run 清空。
+    超链接/域先移除——p.runs 不覆盖其内部 run，残留会导致新旧文本拼接。"""
+    el = p._element
+    for child in list(el):
+        if child.tag in (qn("w:hyperlink"), qn("w:fldSimple")):
+            el.remove(child)
     runs = p.runs
     if runs:
         runs[0].text = new_text
@@ -409,8 +416,12 @@ def _set_run_font(run, name: str):
 def _apply_runs(p: DocxParagraph, runs):
     """按 runs 重写段落文本 run（保留段落级 style/对齐）。
     runs 经 _parse_runs 校验。bg_color 用 w:shd 底纹实现。"""
-    for r in list(p.runs):
-        r._element.getparent().remove(r._element)
+    # 清空段落内联内容：除直接 run 外还要移除超链接/域（p.runs 不覆盖它们，
+    # 残留会拼接进重写后的段落）；保留 pPr 段落属性
+    el = p._element
+    for child in list(el):
+        if child.tag in (qn("w:r"), qn("w:hyperlink"), qn("w:fldSimple")):
+            el.remove(child)
     for item in runs:
         run = p.add_run(item["text"])
         if item.get("bold"):
@@ -474,7 +485,7 @@ async def edit_document(flow_id: str):
                 para_index = int(e.get("para_index"))
             except (TypeError, ValueError):
                 return _err("para_index 必须是整数", 101)
-            new_text = str(e.get("new_text") or "").strip()
+            new_text = _CTRL_CHARS.sub("", str(e.get("new_text") or "")).strip()
             if not new_text:
                 return _err("段落内容不能为空", 101)
             if len(new_text) > 20000:
@@ -483,17 +494,23 @@ async def edit_document(flow_id: str):
                 runs = _parse_runs(e.get("runs"))
             except ValueError as ve:
                 return _err(f"段落 {para_index} runs 格式非法：{ve}", 101)
-            if runs and "".join(x["text"] for x in runs) != new_text:
+            # 前端 newText 为 trim 后文本而 runs 来自未 trim 的块文本，两侧 strip 后再比
+            if runs and "".join(x["text"] for x in runs).strip() != new_text:
                 return _err(f"段落 {para_index} runs 文本与 new_text 不一致", 101)
             parsed_edits.append((para_index, new_text, runs))
             edit_indexes.add(para_index)
 
         parsed_deletes = []
+        seen_deletes = set()
         for d in deletes:
             try:
-                parsed_deletes.append(int(d))
+                idx = int(d)
             except (TypeError, ValueError):
                 return _err("deletes 项必须是整数段落号", 101)
+            if idx in seen_deletes:
+                return _err(f"段落 {idx} 重复删除", 101)
+            seen_deletes.add(idx)
+            parsed_deletes.append(idx)
         overlap = edit_indexes & set(parsed_deletes)
         if overlap:
             return _err(f"段落 {sorted(overlap)} 不能同时修改和删除", 101)
@@ -506,7 +523,7 @@ async def edit_document(flow_id: str):
                 after = int(ins.get("after_para_index"))
             except (TypeError, ValueError):
                 return _err("after_para_index 必须是整数（-1 表示文档开头）", 101)
-            new_text = str(ins.get("new_text") or "").strip()
+            new_text = _CTRL_CHARS.sub("", str(ins.get("new_text") or "")).strip()
             if not new_text:
                 return _err("新段落内容不能为空", 101)
             if len(new_text) > 20000:
@@ -515,7 +532,7 @@ async def edit_document(flow_id: str):
                 runs = _parse_runs(ins.get("runs"))
             except ValueError as ve:
                 return _err(f"新段落 runs 格式非法：{ve}", 101)
-            if runs and "".join(x["text"] for x in runs) != new_text:
+            if runs and "".join(x["text"] for x in runs).strip() != new_text:
                 return _err(f"新段落 runs 文本与 new_text 不一致", 101)
             parsed_inserts.append((after, new_text, runs))
 
@@ -524,6 +541,10 @@ async def edit_document(flow_id: str):
         )
         if not version:
             return _err("版本不存在", 404)
+        # 只允许编辑当前版本：编辑历史版本会以 add_version 落成最新版，
+        # 等于把文件内容悄悄回滚，绕过「文档已变化请刷新」保护
+        if version_id != flow["current_version_id"]:
+            return _err("文档已有新版本，请刷新后重试", 101)
 
         blob = await thread_pool_exec(settings.STORAGE_IMPL.get, _bucket_of(flow), version["file_path"])
         if not blob:
@@ -573,6 +594,7 @@ async def edit_document(flow_id: str):
             located_deletes.append(entry[2])
 
         located_inserts = []  # (mode, ref_paragraph|None, text, style_src|None, runs|None)
+        delete_set = set(parsed_deletes)
         for after, new_text, runs in parsed_inserts:
             if after >= 0 and para_map.get(after) is None and after != -1:
                 return _err(f"插入位置 {after} 无效", 101)
@@ -581,8 +603,14 @@ async def edit_document(flow_id: str):
                 anchor = para_map.get(after)
                 if anchor and anchor[0] == "p":
                     style_src = anchor[1]
+            # 插入参照段必须跳过本请求将删除的段落：ref 先被删会脱离文档树，
+            # insert_paragraph_before 对已分离元素静默写入空气段（内容丢失）
             nxt = next(
-                (para_map[k][1] for k in keys_sorted if k > after and para_map[k][0] == "p"),
+                (
+                    para_map[k][1]
+                    for k in keys_sorted
+                    if k > after and k not in delete_set and para_map[k][0] == "p"
+                ),
                 None,
             )
             if nxt is not None:
@@ -590,27 +618,31 @@ async def edit_document(flow_id: str):
             else:
                 located_inserts.append(("append", None, new_text, style_src, runs))
 
-        # 应用顺序：删除 → 插入 → 改写（改写持有元素引用，不受结构变化影响）
-        for p in located_deletes:
-            el = p._element
-            el.getparent().remove(el)
-        for mode, ref, new_text, style_src, runs in located_inserts:
-            if mode == "append":
-                new_p = doc.add_paragraph(new_text)
-            else:
-                new_p = ref.insert_paragraph_before(new_text)
-            if style_src is not None:
-                try:
-                    new_p.style = style_src.style
-                except Exception:
-                    pass
-            if runs is not None:
-                _apply_runs(new_p, runs)
-        for target, new_text, runs in located_edits:
-            if runs is not None:
-                _apply_runs(target, runs)
-            else:
-                _replace_para_text(target, new_text)
+        # 应用顺序：删除 → 插入 → 改写（改写持有元素引用，不受结构变化影响）；
+        # 逐 run 的 oxml 操作是 CPU 密集，放线程池避免阻塞事件循环
+        def _apply_ops():
+            for p in located_deletes:
+                el = p._element
+                el.getparent().remove(el)
+            for mode, ref, text, style_src, rns in located_inserts:
+                if mode == "append":
+                    new_p = doc.add_paragraph(text)
+                else:
+                    new_p = ref.insert_paragraph_before(text)
+                if style_src is not None:
+                    try:
+                        new_p.style = style_src.style
+                    except Exception:
+                        pass
+                if rns is not None:
+                    _apply_runs(new_p, rns)
+            for target, text, rns in located_edits:
+                if rns is not None:
+                    _apply_runs(target, rns)
+                else:
+                    _replace_para_text(target, text)
+
+        await thread_pool_exec(_apply_ops)
 
         out = BytesIO()
         await thread_pool_exec(doc.save, out)
