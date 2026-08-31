@@ -1,5 +1,27 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-08-31 文件审核：Word 式工具栏（run 级格式落盘）
+
+**核心变更**
+- 文件审核编辑器顶部新增 Word ribbon 简化风工具栏（docx-toolbar.tsx，portal 到父级吸顶容器）：撤销/重做、正文↔标题 2/3/4 块类型、7 种字体 + 10 档中文字号、B/I/U/S/上标/下标、字色/背景高亮色板、四向对齐、有序/无序列表、增减缩进、清除格式、右侧「已修改 N 处」+ 保存/放弃修改
+- run 级格式落盘全链路：`$extractRuns` 从编辑器模型抽 run 序列（format 位 + style 串 → DocxRun，相邻同样式合并，高亮 bg 不落盘）→ docx-diff.ts 双比较（文本变 → edit；文本同但 fmtSig 变 → 纯格式 edit，TDD 单测）→ 后端 `_parse_runs` 白名单校验（6 布尔/颜色 ^#hex/字号 1-200pt/字体 50 字/≤500 片段，控制字符清洗）→ `_apply_runs` 用 python-docx 逐 run 重建段落（bg 用 w:shd、字体同时设 ascii+eastAsia），新版本 source=manual_edit
+- 后端健壮性加固（质量审查 1 Critical + 5 Important 全修复）：删除+插入组合时插入参照段跳过待删段（防静默丢数据）；重写前移除 w:hyperlink/w:fldSimple（防超链接 run 残留拼接）；runs 与 new_text strip 后一致性校验；deletes 去重校验；ooxml 操作包 thread_pool_exec 防阻塞事件循环；仅允许编辑 current_version_id（防历史版本静默回滚）
+- 工具栏交互细节：DropdownMenu（modal 抢焦点）用 lastSelRef 缓存选区 apply 前回挂；Popover 色板 onOpenAutoFocus preventDefault 保选区；激活态订阅 selection 变化同步；全部按钮 onMouseDown preventDefault
+- E2E 实测（dev 9222，真实 Playwright 点击）：B/I 应用+激活态+回退、纯格式改动 dirty 识别与保存归零、字号/字体下拉保选区、保存全链路（新版本生成→编辑器重挂载→工具栏保留）、无序列表（ListPlugin）与缩进（自建 IndentPlugin，0-8 封顶，纯视觉不计 dirty）修复后复测通过、向后兼容（旧后端忽略 runs 不报错）
+
+**遗留**
+- 对齐/缩进/块类型切换不进落盘契约：编辑器内视觉生效，保存后丢失（docx 段落级属性未纳入 diff，规格级缺口，待评估是否补契约）
+- 新版本文件名 `_edited` 后缀累积（多次编辑成 `xxx_edited_edited.docx`）
+- 保存后编辑器重挂载为纯文本灌入，已应用 run 格式不回显（初始灌入设计如此）
+- runs 落盘 docx 核验需后端进程重启后补验（本地容器进程内存代码仍为旧版）
+- 后端 flow_app.py 本轮改动未部署服务器（待用户确认）
+- 生产前端 dist 未部署
+
+## 2026-08-31 流程页签：批注模块去掉直接发表入口
+
+**核心变更**
+- 流程详情左侧批注模块（flow-detail.tsx portal）移除底部「填写批注意见」输入框与「发表批注」按钮，批注区仅保留只读列表（连带清理 commentText state、handleAddComment、Textarea/addFlowComment 引用）；文件审核面板内的选字批注入口不受影响
+
 ## 2026-08-31 文件审核：Lexical 编辑器替换手写 contentEditable
 
 **核心变更**
