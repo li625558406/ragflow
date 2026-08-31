@@ -36,7 +36,7 @@
 ├── docx-diff.ts              修改：EditorBlock 增 runs + fmtSig；diff 升级「文本+格式」双比较
 ├── docx-diff.test.ts         修改：新增 runs/fmtSig 用例
 ├── review-panel.tsx          修改：删除旧吸顶保存栏（整合进工具栏右侧）；保存 payload 增 runs
-└── flow-service.ts           修改：editFlowDocument 增加 runs 字段转换（camel→snake）
+└── flow-service.ts           修改：editFlowDocument 透传 runs（Run 字段已按契约 snake_case，无需逐字段转换）
 
 后端
 ├── api/apps/restful_apis/flow_app.py   修改：/document/edit 解析可选 runs
