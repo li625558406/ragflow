@@ -84,7 +84,7 @@ def derive_day_status(records, work_date, rule, leave_status=None):
     返回 {status, first_in, last_out, late_minutes, punch_count}。
     status ∈ normal|late|rest|missing|abnormal|leave|business_trip
     （absent 由月度确认时从 missing 转换，不在此函数产生）。
-    优先级：有效假单 > abnormal > 迟到/正常判定 > rest > missing。
+    优先级：有效假单 > abnormal > rest > missing > 迟到/正常判定。
     """
     status = {
         "status": "missing", "first_in": None, "last_out": None,
@@ -119,7 +119,7 @@ def derive_day_status(records, work_date, rule, leave_status=None):
     # 5) 迟到判定：最早打卡时间 > 上班时间 + 阈值
     work_start = _parse_hm(rule.get("work_start"), time(9, 0))
     try:
-        threshold = int(rule.get("late_threshold_minutes", 10) or 0)
+        threshold = max(0, int(rule.get("late_threshold_minutes", 10) or 0))
     except (ValueError, TypeError):
         threshold = 10
     limit = datetime.combine(work_date, work_start) + timedelta(minutes=threshold)
