@@ -29,6 +29,7 @@ import {
   $isRangeSelection,
   $isRootNode,
   $isTextNode,
+  $setSelection,
   FORMAT_ELEMENT_COMMAND,
   FORMAT_TEXT_COMMAND,
   INDENT_CONTENT_COMMAND,
@@ -37,6 +38,7 @@ import {
   UNDO_COMMAND,
   type ElementNode,
   type LexicalNode,
+  type RangeSelection,
 } from 'lexical';
 import {
   AlignCenter,
@@ -53,7 +55,7 @@ import {
   RemoveFormatting,
   Undo2,
 } from 'lucide-react';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { mergeStyle, parseStyle } from './docx-format-utils';
 import {
@@ -156,9 +158,8 @@ function GroupDivider() {
 }
 
 /** 下拉触发按钮（块类型/字体/字号共用）。
- * onMouseDown preventDefault + onOpenAutoFocus preventDefault（见各
- * DropdownMenuContent）双保险：防止打开菜单/点击菜单项时焦点移走导致
- * Lexical 选区塌陷——否则选值时 $isRangeSelection 不通过，静默无效 */
+ * onMouseDown preventDefault 防止点击瞬间丢选区；Radix 菜单抢焦点导致
+ * 的选区塌陷由主组件的 lastSelRef 回挂兜底（$ensureSelection） */
 function SelectTrigger({ label, width }: { label: string; width: string }) {
   return (
     <DropdownMenuTrigger asChild>
@@ -194,20 +195,18 @@ function MenuItem({
   );
 }
 
-/** 菜单/浮层打开时不抢焦点（保 Lexical 选区），各 DropdownMenuContent /
- * PopoverContent 统一挂这个 */
+/** 浮层（色板 Popover）打开时不抢焦点（保 Lexical 选区） */
 const keepFocus = (e: Event) => e.preventDefault();
 
 // ── 编辑器内操作（须在 editor.update / editorState.read 内） ──
 
 /** 给选区 extract 出的节点设置/剔除 inline style（setStyle 存在才调，
- * 兼容 ElementNode 等无 style 的节点） */
+ * 兼容 ElementNode 等无 style 的节点）；sel 由调用方 $ensureSelection 提供 */
 function $applySelectionStyle(
+  sel: RangeSelection,
   set: Record<string, string>,
   removeKeys: string[] = [],
 ): void {
-  const sel = $getSelection();
-  if (!$isRangeSelection(sel)) return;
   for (const n of sel.extract()) {
     const anyN = n as {
       setStyle?: (s: string) => void;
@@ -219,10 +218,8 @@ function $applySelectionStyle(
   }
 }
 
-/** 清除选区格式：style 清空 + 文本 format 位清零 + 块对齐回左 */
-function $clearSelectionFormat(): void {
-  const sel = $getSelection();
-  if (!$isRangeSelection(sel)) return;
+/** 清除选区格式：style 清空 + 文本 format 位清零 */
+function $clearSelectionFormat(sel: RangeSelection): void {
   for (const n of sel.extract()) {
     const anyN = n as {
       setStyle?: (s: string) => void;
@@ -251,6 +248,9 @@ export default function DocxToolbar({
   onDiscard: () => void;
 }) {
   const [editor] = useLexicalComposerContext();
+  // 最近一次有效选区缓存：Radix DropdownMenu 为 modal 且公开类型不含
+  // onOpenAutoFocus，打开菜单会抢焦点丢 DOM selection；apply 前用缓存回挂
+  const lastSelRef = useRef<RangeSelection | null>(null);
   const [hasSel, setHasSel] = useState(false);
   const [fmt, setFmt] = useState(0);
   const [blockKind, setBlockKind] = useState<'p' | 'h'>('p');
@@ -269,6 +269,7 @@ export default function DocxToolbar({
           return;
         }
         setHasSel(true);
+        lastSelRef.current = sel;
         setFmt(sel.format);
 
         // 锚点上溯到根下第一层顶级块
@@ -310,6 +311,18 @@ export default function DocxToolbar({
 
   if (!portal) return null;
 
+  /** apply 前取可用选区：当前无效则回挂最近缓存（editor.update 内调用） */
+  const $ensureSelection = (): RangeSelection | null => {
+    const sel = $getSelection();
+    if ($isRangeSelection(sel)) return sel;
+    const cached = lastSelRef.current;
+    if (cached && $isRangeSelection(cached)) {
+      $setSelection(cached.clone());
+      return cached;
+    }
+    return null;
+  };
+
   const sizeLabel =
     FONT_SIZES.find(
       (s) => String(s.pt) === parseFloat(fontSize || '').toString(),
@@ -319,24 +332,32 @@ export default function DocxToolbar({
 
   const applyFont = (name: string) => {
     editor.update(() => {
-      $applySelectionStyle({ 'font-family': name });
+      const sel = $ensureSelection();
+      if (!sel) return;
+      $applySelectionStyle(sel, { 'font-family': name });
     });
   };
   const applySize = (pt: number) => {
     editor.update(() => {
-      $applySelectionStyle({ 'font-size': `${pt}pt` });
+      const sel = $ensureSelection();
+      if (!sel) return;
+      $applySelectionStyle(sel, { 'font-size': `${pt}pt` });
     });
   };
   const applyColor = (hex: string | null) => {
     editor.update(() => {
-      if (hex) $applySelectionStyle({ color: hex });
-      else $applySelectionStyle({}, ['color']);
+      const sel = $ensureSelection();
+      if (!sel) return;
+      if (hex) $applySelectionStyle(sel, { color: hex });
+      else $applySelectionStyle(sel, {}, ['color']);
     });
   };
   const applyBg = (hex: string | null) => {
     editor.update(() => {
-      if (hex) $applySelectionStyle({ 'background-color': hex });
-      else $applySelectionStyle({}, ['background-color']);
+      const sel = $ensureSelection();
+      if (!sel) return;
+      if (hex) $applySelectionStyle(sel, { 'background-color': hex });
+      else $applySelectionStyle(sel, {}, ['background-color']);
     });
   };
   const toggleText = (
@@ -352,6 +373,12 @@ export default function DocxToolbar({
   };
   const alignTo = (t: 'left' | 'center' | 'right' | 'justify') => {
     editor.dispatchCommand(FORMAT_ELEMENT_COMMAND, t);
+  };
+  const applyBlock = (make: (i: number | undefined) => ElementNode) => {
+    editor.update(() => {
+      if (!$ensureSelection()) return;
+      $applyDocxBlockType(make);
+    });
   };
 
   return createPortal(
@@ -378,46 +405,26 @@ export default function DocxToolbar({
             label={blockKind === 'h' ? '标题' : '正文'}
             width="w-16"
           />
-          <DropdownMenuContent
-            align="start"
-            className="w-32"
-            onOpenAutoFocus={keepFocus}
-          >
+          <DropdownMenuContent align="start" className="w-32">
             <MenuItem
               active={blockKind === 'p'}
-              onClick={() =>
-                editor.update(() => {
-                  $applyDocxBlockType((i) => new DocxParagraphNode(i));
-                })
-              }
+              onClick={() => applyBlock((i) => new DocxParagraphNode(i))}
             >
               正文
             </MenuItem>
             <MenuItem
               active={blockKind === 'h'}
-              onClick={() =>
-                editor.update(() => {
-                  $applyDocxBlockType((i) => new DocxHeadingNode('h2', i));
-                })
-              }
+              onClick={() => applyBlock((i) => new DocxHeadingNode('h2', i))}
             >
               标题 2
             </MenuItem>
             <MenuItem
-              onClick={() =>
-                editor.update(() => {
-                  $applyDocxBlockType((i) => new DocxHeadingNode('h3', i));
-                })
-              }
+              onClick={() => applyBlock((i) => new DocxHeadingNode('h3', i))}
             >
               标题 3
             </MenuItem>
             <MenuItem
-              onClick={() =>
-                editor.update(() => {
-                  $applyDocxBlockType((i) => new DocxHeadingNode('h4', i));
-                })
-              }
+              onClick={() => applyBlock((i) => new DocxHeadingNode('h4', i))}
             >
               标题 4
             </MenuItem>
@@ -428,11 +435,7 @@ export default function DocxToolbar({
         {/* 字体 */}
         <DropdownMenu>
           <SelectTrigger label={fontFamily || '字体'} width="w-24" />
-          <DropdownMenuContent
-            align="start"
-            className="w-40"
-            onOpenAutoFocus={keepFocus}
-          >
+          <DropdownMenuContent align="start" className="w-40">
             {FONT_FAMILIES.map((f) => (
               <MenuItem
                 key={f}
@@ -448,11 +451,7 @@ export default function DocxToolbar({
         {/* 字号 */}
         <DropdownMenu>
           <SelectTrigger label={sizeLabel} width="w-20" />
-          <DropdownMenuContent
-            align="start"
-            className="w-28"
-            onOpenAutoFocus={keepFocus}
-          >
+          <DropdownMenuContent align="start" className="w-28">
             {FONT_SIZES.map((s) => (
               <MenuItem
                 key={s.label}
@@ -682,7 +681,8 @@ export default function DocxToolbar({
           disabled={!hasSel}
           onClick={() => {
             editor.update(() => {
-              $clearSelectionFormat();
+              const sel = $ensureSelection();
+              if (sel) $clearSelectionFormat(sel);
             });
             editor.dispatchCommand(FORMAT_ELEMENT_COMMAND, 'left');
           }}
