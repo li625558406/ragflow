@@ -21,8 +21,8 @@ import {
   COMMAND_PRIORITY_HIGH,
   DecoratorNode,
   EditorConfig,
-  ElementFormatType,
   LexicalEditor,
+  LexicalUpdateJSON,
   NodeKey,
   ParagraphNode,
   PASTE_COMMAND,
@@ -65,15 +65,7 @@ export class DocxParagraphNode extends ParagraphNode {
 
   static importJSON(json: Record<string, unknown>): DocxParagraphNode {
     const node = new DocxParagraphNode(json.paraIndex as number | undefined);
-    node.setFormat(
-      (typeof json.format === 'number'
-        ? json.format
-        : 0) as unknown as ElementFormatType,
-    );
-    node.setIndent(typeof json.indent === 'number' ? json.indent : 0);
-    if (typeof json.direction === 'string')
-      node.setDirection(json.direction as 'ltr' | 'rtl' | null);
-    if (typeof json.style === 'string') node.setStyle(json.style);
+    node.updateFromJSON(json as LexicalUpdateJSON<SerializedParagraphNode>);
     return node;
   }
 
@@ -132,12 +124,7 @@ export class DocxHeadingNode extends HeadingNode {
       (json.tag as HeadingTagType) || 'h3',
       json.paraIndex as number | undefined,
     );
-    node.setFormat(
-      (typeof json.format === 'number'
-        ? json.format
-        : 0) as unknown as ElementFormatType,
-    );
-    node.setIndent(typeof json.indent === 'number' ? json.indent : 0);
+    node.updateFromJSON(json as LexicalUpdateJSON<SerializedHeadingNode>);
     return node;
   }
 
@@ -332,8 +319,8 @@ export function collectEditorOps(
 
 // ── 插件 ────────────────────────────────────────────────────
 
-/** 批注高亮：targetsByPara 变化时（挂载/标注批注增删）重建高亮片段；
- * 打字过程绝不重拆，避免光标跳动 */
+/** 批注高亮：targetsByPara 身份变化时重建高亮片段（含批注删除后清除残留高亮）；
+ * 打字过程不重拆（父级须用 useMemo 稳定 targetsByPara），避免光标跳动 */
 function HighlightPlugin({
   targetsByPara,
 }: {
@@ -354,9 +341,12 @@ function HighlightPlugin({
           )
             continue;
           const paraIndex = child.__paraIndex;
-          const targets =
-            paraIndex != null ? targetsByPara.get(paraIndex) : undefined;
-          if (!targets || !targets.length) continue;
+          if (paraIndex == null) continue;
+          const targets = targetsByPara.get(paraIndex) || [];
+          const hasStale = child
+            .getChildren()
+            .some((n) => n instanceof HighlightTextNode);
+          if (!targets.length && !hasStale) continue;
           const segments = splitIntoSegments(child.getTextContent(), targets);
           child.clear();
           for (const seg of segments) {
@@ -493,6 +483,8 @@ export default function DocxParagraphEditor({
   onBlocksChange,
 }: {
   paragraphs: DocxSourceParagraph[];
+  /** 高亮目标集：身份变化会触发高亮重建（历史合并标签，不入撤销栈），
+   * 必须用 useMemo 稳定该 Map，否则打字期间会重拆高亮导致光标跳动 */
   targetsByPara: Map<
     number,
     Array<{ text: string; color: string; key: string }>
@@ -506,7 +498,9 @@ export default function DocxParagraphEditor({
   editorRef: { current: LexicalEditor | null };
   onBlocksChange: (blocks: EditorBlock[]) => void;
 }) {
-  // paragraphs/targetsByPara 固定于挂载时刻；文档刷新/放弃修改由父级换 key 重挂载
+  // paragraphs 固定于挂载时刻；文档刷新/放弃修改由父级换 key 重挂载。
+  // targetsByPara 约定：其身份变化会触发 HighlightPlugin 高亮重建（history-merge
+  // 标签，不入撤销栈），父级必须用 useMemo 稳定该 Map，否则打字期间会重拆高亮导致光标跳动
   const initialConfig = useMemo<InitialConfigType>(
     () => ({
       namespace: 'docx-review-editor',
