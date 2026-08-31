@@ -469,27 +469,35 @@ function buildInitialContent(
   editor: LexicalEditor,
   paragraphs: DocxSourceParagraph[],
 ) {
-  editor.update(() => {
-    const root = $getRoot();
-    for (const para of paragraphs) {
-      if (para.type === 'table' || para.type === 'image') {
-        root.append(new AtomicBlockNode(para.index, para.type, para.text));
-      } else if (para.type === 'heading') {
-        const tag = (
-          para.heading_level && para.heading_level <= 3
-            ? `h${para.heading_level + 1}`
-            : 'h3'
-        ) as HeadingTagType;
-        const h = new DocxHeadingNode(tag, para.index);
-        h.append($createTextNode(para.text));
-        root.append(h);
-      } else {
-        const p = new DocxParagraphNode(para.index);
-        p.append($createTextNode(para.text));
-        root.append(p);
+  // history-merge：灌入不进撤销栈 —— 否则「LexicalComposer 默认空段 + 15 段」
+  // 这个快照会成为 undo 终点，Ctrl+Z 到底后残留 1 个头部空段。
+  editor.update(
+    () => {
+      const root = $getRoot();
+      // LexicalComposer 在 initialEditorState 为 undefined 时会先灌一个默认空
+      // ParagraphNode，若不清理会以无 data-para-index 空段形式混进块列表。
+      root.clear();
+      for (const para of paragraphs) {
+        if (para.type === 'table' || para.type === 'image') {
+          root.append(new AtomicBlockNode(para.index, para.type, para.text));
+        } else if (para.type === 'heading') {
+          const tag = (
+            para.heading_level && para.heading_level <= 3
+              ? `h${para.heading_level + 1}`
+              : 'h3'
+          ) as HeadingTagType;
+          const h = new DocxHeadingNode(tag, para.index);
+          h.append($createTextNode(para.text));
+          root.append(h);
+        } else {
+          const p = new DocxParagraphNode(para.index);
+          p.append($createTextNode(para.text));
+          root.append(p);
+        }
       }
-    }
-  });
+    },
+    { tag: 'history-merge' },
+  );
 }
 
 export default function DocxParagraphEditor({
