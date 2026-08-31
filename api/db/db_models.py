@@ -39,6 +39,7 @@ from peewee import (
     CompositeKey,
     DateField,
     DateTimeField,
+    DecimalField,
     Field,
     FloatField,
     IntegerField,
@@ -2792,3 +2793,83 @@ def seed_default_permissions():
         # 超级管理员不列为具体权限点（逻辑上视为全通过即可），这里不写入。
     except Exception as e:
         logging.error("seed_default_permissions failed: %s", e)
+
+
+class HrEmployee(DataBaseModel):
+    """员工档案：HR 建档，关联现有 user 表。未建档用户看不到人事自助功能。"""
+    id = CharField(max_length=32, primary_key=True)
+    user_id = CharField(max_length=32, null=False, unique=True, index=True, help_text="FK -> user.id")
+    emp_no = CharField(max_length=32, null=False, unique=True, help_text="工号")
+    department = CharField(max_length=64, null=False, default="", help_text="部门")
+    position = CharField(max_length=64, null=False, default="", help_text="职位")
+    entry_date = DateField(null=True, help_text="入职日期")
+    status = CharField(max_length=16, null=False, default="active", index=True,
+                       help_text="active|resigned")
+
+    class Meta:
+        db_table = "hr_employee"
+
+
+class HrRuleConfig(DataBaseModel):
+    """考勤/薪资全局规则配置：单行（id='global'），config 为 JSON 文本。"""
+    id = CharField(max_length=32, primary_key=True, default="global")
+    config = TextField(null=False, default="{}", help_text="规则 JSON，见 hr_calculator.DEFAULT_RULE")
+
+    class Meta:
+        db_table = "hr_rule_config"
+
+
+class HrAttendanceRecord(DataBaseModel):
+    """打卡流水（原始，只增不改）：清洗/去重发生在推导时。"""
+    id = CharField(max_length=32, primary_key=True)
+    employee_id = CharField(max_length=32, null=False, index=True, help_text="FK -> hr_employee.id")
+    punch_time = DateTimeField(null=False, index=True, help_text="打卡时间")
+    source = CharField(max_length=16, null=False, default="web",
+                       help_text="web|api_sync|import|repair")
+    ip_address = CharField(max_length=64, null=False, default="", help_text="打卡IP")
+    remark = CharField(max_length=255, null=False, default="", help_text="备注（补卡原因等）")
+
+    class Meta:
+        db_table = "hr_attendance_record"
+
+
+class HrAttendanceDay(DataBaseModel):
+    """考勤日汇总（清洗后）：由流水推导生成，月度确认后锁定。"""
+    id = CharField(max_length=32, primary_key=True)
+    employee_id = CharField(max_length=32, null=False, index=True, help_text="FK -> hr_employee.id")
+    work_date = DateField(null=False, index=True)
+    status = CharField(max_length=16, null=False, default="missing", index=True,
+                       help_text="normal|late|absent|leave|business_trip|rest|missing|abnormal")
+    first_in = DateTimeField(null=True, help_text="当日最早打卡")
+    last_out = DateTimeField(null=True, help_text="当日最晚打卡")
+    late_minutes = IntegerField(null=False, default=0)
+    overtime_hours = DecimalField(max_digits=6, decimal_places=2, null=False, default=0)
+    leave_id = CharField(max_length=32, null=False, default="", help_text="关联假单（P2）")
+    remark = CharField(max_length=255, null=False, default="")
+    locked = BooleanField(null=False, default=False, help_text="月度确认后锁定")
+
+    class Meta:
+        db_table = "hr_attendance_day"
+        indexes = ((("employee_id", "work_date"), True),)
+
+
+class HrAttendanceMonth(DataBaseModel):
+    """考勤月汇总：一键汇总生成，确认后归档。"""
+    id = CharField(max_length=32, primary_key=True)
+    employee_id = CharField(max_length=32, null=False, index=True, help_text="FK -> hr_employee.id")
+    month = CharField(max_length=7, null=False, index=True, help_text="YYYY-MM")
+    attend_days = DecimalField(max_digits=5, decimal_places=1, null=False, default=0,
+                               help_text="出勤天数（normal+late）")
+    late_count = IntegerField(null=False, default=0)
+    late_minutes = IntegerField(null=False, default=0)
+    absent_days = IntegerField(null=False, default=0)
+    missing_days = IntegerField(null=False, default=0, help_text="缺卡天数（未转旷工的提醒数）")
+    leave_days = DecimalField(max_digits=5, decimal_places=1, null=False, default=0)
+    overtime_hours = DecimalField(max_digits=7, decimal_places=2, null=False, default=0)
+    status = CharField(max_length=16, null=False, default="draft", index=True,
+                       help_text="draft|confirmed")
+    confirmed_by = CharField(max_length=32, null=False, default="")
+
+    class Meta:
+        db_table = "hr_attendance_month"
+        indexes = ((("employee_id", "month"), True),)
