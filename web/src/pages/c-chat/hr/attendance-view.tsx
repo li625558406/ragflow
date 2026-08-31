@@ -41,22 +41,20 @@ function todayMonth() {
 
 // ── 员工打卡卡片 ──
 
-function PunchCard({
-  today,
-  onPunching,
-}: {
-  today: TodayPunch;
-  onPunching: () => void;
-}) {
+function PunchCard({ today }: { today: TodayPunch }) {
+  const qc = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const doPunch = async (action: 'in' | 'out') => {
+    if (busy) return;
     setBusy(true);
     setError('');
     try {
       // 后端按记录顺序自动交替上/下班卡，body 里的 action 仅作语义提示；真正控制是下面的按钮禁用逻辑
-      await punch(action);
-      onPunching();
+      // punch 响应携带最新 today 派生态：直写缓存消除打卡后按钮短暂回退的竞态窗口，并失效日历保持今日状态同步
+      const resp = await punch(action);
+      qc.setQueryData(['hr-today'], resp.today);
+      qc.invalidateQueries({ queryKey: ['hr-calendar'] });
     } catch (e) {
       setError(e instanceof Error ? e.message : '打卡失败');
     } finally {
@@ -177,7 +175,7 @@ function AttendanceCalendar({ month }: { month: string }) {
           return (
             <div
               key={c.work_date}
-              title={`${day?.status ?? ''} ${fmtTime(day?.first_in ?? '')}-${fmtTime(day?.last_out ?? '')}`}
+              title={`${st.label || '未记录'} ${fmtTime(day?.first_in ?? '')}-${fmtTime(day?.last_out ?? '')}`}
               className={`flex h-12 flex-col items-center justify-center rounded-lg text-xs ${st.bg}`}
             >
               <span className="font-medium">
@@ -211,7 +209,8 @@ function HrAdminPanel({
     department: '',
     entry_date: '',
   });
-  const [msg, setMsg] = useState('');
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
   const employees = useQuery({
     queryKey: ['hr-employees', keyword],
     queryFn: () => listEmployees({ keyword }),
@@ -226,40 +225,67 @@ function HrAdminPanel({
   });
 
   const addEmployee = async () => {
-    setMsg('');
+    if (busy) return;
+    setBusy(true);
+    setMsg(null);
     try {
       await createEmployee(newEmp);
-      setMsg('建档成功');
+      setMsg({ ok: true, text: '建档成功' });
       setNewEmp({ user_id: '', emp_no: '', department: '', entry_date: '' });
       qc.invalidateQueries({ queryKey: ['hr-employees'] });
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : '建档失败');
+      setMsg({
+        ok: false,
+        text: e instanceof Error ? e.message : '建档失败',
+      });
+    } finally {
+      setBusy(false);
     }
   };
 
   const doMonthClose = async () => {
-    setMsg('');
+    if (busy) return;
+    setBusy(true);
+    setMsg(null);
     try {
       const s = await monthClose(month);
-      setMsg(`汇总完成：${s.employees} 名员工 / ${s.days} 天`);
+      setMsg({
+        ok: true,
+        text: `汇总完成：${s.employees} 名员工 / ${s.days} 天`,
+      });
       qc.invalidateQueries({ queryKey: ['hr-month-summary', month] });
       qc.invalidateQueries({ queryKey: ['hr-daylist', month] });
       onRefresh();
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : '汇总失败');
+      setMsg({
+        ok: false,
+        text: e instanceof Error ? e.message : '汇总失败',
+      });
+    } finally {
+      setBusy(false);
     }
   };
 
   const doRepair = async (employeeId: string) => {
+    if (busy) return;
     const pt = window.prompt('补卡时间（YYYY-MM-DD HH:MM:SS）：');
     if (!pt) return;
     const reason = window.prompt('补卡原因：') || '';
+    setBusy(true);
+    setMsg(null);
     try {
       await repairPunch({ employee_id: employeeId, punch_time: pt, reason });
-      setMsg('补卡成功');
+      setMsg({ ok: true, text: '补卡成功' });
       qc.invalidateQueries({ queryKey: ['hr-daylist', month] });
+      qc.invalidateQueries({ queryKey: ['hr-month-summary', month] });
+      qc.invalidateQueries({ queryKey: ['hr-calendar'] });
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : '补卡失败');
+      setMsg({
+        ok: false,
+        text: e instanceof Error ? e.message : '补卡失败',
+      });
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -271,12 +297,19 @@ function HrAdminPanel({
         </div>
         <Button
           onClick={doMonthClose}
+          disabled={busy}
           className="bg-[#1a66fb] text-white hover:bg-[#1554d6]"
         >
           一键月度汇总
         </Button>
       </div>
-      {msg && <div className="mb-2 text-sm text-[#1a66fb]">{msg}</div>}
+      {msg && (
+        <div
+          className={`mb-2 text-sm ${msg.ok ? 'text-[#1a66fb]' : 'text-red-500'}`}
+        >
+          {msg.text}
+        </div>
+      )}
 
       <div className="mb-3 flex flex-wrap items-end gap-2">
         <div>
@@ -322,6 +355,7 @@ function HrAdminPanel({
             />
             <Button
               onClick={addEmployee}
+              disabled={busy}
               className="bg-[#1a66fb] text-white hover:bg-[#1554d6]"
             >
               建档
@@ -415,6 +449,24 @@ export default function AttendanceView() {
     today.refetch();
   };
 
+  // 月份输入可能为空或非法（YYYY-MM 之外），回退到当月，避免日历/汇总用脏值发请求
+  const safeMonth = /^\d{4}-\d{2}$/.test(month) ? month : todayMonth();
+
+  if (profile.isError) {
+    return (
+      <div className="p-6 text-sm text-[#94A3B8]">
+        加载失败，请稍后重试
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => profile.refetch()}
+          className="ml-3"
+        >
+          重试
+        </Button>
+      </div>
+    );
+  }
   if (profile.isLoading) {
     return <div className="p-6 text-sm text-[#94A3B8]">加载中…</div>;
   }
@@ -425,14 +477,29 @@ export default function AttendanceView() {
       </div>
     );
   }
-  if (!today.data) {
+  if (today.isError) {
+    return (
+      <div className="p-6 text-sm text-[#94A3B8]">
+        考勤数据加载失败，请稍后重试
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => today.refetch()}
+          className="ml-3"
+        >
+          重试
+        </Button>
+      </div>
+    );
+  }
+  if (today.isLoading || !today.data) {
     return <div className="p-6 text-sm text-[#94A3B8]">加载考勤数据…</div>;
   }
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-4 p-4">
-      <PunchCard today={today.data!} onPunching={refreshAll} />
-      <AttendanceCalendar month={month} />
+      <PunchCard today={today.data} />
+      <AttendanceCalendar month={safeMonth} />
       <div className="flex items-center gap-2 text-xs text-[#94A3B8]">
         <span>月份</span>
         <Input
@@ -442,7 +509,7 @@ export default function AttendanceView() {
           className="w-40"
         />
       </div>
-      {isHr && <HrAdminPanel month={month} onRefresh={refreshAll} />}
+      {isHr && <HrAdminPanel month={safeMonth} onRefresh={refreshAll} />}
     </div>
   );
 }
