@@ -8,14 +8,14 @@
 - 后端健壮性加固（质量审查 1 Critical + 5 Important 全修复）：删除+插入组合时插入参照段跳过待删段（防静默丢数据）；重写前移除 w:hyperlink/w:fldSimple（防超链接 run 残留拼接）；runs 与 new_text strip 后一致性校验；deletes 去重校验；ooxml 操作包 thread_pool_exec 防阻塞事件循环；仅允许编辑 current_version_id（防历史版本静默回滚）
 - 工具栏交互细节：DropdownMenu（modal 抢焦点）用 lastSelRef 缓存选区 apply 前回挂；Popover 色板 onOpenAutoFocus preventDefault 保选区；激活态订阅 selection 变化同步；全部按钮 onMouseDown preventDefault
 - E2E 实测（dev 9222，真实 Playwright 点击）：B/I 应用+激活态+回退、纯格式改动 dirty 识别与保存归零、字号/字体下拉保选区、保存全链路（新版本生成→编辑器重挂载→工具栏保留）、无序列表（ListPlugin）与缩进（自建 IndentPlugin，0-8 封顶，纯视觉不计 dirty）修复后复测通过、向后兼容（旧后端忽略 runs 不报错）
+- 块级属性落盘契约补齐（同日追加）：EditorBlock 增加 align/indent/headingLevel，diffBlocks 对比初始基线（对齐''/缩进0/标题按类型派生，>3 级 clamp 2）仅对变化字段产出操作并与文本/run 变化合并；后端 `_parse_block_attrs` 校验 + `_apply_block_attrs` 写 w:jc/w:ind（每级 600 twips）/Heading 2-4 与 Normal 样式（缺样式 best-effort）；新增 10 单测（39/39 过）+ 后端助手对抗性微测 + E2E 纯对齐改动识别与保存
+- 已部署服务器：后端 flow_app.py + docker restart（容器内导入与功能微测 ALL PASS）；前端 npm run build + dist SCP + nginx reload；API 健康检查 401（服务正常）
 
 **遗留**
-- 对齐/缩进/块类型切换不进落盘契约：编辑器内视觉生效，保存后丢失（docx 段落级属性未纳入 diff，规格级缺口，待评估是否补契约）
+- 列表结构不落盘：无序/有序列表保存后降级为普通段落文本（docx numPr 未纳入契约）
 - 新版本文件名 `_edited` 后缀累积（多次编辑成 `xxx_edited_edited.docx`）
 - 保存后编辑器重挂载为纯文本灌入，已应用 run 格式不回显（初始灌入设计如此）
-- runs 落盘 docx 核验需后端进程重启后补验（本地容器进程内存代码仍为旧版）
-- 后端 flow_app.py 本轮改动未部署服务器（待用户确认）
-- 生产前端 dist 未部署
+- 生产环境真实编辑保存的 run/块级属性落盘效果建议人工抽查一次（服务器端功能微测已过）
 
 ## 2026-08-31 流程页签：批注模块去掉直接发表入口
 
