@@ -379,7 +379,10 @@ export function readEditorBlocks(editor: LexicalEditor): EditorBlock[] {
 }
 
 /** 把选区涉及的顶级块替换为目标类型（正文↔标题），保留原 paraIndex 语义：
- * 改原文段标题层级仍 edit 原段；新增段保持无 index 记 insert */
+ * 改原文段标题层级仍 edit 原段；新增段保持无 index 记 insert。
+ * 列表块（ListNode>ListItemNode）替换为正文/标题时解包 ListItem，
+ * 避免 ListItemNode 直接挂到 Paragraph/Heading 下的非法模型；
+ * 有意不保留原块的段落级属性（缩进/对齐/style）——切换块类型即重置 */
 export function $applyDocxBlockType(
   make: (paraIndex: number | undefined) => ElementNode,
 ): void {
@@ -397,7 +400,13 @@ export function $applyDocxBlockType(
         ? b.__paraIndex
         : undefined;
     const nb = make(paraIndex);
-    for (const c of b.getChildren()) nb.append(c);
+    for (const c of b.getChildren()) {
+      if (c instanceof ListItemNode) {
+        for (const cc of c.getChildren()) nb.append(cc);
+      } else {
+        nb.append(c);
+      }
+    }
     b.replace(nb);
   }
 }
