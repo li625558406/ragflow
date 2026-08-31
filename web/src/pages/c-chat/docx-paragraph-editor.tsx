@@ -1,3 +1,4 @@
+import { ListItemNode, ListNode } from '@lexical/list';
 import {
   InitialConfigType,
   LexicalComposer,
@@ -17,11 +18,17 @@ import {
   $createTextNode,
   $getRoot,
   $getSelection,
+  $isElementNode,
+  $isRangeSelection,
+  $isRootNode,
+  $isTextNode,
   CLICK_COMMAND,
   COMMAND_PRIORITY_HIGH,
   DecoratorNode,
   EditorConfig,
+  ElementNode,
   LexicalEditor,
+  LexicalNode,
   LexicalUpdateJSON,
   NodeKey,
   ParagraphNode,
@@ -40,6 +47,8 @@ import {
   EditorBlock,
   splitIntoSegments,
 } from './docx-diff';
+import type { DocxRun } from './docx-format-utils';
+import { parseStyle, runsFmtSig, stripBgFromStyle } from './docx-format-utils';
 
 // ── 自定义节点 ──────────────────────────────────────────────
 // paraIndex 仅在初始内容灌入（buildInitialContent）时赋值；Lexical 内部
@@ -293,21 +302,104 @@ export class AtomicBlockNode extends DecoratorNode<React.ReactNode> {
 
 // ── 模型抽取与 diff ─────────────────────────────────────────
 
+/** 抽取一个文本块的 run 序列：format 位 + style 串 → DocxRun；
+ * HighlightTextNode 的 background 是批注 UI 色不落盘（其余 format 正常）；
+ * 相邻同样式 run 合并；全默认格式返回 undefined（保持旧整段替换行为）。
+ * 不变量：各 run.text 拼接等于块 text（供后端 runs 与 new_text 一致性校验） */
+function $extractRuns(block: ElementNode): DocxRun[] | undefined {
+  const runs: DocxRun[] = [];
+  const visit = (n: LexicalNode) => {
+    if ($isElementNode(n)) {
+      for (const c of n.getChildren()) visit(c);
+      return;
+    }
+    if (!$isTextNode(n)) return;
+    const isHl = n instanceof HighlightTextNode;
+    const styleMap = parseStyle(
+      isHl ? stripBgFromStyle(n.getStyle()) : n.getStyle(),
+    );
+    const run: DocxRun = { text: n.getTextContent() };
+    if (n.hasFormat('bold')) run.bold = true;
+    if (n.hasFormat('italic')) run.italic = true;
+    if (n.hasFormat('underline')) run.underline = true;
+    if (n.hasFormat('strikethrough')) run.strike = true;
+    if (n.hasFormat('superscript')) run.superscript = true;
+    if (n.hasFormat('subscript')) run.subscript = true;
+    if (styleMap['color']) run.color = styleMap['color'];
+    if (styleMap['background-color'])
+      run.bg_color = styleMap['background-color'];
+    if (styleMap['font-family']) run.font = styleMap['font-family'];
+    if (styleMap['font-size']) {
+      const pt = parseFloat(styleMap['font-size']);
+      if (Number.isFinite(pt)) run.size = pt;
+    }
+    runs.push(run);
+  };
+  for (const c of block.getChildren()) visit(c);
+
+  const merged: DocxRun[] = [];
+  for (const r of runs) {
+    if (!r.text) continue;
+    const prev = merged[merged.length - 1];
+    const styleOf = (x: DocxRun) => JSON.stringify({ ...x, text: undefined });
+    if (prev && styleOf(prev) === styleOf(r)) prev.text += r.text;
+    else merged.push({ ...r });
+  }
+  const hasFmt = merged.some((r) => Object.keys(r).some((k) => k !== 'text'));
+  return hasFmt ? merged : undefined;
+}
+
 export function readEditorBlocks(editor: LexicalEditor): EditorBlock[] {
-  return editor.read(() =>
-    $getRoot()
-      .getChildren()
-      .map((child): EditorBlock => {
-        if (child instanceof AtomicBlockNode) {
-          return { paraIndex: child.__paraIndex, kind: child.__kind, text: '' };
-        }
-        const paraIndex =
-          child instanceof DocxParagraphNode || child instanceof DocxHeadingNode
-            ? child.__paraIndex
-            : undefined;
-        return { paraIndex, kind: 'text', text: child.getTextContent() };
-      }),
-  );
+  return editor.read(() => {
+    const out: EditorBlock[] = [];
+    for (const child of $getRoot().getChildren()) {
+      if (child instanceof AtomicBlockNode) {
+        out.push({
+          paraIndex: child.__paraIndex,
+          kind: child.__kind,
+          text: '',
+        });
+        continue;
+      }
+      const paraIndex =
+        child instanceof DocxParagraphNode || child instanceof DocxHeadingNode
+          ? child.__paraIndex
+          : undefined;
+      const runs = $isElementNode(child) ? $extractRuns(child) : undefined;
+      out.push({
+        paraIndex,
+        kind: 'text',
+        text: child.getTextContent(),
+        runs,
+        fmtSig: runsFmtSig(runs),
+      });
+    }
+    return out;
+  });
+}
+
+/** 把选区涉及的顶级块替换为目标类型（正文↔标题），保留原 paraIndex 语义：
+ * 改原文段标题层级仍 edit 原段；新增段保持无 index 记 insert */
+export function $applyDocxBlockType(
+  make: (paraIndex: number | undefined) => ElementNode,
+): void {
+  const selection = $getSelection();
+  if (!$isRangeSelection(selection)) return;
+  const blocks = new Set<ElementNode>();
+  for (const node of selection.getNodes()) {
+    let cur: LexicalNode | null = node;
+    while (cur && !$isRootNode(cur.getParent())) cur = cur.getParent();
+    if (cur && $isElementNode(cur) && !$isRootNode(cur)) blocks.add(cur);
+  }
+  for (const b of blocks) {
+    const paraIndex =
+      b instanceof DocxParagraphNode || b instanceof DocxHeadingNode
+        ? b.__paraIndex
+        : undefined;
+    const nb = make(paraIndex);
+    for (const c of b.getChildren()) nb.append(c);
+    b.replace(nb);
+  }
 }
 
 export function collectEditorOps(
@@ -540,6 +632,8 @@ export default function DocxParagraphEditor({
             HighlightTextNode,
             HeadingNode,
             ParagraphNode,
+            ListNode,
+            ListItemNode,
           ],
           theme: {},
           onError: (error: Error) => console.error('[docx-editor]', error),
