@@ -129,6 +129,8 @@ async def hr_attendance_calendar():
     if not parsed:
         return get_data_error_result(message="month 格式应为 YYYY-MM")
     year, mon = parsed
+    if year < 1:
+        return get_data_error_result(message="month 格式应为 YYYY-MM")
     # 已落盘行优先；今日及之前的无行日期实时推导（不落盘）
     rows = {str(r.work_date): _day_dict(r)
             for r in HrAttendanceDayService.month_days(emp.id, month)}
@@ -185,6 +187,8 @@ async def hr_employee_create():
         return get_data_error_result(message="user_id 和 emp_no 必填")
     entry = None
     if body.get("entry_date"):
+        if not isinstance(body.get("entry_date"), str):
+            return get_data_error_result(message="entry_date 格式应为 YYYY-MM-DD")
         try:
             entry = datetime.strptime(body["entry_date"], "%Y-%m-%d").date()
         except ValueError:
@@ -205,6 +209,8 @@ async def hr_attendance_repair():
     emp = HrEmployee.get_or_none(HrEmployee.id == body.get("employee_id", ""))
     if not emp:
         return get_data_error_result(message="员工不存在")
+    if body.get("punch_time") is not None and not isinstance(body.get("punch_time"), str):
+        return get_data_error_result(message="punch_time 格式应为 YYYY-MM-DD HH:MM:SS")
     try:
         pt = datetime.strptime(body.get("punch_time") or "", "%Y-%m-%d %H:%M:%S")
     except ValueError:
@@ -212,7 +218,7 @@ async def hr_attendance_repair():
     try:
         rec = HrAttendanceRecordService.punch(
             emp.id, source="repair", punch_time=pt,
-            remark=(body.get("reason") or "")[:255])
+            remark=str(body.get("reason") or "")[:255])
     except ValueError as e:
         return get_data_error_result(message=str(e))
     return get_json_result(data={"id": rec.id, "punch_time": str(rec.punch_time)})
@@ -254,7 +260,7 @@ async def hr_attendance_day_list():
 @permission_required("hr_manage")
 async def hr_attendance_month_close():
     body = await request.get_json(silent=True) or {}
-    month = (body.get("month") or "").strip()
+    month = str(body.get("month") or "").strip()
     parsed = _parse_month(month)
     if not parsed:
         return get_data_error_result(message="month 格式应为 YYYY-MM")
