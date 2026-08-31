@@ -32,7 +32,7 @@ import {
   SerializedTextNode,
   TextNode,
 } from 'lexical';
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
   diffBlocks,
   DocxDiffOps,
@@ -42,7 +42,7 @@ import {
 } from './docx-diff';
 
 // ── 自定义节点 ──────────────────────────────────────────────
-// paraIndex 仅在初始加载（buildInitialContent）时赋值；Lexical 内部
+// paraIndex 仅在初始内容灌入（buildInitialContent）时赋值；Lexical 内部
 // 克隆（回车分段等）走 insertNewAfter/无参构造 → 新实例 paraIndex 为
 // undefined，天然区隔「原文段落」与「新增段落」，diff 无需解析 DOM。
 
@@ -319,6 +319,24 @@ export function collectEditorOps(
 
 // ── 插件 ────────────────────────────────────────────────────
 
+/** 初始内容灌入：挂载后一次性构建文档段落（绕开 initialEditorState，
+ * 该回调在本项目环境下不触发）；须排在 HighlightPlugin 之前，
+ * 保证先有正文再拆高亮 */
+function InitialContentPlugin({
+  paragraphs,
+}: {
+  paragraphs: DocxSourceParagraph[];
+}) {
+  const [editor] = useLexicalComposerContext();
+  const doneRef = useRef(false);
+  useEffect(() => {
+    if (doneRef.current) return;
+    doneRef.current = true;
+    buildInitialContent(editor, paragraphs);
+  }, [editor, paragraphs]);
+  return null;
+}
+
 /** 批注高亮：targetsByPara 身份变化时重建高亮片段（含批注删除后清除残留高亮）；
  * 打字过程不重拆（父级须用 useMemo 稳定 targetsByPara），避免光标跳动 */
 function HighlightPlugin({
@@ -498,32 +516,28 @@ export default function DocxParagraphEditor({
   editorRef: { current: LexicalEditor | null };
   onBlocksChange: (blocks: EditorBlock[]) => void;
 }) {
-  // paragraphs 固定于挂载时刻；文档刷新/放弃修改由父级换 key 重挂载。
+  // paragraphs 固定于挂载时刻（初始内容由 InitialContentPlugin 在挂载后灌入）；
+  // 文档刷新/放弃修改由父级换 key 重挂载。
   // targetsByPara 约定：其身份变化会触发 HighlightPlugin 高亮重建（history-merge
   // 标签，不入撤销栈），父级必须用 useMemo 稳定该 Map，否则打字期间会重拆高亮导致光标跳动
-  const initialConfig = useMemo<InitialConfigType>(
-    () => ({
-      namespace: 'docx-review-editor',
-      nodes: [
-        DocxParagraphNode,
-        DocxHeadingNode,
-        AtomicBlockNode,
-        HighlightTextNode,
-        HeadingNode,
-        ParagraphNode,
-      ],
-      theme: {},
-      onError: (error: Error) => console.error('[docx-editor]', error),
-      initialEditorState: (editor: LexicalEditor) => {
-        buildInitialContent(editor, paragraphs);
-      },
-    }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
-  );
-
   return (
-    <LexicalComposer initialConfig={initialConfig}>
+    <LexicalComposer
+      initialConfig={
+        {
+          namespace: 'docx-review-editor',
+          nodes: [
+            DocxParagraphNode,
+            DocxHeadingNode,
+            AtomicBlockNode,
+            HighlightTextNode,
+            HeadingNode,
+            ParagraphNode,
+          ],
+          theme: {},
+          onError: (error: Error) => console.error('[docx-editor]', error),
+        } as InitialConfigType
+      }
+    >
       <AtomicRenderContext.Provider value={renderAtomic}>
         <RichTextPlugin
           contentEditable={
@@ -533,6 +547,7 @@ export default function DocxParagraphEditor({
           ErrorBoundary={LexicalErrorBoundary}
         />
         <HistoryPlugin />
+        <InitialContentPlugin paragraphs={paragraphs} />
         <HighlightPlugin targetsByPara={targetsByPara} />
         <ClickPlugin onAnchorClick={onAnchorClick} />
         <PastePlugin />
