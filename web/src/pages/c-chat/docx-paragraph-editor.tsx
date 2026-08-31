@@ -178,12 +178,12 @@ export class HighlightTextNode extends TextNode {
   }
 
   static importJSON(json: Record<string, unknown>): HighlightTextNode {
-    return $applyNodeReplacement(
-      new HighlightTextNode(
-        (json.text as string) || '',
-        (json.anchorKey as string) || '',
-      ),
+    const node = new HighlightTextNode(
+      (json.text as string) || '',
+      (json.anchorKey as string) || '',
     );
+    node.updateFromJSON(json as LexicalUpdateJSON<SerializedTextNode>);
+    return node;
   }
 
   exportJSON(): SerializedTextNode & { anchorKey: string } {

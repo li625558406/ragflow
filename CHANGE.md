@@ -1,5 +1,63 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-08-31 文件审核：Lexical 编辑器替换手写 contentEditable
+
+**核心变更**
+- 「文件审核」可编辑正文从手写 contentEditable + DOM diff 升级为 Lexical（0.23.1，项目已有依赖）整篇编辑：4 个自定义节点（DocxParagraphNode / DocxHeadingNode 带 para_index、HighlightTextNode 带批注锚点、AtomicBlockNode 表格/图片只读原子块）+ 插件组（初始灌入、高亮重建、点击联动、粘贴纯文本降级、脏检查）
+- 保存 diff 从「DOM 遍历」改为「编辑器模型遍历」：`readEditorBlocks` → `diffBlocks` 纯函数（docx-diff.ts，14 个单测），产出与后端 `/flow/<id>/document/edit` 契约一致的三类操作；para_index 仅初始灌入赋值，回车新段天然无 index → insert，撤销/重做、IME 安全由 Lexical 原生保障
+- 撤销栈干净：灌入打 history-merge + root.clear 清掉 LexicalComposer 默认空段（Ctrl+Z 到底无残留空段）；批注高亮仅 targetsByPara 变化时重建（打字不重拆），批注删除后残留高亮清除
+- 表格辅助函数（sanitizeTableHtml / highlightInTableHtml / highlightInTableByAnchor / normalizeForMatch）抽到 docx-view-utils.ts，静态渲染与编辑器原子块共用
+- 保存时序修复：fileId 变化后用 loadedFileId 门控，等新内容到达才重挂编辑器，避免旧基线冻结导致重复建版本
+- E2E 实测（dev 9222，测试2 流程）：15 段挂载、改字/回车加段/并段、撤销重做、保存→v4（manual_edit）→docx 落盘核验、批注创建/删除高亮联动全链路通过
+
+**遗留**
+- run 级局部格式（加粗/颜色）仍不保真（沿用段落首 run 样式，设计如此）
+- 保存为新版本后，旧版本上的批注高亮不再显示（批注锚定创建时版本，待产品确认是否需跨版本跟随）
+- shift+enter 产生字面 \n；sanitizeTableHtml 黑名单清洗存在已知绕过面（未加引号 onerror / javascript: URL，既有问题，建议后续换 DOMPurify allowlist）
+- web 全局 jest.config.ts 损坏（umi/test 缺失，既有问题），docx-diff 单测走 .scratch 临时配置
+- 生产前端 dist 未部署
+
+## 2026-08-31 文件审核：Word 式整篇自由编辑（增删段）
+
+**核心变更**
+- 正文从「逐段编辑」升级为 Word 式整篇自由编辑：纸张整体 contentEditable，点哪改哪、回车新增段落、退格/Delete 并段删段；表格/图片为只读原子块（contentEditable=false）
+- 后端 `POST /flow/<flow_id>/document/edit` 从仅 edits 扩展为三类操作：edits 改写 / deletes 删除段落 / inserts 新增段落（after_para_index=-1 表开头）；应用顺序删除→插入→改写（改写持元素引用不受结构变化影响）；插入段复制锚点段样式；全部定位成功才动手；单次 ≤200 处
+- 前端 DOM diff（`collectPaperOps`）：保存时遍历纸张 children，wrapper 带 data-para-index，首块文本对比原文→edit、清空/整块消失→delete、回车产生的额外块/游离块→insert（锚定前一个 index）；250ms 防抖统计改动处数，吸顶保存栏显示「已修改 N 处」
+- React 兼容：编辑期间不改纸张 vdom（防丢光标），放弃修改用 resetKey 重挂载，保存成功后由新内容重挂载
+- 已部署并 E2E 实测：改字+回车加段+并段删段一次保存 → v3（manual_edit）生成 → 下载 v3.docx 用 python-docx 核验三类操作全部正确落盘
+
+**遗留**
+- 并段/改写为整段文本替换，段内局部 run 级格式（局部加粗/颜色）会丢失（沿用段落首 run 样式）
+- 高亮 `<mark>` 标记（AI 标注/批注锚点）在编辑中可能被浏览器拆散文本节点，diff 按 textContent 取文本不受影响
+
+## 2026-08-31 文件审核：正文默认可编辑 + .doc 编辑支持
+
+**核心变更**
+- 后端 `POST /flow/<flow_id>/document/edit` 支持批量 edits（≤200 段/单段 ≤20000 字），先全部定位成功再统一替换；按 `/files/<id>/content` 同源规则（复刻 naive.py `to_paragraphs` 遍历）映射 para_index → docx 段落，python-docx 整段替换文本（保留首 run 格式），存为新版本（source=manual_edit）
+- .doc 编辑支持：LibreOffice headless 转 docx 后编辑，新版本统一存为 .docx；转换与 OLE2 识别抽到共享模块 `api/utils/doc_utils.py`（file_api 与 flow_app 共用；restful_apis 蓝图的 manager 由动态加载器注入，蓝图间不能直接 import）
+- 前端交互改版：正文段落默认 contentEditable 直接编辑（去掉每段编辑按钮/textarea），回车禁用（单段语义）；输入即记录，改动段淡黄底提示，吸顶保存栏显示「已修改 N 处」+ 保存/放弃修改；保存后自动把新版本重传为 document 刷新预览
+- 编辑权限：仅当前节点负责人 + 流程未结束；仅「版本文件来源」（reviewSource==='version' 且 isOwner），手动上传附件只读；表格/图片段落不可编辑
+- 部署实测：docx 流程编辑→v2 生成→预览刷新→内容核验通过；.doc 流程（测试2）编辑→LibreOffice 转换→v2 docx（manual_edit）→替换文本核验正确；放弃修改/错误路径正常
+
+**遗留**
+- 整段替换会丢失段内局部格式（加粗/颜色等 run 级样式保留段落级首 run 样式）
+- 生产前端 dist 未部署
+
+## 2026-08-31 流程批注：表格锚点消歧 + 表格内高亮 + 批注删除
+
+**核心变更**
+- 审核弹框正文改 Word 纸张式排版：A4 白纸（max-w 794px）+ 阴影 + 宋体 + 页边距，正文 14px/2 倍行距/首行缩进 2 字符/两端对齐
+- 流程文档上传只接受 doc/docx：AI 面板 ChatInputBox（新增 accept 透传，文件选择/拖拽/粘贴均校验）、创建流程初始文件、详情页「上传修改版」三处入口
+- 表格内批注引线错乱修复：新增 `anchor_start` 字段（flow_comment 表自动迁移），创建批注时记录选区在段落归一化文本中的起始偏移，定位时按偏移消歧重复文本（`findTextEndRect`），不再错指首次出现行
+- 表格内手动批注与正文同款 `<mark>` 高亮：`highlightInTableByAnchor` DOM 级实现（偏移消歧、精确包裹），点击高亮联动右侧卡片
+- 批注删除：后端 `POST /flow/<flow_id>/comment/<comment_id>/delete`（仅批注作者本人、流程未结束），前端卡片 hover 显示删除按钮 + confirm 确认
+- 已部署服务器并实测：anchor_start 持久化、消歧定位（卡片与选中行像素级对齐）、删除闭环均通过
+
+**遗留**
+- 服务器前端（生产 dist）尚未部署本次改动，仅本地开发服务器生效
+- 存量旧批注无 anchor_start，仍按首现位置定位
+- 表格内每段仍仅首个 AI 标注有高亮（沿用旧逻辑）
+
 ## 2026-08-30 C端「流程」页签（多角色文件流转工作流）
 
 **核心变更**
