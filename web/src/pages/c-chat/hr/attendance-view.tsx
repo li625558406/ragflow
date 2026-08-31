@@ -245,6 +245,13 @@ function HrAdminPanel({
 
   const doMonthClose = async () => {
     if (busy) return;
+    if (
+      !window.confirm(
+        `确认对 ${month} 执行月度汇总归档？归档后日行锁定，不可重算。`,
+      )
+    ) {
+      return;
+    }
     setBusy(true);
     setMsg(null);
     try {
