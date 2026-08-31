@@ -40,6 +40,7 @@ from io import BytesIO
 from urllib.parse import quote
 
 from docx import Document as DocxDocument
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt, RGBColor
@@ -449,6 +450,63 @@ def _apply_runs(p: DocxParagraph, runs):
             run.font.size = Pt(item["size"])
 
 
+_ALIGN_VALS = ("left", "center", "right", "justify")
+_ALIGN_TO_DOCX = {
+    "left": WD_ALIGN_PARAGRAPH.LEFT,
+    "center": WD_ALIGN_PARAGRAPH.CENTER,
+    "right": WD_ALIGN_PARAGRAPH.RIGHT,
+    "justify": WD_ALIGN_PARAGRAPH.JUSTIFY,
+}
+
+
+def _parse_block_attrs(e: dict) -> dict:
+    """解析可选块级属性 align/indent/heading_level：只收集 payload 中提供的键
+    （后端仅应用已提供的键，未提供的段落级属性原样保留）；非法值抛 ValueError。
+    heading_level: null=正文 / 1-3=Heading 2-4（与前端 tag-1 约定一致）。"""
+    attrs = {}
+    if "align" in e:
+        v = e.get("align")
+        if v is not None:
+            if v not in _ALIGN_VALS:
+                raise ValueError(f"align 非法：{v}")
+            attrs["align"] = v
+    if "indent" in e:
+        try:
+            v = int(e.get("indent"))
+        except (TypeError, ValueError):
+            raise ValueError("indent 必须是整数")
+        if not 0 <= v <= 8:
+            raise ValueError("indent 超出范围（0-8）")
+        attrs["indent"] = v
+    if "heading_level" in e:
+        v = e.get("heading_level")
+        if v is not None:
+            try:
+                v = int(v)
+            except (TypeError, ValueError):
+                raise ValueError("heading_level 必须是整数或 null")
+            if not 1 <= v <= 3:
+                raise ValueError("heading_level 超出范围（1-3）")
+        attrs["heading_level"] = v
+    return attrs
+
+
+def _apply_block_attrs(doc, p: DocxParagraph, attrs: dict):
+    """应用块级属性（attrs 经 _parse_block_attrs 校验，只含提供的键）。
+    标题样式按 builtin 名查找（Heading 2-4 / Normal），用户文档缺样式时
+    best-effort 跳过；缩进每级 600 twips（≈ 编辑器 40px/级）。"""
+    if "heading_level" in attrs:
+        hl = attrs["heading_level"]
+        try:
+            p.style = doc.styles["Normal" if hl is None else f"Heading {hl + 1}"]
+        except Exception:
+            pass  # 样式缺失/文档定制样式表时跳过，文本改动不受影响
+    if "align" in attrs:
+        p.alignment = _ALIGN_TO_DOCX[attrs["align"]]
+    if "indent" in attrs:
+        p.paragraph_format.left_indent = Pt(attrs["indent"] * 30)
+
+
 @manager.route("/flow/<flow_id>/document/edit", methods=["POST"])  # noqa: F821
 @login_required
 async def edit_document(flow_id: str):
@@ -492,12 +550,13 @@ async def edit_document(flow_id: str):
                 return _err("单段内容不能超过 20000 字", 101)
             try:
                 runs = _parse_runs(e.get("runs"))
+                block_attrs = _parse_block_attrs(e)
             except ValueError as ve:
-                return _err(f"段落 {para_index} runs 格式非法：{ve}", 101)
+                return _err(f"段落 {para_index} 格式非法：{ve}", 101)
             # 前端 newText 为 trim 后文本而 runs 来自未 trim 的块文本，两侧 strip 后再比
             if runs and "".join(x["text"] for x in runs).strip() != new_text:
                 return _err(f"段落 {para_index} runs 文本与 new_text 不一致", 101)
-            parsed_edits.append((para_index, new_text, runs))
+            parsed_edits.append((para_index, new_text, runs, block_attrs))
             edit_indexes.add(para_index)
 
         parsed_deletes = []
@@ -530,11 +589,12 @@ async def edit_document(flow_id: str):
                 return _err("新段落内容不能超过 20000 字", 101)
             try:
                 runs = _parse_runs(ins.get("runs"))
+                block_attrs = _parse_block_attrs(ins)
             except ValueError as ve:
-                return _err(f"新段落 runs 格式非法：{ve}", 101)
+                return _err(f"新段落格式非法：{ve}", 101)
             if runs and "".join(x["text"] for x in runs).strip() != new_text:
                 return _err(f"新段落 runs 文本与 new_text 不一致", 101)
-            parsed_inserts.append((after, new_text, runs))
+            parsed_inserts.append((after, new_text, runs, block_attrs))
 
         version = next(
             (v for v in FlowVersionService.list_by_flow(flow_id) if v["id"] == version_id), None
@@ -576,13 +636,13 @@ async def edit_document(flow_id: str):
 
         # 先全部定位成功，再统一应用（避免半改状态）
         located_edits = []
-        for para_index, new_text, runs in parsed_edits:
+        for para_index, new_text, runs, block_attrs in parsed_edits:
             entry = _entry_of(para_index)
             if entry is None:
                 return _err(f"段落 {para_index} 定位失败，文档可能已变化，请刷新后重试", 101)
             if entry[0] == "atomic":
                 return _err(f"段落 {para_index} 是{entry[1]}，不支持编辑", 101)
-            located_edits.append((entry[2], new_text, runs))
+            located_edits.append((entry[2], new_text, runs, block_attrs))
 
         located_deletes = []
         for para_index in parsed_deletes:
@@ -593,9 +653,9 @@ async def edit_document(flow_id: str):
                 return _err(f"段落 {para_index} 是{entry[1]}，不支持删除", 101)
             located_deletes.append(entry[2])
 
-        located_inserts = []  # (mode, ref_paragraph|None, text, style_src|None, runs|None)
+        located_inserts = []  # (mode, ref_paragraph|None, text, style_src|None, runs|None, block_attrs|None)
         delete_set = set(parsed_deletes)
-        for after, new_text, runs in parsed_inserts:
+        for after, new_text, runs, block_attrs in parsed_inserts:
             if after >= 0 and para_map.get(after) is None and after != -1:
                 return _err(f"插入位置 {after} 无效", 101)
             style_src = None
@@ -614,9 +674,9 @@ async def edit_document(flow_id: str):
                 None,
             )
             if nxt is not None:
-                located_inserts.append(("before", nxt, new_text, style_src, runs))
+                located_inserts.append(("before", nxt, new_text, style_src, runs, block_attrs))
             else:
-                located_inserts.append(("append", None, new_text, style_src, runs))
+                located_inserts.append(("append", None, new_text, style_src, runs, block_attrs))
 
         # 应用顺序：删除 → 插入 → 改写（改写持有元素引用，不受结构变化影响）；
         # 逐 run 的 oxml 操作是 CPU 密集，放线程池避免阻塞事件循环
@@ -624,7 +684,7 @@ async def edit_document(flow_id: str):
             for p in located_deletes:
                 el = p._element
                 el.getparent().remove(el)
-            for mode, ref, text, style_src, rns in located_inserts:
+            for mode, ref, text, style_src, rns, attrs in located_inserts:
                 if mode == "append":
                     new_p = doc.add_paragraph(text)
                 else:
@@ -634,9 +694,13 @@ async def edit_document(flow_id: str):
                         new_p.style = style_src.style
                     except Exception:
                         pass
+                if attrs:
+                    _apply_block_attrs(doc, new_p, attrs)
                 if rns is not None:
                     _apply_runs(new_p, rns)
-            for target, text, rns in located_edits:
+            for target, text, rns, attrs in located_edits:
+                if attrs:
+                    _apply_block_attrs(doc, target, attrs)
                 if rns is not None:
                     _apply_runs(target, rns)
                 else:

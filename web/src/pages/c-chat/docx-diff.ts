@@ -22,21 +22,45 @@ export interface EditorBlock {
   runs?: DocxRun[];
   /** runsFmtSig(runs) 缓存，文本相同但签名不同 = 纯改格式 */
   fmtSig?: string;
+  /** 块级属性（Word 段落级落盘）：对齐 format type（''=默认左）、
+   * 缩进级 0-8、标题级别（null=正文，1-3=Heading 2-4；非 Docx 块 undefined） */
+  align?: string;
+  indent?: number;
+  headingLevel?: number | null;
 }
 
 export type DocxDiffOps =
   | { error: string }
   | {
       error?: undefined;
-      edits: Array<{ paraIndex: number; newText: string; runs?: DocxRun[] }>;
+      edits: Array<{
+        paraIndex: number;
+        newText: string;
+        runs?: DocxRun[];
+        align?: string;
+        indent?: number;
+        headingLevel?: number | null;
+      }>;
       deletes: number[];
       inserts: Array<{
         afterParaIndex: number;
         newText: string;
         runs?: DocxRun[];
+        align?: string;
+        indent?: number;
+        headingLevel?: number;
       }>;
       count: number;
     };
+
+/** 原文段落的块级基线：编辑器初始灌入即此状态（对齐''/缩进0/标题按类型派生，
+ * heading_level 1-3 → 级别 1-3，>3 灌入降级 h3 → 级别 2），用户未动块级属性时
+ * 当前值 === 基线 → 不产生块级 edit，后端保留原段落 pPr */
+function baseHeadingOf(p: DocxSourceParagraph): number | null {
+  if (p.type !== 'heading') return null;
+  const lvl = p.heading_level ?? 1;
+  return lvl <= 3 ? lvl : 2;
+}
 
 export function diffBlocks(
   blocks: EditorBlock[],
@@ -44,13 +68,22 @@ export function diffBlocks(
 ): DocxDiffOps {
   const byIdx = new Map(paragraphs.map((p) => [p.index, p]));
   const seen = new Set<number>();
-  const edits: Array<{ paraIndex: number; newText: string; runs?: DocxRun[] }> =
-    [];
+  const edits: Array<{
+    paraIndex: number;
+    newText: string;
+    runs?: DocxRun[];
+    align?: string;
+    indent?: number;
+    headingLevel?: number | null;
+  }> = [];
   const deletes: number[] = [];
   const inserts: Array<{
     afterParaIndex: number;
     newText: string;
     runs?: DocxRun[];
+    align?: string;
+    indent?: number;
+    headingLevel?: number;
   }> = [];
   let lastIdx: number | null = null;
 
@@ -63,15 +96,40 @@ export function diffBlocks(
       const orig = byIdx.get(idx);
       if (!orig) continue;
       const text = b.text.trim();
+      // 块级属性相对基线的变化（文本/run 格式/块级可同时变，需合并进同一条 edit）；
+      // 仅在确实变化时携带对应字段，后端只应用已提供的键、其余 pPr 原样保留。
+      // headingLevel undefined（旧调用方/非 Docx 块）视作与基线一致不产生 edit
+      const alignChanged = !!b.align;
+      const indentChanged = (b.indent ?? 0) !== 0;
+      const baseHeading = baseHeadingOf(orig);
+      const curHeading =
+        b.headingLevel === undefined ? baseHeading : b.headingLevel;
+      const headingChanged = curHeading !== baseHeading;
+      const blockAttrs = {
+        ...(alignChanged ? { align: b.align } : {}),
+        ...(indentChanged ? { indent: b.indent } : {}),
+        ...(headingChanged ? { headingLevel: curHeading } : {}),
+      };
+      const hasBlockAttrs = Object.keys(blockAttrs).length > 0;
       if (!text) {
         deletes.push(idx);
       } else if (text !== orig.text.trim()) {
-        edits.push({ paraIndex: idx, newText: text, runs: b.runs });
-      } else if (b.runs && b.fmtSig && b.fmtSig !== '[]') {
-        // 纯改格式：文本相同但样式签名变了。无格式块 fmtSig 为 undefined
-        //（已被排除）；'[]' 为空 runs 兜底。runs 缺失时不产生 edit，
-        // 避免整段替换把原文档已有格式抹成默认格式。
-        edits.push({ paraIndex: idx, newText: text, runs: b.runs });
+        edits.push({
+          paraIndex: idx,
+          newText: text,
+          runs: b.runs,
+          ...blockAttrs,
+        });
+      } else if ((b.runs && b.fmtSig && b.fmtSig !== '[]') || hasBlockAttrs) {
+        // 纯改格式（run 签名变化或块级属性变化）：文本相同。run 格式变化
+        // 但 runs 缺失时不产生 edit，避免整段替换把原文档已有格式抹成默认
+        // 格式（'[]' 为空 runs 兜底，条件里已排除该情形）。
+        edits.push({
+          paraIndex: idx,
+          newText: text,
+          ...(b.runs && b.fmtSig && b.fmtSig !== '[]' ? { runs: b.runs } : {}),
+          ...blockAttrs,
+        });
       }
     } else {
       const text = b.text.trim();
@@ -80,6 +138,9 @@ export function diffBlocks(
           afterParaIndex: lastIdx == null ? -1 : lastIdx,
           newText: text,
           runs: b.runs,
+          align: b.align || undefined,
+          indent: b.indent || undefined,
+          headingLevel: b.headingLevel ?? undefined,
         });
       }
     }

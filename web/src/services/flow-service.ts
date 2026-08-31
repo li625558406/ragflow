@@ -149,14 +149,25 @@ export interface FlowDocRun {
   size?: number;
 }
 
-/** Word 式编辑文档：改写/新增/删除段落（后端按 para_index 定位 docx 同步增删改，存为新版本） */
+/** Word 式编辑文档：改写/新增/删除段落（后端按 para_index 定位 docx 同步增删改，存为新版本）。
+ * align/indent/headingLevel 为块级属性：仅相对基线变化时携带，后端只应用已提供的键 */
 export interface FlowDocEditOps {
-  edits: Array<{ paraIndex: number; newText: string; runs?: FlowDocRun[] }>;
+  edits: Array<{
+    paraIndex: number;
+    newText: string;
+    runs?: FlowDocRun[];
+    align?: string;
+    indent?: number;
+    headingLevel?: number | null;
+  }>;
   deletes: number[];
   inserts: Array<{
     afterParaIndex: number;
     newText: string;
     runs?: FlowDocRun[];
+    align?: string;
+    indent?: number;
+    headingLevel?: number;
   }>;
 }
 
@@ -174,12 +185,22 @@ export async function editFlowDocument(
         para_index: e.paraIndex,
         new_text: e.newText,
         ...(e.runs ? { runs: e.runs } : {}),
+        ...(e.align ? { align: e.align } : {}),
+        ...(e.indent ? { indent: e.indent } : {}),
+        ...(e.headingLevel !== undefined
+          ? { heading_level: e.headingLevel }
+          : {}),
       })),
       deletes: ops.deletes,
       inserts: ops.inserts.map((i) => ({
         after_para_index: i.afterParaIndex,
         new_text: i.newText,
         ...(i.runs ? { runs: i.runs } : {}),
+        ...(i.align ? { align: i.align } : {}),
+        ...(i.indent ? { indent: i.indent } : {}),
+        ...(i.headingLevel !== undefined
+          ? { heading_level: i.headingLevel }
+          : {}),
       })),
     }),
   });

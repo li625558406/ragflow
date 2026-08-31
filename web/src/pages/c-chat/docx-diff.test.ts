@@ -257,3 +257,186 @@ describe('diffBlocks 纯格式分支边界', () => {
     expect(ops.edits).toHaveLength(0);
   });
 });
+
+describe('diffBlocks 块级属性（对齐/缩进/标题级别）', () => {
+  const para = (
+    index: number,
+    text: string,
+    type: any = 'paragraph',
+    heading_level?: number,
+  ) => ({ index, text, type, heading_level });
+
+  it('纯改对齐（文本/run 均未变）→ edit 只带 align', () => {
+    const paragraphs = [para(0, '正文内容')];
+    const blocks = [
+      {
+        paraIndex: 0,
+        kind: 'text' as const,
+        text: '正文内容',
+        align: 'center',
+        indent: 0,
+        headingLevel: null,
+      },
+    ];
+    const ops = diffBlocks(blocks, paragraphs);
+    if ('error' in ops) throw new Error(ops.error);
+    expect(ops.count).toBe(1);
+    expect(ops.edits[0]).toMatchObject({ paraIndex: 0, align: 'center' });
+    expect(ops.edits[0].runs).toBeUndefined();
+    expect(ops.edits[0].indent).toBeUndefined();
+    expect(ops.edits[0].headingLevel).toBeUndefined();
+  });
+
+  it('纯改缩进 → edit 只带 indent', () => {
+    const paragraphs = [para(0, '正文内容')];
+    const blocks = [
+      {
+        paraIndex: 0,
+        kind: 'text' as const,
+        text: '正文内容',
+        align: '',
+        indent: 2,
+        headingLevel: null,
+      },
+    ];
+    const ops = diffBlocks(blocks, paragraphs);
+    if ('error' in ops) throw new Error(ops.error);
+    expect(ops.edits[0]).toMatchObject({ paraIndex: 0, indent: 2 });
+  });
+
+  it('正文 → 标题 2（headingLevel 1）→ edit 带 headingLevel', () => {
+    const paragraphs = [para(0, '正文内容')];
+    const blocks = [
+      {
+        paraIndex: 0,
+        kind: 'text' as const,
+        text: '正文内容',
+        align: '',
+        indent: 0,
+        headingLevel: 1,
+      },
+    ];
+    const ops = diffBlocks(blocks, paragraphs);
+    if ('error' in ops) throw new Error(ops.error);
+    expect(ops.edits[0]).toMatchObject({ paraIndex: 0, headingLevel: 1 });
+  });
+
+  it('标题 → 正文（headingLevel null）→ edit 带 headingLevel null', () => {
+    const paragraphs = [para(0, '标题文字', 'heading', 1)];
+    const blocks = [
+      {
+        paraIndex: 0,
+        kind: 'text' as const,
+        text: '标题文字',
+        align: '',
+        indent: 0,
+        headingLevel: null,
+      },
+    ];
+    const ops = diffBlocks(blocks, paragraphs);
+    if ('error' in ops) throw new Error(ops.error);
+    expect(ops.edits[0]).toMatchObject({ paraIndex: 0, headingLevel: null });
+  });
+
+  it('原标题段未动（headingLevel 与基线一致）→ 不产生 edit', () => {
+    const paragraphs = [para(0, '标题文字', 'heading', 1)];
+    const blocks = [
+      {
+        paraIndex: 0,
+        kind: 'text' as const,
+        text: '标题文字',
+        align: '',
+        indent: 0,
+        headingLevel: 1,
+      },
+    ];
+    const ops = diffBlocks(blocks, paragraphs);
+    if ('error' in ops) throw new Error(ops.error);
+    expect(ops.count).toBe(0);
+  });
+
+  it('heading_level>3 源段灌入降级 h3（基线 clamp 后一致）→ 不产生 edit', () => {
+    const paragraphs = [para(0, '深级标题', 'heading', 5)];
+    const blocks = [
+      {
+        paraIndex: 0,
+        kind: 'text' as const,
+        text: '深级标题',
+        align: '',
+        indent: 0,
+        headingLevel: 2,
+      },
+    ];
+    const ops = diffBlocks(blocks, paragraphs);
+    if ('error' in ops) throw new Error(ops.error);
+    expect(ops.count).toBe(0);
+  });
+
+  it('文本变化 + 对齐变化合并为同一条 edit', () => {
+    const paragraphs = [para(0, '原文')];
+    const blocks = [
+      {
+        paraIndex: 0,
+        kind: 'text' as const,
+        text: '改后文本',
+        align: 'right',
+        indent: 0,
+        headingLevel: null,
+      },
+    ];
+    const ops = diffBlocks(blocks, paragraphs);
+    if ('error' in ops) throw new Error(ops.error);
+    expect(ops.count).toBe(1);
+    expect(ops.edits[0]).toMatchObject({
+      paraIndex: 0,
+      newText: '改后文本',
+      align: 'right',
+    });
+  });
+
+  it('块级属性未变的段（基线对齐态）不产生 edit', () => {
+    const paragraphs = [para(0, '正文内容')];
+    const blocks = [
+      {
+        paraIndex: 0,
+        kind: 'text' as const,
+        text: '正文内容',
+        align: '',
+        indent: 0,
+        headingLevel: null,
+      },
+    ];
+    const ops = diffBlocks(blocks, paragraphs);
+    if ('error' in ops) throw new Error(ops.error);
+    expect(ops.count).toBe(0);
+  });
+
+  it('新增段（无 paraIndex）带块级属性透传到 inserts', () => {
+    const paragraphs = [para(0, 'A')];
+    const blocks = [
+      { paraIndex: 0, kind: 'text' as const, text: 'A' },
+      {
+        kind: 'text' as const,
+        text: '新标题',
+        align: '',
+        indent: 0,
+        headingLevel: 2,
+      },
+    ];
+    const ops = diffBlocks(blocks, paragraphs);
+    if ('error' in ops) throw new Error(ops.error);
+    expect(ops.inserts[0]).toMatchObject({
+      afterParaIndex: 0,
+      newText: '新标题',
+      headingLevel: 2,
+    });
+  });
+
+  it('headingLevel undefined（旧调用方）视作与基线一致 → 不产生 edit', () => {
+    const paragraphs = [para(0, '正文内容')];
+    const blocks = [{ paraIndex: 0, kind: 'text' as const, text: '正文内容' }];
+    const ops = diffBlocks(blocks, paragraphs);
+    if ('error' in ops) throw new Error(ops.error);
+    expect(ops.count).toBe(0);
+  });
+});

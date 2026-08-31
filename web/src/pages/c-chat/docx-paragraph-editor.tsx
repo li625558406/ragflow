@@ -367,8 +367,9 @@ export function readEditorBlocks(editor: LexicalEditor): EditorBlock[] {
         });
         continue;
       }
+      const isDocxHeading = child instanceof DocxHeadingNode;
       const paraIndex =
-        child instanceof DocxParagraphNode || child instanceof DocxHeadingNode
+        child instanceof DocxParagraphNode || isDocxHeading
           ? child.__paraIndex
           : undefined;
       const runs = $isElementNode(child) ? $extractRuns(child) : undefined;
@@ -378,6 +379,15 @@ export function readEditorBlocks(editor: LexicalEditor): EditorBlock[] {
         text: child.getTextContent(),
         runs,
         fmtSig: runsFmtSig(runs),
+        align: $isElementNode(child) ? child.getFormatType() || '' : '',
+        indent: $isElementNode(child) ? child.getIndent() : 0,
+        // h2/h3/h4 → 标题级别 1/2/3；非标题的 Docx 块为 null（正文）；
+        // 其余（ListNode 等）undefined → 走 insert 路径不参与块级比较
+        headingLevel: isDocxHeading
+          ? Number(child.getTag().slice(1)) - 1
+          : paraIndex != null
+            ? null
+            : undefined,
       });
     }
     return out;
