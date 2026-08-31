@@ -66,11 +66,5 @@ export function stripBgFromStyle(style: string): string {
  * （$extractRuns），且 DocxRun 只允许格式字段，不得加入 id/锚点等非格式键。 */
 export function runsFmtSig(runs: DocxRun[] | undefined): string | undefined {
   if (!runs) return undefined;
-  return JSON.stringify(
-    runs.map((r) => {
-      const rest = { ...r };
-      delete rest.text;
-      return rest;
-    }),
-  );
+  return JSON.stringify(runs.map((r) => ({ ...r, text: undefined })));
 }
