@@ -84,6 +84,7 @@ import {
 } from '@/pages/agent/chat/use-send-agent-message';
 import { AgentChatContext } from '@/pages/agent/context';
 import FlowPanel from '@/pages/c-chat/flow/flow-panel';
+import HrView from '@/pages/c-chat/hr';
 import api from '@/utils/api';
 import { markdownToBodyHtml } from '@/utils/markdown-to-word';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -564,7 +565,7 @@ export default function CChat() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [agentDropdownOpen, setAgentDropdownOpen] = useState(false);
   const [mainView, setMainView] = useState<
-    'chat' | 'collaboration' | 'tools' | 'bid' | 'favorites' | 'flow'
+    'chat' | 'collaboration' | 'tools' | 'bid' | 'favorites' | 'flow' | 'hr'
   >('chat');
   const [tabResetKeys, setTabResetKeys] = useState<Record<string, number>>({});
   const [collabDialogOpen, setCollabDialogOpen] = useState(false);
@@ -1451,14 +1452,14 @@ export default function CChat() {
               {(
                 [
                   {
+                    key: 'flow',
+                    label: '流程',
+                    icon: 'workflow',
+                  },
+                  {
                     key: 'chat',
                     label: '对话',
                     icon: 'message-circle',
-                  },
-                  {
-                    key: 'collaboration',
-                    label: '协作',
-                    icon: 'users',
                   },
                   {
                     key: 'tools',
@@ -1466,19 +1467,14 @@ export default function CChat() {
                     icon: 'wrench',
                   },
                   {
-                    key: 'favorites',
-                    label: '收藏',
-                    icon: 'bookmark',
-                  },
-                  {
                     key: 'bid',
                     label: '标书',
                     icon: 'scroll-text',
                   },
                   {
-                    key: 'flow',
-                    label: '流程',
-                    icon: 'workflow',
+                    key: 'hr',
+                    label: '人事',
+                    icon: 'users',
                   },
                 ] as const
               ).map((tab) => (
@@ -2921,6 +2917,18 @@ export default function CChat() {
               }
             >
               <FlowPanel />
+            </div>
+
+            {/* HR View */}
+            <div
+              key={getTabResetKey('hr')}
+              className={
+                mainView === 'hr'
+                  ? 'cs-page-enter flex-1 flex flex-col min-h-0'
+                  : 'hidden'
+              }
+            >
+              <HrView />
             </div>
           </div>
         </div>
