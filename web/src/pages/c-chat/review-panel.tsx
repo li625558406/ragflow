@@ -489,6 +489,11 @@ export default function ReviewPanel({
   const [resetKey, setResetKey] = useState(0);
   const [savingEdits, setSavingEdits] = useState(false);
   const [editError, setEditError] = useState('');
+  // 工具栏 portal 宿主：吸顶空容器 ref 回调，DocxToolbar 渲染到该 DOM
+  const [toolbarHost, setToolbarHost] = useState<HTMLElement | null>(null);
+  const toolbarHostRef = useCallback((el: HTMLDivElement | null) => {
+    setToolbarHost(el);
+  }, []);
   // Word 式引线布局：锚点坐标 + 卡片 top + 画布尺寸
   const wrapRef = useRef<HTMLDivElement>(null);
   const [layout, setLayout] = useState<{
@@ -1199,32 +1204,12 @@ export default function ReviewPanel({
           <div ref={wrapRef} className="relative flex items-start gap-4">
             {/* 正文列：Word 纸张式排版（A4 白纸 + 宋体 + 页边距 + 阴影） */}
             <div className="min-w-0 flex-1" onMouseUp={handleContentMouseUp}>
-              {/* 统一保存栏：有改动时吸顶显示 */}
-              {dirty > 0 && (
-                <div className="sticky top-0 z-10 mx-auto mb-2 flex max-w-[794px] items-center justify-between rounded-lg border border-[#1a66fb] bg-[#F0F5FF] px-3 py-2 shadow-sm">
-                  <span className="text-xs text-[#1a66fb]">
-                    已修改 {dirty} 处（保存将存为新版本）
-                  </span>
-                  <div className="flex gap-1.5">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-7 px-2.5 text-xs"
-                      disabled={savingEdits}
-                      onClick={handleDiscardEdits}
-                    >
-                      放弃修改
-                    </Button>
-                    <Button
-                      size="sm"
-                      className="h-7 px-2.5 text-xs"
-                      disabled={savingEdits}
-                      onClick={handleSaveEdits}
-                    >
-                      {savingEdits ? '保存中…' : '保存'}
-                    </Button>
-                  </div>
-                </div>
+              {/* Word 工具栏吸顶宿主：始终渲染（编辑模式），工具栏 portal 进来 */}
+              {canEdit && onEditDocument && loadedFileId === fileId && (
+                <div
+                  ref={toolbarHostRef}
+                  className="sticky top-0 z-10 mx-auto mb-2 max-w-[794px]"
+                />
               )}
               {editError && (
                 <div className="mx-auto mb-2 max-w-[794px] text-xs text-[#FF4D4F]">
@@ -1246,6 +1231,11 @@ export default function ReviewPanel({
                     renderAtomic={renderAtomicBlock}
                     editorRef={editorRef}
                     onBlocksChange={handleEditorDirty}
+                    toolbarPortal={toolbarHost}
+                    dirty={dirty}
+                    saving={savingEdits}
+                    onSave={handleSaveEdits}
+                    onDiscard={handleDiscardEdits}
                   />
                 ) : (
                   <div className="space-y-2">

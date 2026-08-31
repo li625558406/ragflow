@@ -105,7 +105,11 @@ export async function addFlowComment(
   flowId: string,
   content: string,
   versionId?: string,
-  anchor?: { anchorText?: string; anchorPara?: number | null },
+  anchor?: {
+    anchorText?: string;
+    anchorPara?: number | null;
+    anchorStart?: number | null;
+  },
 ): Promise<{ comment: unknown }> {
   return apiFetch(`/flow/${flowId}/comment`, {
     method: 'POST',
@@ -115,6 +119,68 @@ export async function addFlowComment(
       version_id: versionId,
       anchor_text: anchor?.anchorText || '',
       anchor_para: anchor?.anchorPara ?? null,
+      anchor_start: anchor?.anchorStart ?? null,
+    }),
+  });
+}
+
+/** 删除手动批注（后端校验：仅批注作者本人） */
+export async function deleteFlowComment(
+  flowId: string,
+  commentId: string,
+): Promise<{ id: string }> {
+  return apiFetch(`/flow/${flowId}/comment/${commentId}/delete`, {
+    method: 'POST',
+  });
+}
+
+/** 段落内 run 级格式（snake_case 与后端 docx 写入契约一致） */
+export interface FlowDocRun {
+  text: string;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  strike?: boolean;
+  superscript?: boolean;
+  subscript?: boolean;
+  color?: string;
+  bg_color?: string;
+  font?: string;
+  size?: number;
+}
+
+/** Word 式编辑文档：改写/新增/删除段落（后端按 para_index 定位 docx 同步增删改，存为新版本） */
+export interface FlowDocEditOps {
+  edits: Array<{ paraIndex: number; newText: string; runs?: FlowDocRun[] }>;
+  deletes: number[];
+  inserts: Array<{
+    afterParaIndex: number;
+    newText: string;
+    runs?: FlowDocRun[];
+  }>;
+}
+
+export async function editFlowDocument(
+  flowId: string,
+  versionId: string,
+  ops: FlowDocEditOps,
+): Promise<{ version: FlowVersionItem }> {
+  return apiFetch(`/flow/${flowId}/document/edit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      version_id: versionId,
+      edits: ops.edits.map((e) => ({
+        para_index: e.paraIndex,
+        new_text: e.newText,
+        ...(e.runs ? { runs: e.runs } : {}),
+      })),
+      deletes: ops.deletes,
+      inserts: ops.inserts.map((i) => ({
+        after_para_index: i.afterParaIndex,
+        new_text: i.newText,
+        ...(i.runs ? { runs: i.runs } : {}),
+      })),
     }),
   });
 }

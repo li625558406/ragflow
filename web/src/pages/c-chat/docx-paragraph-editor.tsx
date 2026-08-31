@@ -49,6 +49,7 @@ import {
 } from './docx-diff';
 import type { DocxRun } from './docx-format-utils';
 import { parseStyle, runsFmtSig, stripBgFromStyle } from './docx-format-utils';
+import DocxToolbar from './docx-toolbar';
 
 // ── 自定义节点 ──────────────────────────────────────────────
 // paraIndex 仅在初始内容灌入（buildInitialContent）时赋值；Lexical 内部
@@ -608,6 +609,11 @@ export default function DocxParagraphEditor({
   renderAtomic,
   editorRef,
   onBlocksChange,
+  toolbarPortal,
+  dirty,
+  saving,
+  onSave,
+  onDiscard,
 }: {
   paragraphs: DocxSourceParagraph[];
   /** 高亮目标集：身份变化会触发高亮重建（历史合并标签，不入撤销栈），
@@ -624,6 +630,12 @@ export default function DocxParagraphEditor({
   }) => React.ReactNode;
   editorRef: { current: LexicalEditor | null };
   onBlocksChange: (blocks: EditorBlock[]) => void;
+  /** 工具栏 portal 宿主（父级吸顶容器），null 时工具栏不渲染 */
+  toolbarPortal?: HTMLElement | null;
+  dirty?: number;
+  saving?: boolean;
+  onSave?: () => void;
+  onDiscard?: () => void;
 }) {
   // paragraphs 固定于挂载时刻（初始内容由 InitialContentPlugin 在挂载后灌入）；
   // 文档刷新/放弃修改由父级换 key 重挂载。
@@ -650,6 +662,13 @@ export default function DocxParagraphEditor({
       }
     >
       <AtomicRenderContext.Provider value={renderAtomic}>
+        <DocxToolbar
+          portal={toolbarPortal ?? null}
+          dirty={dirty ?? 0}
+          saving={saving ?? false}
+          onSave={onSave ?? (() => {})}
+          onDiscard={onDiscard ?? (() => {})}
+        />
         <RichTextPlugin
           contentEditable={
             <ContentEditable className="space-y-2 outline-none focus:outline-none" />
