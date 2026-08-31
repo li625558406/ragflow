@@ -61,7 +61,9 @@ export function stripBgFromStyle(style: string): string {
   return mergeStyle(style, {}, ['background-color']);
 }
 
-/** runs 样式签名（不含 text）：文本相同时比较签名判断「纯改格式」 */
+/** runs 样式签名（不含 text）：文本相同时比较签名判断「纯改格式」。
+ * 签名为 JSON.stringify，对键序敏感——runs 必须全部来自同一构造路径
+ * （$extractRuns），且 DocxRun 只允许格式字段，不得加入 id/锚点等非格式键。 */
 export function runsFmtSig(runs: DocxRun[] | undefined): string | undefined {
   if (!runs) return undefined;
   return JSON.stringify(
