@@ -1,5 +1,66 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-08-31 C端「人事」页签 P1：员工档案 + 打卡考勤
+
+**主题**：C端新增「人事」页签，交付人事模块第一阶段（4模块20功能点中的 P1）。
+
+**核心变更**：
+- 设计文档：docs/superpowers/specs/2026-08-31-hr-module-design.md（4模块分4阶段）
+- 新增5张表：hr_employee / hr_rule_config / hr_attendance_record / hr_attendance_day / hr_attendance_month（启动自动建表）
+- 推导引擎 hr_calculator.py：打卡去重 / 迟到阈值 / 半夜异常窗口 / 假单优先，含对抗性单测
+- hr_service.py：员工档案/规则配置/打卡流水/日月汇总 Service 层，month-close 事务化幂等
+- hr_app.py：12个端点（打卡/今日/日历/建档/列表/补卡/日明细/月汇总/一键汇总/规则配置），month 正则校验+归一化+数值键类型防御
+- RBAC 新增 hr_manage / hr_finance 权限点（前后端常量对齐）
+- 前端：c-chat 顶部「人事」页签 + 考勤视图（打卡卡片/考勤日历/HR管理面板），hr-service.ts API 层，中文硬编码
+- 范围微调：员工自助补卡申请依赖审批引擎，移至 P2 与假单审批一起交付；P1 先支持 HR 直接补卡
+
+**遗留**：待部署联调；请假/薪资/报表见 P2-P4。
+
+## 2026-08-31 C端：去掉「协作」「收藏」页签入口
+
+**核心变更**
+- c-chat 顶部模块页签移除「协作」「收藏」两个入口，保留 对话/工具/标书/流程
+- 最小改动：仅删页签按钮项，视图渲染分支与状态保留（不可达死代码，后续确认稳定可清理）
+
+**遗留**
+- CollaborationPanel 与收藏相关渲染分支仍在 index.tsx 中（不可达），待确认后可整体清理
+- 未构建部署
+
+## 2026-08-31 流程版本记录：倒序 + 分页加载 + 时间醒目
+
+**核心变更**
+- 版本时间线倒序排列（最新在前，前端按 version_no desc 排序）
+- 分页展示：初始只显示一页（5 条），底部「查看更多（剩余 N 条）」按钮点击再加载一页；切换流程时重置回第一页
+- 版本时间显示醒目化：由 10px 浅灰升级为 12px 加粗 #444 + 蓝色时钟图标
+- 纯前端改动（flow-detail.tsx），无后端变更
+
+**遗留**
+- 未构建部署（生产 dist 仍是旧版）
+
+## 2026-08-31 流程版本记录：版本删除 + 醒目下载/删除按钮
+
+**核心变更**
+- 需求：版本时间线每条版本增加醒目的「下载」「删除」按钮；删除规则经用户确认——仅审核领导（leader_id）可删，其余人按钮置灰（title 提示原因）；可删最新版（current 回退剩余最高 version_no，无版本置空）；锚定该版本的批注一并删除
+- 后端：`POST /flow/<flow_id>/version/<version_id>/delete`（参与者 + 非 TERMINAL + 仅领导 403 硬校验）；FlowVersionService.delete_version 事务内删版本行 + 锚定批注 + current 回退；存储对象 best-effort `STORAGE_IMPL.rm`；删除后 notify 其他参与人
+- 前端：flow-detail 版本项操作区两按钮（下载蓝、删除红，非领导/已结束/忙碌时删除置灰）；删除走 confirm；删除选中版本后选中态回落最新版；flow-service.ts 新增 deleteFlowVersion；viewer 增加 is_leader（get_flow 返回）
+- 下载为既有能力（downloadVersionBlob）仅 UI 醒目化
+
+**遗留**
+- 未部署（后端 flow_app.py + flow_service.py 需 SCP + docker restart；前端需 build 部署）
+- 删除版本不级联清理 flow_ai_chat 中引用该版本的 output_version_id（记录保留，仅展示层「已存为新版本」标记可能悬空）
+
+## 2026-08-31 流程文件审核：支持以任意历史版本为底稿编辑（增量追加版本）
+
+**核心变更**
+- 需求：版本记录中选中任意版本 → 文件审核显示该版本内容与批注 → 在该版本上 Word 式修改 → 保存后以该版本为底稿生成新版本**增量追加**到时间线
+- 核实结论：前端链路已全部就绪，无需改动——flow-detail 把 `selectedVersion` 传给 FlowAiPanel，文件审核按选中版本下载上传预览；批注列表已按 `version_id === selectedVersion.id` 过滤显示（批注创建时独立落库，不参与文档保存）；`handleEditDocument` 提交的就是选中版本 id
+- 唯一改动：flow_app.py `edit_document` 移除「仅允许编辑 current_version_id」限制，允许以任意版本为底稿；结果经 add_version 增量落成最新版（source=manual_edit），不覆盖/回滚已有版本；权限（仅当前节点负责人）与 TERMINAL 状态检查保留
+- 保存后行为保持现状：新版本上传刷新预览 + flow-detail 失效查询刷新时间线
+
+**遗留**
+- 选中历史版本编辑保存后，左侧版本选中态仍指向旧版本（面板预览已刷到新版本），需手动点选
+- 未部署（后端 flow_app.py 需 SCP + docker restart）
+
 ## 2026-08-31 文件审核：Word 式工具栏（run 级格式落盘）
 
 **核心变更**
