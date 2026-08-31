@@ -83,7 +83,7 @@ const FONT_SIZES: Array<{ label: string; pt: number }> = [
   { label: '四号 14', pt: 14 },
   { label: '小四 12', pt: 12 },
   { label: '五号 10.5', pt: 10.5 },
-  { label: '九号 9', pt: 9 },
+  { label: '小五 9', pt: 9 },
 ];
 const TEXT_COLORS = [
   '#000000',
@@ -155,12 +155,16 @@ function GroupDivider() {
   return <span className="mx-1 h-5 w-px shrink-0 bg-[#E5E5E5]" />;
 }
 
-/** 下拉触发按钮（块类型/字体/字号共用） */
+/** 下拉触发按钮（块类型/字体/字号共用）。
+ * onMouseDown preventDefault + onOpenAutoFocus preventDefault（见各
+ * DropdownMenuContent）双保险：防止打开菜单/点击菜单项时焦点移走导致
+ * Lexical 选区塌陷——否则选值时 $isRangeSelection 不通过，静默无效 */
 function SelectTrigger({ label, width }: { label: string; width: string }) {
   return (
     <DropdownMenuTrigger asChild>
       <button
         type="button"
+        onMouseDown={(e) => e.preventDefault()}
         className={`inline-flex h-7 items-center justify-between gap-0.5 rounded px-1.5 text-[12px] text-[#333333] transition-colors hover:bg-[#F0F2F5] ${width}`}
       >
         <span className="truncate">{label}</span>
@@ -181,6 +185,7 @@ function MenuItem({
 }) {
   return (
     <DropdownMenuItem
+      onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
       className={`cursor-pointer text-[13px] ${active ? 'bg-[#E8F0FF] text-[#1a66fb]' : ''}`}
     >
@@ -188,6 +193,10 @@ function MenuItem({
     </DropdownMenuItem>
   );
 }
+
+/** 菜单/浮层打开时不抢焦点（保 Lexical 选区），各 DropdownMenuContent /
+ * PopoverContent 统一挂这个 */
+const keepFocus = (e: Event) => e.preventDefault();
 
 // ── 编辑器内操作（须在 editor.update / editorState.read 内） ──
 
@@ -369,7 +378,11 @@ export default function DocxToolbar({
             label={blockKind === 'h' ? '标题' : '正文'}
             width="w-16"
           />
-          <DropdownMenuContent align="start" className="w-32">
+          <DropdownMenuContent
+            align="start"
+            className="w-32"
+            onOpenAutoFocus={keepFocus}
+          >
             <MenuItem
               active={blockKind === 'p'}
               onClick={() =>
@@ -415,7 +428,11 @@ export default function DocxToolbar({
         {/* 字体 */}
         <DropdownMenu>
           <SelectTrigger label={fontFamily || '字体'} width="w-24" />
-          <DropdownMenuContent align="start" className="w-40">
+          <DropdownMenuContent
+            align="start"
+            className="w-40"
+            onOpenAutoFocus={keepFocus}
+          >
             {FONT_FAMILIES.map((f) => (
               <MenuItem
                 key={f}
@@ -431,7 +448,11 @@ export default function DocxToolbar({
         {/* 字号 */}
         <DropdownMenu>
           <SelectTrigger label={sizeLabel} width="w-20" />
-          <DropdownMenuContent align="start" className="w-28">
+          <DropdownMenuContent
+            align="start"
+            className="w-28"
+            onOpenAutoFocus={keepFocus}
+          >
             {FONT_SIZES.map((s) => (
               <MenuItem
                 key={s.label}
@@ -518,7 +539,11 @@ export default function DocxToolbar({
               字体颜色
             </TooltipContent>
           </Tooltip>
-          <PopoverContent align="start" className="w-auto p-2">
+          <PopoverContent
+            align="start"
+            className="w-auto p-2"
+            onOpenAutoFocus={keepFocus}
+          >
             <div className="grid grid-cols-5 gap-1.5">
               {TEXT_COLORS.map((c) => (
                 <button
@@ -559,7 +584,11 @@ export default function DocxToolbar({
               背景高亮
             </TooltipContent>
           </Tooltip>
-          <PopoverContent align="start" className="w-auto p-2">
+          <PopoverContent
+            align="start"
+            className="w-auto p-2"
+            onOpenAutoFocus={keepFocus}
+          >
             <div className="grid grid-cols-5 gap-1.5">
               {BG_COLORS.map((c) => (
                 <button
