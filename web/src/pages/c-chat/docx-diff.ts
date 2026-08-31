@@ -16,7 +16,9 @@ export interface EditorBlock {
   paraIndex?: number;
   kind: 'text' | 'table' | 'image';
   text: string;
-  /** run 级格式抽取结果；undefined = 全默认格式（保持旧整段替换行为） */
+  /** run 级格式抽取结果；undefined = 全默认格式（保持旧整段替换行为）。
+   * 不变量：各 run.text 拼接必须等于 block text（trim 前），后端按 runs
+   * 重建段落时以此校验一致性 */
   runs?: DocxRun[];
   /** runsFmtSig(runs) 缓存，文本相同但签名不同 = 纯改格式 */
   fmtSig?: string;
@@ -65,12 +67,10 @@ export function diffBlocks(
         deletes.push(idx);
       } else if (text !== orig.text.trim()) {
         edits.push({ paraIndex: idx, newText: text, runs: b.runs });
-      } else if (
-        b.fmtSig &&
-        b.fmtSig !== JSON.stringify([{ text: orig.text.trim() }]) &&
-        b.fmtSig !== '[]'
-      ) {
-        // 纯改格式：文本相同但样式签名与「无格式」基线不同
+      } else if (b.runs && b.fmtSig && b.fmtSig !== '[]') {
+        // 纯改格式：文本相同但样式签名变了。无格式块 fmtSig 为 undefined
+        //（已被排除）；'[]' 为空 runs 兜底。runs 缺失时不产生 edit，
+        // 避免整段替换把原文档已有格式抹成默认格式。
         edits.push({ paraIndex: idx, newText: text, runs: b.runs });
       }
     } else {

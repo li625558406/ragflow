@@ -216,3 +216,44 @@ describe('diffBlocks 格式（runs/fmtSig）', () => {
     });
   });
 });
+
+describe('diffBlocks 纯格式分支边界', () => {
+  const para = (index: number, text: string, type: any = 'paragraph') => ({
+    index,
+    text,
+    type,
+  });
+
+  it("fmtSig='[]'（空 runs 签名）不产生 edit", () => {
+    const paragraphs = [para(0, '原文')];
+    const blocks = [
+      {
+        paraIndex: 0,
+        kind: 'text' as const,
+        text: '原文',
+        runs: [],
+        fmtSig: '[]',
+      },
+    ];
+    const ops = diffBlocks(blocks, paragraphs);
+    if ('error' in ops) throw new Error(ops.error);
+    expect(ops.count).toBe(0);
+    expect(ops.edits).toHaveLength(0);
+  });
+
+  it('有 fmtSig 但缺 runs（不一致输入）→ 退化为不产生 edit（防静默格式丢失）', () => {
+    const paragraphs = [para(0, '原文')];
+    const blocks = [
+      {
+        paraIndex: 0,
+        kind: 'text' as const,
+        text: '原文',
+        fmtSig: '[{"bold":true}]',
+      },
+    ];
+    const ops = diffBlocks(blocks, paragraphs);
+    if ('error' in ops) throw new Error(ops.error);
+    expect(ops.count).toBe(0);
+    expect(ops.edits).toHaveLength(0);
+  });
+});
