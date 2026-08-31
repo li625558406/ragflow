@@ -7,12 +7,14 @@ import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext
 import { ContentEditable } from '@lexical/react/LexicalContentEditable';
 import { LexicalErrorBoundary } from '@lexical/react/LexicalErrorBoundary';
 import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin';
+import { ListPlugin } from '@lexical/react/LexicalListPlugin';
 import { RichTextPlugin } from '@lexical/react/LexicalRichTextPlugin';
 import {
   HeadingNode,
   HeadingTagType,
   SerializedHeadingNode,
 } from '@lexical/rich-text';
+import { mergeRegister } from '@lexical/utils';
 import {
   $applyNodeReplacement,
   $createTextNode,
@@ -23,14 +25,17 @@ import {
   $isRootNode,
   $isTextNode,
   CLICK_COMMAND,
+  COMMAND_PRIORITY_EDITOR,
   COMMAND_PRIORITY_HIGH,
   DecoratorNode,
   EditorConfig,
   ElementNode,
+  INDENT_CONTENT_COMMAND,
   LexicalEditor,
   LexicalNode,
   LexicalUpdateJSON,
   NodeKey,
+  OUTDENT_CONTENT_COMMAND,
   ParagraphNode,
   PASTE_COMMAND,
   RangeSelection,
@@ -534,6 +539,41 @@ function PastePlugin() {
   return null;
 }
 
+/** 缩进：core 只定义 INDENT/OUTDENT 命令不注册处理器，这里对选区顶级块
+ * setIndent（0-8 封顶/封底）；缩进不进 diff 落盘契约，仅编辑器视觉 */
+function IndentPlugin() {
+  const [editor] = useLexicalComposerContext();
+  useEffect(() => {
+    const apply = (delta: number) => () => {
+      const selection = $getSelection();
+      if (!$isRangeSelection(selection)) return false;
+      const blocks = new Set<ElementNode>();
+      for (const node of selection.getNodes()) {
+        let cur: LexicalNode | null = node;
+        while (cur && !$isRootNode(cur.getParent())) cur = cur.getParent();
+        if (cur && $isElementNode(cur) && !$isRootNode(cur)) blocks.add(cur);
+      }
+      blocks.forEach((b) =>
+        b.setIndent(Math.max(0, Math.min(8, b.getIndent() + delta))),
+      );
+      return true;
+    };
+    return mergeRegister(
+      editor.registerCommand(
+        INDENT_CONTENT_COMMAND,
+        apply(1),
+        COMMAND_PRIORITY_EDITOR,
+      ),
+      editor.registerCommand(
+        OUTDENT_CONTENT_COMMAND,
+        apply(-1),
+        COMMAND_PRIORITY_EDITOR,
+      ),
+    );
+  }, [editor]);
+  return null;
+}
+
 /** 脏检查：任何编辑器更新后抽块描述抛给父级（父级防抖后 diff 计数） */
 function DirtyPlugin({
   onBlocksChange,
@@ -677,6 +717,8 @@ export default function DocxParagraphEditor({
           ErrorBoundary={LexicalErrorBoundary}
         />
         <HistoryPlugin />
+        <ListPlugin />
+        <IndentPlugin />
         <InitialContentPlugin paragraphs={paragraphs} />
         <HighlightPlugin targetsByPara={targetsByPara} />
         <ClickPlugin onAnchorClick={onAnchorClick} />
