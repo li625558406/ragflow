@@ -5,6 +5,7 @@
 - HR 管理接口（建档/全员汇总/补卡/月度归档/规则配置写）：@permission_required("hr_manage")
 """
 import logging
+import math
 import re
 from datetime import date, datetime
 
@@ -308,7 +309,10 @@ def _sanitize_rule_payload(body: dict) -> dict:
     for k, v in (body or {}).items():
         if k in _NUMERIC_RULE_KEYS:
             try:
-                clean[k] = float(v)
+                value = float(v)
+                if not math.isfinite(value):
+                    raise ValueError
+                clean[k] = value
             except (TypeError, ValueError):
                 raise ValueError(f"规则项 {k} 必须是数字")
         else:

@@ -109,6 +109,7 @@ class HrAttendanceDayService(CommonService):
                 return row  # 锁定行不覆盖
             for k, v in fields.items():
                 setattr(row, k, v)
+            row.locked = locked or row.locked
             row.update_time = current_timestamp()
             row.save()
             return row
@@ -137,6 +138,8 @@ class HrAttendanceMonthService(CommonService):
 
         幂等语义：已确认的员工跳过，未确认的补跑；整批包裹在事务中，失败整体回滚。
         """
+        if month == date.today().strftime("%Y-%m"):
+            raise ValueError("当月尚未结束，不能汇总归档")
         confirmed_ids = {
             r.employee_id for r in cls.model.select().where(
                 cls.model.status == "confirmed", cls.model.month == month)

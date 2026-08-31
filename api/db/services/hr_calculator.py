@@ -120,7 +120,7 @@ def derive_day_status(records, work_date, rule, leave_status=None):
     work_start = _parse_hm(rule.get("work_start"), time(9, 0))
     try:
         threshold = max(0, int(rule.get("late_threshold_minutes", 10) or 0))
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         threshold = 10
     limit = datetime.combine(work_date, work_start) + timedelta(minutes=threshold)
     first_in = status["first_in"]
