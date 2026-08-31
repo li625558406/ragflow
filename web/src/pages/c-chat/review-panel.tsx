@@ -456,6 +456,9 @@ export default function ReviewPanel({
   onEditDocument,
 }: ReviewPanelProps) {
   const [content, setContent] = useState<FileContent | null>(null);
+  // 当前 content 实际对应的 fileId：保存后 fileId 变化→编辑器重挂载早于新内容
+  // 到达，用 loadedFileId 门控，避免编辑器以旧文档段落为基线冻结
+  const [loadedFileId, setLoadedFileId] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
@@ -654,6 +657,7 @@ export default function ReviewPanel({
         if (cancelled) return;
         if (res?.data?.code === 0) {
           setContent(res.data.data);
+          setLoadedFileId(fileId);
         } else {
           setError(res?.data?.message || 'Failed to load file content');
         }
@@ -866,6 +870,7 @@ export default function ReviewPanel({
           return;
         }
         setDirty(ops.count);
+        setEditError('');
       }, 250);
     },
     [canEdit, content],
@@ -1232,9 +1237,9 @@ export default function ReviewPanel({
                   fontFamily: "'SimSun', '宋体', 'Times New Roman', serif",
                 }}
               >
-                {canEdit && onEditDocument ? (
+                {canEdit && onEditDocument && loadedFileId === fileId ? (
                   <DocxParagraphEditor
-                    key={`${fileId}-${resetKey}`}
+                    key={`${loadedFileId}-${resetKey}`}
                     paragraphs={content.paragraphs}
                     targetsByPara={targetsByPara}
                     onAnchorClick={handleAnchorClick}

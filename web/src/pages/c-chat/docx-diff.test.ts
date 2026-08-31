@@ -94,7 +94,7 @@ describe('diffBlocks', () => {
       { paraIndex: 1, kind: 'table' as const, text: '' },
     ];
     const ops = diffBlocks(blocks, paragraphs);
-    expect('error' in ops).toBe(false);
+    if ('error' in ops) throw new Error('不应返回 error');
     expect(ops.count).toBe(0);
   });
 
