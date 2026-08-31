@@ -149,3 +149,70 @@ describe('splitIntoSegments', () => {
     ]);
   });
 });
+
+describe('diffBlocks 格式（runs/fmtSig）', () => {
+  const para = (index: number, text: string, type: any = 'paragraph') => ({
+    index,
+    text,
+    type,
+  });
+
+  it('纯改格式（文本同、fmtSig 变）→ edit 且带 runs', () => {
+    const paragraphs = [para(0, '原文')];
+    const runs = [{ text: '原文', bold: true }];
+    const blocks = [
+      {
+        paraIndex: 0,
+        kind: 'text' as const,
+        text: '原文',
+        runs,
+        fmtSig: '[{"bold":true}]',
+      },
+    ];
+    const ops = diffBlocks(blocks, paragraphs);
+    expect(ops).toMatchObject({
+      count: 1,
+      edits: [{ paraIndex: 0, newText: '原文', runs }],
+    });
+  });
+
+  it('无格式的块（无 runs/fmtSig）行为与旧版一致（不产生 edit）', () => {
+    const paragraphs = [para(0, '原文')];
+    const blocks = [{ paraIndex: 0, kind: 'text' as const, text: '原文' }];
+    const ops = diffBlocks(blocks, paragraphs);
+    if ('error' in ops) throw new Error('不应返回 error');
+    expect(ops.count).toBe(0);
+  });
+
+  it('文本+格式同时变化 → edit 带 runs', () => {
+    const paragraphs = [para(0, '原文')];
+    const runs = [{ text: '改后文字', color: '#FF0000' }];
+    const blocks = [
+      {
+        paraIndex: 0,
+        kind: 'text' as const,
+        text: '改后文字',
+        runs,
+        fmtSig: '[{"color":"#FF0000"}]',
+      },
+    ];
+    const ops = diffBlocks(blocks, paragraphs);
+    expect(ops).toMatchObject({
+      count: 1,
+      edits: [{ paraIndex: 0, newText: '改后文字', runs }],
+    });
+  });
+
+  it('insert 带 runs 原样透传', () => {
+    const paragraphs = [para(0, 'A')];
+    const runs = [{ text: '新增段', size: 14 }];
+    const blocks = [
+      { paraIndex: 0, kind: 'text' as const, text: 'A' },
+      { kind: 'text' as const, text: '新增段', runs, fmtSig: '[{"size":14}]' },
+    ];
+    const ops = diffBlocks(blocks, paragraphs);
+    expect(ops).toMatchObject({
+      inserts: [{ afterParaIndex: 0, newText: '新增段', runs }],
+    });
+  });
+});

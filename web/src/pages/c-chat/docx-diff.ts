@@ -1,6 +1,8 @@
 // 文档模型 diff：编辑器块描述 vs 原文段落，产出后端 /flow/<id>/document/edit
 // 契约的三类操作（edits/deletes/inserts）。纯函数、零依赖，可单测。
 
+import type { DocxRun } from './docx-format-utils';
+
 export interface DocxSourceParagraph {
   index: number;
   text: string;
@@ -14,15 +16,23 @@ export interface EditorBlock {
   paraIndex?: number;
   kind: 'text' | 'table' | 'image';
   text: string;
+  /** run 级格式抽取结果；undefined = 全默认格式（保持旧整段替换行为） */
+  runs?: DocxRun[];
+  /** runsFmtSig(runs) 缓存，文本相同但签名不同 = 纯改格式 */
+  fmtSig?: string;
 }
 
 export type DocxDiffOps =
   | { error: string }
   | {
       error?: undefined;
-      edits: Array<{ paraIndex: number; newText: string }>;
+      edits: Array<{ paraIndex: number; newText: string; runs?: DocxRun[] }>;
       deletes: number[];
-      inserts: Array<{ afterParaIndex: number; newText: string }>;
+      inserts: Array<{
+        afterParaIndex: number;
+        newText: string;
+        runs?: DocxRun[];
+      }>;
       count: number;
     };
 
@@ -32,9 +42,14 @@ export function diffBlocks(
 ): DocxDiffOps {
   const byIdx = new Map(paragraphs.map((p) => [p.index, p]));
   const seen = new Set<number>();
-  const edits: Array<{ paraIndex: number; newText: string }> = [];
+  const edits: Array<{ paraIndex: number; newText: string; runs?: DocxRun[] }> =
+    [];
   const deletes: number[] = [];
-  const inserts: Array<{ afterParaIndex: number; newText: string }> = [];
+  const inserts: Array<{
+    afterParaIndex: number;
+    newText: string;
+    runs?: DocxRun[];
+  }> = [];
   let lastIdx: number | null = null;
 
   for (const b of blocks) {
@@ -49,7 +64,14 @@ export function diffBlocks(
       if (!text) {
         deletes.push(idx);
       } else if (text !== orig.text.trim()) {
-        edits.push({ paraIndex: idx, newText: text });
+        edits.push({ paraIndex: idx, newText: text, runs: b.runs });
+      } else if (
+        b.fmtSig &&
+        b.fmtSig !== JSON.stringify([{ text: orig.text.trim() }]) &&
+        b.fmtSig !== '[]'
+      ) {
+        // 纯改格式：文本相同但样式签名与「无格式」基线不同
+        edits.push({ paraIndex: idx, newText: text, runs: b.runs });
       }
     } else {
       const text = b.text.trim();
@@ -57,6 +79,7 @@ export function diffBlocks(
         inserts.push({
           afterParaIndex: lastIdx == null ? -1 : lastIdx,
           newText: text,
+          runs: b.runs,
         });
       }
     }
