@@ -3,11 +3,13 @@ import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import AttendanceView from './attendance-view';
 import LeaveView from './leave-view';
+import SalaryView from './salary-view';
 
 // P2 追加「请假」、P3 追加「薪资」、P4 追加「报表」子页签（见设计文档 §7 阶段拆分）
 const SUB_TABS = [
   { key: 'attendance', label: '考勤' },
   { key: 'leave', label: '请假' },
+  { key: 'salary', label: '薪资' },
 ] as const;
 
 type SubTabKey = (typeof SUB_TABS)[number]['key'];
@@ -46,6 +48,7 @@ export default function HrView() {
       <div className="min-h-0 flex-1 overflow-auto">
         {sub === 'attendance' && <AttendanceView />}
         {sub === 'leave' && <LeaveView />}
+        {sub === 'salary' && <SalaryView />}
       </div>
     </div>
   );
