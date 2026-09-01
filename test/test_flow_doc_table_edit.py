@@ -91,6 +91,20 @@ def test_apply_cell_text_runs_bold():
     assert cell.paragraphs[0].runs[0].bold is True
 
 
+def test_apply_cell_text_runs_newline_writes_br():
+    doc = _doc_with_table()
+    table = _build_para_map(doc)[1][1]
+    runs = [{"text": "一行", "bold": True}, {"text": "\n"}, {"text": "两行"}]
+    _apply_cell_text(table.cell(1, 0), "一行\n两行", runs)
+    cell = table.cell(1, 0)
+    assert cell.text == "一行\n两行"
+    # runs 里的 \n 经 python-docx run.text setter 落为 <w:br/>，加粗保留
+    from docx.oxml.ns import qn
+
+    assert len(cell.paragraphs[0]._element.findall(".//" + qn("w:br"))) > 0
+    assert cell.paragraphs[0].runs[0].bold is True
+
+
 def test_apply_cell_text_multiline_writes_br_and_clears_extra_paras():
     doc = Document()
     t = doc.add_table(rows=1, cols=1)
