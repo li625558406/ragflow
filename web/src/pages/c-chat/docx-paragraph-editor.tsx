@@ -408,6 +408,30 @@ function $extractRuns(block: ElementNode): DocxRun[] | undefined {
   return hasFmt ? merged : undefined;
 }
 
+/** 格内 runs 抽取：按段落逐个 $extractRuns，段间插入 \n 分隔 run，保证
+ * ''.join(runs.text) === 格文本（与正文段「runs 拼接 = 块 text」的不变量一致，
+ * 后端 runs/new_text 一致性校验才过）。无任何格式时返回 undefined。 */
+function $extractCellRuns(cell: TableCellNode): DocxRun[] | undefined {
+  const out: DocxRun[] = [];
+  let first = true;
+  for (const n of cell.getChildren()) {
+    if (!(n instanceof ParagraphNode)) continue;
+    if (!first) out.push({ text: '\n' });
+    const paraRuns = $extractRuns(n);
+    if (paraRuns && paraRuns.length) out.push(...paraRuns);
+    else {
+      // 纯文本段兜底；空段（格内空行 → 空 ParagraphNode）跳过，
+      // 避免空串 run 触发后端 _parse_runs「runs 片段文本不能为空」400，
+      // 空串对 join 不变量无贡献，跳过不影响 ''.join(runs.text) === text
+      const ft = n.getTextContent();
+      if (ft) out.push({ text: ft });
+    }
+    first = false;
+  }
+  const hasFmt = out.some((r) => Object.keys(r).some((k) => k !== 'text'));
+  return hasFmt ? out : undefined;
+}
+
 export function readEditorBlocks(editor: LexicalEditor): EditorBlock[] {
   return editor.read(() => {
     const out: EditorBlock[] = [];
@@ -429,14 +453,21 @@ export function readEditorBlocks(editor: LexicalEditor): EditorBlock[] {
           let col = 0;
           for (const cell of row.getChildren()) {
             if (!(cell instanceof TableCellNode)) continue;
-            // runs 抽取复用 $extractRuns（TableCellNode 是 ElementNode，visit 递归下降
-            // 覆盖格内所有段落；HighlightTextNode 底色已在函数内剔除）
-            const runs = $extractRuns(cell);
+            // 多段单元格用单 \n 连接格内段落文本（与基线 parseTableCells 语义一致），
+            // 未编辑时 diff 相等避免幻影 tableEdit；runs 段间同样插入 \n 分隔 run，
+            // 保证 ''.join(runs.text) === text（后端 runs/new_text 一致性校验才过）
+            const runs = $extractCellRuns(cell);
+            const text = cell
+              .getChildren()
+              .map((n) =>
+                n instanceof ParagraphNode ? n.getTextContent() : '',
+              )
+              .join('\n');
             out.push({
               paraIndex,
               kind: 'table',
               cell: { row: ri, col },
-              text: cell.getTextContent(),
+              text,
               runs,
               fmtSig: runsFmtSig(runs),
             });
