@@ -8,6 +8,7 @@ from peewee import IntegrityError
 from api.db.db_models import (
     DB,
     HrAttendanceDay,
+    HrAttendanceImport,
     HrAttendanceMonth,
     HrAttendanceRecord,
     HrEmployee,
@@ -15,13 +16,15 @@ from api.db.db_models import (
     HrLeaveRequest,
     HrLeaveStep,
     HrPayslip,
+    HrPayslipAdjust,
     HrRuleConfig,
     HrSalaryProfile,
+    HrVoucher,
     User,
 )
 from api.db.services.common_service import CommonService
 from api.db.services.hr_calculator import derive_day_status, leave_status_for_date, load_rule
-from api.db.services.hr_payroll import calc_payslip
+from api.db.services.hr_payroll import apply_adjustment, build_voucher_entries, calc_payslip
 from common.misc_utils import get_uuid
 from common.time_utils import current_timestamp
 
@@ -651,3 +654,130 @@ class HrPayslipService(CommonService):
                 if not row:
                     raise  # 非唯一约束冲突（如字段超长），原样上抛
         return cls._update_draft(row, vals, emp_id, month)
+
+    @classmethod
+    def adjust(cls, payslip_id: str, field: str, new_value, reason: str,
+               operator_id: str) -> tuple:
+        """published 工资单手工调整：重算 net、条件更新落盘、写调整日志。
+        返回 (最新 payslip 实例, pay 凭证是否已过期 bool)。非法入参/状态抛 ValueError。"""
+        row = cls.model.get_or_none(cls.model.id == payslip_id)
+        if not row:
+            raise ValueError("工资单不存在")
+        if row.status != "published":
+            raise ValueError("仅已发布的工资单可手工调整")
+        old = {k: float(getattr(row, k) or 0) for k in
+               ("gross_pay", "attendance_deduction", "social_insurance",
+                "housing_fund", "income_tax", "net_pay")}
+        new = apply_adjustment(old, field, new_value)
+        # 条件更新防发布/调整竞态：仅仍为 published 时生效
+        n = (cls.model.update(
+                attendance_deduction=new["attendance_deduction"],
+                social_insurance=new["social_insurance"],
+                housing_fund=new["housing_fund"], income_tax=new["income_tax"],
+                net_pay=new["net_pay"], update_time=current_timestamp())
+             .where(cls.model.id == payslip_id, cls.model.status == "published").execute())
+        if n == 0:
+            raise ValueError("工资单状态已变化，请刷新后重试")
+        HrPayslipAdjust.insert(id=get_uuid(), payslip_id=payslip_id,
+                               employee_id=row.employee_id, month=row.month,
+                               field=field, old_value=old[field],
+                               new_value=new[field], reason=str(reason or "")[:255],
+                               operator_id=operator_id)
+        # 该月 pay 凭证若已生成则提示过期（仅提示，不自动重生成）
+        stale = HrVoucher.get_or_none(HrVoucher.month == row.month,
+                                      HrVoucher.voucher_type == "pay") is not None
+        return cls.model.get_by_id(payslip_id), stale
+
+
+# ── 财务凭证 / 考勤机导入（P4）──
+
+_PSLIP_FLOAT_KEYS = ("gross_pay", "social_insurance", "housing_fund",
+                     "income_tax", "attendance_deduction", "net_pay")
+
+
+class HrVoucherService(CommonService):
+    model = HrVoucher
+
+    @classmethod
+    def generate(cls, month: str, voucher_type: str, operator_id: str) -> object:
+        """从该月 published payslips 汇总生成凭证；(month, voucher_type) 唯一，重生成覆盖。"""
+        rows = list(HrPayslip.select().where(HrPayslip.month == month,
+                                             HrPayslip.status == "published"))
+        if not rows:
+            raise ValueError(f"{month} 无已发布工资单，无法生成凭证")
+        r = build_voucher_entries(
+            [{k: float(p.__getattr__(k) or 0) for k in _PSLIP_FLOAT_KEYS} for p in rows],
+            voucher_type)
+        payload = {"entries": json.dumps(r["entries"], ensure_ascii=False),
+                   "total_amount": r["total_amount"], "created_by": operator_id,
+                   "update_time": current_timestamp()}
+        row = cls.model.get_or_none(cls.model.month == month,
+                                    cls.model.voucher_type == voucher_type)
+        if row:
+            for k, v in payload.items():
+                setattr(row, k, v)
+            row.save()
+        else:
+            rid = get_uuid()
+            try:
+                cls.insert(id=rid, month=month, voucher_type=voucher_type, **payload)
+            except IntegrityError:
+                # 并发生成同一 (month, type) 撞唯一约束 → 回查改走覆盖分支
+                row = cls.model.get_or_none(cls.model.month == month,
+                                            cls.model.voucher_type == voucher_type)
+                if not row:
+                    raise
+                for k, v in payload.items():
+                    setattr(row, k, v)
+                row.save()
+            row = cls.model.get_by_id(rid)
+        return row
+
+    @classmethod
+    def list_month(cls, month: str) -> list:
+        return list(cls.model.select().where(cls.model.month == month))
+
+
+class HrAttendanceImportService(CommonService):
+    model = HrAttendanceImport
+
+    @classmethod
+    def batch_punch(cls, records: list, source: str, operator_id: str,
+                    file_name: str = "") -> dict:
+        """考勤机批量导入：逐条按 emp_no/employee_id 定位 + 复用同分钟去重 punch。
+        失败行收集不中断（detail 只存前 50 条，fail_rows 记全部失败数）；批次落盘留痕。
+        source ∈ api_sync|manual_excel。"""
+        if source not in ("api_sync", "manual_excel"):
+            raise ValueError("无效的导入来源")
+        if not isinstance(records, list) or not records:
+            raise ValueError("records 应为非空数组")
+        if len(records) > 2000:
+            raise ValueError("单批次最多 2000 条")
+        ok, fails, fail_total = 0, [], 0
+        for i, rec in enumerate(records):
+            try:
+                if not isinstance(rec, dict):
+                    raise ValueError("记录须为对象")  # noqa: TRY004
+                emp = None
+                if rec.get("employee_id"):
+                    emp = HrEmployee.get_or_none(HrEmployee.id == rec["employee_id"])
+                elif rec.get("emp_no"):
+                    emp = HrEmployee.get_or_none(HrEmployee.emp_no == rec["emp_no"])
+                if not emp:
+                    raise ValueError("员工不存在")
+                pt = datetime.strptime(str(rec.get("punch_time") or ""),  # noqa: DTZ007
+                                       "%Y-%m-%d %H:%M:%S")
+                HrAttendanceRecordService.punch(emp.id, source=source, punch_time=pt)
+                ok += 1
+            except (ValueError, TypeError) as e:
+                fail_total += 1
+                if len(fails) < 50:
+                    fails.append({"row": i, "emp": str(rec.get("emp_no")
+                                                       or rec.get("employee_id") or ""),
+                                  "punch_time": str(rec.get("punch_time") or ""),
+                                  "error": str(e)})
+        cls.insert(id=get_uuid(), source=source, file_name=str(file_name or "")[:255],
+                   total_rows=len(records), success_rows=ok, fail_rows=fail_total,
+                   detail=json.dumps(fails, ensure_ascii=False), operator_id=operator_id)
+        return {"total": len(records), "success": ok, "failed": fails,
+                "fail_total": fail_total}
