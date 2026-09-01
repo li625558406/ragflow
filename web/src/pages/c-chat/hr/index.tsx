@@ -1,21 +1,30 @@
+import { usePermission } from '@/hooks/use-permission';
 import { fetchPendingLeaves } from '@/services/hr-service';
 import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import AttendanceView from './attendance-view';
 import LeaveView from './leave-view';
+import ReportView from './report-view';
 import SalaryView from './salary-view';
 
 // P2 追加「请假」、P3 追加「薪资」、P4 追加「报表」子页签（见设计文档 §7 阶段拆分）
+// permission 为权限点：无该权限的登录用户看不到对应页签（报表仅 HR 可见）
 const SUB_TABS = [
   { key: 'attendance', label: '考勤' },
   { key: 'leave', label: '请假' },
   { key: 'salary', label: '薪资' },
+  { key: 'report', label: '报表', permission: 'hr_manage' },
 ] as const;
 
 type SubTabKey = (typeof SUB_TABS)[number]['key'];
 
 export default function HrView() {
   const [sub, setSub] = useState<SubTabKey>('attendance');
+  const { hasPermission } = usePermission();
+  // 过滤式生成：考勤/请假/薪签对全员可见，报表仅 hr_manage
+  const visibleTabs = SUB_TABS.filter(
+    (t) => !('permission' in t) || hasPermission(t.permission),
+  );
   // 待我审批数轮询：与 leave-view 共用同一 queryKey，审批操作后自动同步
   const pending = useQuery({
     queryKey: ['hr-leaves-pending'],
@@ -26,7 +35,7 @@ export default function HrView() {
   return (
     <div className="flex h-full flex-col">
       <div className="flex justify-center gap-1 border-b border-[#E2E8F0] bg-white px-4 py-2">
-        {SUB_TABS.map((t) => (
+        {visibleTabs.map((t) => (
           <button
             key={t.key}
             onClick={() => setSub(t.key)}
@@ -49,6 +58,7 @@ export default function HrView() {
         {sub === 'attendance' && <AttendanceView />}
         {sub === 'leave' && <LeaveView />}
         {sub === 'salary' && <SalaryView />}
+        {sub === 'report' && <ReportView />}
       </div>
     </div>
   );
