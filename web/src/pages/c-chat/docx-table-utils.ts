@@ -22,7 +22,7 @@ function cellText(td: Element): string {
     if (node.nodeType === node.ELEMENT_NODE) {
       const el = node as Element;
       const tag = el.tagName.toLowerCase();
-      if (tag === 'table') return;
+      if (tag === 'table' || tag === 'script' || tag === 'style') return;
       if (tag === 'br') {
         s += '\n';
         return;
@@ -37,7 +37,9 @@ function cellText(td: Element): string {
 }
 
 /** 解析表格 HTML → 单元格列表（caption 忽略；colspan 展开进 col 累加；
- * 非法/超大 colspan 封底 1 封顶 50；无 table 返回 []，畸形输入尽力解析） */
+ * 非法/超大 colspan 封底 1 封顶 50；无 table 返回 []，畸形输入尽力解析；
+ * rowspan 不出现于 naive.py 产物（rag/app/naive.py 只产 td+colspan），刻意忽略；
+ * 多个 table 时取第一个） */
 export function parseTableCells(html: string): TableCellInfo[] {
   if (!html) return [];
   const doc = new DOMParser().parseFromString(html, 'text/html');
@@ -45,7 +47,7 @@ export function parseTableCells(html: string): TableCellInfo[] {
   if (!table) return [];
   const out: TableCellInfo[] = [];
   // HTMLTableElement.rows 只含本表各 section 的直接 tr，自动排除嵌套 <table> 子树的行
-  Array.from((table as HTMLTableElement).rows).forEach((tr, row) => {
+  Array.from(table.rows).forEach((tr, row) => {
     let col = 0;
     for (const td of Array.from(tr.children)) {
       const tag = td.tagName.toLowerCase();

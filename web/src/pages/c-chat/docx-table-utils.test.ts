@@ -35,6 +35,16 @@ describe('parseTableCells', () => {
     expect(parseTableCells(html)[0].text).toBe('第一段\n第二段');
   });
 
+  it('<br> 归 \\n（python-docx cell.text 断行语义）', () => {
+    const html = '<table><tr><td>一行<br>二行</td></tr></table>';
+    expect(parseTableCells(html)[0].text).toBe('一行\n二行');
+  });
+
+  it('script/style 内容不泄入文本（对抗性）', () => {
+    const html = '<table><tr><td>a<script>evil()</script>b</td></tr></table>';
+    expect(parseTableCells(html)[0].text).toBe('ab');
+  });
+
   it('嵌套 table 文本被忽略、&nbsp; 归一为空格（对抗性）', () => {
     const html =
       '<table><tr><td>外层<table><tr><td>内层</td></tr></table></td><td>a&nbsp;b</td></tr></table>';
@@ -70,6 +80,10 @@ describe('parseTableCells', () => {
     ).toBe(1);
     expect(
       parseTableCells("<table><tr><td colspan='99999'>x</td></tr></table>")[0]
+        .colSpan,
+    ).toBe(50);
+    expect(
+      parseTableCells("<table><tr><td colspan='51'>x</td></tr></table>")[0]
         .colSpan,
     ).toBe(50);
   });
