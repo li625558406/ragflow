@@ -1,10 +1,9 @@
 // web/src/pages/c-chat/flow/flow-detail.tsx
 import { Button } from '@/components/ui/button';
-import { Textarea } from '@/components/ui/textarea';
 import {
-  addFlowComment,
   archiveFlow,
   cancelFlow,
+  deleteFlowVersion,
   downloadVersionBlob,
   getFlowDetail,
   listCandidates,
@@ -12,8 +11,17 @@ import {
   uploadFlowVersion,
 } from '@/services/flow-service';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Download, FileText, MessageSquare, User } from 'lucide-react';
-import { useMemo, useRef, useState } from 'react';
+import {
+  ChevronDown,
+  Clock,
+  Download,
+  FileText,
+  MessageSquare,
+  Trash2,
+  User,
+} from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import FlowAiPanel from './flow-ai-panel';
 import type { FlowAiChatItem, FlowVersionItem } from './flow-types';
 
@@ -38,18 +46,23 @@ const HOLDER_FIELD: Record<
 
 const TERMINAL_STATUS = new Set(['archived', 'cancelled']);
 
+/** 版本时间线每页条数（倒序展示，超出部分点「查看更多」加载） */
+const VERSION_PAGE_SIZE = 5;
+
 export default function FlowDetail({
   flowId,
+  commentPortal,
   onChanged,
 }: {
   flowId: string;
+  /** 批注模块 portal 挂载点（外层左侧流程栏下方），不传则不渲染批注模块 */
+  commentPortal?: HTMLElement | null;
   onChanged: () => void;
 }) {
   const qc = useQueryClient();
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(
     null,
   );
-  const [commentText, setCommentText] = useState('');
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState('');
   const uploadInputRef = useRef<HTMLInputElement>(null);
@@ -82,6 +95,21 @@ export default function FlowDetail({
     );
   }, [data, selectedVersionId]);
 
+  // 版本倒序（最新在前）+ 分页展示：初始一页，点「查看更多」再加载一页
+  const [visibleCount, setVisibleCount] = useState(VERSION_PAGE_SIZE);
+  useEffect(() => {
+    setVisibleCount(VERSION_PAGE_SIZE);
+  }, [flowId]);
+  const sortedVersions = useMemo(
+    () =>
+      [...(data?.versions ?? [])].sort((a, b) => b.version_no - a.version_no),
+    [data],
+  );
+  const visibleVersions = useMemo(
+    () => sortedVersions.slice(0, visibleCount),
+    [sortedVersions, visibleCount],
+  );
+
   const commentsOf = useMemo(() => {
     if (!data || !selectedVersion) return [];
     return (data.comments ?? []).filter(
@@ -108,6 +136,8 @@ export default function FlowDetail({
   const terminal = TERMINAL_STATUS.has(flow.status);
   const isOwner = !!viewer?.is_owner;
   const isInitiator = !!viewer?.is_initiator;
+  // 版本删除权限：仅审核领导（后端同校验）；其余人按钮置灰
+  const isLeader = !!viewer?.is_leader;
   const holderField = HOLDER_FIELD[flow.status];
   const holderId = holderField
     ? (flow[holderField] as string | undefined) || ''
@@ -164,12 +194,17 @@ export default function FlowDetail({
     doAction(() => uploadFlowVersion(flowId, fd));
   };
 
-  const handleAddComment = () => {
-    const content = commentText.trim();
-    if (!content || !selectedVersion) return;
+  const handleDeleteVersion = (v: FlowVersionItem) => {
+    if (
+      !window.confirm(
+        `确定删除版本 v${v.version_no}（${v.file_name}）？锚定该版本的批注将一并删除，删除后不可恢复。`,
+      )
+    )
+      return;
     doAction(async () => {
-      await addFlowComment(flowId, content, selectedVersion.id);
-      setCommentText('');
+      await deleteFlowVersion(flowId, v.id);
+      // 删除的是当前选中版本时清空选中态，回落到最新版本
+      setSelectedVersionId((prev) => (prev === v.id ? null : prev));
     });
   };
 
@@ -232,10 +267,16 @@ export default function FlowDetail({
               <input
                 ref={uploadInputRef}
                 type="file"
+                accept=".doc,.docx"
                 className="hidden"
                 onChange={(e) => {
-                  handleUploadFile(e.target.files?.[0] ?? null);
+                  const f = e.target.files?.[0] ?? null;
                   e.target.value = '';
+                  if (f && !/\.(doc|docx)$/i.test(f.name)) {
+                    window.alert('仅支持 doc/docx 格式的文档');
+                    return;
+                  }
+                  handleUploadFile(f);
                 }}
               />
               <Button
@@ -272,6 +313,7 @@ export default function FlowDetail({
               aiChats={data.ai_chats ?? []}
               comments={commentsOf}
               commentAuthors={Object.fromEntries(nicknameMap)}
+              isOwner={isOwner}
               onSaved={() => {
                 qc.invalidateQueries({ queryKey: ['flow-detail', flowId] });
                 onChanged();
@@ -279,53 +321,7 @@ export default function FlowDetail({
             />
           )}
 
-          {/* 批注区 */}
-          <div className="shrink-0 rounded-lg border border-[#F0F0F0] bg-white p-3">
-            <div className="mb-2 flex items-center gap-1 text-sm font-medium">
-              <MessageSquare className="h-4 w-4 text-[#1a66fb]" />
-              批注（v{selectedVersion?.version_no ?? '-'}）
-            </div>
-            <div className="max-h-36 space-y-2 overflow-y-auto">
-              {commentsOf.length === 0 && (
-                <div className="text-xs text-[#999]">暂无批注</div>
-              )}
-              {commentsOf.map((c) => (
-                <div
-                  key={c.id}
-                  className="rounded-md bg-[#F7F8FA] px-2.5 py-1.5"
-                >
-                  <div className="flex items-center justify-between text-xs text-[#888]">
-                    <span className="truncate">
-                      {nicknameMap.get(c.user_id) || c.user_id}
-                    </span>
-                    <span className="shrink-0">
-                      {new Date(c.create_time).toLocaleString()}
-                    </span>
-                  </div>
-                  <div className="mt-0.5 whitespace-pre-wrap text-sm text-[#333]">
-                    {c.content}
-                  </div>
-                </div>
-              ))}
-            </div>
-            {!terminal && selectedVersion && (
-              <div className="mt-2 flex items-end gap-2">
-                <Textarea
-                  value={commentText}
-                  onChange={(e) => setCommentText(e.target.value)}
-                  placeholder="填写批注意见（挂到当前版本）…"
-                  className="min-h-[60px] flex-1 text-sm"
-                />
-                <Button
-                  size="sm"
-                  disabled={busy || !commentText.trim()}
-                  onClick={handleAddComment}
-                >
-                  发表批注
-                </Button>
-              </div>
-            )}
-          </div>
+          {/* 批注区已移至外层左侧流程栏下方（commentPortal） */}
         </div>
 
         {/* 右：版本时间线 */}
@@ -334,7 +330,7 @@ export default function FlowDetail({
             版本记录
           </div>
           <div className="flex-1 overflow-y-auto">
-            {(data.versions ?? []).map((v) => {
+            {visibleVersions.map((v) => {
               const active = selectedVersion?.id === v.id;
               const cnt = (data.comments ?? []).filter(
                 (c) => c.version_id === v.id,
@@ -362,31 +358,103 @@ export default function FlowDetail({
                       </span>
                     )}
                   </div>
-                  <div className="mt-1 flex items-center justify-between text-xs text-[#888]">
-                    <span>
-                      {v.source === 'ai_output' ? 'AI 产出' : '人工上传'}
-                    </span>
+                  <div className="mt-1 text-xs text-[#888]">
+                    {v.source === 'ai_output' ? 'AI 产出' : '人工上传'}
+                  </div>
+                  {/* 醒目操作区：下载 + 删除（删除仅领导可用，其余置灰） */}
+                  <div className="mt-1.5 flex items-center gap-1.5">
                     <button
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
                         handleDownload(v);
                       }}
-                      className="flex items-center gap-0.5 hover:text-[#1a66fb]"
+                      className="flex flex-1 items-center justify-center gap-1 rounded-md border border-[#BFD3F5] bg-[#F0F5FF] px-2 py-1 text-xs font-medium text-[#1a66fb] transition-colors hover:bg-[#E1EBFF]"
                     >
-                      <Download className="h-3 w-3" />
+                      <Download className="h-3 w-3" strokeWidth={2.5} />
                       下载
                     </button>
+                    <button
+                      type="button"
+                      disabled={!isLeader || terminal || busy}
+                      title={
+                        terminal
+                          ? '流程已结束，不可删除版本'
+                          : isLeader
+                            ? '删除该版本（锚定的批注一并删除）'
+                            : '仅审核领导可删除版本'
+                      }
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteVersion(v);
+                      }}
+                      className={`flex flex-1 items-center justify-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+                        isLeader && !terminal && !busy
+                          ? 'border border-[#FBC2C2] bg-[#FFF1F0] text-[#E5484D] hover:bg-[#FFE4E2]'
+                          : 'cursor-not-allowed border border-[#ECECEC] bg-[#F7F7F7] text-[#BBB]'
+                      }`}
+                    >
+                      <Trash2 className="h-3 w-3" strokeWidth={2.5} />
+                      删除
+                    </button>
                   </div>
-                  <div className="mt-0.5 text-[10px] text-[#aaa]">
+                  <div className="mt-0.5 flex items-center gap-1 text-xs font-semibold text-[#444]">
+                    <Clock className="h-3 w-3 shrink-0 text-[#1a66fb]" />
                     {new Date(v.create_time).toLocaleString()}
                   </div>
                 </div>
               );
             })}
+            {sortedVersions.length > visibleCount && (
+              <button
+                type="button"
+                onClick={() => setVisibleCount((c) => c + VERSION_PAGE_SIZE)}
+                className="flex w-full items-center justify-center gap-1 py-2 text-xs font-medium text-[#1a66fb] transition-colors hover:bg-[#F7FAFF]"
+              >
+                <ChevronDown className="h-3.5 w-3.5" />
+                查看更多（剩余 {sortedVersions.length - visibleCount} 条）
+              </button>
+            )}
           </div>
         </div>
       </div>
+
+      {/* 批注模块：portal 到外层左侧流程栏（与流程列表平分高度） */}
+      {commentPortal &&
+        createPortal(
+          <div className="flex h-full min-h-0 flex-col border-t border-[#F0F0F0] p-2 text-[#222]">
+            <div className="flex min-h-0 flex-1 flex-col bg-white p-3">
+              <div className="mb-2 flex shrink-0 items-center gap-1 text-sm font-medium">
+                <MessageSquare className="h-4 w-4 text-[#1a66fb]" />
+                批注（v{selectedVersion?.version_no ?? '-'}）
+              </div>
+              <div className="min-h-0 flex-1 space-y-2 overflow-y-auto">
+                {commentsOf.length === 0 && (
+                  <div className="text-xs text-[#999]">暂无批注</div>
+                )}
+                {commentsOf.map((c) => (
+                  <div
+                    key={c.id}
+                    className="rounded-md bg-[#F7F8FA] px-2.5 py-1.5"
+                  >
+                    <div className="flex items-center justify-between text-xs text-[#888]">
+                      <span className="truncate">
+                        {nicknameMap.get(c.user_id) || c.user_id}
+                      </span>
+                      <span className="shrink-0">
+                        {new Date(c.create_time).toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="mt-0.5 whitespace-pre-wrap text-sm text-[#333]">
+                      {c.content}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>,
+          commentPortal,
+        )}
     </div>
   );
 }

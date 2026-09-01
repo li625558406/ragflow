@@ -59,7 +59,7 @@ export interface FlowDetail {
   versions: FlowVersionItem[];
   comments: FlowCommentItem[];
   ai_chats: FlowAiChatItem[];
-  viewer: { is_owner: boolean; is_initiator: boolean };
+  viewer: { is_owner: boolean; is_initiator: boolean; is_leader: boolean };
 }
 
 export type FlowScope = 'todo' | 'initiated' | 'joined' | 'all';

@@ -8,7 +8,9 @@ import { useHandleMessageInputChange } from '@/hooks/logic-hooks';
 import { useSendMessageBySSE } from '@/hooks/use-send-message';
 import {
   addFlowComment,
+  deleteFlowComment,
   downloadVersionBlob,
+  editFlowDocument,
   saveFlowAiRecord,
 } from '@/services/flow-service';
 import api from '@/utils/api';
@@ -34,6 +36,7 @@ export default function FlowAiPanel({
   aiChats,
   comments,
   commentAuthors,
+  isOwner,
   onSaved,
 }: {
   flowId: string;
@@ -41,6 +44,8 @@ export default function FlowAiPanel({
   aiChats: FlowAiChatItem[];
   comments: FlowCommentItem[];
   commentAuthors: Record<string, string>;
+  /** 当前用户是否为流程当前节点负责人（开放正文段落编辑） */
+  isOwner?: boolean;
   onSaved: () => void;
 }) {
   const [error, setError] = useState('');
@@ -52,12 +57,29 @@ export default function FlowAiPanel({
   const [reviewFileId, setReviewFileId] = useState('');
   const [reviewFileName, setReviewFileName] = useState('');
   const [reviewPreparing, setReviewPreparing] = useState(false);
+  // 审核目标来源：version = 流程版本文件（可编辑段落）；upload = 用户手动上传（只读）
+  const [reviewSource, setReviewSource] = useState<'version' | 'upload' | ''>(
+    '',
+  );
   // flow 特有：未手动上传文件时，发送自动附带当前版本文件
   const [attachFile, setAttachFile] = useState(true);
   // agent_id 与 c-chat 同源：localStorage（c-chat 发送时写入）
   const [agentId] = useState(
     () => localStorage.getItem('ragflow_agent_id') || '',
   );
+  // 当前登录用户 id（批注删除按钮仅对自己的批注显示）
+  const [currentUserId] = useState(() => {
+    try {
+      const u = JSON.parse(localStorage.getItem('userInfo') || '{}') as {
+        id?: string;
+        user_id?: string;
+        email?: string;
+      };
+      return u.id || u.user_id || u.email || '';
+    } catch {
+      return '';
+    }
+  });
 
   const { handleInputChange, value, setValue } = useHandleMessageInputChange();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -178,33 +200,40 @@ export default function FlowAiPanel({
     setUploadedDocs(files);
   }, []);
 
-  // 上传当前版本为 document（AI 附件与审阅面板共用），返回 {id, name}
-  const uploadVersionAsDocument = useCallback(async (): Promise<{
-    id: string;
-    name: string;
-  } | null> => {
-    if (!version) return null;
-    const blob = await downloadVersionBlob(flowId, version.id);
-    const file = new File([blob], version.file_name, {
-      type: version.file_type || 'application/octet-stream',
-    });
-    const fd = new FormData();
-    fd.append('file', file);
-    const resp = await fetch('/api/v1/documents/upload', {
-      method: 'POST',
-      headers: {
-        Authorization: localStorage.getItem('Authorization') || '',
-      },
-      body: fd,
-    });
-    const result = await resp.json();
-    if (result.code === 0 && result.data) {
-      const d = Array.isArray(result.data) ? result.data[0] : result.data;
-      if (d?.id)
-        return { id: d.id as string, name: d.name || version.file_name };
-    }
-    throw new Error(result.message || '文件上传失败');
-  }, [flowId, version]);
+  // 上传版本为 document（AI 附件与审阅面板共用）；不传参则用当前版本，
+  // 编辑保存后传新版本以刷新预览。返回 {id, name}
+  const uploadVersionAsDocument = useCallback(
+    async (
+      v?: FlowVersionItem | null,
+    ): Promise<{
+      id: string;
+      name: string;
+    } | null> => {
+      const target = v ?? version;
+      if (!target) return null;
+      const blob = await downloadVersionBlob(flowId, target.id);
+      const file = new File([blob], target.file_name, {
+        type: target.file_type || 'application/octet-stream',
+      });
+      const fd = new FormData();
+      fd.append('file', file);
+      const resp = await fetch('/api/v1/documents/upload', {
+        method: 'POST',
+        headers: {
+          Authorization: localStorage.getItem('Authorization') || '',
+        },
+        body: fd,
+      });
+      const result = await resp.json();
+      if (result.code === 0 && result.data) {
+        const d = Array.isArray(result.data) ? result.data[0] : result.data;
+        if (d?.id)
+          return { id: d.id as string, name: d.name || target.file_name };
+      }
+      throw new Error(result.message || '文件上传失败');
+    },
+    [flowId, version],
+  );
 
   // 发送：用户上传文件优先；否则按开关附带当前版本文件。
   // 发送语义与 c-chat handlePressEnter 一致（组合态从 DOM 取值、失败回填输入框）。
@@ -242,7 +271,7 @@ export default function FlowAiPanel({
           files = [];
         }
       }
-      // 审阅模式下对齐 ReviewPanel 的目标文件
+      // 审阅模式下对齐 ReviewPanel 的目标文件（并记录来源：手动上传只读，版本文件可编辑）
       if (reviewMode) {
         const target = (docs[0] ?? (files[0] as UploadedDoc | undefined)) as
           | UploadedDoc
@@ -250,6 +279,7 @@ export default function FlowAiPanel({
         if (target?.id) {
           setReviewFileId(target.id);
           setReviewFileName(target.name || '');
+          setReviewSource(docs.length > 0 ? 'upload' : 'version');
         }
       }
 
@@ -305,6 +335,7 @@ export default function FlowAiPanel({
     if (!reviewFileId && uploadedDocsRef.current[0]) {
       setReviewFileId(uploadedDocsRef.current[0].id);
       setReviewFileName(uploadedDocsRef.current[0].name || '');
+      setReviewSource('upload');
     }
     if (!reviewFileId && !uploadedDocsRef.current[0]) {
       if (!version || reviewPreparing) return;
@@ -315,6 +346,7 @@ export default function FlowAiPanel({
         if (doc) {
           setReviewFileId(doc.id);
           setReviewFileName(doc.name);
+          setReviewSource('version');
         }
       } catch (e: any) {
         setError(e?.message || '审阅准备失败，请稍后重试');
@@ -370,14 +402,46 @@ export default function FlowAiPanel({
       content: string;
       anchorText: string;
       anchorPara: number | null;
+      anchorStart?: number | null;
     }) => {
       await addFlowComment(flowId, p.content, version?.id, {
         anchorText: p.anchorText,
         anchorPara: p.anchorPara,
+        anchorStart: p.anchorStart ?? null,
       });
       onSaved();
     },
     [flowId, onSaved, version?.id],
+  );
+
+  // 删除自己的手动批注，经 onSaved 刷新回显
+  const handleDeleteComment = useCallback(
+    async (commentId: string) => {
+      await deleteFlowComment(flowId, commentId);
+      onSaved();
+    },
+    [flowId, onSaved],
+  );
+
+  // Word 式正文编辑：后端按 para_index 同步增删改段落并存新版本（source=manual_edit，
+  // .doc 先转 docx），刷新流程详情后把新版本重新上传为 document，预览即切到新内容
+  const handleEditDocument = useCallback(
+    async (ops: {
+      edits: Array<{ paraIndex: number; newText: string }>;
+      deletes: number[];
+      inserts: Array<{ afterParaIndex: number; newText: string }>;
+    }) => {
+      if (!version) throw new Error('无版本文件，无法编辑');
+      const res = await editFlowDocument(flowId, version.id, ops);
+      onSaved();
+      const doc = await uploadVersionAsDocument(res.version);
+      if (doc) {
+        setReviewFileId(doc.id);
+        setReviewFileName(doc.name);
+        setReviewSource('version');
+      }
+    },
+    [flowId, onSaved, uploadVersionAsDocument, version],
   );
 
   return (
@@ -450,6 +514,10 @@ export default function FlowAiPanel({
         comments={comments}
         commentAuthors={commentAuthors}
         onAddComment={handleAddAnchoredComment}
+        onDeleteComment={handleDeleteComment}
+        currentUserId={currentUserId}
+        canEdit={!!isOwner && reviewSource === 'version' && !!version}
+        onEditDocument={handleEditDocument}
       />
 
       {/* 流式输出区 */}
@@ -478,6 +546,7 @@ export default function FlowAiPanel({
           // 审核入口已挪到标题行醒目按钮，隐藏输入框工具栏内的入口
           reviewAvailable={false}
           onUploadedFilesChange={handleUploadedDocsChange}
+          accept=".doc,.docx"
           autoFocus
         />
       </div>

@@ -186,6 +186,39 @@ class FlowVersionService(_FlowServiceBase):
             ).where(FlowInstance.id == flow["id"]).execute()
         return v.__data__
 
+    @classmethod
+    @DB.connection_context()
+    def delete_version(cls, flow_id: str, version_id: str) -> dict:
+        """删除版本：删 DB 行 + 锚定该版本的批注一并删除；若删的是
+        current_version_id，current 回退到剩余最高 version_no（无版本则置空）。
+        事务内禁止再调带 connection_context 的方法（嵌套上下文报错），内联实现。
+        存储对象由调用方 best-effort 清理。返回 {id, file_path, new_current_version_id}。"""
+        with DB.atomic():
+            v = cls.model.get_or_none(
+                (cls.model.id == version_id) & (cls.model.flow_id == flow_id)
+            )
+            if not v:
+                raise LookupError("版本不存在")
+            file_path = v.file_path
+            v.delete_instance()
+            FlowComment.delete().where(FlowComment.version_id == version_id).execute()
+            remaining = (
+                cls.model.select()
+                .where(cls.model.flow_id == flow_id)
+                .order_by(cls.model.version_no.desc())
+                .first()
+            )
+            new_current = remaining.id if remaining else ""
+            FlowInstance.update(
+                current_version_id=new_current,
+                update_time=current_timestamp(),
+                update_date=datetime_format(datetime.now()),
+            ).where(
+                (FlowInstance.id == flow_id)
+                & (FlowInstance.current_version_id == version_id)
+            ).execute()
+        return {"id": version_id, "file_path": file_path, "new_current_version_id": new_current}
+
 
 class FlowCommentService(_FlowServiceBase):
     model = FlowComment

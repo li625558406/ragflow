@@ -23,6 +23,7 @@
   - GET    /flow/<flow_id>                          流程详情（版本/批注/AI记录/视角）
   - POST   /flow/<flow_id>/version                  追加新版本（人工上传）
   - GET    /flow/<flow_id>/version/<version_id>/download  下载某版本文件
+  - POST   /flow/<flow_id>/version/<version_id>/delete    删除版本（仅领导，批注一并删）
   - POST   /flow/<flow_id>/comment                  添加批注意见（通知其他参与人）
   - POST   /flow/<flow_id>/ai-record                记录一次 AI 处理（回复可落为新版本）
   - POST   /flow/<flow_id>/document/edit            编辑文档段落（存为新版本，仅当前节点负责人）
@@ -234,6 +235,7 @@ async def get_flow(flow_id: str):
             "viewer": {
                 "is_owner": FlowWorkflow.owner_of_current(flow) == current_user.id,
                 "is_initiator": flow["initiator_id"] == current_user.id,
+                "is_leader": flow["leader_id"] == current_user.id,
             },
         })
     except LookupError as e:
@@ -305,7 +307,47 @@ async def upload_version(flow_id: str):
         return _err(str(e))
 
 
-# ── 4.1 编辑文档段落（存为新版本） ────────────────────────────────
+# ── 4.1 删除版本（仅领导；批注一并删，current 回退剩余最高版） ────
+@manager.route("/flow/<flow_id>/version/<version_id>/delete", methods=["POST"])  # noqa: F821
+@login_required
+async def delete_version(flow_id: str, version_id: str):
+    try:
+        flow = _require_participant(_flow_dict(flow_id))
+        if flow["status"] in FlowWorkflow.TERMINAL:
+            return _err("流程已结束")
+        if flow["leader_id"] != current_user.id:
+            return _err("仅审核领导可删除版本", 403)
+        version = next(
+            (v for v in FlowVersionService.list_by_flow(flow_id) if v["id"] == version_id), None
+        )
+        if not version:
+            return _err("版本不存在", 404)
+        result = FlowVersionService.delete_version(flow_id, version_id)
+        # 存储对象 best-effort 清理：失败不影响版本删除结果（孤儿对象可后续清理）
+        try:
+            await thread_pool_exec(settings.STORAGE_IMPL.rm, _bucket_of(flow), result["file_path"])
+        except Exception as e:
+            logger.warning("flow version storage rm failed: %s", e)
+        try:
+            notify_flow_event(
+                flow, _others_of(flow, current_user.id),
+                f"流程「{flow['title']}」删除了版本 v{version['version_no']}",
+                f"{_nickname_of(current_user.id)} 删除了版本 {version['file_name']}"
+                + ("，当前版本已回退" if result["new_current_version_id"] else ""),
+            )
+        except Exception as e:
+            logger.warning("flow notify failed: %s", e)
+        return get_json_result(data={"id": version_id, "new_current_version_id": result["new_current_version_id"]})
+    except LookupError as e:
+        return _err(str(e), 404)
+    except (PermissionError, ValueError, RuntimeError) as e:
+        return _action_error(e)
+    except Exception as e:
+        logger.exception(e)
+        return _err(str(e))
+
+
+# ── 4.2 编辑文档段落（存为新版本） ────────────────────────────────
 _CTRL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 
@@ -601,10 +643,9 @@ async def edit_document(flow_id: str):
         )
         if not version:
             return _err("版本不存在", 404)
-        # 只允许编辑当前版本：编辑历史版本会以 add_version 落成最新版，
-        # 等于把文件内容悄悄回滚，绕过「文档已变化请刷新」保护
-        if version_id != flow["current_version_id"]:
-            return _err("文档已有新版本，请刷新后重试", 101)
+        # 允许以任意版本为底稿编辑（版本记录中选中历史版本 → 文件审核 → 修改），
+        # 结果以 add_version 增量落成最新版，不覆盖/回滚任何已有版本；
+        # 并发防护由前端「文档已变化请刷新」提示 + 版本时间线只增不改语义保证
 
         blob = await thread_pool_exec(settings.STORAGE_IMPL.get, _bucket_of(flow), version["file_path"])
         if not blob:

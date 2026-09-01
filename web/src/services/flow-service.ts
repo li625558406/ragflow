@@ -68,6 +68,16 @@ export async function uploadFlowVersion(
   });
 }
 
+/** 删除版本（后端校验：仅领导；锚定批注一并删，current 回退剩余最高版） */
+export async function deleteFlowVersion(
+  flowId: string,
+  versionId: string,
+): Promise<{ id: string; new_current_version_id: string }> {
+  return apiFetch(`/flow/${flowId}/version/${versionId}/delete`, {
+    method: 'POST',
+  });
+}
+
 export function flowVersionDownloadUrl(
   flowId: string,
   versionId: string,

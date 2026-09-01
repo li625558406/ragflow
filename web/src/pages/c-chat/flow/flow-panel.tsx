@@ -42,6 +42,8 @@ export default function FlowPanel() {
   // 页签采用常驻 hidden-div 模式：不可见时暂停 todo 角标轮询
   const rootRef = useRef<HTMLDivElement>(null);
   const [panelVisible, setPanelVisible] = useState(true);
+  // 批注模块挂载点：位于左侧流程列表下方，由 FlowDetail portal 渲染
+  const [commentSlot, setCommentSlot] = useState<HTMLDivElement | null>(null);
   const qc = useQueryClient();
 
   useEffect(() => {
@@ -70,67 +72,76 @@ export default function FlowPanel() {
 
   return (
     <div ref={rootRef} className="flex h-full w-full gap-3">
-      {/* 左：流程列表 */}
+      {/* 左：流程列表（上）+ 批注模块（下），高度平分 */}
       <div className="flex w-80 shrink-0 flex-col rounded-xl border border-[#E5E5E5] bg-white">
-        <div className="flex items-center justify-between border-b border-[#F0F0F0] px-3 py-2.5">
-          <div className="flex gap-1">
-            {SCOPES.map((s) => (
+        <div className="flex h-1/2 min-h-0 flex-col">
+          <div className="flex shrink-0 items-center justify-between border-b border-[#F0F0F0] px-3 py-2.5">
+            <div className="flex gap-1">
+              {SCOPES.map((s) => (
+                <button
+                  key={s.key}
+                  onClick={() => setScope(s.key)}
+                  className={`rounded-md px-2.5 py-1 text-xs font-medium ${
+                    scope === s.key
+                      ? 'bg-[#1a66fb] text-white'
+                      : 'text-[#666] hover:bg-[#F5F5F5]'
+                  }`}
+                >
+                  {s.label}
+                  {s.key === 'todo' && (todo.data?.total ?? 0) > 0 && (
+                    <span className="ml-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] text-white">
+                      {todo.data!.total}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+            <Button
+              size="sm"
+              className="h-7 px-2"
+              onClick={() => setCreateOpen(true)}
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {isLoading && (
+              <div className="p-4 text-sm text-[#999]">加载中…</div>
+            )}
+            {isError && !isLoading && (
+              <div className="p-4 text-sm text-red-500">
+                加载失败，请稍后重试
+              </div>
+            )}
+            {!isLoading && !isError && data?.list?.length === 0 && (
+              <div className="p-4 text-sm text-[#999]">暂无流程</div>
+            )}
+            {data?.list?.map((f: FlowInstanceItem) => (
               <button
-                key={s.key}
-                onClick={() => setScope(s.key)}
-                className={`rounded-md px-2.5 py-1 text-xs font-medium ${
-                  scope === s.key
-                    ? 'bg-[#1a66fb] text-white'
-                    : 'text-[#666] hover:bg-[#F5F5F5]'
+                key={f.id}
+                onClick={() => setActiveId(f.id)}
+                className={`block w-full border-b border-[#F7F7F7] px-3 py-2.5 text-left hover:bg-[#F7FAFF] ${
+                  activeId === f.id ? 'bg-[#EFF4FF]' : ''
                 }`}
               >
-                {s.label}
-                {s.key === 'todo' && (todo.data?.total ?? 0) > 0 && (
-                  <span className="ml-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] text-white">
-                    {todo.data!.total}
+                <div className="truncate text-sm font-medium text-[#222]">
+                  {f.title}
+                </div>
+                <div className="mt-1 flex items-center justify-between">
+                  <span className="text-xs text-[#888]">
+                    {STATUS_LABEL[f.status] ?? f.status}
                   </span>
-                )}
+                  <span className="text-xs text-[#aaa]">
+                    {new Date(f.update_time).toLocaleDateString()}
+                  </span>
+                </div>
               </button>
             ))}
           </div>
-          <Button
-            size="sm"
-            className="h-7 px-2"
-            onClick={() => setCreateOpen(true)}
-          >
-            <Plus className="h-3.5 w-3.5" />
-          </Button>
         </div>
-        <div className="flex-1 overflow-y-auto">
-          {isLoading && <div className="p-4 text-sm text-[#999]">加载中…</div>}
-          {isError && !isLoading && (
-            <div className="p-4 text-sm text-red-500">加载失败，请稍后重试</div>
-          )}
-          {!isLoading && !isError && data?.list?.length === 0 && (
-            <div className="p-4 text-sm text-[#999]">暂无流程</div>
-          )}
-          {data?.list?.map((f: FlowInstanceItem) => (
-            <button
-              key={f.id}
-              onClick={() => setActiveId(f.id)}
-              className={`block w-full border-b border-[#F7F7F7] px-3 py-2.5 text-left hover:bg-[#F7FAFF] ${
-                activeId === f.id ? 'bg-[#EFF4FF]' : ''
-              }`}
-            >
-              <div className="truncate text-sm font-medium text-[#222]">
-                {f.title}
-              </div>
-              <div className="mt-1 flex items-center justify-between">
-                <span className="text-xs text-[#888]">
-                  {STATUS_LABEL[f.status] ?? f.status}
-                </span>
-                <span className="text-xs text-[#aaa]">
-                  {new Date(f.update_time).toLocaleDateString()}
-                </span>
-              </div>
-            </button>
-          ))}
-        </div>
+
+        {/* 批注模块挂载点：与流程列表平分高度（由 FlowDetail portal 渲染） */}
+        <div ref={setCommentSlot} className="h-1/2 min-h-0" />
       </div>
 
       {/* 右：详情 */}
@@ -138,6 +149,7 @@ export default function FlowPanel() {
         {activeId ? (
           <FlowDetail
             flowId={activeId}
+            commentPortal={commentSlot}
             onChanged={() => {
               qc.invalidateQueries({ queryKey: ['flow-list'] });
               qc.invalidateQueries({ queryKey: ['flow-list-todo-badge'] });
@@ -274,13 +286,23 @@ function CreateFlowDialog({
             <label className="text-sm text-[#555]">
               初始文件
               <span className="ml-1 text-xs text-[#999]">
-                （可选，创建后可在详情页上传）
+                （可选，仅支持 doc/docx，创建后可在详情页上传）
               </span>
             </label>
             <input
               type="file"
+              accept=".doc,.docx"
               className="mt-1 text-sm"
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              onChange={(e) => {
+                const f = e.target.files?.[0] ?? null;
+                if (f && !/\.(doc|docx)$/i.test(f.name)) {
+                  setError('初始文件仅支持 doc/docx 格式');
+                  e.target.value = '';
+                  return;
+                }
+                setError('');
+                setFile(f);
+              }}
             />
           </div>
           {error && <div className="text-sm text-red-500">{error}</div>}
