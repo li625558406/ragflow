@@ -420,6 +420,32 @@ export function readEditorBlocks(editor: LexicalEditor): EditorBlock[] {
         });
         continue;
       }
+      if (child instanceof DocxTableNode) {
+        const paraIndex = child.__paraIndex;
+        if (paraIndex == null) continue;
+        let ri = 0;
+        for (const row of child.getChildren()) {
+          if (!(row instanceof TableRowNode)) continue;
+          let col = 0;
+          for (const cell of row.getChildren()) {
+            if (!(cell instanceof TableCellNode)) continue;
+            // runs 抽取复用 $extractRuns（TableCellNode 是 ElementNode，visit 递归下降
+            // 覆盖格内所有段落；HighlightTextNode 底色已在函数内剔除）
+            const runs = $extractRuns(cell);
+            out.push({
+              paraIndex,
+              kind: 'table',
+              cell: { row: ri, col },
+              text: cell.getTextContent(),
+              runs,
+              fmtSig: runsFmtSig(runs),
+            });
+            col += cell.getColSpan() || 1;
+          }
+          ri += 1;
+        }
+        continue;
+      }
       const isDocxHeading = child instanceof DocxHeadingNode;
       const paraIndex =
         child instanceof DocxParagraphNode || isDocxHeading
@@ -521,29 +547,49 @@ function HighlightPlugin({
   useEffect(() => {
     editor.update(
       () => {
-        const root = $getRoot();
-        for (const child of root.getChildren()) {
-          if (
-            !(child instanceof DocxParagraphNode) &&
-            !(child instanceof DocxHeadingNode)
-          )
-            continue;
-          const paraIndex = child.__paraIndex;
-          if (paraIndex == null) continue;
-          const targets = targetsByPara.get(paraIndex) || [];
-          const hasStale = child
+        // 单段/单格重建：命中 target 拆高亮片段，无 target 但有残留高亮时清场。
+        // 正文段与表格格内段落共用——行为对正文段与改动前逐字节等价。
+        const rebuild = (
+          p: ElementNode,
+          targets: Array<{ text: string; color: string; key: string }>,
+        ) => {
+          const hasStale = p
             .getChildren()
             .some((n) => n instanceof HighlightTextNode);
-          if (!targets.length && !hasStale) continue;
-          const segments = splitIntoSegments(child.getTextContent(), targets);
-          child.clear();
+          if (!targets.length && !hasStale) return;
+          const segments = splitIntoSegments(p.getTextContent(), targets);
+          p.clear();
           for (const seg of segments) {
             if (seg.key) {
               const node = new HighlightTextNode(seg.text, seg.key);
               node.setStyle(`background-color:${seg.color}22;`);
-              child.append(node);
+              p.append(node);
             } else {
-              child.append($createTextNode(seg.text));
+              p.append($createTextNode(seg.text));
+            }
+          }
+        };
+        const root = $getRoot();
+        for (const child of root.getChildren()) {
+          if (
+            child instanceof DocxParagraphNode ||
+            child instanceof DocxHeadingNode
+          ) {
+            const paraIndex = child.__paraIndex;
+            if (paraIndex == null) continue;
+            rebuild(child, targetsByPara.get(paraIndex) || []);
+          } else if (child instanceof DocxTableNode) {
+            const paraIndex = child.__paraIndex;
+            if (paraIndex == null) continue;
+            const targets = targetsByPara.get(paraIndex) || [];
+            for (const row of child.getChildren()) {
+              if (!(row instanceof TableRowNode)) continue;
+              for (const cell of row.getChildren()) {
+                if (!(cell instanceof TableCellNode)) continue;
+                for (const p of cell.getChildren()) {
+                  if (p instanceof ParagraphNode) rebuild(p, targets);
+                }
+              }
             }
           }
         }
