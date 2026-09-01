@@ -50,3 +50,47 @@ export interface HrRuleConfig {
   late_threshold_minutes: number;
   [key: string]: string | number;
 }
+
+// ── P2: 假单 ──
+
+export type LeaveType =
+  | 'personal'
+  | 'sick'
+  | 'annual'
+  | 'marriage'
+  | 'maternity'
+  | 'business_trip'
+  | 'other'
+  | 'repair';
+
+export type LeaveStatus = 'pending' | 'approved' | 'rejected' | 'cancelled';
+
+export interface LeaveStep {
+  step_no: number;
+  approver_id: string;
+  approver_name: string;
+  status: 'waiting' | 'pending' | 'approved' | 'rejected';
+  comment: string;
+  action_time: string;
+}
+
+export interface LeaveRequest {
+  id: string;
+  employee_id: string;
+  nickname?: string;
+  leave_type: LeaveType;
+  start_date: string;
+  end_date: string;
+  duration_days: number;
+  reason: string;
+  status: LeaveStatus;
+  current_step: number;
+  steps?: LeaveStep[];
+}
+
+export interface LeaveBalance {
+  leave_type: string;
+  total_days: number;
+  used_days: number;
+  frozen_days: number;
+}

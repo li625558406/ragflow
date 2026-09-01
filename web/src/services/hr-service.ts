@@ -2,6 +2,8 @@ import type {
   CalendarDay,
   HrEmployeeProfile,
   HrRuleConfig,
+  LeaveBalance,
+  LeaveRequest,
   TodayPunch,
 } from '@/pages/c-chat/hr/hr-types';
 
@@ -144,6 +146,59 @@ export async function saveRuleConfig(
   data: Partial<HrRuleConfig>,
 ): Promise<HrRuleConfig> {
   return apiFetch('/hr/rule-config', {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
+// ── P2: 假单 ──
+
+export async function submitLeave(data: {
+  leave_type: string;
+  start_date: string;
+  end_date: string;
+  reason: string;
+}) {
+  return apiFetch('/hr/leave', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export async function fetchMyLeaves() {
+  return apiFetch<{ list: LeaveRequest[]; total: number }>('/hr/leave/my');
+}
+
+export async function fetchPendingLeaves() {
+  return apiFetch<{ list: LeaveRequest[]; total: number }>('/hr/leave/pending');
+}
+
+export async function approveLeave(
+  id: string,
+  action: 'approved' | 'rejected',
+  comment = '',
+) {
+  return apiFetch(`/hr/leave/${id}/approve`, {
+    method: 'POST',
+    body: JSON.stringify({ action, comment }),
+  });
+}
+
+export async function cancelLeave(id: string) {
+  return apiFetch(`/hr/leave/${id}/cancel`, { method: 'POST' });
+}
+
+export async function fetchLeaveBalance(year?: number) {
+  const q = year ? `?year=${year}` : '';
+  return apiFetch<{ year: number; list: LeaveBalance[] }>(
+    `/hr/leave/balance${q}`,
+  );
+}
+
+export async function updateLeaveBalance(data: {
+  employee_id: string;
+  leave_type: string;
+  year: number;
+  total_days: number;
+}) {
+  return apiFetch('/hr/leave/balance', {
     method: 'PUT',
     body: JSON.stringify(data),
   });
