@@ -163,3 +163,60 @@ export interface SalaryFailedItem {
   employee_id: string;
   reason: string;
 }
+
+// ── P4: 凭证 / 调整日志 / 归档 / 考勤机导入 ──
+
+// 财务凭证：entries 为 [摘要, 科目, 借方金额, 贷方金额] 数组；
+// status: normal=正常 | stale=工资调整后未重生成（UI 需徽章提示）
+export interface Voucher {
+  id: string;
+  month: string;
+  voucher_type: 'accrue' | 'pay';
+  entries: [string, string, number, number][];
+  total_amount: number;
+  status: 'normal' | 'stale' | string;
+  create_time: string;
+}
+
+// 工资手工调整日志（本期仅查询展示；调整入口在工资单列表，后续迭代）
+export interface PayslipAdjust {
+  id: string;
+  payslip_id: string;
+  employee_id: string;
+  month: string;
+  field: string;
+  old_value: number;
+  new_value: number;
+  reason: string;
+  operator_id?: string;
+  operator_name?: string;
+  create_time: string;
+}
+
+// 历史归档检索行：以 hr_attendance_month 为主表，附当月工资单状态/实发（无则为 null）
+export interface ArchiveRow {
+  employee_id: string;
+  emp_no: string;
+  nickname: string;
+  department: string;
+  month: string;
+  attend_days: number;
+  late_count: number;
+  absent_days: number;
+  overtime_hours: number;
+  payslip_status: 'draft' | 'published' | null;
+  net_pay: number | null;
+}
+
+// 考勤机批量导入结果：failed 仅收录前 50 条明细，fail_total 为全部失败行数
+export interface BatchImportResult {
+  total: number;
+  success: number;
+  failed: {
+    row: number;
+    emp: string;
+    punch_time: string;
+    error: string;
+  }[];
+  fail_total?: number;
+}

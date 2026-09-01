@@ -1,14 +1,18 @@
 import type {
+  ArchiveRow,
+  BatchImportResult,
   CalendarDay,
   HrEmployeeProfile,
   HrRuleConfig,
   LeaveBalance,
   LeaveRequest,
   Payslip,
+  PayslipAdjust,
   SalaryFailedItem,
   SalaryProfile,
   SalaryTrialItem,
   TodayPunch,
+  Voucher,
 } from '@/pages/c-chat/hr/hr-types';
 
 const BASE = '/api/v1';
@@ -274,4 +278,140 @@ export async function fetchPayslips(month: string) {
 export async function fetchMyPayslip(month?: string) {
   const q = month ? `?month=${encodeURIComponent(month)}` : '';
   return apiFetch<{ payslip: Payslip | null }>(`/hr/payslip/my${q}`);
+}
+
+// ── P4: 调整 / 凭证 / 报表 / 归档 / 考勤机导入 ──
+
+// 工资手工调整（仅 published）：后端重算 net_pay 落盘并写日志；
+// voucher_stale=true 表示该月 pay 凭证已生成但数据已过期，需重生成
+export async function adjustPayslip(
+  payslipId: string,
+  field: string,
+  newValue: number,
+  reason: string,
+) {
+  return apiFetch<{ payslip: Payslip; voucher_stale: boolean }>(
+    `/hr/salary/payslip/${encodeURIComponent(payslipId)}/adjust`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ field, new_value: newValue, reason }),
+    },
+  );
+}
+
+export async function fetchAdjustments(
+  params: { payslip_id?: string; month?: string; employee_id?: string } = {},
+) {
+  const qs = new URLSearchParams(
+    Object.entries(params).filter(([, v]) => v) as [string, string][],
+  ).toString();
+  return apiFetch<{ list: PayslipAdjust[]; total: number }>(
+    `/hr/salary/adjustments${qs ? `?${qs}` : ''}`,
+  );
+}
+
+// 生成（或重生成，幂等覆盖）月度财务凭证：voucher_type ∈ accrue(计提) | pay(发放)
+export async function generateVoucher(month: string, voucherType: string) {
+  return apiFetch<Voucher>('/hr/voucher/generate', {
+    method: 'POST',
+    body: JSON.stringify({ month, voucher_type: voucherType }),
+  });
+}
+
+export async function fetchVouchers(month: string) {
+  return apiFetch<{ list: Voucher[]; total: number }>(
+    `/hr/voucher/list?month=${encodeURIComponent(month)}`,
+  );
+}
+
+// 从 Content-Disposition 解析文件名：filename*=UTF-8''<RFC5987> 优先，
+// 回退 filename="..."，再回退调用方提供的默认名
+function parseFilenameFromDisposition(
+  disposition: string,
+  fallback: string,
+): string {
+  try {
+    const star = disposition.match(/filename\*=(?:UTF-8|utf-8)''([^;]+)/i);
+    if (star?.[1]) {
+      const decoded = decodeURIComponent(star[1].trim().replace(/^"|"$/g, ''));
+      if (decoded) return decoded;
+    }
+    const plain = disposition.match(/filename="?([^";]+)"?/i);
+    if (plain?.[1]) {
+      const decoded = decodeURIComponent(plain[1].trim());
+      if (decoded && decoded !== 'report.xlsx') return decoded;
+    }
+  } catch {
+    // 解析失败静默走 fallback
+  }
+  return fallback;
+}
+
+// 报表导出（xlsx 二进制流）：apiFetch 走 resp.json() 不支持 blob，
+// 故单独用 fetch 复刻相同鉴权逻辑（Authorization 头 + user_id 参数 + 401 处理）
+export async function exportReport(
+  type: 'attendance' | 'payroll' | 'insurance',
+  month: string,
+): Promise<void> {
+  const uid = getUserInfo().id || '';
+  const url = `${BASE}/hr/report/export?type=${type}&month=${encodeURIComponent(month)}&user_id=${encodeURIComponent(uid)}`;
+  const resp = await fetch(url, { headers: authHeaders() });
+  if (resp.status === 401) {
+    localStorage.removeItem('Authorization');
+    localStorage.removeItem('userInfo');
+    window.location.href = '/login';
+    throw new Error('unauthorized');
+  }
+  if (!resp.ok) throw new Error(`报表下载失败（HTTP ${resp.status}）`);
+  // 后端错误时仍可能返回 JSON（get_data_error_result），靠 Content-Type 甄别
+  const contentType = resp.headers.get('Content-Type') || '';
+  if (contentType.includes('application/json')) {
+    const body = (await resp.json()) as { message?: string };
+    throw new Error(body.message || '报表导出失败');
+  }
+  const blob = await resp.blob();
+  const fallbackName = `report-${type}-${month}.xlsx`;
+  const fileName = parseFilenameFromDisposition(
+    resp.headers.get('Content-Disposition') || '',
+    fallbackName,
+  );
+  const objUrl = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement('a');
+    a.href = objUrl;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    URL.revokeObjectURL(objUrl);
+  }
+}
+
+export async function searchArchive(
+  params: { month?: string; department?: string; keyword?: string } = {},
+) {
+  const qs = new URLSearchParams(
+    Object.entries(params).filter(([, v]) => v) as [string, string][],
+  ).toString();
+  return apiFetch<{ list: ArchiveRow[]; total: number }>(
+    `/hr/archive/search${qs ? `?${qs}` : ''}`,
+  );
+}
+
+export async function syncAttendanceApi(records: unknown[]) {
+  return apiFetch<BatchImportResult>('/hr/attendance/sync-api', {
+    method: 'POST',
+    body: JSON.stringify({ records }),
+  });
+}
+
+export async function importAttendance(records: unknown[], fileName?: string) {
+  return apiFetch<BatchImportResult>('/hr/attendance/import', {
+    method: 'POST',
+    body: JSON.stringify({
+      records,
+      ...(fileName ? { file_name: fileName } : {}),
+    }),
+  });
 }
