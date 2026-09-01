@@ -2,6 +2,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { usePermission } from '@/hooks/use-permission';
 import {
+  adjustPayslip,
   calcSalary,
   fetchMyPayslip,
   fetchPayslips,
@@ -566,9 +567,141 @@ function MonthlyOps({ month }: { month: string }) {
   );
 }
 
+// ── HR：工资单手工调整 ──
+
+// 可调整的扣款项（与后端 /hr/salary/payslip/<pid>/adjust 允许字段对齐）
+const ADJUST_FIELDS: {
+  key:
+    | 'attendance_deduction'
+    | 'social_insurance'
+    | 'housing_fund'
+    | 'income_tax';
+  label: string;
+}[] = [
+  { key: 'attendance_deduction', label: '考勤扣款' },
+  { key: 'social_insurance', label: '社保' },
+  { key: 'housing_fund', label: '公积金' },
+  { key: 'income_tax', label: '个税' },
+];
+
+function PayslipAdjustForm({
+  payslip,
+  onDone,
+}: {
+  payslip: Payslip;
+  onDone: () => void;
+}) {
+  const [field, setField] = useState<string>(ADJUST_FIELDS[0].key);
+  const [newValue, setNewValue] = useState('');
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [okMsg, setOkMsg] = useState('');
+  const qc = useQueryClient();
+
+  const submit = async () => {
+    if (busy) return;
+    const raw = (newValue ?? '').trim();
+    const v = Number(raw);
+    if (raw === '' || !Number.isFinite(v) || v < 0) {
+      setError('新金额必须是不小于 0 的数字');
+      return;
+    }
+    if (!reason.trim()) {
+      setError('请填写调整原因');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    setOkMsg('');
+    try {
+      const r = await adjustPayslip(payslip.id, field, v, reason.trim());
+      qc.invalidateQueries({ queryKey: ['hr-payslips'] });
+      setOkMsg(
+        r?.voucher_stale
+          ? '已调整，实发已重算；该月发放凭证已标记过期，请到报表页重新生成'
+          : '已调整，实发已重算',
+      );
+      setNewValue('');
+      setReason('');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '调整失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div>
+      <div className="mb-2 text-xs font-medium text-[#0F172A]">
+        手工调整：{payslip.nickname || payslip.employee_id}
+        {payslip.emp_no ? `（${payslip.emp_no}）` : ''} · {payslip.month}
+      </div>
+      <div className="grid gap-2 sm:grid-cols-3">
+        <div>
+          <div className="mb-1 text-[10px] text-[#94A3B8]">调整字段</div>
+          <select
+            value={field}
+            onChange={(e) => setField(e.target.value)}
+            className="h-8 w-full rounded-md border border-[#E2E8F0] bg-white px-2 text-xs text-[#0F172A]"
+          >
+            {ADJUST_FIELDS.map((f) => (
+              <option key={f.key} value={f.key}>
+                {f.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <div className="mb-1 text-[10px] text-[#94A3B8]">新金额</div>
+          <Input
+            type="number"
+            min={0}
+            step="any"
+            value={newValue}
+            onChange={(e) => setNewValue(e.target.value)}
+            className="h-8 text-xs"
+          />
+        </div>
+        <div>
+          <div className="mb-1 text-[10px] text-[#94A3B8]">
+            调整原因（必填）
+          </div>
+          <Input
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="如：迟到补扣 / 社保基数修正"
+            className="h-8 text-xs"
+          />
+        </div>
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <Button
+          size="sm"
+          onClick={submit}
+          disabled={busy}
+          className="bg-[#1a66fb] text-white hover:bg-[#1554d6]"
+        >
+          提交调整
+        </Button>
+        <Button size="sm" variant="outline" onClick={onDone} disabled={busy}>
+          收起
+        </Button>
+        <span className="text-[10px] text-[#94A3B8]">
+          仅已发布工资单可调整，调整将重算实发并记录日志
+        </span>
+      </div>
+      {error && <div className="mt-1 text-xs text-red-500">{error}</div>}
+      {okMsg && <div className="mt-1 text-xs text-[#1a66fb]">{okMsg}</div>}
+    </div>
+  );
+}
+
 // ── HR：工资单列表 ──
 
 function PayslipsList({ month }: { month: string }) {
+  const qc = useQueryClient();
+  const [adjustingId, setAdjustingId] = useState('');
   const { data } = useQuery({
     queryKey: ['hr-payslips', month],
     queryFn: () => fetchPayslips(month),
@@ -594,31 +727,63 @@ function PayslipsList({ month }: { month: string }) {
                 <th className="px-2 py-1.5 text-right">应发</th>
                 <th className="px-2 py-1.5 text-right">实发</th>
                 <th className="px-2 py-1.5 text-center">状态</th>
+                <th className="px-2 py-1.5 text-center">操作</th>
               </tr>
             </thead>
             <tbody>
               {list.map((p) => (
-                <tr key={p.employee_id} className="border-t border-[#F8FAFC]">
-                  <td className="px-2 py-1.5 text-left text-[#0F172A]">
-                    {p.nickname || '—'}
-                  </td>
-                  <td className="px-2 py-1.5 text-left text-[#0F172A]">
-                    {p.emp_no || '—'}
-                  </td>
-                  <td className="px-2 py-1.5 text-right text-[#0F172A]">
-                    ¥{fmt(p.gross_pay)}
-                  </td>
-                  <td className="px-2 py-1.5 text-right text-[#0F172A]">
-                    ¥{fmt(p.net_pay)}
-                  </td>
-                  <td className="px-2 py-1.5 text-center">
-                    <span
-                      className={`inline-block rounded-full border px-2 py-0.5 ${PAYSLIP_BADGE[p.status]}`}
-                    >
-                      {PAYSLIP_STATUS_LABEL[p.status]}
-                    </span>
-                  </td>
-                </tr>
+                <Fragment key={p.id}>
+                  <tr className="border-t border-[#F8FAFC]">
+                    <td className="px-2 py-1.5 text-left text-[#0F172A]">
+                      {p.nickname || '—'}
+                    </td>
+                    <td className="px-2 py-1.5 text-left text-[#0F172A]">
+                      {p.emp_no || '—'}
+                    </td>
+                    <td className="px-2 py-1.5 text-right text-[#0F172A]">
+                      ¥{fmt(p.gross_pay)}
+                    </td>
+                    <td className="px-2 py-1.5 text-right text-[#0F172A]">
+                      ¥{fmt(p.net_pay)}
+                    </td>
+                    <td className="px-2 py-1.5 text-center">
+                      <span
+                        className={`inline-block rounded-full border px-2 py-0.5 ${PAYSLIP_BADGE[p.status]}`}
+                      >
+                        {PAYSLIP_STATUS_LABEL[p.status]}
+                      </span>
+                    </td>
+                    <td className="px-2 py-1.5 text-center">
+                      {p.status === 'published' ? (
+                        <button
+                          onClick={() =>
+                            setAdjustingId(adjustingId === p.id ? '' : p.id)
+                          }
+                          className="text-[#1a66fb] hover:underline"
+                        >
+                          {adjustingId === p.id ? '收起' : '调整'}
+                        </button>
+                      ) : (
+                        <span className="text-[#CBD5E1]">—</span>
+                      )}
+                    </td>
+                  </tr>
+                  {adjustingId === p.id && (
+                    <tr className="border-t border-[#F8FAFC]">
+                      <td colSpan={6} className="bg-[#F8FAFC]/60 px-3 py-3">
+                        <PayslipAdjustForm
+                          payslip={p}
+                          onDone={() => {
+                            setAdjustingId('');
+                            qc.invalidateQueries({
+                              queryKey: ['hr-payslips'],
+                            });
+                          }}
+                        />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               ))}
             </tbody>
           </table>
