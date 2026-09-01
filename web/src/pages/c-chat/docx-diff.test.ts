@@ -1,4 +1,9 @@
-import { diffBlocks, splitIntoSegments } from './docx-diff';
+import {
+  diffBlocks,
+  splitIntoSegments,
+  type DocxSourceParagraph,
+  type EditorBlock,
+} from './docx-diff';
 
 const src = (index: number, text: string, type: any = 'paragraph') => ({
   index,
@@ -438,5 +443,134 @@ describe('diffBlocks 块级属性（对齐/缩进/标题级别）', () => {
     const ops = diffBlocks(blocks, paragraphs);
     if ('error' in ops) throw new Error(ops.error);
     expect(ops.count).toBe(0);
+  });
+});
+
+// ── 表格单元格 diff ──
+const tablePara: DocxSourceParagraph = {
+  index: 3,
+  text: '<table><tr><td>甲</td><td>乙</td></tr></table>',
+  type: 'table',
+};
+const tableBaseline = new Map([
+  [
+    3,
+    [
+      { row: 0, col: 0, colSpan: 1, header: false, text: '甲' },
+      { row: 0, col: 1, colSpan: 1, header: false, text: '乙' },
+    ],
+  ],
+]);
+
+function cellBlock(row: number, col: number, text: string): EditorBlock {
+  return { paraIndex: 3, kind: 'table', cell: { row, col }, text };
+}
+
+describe('diffBlocks 表格', () => {
+  it('格文本变 → tableEdits；未变的格不产生 op', () => {
+    const ops = diffBlocks(
+      [cellBlock(0, 0, '甲改'), cellBlock(0, 1, '乙')],
+      [tablePara],
+      tableBaseline,
+    );
+    expect('error' in ops).toBe(false);
+    if (!('error' in ops)) {
+      expect(ops.tableEdits).toEqual([
+        { paraIndex: 3, row: 0, col: 0, newText: '甲改' },
+      ]);
+      expect(ops.count).toBe(1);
+    }
+  });
+
+  it('清空单元格 → newText 空串合法（不是 delete）', () => {
+    const ops = diffBlocks(
+      [cellBlock(0, 0, ''), cellBlock(0, 1, '乙')],
+      [tablePara],
+      tableBaseline,
+    );
+    expect('error' in ops).toBe(false);
+    if (!('error' in ops)) {
+      expect(ops.tableEdits).toEqual([
+        { paraIndex: 3, row: 0, col: 0, newText: '' },
+      ]);
+      expect(ops.deletes).toEqual([]);
+    }
+  });
+
+  it('纯改格式：文本同、runs 签名变 → 带 runs 的 tableEdit', () => {
+    const b = {
+      ...cellBlock(0, 0, '甲'),
+      runs: [{ text: '甲', bold: true }],
+      fmtSig: '[{"bold":true}]',
+    };
+    const ops = diffBlocks(
+      [b, cellBlock(0, 1, '乙')],
+      [tablePara],
+      tableBaseline,
+    );
+    expect('error' in ops).toBe(false);
+    if (!('error' in ops)) {
+      expect(ops.tableEdits).toEqual([
+        {
+          paraIndex: 3,
+          row: 0,
+          col: 0,
+          newText: '甲',
+          runs: [{ text: '甲', bold: true }],
+        },
+      ]);
+    }
+  });
+
+  it('基线缺失（解析失败）→ 该表不产生任何改动（保护）', () => {
+    const ops = diffBlocks([cellBlock(0, 0, '甲改')], [tablePara], new Map());
+    expect('error' in ops).toBe(false);
+    if (!('error' in ops)) expect(ops.count).toBe(0);
+  });
+
+  it('网格错位（基线无此格位）→ 跳过该格', () => {
+    const ops = diffBlocks(
+      [cellBlock(5, 5, '错位')],
+      [tablePara],
+      tableBaseline,
+    );
+    expect('error' in ops).toBe(false);
+    if (!('error' in ops)) expect(ops.count).toBe(0);
+  });
+
+  it('删除整个表格（table 块消失）→ error 保护不变', () => {
+    const ops = diffBlocks(
+      [{ paraIndex: 0, kind: 'text', text: '只有正文' }],
+      [tablePara],
+      tableBaseline,
+    );
+    expect('error' in ops).toBe(true);
+  });
+
+  it('正文段落与表格格改动混合出现', () => {
+    const ops = diffBlocks(
+      [
+        { paraIndex: 0, kind: 'text', text: '正文改' },
+        cellBlock(0, 0, '甲改'),
+        cellBlock(0, 1, '乙'),
+      ],
+      [{ index: 0, text: '正文', type: 'paragraph' }, tablePara],
+      tableBaseline,
+    );
+    expect('error' in ops).toBe(false);
+    if (!('error' in ops)) {
+      expect(ops.edits).toHaveLength(1);
+      expect(ops.tableEdits).toHaveLength(1);
+      expect(ops.count).toBe(2);
+    }
+  });
+
+  it('不传基线参数（旧调用方）→ 表格格直接跳过、不报错', () => {
+    const ops = diffBlocks(
+      [cellBlock(0, 0, '甲改'), cellBlock(0, 1, '乙')],
+      [tablePara],
+    );
+    expect('error' in ops).toBe(false);
+    if (!('error' in ops)) expect(ops.count).toBe(0);
   });
 });

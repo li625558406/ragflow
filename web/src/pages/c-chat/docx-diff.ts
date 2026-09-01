@@ -27,6 +27,17 @@ export interface EditorBlock {
   align?: string;
   indent?: number;
   headingLevel?: number | null;
+  /** kind='table' 时的 docx 逻辑网格坐标（readEditorBlocks 按 colSpan 累加） */
+  cell?: { row: number; col: number };
+}
+
+/** 表格基线单元格（review-panel 用 parseTableCells 从初始 HTML 解析，与灌入同源） */
+export interface BaselineCell {
+  row: number;
+  col: number;
+  colSpan: number;
+  header: boolean;
+  text: string;
 }
 
 export type DocxDiffOps =
@@ -50,6 +61,15 @@ export type DocxDiffOps =
         indent?: number;
         headingLevel?: number;
       }>;
+      /** 单元格级改动：与 edits/deletes/inserts 并列，计入 count 与 200 上限 */
+      tableEdits: Array<{
+        paraIndex: number;
+        row: number;
+        col: number;
+        /** 允许空串（清空单元格） */
+        newText: string;
+        runs?: DocxRun[];
+      }>;
       count: number;
     };
 
@@ -65,6 +85,8 @@ function baseHeadingOf(p: DocxSourceParagraph): number | null {
 export function diffBlocks(
   blocks: EditorBlock[],
   paragraphs: DocxSourceParagraph[],
+  /** 表格基线；缺省/缺某表基线 → 该表改动全部跳过（保护，不报错） */
+  tableBaselines?: Map<number, BaselineCell[]>,
 ): DocxDiffOps {
   const byIdx = new Map(paragraphs.map((p) => [p.index, p]));
   const seen = new Set<number>();
@@ -85,6 +107,13 @@ export function diffBlocks(
     indent?: number;
     headingLevel?: number;
   }> = [];
+  const tableEdits: Array<{
+    paraIndex: number;
+    row: number;
+    col: number;
+    newText: string;
+    runs?: DocxRun[];
+  }> = [];
   let lastIdx: number | null = null;
 
   for (const b of blocks) {
@@ -92,7 +121,34 @@ export function diffBlocks(
       const idx = b.paraIndex;
       seen.add(idx);
       lastIdx = idx;
-      if (b.kind !== 'text') continue; // 表格/图片原子块只记 seen，不参与文本 diff
+      if (b.kind === 'table' && b.cell) {
+        // 单元格 diff：基线缺失/网格错位 → 跳过（保护）；空文本是清空格，不是 delete
+        const base = tableBaselines?.get(idx);
+        if (base) {
+          const bc = base.find(
+            (x) => x.row === b.cell!.row && x.col === b.cell!.col,
+          );
+          if (bc) {
+            const text = b.text.trim();
+            const pureFmt =
+              text === bc.text.trim() &&
+              b.runs &&
+              b.fmtSig &&
+              b.fmtSig !== '[]';
+            if (text !== bc.text.trim() || pureFmt) {
+              tableEdits.push({
+                paraIndex: idx,
+                row: b.cell.row,
+                col: b.cell.col,
+                newText: text,
+                ...(pureFmt ? { runs: b.runs } : {}),
+              });
+            }
+          }
+        }
+        continue;
+      }
+      if (b.kind !== 'text') continue; // 图片原子块只记 seen
       const orig = byIdx.get(idx);
       if (!orig) continue;
       const text = b.text.trim();
@@ -159,7 +215,8 @@ export function diffBlocks(
     edits,
     deletes,
     inserts,
-    count: edits.length + deletes.length + inserts.length,
+    tableEdits,
+    count: edits.length + deletes.length + inserts.length + tableEdits.length,
   };
 }
 
