@@ -2980,3 +2980,55 @@ class HrPayslip(DataBaseModel):
     class Meta:
         db_table = "hr_payslip"
         indexes = ((("employee_id", "month"), True),)
+
+
+class HrPayslipAdjust(DataBaseModel):
+    """工资手工调整日志：仅 published 可调，old/new 全留痕。"""
+    id = CharField(max_length=32, primary_key=True)
+    payslip_id = CharField(max_length=32, null=False, index=True)
+    employee_id = CharField(max_length=32, null=False, index=True)
+    month = CharField(max_length=7, null=False, index=True)
+    field = CharField(max_length=32, null=False,
+                      help_text="attendance_deduction|social_insurance|housing_fund|income_tax")
+    old_value = DecimalField(max_digits=10, decimal_places=2, null=False, default=0)
+    new_value = DecimalField(max_digits=10, decimal_places=2, null=False, default=0)
+    reason = CharField(max_length=255, null=False, default="")
+    operator_id = CharField(max_length=32, null=False, default="")
+
+    class Meta:
+        db_table = "hr_payslip_adjust"
+
+
+class HrVoucher(DataBaseModel):
+    """财务凭证：全月汇总一张；(month, voucher_type) 唯一，重生成覆盖。"""
+    id = CharField(max_length=32, primary_key=True)
+    month = CharField(max_length=7, null=False, index=True)
+    voucher_type = CharField(max_length=16, null=False, default="accrue",
+                             help_text="accrue计提|pay发放")
+    entries = TextField(null=False, default="[]",
+                        help_text="JSON: [[摘要,科目,借,贷], ...]")
+    total_amount = DecimalField(max_digits=12, decimal_places=2, null=False, default=0,
+                                help_text="借贷合计金额")
+    status = CharField(max_length=16, null=False, default="normal")
+    created_by = CharField(max_length=32, null=False, default="")
+
+    class Meta:
+        db_table = "hr_voucher"
+        indexes = ((("month", "voucher_type"), True),)
+
+
+class HrAttendanceImport(DataBaseModel):
+    """考勤机同步批次留痕：api_sync / manual_excel 共用。"""
+    id = CharField(max_length=32, primary_key=True)
+    source = CharField(max_length=16, null=False, default="api_sync",
+                       help_text="api_sync|manual_excel")
+    file_name = CharField(max_length=255, null=False, default="")
+    total_rows = IntegerField(null=False, default=0)
+    success_rows = IntegerField(null=False, default=0)
+    fail_rows = IntegerField(null=False, default=0)
+    detail = TextField(null=False, default="[]",
+                       help_text="JSON: 失败行 [{row, emp, punch_time, error}]（前50条）")
+    operator_id = CharField(max_length=32, null=False, default="")
+
+    class Meta:
+        db_table = "hr_attendance_import"
