@@ -388,87 +388,13 @@ async def ancestors(tenant_id: str = None, file_id: str = None):
 
 
 # ── .doc (OLE2) text extraction ──
+# 识别与 LibreOffice 转换已抽到 api/utils/doc_utils.py 供 flow_app 共用
 
-OLE2_MAGIC = b'\xd0\xcf\x11\xe0'
+from api.utils.doc_utils import (  # noqa: E402
+    doc_to_docx_via_libreoffice as _doc_to_docx_via_libreoffice,
+    is_doc_file as _is_doc_file,
+)
 
-
-def _is_doc_file(blob: bytes, filename: str = "") -> bool:
-    """Check whether a file is an old-format .doc (OLE2 compound document)."""
-    if filename.lower().endswith(".doc") and not filename.lower().endswith(".docx"):
-        return True
-    if blob and blob[:4] == OLE2_MAGIC:
-        return True
-    return False
-
-
-def _doc_to_docx_via_libreoffice(binary: bytes) -> bytes | None:
-    """Convert .doc binary to .docx binary using LibreOffice headless.
-
-    Returns the converted .docx bytes, or None if LibreOffice is unavailable
-    or conversion fails.
-    """
-    import shutil
-    import time as time_mod
-
-    soffice = shutil.which("libreoffice") or shutil.which("soffice")
-    if not soffice:
-        logging.warning("[doc2docx] LibreOffice not found in PATH")
-        return None
-
-    logging.info(f"[doc2docx] starting conversion, binary_size={len(binary)}")
-
-    tmp_in_dir = tempfile.mkdtemp(prefix="doc2docx_in_")
-    tmp_out_dir = tempfile.mkdtemp(prefix="doc2docx_out_")
-    # Unique profile dir per invocation to avoid concurrent lock conflicts
-    profile_dir = tempfile.mkdtemp(prefix="lo_profile_")
-    try:
-        in_path = os.path.join(tmp_in_dir, "input.doc")
-        with open(in_path, "wb") as f:
-            f.write(binary)
-
-        lo_env = {
-            **os.environ,
-            "LD_LIBRARY_PATH": "/usr/lib/libreoffice/program:" + os.environ.get("LD_LIBRARY_PATH", ""),
-            "HOME": profile_dir,  # LibreOffice needs writable HOME for profile
-        }
-        cmd = [
-            soffice, "--headless", "--norestore", "--nologo",
-            f"-env:UserInstallation=file://{profile_dir}",
-            "--convert-to", "docx", "--outdir", tmp_out_dir, in_path,
-        ]
-
-        # Retry up to 2 times: first run may fail while creating profile
-        for attempt in range(2):
-            result = subprocess.run(cmd, capture_output=True, timeout=60, env=lo_env)
-            logging.info(
-                f"[doc2docx] attempt={attempt + 1} returncode={result.returncode} "
-                f"stdout={result.stdout[:200] if result.stdout else 'empty'} "
-                f"stderr={result.stderr[:200] if result.stderr else 'empty'}"
-            )
-            out_path = os.path.join(tmp_out_dir, "input.docx")
-            if result.returncode == 0 and os.path.exists(out_path):
-                with open(out_path, "rb") as f:
-                    docx_blob = f.read()
-                logging.info(f"[doc2docx] conversion OK, docx_size={len(docx_blob)}")
-                return docx_blob
-            # Clean output dir for retry
-            import shutil as shutil_mod
-            shutil_mod.rmtree(tmp_out_dir, ignore_errors=True)
-            os.makedirs(tmp_out_dir, exist_ok=True)
-            if attempt == 0:
-                time_mod.sleep(2)
-
-        logging.warning("[doc2docx] all attempts failed")
-    except subprocess.TimeoutExpired:
-        logging.warning("[doc2docx] conversion timed out (60s)")
-    except Exception as e:
-        logging.warning(f"[doc2docx] conversion error: {e}", exc_info=True)
-    finally:
-        import shutil as shutil_mod
-        shutil_mod.rmtree(tmp_in_dir, ignore_errors=True)
-        shutil_mod.rmtree(tmp_out_dir, ignore_errors=True)
-        shutil_mod.rmtree(profile_dir, ignore_errors=True)
-    return None
 
 
 def _try_subprocess_extractor(binary: bytes, cmd: list[str]) -> str | None:

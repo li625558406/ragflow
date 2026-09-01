@@ -68,6 +68,8 @@ interface ChatInputBoxProps {
   reviewAvailable?: boolean;
   /** 上传完成的文档对象数组变化回调（父级发送时附带） */
   onUploadedFilesChange?: (files: UploadedDoc[]) => void;
+  /** 限制可上传的文件类型（如 '.doc,.docx'），文件选择/拖拽/粘贴均生效 */
+  accept?: string;
   autoFocus?: boolean;
 }
 
@@ -86,6 +88,7 @@ export default function ChatInputBox({
   onToggleReview,
   reviewAvailable,
   onUploadedFilesChange,
+  accept,
   autoFocus,
 }: ChatInputBoxProps) {
   const [composing, setComposing] = useState(false);
@@ -155,15 +158,20 @@ export default function ChatInputBox({
     setUploadedFiles((prev) => prev.filter((f) => f.name !== file.name));
   }, []);
 
-  const handleFileReject = useCallback((_file: File, message: string) => {
-    showToast(
-      message === 'File too large'
-        ? '文件超过50MB限制'
-        : message === 'Maximum 10 files allowed'
-          ? '最多上传10个文件'
-          : message,
-    );
-  }, []);
+  const handleFileReject = useCallback(
+    (_file: File, message: string) => {
+      showToast(
+        message === 'File too large'
+          ? '文件超过50MB限制'
+          : message === 'Maximum 10 files allowed'
+            ? '最多上传10个文件'
+            : message === 'File type not accepted'
+              ? `仅支持 ${accept} 格式的文档`
+              : message,
+      );
+    },
+    [accept],
+  );
 
   const showReviewButton = reviewAvailable ?? uploadedFiles.length > 0;
 
@@ -179,6 +187,7 @@ export default function ChatInputBox({
         maxFiles={10}
         maxSize={50 * 1024 * 1024}
         onFileReject={handleFileReject}
+        accept={accept}
       >
         <FileUploadDropzone
           tabIndex={-1}
