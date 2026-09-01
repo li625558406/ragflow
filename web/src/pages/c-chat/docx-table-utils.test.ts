@@ -39,8 +39,23 @@ describe('parseTableCells', () => {
     const html =
       '<table><tr><td>外层<table><tr><td>内层</td></tr></table></td><td>a&nbsp;b</td></tr></table>';
     const cells = parseTableCells(html);
+    expect(cells).toHaveLength(2);
     expect(cells[0].text).toBe('外层');
     expect(cells[1].text).toBe('a b');
+  });
+
+  it('嵌套表不推移外层行号', () => {
+    const html =
+      '<table><tr><td>第一行<table><tr><td>内层A</td></tr><tr><td>内层B</td></tr></table></td></tr><tr><td>第二行</td></tr></table>';
+    const cells = parseTableCells(html);
+    expect(cells).toHaveLength(2);
+    expect(cells[1]).toEqual({
+      row: 1,
+      col: 0,
+      colSpan: 1,
+      header: false,
+      text: '第二行',
+    });
   });
 
   it('畸形输入：空串 / 无 table / 未闭合标签 / 非法 colspan / 超大 colspan', () => {

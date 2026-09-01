@@ -44,7 +44,8 @@ export function parseTableCells(html: string): TableCellInfo[] {
   const table = doc.querySelector('table');
   if (!table) return [];
   const out: TableCellInfo[] = [];
-  Array.from(table.querySelectorAll('tr')).forEach((tr, row) => {
+  // HTMLTableElement.rows 只含本表各 section 的直接 tr，自动排除嵌套 <table> 子树的行
+  Array.from((table as HTMLTableElement).rows).forEach((tr, row) => {
     let col = 0;
     for (const td of Array.from(tr.children)) {
       const tag = td.tagName.toLowerCase();
