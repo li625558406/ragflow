@@ -127,3 +127,62 @@ def calc_payslip(profile, stats, base_salary, rule, prev_snap=None, month_idx=1)
         "tax_snapshot": tax_snapshot,
         "_soc_calculated": soc_calc, "_fund_calculated": fund_calc,
     }
+
+
+# ── P4: 财务凭证 entries + 工资手工调整 ──
+
+VOUCHER_TYPES = ("accrue", "pay")
+ADJUSTABLE_FIELDS = ("attendance_deduction", "social_insurance", "housing_fund", "income_tax")
+
+
+def build_voucher_entries(payslip_rows, voucher_type):
+    """全月汇总凭证 entries：[[摘要,科目,借,贷],...]。借贷平衡由构造保证。
+    accrue: 借 管理费用—工资 = Σgross / 贷 应付职工薪酬
+    pay:    借 应付职工薪酬 = Σgross / 贷 个税+社保+公积金+银行存款(=Σnet+Σatt)"""
+    if voucher_type not in VOUCHER_TYPES:
+        raise ValueError(f"无效凭证类型：{voucher_type}")
+    if not payslip_rows:
+        return {"entries": [], "total_amount": 0.0}
+
+    def tot(k):
+        return round(sum(_num(p.get(k)) for p in payslip_rows), 2)
+
+    gross = tot("gross_pay")
+    social, fund = tot("social_insurance"), tot("housing_fund")
+    tax = tot("income_tax")
+    if voucher_type == "accrue":
+        entries = [[f"计提{len(payslip_rows)}人月度工资", "管理费用—工资", gross, 0.0],
+                   ["结转应付职工薪酬", "应付职工薪酬", 0.0, gross]]
+    else:
+        # 发放：net = gross − tax − social − fund − att（calc_payslip 恒等式），
+        # 银行存款 = gross − tax − social − fund = Σnet + Σatt，与贷方合计恒等
+        bank = round(gross - tax - social - fund, 2)
+        entries = [["发放月度工资", "应付职工薪酬", gross, 0.0],
+                   ["代扣个人所得税", "应交税费—应交个人所得税", 0.0, tax],
+                   ["代扣社保个人部分", "其他应付款—社保", 0.0, social],
+                   ["代扣公积金个人部分", "其他应付款—公积金", 0.0, fund],
+                   ["实发工资", "银行存款", 0.0, bank]]
+        assert abs(sum(x[2] for x in entries) - sum(x[3] for x in entries)) < 0.01, \
+            "发放凭证借贷不平衡"
+    return {"entries": entries, "total_amount": gross}
+
+
+def apply_adjustment(payslip_dict, field, new_value):
+    """手工调整重算：field 白名单 + 非负校验；net = gross - 四项扣款。返回新 dict（不改入参）。
+
+    注意不能用 _num(new_value, None) 直接判负——_num 会把负值钳成 0 静默通过，
+    须先对原始值做有限性/非负校验（对抗性用例：-5 必须显式拒绝）。
+    """
+    if field not in ADJUSTABLE_FIELDS:
+        raise ValueError(f"不可调整的字段：{field}")
+    if isinstance(new_value, bool) or not isinstance(new_value, (int, float)):
+        # 类型错误统一走 ValueError：Service 层仅捕获 ValueError 转 400 文案
+        raise ValueError("调整值必须是非负数字")  # noqa: TRY004
+    v = float(new_value)
+    if not math.isfinite(v) or v < 0:
+        raise ValueError("调整值必须是非负数字")
+    r = dict(payslip_dict)
+    r[field] = round(v, 2)
+    r["net_pay"] = round(float(r["gross_pay"]) - r["attendance_deduction"]
+                         - r["social_insurance"] - r["housing_fund"] - r["income_tax"], 2)
+    return r

@@ -1,5 +1,9 @@
 """hr_payroll 对抗性单测：个税临界点/跨月续算/覆盖/扣款边界。"""
+import pytest
+
 from api.db.services.hr_payroll import (
+    apply_adjustment,
+    build_voucher_entries,
     calc_attendance_deduction,
     calc_overtime_pay,
     calc_payslip,
@@ -177,3 +181,73 @@ def test_payslip_absent_deduction_and_rounding():
     assert abs(r["attendance_deduction"] - 413.79) < 0.01
     assert r["income_tax"] == 0
     assert abs(r["net_pay"] - (3000.0 - 413.79)) < 0.01
+
+
+# ── P4: 凭证 entries + 手工调整 ──
+
+def _ps(gross, social=0.0, fund=0.0, tax=0.0, att=0.0):
+    return {"gross_pay": gross, "social_insurance": social, "housing_fund": fund,
+            "income_tax": tax, "attendance_deduction": att}
+
+
+def test_voucher_accrue_balanced():
+    rows = [_ps(7555.0), _ps(5000.0)]
+    r = build_voucher_entries(rows, "accrue")
+    debits = sum(e[2] for e in r["entries"])
+    credits = sum(e[3] for e in r["entries"])
+    assert abs(debits - credits) < 0.01 and abs(debits - 12555.0) < 0.01
+    assert r["total_amount"] == 12555.0
+
+
+def test_voucher_pay_balanced_and_breakdown():
+    rows = [_ps(7555.0, social=630.0, fund=720.0, tax=6.15)]
+    r = build_voucher_entries(rows, "pay")
+    e = r["entries"]
+    # 借 应付职工薪酬 7555 = 贷 个税6.15 + 社保630 + 公积金720 + 银行存款6198.85
+    assert abs(sum(x[2] for x in e) - sum(x[3] for x in e)) < 0.01
+    bank = next(x for x in e if "银行存款" in x[1])
+    assert abs(bank[3] - 6198.85) < 0.01
+
+
+def test_voucher_empty_rows():
+    assert build_voucher_entries([], "accrue") == {"entries": [], "total_amount": 0.0}
+
+
+def test_voucher_bad_type_rejected():
+    with pytest.raises(ValueError):
+        build_voucher_entries([_ps(100.0)], "other")
+
+
+def test_adjust_recompute_net():
+    r = apply_adjustment(_ps(7555.0, 630.0, 720.0, 6.15, 20.0), "social_insurance", 500.0)
+    assert r["social_insurance"] == 500.0
+    assert abs(r["net_pay"] - (7555.0 - 20.0 - 500.0 - 720.0 - 6.15)) < 0.01
+
+
+def test_adjust_rejects_unknown_field_and_negative():
+    with pytest.raises(ValueError):
+        apply_adjustment(_ps(100.0), "gross_pay", 1.0)      # 白名单外
+    with pytest.raises(ValueError):
+        apply_adjustment(_ps(100.0), "income_tax", -5.0)    # 负值
+
+
+def test_adjust_does_not_mutate_input():
+    src = _ps(100.0, social=10.0)
+    r = apply_adjustment(src, "social_insurance", 20.0)
+    assert src["social_insurance"] == 10.0 and r["social_insurance"] == 20.0
+
+
+def test_adjust_rejects_non_numeric():
+    with pytest.raises(ValueError):
+        apply_adjustment(_ps(100.0), "income_tax", "abc")
+    with pytest.raises(ValueError):
+        apply_adjustment(_ps(100.0), "income_tax", None)
+
+
+def test_voucher_pay_bank_is_net_plus_att():
+    # 银行存款 = gross − tax − social − fund = net + att（考勤扣款已从实发中扣除）
+    rows = [_ps(7555.0, social=630.0, fund=720.0, tax=6.15, att=20.0)]
+    r = build_voucher_entries(rows, "pay")
+    bank = next(x for x in r["entries"] if "银行存款" in x[1])
+    net = 7555.0 - 20.0 - 630.0 - 720.0 - 6.15
+    assert abs(bank[3] - (net + 20.0)) < 0.01
