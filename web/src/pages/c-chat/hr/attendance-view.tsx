@@ -478,6 +478,17 @@ export default function AttendanceView() {
     return <div className="p-6 text-sm text-[#94A3B8]">加载中…</div>;
   }
   if (!profile.data?.profile) {
+    // HR 管理员未建档也放行管理面板（否则第一个人无法通过界面建档）；普通员工提示未开通
+    if (isHr) {
+      return (
+        <div className="mx-auto w-full max-w-3xl space-y-4 p-4">
+          <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-700">
+            你还没有员工档案（打卡功能未开通）。可先在下方为你自己或其他员工建档。
+          </div>
+          <HrAdminPanel month={safeMonth} onRefresh={() => profile.refetch()} />
+        </div>
+      );
+    }
     return (
       <div className="p-6 text-sm text-[#94A3B8]">
         未开通人事功能：请联系 HR 在「人事管理」中为你建档。
