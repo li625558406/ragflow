@@ -21,6 +21,7 @@ import ReviewPanel, { type Annotation } from '../review-panel';
 import type {
   FlowAiChatItem,
   FlowCommentItem,
+  FlowLiveChat,
   FlowVersionItem,
 } from './flow-types';
 
@@ -32,14 +33,18 @@ const FULL_PLACEHOLDER =
 
 export default function FlowAiPanel({
   flowId,
+  flowTitle,
   version,
   aiChats,
   comments,
   commentAuthors,
   isOwner,
   onSaved,
+  onLiveChatChange,
 }: {
   flowId: string;
+  /** 流程标题（agent 会话命名「流程：xxx」，便于在对话页签识别） */
+  flowTitle: string;
   version: FlowVersionItem | null;
   aiChats: FlowAiChatItem[];
   comments: FlowCommentItem[];
@@ -47,6 +52,8 @@ export default function FlowAiPanel({
   /** 当前用户是否为流程当前节点负责人（开放正文段落编辑） */
   isOwner?: boolean;
   onSaved: () => void;
+  /** 进行中对话（指令+流式回复）变化时上报，供中部对话区实时展示 */
+  onLiveChatChange?: (live: FlowLiveChat | null) => void;
 }) {
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -85,10 +92,31 @@ export default function FlowAiPanel({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const instructionRef = useRef('');
-  const sessionIdRef = useRef('');
+  // 会话续接：优先恢复本流程已保存记录里的 session_id（跨次进入保持多轮上下文）
+  const sessionIdRef = useRef(
+    (() => {
+      for (let i = aiChats.length - 1; i >= 0; i--) {
+        if (aiChats[i].session_id) return aiChats[i].session_id;
+      }
+      return '';
+    })(),
+  );
   // ChatInputBox 内部上传完成的文档对象（发送时附带）
   const uploadedDocsRef = useRef<UploadedDoc[]>([]);
   const [uploadedDocs, setUploadedDocs] = useState<UploadedDoc[]>([]);
+  // 流式期间持续累积回复内容：send() 结束时 hook 会 resetAnswerList 清空
+  // streamState，这里兜住完整回复供完成后展示/保存
+  const contentRef = useRef('');
+  const [completed, setCompleted] = useState<FlowLiveChat | null>(null);
+  // 本轮是否已自动保存（每轮发送重置）
+  const autoSavedRef = useRef(false);
+  // 自动保存成功的记录（后续「存为新版本」基于它补建版本，不重复插记录）
+  const [lastRecord, setLastRecord] = useState<{
+    id: string;
+    instruction: string;
+    response: string;
+    version_id: string;
+  } | null>(null);
 
   // 打字机占位（hasMessages 恒 false，与 c-chat 空态一致）
   const [typewriterText, setTypewriterText] = useState('');
@@ -136,6 +164,71 @@ export default function FlowAiPanel({
     if (sid) sessionIdRef.current = sid;
   }, [answerList]);
 
+  // 对话状态上报（供中部对话区实时展示）：
+  // - 发送中（sending || !done）：busy=true，response 取实时流式内容
+  // - 结束后：send() 尾部 resetAnswerList 会清空 streamState，
+  //   用 contentRef 兜住完整回复转成 completed 展示
+  // - 保存/重新发送时清空 contentRef + completed，上报回落 null
+  useEffect(() => {
+    if (streamState.content) contentRef.current = streamState.content;
+    if (sending || !done) {
+      onLiveChatChange?.({
+        instruction: instructionRef.current,
+        response: streamState.content,
+        busy: true,
+      });
+      return;
+    }
+    if (contentRef.current.trim()) {
+      const next: FlowLiveChat = {
+        instruction: instructionRef.current,
+        response: contentRef.current,
+        busy: false,
+      };
+      setCompleted((prev) => (prev ? prev : next));
+      onLiveChatChange?.(completed ?? next);
+    } else {
+      onLiveChatChange?.(completed);
+    }
+  }, [streamState.content, done, sending, onLiveChatChange, completed]);
+
+  // 自动保存：一轮对话流式结束后，自动将指令+回复写入流程记录（不建版本），
+  // 无需手动点「仅存记录」；「存为新版本」随后可基于该记录补建版本（不重复插记录）。
+  // 失败时保留 contentRef，手动「仅存记录」按钮兜底。
+  useEffect(() => {
+    if (!done || sending || autoSavedRef.current) return;
+    const text = contentRef.current.trim();
+    if (!text) return;
+    autoSavedRef.current = true;
+    (async () => {
+      try {
+        const res = (await saveFlowAiRecord(flowId, {
+          instruction: instructionRef.current || '(见记录)',
+          response: text,
+          version_id: version?.id,
+          session_id: sessionIdRef.current,
+          save_as_version: false,
+        })) as { record?: { id?: string } };
+        if (res?.record?.id) {
+          setLastRecord({
+            id: res.record.id,
+            instruction: instructionRef.current || '(见记录)',
+            response: text,
+            version_id: version?.id || '',
+          });
+        }
+        // 已入正式记录：清空兜底内容与完成态，中部气泡回落到 ai_chats
+        contentRef.current = '';
+        instructionRef.current = '';
+        setCompleted(null);
+        resetAnswerList();
+        onSaved();
+      } catch (e: any) {
+        setError(e?.message || '对话自动保存失败，可手动点击「仅存记录」');
+      }
+    })();
+  }, [done, sending, flowId, version?.id, resetAnswerList, onSaved]);
+
   // 卸载时中止进行中的 SSE 连接
   useEffect(() => {
     return () => stopOutputMessage();
@@ -154,7 +247,8 @@ export default function FlowAiPanel({
   const recentChats = aiChats.slice(-3);
 
   const busy = !done || sending;
-  const responseText = streamState.content.trim();
+  // 结束后 streamState 被 hook reset，从 contentRef 兜底取完整回复
+  const responseText = (streamState.content || contentRef.current).trim();
   const hasContent = responseText.length > 0;
 
   // 无会话时先建会话（与 c-chat 同款：POST /agents/{id}/sessions），
@@ -176,7 +270,9 @@ export default function FlowAiPanel({
               'Content-Type': 'application/json',
               Authorization: localStorage.getItem('Authorization') || '',
             },
-            body: JSON.stringify({ name: query.slice(0, 30) }),
+            body: JSON.stringify({
+              name: `流程：${flowTitle || query.slice(0, 30)}`.slice(0, 60),
+            }),
           },
         );
         const result = await resp.json();
@@ -191,7 +287,7 @@ export default function FlowAiPanel({
         return false;
       }
     },
-    [agentId],
+    [agentId, flowTitle],
   );
 
   // ChatInputBox 上传完成的文档对象同步到 ref（发送时读取，避免闭包过期）
@@ -227,8 +323,9 @@ export default function FlowAiPanel({
       const result = await resp.json();
       if (result.code === 0 && result.data) {
         const d = Array.isArray(result.data) ? result.data[0] : result.data;
-        if (d?.id)
-          return { id: d.id as string, name: d.name || target.file_name };
+        // 返回完整上传响应对象（含 mime_type 等字段）：后端 canvas.get_files_async
+        // 依赖 file["mime_type"]，只传 {id, name} 会在 SSE 输出前 KeyError 挂死
+        if (d?.id) return d as { id: string; name: string };
       }
       throw new Error(result.message || '文件上传失败');
     },
@@ -252,6 +349,11 @@ export default function FlowAiPanel({
     try {
       // 保存记录时要用（发送后输入框即清空）
       instructionRef.current = query;
+      // 新一轮发送：清空上一轮兜底内容、完成态与已存记录
+      contentRef.current = '';
+      setCompleted(null);
+      setLastRecord(null);
+      autoSavedRef.current = false;
       setValue('');
 
       const ok = await ensureSession(query);
@@ -366,17 +468,46 @@ export default function FlowAiPanel({
 
   const handleSave = useCallback(
     async (asVersion: boolean) => {
-      if (!hasContent || saving) return;
+      if (saving) return;
       setSaving(true);
       setError('');
       try {
-        await saveFlowAiRecord(flowId, {
+        if (asVersion && lastRecord) {
+          // 回复已自动存为记录：基于记录补建版本，不重复插记录
+          await saveFlowAiRecord(flowId, {
+            instruction: lastRecord.instruction,
+            response: lastRecord.response,
+            record_id: lastRecord.id,
+            version_id: lastRecord.version_id || version?.id,
+            session_id: sessionIdRef.current,
+            save_as_version: true,
+          });
+          setLastRecord(null);
+          onSaved();
+          return;
+        }
+        if (!hasContent) return;
+        const res = (await saveFlowAiRecord(flowId, {
           instruction: instructionRef.current || '(见记录)',
           response: responseText,
           version_id: version?.id,
           session_id: sessionIdRef.current,
           save_as_version: asVersion,
-        });
+        })) as { record?: { id?: string } };
+        if (!asVersion && res?.record?.id) {
+          // 仅存记录：记住记录 id，后续「存为新版本」基于它补建版本
+          setLastRecord({
+            id: res.record.id,
+            instruction: instructionRef.current || '(见记录)',
+            response: responseText,
+            version_id: version?.id || '',
+          });
+        }
+        if (asVersion) setLastRecord(null);
+        // 已存入正式记录：清空兜底内容与完成态，中部气泡回落到 ai_chats
+        contentRef.current = '';
+        instructionRef.current = '';
+        setCompleted(null);
         resetAnswerList();
         onSaved();
       } catch (e: any) {
@@ -388,6 +519,7 @@ export default function FlowAiPanel({
     [
       flowId,
       hasContent,
+      lastRecord,
       onSaved,
       resetAnswerList,
       responseText,
@@ -520,16 +652,10 @@ export default function FlowAiPanel({
         onEditDocument={handleEditDocument}
       />
 
-      {/* 流式输出区 */}
-      {(busy || hasContent) && (
-        <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap rounded bg-[#F7F8FA] px-2 py-1.5 text-xs leading-relaxed text-[#333]">
-          {streamState.content}
-          {busy && <span className="animate-pulse">▌</span>}
-        </pre>
-      )}
+      {/* 流式回复已实时展示在中部对话区（经 onLiveChatChange 上报），此处不再重复渲染 */}
 
-      {/* 输入框：c-chat 原样组件 */}
-      <div className="mt-2">
+      {/* 输入框：c-chat 原样组件（flow 场景固定约三行高度） */}
+      <div className="mt-2 [&_textarea]:min-h-[68px]">
         <ChatInputBox
           value={value}
           setValue={setValue}
@@ -551,17 +677,20 @@ export default function FlowAiPanel({
         />
       </div>
 
-      {/* 保存动作（AI 回复完成后） */}
-      {done && hasContent && (
+      {/* 保存动作：回复完成后自动已存记录，这里仅保留「存为新版本」；
+          hasContent 为 true 说明自动保存失败，补显手动「仅存记录」兜底 */}
+      {done && (hasContent || lastRecord) && (
         <div className="mt-2 flex justify-end gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={saving}
-            onClick={() => handleSave(false)}
-          >
-            仅存记录
-          </Button>
+          {hasContent && (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={saving}
+              onClick={() => handleSave(false)}
+            >
+              仅存记录
+            </Button>
+          )}
           <Button size="sm" disabled={saving} onClick={() => handleSave(true)}>
             存为新版本
           </Button>

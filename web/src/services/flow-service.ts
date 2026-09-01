@@ -221,6 +221,8 @@ export async function saveFlowAiRecord(
   payload: {
     instruction: string;
     response: string;
+    /** 传入时基于已存记录补建版本（不重复插记录） */
+    record_id?: string;
     version_id?: string;
     session_id?: string;
     save_as_version?: boolean;
@@ -254,6 +256,11 @@ export async function cancelFlow(
   flowId: string,
 ): Promise<{ flow: FlowInstanceItem }> {
   return apiFetch(`/flow/${flowId}/cancel`, { method: 'POST' });
+}
+
+/** 删除流程（后端校验：仅发起人；仅已作废状态；级联删版本/批注/AI记录） */
+export async function deleteFlow(flowId: string): Promise<{ id: string }> {
+  return apiFetch(`/flow/${flowId}/delete`, { method: 'POST' });
 }
 
 export interface FlowCandidate {

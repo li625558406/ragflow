@@ -275,6 +275,19 @@ class FlowAiChatService(_FlowServiceBase):
 
     @classmethod
     @DB.connection_context()
+    def get_record(cls, record_id: str) -> dict | None:
+        rec = cls.model.select().where(cls.model.id == record_id).first()
+        return rec.__data__ if rec else None
+
+    @classmethod
+    @DB.connection_context()
+    def set_output_version(cls, record_id: str, output_version_id: str) -> None:
+        cls.model.update(output_version_id=output_version_id).where(
+            cls.model.id == record_id,
+        ).execute()
+
+    @classmethod
+    @DB.connection_context()
     def list_by_flow(cls, flow_id: str) -> list:
         return [
             r.__data__
@@ -353,6 +366,27 @@ class FlowActionService:
         if not updated:
             raise RuntimeError("流程状态已变化，请刷新后重试")
         return {**flow, "status": "cancelled"}
+
+    @classmethod
+    @DB.connection_context()
+    def delete_flow(cls, flow: dict, user_id: str) -> list:
+        """删除流程：仅发起人、仅已作废（cancelled）状态可删。
+        级联删除 AI 记录/批注/版本与流程本体，返回版本存储对象路径列表，
+        存储清理由调用方 best-effort 执行。"""
+        if user_id != flow["initiator_id"]:
+            raise PermissionError("只有发起人可以删除流程")
+        if flow["status"] != "cancelled":
+            raise ValueError("仅已作废的流程可以删除")
+        flow_id = flow["id"]
+        paths = [
+            v["file_path"] for v in FlowVersionService.list_by_flow(flow_id)
+        ]
+        with DB.atomic():
+            FlowAiChat.delete().where(FlowAiChat.flow_id == flow_id).execute()
+            FlowComment.delete().where(FlowComment.flow_id == flow_id).execute()
+            FlowVersion.delete().where(FlowVersion.flow_id == flow_id).execute()
+            FlowInstance.delete().where(FlowInstance.id == flow_id).execute()
+        return paths
 
 
 def notify_flow_event(flow: dict, to_user_ids: list, title: str, summary: str) -> int:

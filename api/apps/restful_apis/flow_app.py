@@ -883,17 +883,32 @@ async def add_ai_record(flow_id: str):
     try:
         flow = _require_owner(_flow_dict(flow_id))
         body = await request.get_json(silent=True) or {}
-        instruction = (body.get("instruction") or "").strip()
-        response = (body.get("response") or "").strip()
-        if not instruction:
-            return _err("指令内容不能为空", 101)
-        if not response:
-            return _err("AI 回复内容不能为空", 101)
-        version_id = body.get("version_id") or flow["current_version_id"]
+        save_as_version = body.get("save_as_version", True)
+        record_id = body.get("record_id") or ""
+
+        existing = None
+        if record_id:
+            # record_id 模式：基于已自动保存的记录补建新版本（不重复插记录）
+            existing = FlowAiChatService.get_record(record_id)
+            if not existing or existing["flow_id"] != flow_id:
+                return _err("AI 记录不存在", 404)
+            if not save_as_version:
+                return _err("record_id 仅用于补建版本，需 save_as_version=true", 101)
+            instruction = existing["instruction"]
+            response = existing["response"]
+            version_id = existing["version_id"] or flow["current_version_id"]
+            session_id = existing["session_id"]
+        else:
+            instruction = (body.get("instruction") or "").strip()
+            response = (body.get("response") or "").strip()
+            if not instruction:
+                return _err("指令内容不能为空", 101)
+            if not response:
+                return _err("AI 回复内容不能为空", 101)
+            version_id = body.get("version_id") or flow["current_version_id"]
+            session_id = body.get("session_id") or ""
         if not version_id:
             return _err("流程暂无文件版本，无法记录 AI 处理", 101)
-        session_id = body.get("session_id") or ""
-        save_as_version = body.get("save_as_version", True)
 
         output_version_id = ""
         if save_as_version:
@@ -908,9 +923,13 @@ async def add_ai_record(flow_id: str):
             )
             output_version_id = version["id"]
 
-        record = FlowAiChatService.add_record(
-            flow_id, version_id, instruction, response, session_id, output_version_id,
-        )
+        if existing:
+            FlowAiChatService.set_output_version(record_id, output_version_id)
+            record = FlowAiChatService.get_record(record_id)
+        else:
+            record = FlowAiChatService.add_record(
+                flow_id, version_id, instruction, response, session_id, output_version_id,
+            )
         return get_json_result(data={"record": record, "output_version_id": output_version_id})
     except LookupError as e:
         return _err(str(e), 404)
@@ -979,6 +998,30 @@ async def cancel_flow(flow_id: str):
         except Exception as e:
             logger.warning("flow notify failed: %s", e)
         return get_json_result(data={"flow": updated})
+    except LookupError as e:
+        return _err(str(e), 404)
+    except (PermissionError, ValueError, RuntimeError) as e:
+        return _action_error(e)
+    except Exception as e:
+        logger.exception(e)
+        return _err(str(e))
+
+
+# ── 11. 删除流程（仅发起人；仅已作废；级联删版本/批注/AI记录 + 存储对象清理） ──
+@manager.route("/flow/<flow_id>/delete", methods=["POST"])  # noqa: F821
+@login_required
+async def delete_flow(flow_id: str):
+    try:
+        flow = _require_participant(_flow_dict(flow_id))
+        paths = FlowActionService.delete_flow(flow, current_user.id)
+        # 存储对象 best-effort 清理：失败不影响删除结果（孤儿对象可后续清理）
+        bucket = _bucket_of(flow)
+        for p in paths:
+            try:
+                await thread_pool_exec(settings.STORAGE_IMPL.rm, bucket, p)
+            except Exception as e:
+                logger.warning("flow storage rm failed: %s", e)
+        return get_json_result(data={"id": flow_id})
     except LookupError as e:
         return _err(str(e), 404)
     except (PermissionError, ValueError, RuntimeError) as e:

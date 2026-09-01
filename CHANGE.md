@@ -1,5 +1,103 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-01 流程页签：非负责人版本只读查看 + 流程删除（仅已作废）
+
+**主题**：两个功能补充——①流程参与人即使不在当前节点，也能查看版本记录的文件内容（此前只有当前节点负责人能进「文件审核」）；②已作废的流程可由发起人彻底删除（此前作废流程只能永久留在列表）。
+
+**核心变更**：
+- 后端 `flow_service.py`：`FlowActionService.delete_flow(flow, user_id)`——仅发起人、仅 cancelled 状态；事务内级联删 FlowAiChat/FlowComment/FlowVersion/FlowInstance，返回版本存储路径列表
+- 后端 `flow_app.py`：新增 `POST /flow/<flow_id>/delete`（需参与人登录）——调 service 后对存储对象 best-effort 逐个 rm（失败仅 warning，不影响删除结果）
+- 前端 `flow-service.ts`：新增 `deleteFlow(flowId)`
+- 前端 `flow-detail.tsx`：
+  - 版本时间线每项新增「查看」眼睛按钮（所有参与人可用，含已归档/已作废）：下载 blob → `POST /documents/upload` 转 document → 复用 `ReviewPanel` 只读模式（不传 onAddComment/onDeleteComment/canEdit，批注仅边栏展示）；同一版本二次点击直接复用已上传 document
+  - 详情头部：`isInitiator && status==='cancelled'` 时显示「删除流程」按钮（confirm 后调接口，成功回调 onDeleted）
+  - 新增 prop `onDeleted`
+- 前端 `flow-panel.tsx`：onDeleted → 清空选中态 + 刷新流程列表/todo 角标
+
+**验证**：tsc/eslint 通过（无 flow 相关新增问题）；Playwright 实测 dev（9222 → 生产后端）：测试6（领导审批中，自己非当前节点）点 v1 .doc 版本「查看」正常打开内容渲染；已作废流程「测试1」正确显示「删除流程」按钮，非作废流程不显示。
+
+**遗留**：删除接口为后端新端点，生产未部署前前端点击删除会报错；随下次后端 SCP（flow_app.py + flow_service.py）+ docker restart 后生效。前端需 build 部署 dist。
+
+## 2026-09-01 流程页签 UI 重设计（布局 + 交互 + 动画）
+
+**主题**：C端流程页签视觉与交互重设计——新增流程步骤条进度可视化、列表卡片信息分层、版本时间线化、全页适度动效，不改任何业务逻辑与 API。
+
+**核心变更**：
+- 新增 `web/src/pages/c-chat/flow/flow-utils.ts`：状态文案/徽章配色/圆点配色、五节点步骤定义（发起→领导审批→处理→汇总审核→归档）、`statusStepIndex`、`relTime` 相对时间（今天/昨天/N天前/M月D日）
+- flow-panel.tsx：
+  - scope 切换改分段控件（白色指示块滑动过渡 200ms）
+  - 列表卡片化：状态彩色圆点+状态色文字+相对时间；选中卡片左侧蓝色指示条+浅蓝底+描边；入场 stagger 滑入（40ms 间隔，封顶 240ms）
+  - 加载改骨架屏；空状态图标化 +「发起新流程」快捷入口
+  - 批注区改可折叠：底栏开关+计数角标（由 FlowDetail 新 prop `onCommentsCount` 上报），有批注自动展开、手动切换后不干预；收起时列表占满整栏
+- flow-detail.tsx：
+  - 顶部新增 FlowStepper 步骤条：完成节点实心蓝+对勾（zoom 弹入）、当前节点描边+ping 呼吸光圈、连线随进度填充 500ms；已作废全灰+红色标记
+  - 状态徽章按状态配色（进行中蓝/汇总黄/归档绿/作废红）；负责人改胶囊 chip（窄屏隐藏）
+  - 版本列表改时间线样式：左侧竖线+节点圆点（选中实心蓝光圈/AI 产出蓝描边/人工上传灰描边）、来源标签、相对时间；下载/删除改图标 ghost 按钮悬停显隐（focus-within 兜底键盘）
+  - 详情切换 fade+slide 200ms 过渡（key=flowId）；加载改 DetailSkeleton 骨架屏；对话区空状态图标化
+  - 动画统一尊重 `motion-reduce:animate-none`
+
+**验证**：tsc 无 flow 相关错误、eslint 0 error；Playwright 实测 dev（9222）：列表/分段控件/步骤条/时间线/批注折叠展开均正常渲染。
+
+**遗留**：无业务逻辑改动；待随前端 build 部署生产。
+
+## 2026-09-01 流程页签：AI 对话自动保存 + 会话续接 + 存版本不重复（方案C）
+
+**主题**：流程对话持久化改造——每轮对话自动写入 flow_ai_chat（告别手动「仅存记录」）、跨次进入续接同一 agent 会话（多轮上下文不丢）、会话命名「流程：标题」在对话页签可识别、「存为新版本」基于已存记录补建版本不重复插记录。
+
+**核心变更**：
+- 前端 flow-ai-panel.tsx：
+  - 自动保存 effect：流式结束（done && contentRef 有内容）自动调 saveFlowAiRecord(save_as_version=false)，成功后清空兜底态刷新记录；失败保留 contentRef，手动「仅存记录」按钮兜底显示
+  - 会话续接：sessionIdRef 初始化自 aiChats 最后一条的 session_id，重进流程不再新建碎片会话（后端校验仅 agent 归属+canvas 可访问，跨参与人续接共享会话成立）
+  - ensureSession 会话命名 `流程：{flowTitle}`（新建 flowTitle prop）；对话页签历史列表天然可见（同 API 同 user）
+  - lastRecord state 记录自动/手动保存返回的 record_id；「存为新版本」传 record_id 走补建分支；按钮显示条件改 `hasContent || lastRecord`（hasContent 时说明自动保存失败，补显「仅存记录」）
+- 后端 flow_service.py：FlowAiChatService 新增 get_record / set_output_version
+- 后端 flow_app.py add_ai_record：支持 record_id 分支——校验记录归属后仅建版本并回写 output_version_id，不重复插记录；record_id 与 save_as_version=false 组合拒绝
+- flow-service.ts payload 类型补 record_id
+
+**验证**（Playwright 实测，dev 前端 → 生产后端）：
+- 自动保存：发送后记录自动入列表，无「仅存记录」按钮
+- 会话续接：第二轮 completion 请求 session_id 与上轮一致（无新建），AI 准确复述上一轮指令
+- 命名：测试3 新建会话名为「流程：测试3」
+- 存为新版本：record_id 已正确发送；因生产后端未部署新代码暂走旧逻辑重复插记录（测试数据 2 条），部署后即走补建分支
+
+**偏差说明**：验证时生产后端尚为旧代码，record_id 分支走了旧逻辑产生 2 条测试重复记录（测试2 流程，未清理）。
+
+**部署验证**（2026-09-01 16:05 后端 SCP + docker restart 后实测）：测试3 流程点「存为新版本」→ 同一条记录原地回写「已存为新版本」（无重复插入），v3 AI 产出 .md 版本生成，上下文切至 v3。record_id 补建分支生产验证通过。
+
+**遗留**：前端待 build 部署生产 dist（当前 dev 已验证）。
+
+## 2026-09-01 流程页签：AI 回复渲染格式适配（Markdown + 思考过程折叠）
+
+**主题**：流程中部对话区 AI 回复从纯文本（whitespace-pre-wrap）升级为 Markdown 渲染，与对话页签同款体验。
+
+**核心变更**：
+- flow-detail.tsx ConversationView 回复气泡（正式记录 + 进行中流式）改用 `ChapteredMarkdown`（c-chat 同源组件：流式走 StreamMdContent 增量解析、完成后走 MarkdownContent，内置 `<think>` 折叠块/加粗/列表/表格渲染）；进行中传 `loading={live.busy}`
+- 新增 `normalizeLlmMarkdown`：think 标签前后补空行——`<think>` 被转成 `<section>` HTML 块后，CommonMark 的 HTML 块持续到空行结束，`</think># 标题` 无空行时标题被吞成字面文本
+
+**验证**：Playwright 实测：`##` 标题/加粗/两行列表正确渲染、思考过程折叠为按钮、流式期间无格式错乱；tsc/eslint 零新增报错。
+
+## 2026-09-01 流程页签：附带版本文件发送挂死修复（mime_type 缺失）
+
+**主题**：流程「AI 处理」开启「附带版本文件」发送后永远卡「正在思考…」且输入框锁死的根因修复。
+
+**根因**：flow-ai-panel 的 `uploadVersionAsDocument` 只返回 `{id, name}`，后端 `canvas.py get_files_async`（line 1015）直接取 `file["mime_type"]` → KeyError，SSE 生成器在输出任何字节前崩溃 → 请求永不结束，`busy` 锁死后续发送。c-chat 正常是因为它传完整上传响应对象（含 mime_type）。
+
+**核心变更**：
+- flow-ai-panel.tsx `uploadVersionAsDocument` 改为返回完整上传响应对象 `d`（含 mime_type/extension 等），与 c-chat 传参格式对齐；类型注解保持 `{id, name}` 兼容既有调用点（toggleReview/handleEditDocument 只用 id/name）
+
+**验证**：Playwright 实测流程「测试2」附带版本文件发送 → 流式回复正常完成、保存按钮出现、AI 明确识别到附带文件内容。
+
+## 2026-09-01 流程页签：AI 对话实时上屏 + 输入框加高
+
+**主题**：C端流程详情页「AI 处理」发送后，指令与流式回复实时显示在中部对话区（此前只显示在输入框上方小 pre 块，中部一直停留在「暂无对话记录」）；输入框最小高度 40px → 120px。
+
+**核心变更**：
+- flow-types.ts 新增 `FlowLiveChat`（instruction/response/busy）
+- flow-ai-panel.tsx：新增 `onLiveChatChange` 上报对话状态；修复「一直正在思考」——hook 的 send() 结束时 resetAnswerList 会清空 streamState，面板内用 contentRef 流式累积 + completed 状态兜住完整回复（保存按钮 hasContent 同步兜底）；移除原流式 pre 块；输入框包裹层 `[&_textarea]:min-h-[68px]`（约三行，仅 flow 场景生效）
+- flow-detail.tsx：`liveChat` state 传入 ConversationView，未保存的进行中对话以同款气泡追加在正式记录之后（busy 无内容显示「正在思考…」+光标，结束无内容显示「（无回复内容）」），流式增长自动滚底
+
+**遗留**：无（纯前端，未部署）。
+
 ## 2026-09-01 人事模块 P4：财务凭证报表 + 考勤机API预留（功能点15-20）
 
 **主题**：人事页签新增「报表」子页签（仅 hr_manage 可见），交付工资手工调整（留痕+stale 提示）、财务凭证生成（计提/发放，借贷平衡断言）、3 种 Excel 报表导出、历史归档检索、考勤机批量同步预留端点。

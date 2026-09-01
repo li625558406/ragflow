@@ -63,3 +63,10 @@ export interface FlowDetail {
 }
 
 export type FlowScope = 'todo' | 'initiated' | 'joined' | 'all';
+
+/** 正在进行中的一轮对话（发送后未保存前的流式状态），null 表示无进行中对话 */
+export interface FlowLiveChat {
+  instruction: string;
+  response: string;
+  busy: boolean;
+}
