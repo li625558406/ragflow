@@ -119,3 +119,48 @@ def test_invalid_rule_falls_back_to_default():
 def test_punch_count_reflects_dedup():
     r = derive_day_status([punch(9, 0), punch(9, 0), punch(18, 0)], D, DEFAULT_RULE)
     assert r["punch_count"] == 2
+
+
+# ── P2: leave_status_for_date ──
+
+def _leave(type_, s, e, status="approved"):
+    return {"leave_type": type_, "start_date": date.fromisoformat(s),
+            "end_date": date.fromisoformat(e), "status": status}
+
+
+def test_leave_covered_day():
+    from api.db.services.hr_calculator import leave_status_for_date
+    reqs = [_leave("leave", "2026-09-01", "2026-09-03")]
+    assert leave_status_for_date(reqs, date(2026, 9, 2)) == "leave"
+    assert leave_status_for_date(reqs, date(2026, 9, 4)) is None
+
+
+def test_leave_business_trip_priority_first_wins():
+    from api.db.services.hr_calculator import leave_status_for_date
+    reqs = [_leave("leave", "2026-09-01", "2026-09-05"),
+            _leave("business_trip", "2026-09-03", "2026-09-06")]
+    assert leave_status_for_date(reqs, date(2026, 9, 4)) == "leave"  # 列表序优先
+
+
+def test_leave_pending_not_counted():
+    from api.db.services.hr_calculator import leave_status_for_date
+    reqs = [_leave("leave", "2026-09-01", "2026-09-03", status="pending")]
+    assert leave_status_for_date(reqs, date(2026, 9, 2)) is None
+
+
+def test_leave_repair_type_not_derived():
+    from api.db.services.hr_calculator import leave_status_for_date
+    reqs = [_leave("repair", "2026-09-01", "2026-09-01")]
+    assert leave_status_for_date(reqs, date(2026, 9, 1)) is None
+
+
+def test_leave_empty_and_bad_input():
+    from api.db.services.hr_calculator import leave_status_for_date
+    assert leave_status_for_date([], date(2026, 9, 1)) is None
+    assert leave_status_for_date([{"leave_type": None}], date(2026, 9, 1)) is None
+
+
+def test_leave_overrides_missing_and_abnormal():
+    from api.db.services.hr_calculator import derive_day_status
+    r = derive_day_status([], D, DEFAULT_RULE, leave_status="leave")
+    assert r["status"] == "leave"

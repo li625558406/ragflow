@@ -22,6 +22,12 @@ DEFAULT_RULE = {
     "overtime_rate_weekend": 20.0,  # 周末加班 元/小时（P3 使用）
     "holiday_overtime_multiplier": 3.0,  # 法定节假日 日薪倍数（P3 使用）
     "pay_days": 21.75,              # 月标准计薪天数（P3 使用）
+    "annual_quota": 5,              # 年假默认额度 天/年（P2 使用）
+    "sick_quota": 15,               # 病假默认额度 天/年（P2 使用）
+    "marriage_quota": 3,            # 婚假默认额度 天（P2 使用）
+    "maternity_quota": 98,          # 产假默认额度 天（P2 使用）
+    "approval_chain": "",           # 审批链 user_id 逗号分隔；空回退超管列表（P2 使用）
+    "approval_chain_long": "",      # ≥3天假单审批链；空则同 approval_chain（P2 使用）
 }
 
 
@@ -131,3 +137,20 @@ def derive_day_status(records, work_date, rule, leave_status=None):
     else:
         status["status"] = "normal"
     return status
+
+
+def leave_status_for_date(leave_requests, work_date):
+    """当日被 approved 的假单覆盖时返回 'leave'/'business_trip'，否则 None。
+
+    repair 类型不参与日状态推导（它修正打卡流水而非状态）。
+    列表序优先：同日多张假单取第一张命中。
+    """
+    for r in leave_requests or []:
+        try:
+            if r.get("status") != "approved" or r.get("leave_type") not in ("leave", "business_trip"):
+                continue
+            if r["start_date"] <= work_date <= r["end_date"]:
+                return r["leave_type"]
+        except (KeyError, TypeError):
+            continue
+    return None
