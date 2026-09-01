@@ -45,6 +45,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt, RGBColor
+from docx.table import Table as DocxTable
 from docx.text.paragraph import Paragraph as DocxParagraph
 from quart import Blueprint, Response, request
 
@@ -353,8 +354,9 @@ _CTRL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 def _build_para_map(doc):
     """复刻 rag/app/naive.py Docx.to_paragraphs 的遍历规则，建立
-    para_index → ('p', DocxParagraph) / ('table', None) / ('image', None) 映射。
-    w:p 空文本且无图跳过（不占 index）、有图记 image 占 index；w:tbl 整表占一个 index。"""
+    para_index → ('p', DocxParagraph) / ('table', DocxTable) / ('image', None) 映射。
+    w:p 空文本且无图跳过（不占 index）、有图记 image 占 index；w:tbl 整表占一个 index
+    （存 DocxTable 实例，供 table_edits 定位单元格）。"""
     para_map = {}
     idx = 0
     for block in doc.element.body:
@@ -377,7 +379,7 @@ def _build_para_map(doc):
                     para_map[idx] = ("image", None)
                     idx += 1
         elif block.tag.endswith("tbl"):
-            para_map[idx] = ("table", None)
+            para_map[idx] = ("table", DocxTable(block, doc))
             idx += 1
     return para_map
 
@@ -549,6 +551,53 @@ def _apply_block_attrs(doc, p: DocxParagraph, attrs: dict):
         p.paragraph_format.left_indent = Pt(attrs["indent"] * 30)
 
 
+def _parse_table_edits(raw):
+    """解析并校验 table_edits：[{para_index,row,col,new_text,runs?}]。
+    与正文 edits 的差异：new_text 允许空串（清空单元格）；空串不得携带 runs。
+    非法抛 ValueError（消息带格位），由调用方转 400。"""
+    if not isinstance(raw, list):
+        raise ValueError("table_edits 必须是数组")
+    parsed = []
+    for t in raw:
+        if not isinstance(t, dict):
+            raise ValueError("table_edits 项格式非法")
+        try:
+            para_index = int(t.get("para_index"))
+            row = int(t.get("row"))
+            col = int(t.get("col"))
+        except (TypeError, ValueError):
+            raise ValueError("table_edits 的 para_index/row/col 必须是整数")
+        if para_index < 0 or row < 0 or col < 0:
+            raise ValueError(f"表格单元格 ({row},{col}) 行列号不能为负")
+        new_text = _CTRL_CHARS.sub("", str(t.get("new_text") or ""))
+        if len(new_text) > 20000:
+            raise ValueError(f"表格单元格 ({row},{col}) 内容不能超过 20000 字")
+        runs = _parse_runs(t.get("runs"))
+        if not new_text and runs:
+            raise ValueError(f"表格单元格 ({row},{col}) 清空时不能携带 runs")
+        if runs and "".join(x["text"] for x in runs).strip() != new_text.strip():
+            raise ValueError(f"表格单元格 ({row},{col}) runs 文本与 new_text 不一致")
+        parsed.append({
+            "para_index": para_index, "row": row, "col": col,
+            "new_text": new_text, "runs": runs,
+        })
+    return parsed
+
+
+def _apply_cell_text(cell, new_text: str, runs):
+    """写 python-docx 单元格：runs/整段替换写入首段，其余段落清空
+    （保留段落对象——docx 单元格至少需要一个段落）。\\n 由 run.text setter
+    自动转 <w:br/>。"""
+    paras = cell.paragraphs
+    first = paras[0]
+    if runs is not None:
+        _apply_runs(first, runs)
+    else:
+        _replace_para_text(first, new_text)
+    for p in paras[1:]:
+        _replace_para_text(p, "")
+
+
 @manager.route("/flow/<flow_id>/document/edit", methods=["POST"])  # noqa: F821
 @login_required
 async def edit_document(flow_id: str):
@@ -556,7 +605,7 @@ async def edit_document(flow_id: str):
     支持三类操作——edits 改写段落文本 / deletes 删除段落 / inserts 新增段落
     （after_para_index=-1 表示插到文档开头，否则插到该段之后），全部基于原
     para_index，定位成功后统一应用，存为新版本（source=manual_edit）。
-    表格/图片为原子块，不可改写、不可删除。"""
+    表格支持 table_edits 单元格级改写（不可删除整表/不可增删行列）；图片为原子块不可改写。"""
     try:
         flow = _require_owner(_flow_dict(flow_id))
         if flow["status"] in FlowWorkflow.TERMINAL:
@@ -569,11 +618,14 @@ async def edit_document(flow_id: str):
         edits = body.get("edits") or []
         deletes = body.get("deletes") or []
         inserts = body.get("inserts") or []
+        table_edits_raw = body.get("table_edits") or []
         if not isinstance(edits, list) or not isinstance(deletes, list) or not isinstance(inserts, list):
             return _err("edits/deletes/inserts 必须是数组", 101)
-        if not edits and not deletes and not inserts:
+        if not isinstance(table_edits_raw, list):
+            return _err("table_edits 必须是数组", 101)
+        if not edits and not deletes and not inserts and not table_edits_raw:
             return _err("没有需要保存的改动", 101)
-        if len(edits) + len(deletes) + len(inserts) > 200:
+        if len(edits) + len(deletes) + len(inserts) + len(table_edits_raw) > 200:
             return _err("单次最多修改 200 处", 101)
 
         parsed_edits = []
@@ -637,6 +689,11 @@ async def edit_document(flow_id: str):
             if runs and "".join(x["text"] for x in runs).strip() != new_text:
                 return _err(f"新段落 runs 文本与 new_text 不一致", 101)
             parsed_inserts.append((after, new_text, runs, block_attrs))
+
+        try:
+            parsed_table_edits = _parse_table_edits(table_edits_raw)
+        except ValueError as ve:
+            return _err(str(ve), 101)
 
         version = next(
             (v for v in FlowVersionService.list_by_flow(flow_id) if v["id"] == version_id), None
@@ -719,6 +776,21 @@ async def edit_document(flow_id: str):
             else:
                 located_inserts.append(("append", None, new_text, style_src, runs, block_attrs))
 
+        # table_edits 同样先全部定位成功，再统一应用（保持事务语义）；越界行列在此拦截，避免 IndexError
+        located_table_edits = []
+        for t in parsed_table_edits:
+            entry = para_map.get(t["para_index"])
+            if entry is None:
+                return _err(f"段落 {t['para_index']} 定位失败，文档可能已变化，请刷新后重试", 101)
+            if entry[0] != "table":
+                return _err(f"段落 {t['para_index']} 不是表格，table_edits 定位非法", 101)
+            table = entry[1]
+            if t["row"] >= len(table.rows) or t["col"] >= len(table.columns):
+                return _err(
+                    f"表格 {t['para_index']} 单元格 ({t['row']},{t['col']}) 超出范围", 101
+                )
+            located_table_edits.append((table.cell(t["row"], t["col"]), t["new_text"], t["runs"]))
+
         # 应用顺序：删除 → 插入 → 改写（改写持有元素引用，不受结构变化影响）；
         # 逐 run 的 oxml 操作是 CPU 密集，放线程池避免阻塞事件循环
         def _apply_ops():
@@ -746,6 +818,8 @@ async def edit_document(flow_id: str):
                     _apply_runs(target, rns)
                 else:
                     _replace_para_text(target, text)
+            for cell, text, rns in located_table_edits:
+                _apply_cell_text(cell, text, rns)
 
         await thread_pool_exec(_apply_ops)
 
