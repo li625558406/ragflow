@@ -39,7 +39,7 @@ C端流程页签「文件审核」弹框使用 Lexical 富文本编辑器（`web
 **HTML→Lexical 灌入**（`buildInitialContent` 替换 table 分支）：
 - `DOMParser` 解析后端返回的表格 HTML：`<tr>`→TableRowNode，`<td>/<th>`→TableCellNode（`th` 记录表头状态）
 - `colspan/rowspan` 写入 TableCellNode 对应属性；构建逻辑网格映射，被合并覆盖的格位不建独立格
-- 格内文本命中批注目标 → 与正文段同一机制拆 `HighlightTextNode` 染色；`targetsByPara` 扩展为按 `(paraIndex, row, col)` 索引（cellKey 即该三元组）
+- 格内文本命中批注目标 → 与正文段同一机制拆 `HighlightTextNode` 染色；`targetsByPara` 仍按段落 index 索引（表格沿用其 paraIndex，格内每个段落逐一应用 `splitIntoSegments`，行为等价于格级索引且实现更少）
 - 单元格 CSS 对齐（`text-align`）写入格内段落 format；字符样式（粗体表头等）解析为 TextNode format，视觉与原 HTML 一致
 - 畸形/解析失败 → 降级回只读 AtomicBlockNode 展示，不阻塞整个文档打开
 
