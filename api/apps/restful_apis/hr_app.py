@@ -967,6 +967,11 @@ def _emp_maps_for(rows) -> dict:
     return {e.id: (e.emp_no, nicks.get(e.user_id, ""), e.department) for e in emps}
 
 
+def _emp_base(info: dict, employee_id: str) -> dict:
+    emp_no, nickname, dept = info.get(employee_id, ("", "", ""))
+    return {"emp_no": emp_no, "nickname": nickname, "department": dept}
+
+
 @manager.route("/hr/report/export", methods=["GET"])
 @permission_required("hr_manage")
 async def hr_report_export():
@@ -979,27 +984,27 @@ async def hr_report_export():
     if rtype == "attendance":
         rows = list(HrAttendanceMonth.select().where(HrAttendanceMonth.month == month))
         info = _emp_maps_for(rows)
-        data_rows = [dict(info.get(r.employee_id, ("", "", "")), month=r.month,
-                          attend_days=float(r.attend_days), late_count=r.late_count,
-                          late_minutes=r.late_minutes, absent_days=r.absent_days,
-                          missing_days=r.missing_days, leave_days=float(r.leave_days),
-                          overtime_hours=float(r.overtime_hours), status=r.status)
+        data_rows = [{**_emp_base(info, r.employee_id), "month": r.month,
+                      "attend_days": float(r.attend_days), "late_count": r.late_count,
+                      "late_minutes": r.late_minutes, "absent_days": r.absent_days,
+                      "missing_days": r.missing_days, "leave_days": float(r.leave_days),
+                      "overtime_hours": float(r.overtime_hours), "status": r.status}
                      for r in rows]
         headers, name = _att_headers(), f"考勤月汇总-{month}.xlsx"
     elif rtype == "payroll":
         rows = list(HrPayslip.select().where(HrPayslip.month == month))
         info = _emp_maps_for(rows)
-        data_rows = [dict(info.get(r.employee_id, ("", "", "")), month=r.month,
-                          attend_days=float(r.attend_days),
-                          base_salary=float(r.base_salary),
-                          allowances=float(r.allowances),
-                          overtime_pay=float(r.overtime_pay),
-                          gross_pay=float(r.gross_pay),
-                          attendance_deduction=float(r.attendance_deduction),
-                          social_insurance=float(r.social_insurance),
-                          housing_fund=float(r.housing_fund),
-                          income_tax=float(r.income_tax), net_pay=float(r.net_pay),
-                          status=r.status) for r in rows]
+        data_rows = [{**_emp_base(info, r.employee_id), "month": r.month,
+                      "attend_days": float(r.attend_days),
+                      "base_salary": float(r.base_salary),
+                      "allowances": float(r.allowances),
+                      "overtime_pay": float(r.overtime_pay),
+                      "gross_pay": float(r.gross_pay),
+                      "attendance_deduction": float(r.attendance_deduction),
+                      "social_insurance": float(r.social_insurance),
+                      "housing_fund": float(r.housing_fund),
+                      "income_tax": float(r.income_tax), "net_pay": float(r.net_pay),
+                      "status": r.status} for r in rows]
         headers, name = _payroll_headers(), f"工资发放明细-{month}.xlsx"
     else:
         rows = list(HrPayslip.select().where(HrPayslip.month == month))
@@ -1009,12 +1014,12 @@ async def hr_report_export():
         data_rows = []
         for r in rows:
             prof = profiles.get(r.employee_id)
-            data_rows.append(dict(info.get(r.employee_id, ("", "", "")), month=r.month,
-                                  social_base=float(prof.social_base) if prof else "",
-                                  fund_base=float(prof.fund_base) if prof else "",
-                                  social_insurance=float(r.social_insurance),
-                                  housing_fund=float(r.housing_fund),
-                                  income_tax=float(r.income_tax)))
+            data_rows.append({**_emp_base(info, r.employee_id), "month": r.month,
+                              "social_base": float(prof.social_base) if prof else "",
+                              "fund_base": float(prof.fund_base) if prof else "",
+                              "social_insurance": float(r.social_insurance),
+                              "housing_fund": float(r.housing_fund),
+                              "income_tax": float(r.income_tax)})
         headers, name = _insurance_headers(), f"社保公积金个税汇总-{month}.xlsx"
     return _xlsx_response(_build_xlsx(data_rows, headers), name)
 
