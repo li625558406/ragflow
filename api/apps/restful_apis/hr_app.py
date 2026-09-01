@@ -330,7 +330,7 @@ async def hr_rule_config_get():
 _NUMERIC_RULE_KEYS = {
     "late_threshold_minutes", "late_deduction", "absent_deduction_multiplier",
     "overtime_rate_weekday", "overtime_rate_weekend",
-    "holiday_overtime_multiplier", "pay_days",
+    "holiday_overtime_multiplier", "pay_days", "social_rate", "fund_rate",
 }
 
 

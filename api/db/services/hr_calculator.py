@@ -22,6 +22,9 @@ DEFAULT_RULE = {
     "overtime_rate_weekend": 20.0,  # 周末加班 元/小时（P3 使用）
     "holiday_overtime_multiplier": 3.0,  # 法定节假日 日薪倍数（P3 使用）
     "pay_days": 21.75,              # 月标准计薪天数（P3 使用）
+    "social_rate": 0.105,           # 社保个人费率默认（养老8%+医疗2%+失业0.5%）
+    "fund_rate": 0.12,              # 公积金个人费率默认
+    "holidays": "",                 # 法定节假日列表，逗号分隔 YYYY-MM-DD（P3 加班/加班费使用）
     "annual_quota": 5,              # 年假默认额度 天/年（P2 使用）
     "sick_quota": 15,               # 病假默认额度 天/年（P2 使用）
     "marriage_quota": 3,            # 婚假默认额度 天（P2 使用）

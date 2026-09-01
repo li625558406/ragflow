@@ -2924,3 +2924,59 @@ class HrLeaveBalance(DataBaseModel):
     class Meta:
         db_table = "hr_leave_balance"
         indexes = ((("employee_id", "year", "leave_type"), True),)
+
+
+class HrSalaryProfile(DataBaseModel):
+    """员工薪资档案：HR 维护；rate 留空走全局 rule_config。"""
+    id = CharField(max_length=32, primary_key=True)
+    employee_id = CharField(max_length=32, null=False, unique=True, index=True,
+                            help_text="FK -> hr_employee.id")
+    base_salary = DecimalField(max_digits=10, decimal_places=2, null=False, default=0, help_text="基本工资")
+    post_allowance = DecimalField(max_digits=10, decimal_places=2, null=False, default=0, help_text="岗位津贴")
+    meal_allowance = DecimalField(max_digits=10, decimal_places=2, null=False, default=0, help_text="餐补")
+    transport_allowance = DecimalField(max_digits=10, decimal_places=2, null=False, default=0, help_text="交通补贴")
+    social_base = DecimalField(max_digits=10, decimal_places=2, null=False, default=0, help_text="社保基数")
+    fund_base = DecimalField(max_digits=10, decimal_places=2, null=False, default=0, help_text="公积金基数")
+    special_deduction = DecimalField(max_digits=10, decimal_places=2, null=False, default=0,
+                                     help_text="个税专项附加扣除/月")
+    social_rate = DecimalField(max_digits=5, decimal_places=4, null=True, help_text="社保个人费率，空走全局")
+    fund_rate = DecimalField(max_digits=5, decimal_places=4, null=True, help_text="公积金个人费率，空走全局")
+    manual_overrides = TextField(null=False, default="{}", help_text="手工覆盖 JSON: social/fund/tax")
+
+    class Meta:
+        db_table = "hr_salary_profile"
+
+
+class HrPayslip(DataBaseModel):
+    """月薪资单：核算快照，发布后员工可见。"""
+    id = CharField(max_length=32, primary_key=True)
+    employee_id = CharField(max_length=32, null=False, index=True)
+    month = CharField(max_length=7, null=False, index=True)
+    # 考勤快照
+    attend_days = DecimalField(max_digits=5, decimal_places=1, null=False, default=0)
+    late_count = IntegerField(null=False, default=0)
+    late_minutes = IntegerField(null=False, default=0)
+    absent_days = IntegerField(null=False, default=0)
+    overtime_hours = DecimalField(max_digits=7, decimal_places=2, null=False, default=0)
+    leave_days = DecimalField(max_digits=5, decimal_places=1, null=False, default=0)
+    # 应发明细
+    base_salary = DecimalField(max_digits=10, decimal_places=2, null=False, default=0)
+    allowances = DecimalField(max_digits=10, decimal_places=2, null=False, default=0,
+                              help_text="岗位+餐补+交补合计")
+    overtime_pay = DecimalField(max_digits=10, decimal_places=2, null=False, default=0)
+    gross_pay = DecimalField(max_digits=10, decimal_places=2, null=False, default=0, help_text="应发")
+    # 扣款明细
+    attendance_deduction = DecimalField(max_digits=10, decimal_places=2, null=False, default=0)
+    social_insurance = DecimalField(max_digits=10, decimal_places=2, null=False, default=0)
+    housing_fund = DecimalField(max_digits=10, decimal_places=2, null=False, default=0)
+    income_tax = DecimalField(max_digits=10, decimal_places=2, null=False, default=0)
+    net_pay = DecimalField(max_digits=10, decimal_places=2, null=False, default=0, help_text="实发")
+    # 过程留痕
+    tax_snapshot = TextField(null=False, default="{}", help_text="个税累计预扣中间量 JSON")
+    status = CharField(max_length=16, null=False, default="draft", index=True,
+                       help_text="draft|published")
+    published_at = DateTimeField(null=True)
+
+    class Meta:
+        db_table = "hr_payslip"
+        indexes = ((("employee_id", "month"), True),)
