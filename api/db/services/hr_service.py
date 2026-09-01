@@ -304,7 +304,7 @@ class HrLeaveRequestService(CommonService):
             chain = str(rule.get("approval_chain_long") or "") or chain
         uids = [u.strip() for u in chain.split(",") if u.strip()]
         if not uids:
-            uids = [u.id for u in User.select(User.id).where(User.is_superuser == True)]  # noqa: E712
+            uids = [u.id for u in User.select(User.id).where(User.is_superuser == True)]
         return uids
 
     @classmethod

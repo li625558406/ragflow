@@ -46,7 +46,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | A2 detector 旁路方案 | `D:\AI\ragflow2\A2-detector-inprocess-旁路方案.md` | ★ Detector 改为 scheduled_task_executor 进程内执行，绕过 task_executor 主队列。诊断数据、4 文件改动清单、验证流程、回滚、后续优化方向 |
 | crawl-dedup 爬虫排队去重方案 | `D:\AI\ragflow2\crawl-dedup-爬虫排队去重方案.md` | ★ crawl:queued:{site} 标记：入队前 SET NX、task_executor 跑完 DEL，每站最多一条排队/运行中爬虫。含 TTL 自愈被否决的教训、队列清理脚本、验证与回滚 |
 | 流程页签设计 | `D:\AI\ragflow2\docs\superpowers\specs\2026-08-30-flow-workflow-design.md` | ★ C端新增「流程」页签：文件为主视图的多角色串行工作流（发起人→领导→处理人→汇总→归档），4张 flow_* 表、文件版本时间线、复用对话智能体；实施计划见 docs/superpowers/plans/2026-08-30-flow-workflow.md（已完成，待部署联调） |
-| 人事模块设计 | `D:\AI\ragflow2\docs\superpowers\specs\2026-08-31-hr-module-design.md` | ★ C端「人事」页签：打卡考勤/请假审批/薪资核算/财务凭证 4模块20功能点，13张hr_*表+30端点+4阶段实施；P1（员工档案+打卡考勤）已实施待部署 |
+| 人事模块设计 | `D:\AI\ragflow2\docs\superpowers\specs\2026-08-31-hr-module-design.md` | ★ C端「人事」页签：打卡考勤/请假审批/薪资核算/财务凭证 4模块20功能点，13张hr_*表+30端点+4阶段实施；P1 已上线，P2（请假审批联动）已实施待部署，P2 实施计划 docs/superpowers/plans/2026-09-01-hr-p2-leave.md |
 
 
 

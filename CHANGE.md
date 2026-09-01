@@ -1,5 +1,25 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-01 人事模块 P2：请假与出差审批联动（功能点6-9 + 员工补卡申请）
+
+**主题**：人事页签新增「请假」子页签，交付假单申请→多级审批→考勤自动修正→假期余额冻结扣减全闭环。
+
+**核心变更**：
+- 新增3张表：hr_leave_request / hr_leave_step / hr_leave_balance（启动自动建表）
+- 审批链：rule_config 新键 approval_chain / approval_chain_long（≥3天，逗号分隔 user_id，空回退超管列表），提交时实例化 hr_leave_step 逐步推进
+- 余额两段式：frozen（审批中冻结）→ used（终审转已用），驳回/撤销释放；有额度假型 annual(5)/sick(15)/marriage(3)/maternity(98) 天（rule_config 可调），personal/business_trip/other 不占额度；submit 全程 DB.atomic 防孤儿单
+- 并发防重：act() 全部条件更新+rowcount，审批双击只成功一次，防双扣额度
+- 考勤修正：假单类型语义修正——business_trip 判「出差」，其余类型（事假/病假/年假/婚假/产假/other）统一判「请假」；终审回写区间内未锁定日 hr_attendance_day.status+leave_id，驳回/撤销重新推导恢复；close_month/日历/今日全部接假单推导
+- 员工自助补卡申请：leave_type=repair 复用审批链，通过后按 work_start 自动补 source='repair' 打卡（终审前预检同分钟撞卡）；考勤视图仅当日无签到时显示入口
+- 后端 8 端点：POST /hr/leave、GET my（含 steps 审批进度）/pending/\<id\>、POST \<id\>/approve、POST \<id\>/cancel、GET/PUT /hr/leave/balance（HR 调年度额度）
+- 前端：leave-view.tsx（余额卡片/新建假单/审批进度条/待我审批/撤销）、人事页签待审批红点角标（60s 轮询）、假单 7 个 API
+- 触达方案偏差：设计原定复用采集通知系统，因其表结构绑 crawler_result 语义不符，改为「待我审批」tab + 页签角标轮询
+- 审查修复：并发双扣（条件更新）、孤儿假单（原子事务）、假单排序确定性、详情权限口径（复用 permission_allowed）、/hr/leave/my 补 steps
+
+**遗留**：act() 未包整体事务（各步条件更新独立提交，已无双扣风险）；leave-type=leave 历史语义已在推导层兼容；跨年假单整段记入开始年度额度（口径一致，代码有注释）；ruff DTZ/C408 存量告警未清；待部署联调。
+
+**测试**：test/hr/ 26 passed（leave_status_for_date 对抗性单测：边界日期/pending 不计/repair 跳过/类型映射/空输入/列表序优先）。
+
 ## 2026-08-31 C端「人事」页签 P1：员工档案 + 打卡考勤
 
 **主题**：C端新增「人事」页签，交付人事模块第一阶段（4模块20功能点中的 P1）。

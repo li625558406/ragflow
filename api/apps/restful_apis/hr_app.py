@@ -101,7 +101,7 @@ def _today_payload(emp) -> dict:
 
 # ── 员工自助 ──
 
-@manager.route("/hr/employee/me", methods=["GET"])  # noqa: F821
+@manager.route("/hr/employee/me", methods=["GET"])
 @login_required
 async def hr_employee_me():
     emp = HrEmployeeService.get_by_user(current_user.id)
@@ -110,7 +110,7 @@ async def hr_employee_me():
     return get_json_result(data={"profile": _emp_dict(emp)})
 
 
-@manager.route("/hr/attendance/punch", methods=["POST"])  # noqa: F821
+@manager.route("/hr/attendance/punch", methods=["POST"])
 @login_required
 async def hr_attendance_punch():
     emp, err = _require_employee()
@@ -126,7 +126,7 @@ async def hr_attendance_punch():
     })
 
 
-@manager.route("/hr/attendance/today", methods=["GET"])  # noqa: F821
+@manager.route("/hr/attendance/today", methods=["GET"])
 @login_required
 async def hr_attendance_today():
     emp, err = _require_employee()
@@ -135,7 +135,7 @@ async def hr_attendance_today():
     return get_json_result(data=_today_payload(emp))
 
 
-@manager.route("/hr/attendance/calendar", methods=["GET"])  # noqa: F821
+@manager.route("/hr/attendance/calendar", methods=["GET"])
 @login_required
 async def hr_attendance_calendar():
     emp, err = _require_employee()
@@ -180,7 +180,7 @@ async def hr_attendance_calendar():
 
 # ── HR 管理 ──
 
-@manager.route("/hr/employee", methods=["GET"])  # noqa: F821
+@manager.route("/hr/employee", methods=["GET"])
 @permission_required("hr_manage")
 async def hr_employee_list():
     keyword = (request.args.get("keyword") or "").strip()
@@ -209,7 +209,7 @@ async def hr_employee_list():
     return get_json_result(data={"list": emp_list, "total": len(emp_list)})
 
 
-@manager.route("/hr/employee", methods=["POST"])  # noqa: F821
+@manager.route("/hr/employee", methods=["POST"])
 @permission_required("hr_manage")
 async def hr_employee_create():
     body = await request.get_json(silent=True) or {}
@@ -234,7 +234,7 @@ async def hr_employee_create():
     return get_json_result(data=_emp_dict(emp))
 
 
-@manager.route("/hr/attendance/repair", methods=["POST"])  # noqa: F821
+@manager.route("/hr/attendance/repair", methods=["POST"])
 @permission_required("hr_manage")
 async def hr_attendance_repair():
     body = await request.get_json(silent=True) or {}
@@ -256,7 +256,7 @@ async def hr_attendance_repair():
     return get_json_result(data={"id": rec.id, "punch_time": str(rec.punch_time)})
 
 
-@manager.route("/hr/attendance/day-list", methods=["GET"])  # noqa: F821
+@manager.route("/hr/attendance/day-list", methods=["GET"])
 @permission_required("hr_manage")
 async def hr_attendance_day_list():
     month = request.args.get("month", "")
@@ -288,7 +288,7 @@ async def hr_attendance_day_list():
         "total": len(rows)})
 
 
-@manager.route("/hr/attendance/month-close", methods=["POST"])  # noqa: F821
+@manager.route("/hr/attendance/month-close", methods=["POST"])
 @permission_required("hr_manage")
 async def hr_attendance_month_close():
     body = await request.get_json(silent=True) or {}
@@ -308,7 +308,7 @@ async def hr_attendance_month_close():
     return get_json_result(data=stats)
 
 
-@manager.route("/hr/attendance/month/<month>", methods=["GET"])  # noqa: F821
+@manager.route("/hr/attendance/month/<month>", methods=["GET"])
 @permission_required("hr_manage")
 async def hr_attendance_month_summary(month: str):
     rows = list(HrAttendanceMonth.select().where(HrAttendanceMonth.month == month))
@@ -321,7 +321,7 @@ async def hr_attendance_month_summary(month: str):
                   "status": r.status} for r in rows]})
 
 
-@manager.route("/hr/rule-config", methods=["GET"])  # noqa: F821
+@manager.route("/hr/rule-config", methods=["GET"])
 @login_required
 async def hr_rule_config_get():
     return get_json_result(data=HrRuleConfigService.get_config())
@@ -351,7 +351,7 @@ def _sanitize_rule_payload(body: dict) -> dict:
     return clean
 
 
-@manager.route("/hr/rule-config", methods=["PUT"])  # noqa: F821
+@manager.route("/hr/rule-config", methods=["PUT"])
 @permission_required("hr_manage")
 async def hr_rule_config_put():
     body = await request.get_json(silent=True) or {}
@@ -401,7 +401,7 @@ def _steps_dict(request_id: str) -> list:
              "action_time": str(r.action_time or "")} for r in rows]
 
 
-@manager.route("/hr/leave", methods=["POST"])  # noqa: F821
+@manager.route("/hr/leave", methods=["POST"])
 @login_required
 async def hr_leave_submit():
     emp, err = _require_employee()
@@ -423,7 +423,7 @@ async def hr_leave_submit():
     return get_json_result(data={**_req_dict(req), "steps": _steps_dict(req.id)})
 
 
-@manager.route("/hr/leave/my", methods=["GET"])  # noqa: F821
+@manager.route("/hr/leave/my", methods=["GET"])
 @login_required
 async def hr_leave_my():
     emp, err = _require_employee()
@@ -438,7 +438,7 @@ async def hr_leave_my():
         "total": len(rows)})
 
 
-@manager.route("/hr/leave/pending", methods=["GET"])  # noqa: F821
+@manager.route("/hr/leave/pending", methods=["GET"])
 @login_required
 async def hr_leave_pending():
     rows = HrLeaveRequestService.pending_for_approver(current_user.id)
@@ -446,7 +446,7 @@ async def hr_leave_pending():
                                  "total": len(rows)})
 
 
-@manager.route("/hr/leave/<rid>", methods=["GET"])  # noqa: F821
+@manager.route("/hr/leave/<rid>", methods=["GET"])
 @login_required
 async def hr_leave_detail(rid: str):
     r = HrLeaveRequestService.model.get_or_none(
@@ -466,7 +466,7 @@ async def hr_leave_detail(rid: str):
     return get_json_result(data={**_req_dict(r), "steps": _steps_dict(rid)})
 
 
-@manager.route("/hr/leave/<rid>/approve", methods=["POST"])  # noqa: F821
+@manager.route("/hr/leave/<rid>/approve", methods=["POST"])
 @login_required
 async def hr_leave_approve(rid: str):
     body = await request.get_json(silent=True) or {}
@@ -482,7 +482,7 @@ async def hr_leave_approve(rid: str):
     return get_json_result(data={**_req_dict(r), "steps": _steps_dict(rid)})
 
 
-@manager.route("/hr/leave/<rid>/cancel", methods=["POST"])  # noqa: F821
+@manager.route("/hr/leave/<rid>/cancel", methods=["POST"])
 @login_required
 async def hr_leave_cancel(rid: str):
     try:
@@ -493,7 +493,7 @@ async def hr_leave_cancel(rid: str):
     return get_json_result(data=_req_dict(r))
 
 
-@manager.route("/hr/leave/balance", methods=["GET"])  # noqa: F821
+@manager.route("/hr/leave/balance", methods=["GET"])
 @login_required
 async def hr_leave_balance_get():
     emp, err = _require_employee()
@@ -507,7 +507,7 @@ async def hr_leave_balance_get():
          "used_days": r.used_days, "frozen_days": r.frozen_days} for r in rows]})
 
 
-@manager.route("/hr/leave/balance", methods=["PUT"])  # noqa: F821
+@manager.route("/hr/leave/balance", methods=["PUT"])
 @permission_required("hr_manage")
 async def hr_leave_balance_put():
     """HR 调整年度额度总额（不动 used/frozen）。"""
