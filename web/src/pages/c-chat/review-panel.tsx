@@ -1243,26 +1243,29 @@ export default function ReviewPanel({
                 </div>
               )}
               <div
-                className="mx-auto w-full max-w-[794px] border border-[#C9C9C9] bg-white px-[72px] py-[64px] shadow-[0_4px_24px_rgba(0,0,0,0.14)] [&_table]:my-2 [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-[#D4D4D4] [&_td]:px-2 [&_td]:py-1 [&_td]:text-[13px] [&_td]:text-[#333333] [&_td]:align-top [&_th]:border [&_th]:border-[#D4D4D4] [&_th]:bg-[#F5F5F5] [&_th]:px-2 [&_th]:py-1 [&_th]:font-bold"
+                className="mx-auto w-full max-w-[794px] border border-[#C9C9C9] bg-white px-[72px] py-[64px] shadow-[0_4px_24px_rgba(0,0,0,0.14)]"
                 style={{
                   fontFamily: "'SimSun', '宋体', 'Times New Roman', serif",
                 }}
               >
                 {canEdit && onEditDocument && loadedFileId === fileId ? (
-                  <DocxParagraphEditor
-                    key={`${loadedFileId}-${resetKey}`}
-                    paragraphs={content.paragraphs}
-                    targetsByPara={targetsByPara}
-                    onAnchorClick={handleAnchorClick}
-                    renderAtomic={renderAtomicBlock}
-                    editorRef={editorRef}
-                    onBlocksChange={handleEditorDirty}
-                    toolbarPortal={toolbarHost}
-                    dirty={dirty}
-                    saving={savingEdits}
-                    onSave={handleSaveEdits}
-                    onDiscard={handleDiscardEdits}
-                  />
+                  /* 编辑态表格样式只作用于编辑器分支，避免泄漏到只读静态渲染 */
+                  <div className="[&_table]:my-2 [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-[#D4D4D4] [&_td]:px-2 [&_td]:py-1 [&_td]:text-[13px] [&_td]:text-[#333333] [&_td]:align-top [&_th]:border [&_th]:border-[#D4D4D4] [&_th]:bg-[#F5F5F5] [&_th]:px-2 [&_th]:py-1 [&_th]:font-bold">
+                    <DocxParagraphEditor
+                      key={`${loadedFileId}-${resetKey}`}
+                      paragraphs={content.paragraphs}
+                      targetsByPara={targetsByPara}
+                      onAnchorClick={handleAnchorClick}
+                      renderAtomic={renderAtomicBlock}
+                      editorRef={editorRef}
+                      onBlocksChange={handleEditorDirty}
+                      toolbarPortal={toolbarHost}
+                      dirty={dirty}
+                      saving={savingEdits}
+                      onSave={handleSaveEdits}
+                      onDiscard={handleDiscardEdits}
+                    />
+                  </div>
                 ) : (
                   <div className="space-y-2">
                     {content.paragraphs.map((para) => {
