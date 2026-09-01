@@ -12,11 +12,14 @@ from api.db.db_models import (
     HrLeaveBalance,
     HrLeaveRequest,
     HrLeaveStep,
+    HrPayslip,
     HrRuleConfig,
+    HrSalaryProfile,
     User,
 )
 from api.db.services.common_service import CommonService
 from api.db.services.hr_calculator import derive_day_status, leave_status_for_date, load_rule
+from api.db.services.hr_payroll import calc_payslip
 from common.misc_utils import get_uuid
 from common.time_utils import current_timestamp
 
@@ -111,6 +114,7 @@ class HrAttendanceDayService(CommonService):
             first_in=derived["first_in"],
             last_out=derived["last_out"],
             late_minutes=derived["late_minutes"],
+            overtime_hours=derived.get("overtime_hours", 0.0),
         )
         if row:
             if row.locked:
@@ -170,7 +174,7 @@ class HrAttendanceMonthService(CommonService):
                 entry = emp.entry_date or date(year, mon, 1)
                 stats["employees"] += 1
                 agg = {"attend": 0.0, "late": 0, "late_min": 0, "absent": 0,
-                       "missing": 0, "leave": 0.0}
+                       "missing": 0, "leave": 0.0, "ot": 0.0}
                 d = max(date(year, mon, 1), entry)
                 while d <= min(month_end, today):
                     existing = HrAttendanceDayService.model.get_or_none(
@@ -180,6 +184,7 @@ class HrAttendanceMonthService(CommonService):
                         # 锁定行按存量值聚合，不重新推导
                         status = existing.status
                         late_min = existing.late_minutes
+                        agg["ot"] += float(existing.overtime_hours or 0)
                     else:
                         records = HrAttendanceRecordService.list_day(emp.id, d)
                         leaves = HrLeaveRequestService.approved_requests(emp.id, d, d)
@@ -192,6 +197,7 @@ class HrAttendanceMonthService(CommonService):
                             emp.id, d, derived, locked=True)
                         status = row.status
                         late_min = row.late_minutes
+                        agg["ot"] += float(derived.get("overtime_hours", 0.0) or 0)
                     stats["days"] += 1
                     if status in ("normal", "late"):
                         agg["attend"] += 1
@@ -207,7 +213,7 @@ class HrAttendanceMonthService(CommonService):
                 vals = dict(attend_days=agg["attend"], late_count=agg["late"],
                             late_minutes=agg["late_min"], absent_days=agg["absent"],
                             missing_days=agg["missing"], leave_days=agg["leave"],
-                            overtime_hours=0.0, status="confirmed",
+                            overtime_hours=round(agg["ot"], 2), status="confirmed",
                             confirmed_by=operator_id)
                 mrow = cls.model.get_or_none(
                     cls.model.employee_id == emp.id, cls.model.month == month)
@@ -496,3 +502,124 @@ def _rewrite_days(emp, req, rule: dict, revert: bool):
             row.update_time = current_timestamp()
             row.save()
         d += timedelta(days=1)
+
+
+# ── 薪资（P3）──
+
+class HrSalaryProfileService(CommonService):
+    model = HrSalaryProfile
+
+    @classmethod
+    def upsert_profile(cls, employee_id: str, data: dict):
+        row = cls.model.get_or_none(cls.model.employee_id == employee_id)
+        allowed = {"base_salary", "post_allowance", "meal_allowance",
+                   "transport_allowance", "social_base", "fund_base",
+                   "special_deduction", "social_rate", "fund_rate"}
+        vals = {k: data[k] for k in allowed if k in data}
+        if row:
+            for k, v in vals.items():
+                setattr(row, k, v)
+            row.update_time = current_timestamp()
+            row.save()
+            return row
+        rid = get_uuid()
+        # CommonService.insert 返回受影响行数（int），显式生成 id 后回查实例
+        cls.insert(id=rid, employee_id=employee_id, **vals)
+        return cls.model.get_by_id(rid)
+
+
+class HrPayslipService(CommonService):
+    model = HrPayslip
+
+    @classmethod
+    def _prev_snapshot(cls, employee_id: str, month: str):
+        """本人 month 前一个有 snapshot 的 payslip（逐月回退最多12次）。"""
+        y, m = int(month[:4]), int(month[5:7])
+        for _ in range(12):
+            m -= 1
+            if m == 0:
+                y, m = y - 1, 12
+            row = cls.model.get_or_none(
+                cls.model.employee_id == employee_id, cls.model.month == f"{y:04d}-{m:02d}")
+            if row:
+                try:
+                    snap = json.loads(row.tax_snapshot or "{}")
+                except ValueError:
+                    return None
+                if snap and not snap.get("overridden"):
+                    return snap
+                return None  # 上月被手工覆盖，累计链断点，按首月重算
+        return None
+
+    @classmethod
+    def compute_for_employee(cls, emp_id: str, month: str, rule: dict) -> dict:
+        """核算单人：读 confirmed 月汇总 + 薪资档案 + 上月 snapshot → calc_payslip。
+        抛 ValueError 当月未归档/无薪资档案。"""
+        mrow = HrAttendanceMonth.get_or_none(
+            HrAttendanceMonth.employee_id == emp_id, HrAttendanceMonth.month == month)
+        if not mrow or mrow.status != "confirmed":
+            raise ValueError(f"员工 {emp_id} 的 {month} 考勤未月度归档，请先执行月度汇总")
+        prof = HrSalaryProfile.get_or_none(HrSalaryProfile.employee_id == emp_id)
+        if not prof:
+            raise ValueError(f"员工 {emp_id} 未建薪资档案")
+        try:
+            overrides = json.loads(prof.manual_overrides or "{}")
+        except ValueError:
+            overrides = {}
+        if not isinstance(overrides, dict):
+            overrides = {}
+        # 加班分类：按日汇总行归类 weekday/weekend/holiday
+        mon = int(month[5:7])
+        days = HrAttendanceDayService.month_days(emp_id, month)
+        ot = {"weekday": 0.0, "weekend": 0.0, "holiday": 0.0}
+        hset = {d.strip() for d in str(rule.get("holidays") or "").split(",") if d.strip()}
+        for d in days:
+            if d.overtime_hours and d.overtime_hours > 0:
+                if str(d.work_date) in hset:
+                    ot["holiday"] += float(d.overtime_hours)
+                elif d.status == "rest" or d.work_date.weekday() >= 5:
+                    ot["weekend"] += float(d.overtime_hours)
+                else:
+                    ot["weekday"] += float(d.overtime_hours)
+        profile_dict = {
+            "base_salary": float(prof.base_salary), "post_allowance": float(prof.post_allowance),
+            "meal_allowance": float(prof.meal_allowance),
+            "transport_allowance": float(prof.transport_allowance),
+            "social_base": float(prof.social_base), "fund_base": float(prof.fund_base),
+            "special_deduction": float(prof.special_deduction),
+            "social_rate": float(prof.social_rate) if prof.social_rate is not None else None,
+            "fund_rate": float(prof.fund_rate) if prof.fund_rate is not None else None,
+            "overrides": overrides,
+        }
+        stats = {"attend_days": float(mrow.attend_days), "late_count": mrow.late_count,
+                 "absent_days": mrow.absent_days, "overtime": ot}
+        prev = cls._prev_snapshot(emp_id, month)
+        month_idx = mon
+        return calc_payslip(profile_dict, stats, profile_dict["base_salary"], rule,
+                            prev_snap=prev, month_idx=month_idx)
+
+    @classmethod
+    def save_draft(cls, emp_id: str, month: str, r: dict, mrow) -> object:
+        """upsert draft（published 拒绝覆盖）。"""
+        row = cls.model.get_or_none(
+            cls.model.employee_id == emp_id, cls.model.month == month)
+        vals = {k: r[k] for k in ("base_salary", "allowances", "overtime_pay", "gross_pay",
+                                  "attendance_deduction", "social_insurance",
+                                  "housing_fund", "income_tax", "net_pay")}
+        vals.update(overtime_hours=float(mrow.overtime_hours),
+                    tax_snapshot=json.dumps(r.get("tax_snapshot", {}),
+                                            ensure_ascii=False))
+        if row:
+            if row.status == "published":
+                raise ValueError(f"员工 {emp_id} 的 {month} 工资单已发布，不可覆盖")
+            for k, v in vals.items():
+                setattr(row, k, v)
+            row.update_time = current_timestamp()
+            row.save()
+            return row
+        rid = get_uuid()
+        cls.insert(id=rid, employee_id=emp_id, month=month,
+                   attend_days=float(mrow.attend_days), late_count=mrow.late_count,
+                   late_minutes=mrow.late_minutes, absent_days=mrow.absent_days,
+                   leave_days=float(mrow.leave_days), status="draft", **vals)
+        return cls.model.get_by_id(rid)
