@@ -432,8 +432,10 @@ async def hr_leave_my():
     rows = list(HrLeaveRequestService.model.select().where(
         HrLeaveRequestService.model.employee_id == emp.id).order_by(
         HrLeaveRequestService.model.create_time.desc()))
-    return get_json_result(data={"list": [_req_dict(r) for r in rows],
-                                 "total": len(rows)})
+    # 携带 steps 供前端渲染审批进度（含审批人名/状态/意见）
+    return get_json_result(data={
+        "list": [{**_req_dict(r), "steps": _steps_dict(r.id)} for r in rows],
+        "total": len(rows)})
 
 
 @manager.route("/hr/leave/pending", methods=["GET"])  # noqa: F821
