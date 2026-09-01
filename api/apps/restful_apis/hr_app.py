@@ -12,7 +12,7 @@ from datetime import date, datetime
 from quart import Blueprint, request
 
 from api.apps import current_user, login_required
-from api.db.db_models import HrAttendanceDay, HrAttendanceMonth, HrEmployee
+from api.db.db_models import HrAttendanceDay, HrAttendanceMonth, HrEmployee, User
 from api.db.services.hr_calculator import derive_day_status
 from api.db.services.hr_service import (
     HrAttendanceDayService,
@@ -167,15 +167,26 @@ async def hr_employee_list():
     department = (request.args.get("department") or "").strip()
     query = HrEmployee.select()
     if keyword:
-        query = query.where(
-            HrEmployee.emp_no.contains(keyword)
-            | HrEmployee.department.contains(keyword)
-            | HrEmployee.position.contains(keyword))
+        # 关键词同时匹配用户昵称（user 表）与工号/部门/职位
+        matched_uids = [u.id for u in User.select(User.id).where(
+            User.nickname.contains(keyword))]
+        conds = [HrEmployee.emp_no.contains(keyword),
+                 HrEmployee.department.contains(keyword),
+                 HrEmployee.position.contains(keyword)]
+        if matched_uids:
+            conds.append(HrEmployee.user_id.in_(matched_uids))
+        query = query.where(*conds)
     if department:
         query = query.where(HrEmployee.department == department)
     emps = list(query.order_by(HrEmployee.emp_no))
-    return get_json_result(data={"list": [_emp_dict(e) for e in emps],
-                                 "total": len(emps)})
+    nick_map = {u.id: (u.nickname or "") for u in User.select(User.id, User.nickname).where(
+        User.id.in_([e.user_id for e in emps]))} if emps else {}
+    emp_list = []
+    for e in emps:
+        d = _emp_dict(e)
+        d["nickname"] = nick_map.get(e.user_id, "")
+        emp_list.append(d)
+    return get_json_result(data={"list": emp_list, "total": len(emp_list)})
 
 
 @manager.route("/hr/employee", methods=["POST"])  # noqa: F821
@@ -185,7 +196,7 @@ async def hr_employee_create():
     user_id = str(body.get("user_id") or "").strip()
     emp_no = str(body.get("emp_no") or "").strip()
     if not user_id or not emp_no:
-        return get_data_error_result(message="user_id 和 emp_no 必填")
+        return get_data_error_result(message="请选择用户并填写工号")
     entry = None
     if body.get("entry_date"):
         if not isinstance(body.get("entry_date"), str):

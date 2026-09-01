@@ -325,7 +325,9 @@ function HrAdminPanel({
 
       <div className="mb-3 flex flex-wrap items-end gap-2">
         <div>
-          <div className="text-xs text-[#94A3B8]">搜索（工号/部门/职位）</div>
+          <div className="text-xs text-[#94A3B8]">
+            搜索（昵称/工号/部门/职位）
+          </div>
           <Input
             value={keyword}
             onChange={(e) => setKeyword(e.target.value)}
@@ -392,8 +394,8 @@ function HrAdminPanel({
             className="flex items-center justify-between border-b border-[#F8FAFC] px-3 py-1.5 text-xs"
           >
             <span>
-              {e.emp_no} · {e.department || '—'} · {e.position || '—'} ·{' '}
-              {e.status}
+              {e.nickname || '—'} · {e.emp_no} · {e.department || '—'} ·{' '}
+              {e.position || '—'} · {e.status === 'active' ? '在职' : '离职'}
             </span>
             <button
               onClick={() => doRepair(e.id)}

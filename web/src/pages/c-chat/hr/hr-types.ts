@@ -1,6 +1,7 @@
 export interface HrEmployeeProfile {
   id: string;
   user_id: string;
+  nickname?: string;
   emp_no: string;
   department: string;
   position: string;
