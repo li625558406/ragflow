@@ -12,17 +12,27 @@ from datetime import date, datetime
 from quart import Blueprint, request
 
 from api.apps import current_user, login_required
-from api.db.db_models import HrAttendanceDay, HrAttendanceMonth, HrEmployee, User
-from api.db.services.hr_calculator import derive_day_status
+from api.db.db_models import (
+    HrAttendanceDay,
+    HrAttendanceMonth,
+    HrEmployee,
+    HrLeaveStep,
+    User,
+)
+from api.db.services.hr_calculator import derive_day_status, leave_status_for_date
 from api.db.services.hr_service import (
     HrAttendanceDayService,
     HrAttendanceMonthService,
     HrAttendanceRecordService,
     HrEmployeeService,
+    HrLeaveBalanceService,
+    HrLeaveRequestService,
     HrRuleConfigService,
+    QUOTA_KEY,
 )
 from api.utils.api_utils import get_data_error_result, get_json_result
 from api.utils.permission_utils import permission_required
+from common.time_utils import current_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +81,9 @@ def _today_payload(emp) -> dict:
     today = date.today()
     records = HrAttendanceRecordService.list_day(emp.id, today)
     rule = HrRuleConfigService.get_config()
-    derived = derive_day_status(records, today, rule)
+    leaves = HrLeaveRequestService.approved_requests(emp.id, today, today)
+    derived = derive_day_status(records, today, rule,
+                                leave_status=leave_status_for_date(leaves, today))
     return {
         "work_date": str(today),
         "status": derived["status"],
@@ -138,6 +150,9 @@ async def hr_attendance_calendar():
     import calendar as _cal
     today = date.today()
     rule = HrRuleConfigService.get_config()
+    # 当月 approved 假单一次查全，逐日判断覆盖状态
+    month_start, month_end = date(year, mon, 1), date(year, mon, _cal.monthrange(year, mon)[1])
+    month_leaves = HrLeaveRequestService.approved_requests(emp.id, month_start, month_end)
     days = []
     for d in range(1, _cal.monthrange(year, mon)[1] + 1):
         wd = date(year, mon, d)
@@ -146,7 +161,8 @@ async def hr_attendance_calendar():
             days.append(rows[key])
         elif wd <= today:
             records = HrAttendanceRecordService.list_day(emp.id, wd)
-            derived = derive_day_status(records, wd, rule)
+            derived = derive_day_status(records, wd, rule,
+                                        leave_status=leave_status_for_date(month_leaves, wd))
             days.append({"work_date": key, "status": derived["status"],
                          "first_in": str(derived["first_in"] or ""),
                          "last_out": str(derived["last_out"] or ""),
@@ -340,3 +356,168 @@ async def hr_rule_config_put():
     except ValueError as e:
         return get_data_error_result(message=str(e))
     return get_json_result(data=HrRuleConfigService.save_config(payload))
+
+
+# ── 请假 / 补卡申请（P2）──
+
+_LEAVE_TYPES = {"personal", "sick", "annual", "marriage", "maternity",
+                "business_trip", "other", "repair"}
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _parse_date_str(v):
+    if not isinstance(v, str) or not _DATE_RE.match(v):
+        return None
+    try:
+        return datetime.strptime(v, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _req_dict(r, nick_map=None) -> dict:
+    emp = HrEmployee.get_or_none(HrEmployee.id == r.employee_id)
+    nickname = (nick_map or {}).get(emp.user_id, "") if emp else ""
+    return {"id": r.id, "employee_id": r.employee_id, "nickname": nickname,
+            "leave_type": r.leave_type, "start_date": str(r.start_date),
+            "end_date": str(r.end_date), "duration_days": r.duration_days,
+            "reason": r.reason, "status": r.status, "current_step": r.current_step}
+
+
+def _steps_dict(request_id: str) -> list:
+    from api.db.services.hr_service import HrLeaveStepService
+    rows = list(HrLeaveStepService.model.select().where(
+        HrLeaveStepService.model.request_id == request_id).order_by(
+        HrLeaveStepService.model.step_no))
+    uids = [r.approver_id for r in rows]
+    nicks = {u.id: (u.nickname or "") for u in User.select(User.id, User.nickname).where(
+        User.id.in_(uids))} if uids else {}
+    return [{"step_no": r.step_no, "approver_id": r.approver_id,
+             "approver_name": nicks.get(r.approver_id, ""),
+             "status": r.status, "comment": r.comment,
+             "action_time": str(r.action_time or "")} for r in rows]
+
+
+@manager.route("/hr/leave", methods=["POST"])  # noqa: F821
+@login_required
+async def hr_leave_submit():
+    emp, err = _require_employee()
+    if err:
+        return err
+    body = await request.get_json(silent=True) or {}
+    lt = str(body.get("leave_type") or "")
+    if lt not in _LEAVE_TYPES:
+        return get_data_error_result(message="无效的假单类型")
+    sd, ed = _parse_date_str(body.get("start_date")), _parse_date_str(body.get("end_date"))
+    if not sd or not ed:
+        return get_data_error_result(message="日期格式应为 YYYY-MM-DD")
+    try:
+        req = HrLeaveRequestService.submit(
+            emp, lt, sd, ed, str(body.get("reason") or ""),
+            current_user.id, HrRuleConfigService.get_config())
+    except ValueError as e:
+        return get_data_error_result(message=str(e))
+    return get_json_result(data={**_req_dict(req), "steps": _steps_dict(req.id)})
+
+
+@manager.route("/hr/leave/my", methods=["GET"])  # noqa: F821
+@login_required
+async def hr_leave_my():
+    emp, err = _require_employee()
+    if err:
+        return err
+    rows = list(HrLeaveRequestService.model.select().where(
+        HrLeaveRequestService.model.employee_id == emp.id).order_by(
+        HrLeaveRequestService.model.create_time.desc()))
+    return get_json_result(data={"list": [_req_dict(r) for r in rows],
+                                 "total": len(rows)})
+
+
+@manager.route("/hr/leave/pending", methods=["GET"])  # noqa: F821
+@login_required
+async def hr_leave_pending():
+    rows = HrLeaveRequestService.pending_for_approver(current_user.id)
+    return get_json_result(data={"list": [_req_dict(r) for r in rows],
+                                 "total": len(rows)})
+
+
+@manager.route("/hr/leave/<rid>", methods=["GET"])  # noqa: F821
+@login_required
+async def hr_leave_detail(rid: str):
+    r = HrLeaveRequestService.model.get_or_none(
+        HrLeaveRequestService.model.id == rid)
+    if not r:
+        return get_data_error_result(message="假单不存在")
+    emp = HrEmployeeService.get_by_user(current_user.id)
+    is_hr = current_user.is_superuser  # 审批人/HR 均可看详情，其余仅本人
+    step_mine = HrLeaveStep.get_or_none(
+        HrLeaveStep.request_id == rid, HrLeaveStep.approver_id == current_user.id)
+    if not is_hr and not step_mine and (not emp or emp.id != r.employee_id):
+        return get_data_error_result(message="无权查看该假单")
+    return get_json_result(data={**_req_dict(r), "steps": _steps_dict(rid)})
+
+
+@manager.route("/hr/leave/<rid>/approve", methods=["POST"])  # noqa: F821
+@login_required
+async def hr_leave_approve(rid: str):
+    body = await request.get_json(silent=True) or {}
+    action = str(body.get("action") or "")
+    if action not in ("approved", "rejected"):
+        return get_data_error_result(message="action 应为 approved/rejected")
+    try:
+        r = HrLeaveRequestService.act(rid, current_user.id, action,
+                                      str(body.get("comment") or ""),
+                                      HrRuleConfigService.get_config())
+    except ValueError as e:
+        return get_data_error_result(message=str(e))
+    return get_json_result(data={**_req_dict(r), "steps": _steps_dict(rid)})
+
+
+@manager.route("/hr/leave/<rid>/cancel", methods=["POST"])  # noqa: F821
+@login_required
+async def hr_leave_cancel(rid: str):
+    try:
+        r = HrLeaveRequestService.cancel(rid, current_user.id,
+                                         HrRuleConfigService.get_config())
+    except ValueError as e:
+        return get_data_error_result(message=str(e))
+    return get_json_result(data=_req_dict(r))
+
+
+@manager.route("/hr/leave/balance", methods=["GET"])  # noqa: F821
+@login_required
+async def hr_leave_balance_get():
+    emp, err = _require_employee()
+    if err:
+        return err
+    year = request.args.get("year", "")
+    y = int(year) if year.isdigit() else date.today().year
+    rows = HrLeaveBalanceService.list_balance(emp.id, y)
+    return get_json_result(data={"year": y, "list": [
+        {"leave_type": r.leave_type, "total_days": r.total_days,
+         "used_days": r.used_days, "frozen_days": r.frozen_days} for r in rows]})
+
+
+@manager.route("/hr/leave/balance", methods=["PUT"])  # noqa: F821
+@permission_required("hr_manage")
+async def hr_leave_balance_put():
+    """HR 调整年度额度总额（不动 used/frozen）。"""
+    body = await request.get_json(silent=True) or {}
+    emp = HrEmployee.get_or_none(HrEmployee.id == body.get("employee_id", ""))
+    if not emp:
+        return get_data_error_result(message="员工不存在")
+    lt = str(body.get("leave_type") or "")
+    if lt not in QUOTA_KEY:
+        return get_data_error_result(message="无效的假期类型")
+    year = body.get("year")
+    if not isinstance(year, int):
+        return get_data_error_result(message="year 应为整数")
+    total = body.get("total_days")
+    if not isinstance(total, int) or total < 0:
+        return get_data_error_result(message="total_days 应为非负整数")
+    row = HrLeaveBalanceService.get_or_init(
+        emp.id, year, lt, HrRuleConfigService.get_config())
+    row.total_days = total
+    row.update_time = current_timestamp()
+    row.save()
+    return get_json_result(data={"employee_id": emp.id, "year": year,
+                                 "leave_type": lt, "total_days": total})
