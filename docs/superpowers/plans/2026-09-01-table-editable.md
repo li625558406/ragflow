@@ -384,16 +384,16 @@ export function diffBlocks(
           const bc = base.find((x) => x.row === b.cell!.row && x.col === b.cell!.col);
           if (bc) {
             const text = b.text.trim();
-            const pureFmt =
-              text === bc.text.trim() &&
-              b.runs && b.fmtSig && b.fmtSig !== '[]';
-            if (text !== bc.text.trim() || pureFmt) {
+            // 有有效 run 签名（非空、非空数组）即携带 runs：文本变或纯格式变都算改动，
+            // 与正文段落 edits 行为一致（文本+格式同时变时格式不丢失）
+            const hasRuns = !!(b.runs && b.fmtSig && b.fmtSig !== '[]');
+            if (text !== bc.text.trim() || hasRuns) {
               tableEdits.push({
                 paraIndex: idx,
                 row: b.cell.row,
                 col: b.cell.col,
                 newText: text,
-                ...(pureFmt ? { runs: b.runs } : {}),
+                ...(hasRuns ? { runs: b.runs } : {}),
               });
             }
           }
