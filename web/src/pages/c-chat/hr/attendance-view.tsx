@@ -13,6 +13,7 @@ import {
   monthClose,
   punch,
   repairPunch,
+  submitLeave,
 } from '@/services/hr-service';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { CalendarDays, Clock, LogIn, LogOut, Wrench } from 'lucide-react';
@@ -38,6 +39,11 @@ function fmtTime(iso: string) {
 function todayMonth() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 // ── 员工打卡卡片 ──
@@ -125,6 +131,104 @@ function PunchCard({ today }: { today: TodayPunch }) {
               <span>IP {r.ip_address || '—'}</span>
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── 员工补卡申请（P2：复用假单体系 leave_type=repair）──
+
+function RepairRequestCard() {
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [date, setDate] = useState(todayStr());
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const submit = async () => {
+    if (busy) return;
+    if (!date) {
+      setMsg({ ok: false, text: '请选择补卡日期' });
+      return;
+    }
+    if (!reason.trim()) {
+      setMsg({ ok: false, text: '请填写补卡原因' });
+      return;
+    }
+    setBusy(true);
+    setMsg(null);
+    try {
+      await submitLeave({
+        leave_type: 'repair',
+        start_date: date,
+        end_date: date,
+        reason: reason.trim(),
+      });
+      setMsg({ ok: true, text: '已提交，等待审批' });
+      setReason('');
+      setOpen(false);
+      qc.invalidateQueries({ queryKey: ['hr-leaves-my'] });
+    } catch (e) {
+      setMsg({
+        ok: false,
+        text: e instanceof Error ? e.message : '提交失败',
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded-xl border border-[#E2E8F0] bg-white p-5 shadow-sm">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2 text-sm text-[#475569]">
+          <Wrench className="size-4" /> 今日未签到？可申请补卡
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setOpen((v) => !v)}
+          disabled={busy}
+        >
+          {open ? '收起' : '申请补卡'}
+        </Button>
+      </div>
+      {open && (
+        <div className="mt-3 flex flex-wrap items-end gap-2 border-t border-[#F1F5F9] pt-3">
+          <div>
+            <div className="mb-1 text-xs text-[#94A3B8]">补卡日期</div>
+            <Input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="w-40"
+            />
+          </div>
+          <div className="min-w-48 flex-1">
+            <div className="mb-1 text-xs text-[#94A3B8]">原因</div>
+            <Input
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="请填写补卡原因"
+              maxLength={200}
+            />
+          </div>
+          <Button
+            onClick={submit}
+            disabled={busy}
+            className="bg-[#1a66fb] text-white hover:bg-[#1554d6]"
+          >
+            提交
+          </Button>
+        </div>
+      )}
+      {msg && (
+        <div
+          className={`mt-2 text-sm ${msg.ok ? 'text-emerald-600' : 'text-red-500'}`}
+        >
+          {msg.text}
         </div>
       )}
     </div>
@@ -530,6 +634,7 @@ export default function AttendanceView() {
   return (
     <div className="mx-auto w-full max-w-3xl space-y-4 p-4">
       <PunchCard today={today.data} />
+      {!today.data.first_in && <RepairRequestCard />}
       <AttendanceCalendar month={safeMonth} />
       <div className="flex items-center gap-2 text-xs text-[#94A3B8]">
         <span>月份</span>
