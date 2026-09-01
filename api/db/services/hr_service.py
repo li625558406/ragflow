@@ -1,7 +1,7 @@
 """人事模块 P1 Service：员工档案 / 规则配置 / 考勤流水 / 日月汇总。"""
 import calendar
 import json
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 from api.db.db_models import (
     DB,
@@ -9,11 +9,14 @@ from api.db.db_models import (
     HrAttendanceMonth,
     HrAttendanceRecord,
     HrEmployee,
+    HrLeaveBalance,
+    HrLeaveRequest,
+    HrLeaveStep,
     HrRuleConfig,
     User,
 )
 from api.db.services.common_service import CommonService
-from api.db.services.hr_calculator import derive_day_status, load_rule
+from api.db.services.hr_calculator import derive_day_status, leave_status_for_date, load_rule
 from common.misc_utils import get_uuid
 from common.time_utils import current_timestamp
 
@@ -179,7 +182,9 @@ class HrAttendanceMonthService(CommonService):
                         late_min = existing.late_minutes
                     else:
                         records = HrAttendanceRecordService.list_day(emp.id, d)
-                        derived = derive_day_status(records, d, rule)
+                        leaves = HrLeaveRequestService.approved_requests(emp.id, d, d)
+                        derived = derive_day_status(records, d, rule,
+                            leave_status=leave_status_for_date(leaves, d))
                         if derived["status"] == "missing":
                             derived["status"] = "absent"  # 确认时缺卡转旷工
                             agg["missing"] += 1
@@ -214,3 +219,246 @@ class HrAttendanceMonthService(CommonService):
                 else:
                     cls.insert(id=get_uuid(), employee_id=emp.id, month=month, **vals)
         return stats
+
+
+# 有额度假型 -> DEFAULT_RULE 配额键
+QUOTA_KEY = {"annual": "annual_quota", "sick": "sick_quota",
+             "marriage": "marriage_quota", "maternity": "maternity_quota"}
+
+
+class HrLeaveBalanceService(CommonService):
+    model = HrLeaveBalance
+
+    @classmethod
+    def get_or_init(cls, employee_id: str, year: int, leave_type: str, rule: dict):
+        row = cls.model.get_or_none(
+            cls.model.employee_id == employee_id, cls.model.year == year,
+            cls.model.leave_type == leave_type)
+        if row:
+            return row
+        total = int(rule.get(QUOTA_KEY[leave_type], 0) or 0)
+        rid = get_uuid()
+        cls.insert(id=rid, employee_id=employee_id, year=year,
+                   leave_type=leave_type, total_days=total)
+        return cls.model.get_by_id(rid)
+
+    @classmethod
+    def freeze(cls, employee_id: str, year: int, leave_type: str, days: int, rule: dict):
+        """冻结额度；不足抛 ValueError。personal/business_trip/other/repair 不占额度直接返回。"""
+        if leave_type not in QUOTA_KEY:
+            return None
+        row = cls.get_or_init(employee_id, year, leave_type, rule)
+        if row.frozen_days + days > row.total_days - row.used_days:
+            raise ValueError(
+                f"{leave_type} 假期余额不足：剩余 {row.total_days - row.used_days - row.frozen_days} 天")
+        row.frozen_days += days
+        row.update_time = current_timestamp()
+        row.save()
+        return row
+
+    @classmethod
+    def release(cls, employee_id: str, year: int, leave_type: str, days: int):
+        if leave_type not in QUOTA_KEY:
+            return
+        row = cls.model.get_or_none(
+            cls.model.employee_id == employee_id, cls.model.year == year,
+            cls.model.leave_type == leave_type)
+        if row:
+            row.frozen_days = max(0, row.frozen_days - days)
+            row.update_time = current_timestamp()
+            row.save()
+
+    @classmethod
+    def confirm(cls, employee_id: str, year: int, leave_type: str, days: int):
+        """冻结转已用（终审通过）。"""
+        if leave_type not in QUOTA_KEY:
+            return
+        row = cls.model.get_or_none(
+            cls.model.employee_id == employee_id, cls.model.year == year,
+            cls.model.leave_type == leave_type)
+        if row:
+            row.frozen_days = max(0, row.frozen_days - days)
+            row.used_days += days
+            row.update_time = current_timestamp()
+            row.save()
+
+    @classmethod
+    def list_balance(cls, employee_id: str, year: int) -> list:
+        return list(cls.model.select().where(
+            cls.model.employee_id == employee_id, cls.model.year == year))
+
+
+class HrLeaveStepService(CommonService):
+    model = HrLeaveStep
+
+
+class HrLeaveRequestService(CommonService):
+    model = HrLeaveRequest
+
+    @classmethod
+    def resolve_approval_chain(cls, duration_days: int, rule: dict) -> list:
+        """审批链 user_id 列表：≥3天用 approval_chain_long（空则回退 approval_chain），
+        配置空回退超管列表。"""
+        chain = str(rule.get("approval_chain") or "")
+        if duration_days >= 3:
+            chain = str(rule.get("approval_chain_long") or "") or chain
+        uids = [u.strip() for u in chain.split(",") if u.strip()]
+        if not uids:
+            uids = [u.id for u in User.select(User.id).where(User.is_superuser == True)]  # noqa: E712
+        return uids
+
+    @classmethod
+    def submit(cls, employee, leave_type: str, start_date: date, end_date: date,
+               reason: str, applicant_id: str, rule: dict):
+        if end_date < start_date:
+            raise ValueError("结束日期不能早于开始日期")
+        if leave_type == "repair" and start_date != end_date:
+            raise ValueError("补卡申请只能选择单日")
+        duration = (end_date - start_date).days + 1
+        # 冻结余额（有额度假型）
+        HrLeaveBalanceService.freeze(
+            employee.id, start_date.year, leave_type, duration, rule)
+        try:
+            chain = cls.resolve_approval_chain(duration, rule)
+            rid = get_uuid()
+            cls.insert(id=rid, employee_id=employee.id, leave_type=leave_type,
+                       start_date=start_date, end_date=end_date,
+                       duration_days=duration, reason=reason[:500],
+                       status="pending", current_step=1, applicant_id=applicant_id)
+            for i, uid in enumerate(chain, start=1):
+                HrLeaveStepService.insert(
+                    id=get_uuid(), request_id=rid, step_no=i, approver_id=uid,
+                    status="pending" if i == 1 else "waiting")
+        except Exception:
+            HrLeaveBalanceService.release(employee.id, start_date.year, leave_type, duration)
+            raise
+        return cls.model.get_by_id(rid)
+
+    @classmethod
+    def act(cls, request_id: str, approver_id: str, action: str, comment: str, rule: dict):
+        """action ∈ approved|rejected。仅当前步骤审批人可操作；并发双击只成功一次。"""
+        req = cls.model.get_by_id(request_id)
+        if not req or req.status != "pending":
+            raise ValueError("假单不存在或已结束")
+        step = HrLeaveStep.get_or_none(
+            HrLeaveStep.request_id == request_id,
+            HrLeaveStep.step_no == req.current_step)
+        if not step or step.status != "pending":
+            raise ValueError("当前步骤已处理")
+        if step.approver_id != approver_id:
+            raise ValueError("你不是当前步骤审批人")
+        emp = HrEmployee.get_by_id(req.employee_id)
+
+        if action == "rejected":
+            step.status = "rejected"
+            step.comment = comment[:255]
+            step.action_time = datetime.now()
+            step.save()
+            req.status = "rejected"
+            req.save()
+            HrLeaveBalanceService.release(emp.id, req.start_date.year,
+                                          req.leave_type, req.duration_days)
+            _rewrite_days(emp, req, rule, revert=True)
+            return req
+
+        step.status = "approved"
+        step.comment = comment[:255]
+        step.action_time = datetime.now()
+        step.save()
+        nxt = HrLeaveStep.get_or_none(
+            HrLeaveStep.request_id == request_id,
+            HrLeaveStep.step_no == req.current_step + 1)
+        if nxt and nxt.status == "waiting":
+            nxt.status = "pending"
+            nxt.save()
+            req.current_step += 1
+            req.save()
+            return req
+        # 终审通过
+        req.status = "approved"
+        req.save()
+        HrLeaveBalanceService.confirm(emp.id, req.start_date.year,
+                                      req.leave_type, req.duration_days)
+        if req.leave_type == "repair":
+            repair_time = datetime.combine(req.start_date,
+                                           _parse_work_start(rule))
+            HrAttendanceRecordService.punch(
+                emp.id, source="repair", punch_time=repair_time,
+                remark=f"补卡申请通过 {request_id}")
+        else:
+            _rewrite_days(emp, req, rule, revert=False)
+        return req
+
+    @classmethod
+    def cancel(cls, request_id: str, operator_id: str, rule: dict):
+        """仅申请人本人且 pending 可撤销。"""
+        req = cls.model.get_by_id(request_id)
+        if not req or req.status != "pending":
+            raise ValueError("假单不存在或已结束")
+        if req.applicant_id != operator_id:
+            raise ValueError("只能撤销本人提交的假单")
+        req.status = "cancelled"
+        req.save()
+        emp = HrEmployee.get_by_id(req.employee_id)
+        HrLeaveBalanceService.release(emp.id, req.start_date.year,
+                                      req.leave_type, req.duration_days)
+        # 释放冻结时同步把 waiting/pending 步骤终结
+        for s in HrLeaveStep.select().where(HrLeaveStep.request_id == request_id,
+                                            HrLeaveStep.status.in_(["pending", "waiting"])):
+            s.status = "rejected"
+            s.comment = "申请人撤销"
+            s.action_time = datetime.now()
+            s.save()
+        return req
+
+    @classmethod
+    def approved_requests(cls, employee_id: str, start: date, end: date) -> list:
+        """与 [start,end] 有交集的 approved 假单（供日推导）。"""
+        return list(cls.model.select().where(
+            cls.model.employee_id == employee_id,
+            cls.model.status == "approved",
+            cls.model.leave_type.in_(["leave", "business_trip"]),
+            cls.model.start_date <= end,
+            cls.model.end_date >= start))
+
+    @classmethod
+    def pending_for_approver(cls, approver_id: str) -> list:
+        steps = HrLeaveStep.select().where(
+            HrLeaveStep.approver_id == approver_id, HrLeaveStep.status == "pending")
+        req_ids = [s.request_id for s in steps]
+        if not req_ids:
+            return []
+        return list(cls.model.select().where(
+            cls.model.id.in_(req_ids), cls.model.status == "pending"))
+
+
+def _parse_work_start(rule: dict) -> time:
+    try:
+        parts = str(rule.get("work_start", "09:00")).split(":")
+        return time(int(parts[0]), int(parts[1]))
+    except (ValueError, IndexError, TypeError):
+        return time(9, 0)
+
+
+def _rewrite_days(emp, req, rule: dict, revert: bool):
+    """审批终态后回写区间内未锁定日；revert=True 时重新推导恢复。
+    若区间日已有其他 approved 假单覆盖则保持假单状态。"""
+    d = req.start_date
+    while d <= req.end_date:
+        row = HrAttendanceDay.get_or_none(
+            HrAttendanceDay.employee_id == emp.id, HrAttendanceDay.work_date == d)
+        if row and not row.locked:
+            if revert:
+                records = HrAttendanceRecordService.list_day(emp.id, d)
+                others = [r for r in HrLeaveRequestService.approved_requests(
+                    emp.id, d, d) if r.id != req.id]
+                ls = leave_status_for_date(others, d)
+                derived = derive_day_status(records, d, rule, leave_status=ls)
+                row.status = derived["status"]
+                row.leave_id = others[0].id if others else ""
+            else:
+                row.status = "leave" if req.leave_type == "leave" else "business_trip"
+                row.leave_id = req.id
+            row.update_time = current_timestamp()
+            row.save()
+        d += timedelta(days=1)
