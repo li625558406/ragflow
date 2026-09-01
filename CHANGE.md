@@ -1,5 +1,19 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-01 文件审核表格可编辑（run 级格式 + 批注共存）
+
+**主题**：C端流程「文件审核」弹框正文编辑已支持 Word 式 run 级格式，但表格内容为只读原子块（有意取舍）。本次将表格升级为 `@lexical/table` 节点体系（方案A），实现单元格内文字可改 + 加粗/斜体/下划线/删除线/上下标/颜色/底色/字体/字号等 run 级格式，工具栏在格内同样生效；不做表格结构编辑（不增删行列/表格）；格内批注高亮与编辑共存；图片维持只读。
+
+**核心变更**：
+- 前端 `docx-paragraph-editor.tsx`：新增 `DocxTableNode extends TableNode`（携带 paraIndex，import/export 均序列化）；`buildDocxTable` 解析后端表格 HTML → TableRowNode/TableCellNode（colspan/rowspan、th→表头、格内按行分段、空格建空段）；畸形 HTML 降级只读 AtomicBlockNode；`readEditorBlocks` 表格分支逐格产出 `{paraIndex, kind:'table', cell:{row,col}, text, runs, fmtSig}`（格内文本按单 `\n` 连接、runs 含 `\n` 分隔片保证 `''.join(runs.text)===text`）；HighlightPlugin 增加表格分支逐格重建批注高亮
+- 前端 diff 契约 `docx-diff.ts` + `flow-service.ts`：新增 `table_edits: [{para_index, row, col, new_text, runs?}]`（与 edits/deletes/inserts 并列，计入 200 处上限）；`new_text` 允许空串（清空格合法）；基线与灌入同源（parseTableCells）
+- 后端 `flow_app.py::edit_document`：`_parse_table_edits` 校验（row/col 非负整数、runs 一致性、new_text≤20000、空+runs 拒绝，错误信息带格位）；`_apply_cell_text` 用 `table.cell(r,c)` 定位 `_Cell` 复用 `_apply_runs`/`_replace_para_text` 写首段、清空 cell 内其余段；事务语义不变（先全定位再统一应用，存新版本）
+- 降级保护：表格 HTML 解析失败回退只读展示，不阻塞文档打开
+
+**验证**：前端 59/59 jest（docx-diff/docx-table-utils/docx-format-utils 三套件）、后端 22/22 pytest（test_flow_doc_table_edit.py 12 项 + 回归）、tsc 涉及文件全干净；编辑态表格样式已收敛到编辑器分支（不泄漏只读静态渲染）。
+
+**遗留**：合并单元格 false-positive colspan 场景下只写首格（格位被覆盖时后端 `cell(r,c)` 返回同一 `_Cell`，多格改动同写一格）；嵌套表格不支持（灌入时按纯文本处理）；待随前端 build + 后端 flow_app.py SCP 部署后生效。
+
 ## 2026-09-01 流程页签：非负责人版本只读查看 + 流程删除（仅已作废）
 
 **主题**：两个功能补充——①流程参与人即使不在当前节点，也能查看版本记录的文件内容（此前只有当前节点负责人能进「文件审核」）；②已作废的流程可由发起人彻底删除（此前作废流程只能永久留在列表）。
