@@ -1,6 +1,7 @@
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { usePermission } from '@/hooks/use-permission';
+import { listCandidates } from '@/services/flow-service';
 import {
   createEmployee,
   fetchCalendar,
@@ -223,6 +224,10 @@ function HrAdminPanel({
     queryKey: ['hr-month-summary', month],
     queryFn: () => fetchMonthSummary(month),
   });
+  const users = useQuery({
+    queryKey: ['hr-user-options'],
+    queryFn: listCandidates,
+  });
 
   const addEmployee = async () => {
     if (busy) return;
@@ -328,16 +333,22 @@ function HrAdminPanel({
           />
         </div>
         <div className="text-xs text-[#94A3B8]">
-          <div>建档：user_id / 工号 / 部门 / 入职日期</div>
+          <div>建档：用户 / 工号 / 部门 / 入职日期</div>
           <div className="flex gap-1">
-            <Input
+            <select
               value={newEmp.user_id}
-              placeholder="user_id"
               onChange={(e) =>
                 setNewEmp({ ...newEmp, user_id: e.target.value })
               }
-              className="w-40"
-            />
+              className="h-9 w-40 rounded-md border border-[#E2E8F0] bg-white px-2 text-sm text-[#0F172A]"
+            >
+              <option value="">选择用户</option>
+              {(users.data?.list ?? []).map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.nickname}
+                </option>
+              ))}
+            </select>
             <Input
               value={newEmp.emp_no}
               placeholder="工号"
