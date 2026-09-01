@@ -651,12 +651,17 @@ async def hr_salary_profile_put():
                 return get_data_error_result(message=f"{k} 必须是非负数字")
             vals[k] = body[k]
     for k in ("social_rate", "fund_rate"):
-        if k in body and body[k] is not None:
-            v = body[k]
-            if isinstance(v, bool) or not isinstance(v, (int, float)) \
-                    or not math.isfinite(v) or not (0 <= v <= 0.3):
-                return get_data_error_result(message=f"{k} 应在 [0, 0.3] 区间内")
-            vals[k] = v
+        if k not in body:
+            continue
+        v = body[k]
+        if v is None:
+            # 显式 null = 清除个人费率，回退全局费率（未提供该键时仍不改动旧值）
+            vals[k] = None
+            continue
+        if isinstance(v, bool) or not isinstance(v, (int, float)) \
+                or not math.isfinite(v) or not (0 <= v <= 0.3):
+            return get_data_error_result(message=f"{k} 应在 [0, 0.3] 区间内")
+        vals[k] = v
     if "manual_overrides" in body:
         ov = body.get("manual_overrides")
         if not isinstance(ov, dict) or set(ov.keys()) - _OVERRIDE_KEYS:

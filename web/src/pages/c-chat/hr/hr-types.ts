@@ -98,6 +98,7 @@ export interface LeaveBalance {
 // ── P3: 薪资 ──
 
 export interface SalaryProfile {
+  id: string;
   employee_id: string;
   nickname?: string;
   emp_no?: string;
@@ -114,6 +115,7 @@ export interface SalaryProfile {
 }
 
 export interface Payslip {
+  id: string;
   employee_id: string;
   nickname?: string;
   emp_no?: string;
@@ -137,9 +139,14 @@ export interface Payslip {
   published_at: string | null;
 }
 
-// 试算明细（后端 _TRIAL_KEYS 白名单字段）
+// 试算明细：后端将成功/失败员工统一内嵌在 list 中返回（无独立 failed 数组），
+// 失败行 ok=false 且仅带 reason，无金额字段；成功行 ok=true 带金额明细
 export interface SalaryTrialItem {
   employee_id: string;
+  nickname?: string;
+  emp_no?: string;
+  ok: boolean;
+  reason?: string;
   base_salary: number;
   allowances: number;
   overtime_pay: number;

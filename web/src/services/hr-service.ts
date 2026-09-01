@@ -237,10 +237,11 @@ export async function upsertSalaryProfile(data: {
 }
 
 export async function trialSalary(month: string, employeeId?: string) {
+  // 后端契约：失败员工内嵌在 list（ok=false + reason），无独立 failed 数组
   return apiFetch<{
+    month: string;
     list: SalaryTrialItem[];
     total: number;
-    failed: SalaryFailedItem[];
   }>('/hr/salary/trial', {
     method: 'POST',
     body: JSON.stringify({

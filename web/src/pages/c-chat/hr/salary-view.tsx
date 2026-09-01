@@ -72,7 +72,7 @@ function MyPayslipCard({ month }: { month: string }) {
       {isLoading ? (
         <div className="text-sm text-[#94A3B8]">加载中…</div>
       ) : !p ? (
-        <div className="text-sm text-[#94A3B8]">本月工资条尚未发布</div>
+        <div className="text-sm text-[#94A3B8]">该月工资条尚未发布</div>
       ) : (
         <>
           <div className="grid gap-3 sm:grid-cols-2">
@@ -181,9 +181,18 @@ function ProfileEditForm({
       social_rate: null,
       fund_rate: null,
     };
-    // 数值字段：非负校验
+    // 数值字段：非负校验；空串且原值非 0 时拦截，避免误清金额静默存 0
     for (const f of NUM_FIELDS) {
-      const v = Number((values[f.key] ?? '').trim());
+      const raw = (values[f.key] ?? '').trim();
+      if (raw === '') {
+        if (Number(profile[f.key] ?? 0) !== 0) {
+          setError(`${f.label}请输入金额（0 表示无）`);
+          return;
+        }
+        payload[f.key] = 0;
+        continue;
+      }
+      const v = Number(raw);
       if (!Number.isFinite(v) || v < 0) {
         setError(`${f.label}必须是不小于 0 的数字`);
         return;
@@ -363,10 +372,7 @@ function MonthlyOps({ month }: { month: string }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [calcFailed, setCalcFailed] = useState<SalaryFailedItem[]>([]);
-  const [trial, setTrial] = useState<{
-    list: SalaryTrialItem[];
-    failed: SalaryFailedItem[];
-  } | null>(null);
+  const [trial, setTrial] = useState<SalaryTrialItem[] | null>(null);
 
   // 成功后统一失效：工资单列表 + 员工我的工资条
   const invalidatePayslips = () => {
@@ -381,13 +387,15 @@ function MonthlyOps({ month }: { month: string }) {
     setCalcFailed([]);
     try {
       const r = await trialSalary(month);
-      const failed = r.failed ?? [];
-      setTrial({ list: r.list ?? [], failed });
+      // 后端契约：失败员工内嵌在 list 中（ok=false + reason），无独立 failed 数组
+      const list = r.list ?? [];
+      const failedCount = list.filter((t) => !t.ok).length;
+      setTrial(list);
       setMsg({
-        ok: !failed.length,
-        text: failed.length
-          ? `试算完成：成功 ${r.total ?? 0} 人，失败 ${failed.length} 人（见红字）`
-          : `试算完成：共 ${r.total ?? 0} 人`,
+        ok: failedCount === 0,
+        text: failedCount
+          ? `试算完成：成功 ${list.length - failedCount} 人 / 失败 ${failedCount} 人（见红字）`
+          : `试算完成：成功 ${list.length} 人`,
       });
     } catch (e) {
       setMsg({ ok: false, text: e instanceof Error ? e.message : '试算失败' });
@@ -506,39 +514,41 @@ function MonthlyOps({ month }: { month: string }) {
               </tr>
             </thead>
             <tbody>
-              {trial.list.map((t) => (
-                <tr key={t.employee_id} className="border-t border-[#F8FAFC]">
-                  <td className="px-2 py-1.5 text-left text-[#0F172A]">
-                    {t.employee_id}
-                  </td>
-                  <td className="px-2 py-1.5 text-right text-[#0F172A]">
-                    ¥{fmt(t.gross_pay)}
-                  </td>
-                  <td className="px-2 py-1.5 text-right text-[#0F172A]">
-                    ¥
-                    {fmt(
-                      t.attendance_deduction +
-                        t.social_insurance +
-                        t.housing_fund +
-                        t.income_tax,
-                    )}
-                  </td>
-                  <td className="px-2 py-1.5 text-right font-medium text-[#1a66fb]">
-                    ¥{fmt(t.net_pay)}
-                  </td>
-                </tr>
-              ))}
-              {trial.failed.map((f) => (
-                <tr key={f.employee_id} className="border-t border-[#F8FAFC]">
-                  <td
-                    colSpan={4}
-                    className="px-2 py-1.5 text-left text-red-500"
-                  >
-                    {f.employee_id}：{f.reason}
-                  </td>
-                </tr>
-              ))}
-              {trial.list.length === 0 && trial.failed.length === 0 && (
+              {trial.map((t) =>
+                t.ok ? (
+                  <tr key={t.employee_id} className="border-t border-[#F8FAFC]">
+                    <td className="px-2 py-1.5 text-left text-[#0F172A]">
+                      {t.nickname || t.employee_id}
+                    </td>
+                    <td className="px-2 py-1.5 text-right text-[#0F172A]">
+                      ¥{fmt(t.gross_pay)}
+                    </td>
+                    <td className="px-2 py-1.5 text-right text-[#0F172A]">
+                      ¥
+                      {fmt(
+                        t.attendance_deduction +
+                          t.social_insurance +
+                          t.housing_fund +
+                          t.income_tax,
+                      )}
+                    </td>
+                    <td className="px-2 py-1.5 text-right font-medium text-[#1a66fb]">
+                      ¥{fmt(t.net_pay)}
+                    </td>
+                  </tr>
+                ) : (
+                  <tr key={t.employee_id} className="border-t border-[#F8FAFC]">
+                    <td
+                      colSpan={4}
+                      className="px-2 py-1.5 text-left text-red-500"
+                    >
+                      {t.nickname || t.employee_id}（{t.emp_no || '无工号'}）：
+                      {t.reason || '核算失败'}
+                    </td>
+                  </tr>
+                ),
+              )}
+              {trial.length === 0 && (
                 <tr>
                   <td
                     colSpan={4}
