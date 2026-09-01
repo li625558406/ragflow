@@ -9,11 +9,21 @@ import { LexicalErrorBoundary } from '@lexical/react/LexicalErrorBoundary';
 import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin';
 import { ListPlugin } from '@lexical/react/LexicalListPlugin';
 import { RichTextPlugin } from '@lexical/react/LexicalRichTextPlugin';
+import { TablePlugin } from '@lexical/react/LexicalTablePlugin';
 import {
   HeadingNode,
   HeadingTagType,
   SerializedHeadingNode,
 } from '@lexical/rich-text';
+import type { SerializedTableNode } from '@lexical/table';
+import {
+  $createTableCellNode,
+  $createTableRowNode,
+  TableCellHeaderStates,
+  TableCellNode,
+  TableNode,
+  TableRowNode,
+} from '@lexical/table';
 import { mergeRegister } from '@lexical/utils';
 import {
   $applyNodeReplacement,
@@ -54,6 +64,7 @@ import {
 } from './docx-diff';
 import type { DocxRun } from './docx-format-utils';
 import { parseStyle, runsFmtSig, stripBgFromStyle } from './docx-format-utils';
+import { parseTableCells } from './docx-table-utils';
 import DocxToolbar from './docx-toolbar';
 
 // ── 自定义节点 ──────────────────────────────────────────────
@@ -212,6 +223,48 @@ export class HighlightTextNode extends TextNode {
   createDOM(config: EditorConfig): HTMLElement {
     const dom = super.createDOM(config);
     dom.setAttribute('data-anchor-key', this.__anchorKey);
+    return dom;
+  }
+}
+
+/** 文档表格块（对应 source paragraph type=table）：继承 @lexical/table TableNode，
+ * 携带 paraIndex 对齐原文段落号。行列结构由 TableRowNode/TableCellNode 表达，
+ * 格内为普通段落 → 编辑/工具栏/undo/批注高亮全部复用正文机制。 */
+export class DocxTableNode extends TableNode {
+  __paraIndex: number | undefined;
+
+  constructor(paraIndex?: number, key?: NodeKey) {
+    super(key);
+    this.__paraIndex = paraIndex;
+  }
+
+  static getType(): string {
+    return 'docx-table';
+  }
+
+  static clone(node: DocxTableNode): DocxTableNode {
+    return new DocxTableNode(node.__paraIndex, node.__key);
+  }
+
+  static importJSON(json: Record<string, unknown>): DocxTableNode {
+    const node = new DocxTableNode(json.paraIndex as number | undefined);
+    node.updateFromJSON(json as LexicalUpdateJSON<SerializedTableNode>);
+    return node;
+  }
+
+  exportJSON(): SerializedTableNode & { paraIndex: number | undefined } {
+    return {
+      ...super.exportJSON(),
+      type: 'docx-table',
+      paraIndex: this.__paraIndex,
+    };
+  }
+
+  createDOM(config: EditorConfig): HTMLElement {
+    const dom = super.createDOM(config);
+    if (this.__paraIndex != null) {
+      dom.setAttribute('data-para-index', String(this.__paraIndex));
+    }
     return dom;
   }
 }
@@ -617,6 +670,46 @@ function EditorRefPlugin({
 
 // ── 组件 ────────────────────────────────────────────────────
 
+/** 表格 HTML → 可编辑 DocxTableNode：parseTableCells 解析逻辑网格，
+ * 按行分组、格内文本按 \n 拆多段（与 python-docx cell.text 的 \n join 对齐）；
+ * 空/畸形表格（无 table）返回 null → 调用方降级只读原子块 */
+function buildDocxTable(paraIndex: number, html: string): DocxTableNode | null {
+  const cells = parseTableCells(html);
+  if (!cells.length) return null;
+  const rowMap = new Map<number, typeof cells>();
+  for (const c of cells) {
+    const arr = rowMap.get(c.row) || [];
+    arr.push(c);
+    rowMap.set(c.row, arr);
+  }
+  const table = new DocxTableNode(paraIndex);
+  for (const rowCells of [...rowMap.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, v]) => v)) {
+    const tr = $createTableRowNode();
+    for (const c of rowCells) {
+      // TableCellHeaderStates.NO_STATUS（非表头）——注意：0.23.1 枚举无 NO_HEADER，
+      // 计划代码此处为 NO_HEADER，按真实 API 调整为 NO_STATUS。
+      const td = $createTableCellNode(
+        c.header
+          ? TableCellHeaderStates.COLUMN
+          : TableCellHeaderStates.NO_STATUS,
+        c.colSpan > 1 ? c.colSpan : 1,
+      );
+      // 单元格文本按 \n 拆多段（与 python-docx cell.text / getTextContent 的 \n join 对齐）；
+      // 空单元格也保留一个空段（Lexical 要求 cell 非空）
+      for (const line of c.text.split('\n')) {
+        const p = new ParagraphNode();
+        p.append($createTextNode(line));
+        td.append(p);
+      }
+      tr.append(td);
+    }
+    table.append(tr);
+  }
+  return table;
+}
+
 function buildInitialContent(
   editor: LexicalEditor,
   paragraphs: DocxSourceParagraph[],
@@ -630,8 +723,16 @@ function buildInitialContent(
       // ParagraphNode，若不清理会以无 data-para-index 空段形式混进块列表。
       root.clear();
       for (const para of paragraphs) {
-        if (para.type === 'table' || para.type === 'image') {
-          root.append(new AtomicBlockNode(para.index, para.type, para.text));
+        if (para.type === 'table') {
+          const t = buildDocxTable(para.index, para.text);
+          if (t) {
+            root.append(t);
+            continue;
+          }
+          // 解析失败降级只读原子块（spec 4.1：不阻塞文档打开）
+          root.append(new AtomicBlockNode(para.index, 'table', para.text));
+        } else if (para.type === 'image') {
+          root.append(new AtomicBlockNode(para.index, 'image', para.text));
         } else if (para.type === 'heading') {
           const tag = (
             para.heading_level && para.heading_level <= 3
@@ -700,6 +801,10 @@ export default function DocxParagraphEditor({
             DocxParagraphNode,
             DocxHeadingNode,
             AtomicBlockNode,
+            DocxTableNode,
+            TableNode,
+            TableRowNode,
+            TableCellNode,
             HighlightTextNode,
             HeadingNode,
             ParagraphNode,
@@ -727,6 +832,7 @@ export default function DocxParagraphEditor({
           ErrorBoundary={LexicalErrorBoundary}
         />
         <HistoryPlugin />
+        <TablePlugin />
         <ListPlugin />
         <IndentPlugin />
         <InitialContentPlugin paragraphs={paragraphs} />
