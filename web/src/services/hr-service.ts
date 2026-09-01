@@ -4,6 +4,10 @@ import type {
   HrRuleConfig,
   LeaveBalance,
   LeaveRequest,
+  Payslip,
+  SalaryFailedItem,
+  SalaryProfile,
+  SalaryTrialItem,
   TodayPunch,
 } from '@/pages/c-chat/hr/hr-types';
 
@@ -202,4 +206,71 @@ export async function updateLeaveBalance(data: {
     method: 'PUT',
     body: JSON.stringify(data),
   });
+}
+
+// ── P3: 薪资 ──
+
+export async function listSalaryProfiles(keyword?: string) {
+  const q = keyword ? `?keyword=${encodeURIComponent(keyword)}` : '';
+  return apiFetch<{ list: SalaryProfile[]; total: number }>(
+    `/hr/salary-profile${q}`,
+  );
+}
+
+export async function upsertSalaryProfile(data: {
+  employee_id: string;
+  base_salary: number;
+  post_allowance: number;
+  meal_allowance: number;
+  transport_allowance: number;
+  social_base: number;
+  fund_base: number;
+  special_deduction: number;
+  social_rate: number | null;
+  fund_rate: number | null;
+  manual_overrides?: Record<string, number>;
+}): Promise<SalaryProfile> {
+  return apiFetch('/hr/salary-profile', {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function trialSalary(month: string, employeeId?: string) {
+  return apiFetch<{
+    list: SalaryTrialItem[];
+    total: number;
+    failed: SalaryFailedItem[];
+  }>('/hr/salary/trial', {
+    method: 'POST',
+    body: JSON.stringify({
+      month,
+      ...(employeeId ? { employee_id: employeeId } : {}),
+    }),
+  });
+}
+
+export async function calcSalary(month: string) {
+  return apiFetch<{ ok: number; failed: SalaryFailedItem[] }>(
+    '/hr/salary/calc',
+    { method: 'POST', body: JSON.stringify({ month }) },
+  );
+}
+
+export async function publishSalary(month: string) {
+  return apiFetch<{ published: number }>('/hr/salary/publish', {
+    method: 'POST',
+    body: JSON.stringify({ month }),
+  });
+}
+
+export async function fetchPayslips(month: string) {
+  return apiFetch<{ list: Payslip[]; total: number }>(
+    `/hr/salary/payslips?month=${encodeURIComponent(month)}`,
+  );
+}
+
+export async function fetchMyPayslip(month?: string) {
+  const q = month ? `?month=${encodeURIComponent(month)}` : '';
+  return apiFetch<{ payslip: Payslip | null }>(`/hr/payslip/my${q}`);
 }
