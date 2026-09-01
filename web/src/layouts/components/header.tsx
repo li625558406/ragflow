@@ -21,7 +21,6 @@ import React, { useMemo } from 'react';
 import { Link, useLocation } from 'react-router';
 import { BellButton } from './bell-button';
 import GlobalNavbar from './global-navbar';
-import ThemeButton from './theme-button';
 
 import { supportedLanguages } from '@/locales/config';
 
@@ -64,7 +63,11 @@ export function Header({
           to={Routes.Root}
           aria-current={pathname === Routes.Root ? 'page' : undefined}
         >
-          <img src={getStaticAsset('/logo.svg')} alt="RAGFlow logo" className="size-10" />
+          <img
+            src={getStaticAsset('/logo.svg')}
+            alt="RAGFlow logo"
+            className="size-10"
+          />
         </Link>
       </div>
 
@@ -122,8 +125,6 @@ export function Header({
         >
           <LucideCircleHelp className="size-[1em]" />
         </Button>
-
-        <ThemeButton />
 
         {hasNotification && <BellButton />}
 

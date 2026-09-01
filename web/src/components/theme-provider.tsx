@@ -1,5 +1,5 @@
 import { ThemeEnum } from '@/constants/common';
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect } from 'react';
 
 type ThemeProviderProps = {
   children: React.ReactNode;
@@ -19,29 +19,26 @@ const initialState: ThemeProviderState = {
 
 const ThemeProviderContext = createContext<ThemeProviderState>(initialState);
 
-export function ThemeProvider({
-  children,
-  defaultTheme = ThemeEnum.Dark,
-  storageKey = 'vite-ui-theme',
-  ...props
-}: ThemeProviderProps) {
-  const [theme, setTheme] = useState<ThemeEnum>(
-    () => (localStorage.getItem(storageKey) as ThemeEnum) || defaultTheme,
-  );
+/**
+ * 全局固定亮色主题：不再支持 Dark/System。
+ * 忽略 localStorage 存储与 defaultTheme 参数，setTheme 保留为空实现以兼容旧调用方。
+ */
+export function ThemeProvider({ children, ...props }: ThemeProviderProps) {
+  const theme = ThemeEnum.Light;
 
   useEffect(() => {
     const root = window.document.documentElement;
     root.classList.remove(ThemeEnum.Light, ThemeEnum.Dark);
-    localStorage.setItem(storageKey, theme);
+    localStorage.setItem('ragflow-ui-theme', ThemeEnum.Light);
     root.classList.add(theme);
-  }, [storageKey, theme]);
+  }, [theme]);
 
   return (
     <ThemeProviderContext.Provider
       {...props}
       value={{
         theme,
-        setTheme,
+        setTheme: () => null,
       }}
     >
       {children}
@@ -64,20 +61,7 @@ export const useIsDarkTheme = () => {
   return theme === ThemeEnum.Dark;
 };
 
-export function useSwitchToDarkThemeOnMount() {
-  const { setTheme } = useTheme();
-
-  useEffect(() => {
-    setTheme(ThemeEnum.Dark);
-  }, [setTheme]);
-}
-
-export function useSyncThemeFromParams(theme: string | null) {
-  const { setTheme } = useTheme();
-
-  useEffect(() => {
-    if (theme && (theme === ThemeEnum.Light || theme === ThemeEnum.Dark)) {
-      setTheme(theme as ThemeEnum);
-    }
-  }, [theme, setTheme]);
+export function useSyncThemeFromParams(_theme: string | null) {
+  // 主题已固定为亮色，保留空实现以兼容旧调用方
+  void _theme;
 }

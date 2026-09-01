@@ -34,7 +34,6 @@ import authorizationUtil from '@/utils/authorization-util';
 import { login } from '@/services/admin-service';
 
 import { getStaticAsset } from '@/utils/common-util';
-import ThemeSwitch from '../../components/theme-switch';
 import { BgSvg } from '../login-next/bg';
 
 import { CurrentUserInfoContext } from './layouts/root-layout';
@@ -246,10 +245,6 @@ function AdminLogin() {
                 </Button>
               </CardFooter>
             </Card>
-
-            <div className="mt-8 flex justify-center">
-              <ThemeSwitch />
-            </div>
           </div>
         </div>
       </div>

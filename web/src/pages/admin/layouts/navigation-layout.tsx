@@ -21,7 +21,6 @@ import { getSystemVersion, logout } from '@/services/admin-service';
 import authorizationUtil from '@/utils/authorization-util';
 import { getStaticAsset } from '@/utils/common-util';
 
-import ThemeSwitch from '../../../components/theme-switch';
 import { IS_ENTERPRISE } from '../utils';
 import { CurrentUserInfoContext } from './root-layout';
 
@@ -93,7 +92,11 @@ const AdminNavigationLayout = () => {
     <main className="w-screen h-screen flex flex-row px-6 pt-12 pb-6 dark:*:focus-visible:ring-white">
       <aside className="w-72 mr-6 flex flex-col gap-6">
         <div className="flex items-center mb-6">
-          <img className="size-8 mr-5" src={getStaticAsset('/logo.svg')} alt="logo" />
+          <img
+            className="size-8 mr-5"
+            src={getStaticAsset('/logo.svg')}
+            alt="logo"
+          />
           <span className="text-xl font-bold">{t('admin.title')}</span>
         </div>
 
@@ -130,8 +133,6 @@ const AdminNavigationLayout = () => {
             <span className="leading-none text-xs text-accent-primary">
               {version}
             </span>
-
-            <ThemeSwitch />
           </div>
 
           <Button
