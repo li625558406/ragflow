@@ -361,14 +361,28 @@ class HrLeaveRequestService(CommonService):
             _rewrite_days(emp, req, rule, revert=True)
             return req
 
+        nxt = HrLeaveStep.get_or_none(
+            HrLeaveStep.request_id == request_id,
+            HrLeaveStep.step_no == req.current_step + 1)
+        is_final = not (nxt and nxt.status == "waiting")
+        if req.leave_type == "repair":
+            repair_time = datetime.combine(req.start_date, _parse_work_start(rule))
+        if is_final and req.leave_type == "repair":
+            # 终审前预检同分钟撞卡：在写入任何审批状态之前拦截，
+            # 避免"审批已通过但补卡失败"，也避免步骤已推进导致卡单无法重试
+            minute_start = repair_time.replace(second=0, microsecond=0)
+            dup = HrAttendanceRecordService.model.select().where(
+                HrAttendanceRecordService.model.employee_id == emp.id,
+                HrAttendanceRecordService.model.punch_time >= minute_start,
+                HrAttendanceRecordService.model.punch_time < minute_start + timedelta(minutes=1),
+            ).exists()
+            if dup:
+                raise ValueError("该日期该分钟已有打卡记录，无法补卡")
         step.status = "approved"
         step.comment = comment[:255]
         step.action_time = datetime.now()
         step.save()
-        nxt = HrLeaveStep.get_or_none(
-            HrLeaveStep.request_id == request_id,
-            HrLeaveStep.step_no == req.current_step + 1)
-        if nxt and nxt.status == "waiting":
+        if not is_final:
             nxt.status = "pending"
             nxt.save()
             req.current_step += 1
@@ -380,8 +394,6 @@ class HrLeaveRequestService(CommonService):
         HrLeaveBalanceService.confirm(emp.id, req.start_date.year,
                                       req.leave_type, req.duration_days)
         if req.leave_type == "repair":
-            repair_time = datetime.combine(req.start_date,
-                                           _parse_work_start(rule))
             HrAttendanceRecordService.punch(
                 emp.id, source="repair", punch_time=repair_time,
                 remark=f"补卡申请通过 {request_id}")
@@ -413,11 +425,11 @@ class HrLeaveRequestService(CommonService):
 
     @classmethod
     def approved_requests(cls, employee_id: str, start: date, end: date) -> list:
-        """与 [start,end] 有交集的 approved 假单（供日推导）。"""
+        """与 [start,end] 有交集的 approved 假单（供日推导；repair 除外）。"""
         return list(cls.model.select().where(
             cls.model.employee_id == employee_id,
             cls.model.status == "approved",
-            cls.model.leave_type.in_(["leave", "business_trip"]),
+            cls.model.leave_type != "repair",
             cls.model.start_date <= end,
             cls.model.end_date >= start))
 
@@ -457,7 +469,8 @@ def _rewrite_days(emp, req, rule: dict, revert: bool):
                 row.status = derived["status"]
                 row.leave_id = others[0].id if others else ""
             else:
-                row.status = "leave" if req.leave_type == "leave" else "business_trip"
+                row.status = ("business_trip" if req.leave_type == "business_trip"
+                              else "leave")
                 row.leave_id = req.id
             row.update_time = current_timestamp()
             row.save()

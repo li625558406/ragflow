@@ -142,15 +142,17 @@ def derive_day_status(records, work_date, rule, leave_status=None):
 def leave_status_for_date(leave_requests, work_date):
     """当日被 approved 的假单覆盖时返回 'leave'/'business_trip'，否则 None。
 
-    repair 类型不参与日状态推导（它修正打卡流水而非状态）。
-    列表序优先：同日多张假单取第一张命中。
+    business_trip → 'business_trip'；其余所有非 repair 类型（事假/病假/年假/
+    婚假/产假/other，含历史 'leave' 类型）→ 'leave'；repair 不参与日状态推导
+    （它修正打卡流水而非状态）。列表序优先：同日多张假单取第一张命中。
     """
     for r in leave_requests or []:
         try:
-            if r.get("status") != "approved" or r.get("leave_type") not in ("leave", "business_trip"):
+            lt = r.get("leave_type")
+            if r.get("status") != "approved" or lt in (None, "repair"):
                 continue
             if r["start_date"] <= work_date <= r["end_date"]:
-                return r["leave_type"]
+                return "business_trip" if lt == "business_trip" else "leave"
         except (KeyError, TypeError):
             continue
     return None

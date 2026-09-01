@@ -154,6 +154,31 @@ def test_leave_repair_type_not_derived():
     assert leave_status_for_date(reqs, date(2026, 9, 1)) is None
 
 
+def test_leave_annual_type_maps_to_leave():
+    """有额度假型（annual 代表 personal/sick/marriage/maternity/other）统一推导为 leave。"""
+    from api.db.services.hr_calculator import leave_status_for_date
+    reqs = [_leave("annual", "2026-09-01", "2026-09-02")]
+    assert leave_status_for_date(reqs, date(2026, 9, 1)) == "leave"
+    assert leave_status_for_date(reqs, date(2026, 9, 2)) == "leave"
+    assert leave_status_for_date(reqs, date(2026, 9, 3)) is None
+
+
+def test_leave_business_trip_type_maps_to_business_trip():
+    from api.db.services.hr_calculator import leave_status_for_date
+    reqs = [_leave("business_trip", "2026-09-01", "2026-09-02")]
+    assert leave_status_for_date(reqs, date(2026, 9, 2)) == "business_trip"
+
+
+def test_leave_mixed_types_first_wins():
+    """同日多张不同类型假单：列表序优先，非出差在前返回 leave。"""
+    from api.db.services.hr_calculator import leave_status_for_date
+    reqs = [_leave("sick", "2026-09-01", "2026-09-03"),
+            _leave("business_trip", "2026-09-02", "2026-09-04")]
+    assert leave_status_for_date(reqs, date(2026, 9, 2)) == "leave"
+    # 出差单覆盖而病假单未覆盖的日，返回 business_trip
+    assert leave_status_for_date(reqs, date(2026, 9, 4)) == "business_trip"
+
+
 def test_leave_empty_and_bad_input():
     from api.db.services.hr_calculator import leave_status_for_date
     assert leave_status_for_date([], date(2026, 9, 1)) is None
