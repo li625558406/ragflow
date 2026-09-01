@@ -1041,9 +1041,10 @@ async def hr_archive_search():
     if keyword:
         matched_uids = [u.id for u in User.select(User.id).where(
             User.nickname.contains(keyword))]
-        emp_conds.append(HrEmployee.emp_no.contains(keyword))
+        kw_cond = HrEmployee.emp_no.contains(keyword)
         if matched_uids:
-            emp_conds.append(HrEmployee.user_id.in_(matched_uids))
+            kw_cond |= HrEmployee.user_id.in_(matched_uids)
+        emp_conds.append(kw_cond)
     if emp_conds:
         emp_ids = {e.id for e in HrEmployee.select(HrEmployee.id).where(*emp_conds)}
         if not emp_ids:
