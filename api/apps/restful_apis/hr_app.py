@@ -6,6 +6,7 @@
 """
 import logging
 import math
+import json
 import re
 from datetime import date, datetime
 
@@ -17,6 +18,8 @@ from api.db.db_models import (
     HrAttendanceMonth,
     HrEmployee,
     HrLeaveStep,
+    HrPayslip,
+    HrSalaryProfile,
     User,
 )
 from api.db.services.hr_calculator import derive_day_status, leave_status_for_date
@@ -27,7 +30,9 @@ from api.db.services.hr_service import (
     HrEmployeeService,
     HrLeaveBalanceService,
     HrLeaveRequestService,
+    HrPayslipService,
     HrRuleConfigService,
+    HrSalaryProfileService,
     QUOTA_KEY,
 )
 from api.utils.api_utils import get_data_error_result, get_json_result
@@ -531,3 +536,231 @@ async def hr_leave_balance_put():
     row.save()
     return get_json_result(data={"employee_id": emp.id, "year": year,
                                  "leave_type": lt, "total_days": total})
+
+
+# ── 薪资（P3）──
+
+_AMOUNT_KEYS = ("base_salary", "post_allowance", "meal_allowance",
+                "transport_allowance", "social_base", "fund_base", "special_deduction")
+_OVERRIDE_KEYS = {"social", "fund", "tax"}
+
+
+def _valid_amount(v):
+    """金额：数字、非负、有限。"""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False
+    return math.isfinite(v) and v >= 0
+
+
+def _profile_dict(p, nick_map=None, emp_map=None) -> dict:
+    emp = (emp_map or {}).get(p.employee_id)
+    nickname = (nick_map or {}).get(emp.user_id, "") if emp else ""
+    try:
+        overrides = json.loads(p.manual_overrides or "{}")
+    except ValueError:
+        overrides = {}
+    return {
+        "id": p.id, "employee_id": p.employee_id, "nickname": nickname,
+        "emp_no": emp.emp_no if emp else "",
+        "base_salary": float(p.base_salary), "post_allowance": float(p.post_allowance),
+        "meal_allowance": float(p.meal_allowance),
+        "transport_allowance": float(p.transport_allowance),
+        "social_base": float(p.social_base), "fund_base": float(p.fund_base),
+        "special_deduction": float(p.special_deduction),
+        "social_rate": float(p.social_rate) if p.social_rate is not None else None,
+        "fund_rate": float(p.fund_rate) if p.fund_rate is not None else None,
+        "manual_overrides": overrides if isinstance(overrides, dict) else {},
+    }
+
+
+def _payslip_dict(r, nick_map=None, emp_map=None) -> dict:
+    emp = (emp_map or {}).get(r.employee_id)
+    nickname = (nick_map or {}).get(emp.user_id, "") if emp else ""
+    return {
+        "id": r.id, "employee_id": r.employee_id, "nickname": nickname,
+        "emp_no": emp.emp_no if emp else "", "month": r.month,
+        "attend_days": float(r.attend_days), "late_count": r.late_count,
+        "late_minutes": r.late_minutes, "absent_days": r.absent_days,
+        "overtime_hours": float(r.overtime_hours), "leave_days": float(r.leave_days),
+        "base_salary": float(r.base_salary), "allowances": float(r.allowances),
+        "overtime_pay": float(r.overtime_pay), "gross_pay": float(r.gross_pay),
+        "attendance_deduction": float(r.attendance_deduction),
+        "social_insurance": float(r.social_insurance),
+        "housing_fund": float(r.housing_fund), "income_tax": float(r.income_tax),
+        "net_pay": float(r.net_pay), "status": r.status,
+        "published_at": str(r.published_at or "") or None,
+    }
+
+
+def _nick_emp_maps(emps):
+    uids = [e.user_id for e in emps]
+    nicks = {u.id: (u.nickname or "") for u in User.select(User.id, User.nickname).where(
+        User.id.in_(uids))} if uids else {}
+    return nicks, {e.id: e for e in emps}
+
+
+@manager.route("/hr/salary-profile", methods=["GET"])
+@permission_required("hr_manage")
+async def hr_salary_profile_list():
+    keyword = (request.args.get("keyword") or "").strip()
+    query = HrSalaryProfile.select()
+    if keyword:
+        # 关键词匹配昵称或工号，命中员工集合为空时直接返回空列表
+        matched_uids = [u.id for u in User.select(User.id).where(
+            User.nickname.contains(keyword))]
+        emp_ids = {e.id for e in HrEmployee.select(HrEmployee.id).where(
+            HrEmployee.emp_no.contains(keyword))}
+        if matched_uids:
+            emp_ids.update(e.id for e in HrEmployee.select(HrEmployee.id).where(
+                HrEmployee.user_id.in_(matched_uids)))
+        if not emp_ids:
+            return get_json_result(data={"list": [], "total": 0})
+        query = query.where(HrSalaryProfile.employee_id.in_(emp_ids))
+    rows = list(query)
+    emps = list(HrEmployee.select().where(
+        HrEmployee.id.in_([p.employee_id for p in rows]))) if rows else []
+    nicks, emp_map = _nick_emp_maps(emps)
+    return get_json_result(data={
+        "list": [_profile_dict(p, nicks, emp_map) for p in rows], "total": len(rows)})
+
+
+@manager.route("/hr/salary-profile", methods=["PUT"])
+@permission_required("hr_manage")
+async def hr_salary_profile_put():
+    body = await request.get_json(silent=True) or {}
+    emp = HrEmployee.get_or_none(HrEmployee.id == body.get("employee_id", ""))
+    if not emp:
+        return get_data_error_result(message="员工不存在")
+    vals = {}
+    for k in _AMOUNT_KEYS:
+        if k in body:
+            if not _valid_amount(body[k]):
+                return get_data_error_result(message=f"{k} 必须是非负数字")
+            vals[k] = body[k]
+    for k in ("social_rate", "fund_rate"):
+        if k in body and body[k] is not None:
+            v = body[k]
+            if isinstance(v, bool) or not isinstance(v, (int, float)) \
+                    or not math.isfinite(v) or not (0 <= v <= 0.3):
+                return get_data_error_result(message=f"{k} 应在 [0, 0.3] 区间内")
+            vals[k] = v
+    if "manual_overrides" in body:
+        ov = body.get("manual_overrides")
+        if not isinstance(ov, dict) or set(ov.keys()) - _OVERRIDE_KEYS:
+            return get_data_error_result(message="manual_overrides 仅接受 social/fund/tax 键")
+        clean_ov = {}
+        for ok_key, ov_val in ov.items():
+            if ov_val is None:
+                continue
+            if not _valid_amount(ov_val):
+                return get_data_error_result(message=f"覆盖项 {ok_key} 必须是非负数字")
+            clean_ov[ok_key] = ov_val
+        vals["manual_overrides"] = json.dumps(clean_ov, ensure_ascii=False)
+    try:
+        row = HrSalaryProfileService.upsert_profile(emp.id, vals)
+    except ValueError as e:
+        return get_data_error_result(message=str(e))
+    nicks, emp_map = _nick_emp_maps([emp])
+    return get_json_result(data=_profile_dict(row, nicks, emp_map))
+
+
+def _trial_targets(employee_id):
+    """待核算员工集合：指定 id 时单查，否则全体在职。"""
+    if employee_id:
+        emp = HrEmployee.get_or_none(HrEmployee.id == employee_id)
+        return [emp] if emp else []
+    return list(HrEmployee.select().where(HrEmployee.status == "active"))
+
+
+@manager.route("/hr/salary/trial", methods=["POST"])
+@permission_required("hr_manage")
+async def hr_salary_trial():
+    body = await request.get_json(silent=True) or {}
+    month = str(body.get("month") or "").strip()
+    if not _parse_month(month):
+        return get_data_error_result(message="month 格式应为 YYYY-MM")
+    targets = _trial_targets(str(body.get("employee_id") or "").strip())
+    rule = HrRuleConfigService.get_config()
+    nicks, _ = _nick_emp_maps(targets)
+    results = []
+    for emp in targets:
+        try:
+            r = HrPayslipService.compute_for_employee(emp.id, month, rule)
+        except ValueError as e:
+            results.append({"employee_id": emp.id, "nickname": nicks.get(emp.user_id, ""),
+                            "emp_no": emp.emp_no, "ok": False, "reason": str(e)})
+            continue
+        results.append({"employee_id": emp.id, "nickname": nicks.get(emp.user_id, ""),
+                        "emp_no": emp.emp_no, "ok": True, **r})
+    return get_json_result(data={"month": month, "list": results, "total": len(results)})
+
+
+@manager.route("/hr/salary/calc", methods=["POST"])
+@permission_required("hr_manage")
+async def hr_salary_calc():
+    body = await request.get_json(silent=True) or {}
+    month = str(body.get("month") or "").strip()
+    if not _parse_month(month):
+        return get_data_error_result(message="month 格式应为 YYYY-MM")
+    rule = HrRuleConfigService.get_config()
+    ok_count, failed = 0, []
+    for emp in _trial_targets(""):
+        try:
+            r = HrPayslipService.compute_for_employee(emp.id, month, rule)
+            mrow = HrAttendanceMonth.get_or_none(
+                HrAttendanceMonth.employee_id == emp.id, HrAttendanceMonth.month == month)
+            HrPayslipService.save_draft(emp.id, month, r, mrow)
+            ok_count += 1
+        except ValueError as e:  # 单人失败不中断全员
+            failed.append({"employee_id": emp.id, "reason": str(e)})
+        except Exception as e:
+            logger.exception("salary calc failed for %s", emp.id)
+            failed.append({"employee_id": emp.id, "reason": f"核算异常：{e}"})
+    return get_json_result(data={"month": month, "ok": ok_count, "failed": failed})
+
+
+@manager.route("/hr/salary/publish", methods=["POST"])
+@permission_required("hr_manage")
+async def hr_salary_publish():
+    body = await request.get_json(silent=True) or {}
+    month = str(body.get("month") or "").strip()
+    if not _parse_month(month):
+        return get_data_error_result(message="month 格式应为 YYYY-MM")
+    # 条件更新防并发/防重复发布：仅 draft 行推进，published 不受影响
+    n = (HrPayslip.update(status="published", published_at=datetime.now())  # noqa: DTZ005
+         .where(HrPayslip.month == month, HrPayslip.status == "draft").execute())
+    return get_json_result(data={"month": month, "published": n})
+
+
+@manager.route("/hr/salary/payslips", methods=["GET"])
+@permission_required("hr_manage")
+async def hr_salary_payslips():
+    month = request.args.get("month", "")
+    if not _parse_month(month):
+        return get_data_error_result(message="month 格式应为 YYYY-MM")
+    rows = list(HrPayslip.select().where(
+        HrPayslip.month == month).order_by(HrPayslip.employee_id))
+    emps = list(HrEmployee.select().where(
+        HrEmployee.id.in_([r.employee_id for r in rows]))) if rows else []
+    nicks, emp_map = _nick_emp_maps(emps)
+    return get_json_result(data={
+        "month": month,
+        "list": [_payslip_dict(r, nicks, emp_map) for r in rows],
+        "total": len(rows)})
+
+
+@manager.route("/hr/payslip/my", methods=["GET"])
+@login_required
+async def hr_payslip_my():
+    emp, err = _require_employee()
+    if err:
+        return err
+    month = request.args.get("month", "")
+    if not _parse_month(month):
+        month = date.today().strftime("%Y-%m")  # noqa: DTZ011
+    row = HrPayslip.get_or_none(
+        HrPayslip.employee_id == emp.id, HrPayslip.month == month,
+        HrPayslip.status == "published")
+    if not row:
+        return get_json_result(data={"month": month, "payslip": None})
+    return get_json_result(data={"month": month, "payslip": _payslip_dict(row)})
