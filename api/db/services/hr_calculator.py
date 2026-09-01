@@ -87,6 +87,24 @@ def _in_abnormal_window(pt, rule):
     return start <= t <= end
 
 
+def _is_holiday(work_date, rule):
+    return str(work_date) in [d.strip() for d in str(rule.get("holidays") or "").split(",") if d.strip()]
+
+
+def _calc_overtime_hours(punches, work_date, rule, day_status):
+    """工作日: last_out 超过 work_end 的时长；休息日/节假日: 首末打卡跨度。
+    非 normal/late/rest 状态不计加班。保留 2 位小数。"""
+    if day_status not in ("normal", "late", "rest") or not punches:
+        return 0.0
+    last = punches[-1]["punch_time"]
+    if work_date.weekday() < 5 and not _is_holiday(work_date, rule):
+        work_end = _parse_hm(rule.get("work_end"), time(18, 0))
+        delta = last - datetime.combine(work_date, work_end)
+        return round(max(0.0, delta.total_seconds() / 3600), 2)
+    first = punches[0]["punch_time"]
+    return round(max(0.0, (last - first).total_seconds() / 3600), 2)
+
+
 def derive_day_status(records, work_date, rule, leave_status=None):
     """推导某员工某天的考勤状态。
 
@@ -97,7 +115,7 @@ def derive_day_status(records, work_date, rule, leave_status=None):
     """
     status = {
         "status": "missing", "first_in": None, "last_out": None,
-        "late_minutes": 0, "punch_count": 0,
+        "late_minutes": 0, "punch_count": 0, "overtime_hours": 0.0,
     }
     punches = dedup_punch_records(records)
     status["punch_count"] = len(punches)
@@ -118,6 +136,7 @@ def derive_day_status(records, work_date, rule, leave_status=None):
     # 3) 休息日（周末）：不缺卡概念，打卡照记（供 P3 加班统计）
     if work_date.weekday() >= 5:
         status["status"] = "rest"
+        status["overtime_hours"] = _calc_overtime_hours(punches, work_date, rule, "rest")
         return status
 
     # 4) 工作日无打卡 → 缺卡（月度确认时 missing→absent）
@@ -139,6 +158,7 @@ def derive_day_status(records, work_date, rule, leave_status=None):
             (first_in - datetime.combine(work_date, work_start)).total_seconds() // 60)
     else:
         status["status"] = "normal"
+    status["overtime_hours"] = _calc_overtime_hours(punches, work_date, rule, status["status"])
     return status
 
 

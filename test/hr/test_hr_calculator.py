@@ -189,3 +189,44 @@ def test_leave_overrides_missing_and_abnormal():
     from api.db.services.hr_calculator import derive_day_status
     r = derive_day_status([], D, DEFAULT_RULE, leave_status="leave")
     assert r["status"] == "leave"
+
+
+# ── P3: 加班时长推导 ──
+
+def test_overtime_weekday_after_work_end():
+    # 18:30 下班 → 0.5h 加班
+    r = derive_day_status([punch(9, 0), punch(18, 30)], D, DEFAULT_RULE)
+    assert r["overtime_hours"] == 0.5
+
+
+def test_overtime_weekday_none_before_end():
+    r = derive_day_status([punch(9, 0), punch(18, 0)], D, DEFAULT_RULE)
+    assert r["overtime_hours"] == 0
+
+
+def test_overtime_weekend_full_span():
+    # 周六 10:00-14:00 → 4h
+    r = derive_day_status([punch(10, 0), punch(14, 0)], SAT, DEFAULT_RULE)
+    assert r["overtime_hours"] == 4.0
+
+
+def test_overtime_leave_day_zero():
+    r = derive_day_status([punch(9, 0), punch(20, 0)], D, DEFAULT_RULE, leave_status="leave")
+    assert r["overtime_hours"] == 0
+
+
+def test_overtime_missing_day_zero():
+    r = derive_day_status([], D, DEFAULT_RULE)
+    assert r["overtime_hours"] == 0
+
+
+def test_overtime_holiday_treated_as_rest():
+    # 法定节假日全天打卡按休息日口径算跨度
+    rule = {**DEFAULT_RULE, "holidays": "2026-09-02"}
+    r = derive_day_status([punch(9, 0), punch(13, 0)], D, rule)
+    assert r["overtime_hours"] == 4.0
+
+
+def test_overtime_abnormal_zero():
+    r = derive_day_status([punch(23, 30)], D, DEFAULT_RULE)
+    assert r["overtime_hours"] == 0
