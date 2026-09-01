@@ -522,6 +522,50 @@ describe('diffBlocks 表格', () => {
     }
   });
 
+  it('文本与格式同时变 → runs 携带（对齐正文段 edits 语义）', () => {
+    const b = {
+      ...cellBlock(0, 0, '甲改'),
+      runs: [{ text: '甲改', bold: true }],
+      fmtSig: '[{"bold":true}]',
+    };
+    const ops = diffBlocks(
+      [b, cellBlock(0, 1, '乙')],
+      [tablePara],
+      tableBaseline,
+    );
+    expect('error' in ops).toBe(false);
+    if (!('error' in ops)) {
+      expect(ops.tableEdits).toEqual([
+        {
+          paraIndex: 3,
+          row: 0,
+          col: 0,
+          newText: '甲改',
+          runs: [{ text: '甲改', bold: true }],
+        },
+      ]);
+    }
+  });
+
+  it('基线 text 带首尾空格 → 对称 trim 不产生幻影 edit', () => {
+    const baseline: typeof tableBaseline = new Map([
+      [
+        3,
+        [
+          { row: 0, col: 0, colSpan: 1, header: false, text: ' 甲 ' },
+          { row: 0, col: 1, colSpan: 1, header: false, text: '乙' },
+        ],
+      ],
+    ]);
+    const ops = diffBlocks(
+      [cellBlock(0, 0, '甲'), cellBlock(0, 1, '乙')],
+      [tablePara],
+      baseline,
+    );
+    expect('error' in ops).toBe(false);
+    if (!('error' in ops)) expect(ops.count).toBe(0);
+  });
+
   it('基线缺失（解析失败）→ 该表不产生任何改动（保护）', () => {
     const ops = diffBlocks([cellBlock(0, 0, '甲改')], [tablePara], new Map());
     expect('error' in ops).toBe(false);

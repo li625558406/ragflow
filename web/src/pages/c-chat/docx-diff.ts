@@ -125,23 +125,20 @@ export function diffBlocks(
         // 单元格 diff：基线缺失/网格错位 → 跳过（保护）；空文本是清空格，不是 delete
         const base = tableBaselines?.get(idx);
         if (base) {
-          const bc = base.find(
-            (x) => x.row === b.cell!.row && x.col === b.cell!.col,
-          );
+          const cell = b.cell;
+          const bc = base.find((x) => x.row === cell.row && x.col === cell.col);
           if (bc) {
             const text = b.text.trim();
-            const pureFmt =
-              text === bc.text.trim() &&
-              b.runs &&
-              b.fmtSig &&
-              b.fmtSig !== '[]';
-            if (text !== bc.text.trim() || pureFmt) {
+            // 与正文段 edits 同语义：文本变或纯格式变都产生 op；
+            // runs 只要存在且签名非空就携带（文本+格式同时变时不丢格式）
+            const hasRuns = !!(b.runs && b.fmtSig && b.fmtSig !== '[]');
+            if (text !== bc.text.trim() || hasRuns) {
               tableEdits.push({
                 paraIndex: idx,
-                row: b.cell.row,
-                col: b.cell.col,
+                row: cell.row,
+                col: cell.col,
                 newText: text,
-                ...(pureFmt ? { runs: b.runs } : {}),
+                ...(hasRuns ? { runs: b.runs } : {}),
               });
             }
           }
