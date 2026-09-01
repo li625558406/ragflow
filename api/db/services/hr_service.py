@@ -34,8 +34,10 @@ class HrEmployeeService(CommonService):
             raise ValueError("工号已存在")
         if not User.get_or_none(User.id == user_id):
             raise ValueError("用户不存在")
-        return cls.insert(user_id=user_id, emp_no=emp_no, department=department,
-                          position=position, entry_date=entry_date, status="active")
+        # CommonService.insert 返回 Peewee save() 的受影响行数（int），须回查实例
+        cls.insert(user_id=user_id, emp_no=emp_no, department=department,
+                   position=position, entry_date=entry_date, status="active")
+        return cls.get_by_user(user_id)
 
 
 class HrRuleConfigService(CommonService):
@@ -76,8 +78,11 @@ class HrAttendanceRecordService(CommonService):
         ).exists()
         if dup:
             raise ValueError("重复打卡：该分钟已有打卡记录")
-        return cls.insert(employee_id=employee_id, punch_time=pt, source=source,
-                          ip_address=ip, remark=remark)
+        # insert 返回 int（受影响行数），显式生成 id 后回查实例供端点取 rec.id/punch_time
+        rid = get_uuid()
+        cls.insert(id=rid, employee_id=employee_id, punch_time=pt, source=source,
+                   ip_address=ip, remark=remark)
+        return cls.model.get_by_id(rid)
 
     @classmethod
     def list_day(cls, employee_id: str, work_date: date) -> list:
@@ -113,8 +118,10 @@ class HrAttendanceDayService(CommonService):
             row.update_time = current_timestamp()
             row.save()
             return row
-        return cls.insert(id=get_uuid(), employee_id=employee_id, work_date=work_date,
-                          locked=locked, **fields)
+        rid = get_uuid()
+        cls.insert(id=rid, employee_id=employee_id, work_date=work_date,
+                   locked=locked, **fields)
+        return cls.model.get_by_id(rid)
 
     @classmethod
     def month_days(cls, employee_id: str, month: str) -> list:
