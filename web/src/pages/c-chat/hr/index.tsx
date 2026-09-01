@@ -21,7 +21,7 @@ type SubTabKey = (typeof SUB_TABS)[number]['key'];
 export default function HrView() {
   const [sub, setSub] = useState<SubTabKey>('attendance');
   const { hasPermission } = usePermission();
-  // 过滤式生成：考勤/请假/薪签对全员可见，报表仅 hr_manage
+  // 过滤式生成：考勤/请假/薪资对全员可见，报表仅 hr_manage
   const visibleTabs = SUB_TABS.filter(
     (t) => !('permission' in t) || hasPermission(t.permission),
   );

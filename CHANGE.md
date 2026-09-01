@@ -1,5 +1,28 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-01 人事模块 P4：财务凭证报表 + 考勤机API预留（功能点15-20）
+
+**主题**：人事页签新增「报表」子页签（仅 hr_manage 可见），交付工资手工调整（留痕+stale 提示）、财务凭证生成（计提/发放，借贷平衡断言）、3 种 Excel 报表导出、历史归档检索、考勤机批量同步预留端点。
+
+**核心变更**：
+- 新增3张表：hr_payslip_adjust（调整日志 old/new 全留痕）/ hr_voucher（月度凭证，(month, voucher_type) 唯一，重生成覆盖，status normal|stale）/ hr_attendance_import（同步批次留痕，失败明细前50条）
+- 凭证纯函数 build_voucher_entries：accrue=借「管理费用—工资」/贷「应付职工薪酬」；pay=借「应付职工薪酬」/贷个税+社保+公积金+银行存款，逐行校验恒等式 `net = gross − att − social − fund − tax`（脏数据行抛 ValueError 带 employee_id）；仅从 published 工资单汇总
+- 工资手工调整闭环：仅 published 可调，field 白名单（考勤扣款/社保/公积金/个税），强制 reason，条件更新防竞态，net 重算落盘 + 调整日志；该月 pay 凭证已生成时标记 stale 提示重生成；前端 salary-view 工资单行内「调整」表单（e65b9e3 补齐操作入口）
+- 3 种报表导出（openpyxl 内存构建流式下载）：考勤月汇总 / 工资发放明细 / 社保公积金个税汇总；文件名 UTF-8 filename* + ASCII fallback；单元格字符串首字符 `= + - @` 前缀单引号防 Excel 公式注入
+- 历史归档检索：month/department/keyword 三条件可选（至少一个），keyword 工号/昵称 OR 匹配，附当月 payslip 状态与实发
+- 考勤机预留：POST /hr/attendance/sync-api（api_sync）与 /hr/attendance/import（manual_excel，本期接受 JSON records）共用 batch_punch——逐条同分钟去重、失败收集不中断（非 dict 记录 safe 兜底）、批次留痕；2000 条批量卸载 thread_pool_exec 不阻塞事件循环
+- 前端 report-view.tsx：报表导出卡/凭证卡（计提蓝发放绿徽章+entries 借贷表格+stale 标记）/调整记录卡/归档检索卡/考勤机导入卡；exportReport 独立 fetch+blob+Content-Disposition 文件名解析
+
+**偏差说明**：
+- Excel 文件解析预留后续迭代（本期 import 接受 JSON records 数组）
+- hr_finance 权限未启用，P4 端点暂挂 hr_manage（与 P3 口径一致）
+- 凭证全月汇总一张、不分部门（简化口径）
+- 连续二次 adjust 时 voucher_stale 布尔可能失真（MySQL changed-rows 语义，同值更新 rowcount=0，信息级不修）
+
+**测试**：test/hr/ 73 passed；ruff 基线不增长（hr_service 8 / hr_app 7 / 新文件 0）；tsc 零 hr 报错。
+
+**遗留**：待部署联调（后端成套 SCP：db_models/hr_calculator/hr_service/hr_payroll/hr_app + 前端 build）。
+
 ## 2026-09-01 人事模块 P4 质量审查修复（后端 10 项）
 
 **主题**：P4 财务凭证/报表/考勤机导入端点的后端质量审查（Critical 1 + Major 4 + 建议 3）逐项修复。
@@ -13,7 +36,7 @@
 - Excel 公式注入防御：`_build_xlsx` 字符串首字符 `= + - @` 前缀单引号
 - 凭证 stale 状态标记：adjust 时条件更新已存在 pay 凭证 `status="stale"`，generate 重生成恢复 `normal`；批次留痕 insert 包 try/except（`logger.exception` 不吞成功结果）；Content-Disposition 补 ASCII fallback `filename="report.xlsx"`
 
-**测试**：test/hr/ 73 passed（61 + 新增 12 行用例：bool/1e12 拒绝、上限边界、脏 net 行拒绝含 employee_id 报文）；ruff hr_service 8 / hr_app 7 / hr_payroll 0 / test 0 不增长。
+**测试**：test/hr/ 73 passed（70 存量 + 新增 3 行用例：bool/1e12 拒绝、上限边界、脏 net 行拒绝含 employee_id 报文）；ruff hr_service 8 / hr_app 7 / hr_payroll 0 / test 0 不增长。
 
 **遗留**：Excel 注入防御为 hr_app 内部函数，纯函数级单测不可行，依赖代码审查验证；#10（量级小）暂不处理。
 
