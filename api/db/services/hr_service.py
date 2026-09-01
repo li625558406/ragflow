@@ -3,6 +3,8 @@ import calendar
 import json
 from datetime import date, datetime, time, timedelta
 
+from peewee import IntegrityError
+
 from api.db.db_models import (
     DB,
     HrAttendanceDay,
@@ -516,16 +518,22 @@ class HrSalaryProfileService(CommonService):
                    "transport_allowance", "social_base", "fund_base",
                    "special_deduction", "social_rate", "fund_rate"}
         vals = {k: data[k] for k in allowed if k in data}
-        if row:
-            for k, v in vals.items():
-                setattr(row, k, v)
-            row.update_time = current_timestamp()
-            row.save()
-            return row
-        rid = get_uuid()
-        # CommonService.insert 返回受影响行数（int），显式生成 id 后回查实例
-        cls.insert(id=rid, employee_id=employee_id, **vals)
-        return cls.model.get_by_id(rid)
+        if not row:
+            rid = get_uuid()
+            try:
+                # CommonService.insert 返回受影响行数（int），显式生成 id 后回查实例
+                cls.insert(id=rid, employee_id=employee_id, **vals)
+                return cls.model.get_by_id(rid)
+            except IntegrityError:
+                # 并发插入撞 employee_id 唯一约束 → 回查已有行改走更新分支
+                row = cls.model.get_or_none(cls.model.employee_id == employee_id)
+                if not row:
+                    raise  # 非唯一约束冲突，原样上抛
+        for k, v in vals.items():
+            setattr(row, k, v)
+        row.update_time = current_timestamp()
+        row.save()
+        return row
 
 
 class HrPayslipService(CommonService):
@@ -533,23 +541,23 @@ class HrPayslipService(CommonService):
 
     @classmethod
     def _prev_snapshot(cls, employee_id: str, month: str):
-        """本人 month 前一个有 snapshot 的 payslip（逐月回退最多12次）。"""
-        y, m = int(month[:4]), int(month[5:7])
-        for _ in range(12):
-            m -= 1
-            if m == 0:
-                y, m = y - 1, 12
-            row = cls.model.get_or_none(
-                cls.model.employee_id == employee_id, cls.model.month == f"{y:04d}-{m:02d}")
-            if row:
-                try:
-                    snap = json.loads(row.tax_snapshot or "{}")
-                except ValueError:
-                    return None
-                if snap and not snap.get("overridden"):
-                    return snap
-                return None  # 上月被手工覆盖，累计链断点，按首月重算
-        return None
+        """本人 month 之前最近一条 payslip 的有效 snapshot（单条倒序查询）。
+
+        month 为零填充 'YYYY-MM'，字典序即时间序。无历史行 / snapshot 坏 JSON /
+        被手工覆盖(overridden) → None（累计链断点，按首月重算）。
+        """
+        row = (cls.model.select().where(
+               cls.model.employee_id == employee_id, cls.model.month < month)
+               .order_by(cls.model.month.desc()).first())
+        if not row:
+            return None
+        try:
+            snap = json.loads(row.tax_snapshot or "{}")
+        except ValueError:
+            return None
+        if snap and not snap.get("overridden"):
+            return snap
+        return None  # 最近一条被手工覆盖，累计链断点，按首月重算
 
     @classmethod
     def compute_for_employee(cls, emp_id: str, month: str, rule: dict) -> dict:
@@ -595,31 +603,51 @@ class HrPayslipService(CommonService):
                  "absent_days": mrow.absent_days, "overtime": ot}
         prev = cls._prev_snapshot(emp_id, month)
         month_idx = mon
-        return calc_payslip(profile_dict, stats, profile_dict["base_salary"], rule,
-                            prev_snap=prev, month_idx=month_idx)
+        result = calc_payslip(profile_dict, stats, profile_dict["base_salary"], rule,
+                              prev_snap=prev, month_idx=month_idx)
+        # 附带月汇总行供 calc 端点复用（省一次重复查询）；trial 端点白名单输出不会透出
+        result["_mrow"] = mrow
+        return result
+
+    @classmethod
+    def _update_draft(cls, row, vals: dict, emp_id: str, month: str):
+        """条件更新已存在行：仅 status=="draft" 可覆盖（I1 修复：与 publish 端点
+        竞态时 get-then-save 窗口曾可篡改已发布工资单）。rowcount==0 时重查行定位原因。"""
+        n = (cls.model.update(**vals, update_time=current_timestamp())
+             .where(cls.model.id == row.id, cls.model.status == "draft").execute())
+        if n == 0:
+            fresh = cls.model.get_or_none(cls.model.id == row.id)
+            if fresh and fresh.status == "published":
+                raise ValueError(f"员工 {emp_id} 的 {month} 工资单已发布，不可覆盖")
+            raise ValueError(f"员工 {emp_id} 的 {month} 工资单保存失败：状态已变化，请重试")
+        return cls.model.get_by_id(row.id)
 
     @classmethod
     def save_draft(cls, emp_id: str, month: str, r: dict, mrow) -> object:
-        """upsert draft（published 拒绝覆盖）。"""
-        row = cls.model.get_or_none(
-            cls.model.employee_id == emp_id, cls.model.month == month)
+        """upsert draft（published 拒绝覆盖）。
+
+        并发防护：更新走「条件更新+rowcount」；插入撞 (employee_id, month) 唯一
+        约束时回查已有行改走条件更新路径（仍受 published 拒绝保护）。
+        """
         vals = {k: r[k] for k in ("base_salary", "allowances", "overtime_pay", "gross_pay",
                                   "attendance_deduction", "social_insurance",
                                   "housing_fund", "income_tax", "net_pay")}
         vals.update(overtime_hours=float(mrow.overtime_hours),
                     tax_snapshot=json.dumps(r.get("tax_snapshot", {}),
                                             ensure_ascii=False))
-        if row:
-            if row.status == "published":
-                raise ValueError(f"员工 {emp_id} 的 {month} 工资单已发布，不可覆盖")
-            for k, v in vals.items():
-                setattr(row, k, v)
-            row.update_time = current_timestamp()
-            row.save()
-            return row
-        rid = get_uuid()
-        cls.insert(id=rid, employee_id=emp_id, month=month,
-                   attend_days=float(mrow.attend_days), late_count=mrow.late_count,
-                   late_minutes=mrow.late_minutes, absent_days=mrow.absent_days,
-                   leave_days=float(mrow.leave_days), status="draft", **vals)
-        return cls.model.get_by_id(rid)
+        row = cls.model.get_or_none(
+            cls.model.employee_id == emp_id, cls.model.month == month)
+        if not row:
+            rid = get_uuid()
+            try:
+                cls.insert(id=rid, employee_id=emp_id, month=month,
+                           attend_days=float(mrow.attend_days), late_count=mrow.late_count,
+                           late_minutes=mrow.late_minutes, absent_days=mrow.absent_days,
+                           leave_days=float(mrow.leave_days), status="draft", **vals)
+                return cls.model.get_by_id(rid)
+            except IntegrityError:
+                row = cls.model.get_or_none(
+                    cls.model.employee_id == emp_id, cls.model.month == month)
+                if not row:
+                    raise  # 非唯一约束冲突（如字段超长），原样上抛
+        return cls._update_draft(row, vals, emp_id, month)

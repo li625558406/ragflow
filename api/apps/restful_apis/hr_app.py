@@ -22,7 +22,11 @@ from api.db.db_models import (
     HrSalaryProfile,
     User,
 )
-from api.db.services.hr_calculator import derive_day_status, leave_status_for_date
+from api.db.services.hr_calculator import (
+    derive_day_status,
+    leave_status_for_date,
+    normalize_holidays,
+)
 from api.db.services.hr_service import (
     HrAttendanceDayService,
     HrAttendanceMonthService,
@@ -340,10 +344,18 @@ _NUMERIC_RULE_KEYS = {
 
 
 def _sanitize_rule_payload(body: dict) -> dict:
-    """数值键强转 float（失败拒绝），其余键只接受 str，防毒化配置导致全线500。"""
+    """数值键强转 float（失败拒绝），其余键只接受 str，防毒化配置导致全线500。
+
+    holidays 键额外做格式校验（逗号分隔 YYYY-MM-DD，M6）。
+    """
     clean = {}
     for k, v in (body or {}).items():
-        if k in _NUMERIC_RULE_KEYS:
+        if k == "holidays":
+            normalized = normalize_holidays(v)
+            if normalized is None:
+                raise ValueError("holidays 应为逗号分隔的 YYYY-MM-DD 列表")
+            clean[k] = normalized
+        elif k in _NUMERIC_RULE_KEYS:
             try:
                 value = float(v)
                 if not math.isfinite(value):
@@ -546,10 +558,11 @@ _OVERRIDE_KEYS = {"social", "fund", "tax"}
 
 
 def _valid_amount(v):
-    """金额：数字、非负、有限。"""
+    """金额：数字、非负、有限，且不超过 DecimalField(10,2) 上限 9999_9999（M4，
+    防超限落库 DataError）。"""
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         return False
-    return math.isfinite(v) and v >= 0
+    return math.isfinite(v) and 0 <= v <= 99_999_999
 
 
 def _profile_dict(p, nick_map=None, emp_map=None) -> dict:
@@ -672,6 +685,13 @@ def _trial_targets(employee_id):
     return list(HrEmployee.select().where(HrEmployee.status == "active"))
 
 
+# trial 响应白名单（M8）：只透出金额明细 + tax_snapshot（保留：HR 需核对个税累计
+# 预扣中间量）；_soc_calculated/_fund_calculated/_mrow 为内部字段，不透出前端
+_TRIAL_KEYS = ("base_salary", "allowances", "overtime_pay", "gross_pay",
+               "attendance_deduction", "social_insurance", "housing_fund",
+               "income_tax", "net_pay", "tax_snapshot")
+
+
 @manager.route("/hr/salary/trial", methods=["POST"])
 @permission_required("hr_manage")
 async def hr_salary_trial():
@@ -691,7 +711,8 @@ async def hr_salary_trial():
                             "emp_no": emp.emp_no, "ok": False, "reason": str(e)})
             continue
         results.append({"employee_id": emp.id, "nickname": nicks.get(emp.user_id, ""),
-                        "emp_no": emp.emp_no, "ok": True, **r})
+                        "emp_no": emp.emp_no, "ok": True,
+                        **{k: r[k] for k in _TRIAL_KEYS}})
     return get_json_result(data={"month": month, "list": results, "total": len(results)})
 
 
@@ -707,15 +728,14 @@ async def hr_salary_calc():
     for emp in _trial_targets(""):
         try:
             r = HrPayslipService.compute_for_employee(emp.id, month, rule)
-            mrow = HrAttendanceMonth.get_or_none(
-                HrAttendanceMonth.employee_id == emp.id, HrAttendanceMonth.month == month)
+            mrow = r.pop("_mrow")  # compute 时随结果带回，省一次重复查询（I3）
             HrPayslipService.save_draft(emp.id, month, r, mrow)
             ok_count += 1
         except ValueError as e:  # 单人失败不中断全员
             failed.append({"employee_id": emp.id, "reason": str(e)})
-        except Exception as e:
+        except Exception:  # M11：不回显原始异常细节，仅日志留痕
             logger.exception("salary calc failed for %s", emp.id)
-            failed.append({"employee_id": emp.id, "reason": f"核算异常：{e}"})
+            failed.append({"employee_id": emp.id, "reason": "核算异常，请联系管理员"})
     return get_json_result(data={"month": month, "ok": ok_count, "failed": failed})
 
 
@@ -726,7 +746,9 @@ async def hr_salary_publish():
     month = str(body.get("month") or "").strip()
     if not _parse_month(month):
         return get_data_error_result(message="month 格式应为 YYYY-MM")
-    # 条件更新防并发/防重复发布：仅 draft 行推进，published 不受影响
+    # 条件更新防并发/防重复发布：仅 draft 行推进，published 不受影响。
+    # published_at 为 DateTimeField，须存 datetime（current_timestamp() 返回毫秒 int
+    # 是 BigIntegerField(update_time) 专用，写入 DATETIME 列会类型错乱），noqa 保留
     n = (HrPayslip.update(status="published", published_at=datetime.now())  # noqa: DTZ005
          .where(HrPayslip.month == month, HrPayslip.status == "draft").execute())
     return get_json_result(data={"month": month, "published": n})

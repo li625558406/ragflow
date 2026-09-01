@@ -5,7 +5,8 @@
 """
 import json
 import logging
-from datetime import datetime, time, timedelta
+import re
+from datetime import date, datetime, time, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,28 @@ def _is_holiday(work_date, rule):
     return str(work_date) in [d.strip() for d in str(rule.get("holidays") or "").split(",") if d.strip()]
 
 
+_HOLIDAY_ITEM_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def normalize_holidays(value):
+    """规范化 holidays 规则值：逗号分隔逐项 strip。
+
+    空值返回 ""；每项须为合法 YYYY-MM-DD 日期，否则返回 None（由调用方拒绝）。
+    """
+    s = str(value or "").strip()
+    if not s:
+        return ""
+    items = [i.strip() for i in s.split(",")]
+    for i in items:
+        if not _HOLIDAY_ITEM_RE.match(i):
+            return None
+        try:
+            date.fromisoformat(i)
+        except ValueError:
+            return None
+    return ",".join(items)
+
+
 def _calc_overtime_hours(punches, work_date, rule, day_status):
     """工作日: last_out 超过 work_end 的时长；休息日/节假日: 首末打卡跨度。
     非 normal/late/rest 状态不计加班。保留 2 位小数。"""
@@ -133,8 +156,10 @@ def derive_day_status(records, work_date, rule, leave_status=None):
         status["status"] = "abnormal"
         return status
 
-    # 3) 休息日（周末）：不缺卡概念，打卡照记（供 P3 加班统计）
-    if work_date.weekday() >= 5:
+    # 3) 休息日（周末）与法定节假日：不缺卡概念、不判迟到/旷工（C1 修复：
+    #    工作日法定节假日无打卡曾走 missing→absent 被误扣 3 倍日薪），
+    #    打卡照记（供 P3 加班统计，节假日按首末跨度计加班）
+    if work_date.weekday() >= 5 or _is_holiday(work_date, rule):
         status["status"] = "rest"
         status["overtime_hours"] = _calc_overtime_hours(punches, work_date, rule, "rest")
         return status

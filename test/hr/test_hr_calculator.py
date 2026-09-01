@@ -1,5 +1,5 @@
 """hr_calculator 对抗性单测：边界值 / 非法输入 / 状态耦合。"""
-from datetime import datetime, date
+from datetime import date, datetime
 
 from api.db.services.hr_calculator import (
     DEFAULT_RULE,
@@ -230,3 +230,80 @@ def test_overtime_holiday_treated_as_rest():
 def test_overtime_abnormal_zero():
     r = derive_day_status([punch(23, 30)], D, DEFAULT_RULE)
     assert r["overtime_hours"] == 0
+
+
+# ── C1: 法定节假日按休息日口径推导（免打卡/不判迟到/不转旷工）──
+
+HOLIDAY_RULE = {**DEFAULT_RULE, "holidays": "2026-09-02"}  # D 在节假日列表内
+
+
+def test_holiday_no_punch_is_rest_not_missing():
+    """节假日无打卡 → rest，不得走 missing→absent 被扣 3 倍日薪。"""
+    r = derive_day_status([], D, HOLIDAY_RULE)
+    assert r["status"] == "rest"
+    assert r["overtime_hours"] == 0
+    assert r["late_minutes"] == 0
+
+
+def test_holiday_with_punch_is_rest_span_overtime():
+    """节假日全天打卡 → rest，加班按首末跨度计。"""
+    r = derive_day_status([punch(9, 0), punch(13, 0)], D, HOLIDAY_RULE)
+    assert r["status"] == "rest"
+    assert r["overtime_hours"] == 4.0
+
+
+def test_holiday_late_punch_not_marked_late():
+    """节假日打卡晚于 work_start → 不判迟到。"""
+    r = derive_day_status([punch(10, 30), punch(11, 0)], D, HOLIDAY_RULE)
+    assert r["status"] == "rest"
+    assert r["late_minutes"] == 0
+
+
+def test_leave_overrides_holiday():
+    """假单覆盖节假日 → 保持 leave 优先。"""
+    r = derive_day_status([], D, HOLIDAY_RULE, leave_status="leave")
+    assert r["status"] == "leave"
+
+
+def test_holiday_only_listed_dates_are_rest():
+    """不在节假日列表的同为周几的工作日仍按工作日口径（缺卡→missing）。"""
+    other_day = date(2026, 9, 3)  # 周四，不在列表
+    assert other_day.weekday() < 5
+    r = derive_day_status([], other_day, HOLIDAY_RULE)
+    assert r["status"] == "missing"
+
+
+def test_holiday_abnormal_punch_still_abnormal():
+    """节假日窗口内出现异常打卡 → 仍优先 abnormal 待人工确认。"""
+    r = derive_day_status([punch(23, 30)], D, HOLIDAY_RULE)
+    assert r["status"] == "abnormal"
+
+
+# ── M6: normalize_holidays 格式校验 ──
+
+def test_normalize_holidays_empty_and_none():
+    from api.db.services.hr_calculator import normalize_holidays
+    assert normalize_holidays("") == ""
+    assert normalize_holidays(None) == ""
+    assert normalize_holidays("  ") == ""
+
+
+def test_normalize_holidays_valid_single_and_multi():
+    from api.db.services.hr_calculator import normalize_holidays
+    assert normalize_holidays("2026-10-01") == "2026-10-01"
+    assert normalize_holidays("2026-10-01, 2026-10-07") == "2026-10-01,2026-10-07"
+
+
+def test_normalize_holidays_rejects_bad_format():
+    from api.db.services.hr_calculator import normalize_holidays
+    assert normalize_holidays("2026/10/01") is None          # 非法分隔符
+    assert normalize_holidays("2026-10-1") is None           # 未零填充
+    assert normalize_holidays("2026-10-01,,2026-10-07") is None  # 空项
+    assert normalize_holidays("2026-10-01,abc") is None      # 混入非日期
+    assert normalize_holidays("2026-13-01") is None          # 正则过但日期非法
+    assert normalize_holidays("2026-02-30") is None          # 正则过但日期不存在
+
+
+def test_normalize_holidays_trailing_comma_rejected():
+    from api.db.services.hr_calculator import normalize_holidays
+    assert normalize_holidays("2026-10-01,") is None
