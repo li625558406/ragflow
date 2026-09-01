@@ -179,6 +179,14 @@ export interface FlowDocEditOps {
     indent?: number;
     headingLevel?: number;
   }>;
+  /** 单元格级改动（后端 table.cell(r,c) 改写首段、清空多余段） */
+  tableEdits: Array<{
+    paraIndex: number;
+    row: number;
+    col: number;
+    newText: string;
+    runs?: FlowDocRun[];
+  }>;
 }
 
 export async function editFlowDocument(
@@ -200,6 +208,13 @@ export async function editFlowDocument(
         ...(e.headingLevel !== undefined
           ? { heading_level: e.headingLevel }
           : {}),
+      })),
+      table_edits: (ops.tableEdits || []).map((t) => ({
+        para_index: t.paraIndex,
+        row: t.row,
+        col: t.col,
+        new_text: t.newText,
+        ...(t.runs ? { runs: t.runs } : {}),
       })),
       deletes: ops.deletes,
       inserts: ops.inserts.map((i) => ({

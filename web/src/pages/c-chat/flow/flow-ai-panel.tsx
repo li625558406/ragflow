@@ -6,6 +6,7 @@
 import { Button } from '@/components/ui/button';
 import { useHandleMessageInputChange } from '@/hooks/logic-hooks';
 import { useSendMessageBySSE } from '@/hooks/use-send-message';
+import type { FlowDocRun } from '@/services/flow-service';
 import {
   addFlowComment,
   deleteFlowComment,
@@ -562,6 +563,13 @@ export default function FlowAiPanel({
       edits: Array<{ paraIndex: number; newText: string }>;
       deletes: number[];
       inserts: Array<{ afterParaIndex: number; newText: string }>;
+      tableEdits: Array<{
+        paraIndex: number;
+        row: number;
+        col: number;
+        newText: string;
+        runs?: FlowDocRun[];
+      }>;
     }) => {
       if (!version) throw new Error('无版本文件，无法编辑');
       const res = await editFlowDocument(flowId, version.id, ops);

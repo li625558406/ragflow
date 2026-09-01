@@ -1,6 +1,7 @@
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent } from '@/components/ui/sheet';
 import { Textarea } from '@/components/ui/textarea';
+import type { FlowDocRun } from '@/services/flow-service';
 import api from '@/utils/api';
 import request from '@/utils/next-request';
 import type { LexicalEditor } from 'lexical';
@@ -104,6 +105,13 @@ interface ReviewPanelProps {
     edits: Array<{ paraIndex: number; newText: string }>;
     deletes: number[];
     inserts: Array<{ afterParaIndex: number; newText: string }>;
+    tableEdits: Array<{
+      paraIndex: number;
+      row: number;
+      col: number;
+      newText: string;
+      runs?: FlowDocRun[];
+    }>;
   }) => Promise<void> | void;
 }
 
