@@ -315,10 +315,10 @@ class HrLeaveRequestService(CommonService):
         if leave_type == "repair" and start_date != end_date:
             raise ValueError("补卡申请只能选择单日")
         duration = (end_date - start_date).days + 1
-        # 冻结余额（有额度假型）
-        HrLeaveBalanceService.freeze(
-            employee.id, start_date.year, leave_type, duration, rule)
-        try:
+        # freeze + 假单 + 审批步骤 原子化：任一步失败整体回滚（含冻结额度），杜绝孤儿 pending 单
+        with DB.atomic():
+            HrLeaveBalanceService.freeze(
+                employee.id, start_date.year, leave_type, duration, rule)
             chain = cls.resolve_approval_chain(duration, rule)
             rid = get_uuid()
             cls.insert(id=rid, employee_id=employee.id, leave_type=leave_type,
@@ -329,9 +329,6 @@ class HrLeaveRequestService(CommonService):
                 HrLeaveStepService.insert(
                     id=get_uuid(), request_id=rid, step_no=i, approver_id=uid,
                     status="pending" if i == 1 else "waiting")
-        except Exception:
-            HrLeaveBalanceService.release(employee.id, start_date.year, leave_type, duration)
-            raise
         return cls.model.get_by_id(rid)
 
     @classmethod
@@ -350,12 +347,20 @@ class HrLeaveRequestService(CommonService):
         emp = HrEmployee.get_by_id(req.employee_id)
 
         if action == "rejected":
-            step.status = "rejected"
-            step.comment = comment[:255]
-            step.action_time = datetime.now()
-            step.save()
-            req.status = "rejected"
-            req.save()
+            # 条件更新防并发：仅 status=="pending" 时推进一次，并发第二个请求 rowcount==0 直接拒绝
+            n = (HrLeaveStep.update(
+                    status="rejected", comment=comment[:255],
+                    action_time=datetime.now())
+                 .where(HrLeaveStep.id == step.id, HrLeaveStep.status == "pending")
+                 .execute())
+            if n == 0:
+                raise ValueError("当前步骤已处理")
+            n = (HrLeaveRequest.update(status="rejected")
+                 .where(HrLeaveRequest.id == req.id, HrLeaveRequest.status == "pending")
+                 .execute())
+            if n == 0:
+                raise ValueError("假单已结束")
+            req.status = "rejected"  # 同步内存对象供端点返回最新状态
             HrLeaveBalanceService.release(emp.id, req.start_date.year,
                                           req.leave_type, req.duration_days)
             _rewrite_days(emp, req, rule, revert=True)
@@ -378,19 +383,34 @@ class HrLeaveRequestService(CommonService):
             ).exists()
             if dup:
                 raise ValueError("该日期该分钟已有打卡记录，无法补卡")
-        step.status = "approved"
-        step.comment = comment[:255]
-        step.action_time = datetime.now()
-        step.save()
+        # 条件更新防并发：步骤 pending→approved 仅成功一次，终审不会双扣额度
+        n = (HrLeaveStep.update(
+                status="approved", comment=comment[:255],
+                action_time=datetime.now())
+             .where(HrLeaveStep.id == step.id, HrLeaveStep.status == "pending")
+             .execute())
+        if n == 0:
+            raise ValueError("当前步骤已处理")
         if not is_final:
-            nxt.status = "pending"
-            nxt.save()
-            req.current_step += 1
-            req.save()
+            n = (HrLeaveStep.update(status="pending")
+                 .where(HrLeaveStep.id == nxt.id, HrLeaveStep.status == "waiting")
+                 .execute())
+            if n == 0:
+                raise ValueError("当前步骤已处理")
+            n = (HrLeaveRequest.update(current_step=req.current_step + 1)
+                 .where(HrLeaveRequest.id == req.id, HrLeaveRequest.status == "pending")
+                 .execute())
+            if n == 0:
+                raise ValueError("假单已结束")
+            req.current_step += 1  # 同步内存对象供端点返回最新状态
             return req
         # 终审通过
-        req.status = "approved"
-        req.save()
+        n = (HrLeaveRequest.update(status="approved")
+             .where(HrLeaveRequest.id == req.id, HrLeaveRequest.status == "pending")
+             .execute())
+        if n == 0:
+            raise ValueError("假单已结束")
+        req.status = "approved"  # 同步内存对象供端点返回最新状态
         HrLeaveBalanceService.confirm(emp.id, req.start_date.year,
                                       req.leave_type, req.duration_days)
         if req.leave_type == "repair":
@@ -431,7 +451,8 @@ class HrLeaveRequestService(CommonService):
             cls.model.status == "approved",
             cls.model.leave_type != "repair",
             cls.model.start_date <= end,
-            cls.model.end_date >= start))
+            cls.model.end_date >= start).order_by(
+            cls.model.start_date, cls.model.id))
 
     @classmethod
     def pending_for_approver(cls, approver_id: str) -> list:

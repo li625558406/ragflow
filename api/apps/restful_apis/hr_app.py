@@ -31,7 +31,11 @@ from api.db.services.hr_service import (
     QUOTA_KEY,
 )
 from api.utils.api_utils import get_data_error_result, get_json_result
-from api.utils.permission_utils import permission_required
+from api.utils.permission_utils import (
+    get_cached_user_permissions,
+    permission_allowed,
+    permission_required,
+)
 from common.time_utils import current_timestamp
 
 logger = logging.getLogger(__name__)
@@ -448,7 +452,11 @@ async def hr_leave_detail(rid: str):
     if not r:
         return get_data_error_result(message="假单不存在")
     emp = HrEmployeeService.get_by_user(current_user.id)
-    is_hr = current_user.is_superuser  # 审批人/HR 均可看详情，其余仅本人
+    # 不能用 @permission_required（普通员工也要能查自己单子），函数内复用统一权限判定：
+    # 超管或持有 hr_manage 权限者视为 HR
+    is_hr = permission_allowed(
+        bool(current_user.is_superuser),
+        get_cached_user_permissions(current_user.id), "hr_manage")
     step_mine = HrLeaveStep.get_or_none(
         HrLeaveStep.request_id == rid, HrLeaveStep.approver_id == current_user.id)
     if not is_hr and not step_mine and (not emp or emp.id != r.employee_id):
