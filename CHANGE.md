@@ -1,5 +1,31 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-01 人事模块 P3：薪资核算引擎（功能点10-14 + 加班小时数）
+
+**主题**：人事页签新增「薪资」子页签，交付薪资档案管理、加班时长推导（补齐 P1 月汇总缺口）、考勤扣款/加班费/社保公积金/个税累计预扣核算引擎、试算→核算入库→发布工资条闭环。
+
+**核心变更**：
+- 新增2张表：hr_salary_profile（员工薪资档案，employee_id 唯一）/ hr_payslip（月薪资单快照，(employee_id, month) 唯一，status draft|published）
+- 加班时长推导：derive_day_status 输出 overtime_hours——工作日=last_out 超 work_end 时长；休息日/法定节假日（rule.holidays 逗号分隔 YYYY-MM-DD）=首末打卡跨度；leave/abnormal/missing 恒 0；upsert_day/close_month 全量接入
+- 法定节假日免打卡：derive_day_status 将节假日按休息日口径处理（status=rest，不判 missing→absent、不判迟到）——修复「节假日不打卡被扣 3 倍日薪」资金受损路径
+- 核算引擎 hr_payroll.py 纯函数（零 DB 依赖，18 个对抗性单测）：考勤扣款（21.75 日薪制）、加班费（weekday/weekend 单价 + holiday 倍数×日薪）、个税累计预扣 7 级超额累进（tax_snapshot 记 cum_gross/cum_social/cum_fund/cum_special 跨月续算）、应发实发全公式、金额一律 round(2)
+- 核算流程：前置=该月考勤月汇总已 confirmed（否则拒绝）；加班按日归类（holidays→holiday 费率、rest/周末→weekend、其余→weekday）；手工覆盖 manual_overrides（social/fund/tax 数值）命中走覆盖值且 snapshot 留计算原值；draft 幂等重跑（published 条件更新拒绝覆盖）
+- 后端 7 端点：GET/PUT /hr/salary-profile（费率显式 null=清除回退全局）、POST /hr/salary/trial（只读试算）/calc（全员核算入库，单人失败不中断）/publish（draft→published），GET /hr/salary/payslips、GET /hr/payslip/my（员工仅见 published）；HR 端点挂 hr_manage
+- 前端：salary-view.tsx——员工工资条卡片（未发布提示「该月工资条尚未发布」）+ HR 档案管理（keyword 搜索/行内编辑/费率可留空走全局）、试算（失败员工红字显示原因）、核算入库/发布（confirm 强提示）、工资单列表（draft/published 徽章）
+- 规则键：DEFAULT_RULE 新增 social_rate(0.105)/fund_rate(0.12)/holidays("")，holidays 经 normalize_holidays 正则+真日期双重校验入库
+- 质量审查修复：节假日免打卡（Critical）、save_draft 发布竞态改条件更新+rowcount、唯一约束并发 IntegrityError 回查重试、calc 消除重复查询+月快照单条倒序查询替代逐月回退、金额上限 9999 万防 DecimalField 落库 DataError、试算响应白名单防内部字段泄漏、前端试算按 ok 分流渲染
+
+**偏差说明**：
+- 个税跨月续算：上月无快照（含 overridden 断链）时按当月首月起算——设计原文「从1月按当前累计补算」需全量历史收入数据，系统无外部收入源不可得
+- hr_finance 权限未启用：薪资端点暂挂 hr_manage，hr_finance 预留 P4 财务凭证
+- 计划文字「8 端点」实为 7 条路由，按列表实现
+- manual_overrides 暂无前端 UI（仅 API 可设），后续按需补
+- publish 用 datetime.now()（published_at 为 DateTimeField；current_timestamp() 返回毫秒 int 不兼容）
+
+**测试**：test/hr/ 61 passed（26 存量 + 加班推导 7 + 核算引擎 18 + 节假日/normalize_holidays 10）；ruff 新文件 0 告警；tsc 零 hr 报错。
+
+**遗留**：待部署联调（后端 5 文件成套 SCP：db_models/hr_calculator/hr_service/hr_app/hr_payroll + 前端 build）；报表/凭证/导出见 P4。
+
 ## 2026-09-01 人事模块 P2：请假与出差审批联动（功能点6-9 + 员工补卡申请）
 
 **主题**：人事页签新增「请假」子页签，交付假单申请→多级审批→考勤自动修正→假期余额冻结扣减全闭环。
