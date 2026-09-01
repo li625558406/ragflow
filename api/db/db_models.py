@@ -2873,3 +2873,54 @@ class HrAttendanceMonth(DataBaseModel):
     class Meta:
         db_table = "hr_attendance_month"
         indexes = ((("employee_id", "month"), True),)
+
+
+class HrLeaveRequest(DataBaseModel):
+    """假单：区间整天粒度；type=repair 时表示补卡申请（单日）。"""
+    id = CharField(max_length=32, primary_key=True)
+    employee_id = CharField(max_length=32, null=False, index=True, help_text="FK -> hr_employee.id")
+    leave_type = CharField(max_length=16, null=False, default="personal", index=True,
+                           help_text="personal|sick|annual|marriage|maternity|business_trip|other|repair")
+    start_date = DateField(null=False, index=True)
+    end_date = DateField(null=False)
+    duration_days = IntegerField(null=False, default=1, help_text="自然日天数")
+    reason = CharField(max_length=500, null=False, default="")
+    status = CharField(max_length=16, null=False, default="pending", index=True,
+                       help_text="pending|approved|rejected|cancelled")
+    current_step = IntegerField(null=False, default=1, help_text="当前审批步骤序号(1起)")
+    applicant_id = CharField(max_length=32, null=False, default="", help_text="提交人 user_id")
+
+    class Meta:
+        db_table = "hr_leave_request"
+
+
+class HrLeaveStep(DataBaseModel):
+    """审批步骤：提交时按审批链模板实例化，逐步推进。"""
+    id = CharField(max_length=32, primary_key=True)
+    request_id = CharField(max_length=32, null=False, index=True, help_text="FK -> hr_leave_request.id")
+    step_no = IntegerField(null=False, default=1)
+    approver_id = CharField(max_length=32, null=False, help_text="审批人 user_id")
+    status = CharField(max_length=16, null=False, default="pending",
+                       help_text="pending|approved|rejected")
+    comment = CharField(max_length=255, null=False, default="")
+    action_time = DateTimeField(null=True)
+
+    class Meta:
+        db_table = "hr_leave_step"
+        indexes = ((("request_id", "step_no"), True),)
+
+
+class HrLeaveBalance(DataBaseModel):
+    """假期余额：frozen 审批中冻结防并行超扣；通过转 used；驳回/撤销释放。"""
+    id = CharField(max_length=32, primary_key=True)
+    employee_id = CharField(max_length=32, null=False, index=True)
+    year = IntegerField(null=False, index=True)
+    leave_type = CharField(max_length=16, null=False,
+                           help_text="annual|sick|marriage|maternity（有额度假型）")
+    total_days = IntegerField(null=False, default=0)
+    used_days = IntegerField(null=False, default=0)
+    frozen_days = IntegerField(null=False, default=0)
+
+    class Meta:
+        db_table = "hr_leave_balance"
+        indexes = ((("employee_id", "year", "leave_type"), True),)
