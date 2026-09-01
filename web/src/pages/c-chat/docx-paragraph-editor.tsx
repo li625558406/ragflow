@@ -56,6 +56,7 @@ import {
 } from 'lexical';
 import React, { useEffect, useRef } from 'react';
 import {
+  BaselineCell,
   diffBlocks,
   DocxDiffOps,
   DocxSourceParagraph,
@@ -540,8 +541,9 @@ export function $applyDocxBlockType(
 export function collectEditorOps(
   editor: LexicalEditor,
   paragraphs: DocxSourceParagraph[],
+  tableBaselines?: Map<number, BaselineCell[]>,
 ): DocxDiffOps {
-  return diffBlocks(readEditorBlocks(editor), paragraphs);
+  return diffBlocks(readEditorBlocks(editor), paragraphs, tableBaselines);
 }
 
 // ── 插件 ────────────────────────────────────────────────────

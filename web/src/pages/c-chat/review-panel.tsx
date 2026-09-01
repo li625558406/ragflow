@@ -27,6 +27,7 @@ import {
 } from 'react';
 import { diffBlocks, type EditorBlock } from './docx-diff';
 import DocxParagraphEditor, { collectEditorOps } from './docx-paragraph-editor';
+import { parseTableCells, type TableCellInfo } from './docx-table-utils';
 import {
   highlightInTableByAnchor,
   highlightInTableHtml,
@@ -606,6 +607,19 @@ export default function ReviewPanel({
     return m;
   }, [railByPara]);
 
+  // 表格 diff 基线：与初始灌入共用 parseTableCells（同源）；解析失败的表不出现在
+  // Map 里 → diffBlocks 自动跳过该表改动（保护）
+  const tableBaselines = useMemo(() => {
+    const m = new Map<number, TableCellInfo[]>();
+    if (!content) return m;
+    for (const p of content.paragraphs) {
+      if (p.type !== 'table') continue;
+      const cells = parseTableCells(p.text);
+      if (cells.length) m.set(p.index, cells);
+    }
+    return m;
+  }, [content]);
+
   // 未匹配到段落的项（边栏下方兜底展示）
   const unmatched = useMemo(() => {
     const matchedAi = new Set(
@@ -868,7 +882,7 @@ export default function ReviewPanel({
       if (!canEdit || !content) return;
       window.clearTimeout(diffTimer.current);
       diffTimer.current = window.setTimeout(() => {
-        const ops = diffBlocks(blocks, content.paragraphs);
+        const ops = diffBlocks(blocks, content.paragraphs, tableBaselines);
         if ('error' in ops) {
           setDirty(0);
           setEditError(ops.error || '当前改动无法保存');
@@ -878,14 +892,18 @@ export default function ReviewPanel({
         setEditError('');
       }, 250);
     },
-    [canEdit, content],
+    [canEdit, content, tableBaselines],
   );
 
   // 保存：模型 diff 全部改动提交父级写新版本，成功后由新内容重挂载编辑器
   const handleSaveEdits = useCallback(async () => {
     if (!onEditDocument || savingEdits || !editorRef.current || !content)
       return;
-    const ops = collectEditorOps(editorRef.current, content.paragraphs);
+    const ops = collectEditorOps(
+      editorRef.current,
+      content.paragraphs,
+      tableBaselines,
+    );
     if ('error' in ops) {
       setEditError(ops.error || '当前改动无法保存');
       return;
@@ -904,7 +922,7 @@ export default function ReviewPanel({
     } finally {
       setSavingEdits(false);
     }
-  }, [content, onEditDocument, savingEdits]);
+  }, [content, onEditDocument, savingEdits, tableBaselines]);
 
   // 放弃修改：重挂载纸张，丢弃浏览器侧的 DOM 改动
   const handleDiscardEdits = useCallback(() => {
@@ -1217,7 +1235,7 @@ export default function ReviewPanel({
                 </div>
               )}
               <div
-                className="mx-auto w-full max-w-[794px] border border-[#C9C9C9] bg-white px-[72px] py-[64px] shadow-[0_4px_24px_rgba(0,0,0,0.14)]"
+                className="mx-auto w-full max-w-[794px] border border-[#C9C9C9] bg-white px-[72px] py-[64px] shadow-[0_4px_24px_rgba(0,0,0,0.14)] [&_table]:my-2 [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-[#D4D4D4] [&_td]:px-2 [&_td]:py-1 [&_td]:text-[13px] [&_td]:text-[#333333] [&_td]:align-top [&_th]:border [&_th]:border-[#D4D4D4] [&_th]:bg-[#F5F5F5] [&_th]:px-2 [&_th]:py-1 [&_th]:font-bold"
                 style={{
                   fontFamily: "'SimSun', '宋体', 'Times New Roman', serif",
                 }}
