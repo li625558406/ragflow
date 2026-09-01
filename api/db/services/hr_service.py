@@ -706,7 +706,7 @@ class HrVoucherService(CommonService):
         if not rows:
             raise ValueError(f"{month} 无已发布工资单，无法生成凭证")
         r = build_voucher_entries(
-            [{k: float(p.__getattr__(k) or 0) for k in _PSLIP_FLOAT_KEYS} for p in rows],
+            [{k: float(getattr(p, k) or 0) for k in _PSLIP_FLOAT_KEYS} for p in rows],
             voucher_type)
         payload = {"entries": json.dumps(r["entries"], ensure_ascii=False),
                    "total_amount": r["total_amount"], "created_by": operator_id,
@@ -717,21 +717,21 @@ class HrVoucherService(CommonService):
             for k, v in payload.items():
                 setattr(row, k, v)
             row.save()
-        else:
-            rid = get_uuid()
-            try:
-                cls.insert(id=rid, month=month, voucher_type=voucher_type, **payload)
-            except IntegrityError:
-                # 并发生成同一 (month, type) 撞唯一约束 → 回查改走覆盖分支
-                row = cls.model.get_or_none(cls.model.month == month,
-                                            cls.model.voucher_type == voucher_type)
-                if not row:
-                    raise
-                for k, v in payload.items():
-                    setattr(row, k, v)
-                row.save()
-            row = cls.model.get_by_id(rid)
-        return row
+            return row
+        rid = get_uuid()
+        try:
+            cls.insert(id=rid, month=month, voucher_type=voucher_type, **payload)
+            return cls.model.get_by_id(rid)
+        except IntegrityError:
+            # 并发生成同一 (month, type) 撞唯一约束 → 回查改走覆盖分支
+            row = cls.model.get_or_none(cls.model.month == month,
+                                        cls.model.voucher_type == voucher_type)
+            if not row:
+                raise
+            for k, v in payload.items():
+                setattr(row, k, v)
+            row.save()
+            return row
 
     @classmethod
     def list_month(cls, month: str) -> list:
