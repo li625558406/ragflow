@@ -51,6 +51,7 @@ from api.utils.permission_utils import (
     permission_allowed,
     permission_required,
 )
+from common.misc_utils import thread_pool_exec
 from common.time_utils import current_timestamp
 
 logger = logging.getLogger(__name__)
@@ -822,12 +823,20 @@ def _adjust_dict(r, nick_map=None) -> dict:
 
 
 def _build_xlsx(rows: list, headers: list) -> bytes:
-    """openpyxl 内存构建 xlsx：headers = [(字段键, 表头中文), ...]，逐行 append。"""
+    """openpyxl 内存构建 xlsx：headers = [(字段键, 表头中文), ...]，逐行 append。
+
+    公式注入防御：字符串首字符为 = + - @ 时前缀单引号，防止 Excel/WPS 打开时被当公式执行。
+    """
+    def _cell(v):
+        if isinstance(v, str) and v[:1] in ("=", "+", "-", "@"):
+            return "'" + v
+        return v
+
     wb = Workbook()
     ws = wb.active
-    ws.append([title for _, title in headers])
+    ws.append([_cell(title) for _, title in headers])
     for row in rows:
-        ws.append([row.get(k) for k, _ in headers])
+        ws.append([_cell(row.get(k)) for k, _ in headers])
     buf = BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -837,7 +846,8 @@ def _xlsx_response(data: bytes, file_name: str) -> Response:
     return Response(data, mimetype=(
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
         headers={"Content-Disposition":
-                 f"attachment; filename*=UTF-8''{quote(file_name)}"})
+                 'attachment; filename="report.xlsx"; '
+                 f"filename*=UTF-8''{quote(file_name)}"})
 
 
 _ADJUSTABLE_API_FIELDS = ("attendance_deduction", "social_insurance",
@@ -853,9 +863,9 @@ async def hr_salary_payslip_adjust(pid: str):
         return get_data_error_result(
             message=f"field 仅支持：{'/'.join(_ADJUSTABLE_API_FIELDS)}")
     new_value = body.get("new_value")
-    if isinstance(new_value, bool) or not isinstance(new_value, (int, float)) \
-            or not math.isfinite(new_value) or new_value < 0:
-        return get_data_error_result(message="new_value 必须是非负数字")
+    if not _valid_amount(new_value):
+        # bool/非数字/负数/NaN/Inf/超 DecimalField(10,2) 上限均拒绝（与 profile 金额校验同口径）
+        return get_data_error_result(message="new_value 必须是不超过 99999999 的非负数字")
     reason = str(body.get("reason") or "").strip()
     if not reason:
         return get_data_error_result(message="请填写调整原因")
@@ -1079,7 +1089,9 @@ async def hr_archive_search():
 async def hr_attendance_sync_api():
     body = await request.get_json(silent=True) or {}
     try:
-        result = HrAttendanceImportService.batch_punch(
+        # batch_punch 含逐条 DB 查询（最多 2000 条），卸载到线程池避免阻塞事件循环
+        result = await thread_pool_exec(
+            HrAttendanceImportService.batch_punch,
             body.get("records"), "api_sync", current_user.id)
     except ValueError as e:
         return get_data_error_result(message=str(e))
@@ -1091,9 +1103,10 @@ async def hr_attendance_sync_api():
 async def hr_attendance_import():
     body = await request.get_json(silent=True) or {}
     try:
-        result = HrAttendanceImportService.batch_punch(
+        result = await thread_pool_exec(
+            HrAttendanceImportService.batch_punch,
             body.get("records"), "manual_excel", current_user.id,
-            file_name=str(body.get("file_name") or ""))
+            str(body.get("file_name") or ""))
     except ValueError as e:
         return get_data_error_result(message=str(e))
     return get_json_result(data=result)

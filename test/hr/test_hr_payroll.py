@@ -187,7 +187,8 @@ def test_payslip_absent_deduction_and_rounding():
 
 def _ps(gross, social=0.0, fund=0.0, tax=0.0, att=0.0):
     return {"gross_pay": gross, "social_insurance": social, "housing_fund": fund,
-            "income_tax": tax, "attendance_deduction": att}
+            "income_tax": tax, "attendance_deduction": att,
+            "net_pay": round(gross - att - social - fund - tax, 2)}
 
 
 def test_voucher_accrue_balanced():
@@ -242,6 +243,34 @@ def test_adjust_rejects_non_numeric():
         apply_adjustment(_ps(100.0), "income_tax", "abc")
     with pytest.raises(ValueError):
         apply_adjustment(_ps(100.0), "income_tax", None)
+
+
+def test_adjust_rejects_bool_and_over_limit():
+    # bool 是 int 子类，须先行排除（True 静默通过会落库成 1）
+    with pytest.raises(ValueError):
+        apply_adjustment(_ps(100.0), "income_tax", True)
+    with pytest.raises(ValueError):
+        apply_adjustment(_ps(100.0), "income_tax", False)
+    # 1e12 通过旧校验后撞 DecimalField(10,2) 落库 DataError → 服务层兜底拒绝
+    with pytest.raises(ValueError, match="超出上限"):
+        apply_adjustment(_ps(100.0), "income_tax", 1e12)
+    # 上限边界 99999999 恰好允许
+    apply_adjustment(_ps(100.0), "income_tax", 99_999_999)
+
+
+def test_voucher_pay_dirty_net_row_rejected():
+    # 脏数据：net 与各项扣款不匹配 → 原恒真 assert 换成显式校验后必须拒绝
+    rows = [_ps(7555.0, social=630.0, fund=720.0, tax=6.15)]
+    rows[0]["net_pay"] = 1000.0
+    with pytest.raises(ValueError, match="不平衡"):
+        build_voucher_entries(rows, "pay")
+
+
+def test_voucher_pay_dirty_row_error_mentions_employee():
+    rows = [dict(_ps(5000.0), employee_id="emp_abc")]
+    rows[0]["net_pay"] = -999.0
+    with pytest.raises(ValueError, match="emp_abc"):
+        build_voucher_entries(rows, "pay")
 
 
 def test_voucher_pay_bank_is_net_plus_att():

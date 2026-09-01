@@ -1,6 +1,7 @@
 """人事模块 P1 Service：员工档案 / 规则配置 / 考勤流水 / 日月汇总。"""
 import calendar
 import json
+import logging
 from datetime import date, datetime, time, timedelta
 
 from peewee import IntegrityError
@@ -27,6 +28,8 @@ from api.db.services.hr_calculator import derive_day_status, leave_status_for_da
 from api.db.services.hr_payroll import apply_adjustment, build_voucher_entries, calc_payslip
 from common.misc_utils import get_uuid
 from common.time_utils import current_timestamp
+
+logger = logging.getLogger(__name__)
 
 
 class HrEmployeeService(CommonService):
@@ -669,23 +672,27 @@ class HrPayslipService(CommonService):
                ("gross_pay", "attendance_deduction", "social_insurance",
                 "housing_fund", "income_tax", "net_pay")}
         new = apply_adjustment(old, field, new_value)
-        # 条件更新防发布/调整竞态：仅仍为 published 时生效
-        n = (cls.model.update(
-                attendance_deduction=new["attendance_deduction"],
-                social_insurance=new["social_insurance"],
-                housing_fund=new["housing_fund"], income_tax=new["income_tax"],
-                net_pay=new["net_pay"], update_time=current_timestamp())
-             .where(cls.model.id == payslip_id, cls.model.status == "published").execute())
-        if n == 0:
-            raise ValueError("工资单状态已变化，请刷新后重试")
-        HrPayslipAdjust.insert(id=get_uuid(), payslip_id=payslip_id,
-                               employee_id=row.employee_id, month=row.month,
-                               field=field, old_value=old[field],
-                               new_value=new[field], reason=str(reason or "")[:255],
-                               operator_id=operator_id)
-        # 该月 pay 凭证若已生成则提示过期（仅提示，不自动重生成）
-        stale = HrVoucher.get_or_none(HrVoucher.month == row.month,
-                                      HrVoucher.voucher_type == "pay") is not None
+        # 条件更新防发布/调整竞态：仅仍为 published 时生效；更新/调整日志/pay 凭证
+        # 过期标记同事务提交，避免「已调整但日志缺失/凭证仍 normal」的中间态
+        with DB.atomic():
+            n = (cls.model.update(
+                    attendance_deduction=new["attendance_deduction"],
+                    social_insurance=new["social_insurance"],
+                    housing_fund=new["housing_fund"], income_tax=new["income_tax"],
+                    net_pay=new["net_pay"], update_time=current_timestamp())
+                 .where(cls.model.id == payslip_id, cls.model.status == "published").execute())
+            if n == 0:
+                raise ValueError("工资单状态已变化，请刷新后重试")
+            HrPayslipAdjust.insert(id=get_uuid(), payslip_id=payslip_id,
+                                   employee_id=row.employee_id, month=row.month,
+                                   field=field, old_value=old[field],
+                                   new_value=new[field], reason=str(reason or "")[:255],
+                                   operator_id=operator_id).execute()
+            # 该月 pay 凭证若已生成则标记过期 stale（仅标记，不自动重生成；
+            # generate 重生成时 status 恢复 normal）
+            stale = HrVoucher.update(status="stale").where(
+                HrVoucher.month == row.month,
+                HrVoucher.voucher_type == "pay").execute() > 0
         return cls.model.get_by_id(payslip_id), stale
 
 
@@ -710,6 +717,7 @@ class HrVoucherService(CommonService):
             voucher_type)
         payload = {"entries": json.dumps(r["entries"], ensure_ascii=False),
                    "total_amount": r["total_amount"], "created_by": operator_id,
+                   "status": "normal",  # 重生成即视为与当月数据一致，清除 adjust 标记的 stale
                    "update_time": current_timestamp()}
         row = cls.model.get_or_none(cls.model.month == month,
                                     cls.model.voucher_type == voucher_type)
@@ -772,12 +780,19 @@ class HrAttendanceImportService(CommonService):
             except (ValueError, TypeError) as e:
                 fail_total += 1
                 if len(fails) < 50:
-                    fails.append({"row": i, "emp": str(rec.get("emp_no")
-                                                       or rec.get("employee_id") or ""),
-                                  "punch_time": str(rec.get("punch_time") or ""),
+                    # rec 可能是非 dict 脏数据（如字符串/数字），except 内不能再 .get
+                    safe = rec if isinstance(rec, dict) else {}
+                    fails.append({"row": i, "emp": str(safe.get("emp_no")
+                                                       or safe.get("employee_id") or ""),
+                                  "punch_time": str(safe.get("punch_time") or ""),
                                   "error": str(e)})
-        cls.insert(id=get_uuid(), source=source, file_name=str(file_name or "")[:255],
-                   total_rows=len(records), success_rows=ok, fail_rows=fail_total,
-                   detail=json.dumps(fails, ensure_ascii=False), operator_id=operator_id)
+        # 批次留痕失败只记日志不吞成功结果
+        try:
+            cls.insert(id=get_uuid(), source=source, file_name=str(file_name or "")[:255],
+                       total_rows=len(records), success_rows=ok, fail_rows=fail_total,
+                       detail=json.dumps(fails, ensure_ascii=False), operator_id=operator_id)
+        except Exception:
+            logger.exception("考勤导入批次留痕落盘失败（source=%s, total=%s）",
+                             source, len(records))
         return {"total": len(records), "success": ok, "failed": fails,
                 "fail_total": fail_total}

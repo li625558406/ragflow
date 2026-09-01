@@ -155,15 +155,21 @@ def build_voucher_entries(payslip_rows, voucher_type):
                    ["结转应付职工薪酬", "应付职工薪酬", 0.0, gross]]
     else:
         # 发放：net = gross − tax − social − fund − att（calc_payslip 恒等式），
-        # 银行存款 = gross − tax − social − fund = Σnet + Σatt，与贷方合计恒等
+        # 银行存款 = gross − tax − social − fund = Σnet + Σatt，与贷方合计恒等。
+        # 脏数据防御：逐行显式校验恒等式（round(2) 后比较；原 assert 恒真且 -O 下被剥离）
+        for idx, p in enumerate(payslip_rows):
+            expect = round(_num(p.get("gross_pay")) - _num(p.get("attendance_deduction"))
+                           - _num(p.get("social_insurance")) - _num(p.get("housing_fund"))
+                           - _num(p.get("income_tax")), 2)
+            if abs(round(_num(p.get("net_pay")), 2) - expect) >= 0.01:
+                who = f" {p.get('employee_id')}" if p.get("employee_id") else f" 第 {idx + 1} 行"
+                raise ValueError(f"工资单{who}金额不平衡，请先核算修正")
         bank = round(gross - tax - social - fund, 2)
         entries = [["发放月度工资", "应付职工薪酬", gross, 0.0],
                    ["代扣个人所得税", "应交税费—应交个人所得税", 0.0, tax],
                    ["代扣社保个人部分", "其他应付款—社保", 0.0, social],
                    ["代扣公积金个人部分", "其他应付款—公积金", 0.0, fund],
                    ["实发工资", "银行存款", 0.0, bank]]
-        assert abs(sum(x[2] for x in entries) - sum(x[3] for x in entries)) < 0.01, \
-            "发放凭证借贷不平衡"
     return {"entries": entries, "total_amount": gross}
 
 
@@ -172,6 +178,8 @@ def apply_adjustment(payslip_dict, field, new_value):
 
     注意不能用 _num(new_value, None) 直接判负——_num 会把负值钳成 0 静默通过，
     须先对原始值做有限性/非负校验（对抗性用例：-5 必须显式拒绝）。
+    上限 99_999_999 对齐 DecimalField(10,2)，防超限落库 DataError（bool 会命中
+    isinstance int 分支，须先行排除）。
     """
     if field not in ADJUSTABLE_FIELDS:
         raise ValueError(f"不可调整的字段：{field}")
@@ -181,6 +189,8 @@ def apply_adjustment(payslip_dict, field, new_value):
     v = float(new_value)
     if not math.isfinite(v) or v < 0:
         raise ValueError("调整值必须是非负数字")
+    if v > 99_999_999:
+        raise ValueError("调整值超出上限")
     r = dict(payslip_dict)
     r[field] = round(v, 2)
     r["net_pay"] = round(float(r["gross_pay"]) - r["attendance_deduction"]

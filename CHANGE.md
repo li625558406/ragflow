@@ -1,5 +1,22 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-01 人事模块 P4 质量审查修复（后端 10 项）
+
+**主题**：P4 财务凭证/报表/考勤机导入端点的后端质量审查（Critical 1 + Major 4 + 建议 3）逐项修复。
+
+**核心变更**：
+- batch_punch 失败收集路径崩溃修复（Critical）：rec 非 dict 时 except 内 `rec.get` 抛 AttributeError 整批 500 且不留痕 → `safe = rec if isinstance(rec, dict) else {}`
+- adjust 上限校验（回退 P3 M4）：hr_app 端点复用 `_valid_amount`（bool/负数/NaN/Inf/>99999999 拒绝）；`apply_adjustment` 服务层兜底补同上限，防 1e12 撞 DecimalField(10,2) 落库 DataError
+- adjust 原子性：条件更新/调整日志/pay 凭证 stale 标记包进 `DB.atomic()`；连带修复调整日志 insert 漏调 `.execute()` 从未落库的隐患
+- 凭证恒等式真校验：`build_voucher_entries` pay 分支恒真 assert 改为逐行校验 `net = gross − att − social − fund − tax`（round(2) 后比较），脏数据行抛 ValueError 并带 employee_id/行号
+- batch_punch 卸载线程池：sync-api/import 两个 async handler 改 `await thread_pool_exec(...)`，2000 条逐条 DB 查询不再阻塞事件循环
+- Excel 公式注入防御：`_build_xlsx` 字符串首字符 `= + - @` 前缀单引号
+- 凭证 stale 状态标记：adjust 时条件更新已存在 pay 凭证 `status="stale"`，generate 重生成恢复 `normal`；批次留痕 insert 包 try/except（`logger.exception` 不吞成功结果）；Content-Disposition 补 ASCII fallback `filename="report.xlsx"`
+
+**测试**：test/hr/ 73 passed（61 + 新增 12 行用例：bool/1e12 拒绝、上限边界、脏 net 行拒绝含 employee_id 报文）；ruff hr_service 8 / hr_app 7 / hr_payroll 0 / test 0 不增长。
+
+**遗留**：Excel 注入防御为 hr_app 内部函数，纯函数级单测不可行，依赖代码审查验证；#10（量级小）暂不处理。
+
 ## 2026-09-01 人事模块 P3：薪资核算引擎（功能点10-14 + 加班小时数）
 
 **主题**：人事页签新增「薪资」子页签，交付薪资档案管理、加班时长推导（补齐 P1 月汇总缺口）、考勤扣款/加班费/社保公积金/个税累计预扣核算引擎、试算→核算入库→发布工资条闭环。
