@@ -57,6 +57,7 @@ def _storage_put(bucket: str, obj_name: str, blob: bytes):
     落库（否则 DB 行指向不存在的对象，错误延迟到下游才暴露）。"""
     r = settings.STORAGE_IMPL.put(bucket, obj_name, blob)
     if r is None:
+        logger.exception("template fill: storage put failed, bucket=%s obj=%s", bucket, obj_name)
         raise RuntimeError(f"storage put failed: bucket={bucket}, object={obj_name}")
     return r
 
@@ -67,6 +68,10 @@ class TplTemplateService(CommonService):
     @classmethod
     @DB.connection_context()
     def get_list_page(cls, tenant_id: str, keyword: str = "", status: str = "", page: int = 1, size: int = 20):
+        # 分页参数下界钳制：peewee paginate 对 page=0 静默当第 1 页，page<0 会生成
+        # 负 OFFSET → MySQL 1064 → 500；size<=0 同理。上界防单次拉全表。
+        page = max(1, int(page or 1))
+        size = min(max(1, int(size or 20)), 100)
         q = cls.model.select().where(cls.model.tenant_id == tenant_id)
         if keyword:
             q = q.where(cls.model.name.contains(keyword))
@@ -106,14 +111,23 @@ class TplTemplateVersionService(CommonService):
 
     @classmethod
     def create_initial_version(cls, template_id: str, filename: str, blob: bytes):
-        """上传后建 v1，原件入 MinIO。"""
+        """上传后建 v1，原件入 MinIO。
+
+        已知不对称：先 put MinIO 再 insert DB，insert 失败时 MinIO 中会残留
+        孤儿对象（不回滚）——对象无 DB 行引用，仅占存储，不影响业务读取。
+        """
         safe_name = _sanitize_filename(filename)
         obj_name = f"v1_original_{safe_name}"
         _storage_put(template_id, obj_name, blob)
         # DB 列 max_length=256，入库前截断（MinIO object name 已单独清洗截断）
         db_filename = (filename or "")[:_DB_FILENAME_MAX_LEN]
-        return cls.insert(template_id=template_id, version=1,
-                          original_filename=db_filename, original_file_id=obj_name, placeholders=[])
+        try:
+            return cls.insert(template_id=template_id, version=1,
+                              original_filename=db_filename, original_file_id=obj_name, placeholders=[])
+        except Exception:
+            logger.exception("template fill: insert initial version failed after storage put, "
+                             "template=%s object=%s (orphan object left in storage)", template_id, obj_name)
+            raise
 
     @classmethod
     @DB.connection_context()
@@ -121,7 +135,7 @@ class TplTemplateVersionService(CommonService):
         """人工确认后：生成带 {{key}} 的 render 副本入 MinIO，与 placeholders 原子落库。
 
         docx/xlsx 的 apply 函数对脏输入（anchor 不存在、非法 sheet/coord）为静默跳过语义，
-        本层不做占位符校验（API 层 validate_placeholders 负责）。
+        本层不做占位符校验（API 层 validate_placeholders 负责）；租户校验由调用方负责。
         """
         tpl_id = template["id"]
         ver = cls.latest(tpl_id)

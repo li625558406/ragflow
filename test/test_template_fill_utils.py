@@ -467,3 +467,80 @@ def test_normalize_key():
     assert normalize_key("  Sign-Date! ") == "sign_date"
     assert normalize_key("___") == "field"
     assert normalize_key("") == "field"
+
+
+# ---------- service：_sanitize_filename 纯函数（不依赖 DB/MinIO） ----------
+# 说明：api.db.db_models 的 DB 对象为懒连接，import 链不会立即触库，
+# 故直接 `from api.db.services.template_fill_service import _sanitize_filename`
+# 模块级直测即可，无需 stub-load。
+
+def _sanitize(name, max_len=128):
+    from api.db.services.template_fill_service import _sanitize_filename
+    return _sanitize_filename(name, max_len)
+
+
+def test_sanitize_forward_slash_takes_basename():
+    assert _sanitize("a/b/c.docx") == "c.docx"
+
+
+def test_sanitize_backslash_takes_basename():
+    """Windows 路径分隔符：统一按 '/' 处理后取最后一段，防止 '/' 进 MinIO 当目录前缀。"""
+    assert _sanitize("a\\b\\c.docx") == "c.docx"
+
+
+def test_sanitize_empty_returns_fallback():
+    """空串/纯空白/None 兜底 'template'，避免空 object 名片段。"""
+    assert _sanitize("") == "template"
+    assert _sanitize("   ") == "template"
+    assert _sanitize(None) == "template"
+
+
+def test_sanitize_trailing_dot_kept_as_is():
+    """'file.' 清洗后 stem 非空但 ext 为空 → 不走扩展名保留分支，原样保留。"""
+    assert _sanitize("file.") == "file."
+
+
+def test_sanitize_hidden_file_dotfile_kept():
+    """.hidden：rpartition 后 stem 为空 → 不截断分支命中，dotfile 原样保留。"""
+    assert _sanitize(".hidden") == ".hidden"
+
+
+def test_sanitize_oversize_chinese_name_truncated():
+    """恰好超长（129 个汉字）→ 截断到 128，无扩展名按硬截断处理。"""
+    name = "标" * 129
+    out = _sanitize(name)
+    assert out == "标" * 128
+    assert len(out) == 128
+
+
+def test_sanitize_path_traversal_reduced_to_basename():
+    """对抗：'../../etc/passwd' 型穿越只留 base 名，无法借 object name 逃出 bucket 前缀。"""
+    assert _sanitize("../../etc/passwd") == "passwd"
+    assert _sanitize("..\\..\\windows\\system32\\config") == "config"
+    # 整串都是点/斜杠组合时清洗后为空 → 兜底
+    assert _sanitize("../../") == "template"
+
+
+def test_sanitize_ext_exactly_10_chars_preserved_on_truncate():
+    """扩展名恰好 10 字符（边界内）：超长截断时保留 '.xxxxxxxxxx' 扩展名。"""
+    ext = "x" * 10
+    name = "a" * 200 + "." + ext
+    out = _sanitize(name)
+    assert out == "a" * (128 - 10 - 1) + "." + ext
+    assert len(out) == 128
+    assert out.endswith("." + ext)
+
+
+def test_sanitize_ext_11_chars_not_preserved_hard_truncate():
+    """扩展名恰好 11 字符（越界）：不保留扩展名，硬截断到 128。"""
+    ext = "x" * 11
+    name = "a" * 200 + "." + ext
+    out = _sanitize(name)
+    assert out == "a" * 128
+    assert "." not in out
+
+
+def test_sanitize_custom_max_len_boundary():
+    """自定义 max_len 边界：恰好等于 max_len 不截断；超 1 字符才截。"""
+    assert _sanitize("a" * 20, max_len=20) == "a" * 20
+    assert len(_sanitize("a" * 21, max_len=20)) == 20
