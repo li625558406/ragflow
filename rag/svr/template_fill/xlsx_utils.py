@@ -36,38 +36,67 @@ def iter_xlsx_cells(file_bytes: bytes) -> list:
 
 
 def extract_xlsx_candidates(file_bytes: bytes) -> list:
-    """提取疑似含填写点的单元格（供 LLM 识别，降低 token）。"""
+    """提取疑似含填写点的单元格（供 LLM 识别，降低 token）。
+
+    排除以 "=" 开头的公式单元格：公式文本（如 =SUM(A1:A2)）可能恰好命中
+    FILL_HINT_RE，若作为填写点下发给 LLM，渲染时会用占位符文本覆盖公式本身，
+    破坏模板计算逻辑——宁可漏候选，不可污染公式。
+    """
     from rag.svr.template_fill.docx_utils import FILL_HINT_RE
-    return [it for it in iter_xlsx_cells(file_bytes) if FILL_HINT_RE.search(it["text"])]
+    return [
+        it for it in iter_xlsx_cells(file_bytes)
+        if not it["text"].startswith("=") and FILL_HINT_RE.search(it["text"])
+    ]
 
 
-def _find_cell(wb, rep: dict):
-    """按 sheet/coord 定位单元格；sheet 不存在（KeyError）或 coord 非法
-    （openpyxl 转坐标抛 ValueError）时返回 None，交由调用方跳过该条。
-    coord 合法但越界时 openpyxl 会创建空单元格，由调用方"值为 None 不替换"兜住。"""
+def _find_cell(wb, sheet: str, coord: str):
+    """按 sheet/coord 定位单元格；定位失败时返回 None，交由调用方跳过该条。
+
+    失败路径：
+    - sheet 不存在 → openpyxl 抛 KeyError；
+    - coord 非法（如 "不是坐标"）→ openpyxl 转坐标抛 ValueError；
+    - coord 是 range 语法（如 "A1:B2"）→ openpyxl 合法接受并返回 cell 元组，
+      而非单个 cell，后续 cell.value 会抛 AttributeError——同样视为非法 coord，
+      返回 None 跳过，保证"脏输入不中断整批"契约；
+    - coord 合法但超出工作表边界（行 > 1048576 或列 > XFD）→ ValueError；
+    - coord 合法且在边界内但超出已用区域 → openpyxl 惰性创建空单元格返回，
+      由调用方"值为 None 不替换"兜住。
+    """
     try:
-        return wb[rep["sheet"]][rep["coord"]]
+        cell = wb[sheet][coord]
     except (KeyError, ValueError):
         return None
+    # range 语法（"A1:B2"）返回 tuple（或多层嵌套 tuple），不是单个 cell
+    if isinstance(cell, tuple) or not hasattr(cell, "value"):
+        return None
+    return cell
 
 
 def apply_xlsx_placeholders(file_bytes: bytes, replacements: list) -> bytes:
-    """replacements 元素含 sheet/coord/anchor/key；把 anchor 替换为 {{key}}。
+    """replacements 元素含 anchor/key + 定位信息（sheet/coord，或兜底 addr）；把 anchor 替换为 {{key}}。
+
+    定位优先级：显式 sheet+coord 优先；二者任一缺失时，若 addr 为
+    "<sheet>!<coord>" 格式（含 "!"），按最后一个 "!" 拆分兜底（rsplit，兼容
+    sheet 名本身含 "!" 的罕见情况）。两者都不可用则跳过该条。
 
     只改 cell.value，样式保留。脏输入健壮性（与 docx_utils 语义一致）：
-    sheet/coord/anchor/key 任一缺失或为空 → 预检查跳过；sheet 不存在或 coord
-    非法 → _find_cell 返回 None 跳过该条而不中断整批；anchor 不在单元格值中
-    → no-op（幂等）。
+    定位/anchor/key 任一缺失或为空 → 预检查跳过；sheet 不存在或 coord 非法
+    （含 range 语法）→ _find_cell 返回 None 跳过该条而不中断整批；anchor 不在
+    单元格值中 → no-op（幂等）。
     """
     wb = load_workbook(io.BytesIO(file_bytes))
     for rep in replacements:
         sheet = rep.get("sheet")
         coord = rep.get("coord")
+        addr = rep.get("addr")
+        if (not sheet or not coord) and addr and "!" in addr:
+            # addr 兜底：按最后一个 "!" 拆分为 sheet/coord
+            sheet, coord = addr.rsplit("!", 1)
         anchor = rep.get("anchor")
         key = rep.get("key")
         if not sheet or not coord or not anchor or not key:
             continue
-        cell = _find_cell(wb, rep)
+        cell = _find_cell(wb, sheet, coord)
         if cell is None:
             continue
         val = cell.value

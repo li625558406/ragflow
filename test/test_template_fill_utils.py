@@ -263,6 +263,66 @@ def test_apply_xlsx_bad_sheet_or_coord_skipped():
     assert "{{gone2}}" not in "".join(texts.values())
 
 
+def test_apply_xlsx_range_coord_skipped():
+    """对抗：coord 传 range 语法（如 "A1:B2"）时 openpyxl 合法接受并返回 cell 元组，
+    后续 .value 会抛 AttributeError 中断整批。修复后该条被静默跳过，其余条目正常替换。"""
+    from rag.svr.template_fill.xlsx_utils import apply_xlsx_placeholders, iter_xlsx_cells
+    blob = _make_xlsx({"封面": [["项目名称", "________"], ["日期", "____年____月____日"]]})
+    out = apply_xlsx_placeholders(blob, [
+        {"sheet": "封面", "coord": "A1:B2", "anchor": "________", "key": "gone_range"},
+        {"sheet": "封面", "coord": "B1", "anchor": "________", "key": "project_name"},
+        {"sheet": "封面", "coord": "B2", "anchor": "____年____月____日", "key": "sign_date"},
+    ])
+    texts = {it["addr"]: it["text"] for it in iter_xlsx_cells(out)}
+    assert texts["封面!B1"] == "{{project_name}}"
+    assert texts["封面!B2"] == "{{sign_date}}"
+    assert "{{gone_range}}" not in "".join(texts.values())
+
+
+def test_apply_xlsx_addr_fallback():
+    """addr 兜底：条目缺 sheet/coord 但 addr 为 "<sheet>!<coord>" 时按最后一个 "!" 拆分定位。"""
+    from rag.svr.template_fill.xlsx_utils import apply_xlsx_placeholders, iter_xlsx_cells
+    blob = _make_xlsx({"封面": [["项目名称", "________"]]})
+    out = apply_xlsx_placeholders(blob, [
+        {"addr": "封面!B1", "anchor": "________", "key": "project_name"},
+    ])
+    texts = {it["addr"]: it["text"] for it in iter_xlsx_cells(out)}
+    assert texts["封面!B1"] == "{{project_name}}"
+
+
+def test_apply_xlsx_explicit_sheet_coord_over_addr():
+    """显式 sheet/coord 优先于 addr 兜底：addr 写错不影响按显式字段定位。"""
+    from rag.svr.template_fill.xlsx_utils import apply_xlsx_placeholders, iter_xlsx_cells
+    blob = _make_xlsx({"封面": [["项目名称", "________"]]})
+    out = apply_xlsx_placeholders(blob, [
+        {"sheet": "封面", "coord": "B1", "addr": "不存在页!Z99", "anchor": "________", "key": "project_name"},
+    ])
+    texts = {it["addr"]: it["text"] for it in iter_xlsx_cells(out)}
+    assert texts["封面!B1"] == "{{project_name}}"
+
+
+def test_extract_xlsx_skips_formula_cells():
+    """以 "=" 开头的公式单元格不进候选（防止 LLM 把公式文本当填写点、渲染时覆盖公式），
+    普通文本格正常提取。"""
+    from openpyxl import Workbook
+
+    from rag.svr.template_fill.xlsx_utils import extract_xlsx_candidates
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "封面"
+    ws["A1"] = "=SUM(A2:A3)"          # 公式文本，恰好含 "____" 也不该被提取
+    ws["A2"] = 10
+    ws["A3"] = 20
+    ws["B1"] = "合计：____元"          # 普通文本填写点
+    ws["B2"] = "=IF(A2>5, \"____\", \"\")"  # 公式结果含填写特征同样排除
+    buf = io.BytesIO()
+    wb.save(buf)
+    cands = extract_xlsx_candidates(buf.getvalue())
+    texts = [c["text"] for c in cands]
+    assert all(not t.startswith("=") for t in texts)
+    assert any("合计：____元" in t for t in texts)
+
+
 def test_apply_xlsx_preserves_cell_style():
     """对抗：替换只改 value，单元格样式（字体加粗/填充色）必须保留。"""
     from openpyxl import load_workbook
