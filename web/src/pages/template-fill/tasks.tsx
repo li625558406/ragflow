@@ -24,6 +24,7 @@ import {
   downloadTemplateFillResult,
   useListTemplateFillTasks,
   useRetryTemplateFillTask,
+  type TplFillTaskItem,
 } from '@/hooks/use-template-fill-request';
 
 const PAGE_SIZE = 20;
