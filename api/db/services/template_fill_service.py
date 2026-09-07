@@ -184,7 +184,8 @@ class TplTemplateVersionService(CommonService):
         try:
             cls.insert(id=get_uuid(), template_id=tpl_id, version=version,
                        original_file_id=orig_name, render_file_id=render_name,
-                       placeholders=placeholders, created_by=template.get("created_by"))
+                       placeholders=placeholders,
+                       original_filename=getattr(ver, "original_filename", ""))
         except Exception:
             logger.exception("template fill: insert upgraded version failed after storage put, "
                              "template=%s version=%s (orphan objects left in storage)", tpl_id, version)
