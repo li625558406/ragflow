@@ -101,8 +101,13 @@ DESC_MAX = 500       # description 清洗截断
 NAME_MAX = 100
 QUERY_MAX = 300
 PARAM_VAL_MAX = 100
-BATCH_SIZE = 30      # 每批 LLM 产值的字段数上限（设计文档 §10：大模板分批）
+# 每批 LLM 产值的字段数上限（设计文档 §10：大模板分批）。
+# 预算推导：BATCH_SIZE × MAX_EVIDENCE_CHUNKS × CONTENT_SNIPPET = 10 × 6 × 800 ≈ 48K 字符，
+# 加字段清单/参数后仍在主流模型上下文窗口内（原 30 → 30×6×800≈144K 会顶爆小窗口模型）。
+BATCH_SIZE = 10
 MAX_EVIDENCE_CHUNKS = 6  # 每字段进 prompt 的证据片段上限（片段已在检索层截 800 字）
+PARAMS_PROMPT_MAX = 2000       # 任务参数整体序列化进 prompt 的截断上限
+CONSTRAINTS_PROMPT_MAX = 200   # 单字段 constraints 序列化进 prompt 的截断上限
 
 GENERATE_SYSTEM = (
     "你是文档填写引擎。根据每个字段的【检索证据】填写字段值。规则：\n"
@@ -136,15 +141,23 @@ def _build_chat_mdl(tenant_id: str):
 
 
 def _extract_json(text: str) -> dict:
-    """LLM 输出不可信：容忍 ```json 围栏/前后杂文，抽第一个 JSON 对象。"""
-    m = re.search(r"\{.*\}", text or "", re.DOTALL)
-    if not m:
-        return {}
-    try:
-        obj = json.loads(m.group(0))
-        return obj if isinstance(obj, dict) else {}
-    except (ValueError, TypeError):
-        return {}
+    """LLM 输出不可信：容忍 ```json 围栏/前后杂文，抽第一个 JSON 对象。
+    贪婪匹配（应对正文中含 `}` 的合法对象）失败后，补一次非贪婪匹配
+    （应对 LLM 输出尾部带花括号杂文：贪婪把杂文吞进去导致解析失败）。
+    两次都失败 → 记 warning 返回空 dict（调用方据此整批 missing，不再静默）。"""
+    s = text or ""
+    for pattern in (r"\{.*\}", r"\{.*?\}"):
+        m = re.search(pattern, s, re.DOTALL)
+        if not m:
+            continue
+        try:
+            obj = json.loads(m.group(0))
+            if isinstance(obj, dict):
+                return obj
+        except (ValueError, TypeError):
+            continue
+    logger.warning("generate_values: LLM 输出无法解析为 JSON 对象, raw[:200]=%r", s[:200])
+    return {}
 
 
 def _apply_constraints(value, constraints: dict):
@@ -171,25 +184,35 @@ async def generate_values(tenant_id: str, placeholders: list[dict], chunks_by_ke
                           params: dict | None = None,
                           batch_size: int = BATCH_SIZE) -> tuple[dict, set]:
     """LLM 批量产值：一次调用产 ≤batch_size 个字段值（超出分批）。
+    batch_size 为 0/None 等假值时兜底为 BATCH_SIZE（step 与 slice 必须同值，
+    否则 0 产生空批、None 导致 slice 取全量重复发送）。
     返回 (values, missing_keys)。每字段证据最多取 6 片（片段已截 800 字）。"""
     missing: set = set()
     values: dict = {}
     mdl = None
-    for i in range(0, len(placeholders), max(int(batch_size or BATCH_SIZE), 1)):
-        batch = placeholders[i:i + batch_size]
-        spec = [{"key": it["key"],
-                 "name": _clean_for_prompt(it.get("name") or it["key"], NAME_MAX),
-                 "description": _clean_for_prompt(it.get("description"), DESC_MAX),
-                 "constraints": it.get("constraints") or {}} for it in batch]
+    step = max(int(batch_size or BATCH_SIZE), 1)
+    for i in range(0, len(placeholders), step):
+        batch = placeholders[i:i + step]
+        spec = []
+        for it in batch:
+            key = _clean_for_prompt(it["key"], NAME_MAX)
+            spec.append({"key": key,
+                         "name": _clean_for_prompt(it.get("name") or it["key"], NAME_MAX),
+                         "description": _clean_for_prompt(it.get("description"), DESC_MAX),
+                         "constraints": _clean_for_prompt(
+                             json.dumps(it.get("constraints") or {}, ensure_ascii=False),
+                             CONSTRAINTS_PROMPT_MAX)})
         evidence = []
         for it in batch:
+            key = _clean_for_prompt(it["key"], NAME_MAX)
             chunks = (chunks_by_key.get(it["key"]) or {}).get("chunks", [])
             joined = "\n---\n".join(f"[片段{j + 1}] {c['content']}"
                                     for j, c in enumerate(chunks[:MAX_EVIDENCE_CHUNKS])) or "（无检索证据）"
-            evidence.append(f"### 字段 {it['key']}\n{joined}")
+            evidence.append(f"### 字段 {key}\n{joined}")
         user_msg = ("## 字段清单\n" + json.dumps(spec, ensure_ascii=False) +
                     "\n\n## 检索证据\n" + "\n\n".join(evidence) +
-                    "\n\n任务参数（背景信息）：" + json.dumps(params or {}, ensure_ascii=False, default=str))
+                    "\n\n任务参数（背景信息）：" + _clean_for_prompt(
+                        json.dumps(params or {}, ensure_ascii=False, default=str), PARAMS_PROMPT_MAX))
         if mdl is None:
             mdl = _build_chat_mdl(tenant_id)
         ans = await mdl.async_chat(GENERATE_SYSTEM, [{"role": "user", "content": user_msg}])

@@ -1,4 +1,5 @@
 """executor 单测：外部依赖（retriever/LLMBundle/STORAGE_IMPL）全部 monkeypatch，不真调 KB/LLM。"""
+import json
 import types
 
 import pytest
@@ -114,6 +115,21 @@ def test_extract_json_tolerant():
     assert _extract_json('[1,2]') == {}
 
 
+def test_extract_json_trailing_brace_garbage():
+    """贪婪 \\{.*\\} 被尾部花括号杂文拖垮解析时，非贪婪 fallback 取第一个最小 JSON 对象。"""
+    from rag.svr.template_fill.executor import _extract_json
+    assert _extract_json('{"k1": "v1"} 另一个示例 {"x": 1}') == {"k1": "v1"}
+    assert _extract_json('{"k1": "v1"}\n注：以上仅供参考 {"x": 2}') == {"k1": "v1"}
+
+
+def test_extract_json_pure_garbage_returns_empty():
+    """纯垃圾（无合法 JSON 对象）→ 空 dict，不抛异常。"""
+    from rag.svr.template_fill.executor import _extract_json
+    assert _extract_json("这是纯文本回复，没有任何结构化内容可言") == {}
+    assert _extract_json("") == {}
+    assert _extract_json(None) == {}
+
+
 def test_apply_constraints():
     """类型/字数兜底（LLM 安全网）：number 转换失败→None；超长截断；null/空/n-a→None。"""
     from rag.svr.template_fill.executor import _apply_constraints
@@ -177,3 +193,46 @@ def test_generate_values_evidence_chunk_cap(monkeypatch):
         assert f"[片段{i}]" in prompt and f"E{i}" in prompt
     assert "[片段7]" not in prompt
     assert "E7" not in prompt and "E8" not in prompt
+
+
+def test_generate_values_batch_size_zero_no_empty_batch(monkeypatch):
+    """batch_size=0 → step 兜底为 BATCH_SIZE，不产生空批；3 字段一次调用全拿到。"""
+    from rag.svr.template_fill import executor
+    prompts = []
+
+    async def fake_chat(system, history, gen_conf=None, **kw):
+        prompts.append(history[0]["content"])
+        return '{"k1": "值一", "k2": "值二", "k3": "值三"}'
+
+    monkeypatch.setattr(executor, "_build_chat_mdl", lambda tenant: types.SimpleNamespace(async_chat=fake_chat))
+    placeholders = [{"key": f"k{i}", "name": f"字段{i}", "description": "", "constraints": {}}
+                    for i in (1, 2, 3)]
+    chunks_by_key = {k: {"chunks": []} for k in ("k1", "k2", "k3")}
+    vals, missing = executor._run_async(
+        executor.generate_values("t", placeholders, chunks_by_key, params={}, batch_size=0))
+    assert len(prompts) == 1  # 无空批：step 兜底 BATCH_SIZE=10 ≥ 3 → 一次调用
+    assert vals == {"k1": "值一", "k2": "值二", "k3": "值三"}
+    assert missing == set()
+
+
+def test_generate_values_batch_size_none_falls_back_to_default(monkeypatch):
+    """batch_size=None → fallback 到 BATCH_SIZE（step 与 slice 同值），不分批错乱/重复发送。"""
+    from rag.svr.template_fill import executor
+    monkeypatch.setattr(executor, "BATCH_SIZE", 2)
+    prompts = []
+
+    async def fake_chat(system, history, gen_conf=None, **kw):
+        content = history[0]["content"]
+        prompts.append(content)
+        spec = json.loads(content.split("## 检索证据")[0].split("## 字段清单\n")[1])
+        return json.dumps({s["key"]: f"值-{s['key']}" for s in spec}, ensure_ascii=False)
+
+    monkeypatch.setattr(executor, "_build_chat_mdl", lambda tenant: types.SimpleNamespace(async_chat=fake_chat))
+    placeholders = [{"key": f"k{i}", "name": f"字段{i}", "description": "", "constraints": {}}
+                    for i in range(1, 4)]
+    chunks_by_key = {f"k{i}": {"chunks": []} for i in range(1, 4)}
+    vals, missing = executor._run_async(
+        executor.generate_values("t", placeholders, chunks_by_key, params={}, batch_size=None))
+    assert len(prompts) == 2  # 3 字段 / BATCH_SIZE=2 → 两批（2+1），不是 None 时 slice 取全量的 1 批
+    assert vals == {f"k{i}": f"值-k{i}" for i in range(1, 4)}
+    assert missing == set()
