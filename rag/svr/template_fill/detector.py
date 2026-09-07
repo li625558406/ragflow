@@ -98,9 +98,9 @@ def validate_placeholders(items: list, candidates: list) -> tuple:
 async def detect_fill_points(tenant_id: str, file_type: str, candidates: list) -> list:
     """调用租户默认 chat 模型识别填写点（失败抛异常，由 API 层转错误响应）。
     仅此处涉及 LLM/DB（延迟 import，保证纯函数部分无运行时依赖、可独立单测）。"""
-    from api.db import LLMType
     from api.db.joint_services.tenant_model_service import get_tenant_default_model_by_type
     from api.db.services.llm_service import LLMBundle
+    from common.constants import LLMType
 
     if not candidates:
         return []
