@@ -191,3 +191,100 @@ def test_apply_docx_dirty_entry_missing_fields_skipped(sample_docx):
     assert "{{no_anchor}}" not in "".join(texts)
     assert "{{no_addr}}" not in "".join(texts)
     assert "{{empty_anchor}}" not in "".join(texts)
+
+
+# ---------- xlsx 工具 ----------
+
+def _make_xlsx(sheets: dict):
+    from openpyxl import Workbook
+    wb = Workbook()
+    wb.remove(wb.active)
+    for name, rows in sheets.items():
+        ws = wb.create_sheet(title=name)
+        for row in rows:
+            ws.append(row)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def test_iter_xlsx_cells():
+    from rag.svr.template_fill.xlsx_utils import iter_xlsx_cells
+    blob = _make_xlsx({"封面": [["项目名称", "________"], [None, "空行跳过"]], "签章页": [["签字", "（）"]]})
+    items = iter_xlsx_cells(blob)
+    addrs = [it["addr"] for it in items]
+    assert "封面!A1" in addrs and "封面!B1" in addrs
+    assert "封面!A2" not in addrs  # None 值跳过
+    assert "签章页!B1" in addrs
+
+
+def test_apply_xlsx_placeholders():
+    from rag.svr.template_fill.xlsx_utils import apply_xlsx_placeholders, iter_xlsx_cells
+    blob = _make_xlsx({"封面": [["项目名称", "________"]]})
+    out = apply_xlsx_placeholders(blob, [
+        {"sheet": "封面", "coord": "B1", "addr": "封面!B1", "anchor": "________", "key": "project_name"},
+    ])
+    texts = {it["addr"]: it["text"] for it in iter_xlsx_cells(out)}
+    assert texts["封面!B1"] == "{{project_name}}"
+
+
+def test_apply_xlsx_dirty_entry_skipped():
+    """LLM 脏输入：sheet/coord/anchor/key 任一缺失或为空时跳过该条不抛异常，
+    其余合法条目正常替换。"""
+    from rag.svr.template_fill.xlsx_utils import apply_xlsx_placeholders, iter_xlsx_cells
+    blob = _make_xlsx({"封面": [["项目名称", "________"], ["日期", "____年____月____日"]]})
+    out = apply_xlsx_placeholders(blob, [
+        {"sheet": "封面", "coord": "B1", "anchor": "________"},                       # 缺 key
+        {"sheet": "封面", "coord": "B1", "key": "no_anchor"},                          # 缺 anchor
+        {"sheet": "封面", "anchor": "________", "key": "no_coord"},                    # 缺 coord
+        {"coord": "B1", "anchor": "________", "key": "no_sheet"},                      # 缺 sheet
+        {"sheet": "封面", "coord": "B1", "anchor": "", "key": "empty_anchor"},         # anchor 为空
+        {"sheet": "封面", "coord": "B1", "anchor": "________", "key": ""},             # key 为空
+        {"sheet": "封面", "coord": "B1", "anchor": "________", "key": "project_name"},  # 合法
+        {"sheet": "封面", "coord": "B2", "anchor": "____年", "key": "sign_date"},       # 合法
+    ])
+    texts = {it["addr"]: it["text"] for it in iter_xlsx_cells(out)}
+    assert texts["封面!B1"] == "{{project_name}}"
+    assert texts["封面!B2"] == "{{sign_date}}____月____日"  # anchor "____年" 整体被替换
+
+
+def test_apply_xlsx_bad_sheet_or_coord_skipped():
+    """不存在的 sheet 名 / 非法 coord（openpyxl 会抛异常）跳过该条，不中断整批。"""
+    from rag.svr.template_fill.xlsx_utils import apply_xlsx_placeholders, iter_xlsx_cells
+    blob = _make_xlsx({"封面": [["项目名称", "________"]]})
+    out = apply_xlsx_placeholders(blob, [
+        {"sheet": "不存在的页", "coord": "B1", "anchor": "________", "key": "gone1"},   # KeyError 路径
+        {"sheet": "封面", "coord": "不是坐标", "anchor": "________", "key": "gone2"},   # ValueError 路径
+        {"sheet": "封面", "coord": "B1", "anchor": "________", "key": "project_name"},
+    ])
+    texts = {it["addr"]: it["text"] for it in iter_xlsx_cells(out)}
+    assert texts["封面!B1"] == "{{project_name}}"
+    assert "{{gone1}}" not in "".join(texts.values())
+    assert "{{gone2}}" not in "".join(texts.values())
+
+
+def test_apply_xlsx_preserves_cell_style():
+    """对抗：替换只改 value，单元格样式（字体加粗/填充色）必须保留。"""
+    from openpyxl import load_workbook
+    from openpyxl.styles import PatternFill
+
+    from rag.svr.template_fill.xlsx_utils import apply_xlsx_placeholders, iter_xlsx_cells
+    blob = _make_xlsx({"封面": [["项目名称", "________"]]})
+    # 给 B1 设样式后重新序列化
+    wb = load_workbook(io.BytesIO(blob))
+    ws = wb["封面"]
+    ws["B1"].font = ws["B1"].font.copy(bold=True)
+    ws["B1"].fill = PatternFill(fill_type="solid", start_color="FFFF00")
+    buf = io.BytesIO()
+    wb.save(buf)
+    styled = buf.getvalue()
+
+    out = apply_xlsx_placeholders(styled, [
+        {"sheet": "封面", "coord": "B1", "anchor": "________", "key": "project_name"},
+    ])
+    texts = {it["addr"]: it["text"] for it in iter_xlsx_cells(out)}
+    assert texts["封面!B1"] == "{{project_name}}"
+    wb2 = load_workbook(io.BytesIO(out))
+    cell = wb2["封面"]["B1"]
+    assert cell.font.bold is True
+    assert cell.fill.start_color.rgb == "00FFFF00" or cell.fill.start_color.rgb == "FFFF00"
