@@ -60,7 +60,10 @@ def _is_legacy_doc(filename: str) -> bool:
 
 def _convert_doc_to_docx(blob: bytes) -> bytes:
     """旧版 .doc（二进制 Word）转 .docx。容器内有 LibreOffice；用独立
-    UserInstallation 目录避免并发/首启 profile 锁冲突。"""
+    UserInstallation 目录避免并发/首启 profile 锁冲突。容器 soffice 包装
+    脚本未自设库路径，须显式注入 LD_LIBRARY_PATH（否则 soffice.bin 报
+    libreglo.so cannot open shared object file, rc=127）。"""
+    env = {**os.environ, "LD_LIBRARY_PATH": "/usr/lib/libreoffice/program"}
     with tempfile.TemporaryDirectory(prefix="tpl_doc_") as tmp:
         src = os.path.join(tmp, "input.doc")
         with open(src, "wb") as f:
@@ -69,7 +72,7 @@ def _convert_doc_to_docx(blob: bytes) -> bytes:
         r = subprocess.run(
             ["soffice", "--headless", "--norestore", f"-env:UserInstallation={profile}",
              "--convert-to", "docx", "--outdir", tmp, src],
-            capture_output=True, timeout=60, check=False)
+            capture_output=True, timeout=60, check=False, env=env)
         out = os.path.join(tmp, "input.docx")
         if not os.path.exists(out):
             logger.error("doc->docx convert failed: rc=%s stderr=%s",

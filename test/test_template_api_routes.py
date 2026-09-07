@@ -261,9 +261,10 @@ def test_convert_doc_to_docx_success(monkeypatch):
     mod = _template_api
     calls = {}
 
-    def fake_run(cmd, capture_output, timeout, check=True):
+    def fake_run(cmd, capture_output, timeout, check=True, env=None):
         calls["cmd"] = list(cmd)
         calls["timeout"] = timeout
+        calls["env"] = env
         # soffice 语义：--outdir <dir> 后跟源文件路径，产物为 <dir>/input.docx
         outdir = cmd[cmd.index("--outdir") + 1]
         with open(os.path.join(outdir, "input.docx"), "wb") as f:
@@ -278,6 +279,9 @@ def test_convert_doc_to_docx_success(monkeypatch):
     assert "--headless" in calls["cmd"] and "--norestore" in calls["cmd"]
     # 独立 UserInstallation profile 必须携带，防并发/首启锁冲突
     assert any(str(a).startswith("-env:UserInstallation=") for a in calls["cmd"])
+    # 容器 soffice 包装脚本不自设库路径，必须显式注入 LD_LIBRARY_PATH（否则 rc=127）
+    assert calls["env"] is not None
+    assert "libreoffice/program" in calls["env"].get("LD_LIBRARY_PATH", "")
 
 
 def test_convert_doc_to_docx_missing_output_raises(monkeypatch):
