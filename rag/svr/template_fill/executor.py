@@ -44,11 +44,16 @@ def _run_async(coro):
 
 
 def _load_and_check_kbs(tenant_id: str, kb_ids: list[str]):
-    """加载 KB 并做两道校验：全部属于该租户（settings.retriever 不校验权限，
-    这里是唯一防线）；embd_id 一致（混用向量模型检索会错位）。"""
-    kbs = [k for k in (KnowledgebaseService.get_by_ids([k for k in kb_ids if k] or [""]) or []) if k]
-    if not kbs:
+    """加载 KB 并做三道校验：请求的每个 id 都必须真实存在（部分命中视为
+    传参错误，不静默丢弃——本函数是 settings.retriever 无权限校验下的唯一
+    防线）；全部属于该租户；embd_id 一致（混用向量模型检索会错位）。
+    返回校验后的 KB 列表（后续检索只用这份 id，不用原始入参）。"""
+    req_ids = [k for k in (kb_ids or []) if k]
+    kbs = [k for k in (KnowledgebaseService.get_by_ids(req_ids or [""]) or []) if k]
+    if not req_ids or not kbs:
         raise ValueError("知识库不存在或已删除")
+    if len(kbs) < len(set(req_ids)):
+        raise ValueError("部分知识库不存在或已删除")
     for kb in kbs:
         if kb.tenant_id != tenant_id:
             raise PermissionError(f"知识库 {kb.id} 不属于当前租户")
@@ -79,7 +84,7 @@ async def retrieve_slot(tenant_id: str, kb_ids: list[str], query: str, top_k: in
     embd_mdl = _build_embd_mdl(tenant_id, kbs)
     page_size = max(TOP_K_MIN, min(int(top_k or TOP_K_DEFAULT), TOP_K_MAX))
     kbinfos = await settings.retriever.retrieval(
-        query, embd_mdl, [kb.tenant_id for kb in kbs], kb_ids,
+        query, embd_mdl, [kb.tenant_id for kb in kbs], [kb.id for kb in kbs],
         1, page_size, SIMILARITY_THRESHOLD, VECTOR_SIMILARITY_WEIGHT,
         aggs=True, rank_feature=label_question(query, kbs))
     return [_clip_chunk(ck) for ck in kbinfos.get("chunks", [])]
