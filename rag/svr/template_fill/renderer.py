@@ -33,7 +33,8 @@ def manual_mark(name: str) -> str:
 
 def render_docx(blob: bytes, values: dict) -> bytes:
     """用 docxtpl 渲染 Word 模板：values 的 key 对应文档内 {{key}} 占位符，
-    未出现的 key 忽略、缺失的占位符保持原样。"""
+    未出现的 key 忽略；values 缺失的占位符按 Jinja2 默认 Undefined 渲染为
+    空串（不是保持 {{key}} 原样）——executors 侧保证产值覆盖所有注册 key。"""
     from docxtpl import DocxTemplate
     doc = DocxTemplate(io.BytesIO(blob))
     doc.render(values or {})
@@ -45,9 +46,11 @@ def render_docx(blob: bytes, values: dict) -> bytes:
 def render_xlsx(blob: bytes, values: dict, addr_by_key: dict) -> bytes:
     """按注册表 addr（"<sheet>!<coord>"，按最后一个 "!" 拆分，兼容表名含 "!"）
     直写 Excel 单元格。脏输入健壮性：key 无产值 / addr 缺失或无 "!" → 预检查
-    跳过；sheet 不存在（KeyError）/ coord 非法或 range 语法（ValueError/
-    AttributeError）→ 跳过该格不中断整批；值为 None 不替换（openpyxl 会把
-    None 落成空单元格，且超边界 coord 会被惰性创建，均非预期写入）。"""
+    跳过；sheet 不存在（KeyError）/ coord 非法、空串或行越界（IndexError/
+    ValueError）/ range 语法（AttributeError）→ 跳过该格不中断整批；值为
+    None 不替换（openpyxl 会把 None 落成空单元格，且超边界 coord 会被惰性
+    创建，均非预期写入）。注意：列越界（如 XFE1）openpyxl 不抛异常、会静默
+    创建脏格——由注册表侧（xlsx_utils 从真实 workbook 生成）保证不出现。"""
     from openpyxl import load_workbook
     wb = load_workbook(io.BytesIO(blob))
     for key, addr in (addr_by_key or {}).items():
@@ -57,8 +60,8 @@ def render_xlsx(blob: bytes, values: dict, addr_by_key: dict) -> bytes:
         sheet, _, coord = addr.rpartition("!")
         try:
             wb[sheet][coord] = val
-        except (KeyError, ValueError, AttributeError):
-            # KeyError: sheet 不存在；ValueError: coord 非法/越界；
+        except (KeyError, ValueError, AttributeError, IndexError):
+            # KeyError: sheet 不存在；IndexError/ValueError: coord 空/非法/行越界；
             # AttributeError: coord 是 range 语法 → 赋值落在 tuple 上
             logger.warning("xlsx render skip cell key=%s addr=%s", key, addr)
     buf = io.BytesIO()

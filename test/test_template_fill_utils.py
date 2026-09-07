@@ -664,13 +664,22 @@ def test_render_xlsx_by_addr():
 
 
 def test_render_xlsx_bad_addr_skipped():
-    """addr 非法（sheet 不存在/坐标错）→ 跳过该格不抛异常。"""
-    from openpyxl import Workbook
+    """addr 非法 → 跳过该格不抛异常，且好格不被误伤。"""
+    from openpyxl import Workbook, load_workbook
 
     from rag.svr.template_fill.renderer import render_xlsx
-    wb = Workbook(); buf = io.BytesIO(); wb.save(buf)
-    out = render_xlsx(buf.getvalue(), {"a": "x"}, {"a": "不存在的表!ZZ99"})
-    assert out
+    wb = Workbook(); ws = wb.active; ws.title = "S1"; ws["B2"] = "keep"
+    buf = io.BytesIO(); wb.save(buf)
+    dirty = {"a": "不存在的表!ZZ99",       # sheet 不存在 → KeyError
+             "b": "S1!not-a-coord",        # coord 非法 → ValueError/IndexError
+             "c": "S1!",                   # coord 空串 → IndexError
+             "d": "S1!A1:B2",              # range 语法 → AttributeError
+             "e": "S1!A1048577",           # 行越界 → ValueError
+             "ok": "S1!B2"}                # 好格正常写
+    out = render_xlsx(buf.getvalue(), dict.fromkeys(dirty, "x"), dirty)
+    ws2 = load_workbook(io.BytesIO(out))["S1"]
+    assert ws2["B2"].value == "x"          # 好格被写入
+    assert ws2.max_row <= 2 and ws2.max_column <= 2  # 脏格全部未落值
 
 
 def test_render_dispatch():
