@@ -19,7 +19,9 @@ retrieve_slot → generate_values → validate → render，编排入口 execute
 所有外部依赖（retriever / LLMBundle / STORAGE_IMPL）经模块属性注入，可独立单测。
 """
 import asyncio
+import json
 import logging
+import re
 
 from api.db.joint_services.tenant_model_service import get_model_config_by_type_and_name
 from api.db.services.knowledgebase_service import KnowledgebaseService
@@ -88,3 +90,115 @@ async def retrieve_slot(tenant_id: str, kb_ids: list[str], query: str, top_k: in
         1, page_size, SIMILARITY_THRESHOLD, VECTOR_SIMILARITY_WEIGHT,
         aggs=True, rank_feature=label_question(query, kbs))
     return [_clip_chunk(ck) for ck in kbinfos.get("chunks", [])]
+
+
+# ---------- 生成层：prompt 清洗 + LLM 批量产值 + 约束校验兜底 ----------
+
+_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_PARAM_RE = re.compile(r"\{params\.([a-zA-Z0-9_]+)\}")
+
+DESC_MAX = 500       # description 清洗截断
+NAME_MAX = 100
+QUERY_MAX = 300
+PARAM_VAL_MAX = 100
+BATCH_SIZE = 30      # 每批 LLM 产值的字段数上限（设计文档 §10：大模板分批）
+MAX_EVIDENCE_CHUNKS = 6  # 每字段进 prompt 的证据片段上限（片段已在检索层截 800 字）
+
+GENERATE_SYSTEM = (
+    "你是文档填写引擎。根据每个字段的【检索证据】填写字段值。规则：\n"
+    "1. 只准依据证据作答，禁止编造；证据中找不到的字段值输出 null。\n"
+    "2. 遵守字段约束（类型/最大长度）。\n"
+    "3. 只输出一个 JSON 对象：{\"字段key\": \"字段值或null\", ...}，不要输出任何其他文字。")
+
+
+def _clean_for_prompt(text: str, max_len: int) -> str:
+    """用户可控的 description/name/retrieval_query 进 prompt 前清洗：
+    去控制字符 + 截断。这些字段是 prompt 注入面（遗留债③），只能清洗+截断。"""
+    if not isinstance(text, str):
+        return ""
+    return _CTRL_RE.sub("", text).strip()[:max_len]
+
+
+def build_retrieval_query(query_tpl: str, params: dict) -> str:
+    """retrieval_query 支持 {params.xxx} 引用任务参数：值清洗截断后替换；
+    缺 key 原样保留（交由检索层当普通词处理）。"""
+    def _sub(m):
+        val = (params or {}).get(m.group(1))
+        return _clean_for_prompt(str(val), PARAM_VAL_MAX) if val is not None else m.group(0)
+    return _PARAM_RE.sub(_sub, _clean_for_prompt(query_tpl or "", QUERY_MAX))
+
+
+def _build_chat_mdl(tenant_id: str):
+    """照 detector.py 模式构造默认对话模型（延迟 import，纯函数部分可独立单测）。"""
+    from api.db.joint_services.tenant_model_service import get_tenant_default_model_by_type
+    from common.constants import LLMType as _LT
+    return LLMBundle(tenant_id, get_tenant_default_model_by_type(tenant_id, _LT.CHAT))
+
+
+def _extract_json(text: str) -> dict:
+    """LLM 输出不可信：容忍 ```json 围栏/前后杂文，抽第一个 JSON 对象。"""
+    m = re.search(r"\{.*\}", text or "", re.DOTALL)
+    if not m:
+        return {}
+    try:
+        obj = json.loads(m.group(0))
+        return obj if isinstance(obj, dict) else {}
+    except (ValueError, TypeError):
+        return {}
+
+
+def _apply_constraints(value, constraints: dict):
+    """类型/字数兜底（LLM 安全网）。返回规整后的值；不可修复 → None。"""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in ("null", "none", "n/a"):
+        return None
+    ctype = (constraints or {}).get("type")
+    if ctype == "number":
+        try:
+            return float(text) if "." in text else int(text)
+        except ValueError:
+            return None
+    try:
+        max_len = int((constraints or {}).get("max_length") or 0)
+    except (TypeError, ValueError):
+        max_len = 0
+    return text[:max_len] if max_len > 0 else text
+
+
+async def generate_values(tenant_id: str, placeholders: list[dict], chunks_by_key: dict,
+                          params: dict | None = None,
+                          batch_size: int = BATCH_SIZE) -> tuple[dict, set]:
+    """LLM 批量产值：一次调用产 ≤batch_size 个字段值（超出分批）。
+    返回 (values, missing_keys)。每字段证据最多取 6 片（片段已截 800 字）。"""
+    missing: set = set()
+    values: dict = {}
+    mdl = None
+    for i in range(0, len(placeholders), max(int(batch_size or BATCH_SIZE), 1)):
+        batch = placeholders[i:i + batch_size]
+        spec = [{"key": it["key"],
+                 "name": _clean_for_prompt(it.get("name") or it["key"], NAME_MAX),
+                 "description": _clean_for_prompt(it.get("description"), DESC_MAX),
+                 "constraints": it.get("constraints") or {}} for it in batch]
+        evidence = []
+        for it in batch:
+            chunks = (chunks_by_key.get(it["key"]) or {}).get("chunks", [])
+            joined = "\n---\n".join(f"[片段{j + 1}] {c['content']}"
+                                    for j, c in enumerate(chunks[:MAX_EVIDENCE_CHUNKS])) or "（无检索证据）"
+            evidence.append(f"### 字段 {it['key']}\n{joined}")
+        user_msg = ("## 字段清单\n" + json.dumps(spec, ensure_ascii=False) +
+                    "\n\n## 检索证据\n" + "\n\n".join(evidence) +
+                    "\n\n任务参数（背景信息）：" + json.dumps(params or {}, ensure_ascii=False, default=str))
+        if mdl is None:
+            mdl = _build_chat_mdl(tenant_id)
+        ans = await mdl.async_chat(GENERATE_SYSTEM, [{"role": "user", "content": user_msg}])
+        raw = _extract_json(ans)
+        for it in batch:
+            key = it["key"]
+            val = _apply_constraints(raw.get(key), it.get("constraints") or {})
+            if val is None:
+                missing.add(key)
+            else:
+                values[key] = val
+    return values, missing
