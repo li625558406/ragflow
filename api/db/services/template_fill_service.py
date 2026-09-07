@@ -23,8 +23,12 @@ import logging
 from api.db.db_models import DB, TplTemplate, TplTemplateVersion
 from api.db.services.common_service import CommonService
 from common import settings
+from common.misc_utils import get_uuid
 
 logger = logging.getLogger(__name__)
+
+# 模板状态机白名单：任何写库路径只允许这三种状态（防任意字符串落库）
+TEMPLATE_STATUSES = ("draft", "published", "disabled")
 
 # object name 中用户文件名片段的最大长度（MinIO object 名总长上限远大于此，
 # 截断主要为防极端超长文件名 + 保留扩展名可读性）
@@ -62,6 +66,12 @@ def _storage_put(bucket: str, obj_name: str, blob: bytes):
     return r
 
 
+def _storage_get(bucket: str, obj_name: str):
+    """读取 MinIO 对象（与 _storage_put 对称）：对象不存在/读取失败返回 None，
+    由调用方决定兜底语义（升版返回错误、草稿改写抛异常）。"""
+    return settings.STORAGE_IMPL.get(bucket, obj_name)
+
+
 class TplTemplateService(CommonService):
     model = TplTemplate
 
@@ -94,8 +104,18 @@ class TplTemplateService(CommonService):
     @classmethod
     @DB.connection_context()
     def set_status(cls, template_id: str, tenant_id: str, status: str):
+        # 白名单前置：非法状态值不触库直接拒绝，防任意字符串写入 status 列
+        if status not in TEMPLATE_STATUSES:
+            return False
         return cls.model.update(status=status).where(
-            cls.model.id == template_id, cls.model.tenant_id == tenant_id).execute()
+            cls.model.id == template_id, cls.model.tenant_id == tenant_id).execute() > 0
+
+    @classmethod
+    @DB.connection_context()
+    def set_latest_version(cls, template_id: str, version: int):
+        """升版后同步模板 latest_version 指针（仅内部升版链路调用）。"""
+        return cls.model.update(latest_version=version).where(
+            cls.model.id == template_id).execute() > 0
 
 
 class TplTemplateVersionService(CommonService):
@@ -130,31 +150,75 @@ class TplTemplateVersionService(CommonService):
             raise
 
     @classmethod
-    @DB.connection_context()
-    def save_placeholders(cls, template: dict, placeholders: list) -> dict:
-        """人工确认后：生成带 {{key}} 的 render 副本入 MinIO，与 placeholders 原子落库。
+    def replace_anchor_to_placeholder(cls, file_type: str, blob: bytes, items: list) -> bytes:
+        """锚文本替换为 {{key}}，生成 render blob（纯转换，不做任何 IO）。
 
         docx/xlsx 的 apply 函数对脏输入（anchor 不存在、非法 sheet/coord）为静默跳过语义，
+        本层不做占位符校验（API 层 validate_placeholders 负责）。
+        """
+        if file_type == "docx":
+            from rag.svr.template_fill.docx_utils import apply_docx_placeholders
+            return apply_docx_placeholders(blob, items)
+        from rag.svr.template_fill.xlsx_utils import apply_xlsx_placeholders
+        return apply_xlsx_placeholders(blob, items)
+
+    @classmethod
+    def _save_as_new_version(cls, template: dict, ver, placeholders: list) -> tuple:
+        """published 模板保存填写点：不改旧版本行，新建 v{N+1} 版本行 + 新 MinIO 对象。
+
+        历史填写任务按当时版本对象复现，published 后再改填写点必须开新版本，
+        否则旧任务 render/original 被覆盖后无法追溯。
+        """
+        tpl_id = template["id"]
+        version = ver.version + 1
+        ext = template["file_type"]
+        # 原件快照：从旧版本原件复制一份作为新版本原件（副本，不移动旧对象）
+        blob = _storage_get(tpl_id, ver.original_file_id)
+        if not blob:
+            return False, "模板原件缺失"
+        orig_name = f"v{version}_original.{ext}"
+        _storage_put(tpl_id, orig_name, blob)
+        render = cls.replace_anchor_to_placeholder(ext, blob, placeholders)
+        render_name = f"v{version}_render.{ext}"
+        _storage_put(tpl_id, render_name, render)
+        try:
+            cls.insert(id=get_uuid(), template_id=tpl_id, version=version,
+                       original_file_id=orig_name, render_file_id=render_name,
+                       placeholders=placeholders, created_by=template.get("created_by"))
+        except Exception:
+            logger.exception("template fill: insert upgraded version failed after storage put, "
+                             "template=%s version=%s (orphan objects left in storage)", tpl_id, version)
+            raise
+        TplTemplateService.set_latest_version(tpl_id, version)
+        return True, version
+
+    @classmethod
+    @DB.connection_context()
+    def save_placeholders(cls, template: dict, placeholders: list) -> tuple:
+        """人工确认后保存填写点：生成带 {{key}} 的 render 副本入 MinIO 并落库。
+
+        返回 (ok, info)：ok=False 时 info 为错误文案；ok=True 时 info 为版本行 dict
+        （draft 改写）或新版本号（published 升版）。
+
+        draft/disabled 模板：原逻辑，原地改写当前版本行；
+        published 模板：新建 v{N+1} 版本行（历史任务可按当时版本复现）。
         本层不做占位符校验（API 层 validate_placeholders 负责）；租户校验由调用方负责。
         """
         tpl_id = template["id"]
         ver = cls.latest(tpl_id)
         if ver is None:
             raise RuntimeError(f"no version found for template {tpl_id}")
+        if template.get("status") == "published":
+            return cls._save_as_new_version(template, ver, placeholders)
         # MinIO conn.get 返回 r.read() 即 bytes；对象不存在/读取失败返回 None，此处显式兜底
-        blob = settings.STORAGE_IMPL.get(tpl_id, ver.original_file_id)
+        blob = _storage_get(tpl_id, ver.original_file_id)
         if not blob:
             raise RuntimeError(f"original file missing in storage: bucket={tpl_id}, object={ver.original_file_id}")
-        if template["file_type"] == "docx":
-            from rag.svr.template_fill.docx_utils import apply_docx_placeholders
-            render = apply_docx_placeholders(blob, placeholders)
-            render_name = f"v{ver.version}_render.docx"
-        else:
-            from rag.svr.template_fill.xlsx_utils import apply_xlsx_placeholders
-            render = apply_xlsx_placeholders(blob, placeholders)
-            render_name = f"v{ver.version}_render.xlsx"
+        ext = template["file_type"]
+        render = cls.replace_anchor_to_placeholder(ext, blob, placeholders)
+        render_name = f"v{ver.version}_render.{ext}"
         _storage_put(tpl_id, render_name, render)
         ver.render_file_id = render_name
         ver.placeholders = placeholders  # ListField.db_value 在 save 时 json 序列化，直接赋 list 即可
         ver.save()
-        return ver.to_dict()
+        return True, ver.to_dict()

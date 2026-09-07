@@ -416,3 +416,36 @@ def test_upload_unsupported_ext_still_rejected(monkeypatch):
     assert d["code"] == DATA_ERROR_CODE
     assert "仅支持 .docx / .doc / .xlsx" in d["message"]
     assert not inserted and not versions
+
+
+# ---------- P2 遗留债：published 自动升 v2 + 状态机白名单 ----------
+
+def test_set_status_whitelist():
+    """非法状态值直接拒绝，不落库。"""
+    from api.db.services.template_fill_service import TplTemplateService
+    ok = TplTemplateService.set_status("tpl_x", "tenant_x", "hacked")
+    assert ok is False
+
+
+def test_save_placeholders_published_upgrades_version(monkeypatch):
+    """published 模板保存填写点 → 新建 v{N+1}，不改旧版本行。"""
+    from api.db.services import template_fill_service as svc
+    calls = {}
+    monkeypatch.setattr(svc.TplTemplateVersionService, "latest", classmethod(
+        lambda cls, tid: types.SimpleNamespace(version=3, original_file_id="v3_original")))
+    monkeypatch.setattr(svc.TplTemplateService, "get_by_id", classmethod(
+        lambda cls, tid: types.SimpleNamespace(id="tpl_x", status="published",
+                                               file_type="docx", to_dict=lambda: {"id": "tpl_x"})))
+    monkeypatch.setattr(svc, "_storage_get", lambda bucket, name: b"original-blob")
+    monkeypatch.setattr(svc, "_storage_put", lambda bucket, name, blob: None)
+    monkeypatch.setattr(svc.TplTemplateVersionService, "replace_anchor_to_placeholder",
+                        classmethod(lambda cls, *a, **kw: b"rendered"))
+    monkeypatch.setattr(svc.TplTemplateVersionService, "insert", classmethod(
+        lambda cls, **kw: calls.update(version=kw.get("version"))))
+    monkeypatch.setattr(svc.TplTemplateService, "set_latest_version", classmethod(
+        lambda cls, *a, **kw: calls.update(bumped=True)))
+    ok, msg = svc.TplTemplateVersionService.save_placeholders(
+        {"id": "tpl_x", "status": "published", "file_type": "docx"},
+        [{"key": "a", "addr": "x", "anchor": "a"}])
+    assert ok, msg
+    assert calls["version"] == 4 and calls["bumped"], "published 必须升版而非改写 v3"

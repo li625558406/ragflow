@@ -220,16 +220,20 @@ async def save_placeholders(template_id: str):
     ok, err_msg = validate_placeholders(items, candidates)
     if not ok:
         return get_error_data_result(err_msg)
-    TplTemplateVersionService.save_placeholders(tpl.to_dict(), items)
+    svr_ok, info = TplTemplateVersionService.save_placeholders(tpl.to_dict(), items)
+    if not svr_ok:
+        return get_error_data_result(info)
     return get_result(data={"id": template_id, "placeholder_count": len(items)})
 
 
 @manager.route("/template/fill/<template_id>/publish", methods=["POST"])
 @login_required
 async def publish_template(template_id: str):
-    _tpl, err = await _load_template(template_id)
+    tpl, err = await _load_template(template_id)
     if err:
         return err
+    if tpl.status == "published":
+        return get_result()  # 幂等：重复发布直接成功
     ver = TplTemplateVersionService.latest(template_id)
     if not ver or not ver.render_file_id:
         return get_error_data_result("请先保存填写点配置再发布")
@@ -240,9 +244,11 @@ async def publish_template(template_id: str):
 @manager.route("/template/fill/<template_id>/disable", methods=["POST"])
 @login_required
 async def disable_template(template_id: str):
-    _tpl, err = await _load_template(template_id)
+    tpl, err = await _load_template(template_id)
     if err:
         return err
+    if tpl.status == "draft":
+        return get_error_data_result("草稿状态无需停用，可直接删除")
     TplTemplateService.set_status(template_id, current_user.id, "disabled")
     return get_result()
 
