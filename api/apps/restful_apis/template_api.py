@@ -101,7 +101,7 @@ async def upload_template():
     # docx/xlsx 均为 zip 容器，轻量验证内容合法性，防后续解析抛 BadZipFile 500
     if not zipfile.is_zipfile(io.BytesIO(blob)):
         return get_error_data_result("文件已损坏或不是有效的 docx/xlsx 文件")
-    name = (form.get("name") or "").strip()[:256] or file.filename.rsplit(".", 1)[0]
+    name = (form.get("name") or "").strip()[:256] or file.filename.rsplit(".", 1)[0].strip()[:256]
     tpl_id = get_uuid()
     TplTemplateService.insert(id=tpl_id, name=name,
                               description=(form.get("description") or "")[:2000],
