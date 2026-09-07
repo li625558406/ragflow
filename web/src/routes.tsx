@@ -80,6 +80,8 @@ export enum Routes {
   Crawl4ai = '/smart-crawler',
   Bids = '/bids',
   Permission = '/permission',
+  TemplateFill = '/template-fill',
+  TemplateFillDetail = '/template-fill/detail',
 }
 
 const defaultRouteFallback = (
