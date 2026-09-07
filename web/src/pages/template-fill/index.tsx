@@ -80,7 +80,7 @@ export default function TemplateFillPage() {
     <Card className="bg-transparent border-none">
       <CardHeader>
         <div className="flex items-center justify-between">
-          <CardTitle className="text-2xl">模板库</CardTitle>
+          <CardTitle className="text-2xl">范本库</CardTitle>
           <Button onClick={() => setWizardOpen(true)}>上传模板</Button>
         </div>
         <div className="flex gap-2">

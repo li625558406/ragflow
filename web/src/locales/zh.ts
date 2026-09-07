@@ -107,7 +107,7 @@ export default {
       dataset: '知识库',
       memories: '记忆',
       bid: '标书',
-      templateFill: '模板库',
+      templateFill: '范本库',
     },
     skills: {
       title: '技能',
