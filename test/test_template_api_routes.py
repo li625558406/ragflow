@@ -64,6 +64,11 @@ EXPECTED_ENDPOINTS = (
     "delete_template_endpoint",
     "preview_template",
     "download_template",
+    "create_fill_task",
+    "list_fill_tasks",
+    "get_fill_task",
+    "retry_fill_task",
+    "download_fill_result",
 )
 
 
@@ -97,6 +102,11 @@ def test_all_routes_registered_on_blueprint():
         "/template/fill/<template_id>": {"GET", "DELETE"},
         "/template/fill/<template_id>/preview": {"GET"},
         "/template/fill/<template_id>/file": {"GET"},
+        "/template/fill/fill-task": {"POST"},
+        "/template/fill/fill-task/list": {"GET"},
+        "/template/fill/fill-task/<task_id>": {"GET"},
+        "/template/fill/fill-task/<task_id>/retry": {"POST"},
+        "/template/fill/fill-task/<task_id>/download": {"GET"},
     }
     for rule, methods in expected.items():
         assert rule in rules, f"路由未注册: {rule}（现有: {sorted(rules)}）"
@@ -589,3 +599,381 @@ def test_delete_template_missing_returns_error_without_side_effects(monkeypatch)
     assert not removed, "模板不存在时不得触碰 MinIO 对象"
     assert not vers.recorder.get("version_delete_executed"), "模板不存在时不得删版本行"
     assert not main.recorder.get("main_delete_executed"), "模板不存在时不得删主表行"
+
+
+# ---------- P2+P3 Task 8：填写任务 REST 端点 ----------
+
+import contextlib
+
+from quart import Response
+
+
+class _FakeJsonRequest:
+    """quart request 桩：端点内 `await request.get_json()`。"""
+
+    def __init__(self, body=None):
+        self._body = body
+
+    async def get_json(self):
+        return self._body
+
+
+class _FakeUpdateQuery:
+    """peewee update().where().execute() 桩，记录 update 字段与 where 条件。"""
+
+    def __init__(self, recorder, ret):
+        self._recorder = recorder
+        self._ret = ret
+
+    def where(self, *exprs):
+        self._recorder["where"] = list(exprs)
+        return self
+
+    def execute(self):
+        self._recorder["executed"] = True
+        return self._ret
+
+
+class _FakeColumn:
+    """peewee 列桩：in_(...) 返回哨兵表达式对象。"""
+
+    def __init__(self, recorder, name):
+        self._recorder = recorder
+        self._name = name
+
+    def in_(self, values):
+        self._recorder[f"{self._name}_in"] = tuple(values)
+        return object()
+
+
+class _FakeFillModel:
+    """TplFillTask 模型桩：update() 记录字段，execute 返回指定行数。"""
+
+    def __init__(self, ret=1):
+        self.recorder = {}
+        self._ret = ret
+        self.id = object()
+        self.status = _FakeColumn(self.recorder, "status")
+
+    def update(self, **kw):
+        self.recorder["update"] = kw
+        return _FakeUpdateQuery(self.recorder, self._ret)
+
+
+def _make_fill_tpl(status="published", file_type="docx"):
+    return types.SimpleNamespace(id="tpl_x", status=status, file_type=file_type)
+
+
+_UNSET = object()
+
+
+def _make_ver(version_id="ver-1", render_file_id="v1_render.docx", placeholders=_UNSET):
+    return types.SimpleNamespace(id=version_id, render_file_id=render_file_id,
+                                 placeholders=[{"key": "a", "addr": "x"}]
+                                 if placeholders is _UNSET else placeholders)
+
+
+def _patch_fill_deps(monkeypatch, mod, body, tpl=None, ver="default"):
+    """create_fill_task 公共桩：json body + 模板/版本/任务 service + spawn 捕获。
+    ver 传 None 表示 latest 返回 None；传 "default" 用标准已配置版本。"""
+    tpl = tpl if tpl is not None else _make_fill_tpl()
+    if ver == "default":
+        ver = _make_ver()
+    inserted, spawned = {}, []
+    monkeypatch.setattr(mod, "request", _FakeJsonRequest(body))
+    monkeypatch.setattr(mod, "TplTemplateService", types.SimpleNamespace(
+        get_owned=lambda tid, uid, **kw: tpl))
+    monkeypatch.setattr(mod, "TplTemplateVersionService", types.SimpleNamespace(
+        latest=lambda tid: ver))
+    monkeypatch.setattr(mod, "TplFillTaskService", types.SimpleNamespace(
+        insert=lambda **kw: (inserted.update(kw), types.SimpleNamespace(**kw))[1]))
+    monkeypatch.setattr(mod, "_spawn_fill_task", lambda tid: spawned.append(tid))
+    return inserted, spawned
+
+
+def test_create_fill_task_requires_template_id(monkeypatch):
+    mod = _template_api
+    inserted, spawned = _patch_fill_deps(monkeypatch, mod, {"kb_ids": ["kb1"]})
+    resp = asyncio.run(mod.create_fill_task())
+    d = _err_dict(resp)
+    assert d["code"] == DATA_ERROR_CODE
+    assert "template_id" in d["message"]
+    assert not inserted and not spawned, "缺 template_id 不得写库/起线程"
+
+
+def test_create_fill_task_rejects_draft_template(monkeypatch):
+    """draft（未发布）模板拒绝发起填写。"""
+    mod = _template_api
+    inserted, spawned = _patch_fill_deps(
+        monkeypatch, mod, {"template_id": "tpl_x", "kb_ids": ["kb1"]},
+        tpl=_make_fill_tpl(status="draft"))
+    resp = asyncio.run(mod.create_fill_task())
+    d = _err_dict(resp)
+    assert d["code"] == DATA_ERROR_CODE
+    assert "已发布" in d["message"]
+    assert not inserted and not spawned
+
+
+def test_create_fill_task_rejects_empty_or_missing_kb_ids(monkeypatch):
+    """kb_ids 缺失 / 空数组 / 全是无效项 → 拒绝。"""
+    mod = _template_api
+    for body in ({"template_id": "tpl_x"},
+                 {"template_id": "tpl_x", "kb_ids": []},
+                 {"template_id": "tpl_x", "kb_ids": ["", None, 123, "   "]}):
+        inserted, spawned = _patch_fill_deps(monkeypatch, mod, body)
+        resp = asyncio.run(mod.create_fill_task())
+        d = _err_dict(resp)
+        assert d["code"] == DATA_ERROR_CODE, f"body={body} 应拒绝"
+        assert "kb_ids" in d["message"]
+        assert not inserted and not spawned, f"body={body} 不得写库/起线程"
+
+
+def test_create_fill_task_rejects_non_dict_params(monkeypatch):
+    """对抗性：params 传数组/字符串 → 拒绝，不得透传进 JSONField。"""
+    mod = _template_api
+    for bad in (["a"], "str", 42):
+        inserted, spawned = _patch_fill_deps(
+            monkeypatch, mod, {"template_id": "tpl_x", "kb_ids": ["kb1"], "params": bad})
+        resp = asyncio.run(mod.create_fill_task())
+        d = _err_dict(resp)
+        assert d["code"] == DATA_ERROR_CODE, f"params={bad!r} 应拒绝"
+        assert not inserted and not spawned
+
+
+def test_create_fill_task_rejects_when_placeholders_missing(monkeypatch):
+    """版本缺失 / 无 render 副本 / 填写点为空 三种情况都拒绝。"""
+    mod = _template_api
+    cases = [
+        (_make_ver(render_file_id="", placeholders=[{"key": "a"}]), "无 render"),
+        (_make_ver(placeholders=[]), "填写点为空"),
+        (_make_ver(placeholders=None), "填写点为 None"),
+        (None, "版本缺失"),
+    ]
+    for ver, tag in cases:
+        inserted, spawned = _patch_fill_deps(
+            monkeypatch, mod, {"template_id": "tpl_x", "kb_ids": ["kb1"]}, ver=ver)
+        resp = asyncio.run(mod.create_fill_task())
+        d = _err_dict(resp)
+        assert d["code"] == DATA_ERROR_CODE, f"case={tag} 应拒绝"
+        assert "填写点" in d["message"], f"case={tag} 文案应提示填写点"
+        assert not inserted and not spawned, f"case={tag} 不得写库/起线程"
+
+
+def test_create_fill_task_success_pins_version_and_spawns(monkeypatch):
+    """成功路径：insert 必须带 template_version_id=ver.id（pipeline 钉版本），
+    status=pending、tenant_id=current_user.id，且 _spawn_fill_task 被调用。"""
+    mod = _template_api
+    inserted, spawned = _patch_fill_deps(
+        monkeypatch, mod,
+        {"template_id": "tpl_x", "kb_ids": ["kb1", "kb2"], "params": {"tone": "正式"},
+         "source": "web"})
+    resp = asyncio.run(mod.create_fill_task())
+    assert resp["code"] == 0
+    assert inserted["template_version_id"] == "ver-1", "必须写入模板版本 id 钉住版本"
+    assert inserted["template_id"] == "tpl_x"
+    assert inserted["kb_ids"] == ["kb1", "kb2"]
+    assert inserted["params"] == {"tone": "正式"}
+    assert inserted["status"] == "pending"
+    assert inserted["tenant_id"] == "u1"
+    assert spawned == [inserted["id"]], "spawn 必须收到任务 id"
+    assert resp["data"]["task_id"] == inserted["id"]
+    assert resp["data"]["status"] == "pending"
+
+
+def test_create_fill_task_filters_kb_ids_and_truncates_source(monkeypatch):
+    """kb_ids 混入非字符串/空白项被过滤后仍可成功；source 超 16 字截断。"""
+    mod = _template_api
+    inserted, _spawned = _patch_fill_deps(
+        monkeypatch, mod,
+        {"template_id": "tpl_x", "kb_ids": ["kb1", "", None, "  ", 7],
+         "source": "x" * 30})
+    resp = asyncio.run(mod.create_fill_task())
+    assert resp["code"] == 0
+    assert inserted["kb_ids"] == ["kb1"]
+    assert inserted["source"] == "x" * 16, "source 必须截断到 16 字"
+
+
+def test_create_fill_task_source_defaults_to_web(monkeypatch):
+    mod = _template_api
+    inserted, _spawned = _patch_fill_deps(
+        monkeypatch, mod, {"template_id": "tpl_x", "kb_ids": ["kb1"]})
+    resp = asyncio.run(mod.create_fill_task())
+    assert resp["code"] == 0
+    assert inserted["source"] == "web"
+
+
+def _make_task(status="failed", result_file_id="", template_id="tpl_x"):
+    return types.SimpleNamespace(id="task-1", status=status,
+                                 result_file_id=result_file_id,
+                                 template_id=template_id,
+                                 to_dict=lambda: {"id": "task-1", "status": status})
+
+
+def test_get_fill_task_not_found(monkeypatch):
+    mod = _template_api
+    monkeypatch.setattr(mod, "TplFillTaskService", types.SimpleNamespace(
+        get_owned=lambda tid, uid: None))
+    resp = asyncio.run(mod.get_fill_task("task-gone"))
+    d = _err_dict(resp)
+    assert d["code"] == DATA_ERROR_CODE and "任务不存在" in d["message"]
+
+
+def test_get_fill_task_success(monkeypatch):
+    mod = _template_api
+    monkeypatch.setattr(mod, "TplFillTaskService", types.SimpleNamespace(
+        get_owned=lambda tid, uid: _make_task()))
+    resp = asyncio.run(mod.get_fill_task("task-1"))
+    assert resp["code"] == 0
+    assert resp["data"]["id"] == "task-1"
+
+
+def test_list_fill_tasks_uses_service_pagination(monkeypatch):
+    mod = _template_api
+    from werkzeug.datastructures import MultiDict
+    calls = {}
+
+    def fake_page(tenant_id, status="", page=1, size=20):
+        calls.update(tenant_id=tenant_id, status=status, page=page, size=size)
+        return [{"id": "t1"}], 7
+
+    monkeypatch.setattr(mod, "request", types.SimpleNamespace(args=MultiDict([
+        ("status", "failed"), ("page", "2"), ("size", "5")])))
+    monkeypatch.setattr(mod, "TplFillTaskService", types.SimpleNamespace(
+        get_list_page=fake_page))
+    resp = asyncio.run(mod.list_fill_tasks())
+    assert resp["code"] == 0
+    assert resp["data"] == [{"id": "t1"}] and resp["total_datasets"] == 7
+    assert calls == {"tenant_id": "u1", "status": "failed", "page": 2, "size": 5}
+
+
+def _patch_retry_deps(monkeypatch, mod, task, update_ret=1):
+    """retry 公共桩：任务 service + 裸 DB 桩（记录 connection_context 是否被进入）。"""
+    model = _FakeFillModel(ret=update_ret)
+    entered = []
+
+    @contextlib.contextmanager
+    def fake_ctx():
+        entered.append(True)
+        yield
+
+    spawned = []
+    monkeypatch.setattr(mod, "TplFillTaskService", types.SimpleNamespace(
+        get_owned=lambda tid, uid: task, model=model))
+    monkeypatch.setattr(mod, "DB", types.SimpleNamespace(connection_context=fake_ctx))
+    monkeypatch.setattr(mod, "_spawn_fill_task", lambda tid: spawned.append(tid))
+    return model, spawned, entered
+
+
+def test_retry_rejects_non_terminal_running_status(monkeypatch):
+    """仅 failed/partial 可重试：pending/done 等一律拒绝。"""
+    mod = _template_api
+    for status in ("pending", "retrieving", "generating", "rendering", "done"):
+        model, spawned, _entered = _patch_retry_deps(
+            monkeypatch, mod, _make_task(status=status))
+        resp = asyncio.run(mod.retry_fill_task("task-1"))
+        d = _err_dict(resp)
+        assert d["code"] == DATA_ERROR_CODE, f"status={status} 应拒绝"
+        assert "失败或部分完成" in d["message"]
+        assert not model.recorder.get("executed"), f"status={status} 不得写库"
+        assert not spawned
+
+
+def test_retry_rejects_when_task_already_running(monkeypatch):
+    """防重入：task_id 在运行集合内 → 拒绝，不重复复位/起线程。"""
+    mod = _template_api
+    model, spawned, _entered = _patch_retry_deps(
+        monkeypatch, mod, _make_task(status="failed"))
+    monkeypatch.setattr(mod, "_running_tasks", {"task-1"})
+    resp = asyncio.run(mod.retry_fill_task("task-1"))
+    d = _err_dict(resp)
+    assert d["code"] == DATA_ERROR_CODE and "执行中" in d["message"]
+    assert not model.recorder.get("executed") and not spawned
+
+
+def test_retry_rejects_when_cas_update_loses_race(monkeypatch):
+    """对抗性：复位 update 命中 0 行（并发被改走）→ 报错且不起线程。"""
+    mod = _template_api
+    model, spawned, entered = _patch_retry_deps(
+        monkeypatch, mod, _make_task(status="failed"), update_ret=0)
+    monkeypatch.setattr(mod, "_running_tasks", set())
+    resp = asyncio.run(mod.retry_fill_task("task-1"))
+    d = _err_dict(resp)
+    assert d["code"] == DATA_ERROR_CODE and "状态变更失败" in d["message"]
+    assert entered, "裸 update 必须包 DB.connection_context()"
+    assert not spawned
+    assert model.recorder["update"] == {"status": "pending", "error": ""}
+    assert model.recorder["status_in"] == ("failed", "partial"), \
+        "where 必须带 status 白名单 CAS 条件"
+    assert len(model.recorder["where"]) == 2, "where 必须带 id + status 两个条件"
+
+
+def test_retry_success_resets_and_spawns(monkeypatch):
+    mod = _template_api
+    model, spawned, entered = _patch_retry_deps(
+        monkeypatch, mod, _make_task(status="partial"))
+    monkeypatch.setattr(mod, "_running_tasks", set())
+    resp = asyncio.run(mod.retry_fill_task("task-1"))
+    assert resp["code"] == 0
+    assert resp["data"] == {"task_id": "task-1", "status": "pending"}
+    assert model.recorder["update"] == {"status": "pending", "error": ""}
+    assert entered and spawned == ["task-1"]
+
+
+def test_download_fill_result_not_found(monkeypatch):
+    mod = _template_api
+    monkeypatch.setattr(mod, "TplFillTaskService", types.SimpleNamespace(
+        get_owned=lambda tid, uid: None))
+    resp = asyncio.run(mod.download_fill_result("task-gone"))
+    d = _err_dict(resp)
+    assert d["code"] == DATA_ERROR_CODE and "任务不存在" in d["message"]
+
+
+def test_download_fill_result_rejects_without_file(monkeypatch):
+    """无 result_file_id / 存储对象缺失 → 各自的友好错误，不 500。"""
+    mod = _template_api
+    monkeypatch.setattr(mod, "TplFillTaskService", types.SimpleNamespace(
+        get_owned=lambda tid, uid: _make_task(status="done", result_file_id="")))
+    resp = asyncio.run(mod.download_fill_result("task-1"))
+    d = _err_dict(resp)
+    assert "尚未产出" in d["message"]
+
+    fetched = []
+    monkeypatch.setattr(mod, "TplFillTaskService", types.SimpleNamespace(
+        get_owned=lambda tid, uid: _make_task(status="done", result_file_id="f.docx")))
+    monkeypatch.setattr(mod, "settings", types.SimpleNamespace(
+        STORAGE_IMPL=types.SimpleNamespace(
+            get=lambda bucket, name: fetched.append((bucket, name)) or None)))
+    resp = asyncio.run(mod.download_fill_result("task-1"))
+    d = _err_dict(resp)
+    assert "生成稿文件缺失" in d["message"]
+    assert fetched == [("tpl_x", "f.docx")], "bucket 必须是 task.template_id"
+
+
+def test_download_fill_success_returns_blob_attachment(monkeypatch):
+    mod = _template_api
+    monkeypatch.setattr(mod, "TplFillTaskService", types.SimpleNamespace(
+        get_owned=lambda tid, uid: _make_task(status="done", result_file_id="f.docx")))
+    monkeypatch.setattr(mod, "TplTemplateService", types.SimpleNamespace(
+        get_by_id=lambda tid: _make_fill_tpl(file_type="docx")))
+    monkeypatch.setattr(mod, "settings", types.SimpleNamespace(
+        STORAGE_IMPL=types.SimpleNamespace(get=lambda bucket, name: b"result-bytes")))
+    resp = asyncio.run(mod.download_fill_result("task-1"))
+    assert isinstance(resp, Response)
+    assert asyncio.run(resp.get_data()) == b"result-bytes"  # quart Response.get_data 是协程
+    assert "attachment" in resp.headers["Content-Disposition"]
+    assert resp.mimetype.startswith("application/vnd.openxmlformats")
+
+
+def test_download_fill_tpl_missing_falls_back_docx(monkeypatch):
+    """对抗性：模板行已被删（get_by_id None）→ ext 兜底 docx，仍可下载。"""
+    mod = _template_api
+    monkeypatch.setattr(mod, "TplFillTaskService", types.SimpleNamespace(
+        get_owned=lambda tid, uid: _make_task(status="done", result_file_id="f.bin")))
+    monkeypatch.setattr(mod, "TplTemplateService", types.SimpleNamespace(
+        get_by_id=lambda tid: None))
+    monkeypatch.setattr(mod, "settings", types.SimpleNamespace(
+        STORAGE_IMPL=types.SimpleNamespace(get=lambda bucket, name: b"raw-bytes")))
+    resp = asyncio.run(mod.download_fill_result("task-1"))
+    assert isinstance(resp, Response)
+    assert asyncio.run(resp.get_data()) == b"raw-bytes"
+    assert resp.headers["Content-Disposition"].endswith(".docx")

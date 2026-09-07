@@ -20,13 +20,19 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 import uuid
 import zipfile
 
 from quart import Blueprint, Response, request
 
 from api.apps import current_user, login_required
-from api.db.services.template_fill_service import TplTemplateService, TplTemplateVersionService
+from api.db.db_models import DB
+from api.db.services.template_fill_service import (
+    TplFillTaskService,
+    TplTemplateService,
+    TplTemplateVersionService,
+)
 from api.utils.api_utils import get_error_data_result, get_result
 from common import settings
 from common.misc_utils import get_uuid
@@ -41,6 +47,34 @@ PLACEHOLDER_RE = re.compile(r"\{\{([a-z][a-z0-9_]*)\}\}")
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+# 填写任务线程防重入：同一任务同时最多一个执行线程（spawn 时 add、线程 finally discard）
+_running_lock = threading.Lock()
+_running_tasks: set = set()
+
+# 可重试的终态：仅失败/部分完成的任务允许重试
+_RETRYABLE_STATUSES = ("failed", "partial")
+
+
+def _spawn_fill_task(task_id: str):
+    """起 daemon 线程跑填写 pipeline（executor 延迟 import，照本文件其他延迟 import 惯例）。
+    线程内异常自行兜底，executor.execute_task 内部已把崩溃任务置 failed。"""
+    with _running_lock:
+        if task_id in _running_tasks:
+            return
+        _running_tasks.add(task_id)
+
+    def _run():
+        try:
+            from rag.svr.template_fill.executor import execute_task
+            execute_task(task_id)
+        except Exception:  # executor 内部已兜底，此处是最后防线，防线程静默死
+            logger.exception("fill task thread crashed, task_id=%s", task_id)
+        finally:
+            with _running_lock:
+                _running_tasks.discard(task_id)
+
+    threading.Thread(target=_run, daemon=True, name=f"tpl-fill-{task_id[:8]}").start()
 
 
 def _file_type_of(filename: str):
@@ -322,3 +356,105 @@ async def download_template(template_id: str):
     mime = DOCX_MIME if tpl.file_type == "docx" else XLSX_MIME
     return Response(blob, mimetype=mime,
                     headers={"Content-Disposition": f"attachment; filename=template_{template_id}.{tpl.file_type}"})
+
+
+# ---------- 填写任务（P2+P3）：发起 / 列表 / 详情 / 重试 / 下载 ----------
+
+
+@manager.route("/template/fill/fill-task", methods=["POST"])
+@login_required
+async def create_fill_task():
+    """发起填写任务：校验链通过后落 pending 行，起后台线程跑 pipeline。
+    template_version_id 钉住当前版本（published 后再改填写点会升版，历史任务按当时版本复现）。"""
+    body = await request.get_json()
+    body = body or {}
+    template_id = (body.get("template_id") or "").strip()
+    if not template_id:
+        return get_error_data_result("template_id 不能为空")
+    tpl, err = await _load_template(template_id)
+    if err:
+        return err
+    if tpl.status != "published":
+        return get_error_data_result("仅已发布的范本可发起填写")
+    # kb_ids：只保留非空字符串项，过滤后仍为空则拒绝
+    kb_ids = [k for k in (body.get("kb_ids") or []) if isinstance(k, str) and k.strip()]
+    if not kb_ids:
+        return get_error_data_result("kb_ids 不能为空")
+    params = body.get("params")
+    if params is not None and not isinstance(params, dict):
+        return get_error_data_result("params 必须为对象")
+    ver = TplTemplateVersionService.latest(template_id)
+    if not ver or not ver.render_file_id or not ver.placeholders:
+        return get_error_data_result("该范本未配置填写点，请先完成填写点配置")
+    task_id = get_uuid()
+    TplFillTaskService.insert(
+        id=task_id, template_id=template_id, template_version_id=ver.id,
+        kb_ids=kb_ids, params=params, status="pending",
+        source=(body.get("source") or "web")[:16],
+        flow_instance_id="", tenant_id=current_user.id, created_by=current_user.id)
+    _spawn_fill_task(task_id)
+    return get_result(data={"task_id": task_id, "status": "pending"})
+
+
+@manager.route("/template/fill/fill-task/list", methods=["GET"])
+@login_required
+async def list_fill_tasks():
+    # type=int：转换失败（如 ?page=abc）回退默认值，避免 int("abc") 500；负数/超界由 service 层钳制
+    args = request.args
+    rows, total = TplFillTaskService.get_list_page(
+        current_user.id, status=args.get("status", ""),
+        page=args.get("page", 1, type=int), size=args.get("size", 20, type=int))
+    return get_result(data=rows, total=total)
+
+
+@manager.route("/template/fill/fill-task/<task_id>", methods=["GET"])
+@login_required
+async def get_fill_task(task_id: str):
+    task = TplFillTaskService.get_owned(task_id, current_user.id)
+    if not task:
+        return get_error_data_result("任务不存在")
+    return get_result(data=task.to_dict())
+
+
+@manager.route("/template/fill/fill-task/<task_id>/retry", methods=["POST"])
+@login_required
+async def retry_fill_task(task_id: str):
+    """重试失败/部分完成的任务：复位为 pending 后新起一轮 pipeline，
+    values/evidence/result_file_id 由新一轮覆盖写（非增量修补）。"""
+    task = TplFillTaskService.get_owned(task_id, current_user.id)
+    if not task:
+        return get_error_data_result("任务不存在")
+    if task.status not in _RETRYABLE_STATUSES:
+        return get_error_data_result("仅失败或部分完成的任务可重试")
+    with _running_lock:
+        if task_id in _running_tasks:
+            return get_error_data_result("任务正在执行中")
+    # 裸 update 必须显式包连接上下文（与全仓惯例一致）；where 带 status 白名单 CAS 复位，
+    # 命中 0 行说明状态已被并发改走，拒绝重试
+    with DB.connection_context():
+        n = TplFillTaskService.model.update(status="pending", error="").where(
+            TplFillTaskService.model.id == task_id,
+            TplFillTaskService.model.status.in_(_RETRYABLE_STATUSES)).execute()
+    if not n:
+        return get_error_data_result("状态变更失败，请刷新重试")
+    _spawn_fill_task(task_id)
+    return get_result(data={"task_id": task_id, "status": "pending"})
+
+
+@manager.route("/template/fill/fill-task/<task_id>/download", methods=["GET"])
+@login_required
+async def download_fill_result(task_id: str):
+    task = TplFillTaskService.get_owned(task_id, current_user.id)
+    if not task:
+        return get_error_data_result("任务不存在")
+    if not task.result_file_id:
+        return get_error_data_result("生成稿尚未产出")
+    # 生成稿与模板文件同 bucket（bucket=template_id）
+    blob = settings.STORAGE_IMPL.get(task.template_id, task.result_file_id)
+    if not blob:
+        return get_error_data_result("生成稿文件缺失")
+    tpl = TplTemplateService.get_by_id(task.template_id)
+    ext = tpl.file_type if tpl else "docx"
+    mime = DOCX_MIME if ext == "docx" else XLSX_MIME
+    return Response(blob, mimetype=mime,
+                    headers={"Content-Disposition": f"attachment; filename=fill_{task_id}.{ext}"})
