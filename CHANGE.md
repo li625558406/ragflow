@@ -2,6 +2,8 @@
 
 ## 2026-09-07 模板填写系统 P1 实施完成（表 + API + B端模板库页面）
 
+> **2026-09-07 已部署至服务器**（前后端成套 SCP + 前端 build + 容器重启，三张 tpl_ 表已建，`/api/v1/template/fill/list` 401 鉴权正常、页面 200）。待浏览器端功能联调。
+
 **主题**：P1 全量落地（feat/unified-crawler-framework 分支，待部署）：① tpl_template / tpl_template_version / tpl_fill_task 三表进 db_models + migrate_db 兜底；② Service 层（template_fill_service.py，租户隔离/分页钳制/MinIO 存储）；③ docx/xlsx 占位符工具（iter/extract/apply，超链接段落 run 拼接替换、公式格排除、合并单元格安全）；④ detector（LLM 识别填写点 prompt/解析/校验，anchor≤500、空 addr 按 anchor 反查唯一推导）；⑤ REST API 9 端点（/api/v1/template/fill/*，损坏文件兜底、20MB 前置校验、zip 校验）；⑥ B端前端：列表页 + 三步上传向导（上传→AI识别→确认保存）+ 详情页（占位符编辑+`{{key}}`高亮预览+下载），路由/顶部菜单「模板库」/中文文案收口。
 
 **测试**：后端 58 单测全过（含边界/对抗用例），ruff 0 违规；前端 tsc 本功能 0 error。经逐任务双阶段审查（规格+质量），关键修复含：伪 zip 500 兜底、await 同步函数运行时 bug、手动添加行 addr 契约断裂（anchor 反查回填）、向导重复上传、trim 校验值与提交值不一致。
