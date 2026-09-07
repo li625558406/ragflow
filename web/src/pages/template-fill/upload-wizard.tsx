@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { FileText, FileUp, X } from 'lucide-react';
+import { useRef, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -44,6 +45,15 @@ interface UploadWizardProps {
   onSaved?: (id: string) => void;
 }
 
+const TEMPLATE_FILE_RE = /\.(docx|doc|xlsx)$/i;
+
+function formatFileSize(size: number): string {
+  if (size >= 1024 * 1024) {
+    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  return `${Math.max(1, Math.round(size / 1024))} KB`;
+}
+
 export function UploadWizard({
   open,
   onOpenChange,
@@ -59,6 +69,7 @@ export function UploadWizard({
   const [uploadedFileKey, setUploadedFileKey] = useState('');
   const [placeholders, setPlaceholders] = useState<TplPlaceholder[]>([]);
   const [rowErrors, setRowErrors] = useState<Record<string, boolean>>({});
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const uploadMut = useUploadTemplateFill();
   const detectMut = useDetectTemplateFill();
@@ -91,6 +102,19 @@ export function UploadWizard({
     }
   };
 
+  const openFilePicker = () => {
+    // 先清空 value，保证重新选择同一文件时 onChange 也能触发
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    fileInputRef.current?.click();
+  };
+
+  const clearFile = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setFile(null);
+    setStep1Error('');
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
   // detect 建议与现有手动行（addr 为空，detect 建议必带 addr）合并：
   // 建议在前、手动行在后，key 重复的手动行丢弃，避免重新识别静默覆盖手动添加的行
   const applySuggestions = (suggestions: TplPlaceholder[]) => {
@@ -104,12 +128,11 @@ export function UploadWizard({
 
   const goStep2 = () => {
     if (!file) {
-      setStep1Error('请选择 .docx 或 .xlsx 模板文件');
+      setStep1Error('请选择 .docx / .doc / .xlsx 模板文件');
       return;
     }
-    const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
-    if (ext !== '.docx' && ext !== '.xlsx') {
-      setStep1Error('仅支持 .docx / .xlsx 文件');
+    if (!TEMPLATE_FILE_RE.test(file.name)) {
+      setStep1Error('仅支持 .docx / .doc / .xlsx 文件');
       return;
     }
     if (!name.trim()) {
@@ -240,12 +263,67 @@ export function UploadWizard({
         {step === 1 && (
           <div className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
-              <label className="text-sm">模板文件（.docx / .xlsx）</label>
-              <Input
+              <label className="text-sm">
+                模板文件（.docx / .doc / .xlsx）
+              </label>
+              <input
+                ref={fileInputRef}
                 type="file"
-                accept=".docx,.xlsx"
+                accept=".docx,.doc,.xlsx"
+                className="hidden"
                 onChange={handleFileChange}
               />
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={openFilePicker}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    openFilePicker();
+                  }
+                }}
+                className="flex flex-col items-center gap-2 rounded-lg border border-dashed p-6 cursor-pointer transition-colors hover:border-primary/60 hover:bg-muted/50"
+              >
+                {file ? (
+                  <div className="flex w-full items-center gap-3">
+                    <FileText className="h-8 w-8 shrink-0 text-primary" />
+                    <div className="min-w-0 flex-1">
+                      <p
+                        className="truncate text-sm text-text-primary"
+                        title={file.name}
+                      >
+                        {file.name}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {formatFileSize(file.size)}
+                      </p>
+                    </div>
+                    <span className="shrink-0 text-xs text-primary">
+                      重新选择
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 shrink-0"
+                      onClick={clearFile}
+                      aria-label="清除选择"
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ) : (
+                  <>
+                    <FileUp className="h-8 w-8 text-muted-foreground" />
+                    <p className="text-sm text-text-primary">
+                      点击选择模板文件
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      支持 .docx / .doc / .xlsx，不超过 20MB
+                    </p>
+                  </>
+                )}
+              </div>
             </div>
             <div className="flex flex-col gap-1.5">
               <label className="text-sm">模板名称</label>
