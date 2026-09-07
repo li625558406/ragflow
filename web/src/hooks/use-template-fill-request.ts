@@ -364,3 +364,29 @@ export async function downloadTemplateFillResult(
   }
   downloadFileFromBlob(blob, `fill_${taskId}.${ext}`);
 }
+
+// ── 测试填写（P2 Task 12：B端试跑出值+证据，不落任务）──────────────────
+
+// 试跑结果（executor.dry_run 返回结构）：values=产值、cells=逐格状态、
+// evidence=检索证据、partial=是否含待人工字段
+export interface TemplateFillTestResult {
+  values: Record<string, unknown>;
+  cells: Record<string, string>;
+  evidence: Record<string, { query: string; chunks: unknown[] }>;
+  partial: boolean;
+}
+
+// 试跑是一次性同步动作（约 10-60 秒），不走 useMutation 缓存，
+// UI 自管 loading（照 downloadTemplateFillResult 的直接导出 async 函数模式）
+export async function testTemplateFill(
+  templateId: string,
+  payload: { kb_ids: string[]; params?: Record<string, string> },
+): Promise<TemplateFillTestResult> {
+  const { data } = await request.post(api.testTemplateFill(templateId), {
+    data: payload,
+  });
+  if (data.code !== 0) {
+    throw new Error(data.message || '试跑失败');
+  }
+  return data.data as TemplateFillTestResult;
+}

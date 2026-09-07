@@ -69,6 +69,7 @@ EXPECTED_ENDPOINTS = (
     "get_fill_task",
     "retry_fill_task",
     "download_fill_result",
+    "test_fill_template",
 )
 
 
@@ -101,6 +102,7 @@ def test_all_routes_registered_on_blueprint():
         "/template/fill/<template_id>/disable": {"POST"},
         "/template/fill/<template_id>": {"GET", "DELETE"},
         "/template/fill/<template_id>/preview": {"GET"},
+        "/template/fill/<template_id>/test-fill": {"POST"},
         "/template/fill/<template_id>/file": {"GET"},
         "/template/fill/fill-task": {"POST"},
         "/template/fill/fill-task/list": {"GET"},
@@ -1037,3 +1039,113 @@ def test_create_fill_task_rejects_non_string_source(monkeypatch):
         assert d["code"] == DATA_ERROR_CODE, f"source={bad!r} 应拒绝"
         assert "source" in d["message"]
         assert not inserted and not spawned, f"source={bad!r} 不得写库/起线程"
+
+
+# ---------- P2 Task 12：测试填写端点（试跑出值+证据，不落任务） ----------
+
+def _patch_test_fill_deps(monkeypatch, mod, body, tpl=None,
+                          dry_result=None, dry_exc=None):
+    """test-fill 公共桩：json body + 模板 service + executor.dry_run 替身（捕获入参）。
+    dry_run 在端点内延迟 `from ... import`，monkeypatch executor 模块属性即可生效。"""
+    from rag.svr.template_fill import executor as executor_mod
+    tpl = tpl if tpl is not None else _make_fill_tpl()
+    calls = {}
+
+    async def fake_dry_run(tenant_id, template_id, kb_ids, params):
+        calls["args"] = (tenant_id, template_id, kb_ids, params)
+        if dry_exc is not None:
+            raise dry_exc
+        return dry_result if dry_result is not None else {
+            "values": {"k1": "v"}, "cells": {"k1": "filled"},
+            "evidence": {"k1": {"query": "q", "chunks": []}}, "partial": False}
+
+    monkeypatch.setattr(executor_mod, "dry_run", fake_dry_run)
+    monkeypatch.setattr(mod, "request", _FakeJsonRequest(body))
+    monkeypatch.setattr(mod, "TplTemplateService", types.SimpleNamespace(
+        get_owned=lambda tid, uid, **kw: tpl))
+    return calls
+
+
+def test_test_fill_rejects_draft_template(monkeypatch):
+    """非 published（draft/disabled）拒绝试跑，dry_run 不被调用。"""
+    mod = _template_api
+    for status in ("draft", "disabled"):
+        calls = _patch_test_fill_deps(
+            monkeypatch, mod, {"kb_ids": ["kb1"]},
+            tpl=_make_fill_tpl(status=status))
+        resp = asyncio.run(mod.test_fill_template("tpl_x"))
+        d = _err_dict(resp)
+        assert d["code"] == DATA_ERROR_CODE, f"status={status} 应拒绝"
+        assert "发布" in d["message"]
+        assert "args" not in calls, f"status={status} 不得调 dry_run"
+
+
+def test_test_fill_rejects_empty_kb_ids(monkeypatch):
+    """kb_ids 缺失/空数组/全无效项 → 拒绝，dry_run 不被调用。"""
+    mod = _template_api
+    for body in ({}, {"kb_ids": []}, {"kb_ids": ["", None, 123, "   "]}):
+        calls = _patch_test_fill_deps(monkeypatch, mod, body)
+        resp = asyncio.run(mod.test_fill_template("tpl_x"))
+        d = _err_dict(resp)
+        assert d["code"] == DATA_ERROR_CODE, f"body={body} 应拒绝"
+        assert "知识库" in d["message"]
+        assert "args" not in calls, f"body={body} 不得调 dry_run"
+
+
+def test_test_fill_permission_error(monkeypatch):
+    """KB 越权（PermissionError）→「知识库不属于当前租户」，不 500。"""
+    mod = _template_api
+    calls = _patch_test_fill_deps(
+        monkeypatch, mod, {"kb_ids": ["kb1"]}, dry_exc=PermissionError("kb1"))
+    resp = asyncio.run(mod.test_fill_template("tpl_x"))
+    d = _err_dict(resp)
+    assert d["code"] == DATA_ERROR_CODE and "不属于当前租户" in d["message"]
+    assert "args" in calls
+
+
+def test_test_fill_value_error_passthrough(monkeypatch):
+    """ValueError（如模板版本不存在/未配置填写点）→ str(e) 原样透传为中文错误。"""
+    mod = _template_api
+    calls = _patch_test_fill_deps(
+        monkeypatch, mod, {"kb_ids": ["kb1"]}, dry_exc=ValueError("模板版本不存在"))
+    resp = asyncio.run(mod.test_fill_template("tpl_x"))
+    d = _err_dict(resp)
+    assert d["code"] == DATA_ERROR_CODE and d["message"] == "模板版本不存在"
+    assert "args" in calls
+
+
+def test_test_fill_unknown_error_fallback(monkeypatch):
+    """未知异常（检索/LLM 崩溃等）→ 兜底「试跑失败，请重试」，不 500。"""
+    mod = _template_api
+    calls = _patch_test_fill_deps(
+        monkeypatch, mod, {"kb_ids": ["kb1"]}, dry_exc=RuntimeError("boom"))
+    resp = asyncio.run(mod.test_fill_template("tpl_x"))
+    d = _err_dict(resp)
+    assert d["code"] == DATA_ERROR_CODE and "试跑失败" in d["message"]
+    assert "args" in calls
+
+
+def test_test_fill_success_returns_data_and_args(monkeypatch):
+    """成功路径：返回 dry_run 的 data 结构；入参 tenant=current_user、kb 过滤、params 直取。"""
+    mod = _template_api
+    dry_data = {"values": {"k1": "产值"}, "cells": {"k1": "filled"},
+                "evidence": {"k1": {"query": "q", "chunks": []}}, "partial": True}
+    calls = _patch_test_fill_deps(
+        monkeypatch, mod,
+        {"kb_ids": ["kb1", "", None, 7], "params": {"tone": "正式"}},
+        dry_result=dry_data)
+    resp = asyncio.run(mod.test_fill_template("tpl_x"))
+    assert resp["code"] == 0
+    assert resp["data"] == dry_data
+    assert calls["args"] == ("u1", "tpl_x", ["kb1"], {"tone": "正式"})
+
+
+def test_test_fill_non_dict_params_coerced_empty(monkeypatch):
+    """对抗性：params 传数组/字符串/数字 → 归一为 {}，不透传脏类型给 pipeline。"""
+    mod = _template_api
+    for bad in (["a"], "str", 42, None):
+        calls = _patch_test_fill_deps(monkeypatch, mod,
+                                      {"kb_ids": ["kb1"], "params": bad})
+        resp = asyncio.run(mod.test_fill_template("tpl_x"))
+        assert resp["code"] == 0, f"params={bad!r} 应宽松归一而非拒绝"
+        assert calls["args"][3] == {}, f"params={bad!r} 必须归一为空 dict"

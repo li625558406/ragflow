@@ -289,6 +289,74 @@ def _render_result(task, ver, placeholders: list[dict], values: dict, tpl_file_t
     return out, result_obj, ""
 
 
+async def _retrieve_all(tenant_id: str, placeholders: list[dict], kb_ids: list[str],
+                        params: dict, task_id: str = "") -> tuple[dict, dict]:
+    """逐槽检索公共段（execute_task 与 dry_run 共用，纯抽取）：单槽失败降级为
+    空证据（字段走 missing/待人工），不中断整单；kb_ids 为空时全槽直接空证据
+    （不进 retrieve_slot，省 N 次无意义异常+warning）。
+    返回 (chunks_by_key, evidence) 双结构。task_id 仅用于日志上下文（dry_run 无任务 id）。"""
+    chunks_by_key: dict = {}
+    evidence: dict = {}
+    for it in placeholders:
+        key = it.get("key")
+        if not key:
+            logger.warning("placeholder missing key, skipped, task=%s name=%r", task_id, it.get("name"))
+            continue
+        query = build_retrieval_query(it.get("retrieval_query") or it.get("name") or key, params)
+        chunks: list = []
+        if _norm_fill_mode(it) == "llm" and query and kb_ids:
+            try:
+                chunks = await retrieve_slot(tenant_id, kb_ids, query,
+                                             it.get("top_k") or TOP_K_DEFAULT)
+            except Exception as e:  # noqa: BLE001 — 各存储/检索实现异常类型不一，降级空证据
+                logger.warning("retrieve_slot failed, task=%s key=%s: %s", task_id, key, e)
+        chunks_by_key[key] = {"chunks": chunks, "query": query}
+        evidence[key] = {"query": query, "chunks": chunks}
+    return chunks_by_key, evidence
+
+
+def _merge_param_values(placeholders: list[dict], generated: dict, missing: set, params: dict):
+    """param 模式直取任务参数（不经 LLM，同样过约束兜底），命中则覆盖/摘出 missing。"""
+    for it in placeholders:
+        if _norm_fill_mode(it) != "param":
+            continue
+        key = it.get("key")
+        if not key:
+            continue
+        v = _apply_constraints((params or {}).get(key), it.get("constraints") or {})
+        if v is not None:
+            generated[key] = v
+            missing.discard(key)
+
+
+async def dry_run(tenant_id: str, template_id: str, kb_ids: list[str], params: dict) -> dict:
+    """测试填写（B端试跑）：与 execute_task 同款前两步（检索+LLM 生成+param 直取+合成），
+    但不建任务、不渲染、不落 MinIO，直接返回产值供用户预览。
+    试跑永远针对当前最新版本（无 version 钉住需求）。
+    异常向上抛由端点兜底；KB 越权（PermissionError）原样穿透——_retrieve_all 内
+    单槽异常会降级吞掉，故 kb_ids 非空时先显式过一遍 _load_and_check_kbs。"""
+    from api.db.services.template_fill_service import TplTemplateVersionService
+    ver = TplTemplateVersionService.latest(template_id)
+    if ver is None:
+        raise ValueError("模板版本不存在")
+    placeholders = ver.placeholders or []
+    if not placeholders:
+        raise ValueError("该范本未配置填写点")
+    params = params or {}
+    if kb_ids:
+        _load_and_check_kbs(tenant_id, kb_ids)
+
+    chunks_by_key, evidence = await _retrieve_all(tenant_id, placeholders, kb_ids or [], params)
+    llm_placeholders = [it for it in placeholders
+                        if _norm_fill_mode(it) == "llm" and it.get("key")]
+    llm_chunks = {it["key"]: chunks_by_key.get(it["key"], {"chunks": [], "query": ""})
+                  for it in llm_placeholders}
+    generated, missing = await generate_values(tenant_id, llm_placeholders, llm_chunks, params)
+    _merge_param_values(placeholders, generated, missing, params)
+    values, cell_status, is_partial = build_values(placeholders, generated, missing)
+    return {"values": values, "cells": cell_status, "evidence": evidence, "partial": is_partial}
+
+
 async def _execute_task_async(task_id: str):
     """pipeline 本体：每步经 update_status 乐观转移，转移失败即放弃
     （说明有并发执行器接管或终态已变）。"""
@@ -318,25 +386,10 @@ async def _execute_task_async(task_id: str):
     kb_ids = task.kb_ids or []
     params = task.params or {}
 
-    # ② 逐槽检索：单槽失败降级为空证据（字段走 missing/待人工），不中断整单；
-    # kb_ids 为空时全槽直接空证据（不进 retrieve_slot，省 N 次无意义异常+warning）
-    chunks_by_key: dict = {}
-    evidence: dict = {}
-    for it in placeholders:
-        key = it.get("key")
-        if not key:
-            logger.warning("placeholder missing key, skipped, task=%s name=%r", task_id, it.get("name"))
-            continue
-        query = build_retrieval_query(it.get("retrieval_query") or it.get("name") or key, params)
-        chunks: list = []
-        if _norm_fill_mode(it) == "llm" and query and kb_ids:
-            try:
-                chunks = await retrieve_slot(task.tenant_id, kb_ids, query,
-                                             it.get("top_k") or TOP_K_DEFAULT)
-            except Exception as e:  # noqa: BLE001 — 各存储/检索实现异常类型不一，降级空证据
-                logger.warning("retrieve_slot failed, task=%s key=%s: %s", task_id, key, e)
-        chunks_by_key[key] = {"chunks": chunks, "query": query}
-        evidence[key] = {"query": query, "chunks": chunks}
+    # ② 逐槽检索（公共段，dry_run 同款）：单槽失败降级为空证据（字段走 missing/待人工），
+    # 不中断整单；kb_ids 为空时全槽直接空证据（不进 retrieve_slot，省 N 次无意义异常+warning）
+    chunks_by_key, evidence = await _retrieve_all(
+        task.tenant_id, placeholders, kb_ids, params, task_id=task_id)
 
     # ③ LLM 批量产值（仅 llm 模式字段；整体失败 → 任务失败）
     if not svc.update_status(task_id, "retrieving", "generating"):
@@ -353,16 +406,7 @@ async def _execute_task_async(task_id: str):
         return
 
     # ④ param 模式直取任务参数（不经 LLM，同样过约束兜底），命中则覆盖/摘出 missing
-    for it in placeholders:
-        if _norm_fill_mode(it) != "param":
-            continue
-        key = it.get("key")
-        if not key:
-            continue
-        v = _apply_constraints((params or {}).get(key), it.get("constraints") or {})
-        if v is not None:
-            generated[key] = v
-            missing.discard(key)
+    _merge_param_values(placeholders, generated, missing, params)
 
     values, cell_status, is_partial = build_values(placeholders, generated, missing)
 

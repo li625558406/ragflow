@@ -419,3 +419,123 @@ def test_pipeline_final_cas_failure_warns_no_raise(monkeypatch, caplog):
     assert calls["transits"][-1] == ("rendering", "done")  # 尝试过终态转移
     assert any("final status CAS failed" in r.message and "task1" in r.message
                for r in caplog.records)
+
+
+# ---------- dry_run：测试填写（试跑出值+证据，不落任务，P2 Task 12） ----------
+
+def test_dry_run_missing_version_raises(monkeypatch):
+    """最新版本缺失 → ValueError（端点转中文错误透传）。"""
+    from api.db.services import template_fill_service as tpl_svc
+    from rag.svr.template_fill import executor
+    monkeypatch.setattr(tpl_svc.TplTemplateVersionService, "latest",
+                        classmethod(lambda cls, tid: None))
+    with pytest.raises(ValueError, match="模板版本不存在"):
+        executor._run_async(executor.dry_run("t", "tpl1", ["kb1"], {}))
+
+
+def test_dry_run_empty_placeholders_raises(monkeypatch):
+    """版本存在但未配置填写点（空/None）→ ValueError，不进检索/生成。"""
+    from api.db.services import template_fill_service as tpl_svc
+    from rag.svr.template_fill import executor
+    for ph in ([], None):
+        monkeypatch.setattr(tpl_svc.TplTemplateVersionService, "latest",
+                            classmethod(lambda cls, tid, _ph=ph: types.SimpleNamespace(
+                                id="ver1", placeholders=_ph)))
+        with pytest.raises(ValueError, match="未配置填写点"):
+            executor._run_async(executor.dry_run("t", "tpl1", ["kb1"], {}))
+
+
+def test_dry_run_success_structure(monkeypatch):
+    """正常路径：检索段+生成段复用；generate_values 只收 llm 子集；param 直取；
+    manual 恒人工；返回 values/cells/evidence/partial 四键结构。"""
+    from rag.svr.template_fill import executor
+    from rag.svr.template_fill.renderer import manual_mark
+    calls = {}
+
+    async def fake_retrieve_all(tenant_id, placeholders, kb_ids, params, task_id=""):
+        calls["retrieve_all"] = (tenant_id, [p["key"] for p in placeholders], kb_ids, params)
+        chunks = {"k1": {"chunks": [{"content": "证"}], "query": "q1"}}
+        evidence = {k: {"query": v["query"], "chunks": v["chunks"]} for k, v in chunks.items()}
+        return chunks, evidence
+
+    async def fake_generate(tenant_id, placeholders, chunks_by_key, params=None, batch_size=10):
+        calls["generate_keys"] = [it["key"] for it in placeholders]
+        calls["generate_chunks_keys"] = sorted(chunks_by_key)
+        return {"k1": "产值"}, {"k2"}
+
+    monkeypatch.setattr(executor, "_retrieve_all", fake_retrieve_all)
+    monkeypatch.setattr(executor, "generate_values", fake_generate)
+    monkeypatch.setattr(executor, "_load_and_check_kbs",
+                        lambda tenant, kbs: calls.setdefault("kbs", (tenant, kbs)) or [])
+
+    ver = types.SimpleNamespace(placeholders=[
+        {"key": "k1", "name": "一", "fill_mode": "llm"},
+        {"key": "k2", "name": "二", "fill_mode": "llm", "required": True},
+        {"key": "k3", "name": "三", "fill_mode": "param", "constraints": {}},
+        {"key": "k4", "name": "四", "fill_mode": "manual"},
+    ])
+    from api.db.services import template_fill_service as tpl_svc
+    monkeypatch.setattr(tpl_svc.TplTemplateVersionService, "latest",
+                        classmethod(lambda cls, tid: ver))
+
+    out = executor._run_async(executor.dry_run(
+        "tenant-me", "tpl1", ["kb1", "kb2"], {"k3": "参数值"}))
+
+    assert set(out) == {"values", "cells", "evidence", "partial"}
+    assert out["values"] == {"k1": "产值", "k2": manual_mark("二"),
+                             "k3": "参数值", "k4": manual_mark("四")}
+    assert out["cells"] == {"k1": "filled", "k2": "not_found",
+                            "k3": "filled", "k4": "manual"}
+    assert out["partial"] is True, "required 字段 missing 必须落 partial"
+    assert out["evidence"]["k1"] == {"query": "q1", "chunks": [{"content": "证"}]}
+    # 生成段只收 llm 子集；检索段收全量 placeholders + 原始入参
+    assert calls["generate_keys"] == ["k1", "k2"]
+    assert calls["generate_chunks_keys"] == ["k1", "k2"]
+    assert calls["retrieve_all"] == ("tenant-me", ["k1", "k2", "k3", "k4"],
+                                     ["kb1", "kb2"], {"k3": "参数值"})
+    assert calls["kbs"] == ("tenant-me", ["kb1", "kb2"]), "kb_ids 非空必须先过 _load_and_check_kbs"
+
+
+def test_dry_run_permission_error_propagates(monkeypatch):
+    """KB 越权（_load_and_check_kbs 抛 PermissionError）原样穿透，不被检索段降级吞掉。"""
+    from rag.svr.template_fill import executor
+    monkeypatch.setattr(executor.KnowledgebaseService, "get_by_ids",
+                        staticmethod(lambda ids: [types.SimpleNamespace(
+                            id="kb1", tenant_id="OTHER", embd_id="bge")]))
+
+    async def boom(*a, **kw):
+        raise AssertionError("_retrieve_all must not be reached")
+
+    monkeypatch.setattr(executor, "_retrieve_all", boom)
+    ver = types.SimpleNamespace(placeholders=[{"key": "k1", "name": "一", "fill_mode": "llm"}])
+    from api.db.services import template_fill_service as tpl_svc
+    monkeypatch.setattr(tpl_svc.TplTemplateVersionService, "latest",
+                        classmethod(lambda cls, tid: ver))
+    with pytest.raises(PermissionError):
+        executor._run_async(executor.dry_run("tenant-me", "tpl1", ["kb1"], {}))
+
+
+def test_dry_run_empty_kb_ids_no_permission_check(monkeypatch):
+    """kb_ids 为空：跳过权限校验直接空证据试跑（与 execute_task 空短路语义一致）。"""
+    from rag.svr.template_fill import executor
+
+    def boom(ids):
+        raise AssertionError("empty kb_ids must not hit KnowledgebaseService")
+
+    monkeypatch.setattr(executor.KnowledgebaseService, "get_by_ids", staticmethod(boom))
+
+    async def fake_retrieve_all(tenant_id, placeholders, kb_ids, params, task_id=""):
+        assert kb_ids == []
+        return {}, {}
+
+    async def fake_generate(tenant_id, placeholders, chunks_by_key, params=None, batch_size=10):
+        return {}, set()
+
+    monkeypatch.setattr(executor, "_retrieve_all", fake_retrieve_all)
+    monkeypatch.setattr(executor, "generate_values", fake_generate)
+    ver = types.SimpleNamespace(placeholders=[{"key": "k1", "name": "一", "fill_mode": "llm"}])
+    from api.db.services import template_fill_service as tpl_svc
+    monkeypatch.setattr(tpl_svc.TplTemplateVersionService, "latest",
+                        classmethod(lambda cls, tid: ver))
+    out = executor._run_async(executor.dry_run("t", "tpl1", [], None))
+    assert out["cells"] == {"k1": "not_found"} and out["partial"] is False

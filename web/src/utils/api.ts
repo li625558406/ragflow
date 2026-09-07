@@ -471,6 +471,8 @@ export default {
     `${restAPIv1}/template/fill/${id}/preview`,
   downloadTemplateFill: (id: string, kind: 'original' | 'render') =>
     `${restAPIv1}/template/fill/${id}/file?kind=${kind}`,
+  testTemplateFill: (id: string) =>
+    `${restAPIv1}/template/fill/${id}/test-fill`,
 
   // 模板填写-填写任务（P2）
   listTemplateFillTasks: `${restAPIv1}/template/fill/fill-task/list`,

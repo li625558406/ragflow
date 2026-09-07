@@ -19,6 +19,7 @@ import {
   PlaceholderTable,
   trimRows,
 } from './placeholder-table';
+import { TestFillDialog } from './test-fill-dialog';
 
 const STATUS_LABEL: Record<string, string> = {
   draft: '草稿',
@@ -79,6 +80,7 @@ export default function TemplateFillDetailPage() {
   const [placeholders, setPlaceholders] = useState<TplPlaceholder[]>([]);
   const [rowErrors, setRowErrors] = useState<Record<string, boolean>>({});
   const [createOpen, setCreateOpen] = useState(false);
+  const [testOpen, setTestOpen] = useState(false);
 
   const saveMut = useSaveTemplateFillPlaceholders();
 
@@ -211,13 +213,18 @@ export default function TemplateFillDetailPage() {
               版本 v{detail.latest_version}
             </span>
             {detail.status === 'published' && (
-              <Button
-                size="sm"
-                className="ml-auto"
-                onClick={() => setCreateOpen(true)}
-              >
-                发起填写
-              </Button>
+              <div className="ml-auto flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setTestOpen(true)}
+                >
+                  测试填写
+                </Button>
+                <Button size="sm" onClick={() => setCreateOpen(true)}>
+                  发起填写
+                </Button>
+              </div>
             )}
           </div>
           {detail.description && (
@@ -365,6 +372,11 @@ export default function TemplateFillDetailPage() {
         templateId={id ?? ''}
         open={createOpen}
         onOpenChange={setCreateOpen}
+      />
+      <TestFillDialog
+        templateId={id ?? ''}
+        open={testOpen}
+        onOpenChange={setTestOpen}
       />
     </div>
   );

@@ -412,6 +412,38 @@ async def create_fill_task():
     return get_result(data={"task_id": task_id, "status": "pending"})
 
 
+@manager.route("/template/fill/<template_id>/test-fill", methods=["POST"])
+@login_required
+async def test_fill_template(template_id: str):
+    """测试填写（B端试跑）：同 pipeline 前两步（检索+LLM 生成），不建任务、不渲染、
+    不落 MinIO，同步等待直接返回 values/cells/evidence 供用户预览效果。
+    耗时约 10-60 秒（Quart async 不阻塞 worker）。"""
+    tpl, err = await _load_template(template_id)
+    if err:
+        return err
+    if tpl.status != "published":
+        return get_error_data_result("请先发布范本再试跑")
+    body = await request.get_json()
+    body = body or {}
+    kb_ids = [k for k in (body.get("kb_ids") or []) if isinstance(k, str) and k.strip()]
+    if not kb_ids:
+        return get_error_data_result("请选择知识库")
+    params = body.get("params")
+    if not isinstance(params, dict):
+        params = {}
+    from rag.svr.template_fill.executor import dry_run
+    try:
+        data = await dry_run(current_user.id, template_id, kb_ids, params)
+    except PermissionError:
+        return get_error_data_result("知识库不属于当前租户")
+    except ValueError as e:
+        return get_error_data_result(str(e))
+    except Exception:
+        logger.exception("test fill failed, template=%s", template_id)
+        return get_error_data_result("试跑失败，请重试")
+    return get_result(data=data)
+
+
 @manager.route("/template/fill/fill-task/list", methods=["GET"])
 @login_required
 async def list_fill_tasks():
