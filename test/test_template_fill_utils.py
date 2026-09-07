@@ -348,3 +348,122 @@ def test_apply_xlsx_preserves_cell_style():
     cell = wb2["封面"]["B1"]
     assert cell.font.bold is True
     assert cell.fill.start_color.rgb == "00FFFF00" or cell.fill.start_color.rgb == "FFFF00"
+
+
+# ---------- detector：LLM 填写点识别解析/校验（纯函数部分） ----------
+
+CANDS = [
+    {"index": 0, "text": "项目名称：____________", "addr": "para:0"},
+    {"index": 2, "text": "投标单位（　　　）", "addr": "para:2"},
+    {"index": 4, "text": "签字日期：____年____月____日", "addr": "para:4"},
+]
+
+
+def test_parse_detection_response_valid():
+    from rag.svr.template_fill.detector import parse_detection_response
+    raw = '```json\n[{"line": 0, "anchor": "____________", "key": "Project Name", "name": "项目名称", "description": "投标项目全称", "retrieval_query": "项目名称 概况", "fill_mode": "llm", "required": true}, {"line": 4, "anchor": "____年____月____日", "key": "sign_date", "name": "签字日期", "description": "", "retrieval_query": "", "fill_mode": "manual", "required": false}]\n```'
+    out = parse_detection_response(raw, CANDS)
+    assert len(out) == 2
+    assert out[0]["key"] == "project_name"  # 归一化：小写+下划线
+    assert out[0]["addr"] == "para:0"
+    assert out[0]["top_k"] == 6
+
+
+def test_parse_detection_response_drops_invalid_anchor():
+    from rag.svr.template_fill.detector import parse_detection_response
+    raw = '[{"line": 0, "anchor": "不存在的锚", "key": "x", "name": "X", "fill_mode": "llm", "required": true}]'
+    assert parse_detection_response(raw, CANDS) == []
+
+
+def test_parse_detection_response_dedupes_keys():
+    from rag.svr.template_fill.detector import parse_detection_response
+    raw = '[{"line": 0, "anchor": "____________", "key": "date", "name": "A", "fill_mode": "llm", "required": true},{"line": 4, "anchor": "____年", "key": "date", "name": "B", "fill_mode": "manual", "required": false}]'
+    out = parse_detection_response(raw, CANDS)
+    assert [it["key"] for it in out] == ["date", "date_2"]
+
+
+def test_parse_detection_response_garbage_returns_empty():
+    from rag.svr.template_fill.detector import parse_detection_response
+    assert parse_detection_response("我不明白你的意思", CANDS) == []
+
+
+def test_validate_placeholders():
+    from rag.svr.template_fill.detector import validate_placeholders
+    ok, err = validate_placeholders([
+        {"key": "project_name", "name": "项目名称", "addr": "para:0", "anchor": "____________",
+         "fill_mode": "llm", "required": True, "retrieval_query": "q", "description": "", "top_k": 6},
+    ], CANDS)
+    assert ok and err == ""
+    ok, err = validate_placeholders([
+        {"key": "Bad Key!", "name": "x", "addr": "para:0", "anchor": "____________", "fill_mode": "llm",
+         "required": True, "retrieval_query": "", "description": "", "top_k": 6},
+    ], CANDS)
+    assert not ok and "key" in err
+    # anchor 不在 addr 对应文本中 → 拒绝
+    ok, err = validate_placeholders([
+        {"key": "a", "name": "x", "addr": "para:0", "anchor": "瞎写的", "fill_mode": "llm",
+         "required": True, "retrieval_query": "", "description": "", "top_k": 6},
+    ], CANDS)
+    assert not ok and "anchor" in err
+
+
+# ---------- detector 对抗性用例 ----------
+
+def test_parse_detection_response_non_int_line_skipped():
+    """对抗：line 为字符串 "0" 或 None 的项必须被安全跳过（不抛异常），其余项正常保留。"""
+    from rag.svr.template_fill.detector import parse_detection_response
+    raw = '[{"line": "0", "anchor": "____________", "key": "a", "name": "A"},' \
+          '{"line": null, "anchor": "____年", "key": "b", "name": "B"},' \
+          '{"line": 4, "anchor": "____年____月____日", "key": "c", "name": "C"}]'
+    out = parse_detection_response(raw, CANDS)
+    assert [it["key"] for it in out] == ["c"]
+
+
+def test_parse_detection_response_noisy_surroundings():
+    """对抗：JSON 数组前后有大量噪音文本（含代码块/说明）仍能解析。"""
+    from rag.svr.template_fill.detector import parse_detection_response
+    raw = "好的，我分析了这份模板。以下是识别结果：\n```json\n" \
+          '[{"line": 0, "anchor": "____________", "key": "project_name", "name": "项目名称"}]' \
+          "\n```\n以上共 1 个填写点，请确认。"
+    out = parse_detection_response(raw, CANDS)
+    assert len(out) == 1 and out[0]["key"] == "project_name"
+
+
+def test_parse_detection_response_oversize_anchor_dropped():
+    """对抗：超长 anchor（>500 字符）在 parse 阶段即被丢弃——约束选在 parse：
+    识别阶段就该拦住异常项，避免脏数据流入人工确认/apply 链路。"""
+    from rag.svr.template_fill.detector import parse_detection_response
+    long_anchor = "长" * 501
+    raw = f'[{{"line": 0, "anchor": "{long_anchor}", "key": "big", "name": "B"}},' \
+          '{"line": 0, "anchor": "____________", "key": "ok", "name": "O"}]'
+    out = parse_detection_response(raw, CANDS)
+    assert [it["key"] for it in out] == ["ok"]
+
+
+def test_validate_placeholders_rejects_oversize_key():
+    """对抗：超过 64 字符的合法 snake_case key 在 validate 阶段被拒
+    （parse 的 normalize 不截断长度，长度约束统一收口在 validate）。"""
+    from rag.svr.template_fill.detector import validate_placeholders
+    ok, err = validate_placeholders([
+        {"key": "k" * 65, "name": "x", "addr": "para:0", "anchor": "____________", "fill_mode": "llm",
+         "required": True, "retrieval_query": "", "description": "", "top_k": 6},
+    ], CANDS)
+    assert not ok and "key" in err
+
+
+def test_validate_placeholders_non_dict_item_no_crash():
+    """对抗：items 元素非 dict（字符串/None）不抛异常，返回校验失败。"""
+    from rag.svr.template_fill.detector import validate_placeholders
+    ok, err = validate_placeholders(["不是字典"], CANDS)
+    assert not ok and err
+    ok, err = validate_placeholders([None], CANDS)
+    assert not ok and err
+
+
+def test_normalize_key():
+    """归一化：大写/空格/特殊字符 → snake_case；全非法字符兜底为 field。"""
+    from rag.svr.template_fill.detector import normalize_key
+    assert normalize_key("Project Name") == "project_name"
+    assert normalize_key("  Sign-Date! ") == "sign_date"
+    assert normalize_key("___") == "field"
+    assert normalize_key("") == "field"
