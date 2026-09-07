@@ -6,7 +6,7 @@
 
 **测试**：后端 4 套件 152 单测全过（含对抗用例：CAS 竞态/越权 KB/脏 placeholder/batch_size=0/LLM 坏输出/线程启动失败自愈），ruff 0 违规；前端 tsc 本功能 0 error。全流程子代理驱动开发：每任务实现→规格审查→质量审查→修复循环，关键修复含：版本钉住防升版静默换版、兜底 update 泄漏连接池、分批 step/slice 不一致、_extract_json 静默吞批、total_datasets 契约对齐。
 
-**遗留（登记为后续任务）**：① 每租户运行中任务数无上限（可刷 create 耗 LLM 额度）；② 进程崩溃后中间态任务无 sweeper 回收（永久卡 running）；③ create-task-dialog 与 test-fill-dialog KB 选择约 150 行重复；④ 试跑同步等待大模板可能超 nginx proxy_read_timeout 60s；⑤ B端 agent 编辑器组件面板未登记 FillTemplate 节点（需前端 Operator enum + form-config 登记，或通过导入 DSL JSON 挂载）。
+**遗留（登记为后续任务）**：① 每租户运行中任务数无上限（可刷 create 耗 LLM 额度）；② 进程崩溃后中间态任务无 sweeper 回收（永久卡 running）；③ create-task-dialog 与 test-fill-dialog KB 选择约 150 行重复；④ 试跑同步等待大模板可能超 nginx proxy_read_timeout 60s；⑤ B端 agent 编辑器组件面板未登记 FillTemplate 节点（需前端 Operator enum + form-config 登记，或通过导入 DSL JSON 挂载）；⑥ constraints 约束字段只有消费端（_apply_constraints）没有生产端（detector 不产出、前端表单无输入），约束兜底形同虚设；⑦ 任务详情抽屉用范本 latest 版本 placeholders 做映射而任务钉 template_version_id，升版后历史任务行集合可能错位（仅显示层）；⑧ top_k 默认值三处不一致（前端新行 5 / detector 6 / executor 6），无功能影响。
 
 **待办（部署时）**：容器 `pip install "docxtpl>=0.16.5,<0.21.0" "openpyxl>=3.1.5,<4.0.0"`；后端成套 SCP（template_fill_service.py / template_api.py / executor.py / renderer.py / agent/tools/template_fill.py）+ 容器重启 + 冒烟 import；前端 build 部署；用户在 C端 agent 画布挂 FillTemplate 节点（DSL 存 DB，代码无法代劳）。P4 flow 模板填写节点未做。
 
