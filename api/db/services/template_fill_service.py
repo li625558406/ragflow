@@ -57,7 +57,7 @@ def _storage_put(bucket: str, obj_name: str, blob: bytes):
     落库（否则 DB 行指向不存在的对象，错误延迟到下游才暴露）。"""
     r = settings.STORAGE_IMPL.put(bucket, obj_name, blob)
     if r is None:
-        logger.exception("template fill: storage put failed, bucket=%s obj=%s", bucket, obj_name)
+        logger.error("template fill: storage put failed, bucket=%s obj=%s", bucket, obj_name)
         raise RuntimeError(f"storage put failed: bucket={bucket}, object={obj_name}")
     return r
 
