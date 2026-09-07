@@ -12,6 +12,7 @@ import {
   type TplPlaceholder,
 } from '@/hooks/use-template-fill-request';
 import api from '@/utils/api';
+import { CreateTaskDialog } from './create-task-dialog';
 import {
   collectRowErrors,
   emptyPlaceholder,
@@ -77,6 +78,7 @@ export default function TemplateFillDetailPage() {
 
   const [placeholders, setPlaceholders] = useState<TplPlaceholder[]>([]);
   const [rowErrors, setRowErrors] = useState<Record<string, boolean>>({});
+  const [createOpen, setCreateOpen] = useState(false);
 
   const saveMut = useSaveTemplateFillPlaceholders();
 
@@ -208,6 +210,15 @@ export default function TemplateFillDetailPage() {
             <span className="text-sm text-muted-foreground">
               版本 v{detail.latest_version}
             </span>
+            {detail.status === 'published' && (
+              <Button
+                size="sm"
+                className="ml-auto"
+                onClick={() => setCreateOpen(true)}
+              >
+                发起填写
+              </Button>
+            )}
           </div>
           {detail.description && (
             <p className="mt-1 text-sm text-muted-foreground">
@@ -350,6 +361,11 @@ export default function TemplateFillDetailPage() {
           </CardContent>
         </Card>
       </div>
+      <CreateTaskDialog
+        templateId={id ?? ''}
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+      />
     </div>
   );
 }

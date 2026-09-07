@@ -26,32 +26,13 @@ import {
   useRetryTemplateFillTask,
   type TplFillTaskItem,
 } from '@/hooks/use-template-fill-request';
+import {
+  TASK_STATUS_LABEL as STATUS_LABEL,
+  TASK_STATUS_VARIANT as STATUS_VARIANT,
+} from './status';
+import { TaskDetailDrawer } from './task-detail-drawer';
 
 const PAGE_SIZE = 20;
-
-const STATUS_LABEL: Record<string, string> = {
-  pending: '排队中',
-  retrieving: '检索中',
-  generating: '生成中',
-  rendering: '渲染中',
-  done: '已完成',
-  partial: '部分完成',
-  failed: '失败',
-};
-
-// 状态 → Badge 配色（照 ui/badge 既有变体；done/partial/failed 着色，进行中中性）
-const STATUS_VARIANT: Record<
-  string,
-  'default' | 'secondary' | 'success' | 'destructive' | 'outline'
-> = {
-  pending: 'secondary',
-  retrieving: 'secondary',
-  generating: 'default',
-  rendering: 'default',
-  done: 'success',
-  partial: 'outline',
-  failed: 'destructive',
-};
 
 const STATUS_OPTIONS = Object.entries(STATUS_LABEL);
 
@@ -70,18 +51,20 @@ export default function TemplateFillTasksPage() {
     size: PAGE_SIZE,
   });
   const retryMut = useRetryTemplateFillTask();
+  // 详情抽屉：'' 表示未打开（抽屉内 hook 对空 taskId 不发请求）
+  const [detailTaskId, setDetailTaskId] = useState('');
 
   const items = data?.data ?? [];
   const total = data?.total_datasets;
   const hasMore =
     total != null ? page * PAGE_SIZE < total : items.length >= PAGE_SIZE;
 
-  // Task 11 接入详情抽屉后在此打开（当前占位）
-  const handleDetail = () => {
-    message.info('任务详情即将上线');
+  const handleDetail = (taskId: string) => {
+    setDetailTaskId(taskId);
   };
 
   const handleDownload = (task: TplFillTaskItem) => {
+    // 后端 list 未带 file_type，xlsx 范本生成的文件名后缀可能不准（详情抽屉内按范本 file_type 下载）
     downloadTemplateFillResult(task.id).catch((err) =>
       message.error(err instanceof Error ? err.message : '下载失败'),
     );
@@ -162,7 +145,7 @@ export default function TemplateFillTasksPage() {
                     <Button
                       size="sm"
                       variant="outline"
-                      onClick={() => handleDetail()}
+                      onClick={() => handleDetail(task.id)}
                     >
                       详情
                     </Button>
@@ -211,6 +194,11 @@ export default function TemplateFillTasksPage() {
           </Button>
         </div>
       </CardContent>
+      <TaskDetailDrawer
+        taskId={detailTaskId}
+        open={!!detailTaskId}
+        onOpenChange={(o) => !o && setDetailTaskId('')}
+      />
     </Card>
   );
 }
