@@ -269,7 +269,7 @@ export function useListTemplateFillTasks(params: {
       return data as {
         code: number;
         data: TplFillTaskItem[];
-        total?: number;
+        total_datasets?: number;
       };
     },
     refetchInterval: (query) =>
