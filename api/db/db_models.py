@@ -2138,6 +2138,57 @@ class CollectionZdgksxmlExt(DataBaseModel):
         db_table = "collection_zdgksxml_ext"
 
 
+# ── 模板填写系统（P1 建表，P2 执行引擎） ────────────────────────────
+class TplTemplate(DataBaseModel):
+    """模板填写-模板主表。"""
+    id = CharField(max_length=32, primary_key=True)
+    name = CharField(max_length=256, index=True)
+    description = LongTextField(null=True, default="")
+    file_type = CharField(max_length=16, default="docx", help_text="docx | xlsx")
+    status = CharField(max_length=16, default="draft", index=True, help_text="draft | published | disabled")
+    latest_version = IntegerField(default=0)
+    tenant_id = CharField(max_length=32, index=True)
+    created_by = CharField(max_length=32, null=True, default="")
+
+    class Meta:
+        db_table = "tpl_template"
+
+
+class TplTemplateVersion(DataBaseModel):
+    """模板填写-模板版本表（占位符清单随版本原子演进）。"""
+    id = CharField(max_length=32, primary_key=True)
+    template_id = CharField(max_length=32, index=True)
+    version = IntegerField(default=1)
+    original_filename = CharField(max_length=256, default="")
+    original_file_id = CharField(max_length=256, default="", help_text="MinIO object name, bucket=template_id")
+    render_file_id = CharField(max_length=256, default="", help_text="带 {{占位符}} 的工作副本")
+    placeholders = ListField(null=True)
+
+    class Meta:
+        db_table = "tpl_template_version"
+
+
+class TplFillTask(DataBaseModel):
+    """模板填写-填写任务表（P2 执行引擎使用，P1 仅建表）。"""
+    id = CharField(max_length=32, primary_key=True)
+    template_id = CharField(max_length=32, index=True)
+    template_version_id = CharField(max_length=32, index=True)
+    kb_ids = ListField(null=True)
+    params = JSONField(null=True)
+    status = CharField(max_length=24, default="pending", index=True)
+    values = JSONField(null=True)
+    evidence = JSONField(null=True)
+    result_file_id = CharField(max_length=256, default="")
+    error = LongTextField(null=True, default="")
+    source = CharField(max_length=16, default="web", help_text="web | chat | flow")
+    flow_instance_id = CharField(max_length=32, null=True, default="")
+    tenant_id = CharField(max_length=32, index=True)
+    created_by = CharField(max_length=32, null=True, default="")
+
+    class Meta:
+        db_table = "tpl_fill_task"
+
+
 # ── 智能采集通知系统 ──────────────────────────────────────────────
 class Notification(DataBaseModel):
     """采集通知主体：一个 site 一轮新增聚合 = 1 条记录。"""
@@ -2729,6 +2780,10 @@ def migrate_db():
     if not PermissionUserRole.table_exists():
         PermissionUserRole.create_table(safe=True)
         logging.info("permission_user_role: table created")
+    # ── 模板填写系统（新表） ──────────────────────────────────────
+    TplTemplate.create_table(safe=True)
+    TplTemplateVersion.create_table(safe=True)
+    TplFillTask.create_table(safe=True)
     seed_default_permissions()
 
     logging.disable(logging.NOTSET)
