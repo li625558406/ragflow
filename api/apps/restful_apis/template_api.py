@@ -501,8 +501,8 @@ async def download_fill_result(task_id: str):
     blob = settings.STORAGE_IMPL.get(task.template_id, task.result_file_id)
     if not blob:
         return get_error_data_result("生成稿文件缺失")
-    tpl = TplTemplateService.get_by_id(task.template_id)
-    ext = tpl.file_type if tpl else "docx"
+    ok, tpl = TplTemplateService.get_by_id(task.template_id)
+    ext = tpl.file_type if ok and tpl else "docx"
     mime = DOCX_MIME if ext == "docx" else XLSX_MIME
     return Response(blob, mimetype=mime,
                     headers={"Content-Disposition": f"attachment; filename=fill_{task_id}.{ext}"})

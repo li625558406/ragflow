@@ -956,23 +956,39 @@ def test_download_fill_success_returns_blob_attachment(monkeypatch):
     monkeypatch.setattr(mod, "TplFillTaskService", types.SimpleNamespace(
         get_owned=lambda tid, uid: _make_task(status="done", result_file_id="f.docx")))
     monkeypatch.setattr(mod, "TplTemplateService", types.SimpleNamespace(
-        get_by_id=lambda tid: _make_fill_tpl(file_type="docx")))
+        get_by_id=lambda tid: (True, _make_fill_tpl(file_type="docx"))))
     monkeypatch.setattr(mod, "settings", types.SimpleNamespace(
         STORAGE_IMPL=types.SimpleNamespace(get=lambda bucket, name: b"result-bytes")))
     resp = asyncio.run(mod.download_fill_result("task-1"))
     assert isinstance(resp, Response)
     assert asyncio.run(resp.get_data()) == b"result-bytes"  # quart Response.get_data 是协程
     assert "attachment" in resp.headers["Content-Disposition"]
-    assert resp.mimetype.startswith("application/vnd.openxmlformats")
+    assert resp.mimetype == mod.DOCX_MIME
+    assert resp.headers["Content-Disposition"].endswith(".docx")
+
+
+def test_download_fill_xlsx_tpl_uses_xlsx_mime(monkeypatch):
+    """xlsx 模板的生成稿 → XLSX_MIME + .xlsx 文件名（get_by_id 元组契约 True 分支）。"""
+    mod = _template_api
+    monkeypatch.setattr(mod, "TplFillTaskService", types.SimpleNamespace(
+        get_owned=lambda tid, uid: _make_task(status="done", result_file_id="f.xlsx")))
+    monkeypatch.setattr(mod, "TplTemplateService", types.SimpleNamespace(
+        get_by_id=lambda tid: (True, _make_fill_tpl(file_type="xlsx"))))
+    monkeypatch.setattr(mod, "settings", types.SimpleNamespace(
+        STORAGE_IMPL=types.SimpleNamespace(get=lambda bucket, name: b"xlsx-bytes")))
+    resp = asyncio.run(mod.download_fill_result("task-1"))
+    assert isinstance(resp, Response)
+    assert resp.mimetype == mod.XLSX_MIME
+    assert resp.headers["Content-Disposition"].endswith(".xlsx")
 
 
 def test_download_fill_tpl_missing_falls_back_docx(monkeypatch):
-    """对抗性：模板行已被删（get_by_id None）→ ext 兜底 docx，仍可下载。"""
+    """对抗性：模板行已被删（get_by_id → (False, None)）→ ext 兜底 docx，仍可下载。"""
     mod = _template_api
     monkeypatch.setattr(mod, "TplFillTaskService", types.SimpleNamespace(
         get_owned=lambda tid, uid: _make_task(status="done", result_file_id="f.bin")))
     monkeypatch.setattr(mod, "TplTemplateService", types.SimpleNamespace(
-        get_by_id=lambda tid: None))
+        get_by_id=lambda tid: (False, None)))
     monkeypatch.setattr(mod, "settings", types.SimpleNamespace(
         STORAGE_IMPL=types.SimpleNamespace(get=lambda bucket, name: b"raw-bytes")))
     resp = asyncio.run(mod.download_fill_result("task-1"))
