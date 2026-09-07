@@ -85,7 +85,7 @@ def apply_docx_placeholders(file_bytes: bytes, replacements: list) -> bytes:
     for rep in replacements:
         p = addr_map.get(rep.get("addr"))
         if p is not None:
-            _replace_in_paragraph(p, rep["anchor"], "{{%s}}" % rep["key"])
+            _replace_in_paragraph(p, rep["anchor"], f"{{{{{rep['key']}}}}}")
     buf = io.BytesIO()
     doc.save(buf)
     return buf.getvalue()

@@ -73,8 +73,13 @@ def test_apply_docx_anchor_not_found_is_noop(sample_docx):
 
 
 def test_apply_docx_empty_replacements_returns_original(sample_docx):
-    from rag.svr.template_fill.docx_utils import apply_docx_placeholders
-    assert apply_docx_placeholders(sample_docx, []) == sample_docx
+    """空替换列表：文档内容等价（python-docx 重新写 zip 时时间戳精度为 2 秒，
+    字节相等会在跨秒边界时随机失败，故按段落 (addr, text) 比对）。"""
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders, iter_docx_paragraphs
+    out = apply_docx_placeholders(sample_docx, [])
+    src_items = [(it["addr"], it["text"]) for it in iter_docx_paragraphs(sample_docx)]
+    out_items = [(it["addr"], it["text"]) for it in iter_docx_paragraphs(out)]
+    assert out_items == src_items
 
 
 # ---------- 对抗性边界用例 ----------
