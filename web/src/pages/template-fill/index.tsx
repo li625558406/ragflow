@@ -1,3 +1,4 @@
+import { useDebounce } from 'ahooks';
 import { useState } from 'react';
 import { useNavigate } from 'react-router';
 
@@ -43,8 +44,10 @@ export default function TemplateFillPage() {
   const [status, setStatus] = useState('');
   const [page, setPage] = useState(1);
   const [wizardOpen, setWizardOpen] = useState(false);
+  // 300ms 防抖：输入过程中不触发列表请求
+  const debouncedKeyword = useDebounce(keyword, { wait: 300 });
   const { data, isLoading } = useListTemplateFill({
-    keyword,
+    keyword: debouncedKeyword,
     status,
     page,
     size: PAGE_SIZE,

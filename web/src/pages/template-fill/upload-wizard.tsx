@@ -75,6 +75,8 @@ export function UploadWizard({
   const [description, setDescription] = useState('');
   const [step1Error, setStep1Error] = useState('');
   const [templateId, setTemplateId] = useState('');
+  // 上传成功时记录文件指纹（name+size），用于识别「换文件」场景触发重新上传
+  const [uploadedFileKey, setUploadedFileKey] = useState('');
   const [placeholders, setPlaceholders] = useState<TplPlaceholder[]>([]);
   const [rowErrors, setRowErrors] = useState<Record<string, boolean>>({});
 
@@ -91,6 +93,7 @@ export function UploadWizard({
       setDescription('');
       setStep1Error('');
       setTemplateId('');
+      setUploadedFileKey('');
       setPlaceholders([]);
       setRowErrors({});
       detectMut.reset();
@@ -108,6 +111,17 @@ export function UploadWizard({
     }
   };
 
+  // detect 建议与现有手动行（addr 为空，detect 建议必带 addr）合并：
+  // 建议在前、手动行在后，key 重复的手动行丢弃，避免重新识别静默覆盖手动添加的行
+  const applySuggestions = (suggestions: TplPlaceholder[]) => {
+    if (suggestions.length === 0) return;
+    setPlaceholders((prev) => {
+      const sugKeys = new Set(suggestions.map((s) => s.key));
+      const manual = prev.filter((r) => !r.addr && !sugKeys.has(r.key.trim()));
+      return [...suggestions, ...manual];
+    });
+  };
+
   const goStep2 = () => {
     if (!file) {
       setStep1Error('请选择 .docx 或 .xlsx 模板文件');
@@ -123,18 +137,23 @@ export function UploadWizard({
       return;
     }
     setStep1Error('');
+    // 从 Step2 回退后再前进：文件未更换时直接跳转，不重复上传模板
+    const fileKey = `${file.name}:${file.size}`;
+    if (templateId && uploadedFileKey === fileKey) {
+      setStep(2);
+      return;
+    }
     uploadMut.mutate(
       { file, name: name.trim(), description: description.trim() },
       {
         onSuccess: (data) => {
           setTemplateId(data.id);
+          setUploadedFileKey(fileKey);
           setPlaceholders([]);
           setStep(2);
           detectMut.mutate(data.id, {
             onSuccess: (res) => {
-              if (res.suggestions.length > 0) {
-                setPlaceholders(res.suggestions);
-              }
+              applySuggestions(res.suggestions);
             },
             onError: (err) => {
               message.error(
@@ -171,30 +190,43 @@ export function UploadWizard({
     setRowErrors({});
   };
 
-  // 行级校验：key 格式、name、anchor 非空；返回是否有错
-  const validateRows = () => {
+  // 提交前统一 trim，保证「校验的值 = 提交的值」（校验与提交都用同一份归一化结果）
+  const trimRows = (rows: TplPlaceholder[]) =>
+    rows.map((r) => ({
+      ...r,
+      key: r.key.trim(),
+      name: r.name.trim(),
+      anchor: r.anchor.trim(),
+      retrieval_query: (r.retrieval_query || '').trim(),
+    }));
+
+  // 行级校验：key 格式、name、anchor 非空；入参须已 trim
+  const collectRowErrors = (rows: TplPlaceholder[]) => {
     const errors: Record<string, boolean> = {};
-    placeholders.forEach((row, i) => {
-      if (!row.key.trim() || !KEY_PATTERN.test(row.key.trim())) {
+    rows.forEach((row, i) => {
+      if (!row.key || !KEY_PATTERN.test(row.key)) {
         errors[`${i}-key`] = true;
       }
-      if (!row.name.trim()) {
+      if (!row.name) {
         errors[`${i}-name`] = true;
       }
-      if (!row.anchor.trim()) {
+      if (!row.anchor) {
         errors[`${i}-anchor`] = true;
       }
     });
-    setRowErrors(errors);
-    return Object.keys(errors).length === 0;
+    return errors;
   };
 
   const goStep3 = () => {
-    if (placeholders.length === 0) {
+    const rows = trimRows(placeholders);
+    setPlaceholders(rows);
+    if (rows.length === 0) {
       message.error('请至少添加一个填写点');
       return;
     }
-    if (!validateRows()) {
+    const errors = collectRowErrors(rows);
+    setRowErrors(errors);
+    if (Object.keys(errors).length > 0) {
       message.error('存在格式不正确的填写点，请检查标红字段');
       return;
     }
@@ -202,13 +234,17 @@ export function UploadWizard({
   };
 
   const saveConfig = () => {
-    if (!validateRows()) {
+    const rows = trimRows(placeholders);
+    setPlaceholders(rows);
+    const errors = collectRowErrors(rows);
+    setRowErrors(errors);
+    if (Object.keys(errors).length > 0) {
       message.error('存在格式不正确的填写点，请返回修改');
       setStep(2);
       return;
     }
     saveMut.mutate(
-      { id: templateId, placeholders },
+      { id: templateId, placeholders: rows },
       {
         onSuccess: (res) => {
           message.success(`已保存 ${res.placeholder_count} 个填写点`);
@@ -388,16 +424,27 @@ export function UploadWizard({
                           />
                         </TableCell>
                         <TableCell>
-                          <span
-                            className={`block max-w-[160px] truncate text-sm ${
-                              rowErrors[`${i}-anchor`]
-                                ? 'text-red-500'
-                                : 'text-muted-foreground'
-                            }`}
-                            title={row.anchor}
-                          >
-                            {row.anchor || '（手动添加，请补锚文本）'}
-                          </span>
+                          {row.addr ? (
+                            <span
+                              className={`block max-w-[160px] truncate text-sm ${
+                                rowErrors[`${i}-anchor`]
+                                  ? 'text-red-500'
+                                  : 'text-muted-foreground'
+                              }`}
+                              title={row.anchor}
+                            >
+                              {row.anchor}
+                            </span>
+                          ) : (
+                            <Input
+                              className={errCls(`${i}-anchor`)}
+                              value={row.anchor}
+                              onChange={(e) =>
+                                updateRow(i, { anchor: e.target.value })
+                              }
+                              placeholder="模板中已有的原文片段"
+                            />
+                          )}
                         </TableCell>
                         <TableCell>
                           <Button
@@ -416,7 +463,7 @@ export function UploadWizard({
               </div>
             )}
             {!detecting && (
-              <div>
+              <div className="flex items-center gap-3">
                 <Button
                   size="sm"
                   variant="outline"
@@ -426,6 +473,9 @@ export function UploadWizard({
                 >
                   添加填写点
                 </Button>
+                <span className="text-xs text-muted-foreground">
+                  手动添加行无需定位，锚文本须为模板中已有的原文片段
+                </span>
               </div>
             )}
           </div>
