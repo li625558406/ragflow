@@ -1,4 +1,3 @@
-import { useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
@@ -63,7 +62,6 @@ function renderTextWithPlaceholders(text: string) {
 export default function TemplateFillDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
 
   const { data: detailRes, isLoading: detailLoading } = useTemplateFillDetail(
     id ?? '',
@@ -82,7 +80,9 @@ export default function TemplateFillDetailPage() {
 
   const saveMut = useSaveTemplateFillPlaceholders();
 
-  // 详情首次加载（或切换模板）时用后端占位符初始化编辑表
+  // 详情首次加载（或切换模板）时用后端占位符初始化编辑表。
+  // 依赖含 placeholders：内容不变时 React Query structural sharing 保持引用稳定，
+  // 编辑不会被刷新覆盖；保存后 refetch 返回新引用时会以服务端数据（含回填 addr）对齐。
   useEffect(() => {
     if (detail?.placeholders) {
       setPlaceholders(detail.placeholders);
@@ -126,10 +126,7 @@ export default function TemplateFillDetailPage() {
       {
         onSuccess: () => {
           message.success('保存成功');
-          // hooks 内部已 invalidate templateFillPreview，无需重复
-          queryClient.invalidateQueries({
-            queryKey: ['templateFillDetail', id],
-          });
+          // hooks 内部已统一 invalidate 列表/详情/预览，此处无需重复
         },
         onError: (err) => {
           message.error(err instanceof Error ? err.message : '保存失败');
