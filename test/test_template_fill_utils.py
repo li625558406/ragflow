@@ -119,3 +119,75 @@ def test_apply_docx_unknown_addr_is_ignored(sample_docx):
     assert "{{project_name}}" in texts[0]
     assert "{{gone}}" not in "".join(texts)
     assert "{{gone2}}" not in "".join(texts)
+
+
+def _make_docx_with_hyperlink():
+    """构造段落 = run("地址：") + run("____ 详见") + 尾部超链接("官网")，全程手工插
+    XML，不依赖网络。锚文本 "：____" 跨前两个 run（不落在任何单一 run 内），
+    强制触发跨 run 路径。
+
+    复现原始 bug 的关键：python-docx 1.1+ 的 p.text 含超链接内文本，但 p.runs 不含，
+    旧的整段重写路径会把 "官网" 复制进首 run → "地址{{k}}____ 详见官网官网"。
+    """
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    doc = Document()
+    p = doc.add_paragraph("地址：")
+    p.add_run("____ 详见")
+    hl = OxmlElement("w:hyperlink")
+    hl.set(qn("r:id"), "rIdLink")
+    r = OxmlElement("w:r")
+    t = OxmlElement("w:t")
+    t.text = "官网"
+    r.append(t)
+    hl.append(r)
+    p._p.append(hl)
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def test_apply_docx_hyperlink_paragraph_no_duplicate(sample_docx):
+    """含 w:hyperlink 的段落（锚文本跨界）必须走 run 拼接替换：替换后超链接文本
+    只出现一次，占位符正确落位，且原超链接文本不被复制进正文 run。"""
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders, iter_docx_paragraphs
+    src = _make_docx_with_hyperlink()
+    # 前置确认构造成功：p.text 含超链接文本（python-docx 1.1+ 行为）
+    assert next(it["text"] for it in iter_docx_paragraphs(src)) == "地址：____ 详见官网"
+
+    out = apply_docx_placeholders(src, [{"addr": "para:0", "anchor": "：____", "key": "url"}])
+    texts = [it["text"] for it in iter_docx_paragraphs(out)]
+    assert texts[0] == "地址{{url}} 详见官网"
+    # 修复前此处为 2（超链接文本被复制进首 run），修复后必须为 1
+    assert texts[0].count("官网") == 1
+    assert "____" not in texts[0]
+
+
+def test_apply_docx_hyperlink_anchor_absent_is_noop():
+    """含超链接的段落上锚文本不存在（且跨界拼不上）时返回 no-op，超链接文本不受影响。"""
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders, iter_docx_paragraphs
+    src = _make_docx_with_hyperlink()
+    out = apply_docx_placeholders(src, [{"addr": "para:0", "anchor": "不存在的锚", "key": "k"}])
+    texts = [it["text"] for it in iter_docx_paragraphs(out)]
+    assert texts[0] == "地址：____ 详见官网"
+    assert "{{k}}" not in texts[0]
+
+
+def test_apply_docx_dirty_entry_missing_fields_skipped(sample_docx):
+    """LLM 脏输入：addr/anchor/key 任一缺失或为空时跳过该条，不抛 KeyError，
+    其余合法条目正常替换。"""
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders, iter_docx_paragraphs
+    out = apply_docx_placeholders(sample_docx, [
+        {"addr": "para:0", "key": "no_anchor"},                 # 缺 anchor
+        {"addr": "para:0", "anchor": "____________"},            # 缺 key
+        {"anchor": "____年", "key": "no_addr"},                  # 缺 addr
+        {"addr": "para:0", "anchor": "", "key": "empty_anchor"},  # anchor 为空
+        {"addr": "cell:1:1:0", "anchor": "____年____月____日", "key": "sign_date"},
+    ])
+    items = iter_docx_paragraphs(out)
+    texts = [it["text"] for it in items]
+    by_addr = {it["addr"]: it["text"] for it in items}
+    assert "{{sign_date}}" in by_addr["cell:1:1:0"]
+    assert "{{no_anchor}}" not in "".join(texts)
+    assert "{{no_addr}}" not in "".join(texts)
+    assert "{{empty_anchor}}" not in "".join(texts)

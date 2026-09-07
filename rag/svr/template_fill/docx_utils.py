@@ -3,6 +3,12 @@
 addr 定位约定：正文段落 para:<idx>；表格内段落 cell:<row>:<col>:<para_idx>。
 index 为全文档扁平序号，与 addr 一一对应（合并单元格会在多处重复出现同一 addr，
 替换按"锚文本存在才替换"幂等，重复 addr 无副作用）。
+
+跨 run 替换取舍：普通段落跨 run 时整段重写进首 run、清空其余（牺牲段内混合格式）；
+但含超链接（w:hyperlink）/简单域（w:fldSimple）的段落**不可**整段重写——
+python-docx 1.1+ 的 Paragraph.text 包含超链接内文本，而 Paragraph.runs 不包含，
+整段重写会把超链接文本复制进首 run 且原节点仍在（内容重复）。这类段落改走
+run 拼接替换路径（见 _replace_via_run_concat）。
 """
 import io
 import re
@@ -22,6 +28,7 @@ FILL_HINT_RE = re.compile(
 def _build_addr_map(doc):
     """遍历 body 直系子节点（w:p / w:tbl），返回 ({addr: Paragraph}, items)。
 
+    局限：只遍历顶层表格（cell.paragraphs），嵌套表格（cell.tables）内的段落不在编址范围。
     items: [{"index": 扁平序号, "text": 段落文本, "addr": 定位串}]，按文档顺序。
     """
     addr_map = {}
@@ -56,9 +63,52 @@ def extract_docx_candidates(file_bytes: bytes) -> list:
     return [it for it in iter_docx_paragraphs(file_bytes) if it["text"].strip() and FILL_HINT_RE.search(it["text"])]
 
 
+def _has_link_or_field(p: Paragraph) -> bool:
+    """段落是否含超链接（w:hyperlink）或简单域（w:fldSimple）直系子节点。
+
+    这两类节点的文本会进入 Paragraph.text（python-docx 1.1+ 对 hyperlink 生效），
+    但不在 Paragraph.runs 中，整段重写会导致文本被复制。
+    """
+    return bool(p._p.findall(qn("w:hyperlink")) or p._p.findall(qn("w:fldSimple")))
+
+
+def _replace_via_run_concat(p: Paragraph, anchor: str, repl: str) -> bool:
+    """含超链接/域段落的替换：把所有 run 的文本按序拼接，在拼接串上 replace，
+    再按原 run 长度切分写回各 run。
+
+    超链接/域内文本不参与（不在 runs 中），故不会产生复制。替换导致拼接串
+    长度变化时，差值并入最后一个非空 run 的文本——简单可行即可，该路径只为
+    避免超链接文本复制，不追求精确保持 run 边界。锚文本在拼接串中不存在
+    （跨界没拼上）时返回 False（no-op）。
+    """
+    runs = p.runs
+    joined = "".join(r.text for r in runs)
+    if anchor not in joined:
+        return False
+    replaced = joined.replace(anchor, repl)
+    # 按原 run 文本长度在替换后的拼接串上切分写回；总长度差（repl 与 anchor 不等长）
+    # 并入最后一个非空 run——简单可行即可，不追求精确保持 run 边界。
+    pos = 0
+    last_nonempty = -1
+    for i, r in enumerate(runs):
+        n = len(r.text)
+        r.text = replaced[pos:pos + n]
+        pos += n
+        if n > 0:
+            last_nonempty = i
+    tail = replaced[pos:]
+    if tail:
+        target = runs[max(last_nonempty, 0)]
+        target.text = (target.text or "") + tail
+    return True
+
+
 def _replace_in_paragraph(p: Paragraph, anchor: str, repl: str) -> bool:
-    """段内替换锚文本为 repl。优先单 run 内完成；跨 run 时整段重写进首 run、
-    清空其余（P1 取舍：牺牲段内混合格式，保证替换必然生效）。"""
+    """段内替换锚文本为 repl。优先单 run 内完成；跨 run 时：普通段落整段重写
+    进首 run、清空其余（牺牲段内混合格式）；含超链接/域的段落走 run 拼接替换
+    （见 _replace_via_run_concat），避免超链接文本被复制进正文 run。"""
+    if not anchor:
+        return False
     if anchor not in p.text:
         return False
     for run in p.runs:
@@ -66,6 +116,8 @@ def _replace_in_paragraph(p: Paragraph, anchor: str, repl: str) -> bool:
             # str.replace 语义：同段多次出现全部替换
             run.text = run.text.replace(anchor, repl)
             return True
+    if _has_link_or_field(p):
+        return _replace_via_run_concat(p, anchor, repl)
     runs = p.runs
     if not runs:
         return False
@@ -78,14 +130,21 @@ def _replace_in_paragraph(p: Paragraph, anchor: str, repl: str) -> bool:
 def apply_docx_placeholders(file_bytes: bytes, replacements: list) -> bytes:
     """replacements: [{"addr", "anchor", "key"}]，把 anchor 替换为 {{key}}。
 
-    addr 不存在时静默跳过；anchor 不在该段落时为 no-op（幂等）。
+    addr 不存在时静默跳过；anchor 不在该段落时为 no-op（幂等）；
+    addr/anchor/key 任一缺失或为空时跳过该条（LLM 脏输入健壮性，与 addr
+    不存在静默跳过的语义一致）。
     """
     doc = Document(io.BytesIO(file_bytes))
     addr_map, _ = _build_addr_map(doc)
     for rep in replacements:
-        p = addr_map.get(rep.get("addr"))
+        addr = rep.get("addr")
+        anchor = rep.get("anchor")
+        key = rep.get("key")
+        if not addr or not anchor or not key:
+            continue
+        p = addr_map.get(addr)
         if p is not None:
-            _replace_in_paragraph(p, rep["anchor"], f"{{{{{rep['key']}}}}}")
+            _replace_in_paragraph(p, anchor, f"{{{{{key}}}}}")
     buf = io.BytesIO()
     doc.save(buf)
     return buf.getvalue()
