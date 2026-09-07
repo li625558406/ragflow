@@ -274,6 +274,14 @@ const routeConfigOptions = [
         Component: () => import('@/pages/permission'),
       },
       {
+        path: Routes.TemplateFill,
+        Component: () => import('@/pages/template-fill'),
+      },
+      {
+        path: `${Routes.TemplateFillDetail}/:id`,
+        Component: () => import('@/pages/template-fill/detail'),
+      },
+      {
         path: Routes.Skills,
         Component: () => import('@/pages/skills'),
       },

@@ -18,6 +18,7 @@ const PathMap = {
   [Routes.Files]: [Routes.Files],
   [Routes.Crawl4ai]: [Routes.Crawl4ai],
   [Routes.Permission]: [Routes.Permission],
+  [Routes.TemplateFill]: [Routes.TemplateFill, Routes.TemplateFillDetail],
 } as const;
 const menuItems: Array<{
   path: string;
@@ -41,6 +42,7 @@ const menuItems: Array<{
   },
   { path: Routes.Memories, name: 'header.memories', permission: 'memory' },
   { path: Routes.Crawl4ai, name: 'header.crawl4ai', permission: 'crawler' },
+  { path: Routes.TemplateFill, name: 'header.templateFill' },
   {
     path: Routes.Permission,
     name: 'header.userManagement',
