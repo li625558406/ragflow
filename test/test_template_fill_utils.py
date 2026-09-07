@@ -473,6 +473,70 @@ def test_validate_placeholders_non_dict_item_no_crash():
     assert not ok and err
 
 
+# ---------- validate_placeholders：空 addr 按 anchor 反查推导（手动添加行） ----------
+
+def _manual_item(**kw):
+    base = {"key": "m", "name": "手动", "addr": "", "anchor": "项目名称",
+            "fill_mode": "manual", "required": True}
+    base.update(kw)
+    return base
+
+
+def test_validate_empty_addr_unique_anchor_hit_backfills():
+    """空 addr + anchor 恰好命中 1 个候选：通过，且 addr 被回填进 item。"""
+    from rag.svr.template_fill.detector import validate_placeholders
+    item = _manual_item(anchor="项目名称")
+    ok, err = validate_placeholders([item], CANDS)
+    assert ok and err == ""
+    assert item["addr"] == "para:0"  # 回填生效，落库前地址已补齐
+
+
+def test_validate_empty_addr_anchor_not_found_rejected():
+    """空 addr + anchor 未命中任何候选：拒绝且报错面向用户。"""
+    from rag.svr.template_fill.detector import validate_placeholders
+    ok, err = validate_placeholders([_manual_item(anchor="不存在的锚")], CANDS)
+    assert not ok and "未找到" in err
+
+
+def test_validate_empty_addr_anchor_ambiguous_rejected():
+    """空 addr + anchor 多处命中（"____" 在 para:0 与 para:4 都出现）：歧义拒绝，防回填错位。"""
+    from rag.svr.template_fill.detector import validate_placeholders
+    ok, err = validate_placeholders([_manual_item(anchor="____")], CANDS)
+    assert not ok and "匹配到" in err and "2" in err
+
+
+def test_validate_empty_addr_empty_anchor_rejected():
+    """空 addr + 空 anchor：`"" in text` 恒真会命中全部候选，须先行拦截为缺少锚文本。"""
+    from rag.svr.template_fill.detector import validate_placeholders
+    ok, err = validate_placeholders([_manual_item(anchor="")], CANDS)
+    assert not ok and "锚文本" in err
+
+
+def test_validate_empty_addr_case_sensitive_match():
+    """anchor 反查为精确子串匹配、区分大小写，与 addr 非空分支的 membership 校验一致。"""
+    from rag.svr.template_fill.detector import validate_placeholders
+    cands = [{"index": 0, "addr": "para:0", "text": "Project Name: ______"}]
+    item = _manual_item(anchor="Project Name")
+    ok, err = validate_placeholders([item], cands)
+    assert ok and item["addr"] == "para:0"
+    ok, err = validate_placeholders([_manual_item(anchor="project name")], cands)
+    assert not ok and "未找到" in err
+
+
+def test_validate_non_empty_addr_keeps_original_logic():
+    """addr 非空走原逻辑：定位不存在 / anchor 不在该定位文本中均拒绝，不做反查回填。"""
+    from rag.svr.template_fill.detector import validate_placeholders
+    item = {"key": "a", "name": "x", "addr": "para:9", "anchor": "项目名称",
+            "fill_mode": "llm", "required": True}
+    ok, err = validate_placeholders([item], CANDS)
+    assert not ok and "不存在" in err
+    assert item["addr"] == "para:9"  # 未被反查改写
+    item2 = {"key": "b", "name": "x", "addr": "para:0", "anchor": "____年",  # "____年" 只在 para:4
+             "fill_mode": "llm", "required": True}
+    ok, err = validate_placeholders([item2], CANDS)
+    assert not ok and "不在" in err
+
+
 def test_normalize_key():
     """归一化：大写/空格/特殊字符 → snake_case；全非法字符兜底为 field。"""
     from rag.svr.template_fill.detector import normalize_key

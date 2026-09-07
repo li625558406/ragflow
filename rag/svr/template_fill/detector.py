@@ -70,10 +70,12 @@ def parse_detection_response(raw: str, candidates: list) -> list:
 
 
 def validate_placeholders(items: list, candidates: list) -> tuple:
-    """人工确认后的占位符清单校验。返回 (ok, error_message)，错误信息面向前端用户（中文）。"""
+    """人工确认后的占位符清单校验。返回 (ok, error_message)，错误信息面向前端用户（中文）。
+    手动添加行（addr 为空）允许仅凭 anchor 反查推导 addr：唯一命中则回填 item["addr"]，
+    零命中/多处命中均拒绝（多处命中无法确定落位，回填会错位）。"""
     cand_map = {c["addr"]: c for c in candidates}
     seen = set()
-    for it in items:
+    for row_no, it in enumerate(items, start=1):
         if not isinstance(it, dict):
             return False, "条目格式非法（须为对象）"
         key = str(it.get("key") or "")
@@ -89,11 +91,25 @@ def validate_placeholders(items: list, candidates: list) -> tuple:
         # 场景（前端手改提交/旧数据回放）在此兜底
         if len(anchor) > MAX_ANCHOR_LEN:
             return False, f"{key} 的 anchor 超过{MAX_ANCHOR_LEN}字符"
-        cand = cand_map.get(addr)
-        if cand is None:
-            return False, f"{key} 的定位 {addr!r} 不存在"
-        if not anchor or anchor not in cand["text"]:
-            return False, f"{key} 的 anchor 不在 {addr} 文本中"
+        if not addr:
+            # 手动添加行（前端 addr 恒为 ''）：用 anchor 在候选原文里反查定位。
+            # 精确子串匹配、区分大小写，与下方 addr 非空分支的 membership 校验语义一致；
+            # 空 anchor 时 `"" in text` 恒真会命中全部候选，需先行拦截。
+            if not anchor:
+                return False, f"第{row_no}个填写点：缺少锚文本"
+            hits = [c for c in candidates if anchor in c["text"]]
+            if not hits:
+                return False, f"第{row_no}个填写点：锚文本在模板中未找到，请核对"
+            if len(hits) > 1:
+                return False, f"第{row_no}个填写点：锚文本匹配到{len(hits)}处，请使用更长的锚文本"
+            cand = hits[0]
+            it["addr"] = cand["addr"]  # 回填，保证落库的占位符都有有效 addr
+        else:
+            cand = cand_map.get(addr)
+            if cand is None:
+                return False, f"{key} 的定位 {addr!r} 不存在"
+            if not anchor or anchor not in cand["text"]:
+                return False, f"{key} 的 anchor 不在 {addr} 文本中"
         if it.get("fill_mode") not in FILL_MODES:
             return False, f"{key} 的 fill_mode 非法"
     return True, ""
