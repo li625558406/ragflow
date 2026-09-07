@@ -4,7 +4,7 @@
 
 **主题**：模板填写 P1 三项增量：① 「模板库」UI 文案统一改为「范本库」（navbar `zh.ts:templateFill` key + 列表页标题，不碰 en.ts）；② 上传支持旧版 .doc——后端 LibreOffice（`soffice --headless`，独立 UserInstallation profile 防并发锁，timeout 60s）转成 .docx 后以 docx 形态进入全链路（candidates/替换/预览/下载），转换失败中文兜底提示，转换产物复查 20MB 上限；③ 上传向导 Step1 文件选择控件重构——隐藏 input + 虚线拖拽风格选择区（图标+主辅文案），已选态展示文件名/大小/重新选择/清除按钮。
 
-**核心变更**：`web/src/locales/zh.ts`（templateFill='范本库'）、`web/src/pages/template-fill/index.tsx`（CardTitle）、`web/src/pages/template-fill/upload-wizard.tsx`（控件重构 + TEMPLATE_FILE_RE 放行 .doc + 外层 onKeyDown 加 `e.target !== e.currentTarget` 卫语句修复 X 清除按钮被键盘劫持）、`api/apps/restful_apis/template_api.py`（_is_legacy_doc/_convert_doc_to_docx + upload 端点接入转换分支 + 转换后 20MB 复查）。
+**核心变更**：`web/src/locales/zh.ts`（templateFill='范本库'）、`web/src/pages/template-fill/index.tsx`（CardTitle）、`web/src/pages/template-fill/upload-wizard.tsx`（控件重构 + TEMPLATE_FILE_RE 放行 .doc + 外层 onKeyDown 加 `e.target !== e.currentTarget` 卫语句修复 X 清除按钮被键盘劫持）、`api/apps/restful_apis/template_api.py`（_is_legacy_doc/_convert_doc_to_docx + upload 端点接入转换分支 + 转换后 20MB 复查）。部署联调修复：容器 soffice 包装脚本不自设库路径致 rc=127（libreglo.so 加载失败），subprocess 显式注入 `LD_LIBRARY_PATH=/usr/lib/libreoffice/program` 后端到端转换通过。
 
 **测试**：后端 65 单测全过（新增 .doc 后缀判定/转换失败/超限用例，容器无 soffice 场景 monkeypatch subprocess）、ruff 0 违规；tsc 本功能文件 0 error。经合并审查（needs-fixes → 修复 → 复核 APPROVED）。
 
