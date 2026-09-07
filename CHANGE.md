@@ -1,5 +1,23 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-07 模板填写系统 P1 实施完成（表 + API + B端模板库页面）
+
+**主题**：P1 全量落地（feat/unified-crawler-framework 分支，待部署）：① tpl_template / tpl_template_version / tpl_fill_task 三表进 db_models + migrate_db 兜底；② Service 层（template_fill_service.py，租户隔离/分页钳制/MinIO 存储）；③ docx/xlsx 占位符工具（iter/extract/apply，超链接段落 run 拼接替换、公式格排除、合并单元格安全）；④ detector（LLM 识别填写点 prompt/解析/校验，anchor≤500、空 addr 按 anchor 反查唯一推导）；⑤ REST API 9 端点（/api/v1/template/fill/*，损坏文件兜底、20MB 前置校验、zip 校验）；⑥ B端前端：列表页 + 三步上传向导（上传→AI识别→确认保存）+ 详情页（占位符编辑+`{{key}}`高亮预览+下载），路由/顶部菜单「模板库」/中文文案收口。
+
+**测试**：后端 58 单测全过（含边界/对抗用例），ruff 0 违规；前端 tsc 本功能 0 error。经逐任务双阶段审查（规格+质量），关键修复含：伪 zip 500 兜底、await 同步函数运行时 bug、手动添加行 addr 契约断裂（anchor 反查回填）、向导重复上传、trim 校验值与提交值不一致。
+
+**遗留**：P2 执行引擎（检索→LLM→校验→渲染，需容器装 docxtpl）未开始；C端入口 P3/P4 未开始；**待部署联调**（部署冒烟清单见 docs/superpowers/plans/2026-09-07-template-fill-p1.md Task 12）。
+
+## 2026-09-07 模板填写系统设计（固定 Word/Excel 模板 + KB 自动填写）
+
+**主题**：新功能「模板填写」完成方案设计（未编码）。固定模板（Word/Excel）由 LLM 根据知识库内容自动填写：模板独立为「模板库」资产（不放知识库），占位符注册表驱动，LLM 只产字段值 JSON，docxtpl/openpyxl 程序渲染回填，格式样式 100% 保留。
+
+**核心设计**：tpl_template / tpl_template_version / tpl_fill_task 3 张表（占位符清单随版本原子演进，含检索意图/约束/必填元数据）；执行引擎为确定性 pipeline（逐槽位检索 → 一次 LLM 批量产 JSON → 校验兜底 → 渲染）；未命中 required 槽位标「待人工」禁编造，evidence 留存可溯源。入口：B 端独立「模板库」页签（上传向导/LLM 识别填写点/人工确认/版本/预览/测试填写/任务列表）+ C 端对话 FillTemplate 工具（P3）+ flow 模板填写节点（P4）。分 P1-P4 四期实施。
+
+**设计文档**：`docs/superpowers/specs/2026-09-07-template-fill-design.md`（含表结构、API 清单、部署清单、风险对策）。
+
+**遗留**：待实施 P1（表 + 模板管理 API + B 端页面）；新依赖 docxtpl 需进容器镜像。
+
 ## 2026-09-01 文件审核表格可编辑（run 级格式 + 批注共存）
 
 **主题**：C端流程「文件审核」弹框正文编辑已支持 Word 式 run 级格式，但表格内容为只读原子块（有意取舍）。本次将表格升级为 `@lexical/table` 节点体系（方案A），实现单元格内文字可改 + 加粗/斜体/下划线/删除线/上下标/颜色/底色/字体/字号等 run 级格式，工具栏在格内同样生效；不做表格结构编辑（不增删行列/表格）；格内批注高亮与编辑共存；图片维持只读。
