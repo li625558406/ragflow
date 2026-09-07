@@ -236,3 +236,72 @@ def test_generate_values_batch_size_none_falls_back_to_default(monkeypatch):
     assert len(prompts) == 2  # 3 字段 / BATCH_SIZE=2 → 两批（2+1），不是 None 时 slice 取全量的 1 批
     assert vals == {f"k{i}": f"值-k{i}" for i in range(1, 4)}
     assert missing == set()
+
+
+# ---------- 任务编排：状态机白名单 + 待人工合成（P2 Task 7） ----------
+
+def test_task_status_transition_whitelist():
+    """合法转移放行（含进 failed）；跳阶段/终态出边/未知状态拒绝。can_transit 纯函数不触库。"""
+    from api.db.services.template_fill_service import TplFillTaskService
+    assert TplFillTaskService.can_transit("pending", "retrieving")
+    assert TplFillTaskService.can_transit("retrieving", "generating")
+    assert TplFillTaskService.can_transit("generating", "rendering")
+    assert TplFillTaskService.can_transit("rendering", "done")
+    assert TplFillTaskService.can_transit("rendering", "partial")
+    assert TplFillTaskService.can_transit("retrieving", "failed")
+    assert not TplFillTaskService.can_transit("done", "retrieving")   # 终态不可出
+    assert not TplFillTaskService.can_transit("pending", "done")      # 跳阶段
+    assert not TplFillTaskService.can_transit("failed", "pending")    # 失败不可复活
+    assert not TplFillTaskService.can_transit("unknown", "retrieving")  # 未知当前态
+
+
+def test_build_values_manual_and_notfound():
+    """manual 恒待人工；required+missing → 人工标记(partial)；非必填缺失 → 空串；生成命中 → filled。"""
+    from rag.svr.template_fill.executor import build_values
+    from rag.svr.template_fill.renderer import manual_mark
+    placeholders = [
+        {"key": "a", "name": "甲", "fill_mode": "manual"},
+        {"key": "b", "name": "乙", "fill_mode": "llm", "required": True},
+        {"key": "c", "name": "丙", "fill_mode": "llm"},
+        {"key": "d", "name": "丁", "fill_mode": "llm"},
+    ]
+    values, cells, partial = build_values(placeholders, {"d": "已生成值"}, {"b"})
+    assert values == {"a": manual_mark("甲"), "b": manual_mark("乙"), "c": "", "d": "已生成值"}
+    assert cells == {"a": "manual", "b": "not_found", "c": "not_found", "d": "filled"}
+    assert partial is True
+
+
+def test_build_values_bad_fill_mode_treated_as_llm():
+    """fill_mode 非法值（白名单外/缺省）按 llm 处理，不炸不进人工。"""
+    from rag.svr.template_fill.executor import build_values
+    values, cells, partial = build_values(
+        [{"key": "x", "name": "X", "fill_mode": "xxx"}], {"x": "v"}, set())
+    assert values == {"x": "v"}
+    assert cells == {"x": "filled"}
+    assert partial is False
+    values2, cells2, partial2 = build_values([{"key": "y", "name": "Y"}], {"y": "w"}, set())
+    assert values2 == {"y": "w"} and cells2 == {"y": "filled"} and partial2 is False
+
+
+def test_build_values_all_green_not_partial():
+    """全绿场景（生成命中 + 非必填缺失）is_partial 必须为 False。"""
+    from rag.svr.template_fill.executor import build_values
+    placeholders = [
+        {"key": "k1", "name": "一", "fill_mode": "llm"},
+        {"key": "k2", "name": "二", "fill_mode": "llm"},  # 非必填缺失
+    ]
+    values, cells, partial = build_values(placeholders, {"k1": "v1"}, {"k2"})
+    assert values == {"k1": "v1", "k2": ""}
+    assert cells == {"k1": "filled", "k2": "not_found"}
+    assert partial is False
+
+
+def test_execute_task_missing_task_smoke(monkeypatch):
+    """task 不存在：execute_task 不抛异常不崩（service 依赖 monkeypatch，不触库）。"""
+    from api.db.services import template_fill_service as tpl_svc
+    from rag.svr.template_fill import executor
+    monkeypatch.setattr(tpl_svc.TplFillTaskService, "update_status",
+                        lambda task_id, cur, nxt, **extra: True)
+    monkeypatch.setattr(tpl_svc.TplFillTaskService, "get_or_none",
+                        lambda **kw: None)
+    executor.execute_task("no-such-task")  # 不抛异常即通过

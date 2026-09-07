@@ -30,6 +30,17 @@ logger = logging.getLogger(__name__)
 # 模板状态机白名单：任何写库路径只允许这三种状态（防任意字符串落库）
 TEMPLATE_STATUSES = ("draft", "published", "disabled")
 
+# 填写任务状态全集（白名单，防任意字符串落库）
+TASK_STATUSES = ("pending", "retrieving", "generating", "rendering", "done", "partial", "failed")
+# 填写任务状态机：只允许沿 pipeline 顺序推进或进入 failed；终态（done/partial/failed）无出边
+_TASK_TRANSITS = {
+    "pending": {"retrieving", "failed"},
+    "retrieving": {"generating", "failed"},
+    "generating": {"rendering", "failed"},
+    "rendering": {"done", "partial", "failed"},
+    "done": set(), "partial": set(), "failed": set(),
+}
+
 # object name 中用户文件名片段的最大长度（MinIO object 名总长上限远大于此，
 # 截断主要为防极端超长文件名 + 保留扩展名可读性）
 _FILENAME_MAX_LEN = 128
@@ -277,3 +288,52 @@ class TplTemplateVersionService(CommonService):
         ver.placeholders = placeholders  # ListField.db_value 在 save 时 json 序列化，直接赋 list 即可
         ver.save()
         return True, ver.to_dict()
+
+
+class TplFillTaskService(CommonService):
+    model = TplFillTask
+
+    @classmethod
+    def can_transit(cls, cur, nxt) -> bool:
+        """状态机白名单判定（纯函数，不触库）：nxt 必须是 cur 的合法后继。"""
+        return nxt in _TASK_TRANSITS.get(cur, set())
+
+    @classmethod
+    @DB.connection_context()
+    def get_owned(cls, task_id: str, tenant_id: str):
+        """取租户内填写任务，不存在/越权返回 None（id+tenant_id 双条件）。"""
+        return cls.model.select().where(
+            (cls.model.id == task_id) & (cls.model.tenant_id == tenant_id)).first()
+
+    @classmethod
+    @DB.connection_context()
+    def get_list_page(cls, tenant_id: str, status: str = "", page: int = 1, size: int = 20):
+        # 与 TplTemplateService.get_list_page 同款钳制：防负 OFFSET 500、防单次拉全表
+        page = max(1, int(page or 1))
+        size = min(max(1, int(size or 20)), 100)
+        q = cls.model.select().where(cls.model.tenant_id == tenant_id)
+        if status:
+            q = q.where(cls.model.status == status)
+        total = q.count()
+        rows = q.order_by(cls.model.create_time.desc()).paginate(page, size)
+        return [r.to_dict() for r in rows], total
+
+    @classmethod
+    @DB.connection_context()
+    def exists_for(cls, template_id: str) -> bool:
+        """该模板是否存在填写任务记录（limit(1) 存在性，删除守卫用）。"""
+        return cls.model.select().where(
+            cls.model.template_id == template_id).limit(1).exists()
+
+    @classmethod
+    @DB.connection_context()
+    def update_status(cls, task_id: str, cur: str, nxt: str, **extra) -> bool:
+        """乐观状态转移：can_transit 白名单前置 + where 带 status==cur（CAS 语义），
+        防两执行器并发接管或终态被覆盖；extra（error/values/evidence/result_file_id 等）
+        合入同一笔 update。转移被拒/行已被他人改走 → False，调用方必须放弃。"""
+        if not cls.can_transit(cur, nxt):
+            return False
+        fields = {"status": nxt}
+        fields.update(extra)
+        return cls.model.update(**fields).where(
+            cls.model.id == task_id, cls.model.status == cur).execute() > 0

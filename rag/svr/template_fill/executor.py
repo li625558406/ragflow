@@ -225,3 +225,167 @@ async def generate_values(tenant_id: str, placeholders: list[dict], chunks_by_ke
             else:
                 values[key] = val
     return values, missing
+
+
+# ---------- 编排层：待人工合成 + 任务 pipeline（状态机乐观转移） ----------
+
+_FILL_MODES = ("llm", "param", "manual")
+# 中间态集合：崩溃兜底只把这些强置 failed（终态不可被兜底覆盖）
+_TASK_MIDDLE_STATUSES = ("pending", "retrieving", "generating", "rendering")
+
+
+def _norm_fill_mode(it: dict) -> str:
+    """fill_mode 归一：缺省/白名单外脏值一律按 llm（对抗性输入不炸 pipeline）。"""
+    mode = it.get("fill_mode")
+    return mode if mode in _FILL_MODES else "llm"
+
+
+def build_values(placeholders: list[dict], generated: dict, missing: set) -> tuple[dict, dict, bool]:
+    """合成渲染产值三元组 (values, cell_status, is_partial)（纯函数）。
+
+    每槽优先级：manual（恒待人工）> generated 有值 > required+missing（待人工）
+    > 其余缺失落空串。is_partial=True 表示稿件含人工标记，任务终态落 partial 而非 done。
+    """
+    from rag.svr.template_fill.renderer import manual_mark
+    values: dict = {}
+    cell_status: dict = {}
+    is_partial = False
+    for it in placeholders:
+        key = it.get("key")
+        if not key:
+            continue
+        name = it.get("name") or key
+        mode = _norm_fill_mode(it)
+        if mode == "manual":
+            values[key] = manual_mark(name)
+            cell_status[key] = "manual"
+            is_partial = True
+        elif generated.get(key) not in (None, ""):
+            values[key] = generated[key]
+            cell_status[key] = "filled"
+        elif key in missing and it.get("required"):
+            values[key] = manual_mark(name)
+            cell_status[key] = "not_found"
+            is_partial = True
+        else:
+            values[key] = ""
+            cell_status[key] = "not_found"
+    return values, cell_status, is_partial
+
+
+def _render_result(task, ver, placeholders: list[dict], values: dict, tpl_file_type: str):
+    """渲染生成稿：读模板工作副本 → renderer 产值回填。返回 (blob, result_obj, err)，
+    err 非空表示不可恢复失败（blob/result_obj 为 None）。模板 file_type 由调用方
+    一次读出传入，本函数不做循环内 IO。"""
+    from rag.svr.template_fill import renderer
+    blob = settings.STORAGE_IMPL.get(task.template_id, ver.render_file_id)
+    if not blob:
+        return None, None, "模板工作副本缺失"
+    addr_by_key = None
+    if tpl_file_type == "xlsx":
+        addr_by_key = {it["key"]: it.get("addr") for it in placeholders if it.get("key")}
+    out = renderer.render(tpl_file_type, blob, values, addr_by_key)
+    result_obj = f"v{ver.version}_result_{task.id}.{tpl_file_type}"
+    return out, result_obj, ""
+
+
+async def _execute_task_async(task_id: str):
+    """pipeline 本体：每步经 update_status 乐观转移，转移失败即放弃
+    （说明有并发执行器接管或终态已变）。"""
+    from api.db.services import template_fill_service as tpl_svc
+    svc = tpl_svc.TplFillTaskService
+
+    # ① 接管任务：pending→retrieving（CAS 失败 = 已被接管/已终态，直接放弃）
+    if not svc.update_status(task_id, "pending", "retrieving"):
+        return
+    task = svc.get_or_none(id=task_id)
+    if task is None:
+        return
+    ver = tpl_svc.TplTemplateVersionService.latest(task.template_id)
+    if ver is None:
+        svc.update_status(task_id, "retrieving", "failed", error="模板版本不存在")
+        return
+    placeholders = ver.placeholders or []
+    kb_ids = task.kb_ids or []
+    params = task.params or {}
+
+    # ② 逐槽检索：单槽失败降级为空证据（字段走 missing/待人工），不中断整单
+    chunks_by_key: dict = {}
+    evidence: dict = {}
+    for it in placeholders:
+        key = it.get("key")
+        if not key:
+            continue
+        query = build_retrieval_query(it.get("retrieval_query") or it.get("name") or key, params)
+        chunks: list = []
+        if _norm_fill_mode(it) == "llm" and query:
+            try:
+                chunks = await retrieve_slot(task.tenant_id, kb_ids, query,
+                                             it.get("top_k") or TOP_K_DEFAULT)
+            except Exception as e:  # noqa: BLE001 — 各存储/检索实现异常类型不一，降级空证据
+                logger.warning("retrieve_slot failed, task=%s key=%s: %s", task_id, key, e)
+        chunks_by_key[key] = {"chunks": chunks, "query": query}
+        evidence[key] = {"query": query, "chunks": chunks}
+
+    # ③ LLM 批量产值（仅 llm 模式字段；整体失败 → 任务失败）
+    if not svc.update_status(task_id, "retrieving", "generating"):
+        return
+    llm_placeholders = [it for it in placeholders if _norm_fill_mode(it) == "llm"]
+    llm_chunks = {it["key"]: chunks_by_key.get(it["key"], {"chunks": [], "query": ""})
+                  for it in llm_placeholders}
+    try:
+        generated, missing = await generate_values(task.tenant_id, llm_placeholders, llm_chunks, params)
+    except Exception as e:
+        logger.exception("generate_values failed, task=%s", task_id)
+        svc.update_status(task_id, "generating", "failed", error=f"LLM 生成失败: {e}")
+        return
+
+    # ④ param 模式直取任务参数（不经 LLM，同样过约束兜底），命中则覆盖/摘出 missing
+    for it in placeholders:
+        if _norm_fill_mode(it) != "param":
+            continue
+        key = it["key"]
+        v = _apply_constraints((params or {}).get(key), it.get("constraints") or {})
+        if v is not None:
+            generated[key] = v
+            missing.discard(key)
+
+    values, cell_status, is_partial = build_values(placeholders, generated, missing)
+
+    # ⑤ 渲染 + 落稿（storage put 失败会 raise，与渲染异常同路兜底）
+    if not svc.update_status(task_id, "generating", "rendering"):
+        return
+    tpl = tpl_svc.TplTemplateService.get_or_none(id=task.template_id)
+    tpl_file_type = (tpl.file_type if tpl and tpl.file_type else "docx")
+    try:
+        render_blob, result_obj, err = _render_result(task, ver, placeholders, values, tpl_file_type)
+        if err:
+            svc.update_status(task_id, "rendering", "failed", error=err)
+            return
+        tpl_svc._storage_put(task.template_id, result_obj, render_blob)
+    except Exception as e:
+        logger.exception("render/store failed, task=%s", task_id)
+        svc.update_status(task_id, "rendering", "failed", error=f"渲染落稿失败: {e}")
+        return
+
+    # ⑥ 终态：稿件含人工标记 → partial，否则 done
+    svc.update_status(task_id, "rendering", "partial" if is_partial else "done",
+                      values={"cells": cell_status, "render": values},
+                      evidence=evidence, result_file_id=result_obj)
+
+
+def execute_task(task_id: str):
+    """线程入口（同步包装 asyncio.run）。最外层兜底：pipeline 崩溃时把仍处中间态
+    的行强置 failed（终态不动），防任务永久卡在 retrieving/generating/rendering；
+    兜底自身失败只记日志不外抛。"""
+    try:
+        _run_async(_execute_task_async(task_id))
+    except Exception:
+        logger.exception("fill task crashed, task_id=%s", task_id)
+        try:
+            from api.db.db_models import TplFillTask
+            TplFillTask.update(status="failed", error="引擎内部异常").where(
+                TplFillTask.id == task_id,
+                TplFillTask.status.in_(_TASK_MIDDLE_STATUSES)).execute()
+        except Exception:
+            logger.exception("fill task force-fail failed, task_id=%s", task_id)
