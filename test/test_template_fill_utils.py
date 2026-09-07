@@ -451,6 +451,19 @@ def test_validate_placeholders_rejects_oversize_key():
     assert not ok and "key" in err
 
 
+def test_validate_placeholders_anchor_length_boundary():
+    """对抗：anchor 长度约束在 validate 与 parse（MAX_ANCHOR_LEN=500）对齐——
+    恰好 500 通过（含 membership 校验需真实落在候选文本内），501 拒绝且报错可读。"""
+    from rag.svr.template_fill.detector import MAX_ANCHOR_LEN, validate_placeholders
+    anchor_500 = "长" * MAX_ANCHOR_LEN
+    cands = [{"index": 0, "addr": "para:0", "text": "前缀" + anchor_500}]
+    base = {"key": "k", "name": "n", "addr": "para:0", "fill_mode": "llm"}
+    ok, err = validate_placeholders([{**base, "anchor": anchor_500}], cands)
+    assert ok and err == ""
+    ok, err = validate_placeholders([{**base, "anchor": "长" * (MAX_ANCHOR_LEN + 1)}], cands)
+    assert not ok and "anchor" in err and str(MAX_ANCHOR_LEN) in err
+
+
 def test_validate_placeholders_non_dict_item_no_crash():
     """对抗：items 元素非 dict（字符串/None）不抛异常，返回校验失败。"""
     from rag.svr.template_fill.detector import validate_placeholders

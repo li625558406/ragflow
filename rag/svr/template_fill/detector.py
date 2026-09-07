@@ -85,6 +85,10 @@ def validate_placeholders(items: list, candidates: list) -> tuple:
         if not str(it.get("name") or "").strip():
             return False, f"{key} 缺少中文名称"
         addr, anchor = it.get("addr"), str(it.get("anchor") or "")
+        # anchor 长度上限与 parse_detection_response（MAX_ANCHOR_LEN）对齐：parse 拦不住的
+        # 场景（前端手改提交/旧数据回放）在此兜底
+        if len(anchor) > MAX_ANCHOR_LEN:
+            return False, f"{key} 的 anchor 超过{MAX_ANCHOR_LEN}字符"
         cand = cand_map.get(addr)
         if cand is None:
             return False, f"{key} 的定位 {addr!r} 不存在"
