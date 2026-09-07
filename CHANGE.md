@@ -1,5 +1,15 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-07 模板填写 P2+P3 实施完成（执行引擎 + 任务闭环 + C端对话工具，未部署）
+
+**主题**：模板填写系统 P2+P3 全量落地（feat/unified-crawler-framework 分支，23 commits）：① 依赖修正（docxtpl 主依赖 + openpyxl 升主依赖）；② P1 遗留债 4 项全部消化（published 保存填写点自动升 v2、模板状态机白名单、prompt 注入面清洗、模板删除端点含事务+行锁防 TOCTOU）；③ 执行引擎 `rag/svr/template_fill/executor.py`——检索层（逐槽 KB 检索 + 租户/Embedding 一致性校验 + 部分命中拒用）、生成层（LLM 批量产 JSON ≤10 字段/批、prompt 全注入面清洗截断、_apply_constraints 兜底、JSON 解析两级 fallback）、编排层（`build_values` 待人工合成 + `execute_task` 六步 CAS 状态机 pipeline：pending→retrieving→generating→rendering→done/partial/failed，按 task.template_version_id 钉住版本）；④ 渲染层 renderer.py（docxtpl Word 模板渲染 + openpyxl Excel 坐标直写，manual/not_found 落【待人工】标记）；⑤ 填写任务 REST 6 端点（发起[后台 daemon 线程+防重入+spawn 自愈]/列表/详情/重试/下载/测试填写 test-fill 试跑直返不落任务）；⑥ B端前端：任务列表页（状态筛选+3s 函数式轮询+下载/重试）、任务详情抽屉（逐格值+单元格状态+检索证据溯源）、发起填写对话框（KB 多选+params 键值对）、测试填写对话框；⑦ C端 agent 画布 FillTemplate 工具（list_templates/fill/status 三 action，fill 同步轮询 50s，自动发现注册验证通过）。
+
+**测试**：后端 4 套件 152 单测全过（含对抗用例：CAS 竞态/越权 KB/脏 placeholder/batch_size=0/LLM 坏输出/线程启动失败自愈），ruff 0 违规；前端 tsc 本功能 0 error。全流程子代理驱动开发：每任务实现→规格审查→质量审查→修复循环，关键修复含：版本钉住防升版静默换版、兜底 update 泄漏连接池、分批 step/slice 不一致、_extract_json 静默吞批、total_datasets 契约对齐。
+
+**遗留（登记为后续任务）**：① 每租户运行中任务数无上限（可刷 create 耗 LLM 额度）；② 进程崩溃后中间态任务无 sweeper 回收（永久卡 running）；③ create-task-dialog 与 test-fill-dialog KB 选择约 150 行重复；④ 试跑同步等待大模板可能超 nginx proxy_read_timeout 60s；⑤ B端 agent 编辑器组件面板未登记 FillTemplate 节点（需前端 Operator enum + form-config 登记，或通过导入 DSL JSON 挂载）。
+
+**待办（部署时）**：容器 `pip install "docxtpl>=0.16.5,<0.21.0" "openpyxl>=3.1.5,<4.0.0"`；后端成套 SCP（template_fill_service.py / template_api.py / executor.py / renderer.py / agent/tools/template_fill.py）+ 容器重启 + 冒烟 import；前端 build 部署；用户在 C端 agent 画布挂 FillTemplate 节点（DSL 存 DB，代码无法代劳）。P4 flow 模板填写节点未做。
+
 ## 2026-09-07 范本库改名 + 旧版 .doc 支持 + 上传控件样式优化（未部署）
 
 **主题**：模板填写 P1 三项增量：① 「模板库」UI 文案统一改为「范本库」（navbar `zh.ts:templateFill` key + 列表页标题，不碰 en.ts）；② 上传支持旧版 .doc——后端 LibreOffice（`soffice --headless`，独立 UserInstallation profile 防并发锁，timeout 60s）转成 .docx 后以 docx 形态进入全链路（candidates/替换/预览/下载），转换失败中文兜底提示，转换产物复查 20MB 上限；③ 上传向导 Step1 文件选择控件重构——隐藏 input + 虚线拖拽风格选择区（图标+主辅文案），已选态展示文件名/大小/重新选择/清除按钮。
