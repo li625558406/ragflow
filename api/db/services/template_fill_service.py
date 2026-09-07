@@ -117,6 +117,44 @@ class TplTemplateService(CommonService):
         return cls.model.update(latest_version=version).where(
             cls.model.id == template_id).execute() > 0
 
+    @classmethod
+    @DB.connection_context()
+    def has_tasks(cls, template_id: str) -> bool:
+        """该模板是否存在填写任务记录（有任务即拒删：历史任务下载依赖其 bucket 对象）。"""
+        from api.db.db_models import TplFillTask
+        return bool(TplFillTask.select().where(
+            TplFillTask.template_id == template_id).limit(1))
+
+    @classmethod
+    @DB.connection_context()
+    def delete_template(cls, template_id: str, tenant_id: str) -> tuple:
+        """删除模板（仅 draft/disabled 且无填写任务记录）。
+
+        清理顺序：逐版本删 MinIO 对象（bucket=template_id）→ 删版本行 → 删主表行。
+        对象删除失败仅告警不阻塞（DB 行残留引用比对象残留危害小，且站点存储故障
+        不应永久卡死模板删除）；返回 (ok, msg)。
+        """
+        tpl = cls.get_owned(template_id, tenant_id)
+        if not tpl:
+            return False, "模板不存在"
+        if tpl.status == "published":
+            return False, "已发布模板不可删除，请先停用"
+        if cls.has_tasks(template_id):
+            return False, "该模板已有填写任务记录，不可删除（历史任务需保留可下载）"
+        for ver in TplTemplateVersion.select().where(TplTemplateVersion.template_id == template_id):
+            for obj in (ver.original_file_id, ver.render_file_id):
+                if obj:
+                    try:
+                        settings.STORAGE_IMPL.rm(template_id, obj)
+                    except Exception:  # noqa: BLE001 — 各存储实现异常类型不一，删除失败只告警不阻塞
+                        logger.warning("template fill: delete storage obj failed: %s/%s",
+                                       template_id, obj)
+        TplTemplateVersion.delete().where(
+            TplTemplateVersion.template_id == template_id).execute()
+        cls.model.delete().where(cls.model.id == template_id,
+                                 cls.model.tenant_id == tenant_id).execute()
+        return True, ""
+
 
 class TplTemplateVersionService(CommonService):
     model = TplTemplateVersion

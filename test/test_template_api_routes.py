@@ -61,6 +61,7 @@ EXPECTED_ENDPOINTS = (
     "publish_template",
     "disable_template",
     "get_template",
+    "delete_template_endpoint",
     "preview_template",
     "download_template",
 )
@@ -75,7 +76,7 @@ def test_template_api_module_loads_and_registers_routes():
 
 
 def test_all_routes_registered_on_blueprint():
-    """9 个端点必须全部挂到 blueprint 上，且 methods 正确（防止漏装饰器/漏路径）。"""
+    """10 个端点必须全部挂到 blueprint 上，且 methods 正确（防止漏装饰器/漏路径）。"""
     from quart import Quart
 
     app = Quart(__name__)
@@ -84,7 +85,8 @@ def test_all_routes_registered_on_blueprint():
     for r in app.url_map.iter_rules():
         if r.rule == "/static/<path:filename>":
             continue
-        rules[r.rule] = r.methods
+        # 同一路径可挂多条 Rule（如 GET+DELETE 分两个端点函数），必须并集合并而非覆盖
+        rules.setdefault(r.rule, set()).update(r.methods)
     expected = {
         "/template/fill/upload": {"POST"},
         "/template/fill/list": {"GET"},
@@ -92,7 +94,7 @@ def test_all_routes_registered_on_blueprint():
         "/template/fill/<template_id>/save-placeholders": {"POST"},
         "/template/fill/<template_id>/publish": {"POST"},
         "/template/fill/<template_id>/disable": {"POST"},
-        "/template/fill/<template_id>": {"GET"},
+        "/template/fill/<template_id>": {"GET", "DELETE"},
         "/template/fill/<template_id>/preview": {"GET"},
         "/template/fill/<template_id>/file": {"GET"},
     }
@@ -449,3 +451,122 @@ def test_save_placeholders_published_upgrades_version(monkeypatch):
         [{"key": "a", "addr": "x", "anchor": "a"}])
     assert ok, msg
     assert calls["version"] == 4 and calls["bumped"], "published 必须升版而非改写 v3"
+
+
+# ---------- P2 遗留债④：模板删除 ----------
+
+def test_delete_template_refuses_when_tasks_exist(monkeypatch):
+    """有填写任务记录的模板拒删（历史任务下载依赖其 bucket=template_id 的对象）。"""
+    from api.db.services.template_fill_service import TplTemplateService
+    monkeypatch.setattr(TplTemplateService, "get_owned", classmethod(
+        lambda cls, tid, uid: types.SimpleNamespace(id="tpl_x", status="disabled")))
+    monkeypatch.setattr(TplTemplateService, "has_tasks", classmethod(lambda cls, tid: True))
+    ok, msg = TplTemplateService.delete_template("tpl_x", "tenant_x")
+    assert not ok and "填写任务" in msg
+
+
+def test_delete_template_refuses_published(monkeypatch):
+    """published 必须先停用才能删（防误删线上可用模板）。"""
+    from api.db.services.template_fill_service import TplTemplateService
+    monkeypatch.setattr(TplTemplateService, "get_owned", classmethod(
+        lambda cls, tid, uid: types.SimpleNamespace(id="tpl_x", status="published")))
+    ok, msg = TplTemplateService.delete_template("tpl_x", "tenant_x")
+    assert not ok and "停用" in msg
+
+
+class _FakeDeleteQuery:
+    """peewee delete().where().execute() 桩，记录 where 条件。"""
+
+    def __init__(self, recorder, tag):
+        self._recorder = recorder
+        self._tag = tag
+
+    def where(self, *exprs):
+        self._recorder[self._tag] = list(exprs)
+        return self
+
+    def execute(self):
+        self._recorder[self._tag + "_executed"] = True
+        return 1
+
+
+class _FakeVersionModel:
+    """TplTemplateVersion 桩：select().where() 可迭代出给定版本行，delete() 可记录。"""
+
+    # service 里 where(TplTemplateVersion.template_id == ...) 的哨兵表达式对象
+    template_id = object()
+
+    def __init__(self, rows):
+        self._rows = rows
+        self.recorder = {}
+
+    def select(self):
+        return self
+
+    def where(self, *exprs):
+        self.recorder["select_where"] = list(exprs)
+        return self
+
+    def __iter__(self):
+        return iter(self._rows)
+
+    def delete(self):
+        return _FakeDeleteQuery(self.recorder, "version_delete")
+
+
+class _FakeMainModel:
+    # service 里 where(cls.model.id == ..., cls.model.tenant_id == ...) 的哨兵表达式对象
+    id = object()
+    tenant_id = object()
+
+    def __init__(self):
+        self.recorder = {}
+
+    def delete(self):
+        return _FakeDeleteQuery(self.recorder, "main_delete")
+
+
+def test_delete_template_success_cleans_versions_and_storage(monkeypatch):
+    """happy path：逐版本删 MinIO 对象（rm）→ 删版本行 → 删主表行。"""
+    from api.db.services import template_fill_service as svc
+    monkeypatch.setattr(svc.TplTemplateService, "get_owned", classmethod(
+        lambda cls, tid, uid: types.SimpleNamespace(id="tpl_x", status="draft")))
+    monkeypatch.setattr(svc.TplTemplateService, "has_tasks", classmethod(lambda cls, tid: False))
+    vers = _FakeVersionModel([
+        types.SimpleNamespace(original_file_id="v1_original_a.docx", render_file_id="v1_render.docx"),
+        types.SimpleNamespace(original_file_id="v2_original.docx", render_file_id=None),
+    ])
+    monkeypatch.setattr(svc, "TplTemplateVersion", vers)
+    main = _FakeMainModel()
+    monkeypatch.setattr(svc.TplTemplateService, "model", main)
+    removed = []
+    monkeypatch.setattr(svc.settings, "STORAGE_IMPL", types.SimpleNamespace(
+        rm=lambda bucket, fnm: removed.append((bucket, fnm))))
+    ok, msg = svc.TplTemplateService.delete_template("tpl_x", "tenant_x")
+    assert ok, msg
+    assert sorted(removed) == [("tpl_x", "v1_original_a.docx"), ("tpl_x", "v1_render.docx"),
+                               ("tpl_x", "v2_original.docx")], "render_file_id 为空的版本不得传空对象名"
+    assert vers.recorder.get("version_delete_executed"), "版本行必须删除"
+    assert main.recorder.get("main_delete_executed"), "主表行必须删除"
+
+
+def test_delete_template_storage_rm_failure_does_not_block(monkeypatch):
+    """对抗性：MinIO rm 抛异常只告警，版本行/主表行仍删除（DB 行清理不被存储故障卡死）。"""
+    from api.db.services import template_fill_service as svc
+    monkeypatch.setattr(svc.TplTemplateService, "get_owned", classmethod(
+        lambda cls, tid, uid: types.SimpleNamespace(id="tpl_x", status="disabled")))
+    monkeypatch.setattr(svc.TplTemplateService, "has_tasks", classmethod(lambda cls, tid: False))
+    vers = _FakeVersionModel([
+        types.SimpleNamespace(original_file_id="v1_original_a.docx", render_file_id=None),
+    ])
+    monkeypatch.setattr(svc, "TplTemplateVersion", vers)
+    main = _FakeMainModel()
+    monkeypatch.setattr(svc.TplTemplateService, "model", main)
+
+    def boom(bucket, fnm):
+        raise RuntimeError("minio down")
+
+    monkeypatch.setattr(svc.settings, "STORAGE_IMPL", types.SimpleNamespace(rm=boom))
+    ok, msg = svc.TplTemplateService.delete_template("tpl_x", "tenant_x")
+    assert ok, msg
+    assert vers.recorder.get("version_delete_executed") and main.recorder.get("main_delete_executed")

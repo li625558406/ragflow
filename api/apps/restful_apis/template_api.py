@@ -266,6 +266,16 @@ async def get_template(template_id: str):
     return get_result(data=data)
 
 
+@manager.route("/template/fill/<template_id>", methods=["DELETE"])
+@login_required
+async def delete_template_endpoint(template_id: str):
+    """删除模板：仅 draft/disabled 且无填写任务记录可删（守卫在 service 层）。"""
+    ok, msg = TplTemplateService.delete_template(template_id, current_user.id)
+    if not ok:
+        return get_error_data_result(msg)
+    return get_result()
+
+
 @manager.route("/template/fill/<template_id>/preview", methods=["GET"])
 @login_required
 async def preview_template(template_id: str):
