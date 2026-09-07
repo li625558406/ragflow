@@ -1,5 +1,6 @@
 """executor 单测：外部依赖（retriever/LLMBundle/STORAGE_IMPL）全部 monkeypatch，不真调 KB/LLM。"""
 import json
+import logging
 import types
 
 import pytest
@@ -305,3 +306,116 @@ def test_execute_task_missing_task_smoke(monkeypatch):
     monkeypatch.setattr(tpl_svc.TplFillTaskService, "get_or_none",
                         lambda **kw: None)
     executor.execute_task("no-such-task")  # 不抛异常即通过
+
+
+# ---------- pipeline 编排回归：版本钉住 + kb 空短路 + 终态 CAS（审查修复） ----------
+
+def _make_task(**over):
+    base = {"id": "task1", "template_id": "tpl1", "template_version_id": "ver1",
+            "kb_ids": ["kb1"], "params": {}, "status": "pending", "tenant_id": "t",
+            "source": "web", "flow_instance_id": "", "created_by": ""}
+    base.update(over)
+    return types.SimpleNamespace(**base)
+
+
+def _make_ver(placeholders=None):
+    return types.SimpleNamespace(
+        id="ver1", template_id="tpl1", version=2, render_file_id="v2_render.docx",
+        placeholders=placeholders if placeholders is not None else [
+            {"key": "k1", "name": "字段一", "fill_mode": "llm", "retrieval_query": "查询词"}])
+
+
+def _broken_latest(template_id):
+    raise AssertionError("latest() must not be called")
+
+
+_MISSING = object()  # checked_ver 哨兵：区分「未传」与「显式传 None（版本行解析不到）」
+
+
+def _run_pipeline(monkeypatch, task, *, checked_ver=_MISSING, latest_ver=_broken_latest,
+                  final_ok=True):
+    if checked_ver is _MISSING:
+        checked_ver = _make_ver()
+    """公共编排 mock：service/存储/检索/LLM 全部替身，返回调用记录 dict。"""
+    from api.db.services import template_fill_service as tpl_svc
+    from rag.svr.template_fill import executor
+
+    calls = {"retrieve": [], "transits": [], "puts": [], "checked": [], "latest": 0}
+
+    async def fake_retrieve(tenant_id, kb_ids, query, top_k=6):
+        calls["retrieve"].append((kb_ids, query))
+        return [{"content": "证据", "doc_id": "d", "doc_name": "n", "similarity": 0.9}]
+
+    async def fake_generate(tenant_id, placeholders, chunks_by_key, params=None, batch_size=10):
+        calls["generate"] = [it.get("key") for it in placeholders]
+        return {"k1": "产值"}, set()
+
+    def fake_update_status(task_id, cur, nxt, **extra):
+        calls["transits"].append((cur, nxt))
+        return not (nxt in ("done", "partial") and not final_ok)
+
+    def fake_latest(template_id):
+        calls["latest"] += 1
+        return latest_ver
+
+    def fake_checked(template_id, version_id):
+        calls["checked"].append((template_id, version_id))
+        return checked_ver
+
+    monkeypatch.setattr(executor, "retrieve_slot", fake_retrieve)
+    monkeypatch.setattr(executor, "generate_values", fake_generate)
+    monkeypatch.setattr(tpl_svc.TplFillTaskService, "update_status", fake_update_status)
+    monkeypatch.setattr(tpl_svc.TplFillTaskService, "get_or_none", lambda **kw: task)
+    monkeypatch.setattr(tpl_svc.TplTemplateVersionService, "latest", fake_latest)
+    monkeypatch.setattr(tpl_svc.TplTemplateVersionService, "get_by_id_checked", fake_checked)
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_or_none",
+                        lambda **kw: types.SimpleNamespace(file_type="docx"))
+    monkeypatch.setattr(executor, "_render_result",
+                        lambda task, ver, placeholders, values, ftype: (b"blob", "v2_result_task1.docx", ""))
+    monkeypatch.setattr(tpl_svc, "_storage_put", lambda bucket, obj, blob: calls["puts"].append(obj))
+    executor.execute_task(task.id)
+    return calls
+
+
+def test_pipeline_uses_pinned_version_row(monkeypatch):
+    """task.template_version_id 指向版本行：用该行渲染，latest() 一次都不调。"""
+    calls = _run_pipeline(monkeypatch, _make_task())
+    assert calls["checked"] == [("tpl1", "ver1")]
+    assert calls["latest"] == 0
+    assert calls["transits"][-1] == ("rendering", "done")
+    assert calls["puts"] == ["v2_result_task1.docx"]
+
+
+def test_pipeline_empty_version_id_falls_back_to_latest(monkeypatch):
+    """template_version_id 为空（防御旧数据）→ fallback latest()，不查钉住行。"""
+    calls = _run_pipeline(monkeypatch, _make_task(template_version_id=""),
+                          latest_ver=_make_ver())
+    assert calls["checked"] == []
+    assert calls["latest"] == 1
+    assert calls["transits"][-1] == ("rendering", "done")
+
+
+def test_pipeline_unresolvable_version_fails(monkeypatch):
+    """钉住版本行解析不到 → 任务落 failed，不静默换 latest()，不进后续步骤。"""
+    calls = _run_pipeline(monkeypatch, _make_task(template_version_id="ver-gone"),
+                          checked_ver=None)
+    assert calls["latest"] == 0
+    assert calls["transits"][-1] == ("retrieving", "failed")
+    assert "generate" not in calls and calls["puts"] == []
+
+
+def test_pipeline_empty_kb_ids_skips_retrieval(monkeypatch):
+    """kb_ids=[] → 不调 retrieve_slot（全槽空证据），任务正常走完落终态。"""
+    calls = _run_pipeline(monkeypatch, _make_task(kb_ids=[]))
+    assert calls["retrieve"] == []
+    assert calls["generate"] == ["k1"]
+    assert calls["transits"][-1] == ("rendering", "done")
+
+
+def test_pipeline_final_cas_failure_warns_no_raise(monkeypatch, caplog):
+    """终态 CAS 失败（update_status 返回 False）→ 不抛异常，且有孤儿对象告警。"""
+    with caplog.at_level(logging.WARNING, logger="rag.svr.template_fill.executor"):
+        calls = _run_pipeline(monkeypatch, _make_task(), final_ok=False)
+    assert calls["transits"][-1] == ("rendering", "done")  # 尝试过终态转移
+    assert any("final status CAS failed" in r.message and "task1" in r.message
+               for r in caplog.records)

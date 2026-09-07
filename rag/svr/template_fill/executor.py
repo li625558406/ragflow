@@ -301,7 +301,16 @@ async def _execute_task_async(task_id: str):
     task = svc.get_or_none(id=task_id)
     if task is None:
         return
-    ver = tpl_svc.TplTemplateVersionService.latest(task.template_id)
+    # 版本钉住：优先按任务创建时锁定的版本行 id（TplFillTask.template_version_id =
+    # 版本行主键，见创建任务写入 ver.id）解析——历史任务必须按当时版本复现，
+    # 防 pending 期间模板 published 升版后静默改用新版渲染；列为空（防御旧数据）
+    # 才退 latest()，列非空但版本行解析不到 → failed，不做静默换版。
+    if task.template_version_id:
+        ver = tpl_svc.TplTemplateVersionService.get_by_id_checked(
+            task.template_id, task.template_version_id)
+    else:
+        logger.warning("fill task has no pinned template_version_id, fallback to latest, task=%s", task_id)
+        ver = tpl_svc.TplTemplateVersionService.latest(task.template_id)
     if ver is None:
         svc.update_status(task_id, "retrieving", "failed", error="模板版本不存在")
         return
@@ -309,16 +318,18 @@ async def _execute_task_async(task_id: str):
     kb_ids = task.kb_ids or []
     params = task.params or {}
 
-    # ② 逐槽检索：单槽失败降级为空证据（字段走 missing/待人工），不中断整单
+    # ② 逐槽检索：单槽失败降级为空证据（字段走 missing/待人工），不中断整单；
+    # kb_ids 为空时全槽直接空证据（不进 retrieve_slot，省 N 次无意义异常+warning）
     chunks_by_key: dict = {}
     evidence: dict = {}
     for it in placeholders:
         key = it.get("key")
         if not key:
+            logger.warning("placeholder missing key, skipped, task=%s name=%r", task_id, it.get("name"))
             continue
         query = build_retrieval_query(it.get("retrieval_query") or it.get("name") or key, params)
         chunks: list = []
-        if _norm_fill_mode(it) == "llm" and query:
+        if _norm_fill_mode(it) == "llm" and query and kb_ids:
             try:
                 chunks = await retrieve_slot(task.tenant_id, kb_ids, query,
                                              it.get("top_k") or TOP_K_DEFAULT)
@@ -330,7 +341,8 @@ async def _execute_task_async(task_id: str):
     # ③ LLM 批量产值（仅 llm 模式字段；整体失败 → 任务失败）
     if not svc.update_status(task_id, "retrieving", "generating"):
         return
-    llm_placeholders = [it for it in placeholders if _norm_fill_mode(it) == "llm"]
+    llm_placeholders = [it for it in placeholders
+                        if _norm_fill_mode(it) == "llm" and it.get("key")]
     llm_chunks = {it["key"]: chunks_by_key.get(it["key"], {"chunks": [], "query": ""})
                   for it in llm_placeholders}
     try:
@@ -344,7 +356,9 @@ async def _execute_task_async(task_id: str):
     for it in placeholders:
         if _norm_fill_mode(it) != "param":
             continue
-        key = it["key"]
+        key = it.get("key")
+        if not key:
+            continue
         v = _apply_constraints((params or {}).get(key), it.get("constraints") or {})
         if v is not None:
             generated[key] = v
@@ -368,10 +382,14 @@ async def _execute_task_async(task_id: str):
         svc.update_status(task_id, "rendering", "failed", error=f"渲染落稿失败: {e}")
         return
 
-    # ⑥ 终态：稿件含人工标记 → partial，否则 done
-    svc.update_status(task_id, "rendering", "partial" if is_partial else "done",
-                      values={"cells": cell_status, "render": values},
-                      evidence=evidence, result_file_id=result_obj)
+    # ⑥ 终态：稿件含人工标记 → partial，否则 done。CAS 失败（返回 False）说明
+    # 并发执行器接管或终态已变：稿件对象已入 MinIO 但 DB 未落终态（孤儿对象），
+    # 此处只告警不重试，交人工核对。
+    if not svc.update_status(task_id, "rendering", "partial" if is_partial else "done",
+                             values={"cells": cell_status, "render": values},
+                             evidence=evidence, result_file_id=result_obj):
+        logger.warning("fill task final status CAS failed, task=%s result_obj=%s "
+                       "(result object in storage without terminal status)", task_id, result_obj)
 
 
 def execute_task(task_id: str):
@@ -380,12 +398,15 @@ def execute_task(task_id: str):
     兜底自身失败只记日志不外抛。"""
     try:
         _run_async(_execute_task_async(task_id))
-    except Exception:
+    except Exception as e:
         logger.exception("fill task crashed, task_id=%s", task_id)
         try:
-            from api.db.db_models import TplFillTask
-            TplFillTask.update(status="failed", error="引擎内部异常").where(
-                TplFillTask.id == task_id,
-                TplFillTask.status.in_(_TASK_MIDDLE_STATUSES)).execute()
+            from api.db.db_models import DB, TplFillTask
+            # 兜底写入是 daemon 线程内的一次性 update，必须自备连接上下文，
+            # 否则裸取的池连接随线程结束永久占用不归还。
+            with DB.connection_context():
+                TplFillTask.update(status="failed", error=f"引擎内部异常: {str(e)[:200]}").where(
+                    TplFillTask.id == task_id,
+                    TplFillTask.status.in_(_TASK_MIDDLE_STATUSES)).execute()
         except Exception:
             logger.exception("fill task force-fail failed, task_id=%s", task_id)

@@ -195,6 +195,16 @@ class TplTemplateVersionService(CommonService):
                 .first())
 
     @classmethod
+    @DB.connection_context()
+    def get_by_id_checked(cls, template_id: str, version_id: str):
+        """按版本行主键取版本：template_id + id 双条件（防跨模板引用脏数据），
+        不存在/入参为空返回 None。填写任务钉版本用（历史任务按当时版本复现）。"""
+        if not version_id:
+            return None
+        return cls.model.select().where(
+            (cls.model.id == version_id) & (cls.model.template_id == template_id)).first()
+
+    @classmethod
     def create_initial_version(cls, template_id: str, filename: str, blob: bytes):
         """上传后建 v1，原件入 MinIO。
 
