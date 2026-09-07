@@ -1,5 +1,15 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-07 范本库改名 + 旧版 .doc 支持 + 上传控件样式优化（未部署）
+
+**主题**：模板填写 P1 三项增量：① 「模板库」UI 文案统一改为「范本库」（navbar `zh.ts:templateFill` key + 列表页标题，不碰 en.ts）；② 上传支持旧版 .doc——后端 LibreOffice（`soffice --headless`，独立 UserInstallation profile 防并发锁，timeout 60s）转成 .docx 后以 docx 形态进入全链路（candidates/替换/预览/下载），转换失败中文兜底提示，转换产物复查 20MB 上限；③ 上传向导 Step1 文件选择控件重构——隐藏 input + 虚线拖拽风格选择区（图标+主辅文案），已选态展示文件名/大小/重新选择/清除按钮。
+
+**核心变更**：`web/src/locales/zh.ts`（templateFill='范本库'）、`web/src/pages/template-fill/index.tsx`（CardTitle）、`web/src/pages/template-fill/upload-wizard.tsx`（控件重构 + TEMPLATE_FILE_RE 放行 .doc + 外层 onKeyDown 加 `e.target !== e.currentTarget` 卫语句修复 X 清除按钮被键盘劫持）、`api/apps/restful_apis/template_api.py`（_is_legacy_doc/_convert_doc_to_docx + upload 端点接入转换分支 + 转换后 20MB 复查）。
+
+**测试**：后端 65 单测全过（新增 .doc 后缀判定/转换失败/超限用例，容器无 soffice 场景 monkeypatch subprocess）、ruff 0 违规；tsc 本功能文件 0 error。经合并审查（needs-fixes → 修复 → 复核 APPROVED）。
+
+**遗留**：**本条三项改动 + 后端 .doc 支持均未部署服务器**（后端 template_api.py 需 SCP + 容器重启；前端需重新 build）；上传 .doc 依赖容器内 LibreOffice（soffice 已确认存在）。
+
 ## 2026-09-07 模板填写系统 P1 实施完成（表 + API + B端模板库页面）
 
 > **2026-09-07 已部署至服务器**（前后端成套 SCP + 前端 build + 容器重启，三张 tpl_ 表已建，`/api/v1/template/fill/list` 401 鉴权正常、页面 200）。待浏览器端功能联调。
