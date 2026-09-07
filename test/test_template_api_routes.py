@@ -9,9 +9,11 @@ test_flow_doc_table_edit.py 的模式：从源文件加载模块并注入最小�
 """
 
 import inspect
+import io
 import os
 import sys
 import types
+import zipfile
 from importlib.util import module_from_spec, spec_from_file_location
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -112,6 +114,18 @@ def test_file_type_of_boundaries():
     assert f("evil.docx.exe") is None  # 伪扩展名
     assert f("template.docxx") is None  # endswith 前缀误伤
     assert f("template.doc") is None  # 旧版 doc 不支持
+
+
+def test_is_legacy_doc_boundaries():
+    """_is_legacy_doc 纯函数边界：大小写/.docx 不误伤/无扩展名/伪扩展名/None 安全。"""
+    f = _template_api._is_legacy_doc
+    assert f("a.doc") is True
+    assert f("a.DOC") is True  # 大写扩展名按 lower 归一
+    assert f("a.docx") is False  # endswith(".doc") 不误伤 .docx
+    assert f("noext") is False
+    assert f(".doc.exe") is False  # 伪扩展名
+    assert f("") is False
+    assert f(None) is False  # None 安全（or 空串兜底）
 
 
 def test_extract_candidates_dispatches_by_file_type():
@@ -238,3 +252,163 @@ def test_corrupt_template_returns_error_not_500(monkeypatch):
     up_src = _inspect2.getsource(mod.upload_template)
     assert "is_zipfile" in up_src and "seek(0, 2)" in up_src
     assert "文件已损坏或不是有效的 docx/xlsx 文件" in up_src
+
+
+# ---------- 需求①：旧版 .doc 上传转 docx ----------
+
+def test_convert_doc_to_docx_success(monkeypatch):
+    """monkeypatch subprocess.run 伪造 LibreOffice 转换成功产物（不真跑 soffice）。"""
+    mod = _template_api
+    calls = {}
+
+    def fake_run(cmd, capture_output, timeout, check=True):
+        calls["cmd"] = list(cmd)
+        calls["timeout"] = timeout
+        # soffice 语义：--outdir <dir> 后跟源文件路径，产物为 <dir>/input.docx
+        outdir = cmd[cmd.index("--outdir") + 1]
+        with open(os.path.join(outdir, "input.docx"), "wb") as f:
+            f.write(b"converted-docx-bytes")
+        return types.SimpleNamespace(returncode=0, stderr=b"")
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    out = mod._convert_doc_to_docx(b"legacy-doc-bytes")
+    assert out == b"converted-docx-bytes"
+    assert calls["timeout"] == 60
+    assert "--convert-to" in calls["cmd"] and "docx" in calls["cmd"]
+    assert "--headless" in calls["cmd"] and "--norestore" in calls["cmd"]
+    # 独立 UserInstallation profile 必须携带，防并发/首启锁冲突
+    assert any(str(a).startswith("-env:UserInstallation=") for a in calls["cmd"])
+
+
+def test_convert_doc_to_docx_missing_output_raises(monkeypatch):
+    """soffice 返回 0 但产物缺失（转换实际失败）→ RuntimeError，由端点兜底。"""
+    mod = _template_api
+    monkeypatch.setattr(mod.subprocess, "run",
+                        lambda *a, **kw: types.SimpleNamespace(returncode=0, stderr=b""))
+    raised = False
+    try:
+        mod._convert_doc_to_docx(b"legacy-doc-bytes")
+    except RuntimeError:
+        raised = True
+    assert raised, "转换产物缺失必须抛 RuntimeError"
+
+
+class _FakeUploadFile:
+    """模拟 werkzeug FileStorage 的 seek/tell/read 协议（upload 端点探大小用）。"""
+
+    def __init__(self, filename, blob=b""):
+        self.filename = filename
+        self._blob = blob
+        self._pos = 0
+
+    def seek(self, pos, whence=0):
+        if whence == 0:
+            self._pos = pos
+        elif whence == 2:
+            self._pos = len(self._blob) + pos
+        else:
+            self._pos += pos
+        return self._pos
+
+    def tell(self):
+        return self._pos
+
+    def read(self):
+        data = self._blob[self._pos:]
+        self._pos = len(self._blob)
+        return data
+
+
+class _FakeRequest:
+    """quart request 桩：端点内 `await request.files` / `await request.form`。"""
+
+    def __init__(self, file=None, form=None):
+        self._file = file
+        self._form = form or {}
+
+    @property
+    def files(self):
+        async def _get():
+            return {"file": self._file} if self._file else {}
+        return _get()
+
+    @property
+    def form(self):
+        async def _get():
+            return self._form
+        return _get()
+
+
+def _fake_docx_bytes():
+    """最小合法 zip 字节（模拟转换产物 docx，能过端点 is_zipfile 校验）。"""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("[Content_Types].xml", "<Types/>")
+    return buf.getvalue()
+
+
+def _patch_upload_deps(monkeypatch, mod, request_stub, convert_result=None):
+    convert_result = convert_result or _fake_docx_bytes()
+    inserted, versions = {}, {}
+    monkeypatch.setattr(mod, "request", request_stub)
+    monkeypatch.setattr(mod, "TplTemplateService", types.SimpleNamespace(
+        insert=lambda **kw: (inserted.update(kw), "tpl-id")[1]))
+    monkeypatch.setattr(mod, "TplTemplateVersionService", types.SimpleNamespace(
+        create_initial_version=lambda tid, fn, blob: versions.update(
+            tid=tid, fn=fn, blob=blob)))
+    monkeypatch.setattr(mod, "_convert_doc_to_docx", lambda blob: convert_result)
+    return inserted, versions
+
+
+def test_upload_legacy_doc_converts_and_stores_docx(monkeypatch):
+    """.doc 上传走转换路径：入库 file_type='docx'，存的是转换产物 blob。"""
+    mod = _template_api
+    req = _FakeRequest(file=_FakeUploadFile("legacy.doc", b"legacy-bytes"),
+                       form={"name": "测试模板"})
+    inserted, versions = _patch_upload_deps(monkeypatch, mod, req)
+    resp = asyncio.run(mod.upload_template())
+    assert resp["code"] == 0
+    assert inserted["file_type"] == "docx"  # 以 docx 形态入库
+    assert versions["blob"] == _fake_docx_bytes()  # 存的是转换产物而非原始 .doc
+    assert versions["fn"] == "legacy.doc"  # filename 原样传给 service
+
+
+def test_upload_legacy_doc_uppercase_ext(monkeypatch):
+    """大写 .DOC 同样走转换路径。"""
+    mod = _template_api
+    req = _FakeRequest(file=_FakeUploadFile("模板.DOC", b"legacy-bytes"), form={})
+    inserted, _versions = _patch_upload_deps(monkeypatch, mod, req)
+    resp = asyncio.run(mod.upload_template())
+    assert resp["code"] == 0
+    assert inserted["file_type"] == "docx"
+
+
+def test_upload_legacy_doc_convert_failure_returns_friendly_error(monkeypatch):
+    """转换抛异常 → 端点兜底为友好错误 dict，不 500、不写库。"""
+    mod = _template_api
+    req = _FakeRequest(file=_FakeUploadFile("legacy.doc", b"legacy-bytes"),
+                       form={"name": "测试模板"})
+    inserted, versions = _patch_upload_deps(monkeypatch, mod, req)
+
+    def boom(blob):
+        raise RuntimeError("doc convert failed")
+
+    monkeypatch.setattr(mod, "_convert_doc_to_docx", boom)
+    resp = asyncio.run(mod.upload_template())
+    d = _err_dict(resp)
+    assert d["code"] == DATA_ERROR_CODE
+    assert "另存为 .docx" in d["message"]
+    assert not inserted, "转换失败不得写库"
+    assert not versions, "转换失败不得建版本"
+
+
+def test_upload_unsupported_ext_still_rejected(monkeypatch):
+    """回归：.txt 等不支持后缀仍被拒绝，且不触发转换。"""
+    mod = _template_api
+    req = _FakeRequest(file=_FakeUploadFile("notes.txt", b"text"), form={})
+    inserted, versions = _patch_upload_deps(monkeypatch, mod, req)
+    resp = asyncio.run(mod.upload_template())
+    d = _err_dict(resp)
+    assert d["code"] == DATA_ERROR_CODE
+    assert "仅支持 .docx / .doc / .xlsx" in d["message"]
+    assert not inserted and not versions

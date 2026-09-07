@@ -16,7 +16,11 @@
 """模板填写：模板管理 API（P1）。路由前缀 /api/v1/template/fill/*"""
 import io
 import logging
+import os
 import re
+import subprocess
+import tempfile
+import uuid
 import zipfile
 
 from quart import Blueprint, Response, request
@@ -46,6 +50,33 @@ def _file_type_of(filename: str):
     if lower.endswith(".xlsx"):
         return "xlsx"
     return None
+
+
+def _is_legacy_doc(filename: str) -> bool:
+    """是否为旧版 .doc（二进制 Word）文件。endswith(".doc") 不会误伤 .docx
+    （"a.docx".endswith(".doc") 为 False）。"""
+    return (filename or "").lower().endswith(".doc")
+
+
+def _convert_doc_to_docx(blob: bytes) -> bytes:
+    """旧版 .doc（二进制 Word）转 .docx。容器内有 LibreOffice；用独立
+    UserInstallation 目录避免并发/首启 profile 锁冲突。"""
+    with tempfile.TemporaryDirectory(prefix="tpl_doc_") as tmp:
+        src = os.path.join(tmp, "input.doc")
+        with open(src, "wb") as f:
+            f.write(blob)
+        profile = f"file://{tmp}/lo_profile_{uuid.uuid4().hex}"
+        r = subprocess.run(
+            ["soffice", "--headless", "--norestore", f"-env:UserInstallation={profile}",
+             "--convert-to", "docx", "--outdir", tmp, src],
+            capture_output=True, timeout=60, check=False)
+        out = os.path.join(tmp, "input.docx")
+        if not os.path.exists(out):
+            logger.error("doc->docx convert failed: rc=%s stderr=%s",
+                         r.returncode, (r.stderr or b"")[:500])
+            raise RuntimeError("doc convert failed")
+        with open(out, "rb") as f:
+            return f.read()
 
 
 def _extract_candidates(file_type: str, blob: bytes):
@@ -85,10 +116,16 @@ async def upload_template():
     form = await request.form
     file = files.get("file")
     if not file or not file.filename:
-        return get_error_data_result("请上传 .docx 或 .xlsx 模板文件")
+        return get_error_data_result("请上传 .docx / .doc / .xlsx 模板文件")
     file_type = _file_type_of(file.filename)
+    is_legacy_doc = False
     if not file_type:
-        return get_error_data_result("仅支持 .docx / .xlsx")
+        if _is_legacy_doc(file.filename):
+            # 旧版 .doc：后端转成 .docx 后以 docx 形态进入全链路（candidates/替换/预览/下载）
+            is_legacy_doc = True
+            file_type = "docx"
+        else:
+            return get_error_data_result("仅支持 .docx / .doc / .xlsx")
     # read 前先 seek 到尾部探实际大小，避免超大文件先整份读进内存（app 级 MAX_CONTENT_LENGTH 默认 1GB）
     file.seek(0, 2)
     size = file.tell()
@@ -98,6 +135,12 @@ async def upload_template():
     blob = file.read()
     if not blob or len(blob) > MAX_TEMPLATE_SIZE:
         return get_error_data_result("文件为空或超过 20MB")
+    if is_legacy_doc:
+        try:
+            blob = _convert_doc_to_docx(blob)
+        except Exception:
+            logger.exception("legacy doc convert failed, filename=%s", file.filename)
+            return get_error_data_result("旧版 .doc 转换失败，请用 Word 另存为 .docx 后重新上传")
     # docx/xlsx 均为 zip 容器，轻量验证内容合法性，防后续解析抛 BadZipFile 500
     if not zipfile.is_zipfile(io.BytesIO(blob)):
         return get_error_data_result("文件已损坏或不是有效的 docx/xlsx 文件")
