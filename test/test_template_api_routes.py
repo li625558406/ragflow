@@ -36,7 +36,10 @@ def _noop_decorator(f=None, *a, **kw):
 
 
 def _load_template_api():
-    _make_stub_module("api.apps", current_user=None, login_required=_noop_decorator)
+    # current_user 用 SimpleNamespace：端点内部会取 .id（如 _load_template → get_owned(tid, current_user.id)），
+    # 桩成 None 会让守卫路径直调时 NoneType.id 崩溃
+    user_stub = types.SimpleNamespace(id="u1")
+    _make_stub_module("api.apps", current_user=user_stub, login_required=_noop_decorator)
     path = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "api", "apps", "restful_apis", "template_api.py"))
     spec = spec_from_file_location("template_api_under_test", path)
@@ -147,3 +150,91 @@ def test_list_endpoint_accepts_garbage_pagination_via_type_int():
 
     src = _inspect.getsource(_template_api.list_templates)
     assert "type=int" in src and "int(args.get" not in src
+
+
+# ---------- 守卫路径：_load_latest_blob / _load_template ----------
+# 无 Quart app 上下文时 _safe_jsonify 回退为纯 dict，错误返回即 {"code": RetCode.DATA_ERROR(102), "message": ...}
+
+import asyncio
+
+DATA_ERROR_CODE = 102
+
+
+def _err_dict(resp):
+    """本测试无 Quart app 上下文，_safe_jsonify 回退为纯 dict。"""
+    assert resp is not None, "守卫路径必须返回错误响应"
+    assert isinstance(resp, dict), f"错误返回应为 dict，实际: {type(resp)}"
+    return resp
+
+
+def test_load_latest_blob_missing_version(monkeypatch):
+    """ver 缺失（latest 返回 None）→ 错误 dict，不抛异常、不透传 None blob 给下游。"""
+    mod = _template_api
+    fake_ver_svc = types.SimpleNamespace(latest=lambda tid: None)
+    monkeypatch.setattr(mod, "TplTemplateVersionService", fake_ver_svc)
+    blob, err = mod._load_latest_blob("tpl-no-ver")
+    assert blob is None
+    assert _err_dict(err)["code"] == DATA_ERROR_CODE
+    assert "版本缺失" in _err_dict(err)["message"]
+
+
+def test_load_latest_blob_missing_blob(monkeypatch):
+    """存储对象缺失（STORAGE_IMPL.get 返回 None）→ 错误 dict。"""
+    mod = _template_api
+    fake_ver = types.SimpleNamespace(original_file_id="fid-1", render_file_id=None)
+    monkeypatch.setattr(mod, "TplTemplateVersionService",
+                        types.SimpleNamespace(latest=lambda tid: fake_ver))
+    fake_settings = types.SimpleNamespace(
+        STORAGE_IMPL=types.SimpleNamespace(get=lambda tenant, name: None))
+    monkeypatch.setattr(mod, "settings", fake_settings)
+    blob, err = mod._load_latest_blob("tpl-no-blob")
+    assert blob is None
+    assert _err_dict(err)["code"] == DATA_ERROR_CODE
+    assert "文件缺失" in _err_dict(err)["message"]
+
+
+def test_load_latest_blob_success_returns_blob(monkeypatch):
+    """对照组：版本与存储对象都在 → 原样返回 blob，err 为 None。"""
+    mod = _template_api
+    fake_ver = types.SimpleNamespace(original_file_id="fid-1", render_file_id="fid-2")
+    monkeypatch.setattr(mod, "TplTemplateVersionService",
+                        types.SimpleNamespace(latest=lambda tid: fake_ver))
+    fake_settings = types.SimpleNamespace(
+        STORAGE_IMPL=types.SimpleNamespace(get=lambda tenant, name: b"blob-bytes"))
+    monkeypatch.setattr(mod, "settings", fake_settings)
+    blob, err = mod._load_latest_blob("tpl-ok")
+    assert err is None
+    assert blob == b"blob-bytes"
+
+
+def test_load_template_not_found(monkeypatch):
+    """模板不存在 / 非本人模板（get_owned 返回 None）→ 错误 dict。"""
+    mod = _template_api
+    monkeypatch.setattr(mod, "TplTemplateService",
+                        types.SimpleNamespace(get_owned=lambda tid, uid: None))
+    tpl, err = asyncio.run(mod._load_template("tpl-gone"))
+    assert tpl is None
+    assert _err_dict(err)["code"] == DATA_ERROR_CODE
+    assert "模板不存在" in _err_dict(err)["message"]
+
+
+def test_corrupt_template_returns_error_not_500(monkeypatch):
+    """I-1 回归：伪 zip 字节在候选提取阶段必须抛异常（由端点 try/except 兜底为错误 dict）。"""
+    mod = _template_api
+
+    raised = False
+    try:
+        mod._extract_candidates("docx", b"this is not a zip file")
+    except Exception:  # noqa: BLE001 — 断言目标就是「任意解析异常都被端点兜底」
+        raised = True
+    assert raised, "伪 zip 必须在提取阶段抛异常（由端点 try/except 兜底）"
+
+    # 端点源码必须存在兜底 try/except（防回退）
+    import inspect as _inspect2
+    for fn in (mod.detect_placeholders, mod.save_placeholders, mod.preview_template):
+        src = _inspect2.getsource(fn)
+        assert "模板文件损坏或无法解析" in src, f"{fn.__name__} 缺少损坏模板兜底"
+    # upload 必须有 zip 内容校验 + read 前探大小
+    up_src = _inspect2.getsource(mod.upload_template)
+    assert "is_zipfile" in up_src and "seek(0, 2)" in up_src
+    assert "文件已损坏或不是有效的 docx/xlsx 文件" in up_src

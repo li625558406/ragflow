@@ -14,8 +14,10 @@
 #  limitations under the License.
 #
 """模板填写：模板管理 API（P1）。路由前缀 /api/v1/template/fill/*"""
+import io
 import logging
 import re
+import zipfile
 
 from quart import Blueprint, Response, request
 
@@ -69,7 +71,7 @@ def _load_latest_blob(template_id: str):
     return blob, None
 
 
-def _load_template(template_id: str):
+async def _load_template(template_id: str):
     tpl = TplTemplateService.get_owned(template_id, current_user.id)
     if not tpl:
         return None, get_error_data_result("模板不存在")
@@ -87,10 +89,19 @@ async def upload_template():
     file_type = _file_type_of(file.filename)
     if not file_type:
         return get_error_data_result("仅支持 .docx / .xlsx")
+    # read 前先 seek 到尾部探实际大小，避免超大文件先整份读进内存（app 级 MAX_CONTENT_LENGTH 默认 1GB）
+    file.seek(0, 2)
+    size = file.tell()
+    file.seek(0)
+    if size <= 0 or size > MAX_TEMPLATE_SIZE:
+        return get_error_data_result("文件为空或超过 20MB")
     blob = file.read()
     if not blob or len(blob) > MAX_TEMPLATE_SIZE:
         return get_error_data_result("文件为空或超过 20MB")
-    name = (form.get("name") or file.filename.rsplit(".", 1)[0]).strip()[:256]
+    # docx/xlsx 均为 zip 容器，轻量验证内容合法性，防后续解析抛 BadZipFile 500
+    if not zipfile.is_zipfile(io.BytesIO(blob)):
+        return get_error_data_result("文件已损坏或不是有效的 docx/xlsx 文件")
+    name = (form.get("name") or "").strip()[:256] or file.filename.rsplit(".", 1)[0]
     tpl_id = get_uuid()
     TplTemplateService.insert(id=tpl_id, name=name,
                               description=(form.get("description") or "")[:2000],
@@ -121,7 +132,11 @@ async def detect_placeholders():
     blob, err = _load_latest_blob(tpl.id)
     if err:
         return err
-    candidates = _extract_candidates(tpl.file_type, blob)
+    try:
+        candidates = _extract_candidates(tpl.file_type, blob)
+    except Exception:
+        logger.exception("extract candidates failed, template=%s", tpl.id)
+        return get_error_data_result("模板文件损坏或无法解析")
     try:
         suggestions = await detect_fill_points(current_user.id, tpl.file_type, candidates)
     except Exception:
@@ -147,7 +162,12 @@ async def save_placeholders(template_id: str):
     blob, err = _load_latest_blob(template_id)
     if err:
         return err
-    candidates = _extract_candidates(tpl.file_type, blob)
+    # 已知双重读件：service.save_placeholders 会再 get+parse 一次，量级可接受
+    try:
+        candidates = _extract_candidates(tpl.file_type, blob)
+    except Exception:
+        logger.exception("extract candidates failed, template=%s", template_id)
+        return get_error_data_result("模板文件损坏或无法解析")
     ok, err_msg = validate_placeholders(items, candidates)
     if not ok:
         return get_error_data_result(err_msg)
@@ -204,12 +224,16 @@ async def preview_template(template_id: str):
     blob = settings.STORAGE_IMPL.get(template_id, obj_name)
     if not blob:
         return get_error_data_result("文件不存在")
-    if tpl.file_type == "docx":
-        from rag.svr.template_fill.docx_utils import iter_docx_paragraphs
-        items = iter_docx_paragraphs(blob)
-    else:
-        from rag.svr.template_fill.xlsx_utils import iter_xlsx_cells
-        items = iter_xlsx_cells(blob)
+    try:
+        if tpl.file_type == "docx":
+            from rag.svr.template_fill.docx_utils import iter_docx_paragraphs
+            items = iter_docx_paragraphs(blob)
+        else:
+            from rag.svr.template_fill.xlsx_utils import iter_xlsx_cells
+            items = iter_xlsx_cells(blob)
+    except Exception:
+        logger.exception("preview parse failed, template=%s", template_id)
+        return get_error_data_result("模板文件损坏或无法解析")
     for it in items:
         m = PLACEHOLDER_RE.search(it["text"])
         it["placeholder_key"] = m.group(1) if m else ""
