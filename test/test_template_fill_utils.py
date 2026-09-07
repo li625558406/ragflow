@@ -621,3 +621,60 @@ def test_sanitize_custom_max_len_boundary():
     """自定义 max_len 边界：恰好等于 max_len 不截断；超 1 字符才截。"""
     assert _sanitize("a" * 20, max_len=20) == "a" * 20
     assert len(_sanitize("a" * 21, max_len=20)) == 20
+
+
+# ---------- P2 renderer ----------
+
+def _mk_docx_with_placeholder():
+    """用 python-docx 造一个含 {{name}} 的 docx blob。"""
+    from docx import Document
+    doc = Document()
+    doc.add_paragraph("项目名称：{{name}}")
+    buf = io.BytesIO(); doc.save(buf)
+    return buf.getvalue()
+
+
+def test_render_docx_replaces_placeholder():
+    from docx import Document as Docx
+
+    from rag.svr.template_fill.renderer import render_docx
+    out = render_docx(_mk_docx_with_placeholder(), {"name": "测试项目"})
+    text = "\n".join(p.text for p in Docx(io.BytesIO(out)).paragraphs)
+    assert "测试项目" in text and "{{" not in text
+
+
+def test_render_docx_manual_mark():
+    from docx import Document as Docx
+
+    from rag.svr.template_fill.renderer import manual_mark, render_docx
+    out = render_docx(_mk_docx_with_placeholder(), {"name": manual_mark("负责人")})
+    text = "\n".join(p.text for p in Docx(io.BytesIO(out)).paragraphs)
+    assert "【待人工：负责人】" in text
+
+
+def test_render_xlsx_by_addr():
+    from openpyxl import Workbook, load_workbook
+
+    from rag.svr.template_fill.renderer import render_xlsx
+    wb = Workbook(); ws = wb.active; ws.title = "封面"; ws["B1"] = "{{name}}"
+    buf = io.BytesIO(); wb.save(buf)
+    out = render_xlsx(buf.getvalue(), {"name": "测试项目"}, {"name": "封面!B1"})
+    ws2 = load_workbook(io.BytesIO(out))["封面"]
+    assert ws2["B1"].value == "测试项目"
+
+
+def test_render_xlsx_bad_addr_skipped():
+    """addr 非法（sheet 不存在/坐标错）→ 跳过该格不抛异常。"""
+    from openpyxl import Workbook
+
+    from rag.svr.template_fill.renderer import render_xlsx
+    wb = Workbook(); buf = io.BytesIO(); wb.save(buf)
+    out = render_xlsx(buf.getvalue(), {"a": "x"}, {"a": "不存在的表!ZZ99"})
+    assert out
+
+
+def test_render_dispatch():
+    from rag.svr.template_fill.renderer import render
+    blob = _mk_docx_with_placeholder()
+    out = render("docx", blob, {"name": "X"})
+    assert out and out != blob
