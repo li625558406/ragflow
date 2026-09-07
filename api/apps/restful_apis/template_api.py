@@ -141,6 +141,9 @@ async def upload_template():
         except Exception:
             logger.exception("legacy doc convert failed, filename=%s", file.filename)
             return get_error_data_result("旧版 .doc 转换失败，请用 Word 另存为 .docx 后重新上传")
+        # docx 体积可能大于源文件，转换后复查一次，防止存储超限 blob 入库
+        if len(blob) > MAX_TEMPLATE_SIZE:
+            return get_error_data_result("文件为空或超过 20MB")
     # docx/xlsx 均为 zip 容器，轻量验证内容合法性，防后续解析抛 BadZipFile 500
     if not zipfile.is_zipfile(io.BytesIO(blob)):
         return get_error_data_result("文件已损坏或不是有效的 docx/xlsx 文件")
