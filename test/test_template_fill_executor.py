@@ -129,7 +129,7 @@ def test_apply_constraints():
     assert _apply_constraints(123, {"max_length": "bad"}) == "123"  # 非法 max_length 不炸
 
 
-def test_generate_values_batch_and_missing():
+def test_generate_values_batch_and_missing(monkeypatch):
     """批量产值：证据装配进 prompt；LLM null → missing；分批逻辑（batch_size=2 三字段两批）。"""
     from rag.svr.template_fill import executor
     prompts = []
@@ -140,7 +140,7 @@ def test_generate_values_batch_and_missing():
             return '{"k1": "值一", "k2": null}'
         return '{"k3": "值三"}'
 
-    executor._build_chat_mdl = lambda tenant: types.SimpleNamespace(async_chat=fake_chat)
+    monkeypatch.setattr(executor, "_build_chat_mdl", lambda tenant: types.SimpleNamespace(async_chat=fake_chat))
     placeholders = [
         {"key": "k1", "name": "字段一", "description": "说明", "constraints": {}},
         {"key": "k2", "name": "字段二", "description": "", "constraints": {}},
@@ -154,3 +154,26 @@ def test_generate_values_batch_and_missing():
     assert missing == {"k2"}
     assert len(prompts) == 2  # batch_size=2 → 两批
     assert "证据k1" in prompts[0]  # 证据装配进 prompt
+
+
+def test_generate_values_evidence_chunk_cap(monkeypatch):
+    """每字段证据最多取 6 片（MAX_EVIDENCE_CHUNKS）：第 7 片起不进 prompt。"""
+    from rag.svr.template_fill import executor
+    prompts = []
+
+    async def fake_chat(system, history, gen_conf=None, **kw):
+        prompts.append(history[0]["content"])
+        return '{"k1": "v"}'
+
+    monkeypatch.setattr(executor, "_build_chat_mdl", lambda tenant: types.SimpleNamespace(async_chat=fake_chat))
+    placeholders = [{"key": "k1", "name": "字段一", "description": "", "constraints": {}}]
+    chunks_by_key = {"k1": {"chunks": [
+        {"content": f"E{i}", "doc_id": "d", "doc_name": "n", "similarity": 0.9} for i in range(1, 9)]}}
+    vals, missing = executor._run_async(
+        executor.generate_values("t", placeholders, chunks_by_key, params={}))
+    assert vals == {"k1": "v"} and missing == set()
+    prompt = prompts[0]
+    for i in range(1, 7):
+        assert f"[片段{i}]" in prompt and f"E{i}" in prompt
+    assert "[片段7]" not in prompt
+    assert "E7" not in prompt and "E8" not in prompt
