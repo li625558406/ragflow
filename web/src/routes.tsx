@@ -82,6 +82,7 @@ export enum Routes {
   Permission = '/permission',
   TemplateFill = '/template-fill',
   TemplateFillDetail = '/template-fill/detail',
+  TemplateFillTasks = '/template-fill/tasks',
 }
 
 const defaultRouteFallback = (
@@ -280,6 +281,10 @@ const routeConfigOptions = [
       {
         path: `${Routes.TemplateFillDetail}/:id`,
         Component: () => import('@/pages/template-fill/detail'),
+      },
+      {
+        path: Routes.TemplateFillTasks,
+        Component: () => import('@/pages/template-fill/tasks'),
       },
       {
         path: Routes.Skills,

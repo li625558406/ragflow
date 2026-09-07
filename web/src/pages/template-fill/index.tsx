@@ -81,7 +81,15 @@ export default function TemplateFillPage() {
       <CardHeader>
         <div className="flex items-center justify-between">
           <CardTitle className="text-2xl">范本库</CardTitle>
-          <Button onClick={() => setWizardOpen(true)}>上传模板</Button>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              onClick={() => navigate(Routes.TemplateFillTasks)}
+            >
+              填写任务
+            </Button>
+            <Button onClick={() => setWizardOpen(true)}>上传模板</Button>
+          </div>
         </div>
         <div className="flex gap-2">
           <Input
