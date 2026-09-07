@@ -459,7 +459,7 @@ def test_delete_template_refuses_when_tasks_exist(monkeypatch):
     """有填写任务记录的模板拒删（历史任务下载依赖其 bucket=template_id 的对象）。"""
     from api.db.services.template_fill_service import TplTemplateService
     monkeypatch.setattr(TplTemplateService, "get_owned", classmethod(
-        lambda cls, tid, uid: types.SimpleNamespace(id="tpl_x", status="disabled")))
+        lambda cls, tid, uid, **kw: types.SimpleNamespace(id="tpl_x", status="disabled")))
     monkeypatch.setattr(TplTemplateService, "has_tasks", classmethod(lambda cls, tid: True))
     ok, msg = TplTemplateService.delete_template("tpl_x", "tenant_x")
     assert not ok and "填写任务" in msg
@@ -469,7 +469,7 @@ def test_delete_template_refuses_published(monkeypatch):
     """published 必须先停用才能删（防误删线上可用模板）。"""
     from api.db.services.template_fill_service import TplTemplateService
     monkeypatch.setattr(TplTemplateService, "get_owned", classmethod(
-        lambda cls, tid, uid: types.SimpleNamespace(id="tpl_x", status="published")))
+        lambda cls, tid, uid, **kw: types.SimpleNamespace(id="tpl_x", status="published")))
     ok, msg = TplTemplateService.delete_template("tpl_x", "tenant_x")
     assert not ok and "停用" in msg
 
@@ -530,7 +530,7 @@ def test_delete_template_success_cleans_versions_and_storage(monkeypatch):
     """happy path：逐版本删 MinIO 对象（rm）→ 删版本行 → 删主表行。"""
     from api.db.services import template_fill_service as svc
     monkeypatch.setattr(svc.TplTemplateService, "get_owned", classmethod(
-        lambda cls, tid, uid: types.SimpleNamespace(id="tpl_x", status="draft")))
+        lambda cls, tid, uid, **kw: types.SimpleNamespace(id="tpl_x", status="draft")))
     monkeypatch.setattr(svc.TplTemplateService, "has_tasks", classmethod(lambda cls, tid: False))
     vers = _FakeVersionModel([
         types.SimpleNamespace(original_file_id="v1_original_a.docx", render_file_id="v1_render.docx"),
@@ -554,7 +554,7 @@ def test_delete_template_storage_rm_failure_does_not_block(monkeypatch):
     """对抗性：MinIO rm 抛异常只告警，版本行/主表行仍删除（DB 行清理不被存储故障卡死）。"""
     from api.db.services import template_fill_service as svc
     monkeypatch.setattr(svc.TplTemplateService, "get_owned", classmethod(
-        lambda cls, tid, uid: types.SimpleNamespace(id="tpl_x", status="disabled")))
+        lambda cls, tid, uid, **kw: types.SimpleNamespace(id="tpl_x", status="disabled")))
     monkeypatch.setattr(svc.TplTemplateService, "has_tasks", classmethod(lambda cls, tid: False))
     vers = _FakeVersionModel([
         types.SimpleNamespace(original_file_id="v1_original_a.docx", render_file_id=None),
@@ -570,3 +570,22 @@ def test_delete_template_storage_rm_failure_does_not_block(monkeypatch):
     ok, msg = svc.TplTemplateService.delete_template("tpl_x", "tenant_x")
     assert ok, msg
     assert vers.recorder.get("version_delete_executed") and main.recorder.get("main_delete_executed")
+
+
+def test_delete_template_missing_returns_error_without_side_effects(monkeypatch):
+    """对抗性：get_owned 返回 None（不存在/越权）→ 拒删，且不触发任何 rm/DELETE。"""
+    from api.db.services import template_fill_service as svc
+    monkeypatch.setattr(svc.TplTemplateService, "get_owned", classmethod(
+        lambda cls, tid, uid, **kw: None))
+    vers = _FakeVersionModel([])
+    monkeypatch.setattr(svc, "TplTemplateVersion", vers)
+    main = _FakeMainModel()
+    monkeypatch.setattr(svc.TplTemplateService, "model", main)
+    removed = []
+    monkeypatch.setattr(svc.settings, "STORAGE_IMPL", types.SimpleNamespace(
+        rm=lambda bucket, fnm: removed.append((bucket, fnm))))
+    ok, msg = svc.TplTemplateService.delete_template("tpl_x", "tenant_x")
+    assert not ok and msg == "模板不存在"
+    assert not removed, "模板不存在时不得触碰 MinIO 对象"
+    assert not vers.recorder.get("version_delete_executed"), "模板不存在时不得删版本行"
+    assert not main.recorder.get("main_delete_executed"), "模板不存在时不得删主表行"

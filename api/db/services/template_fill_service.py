@@ -20,7 +20,7 @@
 """
 import logging
 
-from api.db.db_models import DB, TplTemplate, TplTemplateVersion
+from api.db.db_models import DB, TplFillTask, TplTemplate, TplTemplateVersion
 from api.db.services.common_service import CommonService
 from common import settings
 from common.misc_utils import get_uuid
@@ -93,13 +93,18 @@ class TplTemplateService(CommonService):
 
     @classmethod
     @DB.connection_context()
-    def get_owned(cls, template_id: str, tenant_id: str):
+    def get_owned(cls, template_id: str, tenant_id: str, for_update: bool = False):
         """取租户内模板，不存在/越权返回 None。
 
         peewee 的 Model.get_or_none 支持位置条件参数，但用 `&` 合并成
         单表达式最稳妥（与 common_service.get_by_id 的单条件位置传参惯例一致）。
+        for_update=True 时加行锁（SELECT ... FOR UPDATE）——调用方须在 DB.atomic()
+        事务内使用，锁到事务结束；SQLite 方言下为静默 no-op，不影响单测。
         """
-        return cls.model.get_or_none((cls.model.id == template_id) & (cls.model.tenant_id == tenant_id))
+        q = cls.model.select().where((cls.model.id == template_id) & (cls.model.tenant_id == tenant_id))
+        if for_update:
+            q = q.for_update()
+        return q.first()
 
     @classmethod
     @DB.connection_context()
@@ -121,23 +126,28 @@ class TplTemplateService(CommonService):
     @DB.connection_context()
     def has_tasks(cls, template_id: str) -> bool:
         """该模板是否存在填写任务记录（有任务即拒删：历史任务下载依赖其 bucket 对象）。"""
-        from api.db.db_models import TplFillTask
-        return bool(TplFillTask.select().where(
-            TplFillTask.template_id == template_id).limit(1))
+        return TplFillTask.select().where(
+            TplFillTask.template_id == template_id).exists()
 
     @classmethod
     @DB.connection_context()
     def delete_template(cls, template_id: str, tenant_id: str) -> tuple:
         """删除模板（仅 draft/disabled 且无填写任务记录）。
 
-        清理顺序：逐版本删 MinIO 对象（bucket=template_id）→ 删版本行 → 删主表行。
+        清理顺序：逐版本删 MinIO 对象（bucket=template_id）→ 事务内删版本行 → 删主表行。
         对象删除失败仅告警不阻塞（DB 行残留引用比对象残留危害小，且站点存储故障
         不应永久卡死模板删除）；返回 (ok, msg)。
+
+        事务与锁：has_tasks 复查 → 版本行 DELETE → 主表行 DELETE 包进 DB.atomic()，
+        且复查用 for_update 行锁锁住模板行——否则守卫通过后、删除前若并发新建填写
+        任务，会删掉仍被历史任务引用的模板（TOCTOU）；两条 DELETE 同事务，也杜绝
+        版本行删掉而主表行删失败留下的「零版本模板」损坏态。MinIO rm 循环刻意留在
+        事务外、DB 删除之前：rm 失败不回滚 DB 的语义不变。
         """
         tpl = cls.get_owned(template_id, tenant_id)
         if not tpl:
             return False, "模板不存在"
-        if tpl.status == "published":
+        if tpl.status not in ("draft", "disabled"):
             return False, "已发布模板不可删除，请先停用"
         if cls.has_tasks(template_id):
             return False, "该模板已有填写任务记录，不可删除（历史任务需保留可下载）"
@@ -149,10 +159,16 @@ class TplTemplateService(CommonService):
                     except Exception:  # noqa: BLE001 — 各存储实现异常类型不一，删除失败只告警不阻塞
                         logger.warning("template fill: delete storage obj failed: %s/%s",
                                        template_id, obj)
-        TplTemplateVersion.delete().where(
-            TplTemplateVersion.template_id == template_id).execute()
-        cls.model.delete().where(cls.model.id == template_id,
-                                 cls.model.tenant_id == tenant_id).execute()
+        with DB.atomic():
+            # 事务内复查（TOCTOU 闭合）：守卫与删除之间的并发写入已由行锁串行化
+            if cls.has_tasks(template_id):
+                return False, "该模板已有填写任务记录，不可删除（历史任务需保留可下载）"
+            if not cls.get_owned(template_id, tenant_id, for_update=True):
+                return False, "模板不存在"
+            TplTemplateVersion.delete().where(
+                TplTemplateVersion.template_id == template_id).execute()
+            cls.model.delete().where(cls.model.id == template_id,
+                                     cls.model.tenant_id == tenant_id).execute()
         return True, ""
 
 
