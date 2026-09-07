@@ -74,7 +74,20 @@ def _spawn_fill_task(task_id: str):
             with _running_lock:
                 _running_tasks.discard(task_id)
 
-    threading.Thread(target=_run, daemon=True, name=f"tpl-fill-{task_id[:8]}").start()
+    try:
+        threading.Thread(target=_run, daemon=True, name=f"tpl-fill-{task_id[:8]}").start()
+    except Exception:
+        # 线程启动失败（如线程数耗尽）：add 已执行而线程内 finally 永不会跑，
+        # task_id 会永久滞留集合导致 retry 恒报「任务正在执行中」。
+        # 故锁内 discard + 任务行 CAS 置 failed（照 retry 复位写法，包连接上下文）供重试。
+        with _running_lock:
+            _running_tasks.discard(task_id)
+        logger.exception("fill task thread start failed, task_id=%s", task_id)
+        with DB.connection_context():
+            TplFillTaskService.model.update(
+                status="failed", error="任务调度失败：后台线程启动异常，请重试").where(
+                TplFillTaskService.model.id == task_id,
+                TplFillTaskService.model.status == "pending").execute()
 
 
 def _file_type_of(filename: str):
@@ -383,6 +396,9 @@ async def create_fill_task():
     params = body.get("params")
     if params is not None and not isinstance(params, dict):
         return get_error_data_result("params 必须为对象")
+    source = body.get("source")
+    if source is not None and not isinstance(source, str):
+        return get_error_data_result("source 必须为字符串")
     ver = TplTemplateVersionService.latest(template_id)
     if not ver or not ver.render_file_id or not ver.placeholders:
         return get_error_data_result("该范本未配置填写点，请先完成填写点配置")
@@ -390,7 +406,7 @@ async def create_fill_task():
     TplFillTaskService.insert(
         id=task_id, template_id=template_id, template_version_id=ver.id,
         kb_ids=kb_ids, params=params, status="pending",
-        source=(body.get("source") or "web")[:16],
+        source=(source or "web")[:16],
         flow_instance_id="", tenant_id=current_user.id, created_by=current_user.id)
     _spawn_fill_task(task_id)
     return get_result(data={"task_id": task_id, "status": "pending"})

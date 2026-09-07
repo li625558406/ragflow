@@ -977,3 +977,63 @@ def test_download_fill_tpl_missing_falls_back_docx(monkeypatch):
     assert isinstance(resp, Response)
     assert asyncio.run(resp.get_data()) == b"raw-bytes"
     assert resp.headers["Content-Disposition"].endswith(".docx")
+
+
+# ---------- spawn 自愈 + source 类型校验 ----------
+
+def test_spawn_thread_start_failure_self_heals(monkeypatch):
+    """对抗性：Thread.start 抛异常（线程数耗尽）→ 接口不 500、不落库中断，
+    _running_tasks 不残留（否则 retry 恒报「任务正在执行中」），
+    任务行 CAS 置 failed（where 带 id + status=pending）供后续重试。"""
+    mod = _template_api
+    inserted = {}
+    model = _FakeFillModel(ret=1)
+    monkeypatch.setattr(mod, "request", _FakeJsonRequest(
+        {"template_id": "tpl_x", "kb_ids": ["kb1"]}))
+    monkeypatch.setattr(mod, "TplTemplateService", types.SimpleNamespace(
+        get_owned=lambda tid, uid, **kw: _make_fill_tpl()))
+    monkeypatch.setattr(mod, "TplTemplateVersionService", types.SimpleNamespace(
+        latest=lambda tid: _make_ver()))
+    monkeypatch.setattr(mod, "TplFillTaskService", types.SimpleNamespace(
+        insert=lambda **kw: (inserted.update(kw), types.SimpleNamespace(**kw))[1],
+        model=model))
+    entered = []
+
+    @contextlib.contextmanager
+    def fake_ctx():
+        entered.append(True)
+        yield
+
+    monkeypatch.setattr(mod, "DB", types.SimpleNamespace(connection_context=fake_ctx))
+    monkeypatch.setattr(mod, "_running_tasks", set())
+
+    class _BoomThread:
+        def __init__(self, target=None, daemon=None, name=None):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(mod.threading, "Thread", _BoomThread)
+    resp = asyncio.run(mod.create_fill_task())
+    assert resp["code"] == 0, "线程启动失败不得 500（任务行已落库，接口应正常返回）"
+    assert inserted["status"] == "pending"
+    assert mod._running_tasks == set(), "spawn 失败后 _running_tasks 不得残留"
+    assert entered, "失败复位必须包 DB.connection_context()"
+    assert model.recorder["update"]["status"] == "failed"
+    assert "任务调度失败" in model.recorder["update"]["error"]
+    assert len(model.recorder["where"]) == 2, "where 必须带 id + status=pending 两个 CAS 条件"
+
+
+def test_create_fill_task_rejects_non_string_source(monkeypatch):
+    """对抗性：source 传非字符串（int/float/list/dict）→ 友好错误，不 500、不写库。"""
+    mod = _template_api
+    for bad in (42, 3.14, ["web"], {"s": 1}):
+        inserted, spawned = _patch_fill_deps(
+            monkeypatch, mod,
+            {"template_id": "tpl_x", "kb_ids": ["kb1"], "source": bad})
+        resp = asyncio.run(mod.create_fill_task())
+        d = _err_dict(resp)
+        assert d["code"] == DATA_ERROR_CODE, f"source={bad!r} 应拒绝"
+        assert "source" in d["message"]
+        assert not inserted and not spawned, f"source={bad!r} 不得写库/起线程"
