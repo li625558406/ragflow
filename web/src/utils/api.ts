@@ -455,4 +455,20 @@ export default {
   permissionUserRoles: (userId: string) =>
     `${restAPIv1}/permission/users/${userId}/roles`,
   permissionUser: (userId: string) => `${restAPIv1}/permission/users/${userId}`,
+
+  // 模板填写
+  uploadTemplateFill: `${restAPIv1}/template/fill/upload`,
+  listTemplateFill: `${restAPIv1}/template/fill/list`,
+  detectTemplateFill: `${restAPIv1}/template/fill/detect`,
+  getTemplateFill: (id: string) => `${restAPIv1}/template/fill/${id}`,
+  saveTemplateFillPlaceholders: (id: string) =>
+    `${restAPIv1}/template/fill/${id}/save-placeholders`,
+  publishTemplateFill: (id: string) =>
+    `${restAPIv1}/template/fill/${id}/publish`,
+  disableTemplateFill: (id: string) =>
+    `${restAPIv1}/template/fill/${id}/disable`,
+  previewTemplateFill: (id: string) =>
+    `${restAPIv1}/template/fill/${id}/preview`,
+  downloadTemplateFill: (id: string, kind: 'original' | 'render') =>
+    `${restAPIv1}/template/fill/${id}/file?kind=${kind}`,
 };
