@@ -2781,9 +2781,15 @@ def migrate_db():
         PermissionUserRole.create_table(safe=True)
         logging.info("permission_user_role: table created")
     # ── 模板填写系统（新表） ──────────────────────────────────────
-    TplTemplate.create_table(safe=True)
-    TplTemplateVersion.create_table(safe=True)
-    TplFillTask.create_table(safe=True)
+    if not TplTemplate.table_exists():
+        TplTemplate.create_table(safe=True)
+        logging.info("template fill: tpl_template table created")
+    if not TplTemplateVersion.table_exists():
+        TplTemplateVersion.create_table(safe=True)
+        logging.info("template fill: tpl_template_version table created")
+    if not TplFillTask.table_exists():
+        TplFillTask.create_table(safe=True)
+        logging.info("template fill: tpl_fill_task table created")
     seed_default_permissions()
 
     logging.disable(logging.NOTSET)
