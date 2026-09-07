@@ -1,8 +1,6 @@
-import { Trash2 } from 'lucide-react';
 import { useState } from 'react';
 
 import { Button } from '@/components/ui/button';
-import { Checkbox } from '@/components/ui/checkbox';
 import {
   Dialog,
   DialogContent,
@@ -12,13 +10,6 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import message from '@/components/ui/message';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import {
   Table,
   TableBody,
@@ -34,29 +25,18 @@ import {
   useUploadTemplateFill,
   type TplPlaceholder,
 } from '@/hooks/use-template-fill-request';
-
-const KEY_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
+import {
+  collectRowErrors,
+  emptyPlaceholder,
+  PlaceholderTable,
+  trimRows,
+} from './placeholder-table';
 
 const FILL_MODE_LABEL: Record<TplPlaceholder['fill_mode'], string> = {
   llm: 'AI填写',
   param: '参数',
   manual: '人工',
 };
-
-// 新增空行的默认值（top_k 给检索兜底默认值）
-function emptyPlaceholder(): TplPlaceholder {
-  return {
-    key: '',
-    name: '',
-    description: '',
-    retrieval_query: '',
-    fill_mode: 'llm',
-    required: true,
-    addr: '',
-    anchor: '',
-    top_k: 5,
-  };
-}
 
 interface UploadWizardProps {
   open: boolean;
@@ -190,33 +170,6 @@ export function UploadWizard({
     setRowErrors({});
   };
 
-  // 提交前统一 trim，保证「校验的值 = 提交的值」（校验与提交都用同一份归一化结果）
-  const trimRows = (rows: TplPlaceholder[]) =>
-    rows.map((r) => ({
-      ...r,
-      key: r.key.trim(),
-      name: r.name.trim(),
-      anchor: r.anchor.trim(),
-      retrieval_query: (r.retrieval_query || '').trim(),
-    }));
-
-  // 行级校验：key 格式、name、anchor 非空；入参须已 trim
-  const collectRowErrors = (rows: TplPlaceholder[]) => {
-    const errors: Record<string, boolean> = {};
-    rows.forEach((row, i) => {
-      if (!row.key || !KEY_PATTERN.test(row.key)) {
-        errors[`${i}-key`] = true;
-      }
-      if (!row.name) {
-        errors[`${i}-name`] = true;
-      }
-      if (!row.anchor) {
-        errors[`${i}-anchor`] = true;
-      }
-    });
-    return errors;
-  };
-
   const goStep3 = () => {
     const rows = trimRows(placeholders);
     setPlaceholders(rows);
@@ -261,9 +214,6 @@ export function UploadWizard({
   const detecting = detectMut.isPending;
   const detectEmpty =
     !detecting && !detectMut.error && detectMut.data?.suggestions.length === 0;
-
-  const errCls = (field: string) =>
-    rowErrors[field] ? 'border-red-500 focus-visible:ring-red-500' : '';
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -354,112 +304,12 @@ export function UploadWizard({
             )}
             {!detecting && (
               <div className="max-h-[50vh] overflow-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>key（小写字母开头）</TableHead>
-                      <TableHead>中文名</TableHead>
-                      <TableHead>检索词</TableHead>
-                      <TableHead className="w-[110px]">填写方式</TableHead>
-                      <TableHead className="w-[60px]">必填</TableHead>
-                      <TableHead>锚文本</TableHead>
-                      <TableHead className="w-[40px]" />
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {placeholders.map((row, i) => (
-                      <TableRow key={i}>
-                        <TableCell>
-                          <Input
-                            className={errCls(`${i}-key`)}
-                            value={row.key}
-                            onChange={(e) =>
-                              updateRow(i, { key: e.target.value })
-                            }
-                            placeholder="如 project_name"
-                          />
-                        </TableCell>
-                        <TableCell>
-                          <Input
-                            className={errCls(`${i}-name`)}
-                            value={row.name}
-                            onChange={(e) =>
-                              updateRow(i, { name: e.target.value })
-                            }
-                          />
-                        </TableCell>
-                        <TableCell>
-                          <Input
-                            value={row.retrieval_query}
-                            onChange={(e) =>
-                              updateRow(i, { retrieval_query: e.target.value })
-                            }
-                          />
-                        </TableCell>
-                        <TableCell>
-                          <Select
-                            value={row.fill_mode}
-                            onValueChange={(v) =>
-                              updateRow(i, {
-                                fill_mode: v as TplPlaceholder['fill_mode'],
-                              })
-                            }
-                          >
-                            <SelectTrigger className="w-[100px]">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="llm">AI填写</SelectItem>
-                              <SelectItem value="param">参数</SelectItem>
-                              <SelectItem value="manual">人工</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </TableCell>
-                        <TableCell className="text-center">
-                          <Checkbox
-                            checked={row.required}
-                            onCheckedChange={(checked) =>
-                              updateRow(i, { required: checked === true })
-                            }
-                          />
-                        </TableCell>
-                        <TableCell>
-                          {row.addr ? (
-                            <span
-                              className={`block max-w-[160px] truncate text-sm ${
-                                rowErrors[`${i}-anchor`]
-                                  ? 'text-red-500'
-                                  : 'text-muted-foreground'
-                              }`}
-                              title={row.anchor}
-                            >
-                              {row.anchor}
-                            </span>
-                          ) : (
-                            <Input
-                              className={errCls(`${i}-anchor`)}
-                              value={row.anchor}
-                              onChange={(e) =>
-                                updateRow(i, { anchor: e.target.value })
-                              }
-                              placeholder="模板中已有的原文片段"
-                            />
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          <Button
-                            size="icon-xs"
-                            variant="ghost"
-                            onClick={() => removeRow(i)}
-                            title="删除该填写点"
-                          >
-                            <Trash2 className="size-[1em] text-red-500" />
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                <PlaceholderTable
+                  rows={placeholders}
+                  errors={rowErrors}
+                  onUpdate={updateRow}
+                  onRemove={removeRow}
+                />
               </div>
             )}
             {!detecting && (
