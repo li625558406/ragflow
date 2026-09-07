@@ -50,7 +50,11 @@ export function useListTemplateFill(params: {
       const { data } = await request.get(
         `${api.listTemplateFill}?${searchParams.toString()}`,
       );
-      return data as { code: number; data: TplTemplateItem[]; total?: number };
+      return data as {
+        code: number;
+        data: TplTemplateItem[];
+        total_datasets?: number;
+      };
     },
   });
 }
@@ -88,6 +92,8 @@ export function useTemplateFillPreview(id: string) {
             text: string;
             addr: string;
             placeholder_key: string;
+            sheet?: string;
+            coord?: string;
           }[];
         };
       };
@@ -101,6 +107,8 @@ function useInvalidateTemplateFill() {
   return () => {
     queryClient.invalidateQueries({ queryKey: ['templateFillList'] });
     queryClient.invalidateQueries({ queryKey: ['templateFillDetail'] });
+    // save_placeholders 会重建 render 文件，已挂载的预览缓存需要一起失效
+    queryClient.invalidateQueries({ queryKey: ['templateFillPreview'] });
   };
 }
 
