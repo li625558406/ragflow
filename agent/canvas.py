@@ -621,17 +621,12 @@ class Canvas(Graph):
             try:
                 while not batch_task.done():
                     drained = False
-                    # Drain FanOut event queues — pop ALL pending events per tick
-                    # so chapters appear immediately when each lane completes.
-                    for i in range(idx, to):
-                        cpn_obj = self.get_component_obj(self.path[i])
-                        if cpn_obj.component_name.lower() == "fanout":
-                            eq = getattr(cpn_obj, "_event_queue", None)
-                            if eq:
-                                while not eq.empty():
-                                    ev = eq.get_nowait()
-                                    yield decorate(ev["event"], ev["data"])
-                                    drained = True
+                    # Drain component event queues (FanOut, TemplateFill, ...)
+                    # — pop ALL pending events per tick so progress appears
+                    # immediately when it is produced.
+                    for ev in self._drain_component_events(idx, to, decorate):
+                        yield ev
+                        drained = True
                     # Drain tool event queue — tool usage appears in real-time
                     while not self._tool_event_queue.empty():
                         ev = self._tool_event_queue.get_nowait()
@@ -653,15 +648,9 @@ class Canvas(Graph):
                 if not batch_task.done():
                     batch_task.cancel()
                     logging.info(f"Canvas batch [{idx}:{to}] cancelled due to client disconnect.")
-            # Drain any remaining FanOut events.
-            for i in range(idx, to):
-                cpn_obj = self.get_component_obj(self.path[i])
-                if cpn_obj.component_name.lower() == "fanout":
-                    eq = getattr(cpn_obj, "_event_queue", None)
-                    if eq:
-                        while not eq.empty():
-                            ev = eq.get_nowait()
-                            yield decorate(ev["event"], ev["data"])
+            # Drain any remaining component events (FanOut, TemplateFill, ...).
+            for ev in self._drain_component_events(idx, to, decorate):
+                yield ev
             # Drain any remaining tool events.
             while not self._tool_event_queue.empty():
                 ev = self._tool_event_queue.get_nowait()
@@ -1029,6 +1018,19 @@ class Canvas(Graph):
             return asyncio.run_coroutine_threadsafe(self.get_files_async(files, layout_recognize), loop).result()
 
         return asyncio.run(self.get_files_async(files, layout_recognize))
+
+    def _drain_component_events(self, start: int, end: int, decorate):
+        """Drain any component's _event_queue within path[start:end] (FanOut,
+        TemplateFill, ...). Generalizes the former FanOut-only gate: any
+        component owning an _event_queue gets its events forwarded as SSE."""
+        for i in range(start, end):
+            cpn_obj = self.get_component_obj(self.path[i])
+            eq = getattr(cpn_obj, "_event_queue", None)
+            if eq is None:
+                continue
+            while not eq.empty():
+                ev = eq.get_nowait()
+                yield decorate(ev["event"], ev["data"])
 
     def tool_use_callback(self, agent_id: str, func_name: str, params: dict, result: Any, elapsed_time=None, status=None):
         agent_ids = agent_id.split("-->")
