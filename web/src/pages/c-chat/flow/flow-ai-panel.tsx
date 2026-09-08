@@ -114,6 +114,10 @@ export default function FlowAiPanel({
   // streamState，用 ref 兜住供完成后（completed 态）继续展示成稿条
   const templateFillRef = useRef<ITemplateFillState | undefined>(undefined);
   const [completed, setCompleted] = useState<FlowLiveChat | null>(null);
+  // 成稿条持久快照：自动保存成功清空 completed 后，仍用最近一次 finished 的
+  // templateFill 上报，成稿条（含「存为流程版本」按钮）不随之消失
+  const [lastTemplateFill, setLastTemplateFill] =
+    useState<ITemplateFillState | null>(null);
   // 本轮是否已自动保存（每轮发送重置）
   const autoSavedRef = useRef(false);
   // 自动保存成功的记录（后续「存为新版本」基于它补建版本，不重复插记录）
@@ -164,11 +168,10 @@ export default function FlowAiPanel({
     excludeFanOutFromContent: false,
   });
 
-  // 范本填写进度快照：流式期间随 onLiveChatChange 上报；send() 结束 hook 会清空
-  // streamState，用 ref 兜住供完成后（completed 态）继续展示成稿条
   useEffect(() => {
     if (streamState.templateFill) {
       templateFillRef.current = streamState.templateFill;
+      setLastTemplateFill(streamState.templateFill);
     }
   }, [streamState.templateFill]);
 
@@ -204,7 +207,19 @@ export default function FlowAiPanel({
       setCompleted((prev) => (prev ? prev : next));
       onLiveChatChange?.(completed ?? next);
     } else {
-      onLiveChatChange?.(completed);
+      // completed 清空（自动/手动保存成功）后，仍用最近一次成稿快照上报，
+      // 保证成稿条与「存为流程版本」按钮持续可见可用
+      onLiveChatChange?.(
+        completed ??
+          (lastTemplateFill
+            ? {
+                instruction: '',
+                response: '',
+                busy: false,
+                templateFill: lastTemplateFill,
+              }
+            : null),
+      );
     }
   }, [
     streamState.content,
@@ -213,6 +228,7 @@ export default function FlowAiPanel({
     sending,
     onLiveChatChange,
     completed,
+    lastTemplateFill,
   ]);
 
   // 自动保存：一轮对话流式结束后，自动将指令+回复写入流程记录（不建版本），
@@ -376,6 +392,7 @@ export default function FlowAiPanel({
       contentRef.current = '';
       templateFillRef.current = undefined;
       setCompleted(null);
+      setLastTemplateFill(null);
       setLastRecord(null);
       autoSavedRef.current = false;
       setValue('');
@@ -390,35 +407,39 @@ export default function FlowAiPanel({
       let files: unknown[] = docs;
       if (files.length === 0 && attachFile && version) {
         // 轻量通道：服务端提取版本纯文本 → 小 txt 文件上传（免每次整份 docx
-        // blob 上传 + 画布重复解析）；失败静默回退原 uploadVersionAsDocument
-        try {
-          const text = await getFlowVersionContent(flowId, version.id);
-          if (text) {
-            const fd = new FormData();
-            fd.append(
-              'file',
-              new File([text], `${version.file_name}.txt`, {
-                type: 'text/plain',
-              }),
-            );
-            const resp = await fetch('/api/v1/documents/upload', {
-              method: 'POST',
-              headers: {
-                Authorization: localStorage.getItem('Authorization') || '',
-              },
-              body: fd,
-            });
-            const result = await resp.json();
-            if (result.code === 0 && result.data) {
-              const d = Array.isArray(result.data)
-                ? result.data[0]
-                : result.data;
-              // 传完整上传响应对象（含 mime_type）：canvas.get_files_async 依赖
-              if (d?.id) files = [d];
+        // blob 上传 + 画布重复解析）；失败静默回退原 uploadVersionAsDocument。
+        // 审阅模式不走轻量通道：txt 无 docx 段落结构，会污染审阅目标
+        // （ReviewPanel 展示 txt 段落但编辑落回版本 docx，段落错位损坏文档）
+        if (!reviewMode) {
+          try {
+            const text = await getFlowVersionContent(flowId, version.id);
+            if (text) {
+              const fd = new FormData();
+              fd.append(
+                'file',
+                new File([text], `${version.file_name}.txt`, {
+                  type: 'text/plain',
+                }),
+              );
+              const resp = await fetch('/api/v1/documents/upload', {
+                method: 'POST',
+                headers: {
+                  Authorization: localStorage.getItem('Authorization') || '',
+                },
+                body: fd,
+              });
+              const result = await resp.json();
+              if (result.code === 0 && result.data) {
+                const d = Array.isArray(result.data)
+                  ? result.data[0]
+                  : result.data;
+                // 传完整上传响应对象（含 mime_type）：canvas.get_files_async 依赖
+                if (d?.id) files = [d];
+              }
             }
+          } catch {
+            // 轻通道失败 → 走下方回退
           }
-        } catch {
-          // 轻通道失败 → 走下方回退
         }
         if (files.length === 0) {
           try {

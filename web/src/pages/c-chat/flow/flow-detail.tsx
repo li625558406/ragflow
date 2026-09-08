@@ -108,7 +108,9 @@ export default function FlowDetail({
       if (!docId || savingDocIds[docId] === 'saving') return;
       setSavingDocIds((p) => ({ ...p, [docId]: 'saving' }));
       try {
-        const resp = await fetch(dl.url || '', {
+        // url 缺失直接失败：fetch('') 会请求当前页面把 index.html 存成版本
+        if (!dl.url) throw new Error('download url missing');
+        const resp = await fetch(dl.url, {
           headers: {
             Authorization: localStorage.getItem('Authorization') || '',
           },
@@ -125,12 +127,14 @@ export default function FlowDetail({
         fd.append('source', 'ai_template_fill');
         await uploadFlowVersion(flowId, fd);
         setSavingDocIds((p) => ({ ...p, [docId]: 'saved' }));
-        await qc.invalidateQueries({
-          queryKey: ['flow-detail', flowId],
-        });
-      } catch {
+      } catch (e) {
+        console.warn('save as flow version failed', e);
         setSavingDocIds((p) => ({ ...p, [docId]: 'error' }));
+        return;
       }
+      // 缓存失效放在 try 外：invalidate 抛错不应把本次保存标为 error，
+      // 否则用户按「失败重试」会重复建版本
+      await qc.invalidateQueries({ queryKey: ['flow-detail', flowId] });
     },
     [flowId, qc, savingDocIds],
   );
@@ -466,7 +470,7 @@ export default function FlowDetail({
                 const st = savingDocIds[dl.doc_id || ''];
                 return (
                   <button
-                    disabled={st === 'saving' || st === 'saved'}
+                    disabled={st === 'saving' || st === 'saved' || !dl.doc_id}
                     onClick={() => saveDownloadAsVersion(dl)}
                     className={`ml-2 shrink-0 rounded px-2 py-0.5 transition-colors ${
                       st === 'saved'
@@ -545,9 +549,9 @@ export default function FlowDetail({
                       className={`absolute left-0 top-[15px] h-[11px] w-[11px] rounded-full border-2 bg-white transition-colors duration-150 ${
                         active
                           ? 'border-[#1a66fb] bg-[#1a66fb] shadow-[0_0_0_3px_rgba(26,102,251,0.15)]'
-                          : v.source === 'ai_output'
-                            ? 'border-[#1a66fb]'
-                            : 'border-[#CCC]'
+                          : v.source === 'manual_upload'
+                            ? 'border-[#CCC]'
+                            : 'border-[#1a66fb]'
                       }`}
                     />
                     <div className="flex items-center justify-between gap-2">
@@ -568,12 +572,16 @@ export default function FlowDetail({
                     <div className="mt-0.5 flex items-center gap-1.5 text-xs text-[#888]">
                       <span
                         className={`rounded px-1 text-[10px] ${
-                          v.source === 'ai_output'
-                            ? 'bg-[#EFF4FF] text-[#1a66fb]'
-                            : 'bg-[#F2F3F5] text-[#888]'
+                          v.source === 'manual_upload'
+                            ? 'bg-[#F2F3F5] text-[#888]'
+                            : 'bg-[#EFF4FF] text-[#1a66fb]'
                         }`}
                       >
-                        {v.source === 'ai_output' ? 'AI 产出' : '人工上传'}
+                        {v.source === 'manual_upload'
+                          ? '人工上传'
+                          : v.source === 'ai_output'
+                            ? 'AI 产出'
+                            : 'AI 范本填写'}
                       </span>
                       <span className="truncate">{relTime(v.create_time)}</span>
                       <span className="ml-auto flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-150 focus-within:opacity-100 group-hover:opacity-100">
@@ -866,21 +874,24 @@ function ConversationView({
               </div>
             </div>
           )}
-          <div className="flex justify-start">
-            <div className="max-w-[90%] rounded-lg rounded-bl-sm border border-[#ECECEC] bg-white px-3 py-1.5 text-xs leading-relaxed text-[#333]">
-              {live.response ? (
-                <ChapteredMarkdown
-                  content={normalizeLlmMarkdown(live.response)}
-                  loading={live.busy}
-                />
-              ) : (
-                <span>
-                  {live.busy ? '正在思考…' : '（无回复内容）'}
-                  {live.busy && <span className="animate-pulse">▌</span>}
-                </span>
-              )}
+          {/* 仅剩成稿条（回复已自动入库、response 为空）时不渲染空回复气泡 */}
+          {(live.response || live.busy) && (
+            <div className="flex justify-start">
+              <div className="max-w-[90%] rounded-lg rounded-bl-sm border border-[#ECECEC] bg-white px-3 py-1.5 text-xs leading-relaxed text-[#333]">
+                {live.response ? (
+                  <ChapteredMarkdown
+                    content={normalizeLlmMarkdown(live.response)}
+                    loading={live.busy}
+                  />
+                ) : (
+                  <span>
+                    {live.busy ? '正在思考…' : '（无回复内容）'}
+                    {live.busy && <span className="animate-pulse">▌</span>}
+                  </span>
+                )}
+              </div>
             </div>
-          </div>
+          )}
           {live.templateFill?.templates?.length ? (
             <div className="max-w-[90%]">
               <TemplateFillProgress
