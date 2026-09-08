@@ -65,7 +65,8 @@ module.exports = {
     'check-file/folder-naming-convention': [
       'error',
       {
-        'src/**/': 'KEBAB_CASE',
+        // 允许 jest 惯用的 dunder 测试目录（src/**/__tests__/），其余仍为 KEBAB_CASE
+        'src/**/': '@(+([a-z0-9-])|__+([a-z0-9])__)',
         'mocks/*/': 'KEBAB_CASE',
       },
     ],
