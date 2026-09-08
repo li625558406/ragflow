@@ -254,7 +254,7 @@ async def generate_values(tenant_id: str, placeholders: list[dict], chunks_by_ke
             try:
                 on_progress(done_slots, total)
             except Exception:
-                logging.exception("generate_values on_progress callback failed")
+                logger.exception("generate_values on_progress callback failed")
     missing: set = set()
     values: dict = {}
     for batch, raw in results:
