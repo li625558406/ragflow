@@ -65,10 +65,15 @@ class ESConnection(ESConnectionBase):
     """
 
     def _es_search_once(self, index_names: list[str], query: dict, track_total_hits: bool):
+        # timeout 必须放进 body 而非 kwarg：elasticsearch-py 9.x 会把 kwarg 原地合并进
+        # body（body[key]=kwargs.pop(key)），而 es_conn.search 的重试循环（ATTEMPT_TIME=2）
+        # 在 ConnectionTimeout 后复用同一个 query dict——第二次调用时 body 已含 timeout，
+        # kwarg 再传一次即抛 "Received multiple values for 'timeout'"，重试请求必然失败
+        # （ES 高负载下表现为检索结果静默降级为空）。
+        query["timeout"] = "600s"
         return self.es.search(
             index=index_names,
             body=query,
-            timeout="600s",
             track_total_hits=track_total_hits,
             _source=True,
         )
