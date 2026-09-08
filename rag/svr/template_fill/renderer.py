@@ -23,13 +23,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-MANUAL_MARK = "【待人工：{name}】"
-
-
-def manual_mark(name: str) -> str:
-    """manual 填写点的产值：渲染时落为可见的人工提示标记（截断超长名防脏输入）。"""
-    return MANUAL_MARK.format(name=(name or "")[:50])
-
 
 def render_docx(blob: bytes, values: dict) -> bytes:
     """用 docxtpl 渲染 Word 模板：values 的 key 对应文档内 {{key}} 占位符，

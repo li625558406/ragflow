@@ -402,6 +402,8 @@ def test_parse_detection_response_valid():
     assert out[0]["key"] == "project_name"  # 归一化：小写+下划线
     assert out[0]["addr"] == "para:0"
     assert out[0]["top_k"] == 6
+    # fill_mode 代码层强制 llm：LLM 输出 manual 也被规整（识别产物统一 AI 填写）
+    assert all(it["fill_mode"] == "llm" for it in out)
 
 
 def test_parse_detection_response_drops_invalid_anchor():
@@ -678,13 +680,14 @@ def test_render_docx_replaces_placeholder():
     assert "测试项目" in text and "{{" not in text
 
 
-def test_render_docx_manual_mark():
+def test_render_docx_missing_value_renders_empty():
+    """缺值占位符渲染为空串（人工二次加工留空），不再落【待人工】标记。"""
     from docx import Document as Docx
 
-    from rag.svr.template_fill.renderer import manual_mark, render_docx
-    out = render_docx(_mk_docx_with_placeholder(), {"name": manual_mark("负责人")})
+    from rag.svr.template_fill.renderer import render_docx
+    out = render_docx(_mk_docx_with_placeholder(), {"name": ""})
     text = "\n".join(p.text for p in Docx(io.BytesIO(out)).paragraphs)
-    assert "【待人工：负责人】" in text
+    assert "【待人工" not in text and "{{" not in text
 
 
 def test_render_xlsx_by_addr():

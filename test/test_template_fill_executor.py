@@ -257,44 +257,37 @@ def test_task_status_transition_whitelist():
 
 
 def test_build_values_manual_and_notfound():
-    """manual 恒待人工；required+missing → 人工标记(partial)；非必填缺失 → 空串；生成命中 → filled。"""
+    """manual 视同 llm（全部 AI 填写）；缺失一律落空串（人工二次加工），不再插【待人工】标记。"""
     from rag.svr.template_fill.executor import build_values
-    from rag.svr.template_fill.renderer import manual_mark
     placeholders = [
         {"key": "a", "name": "甲", "fill_mode": "manual"},
         {"key": "b", "name": "乙", "fill_mode": "llm", "required": True},
         {"key": "c", "name": "丙", "fill_mode": "llm"},
         {"key": "d", "name": "丁", "fill_mode": "llm"},
     ]
-    values, cells, partial = build_values(placeholders, {"d": "已生成值"}, {"b"})
-    assert values == {"a": manual_mark("甲"), "b": manual_mark("乙"), "c": "", "d": "已生成值"}
-    assert cells == {"a": "manual", "b": "not_found", "c": "not_found", "d": "filled"}
-    assert partial is True
+    values, cells = build_values(placeholders, {"d": "已生成值"})
+    assert values == {"a": "", "b": "", "c": "", "d": "已生成值"}
+    assert cells == {"a": "not_found", "b": "not_found", "c": "not_found", "d": "filled"}
 
 
 def test_build_values_bad_fill_mode_treated_as_llm():
-    """fill_mode 非法值（白名单外/缺省）按 llm 处理，不炸不进人工。"""
+    """fill_mode 非法值（白名单外/缺省）按 llm 处理，不炸。"""
     from rag.svr.template_fill.executor import build_values
-    values, cells, partial = build_values(
-        [{"key": "x", "name": "X", "fill_mode": "xxx"}], {"x": "v"}, set())
+    values, cells = build_values([{"key": "x", "name": "X", "fill_mode": "xxx"}], {"x": "v"})
     assert values == {"x": "v"}
     assert cells == {"x": "filled"}
-    assert partial is False
-    values2, cells2, partial2 = build_values([{"key": "y", "name": "Y"}], {"y": "w"}, set())
-    assert values2 == {"y": "w"} and cells2 == {"y": "filled"} and partial2 is False
+    values2, cells2 = build_values([{"key": "y", "name": "Y"}], {"y": "w"})
+    assert values2 == {"y": "w"} and cells2 == {"y": "filled"}
 
 
-def test_build_values_all_green_not_partial():
-    """全绿场景（生成命中 + 非必填缺失）is_partial 必须为 False。"""
+def test_build_values_missing_key_not_in_generated():
+    """generated 里没有的 key（不在 missing 集合场景）同样落空串。"""
     from rag.svr.template_fill.executor import build_values
-    placeholders = [
-        {"key": "k1", "name": "一", "fill_mode": "llm"},
-        {"key": "k2", "name": "二", "fill_mode": "llm"},  # 非必填缺失
-    ]
-    values, cells, partial = build_values(placeholders, {"k1": "v1"}, {"k2"})
+    values, cells = build_values(
+        [{"key": "k1", "name": "一", "fill_mode": "llm"},
+         {"key": "k2", "name": "二", "fill_mode": "llm"}], {"k1": "v1"})
     assert values == {"k1": "v1", "k2": ""}
     assert cells == {"k1": "filled", "k2": "not_found"}
-    assert partial is False
 
 
 def test_execute_task_missing_task_smoke(monkeypatch):
@@ -446,10 +439,9 @@ def test_dry_run_empty_placeholders_raises(monkeypatch):
 
 
 def test_dry_run_success_structure(monkeypatch):
-    """正常路径：检索段+生成段复用；generate_values 只收 llm 子集；param 直取；
-    manual 恒人工；返回 values/cells/evidence/partial 四键结构。"""
+    """正常路径：检索段+生成段复用；generate_values 收 llm 子集（manual 视同 llm）；
+    param 直取；缺失一律空串（partial 恒 False）；返回四键结构。"""
     from rag.svr.template_fill import executor
-    from rag.svr.template_fill.renderer import manual_mark
     calls = {}
 
     async def fake_retrieve_all(tenant_id, placeholders, kb_ids, params, task_id=""):
@@ -482,15 +474,14 @@ def test_dry_run_success_structure(monkeypatch):
         "tenant-me", "tpl1", ["kb1", "kb2"], {"k3": "参数值"}))
 
     assert set(out) == {"values", "cells", "evidence", "partial"}
-    assert out["values"] == {"k1": "产值", "k2": manual_mark("二"),
-                             "k3": "参数值", "k4": manual_mark("四")}
+    assert out["values"] == {"k1": "产值", "k2": "", "k3": "参数值", "k4": ""}
     assert out["cells"] == {"k1": "filled", "k2": "not_found",
-                            "k3": "filled", "k4": "manual"}
-    assert out["partial"] is True, "required 字段 missing 必须落 partial"
+                            "k3": "filled", "k4": "not_found"}
+    assert out["partial"] is False, "缺失留空待人工加工，不再落 partial"
     assert out["evidence"]["k1"] == {"query": "q1", "chunks": [{"content": "证"}]}
-    # 生成段只收 llm 子集；检索段收全量 placeholders + 原始入参
-    assert calls["generate_keys"] == ["k1", "k2"]
-    assert calls["generate_chunks_keys"] == ["k1", "k2"]
+    # 生成段收 llm 子集（manual 视同 llm，排除 param）；检索段收全量 placeholders + 原始入参
+    assert calls["generate_keys"] == ["k1", "k2", "k4"]
+    assert calls["generate_chunks_keys"] == ["k1", "k2", "k4"]
     assert calls["retrieve_all"] == ("tenant-me", ["k1", "k2", "k3", "k4"],
                                      ["kb1", "kb2"], {"k3": "参数值"})
     assert calls["kbs"] == ("tenant-me", ["kb1", "kb2"]), "kb_ids 非空必须先过 _load_and_check_kbs"

@@ -9,11 +9,11 @@ MAX_ANCHOR_LEN = 500  # anchor 超长约束收口在 parse：识别阶段就拦�
 DETECT_SYSTEM = """你是文档模板分析专家。用户给出固定模板中疑似需要填写的编号行（行号\\t文本）。
 请识别其中所有"填写点"——模板留空、需要后续填写内容的位置。
 输出 JSON 数组，每个元素：
-{"line": 行号(int), "anchor": "该行原文中将被替换为占位符的精确子串", "key": "snake_case英文标识", "name": "中文字段名", "description": "给填写模型的说明", "retrieval_query": "适合去知识库检索的查询词", "fill_mode": "llm 或 manual", "required": true或false}
+{"line": 行号(int), "anchor": "该行原文中将被替换为占位符的精确子串", "key": "snake_case英文标识", "name": "中文字段名", "description": "给填写模型的说明", "retrieval_query": "适合去知识库检索的查询词", "fill_mode": "llm", "required": true或false}
 规则：
 1. anchor 必须是该行原文的精确子串，禁止改写；一行可有多个填写点（拆成多个元素）。
 2. 同一含义的填写点 key 全局唯一；日期类建议 key 如 sign_date。
-3. 无法确定如何填写的位置用 fill_mode=manual。
+3. fill_mode 一律填 "llm"（所有填写点统一交给 AI 检索填写，检索不到的留空由人工后续加工）。
 4. 找不到任何填写点输出 []。只输出 JSON 数组，不要输出其它文字。"""
 
 
@@ -53,13 +53,14 @@ def parse_detection_response(raw: str, candidates: list) -> list:
         while key in used_keys:
             key = f"{key}_2"
         used_keys.add(key)
-        mode = it.get("fill_mode") if it.get("fill_mode") in FILL_MODES else "llm"
+        # fill_mode 代码层强制 llm：识别产物统一交给 AI 检索填写（prompt 只是引导，
+        # LLM 不听话也拦得住）；manual/param 只能由人工在详情页显式配置
         out.append({
             "key": key,
             "name": str(it.get("name") or key)[:100],
             "description": str(it.get("description") or ""),
             "retrieval_query": str(it.get("retrieval_query") or ""),
-            "fill_mode": mode,
+            "fill_mode": "llm",
             "required": bool(it.get("required", True)),
             "addr": cand["addr"],
             "anchor": anchor,

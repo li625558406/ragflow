@@ -227,7 +227,7 @@ async def generate_values(tenant_id: str, placeholders: list[dict], chunks_by_ke
     return values, missing
 
 
-# ---------- 编排层：待人工合成 + 任务 pipeline（状态机乐观转移） ----------
+# ---------- 编排层：产值合成 + 任务 pipeline（状态机乐观转移） ----------
 
 _FILL_MODES = ("llm", "param", "manual")
 # 中间态集合：崩溃兜底只把这些强置 failed（终态不可被兜底覆盖）
@@ -235,42 +235,34 @@ _TASK_MIDDLE_STATUSES = ("pending", "retrieving", "generating", "rendering")
 
 
 def _norm_fill_mode(it: dict) -> str:
-    """fill_mode 归一：缺省/白名单外脏值一律按 llm（对抗性输入不炸 pipeline）。"""
+    """fill_mode 归一：manual 视同 llm（全部交给 AI 检索填写，填不出留空由人工
+    二次加工，不再落【待人工】标记）；param 保留直取任务参数；缺省/白名单外
+    脏值按 llm（对抗性输入不炸 pipeline）。"""
     mode = it.get("fill_mode")
-    return mode if mode in _FILL_MODES else "llm"
+    if mode == "param":
+        return "param"
+    return "llm"
 
 
-def build_values(placeholders: list[dict], generated: dict, missing: set) -> tuple[dict, dict, bool]:
-    """合成渲染产值三元组 (values, cell_status, is_partial)（纯函数）。
+def build_values(placeholders: list[dict], generated: dict) -> tuple[dict, dict]:
+    """合成渲染产值二元组 (values, cell_status)（纯函数）。
 
-    每槽优先级：manual（恒待人工）> generated 有值 > required+missing（待人工）
-    > 其余缺失落空串。is_partial=True 表示稿件含人工标记，任务终态落 partial 而非 done。
+    有产值落值，缺失一律落空串（输出文档留空，人工审核二次加工），
+    不再插【待人工】标记、不再有 partial 终态。
     """
-    from rag.svr.template_fill.renderer import manual_mark
     values: dict = {}
     cell_status: dict = {}
-    is_partial = False
     for it in placeholders:
         key = it.get("key")
         if not key:
             continue
-        name = it.get("name") or key
-        mode = _norm_fill_mode(it)
-        if mode == "manual":
-            values[key] = manual_mark(name)
-            cell_status[key] = "manual"
-            is_partial = True
-        elif generated.get(key) not in (None, ""):
+        if generated.get(key) not in (None, ""):
             values[key] = generated[key]
             cell_status[key] = "filled"
-        elif key in missing and it.get("required"):
-            values[key] = manual_mark(name)
-            cell_status[key] = "not_found"
-            is_partial = True
         else:
             values[key] = ""
             cell_status[key] = "not_found"
-    return values, cell_status, is_partial
+    return values, cell_status
 
 
 def _render_result(task, ver, placeholders: list[dict], values: dict, tpl_file_type: str):
@@ -292,7 +284,7 @@ def _render_result(task, ver, placeholders: list[dict], values: dict, tpl_file_t
 async def _retrieve_all(tenant_id: str, placeholders: list[dict], kb_ids: list[str],
                         params: dict, task_id: str = "") -> tuple[dict, dict]:
     """逐槽检索公共段（execute_task 与 dry_run 共用，纯抽取）：单槽失败降级为
-    空证据（字段走 missing/待人工），不中断整单；kb_ids 为空时全槽直接空证据
+    空证据（该字段留空待人工二次加工），不中断整单；kb_ids 为空时全槽直接空证据
     （不进 retrieve_slot，省 N 次无意义异常+warning）。
     返回 (chunks_by_key, evidence) 双结构。task_id 仅用于日志上下文（dry_run 无任务 id）。"""
     chunks_by_key: dict = {}
@@ -353,8 +345,9 @@ async def dry_run(tenant_id: str, template_id: str, kb_ids: list[str], params: d
                   for it in llm_placeholders}
     generated, missing = await generate_values(tenant_id, llm_placeholders, llm_chunks, params)
     _merge_param_values(placeholders, generated, missing, params)
-    values, cell_status, is_partial = build_values(placeholders, generated, missing)
-    return {"values": values, "cells": cell_status, "evidence": evidence, "partial": is_partial}
+    values, cell_status = build_values(placeholders, generated)
+    # partial 字段为前端契约保留，恒 False——缺值留空待人工二次加工，不再有 partial 终态
+    return {"values": values, "cells": cell_status, "evidence": evidence, "partial": False}
 
 
 async def _execute_task_async(task_id: str):
@@ -408,7 +401,7 @@ async def _execute_task_async(task_id: str):
     # ④ param 模式直取任务参数（不经 LLM，同样过约束兜底），命中则覆盖/摘出 missing
     _merge_param_values(placeholders, generated, missing, params)
 
-    values, cell_status, is_partial = build_values(placeholders, generated, missing)
+    values, cell_status = build_values(placeholders, generated)
 
     # ⑤ 渲染 + 落稿（storage put 失败会 raise，与渲染异常同路兜底）
     if not svc.update_status(task_id, "generating", "rendering"):
@@ -426,10 +419,10 @@ async def _execute_task_async(task_id: str):
         svc.update_status(task_id, "rendering", "failed", error=f"渲染落稿失败: {e}")
         return
 
-    # ⑥ 终态：稿件含人工标记 → partial，否则 done。CAS 失败（返回 False）说明
-    # 并发执行器接管或终态已变：稿件对象已入 MinIO 但 DB 未落终态（孤儿对象），
-    # 此处只告警不重试，交人工核对。
-    if not svc.update_status(task_id, "rendering", "partial" if is_partial else "done",
+    # ⑥ 终态：渲染成功即 done（缺值留空交人工二次加工，不再有 partial）。
+    # CAS 失败（返回 False）说明并发执行器接管或终态已变：稿件对象已入 MinIO
+    # 但 DB 未落终态（孤儿对象），此处只告警不重试，交人工核对。
+    if not svc.update_status(task_id, "rendering", "done",
                              values={"cells": cell_status, "render": values},
                              evidence=evidence, result_file_id=result_obj):
         logger.warning("fill task final status CAS failed, task=%s result_obj=%s "
