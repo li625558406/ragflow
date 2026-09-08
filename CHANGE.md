@@ -1,12 +1,14 @@
 # CHANGE.md — 项目迭代记录
 
-## 2026-09-08 范本库列表批量删除 + 单个删除（未部署）
+## 2026-09-08 范本库列表批量删除 + 单个删除（后端已部署，前端待 build）
 
 **主题**：范本库列表页新增删除能力。① 后端新增 `POST /api/v1/template/fill/batch-delete`（template_api.py）：ids 非空字符串数组校验 + 单次上限 50，逐个复用 `TplTemplateService.delete_template`（守卫/事务/TOCTOU 行锁全复用单删），部分失败不影响其余，返回 `{deleted: [...], failed: [{id, message}]}`；单个删除复用既有 `DELETE /template/fill/<id>` 端点。② 前端：api.ts 补 `deleteTemplateFill`/`batchDeleteTemplateFill` URL；hooks 新增 `useDeleteTemplateFill`/`useBatchDeleteTemplateFill`（成功后失效列表缓存）；列表页加全选/行复选框列、行内「删除」按钮（仅 draft/disabled 可删，与后端守卫一致）、选中后顶部浮现「批量删除(N)」按钮，均走 `ConfirmDeleteDialog` 二次确认；搜索/筛选/翻页时清空选中；批量删除部分失败时 toast 汇总展示首条失败原因。
 
-**测试**：后端 test_template_api_routes.py 新增 9 用例（路由注册、非法 ids 8 组参数化、超 50 上限、部分失败、全成功），4 套件 165 单测全绿；共享桩 `_FakeJsonRequest.get_json` 兼容 `silent=True` 签名。前端改动文件 tsc/ESLint 0 error。
+**线上 500 修复（部署首删即现）**：`delete_template` 在 `DB.atomic()` 事务块内调用带 `@DB.connection_context` 装饰器的 `has_tasks`/`get_owned`——该装饰器退出时无条件 `db.close()`，与开启的事务冲突，真实 MySQL 必现 `OperationalError('Attempting to close database while transaction is open.')`（单测桩/SQLite 不触发，属 review+153 单测都漏掉的盲区）。修复：事务内复查改裸查询（复用事务连接），并加源码断言回归测试（事务块内禁止调用装饰器方法）。已 SCP + 重启部署，commit `ffa23504`。
 
-**遗留**：未部署服务器（后端 template_api.py 需 SCP + 容器重启；前端需 build 部署）。已发布/有填写任务记录的模板按设计不可删（守卫在 service 层）。
+**测试**：后端 test_template_api_routes.py 新增 10 用例（路由注册、非法 ids 8 组参数化、超 50 上限、部分失败、全成功、事务裸查询源码断言），4 套件 165 单测全绿；共享桩 `_FakeJsonRequest.get_json` 兼容 `silent=True` 签名。前端改动文件 tsc/ESLint 0 error。
+
+**遗留**：前端未 build 部署（复选框/删除按钮在旧构建里不存在；用户本地前端 dev 连服务器后端可直接联调）。已发布/有填写任务记录的模板按设计不可删（守卫在 service 层）。
 
 ## 2026-09-07 模板填写 P2+P3 实施完成（执行引擎 + 任务闭环 + C端对话工具，未部署）
 
