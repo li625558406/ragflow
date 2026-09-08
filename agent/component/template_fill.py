@@ -33,7 +33,7 @@ import logging
 import re
 from functools import partial
 
-from agent.component.base import ComponentParamBase, ComponentBase
+from agent.component.base import ComponentBase, ComponentParamBase
 from api.db.services.template_fill_service import (
     TplTemplateService,
     TplTemplateVersionService,
@@ -140,9 +140,9 @@ class TemplateFill(ComponentBase):
             else:
                 try:
                     ans = json.dumps(val, ensure_ascii=False)
-                except Exception:
+                except Exception:  # noqa: BLE001 — 不可序列化值降级 str
                     ans = str(val)
-            text = re.sub(r"\{%s\}" % re.escape(k), ans, text)
+            text = re.sub(r"\{" + re.escape(k) + r"\}", ans, text)
         return text.strip()
 
     def _load_candidates(self, tenant_id: str) -> list[dict]:
@@ -175,7 +175,7 @@ class TemplateFill(ComponentBase):
                     outs = obj.output() or {}
                     return {k: v for k, v in outs.items()
                             if isinstance(v, (str, int, float, bool)) and v != ""}
-        except Exception:  # noqa: BLE001 — 画布结构异常不阻断主流程，仅少一路证据
+        except Exception:
             logger.warning("TemplateFill._begin_fields failed", exc_info=True)
         return {}
 
@@ -248,7 +248,7 @@ class TemplateFill(ComponentBase):
         tenant_id = self._canvas.get_tenant_id() if self._canvas else ""
         if not tenant_id:
             raise ValueError("无法确定画布租户")
-        kb_ids = [k for k in (self._param.dataset_ids or []) if k]
+        kb_ids = list(dict.fromkeys(k for k in (self._param.dataset_ids or []) if k))
         if not kb_ids:
             raise ValueError("请先在节点配置中选择知识库")
         query = self._resolve_query()
@@ -265,7 +265,7 @@ class TemplateFill(ComponentBase):
         downloads: list[dict] = []
         summary_lines: list[str] = []
         for cand in chosen:
-            dl, cell_status, filled = await self._fill_one(
+            dl, _cell_status, filled = await self._fill_one(
                 tenant_id, cand, kb_ids, query, begin_fields, user_file_text)
             downloads.append(dl)
             total = len(cand["_placeholders"])

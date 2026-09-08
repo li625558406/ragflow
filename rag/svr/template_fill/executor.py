@@ -38,6 +38,9 @@ TOP_K_MAX = 20
 TOP_K_DEFAULT = 6
 SIMILARITY_THRESHOLD = 0.2
 VECTOR_SIMILARITY_WEIGHT = 0.5
+# 逐槽检索并发路数（_retrieve_all 信号量）：大模板百级填写点并发 6 路，
+# 单槽 ES 查询秒级耗时下把小时级串行压到分钟级，同时不把 ES/embd 打爆
+RETRIEVAL_CONCURRENCY = 6
 
 
 def _run_async(coro):
@@ -80,10 +83,19 @@ def _clip_chunk(ck: dict) -> dict:
     }
 
 
-async def retrieve_slot(tenant_id: str, kb_ids: list[str], query: str, top_k: int = TOP_K_DEFAULT) -> list[dict]:
-    """单槽位检索。query 已由上游清洗；异常向上抛由编排层兜底为该槽位空结果。"""
+def load_retrieval_ctx(tenant_id: str, kb_ids: list[str]):
+    """检索上下文一次性加载（知识库校验 + embedding 模型），供同批多槽复用，
+    免去每槽重复 DB 查询与模型构建。"""
     kbs = _load_and_check_kbs(tenant_id, kb_ids)
     embd_mdl = _build_embd_mdl(tenant_id, kbs)
+    return kbs, embd_mdl
+
+
+async def retrieve_slot(tenant_id: str, kb_ids: list[str], query: str, top_k: int = TOP_K_DEFAULT,
+                        ctx=None) -> list[dict]:
+    """单槽位检索。query 已由上游清洗；异常向上抛由编排层兜底为该槽位空结果。
+    ctx 为 load_retrieval_ctx 产物（多槽并发时复用，省每槽重复加载）。"""
+    kbs, embd_mdl = ctx if ctx else load_retrieval_ctx(tenant_id, kb_ids)
     page_size = max(TOP_K_MIN, min(int(top_k or TOP_K_DEFAULT), TOP_K_MAX))
     kbinfos = await settings.retriever.retrieval(
         query, embd_mdl, [kb.tenant_id for kb in kbs], [kb.id for kb in kbs],
@@ -286,24 +298,46 @@ async def _retrieve_all(tenant_id: str, placeholders: list[dict], kb_ids: list[s
     """逐槽检索公共段（execute_task 与 dry_run 共用，纯抽取）：单槽失败降级为
     空证据（该字段留空待人工二次加工），不中断整单；kb_ids 为空时全槽直接空证据
     （不进 retrieve_slot，省 N 次无意义异常+warning）。
+    llm 槽并发检索（RETRIEVAL_CONCURRENCY 路信号量），大模板（百级填写点）串行
+    会被单次 ES 查询秒级~百秒级耗时放大成小时级阻塞；检索上下文只加载一次。
     返回 (chunks_by_key, evidence) 双结构。task_id 仅用于日志上下文（dry_run 无任务 id）。"""
     chunks_by_key: dict = {}
     evidence: dict = {}
+    todo: list[tuple[str, str, dict]] = []   # (key, query, placeholder)
     for it in placeholders:
         key = it.get("key")
         if not key:
             logger.warning("placeholder missing key, skipped, task=%s name=%r", task_id, it.get("name"))
             continue
         query = build_retrieval_query(it.get("retrieval_query") or it.get("name") or key, params)
-        chunks: list = []
+        chunks_by_key[key] = {"chunks": [], "query": query}
+        evidence[key] = {"query": query, "chunks": []}
         if _norm_fill_mode(it) == "llm" and query and kb_ids:
-            try:
-                chunks = await retrieve_slot(tenant_id, kb_ids, query,
-                                             it.get("top_k") or TOP_K_DEFAULT)
-            except Exception as e:  # noqa: BLE001 — 各存储/检索实现异常类型不一，降级空证据
-                logger.warning("retrieve_slot failed, task=%s key=%s: %s", task_id, key, e)
-        chunks_by_key[key] = {"chunks": chunks, "query": query}
-        evidence[key] = {"query": query, "chunks": chunks}
+            todo.append((key, query, it))
+    ctx = None
+    if todo:
+        try:
+            ctx = load_retrieval_ctx(tenant_id, kb_ids)
+        except Exception as e:  # noqa: BLE001 — 上下文加载失败等价全部槽降级空证据
+            logger.warning("load_retrieval_ctx failed, task=%s: %s", task_id, e)
+
+    sem = asyncio.Semaphore(RETRIEVAL_CONCURRENCY)
+
+    async def _one(key: str, query: str, it: dict):
+        async with sem:
+            chunks = await retrieve_slot(tenant_id, kb_ids, query,
+                                         it.get("top_k") or TOP_K_DEFAULT, ctx=ctx)
+        return key, chunks
+
+    results = await asyncio.gather(
+        *[_one(key, query, it) for key, query, it in todo], return_exceptions=True)
+    for (key, _query, _it), res in zip(todo, results):
+        if isinstance(res, BaseException):
+            logger.warning("retrieve_slot failed, task=%s key=%s: %s", task_id, key, res)
+            continue
+        _key, chunks = res
+        chunks_by_key[key]["chunks"] = chunks
+        evidence[key]["chunks"] = chunks
     return chunks_by_key, evidence
 
 

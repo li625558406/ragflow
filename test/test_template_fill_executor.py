@@ -76,6 +76,41 @@ def test_retrieve_slot_topk_clamped(monkeypatch):
         assert 1 <= captured["page_size"] <= 20
 
 
+def test_retrieve_all_concurrent_ctx_shared(monkeypatch):
+    """_retrieve_all 并发化回归：ctx 只加载一次、llm 槽并发、单槽异常降级空证据、
+    param 槽/无 key 槽不进检索。"""
+    from rag.svr.template_fill import executor
+    calls = {"ctx": 0, "slots": 0}
+
+    def fake_ctx(tenant_id, kb_ids):
+        calls["ctx"] += 1
+        return ("ctx_kbs", "ctx_embd")
+
+    async def fake_slot(tenant_id, kb_ids, query, top_k=6, ctx=None):
+        assert ctx == ("ctx_kbs", "ctx_embd")
+        calls["slots"] += 1
+        if query == "炸":
+            raise RuntimeError("es down")
+        return [{"content": query, "doc_id": "d", "doc_name": "n", "similarity": 0.9}]
+
+    monkeypatch.setattr(executor, "load_retrieval_ctx", fake_ctx)
+    monkeypatch.setattr(executor, "retrieve_slot", fake_slot)
+    placeholders = [{"key": f"k{i}", "name": f"字段{i}", "fill_mode": "llm"}
+                    for i in range(5)] + [
+        {"key": "炸", "name": "炸", "fill_mode": "llm"},
+        {"key": "p1", "name": "参数字段", "fill_mode": "param"},
+        {"key": None, "name": "无key"},
+    ]
+    chunks_by_key, _evidence = executor._run_async(
+        executor._retrieve_all("t", placeholders, ["kb1"], {}))
+    assert calls["ctx"] == 1                      # 上下文整批只加载一次
+    assert calls["slots"] == 6                    # 5 个 llm 槽 + 炸；param/无key 不进
+    assert chunks_by_key["k0"]["chunks"][0]["content"] == "字段0"
+    assert chunks_by_key["炸"]["chunks"] == []    # 单槽异常降级空证据
+    assert chunks_by_key["p1"]["chunks"] == []
+    assert "None" not in chunks_by_key and None not in chunks_by_key
+
+
 # ---------- 生成层：prompt 清洗 + LLM 批量产值 ----------
 
 def test_clean_for_prompt_strips_and_truncates():
@@ -335,7 +370,7 @@ def _run_pipeline(monkeypatch, task, *, checked_ver=_MISSING, latest_ver=_broken
 
     calls = {"retrieve": [], "transits": [], "puts": [], "checked": [], "latest": 0}
 
-    async def fake_retrieve(tenant_id, kb_ids, query, top_k=6):
+    async def fake_retrieve(tenant_id, kb_ids, query, top_k=6, ctx=None):
         calls["retrieve"].append((kb_ids, query))
         return [{"content": "证据", "doc_id": "d", "doc_name": "n", "similarity": 0.9}]
 
@@ -356,6 +391,8 @@ def _run_pipeline(monkeypatch, task, *, checked_ver=_MISSING, latest_ver=_broken
         return checked_ver
 
     monkeypatch.setattr(executor, "retrieve_slot", fake_retrieve)
+    monkeypatch.setattr(executor, "load_retrieval_ctx",
+                        lambda tenant_id, kb_ids: (types.SimpleNamespace(id="kb1"), None))
     monkeypatch.setattr(executor, "generate_values", fake_generate)
     monkeypatch.setattr(tpl_svc.TplFillTaskService, "update_status", fake_update_status)
     monkeypatch.setattr(tpl_svc.TplFillTaskService, "get_or_none", lambda **kw: task)

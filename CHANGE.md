@@ -1,5 +1,13 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-08 范本填写检索性能优化：并发检索 + 上下文复用 + KB 去重（后端，已部署）
+
+**主题**：用户实测「专用本（196 填写点）+ 画布范本填写」疑似卡死——排查为非卡死而是极慢：逐槽串行检索 × 单次 ES 查询 70~125s（ES 同时被 OCR 解析任务压载）× 每槽重复加载 KB/embedding 模型，预计 5 小时+。优化 executor.py `_retrieve_all`：① llm 槽并发检索（`RETRIEVAL_CONCURRENCY=6` 信号量），百级填写点从小时级压到分钟级；② 新增 `load_retrieval_ctx` 整批只加载一次知识库校验+embedding 模型（`retrieve_slot` 加可选 ctx 参数，向后兼容）；③ 上下文加载失败等价全槽降级空证据（不中断）；④ 画布节点 kb_ids 去重（实测配置同一 KB 重复 4 次，ES 索引列表翻倍）。单槽失败仍降级空证据，语义不变。
+
+**测试**：新增并发回归测试（ctx 只加载一次、param/无 key 槽不进检索、单槽异常降级）；修复 gather 结果解包 bug（测试先行抓到）；模板填写套件 206 单测全绿，ruff check 0 违规（ruff format 存量文件非 format 风格，不做全文件重排）。已 SCP executor.py + template_fill.py（组件）+ 容器重启。
+
+**遗留**：ES 单查询 100s+ 的根因是 OCR/DeepDOC 解析任务并发压载+KB 体量大，属平台级负载问题，本次只做并发缓解；产值 LLM 批次（196 槽 / 10 ≈ 20 次串行调用）仍需 10 分钟级，如仍慢可再并发化。
+
 ## 2026-09-08 范本填写节点升级：多范本各产一份成稿 + 三路数据注入 + C端成稿在线预览（前后端，未部署）
 
 **主题**：按用户需求「自己捞取适配的单个或多个范本，LLM 根据范本做 KB 检索 + 上传文件 + 用户输入内容做范本数据注入，最终输出到前端 UI 渲染写好的内容」（渲染复用 C 端流程页签现成 Word 渲染设施）。① **TemplateFill 节点多范本**（agent/component/template_fill.py）：选型 prompt 改为选出一个或多个适配范本（`{"template_ids": [...]}`，兼容旧单选契约；非法 JSON/编造 id/空列表仍必报错），每个选中范本独立走「检索→产值→渲染」各产一份成稿，`download` 输出改为**列表 JSON**（Message._extract_downloads 原生支持 list 契约），content 汇总逐份列出填充情况。② **三路数据注入**：KB 检索（原有）+ **用户上传文件**（canvas 已解析的 `sys.file_content`，截 2000 字预置片段插到每个填写点证据首位，优先于 KB 片段）+ **用户输入**（需求描述进产值 LLM 背景信息；**Begin 表单字段**标量输出自动收集——与 param 模式填写点 key 同名即不经 LLM 直取，其余作背景信息）。③ **产物落桶修正**：产物改存 `{tenant_id}-downloads` bucket——`/agents/download`（FileService.get_blob）与 `/files/{id}/content` 两个端点的既有读取契约都是这个 bucket。④ **下载契约修复（存量 bug）**：message.py `_extract_downloads` 给每条下载信息注入 `url`（`/api/v1/agents/download?id=&created_by=`）与 `name`（此前 dl.url/dl.name 全链路无人赋值，c-chat 下载按钮 href undefined 是坏的）；docs_generator.py 产物同步改存 `-downloads` bucket（原存裸租户 bucket，下载端点读不到必 404）。⑤ **前端成稿预览**（web/src/pages/c-chat/index.tsx）：下载条目重构为「文件名（点击预览）+ 下载」双操作——预览打开现成 ReviewPanel（`GET /files/{id}/content` 段落 JSON 只读渲染，与流程页签同款），下载走修复后的 url；use-send-message.ts downloads 类型补 url/name。
