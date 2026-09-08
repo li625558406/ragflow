@@ -34,7 +34,7 @@ TemplateFill 画布节点（多范本、检索/产值/渲染）目前全程无�
 | 时机 | event 名 | data 契约 |
 |---|---|---|
 | 选型完成 | `template_fill_progress` | `{stage:"selected", templates:[{template_id, name, slot_count}]}` |
-| 每范本检索/产值推进 | `template_fill_progress` | `{stage:"filling", template_id, name, done, total}`（done/total 为该范本已填写槽位/总槽位，批次粒度） |
+| 每范本检索/产值推进 | `template_fill_progress` | `{stage:"filling", template_id, name, done, total}`（done/total 为该范本 LLM 产值槽位的累计进度，param 直取槽不计数，批次粒度；与 selected 的 slot_count 口径不同——后者为全部填写点） |
 | 单范本渲染成功 | `template_fill_progress` | `{stage:"filled", template_id, name, download:{doc_id, filename, mime_type, size, url, name}}`（url/name 由组件直接按 Message._with_download_url 同款规则补齐） |
 | 单范本失败降级 | `template_fill_progress` | `{stage:"failed", template_id, name, error}` |
 | 全部完成/取消 | `template_fill_progress` | `{stage:"done"}` / `{stage:"cancelled"}` |
