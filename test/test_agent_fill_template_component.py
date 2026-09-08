@@ -22,6 +22,7 @@
   产物落 {tenant_id}-downloads bucket、下载输出列表契约（下游 Message 依赖）
 所有外部依赖（Service / settings.STORAGE_IMPL / executor 函数 / renderer.render）
 经模块属性注入替身，不触真实 DB / LLM / MinIO。"""
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -71,6 +72,7 @@ def _make_component(param=None, canvas=None):
     cpn._param = param or TemplateFillParam()
     cpn._param.check()
     cpn._canvas = canvas or FakeCanvas()
+    cpn._event_queue = asyncio.Queue()
     return cpn
 
 
@@ -199,7 +201,7 @@ def patched_env(monkeypatch):
                 for placeholders in placeholders_list]
 
     async def fake_generate_values(tenant_id, placeholders, chunks_by_key, params,
-                                   batch_size=10, sem=None):
+                                   batch_size=10, sem=None, on_progress=None):
         calls["gen_keys"] = [it["key"] for it in placeholders]
         return {it["key"]: f"值_{it['key']}" for it in placeholders}, set()
 
@@ -234,12 +236,15 @@ def test_invoke_async_happy_path_docx(patched_env):
     # 产物必须落 {tenant_id}-downloads bucket：/agents/download 与
     # /files/{id}/content 两个端点的既有读取契约都是这个 bucket
     assert patched_env["put"][0][0] == "t1-downloads"
-    # 下载输出契约：输出为列表（多范本各一份），每项四字段供下游
-    # Message._extract_downloads / 前端下载与预览按钮使用
+    # 下载输出契约：输出为列表（多范本各一份），每项六字段供下游
+    # Message._extract_downloads / 前端下载与预览按钮使用（url/name 为
+    # /agents/download 直连下载新增）
     dls = json.loads(cpn.output("download"))
     assert isinstance(dls, list) and len(dls) == 1
     dl = dls[0]
-    assert set(dl) == {"doc_id", "filename", "mime_type", "size"}
+    assert set(dl) == {"doc_id", "filename", "mime_type", "size", "url", "name"}
+    assert dl["url"].startswith("/api/v1/agents/download?id=")
+    assert dl["name"] == "道路报告.docx"
     assert dl["filename"] == "道路报告.docx"
     assert dl["mime_type"].endswith("wordprocessingml.document")
     assert dl["size"] == len(b"RESULT_BLOB")
@@ -405,7 +410,7 @@ def test_invoke_async_user_file_evidence_prepended(patched_env, monkeypatch):
     seen = {"chunks": {}, "background": None}
 
     async def fake_generate_values(tenant_id, placeholders, chunks_by_key, params,
-                                   batch_size=10, sem=None):
+                                   batch_size=10, sem=None, on_progress=None):
         seen["chunks"] = {k: v["chunks"] for k, v in chunks_by_key.items()}
         seen["background"] = params
         return {it["key"]: f"值_{it['key']}" for it in placeholders}, set()
