@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import message from '@/components/ui/message';
 import {
+  useDetectTemplateFill,
   useSaveTemplateFillPlaceholders,
   useTemplateFillDetail,
   useTemplateFillPreview,
@@ -83,6 +84,33 @@ export default function TemplateFillDetailPage() {
   const [testOpen, setTestOpen] = useState(false);
 
   const saveMut = useSaveTemplateFillPlaceholders();
+  const detectMut = useDetectTemplateFill();
+
+  // detect 建议与现有手动行合并（与上传向导同规则）：
+  // 建议在前、手动行（无定位 addr）在后，key 重复的手动行丢弃，避免覆盖手动添加的行
+  const applySuggestions = (suggestions: TplPlaceholder[]) => {
+    if (suggestions.length === 0) {
+      message.warning('未识别到填写点，可手动添加');
+      return;
+    }
+    setPlaceholders((prev) => {
+      const sugKeys = new Set(suggestions.map((s) => s.key.trim()));
+      const manual = prev.filter((r) => !r.addr && !sugKeys.has(r.key.trim()));
+      return [...suggestions, ...manual];
+    });
+    message.success(`AI 识别到 ${suggestions.length} 个填写点，请确认后保存`);
+  };
+
+  const runDetect = () => {
+    if (!id) return;
+    detectMut.mutate(id, {
+      onSuccess: (res) => applySuggestions(res.suggestions),
+      onError: (err) =>
+        message.error(
+          err instanceof Error ? err.message : 'AI 识别失败，可手动添加填写点',
+        ),
+    });
+  };
 
   // 详情首次加载（或切换模板）时用后端占位符初始化编辑表。
   // 依赖含 placeholders：内容不变时 React Query structural sharing 保持引用稳定，
@@ -326,6 +354,14 @@ export default function TemplateFillDetailPage() {
               )}
             </div>
             <div className="flex items-center gap-3">
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={readonly || detectMut.isPending}
+                onClick={runDetect}
+              >
+                {detectMut.isPending ? '识别中…' : 'AI 识别'}
+              </Button>
               <Button
                 size="sm"
                 variant="outline"
