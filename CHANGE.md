@@ -1,5 +1,17 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-08 ES 检索重试冲突根治第二例（track_total_hits）+ 索引名去重消 KNN 4 倍放大 + KB 3b4f619c 索引瘦身（保留近1个月）（后端，已部署）
+
+**主题**：用户「再看看」复查服务器——load 12.55、iowait 88~93%、磁盘读 ~180MB/s。ES hot threads 实证 6+ 个 search 线程 100% 阻塞在 HNSW 向量检索 off-heap 读盘（`OffHeapFloatVectorValues`）：17.9GB 索引（78 万 chunk）+ ES 堆仅 2GB，向量无法常驻页缓存，每次 KNN 现读盘。两个叠加的放大因素：① **track_total_hits 重试冲突**（与上文 timeout 同族 bug）——用户画布范本填写检索（`canvas:TemplateFill`，k=1024/num_candidates=2048 大查询）超时重试时 ES 9.x 客户端 kwarg 原地合并进 body 导致 `Received multiple values for 'track_total_hits'`，重试必然失败；② **索引名 4 倍重复**——同租户 4 个 KB 走 `index_name(tenant_id)` 返回同一索引，`index_names` 未去重，ES 对同一索引建 4 个搜索上下文，KNN 开销 4 倍放大。修复（commit `ce55fef1`）：`_es_search_once` 把 `track_total_hits` 写进 body 不再走 kwarg；`_source=True` kwarg 一并移除（ES 默认值，与 body 内字段列表潜在冲突）；入口 `dict.fromkeys` 去重保序 index_names。
+
+**索引瘦身（用户指示 KB 3b4f619c 保留近1个月）**：先摸底后删——KB「其他」34878 文档/52.9 万 chunk（token 1.39 亿），30 天前 16606 文档/~21.1 万 chunk 待删。执行脚本走官方 `DocumentService.remove_document` 全路径（DB 行+KB 计数回写+取消任务+删任务行+chunk 图+缩略图+ES chunks+元数据+图谱清理），补 MinIO 原文件 + File2Document/File 孤儿行清理（禁裸 SQL 防孤儿）。**16606 文档删除完成、0 错误、92 分钟**（前段 15 文档/s，后段大文档 delete_by_query 变重降至 ~1.3/s），KB 剩 18273 文档/31.8 万 chunk。删除后 ES 磁盘虚高（17.9→33.8GB，tombstone 未合并），随即 `_forcemerge?max_num_segments=1` 后台合并回收。
+
+**测试**：`test/test_es_conn_search_once.py` 扩到 6 用例（新增 track_total_hits 进 body 无 kwarg、无 _source kwarg、index_names 去重保序；重试幂等断言扩到全部参数），11/11 全绿（含 kb_uploader 5 例）；ruff 与基线一致（39=39）。
+
+**部署**：es_conn.py SCP + 容器重启，md5 一致、healthz 200；服务器脚本已清理。
+
+**遗留**：平台级容量瓶颈仍在——17.9GB 索引 vs ES 堆 2GB/机器 4核15GB，向量检索本质是磁盘速度；已向用户给出升级建议（8核32GB 起步/16核64GB 一步到位 + 按时间清理过期 KB chunk 控制索引体积 + 必要时 ES 独立部署）；forcemerge 完成后需复核最终 store.size；KB 按月清理目前为一次性脚本（`.scratch/_kb_slim_delete.py`），如需常态化可做成定时任务。
+
 ## 2026-09-08 KBUploader PDF 页数解析上限（>50页只上传不排队）+ 僵尸解析任务清理（后端，已部署）
 
 **主题**：服务器负载排查（load 峰值 7.46/4核）定位为采集批量入库触发 115 篇文档解析、task 队列积压 110 自愈后，用户发现既有 5MiB 体积上限（`kb_uploader.py PARSE_SIZE_LIMIT`）挡不住解析成本——文件大小与解析成本不相关：1.3MB 高压缩文本型招标 PDF 可达 ~96 页，按 12 页/分片跑 DeepDOC 布局识别（CPU 密集），多个此类文件即占满共享 task 队列。新增 `PARSE_PAGE_LIMIT=50`：`_upload_blob` 对 .pdf 用 `PdfParser.total_page_number`（pdfplumber）数页数，超限照常上传、不排队解析（用户可在 KB UI 手动触发）；页数统计失败 fail-open（None 照常排队，与 `queue_tasks` 的 None→0 语义一致）；非 PDF 文件不检查；5MiB 体积上限优先（先判体积，未超体积才判页数）。commit `c351201f`。
