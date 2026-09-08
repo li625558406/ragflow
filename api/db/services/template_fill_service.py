@@ -154,6 +154,11 @@ class TplTemplateService(CommonService):
         任务，会删掉仍被历史任务引用的模板（TOCTOU）；两条 DELETE 同事务，也杜绝
         版本行删掉而主表行删失败留下的「零版本模板」损坏态。MinIO rm 循环刻意留在
         事务外、DB 删除之前：rm 失败不回滚 DB 的语义不变。
+
+        ⚠️ 事务内必须用裸查询（不得调 has_tasks/get_owned 等带 @DB.connection_context
+        的方法）：该装饰器退出时无条件 db.close()，而连接上有 atomic 开着的事务时
+        close 会抛 OperationalError('Attempting to close database while transaction
+        is open.')——真实 MySQL 已踩坑（线上删除模板 500），SQLite/单测桩不触发。
         """
         tpl = cls.get_owned(template_id, tenant_id)
         if not tpl:
@@ -171,10 +176,14 @@ class TplTemplateService(CommonService):
                         logger.warning("template fill: delete storage obj failed: %s/%s",
                                        template_id, obj)
         with DB.atomic():
-            # 事务内复查（TOCTOU 闭合）：守卫与删除之间的并发写入已由行锁串行化
-            if cls.has_tasks(template_id):
+            # 事务内复查（TOCTOU 闭合）：守卫与删除之间的并发写入已由行锁串行化。
+            # 复查查询为裸查询（复用事务连接），理由见 docstring ⚠️ 段
+            if TplFillTask.select().where(
+                    TplFillTask.template_id == template_id).limit(1).exists():
                 return False, "该模板已有填写任务记录，不可删除（历史任务需保留可下载）"
-            if not cls.get_owned(template_id, tenant_id, for_update=True):
+            if not cls.model.select().where(
+                    (cls.model.id == template_id) & (cls.model.tenant_id == tenant_id)
+            ).for_update().first():
                 return False, "模板不存在"
             TplTemplateVersion.delete().where(
                 TplTemplateVersion.template_id == template_id).execute()

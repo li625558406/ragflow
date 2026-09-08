@@ -535,8 +535,23 @@ class _FakeMainModel:
     id = object()
     tenant_id = object()
 
-    def __init__(self):
+    def __init__(self, row=None):
         self.recorder = {}
+        self._row = row
+
+    def select(self):
+        """事务内裸查询链：select().where(...).for_update().first()。
+        first() 返回构造时给定的行（None 表示模板已被并发删除）。"""
+        return self
+
+    def where(self, *exprs):
+        return self
+
+    def for_update(self):
+        return self
+
+    def first(self):
+        return self._row
 
     def delete(self):
         return _FakeDeleteQuery(self.recorder, "main_delete")
@@ -553,7 +568,8 @@ def test_delete_template_success_cleans_versions_and_storage(monkeypatch):
         types.SimpleNamespace(original_file_id="v2_original.docx", render_file_id=None),
     ])
     monkeypatch.setattr(svc, "TplTemplateVersion", vers)
-    main = _FakeMainModel()
+    # 事务内裸查询 for_update().first() 返回行（行锁复查通过）
+    main = _FakeMainModel(row=types.SimpleNamespace(id="tpl_x", status="draft"))
     monkeypatch.setattr(svc.TplTemplateService, "model", main)
     removed = []
     monkeypatch.setattr(svc.settings, "STORAGE_IMPL", types.SimpleNamespace(
@@ -576,7 +592,7 @@ def test_delete_template_storage_rm_failure_does_not_block(monkeypatch):
         types.SimpleNamespace(original_file_id="v1_original_a.docx", render_file_id=None),
     ])
     monkeypatch.setattr(svc, "TplTemplateVersion", vers)
-    main = _FakeMainModel()
+    main = _FakeMainModel(row=types.SimpleNamespace(id="tpl_x", status="disabled"))
     monkeypatch.setattr(svc.TplTemplateService, "model", main)
 
     def boom(bucket, fnm):
@@ -605,6 +621,21 @@ def test_delete_template_missing_returns_error_without_side_effects(monkeypatch)
     assert not removed, "模板不存在时不得触碰 MinIO 对象"
     assert not vers.recorder.get("version_delete_executed"), "模板不存在时不得删版本行"
     assert not main.recorder.get("main_delete_executed"), "模板不存在时不得删主表行"
+
+
+def test_delete_template_atomic_block_uses_bare_queries():
+    """回归（线上 500 根因）：DB.atomic() 事务块内禁止调用带 @DB.connection_context
+    装饰器的方法（has_tasks/get_owned）——装饰器退出时无条件 db.close()，事务开着时
+    close 抛 OperationalError('Attempting to close database while transaction is open.')。
+    单测桩/SQLite 不触发，只有真实 MySQL 暴露，故用源码断言防回退。"""
+    from api.db.services import template_fill_service as svc
+    src = inspect.getsource(svc.TplTemplateService.delete_template)
+    head, sep, atomic_block = src.partition("with DB.atomic():")
+    assert sep, "delete_template 必须包含 with DB.atomic(): 事务块"
+    assert "cls.has_tasks(" not in atomic_block, \
+        "事务内不得调用装饰器版 has_tasks（connection_context 退出 close 与 atomic 冲突）"
+    assert "cls.get_owned(" not in atomic_block, \
+        "事务内不得调用装饰器版 get_owned（connection_context 退出 close 与 atomic 冲突）"
 
 
 # ---------- P2+P3 Task 8：填写任务 REST 端点 ----------
