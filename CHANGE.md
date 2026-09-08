@@ -1,5 +1,13 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-08 修复 docx 表格 addr 缺表序号导致多表格模板识别校验失败（已部署）
+
+**主题**：专用本模板后台识别报「anchor 不在 cell:0:0:5 文本中」——根因是 docx 表格 addr 格式为 `cell:<row>:<col>:<para_idx>`，**没有表序号**，多表格文档两个表同 (row,col,para) 的段落撞号：parse 按 index 定位到表 A 段落（校验通过），validate/渲染按 addr 查到表 B 段落（anchor 错位）。不只校验失败——渲染替换也会落错表（锚文本恰好存在时静默替换错段落）。修复：addr 改为 `cell:<tbl_no>:<row>:<col>:<para_idx>`（docx_utils.py `_build_addr_map`）；xlsx addr 含 sheet 名天然唯一不受影响。存量兼容：修复前唯一已保存模板（通用本）99 个占位符全是 `para:` 格式，无需迁移；修复后容器内直跑识别线程体重跑专用本成功（196 个填写点，cell addr 均为新格式）。commit `dfb225cd`。
+
+**测试**：新增多表格回归测试（同位置段落 addr 唯一 + 替换落到正确表）；4 套件 182 单测全绿，ruff 0 违规。服务器已 SCP docx_utils.py + 重启，专用本/通用本 detect 均为 done。
+
+**遗留**：旧格式 addr 的存量占位符无自动迁移（当前数据无此类 addr，若未来发现旧导出数据需人工重识别）。
+
 ## 2026-09-08 上传模板改为「上传即走」后台 AI 识别 + 列表识别状态（前后端，均未部署）
 
 **主题**：按用户需求「上传执行到下一步时，可在列表看到 AI 识别的进度或状态」（经确认选择后台识别方案）：① 后端 `tpl_template` 加 `detect_status`（none|running|done|failed）+ `detect_error` 字段（db_models.py 含 migrate_db 迁移）；`TplTemplateService.set_detect_status` 状态流转方法；新增 `POST /template/fill/detect-async` 端点（template_api.py）——daemon 线程跑 LLM 识别，成功自动 `save_placeholders` 落库，所有失败路径（含 0 条识别结果）必置 failed 防卡 running；防重入双保险（进程内 `_detecting` set 为准 + DB 状态展示，进程重启自愈）；仅对「无已保存填写点」模板开放，防覆盖人工配置。② 前端：上传向导重构为单面板（upload-wizard.tsx 整体重写）——文件队列串行「上传 → 触发后台识别」后自动关闭弹框，不再等 LLM；列表页状态列叠加识别徽标（AI 识别中/已识别/AI 识别失败，失败悬浮显原因），存在识别中行时 3s 函数式轮询自动停止（use-template-fill-request.ts）；移除批量上传按钮与弹框（batch-upload-dialog.tsx 已删）。后端 commit `90d1f057`（含 12 个新单测，4 套件全绿）。
