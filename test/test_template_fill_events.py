@@ -121,6 +121,34 @@ def test_single_failure_pushes_failed_and_continues():
     assert "检索炸了" in failed_ev["data"]["error"]
 
 
+def test_all_failures_push_failed_and_raise_output():
+    """全部失败时节点按现有语义报错：每范本各推一条 failed（error 含原因）、
+    无 filled；downloads 为空 → _invoke_async 在 set_output 与 done 之前直接
+    raise ValueError（「所有范本填写均失败」），因此 done 不推送、最后一个事件
+    是最后一个 failed，且 asyncio.run 会把 ValueError 抛出到调用方。"""
+    import pytest
+
+    cands = [_cand("t1", "范本A", [{"key": "k1", "fill_mode": "llm"}]),
+             _cand("t2", "范本B", [{"key": "k1", "fill_mode": "llm"}])]
+    comp = _make_comp(cands, {"t1": RuntimeError("检索炸了"), "t2": ValueError("渲染炸了")})
+    with pytest.raises(ValueError, match="所有范本填写均失败"):
+        _run(comp)
+    evs = _drain(comp)
+    stages = [(e["data"]["stage"], e["data"].get("template_id")) for e in evs]
+    # 两个 failed 都存在，error 各自携带原因
+    failed = [(e["data"]["template_id"], e["data"]["error"])
+              for e in evs if e["data"]["stage"] == "failed"]
+    assert {tid for tid, _ in failed} == {"t1", "t2"}
+    assert any("检索炸了" in err for _, err in failed)
+    assert any("渲染炸了" in err for _, err in failed)
+    assert "filled" not in [s for s, _ in stages]
+    # 现有实现：全失败在 set_output / done 推送之前 raise，最后事件是最后一个 failed
+    assert stages[-1] == ("failed", "t2")
+    assert "done" not in [s for s, _ in stages]
+    # 降级语义：不写任何输出（download 输出不存在）
+    assert comp._outs.get("download") in (None, "")
+
+
 def test_cancel_pushes_cancelled_and_no_done():
     """选中后取消：推 cancelled、不推 filled/done、不写输出。"""
     cands = [_cand("t1", "范本A", [{"key": "k1", "fill_mode": "llm"}])]

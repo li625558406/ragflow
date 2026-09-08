@@ -137,7 +137,7 @@ class TemplateFill(ComponentBase):
     def __init__(self, canvas, id, param: ComponentParamBase):
         super().__init__(canvas, id, param)
         # 进度事件队列：canvas.run 心跳循环 drain 后经 decorate 变同名 SSE
-        # （FanOut 同款机制；canvas drain 已泛化为任意带 _event_queue 的组件）
+        # （FanOut 同款机制；canvas.run 心跳循环 drain——泛化到任意组件由 canvas 侧改动提供）
         self._event_queue: asyncio.Queue = asyncio.Queue()
 
     def _push_progress(self, data: dict) -> None:
@@ -311,6 +311,7 @@ class TemplateFill(ComponentBase):
                     tenant_id, cand, chunks, query, begin_fields,
                     user_file_text, sem, on_progress=_on_gen_progress)
             except _FillCancelled:
+                # 预留：_fill_one 内部若加取消检查，经此透传；当前由入口与 gather 后统一判定
                 raise
             except Exception as e:
                 logger.warning("TemplateFill %s fill failed: %s", tid, e)
