@@ -50,8 +50,6 @@ export default function TemplateFillPage() {
   const [page, setPage] = useState(1);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [batchUploadOpen, setBatchUploadOpen] = useState(false);
-  // 上传向导多选转交的文件（打开批量弹框时作为初始列表）
-  const [batchFiles, setBatchFiles] = useState<File[] | null>(null);
   // 当前页选中的模板 id（翻页/筛选/删除后清空）
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // 待删除目标：单项为该模板；批量时为 null（配合 batchConfirmOpen）
@@ -346,11 +344,7 @@ export default function TemplateFillPage() {
       />
       <BatchUploadDialog
         open={batchUploadOpen}
-        onOpenChange={(open) => {
-          setBatchUploadOpen(open);
-          if (!open) setBatchFiles(null);
-        }}
-        initialFiles={batchFiles}
+        onOpenChange={setBatchUploadOpen}
       />
       <UploadWizard
         open={wizardOpen}
@@ -358,11 +352,6 @@ export default function TemplateFillPage() {
         onSaved={(id) => {
           setWizardOpen(false);
           navigate(`${Routes.TemplateFillDetail}/${id}`);
-        }}
-        onBatchFiles={(files) => {
-          setWizardOpen(false);
-          setBatchFiles(files);
-          setBatchUploadOpen(true);
         }}
       />
     </Card>

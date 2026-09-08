@@ -53,30 +53,23 @@ function validateFile(file: File): string {
 export function BatchUploadDialog({
   open,
   onOpenChange,
-  initialFiles,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  // 从上传向导多选转交来的文件：打开时直接填入列表
-  initialFiles?: File[] | null;
 }) {
   const [items, setItems] = useState<UploadItem[]>([]);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadMut = useUploadTemplateFill();
 
-  // 每次打开时重置列表：有转交文件（上传向导多选）则填入，否则清空。
+  // 每次打开时清空列表重新选。
   // 必须用 effect——受控 Dialog 从 props 切 open 不触发 Radix 的 onOpenChange
   useEffect(() => {
     if (open) {
-      setItems(
-        initialFiles?.length
-          ? initialFiles.map((file) => ({ file, status: 'pending' as const }))
-          : [],
-      );
+      setItems([]);
       setUploading(false);
     }
-  }, [open, initialFiles]);
+  }, [open]);
 
   const handleOpenChange = (next: boolean) => {
     onOpenChange(next);

@@ -43,8 +43,6 @@ interface UploadWizardProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSaved?: (id: string) => void;
-  // 一次选中多个文件时回调（AI 识别为逐模板环节，多文件转交批量上传建草稿）
-  onBatchFiles?: (files: File[]) => void;
 }
 
 const TEMPLATE_FILE_RE = /\.(docx|doc|xlsx)$/i;
@@ -60,10 +58,11 @@ export function UploadWizard({
   open,
   onOpenChange,
   onSaved,
-  onBatchFiles,
 }: UploadWizardProps) {
   const [step, setStep] = useState(1);
-  const [file, setFile] = useState<File | null>(null);
+  // 文件队列：支持多选，逐个走「上传 → AI 识别 → 确认保存」完整流程
+  const [files, setFiles] = useState<File[]>([]);
+  const [fileIndex, setFileIndex] = useState(0);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [step1Error, setStep1Error] = useState('');
@@ -74,6 +73,9 @@ export function UploadWizard({
   const [rowErrors, setRowErrors] = useState<Record<string, boolean>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const currentFile = files[fileIndex] ?? null;
+  const multiFile = files.length > 1;
+
   const uploadMut = useUploadTemplateFill();
   const detectMut = useDetectTemplateFill();
   const saveMut = useSaveTemplateFillPlaceholders();
@@ -82,7 +84,8 @@ export function UploadWizard({
   const handleOpenChange = (next: boolean) => {
     if (next) {
       setStep(1);
-      setFile(null);
+      setFiles([]);
+      setFileIndex(0);
       setName('');
       setDescription('');
       setStep1Error('');
@@ -96,20 +99,14 @@ export function UploadWizard({
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files ?? []);
-    if (files.length === 0) return;
-    // 多选：转交批量上传（父组件切弹框），本向导只处理单文件 AI 识别流程
-    if (files.length > 1) {
-      onBatchFiles?.(files);
-      return;
-    }
-    const f = files[0];
-    setFile(f);
+    const picked = Array.from(e.target.files ?? []);
+    if (picked.length === 0) return;
+    // 每次选择替换整个列表，从第一个文件开始逐个走流程
+    setFiles(picked);
+    setFileIndex(0);
     setStep1Error('');
-    if (f && !name) {
-      // 默认模板名取文件名去扩展
-      setName(f.name.replace(/\.[^.]+$/, ''));
-    }
+    setName(picked[0].name.replace(/\.[^.]+$/, ''));
+    setDescription('');
   };
 
   const openFilePicker = () => {
@@ -118,11 +115,11 @@ export function UploadWizard({
     fileInputRef.current?.click();
   };
 
-  const clearFile = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setFile(null);
-    setStep1Error('');
-    if (fileInputRef.current) fileInputRef.current.value = '';
+  const removeFile = (index: number) => {
+    const next = files.filter((_, i) => i !== index);
+    setFiles(next);
+    // 移除后当前索引可能越界，收敛到最后一个有效位置
+    setFileIndex((fi) => Math.min(fi, Math.max(0, next.length - 1)));
   };
 
   // detect 建议与现有手动行（addr 为空，detect 建议必带 addr）合并：
@@ -136,32 +133,14 @@ export function UploadWizard({
     });
   };
 
-  const goStep2 = () => {
-    if (!file) {
-      setStep1Error('请选择 .docx / .doc / .xlsx 模板文件');
-      return;
-    }
-    if (!TEMPLATE_FILE_RE.test(file.name)) {
-      setStep1Error('仅支持 .docx / .doc / .xlsx 文件');
-      return;
-    }
-    if (!name.trim()) {
-      setStep1Error('请填写模板名称');
-      return;
-    }
-    setStep1Error('');
-    // 从 Step2 回退后再前进：文件未更换时直接跳转，不重复上传模板
-    const fileKey = `${file.name}:${file.size}`;
-    if (templateId && uploadedFileKey === fileKey) {
-      setStep(2);
-      return;
-    }
+  // 上传指定文件并自动触发 AI 识别（单/多文件共用；desc 显式传参避免 state 异步旧值）
+  const startUploadAndDetect = (f: File, tplName: string, desc: string) => {
     uploadMut.mutate(
-      { file, name: name.trim(), description: description.trim() },
+      { file: f, name: tplName, description: desc },
       {
         onSuccess: (data) => {
           setTemplateId(data.id);
-          setUploadedFileKey(fileKey);
+          setUploadedFileKey(`${f.name}:${f.size}`);
           setPlaceholders([]);
           setStep(2);
           detectMut.mutate(data.id, {
@@ -182,6 +161,27 @@ export function UploadWizard({
         },
       },
     );
+  };
+
+  const goStep2 = () => {
+    if (!currentFile) {
+      setStep1Error('请选择 .docx / .doc / .xlsx 模板文件');
+      return;
+    }
+    if (!TEMPLATE_FILE_RE.test(currentFile.name)) {
+      setStep1Error('仅支持 .docx / .doc / .xlsx 文件');
+      return;
+    }
+    const tplName = name.trim() || currentFile.name.replace(/\.[^.]+$/, '');
+    setName(tplName);
+    setStep1Error('');
+    // 从 Step2 回退后再前进：文件未更换时直接跳转，不重复上传模板
+    const fileKey = `${currentFile.name}:${currentFile.size}`;
+    if (templateId && uploadedFileKey === fileKey) {
+      setStep(2);
+      return;
+    }
+    startUploadAndDetect(currentFile, tplName, description.trim());
   };
 
   const updateRow = (index: number, patch: Partial<TplPlaceholder>) => {
@@ -233,9 +233,27 @@ export function UploadWizard({
       { id: templateId, placeholders: rows },
       {
         onSuccess: (res) => {
+          const next = fileIndex + 1;
+          if (next >= files.length) {
+            // 全部文件处理完成
+            message.success(`已保存 ${res.placeholder_count} 个填写点`);
+            onOpenChange(false);
+            onSaved?.(templateId);
+            return;
+          }
+          // 自动进入下一个文件：重置逐文件状态，直接开始上传 + AI 识别
+          const nf = files[next];
+          const nextName = nf.name.replace(/\.[^.]+$/, '');
           message.success(`已保存 ${res.placeholder_count} 个填写点`);
-          onOpenChange(false);
-          onSaved?.(templateId);
+          setFileIndex(next);
+          setName(nextName);
+          setDescription('');
+          setTemplateId('');
+          setUploadedFileKey('');
+          setPlaceholders([]);
+          setRowErrors({});
+          detectMut.reset();
+          startUploadAndDetect(nf, nextName, '');
         },
         onError: (err) => {
           message.error(err instanceof Error ? err.message : '保存失败');
@@ -267,6 +285,11 @@ export function UploadWizard({
                 {i < 2 && <span className="ml-2">→</span>}
               </span>
             ))}
+            {multiFile && (
+              <span className="ml-2 text-xs text-primary">
+                第 {fileIndex + 1}/{files.length} 个文件
+              </span>
+            )}
           </div>
         </DialogHeader>
 
@@ -284,62 +307,67 @@ export function UploadWizard({
                 className="hidden"
                 onChange={handleFileChange}
               />
-              <div
-                role="button"
-                tabIndex={0}
-                onClick={openFilePicker}
-                onKeyDown={(e) => {
-                  if (e.target !== e.currentTarget) return;
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    openFilePicker();
-                  }
-                }}
-                className="flex flex-col items-center gap-2 rounded-lg border border-dashed p-6 cursor-pointer transition-colors hover:border-primary/60 hover:bg-muted/50"
-              >
-                {file ? (
-                  <div className="flex w-full items-center gap-3">
-                    <FileText className="h-8 w-8 shrink-0 text-primary" />
-                    <div className="min-w-0 flex-1">
-                      <p
-                        className="truncate text-sm text-text-primary"
-                        title={file.name}
-                      >
-                        {file.name}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {formatFileSize(file.size)}
-                      </p>
-                    </div>
-                    <span className="shrink-0 text-xs text-primary">
-                      重新选择
-                    </span>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 shrink-0"
-                      onClick={clearFile}
-                      aria-label="清除选择"
+              {files.length === 0 ? (
+                <div
+                  role="button"
+                  tabIndex={0}
+                  onClick={openFilePicker}
+                  onKeyDown={(e) => {
+                    if (e.target !== e.currentTarget) return;
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      openFilePicker();
+                    }
+                  }}
+                  className="flex flex-col items-center gap-2 rounded-lg border border-dashed p-6 cursor-pointer transition-colors hover:border-primary/60 hover:bg-muted/50"
+                >
+                  <FileUp className="h-8 w-8 text-muted-foreground" />
+                  <p className="text-sm text-text-primary">点击选择模板文件</p>
+                  <p className="text-xs text-muted-foreground">
+                    支持 .docx / .doc / .xlsx，不超过 20MB；可多选，将逐个走 AI
+                    识别流程
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-lg border">
+                  {files.map((f, i) => (
+                    <div
+                      key={`${f.name}:${f.size}`}
+                      className="flex items-center gap-3 border-b px-3 py-2 last:border-b-0"
                     >
-                      <X className="h-4 w-4" />
-                    </Button>
-                  </div>
-                ) : (
-                  <>
-                    <FileUp className="h-8 w-8 text-muted-foreground" />
-                    <p className="text-sm text-text-primary">
-                      点击选择模板文件
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      支持 .docx / .doc / .xlsx，不超过
-                      20MB；可多选，多文件将批量上传为草稿
-                    </p>
-                  </>
-                )}
-              </div>
+                      <FileText className="h-4 w-4 shrink-0 text-primary" />
+                      <div className="min-w-0 flex-1">
+                        <p
+                          className="truncate text-sm text-text-primary"
+                          title={f.name}
+                        >
+                          {f.name}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {formatFileSize(f.size)}
+                        </p>
+                      </div>
+                      <span className="shrink-0 text-xs text-primary">
+                        重新选择
+                      </span>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 shrink-0"
+                        onClick={() => removeFile(i)}
+                        aria-label={`移除 ${f.name}`}
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
             <div className="flex flex-col gap-1.5">
-              <label className="text-sm">模板名称</label>
+              <label className="text-sm">
+                模板名称{multiFile && '（其余模板自动取文件名）'}
+              </label>
               <Input
                 value={name}
                 onChange={(e) => {
@@ -349,15 +377,17 @@ export function UploadWizard({
                 placeholder="默认取文件名"
               />
             </div>
-            <div className="flex flex-col gap-1.5">
-              <label className="text-sm">说明</label>
-              <Textarea
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="模板用途说明（选填）"
-                rows={3}
-              />
-            </div>
+            {files.length <= 1 && (
+              <div className="flex flex-col gap-1.5">
+                <label className="text-sm">说明</label>
+                <Textarea
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="模板用途说明（选填）"
+                  rows={3}
+                />
+              </div>
+            )}
             {step1Error && <p className="text-sm text-red-500">{step1Error}</p>}
           </div>
         )}
@@ -469,7 +499,10 @@ export function UploadWizard({
               <Button variant="outline" onClick={() => handleOpenChange(false)}>
                 取消
               </Button>
-              <Button disabled={uploadMut.isPending} onClick={goStep2}>
+              <Button
+                disabled={files.length === 0 || uploadMut.isPending}
+                onClick={goStep2}
+              >
                 {uploadMut.isPending ? '上传中…' : '下一步'}
               </Button>
             </>
@@ -490,7 +523,7 @@ export function UploadWizard({
                 上一步
               </Button>
               <Button disabled={saveMut.isPending} onClick={saveConfig}>
-                {saveMut.isPending ? '保存中…' : '保存配置'}
+                {saveMut.isPending ? '保存中…' : '保存并继续'}
               </Button>
             </>
           )}
