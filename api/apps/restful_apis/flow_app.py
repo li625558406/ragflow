@@ -51,6 +51,7 @@ from quart import Blueprint, Response, request
 
 from api.apps import current_user, login_required
 from api.db.db_models import FlowInstance, User
+from api.db.services.file_service import FileService
 from api.db.services.flow_service import (
     FlowActionService,
     FlowAiChatService,
@@ -108,6 +109,14 @@ def _safe_filename(name: str) -> str:
         digest = hashlib.md5(cleaned.encode("utf-8")).hexdigest()[:8]
         cleaned = f"{root[:160]}_{digest}{ext}"
     return cleaned
+
+
+# 版本来源白名单：manual_upload=发起/负责人手动上传；ai_template_fill=AI 范本填写成稿落版本
+_VERSION_SOURCES = ("manual_upload", "ai_template_fill")
+
+
+def _normalize_version_source(raw) -> str:
+    return raw if raw in _VERSION_SOURCES else "manual_upload"
 
 
 def _others_of(flow: dict, me: str) -> list:
@@ -289,6 +298,9 @@ async def upload_version(flow_id: str):
             return _err("文件内容为空", 101)
 
         file_name = _safe_filename(file.filename)
+        # AI 面板「存为流程版本」与手动上传共用本端点；source 白名单防脏标注
+        form = await request.form
+        source = _normalize_version_source(form.get("source"))
         # 外层先算一次 version_no 仅用于拼 object_name；add_version 内部会再算一次，
         # 无并发时两次结果一致（唯一索引 flow_id+version_no 兜底极端并发）。
         no = FlowVersionService.next_version_no(flow_id)
@@ -296,7 +308,7 @@ async def upload_version(flow_id: str):
         await thread_pool_exec(settings.STORAGE_IMPL.put, _bucket_of(flow), object_name, blob)
         version = FlowVersionService.add_version(
             flow, object_name, file_name, file.mimetype or "", len(blob),
-            "manual_upload", current_user.id,
+            source, current_user.id,
         )
         return get_json_result(data={"version": version})
     except LookupError as e:
@@ -863,6 +875,55 @@ async def download_version(flow_id: str, version_id: str):
             mimetype=version["file_type"] or "application/octet-stream",
             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(file_name)}"},
         )
+    except LookupError as e:
+        return _err(str(e), 404)
+    except PermissionError as e:
+        return _err(str(e), 403)
+    except Exception as e:
+        logger.exception(e)
+        return _err(str(e))
+
+
+# ── 5.1 版本内容纯文本（三角色可读；模板填写证据注入等轻量用途） ──
+_VERSION_CONTENT_MAX = 20000
+
+_PARSE_HEADER_PREFIX = "\n -----------------\nFile: "
+
+
+@manager.route("/flow/<flow_id>/version/<version_id>/content", methods=["GET"])  # noqa: F821
+@login_required
+async def version_content(flow_id: str, version_id: str):
+    """版本文本提取（服务端化）：供流程 AI 对话附带当前版本作填写证据。
+    解析失败返回空文本 + warning，不阻断（前端回退纯 KB 检索）。"""
+    try:
+        flow = _require_participant(_flow_dict(flow_id))
+        version = next(
+            (v for v in FlowVersionService.list_by_flow(flow_id) if v["id"] == version_id),
+            None)
+        if not version:
+            return _err("版本不存在", 404)
+        blob = await thread_pool_exec(
+            settings.STORAGE_IMPL.get, _bucket_of(flow), version["file_path"])
+        if not blob:
+            return get_json_result(data={"content": ""})
+
+        def _extract_text() -> str:
+            try:
+                # FileService.parse(filename, blob, img_base64, tenant_id)：
+                # img_base64=False 避免图片文件走 base64 分支；current_user.id 作 tenant 兜底
+                text = FileService.parse(version["file_name"], blob, False, current_user.id)
+            except Exception:
+                logger.warning("flow version content parse failed: %s",
+                               version["file_name"], exc_info=True)
+                return ""
+            # 剥掉 parse 输出的固定文件头，只留正文
+            if text.startswith(_PARSE_HEADER_PREFIX):
+                head, _, body = text.partition("Content as following: \n")
+                text = body if _ else text
+            return (text or "")[:_VERSION_CONTENT_MAX]
+
+        text = await thread_pool_exec(_extract_text)
+        return get_json_result(data={"content": text})
     except LookupError as e:
         return _err(str(e), 404)
     except PermissionError as e:
