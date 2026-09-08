@@ -43,6 +43,8 @@ interface UploadWizardProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSaved?: (id: string) => void;
+  // 一次选中多个文件时回调（AI 识别为逐模板环节，多文件转交批量上传建草稿）
+  onBatchFiles?: (files: File[]) => void;
 }
 
 const TEMPLATE_FILE_RE = /\.(docx|doc|xlsx)$/i;
@@ -58,6 +60,7 @@ export function UploadWizard({
   open,
   onOpenChange,
   onSaved,
+  onBatchFiles,
 }: UploadWizardProps) {
   const [step, setStep] = useState(1);
   const [file, setFile] = useState<File | null>(null);
@@ -93,7 +96,14 @@ export function UploadWizard({
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0] ?? null;
+    const files = Array.from(e.target.files ?? []);
+    if (files.length === 0) return;
+    // 多选：转交批量上传（父组件切弹框），本向导只处理单文件 AI 识别流程
+    if (files.length > 1) {
+      onBatchFiles?.(files);
+      return;
+    }
+    const f = files[0];
     setFile(f);
     setStep1Error('');
     if (f && !name) {
@@ -270,6 +280,7 @@ export function UploadWizard({
                 ref={fileInputRef}
                 type="file"
                 accept=".docx,.doc,.xlsx"
+                multiple
                 className="hidden"
                 onChange={handleFileChange}
               />
@@ -320,7 +331,8 @@ export function UploadWizard({
                       点击选择模板文件
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      支持 .docx / .doc / .xlsx，不超过 20MB
+                      支持 .docx / .doc / .xlsx，不超过
+                      20MB；可多选，多文件将批量上传为草稿
                     </p>
                   </>
                 )}

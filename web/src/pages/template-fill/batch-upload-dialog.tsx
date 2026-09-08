@@ -1,5 +1,5 @@
 import { FileText, FileUp, X } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -53,20 +53,32 @@ function validateFile(file: File): string {
 export function BatchUploadDialog({
   open,
   onOpenChange,
+  initialFiles,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  // 从上传向导多选转交来的文件：打开时直接填入列表
+  initialFiles?: File[] | null;
 }) {
   const [items, setItems] = useState<UploadItem[]>([]);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadMut = useUploadTemplateFill();
 
-  const handleOpenChange = (next: boolean) => {
-    if (next) {
-      setItems([]);
+  // 每次打开时重置列表：有转交文件（上传向导多选）则填入，否则清空。
+  // 必须用 effect——受控 Dialog 从 props 切 open 不触发 Radix 的 onOpenChange
+  useEffect(() => {
+    if (open) {
+      setItems(
+        initialFiles?.length
+          ? initialFiles.map((file) => ({ file, status: 'pending' as const }))
+          : [],
+      );
       setUploading(false);
     }
+  }, [open, initialFiles]);
+
+  const handleOpenChange = (next: boolean) => {
     onOpenChange(next);
   };
 
