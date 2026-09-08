@@ -5,6 +5,7 @@
 // 标注提取（structuredOutputRef）与存记录/存新版本。
 import { Button } from '@/components/ui/button';
 import { useHandleMessageInputChange } from '@/hooks/logic-hooks';
+import type { ITemplateFillState } from '@/hooks/template-fill-stream';
 import { useSendMessageBySSE } from '@/hooks/use-send-message';
 import type { FlowDocRun } from '@/services/flow-service';
 import {
@@ -12,6 +13,7 @@ import {
   deleteFlowComment,
   downloadVersionBlob,
   editFlowDocument,
+  getFlowVersionContent,
   saveFlowAiRecord,
 } from '@/services/flow-service';
 import api from '@/utils/api';
@@ -108,6 +110,9 @@ export default function FlowAiPanel({
   // 流式期间持续累积回复内容：send() 结束时 hook 会 resetAnswerList 清空
   // streamState，这里兜住完整回复供完成后展示/保存
   const contentRef = useRef('');
+  // 范本填写进度快照：流式期间随 onLiveChatChange 上报；send() 结束 hook 会清空
+  // streamState，用 ref 兜住供完成后（completed 态）继续展示成稿条
+  const templateFillRef = useRef<ITemplateFillState | undefined>(undefined);
   const [completed, setCompleted] = useState<FlowLiveChat | null>(null);
   // 本轮是否已自动保存（每轮发送重置）
   const autoSavedRef = useRef(false);
@@ -159,6 +164,14 @@ export default function FlowAiPanel({
     excludeFanOutFromContent: false,
   });
 
+  // 范本填写进度快照：流式期间随 onLiveChatChange 上报；send() 结束 hook 会清空
+  // streamState，用 ref 兜住供完成后（completed 态）继续展示成稿条
+  useEffect(() => {
+    if (streamState.templateFill) {
+      templateFillRef.current = streamState.templateFill;
+    }
+  }, [streamState.templateFill]);
+
   // 从流式事件中提取 session_id（多轮续聊依赖）
   useEffect(() => {
     const sid = answerList.find((e: any) => e?.session_id)?.session_id;
@@ -177,6 +190,7 @@ export default function FlowAiPanel({
         instruction: instructionRef.current,
         response: streamState.content,
         busy: true,
+        templateFill: streamState.templateFill,
       });
       return;
     }
@@ -185,13 +199,21 @@ export default function FlowAiPanel({
         instruction: instructionRef.current,
         response: contentRef.current,
         busy: false,
+        templateFill: templateFillRef.current,
       };
       setCompleted((prev) => (prev ? prev : next));
       onLiveChatChange?.(completed ?? next);
     } else {
       onLiveChatChange?.(completed);
     }
-  }, [streamState.content, done, sending, onLiveChatChange, completed]);
+  }, [
+    streamState.content,
+    streamState.templateFill,
+    done,
+    sending,
+    onLiveChatChange,
+    completed,
+  ]);
 
   // 自动保存：一轮对话流式结束后，自动将指令+回复写入流程记录（不建版本），
   // 无需手动点「仅存记录」；「存为新版本」随后可基于该记录补建版本（不重复插记录）。
@@ -352,6 +374,7 @@ export default function FlowAiPanel({
       instructionRef.current = query;
       // 新一轮发送：清空上一轮兜底内容、完成态与已存记录
       contentRef.current = '';
+      templateFillRef.current = undefined;
       setCompleted(null);
       setLastRecord(null);
       autoSavedRef.current = false;
@@ -366,12 +389,45 @@ export default function FlowAiPanel({
       const docs = uploadedDocsRef.current;
       let files: unknown[] = docs;
       if (files.length === 0 && attachFile && version) {
+        // 轻量通道：服务端提取版本纯文本 → 小 txt 文件上传（免每次整份 docx
+        // blob 上传 + 画布重复解析）；失败静默回退原 uploadVersionAsDocument
         try {
-          const doc = await uploadVersionAsDocument();
-          if (doc) files = [doc];
+          const text = await getFlowVersionContent(flowId, version.id);
+          if (text) {
+            const fd = new FormData();
+            fd.append(
+              'file',
+              new File([text], `${version.file_name}.txt`, {
+                type: 'text/plain',
+              }),
+            );
+            const resp = await fetch('/api/v1/documents/upload', {
+              method: 'POST',
+              headers: {
+                Authorization: localStorage.getItem('Authorization') || '',
+              },
+              body: fd,
+            });
+            const result = await resp.json();
+            if (result.code === 0 && result.data) {
+              const d = Array.isArray(result.data)
+                ? result.data[0]
+                : result.data;
+              // 传完整上传响应对象（含 mime_type）：canvas.get_files_async 依赖
+              if (d?.id) files = [d];
+            }
+          }
         } catch {
-          // 附件上传失败不阻断发送，降级为无文件提问
-          files = [];
+          // 轻通道失败 → 走下方回退
+        }
+        if (files.length === 0) {
+          try {
+            const doc = await uploadVersionAsDocument();
+            if (doc) files = [doc];
+          } catch {
+            // 附件上传失败不阻断发送，降级为无文件提问
+            files = [];
+          }
         }
       }
       // 审阅模式下对齐 ReviewPanel 的目标文件（并记录来源：手动上传只读，版本文件可编辑）

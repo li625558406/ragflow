@@ -1,3 +1,5 @@
+import type { ITemplateFillState } from '@/hooks/template-fill-stream';
+
 export type FlowStatus =
   | 'initiator'
   | 'leader'
@@ -26,7 +28,7 @@ export interface FlowVersionItem {
   file_path: string;
   file_type: string;
   file_size: number;
-  source: 'manual_upload' | 'ai_output';
+  source: 'manual_upload' | 'ai_output' | 'ai_template_fill';
   created_by: string;
   node_status: FlowStatus;
   create_time: number;
@@ -69,4 +71,6 @@ export interface FlowLiveChat {
   instruction: string;
   response: string;
   busy: boolean;
+  /** 范本填写进度（template_fill_progress 事件累积，随流式上报） */
+  templateFill?: ITemplateFillState;
 }

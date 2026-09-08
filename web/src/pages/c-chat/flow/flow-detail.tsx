@@ -1,6 +1,7 @@
 // web/src/pages/c-chat/flow/flow-detail.tsx
 import ChapteredMarkdown from '@/components/chaptered-markdown';
 import { Button } from '@/components/ui/button';
+import type { ITemplateFillDownload } from '@/hooks/template-fill-stream';
 import {
   archiveFlow,
   cancelFlow,
@@ -24,9 +25,18 @@ import {
   Trash2,
   User,
 } from 'lucide-react';
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { createPortal } from 'react-dom';
 import ReviewPanel from '../review-panel';
+import TemplateFillProgress from '../template-fill-progress';
 import FlowAiPanel from './flow-ai-panel';
 import type {
   FlowAiChatItem,
@@ -88,6 +98,42 @@ export default function FlowDetail({
   const [actionError, setActionError] = useState('');
   // 进行中的一轮 AI 对话（发送后未保存前的流式状态）
   const [liveChat, setLiveChat] = useState<FlowLiveChat | null>(null);
+  // AI 范本填写成稿「存为流程版本」：成稿 blob（agents/download）→ flow 版本
+  const [savingDocIds, setSavingDocIds] = useState<
+    Record<string, 'saving' | 'saved' | 'error'>
+  >({});
+  const saveDownloadAsVersion = useCallback(
+    async (dl: ITemplateFillDownload) => {
+      const docId = dl.doc_id || '';
+      if (!docId || savingDocIds[docId] === 'saving') return;
+      setSavingDocIds((p) => ({ ...p, [docId]: 'saving' }));
+      try {
+        const resp = await fetch(dl.url || '', {
+          headers: {
+            Authorization: localStorage.getItem('Authorization') || '',
+          },
+        });
+        if (!resp.ok) throw new Error(`download failed ${resp.status}`);
+        const blob = await resp.blob();
+        const fd = new FormData();
+        fd.append(
+          'file',
+          new File([blob], dl.filename || '成稿.docx', {
+            type: dl.mime_type || 'application/octet-stream',
+          }),
+        );
+        fd.append('source', 'ai_template_fill');
+        await uploadFlowVersion(flowId, fd);
+        setSavingDocIds((p) => ({ ...p, [docId]: 'saved' }));
+        await qc.invalidateQueries({
+          queryKey: ['flow-detail', flowId],
+        });
+      } catch {
+        setSavingDocIds((p) => ({ ...p, [docId]: 'error' }));
+      }
+    },
+    [flowId, qc, savingDocIds],
+  );
   const uploadInputRef = useRef<HTMLInputElement>(null);
   // 版本文件只读查看（所有参与人可用）：版本转 document 后交给 ReviewPanel
   const [viewOpen, setViewOpen] = useState(false);
@@ -413,7 +459,34 @@ export default function FlowDetail({
         <div className="flex min-w-0 flex-1 flex-col gap-2">
           {/* 主区域：默认展示 AI 对话记录（文件预览收进「文件审核」抽屉） */}
           <div className="min-h-0 flex-1 overflow-auto rounded-lg bg-[#FAFAFA] p-3">
-            <ConversationView chats={data.ai_chats ?? []} live={liveChat} />
+            <ConversationView
+              chats={data.ai_chats ?? []}
+              live={liveChat}
+              extraAction={(dl) => {
+                const st = savingDocIds[dl.doc_id || ''];
+                return (
+                  <button
+                    disabled={st === 'saving' || st === 'saved'}
+                    onClick={() => saveDownloadAsVersion(dl)}
+                    className={`ml-2 shrink-0 rounded px-2 py-0.5 transition-colors ${
+                      st === 'saved'
+                        ? 'bg-[#F0F9EB] text-[#67C23A]'
+                        : st === 'error'
+                          ? 'bg-[#FDE9E9] text-red-500'
+                          : 'border border-[#BFD3F5] bg-[#F0F5FF] text-[#1a66fb] hover:bg-[#E3EDFF]'
+                    }`}
+                  >
+                    {st === 'saving'
+                      ? '保存中…'
+                      : st === 'saved'
+                        ? '已存版本'
+                        : st === 'error'
+                          ? '失败重试'
+                          : '存为流程版本'}
+                  </button>
+                );
+              }}
+            />
           </div>
 
           {isOwner && !terminal && (
@@ -730,9 +803,12 @@ function DetailSkeleton() {
 function ConversationView({
   chats,
   live,
+  extraAction,
 }: {
   chats: FlowAiChatItem[];
   live: FlowLiveChat | null;
+  /** 成稿条目附加动作（存为流程版本按钮） */
+  extraAction?: (dl: ITemplateFillDownload) => ReactNode;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   // 流式回复增长时自动滚到底部
@@ -805,6 +881,14 @@ function ConversationView({
               )}
             </div>
           </div>
+          {live.templateFill?.templates?.length ? (
+            <div className="max-w-[90%]">
+              <TemplateFillProgress
+                state={live.templateFill}
+                extraAction={(dl) => extraAction?.(dl)}
+              />
+            </div>
+          ) : null}
         </div>
       )}
       <div ref={bottomRef} />

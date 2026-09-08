@@ -111,6 +111,18 @@ export async function downloadVersionBlob(
   return resp.blob();
 }
 
+/** 版本文件纯文本（服务端提取，20000 字截断；解析失败返回空串）。
+ * 供流程 AI 对话附带当前版本作范本填写证据，替代每次整份 blob 上传。 */
+export async function getFlowVersionContent(
+  flowId: string,
+  versionId: string,
+): Promise<string> {
+  const res = await apiFetch<{ content: string }>(
+    `/flow/${flowId}/version/${versionId}/content`,
+  );
+  return res?.content || '';
+}
+
 export async function addFlowComment(
   flowId: string,
   content: string,
