@@ -32,7 +32,6 @@ import {
   type TplTemplateItem,
 } from '@/hooks/use-template-fill-request';
 import { Routes } from '@/routes';
-import { BatchUploadDialog } from './batch-upload-dialog';
 import { UploadWizard } from './upload-wizard';
 
 const PAGE_SIZE = 20;
@@ -49,7 +48,6 @@ export default function TemplateFillPage() {
   const [status, setStatus] = useState('');
   const [page, setPage] = useState(1);
   const [wizardOpen, setWizardOpen] = useState(false);
-  const [batchUploadOpen, setBatchUploadOpen] = useState(false);
   // 当前页选中的模板 id（翻页/筛选/删除后清空）
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // 待删除目标：单项为该模板；批量时为 null（配合 batchConfirmOpen）
@@ -164,9 +162,6 @@ export default function TemplateFillPage() {
               onClick={() => navigate(Routes.TemplateFillTasks)}
             >
               填写任务
-            </Button>
-            <Button variant="outline" onClick={() => setBatchUploadOpen(true)}>
-              批量上传
             </Button>
             <Button onClick={() => setWizardOpen(true)}>上传模板</Button>
           </div>
@@ -341,10 +336,6 @@ export default function TemplateFillPage() {
         }}
         cancelButtonText="取消"
         okButtonText="删除"
-      />
-      <BatchUploadDialog
-        open={batchUploadOpen}
-        onOpenChange={setBatchUploadOpen}
       />
       <UploadWizard
         open={wizardOpen}
