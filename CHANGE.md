@@ -1,5 +1,18 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-08 模板填写进度流式 + 流程页签适配（后端+前端，未部署）
+
+**主题**：TemplateFill 画布节点全程零反馈 → 5 类进度事件实时渲染（C端对话 + 流程 AI 面板共用）；流程场景版本文本轻量注入 + 成稿一键落流程版本时间线。
+
+**核心变更**：
+- 后端：`generate_values` 批次进度回调 `on_progress(done,total)`（done/total 为 LLM 产值槽位，param 直取槽不计数）；TemplateFill 组件 `_event_queue` 推 selected/filling/filled/failed/done|cancelled（filled 即时下载条含 url/name，单范本失败不中断；取消为检查点式，计划批准取舍）；canvas drain 泛化（任意带 `_event_queue` 的组件，FanOut 行为不变）；flow 新端点 `GET /flow/<id>/version/<vid>/content`（三角色可读、20000 字截断、解析失败回空串）+ `POST /flow/<id>/version` 支持 `source=ai_template_fill`；`FileService.parse` 支持 tenant_id 显式传入短路（Quart executor 线程无请求上下文，current_user LocalProxy 陷阱）
+- 前端：`template-fill-stream.ts` 事件归约纯函数（每事件浅拷贝换引用 + finished 终态防御）+ `use-send-message.ts` SSE 分支；`template-fill-progress.tsx` 共用进度卡片（c-chat 流式气泡 / flow 对话区）；FlowAiPanel 附带版本改走轻量文本通道（**审阅模式排除**，仍走整份 docx 上传保证 ReviewPanel 段落锚点一致；轻通道失败回退整份上传）；flow 成稿条「存为流程版本」按钮（blob→uploadFlowVersion→时间线刷新，自动保存成功后成稿条仍保留可操作）；版本时间线来源三分支（人工上传/AI 产出/AI 范本填写）
+- 设计文档：docs/superpowers/specs/2026-09-08-template-fill-flow-design.md；实施计划：docs/superpowers/plans/2026-09-08-template-fill-flow.md
+
+**测试**：后端 124 passed（executor 21/events 5/canvas drain 3/flow version source 6/tool/utils）；前端 jest 7 passed（归约模块，用 .scratch/jest.template-fill.config.js 临时配置，存量 jest.config.ts 损坏引用未安装的 umi/test）；tsc/eslint 改动文件零新增。
+
+**遗留**：容器内端到端冒烟（SSE 事件到达 + content 端点真实 JWT 实测非空 + 成稿落版本）待部署后验证
+
 ## 2026-09-08 ES 检索重试冲突根治第二例（track_total_hits）+ 索引名去重消 KNN 4 倍放大 + KB 3b4f619c 索引瘦身（保留近1个月）（后端，已部署）
 
 **主题**：用户「再看看」复查服务器——load 12.55、iowait 88~93%、磁盘读 ~180MB/s。ES hot threads 实证 6+ 个 search 线程 100% 阻塞在 HNSW 向量检索 off-heap 读盘（`OffHeapFloatVectorValues`）：17.9GB 索引（78 万 chunk）+ ES 堆仅 2GB，向量无法常驻页缓存，每次 KNN 现读盘。两个叠加的放大因素：① **track_total_hits 重试冲突**（与上文 timeout 同族 bug）——用户画布范本填写检索（`canvas:TemplateFill`，k=1024/num_candidates=2048 大查询）超时重试时 ES 9.x 客户端 kwarg 原地合并进 body 导致 `Received multiple values for 'track_total_hits'`，重试必然失败；② **索引名 4 倍重复**——同租户 4 个 KB 走 `index_name(tenant_id)` 返回同一索引，`index_names` 未去重，ES 对同一索引建 4 个搜索上下文，KNN 开销 4 倍放大。修复（commit `ce55fef1`）：`_es_search_once` 把 `track_total_hits` 写进 body 不再走 kwarg；`_source=True` kwarg 一并移除（ES 默认值，与 body 内字段列表潜在冲突）；入口 `dict.fromkeys` 去重保序 index_names。
