@@ -117,6 +117,9 @@ PARAM_VAL_MAX = 100
 # 预算推导：BATCH_SIZE × MAX_EVIDENCE_CHUNKS × CONTENT_SNIPPET = 10 × 6 × 800 ≈ 48K 字符，
 # 加字段清单/参数后仍在主流模型上下文窗口内（原 30 → 30×6×800≈144K 会顶爆小窗口模型）。
 BATCH_SIZE = 10
+# 产值批次并发上限：批次间字段独立无依赖，并发安全；大批量模板（百级填写点）
+# 串行 20 批 × 单批 20~40s 会放大成 10 分钟级阻塞。共享 sem 时以外部闸为准。
+GENERATE_CONCURRENCY = 3
 MAX_EVIDENCE_CHUNKS = 6  # 每字段进 prompt 的证据片段上限（片段已在检索层截 800 字）
 PARAMS_PROMPT_MAX = 2000       # 任务参数整体序列化进 prompt 的截断上限
 CONSTRAINTS_PROMPT_MAX = 200   # 单字段 constraints 序列化进 prompt 的截断上限
@@ -194,17 +197,23 @@ def _apply_constraints(value, constraints: dict):
 
 async def generate_values(tenant_id: str, placeholders: list[dict], chunks_by_key: dict,
                           params: dict | None = None,
-                          batch_size: int = BATCH_SIZE) -> tuple[dict, set]:
-    """LLM 批量产值：一次调用产 ≤batch_size 个字段值（超出分批）。
+                          batch_size: int = BATCH_SIZE,
+                          sem: asyncio.Semaphore | None = None) -> tuple[dict, set]:
+    """LLM 批量产值：一次调用产 ≤batch_size 个字段值（超出分批），批次间并发
+    （GENERATE_CONCURRENCY 路；字段独立无依赖，并发安全）。
     batch_size 为 0/None 等假值时兜底为 BATCH_SIZE（step 与 slice 必须同值，
     否则 0 产生空批、None 导致 slice 取全量重复发送）。
+    sem 为跨层共享并发闸（画布多范本并行时传入全局信号量，使多范本 × 批次
+    总并发不超闸值）；不传则内部自建。
     返回 (values, missing_keys)。每字段证据最多取 6 片（片段已截 800 字）。"""
-    missing: set = set()
-    values: dict = {}
-    mdl = None
     step = max(int(batch_size or BATCH_SIZE), 1)
-    for i in range(0, len(placeholders), step):
-        batch = placeholders[i:i + step]
+    batches = [placeholders[i:i + step] for i in range(0, len(placeholders), step)]
+    if not batches:
+        return {}, set()
+    sem = sem or asyncio.Semaphore(GENERATE_CONCURRENCY)
+    mdl = _build_chat_mdl(tenant_id)
+
+    def _build_msg(batch: list[dict]) -> str:
         spec = []
         for it in batch:
             key = _clean_for_prompt(it["key"], NAME_MAX)
@@ -221,14 +230,21 @@ async def generate_values(tenant_id: str, placeholders: list[dict], chunks_by_ke
             joined = "\n---\n".join(f"[片段{j + 1}] {c['content']}"
                                     for j, c in enumerate(chunks[:MAX_EVIDENCE_CHUNKS])) or "（无检索证据）"
             evidence.append(f"### 字段 {key}\n{joined}")
-        user_msg = ("## 字段清单\n" + json.dumps(spec, ensure_ascii=False) +
-                    "\n\n## 检索证据\n" + "\n\n".join(evidence) +
-                    "\n\n任务参数（背景信息）：" + _clean_for_prompt(
-                        json.dumps(params or {}, ensure_ascii=False, default=str), PARAMS_PROMPT_MAX))
-        if mdl is None:
-            mdl = _build_chat_mdl(tenant_id)
-        ans = await mdl.async_chat(GENERATE_SYSTEM, [{"role": "user", "content": user_msg}])
-        raw = _extract_json(ans)
+        return ("## 字段清单\n" + json.dumps(spec, ensure_ascii=False) +
+                "\n\n## 检索证据\n" + "\n\n".join(evidence) +
+                "\n\n任务参数（背景信息）：" + _clean_for_prompt(
+                    json.dumps(params or {}, ensure_ascii=False, default=str), PARAMS_PROMPT_MAX))
+
+    async def _one(batch: list[dict]):
+        user_msg = _build_msg(batch)
+        async with sem:
+            ans = await mdl.async_chat(GENERATE_SYSTEM, [{"role": "user", "content": user_msg}])
+        return batch, _extract_json(ans)
+
+    results = await asyncio.gather(*[_one(b) for b in batches])
+    missing: set = set()
+    values: dict = {}
+    for batch, raw in results:
         for it in batch:
             key = it["key"]
             val = _apply_constraints(raw.get(key), it.get("constraints") or {})
@@ -339,6 +355,61 @@ async def _retrieve_all(tenant_id: str, placeholders: list[dict], kb_ids: list[s
         chunks_by_key[key]["chunks"] = chunks
         evidence[key]["chunks"] = chunks
     return chunks_by_key, evidence
+
+
+async def retrieve_all_shared(tenant_id: str, placeholders_list: list[list[dict]],
+                              kb_ids: list[str], task_id: str = "") -> list[dict]:
+    """多范本共享检索（画布多范本节点专用）：各范本占位符平铺后按 (top_k, query)
+    去重——不同范本的填写点检索词高度重合（同域政务范本尤其如此），同一检索词
+    只查一次 ES，结果按 key 分发回各自范本。槽位归集/降级语义与 _retrieve_all
+    一致：param/无 key 槽不进检索、单槽失败降级空证据、上下文加载失败全槽空。
+    返回与入参等长的 [{key: {"chunks": [...], "query": ...}}, ...]。"""
+    slots_list: list[dict] = []
+    todo: dict[tuple[int, str], None] = {}   # (top_k, query) → 去重保序
+    for placeholders in placeholders_list:
+        slots: dict = {}
+        for it in placeholders:
+            key = it.get("key")
+            if not key:
+                logger.warning("placeholder missing key, skipped, task=%s name=%r",
+                               task_id, it.get("name"))
+                continue
+            query = build_retrieval_query(it.get("retrieval_query") or it.get("name") or key, {})
+            slots[key] = {"chunks": [], "query": query}
+            if _norm_fill_mode(it) == "llm" and query and kb_ids:
+                todo.setdefault((int(it.get("top_k") or TOP_K_DEFAULT), query))
+        slots_list.append(slots)
+
+    if not todo:
+        return slots_list
+    try:
+        ctx = load_retrieval_ctx(tenant_id, kb_ids)
+    except Exception as e:  # noqa: BLE001 — 上下文加载失败等价全部槽降级空证据
+        logger.warning("load_retrieval_ctx failed, task=%s: %s", task_id, e)
+        return slots_list
+
+    sem = asyncio.Semaphore(RETRIEVAL_CONCURRENCY)
+
+    async def _one(qk: tuple[int, str]):
+        top_k, query = qk
+        async with sem:
+            try:
+                return qk, await retrieve_slot(tenant_id, kb_ids, query, top_k, ctx=ctx)
+            except Exception as e:  # noqa: BLE001 — 单槽失败降级空证据
+                logger.warning("retrieve_slot failed, task=%s query=%r: %s", task_id, query, e)
+                return qk, []
+
+    results = await asyncio.gather(*[_one(qk) for qk in todo])
+    chunks_by_qk = dict(results)
+    for slots, placeholders in zip(slots_list, placeholders_list):
+        for it in placeholders:
+            key = it.get("key")
+            if not key or _norm_fill_mode(it) != "llm":
+                continue
+            query = slots[key]["query"]
+            slots[key]["chunks"] = chunks_by_qk.get(
+                (int(it.get("top_k") or TOP_K_DEFAULT), query), [])
+    return slots_list
 
 
 def _merge_param_values(placeholders: list[dict], generated: dict, missing: set, params: dict):

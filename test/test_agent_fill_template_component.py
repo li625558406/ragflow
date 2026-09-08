@@ -190,18 +190,20 @@ def patched_env(monkeypatch):
     monkeypatch.setattr(fill_template, "TplTemplateVersionService", FakeService)
     monkeypatch.setattr(fill_template.settings, "STORAGE_IMPL", FakeStorage())
 
-    async def fake_retrieve_all(tenant_id, placeholders, kb_ids, params, task_id=""):
+    async def fake_retrieve_all_shared(tenant_id, placeholders_list, kb_ids, task_id=""):
         calls["kb_ids"] = kb_ids
-        return {it["key"]: {"chunks": [{"content": "证据", "doc_id": "d", "doc_name": "n",
-                                        "similarity": 0.9}], "query": it["key"]}
-                for it in placeholders if it.get("key")}, {}
+        calls["shared_task_id"] = task_id
+        return [{it["key"]: {"chunks": [{"content": "证据", "doc_id": "d", "doc_name": "n",
+                                         "similarity": 0.9}], "query": it["key"]}
+                 for it in placeholders if it.get("key")}
+                for placeholders in placeholders_list]
 
     async def fake_generate_values(tenant_id, placeholders, chunks_by_key, params,
-                                   batch_size=10):
+                                   batch_size=10, sem=None):
         calls["gen_keys"] = [it["key"] for it in placeholders]
         return {it["key"]: f"值_{it['key']}" for it in placeholders}, set()
 
-    monkeypatch.setattr(fill_template.executor, "_retrieve_all", fake_retrieve_all)
+    monkeypatch.setattr(fill_template.executor, "retrieve_all_shared", fake_retrieve_all_shared)
     monkeypatch.setattr(fill_template.executor, "generate_values", fake_generate_values)
 
     def fake_render(file_type, blob, values, addr_by_key=None):
@@ -336,24 +338,26 @@ def test_invoke_async_xlsx_addr_passthrough(patched_env):
 
 
 def test_invoke_async_query_fallback_sys_query(patched_env):
-    """query 为空回退 {sys.query}：检索 query 应来自 sys.query 值（经 retrieve 桩透传验证）。"""
+    """query 为空回退 {sys.query}：检索 task_id 应来自画布节点（经共享检索桩透传验证）。"""
     _stage_one_candidate()
     seen = {}
 
-    async def fake_retrieve_all(tenant_id, placeholders, kb_ids, params, task_id=""):
+    async def fake_retrieve_all_shared(tenant_id, placeholders_list, kb_ids, task_id=""):
         seen["task_id"] = task_id
-        return {}, {}
+        return [{it["key"]: {"chunks": [], "query": it["key"]}
+                 for it in placeholders if it.get("key")}
+                for placeholders in placeholders_list]
 
     patched_env  # fixture 已挂 generate_values 桩（全空产值 → 留空路径）
     import asyncio
     cpn = _make_component(TemplateFillParam(), canvas=FakeCanvas(sys_query="我的需求"))
     cpn._param.dataset_ids = ["kb1"]
-    orig = fill_template.executor._retrieve_all
-    fill_template.executor._retrieve_all = fake_retrieve_all
+    orig = fill_template.executor.retrieve_all_shared
+    fill_template.executor.retrieve_all_shared = fake_retrieve_all_shared
     try:
         asyncio.run(cpn._invoke_async())
     finally:
-        fill_template.executor._retrieve_all = orig
+        fill_template.executor.retrieve_all_shared = orig
     assert seen["task_id"] == "canvas:node1"
 
 
@@ -401,7 +405,7 @@ def test_invoke_async_user_file_evidence_prepended(patched_env, monkeypatch):
     seen = {"chunks": {}, "background": None}
 
     async def fake_generate_values(tenant_id, placeholders, chunks_by_key, params,
-                                   batch_size=10):
+                                   batch_size=10, sem=None):
         seen["chunks"] = {k: v["chunks"] for k, v in chunks_by_key.items()}
         seen["background"] = params
         return {it["key"]: f"值_{it['key']}" for it in placeholders}, set()
@@ -428,3 +432,71 @@ def test_invoke_async_user_file_absent_no_injection(patched_env):
     cpn._param.dataset_ids = ["kb1"]
     asyncio.run(cpn._invoke_async())
     assert patched_env["render"][2]["项目名称"] == "值_项目名称"
+
+
+def test_invoke_async_one_template_failure_degrades_to_summary_line(patched_env, monkeypatch):
+    """多范本并行：单个范本填写失败不拖死节点 → 该范本降级为汇总行，其余照常产出。"""
+    FakeService.rows = [
+        {"id": "t1", "name": "报告A", "description": "", "file_type": "docx"},
+        {"id": "t2", "name": "报告B", "description": "", "file_type": "docx"},
+    ]
+    # t2 工作副本缺失（render_obj 拿不到 blob）→ 该范本 _fill_one 抛 ValueError
+    FakeService.vers = {"t1": _ver([_ver_slot("项目名称")]),
+                        "t2": _ver([_ver_slot("项目名称")], render_file_id="missing_obj")}
+
+    class MultiMdl:
+        async def async_chat(self, system, msgs):
+            return '{"template_ids": ["t1", "t2"]}'
+
+    monkeypatch.setattr(fill_template.executor, "_build_chat_mdl", lambda *_: MultiMdl())
+    cpn = _make_component(TemplateFillParam())
+    cpn._param.dataset_ids = ["kb1"]
+    import asyncio
+    asyncio.run(cpn._invoke_async())
+
+    dls = json.loads(cpn.output("download"))
+    assert [d["filename"] for d in dls] == ["报告A.docx"]
+    assert "填写失败" in cpn.output("content") and "报告B" in cpn.output("content")
+    assert "报告A" in cpn.output("content")
+
+
+def test_invoke_async_all_templates_failed_raises(patched_env, monkeypatch):
+    """所有范本均失败 → 节点报错（携带首个原因），不输出空下载列表。"""
+    _stage_one_candidate()
+    FakeService.vers["t1"] = _ver([_ver_slot("项目名称")], render_file_id="missing_obj")
+    cpn = _make_component(TemplateFillParam())
+    cpn._param.dataset_ids = ["kb1"]
+    import asyncio
+    with pytest.raises(ValueError, match="所有范本填写均失败"):
+        asyncio.run(cpn._invoke_async())
+
+
+def test_invoke_async_shared_retrieval_called_once_for_multi_templates(patched_env, monkeypatch):
+    """多范本：共享检索只调一次（retrieve_all_shared 桩调用计数），各范本拿到各自证据。"""
+    FakeService.rows = [
+        {"id": "t1", "name": "报告A", "description": "", "file_type": "docx"},
+        {"id": "t2", "name": "报告B", "description": "", "file_type": "docx"},
+    ]
+    FakeService.vers = {t: _ver([_ver_slot("项目名称")]) for t in ("t1", "t2")}
+    calls = {"shared": 0}
+
+    async def fake_shared(tenant_id, placeholders_list, kb_ids, task_id=""):
+        calls["shared"] += 1
+        assert len(placeholders_list) == 2
+        return [{it["key"]: {"chunks": [{"content": f"证据_{tid}", "doc_id": "d",
+                                         "doc_name": "n", "similarity": 0.9}],
+                             "query": it["key"]} for it in ph if it.get("key")}
+                for tid, ph in zip(("t1", "t2"), placeholders_list)]
+
+    class MultiMdl:
+        async def async_chat(self, system, msgs):
+            return '{"template_ids": ["t1", "t2"]}'
+
+    monkeypatch.setattr(fill_template.executor, "retrieve_all_shared", fake_shared)
+    monkeypatch.setattr(fill_template.executor, "_build_chat_mdl", lambda *_: MultiMdl())
+    cpn = _make_component(TemplateFillParam())
+    cpn._param.dataset_ids = ["kb1"]
+    import asyncio
+    asyncio.run(cpn._invoke_async())
+    assert calls["shared"] == 1
+    assert len(patched_env["put"]) == 2

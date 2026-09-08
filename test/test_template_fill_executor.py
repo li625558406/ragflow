@@ -111,6 +111,70 @@ def test_retrieve_all_concurrent_ctx_shared(monkeypatch):
     assert "None" not in chunks_by_key and None not in chunks_by_key
 
 
+def test_retrieve_all_shared_dedup_queries(monkeypatch):
+    """retrieve_all_shared 跨范本共享检索：相同 (top_k, query) 只查一次 ES、
+    结果分发回各自范本；param 槽不进检索；ctx 只加载一次。"""
+    from rag.svr.template_fill import executor
+    calls = {"ctx": 0, "slots": []}
+
+    def fake_ctx(tenant_id, kb_ids):
+        calls["ctx"] += 1
+        return ("ctx_kbs", "ctx_embd")
+
+    async def fake_slot(tenant_id, kb_ids, query, top_k=6, ctx=None):
+        assert ctx == ("ctx_kbs", "ctx_embd")
+        calls["slots"].append((top_k, query))
+        return [{"content": f"证据[{top_k}|{query}]", "doc_id": "d", "doc_name": "n",
+                 "similarity": 0.9}]
+
+    monkeypatch.setattr(executor, "load_retrieval_ctx", fake_ctx)
+    monkeypatch.setattr(executor, "retrieve_slot", fake_slot)
+    # 范本A/B 的 k1 检索词相同（重合场景）、k2 各不相同；B.p 为 param 槽
+    tpl_a = [{"key": "k1", "name": "项目名称", "fill_mode": "llm"},
+             {"key": "k2", "name": "A特有", "fill_mode": "llm"}]
+    tpl_b = [{"key": "k1", "name": "项目名称", "fill_mode": "llm"},
+             {"key": "k2", "name": "B特有", "fill_mode": "llm"},
+             {"key": "p", "name": "参数", "fill_mode": "param"}]
+    out = executor._run_async(
+        executor.retrieve_all_shared("t", [tpl_a, tpl_b], ["kb1"]))
+    assert calls["ctx"] == 1
+    assert sorted(calls["slots"]) == sorted([(6, "项目名称"), (6, "A特有"), (6, "B特有")])
+    assert out[0]["k1"]["chunks"][0]["content"] == "证据[6|项目名称]"
+    assert out[1]["k1"]["chunks"][0]["content"] == "证据[6|项目名称]"   # 共享结果分发
+    assert out[0]["k2"]["chunks"][0]["content"] == "证据[6|A特有]"
+    assert out[1]["k2"]["chunks"][0]["content"] == "证据[6|B特有]"
+    assert out[1]["p"]["chunks"] == []                                 # param 槽不检索
+
+
+def test_retrieve_all_shared_topk_in_key_and_ctx_fail(monkeypatch):
+    """同 query 不同 top_k 视为不同槽位各查一次；ctx 加载失败全槽降级空证据不炸。"""
+    from rag.svr.template_fill import executor
+    calls = {"slots": []}
+
+    async def fake_slot(tenant_id, kb_ids, query, top_k=6, ctx=None):
+        calls["slots"].append((top_k, query))
+        return [{"content": "x", "doc_id": "d", "doc_name": "n", "similarity": 0.9}]
+
+    monkeypatch.setattr(executor, "load_retrieval_ctx",
+                        lambda tenant, kbs: (_ for _ in ()).throw(RuntimeError("db down")))
+    monkeypatch.setattr(executor, "retrieve_slot", fake_slot)
+    tpl = [{"key": "k1", "name": "字段", "fill_mode": "llm", "top_k": 3},
+           {"key": "k2", "name": "字段", "fill_mode": "llm", "top_k": 12}]
+    out = executor._run_async(executor.retrieve_all_shared("t", [tpl], ["kb1"]))
+    assert out[0]["k1"]["chunks"] == [] and out[0]["k2"]["chunks"] == []
+    assert calls["slots"] == []
+
+
+def test_retrieve_all_shared_empty_kb_ids_no_retrieval(monkeypatch):
+    """kb_ids 为空 → 全槽空证据，不加载 ctx（省无意义异常）。"""
+    from rag.svr.template_fill import executor
+    monkeypatch.setattr(executor, "load_retrieval_ctx",
+                        lambda *_: (_ for _ in ()).throw(AssertionError("不应加载 ctx")))
+    tpl = [{"key": "k1", "name": "字段", "fill_mode": "llm"}]
+    out = executor._run_async(executor.retrieve_all_shared("t", [tpl], []))
+    assert out[0]["k1"] == {"chunks": [], "query": "字段"}
+
+
 # ---------- 生成层：prompt 清洗 + LLM 批量产值 ----------
 
 def test_clean_for_prompt_strips_and_truncates():
@@ -205,7 +269,8 @@ def test_generate_values_batch_and_missing(monkeypatch):
     assert vals == {"k1": "值一", "k3": "值三"}
     assert missing == {"k2"}
     assert len(prompts) == 2  # batch_size=2 → 两批
-    assert "证据k1" in prompts[0]  # 证据装配进 prompt
+    # 批次并发后完成顺序不定，断言放宽为「证据装配进了 prompt」
+    assert any("证据k1" in p for p in prompts)
 
 
 def test_generate_values_evidence_chunk_cap(monkeypatch):
@@ -272,6 +337,53 @@ def test_generate_values_batch_size_none_falls_back_to_default(monkeypatch):
     assert len(prompts) == 2  # 3 字段 / BATCH_SIZE=2 → 两批（2+1），不是 None 时 slice 取全量的 1 批
     assert vals == {f"k{i}": f"值-k{i}" for i in range(1, 4)}
     assert missing == set()
+
+
+def test_generate_values_batches_run_concurrently(monkeypatch):
+    """批次并发：多批同时在途（峰值并发 ≥2）；共享外部信号量时被钉住（峰值=1）。"""
+    import asyncio
+
+    from rag.svr.template_fill import executor
+
+    state = {"cur": 0, "peak": 0}
+
+    async def fake_chat(system, history, gen_conf=None, **kw):
+        state["cur"] += 1
+        state["peak"] = max(state["peak"], state["cur"])
+        await asyncio.sleep(0.01)
+        state["cur"] -= 1
+        content = history[0]["content"]
+        spec = json.loads(content.split("## 检索证据")[0].split("## 字段清单\n")[1])
+        return json.dumps({s["key"]: f"值-{s['key']}" for s in spec}, ensure_ascii=False)
+
+    monkeypatch.setattr(executor, "_build_chat_mdl", lambda tenant: types.SimpleNamespace(async_chat=fake_chat))
+    placeholders = [{"key": f"k{i}", "name": f"字段{i}", "description": "", "constraints": {}}
+                    for i in range(4)]
+    chunks_by_key = {f"k{i}": {"chunks": []} for i in range(4)}
+
+    # 默认 GENERATE_CONCURRENCY=3：4 批（batch_size=1）应并发，峰值 ≥2
+    vals, missing = executor._run_async(
+        executor.generate_values("t", placeholders, chunks_by_key, params={}, batch_size=1))
+    assert vals == {f"k{i}": f"值-k{i}" for i in range(4)} and missing == set()
+    assert state["peak"] >= 2
+
+    # 外部共享 sem(1)：多范本并行场景总闸生效，峰值钉在 1
+    state.update(cur=0, peak=0)
+    sem = asyncio.Semaphore(1)
+    vals, missing = executor._run_async(
+        executor.generate_values("t", placeholders, chunks_by_key, params={},
+                                 batch_size=1, sem=sem))
+    assert vals == {f"k{i}": f"值-k{i}" for i in range(4)}
+    assert state["peak"] == 1
+
+
+def test_generate_values_empty_placeholders_no_llm(monkeypatch):
+    """空占位符 → 不建模型不调 LLM，直接返回空。"""
+    from rag.svr.template_fill import executor
+    monkeypatch.setattr(executor, "_build_chat_mdl",
+                        lambda *_: (_ for _ in ()).throw(AssertionError("不应构建模型")))
+    vals, missing = executor._run_async(executor.generate_values("t", [], {}, params={}))
+    assert vals == {} and missing == set()
 
 
 # ---------- 任务编排：状态机白名单 + 待人工合成（P2 Task 7） ----------

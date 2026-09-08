@@ -28,6 +28,7 @@ download 列表 JSON（下游 Message 节点 _extract_downloads 识别后渲染�
 FillTemplate 工具）同样经 component_class 解析且 agent.component 优先，
 组件类若与工具类同名会遮蔽工具、破坏存量画布，两包不得重名。
 """
+import asyncio
 import json
 import logging
 import re
@@ -63,6 +64,9 @@ _SELECT_SYSTEM = (
 _USER_FILE_EVIDENCE_MAX = 2000
 # Begin 表单字段进产值 LLM 背景信息的单字段截断上限
 _BEGIN_FIELD_PROMPT_MAX = 200
+# 单次画布运行的 LLM 并发总闸：多范本并行 × 产值批次并发共用这一个信号量
+# （executor.generate_values 接收外部 sem），防止多范本时并发调用数相乘打爆 provider
+_FILL_CONCURRENCY = 4
 
 
 def build_candidates(rows: list[dict], latest_of) -> list[dict]:
@@ -187,15 +191,13 @@ class TemplateFill(ComponentBase):
             return ""
         return text.strip()[:_USER_FILE_EVIDENCE_MAX]
 
-    async def _fill_one(self, tenant_id: str, cand: dict, kb_ids: list[str], query: str,
-                        begin_fields: dict, user_file_text: str) -> tuple[dict, dict, int]:
-        """对单个选中范本走完整填写 pipeline：检索 → LLM 产值 → param 直取 → 渲染。
-        返回 (download_info, cell_status, filled_count)。"""
+    async def _fill_one(self, tenant_id: str, cand: dict, chunks_by_key: dict, query: str,
+                        begin_fields: dict, user_file_text: str, sem: asyncio.Semaphore
+                        ) -> tuple[dict, dict, int]:
+        """对单个选中范本走完整填写 pipeline：LLM 产值 → param 直取 → 渲染。
+        检索已由 _invoke_async 跨范本共享完成（chunks_by_key 传入）；sem 为全局
+        LLM 并发闸（多范本并行 × 批次并发共用）。返回 (download_info, cell_status, filled_count)。"""
         placeholders = cand["_placeholders"]
-
-        # ② 检索（单槽失败在 _retrieve_all 内降级为空证据）
-        chunks_by_key, _evidence = await executor._retrieve_all(
-            tenant_id, placeholders, kb_ids, {}, task_id=f"canvas:{self._id}")
 
         # ③ 用户上传文件作为填写证据：预置片段插到每槽证据首位（优先于 KB 片段）
         if user_file_text:
@@ -216,7 +218,7 @@ class TemplateFill(ComponentBase):
         if query:
             background["用户需求描述"] = query[:_BEGIN_FIELD_PROMPT_MAX]
         generated, missing = await executor.generate_values(
-            tenant_id, llm_placeholders, llm_chunks, background)
+            tenant_id, llm_placeholders, llm_chunks, background, sem=sem)
         executor._merge_param_values(placeholders, generated, missing, begin_fields)
         values, cell_status = executor.build_values(placeholders, generated)
 
@@ -260,18 +262,38 @@ class TemplateFill(ComponentBase):
         begin_fields = self._begin_fields()
         user_file_text = self._user_file_evidence()
 
-        # 每个适配范本各产一份成稿；download 输出为列表（Message._extract_downloads
-        # 原生支持 list 契约，前端逐条渲染下载/预览）
+        # ② 跨范本共享检索：所有选中范本的填写点按 (top_k, 检索词) 去重，
+        # 同一检索词只查一次 ES（多范本重合场景 ES 压力骤减）；单槽失败降级空证据
+        chunks_list = await executor.retrieve_all_shared(
+            tenant_id, [c["_placeholders"] for c in chosen], kb_ids,
+            task_id=f"canvas:{self._id}")
+
+        # ③④ 多范本并行填写（LLM 总并发钉在 _FILL_CONCURRENCY）；单范本失败
+        # 不拖死整节点，降级为汇总行提示，其余范本照常产出
+        sem = asyncio.Semaphore(_FILL_CONCURRENCY)
+        results = await asyncio.gather(
+            *[self._fill_one(tenant_id, cand, chunks, query, begin_fields,
+                             user_file_text, sem)
+              for cand, chunks in zip(chosen, chunks_list)],
+            return_exceptions=True)
+
+        # download 输出为列表（Message._extract_downloads 原生支持 list 契约，
+        # 前端逐条渲染下载/预览）
         downloads: list[dict] = []
         summary_lines: list[str] = []
-        for cand in chosen:
-            dl, _cell_status, filled = await self._fill_one(
-                tenant_id, cand, kb_ids, query, begin_fields, user_file_text)
+        for cand, res in zip(chosen, results):
+            if isinstance(res, BaseException):
+                summary_lines.append(f"《{cand['name']}》：填写失败（{res}）。")
+                continue
+            dl, _cell_status, filled = res
             downloads.append(dl)
             total = len(cand["_placeholders"])
             summary_lines.append(
                 f"《{cand['name']}》：共 {total} 个填写点，AI 填充 {filled} 个，"
                 f"{total - filled} 个未检索到值已留空。")
+        if not downloads:
+            raise ValueError("所有范本填写均失败：" + "；".join(
+                str(r) for r in results if isinstance(r, BaseException)))
         self.set_output("download", json.dumps(downloads, ensure_ascii=False))
         suffix = "，可在上方预览或下载成稿。" if len(downloads) == 1 else "，可在上方逐份预览或下载成稿。"
         head = (f"已选用 {len(downloads)} 份范本：\n" if len(downloads) > 1 else "已选用范本")
