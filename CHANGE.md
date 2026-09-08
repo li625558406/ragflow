@@ -1,5 +1,15 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-08 KBUploader PDF 页数解析上限（>50页只上传不排队）+ 僵尸解析任务清理（后端，已部署）
+
+**主题**：服务器负载排查（load 峰值 7.46/4核）定位为采集批量入库触发 115 篇文档解析、task 队列积压 110 自愈后，用户发现既有 5MiB 体积上限（`kb_uploader.py PARSE_SIZE_LIMIT`）挡不住解析成本——文件大小与解析成本不相关：1.3MB 高压缩文本型招标 PDF 可达 ~96 页，按 12 页/分片跑 DeepDOC 布局识别（CPU 密集），多个此类文件即占满共享 task 队列。新增 `PARSE_PAGE_LIMIT=50`：`_upload_blob` 对 .pdf 用 `PdfParser.total_page_number`（pdfplumber）数页数，超限照常上传、不排队解析（用户可在 KB UI 手动触发）；页数统计失败 fail-open（None 照常排队，与 `queue_tasks` 的 None→0 语义一致）；非 PDF 文件不检查；5MiB 体积上限优先（先判体积，未超体积才判页数）。commit `c351201f`。
+
+**服务器清理**：观察确认队列正常消费非卡死（done 7→133、lag 110→0，约 20 分钟自愈，load 回落 1.40）；task 表 202 行 progress<1 僵尸行（所属文档 run=4 FAIL 终态、178 行为 8 月遗留，永不被消费只污染统计）按官方 stop_parsing 语义清理——删 200 行任务行 + 对应文档残留 ES chunk 按文档逐个 delete_by_query（实测 chunk 删除 0 条，即无残留），2 个文档跳过（非终态/已有完成任务，防误删有效 chunk）。
+
+**测试**：新增 `test/test_kb_uploader_page_limit.py` 5 用例（60页跳过 / 边界50页解析 / 统计失败 fail-open / 非 PDF 不检查 / 体积上限优先且短路页数检查），全绿；ruff 与文件基线一致（仅新增 1 条 LOG015 与既有同款日志风格一致）。已 SCP `rag/svr/crawler_engine/kb_uploader.py`（爬虫子进程每次新起 Python 导入，无需重启容器），容器内冒烟 `PARSE_PAGE_LIMIT: 50` 生效。
+
+**遗留**：`PARSE_PAGE_LIMIT=50` 为代码常量，如需调阈值改代码（阈值依据：本次肇事 PDF 84~96 页，100 挡不住故取 50）；detector 定时探测与解析共用单实例 task_executor 的挤兑问题仍未做隔离。
+
 ## 2026-09-08 修复 ES 高负载下检索重试必然失败：timeout kwarg 与 body 合并冲突（后端，已部署）
 
 **主题**：用户画布触发范本填写（196 填写点）长时间无结果——日志显示 `retrieve_slot failed ... Received multiple values for 'timeout', specify parameters using either body or parameters, not both`，失败槽每个耗时 ~600s 且节奏与 ES 客户端超时（`Elasticsearch(..., timeout=600)`）吻合。根因链：① `es_conn.py _es_search_once` 把 `timeout="600s"` 作为 **kwarg** 传给 ES 客户端；② elasticsearch-py 9.x 的 `@_rewrite_parameters` wrapper 会把 kwarg **原地合并进 body dict**（`body[key]=kwargs.pop(key)`）；③ `es_conn.search()` 重试循环（`ATTEMPT_TIME=2`）在 ConnectionTimeout 后**复用同一 query dict** 重试；④ 第二次调用时 body 已含 timeout、kwarg 再传一次 → ValueError → 该槽降级空证据。即：**ES 高负载下凡触发超时重试的检索必然失败**，平时低负载不触发重试所以长期未暴露（对话检索、B端填写任务同受此债）。修复（commit `fd8f97be`）：`_es_search_once` 把 `timeout` 直接写进 body、不再走 kwarg 合并路径，重试恢复可用。诊断过程中容器内实证：单查/12 路并发均复现不了（当时 ES 负载低不超时），最终靠「失败节奏=600s+kwarg 合并语义」锁定。
