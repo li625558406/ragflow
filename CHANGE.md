@@ -1,5 +1,13 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-08 上传模板改为「上传即走」后台 AI 识别 + 列表识别状态（前后端，均未部署）
+
+**主题**：按用户需求「上传执行到下一步时，可在列表看到 AI 识别的进度或状态」（经确认选择后台识别方案）：① 后端 `tpl_template` 加 `detect_status`（none|running|done|failed）+ `detect_error` 字段（db_models.py 含 migrate_db 迁移）；`TplTemplateService.set_detect_status` 状态流转方法；新增 `POST /template/fill/detect-async` 端点（template_api.py）——daemon 线程跑 LLM 识别，成功自动 `save_placeholders` 落库，所有失败路径（含 0 条识别结果）必置 failed 防卡 running；防重入双保险（进程内 `_detecting` set 为准 + DB 状态展示，进程重启自愈）；仅对「无已保存填写点」模板开放，防覆盖人工配置。② 前端：上传向导重构为单面板（upload-wizard.tsx 整体重写）——文件队列串行「上传 → 触发后台识别」后自动关闭弹框，不再等 LLM；列表页状态列叠加识别徽标（AI 识别中/已识别/AI 识别失败，失败悬浮显原因），存在识别中行时 3s 函数式轮询自动停止（use-template-fill-request.ts）；移除批量上传按钮与弹框（batch-upload-dialog.tsx 已删）。后端 commit `90d1f057`（含 12 个新单测，4 套件全绿）。
+
+**测试**：后端 pytest 4 套件全过（含线程启动失败自愈、幂等防重、任意失败路径 `_detecting` 必回收等对抗用例）；前端改动文件 tsc/ESLint 0 error；Playwright 实测本地上传链路（上传成功、detect-async 因后端未部署返回 405 → 向导按设计标记失败并关闭，预期行为），测试模板已删除清理。
+
+**遗留**：前后端均未部署——需 SCP `template_api.py` / `template_fill_service.py` / `db_models.py` + docker restart（触发 tpl_template 加列迁移）+ 前端 build；部署后回归完整「上传 → 列表识别中 → 已识别 → 详情确认」链路。详情页同步 detect 接口保留（已有填写点模板用手动识别）。
+
 ## 2026-09-08 上传向导多文件逐个走完整识别流程（纯前端，未 build 部署）
 
 **主题**：按用户要求「单个/多个文件上传流程必须一致，下一步都是 AI 识别」——上传向导多选文件不再转交批量上传弹框，改为向导内维护文件队列：每个文件依次走「上传 → AI 识别 → 确认保存」完整三步，保存一个自动进入下一个（重置模板名/填写点/识别状态并直接开始上传+识别），步骤条显示「第 x/N 个文件」，Step1 显示文件列表（可单个移除），多文件时模板名只对第一个生效、其余自动取文件名，Step3 按钮改「保存并继续」。单个文件流程保持不变；「批量上传」弹框保留为独立入口（仅建草稿），移除 initialFiles 转交死代码。commit `450636fc`。

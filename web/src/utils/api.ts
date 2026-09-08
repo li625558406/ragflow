@@ -460,6 +460,7 @@ export default {
   uploadTemplateFill: `${restAPIv1}/template/fill/upload`,
   listTemplateFill: `${restAPIv1}/template/fill/list`,
   detectTemplateFill: `${restAPIv1}/template/fill/detect`,
+  detectTemplateFillAsync: `${restAPIv1}/template/fill/detect-async`,
   getTemplateFill: (id: string) => `${restAPIv1}/template/fill/${id}`,
   saveTemplateFillPlaceholders: (id: string) =>
     `${restAPIv1}/template/fill/${id}/save-placeholders`,

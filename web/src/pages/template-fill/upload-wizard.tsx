@@ -1,5 +1,5 @@
 import { FileText, FileUp, X } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -11,41 +11,50 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import message from '@/components/ui/message';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
 import {
-  useDetectTemplateFill,
-  useSaveTemplateFillPlaceholders,
+  useDetectTemplateFillAsync,
   useUploadTemplateFill,
-  type TplPlaceholder,
 } from '@/hooks/use-template-fill-request';
-import {
-  collectRowErrors,
-  emptyPlaceholder,
-  PlaceholderTable,
-  trimRows,
-} from './placeholder-table';
-
-const FILL_MODE_LABEL: Record<TplPlaceholder['fill_mode'], string> = {
-  llm: 'AI填写',
-  param: '参数',
-  manual: '人工',
-};
 
 interface UploadWizardProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  // 全部文件上传并提交识别后回调（参数为最后一个模板 id）
   onSaved?: (id: string) => void;
 }
 
 const TEMPLATE_FILE_RE = /\.(docx|doc|xlsx)$/i;
+
+type ItemStatus =
+  | 'pending'
+  | 'uploading'
+  | 'detecting'
+  | 'submitted'
+  | 'failed';
+
+interface UploadItem {
+  file: File;
+  status: ItemStatus;
+  error?: string;
+  templateId?: string;
+}
+
+const STATUS_TEXT: Record<ItemStatus, string> = {
+  pending: '待上传',
+  uploading: '上传中…',
+  detecting: 'AI 识别中…',
+  submitted: '已提交识别',
+  failed: '失败',
+};
+
+const STATUS_CLS: Record<ItemStatus, string> = {
+  pending: 'text-muted-foreground',
+  uploading: 'text-muted-foreground',
+  detecting: 'text-state-warning',
+  submitted: 'text-state-success',
+  failed: 'text-state-error',
+};
 
 function formatFileSize(size: number): string {
   if (size >= 1024 * 1024) {
@@ -59,54 +68,44 @@ export function UploadWizard({
   onOpenChange,
   onSaved,
 }: UploadWizardProps) {
-  const [step, setStep] = useState(1);
-  // 文件队列：支持多选，逐个走「上传 → AI 识别 → 确认保存」完整流程
-  const [files, setFiles] = useState<File[]>([]);
-  const [fileIndex, setFileIndex] = useState(0);
+  const [items, setItems] = useState<UploadItem[]>([]);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [step1Error, setStep1Error] = useState('');
-  const [templateId, setTemplateId] = useState('');
-  // 上传成功时记录文件指纹（name+size），用于识别「换文件」场景触发重新上传
-  const [uploadedFileKey, setUploadedFileKey] = useState('');
-  const [placeholders, setPlaceholders] = useState<TplPlaceholder[]>([]);
-  const [rowErrors, setRowErrors] = useState<Record<string, boolean>>({});
+  const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const currentFile = files[fileIndex] ?? null;
-  const multiFile = files.length > 1;
-
+  const multiFile = items.length > 1;
   const uploadMut = useUploadTemplateFill();
-  const detectMut = useDetectTemplateFill();
-  const saveMut = useSaveTemplateFillPlaceholders();
+  const detectAsyncMut = useDetectTemplateFillAsync();
 
-  // 对话框每次打开时重置全部状态
-  const handleOpenChange = (next: boolean) => {
-    if (next) {
-      setStep(1);
-      setFiles([]);
-      setFileIndex(0);
+  // 打开时重置全部状态：必须用 effect——受控 Dialog 从 props 切 open
+  // 不触发 Radix 的 onOpenChange，靠回调重置会残留上次的状态
+  useEffect(() => {
+    if (open) {
+      setItems([]);
       setName('');
       setDescription('');
       setStep1Error('');
-      setTemplateId('');
-      setUploadedFileKey('');
-      setPlaceholders([]);
-      setRowErrors({});
-      detectMut.reset();
+      setUploading(false);
     }
-    onOpenChange(next);
+  }, [open]);
+
+  const patchItem = (index: number, patch: Partial<UploadItem>) => {
+    setItems((prev) =>
+      prev.map((it, i) => (i === index ? { ...it, ...patch } : it)),
+    );
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const picked = Array.from(e.target.files ?? []);
     if (picked.length === 0) return;
-    // 每次选择替换整个列表，从第一个文件开始逐个走流程
-    setFiles(picked);
-    setFileIndex(0);
+    // 每次选择替换整个列表
+    setItems(picked.map((file) => ({ file, status: 'pending' as const })));
     setStep1Error('');
     setName(picked[0].name.replace(/\.[^.]+$/, ''));
     setDescription('');
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const openFilePicker = () => {
@@ -116,417 +115,200 @@ export function UploadWizard({
   };
 
   const removeFile = (index: number) => {
-    const next = files.filter((_, i) => i !== index);
-    setFiles(next);
-    // 移除后当前索引可能越界，收敛到最后一个有效位置
-    setFileIndex((fi) => Math.min(fi, Math.max(0, next.length - 1)));
+    setItems((prev) => prev.filter((_, i) => i !== index));
   };
 
-  // detect 建议与现有手动行（addr 为空，detect 建议必带 addr）合并：
-  // 建议在前、手动行在后，key 重复的手动行丢弃，避免重新识别静默覆盖手动添加的行
-  const applySuggestions = (suggestions: TplPlaceholder[]) => {
-    if (suggestions.length === 0) return;
-    setPlaceholders((prev) => {
-      const sugKeys = new Set(suggestions.map((s) => s.key));
-      const manual = prev.filter((r) => !r.addr && !sugKeys.has(r.key.trim()));
-      return [...suggestions, ...manual];
-    });
-  };
-
-  // 上传指定文件并自动触发 AI 识别（单/多文件共用；desc 显式传参避免 state 异步旧值）
-  const startUploadAndDetect = (f: File, tplName: string, desc: string) => {
-    uploadMut.mutate(
-      { file: f, name: tplName, description: desc },
-      {
-        onSuccess: (data) => {
-          setTemplateId(data.id);
-          setUploadedFileKey(`${f.name}:${f.size}`);
-          setPlaceholders([]);
-          setStep(2);
-          detectMut.mutate(data.id, {
-            onSuccess: (res) => {
-              applySuggestions(res.suggestions);
-            },
-            onError: (err) => {
-              message.error(
-                err instanceof Error
-                  ? err.message
-                  : 'AI 识别失败，可手动添加填写点',
-              );
-            },
-          });
-        },
-        onError: (err) => {
-          message.error(err instanceof Error ? err.message : '上传失败');
-        },
-      },
-    );
-  };
-
-  const goStep2 = () => {
-    if (!currentFile) {
-      setStep1Error('请选择 .docx / .doc / .xlsx 模板文件');
-      return;
+  // 顺序逐个：上传建模板 → 提交后台 AI 识别（串行防 .doc 转换挤占容器资源）；
+  // 单个失败标记后继续下一个，最后汇总。识别结果由后台线程自动保存为填写点，
+  // 进度在列表 detect_status 列轮询展示，向导无需等待 LLM 完成。
+  const startUpload = async () => {
+    const queue = items;
+    if (queue.length === 0) return;
+    for (let i = 0; i < queue.length; i++) {
+      if (queue[i].status === 'submitted') continue;
+      const f = queue[i];
+      if (!TEMPLATE_FILE_RE.test(f.file.name)) {
+        patchItem(i, {
+          status: 'failed',
+          error: '仅支持 .docx / .doc / .xlsx',
+        });
+        continue;
+      }
+      const tplName =
+        (i === 0 ? name.trim() : '') || f.file.name.replace(/\.[^.]+$/, '');
+      patchItem(i, { status: 'uploading', error: undefined });
+      let tplId = '';
+      try {
+        const res = await uploadMut.mutateAsync({
+          file: f.file,
+          name: tplName,
+          description: i === 0 ? description.trim() : '',
+        });
+        tplId = res.id;
+        patchItem(i, { templateId: tplId, status: 'detecting' });
+      } catch (e) {
+        patchItem(i, {
+          status: 'failed',
+          error: e instanceof Error ? e.message : '上传失败',
+        });
+        continue;
+      }
+      try {
+        await detectAsyncMut.mutateAsync(tplId);
+        patchItem(i, { status: 'submitted' });
+      } catch (e) {
+        // 模板已建成，仅识别提交失败：仍算部分成功，提示到详情手动识别
+        patchItem(i, {
+          status: 'failed',
+          error: e instanceof Error ? e.message : '识别提交失败',
+        });
+      }
     }
-    if (!TEMPLATE_FILE_RE.test(currentFile.name)) {
-      setStep1Error('仅支持 .docx / .doc / .xlsx 文件');
-      return;
+    setUploading(false);
+    const failCount = queue.filter((it) => it.status === 'failed').length;
+    const okCount = queue.length - failCount;
+    if (failCount === 0) {
+      message.success(
+        `已上传 ${okCount} 个模板，AI 识别进行中，可在列表查看进度`,
+      );
+    } else {
+      message.warning(
+        `上传 ${okCount} 个成功，${failCount} 个失败，失败原因见列表`,
+      );
     }
-    const tplName = name.trim() || currentFile.name.replace(/\.[^.]+$/, '');
-    setName(tplName);
-    setStep1Error('');
-    // 从 Step2 回退后再前进：文件未更换时直接跳转，不重复上传模板
-    const fileKey = `${currentFile.name}:${currentFile.size}`;
-    if (templateId && uploadedFileKey === fileKey) {
-      setStep(2);
-      return;
-    }
-    startUploadAndDetect(currentFile, tplName, description.trim());
+    onOpenChange(false);
+    onSaved?.(queue[queue.length - 1]?.templateId ?? '');
   };
 
-  const updateRow = (index: number, patch: Partial<TplPlaceholder>) => {
-    setPlaceholders((prev) =>
-      prev.map((row, i) => (i === index ? { ...row, ...patch } : row)),
-    );
-    // 编辑即清除该行错误标记
-    setRowErrors((prev) => {
-      const next = { ...prev };
-      Object.keys(next).forEach((k) => {
-        if (k.startsWith(`${index}-`)) delete next[k];
-      });
-      return next;
-    });
-  };
-
-  const removeRow = (index: number) => {
-    setPlaceholders((prev) => prev.filter((_, i) => i !== index));
-    setRowErrors({});
-  };
-
-  const goStep3 = () => {
-    const rows = trimRows(placeholders);
-    setPlaceholders(rows);
-    if (rows.length === 0) {
-      message.error('请至少添加一个填写点');
-      return;
-    }
-    const errors = collectRowErrors(rows);
-    setRowErrors(errors);
-    if (Object.keys(errors).length > 0) {
-      message.error('存在格式不正确的填写点，请检查标红字段');
-      return;
-    }
-    setStep(3);
-  };
-
-  const saveConfig = () => {
-    const rows = trimRows(placeholders);
-    setPlaceholders(rows);
-    const errors = collectRowErrors(rows);
-    setRowErrors(errors);
-    if (Object.keys(errors).length > 0) {
-      message.error('存在格式不正确的填写点，请返回修改');
-      setStep(2);
-      return;
-    }
-    saveMut.mutate(
-      { id: templateId, placeholders: rows },
-      {
-        onSuccess: (res) => {
-          const next = fileIndex + 1;
-          if (next >= files.length) {
-            // 全部文件处理完成
-            message.success(`已保存 ${res.placeholder_count} 个填写点`);
-            onOpenChange(false);
-            onSaved?.(templateId);
-            return;
-          }
-          // 自动进入下一个文件：重置逐文件状态，直接开始上传 + AI 识别
-          const nf = files[next];
-          const nextName = nf.name.replace(/\.[^.]+$/, '');
-          message.success(`已保存 ${res.placeholder_count} 个填写点`);
-          setFileIndex(next);
-          setName(nextName);
-          setDescription('');
-          setTemplateId('');
-          setUploadedFileKey('');
-          setPlaceholders([]);
-          setRowErrors({});
-          detectMut.reset();
-          startUploadAndDetect(nf, nextName, '');
-        },
-        onError: (err) => {
-          message.error(err instanceof Error ? err.message : '保存失败');
-        },
-      },
-    );
-  };
-
-  const detecting = detectMut.isPending;
-  const detectEmpty =
-    !detecting && !detectMut.error && detectMut.data?.suggestions.length === 0;
+  const hasPending = items.some((it) => it.status === 'pending');
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="max-w-4xl">
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>上传模板</DialogTitle>
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            {['1 上传文件', '2 AI 识别', '3 确认保存'].map((label, i) => (
-              <span
-                key={label}
-                className={
-                  step === i + 1
-                    ? 'font-medium text-text-primary'
-                    : 'text-muted-foreground'
-                }
-              >
-                {label}
-                {i < 2 && <span className="ml-2">→</span>}
-              </span>
-            ))}
-            {multiFile && (
-              <span className="ml-2 text-xs text-primary">
-                第 {fileIndex + 1}/{files.length} 个文件
-              </span>
-            )}
-          </div>
         </DialogHeader>
-
-        {step === 1 && (
-          <div className="flex flex-col gap-4">
-            <div className="flex flex-col gap-1.5">
-              <label className="text-sm">
-                模板文件（.docx / .doc / .xlsx）
-              </label>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".docx,.doc,.xlsx"
-                multiple
-                className="hidden"
-                onChange={handleFileChange}
-              />
-              {files.length === 0 ? (
-                <div
-                  role="button"
-                  tabIndex={0}
-                  onClick={openFilePicker}
-                  onKeyDown={(e) => {
-                    if (e.target !== e.currentTarget) return;
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      openFilePicker();
-                    }
-                  }}
-                  className="flex flex-col items-center gap-2 rounded-lg border border-dashed p-6 cursor-pointer transition-colors hover:border-primary/60 hover:bg-muted/50"
-                >
-                  <FileUp className="h-8 w-8 text-muted-foreground" />
-                  <p className="text-sm text-text-primary">点击选择模板文件</p>
-                  <p className="text-xs text-muted-foreground">
-                    支持 .docx / .doc / .xlsx，不超过 20MB；可多选，将逐个走 AI
-                    识别流程
-                  </p>
-                </div>
-              ) : (
-                <div className="rounded-lg border">
-                  {files.map((f, i) => (
-                    <div
-                      key={`${f.name}:${f.size}`}
-                      className="flex items-center gap-3 border-b px-3 py-2 last:border-b-0"
-                    >
-                      <FileText className="h-4 w-4 shrink-0 text-primary" />
-                      <div className="min-w-0 flex-1">
-                        <p
-                          className="truncate text-sm text-text-primary"
-                          title={f.name}
-                        >
-                          {f.name}
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          {formatFileSize(f.size)}
-                        </p>
-                      </div>
-                      <span className="shrink-0 text-xs text-primary">
-                        重新选择
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-1.5">
+            <label className="text-sm">模板文件（.docx / .doc / .xlsx）</label>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".docx,.doc,.xlsx"
+              multiple
+              className="hidden"
+              onChange={handleFileChange}
+            />
+            {items.length === 0 ? (
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={openFilePicker}
+                onKeyDown={(e) => {
+                  if (e.target !== e.currentTarget) return;
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    openFilePicker();
+                  }
+                }}
+                className="flex flex-col items-center gap-2 rounded-lg border border-dashed p-6 cursor-pointer transition-colors hover:border-primary/60 hover:bg-muted/50"
+              >
+                <FileUp className="h-8 w-8 text-muted-foreground" />
+                <p className="text-sm text-text-primary">点击选择模板文件</p>
+                <p className="text-xs text-muted-foreground">
+                  支持 .docx / .doc / .xlsx，不超过 20MB；可多选，上传后自动进行
+                  AI 识别
+                </p>
+              </div>
+            ) : (
+              <div className="rounded-lg border">
+                {items.map((it, i) => (
+                  <div
+                    key={`${it.file.name}:${it.file.size}`}
+                    className="flex items-center gap-3 border-b px-3 py-2 last:border-b-0"
+                  >
+                    <FileText className="h-4 w-4 shrink-0 text-primary" />
+                    <div className="min-w-0 flex-1">
+                      <p
+                        className="truncate text-sm text-text-primary"
+                        title={it.file.name}
+                      >
+                        {it.file.name}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {formatFileSize(it.file.size)}
+                      </p>
+                    </div>
+                    {it.error && (
+                      <span
+                        className="max-w-[180px] truncate text-xs text-state-error"
+                        title={it.error}
+                      >
+                        {it.error}
                       </span>
+                    )}
+                    <span
+                      className={`shrink-0 text-xs ${STATUS_CLS[it.status]}`}
+                    >
+                      {STATUS_TEXT[it.status]}
+                    </span>
+                    {!uploading && it.status !== 'submitted' && (
                       <Button
                         variant="ghost"
                         size="icon"
                         className="h-7 w-7 shrink-0"
                         onClick={() => removeFile(i)}
-                        aria-label={`移除 ${f.name}`}
+                        aria-label={`移除 ${it.file.name}`}
                       >
                         <X className="h-4 w-4" />
                       </Button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <label className="text-sm">
+              模板名称{multiFile && '（其余模板自动取文件名）'}
+            </label>
+            <Input
+              value={name}
+              onChange={(e) => {
+                setName(e.target.value);
+                setStep1Error('');
+              }}
+              placeholder="默认取文件名"
+            />
+          </div>
+          {!multiFile && (
             <div className="flex flex-col gap-1.5">
-              <label className="text-sm">
-                模板名称{multiFile && '（其余模板自动取文件名）'}
-              </label>
-              <Input
-                value={name}
-                onChange={(e) => {
-                  setName(e.target.value);
-                  setStep1Error('');
-                }}
-                placeholder="默认取文件名"
+              <label className="text-sm">说明</label>
+              <Textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="模板用途说明（选填）"
+                rows={3}
               />
             </div>
-            {files.length <= 1 && (
-              <div className="flex flex-col gap-1.5">
-                <label className="text-sm">说明</label>
-                <Textarea
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  placeholder="模板用途说明（选填）"
-                  rows={3}
-                />
-              </div>
-            )}
-            {step1Error && <p className="text-sm text-red-500">{step1Error}</p>}
-          </div>
-        )}
-
-        {step === 2 && (
-          <div className="flex flex-col gap-3">
-            {detecting && (
-              <div className="flex items-center justify-center py-8 text-muted-foreground">
-                <div className="mr-3 h-6 w-6 animate-spin rounded-full border-2 border-primary border-b-transparent" />
-                AI 识别中…
-              </div>
-            )}
-            {detectEmpty && (
-              <p className="text-sm text-amber-600">
-                未识别到填写点，请在下方手动添加
-              </p>
-            )}
-            {!detecting && detectMut.error && (
-              <div className="flex items-center justify-between">
-                <p className="text-sm text-red-500">
-                  {detectMut.error instanceof Error
-                    ? detectMut.error.message
-                    : 'AI 识别失败'}
-                  ，可手动添加填写点
-                </p>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={detecting}
-                  onClick={() => detectMut.mutate(templateId)}
-                >
-                  重新识别
-                </Button>
-              </div>
-            )}
-            {!detecting && (
-              <div className="max-h-[50vh] overflow-auto">
-                <PlaceholderTable
-                  rows={placeholders}
-                  errors={rowErrors}
-                  onUpdate={updateRow}
-                  onRemove={removeRow}
-                />
-              </div>
-            )}
-            {!detecting && (
-              <div className="flex items-center gap-3">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() =>
-                    setPlaceholders((prev) => [...prev, emptyPlaceholder()])
-                  }
-                >
-                  添加填写点
-                </Button>
-                <span className="text-xs text-muted-foreground">
-                  手动添加行无需定位，锚文本须为模板中已有的原文片段
-                </span>
-              </div>
-            )}
-          </div>
-        )}
-
-        {step === 3 && (
-          <div className="flex flex-col gap-3">
-            <p className="text-sm text-muted-foreground">
-              共 {placeholders.length} 个填写点，请确认后保存：
-            </p>
-            <div className="max-h-[50vh] overflow-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>key</TableHead>
-                    <TableHead>中文名</TableHead>
-                    <TableHead>填写方式</TableHead>
-                    <TableHead>必填</TableHead>
-                    <TableHead>锚文本</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {placeholders.map((row, i) => (
-                    <TableRow key={i}>
-                      <TableCell className="font-mono text-xs">
-                        {row.key}
-                      </TableCell>
-                      <TableCell>{row.name}</TableCell>
-                      <TableCell>{FILL_MODE_LABEL[row.fill_mode]}</TableCell>
-                      <TableCell>{row.required ? '是' : '否'}</TableCell>
-                      <TableCell>
-                        <span
-                          className="block max-w-[240px] truncate text-sm text-muted-foreground"
-                          title={row.anchor}
-                        >
-                          {row.anchor}
-                        </span>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          </div>
-        )}
-
+          )}
+          {step1Error && <p className="text-sm text-red-500">{step1Error}</p>}
+          <p className="text-xs text-muted-foreground">
+            上传后自动进行 AI
+            识别填写点，识别结果自动保存；可在此处关闭弹框，在列表查看识别进度，点模板名进入详情确认修改
+          </p>
+        </div>
         <DialogFooter>
-          {step === 1 && (
-            <>
-              <Button variant="outline" onClick={() => handleOpenChange(false)}>
-                取消
-              </Button>
-              <Button
-                disabled={files.length === 0 || uploadMut.isPending}
-                onClick={goStep2}
-              >
-                {uploadMut.isPending ? '上传中…' : '下一步'}
-              </Button>
-            </>
-          )}
-          {step === 2 && (
-            <>
-              <Button variant="outline" onClick={() => setStep(1)}>
-                上一步
-              </Button>
-              <Button disabled={detecting} onClick={goStep3}>
-                下一步
-              </Button>
-            </>
-          )}
-          {step === 3 && (
-            <>
-              <Button variant="outline" onClick={() => setStep(2)}>
-                上一步
-              </Button>
-              <Button disabled={saveMut.isPending} onClick={saveConfig}>
-                {saveMut.isPending ? '保存中…' : '保存并继续'}
-              </Button>
-            </>
-          )}
+          <Button
+            variant="outline"
+            disabled={uploading}
+            onClick={() => onOpenChange(false)}
+          >
+            取消
+          </Button>
+          <Button disabled={uploading || !hasPending} onClick={startUpload}>
+            {uploading ? '上传中…' : '开始上传'}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

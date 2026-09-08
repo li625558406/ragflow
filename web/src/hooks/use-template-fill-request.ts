@@ -23,6 +23,9 @@ export interface TplTemplateItem {
   status: 'draft' | 'published' | 'disabled';
   latest_version: number;
   create_time: number;
+  // 后台 AI 识别状态（detect-async 链路）：none | running | done | failed
+  detect_status?: 'none' | 'running' | 'done' | 'failed';
+  detect_error?: string;
 }
 
 export interface TplCandidate {
@@ -32,6 +35,7 @@ export interface TplCandidate {
 }
 
 // 获取模板填写列表
+// 列表中存在「识别中」的模板时启用 3s 轮询，全部结束自动停止
 export function useListTemplateFill(params: {
   keyword?: string;
   status?: string;
@@ -56,6 +60,10 @@ export function useListTemplateFill(params: {
         data: TplTemplateItem[];
         total_datasets?: number;
       };
+    },
+    refetchInterval: (query) => {
+      const rows = query.state.data?.data ?? [];
+      return rows.some((it) => it.detect_status === 'running') ? 3000 : false;
     },
   });
 }
@@ -154,6 +162,23 @@ export function useDetectTemplateFill() {
         suggestions: TplPlaceholder[];
       };
     },
+  });
+}
+
+// 触发后台 AI 识别：立即返回 running，结果自动保存为填写点，
+// 进度经列表 detect_status 字段轮询展示
+export function useDetectTemplateFillAsync() {
+  return useMutation({
+    mutationFn: async (templateId: string) => {
+      const { data } = await request.post(api.detectTemplateFillAsync, {
+        data: { template_id: templateId },
+      });
+      if (data.code !== 0) {
+        throw new Error(data.message || '识别任务提交失败');
+      }
+      return data.data as { status: string };
+    },
+    onSuccess: useInvalidateTemplateFill(),
   });
 }
 

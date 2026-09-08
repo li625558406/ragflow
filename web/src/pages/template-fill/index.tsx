@@ -42,6 +42,18 @@ const STATUS_LABEL: Record<string, string> = {
   disabled: '已停用',
 };
 
+// 后台 AI 识别状态徽标（仅 draft 且非 none 时叠加展示）
+const DETECT_BADGE: Partial<
+  Record<
+    NonNullable<TplTemplateItem['detect_status']>,
+    { text: string; cls: string }
+  >
+> = {
+  running: { text: 'AI 识别中', cls: 'text-state-warning' },
+  done: { text: '已识别', cls: 'text-state-success' },
+  failed: { text: 'AI 识别失败', cls: 'text-state-error' },
+};
+
 export default function TemplateFillPage() {
   const navigate = useNavigate();
   const [keyword, setKeyword] = useState('');
@@ -245,7 +257,21 @@ export default function TemplateFillPage() {
                   <TableCell>
                     {it.file_type === 'docx' ? 'Word' : 'Excel'}
                   </TableCell>
-                  <TableCell>{STATUS_LABEL[it.status]}</TableCell>
+                  <TableCell>
+                    <span className="flex items-center gap-2">
+                      {STATUS_LABEL[it.status]}
+                      {it.status === 'draft' &&
+                        it.detect_status &&
+                        (DETECT_BADGE[it.detect_status] ? (
+                          <span
+                            className={`text-xs ${DETECT_BADGE[it.detect_status]!.cls}`}
+                            title={it.detect_error || undefined}
+                          >
+                            {DETECT_BADGE[it.detect_status]!.text}
+                          </span>
+                        ) : null)}
+                    </span>
+                  </TableCell>
                   <TableCell>v{it.latest_version}</TableCell>
                   <TableCell className="space-x-2">
                     {(it.status === 'draft' || it.status === 'disabled') && (
@@ -337,14 +363,8 @@ export default function TemplateFillPage() {
         cancelButtonText="取消"
         okButtonText="删除"
       />
-      <UploadWizard
-        open={wizardOpen}
-        onOpenChange={setWizardOpen}
-        onSaved={(id) => {
-          setWizardOpen(false);
-          navigate(`${Routes.TemplateFillDetail}/${id}`);
-        }}
-      />
+      {/* 上传后 AI 识别在后台执行，留在列表页看识别进度，不跳详情 */}
+      <UploadWizard open={wizardOpen} onOpenChange={setWizardOpen} />
     </Card>
   );
 }
