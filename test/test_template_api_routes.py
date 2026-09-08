@@ -14,6 +14,8 @@ import os
 import sys
 import types
 import zipfile
+
+import pytest
 from importlib.util import module_from_spec, spec_from_file_location
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -62,6 +64,7 @@ EXPECTED_ENDPOINTS = (
     "disable_template",
     "get_template",
     "delete_template_endpoint",
+    "batch_delete_templates",
     "preview_template",
     "download_template",
     "create_fill_task",
@@ -101,6 +104,7 @@ def test_all_routes_registered_on_blueprint():
         "/template/fill/<template_id>/publish": {"POST"},
         "/template/fill/<template_id>/disable": {"POST"},
         "/template/fill/<template_id>": {"GET", "DELETE"},
+        "/template/fill/batch-delete": {"POST"},
         "/template/fill/<template_id>/preview": {"GET"},
         "/template/fill/<template_id>/test-fill": {"POST"},
         "/template/fill/<template_id>/file": {"GET"},
@@ -616,7 +620,8 @@ class _FakeJsonRequest:
     def __init__(self, body=None):
         self._body = body
 
-    async def get_json(self):
+    async def get_json(self, *a, **kw):
+        # 兼容 quart 真实签名（如 get_json(silent=True)）
         return self._body
 
 
@@ -1165,3 +1170,75 @@ def test_test_fill_non_dict_params_coerced_empty(monkeypatch):
         resp = asyncio.run(mod.test_fill_template("tpl_x"))
         assert resp["code"] == 0, f"params={bad!r} 应宽松归一而非拒绝"
         assert calls["args"][3] == {}, f"params={bad!r} 必须归一为空 dict"
+
+
+# ---------- 批量删除模板端点 ----------
+
+def _patch_batch_delete(monkeypatch, mod, body, results):
+    """batch_delete 公共桩：json body + delete_template 逐 id 返回 results[id]=(ok,msg)。
+    返回 calls 记录每次调用的 (template_id, tenant_id)。"""
+    calls = []
+    monkeypatch.setattr(mod, "request", _FakeJsonRequest(body))
+    monkeypatch.setattr(mod, "TplTemplateService", types.SimpleNamespace(
+        delete_template=lambda tid, uid: (calls.append((tid, uid)),
+                                          results.get(tid, (True, "")))[1]))
+    return calls
+
+
+def test_batch_delete_route_and_endpoint_exist():
+    mod = _template_api
+    assert inspect.iscoroutinefunction(mod.batch_delete_templates)
+
+
+@pytest.mark.parametrize("body", [
+    None, {}, {"ids": None}, {"ids": []}, {"ids": "tpl_x"},
+    {"ids": [1, 2]}, {"ids": ["", "tpl_a"]}, {"ids": ["tpl_a", None]},
+])
+def test_batch_delete_rejects_invalid_ids(monkeypatch, body):
+    """对抗性：ids 缺失/空/非数组/混入非串/空串 → 102 拒绝，且不触碰 service。"""
+    mod = _template_api
+    calls = _patch_batch_delete(monkeypatch, mod, body, {})
+    resp = asyncio.run(mod.batch_delete_templates())
+    d = _err_dict(resp)
+    assert d["code"] == DATA_ERROR_CODE, f"body={body!r} 应拒绝"
+    assert "ids" in d["message"]
+    assert not calls, f"body={body!r} 不得触发任何删除"
+
+
+def test_batch_delete_caps_at_50(monkeypatch):
+    """单次上限 50：51 个 id 直接拒绝，service 零调用。"""
+    mod = _template_api
+    calls = _patch_batch_delete(monkeypatch, mod,
+                                {"ids": [f"tpl_{i}" for i in range(51)]}, {})
+    resp = asyncio.run(mod.batch_delete_templates())
+    d = _err_dict(resp)
+    assert d["code"] == DATA_ERROR_CODE and "50" in d["message"]
+    assert not calls
+
+
+def test_batch_delete_mixed_success_and_failure(monkeypatch):
+    """部分失败不影响其余：deleted 只含成功 id，failed 逐条带原因。"""
+    mod = _template_api
+    calls = _patch_batch_delete(
+        monkeypatch, mod, {"ids": ["tpl_a", "tpl_b", "tpl_c"]},
+        {"tpl_b": (False, "该模板已有填写任务记录，不可删除（历史任务需保留可下载）"),
+         "tpl_c": (False, "已发布模板不可删除，请先停用")})
+    resp = asyncio.run(mod.batch_delete_templates())
+    assert resp["code"] == 0
+    assert resp["data"]["deleted"] == ["tpl_a"]
+    failed = {f["id"]: f["message"] for f in resp["data"]["failed"]}
+    assert set(failed) == {"tpl_b", "tpl_c"}
+    assert "填写任务" in failed["tpl_b"] and "停用" in failed["tpl_c"]
+    assert calls == [("tpl_a", "u1"), ("tpl_b", "u1"), ("tpl_c", "u1")], \
+        "每个 id 都必须尝试且以 current_user.id 归属租户"
+
+
+def test_batch_delete_all_success(monkeypatch):
+    mod = _template_api
+    calls = _patch_batch_delete(
+        monkeypatch, mod, {"ids": ["tpl_a", "tpl_b"]}, {})
+    resp = asyncio.run(mod.batch_delete_templates())
+    assert resp["code"] == 0
+    assert resp["data"]["deleted"] == ["tpl_a", "tpl_b"]
+    assert resp["data"]["failed"] == []
+    assert len(calls) == 2

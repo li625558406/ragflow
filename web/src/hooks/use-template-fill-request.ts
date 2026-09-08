@@ -218,6 +218,45 @@ export function useDisableTemplateFill() {
   });
 }
 
+// 删除模板（仅 draft/disabled 且无填写任务记录，守卫在 service 层）
+export function useDeleteTemplateFill() {
+  const invalidate = useInvalidateTemplateFill();
+
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const { data } = await request.delete(api.deleteTemplateFill(id));
+      if (data.code !== 0) {
+        throw new Error(data.message || '删除失败');
+      }
+      return data as { code: number };
+    },
+    onSuccess: invalidate,
+  });
+}
+
+// 批量删除模板：部分失败不影响其余，逐条返回失败原因
+export interface TplBatchDeleteResult {
+  deleted: string[];
+  failed: { id: string; message: string }[];
+}
+
+export function useBatchDeleteTemplateFill() {
+  const invalidate = useInvalidateTemplateFill();
+
+  return useMutation({
+    mutationFn: async (ids: string[]) => {
+      const { data } = await request.post(api.batchDeleteTemplateFill, {
+        data: { ids },
+      });
+      if (data.code !== 0) {
+        throw new Error(data.message || '批量删除失败');
+      }
+      return data.data as TplBatchDeleteResult;
+    },
+    onSuccess: invalidate,
+  });
+}
+
 // ── 填写任务（P2）──────────────────────────────────────────────
 
 // 填写任务行，字段以后端 TplFillTask.to_dict 为准（snake_case）

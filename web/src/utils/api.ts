@@ -467,6 +467,8 @@ export default {
     `${restAPIv1}/template/fill/${id}/publish`,
   disableTemplateFill: (id: string) =>
     `${restAPIv1}/template/fill/${id}/disable`,
+  deleteTemplateFill: (id: string) => `${restAPIv1}/template/fill/${id}`,
+  batchDeleteTemplateFill: `${restAPIv1}/template/fill/batch-delete`,
   previewTemplateFill: (id: string) =>
     `${restAPIv1}/template/fill/${id}/preview`,
   downloadTemplateFill: (id: string, kind: 'original' | 'render') =>

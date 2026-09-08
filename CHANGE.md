@@ -1,5 +1,13 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-08 范本库列表批量删除 + 单个删除（未部署）
+
+**主题**：范本库列表页新增删除能力。① 后端新增 `POST /api/v1/template/fill/batch-delete`（template_api.py）：ids 非空字符串数组校验 + 单次上限 50，逐个复用 `TplTemplateService.delete_template`（守卫/事务/TOCTOU 行锁全复用单删），部分失败不影响其余，返回 `{deleted: [...], failed: [{id, message}]}`；单个删除复用既有 `DELETE /template/fill/<id>` 端点。② 前端：api.ts 补 `deleteTemplateFill`/`batchDeleteTemplateFill` URL；hooks 新增 `useDeleteTemplateFill`/`useBatchDeleteTemplateFill`（成功后失效列表缓存）；列表页加全选/行复选框列、行内「删除」按钮（仅 draft/disabled 可删，与后端守卫一致）、选中后顶部浮现「批量删除(N)」按钮，均走 `ConfirmDeleteDialog` 二次确认；搜索/筛选/翻页时清空选中；批量删除部分失败时 toast 汇总展示首条失败原因。
+
+**测试**：后端 test_template_api_routes.py 新增 9 用例（路由注册、非法 ids 8 组参数化、超 50 上限、部分失败、全成功），4 套件 165 单测全绿；共享桩 `_FakeJsonRequest.get_json` 兼容 `silent=True` 签名。前端改动文件 tsc/ESLint 0 error。
+
+**遗留**：未部署服务器（后端 template_api.py 需 SCP + 容器重启；前端需 build 部署）。已发布/有填写任务记录的模板按设计不可删（守卫在 service 层）。
+
 ## 2026-09-07 模板填写 P2+P3 实施完成（执行引擎 + 任务闭环 + C端对话工具，未部署）
 
 **主题**：模板填写系统 P2+P3 全量落地（feat/unified-crawler-framework 分支，23 commits）：① 依赖修正（docxtpl 主依赖 + openpyxl 升主依赖）；② P1 遗留债 4 项全部消化（published 保存填写点自动升 v2、模板状态机白名单、prompt 注入面清洗、模板删除端点含事务+行锁防 TOCTOU）；③ 执行引擎 `rag/svr/template_fill/executor.py`——检索层（逐槽 KB 检索 + 租户/Embedding 一致性校验 + 部分命中拒用）、生成层（LLM 批量产 JSON ≤10 字段/批、prompt 全注入面清洗截断、_apply_constraints 兜底、JSON 解析两级 fallback）、编排层（`build_values` 待人工合成 + `execute_task` 六步 CAS 状态机 pipeline：pending→retrieving→generating→rendering→done/partial/failed，按 task.template_version_id 钉住版本）；④ 渲染层 renderer.py（docxtpl Word 模板渲染 + openpyxl Excel 坐标直写，manual/not_found 落【待人工】标记）；⑤ 填写任务 REST 6 端点（发起[后台 daemon 线程+防重入+spawn 自愈]/列表/详情/重试/下载/测试填写 test-fill 试跑直返不落任务）；⑥ B端前端：任务列表页（状态筛选+3s 函数式轮询+下载/重试）、任务详情抽屉（逐格值+单元格状态+检索证据溯源）、发起填写对话框（KB 多选+params 键值对）、测试填写对话框；⑦ C端 agent 画布 FillTemplate 工具（list_templates/fill/status 三 action，fill 同步轮询 50s，自动发现注册验证通过）。

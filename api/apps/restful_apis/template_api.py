@@ -323,6 +323,33 @@ async def delete_template_endpoint(template_id: str):
     return get_result()
 
 
+BATCH_DELETE_MAX = 50
+
+
+@manager.route("/template/fill/batch-delete", methods=["POST"])
+@login_required
+async def batch_delete_templates():
+    """批量删除模板：逐个走 delete_template（守卫/事务复用单删），部分失败不影响其余。"""
+    req = await request.get_json(silent=True) or {}
+    ids = req.get("ids")
+    if (
+        not isinstance(ids, list)
+        or not ids
+        or not all(isinstance(i, str) and i for i in ids)
+    ):
+        return get_error_data_result("ids 必须为非空字符串数组")
+    if len(ids) > BATCH_DELETE_MAX:
+        return get_error_data_result(f"单次最多删除 {BATCH_DELETE_MAX} 个模板")
+    deleted, failed = [], []
+    for tid in ids:
+        ok, msg = TplTemplateService.delete_template(tid, current_user.id)
+        if ok:
+            deleted.append(tid)
+        else:
+            failed.append({"id": tid, "message": msg})
+    return get_result(data={"deleted": deleted, "failed": failed})
+
+
 @manager.route("/template/fill/<template_id>/preview", methods=["GET"])
 @login_required
 async def preview_template(template_id: str):

@@ -2,8 +2,10 @@ import { useDebounce } from 'ahooks';
 import { useState } from 'react';
 import { useNavigate } from 'react-router';
 
+import { ConfirmDeleteDialog } from '@/components/confirm-delete-dialog';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import message from '@/components/ui/message';
 import {
@@ -22,6 +24,8 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import {
+  useBatchDeleteTemplateFill,
+  useDeleteTemplateFill,
   useDisableTemplateFill,
   useListTemplateFill,
   usePublishTemplateFill,
@@ -44,6 +48,13 @@ export default function TemplateFillPage() {
   const [status, setStatus] = useState('');
   const [page, setPage] = useState(1);
   const [wizardOpen, setWizardOpen] = useState(false);
+  // 当前页选中的模板 id（翻页/筛选/删除后清空）
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  // 待删除目标：单项为该模板；批量时为 null（配合 batchConfirmOpen）
+  const [deleteTarget, setDeleteTarget] = useState<TplTemplateItem | null>(
+    null,
+  );
+  const [batchConfirmOpen, setBatchConfirmOpen] = useState(false);
   // 300ms 防抖：输入过程中不触发列表请求
   const debouncedKeyword = useDebounce(keyword, { wait: 300 });
   const { data, isLoading } = useListTemplateFill({
@@ -54,6 +65,8 @@ export default function TemplateFillPage() {
   });
   const publishMut = usePublishTemplateFill();
   const disableMut = useDisableTemplateFill();
+  const deleteMut = useDeleteTemplateFill();
+  const batchDeleteMut = useBatchDeleteTemplateFill();
 
   const items = data?.data ?? [];
   const total = data?.total_datasets;
@@ -76,12 +89,74 @@ export default function TemplateFillPage() {
     });
   };
 
+  const toggleOne = (id: string, checked: boolean) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (checked) {
+        next.add(id);
+      } else {
+        next.delete(id);
+      }
+      return next;
+    });
+  };
+
+  const allChecked =
+    items.length > 0 && items.every((it) => selected.has(it.id));
+
+  const toggleAll = (checked: boolean) => {
+    setSelected(checked ? new Set(items.map((it) => it.id)) : new Set());
+  };
+
+  const handleDeleteConfirm = () => {
+    if (!deleteTarget) return;
+    deleteMut.mutate(deleteTarget.id, {
+      onSuccess: () => {
+        message.success(`模板「${deleteTarget.name}」已删除`);
+        setDeleteTarget(null);
+        setSelected(new Set());
+      },
+      onError: (err) =>
+        message.error(err instanceof Error ? err.message : '删除失败'),
+    });
+  };
+
+  const handleBatchDeleteConfirm = () => {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    batchDeleteMut.mutate(ids, {
+      onSuccess: (res) => {
+        const failCount = res.failed.length;
+        if (failCount === 0) {
+          message.success(`已删除 ${res.deleted.length} 个模板`);
+        } else {
+          message.warning(
+            `删除 ${res.deleted.length} 个成功，${failCount} 个失败：${res.failed[0].message}${failCount > 1 ? ' 等' : ''}`,
+          );
+        }
+        setBatchConfirmOpen(false);
+        setSelected(new Set());
+      },
+      onError: (err) =>
+        message.error(err instanceof Error ? err.message : '批量删除失败'),
+    });
+  };
+
   return (
     <Card className="bg-transparent border-none">
       <CardHeader>
         <div className="flex items-center justify-between">
           <CardTitle className="text-2xl">范本库</CardTitle>
           <div className="flex gap-2">
+            {selected.size > 0 && (
+              <Button
+                variant="outline"
+                disabled={batchDeleteMut.isPending}
+                onClick={() => setBatchConfirmOpen(true)}
+              >
+                批量删除({selected.size})
+              </Button>
+            )}
             <Button
               variant="outline"
               onClick={() => navigate(Routes.TemplateFillTasks)}
@@ -98,6 +173,7 @@ export default function TemplateFillPage() {
             onChange={(e) => {
               setKeyword(e.target.value);
               setPage(1);
+              setSelected(new Set());
             }}
             className="w-64"
           />
@@ -106,6 +182,7 @@ export default function TemplateFillPage() {
             onValueChange={(v) => {
               setStatus(v === 'all' ? '' : v);
               setPage(1);
+              setSelected(new Set());
             }}
           >
             <SelectTrigger className="w-32">
@@ -133,16 +210,30 @@ export default function TemplateFillPage() {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-10">
+                  <Checkbox
+                    checked={allChecked}
+                    onCheckedChange={(v) => toggleAll(v === true)}
+                    aria-label="全选本页"
+                  />
+                </TableHead>
                 <TableHead>模板名称</TableHead>
                 <TableHead>类型</TableHead>
                 <TableHead>状态</TableHead>
                 <TableHead>版本</TableHead>
-                <TableHead className="w-[200px]">操作</TableHead>
+                <TableHead className="w-[240px]">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {items.map((it) => (
                 <TableRow key={it.id}>
+                  <TableCell onClick={(e) => e.stopPropagation()}>
+                    <Checkbox
+                      checked={selected.has(it.id)}
+                      onCheckedChange={(v) => toggleOne(it.id, v === true)}
+                      aria-label={`选择模板 ${it.name}`}
+                    />
+                  </TableCell>
                   <TableCell
                     className="cursor-pointer font-medium hover:text-text-primary"
                     onClick={() =>
@@ -186,6 +277,17 @@ export default function TemplateFillPage() {
                     >
                       详情
                     </Button>
+                    {(it.status === 'draft' || it.status === 'disabled') && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="text-state-error hover:text-state-error"
+                        disabled={deleteMut.isPending}
+                        onClick={() => setDeleteTarget(it)}
+                      >
+                        删除
+                      </Button>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}
@@ -211,6 +313,30 @@ export default function TemplateFillPage() {
           </Button>
         </div>
       </CardContent>
+      <ConfirmDeleteDialog
+        open={deleteTarget != null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null);
+        }}
+        onOk={handleDeleteConfirm}
+        title="删除模板"
+        content={{
+          title: `确定删除模板「${deleteTarget?.name ?? ''}」？删除后不可恢复。`,
+        }}
+        cancelButtonText="取消"
+        okButtonText="删除"
+      />
+      <ConfirmDeleteDialog
+        open={batchConfirmOpen}
+        onOpenChange={setBatchConfirmOpen}
+        onOk={handleBatchDeleteConfirm}
+        title="批量删除模板"
+        content={{
+          title: `确定删除选中的 ${selected.size} 个模板？仅草稿/已停用且无填写任务记录的模板会被删除，其余自动跳过。`,
+        }}
+        cancelButtonText="取消"
+        okButtonText="删除"
+      />
       <UploadWizard
         open={wizardOpen}
         onOpenChange={setWizardOpen}
