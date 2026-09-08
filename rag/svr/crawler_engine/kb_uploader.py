@@ -77,6 +77,22 @@ class KBUploader:
     # users can manually trigger parsing later from the KB UI if needed.
     PARSE_SIZE_LIMIT = 5 * 1024 * 1024  # 5 MiB
 
+    # PDFs with more pages than this are uploaded but not queued for parsing.
+    # File size does not correlate with parse cost: a compressed text PDF can
+    # be small yet span ~100 pages, each page-range shard running DeepDOC
+    # layout recognition (CPU-bound) and stalling the shared task queue.
+    PARSE_PAGE_LIMIT = 50
+
+    @staticmethod
+    def _pdf_page_count(blob: bytes) -> int | None:
+        """Count PDF pages; None when the blob is not parseable as a PDF."""
+        try:
+            from deepdoc.parser import PdfParser
+
+            return PdfParser.total_page_number("", blob)
+        except Exception:  # noqa: BLE001 — 损坏 PDF 按 None 处理（fail-open，照常排队由解析器自行报错）
+            return None
+
     def _upload_blob(self, kb, blob: bytes, display_name: str) -> List[str]:
         """Upload raw bytes to a KB. Returns list of document IDs."""
         from api.db.services.file_service import FileService
@@ -101,6 +117,14 @@ class KBUploader:
                 display_name, len(blob) / (1024 * 1024),
                 self.PARSE_SIZE_LIMIT / (1024 * 1024),
             )
+        elif display_name.lower().endswith(".pdf"):
+            pages = self._pdf_page_count(blob)
+            if pages is not None and pages > self.PARSE_PAGE_LIMIT:
+                skip_parsing = True
+                logging.info(
+                    "KBUploader: %s pages=%d exceeds %d-page limit, uploading without parsing",
+                    display_name, pages, self.PARSE_PAGE_LIMIT,
+                )
 
         doc_ids = []
         for doc, _ in pairs:
