@@ -957,6 +957,7 @@ export const RestrictedUpstreamMap = {
   [Operator.LoopStart]: [Operator.Begin],
   [Operator.ExitLoop]: [Operator.Begin],
   [Operator.DocGenerator]: [Operator.Begin],
+  [Operator.TemplateFill]: [Operator.Begin],
 };
 
 export const NodeMap = {
@@ -1028,6 +1029,7 @@ export const NodeMap = {
   [Operator.ExitLoop]: 'exitLoopNode',
   [Operator.ExcelProcessor]: 'ragNode',
   [Operator.DocGenerator]: 'ragNode',
+  [Operator.TemplateFill]: 'ragNode',
 };
 
 export enum BeginQueryType {
@@ -1254,6 +1256,15 @@ export const initialDocGeneratorValues = {
   add_timestamp: true,
   font_size: 12,
   outputs: {
+    download: { type: 'string' },
+  },
+};
+
+export const initialTemplateFillValues = {
+  query: AgentGlobalsSysQueryWithBrace,
+  dataset_ids: [],
+  outputs: {
+    content: { type: 'string' },
     download: { type: 'string' },
   },
 };

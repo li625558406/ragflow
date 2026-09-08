@@ -195,7 +195,9 @@ function filterDocGeneratorDownloadOutputOptions(
       const { nodeId, output } = splitOperatorOutputValue(option.value);
       if (
         output === 'download' &&
-        getOperatorTypeFromId(nodeId) === Operator.DocGenerator
+        [Operator.DocGenerator, Operator.TemplateFill].includes(
+          getOperatorTypeFromId(nodeId) as Operator,
+        )
       ) {
         return allowDocGeneratorDownloadOutput;
       }

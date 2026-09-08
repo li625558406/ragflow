@@ -3,6 +3,7 @@ import SvgIcon from '@/components/svg-icon';
 import { cn } from '@/lib/utils';
 import {
   FileCode,
+  FilePen,
   FileText,
   HousePlus,
   Infinity as InfinityIcon,
@@ -78,6 +79,7 @@ export const LucideIconMap = {
   [Operator.Loop]: InfinityIcon,
   [Operator.ExitLoop]: LogOut,
   [Operator.DocGenerator]: FileText,
+  [Operator.TemplateFill]: FilePen,
 };
 
 const Empty = () => {

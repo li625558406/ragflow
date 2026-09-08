@@ -31,6 +31,7 @@ import StringTransformForm from '../form/string-transform-form';
 import SwitchForm from '../form/switch-form';
 import TavilyExtractForm from '../form/tavily-extract-form';
 import TavilyForm from '../form/tavily-form';
+import TemplateFillForm from '../form/template-fill-form';
 import TitleChunkerForm from '../form/title-chunker-form';
 import TokenChunkerForm from '../form/token-chunker-form';
 import TokenizerForm from '../form/tokenizer-form';
@@ -114,6 +115,9 @@ export const FormConfigMap = {
   },
   [Operator.DocGenerator]: {
     component: DocGeneratorForm,
+  },
+  [Operator.TemplateFill]: {
+    component: TemplateFillForm,
   },
   [Operator.Note]: {
     component: () => <></>,

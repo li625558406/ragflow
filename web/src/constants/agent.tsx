@@ -128,6 +128,7 @@ export enum Operator {
   StringTransform = 'StringTransform',
   SearXNG = 'SearXNG',
   DocGenerator = 'DocGenerator',
+  TemplateFill = 'TemplateFill',
   Placeholder = 'Placeholder',
   DataOperations = 'DataOperations',
   ListOperations = 'ListOperations',

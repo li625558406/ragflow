@@ -124,6 +124,7 @@ export function AccordionOperators({
               Operator.WenCai,
               Operator.SearXNG,
               Operator.DocGenerator,
+              Operator.TemplateFill,
               Operator.BidSearch,
               Operator.BidGetDetail,
               Operator.BidImportToKb,
