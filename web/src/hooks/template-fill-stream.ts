@@ -42,7 +42,7 @@ export interface ITemplateFillEvent {
   templates?: Array<{ template_id: string; name: string; slot_count?: number }>;
 }
 
-/** O(1) 事件归约：就地更新 acc.templateFill（与 hook 的增量累积模式一致） */
+/** 事件归约：进度分支浅拷贝换引用（防 React.memo/useEffect 依赖引用漏渲染），与 hook 的增量累积模式一致 */
 export function applyTemplateFillEvent(
   acc: IStreamAcc,
   d: ITemplateFillEvent,
@@ -50,7 +50,9 @@ export function applyTemplateFillEvent(
   if (!acc.templateFill) {
     acc.templateFill = { templates: [] };
   }
-  const tf = acc.templateFill;
+  let tf = acc.templateFill;
+  // finished 终态防御：结束后忽略一切迟到事件；仅 selected（重开新一轮）可穿透并清 finished
+  if (tf.finished && d.stage !== 'selected') return;
   if (d.stage === 'selected') {
     tf.templates = (d.templates || []).map((t) => ({
       template_id: t.template_id,
@@ -66,6 +68,9 @@ export function applyTemplateFillEvent(
     return;
   }
   if (!d.template_id) return;
+  // 进度类事件（filling/filled/failed）：浅拷贝换引用，保证下游 memo 组件感知更新（模板数个位数，开销可忽略）
+  acc.templateFill = { ...tf, templates: [...tf.templates] };
+  tf = acc.templateFill;
   let t = tf.templates.find((x) => x.template_id === d.template_id);
   if (!t) {
     t = { template_id: d.template_id, name: d.name || '', status: 'filling' };

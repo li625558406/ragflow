@@ -87,4 +87,54 @@ describe('applyTemplateFillEvent', () => {
     expect(acc.templateFill?.templates).toHaveLength(1);
     expect(acc.templateFill?.templates[0].template_id).toBe('t9');
   });
+
+  it('cancelled 置 finished 终态', () => {
+    const acc: IStreamAcc = {};
+    applyTemplateFillEvent(acc, {
+      stage: 'selected',
+      templates: [{ template_id: 't1', name: 'A' }],
+    });
+    applyTemplateFillEvent(acc, { stage: 'cancelled' });
+    expect(acc.templateFill?.finished).toBe(true);
+  });
+
+  it('finished 后迟到 filling/filled 被忽略，selected 重开新一轮生效', () => {
+    const acc: IStreamAcc = {};
+    applyTemplateFillEvent(acc, {
+      stage: 'selected',
+      templates: [{ template_id: 't1', name: 'A', slot_count: 2 }],
+    });
+    applyTemplateFillEvent(acc, { stage: 'done' });
+    expect(acc.templateFill?.finished).toBe(true);
+
+    // 迟到的进度事件：卡片状态与 finished 均不变
+    const before = acc.templateFill;
+    applyTemplateFillEvent(acc, {
+      stage: 'filling',
+      template_id: 't1',
+      done: 1,
+      total: 2,
+    });
+    applyTemplateFillEvent(acc, {
+      stage: 'filled',
+      template_id: 't1',
+      download: { doc_id: 'd1', filename: 'a.docx', mime_type: 'x' },
+    });
+    expect(acc.templateFill).toBe(before);
+    expect(acc.templateFill?.finished).toBe(true);
+    expect(acc.templateFill?.templates[0]).toMatchObject({
+      status: 'selected',
+      name: 'A',
+      slot_count: 2,
+    });
+
+    // selected 重开新一轮：清除 finished，新列表生效
+    applyTemplateFillEvent(acc, {
+      stage: 'selected',
+      templates: [{ template_id: 't2', name: 'B', slot_count: 1 }],
+    });
+    expect(acc.templateFill?.finished).toBeUndefined();
+    expect(acc.templateFill?.templates).toHaveLength(1);
+    expect(acc.templateFill?.templates[0].template_id).toBe('t2');
+  });
 });
