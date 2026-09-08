@@ -198,13 +198,16 @@ def _apply_constraints(value, constraints: dict):
 async def generate_values(tenant_id: str, placeholders: list[dict], chunks_by_key: dict,
                           params: dict | None = None,
                           batch_size: int = BATCH_SIZE,
-                          sem: asyncio.Semaphore | None = None) -> tuple[dict, set]:
+                          sem: asyncio.Semaphore | None = None,
+                          on_progress=None) -> tuple[dict, set]:
     """LLM 批量产值：一次调用产 ≤batch_size 个字段值（超出分批），批次间并发
     （GENERATE_CONCURRENCY 路；字段独立无依赖，并发安全）。
     batch_size 为 0/None 等假值时兜底为 BATCH_SIZE（step 与 slice 必须同值，
     否则 0 产生空批、None 导致 slice 取全量重复发送）。
     sem 为跨层共享并发闸（画布多范本并行时传入全局信号量，使多范本 × 批次
     总并发不超闸值）；不传则内部自建。
+    on_progress 为可选回调 (done, total)：每批 LLM 返回后即回调一次（批次并发下
+    完成顺序不定），进度上报用；回调异常被吞掉不影响产值。
     返回 (values, missing_keys)。每字段证据最多取 6 片（片段已截 800 字）。"""
     step = max(int(batch_size or BATCH_SIZE), 1)
     batches = [placeholders[i:i + step] for i in range(0, len(placeholders), step)]
@@ -241,7 +244,17 @@ async def generate_values(tenant_id: str, placeholders: list[dict], chunks_by_ke
             ans = await mdl.async_chat(GENERATE_SYSTEM, [{"role": "user", "content": user_msg}])
         return batch, _extract_json(ans)
 
-    results = await asyncio.gather(*[_one(b) for b in batches])
+    total = sum(len(b) for b in batches)
+    done_slots = 0
+    results = []
+    for fut in asyncio.as_completed([_one(b) for b in batches]):
+        results.append(await fut)
+        if on_progress:
+            done_slots += len(results[-1][0])
+            try:
+                on_progress(done_slots, total)
+            except Exception:
+                logging.exception("generate_values on_progress callback failed")
     missing: set = set()
     values: dict = {}
     for batch, raw in results:

@@ -679,3 +679,68 @@ def test_dry_run_empty_kb_ids_no_permission_check(monkeypatch):
                         classmethod(lambda cls, tid: ver))
     out = executor._run_async(executor.dry_run("t", "tpl1", [], None))
     assert out["cells"] == {"k1": "not_found"} and out["partial"] is False
+
+
+# ---------- generate_values 进度回调 on_progress（批次完成即上报） ----------
+
+def test_generate_values_on_progress_reports_batch_completion(monkeypatch):
+    """on_progress 每批完成即回调 (done, total)；total 为全部 llm 槽数，末次回调 done=total。"""
+    from rag.svr.template_fill import executor
+
+    async def fake_chat(system, history, gen_conf=None, **kw):
+        content = history[0]["content"]
+        spec = json.loads(content.split("## 检索证据")[0].split("## 字段清单\n")[1])
+        return json.dumps({s["key"]: "v" for s in spec}, ensure_ascii=False)
+
+    monkeypatch.setattr(executor, "_build_chat_mdl",
+                        lambda tenant: types.SimpleNamespace(async_chat=fake_chat))
+    placeholders = [{"key": f"k{i}", "name": f"字段{i}", "description": "", "constraints": {}}
+                    for i in range(5)]
+    chunks_by_key = {f"k{i}": {"chunks": []} for i in range(5)}
+    events = []
+    vals, missing = executor._run_async(executor.generate_values(
+        "t", placeholders, chunks_by_key, params={}, batch_size=2,
+        on_progress=lambda done, total: events.append((done, total))))
+    assert vals == {f"k{i}": "v" for i in range(5)} and missing == set()
+    assert events[-1] == (5, 5)
+    assert sorted(e[0] for e in events) == [2, 4, 5]   # 3 批 → 3 次回调
+    assert all(e[1] == 5 for e in events)
+
+
+def test_generate_values_on_progress_exception_swallowed(monkeypatch):
+    """on_progress 抛异常不影响产值结果（进度是旁路，不能拖垮主流程）。"""
+    from rag.svr.template_fill import executor
+
+    async def fake_chat(system, history, gen_conf=None, **kw):
+        content = history[0]["content"]
+        spec = json.loads(content.split("## 检索证据")[0].split("## 字段清单\n")[1])
+        return json.dumps({s["key"]: "v" for s in spec}, ensure_ascii=False)
+
+    monkeypatch.setattr(executor, "_build_chat_mdl",
+                        lambda tenant: types.SimpleNamespace(async_chat=fake_chat))
+    placeholders = [{"key": "k1", "name": "字段一", "description": "", "constraints": {}}]
+    chunks_by_key = {"k1": {"chunks": []}}
+
+    def boom(done, total):
+        raise RuntimeError("cb boom")
+
+    vals, missing = executor._run_async(executor.generate_values(
+        "t", placeholders, chunks_by_key, params={}, on_progress=boom))
+    assert vals == {"k1": "v"} and missing == set()
+
+
+def test_generate_values_without_on_progress_unchanged(monkeypatch):
+    """不传 on_progress 行为与旧版完全一致（向后兼容回归）。"""
+    from rag.svr.template_fill import executor
+
+    async def fake_chat(system, history, gen_conf=None, **kw):
+        return '{"k1": "v1", "k2": null}'
+
+    monkeypatch.setattr(executor, "_build_chat_mdl",
+                        lambda tenant: types.SimpleNamespace(async_chat=fake_chat))
+    placeholders = [{"key": "k1", "name": "一", "description": "", "constraints": {}},
+                    {"key": "k2", "name": "二", "description": "", "constraints": {}}]
+    chunks_by_key = {"k1": {"chunks": []}, "k2": {"chunks": []}}
+    vals, missing = executor._run_async(
+        executor.generate_values("t", placeholders, chunks_by_key, params={}))
+    assert vals == {"k1": "v1"} and missing == {"k2"}
