@@ -9,7 +9,7 @@
 - 前端：`template-fill-stream.ts` 事件归约纯函数（每事件浅拷贝换引用 + finished 终态防御）+ `use-send-message.ts` SSE 分支；`template-fill-progress.tsx` 共用进度卡片（c-chat 流式气泡 / flow 对话区）；FlowAiPanel 附带版本改走轻量文本通道（**审阅模式排除**，仍走整份 docx 上传保证 ReviewPanel 段落锚点一致；轻通道失败回退整份上传）；flow 成稿条「存为流程版本」按钮（blob→uploadFlowVersion→时间线刷新，自动保存成功后成稿条仍保留可操作）；版本时间线来源三分支（人工上传/AI 产出/AI 范本填写）
 - 设计文档：docs/superpowers/specs/2026-09-08-template-fill-flow-design.md；实施计划：docs/superpowers/plans/2026-09-08-template-fill-flow.md
 
-**测试**：后端 124 passed（executor 21/events 5/canvas drain 3/flow version source 6/tool/utils）；前端 jest 7 passed（归约模块，用 .scratch/jest.template-fill.config.js 临时配置，存量 jest.config.ts 损坏引用未安装的 umi/test）；tsc/eslint 改动文件零新增。
+**测试**：后端 124 passed（executor 21/events 5/canvas drain 3/flow version source 6/tool/utils）；前端 jest 7 passed（归约模块，用 .scratch/jest.template-fill.config.js 临时配置，存量 jest.config.ts 损坏引用未安装的 umi/test）；tsc/eslint 改动文件零新增。口径说明：设计 §5 的「存版本失败前端 toast」实现为按钮内联错误态（失败重试）+ console.warn，功能等价且带重试入口。
 
 **遗留**：容器内端到端冒烟（SSE 事件到达 + content 端点真实 JWT 实测非空 + 成稿落版本）待部署后验证
 
