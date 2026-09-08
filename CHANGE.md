@@ -1,5 +1,13 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-08 填写点统一 AI 填写，缺值留空交人工二次加工（已部署）
+
+**主题**：按用户要求「识别后填写方式都让 AI 填，AI 自行判断，没有的空着占位符，最终输出文档人工审核二次加工」：① 识别层（detector.py）——prompt 不再引导 LLM 产 manual，parse_detection_response 代码层强制 fill_mode="llm"（LLM 不听话也拦得住，识别产物不再有「人工」）；② 执行层（executor.py）——_norm_fill_mode 把 manual 视同 llm（存量已保存的 manual 填写点也改走检索+LLM 生成；param 直取任务参数保留），build_values 删【待人工】标记合成，缺失一律落空串，is_partial 语义移除，任务渲染成功即 done；③ 渲染层（renderer.py）——manual_mark/【待人工：xxx】标记机制删除。partial 终态为兼容历史任务保留（重试/下载仍放行），新生成的任务不会再出现。前端零改动（新增填写点默认已是 llm，CELL_STATUS 的 not_found 徽标即「留空待加工」提示）。
+
+**测试**：4 套件 182 单测全绿（parse 强制 llm 断言、build_values manual→空串、dry_run manual 参与生成/partial 恒 False、缺值渲染空串等用例同步改写），ruff 0 违规。已 SCP detector/executor/renderer + 重启，容器冒烟通过。commit `a6cfc21a`。
+
+**遗留**：存量模板（专用本/通用本）已保存的填写点中如有个别 fill_mode=manual 的行，执行时自动视同 llm 处理，无需重新识别；详情页仍可手动把某个填写点改为 manual/param（改为 manual 时执行也按 AI 填写处理，详情页下拉选项后续可按需精简）。
+
 ## 2026-09-08 修复 docx 表格 addr 缺表序号导致多表格模板识别校验失败（已部署）
 
 **主题**：专用本模板后台识别报「anchor 不在 cell:0:0:5 文本中」——根因是 docx 表格 addr 格式为 `cell:<row>:<col>:<para_idx>`，**没有表序号**，多表格文档两个表同 (row,col,para) 的段落撞号：parse 按 index 定位到表 A 段落（校验通过），validate/渲染按 addr 查到表 B 段落（anchor 错位）。不只校验失败——渲染替换也会落错表（锚文本恰好存在时静默替换错段落）。修复：addr 改为 `cell:<tbl_no>:<row>:<col>:<para_idx>`（docx_utils.py `_build_addr_map`）；xlsx addr 含 sheet 名天然唯一不受影响。存量兼容：修复前唯一已保存模板（通用本）99 个占位符全是 `para:` 格式，无需迁移；修复后容器内直跑识别线程体重跑专用本成功（196 个填写点，cell addr 均为新格式）。commit `dfb225cd`。
