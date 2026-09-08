@@ -576,7 +576,12 @@ class FileService(CommonService):
 
         FACTORY = {ParserType.PRESENTATION.value: presentation, ParserType.PICTURE.value: picture, ParserType.AUDIO.value: audio, ParserType.EMAIL.value: email}
         parser_config = {"chunk_token_num": 16096, "delimiter": "\n!?;。；！？", "layout_recognize": layout_recognize or "Plain Text"}
-        kwargs = {"lang": "English", "callback": dummy, "parser_config": parser_config, "from_page": 0, "to_page": MAXIMUM_PAGE_NUMBER, "tenant_id": current_user.id if current_user else tenant_id}
+        # tenant_id 显式传入时直接使用（后台线程/无请求上下文场景，不触碰 current_user LocalProxy）；
+        # 否则回退请求上下文用户。tenant_id=None 时行为与原实现一致。
+        tenant = tenant_id
+        if tenant is None:
+            tenant = current_user.id
+        kwargs = {"lang": "English", "callback": dummy, "parser_config": parser_config, "from_page": 0, "to_page": MAXIMUM_PAGE_NUMBER, "tenant_id": tenant}
         file_type = filename_type(filename)
         if img_base64 and file_type == FileType.VISUAL.value:
             return GptV4.image2base64(blob)

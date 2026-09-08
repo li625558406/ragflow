@@ -907,11 +907,15 @@ async def version_content(flow_id: str, version_id: str):
         if not blob:
             return get_json_result(data={"content": ""})
 
+        # current_user 是请求上下文 LocalProxy，不随 thread_pool_exec 线程传播，
+        # 必须在线程外捕获 uid 再显式传入（parse 对显式 tenant_id 短路，不触碰 current_user）
+        uid = current_user.id
+
         def _extract_text() -> str:
             try:
                 # FileService.parse(filename, blob, img_base64, tenant_id)：
-                # img_base64=False 避免图片文件走 base64 分支；current_user.id 作 tenant 兜底
-                text = FileService.parse(version["file_name"], blob, False, current_user.id)
+                # img_base64=False 避免图片文件走 base64 分支
+                text = FileService.parse(version["file_name"], blob, False, uid)
             except Exception:
                 logger.warning("flow version content parse failed: %s",
                                version["file_name"], exc_info=True)
