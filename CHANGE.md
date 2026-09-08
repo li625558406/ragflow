@@ -1,12 +1,12 @@
 # CHANGE.md — 项目迭代记录
 
-## 2026-09-08 Agent 画布新增「范本填写」节点（TemplateFill，前后端，未部署）
+## 2026-09-08 Agent 画布新增「范本填写」节点（TemplateFill，前后端，已部署）
 
 **主题**：按用户需求「配置一个节点专门写范本：LLM 自行判断用哪个范本，按占位符 KB 检索填写，输出内容」（经确认选独立节点形态，配置时只选知识库不选范本）。① 后端新增 `agent/component/template_fill.py`（`TemplateFillParam` + `TemplateFill` 组件，命名约定自动注册零登记）：运行时拉本租户已发布范本 → LLM 选最合适的一个（唯一候选跳过选型省一次 LLM）→ 复用 executor 的 `_retrieve_all`/`generate_values`/`build_values` 确定性 pipeline（缺值留空待人工二次加工，与 2026-09-08 统一 AI 填写语义一致）→ docxtpl/openpyxl 渲染 → 产物入 STORAGE_IMPL 并输出 `download` JSON（契约同 DocGenerator，下游 Message 节点渲染下载按钮）+ `content` 汇总文本。**关键命名约束**：组件类刻意取 `TemplateFill` 而非 `FillTemplate`——Agent 节点的工具同样经 `component_class` 解析且 agent.component 优先于 agent.tools，C 端对话 FillTemplate 工具类（agent/tools/template_fill.py）会被同名组件遮蔽、破坏存量画布（已加防遮蔽断言验证）。② 前端 9 处登记：Operator 枚举 `TemplateFill`、initial values（query 默认 `{sys.query}` + dataset_ids）、NodeMap/RestrictedUpstreamMap、use-add-node、form-config-map、新建 template-fill-form（需求描述 PromptEditor + KB 多选复用 KnowledgeBaseFormField + 输出列表）、工具面板分组、图标 FilePen、zh.ts（flow.templateFill/templateFillDescription/templateFillQuery）；`use-get-begin-query` 的 download 输出引用过滤同步覆盖 TemplateFill（同 DocGenerator 契约）。
 
-**测试**：新增 `test/test_agent_fill_template_component.py` 16 单测全绿（对抗性覆盖：选型 LLM 非法 JSON/编造范本 id 必报错不静默换第一个、无已发布范本、未选知识库、工作副本缺失、xlsx addr 透传、download 输出契约、唯一候选不调选型 LLM）；`component_class('FillTemplate')` 仍解析到 C 端工具类（防遮蔽断言）；改动前端文件 tsc 0 error（存量 data-source 报错与本次无关）。本地按规范未 build 未部署。
+**测试**：新增 `test/test_agent_fill_template_component.py` 16 单测全绿（对抗性覆盖：选型 LLM 非法 JSON/编造范本 id 必报错不静默换第一个、无已发布范本、未选知识库、工作副本缺失、xlsx addr 透传、download 输出契约、唯一候选不调选型 LLM）；`component_class('FillTemplate')` 仍解析到 C 端工具类（防遮蔽断言）；改动前端文件 tsc 0 error（存量 data-source 报错与本次无关）。已部署：前端 build + SCP + nginx reload，后端 SCP `agent/component/template_fill.py` + 容器重启，容器内冒烟通过（TemplateFill 注册成功、FillTemplate 工具未被遮蔽）。
 
-**遗留**：未部署——后端 SCP `agent/component/template_fill.py` + 前端 build；部署后建议在画布实测「范本填写 → Message」链路的下载按钮。query 需求描述为空时自动回退 `{sys.query}`；暂无任务参数（param 模式填写点会留空）。
+**遗留**：建议在画布实测「范本填写 → Message」链路的下载按钮。query 需求描述为空时自动回退 `{sys.query}`；暂无任务参数（param 模式填写点会留空）。
 
 ## 2026-09-08 填写点统一 AI 填写，缺值留空交人工二次加工（已部署）
 
