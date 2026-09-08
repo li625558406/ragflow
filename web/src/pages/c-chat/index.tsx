@@ -53,6 +53,7 @@ import {
   X,
 } from 'lucide-react';
 import ReviewPanel, { type Annotation } from './review-panel';
+import TemplateFillProgress from './template-fill-progress';
 
 import { RealtimeAudioButton } from '@/components/realtime-audio-button';
 import {
@@ -2347,6 +2348,19 @@ export default function CChat() {
                                     </div>
                                   )}
                                 </div>
+                                {/* 范本填写实时进度（仅流式期间；结束后由 msg.downloads 接管） */}
+                                {streaming && (
+                                  <TemplateFillProgress
+                                    state={streamState.templateFill}
+                                    onPreview={(dl) =>
+                                      setPreviewDoc({
+                                        fileId: dl.doc_id || '',
+                                        fileName:
+                                          dl.filename || dl.name || '成稿',
+                                      })
+                                    }
+                                  />
+                                )}
                                 {/* Reference sources */}
                                 {!streaming && refs && (
                                   <div className="mt-3 space-y-2">
