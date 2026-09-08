@@ -5,6 +5,10 @@ import { BeginQuery } from '@/pages/agent/interface';
 import { getAuthorization } from '@/utils/authorization-util';
 import { EventSourceParserStream } from 'eventsource-parser/stream';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  applyTemplateFillEvent,
+  ITemplateFillState,
+} from './template-fill-stream';
 
 export enum MessageEventType {
   WorkflowStarted = 'workflow_started',
@@ -129,6 +133,8 @@ export interface IStreamState {
     finished: boolean[];
     errored: boolean[];
   };
+  /** TemplateFill 范本填写进度（template_fill_progress 事件累积） */
+  templateFill?: ITemplateFillState;
 }
 
 // ── Debug logging for SSE stream diagnosis ──
@@ -162,6 +168,7 @@ export const useSendMessageBySSE = (
     audioBinary: undefined,
     attachment: undefined,
     downloads: [],
+    templateFill: undefined,
   });
 
   // ── RAF-throttled rendering state (updated at most 60 fps) ──
@@ -303,6 +310,7 @@ export const useSendMessageBySSE = (
       downloads: [],
       fanOutLanes: undefined,
       fanOutDirty: false,
+      templateFill: undefined,
     };
     // Must also clear the React state so that consumers (e.g. c-chat) that
     // read streamState.content directly don't pick up stale text from a
@@ -346,6 +354,7 @@ export const useSendMessageBySSE = (
           downloads: [],
           fanOutLanes: undefined,
           fanOutDirty: false,
+          templateFill: undefined,
         };
         // Reset streamState so stale content from a previous abort
         // doesn't leak into the c-chat effect when done toggles to false.
@@ -501,6 +510,10 @@ export const useSendMessageBySSE = (
                       d.lanes.map((l: any) => l.label),
                     );
                   }
+                }
+
+                if (val?.event === 'template_fill_progress') {
+                  applyTemplateFillEvent(streamAccRef.current, val.data);
                 }
 
                 if (val?.event === MessageEventType.Message) {
