@@ -1,5 +1,13 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-08 范本填写 LLM 压力优化：产值批次并发 + 多范本并行 + 跨范本检索去重（后端，未部署）
+
+**主题**：用户提出「一个范本过长（专用本 196 填写点）、多个范本处理时对 LLM 压力很大」——量化根因是调用链三层全串行：196 槽 ÷ BATCH_SIZE=10 → 20 次串行 LLM 批次调用（10 分钟级）× `_invoke_async` 里多范本 for 循环串行。三层解串（commit `4be0c134`）：① **产值批次并发**（executor.py `generate_values`）：分批后 `asyncio.gather` 并发（`GENERATE_CONCURRENCY=3`，批次间字段独立无依赖），支持外部传入共享 `sem`；② **多范本并行**（agent/component/template_fill.py）：`_fill_one` 并行 gather，全局 LLM 并发总闸 `_FILL_CONCURRENCY=4`（画布与 executor 共用同一信号量，多范本×批次并发不相乘打爆 provider）；**单范本失败不再拖死节点**——降级为「《xx》：填写失败（原因）」汇总行，其余范本照常产出，全失败才报节点错误；③ **跨范本检索去重**（executor.py 新增 `retrieve_all_shared`）：各范本填写点按 `(top_k, query)` 去重，同一检索词只查一次 ES、结果分发回各范本（同域政务范本检索词高度重合），槽位归集/降级语义与 `_retrieve_all` 一致（ctx 失败全槽空、单槽失败降级、param/无 key 槽不进检索）。效果：单范本 10min → ~3.5min；3 范本 30min → ~8min；任务 pipeline（execute_task/dry_run）路径行为不变（仅产值批次内部从串行变 3 路并发）。
+
+**测试**：executor 新增 5 用例（共享检索去重/top_k 入键/ctx 失败全降级/空 kb_ids 不加载 ctx、批次并发峰值≥2+共享 sem 钉 1、空占位符不建模型）；画布组件新增 3 用例（单范本失败降级汇总行、全失败报错、共享检索只调一次）；修正批次顺序敏感断言（并发后完成顺序不定）；模板填写 5 套件 214 单测全绿，ruff 0 新增违规（存量 3 项为基线）。
+
+**遗留**：未部署（SCP `rag/svr/template_fill/executor.py` + `agent/component/template_fill.py` + 容器重启）；LLM provider 侧压力峰值从 1 路变 4 路（DeepSeek/Qwen 速率上限内）；ES 单查 100s 的平台级负载根因不变（见上条）。
+
 ## 2026-09-08 范本填写检索性能优化：并发检索 + 上下文复用 + KB 去重（后端，已部署）
 
 **主题**：用户实测「专用本（196 填写点）+ 画布范本填写」疑似卡死——排查为非卡死而是极慢：逐槽串行检索 × 单次 ES 查询 70~125s（ES 同时被 OCR 解析任务压载）× 每槽重复加载 KB/embedding 模型，预计 5 小时+。优化 executor.py `_retrieve_all`：① llm 槽并发检索（`RETRIEVAL_CONCURRENCY=6` 信号量），百级填写点从小时级压到分钟级；② 新增 `load_retrieval_ctx` 整批只加载一次知识库校验+embedding 模型（`retrieve_slot` 加可选 ctx 参数，向后兼容）；③ 上下文加载失败等价全槽降级空证据（不中断）；④ 画布节点 kb_ids 去重（实测配置同一 KB 重复 4 次，ES 索引列表翻倍）。单槽失败仍降级空证据，语义不变。
