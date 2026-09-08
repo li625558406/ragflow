@@ -1,5 +1,11 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-08 范本库批量上传模板（纯前端，未 build 部署）
+
+**主题**：范本库列表页新增「批量上传」入口（batch-upload-dialog.tsx）：多选 .docx/.doc/.xlsx 文件（单次上限 20 个、单个 ≤20MB），逐个展示文件名/大小，顺序复用既有 `POST /template/fill/upload` 端点逐个创建草稿模板（名称默认取文件名去扩展），逐条展示上传中/成功/失败状态与失败原因，单个失败不中断后续。AI 识别填写点为逐模板 LLM+人工确认环节，刻意不批量；上传完成后需逐个进详情走「AI 识别→确认保存→发布」。后端零改动。
+
+**测试**：tsc/ESLint 0 error。**遗留**：未 build 部署服务器（用户本地 dev 前端可直接联调）。
+
 ## 2026-09-08 范本库列表批量删除 + 单个删除（后端已部署，前端待 build）
 
 **主题**：范本库列表页新增删除能力。① 后端新增 `POST /api/v1/template/fill/batch-delete`（template_api.py）：ids 非空字符串数组校验 + 单次上限 50，逐个复用 `TplTemplateService.delete_template`（守卫/事务/TOCTOU 行锁全复用单删），部分失败不影响其余，返回 `{deleted: [...], failed: [{id, message}]}`；单个删除复用既有 `DELETE /template/fill/<id>` 端点。② 前端：api.ts 补 `deleteTemplateFill`/`batchDeleteTemplateFill` URL；hooks 新增 `useDeleteTemplateFill`/`useBatchDeleteTemplateFill`（成功后失效列表缓存）；列表页加全选/行复选框列、行内「删除」按钮（仅 draft/disabled 可删，与后端守卫一致）、选中后顶部浮现「批量删除(N)」按钮，均走 `ConfirmDeleteDialog` 二次确认；搜索/筛选/翻页时清空选中；批量删除部分失败时 toast 汇总展示首条失败原因。
