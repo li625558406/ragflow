@@ -135,6 +135,16 @@ class TplTemplateService(CommonService):
 
     @classmethod
     @DB.connection_context()
+    def set_detect_status(cls, template_id: str, status: str, error: str = "") -> bool:
+        """后台 AI 识别状态流转（detect-async 端点专用，不校验租户——调用方已核权）。"""
+        if status not in ("none", "running", "done", "failed"):
+            return False
+        return cls.model.update(detect_status=status,
+                                detect_error=(error or "")[:512]).where(
+            cls.model.id == template_id).execute() > 0
+
+    @classmethod
+    @DB.connection_context()
     def has_tasks(cls, template_id: str) -> bool:
         """该模板是否存在填写任务记录（有任务即拒删：历史任务下载依赖其 bucket 对象）。"""
         return TplFillTask.select().where(

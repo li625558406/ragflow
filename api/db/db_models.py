@@ -2146,6 +2146,8 @@ class TplTemplate(DataBaseModel):
     description = LongTextField(null=True, default="")
     file_type = CharField(max_length=16, default="docx", help_text="docx | xlsx")
     status = CharField(max_length=16, default="draft", index=True, help_text="draft | published | disabled")
+    detect_status = CharField(max_length=16, default="none", help_text="AI 识别填写点状态: none | running | done | failed")
+    detect_error = CharField(max_length=512, null=True, default="", help_text="AI 识别失败原因")
     latest_version = IntegerField(default=0)
     tenant_id = CharField(max_length=32, index=True)
     created_by = CharField(max_length=32, null=True, default="")
@@ -2784,6 +2786,9 @@ def migrate_db():
     if not TplTemplate.table_exists():
         TplTemplate.create_table(safe=True)
         logging.info("template fill: tpl_template table created")
+    # AI 识别填写点状态（2026-09-08 后台识别：列表展示识别中/失败，完成后自动保存填写点）
+    alter_db_add_column(migrator, "tpl_template", "detect_status", CharField(max_length=16, null=False, help_text="none | running | done | failed", default="none"))
+    alter_db_add_column(migrator, "tpl_template", "detect_error", CharField(max_length=512, null=True, help_text="AI 识别失败原因", default=""))
     if not TplTemplateVersion.table_exists():
         TplTemplateVersion.create_table(safe=True)
         logging.info("template fill: tpl_template_version table created")

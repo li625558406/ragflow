@@ -14,6 +14,7 @@ import os
 import sys
 import types
 import zipfile
+from typing import ClassVar
 
 import pytest
 from importlib.util import module_from_spec, spec_from_file_location
@@ -59,6 +60,7 @@ EXPECTED_ENDPOINTS = (
     "upload_template",
     "list_templates",
     "detect_placeholders",
+    "detect_placeholders_async",
     "save_placeholders",
     "publish_template",
     "disable_template",
@@ -100,6 +102,7 @@ def test_all_routes_registered_on_blueprint():
         "/template/fill/upload": {"POST"},
         "/template/fill/list": {"GET"},
         "/template/fill/detect": {"POST"},
+        "/template/fill/detect-async": {"POST"},
         "/template/fill/<template_id>/save-placeholders": {"POST"},
         "/template/fill/<template_id>/publish": {"POST"},
         "/template/fill/<template_id>/disable": {"POST"},
@@ -1273,3 +1276,249 @@ def test_batch_delete_all_success(monkeypatch):
     assert resp["data"]["deleted"] == ["tpl_a", "tpl_b"]
     assert resp["data"]["failed"] == []
     assert len(calls) == 2
+
+
+# ---------- 后台 AI 识别（detect-async + 状态落库） ----------
+
+class _FakeThread:
+    """threading.Thread 桩：不真起线程，捕获 target/args 供断言。"""
+
+    instances: ClassVar[list] = []
+
+    def __init__(self, target=None, daemon=False, name=None, args=()):
+        self.target, self.args, self.name = target, args, name
+        _FakeThread.instances.append(self)
+
+    def start(self):
+        self.started = True
+
+
+def _patch_detect_async(monkeypatch, mod, body, tpl=None, ver="default",
+                        thread_cls=_FakeThread, reset=True):
+    """detect-async 公共桩：json body + get_owned/latest/set_detect_status + Thread 捕获。
+    ver 传 None 表示 latest 返回 None；"empty" 表示无填写点版本；
+    reset=False 跳过 _detecting 清理（幂等测试模拟「上一个线程还在跑」）。"""
+    if reset:
+        mod._detecting.clear()
+    _FakeThread.instances = []
+    tpl = tpl if tpl is not None else types.SimpleNamespace(id="tpl_x")
+    if ver == "default":
+        ver = _make_ver()  # 带填写点（默认：应被拒绝）
+    elif ver == "empty":
+        ver = _make_ver(placeholders=[])
+    statuses = []
+    monkeypatch.setattr(mod, "request", _FakeJsonRequest(body))
+    monkeypatch.setattr(mod, "TplTemplateService", types.SimpleNamespace(
+        get_owned=lambda tid, uid, **kw: tpl,
+        set_detect_status=lambda tid, st, err="": statuses.append((tid, st, err))))
+    monkeypatch.setattr(mod, "TplTemplateVersionService", types.SimpleNamespace(
+        latest=lambda tid: ver))
+    if thread_cls is not None:
+        monkeypatch.setattr(mod.threading, "Thread", thread_cls)
+    return statuses
+
+
+def test_detect_async_route_and_endpoint_exist():
+    mod = _template_api
+    assert inspect.iscoroutinefunction(mod.detect_placeholders_async)
+
+
+def test_detect_async_rejects_template_with_placeholders(monkeypatch):
+    """已有填写点的模板拒绝（防后台自动覆盖人工配置）。"""
+    mod = _template_api
+    statuses = _patch_detect_async(
+        monkeypatch, mod, {"template_id": "tpl_x"}, ver="default")
+    resp = asyncio.run(mod.detect_placeholders_async())
+    d = _err_dict(resp)
+    assert d["code"] == DATA_ERROR_CODE
+    assert "已配置填写点" in d["message"]
+    assert not statuses and not _FakeThread.instances
+
+
+def test_detect_async_accepts_empty_template_and_returns_running(monkeypatch):
+    """无填写点 → 置 running + 起线程 + 返回 running；线程参数钉住模板/租户。"""
+    mod = _template_api
+    statuses = _patch_detect_async(
+        monkeypatch, mod, {"template_id": "tpl_x"}, ver="empty")
+    resp = asyncio.run(mod.detect_placeholders_async())
+    assert resp["code"] == 0 and resp["data"]["status"] == "running"
+    assert statuses == [("tpl_x", "running", "")]
+    assert len(_FakeThread.instances) == 1
+    assert _FakeThread.instances[0].args == ("tpl_x", "u1"), \
+        "线程必须拿到 template_id + current_user.id"
+
+
+def test_detect_async_accepts_missing_version(monkeypatch):
+    """版本行缺失（latest=None）也放行——worker 内会以「模板文件缺失」收口。"""
+    mod = _template_api
+    statuses = _patch_detect_async(
+        monkeypatch, mod, {"template_id": "tpl_x"}, ver=None)
+    resp = asyncio.run(mod.detect_placeholders_async())
+    assert resp["code"] == 0 and resp["data"]["status"] == "running"
+    assert statuses == [("tpl_x", "running", "")]
+
+
+def test_detect_async_idempotent_while_running(monkeypatch):
+    """同一模板重复触发：幂等返回 running，不重复置状态/起线程。"""
+    mod = _template_api
+    _patch_detect_async(monkeypatch, mod, {"template_id": "tpl_x"}, ver="empty")
+    resp1 = asyncio.run(mod.detect_placeholders_async())
+    assert resp1["data"]["status"] == "running"
+    # 模拟第二个请求进来时首个线程仍在跑（_detecting 未清理）
+    _patch_detect_async(monkeypatch, mod, {"template_id": "tpl_x"}, ver="empty",
+                        reset=False)
+    resp2 = asyncio.run(mod.detect_placeholders_async())
+    assert resp2["code"] == 0 and resp2["data"]["status"] == "running"
+    assert not _FakeThread.instances, "幂等路径不得重复起线程"
+
+
+def test_detect_async_thread_spawn_failure_marks_failed(monkeypatch):
+    """对抗性：线程启动失败 → 回收标记 + 置 failed + 返回错误，防卡 running。"""
+    mod = _template_api
+
+    class _BoomThread:
+        def __init__(self, *a, **kw):
+            raise RuntimeError("no threads")
+
+    statuses = _patch_detect_async(
+        monkeypatch, mod, {"template_id": "tpl_x"}, ver="empty",
+        thread_cls=_BoomThread)
+    resp = asyncio.run(mod.detect_placeholders_async())
+    d = _err_dict(resp)
+    assert d["code"] == DATA_ERROR_CODE and "启动失败" in d["message"]
+    assert statuses and statuses[-1][1] == "failed"
+    assert "tpl_x" not in mod._detecting, "失败后必须回收防重入标记"
+
+
+def _patch_detect_worker(monkeypatch, mod, *, tpl="exists", blob=b"blob",
+                         candidates_err=False, detect_err=False,
+                         suggestions=None, validate_ok=True, save_ok=True):
+    """_run_detect_task 公共桩：拦截存储/LLM/校验/保存全链路，记录调用。"""
+    calls = {"save": [], "statuses": []}
+    tpl_obj = None
+    if tpl == "exists":
+        tpl_obj = types.SimpleNamespace(
+            id="tpl_x", file_type="docx", status="draft",
+            to_dict=lambda: {"id": "tpl_x", "file_type": "docx", "status": "draft"})
+    monkeypatch.setattr(mod, "TplTemplateService", types.SimpleNamespace(
+        get_owned=lambda tid, uid, **kw: tpl_obj,
+        set_detect_status=lambda tid, st, err="": calls["statuses"].append((st, err))))
+    monkeypatch.setattr(mod, "TplTemplateVersionService", types.SimpleNamespace(
+        latest=lambda tid: _make_ver(),
+        save_placeholders=lambda tpl_dict, items: calls["save"].append(
+            (tpl_dict["id"], items)) or (save_ok, "storage down" if not save_ok
+                                         else {"id": "ver1"})))
+    monkeypatch.setattr(mod, "_load_latest_blob",
+                        lambda tid: (None, {"code": 102}) if blob is None else (blob, None))
+    if candidates_err:
+        def _boom(*a, **kw):
+            raise ValueError("bad zip")
+        monkeypatch.setattr(mod, "_extract_candidates", _boom)
+    else:
+        monkeypatch.setattr(mod, "_extract_candidates",
+                            lambda ft, b: [{"text": "项目名称"}])
+    if detect_err:
+        async def _boom_async(*a, **kw):
+            raise RuntimeError("llm down")
+        monkeypatch.setattr(mod, "detect_fill_points", _boom_async)
+    else:
+        async def _ok_async(*a, **kw):
+            return suggestions if suggestions is not None else []
+        monkeypatch.setattr(mod, "detect_fill_points", _ok_async)
+    monkeypatch.setattr(mod, "validate_placeholders",
+                        lambda items, cands: (validate_ok, "key 重复" if not validate_ok else ""))
+    return calls
+
+
+def _worker_suggestions():
+    return [{"key": "project_name", "name": "项目名称", "fill_mode": "llm",
+             "required": "true", "anchor": "项目名称", "addr": "1"}]
+
+
+def test_detect_worker_full_success(monkeypatch):
+    """全绿路径：规整 required → 校验 → 自动保存 → done。"""
+    mod = _template_api
+    mod._detecting.add("tpl_x")
+    calls = _patch_detect_worker(monkeypatch, mod, suggestions=_worker_suggestions())
+    mod._run_detect_task("tpl_x", "u1")
+    assert calls["statuses"] == [("done", "")], calls["statuses"]
+    assert len(calls["save"]) == 1
+    saved = calls["save"][0][1][0]
+    assert saved["required"] is True, "字符串 'true' 必须规整为 bool"
+
+
+def test_detect_worker_template_missing_marks_failed(monkeypatch):
+    mod = _template_api
+    mod._detecting.add("tpl_x")
+    calls = _patch_detect_worker(monkeypatch, mod, tpl=None)
+    mod._run_detect_task("tpl_x", "u1")
+    assert calls["statuses"] == [("failed", "模板不存在")]
+    assert "tpl_x" not in mod._detecting, "finally 必须回收防重入标记"
+
+
+def test_detect_worker_blob_missing_marks_failed(monkeypatch):
+    mod = _template_api
+    mod._detecting.add("tpl_x")
+    calls = _patch_detect_worker(monkeypatch, mod, blob=None)
+    mod._run_detect_task("tpl_x", "u1")
+    assert calls["statuses"][0][0] == "failed"
+
+
+def test_detect_worker_candidates_crash_marks_failed(monkeypatch):
+    mod = _template_api
+    mod._detecting.add("tpl_x")
+    calls = _patch_detect_worker(monkeypatch, mod, candidates_err=True)
+    mod._run_detect_task("tpl_x", "u1")
+    assert calls["statuses"][0][0] == "failed"
+    assert "损坏" in calls["statuses"][0][1]
+
+
+def test_detect_worker_llm_crash_marks_failed(monkeypatch):
+    mod = _template_api
+    mod._detecting.add("tpl_x")
+    calls = _patch_detect_worker(monkeypatch, mod, detect_err=True)
+    mod._run_detect_task("tpl_x", "u1")
+    assert calls["statuses"][0][0] == "failed"
+    assert "重试" in calls["statuses"][0][1]
+
+
+def test_detect_worker_zero_suggestions_marks_failed(monkeypatch):
+    """0 条识别结果 → failed（列表显示「识别完成」但详情空白比显式失败更误导）。"""
+    mod = _template_api
+    mod._detecting.add("tpl_x")
+    calls = _patch_detect_worker(monkeypatch, mod, suggestions=[])
+    mod._run_detect_task("tpl_x", "u1")
+    st, err = calls["statuses"][0]
+    assert st == "failed" and "未识别到填写点" in err
+
+
+def test_detect_worker_validate_reject_marks_failed(monkeypatch):
+    mod = _template_api
+    mod._detecting.add("tpl_x")
+    calls = _patch_detect_worker(monkeypatch, mod,
+                                 suggestions=_worker_suggestions(), validate_ok=False)
+    mod._run_detect_task("tpl_x", "u1")
+    st, err = calls["statuses"][0]
+    assert st == "failed" and "校验" in err
+    assert not calls["save"], "校验不过不得落保存"
+
+
+def test_detect_worker_save_failure_marks_failed(monkeypatch):
+    mod = _template_api
+    mod._detecting.add("tpl_x")
+    calls = _patch_detect_worker(monkeypatch, mod,
+                                 suggestions=_worker_suggestions(), save_ok=False)
+    mod._run_detect_task("tpl_x", "u1")
+    st, err = calls["statuses"][0]
+    assert st == "failed" and "storage down" in err
+
+
+def test_detect_worker_never_leaves_detecting_marker(monkeypatch):
+    """对抗性：任意失败路径后 _detecting 标记必须被回收（幂等重触发才可用）。"""
+    mod = _template_api
+    for kwargs in ({"tpl": None}, {"blob": None}, {"candidates_err": True},
+                   {"detect_err": True}, {"suggestions": []}):
+        mod._detecting.add("tpl_x")
+        _patch_detect_worker(monkeypatch, mod, **kwargs)
+        mod._run_detect_task("tpl_x", "u1")
+        assert "tpl_x" not in mod._detecting, f"kwargs={kwargs} 未回收标记"

@@ -14,6 +14,7 @@
 #  limitations under the License.
 #
 """模板填写：模板管理 API（P1）。路由前缀 /api/v1/template/fill/*"""
+import asyncio
 import io
 import logging
 import os
@@ -243,6 +244,107 @@ async def detect_placeholders():
         req = it.get("required")
         it["required"] = req is True or (isinstance(req, str) and req.strip().lower() == "true")
     return get_result(data={"candidates": candidates, "suggestions": suggestions})
+
+
+# 后台识别线程防重入：同一模板同时最多一个识别线程（与 _spawn_fill_task 同模式）。
+# 进程重启后 _detecting 清空而 DB 可能残留 running → 重触发会重新入队自愈。
+_detecting_lock = threading.Lock()
+_detecting: set = set()
+
+
+def _run_detect_task(template_id: str, tenant_id: str):
+    """daemon 线程体：LLM 识别 → 校验 → 自动保存填写点 → 状态落 DB。
+
+    仅对无已保存填写点的草稿模板开放（端点守卫），自动保存不会覆盖人工配置。
+    所有失败路径必须置 failed（含线程级兜底），防模板永久卡 running；
+    0 条识别结果也置 failed——列表显示「识别完成」但详情空白比显式失败更误导。
+    """
+    try:
+        tpl = TplTemplateService.get_owned(template_id, tenant_id)
+        if not tpl:
+            TplTemplateService.set_detect_status(template_id, "failed", "模板不存在")
+            return
+        blob, err = _load_latest_blob(template_id)
+        if err or not blob:
+            TplTemplateService.set_detect_status(template_id, "failed", "模板文件缺失")
+            return
+        try:
+            candidates = _extract_candidates(tpl.file_type, blob)
+        except Exception:
+            logger.exception("extract candidates failed, template=%s", template_id)
+            TplTemplateService.set_detect_status(template_id, "failed", "模板文件损坏或无法解析")
+            return
+        try:
+            # daemon 线程无事件循环，asyncio.run 新建 loop 跑异步 LLM 识别
+            suggestions = asyncio.run(detect_fill_points(tenant_id, tpl.file_type, candidates))
+        except Exception:
+            logger.exception("detect fill points failed, template=%s", template_id)
+            TplTemplateService.set_detect_status(template_id, "failed", "AI 识别失败，请重试或手动添加填写点")
+            return
+        for it in suggestions or []:
+            req = it.get("required")
+            it["required"] = req is True or (isinstance(req, str) and req.strip().lower() == "true")
+        if not suggestions:
+            TplTemplateService.set_detect_status(template_id, "failed", "未识别到填写点，请在详情页手动添加")
+            return
+        ok, err_msg = validate_placeholders(suggestions, candidates)
+        if not ok:
+            TplTemplateService.set_detect_status(template_id, "failed", f"识别结果校验未通过：{err_msg}")
+            return
+        svr_ok, info = TplTemplateVersionService.save_placeholders(tpl.to_dict(), suggestions)
+        if not svr_ok:
+            TplTemplateService.set_detect_status(template_id, "failed", str(info))
+            return
+        TplTemplateService.set_detect_status(template_id, "done")
+    except Exception:
+        logger.exception("background detect crashed, template=%s", template_id)
+        try:
+            TplTemplateService.set_detect_status(template_id, "failed", "识别线程异常，请重试")
+        except Exception:  # 最后防线：状态写不进也不让线程静默死
+            logger.exception("mark detect failed failed, template=%s", template_id)
+    finally:
+        with _detecting_lock:
+            _detecting.discard(template_id)
+
+
+@manager.route("/template/fill/detect-async", methods=["POST"])
+@login_required
+async def detect_placeholders_async():
+    """触发后台 AI 识别：立即返回 running，前端列表轮询 detect_status 展示进度。
+
+    仅限无已保存填写点的模板（上传向导的自动识别链路）：识别成功后自动保存
+    为该模板填写点；已有填写点的模板请用同步 detect 端点在详情页人工确认合并，
+    避免后台自动覆盖人工配置。重复触发幂等返回 running。
+    """
+    body = await request.get_json(silent=True) or {}
+    tpl, err = await _load_template((body or {}).get("template_id", ""))
+    if err:
+        return err
+    ver = TplTemplateVersionService.latest(tpl.id)
+    if ver and ver.placeholders:
+        return get_error_data_result("该模板已配置填写点，请到详情页使用「AI 识别」")
+    with _detecting_lock:
+        if tpl.id in _detecting:
+            return get_result(data={"status": "running"})
+        _detecting.add(tpl.id)
+    try:
+        TplTemplateService.set_detect_status(tpl.id, "running")
+    except Exception:
+        with _detecting_lock:
+            _detecting.discard(tpl.id)
+        raise
+    try:
+        threading.Thread(target=_run_detect_task, daemon=True,
+                         name=f"tpl-detect-{tpl.id[:8]}",
+                         args=(tpl.id, current_user.id)).start()
+    except Exception:
+        # 线程启动失败：回收标记并把状态置 failed，防卡 running
+        with _detecting_lock:
+            _detecting.discard(tpl.id)
+        logger.exception("spawn detect thread failed, template=%s", tpl.id)
+        TplTemplateService.set_detect_status(tpl.id, "failed", "识别任务启动失败，请重试")
+        return get_error_data_result("识别任务启动失败，请重试")
+    return get_result(data={"status": "running"})
 
 
 @manager.route("/template/fill/<template_id>/save-placeholders", methods=["POST"])
