@@ -14,11 +14,13 @@
 #  limitations under the License.
 #
 """「范本填写」画布节点：配置时只选知识库（不选范本），运行时节点内部
-① 拉取本租户已发布范本清单 → ② LLM 按用户需求（query，默认 {sys.query}）选最
-合适的一个 → ③ 按其填写点逐条 KB 检索 → ④ LLM 批量产值（缺值留空待人工二次
-加工，语义与模板填写引擎 2026-09-08 改造后一致）→ ⑤ docxtpl/openpyxl 渲染 →
-⑥ 产物入 STORAGE_IMPL 并输出 download JSON（下游 Message 节点 _extract_downloads
-识别后渲染下载按钮，契约同 DocGenerator）。
+① 拉取本租户已发布范本清单 → ② LLM 按用户需求（query，默认 {sys.query}）选出
+一个或多个适配范本（每个各产一份成稿）→ ③ 按其填写点逐条 KB 检索，用户上传
+文件（sys.file_content）与 Begin 表单字段一并注入证据/参数 → ④ LLM 批量产值
+（缺值留空待人工二次加工，语义与模板填写引擎 2026-09-08 改造后一致）→
+⑤ docxtpl/openpyxl 渲染 → ⑥ 产物入 {tenant_id}-downloads bucket 并输出
+download 列表 JSON（下游 Message 节点 _extract_downloads 识别后渲染下载/预览，
+契约同 DocGenerator）。
 
 检索/产值复用 rag.svr.template_fill.executor 既有函数（与填写任务同一条
 确定性 pipeline，不走 tpl_fill_task 表、不建任务行）。类名刻意取 TemplateFill
@@ -52,8 +54,15 @@ _MIME_BY_TYPE = {
 }
 
 _SELECT_SYSTEM = (
-    "你是范本选择器。根据用户需求，从候选范本中选出最合适的一个。\n"
-    "只输出一个 JSON 对象：{\"template_id\": \"选中的范本id\"}，不要输出任何其他文字。")
+    "你是范本选择器。根据用户需求，从候选范本中选出所有适合的范本（一个或多个；"
+    "拿不准时只选最合适的一个，不要把不相关的范本也选进来）。\n"
+    "只输出一个 JSON 对象：{\"template_ids\": [\"范本id\", ...]}，不要输出任何其他文字。")
+
+# 用户上传文件内容作为填写证据的单槽截断上限（generate_values 每槽证据预算
+# 6 片 × 800 字，预置片段占前 2000 字，避免挤出 KB 检索证据）
+_USER_FILE_EVIDENCE_MAX = 2000
+# Begin 表单字段进产值 LLM 背景信息的单字段截断上限
+_BEGIN_FIELD_PROMPT_MAX = 200
 
 
 def build_candidates(rows: list[dict], latest_of) -> list[dict]:
@@ -77,14 +86,25 @@ def build_candidates(rows: list[dict], latest_of) -> list[dict]:
     return candidates
 
 
-def parse_selection(text: str, candidate_ids: list[str]) -> str:
-    """解析选型 LLM 输出并校验：非法 JSON / id 不在候选内 → ValueError（调用方
-    兜底报错，不静默换第一个——选错范本产出的成稿比失败更有害）。"""
+def parse_selection(text: str, candidate_ids: list[str]) -> list[str]:
+    """解析选型 LLM 输出并校验：非法 JSON / 空 / 含不在候选内的 id → ValueError
+    （调用方兜底报错，不静默换第一个——选错范本产出的成稿比失败更有害）。
+    兼容 {"template_ids": [...]} 与旧版单选 {"template_id": "..."}；去重保序。"""
     raw = executor._extract_json(text or "")
-    tpl_id = raw.get("template_id")
-    if not tpl_id or tpl_id not in candidate_ids:
+    ids = raw.get("template_ids")
+    if ids is None:
+        ids = [raw["template_id"]] if raw.get("template_id") else []
+    if not isinstance(ids, list):
+        ids = [ids]
+    picked: list[str] = []
+    for tid in ids:
+        if tid not in candidate_ids:
+            raise ValueError("AI 未能从已发布范本中选出合适的范本，请补充需求描述或检查范本库")
+        if tid not in picked:
+            picked.append(tid)
+    if not picked:
         raise ValueError("AI 未能从已发布范本中选出合适的范本，请补充需求描述或检查范本库")
-    return tpl_id
+    return picked
 
 
 class TemplateFillParam(ComponentParamBase):
@@ -130,10 +150,10 @@ class TemplateFill(ComponentBase):
             tenant_id, status="published", page=1, size=_LIST_SIZE)
         return build_candidates(rows, TplTemplateVersionService.latest)
 
-    async def _select_template(self, tenant_id: str, candidates: list[dict], query: str) -> dict:
-        """唯一候选直接命中（省一次 LLM）；多个走 LLM 选型。"""
+    async def _select_templates(self, tenant_id: str, candidates: list[dict], query: str) -> list[dict]:
+        """唯一候选直接命中（省一次 LLM）；多个走 LLM 选出一个或多个。"""
         if len(candidates) == 1:
-            return candidates[0]
+            return list(candidates)
         mdl = executor._build_chat_mdl(tenant_id)
         catalog = [{"template_id": c["template_id"], "name": c["name"],
                     "description": c["description"], "填写点": c["slot_names"]}
@@ -142,7 +162,85 @@ class TemplateFill(ComponentBase):
                     "\n\n## 用户需求\n" + (query or "（未提供）"))
         ans = await mdl.async_chat(_SELECT_SYSTEM, [{"role": "user", "content": user_msg}])
         chosen = parse_selection(ans, [c["template_id"] for c in candidates])
-        return next(c for c in candidates if c["template_id"] == chosen)
+        by_id = {c["template_id"]: c for c in candidates}
+        return [by_id[tid] for tid in chosen]
+
+    def _begin_fields(self) -> dict:
+        """收集 Begin 表单字段输出（标量字段，键名可与填写点 key 同名实现 param
+        直取；同时作为产值 LLM 的背景信息）。无 Begin / 无输出返回空 dict。"""
+        try:
+            for cpn in (self._canvas.components or {}).values():
+                obj = cpn.get("obj") if isinstance(cpn, dict) else None
+                if obj is not None and getattr(obj, "component_name", "").lower() == "begin":
+                    outs = obj.output() or {}
+                    return {k: v for k, v in outs.items()
+                            if isinstance(v, (str, int, float, bool)) and v != ""}
+        except Exception:  # noqa: BLE001 — 画布结构异常不阻断主流程，仅少一路证据
+            logger.warning("TemplateFill._begin_fields failed", exc_info=True)
+        return {}
+
+    def _user_file_evidence(self) -> str:
+        """用户上传文件的解析文本（canvas.run 已解析为 sys.file_content），截断备用。"""
+        try:
+            text = self._canvas.globals.get("sys.file_content") or ""
+        except Exception:  # noqa: BLE001
+            return ""
+        return text.strip()[:_USER_FILE_EVIDENCE_MAX]
+
+    async def _fill_one(self, tenant_id: str, cand: dict, kb_ids: list[str], query: str,
+                        begin_fields: dict, user_file_text: str) -> tuple[dict, dict, int]:
+        """对单个选中范本走完整填写 pipeline：检索 → LLM 产值 → param 直取 → 渲染。
+        返回 (download_info, cell_status, filled_count)。"""
+        placeholders = cand["_placeholders"]
+
+        # ② 检索（单槽失败在 _retrieve_all 内降级为空证据）
+        chunks_by_key, _evidence = await executor._retrieve_all(
+            tenant_id, placeholders, kb_ids, {}, task_id=f"canvas:{self._id}")
+
+        # ③ 用户上传文件作为填写证据：预置片段插到每槽证据首位（优先于 KB 片段）
+        if user_file_text:
+            for it in placeholders:
+                if executor._norm_fill_mode(it) != "llm" or not it.get("key"):
+                    continue
+                slot = chunks_by_key.setdefault(it["key"], {"chunks": [], "query": ""})
+                slot["chunks"].insert(0, {
+                    "content": f"[用户上传文件] {user_file_text}",
+                    "doc_id": "", "doc_name": "用户上传文件", "similarity": 1.0})
+
+        # ④ LLM 产值（背景信息 = Begin 表单字段 + 需求描述）+ param 模式直取 Begin 字段
+        llm_placeholders = [it for it in placeholders
+                            if executor._norm_fill_mode(it) == "llm" and it.get("key")]
+        llm_chunks = {it["key"]: chunks_by_key.get(it["key"], {"chunks": [], "query": ""})
+                      for it in llm_placeholders}
+        background = dict(begin_fields)
+        if query:
+            background["用户需求描述"] = query[:_BEGIN_FIELD_PROMPT_MAX]
+        generated, missing = await executor.generate_values(
+            tenant_id, llm_placeholders, llm_chunks, background)
+        executor._merge_param_values(placeholders, generated, missing, begin_fields)
+        values, cell_status = executor.build_values(placeholders, generated)
+
+        # ⑤ 渲染（工作副本缺失/渲染失败向上抛，由 invoke_async 统一落 _ERROR）
+        from rag.svr.template_fill import renderer
+        blob = settings.STORAGE_IMPL.get(cand["template_id"], cand["_ver"].render_file_id)
+        if not blob:
+            raise ValueError("范本工作副本缺失，请重新上传或识别填写点")
+        addr_by_key = None
+        if cand["file_type"] == "xlsx":
+            addr_by_key = {it["key"]: it.get("addr") for it in placeholders if it.get("key")}
+        out = renderer.render(cand["file_type"], blob, values, addr_by_key)
+
+        # ⑥ 落稿：bucket 用 {tenant_id}-downloads（/agents/download 与 /files/{id}/content
+        # 两个端点的既有读取契约都是这个 bucket，前端下载与在线预览因此都可直接用）
+        doc_id = get_uuid()
+        settings.STORAGE_IMPL.put(f"{tenant_id}-downloads", doc_id, out)
+        ext = cand["file_type"]
+        filename = f"{_sanitize_filename(cand['name'])}.{ext}"
+        filled = sum(1 for s in cell_status.values() if s == "filled")
+        return ({
+            "doc_id": doc_id, "filename": filename,
+            "mime_type": _MIME_BY_TYPE.get(ext, "application/octet-stream"),
+            "size": len(out)}, cell_status, filled)
 
     async def _invoke_async(self, **kwargs):
         if self.check_if_canceled("TemplateFill processing"):
@@ -158,48 +256,30 @@ class TemplateFill(ComponentBase):
         candidates = self._load_candidates(tenant_id)
         if not candidates:
             raise ValueError("暂无可用的已发布范本，请先在范本库发布并配置填写点")
-        cand = await self._select_template(tenant_id, candidates, query)
-        placeholders = cand["_placeholders"]
+        chosen = await self._select_templates(tenant_id, candidates, query)
+        begin_fields = self._begin_fields()
+        user_file_text = self._user_file_evidence()
 
-        # ② ③ ④ 与模板填写引擎同款确定性 pipeline（params 为空：节点形态无任务参数，
-        # param 模式字段自然留空；单槽检索失败在 _retrieve_all 内降级为空证据）
-        chunks_by_key, _evidence = await executor._retrieve_all(
-            tenant_id, placeholders, kb_ids, {}, task_id=f"canvas:{self._id}")
-        llm_placeholders = [it for it in placeholders
-                            if executor._norm_fill_mode(it) == "llm" and it.get("key")]
-        llm_chunks = {it["key"]: chunks_by_key.get(it["key"], {"chunks": [], "query": ""})
-                      for it in llm_placeholders}
-        generated, missing = await executor.generate_values(tenant_id, llm_placeholders, llm_chunks, {})
-        executor._merge_param_values(placeholders, generated, missing, {})
-        values, cell_status = executor.build_values(placeholders, generated)
-
-        # ⑤ 渲染（工作副本缺失/渲染失败向上抛，由 invoke_async 统一落 _ERROR）
-        from rag.svr.template_fill import renderer
-        blob = settings.STORAGE_IMPL.get(cand["template_id"], cand["_ver"].render_file_id)
-        if not blob:
-            raise ValueError("范本工作副本缺失，请重新上传或识别填写点")
-        addr_by_key = None
-        if cand["file_type"] == "xlsx":
-            addr_by_key = {it["key"]: it.get("addr") for it in placeholders if it.get("key")}
-        out = renderer.render(cand["file_type"], blob, values, addr_by_key)
-
-        # ⑥ 落稿 + 下载输出（契约同 DocGenerator：下游 Message 渲染下载按钮）
-        doc_id = get_uuid()
-        settings.STORAGE_IMPL.put(tenant_id, doc_id, out)
-        ext = cand["file_type"]
-        filename = f"{_sanitize_filename(cand['name'])}.{ext}"
-        self.set_output("download", json.dumps({
-            "doc_id": doc_id, "filename": filename,
-            "mime_type": _MIME_BY_TYPE.get(ext, "application/octet-stream"),
-            "size": len(out)}))
-        filled = sum(1 for s in cell_status.values() if s == "filled")
-        self.set_output(
-            "content",
-            f"已选用范本《{cand['name']}》：共 {len(placeholders)} 个填写点，"
-            f"AI 填充 {filled} 个，{len(placeholders) - filled} 个未检索到值已留空，"
-            "待人工审核补充。成稿见附件。")
-        logger.info("TemplateFill done, canvas=%s template=%s slots=%s filled=%s",
-                    self._id, cand["template_id"], len(placeholders), filled)
+        # 每个适配范本各产一份成稿；download 输出为列表（Message._extract_downloads
+        # 原生支持 list 契约，前端逐条渲染下载/预览）
+        downloads: list[dict] = []
+        summary_lines: list[str] = []
+        for cand in chosen:
+            dl, cell_status, filled = await self._fill_one(
+                tenant_id, cand, kb_ids, query, begin_fields, user_file_text)
+            downloads.append(dl)
+            total = len(cand["_placeholders"])
+            summary_lines.append(
+                f"《{cand['name']}》：共 {total} 个填写点，AI 填充 {filled} 个，"
+                f"{total - filled} 个未检索到值已留空。")
+        self.set_output("download", json.dumps(downloads, ensure_ascii=False))
+        suffix = "，可在上方预览或下载成稿。" if len(downloads) == 1 else "，可在上方逐份预览或下载成稿。"
+        head = (f"已选用 {len(downloads)} 份范本：\n" if len(downloads) > 1 else "已选用范本")
+        self.set_output("content", head + "\n".join(
+            ("- " + ln for ln in summary_lines) if len(downloads) > 1 else summary_lines
+        ) + suffix)
+        logger.info("TemplateFill done, canvas=%s templates=%s",
+                    self._id, [c["template_id"] for c in chosen])
 
     def thoughts(self) -> str:
         return "正在根据需求选择范本并检索知识库填写..."

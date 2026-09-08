@@ -314,6 +314,12 @@ export default function CChat() {
   const [reviewFileId, setReviewFileId] = useState<string>('');
   const [reviewFileName, setReviewFileName] = useState<string>('');
 
+  // ── 成稿预览（画布范本填写/文档生成的 download 产物，在线只读查看）──
+  const [previewDoc, setPreviewDoc] = useState<{
+    fileId: string;
+    fileName: string;
+  } | null>(null);
+
   // ── B-side chat hooks ──
   const { handleInputChange, value, setValue } = useHandleMessageInputChange();
   const {
@@ -2401,21 +2407,45 @@ export default function CChat() {
                                     <div className="mt-2 space-y-1.5">
                                       {(msg.downloads as any[]).map(
                                         (dl: any, di: number) => (
-                                          <a
+                                          <div
                                             key={di}
-                                            href={dl.url}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            className="flex items-center gap-2 px-3 py-2 bg-[#F5F5F5] border border-[#E5E5E5] rounded-lg text-xs text-[#000000] hover:bg-[#EAEAEA] transition-colors"
+                                            className="flex items-center gap-2 px-3 py-2 bg-[#F5F5F5] border border-[#E5E5E5] rounded-lg text-xs text-[#000000]"
                                           >
-                                            <Download
-                                              className="w-3.5 h-3.5 shrink-0"
-                                              strokeWidth={2}
-                                            />
-                                            <span className="truncate">
-                                              {dl.name || '下载文件'}
-                                            </span>
-                                          </a>
+                                            <button
+                                              className="flex items-center gap-2 min-w-0 text-left hover:text-[#1a66fb] transition-colors"
+                                              onClick={() =>
+                                                setPreviewDoc({
+                                                  fileId: dl.doc_id || '',
+                                                  fileName:
+                                                    dl.filename ||
+                                                    dl.name ||
+                                                    '成稿',
+                                                })
+                                              }
+                                            >
+                                              <FileText
+                                                className="w-3.5 h-3.5 shrink-0"
+                                                strokeWidth={2}
+                                              />
+                                              <span className="truncate max-w-[280px]">
+                                                {dl.filename ||
+                                                  dl.name ||
+                                                  '成稿'}
+                                              </span>
+                                            </button>
+                                            <a
+                                              href={dl.url}
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              className="ml-auto flex shrink-0 items-center gap-1 text-[#525252] hover:text-[#000000] transition-colors"
+                                            >
+                                              <Download
+                                                className="w-3.5 h-3.5"
+                                                strokeWidth={2}
+                                              />
+                                              下载
+                                            </a>
+                                          </div>
                                         ),
                                       )}
                                     </div>
@@ -3026,6 +3056,15 @@ export default function CChat() {
             setReviewFileId(id);
             setReviewFileName(name);
           }}
+        />
+
+        {/* 成稿在线预览：范本填写/文档生成产物（download.doc_id），纯只读 */}
+        <ReviewPanel
+          open={!!previewDoc}
+          onClose={() => setPreviewDoc(null)}
+          fileId={previewDoc?.fileId || ''}
+          fileName={previewDoc?.fileName || ''}
+          annotations={[]}
         />
       </div>
 

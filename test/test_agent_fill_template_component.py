@@ -15,9 +15,11 @@
 #
 """「范本填写」画布节点单测。对抗性覆盖：
 - build_candidates：最新版本缺失 / 填写点为空 / key 缺失的脏数据
-- parse_selection：非法 JSON、id 不在候选内（选错范本必须报错而非静默换第一个）
+- parse_selection：非法 JSON、id 不在候选内、空列表、脏类型（选错范本必须报错
+  而非静默换第一个；多选去重保序，兼容旧版单选契约）
 - _invoke_async：无已发布范本、未选知识库、选型 LLM 输出非法、工作副本缺失、
-  xlsx addr 透传、下载输出契约（下游 Message _extract_downloads 依赖）
+  多范本各产一份成稿、Begin 表单字段 param 直取、上传文件证据注入、
+  产物落 {tenant_id}-downloads bucket、下载输出列表契约（下游 Message 依赖）
 所有外部依赖（Service / settings.STORAGE_IMPL / executor 函数 / renderer.render）
 经模块属性注入替身，不触真实 DB / LLM / MinIO。"""
 import json
@@ -41,9 +43,14 @@ PH_XLSX_SLOTS = [
 
 
 class FakeCanvas:
-    def __init__(self, tenant="t1", sys_query="写一份道路工程情况报告"):
+    def __init__(self, tenant="t1", sys_query="写一份道路工程情况报告",
+                 begin_fields=None, file_content=""):
         self._tenant = tenant
         self._sys_query = sys_query
+        self.globals = {"sys.query": sys_query, "sys.file_content": file_content}
+        begin_fields = begin_fields or {}
+        begin_obj = SimpleNamespace(component_name="Begin", output=lambda: begin_fields)
+        self.components = {"begin": {"obj": begin_obj}}
 
     def is_canceled(self):
         return False
@@ -115,8 +122,14 @@ def test_build_candidates_slots_missing_key_dropped():
 
 # ---------- parse_selection（对抗性） ----------
 
-def test_parse_selection_valid():
-    assert parse_selection('{"template_id": "t2"}', ["t1", "t2"]) == "t2"
+def test_parse_selection_valid_single_legacy():
+    # 旧版单选契约 {"template_id": ...} 兼容
+    assert parse_selection('{"template_id": "t2"}', ["t1", "t2"]) == ["t2"]
+
+
+def test_parse_selection_multi_dedupe_preserve_order():
+    ans = '{"template_ids": ["t2", "t1", "t2", "t1"]}'
+    assert parse_selection(ans, ["t1", "t2"]) == ["t2", "t1"]
 
 
 def test_parse_selection_invalid_json():
@@ -127,12 +140,24 @@ def test_parse_selection_invalid_json():
 def test_parse_selection_unknown_id():
     # 选型 LLM 编造不存在的范本 id → 必须报错，不允许静默降级第一个
     with pytest.raises(ValueError, match="未能从已发布范本中选出"):
-        parse_selection('{"template_id": "ghost"}', ["t1"])
+        parse_selection('{"template_ids": ["t1", "ghost"]}', ["t1"])
+
+
+def test_parse_selection_empty_list():
+    with pytest.raises(ValueError, match="未能从已发布范本中选出"):
+        parse_selection('{"template_ids": []}', ["t1"])
 
 
 def test_parse_selection_null_value():
     with pytest.raises(ValueError):
         parse_selection('{"template_id": null}', ["t1"])
+
+
+def test_parse_selection_ids_not_list():
+    # 脏输出：template_ids 是字符串 → 容错为单元素；不在候选内报错
+    with pytest.raises(ValueError, match="未能从已发布范本中选出"):
+        parse_selection('{"template_ids": "ghost"}', ["t1"])
+    assert parse_selection('{"template_ids": "t1"}', ["t1"]) == ["t1"]
 
 
 # ---------- 参数默认值 ----------
@@ -204,8 +229,14 @@ def test_invoke_async_happy_path_docx(patched_env):
     assert patched_env["render"][0] == "docx"
     assert patched_env["render"][2]["项目名称"] == "值_项目名称"
     assert patched_env["kb_ids"] == ["kb1"]
-    # 下载输出契约：下游 Message._extract_downloads 靠这四个字段渲染下载按钮
-    dl = json.loads(cpn.output("download"))
+    # 产物必须落 {tenant_id}-downloads bucket：/agents/download 与
+    # /files/{id}/content 两个端点的既有读取契约都是这个 bucket
+    assert patched_env["put"][0][0] == "t1-downloads"
+    # 下载输出契约：输出为列表（多范本各一份），每项四字段供下游
+    # Message._extract_downloads / 前端下载与预览按钮使用
+    dls = json.loads(cpn.output("download"))
+    assert isinstance(dls, list) and len(dls) == 1
+    dl = dls[0]
     assert set(dl) == {"doc_id", "filename", "mime_type", "size"}
     assert dl["filename"] == "道路报告.docx"
     assert dl["mime_type"].endswith("wordprocessingml.document")
@@ -324,3 +355,76 @@ def test_invoke_async_query_fallback_sys_query(patched_env):
     finally:
         fill_template.executor._retrieve_all = orig
     assert seen["task_id"] == "canvas:node1"
+
+
+def test_invoke_async_multi_template_ids_two_outputs(patched_env, monkeypatch):
+    """选型 LLM 返回多个 template_ids → 每个范本各产一份成稿。"""
+    FakeService.rows = [
+        {"id": "t1", "name": "报告A", "description": "", "file_type": "docx"},
+        {"id": "t2", "name": "报告B", "description": "", "file_type": "docx"},
+    ]
+    FakeService.vers = {t: _ver([_ver_slot("项目名称")]) for t in ("t1", "t2")}
+
+    class MultiMdl:
+        async def async_chat(self, system, msgs):
+            return '{"template_ids": ["t2", "t1"]}'
+
+    monkeypatch.setattr(fill_template.executor, "_build_chat_mdl", lambda *_: MultiMdl())
+    cpn = _make_component(TemplateFillParam())
+    cpn._param.dataset_ids = ["kb1"]
+    import asyncio
+    asyncio.run(cpn._invoke_async())
+
+    dls = json.loads(cpn.output("download"))
+    assert [d["filename"] for d in dls] == ["报告B.docx", "报告A.docx"]
+    assert len(patched_env["put"]) == 2
+    assert all(bucket == "t1-downloads" for bucket, _doc, _blob in patched_env["put"])
+    assert "已选用 2 份范本" in cpn.output("content")
+    assert "报告A" in cpn.output("content") and "报告B" in cpn.output("content")
+
+
+def test_invoke_async_begin_field_param_direct(patched_env):
+    """Begin 表单字段与 param 模式填写点 key 同名 → 不经 LLM 直取字段值。"""
+    _stage_one_candidate(placeholders=[_ver_slot("金额", mode="param", addr="Sheet1!B2")])
+    cpn = _make_component(TemplateFillParam(),
+                          canvas=FakeCanvas(begin_fields={"金额": "1024.5"}))
+    cpn._param.dataset_ids = ["kb1"]
+    import asyncio
+    asyncio.run(cpn._invoke_async())
+    assert patched_env["gen_keys"] == []          # param 字段不进 LLM 产值
+    assert patched_env["render"][2] == {"金额": "1024.5"}
+
+
+def test_invoke_async_user_file_evidence_prepended(patched_env, monkeypatch):
+    """用户上传文件文本注入：预置片段插到每个 llm 槽证据首位；需求描述进背景。"""
+    _stage_one_candidate()
+    seen = {"chunks": {}, "background": None}
+
+    async def fake_generate_values(tenant_id, placeholders, chunks_by_key, params,
+                                   batch_size=10):
+        seen["chunks"] = {k: v["chunks"] for k, v in chunks_by_key.items()}
+        seen["background"] = params
+        return {it["key"]: f"值_{it['key']}" for it in placeholders}, set()
+
+    monkeypatch.setattr(fill_template.executor, "generate_values", fake_generate_values)
+    import asyncio
+    cpn = _make_component(TemplateFillParam(),
+                          canvas=FakeCanvas(file_content="这是上传的可研报告正文"))
+    cpn._param.dataset_ids = ["kb1"]
+    asyncio.run(cpn._invoke_async())
+
+    first = seen["chunks"]["项目名称"][0]
+    assert first["content"].startswith("[用户上传文件]")
+    assert "可研报告正文" in first["content"]
+    # 需求描述进产值 LLM 背景信息
+    assert seen["background"]["用户需求描述"] == "写一份道路工程情况报告"
+
+
+def test_invoke_async_user_file_absent_no_injection(patched_env):
+    """无上传文件（sys.file_content 为空）→ 证据不注入、正常走 KB 桩路径。"""
+    _stage_one_candidate()
+    import asyncio
+    cpn = _make_component(TemplateFillParam(), canvas=FakeCanvas(file_content=""))
+    cpn._param.dataset_ids = ["kb1"]
+    asyncio.run(cpn._invoke_async())
+    assert patched_env["render"][2]["项目名称"] == "值_项目名称"

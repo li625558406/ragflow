@@ -114,7 +114,10 @@ class DocGenerator(Message, ABC):
 
                 file_size = len(file_bytes)
                 doc_id = get_uuid()
-                settings.STORAGE_IMPL.put(self._canvas.get_tenant_id(), doc_id, file_bytes)
+                # bucket 必须是 {tenant_id}-downloads：/agents/download 端点经
+                # FileService.get_blob 只读这个 bucket，存裸租户 bucket 下载必 404
+                settings.STORAGE_IMPL.put(
+                    f"{self._canvas.get_tenant_id()}-downloads", doc_id, file_bytes)
 
                 logging.info(
                     "Successfully generated %s: %s (Size: %s bytes)",

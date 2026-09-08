@@ -1,6 +1,14 @@
 # CHANGE.md — 项目迭代记录
 
-## 2026-09-08 Agent 画布新增「范本填写」节点（TemplateFill，前后端，已部署）
+## 2026-09-08 范本填写节点升级：多范本各产一份成稿 + 三路数据注入 + C端成稿在线预览（前后端，未部署）
+
+**主题**：按用户需求「自己捞取适配的单个或多个范本，LLM 根据范本做 KB 检索 + 上传文件 + 用户输入内容做范本数据注入，最终输出到前端 UI 渲染写好的内容」（渲染复用 C 端流程页签现成 Word 渲染设施）。① **TemplateFill 节点多范本**（agent/component/template_fill.py）：选型 prompt 改为选出一个或多个适配范本（`{"template_ids": [...]}`，兼容旧单选契约；非法 JSON/编造 id/空列表仍必报错），每个选中范本独立走「检索→产值→渲染」各产一份成稿，`download` 输出改为**列表 JSON**（Message._extract_downloads 原生支持 list 契约），content 汇总逐份列出填充情况。② **三路数据注入**：KB 检索（原有）+ **用户上传文件**（canvas 已解析的 `sys.file_content`，截 2000 字预置片段插到每个填写点证据首位，优先于 KB 片段）+ **用户输入**（需求描述进产值 LLM 背景信息；**Begin 表单字段**标量输出自动收集——与 param 模式填写点 key 同名即不经 LLM 直取，其余作背景信息）。③ **产物落桶修正**：产物改存 `{tenant_id}-downloads` bucket——`/agents/download`（FileService.get_blob）与 `/files/{id}/content` 两个端点的既有读取契约都是这个 bucket。④ **下载契约修复（存量 bug）**：message.py `_extract_downloads` 给每条下载信息注入 `url`（`/api/v1/agents/download?id=&created_by=`）与 `name`（此前 dl.url/dl.name 全链路无人赋值，c-chat 下载按钮 href undefined 是坏的）；docs_generator.py 产物同步改存 `-downloads` bucket（原存裸租户 bucket，下载端点读不到必 404）。⑤ **前端成稿预览**（web/src/pages/c-chat/index.tsx）：下载条目重构为「文件名（点击预览）+ 下载」双操作——预览打开现成 ReviewPanel（`GET /files/{id}/content` 段落 JSON 只读渲染，与流程页签同款），下载走修复后的 url；use-send-message.ts downloads 类型补 url/name。
+
+**测试**：test_agent_fill_template_component.py 扩到 23 单测全绿（新增：多 template_ids 两份成稿、parse_selection 多选去重保序/空列表/脏类型、Begin 字段 param 直取、上传文件证据注入首位+需求描述进背景、无上传文件不注入、产物落 `-downloads` bucket 断言）；模板填写相关 5 套件 205 单测全绿无回归；前端改动文件 tsc 0 新增错误（3 个 c-chat 存量报错与本次无关，已对照基线确认）。
+
+**遗留**：前后端均未部署。部署清单：SCP `agent/component/template_fill.py` + `agent/component/message.py` + `agent/component/docs_generator.py` + 前端 build，docker restart；画布实测「范本填写 → Message」多范本链路；xlsx 产物在线预览暂走下载（file content 端点仅解析 docx/doc，xlsx 预览为原生降级）。
+
+
 
 **主题**：按用户需求「配置一个节点专门写范本：LLM 自行判断用哪个范本，按占位符 KB 检索填写，输出内容」（经确认选独立节点形态，配置时只选知识库不选范本）。① 后端新增 `agent/component/template_fill.py`（`TemplateFillParam` + `TemplateFill` 组件，命名约定自动注册零登记）：运行时拉本租户已发布范本 → LLM 选最合适的一个（唯一候选跳过选型省一次 LLM）→ 复用 executor 的 `_retrieve_all`/`generate_values`/`build_values` 确定性 pipeline（缺值留空待人工二次加工，与 2026-09-08 统一 AI 填写语义一致）→ docxtpl/openpyxl 渲染 → 产物入 STORAGE_IMPL 并输出 `download` JSON（契约同 DocGenerator，下游 Message 节点渲染下载按钮）+ `content` 汇总文本。**关键命名约束**：组件类刻意取 `TemplateFill` 而非 `FillTemplate`——Agent 节点的工具同样经 `component_class` 解析且 agent.component 优先于 agent.tools，C 端对话 FillTemplate 工具类（agent/tools/template_fill.py）会被同名组件遮蔽、破坏存量画布（已加防遮蔽断言验证）。② 前端 9 处登记：Operator 枚举 `TemplateFill`、initial values（query 默认 `{sys.query}` + dataset_ids）、NodeMap/RestrictedUpstreamMap、use-add-node、form-config-map、新建 template-fill-form（需求描述 PromptEditor + KB 多选复用 KnowledgeBaseFormField + 输出列表）、工具面板分组、图标 FilePen、zh.ts（flow.templateFill/templateFillDescription/templateFillQuery）；`use-get-begin-query` 的 download 输出引用过滤同步覆盖 TemplateFill（同 DocGenerator 契约）。
 

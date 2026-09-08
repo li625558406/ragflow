@@ -116,6 +116,10 @@ export interface IStreamState {
     filename: string;
     mime_type: string;
     size?: number;
+    /** 后端 Message._extract_downloads 注入：/api/v1/agents/download 下载地址 */
+    url?: string;
+    /** 展示名兜底（后端从 filename 派生） */
+    name?: string;
   }>;
   /** FanOut multi-lane streaming slots (pre-allocated on fanout_meta). */
   fanOutLanes?: {

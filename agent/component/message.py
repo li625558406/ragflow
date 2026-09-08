@@ -82,13 +82,28 @@ class Message(ComponentBase):
             except Exception:
                 return []
 
+        items: list[dict[str, Any]] = []
         if self._is_download_info(value):
-            return [value]
+            items = [value]
+        elif isinstance(value, list) and all(self._is_download_info(item) for item in value):
+            items = value
+        else:
+            return []
+        return [self._with_download_url(dict(item)) for item in items]
 
-        if isinstance(value, list) and all(self._is_download_info(item) for item in value):
-            return value
-
-        return []
+    def _with_download_url(self, info: dict[str, Any]) -> dict[str, Any]:
+        """补齐前端下载/预览所需字段：url 指向 agents/download 端点（该端点经
+        FileService.get_blob 读 {created_by}-downloads bucket，产物方须存同
+        bucket）；name 兜底自 filename（c-chat 下载按钮读 dl.name）。"""
+        doc_id = info.get("doc_id")
+        if doc_id and not info.get("url"):
+            tenant_id = self._canvas.get_tenant_id() if self._canvas else ""
+            if tenant_id:
+                info["url"] = (f"/api/v1/agents/download?id={doc_id}"
+                               f"&created_by={tenant_id}")
+        if not info.get("name") and info.get("filename"):
+            info["name"] = info["filename"]
+        return info
 
     def _stringify_message_value(
         self,
