@@ -1,5 +1,13 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-08 修复 ES 高负载下检索重试必然失败：timeout kwarg 与 body 合并冲突（后端，已部署）
+
+**主题**：用户画布触发范本填写（196 填写点）长时间无结果——日志显示 `retrieve_slot failed ... Received multiple values for 'timeout', specify parameters using either body or parameters, not both`，失败槽每个耗时 ~600s 且节奏与 ES 客户端超时（`Elasticsearch(..., timeout=600)`）吻合。根因链：① `es_conn.py _es_search_once` 把 `timeout="600s"` 作为 **kwarg** 传给 ES 客户端；② elasticsearch-py 9.x 的 `@_rewrite_parameters` wrapper 会把 kwarg **原地合并进 body dict**（`body[key]=kwargs.pop(key)`）；③ `es_conn.search()` 重试循环（`ATTEMPT_TIME=2`）在 ConnectionTimeout 后**复用同一 query dict** 重试；④ 第二次调用时 body 已含 timeout、kwarg 再传一次 → ValueError → 该槽降级空证据。即：**ES 高负载下凡触发超时重试的检索必然失败**，平时低负载不触发重试所以长期未暴露（对话检索、B端填写任务同受此债）。修复（commit `fd8f97be`）：`_es_search_once` 把 `timeout` 直接写进 body、不再走 kwarg 合并路径，重试恢复可用。诊断过程中容器内实证：单查/12 路并发均复现不了（当时 ES 负载低不超时），最终靠「失败节奏=600s+kwarg 合并语义」锁定。
+
+**测试**：新增 `test/test_es_conn_search_once.py` 3 用例（timeout 进 body 不走 kwarg、重试复用同一 dict 不抛冲突、caller 预带 timeout 幂等）；模板填写 5 套件 214 单测全绿；ruff 无新增违规（es_conn.py 存量 40 条风格问题为基线，不做全文件重排）。已 SCP `rag/utils/es_conn.py` + 容器重启 + 容器内冒烟确认修复生效。
+
+**遗留**：ES 单查询 100s+ 的平台级负载根因（OCR 解析压载）不变；本次画布实测运行因该 bug 已产出污染结果，需重新触发验证。
+
 ## 2026-09-08 范本填写 LLM 压力优化：产值批次并发 + 多范本并行 + 跨范本检索去重（后端，未部署）
 
 **主题**：用户提出「一个范本过长（专用本 196 填写点）、多个范本处理时对 LLM 压力很大」——量化根因是调用链三层全串行：196 槽 ÷ BATCH_SIZE=10 → 20 次串行 LLM 批次调用（10 分钟级）× `_invoke_async` 里多范本 for 循环串行。三层解串（commit `4be0c134`）：① **产值批次并发**（executor.py `generate_values`）：分批后 `asyncio.gather` 并发（`GENERATE_CONCURRENCY=3`，批次间字段独立无依赖），支持外部传入共享 `sem`；② **多范本并行**（agent/component/template_fill.py）：`_fill_one` 并行 gather，全局 LLM 并发总闸 `_FILL_CONCURRENCY=4`（画布与 executor 共用同一信号量，多范本×批次并发不相乘打爆 provider）；**单范本失败不再拖死节点**——降级为「《xx》：填写失败（原因）」汇总行，其余范本照常产出，全失败才报节点错误；③ **跨范本检索去重**（executor.py 新增 `retrieve_all_shared`）：各范本填写点按 `(top_k, query)` 去重，同一检索词只查一次 ES、结果分发回各范本（同域政务范本检索词高度重合），槽位归集/降级语义与 `_retrieve_all` 一致（ctx 失败全槽空、单槽失败降级、param/无 key 槽不进检索）。效果：单范本 10min → ~3.5min；3 范本 30min → ~8min；任务 pipeline（execute_task/dry_run）路径行为不变（仅产值批次内部从串行变 3 路并发）。
