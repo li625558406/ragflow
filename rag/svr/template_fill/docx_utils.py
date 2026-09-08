@@ -1,6 +1,8 @@
 """docx 模板工具：段落遍历（含表格内段落）、填写点候选提取、锚文本→占位符替换。
 
-addr 定位约定：正文段落 para:<idx>；表格内段落 cell:<row>:<col>:<para_idx>。
+addr 定位约定：正文段落 para:<idx>；表格内段落 cell:<tbl_no>:<row>:<col>:<para_idx>
+（tbl_no 为正文第几个表格，0 起）。缺 tbl_no 时多表格文档的 cell(r,c,p) 会跨表撞号
+（不同表格同位置段落共享 addr，validate/render 按 addr 查到的段落错位），故必须带表序号。
 index 为全文档扁平序号，与 addr 一一对应（合并单元格会在多处重复出现同一 addr，
 替换按"锚文本存在才替换"幂等，重复 addr 无副作用）。
 
@@ -34,6 +36,7 @@ def _build_addr_map(doc):
     addr_map = {}
     items = []
     idx = 0
+    tbl_no = -1
     for block in doc.element.body.iterchildren():
         if block.tag == qn("w:p"):
             p = Paragraph(block, doc)
@@ -41,11 +44,12 @@ def _build_addr_map(doc):
             items.append({"index": idx, "text": p.text, "addr": f"para:{idx}"})
             idx += 1
         elif block.tag == qn("w:tbl"):
+            tbl_no += 1
             tbl = Table(block, doc)
             for r, row in enumerate(tbl.rows):
                 for c, cell in enumerate(row.cells):
                     for pi, p in enumerate(cell.paragraphs):
-                        addr = f"cell:{r}:{c}:{pi}"
+                        addr = f"cell:{tbl_no}:{r}:{c}:{pi}"
                         addr_map[addr] = p
                         items.append({"index": idx, "text": p.text, "addr": addr})
                         idx += 1

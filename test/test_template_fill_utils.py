@@ -35,7 +35,7 @@ def test_iter_docx_paragraphs(sample_docx):
     # 表格内段落扁平编号继续递增
     assert "日期" in texts
     cell_items = [it for it in items if it["addr"].startswith("cell:")]
-    assert any(it["addr"] == "cell:1:1:0" for it in cell_items)
+    assert any(it["addr"] == "cell:0:1:1:0" for it in cell_items)
 
 
 def test_extract_docx_candidates(sample_docx):
@@ -44,21 +44,21 @@ def test_extract_docx_candidates(sample_docx):
     # 普通段落（无填写特征）被过滤
     assert all("无填写点" not in c["text"] for c in cands)
     assert any("项目名称" in c["text"] for c in cands)
-    assert any(c["addr"] == "cell:1:1:0" for c in cands)
+    assert any(c["addr"] == "cell:0:1:1:0" for c in cands)
 
 
 def test_apply_docx_placeholders(sample_docx):
     from rag.svr.template_fill.docx_utils import apply_docx_placeholders
     out = apply_docx_placeholders(sample_docx, [
         {"addr": "para:0", "anchor": "____________", "key": "project_name"},
-        {"addr": "cell:1:1:0", "anchor": "____年____月____日", "key": "sign_date"},
+        {"addr": "cell:0:1:1:0", "anchor": "____年____月____日", "key": "sign_date"},
     ])
     from rag.svr.template_fill.docx_utils import iter_docx_paragraphs
     texts = [it["text"] for it in iter_docx_paragraphs(out)]
     assert "{{project_name}}" in texts[0]
     # cell:1:1:0 扁平序号 = 2 正文段 + 4 单元格段中排第 6（idx 5），按 addr 定位更稳健
     by_addr = {it["addr"]: it["text"] for it in iter_docx_paragraphs(out)}
-    assert "{{sign_date}}" in by_addr["cell:1:1:0"]
+    assert "{{sign_date}}" in by_addr["cell:0:1:1:0"]
     # 原 anchor 消失
     assert "____________" not in texts[0]
 
@@ -83,6 +83,41 @@ def test_apply_docx_empty_replacements_returns_original(sample_docx):
 
 
 # ---------- 对抗性边界用例 ----------
+
+def test_docx_multi_table_same_position_addr_unique():
+    """回归：addr 曾缺表序号（cell:<r>:<c>:<pi>），两个表格同 (r,c,p) 段落撞号——
+    parse 按 index 选了表 A 的段落，validate/渲染按 addr 查到表 B 的段落，
+    锚文本错位导致校验失败/替换落错表。addr 必须带表序号保证全局唯一。"""
+    doc = Document()
+    doc.add_paragraph("标题：")
+    for i, tbl_texts in enumerate([["5.工程特征：", ""], ["2）道路工程：", ""]]):
+        tbl = doc.add_table(rows=1, cols=2)
+        for c, text in enumerate(tbl_texts):
+            tbl.rows[0].cells[c].paragraphs[0].text = text
+        if i == 0:
+            doc.add_paragraph("中间分隔段")
+    buf = io.BytesIO()
+    doc.save(buf)
+    data = buf.getvalue()
+
+    from rag.svr.template_fill.docx_utils import iter_docx_paragraphs
+    items = iter_docx_paragraphs(data)
+    addrs = [it["addr"] for it in items if it["addr"].startswith("cell:")]
+    # 两表同位置段落 addr 不同
+    assert len(addrs) == len(set(addrs))
+    by_text = {it["text"]: it["addr"] for it in items if it["text"]}
+    assert by_text["5.工程特征："] == "cell:0:0:0:0"
+    assert by_text["2）道路工程："] == "cell:1:0:0:0"
+
+    # 替换必须落到表 0 的段落，表 1 同位置不受影响
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders
+    out = apply_docx_placeholders(data, [
+        {"addr": "cell:0:0:0:0", "anchor": "5.工程特征：", "key": "engineering_characteristics"},
+    ])
+    out_texts = {it["addr"]: it["text"] for it in iter_docx_paragraphs(out)}
+    assert out_texts["cell:0:0:0:0"] == "{{engineering_characteristics}}"
+    assert out_texts["cell:1:0:0:0"] == "2）道路工程："
+
 
 def test_apply_docx_empty_document_no_crash():
     """空文档（无正文段落/表格）不崩溃。"""
@@ -182,12 +217,12 @@ def test_apply_docx_dirty_entry_missing_fields_skipped(sample_docx):
         {"addr": "para:0", "anchor": "____________"},            # 缺 key
         {"anchor": "____年", "key": "no_addr"},                  # 缺 addr
         {"addr": "para:0", "anchor": "", "key": "empty_anchor"},  # anchor 为空
-        {"addr": "cell:1:1:0", "anchor": "____年____月____日", "key": "sign_date"},
+        {"addr": "cell:0:1:1:0", "anchor": "____年____月____日", "key": "sign_date"},
     ])
     items = iter_docx_paragraphs(out)
     texts = [it["text"] for it in items]
     by_addr = {it["addr"]: it["text"] for it in items}
-    assert "{{sign_date}}" in by_addr["cell:1:1:0"]
+    assert "{{sign_date}}" in by_addr["cell:0:1:1:0"]
     assert "{{no_anchor}}" not in "".join(texts)
     assert "{{no_addr}}" not in "".join(texts)
     assert "{{empty_anchor}}" not in "".join(texts)
