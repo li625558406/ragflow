@@ -18,13 +18,13 @@
 
 **遗留**：ES 单查询 100s+ 的平台级负载根因（OCR 解析压载）不变；本次画布实测运行因该 bug 已产出污染结果，需重新触发验证。
 
-## 2026-09-08 范本填写 LLM 压力优化：产值批次并发 + 多范本并行 + 跨范本检索去重（后端，未部署）
+## 2026-09-08 范本填写 LLM 压力优化：产值批次并发 + 多范本并行 + 跨范本检索去重（后端，已部署）
 
 **主题**：用户提出「一个范本过长（专用本 196 填写点）、多个范本处理时对 LLM 压力很大」——量化根因是调用链三层全串行：196 槽 ÷ BATCH_SIZE=10 → 20 次串行 LLM 批次调用（10 分钟级）× `_invoke_async` 里多范本 for 循环串行。三层解串（commit `4be0c134`）：① **产值批次并发**（executor.py `generate_values`）：分批后 `asyncio.gather` 并发（`GENERATE_CONCURRENCY=3`，批次间字段独立无依赖），支持外部传入共享 `sem`；② **多范本并行**（agent/component/template_fill.py）：`_fill_one` 并行 gather，全局 LLM 并发总闸 `_FILL_CONCURRENCY=4`（画布与 executor 共用同一信号量，多范本×批次并发不相乘打爆 provider）；**单范本失败不再拖死节点**——降级为「《xx》：填写失败（原因）」汇总行，其余范本照常产出，全失败才报节点错误；③ **跨范本检索去重**（executor.py 新增 `retrieve_all_shared`）：各范本填写点按 `(top_k, query)` 去重，同一检索词只查一次 ES、结果分发回各范本（同域政务范本检索词高度重合），槽位归集/降级语义与 `_retrieve_all` 一致（ctx 失败全槽空、单槽失败降级、param/无 key 槽不进检索）。效果：单范本 10min → ~3.5min；3 范本 30min → ~8min；任务 pipeline（execute_task/dry_run）路径行为不变（仅产值批次内部从串行变 3 路并发）。
 
 **测试**：executor 新增 5 用例（共享检索去重/top_k 入键/ctx 失败全降级/空 kb_ids 不加载 ctx、批次并发峰值≥2+共享 sem 钉 1、空占位符不建模型）；画布组件新增 3 用例（单范本失败降级汇总行、全失败报错、共享检索只调一次）；修正批次顺序敏感断言（并发后完成顺序不定）；模板填写 5 套件 214 单测全绿，ruff 0 新增违规（存量 3 项为基线）。
 
-**遗留**：未部署（SCP `rag/svr/template_fill/executor.py` + `agent/component/template_fill.py` + 容器重启）；LLM provider 侧压力峰值从 1 路变 4 路（DeepSeek/Qwen 速率上限内）；ES 单查 100s 的平台级负载根因不变（见上条）。
+**遗留**：已部署（SCP `rag/svr/template_fill/executor.py` + `agent/component/template_fill.py` + 容器重启，冒烟 `GENERATE_CONCURRENCY: 3` 生效）；LLM provider 侧压力峰值从 1 路变 4 路（DeepSeek/Qwen 速率上限内）；ES 单查 100s 的平台级负载根因不变（见上条）。
 
 ## 2026-09-08 范本填写检索性能优化：并发检索 + 上下文复用 + KB 去重（后端，已部署）
 
@@ -34,13 +34,13 @@
 
 **遗留**：ES 单查询 100s+ 的根因是 OCR/DeepDOC 解析任务并发压载+KB 体量大，属平台级负载问题，本次只做并发缓解；产值 LLM 批次（196 槽 / 10 ≈ 20 次串行调用）仍需 10 分钟级，如仍慢可再并发化。
 
-## 2026-09-08 范本填写节点升级：多范本各产一份成稿 + 三路数据注入 + C端成稿在线预览（前后端，未部署）
+## 2026-09-08 范本填写节点升级：多范本各产一份成稿 + 三路数据注入 + C端成稿在线预览（前后端，已部署）
 
 **主题**：按用户需求「自己捞取适配的单个或多个范本，LLM 根据范本做 KB 检索 + 上传文件 + 用户输入内容做范本数据注入，最终输出到前端 UI 渲染写好的内容」（渲染复用 C 端流程页签现成 Word 渲染设施）。① **TemplateFill 节点多范本**（agent/component/template_fill.py）：选型 prompt 改为选出一个或多个适配范本（`{"template_ids": [...]}`，兼容旧单选契约；非法 JSON/编造 id/空列表仍必报错），每个选中范本独立走「检索→产值→渲染」各产一份成稿，`download` 输出改为**列表 JSON**（Message._extract_downloads 原生支持 list 契约），content 汇总逐份列出填充情况。② **三路数据注入**：KB 检索（原有）+ **用户上传文件**（canvas 已解析的 `sys.file_content`，截 2000 字预置片段插到每个填写点证据首位，优先于 KB 片段）+ **用户输入**（需求描述进产值 LLM 背景信息；**Begin 表单字段**标量输出自动收集——与 param 模式填写点 key 同名即不经 LLM 直取，其余作背景信息）。③ **产物落桶修正**：产物改存 `{tenant_id}-downloads` bucket——`/agents/download`（FileService.get_blob）与 `/files/{id}/content` 两个端点的既有读取契约都是这个 bucket。④ **下载契约修复（存量 bug）**：message.py `_extract_downloads` 给每条下载信息注入 `url`（`/api/v1/agents/download?id=&created_by=`）与 `name`（此前 dl.url/dl.name 全链路无人赋值，c-chat 下载按钮 href undefined 是坏的）；docs_generator.py 产物同步改存 `-downloads` bucket（原存裸租户 bucket，下载端点读不到必 404）。⑤ **前端成稿预览**（web/src/pages/c-chat/index.tsx）：下载条目重构为「文件名（点击预览）+ 下载」双操作——预览打开现成 ReviewPanel（`GET /files/{id}/content` 段落 JSON 只读渲染，与流程页签同款），下载走修复后的 url；use-send-message.ts downloads 类型补 url/name。
 
 **测试**：test_agent_fill_template_component.py 扩到 23 单测全绿（新增：多 template_ids 两份成稿、parse_selection 多选去重保序/空列表/脏类型、Begin 字段 param 直取、上传文件证据注入首位+需求描述进背景、无上传文件不注入、产物落 `-downloads` bucket 断言）；模板填写相关 5 套件 205 单测全绿无回归；前端改动文件 tsc 0 新增错误（3 个 c-chat 存量报错与本次无关，已对照基线确认）。
 
-**遗留**：前后端均未部署。部署清单：SCP `agent/component/template_fill.py` + `agent/component/message.py` + `agent/component/docs_generator.py` + 前端 build，docker restart；画布实测「范本填写 → Message」多范本链路；xlsx 产物在线预览暂走下载（file content 端点仅解析 docx/doc，xlsx 预览为原生降级）。
+**遗留**：已部署（2026-09-08 全量部署：SCP template_fill/message/docs_generator + 前端 build + 容器重启冒烟通过）。待画布实测「范本填写 → Message」多范本链路；xlsx 产物在线预览暂走下载（file content 端点仅解析 docx/doc，xlsx 预览为原生降级）。
 
 
 
@@ -66,33 +66,33 @@
 
 **遗留**：旧格式 addr 的存量占位符无自动迁移（当前数据无此类 addr，若未来发现旧导出数据需人工重识别）。
 
-## 2026-09-08 上传模板改为「上传即走」后台 AI 识别 + 列表识别状态（前后端，均未部署）
+## 2026-09-08 上传模板改为「上传即走」后台 AI 识别 + 列表识别状态（前后端，已部署）
 
 **主题**：按用户需求「上传执行到下一步时，可在列表看到 AI 识别的进度或状态」（经确认选择后台识别方案）：① 后端 `tpl_template` 加 `detect_status`（none|running|done|failed）+ `detect_error` 字段（db_models.py 含 migrate_db 迁移）；`TplTemplateService.set_detect_status` 状态流转方法；新增 `POST /template/fill/detect-async` 端点（template_api.py）——daemon 线程跑 LLM 识别，成功自动 `save_placeholders` 落库，所有失败路径（含 0 条识别结果）必置 failed 防卡 running；防重入双保险（进程内 `_detecting` set 为准 + DB 状态展示，进程重启自愈）；仅对「无已保存填写点」模板开放，防覆盖人工配置。② 前端：上传向导重构为单面板（upload-wizard.tsx 整体重写）——文件队列串行「上传 → 触发后台识别」后自动关闭弹框，不再等 LLM；列表页状态列叠加识别徽标（AI 识别中/已识别/AI 识别失败，失败悬浮显原因），存在识别中行时 3s 函数式轮询自动停止（use-template-fill-request.ts）；移除批量上传按钮与弹框（batch-upload-dialog.tsx 已删）。后端 commit `90d1f057`（含 12 个新单测，4 套件全绿）。
 
 **测试**：后端 pytest 4 套件全过（含线程启动失败自愈、幂等防重、任意失败路径 `_detecting` 必回收等对抗用例）；前端改动文件 tsc/ESLint 0 error；Playwright 实测本地上传链路（上传成功、detect-async 因后端未部署返回 405 → 向导按设计标记失败并关闭，预期行为），测试模板已删除清理。
 
-**遗留**：前后端均未部署——需 SCP `template_api.py` / `template_fill_service.py` / `db_models.py` + docker restart（触发 tpl_template 加列迁移）+ 前端 build；部署后回归完整「上传 → 列表识别中 → 已识别 → 详情确认」链路。详情页同步 detect 接口保留（已有填写点模板用手动识别）。
+**遗留**：已部署（2026-09-08 全量部署确认：服务器文件 md5 一致、tpl_template 迁移列 `detect_status`/`detect_error` 已生成、容器重启）。详情页同步 detect 接口保留（已有填写点模板用手动识别）。
 
-## 2026-09-08 上传向导多文件逐个走完整识别流程（纯前端，未 build 部署）
+## 2026-09-08 上传向导多文件逐个走完整识别流程（纯前端，已 build 部署）
 
 **主题**：按用户要求「单个/多个文件上传流程必须一致，下一步都是 AI 识别」——上传向导多选文件不再转交批量上传弹框，改为向导内维护文件队列：每个文件依次走「上传 → AI 识别 → 确认保存」完整三步，保存一个自动进入下一个（重置模板名/填写点/识别状态并直接开始上传+识别），步骤条显示「第 x/N 个文件」，Step1 显示文件列表（可单个移除），多文件时模板名只对第一个生效、其余自动取文件名，Step3 按钮改「保存并继续」。单个文件流程保持不变；「批量上传」弹框保留为独立入口（仅建草稿），移除 initialFiles 转交死代码。commit `450636fc`。
 
-**测试**：tsc/ESLint 0 error；Playwright 浏览器端到端实测 2 文件全流程通过（Step1 文件列表 → 第 1/2 个识别保存 → 自动进第 2/2 个并完成识别 → 保存后关闭并跳详情），测试模板已批量删除清理。**遗留**：未 build 部署。
+**测试**：tsc/ESLint 0 error；Playwright 浏览器端到端实测 2 文件全流程通过（Step1 文件列表 → 第 1/2 个识别保存 → 自动进第 2/2 个并完成识别 → 保存后关闭并跳详情），测试模板已批量删除清理。**遗留**：已随 2026-09-08 前端 build 部署。
 
-## 2026-09-08 范本库详情页补 AI 识别按钮（纯前端，未 build 部署）
+## 2026-09-08 范本库详情页补 AI 识别按钮（纯前端，已 build 部署）
 
 **主题**：批量上传只建草稿，原设计要求到详情页完成「AI 识别→确认保存→发布」，但详情页漏了识别入口（识别只在上传向导里有），批量上传的草稿只能手动加填写点。补齐：详情页「填写点配置」卡片加「AI 识别」按钮（template-fill/detail.tsx），复用既有 detect 接口（后端零改动）+ 上传向导同款合并规则——建议行在前、手动行（无 addr）在后、key 重复的手动行丢弃；识别中按钮禁用显「识别中…」；0 条识别结果 warning、失败 error 兜底。已提交 commit `ce2173e8`。
 
-**测试**：tsc/ESLint 0 error。**遗留**：未浏览器实测识别链路；未 build 部署。
+**测试**：tsc/ESLint 0 error。**遗留**：未浏览器实测识别链路；已随 2026-09-08 前端 build 部署。
 
-## 2026-09-08 范本库批量上传模板（纯前端，未 build 部署）
+## 2026-09-08 范本库批量上传模板（纯前端，已 build 部署；后续迭代中弹框被移除重构）
 
 **主题**：范本库列表页新增「批量上传」入口（batch-upload-dialog.tsx）：多选 .docx/.doc/.xlsx 文件（单次上限 20 个、单个 ≤20MB），逐个展示文件名/大小，顺序复用既有 `POST /template/fill/upload` 端点逐个创建草稿模板（名称默认取文件名去扩展），逐条展示上传中/成功/失败状态与失败原因，单个失败不中断后续。AI 识别填写点为逐模板 LLM+人工确认环节，刻意不批量；上传完成后需逐个进详情走「AI 识别→确认保存→发布」。后端零改动。
 
-**测试**：tsc/ESLint 0 error。**遗留**：未 build 部署服务器（用户本地 dev 前端可直接联调）。
+**测试**：tsc/ESLint 0 error。**遗留**：已随 2026-09-08 前端 build 部署。
 
-## 2026-09-08 范本库列表批量删除 + 单个删除（后端已部署，前端待 build）
+## 2026-09-08 范本库列表批量删除 + 单个删除（前后端，已部署）
 
 **主题**：范本库列表页新增删除能力。① 后端新增 `POST /api/v1/template/fill/batch-delete`（template_api.py）：ids 非空字符串数组校验 + 单次上限 50，逐个复用 `TplTemplateService.delete_template`（守卫/事务/TOCTOU 行锁全复用单删），部分失败不影响其余，返回 `{deleted: [...], failed: [{id, message}]}`；单个删除复用既有 `DELETE /template/fill/<id>` 端点。② 前端：api.ts 补 `deleteTemplateFill`/`batchDeleteTemplateFill` URL；hooks 新增 `useDeleteTemplateFill`/`useBatchDeleteTemplateFill`（成功后失效列表缓存）；列表页加全选/行复选框列、行内「删除」按钮（仅 draft/disabled 可删，与后端守卫一致）、选中后顶部浮现「批量删除(N)」按钮，均走 `ConfirmDeleteDialog` 二次确认；搜索/筛选/翻页时清空选中；批量删除部分失败时 toast 汇总展示首条失败原因。
 
@@ -100,9 +100,9 @@
 
 **测试**：后端 test_template_api_routes.py 新增 10 用例（路由注册、非法 ids 8 组参数化、超 50 上限、部分失败、全成功、事务裸查询源码断言），4 套件 165 单测全绿；共享桩 `_FakeJsonRequest.get_json` 兼容 `silent=True` 签名。前端改动文件 tsc/ESLint 0 error。
 
-**遗留**：前端未 build 部署（复选框/删除按钮在旧构建里不存在；用户本地前端 dev 连服务器后端可直接联调）。已发布/有填写任务记录的模板按设计不可删（守卫在 service 层）。
+**遗留**：前端已随 2026-09-08 build 部署。已发布/有填写任务记录的模板按设计不可删（守卫在 service 层）。
 
-## 2026-09-07 模板填写 P2+P3 实施完成（执行引擎 + 任务闭环 + C端对话工具，未部署）
+## 2026-09-07 模板填写 P2+P3 实施完成（执行引擎 + 任务闭环 + C端对话工具，已部署）
 
 **主题**：模板填写系统 P2+P3 全量落地（feat/unified-crawler-framework 分支，23 commits）：① 依赖修正（docxtpl 主依赖 + openpyxl 升主依赖）；② P1 遗留债 4 项全部消化（published 保存填写点自动升 v2、模板状态机白名单、prompt 注入面清洗、模板删除端点含事务+行锁防 TOCTOU）；③ 执行引擎 `rag/svr/template_fill/executor.py`——检索层（逐槽 KB 检索 + 租户/Embedding 一致性校验 + 部分命中拒用）、生成层（LLM 批量产 JSON ≤10 字段/批、prompt 全注入面清洗截断、_apply_constraints 兜底、JSON 解析两级 fallback）、编排层（`build_values` 待人工合成 + `execute_task` 六步 CAS 状态机 pipeline：pending→retrieving→generating→rendering→done/partial/failed，按 task.template_version_id 钉住版本）；④ 渲染层 renderer.py（docxtpl Word 模板渲染 + openpyxl Excel 坐标直写，manual/not_found 落【待人工】标记）；⑤ 填写任务 REST 6 端点（发起[后台 daemon 线程+防重入+spawn 自愈]/列表/详情/重试/下载/测试填写 test-fill 试跑直返不落任务）；⑥ B端前端：任务列表页（状态筛选+3s 函数式轮询+下载/重试）、任务详情抽屉（逐格值+单元格状态+检索证据溯源）、发起填写对话框（KB 多选+params 键值对）、测试填写对话框；⑦ C端 agent 画布 FillTemplate 工具（list_templates/fill/status 三 action，fill 同步轮询 50s，自动发现注册验证通过）。
 
@@ -110,9 +110,9 @@
 
 **遗留（登记为后续任务）**：① 每租户运行中任务数无上限（可刷 create 耗 LLM 额度）；② 进程崩溃后中间态任务无 sweeper 回收（永久卡 running）；③ create-task-dialog 与 test-fill-dialog KB 选择约 150 行重复；④ 试跑同步等待大模板可能超 nginx proxy_read_timeout 60s；⑤ B端 agent 编辑器组件面板未登记 FillTemplate 节点（需前端 Operator enum + form-config 登记，或通过导入 DSL JSON 挂载）；⑥ constraints 约束字段只有消费端（_apply_constraints）没有生产端（detector 不产出、前端表单无输入），约束兜底形同虚设；⑦ 任务详情抽屉用范本 latest 版本 placeholders 做映射而任务钉 template_version_id，升版后历史任务行集合可能错位（仅显示层）；⑧ top_k 默认值三处不一致（前端新行 5 / detector 6 / executor 6），无功能影响。
 
-**待办（部署时）**：容器 `pip install "docxtpl>=0.16.5,<0.21.0" "openpyxl>=3.1.5,<4.0.0"`；后端成套 SCP（template_fill_service.py / template_api.py / executor.py / renderer.py / agent/tools/template_fill.py）+ 容器重启 + 冒烟 import；前端 build 部署；用户在 C端 agent 画布挂 FillTemplate 节点（DSL 存 DB，代码无法代劳）。P4 flow 模板填写节点未做。
+**待办（部署时）**：已完成（2026-09-08 核验：容器 docxtpl/openpyxl 已装，template_fill_service/template_api/executor/renderer/agent tools 与服务器 md5 一致，容器重启冒烟通过）。P4 flow 模板填写节点未做。
 
-## 2026-09-07 范本库改名 + 旧版 .doc 支持 + 上传控件样式优化（未部署）
+## 2026-09-07 范本库改名 + 旧版 .doc 支持 + 上传控件样式优化（已部署）
 
 **主题**：模板填写 P1 三项增量：① 「模板库」UI 文案统一改为「范本库」（navbar `zh.ts:templateFill` key + 列表页标题，不碰 en.ts）；② 上传支持旧版 .doc——后端 LibreOffice（`soffice --headless`，独立 UserInstallation profile 防并发锁，timeout 60s）转成 .docx 后以 docx 形态进入全链路（candidates/替换/预览/下载），转换失败中文兜底提示，转换产物复查 20MB 上限；③ 上传向导 Step1 文件选择控件重构——隐藏 input + 虚线拖拽风格选择区（图标+主辅文案），已选态展示文件名/大小/重新选择/清除按钮。
 
@@ -120,7 +120,7 @@
 
 **测试**：后端 65 单测全过（新增 .doc 后缀判定/转换失败/超限用例，容器无 soffice 场景 monkeypatch subprocess）、ruff 0 违规；tsc 本功能文件 0 error。经合并审查（needs-fixes → 修复 → 复核 APPROVED）。
 
-**遗留**：**本条三项改动 + 后端 .doc 支持均未部署服务器**（后端 template_api.py 需 SCP + 容器重启；前端需重新 build）；上传 .doc 依赖容器内 LibreOffice（soffice 已确认存在）。
+**遗留**：已部署（2026-09-08 核验：template_api.py 与服务器 md5 一致，前端已随最新 build 上线）；上传 .doc 依赖容器内 LibreOffice（soffice 已确认存在，LD_LIBRARY_PATH 修复已在服务器生效）。
 
 ## 2026-09-07 模板填写系统 P1 实施完成（表 + API + B端模板库页面）
 
