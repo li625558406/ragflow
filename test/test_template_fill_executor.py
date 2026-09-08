@@ -703,7 +703,10 @@ def test_generate_values_on_progress_reports_batch_completion(monkeypatch):
         on_progress=lambda done, total: events.append((done, total))))
     assert vals == {f"k{i}": "v" for i in range(5)} and missing == set()
     assert events[-1] == (5, 5)
-    assert sorted(e[0] for e in events) == [2, 4, 5]   # 3 批 → 3 次回调
+    # 3 批（2+2+1）→ 3 次回调；as_completed 完成顺序不定，累计 done 序列
+    # 随之变化（(2,4,5)/(2,3,5)/(1,3,5)），断言只锁「次数 + 单调递增到 total」
+    assert len(events) == 3
+    assert sorted(e[0] for e in events) in ([2, 4, 5], [2, 3, 5], [1, 3, 5])
     assert all(e[1] == 5 for e in events)
 
 

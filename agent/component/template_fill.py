@@ -69,6 +69,10 @@ _BEGIN_FIELD_PROMPT_MAX = 200
 _FILL_CONCURRENCY = 4
 
 
+class _FillCancelled(Exception):
+    """画布取消中断填写：不落 failed 事件，由 invoke 统一推 cancelled。"""
+
+
 def build_candidates(rows: list[dict], latest_of) -> list[dict]:
     """已发布范本行 → 选型候选（纯逻辑，latest_of 注入便于单测）。
     最新版本缺失或未配置填写点的范本跳过（选了也填不了）。"""
@@ -129,6 +133,15 @@ class TemplateFillParam(ComponentParamBase):
 
 class TemplateFill(ComponentBase):
     component_name = "TemplateFill"
+
+    def __init__(self, canvas, id, param: ComponentParamBase):
+        super().__init__(canvas, id, param)
+        # 进度事件队列：canvas.run 心跳循环 drain 后经 decorate 变同名 SSE
+        # （FanOut 同款机制；canvas drain 已泛化为任意带 _event_queue 的组件）
+        self._event_queue: asyncio.Queue = asyncio.Queue()
+
+    def _push_progress(self, data: dict) -> None:
+        self._event_queue.put_nowait({"event": "template_fill_progress", "data": data})
 
     def _resolve_query(self) -> str:
         """需求描述解析：按变量引用替换（UserFillUp 同款 partial 适配），空回退 sys.query。"""
@@ -192,11 +205,12 @@ class TemplateFill(ComponentBase):
         return text.strip()[:_USER_FILE_EVIDENCE_MAX]
 
     async def _fill_one(self, tenant_id: str, cand: dict, chunks_by_key: dict, query: str,
-                        begin_fields: dict, user_file_text: str, sem: asyncio.Semaphore
-                        ) -> tuple[dict, dict, int]:
+                        begin_fields: dict, user_file_text: str, sem: asyncio.Semaphore,
+                        on_progress=None) -> tuple[dict, dict, int]:
         """对单个选中范本走完整填写 pipeline：LLM 产值 → param 直取 → 渲染。
         检索已由 _invoke_async 跨范本共享完成（chunks_by_key 传入）；sem 为全局
-        LLM 并发闸（多范本并行 × 批次并发共用）。返回 (download_info, cell_status, filled_count)。"""
+        LLM 并发闸（多范本并行 × 批次并发共用）；on_progress 透传 executor
+        批次产值进度回调 (done, total)。返回 (download_info, cell_status, filled_count)。"""
         placeholders = cand["_placeholders"]
 
         # ③ 用户上传文件作为填写证据：预置片段插到每槽证据首位（优先于 KB 片段）
@@ -218,7 +232,8 @@ class TemplateFill(ComponentBase):
         if query:
             background["用户需求描述"] = query[:_BEGIN_FIELD_PROMPT_MAX]
         generated, missing = await executor.generate_values(
-            tenant_id, llm_placeholders, llm_chunks, background, sem=sem)
+            tenant_id, llm_placeholders, llm_chunks, background, sem=sem,
+            on_progress=on_progress)
         executor._merge_param_values(placeholders, generated, missing, begin_fields)
         values, cell_status = executor.build_values(placeholders, generated)
 
@@ -242,7 +257,9 @@ class TemplateFill(ComponentBase):
         return ({
             "doc_id": doc_id, "filename": filename,
             "mime_type": _MIME_BY_TYPE.get(ext, "application/octet-stream"),
-            "size": len(out)}, cell_status, filled)
+            "size": len(out),
+            "url": f"/api/v1/agents/download?id={doc_id}&created_by={tenant_id}",
+            "name": filename}, cell_status, filled)
 
     async def _invoke_async(self, **kwargs):
         if self.check_if_canceled("TemplateFill processing"):
@@ -259,6 +276,9 @@ class TemplateFill(ComponentBase):
         if not candidates:
             raise ValueError("暂无可用的已发布范本，请先在范本库发布并配置填写点")
         chosen = await self._select_templates(tenant_id, candidates, query)
+        self._push_progress({"stage": "selected", "templates": [
+            {"template_id": c["template_id"], "name": c["name"],
+             "slot_count": len(c["_placeholders"])} for c in chosen]})
         begin_fields = self._begin_fields()
         user_file_text = self._user_file_evidence()
 
@@ -269,13 +289,47 @@ class TemplateFill(ComponentBase):
             task_id=f"canvas:{self._id}")
 
         # ③④ 多范本并行填写（LLM 总并发钉在 _FILL_CONCURRENCY）；单范本失败
-        # 不拖死整节点，降级为汇总行提示，其余范本照常产出
+        # 不拖死整节点，降级为汇总行提示，其余范本照常产出；每范本推
+        # filling/filled/failed 进度事件（filling total 只数 llm 槽，param 不计）
         sem = asyncio.Semaphore(_FILL_CONCURRENCY)
+
+        async def _fill_and_notify(cand: dict, chunks: dict):
+            tid, name = cand["template_id"], cand["name"]
+            if self.check_if_canceled("TemplateFill filling"):
+                raise _FillCancelled()
+            llm_total = sum(1 for it in cand["_placeholders"]
+                            if executor._norm_fill_mode(it) == "llm" and it.get("key"))
+            self._push_progress({"stage": "filling", "template_id": tid, "name": name,
+                                 "done": 0, "total": llm_total})
+
+            def _on_gen_progress(done: int, total: int):
+                self._push_progress({"stage": "filling", "template_id": tid,
+                                     "name": name, "done": done, "total": total})
+
+            try:
+                dl, cell_status, filled = await self._fill_one(
+                    tenant_id, cand, chunks, query, begin_fields,
+                    user_file_text, sem, on_progress=_on_gen_progress)
+            except _FillCancelled:
+                raise
+            except Exception as e:
+                logger.warning("TemplateFill %s fill failed: %s", tid, e)
+                self._push_progress({"stage": "failed", "template_id": tid,
+                                     "name": name, "error": str(e)})
+                return (cand, None, {}, 0, e)
+            self._push_progress({"stage": "filled", "template_id": tid,
+                                 "name": name, "download": dl})
+            return (cand, dl, cell_status, filled, None)
+
         results = await asyncio.gather(
-            *[self._fill_one(tenant_id, cand, chunks, query, begin_fields,
-                             user_file_text, sem)
+            *[_fill_and_notify(cand, chunks)
               for cand, chunks in zip(chosen, chunks_list)],
             return_exceptions=True)
+
+        if self.check_if_canceled("TemplateFill after gather") or any(
+                isinstance(r, _FillCancelled) for r in results):
+            self._push_progress({"stage": "cancelled"})
+            return
 
         # download 输出为列表（Message._extract_downloads 原生支持 list 契约，
         # 前端逐条渲染下载/预览）
@@ -285,21 +339,28 @@ class TemplateFill(ComponentBase):
             if isinstance(res, BaseException):
                 summary_lines.append(f"《{cand['name']}》：填写失败（{res}）。")
                 continue
-            dl, _cell_status, filled = res
+            _cand, dl, _cell_status, filled, _err = res
+            if dl is None:
+                summary_lines.append(f"《{cand['name']}》：填写失败。")
+                continue
             downloads.append(dl)
             total = len(cand["_placeholders"])
             summary_lines.append(
                 f"《{cand['name']}》：共 {total} 个填写点，AI 填充 {filled} 个，"
                 f"{total - filled} 个未检索到值已留空。")
         if not downloads:
-            raise ValueError("所有范本填写均失败：" + "；".join(
-                str(r) for r in results if isinstance(r, BaseException)))
+            # 失败详情：_fill_and_notify 已捕获的异常在五元组第 5 位，
+            # 未捕获异常（return_exceptions=True）是 BaseException 元素
+            errs = [str(r) if isinstance(r, BaseException) else str(r[4])
+                    for r in results]
+            raise ValueError("所有范本填写均失败：" + "；".join(errs))
         self.set_output("download", json.dumps(downloads, ensure_ascii=False))
         suffix = "，可在上方预览或下载成稿。" if len(downloads) == 1 else "，可在上方逐份预览或下载成稿。"
         head = (f"已选用 {len(downloads)} 份范本：\n" if len(downloads) > 1 else "已选用范本")
         self.set_output("content", head + "\n".join(
             ("- " + ln for ln in summary_lines) if len(downloads) > 1 else summary_lines
         ) + suffix)
+        self._push_progress({"stage": "done"})
         logger.info("TemplateFill done, canvas=%s templates=%s",
                     self._id, [c["template_id"] for c in chosen])
 
