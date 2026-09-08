@@ -115,8 +115,23 @@ def _safe_filename(name: str) -> str:
 _VERSION_SOURCES = ("manual_upload", "ai_template_fill")
 
 
-def _normalize_version_source(raw) -> str:
+def _normalize_version_source(raw: str | None) -> str:
     return raw if raw in _VERSION_SOURCES else "manual_upload"
+
+
+# 版本内容纯文本截断上限 + FileService.parse 输出的固定文件头前缀
+_VERSION_CONTENT_MAX = 20000
+
+_PARSE_HEADER_PREFIX = "\n -----------------\nFile: "
+
+
+def _clean_version_text(text: str) -> str:
+    """剥离 FileService.parse 输出的固定头并截断（_VERSION_CONTENT_MAX）。"""
+    # 剥掉 parse 输出的固定文件头，只留正文
+    if text and text.startswith(_PARSE_HEADER_PREFIX):
+        head, sep, body = text.partition("Content as following: \n")
+        text = body if sep else text
+    return (text or "")[:_VERSION_CONTENT_MAX]
 
 
 def _others_of(flow: dict, me: str) -> list:
@@ -885,11 +900,6 @@ async def download_version(flow_id: str, version_id: str):
 
 
 # ── 5.1 版本内容纯文本（三角色可读；模板填写证据注入等轻量用途） ──
-_VERSION_CONTENT_MAX = 20000
-
-_PARSE_HEADER_PREFIX = "\n -----------------\nFile: "
-
-
 @manager.route("/flow/<flow_id>/version/<version_id>/content", methods=["GET"])  # noqa: F821
 @login_required
 async def version_content(flow_id: str, version_id: str):
@@ -920,11 +930,7 @@ async def version_content(flow_id: str, version_id: str):
                 logger.warning("flow version content parse failed: %s",
                                version["file_name"], exc_info=True)
                 return ""
-            # 剥掉 parse 输出的固定文件头，只留正文
-            if text.startswith(_PARSE_HEADER_PREFIX):
-                head, _, body = text.partition("Content as following: \n")
-                text = body if _ else text
-            return (text or "")[:_VERSION_CONTENT_MAX]
+            return _clean_version_text(text)
 
         text = await thread_pool_exec(_extract_text)
         return get_json_result(data={"content": text})

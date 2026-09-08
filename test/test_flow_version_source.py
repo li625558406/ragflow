@@ -53,3 +53,25 @@ def test_normalize_version_source():
 
 def test_version_content_max_constant():
     assert _flow_app._VERSION_CONTENT_MAX == 20000
+
+
+def test_clean_version_text_strips_header():
+    _clean = _flow_app._clean_version_text
+    header = "\n -----------------\nFile: x.docx\nContent as following: \n"
+    assert _clean(header + "正文") == "正文"
+
+
+def test_clean_version_text_passthrough_without_header():
+    _clean = _flow_app._clean_version_text
+    plain = "没有固定头的普通文本"
+    assert _clean(plain) == plain
+
+
+def test_clean_version_text_truncates_to_max():
+    _clean = _flow_app._clean_version_text
+    assert len(_clean("字" * (_flow_app._VERSION_CONTENT_MAX + 500))) == 20000
+
+
+def test_clean_version_text_empty():
+    _clean = _flow_app._clean_version_text
+    assert _clean("") == ""
