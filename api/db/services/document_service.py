@@ -678,11 +678,26 @@ class DocumentService(CommonService):
     @classmethod
     @DB.connection_context()
     def accessible(cls, doc_id, user_id):
+        # 读操作全局放开：文档所属 KB 存在即可访问（2026-09-09 移除团队隔离）
         docs = (
             cls.model.select(cls.model.id)
             .join(Knowledgebase, on=(Knowledgebase.id == cls.model.kb_id))
-            .join(UserTenant, on=(UserTenant.tenant_id == Knowledgebase.tenant_id))
-            .where(cls.model.id == doc_id, UserTenant.user_id == user_id)
+            .where(cls.model.id == doc_id, Knowledgebase.status == StatusEnum.VALID.value)
+            .paginate(0, 1)
+        )
+        docs = docs.dicts()
+        if not docs:
+            return False
+        return True
+
+    @classmethod
+    @DB.connection_context()
+    def owned(cls, doc_id, user_id):
+        # 写操作 owner-only：文档所属 KB 的所有者可执行（2026-09-09 移除团队隔离）
+        docs = (
+            cls.model.select(cls.model.id)
+            .join(Knowledgebase, on=(Knowledgebase.id == cls.model.kb_id))
+            .where(cls.model.id == doc_id, Knowledgebase.tenant_id == user_id)
             .paginate(0, 1)
         )
         docs = docs.dicts()

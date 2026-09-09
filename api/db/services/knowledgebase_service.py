@@ -167,21 +167,12 @@ class KnowledgebaseService(CommonService):
             User.avatar.alias('tenant_avatar'),
             cls.model.update_time
         ]
+        kbs = cls.model.select(*fields).join(User, on=(cls.model.tenant_id == User.id))
+        if joined_tenant_ids is not None:
+            kbs = kbs.where(cls.model.tenant_id.in_(joined_tenant_ids))
+        kbs = kbs.where(cls.model.status == StatusEnum.VALID.value)
         if keywords:
-            kbs = cls.model.select(*fields).join(User, on=(cls.model.tenant_id == User.id)).where(
-                ((cls.model.tenant_id.in_(joined_tenant_ids) & (cls.model.permission ==
-                                                                TenantPermission.TEAM.value)) | (
-                    cls.model.tenant_id == user_id))
-                & (cls.model.status == StatusEnum.VALID.value),
-                (fn.LOWER(cls.model.name).contains(keywords.lower()))
-            )
-        else:
-            kbs = cls.model.select(*fields).join(User, on=(cls.model.tenant_id == User.id)).where(
-                ((cls.model.tenant_id.in_(joined_tenant_ids) & (cls.model.permission ==
-                                                                TenantPermission.TEAM.value)) | (
-                    cls.model.tenant_id == user_id))
-                & (cls.model.status == StatusEnum.VALID.value)
-            )
+            kbs = kbs.where(fn.LOWER(cls.model.name).contains(keywords.lower()))
         if parser_id:
             kbs = kbs.where(cls.model.parser_id == parser_id)
         if desc:
@@ -459,12 +450,9 @@ class KnowledgebaseService(CommonService):
         if parser_id:
             kbs = kbs.where(cls.model.parser_id == parser_id)
 
-        kbs = kbs.where(
-            ((cls.model.tenant_id.in_(joined_tenant_ids) & (cls.model.permission ==
-                                                            TenantPermission.TEAM.value)) | (
-                cls.model.tenant_id == user_id))
-            & (cls.model.status == StatusEnum.VALID.value)
-        )
+        if joined_tenant_ids is not None:
+            kbs = kbs.where(cls.model.tenant_id.in_(joined_tenant_ids))
+        kbs = kbs.where(cls.model.status == StatusEnum.VALID.value)
 
         if desc:
             kbs = kbs.order_by(cls.model.getter_by(orderby).desc())
@@ -485,9 +473,22 @@ class KnowledgebaseService(CommonService):
         #     user_id: User ID
         # Returns:
         #     Boolean indicating accessibility
+        # 读操作全局放开：KB 存在（VALID）即可访问（2026-09-09 移除团队隔离）
         docs = cls.model.select(
-            cls.model.id).join(UserTenant, on=(UserTenant.tenant_id == Knowledgebase.tenant_id)
-                               ).where(cls.model.id == kb_id, UserTenant.user_id == user_id).paginate(0, 1)
+            cls.model.id).where(cls.model.id == kb_id, cls.model.status == StatusEnum.VALID.value).paginate(0, 1)
+        docs = docs.dicts()
+        if not docs:
+            return False
+        return True
+
+    @classmethod
+    @DB.connection_context()
+    def owned(cls, kb_id, user_id):
+        # 写操作 owner-only：仅 KB 所有者可执行（2026-09-09 移除团队隔离）
+        docs = cls.model.select(
+            cls.model.id).where(cls.model.id == kb_id,
+                                cls.model.tenant_id == user_id,
+                                cls.model.status == StatusEnum.VALID.value).paginate(0, 1)
         docs = docs.dicts()
         if not docs:
             return False
