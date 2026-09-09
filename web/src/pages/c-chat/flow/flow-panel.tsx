@@ -283,7 +283,7 @@ export default function FlowPanel() {
 
       {scope === 'admin' && (
         <div className="min-w-0 flex-1">
-          <FlowManage />
+          <FlowManage onBack={() => setScope('todo')} />
         </div>
       )}
 
