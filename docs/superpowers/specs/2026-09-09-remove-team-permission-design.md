@@ -48,7 +48,8 @@ RAGFlow 原生「团队」体系通过 `user_tenant` 表实现跨租户资源共
 | 3 | 智能体列表 `agent_api.py:432-449` | 读 | `UserCanvasService.get_by_tenant_ids` 租户参数为 `None` 时不过滤；`owner_ids` 不再做 joined 授权校验 |
 | 4 | 对话助手列表 `chat_api.py:361,370` | 读 | `DialogService.get_by_tenant_ids` 同上 |
 | 5 | 搜索应用列表 `search_api.py:82,84` | 读 | `SearchService.get_by_tenant_ids` 同上（空列表改为全局） |
-| 6 | `KnowledgebaseService.accessible` | 读 | 去掉 `user_tenant` join，改为「KB 存在（status=VALID）即通过」 |
+| 6 | `KnowledgebaseService.accessible` | 读 | 去掉 `user_tenant` join，改为「KB 存在（status=VALID）即通过」；**新增 `KnowledgebaseService.owned(kb_id, user_id)`**（owner-only），因为 `accessible` 在 document_api/chunk_api/dataset_api_service 中同时守着 chunk 增删改、文档删除/解析/元数据修改、知识图谱删除、索引构建等写端点——这些调用点改为 `owned()`，读调用点维持 `accessible()` |
+| 6b | `DocumentService.accessible`（document_service.py:680）、`UserCanvasService.accessible`（canvas_service.py:205） | 读 | 同理改为存在性检查；文档摄取门禁（document_api.py:1376）改为新的 `DocumentService.owned()`（按 doc→KB→tenant_id 判 owner）；智能体的写端点已有独立 owner 校验，无需处理 |
 | 7 | `check_kb_team_permission` | 写 | 函数体改为 owner-only：`return kb["tenant_id"] == other`。唯一调用点文档上传（document_api.py:440）收紧为仅 owner |
 | 8 | `check_file_team_permission` | 写 | 函数体改为 owner-only：`return file["tenant_id"] == other`，覆盖删除（443）、移动（491） |
 | 9 | `file_api_service.get_file_content`:595 | 读 | 移除 `check_file_team_permission` 校验，仅保留文件存在性检查（下载全局放开） |
