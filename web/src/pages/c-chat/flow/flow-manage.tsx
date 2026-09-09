@@ -95,29 +95,34 @@ export default function FlowManage({ onBack }: { onBack: () => void }) {
   /** 再次发起：预填标题/参与人；最终版本为 doc/docx 时预填为初始文件 */
   const startReinitiate = async (f: FlowInstanceItem) => {
     setActionError('');
-    let file: File | null = null;
+    setBusyId(f.id);
     try {
-      if (f.current_version_id) {
-        const detail = await getFlowDetail(f.id);
-        const last = detail.versions[detail.versions.length - 1];
-        if (last && /\.(doc|docx)$/i.test(last.file_name)) {
-          const blob = await downloadVersionBlob(f.id, last.id);
-          file = new File([blob], last.file_name, {
-            type: last.file_type || undefined,
-          });
+      let file: File | null = null;
+      try {
+        if (f.current_version_id) {
+          const detail = await getFlowDetail(f.id);
+          const last = detail.versions[detail.versions.length - 1];
+          if (last && /\.(doc|docx)$/i.test(last.file_name)) {
+            const blob = await downloadVersionBlob(f.id, last.id);
+            file = new File([blob], last.file_name, {
+              type: last.file_type || undefined,
+            });
+          }
         }
+      } catch {
+        // 预填文件失败不阻断，走手动上传
       }
-    } catch {
-      // 预填文件失败不阻断，走手动上传
+      setReinitiate({
+        initial: {
+          title: f.title,
+          leaderId: f.leader_id,
+          handlerId: f.handler_id,
+          file,
+        },
+      });
+    } finally {
+      setBusyId(null);
     }
-    setReinitiate({
-      initial: {
-        title: f.title,
-        leaderId: f.leader_id,
-        handlerId: f.handler_id,
-        file,
-      },
-    });
   };
 
   // 详情查看态：整区切换到 FlowDetail
@@ -130,6 +135,7 @@ export default function FlowManage({ onBack }: { onBack: () => void }) {
             variant="outline"
             className="h-7 gap-1 rounded-full"
             onClick={() => {
+              setActionError('');
               setViewFlowId(null);
               refresh();
             }}
@@ -284,7 +290,10 @@ export default function FlowManage({ onBack }: { onBack: () => void }) {
                       <ActionBtn
                         title="查看"
                         disabled={busyId === f.id}
-                        onClick={() => setViewFlowId(f.id)}
+                        onClick={() => {
+                          setActionError('');
+                          setViewFlowId(f.id);
+                        }}
                       >
                         <Eye className="h-3.5 w-3.5" />
                       </ActionBtn>
