@@ -282,9 +282,6 @@ export default function FlowAiPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [done, answerList]);
 
-  // 后端按 create_time 正序返回，取最后 3 条即最近记录
-  const recentChats = aiChats.slice(-3);
-
   const busy = !done || sending;
   // 结束后 streamState 被 hook reset，从 contentRef 兜底取完整回复
   const responseText = (streamState.content || contentRef.current).trim();
@@ -661,61 +658,52 @@ export default function FlowAiPanel({
     [flowId, onSaved, uploadVersionAsDocument, version],
   );
 
-  return (
-    <div className="shrink-0 rounded-lg border border-[#F0F0F0] bg-white px-4 py-3">
-      {/* 标题行 */}
-      <div className="flex items-center gap-2">
-        <Bot className="h-4 w-4 shrink-0 text-[#1668DC]" />
-        <span className="shrink-0 text-sm font-medium">AI 处理</span>
-        <span className="min-w-0 flex-1 truncate text-xs text-[#999]">
-          （上下文：
-          {version
-            ? `v${version.version_no} ${version.file_name}`
-            : '无上下文文件'}
-          ）
-        </span>
-        {/* flow 特有：未手动上传文件时发送自动附带当前版本 */}
-        {version && (
-          <button
-            onClick={() => setAttachFile((prev) => !prev)}
-            className={`shrink-0 rounded-md border px-2 py-0.5 text-xs transition-colors ${
-              attachFile
-                ? 'border-[#BFD3F5] bg-[#F0F5FF] text-[#1a66fb]'
-                : 'border-[#E8E8E8] bg-white text-[#8A8A8A] hover:text-[#525252]'
-            }`}
-            title="未手动上传文件时，发送自动附带当前版本文件作为 AI 上下文"
-          >
-            附带版本文件{attachFile ? '开' : '关'}
-          </button>
-        )}
-        {/* 文件审核：从输入框工具栏挪出的醒目入口 */}
-        {(!!version || uploadedDocs.length > 0) && (
-          <button
-            onClick={toggleReview}
-            className={`flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-              reviewMode
-                ? 'border border-[#BFD3F5] bg-[#F0F5FF] text-[#1a66fb]'
-                : 'bg-[#1a66fb] text-white hover:bg-[#0f56e0]'
-            }`}
-          >
-            <FileText className="h-3.5 w-3.5" strokeWidth={2} />
-            {reviewMode ? '关闭审核' : '文件审核'}
-          </button>
-        )}
-      </div>
-
-      {/* 历史记录摘要（最近 3 条） */}
-      {recentChats.length > 0 && (
-        <div className="mt-2 max-h-20 space-y-1 overflow-y-auto rounded bg-[#FAFAFA] px-2 py-1.5">
-          {recentChats.map((c) => (
-            <div key={c.id} className="truncate text-xs text-[#999]">
-              指令：{c.instruction} →{' '}
-              {c.output_version_id ? '已存为新版本' : '未存版本'}
-            </div>
-          ))}
-        </div>
+  // 标题行内容（AI 处理 / 上下文 / 附带版本文件 / 文件审核）：
+  // 经 ChatInputBox 的 leftSlot 渲染在发送按钮同一行，不再单独占一行
+  const titleRow = (
+    <>
+      <Bot className="h-4 w-4 shrink-0 text-[#1668DC]" />
+      <span className="shrink-0 text-sm font-medium">AI 处理</span>
+      <span className="min-w-0 flex-1 truncate text-xs text-[#999]">
+        （上下文：
+        {version
+          ? `v${version.version_no} ${version.file_name}`
+          : '无上下文文件'}
+        ）
+      </span>
+      {/* flow 特有：未手动上传文件时发送自动附带当前版本 */}
+      {version && (
+        <button
+          onClick={() => setAttachFile((prev) => !prev)}
+          className={`shrink-0 rounded-md border px-2 py-0.5 text-xs transition-colors ${
+            attachFile
+              ? 'border-[#BFD3F5] bg-[#F0F5FF] text-[#1a66fb]'
+              : 'border-[#E8E8E8] bg-white text-[#8A8A8A] hover:text-[#525252]'
+          }`}
+          title="未手动上传文件时，发送自动附带当前版本文件作为 AI 上下文"
+        >
+          附带版本文件{attachFile ? '开' : '关'}
+        </button>
       )}
+      {/* 文件审核：从输入框工具栏挪出的醒目入口 */}
+      {(!!version || uploadedDocs.length > 0) && (
+        <button
+          onClick={toggleReview}
+          className={`flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+            reviewMode
+              ? 'border border-[#BFD3F5] bg-[#F0F5FF] text-[#1a66fb]'
+              : 'bg-[#1a66fb] text-white hover:bg-[#0f56e0]'
+          }`}
+        >
+          <FileText className="h-3.5 w-3.5" strokeWidth={2} />
+          {reviewMode ? '关闭审核' : '文件审核'}
+        </button>
+      )}
+    </>
+  );
 
+  return (
+    <div className="shrink-0">
       {!agentId && (
         <div className="mt-2 text-xs text-[#FAAD14]">{NO_AGENT_HINT}</div>
       )}
@@ -759,6 +747,7 @@ export default function FlowAiPanel({
           onUploadedFilesChange={handleUploadedDocsChange}
           accept=".doc,.docx"
           autoFocus
+          leftSlot={titleRow}
         />
       </div>
 
