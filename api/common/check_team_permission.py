@@ -13,47 +13,27 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
+"""写操作 owner-only 门禁（2026-09-09 团队权限隔离移除）。
 
+读操作全局放开，写操作仅资源所有者可执行；权限管控后续由
+/permission 页面的 RBAC（@permission_required）承接。
+原团队（user_tenant join）判断已移除。
+"""
 
-from api.db import TenantPermission
 from api.db.db_models import File, Knowledgebase
-from api.db.services.file_service import FileService
-from api.db.services.knowledgebase_service import KnowledgebaseService
-from api.db.services.user_service import TenantService
 
 
 def check_kb_team_permission(kb: dict | Knowledgebase, other: str) -> bool:
+    """KB 写操作门禁：仅 KB 所有者（tenant_id 相同）可执行。"""
     kb = kb.to_dict() if isinstance(kb, Knowledgebase) else kb
-
-    kb_tenant_id = kb["tenant_id"]
-
-    if kb_tenant_id == other:
-        return True
-
-    if kb["permission"] != TenantPermission.TEAM:
+    if not kb or not other:
         return False
-
-    joined_tenants = TenantService.get_joined_tenants_by_user_id(other)
-    return any(tenant["tenant_id"] == kb_tenant_id for tenant in joined_tenants)
+    return kb.get("tenant_id") == other
 
 
 def check_file_team_permission(file: dict | File, other: str) -> bool:
+    """文件写操作门禁：仅文件所有者（tenant_id 相同）可执行。"""
     file = file.to_dict() if isinstance(file, File) else file
-
-    file_tenant_id = file["tenant_id"]
-    if file_tenant_id == other:
-        return True
-
-    file_id = file["id"]
-
-    kb_ids = [kb_info["kb_id"] for kb_info in FileService.get_kb_id_by_file_id(file_id)]
-
-    for kb_id in kb_ids:
-        ok, kb = KnowledgebaseService.get_by_id(kb_id)
-        if not ok:
-            continue
-
-        if check_kb_team_permission(kb, other):
-            return True
-
-    return False
+    if not file or not other:
+        return False
+    return file.get("tenant_id") == other
