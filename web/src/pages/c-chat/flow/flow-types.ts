@@ -18,6 +18,9 @@ export interface FlowInstanceItem {
   current_version_id: string;
   create_time: number;
   update_time: number;
+  /** 软删标记：0 正常 / 1 回收站（常规列表不会出现 1） */
+  deleted?: number;
+  deleted_time?: number | null;
 }
 
 export interface FlowVersionItem {
@@ -74,3 +77,11 @@ export interface FlowLiveChat {
   /** 范本填写进度（template_fill_progress 事件累积，随流式上报） */
   templateFill?: ITemplateFillState;
 }
+
+/** 已结束流程管理页：视角与状态筛选 */
+export type FlowManageScope = 'initiated' | 'joined';
+export type FlowFinishedFilter =
+  | 'finished'
+  | 'archived'
+  | 'cancelled'
+  | 'deleted';

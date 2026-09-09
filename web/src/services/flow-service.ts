@@ -1,5 +1,6 @@
 import type {
   FlowDetail,
+  FlowFinishedFilter,
   FlowInstanceItem,
   FlowScope,
   FlowVersionItem,
@@ -50,8 +51,11 @@ export async function createFlow(formData: FormData): Promise<{ id: string }> {
 
 export async function listFlows(
   scope: FlowScope,
+  status?: FlowFinishedFilter,
 ): Promise<{ list: FlowInstanceItem[]; total: number }> {
-  return apiFetch(`/flow/list?scope=${scope}`);
+  return apiFetch(
+    `/flow/list?scope=${scope}${status ? `&status=${status}` : ''}`,
+  );
 }
 
 export async function getFlowDetail(flowId: string): Promise<FlowDetail> {
@@ -297,4 +301,21 @@ export interface FlowCandidate {
 
 export async function listCandidates(): Promise<{ list: FlowCandidate[] }> {
   return apiFetch('/flow/candidates');
+}
+
+/** 软删除已结束流程（后端校验：仅发起人；仅终态；可恢复） */
+export async function softDeleteFlow(flowId: string): Promise<{ id: string }> {
+  return apiFetch(`/flow/${flowId}/soft-delete`, { method: 'POST' });
+}
+
+/** 回收站恢复（后端校验：仅发起人；幂等） */
+export async function restoreFlow(flowId: string): Promise<{ id: string }> {
+  return apiFetch(`/flow/${flowId}/restore`, { method: 'POST' });
+}
+
+/** 重新激活已结束流程（后端校验：仅发起人；状态回发起人节点） */
+export async function reactivateFlow(
+  flowId: string,
+): Promise<{ flow: FlowInstanceItem }> {
+  return apiFetch(`/flow/${flowId}/reactivate`, { method: 'POST' });
 }
