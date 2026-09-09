@@ -139,6 +139,18 @@ export default function CreateFlowDialog({
                 （可选，仅支持 doc/docx，创建后可在详情页上传）
               </span>
             </label>
+            {file && (
+              <div className="mt-1 flex items-center gap-2 rounded-md bg-[#F0F5FF] px-2 py-1 text-xs text-[#1a66fb]">
+                <span className="truncate">{file.name}</span>
+                <button
+                  type="button"
+                  className="ml-auto shrink-0 cursor-pointer text-[#999] hover:text-[#E5484D]"
+                  onClick={() => setFile(null)}
+                >
+                  移除
+                </button>
+              </div>
+            )}
             <input
               type="file"
               accept=".doc,.docx"
