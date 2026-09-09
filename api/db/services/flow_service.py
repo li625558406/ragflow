@@ -67,6 +67,30 @@ class FlowWorkflow:
             return prev
         raise ValueError(f"未知 action: {action}")
 
+    @classmethod
+    def check_terminal_action(cls, flow: dict, user_id, action: str) -> None:
+        """软删除/恢复/重新激活的纯校验：仅发起人 + 前置状态。
+        非法抛 PermissionError / ValueError；合法通过返回 None。
+        restore 未删除时不在此报错——由服务层做幂等成功处理。"""
+        if user_id != flow.get("initiator_id"):
+            raise PermissionError("只有发起人可以操作")
+        deleted = flow.get("deleted", 0)
+        terminal = flow.get("status") in cls.TERMINAL
+        if action == "soft_delete":
+            if not terminal:
+                raise ValueError("仅已结束的流程可以删除")
+            if deleted:
+                raise ValueError("流程已在回收站")
+        elif action == "reactivate":
+            if not terminal:
+                raise ValueError("仅已结束的流程可以重新激活")
+            if deleted:
+                raise ValueError("回收站中的流程请先恢复后再重新激活")
+        elif action == "restore":
+            pass
+        else:
+            raise ValueError(f"未知 action: {action}")
+
 
 def _bucket_of(flow: dict) -> str:
     """文件统一存发起人的 bucket（RAGFlow 惯例：bucket = user_id）。"""

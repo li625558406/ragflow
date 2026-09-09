@@ -76,3 +76,50 @@ class TestSubmitTarget:
                     assert False, "should raise"
                 except ValueError:
                     pass
+
+
+class TestTerminalAction:
+    """软删除/恢复/重新激活的权限+前置状态纯校验。"""
+
+    def _terminal(self, status="archived", deleted=0):
+        return {
+            "initiator_id": "u1", "leader_id": "u2", "handler_id": "u3",
+            "status": status, "deleted": deleted,
+        }
+
+    def test_non_initiator_rejected(self):
+        import pytest
+        for action in ("soft_delete", "restore", "reactivate"):
+            with pytest.raises(PermissionError):
+                FlowWorkflow.check_terminal_action(self._terminal(), "u2", action)
+            with pytest.raises(PermissionError):
+                FlowWorkflow.check_terminal_action(self._terminal(), "stranger", action)
+
+    def test_soft_delete_requires_terminal(self):
+        import pytest
+        for st in ("initiator", "leader", "handler", "summary"):
+            with pytest.raises(ValueError):
+                FlowWorkflow.check_terminal_action(self._terminal(st), "u1", "soft_delete")
+        FlowWorkflow.check_terminal_action(self._terminal("archived"), "u1", "soft_delete")
+        FlowWorkflow.check_terminal_action(self._terminal("cancelled"), "u1", "soft_delete")
+
+    def test_soft_delete_rejects_already_deleted(self):
+        import pytest
+        with pytest.raises(ValueError):
+            FlowWorkflow.check_terminal_action(self._terminal(deleted=1), "u1", "soft_delete")
+
+    def test_reactivate_requires_terminal_and_not_deleted(self):
+        import pytest
+        with pytest.raises(ValueError):
+            FlowWorkflow.check_terminal_action(self._terminal("initiator"), "u1", "reactivate")
+        with pytest.raises(ValueError):
+            FlowWorkflow.check_terminal_action(self._terminal(deleted=1), "u1", "reactivate")
+        FlowWorkflow.check_terminal_action(self._terminal("cancelled"), "u1", "reactivate")
+
+    def test_restore_requires_deleted(self):
+        FlowWorkflow.check_terminal_action(self._terminal(deleted=1), "u1", "restore")
+
+    def test_unknown_action_rejected(self):
+        import pytest
+        with pytest.raises(ValueError):
+            FlowWorkflow.check_terminal_action(self._terminal(), "u1", "hack")
