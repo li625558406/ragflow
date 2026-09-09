@@ -388,11 +388,11 @@ def list_datasets(tenant_id: str, args: dict):
     if kb_id:
         kbs = KnowledgebaseService.get_kb_by_id(kb_id, tenant_id)
         if not kbs:
-            return False, f"User '{tenant_id}' lacks permission for dataset '{kb_id}'"
+            return False, f"Dataset '{kb_id}' not found!"
     if name:
         kbs = KnowledgebaseService.get_kb_by_name(name, tenant_id)
         if not kbs:
-            return False, f"User '{tenant_id}' lacks permission for dataset '{name}'"
+            return False, f"Dataset '{name}' not found!"
     if ext_fields.get("owner_ids", []):
         tenant_ids = ext_fields["owner_ids"]
     else:

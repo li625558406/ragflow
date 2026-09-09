@@ -18,7 +18,7 @@ from datetime import datetime
 from peewee import fn, JOIN
 
 from api.db import TenantPermission
-from api.db.db_models import DB, Document, Knowledgebase, User, UserTenant, UserCanvas
+from api.db.db_models import DB, Document, Knowledgebase, User, UserCanvas
 from api.db.services.common_service import CommonService
 from common.time_utils import current_timestamp, datetime_format
 from api.db.services import duplicate_name
@@ -500,11 +500,11 @@ class KnowledgebaseService(CommonService):
         # Get dataset by ID and user ID
         # Args:
         #     kb_id: Knowledge base ID
-        #     user_id: User ID
+        #     user_id: User ID (仅保留签名兼容，2026-09-09 移除团队隔离后读全局放开，不再做团队过滤)
         # Returns:
         #     List containing dataset information
-        kbs = cls.model.select().join(UserTenant, on=(UserTenant.tenant_id == Knowledgebase.tenant_id)
-                                      ).where(cls.model.id == kb_id, UserTenant.user_id == user_id).paginate(0, 1)
+        kbs = cls.model.select().where(cls.model.id == kb_id,
+                                       cls.model.status == StatusEnum.VALID.value).paginate(0, 1)
         kbs = kbs.dicts()
         return list(kbs)
 
@@ -514,11 +514,11 @@ class KnowledgebaseService(CommonService):
         # Get dataset by name and user ID
         # Args:
         #     kb_name: Knowledge base name
-        #     user_id: User ID
+        #     user_id: User ID (仅保留签名兼容，2026-09-09 移除团队隔离后读全局放开，不再做团队过滤)
         # Returns:
         #     List containing dataset information
-        kbs = cls.model.select().join(UserTenant, on=(UserTenant.tenant_id == Knowledgebase.tenant_id)
-                                      ).where(cls.model.name == kb_name, UserTenant.user_id == user_id).paginate(0, 1)
+        kbs = cls.model.select().where(cls.model.name == kb_name,
+                                       cls.model.status == StatusEnum.VALID.value).paginate(0, 1)
         kbs = kbs.dicts()
         return list(kbs)
 
