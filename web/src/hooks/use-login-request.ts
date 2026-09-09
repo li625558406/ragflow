@@ -9,7 +9,7 @@ import {
   redirectToLogin,
   default as storage,
 } from '@/utils/authorization-util';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useSaveSetting } from './use-user-setting-request';
 
@@ -54,6 +54,7 @@ export const useLoginWithChannel = () => {
 
 export const useLogin = () => {
   const { saveSetting } = useSaveSetting(true);
+  const queryClient = useQueryClient();
   const {
     data,
     isPending: loading,
@@ -80,6 +81,9 @@ export const useLogin = () => {
           userInfo: JSON.stringify(userInfo),
           Token: token,
         });
+        // 换账号登录必须清空上一账号的查询缓存（如权限 isSuperuser、流程列表），
+        // 否则 staleTime 内新账号会继承旧账号数据（普通用户误见超管页签等）
+        queryClient.removeQueries();
       }
       return res.code;
     },
@@ -122,6 +126,7 @@ export const useRegister = () => {
 
 export const useLogout = () => {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const {
     data,
     isPending: loading,
@@ -133,6 +138,7 @@ export const useLogout = () => {
       if (data.code === 0) {
         message.success(t('message.logout'));
         authorizationUtil.removeAll();
+        queryClient.removeQueries();
         redirectToLogin();
       }
       return data.code;
