@@ -164,6 +164,8 @@ export default function CreateFlowDialog({
                 }
                 setError('');
                 setFile(f);
+                // 清空 input 原生值，确保「移除」后重选同一文件也能触发 change
+                e.target.value = '';
               }}
             />
           </div>
