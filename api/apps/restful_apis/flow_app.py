@@ -30,6 +30,9 @@
   - POST   /flow/<flow_id>/submit                   流转（next）/ 退回（return）
   - POST   /flow/<flow_id>/archive                  归档（仅汇总节点发起人）
   - POST   /flow/<flow_id>/cancel                   作废（仅发起人）
+  - POST   /flow/<flow_id>/soft-delete              软删除（仅发起人；仅终态；可恢复）
+  - POST   /flow/<flow_id>/restore                  回收站恢复（仅发起人）
+  - POST   /flow/<flow_id>/reactivate               重新激活（仅发起人；状态回 initiator）
 """
 import hashlib
 import logging
@@ -1171,6 +1174,65 @@ async def delete_flow(flow_id: str):
             except Exception as e:
                 logger.warning("flow storage rm failed: %s", e)
         return get_json_result(data={"id": flow_id})
+    except LookupError as e:
+        return _err(str(e), 404)
+    except (PermissionError, ValueError, RuntimeError) as e:
+        return _action_error(e)
+    except Exception as e:
+        logger.exception(e)
+        return _err(str(e))
+
+
+# ── 12. 软删除流程（仅发起人；仅终态；数据与文件保留，可从回收站恢复） ──
+@manager.route("/flow/<flow_id>/soft-delete", methods=["POST"])  # noqa: F821
+@login_required
+async def soft_delete_flow(flow_id: str):
+    try:
+        flow = _require_participant(_flow_dict(flow_id))
+        FlowActionService.soft_delete(flow, current_user.id)
+        return get_json_result(data={"id": flow_id})
+    except LookupError as e:
+        return _err(str(e), 404)
+    except (PermissionError, ValueError, RuntimeError) as e:
+        return _action_error(e)
+    except Exception as e:
+        logger.exception(e)
+        return _err(str(e))
+
+
+# ── 13. 回收站恢复（仅发起人；幂等） ──────────────────────────────
+@manager.route("/flow/<flow_id>/restore", methods=["POST"])  # noqa: F821
+@login_required
+async def restore_flow(flow_id: str):
+    try:
+        flow = _require_participant(_flow_dict(flow_id))
+        FlowActionService.restore(flow, current_user.id)
+        return get_json_result(data={"id": flow_id})
+    except LookupError as e:
+        return _err(str(e), 404)
+    except (PermissionError, ValueError, RuntimeError) as e:
+        return _action_error(e)
+    except Exception as e:
+        logger.exception(e)
+        return _err(str(e))
+
+
+# ── 14. 重新激活（仅发起人；仅终态；状态回 initiator，历史全保留） ──
+@manager.route("/flow/<flow_id>/reactivate", methods=["POST"])  # noqa: F821
+@login_required
+async def reactivate_flow(flow_id: str):
+    try:
+        flow = _require_participant(_flow_dict(flow_id))
+        updated = FlowActionService.reactivate(flow, current_user.id)
+        try:
+            notify_flow_event(
+                updated, [updated["leader_id"], updated["handler_id"]],
+                f"流程「{updated['title']}」已重新激活",
+                f"{_nickname_of(current_user.id)} 重新发起了该流程，当前在发起人节点处理",
+            )
+        except Exception as e:
+            logger.warning("flow notify failed: %s", e)
+        return get_json_result(data={"flow": updated})
     except LookupError as e:
         return _err(str(e), 404)
     except (PermissionError, ValueError, RuntimeError) as e:

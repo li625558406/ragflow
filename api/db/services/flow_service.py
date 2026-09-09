@@ -15,6 +15,7 @@ from api.db.db_models import (
     FlowInstance,
     FlowVersion,
     Notification,
+    User,
 )
 from api.db.services.common_service import CommonService
 from api.db.services.notification_service import NotificationUserService
@@ -440,6 +441,69 @@ class FlowActionService:
             FlowVersion.delete().where(FlowVersion.flow_id == flow_id).execute()
             FlowInstance.delete().where(FlowInstance.id == flow_id).execute()
         return paths
+
+    @classmethod
+    @DB.connection_context()
+    def soft_delete(cls, flow: dict, user_id: str) -> dict:
+        """软删除：仅发起人、仅终态。置 deleted=1 + deleted_time，数据与文件全保留。"""
+        FlowWorkflow.check_terminal_action(flow, user_id, "soft_delete")
+        updated = (
+            FlowInstance.update(
+                deleted=1,
+                deleted_time=current_timestamp(),
+                update_time=current_timestamp(),
+                update_date=datetime_format(datetime.now()),
+            )
+            .where((FlowInstance.id == flow["id"]) & (FlowInstance.deleted == 0))  # 乐观锁
+            .execute()
+        )
+        if not updated:
+            raise RuntimeError("流程状态已变化，请刷新后重试")
+        return {**flow, "deleted": 1}
+
+    @classmethod
+    @DB.connection_context()
+    def restore(cls, flow: dict, user_id: str) -> dict:
+        """回收站恢复：仅发起人。已恢复时幂等返回成功。"""
+        if user_id != flow["initiator_id"]:
+            raise PermissionError("只有发起人可以操作")
+        if not flow.get("deleted", 0):
+            return {**flow, "deleted": 0}  # 幂等：已恢复直接成功
+        FlowInstance.update(
+            deleted=0,
+            deleted_time=None,
+            update_time=current_timestamp(),
+            update_date=datetime_format(datetime.now()),
+        ).where((FlowInstance.id == flow["id"]) & (FlowInstance.deleted == 1)).execute()
+        return {**flow, "deleted": 0}
+
+    @classmethod
+    @DB.connection_context()
+    def reactivate(cls, flow: dict, user_id: str) -> dict:
+        """重新激活：仅发起人、仅终态且未软删。状态回到 initiator，
+        current_version_id 不变，历史版本/批注/AI 记录全保留。"""
+        FlowWorkflow.check_terminal_action(flow, user_id, "reactivate")
+        # 领导/处理人账号必须仍存在且启用
+        for uid, label in ((flow["leader_id"], "领导"), (flow["handler_id"], "处理人")):
+            u = User.get_or_none(User.id == uid)
+            if not u or u.status != "1":
+                raise ValueError(f"原{label}账号不存在或已停用，无法重新激活")
+        updated = (
+            FlowInstance.update(
+                status="initiator",
+                update_time=current_timestamp(),
+                update_date=datetime_format(datetime.now()),
+            )
+            .where(
+                (FlowInstance.id == flow["id"])
+                & (FlowInstance.status == flow["status"])  # 乐观锁：仍是进入时的终态
+                & (FlowInstance.deleted == 0)
+            )
+            .execute()
+        )
+        if not updated:
+            raise RuntimeError("流程状态已变化，请刷新后重试")
+        return {**flow, "status": "initiator"}
 
 
 def notify_flow_event(flow: dict, to_user_ids: list, title: str, summary: str) -> int:
