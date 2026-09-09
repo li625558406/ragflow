@@ -454,7 +454,11 @@ class FlowActionService:
                 update_time=current_timestamp(),
                 update_date=datetime_format(datetime.now()),
             )
-            .where((FlowInstance.id == flow["id"]) & (FlowInstance.deleted == 0))  # 乐观锁
+            .where(
+                (FlowInstance.id == flow["id"])
+                & (FlowInstance.status == flow["status"])  # 乐观锁：仍是进入时的终态
+                & (FlowInstance.deleted == 0)
+            )
             .execute()
         )
         if not updated:
