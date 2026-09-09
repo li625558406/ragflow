@@ -2,6 +2,7 @@
 """FlowWorkflow 状态机纯逻辑测试（无 DB 依赖，对抗性用例含非法输入）。"""
 import sys
 import os
+import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from api.db.services.flow_service import FlowWorkflow
@@ -88,7 +89,6 @@ class TestTerminalAction:
         }
 
     def test_non_initiator_rejected(self):
-        import pytest
         for action in ("soft_delete", "restore", "reactivate"):
             with pytest.raises(PermissionError):
                 FlowWorkflow.check_terminal_action(self._terminal(), "u2", action)
@@ -96,7 +96,6 @@ class TestTerminalAction:
                 FlowWorkflow.check_terminal_action(self._terminal(), "stranger", action)
 
     def test_soft_delete_requires_terminal(self):
-        import pytest
         for st in ("initiator", "leader", "handler", "summary"):
             with pytest.raises(ValueError):
                 FlowWorkflow.check_terminal_action(self._terminal(st), "u1", "soft_delete")
@@ -104,12 +103,10 @@ class TestTerminalAction:
         FlowWorkflow.check_terminal_action(self._terminal("cancelled"), "u1", "soft_delete")
 
     def test_soft_delete_rejects_already_deleted(self):
-        import pytest
         with pytest.raises(ValueError):
             FlowWorkflow.check_terminal_action(self._terminal(deleted=1), "u1", "soft_delete")
 
     def test_reactivate_requires_terminal_and_not_deleted(self):
-        import pytest
         with pytest.raises(ValueError):
             FlowWorkflow.check_terminal_action(self._terminal("initiator"), "u1", "reactivate")
         with pytest.raises(ValueError):
@@ -119,7 +116,10 @@ class TestTerminalAction:
     def test_restore_requires_deleted(self):
         FlowWorkflow.check_terminal_action(self._terminal(deleted=1), "u1", "restore")
 
+    def test_restore_not_deleted_passes_check(self):
+        # 服务层幂等契约：未删除时校验层不拦，由服务层直接返回成功
+        FlowWorkflow.check_terminal_action(self._terminal(deleted=0), "u1", "restore")
+
     def test_unknown_action_rejected(self):
-        import pytest
         with pytest.raises(ValueError):
             FlowWorkflow.check_terminal_action(self._terminal(), "u1", "hack")

@@ -127,14 +127,15 @@ class FlowInstanceService(_FlowServiceBase):
         row = cls.model.get_or_none(cls.model.id == flow_id)
         return row.__data__ if row else None
 
-    LIST_TERMINAL = ("archived", "cancelled")
+    LIST_TERMINAL = FlowWorkflow.TERMINAL
 
     @classmethod
     @DB.connection_context()
     def list_for_user(cls, user_id: str, scope: str, status: str = ""):
         """scope: todo=待我处理 / initiated=我发起 / joined=我参与 / all=同 joined。
         常规查询（status 为空）：统一剔除软删行与终态行——已结束流程统一走管理页。
-        status 非空进入管理页查询（正交于 scope）：
+        status 非空进入管理页查询（scope 仍生效：initiated=仅我发起；其余=我参与的全部终态；
+        deleted 时仅看本人软删）：
           finished=未删除的终态 / archived / cancelled=对应终态 /
           deleted=回收站（仅本人软删的，scope 失效）。"""
         base = (
@@ -174,7 +175,7 @@ class FlowInstanceService(_FlowServiceBase):
                 & not_terminal
                 & (cls.model.initiator_id == user_id)
             )
-        # joined / all：base 已含终态/软删过滤
+        # joined / all：补终态/软删过滤，base 本身只含参与人条件
         else:
             q = q.where(not_deleted & not_terminal)
         items = [r.__data__ for r in q.order_by(cls.model.update_time.desc())]
