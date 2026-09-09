@@ -164,14 +164,10 @@ class DialogService(CommonService):
             cls.model.update_time,
             cls.model.create_time,
         ]
-        dialogs = (
-            cls.model.select(*fields)
-            .join(User, on=(cls.model.tenant_id == User.id))
-            .where(
-                (cls.model.tenant_id.in_(joined_tenant_ids) | (cls.model.tenant_id == user_id))
-                & (cls.model.status == StatusEnum.VALID.value),
-            )
-        )
+        dialogs = cls.model.select(*fields).join(User, on=(cls.model.tenant_id == User.id))
+        if joined_tenant_ids is not None:
+            dialogs = dialogs.where(cls.model.tenant_id.in_(joined_tenant_ids))
+        dialogs = dialogs.where(cls.model.status == StatusEnum.VALID.value)
         if id:
             dialogs = dialogs.where(cls.model.id == id)
         if name:

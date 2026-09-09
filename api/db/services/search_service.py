@@ -94,12 +94,10 @@ class SearchService(CommonService):
             User.nickname,
             User.avatar.alias("tenant_avatar"),
         ]
-        query = (
-            cls.model.select(*fields)
-            .join(User, on=(cls.model.tenant_id == User.id))
-            .where(((cls.model.tenant_id.in_(joined_tenant_ids)) | (cls.model.tenant_id == user_id)) & (
-                        cls.model.status == StatusEnum.VALID.value))
-        )
+        query = cls.model.select(*fields).join(User, on=(cls.model.tenant_id == User.id))
+        if joined_tenant_ids is not None:
+            query = query.where(cls.model.tenant_id.in_(joined_tenant_ids))
+        query = query.where(cls.model.status == StatusEnum.VALID.value)
 
         if keywords:
             query = query.where(fn.LOWER(cls.model.name).contains(keywords.lower()))

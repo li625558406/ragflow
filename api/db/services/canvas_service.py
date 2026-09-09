@@ -163,15 +163,11 @@ class UserCanvasService(CommonService):
             cls.model.update_time,
             cls.model.canvas_category,
         ]
+        agents = cls.model.select(*fields).join(User, on=(cls.model.user_id == User.id))
+        if joined_tenant_ids is not None:
+            agents = agents.where(cls.model.user_id.in_(joined_tenant_ids))
         if keywords:
-            agents = cls.model.select(*fields).join(User, on=(cls.model.user_id == User.id)).where(
-                (((cls.model.user_id.in_(joined_tenant_ids)) & (cls.model.permission == TenantPermission.TEAM.value)) | (cls.model.user_id == user_id)),
-                (fn.LOWER(cls.model.title).contains(keywords.lower()))
-            )
-        else:
-            agents = cls.model.select(*fields).join(User, on=(cls.model.user_id == User.id)).where(
-                (((cls.model.user_id.in_(joined_tenant_ids)) & (cls.model.permission == TenantPermission.TEAM.value)) | (cls.model.user_id == user_id))
-            )
+            agents = agents.where(fn.LOWER(cls.model.title).contains(keywords.lower()))
         if canvas_category:
             agents = agents.where(cls.model.canvas_category == canvas_category)
         if desc:
@@ -203,19 +199,10 @@ class UserCanvasService(CommonService):
     @classmethod
     @DB.connection_context()
     def accessible(cls, canvas_id, tenant_id):
-        from api.db.services.user_service import UserTenantService
-        e, c = UserCanvasService.get_by_canvas_id(canvas_id)
-        if not e:
-            return False
-
-        tids = [t.tenant_id for t in UserTenantService.query(user_id=tenant_id)]
-        if c["user_id"] == tenant_id:
-            return True
-        if c["user_id"] not in tids:
-            return False
-        if c["permission"] != TenantPermission.TEAM.value:
-            return False
-        return True
+        # 读操作全局放开：智能体存在即可访问；写操作由各端点的 owner 校验保证
+        # （2026-09-09 移除团队隔离）
+        e, _c = UserCanvasService.get_by_canvas_id(canvas_id)
+        return e
 
     @classmethod
     def get_agent_dsl_with_release(cls, agent_id, release_mode=False, tenant_id=None):
