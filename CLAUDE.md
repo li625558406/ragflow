@@ -51,6 +51,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 范本填写取消链路设计 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-09-template-fill-cancel-retrieval-design.md` | ★ 前端停止→服务端取消（SSE task_id + POST cancel 端点写 Redis 取消键）+ 取消检查点下沉批次/检索粒度（executor should_cancel）+ 画布检索并发限流（TEMPLATE_FILL_RETRIEVAL_CONCURRENCY 默认2）；实施计划 docs/superpowers/plans/2026-09-09-template-fill-cancel-retrieval.md（已完成，未部署） |
 | 已结束流程维护页 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-09-flow-finished-manage-design.md` | ★ 流程页签管理视图：已结束流程查看/软删除（回收站可恢复）/再次发起/重新激活；flow_instance 软删字段 + list status 过滤 + 3 动作端点（soft-delete/restore/reactivate，仅发起人+乐观锁）；实施计划 docs/superpowers/plans/2026-09-09-flow-finished-manage.md（已完成编码，未部署） |
 | 人事模块设计 | `D:\AI\ragflow2\docs\superpowers\specs\2026-08-31-hr-module-design.md` | ★ C端「人事」页签：打卡考勤/请假审批/薪资核算/财务凭证 4模块20功能点，13张hr_*表+30端点+4阶段实施；P1 已上线，P2/P3/P4（凭证+报表+考勤机导入）已实施待部署（P4 后端质量审查修复见 CHANGE.md 2026-09-01 条目），实施计划 docs/superpowers/plans/2026-09-01-hr-p2-leave.md 与 2026-09-01-hr-p3-salary.md |
+| 移除团队权限隔离 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-09-remove-team-permission-design.md` | ★ 读全局放开（KB/智能体/对话助手/搜索应用/文件所有人可见）+ 写 owner-only；9 处后端改动点、不动数据模型与前端，后续写权限由 /permission RBAC 承接；未实施 |
 
 
 
