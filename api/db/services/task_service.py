@@ -524,6 +524,18 @@ def has_canceled(task_id):
     return False
 
 
+def cancel_task(task_id):
+    """Write the cancel flag so `has_canceled` polling in task executor
+    picks it up and aborts the run. Idempotent: safe to call for
+    unknown/already-finished task ids."""
+    try:
+        REDIS_CONN.set(f"{task_id}-cancel", "x")
+    except Exception as e:
+        logging.exception(e)
+        return False
+    return True
+
+
 def clear_canceled(task_id):
     """Clear the cancel flag before starting a new run so a previous
     stop/cancel doesn't block the next conversation with the same agent."""

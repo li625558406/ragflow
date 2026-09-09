@@ -48,7 +48,7 @@ from api.db.services.document_service import DocumentService
 from api.db.services.file_service import FileService
 from api.db.services.knowledgebase_service import KnowledgebaseService
 from api.db.services.pipeline_operation_log_service import PipelineOperationLogService
-from api.db.services.task_service import CANVAS_DEBUG_DOC_ID, TaskService, queue_dataflow
+from api.db.services.task_service import CANVAS_DEBUG_DOC_ID, TaskService, cancel_task, queue_dataflow
 from api.db.services.user_service import TenantService, UserService
 from api.db.services.user_canvas_version import UserCanvasVersionService
 from api.utils.api_utils import (
@@ -332,6 +332,15 @@ async def download_agent_file():
     created_by = request.args.get("created_by")
     blob = FileService.get_blob(created_by, id)
     return Response(blob)
+
+
+@manager.route("/agents/tasks/<task_id>/cancel", methods=["POST"])  # noqa: F821
+@login_required
+async def cancel_agent_task(task_id):
+    # Write the Redis cancel flag; the running executor polls has_canceled
+    # and aborts. Idempotent: unknown/finished task ids also return success.
+    cancel_task(task_id)
+    return get_json_result(data=True)
 
 
 async def _iter_session_completion_events(tenant_id, agent_id, req, return_trace):
