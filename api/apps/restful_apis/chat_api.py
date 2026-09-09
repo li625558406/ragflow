@@ -41,7 +41,7 @@ from api.db.services.knowledgebase_service import KnowledgebaseService
 from api.db.services.llm_service import LLMBundle
 from api.db.services.search_service import SearchService
 from api.db.services.tenant_llm_service import TenantLLMService
-from api.db.services.user_service import TenantService, UserTenantService
+from api.db.services.user_service import TenantService
 from api.utils.api_utils import (
     check_duplicate_ids,
     get_data_error_result,
@@ -383,19 +383,7 @@ def list_chats():
 @login_required
 def get_chat(chat_id):
     try:
-        tenants = UserTenantService.query(user_id=current_user.id)
-        for tenant in tenants:
-            if DialogService.query(
-                tenant_id=tenant.tenant_id, id=chat_id, status=StatusEnum.VALID.value
-            ):
-                break
-        else:
-            return get_json_result(
-                data=False,
-                message="No authorization.",
-                code=RetCode.AUTHENTICATION_ERROR,
-            )
-
+        # 2026-09-09 移除团队隔离：读全局放开，存在即可见
         ok, chat = DialogService.get_by_id(chat_id)
         if not ok:
             return get_data_error_result(message="Chat not found!")

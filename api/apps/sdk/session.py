@@ -33,7 +33,6 @@ from api.db.services.knowledgebase_service import KnowledgebaseService
 from api.db.services.llm_service import LLMBundle
 from common.metadata_utils import apply_meta_data_filter
 from api.db.services.search_service import SearchService
-from api.db.services.user_service import UserTenantService
 from api.db.joint_services.tenant_model_service import get_tenant_default_model_by_type, get_model_config_by_id, \
     get_model_config_by_type_and_name
 from common.misc_utils import get_uuid
@@ -359,7 +358,6 @@ async def retrieval_test_embedded():
     async def _retrieval():
         nonlocal similarity_threshold, vector_similarity_weight, top, rerank_id
         local_doc_ids = list(doc_ids) if doc_ids else []
-        tenant_ids = []
         _question = question
 
         meta_data_filter = {}
@@ -393,19 +391,17 @@ async def retrieval_test_embedded():
             metas = DocMetadataService.get_flatted_meta_by_kbs(kb_ids)
             local_doc_ids = await apply_meta_data_filter(meta_data_filter, metas, _question, chat_mdl, local_doc_ids)
 
-        tenants = UserTenantService.query(user_id=tenant_id)
+        # 2026-09-09 移除团队隔离：读全局放开，逐个 KB 取 owner tenant 构造索引名列表
+        tenant_ids = []
+        kb = None
         for kb_id in kb_ids:
-            for tenant in tenants:
-                if KnowledgebaseService.query(tenant_id=tenant.tenant_id, id=kb_id):
-                    tenant_ids.append(tenant.tenant_id)
-                    break
-            else:
-                return get_json_result(data=False, message="Only owner of dataset authorized for this operation.",
-                                       code=RetCode.OPERATING_ERROR)
-
-        e, kb = KnowledgebaseService.get_by_id(kb_ids[0])
-        if not e:
-            return get_error_data_result(message="Knowledgebase not found!")
+            _e, _kb = KnowledgebaseService.get_by_id(kb_id)
+            if not _e:
+                return get_error_data_result(message="Knowledgebase not found!")
+            tenant_ids.append(_kb.tenant_id)
+            if kb is None:
+                kb = _kb
+        tenant_ids = list(dict.fromkeys(tenant_ids))
 
         if langs:
             _question = await cross_languages(kb.tenant_id, None, _question, langs)
@@ -519,14 +515,7 @@ async def detail_share_embedded():
     if not tenant_id:
         return get_error_data_result(message="permission denined.")
     try:
-        tenants = UserTenantService.query(user_id=tenant_id)
-        for tenant in tenants:
-            if SearchService.query(tenant_id=tenant.tenant_id, id=search_id):
-                break
-        else:
-            return get_json_result(data=False, message="Has no permission for this operation.",
-                                   code=RetCode.OPERATING_ERROR)
-
+        # 2026-09-09 移除团队隔离：读全局放开，存在即可见
         search = SearchService.get_detail(search_id)
         if not search:
             return get_error_data_result(message="Can't find this Search App!")

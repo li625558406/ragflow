@@ -918,7 +918,6 @@ async def search(dataset_id: str, tenant_id: str, req: dict):
     from api.db.services.doc_metadata_service import DocMetadataService
     from api.db.services.llm_service import LLMBundle
     from api.db.services.search_service import SearchService
-    from api.db.services.user_service import UserTenantService
     from common.constants import LLMType
     from common.metadata_utils import apply_meta_data_filter
     from rag.app.tag import label_question
@@ -978,14 +977,8 @@ async def search(dataset_id: str, tenant_id: str, req: dict):
         metas = DocMetadataService.get_flatted_meta_by_kbs([dataset_id])
         local_doc_ids = await apply_meta_data_filter(meta_data_filter, metas, question, chat_mdl, local_doc_ids)
 
-    tenant_ids = []
-    tenants = UserTenantService.query(user_id=tenant_id)
-    for tenant in tenants:
-        if KnowledgebaseService.query(tenant_id=tenant.tenant_id, id=dataset_id):
-            tenant_ids.append(tenant.tenant_id)
-            break
-    else:
-        return False, "Only owner of dataset authorized for this operation."
+    # 2026-09-09 移除团队隔离：读全局放开，检索索引名直接用目标 KB 的 owner tenant
+    tenant_ids = [kb.tenant_id]
 
     _question = question
     if langs:

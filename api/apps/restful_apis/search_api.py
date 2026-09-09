@@ -24,7 +24,7 @@ from api.constants import DATASET_NAME_LIMIT
 from api.db.db_models import DB
 from api.db.services import duplicate_name
 from api.db.services.search_service import SearchService
-from api.db.services.user_service import TenantService, UserTenantService
+from api.db.services.user_service import TenantService
 from common.misc_utils import get_uuid
 from common.constants import RetCode, StatusEnum
 from api.utils.api_utils import get_data_error_result, get_json_result, get_request_json, server_error_response, validate_request
@@ -95,13 +95,7 @@ def list_searches():
 @login_required
 def detail(search_id):
     try:
-        tenants = UserTenantService.query(user_id=current_user.id)
-        for tenant in tenants:
-            if SearchService.query(tenant_id=tenant.tenant_id, id=search_id):
-                break
-        else:
-            return get_json_result(data=False, message="Has no permission for this operation.", code=RetCode.OPERATING_ERROR)
-
+        # 2026-09-09 移除团队隔离：读全局放开，存在即可见
         search = SearchService.get_detail(search_id)
         if not search:
             return get_data_error_result(message="Can't find this Search App!")
