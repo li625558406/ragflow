@@ -131,6 +131,10 @@ GENERATE_SYSTEM = (
     "3. 只输出一个 JSON 对象：{\"字段key\": \"字段值或null\", ...}，不要输出任何其他文字。")
 
 
+class GenerateCancelled(Exception):
+    """should_cancel 命中时抛出：调用方（组件/B端管道）捕获后各自收口。"""
+
+
 def _clean_for_prompt(text: str, max_len: int) -> str:
     """用户可控的 description/name/retrieval_query 进 prompt 前清洗：
     去控制字符 + 截断。这些字段是 prompt 注入面（遗留债③），只能清洗+截断。"""
@@ -199,7 +203,8 @@ async def generate_values(tenant_id: str, placeholders: list[dict], chunks_by_ke
                           params: dict | None = None,
                           batch_size: int = BATCH_SIZE,
                           sem: asyncio.Semaphore | None = None,
-                          on_progress=None) -> tuple[dict, set]:
+                          on_progress=None,
+                          should_cancel=None) -> tuple[dict, set]:
     """LLM 批量产值：一次调用产 ≤batch_size 个字段值（超出分批），批次间并发
     （GENERATE_CONCURRENCY 路；字段独立无依赖，并发安全）。
     batch_size 为 0/None 等假值时兜底为 BATCH_SIZE（step 与 slice 必须同值，
@@ -208,6 +213,9 @@ async def generate_values(tenant_id: str, placeholders: list[dict], chunks_by_ke
     总并发不超闸值）；不传则内部自建。
     on_progress 为可选回调 (done, total)：每批 LLM 返回后即回调一次（批次并发下
     完成顺序不定），进度上报用；回调异常被吞掉不影响产值。
+    should_cancel 为可选取消探针（无参同步回调，返回 True 表示外部要求取消）：
+    每批拿到信号量后、以及每批结果回收后各检查一次，命中即抛 GenerateCancelled，
+    在途批次结果丢弃不落返回值；传 None 时行为与不取消完全一致。
     返回 (values, missing_keys)。每字段证据最多取 6 片（片段已截 800 字）。"""
     step = max(int(batch_size or BATCH_SIZE), 1)
     batches = [placeholders[i:i + step] for i in range(0, len(placeholders), step)]
@@ -241,20 +249,28 @@ async def generate_values(tenant_id: str, placeholders: list[dict], chunks_by_ke
     async def _one(batch: list[dict]):
         user_msg = _build_msg(batch)
         async with sem:
+            if should_cancel and should_cancel():
+                raise GenerateCancelled()
             ans = await mdl.async_chat(GENERATE_SYSTEM, [{"role": "user", "content": user_msg}])
         return batch, _extract_json(ans)
 
     total = sum(len(b) for b in batches)
     done_slots = 0
     results = []
-    for fut in asyncio.as_completed([_one(b) for b in batches]):
-        results.append(await fut)
-        if on_progress:
-            done_slots += len(results[-1][0])
-            try:
-                on_progress(done_slots, total)
-            except Exception:
-                logger.exception("generate_values on_progress callback failed")
+    try:
+        for fut in asyncio.as_completed([_one(b) for b in batches]):
+            results.append(await fut)
+            if should_cancel and should_cancel():
+                raise GenerateCancelled()
+            if on_progress:
+                done_slots += len(results[-1][0])
+                try:
+                    on_progress(done_slots, total)
+                except Exception:
+                    logger.exception("generate_values on_progress callback failed")
+    except GenerateCancelled:
+        logger.info("generate_values cancelled: %d/%d batches done", len(results), len(batches))
+        raise
     missing: set = set()
     values: dict = {}
     for batch, raw in results:
@@ -323,12 +339,18 @@ def _render_result(task, ver, placeholders: list[dict], values: dict, tpl_file_t
 
 
 async def _retrieve_all(tenant_id: str, placeholders: list[dict], kb_ids: list[str],
-                        params: dict, task_id: str = "") -> tuple[dict, dict]:
+                        params: dict, task_id: str = "",
+                        should_cancel=None, sem: asyncio.Semaphore | None = None) -> tuple[dict, dict]:
     """逐槽检索公共段（execute_task 与 dry_run 共用，纯抽取）：单槽失败降级为
     空证据（该字段留空待人工二次加工），不中断整单；kb_ids 为空时全槽直接空证据
     （不进 retrieve_slot，省 N 次无意义异常+warning）。
     llm 槽并发检索（RETRIEVAL_CONCURRENCY 路信号量），大模板（百级填写点）串行
     会被单次 ES 查询秒级~百秒级耗时放大成小时级阻塞；检索上下文只加载一次。
+    should_cancel 为可选取消探针（无参同步回调，返回 True 表示外部要求取消）：
+    每槽拿到信号量后检查，命中即抛 GenerateCancelled（穿透单槽降级路径向上抛，
+    在途槽结果丢弃）；传 None 时行为与不取消完全一致。
+    sem 为可选注入的共享信号量（跨层共享并发闸）；不传则内部按
+    RETRIEVAL_CONCURRENCY 自建，行为不变。
     返回 (chunks_by_key, evidence) 双结构。task_id 仅用于日志上下文（dry_run 无任务 id）。"""
     chunks_by_key: dict = {}
     evidence: dict = {}
@@ -350,16 +372,26 @@ async def _retrieve_all(tenant_id: str, placeholders: list[dict], kb_ids: list[s
         except Exception as e:  # noqa: BLE001 — 上下文加载失败等价全部槽降级空证据
             logger.warning("load_retrieval_ctx failed, task=%s: %s", task_id, e)
 
-    sem = asyncio.Semaphore(RETRIEVAL_CONCURRENCY)
+    sem = sem if sem is not None else asyncio.Semaphore(RETRIEVAL_CONCURRENCY)
 
     async def _one(key: str, query: str, it: dict):
         async with sem:
+            if should_cancel and should_cancel():
+                raise GenerateCancelled()
             chunks = await retrieve_slot(tenant_id, kb_ids, query,
                                          it.get("top_k") or TOP_K_DEFAULT, ctx=ctx)
         return key, chunks
 
     results = await asyncio.gather(
         *[_one(key, query, it) for key, query, it in todo], return_exceptions=True)
+    # 取消必须穿透单槽降级路径（return_exceptions 会把异常当结果收进来）：
+    # 命中即整体向上抛，在途/已完成槽结果丢弃，不落返回值
+    for res in results:
+        if isinstance(res, GenerateCancelled):
+            logger.info("_retrieve_all cancelled: task=%s %d/%d slots done",
+                        task_id, sum(1 for r in results if not isinstance(r, GenerateCancelled)),
+                        len(todo))
+            raise res
     for (key, _query, _it), res in zip(todo, results):
         if isinstance(res, BaseException):
             logger.warning("retrieve_slot failed, task=%s key=%s: %s", task_id, key, res)
@@ -371,11 +403,17 @@ async def _retrieve_all(tenant_id: str, placeholders: list[dict], kb_ids: list[s
 
 
 async def retrieve_all_shared(tenant_id: str, placeholders_list: list[list[dict]],
-                              kb_ids: list[str], task_id: str = "") -> list[dict]:
+                              kb_ids: list[str], task_id: str = "",
+                              should_cancel=None, sem: asyncio.Semaphore | None = None) -> list[dict]:
     """多范本共享检索（画布多范本节点专用）：各范本占位符平铺后按 (top_k, query)
     去重——不同范本的填写点检索词高度重合（同域政务范本尤其如此），同一检索词
     只查一次 ES，结果按 key 分发回各自范本。槽位归集/降级语义与 _retrieve_all
     一致：param/无 key 槽不进检索、单槽失败降级空证据、上下文加载失败全槽空。
+    should_cancel 为可选取消探针（无参同步回调，返回 True 表示外部要求取消）：
+    每槽拿到信号量后检查，命中即抛 GenerateCancelled（单槽降级不吞取消信号，
+    在途槽结果丢弃）；传 None 时行为与不取消完全一致。
+    sem 为可选注入的共享信号量（跨层共享并发闸，多范本 × 槽位总并发不超闸值）；
+    不传则内部按 RETRIEVAL_CONCURRENCY 自建，行为不变。
     返回与入参等长的 [{key: {"chunks": [...], "query": ...}}, ...]。"""
     slots_list: list[dict] = []
     todo: dict[tuple[int, str], None] = {}   # (top_k, query) → 去重保序
@@ -401,18 +439,26 @@ async def retrieve_all_shared(tenant_id: str, placeholders_list: list[list[dict]
         logger.warning("load_retrieval_ctx failed, task=%s: %s", task_id, e)
         return slots_list
 
-    sem = asyncio.Semaphore(RETRIEVAL_CONCURRENCY)
+    sem = sem if sem is not None else asyncio.Semaphore(RETRIEVAL_CONCURRENCY)
 
     async def _one(qk: tuple[int, str]):
         top_k, query = qk
         async with sem:
+            # 取消检查必须在单槽降级 try 之外：GenerateCancelled 是控制流信号，
+            # 不是检索失败，不能被降级成空证据
+            if should_cancel and should_cancel():
+                raise GenerateCancelled()
             try:
                 return qk, await retrieve_slot(tenant_id, kb_ids, query, top_k, ctx=ctx)
             except Exception as e:  # noqa: BLE001 — 单槽失败降级空证据
                 logger.warning("retrieve_slot failed, task=%s query=%r: %s", task_id, query, e)
                 return qk, []
 
-    results = await asyncio.gather(*[_one(qk) for qk in todo])
+    try:
+        results = await asyncio.gather(*[_one(qk) for qk in todo])
+    except GenerateCancelled:
+        logger.info("retrieve_all_shared cancelled: task=%s", task_id)
+        raise
     chunks_by_qk = dict(results)
     for slots, placeholders in zip(slots_list, placeholders_list):
         for it in placeholders:

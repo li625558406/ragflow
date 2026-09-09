@@ -747,3 +747,117 @@ def test_generate_values_without_on_progress_unchanged(monkeypatch):
     vals, missing = executor._run_async(
         executor.generate_values("t", placeholders, chunks_by_key, params={}))
     assert vals == {"k1": "v1"} and missing == {"k2"}
+
+
+# ---------- 外部取消原语 should_cancel + 检索信号量注入（组件层接入前置） ----------
+
+def _cancel_after_first():
+    """首次检查放行（False），之后一律取消（True）——模拟「跑到一半收到取消信号」。"""
+    calls = {"n": 0}
+
+    def _cb():
+        calls["n"] += 1
+        return calls["n"] > 1
+
+    return _cb
+
+
+def test_generate_values_should_cancel_raises(monkeypatch):
+    """should_cancel 命中 → 抛 GenerateCancelled（6 占位符 batch_size=3 → 2 批，
+    首查放行其后拦截，在途批次结果丢弃）。"""
+    from rag.svr.template_fill import executor
+
+    async def fake_chat(system, history, gen_conf=None, **kw):
+        return '{"k1": "v"}'
+
+    monkeypatch.setattr(executor, "_build_chat_mdl",
+                        lambda tenant: types.SimpleNamespace(async_chat=fake_chat))
+    placeholders = [{"key": f"k{i}", "name": f"字段{i}", "description": "", "constraints": {}}
+                    for i in range(6)]
+    chunks_by_key = {f"k{i}": {"chunks": []} for i in range(6)}
+    with pytest.raises(executor.GenerateCancelled):
+        executor._run_async(executor.generate_values(
+            "t", placeholders, chunks_by_key, params={}, batch_size=3,
+            should_cancel=_cancel_after_first()))
+
+
+def test_generate_values_no_cancel_regression(monkeypatch):
+    """should_cancel=None：行为与现状完全一致，正常返回 (dict, set)（B端默认路径零变化）。"""
+    from rag.svr.template_fill import executor
+
+    async def fake_chat(system, history, gen_conf=None, **kw):
+        content = history[0]["content"]
+        spec = json.loads(content.split("## 检索证据")[0].split("## 字段清单\n")[1])
+        return json.dumps({s["key"]: f"值-{s['key']}" for s in spec}, ensure_ascii=False)
+
+    monkeypatch.setattr(executor, "_build_chat_mdl",
+                        lambda tenant: types.SimpleNamespace(async_chat=fake_chat))
+    placeholders = [{"key": f"k{i}", "name": f"字段{i}", "description": "", "constraints": {}}
+                    for i in range(4)]
+    chunks_by_key = {f"k{i}": {"chunks": []} for i in range(4)}
+    vals, missing = executor._run_async(
+        executor.generate_values("t", placeholders, chunks_by_key, params={},
+                                 batch_size=2, should_cancel=None))
+    assert isinstance(vals, dict) and isinstance(missing, set)
+    assert vals == {f"k{i}": f"值-k{i}" for i in range(4)}
+    assert missing == set()
+
+
+def test_retrieve_all_shared_should_cancel(monkeypatch):
+    """retrieve_all_shared should_cancel 命中 → GenerateCancelled，检索未被触达。"""
+    from rag.svr.template_fill import executor
+
+    async def fake_slot(tenant_id, kb_ids, query, top_k=6, ctx=None):
+        raise AssertionError("retrieval must not be reached")
+
+    monkeypatch.setattr(executor, "retrieve_slot", fake_slot)
+    monkeypatch.setattr(executor, "load_retrieval_ctx",
+                        lambda tenant, kbs: ("ctx_kbs", "ctx_embd"))
+    tpl = [{"key": "k1", "name": "字段一", "fill_mode": "llm"},
+           {"key": "k2", "name": "字段二", "fill_mode": "llm"}]
+    with pytest.raises(executor.GenerateCancelled):
+        executor._run_async(executor.retrieve_all_shared(
+            "t", [tpl], ["kb1"], should_cancel=lambda: True))
+
+
+def test_retrieve_all_should_cancel(monkeypatch):
+    """_retrieve_all should_cancel 命中 → GenerateCancelled（穿透 return_exceptions
+    的单槽降级路径向上抛），检索未被触达。"""
+    from rag.svr.template_fill import executor
+
+    async def fake_slot(tenant_id, kb_ids, query, top_k=6, ctx=None):
+        raise AssertionError("retrieval must not be reached")
+
+    monkeypatch.setattr(executor, "retrieve_slot", fake_slot)
+    monkeypatch.setattr(executor, "load_retrieval_ctx",
+                        lambda tenant, kbs: ("ctx_kbs", "ctx_embd"))
+    placeholders = [{"key": "k1", "name": "一", "fill_mode": "llm", "retrieval_query": "q1"},
+                    {"key": "k2", "name": "二", "fill_mode": "llm", "retrieval_query": "q2"}]
+    with pytest.raises(executor.GenerateCancelled):
+        executor._run_async(executor._retrieve_all(
+            "t", placeholders, ["kb1"], {}, should_cancel=lambda: True))
+
+
+def test_retrieve_all_shared_sem_injection_pins_concurrency(monkeypatch):
+    """retrieve_all_shared 注入 sem=Semaphore(1) 生效：4 个独立槽位并发峰值钉在 1，
+    且全部槽位正常完成（注入是替换内部建闸，不是摆设参数）。"""
+    import asyncio
+
+    from rag.svr.template_fill import executor
+    state = {"cur": 0, "peak": 0}
+
+    async def fake_slot(tenant_id, kb_ids, query, top_k=6, ctx=None):
+        state["cur"] += 1
+        state["peak"] = max(state["peak"], state["cur"])
+        await asyncio.sleep(0.01)
+        state["cur"] -= 1
+        return [{"content": query, "doc_id": "d", "doc_name": "n", "similarity": 0.9}]
+
+    monkeypatch.setattr(executor, "retrieve_slot", fake_slot)
+    monkeypatch.setattr(executor, "load_retrieval_ctx",
+                        lambda tenant, kbs: ("ctx_kbs", "ctx_embd"))
+    tpl = [{"key": f"k{i}", "name": f"字段{i}", "fill_mode": "llm"} for i in range(4)]
+    out = executor._run_async(executor.retrieve_all_shared(
+        "t", [tpl], ["kb1"], sem=asyncio.Semaphore(1)))
+    assert state["peak"] == 1, "注入的 Semaphore(1) 未生效（内部默认 6 路会并发）"
+    assert all(len(out[0][f"k{i}"]["chunks"]) == 1 for i in range(4))
