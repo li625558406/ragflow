@@ -78,8 +78,8 @@ def list_searches():
 
     try:
         if not owner_ids:
-            tenants = []
-            search_apps, total = SearchService.get_by_tenant_ids(tenants, current_user.id, page_number, items_per_page, orderby, desc, keywords)
+            # 2026-09-09 移除团队隔离：全局可见
+            search_apps, total = SearchService.get_by_tenant_ids(None, current_user.id, page_number, items_per_page, orderby, desc, keywords)
         else:
             search_apps, total = SearchService.get_by_tenant_ids(owner_ids, current_user.id, 0, 0, orderby, desc, keywords)
             search_apps = [s for s in search_apps if s["tenant_id"] in owner_ids]

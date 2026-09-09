@@ -396,8 +396,8 @@ def list_datasets(tenant_id: str, args: dict):
     if ext_fields.get("owner_ids", []):
         tenant_ids = ext_fields["owner_ids"]
     else:
-        tenants = TenantService.get_joined_tenants_by_user_id(tenant_id)
-        tenant_ids = [m["tenant_id"] for m in tenants]
+        # 2026-09-09 移除团队隔离：不指定 owner_ids 时全局可见
+        tenant_ids = None
     kbs, total = KnowledgebaseService.get_list(tenant_ids, tenant_id, page, page_size, orderby, desc, kb_id, name, keywords, parser_id)
     users = UserService.get_by_ids([m["tenant_id"] for m in kbs])
     user_map = {m.id: m.to_dict() for m in users}
@@ -458,7 +458,7 @@ def delete_knowledge_graph(dataset_id: str, tenant_id: str):
     :param tenant_id: tenant ID
     :return: (success, result) or (success, error_message)
     """
-    if not KnowledgebaseService.accessible(dataset_id, tenant_id):
+    if not KnowledgebaseService.owned(dataset_id, tenant_id):
         return False, "No authorization."
     _, kb = KnowledgebaseService.get_by_id(dataset_id)
     from rag.nlp import search
@@ -482,7 +482,7 @@ def run_index(dataset_id: str, tenant_id: str, index_type: str):
 
     if not dataset_id:
         return False, 'Lack of "Dataset ID"'
-    if not KnowledgebaseService.accessible(dataset_id, tenant_id):
+    if not KnowledgebaseService.owned(dataset_id, tenant_id):
         return False, "No authorization."
 
     ok, kb = KnowledgebaseService.get_by_id(dataset_id)
@@ -683,7 +683,7 @@ def delete_tags(dataset_id: str, tenant_id: str, tags: list[str]):
     if not dataset_id:
         return False, 'Lack of "Dataset ID"'
 
-    if not KnowledgebaseService.accessible(dataset_id, tenant_id):
+    if not KnowledgebaseService.owned(dataset_id, tenant_id):
         return False, "No authorization."
 
     ok, kb = KnowledgebaseService.get_by_id(dataset_id)
@@ -801,7 +801,7 @@ def delete_index(dataset_id: str, tenant_id: str, index_type: str):
     if not dataset_id:
         return False, 'Lack of "Dataset ID"'
 
-    if not KnowledgebaseService.accessible(dataset_id, tenant_id):
+    if not KnowledgebaseService.owned(dataset_id, tenant_id):
         return False, "No authorization."
 
     ok, kb = KnowledgebaseService.get_by_id(dataset_id)
@@ -845,7 +845,7 @@ def run_embedding(dataset_id: str, tenant_id: str):
     if not dataset_id:
         return False, 'Lack of "Dataset ID"'
 
-    if not KnowledgebaseService.accessible(dataset_id, tenant_id):
+    if not KnowledgebaseService.owned(dataset_id, tenant_id):
         return False, "No authorization."
 
     ok, kb = KnowledgebaseService.get_by_id(dataset_id)
@@ -887,7 +887,7 @@ def rename_tag(dataset_id: str, tenant_id: str, from_tag: str, to_tag: str):
     if not dataset_id:
         return False, 'Lack of "Dataset ID"'
 
-    if not KnowledgebaseService.accessible(dataset_id, tenant_id):
+    if not KnowledgebaseService.owned(dataset_id, tenant_id):
         return False, "No authorization."
 
     ok, kb = KnowledgebaseService.get_by_id(dataset_id)
@@ -1060,7 +1060,6 @@ async def search_all(tenant_id: str, req: dict):
         get_tenant_default_model_by_type,
     )
     from api.db.services.llm_service import LLMBundle
-    from api.db.services.user_service import UserTenantService
     from common.constants import LLMType
     from rag.app.tag import label_question
     from rag.prompts.generator import keyword_extraction
@@ -1080,19 +1079,16 @@ async def search_all(tenant_id: str, req: dict):
 
     # Resolve all accessible KBs for this tenant
     requested_kb_ids = req.get("kb_ids") or []
-    tenants = UserTenantService.query(user_id=tenant_id)
-    tenant_ids = [t.tenant_id for t in tenants]
 
-    if not tenant_ids:
-        return True, {"chunks": [], "total": 0, "doc_aggs": [], "kb_names": {}}
-
-    # Get all permitted KB IDs (team KBs from joined tenants + owned KBs)
+    # 2026-09-09 移除团队隔离：全局可见全部 KB
     all_kb_records, _ = KnowledgebaseService.get_by_tenant_ids(
-        tenant_ids, tenant_id,
+        None, tenant_id,
         page_number=None, items_per_page=None,
         orderby="create_time", desc=True, keywords=""
     )
     all_kb_ids = [kb["id"] for kb in all_kb_records]
+    # 检索层用 tenant_ids 构造索引名列表，需覆盖目标 KB 的 owner tenant
+    tenant_ids = list({kb["tenant_id"] for kb in all_kb_records})
 
     # Filter to requested KBs if specified, otherwise use all
     if requested_kb_ids:

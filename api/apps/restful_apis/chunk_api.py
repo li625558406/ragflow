@@ -201,7 +201,7 @@ async def get_chunk(tenant_id, dataset_id, document_id, chunk_id):
 @login_required
 @add_tenant_id_to_kwargs
 async def add_chunk(tenant_id, dataset_id, document_id):
-    if not KnowledgebaseService.accessible(kb_id=dataset_id, user_id=tenant_id):
+    if not KnowledgebaseService.owned(kb_id=dataset_id, user_id=tenant_id):
         return get_error_data_result(message=f"You don't own the dataset {dataset_id}.")
     doc = DocumentService.query(id=document_id, kb_id=dataset_id)
     if not doc:
@@ -287,7 +287,7 @@ async def add_chunk(tenant_id, dataset_id, document_id):
 @login_required
 @add_tenant_id_to_kwargs
 async def rm_chunk(tenant_id, dataset_id, document_id):
-    if not KnowledgebaseService.accessible(kb_id=dataset_id, user_id=tenant_id):
+    if not KnowledgebaseService.owned(kb_id=dataset_id, user_id=tenant_id):
         return get_error_data_result(message=f"You don't own the dataset {dataset_id}.")
     docs = DocumentService.query(id=document_id, kb_id=dataset_id)
     if not docs:
@@ -331,7 +331,7 @@ async def rm_chunk(tenant_id, dataset_id, document_id):
 @login_required
 @add_tenant_id_to_kwargs
 async def update_chunk(tenant_id, dataset_id, document_id, chunk_id):
-    if not KnowledgebaseService.accessible(kb_id=dataset_id, user_id=tenant_id):
+    if not KnowledgebaseService.owned(kb_id=dataset_id, user_id=tenant_id):
         return get_error_data_result(message=f"You don't own the dataset {dataset_id}.")
     doc = DocumentService.query(id=document_id, kb_id=dataset_id)
     if not doc:
@@ -414,7 +414,7 @@ async def update_chunk(tenant_id, dataset_id, document_id, chunk_id):
 @login_required
 @add_tenant_id_to_kwargs
 async def switch_chunks(tenant_id, dataset_id, document_id):
-    if not KnowledgebaseService.accessible(kb_id=dataset_id, user_id=tenant_id):
+    if not KnowledgebaseService.owned(kb_id=dataset_id, user_id=tenant_id):
         return get_error_data_result(message=f"You don't own the dataset {dataset_id}.")
     req = await get_request_json()
     if not req.get("chunk_ids"):

@@ -367,8 +367,9 @@ def list_chats():
                 start = (page_number - 1) * items_per_page
                 chats = chats[start : start + items_per_page]
         else:
+            # 2026-09-09 移除团队隔离：全局可见
             chats, total = DialogService.get_by_tenant_ids(
-                [], current_user.id, page_number, items_per_page, orderby, desc, keywords, **exact_filters
+                None, current_user.id, page_number, items_per_page, orderby, desc, keywords, **exact_filters
             )
 
         return get_json_result(

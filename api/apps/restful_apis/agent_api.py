@@ -49,7 +49,7 @@ from api.db.services.file_service import FileService
 from api.db.services.knowledgebase_service import KnowledgebaseService
 from api.db.services.pipeline_operation_log_service import PipelineOperationLogService
 from api.db.services.task_service import CANVAS_DEBUG_DOC_ID, TaskService, cancel_task, queue_dataflow
-from api.db.services.user_service import TenantService, UserService
+from api.db.services.user_service import UserService
 from api.db.services.user_canvas_version import UserCanvasVersionService
 from api.utils.api_utils import (
     add_tenant_id_to_kwargs,
@@ -295,15 +295,19 @@ def get_agent_session(agent_id, session_id, tenant_id):
 @manager.route("/agents/<agent_id>/sessions/<session_id>", methods=["DELETE"])  # noqa: F821
 @login_or_apikey_required
 def delete_agent_session_item(agent_id, session_id, tenant_id):
-    if not UserCanvasService.accessible(agent_id, tenant_id):
+    # 2026-09-09 移除团队隔离：仅会话创建者或 agent 所有者可删除会话
+    _, conv = API4ConversationService.get_by_id(session_id)
+    _, user_canvas = UserCanvasService.get_by_id(agent_id)
+    conv_owner = bool(conv) and conv.user_id == tenant_id
+    canvas_owner = bool(user_canvas) and user_canvas.user_id == tenant_id
+    if not (conv_owner or canvas_owner):
         return get_json_result(
             data=False,
-            message="Only owner of canvas authorized for this operation.",
+            message="No authorization for this operation.",
             code=RetCode.OPERATING_ERROR,
         )
     # Clean up uploaded files from MinIO before deleting the conversation
     try:
-        _, conv = API4ConversationService.get_by_id(session_id)
         if conv:
             API4ConversationService.decompress_conv(conv)
             messages = conv.message if isinstance(conv.message, list) else []
@@ -429,25 +433,10 @@ def list_agents(tenant_id):
     items_per_page = int(request.args.get("page_size", 0))
     order_by = request.args.get("orderby", "create_time")
     desc = str(request.args.get("desc", "true")).lower() != "false"
-    tenants = TenantService.get_joined_tenants_by_user_id(tenant_id)
-    authorized_owner_ids = {member["tenant_id"] for member in tenants}
-    authorized_owner_ids.add(tenant_id)
 
-    if owner_ids:
-        requested_owner_ids = set(owner_ids)
-        unauthorized_owner_ids = requested_owner_ids - authorized_owner_ids
-        if unauthorized_owner_ids:
-            return get_json_result(
-                data=False,
-                message="Only authorized owner_ids can be queried.",
-                code=RetCode.OPERATING_ERROR,
-            )
-        effective_owner_ids = list(requested_owner_ids)
-    else:
-        effective_owner_ids = list(authorized_owner_ids)
-
+    # 2026-09-09 移除团队隔离：列表全局可见；owner_ids 仅作为过滤条件，不再做授权校验
     canvas, total = UserCanvasService.get_by_tenant_ids(
-        effective_owner_ids,
+        owner_ids or None,
         tenant_id,
         page_number,
         items_per_page,
@@ -790,7 +779,8 @@ async def update_agent(agent_id, tenant_id):
 @login_required
 @add_tenant_id_to_kwargs
 async def reset_agent(agent_id, tenant_id):
-    if not UserCanvasService.accessible(agent_id, tenant_id):
+    # 2026-09-09 移除团队隔离：reset 覆写 DSL，属写操作，仅 agent 所有者可执行
+    if not UserCanvasService.query(user_id=tenant_id, id=agent_id):
         return get_json_result(
             data=False,
             message="Only owner of canvas authorized for this operation.",

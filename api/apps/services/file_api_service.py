@@ -592,6 +592,5 @@ def get_file_content(uid: str, file_id: str):
     e, file = FileService.get_by_id(file_id)
     if not e:
         return False, "Document not found!"
-    if not check_file_team_permission(file, uid):
-        return False, "No authorization."
+    # 2026-09-09 移除团队隔离：文件下载读操作全局放开
     return True, file
