@@ -295,10 +295,13 @@ def get_agent_session(agent_id, session_id, tenant_id):
 @manager.route("/agents/<agent_id>/sessions/<session_id>", methods=["DELETE"])  # noqa: F821
 @login_or_apikey_required
 def delete_agent_session_item(agent_id, session_id, tenant_id):
-    # 2026-09-09 移除团队隔离：仅会话创建者或 agent 所有者可删除会话
+    # 2026-09-09 移除团队隔离：会话必须属于该 agent（dialog_id==agent_id），
+    # 且仅会话创建者或 agent 所有者可删除，防止跨 agent 越权删除
     _, conv = API4ConversationService.get_by_id(session_id)
+    if not conv or conv.dialog_id != agent_id:
+        return get_data_error_result(message="Session not found.")
     _, user_canvas = UserCanvasService.get_by_id(agent_id)
-    conv_owner = bool(conv) and conv.user_id == tenant_id
+    conv_owner = conv.user_id == tenant_id
     canvas_owner = bool(user_canvas) and user_canvas.user_id == tenant_id
     if not (conv_owner or canvas_owner):
         return get_json_result(

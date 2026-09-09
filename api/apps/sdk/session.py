@@ -41,7 +41,7 @@ from api.utils.api_utils import check_duplicate_ids, get_error_data_result, get_
 from rag.app.tag import label_question
 from rag.prompts.template import load_prompt
 from rag.prompts.generator import cross_languages, keyword_extraction
-from common.constants import RetCode, LLMType
+from common.constants import RetCode, LLMType, StatusEnum
 from common import settings
 
 
@@ -391,12 +391,12 @@ async def retrieval_test_embedded():
             metas = DocMetadataService.get_flatted_meta_by_kbs(kb_ids)
             local_doc_ids = await apply_meta_data_filter(meta_data_filter, metas, _question, chat_mdl, local_doc_ids)
 
-        # 2026-09-09 移除团队隔离：读全局放开，逐个 KB 取 owner tenant 构造索引名列表
+        # 2026-09-09 移除团队隔离：读全局放开，逐个 KB 取 owner tenant 构造索引名列表（软删的 KB 视为不存在）
         tenant_ids = []
         kb = None
         for kb_id in kb_ids:
             _e, _kb = KnowledgebaseService.get_by_id(kb_id)
-            if not _e:
+            if not _e or _kb.status != StatusEnum.VALID.value:
                 return get_error_data_result(message="Knowledgebase not found!")
             tenant_ids.append(_kb.tenant_id)
             if kb is None:

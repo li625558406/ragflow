@@ -383,9 +383,9 @@ def list_chats():
 @login_required
 def get_chat(chat_id):
     try:
-        # 2026-09-09 移除团队隔离：读全局放开，存在即可见
+        # 2026-09-09 移除团队隔离：读全局放开，存在即可见（软删的对话视为不存在）
         ok, chat = DialogService.get_by_id(chat_id)
-        if not ok:
+        if not ok or chat.status != StatusEnum.VALID.value:
             return get_data_error_result(message="Chat not found!")
         return get_json_result(data=_build_chat_response(chat))
     except Exception as ex:

@@ -25,7 +25,7 @@ from api.db.services.file_service import FileService
 from api.db.services.knowledgebase_service import KnowledgebaseService
 from api.db.services.connector_service import Connector2KbService
 from api.db.services.task_service import GRAPH_RAPTOR_FAKE_DOC_ID, TaskService
-from api.db.services.user_service import TenantService, UserService, UserTenantService
+from api.db.services.user_service import TenantService, UserService
 from common.constants import FileSource, StatusEnum
 from api.utils.api_utils import deep_merge, get_parser_config, remap_dictionary_keys, verify_embedding_availability
 
@@ -575,11 +575,10 @@ def list_tags(dataset_id: str, tenant_id: str):
     if not KnowledgebaseService.accessible(dataset_id, tenant_id):
         return False, "No authorization."
 
-    tenants = UserTenantService.get_tenants_by_user_id(tenant_id)
-    tags = []
-    for tenant in tenants:
-        tags += settings.retriever.all_tags(tenant["tenant_id"], [dataset_id])
-    return True, tags
+    ok, kb = KnowledgebaseService.get_by_id(dataset_id)
+    if not ok:
+        return False, f"Invalid Dataset ID '{dataset_id}'"
+    return True, settings.retriever.all_tags(kb.tenant_id, [dataset_id])
 
 
 def aggregate_tags(dataset_ids: list[str], tenant_id: str):
@@ -939,8 +938,8 @@ async def search(dataset_id: str, tenant_id: str, req: dict):
     langs = req.get("cross_languages", [])
 
     if not KnowledgebaseService.accessible(dataset_id, tenant_id):
-        logging.warning("search access denied: dataset=%s tenant=%s", dataset_id, tenant_id)
-        return False, "Only owner of dataset authorized for this operation."
+        logging.warning("search access denied/dataset invalid: dataset=%s tenant=%s", dataset_id, tenant_id)
+        return False, "Dataset not found!"
 
     e, kb = KnowledgebaseService.get_by_id(dataset_id)
     if not e:
