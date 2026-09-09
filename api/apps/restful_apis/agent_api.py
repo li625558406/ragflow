@@ -339,7 +339,13 @@ async def download_agent_file():
 async def cancel_agent_task(task_id):
     # Write the Redis cancel flag; the running executor polls has_canceled
     # and aborts. Idempotent: unknown/finished task ids also return success.
-    cancel_task(task_id)
+    # Only a failed Redis write (cancel_task -> False) is an error.
+    if not cancel_task(task_id):
+        return get_json_result(
+            data=False,
+            message="Failed to write cancel flag to Redis; the task may keep running.",
+            code=RetCode.EXCEPTION_ERROR,
+        )
     return get_json_result(data=True)
 
 

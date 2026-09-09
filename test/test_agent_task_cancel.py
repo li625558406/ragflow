@@ -4,10 +4,11 @@
   1. task_service.cancel_task(task_id) 写入 Redis 键 `{task_id}-cancel`，返回 True；
   2. Redis 异常时记日志并返回 False（不向上抛）；
   3. agent_api 注册路由 POST /agents/tasks/<task_id>/cancel 且带 @login_required，
-     端点委托 cancel_task 并幂等返回成功（不校验 task 是否存在/已结束）。
+     端点委托 cancel_task 并幂等返回成功（不校验 task 是否存在/已结束）；
+  4. cancel_task 返回 False（Redis 写失败）时端点返回非 0 code。
 
 说明：直接 `from api.apps.restful_apis.agent_api import ...` 会触发 api/apps/__init__.py
-的 `settings.init_settings()`，需要本机 Redis/ES。故照 test_agents_webhook_unit.py 的
+的 `settings.init_settings()`，需要本机 Redis/ES。故照 test/test_flow_version_source.py 的
 模式：从源文件 importlib 加载模块，注入最小桩依赖。
 """
 
@@ -134,7 +135,7 @@ class RecordingManager:
 
 
 def _load_agent_api(monkeypatch, cancel_task_stub):
-    """importlib 加载真实 agent_api.py（照 test_agents_webhook_unit.py 的桩集）。"""
+    """importlib 加载真实 agent_api.py（照 test/test_flow_version_source.py 的桩集）。"""
     common_pkg = _register(monkeypatch, "common")
     common_pkg.__path__ = [str(REPO_ROOT / "common")]
     settings_mod = ModuleType("common.settings")
@@ -389,6 +390,23 @@ def test_cancel_endpoint_route_registered(monkeypatch):
     body = res if isinstance(res, dict) else json.loads(res.get_data(as_text=True))
     assert body["code"] == 0, body
     assert body["data"] is True, body
+
+
+def test_cancel_endpoint_redis_write_failure_returns_error(monkeypatch):
+    """cancel_task 返回 False（Redis 写失败）时端点返回非 0 code，不误报成功。"""
+
+    def failing_cancel_task(_task_id):
+        return False
+
+    module = _load_agent_api(monkeypatch, failing_cancel_task)
+    matched = [(rule, options, func) for rule, options, func in module.manager.routes if rule == "/agents/tasks/<task_id>/cancel"]
+    assert matched
+    _rule, _options, func = matched[0]
+
+    res = asyncio.run(func("task-abc"))
+    body = res if isinstance(res, dict) else json.loads(res.get_data(as_text=True))
+    assert body["code"] != 0, body
+    assert body["data"] is False, body
 
 
 def test_cancel_route_no_conflict_with_existing_rules(monkeypatch):
