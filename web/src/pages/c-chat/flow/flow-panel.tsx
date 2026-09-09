@@ -4,14 +4,13 @@ import { usePermission } from '@/hooks/use-permission';
 import { listFlows } from '@/services/flow-service';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  Archive,
   ChevronDown,
   Inbox,
   MessageSquare,
   Plus,
   Waypoints,
 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import CreateFlowDialog from './create-flow-dialog';
 import FlowDetail from './flow-detail';
 import FlowManage from './flow-manage';
@@ -23,7 +22,7 @@ import {
   STATUS_TEXT_COLOR,
 } from './flow-utils';
 
-const SCOPES: { key: FlowScope; label: string }[] = [
+const BASE_SCOPES: { key: FlowScope; label: string }[] = [
   { key: 'todo', label: '待我处理' },
   { key: 'initiated', label: '我发起的' },
   { key: 'joined', label: '我参与的' },
@@ -33,8 +32,6 @@ export default function FlowPanel() {
   const [scope, setScope] = useState<FlowScope>('todo');
   const [activeId, setActiveId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  // 工作台 / 全部流程管理 双视图（管理视图仅超管可见）
-  const [view, setView] = useState<'workbench' | 'manage'>('workbench');
   // 页签采用常驻 hidden-div 模式：不可见时暂停 todo 角标轮询
   const rootRef = useRef<HTMLDivElement>(null);
   const [panelVisible, setPanelVisible] = useState(true);
@@ -46,6 +43,15 @@ export default function FlowPanel() {
   const commentManualRef = useRef(false);
   const qc = useQueryClient();
   const { isSuperuser } = usePermission();
+
+  // 超管追加「全部流程」页签，与其余三视角并列切换
+  const scopes = useMemo(
+    () =>
+      isSuperuser
+        ? [...BASE_SCOPES, { key: 'admin' as FlowScope, label: '全部流程' }]
+        : BASE_SCOPES,
+    [isSuperuser],
+  );
 
   useEffect(() => {
     const el = rootRef.current;
@@ -73,6 +79,8 @@ export default function FlowPanel() {
   const { data, isLoading, isError } = useQuery({
     queryKey: ['flow-list', scope],
     queryFn: () => listFlows(scope),
+    // 全部流程为管理表格视图，左侧列表查询不跑
+    enabled: scope !== 'admin',
   });
 
   const todo = useQuery({
@@ -81,29 +89,29 @@ export default function FlowPanel() {
     refetchInterval: panelVisible ? 30_000 : false,
   });
 
-  const scopeIdx = SCOPES.findIndex((s) => s.key === scope);
+  const scopeIdx = scopes.findIndex((s) => s.key === scope);
   const list = data?.list ?? [];
 
   return (
     <div ref={rootRef} className="flex h-full w-full gap-3">
-      {view === 'workbench' && (
+      {scope !== 'admin' && (
         <>
           {/* 左：流程列表（上）+ 批注模块（下，可折叠），高度平分 */}
           <div className="flex w-80 shrink-0 flex-col overflow-hidden rounded-xl bg-white">
             <div className="flex min-h-0 flex-1 flex-col">
-              {/* 顶栏：分段控件 + 新建 */}
-              <div className="flex shrink-0 items-center gap-2 border-b border-[#F0F0F0] px-3 py-2.5">
-                <div className="relative flex flex-1 rounded-lg bg-[#F2F3F5] p-0.5">
+              {/* 顶栏：分段控件（超管含「全部流程」）+ 下方全宽新建按钮 */}
+              <div className="shrink-0 space-y-2 border-b border-[#F0F0F0] px-3 py-2.5">
+                <div className="relative flex rounded-lg bg-[#F2F3F5] p-0.5">
                   {/* 滑动指示块 */}
                   <span
                     aria-hidden
                     className="absolute inset-y-0.5 left-0.5 rounded-md bg-white shadow-[0_1px_3px_rgba(0,0,0,0.10)] transition-transform duration-200 ease-out"
                     style={{
-                      width: 'calc((100% - 4px) / 3)',
+                      width: `calc((100% - 4px) / ${scopes.length})`,
                       transform: `translateX(${scopeIdx * 100}%)`,
                     }}
                   />
-                  {SCOPES.map((s) => (
+                  {scopes.map((s) => (
                     <button
                       key={s.key}
                       onClick={() => setScope(s.key)}
@@ -122,23 +130,12 @@ export default function FlowPanel() {
                     </button>
                   ))}
                 </div>
-                {isSuperuser && (
-                  <Button
-                    size="icon"
-                    variant="outline"
-                    title="全部流程"
-                    className="h-7 w-7 shrink-0 rounded-full border-[#E5E5E5] text-[#666] transition-transform hover:text-[#1a66fb] active:scale-90"
-                    onClick={() => setView('manage')}
-                  >
-                    <Archive className="h-4 w-4" />
-                  </Button>
-                )}
                 <Button
-                  size="icon"
-                  className="h-7 w-7 shrink-0 rounded-full transition-transform active:scale-90"
+                  className="h-8 w-full gap-1 rounded-lg text-sm font-medium transition-transform active:scale-[0.99]"
                   onClick={() => setCreateOpen(true)}
                 >
                   <Plus className="h-4 w-4" />
+                  新建流程
                 </Button>
               </div>
 
@@ -284,9 +281,9 @@ export default function FlowPanel() {
         </>
       )}
 
-      {view === 'manage' && (
+      {scope === 'admin' && (
         <div className="min-w-0 flex-1">
-          <FlowManage onBack={() => setView('workbench')} />
+          <FlowManage />
         </div>
       )}
 

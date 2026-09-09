@@ -46,7 +46,7 @@ function currentUserId(): string {
   }
 }
 
-export default function FlowManage({ onBack }: { onBack: () => void }) {
+export default function FlowManage() {
   const [filter, setFilter] = useState<FlowFinishedFilter | 'all'>('all');
   const [viewFlowId, setViewFlowId] = useState<string | null>(null);
   const [reinitiate, setReinitiate] = useState<{
@@ -172,16 +172,8 @@ export default function FlowManage({ onBack }: { onBack: () => void }) {
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden rounded-xl border border-[#E5E5E5] bg-white">
-      {/* 顶栏：返回 + 标题 + 视角分段 + 状态筛选 */}
+      {/* 顶栏：状态筛选（页签切换由左侧分段控件承担） */}
       <div className="flex shrink-0 items-center gap-3 border-b border-[#F0F0F0] px-4 py-2.5">
-        <button
-          type="button"
-          onClick={onBack}
-          className="flex cursor-pointer items-center gap-1 text-sm text-[#666] transition-colors hover:text-[#1a66fb]"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          返回
-        </button>
         <span className="text-sm font-semibold text-[#222]">全部流程</span>
 
         <div className="ml-auto flex items-center gap-1.5">
