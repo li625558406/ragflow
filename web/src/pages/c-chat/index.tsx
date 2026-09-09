@@ -573,7 +573,7 @@ export default function CChat() {
   const [agentDropdownOpen, setAgentDropdownOpen] = useState(false);
   const [mainView, setMainView] = useState<
     'chat' | 'collaboration' | 'tools' | 'bid' | 'favorites' | 'flow' | 'hr'
-  >('chat');
+  >('flow');
   const [tabResetKeys, setTabResetKeys] = useState<Record<string, number>>({});
   const [collabDialogOpen, setCollabDialogOpen] = useState(false);
   const [collabMessage, setCollabMessage] = useState('');
