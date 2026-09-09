@@ -52,7 +52,7 @@ deleted_time  BigInteger 可空      -- 软删时间（毫秒时间戳）
 ### 4.2 新增动作端点（均 `@login_required`，仅发起人）
 
 ```
-POST /flow/<flow_id>/delete       软删除
+POST /flow/<flow_id>/soft-delete  软删除（/delete 路由已被现有硬删除端点占用，保持不动）
 POST /flow/<flow_id>/restore      恢复
 POST /flow/<flow_id>/reactivate   重新激活
 ```
@@ -65,7 +65,7 @@ POST /flow/<flow_id>/reactivate   重新激活
 
 ### 4.3 flow_app.py 路由注册
 
-`GET /flow/list` 新增可选参数 `status`（取值 finished/archived/cancelled/deleted，非法值返回 101）；三个新端点按现有路由风格注册。
+`GET /flow/list` 新增可选参数 `status`（取值 finished/archived/cancelled/deleted，非法值返回 101）；三个新端点（soft-delete/restore/reactivate）按现有路由风格注册。
 
 ## 5. 前端
 
