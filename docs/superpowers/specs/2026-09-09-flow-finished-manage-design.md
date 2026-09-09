@@ -20,7 +20,7 @@ C 端「流程」页签（`web/src/pages/c-chat/flow/`）现有左侧列表只�
 | 重新激活语义 | 状态回到发起人节点（initiator），current_version_id 不变，全部历史保留 |
 | 再次发起 | 不新增后端端点，前端复用 POST /flow，预填标题/参与人/最终版本文件（仅 doc/docx） |
 | 常规列表行为 | 上线后 待我处理/我发起的/我参与 只显示进行中流程，终态流程统一去管理页 |
-| 后端方案 | 方案 A：扩展现有 GET /flow/list + 新增 delete/restore/reactivate 三个动作端点 |
+| 后端方案 | 方案 A：扩展现有 GET /flow/list + 新增 soft-delete/restore/reactivate 三个动作端点 |
 | 操作权限 | 删除/恢复/重新激活/再次发起预填 仅发起人；「我参与的」视角仅可查看 |
 
 ## 3. 数据模型
@@ -28,7 +28,7 @@ C 端「流程」页签（`web/src/pages/c-chat/flow/`）现有左侧列表只�
 `flow_instance` 表新增 2 个字段（`api/db/db_models.py` + 项目初始化脚本同步，保证迁移部署安全；存量行取默认值）：
 
 ```
-deleted       SmallInt  默认 0     -- 软删标记：0 正常 / 1 已软删
+deleted       Integer  默认 0      -- 软删标记：0 正常 / 1 已软删（回收站）
 deleted_time  BigInteger 可空      -- 软删时间（毫秒时间戳）
 ```
 
@@ -57,7 +57,7 @@ POST /flow/<flow_id>/restore      恢复
 POST /flow/<flow_id>/reactivate   重新激活
 ```
 
-- **delete**：仅终态（archived/cancelled）且 `deleted=0` 可删；置 `deleted=1, deleted_time=now`。非发起人 → PermissionError；进行中 → ValueError。
+- **soft-delete**：仅终态（archived/cancelled）且 `deleted=0` 可删；置 `deleted=1, deleted_time=now`。非发起人 → PermissionError；进行中 → ValueError。
 - **restore**：仅 `deleted=1` 可恢复；置 `deleted=0, deleted_time=None`。重复恢复幂等返回成功。
 - **reactivate**：仅终态且 `deleted=0` 可激活；`status → initiator`，`current_version_id` 不变；leader/handler 账号已删除/禁用时拒绝并提示；成功后复用现有通知系统告知 leader/handler「流程已重新激活」。
 - 所有状态变更使用**前置状态条件更新**（乐观锁，沿用现有 submit/archive 模式），并发冲突返回「流程状态已变化」。
