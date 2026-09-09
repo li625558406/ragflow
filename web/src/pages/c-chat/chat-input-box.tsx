@@ -28,6 +28,7 @@ import {
   useRef,
   useState,
   type ChangeEventHandler,
+  type ReactNode,
   type RefObject,
 } from 'react';
 
@@ -71,6 +72,8 @@ interface ChatInputBoxProps {
   /** 限制可上传的文件类型（如 '.doc,.docx'），文件选择/拖拽/粘贴均生效 */
   accept?: string;
   autoFocus?: boolean;
+  /** 渲染在发送按钮所在行左侧的可选内容（不传时该行为纯右侧按钮，c-chat 原样） */
+  leftSlot?: ReactNode;
 }
 
 export default function ChatInputBox({
@@ -90,6 +93,7 @@ export default function ChatInputBox({
   onUploadedFilesChange,
   accept,
   autoFocus,
+  leftSlot,
 }: ChatInputBoxProps) {
   const [composing, setComposing] = useState(false);
   // FileUpload 受控队列：raw 文件 + 上传结果（document 对象）
@@ -310,6 +314,11 @@ export default function ChatInputBox({
             autoFocus={autoFocus}
           />
           <div className="flex items-center justify-end gap-2">
+            {leftSlot && (
+              <div className="flex min-w-0 flex-1 items-center gap-2">
+                {leftSlot}
+              </div>
+            )}
             {!sendLoading ? (
               <>
                 <div className="shrink-0 w-9 h-9 flex items-center justify-center">
