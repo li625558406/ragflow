@@ -253,3 +253,49 @@ def test_executor_generate_cancelled_translates_to_cancelled_event(monkeypatch):
     assert stages[-1] == "cancelled"
     assert "failed" not in stages and "filled" not in stages and "done" not in stages
     assert comp._outs.get("download") in (None, "")
+
+
+def test_parse_concurrency_env_defense(monkeypatch):
+    """TEMPLATE_FILL_RETRIEVAL_CONCURRENCY 坏值防御：非数字/空串降级默认（不炸
+    import），0/负数钳到 1（Semaphore(0) 会让首个槽永久阻塞、画布挂死），合法值
+    原样生效，未设走默认。"""
+    from agent.component.template_fill import _parse_concurrency
+
+    monkeypatch.delenv("TEMPLATE_FILL_RETRIEVAL_CONCURRENCY", raising=False)
+    assert _parse_concurrency(2) == 2  # 未设 → 默认
+
+    monkeypatch.setenv("TEMPLATE_FILL_RETRIEVAL_CONCURRENCY", "abc")
+    assert _parse_concurrency(2) == 2  # 非数字 → 降级默认
+    monkeypatch.setenv("TEMPLATE_FILL_RETRIEVAL_CONCURRENCY", "")
+    assert _parse_concurrency(2) == 2  # 空串 → 降级默认
+    monkeypatch.setenv("TEMPLATE_FILL_RETRIEVAL_CONCURRENCY", "0")
+    assert _parse_concurrency(2) == 1  # 0 → 钳到 1（防 Semaphore(0) 挂死）
+    monkeypatch.setenv("TEMPLATE_FILL_RETRIEVAL_CONCURRENCY", "-3")
+    assert _parse_concurrency(2) == 1  # 负数 → 钳到 1
+    monkeypatch.setenv("TEMPLATE_FILL_RETRIEVAL_CONCURRENCY", "5")
+    assert _parse_concurrency(2) == 5  # 合法值 → 原样生效
+
+
+def test_retrieval_cancelled_pushes_cancelled_and_no_output(monkeypatch):
+    """检索阶段取消（生产上最常见窗口：分钟级大 KNN）：retrieve_all_shared 桩抛
+    GenerateCancelled（取消标志恒 False，纯异常路径）→ 组件就地推 cancelled
+    终态，异常不外逸（外逸会被 base.invoke_async 吞成空 _ERROR → canvas 误判
+    正常 + 下游空输出）、不推 failed/done、不写输出。"""
+    import agent.component.template_fill as tf_mod
+
+    cands = [_cand("t1", "范本A", [{"key": "k1", "fill_mode": "llm"}])]
+    comp = _make_comp(cands, None)
+
+    async def fake_shared(*a, **k):
+        raise tf_mod.executor.GenerateCancelled()
+
+    monkeypatch.setattr(tf_mod.executor, "retrieve_all_shared", fake_shared)
+
+    # 取消异常必须在组件内消化（不外逸）：正常返回且推 cancelled 终态
+    asyncio.run(comp._invoke_async())
+    evs = _drain(comp)
+    stages = [e["data"]["stage"] for e in evs]
+    assert "selected" in stages
+    assert stages[-1] == "cancelled"
+    assert "failed" not in stages and "filled" not in stages and "done" not in stages
+    assert comp._outs.get("download") in (None, "")

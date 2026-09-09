@@ -70,8 +70,19 @@ _BEGIN_FIELD_PROMPT_MAX = 200
 _FILL_CONCURRENCY = 4
 # 画布侧 KB 检索并发闸：与产值总闸同理，防止多范本共享检索的槽级并发打爆 ES
 # （executor.retrieve_all_shared 接收外部 sem；B 端任务管道不传 sem，走
-# executor 自建 RETRIEVAL_CONCURRENCY，行为零变化）
-_RETRIEVAL_CONCURRENCY = int(os.getenv("TEMPLATE_FILL_RETRIEVAL_CONCURRENCY", "2"))
+# executor 自建 RETRIEVAL_CONCURRENCY，行为零变化）。env 坏值（非数字/"0"）降级
+# 默认而非炸 import / Semaphore(0) 永久阻塞。
+def _parse_concurrency(default: int) -> int:
+    raw = os.getenv("TEMPLATE_FILL_RETRIEVAL_CONCURRENCY", "")
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        if raw:
+            logger.warning("invalid TEMPLATE_FILL_RETRIEVAL_CONCURRENCY=%r, fallback to %d", raw, default)
+        return default
+
+
+_RETRIEVAL_CONCURRENCY = _parse_concurrency(2)
 
 
 class _FillCancelled(Exception):
@@ -294,10 +305,19 @@ class TemplateFill(ComponentBase):
         # 槽级并发钉在 _RETRIEVAL_CONCURRENCY + 取消探针（批次级取消，命中即中断检索）
         retrieval_sem = asyncio.Semaphore(_RETRIEVAL_CONCURRENCY)
         cancelled = lambda: self.check_if_canceled("TemplateFill retrieval/filling")
-        chunks_list = await executor.retrieve_all_shared(
-            tenant_id, [c["_placeholders"] for c in chosen], kb_ids,
-            task_id=f"canvas:{self._id}",
-            should_cancel=cancelled, sem=retrieval_sem)
+        try:
+            chunks_list = await executor.retrieve_all_shared(
+                tenant_id, [c["_placeholders"] for c in chosen], kb_ids,
+                task_id=f"canvas:{self._id}",
+                should_cancel=cancelled, sem=retrieval_sem)
+        except executor.GenerateCancelled:
+            # 检索阶段取消信号不外逸：_FillCancelled 只在 gather 之后被判定，
+            # 此处转抛会逸出 invoke_async 被吞成 _ERROR（str 为空串 → canvas
+            # 误判正常），UI 悬挂 + 下游空输出。就地与 gather 后分支同行为：
+            # 推 cancelled 终态事件后返回（不落 failed/done、不写输出）。
+            logger.info("TemplateFill %s cancelled during shared retrieval", self._id)
+            self._push_progress({"stage": "cancelled"})
+            return
 
         # ③④ 多范本并行填写（LLM 总并发钉在 _FILL_CONCURRENCY）；单范本失败
         # 不拖死整节点，降级为汇总行提示，其余范本照常产出；每范本推
