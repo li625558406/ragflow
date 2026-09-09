@@ -2258,6 +2258,9 @@ class FlowInstance(DataBaseModel):
     status = CharField(max_length=32, null=False, default="initiator", index=True,
                        help_text="initiator|leader|handler|summary|archived|cancelled（当前文件在谁手上）")
     current_version_id = CharField(max_length=32, null=False, default="", help_text="当前最新版本 id")
+    deleted = IntegerField(null=False, default=0, index=True,
+                           help_text="软删标记：0正常 / 1已软删（回收站）")
+    deleted_time = BigIntegerField(null=True, help_text="软删时间（毫秒时间戳）")
 
     class Meta:
         db_table = "flow_instance"
@@ -2789,6 +2792,9 @@ def migrate_db():
     # AI 识别填写点状态（2026-09-08 后台识别：列表展示识别中/失败，完成后自动保存填写点）
     alter_db_add_column(migrator, "tpl_template", "detect_status", CharField(max_length=16, null=False, help_text="none | running | done | failed", default="none"))
     alter_db_add_column(migrator, "tpl_template", "detect_error", CharField(max_length=512, null=True, help_text="AI 识别失败原因", default=""))
+    # ── 流程软删除（2026-09-09 已结束流程维护页） ──────────────────
+    alter_db_add_column(migrator, "flow_instance", "deleted", IntegerField(null=False, default=0, index=True, help_text="软删标记：0正常 / 1已软删（回收站）"))
+    alter_db_add_column(migrator, "flow_instance", "deleted_time", BigIntegerField(null=True, help_text="软删时间（毫秒时间戳）"))
     if not TplTemplateVersion.table_exists():
         TplTemplateVersion.create_table(safe=True)
         logging.info("template fill: tpl_template_version table created")
