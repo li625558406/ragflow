@@ -56,7 +56,18 @@ RAGFlow 原生「团队」体系通过 `user_tenant` 表实现跨租户资源共
 
 Service 层约定：`get_by_tenant_ids` / `get_list` / `get_all_kb_by_tenant_ids` 系列**签名保留**，租户 ID 列表参数为 `None` 时跳过租户与 `permission` 过滤条件；调用方逐个改为传 `None`。不删函数、不改函数名，保证改动最小可回滚。
 
-### 3.2 明确不改的边界
+### 3.2 补充修订（质量审查发现，2026-09-09）
+
+原写端点 owner 校验盘点遗漏两处——以下端点此前**仅靠 `accessible` 把门**，本次改造后必须补显式 owner 校验：
+
+| 端点 | 位置 | 写风险 | 改法 |
+|---|---|---|---|
+| `POST /agents/<id>/reset` | agent_api.py `reset_agent` | reset 后 `update_by_id` **覆写他人 agent 的 DSL** | accessible 门禁替换为 owner 硬校验 `UserCanvasService.query(user_id=tenant_id, id=agent_id)` |
+| `DELETE /agents/<id>/sessions/<sid>` | agent_api.py `delete_agent_session_item` | 删除他人会话 + MinIO 文件清理 | 允许「会话创建者（conv.user_id）或 agent 所有者」二者之一，其余拒绝 |
+
+**使用类操作明确为终态（全局放开，不算写）**：运行/调试他人智能体（debug_agent_component、chat/completion）、读取他人会话（GET session）。理由：原团队特性即允许成员用 owner 的模型配置运行其智能体；「全局可见」含可运行。他人运行产生的 LLM token 消耗由运行者/平台承担，与原团队行为一致。
+
+### 3.3 明确不改的边界
 
 - 写端点自身的 owner 校验（KB 更新/删除、智能体更新/删除、对话助手更新/删除）保持现状
 - `user_account_service.py:327`（「我的智能体」计数）保持只查自己

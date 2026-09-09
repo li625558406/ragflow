@@ -617,6 +617,47 @@ git commit -m "feat(api): 智能体/对话/搜索服务租户参数 None 全局�
         if not DocumentService.owned(doc_id, user_id):
 ```
 
+- [ ] **Step 7b: 补 agent 写端点缺失的 owner 校验（spec 3.2 修订）**
+
+`reset_agent`（agent_api.py 约 :789-797）：把 accessible 门禁整体替换为 owner 硬校验（沿用 :731/:716 的既有模式）：
+
+```python
+@manager.route("/agents/<agent_id>/reset", methods=["POST"])  # noqa: F821
+@login_required
+@add_tenant_id_to_kwargs
+async def reset_agent(agent_id, tenant_id):
+    # 2026-09-09 移除团队隔离：reset 覆写 DSL，属写操作，仅 agent 所有者可执行
+    if not UserCanvasService.query(user_id=tenant_id, id=agent_id):
+        return get_json_result(
+            data=False,
+            message="Only owner of canvas authorized for this operation.",
+            code=RetCode.OPERATING_ERROR,
+        )
+```
+
+`delete_agent_session_item`（agent_api.py 约 :294-300）：把 accessible 门禁替换为「会话创建者或 agent 所有者」（conv 在后续代码已有获取，直接复用）：
+
+```python
+@manager.route("/agents/<agent_id>/sessions/<session_id>", methods=["DELETE"])  # noqa: F821
+@login_or_apikey_required
+def delete_agent_session_item(agent_id, session_id, tenant_id):
+    # 2026-09-09 移除团队隔离：仅会话创建者或 agent 所有者可删除会话
+    _, conv = API4ConversationService.get_by_id(session_id)
+    _, user_canvas = UserCanvasService.get_by_id(agent_id)
+    conv_owner = bool(conv) and conv.user_id == tenant_id
+    canvas_owner = bool(user_canvas) and user_canvas.user_id == tenant_id
+    if not (conv_owner or canvas_owner):
+        return get_json_result(
+            data=False,
+            message="No authorization for this operation.",
+            code=RetCode.OPERATING_ERROR,
+        )
+```
+
+（注意：替换后函数体内原先后面的 `_, conv = API4ConversationService.get_by_id(session_id)` 获取语句不要重复——把原 try 块内对 conv 的获取与本次获取合并，保持 MinIO 清理逻辑原样。）
+
+`debug_agent_component`（:578）、`get_agent_session`（GET :270）、执行/会话读取类端点：**不改**——使用类操作全局放开是终态（spec 3.2）。
+
 - [ ] **Step 8: chunk_api 写端点 4 处**
 
 先 Read 核对 `:204, :290, :334, :417` 所属函数是 chunks 增/删/改，然后逐处：
