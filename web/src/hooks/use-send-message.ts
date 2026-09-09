@@ -443,6 +443,8 @@ export const useSendMessageBySSE = (
                     );
                   }
                   setDone(true);
+                  // 流正常结束，清空 task_id：卸载/防御性 stop 不再对已结束任务发 cancel
+                  taskIdRef.current = null;
                   break;
                 }
 
@@ -600,6 +602,8 @@ export const useSendMessageBySSE = (
 
                 if (isFinished) {
                   setDone(true);
+                  // 流正常结束，清空 task_id：卸载/防御性 stop 不再对已结束任务发 cancel
+                  taskIdRef.current = null;
                   break;
                 }
               } catch (e) {
