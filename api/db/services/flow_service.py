@@ -127,19 +127,40 @@ class FlowInstanceService(_FlowServiceBase):
         row = cls.model.get_or_none(cls.model.id == flow_id)
         return row.__data__ if row else None
 
+    LIST_TERMINAL = ("archived", "cancelled")
+
     @classmethod
     @DB.connection_context()
-    def list_for_user(cls, user_id: str, scope: str):
-        """scope: todo=待我处理 / initiated=我发起 / joined=我参与 / all=同 joined。"""
+    def list_for_user(cls, user_id: str, scope: str, status: str = ""):
+        """scope: todo=待我处理 / initiated=我发起 / joined=我参与 / all=同 joined。
+        常规查询（status 为空）：统一剔除软删行与终态行——已结束流程统一走管理页。
+        status 非空进入管理页查询（正交于 scope）：
+          finished=未删除的终态 / archived / cancelled=对应终态 /
+          deleted=回收站（仅本人软删的，scope 失效）。"""
         base = (
             (cls.model.initiator_id == user_id)
             | (cls.model.leader_id == user_id)
             | (cls.model.handler_id == user_id)
         )
         q = cls.model.select().where(base)
-        if scope == "todo":
+        not_deleted = cls.model.deleted == 0
+        not_terminal = cls.model.status.not_in(cls.LIST_TERMINAL)
+        if status == "deleted":
+            # 回收站：只看自己软删的流程
+            q = q.where((cls.model.initiator_id == user_id) & (cls.model.deleted == 1))
+        elif status in ("finished", "archived", "cancelled"):
+            terminal = (
+                cls.model.status.in_(cls.LIST_TERMINAL)
+                if status == "finished"
+                else (cls.model.status == status)
+            )
+            q = q.where(not_deleted & terminal)
+            if scope == "initiated":
+                q = q.where(cls.model.initiator_id == user_id)
+        elif scope == "todo":
             q = q.where(
-                cls.model.status.not_in(["archived", "cancelled"])
+                not_deleted
+                & not_terminal
                 & (
                     ((cls.model.status == "initiator") & (cls.model.initiator_id == user_id))
                     | ((cls.model.status == "leader") & (cls.model.leader_id == user_id))
@@ -148,7 +169,14 @@ class FlowInstanceService(_FlowServiceBase):
                 )
             )
         elif scope == "initiated":
-            q = q.where(cls.model.initiator_id == user_id)
+            q = q.where(
+                not_deleted
+                & not_terminal
+                & (cls.model.initiator_id == user_id)
+            )
+        # joined / all：base 已含终态/软删过滤
+        else:
+            q = q.where(not_deleted & not_terminal)
         items = [r.__data__ for r in q.order_by(cls.model.update_time.desc())]
         return items, len(items)
 

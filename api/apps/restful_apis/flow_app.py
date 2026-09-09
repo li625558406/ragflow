@@ -19,7 +19,7 @@
 
 端点：
   - POST   /flow                                    创建流程（发起人上传 v1 文件）
-  - GET    /flow/list?scope=                        流程列表（todo/initiated/joined/all）
+  - GET    /flow/list?scope=&status=                流程列表（scope: todo/initiated/joined/all；status: finished/archived/cancelled/deleted 管理页过滤）
   - GET    /flow/<flow_id>                          流程详情（版本/批注/AI记录/视角）
   - POST   /flow/<flow_id>/version                  追加新版本（人工上传）
   - GET    /flow/<flow_id>/version/<version_id>/download  下载某版本文件
@@ -73,6 +73,7 @@ manager = Blueprint("rest_flow_app", __name__)
 logger = logging.getLogger(__name__)
 
 _SCOPES = ("todo", "initiated", "joined", "all")
+_LIST_STATUS = ("finished", "archived", "cancelled", "deleted")
 
 
 def _err(msg: str, code: int = 100):
@@ -239,7 +240,10 @@ async def list_flows():
         scope = request.args.get("scope", "all")
         if scope not in _SCOPES:
             return _err(f"非法 scope: {scope}，可选值 todo/initiated/joined/all", 101)
-        items, total = FlowInstanceService.list_for_user(current_user.id, scope)
+        status = (request.args.get("status") or "").strip()
+        if status and status not in _LIST_STATUS:
+            return _err(f"非法 status: {status}，可选值 finished/archived/cancelled/deleted", 101)
+        items, total = FlowInstanceService.list_for_user(current_user.id, scope, status)
         return get_json_result(data={"list": items, "total": total})
     except Exception as e:
         logger.exception(e)
