@@ -1,5 +1,6 @@
 // web/src/pages/c-chat/flow/flow-panel.tsx
 import { Button } from '@/components/ui/button';
+import { usePermission } from '@/hooks/use-permission';
 import { listFlows } from '@/services/flow-service';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -32,7 +33,7 @@ export default function FlowPanel() {
   const [scope, setScope] = useState<FlowScope>('todo');
   const [activeId, setActiveId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  // 工作台 / 已结束流程管理 双视图
+  // 工作台 / 全部流程管理 双视图（管理视图仅超管可见）
   const [view, setView] = useState<'workbench' | 'manage'>('workbench');
   // 页签采用常驻 hidden-div 模式：不可见时暂停 todo 角标轮询
   const rootRef = useRef<HTMLDivElement>(null);
@@ -44,6 +45,7 @@ export default function FlowPanel() {
   const [commentCount, setCommentCount] = useState(0);
   const commentManualRef = useRef(false);
   const qc = useQueryClient();
+  const { isSuperuser } = usePermission();
 
   useEffect(() => {
     const el = rootRef.current;
@@ -87,7 +89,7 @@ export default function FlowPanel() {
       {view === 'workbench' && (
         <>
           {/* 左：流程列表（上）+ 批注模块（下，可折叠），高度平分 */}
-          <div className="flex w-80 shrink-0 flex-col overflow-hidden rounded-xl border border-[#E5E5E5] bg-white">
+          <div className="flex w-80 shrink-0 flex-col overflow-hidden rounded-xl bg-white">
             <div className="flex min-h-0 flex-1 flex-col">
               {/* 顶栏：分段控件 + 新建 */}
               <div className="flex shrink-0 items-center gap-2 border-b border-[#F0F0F0] px-3 py-2.5">
@@ -113,22 +115,24 @@ export default function FlowPanel() {
                     >
                       {s.label}
                       {s.key === 'todo' && (todo.data?.total ?? 0) > 0 && (
-                        <span className="ml-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 align-top text-[10px] leading-4 text-white">
+                        <span className="absolute -right-0.5 -top-1.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] leading-4 text-white shadow">
                           {todo.data!.total}
                         </span>
                       )}
                     </button>
                   ))}
                 </div>
-                <Button
-                  size="icon"
-                  variant="outline"
-                  title="已结束流程"
-                  className="h-7 w-7 shrink-0 rounded-full border-[#E5E5E5] text-[#666] transition-transform hover:text-[#1a66fb] active:scale-90"
-                  onClick={() => setView('manage')}
-                >
-                  <Archive className="h-4 w-4" />
-                </Button>
+                {isSuperuser && (
+                  <Button
+                    size="icon"
+                    variant="outline"
+                    title="全部流程"
+                    className="h-7 w-7 shrink-0 rounded-full border-[#E5E5E5] text-[#666] transition-transform hover:text-[#1a66fb] active:scale-90"
+                    onClick={() => setView('manage')}
+                  >
+                    <Archive className="h-4 w-4" />
+                  </Button>
+                )}
                 <Button
                   size="icon"
                   className="h-7 w-7 shrink-0 rounded-full transition-transform active:scale-90"
@@ -246,8 +250,11 @@ export default function FlowPanel() {
             )}
           </div>
 
+          {/* 中间分隔线 */}
+          <div aria-hidden className="w-px shrink-0 bg-[#E5E5E5]" />
+
           {/* 右：详情 */}
-          <div className="min-w-0 flex-1 overflow-hidden rounded-xl border border-[#E5E5E5] bg-white">
+          <div className="min-w-0 flex-1 overflow-hidden rounded-xl bg-white">
             {activeId ? (
               <FlowDetail
                 flowId={activeId}

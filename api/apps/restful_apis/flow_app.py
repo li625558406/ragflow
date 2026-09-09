@@ -75,8 +75,9 @@ manager = Blueprint("rest_flow_app", __name__)
 
 logger = logging.getLogger(__name__)
 
-_SCOPES = ("todo", "initiated", "joined", "all")
+_SCOPES = ("todo", "initiated", "joined", "all", "admin")
 _LIST_STATUS = ("finished", "archived", "cancelled", "deleted")
+_ADMIN_STATUS = ("running", "archived", "cancelled", "deleted")
 
 
 def _err(msg: str, code: int = 100):
@@ -93,6 +94,18 @@ def _require_participant(flow) -> dict:
     if not FlowWorkflow.can_view(flow, current_user.id):
         raise PermissionError("无权访问该流程")
     return flow
+
+
+def _require_viewer(flow) -> dict:
+    """读端点专用：参与人或超级管理员可读（超管「全部流程」视图）。
+    写端点仍走 _require_participant/_require_owner，不放大超管写权限。"""
+    if not flow:
+        raise LookupError("流程不存在")
+    if FlowWorkflow.can_view(flow, current_user.id):
+        return flow
+    if bool(getattr(current_user, "is_superuser", False)):
+        return flow
+    raise PermissionError("无权访问该流程")
 
 
 def _require_owner(flow) -> dict:
@@ -242,11 +255,18 @@ async def list_flows():
     try:
         scope = request.args.get("scope", "all")
         if scope not in _SCOPES:
-            return _err(f"非法 scope: {scope}，可选值 todo/initiated/joined/all", 101)
+            return _err(f"非法 scope: {scope}，可选值 todo/initiated/joined/all/admin", 101)
         status = (request.args.get("status") or "").strip()
-        if status and status not in _LIST_STATUS:
-            return _err(f"非法 status: {status}，可选值 finished/archived/cancelled/deleted", 101)
-        items, total = FlowInstanceService.list_for_user(current_user.id, scope, status)
+        allowed_status = _ADMIN_STATUS if scope == "admin" else _LIST_STATUS
+        if status and status not in allowed_status:
+            return _err(f"非法 status: {status}，可选值 {'/'.join(allowed_status)}", 101)
+        if scope == "admin":
+            # 全部流程：仅超级管理员，返回系统内所有用户的全部流程
+            if not bool(getattr(current_user, "is_superuser", False)):
+                return _err("仅超级管理员可查看全部流程", 403)
+            items, total = FlowInstanceService.list_all(status)
+        else:
+            items, total = FlowInstanceService.list_for_user(current_user.id, scope, status)
         return get_json_result(data={"list": items, "total": total})
     except Exception as e:
         logger.exception(e)
@@ -258,7 +278,7 @@ async def list_flows():
 @login_required
 async def get_flow(flow_id: str):
     try:
-        flow = _require_participant(_flow_dict(flow_id))
+        flow = _require_viewer(_flow_dict(flow_id))
         return get_json_result(data={
             "flow": flow,
             "versions": FlowVersionService.list_by_flow(flow_id),
@@ -886,7 +906,7 @@ async def edit_document(flow_id: str):
 @login_required
 async def download_version(flow_id: str, version_id: str):
     try:
-        flow = _require_participant(_flow_dict(flow_id))
+        flow = _require_viewer(_flow_dict(flow_id))
         version = next((v for v in FlowVersionService.list_by_flow(flow_id) if v["id"] == version_id), None)
         if not version:
             return _err("版本不存在", 404)
@@ -913,7 +933,7 @@ async def version_content(flow_id: str, version_id: str):
     """版本文本提取（服务端化）：供流程 AI 对话附带当前版本作填写证据。
     解析失败返回空文本 + warning，不阻断（前端回退纯 KB 检索）。"""
     try:
-        flow = _require_participant(_flow_dict(flow_id))
+        flow = _require_viewer(_flow_dict(flow_id))
         version = next(
             (v for v in FlowVersionService.list_by_flow(flow_id) if v["id"] == version_id),
             None)

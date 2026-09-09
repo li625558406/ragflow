@@ -47,6 +47,7 @@ import {
   FLOW_STEPS,
   relTime,
   STATUS_BADGE,
+  STATUS_COLOR,
   STATUS_LABEL,
   statusStepIndex,
 } from './flow-utils';
@@ -362,6 +363,7 @@ export default function FlowDetail({
               }`}
             >
               {STATUS_LABEL[flow.status] ?? flow.status}
+              {!terminal && holderName && `·${holderName}`}
             </span>
             {!terminal && holderId && (
               <span className="hidden shrink-0 items-center gap-1 rounded-full bg-[#F7F8FA] px-2 py-0.5 text-xs text-[#888] lg:flex">
@@ -660,10 +662,6 @@ export default function FlowDetail({
         createPortal(
           <div className="flex h-full min-h-0 flex-col border-t border-[#F0F0F0] p-2 text-[#222]">
             <div className="flex min-h-0 flex-1 flex-col bg-white p-3">
-              <div className="mb-2 flex shrink-0 items-center gap-1 text-sm font-medium">
-                <MessageSquare className="h-4 w-4 text-[#1a66fb]" />
-                批注（v{selectedVersion?.version_no ?? '-'}）
-              </div>
               <div className="min-h-0 flex-1 space-y-2 overflow-y-auto">
                 {commentsOf.length === 0 && (
                   <div className="text-xs text-[#999]">暂无批注</div>
@@ -708,16 +706,21 @@ export default function FlowDetail({
 
 /**
  * 流程步骤条：发起 → 领导审批 → 处理 → 汇总审核 → 归档。
- * 已完成节点实心蓝 + 对勾（入场缩放弹出），当前节点描边 + 呼吸光圈，
- * 连线随进度填充；已作废流程全部节点置灰。
+ * 每个节点独立配色（发起蓝/领导紫/处理青/汇总橙/归档绿）：
+ * 已完成节点实心 + 对勾（入场缩放弹出），当前节点描边 + 呼吸光圈，
+ * 连线随进度填充为上一节点色，节点文字同色区分；已作废流程全部节点置灰。
  */
 function FlowStepper({ status }: { status: string }) {
   const currentIdx = statusStepIndex(status);
+  const cancelled = status === 'cancelled';
   return (
     <div className="flex items-center">
       {FLOW_STEPS.map((s, i) => {
         const done = i < currentIdx;
         const current = i === currentIdx;
+        const color = cancelled
+          ? '#C4C4C4'
+          : STATUS_COLOR[s.key]?.main || '#1a66fb';
         return (
           <Fragment key={s.key}>
             {i > 0 && (
@@ -726,28 +729,30 @@ function FlowStepper({ status }: { status: string }) {
                 className="relative mx-1.5 h-0.5 w-7 shrink-0 overflow-hidden rounded bg-[#E8E8E8]"
               >
                 <span
-                  className={`absolute inset-y-0 left-0 rounded bg-[#1a66fb] transition-[width] duration-500 ease-out ${
-                    i <= currentIdx ? 'w-full' : 'w-0'
-                  }`}
+                  className="absolute inset-y-0 left-0 rounded transition-[width] duration-500 ease-out"
+                  style={{
+                    width: i <= currentIdx && !cancelled ? '100%' : '0',
+                    background:
+                      STATUS_COLOR[FLOW_STEPS[i - 1].key]?.main || '#1a66fb',
+                  }}
                 />
               </span>
             )}
             <div className="flex items-center gap-1.5">
               <span className="relative flex h-[18px] w-[18px] shrink-0 items-center justify-center">
-                {current && (
+                {current && !cancelled && (
                   <span
                     aria-hidden
-                    className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#1a66fb] opacity-20 motion-reduce:animate-none"
+                    className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-20 motion-reduce:animate-none"
+                    style={{ background: color }}
                   />
                 )}
                 <span
-                  className={`relative flex h-[18px] w-[18px] items-center justify-center rounded-full border-2 transition-colors duration-200 ${
-                    done
-                      ? 'border-[#1a66fb] bg-[#1a66fb]'
-                      : current
-                        ? 'border-[#1a66fb] bg-white'
-                        : 'border-[#D8D8D8] bg-white'
-                  }`}
+                  className="relative flex h-[18px] w-[18px] items-center justify-center rounded-full border-2 bg-white transition-colors duration-200"
+                  style={{
+                    borderColor: done || current ? color : '#D8D8D8',
+                    background: done ? color : '#FFFFFF',
+                  }}
                 >
                   {done && (
                     <Check
@@ -755,15 +760,23 @@ function FlowStepper({ status }: { status: string }) {
                       strokeWidth={3.5}
                     />
                   )}
-                  {current && (
-                    <span className="h-1.5 w-1.5 rounded-full bg-[#1a66fb]" />
+                  {current && !cancelled && (
+                    <span
+                      className="h-1.5 w-1.5 rounded-full"
+                      style={{ background: color }}
+                    />
                   )}
                 </span>
               </span>
               <span
                 className={`whitespace-nowrap text-xs ${
-                  done || current ? 'font-medium text-[#333]' : 'text-[#AAA]'
+                  cancelled ? 'text-[#AAA]' : 'font-medium'
                 }`}
+                style={
+                  cancelled
+                    ? undefined
+                    : { color: done || current ? color : '#AAAAAA' }
+                }
               >
                 {s.label}
               </span>
@@ -771,7 +784,7 @@ function FlowStepper({ status }: { status: string }) {
           </Fragment>
         );
       })}
-      {status === 'cancelled' && (
+      {cancelled && (
         <span className="ml-3 rounded bg-[#FFF1F0] px-1.5 py-0.5 text-[10px] text-[#E5484D]">
           流程已作废
         </span>
@@ -842,12 +855,12 @@ function ConversationView({
       {chats.map((c) => (
         <div key={c.id} className="space-y-1.5">
           <div className="flex justify-end">
-            <div className="max-w-[80%] whitespace-pre-wrap rounded-lg rounded-br-sm bg-[#EFF4FF] px-3 py-1.5 text-xs leading-relaxed text-[#1a3a6b]">
+            <div className="max-w-[80%] whitespace-pre-wrap rounded-lg rounded-br-sm bg-[#EFF4FF] px-3 py-1.5 text-sm leading-relaxed text-[#1a3a6b]">
               {c.instruction}
             </div>
           </div>
           <div className="flex justify-start">
-            <div className="max-w-[90%] rounded-lg rounded-bl-sm border border-[#ECECEC] bg-white px-3 py-1.5 text-xs leading-relaxed text-[#333]">
+            <div className="max-w-[90%] rounded-lg rounded-bl-sm border border-[#ECECEC] bg-white px-3 py-1.5 text-sm leading-relaxed text-[#333]">
               <ChapteredMarkdown
                 content={normalizeLlmMarkdown(c.response) || '（无回复内容）'}
                 loading={false}
@@ -869,7 +882,7 @@ function ConversationView({
         <div className="space-y-1.5">
           {live.instruction && (
             <div className="flex justify-end">
-              <div className="max-w-[80%] whitespace-pre-wrap rounded-lg rounded-br-sm bg-[#EFF4FF] px-3 py-1.5 text-xs leading-relaxed text-[#1a3a6b]">
+              <div className="max-w-[80%] whitespace-pre-wrap rounded-lg rounded-br-sm bg-[#EFF4FF] px-3 py-1.5 text-sm leading-relaxed text-[#1a3a6b]">
                 {live.instruction}
               </div>
             </div>
@@ -877,7 +890,7 @@ function ConversationView({
           {/* 仅剩成稿条（回复已自动入库、response 为空）时不渲染空回复气泡 */}
           {(live.response || live.busy) && (
             <div className="flex justify-start">
-              <div className="max-w-[90%] rounded-lg rounded-bl-sm border border-[#ECECEC] bg-white px-3 py-1.5 text-xs leading-relaxed text-[#333]">
+              <div className="max-w-[90%] rounded-lg rounded-bl-sm border border-[#ECECEC] bg-white px-3 py-1.5 text-sm leading-relaxed text-[#333]">
                 {live.response ? (
                   <ChapteredMarkdown
                     content={normalizeLlmMarkdown(live.response)}

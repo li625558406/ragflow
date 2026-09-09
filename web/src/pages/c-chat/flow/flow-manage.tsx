@@ -1,5 +1,6 @@
 // web/src/pages/c-chat/flow/flow-manage.tsx
-// 已结束流程管理视图：查看 / 再次发起 / 重新激活 / 软删除（回收站可恢复）。
+// 全部流程管理视图（仅超级管理员）：系统内所有用户的全部流程，
+// 查看 / 再次发起 / 重新激活 / 软删除（回收站可恢复，操作仅流程发起人可用）。
 import { Button } from '@/components/ui/button';
 import {
   downloadVersionBlob,
@@ -24,23 +25,29 @@ import {
 import { useMemo, useState, type ReactNode } from 'react';
 import CreateFlowDialog, { type CreateFlowInitial } from './create-flow-dialog';
 import FlowDetail from './flow-detail';
-import type {
-  FlowFinishedFilter,
-  FlowInstanceItem,
-  FlowManageScope,
-} from './flow-types';
+import type { FlowFinishedFilter, FlowInstanceItem } from './flow-types';
 import { relTime, STATUS_BADGE, STATUS_LABEL } from './flow-utils';
 
-const FILTERS: { key: FlowFinishedFilter; label: string }[] = [
-  { key: 'finished', label: '全部' },
+/** 状态筛选：'all' 表示全部（不传 status） */
+const FILTERS: { key: FlowFinishedFilter | 'all'; label: string }[] = [
+  { key: 'all', label: '全部' },
+  { key: 'running', label: '进行中' },
   { key: 'archived', label: '已归档' },
   { key: 'cancelled', label: '已作废' },
   { key: 'deleted', label: '回收站' },
 ];
 
+/** 当前登录用户 id（操作按钮仅流程发起人可见） */
+function currentUserId(): string {
+  try {
+    return JSON.parse(localStorage.getItem('userInfo') || '{}').id || '';
+  } catch {
+    return '';
+  }
+}
+
 export default function FlowManage({ onBack }: { onBack: () => void }) {
-  const [scope, setScope] = useState<FlowManageScope>('initiated');
-  const [filter, setFilter] = useState<FlowFinishedFilter>('finished');
+  const [filter, setFilter] = useState<FlowFinishedFilter | 'all'>('all');
   const [viewFlowId, setViewFlowId] = useState<string | null>(null);
   const [reinitiate, setReinitiate] = useState<{
     initial: CreateFlowInitial;
@@ -48,10 +55,12 @@ export default function FlowManage({ onBack }: { onBack: () => void }) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [actionError, setActionError] = useState('');
   const qc = useQueryClient();
+  const meId = useMemo(currentUserId, []);
 
-  const { data, isLoading, isError } = useQuery({
-    queryKey: ['flow-manage', scope, filter],
-    queryFn: () => listFlows(scope, filter),
+  const statusParam = filter === 'all' ? undefined : filter;
+  const { data, isLoading, isError, error } = useQuery({
+    queryKey: ['flow-manage', filter],
+    queryFn: () => listFlows('admin', statusParam),
   });
 
   // id → 昵称映射（表格展示领导/处理人名字）
@@ -173,29 +182,7 @@ export default function FlowManage({ onBack }: { onBack: () => void }) {
           <ArrowLeft className="h-4 w-4" />
           返回
         </button>
-        <span className="text-sm font-semibold text-[#222]">已结束流程</span>
-
-        <div className="ml-4 flex overflow-hidden rounded-lg bg-[#F2F3F5] p-0.5">
-          {(
-            [
-              { key: 'initiated', label: '我发起的' },
-              { key: 'joined', label: '我参与的' },
-            ] as { key: FlowManageScope; label: string }[]
-          ).map((s) => (
-            <button
-              key={s.key}
-              type="button"
-              onClick={() => setScope(s.key)}
-              className={`cursor-pointer rounded-md px-3 py-1 text-xs transition-colors ${
-                scope === s.key
-                  ? 'bg-[#1a66fb] text-white'
-                  : 'bg-white text-[#666] hover:bg-[#F7F8FA]'
-              }`}
-            >
-              {s.label}
-            </button>
-          ))}
-        </div>
+        <span className="text-sm font-semibold text-[#222]">全部流程</span>
 
         <div className="ml-auto flex items-center gap-1.5">
           <span className="text-xs text-[#999]">筛选</span>
@@ -226,7 +213,7 @@ export default function FlowManage({ onBack }: { onBack: () => void }) {
 
         {isError && !isLoading && (
           <div className="flex h-full items-center justify-center text-sm text-red-500">
-            加载失败，请稍后重试
+            {(error as Error)?.message || '加载失败，请稍后重试'}
           </div>
         )}
 
@@ -236,7 +223,7 @@ export default function FlowManage({ onBack }: { onBack: () => void }) {
               <Archive className="h-5 w-5 text-[#1a66fb]" />
             </div>
             <div className="text-sm text-[#666]">
-              {inTrash ? '回收站为空' : '暂无已结束的流程'}
+              {inTrash ? '回收站为空' : '暂无流程'}
             </div>
           </div>
         )}
@@ -247,6 +234,7 @@ export default function FlowManage({ onBack }: { onBack: () => void }) {
               <tr className="border-b border-[#F0F0F0] text-xs text-[#999]">
                 <th className="px-4 py-2 text-left font-normal">标题</th>
                 <th className="px-3 py-2 text-left font-normal">状态</th>
+                <th className="px-3 py-2 text-left font-normal">发起人</th>
                 <th className="px-3 py-2 text-left font-normal">领导</th>
                 <th className="px-3 py-2 text-left font-normal">处理人</th>
                 <th className="px-3 py-2 text-left font-normal">最后更新</th>
@@ -277,6 +265,9 @@ export default function FlowManage({ onBack }: { onBack: () => void }) {
                     </span>
                   </td>
                   <td className="whitespace-nowrap px-3 py-2.5 text-[#444]">
+                    {userMap.get(f.initiator_id) || f.initiator_id}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-2.5 text-[#444]">
                     {userMap.get(f.leader_id) || f.leader_id}
                   </td>
                   <td className="whitespace-nowrap px-3 py-2.5 text-[#444]">
@@ -298,7 +289,7 @@ export default function FlowManage({ onBack }: { onBack: () => void }) {
                         <Eye className="h-3.5 w-3.5" />
                       </ActionBtn>
 
-                      {scope === 'initiated' && !inTrash && (
+                      {f.initiator_id === meId && !inTrash && (
                         <>
                           <ActionBtn
                             title="再次发起（预填标题与参与人）"
@@ -341,7 +332,7 @@ export default function FlowManage({ onBack }: { onBack: () => void }) {
                         </>
                       )}
 
-                      {scope === 'initiated' && inTrash && (
+                      {f.initiator_id === meId && inTrash && (
                         <ActionBtn
                           title="恢复"
                           disabled={busyId === f.id}

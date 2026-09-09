@@ -182,6 +182,26 @@ class FlowInstanceService(_FlowServiceBase):
         items = [r.__data__ for r in q.order_by(cls.model.update_time.desc())]
         return items, len(items)
 
+    @classmethod
+    @DB.connection_context()
+    def list_all(cls, status: str = ""):
+        """超管「全部流程」视图：不做参与人过滤，返回系统内全部流程。
+        status: ''=全部（不含回收站）/ running=进行中 / archived / cancelled / deleted=全部用户的回收站。"""
+        q = cls.model.select()
+        if status == "deleted":
+            q = q.where(cls.model.deleted == 1)
+        elif status == "running":
+            q = q.where(
+                (cls.model.deleted == 0)
+                & cls.model.status.not_in(cls.LIST_TERMINAL)
+            )
+        elif status in ("archived", "cancelled"):
+            q = q.where((cls.model.deleted == 0) & (cls.model.status == status))
+        else:
+            q = q.where(cls.model.deleted == 0)
+        items = [r.__data__ for r in q.order_by(cls.model.update_time.desc())]
+        return items, len(items)
+
 
 class FlowVersionService(_FlowServiceBase):
     model = FlowVersion

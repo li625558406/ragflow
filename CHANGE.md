@@ -1,5 +1,18 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-09 流程页签：全部流程管理页超管专属 + 节点状态独立配色（后端+前端，未部署）
+
+**主题**：①原「已结束流程」管理视图改为仅超级管理员可见的「全部流程」——可看系统内所有用户的全部流程；②流程 6 状态节点独立配色（含文字颜色），覆盖详情页时间线步骤条与左侧列表状态标签。
+
+**核心变更**：
+- 后端：`FlowInstanceService.list_all(status)`（不做参与人过滤，deleted/running/archived/cancelled 四分支）；`flow_app.py` list_flows 新增 `scope=admin`（非超管 403，`_ADMIN_STATUS` 校验，其他 scope 行为零变化）；新增 `_require_viewer`（参与人或超管）仅用于 3 个 GET 读端点（详情/版本下载/版本内容）——超管可查看任意未参与流程，写端点仍走 participant/owner 不放大写权限
+- 前端：`flow-manage.tsx` 重写为「全部流程」视图（删除三视角分段改状态筛选 全部/进行中/已归档/已作废/回收站，表格加发起人列，操作按钮改 `initiator_id === meId` 门槛，isError 透传后端 message）；`flow-panel.tsx` Archive 入口包 `usePermission().isSuperuser`；`FlowFinishedFilter` 删 'finished' 改 running/archived/cancelled/deleted，`FlowScope` 加 'admin'
+- 配色：`flow-utils.ts` 四个映射（BADGE/DOT/TEXT_COLOR/STATUS_COLOR）每状态独立色系（发起蓝 #1a66fb / 领导紫 #7C3AED / 处理青 #0E9488 / 汇总橙 #C7810A / 归档绿 #188A52 / 作废红 #E5484D）；`flow-detail.tsx` FlowStepper 重写——节点圈/边框/连线/呼吸光圈/文字全用各节点主色内联 style（Tailwind JIT 不支持运行时拼类名），cancelled 全灰
+
+**审查**：代码审查子代理发现并修复 Critical——超管查看未参与流程详情 403（读端点换 `_require_viewer`，写端点逐个确认未放宽）；另修管理页错误提示吞后端 message。复审结论 READY。
+
+**遗留**：未部署（与「移除团队权限隔离」15 后端文件合并成套：追加 flow_service.py + flow_app.py，前端须 build）；列表无分页（全量返回，存量量小接受）；非参与人超管在详情页写操作显示「无权访问该流程」为预期。
+
 ## 2026-09-09 移除团队权限隔离：读全局放开 + 写 owner-only（后端，未部署）
 
 **主题**：团队（user_tenant）机制未被用作权限模型反而造成资源互相不可见。去掉团队隔离——任何账号的知识库/智能体/对话助手/搜索应用/文件全部互相可见（含 permission='me' 的 KB），写操作（编辑/删除/移动/上传）仅限资源所有者；后续写权限管控统一由 /permission 页面 RBAC 承接。设计 `docs/superpowers/specs/2026-09-09-remove-team-permission-design.md`（方案A 显式全局化），实施计划 `docs/superpowers/plans/2026-09-09-remove-team-permission.md`，5 任务子代理驱动执行（每任务 spec 合规审查+质量审查双循环）。

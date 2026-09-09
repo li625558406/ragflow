@@ -11,11 +11,11 @@ export const STATUS_LABEL: Record<string, string> = {
   cancelled: '已作废',
 };
 
-/** 状态 → 徽章配色（C端 #1a66fb 主色系） */
+/** 状态 → 徽章配色（每节点独立色系：发起蓝 / 领导紫 / 处理青 / 汇总橙 / 归档绿 / 作废红） */
 export const STATUS_BADGE: Record<string, string> = {
   initiator: 'bg-[#EFF4FF] text-[#1a66fb]',
-  leader: 'bg-[#EFF4FF] text-[#1a66fb]',
-  handler: 'bg-[#EFF4FF] text-[#1a66fb]',
+  leader: 'bg-[#F3EFFF] text-[#7C3AED]',
+  handler: 'bg-[#E6F7F5] text-[#0E9488]',
   summary: 'bg-[#FFF7E8] text-[#C7810A]',
   archived: 'bg-[#EAF8F0] text-[#188A52]',
   cancelled: 'bg-[#FFF1F0] text-[#E5484D]',
@@ -24,8 +24,8 @@ export const STATUS_BADGE: Record<string, string> = {
 /** 状态 → 列表小圆点配色 */
 export const STATUS_DOT: Record<string, string> = {
   initiator: 'bg-[#1a66fb]',
-  leader: 'bg-[#1a66fb]',
-  handler: 'bg-[#1a66fb]',
+  leader: 'bg-[#8B5CF6]',
+  handler: 'bg-[#14B8A6]',
   summary: 'bg-[#F5A623]',
   archived: 'bg-[#34C77B]',
   cancelled: 'bg-[#E5484D]',
@@ -34,11 +34,21 @@ export const STATUS_DOT: Record<string, string> = {
 /** 状态 → 列表状态文字配色 */
 export const STATUS_TEXT_COLOR: Record<string, string> = {
   initiator: 'text-[#1a66fb]',
-  leader: 'text-[#1a66fb]',
-  handler: 'text-[#1a66fb]',
+  leader: 'text-[#7C3AED]',
+  handler: 'text-[#0E9488]',
   summary: 'text-[#C7810A]',
   archived: 'text-[#188A52]',
   cancelled: 'text-[#E5484D]',
+};
+
+/** 状态/节点 → 主色与浅底色（hex，供步骤条等需要动态内联样式的场景使用） */
+export const STATUS_COLOR: Record<string, { main: string; soft: string }> = {
+  initiator: { main: '#1a66fb', soft: '#EFF4FF' },
+  leader: { main: '#7C3AED', soft: '#F3EFFF' },
+  handler: { main: '#0E9488', soft: '#E6F7F5' },
+  summary: { main: '#C7810A', soft: '#FFF7E8' },
+  archived: { main: '#188A52', soft: '#EAF8F0' },
+  cancelled: { main: '#E5484D', soft: '#FFF1F0' },
 };
 
 /** 流程五个正向节点（步骤条顺序） */

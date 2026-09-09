@@ -67,7 +67,7 @@ export interface FlowDetail {
   viewer: { is_owner: boolean; is_initiator: boolean; is_leader: boolean };
 }
 
-export type FlowScope = 'todo' | 'initiated' | 'joined' | 'all';
+export type FlowScope = 'todo' | 'initiated' | 'joined' | 'all' | 'admin';
 
 /** 正在进行中的一轮对话（发送后未保存前的流式状态），null 表示无进行中对话 */
 export interface FlowLiveChat {
@@ -78,10 +78,9 @@ export interface FlowLiveChat {
   templateFill?: ITemplateFillState;
 }
 
-/** 已结束流程管理页：视角与状态筛选 */
-export type FlowManageScope = 'initiated' | 'joined';
+/** 全部流程管理页（超管）：状态筛选，''（全部）由调用方转换为不传 status */
 export type FlowFinishedFilter =
-  | 'finished'
+  | 'running'
   | 'archived'
   | 'cancelled'
   | 'deleted';
