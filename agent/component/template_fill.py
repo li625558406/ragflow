@@ -31,6 +31,7 @@ FillTemplate 工具）同样经 component_class 解析且 agent.component 优先
 import asyncio
 import json
 import logging
+import os
 import re
 from functools import partial
 
@@ -67,6 +68,10 @@ _BEGIN_FIELD_PROMPT_MAX = 200
 # 单次画布运行的 LLM 并发总闸：多范本并行 × 产值批次并发共用这一个信号量
 # （executor.generate_values 接收外部 sem），防止多范本时并发调用数相乘打爆 provider
 _FILL_CONCURRENCY = 4
+# 画布侧 KB 检索并发闸：与产值总闸同理，防止多范本共享检索的槽级并发打爆 ES
+# （executor.retrieve_all_shared 接收外部 sem；B 端任务管道不传 sem，走
+# executor 自建 RETRIEVAL_CONCURRENCY，行为零变化）
+_RETRIEVAL_CONCURRENCY = int(os.getenv("TEMPLATE_FILL_RETRIEVAL_CONCURRENCY", "2"))
 
 
 class _FillCancelled(Exception):
@@ -206,11 +211,13 @@ class TemplateFill(ComponentBase):
 
     async def _fill_one(self, tenant_id: str, cand: dict, chunks_by_key: dict, query: str,
                         begin_fields: dict, user_file_text: str, sem: asyncio.Semaphore,
-                        on_progress=None) -> tuple[dict, dict, int]:
+                        on_progress=None, should_cancel=None) -> tuple[dict, dict, int]:
         """对单个选中范本走完整填写 pipeline：LLM 产值 → param 直取 → 渲染。
         检索已由 _invoke_async 跨范本共享完成（chunks_by_key 传入）；sem 为全局
         LLM 并发闸（多范本并行 × 批次并发共用）；on_progress 透传 executor
-        批次产值进度回调 (done, total)。返回 (download_info, cell_status, filled_count)。"""
+        批次产值进度回调 (done, total)；should_cancel 为取消探针，透传给
+        executor.generate_values（命中抛 GenerateCancelled，由调用方转 _FillCancelled）。
+        返回 (download_info, cell_status, filled_count)。"""
         placeholders = cand["_placeholders"]
 
         # ③ 用户上传文件作为填写证据：预置片段插到每槽证据首位（优先于 KB 片段）
@@ -233,7 +240,7 @@ class TemplateFill(ComponentBase):
             background["用户需求描述"] = query[:_BEGIN_FIELD_PROMPT_MAX]
         generated, missing = await executor.generate_values(
             tenant_id, llm_placeholders, llm_chunks, background, sem=sem,
-            on_progress=on_progress)
+            on_progress=on_progress, should_cancel=should_cancel)
         executor._merge_param_values(placeholders, generated, missing, begin_fields)
         values, cell_status = executor.build_values(placeholders, generated)
 
@@ -283,10 +290,14 @@ class TemplateFill(ComponentBase):
         user_file_text = self._user_file_evidence()
 
         # ② 跨范本共享检索：所有选中范本的填写点按 (top_k, 检索词) 去重，
-        # 同一检索词只查一次 ES（多范本重合场景 ES 压力骤减）；单槽失败降级空证据
+        # 同一检索词只查一次 ES（多范本重合场景 ES 压力骤减）；单槽失败降级空证据；
+        # 槽级并发钉在 _RETRIEVAL_CONCURRENCY + 取消探针（批次级取消，命中即中断检索）
+        retrieval_sem = asyncio.Semaphore(_RETRIEVAL_CONCURRENCY)
+        cancelled = lambda: self.check_if_canceled("TemplateFill retrieval/filling")
         chunks_list = await executor.retrieve_all_shared(
             tenant_id, [c["_placeholders"] for c in chosen], kb_ids,
-            task_id=f"canvas:{self._id}")
+            task_id=f"canvas:{self._id}",
+            should_cancel=cancelled, sem=retrieval_sem)
 
         # ③④ 多范本并行填写（LLM 总并发钉在 _FILL_CONCURRENCY）；单范本失败
         # 不拖死整节点，降级为汇总行提示，其余范本照常产出；每范本推
@@ -309,10 +320,14 @@ class TemplateFill(ComponentBase):
             try:
                 dl, cell_status, filled = await self._fill_one(
                     tenant_id, cand, chunks, query, begin_fields,
-                    user_file_text, sem, on_progress=_on_gen_progress)
+                    user_file_text, sem, on_progress=_on_gen_progress,
+                    should_cancel=cancelled)
             except _FillCancelled:
-                # 预留：_fill_one 内部若加取消检查，经此透传；当前由入口与 gather 后统一判定
                 raise
+            except executor.GenerateCancelled:
+                # executor 产值/检索批次级取消信号 → 转抛 _FillCancelled()，与
+                # 入口检查同路，由 gather 后统一判定推 cancelled（不落 failed）
+                raise _FillCancelled() from None
             except Exception as e:
                 logger.warning("TemplateFill %s fill failed: %s", tid, e)
                 self._push_progress({"stage": "failed", "template_id": tid,

@@ -192,7 +192,7 @@ def patched_env(monkeypatch):
     monkeypatch.setattr(fill_template, "TplTemplateVersionService", FakeService)
     monkeypatch.setattr(fill_template.settings, "STORAGE_IMPL", FakeStorage())
 
-    async def fake_retrieve_all_shared(tenant_id, placeholders_list, kb_ids, task_id=""):
+    async def fake_retrieve_all_shared(tenant_id, placeholders_list, kb_ids, task_id="", should_cancel=None, sem=None):
         calls["kb_ids"] = kb_ids
         calls["shared_task_id"] = task_id
         return [{it["key"]: {"chunks": [{"content": "证据", "doc_id": "d", "doc_name": "n",
@@ -201,7 +201,7 @@ def patched_env(monkeypatch):
                 for placeholders in placeholders_list]
 
     async def fake_generate_values(tenant_id, placeholders, chunks_by_key, params,
-                                   batch_size=10, sem=None, on_progress=None):
+                                   batch_size=10, sem=None, on_progress=None, should_cancel=None):
         calls["gen_keys"] = [it["key"] for it in placeholders]
         return {it["key"]: f"值_{it['key']}" for it in placeholders}, set()
 
@@ -347,7 +347,7 @@ def test_invoke_async_query_fallback_sys_query(patched_env):
     _stage_one_candidate()
     seen = {}
 
-    async def fake_retrieve_all_shared(tenant_id, placeholders_list, kb_ids, task_id=""):
+    async def fake_retrieve_all_shared(tenant_id, placeholders_list, kb_ids, task_id="", should_cancel=None, sem=None):
         seen["task_id"] = task_id
         return [{it["key"]: {"chunks": [], "query": it["key"]}
                  for it in placeholders if it.get("key")}
@@ -410,7 +410,7 @@ def test_invoke_async_user_file_evidence_prepended(patched_env, monkeypatch):
     seen = {"chunks": {}, "background": None}
 
     async def fake_generate_values(tenant_id, placeholders, chunks_by_key, params,
-                                   batch_size=10, sem=None, on_progress=None):
+                                   batch_size=10, sem=None, on_progress=None, should_cancel=None):
         seen["chunks"] = {k: v["chunks"] for k, v in chunks_by_key.items()}
         seen["background"] = params
         return {it["key"]: f"值_{it['key']}" for it in placeholders}, set()
@@ -485,7 +485,8 @@ def test_invoke_async_shared_retrieval_called_once_for_multi_templates(patched_e
     FakeService.vers = {t: _ver([_ver_slot("项目名称")]) for t in ("t1", "t2")}
     calls = {"shared": 0}
 
-    async def fake_shared(tenant_id, placeholders_list, kb_ids, task_id=""):
+    async def fake_shared(tenant_id, placeholders_list, kb_ids, task_id="",
+                          should_cancel=None, sem=None):
         calls["shared"] += 1
         assert len(placeholders_list) == 2
         return [{it["key"]: {"chunks": [{"content": f"证据_{tid}", "doc_id": "d",

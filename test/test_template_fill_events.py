@@ -37,7 +37,7 @@ def _make_comp(candidates, fill_results, canceled=False):
     comp._user_file_evidence = lambda: ""
 
     async def _fill_one(tenant_id, cand, chunks, query, begin_fields, user_file_text, sem,
-                        on_progress=None):
+                        on_progress=None, should_cancel=None):
         res = fill_results[cand["template_id"]]
         if isinstance(res, Exception):
             raise res
@@ -61,7 +61,8 @@ def _drain(comp):
 def _run(comp):
     import agent.component.template_fill as tf_mod
 
-    async def fake_retrieve_all(tenant_id, placeholders_list, kb_ids, task_id=""):
+    async def fake_retrieve_all(tenant_id, placeholders_list, kb_ids, task_id="",
+                                should_cancel=None, sem=None):
         return [{} for _ in placeholders_list]
 
     orig = tf_mod.executor.retrieve_all_shared
@@ -174,4 +175,81 @@ def test_cancelled_before_start_no_output():
     comp = _make_comp(cands, {"t1": _dl("d1")}, canceled=True)
     evs = _run(comp)
     assert evs == []
+    assert comp._outs.get("download") in (None, "")
+
+
+def test_cancel_mid_filling_probe_passed_and_cancelled_pushed(monkeypatch):
+    """filling 中途取消标志翻真：generate_values / retrieve_all_shared 收到
+    should_cancel 探针（retrieve 侧还带共享限流 sem），探针命中后推 cancelled
+    且不推 filled/done、不写输出。走真实 _fill_one（executor.generate_values
+    打桩，抛 GenerateCancelled 前不触渲染/存储）。"""
+    import agent.component.template_fill as tf_mod
+
+    cands = [_cand("t1", "范本A", [{"key": "k1", "fill_mode": "llm"}])]
+    comp = _make_comp(cands, None)
+    comp._fill_one = TemplateFill._fill_one.__get__(comp, TemplateFill)  # 真实方法
+
+    seen = {}
+
+    async def fake_gen(tenant_id, placeholders, chunks_by_key, background,
+                       sem=None, on_progress=None, should_cancel=None):
+        seen["should_cancel"] = should_cancel
+        if should_cancel is not None and should_cancel():
+            raise tf_mod.executor.GenerateCancelled()
+        return {it["key"]: "v" for it in placeholders}, set()
+
+    async def fake_shared(tenant_id, placeholders_list, kb_ids, task_id="",
+                          should_cancel=None, sem=None):
+        seen["shared_kwargs"] = {"should_cancel": should_cancel, "sem": sem}
+        return [{} for _ in placeholders_list]
+
+    state = {"n": 0}
+
+    def check(*a, **k):
+        state["n"] += 1
+        return state["n"] >= 3  # 1=入口 2=filling 检查通过；3=产值探针命中
+
+    comp.check_if_canceled = check
+    monkeypatch.setattr(tf_mod.executor, "generate_values", fake_gen)
+    monkeypatch.setattr(tf_mod.executor, "retrieve_all_shared", fake_shared)
+
+    asyncio.run(comp._invoke_async())
+    evs = _drain(comp)
+    stages = [e["data"]["stage"] for e in evs]
+    # generate_values 收到 should_cancel kwarg（无参可调用探针）
+    assert callable(seen["should_cancel"])
+    # 共享检索收到 should_cancel + 限流信号量
+    assert callable(seen["shared_kwargs"]["should_cancel"])
+    assert isinstance(seen["shared_kwargs"]["sem"], asyncio.Semaphore)
+    assert stages[-1] == "cancelled"
+    assert "filled" not in stages and "done" not in stages
+    assert "failed" not in stages  # 取消不作为范本失败降级
+    assert comp._outs.get("download") in (None, "")
+
+
+def test_executor_generate_cancelled_translates_to_cancelled_event(monkeypatch):
+    """executor 抛 GenerateCancelled（取消标志始终为 False，纯异常路径）→
+    组件经 _FillCancelled 透传分支转推 cancelled，不推 failed/done。"""
+    import agent.component.template_fill as tf_mod
+
+    cands = [_cand("t1", "范本A", [{"key": "k1", "fill_mode": "llm"}])]
+    comp = _make_comp(cands, None)
+    comp._fill_one = TemplateFill._fill_one.__get__(comp, TemplateFill)
+
+    async def fake_gen(*a, **k):
+        raise tf_mod.executor.GenerateCancelled()
+
+    async def fake_shared(tenant_id, placeholders_list, kb_ids, task_id="",
+                          should_cancel=None, sem=None):
+        return [{} for _ in placeholders_list]
+
+    monkeypatch.setattr(tf_mod.executor, "generate_values", fake_gen)
+    monkeypatch.setattr(tf_mod.executor, "retrieve_all_shared", fake_shared)
+
+    asyncio.run(comp._invoke_async())
+    evs = _drain(comp)
+    stages = [e["data"]["stage"] for e in evs]
+    assert "selected" in stages
+    assert stages[-1] == "cancelled"
+    assert "failed" not in stages and "filled" not in stages and "done" not in stages
     assert comp._outs.get("download") in (None, "")
