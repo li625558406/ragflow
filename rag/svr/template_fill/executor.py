@@ -48,6 +48,19 @@ def _run_async(coro):
     return asyncio.run(coro)
 
 
+def _should_cancel(cancel):
+    """防御式取消探针（与 on_progress 的异常兜底对称）：探针回调自身抛异常时
+    视为「未取消」并记一次 warning，异常不向上传播、也不吞掉真实取消信号。
+    契约：cancel 为 None/假值 → False；回调异常 → False；其余返回 bool(cancel())。"""
+    if not cancel:
+        return False
+    try:
+        return bool(cancel())
+    except Exception:
+        logger.warning("should_cancel callback raised; treating as not cancelled", exc_info=True)
+        return False
+
+
 def _load_and_check_kbs(tenant_id: str, kb_ids: list[str]):
     """加载 KB 并做三道校验：请求的每个 id 都必须真实存在（部分命中视为
     传参错误，不静默丢弃——本函数是 settings.retriever 无权限校验下的唯一
@@ -215,7 +228,8 @@ async def generate_values(tenant_id: str, placeholders: list[dict], chunks_by_ke
     完成顺序不定），进度上报用；回调异常被吞掉不影响产值。
     should_cancel 为可选取消探针（无参同步回调，返回 True 表示外部要求取消）：
     每批拿到信号量后、以及每批结果回收后各检查一次，命中即抛 GenerateCancelled，
-    在途批次结果丢弃不落返回值；传 None 时行为与不取消完全一致。
+    在途批次结果丢弃不落返回值；探针自身抛异常视为未取消（warning 不传播）；
+    传 None 时行为与不取消完全一致。
     返回 (values, missing_keys)。每字段证据最多取 6 片（片段已截 800 字）。"""
     step = max(int(batch_size or BATCH_SIZE), 1)
     batches = [placeholders[i:i + step] for i in range(0, len(placeholders), step)]
@@ -249,7 +263,7 @@ async def generate_values(tenant_id: str, placeholders: list[dict], chunks_by_ke
     async def _one(batch: list[dict]):
         user_msg = _build_msg(batch)
         async with sem:
-            if should_cancel and should_cancel():
+            if _should_cancel(should_cancel):
                 raise GenerateCancelled()
             ans = await mdl.async_chat(GENERATE_SYSTEM, [{"role": "user", "content": user_msg}])
         return batch, _extract_json(ans)
@@ -260,7 +274,7 @@ async def generate_values(tenant_id: str, placeholders: list[dict], chunks_by_ke
     try:
         for fut in asyncio.as_completed([_one(b) for b in batches]):
             results.append(await fut)
-            if should_cancel and should_cancel():
+            if _should_cancel(should_cancel):
                 raise GenerateCancelled()
             if on_progress:
                 done_slots += len(results[-1][0])
@@ -348,7 +362,8 @@ async def _retrieve_all(tenant_id: str, placeholders: list[dict], kb_ids: list[s
     会被单次 ES 查询秒级~百秒级耗时放大成小时级阻塞；检索上下文只加载一次。
     should_cancel 为可选取消探针（无参同步回调，返回 True 表示外部要求取消）：
     每槽拿到信号量后检查，命中即抛 GenerateCancelled（穿透单槽降级路径向上抛，
-    在途槽结果丢弃）；传 None 时行为与不取消完全一致。
+    在途槽结果丢弃）；探针自身抛异常视为未取消（否则会被 return_exceptions 收进
+    results 误记成槽失败，取消请求被静默吞掉）；传 None 时行为与不取消完全一致。
     sem 为可选注入的共享信号量（跨层共享并发闸）；不传则内部按
     RETRIEVAL_CONCURRENCY 自建，行为不变。
     返回 (chunks_by_key, evidence) 双结构。task_id 仅用于日志上下文（dry_run 无任务 id）。"""
@@ -376,7 +391,7 @@ async def _retrieve_all(tenant_id: str, placeholders: list[dict], kb_ids: list[s
 
     async def _one(key: str, query: str, it: dict):
         async with sem:
-            if should_cancel and should_cancel():
+            if _should_cancel(should_cancel):
                 raise GenerateCancelled()
             chunks = await retrieve_slot(tenant_id, kb_ids, query,
                                          it.get("top_k") or TOP_K_DEFAULT, ctx=ctx)
@@ -411,7 +426,8 @@ async def retrieve_all_shared(tenant_id: str, placeholders_list: list[list[dict]
     一致：param/无 key 槽不进检索、单槽失败降级空证据、上下文加载失败全槽空。
     should_cancel 为可选取消探针（无参同步回调，返回 True 表示外部要求取消）：
     每槽拿到信号量后检查，命中即抛 GenerateCancelled（单槽降级不吞取消信号，
-    在途槽结果丢弃）；传 None 时行为与不取消完全一致。
+    在途槽结果丢弃）；探针自身抛异常视为未取消（warning 不传播）；
+    传 None 时行为与不取消完全一致。
     sem 为可选注入的共享信号量（跨层共享并发闸，多范本 × 槽位总并发不超闸值）；
     不传则内部按 RETRIEVAL_CONCURRENCY 自建，行为不变。
     返回与入参等长的 [{key: {"chunks": [...], "query": ...}}, ...]。"""
@@ -446,7 +462,7 @@ async def retrieve_all_shared(tenant_id: str, placeholders_list: list[list[dict]
         async with sem:
             # 取消检查必须在单槽降级 try 之外：GenerateCancelled 是控制流信号，
             # 不是检索失败，不能被降级成空证据
-            if should_cancel and should_cancel():
+            if _should_cancel(should_cancel):
                 raise GenerateCancelled()
             try:
                 return qk, await retrieve_slot(tenant_id, kb_ids, query, top_k, ctx=ctx)

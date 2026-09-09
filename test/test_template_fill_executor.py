@@ -861,3 +861,71 @@ def test_retrieve_all_shared_sem_injection_pins_concurrency(monkeypatch):
         "t", [tpl], ["kb1"], sem=asyncio.Semaphore(1)))
     assert state["peak"] == 1, "注入的 Semaphore(1) 未生效（内部默认 6 路会并发）"
     assert all(len(out[0][f"k{i}"]["chunks"]) == 1 for i in range(4))
+
+
+# ---------- 对抗性：should_cancel 探针自身抛异常（防御式，视为未取消） ----------
+
+def test_generate_values_cancel_probe_raises_treated_as_not_cancelled(monkeypatch):
+    """探针回调抛 RuntimeError → 不向上传播、视为未取消，generate_values 正常完成
+    返回结果（防御与 on_progress 对称，调用方不能看到非取消类随机错误）。"""
+    from rag.svr.template_fill import executor
+
+    async def fake_chat(system, history, gen_conf=None, **kw):
+        content = history[0]["content"]
+        spec = json.loads(content.split("## 检索证据")[0].split("## 字段清单\n")[1])
+        return json.dumps({s["key"]: f"值-{s['key']}" for s in spec}, ensure_ascii=False)
+
+    monkeypatch.setattr(executor, "_build_chat_mdl",
+                        lambda tenant: types.SimpleNamespace(async_chat=fake_chat))
+
+    def boom():
+        raise RuntimeError("probe boom")
+
+    placeholders = [{"key": f"k{i}", "name": f"字段{i}", "description": "", "constraints": {}}
+                    for i in range(4)]
+    chunks_by_key = {f"k{i}": {"chunks": []} for i in range(4)}
+    vals, missing = executor._run_async(executor.generate_values(
+        "t", placeholders, chunks_by_key, params={}, batch_size=2, should_cancel=boom))
+    assert vals == {f"k{i}": f"值-k{i}" for i in range(4)}
+    assert missing == set()
+
+
+def test_retrieve_all_cancel_probe_always_raises_returns_partial(monkeypatch, caplog):
+    """_retrieve_all 探针持续抛异常 → 视为未取消，正常返回全部槽证据；
+    不得落入「retrieve_slot failed」降级分支（探针异常≠槽失败，日志不误导）。
+    但探针恢复返回 True 后真取消信号仍生效——防御不吞取消。"""
+    import asyncio
+
+    from rag.svr.template_fill import executor
+    calls = {"n": 0}
+
+    def flaky_probe():
+        calls["n"] += 1
+        if calls["n"] <= 20:
+            raise RuntimeError("probe boom")
+        return True
+
+    async def fake_slot(tenant_id, kb_ids, query, top_k=6, ctx=None):
+        await asyncio.sleep(0)
+        return [{"content": query, "doc_id": "d", "doc_name": "n", "similarity": 0.9}]
+
+    monkeypatch.setattr(executor, "retrieve_slot", fake_slot)
+    monkeypatch.setattr(executor, "load_retrieval_ctx",
+                        lambda tenant, kbs: ("ctx_kbs", "ctx_embd"))
+    placeholders = [{"key": f"k{i}", "name": f"字段{i}", "fill_mode": "llm",
+                     "retrieval_query": f"q{i}"} for i in range(3)]
+
+    # 阶段一：探针持续抛异常 → 当没取消，全部槽证据正常返回
+    with caplog.at_level(logging.WARNING, logger="rag.svr.template_fill.executor"):
+        chunks_by_key, _evidence = executor._run_async(
+            executor._retrieve_all("t", placeholders, ["kb1"], {}, should_cancel=flaky_probe))
+    assert all(len(chunks_by_key[f"k{i}"]["chunks"]) == 1 for i in range(3))
+    assert calls["n"] >= 3, "每个槽拿到信号量后都应探查过取消"
+    assert any("should_cancel callback raised" in r.message for r in caplog.records)
+    assert not any("retrieve_slot failed" in r.message for r in caplog.records), \
+        "探针异常不得被误记成槽失败（日志误导）"
+
+    # 阶段二：探针恢复后返回 True → 真取消信号不被防御逻辑吞掉
+    with pytest.raises(executor.GenerateCancelled):
+        executor._run_async(executor._retrieve_all(
+            "t", placeholders, ["kb1"], {}, should_cancel=lambda: True))
