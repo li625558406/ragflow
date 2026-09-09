@@ -1,5 +1,20 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-09 流程页签：已结束流程维护页（后端+前端，未部署）
+
+**主题**：C端流程页签新增「已结束流程」管理视图，发起人可统一维护走完的流程（查看/软删除/再次发起/重新激活），常规列表只留进行中。
+
+**核心变更**：
+- 数据模型：`flow_instance` 新增 `deleted`（默认0，索引）/`deleted_time` 软删字段（db_models.py + migrate_db 幂等迁移，存量行默认值安全）
+- 列表查询：`FlowInstanceService.list_for_user` 加 `status` 参数（finished/archived/cancelled/deleted 四值，deleted 只看本人软删）；常规 scope（todo/initiated/joined/all）剔除终态与软删行，todo 角标轮询走同一查询自动干净
+- 新端点（flow_app.py，均 @login_required 仅发起人）：`POST /flow/<id>/soft-delete`（仅终态；乐观锁含终态条件，防并发 reactivate 后误删进行中流程）、`/restore`（幂等）、`/reactivate`（校验领导/处理人账号存活，状态回 initiator，current_version_id 不变，notify 通知 leader+handler）；全部乐观锁前置状态条件更新，冲突报「流程状态已变化」
+- 前端：新建 `flow-manage.tsx` 管理视图（视角切换/四态筛选/表格操作/详情整区切换复用 FlowDetail/再次发起预填含 doc-docx 版本自动下载转 File）；flow-panel 双视图接入（顶栏 Archive 入口）；`CreateFlowDialog` 抽独立组件 `create-flow-dialog.tsx` 支持 `initial` 预填（含已选文件展示条与重选同文件修复）；flow-service 补 status 参数与 3 个动作 API
+- 设计文档 `docs/superpowers/specs/2026-09-09-flow-finished-manage-design.md`；实施计划 `docs/superpowers/plans/2026-09-09-flow-finished-manage.md`
+
+**测试**：后端纯逻辑单测 35 passed（含 check_terminal_action 权限/终态/软删态/未知 action 7 项）；ruff 新增错误均为文件既有模式延续；前端 tsc flow 文件零错误。子代理两阶段审查 5 个批次：批次3 修复 soft_delete 乐观锁缺终态条件竞态（commit `2f4a113d`）、批次4 补文件展示条（`7dc9f979`）+ 移除后重选同文件丢失（`c44efcee`）、批次5 修再次发起 busy 锁乱序竞态 + 详情态错误条遮蔽（`c66586d1`）。
+
+**遗留**：未部署（成套 SCP：db_models.py + flow_service.py + flow_app.py + 前端 build；后端三文件须整套部署否则常规列表过滤与端点不一致）；彻底删除入口维持 FlowDetail 内原硬删除（仅已作废）不变；DB 写入路径（软删/恢复/重新激活乐观锁）待手动冒烟。
+
 ## 2026-09-09 范本填写取消链路补全 + 检索并发限流（后端+前端，未部署）
 
 **主题**：2026-09-09 流程页签实测暴露三个缺口收口——百级填写点范本填写时检索并发 6 路 × 大 KNN 打满磁盘（load 10.86、iowait 7-8%、单查询 22s→244s），用户点「停止」只能 abort 本地 SSE 无法取消服务端，最终靠重启容器收场。
