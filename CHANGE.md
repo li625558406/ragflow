@@ -4,14 +4,14 @@
 
 **主题**：团队（user_tenant）机制未被用作权限模型反而造成资源互相不可见。去掉团队隔离——任何账号的知识库/智能体/对话助手/搜索应用/文件全部互相可见（含 permission='me' 的 KB），写操作（编辑/删除/移动/上传）仅限资源所有者；后续写权限管控统一由 /permission 页面 RBAC 承接。设计 `docs/superpowers/specs/2026-09-09-remove-team-permission-design.md`（方案A 显式全局化），实施计划 `docs/superpowers/plans/2026-09-09-remove-team-permission.md`，5 任务子代理驱动执行（每任务 spec 合规审查+质量审查双循环）。
 
-**核心变更**（commits `c0af2d85`→`10744e54`，15 文件）：
+**核心变更**（commits `c0af2d85`→`672281d6`，16 文件）：
 - Service 层：`get_by_tenant_ids`/`get_list` 系列签名保留，租户参数传 `None`=全局（跳过租户与 permission='team' 过滤；`is not None` 判断避开 peewee `in_([])` 恒假）；`KnowledgebaseService`/`DocumentService`/`UserCanvasService` 的 `accessible` 降为存在性检查（status=VALID 即通过），新增对称的 `owned()`（tenant_id==user_id + VALID）作写门禁
-- API 层：KB/智能体/对话助手/搜索应用列表全局可见；16 处写端点（chunk 增删改 4、文档删除/解析/元数据 5、知识图谱/索引/标签/嵌入 6、摄取门禁 1）accessible→owned；`check_kb_team_permission`/`check_file_team_permission` 函数体改纯 owner 判断（上传/文件删除/移动仍 owner-only）；文件下载 `get_file_content` 移除团队校验（读全局）；补 spec 3.2 漏盘点——agent reset 加 owner 硬校验（防覆写他人 DSL）、agent 会话删除校验「会话创建者或 agent 所有者」+ conv.dialog_id 归属绑定（封跨 agent 越权删除）；清除 7 处读端点残留 joined-tenants 拦截（dataset search、chat/search 详情、SDK retrieval/searchbot、list_tags、list_datasets 按 id/name 查询）
+- API 层：KB/智能体/对话助手/搜索应用列表全局可见；18 处写端点（chunk 增删改 4、文档删除/解析/元数据 5、知识图谱/索引/标签/嵌入 6、摄取门禁 1、SDK 解析触发/停止 2）accessible→owned；`check_kb_team_permission`/`check_file_team_permission` 函数体改纯 owner 判断（上传/文件删除/移动仍 owner-only）；文件下载 `get_file_content` 移除团队校验（读全局）；补 spec 3.2 漏盘点——agent reset 加 owner 硬校验（防覆写他人 DSL）、agent 会话删除校验「会话创建者或 agent 所有者」+ conv.dialog_id 归属绑定（封跨 agent 越权删除）、rerun_agent 补 DocumentService.owned（存量洞）、批量删对话 chat_id 兼容分支补 _ensure_owned_chat（存量洞）；清除 7 处读端点残留 joined-tenants 拦截（dataset search、chat/search 详情、SDK retrieval/searchbot、list_tags、list_datasets 按 id/name 查询）
 - 有意不动：user_tenant 表与团队邀请/B端团队成员页（死路径）、前端全部页面、协作功能、统计/系统 token/鉴权路径、「我的智能体」计数、accessible4deletion
 
 **测试**：新增 `test/test_check_team_permission.py` 15 用例（owner-only 双分支/空值/model+dict）全过；全量 pytest 342 passed（2 failed 为 8 月 RBAC 既有破损 permission_utils，与本改造无关）；14 文件 py_compile 零错误；ruff 与基线净零。对抗性 grep 审计：`get_joined_tenants_by_user_id` 零调用方、`UserTenantService` 残留全部在白名单（统计/token/协作/团队管理）、写端点 owned 全在场、无前端/db_models 越界改动。审查修复记录：model 分支桩类型分裂、search_all tenant_ids NameError（计划遗漏）、DocumentService.owned 补 KB VALID 对称、get_chat 软删回归。
 
-**遗留**：未部署——**必须成套 SCP 全部 15 文件后重启**（中间态：Task2/3 合并后写端点门禁曾短暂为「存在即可写」，列表传 [] 返回空，单独部署部分文件会出现行为不一致）；部署后需两账号交叉验证（B 可见/可检索/可下载 A 的资源，B 改/删/传 A 的资源被拒）；SDK session `_retrieval` 逐 KB 查询为 N+1（量级小未优化）；`get_all_kb_by_tenant_ids` 现零调用方（死代码保留）。
+**遗留**：未部署——**必须成套 SCP 全部 16 文件后重启**（中间态：Task2/3 合并后写端点门禁曾短暂为「存在即可写」，列表传 [] 返回空，单独部署部分文件会出现行为不一致）；部署后需两账号交叉验证（B 可见/可检索/可下载 A 的资源，B 改/删/传 A 的资源被拒）；chunk 读端点（chunk_api.py list）索引名仍用请求者租户构造，非 owner 检索他人 KB chunk 视图为空（存量问题非回归，主检索链路 search/search_all 已按 KB owner 修复，后续迭代统一）；SDK session `_retrieval` 逐 KB 查询为 N+1（量级小未优化）；`get_all_kb_by_tenant_ids` 现零调用方（死代码保留）。
 
 ## 2026-09-09 流程页签：已结束流程维护页（后端+前端，未部署）
 
