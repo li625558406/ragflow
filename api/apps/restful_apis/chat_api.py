@@ -607,6 +607,8 @@ async def bulk_delete_chats():
             # keep backward compatibility, DELETE with chat_id in request body
             chat_id = req.get("chat_id")
             if chat_id:
+                if not _ensure_owned_chat(chat_id):
+                    return get_data_error_result(message=f"Chat({chat_id}) not found.")
                 try:
                     if not DialogService.update_by_id(chat_id, {"status": StatusEnum.INVALID.value}):
                         return get_data_error_result(message=f"Failed to delete chat {chat_id}")
