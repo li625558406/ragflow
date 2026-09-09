@@ -697,7 +697,8 @@ class DocumentService(CommonService):
         docs = (
             cls.model.select(cls.model.id)
             .join(Knowledgebase, on=(Knowledgebase.id == cls.model.kb_id))
-            .where(cls.model.id == doc_id, Knowledgebase.tenant_id == user_id)
+            .where(cls.model.id == doc_id, Knowledgebase.tenant_id == user_id,
+                   Knowledgebase.status == StatusEnum.VALID.value)
             .paginate(0, 1)
         )
         docs = docs.dicts()
