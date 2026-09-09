@@ -183,6 +183,8 @@ export const useSendMessageBySSE = (
   // pressure, and React re-renders keep recomputing useMemo(…, [answerList])
   // even in background tabs — causing a freeze when the user returns.
   const eventBufferRef = useRef<any[]>([]);
+  // 服务端取消：SSE envelope 每帧带 task_id（canvas.run decorate），停止时写取消键
+  const taskIdRef = useRef<string | null>(null);
 
   const flushEventBuffer = useCallback(() => {
     const batch = eventBufferRef.current;
@@ -345,6 +347,7 @@ export const useSendMessageBySSE = (
         setWasAborted(false);
         workflowFinishedRef.current = false;
         eventBufferRef.current = [];
+        taskIdRef.current = null;
 
         streamAccRef.current = {
           content: '',
@@ -444,6 +447,10 @@ export const useSendMessageBySSE = (
                 }
 
                 const val = JSON.parse(value?.data || '');
+
+                if (typeof val?.task_id === 'string' && val.task_id) {
+                  taskIdRef.current = val.task_id;
+                }
 
                 if (typeof val?.code === 'number' && val.code !== 0) {
                   if (_dbg) {
@@ -673,6 +680,16 @@ export const useSendMessageBySSE = (
   }, [flushEventBuffer, flushNextFanOutLane]);
 
   const stopOutputMessage = useCallback(() => {
+    const taskId = taskIdRef.current;
+    if (taskId) {
+      // fire-and-forget：服务端取消（幂等），失败不阻断本地停止
+      fetch(`/api/v1/agents/tasks/${taskId}/cancel`, {
+        method: 'POST',
+        headers: {
+          [Authorization]: getAuthorization(),
+        },
+      }).catch((e) => console.warn('cancel task failed', e));
+    }
     sseRef.current?.abort();
   }, []);
 
