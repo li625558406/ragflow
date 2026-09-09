@@ -1,5 +1,19 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-09 范本填写取消链路补全 + 检索并发限流（后端+前端，未部署）
+
+**主题**：2026-09-09 流程页签实测暴露三个缺口收口——百级填写点范本填写时检索并发 6 路 × 大 KNN 打满磁盘（load 10.86、iowait 7-8%、单查询 22s→244s），用户点「停止」只能 abort 本地 SSE 无法取消服务端，最终靠重启容器收场。
+
+**核心变更**：
+- executor 层（commit `af6866f9`+`16822d16`）：新增 `GenerateCancelled` 异常；`generate_values`/`retrieve_all_shared`/`_retrieve_all` 均加可选 `should_cancel` 回调（检查点：`_one` 获信号量后 + as_completed 收集循环每轮）与 `sem` 信号量注入；探针异常防御式处理（视为未取消，避免 `_retrieve_all` 在 `return_exceptions=True` 下静默吞取消）；`should_cancel=None` 时 B 端路径零变化
+- 组件接线（commit `7bccb152`+`5276570b`）：`_invoke_async` 传取消探针（`check_if_canceled`）+ 共享检索信号量；检索/产值阶段取消统一转推 `cancelled` 事件（检索阶段就地消化而非转抛——`_FillCancelled` 无参 `str()==""` 会被 base.py 吞成空 `_ERROR` 静默成功，与原 bug 同形）；`TEMPLATE_FILL_RETRIEVAL_CONCURRENCY` env 可调默认 2（坏值防御：非数字降级、0/负数钳 1 防 Semaphore(0) 挂死）；B 端检索保持默认 6 不变
+- 取消端点（commit `f3d45b82`+`2b7817da`）：`task_service.cancel_task()`（写 Redis `{task_id}-cancel`，与 `has_canceled` 同键）+ `POST /api/v1/agents/tasks/<task_id>/cancel`（@login_required，幂等；Redis 写失败返回错误）
+- 前端（commit `cb2db289`+`4770f584`）：`use-send-message.ts` SSE envelope 捕获 `task_id` 存 `taskIdRef`（每次 send 重置、流正常结束清空防幽灵请求）；`stopOutputMessage` fire-and-forget POST cancel（getAuthorization 头，失败不阻断本地停止）后照旧 abort；c-chat 与 flow-ai-panel 共用即同时生效
+
+**测试**：后端 166 passed（executor 47/events 9/component 23/canvas drain 3/flow version source 6/tool/utils/cancel 端点 5 等）；前端 jest 7 passed（template-fill-stream 归约）+ tsc/eslint 改动文件零新增。审查修复循环：Task 1 探针防御、Task 2 检索阶段取消逸出（C1）+ env 坏值（I1）、Task 3 Redis 写失败伪幂等、Task 4 幽灵 cancel 请求。
+
+**遗留**：待部署（4 后端文件 SCP + 重启 + 前端 build 部署）；端到端验证点停止→服务器日志 "has been canceled" 且检索停止；取消键无 TTL（与既有 cancel_all_task_of 一致，canvas.run 启动时 clear 闭环）；取消在途 LLM 调用需等当前批次完成（asyncio 语义，设计非目标）。
+
 ## 2026-09-08 模板填写进度流式 + 流程页签适配（后端+前端，已部署 2026-09-09 并通过端到端冒烟：content 端点真实 JWT 返回非空正文）
 
 **主题**：TemplateFill 画布节点全程零反馈 → 5 类进度事件实时渲染（C端对话 + 流程 AI 面板共用）；流程场景版本文本轻量注入 + 成稿一键落流程版本时间线。

@@ -47,7 +47,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | crawl-dedup 爬虫排队去重方案 | `D:\AI\ragflow2\crawl-dedup-爬虫排队去重方案.md` | ★ crawl:queued:{site} 标记：入队前 SET NX、task_executor 跑完 DEL，每站最多一条排队/运行中爬虫。含 TTL 自愈被否决的教训、队列清理脚本、验证与回滚 |
 | 流程页签设计 | `D:\AI\ragflow2\docs\superpowers\specs\2026-08-30-flow-workflow-design.md` | ★ C端新增「流程」页签：文件为主视图的多角色串行工作流（发起人→领导→处理人→汇总→归档），4张 flow_* 表、文件版本时间线、复用对话智能体；实施计划见 docs/superpowers/plans/2026-08-30-flow-workflow.md（已完成，待部署联调） |
 | 模板填写系统设计 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-07-template-fill-design.md` | ★ 固定模板（Word/Excel）+ KB 自动填写：tpl_ 3表、占位符注册表、LLM产字段值JSON+docxtpl/openpyxl渲染、B端范本库页签 + C端对话工具/flow节点双入口；最新：2026-09-08 画布「范本填写」节点 TemplateFill 升级（多范本各产成稿+三路注入+成稿预览）+ LLM 压力优化（产值批次并发3/多范本并行总闸4/跨范本检索去重，commit 4be0c134，未部署），见 CHANGE.md 当日条目 |
-| 模板填写进度流式设计 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-08-template-fill-flow-design.md` | ★ TemplateFill 进度流式（5 类事件经 FanOut 同款管道，C端对话+流程 AI 面板共用）+ 流程页签适配（版本文本轻量注入 + 成稿存为流程版本）；实施计划 docs/superpowers/plans/2026-09-08-template-fill-flow.md（已完成，未部署） |
+| 模板填写进度流式设计 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-08-template-fill-flow-design.md` | ★ TemplateFill 进度流式（5 类事件经 FanOut 同款管道，C端对话+流程 AI 面板共用）+ 流程页签适配（版本文本轻量注入 + 成稿存为流程版本）；实施计划 docs/superpowers/plans/2026-09-08-template-fill-flow.md（已完成，已部署 2026-09-09） |
+| 范本填写取消链路设计 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-09-template-fill-cancel-retrieval-design.md` | ★ 前端停止→服务端取消（SSE task_id + POST cancel 端点写 Redis 取消键）+ 取消检查点下沉批次/检索粒度（executor should_cancel）+ 画布检索并发限流（TEMPLATE_FILL_RETRIEVAL_CONCURRENCY 默认2）；实施计划 docs/superpowers/plans/2026-09-09-template-fill-cancel-retrieval.md（已完成，未部署） |
 | 人事模块设计 | `D:\AI\ragflow2\docs\superpowers\specs\2026-08-31-hr-module-design.md` | ★ C端「人事」页签：打卡考勤/请假审批/薪资核算/财务凭证 4模块20功能点，13张hr_*表+30端点+4阶段实施；P1 已上线，P2/P3/P4（凭证+报表+考勤机导入）已实施待部署（P4 后端质量审查修复见 CHANGE.md 2026-09-01 条目），实施计划 docs/superpowers/plans/2026-09-01-hr-p2-leave.md 与 2026-09-01-hr-p3-salary.md |
 
 
