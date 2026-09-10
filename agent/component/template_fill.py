@@ -253,6 +253,7 @@ class TemplateFill(ComponentBase):
             tenant_id, llm_placeholders, llm_chunks, background, sem=sem,
             on_progress=on_progress, should_cancel=should_cancel)
         executor._merge_param_values(placeholders, generated, missing, begin_fields)
+        executor._merge_default_values(placeholders, generated, missing)
         values, cell_status = executor.build_values(placeholders, generated)
 
         # ⑤ 渲染（工作副本缺失/渲染失败向上抛，由 invoke_async 统一落 _ERROR）

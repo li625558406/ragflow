@@ -929,3 +929,26 @@ def test_retrieve_all_cancel_probe_always_raises_returns_partial(monkeypatch, ca
     with pytest.raises(executor.GenerateCancelled):
         executor._run_async(executor._retrieve_all(
             "t", placeholders, ["kb1"], {}, should_cancel=lambda: True))
+
+
+# ---------- 范本默认值基线：LLM missing 兜底 + prompt 默认值参考 ----------
+
+def test_merge_default_values_fills_missing_only():
+    from rag.svr.template_fill import executor
+    ph = [{"key": "a", "fill_mode": "llm", "default_value": "默认A"},
+          {"key": "b", "fill_mode": "llm", "default_value": "默认B"},
+          {"key": "c", "fill_mode": "llm", "default_value": ""},
+          {"key": "d", "fill_mode": "param", "default_value": "不生效"}]
+    generated, missing = {"a": "LLM值"}, {"b", "c", "d"}
+    executor._merge_default_values(ph, generated, missing)
+    assert generated["b"] == "默认B"
+    # a 已有产值：不被默认值覆盖，也从不进 missing
+    assert generated["a"] == "LLM值" and "a" not in missing
+    assert "c" in missing and "d" in missing      # 无默认值/param 不兜底
+
+
+def test_default_hint():
+    from rag.svr.template_fill import executor
+    assert executor._default_hint({"default_value": "上次值"}) == "上次值"
+    assert executor._default_hint({}) == ""
+    assert executor._default_hint({"default_value": None}) == ""

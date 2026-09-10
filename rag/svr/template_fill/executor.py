@@ -141,7 +141,8 @@ GENERATE_SYSTEM = (
     "你是文档填写引擎。根据每个字段的【检索证据】填写字段值。规则：\n"
     "1. 只准依据证据作答，禁止编造；证据中找不到的字段值输出 null。\n"
     "2. 遵守字段约束（类型/最大长度）。\n"
-    "3. 只输出一个 JSON 对象：{\"字段key\": \"字段值或null\", ...}，不要输出任何其他文字。")
+    "3. 字段带 default_value 时为该字段上次填写值，可作参考；证据与之冲突时以证据为准。\n"
+    "4. 只输出一个 JSON 对象：{\"字段key\": \"字段值或null\", ...}，不要输出任何其他文字。")
 
 
 class GenerateCancelled(Exception):
@@ -212,6 +213,23 @@ def _apply_constraints(value, constraints: dict):
     return text[:max_len] if max_len > 0 else text
 
 
+def _default_hint(it: dict) -> str:
+    """产值 prompt 的默认值参考提示（无则空串）。"""
+    return _clean_for_prompt(str(it.get("default_value") or ""), 100)
+
+
+def _merge_default_values(placeholders: list[dict], generated: dict, missing: set):
+    """P1 兜底：LLM 提取不到（missing）的 llm 字段直取默认值。只填 missing、
+    不覆盖已有产值；param 模式不兜底（param 直取失败无默认语义）。就地修改。"""
+    for it in placeholders:
+        if _norm_fill_mode(it) != "llm":
+            continue
+        key = it.get("key")
+        if key and key in missing and str(it.get("default_value") or ""):
+            generated[key] = it["default_value"]
+            missing.discard(key)
+
+
 async def generate_values(tenant_id: str, placeholders: list[dict], chunks_by_key: dict,
                           params: dict | None = None,
                           batch_size: int = BATCH_SIZE,
@@ -247,7 +265,8 @@ async def generate_values(tenant_id: str, placeholders: list[dict], chunks_by_ke
                          "description": _clean_for_prompt(it.get("description"), DESC_MAX),
                          "constraints": _clean_for_prompt(
                              json.dumps(it.get("constraints") or {}, ensure_ascii=False),
-                             CONSTRAINTS_PROMPT_MAX)})
+                             CONSTRAINTS_PROMPT_MAX),
+                         "default_value": _default_hint(it)})
         evidence = []
         for it in batch:
             key = _clean_for_prompt(it["key"], NAME_MAX)
@@ -525,6 +544,7 @@ async def dry_run(tenant_id: str, template_id: str, kb_ids: list[str], params: d
                   for it in llm_placeholders}
     generated, missing = await generate_values(tenant_id, llm_placeholders, llm_chunks, params)
     _merge_param_values(placeholders, generated, missing, params)
+    _merge_default_values(placeholders, generated, missing)
     values, cell_status = build_values(placeholders, generated)
     # partial 字段为前端契约保留，恒 False——缺值留空待人工二次加工，不再有 partial 终态
     return {"values": values, "cells": cell_status, "evidence": evidence, "partial": False}
@@ -580,6 +600,7 @@ async def _execute_task_async(task_id: str):
 
     # ④ param 模式直取任务参数（不经 LLM，同样过约束兜底），命中则覆盖/摘出 missing
     _merge_param_values(placeholders, generated, missing, params)
+    _merge_default_values(placeholders, generated, missing)
 
     values, cell_status = build_values(placeholders, generated)
 
