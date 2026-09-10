@@ -297,6 +297,7 @@ class TplTemplateVersionService(CommonService):
         """产值沉淀纯逻辑：非空值写入 default_value（source=auto）。
         manual 不覆盖，除非 key ∈ override_keys（用户确认卡片显式给值）。
         空值（渲染留空）不沉淀——不得抹掉历史默认值。返回是否有变更。"""
+        from rag.svr.template_fill.detector import MAX_ANCHOR_LEN  # 与 _merge_defaults 同源同写法
         override = override_keys or set()
         changed = False
         for it in placeholders:
@@ -308,7 +309,9 @@ class TplTemplateVersionService(CommonService):
                 continue
             if str(it.get("default_source") or "") == "manual" and key not in override:
                 continue
-            new_val = str(val)
+            new_val = str(val).strip()[:MAX_ANCHOR_LEN]  # LLM 长输出截断，对齐 save 层入库口径
+            if not new_val:
+                continue  # 剥空白后为空 = 空值，不沉淀（不得抹掉历史默认值）
             if it.get("default_value") == new_val and it.get("default_source") == "auto":
                 continue
             it["default_value"] = new_val

@@ -856,3 +856,14 @@ def test_sediment_no_change_returns_false():
     ph = [{"key": "a", "default_value": "同值", "default_source": "auto"}]
     assert S._sediment_into_placeholders(ph, {"a": "同值"}) is False
     assert S._sediment_into_placeholders(ph, {}) is False
+
+
+def test_sediment_long_value_truncated_to_max_anchor_len():
+    from rag.svr.template_fill.detector import MAX_ANCHOR_LEN
+    from api.db.services.template_fill_service import TplTemplateVersionService as S
+    ph = [{"key": "a", "default_value": "", "default_source": ""}]
+    # 超长 LLM 输出（600 字）：截到 500，且算变更
+    long_val = "长" * (MAX_ANCHOR_LEN + 100)
+    assert S._sediment_into_placeholders(ph, {"a": long_val}) is True
+    assert len(ph[0]["default_value"]) == MAX_ANCHOR_LEN
+    assert ph[0]["default_source"] == "auto"
