@@ -1085,3 +1085,23 @@ def test_predict_changed_fields_unparseable_output_returns_empty(monkeypatch):
     assert executor._run_async(executor.predict_changed_fields("t", items, {})) == set()
     monkeypatch.setattr(executor, "_build_chat_mdl", lambda tid: BadShapeMdl())
     assert executor._run_async(executor.predict_changed_fields("t", items, {})) == set()
+
+
+def test_predict_changed_fields_items_missing_key_no_crash(monkeypatch):
+    """对抗性（T8 审查遗留）：混入缺 key 的脏 item 不炸不参与预判；全部缺 key → 空集。"""
+    from rag.svr.template_fill import executor
+
+    class FakeMdl:
+        async def async_chat(self, sys, msgs):
+            return '{"changed": ["a"]}'
+
+    monkeypatch.setattr(executor, "_build_chat_mdl", lambda tid: FakeMdl())
+    items = [{"name": "无key", "default_value": "1"},
+             {"key": "a", "name": "甲", "default_value": "2"}]
+    got = executor._run_async(executor.predict_changed_fields("t", items, {}))
+    assert got == {"a"}
+    # 全部缺 key → 过滤后为空清单，直接空集且不建模型
+    monkeypatch.setattr(executor, "_build_chat_mdl",
+                        lambda *_: (_ for _ in ()).throw(AssertionError("不应构建模型")))
+    assert executor._run_async(
+        executor.predict_changed_fields("t", [{"name": "无key"}], {})) == set()

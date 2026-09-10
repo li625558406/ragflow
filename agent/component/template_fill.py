@@ -44,6 +44,7 @@ from api.db.services.template_fill_service import (
 from common import settings
 from common.misc_utils import get_uuid
 from rag.svr.template_fill import executor
+from rag.utils.redis_conn import REDIS_CONN
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,11 @@ def _parse_concurrency(default: int) -> int:
 
 
 _RETRIEVAL_CONCURRENCY = _parse_concurrency(2)
+
+# P2 暂停确认：预判后挂起等待用户在对话侧确认（confirm_pending SSE → 前端确认卡片
+# → POST /template/fill/confirm 写 Redis 键 → 本节点轮询读取）。
+_CONFIRM_TIMEOUT = 600          # 确认等待超时（秒），超时按预判结果自动继续
+_CONFIRM_POLL_INTERVAL = 1.5    # Redis 轮询间隔（与 cancel 探针同量级）
 
 
 class _FillCancelled(Exception):
@@ -220,16 +226,96 @@ class TemplateFill(ComponentBase):
             return ""
         return text.strip()[:_USER_FILE_EVIDENCE_MAX]
 
+    async def _confirm_changed_fields(self, chosen: list[dict], query: str,
+                                      begin_fields: dict) -> dict:
+        """P2 暂停确认：预判各范本疑似变化字段 → 推 confirm_pending 事件挂起等待。
+        返回 {template_id: {"changed": set, "values": dict}}；全部选中范本均无
+        默认值字段时返回 {}（跳过确认，行为与现状一致）。
+        超时/Redis 异常/预判失败 → 按预判结果（或空集）自动继续。"""
+        d_map: dict[str, list[dict]] = {}
+        for c in chosen:
+            items = [it for it in c["_placeholders"]
+                     if executor._norm_fill_mode(it) == "llm" and it.get("key")
+                     and str(it.get("default_value") or "")]
+            if items:
+                d_map[c["template_id"]] = items
+        if not d_map:
+            return {}
+        task_id = getattr(self._canvas, "task_id", "") or ""
+        background = dict(begin_fields)
+        if query:
+            background["用户需求描述"] = query[:_BEGIN_FIELD_PROMPT_MAX]
+        predicted: dict[str, set] = {}
+        try:
+            for tid, items in d_map.items():
+                predicted[tid] = await executor.predict_changed_fields(
+                    self._canvas.get_tenant_id(), items, background,
+                    should_cancel=lambda: self.check_if_canceled("TemplateFill predict"))
+        except executor.GenerateCancelled:
+            # 预判期取消信号不外逸：与检索/产值阶段同路转 _FillCancelled，
+            # 由 invoke 统一收口为 cancelled 终态（不落 failed）
+            raise _FillCancelled() from None
+        name_of = {c["template_id"]: c["name"] for c in chosen}
+        # 字段名用 confirm_templates：selected 事件的 templates 已被前端归约占用
+        self._push_progress({
+            "stage": "confirm_pending", "task_id": task_id,
+            "confirm_templates": [{"template_id": tid, "name": name_of.get(tid, ""),
+                           "candidates": [{"key": it["key"],
+                                           "name": it.get("name") or it["key"],
+                                           "default_value": it.get("default_value")}
+                                          for it in d_map[tid]],
+                           "predicted": sorted(predicted.get(tid) or set())}
+                          for tid in d_map]})
+        decisions = {tid: {"changed": set(predicted.get(tid) or set()), "values": {}}
+                     for tid in d_map}
+        if not task_id:
+            return decisions
+        waited = 0.0
+        while waited < _CONFIRM_TIMEOUT:
+            if self.check_if_canceled("TemplateFill confirm wait"):
+                raise _FillCancelled()
+            try:
+                raw = REDIS_CONN.get(f"tpl_fill:confirm:{task_id}")
+            except Exception:
+                logger.warning("confirm poll failed; fallback to predicted", exc_info=True)
+                break
+            if raw:
+                try:
+                    REDIS_CONN.delete(f"tpl_fill:confirm:{task_id}")
+                    data = json.loads(raw)
+                except Exception:
+                    logger.warning("confirm payload unparsable; fallback to predicted")
+                    break
+                for tid, d in (data or {}).items():
+                    if tid not in decisions or not isinstance(d, dict):
+                        continue
+                    valid = {it["key"] for it in d_map[tid]}
+                    decisions[tid] = {
+                        "changed": {k for k in d.get("changed", []) if k in valid},
+                        "values": {k: v for k, v in d.get("values", {}).items()
+                                   if k in valid}}
+                return decisions
+            await asyncio.sleep(_CONFIRM_POLL_INTERVAL)
+            waited += _CONFIRM_POLL_INTERVAL
+        self._push_progress({"stage": "confirm_timeout"})
+        return decisions
+
     async def _fill_one(self, tenant_id: str, cand: dict, chunks_by_key: dict, query: str,
                         begin_fields: dict, user_file_text: str, sem: asyncio.Semaphore,
-                        on_progress=None, should_cancel=None) -> tuple[dict, dict, int]:
+                        on_progress=None, should_cancel=None,
+                        decision: dict | None = None) -> tuple[dict, dict, int]:
         """对单个选中范本走完整填写 pipeline：LLM 产值 → param 直取 → 渲染。
         检索已由 _invoke_async 跨范本共享完成（chunks_by_key 传入）；sem 为全局
         LLM 并发闸（多范本并行 × 批次并发共用）；on_progress 透传 executor
         批次产值进度回调 (done, total)；should_cancel 为取消探针，透传给
-        executor.generate_values（命中抛 GenerateCancelled，由调用方转 _FillCancelled）。
+        executor.generate_values（命中抛 GenerateCancelled，由调用方转 _FillCancelled）；
+        decision 为暂停确认产物（None = 未走确认，行为与现状一致）：
+        {"changed": set, "values": dict}，values 为用户直填值（空串=明确清空）。
         返回 (download_info, cell_status, filled_count)。"""
         placeholders = cand["_placeholders"]
+        decision = decision or {}
+        direct_values = decision.get("values") or {}
+        changed_keys = decision.get("changed") or set()
 
         # ③ 用户上传文件作为填写证据：预置片段插到每槽证据首位（优先于 KB 片段）
         if user_file_text:
@@ -242,8 +328,13 @@ class TemplateFill(ComponentBase):
                     "doc_id": "", "doc_name": "用户上传文件", "similarity": 1.0})
 
         # ④ LLM 产值（背景信息 = Begin 表单字段 + 需求描述）+ param 模式直取 Begin 字段
+        # P2 条件执行：llm 槽与检索一致收窄——用户直填直取（不进 LLM）；
+        # 有默认值且预判未变化（D−C）不进 LLM，直接走 _merge_default_values 兜底
         llm_placeholders = [it for it in placeholders
-                            if executor._norm_fill_mode(it) == "llm" and it.get("key")]
+                            if executor._norm_fill_mode(it) == "llm" and it.get("key")
+                            and it["key"] not in direct_values
+                            and not (str(it.get("default_value") or "")
+                                     and it["key"] not in changed_keys)]
         llm_chunks = {it["key"]: chunks_by_key.get(it["key"], {"chunks": [], "query": ""})
                       for it in llm_placeholders}
         background = dict(begin_fields)
@@ -253,6 +344,11 @@ class TemplateFill(ComponentBase):
             tenant_id, llm_placeholders, llm_chunks, background, sem=sem,
             on_progress=on_progress, should_cancel=should_cancel)
         executor._merge_param_values(placeholders, generated, missing, begin_fields)
+        # P2 用户直填值直取（空串=明确清空，渲染为空）；随后作为沉淀 override。
+        # 先摘出 missing，防 _merge_default_values 把默认值回填覆盖用户直填
+        for k, v in direct_values.items():
+            generated[k] = v
+            missing.discard(k)
         executor._merge_default_values(placeholders, generated, missing)
         values, cell_status = executor.build_values(placeholders, generated)
 
@@ -271,7 +367,8 @@ class TemplateFill(ComponentBase):
         #  _load_candidates 等既有同步调用惯例一致）
         try:
             TplTemplateVersionService.sediment_defaults(
-                cand["template_id"], cand["_ver"].id, values)
+                cand["template_id"], cand["_ver"].id, values,
+                override_keys=set(direct_values.keys()))
         except Exception:  # noqa: BLE001 — 沉淀失败不阻断成稿交付
             logger.warning("sediment_defaults failed, template=%s",
                            cand["template_id"], exc_info=True)
@@ -311,6 +408,24 @@ class TemplateFill(ComponentBase):
         begin_fields = self._begin_fields()
         user_file_text = self._user_file_evidence()
 
+        # P2 预判 + 暂停确认：有默认值字段才触发；返回 {} = 无基线，行为同现状
+        decisions = await self._confirm_changed_fields(chosen, query, begin_fields)
+
+        def _llm_fill_items(c: dict) -> list[dict]:
+            """确认后该范本真正要走检索+LLM 的字段：N（无默认值）∪ C∩D（预判变化）
+            ∪ 用户直填之外的兜底排除 D−C（直用默认值，免检索免 LLM）。"""
+            d = decisions.get(c["template_id"]) or {}
+            changed, direct = d.get("changed") or set(), set((d.get("values") or {}).keys())
+            out = []
+            for it in c["_placeholders"]:
+                k = it.get("key")
+                if not k or executor._norm_fill_mode(it) != "llm" or k in direct:
+                    continue
+                if str(it.get("default_value") or "") and k not in changed:
+                    continue
+                out.append(it)
+            return out
+
         # ② 跨范本共享检索：所有选中范本的填写点按 (top_k, 检索词) 去重，
         # 同一检索词只查一次 ES（多范本重合场景 ES 压力骤减）；单槽失败降级空证据；
         # 槽级并发钉在 _RETRIEVAL_CONCURRENCY + 取消探针（批次级取消，命中即中断检索）
@@ -318,7 +433,7 @@ class TemplateFill(ComponentBase):
         cancelled = lambda: self.check_if_canceled("TemplateFill retrieval/filling")
         try:
             chunks_list = await executor.retrieve_all_shared(
-                tenant_id, [c["_placeholders"] for c in chosen], kb_ids,
+                tenant_id, [_llm_fill_items(c) for c in chosen], kb_ids,
                 task_id=f"canvas:{self._id}",
                 should_cancel=cancelled, sem=retrieval_sem)
         except executor.GenerateCancelled:
@@ -339,8 +454,7 @@ class TemplateFill(ComponentBase):
             tid, name = cand["template_id"], cand["name"]
             if self.check_if_canceled("TemplateFill filling"):
                 raise _FillCancelled()
-            llm_total = sum(1 for it in cand["_placeholders"]
-                            if executor._norm_fill_mode(it) == "llm" and it.get("key"))
+            llm_total = len(_llm_fill_items(cand))
             self._push_progress({"stage": "filling", "template_id": tid, "name": name,
                                  "done": 0, "total": llm_total})
 
@@ -352,7 +466,8 @@ class TemplateFill(ComponentBase):
                 dl, cell_status, filled = await self._fill_one(
                     tenant_id, cand, chunks, query, begin_fields,
                     user_file_text, sem, on_progress=_on_gen_progress,
-                    should_cancel=cancelled)
+                    should_cancel=cancelled,
+                    decision=decisions.get(cand["template_id"]))
             except _FillCancelled:
                 raise
             except executor.GenerateCancelled:

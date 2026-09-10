@@ -16,6 +16,7 @@
 """模板填写：模板管理 API（P1）。路由前缀 /api/v1/template/fill/*"""
 import asyncio
 import io
+import json
 import logging
 import os
 import re
@@ -38,6 +39,7 @@ from api.utils.api_utils import get_error_data_result, get_result
 from common import settings
 from common.misc_utils import get_uuid
 from rag.svr.template_fill.detector import detect_fill_points, validate_placeholders
+from rag.utils.redis_conn import REDIS_CONN
 
 logger = logging.getLogger(__name__)
 
@@ -652,3 +654,38 @@ async def download_fill_result(task_id: str):
     mime = DOCX_MIME if ext == "docx" else XLSX_MIME
     return Response(blob, mimetype=mime,
                     headers={"Content-Disposition": f"attachment; filename=fill_{task_id}.{ext}"})
+
+
+# ---------- 画布 TemplateFill 暂停确认（P2 默认值基线） ----------
+
+# > 画布节点 _CONFIRM_TIMEOUT(600s)：确认提交晚于节点超时也没意义，键先过期自愈
+_CONFIRM_TTL = 700
+
+
+@manager.route("/template/fill/confirm", methods=["POST"])
+@login_required
+async def confirm_template_fill():
+    """画布 TemplateFill 暂停确认唤醒：写 Redis 确认键，节点轮询读取后继续。
+    decisions: {template_id: {changed: [key...], values: {key: value}}}"""
+    body = await request.get_json(silent=True) or {}
+    task_id = str(body.get("task_id") or "").strip()
+    decisions = body.get("decisions")
+    if not task_id or not isinstance(decisions, dict):
+        return get_error_data_result("task_id 与 decisions 不能为空")
+    # 入参清洗（前端数据不可信）：只留字符串 key，值统一 str 归一
+    clean = {}
+    for tid, d in decisions.items():
+        if not isinstance(d, dict):
+            continue
+        clean[str(tid)] = {
+            "changed": [str(k) for k in (d.get("changed") or []) if isinstance(k, str)],
+            "values": {str(k): str(v) for k, v in (d.get("values") or {}).items()
+                       if isinstance(k, str)},
+        }
+    try:
+        REDIS_CONN.set(f"tpl_fill:confirm:{task_id}",
+                       json.dumps(clean, ensure_ascii=False), exp=_CONFIRM_TTL)
+    except Exception:
+        logger.exception("write confirm key failed, task=%s", task_id)
+        return get_error_data_result("确认提交失败，请重试")
+    return get_result(data={"ok": True})

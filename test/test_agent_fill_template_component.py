@@ -506,3 +506,115 @@ def test_invoke_async_shared_retrieval_called_once_for_multi_templates(patched_e
     asyncio.run(cpn._invoke_async())
     assert calls["shared"] == 1
     assert len(patched_env["put"]) == 2
+
+
+# ---------- P2 暂停确认：_confirm_changed_fields（超时兜底 + 确认载荷过滤） ----------
+
+def _confirm_component(monkeypatch, canvas_task_id="task-9"):
+    """确认编排专用组件：画布带 task_id（真实 canvas 构造时注入，缺省回退空串即跳过等待）。"""
+    canvas = FakeCanvas()
+    canvas.task_id = canvas_task_id
+    return _make_component(TemplateFillParam(), canvas=canvas)
+
+
+def _chosen_with_defaults():
+    """一个带默认值字段（甲，旧默认值）+ 一个无默认值字段（乙）的选中范本。"""
+    return [{"template_id": "t1", "name": "道路报告",
+             "_placeholders": [
+                 {"key": "a", "name": "甲", "fill_mode": "llm", "default_value": "旧默认"},
+                 {"key": "b", "name": "乙", "fill_mode": "llm"}]}]
+
+
+def _drain_events(cpn):
+    events = []
+    while not cpn._event_queue.empty():
+        events.append(cpn._event_queue.get_nowait()["data"])
+    return events
+
+
+def test_confirm_wait_timeout_uses_predicted(monkeypatch):
+    """Redis 一直无确认键 → 超时后按预判集合自动继续，且推送 confirm_pending +
+    confirm_timeout 两个事件；无默认值字段（乙）不进 decisions 载荷。"""
+    import asyncio
+
+    cpn = _confirm_component(monkeypatch)
+    monkeypatch.setattr(fill_template, "_CONFIRM_TIMEOUT", 0.05)
+
+    class FakeRedis:
+        def get(self, k):
+            return None
+
+        def delete(self, k):
+            raise AssertionError("超时路径不得删除任何键")
+
+    monkeypatch.setattr(fill_template, "REDIS_CONN", FakeRedis())
+
+    async def fake_sleep(_s):
+        return None
+
+    monkeypatch.setattr(fill_template.asyncio, "sleep", fake_sleep)
+
+    async def fake_predict(tenant_id, items, background=None, should_cancel=None):
+        assert tenant_id == "t1"
+        assert [it["key"] for it in items] == ["a"], "无默认值字段不参与预判"
+        return {"a", "ghost"}  # 预判编造 key 原样带入（消费侧再过滤）
+
+    monkeypatch.setattr(fill_template.executor, "predict_changed_fields", fake_predict)
+
+    decisions = asyncio.run(cpn._confirm_changed_fields(_chosen_with_defaults(), "需求", {}))
+    assert decisions == {"t1": {"changed": {"a", "ghost"}, "values": {}}}
+    stages = [e["stage"] for e in _drain_events(cpn)]
+    assert stages == ["confirm_pending", "confirm_timeout"]
+
+
+def test_confirm_payload_filters_unknown_keys(monkeypatch):
+    """确认载荷含 ghost key / 越范本 id → 只留合法 key，直填 values 进入 decisions；
+    键被消费（Redis delete 调用）；不再推 confirm_timeout。"""
+    import asyncio
+
+    cpn = _confirm_component(monkeypatch)
+    payload = json.dumps({
+        "t1": {"changed": ["a", "ghost", 123], "values": {"a": "直填值", "ghost": "x"}},
+        "t2": {"changed": ["zzz"], "values": {"zzz": "越范本"}},
+    }, ensure_ascii=False)
+    deleted = []
+
+    class FakeRedis:
+        def get(self, k):
+            assert k == "tpl_fill:confirm:task-9"
+            return payload
+
+        def delete(self, k):
+            deleted.append(k)
+
+    monkeypatch.setattr(fill_template, "REDIS_CONN", FakeRedis())
+
+    async def fake_predict(*a, **kw):
+        return set()
+
+    monkeypatch.setattr(fill_template.executor, "predict_changed_fields", fake_predict)
+
+    decisions = asyncio.run(cpn._confirm_changed_fields(_chosen_with_defaults(), "需求", {}))
+    assert deleted == ["tpl_fill:confirm:task-9"], "确认键必须消费防重复触发"
+    assert decisions == {"t1": {"changed": {"a"}, "values": {"a": "直填值"}}}, \
+        "ghost/非串 key 过滤、越范本 id(t2) 整体忽略、直填值进 values"
+    stages = [e["stage"] for e in _drain_events(cpn)]
+    assert stages == ["confirm_pending"], "拿到确认后不得再推 confirm_timeout"
+
+
+def test_confirm_no_default_items_skips_all(monkeypatch):
+    """回归红线：全部选中范本均无默认值字段 → 直接返回 {}，不推事件、不触 Redis、
+    不调预判（首填链路与现状完全一致）。"""
+    import asyncio
+
+    cpn = _make_component(TemplateFillParam())  # FakeCanvas 无 task_id 也无关紧要
+
+    def boom(*a, **kw):
+        raise AssertionError("无默认值字段不应触发预判/Redis")
+
+    monkeypatch.setattr(fill_template, "REDIS_CONN", boom)
+    monkeypatch.setattr(fill_template.executor, "predict_changed_fields", boom)
+    chosen = [{"template_id": "t1", "name": "报告",
+               "_placeholders": [{"key": "k1", "name": "字段", "fill_mode": "llm"}]}]
+    assert asyncio.run(cpn._confirm_changed_fields(chosen, "需求", {})) == {}
+    assert _drain_events(cpn) == []

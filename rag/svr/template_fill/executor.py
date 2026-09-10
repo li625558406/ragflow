@@ -343,6 +343,8 @@ async def predict_changed_fields(tenant_id: str, default_items: list[dict],
     """1 次/块 LLM 调用预判需要更新的默认值字段集合。
     返回校验后 key 集合（编造/非法 key 过滤）；LLM 失败或输出不可解析 → 空集
     （调用方按"全部保持默认，用户确认时手动挑"兜底）。GenerateCancelled 穿透。"""
+    # 缺 key 的脏 item 不参与预判（valid 集合与 spec 构建都会 KeyError）
+    default_items = [it for it in default_items if it.get("key")]
     if not default_items:
         return set()
     mdl = _build_chat_mdl(tenant_id)
