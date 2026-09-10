@@ -10,6 +10,7 @@ import {
   useSaveTemplateFillPlaceholders,
   useTemplateFillDetail,
   useTemplateFillPreview,
+  useUpdateTemplateFillDefaults,
   type TplPlaceholder,
 } from '@/hooks/use-template-fill-request';
 import api from '@/utils/api';
@@ -85,6 +86,20 @@ export default function TemplateFillDetailPage() {
 
   const saveMut = useSaveTemplateFillPlaceholders();
   const detectMut = useDetectTemplateFill();
+  const saveDefaultsMut = useUpdateTemplateFillDefaults();
+
+  // 默认值单 key 即时保存（失焦触发；空串=清空）
+  const handleSaveDefault = (key: string, value: string) => {
+    if (!id) return;
+    saveDefaultsMut.mutate(
+      { id, defaults: { [key]: value } },
+      {
+        onSuccess: () => message.success('默认值已保存'),
+        onError: (err) =>
+          message.error(err instanceof Error ? err.message : '保存默认值失败'),
+      },
+    );
+  };
 
   // detect 建议与现有手动行合并（与上传向导同规则）：
   // 建议在前、手动行（无定位 addr）在后，key 重复的手动行丢弃，避免覆盖手动添加的行
@@ -350,6 +365,9 @@ export default function TemplateFillDetailPage() {
                   onUpdate={updateRow}
                   onRemove={removeRow}
                   disabled={readonly}
+                  templateId={id}
+                  onSaveDefault={handleSaveDefault}
+                  savingDefault={saveDefaultsMut.isPending}
                 />
               )}
             </div>

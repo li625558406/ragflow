@@ -13,6 +13,9 @@ export interface TplPlaceholder {
   addr: string;
   anchor: string;
   top_k: number;
+  /** 默认值基线：空串/undefined=无；source 标记来源 */
+  default_value?: string;
+  default_source?: 'detected' | 'auto' | 'manual' | '';
 }
 
 export interface TplTemplateItem {
@@ -453,4 +456,30 @@ export async function testTemplateFill(
     throw new Error(data.message || '试跑失败');
   }
   return data.data as TemplateFillTestResult;
+}
+
+// 更新默认值（单 key 即时保存；空串=清空）
+export function useUpdateTemplateFillDefaults() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      id,
+      defaults,
+    }: {
+      id: string;
+      defaults: Record<string, string>;
+    }) => {
+      // PUT 语义（覆盖式基线更新），走项目 request.put 封装
+      const { data } = await request.put(api.updateTemplateFillDefaults(id), {
+        data: { defaults },
+      });
+      if (data.code !== 0) {
+        throw new Error(data.message || '保存默认值失败');
+      }
+      return data.data as { id: string };
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['templateFillDetail'] });
+    },
+  });
 }

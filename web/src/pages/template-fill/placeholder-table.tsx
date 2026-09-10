@@ -1,4 +1,5 @@
 import { Trash2 } from 'lucide-react';
+import { useEffect, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -34,6 +35,8 @@ export function emptyPlaceholder(): TplPlaceholder {
     addr: '',
     anchor: '',
     top_k: 5,
+    default_value: '',
+    default_source: '' as const,
   };
 }
 
@@ -65,12 +68,69 @@ export function collectRowErrors(rows: TplPlaceholder[]) {
   return errors;
 }
 
+// 默认值单元格：受控 Input 失焦即保存，右侧展示来源徽标（手动/沉淀/识别）
+function DefaultValueCell({
+  row,
+  onSave,
+  saving,
+  disabled,
+}: {
+  row: TplPlaceholder;
+  onSave: (key: string, value: string) => void;
+  saving: boolean;
+  disabled?: boolean;
+}) {
+  const [val, setVal] = useState(row.default_value || '');
+  // 服务端数据回流（保存成功 invalidate 详情）时同步本地输入框
+  useEffect(() => setVal(row.default_value || ''), [row.default_value]);
+  const commit = () => {
+    // 空 key 是未保存的新增行，无基线可写
+    if (!row.key) return;
+    if ((row.default_value || '') !== val.trim()) onSave(row.key, val.trim());
+  };
+  return (
+    <div className="flex items-center gap-1">
+      <Input
+        value={val}
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) =>
+          e.key === 'Enter' && (e.target as HTMLInputElement).blur()
+        }
+        placeholder="空=无默认值"
+        className="h-7 text-xs"
+        disabled={saving || disabled}
+      />
+      {row.default_source === 'manual' && (
+        <span className="shrink-0 rounded bg-[#EFF4FF] px-1 text-[10px] text-[#1a66fb]">
+          手动
+        </span>
+      )}
+      {row.default_source === 'auto' && (
+        <span className="shrink-0 rounded bg-[#F0F9EB] px-1 text-[10px] text-[#52c41a]">
+          沉淀
+        </span>
+      )}
+      {row.default_source === 'detected' && (
+        <span className="shrink-0 rounded bg-[#FFF7E6] px-1 text-[10px] text-[#FA8C16]">
+          识别
+        </span>
+      )}
+    </div>
+  );
+}
+
 interface PlaceholderTableProps {
   rows: TplPlaceholder[];
   errors: Record<string, boolean>;
   onUpdate: (index: number, patch: Partial<TplPlaceholder>) => void;
   onRemove: (index: number) => void;
   disabled?: boolean;
+  /** 传入模板 id 才显示默认值列（无 id 的复用场景如上传向导不渲染） */
+  templateId?: string;
+  /** 默认值保存回调（单 key 即时保存） */
+  onSaveDefault?: (key: string, value: string) => void;
+  savingDefault?: boolean;
 }
 
 // 可编辑填写点表格（上传向导 Step2 与模板详情页共用）
@@ -80,9 +140,15 @@ export function PlaceholderTable({
   onUpdate,
   onRemove,
   disabled = false,
+  templateId,
+  onSaveDefault,
+  savingDefault = false,
 }: PlaceholderTableProps) {
   const errCls = (field: string) =>
     errors[field] ? 'border-red-500 focus-visible:ring-red-500' : '';
+
+  // 无模板 id 时默认值列整体隐藏（无法调保存端点）
+  const showDefaults = !!templateId && !!onSaveDefault;
 
   return (
     <Table>
@@ -94,6 +160,7 @@ export function PlaceholderTable({
           <TableHead className="w-[110px]">填写方式</TableHead>
           <TableHead className="w-[60px]">必填</TableHead>
           <TableHead>锚文本</TableHead>
+          {showDefaults && <TableHead className="w-[180px]">默认值</TableHead>}
           <TableHead className="w-[40px]" />
         </TableRow>
       </TableHeader>
@@ -175,6 +242,16 @@ export function PlaceholderTable({
                 />
               )}
             </TableCell>
+            {showDefaults && (
+              <TableCell>
+                <DefaultValueCell
+                  row={row}
+                  onSave={onSaveDefault!}
+                  saving={savingDefault}
+                  disabled={disabled}
+                />
+              </TableCell>
+            )}
             <TableCell>
               <Button
                 size="icon-xs"
