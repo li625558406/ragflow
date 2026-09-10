@@ -8,15 +8,20 @@ MAX_ANCHOR_LEN = 500  # anchor 超长约束收口在 parse：识别阶段就拦�
 
 # 留空标记判定：仅由空白/下划线（含全角）/横线/点/顿号等组成的 anchor 视为"空范本留空位"，
 # 不派生默认值。注意不含字母数字，日期（2026-09-10）、金额等含数字的现值不会误判。
+# 已用 fullmatch，无需 ^$ 首尾锚定。
 _BLANK_ANCHOR_RE = re.compile(
-    r"^[\s_＿\-—–~·*.*×﹏－﹣。．·.,，、;；:：/\\'\"”「」『』（）()【】\[\]……]+$")
+    r"[\s_＿\-—–~·*.×﹏－﹣。．,，、;；:：/\\'\"”「」『』（）()【】\[\]……⋯‥▁＊〰]+")
+
+# anchor 派生值回流渲染链路前的控制字符剥离（\x00-\x1f 中排除 \t\n\r 无必要——留空标记判定
+# 已 strip，残留控制字符只会污染 docx XML）
+_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 def derive_default_from_anchor(anchor) -> str:
     """已填现值提取（纯函数）：anchor 是识别器选中的"将被替换为 {{key}} 的原文子串"。
     已填范本的 anchor 即现值 → 作为 detected 默认值；空范本的 anchor 是留空标记 → 无默认值。
     返回空串表示无默认值。截断对齐 MAX_ANCHOR_LEN（防御旧数据超长）。"""
-    text = str(anchor or "").strip()
+    text = _CTRL_RE.sub("", str(anchor or "").strip())
     if not text or _BLANK_ANCHOR_RE.fullmatch(text) or text.upper() in ("N/A", "NA", "NONE", "NULL"):
         return ""
     return text[:MAX_ANCHOR_LEN]

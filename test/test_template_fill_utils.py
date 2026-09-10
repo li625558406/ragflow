@@ -739,6 +739,10 @@ def test_derive_default_from_anchor_blank_markers():
     assert derive_default_from_anchor("---") == ""
     assert derive_default_from_anchor("………") == ""
     assert derive_default_from_anchor("N/A") == ""
+    assert derive_default_from_anchor("▁▁▁▁") == ""   # 下八分之一块
+    assert derive_default_from_anchor("＊＊＊") == ""  # 全角星号
+    assert derive_default_from_anchor("⋯⋯") == ""     # 中点省略号
+    assert derive_default_from_anchor("none") == ""   # 小写 none 同样视为留空标记
 
 
 def test_derive_default_from_anchor_filled_values():
@@ -746,3 +750,11 @@ def test_derive_default_from_anchor_filled_values():
     assert derive_default_from_anchor("XX建设工程有限公司") == "XX建设工程有限公司"
     assert derive_default_from_anchor("2026-09-10") == "2026-09-10"
     assert derive_default_from_anchor("  100万元  ") == "100万元"
+    assert derive_default_from_anchor("____2026") == "____2026"  # 混合内容：含数字不误判为留空
+
+
+def test_derive_default_from_anchor_truncates_and_strips_ctrl():
+    """超长截断对齐 MAX_ANCHOR_LEN；控制字符剥离（防污染 docx XML）。"""
+    from rag.svr.template_fill.detector import MAX_ANCHOR_LEN, derive_default_from_anchor
+    assert len(derive_default_from_anchor("A" * 501)) == MAX_ANCHOR_LEN
+    assert derive_default_from_anchor("值\x00\x01名") == "值名"
