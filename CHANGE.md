@@ -1,5 +1,29 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-10 范本默认值基线 P1（后端+前端，未部署）
+
+**主题**：模板填写大范本（几百填写点）漏填根治与基线沉淀。
+
+**核心变更**：
+- anchor 派生默认值（`detector.derive_default_from_anchor`，识别时零 LLM 成本提取已填现值，留空标记/控制字符过滤）
+- `save_placeholders` 默认值合并（`_merge_defaults`：显式携带 > 按 key 继承 > anchor 派生；显式清空态跨保存持久）
+- LLM 提取不到时 fallback 默认值（`executor._merge_default_values`，过 `_apply_constraints` 约束闸）+ 产值 prompt 注入默认值参考（`_default_hint`）
+- 成稿后产值自动沉淀为默认值（`sediment_defaults`，manual 保护、空值不抹历史、失败仅告警不影响交付）
+- B端默认值编辑（`PUT /template/fill/<id>/defaults` + 范本详情默认值列行内编辑/来源徽标/单 key 即时保存，含 IME 合成态保护）
+
+**遗留**：P2（变化字段预判 + 对话中暂停确认 + 条件执行）另行实施；未部署。
+
+## 2026-09-10 流程页签：文件审核入口上移到顶部按钮行（前端，未部署）
+
+**主题**：C端流程详情页「文件审核」按钮从 AI 面板输入框标题行（ChatInputBox leftSlot）上移到顶部状态条按钮行，与「作废 / 退回上一节点 / 提交下一节点 / 上传修改版」同排，样式统一用 Button size="sm"。
+
+**核心变更**：
+- `flow-ai-panel.tsx`：标题行删除文件审核按钮；新增导出 `FlowReviewControl` 类型与 `onReviewControlChange` prop，面板内部 effect 将 `{ visible, active, toggle }` 实时上报父级（卸载时上报 null 清空）；顺带清理不再使用的 FileText import
+- `flow-detail.tsx`：新增 `reviewCtl` state 接收上报，顶部按钮行首位渲染文件审核按钮（醒目样式：主蓝填充+投影+半粗字重；审核中变 outline「关闭审核」）；FlowAiPanel 传入 `onReviewControlChange={setReviewCtl}`
+- 作废按钮从详情页顶栏移到左侧流程列表卡片（flow-panel.tsx）：发起人 + 非终态（未归档/未作废）时在卡片状态行显示红色「作废」文字按钮，stopPropagation 不触发卡片选中，确认弹窗与原详情页一致；成功后刷新 flow-list / todo 角标 / flow-detail；`flow-detail.tsx` 顶栏删除作废按钮与 handleCancel（cancelFlow import 一并清理）
+
+**遗留**：未部署（前端改动，随下次 build 一起发）；可见性逻辑不变（有版本文件或手动上传文件时显示）。
+
 ## 2026-09-09 流程页签：全部流程管理页超管专属 + 节点状态独立配色（后端+前端，未部署）
 
 **主题**：①原「已结束流程」管理视图改为仅超级管理员可见的「全部流程」——可看系统内所有用户的全部流程；②流程 6 状态节点独立配色（含文字颜色），覆盖详情页时间线步骤条与左侧列表状态标签。
