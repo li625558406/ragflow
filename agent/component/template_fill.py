@@ -256,9 +256,15 @@ class TemplateFill(ComponentBase):
             # 由 invoke 统一收口为 cancelled 终态（不落 failed）
             raise _FillCancelled() from None
         name_of = {c["template_id"]: c["name"] for c in chosen}
+        # 运行级 nonce：task_id 即 agent_id（跨运行不变），确认键必须带本次运行的
+        # 随机 nonce——孤儿键（重复点击/超时后才确认/取消残留/delete 失败）在新运行
+        # nonce 不同时永不命中，由 700s TTL 自然过期，防旧 decisions 被立即消费跳过
+        # 确认 + 旧直填值经 sediment 沉淀污染默认值基线
+        nonce = get_uuid()
         # 字段名用 confirm_templates：selected 事件的 templates 已被前端归约占用
         self._push_progress({
             "stage": "confirm_pending", "task_id": task_id,
+            "confirm_nonce": nonce,
             "confirm_templates": [{"template_id": tid, "name": name_of.get(tid, ""),
                            "candidates": [{"key": it["key"],
                                            "name": it.get("name") or it["key"],
@@ -271,17 +277,19 @@ class TemplateFill(ComponentBase):
         if not task_id:
             return decisions
         waited = 0.0
+        # 确认键带运行级 nonce（与 confirm_pending 事件下发给前端的一致）
+        confirm_key = f"tpl_fill:confirm:{task_id}:{nonce}"
         while waited < _CONFIRM_TIMEOUT:
             if self.check_if_canceled("TemplateFill confirm wait"):
                 raise _FillCancelled()
             try:
-                raw = REDIS_CONN.get(f"tpl_fill:confirm:{task_id}")
+                raw = REDIS_CONN.get(confirm_key)
             except Exception:
                 logger.warning("confirm poll failed; fallback to predicted", exc_info=True)
                 break
             if raw:
                 try:
-                    REDIS_CONN.delete(f"tpl_fill:confirm:{task_id}")
+                    REDIS_CONN.delete(confirm_key)
                     data = json.loads(raw)
                 except Exception:
                     logger.warning("confirm payload unparsable; fallback to predicted")
@@ -290,9 +298,13 @@ class TemplateFill(ComponentBase):
                     if tid not in decisions or not isinstance(d, dict):
                         continue
                     valid = {it["key"] for it in d_map[tid]}
+                    # 载荷结构防御：非官方写键可能塞标量（values 非 dict / changed 非 list），
+                    # isinstance 兜底按空处理，不炸 run
+                    changed_raw = d.get("changed") if isinstance(d.get("changed"), list) else []
+                    values_raw = d.get("values") if isinstance(d.get("values"), dict) else {}
                     decisions[tid] = {
-                        "changed": {k for k in d.get("changed", []) if k in valid},
-                        "values": {k: v for k, v in d.get("values", {}).items()
+                        "changed": {k for k in changed_raw if k in valid},
+                        "values": {k: v for k, v in values_raw.items()
                                    if k in valid}}
                 return decisions
             await asyncio.sleep(_CONFIRM_POLL_INTERVAL)

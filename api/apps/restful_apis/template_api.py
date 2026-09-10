@@ -661,17 +661,29 @@ async def download_fill_result(task_id: str):
 # > 画布节点 _CONFIRM_TIMEOUT(600s)：确认提交晚于节点超时也没意义，键先过期自愈
 _CONFIRM_TTL = 700
 
+# nonce 卫生：限长 64 + 字母数字与连字符白名单，防键注入/超长键
+# （组件侧 get_uuid() 产出为 32 位 hex，天然满足）
+_CONFIRM_NONCE_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+
 
 @manager.route("/template/fill/confirm", methods=["POST"])
 @login_required
 async def confirm_template_fill():
     """画布 TemplateFill 暂停确认唤醒：写 Redis 确认键，节点轮询读取后继续。
-    decisions: {template_id: {changed: [key...], values: {key: value}}}"""
+    decisions: {template_id: {changed: [key...], values: {key: value}}}
+    nonce 为本次运行的运行级随机数（confirm_pending 事件下发）：task_id 即
+    agent_id 跨运行不变，键含 nonce 后孤儿键（重复点击/超时后确认/取消残留）
+    永不被新运行误读，由 700s TTL 自然过期。"""
     body = await request.get_json(silent=True) or {}
     task_id = str(body.get("task_id") or "").strip()
+    nonce = str(body.get("nonce") or "").strip()
     decisions = body.get("decisions")
     if not task_id or not isinstance(decisions, dict):
         return get_error_data_result("task_id 与 decisions 不能为空")
+    if not nonce:
+        return get_error_data_result("nonce 不能为空")
+    if not _CONFIRM_NONCE_RE.fullmatch(nonce):
+        return get_error_data_result("nonce 非法")
     # 入参清洗（前端数据不可信）：只留字符串 key，值统一 str 归一
     clean = {}
     for tid, d in decisions.items():
@@ -682,10 +694,14 @@ async def confirm_template_fill():
             "values": {str(k): str(v) for k, v in (d.get("values") or {}).items()
                        if isinstance(k, str)},
         }
+    # RedisDB.set 内部吞异常只返回 False，必须查返回值而非只捕获异常，
+    # 否则真实 Redis 故障会误报 ok:true、确认静默丢失
     try:
-        REDIS_CONN.set(f"tpl_fill:confirm:{task_id}",
-                       json.dumps(clean, ensure_ascii=False), exp=_CONFIRM_TTL)
+        ok = REDIS_CONN.set(f"tpl_fill:confirm:{task_id}:{nonce}",
+                            json.dumps(clean, ensure_ascii=False), exp=_CONFIRM_TTL)
     except Exception:
-        logger.exception("write confirm key failed, task=%s", task_id)
+        logger.exception("write confirm key failed, task=%s nonce=%s", task_id, nonce)
+        ok = False
+    if not ok:
         return get_error_data_result("确认提交失败，请重试")
     return get_result(data={"ok": True})

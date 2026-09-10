@@ -1531,15 +1531,19 @@ def test_detect_worker_never_leaves_detecting_marker(monkeypatch):
 # ---------- 画布 TemplateFill 暂停确认端点（P2 confirm） ----------
 
 class _FakeConfirmRedis:
-    """REDIS_CONN 桩：记录 set 调用（key/值/exp）。"""
+    """REDIS_CONN 桩：记录 set 调用（key/值/exp）。
+    fail='raise' 抛异常；fail='false' 返回 False（RedisDB.set 真实语义：
+    内部吞异常只回 False，I1 回归——两条故障路径都必须友好报错而非误报 ok）。"""
 
-    def __init__(self, recorder, fail=False):
+    def __init__(self, recorder, fail=None):
         self._recorder = recorder
         self._fail = fail
 
     def set(self, k, v, exp=3600):
-        if self._fail:
+        if self._fail == "raise":
             raise RuntimeError("redis down")
+        if self._fail == "false":
+            return False
         self._recorder["set"] = (k, v, exp)
         return True
 
@@ -1547,9 +1551,11 @@ class _FakeConfirmRedis:
 def test_confirm_rejects_missing_task_id_or_decisions(monkeypatch):
     """task_id 缺失/空串、decisions 缺失/非 dict → 102 拒绝，不触碰 Redis。"""
     mod = _template_api
-    for body in (None, {}, {"decisions": {}}, {"task_id": "  ", "decisions": {}},
-                 {"task_id": "t1"}, {"task_id": "t1", "decisions": "x"},
-                 {"task_id": "t1", "decisions": [1]}):
+    for body in (None, {}, {"decisions": {}, "nonce": "n1"},
+                 {"task_id": "  ", "nonce": "n1", "decisions": {}},
+                 {"task_id": "t1", "nonce": "n1"},
+                 {"task_id": "t1", "nonce": "n1", "decisions": "x"},
+                 {"task_id": "t1", "nonce": "n1", "decisions": [1]}):
         recorder = {}
         monkeypatch.setattr(mod, "request", _FakeJsonRequest(body))
         monkeypatch.setattr(mod, "REDIS_CONN", _FakeConfirmRedis(recorder))
@@ -1560,13 +1566,35 @@ def test_confirm_rejects_missing_task_id_or_decisions(monkeypatch):
         assert "set" not in recorder, f"body={body!r} 不得写 Redis"
 
 
+def test_confirm_rejects_missing_or_invalid_nonce(monkeypatch):
+    """I2 回归：nonce 必填（运行级防跨运行孤儿键误读）+ 卫生校验
+    （限长 64、字母数字与连字符白名单，防键注入/超长键）→ 拒绝且不写 Redis。"""
+    mod = _template_api
+    for body in (
+        {"task_id": "t1", "decisions": {}},                              # 缺失
+        {"task_id": "t1", "nonce": "  ", "decisions": {}},               # 空白
+        {"task_id": "t1", "nonce": "x" * 65, "decisions": {}},           # 超长
+        {"task_id": "t1", "nonce": "../evil", "decisions": {}},          # 路径注入
+        {"task_id": "t1", "nonce": "a b:c", "decisions": {}},            # 非白名单字符
+    ):
+        recorder = {}
+        monkeypatch.setattr(mod, "request", _FakeJsonRequest(body))
+        monkeypatch.setattr(mod, "REDIS_CONN", _FakeConfirmRedis(recorder))
+        resp = asyncio.run(mod.confirm_template_fill())
+        d = _err_dict(resp)
+        assert d["code"] == DATA_ERROR_CODE, f"body={body!r} 应拒绝"
+        assert "nonce" in d["message"], f"body={body!r} 文案应提示 nonce"
+        assert "set" not in recorder, f"body={body!r} 不得写 Redis"
+
+
 def test_confirm_cleans_and_writes_key_with_ttl(monkeypatch):
     """成功路径：入参清洗（非 dict 决策项丢弃、changed/values 只留字符串 key、值 str 归一）
-    后写 tpl_fill:confirm:{task_id}，TTL 必须大于节点 600s 等待超时。"""
+    后写 tpl_fill:confirm:{task_id}:{nonce}，TTL 必须大于节点 600s 等待超时。"""
     mod = _template_api
     recorder = {}
     monkeypatch.setattr(mod, "request", _FakeJsonRequest({
         "task_id": "task-9",
+        "nonce": "run-nonce-1",
         "decisions": {
             "t1": {"changed": ["a", 123, "b"], "values": {"a": "直填", 7: "x"},
                    "ignored": "field"},
@@ -1577,7 +1605,7 @@ def test_confirm_cleans_and_writes_key_with_ttl(monkeypatch):
     resp = asyncio.run(mod.confirm_template_fill())
     assert resp["code"] == 0 and resp["data"] == {"ok": True}
     key, val, exp = recorder["set"]
-    assert key == "tpl_fill:confirm:task-9"
+    assert key == "tpl_fill:confirm:task-9:run-nonce-1", "确认键必须带运行级 nonce"
     assert exp > 600, "确认键 TTL 必须大于画布节点 600s 等待超时"
     data = json.loads(val)
     assert data == {"t1": {"changed": ["a", "b"], "values": {"a": "直填"}},
@@ -1585,12 +1613,15 @@ def test_confirm_cleans_and_writes_key_with_ttl(monkeypatch):
         "非串 key 归一 str、非串 changed 项/非 dict 决策项过滤、值 str 归一"
 
 
-def test_confirm_redis_failure_returns_friendly_error(monkeypatch):
-    """对抗性：Redis 写入异常 → 兜底「确认提交失败」，不 500。"""
+@pytest.mark.parametrize("fail", ["raise", "false"])
+def test_confirm_redis_failure_returns_friendly_error(monkeypatch, fail):
+    """对抗性（I1）：Redis 写入抛异常 / 返回 False（RedisDB.set 吞异常真实语义）
+    都必须兜底「确认提交失败」，绝不误报 ok:true。"""
     mod = _template_api
     monkeypatch.setattr(mod, "request", _FakeJsonRequest(
-        {"task_id": "t1", "decisions": {"t1": {"changed": ["a"], "values": {}}}}))
-    monkeypatch.setattr(mod, "REDIS_CONN", _FakeConfirmRedis({}, fail=True))
+        {"task_id": "t1", "nonce": "n1",
+         "decisions": {"t1": {"changed": ["a"], "values": {}}}}))
+    monkeypatch.setattr(mod, "REDIS_CONN", _FakeConfirmRedis({}, fail=fail))
     resp = asyncio.run(mod.confirm_template_fill())
     d = _err_dict(resp)
     assert d["code"] == DATA_ERROR_CODE and "确认提交失败" in d["message"]

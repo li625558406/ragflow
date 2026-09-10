@@ -24,6 +24,7 @@
 经模块属性注入替身，不触真实 DB / LLM / MinIO。"""
 import asyncio
 import json
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -534,7 +535,8 @@ def _drain_events(cpn):
 
 def test_confirm_wait_timeout_uses_predicted(monkeypatch):
     """Redis 一直无确认键 → 超时后按预判集合自动继续，且推送 confirm_pending +
-    confirm_timeout 两个事件；无默认值字段（乙）不进 decisions 载荷。"""
+    confirm_timeout 两个事件；无默认值字段（乙）不进 decisions 载荷；
+    confirm_pending 事件必须下发运行级 confirm_nonce（I2）。"""
     import asyncio
 
     cpn = _confirm_component(monkeypatch)
@@ -563,13 +565,18 @@ def test_confirm_wait_timeout_uses_predicted(monkeypatch):
 
     decisions = asyncio.run(cpn._confirm_changed_fields(_chosen_with_defaults(), "需求", {}))
     assert decisions == {"t1": {"changed": {"a", "ghost"}, "values": {}}}
-    stages = [e["stage"] for e in _drain_events(cpn)]
+    events = _drain_events(cpn)
+    stages = [e["stage"] for e in events]
     assert stages == ["confirm_pending", "confirm_timeout"]
+    nonce = events[0]["confirm_nonce"]
+    assert isinstance(nonce, str) and re.fullmatch(r"[A-Za-z0-9-]{1,64}", nonce), \
+        "confirm_pending 必须下发合法的运行级 confirm_nonce"
 
 
 def test_confirm_payload_filters_unknown_keys(monkeypatch):
     """确认载荷含 ghost key / 越范本 id → 只留合法 key，直填 values 进入 decisions；
-    键被消费（Redis delete 调用）；不再推 confirm_timeout。"""
+    轮询/消费键必须带运行级 nonce（tpl_fill:confirm:{task_id}:{nonce}，I2），
+    且与 confirm_pending 事件下发的 confirm_nonce 一致；不再推 confirm_timeout。"""
     import asyncio
 
     cpn = _confirm_component(monkeypatch)
@@ -577,15 +584,15 @@ def test_confirm_payload_filters_unknown_keys(monkeypatch):
         "t1": {"changed": ["a", "ghost", 123], "values": {"a": "直填值", "ghost": "x"}},
         "t2": {"changed": ["zzz"], "values": {"zzz": "越范本"}},
     }, ensure_ascii=False)
-    deleted = []
+    seen = {"deleted": []}
 
     class FakeRedis:
         def get(self, k):
-            assert k == "tpl_fill:confirm:task-9"
+            seen["get"] = k
             return payload
 
         def delete(self, k):
-            deleted.append(k)
+            seen["deleted"].append(k)
 
     monkeypatch.setattr(fill_template, "REDIS_CONN", FakeRedis())
 
@@ -595,11 +602,48 @@ def test_confirm_payload_filters_unknown_keys(monkeypatch):
     monkeypatch.setattr(fill_template.executor, "predict_changed_fields", fake_predict)
 
     decisions = asyncio.run(cpn._confirm_changed_fields(_chosen_with_defaults(), "需求", {}))
-    assert deleted == ["tpl_fill:confirm:task-9"], "确认键必须消费防重复触发"
+    confirm_key = seen["get"]
+    assert confirm_key.startswith("tpl_fill:confirm:task-9:"), \
+        f"确认键必须带运行级 nonce，实际: {confirm_key}"
+    assert seen["deleted"] == [confirm_key], "确认键必须消费防重复触发"
+    nonce = confirm_key.rsplit(":", 1)[1]
+    events = _drain_events(cpn)
+    pending = [e for e in events if e["stage"] == "confirm_pending"]
+    assert pending and pending[0]["confirm_nonce"] == nonce, \
+        "事件下发的 confirm_nonce 必须与轮询键中的 nonce 一致（前端携带它调 confirm 端点）"
+    assert [e["stage"] for e in events] == ["confirm_pending"], "拿到确认后不得再推 confirm_timeout"
     assert decisions == {"t1": {"changed": {"a"}, "values": {"a": "直填值"}}}, \
         "ghost/非串 key 过滤、越范本 id(t2) 整体忽略、直填值进 values"
-    stages = [e["stage"] for e in _drain_events(cpn)]
-    assert stages == ["confirm_pending"], "拿到确认后不得再推 confirm_timeout"
+
+
+def test_confirm_payload_scalar_values_defensive(monkeypatch):
+    """M1 对抗性：非官方写键塞 values 为标量 / changed 为字符串 → 不炸 run，
+    按「无值/无变化」处理（只更新对应范本 decisions 为空集）。"""
+    import asyncio
+
+    cpn = _confirm_component(monkeypatch)
+    payload = json.dumps({
+        "t1": {"changed": "a", "values": "not-a-dict"},
+        "t2": {"changed": ["zzz"], "values": 42},
+    }, ensure_ascii=False)
+
+    class FakeRedis:
+        def get(self, k):
+            return payload
+
+        def delete(self, k):
+            pass
+
+    monkeypatch.setattr(fill_template, "REDIS_CONN", FakeRedis())
+
+    async def fake_predict(*a, **kw):
+        return set()
+
+    monkeypatch.setattr(fill_template.executor, "predict_changed_fields", fake_predict)
+
+    decisions = asyncio.run(cpn._confirm_changed_fields(_chosen_with_defaults(), "需求", {}))
+    assert decisions == {"t1": {"changed": set(), "values": {}}}, \
+        "values 标量 / changed 非串兜底为空，不得 AttributeError"
 
 
 def test_confirm_no_default_items_skips_all(monkeypatch):
