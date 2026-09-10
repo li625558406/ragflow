@@ -952,3 +952,31 @@ def test_default_hint():
     assert executor._default_hint({"default_value": "上次值"}) == "上次值"
     assert executor._default_hint({}) == ""
     assert executor._default_hint({"default_value": None}) == ""
+
+
+def test_build_msg_spec_includes_default_value(monkeypatch):
+    """接线测试：_build_msg 是 generate_values 内闭包无法直接调用，改为通过
+    mock LLM 捕获实际发送的 prompt，验证字段清单 spec 里的 default_value 键
+    确实被注入——带默认值的字段 prompt 中出现「上次值」；无默认值字段为空串。"""
+    from rag.svr.template_fill import executor
+    prompts = []
+
+    async def fake_chat(system, history, gen_conf=None, **kw):
+        prompts.append(history[0]["content"])
+        return '{"k1": "v1", "k2": "v2"}'
+
+    monkeypatch.setattr(executor, "_build_chat_mdl", lambda tenant: types.SimpleNamespace(async_chat=fake_chat))
+    placeholders = [
+        {"key": "k1", "name": "字段一", "description": "", "constraints": {}, "default_value": "上次值"},
+        {"key": "k2", "name": "字段二", "description": "", "constraints": {}},  # 无 default_value
+    ]
+    chunks_by_key = {"k1": {"chunks": []}, "k2": {"chunks": []}}
+    vals, missing = executor._run_async(
+        executor.generate_values("t", placeholders, chunks_by_key, params={}))
+    assert vals == {"k1": "v1", "k2": "v2"} and missing == set()
+    assert len(prompts) == 1
+    prompt = prompts[0]
+    # spec 字段清单 JSON 中带默认值的字段注入了 default_value
+    assert '"default_value": "上次值"' in prompt
+    # 无默认值的字段 default_value 为空串（_default_hint({}) == ""）
+    assert '"default_value": ""' in prompt
