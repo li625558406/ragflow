@@ -99,6 +99,11 @@ export default function FlowDetail({
   const [actionError, setActionError] = useState('');
   // 进行中的一轮 AI 对话（发送后未保存前的流式状态）
   const [liveChat, setLiveChat] = useState<FlowLiveChat | null>(null);
+  // 确认卡片提交回写函数（FlowAiPanel 上报）：提交成功后回写流式态，
+  // 使归约器的 confirm_timeout 守卫（!submitted）生效，消除超时/提交竞态假象
+  const [markConfirmSubmitted, setMarkConfirmSubmitted] = useState<
+    (() => void) | null
+  >(null);
   // AI 范本填写成稿「存为流程版本」：成稿 blob（agents/download）→ flow 版本
   const [savingDocIds, setSavingDocIds] = useState<
     Record<string, 'saving' | 'saved' | 'error'>
@@ -468,6 +473,7 @@ export default function FlowDetail({
             <ConversationView
               chats={data.ai_chats ?? []}
               live={liveChat}
+              onConfirmSubmitted={markConfirmSubmitted ?? undefined}
               extraAction={(dl) => {
                 const st = savingDocIds[dl.doc_id || ''];
                 return (
@@ -509,6 +515,7 @@ export default function FlowDetail({
                 onChanged();
               }}
               onLiveChatChange={setLiveChat}
+              onConfirmSubmittedReady={setMarkConfirmSubmitted}
             />
           )}
 
@@ -825,11 +832,14 @@ function ConversationView({
   chats,
   live,
   extraAction,
+  onConfirmSubmitted,
 }: {
   chats: FlowAiChatItem[];
   live: FlowLiveChat | null;
   /** 成稿条目附加动作（存为流程版本按钮） */
   extraAction?: (dl: ITemplateFillDownload) => ReactNode;
+  /** 确认卡片提交成功后回调：回写流式态（FlowAiPanel 经 onConfirmSubmittedReady 上报的函数） */
+  onConfirmSubmitted?: () => void;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   // 流式回复增长时自动滚到底部
@@ -909,6 +919,7 @@ function ConversationView({
             <div className="max-w-[90%]">
               <TemplateFillProgress
                 state={live.templateFill}
+                onConfirmSubmitted={onConfirmSubmitted}
                 extraAction={(dl) => extraAction?.(dl)}
               />
             </div>

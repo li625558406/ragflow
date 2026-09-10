@@ -12,8 +12,12 @@ import { useState } from 'react';
 
 export default function TemplateFillConfirmCard({
   pending,
+  onSubmitted,
 }: {
   pending: ITemplateFillConfirmPending;
+  /** 提交成功后回调（可选）：使用方把 submitted 回写进流式状态，
+   *  使归约器的 confirm_timeout 守卫（!submitted）真正生效 */
+  onSubmitted?: () => void;
 }) {
   // 各范本勾选的候选字段 key（初始 = AI 预判），Set 不可变更新保证 memo 感知
   const [checked, setChecked] = useState<Record<string, Set<string>>>(() =>
@@ -64,6 +68,8 @@ export default function TemplateFillConfirmCard({
         decisions,
       );
       setSubmitted(true);
+      // 回写流式状态：迟到/并发的 confirm_timeout 不再把本卡片置 expired
+      onSubmitted?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : '确认提交失败');
     } finally {
@@ -71,20 +77,24 @@ export default function TemplateFillConfirmCard({
     }
   };
 
-  // 超时且未提交：灰字只读，按钮隐藏
-  if (pending.expired && !submitted) {
+  // 已提交（本地成功或流式态回写）优先于超时判断：显示蓝字；
+  // 若超时与提交同真，说明提交在途时后端已按超时继续 —— 降级提示，
+  // 不再宣称「正在继续填写」（直填值可能已被后端按 AI 预判丢弃）
+  if (submitted || pending.submitted) {
     return (
-      <div className="rounded-lg border border-[#E5E5E5] bg-[#F5F5F5] px-3 py-2 text-xs text-[#8C8C8C]">
-        等待超时，已按 AI 预判字段继续填写。
+      <div className="rounded-lg border border-[#E5E5E5] bg-[#F5F5F5] px-3 py-2 text-xs text-[#1a66fb]">
+        {pending.expired
+          ? '已提交确认，但填写可能已按 AI 预判继续'
+          : '已确认，正在继续填写…'}
       </div>
     );
   }
 
-  // 已提交：蓝字进行中提示
-  if (submitted) {
+  // 超时且未提交：灰字只读，按钮隐藏
+  if (pending.expired) {
     return (
-      <div className="rounded-lg border border-[#E5E5E5] bg-[#F5F5F5] px-3 py-2 text-xs text-[#1a66fb]">
-        已确认，正在继续填写…
+      <div className="rounded-lg border border-[#E5E5E5] bg-[#F5F5F5] px-3 py-2 text-xs text-[#8C8C8C]">
+        等待超时，已按 AI 预判字段继续填写。
       </div>
     );
   }
@@ -97,6 +107,8 @@ export default function TemplateFillConfirmCard({
           {t.candidates.map((c) => {
             const inputKey = `${t.template_id}:${c.key}`;
             const isChecked = checked[t.template_id]?.has(c.key) ?? false;
+            // 直填了值的字段后端无论是否勾选都直取生效，因此不划线（划线暗示"不变化"，与生效矛盾）
+            const hasInput = (inputs[inputKey] || '').trim() !== '';
             return (
               <div key={c.key} className="flex items-center gap-2">
                 <Checkbox
@@ -105,7 +117,9 @@ export default function TemplateFillConfirmCard({
                 />
                 <span
                   className={
-                    isChecked ? 'text-[#000000]' : 'text-[#8C8C8C] line-through'
+                    isChecked || hasInput
+                      ? 'text-[#000000]'
+                      : 'text-[#8C8C8C] line-through'
                   }
                 >
                   {c.name || c.key}
@@ -129,10 +143,16 @@ export default function TemplateFillConfirmCard({
       ))}
       {error && <div className="text-[#E5484D]">{error}</div>}
       <div className="flex justify-end pt-0.5">
+        {/* nonce 缺失 = 确认通道未就绪（Redis 唤醒令牌缺失），提交必然无效，前置禁用 */}
+        {!pending.nonce && (
+          <span className="mr-auto self-center text-[#8C8C8C]">
+            确认通道未就绪，暂时无法提交
+          </span>
+        )}
         <Button
           size="sm"
           className="h-7 bg-[#1a66fb] px-3 text-xs text-white hover:bg-[#1557d6]"
-          disabled={submitting}
+          disabled={submitting || !pending.nonce}
           onClick={submit}
         >
           {submitting && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}

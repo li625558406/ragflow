@@ -44,6 +44,7 @@ export default function FlowAiPanel({
   isOwner,
   onSaved,
   onLiveChatChange,
+  onConfirmSubmittedReady,
 }: {
   flowId: string;
   /** 流程标题（agent 会话命名「流程：xxx」，便于在对话页签识别） */
@@ -57,6 +58,9 @@ export default function FlowAiPanel({
   onSaved: () => void;
   /** 进行中对话（指令+流式回复）变化时上报，供中部对话区实时展示 */
   onLiveChatChange?: (live: FlowLiveChat | null) => void;
+  /** 确认卡片提交回写函数上报：确认卡片渲染在中部对话区（ConversationView），
+   *  提交成功后经此把 submitted 回写进本面板的流式累积态，供归约器 confirm_timeout 守卫判断 */
+  onConfirmSubmittedReady?: (fn: (() => void) | null) => void;
 }) {
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -164,9 +168,16 @@ export default function FlowAiPanel({
     resetAnswerList,
     answerList,
     structuredOutputRef,
+    markConfirmSubmitted,
   } = useSendMessageBySSE(api.agentChatCompletion, {
     excludeFanOutFromContent: false,
   });
+
+  // 确认卡片提交回写函数上报：挂载就绪上报、卸载清空
+  useEffect(() => {
+    onConfirmSubmittedReady?.(markConfirmSubmitted);
+    return () => onConfirmSubmittedReady?.(null);
+  }, [onConfirmSubmittedReady, markConfirmSubmitted]);
 
   useEffect(() => {
     if (streamState.templateFill) {

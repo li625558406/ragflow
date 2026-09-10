@@ -13,17 +13,25 @@ export default function TemplateFillProgress({
   state,
   onPreview,
   extraAction,
+  onConfirmSubmitted,
 }: {
   state?: ITemplateFillState;
   /** 成稿点击预览（c-chat 传 setPreviewDoc；不传则文件名为纯文本） */
   onPreview?: (dl: ITemplateFillDownload) => void;
   /** 条目右侧附加动作（flow 传「存为流程版本」按钮） */
   extraAction?: (dl: ITemplateFillDownload) => ReactNode;
+  /** 确认卡片提交成功后回调（透传给卡片 onSubmitted）：使用方回写流式状态 */
+  onConfirmSubmitted?: () => void;
 }) {
   // 画布挂起确认卡片（confirm_pending）：附加块，置于范本行列表之上
   const confirmCard = state?.pendingConfirm && (
     <div className="mt-2">
-      <TemplateFillConfirmCard pending={state.pendingConfirm} />
+      {/* task_id+nonce 唯一标识一轮确认：新一轮覆盖时 remount，重置卡片全部本地状态，避免多轮确认 stale */}
+      <TemplateFillConfirmCard
+        key={`${state.pendingConfirm.task_id}:${state.pendingConfirm.nonce || ''}`}
+        pending={state.pendingConfirm}
+        onSubmitted={onConfirmSubmitted}
+      />
     </div>
   );
   if (!state?.templates?.length) return confirmCard || null;

@@ -332,6 +332,7 @@ export default function CChat() {
     setDone,
     resetAnswerList,
     structuredOutputRef,
+    markConfirmSubmitted,
   } = useSendMessageBySSE(api.agentChatCompletion, {
     excludeFanOutFromContent: false,
   });
@@ -2352,6 +2353,7 @@ export default function CChat() {
                                 {streaming && (
                                   <TemplateFillProgress
                                     state={streamState.templateFill}
+                                    onConfirmSubmitted={markConfirmSubmitted}
                                     onPreview={(dl) =>
                                       setPreviewDoc({
                                         fileId: dl.doc_id || '',

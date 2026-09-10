@@ -697,6 +697,21 @@ export const useSendMessageBySSE = (
     sseRef.current?.abort();
   }, []);
 
+  // 确认卡片提交成功后的流式态回写：把 submitted 标记写入累积器并立即刷新渲染态，
+  // 使归约器的 confirm_timeout 守卫（!submitted）真正生效 —— 用户已提交时，
+  // 迟到/并发的 confirm_timeout 不再把确认卡片置 expired（消除超时/提交竞态的 UI 假象）
+  const markConfirmSubmitted = useCallback(() => {
+    const acc = streamAccRef.current;
+    const pc = acc.templateFill?.pendingConfirm;
+    if (!pc || pc.submitted) return;
+    // 换引用更新（与归约器浅拷贝约定一致），让依赖 streamState.templateFill 的下游感知更新
+    acc.templateFill = {
+      ...acc.templateFill!,
+      pendingConfirm: { ...pc, submitted: true },
+    };
+    setStreamState({ ...acc });
+  }, []);
+
   return {
     send,
     answerList,
@@ -707,5 +722,6 @@ export const useSendMessageBySSE = (
     resetAnswerList,
     stopOutputMessage,
     structuredOutputRef,
+    markConfirmSubmitted,
   };
 };
