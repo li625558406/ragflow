@@ -725,3 +725,24 @@ def test_render_dispatch():
     blob = _mk_docx_with_placeholder()
     out = render("docx", blob, {"name": "X"})
     assert out and out != blob
+
+
+# ---------- detector：anchor 派生默认值（纯函数） ----------
+
+def test_derive_default_from_anchor_blank_markers():
+    from rag.svr.template_fill.detector import derive_default_from_anchor
+    assert derive_default_from_anchor("") == ""
+    assert derive_default_from_anchor(None) == ""
+    assert derive_default_from_anchor("______") == ""
+    assert derive_default_from_anchor("＿＿＿＿") == ""   # 全角下划线
+    assert derive_default_from_anchor("　　") == ""       # 全角空格
+    assert derive_default_from_anchor("---") == ""
+    assert derive_default_from_anchor("………") == ""
+    assert derive_default_from_anchor("N/A") == ""
+
+
+def test_derive_default_from_anchor_filled_values():
+    from rag.svr.template_fill.detector import derive_default_from_anchor
+    assert derive_default_from_anchor("XX建设工程有限公司") == "XX建设工程有限公司"
+    assert derive_default_from_anchor("2026-09-10") == "2026-09-10"
+    assert derive_default_from_anchor("  100万元  ") == "100万元"
