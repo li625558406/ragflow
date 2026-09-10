@@ -946,12 +946,29 @@ def test_merge_default_values_fills_missing_only():
     assert generated["a"] == "LLM值" and "a" not in missing
     assert "c" in missing and "d" in missing      # 无默认值/param 不兜底
 
+    # 约束闸：number 类型默认值非数字 → _apply_constraints 判 None → 留在 missing
+    # max_length 截断对默认值同样生效（与 LLM 产值同一道闸）
+    ph2 = [{"key": "n", "fill_mode": "llm", "default_value": "abc",
+            "constraints": {"type": "number"}},
+           {"key": "m", "fill_mode": "llm", "default_value": "x" * 300,
+            "constraints": {"max_length": 10}}]
+    generated2, missing2 = {}, {"n", "m"}
+    executor._merge_default_values(ph2, generated2, missing2)
+    assert "n" in missing2 and "n" not in generated2
+    assert generated2["m"] == "x" * 10 and "m" not in missing2
+
 
 def test_default_hint():
     from rag.svr.template_fill import executor
     assert executor._default_hint({"default_value": "上次值"}) == "上次值"
     assert executor._default_hint({}) == ""
     assert executor._default_hint({"default_value": None}) == ""
+    # 非字符串输入归一为字符串
+    assert executor._default_hint({"default_value": 123}) == "123"
+    # 超长输入截断到 DEFAULT_HINT_MAX(100)
+    assert executor._default_hint({"default_value": "长" * 300}) == "长" * 100
+    # 控制字符被剥离（防 prompt 注入）
+    assert executor._default_hint({"default_value": "a\x00b\x01c"}) == "abc"
 
 
 def test_build_msg_spec_includes_default_value(monkeypatch):

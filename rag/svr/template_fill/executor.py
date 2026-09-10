@@ -136,6 +136,7 @@ GENERATE_CONCURRENCY = 3
 MAX_EVIDENCE_CHUNKS = 6  # 每字段进 prompt 的证据片段上限（片段已在检索层截 800 字）
 PARAMS_PROMPT_MAX = 2000       # 任务参数整体序列化进 prompt 的截断上限
 CONSTRAINTS_PROMPT_MAX = 200   # 单字段 constraints 序列化进 prompt 的截断上限
+DEFAULT_HINT_MAX = 100         # 默认值作为 prompt 参考提示的截断上限
 
 GENERATE_SYSTEM = (
     "你是文档填写引擎。根据每个字段的【检索证据】填写字段值。规则：\n"
@@ -214,19 +215,32 @@ def _apply_constraints(value, constraints: dict):
 
 
 def _default_hint(it: dict) -> str:
-    """产值 prompt 的默认值参考提示（无则空串）。"""
-    return _clean_for_prompt(str(it.get("default_value") or ""), 100)
+    """产值 prompt 的默认值参考提示（无则空串）。
+    口径说明（有意设计，非遗漏）：prompt 提示只截 100 字（DEFAULT_HINT_MAX，
+    仅为 LLM 提供参考）；fallback 兜底（_merge_default_values）用全量默认值
+    （save 层入库时截 500）。两处长度口径不同：前者省 token，后者还原原值。"""
+    return _clean_for_prompt(str(it.get("default_value") or ""), DEFAULT_HINT_MAX)
 
 
 def _merge_default_values(placeholders: list[dict], generated: dict, missing: set):
     """P1 兜底：LLM 提取不到（missing）的 llm 字段直取默认值。只填 missing、
-    不覆盖已有产值；param 模式不兜底（param 直取失败无默认语义）。就地修改。"""
+    不覆盖已有产值；param 模式不兜底（param 直取失败无默认语义）。就地修改。
+    默认值来自 B 端存量数据，不可信：先 str 归一 + 控制字符剥离（防 dict/int/
+    控制字符原样落渲染），再过 _apply_constraints 约束闸（与 LLM 产值同一道
+    截断/类型校验）；约束判 None（如 number 字段默认值非数字）则留在 missing
+    不写 generated，宁缺勿错。"""
     for it in placeholders:
         if _norm_fill_mode(it) != "llm":
             continue
         key = it.get("key")
-        if key and key in missing and str(it.get("default_value") or ""):
-            generated[key] = it["default_value"]
+        if not (key and key in missing):
+            continue
+        raw = _CTRL_RE.sub("", str(it.get("default_value") or "")).strip()
+        if not raw:
+            continue
+        v = _apply_constraints(raw, it.get("constraints") or {})
+        if v is not None:
+            generated[key] = v
             missing.discard(key)
 
 
