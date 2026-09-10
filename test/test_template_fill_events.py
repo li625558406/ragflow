@@ -37,7 +37,7 @@ def _make_comp(candidates, fill_results, canceled=False):
     comp._user_file_evidence = lambda: ""
 
     async def _fill_one(tenant_id, cand, chunks, query, begin_fields, user_file_text, sem,
-                        on_progress=None, should_cancel=None):
+                        on_progress=None, should_cancel=None, decision=None):
         res = fill_results[cand["template_id"]]
         if isinstance(res, Exception):
             raise res

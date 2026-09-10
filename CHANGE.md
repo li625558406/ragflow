@@ -1,5 +1,17 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-10 范本默认值基线 P2：变化字段确认填写（后端+前端，未部署）
+
+**主题**：重填场景 LLM 负担从几百字段降到 ~100 变化字段。
+
+**核心变更**：
+- `executor.predict_changed_fields`：分块（200/块）LLM 预判疑似变化字段，失败/非法输出回退空集，GenerateCancelled 穿透
+- 画布 TemplateFill 暂停确认：`_confirm_changed_fields` 推 `confirm_pending` SSE 事件（含 confirm_nonce）→ 轮询 Redis `tpl_fill:confirm:{task_id}:{nonce}`（600s 超时按预判继续）→ `POST /template/fill/confirm` 端点写键唤醒（nonce 运行级隔离防跨运行误读，Redis 写失败检测）
+- 条件执行：D−C 字段免检索免 LLM 直用默认值；用户直填值最高优先（空串=清空）+ 沉淀 override；检索/产值/进度三处同步收窄
+- 前端确认卡片（C端对话 + flow AI 面板共用）：勾选变化字段 + 直填值，SSE confirm_pending 归约、轮次 key 隔离、提交状态回写流式态、超时/提交竞态降级文案
+
+**遗留**：B端异步填写任务（无人在场）不接入暂停确认，保持 P1 fallback 行为；未部署（后端 5 文件成套 SCP + 前端 build，前后端需一起上线——confirm 端点要求 nonce，旧前端调用会被拒）。
+
 ## 2026-09-10 范本默认值基线 P1（后端+前端，未部署）
 
 **主题**：模板填写大范本（几百填写点）漏填根治与基线沉淀。
