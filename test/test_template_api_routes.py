@@ -453,7 +453,8 @@ def test_save_placeholders_published_upgrades_version(monkeypatch):
     from api.db.services import template_fill_service as svc
     calls = {}
     monkeypatch.setattr(svc.TplTemplateVersionService, "latest", classmethod(
-        lambda cls, tid: types.SimpleNamespace(version=3, original_file_id="v3_original")))
+        lambda cls, tid: types.SimpleNamespace(version=3, original_file_id="v3_original",
+                                               placeholders=[])))
     monkeypatch.setattr(svc.TplTemplateService, "get_by_id", classmethod(
         lambda cls, tid: types.SimpleNamespace(id="tpl_x", status="published",
                                                file_type="docx", to_dict=lambda: {"id": "tpl_x"})))

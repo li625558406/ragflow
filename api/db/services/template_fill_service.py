@@ -256,6 +256,36 @@ class TplTemplateVersionService(CommonService):
         from rag.svr.template_fill.xlsx_utils import apply_xlsx_placeholders
         return apply_xlsx_placeholders(blob, items)
 
+    @staticmethod
+    def _merge_defaults(items: list, prev_placeholders) -> list:
+        """占位符默认值合并（纯函数，save_placeholders 落库前调用）。优先级：
+        1. 条目显式携带 default_value 字段（前端回显/默认值编辑链路）→ 原样保留
+           （含"显式清空"：value 空串且 source 空 = 用户清了默认值，不得再派生）；
+        2. 同 key 旧版本已有默认值 → 继承（重新识别/改填写点不丢基线）；
+        3. 否则从 anchor 派生（已填范本识别时零成本提取现值，source=detected）。
+        就地修改并返回 items。"""
+        from rag.svr.template_fill.detector import derive_default_from_anchor
+        prev_map = {it.get("key"): it for it in (prev_placeholders or [])
+                    if isinstance(it, dict) and it.get("key")}
+        for it in items:
+            key = it.get("key")
+            if not key:
+                continue
+            if "default_value" in it:
+                val = str(it.get("default_value") or "")
+                src = str(it.get("default_source") or "")
+                it["default_value"], it["default_source"] = val, (src or ("manual" if val else ""))
+                continue
+            prev = prev_map.get(key) or {}
+            if str(prev.get("default_value") or ""):
+                it["default_value"] = prev["default_value"]
+                it["default_source"] = prev.get("default_source") or "detected"
+                continue
+            derived = derive_default_from_anchor(it.get("anchor"))
+            it["default_value"] = derived
+            it["default_source"] = "detected" if derived else ""
+        return items
+
     @classmethod
     def _save_as_new_version(cls, template: dict, ver, placeholders: list) -> tuple:
         """published 模板保存填写点：不改旧版本行，新建 v{N+1} 版本行 + 新 MinIO 对象。
@@ -303,6 +333,7 @@ class TplTemplateVersionService(CommonService):
         ver = cls.latest(tpl_id)
         if ver is None:
             raise RuntimeError(f"no version found for template {tpl_id}")
+        placeholders = cls._merge_defaults(placeholders, ver.placeholders)
         if template.get("status") == "published":
             return cls._save_as_new_version(template, ver, placeholders)
         # MinIO conn.get 返回 r.read() 即 bytes；对象不存在/读取失败返回 None，此处显式兜底

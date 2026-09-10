@@ -758,3 +758,34 @@ def test_derive_default_from_anchor_truncates_and_strips_ctrl():
     from rag.svr.template_fill.detector import MAX_ANCHOR_LEN, derive_default_from_anchor
     assert len(derive_default_from_anchor("A" * 501)) == MAX_ANCHOR_LEN
     assert derive_default_from_anchor("值\x00\x01名") == "值名"
+
+
+# ---------- service：save_placeholders 默认值合并（纯函数） ----------
+
+def test_merge_defaults_explicit_wins():
+    from api.db.services.template_fill_service import TplTemplateVersionService as S
+    items = [{"key": "a", "anchor": "旧值", "default_value": "人工改的", "default_source": "manual"},
+             {"key": "b", "anchor": "甲公司"}]
+    out = S._merge_defaults(items, [{"key": "a", "default_value": "上版默认", "default_source": "auto"}])
+    assert out[0]["default_value"] == "人工改的" and out[0]["default_source"] == "manual"
+    assert out[1]["default_value"] == "甲公司" and out[1]["default_source"] == "detected"
+
+
+def test_merge_defaults_inherit_by_key():
+    from api.db.services.template_fill_service import TplTemplateVersionService as S
+    items = [{"key": "a", "anchor": "＿＿＿"}]
+    out = S._merge_defaults(items, [{"key": "a", "default_value": "历史沉淀", "default_source": "auto"}])
+    assert out[0]["default_value"] == "历史沉淀" and out[0]["default_source"] == "auto"
+
+
+def test_merge_defaults_echo_preserves_source():
+    from api.db.services.template_fill_service import TplTemplateVersionService as S
+    items = [{"key": "a", "anchor": "现值", "default_value": "", "default_source": ""}]
+    out = S._merge_defaults(items, [])
+    assert out[0]["default_value"] == "" and out[0]["default_source"] == ""
+
+
+def test_merge_defaults_new_key_from_blank_anchor():
+    from api.db.services.template_fill_service import TplTemplateVersionService as S
+    out = S._merge_defaults([{"key": "k", "anchor": "______"}], [])
+    assert out[0]["default_value"] == "" and out[0]["default_source"] == ""
