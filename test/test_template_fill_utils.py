@@ -825,14 +825,23 @@ def test_sediment_into_placeholders():
     from api.db.services.template_fill_service import TplTemplateVersionService as S
     ph = [{"key": "a", "default_value": "旧", "default_source": "auto"},
           {"key": "b", "default_value": "人工", "default_source": "manual"},
-          {"key": "c", "default_value": "", "default_source": ""}]
-    values = {"a": "新A", "b": "新B", "c": "新C", "empty": ""}
+          {"key": "c", "default_value": "", "default_source": ""},
+          # 有历史默认值的占位符，本次产值留空 → 不得被空值抹掉
+          {"key": "d", "default_value": "历史值", "default_source": "auto"},
+          # 无 key 占位符 → 直接跳过，不报错也不被修改
+          {"name": "无key"},
+          {"key": "", "default_value": "旧空key", "default_source": "auto"}]
+    values = {"a": "新A", "b": "新B", "c": "新C", "empty": "", "d": "", "e": None}
     changed = S._sediment_into_placeholders(ph, values)
     assert changed is True
     assert ph[0]["default_value"] == "新A" and ph[0]["default_source"] == "auto"
     assert ph[1]["default_value"] == "人工"    # manual 不被覆盖
     assert ph[2]["default_value"] == "新C"
-    # 空值不沉淀（不会抹掉已有默认值）
+    # 空值（""/None）不沉淀：历史默认值原样保留
+    assert ph[3]["default_value"] == "历史值" and ph[3]["default_source"] == "auto"
+    # 无 key / key 为空串的占位符被跳过：内容不变、不报错
+    assert ph[4] == {"name": "无key"}
+    assert ph[5]["default_value"] == "旧空key" and ph[5]["default_source"] == "auto"
 
 
 def test_sediment_override_manual():
