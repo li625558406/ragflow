@@ -266,6 +266,16 @@ class TemplateFill(ComponentBase):
             addr_by_key = {it["key"]: it.get("addr") for it in placeholders if it.get("key")}
         out = renderer.render(cand["file_type"], blob, values, addr_by_key)
 
+        # 产值沉淀为默认值（auto）：失败仅告警，不影响成稿交付
+        # （TplTemplateVersionService 已在模块顶部导入；同步 DB 调用，与文件内
+        #  _load_candidates 等既有同步调用惯例一致）
+        try:
+            TplTemplateVersionService.sediment_defaults(
+                cand["template_id"], cand["_ver"].id, values)
+        except Exception:  # noqa: BLE001 — 沉淀失败不阻断成稿交付
+            logger.warning("sediment_defaults failed, template=%s",
+                           cand["template_id"], exc_info=True)
+
         # ⑥ 落稿：bucket 用 {tenant_id}-downloads（/agents/download 与 /files/{id}/content
         # 两个端点的既有读取契约都是这个 bucket，前端下载与在线预览因此都可直接用）
         doc_id = get_uuid()

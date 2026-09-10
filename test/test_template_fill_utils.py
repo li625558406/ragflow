@@ -817,3 +817,33 @@ def test_merge_defaults_prev_dirty_items_ignored():
     out = S._merge_defaults([{"key": "a", "anchor": "甲"}],
                             ["dirty", {"no_key": 1}, {"key": "a", "default_value": "好值", "default_source": "auto"}])
     assert out[0]["default_value"] == "好值"
+
+
+# ---------- service：产值沉淀默认值（纯函数） ----------
+
+def test_sediment_into_placeholders():
+    from api.db.services.template_fill_service import TplTemplateVersionService as S
+    ph = [{"key": "a", "default_value": "旧", "default_source": "auto"},
+          {"key": "b", "default_value": "人工", "default_source": "manual"},
+          {"key": "c", "default_value": "", "default_source": ""}]
+    values = {"a": "新A", "b": "新B", "c": "新C", "empty": ""}
+    changed = S._sediment_into_placeholders(ph, values)
+    assert changed is True
+    assert ph[0]["default_value"] == "新A" and ph[0]["default_source"] == "auto"
+    assert ph[1]["default_value"] == "人工"    # manual 不被覆盖
+    assert ph[2]["default_value"] == "新C"
+    # 空值不沉淀（不会抹掉已有默认值）
+
+
+def test_sediment_override_manual():
+    from api.db.services.template_fill_service import TplTemplateVersionService as S
+    ph = [{"key": "b", "default_value": "人工", "default_source": "manual"}]
+    S._sediment_into_placeholders(ph, {"b": "用户直填"}, override_keys={"b"})
+    assert ph[0]["default_value"] == "用户直填" and ph[0]["default_source"] == "auto"
+
+
+def test_sediment_no_change_returns_false():
+    from api.db.services.template_fill_service import TplTemplateVersionService as S
+    ph = [{"key": "a", "default_value": "同值", "default_source": "auto"}]
+    assert S._sediment_into_placeholders(ph, {"a": "同值"}) is False
+    assert S._sediment_into_placeholders(ph, {}) is False

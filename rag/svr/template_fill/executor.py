@@ -642,6 +642,13 @@ async def _execute_task_async(task_id: str):
                              evidence=evidence, result_file_id=result_obj):
         logger.warning("fill task final status CAS failed, task=%s result_obj=%s "
                        "(result object in storage without terminal status)", task_id, result_obj)
+        return
+
+    # ⑦ 产值沉淀为默认值（auto）：失败仅告警，不影响任务终态
+    try:
+        tpl_svc.TplTemplateVersionService.sediment_defaults(task.template_id, ver.id, values)
+    except Exception:
+        logger.warning("sediment_defaults failed, task=%s", task_id, exc_info=True)
 
 
 def execute_task(task_id: str):

@@ -291,6 +291,48 @@ class TplTemplateVersionService(CommonService):
             it["default_source"] = "detected" if derived else ""
         return items
 
+    @staticmethod
+    def _sediment_into_placeholders(placeholders: list, values: dict,
+                                    override_keys: set | None = None) -> bool:
+        """产值沉淀纯逻辑：非空值写入 default_value（source=auto）。
+        manual 不覆盖，除非 key ∈ override_keys（用户确认卡片显式给值）。
+        空值（渲染留空）不沉淀——不得抹掉历史默认值。返回是否有变更。"""
+        override = override_keys or set()
+        changed = False
+        for it in placeholders:
+            key = it.get("key") if isinstance(it, dict) else None
+            if not key:
+                continue
+            val = (values or {}).get(key)
+            if val in (None, ""):
+                continue
+            if str(it.get("default_source") or "") == "manual" and key not in override:
+                continue
+            new_val = str(val)
+            if it.get("default_value") == new_val and it.get("default_source") == "auto":
+                continue
+            it["default_value"] = new_val
+            it["default_source"] = "auto"
+            changed = True
+        return changed
+
+    @classmethod
+    @DB.connection_context()
+    def sediment_defaults(cls, template_id: str, version_id: str, values: dict,
+                          override_keys: set | None = None) -> bool:
+        """填写成功后把产值沉淀为该版本默认值。失败由调用方兜底（仅日志，
+        不影响成稿交付）。返回是否有变更；版本行不存在返回 False。"""
+        ver = cls.model.select().where(
+            (cls.model.id == version_id) & (cls.model.template_id == template_id)).first()
+        if ver is None:
+            return False
+        placeholders = ver.placeholders or []
+        if not cls._sediment_into_placeholders(placeholders, values, override_keys):
+            return False
+        ver.placeholders = placeholders
+        ver.save()
+        return True
+
     @classmethod
     def _save_as_new_version(cls, template: dict, ver, placeholders: list) -> tuple:
         """published 模板保存填写点：不改旧版本行，新建 v{N+1} 版本行 + 新 MinIO 对象。
