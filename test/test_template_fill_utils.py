@@ -789,3 +789,31 @@ def test_merge_defaults_new_key_from_blank_anchor():
     from api.db.services.template_fill_service import TplTemplateVersionService as S
     out = S._merge_defaults([{"key": "k", "anchor": "______"}], [])
     assert out[0]["default_value"] == "" and out[0]["default_source"] == ""
+
+
+def test_merge_defaults_cleared_sticky_across_saves():
+    from api.db.services.template_fill_service import TplTemplateVersionService as S
+    # 用户清空后（manual+空值），下次保存前端不回显 default_value 字段 → 不得复活
+    out = S._merge_defaults([{"key": "a", "anchor": "现值"}],
+                            [{"key": "a", "default_value": "", "default_source": "manual"}])
+    assert out[0]["default_value"] == "" and out[0]["default_source"] == "manual"
+
+
+def test_merge_defaults_explicit_truncated_and_stripped():
+    from api.db.services.template_fill_service import TplTemplateVersionService as S
+    out = S._merge_defaults([{"key": "a", "anchor": "", "default_value": "  " + "长" * 600, "default_source": ""}], [])
+    assert out[0]["default_value"] == "长" * 500
+
+
+def test_merge_defaults_explicit_null_treated_as_clear():
+    from api.db.services.template_fill_service import TplTemplateVersionService as S
+    # 前端序列化 null → 显式清空，不走派生
+    out = S._merge_defaults([{"key": "a", "anchor": "现值", "default_value": None}], [])
+    assert out[0]["default_value"] == "" and out[0]["default_source"] == ""
+
+
+def test_merge_defaults_prev_dirty_items_ignored():
+    from api.db.services.template_fill_service import TplTemplateVersionService as S
+    out = S._merge_defaults([{"key": "a", "anchor": "甲"}],
+                            ["dirty", {"no_key": 1}, {"key": "a", "default_value": "好值", "default_source": "auto"}])
+    assert out[0]["default_value"] == "好值"

@@ -258,28 +258,33 @@ class TplTemplateVersionService(CommonService):
 
     @staticmethod
     def _merge_defaults(items: list, prev_placeholders) -> list:
-        """占位符默认值合并（纯函数，save_placeholders 落库前调用）。优先级：
-        1. 条目显式携带 default_value 字段（前端回显/默认值编辑链路）→ 原样保留
-           （含"显式清空"：value 空串且 source 空 = 用户清了默认值，不得再派生）；
-        2. 同 key 旧版本已有默认值 → 继承（重新识别/改填写点不丢基线）；
+        """占位符默认值合并（就地修改合并，save_placeholders 落库前调用）。优先级：
+        1. 条目显式携带 default_value 字段（前端回显/默认值编辑链路）→ strip + 截断
+           后原样保留（含"显式清空"：value 为 null/空串 = 用户清了默认值，不得再派生）；
+        2. 同 key 旧版本含 default_value 键 → 原样继承（含显式清空态，跨保存持久：
+           用户清空默认值落库后，即使下次保存前端不回显该字段也不会"复活"）；
         3. 否则从 anchor 派生（已填范本识别时零成本提取现值，source=detected）。
         就地修改并返回 items。"""
-        from rag.svr.template_fill.detector import derive_default_from_anchor
+        from rag.svr.template_fill.detector import MAX_ANCHOR_LEN, derive_default_from_anchor
         prev_map = {it.get("key"): it for it in (prev_placeholders or [])
                     if isinstance(it, dict) and it.get("key")}
         for it in items:
+            if not isinstance(it, dict):
+                continue
             key = it.get("key")
             if not key:
                 continue
             if "default_value" in it:
-                val = str(it.get("default_value") or "")
-                src = str(it.get("default_source") or "")
-                it["default_value"], it["default_source"] = val, (src or ("manual" if val else ""))
+                val = str(it.get("default_value") or "").strip()[:MAX_ANCHOR_LEN]
+                it["default_value"], it["default_source"] = val, (
+                    str(it.get("default_source") or "") or ("manual" if val else ""))
                 continue
             prev = prev_map.get(key) or {}
-            if str(prev.get("default_value") or ""):
-                it["default_value"] = prev["default_value"]
-                it["default_source"] = prev.get("default_source") or "detected"
+            if "default_value" in prev:
+                it["default_value"] = str(prev.get("default_value") or "").strip()
+                it["default_source"] = str(prev.get("default_source") or "")
+                if it["default_value"] and not it["default_source"]:
+                    it["default_source"] = "manual"
                 continue
             derived = derive_default_from_anchor(it.get("anchor"))
             it["default_value"] = derived
