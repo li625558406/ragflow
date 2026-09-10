@@ -478,6 +478,8 @@ export default {
     `${restAPIv1}/template/fill/${id}/test-fill`,
   updateTemplateFillDefaults: (id: string) =>
     `${restAPIv1}/template/fill/${id}/defaults`,
+  // 画布范本填写暂停确认提交（Redis 唤醒画布节点继续）
+  confirmTemplateFill: `${restAPIv1}/template/fill/confirm`,
 
   // 模板填写-填写任务（P2）
   listTemplateFillTasks: `${restAPIv1}/template/fill/fill-task/list`,

@@ -138,3 +138,77 @@ describe('applyTemplateFillEvent', () => {
     expect(acc.templateFill?.templates[0].template_id).toBe('t2');
   });
 });
+
+describe('confirm_pending / confirm_timeout', () => {
+  it('confirm_pending 写入 pendingConfirm 状态（含 nonce）', () => {
+    const acc: IStreamAcc = {};
+    applyTemplateFillEvent(acc, {
+      stage: 'confirm_pending',
+      task_id: 't1',
+      confirm_nonce: 'n1',
+      confirm_templates: [
+        {
+          template_id: 'tp1',
+          name: '范本',
+          candidates: [{ key: 'a', name: '甲', default_value: 'v' }],
+          predicted: ['a'],
+        },
+      ],
+    } as any);
+    expect(acc.templateFill?.pendingConfirm?.task_id).toBe('t1');
+    expect(acc.templateFill?.pendingConfirm?.nonce).toBe('n1');
+    expect(
+      acc.templateFill?.pendingConfirm?.templates[0].candidates[0].key,
+    ).toBe('a');
+  });
+
+  it('confirm_pending 缺字段容错（空 task_id/nonce/templates）', () => {
+    const acc: IStreamAcc = {};
+    applyTemplateFillEvent(acc, { stage: 'confirm_pending' } as any);
+    expect(acc.templateFill?.pendingConfirm?.task_id).toBe('');
+    expect(acc.templateFill?.pendingConfirm?.nonce).toBe('');
+    expect(acc.templateFill?.pendingConfirm?.templates).toEqual([]);
+  });
+
+  it('confirm_timeout 置 expired；submitted 后不覆盖', () => {
+    const acc: IStreamAcc = {};
+    applyTemplateFillEvent(acc, {
+      stage: 'confirm_pending',
+      task_id: 't1',
+      confirm_nonce: 'n1',
+      confirm_templates: [],
+    } as any);
+    applyTemplateFillEvent(acc, { stage: 'confirm_timeout' } as any);
+    expect(acc.templateFill?.pendingConfirm?.expired).toBe(true);
+    // nonce 等已有字段保留
+    expect(acc.templateFill?.pendingConfirm?.nonce).toBe('n1');
+
+    // 已提交场景：timeout 不覆盖 expired
+    const acc2: IStreamAcc = {};
+    applyTemplateFillEvent(acc2, {
+      stage: 'confirm_pending',
+      task_id: 't2',
+      confirm_templates: [],
+    } as any);
+    acc2.templateFill!.pendingConfirm!.submitted = true;
+    applyTemplateFillEvent(acc2, { stage: 'confirm_timeout' } as any);
+    expect(acc2.templateFill!.pendingConfirm!.expired).toBeUndefined();
+  });
+
+  it('finished 终态后迟到的 confirm_pending/confirm_timeout 被忽略', () => {
+    const acc: IStreamAcc = {};
+    applyTemplateFillEvent(acc, {
+      stage: 'selected',
+      templates: [{ template_id: 't1', name: 'A' }],
+    });
+    applyTemplateFillEvent(acc, { stage: 'done' });
+    applyTemplateFillEvent(acc, {
+      stage: 'confirm_pending',
+      task_id: 'tx',
+      confirm_templates: [],
+    } as any);
+    applyTemplateFillEvent(acc, { stage: 'confirm_timeout' } as any);
+    expect(acc.templateFill?.pendingConfirm).toBeUndefined();
+    expect(acc.templateFill?.finished).toBe(true);
+  });
+});

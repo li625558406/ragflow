@@ -23,6 +23,37 @@ export interface ITemplateFillTemplate {
 export interface ITemplateFillState {
   templates: ITemplateFillTemplate[];
   finished?: boolean;
+  /** 画布挂起等待人工确认（confirm_pending 事件产出的确认卡片状态） */
+  pendingConfirm?: ITemplateFillConfirmPending;
+}
+
+// ── 变化字段确认（P2：confirm_pending / confirm_timeout）─────────────────
+
+/** 候选变化字段（一条填写点） */
+export interface ITemplateFillCandidate {
+  key: string;
+  name: string;
+  default_value: string;
+}
+
+/** 单范本的确认信息：candidates 为全部可决策字段，predicted 为 AI 预判有变化的字段 */
+export interface ITemplateFillConfirmTemplate {
+  template_id: string;
+  name: string;
+  candidates: ITemplateFillCandidate[];
+  predicted: string[];
+}
+
+/** confirm_pending 事件的归约结果（confirmed_state：expired/submitted 由前端标记） */
+export interface ITemplateFillConfirmPending {
+  task_id: string;
+  /** Redis 唤醒 nonce，提交确认时必传（T9 契约） */
+  nonce?: string;
+  templates: ITemplateFillConfirmTemplate[];
+  /** confirm_timeout 且用户未提交 → 置 true，卡片转灰字只读 */
+  expired?: boolean;
+  /** 用户已提交确认 → 置 true */
+  submitted?: boolean;
 }
 
 /** use-send-message 的 streamAccRef 与本模块解耦的最小结构约束 */
@@ -31,7 +62,15 @@ export interface IStreamAcc {
 }
 
 export interface ITemplateFillEvent {
-  stage: 'selected' | 'filling' | 'filled' | 'failed' | 'done' | 'cancelled';
+  stage:
+    | 'selected'
+    | 'filling'
+    | 'filled'
+    | 'failed'
+    | 'done'
+    | 'cancelled'
+    | 'confirm_pending'
+    | 'confirm_timeout';
   template_id?: string;
   name?: string;
   slot_count?: number;
@@ -40,6 +79,12 @@ export interface ITemplateFillEvent {
   download?: ITemplateFillDownload;
   error?: string;
   templates?: Array<{ template_id: string; name: string; slot_count?: number }>;
+  /** confirm_pending：挂起任务 ID */
+  task_id?: string;
+  /** confirm_pending：Redis 唤醒 nonce */
+  confirm_nonce?: string;
+  // confirm_pending：各范本候选变化字段（命名避开了 selected 事件的 templates）
+  confirm_templates?: ITemplateFillConfirmTemplate[];
 }
 
 /** 事件归约：进度分支浅拷贝换引用（防 React.memo/useEffect 依赖引用漏渲染），与 hook 的增量累积模式一致 */
@@ -61,6 +106,22 @@ export function applyTemplateFillEvent(
       status: 'selected' as const,
     }));
     tf.finished = undefined;
+    return;
+  }
+  // 画布挂起等待人工确认（确认发生在填写开始前；不穿透 finished 终态防御，迟到事件照常忽略）
+  if (d.stage === 'confirm_pending') {
+    tf.pendingConfirm = {
+      task_id: d.task_id || '',
+      nonce: d.confirm_nonce || '',
+      templates: d.confirm_templates || [],
+    };
+    return;
+  }
+  if (d.stage === 'confirm_timeout') {
+    // 用户已提交确认则不覆盖；否则标记过期（卡片转灰字只读）
+    if (tf.pendingConfirm && !tf.pendingConfirm.submitted) {
+      tf.pendingConfirm = { ...tf.pendingConfirm, expired: true };
+    }
     return;
   }
   if (d.stage === 'done' || d.stage === 'cancelled') {

@@ -488,3 +488,24 @@ export function useUpdateTemplateFillDefaults(opts?: { invalidate?: boolean }) {
     },
   });
 }
+
+// ── 画布暂停确认（P2：confirm_pending SSE 事件 + Redis 唤醒）──────────────
+
+// 画布范本填写暂停确认提交（Redis 唤醒画布节点继续）
+// nonce 来自 confirm_pending 事件的 confirm_nonce，后端正则校验必填；
+// decisions 结构：{ template_id: { changed: 勾选字段 key 数组, values: 直填值（仅非空项） } }
+export async function confirmTemplateFill(
+  taskId: string,
+  nonce: string,
+  decisions: Record<
+    string,
+    { changed: string[]; values: Record<string, string> }
+  >,
+): Promise<void> {
+  const { data } = await request.post(api.confirmTemplateFill, {
+    data: { task_id: taskId, nonce, decisions },
+  });
+  if (data.code !== 0) {
+    throw new Error(data.message || '确认提交失败');
+  }
+}
