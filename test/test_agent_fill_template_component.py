@@ -662,3 +662,96 @@ def test_confirm_no_default_items_skips_all(monkeypatch):
                "_placeholders": [{"key": "k1", "name": "字段", "fill_mode": "llm"}]}]
     assert asyncio.run(cpn._confirm_changed_fields(chosen, "需求", {})) == {}
     assert _drain_events(cpn) == []
+
+
+# ---------- P2 条件执行：decision 消费侧（检索收窄 + 直填优先 + 沉淀 override） ----------
+
+def test_decision_conditional_execution_skips_unchanged_defaults(patched_env, monkeypatch):
+    """P2 核心语义（decision 消费侧）：decisions={"changed": {a}, "values": {f: 直填}}，
+    四个 llm 字段中——
+    - a（有默认值、预判变化 C∩D）→ 走检索 + LLM；
+    - d（无默认值 N）→ 走检索 + LLM；
+    - e（有默认值、未变化 D−C）→ 不检索不调 LLM，渲染直取默认值；
+    - f（有默认值、未变化但用户直填）→ 不检索不调 LLM，渲染直取直填值，
+      沉淀收到 override_keys={f}（直填覆盖沉淀保护）。
+    同时验证：_fill_one 收到的 llm_placeholders 与检索清单同口径收窄。"""
+    import asyncio
+
+    ph = [
+        {"key": "a", "name": "甲", "fill_mode": "llm", "default_value": "旧甲"},
+        {"key": "d", "name": "丁", "fill_mode": "llm"},
+        {"key": "e", "name": "戊", "fill_mode": "llm", "default_value": "旧戊"},
+        {"key": "f", "name": "己", "fill_mode": "llm", "default_value": "旧己"},
+    ]
+    _stage_one_candidate(placeholders=ph)
+    FakeService.vers["t1"] = SimpleNamespace(placeholders=ph, render_file_id="render_obj",
+                                             version=1, id="v1")
+    seen = {"retrieved": None}
+    sed_calls = []
+
+    def fake_sediment(cls, template_id, version_id, values, override_keys=None):
+        sed_calls.append({"tid": template_id, "vid": version_id,
+                          "values": dict(values), "override": set(override_keys or set())})
+
+    monkeypatch.setattr(FakeService, "sediment_defaults", classmethod(fake_sediment),
+                        raising=False)
+
+    async def fake_shared(tenant_id, placeholders_list, kb_ids, task_id="",
+                          should_cancel=None, sem=None):
+        seen["retrieved"] = [[it["key"] for it in ph] for ph in placeholders_list]
+        return [{it["key"]: {"chunks": [], "query": it["key"]} for it in ph if it.get("key")}
+                for ph in placeholders_list]
+
+    monkeypatch.setattr(fill_template.executor, "retrieve_all_shared", fake_shared)
+
+    cpn = _make_component(TemplateFillParam())
+    cpn._param.dataset_ids = ["kb1"]
+
+    async def fake_confirm(chosen, query, begin_fields):
+        return {"t1": {"changed": {"a"}, "values": {"f": "直填值"}}}
+
+    cpn._confirm_changed_fields = fake_confirm
+    asyncio.run(cpn._invoke_async())
+
+    # 检索清单只含 a（C∩D）与 d（N）；e（D−C）与 f（直填）被排除
+    assert seen["retrieved"] == [["a", "d"]]
+    # LLM 产值同口径收窄
+    assert patched_env["gen_keys"] == ["a", "d"]
+    # 渲染产值：e 直取默认值、f 直取直填值（优先级最高）、a/d 走 LLM 产值
+    assert patched_env["render"][2] == {"a": "值_a", "d": "值_d", "e": "旧戊", "f": "直填值"}
+    # 沉淀：带 override_keys={f}，且 e 的默认值语义不被本次产值破坏
+    assert len(sed_calls) == 1
+    assert sed_calls[0]["override"] == {"f"}
+    assert sed_calls[0]["values"]["e"] == "旧戊"
+
+
+def test_decision_empty_direct_value_renders_blank(patched_env, monkeypatch):
+    """用户直填空串 = 明确清空：不进 LLM、渲染为空（build_values 空值落空串），
+    且不回填默认值（直填先于 _merge_default_values 摘出 missing）。"""
+    import asyncio
+
+    ph = [{"key": "a", "name": "甲", "fill_mode": "llm", "default_value": "旧甲"}]
+    _stage_one_candidate(placeholders=ph)
+    FakeService.vers["t1"] = SimpleNamespace(placeholders=ph, render_file_id="render_obj",
+                                             version=1, id="v1")
+
+    async def fake_shared(tenant_id, placeholders_list, kb_ids, task_id="",
+                          should_cancel=None, sem=None):
+        return [{it["key"]: {"chunks": [], "query": it["key"]} for it in ph if it.get("key")}
+                for ph in placeholders_list]
+
+    monkeypatch.setattr(fill_template.executor, "retrieve_all_shared", fake_shared)
+
+    cpn = _make_component(TemplateFillParam())
+    cpn._param.dataset_ids = ["kb1"]
+
+    async def fake_confirm(chosen, query, begin_fields):
+        return {"t1": {"changed": set(), "values": {"a": ""}}}
+
+    cpn._confirm_changed_fields = fake_confirm
+    asyncio.run(cpn._invoke_async())
+
+    # 直填字段不进 LLM（检索清单同样排除，但 gen_keys 已足够断言口径）
+    assert patched_env["gen_keys"] == []
+    # 渲染为空串（清空语义），而非旧默认值「旧甲」
+    assert patched_env["render"][2] == {"a": ""}

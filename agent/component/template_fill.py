@@ -355,6 +355,17 @@ class TemplateFill(ComponentBase):
         generated, missing = await executor.generate_values(
             tenant_id, llm_placeholders, llm_chunks, background, sem=sem,
             on_progress=on_progress, should_cancel=should_cancel)
+        # P2：D−C 字段未进 LLM 产值，也就不会出现在 generate_values 返回的
+        # missing 里；显式纳入 missing 才能让 _merge_default_values 直取默认值
+        # （否则这些字段永远渲染为空白，条件执行的免检索免 LLM 收益失效）。
+        # 已有产值/直填的键跳过，不覆盖。
+        for it in placeholders:
+            k = it.get("key")
+            if (k and k not in generated and k not in direct_values
+                    and executor._norm_fill_mode(it) == "llm"
+                    and str(it.get("default_value") or "")
+                    and k not in changed_keys):
+                missing.add(k)
         executor._merge_param_values(placeholders, generated, missing, begin_fields)
         # P2 用户直填值直取（空串=明确清空，渲染为空）；随后作为沉淀 override。
         # 先摘出 missing，防 _merge_default_values 把默认值回填覆盖用户直填

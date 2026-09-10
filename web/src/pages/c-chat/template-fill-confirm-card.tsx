@@ -143,8 +143,8 @@ export default function TemplateFillConfirmCard({
       ))}
       {error && <div className="text-[#E5484D]">{error}</div>}
       <div className="flex justify-end pt-0.5">
-        {/* nonce 缺失 = 确认通道未就绪（Redis 唤醒令牌缺失），提交必然无效，前置禁用 */}
-        {!pending.nonce && (
+        {/* nonce/task_id 缺失 = 确认通道未就绪（Redis 唤醒令牌缺失），提交必然无效，前置禁用 */}
+        {(!pending.nonce || !pending.task_id) && (
           <span className="mr-auto self-center text-[#8C8C8C]">
             确认通道未就绪，暂时无法提交
           </span>
@@ -152,7 +152,7 @@ export default function TemplateFillConfirmCard({
         <Button
           size="sm"
           className="h-7 bg-[#1a66fb] px-3 text-xs text-white hover:bg-[#1557d6]"
-          disabled={submitting || !pending.nonce}
+          disabled={submitting || !pending.nonce || !pending.task_id}
           onClick={submit}
         >
           {submitting && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}

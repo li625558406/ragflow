@@ -10,7 +10,12 @@
 - 条件执行：D−C 字段免检索免 LLM 直用默认值；用户直填值最高优先（空串=清空）+ 沉淀 override；检索/产值/进度三处同步收窄
 - 前端确认卡片（C端对话 + flow AI 面板共用）：勾选变化字段 + 直填值，SSE confirm_pending 归约、轮次 key 隔离、提交状态回写流式态、超时/提交竞态降级文案
 
-**遗留**：B端异步填写任务（无人在场）不接入暂停确认，保持 P1 fallback 行为；未部署（后端 5 文件成套 SCP + 前端 build，前后端需一起上线——confirm 端点要求 nonce，旧前端调用会被拒）。
+**最终整体审查修复**（268→270 passed）：
+- ★ 修复条件执行致命缺陷：D−C 字段被排除在 `llm_placeholders` 后不进 `generate_values`，也就不进返回的 `missing` 集，`_merge_default_values` 只填 missing → 未变化字段渲染为空白而非默认值，免检索免 LLM 收益实际失效；修复为把 D−C 键显式纳入 missing（`agent/component/template_fill.py`），并补 2 个组件级 decision 消费侧测试（检索收窄口径/直填优先/空串清空/沉淀 override_keys）
+- `predict_changed_fields` 脏 item 防御补 isinstance（非 dict 项不再 AttributeError）
+- 确认卡片提交禁用条件补 `!pending.task_id`（nonce/task_id 任一缺失即确认通道未就绪）
+
+**遗留**：B端异步填写任务（无人在场）不接入暂停确认，保持 P1 fallback 行为；未部署（后端 5 文件成套 SCP + 前端 build，前后端需一起上线——confirm 端点要求 nonce，旧前端调用会被拒）。审查已确认可接受的已知限制：①用户直填空串（清空）当轮生效，但沉淀层空值不写回，下一轮该字段仍按旧默认值填回（跨轮清空需在 B端默认值列手动清）；②confirm 端点无归属校验（屏障为 32-hex nonce 保密 + 登录态）；③确认等待期刷新页面 = 整个运行作废（与既有进度卡同为内存态，但暂停窗口最长 10 分钟放大了误刷新代价）；④Redis 宕机期间确认轮询空转至 600s 超时兜底（降级延迟最长 10 分钟，功能最终正确）。
 
 ## 2026-09-10 范本默认值基线 P1（后端+前端，未部署）
 
