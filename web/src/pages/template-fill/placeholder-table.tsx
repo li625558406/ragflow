@@ -71,22 +71,36 @@ export function collectRowErrors(rows: TplPlaceholder[]) {
 // 默认值单元格：受控 Input 失焦即保存，右侧展示来源徽标（手动/沉淀/识别）
 function DefaultValueCell({
   row,
+  index,
+  onUpdate,
   onSave,
   saving,
   disabled,
+  persistedKeys,
 }: {
   row: TplPlaceholder;
+  index: number;
+  onUpdate: (index: number, patch: Partial<TplPlaceholder>) => void;
   onSave: (key: string, value: string) => void;
   saving: boolean;
   disabled?: boolean;
+  persistedKeys?: Set<string>;
 }) {
   const [val, setVal] = useState(row.default_value || '');
-  // 服务端数据回流（保存成功 invalidate 详情）时同步本地输入框
+  // 服务端数据回流（保存配置成功 invalidate 详情）时同步本地输入框
   useEffect(() => setVal(row.default_value || ''), [row.default_value]);
   const commit = () => {
-    // 空 key 是未保存的新增行，无基线可写
+    const v = val.trim();
+    // 值未变化不做任何写
+    if ((row.default_value || '') === v) return;
+    // 先回写共享 rows state（后端保存成功后 default_source 置 manual，本地同步置 manual 保持徽标一致）：
+    // 1) 「保存配置」全量 POST 时携带最新 default_value，消除端点在途与全量保存的竞态
+    // 2) 新增行（key 未落库）的编辑不丢，等「保存配置」一并落库
     if (!row.key) return;
-    if ((row.default_value || '') !== val.trim()) onSave(row.key, val.trim());
+    onUpdate(index, { default_value: v, default_source: 'manual' });
+    // key 未持久化（服务端还没有该填写点）时只回写本地，不调即时保存端点
+    if (persistedKeys && !persistedKeys.has(row.key)) return;
+    onSave(row.key, v);
   };
   return (
     <div className="flex items-center gap-1">
@@ -94,9 +108,15 @@ function DefaultValueCell({
         value={val}
         onChange={(e) => setVal(e.target.value)}
         onBlur={commit}
-        onKeyDown={(e) =>
-          e.key === 'Enter' && (e.target as HTMLInputElement).blur()
-        }
+        onKeyDown={(e) => {
+          // 中文 IME 合成态的 Enter（确认候选词）不触发失焦提交，避免丢字
+          if (
+            e.key === 'Enter' &&
+            !(e.nativeEvent as KeyboardEvent).isComposing
+          ) {
+            (e.target as HTMLInputElement).blur();
+          }
+        }}
         placeholder="空=无默认值"
         className="h-7 text-xs"
         disabled={saving || disabled}
@@ -131,6 +151,8 @@ interface PlaceholderTableProps {
   /** 默认值保存回调（单 key 即时保存） */
   onSaveDefault?: (key: string, value: string) => void;
   savingDefault?: boolean;
+  /** 服务端已持久化的填写点 key 集合；默认值 commit 时未持久化的 key 只回写本地不调即时保存端点 */
+  persistedKeys?: Set<string>;
 }
 
 // 可编辑填写点表格（上传向导 Step2 与模板详情页共用）
@@ -143,6 +165,7 @@ export function PlaceholderTable({
   templateId,
   onSaveDefault,
   savingDefault = false,
+  persistedKeys,
 }: PlaceholderTableProps) {
   const errCls = (field: string) =>
     errors[field] ? 'border-red-500 focus-visible:ring-red-500' : '';
@@ -246,9 +269,12 @@ export function PlaceholderTable({
               <TableCell>
                 <DefaultValueCell
                   row={row}
+                  index={i}
+                  onUpdate={onUpdate}
                   onSave={onSaveDefault!}
                   saving={savingDefault}
                   disabled={disabled}
+                  persistedKeys={persistedKeys}
                 />
               </TableCell>
             )}

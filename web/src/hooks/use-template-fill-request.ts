@@ -459,7 +459,10 @@ export async function testTemplateFill(
 }
 
 // 更新默认值（单 key 即时保存；空串=清空）
-export function useUpdateTemplateFillDefaults() {
+// opts.invalidate 默认 true；模板详情页传 false —— 该页在 commit 时已把新值回写本地
+// placeholders state，无需 refetch；若 invalidate 回流会整表覆盖，冲掉用户尚未保存的行编辑
+export function useUpdateTemplateFillDefaults(opts?: { invalidate?: boolean }) {
+  const { invalidate = true } = opts ?? {};
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async ({
@@ -479,7 +482,9 @@ export function useUpdateTemplateFillDefaults() {
       return data.data as { id: string };
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['templateFillDetail'] });
+      if (invalidate) {
+        queryClient.invalidateQueries({ queryKey: ['templateFillDetail'] });
+      }
     },
   });
 }

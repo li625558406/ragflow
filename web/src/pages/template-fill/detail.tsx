@@ -1,5 +1,5 @@
 import { ArrowLeft } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 
 import { Button } from '@/components/ui/button';
@@ -86,7 +86,15 @@ export default function TemplateFillDetailPage() {
 
   const saveMut = useSaveTemplateFillPlaceholders();
   const detectMut = useDetectTemplateFill();
-  const saveDefaultsMut = useUpdateTemplateFillDefaults();
+  // invalidate=false：默认值保存不做 refetch 整表回流（会冲掉未保存的行编辑），
+  // 本地回写在 DefaultValueCell commit 时已完成，这里只负责调端点 + 提示
+  const saveDefaultsMut = useUpdateTemplateFillDefaults({ invalidate: false });
+
+  // 服务端已持久化的填写点 key 集合：默认值 commit 时未持久化的 key 只回写本地不调端点
+  const persistedKeys = useMemo(
+    () => new Set((detail?.placeholders ?? []).map((p) => p.key)),
+    [detail?.placeholders],
+  );
 
   // 默认值单 key 即时保存（失焦触发；空串=清空）
   const handleSaveDefault = (key: string, value: string) => {
@@ -368,6 +376,7 @@ export default function TemplateFillDetailPage() {
                   templateId={id}
                   onSaveDefault={handleSaveDefault}
                   savingDefault={saveDefaultsMut.isPending}
+                  persistedKeys={persistedKeys}
                 />
               )}
             </div>
