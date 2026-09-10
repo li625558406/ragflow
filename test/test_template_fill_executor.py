@@ -997,3 +997,91 @@ def test_build_msg_spec_includes_default_value(monkeypatch):
     assert '"default_value": "上次值"' in prompt
     # 无默认值的字段 default_value 为空串（_default_hint({}) == ""）
     assert '"default_value": ""' in prompt
+
+
+# ---------- 变化字段预判 predict_changed_fields（P2：默认值基线，D 组复用） ----------
+
+def test_predict_changed_fields_validates_keys(monkeypatch):
+    """LLM 返回的 key 必须校验：编造（ghost）/非字符串（123）过滤，只留合法 key。"""
+    from rag.svr.template_fill import executor
+
+    class FakeMdl:
+        async def async_chat(self, sys, msgs):
+            return '{"changed": ["a", "ghost", 123]}'
+
+    monkeypatch.setattr(executor, "_build_chat_mdl", lambda tid: FakeMdl())
+    items = [{"key": "a", "name": "甲", "default_value": "1"},
+             {"key": "b", "name": "乙", "default_value": "2"}]
+    got = executor._run_async(executor.predict_changed_fields("t", items, {"需求": "x"}))
+    assert got == {"a"}
+
+
+def test_predict_changed_fields_failure_returns_empty(monkeypatch):
+    """LLM 调用失败 → 空集（调用方按「全部保持默认」兜底），不向上抛。"""
+    from rag.svr.template_fill import executor
+
+    class BoomMdl:
+        async def async_chat(self, sys, msgs):
+            raise RuntimeError("llm down")
+
+    monkeypatch.setattr(executor, "_build_chat_mdl", lambda tid: BoomMdl())
+    items = [{"key": "a", "name": "甲", "default_value": "1"}]
+    assert executor._run_async(executor.predict_changed_fields("t", items, {})) == set()
+
+
+def test_predict_changed_fields_chunks_large_list(monkeypatch):
+    """超大清单分块串行合并：400 字段 → 2 块（PREDICT_CHUNK=200），块间结果并集。"""
+    from rag.svr.template_fill import executor
+    calls = []
+
+    class FakeMdl:
+        async def async_chat(self, sys, msgs):
+            calls.append(msgs)
+            return '{"changed": ["k1"]}'
+
+    monkeypatch.setattr(executor, "_build_chat_mdl", lambda tid: FakeMdl())
+    items = [{"key": f"k{i}", "name": f"f{i}", "default_value": "v"} for i in range(400)]
+    got = executor._run_async(executor.predict_changed_fields("t", items, {}))
+    assert got == {"k1"} and len(calls) == 2
+
+
+def test_predict_changed_fields_empty_items_no_llm(monkeypatch):
+    """空清单 → 直接空集，不建模型不调 LLM。"""
+    from rag.svr.template_fill import executor
+    monkeypatch.setattr(executor, "_build_chat_mdl",
+                        lambda *_: (_ for _ in ()).throw(AssertionError("不应构建模型")))
+    assert executor._run_async(executor.predict_changed_fields("t", [], {})) == set()
+
+
+def test_predict_changed_fields_should_cancel(monkeypatch):
+    """should_cancel 命中 → GenerateCancelled 穿透（控制流信号，不降级空集）。"""
+    from rag.svr.template_fill import executor
+
+    class FakeMdl:
+        async def async_chat(self, sys, msgs):
+            return '{"changed": ["a"]}'
+
+    monkeypatch.setattr(executor, "_build_chat_mdl", lambda tid: FakeMdl())
+    items = [{"key": "a", "name": "甲", "default_value": "1"}]
+    with pytest.raises(executor.GenerateCancelled):
+        executor._run_async(executor.predict_changed_fields(
+            "t", items, {}, should_cancel=lambda: True))
+
+
+def test_predict_changed_fields_unparseable_output_returns_empty(monkeypatch):
+    """LLM 输出不可解析/changed 非 list → 空集，不炸。"""
+    from rag.svr.template_fill import executor
+
+    class GarbageMdl:
+        async def async_chat(self, sys, msgs):
+            return "这不是JSON"
+
+    class BadShapeMdl:
+        async def async_chat(self, sys, msgs):
+            return '{"changed": "not-a-list"}'
+
+    items = [{"key": "a", "name": "甲", "default_value": "1"}]
+    monkeypatch.setattr(executor, "_build_chat_mdl", lambda tid: GarbageMdl())
+    assert executor._run_async(executor.predict_changed_fields("t", items, {})) == set()
+    monkeypatch.setattr(executor, "_build_chat_mdl", lambda tid: BadShapeMdl())
+    assert executor._run_async(executor.predict_changed_fields("t", items, {})) == set()

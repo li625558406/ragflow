@@ -145,6 +145,12 @@ GENERATE_SYSTEM = (
     "3. 字段带 default_value 时为该字段上次填写值，可作参考；证据与之冲突时以证据为准。\n"
     "4. 只输出一个 JSON 对象：{\"字段key\": \"字段值或null\", ...}，不要输出任何其他文字。")
 
+PREDICT_CHUNK = 200  # 预判清单分块阈值：400字段×~150字符≈60K，超小窗口模型风险，分块串行
+PREDICT_SYSTEM = (
+    "你是文档填写助手。给出范本的默认值字段清单（key/名称/当前默认值）和本次填写需求。"
+    "请判断哪些字段在本次填写中需要更新（与需求直接相关、或默认值明显是待改样例）。"
+    "无关字段一律保持默认。只输出 JSON 对象：{\"changed\": [\"key\", ...]}，不要输出其他文字。")
+
 
 class GenerateCancelled(Exception):
     """should_cancel 命中时抛出：调用方（组件/B端管道）捕获后各自收口。"""
@@ -329,6 +335,41 @@ async def generate_values(tenant_id: str, placeholders: list[dict], chunks_by_ke
             else:
                 values[key] = val
     return values, missing
+
+
+async def predict_changed_fields(tenant_id: str, default_items: list[dict],
+                                 background: dict | None = None,
+                                 should_cancel=None) -> set:
+    """1 次/块 LLM 调用预判需要更新的默认值字段集合。
+    返回校验后 key 集合（编造/非法 key 过滤）；LLM 失败或输出不可解析 → 空集
+    （调用方按"全部保持默认，用户确认时手动挑"兜底）。GenerateCancelled 穿透。"""
+    if not default_items:
+        return set()
+    mdl = _build_chat_mdl(tenant_id)
+    valid = {it["key"] for it in default_items}
+    found: set = set()
+    for i in range(0, len(default_items), PREDICT_CHUNK):
+        spec = [{"key": _clean_for_prompt(it["key"], NAME_MAX),
+                 "name": _clean_for_prompt(it.get("name") or it["key"], NAME_MAX),
+                 "default_value": _default_hint(it)}
+                for it in default_items[i:i + PREDICT_CHUNK]]
+        user_msg = ("## 默认值字段清单\n" + json.dumps(spec, ensure_ascii=False) +
+                    "\n\n本次填写需求：" + _clean_for_prompt(
+                        json.dumps(background or {}, ensure_ascii=False, default=str),
+                        PARAMS_PROMPT_MAX))
+        if _should_cancel(should_cancel):
+            raise GenerateCancelled()
+        try:
+            ans = await mdl.async_chat(PREDICT_SYSTEM, [{"role": "user", "content": user_msg}])
+            raw = _extract_json(ans)
+            keys = raw.get("changed")
+            if isinstance(keys, list):
+                found |= {k for k in keys if isinstance(k, str) and k in valid}
+        except GenerateCancelled:
+            raise
+        except Exception:
+            logger.warning("predict_changed_fields chunk failed; keep defaults", exc_info=True)
+    return found
 
 
 # ---------- 编排层：产值合成 + 任务 pipeline（状态机乐观转移） ----------
