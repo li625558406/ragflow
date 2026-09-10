@@ -344,16 +344,22 @@ class TplTemplateVersionService(CommonService):
         对抗点说明：defaults 的 key 理论上可能是非字符串（自定义对象等），
         `k not in keys` 是纯哈希成员判断（keys 为字符串集合），非 hashable 的
         key 会抛 TypeError 而非静默通过，非字符串但 hashable 的 key 必然不在
-        keys 中 → 走 unknown 拒绝路径，两种情况都不会误改占位符。"""
+        keys 中 → 走 unknown 拒绝路径，两种情况都不会误改占位符。
+
+        非字符串 falsy 值（0/false）视为清空，与文本语义一致。"""
+        from rag.svr.template_fill.detector import MAX_ANCHOR_LEN  # 与 _merge_defaults 同源同写法
         keys = {it.get("key") for it in placeholders if isinstance(it, dict)}
         unknown = [k for k in defaults if k not in keys]
         if unknown:
             return False, f"未知填写点 key: {', '.join(str(k) for k in unknown[:5])}"
         for it in placeholders:
+            if not isinstance(it, dict):  # 非 dict 项防御：keys 侧已过滤，循环侧对称兜底
+                continue
             k = it.get("key")
             if k not in defaults:
                 continue
-            val = str(defaults[k] or "").strip()
+            # 截断对齐 MAX_ANCHOR_LEN，维持「DB 中 default_value ≤ 500」不变量
+            val = str(defaults[k] or "").strip()[:MAX_ANCHOR_LEN]
             it["default_value"] = val
             it["default_source"] = "manual" if val else ""
         return True, ""

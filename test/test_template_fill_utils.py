@@ -882,3 +882,13 @@ def test_update_defaults_validation():
     assert ok is True
     assert ph[0]["default_value"] == "新值" and ph[0]["default_source"] == "manual"
     assert ph[1]["default_value"] == "" and ph[1]["default_source"] == ""  # 空串=清空
+    # 超长值（600 字）截断到 MAX_ANCHOR_LEN=500，维持 default_value ≤ 500 不变量
+    from rag.svr.template_fill.detector import MAX_ANCHOR_LEN
+    ok, err = S._apply_defaults_edits(ph, {"a": "长" * (MAX_ANCHOR_LEN + 100)})
+    assert ok is True
+    assert ph[0]["default_value"] == "长" * MAX_ANCHOR_LEN
+    assert ph[0]["default_source"] == "manual"
+    # 纯空白值：剥空白后为空 → 视为清空（default_value="" 且 source=""）
+    ok, err = S._apply_defaults_edits(ph, {"a": "   "})
+    assert ok is True
+    assert ph[0]["default_value"] == "" and ph[0]["default_source"] == ""
