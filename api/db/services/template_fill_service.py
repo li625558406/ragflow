@@ -336,6 +336,45 @@ class TplTemplateVersionService(CommonService):
         ver.save()
         return True
 
+    @staticmethod
+    def _apply_defaults_edits(placeholders: list, defaults: dict) -> tuple:
+        """B端默认值编辑纯逻辑：{key: value}，空串=清空。未知 key 整体拒绝
+        （防手改请求错别字静默丢编辑）。就地修改。返回 (ok, error_msg)。
+
+        对抗点说明：defaults 的 key 理论上可能是非字符串（自定义对象等），
+        `k not in keys` 是纯哈希成员判断（keys 为字符串集合），非 hashable 的
+        key 会抛 TypeError 而非静默通过，非字符串但 hashable 的 key 必然不在
+        keys 中 → 走 unknown 拒绝路径，两种情况都不会误改占位符。"""
+        keys = {it.get("key") for it in placeholders if isinstance(it, dict)}
+        unknown = [k for k in defaults if k not in keys]
+        if unknown:
+            return False, f"未知填写点 key: {', '.join(str(k) for k in unknown[:5])}"
+        for it in placeholders:
+            k = it.get("key")
+            if k not in defaults:
+                continue
+            val = str(defaults[k] or "").strip()
+            it["default_value"] = val
+            it["default_source"] = "manual" if val else ""
+        return True, ""
+
+    @classmethod
+    @DB.connection_context()
+    def update_defaults(cls, template_id: str, defaults: dict) -> tuple:
+        """B端默认值编辑：只改 latest 版本 placeholders 内的 default_value/default_source，
+        不动 MinIO 文件、不升版本（默认值是元数据，render/original 无关）。
+        返回 (ok, msg)。"""
+        ver = cls.latest(template_id)
+        if ver is None:
+            return False, "模板版本不存在"
+        placeholders = ver.placeholders or []
+        ok, msg = cls._apply_defaults_edits(placeholders, defaults or {})
+        if not ok:
+            return False, msg
+        ver.placeholders = placeholders
+        ver.save()
+        return True, ""
+
     @classmethod
     def _save_as_new_version(cls, template: dict, ver, placeholders: list) -> tuple:
         """published 模板保存填写点：不改旧版本行，新建 v{N+1} 版本行 + 新 MinIO 对象。

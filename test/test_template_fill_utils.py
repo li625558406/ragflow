@@ -867,3 +867,18 @@ def test_sediment_long_value_truncated_to_max_anchor_len():
     assert S._sediment_into_placeholders(ph, {"a": long_val}) is True
     assert len(ph[0]["default_value"]) == MAX_ANCHOR_LEN
     assert ph[0]["default_source"] == "auto"
+
+
+# ---------- service：B端默认值编辑（纯函数） ----------
+
+def test_update_defaults_validation():
+    from api.db.services.template_fill_service import TplTemplateVersionService as S
+    ph = [{"key": "a", "default_value": "", "default_source": ""},
+          {"key": "b", "default_value": "x", "default_source": "auto"}]
+    # 未知 key（如手改请求的错别字）整体拒绝，防编辑静默丢失
+    ok, err = S._apply_defaults_edits(ph, {"a": "新值", "b": "", "ghost": "y"})
+    assert ok is False and "ghost" in err
+    ok, err = S._apply_defaults_edits(ph, {"a": "新值", "b": ""})
+    assert ok is True
+    assert ph[0]["default_value"] == "新值" and ph[0]["default_source"] == "manual"
+    assert ph[1]["default_value"] == "" and ph[1]["default_source"] == ""  # 空串=清空

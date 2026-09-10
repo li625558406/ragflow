@@ -375,6 +375,23 @@ async def save_placeholders(template_id: str):
     return get_result(data={"id": template_id, "placeholder_count": len(items)})
 
 
+@manager.route("/template/fill/<template_id>/defaults", methods=["PUT"])
+@login_required
+async def update_template_defaults(template_id: str):
+    """B端默认值编辑：{defaults: {key: value}}，空串=清空该字段默认值。"""
+    body = await request.get_json(silent=True) or {}
+    defaults = body.get("defaults")
+    if not isinstance(defaults, dict) or not defaults:
+        return get_error_data_result("defaults 不能为空")
+    tpl, err = await _load_template(template_id)
+    if err:
+        return err
+    ok, msg = TplTemplateVersionService.update_defaults(template_id, defaults)
+    if not ok:
+        return get_error_data_result(msg)
+    return get_result(data={"id": template_id})
+
+
 @manager.route("/template/fill/<template_id>/publish", methods=["POST"])
 @login_required
 async def publish_template(template_id: str):
