@@ -63,6 +63,15 @@ export default function FlowPanel({
   const meId = useMemo(currentUserId, []);
   // 列表卡片作废请求进行中的流程 id（防并发二次提交）
   const [cancelBusyId, setCancelBusyId] = useState<string | null>(null);
+  // 范本预览抽屉开/关：打开时收起左侧流程列表给抽屉腾位（同时上报外层）
+  const [tplPreviewOpen, setTplPreviewOpen] = useState(false);
+  const handleTplPreviewOpen = useCallback(
+    (open: boolean) => {
+      setTplPreviewOpen(open);
+      onTplPreviewOpenChange?.(open);
+    },
+    [onTplPreviewOpenChange],
+  );
 
   // 超管追加「全部流程」页签，与其余三视角并列切换
   const scopes = useMemo(
@@ -135,8 +144,12 @@ export default function FlowPanel({
     <div ref={rootRef} className="flex h-full w-full gap-3">
       {scope !== 'admin' && (
         <>
-          {/* 左：流程列表（上）+ 批注模块（下，可折叠），高度平分 */}
-          <div className="flex w-80 shrink-0 flex-col overflow-hidden rounded-xl bg-white">
+          {/* 左：流程列表（上）+ 批注模块（下，可折叠），高度平分；范本预览抽屉打开时收起腾位 */}
+          <div
+            className={`flex shrink-0 flex-col overflow-hidden rounded-xl bg-white transition-all duration-300 ease-in-out ${
+              tplPreviewOpen ? 'w-0' : 'w-80'
+            }`}
+          >
             <div className="flex min-h-0 flex-1 flex-col">
               {/* 顶栏：分段控件（超管含「全部流程」）+ 下方全宽新建按钮 */}
               <div className="shrink-0 space-y-2 border-b border-[#F0F0F0] px-3 py-2.5">
@@ -302,8 +315,10 @@ export default function FlowPanel({
             )}
           </div>
 
-          {/* 中间分隔线 */}
-          <div aria-hidden className="w-px shrink-0 bg-[#E5E5E5]" />
+          {/* 中间分隔线（列表收起时一并隐藏） */}
+          {!tplPreviewOpen && (
+            <div aria-hidden className="w-px shrink-0 bg-[#E5E5E5]" />
+          )}
 
           {/* 右：详情 */}
           <div className="min-w-0 flex-1 overflow-hidden rounded-xl bg-white">
@@ -312,7 +327,7 @@ export default function FlowPanel({
                 flowId={activeId}
                 commentPortal={commentSlot}
                 onCommentsCount={handleCommentCount}
-                onTplPreviewOpenChange={onTplPreviewOpenChange}
+                onTplPreviewOpenChange={handleTplPreviewOpen}
                 onChanged={() => {
                   qc.invalidateQueries({ queryKey: ['flow-list'] });
                   qc.invalidateQueries({ queryKey: ['flow-list-todo-badge'] });
