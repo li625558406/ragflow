@@ -52,6 +52,7 @@ export default function FlowAiPanel({
   onSaved,
   onLiveChatChange,
   onReviewControlChange,
+  onReviewOpenChange,
   onConfirmSubmittedReady,
 }: {
   flowId: string;
@@ -68,6 +69,8 @@ export default function FlowAiPanel({
   onLiveChatChange?: (live: FlowLiveChat | null) => void;
   /** 文件审核入口状态变化时上报，供父级在顶部按钮行渲染入口按钮 */
   onReviewControlChange?: (ctl: FlowReviewControl | null) => void;
+  /** 文件审核抽屉开/关上报：外层收缩布局为抽屉腾位（与范本预览抽屉同款联动） */
+  onReviewOpenChange?: (open: boolean) => void;
   /** 确认卡片提交回写函数上报（与 onReviewControlChange 同款模式）：
    *  确认卡片渲染在中部对话区（ConversationView），提交成功后经此把 submitted
    *  回写进本面板的流式累积态，供归约器 confirm_timeout 守卫判断 */
@@ -617,6 +620,12 @@ export default function FlowAiPanel({
   useEffect(() => {
     return () => onReviewControlChange?.(null);
   }, [onReviewControlChange]);
+
+  // 文件审核抽屉开/关上报（腾位联动，与范本预览抽屉同款）；卸载时兜底关闭
+  useEffect(() => {
+    onReviewOpenChange?.(reviewMode);
+    return () => onReviewOpenChange?.(false);
+  }, [reviewMode, onReviewOpenChange]);
 
   const handleSave = useCallback(
     async (asVersion: boolean) => {

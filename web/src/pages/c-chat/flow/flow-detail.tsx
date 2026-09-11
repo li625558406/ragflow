@@ -81,6 +81,7 @@ export default function FlowDetail({
   onChanged,
   onDeleted,
   onTplPreviewOpenChange,
+  onReviewOpenChange,
 }: {
   flowId: string;
   /** 批注模块 portal 挂载点（外层左侧流程栏下方），不传则不渲染批注模块 */
@@ -92,6 +93,8 @@ export default function FlowDetail({
   onDeleted?: () => void;
   /** 范本预览抽屉开/关上报（透传自 ConversationView）：外层收缩布局为抽屉腾位 */
   onTplPreviewOpenChange?: (open: boolean) => void;
+  /** 版本文件审核抽屉开/关上报：外层收缩布局为抽屉腾位 */
+  onReviewOpenChange?: (open: boolean) => void;
 }) {
   const qc = useQueryClient();
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(
@@ -153,6 +156,13 @@ export default function FlowDetail({
   const uploadInputRef = useRef<HTMLInputElement>(null);
   // 版本文件只读查看（所有参与人可用）：版本转 document 后交给 ReviewPanel
   const [viewOpen, setViewOpen] = useState(false);
+  // AI 面板「文件审核」抽屉开/关（FlowAiPanel 上报）
+  const [aiReviewOpen, setAiReviewOpen] = useState(false);
+  // 审核抽屉（版本查看 / AI 面板文件审核）任一打开即上报外层腾位联动，卸载时兜底关闭
+  useEffect(() => {
+    onReviewOpenChange?.(viewOpen || aiReviewOpen);
+    return () => onReviewOpenChange?.(false);
+  }, [viewOpen, aiReviewOpen, onReviewOpenChange]);
   const [viewPreparing, setViewPreparing] = useState(false);
   const [viewPendingId, setViewPendingId] = useState('');
   const [viewFileId, setViewFileId] = useState('');
@@ -527,6 +537,7 @@ export default function FlowDetail({
               }}
               onLiveChatChange={setLiveChat}
               onReviewControlChange={setReviewCtl}
+              onReviewOpenChange={setAiReviewOpen}
               onConfirmSubmittedReady={setMarkConfirmSubmitted}
             />
           )}
@@ -534,13 +545,14 @@ export default function FlowDetail({
           {/* 批注区已移至外层左侧流程栏下方（commentPortal） */}
         </div>
 
-        {/* 右：版本时间线（范本预览抽屉打开时收起腾位） */}
+        {/* 右：版本时间线（范本预览/文件审核抽屉打开时收起腾位） */}
         <div
           className={`flex shrink-0 flex-col overflow-hidden rounded-lg border border-[#F0F0F0] bg-white transition-all duration-300 ease-in-out ${
-            tplPreviewOpen ? 'w-0 border-0' : 'w-64'
+            tplPreviewOpen || viewOpen || aiReviewOpen ? 'w-0 border-0' : 'w-64'
           }`}
         >
-          <div className="border-b border-[#F0F0F0] px-3 py-2 text-sm font-medium">
+          {/* 标题栏蓝底色，醒目区分（与左栏批注开关条同款色系） */}
+          <div className="border-b border-[#D6E2FF] bg-[#EFF4FF] px-3 py-2 text-sm font-medium text-[#1a66fb]">
             版本记录
             <span className="ml-1 text-xs font-normal text-[#999]">
               {sortedVersions.length} 条

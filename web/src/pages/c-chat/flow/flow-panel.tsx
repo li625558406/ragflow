@@ -42,9 +42,12 @@ function currentUserId(): string {
 
 export default function FlowPanel({
   onTplPreviewOpenChange,
+  onReviewOpenChange,
 }: {
   /** 范本预览抽屉开/关上报（透传自 FlowDetail）：外层收缩布局腾位 */
   onTplPreviewOpenChange?: (open: boolean) => void;
+  /** 版本文件审核抽屉开/关上报（透传自 FlowDetail）：外层收缩布局腾位 */
+  onReviewOpenChange?: (open: boolean) => void;
 }) {
   const [scope, setScope] = useState<FlowScope>('todo');
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -71,6 +74,15 @@ export default function FlowPanel({
       onTplPreviewOpenChange?.(open);
     },
     [onTplPreviewOpenChange],
+  );
+  // 版本文件审核抽屉开/关：与范本预览同款腾位联动（任一打开即收起左列表）
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const handleReviewOpen = useCallback(
+    (open: boolean) => {
+      setReviewOpen(open);
+      onReviewOpenChange?.(open);
+    },
+    [onReviewOpenChange],
   );
 
   // 超管追加「全部流程」页签，与其余三视角并列切换
@@ -144,10 +156,10 @@ export default function FlowPanel({
     <div ref={rootRef} className="flex h-full w-full gap-3">
       {scope !== 'admin' && (
         <>
-          {/* 左：流程列表（上）+ 批注模块（下，可折叠），高度平分；范本预览抽屉打开时收起腾位 */}
+          {/* 左：流程列表（上）+ 批注模块（下，可折叠），高度平分；范本预览/文件审核抽屉打开时收起腾位 */}
           <div
             className={`flex shrink-0 flex-col overflow-hidden rounded-xl bg-white transition-all duration-300 ease-in-out ${
-              tplPreviewOpen ? 'w-0' : 'w-80'
+              tplPreviewOpen || reviewOpen ? 'w-0' : 'w-80'
             }`}
           >
             <div className="flex min-h-0 flex-1 flex-col">
@@ -272,7 +284,7 @@ export default function FlowPanel({
                                 e.stopPropagation();
                                 handleCancelFromList(f);
                               }}
-                              className="shrink-0 cursor-pointer rounded text-xs font-medium text-[#E5484D] transition-colors hover:text-red-600 hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+                              className="shrink-0 cursor-pointer rounded-md border border-[#E5484D]/40 px-2 py-0.5 text-xs font-medium text-[#E5484D] transition-colors hover:border-[#E5484D] hover:bg-[#E5484D] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               作废
                             </button>
@@ -285,8 +297,8 @@ export default function FlowPanel({
               </div>
             </div>
 
-            {/* 批注区开关：计数由 FlowDetail 上报 */}
-            <div className="shrink-0 border-t border-[#F0F0F0]">
+            {/* 批注区开关：计数由 FlowDetail 上报（蓝底色醒目区分） */}
+            <div className="shrink-0 border-t border-[#D6E2FF] bg-[#EFF4FF]">
               <button
                 type="button"
                 onClick={() => {
@@ -316,7 +328,7 @@ export default function FlowPanel({
           </div>
 
           {/* 中间分隔线（列表收起时一并隐藏） */}
-          {!tplPreviewOpen && (
+          {!(tplPreviewOpen || reviewOpen) && (
             <div aria-hidden className="w-px shrink-0 bg-[#E5E5E5]" />
           )}
 
@@ -328,6 +340,7 @@ export default function FlowPanel({
                 commentPortal={commentSlot}
                 onCommentsCount={handleCommentCount}
                 onTplPreviewOpenChange={handleTplPreviewOpen}
+                onReviewOpenChange={handleReviewOpen}
                 onChanged={() => {
                   qc.invalidateQueries({ queryKey: ['flow-list'] });
                   qc.invalidateQueries({ queryKey: ['flow-list-todo-badge'] });
