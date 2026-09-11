@@ -2310,6 +2310,8 @@ class FlowAiChat(DataBaseModel):
     instruction = TextField(null=False, default="", help_text="用户指令")
     response = TextField(null=False, default="", help_text="AI 回复全文")
     session_id = CharField(max_length=64, null=False, default="", help_text="对话会话 id")
+    user_id = CharField(max_length=32, null=False, default="", help_text="操作人 user_id（对话归属展示）")
+    template_fill_events = TextField(null=False, default="", help_text="范本填写原始事件序列 JSON（刷新回放用）")
 
     class Meta:
         db_table = "flow_ai_chat"
@@ -2795,6 +2797,19 @@ def migrate_db():
     # ── 流程软删除（2026-09-09 已结束流程维护页） ──────────────────
     alter_db_add_column(migrator, "flow_instance", "deleted", IntegerField(null=False, default=0, index=True, help_text="软删标记：0正常 / 1已软删（回收站）"))
     alter_db_add_column(migrator, "flow_instance", "deleted_time", BigIntegerField(null=True, help_text="软删时间（毫秒时间戳）"))
+    # 2026-09-11 流程对话自治存储：flow_ai_chat 加操作人归属 + 范本填写事件
+    alter_db_add_column(migrator, "flow_ai_chat", "user_id", CharField(max_length=32, null=False, default="", help_text="操作人 user_id（对话归属展示）"))
+    alter_db_add_column(migrator, "flow_ai_chat", "template_fill_events", TextField(null=False, default="", help_text="范本填写原始事件序列 JSON（刷新回放用）"))
+    try:
+        # 存量回填（幂等）：流程影子会话打标 → 对话页签不可见
+        DB.execute_sql("UPDATE api_4_conversation SET source = 'flow' WHERE source = 'agent' AND name LIKE '流程：%'")
+        # 存量记录归属流程发起人（幂等）
+        DB.execute_sql(
+            "UPDATE flow_ai_chat c JOIN flow_instance f ON c.flow_id = f.id "
+            "SET c.user_id = f.initiator_id WHERE c.user_id = ''"
+        )
+    except Exception as e:
+        logging.exception("flow chat save backfill failed: %s", e)
     if not TplTemplateVersion.table_exists():
         TplTemplateVersion.create_table(safe=True)
         logging.info("template fill: tpl_template_version table created")
