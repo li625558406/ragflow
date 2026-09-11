@@ -333,7 +333,14 @@ export const useSendMessageBySSE = (
     async (
       body: any,
       controller?: AbortController,
-    ): Promise<{ response: Response; data: ResponseType } | undefined> => {
+    ): Promise<
+      | {
+          response: Response;
+          data: ResponseType;
+          content?: string;
+        }
+      | undefined
+    > => {
       // Clear any pending resetAnswerList timer from a previous abort
       // to prevent it from clearing answerList during the new stream.
       if (timer.current) {
@@ -644,9 +651,14 @@ export const useSendMessageBySSE = (
         }
 
         flushStreamState();
+        // resetAnswerList 会同步清空 streamAccRef/streamState（React 批处理下
+        // 消费者看不到中间态）。尾包 message 与 [DONE] 同帧到达时 RAF flush
+        // 一次都没跑过，streamState.content 直接以空态落地——必须在 reset 前
+        // 捕获完整累积回复并随返回值带给调用方（flow AI 面板自动保存依赖它）。
+        const finalContent = streamAccRef.current.content || '';
         setDone(true);
         resetAnswerList();
-        return { data: await res, response };
+        return { data: await res, response, content: finalContent };
       } catch (e) {
         // Aborted: flush remaining content but do NOT clear the accumulator.
         // The user should see whatever was rendered before stopping.

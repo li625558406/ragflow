@@ -542,6 +542,13 @@ export default function FlowAiPanel({
           files,
           internet: false,
         });
+        // hook 收尾时同步 flush+reset（React 批处理），streamState 一次性清空；
+        // 尾包 message 与 [DONE] 同帧到达时 RAF flush 未跑过，contentRef 拿不到
+        // 内容，自动保存会因空文本静默跳过——用 send 返回的最终累积回复兜底
+        const finalText = (res?.content as string | undefined)?.trim();
+        if (finalText && !contentRef.current.trim()) {
+          contentRef.current = finalText;
+        }
       } catch (e: any) {
         const msg = e?.message || '发送失败，请检查网络后重试';
         if (isSessionMissingError(msg)) sessionIdRef.current = '';

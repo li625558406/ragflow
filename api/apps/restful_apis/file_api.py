@@ -301,21 +301,34 @@ async def download(tenant_id: str = None, file_id: str = None):
     """
     try:
         success, result = file_api_service.get_file_content(tenant_id, file_id)
-        if not success:
-            return get_error_data_result(message=result)
+        file = result if success else None
+        blob = None
+        if success:
+            blob = await thread_pool_exec(settings.STORAGE_IMPL.get, file.parent_id, file.location)
+            if not blob:
+                b, n = File2DocumentService.get_storage_address(file_id=file_id)
+                blob = await thread_pool_exec(settings.STORAGE_IMPL.get, b, n)
 
-        file = result
-        blob = await thread_pool_exec(settings.STORAGE_IMPL.get, file.parent_id, file.location)
+        # 兜底：对话/范本成稿等生成文件存 {tenant_id}-downloads 桶且无 file 表记录
+        # （与 /files/<id>/content 的兜底同口径，审核保真渲染依赖此路由拉原始 blob）
         if not blob:
-            b, n = File2DocumentService.get_storage_address(file_id=file_id)
-            blob = await thread_pool_exec(settings.STORAGE_IMPL.get, b, n)
+            bname = f"{tenant_id}-downloads"
+            blob = await thread_pool_exec(settings.STORAGE_IMPL.get, bname, file_id)
+
+        if not blob:
+            return get_error_data_result(message=result if not success else "File not found in storage")
 
         response = await make_response(blob)
-        ext = re.search(r"\.([^.]+)$", file.name.lower())
-        ext = ext.group(1) if ext else None
+        name = file.name if success else file_id
+        ext = re.search(r"\.([^.]+)$", (name or "").lower())
+        if ext:
+            ext = ext.group(1)
+        elif blob[:2] == b"PK":
+            # -downloads 桶对象名为无后缀 uuid，按 zip 魔数识别 docx
+            ext = "docx"
         content_type = None
         if ext:
-            fallback_prefix = "image" if file.type == FileType.VISUAL.value else "application"
+            fallback_prefix = "image" if (success and file.type == FileType.VISUAL.value) else "application"
             content_type = CONTENT_TYPE_MAP.get(ext, f"{fallback_prefix}/{ext}")
         apply_safe_file_response_headers(response, content_type, ext)
         return response

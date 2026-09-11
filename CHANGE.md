@@ -1,6 +1,18 @@
 # CHANGE.md — 项目迭代记录
 
-## 2026-09-11 文件审核 docx 保真渲染（批注功能全保留）+ 范本预览大文档性能优化（未部署，纯前端）
+## 2026-09-11 修复流程 AI 对话刷新后记录丢失（自动保存静默失效）（已部署+验证，纯前端）
+
+**主题**：流程 AI 面板一轮对话正常完成后 `POST /flow/<id>/ai-record` 从未发出（服务器 24h 日志零请求），刷新页面记录全部丢失。Playwright 生产复现 + SSE 抓包定位根因后修复。
+
+**根因**：范本填写轮 agent 只产出**一条** `message` 事件（如"等待超时，已按 AI 预判字段继续填写。"84 字符），且与 `message_end`/`workflow_finished`/`[DONE]` 在同一网络分帧内到达；reader 循环在 microtask 中连续处理完毕，RAF 节流的 streamState flush **一次都没执行**；hook 收尾同步执行 `flushStreamState + setDone(true) + resetAnswerList()`，React 18 批处理下最终 `streamState.content=''` 落地——面板 `contentRef` 全程未填充，自动保存在 `if (!text) return` 处静默退出。
+
+**核心变更**：
+- `use-send-message.ts`：`send()` 在 `resetAnswerList()` 清空累积器**之前**捕获 `streamAccRef.current.content`，随返回值新增 `content?: string` 交付调用方（增量字段，其余 7 个消费方不受影响）
+- `flow-ai-panel.tsx` `handleSend`：`await send()` 后用 `res.content` 兜底补写 `contentRef`（仅当其为空时），`setSending(false)` 触发的最终渲染使自动保存 effect 拿到非空文本正常 POST
+
+**遗留**：用户在流式中途刷新/关闭页面仍会丢记录（未做中途快照持久化，当前修复覆盖"完整等到流结束"主场景）；本地 jest 配置依赖未安装的 `umi/test` 无法本机跑前端单测（环境既有问题）。
+
+## 2026-09-11 文件审核 docx 保真渲染（批注功能全保留）+ 范本预览大文档性能优化（已部署，纯前端）
 
 **主题**：① 文件审核（review-panel）只读路径 docx 改 docx-preview 渲染原始文件，Word 字号/表格/排版保真，AI 标注+手动批注锚定/批注栏/引线/兜底全部保留；② 范本实时预览大文档卡顿治理：占位符高亮由 innerHTML 快照重放改 span 映射增量更新 + 屏外页懒渲染。设计文档 `docs/superpowers/specs/2026-09-11-review-panel-docx-fidelity-design.md`。
 
