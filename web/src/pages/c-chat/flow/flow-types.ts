@@ -56,6 +56,10 @@ export interface FlowAiChatItem {
   instruction: string;
   response: string;
   session_id: string;
+  /** 操作人 user_id（存量迁移后非空，归属展示用） */
+  user_id: string;
+  /** 范本填写原始事件序列（刷新回放用） */
+  template_fill_events?: unknown[];
   create_time: number;
 }
 

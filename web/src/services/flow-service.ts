@@ -257,12 +257,26 @@ export async function saveFlowAiRecord(
     version_id?: string;
     session_id?: string;
     save_as_version?: boolean;
+    /** 范本填写原始事件序列（后端序列化为 JSON 字符串落库） */
+    template_fill_events?: unknown[];
   },
 ): Promise<{ record: unknown; output_version_id: string }> {
   return apiFetch(`/flow/${flowId}/ai-record`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+  });
+}
+
+/** 创建流程专属影子会话（conversation.source='flow'，对话页签不可见） */
+export async function createFlowChatSession(
+  flowId: string,
+  agentId: string,
+): Promise<{ session_id: string }> {
+  return apiFetch(`/flow/${flowId}/chat/session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agent_id: agentId }),
   });
 }
 
