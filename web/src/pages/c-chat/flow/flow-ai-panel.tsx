@@ -137,16 +137,7 @@ export default function FlowAiPanel({
   const composingRef = useRef(false);
   const instructionRef = useRef('');
   // 会话续接：只恢复【自己】保存记录里的 session_id（多人操作各自独立续聊）
-  const sessionIdRef = useRef(
-    (() => {
-      for (let i = aiChats.length - 1; i >= 0; i--) {
-        if (aiChats[i].session_id && aiChats[i].user_id === currentUserId) {
-          return aiChats[i].session_id;
-        }
-      }
-      return '';
-    })(),
-  );
+  const sessionIdRef = useRef('');
   // ChatInputBox 内部上传完成的文档对象（发送时附带）
   const uploadedDocsRef = useRef<UploadedDoc[]>([]);
   const [uploadedDocs, setUploadedDocs] = useState<UploadedDoc[]>([]);
@@ -225,13 +216,28 @@ export default function FlowAiPanel({
     }
   }, [streamState.templateFill]);
 
+  // 会话续接：只恢复【自己】保存记录里的 session_id（多人操作各自独立续聊）。
+  // aiChats 异步到达，挂载后首次到位时恢复一次。
+  const sessionRestoredRef = useRef(false);
+  useEffect(() => {
+    if (sessionRestoredRef.current || aiChats.length === 0) return;
+    sessionRestoredRef.current = true;
+    for (let i = aiChats.length - 1; i >= 0; i--) {
+      if (aiChats[i].session_id && aiChats[i].user_id === currentUserId) {
+        sessionIdRef.current = aiChats[i].session_id;
+        break;
+      }
+    }
+  }, [aiChats, currentUserId]);
+
   // 刷新恢复：从本流程已保存记录的 template_fill_events 重放范本填写进度
   // （数据源为 flow 自持存储，不再依赖 agent 会话消息）。仅挂载时恢复一次。
   const replayRestoredRef = useRef(false);
   useEffect(() => {
-    if (replayRestoredRef.current || lastTemplateFill || aiChats.length === 0)
-      return;
+    if (replayRestoredRef.current || aiChats.length === 0) return;
     replayRestoredRef.current = true;
+    if (lastTemplateFill) return;
+    // 回放取最新带事件的记录（纯文本轮之后刷新仍还原更早的模板进度，与旧 agent 会话回放行为一致）
     for (let i = aiChats.length - 1; i >= 0; i--) {
       const restored = parseAndReplay(aiChats[i].template_fill_events);
       if (restored) {
@@ -241,7 +247,6 @@ export default function FlowAiPanel({
       }
     }
     // 仅挂载后 aiChats 首次到位时恢复一次
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [aiChats, lastTemplateFill]);
 
   // 从流式事件中提取 session_id（多轮续聊依赖）
@@ -369,25 +374,21 @@ export default function FlowAiPanel({
 
   // 无会话时经 flow 后端建影子会话（source='flow'，对话页签不可见），
   // 否则后端走无状态 fresh run 路径，多轮对话没有上下文延续。
-  const ensureSession = useCallback(
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    async (_query: string): Promise<boolean> => {
-      if (sessionIdRef.current) return true;
-      try {
-        const result = await createFlowChatSession(flowId, agentId);
-        if (result?.session_id) {
-          sessionIdRef.current = result.session_id;
-          return true;
-        }
-        setError('创建会话失败');
-        return false;
-      } catch (e: any) {
-        setError(e?.message || '创建会话失败');
-        return false;
+  const ensureSession = useCallback(async (): Promise<boolean> => {
+    if (sessionIdRef.current) return true;
+    try {
+      const result = await createFlowChatSession(flowId, agentId);
+      if (result?.session_id) {
+        sessionIdRef.current = result.session_id;
+        return true;
       }
-    },
-    [agentId, flowId],
-  );
+      setError('创建会话失败');
+      return false;
+    } catch (e: any) {
+      setError(e?.message || '创建会话失败');
+      return false;
+    }
+  }, [agentId, flowId]);
 
   // ChatInputBox 上传完成的文档对象同步到 ref（发送时读取，避免闭包过期）
   const handleUploadedDocsChange = useCallback((files: UploadedDoc[]) => {
@@ -458,7 +459,7 @@ export default function FlowAiPanel({
       autoSavedRef.current = false;
       setValue('');
 
-      const ok = await ensureSession(query);
+      const ok = await ensureSession();
       if (!ok) {
         setValue(query);
         return;
