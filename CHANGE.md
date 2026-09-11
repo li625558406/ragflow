@@ -1,5 +1,17 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-11 修复流程对话回放缺成稿卡（filled/done 范本事件未落库）（已部署，纯前端）
+
+**主题**：接上条自动保存修复——记录虽已保存，但刷新回放永远停在「填写中 x/y」，看不到「可在上方预览或下载成稿」对应的成稿卡（下载/存为流程版本入口）。
+
+**根因**：下载入口来自 `filled` 事件（`download` 字段），完成态来自 `done` 事件；两者与 `[DONE]` 在同一网络分帧到达（服务端实测间隔仅 200ms），RAF 未执行，`resetAnswerList` 批处理清空前 `answerList`/`eventBuffer` 对消费方不可见——落库的 `template_fill_events` 止于 `filling`（生产 DB 实证：8 事件无 filled/done）。
+
+**核心变更**：
+- `use-send-message.ts`：`send()` 用局部闭包数组收集本轮全量原始 SSE 事件，随返回值新增 `events?: any[]`
+- `flow-ai-panel.tsx`：`await send()` 后按 `event === 'template_fill_progress'` 过滤重建 `templateFillEventsRef`，`filled.download` 与 `done` 一并落库，回放 reducer（template-fill-stream.ts）按既有逻辑还原成稿卡
+
+**遗留**：该修复前保存的记录（如 22:36 那条测试记录）事件序列已缺失，回放仍无成稿卡；成稿文件本身在 `{tenant_id}-downloads` 桶，可从版本记录/AI 范本填写条目下载。
+
 ## 2026-09-11 修复流程 AI 对话刷新后记录丢失（自动保存静默失效）（已部署+验证，纯前端）
 
 **主题**：流程 AI 面板一轮对话正常完成后 `POST /flow/<id>/ai-record` 从未发出（服务器 24h 日志零请求），刷新页面记录全部丢失。Playwright 生产复现 + SSE 抓包定位根因后修复。
