@@ -1,5 +1,17 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-11 SSE 过滤器吞掉心跳/范本进度事件 → 前端「正在思考」永久卡死（已部署）
+
+**主题**：范本书写长运行（~9 分钟）期间会话 SSE 流零字节，被 NAT/代理静默掐断，浏览器 reader 永远等不到关闭。
+
+**根因**：`agent_api.py _iter_session_completion_events` 白名单（message/message_end/workflow_*/node_*）把 `heartbeat` 和 `template_fill_progress` 全部过滤（日志实锤 filtered=41 = 23 进度 + 18 心跳）。范本填写运行期间 SSE 连接除首尾 node 事件外全程无字节 → 中间层按空闲连接掐断 → 后端关闭信号到不了浏览器 → `useSendMessageBySSE` 的 `done` 永不置 true → flow-detail「正在思考…▌」卡死。
+
+**核心变更**：
+- 白名单加入 `heartbeat`（15s keepalive，根治空闲掐断）+ `template_fill_progress`（范本进度卡片 + confirm_pending 确认卡片依赖同一事件名，此前在该路径从未到达前端——P2 确认功能实际不可用，本次一并修复）
+- 同日顺带：`docker/entrypoint.sh` 加 docxtpl 自愈守卫（容器 recreate 丢失容器内手工安装的 docxtpl，范本渲染报 No module named 'docxtpl'）
+
+**遗留**：DeepSeek API 产值延迟（~5.5 分钟）为外部瓶颈；前端画布运行失败时 content length=0 无错误提示的 UX 缺陷仍未修。
+
 ## 2026-09-10 范本默认值基线 P2：变化字段确认填写（后端+前端，未部署）
 
 **主题**：重填场景 LLM 负担从几百字段降到 ~100 变化字段。

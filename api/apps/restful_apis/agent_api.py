@@ -387,7 +387,12 @@ async def _iter_session_completion_events(tenant_id, agent_id, req, return_trace
             yield ans
             continue
 
-        if event in ["message", "message_end", "workflow_started", "node_started", "node_logs", "workflow_finished"]:
+        # heartbeat 必须放行：长节点（范本填写等）运行期间 SSE 若无任何字节，
+        # 中间层（NAT/代理）会按空闲连接静默掐断，浏览器端 reader 永远等不到
+        # 关闭 → 前端「正在思考…」永久卡死；15s 一次的心跳同时充当 keepalive。
+        # template_fill_progress 放行：范本填写进度卡片 + confirm_pending 确认卡片
+        # （同一事件名带 stage 字段）依赖它到达前端。
+        if event in ["message", "message_end", "workflow_started", "node_started", "node_logs", "workflow_finished", "heartbeat", "template_fill_progress"]:
             yield ans
         else:
             filtered_count += 1
