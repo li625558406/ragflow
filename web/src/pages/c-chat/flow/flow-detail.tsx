@@ -490,6 +490,7 @@ export default function FlowDetail({
             <ConversationView
               chats={data.ai_chats ?? []}
               live={liveChat}
+              authorNames={Object.fromEntries(nicknameMap)}
               onConfirmSubmitted={markConfirmSubmitted ?? undefined}
               onLivePreviewOpenChange={(open) => {
                 setTplPreviewOpen(open);
@@ -858,12 +859,15 @@ function DetailSkeleton() {
 function ConversationView({
   chats,
   live,
+  authorNames,
   extraAction,
   onConfirmSubmitted,
   onLivePreviewOpenChange,
 }: {
   chats: FlowAiChatItem[];
   live: FlowLiveChat | null;
+  /** user_id -> 昵称（对话归属展示） */
+  authorNames?: Record<string, string>;
   /** 成稿条目附加动作（存为流程版本按钮） */
   extraAction?: (dl: ITemplateFillDownload) => ReactNode;
   /** 确认卡片提交成功后回调：回写流式态（FlowAiPanel 经 onConfirmSubmittedReady 上报的函数） */
@@ -908,6 +912,11 @@ function ConversationView({
             </div>
           </div>
           <div className="flex items-center gap-2 px-1 text-[10px] text-[#aaa]">
+            {c.user_id && authorNames?.[c.user_id] && (
+              <span className="rounded bg-[#F5F5F5] px-1 text-[#888]">
+                {authorNames[c.user_id]}
+              </span>
+            )}
             <span>{new Date(c.create_time).toLocaleString()}</span>
             {c.output_version_id && (
               <span className="rounded bg-[#EFF4FF] px-1 text-[#1a66fb]">
