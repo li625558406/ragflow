@@ -338,6 +338,7 @@ export const useSendMessageBySSE = (
           response: Response;
           data: ResponseType;
           content?: string;
+          events?: any[];
         }
       | undefined
     > => {
@@ -349,6 +350,11 @@ export const useSendMessageBySSE = (
       }
       structuredOutputRef.current = null;
       initializeSseRef();
+      // 本轮全量原始 SSE 事件（send 局部闭包，每次调用独立）。
+      // 尾包事件与 [DONE] 同帧到达时 eventBuffer/answerList 会被批处理 reset
+      // 吞掉（消费方看不到），随返回值交付供调用方重建事件序列（如
+      // flow 面板落库 template_fill_events，缺 done 事件会导致回放无成稿卡）。
+      const rawEvents: any[] = [];
       try {
         setDone(false);
         setWasAborted(false);
@@ -456,6 +462,7 @@ export const useSendMessageBySSE = (
                 }
 
                 const val = JSON.parse(value?.data || '');
+                rawEvents.push(val);
 
                 if (typeof val?.task_id === 'string' && val.task_id) {
                   taskIdRef.current = val.task_id;
@@ -658,7 +665,12 @@ export const useSendMessageBySSE = (
         const finalContent = streamAccRef.current.content || '';
         setDone(true);
         resetAnswerList();
-        return { data: await res, response, content: finalContent };
+        return {
+          data: await res,
+          response,
+          content: finalContent,
+          events: rawEvents,
+        };
       } catch (e) {
         // Aborted: flush remaining content but do NOT clear the accumulator.
         // The user should see whatever was rendered before stopping.

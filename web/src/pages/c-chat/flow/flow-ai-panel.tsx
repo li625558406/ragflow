@@ -549,6 +549,15 @@ export default function FlowAiPanel({
         if (finalText && !contentRef.current.trim()) {
           contentRef.current = finalText;
         }
+        // 同理，done 事件（含成稿文件下载契约）与 [DONE] 同帧到达时不会进入
+        // answerList → templateFillEventsRef 缺 done，落库后回放永远停在
+        // 「填写中 x/y」、无预览/下载/存为流程版本入口——用全量原始事件重建
+        const finalTplEvents = ((res?.events as any[] | undefined) ?? [])
+          .filter((e: any) => e?.event === 'template_fill_progress')
+          .map((e: any) => e.data);
+        if (finalTplEvents.length > 0) {
+          templateFillEventsRef.current = finalTplEvents;
+        }
       } catch (e: any) {
         const msg = e?.message || '发送失败，请检查网络后重试';
         if (isSessionMissingError(msg)) sessionIdRef.current = '';
