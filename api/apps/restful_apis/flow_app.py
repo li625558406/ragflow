@@ -1277,7 +1277,9 @@ async def reactivate_flow(flow_id: str):
 @login_required
 async def create_flow_chat_session(flow_id: str):
     """为当前用户创建流程专属 agent 会话（conversation.source='flow'）。
-    影子会话仅作画布多轮续聊的运行时缓存；权威对话记录在 flow_ai_chat。"""
+    影子会话仅作画布多轮续聊的运行时缓存；权威对话记录在 flow_ai_chat。
+    注：本端点用 _require_viewer（读级口径）而非 _require_participant——
+    建影子会话性质近读（会话归属强制 current_user.id，无越权面）。"""
     try:
         flow = _require_viewer(_flow_dict(flow_id))
         body = await request.get_json(silent=True) or {}
