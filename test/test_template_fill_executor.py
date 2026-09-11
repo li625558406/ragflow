@@ -684,7 +684,8 @@ def test_dry_run_empty_kb_ids_no_permission_check(monkeypatch):
 # ---------- generate_values 进度回调 on_progress（批次完成即上报） ----------
 
 def test_generate_values_on_progress_reports_batch_completion(monkeypatch):
-    """on_progress 每批完成即回调 (done, total)；total 为全部 llm 槽数，末次回调 done=total。"""
+    """on_progress 每批完成即回调 (done, total, new_values)；total 为全部 llm 槽数，
+    末次回调 done=total；new_values 为该批已过约束闸的产出值（实时预览用）。"""
     from rag.svr.template_fill import executor
 
     async def fake_chat(system, history, gen_conf=None, **kw):
@@ -700,9 +701,14 @@ def test_generate_values_on_progress_reports_batch_completion(monkeypatch):
     events = []
     vals, missing = executor._run_async(executor.generate_values(
         "t", placeholders, chunks_by_key, params={}, batch_size=2,
-        on_progress=lambda done, total: events.append((done, total))))
+        on_progress=lambda done, total, new_vals=None: events.append((done, total, new_vals))))
     assert vals == {f"k{i}": "v" for i in range(5)} and missing == set()
-    assert events[-1] == (5, 5)
+    assert events[-1][:2] == (5, 5)
+    # new_values 与最终 values 同口径：全部字段都会随某批回调带出
+    merged_vals: dict = {}
+    for e in events:
+        merged_vals.update(e[2] or {})
+    assert merged_vals == {f"k{i}": "v" for i in range(5)}
     # 3 批（2+2+1）→ 3 次回调；as_completed 完成顺序不定，累计 done 序列
     # 随之变化（(2,4,5)/(2,3,5)/(1,3,5)），断言只锁「次数 + 单调递增到 total」
     assert len(events) == 3
@@ -724,7 +730,7 @@ def test_generate_values_on_progress_exception_swallowed(monkeypatch):
     placeholders = [{"key": "k1", "name": "字段一", "description": "", "constraints": {}}]
     chunks_by_key = {"k1": {"chunks": []}}
 
-    def boom(done, total):
+    def boom(done, total, new_vals=None):
         raise RuntimeError("cb boom")
 
     vals, missing = executor._run_async(executor.generate_values(

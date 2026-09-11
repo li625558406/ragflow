@@ -18,6 +18,8 @@ export interface ITemplateFillTemplate {
   status: 'selected' | 'filling' | 'filled' | 'failed';
   download?: ITemplateFillDownload;
   error?: string;
+  /** 实时预览：filling 事件逐批累积的已产出字段值 {key: value} */
+  values?: Record<string, string>;
 }
 
 export interface ITemplateFillState {
@@ -76,6 +78,8 @@ export interface ITemplateFillEvent {
   slot_count?: number;
   done?: number;
   total?: number;
+  /** filling：该批产出的字段值（实时预览逐槽填入） */
+  values?: Record<string, string>;
   download?: ITemplateFillDownload;
   error?: string;
   templates?: Array<{ template_id: string; name: string; slot_count?: number }>;
@@ -142,6 +146,10 @@ export function applyTemplateFillEvent(
     t.status = 'filling';
     t.done = d.done;
     t.total = d.total;
+    // 实时预览：合并该批产出值（换引用保证 memo 感知）
+    if (d.values && Object.keys(d.values).length > 0) {
+      t.values = { ...t.values, ...d.values };
+    }
   } else if (d.stage === 'filled') {
     t.status = 'filled';
     t.download = d.download;

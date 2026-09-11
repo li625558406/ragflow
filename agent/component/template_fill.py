@@ -319,7 +319,7 @@ class TemplateFill(ComponentBase):
         """对单个选中范本走完整填写 pipeline：LLM 产值 → param 直取 → 渲染。
         检索已由 _invoke_async 跨范本共享完成（chunks_by_key 传入）；sem 为全局
         LLM 并发闸（多范本并行 × 批次并发共用）；on_progress 透传 executor
-        批次产值进度回调 (done, total)；should_cancel 为取消探针，透传给
+        批次产值进度回调 (done, total, new_values)；should_cancel 为取消探针，透传给
         executor.generate_values（命中抛 GenerateCancelled，由调用方转 _FillCancelled）；
         decision 为暂停确认产物（None = 未走确认，行为与现状一致）：
         {"changed": set, "values": dict}，values 为用户直填值（空串=明确清空）。
@@ -481,9 +481,13 @@ class TemplateFill(ComponentBase):
             self._push_progress({"stage": "filling", "template_id": tid, "name": name,
                                  "done": 0, "total": llm_total})
 
-            def _on_gen_progress(done: int, total: int):
-                self._push_progress({"stage": "filling", "template_id": tid,
-                                     "name": name, "done": done, "total": total})
+            def _on_gen_progress(done: int, total: int, new_values: dict | None = None):
+                ev = {"stage": "filling", "template_id": tid,
+                      "name": name, "done": done, "total": total}
+                # 实时预览：该批产出的 {key: value} 随事件下发，前端正文视图逐槽填入
+                if new_values:
+                    ev["values"] = new_values
+                self._push_progress(ev)
 
             try:
                 dl, cell_status, filled = await self._fill_one(

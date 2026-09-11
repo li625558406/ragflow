@@ -262,8 +262,9 @@ async def generate_values(tenant_id: str, placeholders: list[dict], chunks_by_ke
     否则 0 产生空批、None 导致 slice 取全量重复发送）。
     sem 为跨层共享并发闸（画布多范本并行时传入全局信号量，使多范本 × 批次
     总并发不超闸值）；不传则内部自建。
-    on_progress 为可选回调 (done, total)：每批 LLM 返回后即回调一次（批次并发下
-    完成顺序不定），进度上报用；回调异常被吞掉不影响产值。
+    on_progress 为可选回调 (done, total, new_values)：每批 LLM 返回后即回调一次（批次并发下
+    完成顺序不定），进度上报用；new_values 为该批已过约束闸的产出值 dict（实时预览用）；
+    回调异常被吞掉不影响产值。
     should_cancel 为可选取消探针（无参同步回调，返回 True 表示外部要求取消）：
     每批拿到信号量后、以及每批结果回收后各检查一次，命中即抛 GenerateCancelled，
     在途批次结果丢弃不落返回值；探针自身抛异常视为未取消（warning 不传播）；
@@ -318,7 +319,15 @@ async def generate_values(tenant_id: str, placeholders: list[dict], chunks_by_ke
             if on_progress:
                 done_slots += len(results[-1][0])
                 try:
-                    on_progress(done_slots, total)
+                    batch, raw = results[-1]
+                    # 实时预览：把该批已产出（过约束闸）的字段值随回调带出，
+                    # 与最终返回 values 同口径；约束处理异常只损本次实时事件
+                    new_vals = {}
+                    for it in batch:
+                        val = _apply_constraints(raw.get(it["key"]), it.get("constraints") or {})
+                        if val is not None:
+                            new_vals[it["key"]] = val
+                    on_progress(done_slots, total, new_vals)
                 except Exception:
                     logger.exception("generate_values on_progress callback failed")
     except GenerateCancelled:

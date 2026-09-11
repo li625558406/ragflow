@@ -6,8 +6,9 @@ import type {
   ITemplateFillState,
 } from '@/hooks/template-fill-stream';
 import TemplateFillConfirmCard from '@/pages/c-chat/template-fill-confirm-card';
-import { Download, FileText, Loader2 } from 'lucide-react';
-import type { ReactNode } from 'react';
+import TemplateFillLivePreview from '@/pages/c-chat/template-fill-live-preview';
+import { Download, Eye, FileText, Loader2 } from 'lucide-react';
+import { useState, type ReactNode } from 'react';
 
 export default function TemplateFillProgress({
   state,
@@ -23,6 +24,10 @@ export default function TemplateFillProgress({
   /** 确认卡片提交成功后回调（透传给卡片 onSubmitted）：使用方回写流式状态 */
   onConfirmSubmitted?: () => void;
 }) {
+  // 实时预览：当前打开正文预览的范本 id（存 id 而非对象快照，values 更新时
+  // 从 state.templates 派生最新引用，预览槽位才能随 filling 事件实时填入）
+  const [liveTplId, setLiveTplId] = useState<string>('');
+  const liveTpl = state?.templates.find((t) => t.template_id === liveTplId);
   // 画布挂起确认卡片（confirm_pending）：附加块，置于范本行列表之上
   const confirmCard = state?.pendingConfirm && (
     <div className="mt-2">
@@ -62,6 +67,13 @@ export default function TemplateFillProgress({
               >
                 <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[#1a66fb]" />
                 《{t.name}》填写中 {t.done ?? 0}/{t.total ?? 0}
+                <button
+                  className="ml-auto flex shrink-0 items-center gap-1 text-[#1a66fb] transition-colors hover:text-[#1557d6]"
+                  onClick={() => setLiveTplId(t.template_id)}
+                >
+                  <Eye className="h-3.5 w-3.5" />
+                  实时预览
+                </button>
               </div>
             );
           }
@@ -115,6 +127,12 @@ export default function TemplateFillProgress({
           );
         })}
       </div>
+      {liveTpl && (
+        <TemplateFillLivePreview
+          tpl={liveTpl}
+          onClose={() => setLiveTplId('')}
+        />
+      )}
     </>
   );
 }

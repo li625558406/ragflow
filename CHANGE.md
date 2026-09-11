@@ -1,5 +1,16 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-11 范本填写「实时影子预览」：打开正文全览，LLM 产值逐槽实时填入高亮（已部署）
+
+**主题**：填写运行期间用户可点「实时预览」打开模板正文抽屉，LLM 每产出一批字段值即填入对应占位符槽位并蓝色高亮——纯前端展示层合成（模板正文段落 + 已产值 values），交付管线不动，最终成稿仍以后端 docxtpl/openpyxl 渲染为准。
+
+**核心变更**：
+- 后端：`executor.generate_values` 的 on_progress 回调扩展为 `(done, total, new_values)`，new_values 为该批已过 `_apply_constraints` 约束闸的产出值（与最终返回同口径，回调异常仅 try/except 吞掉）；画布 `TemplateFill._on_gen_progress` 把 values 随 `filling` SSE 事件下发
+- 前端：`template-fill-stream.ts` 归约器 filling 分支逐批合并 `values`（换引用保 memo 感知）；新建 `template-fill-live-preview.tsx` 抽屉组件（useTemplateFillPreview 拉正文，`{{lower_snake_key}}` 拆槽，已填值蓝字 #1a66fb + 浅蓝底高亮，未填虚线槽位；docx 段落流 / xlsx 按 sheet 分组）；`template-fill-progress.tsx` filling 行加「实时预览」按钮（存 template_id 而非对象快照，values 更新实时刷新）
+- 事件量评估：产值批次每批 ~10 字段，SSE 压力可忽略
+
+**遗留**：xlsx 实时预览从简（coord+text 平铺）；实时视图与最终渲染文件可能存在极小延迟差（事件管道 vs 渲染完成）。
+
 ## 2026-09-11 SSE 过滤器吞掉心跳/范本进度事件 → 前端「正在思考」永久卡死（已部署）
 
 **主题**：范本书写长运行（~9 分钟）期间会话 SSE 流零字节，被 NAT/代理静默掐断，浏览器 reader 永远等不到关闭。
