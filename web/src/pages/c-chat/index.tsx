@@ -325,6 +325,9 @@ export default function CChat() {
     fileName: string;
   } | null>(null);
 
+  // 范本实时预览抽屉开/关：打开时对话区右侧腾位（paddingRight=抽屉宽，带过渡）
+  const [tplPreviewOpen, setTplPreviewOpen] = useState(false);
+
   // ── B-side chat hooks ──
   const { handleInputChange, value, setValue } = useHandleMessageInputChange();
   const {
@@ -624,6 +627,20 @@ export default function CChat() {
   const [favoriteDialogOpen, setFavoriteDialogOpen] = useState(false);
   const [isSaveAllFavorites, setIsSaveAllFavorites] = useState(false);
   const [panelRefreshToken, setPanelRefreshToken] = useState(0);
+
+  // 范本预览抽屉开/关联动：打开时收起左侧栏给抽屉腾位（与文件审核同款模式），
+  // 关闭时若文件审核未开启则恢复左侧栏
+  const handleTplPreviewOpenChange = useCallback(
+    (open: boolean) => {
+      setTplPreviewOpen(open);
+      if (open) {
+        setSidebarCollapsed(true);
+      } else if (!reviewMode) {
+        setSidebarCollapsed(false);
+      }
+    },
+    [reviewMode],
+  );
 
   // ── Click outside agent dropdown ──
   const agentDropdownRef = useRef<HTMLDivElement>(null);
@@ -1794,9 +1811,12 @@ export default function CChat() {
               key={getTabResetKey('chat')}
               className={
                 mainView === 'chat'
-                  ? 'cs-page-enter flex-1 flex flex-col min-h-0 relative'
+                  ? 'cs-page-enter flex-1 flex flex-col min-h-0 relative transition-[padding] duration-300 ease-in-out'
                   : 'hidden'
               }
+              style={{
+                paddingRight: tplPreviewOpen ? 'min(56rem, 85vw)' : 0,
+              }}
             >
               {/* Header */}
               <div className="h-14 bg-white border-b border-[#D4D4D4] flex items-center px-4 shrink-0">
@@ -2396,6 +2416,9 @@ export default function CChat() {
                                         : msg.templateFill
                                     }
                                     onConfirmSubmitted={markConfirmSubmitted}
+                                    onLivePreviewOpenChange={
+                                      handleTplPreviewOpenChange
+                                    }
                                     onPreview={(dl) =>
                                       setPreviewDoc({
                                         fileId: dl.doc_id || '',
@@ -3000,11 +3023,14 @@ export default function CChat() {
               key={getTabResetKey('flow')}
               className={
                 mainView === 'flow'
-                  ? 'cs-page-enter flex-1 flex flex-col min-h-0'
+                  ? 'cs-page-enter flex-1 flex flex-col min-h-0 transition-[padding] duration-300 ease-in-out'
                   : 'hidden'
               }
+              style={{
+                paddingRight: tplPreviewOpen ? 'min(56rem, 85vw)' : 0,
+              }}
             >
-              <FlowPanel />
+              <FlowPanel onTplPreviewOpenChange={handleTplPreviewOpenChange} />
             </div>
 
             {/* HR View */}

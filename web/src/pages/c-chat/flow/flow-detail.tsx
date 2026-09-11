@@ -80,6 +80,7 @@ export default function FlowDetail({
   onCommentsCount,
   onChanged,
   onDeleted,
+  onTplPreviewOpenChange,
 }: {
   flowId: string;
   /** 批注模块 portal 挂载点（外层左侧流程栏下方），不传则不渲染批注模块 */
@@ -89,6 +90,8 @@ export default function FlowDetail({
   onChanged: () => void;
   /** 流程被删除后回调（外层清空选中态并刷新列表） */
   onDeleted?: () => void;
+  /** 范本预览抽屉开/关上报（透传自 ConversationView）：外层收缩布局为抽屉腾位 */
+  onTplPreviewOpenChange?: (open: boolean) => void;
 }) {
   const qc = useQueryClient();
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(
@@ -109,6 +112,8 @@ export default function FlowDetail({
   const [savingDocIds, setSavingDocIds] = useState<
     Record<string, 'saving' | 'saved' | 'error'>
   >({});
+  // 范本预览抽屉开/关：打开时收起右侧「版本记录」栏给抽屉腾位
+  const [tplPreviewOpen, setTplPreviewOpen] = useState(false);
   const saveDownloadAsVersion = useCallback(
     async (dl: ITemplateFillDownload) => {
       const docId = dl.doc_id || '';
@@ -476,6 +481,10 @@ export default function FlowDetail({
               chats={data.ai_chats ?? []}
               live={liveChat}
               onConfirmSubmitted={markConfirmSubmitted ?? undefined}
+              onLivePreviewOpenChange={(open) => {
+                setTplPreviewOpen(open);
+                onTplPreviewOpenChange?.(open);
+              }}
               extraAction={(dl) => {
                 const st = savingDocIds[dl.doc_id || ''];
                 return (
@@ -525,8 +534,12 @@ export default function FlowDetail({
           {/* 批注区已移至外层左侧流程栏下方（commentPortal） */}
         </div>
 
-        {/* 右：版本时间线 */}
-        <div className="flex w-64 shrink-0 flex-col rounded-lg border border-[#F0F0F0] bg-white">
+        {/* 右：版本时间线（范本预览抽屉打开时收起腾位） */}
+        <div
+          className={`flex shrink-0 flex-col overflow-hidden rounded-lg border border-[#F0F0F0] bg-white transition-all duration-300 ease-in-out ${
+            tplPreviewOpen ? 'w-0 border-0' : 'w-64'
+          }`}
+        >
           <div className="border-b border-[#F0F0F0] px-3 py-2 text-sm font-medium">
             版本记录
             <span className="ml-1 text-xs font-normal text-[#999]">
@@ -836,6 +849,7 @@ function ConversationView({
   live,
   extraAction,
   onConfirmSubmitted,
+  onLivePreviewOpenChange,
 }: {
   chats: FlowAiChatItem[];
   live: FlowLiveChat | null;
@@ -843,6 +857,8 @@ function ConversationView({
   extraAction?: (dl: ITemplateFillDownload) => ReactNode;
   /** 确认卡片提交成功后回调：回写流式态（FlowAiPanel 经 onConfirmSubmittedReady 上报的函数） */
   onConfirmSubmitted?: () => void;
+  /** 范本预览抽屉开/关上报（供外层收缩布局腾位） */
+  onLivePreviewOpenChange?: (open: boolean) => void;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   // 流式回复增长时自动滚到底部
@@ -923,6 +939,7 @@ function ConversationView({
               <TemplateFillProgress
                 state={live.templateFill}
                 onConfirmSubmitted={onConfirmSubmitted}
+                onLivePreviewOpenChange={onLivePreviewOpenChange}
                 extraAction={(dl) => extraAction?.(dl)}
               />
             </div>

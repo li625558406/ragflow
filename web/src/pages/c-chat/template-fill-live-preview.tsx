@@ -5,7 +5,7 @@
 import type { ITemplateFillTemplate } from '@/hooks/template-fill-stream';
 import { useTemplateFillPreview } from '@/hooks/use-template-fill-request';
 import { Loader2, X } from 'lucide-react';
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 
 // 与后端 PLACEHOLDER_RE 同口径：{{lower_snake_key}}
 const PLACEHOLDER_RE = /\{\{([a-z][a-z0-9_]*)\}\}/g;
@@ -44,6 +44,15 @@ export default function TemplateFillLivePreview({
   const items = data?.data?.items ?? [];
   const fileType = data?.data?.file_type || 'docx';
   const values = tpl.values || {};
+
+  // 常驻抽屉：Esc 快捷关闭
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
   const filledCount = useMemo(() => Object.keys(values).length, [values]);
 
@@ -86,85 +95,77 @@ export default function TemplateFillLivePreview({
     });
 
   return (
-    // 居中弹窗：点遮罩空白处关闭（面板内点击 stopPropagation 阻断）；进退场淡入+缩放动画
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6 animate-in fade-in duration-200"
-      onClick={onClose}
-    >
-      <div
-        className="flex max-h-[90vh] w-full max-w-5xl flex-col rounded-xl bg-white shadow-xl animate-in fade-in zoom-in-95 duration-200"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* 头部：模板名 + 实时填充进度 + 关闭 */}
-        <div className="flex items-center gap-2 border-b border-[#E5E5E5] px-4 py-3">
-          <span className="truncate text-sm font-medium text-[#000000]">
-            《{tpl.name || '范本'}》实时预览
-          </span>
-          {tpl.status === 'filling' && (
-            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[#1a66fb]" />
-          )}
-          <span className="shrink-0 rounded bg-[#EFF4FF] px-1.5 text-xs text-[#1a66fb]">
-            {tpl.status === 'filling'
-              ? `已填入 ${tpl.done ?? filledCount}/${tpl.total ?? tpl.slot_count ?? 0}`
-              : tpl.status === 'filled'
-                ? `已填入 ${filledCount} 个字段`
-                : '等待填写'}
-          </span>
-          <button
-            className="ml-auto rounded p-1 text-[#8C8C8C] transition-colors hover:bg-[#F5F5F5] hover:text-[#000000]"
-            onClick={onClose}
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-        {/* 正文：overflow-x-hidden + break-words 根治横向滚动条；内容块水平居中 */}
-        <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-6 py-4">
-          {isLoading ? (
-            <div className="flex items-center justify-center gap-2 py-16 text-xs text-[#8C8C8C]">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              正在加载模板正文…
-            </div>
-          ) : fileType === 'xlsx' ? (
-            <div className="mx-auto w-full max-w-3xl space-y-4">
-              {sheetGroups.map(([sheet, rows]) => (
-                <div key={sheet}>
-                  <div className="mb-1 text-xs font-medium text-[#525252]">
-                    {sheet}
-                  </div>
-                  <div className="space-y-0.5">
-                    {rows.map((it) => (
-                      <div
-                        key={it.index}
-                        className="flex gap-2 text-xs leading-6 text-[#000000]"
-                      >
-                        <span className="w-16 shrink-0 font-mono text-[10px] text-[#8C8C8C]">
-                          {it.coord || ''}
-                        </span>
-                        <span className="min-w-0 flex-1 break-words">
-                          {renderText(it.text)}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
+    // 右侧常驻抽屉：无遮罩不挡对话（可边跟 LLM 对话边实时看填入）；由使用方收缩主区腾位
+    <div className="fixed right-0 top-0 z-40 flex h-full w-[min(56rem,85vw)] flex-col border-l border-[#E5E5E5] bg-white shadow-[-8px_0_24px_rgba(0,0,0,0.08)] animate-in fade-in slide-in-from-right-4 duration-300">
+      {/* 头部：模板名 + 实时填充进度 + 关闭 */}
+      <div className="flex items-center gap-2 border-b border-[#E5E5E5] px-4 py-3">
+        <span className="truncate text-sm font-medium text-[#000000]">
+          《{tpl.name || '范本'}》实时预览
+        </span>
+        {tpl.status === 'filling' && (
+          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[#1a66fb]" />
+        )}
+        <span className="shrink-0 rounded bg-[#EFF4FF] px-1.5 text-xs text-[#1a66fb]">
+          {tpl.status === 'filling'
+            ? `已填入 ${tpl.done ?? filledCount}/${tpl.total ?? tpl.slot_count ?? 0}`
+            : tpl.status === 'filled'
+              ? `已填入 ${filledCount} 个字段`
+              : '等待填写'}
+        </span>
+        <button
+          className="ml-auto rounded p-1 text-[#8C8C8C] transition-colors hover:bg-[#F5F5F5] hover:text-[#000000]"
+          onClick={onClose}
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      {/* 正文：overflow-x-hidden + break-words 根治横向滚动条；内容块水平居中 */}
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-6 py-4">
+        {isLoading ? (
+          <div className="flex items-center justify-center gap-2 py-16 text-xs text-[#8C8C8C]">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            正在加载模板正文…
+          </div>
+        ) : fileType === 'xlsx' ? (
+          <div className="mx-auto w-full max-w-3xl space-y-4">
+            {sheetGroups.map(([sheet, rows]) => (
+              <div key={sheet}>
+                <div className="mb-1 text-xs font-medium text-[#525252]">
+                  {sheet}
                 </div>
+                <div className="space-y-0.5">
+                  {rows.map((it) => (
+                    <div
+                      key={it.index}
+                      className="flex gap-2 text-xs leading-6 text-[#000000]"
+                    >
+                      <span className="w-16 shrink-0 font-mono text-[10px] text-[#8C8C8C]">
+                        {it.coord || ''}
+                      </span>
+                      <span className="min-w-0 flex-1 break-words">
+                        {renderText(it.text)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="mx-auto w-full max-w-3xl space-y-1.5 text-sm leading-7 text-[#000000]">
+            {items
+              .filter((it) => it.text.trim())
+              .map((it) => (
+                <p key={it.index} className="break-words">
+                  {renderText(it.text)}
+                </p>
               ))}
-            </div>
-          ) : (
-            <div className="mx-auto w-full max-w-3xl space-y-1.5 text-sm leading-7 text-[#000000]">
-              {items
-                .filter((it) => it.text.trim())
-                .map((it) => (
-                  <p key={it.index} className="break-words">
-                    {renderText(it.text)}
-                  </p>
-                ))}
-            </div>
-          )}
-        </div>
-        {/* 底部说明 */}
-        <div className="border-t border-[#E5E5E5] px-4 py-2 text-[10px] text-[#8C8C8C]">
-          蓝色为 AI 已填入内容；虚线槽位等待 AI 填入。成稿以最终渲染文件为准。
-        </div>
+          </div>
+        )}
+      </div>
+      {/* 底部说明 */}
+      <div className="border-t border-[#E5E5E5] px-4 py-2 text-[10px] text-[#8C8C8C]">
+        蓝色为 AI 已填入内容；虚线槽位等待 AI 填入。成稿以最终渲染文件为准。
       </div>
     </div>
   );

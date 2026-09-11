@@ -40,7 +40,12 @@ function currentUserId(): string {
   }
 }
 
-export default function FlowPanel() {
+export default function FlowPanel({
+  onTplPreviewOpenChange,
+}: {
+  /** 范本预览抽屉开/关上报（透传自 FlowDetail）：外层收缩布局腾位 */
+  onTplPreviewOpenChange?: (open: boolean) => void;
+}) {
   const [scope, setScope] = useState<FlowScope>('todo');
   const [activeId, setActiveId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -307,6 +312,7 @@ export default function FlowPanel() {
                 flowId={activeId}
                 commentPortal={commentSlot}
                 onCommentsCount={handleCommentCount}
+                onTplPreviewOpenChange={onTplPreviewOpenChange}
                 onChanged={() => {
                   qc.invalidateQueries({ queryKey: ['flow-list'] });
                   qc.invalidateQueries({ queryKey: ['flow-list-todo-badge'] });

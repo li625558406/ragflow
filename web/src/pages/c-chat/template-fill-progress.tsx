@@ -8,13 +8,14 @@ import type {
 import TemplateFillConfirmCard from '@/pages/c-chat/template-fill-confirm-card';
 import TemplateFillLivePreview from '@/pages/c-chat/template-fill-live-preview';
 import { Download, Eye, FileText, Loader2 } from 'lucide-react';
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 
 export default function TemplateFillProgress({
   state,
   onPreview,
   extraAction,
   onConfirmSubmitted,
+  onLivePreviewOpenChange,
 }: {
   state?: ITemplateFillState;
   /** 成稿点击预览（c-chat 传 setPreviewDoc；不传则文件名为纯文本） */
@@ -23,11 +24,17 @@ export default function TemplateFillProgress({
   extraAction?: (dl: ITemplateFillDownload) => ReactNode;
   /** 确认卡片提交成功后回调（透传给卡片 onSubmitted）：使用方回写流式状态 */
   onConfirmSubmitted?: () => void;
+  /** 实时预览抽屉开/关上报：使用方收缩左右布局为抽屉腾位（c-chat 用；flow 不传则无腾位） */
+  onLivePreviewOpenChange?: (open: boolean) => void;
 }) {
   // 实时预览：当前打开正文预览的范本 id（存 id 而非对象快照，values 更新时
   // 从 state.templates 派生最新引用，预览槽位才能随 filling 事件实时填入）
   const [liveTplId, setLiveTplId] = useState<string>('');
   const liveTpl = state?.templates.find((t) => t.template_id === liveTplId);
+  // 抽屉开/关上报（布局腾位联动）；liveTplId 存在但范本行已被新一轮清空时视为关闭
+  useEffect(() => {
+    onLivePreviewOpenChange?.(Boolean(liveTpl));
+  }, [liveTpl, onLivePreviewOpenChange]);
   // 画布挂起确认卡片（confirm_pending）：附加块，置于范本行列表之上
   const confirmCard = state?.pendingConfirm && (
     <div className="mt-2">
