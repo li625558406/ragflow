@@ -509,3 +509,33 @@ export async function confirmTemplateFill(
     throw new Error(data.message || '确认提交失败');
   }
 }
+
+// ── 范本原始文件（docx-preview 保真渲染用）──────────────────────────
+
+// 获取模板原始文件 blob（kind=original）。错误体是 JSON（code != 0）时
+// blob 里装的是错误信息而非文件，parse message 抛错（照 downloadTemplateFillResult 口径）。
+export function useTemplateFillFile(id: string) {
+  return useQuery({
+    queryKey: ['templateFillFile', id],
+    queryFn: async () => {
+      const res = await request.get(api.downloadTemplateFill(id, 'original'), {
+        responseType: 'blob',
+      });
+      const blob = res.data as Blob;
+      if (!blob || blob.size === 0) {
+        throw new Error('文件为空');
+      }
+      if (blob.type.includes('application/json')) {
+        let message = '文件获取失败';
+        try {
+          message = JSON.parse(await blob.text()).message || message;
+        } catch {
+          // 保留默认错误文案
+        }
+        throw new Error(message);
+      }
+      return blob;
+    },
+    enabled: !!id,
+  });
+}
