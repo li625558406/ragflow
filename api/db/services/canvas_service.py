@@ -275,6 +275,47 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
     sse_msg_count = 0
     sse_think_start_count = 0
     sse_think_end_count = 0
+
+    def _persist_messages(tag: str):
+        """组装最后一条 assistant 消息并落库。final=流自然走完；partial=断连/取消时
+        落盘已捕获的部分文本+进度事件——否则用户刷新页面会整轮丢失（刷新回看是常态路径）。"""
+        try:
+            assistant_msg = {"role": "assistant", "content": txt, "created_at": time.time(), "id": message_id}
+            if structured_data:
+                # Associate structured output with the file from this turn's user message
+                if files and len(files) > 0:
+                    first_file = files[0]
+                    if isinstance(first_file, dict):
+                        structured_data["fileId"] = first_file.get("id", "")
+                        structured_data["fileName"] = first_file.get("name", "")
+                assistant_msg["data"] = structured_data
+            if template_fill_events:
+                # 范本填写进度随消息持久化（前端加载历史时重放归约恢复进度卡片与填入值回看）。
+                # 只存原始事件序列，归约逻辑唯一收敛在前端 applyTemplateFillEvent；上限防御异常刷屏。
+                data_field = assistant_msg.get("data")
+                if not isinstance(data_field, dict):
+                    data_field = {}
+                    assistant_msg["data"] = data_field
+                data_field["templateFillEvents"] = template_fill_events[-200:]
+            conv.message.append(assistant_msg)
+            conv.reference = canvas.get_reference()
+            conv.errors = canvas.error
+            conv.dsl = str(canvas)
+            conv_data = {
+                "id": conv.id,
+                "dialog_id": conv.dialog_id,
+                "user_id": conv.user_id,
+                "message": conv.message,
+                "reference": conv.reference,
+                "dsl": conv.dsl,
+                "errors": conv.errors,
+                "source": conv.source,
+            }
+            rows = API4ConversationService.append_message(conv_data["id"], conv_data)
+            logging.info(f"[completion] append_message ({tag}) returned rows={rows}")
+        except Exception:
+            logging.exception(f"[completion] append_message ({tag}) FAILED")
+
     try:
         async for ans in canvas.run(query=query, files=files, user_id=user_id, inputs=inputs, internet=kwargs.get("internet")):
             ans["session_id"] = session_id
@@ -296,7 +337,13 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
             elif ans["event"] == "template_fill_progress":
                 template_fill_events.append(ans.get("data") or {})
             yield "data:" + json.dumps(ans, ensure_ascii=False) + "\n\n"
+    except GeneratorExit:
+        # 客户端断连（刷新/关页）会在当前 yield 点抛 GeneratorExit，杀掉整个生成器——
+        # 不在此处落盘，本轮已产生的部分文本与进度事件会全部丢失（对齐 normal-end 落库口径）。
+        _persist_messages("partial-disconnect")
+        raise
     except TaskCanceledException:
+        _persist_messages("partial-canceled")
         yield ("data:" + json.dumps({
             "event": "task_canceled",
             "data": {"message": "Task has been canceled by user."},
@@ -316,37 +363,6 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
         txt = "<think>" * (close_think - open_think) + txt
         logging.warning(f"[THINK-FIX] prepended {close_think - open_think} missing open think tag(s) (open={open_think} close={close_think})")
 
-    assistant_msg = {"role": "assistant", "content": txt, "created_at": time.time(), "id": message_id}
-    if structured_data:
-        # Associate structured output with the file from this turn's user message
-        if files and len(files) > 0:
-            first_file = files[0]
-            if isinstance(first_file, dict):
-                structured_data["fileId"] = first_file.get("id", "")
-                structured_data["fileName"] = first_file.get("name", "")
-        assistant_msg["data"] = structured_data
-    if template_fill_events:
-        # 范本填写进度随消息持久化（前端加载历史时重放归约恢复进度卡片与填入值回看）。
-        # 只存原始事件序列，归约逻辑唯一收敛在前端 applyTemplateFillEvent；上限防御异常刷屏。
-        data_field = assistant_msg.get("data")
-        if not isinstance(data_field, dict):
-            data_field = {}
-            assistant_msg["data"] = data_field
-        data_field["templateFillEvents"] = template_fill_events[-200:]
-    conv.message.append(assistant_msg)
-    conv.reference = canvas.get_reference()
-    conv.errors = canvas.error
-    conv.dsl = str(canvas)
-    conv_data = {
-        "id": conv.id,
-        "dialog_id": conv.dialog_id,
-        "user_id": conv.user_id,
-        "message": conv.message,
-        "reference": conv.reference,
-        "dsl": conv.dsl,
-        "errors": conv.errors,
-        "source": conv.source,
-    }
     # ── [SSE-DIAG] detailed diagnostics for intermittent no-output issue ──
     has_think_block = "<think>" in txt and "</think>" in txt
     visible_text = txt
@@ -373,12 +389,8 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
     else:
         logging.info("[THINK-TRACE] session=%s txt_full=%s",
                      session_id, txt.replace("\n","\\n"))
-    logging.info(f"[completion] Saving session {conv_data['id']}: {len(conv_data['message'])} messages, content length={len(txt)} chars")
-    try:
-        rows = API4ConversationService.append_message(conv_data["id"], conv_data)
-        logging.info(f"[completion] append_message returned rows={rows}")
-    except Exception as e:
-        logging.exception(f"[completion] append_message FAILED: {e}")
+    logging.info(f"[completion] Saving session {conv.id}: {len(conv.message)} messages, content length={len(txt)} chars")
+    _persist_messages("final")
 
 async def completion_openai(tenant_id, agent_id, question, session_id=None, stream=True, **kwargs):
     tiktoken_encoder = tiktoken.get_encoding("cl100k_base")
