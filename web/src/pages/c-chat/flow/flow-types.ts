@@ -58,8 +58,8 @@ export interface FlowAiChatItem {
   session_id: string;
   /** 操作人 user_id（存量迁移后非空，归属展示用） */
   user_id: string;
-  /** 范本填写原始事件序列（刷新回放用） */
-  template_fill_events?: unknown[];
+  /** 范本填写原始事件序列：落库/读取均为 JSON 字符串（兼容历史数组类型），回放前 parse */
+  template_fill_events?: string | unknown[];
   create_time: number;
 }
 

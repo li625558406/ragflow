@@ -31,6 +31,13 @@ import type {
 
 const NO_AGENT_HINT = '未配置对话智能体，请先在「对话」页签使用过智能体对话';
 
+// 影子会话失效类错误：会话行被外部清理（后端路由层校验 "Session not found!"）
+// 或会话与当前智能体绑定校验不过（"Session does not belong to the requested agent."）。
+// 这类失败是永久性的——重试同一 session_id 必然再失败，必须清空引用让下一次
+// 发送经 ensureSession 自动重建新会话（权威数据在 flow_ai_chat，会话行可再生）。
+const isSessionMissingError = (msg: string) =>
+  /session not found/i.test(msg) || /does not belong/i.test(msg);
+
 // 文件审核入口控制：状态在面板内部，经回调上报给父级（flow-detail 顶部按钮行）渲染按钮
 export type FlowReviewControl = {
   visible: boolean;
@@ -536,7 +543,9 @@ export default function FlowAiPanel({
           internet: false,
         });
       } catch (e: any) {
-        setError(e?.message || '发送失败，请检查网络后重试');
+        const msg = e?.message || '发送失败，请检查网络后重试';
+        if (isSessionMissingError(msg)) sessionIdRef.current = '';
+        setError(msg);
         setValue(query);
         return;
       }
@@ -545,10 +554,13 @@ export default function FlowAiPanel({
         res &&
         (res.response.status !== 200 || (res.data as any)?.code !== 0)
       ) {
-        setError(
+        const msg =
           (res.data as any)?.message ||
-            `请求失败（HTTP ${res.response.status}）`,
-        );
+          `请求失败（HTTP ${res.response.status}）`;
+        // 影子会话被外部删除时后端在此返回（HTTP 200 + code!=0 + "Session not found!"），
+        // 清空引用让下一次发送自动重建会话，避免每轮发送都失败且无法自愈
+        if (isSessionMissingError(msg)) sessionIdRef.current = '';
+        setError(msg);
         setValue(query);
       }
     } finally {
