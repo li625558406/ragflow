@@ -259,6 +259,13 @@ function ensure_croniter() {
     echo "croniter ready."
 }
 
+function ensure_docxtpl() {
+    echo "Checking docxtpl for template fill rendering..."
+    # 范本填写 Word 渲染依赖（docxtpl 基于 python-docx；openpyxl 已在基础镜像内）
+    python3 -c "import docxtpl" 2>/dev/null || python3 -m pip install docxtpl -i https://pypi.tuna.tsinghua.edu.cn/simple --timeout 120 -q
+    echo "docxtpl ready."
+}
+
 function ensure_playwright() {
     echo "Setting up Playwright for WeChat MP crawler..."
     # Install system dependencies for Chromium (may need root/apt)
@@ -322,6 +329,7 @@ function wait_for_server() {
 ensure_docling
 ensure_ddddocr
 ensure_croniter
+ensure_docxtpl
 ensure_playwright
 ensure_doc_converter
 ensure_db_init
