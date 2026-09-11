@@ -300,6 +300,13 @@ def delete_agent_session_item(agent_id, session_id, tenant_id):
     _, conv = API4ConversationService.get_by_id(session_id)
     if not conv or conv.dialog_id != agent_id:
         return get_data_error_result(message="Session not found.")
+    # 流程页签影子会话（source='flow'）只归流程页签管理，对话页不得删除
+    if conv.source == "flow":
+        return get_json_result(
+            data=False,
+            message="流程会话请在流程页签中管理，不能在此删除。",
+            code=RetCode.OPERATING_ERROR,
+        )
     _, user_canvas = UserCanvasService.get_by_id(agent_id)
     conv_owner = conv.user_id == tenant_id
     canvas_owner = bool(user_canvas) and user_canvas.user_id == tenant_id
