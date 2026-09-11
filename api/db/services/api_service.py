@@ -107,6 +107,8 @@ class API4ConversationService(CommonService):
         else:
             fields = [field for field in cls.model._meta.fields.values() if field.name != 'dsl']
             sessions = cls.model.select(*fields).where(cls.model.dialog_id == dialog_id)
+        # 流程影子会话（source='flow'）仅作流程页运行时缓存，对话页签不展示
+        sessions = sessions.where(peewee.fn.COALESCE(cls.model.source, '') != 'flow')
         if id:
             sessions = sessions.where(cls.model.id == id)
         if user_id:
@@ -138,7 +140,8 @@ class API4ConversationService(CommonService):
         fields = [cls.model.id, cls.model.name,]
         sessions = cls.model.select(*fields).where(
             cls.model.dialog_id == dialog_id,
-            cls.model.exp_user_id == exp_user_id
+            cls.model.exp_user_id == exp_user_id,
+            peewee.fn.COALESCE(cls.model.source, '') != 'flow'
             ).order_by(cls.model.getter_by("create_date").desc())
 
         return list(sessions.dicts())
