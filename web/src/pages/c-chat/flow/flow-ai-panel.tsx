@@ -18,7 +18,6 @@ import {
   saveFlowAiRecord,
 } from '@/services/flow-service';
 import api from '@/utils/api';
-import { Bot } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ChatInputBox, { type UploadedDoc } from '../chat-input-box';
 import ReviewPanel, { type Annotation } from '../review-panel';
@@ -736,12 +735,10 @@ export default function FlowAiPanel({
     [flowId, onSaved, uploadVersionAsDocument, version],
   );
 
-  // 标题行内容（AI 处理 / 上下文 / 附带版本文件 / 文件审核）：
+  // 标题行内容（上下文 / 附带版本文件）：
   // 经 ChatInputBox 的 leftSlot 渲染在发送按钮同一行，不再单独占一行
   const titleRow = (
     <>
-      <Bot className="h-4 w-4 shrink-0 text-[#1668DC]" />
-      <span className="shrink-0 text-sm font-medium">AI 处理</span>
       <span className="min-w-0 flex-1 truncate text-xs text-[#999]">
         （上下文：
         {version
