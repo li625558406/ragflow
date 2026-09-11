@@ -327,6 +327,8 @@ export default function CChat() {
 
   // 范本实时预览抽屉开/关：打开时对话区右侧腾位（paddingRight=抽屉宽，带过渡）
   const [tplPreviewOpen, setTplPreviewOpen] = useState(false);
+  // flow 内版本文件审核抽屉开/关（FlowPanel 上报）：同样参与右侧腾位联动
+  const [flowReviewOpen, setFlowReviewOpen] = useState(false);
 
   // ── B-side chat hooks ──
   const { handleInputChange, value, setValue } = useHandleMessageInputChange();
@@ -641,6 +643,21 @@ export default function CChat() {
     },
     [reviewMode],
   );
+
+  // 文件审核/成稿预览/流程版本审核抽屉是否打开（均为右侧常驻抽屉，参与腾位联动）
+  const reviewSheetOpen =
+    (reviewMode && !!reviewFileId && mainView !== 'chat') ||
+    !!previewDoc ||
+    flowReviewOpen;
+
+  // 审核类抽屉开/关联动侧栏收起：打开收起；全关且无范本预览/审核模式时恢复
+  useEffect(() => {
+    if (reviewSheetOpen) {
+      setSidebarCollapsed(true);
+    } else if (!tplPreviewOpen && !reviewMode) {
+      setSidebarCollapsed(false);
+    }
+  }, [reviewSheetOpen, tplPreviewOpen, reviewMode]);
 
   // ── Click outside agent dropdown ──
   const agentDropdownRef = useRef<HTMLDivElement>(null);
@@ -1815,7 +1832,8 @@ export default function CChat() {
                   : 'hidden'
               }
               style={{
-                paddingRight: tplPreviewOpen ? 'min(56rem, 85vw)' : 0,
+                // 范本预览/审核类抽屉（同为半屏宽）打开时右侧腾位，与抽屉平分布局
+                paddingRight: tplPreviewOpen || reviewSheetOpen ? '50%' : 0,
               }}
             >
               {/* Header */}
@@ -3027,10 +3045,14 @@ export default function CChat() {
                   : 'hidden'
               }
               style={{
-                paddingRight: tplPreviewOpen ? 'min(56rem, 85vw)' : 0,
+                // 范本预览/审核类抽屉（同为半屏宽）打开时右侧腾位，与抽屉平分布局
+                paddingRight: tplPreviewOpen || reviewSheetOpen ? '50%' : 0,
               }}
             >
-              <FlowPanel onTplPreviewOpenChange={handleTplPreviewOpenChange} />
+              <FlowPanel
+                onTplPreviewOpenChange={handleTplPreviewOpenChange}
+                onReviewOpenChange={setFlowReviewOpen}
+              />
             </div>
 
             {/* HR View */}

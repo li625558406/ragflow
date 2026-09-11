@@ -96,7 +96,7 @@ export default function TemplateFillLivePreview({
 
   return (
     // 右侧常驻抽屉：无遮罩不挡对话（可边跟 LLM 对话边实时看填入）；由使用方收缩主区腾位
-    <div className="fixed right-0 top-0 z-40 flex h-full w-[min(56rem,85vw)] flex-col border-l border-[#E5E5E5] bg-white shadow-[-8px_0_24px_rgba(0,0,0,0.08)] animate-in fade-in slide-in-from-right-4 duration-300">
+    <div className="fixed right-0 top-0 z-40 flex h-full w-1/2 flex-col border-l border-[#E5E5E5] bg-white shadow-[-8px_0_24px_rgba(0,0,0,0.08)] animate-in fade-in slide-in-from-right-4 duration-300">
       {/* 头部：模板名 + 实时填充进度 + 关闭 */}
       <div className="flex items-center gap-2 border-b border-[#E5E5E5] px-4 py-3">
         <span className="truncate text-sm font-medium text-[#000000]">

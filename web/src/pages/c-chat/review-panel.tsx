@@ -1,5 +1,4 @@
 import { Button } from '@/components/ui/button';
-import { Sheet, SheetContent } from '@/components/ui/sheet';
 import { Textarea } from '@/components/ui/textarea';
 import type { FlowDocRun } from '@/services/flow-service';
 import api from '@/utils/api';
@@ -317,7 +316,8 @@ interface RailItem {
   color: string;
 }
 
-const RAIL_W = 270;
+// 批注栏宽度：抽屉改半屏后收窄，给正文纸张留更多空间
+const RAIL_W = 210;
 
 // ── Cards ──
 
@@ -662,6 +662,16 @@ export default function ReviewPanel({
     window.addEventListener('annotation-select', handler);
     return () => window.removeEventListener('annotation-select', handler);
   }, []);
+
+  // 常驻抽屉（非 inline 模式）：Esc 快捷关闭（与范本实时预览抽屉同款）
+  useEffect(() => {
+    if (inline || !open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [inline, open, onClose]);
 
   const handleAnchorClick = useCallback((key: string) => {
     setSelectedKey(key);
@@ -1075,26 +1085,9 @@ export default function ReviewPanel({
           50% { box-shadow: 0 0 0 6px rgba(26,102,251,0.2); transform: scale(1); }
           100% { box-shadow: 0 0 0 0 transparent; transform: scale(1); }
         }
-        /* 文件审核抽屉：自定义滑入滑出动画（覆盖 tailwindcss-animate 默认） */
-        @keyframes reviewDrawerIn {
-          from { transform: translateX(102%); }
-          to { transform: translateX(0); }
-        }
-        @keyframes reviewDrawerOut {
-          from { transform: translateX(0); }
-          to { transform: translateX(102%); }
-        }
-        .review-drawer[data-state='open'] {
-          animation: reviewDrawerIn 1s cubic-bezier(0.22, 1, 0.36, 1) both;
-          will-change: transform;
-        }
-        .review-drawer[data-state='closed'] {
-          animation: reviewDrawerOut 0.6s cubic-bezier(0.55, 0, 0.55, 0.2) both;
-          will-change: transform;
-        }
       `}</style>
       {/* Header */}
-      <div className="px-5 py-3 border-b border-[#F0F0F0] shrink-0">
+      <div className="px-4 py-3 border-b border-[#E5E5E5] shrink-0">
         <div className="flex items-center justify-between mb-1">
           <div className="flex items-center gap-2 min-w-0">
             <FileText
@@ -1123,15 +1116,13 @@ export default function ReviewPanel({
                 下载标注文档
               </button>
             )}
-            {/* Sheet 模式下组件自带右上角关闭按钮，避免重复；inline 模式无自带按钮 */}
-            {inline && (
-              <button
-                onClick={onClose}
-                className="p-1.5 rounded-lg hover:bg-[#F5F5F5] transition"
-              >
-                <X className="w-4 h-4 text-[#8A8A8A]" strokeWidth={2} />
-              </button>
-            )}
+            {/* 右上角关闭按钮（抽屉与 inline 模式均渲染），交互与范本预览抽屉一致 */}
+            <button
+              onClick={onClose}
+              className="rounded p-1 text-[#8C8C8C] transition-colors hover:bg-[#F5F5F5] hover:text-[#000000]"
+            >
+              <X className="h-4 w-4" />
+            </button>
           </div>
         </div>
         {/* File tabs if multiple files */}
@@ -1199,9 +1190,10 @@ export default function ReviewPanel({
         </div>
       )}
 
-      {/* Content：正文列 + 右侧批注栏（Word 式）+ SVG 引线 */}
+      {/* Content：正文列 + 右侧批注栏（Word 式）+ SVG 引线（滚动容器与范本预览同款：
+          min-h-0 flex-1 + overflow-x-hidden 防横向滚动条） */}
       <div
-        className={`overflow-y-auto px-5 py-4 ${inline ? 'flex-1' : 'h-[calc(100vh-130px)]'}`}
+        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-6 py-4"
         onScroll={() => setPendingSel(null)}
       >
         {loading && (
@@ -1560,19 +1552,13 @@ export default function ReviewPanel({
     );
   }
 
+  // 右侧常驻抽屉：与范本实时预览抽屉完全同款（同类名同宽度同层级）。
+  // 使用点为常挂载 + open 属性切换，open=false 时不渲染；无遮罩不挡对话，
+  // 由使用方收缩主区腾位；animate-in 滑入，Esc 关闭。
+  if (!open) return null;
   return (
-    <Sheet
-      open={open}
-      onOpenChange={(v) => {
-        if (!v) onClose();
-      }}
-    >
-      <SheetContent
-        className="review-drawer max-w-full overflow-hidden bg-white p-0 text-[#1A1A1A]"
-        style={{ width: '72vw', maxWidth: '1200px' }}
-      >
-        {innerContent}
-      </SheetContent>
-    </Sheet>
+    <div className="fixed right-0 top-0 z-40 flex h-full w-1/2 flex-col border-l border-[#E5E5E5] bg-white text-[#1A1A1A] shadow-[-8px_0_24px_rgba(0,0,0,0.08)] animate-in fade-in slide-in-from-right-4 duration-300">
+      {innerContent}
+    </div>
   );
 }
