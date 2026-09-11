@@ -67,6 +67,10 @@ import {
   useHandleMessageInputChange,
   useSelectDerivedMessages,
 } from '@/hooks/logic-hooks';
+import {
+  replayTemplateFillEvents,
+  type ITemplateFillState,
+} from '@/hooks/template-fill-stream';
 import { useCancelConversation } from '@/hooks/use-agent-request';
 import {
   MessageEventType,
@@ -342,6 +346,10 @@ export default function CChat() {
   // Cache node events so they persist after stream completion clears answerList
   const cachedNodeEventsRef = useRef<Record<string, Array<any>>>({});
 
+  // 范本填写进度快照：done 后渲染从 streamState 切到 msg.templateFill，
+  // ref 兜住最终态供 done 效果回填到消息上（镜像 structuredOutputRef 模式）
+  const templateFillRef = useRef<ITemplateFillState | undefined>(undefined);
+
   // Prevent double-send: lock acquired synchronously before async state updates
   const sendingLockRef = useRef(false);
   // Track IME composition so we don't block send while user is composing Chinese
@@ -530,9 +538,35 @@ export default function CChat() {
       answer: answer ?? '',
       attachment: streamState.attachment as any,
       downloads: streamState.downloads,
+      templateFill: streamState.templateFill,
       id: streamState.id,
     } as IAnswer);
   }, [streamState, addNewestOneAnswer, done]);
+
+  // 流结束（done）时把最终范本填写进度快照回填到最后一条 assistant 消息：
+  // streaming 变 false 后渲染源从 streamState 切到 msg.templateFill，不回填则卡片消失
+  useEffect(() => {
+    if (!done) return;
+    const tf = templateFillRef.current;
+    if (!tf?.templates?.length) return;
+    setDerivedMessages((prev) => {
+      for (let i = prev.length - 1; i >= 0; i--) {
+        if (prev[i].role === 'assistant') {
+          if (prev[i].templateFill === tf) return prev;
+          const next = [...prev];
+          next[i] = { ...next[i], templateFill: tf };
+          return next;
+        }
+      }
+      return prev;
+    });
+  }, [done]);
+
+  useEffect(() => {
+    if (streamState.templateFill) {
+      templateFillRef.current = streamState.templateFill;
+    }
+  }, [streamState.templateFill]);
 
   // ── Persist structured output (annotations) to assistant message on SSE completion ──
   useEffect(() => {
@@ -984,6 +1018,10 @@ export default function CChat() {
               reference,
               data: m.data,
               files: m.files || undefined,
+              // 范本填写进度恢复：重放随消息持久化的原始事件（刷新后回看进度卡片与蓝色填入值）
+              templateFill: replayTemplateFillEvents(
+                m.data?.templateFillEvents,
+              ),
             } as IMessage;
           }) as IMessage[];
 
@@ -2349,10 +2387,14 @@ export default function CChat() {
                                     </div>
                                   )}
                                 </div>
-                                {/* 范本填写实时进度（仅流式期间；结束后由 msg.downloads 接管） */}
-                                {streaming && (
+                                {/* 范本填写进度：流式期间用实时归约态；历史消息用持久化事件重放恢复（刷新后可回看） */}
+                                {(streaming || msg.templateFill) && (
                                   <TemplateFillProgress
-                                    state={streamState.templateFill}
+                                    state={
+                                      streaming
+                                        ? streamState.templateFill
+                                        : msg.templateFill
+                                    }
                                     onConfirmSubmitted={markConfirmSubmitted}
                                     onPreview={(dl) =>
                                       setPreviewDoc({

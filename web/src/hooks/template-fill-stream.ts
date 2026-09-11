@@ -158,3 +158,18 @@ export function applyTemplateFillEvent(
     t.error = d.error;
   }
 }
+
+/** 历史消息恢复：重放消息 data.templateFillEvents（后端随消息持久化的原始事件序列）
+ *  还原 templateFill 状态（进度行 + 填入值回看）。无有效模板行时返回 undefined。 */
+export function replayTemplateFillEvents(
+  events: unknown,
+): ITemplateFillState | undefined {
+  if (!Array.isArray(events) || events.length === 0) return undefined;
+  const acc: IStreamAcc = {};
+  for (const ev of events) {
+    if (ev && typeof ev === 'object') {
+      applyTemplateFillEvent(acc, ev as ITemplateFillEvent);
+    }
+  }
+  return acc.templateFill?.templates?.length ? acc.templateFill : undefined;
+}

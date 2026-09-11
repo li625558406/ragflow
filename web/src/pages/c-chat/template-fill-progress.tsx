@@ -56,6 +56,14 @@ export default function TemplateFillProgress({
                 <span className="ml-auto shrink-0 rounded bg-[#EFF4FF] px-1.5 text-[#1a66fb]">
                   {t.slot_count ?? 0} 个填写点
                 </span>
+                {/* 范本正文预览：未开填时也可查看范本内容（占位符显示为虚线待填槽位） */}
+                <button
+                  className="flex shrink-0 items-center gap-1 text-[#1a66fb] transition-colors hover:text-[#1557d6]"
+                  onClick={() => setLiveTplId(t.template_id)}
+                >
+                  <Eye className="h-3.5 w-3.5" />
+                  查看范本
+                </button>
               </div>
             );
           }
@@ -114,6 +122,17 @@ export default function TemplateFillProgress({
                 </span>
               )}
               {extraAction?.(dl)}
+              {/* 填写内容回看入口：filled 后 values 仍在（filling 事件累积），
+                  打开正文预览可回看蓝色填入值 */}
+              {t.values && Object.keys(t.values).length > 0 && (
+                <button
+                  className="flex shrink-0 items-center gap-1 text-[#1a66fb] transition-colors hover:text-[#1557d6]"
+                  onClick={() => setLiveTplId(t.template_id)}
+                >
+                  <Eye className="h-3.5 w-3.5" />
+                  查看填写内容
+                </button>
+              )}
               <a
                 href={dl.url}
                 target="_blank"

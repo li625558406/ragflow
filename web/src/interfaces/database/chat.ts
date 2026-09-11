@@ -1,4 +1,5 @@
 import { MessageType } from '@/constants/chat';
+import { ITemplateFillState } from '@/hooks/template-fill-stream';
 import { IAttachment } from '@/hooks/use-send-message';
 
 export interface IDocumentDownloadInfo {
@@ -113,6 +114,8 @@ export interface Message {
   chatBoxId?: string;
   attachment?: IAttachment;
   downloads?: IDocumentDownloadInfo[];
+  /** 范本填写进度（历史消息由 data.templateFillEvents 重放恢复，刷新后可回看） */
+  templateFill?: ITemplateFillState;
 }
 
 export interface IReferenceChunk {
@@ -144,6 +147,8 @@ export interface IAnswer {
   answer: string;
   attachment?: IAttachment;
   downloads?: IDocumentDownloadInfo[];
+  /** 范本填写进度（流式期间随 addNewestOneAnswer 落到消息上，done 后渲染切换源） */
+  templateFill?: ITemplateFillState;
   reference?: IReference;
   conversationId?: string;
   prompt?: string;

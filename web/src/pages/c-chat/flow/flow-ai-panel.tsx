@@ -6,6 +6,7 @@
 import { Button } from '@/components/ui/button';
 import { useHandleMessageInputChange } from '@/hooks/logic-hooks';
 import type { ITemplateFillState } from '@/hooks/template-fill-stream';
+import { replayTemplateFillEvents } from '@/hooks/template-fill-stream';
 import { useSendMessageBySSE } from '@/hooks/use-send-message';
 import type { FlowDocRun } from '@/services/flow-service';
 import {
@@ -196,6 +197,46 @@ export default function FlowAiPanel({
       setLastTemplateFill(streamState.templateFill);
     }
   }, [streamState.templateFill]);
+
+  // 刷新恢复：从 agent 会话最后一条 assistant 消息的持久化事件（data.templateFillEvents，
+  // canvas_service 落库）重放还原范本填写进度，成稿条与「查看填写内容」回看不因刷新丢失。
+  // 仅在无流式态时拉取一次；失败静默（进度卡片属增强展示，不阻断面板）。
+  useEffect(() => {
+    if (!agentId || !sessionIdRef.current || lastTemplateFill) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const resp = await fetch(
+          `/api/v1/agents/${agentId}/sessions/${sessionIdRef.current}`,
+          {
+            headers: {
+              Authorization: localStorage.getItem('Authorization') || '',
+            },
+          },
+        );
+        const result = await resp.json();
+        if (cancelled || result.code !== 0) return;
+        const msgs: any[] = result.data?.messages || result.data?.message || [];
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          const restored = replayTemplateFillEvents(
+            msgs[i]?.data?.templateFillEvents,
+          );
+          if (restored) {
+            templateFillRef.current = restored;
+            setLastTemplateFill(restored);
+            break;
+          }
+        }
+      } catch {
+        // 静默：恢复失败不影响面板正常使用
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // 仅挂载时恢复一次；lastTemplateFill 有值（本轮已有流式进度）则跳过
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // 从流式事件中提取 session_id（多轮续聊依赖）
   useEffect(() => {

@@ -271,6 +271,7 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
     })
     txt = ""
     structured_data = None  # Capture structured output for persistence
+    template_fill_events = []  # Capture template_fill_progress events for persistence (刷新后回看范本填写进度/填入值)
     sse_msg_count = 0
     sse_think_start_count = 0
     sse_think_end_count = 0
@@ -292,6 +293,8 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
                 outputs = ans.get("data", {}).get("outputs", {})
                 if isinstance(outputs, dict) and outputs.get("structured"):
                     structured_data = outputs["structured"]
+            elif ans["event"] == "template_fill_progress":
+                template_fill_events.append(ans.get("data") or {})
             yield "data:" + json.dumps(ans, ensure_ascii=False) + "\n\n"
     except TaskCanceledException:
         yield ("data:" + json.dumps({
@@ -322,6 +325,14 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
                 structured_data["fileId"] = first_file.get("id", "")
                 structured_data["fileName"] = first_file.get("name", "")
         assistant_msg["data"] = structured_data
+    if template_fill_events:
+        # 范本填写进度随消息持久化（前端加载历史时重放归约恢复进度卡片与填入值回看）。
+        # 只存原始事件序列，归约逻辑唯一收敛在前端 applyTemplateFillEvent；上限防御异常刷屏。
+        data_field = assistant_msg.get("data")
+        if not isinstance(data_field, dict):
+            data_field = {}
+            assistant_msg["data"] = data_field
+        data_field["templateFillEvents"] = template_fill_events[-200:]
     conv.message.append(assistant_msg)
     conv.reference = canvas.get_reference()
     conv.errors = canvas.error

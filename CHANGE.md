@@ -1,5 +1,18 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-11 范本填写进度持久化 + 预览入口全程可见（未部署）
+
+**主题**：范本填写进度卡片/填入值刷新即丢（仅流式内存态）+ 预览入口只在 filling 态显示——刷新后无法回看填了什么，filled 后也找不到入口。
+
+**核心变更**：
+- 后端 `canvas_service.py`：`template_fill_progress` 事件随流收集，结束后以原始事件序列挂到 assistant 消息 `data.templateFillEvents`（上限 200 条防刷屏）；归约逻辑唯一收敛在前端，后端零重复
+- 前端 `template-fill-stream.ts`：新增 `replayTemplateFillEvents` 纯函数（重放历史事件还原 ITemplateFillState）
+- c-chat `index.tsx`：loadSessionMessages 重放恢复 `msg.templateFill`；渲染条件 `streaming || msg.templateFill`（流式用实时态、历史用恢复态）；done 时把最终快照回填到最后一条 assistant 消息（镜像 structuredOutputRef 模式，修「流结束瞬间卡片消失」）
+- `template-fill-progress.tsx`：selected 行加「查看范本」、filled 行加「查看填写内容」（复用实时预览抽屉回看蓝色填入值）
+- flow `flow-ai-panel.tsx`：挂载时从 agent 会话最后一条 assistant 消息重放恢复 lastTemplateFill，成稿条与「存为流程版本」跨刷新保留
+
+**遗留**：历史事件重放后 pendingConfirm 确认卡片也会恢复（nonce 已持久化，提交仍有效——属预期行为）；Jest 配置在本机无法解析 umi/test（预存环境问题），前端归约逻辑未跑单测，靠 tsc 比对（改动零新增错误）。
+
 ## 2026-09-11 B端范本 AI 识别精度三连修：LLM 分块识别 + 正则补漏报 + 手动占位符直通（未部署）
 
 **主题**：标准施工招标范本（福建省 2022 版通用本/专用本实测）识别不精准的根因修复。
