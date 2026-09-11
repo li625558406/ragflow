@@ -11,6 +11,7 @@ import { useSendMessageBySSE } from '@/hooks/use-send-message';
 import type { FlowDocRun } from '@/services/flow-service';
 import {
   addFlowComment,
+  createFlowChatSession,
   deleteFlowComment,
   downloadVersionBlob,
   editFlowDocument,
@@ -41,9 +42,33 @@ export type FlowReviewControl = {
 const FULL_PLACEHOLDER =
   '请在此描述您的标书分析需求，例如：提取招标文件中的关键资质要求、分析评分标准的权重分布、对比各投标企业的技术方案优劣、检查合同条款中的潜在风险点...';
 
+/** template_fill_events 落库为 JSON 字符串；解析失败/为空/畸形时静默返回 undefined（回放是尽力而为） */
+function parseAndReplay(raw: unknown) {
+  if (!raw) return undefined;
+  let events: unknown[];
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed) || parsed.length === 0) return undefined;
+      events = parsed;
+    } catch {
+      return undefined;
+    }
+  } else if (Array.isArray(raw)) {
+    if (raw.length === 0) return undefined;
+    events = raw;
+  } else {
+    return undefined;
+  }
+  try {
+    return replayTemplateFillEvents(events);
+  } catch {
+    return undefined;
+  }
+}
+
 export default function FlowAiPanel({
   flowId,
-  flowTitle,
   version,
   aiChats,
   comments,
@@ -56,8 +81,6 @@ export default function FlowAiPanel({
   onConfirmSubmittedReady,
 }: {
   flowId: string;
-  /** 流程标题（agent 会话命名「流程：xxx」，便于在对话页签识别） */
-  flowTitle: string;
   version: FlowVersionItem | null;
   aiChats: FlowAiChatItem[];
   comments: FlowCommentItem[];
@@ -113,11 +136,13 @@ export default function FlowAiPanel({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const instructionRef = useRef('');
-  // 会话续接：优先恢复本流程已保存记录里的 session_id（跨次进入保持多轮上下文）
+  // 会话续接：只恢复【自己】保存记录里的 session_id（多人操作各自独立续聊）
   const sessionIdRef = useRef(
     (() => {
       for (let i = aiChats.length - 1; i >= 0; i--) {
-        if (aiChats[i].session_id) return aiChats[i].session_id;
+        if (aiChats[i].session_id && aiChats[i].user_id === currentUserId) {
+          return aiChats[i].session_id;
+        }
       }
       return '';
     })(),
@@ -200,50 +225,39 @@ export default function FlowAiPanel({
     }
   }, [streamState.templateFill]);
 
-  // 刷新恢复：从 agent 会话最后一条 assistant 消息的持久化事件（data.templateFillEvents，
-  // canvas_service 落库）重放还原范本填写进度，成稿条与「查看填写内容」回看不因刷新丢失。
-  // 仅在无流式态时拉取一次；失败静默（进度卡片属增强展示，不阻断面板）。
+  // 刷新恢复：从本流程已保存记录的 template_fill_events 重放范本填写进度
+  // （数据源为 flow 自持存储，不再依赖 agent 会话消息）。仅挂载时恢复一次。
+  const replayRestoredRef = useRef(false);
   useEffect(() => {
-    if (!agentId || !sessionIdRef.current || lastTemplateFill) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const resp = await fetch(
-          `/api/v1/agents/${agentId}/sessions/${sessionIdRef.current}`,
-          {
-            headers: {
-              Authorization: localStorage.getItem('Authorization') || '',
-            },
-          },
-        );
-        const result = await resp.json();
-        if (cancelled || result.code !== 0) return;
-        const msgs: any[] = result.data?.messages || result.data?.message || [];
-        for (let i = msgs.length - 1; i >= 0; i--) {
-          const restored = replayTemplateFillEvents(
-            msgs[i]?.data?.templateFillEvents,
-          );
-          if (restored) {
-            templateFillRef.current = restored;
-            setLastTemplateFill(restored);
-            break;
-          }
-        }
-      } catch {
-        // 静默：恢复失败不影响面板正常使用
+    if (replayRestoredRef.current || lastTemplateFill || aiChats.length === 0)
+      return;
+    replayRestoredRef.current = true;
+    for (let i = aiChats.length - 1; i >= 0; i--) {
+      const restored = parseAndReplay(aiChats[i].template_fill_events);
+      if (restored) {
+        templateFillRef.current = restored;
+        setLastTemplateFill(restored);
+        break;
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // 仅挂载时恢复一次；lastTemplateFill 有值（本轮已有流式进度）则跳过
+    }
+    // 仅挂载后 aiChats 首次到位时恢复一次
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [aiChats, lastTemplateFill]);
 
   // 从流式事件中提取 session_id（多轮续聊依赖）
   useEffect(() => {
     const sid = answerList.find((e: any) => e?.session_id)?.session_id;
     if (sid) sessionIdRef.current = sid;
+  }, [answerList]);
+
+  // 范本填写原始事件序列（template_fill_progress 的 data 载荷）：随自动保存/手动保存
+  // 落到 flow_ai_chat.template_fill_events；发送新一轮时清空
+  const templateFillEventsRef = useRef<unknown[]>([]);
+  useEffect(() => {
+    const events = answerList
+      .filter((e: any) => e?.event === 'template_fill_progress')
+      .map((e: any) => e.data);
+    if (events.length > 0) templateFillEventsRef.current = events;
   }, [answerList]);
 
   // 对话状态上报（供中部对话区实时展示）：
@@ -311,6 +325,7 @@ export default function FlowAiPanel({
           response: text,
           version_id: version?.id,
           session_id: sessionIdRef.current,
+          template_fill_events: templateFillEventsRef.current,
           save_as_version: false,
         })) as { record?: { id?: string } };
         if (res?.record?.id) {
@@ -352,43 +367,26 @@ export default function FlowAiPanel({
   const responseText = (streamState.content || contentRef.current).trim();
   const hasContent = responseText.length > 0;
 
-  // 无会话时先建会话（与 c-chat 同款：POST /agents/{id}/sessions），
+  // 无会话时经 flow 后端建影子会话（source='flow'，对话页签不可见），
   // 否则后端走无状态 fresh run 路径，多轮对话没有上下文延续。
   const ensureSession = useCallback(
-    async (query: string): Promise<boolean> => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    async (_query: string): Promise<boolean> => {
       if (sessionIdRef.current) return true;
       try {
-        const userInfo = JSON.parse(
-          localStorage.getItem('userInfo') || '{}',
-        ) as { id?: string; user_id?: string; email?: string };
-        const uid =
-          userInfo?.id || userInfo?.user_id || userInfo?.email || 'current';
-        const resp = await fetch(
-          `/api/v1/agents/${agentId}/sessions?user_id=${encodeURIComponent(uid)}`,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: localStorage.getItem('Authorization') || '',
-            },
-            body: JSON.stringify({
-              name: `流程：${flowTitle || query.slice(0, 30)}`.slice(0, 60),
-            }),
-          },
-        );
-        const result = await resp.json();
-        if (result.code === 0 && result.data?.id) {
-          sessionIdRef.current = result.data.id as string;
+        const result = await createFlowChatSession(flowId, agentId);
+        if (result?.session_id) {
+          sessionIdRef.current = result.session_id;
           return true;
         }
-        setError(result.message || '创建会话失败');
-        return false;
-      } catch {
         setError('创建会话失败');
+        return false;
+      } catch (e: any) {
+        setError(e?.message || '创建会话失败');
         return false;
       }
     },
-    [agentId, flowTitle],
+    [agentId, flowId],
   );
 
   // ChatInputBox 上传完成的文档对象同步到 ref（发送时读取，避免闭包过期）
@@ -453,6 +451,7 @@ export default function FlowAiPanel({
       // 新一轮发送：清空上一轮兜底内容、完成态与已存记录
       contentRef.current = '';
       templateFillRef.current = undefined;
+      templateFillEventsRef.current = [];
       setCompleted(null);
       setLastTemplateFill(null);
       setLastRecord(null);
@@ -653,6 +652,7 @@ export default function FlowAiPanel({
           response: responseText,
           version_id: version?.id,
           session_id: sessionIdRef.current,
+          template_fill_events: templateFillEventsRef.current,
           save_as_version: asVersion,
         })) as { record?: { id?: string } };
         if (!asVersion && res?.record?.id) {

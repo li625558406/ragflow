@@ -525,7 +525,6 @@ export default function FlowDetail({
           {isOwner && !terminal && (
             <FlowAiPanel
               flowId={flowId}
-              flowTitle={flow.title}
               version={selectedVersion}
               aiChats={data.ai_chats ?? []}
               comments={commentsOf}
