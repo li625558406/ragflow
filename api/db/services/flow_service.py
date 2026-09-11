@@ -336,7 +336,8 @@ class FlowAiChatService(_FlowServiceBase):
     @classmethod
     @DB.connection_context()
     def add_record(cls, flow_id: str, version_id: str, instruction: str,
-                   response: str, session_id: str = "", output_version_id: str = "") -> dict:
+                   response: str, session_id: str = "", output_version_id: str = "",
+                   user_id: str = "", template_fill_events: str = "") -> dict:
         rec = cls.insert(
             flow_id=flow_id,
             version_id=version_id,
@@ -344,6 +345,8 @@ class FlowAiChatService(_FlowServiceBase):
             response=response,
             session_id=session_id,
             output_version_id=output_version_id,
+            user_id=user_id,
+            template_fill_events=template_fill_events,
         )
         return rec.__data__
 
