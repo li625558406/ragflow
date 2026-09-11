@@ -35,6 +35,7 @@
   - POST   /flow/<flow_id>/reactivate               重新激活（仅发起人；状态回 initiator）
 """
 import hashlib
+import json
 import logging
 import os
 import re
@@ -43,6 +44,7 @@ import uuid
 from io import BytesIO
 from urllib.parse import quote
 
+from agent.canvas import Canvas
 from docx import Document as DocxDocument
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
@@ -54,6 +56,8 @@ from quart import Blueprint, Response, request
 
 from api.apps import current_user, login_required
 from api.db.db_models import FlowInstance, User
+from api.db.services.api_service import API4ConversationService
+from api.db.services.canvas_service import UserCanvasService
 from api.db.services.file_service import FileService
 from api.db.services.flow_service import (
     FlowActionService,
@@ -66,10 +70,11 @@ from api.db.services.flow_service import (
     notify_flow_event,
     notify_target_of,
 )
+from api.db.services.user_canvas_version import UserCanvasVersionService
 from api.utils.api_utils import get_json_result
 from api.utils.doc_utils import doc_to_docx_via_libreoffice, is_doc_file
 from common import settings
-from common.misc_utils import thread_pool_exec
+from common.misc_utils import get_uuid, thread_pool_exec
 
 manager = Blueprint("rest_flow_app", __name__)
 
@@ -1079,6 +1084,10 @@ async def add_ai_record(flow_id: str):
                 return _err("AI 回复内容不能为空", 101)
             version_id = body.get("version_id") or flow["current_version_id"]
             session_id = body.get("session_id") or ""
+        user_id = current_user.id
+        template_fill_events = body.get("template_fill_events") or ""
+        if not isinstance(template_fill_events, str):
+            template_fill_events = json.dumps(template_fill_events, ensure_ascii=False)
         if not version_id:
             return _err("流程暂无文件版本，无法记录 AI 处理", 101)
 
@@ -1101,6 +1110,7 @@ async def add_ai_record(flow_id: str):
         else:
             record = FlowAiChatService.add_record(
                 flow_id, version_id, instruction, response, session_id, output_version_id,
+                user_id=user_id, template_fill_events=template_fill_events,
             )
         return get_json_result(data={"record": record, "output_version_id": output_version_id})
     except LookupError as e:
@@ -1253,6 +1263,49 @@ async def reactivate_flow(flow_id: str):
         except Exception as e:
             logger.warning("flow notify failed: %s", e)
         return get_json_result(data={"flow": updated})
+    except LookupError as e:
+        return _err(str(e), 404)
+    except (PermissionError, ValueError, RuntimeError) as e:
+        return _action_error(e)
+    except Exception as e:
+        logger.exception(e)
+        return _err(str(e))
+
+
+# ── 7.1 流程对话影子会话（source='flow'，对话页签不可见） ──────────
+@manager.route("/flow/<flow_id>/chat/session", methods=["POST"])  # noqa: F821
+@login_required
+async def create_flow_chat_session(flow_id: str):
+    """为当前用户创建流程专属 agent 会话（conversation.source='flow'）。
+    影子会话仅作画布多轮续聊的运行时缓存；权威对话记录在 flow_ai_chat。"""
+    try:
+        flow = _require_viewer(_flow_dict(flow_id))
+        body = await request.get_json(silent=True) or {}
+        agent_id = (body.get("agent_id") or "").strip()
+        if not agent_id:
+            return _err("缺少 agent_id", 101)
+        # 与 agent_api.create_agent_session（agent_api.py:232-268）同款初始化，
+        # get_agent_dsl_with_release 返回 (cvs, dsl)，内部处理 agent 不存在（LookupError）
+        cvs, dsl = UserCanvasService.get_agent_dsl_with_release(
+            agent_id, False, current_user.id)
+        canvas = Canvas(dsl, cvs.user_id, agent_id, canvas_id=cvs.id)
+        canvas.globals["sys.user_id"] = current_user.id
+        canvas.reset()
+        session_id = get_uuid()
+        conv = {
+            "id": session_id,
+            "name": f"流程：{flow['title']}"[:60],
+            "dialog_id": cvs.id,
+            "user_id": current_user.id,
+            "exp_user_id": current_user.id,
+            "message": [{"role": "assistant", "content": canvas.get_prologue()}],
+            "source": "flow",
+            "dsl": json.loads(str(canvas)),
+            "reference": [],
+            "version_title": UserCanvasVersionService.get_latest_version_title(cvs.id),
+        }
+        API4ConversationService.save(**conv)
+        return get_json_result(data={"session_id": session_id})
     except LookupError as e:
         return _err(str(e), 404)
     except (PermissionError, ValueError, RuntimeError) as e:
