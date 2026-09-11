@@ -9,9 +9,12 @@
 - 新端点 `POST /flow/<id>/chat/session`：创建 `source='flow'` 影子会话（画布 DSL 运行时缓存，多轮续聊靠它，可随时清理不丢权威数据）
 - c-chat 会话列表（`API4ConversationService.get_list/get_names`，`COALESCE(source,'') != 'flow'` 防 NULL 误滤）过滤影子会话；DELETE 会话接口对 `source='flow'` 返回 OPERATING_ERROR 拒删
 - 前端 ensureSession 改走 flow 端点；sessionIdRef 只恢复本人（user_id 匹配）记录且适配 aiChats 异步到达；刷新回放范本进度改从 `flow_ai_chat.template_fill_events` 重放（JSON 字符串 parse 兜底，删除 agent 会话 fetch）；自动/手动保存附带原始事件序列
+- 影子会话失效自愈：发送命中 "Session not found" / "does not belong"（路由层 HTTP 200 code≠0 信封）时清空 sessionIdRef，下次发送自动重建会话（设计 §8 承诺）
 - 对话气泡 meta 行展示操作人昵称 chip（复用 nicknameMap）；存量「流程：xxx」会话由迁移打标 source='flow' 后从对话页签消失
 
-**遗留**：agent_id 仍读 localStorage（未列入本次痛点）；`template_fill_events` 为 TEXT 列（64KB 上限，超长事件序列会被 MySQL 截断/报错，后续可评估 MEDIUMTEXT）；`sdk/session.py` SDK 会话列表与 `stats()` 统计未过滤 source='flow'（本次范围外，影子会话会轻微放大 PV/统计数字）；部署须成套 SCP 并执行存量打标迁移（见设计文档 §7/§10）。
+**遗留**：agent_id 仍读 localStorage（未列入本次痛点）；`template_fill_events` 为 TEXT 列（64KB 上限，超长事件序列会被 MySQL 截断/报错，后续可评估 MEDIUMTEXT）；`sdk/session.py` SDK 会话列表与 `stats()` 统计未过滤 source='flow'（本次范围外，影子会话会轻微放大 PV/统计数字）；「路由校验通过后、completion 执行前会话被删」的窄竞态表现为 SSE 中断无结构化报错，前端不覆盖（窗口极窄，下一轮发送自愈）；部署须成套 SCP 并执行存量打标迁移（见设计文档 §7/§10），**顺序：先后端 5 文件 + 重启（迁移顺带完成），再上前端 build，切勿前端先行**。
+
+**冒烟补充**（在计划 Task 9 六步之外）：手删一条 flow 影子会话行 → 追问报一次 "Session not found!" → 再发送自动重建恢复正常；大范本长填写值跑一轮自动保存观察 TEXT 64KB 是否触发；纯文本轮后刷新 → 进度回放到更早记录的范本进度。
 
 ## 2026-09-11 文件审核弹窗改为常驻右抽屉（与范本实时预览同款）（未部署）
 
