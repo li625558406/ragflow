@@ -2,6 +2,16 @@
 
 set -e
 
+# Auto-install claude-agent-sdk if not present (not bundled in base image)
+if ! python3 -c "import claude_agent_sdk" 2>/dev/null; then
+    echo "[agent-engine] Installing claude-agent-sdk ..."
+    python3 -m pip install claude-agent-sdk -i https://pypi.tuna.tsinghua.edu.cn/simple --timeout 120 -q
+    # claude-agent-sdk 会连带升级 mcp 到 2.x（函数改名 streamablehttp_client -> streamable_http_client），
+    # RAGFlow 上游代码按 1.x API 编写，这里固定压回 1.x（对 claude-agent-sdk 同样满足其无版本约束）
+    python3 -m pip install "mcp<2" -i https://pypi.tuna.tsinghua.edu.cn/simple --timeout 120 -q
+    echo "[agent-engine] claude-agent-sdk installed (mcp pinned to 1.x)."
+fi
+
 echo "Start RAGFlow cluster, version: "
 cat /ragflow/VERSION
 
@@ -259,7 +269,9 @@ function ensure_playwright() {
             2>/dev/null || true
     fi
     # Install Chromium browser binary (idempotent — skips if already installed)
-    python3 -m playwright install chromium 2>/dev/null || true
+    # Try China mirror first, then official CDN, with timeout to avoid blocking startup
+    export PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright
+    timeout 60 python3 -m playwright install chromium 2>/dev/null || true
     echo "Playwright ready."
 }
 
