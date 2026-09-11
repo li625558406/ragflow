@@ -1,5 +1,27 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-11 文件审核弹窗改为常驻右抽屉（与范本实时预览同款）（未部署）
+
+**主题**：文件审核/成稿预览/流程版本审核的 Sheet 弹窗（带遮罩、挡对话）改造为与「查看范本」一致的右侧常驻抽屉。
+
+**核心变更**：
+- `review-panel.tsx`：Sheet → fixed 右抽屉（无遮罩、z-40、`w-[min(56rem,85vw)]`、animate-in 滑入、Esc 关闭、右上角关闭按钮两种模式均渲染、**open 门控**：非 inline 且 open=false 时 return null——使用点均常挂载+open 属性切换，缺门控会常显）；内容区高度统一 flex-1，删除废弃的 reviewDrawerIn/Out keyframes
+- 腾位联动三层打通：c-chat 对话区 paddingRight（范本预览/审核类抽屉统一 56rem，带过渡）+ 侧栏自动收起恢复；flow 左流程列表收起；flow 右版本记录栏收起
+- 接线：flow-detail `onReviewOpenChange`（viewOpen 上报+卸载兜底）→ flow-panel → index `flowReviewOpen`，与 `previewDoc`、非 chat 视图 reviewMode 合流为 `reviewSheetOpen`
+- chat 视图的 inline 审阅列（55vw）保持不变
+- 修正记录：首版漏 open 门控（抽屉常显）+ 宽度 75rem/z-50 与范本预览不一致，已对齐为与范本实时预览完全同款
+- 控件细节对齐范本预览（第二轮）：头部 px-4/边框 #E5E5E5、关闭按钮同款类名（hover 变黑字）、正文区 `min-h-0 flex-1 overflow-x-hidden px-6`、抽屉容器去掉多余的 overflow-hidden
+- 平分布局（第三轮）：抽屉宽度与主区腾位从固定 `min(56rem,85vw)` 改为各占 50%——抽屉 `w-1/2`、主区 `paddingRight: 50%`（侧栏联动收起为 w-0 后主区即全视口宽，正好平分）；范本预览与审核类抽屉同步改
+- flow AI 面板「文件审核」抽屉接入腾位联动：flow-ai-panel 新增 `onReviewOpenChange` 上报 reviewMode → flow-detail 合并 viewOpen/aiReviewOpen 上报并收起版本时间线 → flow-panel 左列表收起 → index 主区 paddingRight + 侧栏联动（此前该抽屉打开时直接盖住时间线/列表，不腾位）
+
+## 2026-09-11 持久化「未生效」根因修复：断连/取消整轮丢失 → partial 落盘（未部署）
+
+**主题**：用户反馈范本填写进度持久化没生效。排查结论：收集/落库代码链路正确且已部署，但持久化只在流自然走完后执行——用户测试时刷新页面，SSE 断连触发 GeneratorExit 杀掉整个 completion 生成器，落库逻辑被整体跳过，整轮（含用户消息）全部丢失（服务器日志三次 `Canvas batch cancelled due to client disconnect`，DB 中对应会话 round=0 仅剩欢迎语）。
+
+**核心变更**（仅 `canvas_service.py`）：落库逻辑提取为 `_persist_messages(tag)`，三条路径统一收口：`final`（自然走完，原行为）、`partial-disconnect`（GeneratorExit 后落盘部分文本+已捕获进度事件再 re-raise）、`partial-canceled`（显式取消也落盘）。前端无需改动——replay 部分事件即还原部分进度卡片。
+
+**遗留**：断连后画布仍会取消运行（canvas.run 原行为），刷新回看的是「已产生的部分进度」，任务不会后台续跑；若要断点续跑需另立后台执行架构。
+
 ## 2026-09-11 范本填写进度持久化 + 预览入口全程可见（未部署）
 
 **主题**：范本填写进度卡片/填入值刷新即丢（仅流式内存态）+ 预览入口只在 filling 态显示——刷新后无法回看填了什么，filled 后也找不到入口。
