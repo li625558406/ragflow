@@ -86,8 +86,15 @@ export default function TemplateFillLivePreview({
     });
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/30">
-      <div className="flex h-full w-full max-w-2xl flex-col bg-white shadow-xl">
+    // 居中弹窗：点遮罩空白处关闭（面板内点击 stopPropagation 阻断）；进退场淡入+缩放动画
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6 animate-in fade-in duration-200"
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[90vh] w-full max-w-5xl flex-col rounded-xl bg-white shadow-xl animate-in fade-in zoom-in-95 duration-200"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* 头部：模板名 + 实时填充进度 + 关闭 */}
         <div className="flex items-center gap-2 border-b border-[#E5E5E5] px-4 py-3">
           <span className="truncate text-sm font-medium text-[#000000]">
@@ -110,15 +117,15 @@ export default function TemplateFillLivePreview({
             <X className="h-4 w-4" />
           </button>
         </div>
-        {/* 正文 */}
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+        {/* 正文：overflow-x-hidden + break-words 根治横向滚动条；内容块水平居中 */}
+        <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-6 py-4">
           {isLoading ? (
             <div className="flex items-center justify-center gap-2 py-16 text-xs text-[#8C8C8C]">
               <Loader2 className="h-4 w-4 animate-spin" />
               正在加载模板正文…
             </div>
           ) : fileType === 'xlsx' ? (
-            <div className="space-y-4">
+            <div className="mx-auto w-full max-w-3xl space-y-4">
               {sheetGroups.map(([sheet, rows]) => (
                 <div key={sheet}>
                   <div className="mb-1 text-xs font-medium text-[#525252]">
@@ -133,7 +140,9 @@ export default function TemplateFillLivePreview({
                         <span className="w-16 shrink-0 font-mono text-[10px] text-[#8C8C8C]">
                           {it.coord || ''}
                         </span>
-                        <span>{renderText(it.text)}</span>
+                        <span className="min-w-0 flex-1 break-words">
+                          {renderText(it.text)}
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -141,11 +150,13 @@ export default function TemplateFillLivePreview({
               ))}
             </div>
           ) : (
-            <div className="space-y-1.5 text-sm leading-7 text-[#000000]">
+            <div className="mx-auto w-full max-w-3xl space-y-1.5 text-sm leading-7 text-[#000000]">
               {items
                 .filter((it) => it.text.trim())
                 .map((it) => (
-                  <p key={it.index}>{renderText(it.text)}</p>
+                  <p key={it.index} className="break-words">
+                    {renderText(it.text)}
+                  </p>
                 ))}
             </div>
           )}
