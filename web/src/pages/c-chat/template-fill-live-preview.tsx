@@ -8,7 +8,12 @@ import {
   useTemplateFillFile,
   useTemplateFillPreview,
 } from '@/hooks/use-template-fill-request';
-import { applyDocxHighlight } from '@/pages/c-chat/docx-highlight';
+import {
+  applyDocxHighlight,
+  applyDocxPageLazy,
+  updateDocxHighlight,
+  type DocxPlaceholderSpans,
+} from '@/pages/c-chat/docx-highlight';
 import { renderAsync } from 'docx-preview';
 import { Loader2, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -60,11 +65,12 @@ export default function TemplateFillLivePreview({
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  // ── docx 保真渲染（docx-preview）：原始 blob → renderAsync → pristine 快照；
-  // values 变化时快照重放 + 高亮重涂。渲染失败降级回纯文本段落渲染。
+  // ── docx 保真渲染（docx-preview）：原始 blob → renderAsync → 占位符高亮。
+  // values 变化时经 spans 映射增量更新（零 DOM 重建），大文档不卡顿。
+  // 渲染失败降级回纯文本段落渲染。
   const [renderFailed, setRenderFailed] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
-  const pristineRef = useRef<string>('');
+  const placeholderSpansRef = useRef<DocxPlaceholderSpans>(new Map());
   const valuesRef = useRef(values);
   valuesRef.current = values;
 
@@ -77,32 +83,30 @@ export default function TemplateFillLivePreview({
     error: fileError,
   } = useTemplateFillFile(docxEnabled ? tpl.template_id : '');
 
-  // blob 到达：清容器 → renderAsync → 存 pristine 快照 → 立即涂一次高亮
+  // blob 到达：清容器 → renderAsync → 屏外页懒渲染 → 建占位符 span 映射
   useEffect(() => {
     if (!docxEnabled || !fileBlob || !containerRef.current) return;
     const el = containerRef.current;
     setRenderFailed(false);
+    placeholderSpansRef.current = new Map();
     el.innerHTML = '';
     renderAsync(fileBlob, el, undefined, { inWrapper: true, breakPages: true })
       .then(() => {
-        pristineRef.current = el.innerHTML;
-        applyDocxHighlight(el, valuesRef.current);
+        applyDocxPageLazy(el);
+        placeholderSpansRef.current = applyDocxHighlight(el, valuesRef.current);
       })
       .catch(() => setRenderFailed(true));
   }, [fileBlob, docxEnabled]);
 
-  // values 变化：快照重放 + 重涂（SSE filling 批次频率低，整段替换简单可靠）
+  // values 变化：按 span 映射增量更新（已填⇄未填双向切换），不重建 DOM
   useEffect(() => {
     if (!docxEnabled) return;
-    const el = containerRef.current;
-    if (!el || !pristineRef.current) return;
-    el.innerHTML = pristineRef.current;
-    applyDocxHighlight(el, values);
+    updateDocxHighlight(placeholderSpansRef.current, values);
   }, [values, docxEnabled]);
 
-  // 范本切换时清快照（防止上一范本的高亮基线串台）
+  // 范本切换时清占位符映射（防止上一范本的 span 基线串台）
   useEffect(() => {
-    pristineRef.current = '';
+    placeholderSpansRef.current = new Map();
     setRenderFailed(false);
   }, [tpl.template_id]);
 
