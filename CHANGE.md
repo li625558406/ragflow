@@ -1,5 +1,18 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-11 修复范本「实时预览」看不到 AI 填入内容（默认值/param 产值不随事件下发）（未部署）
+
+**主题**：用户点「实时预览」后正文里几乎看不到蓝色填入内容（523 槽范本实测仅 11 个值随事件到达）。
+
+**根因**（生产 DB 事件序列 + 容器内 LLM 复现实证）：LLM 批次只覆盖 117 个 llm 槽，且无检索证据时按设计返回 null（仅 11 槽产出）；其余 ~476 槽由 param 直取/默认值兜底（D−C、missing→default）填充——这条路径**不经过 generate_values 批次回调，产值从不随 filling 事件下发**，预览里这些槽位永远停在虚线状态。成稿本身不受影响（渲染用完整 values）。
+
+**核心变更**：
+- `agent/component/template_fill.py`：`_fill_one` 在 `build_values` 之后、渲染之前把非空产值按 `_VALUES_PUSH_CHUNK=40` 槽/事件分批补推（filling 事件只带 `values`，不带 done/total，进度口径仍以 LLM 批次为准；前端合并幂等，与批次事件重叠无副作用）
+- `web/src/hooks/template-fill-stream.ts`：reducer 对 filling 事件的 `done`/`total` 改为存在才覆盖，兼容无进度字段的补推事件
+- 测试：后端 `test_template_fill_events.py` 新增 `test_values_backfill_pushed_before_render`（真实 _fill_one + 桩渲染/存储/沉淀，断言补推覆盖默认值兜底字段、空串不推、无 done/total），4 套件 164 单测全绿；前端新增 reducer 补推事件用例
+
+**遗留**：LLM 无证据槽位（本例 106/117）依赖 KB 检索质量，检索不到就靠默认值兜底——实时预览的「逐批填入」节奏因此主要发生在收尾补推阶段（默认值集中到达），属设计取舍非缺陷。
+
 ## 2026-09-11 修复流程对话回放缺成稿卡（filled/done 范本事件未落库）（已部署，纯前端）
 
 **主题**：接上条自动保存修复——记录虽已保存，但刷新回放永远停在「填写中 x/y」，看不到「可在上方预览或下载成稿」对应的成稿卡（下载/存为流程版本入口）。

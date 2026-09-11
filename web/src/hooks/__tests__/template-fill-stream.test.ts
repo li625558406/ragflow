@@ -50,6 +50,39 @@ describe('applyTemplateFillEvent', () => {
     expect(acc.templateFill?.templates[0].name).toBe('范本X');
   });
 
+  it('渲染前产值补推事件（无 done/total）保留既有进度、只合并 values', () => {
+    const acc: IStreamAcc = {};
+    applyTemplateFillEvent(acc, {
+      stage: 'selected',
+      templates: [{ template_id: 't1', name: '范本A', slot_count: 4 }],
+    });
+    applyTemplateFillEvent(acc, {
+      stage: 'filling',
+      template_id: 't1',
+      name: '范本A',
+      done: 2,
+      total: 4,
+      values: { k1: 'v1' },
+    });
+    // 后端渲染前的产值补推：默认值/param 直取产值不经过 LLM 批次回调，
+    // 事件只带 values 不带 done/total——进度显示不得被破坏
+    applyTemplateFillEvent(acc, {
+      stage: 'filling',
+      template_id: 't1',
+      name: '范本A',
+      values: { k2: 'v2' },
+    } as any);
+    expect(acc.templateFill?.templates[0]).toMatchObject({
+      status: 'filling',
+      done: 2,
+      total: 4,
+    });
+    expect(acc.templateFill?.templates[0].values).toEqual({
+      k1: 'v1',
+      k2: 'v2',
+    });
+  });
+
   it('filled 落 download、failed 落 error、done/cancelled 置 finished', () => {
     const acc: IStreamAcc = {};
     applyTemplateFillEvent(acc, {

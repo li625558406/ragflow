@@ -299,3 +299,59 @@ def test_retrieval_cancelled_pushes_cancelled_and_no_output(monkeypatch):
     assert stages[-1] == "cancelled"
     assert "failed" not in stages and "filled" not in stages and "done" not in stages
     assert comp._outs.get("download") in (None, "")
+
+
+def test_values_backfill_pushed_before_render(monkeypatch):
+    """渲染前产值补推（实时预览兜底）：默认值兜底（D−C）与 param 直取不经过
+    LLM 批次回调，产值从不随 filling 事件下发——预览里这些槽位永远停在虚线。
+    真实 _fill_one + 桩 generate_values / 渲染 / 存储 / 沉淀：断言渲染前有带
+    values 的 filling 事件、覆盖默认值兜底字段、不带 done/total（进度口径仍以
+    LLM 批次为准）、空串产值（missing 留空）不补推。"""
+    import agent.component.template_fill as tf_mod
+    from rag.svr.template_fill import renderer
+
+    cands = [_cand("t1", "范本A", [
+        {"key": "llm_k", "fill_mode": "llm"},
+        {"key": "def_k", "fill_mode": "llm", "default_value": "默认值"},
+        {"key": "empty_k", "fill_mode": "llm"},
+    ])]
+    comp = _make_comp(cands, None)
+    comp._fill_one = TemplateFill._fill_one.__get__(comp, TemplateFill)
+
+    async def no_confirm(chosen, query, begin_fields):
+        return {}  # 跳过 P2 确认流（有默认值字段会触发预判 LLM + Redis 挂起）
+
+    comp._confirm_changed_fields = no_confirm
+
+    async def fake_gen(tenant_id, placeholders, chunks_by_key, background,
+                       sem=None, on_progress=None, should_cancel=None):
+        # def_k 是 D−C 免 LLM 不进清单；empty_k 进 LLM 但产不出（missing 留空）
+        assert [it["key"] for it in placeholders] == ["llm_k", "empty_k"]
+        return {"llm_k": "LLM值"}, {"empty_k"}
+
+    async def fake_shared(tenant_id, placeholders_list, kb_ids, task_id="",
+                          should_cancel=None, sem=None):
+        return [{} for _ in placeholders_list]
+
+    monkeypatch.setattr(tf_mod.executor, "generate_values", fake_gen)
+    monkeypatch.setattr(tf_mod.executor, "retrieve_all_shared", fake_shared)
+    monkeypatch.setattr(tf_mod, "settings",
+                        MagicMock(get=lambda b, k: b"blob", put=lambda *a: None))
+    monkeypatch.setattr(renderer, "render",
+                        lambda ft, blob, values, addr=None: b"out")
+    monkeypatch.setattr(tf_mod.TplTemplateVersionService, "sediment_defaults",
+                        lambda *a, **k: None)
+
+    asyncio.run(comp._invoke_async())
+    evs = _drain(comp)
+    # 渲染前的补推事件：filling + values 覆盖 llm 产值与默认值兜底，空串不推
+    idx_render = next(i for i, e in enumerate(evs) if e["data"]["stage"] == "filled")
+    backfills = [e["data"] for e in evs[:idx_render]
+                 if e["data"]["stage"] == "filling" and e["data"].get("values")]
+    assert len(backfills) == 1
+    bf = backfills[0]
+    assert bf["values"] == {"llm_k": "LLM值", "def_k": "默认值"}
+    assert "done" not in bf and "total" not in bf
+    assert bf["template_id"] == "t1"
+    # 成稿照常产出
+    assert json.loads(comp._outs["download"])[0]["doc_id"]

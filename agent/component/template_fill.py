@@ -84,6 +84,9 @@ def _parse_concurrency(default: int) -> int:
 
 
 _RETRIEVAL_CONCURRENCY = _parse_concurrency(2)
+# 渲染前补推产值（实时预览兜底）单事件最大槽位数：默认值兜底常占大模板的
+# 绝大多数槽位，分批控单事件体积（SSE 帧 ~10KB 量级），防整包 JSON 撑爆帧
+_VALUES_PUSH_CHUNK = 40
 
 # P2 暂停确认：预判后挂起等待用户在对话侧确认（confirm_pending SSE → 前端确认卡片
 # → POST /template/fill/confirm 写 Redis 键 → 本节点轮询读取）。
@@ -374,6 +377,17 @@ class TemplateFill(ComponentBase):
             missing.discard(k)
         executor._merge_default_values(placeholders, generated, missing)
         values, cell_status = executor.build_values(placeholders, generated)
+
+        # 实时预览兜底：param 直取与默认值兜底（D−C、LLM 空值回退）不经过
+        # LLM 批次回调，产值从不随 filling 事件下发——大模板里这往往是绝大多数
+        # 槽位，预览会一直停在虚线槽位（用户视角「没看到 AI 填入」）。渲染前
+        # 把非空产值分批补推；前端 values 合并幂等，与批次事件重叠无副作用。
+        # 不带 done/total（进度口径仍以 LLM 批次为准），前端 reducer 按缺省跳过。
+        pending = {k: v for k, v in values.items() if v not in (None, "")}
+        for i in range(0, len(pending), _VALUES_PUSH_CHUNK):
+            part = dict(list(pending.items())[i:i + _VALUES_PUSH_CHUNK])
+            self._push_progress({"stage": "filling", "template_id": cand["template_id"],
+                                 "name": cand["name"], "values": part})
 
         # ⑤ 渲染（工作副本缺失/渲染失败向上抛，由 invoke_async 统一落 _ERROR）
         from rag.svr.template_fill import renderer

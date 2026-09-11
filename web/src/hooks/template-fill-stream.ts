@@ -144,8 +144,9 @@ export function applyTemplateFillEvent(
   if (d.name) t.name = d.name;
   if (d.stage === 'filling') {
     t.status = 'filling';
-    t.done = d.done;
-    t.total = d.total;
+    // done/total 缺省（渲染前产值补推事件）时保留既有进度，进度口径仍以 LLM 批次为准
+    if (d.done != null) t.done = d.done;
+    if (d.total != null) t.total = d.total;
     // 实时预览：合并该批产出值（换引用保证 memo 感知）
     if (d.values && Object.keys(d.values).length > 0) {
       t.values = { ...t.values, ...d.values };
