@@ -22,9 +22,20 @@ from docx.text.paragraph import Paragraph
 
 # 常见填写点特征：下划线空位 / 中文括号空位 / 【】空位 / ×× 占位 / 括号内"填写"提示 / "：" 结尾（冒号后留白）。
 # 注意："填写"仅在括号内（如"（请填写）"）才算特征，避免正文说明文字（"应如实填写"）误报污染候选集。
+# 补充模式（标准范本实测漏报修复）：
+# - ":[ \t\u3000]{3,}\S"：冒号+留白+后续文字（"编制日期：　　年　月　日"、"招标人：　　（盖单位电子公章）"等冒号不在行尾的填写点）
+# - "[ \u3000]{2,}年[ \u3000]*月[ \u3000]*日"：「　年　月　日」空白日期占位（要求年前有留白，
+#   真实日期"2026年9月11日"不含留白不误报）
+# - "\S[ \u3000]{6,}\S"：行内长空白占位（"本招标项目　　（项目名称）　已由　　（审批机关）"跨栏留白）
 FILL_HINT_RE = re.compile(
-    r"(_{2,}|（\s*）|\(\s*\)|【\s*】|×{2,}|XX{1,}|xx{1,}|[（(][^（）()]*填写[^（）()]*[)）]|：\s*$|:\s*$)"
+    r"(_{2,}|（\s*）|\(\s*\)|【\s*】|×{2,}|XX{1,}|xx{1,}|[（(][^（）()]*填写[^（）()]*[)）]|：\s*$|:\s*$"
+    r"|[:：][ \t\u3000]{3,}\S"
+    r"|[ \u3000]{2,}年[ \u3000]*月[ \u3000]*日"
+    r"|\S[ \u3000]{6,}\S)"
 )
+
+# 手动占位符：用户在模板正文里手写的 {{snake_key}}（与 renderer/docxtpl、前端实时预览同口径）
+PH_RE = re.compile(r"\{\{([a-z][a-z0-9_]*)\}\}")
 
 
 def _build_addr_map(doc):
@@ -63,8 +74,12 @@ def iter_docx_paragraphs(file_bytes: bytes) -> list:
 
 
 def extract_docx_candidates(file_bytes: bytes) -> list:
-    """提取疑似含填写点的段落（供 LLM 识别，降低 token）。"""
-    return [it for it in iter_docx_paragraphs(file_bytes) if it["text"].strip() and FILL_HINT_RE.search(it["text"])]
+    """提取疑似含填写点的段落（供 LLM 识别，降低 token）。
+    含手动占位符 {{key}} 的段落无条件纳入（用户显式标注，不经特征猜测）。"""
+    return [
+        it for it in iter_docx_paragraphs(file_bytes)
+        if it["text"].strip() and (FILL_HINT_RE.search(it["text"]) or PH_RE.search(it["text"]))
+    ]
 
 
 def _has_link_or_field(p: Paragraph) -> bool:

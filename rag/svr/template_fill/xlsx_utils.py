@@ -42,10 +42,11 @@ def extract_xlsx_candidates(file_bytes: bytes) -> list:
     FILL_HINT_RE，若作为填写点下发给 LLM，渲染时会用占位符文本覆盖公式本身，
     破坏模板计算逻辑——宁可漏候选，不可污染公式。
     """
-    from rag.svr.template_fill.docx_utils import FILL_HINT_RE
+    from rag.svr.template_fill.docx_utils import FILL_HINT_RE, PH_RE
     return [
         it for it in iter_xlsx_cells(file_bytes)
-        if not it["text"].startswith("=") and FILL_HINT_RE.search(it["text"])
+        if not it["text"].startswith("=")
+        and (FILL_HINT_RE.search(it["text"]) or PH_RE.search(it["text"]))
     ]
 
 

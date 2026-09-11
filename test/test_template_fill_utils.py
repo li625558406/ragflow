@@ -859,8 +859,8 @@ def test_sediment_no_change_returns_false():
 
 
 def test_sediment_long_value_truncated_to_max_anchor_len():
-    from rag.svr.template_fill.detector import MAX_ANCHOR_LEN
     from api.db.services.template_fill_service import TplTemplateVersionService as S
+    from rag.svr.template_fill.detector import MAX_ANCHOR_LEN
     ph = [{"key": "a", "default_value": "", "default_source": ""}]
     # 超长 LLM 输出（600 字）：截到 500，且算变更
     long_val = "长" * (MAX_ANCHOR_LEN + 100)
@@ -892,3 +892,135 @@ def test_update_defaults_validation():
     ok, err = S._apply_defaults_edits(ph, {"a": "   "})
     assert ok is True
     assert ph[0]["default_value"] == "" and ph[0]["default_source"] == ""
+
+
+# ---------- FILL_HINT_RE 补漏报模式（标准范本实测） ----------
+
+def test_fill_hint_colon_blank_then_content():
+    """冒号+留白+后续文字：日期行/盖章行等冒号不在行尾的填写点必须命中。"""
+    from rag.svr.template_fill.docx_utils import FILL_HINT_RE
+    assert FILL_HINT_RE.search("招标文件编制日期：\u3000 \u3000  年   \u3000月   \u3000日")
+    assert FILL_HINT_RE.search("招标人：\u3000\u3000\u3000\u3000（盖单位电子公章）")
+    assert FILL_HINT_RE.search("开标时间:      年  月  日  时（北京时间）")
+
+
+def test_fill_hint_date_blank_placeholder():
+    """「　年　月　日」空白日期占位：年前有留白才命中；真实日期不误报。"""
+    from rag.svr.template_fill.docx_utils import FILL_HINT_RE
+    assert FILL_HINT_RE.search("请于          年     月     日前递交")
+    assert FILL_HINT_RE.search("编制日期：\u3000\u3000年\u3000\u3000月\u3000\u3000日")
+    # 真实日期（无留白）不算填写特征
+    assert not FILL_HINT_RE.search("竣工日期为2026年9月11日，工期180天")
+    assert not FILL_HINT_RE.search("本工程计划2026年09月开工")
+
+
+def test_fill_hint_inline_long_blank():
+    """行内长空白占位（跨栏留白）：6 个以上连续空白且两侧有内容。"""
+    from rag.svr.template_fill.docx_utils import FILL_HINT_RE
+    assert FILL_HINT_RE.search("本招标项目        （项目名称）  已由")
+    assert FILL_HINT_RE.search("以\u3000\u3000\u3000\u3000\u3000\u3000\u3000（审批机关名称）批准建设")
+    # 普通正文短空格不命中
+    assert not FILL_HINT_RE.search("本招标项目 已由有关机关批准建设")
+
+
+# ---------- 手动占位符 {{key}} 直通 ----------
+
+def test_docx_candidates_include_manual_placeholder_paragraphs():
+    """含 {{snake_key}} 的段落无条件进候选（用户显式标注，不经特征猜测）。"""
+    from rag.svr.template_fill.docx_utils import extract_docx_candidates
+    doc = _make_docx([
+        "本工程项目名称为{{project_name}}，工期{{duration_days}}天",
+        "没有任何填写特征的普通说明段落",
+    ])
+    cands = extract_docx_candidates(doc)
+    texts = [c["text"] for c in cands]
+    assert any("{{project_name}}" in t for t in texts)
+    assert all("普通说明段落" not in t for t in texts)
+
+
+def test_xlsx_candidates_include_manual_placeholder_cells():
+    from rag.svr.template_fill.xlsx_utils import extract_xlsx_candidates
+    blob = _make_xlsx({"封面": [["项目名称：{{project_name}}"], ["说明文字"]]})
+    texts = [c["text"] for c in extract_xlsx_candidates(blob)]
+    assert any("{{project_name}}" in t for t in texts)
+    assert all("说明文字" not in t for t in texts)
+
+
+def test_extract_explicit_placeholders_basic_and_multi():
+    """直通提取：anchor 为 {{key}} 整串、addr/line 对齐候选行；同段多个占位符拆多条。"""
+    from rag.svr.template_fill.detector import extract_explicit_placeholders
+    cands = [{"index": 3, "text": "名称{{name}} 工期{{duration_days}}天", "addr": "para:3"}]
+    out = extract_explicit_placeholders(cands)
+    assert [(it["key"], it["anchor"]) for it in out] == [
+        ("name", "{{name}}"), ("duration_days", "{{duration_days}}")]
+    assert all(it["addr"] == "para:3" and it["line"] == 3 for it in out)
+    assert all(it["fill_mode"] == "llm" and it["top_k"] == 6 for it in out)
+
+
+def test_extract_explicit_placeholders_ignores_invalid_forms():
+    """对抗：大写/数字开头/空 key 等非法占位符形态不命中（与渲染端 docxtpl 口径一致）。"""
+    from rag.svr.template_fill.detector import extract_explicit_placeholders
+    cands = [{"index": 0, "text": "{{Name}} {{9bad}} {{ok_key}} {{}}", "addr": "para:0"}]
+    out = extract_explicit_placeholders(cands)
+    assert [it["key"] for it in out] == ["ok_key"]
+
+
+# ---------- LLM 分块识别 + 合并 ----------
+
+@pytest.mark.asyncio
+async def test_detect_chunked_splits_and_merges():
+    """候选按 60 行/块切分多次调用；LLM 返回可解析时合并全部识别项。"""
+    from rag.svr.template_fill.detector import DETECT_CHUNK_SIZE, _detect_chunked
+    n = DETECT_CHUNK_SIZE + 10  # 2 块
+    cands = [{"index": i, "text": f"字段{i}：____________", "addr": f"para:{i}"} for i in range(n)]
+    calls = []
+
+    async def fake_chat(system, messages):
+        calls.append(len(messages[0]["content"]))
+        lines = messages[0]["content"].split("编号行：\n")[1]
+        idxs = [int(l.split("\t")[0]) for l in lines.strip().splitlines()]
+        import json as _json
+        return _json.dumps([{"line": i, "anchor": "____________", "key": f"k{i}",
+                             "name": f"N{i}", "fill_mode": "llm"} for i in idxs])
+
+    items, failed = await _detect_chunked(fake_chat, "docx", cands)
+    assert len(calls) == 2 and failed == 0
+    assert len(items) == n
+
+
+@pytest.mark.asyncio
+async def test_detect_chunked_single_chunk_failure_is_partial(monkeypatch):
+    """对抗：单块 LLM 抛异常不拖垮整体，其余块结果保留（failed=1）。
+    块大小压到 1，保证 2 个候选切成 2 块。"""
+    from rag.svr.template_fill import detector
+    monkeypatch.setattr(detector, "DETECT_CHUNK_SIZE", 1)
+    _detect_chunked = detector._detect_chunked
+    cands = [{"index": 0, "text": "A：____________", "addr": "para:0"},
+             {"index": 1, "text": "B：____________", "addr": "para:1"}]
+
+    async def flaky_chat(system, messages):
+        if "B：" in messages[0]["content"]:
+            raise RuntimeError("llm boom")
+        return '[{"line": 0, "anchor": "____________", "key": "ka", "name": "A", "fill_mode": "llm"}]'
+
+    items, failed = await _detect_chunked(flaky_chat, "docx", cands)
+    assert failed == 1 and [it["key"] for it in items] == ["ka"]
+
+
+def test_merge_detection_dedups_pos_and_keys():
+    """合并：手动直通优先（同 (addr, anchor) 丢弃 LLM 重复项）；跨源 key 冲突加后缀。"""
+    from rag.svr.template_fill.detector import _merge_detection
+    explicit = [{"key": "name", "anchor": "{{name}}", "addr": "para:1", "line": 1}]
+    llm = [{"key": "name", "anchor": "{{name}}", "addr": "para:1", "line": 1},   # 同位置重复 → 丢弃
+           {"key": "name", "anchor": "____", "addr": "para:0", "line": 0},       # 同 key 不同位置 → name_2
+           {"key": "date", "anchor": "{{date}}", "addr": "para:2", "line": 2}]
+    out = _merge_detection(explicit, llm)
+    assert [(it["key"], it["anchor"]) for it in out] == [
+        ("name", "{{name}}"), ("name_2", "____"), ("date", "{{date}}")]
+
+
+def test_merge_detection_empty_llm_keeps_explicit():
+    """LLM 全军覆没时手动直通项仍保留（确定性标注不依赖 LLM 存活）。"""
+    from rag.svr.template_fill.detector import _merge_detection
+    explicit = [{"key": "k", "anchor": "{{k}}", "addr": "para:0", "line": 0}]
+    assert _merge_detection(explicit, []) == explicit

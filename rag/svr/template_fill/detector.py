@@ -1,10 +1,22 @@
 """LLM 填写点识别：prompt 构造、响应解析与占位符清单校验（纯函数部分可独立单测）。"""
+import asyncio
 import json
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 FILL_MODES = ("llm", "param", "manual")
 KEY_RE = re.compile(r"[^a-z0-9_]+")
 MAX_ANCHOR_LEN = 500  # anchor 超长约束收口在 parse：识别阶段就拦住异常项，不让脏数据流入人工确认/apply 链路
+
+# 手动占位符（与 docx_utils.PH_RE / renderer docxtpl / 前端预览同口径）
+PH_RE = re.compile(r"\{\{([a-z][a-z0-9_]*)\}\}")
+
+# 分块识别：大范本（几百行候选）单次 LLM 调用会被输出上限截断且注意力稀释，
+# 按块切分多次调用再合并；并发上限控制 LLM 压力。
+DETECT_CHUNK_SIZE = 60
+DETECT_CONCURRENCY = 3
 
 # 留空标记判定：仅由空白/下划线（含全角）/横线/点/顿号等组成的 anchor 视为"空范本留空位"，
 # 不派生默认值。注意不含字母数字，日期（2026-09-10）、金额等含数字的现值不会误判。
@@ -34,7 +46,8 @@ DETECT_SYSTEM = """你是文档模板分析专家。用户给出固定模板中�
 1. anchor 必须是该行原文的精确子串，禁止改写；一行可有多个填写点（拆成多个元素）。
 2. 同一含义的填写点 key 全局唯一；日期类建议 key 如 sign_date。
 3. fill_mode 一律填 "llm"（所有填写点统一交给 AI 检索填写，检索不到的留空由人工后续加工）。
-4. 找不到任何填写点输出 []。只输出 JSON 数组，不要输出其它文字。"""
+4. 找不到任何填写点输出 []。只输出 JSON 数组，不要输出其它文字。
+5. 正文叙述中以冒号结尾、用于引出下文的句子（如"包括以下内容："、"下列情形之一："）不是填写点，不要输出；只有"标签：＋留白待填值"（如 申请人：/地址：/编号： 后跟空白）才是填写点。"""
 
 
 def normalize_key(key: str) -> str:
@@ -136,8 +149,78 @@ def validate_placeholders(items: list, candidates: list) -> tuple:
     return True, ""
 
 
+def extract_explicit_placeholders(candidates: list) -> list:
+    """手动占位符直通：用户在模板正文里手写的 {{snake_key}} 直接识别为填写点，
+    不经 LLM（确定性、零成本、不漏不错）。anchor 即 {{key}} 整串——渲染链路
+    anchor→{{key}} 替换对其幂等（替换后文本不变），docxtpl 直接渲染。
+    key 冲突（同 key 多处出现）由 _merge_detection 统一加后缀。"""
+    out = []
+    for c in candidates:
+        for m in PH_RE.finditer(c["text"]):
+            key = normalize_key(m.group(1))
+            out.append({
+                "key": key,
+                "name": key,
+                "description": "手动占位符（模板中预先标注），确认时可修改中文名称",
+                "retrieval_query": "",
+                "fill_mode": "llm",
+                "required": True,
+                "addr": c["addr"],
+                "anchor": m.group(0),
+                "line": c["index"],
+                "top_k": 6,
+            })
+    return out
+
+
+async def _detect_chunked(chat, file_type: str, candidates: list) -> tuple:
+    """分块并发识别。chat(system, messages) -> str（LLM 调用抽象，便于单测注入）。
+    返回 (items, failed_chunks)：单块失败不拖垮整体（大范本部分结果好过全无），
+    全部失败由调用方结合合并结果决定是否抛错。"""
+    chunks = [candidates[i:i + DETECT_CHUNK_SIZE]
+              for i in range(0, len(candidates), DETECT_CHUNK_SIZE)]
+    sem = asyncio.Semaphore(DETECT_CONCURRENCY)
+
+    async def run_one(chunk: list) -> list:
+        numbered = "\n".join(f'{c["index"]}\t{c["text"]}' for c in chunk)
+        user_msg = f"文件类型：{file_type}\n编号行：\n{numbered}"
+        async with sem:
+            ans = await chat(DETECT_SYSTEM, [{"role": "user", "content": user_msg}])
+        return parse_detection_response(ans, chunk)
+
+    results = await asyncio.gather(*(run_one(c) for c in chunks), return_exceptions=True)
+    items, failed = [], 0
+    for r in results:
+        if isinstance(r, BaseException):
+            failed += 1
+            logger.warning("detect chunk failed: %s", r)
+            continue
+        items.extend(r)
+    return items, failed
+
+
+def _merge_detection(explicit: list, llm_items: list) -> list:
+    """合并手动直通项与 LLM 识别项：(addr, anchor) 去重（手动优先），跨源/跨块
+    key 冲突按出现顺序加 _2/_3 后缀（与 parse_detection_response 单次调用内
+    去重语义一致，但作用域为整次识别）。"""
+    merged, seen_pos, used_keys = [], set(), set()
+    for it in explicit + llm_items:
+        pos = (it["addr"], it["anchor"])
+        if pos in seen_pos:
+            continue
+        seen_pos.add(pos)
+        base_key, key, n = it["key"], it["key"], 2
+        while key in used_keys:
+            key = f"{base_key}_{n}"
+            n += 1
+        used_keys.add(key)
+        it["key"] = key
+        merged.append(it)
+    return merged
+
+
 async def detect_fill_points(tenant_id: str, file_type: str, candidates: list) -> list:
-    """调用租户默认 chat 模型识别填写点（失败抛异常，由 API 层转错误响应）。
+    """识别填写点 = 手动占位符直通 + 分块 LLM 识别合并（失败抛异常，由 API 层转错误响应）。
     仅此处涉及 LLM/DB（延迟 import，保证纯函数部分无运行时依赖、可独立单测）。"""
     from api.db.joint_services.tenant_model_service import get_tenant_default_model_by_type
     from api.db.services.llm_service import LLMBundle
@@ -145,9 +228,17 @@ async def detect_fill_points(tenant_id: str, file_type: str, candidates: list) -
 
     if not candidates:
         return []
+    explicit = extract_explicit_placeholders(candidates)
     model_config = get_tenant_default_model_by_type(tenant_id, LLMType.CHAT)
     chat_mdl = LLMBundle(tenant_id, model_config)
-    numbered = "\n".join(f'{c["index"]}\t{c["text"]}' for c in candidates)
-    user_msg = f"文件类型：{file_type}\n编号行：\n{numbered}"
-    ans = await chat_mdl.async_chat(DETECT_SYSTEM, [{"role": "user", "content": user_msg}])
-    return parse_detection_response(ans, candidates)
+
+    async def _chat(system, messages):
+        return await chat_mdl.async_chat(system, messages)
+
+    llm_items, failed = await _detect_chunked(_chat, file_type, candidates)
+    merged = _merge_detection(explicit, llm_items)
+    if failed:
+        if not merged:
+            raise RuntimeError(f"AI 识别失败：{failed} 个分块全部失败")
+        logger.warning("detect: %d 个分块失败，返回部分合并结果（%d 项）", failed, len(merged))
+    return merged
