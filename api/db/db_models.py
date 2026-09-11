@@ -2801,13 +2801,14 @@ def migrate_db():
     alter_db_add_column(migrator, "flow_ai_chat", "user_id", CharField(max_length=32, null=False, default="", help_text="操作人 user_id（对话归属展示）"))
     alter_db_add_column(migrator, "flow_ai_chat", "template_fill_events", TextField(null=False, default="", help_text="范本填写原始事件序列 JSON（刷新回放用）"))
     try:
-        # 存量回填（幂等）：流程影子会话打标 → 对话页签不可见
-        DB.execute_sql("UPDATE api_4_conversation SET source = 'flow' WHERE source = 'agent' AND name LIKE '流程：%'")
-        # 存量记录归属流程发起人（幂等）
-        DB.execute_sql(
-            "UPDATE flow_ai_chat c JOIN flow_instance f ON c.flow_id = f.id "
-            "SET c.user_id = f.initiator_id WHERE c.user_id = ''"
-        )
+        # 存量回填（幂等）：流程影子会话打标 → 对话页签不可见；归属流程发起人。
+        # atomic 显式提交：启动期 connection_context 归还连接时未提交 DML 会被回滚（DDL 不受影响）
+        with DB.atomic():
+            DB.execute_sql("UPDATE api_4_conversation SET source = 'flow' WHERE source = 'agent' AND name LIKE '流程：%'")
+            DB.execute_sql(
+                "UPDATE flow_ai_chat c JOIN flow_instance f ON c.flow_id = f.id "
+                "SET c.user_id = f.initiator_id WHERE c.user_id = ''"
+            )
     except Exception as e:
         logging.exception("flow chat save backfill failed: %s", e)
     if not TplTemplateVersion.table_exists():
