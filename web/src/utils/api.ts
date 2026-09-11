@@ -179,6 +179,7 @@ export default {
   getFile: `${restAPIv1}/files`,
   moveFile: `${restAPIv1}/files/move`,
   getFileContent: (fileId: string) => `${restAPIv1}/files/${fileId}/content`,
+  getFileBlob: (fileId: string) => `${restAPIv1}/files/${fileId}`,
   annotateFile: (fileId: string) => `${restAPIv1}/files/${fileId}/annotate`,
 
   // system
