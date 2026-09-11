@@ -32,7 +32,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 | 文档 | 路径 | 包含内容 |
 |------|------|----------|
-| 迭代记录 | `D:\AI\ragflow2\CHANGE.md` | ★ 全部新增需求/功能整改记录：ES track_total_hits 重试冲突根治 + 索引名去重消 KNN 4倍放大 + KB 3b4f619c 索引瘦身保留近1个月（09-08，最新）、KBUploader PDF 页数解析上限等，最新迭代在最上方 |
+| 迭代记录 | `D:\AI\ragflow2\CHANGE.md` | ★ 全部新增需求/功能整改记录：文件审核 docx 保真渲染（批注全保留）+ 范本预览大文档性能优化（09-11，最新）、范本预览 docx-preview 保真、流程对话保存自治等，最新迭代在最上方 |
 | 部署服务器 | `D:\AI\ragflow2\本地部署服务器.md` | 服务器SSH连接、Docker部署、前端/后端/Flutter热更新、Nginx配置、常见问题排查 |
 | 第三方接口 | `D:\AI\ragflow2\接口文档_2026-06-04.md` | 标讯API、企业画像API、合同API等第三方接口的请求/响应字段定义和鉴权方式 |
 | 项目架构 | `D:\AI\ragflow2\项目架构.md` | 系统整体架构、模块间调用关系、数据流、技术选型决策背景 |
@@ -55,6 +55,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 移除团队权限隔离 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-09-remove-team-permission-design.md` | ★ 读全局放开（KB/智能体/对话助手/搜索应用/文件所有人可见）+ 写 owner-only；Service 租户参数 None=全局、accessible 存在性检查、新增 owned()；user_tenant 留死路径，后续写权限由 /permission RBAC 承接；实施计划 docs/superpowers/plans/2026-09-09-remove-team-permission.md（已完成编码，未部署，须 15 个后端文件成套 SCP） |
 | 流程对话保存自治 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-11-flow-chat-save-design.md` | ★ 流程 AI 对话与对话页解耦：flow_ai_chat 加 user_id/template_fill_events 成权威存储、影子会话 source='flow' 对话页不可见、存量「流程：xxx」会话打标迁移；多轮续聊仍借 canvas DSL 运行时（设计完成，未实施） |
 | 范本预览保真渲染 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-11-template-preview-docx-fidelity-design.md` | ★ C端范本预览 docx 分支改 docx-preview 渲染原始文件（字号/加粗/颜色/表格保真）+ applyDocxHighlight 跨 run 占位符高亮保留；xlsx/B端不动（已完成编码+构建验证，未部署，纯前端） |
+| 文件审核保真渲染 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-11-review-panel-docx-fidelity-design.md` | ★ 文件审核只读路径 docx-preview 保真（AI 标注/手动批注锚定+批注栏+引线+兜底全保留，highlightDocxRanges 归一化匹配+同 p 校验）+ 范本预览性能优化（span 映射增量高亮 + content-visibility 屏外页懒渲染）；编辑态保持旧视图（已完成编码+构建验证，未部署，纯前端） |
 
 
 

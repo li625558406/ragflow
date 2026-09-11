@@ -1,5 +1,17 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-11 文件审核 docx 保真渲染（批注功能全保留）+ 范本预览大文档性能优化（未部署，纯前端）
+
+**主题**：① 文件审核（review-panel）只读路径 docx 改 docx-preview 渲染原始文件，Word 字号/表格/排版保真，AI 标注+手动批注锚定/批注栏/引线/兜底全部保留；② 范本实时预览大文档卡顿治理：占位符高亮由 innerHTML 快照重放改 span 映射增量更新 + 屏外页懒渲染。设计文档 `docs/superpowers/specs/2026-09-11-review-panel-docx-fidelity-design.md`。
+
+**核心变更**：
+- `docx-highlight.ts` 新增文本标注能力 `highlightDocxRanges`：去空白归一化全文匹配（与 findTextEndRect 同口径），anchor_start 偏移消歧重复文本，同 `<p>` 校验防跨块误删，从后往前插 `mark[data-anchor-key]`（bg color+22、下边框 2px color、cloneContents 保原空白）
+- 性能：`applyDocxHighlight` 返回 key→span[] 映射，`updateDocxHighlight` 增量更新（values 变化零 DOM 重建，StrictMode 下 updater 双调用不再重复改 DOM）；`applyDocxPageLazy` 给分页 section 设 `content-visibility: auto` + `contain-intrinsic-size: 794px 1123px`，屏外页跳过布局绘制
+- `review-panel.tsx` 只读三路分支：编辑态保持旧纸张视图（Lexical 模型不兼容）→ 保真（useFileBlob 拉 `GET /files/<id>` blob + renderAsync + mark 锚定，点击 mark 跳批注栏）→ 降级（渲染失败黄条提示回旧段落视图）；`activeRailItems` 过滤未锚定项落入既有兜底列表；批注栏/引线/统计/编号全部改用 activeRailItems
+- 新 hook `use-file-blob.ts`（queryKey `['fileBlob', fileId]`，JSON 错误体检测）；`api.ts` 加 `getFileBlob` entry；后端零改动
+
+**遗留**：保真模式下手动批注无段落索引（docx DOM 无 data-para-index），anchor_para 为空靠 anchor_text 文本匹配回锚（正常可命中，重复文本取首处）；文本标注起止跨 `<p>` 时跳过锚定落兜底列表（防块级结构破坏，设计约束）；B端范本库详情页仍未升级保真。
+
 ## 2026-09-11 范本预览 Word 格式保真渲染（docx-preview + 填入高亮保留）（未部署，纯前端）
 
 **主题**：C端「查看范本 / 实时预览 / 查看填写内容」抽屉的 docx 分支由纯文本段落渲染改为 docx-preview 渲染原始 docx，字号/加粗/颜色/表格/页面排版保真还原；AI 填入实时高亮（蓝色值 + 虚线槽位）保留。设计文档 `docs/superpowers/specs/2026-09-11-template-preview-docx-fidelity-design.md`，实施计划 `docs/superpowers/plans/2026-09-11-template-preview-docx-fidelity.md`。
