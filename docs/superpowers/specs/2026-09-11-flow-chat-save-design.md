@@ -57,7 +57,7 @@ template_fill_events TextField    default ""   范本填写事件流 JSON（刷�
 |---|--------|------|
 | 1 | 新端点 `POST /flow/<flow_id>/chat/session` | 为当前用户创建 `source='flow'` 影子会话。复用 `create_agent_session`（agent_api.py:232）的最小逻辑：取 agent DSL → Canvas reset → API4ConversationService.save（name=`流程：{flow_title}`、source=`flow`、user_id=当前用户）。权限 `login_required`（与读开放口径一致，能开面板就能建会话）。返回 `{session_id}`。**不改 agent_api.py 的列表路由**（过滤下沉 Service） |
 | 2 | `add_ai_record`（flow_app.py:1052） | 落库时 `user_id = current_user.id`；请求体新增 `template_fill_events`（JSON 字符串，原样存储） |
-| 3 | flow 详情接口（flow_app.py:281） | ai_chats 返回**不过滤**，每条带 `user_id`；新增 `chat_authors: {user_id: nickname}` 映射（与现有 `commentAuthors` 同款模式）供前端归属展示 |
+| 3 | flow 详情接口（flow_app.py:281） | ai_chats 返回**不过滤**，每条带 `user_id`；归属昵称展示复用前端已有 `nicknameMap`（`/flow/candidates` 全量用户接口），**后端不加 chat_authors 字段**（避免重复数据源） |
 | 4 | c-chat 会话列表过滤 | `API4ConversationService.get_list / get_names` 增加 `source != 'flow'` 条件（过滤下沉到 Service，agent_api.py 路由层不动）。MCP Server 若有同源列表逻辑一并排查 |
 
 ## 6. 前端改动（flow-ai-panel.tsx / flow-service.ts / flow-types.ts）
@@ -68,15 +68,15 @@ template_fill_events TextField    default ""   范本填写事件流 JSON（刷�
 | `sessionIdRef` 从全部 aiChats 倒序找 session_id（:117-124） | 保持倒序逻辑，但后端 ai_chats 自此全量带 user_id；续聊取**自己的**最新记录（前端用 currentUserId 过滤一行） |
 | 刷新回放：GET `/agents/{agentId}/sessions/{sessionId}` 拉消息重放 templateFillEvents（:206-241） | **整段删除**，改为从 ai_chats 最新一条带 `template_fill_events` 的记录 `replayTemplateFillEvents` 重放（数据源 flow 自己的表） |
 | `saveFlowAiRecord` payload 只存文本 | 新增 `template_fill_events: JSON.stringify(templateFillRef.current 的事件序列)` |
-| 中部对话区气泡（ConversationView / flow-detail） | 气泡显示操作人昵称（取 `chat_authors[user_id]`），多人对话交织时归属清晰 |
+| 中部对话区气泡（ConversationView / flow-detail） | 气泡显示操作人昵称（复用前端 `nicknameMap`），多人对话交织时归属清晰 |
 
 发送、自动保存、`record_id` 补建版本、存版本链路**零改动**。
 
 ## 7. 存量数据迁移（部署时一次性执行）
 
 ```sql
--- 1) 存量「流程：xxx」会话打标 → 对话页签立即消失
-UPDATE conversation SET source = 'flow'
+-- 1) 存量「流程：xxx」会话打标 → 对话页签立即消失（注意表名是 api_4_conversation）
+UPDATE api_4_conversation SET source = 'flow'
 WHERE source = 'agent' AND name LIKE '流程：%';
 
 -- 2) 存量 flow_ai_chat 空 user_id 归属流程发起人
@@ -85,7 +85,7 @@ SET c.user_id = f.initiator_id
 WHERE c.user_id = '';
 ```
 
-注意：conversation 表为 RAGFlow 上游表，`name LIKE '流程：%'` 是前端 `ensureSession` 写死的命名约定（flow-ai-panel.tsx:375），打标前用 `SELECT COUNT(*)` 核对命中数。迁移脚本进项目初始化/迁移体系（不裸 SQL 手工跑生产，脚本落库备查）。
+注意：`api_4_conversation` 为 RAGFlow 上游表，`name LIKE '流程：%'` 是前端 `ensureSession` 写死的命名约定（flow-ai-panel.tsx:375），打标前用 `SELECT COUNT(*)` 核对命中数。迁移逻辑进 `db_models.py migrate_db`（幂等，随启动执行）。
 
 ## 8. 边界与错误处理
 
