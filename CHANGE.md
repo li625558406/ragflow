@@ -1,5 +1,18 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-11 流程对话保存自治存储（流程/对话页解耦）（未部署，前后端须一起上线）
+
+**主题**：流程 AI 对话与 c-chat 对话页彻底解耦，权威存储归流程。设计文档 `docs/superpowers/specs/2026-09-11-flow-chat-save-design.md`，实施计划 `docs/superpowers/plans/2026-09-11-flow-chat-save.md`。
+
+**核心变更**：
+- `flow_ai_chat` 加 `user_id` / `template_fill_events` 列，成为权威对话存储（migrate_db 幂等迁移 + 存量空 user_id 回填流程发起人）
+- 新端点 `POST /flow/<id>/chat/session`：创建 `source='flow'` 影子会话（画布 DSL 运行时缓存，多轮续聊靠它，可随时清理不丢权威数据）
+- c-chat 会话列表（`API4ConversationService.get_list/get_names`，`COALESCE(source,'') != 'flow'` 防 NULL 误滤）过滤影子会话；DELETE 会话接口对 `source='flow'` 返回 OPERATING_ERROR 拒删
+- 前端 ensureSession 改走 flow 端点；sessionIdRef 只恢复本人（user_id 匹配）记录且适配 aiChats 异步到达；刷新回放范本进度改从 `flow_ai_chat.template_fill_events` 重放（JSON 字符串 parse 兜底，删除 agent 会话 fetch）；自动/手动保存附带原始事件序列
+- 对话气泡 meta 行展示操作人昵称 chip（复用 nicknameMap）；存量「流程：xxx」会话由迁移打标 source='flow' 后从对话页签消失
+
+**遗留**：agent_id 仍读 localStorage（未列入本次痛点）；`template_fill_events` 为 TEXT 列（64KB 上限，超长事件序列会被 MySQL 截断/报错，后续可评估 MEDIUMTEXT）；`sdk/session.py` SDK 会话列表与 `stats()` 统计未过滤 source='flow'（本次范围外，影子会话会轻微放大 PV/统计数字）；部署须成套 SCP 并执行存量打标迁移（见设计文档 §7/§10）。
+
 ## 2026-09-11 文件审核弹窗改为常驻右抽屉（与范本实时预览同款）（未部署）
 
 **主题**：文件审核/成稿预览/流程版本审核的 Sheet 弹窗（带遮罩、挡对话）改造为与「查看范本」一致的右侧常驻抽屉。
