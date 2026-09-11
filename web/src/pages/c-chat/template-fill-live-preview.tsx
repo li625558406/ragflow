@@ -1,11 +1,17 @@
-// 范本填写「实时预览」：打开模板正文（/template/fill/<id>/preview 的逐段条目），
-// 占位符渲染为高亮槽位；LLM 每产出一批字段值（filling 事件 values），对应槽位
-// 实时填入并高亮 —— 纯展示层合成，最终成稿仍以后端 docxtpl/openpyxl 渲染为准。
+// 范本填写「实时预览」：docx 分支拉原始文件经 docx-preview 保真渲染（字号/加粗/
+// 颜色/表格/排版不丢），占位符经 DOM 后处理渲染为高亮槽位；LLM 每产出一批字段值
+// （filling 事件 values），pristine 快照重放 + 高亮重涂实现实时填入。渲染失败降级
+// 回纯文本段落渲染。xlsx 分支维持旧链路。最终成稿仍以后端 docxtpl/openpyxl 为准。
 // c-chat 对话与 flow AI 面板共用（经 template-fill-progress 接入）。文案全中文。
 import type { ITemplateFillTemplate } from '@/hooks/template-fill-stream';
-import { useTemplateFillPreview } from '@/hooks/use-template-fill-request';
+import {
+  useTemplateFillFile,
+  useTemplateFillPreview,
+} from '@/hooks/use-template-fill-request';
+import { applyDocxHighlight } from '@/pages/c-chat/docx-highlight';
+import { renderAsync } from 'docx-preview';
 import { Loader2, X } from 'lucide-react';
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 // 与后端 PLACEHOLDER_RE 同口径：{{lower_snake_key}}
 const PLACEHOLDER_RE = /\{\{([a-z][a-z0-9_]*)\}\}/g;
@@ -53,6 +59,56 @@ export default function TemplateFillLivePreview({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
+
+  // ── docx 保真渲染（docx-preview）：原始 blob → renderAsync → pristine 快照；
+  // values 变化时快照重放 + 高亮重涂。渲染失败降级回纯文本段落渲染。
+  const [renderFailed, setRenderFailed] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const pristineRef = useRef<string>('');
+  const valuesRef = useRef(values);
+  valuesRef.current = values;
+
+  // file_type 为 docx 才拉原始文件（xlsx 走旧链路）；preview 接口未返回前默认 docx，
+  // 文件与 preview 并行拉取提速
+  const docxEnabled = fileType === 'docx';
+  const {
+    data: fileBlob,
+    isLoading: fileLoading,
+    error: fileError,
+  } = useTemplateFillFile(docxEnabled ? tpl.template_id : '');
+
+  // blob 到达：清容器 → renderAsync → 存 pristine 快照 → 立即涂一次高亮
+  useEffect(() => {
+    if (!docxEnabled || !fileBlob || !containerRef.current) return;
+    const el = containerRef.current;
+    setRenderFailed(false);
+    el.innerHTML = '';
+    renderAsync(fileBlob, el, undefined, { inWrapper: true, breakPages: true })
+      .then(() => {
+        pristineRef.current = el.innerHTML;
+        applyDocxHighlight(el, valuesRef.current);
+      })
+      .catch(() => setRenderFailed(true));
+  }, [fileBlob, docxEnabled]);
+
+  // values 变化：快照重放 + 重涂（SSE filling 批次频率低，整段替换简单可靠）
+  useEffect(() => {
+    if (!docxEnabled) return;
+    const el = containerRef.current;
+    if (!el || !pristineRef.current) return;
+    el.innerHTML = pristineRef.current;
+    applyDocxHighlight(el, values);
+  }, [values, docxEnabled]);
+
+  // 范本切换时清快照（防止上一范本的高亮基线串台）
+  useEffect(() => {
+    pristineRef.current = '';
+    setRenderFailed(false);
+  }, [tpl.template_id]);
+
+  const docxFidelity = docxEnabled && !renderFailed && !fileError;
+  const docxLoading =
+    fileLoading || (docxEnabled && !fileBlob && !fileError && isLoading);
 
   const filledCount = useMemo(() => Object.keys(values).length, [values]);
 
@@ -119,53 +175,66 @@ export default function TemplateFillLivePreview({
           <X className="h-4 w-4" />
         </button>
       </div>
-      {/* 正文：overflow-x-hidden + break-words 根治横向滚动条；内容块水平居中 */}
-      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-6 py-4">
-        {isLoading ? (
-          <div className="flex items-center justify-center gap-2 py-16 text-xs text-[#8C8C8C]">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            正在加载模板正文…
-          </div>
-        ) : fileType === 'xlsx' ? (
-          <div className="mx-auto w-full max-w-3xl space-y-4">
-            {sheetGroups.map(([sheet, rows]) => (
-              <div key={sheet}>
-                <div className="mb-1 text-xs font-medium text-[#525252]">
-                  {sheet}
+      {/* 正文：docx 走 docx-preview 保真渲染；失败/降级回纯文本段落 */}
+      {docxLoading ? (
+        <div className="flex min-h-0 flex-1 items-center justify-center gap-2 py-16 text-xs text-[#8C8C8C]">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          正在加载模板正文…
+        </div>
+      ) : docxFidelity ? (
+        // 保真渲染容器：docx-preview 页面宽度固定（A4），窄抽屉下横向滚动看全
+        <div className="min-h-0 flex-1 overflow-auto px-6 py-4">
+          <div ref={containerRef} />
+        </div>
+      ) : (
+        <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-6 py-4">
+          {docxEnabled && (renderFailed || fileError) && (
+            <div className="mb-2 rounded bg-[#FFF7E8] px-3 py-2 text-xs text-[#FAAD14]">
+              格式渲染失败，已降级为纯文本预览
+            </div>
+          )}
+          {fileType === 'xlsx' ? (
+            <div className="mx-auto w-full max-w-3xl space-y-4">
+              {sheetGroups.map(([sheet, rows]) => (
+                <div key={sheet}>
+                  <div className="mb-1 text-xs font-medium text-[#525252]">
+                    {sheet}
+                  </div>
+                  <div className="space-y-0.5">
+                    {rows.map((it) => (
+                      <div
+                        key={it.index}
+                        className="flex gap-2 text-xs leading-6 text-[#000000]"
+                      >
+                        <span className="w-16 shrink-0 font-mono text-[10px] text-[#8C8C8C]">
+                          {it.coord || ''}
+                        </span>
+                        <span className="min-w-0 flex-1 break-words">
+                          {renderText(it.text)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <div className="space-y-0.5">
-                  {rows.map((it) => (
-                    <div
-                      key={it.index}
-                      className="flex gap-2 text-xs leading-6 text-[#000000]"
-                    >
-                      <span className="w-16 shrink-0 font-mono text-[10px] text-[#8C8C8C]">
-                        {it.coord || ''}
-                      </span>
-                      <span className="min-w-0 flex-1 break-words">
-                        {renderText(it.text)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="mx-auto w-full max-w-3xl space-y-1.5 text-sm leading-7 text-[#000000]">
-            {items
-              .filter((it) => it.text.trim())
-              .map((it) => (
-                <p key={it.index} className="break-words">
-                  {renderText(it.text)}
-                </p>
               ))}
-          </div>
-        )}
-      </div>
+            </div>
+          ) : (
+            <div className="mx-auto w-full max-w-3xl space-y-1.5 text-sm leading-7 text-[#000000]">
+              {items
+                .filter((it) => it.text.trim())
+                .map((it) => (
+                  <p key={it.index} className="break-words">
+                    {renderText(it.text)}
+                  </p>
+                ))}
+            </div>
+          )}
+        </div>
+      )}
       {/* 底部说明 */}
       <div className="border-t border-[#E5E5E5] px-4 py-2 text-[10px] text-[#8C8C8C]">
-        蓝色为 AI 已填入内容；虚线槽位等待 AI 填入。成稿以最终渲染文件为准。
+        按 Word 原始格式渲染；蓝色为 AI 已填入内容，虚线槽位等待 AI
+        填入。成稿以最终渲染文件为准。
       </div>
     </div>
   );
