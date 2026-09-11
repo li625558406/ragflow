@@ -1,5 +1,17 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-11 范本预览 Word 格式保真渲染（docx-preview + 填入高亮保留）（未部署，纯前端）
+
+**主题**：C端「查看范本 / 实时预览 / 查看填写内容」抽屉的 docx 分支由纯文本段落渲染改为 docx-preview 渲染原始 docx，字号/加粗/颜色/表格/页面排版保真还原；AI 填入实时高亮（蓝色值 + 虚线槽位）保留。设计文档 `docs/superpowers/specs/2026-09-11-template-preview-docx-fidelity-design.md`，实施计划 `docs/superpowers/plans/2026-09-11-template-preview-docx-fidelity.md`。
+
+**核心变更**：
+- 新依赖 `docx-preview@0.4.0`；新 hook `useTemplateFillFile`（`/template/fill/<id>/file?kind=original` 拉 blob，JSON 错误体检测照 downloadTemplateFillResult 口径）
+- `template-fill-live-preview.tsx` docx 分支重写：`renderAsync` 渲染 → pristine innerHTML 快照；SSE filling values 变化时快照重放 + 高亮重涂（渲染失败/接口报错降级回原纯文本渲染 + 顶部黄色轻提示）
+- 新模块 `docx-highlight.ts`：`applyDocxHighlight` 处理 Word 占位符跨 run 拆分——TreeWalker 收集文本节点拼接全文定位 `{{key}}`，Range 跨节点 deleteContents + insertNode 替换，从后往前处理保证偏移不失效；高亮 span 继承 Word 上下文字号（不再硬编码 text-xs）
+- 部署：纯前端 build + SCP（后端零改动）；npm install 需联网
+
+**遗留**：xlsx 分支维持旧渲染（docx-preview 不支持 xlsx）；B端范本库详情页（template-fill/detail.tsx）纯文本预览本次未升级（如需同款保真另行安排）；docx-preview 为 A4 固定页宽，半屏抽屉下横向滚动看全（未做缩放）。
+
 ## 2026-09-11 流程对话保存自治存储（流程/对话页解耦）（未部署，前后端须一起上线）
 
 **主题**：流程 AI 对话与 c-chat 对话页彻底解耦，权威存储归流程。设计文档 `docs/superpowers/specs/2026-09-11-flow-chat-save-design.md`，实施计划 `docs/superpowers/plans/2026-09-11-flow-chat-save.md`。

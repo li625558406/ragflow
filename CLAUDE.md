@@ -54,6 +54,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 人事模块设计 | `D:\AI\ragflow2\docs\superpowers\specs\2026-08-31-hr-module-design.md` | ★ C端「人事」页签：打卡考勤/请假审批/薪资核算/财务凭证 4模块20功能点，13张hr_*表+30端点+4阶段实施；P1 已上线，P2/P3/P4（凭证+报表+考勤机导入）已实施待部署（P4 后端质量审查修复见 CHANGE.md 2026-09-01 条目），实施计划 docs/superpowers/plans/2026-09-01-hr-p2-leave.md 与 2026-09-01-hr-p3-salary.md |
 | 移除团队权限隔离 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-09-remove-team-permission-design.md` | ★ 读全局放开（KB/智能体/对话助手/搜索应用/文件所有人可见）+ 写 owner-only；Service 租户参数 None=全局、accessible 存在性检查、新增 owned()；user_tenant 留死路径，后续写权限由 /permission RBAC 承接；实施计划 docs/superpowers/plans/2026-09-09-remove-team-permission.md（已完成编码，未部署，须 15 个后端文件成套 SCP） |
 | 流程对话保存自治 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-11-flow-chat-save-design.md` | ★ 流程 AI 对话与对话页解耦：flow_ai_chat 加 user_id/template_fill_events 成权威存储、影子会话 source='flow' 对话页不可见、存量「流程：xxx」会话打标迁移；多轮续聊仍借 canvas DSL 运行时（设计完成，未实施） |
+| 范本预览保真渲染 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-11-template-preview-docx-fidelity-design.md` | ★ C端范本预览 docx 分支改 docx-preview 渲染原始文件（字号/加粗/颜色/表格保真）+ applyDocxHighlight 跨 run 占位符高亮保留；xlsx/B端不动（已完成编码+构建验证，未部署，纯前端） |
 
 
 
