@@ -4,7 +4,6 @@ import { Button } from '@/components/ui/button';
 import type { ITemplateFillDownload } from '@/hooks/template-fill-stream';
 import {
   archiveFlow,
-  cancelFlow,
   deleteFlow,
   deleteFlowVersion,
   downloadVersionBlob,
@@ -37,7 +36,7 @@ import {
 import { createPortal } from 'react-dom';
 import ReviewPanel from '../review-panel';
 import TemplateFillProgress from '../template-fill-progress';
-import FlowAiPanel from './flow-ai-panel';
+import FlowAiPanel, { type FlowReviewControl } from './flow-ai-panel';
 import type {
   FlowAiChatItem,
   FlowLiveChat,
@@ -97,6 +96,8 @@ export default function FlowDetail({
   );
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState('');
+  // 文件审核入口（状态在 FlowAiPanel 内部，经回调上报到这里渲染到顶部按钮行）
+  const [reviewCtl, setReviewCtl] = useState<FlowReviewControl | null>(null);
   // 进行中的一轮 AI 对话（发送后未保存前的流式状态）
   const [liveChat, setLiveChat] = useState<FlowLiveChat | null>(null);
   // 确认卡片提交回写函数（FlowAiPanel 上报）：提交成功后回写流式态，
@@ -269,11 +270,6 @@ export default function FlowDetail({
     doAction(() => archiveFlow(flowId));
   };
 
-  const handleCancel = () => {
-    if (!window.confirm('确定作废该流程？作废后不可恢复。')) return;
-    doAction(() => cancelFlow(flowId));
-  };
-
   const handleUploadFile = (file: File | null) => {
     if (!file) return;
     const fd = new FormData();
@@ -378,6 +374,22 @@ export default function FlowDetail({
             )}
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            {reviewCtl?.visible && (
+              <Button
+                size="sm"
+                variant={reviewCtl.active ? 'outline' : 'default'}
+                disabled={busy}
+                onClick={reviewCtl.toggle}
+                className={
+                  reviewCtl.active
+                    ? ''
+                    : 'bg-[#1a66fb] font-semibold shadow-[0_2px_8px_rgba(26,102,251,0.45)] hover:bg-[#0f56e0] hover:shadow-[0_2px_10px_rgba(26,102,251,0.6)]'
+                }
+              >
+                <FileText className="h-3.5 w-3.5" strokeWidth={2.5} />
+                {reviewCtl.active ? '关闭审核' : '文件审核'}
+              </Button>
+            )}
             {isInitiator && flow.status === 'cancelled' && (
               <Button
                 size="sm"
@@ -386,16 +398,6 @@ export default function FlowDetail({
                 onClick={handleDeleteFlow}
               >
                 删除流程
-              </Button>
-            )}
-            {isInitiator && !terminal && (
-              <Button
-                size="sm"
-                variant="destructive"
-                disabled={busy}
-                onClick={handleCancel}
-              >
-                作废
               </Button>
             )}
             {isOwner && !terminal && flow.status === 'summary' && (
@@ -515,6 +517,7 @@ export default function FlowDetail({
                 onChanged();
               }}
               onLiveChatChange={setLiveChat}
+              onReviewControlChange={setReviewCtl}
               onConfirmSubmittedReady={setMarkConfirmSubmitted}
             />
           )}

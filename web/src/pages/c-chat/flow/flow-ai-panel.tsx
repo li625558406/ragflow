@@ -17,7 +17,7 @@ import {
   saveFlowAiRecord,
 } from '@/services/flow-service';
 import api from '@/utils/api';
-import { Bot, FileText } from 'lucide-react';
+import { Bot } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ChatInputBox, { type UploadedDoc } from '../chat-input-box';
 import ReviewPanel, { type Annotation } from '../review-panel';
@@ -29,6 +29,13 @@ import type {
 } from './flow-types';
 
 const NO_AGENT_HINT = '未配置对话智能体，请先在「对话」页签使用过智能体对话';
+
+// 文件审核入口控制：状态在面板内部，经回调上报给父级（flow-detail 顶部按钮行）渲染按钮
+export type FlowReviewControl = {
+  visible: boolean;
+  active: boolean;
+  toggle: () => void;
+};
 
 // 打字机占位（与 c-chat 同款文案与节奏）
 const FULL_PLACEHOLDER =
@@ -44,6 +51,7 @@ export default function FlowAiPanel({
   isOwner,
   onSaved,
   onLiveChatChange,
+  onReviewControlChange,
   onConfirmSubmittedReady,
 }: {
   flowId: string;
@@ -58,8 +66,11 @@ export default function FlowAiPanel({
   onSaved: () => void;
   /** 进行中对话（指令+流式回复）变化时上报，供中部对话区实时展示 */
   onLiveChatChange?: (live: FlowLiveChat | null) => void;
-  /** 确认卡片提交回写函数上报：确认卡片渲染在中部对话区（ConversationView），
-   *  提交成功后经此把 submitted 回写进本面板的流式累积态，供归约器 confirm_timeout 守卫判断 */
+  /** 文件审核入口状态变化时上报，供父级在顶部按钮行渲染入口按钮 */
+  onReviewControlChange?: (ctl: FlowReviewControl | null) => void;
+  /** 确认卡片提交回写函数上报（与 onReviewControlChange 同款模式）：
+   *  确认卡片渲染在中部对话区（ConversationView），提交成功后经此把 submitted
+   *  回写进本面板的流式累积态，供归约器 confirm_timeout 守卫判断 */
   onConfirmSubmittedReady?: (fn: (() => void) | null) => void;
 }) {
   const [error, setError] = useState('');
@@ -173,7 +184,7 @@ export default function FlowAiPanel({
     excludeFanOutFromContent: false,
   });
 
-  // 确认卡片提交回写函数上报：挂载就绪上报、卸载清空
+  // 确认卡片提交回写函数上报：挂载就绪上报、卸载清空（与 onReviewControlChange 同款生命周期）
   useEffect(() => {
     onConfirmSubmittedReady?.(markConfirmSubmitted);
     return () => onConfirmSubmittedReady?.(null);
@@ -552,6 +563,21 @@ export default function FlowAiPanel({
     version,
   ]);
 
+  // 文件审核入口状态上报：父级据此在顶部按钮行渲染/更新按钮；卸载时清空
+  const reviewVisible = !!version || uploadedDocs.length > 0;
+  useEffect(() => {
+    onReviewControlChange?.({
+      visible: reviewVisible,
+      active: reviewMode,
+      toggle: () => {
+        void toggleReview();
+      },
+    });
+  }, [onReviewControlChange, reviewVisible, reviewMode, toggleReview]);
+  useEffect(() => {
+    return () => onReviewControlChange?.(null);
+  }, [onReviewControlChange]);
+
   const handleSave = useCallback(
     async (asVersion: boolean) => {
       if (saving) return;
@@ -696,20 +722,7 @@ export default function FlowAiPanel({
           附带版本文件{attachFile ? '开' : '关'}
         </button>
       )}
-      {/* 文件审核：从输入框工具栏挪出的醒目入口 */}
-      {(!!version || uploadedDocs.length > 0) && (
-        <button
-          onClick={toggleReview}
-          className={`flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-            reviewMode
-              ? 'border border-[#BFD3F5] bg-[#F0F5FF] text-[#1a66fb]'
-              : 'bg-[#1a66fb] text-white hover:bg-[#0f56e0]'
-          }`}
-        >
-          <FileText className="h-3.5 w-3.5" strokeWidth={2} />
-          {reviewMode ? '关闭审核' : '文件审核'}
-        </button>
-      )}
+      {/* 文件审核入口已上移到流程详情顶部按钮行（经 onReviewControlChange 上报） */}
     </>
   );
 

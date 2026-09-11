@@ -1,7 +1,7 @@
 // web/src/pages/c-chat/flow/flow-panel.tsx
 import { Button } from '@/components/ui/button';
 import { usePermission } from '@/hooks/use-permission';
-import { listFlows } from '@/services/flow-service';
+import { cancelFlow, listFlows } from '@/services/flow-service';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ChevronDown,
@@ -28,6 +28,18 @@ const BASE_SCOPES: { key: FlowScope; label: string }[] = [
   { key: 'joined', label: '我参与的' },
 ];
 
+/** 终态：归档/作废后不可再作废（与 flow-detail 顶部判断口径一致） */
+const TERMINAL_STATUS = new Set(['archived', 'cancelled']);
+
+/** 当前登录用户 id（列表卡片作废按钮仅发起人可见） */
+function currentUserId(): string {
+  try {
+    return JSON.parse(localStorage.getItem('userInfo') || '{}').id || '';
+  } catch {
+    return '';
+  }
+}
+
 export default function FlowPanel() {
   const [scope, setScope] = useState<FlowScope>('todo');
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -43,6 +55,9 @@ export default function FlowPanel() {
   const commentManualRef = useRef(false);
   const qc = useQueryClient();
   const { isSuperuser } = usePermission();
+  const meId = useMemo(currentUserId, []);
+  // 列表卡片作废请求进行中的流程 id（防并发二次提交）
+  const [cancelBusyId, setCancelBusyId] = useState<string | null>(null);
 
   // 超管追加「全部流程」页签，与其余三视角并列切换
   const scopes = useMemo(
@@ -91,6 +106,25 @@ export default function FlowPanel() {
 
   const scopeIdx = scopes.findIndex((s) => s.key === scope);
   const list = data?.list ?? [];
+
+  /** 列表卡片直接作废（仅发起人、非终态流程可见入口），成功后刷新列表与详情 */
+  const handleCancelFromList = useCallback(
+    async (f: FlowInstanceItem) => {
+      if (!window.confirm('确定作废该流程？作废后不可恢复。')) return;
+      setCancelBusyId(f.id);
+      try {
+        await cancelFlow(f.id);
+        qc.invalidateQueries({ queryKey: ['flow-list'] });
+        qc.invalidateQueries({ queryKey: ['flow-list-todo-badge'] });
+        qc.invalidateQueries({ queryKey: ['flow-detail', f.id] });
+      } catch (e: any) {
+        window.alert(e?.message || '作废失败，请稍后重试');
+      } finally {
+        setCancelBusyId(null);
+      }
+    },
+    [qc],
+  );
 
   return (
     <div ref={rootRef} className="flex h-full w-full gap-3">
@@ -170,6 +204,8 @@ export default function FlowPanel() {
                 <div className="space-y-1 p-2">
                   {list.map((f: FlowInstanceItem, i) => {
                     const active = activeId === f.id;
+                    const canCancel =
+                      f.initiator_id === meId && !TERMINAL_STATUS.has(f.status);
                     return (
                       <button
                         key={f.id}
@@ -209,6 +245,20 @@ export default function FlowPanel() {
                           <span className="ml-auto shrink-0 text-[#aaa]">
                             {relTime(f.update_time)}
                           </span>
+                          {canCancel && (
+                            <button
+                              type="button"
+                              disabled={cancelBusyId === f.id}
+                              onClick={(e) => {
+                                // 阻止冒泡：作废不触发卡片选中
+                                e.stopPropagation();
+                                handleCancelFromList(f);
+                              }}
+                              className="shrink-0 cursor-pointer rounded text-xs font-medium text-[#E5484D] transition-colors hover:text-red-600 hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              作废
+                            </button>
+                          )}
                         </div>
                       </button>
                     );
