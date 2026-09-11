@@ -1,8 +1,10 @@
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
+import { useFileBlob } from '@/hooks/use-file-blob';
 import type { FlowDocRun } from '@/services/flow-service';
 import api from '@/utils/api';
 import request from '@/utils/next-request';
+import { renderAsync } from 'docx-preview';
 import type { LexicalEditor } from 'lexical';
 import {
   AlertCircle,
@@ -26,6 +28,11 @@ import {
   useState,
 } from 'react';
 import { diffBlocks, type EditorBlock } from './docx-diff';
+import {
+  applyDocxPageLazy,
+  highlightDocxRanges,
+  type DocxHighlightItem,
+} from './docx-highlight';
 import DocxParagraphEditor, { collectEditorOps } from './docx-paragraph-editor';
 import { parseTableCells, type TableCellInfo } from './docx-table-utils';
 import {
@@ -512,6 +519,23 @@ export default function ReviewPanel({
     h: number;
   }>({ cards: {}, anchors: {}, w: 0, h: 0 });
 
+  // ── docx 只读保真（docx-preview）：只读路径渲染原始文件，Word 字号/字体/
+  // 表格样式不丢；AI 标注/手动批注经 highlightDocxRanges 锚定 mark[data-anchor-key]，
+  // 批注栏/引线/未定位兜底全部沿用。编辑态走旧段落视图（Lexical 模型不兼容）。
+  const editing = canEdit && onEditDocument && loadedFileId === fileId;
+  const docxFidelityCandidate = content?.file_type === 'docx' && !editing;
+  const docxWrapRef = useRef<HTMLDivElement>(null);
+  const [docxRenderFailed, setDocxRenderFailed] = useState(false);
+  const [markedKeys, setMarkedKeys] = useState<Set<string>>(new Set());
+  const {
+    data: docxBlob,
+    isLoading: docxBlobLoading,
+    error: docxBlobError,
+  } = useFileBlob(docxFidelityCandidate ? fileId : '');
+  const docxFidelity = Boolean(
+    docxFidelityCandidate && docxBlob && !docxBlobError && !docxRenderFailed,
+  );
+
   // Build annotation set keyed by paragraph index — supports multiple per paragraph
   const annotationMap = useMemo(() => {
     if (!content) return new Map<number, Annotation[]>();
@@ -589,6 +613,76 @@ export default function ReviewPanel({
     [railByPara],
   );
 
+  // 保真模式只渲染成功锚定 mark 的项（未命中的进底部兜底列表）；旧视图全量
+  const activeRailItems = useMemo(
+    () =>
+      docxFidelity
+        ? railItems.filter((it) => markedKeys.has(it.key))
+        : railItems,
+    [docxFidelity, railItems, markedKeys],
+  );
+
+  // blob 渲染 effect 取 railItems 快照用（railItems 晚于 blob 到达时兜底补锚）
+  const railItemsRef = useRef<RailItem[]>(railItems);
+  railItemsRef.current = railItems;
+
+  // railItem → highlightDocxRanges 入参（与旧视图 targetsByPara 同源：首个 AI
+  // 标注 + 首个手动批注的文本/颜色/锚点偏移）
+  const toHighlightItems = (items: RailItem[]): DocxHighlightItem[] => {
+    const out: DocxHighlightItem[] = [];
+    for (const it of items) {
+      const text =
+        it.kind === 'ai'
+          ? getMatchedText(it.ann!)
+          : (it.comment?.anchor_text || '').trim();
+      if (!text) continue;
+      out.push({
+        text,
+        key: it.key,
+        color: it.color,
+        start:
+          it.kind === 'comment' ? (it.comment?.anchor_start ?? null) : null,
+      });
+    }
+    return out;
+  };
+
+  // blob 到达：清容器 → renderAsync 保真渲染 → 屏外页懒渲染 → 按当前 railItems
+  // 插入 mark[data-anchor-key]。渲染失败降级回旧段落视图。
+  useEffect(() => {
+    if (!docxFidelityCandidate || !docxBlob || !docxWrapRef.current) return;
+    const el = docxWrapRef.current;
+    setDocxRenderFailed(false);
+    el.innerHTML = '';
+    renderAsync(docxBlob, el, undefined, { inWrapper: true, breakPages: true })
+      .then(() => {
+        applyDocxPageLazy(el);
+        setMarkedKeys(
+          highlightDocxRanges(el, toHighlightItems(railItemsRef.current)),
+        );
+      })
+      .catch(() => {
+        setDocxRenderFailed(true);
+        setMarkedKeys(new Set());
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docxBlob, docxFidelityCandidate]);
+
+  // railItems 变化（annotations/comments 异步到达）：只补插新增 key 的 mark，
+  // 已锚定的不重插；highlightDocxRanges 在 setState 外执行（StrictMode 下
+  // updater 双调用会重复改 DOM）
+  useEffect(() => {
+    if (!docxFidelity || !docxWrapRef.current) return;
+    const fresh = toHighlightItems(railItems).filter(
+      (it) => !markedKeys.has(it.key),
+    );
+    if (!fresh.length) return;
+    const added = highlightDocxRanges(docxWrapRef.current, fresh);
+    if (!added.size) return;
+    setMarkedKeys((prev) => new Set([...prev, ...added]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docxFidelity, railItems, markedKeys]);
+
   // 段落高亮目标（首个 AI 标注 + 首个手动批注）
   const targetsByPara = useMemo(() => {
     const m = new Map<number, HighlightTarget[]>();
@@ -631,12 +725,14 @@ export default function ReviewPanel({
   // 未匹配到段落的项（边栏下方兜底展示）
   const unmatched = useMemo(() => {
     const matchedAi = new Set(
-      railItems
+      activeRailItems
         .filter((i) => i.kind === 'ai')
         .map((i) => getMatchedText(i.ann!)),
     );
     const matchedCm = new Set(
-      railItems.filter((i) => i.kind === 'comment').map((i) => i.comment!.id),
+      activeRailItems
+        .filter((i) => i.kind === 'comment')
+        .map((i) => i.comment!.id),
     );
     return {
       ai: annotations.filter((a) => !matchedAi.has(getMatchedText(a))),
@@ -647,7 +743,7 @@ export default function ReviewPanel({
         (c) => !(c.anchor_text || '').trim(),
       ),
     };
-  }, [railItems, annotations, comments]);
+  }, [activeRailItems, annotations, comments]);
 
   // Listen for annotation selection events (from table-HTML highlight clicks)
   useEffect(() => {
@@ -730,7 +826,7 @@ export default function ReviewPanel({
       if (!wrap) return;
       const wrapRect = wrap.getBoundingClientRect();
       const anchors: Record<string, { x: number; y: number }> = {};
-      for (const it of railItems) {
+      for (const it of activeRailItems) {
         const mark = wrap.querySelector<HTMLElement>(
           `[data-anchor-key="${it.key}"]`,
         );
@@ -758,7 +854,7 @@ export default function ReviewPanel({
       }
       const tops: Record<string, number> = {};
       let prevBottom = -Infinity;
-      const sorted = [...railItems].sort(
+      const sorted = [...activeRailItems].sort(
         (a, b) => (anchors[a.key]?.y ?? 0) - (anchors[b.key]?.y ?? 0),
       );
       const wrapH = wrap.offsetHeight;
@@ -793,7 +889,7 @@ export default function ReviewPanel({
       clearTimeout(t);
       window.removeEventListener('resize', measure);
     };
-  }, [content, railItems, open, fileId, fileName, annotations, comments]);
+  }, [content, activeRailItems, open, fileId, fileName, annotations, comments]);
 
   // ── 手动批注：选中文本 → 悬浮「添加批注」→ 输入 → 提交 ──
 
@@ -1005,9 +1101,9 @@ export default function ReviewPanel({
         bySeverity[ann.severity as keyof typeof bySeverity]++;
       }
     }
-    const matched = railItems.filter((i) => i.kind === 'ai').length;
+    const matched = activeRailItems.filter((i) => i.kind === 'ai').length;
     return { matched, total: annotations.length, bySeverity };
-  }, [annotations, railItems]);
+  }, [annotations, activeRailItems]);
 
   const handleSelectTableAnn = useCallback(
     (e: React.MouseEvent) => {
@@ -1223,7 +1319,7 @@ export default function ReviewPanel({
             {/* 正文列：Word 纸张式排版（A4 白纸 + 宋体 + 页边距 + 阴影） */}
             <div className="min-w-0 flex-1" onMouseUp={handleContentMouseUp}>
               {/* Word 工具栏吸顶宿主：始终渲染（编辑模式），工具栏 portal 进来 */}
-              {canEdit && onEditDocument && loadedFileId === fileId && (
+              {editing && (
                 <div
                   ref={toolbarHostRef}
                   className="sticky top-0 z-10 mx-auto mb-2 max-w-[794px]"
@@ -1234,14 +1330,15 @@ export default function ReviewPanel({
                   {editError}
                 </div>
               )}
-              <div
-                className="mx-auto w-full max-w-[794px] border border-[#C9C9C9] bg-white px-[72px] py-[64px] shadow-[0_4px_24px_rgba(0,0,0,0.14)]"
-                style={{
-                  fontFamily: "'SimSun', '宋体', 'Times New Roman', serif",
-                }}
-              >
-                {canEdit && onEditDocument && loadedFileId === fileId ? (
-                  /* 编辑态表格样式只作用于编辑器分支，避免泄漏到只读静态渲染 */
+              {editing ? (
+                /* 编辑态：旧纸张视图（Lexical 编辑器模型与保真 DOM 不兼容） */
+                <div
+                  className="mx-auto w-full max-w-[794px] border border-[#C9C9C9] bg-white px-[72px] py-[64px] shadow-[0_4px_24px_rgba(0,0,0,0.14)]"
+                  style={{
+                    fontFamily: "'SimSun', '宋体', 'Times New Roman', serif",
+                  }}
+                >
+                  {/* 编辑态表格样式只作用于编辑器分支，避免泄漏到只读静态渲染 */}
                   <div className="[&_table]:my-2 [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-[#D4D4D4] [&_td]:px-2 [&_td]:py-1 [&_td]:text-[13px] [&_td]:text-[#333333] [&_td]:align-top [&_th]:border [&_th]:border-[#D4D4D4] [&_th]:bg-[#F5F5F5] [&_th]:px-2 [&_th]:py-1 [&_th]:font-bold">
                     <DocxParagraphEditor
                       key={`${loadedFileId}-${resetKey}`}
@@ -1258,105 +1355,135 @@ export default function ReviewPanel({
                       onDiscard={handleDiscardEdits}
                     />
                   </div>
-                ) : (
-                  <div className="space-y-2">
-                    {content.paragraphs.map((para) => {
-                      const targets = targetsByPara.get(para.index) || [];
-                      const firstAi = (railByPara.get(para.index) || []).find(
-                        (i) => i.kind === 'ai',
-                      );
+                </div>
+              ) : docxFidelity ? (
+                /* 只读保真：docx-preview 渲染原始文件，mark[data-anchor-key] 点击跳批注 */
+                <div className="min-w-0 flex-1 overflow-auto">
+                  <div
+                    ref={docxWrapRef}
+                    onClick={handleSelectTableAnn}
+                    className="mx-auto w-full max-w-[900px]"
+                  />
+                </div>
+              ) : docxFidelityCandidate && docxBlobLoading ? (
+                <div className="flex items-center justify-center py-20 text-sm text-[#8A8A8A]">
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  正在加载原始文档…
+                </div>
+              ) : (
+                /* 降级/非 docx：旧段落纸张视图 */
+                <>
+                  {docxFidelityCandidate &&
+                    (docxBlobError || docxRenderFailed) && (
+                      <div className="mx-auto mb-2 max-w-[794px] rounded bg-[#FFF7E8] px-3 py-2 text-xs text-[#FAAD14]">
+                        格式渲染失败，已降级为纯文本预览
+                      </div>
+                    )}
+                  <div
+                    className="mx-auto w-full max-w-[794px] border border-[#C9C9C9] bg-white px-[72px] py-[64px] shadow-[0_4px_24px_rgba(0,0,0,0.14)]"
+                    style={{
+                      fontFamily: "'SimSun', '宋体', 'Times New Roman', serif",
+                    }}
+                  >
+                    <div className="space-y-2">
+                      {content.paragraphs.map((para) => {
+                        const targets = targetsByPara.get(para.index) || [];
+                        const firstAi = (railByPara.get(para.index) || []).find(
+                          (i) => i.kind === 'ai',
+                        );
 
-                      let paraElement: React.ReactNode;
-                      if (para.type === 'heading') {
-                        const HeadingTag = (
-                          para.heading_level && para.heading_level <= 3
-                            ? `h${para.heading_level + 1}`
-                            : 'h3'
-                        ) as 'h2' | 'h3' | 'h4';
-                        paraElement = (
-                          <HeadingTag className="text-[15px] font-bold text-[#1A1A1A] mt-5 mb-2">
-                            {renderHighlighted(
-                              para.text,
-                              targets,
-                              handleAnchorClick,
-                            )}
-                          </HeadingTag>
-                        );
-                      } else if (para.type === 'table') {
-                        let tableHtml = para.text;
-                        if (firstAi?.ann) {
-                          tableHtml = highlightInTableHtml(
-                            tableHtml,
-                            getMatchedText(firstAi.ann),
-                            firstAi.color,
-                            firstAi.key,
+                        let paraElement: React.ReactNode;
+                        if (para.type === 'heading') {
+                          const HeadingTag = (
+                            para.heading_level && para.heading_level <= 3
+                              ? `h${para.heading_level + 1}`
+                              : 'h3'
+                          ) as 'h2' | 'h3' | 'h4';
+                          paraElement = (
+                            <HeadingTag className="text-[15px] font-bold text-[#1A1A1A] mt-5 mb-2">
+                              {renderHighlighted(
+                                para.text,
+                                targets,
+                                handleAnchorClick,
+                              )}
+                            </HeadingTag>
+                          );
+                        } else if (para.type === 'table') {
+                          let tableHtml = para.text;
+                          if (firstAi?.ann) {
+                            tableHtml = highlightInTableHtml(
+                              tableHtml,
+                              getMatchedText(firstAi.ann),
+                              firstAi.color,
+                              firstAi.key,
+                            );
+                          }
+                          // 手动批注：表格内与正文同款 <mark> 高亮（anchor_start 消歧）
+                          for (const it of railByPara.get(para.index) || []) {
+                            if (it.kind !== 'comment') continue;
+                            const at = (it.comment?.anchor_text || '').trim();
+                            if (!at) continue;
+                            tableHtml = highlightInTableByAnchor(
+                              tableHtml,
+                              at,
+                              it.comment?.anchor_start,
+                              it.color,
+                              it.key,
+                            );
+                          }
+                          paraElement = (
+                            <div
+                              className="text-xs overflow-x-auto [&_table]:w-full [&_table]:border-collapse [&_th]:border [&_th]:border-[#D4D4D4] [&_th]:bg-[#F5F5F5] [&_th]:px-2 [&_th]:py-1 [&_th]:text-[#1A1A1A] [&_td]:border [&_td]:border-[#D4D4D4] [&_td]:px-2 [&_td]:py-1 [&_td]:text-[#333333]"
+                              onClick={handleSelectTableAnn}
+                              dangerouslySetInnerHTML={{
+                                __html: sanitizeTableHtml(tableHtml),
+                              }}
+                            />
+                          );
+                        } else if (para.type === 'image') {
+                          paraElement = (
+                            <div className="py-1 text-[13px] italic text-[#8A8A8A]">
+                              {renderHighlighted(
+                                para.text,
+                                targets,
+                                handleAnchorClick,
+                              )}
+                            </div>
+                          );
+                        } else {
+                          paraElement = (
+                            <p
+                              className="text-[14px] leading-[2] text-justify text-[#333333]"
+                              style={{ textIndent: '2em' }}
+                            >
+                              {renderHighlighted(
+                                para.text,
+                                targets,
+                                handleAnchorClick,
+                              )}
+                            </p>
                           );
                         }
-                        // 手动批注：表格内与正文同款 <mark> 高亮（anchor_start 消歧）
-                        for (const it of railByPara.get(para.index) || []) {
-                          if (it.kind !== 'comment') continue;
-                          const at = (it.comment?.anchor_text || '').trim();
-                          if (!at) continue;
-                          tableHtml = highlightInTableByAnchor(
-                            tableHtml,
-                            at,
-                            it.comment?.anchor_start,
-                            it.color,
-                            it.key,
-                          );
-                        }
-                        paraElement = (
+
+                        return (
                           <div
-                            className="text-xs overflow-x-auto [&_table]:w-full [&_table]:border-collapse [&_th]:border [&_th]:border-[#D4D4D4] [&_th]:bg-[#F5F5F5] [&_th]:px-2 [&_th]:py-1 [&_th]:text-[#1A1A1A] [&_td]:border [&_td]:border-[#D4D4D4] [&_td]:px-2 [&_td]:py-1 [&_td]:text-[#333333]"
-                            onClick={handleSelectTableAnn}
-                            dangerouslySetInnerHTML={{
-                              __html: sanitizeTableHtml(tableHtml),
-                            }}
-                          />
-                        );
-                      } else if (para.type === 'image') {
-                        paraElement = (
-                          <div className="py-1 text-[13px] italic text-[#8A8A8A]">
-                            {renderHighlighted(
-                              para.text,
-                              targets,
-                              handleAnchorClick,
-                            )}
+                            key={para.index}
+                            data-para-index={para.index}
+                            className="relative py-0.5"
+                          >
+                            {paraElement}
                           </div>
                         );
-                      } else {
-                        paraElement = (
-                          <p
-                            className="text-[14px] leading-[2] text-justify text-[#333333]"
-                            style={{ textIndent: '2em' }}
-                          >
-                            {renderHighlighted(
-                              para.text,
-                              targets,
-                              handleAnchorClick,
-                            )}
-                          </p>
-                        );
-                      }
-
-                      return (
-                        <div
-                          key={para.index}
-                          data-para-index={para.index}
-                          className="relative py-0.5"
-                        >
-                          {paraElement}
-                        </div>
-                      );
-                    })}
+                      })}
+                    </div>
                   </div>
-                )}
-              </div>
+                </>
+              )}
             </div>
 
             {/* 右侧批注栏 */}
             <div className="relative shrink-0" style={{ width: RAIL_W }}>
-              {railItems.map((it) => {
+              {activeRailItems.map((it) => {
                 const top = layout.cards[it.key];
                 return (
                   <div
@@ -1401,7 +1528,7 @@ export default function ReviewPanel({
                 width={layout.w}
                 height={layout.h}
               >
-                {railItems.map((it) => {
+                {activeRailItems.map((it) => {
                   const a = layout.anchors[it.key];
                   const top = layout.cards[it.key];
                   if (!a || top === undefined) return null;
@@ -1508,7 +1635,9 @@ export default function ReviewPanel({
                   <AiCard
                     key={`unmatched-ai-${i}`}
                     num={
-                      railItems.filter((x) => x.kind === 'ai').length + i + 1
+                      activeRailItems.filter((x) => x.kind === 'ai').length +
+                      i +
+                      1
                     }
                     ann={ann}
                     unmatched
