@@ -491,4 +491,7 @@ export default {
     `${restAPIv1}/template/fill/fill-task/${taskId}/retry`,
   downloadTemplateFillTask: (taskId: string) =>
     `${restAPIv1}/template/fill/fill-task/${taskId}/download`,
+  // 断连重连：后台填写任务进度快照（status/done/total/values/download/error/stalled）
+  templateFillTaskProgress: (taskId: string) =>
+    `${restAPIv1}/template/fill/fill-task/${taskId}/progress`,
 };

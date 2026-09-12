@@ -5,6 +5,7 @@ import type {
   ITemplateFillDownload,
   ITemplateFillState,
 } from '@/hooks/template-fill-stream';
+import { useTemplateFillTaskPoll } from '@/hooks/use-template-fill-task-poll';
 import TemplateFillConfirmCard from '@/pages/c-chat/template-fill-confirm-card';
 import TemplateFillLivePreview from '@/pages/c-chat/template-fill-live-preview';
 import { Download, Eye, FileText, Loader2 } from 'lucide-react';
@@ -30,28 +31,36 @@ export default function TemplateFillProgress({
   // 实时预览：当前打开正文预览的范本 id（存 id 而非对象快照，values 更新时
   // 从 state.templates 派生最新引用，预览槽位才能随 filling 事件实时填入）
   const [liveTplId, setLiveTplId] = useState<string>('');
-  const liveTpl = state?.templates.find((t) => t.template_id === liveTplId);
+  // 断连重连：带 task_id 且 SSE 已停（历史恢复态）的行走轮询 override；
+  // 实时流式期间本组件也会挂载，override 与 SSE 幂等合并无冲突
+  const mergedTemplates = useTemplateFillTaskPoll(state?.templates, true);
+  const mergedState = mergedTemplates
+    ? ({ ...(state || {}), templates: mergedTemplates } as ITemplateFillState)
+    : state;
+  const liveTpl = mergedState?.templates.find(
+    (t) => t.template_id === liveTplId,
+  );
   // 抽屉开/关上报（布局腾位联动）；liveTplId 存在但范本行已被新一轮清空时视为关闭
   useEffect(() => {
     onLivePreviewOpenChange?.(Boolean(liveTpl));
   }, [liveTpl, onLivePreviewOpenChange]);
   // 画布挂起确认卡片（confirm_pending）：附加块，置于范本行列表之上
-  const confirmCard = state?.pendingConfirm && (
+  const confirmCard = mergedState?.pendingConfirm && (
     <div className="mt-2">
       {/* task_id+nonce 唯一标识一轮确认：新一轮覆盖时 remount，重置卡片全部本地状态，避免多轮确认 stale */}
       <TemplateFillConfirmCard
-        key={`${state.pendingConfirm.task_id}:${state.pendingConfirm.nonce || ''}`}
-        pending={state.pendingConfirm}
+        key={`${mergedState.pendingConfirm.task_id}:${mergedState.pendingConfirm.nonce || ''}`}
+        pending={mergedState.pendingConfirm}
         onSubmitted={onConfirmSubmitted}
       />
     </div>
   );
-  if (!state?.templates?.length) return confirmCard || null;
+  if (!mergedState?.templates?.length) return confirmCard || null;
   return (
     <>
       {confirmCard}
       <div className="mt-2 space-y-1.5">
-        {state.templates.map((t) => {
+        {mergedState.templates.map((t) => {
           if (t.status === 'selected') {
             return (
               <div

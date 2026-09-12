@@ -297,6 +297,68 @@ describe('confirm_pending / confirm_timeout', () => {
     expect(acc2.templateFill!.pendingConfirm!.expired).toBeUndefined();
   });
 
+  it('filling/filled/failed 事件携带 task_id 时记录到模板行（断连重连锚点）', () => {
+    const acc: IStreamAcc = {};
+    applyTemplateFillEvent(acc, {
+      stage: 'filling',
+      template_id: 't1',
+      name: 'A',
+      done: 1,
+      total: 5,
+      task_id: 'task-1',
+    });
+    expect(acc.templateFill?.templates[0].task_id).toBe('task-1');
+    applyTemplateFillEvent(acc, {
+      stage: 'filled',
+      template_id: 't1',
+      name: 'A',
+      download: { doc_id: 'd', filename: 'a.docx', mime_type: 'x' },
+      task_id: 'task-1',
+    });
+    expect(acc.templateFill?.templates[0].task_id).toBe('task-1');
+    const acc2: IStreamAcc = {};
+    applyTemplateFillEvent(acc2, {
+      stage: 'failed',
+      template_id: 't2',
+      name: 'B',
+      error: 'x',
+      task_id: 'task-2',
+    });
+    expect(acc2.templateFill?.templates[0].task_id).toBe('task-2');
+  });
+
+  it('无 task_id 的旧消息归约不变（兼容）', () => {
+    const acc: IStreamAcc = {};
+    applyTemplateFillEvent(acc, {
+      stage: 'filling',
+      template_id: 't1',
+      name: 'A',
+      done: 0,
+      total: 3,
+    });
+    expect(acc.templateFill?.templates[0].task_id).toBeUndefined();
+  });
+
+  it('同名无 task_id 的事件不抹掉已记录的 task_id', () => {
+    const acc: IStreamAcc = {};
+    applyTemplateFillEvent(acc, {
+      stage: 'filling',
+      template_id: 't1',
+      name: 'A',
+      done: 0,
+      total: 3,
+      task_id: 'task-1',
+    });
+    applyTemplateFillEvent(acc, {
+      stage: 'filling',
+      template_id: 't1',
+      name: 'A',
+      done: 1,
+      total: 3,
+    });
+    expect(acc.templateFill?.templates[0].task_id).toBe('task-1');
+  });
+
   it('finished 终态后迟到的 confirm_pending/confirm_timeout 被忽略', () => {
     const acc: IStreamAcc = {};
     applyTemplateFillEvent(acc, {

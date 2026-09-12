@@ -20,6 +20,8 @@ export interface ITemplateFillTemplate {
   error?: string;
   /** 实时预览：filling 事件逐批累积的已产出字段值 {key: value} */
   values?: Record<string, string>;
+  /** 后台任务锚点（断连重连轮询用）；旧消息无此字段 → 轮询不触发 */
+  task_id?: string;
 }
 
 export interface ITemplateFillState {
@@ -83,7 +85,7 @@ export interface ITemplateFillEvent {
   download?: ITemplateFillDownload;
   error?: string;
   templates?: Array<{ template_id: string; name: string; slot_count?: number }>;
-  /** confirm_pending：挂起任务 ID */
+  /** confirm_pending：挂起任务 ID；filling/filled/failed：后台任务锚点（断连重连轮询用） */
   task_id?: string;
   /** confirm_pending：Redis 唤醒 nonce */
   confirm_nonce?: string;
@@ -142,6 +144,7 @@ export function applyTemplateFillEvent(
     tf.templates.push(t);
   }
   if (d.name) t.name = d.name;
+  if (d.task_id) t.task_id = d.task_id;
   if (d.stage === 'filling') {
     t.status = 'filling';
     // done/total 缺省（渲染前产值补推事件）时保留既有进度，进度口径仍以 LLM 批次为准
