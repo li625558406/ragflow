@@ -207,7 +207,7 @@ def _write_snapshot(task_id: str, force: bool = False, **fields) -> None:
         if not force and now - _last_snapshot_ts.get(task_id, 0.0) < _PROGRESS_MIN_INTERVAL:
             return
         _last_snapshot_ts[task_id] = now
-        payload = {"updated_at": int(now)}
+        payload = {"updated_at": int(now * 1000)}  # 毫秒 epoch，与读侧 current_timestamp() 同量纲
         payload.update(fields)
         REDIS_CONN.set(_PROGRESS_KEY.format(task_id=task_id),
                        json.dumps(payload, ensure_ascii=False), exp=_PROGRESS_TTL)

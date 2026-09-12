@@ -110,6 +110,14 @@ class TestBuildProgressPayload:
                                                             update_offset_ms=601_000), snap)
         assert p["stalled"] is True
 
+    def test_not_stalled_when_snapshot_alive_second_epoch(self):
+        # 跨量纲对抗：快照 updated_at 传旧秒级值（10位），读侧防御归一到毫秒 → 不误报
+        snap = {"status": "generating",
+                "updated_at": int(time.time()) - 10}
+        p = _template_api.build_progress_payload(self._task(status="generating",
+                                                            update_offset_ms=601_000), snap)
+        assert p["stalled"] is False
+
     def test_stalled_when_snapshot_has_no_updated_at(self):
         # 旧版本快照无 updated_at 字段：退回仅 DB 信号判定 → stalled
         p = _template_api.build_progress_payload(self._task(status="generating",

@@ -645,15 +645,18 @@ def build_progress_payload(task, snapshot: dict | None, download: dict | None = 
     进度数字停更但状态/终态值仍准确。
     stalled：非终态且 DB update_time 超阈值（服务器重启 daemon 线程死）→ 前端
     提示可重试。双信号防误报：DB update_time 只在状态跃迁刷新，长 generating
-    任务会被超阈值——但快照 updated_at（executor 每次写快照都刷新，毫秒 epoch）
-    仍新鲜说明任务活着，不判 stalled；两个活性信号都停跳才判中断。"""
+    任务会被超阈值——但快照 updated_at（executor 每次写快照都刷新，毫秒 epoch，
+    旧秒级值读侧防御归一）仍新鲜说明任务活着，不判 stalled；两个活性信号都停跳才判中断。"""
     status = (snapshot or {}).get("status") or task.status
     values = (snapshot or {}).get("values")
     if values is None:
         values = (task.values or {}).get("render") if isinstance(task.values, dict) else None
     snap_alive = False
     if snapshot and snapshot.get("updated_at"):
-        snap_alive = (current_timestamp() - snapshot["updated_at"]) <= _PROGRESS_STALLED_SECONDS * 1000
+        snap_ts = snapshot["updated_at"]
+        if snap_ts < 10**12:  # 兼容旧秒级快照：归一到毫秒
+            snap_ts *= 1000
+        snap_alive = (current_timestamp() - snap_ts) <= _PROGRESS_STALLED_SECONDS * 1000
     stalled = (task.status not in TERMINAL_TASK_STATUSES
                and bool(task.update_time)
                and (current_timestamp() - task.update_time) > _PROGRESS_STALLED_SECONDS * 1000
