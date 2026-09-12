@@ -22,8 +22,8 @@
 download 列表 JSON（下游 Message 节点 _extract_downloads 识别后渲染下载/预览，
 契约同 DocGenerator）。
 
-检索/产值复用 rag.svr.template_fill.executor 既有函数（与填写任务同一条
-确定性 pipeline，不走 tpl_fill_task 表、不建任务行）。类名刻意取 TemplateFill
+检索/产值/渲染经 tpl_fill_task 后台执行器执行（与 B端填写任务同 pipeline），
+节点只做任务创建与进度观察。类名刻意取 TemplateFill
 而非 FillTemplate：Agent 节点的工具（agent/tools/template_fill.py 的 C 端
 FillTemplate 工具）同样经 component_class 解析且 agent.component 优先，
 组件类若与工具类同名会遮蔽工具、破坏存量画布，两包不得重名。
@@ -31,12 +31,12 @@ FillTemplate 工具）同样经 component_class 解析且 agent.component 优先
 import asyncio
 import json
 import logging
-import os
 import re
 from functools import partial
 
 from agent.component.base import ComponentBase, ComponentParamBase
 from api.db.services.template_fill_service import (
+    TplFillTaskService,
     TplTemplateService,
     TplTemplateVersionService,
     _sanitize_filename,
@@ -44,6 +44,7 @@ from api.db.services.template_fill_service import (
 from common import settings
 from common.misc_utils import get_uuid
 from rag.svr.template_fill import executor
+from rag.svr.template_fill.spawn import spawn_fill_task
 from rag.utils.redis_conn import REDIS_CONN
 
 logger = logging.getLogger(__name__)
@@ -66,27 +67,6 @@ _SELECT_SYSTEM = (
 _USER_FILE_EVIDENCE_MAX = 2000
 # Begin 表单字段进产值 LLM 背景信息的单字段截断上限
 _BEGIN_FIELD_PROMPT_MAX = 200
-# 单次画布运行的 LLM 并发总闸：多范本并行 × 产值批次并发共用这一个信号量
-# （executor.generate_values 接收外部 sem），防止多范本时并发调用数相乘打爆 provider
-_FILL_CONCURRENCY = 4
-# 画布侧 KB 检索并发闸：与产值总闸同理，防止多范本共享检索的槽级并发打爆 ES
-# （executor.retrieve_all_shared 接收外部 sem；B 端任务管道不传 sem，走
-# executor 自建 RETRIEVAL_CONCURRENCY，行为零变化）。env 坏值（非数字/"0"）降级
-# 默认而非炸 import / Semaphore(0) 永久阻塞。
-def _parse_concurrency(default: int) -> int:
-    raw = os.getenv("TEMPLATE_FILL_RETRIEVAL_CONCURRENCY", "")
-    try:
-        return max(1, int(raw))
-    except (TypeError, ValueError):
-        if raw:
-            logger.warning("invalid TEMPLATE_FILL_RETRIEVAL_CONCURRENCY=%r, fallback to %d", raw, default)
-        return default
-
-
-_RETRIEVAL_CONCURRENCY = _parse_concurrency(2)
-# 渲染前补推产值（实时预览兜底）单事件最大槽位数：默认值兜底常占大模板的
-# 绝大多数槽位，分批控单事件体积（SSE 帧 ~10KB 量级），防整包 JSON 撑爆帧
-_VALUES_PUSH_CHUNK = 40
 
 # P2 暂停确认：预判后挂起等待用户在对话侧确认（confirm_pending SSE → 前端确认卡片
 # → POST /template/fill/confirm 写 Redis 键 → 本节点轮询读取）。
@@ -96,6 +76,30 @@ _CONFIRM_POLL_INTERVAL = 1.5    # Redis 轮询间隔（与 cancel 探针同量�
 
 class _FillCancelled(Exception):
     """画布取消中断填写：不落 failed 事件，由 invoke 统一推 cancelled。"""
+
+
+def _canvas_task_params(begin_fields: dict, query: str, decision: dict | None,
+                        llm_item_keys: set, placeholders: list[dict],
+                        user_file_text: str) -> dict:
+    """组装委托给 executor.execute_task 的任务 params：
+    背景（Begin 字段+需求描述，与节点内 background 同构）+ 下划线保留键
+    （直填值/预判变化键/检索跳过键/用户文件证据），executor 侧 split_canvas_params 拆解。
+    llm_item_keys 为确认后仍要走检索+LLM 的字段 key 集合；其余 llm 槽（D−C 与直填）
+    跳过检索，由 executor 的 missing 显式纳入 → _merge_default_values 兜底。"""
+    decision = decision or {}
+    direct = decision.get("values") or {}
+    changed = decision.get("changed") or set()
+    skip = [it["key"] for it in placeholders
+            if it.get("key") and executor._norm_fill_mode(it) == "llm"
+            and it["key"] not in llm_item_keys]
+    params: dict = dict(begin_fields)
+    if query and query.strip():
+        params["用户需求描述"] = query.strip()[:_BEGIN_FIELD_PROMPT_MAX]
+    params["_direct_values"] = {str(k): str(v) for k, v in direct.items()}
+    params["_changed_keys"] = sorted(str(k) for k in changed)
+    params["_retrieve_skip_keys"] = skip
+    params["_user_file_text"] = user_file_text or ""
+    return params
 
 
 def build_candidates(rows: list[dict], latest_of) -> list[dict]:
@@ -315,114 +319,25 @@ class TemplateFill(ComponentBase):
         self._push_progress({"stage": "confirm_timeout"})
         return decisions
 
-    async def _fill_one(self, tenant_id: str, cand: dict, chunks_by_key: dict, query: str,
-                        begin_fields: dict, user_file_text: str, sem: asyncio.Semaphore,
-                        on_progress=None, should_cancel=None,
-                        decision: dict | None = None) -> tuple[dict, dict, int]:
-        """对单个选中范本走完整填写 pipeline：LLM 产值 → param 直取 → 渲染。
-        检索已由 _invoke_async 跨范本共享完成（chunks_by_key 传入）；sem 为全局
-        LLM 并发闸（多范本并行 × 批次并发共用）；on_progress 透传 executor
-        批次产值进度回调 (done, total, new_values)；should_cancel 为取消探针，透传给
-        executor.generate_values（命中抛 GenerateCancelled，由调用方转 _FillCancelled）；
-        decision 为暂停确认产物（None = 未走确认，行为与现状一致）：
-        {"changed": set, "values": dict}，values 为用户直填值（空串=明确清空）。
-        返回 (download_info, cell_status, filled_count)。"""
-        placeholders = cand["_placeholders"]
-        decision = decision or {}
-        direct_values = decision.get("values") or {}
-        changed_keys = decision.get("changed") or set()
-
-        # ③ 用户上传文件作为填写证据：预置片段插到每槽证据首位（优先于 KB 片段）
-        if user_file_text:
-            for it in placeholders:
-                if executor._norm_fill_mode(it) != "llm" or not it.get("key"):
-                    continue
-                slot = chunks_by_key.setdefault(it["key"], {"chunks": [], "query": ""})
-                slot["chunks"].insert(0, {
-                    "content": f"[用户上传文件] {user_file_text}",
-                    "doc_id": "", "doc_name": "用户上传文件", "similarity": 1.0})
-
-        # ④ LLM 产值（背景信息 = Begin 表单字段 + 需求描述）+ param 模式直取 Begin 字段
-        # P2 条件执行：llm 槽与检索一致收窄——用户直填直取（不进 LLM）；
-        # 有默认值且预判未变化（D−C）不进 LLM，直接走 _merge_default_values 兜底
-        llm_placeholders = [it for it in placeholders
-                            if executor._norm_fill_mode(it) == "llm" and it.get("key")
-                            and it["key"] not in direct_values
-                            and not (str(it.get("default_value") or "")
-                                     and it["key"] not in changed_keys)]
-        llm_chunks = {it["key"]: chunks_by_key.get(it["key"], {"chunks": [], "query": ""})
-                      for it in llm_placeholders}
-        background = dict(begin_fields)
-        if query:
-            background["用户需求描述"] = query[:_BEGIN_FIELD_PROMPT_MAX]
-        generated, missing = await executor.generate_values(
-            tenant_id, llm_placeholders, llm_chunks, background, sem=sem,
-            on_progress=on_progress, should_cancel=should_cancel)
-        # P2：D−C 字段未进 LLM 产值，也就不会出现在 generate_values 返回的
-        # missing 里；显式纳入 missing 才能让 _merge_default_values 直取默认值
-        # （否则这些字段永远渲染为空白，条件执行的免检索免 LLM 收益失效）。
-        # 已有产值/直填的键跳过，不覆盖。
-        for it in placeholders:
-            k = it.get("key")
-            if (k and k not in generated and k not in direct_values
-                    and executor._norm_fill_mode(it) == "llm"
-                    and str(it.get("default_value") or "")
-                    and k not in changed_keys):
-                missing.add(k)
-        executor._merge_param_values(placeholders, generated, missing, begin_fields)
-        # P2 用户直填值直取（空串=明确清空，渲染为空）；随后作为沉淀 override。
-        # 先摘出 missing，防 _merge_default_values 把默认值回填覆盖用户直填
-        for k, v in direct_values.items():
-            generated[k] = v
-            missing.discard(k)
-        executor._merge_default_values(placeholders, generated, missing)
-        values, cell_status = executor.build_values(placeholders, generated)
-
-        # 实时预览兜底：param 直取与默认值兜底（D−C、LLM 空值回退）不经过
-        # LLM 批次回调，产值从不随 filling 事件下发——大模板里这往往是绝大多数
-        # 槽位，预览会一直停在虚线槽位（用户视角「没看到 AI 填入」）。渲染前
-        # 把非空产值分批补推；前端 values 合并幂等，与批次事件重叠无副作用。
-        # 不带 done/total（进度口径仍以 LLM 批次为准），前端 reducer 按缺省跳过。
-        pending = {k: v for k, v in values.items() if v not in (None, "")}
-        for i in range(0, len(pending), _VALUES_PUSH_CHUNK):
-            part = dict(list(pending.items())[i:i + _VALUES_PUSH_CHUNK])
-            self._push_progress({"stage": "filling", "template_id": cand["template_id"],
-                                 "name": cand["name"], "values": part})
-
-        # ⑤ 渲染（工作副本缺失/渲染失败向上抛，由 invoke_async 统一落 _ERROR）
-        from rag.svr.template_fill import renderer
-        blob = settings.STORAGE_IMPL.get(cand["template_id"], cand["_ver"].render_file_id)
-        if not blob:
-            raise ValueError("范本工作副本缺失，请重新上传或识别填写点")
-        addr_by_key = None
-        if cand["file_type"] == "xlsx":
-            addr_by_key = {it["key"]: it.get("addr") for it in placeholders if it.get("key")}
-        out = renderer.render(cand["file_type"], blob, values, addr_by_key)
-
-        # 产值沉淀为默认值（auto）：失败仅告警，不影响成稿交付
-        # （TplTemplateVersionService 已在模块顶部导入；同步 DB 调用，与文件内
-        #  _load_candidates 等既有同步调用惯例一致）
+    def _bridge_download(self, tenant_id: str, cand: dict, row) -> dict | None:
+        """成稿 bucket 桥接：fill-task 稿件在 {template_id} bucket，拷入
+        {tenant_id}-downloads（既有 /agents/download 与 /files/{id}/content 契约）。
+        确定性对象名 tplfill-{task_id} 幂等覆盖。失败返回 None（降级为 failed 事件）。"""
         try:
-            TplTemplateVersionService.sediment_defaults(
-                cand["template_id"], cand["_ver"].id, values,
-                override_keys=set(direct_values.keys()))
-        except Exception:  # noqa: BLE001 — 沉淀失败不阻断成稿交付
-            logger.warning("sediment_defaults failed, template=%s",
-                           cand["template_id"], exc_info=True)
-
-        # ⑥ 落稿：bucket 用 {tenant_id}-downloads（/agents/download 与 /files/{id}/content
-        # 两个端点的既有读取契约都是这个 bucket，前端下载与在线预览因此都可直接用）
-        doc_id = get_uuid()
-        settings.STORAGE_IMPL.put(f"{tenant_id}-downloads", doc_id, out)
-        ext = cand["file_type"]
-        filename = f"{_sanitize_filename(cand['name'])}.{ext}"
-        filled = sum(1 for s in cell_status.values() if s == "filled")
-        return ({
-            "doc_id": doc_id, "filename": filename,
-            "mime_type": _MIME_BY_TYPE.get(ext, "application/octet-stream"),
-            "size": len(out),
-            "url": f"/api/v1/agents/download?id={doc_id}&created_by={tenant_id}",
-            "name": filename}, cell_status, filled)
+            blob = settings.STORAGE_IMPL.get(cand["template_id"], row.result_file_id)
+            if not blob:
+                return None
+            doc_id = f"tplfill-{row.id}"
+            settings.STORAGE_IMPL.put(f"{tenant_id}-downloads", doc_id, blob)
+            ext = cand["file_type"]
+            filename = f"{_sanitize_filename(cand['name'])}.{ext}"
+            return {"doc_id": doc_id, "filename": filename, "name": filename,
+                    "mime_type": _MIME_BY_TYPE.get(ext, "application/octet-stream"),
+                    "size": len(blob),
+                    "url": f"/api/v1/agents/download?id={doc_id}&created_by={tenant_id}"}
+        except Exception:  # 桥接失败降级为 failed 事件，不炸观察循环
+            logger.warning("bridge download failed, task=%s", row.id, exc_info=True)
+            return None
 
     async def _invoke_async(self, **kwargs):
         if self.check_if_canceled("TemplateFill processing"):
@@ -463,100 +378,114 @@ class TemplateFill(ComponentBase):
                 out.append(it)
             return out
 
-        # ② 跨范本共享检索：所有选中范本的填写点按 (top_k, 检索词) 去重，
-        # 同一检索词只查一次 ES（多范本重合场景 ES 压力骤减）；单槽失败降级空证据；
-        # 槽级并发钉在 _RETRIEVAL_CONCURRENCY + 取消探针（批次级取消，命中即中断检索）
-        retrieval_sem = asyncio.Semaphore(_RETRIEVAL_CONCURRENCY)
-        cancelled = lambda: self.check_if_canceled("TemplateFill retrieval/filling")
-        try:
-            chunks_list = await executor.retrieve_all_shared(
-                tenant_id, [_llm_fill_items(c) for c in chosen], kb_ids,
-                task_id=f"canvas:{self._id}",
-                should_cancel=cancelled, sem=retrieval_sem)
-        except executor.GenerateCancelled:
-            # 检索阶段取消信号不外逸：_FillCancelled 只在 gather 之后被判定，
-            # 此处转抛会逸出 invoke_async 被吞成 _ERROR（str 为空串 → canvas
-            # 误判正常），UI 悬挂 + 下游空输出。就地与 gather 后分支同行为：
-            # 推 cancelled 终态事件后返回（不落 failed/done、不写输出）。
-            logger.info("TemplateFill %s cancelled during shared retrieval", self._id)
-            self._push_progress({"stage": "cancelled"})
-            return
+        # ② 委托后台执行器：每范本一个 tpl_fill_task 行 + daemon 线程（复用 B端
+        # _spawn_fill_task 同一调度路径）。执行与连接解耦——断连/刷新后任务照常
+        # 跑完落库；节点降级为观察者。同一范本已有执行中任务则复用观察（不重复起线程）。
+        task_of: dict[str, str] = {}   # template_id -> task_id
+        for c in chosen:
+            tid = c["template_id"]
+            row = TplFillTaskService.find_running(tid, tenant_id)
+            if row is not None:
+                task_of[tid] = row.id
+                continue
+            task_id = get_uuid()
+            TplFillTaskService.insert(
+                id=task_id, template_id=tid, template_version_id=c["_ver"].id,
+                kb_ids=kb_ids,
+                params=_canvas_task_params(
+                    begin_fields, query, decisions.get(tid),
+                    {it["key"] for it in _llm_fill_items(c)},
+                    c["_placeholders"], user_file_text),
+                status="pending", source="canvas", flow_instance_id="",
+                tenant_id=tenant_id, created_by=tenant_id)
+            spawn_fill_task(task_id)
+            task_of[tid] = task_id
 
-        # ③④ 多范本并行填写（LLM 总并发钉在 _FILL_CONCURRENCY）；单范本失败
-        # 不拖死整节点，降级为汇总行提示，其余范本照常产出；每范本推
-        # filling/filled/failed 进度事件（filling total 只数 llm 槽，param 不计）
-        sem = asyncio.Semaphore(_FILL_CONCURRENCY)
+        # ③ 观察者轮询（1.5s，与确认轮询同量级）：读 Redis 快照 + DB 状态，组装
+        # 与既有完全同形的 filling/filled/failed 事件（新增可选 task_id 字段）。
+        # values 只在键数增长时推送（SSE 体积控制；前端合并幂等）。
+        pending_tasks = {tid: t for tid, t in task_of.items()}
+        results: dict[str, tuple[dict | None, str | None]] = {}  # tid -> (dl, err)
+        pushed_values_len: dict[str, int] = {}
+        while pending_tasks:
+            if self.check_if_canceled("TemplateFill observing"):
+                # 画布被停止：未终态任务写取消键（executor 批次/检索探针既有），
+                # 线程自行收口置 cancelled——结果不丢，用户可重连查看
+                for tid, t in list(pending_tasks.items()):
+                    executor.write_cancel_key(t)
+                self._push_progress({"stage": "cancelled"})
+                return
+            await asyncio.sleep(1.5)
+            for cand in chosen:
+                tid = cand["template_id"]
+                if tid not in pending_tasks:
+                    continue
+                task_id = task_of[tid]
+                row = TplFillTaskService.get_or_none(id=task_id)
+                if row is None:
+                    pending_tasks.pop(tid)
+                    results[tid] = (None, "任务行不存在")
+                    self._push_progress({"stage": "failed", "template_id": tid,
+                                         "name": cand["name"],
+                                         "error": "任务行不存在", "task_id": task_id})
+                    continue
+                snap = executor.read_progress_snapshot(task_id)
+                if row.status in ("pending", "retrieving", "generating", "rendering"):
+                    done = (snap or {}).get("done") or 0
+                    total = (snap or {}).get("total")
+                    if total is None:
+                        total = len(_llm_fill_items(cand))
+                    ev = {"stage": "filling", "template_id": tid, "name": cand["name"],
+                          "done": done, "total": total, "task_id": task_id}
+                    vals = (snap or {}).get("values")
+                    if isinstance(vals, dict) and len(vals) > pushed_values_len.get(tid, 0):
+                        ev["values"] = vals
+                        pushed_values_len[tid] = len(vals)
+                    self._push_progress(ev)
+                    continue
+                # 终态
+                pending_tasks.pop(tid)
+                if row.status == "done" and row.result_file_id:
+                    dl = self._bridge_download(tenant_id, cand, row)
+                    if dl is None:
+                        results[tid] = (None, "成稿对象读取失败")
+                        self._push_progress({"stage": "failed", "template_id": tid,
+                                             "name": cand["name"],
+                                             "error": "成稿对象读取失败", "task_id": task_id})
+                        continue
+                    results[tid] = (dl, None)
+                    self._push_progress({"stage": "filled", "template_id": tid,
+                                         "name": cand["name"], "download": dl,
+                                         "task_id": task_id})
+                elif row.status == "cancelled":
+                    results[tid] = (None, "任务已取消")
+                    self._push_progress({"stage": "failed", "template_id": tid,
+                                         "name": cand["name"],
+                                         "error": "任务已取消", "task_id": task_id})
+                else:
+                    err = row.error or (snap or {}).get("error") or "填写失败"
+                    results[tid] = (None, err)
+                    self._push_progress({"stage": "failed", "template_id": tid,
+                                         "name": cand["name"], "error": err,
+                                         "task_id": task_id})
 
-        async def _fill_and_notify(cand: dict, chunks: dict):
-            tid, name = cand["template_id"], cand["name"]
-            if self.check_if_canceled("TemplateFill filling"):
-                raise _FillCancelled()
-            llm_total = len(_llm_fill_items(cand))
-            self._push_progress({"stage": "filling", "template_id": tid, "name": name,
-                                 "done": 0, "total": llm_total})
-
-            def _on_gen_progress(done: int, total: int, new_values: dict | None = None):
-                ev = {"stage": "filling", "template_id": tid,
-                      "name": name, "done": done, "total": total}
-                # 实时预览：该批产出的 {key: value} 随事件下发，前端正文视图逐槽填入
-                if new_values:
-                    ev["values"] = new_values
-                self._push_progress(ev)
-
-            try:
-                dl, cell_status, filled = await self._fill_one(
-                    tenant_id, cand, chunks, query, begin_fields,
-                    user_file_text, sem, on_progress=_on_gen_progress,
-                    should_cancel=cancelled,
-                    decision=decisions.get(cand["template_id"]))
-            except _FillCancelled:
-                raise
-            except executor.GenerateCancelled:
-                # executor 产值/检索批次级取消信号 → 转抛 _FillCancelled()，与
-                # 入口检查同路，由 gather 后统一判定推 cancelled（不落 failed）
-                raise _FillCancelled() from None
-            except Exception as e:
-                logger.warning("TemplateFill %s fill failed: %s", tid, e)
-                self._push_progress({"stage": "failed", "template_id": tid,
-                                     "name": name, "error": str(e)})
-                return (cand, None, {}, 0, e)
-            self._push_progress({"stage": "filled", "template_id": tid,
-                                 "name": name, "download": dl})
-            return (cand, dl, cell_status, filled, None)
-
-        results = await asyncio.gather(
-            *[_fill_and_notify(cand, chunks)
-              for cand, chunks in zip(chosen, chunks_list)],
-            return_exceptions=True)
-
-        if self.check_if_canceled("TemplateFill after gather") or any(
-                isinstance(r, _FillCancelled) for r in results):
-            self._push_progress({"stage": "cancelled"})
-            return
-
-        # download 输出为列表（Message._extract_downloads 原生支持 list 契约，
-        # 前端逐条渲染下载/预览）
+        # ④ 汇总输出（契约与改造前一致：download 列表 + content 汇总）
         downloads: list[dict] = []
         summary_lines: list[str] = []
-        for cand, res in zip(chosen, results):
-            if isinstance(res, BaseException):
-                summary_lines.append(f"《{cand['name']}》：填写失败（{res}）。")
-                continue
-            _cand, dl, _cell_status, filled, _err = res
+        for cand in chosen:
+            tid = cand["template_id"]
+            dl, err = results.get(tid, (None, "填写失败"))
             if dl is None:
-                summary_lines.append(f"《{cand['name']}》：填写失败。")
+                summary_lines.append(f"《{cand['name']}》：填写失败（{err}）。")
                 continue
             downloads.append(dl)
             total = len(cand["_placeholders"])
             summary_lines.append(
-                f"《{cand['name']}》：共 {total} 个填写点，AI 填充 {filled} 个，"
-                f"{total - filled} 个未检索到值已留空。")
+                f"《{cand['name']}》：共 {total} 个填写点，AI 填充完成，"
+                f"未检索到值的填写点已留空。")
         if not downloads:
-            # 失败详情：_fill_and_notify 已捕获的异常在五元组第 5 位，
-            # 未捕获异常（return_exceptions=True）是 BaseException 元素
-            errs = [str(r) if isinstance(r, BaseException) else str(r[4])
-                    for r in results]
-            raise ValueError("所有范本填写均失败：" + "；".join(errs))
+            raise ValueError("所有范本填写均失败：" + "；".join(
+                str(results.get(c["template_id"], ("", "未知"))[1]) for c in chosen))
         self.set_output("download", json.dumps(downloads, ensure_ascii=False))
         suffix = "，可在上方预览或下载成稿。" if len(downloads) == 1 else "，可在上方逐份预览或下载成稿。"
         head = (f"已选用 {len(downloads)} 份范本：\n" if len(downloads) > 1 else "已选用范本")
