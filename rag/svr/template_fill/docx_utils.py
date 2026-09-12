@@ -136,8 +136,8 @@ def _locate_run_span(runs: list, start: int, end: int) -> tuple:
             j, off_j = idx, end - pos
             break
         pos += n
-    if i < 0 or j < 0:  # 理论不可达（anchor 必在拼接串覆盖范围内），兜底尾 run
-        i, j, off_i, off_j = len(runs) - 1, len(runs) - 1, len(runs[-1].text), len(runs[-1].text)
+    if i < 0 or j < 0:  # 理论不可达（anchor 必在拼接串覆盖范围内），兜底安全值防越界
+        i, j, off_i, off_j = max(i, 0), max(j, 0), 0, 0
     return i, j, off_i, off_j
 
 
@@ -145,15 +145,21 @@ def _replace_cross_run_in_place(p: Paragraph, anchor: str, repl: str) -> bool:
     """跨 run 区间替换（格式保真）：只重写 anchor 覆盖的 run 区间——
     首 run 保留 anchor 前文本并接替换值，尾 run 保留 anchor 后文本，中间 run 清空；
     区间外 run 原样不动（段内其他位置格式完整保留）。
-    按替换前出现次数循环保持 str.replace「全部替换」语义，且不重扫替换产物
-    （repl 含 anchor，如手动占位符 anchor==repl 场景，不会死循环）。"""
+
+    扫描策略：按替换前出现次数循环，每轮从上一轮替换终点之后继续 find
+    （scan_from = start + len(repl)），严格复刻 str.replace「不重扫替换产物」
+    的语义——anchor 是 repl 子串时（如 anchor="name"、repl="{{name}}"），
+    刚写入的 repl 不会被再次命中，避免文本腐坏与后续真实出现漏替。
+    中段 run 仅在有文本时置空：空文本 run 的置空唯一效果是经 Run.text setter
+    销毁 rPr 外的结构子节点（w:fldChar/w:drawing 等），跳过即保住结构。"""
     runs = p.runs
     remaining = "".join(r.text for r in runs).count(anchor)
     replaced = False
+    scan_from = 0
     while remaining > 0:
         remaining -= 1
         joined = "".join(r.text for r in runs)
-        start = joined.find(anchor)
+        start = joined.find(anchor, scan_from)
         if start < 0:
             break
         end = start + len(anchor)
@@ -163,8 +169,10 @@ def _replace_cross_run_in_place(p: Paragraph, anchor: str, repl: str) -> bool:
         else:
             runs[i].text = runs[i].text[:off_i] + repl
             for mid in range(i + 1, j):
-                runs[mid].text = ""
+                if runs[mid].text:
+                    runs[mid].text = ""
             runs[j].text = runs[j].text[off_j:]
+        scan_from = start + len(repl)
         replaced = True
     return replaced
 

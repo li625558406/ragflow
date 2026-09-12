@@ -1341,3 +1341,55 @@ def test_cross_run_replace_anchor_equals_replacement_no_loop():
     out = apply_docx_placeholders(blob, [{"addr": "para:0", "anchor": "{{k}}", "key": "k"}])
     p = Document(io.BytesIO(out)).paragraphs[0]
     assert "".join(r.text for r in p.runs) == "AB{{k}}CD"
+
+
+def test_cross_run_replace_anchor_substring_of_repl_no_rescan():
+    """对抗（C1 回归）：anchor 是 repl 的子串（如 anchor="name"、repl="{{name}}"）时，
+    每轮循环若从头重扫 find(anchor)，会命中刚写入的替换产物（"{{name}}" 内含 "name"），
+    导致文本腐坏 + 第二处真实出现漏替。必须用偏移扫描跳过刚写入的 repl，
+    严格复刻 str.replace 不重扫产物的语义。"""
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders
+    blob = _doc_with_runs(["na", "me", "na", "me"])
+    out = apply_docx_placeholders(blob, [{"addr": "para:0", "anchor": "name", "key": "name"}])
+    p = Document(io.BytesIO(out)).paragraphs[0]
+    joined = "".join(r.text for r in p.runs)
+    assert joined == "{{name}}{{name}}"
+    assert joined.count("{{name}}") == 2
+
+
+def test_cross_run_replace_preserves_structured_empty_middle_run():
+    """对抗（I1 回归）：区间中段文本为空但含结构节点（w:fldChar/w:drawing 等）的 run，
+    Run.text = "" setter 会清掉 rPr 外全部子节点，域字符/行内图被删。
+    注意：python-docx 1.2.0 的 Run.text getter 会把 w:br 翻译成 "\\n"（非空），
+    故此处用贡献空文本的 w:fldChar 构造「空文本+结构」run。
+    仅当 run 有文本时才置空；空文本 run 跳过（置空唯一效果就是销毁结构）。"""
+    from docx import Document
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders
+    buf = io.BytesIO()
+    doc = Document()
+    p = doc.add_paragraph()
+    p.add_run("AB")
+    r_mid = p.add_run()      # 空文本 run
+    fc = OxmlElement("w:fldChar")
+    fc.set(qn("w:fldCharType"), "begin")
+    r_mid._r.append(fc)      # 带 w:fldChar 结构节点（域字符/行内图代表）
+    p.add_run("CD")
+    doc.save(buf)
+    out = apply_docx_placeholders(buf.getvalue(), [{"addr": "para:0", "anchor": "BC", "key": "k"}])
+    p2 = Document(io.BytesIO(out)).paragraphs[0]
+    assert "".join(r.text for r in p2.runs) == "A{{k}}D"
+    # 空文本中段 run 的 w:fldChar 必须仍存在
+    assert p2.runs[1]._r.findall(qn("w:fldChar")), "中段空文本 run 的 w:fldChar 被 text='' setter 销毁"
+
+
+def test_cross_run_replace_empty_text_run_sandwich():
+    """纯空文本中段 run（无结构节点）：替换正确落位、中间 run 保持空文本，
+    两侧文本各自保留前缀/后缀。"""
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders
+    blob = _doc_with_runs(["AB", "", "CD"])
+    out = apply_docx_placeholders(blob, [{"addr": "para:0", "anchor": "BC", "key": "k"}])
+    p = Document(io.BytesIO(out)).paragraphs[0]
+    assert [r.text for r in p.runs] == ["A{{k}}", "", "D"]
