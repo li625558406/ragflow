@@ -14,7 +14,6 @@ from peewee import IntegrityError
 
 from rag.svr.document_rewrite.versions import (
     SOURCE_TYPES,
-    _obj_name,
     _root_id_from_doc_id,
 )
 
@@ -51,9 +50,6 @@ class TestPureFunctions:
         assert _root_id_from_doc_id("some-other-obj") == "some-other-obj"
         assert _root_id_from_doc_id("") == ""
         assert _root_id_from_doc_id(None) == ""
-
-    def test_obj_name_deterministic(self):
-        assert _obj_name("root1", 3) == "rewrite-root1-v3"
 
     def test_source_types_enum(self):
         assert set(SOURCE_TYPES) == {"chat_fill", "flow_version", "rewrite", "rollback"}
@@ -220,7 +216,7 @@ class TestFlowAddVersionSwitchCurrent:
 
 
 class TestRegisterChatVersion:
-    """取号撞唯一索引 → 重试（最多3次）；对象名确定性。"""
+    """取号撞唯一索引 → 重试（最多3次）；对象名与行 uuid 1:1。"""
 
     def _patch_env(self, monkeypatch, model, puts):
         import api.db.db_models as db_models
@@ -265,15 +261,17 @@ class TestRegisterChatVersion:
             "u1", "task9", b"blob", "docx", "报告",
             source_type="rewrite", instruction="改第二节",
         )
-        # 第一次 IntegrityError → 重试后成功，version_no 仍取 1（first()=None），对象名确定；
-        # 每次尝试都 put 同名对象（覆盖写幂等，blob 回滚不存在故依赖确定性对象名）
+        # 第一次 IntegrityError → 重试后成功，version_no 仍取 1（first()=None）；
+        # 对象名与行 uuid 1:1（rewrite-{行id}）：每次尝试各写各的对象，
+        # 败者重试不会覆盖胜者已提交版本的对象内容（防跨请求 blob 污染）
         assert len(inserts) == 2
         assert out["version_no"] == 1
-        assert out["obj"] == "rewrite-task9-v1"
+        assert out["obj"] == f"rewrite-{out['id']}"
+        assert [obj for _, obj in puts] == [f"rewrite-{r['id']}" for r in inserts]
+        assert len({obj for _, obj in puts}) == 2  # 两次尝试对象名互不相同
         assert out["root_id"] == "task9"
         assert out["source_type"] == "rewrite"
         assert out["file_name"] == "报告.docx"
-        assert puts == [("u1", "rewrite-task9-v1"), ("u1", "rewrite-task9-v1")]
 
     def test_exhausted_retry_raises(self, monkeypatch):
         from rag.svr.document_rewrite import versions as vmod

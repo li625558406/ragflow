@@ -11,6 +11,7 @@ DB/存储依赖全部延迟 import（工具注册期安全）。设计 §7：
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -26,10 +27,6 @@ def _root_id_from_doc_id(doc_id: str) -> str:
     if doc_id.startswith("tplfill-"):
         return doc_id[len("tplfill-"):]
     return doc_id
-
-
-def _obj_name(root_id: str, version_no: int) -> str:
-    return f"rewrite-{root_id}-v{version_no}"
 
 
 def _chat_bucket(tenant_id: str) -> str:
@@ -66,7 +63,11 @@ def register_chat_version(tenant_id: str, root_id: str, blob: bytes, file_type: 
     """登记一个 chat 版本：MinIO 写 {tenant}-downloads + doc_rewrite_version 行。
 
     force_version_no 用于首次登记原始成稿（=1）；正常重写事务取号自动递增。
-    对象名确定性（rewrite-{root}-v{n}），重试覆盖写幂等。返回版本行 dict。
+    对象名与行身份 1:1（rewrite-{行uuid}）：并发撞号的败者重试后写自己的新对象，
+    不会覆盖胜者已提交版本的对象内容；失败尝试遗留的孤儿对象无害。
+    返回版本行 dict。
+    契约：不得在外层 DB.atomic() 事务内调用——内层 atomic 退化为 savepoint，
+    重试取号的 SELECT MAX 复用外层快照（REPEATABLE READ）会取到旧号导致假性冲突。
     注意：peewee 的 Model.insert() 返回 Insert 查询而非行实例，此处用 create()
     并显式填 id/时间戳（对齐 CommonService.insert 的行为）。
     """
@@ -96,12 +97,13 @@ def register_chat_version(tenant_id: str, root_id: str, blob: bytes, file_type: 
                         .first()
                     )
                     version_no = (last.version_no + 1) if last else 1
-                obj = _obj_name(root_id, version_no)
+                row_id = get_uuid()
+                obj = f"rewrite-{row_id}"
                 FileService.put_blob(tenant_id, obj, blob)
                 now_ts = current_timestamp()
                 now_dt = datetime_format(datetime.now())
                 row = DocRewriteVersion.create(
-                    id=get_uuid(),
+                    id=row_id,
                     root_id=root_id,
                     version_no=version_no,
                     source_type=source_type,
@@ -118,8 +120,9 @@ def register_chat_version(tenant_id: str, root_id: str, blob: bytes, file_type: 
                     update_date=now_dt,
                 )
                 return row.__data__
-        except IntegrityError as e:  # 并发取号撞唯一索引 → 重试
+        except IntegrityError as e:  # 并发取号撞唯一索引 → 退避后重试
             last_err = e
+            time.sleep(0.05 * (_attempt + 1))
             logger.warning("[rewrite] version_no conflict root=%s retry=%s", root_id, _attempt)
     raise RuntimeError(f"版本登记并发冲突，请重试：{last_err}")
 
