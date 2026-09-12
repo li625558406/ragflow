@@ -2191,6 +2191,30 @@ class TplFillTask(DataBaseModel):
         db_table = "tpl_fill_task"
 
 
+class DocRewriteVersion(DataBaseModel):
+    """C端对话成稿局部重写版本链（append-only，复制式回退）。
+
+    root_id：版本链锚。chat=原成稿对象名派生（tplfill-{task_id} → task_id）；
+    flow=flow_id（flow 场景版本链本体在 flow_version 表，本表不写 flow 行）。
+    当前版恒为链内 max(version_no)，无指针字段。
+    """
+    id = CharField(max_length=32, primary_key=True)
+    root_id = CharField(max_length=32, index=True)
+    version_no = IntegerField(index=True)
+    source_type = CharField(max_length=16, default="rewrite", verbose_name="chat_fill/flow_version/rewrite/rollback")
+    bucket = CharField(max_length=128, default="")
+    obj = CharField(max_length=1024, default="")
+    file_name = CharField(max_length=512, default="")
+    file_type = CharField(max_length=16, default="docx")
+    instruction = TextField(null=True)
+    section_title = CharField(max_length=512, default="")
+    created_by = CharField(max_length=32, index=True)
+
+    class Meta:
+        db_table = "doc_rewrite_version"
+        indexes = ((("root_id", "version_no"), True),)
+
+
 # ── 智能采集通知系统 ──────────────────────────────────────────────
 class Notification(DataBaseModel):
     """采集通知主体：一个 site 一轮新增聚合 = 1 条记录。"""
@@ -2825,6 +2849,10 @@ def migrate_db():
     if not TplFillTask.table_exists():
         TplFillTask.create_table(safe=True)
         logging.info("template fill: tpl_fill_task table created")
+    # ── C端对话成稿局部重写版本链（append-only，复制式回退） ──────
+    if not DocRewriteVersion.table_exists():
+        DocRewriteVersion.create_table(safe=True)
+        logging.info("document rewrite: doc_rewrite_version table created")
     seed_default_permissions()
 
     logging.disable(logging.NOTSET)

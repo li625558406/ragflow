@@ -230,7 +230,8 @@ class FlowVersionService(_FlowServiceBase):
     @classmethod
     @DB.connection_context()
     def add_version(cls, flow: dict, object_name: str, file_name: str, file_type: str,
-                    file_size: int, source: str, created_by: str) -> dict:
+                    file_size: int, source: str, created_by: str,
+                    switch_current: bool = True) -> dict:
         # cls.insert 自动填充 id + create/update 时间戳，model.create 不会填 id，故统一走 insert。
         # 事务内禁止再调带 connection_context 的方法（嵌套上下文会报
         # "Attempting to close database while transaction is open"），version_no 内联计算。
@@ -253,11 +254,14 @@ class FlowVersionService(_FlowServiceBase):
                 created_by=created_by,
                 node_status=flow["status"],
             )
-            FlowInstance.update(
-                current_version_id=v.id,
-                update_time=current_timestamp(),
-                update_date=datetime_format(datetime.now()),
-            ).where(FlowInstance.id == flow["id"]).execute()
+            # switch_current=False：AI 局部重写只追加版本，不改变用户当前指向
+            # （current 仍锚定用户手上的版），由用户在前端显式切换。默认 True，B端行为不变。
+            if switch_current:
+                FlowInstance.update(
+                    current_version_id=v.id,
+                    update_time=current_timestamp(),
+                    update_date=datetime_format(datetime.now()),
+                ).where(FlowInstance.id == flow["id"]).execute()
         return v.__data__
 
     @classmethod
