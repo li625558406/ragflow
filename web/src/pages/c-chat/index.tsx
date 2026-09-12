@@ -2433,6 +2433,7 @@ export default function CChat() {
                                         ? streamState.templateFill
                                         : msg.templateFill
                                     }
+                                    streaming={streaming}
                                     onConfirmSubmitted={markConfirmSubmitted}
                                     onLivePreviewOpenChange={
                                       handleTplPreviewOpenChange

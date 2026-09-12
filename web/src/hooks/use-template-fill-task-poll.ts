@@ -20,29 +20,49 @@ export function useTemplateFillTaskPoll(
   const [overrides, setOverrides] = useState<
     Record<string, Partial<ITemplateFillTemplate>>
   >({});
-  // 已到终态的 task_id，停轮询（终态本地合成后不再请求）
+  // 已到终态的 task_id，停轮询（终态本地合成后不再请求）。
+  // 刻意不清理：retry 场景走新一轮消息/新卡片（新 task_id），同 task_id 复活不存在，
+  // 清理反而可能让已合成终态的行被再次轮询覆盖。
   const stopped = useRef<Set<string>>(new Set());
+  // 最新 templates 存 ref：effect deps 只留 [enabled]，interval 不随 SSE 事件
+  // （流式期间每次归约都换 templates 引用）拆建重置，避免请求被事件频率放大。
+  const templatesRef = useRef(templates);
+  templatesRef.current = templates;
 
   useEffect(() => {
-    if (!enabled || !templates?.length) return;
-    const targets = templates.filter(
-      (t) =>
-        t.task_id && t.status === 'filling' && !stopped.current.has(t.task_id),
-    );
-    if (!targets.length) return;
+    if (!enabled) return;
     let cancelled = false;
 
     const tick = async () => {
+      const targets = (templatesRef.current || []).filter(
+        (t) =>
+          t.task_id &&
+          t.status === 'filling' &&
+          !stopped.current.has(t.task_id),
+      );
       for (const t of targets) {
         const taskId = t.task_id!;
         try {
-          // request 为 axios 实例，data 为 {code, data, message} 信封
+          // request 为 umi-request extend 实例，data 为 {code, data, message} 信封
           const { data } = await request.get(
             api.templateFillTaskProgress(taskId),
           );
           if (cancelled) return;
           const d = data?.data || data;
           if (!d?.status) continue;
+          // stalled 中断：后端探活判定任务已死但 status 仍是生成中——直接判失败停轮询，
+          // 否则非终态分支只更新进度、永远轮询，中断提示不可达
+          if (d.stalled) {
+            stopped.current.add(taskId);
+            setOverrides((prev) => ({
+              ...prev,
+              [taskId]: {
+                status: 'failed' as const,
+                error: '任务中断，可重试',
+              },
+            }));
+            continue;
+          }
           if (TERMINAL_TASK_STATUSES.includes(d.status)) {
             stopped.current.add(taskId);
             setOverrides((prev) => ({
@@ -52,7 +72,11 @@ export function useTemplateFillTaskPoll(
                   ? {
                       status: 'filled' as const,
                       download: d.download,
-                      values: d.values || undefined,
+                      // values 缺省时不下该键：避免清掉 SSE/回放已累积的 t.values
+                      //（「查看填写内容」入口依赖它）
+                      ...(d.values && Object.keys(d.values).length
+                        ? { values: d.values }
+                        : {}),
                     }
                   : {
                       status: 'failed' as const,
@@ -79,13 +103,15 @@ export function useTemplateFillTaskPoll(
       }
     };
 
+    // 仅依赖 enabled（历史恢复态挂载即启停）：interval 稳定，不随流式事件重建；
+    // 无轮询目标时 tick 空转直接返回，开销可忽略
     const timer = setInterval(tick, POLL_INTERVAL_MS);
     tick();
     return () => {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [enabled, templates]);
+  }, [enabled]);
 
   // 合并 override：SSE 已到 filled 的行以 SSE 为准（丢弃 override）；
   // filling 行叠加轮询产物（done/total/values），终态 override 换 status。

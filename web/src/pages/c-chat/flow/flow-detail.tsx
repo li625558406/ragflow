@@ -973,6 +973,7 @@ function ConversationView({
             <div className="max-w-[90%]">
               <TemplateFillProgress
                 state={live.templateFill}
+                streaming={Boolean(live.busy)}
                 onConfirmSubmitted={onConfirmSubmitted}
                 onLivePreviewOpenChange={onLivePreviewOpenChange}
                 extraAction={(dl) => extraAction?.(dl)}

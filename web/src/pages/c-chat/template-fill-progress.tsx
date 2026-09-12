@@ -13,12 +13,16 @@ import { useEffect, useState, type ReactNode } from 'react';
 
 export default function TemplateFillProgress({
   state,
+  streaming = false,
   onPreview,
   extraAction,
   onConfirmSubmitted,
   onLivePreviewOpenChange,
 }: {
   state?: ITemplateFillState;
+  /** 实时流式进行中（c-chat 传 sendLoading 派生标志；flow 传 live.busy）：
+   *  流式期间 SSE 为准不轮询；false（历史恢复态）才启用断连重连轮询（设计 §5） */
+  streaming?: boolean;
   /** 成稿点击预览（c-chat 传 setPreviewDoc；不传则文件名为纯文本） */
   onPreview?: (dl: ITemplateFillDownload) => void;
   /** 条目右侧附加动作（flow 传「存为流程版本」按钮） */
@@ -31,9 +35,9 @@ export default function TemplateFillProgress({
   // 实时预览：当前打开正文预览的范本 id（存 id 而非对象快照，values 更新时
   // 从 state.templates 派生最新引用，预览槽位才能随 filling 事件实时填入）
   const [liveTplId, setLiveTplId] = useState<string>('');
-  // 断连重连：带 task_id 且 SSE 已停（历史恢复态）的行走轮询 override；
-  // 实时流式期间本组件也会挂载，override 与 SSE 幂等合并无冲突
-  const mergedTemplates = useTemplateFillTaskPoll(state?.templates, true);
+  // 断连重连：带 task_id 且 SSE 已停（历史恢复态，!streaming）的行走轮询 override；
+  // 实时流式期间（streaming=true）SSE 为准不轮询，避免请求被 SSE 事件放大
+  const mergedTemplates = useTemplateFillTaskPoll(state?.templates, !streaming);
   const mergedState = mergedTemplates
     ? ({ ...(state || {}), templates: mergedTemplates } as ITemplateFillState)
     : state;
