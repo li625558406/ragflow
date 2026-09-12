@@ -477,6 +477,55 @@ def test_parse_detection_response_oversize_anchor_dropped():
     assert [it["key"] for it in out] == ["ok"]
 
 
+def test_parse_detection_response_overlong_key_truncated():
+    """对抗：LLM 照中文长字段名直译出 >64 字符 key（生产实测 71 字符导致整次识别
+    判死），parse 阶段必须截断到 ≤64 且仍为合法 snake_case，其余建议不受牵连。"""
+    from rag.svr.template_fill.detector import parse_detection_response
+    long_key = "liability_for_refusing_to_replace_key_construction_management_personnel"
+    assert len(long_key) == 71
+    raw = f'[{{"line": 0, "anchor": "____________", "key": "{long_key}", "name": "拒换_KEY责任"}},' \
+          '{"line": 4, "anchor": "____年____月____日", "key": "sign_date", "name": "签字日期"}]'
+    out = parse_detection_response(raw, CANDS)
+    assert len(out) == 2
+    k = out[0]["key"]
+    assert len(k) <= 64 and k.startswith("liability_for_refusing")
+    # 截断后仍过 validate_placeholders（生产故障链路的终审）
+    from rag.svr.template_fill.detector import validate_placeholders
+    ok, err = validate_placeholders(out, CANDS)
+    assert ok, err
+
+
+def test_parse_detection_response_truncated_key_dedup_keeps_length():
+    """对抗：两条超长 key 截断后前 64 字符相同 → 去重后缀拼接时必须同步收缩
+    基串，保证含后缀总长仍 ≤64（旧逻辑 key+"_2" 会溢出到 66）。"""
+    from rag.svr.template_fill.detector import parse_detection_response
+    long_key = "liability_for_refusing_to_replace_key_construction_management_personnel"
+    raw = f'[{{"line": 0, "anchor": "____________", "key": "{long_key}", "name": "A"}},' \
+          f'{{"line": 0, "anchor": "____________", "key": "{long_key}", "name": "B"}}]'
+    out = parse_detection_response(raw, CANDS)
+    assert len(out) == 2
+    k1, k2 = out[0]["key"], out[1]["key"]
+    assert k1 != k2
+    for k in (k1, k2):
+        assert len(k) <= 64
+        import re as _re
+        assert _re.fullmatch(r"[a-z][a-z0-9_]{0,63}", k)
+
+
+def test_parse_detection_response_64char_key_dedup_no_overflow():
+    """对抗：恰好 64 字符的 key 撞车去重，加后缀后不得超限。"""
+    from rag.svr.template_fill.detector import parse_detection_response
+    k64 = "a" + "b" * 63
+    assert len(k64) == 64
+    raw = f'[{{"line": 0, "anchor": "____________", "key": "{k64}", "name": "A"}},' \
+          f'{{"line": 0, "anchor": "____________", "key": "{k64}", "name": "B"}}]'
+    out = parse_detection_response(raw, CANDS)
+    assert len(out) == 2
+    for it in out:
+        assert len(it["key"]) <= 64
+    assert out[1]["key"] == "a" + "b" * 61 + "_2"
+
+
 def test_validate_placeholders_rejects_oversize_key():
     """对抗：超过 64 字符的合法 snake_case key 在 validate 阶段被拒
     （parse 的 normalize 不截断长度，长度约束统一收口在 validate）。"""

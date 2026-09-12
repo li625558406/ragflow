@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 
 FILL_MODES = ("llm", "param", "manual")
 KEY_RE = re.compile(r"[^a-z0-9_]+")
+KEY_MAX_LEN = 64  # key 长度上限（与 validate_placeholders 的 [a-z][a-z0-9_]{0,63} 对齐）
 MAX_ANCHOR_LEN = 500  # anchor 超长约束收口在 parse：识别阶段就拦住异常项，不让脏数据流入人工确认/apply 链路
 
 # 手动占位符（与 docx_utils.PH_RE / renderer docxtpl / 前端预览同口径）
@@ -98,7 +99,7 @@ DETECT_SYSTEM = """你是文档模板分析专家。用户给出固定模板中�
 {"line": 行号(int), "anchor": "该行原文中将被替换为占位符的精确子串", "key": "snake_case英文标识", "name": "中文字段名", "description": "给填写模型的说明", "retrieval_query": "适合去知识库检索的查询词", "fill_mode": "llm", "required": true或false}
 规则：
 1. anchor 必须是该行原文的精确子串，禁止改写；一行可有多个填写点（拆成多个元素）。anchor 只能选留白标记（下划线串/连续空格/括号提示）或已填写的现值本身，禁止选字段标签（如"申请人："这类冒号结尾引导词）或正文叙述文字。
-2. 同一含义的填写点 key 全局唯一；日期类建议 key 如 sign_date。
+2. 同一含义的填写点 key 全局唯一，不超过 32 个字符（过长会被截断），日期类建议 key 如 sign_date。
 3. fill_mode 一律填 "llm"（所有填写点统一交给 AI 检索填写，检索不到的留空由人工后续加工）。
 4. 找不到任何填写点输出 []。只输出 JSON 数组，不要输出其它文字。
 5. 正文叙述中以冒号结尾、用于引出下文的句子（如"包括以下内容："、"下列情形之一："）不是填写点，不要输出；只有"标签：＋留白待填值"（如 申请人：/地址：/编号： 后跟空白）才是填写点。"""
@@ -106,7 +107,7 @@ DETECT_SYSTEM = """你是文档模板分析专家。用户给出固定模板中�
 
 def normalize_key(key: str) -> str:
     """归一化为 snake_case：小写 + 非法字符替换为下划线；全空兜底 "field"。
-    注意：不截断长度——长度约束统一收口在 validate_placeholders（[a-z][a-z0-9_]{0,63}）。"""
+    长度截断在 parse_detection_response 内做（含去重后缀同步截断），validate_placeholders 仍保留终审。"""
     k = KEY_RE.sub("_", str(key).strip().lower())
     return k.strip("_") or "field"
 
@@ -163,8 +164,16 @@ def parse_detection_response(raw: str, candidates: list) -> list:
             else:
                 low_confidence = True
         key = normalize_key(it.get("key") or it.get("name") or "field")
+        # 截断兜底：LLM 常照中文长字段名直译出 >64 字符的 key，若放行到
+        # validate_placeholders 会判死整次识别（全部建议被丢弃），故在 parse
+        # 阶段截断保住其余项；去重后缀拼接时同步保证总长不超限
+        key = key[:KEY_MAX_LEN].rstrip("_") or "field"
+        suffix = 2
+        base = key
         while key in used_keys:
-            key = f"{key}_2"
+            tail = f"_{suffix}"
+            key = base[: KEY_MAX_LEN - len(tail)].rstrip("_") + tail
+            suffix += 1
         used_keys.add(key)
         # fill_mode 代码层强制 llm：识别产物统一交给 AI 检索填写（prompt 只是引导，
         # LLM 不听话也拦得住）；manual/param 只能由人工在详情页显式配置
