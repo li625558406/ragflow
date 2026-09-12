@@ -62,7 +62,7 @@ export function useTemplateFillTaskPoll(
               ...prev,
               [taskId]: {
                 status: 'failed' as const,
-                error: '任务中断，可重试',
+                error: '任务中断，请稍后刷新重试',
               },
             }));
             continue;

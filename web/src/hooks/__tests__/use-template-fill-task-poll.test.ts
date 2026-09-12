@@ -72,7 +72,7 @@ describe('useTemplateFillTaskPoll', () => {
     });
   });
 
-  it('stalled（非终态）→ 判 failed「任务中断，可重试」并停止轮询', async () => {
+  it('stalled（非终态）→ 判 failed「任务中断，请稍后刷新重试」并停止轮询', async () => {
     jest.useFakeTimers();
     mockedGet.mockReturnValue(
       envelope({ status: 'generating', stalled: true, done: 2, total: 10 }),
@@ -83,7 +83,7 @@ describe('useTemplateFillTaskPoll', () => {
     await flush();
     expect(result.current?.[0]).toMatchObject({
       status: 'failed',
-      error: '任务中断，可重试',
+      error: '任务中断，请稍后刷新重试',
     });
     jest.advanceTimersByTime(4000);
     await flush();

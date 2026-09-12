@@ -616,22 +616,23 @@ _bridged_tasks: set[str] = set()
 def _bridge_download(task) -> dict | None:
     """done 任务生成稿桥接：从 {template_id} bucket 拷入 {tenant}-downloads
     （/agents/download 与 /files/{id}/content 的既有读取契约），返回 download
-    dict 或 None。模板名查询便宜，保留在记忆化前构造 filename；昂贵的 blob
-    get+put 每任务进程内只做一次（确定性对象名 tplfill-{task_id} 幂等覆盖，
-    记忆化复用不产生重复对象；模板缺失/生成稿缺失/IO 异常均不记忆化，下次
-    轮询自动重试）。"""
+    dict 或 None。模板行查询便宜（取真实 file_type 定扩展名），保留在记忆化前
+    构造 filename；模板缺失/查询失败只是桥接细节，fallback 为 .docx（名退化
+    为 doc_id），不让 done 任务丢下载入口；昂贵的 blob get+put 每任务进程内
+    只做一次（确定性对象名 tplfill-{task_id} 幂等覆盖，记忆化复用不产生重复
+    对象；生成稿缺失/IO 异常不记忆化，下次轮询自动重试）。"""
     doc_id = f"tplfill-{task.id}"
     try:
-        tpl = TplTemplateService.get_or_none(id=task.template_id)
-        if not tpl:
-            return None
+        ok, tpl = TplTemplateService.get_by_id(task.template_id)
+        ext = tpl.file_type if ok and tpl and tpl.file_type in ("docx", "xlsx") else "docx"
+        base = sanitize_filename(tpl.name) if ok and tpl else doc_id
         if task.id not in _bridged_tasks:
             blob = settings.STORAGE_IMPL.get(task.template_id, task.result_file_id)
             if not blob:
                 return None
             settings.STORAGE_IMPL.put(f"{task.tenant_id}-downloads", doc_id, blob)
             _bridged_tasks.add(task.id)
-        filename = f"{sanitize_filename(tpl.name)}.docx"
+        filename = f"{base}.{ext}"
     except Exception:
         logger.exception("progress bucket bridge failed, task=%s", task.id)
         return None

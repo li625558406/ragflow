@@ -162,12 +162,20 @@ class TestBridgeDownload:
         return SimpleNamespace(id=task_id, template_id=template_id, tenant_id=tenant_id,
                                result_file_id=result_file_id, status="done")
 
-    def _install_stubs(self, monkeypatch, storage, tpl_name="我的 范本.docx"):
+    def _install_stubs(self, monkeypatch, storage, tpl_name="我的 范本.docx",
+                       file_type="docx", tpl=None):
         monkeypatch.setattr(_template_api, "settings",
                             SimpleNamespace(STORAGE_IMPL=storage))
-        tpl = SimpleNamespace(name=tpl_name)
+        tpl = tpl if tpl is not None else SimpleNamespace(name=tpl_name, file_type=file_type)
         monkeypatch.setattr(_template_api, "TplTemplateService",
-                            SimpleNamespace(get_or_none=lambda id: tpl))
+                            SimpleNamespace(get_by_id=lambda id: (True, tpl)))
+
+    def _not_found_stubs(self, monkeypatch, storage):
+        # 模板行查不到：get_by_id 返回 (False, None)
+        monkeypatch.setattr(_template_api, "settings",
+                            SimpleNamespace(STORAGE_IMPL=storage))
+        monkeypatch.setattr(_template_api, "TplTemplateService",
+                            SimpleNamespace(get_by_id=lambda id: (False, None)))
 
     def test_bridge_success_put_called(self, monkeypatch):
         storage = _FakeStorage()
@@ -198,9 +206,37 @@ class TestBridgeDownload:
 
     def test_bridge_exception_returns_none(self, monkeypatch):
         # 模板查询抛异常（DB 抖动）不得炸轮询端点：吞异常返 None
-        def boom(**kw):
+        def boom(id):
             raise RuntimeError("db down")
         monkeypatch.setattr(_template_api, "settings", SimpleNamespace(STORAGE_IMPL=_FakeStorage()))
         monkeypatch.setattr(_template_api, "TplTemplateService",
-                            SimpleNamespace(get_or_none=boom))
+                            SimpleNamespace(get_by_id=boom))
         assert _template_api._bridge_download(self._task()) is None
+
+    def test_bridge_xlsx_template_filename_ext(self, monkeypatch):
+        # xlsx 模板的成稿 filename 必须带真实扩展名 .xlsx，而非硬编码 .docx
+        storage = _FakeStorage()
+        self._install_stubs(monkeypatch, storage, tpl_name="台账 范本", file_type="xlsx")
+        d = _template_api._bridge_download(self._task())
+        assert d is not None
+        assert d["filename"] == "台账 范本.xlsx"
+        assert d["filename"].endswith(".xlsx")
+        assert d["filename"] == d["name"]
+
+    def test_bridge_template_missing_fallback_docx(self, monkeypatch):
+        # 模板行查不到只是桥接细节：fallback 保持 .docx（名退化为 doc_id），
+        # done 任务不能因此丢下载入口
+        storage = _FakeStorage()
+        self._not_found_stubs(monkeypatch, storage)
+        d = _template_api._bridge_download(self._task())
+        assert d is not None
+        assert d["filename"] == "tplfill-taskid1.docx"
+        assert storage.puts == [("tenant1-downloads", "tplfill-taskid1", b"docx-bytes")]
+
+    def test_bridge_unknown_file_type_fallback_docx(self, monkeypatch):
+        # file_type 是白名单外的脏值（如历史脏数据 ".doc"）→ 防御性退回 .docx
+        storage = _FakeStorage()
+        self._install_stubs(monkeypatch, storage, tpl_name="脏 范本", file_type=".doc")
+        d = _template_api._bridge_download(self._task())
+        assert d is not None
+        assert d["filename"] == "脏 范本.docx"
