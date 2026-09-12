@@ -6,6 +6,13 @@ import types
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _reset_snapshot_throttle(monkeypatch):
+    """快照节流时间戳按测试隔离：防用例间残留导致节流跳写、断言互相污染。"""
+    from rag.svr.template_fill import executor
+    monkeypatch.setattr(executor, "_last_snapshot_ts", {})
+
+
 def test_validate_kbs_tenant_mismatch_rejected(monkeypatch):
     """KB 不属于任务租户 → 拒绝（跨租户数据泄露防线）。"""
     from rag.svr.template_fill import executor
@@ -481,6 +488,21 @@ def _run_pipeline(monkeypatch, task, *, checked_ver=_MISSING, latest_ver=_broken
     from rag.svr.template_fill import executor
 
     calls = {"retrieve": [], "transits": [], "puts": [], "checked": [], "latest": 0}
+
+    class _NoopRedis:
+        """进度快照 no-op 替身：_execute_task_async 对 B端任务也无条件写快照
+        （generating 首写 + 终态 force 写），不 stub 会打真实 Redis 产生垃圾键。
+        写入内容记入 calls['snapshots'] 供断言；get 恒 None（取消探针不命中）。"""
+
+        def set(self, key, val, exp=None):
+            calls.setdefault("snapshots", []).append(json.loads(val))
+
+        def get(self, key):
+            return None
+
+    monkeypatch.setattr(executor, "REDIS_CONN", _NoopRedis())
+    monkeypatch.setattr(tpl_svc.TplFillTaskService, "cancel_running",
+                        lambda task_id: calls.setdefault("cancel_running", []).append(task_id) or True)
 
     async def fake_retrieve(tenant_id, kb_ids, query, top_k=6, ctx=None):
         calls["retrieve"].append((kb_ids, query))
@@ -1154,6 +1176,10 @@ class TestSplitCanvasParams:
         assert opts["changed_keys"] == {"k"}
         assert opts["retrieve_skip_keys"] == {"1", "None"}
         assert opts["user_file_text"] == "42"
+        # null 直填值 → 空串（明确清空语义），不得落字面量 "None" 进成稿
+        clean, opts = split_canvas_params({"_direct_values": {"k1": None}})
+        assert clean == {}
+        assert opts["direct_values"] == {"k1": ""}
 
 
 class TestProgressSnapshot:
@@ -1179,6 +1205,39 @@ class TestProgressSnapshot:
 
         monkeypatch.setattr(executor, "REDIS_CONN", _Boom())
         assert executor.read_progress_snapshot("t1") is None
+
+    def test_read_snapshot_happy_path(self, monkeypatch):
+        """Redis 有值 → 返回 dict；空/缺失 → None（调用方退化读 DB）。"""
+        from rag.svr.template_fill import executor
+
+        class _Fake:
+            def __init__(self, raw):
+                self._raw = raw
+
+            def get(self, k):
+                return self._raw
+
+        monkeypatch.setattr(executor, "REDIS_CONN",
+                            _Fake(json.dumps({"status": "generating", "done": 1})))
+        assert executor.read_progress_snapshot("t1") == {"status": "generating", "done": 1}
+        monkeypatch.setattr(executor, "REDIS_CONN", _Fake(None))
+        assert executor.read_progress_snapshot("t1") is None
+
+    def test_write_snapshot_throttled_unless_force(self, monkeypatch):
+        """节流：非 force 写 0.5s 内只落一次；force 写（终态）不受窗口限制。"""
+        from rag.svr.template_fill import executor
+        writes = []
+
+        class _Fake:
+            def set(self, key, val, exp=None):
+                writes.append(json.loads(val))
+
+        monkeypatch.setattr(executor, "REDIS_CONN", _Fake())
+        executor._write_snapshot("t1", status="generating", done=1)
+        executor._write_snapshot("t1", status="generating", done=2)  # <0.5s → 被节流跳过
+        assert len(writes) == 1 and writes[0]["done"] == 1
+        executor._write_snapshot("t1", force=True, status="done", done=2)
+        assert len(writes) == 2 and writes[-1]["done"] == 2
 
 
 class TestCancelTransit:

@@ -33,6 +33,7 @@ TEMPLATE_STATUSES = ("draft", "published", "disabled")
 # 填写任务状态全集（白名单，防任意字符串落库）
 TASK_STATUSES = ("pending", "retrieving", "generating", "rendering", "done", "partial", "failed", "cancelled")
 # 填写任务状态机：只允许沿 pipeline 顺序推进或进入 failed；终态（done/partial/failed）无出边
+# 注意：cancel_running 允许 rendering→cancelled（渲染期取消无需等渲染完成），与白名单口径有意旁路
 _TASK_TRANSITS = {
     "pending": {"retrieving", "failed", "cancelled"},
     "retrieving": {"generating", "failed", "cancelled"},
@@ -497,7 +498,10 @@ class TplFillTaskService(CommonService):
     @DB.connection_context()
     def cancel_running(cls, task_id: str) -> bool:
         """把未终态任务置 cancelled（画布停止/取消路径用）。where 不带 status==cur
-        （取消可能发生在任一中间态），但用 in_ 白名单限定中间态，终态行不受影响。"""
+        （取消可能发生在任一中间态），但用 in_ 白名单限定中间态，终态行不受影响。
+        注：rendering→cancelled 与 _TASK_TRANSITS 白名单口径有意旁路——渲染期取消
+        无需等渲染完成，直接置 cancelled（渲染稿成孤儿对象由人工/TTL 兜底）。
+        返回 False 表示行已是终态（未被本次取消改动），调用方据此决定快照口径。"""
         return cls.model.update(status="cancelled", error="画布已停止，任务被取消").where(
             cls.model.id == task_id,
             cls.model.status.in_(("pending", "retrieving", "generating", "rendering"))).execute() > 0

@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 
 from api.db.joint_services.tenant_model_service import get_model_config_by_type_and_name
 from api.db.services.knowledgebase_service import KnowledgebaseService
@@ -167,6 +168,12 @@ _CANVAS_RESERVED_KEYS = ("_direct_values", "_changed_keys",
 # 进度快照键与 TTL（24h；终态也写一次，靠 TTL 过期，不主动删）
 _PROGRESS_KEY = "tpl_fill_progress:{task_id}"
 _PROGRESS_TTL = 24 * 3600
+# 快照节流：非 force 写距上次 <0.5s 直接跳过（抑制 600 键模板 × 数十批的
+# 全量序列化写放大）。跳过只丢中间进度——快照是幂等覆盖语义，终态写一律
+# force=True 兜底，最终值不丢。多任务并发按 task_id 分桶；GIL 下 dict
+# 读写原子，时间窗口误差无害，不加锁。
+_PROGRESS_MIN_INTERVAL = 0.5
+_last_snapshot_ts: dict[str, float] = {}
 # 画布取消键：节点在画布被停止时为未终态任务写该键，executor 探针命中即中断
 _CANCEL_KEY = "tpl_fill:cancel:{task_id}"
 _CANCEL_TTL = 3600
@@ -179,7 +186,8 @@ def split_canvas_params(params: dict | None) -> tuple[dict, dict]:
     params = params if isinstance(params, dict) else {}
     dv = params.get("_direct_values")
     opts = {
-        "direct_values": ({str(k): str(v) for k, v in dv.items()}
+        "direct_values": ({str(k): (str(v) if v is not None else "")
+                           for k, v in dv.items()}
                           if isinstance(dv, dict) else {}),
         "changed_keys": {str(k) for k in (params.get("_changed_keys") or [])},
         "retrieve_skip_keys": {str(k) for k in (params.get("_retrieve_skip_keys") or [])},
@@ -189,12 +197,17 @@ def split_canvas_params(params: dict | None) -> tuple[dict, dict]:
     return clean, opts
 
 
-def _write_snapshot(task_id: str, **fields) -> None:
+def _write_snapshot(task_id: str, force: bool = False, **fields) -> None:
     """写进度快照（累积 values 由调用方传全量）。Redis 故障只告警——
-    快照是重连体验增强，不是执行的权威路径（权威在 DB 行）。"""
-    import time as _time
+    快照是重连体验增强，不是执行的权威路径（权威在 DB 行）。
+    非 force 写按 task_id 节流（_PROGRESS_MIN_INTERVAL 秒内跳过）；终态写
+    （done/failed/cancelled）一律 force=True，保证最终值必落。"""
     try:
-        payload = {"updated_at": int(_time.time())}
+        now = time.time()
+        if not force and now - _last_snapshot_ts.get(task_id, 0.0) < _PROGRESS_MIN_INTERVAL:
+            return
+        _last_snapshot_ts[task_id] = now
+        payload = {"updated_at": int(now)}
         payload.update(fields)
         REDIS_CONN.set(_PROGRESS_KEY.format(task_id=task_id),
                        json.dumps(payload, ensure_ascii=False), exp=_PROGRESS_TTL)
@@ -747,8 +760,14 @@ async def _execute_task_async(task_id: str):
             task.tenant_id, placeholders, kb_ids, clean_params, task_id=task_id,
             skip_keys=skip_keys, should_cancel=cancel_probe)
     except GenerateCancelled:
-        svc.cancel_running(task_id)
-        _write_snapshot(task_id, status="cancelled", error="画布已停止，任务被取消")
+        # cancel_running 返回 False 说明行已终态（如崩溃兜底已强置 failed）：
+        # 不再写 cancelled 快照误导前端，按 failed 收口（error 沿用原文案）
+        if svc.cancel_running(task_id):
+            _write_snapshot(task_id, force=True, status="cancelled",
+                            error="画布已停止，任务被取消")
+        else:
+            _write_snapshot(task_id, force=True, status="failed",
+                            error="画布已停止，任务被取消")
         return
 
     # ③ LLM 批量产值（仅 llm 模式字段；整体失败 → 任务失败）
@@ -783,14 +802,18 @@ async def _execute_task_async(task_id: str):
             task.tenant_id, llm_placeholders, llm_chunks, clean_params,
             on_progress=_on_progress, should_cancel=cancel_probe)
     except GenerateCancelled:
-        svc.cancel_running(task_id)
-        _write_snapshot(task_id, status="cancelled", values=dict(acc_values),
-                        error="画布已停止，任务被取消")
+        # 同上：cancel_running False（行已被兜底置终态）→ 按 failed 快照收口
+        if svc.cancel_running(task_id):
+            _write_snapshot(task_id, force=True, status="cancelled",
+                            values=dict(acc_values), error="画布已停止，任务被取消")
+        else:
+            _write_snapshot(task_id, force=True, status="failed",
+                            values=dict(acc_values), error="画布已停止，任务被取消")
         return
     except Exception as e:
         logger.exception("generate_values failed, task=%s", task_id)
         svc.update_status(task_id, "generating", "failed", error=f"LLM 生成失败: {e}")
-        _write_snapshot(task_id, status="failed", values=dict(acc_values),
+        _write_snapshot(task_id, force=True, status="failed", values=dict(acc_values),
                         error=f"LLM 生成失败: {e}")
         return
 
@@ -821,13 +844,14 @@ async def _execute_task_async(task_id: str):
         render_blob, result_obj, err = _render_result(task, ver, placeholders, values, tpl_file_type)
         if err:
             svc.update_status(task_id, "rendering", "failed", error=err)
-            _write_snapshot(task_id, status="failed", values=values, error=err)
+            _write_snapshot(task_id, force=True, status="failed", values=values, error=err)
             return
         tpl_svc._storage_put(task.template_id, result_obj, render_blob)
     except Exception as e:
         logger.exception("render/store failed, task=%s", task_id)
         svc.update_status(task_id, "rendering", "failed", error=f"渲染落稿失败: {e}")
-        _write_snapshot(task_id, status="failed", values=values, error=f"渲染落稿失败: {e}")
+        _write_snapshot(task_id, force=True, status="failed", values=values,
+                        error=f"渲染落稿失败: {e}")
         return
 
     # ⑥ 终态：渲染成功即 done（缺值留空交人工二次加工，不再有 partial）。
@@ -839,7 +863,7 @@ async def _execute_task_async(task_id: str):
         logger.warning("fill task final status CAS failed, task=%s result_obj=%s "
                        "(result object in storage without terminal status)", task_id, result_obj)
         return
-    _write_snapshot(task_id, status="done", values=values)
+    _write_snapshot(task_id, force=True, status="done", values=values)
 
     # ⑦ 产值沉淀为默认值（auto）：失败仅告警，不影响任务终态
     try:
