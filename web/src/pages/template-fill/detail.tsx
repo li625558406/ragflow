@@ -84,6 +84,9 @@ export default function TemplateFillDetailPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [testOpen, setTestOpen] = useState(false);
 
+  // 划选标记候选：在预览段落中选中文字后记录 {addr, 文本}，段落旁浮出标记按钮
+  const [mark, setMark] = useState<{ addr: string; text: string } | null>(null);
+
   const saveMut = useSaveTemplateFillPlaceholders();
   const detectMut = useDetectTemplateFill();
   // invalidate=false：默认值保存不做 refetch 整表回流（会冲掉未保存的行编辑），
@@ -164,6 +167,45 @@ export default function TemplateFillDetailPage() {
   const removeRow = (index: number) => {
     setPlaceholders((prev) => prev.filter((_, i) => i !== index));
     setRowErrors({});
+  };
+
+  // 预览划选：mouseup 时若非折叠选区完整落在该段落内则记为候选
+  const handleParaMouseUp = (
+    item: { addr: string },
+    e: React.MouseEvent<HTMLParagraphElement>,
+  ) => {
+    const sel = window.getSelection();
+    const text = (sel?.toString() ?? '').trim();
+    const p = e.currentTarget;
+    if (
+      !sel ||
+      sel.isCollapsed ||
+      !text ||
+      !p.contains(sel.anchorNode) ||
+      !p.contains(sel.focusNode)
+    ) {
+      setMark(null);
+      return;
+    }
+    setMark({ addr: item.addr, text });
+  };
+
+  // 划选确认：追加一行填写点（key 自动生成占位，anchor/addr 取自选区）
+  const addMarkedRow = () => {
+    if (!mark) return;
+    const keys = new Set(placeholders.map((r) => r.key.trim()));
+    let key = 'field';
+    let n = 2;
+    while (keys.has(key)) {
+      key = `field_${n}`;
+      n += 1;
+    }
+    setPlaceholders((prev) => [
+      ...prev,
+      { ...emptyPlaceholder(), key, addr: mark.addr, anchor: mark.text },
+    ]);
+    setMark(null);
+    window.getSelection()?.removeAllRanges();
   };
 
   const saveConfig = () => {
@@ -336,14 +378,26 @@ export default function TemplateFillDetailPage() {
             ) : (
               <div className="max-h-[65vh] space-y-1 overflow-auto">
                 {previewItems.map((item) => (
-                  <p
-                    key={item.index}
-                    className={`px-2 py-1 text-sm leading-6 ${
-                      item.placeholder_key ? 'bg-yellow-100' : ''
-                    }`}
-                  >
-                    {renderTextWithPlaceholders(item.text)}
-                  </p>
+                  <div key={item.index} className="flex items-start gap-1">
+                    <p
+                      className={`flex-1 px-2 py-1 text-sm leading-6 ${
+                        item.placeholder_key ? 'bg-yellow-100' : ''
+                      }`}
+                      onMouseUp={(e) => handleParaMouseUp(item, e)}
+                    >
+                      {renderTextWithPlaceholders(item.text)}
+                    </p>
+                    {mark?.addr === item.addr && (
+                      <Button
+                        size="sm"
+                        className="shrink-0"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={addMarkedRow}
+                      >
+                        标记为填写点
+                      </Button>
+                    )}
+                  </div>
                 ))}
               </div>
             )}
