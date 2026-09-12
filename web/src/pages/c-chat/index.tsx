@@ -95,6 +95,7 @@ import { markdownToBodyHtml } from '@/utils/markdown-to-word';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { v4 as uuid } from 'uuid';
+import { collectRecentDownloads } from './recent-downloads';
 
 interface Agent {
   id: string;
@@ -528,6 +529,9 @@ export default function CChat() {
 
   const answerListRef = useRef(answerList);
   answerListRef.current = answerList;
+  // 发送 payload 需实时读取消息列表（recent_downloads），用 ref 避免进 useCallback deps
+  const derivedMessagesRef = useRef(derivedMessages);
+  derivedMessagesRef.current = derivedMessages;
 
   useEffect(() => {
     if (done) {
@@ -1056,6 +1060,8 @@ export default function CChat() {
               templateFill: replayTemplateFillEvents(
                 m.data?.templateFillEvents,
               ),
+              // 成稿卡恢复：重写/回退要引用上一轮成稿（recent_downloads 的数据源）
+              downloads: m.data?.downloads,
             } as IMessage;
           }) as IMessage[];
 
@@ -1303,6 +1309,10 @@ export default function CChat() {
         stream: true,
         files: currentFiles,
         internet: enableInternet,
+        // 最近成稿卡契约：后端白名单写入 sys.recent_downloads，DocumentRewrite 定位重写目标
+        recent_downloads: collectRecentDownloads(
+          derivedMessagesRef.current ?? [],
+        ),
       });
 
       if (

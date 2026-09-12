@@ -533,6 +533,8 @@ export default function FlowAiPanel({
           stream: true,
           files,
           internet: false,
+          // 当前流程版本文档：sys.flow_version_id 供 flow 场景 DocumentRewrite 定位重写目标（无版本空串→工具降级 chat 来源）
+          flow_version_id: String(version?.id ?? ''),
         });
         // hook 收尾时同步 flush+reset（React 批处理），streamState 一次性清空；
         // 尾包 message 与 [DONE] 同帧到达时 RAF flush 未跑过，contentRef 拿不到
