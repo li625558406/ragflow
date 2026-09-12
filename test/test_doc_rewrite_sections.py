@@ -40,7 +40,7 @@ def test_split_basic():
     # 邻接标题：附录节 para_end == para_start，body 为空
     assert sections[2]["para_end"] == sections[2]["para_start"]
     assert sections[2]["word_count"] == 0
-    assert "第一节正文第一段。" in sections[0]["preview"] or sections[0]["word_count"] > 0
+    assert "第一节正文第一段。" in sections[0]["preview"]
 
 
 def test_no_heading_raises():
@@ -83,7 +83,7 @@ def test_section_containing_table_word_count_counts_paragraphs_only():
     doc.add_paragraph("表后段落。")
     sections = split_sections(doc)
     assert sections[0]["para_end"] == 2  # 段落索引空间里表格不可见
-    assert "节内段落。" in sections[0]["preview"] or sections[0]["word_count"] >= 10
+    assert "节内段落。" in sections[0]["preview"]
 
 
 def test_get_section_and_outline():
