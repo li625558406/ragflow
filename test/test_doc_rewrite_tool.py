@@ -96,7 +96,6 @@ async def _fake_rewrite_section(*args, **kwargs):
 
 def test_meta_declaration():
     assert DocumentRewrite.component_name == "DocumentRewrite"
-    param = type(_make_tool(FakeCanvas())).__mro__  # 占位：真实声明见下方 Param 实例化
     from agent.tools.document_rewrite import DocumentRewriteParam
     p = DocumentRewriteParam()
     assert p.meta["name"] == "DocumentRewrite"
@@ -210,6 +209,165 @@ def test_no_heading_document_guides_full_regen():
         out = tool._invoke(action="rewrite", section_no="1", instruction="改")
     assert "标题" in out or "重新生成" in out
     assert canvas.globals["sys.pending_downloads"] == []
+
+
+# ---------- 链感知目标解析（C1：连续重写不丢内容、root_id 不断链）----------
+
+_CHAIN = [
+    {"version_no": 1, "source_type": "chat_fill", "obj": "rewrite-aaa",
+     "file_name": "方案.docx", "section_title": "", "instruction": ""},
+    {"version_no": 2, "source_type": "rewrite", "obj": "rewrite-bbb",
+     "file_name": "方案.docx", "section_title": "第二节", "instruction": "补充进度安排"},
+]
+
+
+def _patch_real_blob_loader(blobs_by_obj=None):
+    """不 patch _load_chat_blob（走真实链感知逻辑），只 patch 存储/版本链。
+
+    FileService.get_blob 返回可解析 docx；list_versions 返回链；
+    root_id_for_doc 模拟真实语义：rewrite- 产物经 DB 反查得 task1，
+    tplfill- 前缀剥前缀（真实函数纯路径已由 versions 纯函数测试覆盖）。"""
+    blob = _docx_blob()
+
+    def fake_get_blob(tenant_id, obj):
+        return (blobs_by_obj or {}).get(obj, blob)
+
+    return (
+        patch("api.db.services.file_service.FileService.get_blob", side_effect=fake_get_blob),
+        patch("agent.tools.document_rewrite.root_id_for_doc",
+              MagicMock(side_effect=lambda d: "task1")),
+    )
+
+
+def test_rewrite_from_tplfill_doc_switches_to_chain_latest():
+    """C1 回归：doc_id 指向原始成稿但链上已有新版本 → 必须切到链内最新版内容，
+    且版本登记 root_id 是 task1 而非 doc_id 原样（链不断）。"""
+    canvas = FakeCanvas(sys_vars=_recent())
+    tool = _make_tool(canvas)
+    reg_calls = {}
+
+    def fake_reg(tenant_id, root_id, new_blob, file_type, base_file_name, **kw):
+        reg_calls.update(tenant_id=tenant_id, root_id=root_id, blob=new_blob,
+                         file_type=file_type, base_file_name=base_file_name, **kw)
+        return {"version_no": 3, "obj": "rewrite-ccc", "file_name": "方案_v3.docx"}
+
+    blob_patch, root_patch = _patch_real_blob_loader()
+    with blob_patch as gb, root_patch, \
+            patch("agent.tools.document_rewrite.list_versions",
+                  return_value=_CHAIN) as lv, \
+            patch("agent.tools.document_rewrite.ensure_base_version") as ens, \
+            patch("agent.tools.document_rewrite.register_chat_version", side_effect=fake_reg), \
+            patch.object(DocumentRewrite, "_build_chat_mdl", MagicMock(return_value=_fake_llm())), \
+            patch("agent.tools.document_rewrite.rewrite_section", _fake_rewrite_section):
+        out = tool._invoke(action="rewrite", section_no="1", instruction="再改一次")
+
+    # 先读显式/最近卡对象，再切到链内最新版 rewrite-bbb 的内容
+    assert gb.call_args_list[0].args == ("t1", DOC_ID)
+    assert ("t1", "rewrite-bbb") in [c.args for c in gb.call_args_list]
+    lv.assert_called_once_with("task1")
+    # 版本登记契约：root_id 是链锚 task1，而非切换后的 obj 或 doc_id 原样
+    assert reg_calls["root_id"] == "task1"
+    assert reg_calls["tenant_id"] == "t1"
+    assert reg_calls["source_type"] == "rewrite"
+    assert reg_calls["base_file_name"] == BASE_NAME
+    assert isinstance(reg_calls["blob"], bytes) and reg_calls["blob"]
+    # 链非空，ensure_base_version 仍被调用但真实实现本就空操作（此处 mock 不校验）
+    ens.assert_called_once()
+    # 成稿卡指向新对象
+    dl = canvas.globals["sys.pending_downloads"]
+    assert len(dl) == 1 and dl[0]["doc_id"] == "rewrite-ccc"
+    assert "已完成" in out
+
+
+def test_rewrite_from_chain_obj_resolves_root_via_db():
+    """C1 反向：doc_id 本身是链上产物 rewrite-bbb → register 仍收到 root_id=task1（DB 反查）。"""
+    canvas = FakeCanvas()  # 无 recent_downloads，显式指定链上产物
+    tool = _make_tool(canvas)
+    reg_calls = {}
+
+    def fake_reg(tenant_id, root_id, new_blob, file_type, base_file_name, **kw):
+        reg_calls.update(tenant_id=tenant_id, root_id=root_id, **kw)
+        return {"version_no": 3, "obj": "rewrite-ccc", "file_name": "方案_v3.docx"}
+
+    blob_patch, root_patch = _patch_real_blob_loader()
+    with blob_patch as gb, root_patch, \
+            patch("agent.tools.document_rewrite.list_versions", return_value=_CHAIN), \
+            patch("agent.tools.document_rewrite.ensure_base_version"), \
+            patch("agent.tools.document_rewrite.register_chat_version", side_effect=fake_reg), \
+            patch.object(DocumentRewrite, "_build_chat_mdl", MagicMock(return_value=_fake_llm())), \
+            patch("agent.tools.document_rewrite.rewrite_section", _fake_rewrite_section):
+        out = tool._invoke(action="rewrite", doc_id="rewrite-bbb",
+                           section_no="2", instruction="继续改")
+
+    # 读取链上产物对象本身；链末位即该对象，无需切换
+    gb.assert_called_once_with("t1", "rewrite-bbb")
+    assert reg_calls["root_id"] == "task1"
+    assert reg_calls["source_type"] == "rewrite"
+    dl = canvas.globals["sys.pending_downloads"]
+    assert len(dl) == 1 and dl[0]["doc_id"] == "rewrite-ccc"
+    assert "已完成" in out
+
+
+def test_rewrite_falls_back_when_latest_blob_missing():
+    """对抗性：链末位对象 blob 丢失 → 保留原对象内容继续重写，不得整体失败。"""
+    canvas = FakeCanvas(sys_vars=_recent())
+    tool = _make_tool(canvas)
+    reg_calls = {}
+
+    def fake_reg(tenant_id, root_id, new_blob, file_type, base_file_name, **kw):
+        reg_calls.update(tenant_id=tenant_id, root_id=root_id, **kw)
+        return {"version_no": 3, "obj": "rewrite-ccc", "file_name": "方案_v3.docx"}
+
+    blob = _docx_blob()
+
+    def fake_get_blob(tenant_id, obj):
+        return b"" if obj == "rewrite-bbb" else blob  # 链末位对象 blob 丢失
+
+    with patch("api.db.services.file_service.FileService.get_blob",
+               side_effect=fake_get_blob) as gb, \
+            patch("agent.tools.document_rewrite.root_id_for_doc",
+                  MagicMock(side_effect=lambda d: "task1")), \
+            patch("agent.tools.document_rewrite.list_versions", return_value=_CHAIN), \
+            patch("agent.tools.document_rewrite.ensure_base_version"), \
+            patch("agent.tools.document_rewrite.register_chat_version", side_effect=fake_reg), \
+            patch.object(DocumentRewrite, "_build_chat_mdl", MagicMock(return_value=_fake_llm())), \
+            patch("agent.tools.document_rewrite.rewrite_section", _fake_rewrite_section):
+        out = tool._invoke(action="rewrite", section_no="1", instruction="改")
+
+    assert ("t1", "rewrite-bbb") in [c.args for c in gb.call_args_list]
+    assert reg_calls["root_id"] == "task1"
+    dl = canvas.globals["sys.pending_downloads"]
+    assert len(dl) == 1 and dl[0]["doc_id"] == "rewrite-ccc"
+    assert "已完成" in out
+
+
+def test_emit_download_resets_corrupted_pending():
+    """I2：sys.pending_downloads 被污染为非 list → 强制重置为恰含 1 条契约的 list。"""
+    canvas = FakeCanvas(sys_vars=_recent())
+    canvas.globals["sys.pending_downloads"] = "corrupt"
+    tool = _make_tool(canvas)
+    reg_calls = {}
+
+    def fake_reg(tenant_id, root_id, new_blob, file_type, base_file_name, **kw):
+        reg_calls.update(tenant_id=tenant_id, root_id=root_id, **kw)
+        return {"version_no": 2, "obj": "rewrite-v2", "file_name": "方案_v2.docx"}
+
+    blob_patch, root_patch = _patch_real_blob_loader()
+    with blob_patch, root_patch, \
+            patch("agent.tools.document_rewrite.list_versions", return_value=[]), \
+            patch("agent.tools.document_rewrite.ensure_base_version"), \
+            patch("agent.tools.document_rewrite.register_chat_version", side_effect=fake_reg), \
+            patch.object(DocumentRewrite, "_build_chat_mdl", MagicMock(return_value=_fake_llm())), \
+            patch("agent.tools.document_rewrite.rewrite_section", _fake_rewrite_section):
+        out = tool._invoke(action="rewrite", section_no="1", instruction="改")
+
+    assert "已完成" in out
+    dl = canvas.globals["sys.pending_downloads"]
+    assert isinstance(dl, list)
+    assert len(dl) == 1
+    assert dl[0]["doc_id"] == "rewrite-v2"
+    for key in ("filename", "name", "mime_type", "size", "url"):
+        assert key in dl[0]
 
 
 # ---------- versions ----------

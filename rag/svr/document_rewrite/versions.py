@@ -29,6 +29,23 @@ def _root_id_from_doc_id(doc_id: str) -> str:
     return doc_id
 
 
+def root_id_for_doc(doc_id: str) -> str:
+    """doc_id/对象名 → 版本链锚。rewrite-{uuid} 产物对象按 DB 反查 root_id；
+    查不到（无链/未知对象）退化为剥 tplfill- 前缀。"""
+    doc_id = (doc_id or "").strip()
+    if doc_id.startswith("rewrite-"):
+        from api.db.db_models import DocRewriteVersion
+
+        row = (
+            DocRewriteVersion.select()
+            .where(DocRewriteVersion.obj == doc_id)
+            .first()
+        )
+        if row:
+            return row.root_id
+    return _root_id_from_doc_id(doc_id)
+
+
 def _chat_bucket(tenant_id: str) -> str:
     return f"{tenant_id}-downloads"
 

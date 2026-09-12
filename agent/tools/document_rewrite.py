@@ -38,12 +38,12 @@ from agent.tools.base import ToolBase, ToolMeta, ToolParamBase
 from common.connection_utils import timeout
 from rag.svr.document_rewrite.rewriter import rewrite_section
 from rag.svr.document_rewrite.versions import (
-    _root_id_from_doc_id,
     ensure_base_version,
     get_version,
     list_versions,
     load_flow_version_blob,
     register_chat_version,
+    root_id_for_doc,
     save_flow_version,
 )
 
@@ -67,7 +67,7 @@ class DocumentRewriteParam(ToolParamBase):
             "description": """文档局部重写工具。对当前会话最近生成的成稿文档（Word）做按节重写。四个 action：
 
 1. outline：返回文档的带编号章节目录。当用户说「重写第N节/某节」但不确定节号，或没有指明操作文档时，先调用它确认。
-2. rewrite：重写某一节。需要 section_no（节号，来自 outline）和 instruction（用户对该节的重写要求，原样转述用户的补充要求）。完成后返回新版本说明，用户会看到新的成稿卡片。
+2. rewrite：重写某一节。需要 section_no（节号，来自 outline）和 instruction（用户对该节的重写要求，原样转述用户的补充要求）。完成后返回新版本说明，用户会看到新的成稿卡片。多次重写请逐节顺序进行，请勿在同一轮并行发起多个 rewrite。
 3. versions：列出该文档的全部历史版本（版本号/来源/说明）。
 4. rollback：回退到某个历史版本。需要 version_no（versions 返回的版本号）。回退会生成一个新版本（内容为历史版），不会丢失任何版本。
 
@@ -187,7 +187,22 @@ class DocumentRewrite(ToolBase, ABC):
                     break
         if base_name.lower().endswith(".docx"):
             base_name = base_name[:-5]
-        return blob, doc_id, base_name
+        # 链感知：doc_id 可能是链上任一对象（原始成稿或 rewrite 产物）。
+        # 重写必须基于链内最新版内容，否则连续重写会丢掉上一次的改写。
+        # list_versions 按 version_no 升序，末位即最新版；切到最新版后
+        # root_id 不变（版本链锚），链不会断。
+        latest_obj = ""
+        rows = list_versions(root_id_for_doc(doc_id))
+        if rows and rows[-1]["obj"] != doc_id:
+            latest_blob = FileService.get_blob(tenant_id, rows[-1]["obj"])
+            if latest_blob:
+                blob, latest_obj = latest_blob, rows[-1]["obj"]
+            else:
+                logger.warning(
+                    "[rewrite] chain latest blob missing root=%s obj=%s, "
+                    "fallback to requested obj=%s",
+                    root_id_for_doc(doc_id), rows[-1]["obj"], doc_id)
+        return blob, (latest_obj or doc_id), base_name
 
     def _load_flow_target(self) -> tuple[bytes | None, dict | None, dict | None]:
         """flow 场景目标：sys.flow_version_id → (blob, flow_version行, flow行)。
@@ -227,7 +242,7 @@ class DocumentRewrite(ToolBase, ABC):
             mode = "chat"
             doc_id = self._resolve_doc_id(kwargs.get("doc_id"))
             blob, doc_id, base_name = self._load_chat_blob(doc_id)
-            root_id = _root_id_from_doc_id(doc_id)
+            root_id = root_id_for_doc(doc_id)
         doc = DocxDocument(io.BytesIO(blob))
         return doc, root_id, mode, base_name, blob, flow_row
 
@@ -248,6 +263,13 @@ class DocumentRewrite(ToolBase, ABC):
         pending = self._canvas.globals.setdefault("sys.pending_downloads", [])
         if isinstance(pending, list):
             pending.append(dl)
+        else:
+            # 队列被污染为非 list 时不得静默丢弃契约（返回文本承诺的成稿卡会落空）：
+            # 记日志并强制重置为仅含本次契约的 list，保住下载卡。
+            logger.error(
+                "sys.pending_downloads 被污染为非 list（type=%s），已强制重置保住本次成稿卡。",
+                type(pending).__name__)
+            self._canvas.globals["sys.pending_downloads"] = [dl]
         return dl
 
     @staticmethod

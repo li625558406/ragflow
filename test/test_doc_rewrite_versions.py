@@ -8,6 +8,7 @@
 - register_chat_version 通过 monkeypatch 模块属性命中延迟 import。
 """
 import contextlib
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from peewee import IntegrityError
@@ -15,6 +16,7 @@ from peewee import IntegrityError
 from rag.svr.document_rewrite.versions import (
     SOURCE_TYPES,
     _root_id_from_doc_id,
+    root_id_for_doc,
 )
 
 
@@ -53,6 +55,46 @@ class TestPureFunctions:
 
     def test_source_types_enum(self):
         assert set(SOURCE_TYPES) == {"chat_fill", "flow_version", "rewrite", "rollback"}
+
+
+class TestRootIdForDoc:
+    """链感知锚解析：rewrite- 产物对象按 DB 反查 root_id，查不到退化剥前缀。"""
+
+    def test_rewrite_prefix_db_hit(self, monkeypatch):
+        import api.db.db_models as db_models
+
+        row = SimpleNamespace(root_id="task1")
+
+        class FakeModel:
+            obj = _FakeField()
+
+            @classmethod
+            def select(cls):
+                return _FakeQuery(first_result=row)
+
+        monkeypatch.setattr(db_models, "DocRewriteVersion", FakeModel)
+        assert root_id_for_doc("rewrite-abc123") == "task1"
+
+    def test_rewrite_prefix_db_miss_falls_back(self, monkeypatch):
+        """对抗性：孤儿 rewrite- 对象（DB 无行）不得抛错，退化按原样当锚。"""
+        import api.db.db_models as db_models
+
+        class FakeModel:
+            obj = _FakeField()
+
+            @classmethod
+            def select(cls):
+                return _FakeQuery(first_result=None)
+
+        monkeypatch.setattr(db_models, "DocRewriteVersion", FakeModel)
+        assert root_id_for_doc("rewrite-orphan") == "rewrite-orphan"
+
+    def test_non_rewrite_prefix_skips_db(self):
+        """非 rewrite- 前缀纯路径，不触碰 DB（无需 patch 即可通过）。"""
+        assert root_id_for_doc("tplfill-task1") == "task1"
+        assert root_id_for_doc("some-obj") == "some-obj"
+        assert root_id_for_doc("") == ""
+        assert root_id_for_doc(None) == ""
 
 
 class TestFlowAddVersionSwitchCurrent:
