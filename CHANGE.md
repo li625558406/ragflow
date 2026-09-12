@@ -1,6 +1,6 @@
 # CHANGE.md — 项目迭代记录
 
-## 2026-09-12 范本AI识别准确性与格式保真改造（已完成编码+审查，未部署）
+## 2026-09-12 范本AI识别准确性与格式保真改造（已部署 2026-09-12）
 
 **主题**：治理范本 AI 识别三类问题（① 标签被选为 anchor 变蓝 ② 跨 run 替换格式错乱 ③ 正文原文被选为 anchor 被覆盖）+ B端预览划选手动标记兜底。
 
@@ -10,7 +10,7 @@
 - 前端：`TplPlaceholder.low_confidence?` 字段 + 填写点表格行琥珀警示底色；`detail.tsx` docx 预览划选文字 → 段落旁「标记为填写点」按钮一键加行（key 自动生成、readonly 屏蔽），预览接口本就透传 addr 无后端改动
 - 测试 +16 个对抗用例（标签收缩/撞车回退/混合 anchor/跨 run 格式保留/anchor 子串/结构 run 保留等），`test_template_fill_utils.py` 108 用例 + API 路由 194 全绿
 
-**遗留**：未部署。部署约束：`rag/svr/template_fill/detector.py` + `docx_utils.py` 成套 SCP + docker restart；前端需 `npm run build` + SCP + nginx reload。已知既有局限（审查备案）：单 run 快路径只替首个含 anchor 的 run；同行重复标签收缩取首个出现位置。
+**遗留**：已知既有局限（审查备案）：单 run 快路径只替首个含 anchor 的 run；同行重复标签收缩取首个出现位置。部署记录（2026-09-12）：detector.py + docx_utils.py 成套 SCP + docker restart，容器内 import 冒烟通过；前端 dist 构建上传 + nginx reload 完成；git 已推送（3dac0d8b..0c7a1635，10 commits）。
 
 **设计**：docs/superpowers/specs/2026-09-12-template-detect-accuracy-design.md | **计划**：docs/superpowers/plans/2026-09-12-template-detect-accuracy.md
 
