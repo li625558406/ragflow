@@ -1,5 +1,15 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-12 修复流程对话运行期报错后 UI 整轮空白（canvas 错误兜底为 assistant 消息）（已部署 2026-09-12）
+
+**主题**：流程 demo03 触发对话后界面被置空。根因：范本填写节点运行时报「暂无可用的已发布范本」（范本识别完成但仍为草稿未发布），canvas 只置 `canvas.error` 后静默结束——无 message 事件、无异常，`completion` 以 0 字符文本走 final 落库，SSE HTTP 200 正常收流，前端无错误分支可走 → 整轮空白、flow_ai_chat 不落记录（错误只存在 API4Conversation.errors 无人展示）。
+
+**核心变更**（`api/db/services/canvas_service.py` completion）：canvas 正常收尾后若 `canvas.error` 非空且无任何回复文本，把错误兜底成一条 assistant message 事件（`执行失败：{error}`）下发，并随 final 落库——前端气泡可见、刷新可回看、flow_ai_chat 自动保存能拿到文本。事件结构与 canvas 原生 message 事件对齐（`data.content`）。
+
+**遗留**：仅修 session 补全路径（流程 AI 面板/对话页共用）；agent_api 无 session 直跑路径（B端调试运行）如遇同类错误仍无提示，量小暂不动。
+
+**部署**：2026-09-12 canvas_service.py SCP + docker restart，容器内确认新代码已加载；git 已推送（509146f6）。
+
 ## 2026-09-12 修复范本 AI 识别被单颗超长 key 判死（parse 阶段截断兜底）（已部署 2026-09-12）
 
 **主题**：《福建省房屋建筑和市政基础设施工程标准施工招标文件专用本》上传后识别失败，detect_error=`非法 key: 'liability_for_refusing_to_replace_key_construction_management_personnel'（71 字符 > 64 上限）`——LLM 照中文长字段名直译出合法 snake_case 但超长的 key，`validate_placeholders` 终审判死**整次识别**，623 项正确建议全部丢弃。
