@@ -1,5 +1,16 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-12 执行失败对话 UI 提醒（toast 弹窗 + 气泡红底红字）（已部署 2026-09-12）
+
+**主题**：在 canvas 错误兜底消息基础上加显式 UI 提醒，用户不再只看到一段普通文本。
+
+**核心变更**：
+- 后端 `canvas_service.py`：兜底 message 事件 data 加 `error: true` 标记
+- 前端 `flow-ai-panel.tsx`：发送完成后扫描 SSE 事件，命中 `message && data.error` 时弹 `message.error` toast（内容即错误文本）
+- 前端 `flow-detail.tsx`：`isErrorResponse`（「执行失败：」前缀识别）——历史记录气泡与进行中实时气泡红底红字（`border-red-300 bg-red-50 text-red-700`），刷新回看同样醒目
+
+**部署**：2026-09-12 后端 SCP + 重启 + 前端 build 上传 + nginx reload；git 已推送（385fd4e2）。
+
 ## 2026-09-12 修复流程对话运行期报错后 UI 整轮空白（canvas 错误兜底为 assistant 消息）（已部署 2026-09-12）
 
 **主题**：流程 demo03 触发对话后界面被置空。根因：范本填写节点运行时报「暂无可用的已发布范本」（范本识别完成但仍为草稿未发布），canvas 只置 `canvas.error` 后静默结束——无 message 事件、无异常，`completion` 以 0 字符文本走 final 落库，SSE HTTP 200 正常收流，前端无错误分支可走 → 整轮空白、flow_ai_chat 不落记录（错误只存在 API4Conversation.errors 无人展示）。
