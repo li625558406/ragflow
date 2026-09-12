@@ -198,7 +198,7 @@ class TestFlowAddVersionSwitchCurrent:
             with patch.object(flow_service, "DB", FakeDB), \
                     patch.object(svc, "insert", side_effect=fake_insert), \
                     patch.object(flow_service, "FlowInstance", FakeFlowInstance):
-                row = svc.add_version.__wrapped__(
+                svc.add_version.__wrapped__(
                     svc,
                     {"id": "f1", "status": "running"},
                     object_name="obj1", file_name="a.docx", file_type="docx",

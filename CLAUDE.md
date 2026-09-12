@@ -58,6 +58,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 文件审核保真渲染 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-11-review-panel-docx-fidelity-design.md` | ★ 文件审核只读路径 docx-preview 保真（AI 标注/手动批注锚定+批注栏+引线+兜底全保留，highlightDocxRanges 归一化匹配+同 p 校验）+ 范本预览性能优化（span 映射增量高亮 + content-visibility 屏外页懒渲染）；编辑态保持旧视图（已完成编码+构建验证，未部署，纯前端） |
 | 范本识别准确性与格式保真 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-12-template-detect-accuracy-design.md` | ★ 范本 AI 识别三层改造：识别后处理（标签型 anchor 收缩修正/丢弃/low_confidence 警示）+ 跨 run 区间替换保格式 + B端预览划选手动标记（预览透传 addr）；已完成编码+审查（+16 对抗测试），已部署 2026-09-12 |
 | 范本填写后台化与断连重连 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-12-template-fill-detached-task-design.md` | ★ 对话/流程填写执行与 SSE 连接解耦（方案A）：节点委托 tpl_fill_task 后台线程+观察者轮询+progress 重连端点+前端轮询 hook；已完成编码+两道审查（未部署，部署须 executor/spawn/template_api/template_fill_service/template_fill.py 成套 SCP + 前端 build） |
+| 对话文档按节局部重写 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-12-chat-doc-section-rewrite-design.md` | ★ C端对话内说「重写第N节」→ DocumentRewrite 工具（outline/rewrite/versions/rollback）对成稿 docx 按节 LLM 重写保格式（heading切节/段落区间替换样式拷贝）+ doc_rewrite_version 版本链可回退 + downloads 持久化/历史恢复/recent_downloads 上下文；已完成编码+两道审查（13 套件 394 passed），实施计划 docs/superpowers/plans/2026-09-12-chat-doc-section-rewrite.md（未部署，后端 7 文件成套 SCP + 前端 build，见 CHANGE.md 当日条目） |
 
 
 

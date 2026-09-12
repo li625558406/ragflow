@@ -67,7 +67,8 @@ class DocumentRewriteParam(ToolParamBase):
             "description": """文档局部重写工具。对当前会话最近生成的成稿文档（Word）做按节重写。四个 action：
 
 1. outline：返回文档的带编号章节目录。当用户说「重写第N节/某节」但不确定节号，或没有指明操作文档时，先调用它确认。
-2. rewrite：重写某一节。需要 section_no（节号，来自 outline）和 instruction（用户对该节的重写要求，原样转述用户的补充要求）。完成后返回新版本说明，用户会看到新的成稿卡片。多次重写请逐节顺序进行，请勿在同一轮并行发起多个 rewrite。
+2. rewrite：重写某一节。需要 section_no（节号，来自 outline）和 instruction（用户对该节的重写要求，原样转述用户的补充要求）。
+   完成后返回新版本说明，用户会看到新的成稿卡片。多次重写请逐节顺序进行，请勿在同一轮并行发起多个 rewrite。
 3. versions：列出该文档的全部历史版本（版本号/来源/说明）。
 4. rollback：回退到某个历史版本。需要 version_no（versions 返回的版本号）。回退会生成一个新版本（内容为历史版），不会丢失任何版本。
 

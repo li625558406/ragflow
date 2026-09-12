@@ -1,9 +1,20 @@
 # test/test_doc_rewrite_pipeline.py
 # -*- coding: utf-8 -*-
 """后端管道测试：Message 合并 pending_downloads（契约核心），+ canvas_service 持久化捕获。"""
+import asyncio
+import gc
 from unittest.mock import MagicMock
 
 from agent.component.message import Message
+
+# message.py import 期的 nest_asyncio.apply() 会经 policy 创建默认事件循环；
+# pytest-asyncio teardown 的 set_event_loop(None) 解除该 loop 的引用后，它在
+# 后续测试 GC 时触发 pytest unraisable 告警，造成跨套件误报失败。模块级持有
+# 引用阻止 GC 即可（该 loop 从未运行，生命周期本就无害）。
+_NEST_ASYNCIO_LOOP_KEEPALIVE = tuple(
+    loop for loop in gc.get_objects()
+    if isinstance(loop, asyncio.AbstractEventLoop) and not loop.is_closed()
+)
 
 
 class FakeCanvas:

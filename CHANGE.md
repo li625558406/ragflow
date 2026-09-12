@@ -1,5 +1,28 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-12 C端对话文档按节局部重写（DocumentRewrite）
+
+**主题**：对话里说「把第3节重写，补充XX」→ LLM 按节重写成稿 docx → 新版本成稿卡，可回退。
+
+**核心变更**：
+- 新增 Agent 工具 `DocumentRewrite`（agent/tools/document_rewrite.py，outline/rewrite/versions/rollback 四 action，DSL 零改动，自动发现注册）
+- 新增执行层 `rag/svr/document_rewrite/`：sections.py（heading1/标题1/大纲级别0切节）、docx_edit.py（段落区间替换+pPr/rPr样式拷贝+表格保留）、rewriter.py（LLM JSON 段落契约+校验重试）、versions.py（doc_rewrite_version 版本链，(root_id,version_no) 唯一索引+并发取号重试，回退=复制式 append-only）
+- 新表 `doc_rewrite_version`（init_database_tables + migrate_db 幂等迁移，部署时自动建表）
+- flow 场景复用 flow_version 表（`FlowVersionService.add_version` 新增 `switch_current` 参数，ai_rewrite 不切 current_version_id）
+- 产物链路：工具写 canvas 全局 sys.pending_downloads → Message 组件合并输出 download 契约 → 成稿卡
+- 上下文链路：前端 payload 附 recent_downloads（最近2张成稿卡）/ flow_version_id → canvas.run 白名单 → sys 变量 → 工具读取
+- 存量缺口修复：canvas workflow_finished 的 downloads 持久化进 message data + 前端历史消息恢复 downloads 渲染成稿卡（否则刷新后无法发起重写）；canvas.run 开局清零 sys.pending_downloads 防跨轮幽灵成稿卡；sendMessage 从 res.events 回填 downloads（在线流被 done 批处理吞掉的修复）
+- 测试：6 个新测试套件 61 用例（切节/替换/版本/重写/工具/管道，对抗用例覆盖无heading、邻接标题、表格保留、并发撞号、越权、非法JSON、链感知连续重写等），13 套件合跑 394 passed 零回退
+
+**遗留**：
+- flow 场景 rollback 走流程页签人工操作（对话内提示引导），对话内 flow 回退未做
+- heading 识别覆盖度依赖样式名枚举（Heading 1/标题 1/大纲级别0），奇形模板切节失败明确报错优于错切（设计已接受）
+- 多 Message 终端节点画布的 pending_downloads 合并约束（仅单 Message 画布成立，已在 Message docstring 钉死）
+- E2E 联调（填写→重写→回退→下载还原）待部署后验证
+- /api/v1/agents/download 端点无鉴权（既有风险 M8，非本功能引入）
+
+**部署**：后端 7 文件成套 SCP（agent/tools/document_rewrite.py、rag/svr/document_rewrite/ 4文件、agent/canvas.py、agent/component/message.py、api/db/services/canvas_service.py、api/db/services/flow_service.py、api/db/db_models.py）+ docker restart；前端 npm run build + dist 部署。新表由 migrate_db 自动创建。
+
 ## 2026-09-12 范本填写后台化与断连重连（方案A）
 
 **主题**：填写执行与 SSE 连接解耦——断连/刷新后任务在服务器跑完，成稿落库可取。
