@@ -1273,3 +1273,71 @@ def test_parse_mixed_label_blank_anchor_shrinks_to_blank():
     assert len(out) == 1
     assert out[0]["anchor"] == "＿＿＿＿＿"
     assert out[0]["low_confidence"] is False
+
+
+# ---------- 跨 run 区间替换（格式保真） ----------
+
+def _doc_with_runs(texts, bolds=None):
+    """构造单段落多 run 文档：texts 为各 run 文本，bolds 为对应加粗标记。"""
+    buf = io.BytesIO()
+    doc = Document()
+    p = doc.add_paragraph()
+    for k, t in enumerate(texts):
+        r = p.add_run(t)
+        if bolds and bolds[k]:
+            r.bold = True
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def test_cross_run_replace_preserves_outside_runs():
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders
+    blob = _doc_with_runs(["AB", "CD", "EF"], [False, False, True])
+    out = apply_docx_placeholders(blob, [{"addr": "para:0", "anchor": "BC", "key": "k"}])
+    p = Document(io.BytesIO(out)).paragraphs[0]
+    assert [r.text for r in p.runs] == ["A{{k}}", "D", "EF"]
+    assert p.runs[2].bold  # 区间外 run 的格式完整保留
+
+
+def test_cross_run_replace_span_three_runs_clears_middle():
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders
+    blob = _doc_with_runs(["AB", "CD", "EF"])
+    out = apply_docx_placeholders(blob, [{"addr": "para:0", "anchor": "BCDE", "key": "k"}])
+    p = Document(io.BytesIO(out)).paragraphs[0]
+    assert [r.text for r in p.runs] == ["A{{k}}", "", "F"]
+
+
+def test_cross_run_replace_anchor_at_end_single_tail_run():
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders
+    blob = _doc_with_runs(["AB", "CD"])
+    out = apply_docx_placeholders(blob, [{"addr": "para:0", "anchor": "CD", "key": "k"}])
+    p = Document(io.BytesIO(out)).paragraphs[0]
+    assert "".join(r.text for r in p.runs) == "AB{{k}}"
+
+
+def test_cross_run_replace_anchor_whole_paragraph():
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders
+    blob = _doc_with_runs(["AB", "CD"])
+    out = apply_docx_placeholders(blob, [{"addr": "para:0", "anchor": "ABCD", "key": "k"}])
+    p = Document(io.BytesIO(out)).paragraphs[0]
+    assert "".join(r.text for r in p.runs) == "{{k}}"
+
+
+def test_cross_run_replace_multiple_occurrences_across_runs():
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders
+    # anchor "AA" 不落在任何单一 run 内（真正走跨 run 路径），且跨 run 边界出现 2 次；
+    # str.replace 语义须全部替换。注意不能用 "_" 这类单 run 内完整出现的 anchor——
+    # 那会被 _replace_in_paragraph 的单 run 快速路径拦截（首个命中 run 即 return）。
+    blob = _doc_with_runs(["xA", "Ax", "xA", "Ax"])
+    out = apply_docx_placeholders(blob, [{"addr": "para:0", "anchor": "AA", "key": "k"}])
+    p = Document(io.BytesIO(out)).paragraphs[0]
+    assert "".join(r.text for r in p.runs) == "x{{k}}xx{{k}}x"
+
+
+def test_cross_run_replace_anchor_equals_replacement_no_loop():
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders
+    # 手动占位符直通场景：anchor == repl，必须幂等且不死循环
+    blob = _doc_with_runs(["AB", "{{k}}", "CD"])
+    out = apply_docx_placeholders(blob, [{"addr": "para:0", "anchor": "{{k}}", "key": "k"}])
+    p = Document(io.BytesIO(out)).paragraphs[0]
+    assert "".join(r.text for r in p.runs) == "AB{{k}}CD"

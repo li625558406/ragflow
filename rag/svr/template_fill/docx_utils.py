@@ -6,8 +6,8 @@ addr 定位约定：正文段落 para:<idx>；表格内段落 cell:<tbl_no>:<row
 index 为全文档扁平序号，与 addr 一一对应（合并单元格会在多处重复出现同一 addr，
 替换按"锚文本存在才替换"幂等，重复 addr 无副作用）。
 
-跨 run 替换取舍：普通段落跨 run 时整段重写进首 run、清空其余（牺牲段内混合格式）；
-但含超链接（w:hyperlink）/简单域（w:fldSimple）的段落**不可**整段重写——
+跨 run 替换取舍：普通段落跨 run 时只重写 anchor 覆盖的 run 区间，区间外格式保留
+（`_replace_cross_run_in_place`）；但含超链接（w:hyperlink）/简单域（w:fldSimple）的段落**不可**整段重写——
 python-docx 1.1+ 的 Paragraph.text 包含超链接内文本，而 Paragraph.runs 不包含，
 整段重写会把超链接文本复制进首 run 且原节点仍在（内容重复）。这类段落改走
 run 拼接替换路径（见 _replace_via_run_concat）。
@@ -122,10 +122,58 @@ def _replace_via_run_concat(p: Paragraph, anchor: str, repl: str) -> bool:
     return True
 
 
+def _locate_run_span(runs: list, start: int, end: int) -> tuple:
+    """在 run 文本拼接坐标系里返回覆盖 [start, end) 的
+    (首run下标 i, 尾run下标 j, anchor在首run内偏移, anchor在尾run内偏移)。"""
+    pos = 0
+    i = j = -1
+    off_i = off_j = 0
+    for idx, r in enumerate(runs):
+        n = len(r.text)
+        if i < 0 and pos + n > start:
+            i, off_i = idx, start - pos
+        if pos + n >= end:
+            j, off_j = idx, end - pos
+            break
+        pos += n
+    if i < 0 or j < 0:  # 理论不可达（anchor 必在拼接串覆盖范围内），兜底尾 run
+        i, j, off_i, off_j = len(runs) - 1, len(runs) - 1, len(runs[-1].text), len(runs[-1].text)
+    return i, j, off_i, off_j
+
+
+def _replace_cross_run_in_place(p: Paragraph, anchor: str, repl: str) -> bool:
+    """跨 run 区间替换（格式保真）：只重写 anchor 覆盖的 run 区间——
+    首 run 保留 anchor 前文本并接替换值，尾 run 保留 anchor 后文本，中间 run 清空；
+    区间外 run 原样不动（段内其他位置格式完整保留）。
+    按替换前出现次数循环保持 str.replace「全部替换」语义，且不重扫替换产物
+    （repl 含 anchor，如手动占位符 anchor==repl 场景，不会死循环）。"""
+    runs = p.runs
+    remaining = "".join(r.text for r in runs).count(anchor)
+    replaced = False
+    while remaining > 0:
+        remaining -= 1
+        joined = "".join(r.text for r in runs)
+        start = joined.find(anchor)
+        if start < 0:
+            break
+        end = start + len(anchor)
+        i, j, off_i, off_j = _locate_run_span(runs, start, end)
+        if i == j:
+            runs[i].text = runs[i].text[:off_i] + repl + runs[i].text[off_j:]
+        else:
+            runs[i].text = runs[i].text[:off_i] + repl
+            for mid in range(i + 1, j):
+                runs[mid].text = ""
+            runs[j].text = runs[j].text[off_j:]
+        replaced = True
+    return replaced
+
+
 def _replace_in_paragraph(p: Paragraph, anchor: str, repl: str) -> bool:
-    """段内替换锚文本为 repl。优先单 run 内完成；跨 run 时：普通段落整段重写
-    进首 run、清空其余（牺牲段内混合格式）；含超链接/域的段落走 run 拼接替换
-    （见 _replace_via_run_concat），避免超链接文本被复制进正文 run。"""
+    """段内替换锚文本为 repl。优先单 run 内完成；跨 run 时：普通段落只重写
+    anchor 覆盖的 run 区间，区间外格式保留（见 _replace_cross_run_in_place）；
+    含超链接/域的段落走 run 拼接替换（见 _replace_via_run_concat），
+    避免超链接文本被复制进正文 run。"""
     if not anchor:
         return False
     if anchor not in p.text:
@@ -137,13 +185,9 @@ def _replace_in_paragraph(p: Paragraph, anchor: str, repl: str) -> bool:
             return True
     if _has_link_or_field(p):
         return _replace_via_run_concat(p, anchor, repl)
-    runs = p.runs
-    if not runs:
+    if not p.runs:
         return False
-    runs[0].text = p.text.replace(anchor, repl)
-    for r in runs[1:]:
-        r.text = ""
-    return True
+    return _replace_cross_run_in_place(p, anchor, repl)
 
 
 def apply_docx_placeholders(file_bytes: bytes, replacements: list) -> bytes:
