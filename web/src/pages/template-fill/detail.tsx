@@ -387,7 +387,7 @@ export default function TemplateFillDetailPage() {
                     >
                       {renderTextWithPlaceholders(item.text)}
                     </p>
-                    {mark?.addr === item.addr && (
+                    {mark?.addr === item.addr && !readonly && (
                       <Button
                         size="sm"
                         className="shrink-0"
