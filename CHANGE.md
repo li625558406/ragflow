@@ -10,9 +10,9 @@
 - spawn 抽取 rag/svr/template_fill/spawn.py（daemon 线程+防重入，B端/画布共用）
 - 新端点 GET /template/fill/fill-task/{id}/progress（owner 校验+stalled 双信号判定+downloads bucket 桥接 tplfill-{task_id}，记忆化）
 - 状态机扩展 cancelled 态；TplFillTaskService 新增 cancel_running/find_running（2h 复用窗）/TERMINAL_TASK_STATUSES/sanitize_filename 公开别名
-- 前端：归约记 task_id + useTemplateFillTaskPoll 轮询 hook（仅历史恢复态启用、终态本地合成成稿卡、stalled 提示可重试、迟到响应竞态封死）
+- 前端：归约记 task_id + useTemplateFillTaskPoll 轮询 hook（仅历史恢复态启用、终态本地合成成稿卡、stalled 提示刷新重试、迟到响应竞态封死）
 
-**遗留**：未部署；flow_instance_id 暂留空；多范本共享检索去重随委托化不再适用（B端行为）；汇总文案不再含 filled 计数（节点不再持有逐槽状态）
+**遗留**：未部署；flow_instance_id 暂留空；多范本共享检索去重随委托化不再适用（B端行为）；汇总文案不再含 filled 计数（节点不再持有逐槽状态）；stalled 行不可 retry（retry 白名单仅 failed/partial，放宽需带超龄 CAS 条件，下轮）；executor 检索期心跳缺失（>10min 纯检索长任务有 stalled 误判窗口，R1）；retry 成功不覆盖旧 progress 快照（当前仅 B端用 retry，无轮询冲突，R2）；B端 create_fill_task 入参未剥 `_` 前缀保留键（自伤范围，建议硬化，R3）；find_running 复用会静默丢弃新一轮确认的直填值（设计 §6 已接受的取舍，R5）。终审全量：后端 8 套件 346+ 用例、前端 jest 32 用例全绿；部署须后端 5 文件成套 SCP（executor/spawn/template_api/template_fill_service/template_fill.py）+ 前端 build。
 
 ## 2026-09-12 执行失败对话 UI 提醒（toast 弹窗 + 气泡红底红字）（已部署 2026-09-12）
 
