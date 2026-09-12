@@ -170,7 +170,12 @@ def save_flow_version(flow: dict, blob: bytes, file_type: str, file_name: str,
     from api.db.services.flow_service import FlowVersionService
 
     bucket = flow["initiator_id"]
-    obj = f"ai-rewrite-{flow['id']}-{file_name}"
+    # 对象名拼行级 uuid：与 chat 分支「对象名与版本行 1:1」同理，确定性命名
+    # （ai-rewrite-{flow_id}-{file_name}）会让连续重写/回退覆盖先前版本的 blob，
+    # 污染 append-only 版本链。
+    from common.misc_utils import get_uuid
+
+    obj = f"ai-rewrite-{flow['id']}-{get_uuid()}-{file_name}"
     settings.STORAGE_IMPL.put(bucket, obj, blob)
     return FlowVersionService.add_version(
         flow, object_name=obj, file_name=file_name, file_type=file_type,

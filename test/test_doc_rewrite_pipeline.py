@@ -86,6 +86,11 @@ def test_persist_capture_shape():
     assert _extract_finished_downloads(
         {"event": "workflow_finished", "data": {"outputs": {"downloads": [_dl("a")]}}}
     ) == [_dl("a")]
+    # 混入非 dict 元素：过滤保留合法项，不因单个坏元素整体放弃持久化
+    assert _extract_finished_downloads(
+        {"event": "workflow_finished",
+         "data": {"outputs": {"downloads": [_dl("a"), "junk", 3]}}}
+    ) == [_dl("a")]
     assert _extract_finished_downloads({"event": "message"}) is None
     assert _extract_finished_downloads(
         {"event": "workflow_finished", "data": {"outputs": {}}}) is None

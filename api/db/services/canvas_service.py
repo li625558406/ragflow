@@ -227,14 +227,17 @@ class UserCanvasService(CommonService):
 
 
 def _extract_finished_downloads(ans: dict):
-    """从 workflow_finished 事件提取 downloads 输出（List[dict]），否则 None。"""
+    """从 workflow_finished 事件提取 downloads 输出（List[dict]），否则 None。
+    列表内混入的非 dict 元素过滤丢弃，不因单个坏元素整体放弃持久化。"""
     if not isinstance(ans, dict) or ans.get("event") != "workflow_finished":
         return None
     outputs = (ans.get("data") or {}).get("outputs")
     if isinstance(outputs, dict):
         dls = outputs.get("downloads")
-        if isinstance(dls, list) and dls and all(isinstance(d, dict) for d in dls):
-            return dls
+        if isinstance(dls, list):
+            items = [d for d in dls if isinstance(d, dict)]
+            if items:
+                return items
     return None
 
 

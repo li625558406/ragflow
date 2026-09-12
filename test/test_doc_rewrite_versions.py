@@ -97,6 +97,48 @@ class TestRootIdForDoc:
         assert root_id_for_doc(None) == ""
 
 
+class TestSaveFlowVersionUniqueObject:
+    """save_flow_version 对象名含行级 uuid：连续重写/回退不得覆盖先前版本 blob
+    （append-only 契约，终审 I-1 防回归）。"""
+
+    def test_consecutive_saves_use_distinct_objects(self, monkeypatch):
+        from rag.svr.document_rewrite import versions as vmod
+
+        puts = []
+
+        class FakeStorage:
+            def put(self, bucket, obj, blob):
+                puts.append((bucket, obj))
+
+        import common.settings as common_settings
+        monkeypatch.setattr(common_settings, "STORAGE_IMPL", FakeStorage())
+
+        captured = []
+
+        class FakeFlowVersionService:
+            @staticmethod
+            def add_version(flow, object_name="", file_name="", file_type="",
+                            file_size=0, source="", created_by="", switch_current=True):
+                captured.append({"object_name": object_name, "file_name": file_name})
+                return {"object_name": object_name, "version_no": len(captured)}
+
+        import api.db.services.flow_service as flow_service
+        monkeypatch.setattr(flow_service, "FlowVersionService", FakeFlowVersionService)
+
+        flow = {"id": "f1", "initiator_id": "tenant-x"}
+        vmod.save_flow_version(flow, b"v1", "docx", "报告.docx", "u1")
+        vmod.save_flow_version(flow, b"v2", "docx", "报告.docx", "u1")
+
+        assert len(puts) == 2
+        obj1, obj2 = puts[0][1], puts[1][1]
+        # 对象名互不相同：第二次写入不得覆盖第一次的 blob
+        assert obj1 != obj2
+        assert obj1.startswith("ai-rewrite-f1-") and obj2.startswith("ai-rewrite-f1-")
+        # 展示名 file_name 保持稳定（不含 uuid）
+        assert captured[0]["file_name"] == "报告.docx"
+        assert captured[1]["file_name"] == "报告.docx"
+
+
 class TestFlowAddVersionSwitchCurrent:
     """flow add_version 的 switch_current 开关：False 不得更新 current_version_id。"""
 

@@ -186,8 +186,6 @@ class DocumentRewrite(ToolBase, ABC):
                 if isinstance(item, dict) and item.get("doc_id") == doc_id and item.get("filename"):
                     base_name = str(item["filename"])
                     break
-        if base_name.lower().endswith(".docx"):
-            base_name = base_name[:-5]
         # 链感知：doc_id 可能是链上任一对象（原始成稿或 rewrite 产物）。
         # 重写必须基于链内最新版内容，否则连续重写会丢掉上一次的改写。
         # list_versions 按 version_no 升序，末位即最新版；切到最新版后
@@ -203,6 +201,12 @@ class DocumentRewrite(ToolBase, ABC):
                     "[rewrite] chain latest blob missing root=%s obj=%s, "
                     "fallback to requested obj=%s",
                     root_id_for_doc(doc_id), rows[-1]["obj"], doc_id)
+        # recent 未命中（连续重写的 rewrite-{uuid} 产物对象）时展示名退化成
+        # 对象名，不可读——用链内最新版本的 file_name 兜底。
+        if base_name == doc_id and rows:
+            base_name = str(rows[-1].get("file_name") or base_name)
+        if base_name.lower().endswith(".docx"):
+            base_name = base_name[:-5]
         return blob, (latest_obj or doc_id), base_name
 
     def _load_flow_target(self) -> tuple[bytes | None, dict | None, dict | None]:
@@ -376,9 +380,10 @@ class DocumentRewrite(ToolBase, ABC):
     # ---------- action: versions ----------
 
     def _versions(self, kwargs):
-        _doc, root_id, mode, _base, _blob, _flow = self._doc_for_action(kwargs)
-        if mode == "flow":
+        # flow 场景提前引导：不进 _doc_for_action（flow 已删时会抛错而非引导）
+        if str(self._read_sys("sys.flow_version_id") or "").strip():
             return "流程文档的版本请到「流程」页签的版本时间线查看。"
+        _doc, root_id, mode, _base, _blob, _flow = self._doc_for_action(kwargs)
         rows = list_versions(root_id)
         if not rows:
             return ("该文档还没有重写版本记录（当前成稿即原始版本）。"
@@ -402,10 +407,11 @@ class DocumentRewrite(ToolBase, ABC):
         version_no = self._to_int(kwargs.get("version_no"))
         if version_no is None:
             return "缺少有效的 version_no。请先用 action=versions 查看版本列表。"
+        # flow 场景提前引导：不进 _doc_for_action（flow 已删时会抛错而非引导）
+        if str(self._read_sys("sys.flow_version_id") or "").strip():
+            return "流程文档版本请到「流程」页签操作回退。"
 
         _doc, root_id, mode, base_name, _blob, _flow = self._doc_for_action(kwargs)
-        if mode == "flow":
-            return "流程文档版本请到「流程」页签操作回退。"
         hist = get_version(root_id, version_no)
         if hist is None:
             rows = list_versions(root_id)

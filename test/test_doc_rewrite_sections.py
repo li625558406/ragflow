@@ -93,3 +93,25 @@ def test_get_section_and_outline():
     outline = build_outline(sections)
     assert "第1节 实施方案" in outline
     assert "第3节 附录" in outline
+
+
+def test_multi_level_headings_follow_top_level_section():
+    """heading2/3 不是节边界：跟随所属一级节，作为正文段处理（spec §10）。"""
+    doc = Document()
+    doc.add_heading("总述", level=1)
+    doc.add_paragraph("总述引言。")
+    doc.add_heading("背景", level=2)
+    doc.add_paragraph("背景详情。")
+    doc.add_heading("措施", level=3)
+    doc.add_paragraph("措施详情。")
+    doc.add_heading("进度安排", level=1)
+    doc.add_paragraph("第二节正文。")
+    sections = split_sections(doc)
+    assert len(sections) == 2
+    assert sections[0]["title"] == "总述"
+    # heading2/3 及其下段落全部归入第一节正文区间
+    assert sections[0]["para_start"] == 0
+    assert sections[0]["para_end"] == 5
+    assert "背景详情。" in sections[0]["preview"] or "总述引言。" == sections[0]["preview"]
+    assert sections[1]["title"] == "进度安排"
+    assert sections[1]["para_start"] == 6
