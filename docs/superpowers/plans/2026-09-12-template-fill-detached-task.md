@@ -283,18 +283,25 @@ Expected: PASS
 ```python
     params = task.params or {}
     clean_params, opts = split_canvas_params(params)
-    direct_values: dict = opts["direct_values"]
-    changed_keys: set = opts["changed_keys"]
+    # 画布委托门控：只有 params 携带保留键（画布节点必写，含空值）才启用
+    # D−C 收窄/直填覆盖/证据注入/取消探针；B端普通任务保持全量进 LLM 的既有行为
+    is_canvas = any(k in params for k in _CANVAS_RESERVED_KEYS)
+    direct_values: dict = opts["direct_values"] if is_canvas else {}
+    changed_keys: set = (opts["changed_keys"] if is_canvas
+                         else {it.get("key") for it in placeholders if it.get("key")})
+    skip_keys = opts["retrieve_skip_keys"] if is_canvas else None
+    user_file_text = opts["user_file_text"] if is_canvas else ""
+    cancel_probe = _make_cancel_probe(task_id) if is_canvas else None
 ```
 
 ② ②检索段（原 652-653 行）改为传 skip 与取消探针：
 
 ```python
-    cancel_probe = _make_cancel_probe(task_id)
+    cancel_probe = _make_cancel_probe(task_id) if is_canvas else None
     try:
         chunks_by_key, evidence = await _retrieve_all(
             task.tenant_id, placeholders, kb_ids, clean_params, task_id=task_id,
-            skip_keys=opts["retrieve_skip_keys"], should_cancel=cancel_probe)
+            skip_keys=skip_keys, should_cancel=cancel_probe)
     except GenerateCancelled:
         svc.cancel_running(task_id)
         _write_snapshot(task_id, status="cancelled", error="画布已停止，任务被取消")
@@ -325,11 +332,11 @@ Expected: PASS
     llm_chunks = {it["key"]: chunks_by_key.get(it["key"], {"chunks": [], "query": ""})
                   for it in llm_placeholders}
     # 用户上传文件作为填写证据：预置片段插到每槽证据首位（优先于 KB 片段）
-    if opts["user_file_text"]:
+    if user_file_text:
         for it in llm_placeholders:
             llm_chunks.setdefault(it["key"], {"chunks": [], "query": ""})
             llm_chunks[it["key"]]["chunks"].insert(0, {
-                "content": f"[用户上传文件] {opts['user_file_text']}",
+                "content": f"[用户上传文件] {user_file_text}",
                 "doc_id": "", "doc_name": "用户上传文件", "similarity": 1.0})
     acc_values: dict = {}
 

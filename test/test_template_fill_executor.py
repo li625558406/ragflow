@@ -1193,3 +1193,35 @@ class TestCancelTransit:
         from api.db.services.template_fill_service import TplFillTaskService
         for cur in ("done", "failed", "partial", "cancelled"):
             assert TplFillTaskService.can_transit(cur, "cancelled") is False
+
+
+# ── 画布委托门控：B端普通任务（params 无保留键）行为零变化（防 D−C 误伤） ──
+
+
+def _default_field_ver():
+    """单 llm 占位符且带 default_value 的版本（D−C 收窄的目标字段形态）。"""
+    return _make_ver(placeholders=[
+        {"key": "k1", "name": "字段一", "fill_mode": "llm", "default_value": "默认值"}])
+
+
+class TestBEndBehaviorUnchanged:
+    """B端普通任务（params 无任何下划线保留键）必须保持全量进 LLM 的既有行为：
+    有 default_value 的 llm 字段不得被 D−C 收窄跳过（default 仅作 prompt 参考）。"""
+
+    def test_default_value_field_still_goes_to_llm(self, monkeypatch):
+        calls = _run_pipeline(
+            monkeypatch, _make_task(params={}),     # B端普通任务：无保留键 → 门控关闭
+            checked_ver=_default_field_ver())
+        assert calls["generate"] == ["k1"], \
+            "B端有默认值的 llm 字段必须进 LLM，不得被 D−C 收窄直取默认值"
+        assert calls["transits"][-1] == ("rendering", "done")
+
+    def test_canvas_delegation_still_narrows_default_fields(self, monkeypatch):
+        """画布委托正向用例：params 带 `_changed_keys`（画布节点必写，含空值）→
+        门控开启，D−C 收窄生效：有默认值且预判未变化的字段不进 LLM（双向证明）。"""
+        calls = _run_pipeline(
+            monkeypatch, _make_task(params={"_changed_keys": []}),
+            checked_ver=_default_field_ver())
+        assert calls["generate"] == [], \
+            "画布委托下默认值未变化字段应被收窄、不进 LLM"
+        assert calls["transits"][-1] == ("rendering", "done")
