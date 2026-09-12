@@ -422,6 +422,85 @@ def test_task_status_transition_whitelist():
     assert not TplFillTaskService.can_transit("unknown", "retrieving")  # 未知当前态
 
 
+def test_find_running_rejects_stale_running_rows(monkeypatch):
+    """对抗（僵尸任务防复用）：find_running 的 where 必须带 create_time 年龄过滤
+    （仅复用最近 2h 内创建的中间态行）。docker restart 遗留的永久中间态僵尸行超窗，
+    查询即不复用 → 画布节点走新建任务，不会每 1.5s 轮询到天荒地老。
+    经假 model 捕获 where 表达式断言（不触真库；@DB.connection_context 装饰器
+    临时旁路，避免单测连 MySQL）。"""
+    import peewee
+
+    from api.db.services import template_fill_service as tpl_svc
+    from common.time_utils import current_timestamp
+
+    log = []
+
+    class _Expr:
+        def __and__(self, other):
+            return self
+
+    class _Col:
+        def __init__(self, name):
+            self.name = name
+
+        def __eq__(self, other):
+            log.append((self.name, "==", other))
+            return _Expr()
+
+        def __ge__(self, other):
+            log.append((self.name, ">=", other))
+            return _Expr()
+
+        def in_(self, seq):
+            log.append((self.name, "in", tuple(seq)))
+            return _Expr()
+
+        def desc(self):
+            return self
+
+    _row = object()  # first() 哨兵：能取到行即透传给调用方
+
+    class _Select:
+        def where(self, *exprs):
+            log.append(("where", len(exprs)))
+            return self
+
+        def order_by(self, *a):
+            return self
+
+        def first(self):
+            return _row
+
+    class _FakeModel:
+        template_id = _Col("template_id")
+        tenant_id = _Col("tenant_id")
+        status = _Col("status")
+        create_time = _Col("create_time")
+
+        @classmethod
+        def select(cls):
+            return _Select()
+
+    # 旁路装饰器（类定义时已绑定 ConnectionContext）：单测不真连 MySQL
+    monkeypatch.setattr(peewee.ConnectionContext, "__enter__", lambda self: None)
+    monkeypatch.setattr(peewee.ConnectionContext, "__exit__", lambda self, *a: False)
+    monkeypatch.setattr(tpl_svc.TplFillTaskService, "model", _FakeModel)
+
+    row = tpl_svc.TplFillTaskService.find_running("tpl_x", "tenant_x")
+    assert row is _row
+
+    by_op = {(op[0], op[1]): op[2] for op in log if isinstance(op, tuple) and len(op) == 3}
+    assert by_op[("template_id", "==")] == "tpl_x"
+    assert by_op[("tenant_id", "==")] == "tenant_x"
+    assert by_op[("status", "in")] == ("pending", "retrieving", "generating", "rendering")
+    # 年龄过滤：cutoff = now - 2h（允许毫秒级时钟流逝误差）
+    cutoff = by_op[("create_time", ">=")]
+    window_ms = current_timestamp() - cutoff
+    assert 2 * 3600 * 1000 - 5000 <= window_ms <= 2 * 3600 * 1000, \
+        f"find_running 必须带 2h 年龄过滤，实际窗口 {window_ms}ms"
+    assert ("where", 1) in log, "4 个条件经 & 合并为单表达式传入 where"
+
+
 def test_build_values_manual_and_notfound():
     """manual 视同 llm（全部 AI 填写）；缺失一律落空串（人工二次加工），不再插【待人工】标记。"""
     from rag.svr.template_fill.executor import build_values

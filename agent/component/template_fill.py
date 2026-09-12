@@ -32,6 +32,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from functools import partial
 
 from agent.component.base import ComponentBase, ComponentParamBase
@@ -72,6 +73,11 @@ _BEGIN_FIELD_PROMPT_MAX = 200
 # → POST /template/fill/confirm 写 Redis 键 → 本节点轮询读取）。
 _CONFIRM_TIMEOUT = 600          # 确认等待超时（秒），超时按预判结果自动继续
 _CONFIRM_POLL_INTERVAL = 1.5    # Redis 轮询间隔（与 cancel 探针同量级）
+
+# 观察者轮询总 deadline：防僵尸任务无限轮询。docker restart 部署等场景下执行中
+# 任务行可能永久停中间态（后台线程已死、无人强置终态），若无总上限节点会每
+# 1.5s 轮询到天荒地老。超时后写取消键 + 按 failed 收口，走正常汇总输出。
+_OBSERVE_TIMEOUT_S = 3600
 
 
 class _FillCancelled(Exception):
@@ -382,8 +388,10 @@ class TemplateFill(ComponentBase):
         # _spawn_fill_task 同一调度路径）。执行与连接解耦——断连/刷新后任务照常
         # 跑完落库；节点降级为观察者。同一范本已有执行中任务则复用观察（不重复起线程）。
         task_of: dict[str, str] = {}   # template_id -> task_id
+        total_of: dict[str, int] = {}  # template_id -> llm 槽数（filling 事件 total 回落，建任务时算一次）
         for c in chosen:
             tid = c["template_id"]
+            total_of[tid] = len(_llm_fill_items(c))
             row = TplFillTaskService.find_running(tid, tenant_id)
             if row is not None:
                 task_of[tid] = row.id
@@ -404,9 +412,10 @@ class TemplateFill(ComponentBase):
         # ③ 观察者轮询（1.5s，与确认轮询同量级）：读 Redis 快照 + DB 状态，组装
         # 与既有完全同形的 filling/filled/failed 事件（新增可选 task_id 字段）。
         # values 只在键数增长时推送（SSE 体积控制；前端合并幂等）。
-        pending_tasks = {tid: t for tid, t in task_of.items()}
+        pending_tasks = dict(task_of)
         results: dict[str, tuple[dict | None, str | None]] = {}  # tid -> (dl, err)
         pushed_values_len: dict[str, int] = {}
+        started = time.monotonic()
         while pending_tasks:
             if self.check_if_canceled("TemplateFill observing"):
                 # 画布被停止：未终态任务写取消键（executor 批次/检索探针既有），
@@ -416,58 +425,84 @@ class TemplateFill(ComponentBase):
                 self._push_progress({"stage": "cancelled"})
                 return
             await asyncio.sleep(1.5)
+            if time.monotonic() - started >= _OBSERVE_TIMEOUT_S:
+                # 僵尸任务兜底：超总 deadline 仍中间态（典型为部署重启后线程已死）
+                # → 写取消键（线程若尚存则促其自行收口）+ 按 failed 收口走正常汇总
+                logger.warning("TemplateFill observe timeout (%ss), canvas=%s tasks=%s",
+                               _OBSERVE_TIMEOUT_S, self._id, list(pending_tasks.values()))
+                for cand in chosen:
+                    tid = cand["template_id"]
+                    if tid not in pending_tasks:
+                        continue
+                    task_id = task_of[tid]
+                    try:
+                        executor.write_cancel_key(task_id)
+                    except Exception:  # 收口不因 Redis 抖动中断
+                        logger.warning("write_cancel_key failed, task=%s", task_id,
+                                       exc_info=True)
+                    pending_tasks.pop(tid)
+                    results[tid] = (None, "任务超时未完成")
+                    self._push_progress({"stage": "failed", "template_id": tid,
+                                         "name": cand["name"],
+                                         "error": "任务超时未完成", "task_id": task_id})
+                break
             for cand in chosen:
                 tid = cand["template_id"]
                 if tid not in pending_tasks:
                     continue
                 task_id = task_of[tid]
-                row = TplFillTaskService.get_or_none(id=task_id)
-                if row is None:
-                    pending_tasks.pop(tid)
-                    results[tid] = (None, "任务行不存在")
-                    self._push_progress({"stage": "failed", "template_id": tid,
-                                         "name": cand["name"],
-                                         "error": "任务行不存在", "task_id": task_id})
-                    continue
-                snap = executor.read_progress_snapshot(task_id)
-                if row.status in ("pending", "retrieving", "generating", "rendering"):
-                    done = (snap or {}).get("done") or 0
-                    total = (snap or {}).get("total")
-                    if total is None:
-                        total = len(_llm_fill_items(cand))
-                    ev = {"stage": "filling", "template_id": tid, "name": cand["name"],
-                          "done": done, "total": total, "task_id": task_id}
-                    vals = (snap or {}).get("values")
-                    if isinstance(vals, dict) and len(vals) > pushed_values_len.get(tid, 0):
-                        ev["values"] = vals
-                        pushed_values_len[tid] = len(vals)
-                    self._push_progress(ev)
-                    continue
-                # 终态
-                pending_tasks.pop(tid)
-                if row.status == "done" and row.result_file_id:
-                    dl = self._bridge_download(tenant_id, cand, row)
-                    if dl is None:
-                        results[tid] = (None, "成稿对象读取失败")
+                # 瞬时 DB/Redis 抖动不应炸整轮画布运行：本轮跳过保持 pending，下轮重试
+                try:
+                    row = TplFillTaskService.get_or_none(id=task_id)
+                    if row is None:
+                        pending_tasks.pop(tid)
+                        results[tid] = (None, "任务行不存在")
                         self._push_progress({"stage": "failed", "template_id": tid,
                                              "name": cand["name"],
-                                             "error": "成稿对象读取失败", "task_id": task_id})
+                                             "error": "任务行不存在", "task_id": task_id})
                         continue
-                    results[tid] = (dl, None)
-                    self._push_progress({"stage": "filled", "template_id": tid,
-                                         "name": cand["name"], "download": dl,
-                                         "task_id": task_id})
-                elif row.status == "cancelled":
-                    results[tid] = (None, "任务已取消")
-                    self._push_progress({"stage": "failed", "template_id": tid,
-                                         "name": cand["name"],
-                                         "error": "任务已取消", "task_id": task_id})
-                else:
-                    err = row.error or (snap or {}).get("error") or "填写失败"
-                    results[tid] = (None, err)
-                    self._push_progress({"stage": "failed", "template_id": tid,
-                                         "name": cand["name"], "error": err,
-                                         "task_id": task_id})
+                    snap = executor.read_progress_snapshot(task_id)
+                    if row.status in ("pending", "retrieving", "generating", "rendering"):
+                        done = (snap or {}).get("done") or 0
+                        total = (snap or {}).get("total")
+                        if total is None:
+                            total = total_of.get(tid, 0)
+                        ev = {"stage": "filling", "template_id": tid, "name": cand["name"],
+                              "done": done, "total": total, "task_id": task_id}
+                        vals = (snap or {}).get("values")
+                        if isinstance(vals, dict) and len(vals) > pushed_values_len.get(tid, 0):
+                            ev["values"] = vals
+                            pushed_values_len[tid] = len(vals)
+                        self._push_progress(ev)
+                        continue
+                    # 终态
+                    pending_tasks.pop(tid)
+                    if row.status == "done" and row.result_file_id:
+                        dl = self._bridge_download(tenant_id, cand, row)
+                        if dl is None:
+                            results[tid] = (None, "成稿对象读取失败")
+                            self._push_progress({"stage": "failed", "template_id": tid,
+                                                 "name": cand["name"],
+                                                 "error": "成稿对象读取失败", "task_id": task_id})
+                            continue
+                        results[tid] = (dl, None)
+                        self._push_progress({"stage": "filled", "template_id": tid,
+                                             "name": cand["name"], "download": dl,
+                                             "task_id": task_id})
+                    elif row.status == "cancelled":
+                        results[tid] = (None, "任务已取消")
+                        self._push_progress({"stage": "failed", "template_id": tid,
+                                             "name": cand["name"],
+                                             "error": "任务已取消", "task_id": task_id})
+                    else:
+                        err = row.error or (snap or {}).get("error") or "填写失败"
+                        results[tid] = (None, err)
+                        self._push_progress({"stage": "failed", "template_id": tid,
+                                             "name": cand["name"], "error": err,
+                                             "task_id": task_id})
+                except Exception:  # 单任务本轮观察失败不影响其余任务与画布
+                    logger.warning("observe task %s failed", task_id, exc_info=True)
+                    continue
 
         # ④ 汇总输出（契约与改造前一致：download 列表 + content 汇总）
         downloads: list[dict] = []

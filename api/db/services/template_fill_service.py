@@ -24,6 +24,7 @@ from api.db.db_models import DB, TplFillTask, TplTemplate, TplTemplateVersion
 from api.db.services.common_service import CommonService
 from common import settings
 from common.misc_utils import get_uuid
+from common.time_utils import current_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,11 @@ TERMINAL_TASK_STATUSES = ("done", "partial", "failed", "cancelled")
 # object name 中用户文件名片段的最大长度（MinIO object 名总长上限远大于此，
 # 截断主要为防极端超长文件名 + 保留扩展名可读性）
 _FILENAME_MAX_LEN = 128
+
+# find_running 复用中间态行的年龄窗口（毫秒）：docker restart 部署等场景下执行中
+# 任务行可能永久停中间态（后台线程已死、无人强置终态），超窗的中间态行视为僵尸
+# 不再复用观察（否则画布节点每 1.5s 轮询到天荒地老）
+_RUNNING_REUSE_WINDOW_MS = 2 * 3600 * 1000
 # original_filename 列 CharField(max_length=256)，入库前必须截断避免 strict mode 报错
 _DB_FILENAME_MAX_LEN = 256
 
@@ -518,9 +524,12 @@ class TplFillTaskService(CommonService):
     @DB.connection_context()
     def find_running(cls, template_id: str, tenant_id: str):
         """该范本在租户内是否已有执行中任务（画布重复发起时复用观察，不重复起线程）。
-        取最新一条；无则 None。"""
+        取最新一条；无则 None。只复用最近 _RUNNING_REUSE_WINDOW_MS 内创建的中间态行：
+        超龄中间态行是部署重启遗留的僵尸（线程已死无人收口），复用会导致节点无限轮询，
+        改为新建任务重跑。"""
         return cls.model.select().where(
             (cls.model.template_id == template_id)
             & (cls.model.tenant_id == tenant_id)
             & cls.model.status.in_(("pending", "retrieving", "generating", "rendering"))
+            & (cls.model.create_time >= current_timestamp() - _RUNNING_REUSE_WINDOW_MS)
         ).order_by(cls.model.create_time.desc()).first()

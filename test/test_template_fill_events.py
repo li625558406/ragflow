@@ -63,8 +63,29 @@ class _TaskServiceStub:
         return seq[min(i, len(seq) - 1)]
 
 
-def _make_comp(candidates, sequences=None, canceled=False):
-    """构造 TemplateFill 实例并 stub 委托面（任务服务/spawn/快照/桥接）。"""
+class _FlakyServiceStub(_TaskServiceStub):
+    """对抗桩：每个任务前 fail_first 次 get_or_none 抛异常（模拟瞬时 DB 抖动），
+    之后走父类序列。计数独立于父类 queries，避免干扰序列游标。"""
+
+    def __init__(self, sequences, fail_first=1):
+        super().__init__(sequences)
+        self._fail_first = fail_first
+        self._calls = {}
+
+    def get_or_none(self, id=None, **kw):
+        key = self.id_map.get(id, id)
+        n = self._calls.get(key, 0)
+        self._calls[key] = n + 1
+        if n < self._fail_first:
+            raise RuntimeError("db jitter")
+        return super().get_or_none(id=id, **kw)
+
+
+def _make_comp(candidates, sequences=None, canceled=False, monkeypatch=None):
+    """构造 TemplateFill 实例并 stub 委托面（任务服务/spawn/快照/桥接）。
+    monkeypatch 必传：模块属性替换经 monkeypatch.setattr 登记，teardown 恢复原值，
+    防桩泄漏污染其他测试模块对 agent.component.template_fill 的导入。"""
+    assert monkeypatch is not None, "_make_comp 必须传 monkeypatch（防模块属性桩泄漏）"
     # 真实 __init__ 断言 canvas is Graph：MagicMock(spec=Graph) 可过 isinstance 且不触 Graph.__init__
     comp = TemplateFill(MagicMock(spec=Graph), "node1", TemplateFillParam())
     comp._canvas.get_tenant_id.return_value = "t"
@@ -85,8 +106,8 @@ def _make_comp(candidates, sequences=None, canceled=False):
         """序列键 task-N → 节点传入的真实 uuid id（与生产 row.id 一致）。"""
         return next((u for u, n in svc.id_map.items() if n == row_id), row_id)
     comp._bridge_download = lambda tenant_id, cand, row: _dl(f"d-{_rev(row.id)}")
-    tf_mod.TplFillTaskService = svc
-    tf_mod.spawn_fill_task = lambda task_id: None
+    monkeypatch.setattr(tf_mod, "TplFillTaskService", svc)
+    monkeypatch.setattr(tf_mod, "spawn_fill_task", lambda task_id: None)
 
     outs = {}
     comp.set_output = lambda k, v: outs.update({k: v})
@@ -119,7 +140,8 @@ def test_event_sequence_happy_path(monkeypatch):
         "task-1": [_Row("task-1", status="generating"),
                    _Row("task-1", status="done", result_file_id="rf1")],
         "task-2": [_Row("task-2", status="generating"),
-                   _Row("task-2", status="done", result_file_id="rf2")]})
+                   _Row("task-2", status="done", result_file_id="rf2")]},
+        monkeypatch=monkeypatch)
     import agent.component.template_fill as tf_mod
     monkeypatch.setattr(tf_mod.executor, "read_progress_snapshot",
                         lambda task_id: None)
@@ -142,7 +164,8 @@ def test_event_sequence_happy_path(monkeypatch):
         "task-1": [_Row("task-1", status="generating"),
                    _Row("task-1", status="done", result_file_id="rf1")],
         "task-2": [_Row("task-2", status="generating"),
-                   _Row("task-2", status="done", result_file_id="rf2")]})
+                   _Row("task-2", status="done", result_file_id="rf2")]},
+        monkeypatch=monkeypatch)
     raw = _run(comp2)
     uuid_of = {v: k for k, v in svc2.id_map.items()}
     tid1, tid2 = uuid_of["task-1"], uuid_of["task-2"]
@@ -168,7 +191,8 @@ def test_filling_values_from_snapshot_push_once(monkeypatch):
     comp, _ = _make_comp(cands, {
         "task-1": [_Row("task-1", status="generating"),
                    _Row("task-1", status="generating"),
-                   _Row("task-1", status="done", result_file_id="rf1")]})
+                   _Row("task-1", status="done", result_file_id="rf1")]},
+        monkeypatch=monkeypatch)
     import agent.component.template_fill as tf_mod
     snaps = iter([
         {"done": 1, "total": 3, "values": {"k1": "v1"}},
@@ -194,7 +218,8 @@ def test_single_failure_pushes_failed_and_continues(monkeypatch):
              _cand("t2", "范本B", [{"key": "k1", "fill_mode": "llm"}])]
     comp, _ = _make_comp(cands, {
         "task-1": [_Row("task-1", status="failed", error="检索炸了")],
-        "task-2": [_Row("task-2", status="done", result_file_id="rf2")]})
+        "task-2": [_Row("task-2", status="done", result_file_id="rf2")]},
+        monkeypatch=monkeypatch)
     import agent.component.template_fill as tf_mod
     monkeypatch.setattr(tf_mod.executor, "read_progress_snapshot",
                         lambda task_id: None)
@@ -217,7 +242,8 @@ def test_all_failures_push_failed_and_raise_output(monkeypatch):
              _cand("t2", "范本B", [{"key": "k1", "fill_mode": "llm"}])]
     comp, _ = _make_comp(cands, {
         "task-1": [_Row("task-1", status="failed", error="检索炸了")],
-        "task-2": [_Row("task-2", status="failed", error="渲染炸了")]})
+        "task-2": [_Row("task-2", status="failed", error="渲染炸了")]},
+        monkeypatch=monkeypatch)
     import agent.component.template_fill as tf_mod
     monkeypatch.setattr(tf_mod.executor, "read_progress_snapshot",
                         lambda task_id: None)
@@ -241,7 +267,8 @@ def test_cancel_writes_cancel_key_and_pushes_cancelled(monkeypatch):
     自行收口置 cancelled）、推 cancelled、不推 filled/done、不写输出。"""
     cands = [_cand("t1", "范本A", [{"key": "k1", "fill_mode": "llm"}])]
     comp, svc = _make_comp(cands, {
-        "task-1": [_Row("task-1", status="generating")]})
+        "task-1": [_Row("task-1", status="generating")]},
+        monkeypatch=monkeypatch)
     calls = {"n": 0}
     cancel_keys = []
 
@@ -264,10 +291,10 @@ def test_cancel_writes_cancel_key_and_pushes_cancelled(monkeypatch):
     assert cancel_keys == [svc.inserted[0][0]]
 
 
-def test_cancelled_before_start_no_output():
+def test_cancelled_before_start_no_output(monkeypatch):
     """入口即取消：直接返回，无任何事件、无输出（不推 selected）。"""
     cands = [_cand("t1", "范本A", [{"key": "k1", "fill_mode": "llm"}])]
-    comp, _ = _make_comp(cands, canceled=True)
+    comp, _ = _make_comp(cands, canceled=True, monkeypatch=monkeypatch)
     evs = _run(comp)
     assert evs == []
     assert comp._outs.get("download") in (None, "")
@@ -280,7 +307,8 @@ def test_bridge_failure_degrades_to_failed_and_raises(monkeypatch):
     _fast_sleep(monkeypatch)
     cands = [_cand("t1", "范本A", [{"key": "k1", "fill_mode": "llm"}])]
     comp, _ = _make_comp(cands, {
-        "task-1": [_Row("task-1", status="done", result_file_id="rf1")]})
+        "task-1": [_Row("task-1", status="done", result_file_id="rf1")]},
+        monkeypatch=monkeypatch)
     comp._bridge_download = lambda tenant_id, cand, row: None
     import agent.component.template_fill as tf_mod
     monkeypatch.setattr(tf_mod.executor, "read_progress_snapshot",
@@ -301,7 +329,8 @@ def test_cancelled_task_row_pushes_failed(monkeypatch):
     _fast_sleep(monkeypatch)
     cands = [_cand("t1", "范本A", [{"key": "k1", "fill_mode": "llm"}])]
     comp, _ = _make_comp(cands, {
-        "task-1": [_Row("task-1", status="cancelled")]})
+        "task-1": [_Row("task-1", status="cancelled")]},
+        monkeypatch=monkeypatch)
     import agent.component.template_fill as tf_mod
     monkeypatch.setattr(tf_mod.executor, "read_progress_snapshot",
                         lambda task_id: None)
@@ -311,6 +340,64 @@ def test_cancelled_task_row_pushes_failed(monkeypatch):
     stages = [e["data"]["stage"] for e in evs]
     assert stages == ["selected", "failed"]
     assert evs[-1]["data"]["error"] == "任务已取消"
+    assert comp._outs.get("download") in (None, "")
+
+
+def test_observe_db_jitter_skips_round_and_recovers(monkeypatch):
+    """对抗（Important-1）：观察循环内 get_or_none 首轮抛异常（瞬时 DB 抖动）→
+    单任务本轮跳过保持 pending、不炸画布；次轮恢复后事件正常收口
+    （filling → filled → done）。"""
+    _fast_sleep(monkeypatch)
+    cands = [_cand("t1", "范本A", [{"key": "k1", "fill_mode": "llm"}])]
+    comp, _ = _make_comp(cands, {
+        "task-1": [_Row("task-1", status="generating"),
+                   _Row("task-1", status="done", result_file_id="rf1")]},
+        monkeypatch=monkeypatch)
+    import agent.component.template_fill as tf_mod
+    flaky = _FlakyServiceStub({
+        "task-1": [_Row("task-1", status="generating"),
+                   _Row("task-1", status="done", result_file_id="rf1")]})
+    monkeypatch.setattr(tf_mod, "TplFillTaskService", flaky)
+    monkeypatch.setattr(tf_mod.executor, "read_progress_snapshot",
+                        lambda task_id: None)
+    evs = _run(comp)
+    stages = [(e["data"]["stage"], e["data"].get("template_id")) for e in evs]
+    assert stages == [
+        ("selected", None),
+        ("filling", "t1"),   # 首轮异常跳过，次轮正常推 filling
+        ("filled", "t1"),
+        ("done", None),
+    ]
+    assert comp._outs.get("download"), "画布未炸 → 正常写 download 输出"
+
+
+def test_observe_deadline_collects_remaining_tasks_as_failed(monkeypatch):
+    """对抗（Important-2b）：观察超总 deadline（_OBSERVE_TIMEOUT_S 压成 0）仍中间态
+    → 写取消键 + 逐个按 failed 收口（error=任务超时未完成，带 task_id），不再无限轮询；
+    全部失败 → 汇总 raise、无 filled/done、无输出。"""
+    import pytest
+    _fast_sleep(monkeypatch)
+    cands = [_cand("t1", "范本A", [{"key": "k1", "fill_mode": "llm"}])]
+    comp, svc = _make_comp(cands, {
+        "task-1": [_Row("task-1", status="generating")]},
+        monkeypatch=monkeypatch)
+    import agent.component.template_fill as tf_mod
+    monkeypatch.setattr(tf_mod, "_OBSERVE_TIMEOUT_S", 0)
+    monkeypatch.setattr(tf_mod.executor, "read_progress_snapshot",
+                        lambda task_id: None)
+    cancel_keys = []
+    monkeypatch.setattr(tf_mod.executor, "write_cancel_key",
+                        lambda task_id: cancel_keys.append(task_id))
+    with pytest.raises(ValueError, match="任务超时未完成"):
+        _run(comp)
+    evs = _drain(comp)
+    stages = [e["data"]["stage"] for e in evs]
+    assert stages == ["selected", "failed"]
+    failed = evs[-1]["data"]
+    assert failed["error"] == "任务超时未完成"
+    assert failed["task_id"] == svc.inserted[0][0]
+    assert cancel_keys == [svc.inserted[0][0]], "超时收口前必须写取消键（线程若尚存促其自行收口）"
+    assert "filled" not in stages and "done" not in stages
     assert comp._outs.get("download") in (None, "")
 
 
