@@ -1284,3 +1284,60 @@ class TestBEndBehaviorUnchanged:
         assert calls["generate"] == [], \
             "画布委托下默认值未变化字段应被收窄、不进 LLM"
         assert calls["transits"][-1] == ("rendering", "done")
+
+
+# ── spawn 抽取共用：B端 fill-task API 与画布节点共一条调度路径 ──
+
+_spawned_targets: list = []
+
+
+class _FakeThread:
+    """假线程（测试免并发）：start() 只把 target 入队不执行，
+    由 _flush_spawned() 同步逐个跑——这样才能让「已 spawn 未跑完」的
+    中间态可观察，真正验证防重入与 is_running 生命周期。"""
+    def __init__(self, target=None, daemon=None, name=None, **kw):
+        self._target = target
+    def start(self):
+        _spawned_targets.append(self._target)
+
+
+def _flush_spawned():
+    """同步执行所有已入队的线程 target（模拟 daemon 线程全部跑完）。"""
+    while _spawned_targets:
+        _spawned_targets.pop(0)()
+
+
+class TestSpawnReuse:
+    """spawn 防重入：同 task_id 连续两次调用只执行一次。"""
+
+    def test_spawn_dedup(self, monkeypatch):
+        import threading
+
+        from rag.svr.template_fill import spawn as spawn_mod
+        _spawned_targets.clear()
+        calls = []
+        # execute_task 经 spawn 模块级注入点解析——monkeypatch 模块属性即命中
+        monkeypatch.setattr(spawn_mod, "execute_task", lambda tid: calls.append(tid),
+                            raising=False)
+        monkeypatch.setattr(threading, "Thread", _FakeThread)
+        spawn_mod.spawn_fill_task("t-spawn-1")
+        spawn_mod.spawn_fill_task("t-spawn-1")  # 仍在执行中（未 flush）→ 防重入拦截
+        _flush_spawned()
+        assert calls == ["t-spawn-1"]
+
+    def test_is_running_lifecycle(self, monkeypatch):
+        import threading
+
+        from rag.svr.template_fill import spawn as spawn_mod
+        _spawned_targets.clear()
+        release = []
+        def _fake_exec(tid):
+            release.append(tid)
+        monkeypatch.setattr(spawn_mod, "execute_task", _fake_exec, raising=False)
+        monkeypatch.setattr(threading, "Thread", _FakeThread)
+        assert spawn_mod.is_running("t-iso") is False
+        spawn_mod.spawn_fill_task("t-iso")
+        assert spawn_mod.is_running("t-iso") is True  # 已 spawn 未跑完 → 执行中
+        _flush_spawned()
+        assert spawn_mod.is_running("t-iso") is False  # 跑完 finally 已 discard
+        assert release == ["t-iso"]
