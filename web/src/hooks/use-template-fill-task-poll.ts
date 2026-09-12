@@ -49,6 +49,10 @@ export function useTemplateFillTaskPoll(
           );
           if (cancelled) return;
           const d = data?.data || data;
+          // 迟到响应防护：unmount 或同任务更快的 tick 已处理终态（stopped）时，
+          // 直接丢弃本响应——否则 running 快照会整键覆盖终态 override（丢 status:
+          // 'filled'），而该 id 已在 stopped 中永不再轮询 → 卡片永久卡死
+          if (cancelled || stopped.current.has(taskId)) continue;
           if (!d?.status) continue;
           // stalled 中断：后端探活判定任务已死但 status 仍是生成中——直接判失败停轮询，
           // 否则非终态分支只更新进度、永远轮询，中断提示不可达
@@ -80,9 +84,7 @@ export function useTemplateFillTaskPoll(
                     }
                   : {
                       status: 'failed' as const,
-                      error: d.stalled
-                        ? '任务中断，可重试'
-                        : d.error || '填写失败',
+                      error: d.error || '填写失败',
                     },
             }));
           } else {
@@ -115,6 +117,8 @@ export function useTemplateFillTaskPoll(
 
   // 合并 override：SSE 已到 filled 的行以 SSE 为准（丢弃 override）；
   // filling 行叠加轮询产物（done/total/values），终态 override 换 status。
+  // 无 override 时直接透传原引用，避免每次渲染都 map 出新数组引发下游重渲染
+  if (!Object.keys(overrides).length) return templates;
   const merged = templates?.map((t) => {
     const ov = t.task_id ? overrides[t.task_id] : undefined;
     if (!ov) return t;

@@ -183,4 +183,65 @@ describe('useTemplateFillTaskPoll', () => {
     await flush();
     expect(mockedGet).toHaveBeenCalledTimes(2);
   });
+
+  it('重叠 tick 竞态：慢请求迟到的 running 响应不覆盖终态 override', async () => {
+    jest.useFakeTimers();
+    let resolveSlow: (v: {
+      data: { code: number; data: Record<string, unknown> };
+    }) => void = () => {};
+    const slowPromise = new Promise<{
+      data: { code: number; data: Record<string, unknown> };
+    }>((resolve) => {
+      resolveSlow = resolve;
+    });
+    // tick1（挂载立即）：慢请求 pending 不返回
+    mockedGet.mockImplementationOnce(() => slowPromise);
+    // tick2（下一周期）：快请求先返回终态 done
+    mockedGet.mockImplementationOnce(() =>
+      envelope({ status: 'done', download: { doc_id: 'd1' } }),
+    );
+    const { result } = renderHook(() =>
+      useTemplateFillTaskPoll([fillingTpl()], true),
+    );
+    await flush();
+    expect(mockedGet).toHaveBeenCalledTimes(1);
+    jest.advanceTimersByTime(2000);
+    await flush();
+    expect(mockedGet).toHaveBeenCalledTimes(2);
+    // 快 tick 终态已落地：stopped.add + override {status:'filled'}
+    expect(result.current?.[0]).toMatchObject({
+      status: 'filled',
+      download: { doc_id: 'd1' },
+    });
+    // 慢 tick 的 running 快照迟到：必须被丢弃，终态不回退
+    resolveSlow({
+      data: { code: 0, data: { status: 'running', done: 5, total: 10 } },
+    });
+    await flush();
+    expect(result.current?.[0]).toMatchObject({
+      status: 'filled',
+      download: { doc_id: 'd1' },
+    });
+  });
+
+  it('unmount 后不再发起请求', async () => {
+    jest.useFakeTimers();
+    mockedGet.mockReturnValue(
+      envelope({ status: 'running', done: 1, total: 2 }),
+    );
+    const { rerender, unmount } = renderHook(
+      ({ templates }: { templates: ITemplateFillTemplate[] }) =>
+        useTemplateFillTaskPoll(templates, true),
+      { initialProps: { templates: [fillingTpl()] } },
+    );
+    await flush();
+    expect(mockedGet).toHaveBeenCalledTimes(1);
+    rerender({ templates: [fillingTpl({ done: 1 })] });
+    await flush();
+    unmount();
+    // 卸载后推进多个周期：effect cleanup 已置 cancelled + 清 interval，不再请求
+    jest.advanceTimersByTime(6000);
+    await flush();
+    expect(mockedGet).toHaveBeenCalledTimes(1);
+  });
 });

@@ -13,7 +13,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 
 export default function TemplateFillProgress({
   state,
-  streaming = false,
+  streaming = true,
   onPreview,
   extraAction,
   onConfirmSubmitted,
@@ -21,7 +21,8 @@ export default function TemplateFillProgress({
 }: {
   state?: ITemplateFillState;
   /** 实时流式进行中（c-chat 传 sendLoading 派生标志；flow 传 live.busy）：
-   *  流式期间 SSE 为准不轮询；false（历史恢复态）才启用断连重连轮询（设计 §5） */
+   *  流式期间 SSE 为准不轮询；false（历史恢复态）才启用断连重连轮询（设计 §5）。
+   *  默认 true（fail-safe）：新调用点漏传 → 不轮询，而非静默开启请求放大 */
   streaming?: boolean;
   /** 成稿点击预览（c-chat 传 setPreviewDoc；不传则文件名为纯文本） */
   onPreview?: (dl: ITemplateFillDownload) => void;
