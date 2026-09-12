@@ -46,4 +46,29 @@ describe('collectRecentDownloads', () => {
       ]),
     ).toEqual([{ doc_id: 'x', filename: '名字' }]);
   });
+
+  it('对抗：超长 filename 截断 120，控制字符剥除', () => {
+    const longName = '很'.repeat(300);
+    const dirty = `成\u0000稿\u001f标书\n第2节\tv${'\u007f'}1.docx`;
+    expect(
+      collectRecentDownloads([
+        { downloads: [{ doc_id: 'long', filename: longName }] },
+      ]),
+    ).toEqual([{ doc_id: 'long', filename: '很'.repeat(120) }]);
+    expect(
+      collectRecentDownloads([
+        { downloads: [{ doc_id: 'dirty', filename: dirty }] },
+      ]),
+    ).toEqual([{ doc_id: 'dirty', filename: '成稿标书第2节v1.docx' }]);
+    // name 回退路径同样清洗
+    expect(
+      collectRecentDownloads([
+        {
+          downloads: [
+            { doc_id: 'n', name: `a\r\u001bb${'c'.repeat(200)}` } as any,
+          ],
+        },
+      ]),
+    ).toEqual([{ doc_id: 'n', filename: `ab${'c'.repeat(118)}` }]);
+  });
 });

@@ -1323,6 +1323,31 @@ export default function CChat() {
         setValue(query);
         removeLatestMessage();
       }
+
+      // 尾包 downloads 回填：workflow_finished 与 [DONE] 同帧到达时，
+      // setDone+resetAnswerList 批处理同步清空 streamAccRef，流式 effect 被
+      // `if (done) return` 短路，downloads 永远落不到消息上 → 下一轮
+      // collectRecentDownloads 返回 []，DocumentRewrite 报「无法确定要重写的
+      // 文档」。send 返回的全量 rawEvents 不受批处理影响，据其回填最后一条
+      // assistant 消息（同款模式：templateFill done-effect、flow 面板
+      // finalTplEvents 重建）。无 downloads 时零动作，不影响普通问答轮次。
+      const finishedDownloads = ((res?.events as any[] | undefined) ?? []).find(
+        (e: any) => e?.event === 'workflow_finished',
+      )?.data?.outputs?.downloads;
+      if (Array.isArray(finishedDownloads) && finishedDownloads.length > 0) {
+        setDerivedMessages((prev) => {
+          for (let i = prev.length - 1; i >= 0; i--) {
+            if (prev[i].role === 'assistant') {
+              // 流式路径正常落地过 downloads（RAF flush 早于 [DONE]）则不动，避免无谓重渲染
+              if (prev[i].downloads?.length) return prev;
+              const next = [...prev];
+              next[i] = { ...next[i], downloads: finishedDownloads };
+              return next;
+            }
+          }
+          return prev;
+        });
+      }
     },
     [
       currentAgentId,
@@ -1331,6 +1356,7 @@ export default function CChat() {
       setValue,
       removeLatestMessage,
       enableInternet,
+      setDerivedMessages,
     ],
   );
 

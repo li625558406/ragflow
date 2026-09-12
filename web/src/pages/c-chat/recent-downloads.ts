@@ -26,7 +26,13 @@ export function collectRecentDownloads(
     for (let j = dls.length - 1; j >= 0 && out.length < limit; j--) {
       const d = dls[j];
       if (d && typeof d.doc_id === 'string' && d.doc_id) {
-        out.push({ doc_id: d.doc_id, filename: d.filename || d.name || '' });
+        // filename 清洗：剥控制字符 + 截断 120 字符，防下游 prompt 注入/超长负载
+        const raw = d.filename || d.name || '';
+        const filename = raw
+          // eslint-disable-next-line no-control-regex -- 控制字符正是要清洗的目标
+          .replace(/[\u0000-\u001f\u007f]/g, '')
+          .slice(0, 120);
+        out.push({ doc_id: d.doc_id, filename });
       }
     }
   }
