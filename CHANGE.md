@@ -1,5 +1,24 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-12 修复流程 AI 面板刷新后无成稿卡：template_fill_events 超 TEXT 64KB 被截断致 JSON 损坏（已编码未部署）
+
+**主题**：范本填写（523 填写点大范本）完成后流程 AI 面板只有文字总结，成稿卡（预览/下载/存为流程版本入口）整个消失。
+
+**根因**（服务器 DB 实证，记录 7507b528）：`flow_ai_chat.template_fill_events` 为 MySQL `TEXT`（65535 字节上限），大范本事件序列（含大量中文填入值）实测存储 65533 字节被静默截断，JSON 损坏（Unterminated string @ char 50912）；刷新回放 `parseAndReplay` 解析失败返回 undefined → 成稿卡消失（`response` 文本独立存储不受影响）。
+
+**核心变更**：
+- `api/db/db_models.py`：新增 `MediumTextField`（field_type='MEDIUMTEXT'，16MB），`FlowAiChat.template_fill_events` 改用；`migrate_db` 加 `alter_db_column_type` 幂等迁移（存量 TEXT → MEDIUMTEXT）
+- `web/src/hooks/template-fill-stream.ts`：新增 `parseTemplateFillEvents(raw)`——JSON.parse 失败时按引号/转义/括号深度状态扫描，截到最后一个完整闭合的事件元素补 `]` 挽救重试（只丢尾部残缺事件）
+- `flow-ai-panel.tsx`：`parseAndReplay` 改用挽救解析
+- 测试：`template-fill-stream.test.ts` 新增 6 个挽救用例（合法/畸形/字符串中段截断/嵌套对象截断/值含 `}` 引号状态/无完整元素），18 全绿；并用服务器真实截断记录实测：挽救出 21 个完整事件（selected/confirm/filling 全保住）
+
+**遗留**：① 已截断的存量记录（7507b528）尾部事件（收尾产值批/filled/done）物理丢失不可恢复，回放停在中途；新记录在 MEDIUMTEXT 下完整。② 部署需成套：`db_models.py`（重启容器触发 migrate_db）+ 前端 build，一起上线；部署后确认迁移生效：
+```sql
+SELECT COLUMN_TYPE FROM information_schema.columns
+WHERE table_name='flow_ai_chat' AND column_name='template_fill_events';
+-- 预期 mediumtext（ALTER 失败仅打日志不阻断启动，需人工确认）
+```
+
 ## 2026-09-11 修复范本「实时预览」看不到 AI 填入内容（默认值/param 产值不随事件下发）（未部署）
 
 **主题**：用户点「实时预览」后正文里几乎看不到蓝色填入内容（523 槽范本实测仅 11 个值随事件到达）。

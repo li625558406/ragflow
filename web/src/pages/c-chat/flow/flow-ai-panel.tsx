@@ -6,7 +6,10 @@
 import { Button } from '@/components/ui/button';
 import { useHandleMessageInputChange } from '@/hooks/logic-hooks';
 import type { ITemplateFillState } from '@/hooks/template-fill-stream';
-import { replayTemplateFillEvents } from '@/hooks/template-fill-stream';
+import {
+  parseTemplateFillEvents,
+  replayTemplateFillEvents,
+} from '@/hooks/template-fill-stream';
 import { useSendMessageBySSE } from '@/hooks/use-send-message';
 import type { FlowDocRun } from '@/services/flow-service';
 import {
@@ -49,24 +52,12 @@ export type FlowReviewControl = {
 const FULL_PLACEHOLDER =
   '请在此描述您的标书分析需求，例如：提取招标文件中的关键资质要求、分析评分标准的权重分布、对比各投标企业的技术方案优劣、检查合同条款中的潜在风险点...';
 
-/** template_fill_events 落库为 JSON 字符串；解析失败/为空/畸形时静默返回 undefined（回放是尽力而为） */
+/** template_fill_events 落库为 JSON 字符串；为空/畸形时静默返回 undefined（回放是尽力而为）。
+ *  截断损坏（旧 TEXT 64KB 落库上限）由 parseTemplateFillEvents 挽救：丢尾部残缺
+ *  事件、保住前面的进度/产值/成稿事件。 */
 function parseAndReplay(raw: unknown) {
-  if (!raw) return undefined;
-  let events: unknown[];
-  if (typeof raw === 'string') {
-    try {
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed) || parsed.length === 0) return undefined;
-      events = parsed;
-    } catch {
-      return undefined;
-    }
-  } else if (Array.isArray(raw)) {
-    if (raw.length === 0) return undefined;
-    events = raw;
-  } else {
-    return undefined;
-  }
+  const events = parseTemplateFillEvents(raw);
+  if (!events) return undefined;
   try {
     return replayTemplateFillEvents(events);
   } catch {

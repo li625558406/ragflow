@@ -2301,6 +2301,12 @@ class FlowComment(DataBaseModel):
         db_table = "flow_comment"
 
 
+class MediumTextField(TextField):
+    """MySQL MEDIUMTEXT（16MB）。TEXT 上限 64KB，范本填写事件序列（含大量中文
+    填入值）实测会超限被静默截断致 JSON 损坏，回放失效。"""
+    field_type = "MEDIUMTEXT"
+
+
 class FlowAiChat(DataBaseModel):
     """AI 处理记录：某版本上的一次 AI 对话，回复可落为新版本。"""
     id = CharField(max_length=32, primary_key=True)
@@ -2311,7 +2317,7 @@ class FlowAiChat(DataBaseModel):
     response = TextField(null=False, default="", help_text="AI 回复全文")
     session_id = CharField(max_length=64, null=False, default="", help_text="对话会话 id")
     user_id = CharField(max_length=32, null=False, default="", help_text="操作人 user_id（对话归属展示）")
-    template_fill_events = TextField(null=False, default="", help_text="范本填写原始事件序列 JSON（刷新回放用）")
+    template_fill_events = MediumTextField(null=False, default="", help_text="范本填写原始事件序列 JSON（刷新回放用）")
 
     class Meta:
         db_table = "flow_ai_chat"
@@ -2799,7 +2805,9 @@ def migrate_db():
     alter_db_add_column(migrator, "flow_instance", "deleted_time", BigIntegerField(null=True, help_text="软删时间（毫秒时间戳）"))
     # 2026-09-11 流程对话自治存储：flow_ai_chat 加操作人归属 + 范本填写事件
     alter_db_add_column(migrator, "flow_ai_chat", "user_id", CharField(max_length=32, null=False, default="", help_text="操作人 user_id（对话归属展示）"))
-    alter_db_add_column(migrator, "flow_ai_chat", "template_fill_events", TextField(null=False, default="", help_text="范本填写原始事件序列 JSON（刷新回放用）"))
+    alter_db_add_column(migrator, "flow_ai_chat", "template_fill_events", MediumTextField(null=False, default="", help_text="范本填写原始事件序列 JSON（刷新回放用）"))
+    # 2026-09-12 TEXT(64KB) 超限截断致 JSON 损坏（回放无成稿卡），升级 MEDIUMTEXT(16MB)
+    alter_db_column_type(migrator, "flow_ai_chat", "template_fill_events", MediumTextField(null=False, default="", help_text="范本填写原始事件序列 JSON（刷新回放用）"))
     try:
         # 存量回填（幂等）：流程影子会话打标 → 对话页签不可见；归属流程发起人。
         # atomic 显式提交：启动期 connection_context 归还连接时未提交 DML 会被回滚（DDL 不受影响）

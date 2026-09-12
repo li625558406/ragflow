@@ -1,4 +1,73 @@
-import { applyTemplateFillEvent, IStreamAcc } from '../template-fill-stream';
+import {
+  applyTemplateFillEvent,
+  IStreamAcc,
+  parseTemplateFillEvents,
+} from '../template-fill-stream';
+
+describe('parseTemplateFillEvents（截断 JSON 挽救）', () => {
+  const ev = (stage: string, extra: Record<string, unknown> = {}) =>
+    JSON.stringify({ stage, ...extra });
+
+  it('合法 JSON 数组直接解析', () => {
+    const raw = `[${ev('selected')},${ev('done')}]`;
+    const events = parseTemplateFillEvents(raw) as any[];
+    expect(events).toHaveLength(2);
+    expect(events[0].stage).toBe('selected');
+    expect(events[1].stage).toBe('done');
+  });
+
+  it('非字符串/空串/非数组/空数组返回 undefined', () => {
+    expect(parseTemplateFillEvents(undefined)).toBeUndefined();
+    expect(parseTemplateFillEvents('')).toBeUndefined();
+    expect(parseTemplateFillEvents('{"a":1}')).toBeUndefined();
+    expect(parseTemplateFillEvents('[]')).toBeUndefined();
+  });
+
+  it('已解析的事件数组直通（序列化层提前解析的输入）', () => {
+    const arr = [{ stage: 'done' }];
+    expect(parseTemplateFillEvents(arr)).toBe(arr);
+    expect(parseTemplateFillEvents([])).toBeUndefined();
+    expect(parseTemplateFillEvents(42)).toBeUndefined();
+  });
+
+  it('截断在字符串中间（值含 } 和中文）挽救出前面的完整事件', () => {
+    // 模拟 MySQL TEXT 64KB 截断：最后一个事件的 values 字符串被拦腰截断，
+    // 且已输出的值文本里含 } 字符（不能被误认成元素边界）
+    const raw =
+      `[${ev('selected', { templates: [{ template_id: 't1' }] })},` +
+      ev('filling', { values: { a: '中文值{带花括号}' } }) +
+      ',' +
+      ev('filled', { download: { filename: '成稿.docx', size: 12 } }).slice(
+        0,
+        -30,
+      ); // 截断在 filled 事件中途
+    const events = parseTemplateFillEvents(raw) as any[];
+    expect(events).toHaveLength(2);
+    expect(events[0].stage).toBe('selected');
+    expect(events[1].stage).toBe('filling');
+    expect(events[1].values.a).toBe('中文值{带花括号}');
+  });
+
+  it('截断在嵌套对象中间时回退到上一个完整元素边界', () => {
+    // download 是嵌套对象：截断点位于内层 } 之后、外层 } 之前
+    const inner = `{"stage":"filled","download":{"doc_id":"d1"`;
+    const raw = `[${ev('selected')},${inner}`;
+    const events = parseTemplateFillEvents(raw) as any[];
+    expect(events).toHaveLength(1);
+    expect(events[0].stage).toBe('selected');
+  });
+
+  it('字符串值内的 } 不被当作元素边界（引号状态跟踪）', () => {
+    const raw = `[${ev('filling', { values: { k: 'a}b]c"d}e' } })}`;
+    const events = parseTemplateFillEvents(raw) as any[];
+    expect(events).toHaveLength(1);
+    expect(events[0].values.k).toBe('a}b]c"d}e');
+  });
+
+  it('无任何完整元素时返回 undefined', () => {
+    expect(parseTemplateFillEvents('[{"stage":"fil')).toBeUndefined();
+  });
+});
 
 describe('applyTemplateFillEvent', () => {
   it('selected 重置范本卡片列表', () => {

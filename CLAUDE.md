@@ -32,7 +32,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 | 文档 | 路径 | 包含内容 |
 |------|------|----------|
-| 迭代记录 | `D:\AI\ragflow2\CHANGE.md` | ★ 全部新增需求/功能整改记录：文件审核 docx 保真渲染（批注全保留）+ 范本预览大文档性能优化（09-11，最新）、范本预览 docx-preview 保真、流程对话保存自治等，最新迭代在最上方 |
+| 迭代记录 | `D:\AI\ragflow2\CHANGE.md` | ★ 全部新增需求/功能整改记录：template_fill_events 超 TEXT 64KB 截断致回放无成稿卡修复（MEDIUMTEXT 迁移+挽救解析，09-12，最新）、范本实时预览产值补推、流程对话保存自治等，最新迭代在最上方 |
 | 部署服务器 | `D:\AI\ragflow2\本地部署服务器.md` | 服务器SSH连接、Docker部署、前端/后端/Flutter热更新、Nginx配置、常见问题排查 |
 | 第三方接口 | `D:\AI\ragflow2\接口文档_2026-06-04.md` | 标讯API、企业画像API、合同API等第三方接口的请求/响应字段定义和鉴权方式 |
 | 项目架构 | `D:\AI\ragflow2\项目架构.md` | 系统整体架构、模块间调用关系、数据流、技术选型决策背景 |

@@ -174,3 +174,46 @@ export function replayTemplateFillEvents(
   }
   return acc.templateFill?.templates?.length ? acc.templateFill : undefined;
 }
+
+/** 持久化事件序列解析：合法 JSON 数组直接返回；截断损坏（旧 TEXT 64KB 落库上限）
+ *  时按括号深度扫描挽救——截到最后一个「完整闭合的事件对象」补 ] 重试，只丢
+ *  尾部残缺事件，前面的进度/产值/成稿事件全部保住。无法挽救返回 undefined。 */
+export function parseTemplateFillEvents(raw: unknown): unknown[] | undefined {
+  // 序列化层可能已把该列解析成数组直传（旧 parseAndReplay 契约），直通
+  if (Array.isArray(raw)) return raw.length > 0 ? raw : undefined;
+  if (typeof raw !== 'string' || !raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed : undefined;
+  } catch {
+    // fall through to salvage
+  }
+  // 引号/转义状态跟踪 + 括号深度计数：记录最后一个 depth 由 2→1 的 '}' 位置
+  // （即一个事件元素刚闭合处）。字符串值内部的 } [ { 均不计。
+  let inStr = false;
+  let esc = false;
+  let depth = 0;
+  let lastElementEnd = -1;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+    } else if (ch === '"') {
+      inStr = true;
+    } else if (ch === '{' || ch === '[') {
+      depth++;
+    } else if (ch === '}' || ch === ']') {
+      depth--;
+      if (depth === 1 && ch === '}') lastElementEnd = i;
+    }
+  }
+  if (lastElementEnd < 0) return undefined;
+  try {
+    const parsed = JSON.parse(raw.slice(0, lastElementEnd + 1) + ']');
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
