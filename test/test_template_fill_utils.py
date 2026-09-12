@@ -1159,3 +1159,68 @@ def test_render_docx_color_respects_rpr_schema_order():
             sz_kept = rPr.find(qn("w:sz")) is not None and any(
                 t == "值" and c == "0000FF" for t, c in _run_colors_of_first_para(out))
     assert sz_kept
+
+
+# ---------- 识别后处理：标签/实心 anchor 收缩修正与低置信标记 ----------
+
+def test_shrink_anchor_to_blank_finds_blank_after_label():
+    from rag.svr.template_fill.detector import _shrink_anchor_to_blank
+    line = "投标人名称：＿＿＿＿＿＿（盖章）"
+    assert _shrink_anchor_to_blank("投标人名称：", line) == "＿＿＿＿＿＿"
+
+
+def test_shrink_anchor_to_blank_no_blank_returns_empty():
+    from rag.svr.template_fill.detector import _shrink_anchor_to_blank
+    assert _shrink_anchor_to_blank("投标人名称：", "投标人名称：签字") == ""
+
+
+def test_parse_label_anchor_shrunk_to_blank():
+    from rag.svr.template_fill.detector import parse_detection_response
+    cands = [{"index": 0, "text": "投标人名称：＿＿＿＿＿＿", "addr": "para:0"}]
+    raw = ('[{"line":0,"anchor":"投标人名称：","key":"bidder_name",'
+           '"name":"投标人名称","retrieval_query":"","fill_mode":"llm","required":true}]')
+    out = parse_detection_response(raw, cands)
+    assert len(out) == 1
+    assert out[0]["anchor"] == "＿＿＿＿＿＿"
+    assert out[0]["low_confidence"] is False
+
+
+def test_parse_label_anchor_without_blank_dropped():
+    from rag.svr.template_fill.detector import parse_detection_response
+    cands = [{"index": 0, "text": "包括以下内容：", "addr": "para:0"}]
+    raw = ('[{"line":0,"anchor":"包括以下内容：","key":"content",'
+           '"name":"内容","retrieval_query":"","fill_mode":"llm","required":true}]')
+    assert parse_detection_response(raw, cands) == []
+
+
+def test_parse_solid_anchor_with_blank_in_line_shrunk():
+    from rag.svr.template_fill.detector import parse_detection_response
+    cands = [{"index": 0, "text": "工程名称　　（填写完整名称）　开工日期", "addr": "para:0"}]
+    raw = ('[{"line":0,"anchor":"工程名称","key":"project_name",'
+           '"name":"工程名称","retrieval_query":"","fill_mode":"llm","required":true}]')
+    out = parse_detection_response(raw, cands)
+    assert len(out) == 1
+    assert out[0]["anchor"] == "（填写完整名称）"
+
+
+def test_parse_solid_anchor_no_blank_in_line_low_confidence_kept():
+    from rag.svr.template_fill.detector import parse_detection_response
+    # 已填范本现值：整行无留白特征，anchor 合法保留但打低置信
+    cands = [{"index": 0, "text": "合同金额为人民币壹佰万元整", "addr": "para:0"}]
+    raw = ('[{"line":0,"anchor":"壹佰万元整","key":"amount",'
+           '"name":"金额","retrieval_query":"","fill_mode":"llm","required":true}]')
+    out = parse_detection_response(raw, cands)
+    assert len(out) == 1
+    assert out[0]["anchor"] == "壹佰万元整"
+    assert out[0]["low_confidence"] is True
+
+
+def test_parse_blank_anchor_no_low_confidence():
+    from rag.svr.template_fill.detector import parse_detection_response
+    cands = [{"index": 0, "text": "编号：＿＿＿＿＿＿", "addr": "para:0"}]
+    raw = ('[{"line":0,"anchor":"＿＿＿＿＿＿","key":"code",'
+           '"name":"编号","retrieval_query":"","fill_mode":"llm","required":true}]')
+    out = parse_detection_response(raw, cands)
+    assert len(out) == 1
+    assert out[0]["anchor"] == "＿＿＿＿＿＿"
+    assert out[0]["low_confidence"] is False

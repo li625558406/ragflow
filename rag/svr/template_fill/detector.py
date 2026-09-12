@@ -39,15 +39,41 @@ _LABEL_ANCHOR_RE = re.compile(r".+[：:]\s*$")
 _DATE_SKELETON_RE = re.compile(r"[\s年月日度.．:：\-—_＿、]*[年月日][\s年月日度.．:：\-—_＿、]*")
 _HINT_ANCHOR_RE = re.compile(r"[（(][^（）()]*[）)]\s*[\s元万元整人民币]*")
 
+# 留白标记特征（收缩修正的目标形态）：下划线串（含全角＿）/ 连续空格（含全角　）/
+# 括号提示（如"（投标人名称）"）。anchor 本身含留白标记 = 无需修正。
+_BLANK_MARK_RE = re.compile(r"[_＿]{2,}|[ \u3000]{2,}|[（(][^（）()]*[）)]")
+# 收缩目标优先级（不能合并成单条正则取 leftmost：同一行内多种留白共存时按类型择优）：
+# 下划线填空线（最典型填写位）> 括号提示（比裸空格更具体，如"工程名称　　（填写完整名称）"
+# 应收缩到括号提示而非中间空格）> 连续空格
+_SHRINK_MARK_RES = (
+    re.compile(r"[_＿]{2,}"),
+    re.compile(r"[（(][^（）()]*[）)]"),
+    re.compile(r"[ \u3000]{2,}"),
+)
+
+
+def _shrink_anchor_to_blank(anchor: str, line_text: str) -> str:
+    """标签/实心 anchor 收缩修正：在 anchor 结束位置之后按优先级找留白标记串，
+    返回该串作为新 anchor；找不到返回空串。治两类识别错误：
+    ① LLM 把字段标签（"投标人名称："）选为 anchor → 收缩到标签后的留白；
+    ③ LLM 把正文原文选为 anchor → 同行有留白时收缩到留白，避免原文被覆盖。"""
+    pos = line_text.find(anchor)
+    if pos < 0:
+        return ""
+    rest = line_text[pos + len(anchor):]
+    for pat in _SHRINK_MARK_RES:
+        m = pat.search(rest)
+        if m:
+            return m.group(0)
+    return ""
+
 
 def _is_template_skeleton(text: str) -> bool:
     if _LABEL_ANCHOR_RE.fullmatch(text):
         return True
     if _DATE_SKELETON_RE.fullmatch(text) and not any(c.isdigit() for c in text):
         return True
-    if _HINT_ANCHOR_RE.fullmatch(text):
-        return True
-    return False
+    return bool(_HINT_ANCHOR_RE.fullmatch(text))
 
 
 def derive_default_from_anchor(anchor) -> str:
@@ -67,7 +93,7 @@ DETECT_SYSTEM = """你是文档模板分析专家。用户给出固定模板中�
 输出 JSON 数组，每个元素：
 {"line": 行号(int), "anchor": "该行原文中将被替换为占位符的精确子串", "key": "snake_case英文标识", "name": "中文字段名", "description": "给填写模型的说明", "retrieval_query": "适合去知识库检索的查询词", "fill_mode": "llm", "required": true或false}
 规则：
-1. anchor 必须是该行原文的精确子串，禁止改写；一行可有多个填写点（拆成多个元素）。
+1. anchor 必须是该行原文的精确子串，禁止改写；一行可有多个填写点（拆成多个元素）。anchor 只能选留白标记（下划线串/连续空格/括号提示）或已填写的现值本身，禁止选字段标签（如"申请人："这类冒号结尾引导词）或正文叙述文字。
 2. 同一含义的填写点 key 全局唯一；日期类建议 key 如 sign_date。
 3. fill_mode 一律填 "llm"（所有填写点统一交给 AI 检索填写，检索不到的留空由人工后续加工）。
 4. 找不到任何填写点输出 []。只输出 JSON 数组，不要输出其它文字。
@@ -106,6 +132,25 @@ def parse_detection_response(raw: str, candidates: list) -> list:
         cand = cand_map.get(line)
         if cand is None or not anchor or anchor not in cand["text"]:
             continue
+        # 标签/实心 anchor 后处理（治①③，prompt 只是引导，代码层兜底）：
+        # 标签型 → 收缩到标签后的留白串，收缩失败丢弃（标签绝不能整体被替换）；
+        # 实心（无留白特征）→ 同行有留白特征则收缩，失败保留并打低置信；
+        # 整行无留白特征 → 已填范本现值是合法 anchor，保留并打低置信警示。
+        low_confidence = False
+        if _LABEL_ANCHOR_RE.fullmatch(anchor):
+            shrunk = _shrink_anchor_to_blank(anchor, cand["text"])
+            if not shrunk:
+                continue
+            anchor = shrunk
+        elif not _BLANK_MARK_RE.search(anchor):
+            if _BLANK_MARK_RE.search(cand["text"]):
+                shrunk = _shrink_anchor_to_blank(anchor, cand["text"])
+                if shrunk:
+                    anchor = shrunk
+                else:
+                    low_confidence = True
+            else:
+                low_confidence = True
         key = normalize_key(it.get("key") or it.get("name") or "field")
         while key in used_keys:
             key = f"{key}_2"
@@ -123,6 +168,7 @@ def parse_detection_response(raw: str, candidates: list) -> list:
             "anchor": anchor,
             "line": line,
             "top_k": 6,
+            "low_confidence": low_confidence,
         })
     return out
 
