@@ -1,5 +1,18 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-12 修复范本 AI 识别被单颗超长 key 判死（parse 阶段截断兜底）（已部署 2026-09-12）
+
+**主题**：《福建省房屋建筑和市政基础设施工程标准施工招标文件专用本》上传后识别失败，detect_error=`非法 key: 'liability_for_refusing_to_replace_key_construction_management_personnel'（71 字符 > 64 上限）`——LLM 照中文长字段名直译出合法 snake_case 但超长的 key，`validate_placeholders` 终审判死**整次识别**，623 项正确建议全部丢弃。
+
+**核心变更**（`rag/svr/template_fill/detector.py`）：
+- `parse_detection_response` 内 key 截断兜底：超 64 字符截断到 `KEY_MAX_LEN`（新常量，与 validate 的 `[a-z][a-z0-9_]{0,63}` 对齐）；撞车去重后缀拼接时同步收缩基串保证含 `_2`/`_10` 总长仍 ≤64（旧逻辑 `key+"_2"` 对 64 字符 key 会溢出到 66，一并修复）
+- DETECT_SYSTEM 规则 2 加约束：key 不超过 32 字符（降低截断概率）
+- `validate_placeholders` 终审保持严格不变（手动提交路径仍拦非法输入）
+
+**测试**：+3 对抗用例（生产同款 71 字符 key 截断且过终审 / 截断撞车去重不超限 / 恰好 64 字符 key 去重不溢出），模板三套件 254 全绿。
+
+**遗留**：无。部署记录（2026-09-12）：detector.py SCP + docker restart，容器内冒烟（71→64 截断实测通过）；容器内重触发该范本识别 → done，623 个填写点全部合法（0 超长 0 低置信）；git 已推送（0a4e5999）。
+
 ## 2026-09-12 范本AI识别准确性与格式保真改造（已部署 2026-09-12）
 
 **主题**：治理范本 AI 识别三类问题（① 标签被选为 anchor 变蓝 ② 跨 run 替换格式错乱 ③ 正文原文被选为 anchor 被覆盖）+ B端预览划选手动标记兜底。
