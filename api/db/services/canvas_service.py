@@ -226,6 +226,18 @@ class UserCanvasService(CommonService):
         return cvs, dsl
 
 
+def _extract_finished_downloads(ans: dict):
+    """从 workflow_finished 事件提取 downloads 输出（List[dict]），否则 None。"""
+    if not isinstance(ans, dict) or ans.get("event") != "workflow_finished":
+        return None
+    outputs = (ans.get("data") or {}).get("outputs")
+    if isinstance(outputs, dict):
+        dls = outputs.get("downloads")
+        if isinstance(dls, list) and dls and all(isinstance(d, dict) for d in dls):
+            return dls
+    return None
+
+
 async def completion(tenant_id, agent_id, session_id=None, **kwargs):
     query = kwargs.get("query", "") or kwargs.get("question", "")
     files = kwargs.get("files", [])
@@ -233,6 +245,8 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
     user_id = kwargs.get("user_id", "")
     custom_header = kwargs.get("custom_header", "")
     release_mode = str(kwargs.get("release", "")).strip().lower()
+    recent_downloads = kwargs.get("recent_downloads") or []
+    flow_version_id = str(kwargs.get("flow_version_id") or "").strip()
 
     if session_id:
         e, conv = API4ConversationService.get_by_id(session_id)
@@ -272,6 +286,7 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
     txt = ""
     structured_data = None  # Capture structured output for persistence
     template_fill_events = []  # Capture template_fill_progress events for persistence (刷新后回看范本填写进度/填入值)
+    finished_downloads = None  # Capture workflow_finished downloads for persistence (刷新后历史恢复成稿卡)
     sse_msg_count = 0
     sse_think_start_count = 0
     sse_think_end_count = 0
@@ -297,6 +312,12 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
                     data_field = {}
                     assistant_msg["data"] = data_field
                 data_field["templateFillEvents"] = template_fill_events[-200:]
+            if finished_downloads:
+                data_field = assistant_msg.get("data")
+                if not isinstance(data_field, dict):
+                    data_field = {}
+                    assistant_msg["data"] = data_field
+                data_field["downloads"] = finished_downloads
             conv.message.append(assistant_msg)
             conv.reference = canvas.get_reference()
             conv.errors = canvas.error
@@ -317,7 +338,8 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
             logging.exception(f"[completion] append_message ({tag}) FAILED")
 
     try:
-        async for ans in canvas.run(query=query, files=files, user_id=user_id, inputs=inputs, internet=kwargs.get("internet")):
+        async for ans in canvas.run(query=query, files=files, user_id=user_id, inputs=inputs, internet=kwargs.get("internet"),
+                                    recent_downloads=recent_downloads, flow_version_id=flow_version_id):
             ans["session_id"] = session_id
             if ans["event"] == "message":
                 sse_msg_count += 1
@@ -336,6 +358,10 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
                     structured_data = outputs["structured"]
             elif ans["event"] == "template_fill_progress":
                 template_fill_events.append(ans.get("data") or {})
+            elif ans["event"] == "workflow_finished":
+                captured = _extract_finished_downloads(ans)
+                if captured:
+                    finished_downloads = captured
             yield "data:" + json.dumps(ans, ensure_ascii=False) + "\n\n"
     except GeneratorExit:
         # 客户端断连（刷新/关页）会在当前 yield 点抛 GeneratorExit，杀掉整个生成器——

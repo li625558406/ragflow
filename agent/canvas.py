@@ -413,7 +413,7 @@ class Canvas(Graph):
                 break
 
         for k in kwargs.keys():
-            if k in ["query", "user_id", "files", "internet"] and kwargs[k]:
+            if k in ["query", "user_id", "files", "internet", "recent_downloads", "flow_version_id"] and kwargs[k]:
                 if k == "files":
                     raw_files = kwargs[k]
                     self.globals[f"sys.{k}"] = await self.get_files_async(kwargs[k], layout_recognize)

@@ -105,6 +105,23 @@ class Message(ComponentBase):
             info["name"] = info["filename"]
         return info
 
+    def _merge_pending_downloads(self, downloads: list[dict[str, Any]]):
+        """工具（DocumentRewrite 等）运行期把 download 契约写入 canvas 全局
+        sys.pending_downloads；Message 出口统一合并进 downloads 输出（按 doc_id
+        幂等去重），合并后清空防重复下发。"""
+        try:
+            pending = (self._canvas.globals or {}).get("sys.pending_downloads") if self._canvas else None
+            if isinstance(pending, list):
+                seen = {d.get("doc_id") for d in downloads if isinstance(d, dict)}
+                for d in pending:
+                    if isinstance(d, dict) and d.get("doc_id") and d.get("doc_id") not in seen:
+                        downloads.append(self._with_download_url(dict(d)))
+                        seen.add(d.get("doc_id"))
+            if self._canvas is not None and hasattr(self._canvas, "globals"):
+                self._canvas.globals["sys.pending_downloads"] = []
+        except Exception:
+            logging.exception("merge pending downloads failed")
+
     def _stringify_message_value(
         self,
         value: Any,
@@ -238,6 +255,7 @@ class Message(ComponentBase):
             all_content += rand_cnt[s: ]
             yield rand_cnt[s: ]
 
+        self._merge_pending_downloads(downloads)
         self.set_output("downloads", downloads)
         self.set_output("content", all_content)
         self._convert_content(all_content)
@@ -274,6 +292,7 @@ class Message(ComponentBase):
         for n, v in kwargs.items():
             content = re.sub(n, v, content)
 
+        self._merge_pending_downloads(downloads)
         self.set_output("downloads", downloads)
         self.set_output("content", content)
         self._convert_content(content)
