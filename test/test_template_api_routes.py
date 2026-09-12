@@ -924,11 +924,13 @@ def test_retry_rejects_non_terminal_running_status(monkeypatch):
 
 
 def test_retry_rejects_when_task_already_running(monkeypatch):
-    """防重入：task_id 在运行集合内 → 拒绝，不重复复位/起线程。"""
+    """防重入：task_id 在运行集合内 → 拒绝，不重复复位/起线程。
+    运行集合在 spawn 模块（template_api 经 is_running 读取），须 patch spawn。"""
     mod = _template_api
+    from rag.svr.template_fill import spawn as spawn_mod
     model, spawned, _entered = _patch_retry_deps(
         monkeypatch, mod, _make_task(status="failed"))
-    monkeypatch.setattr(mod, "_running_tasks", {"task-1"})
+    monkeypatch.setattr(spawn_mod, "_running_tasks", {"task-1"})
     resp = asyncio.run(mod.retry_fill_task("task-1"))
     d = _err_dict(resp)
     assert d["code"] == DATA_ERROR_CODE and "执行中" in d["message"]
@@ -938,9 +940,10 @@ def test_retry_rejects_when_task_already_running(monkeypatch):
 def test_retry_rejects_when_cas_update_loses_race(monkeypatch):
     """对抗性：复位 update 命中 0 行（并发被改走）→ 报错且不起线程。"""
     mod = _template_api
+    from rag.svr.template_fill import spawn as spawn_mod
     model, spawned, entered = _patch_retry_deps(
         monkeypatch, mod, _make_task(status="failed"), update_ret=0)
-    monkeypatch.setattr(mod, "_running_tasks", set())
+    monkeypatch.setattr(spawn_mod, "_running_tasks", set())
     resp = asyncio.run(mod.retry_fill_task("task-1"))
     d = _err_dict(resp)
     assert d["code"] == DATA_ERROR_CODE and "状态变更失败" in d["message"]
@@ -954,9 +957,10 @@ def test_retry_rejects_when_cas_update_loses_race(monkeypatch):
 
 def test_retry_success_resets_and_spawns(monkeypatch):
     mod = _template_api
+    from rag.svr.template_fill import spawn as spawn_mod
     model, spawned, entered = _patch_retry_deps(
         monkeypatch, mod, _make_task(status="partial"))
-    monkeypatch.setattr(mod, "_running_tasks", set())
+    monkeypatch.setattr(spawn_mod, "_running_tasks", set())
     resp = asyncio.run(mod.retry_fill_task("task-1"))
     assert resp["code"] == 0
     assert resp["data"] == {"task_id": "task-1", "status": "pending"}
@@ -1066,7 +1070,15 @@ def test_spawn_thread_start_failure_self_heals(monkeypatch):
         yield
 
     monkeypatch.setattr(mod, "DB", types.SimpleNamespace(connection_context=fake_ctx))
-    monkeypatch.setattr(mod, "_running_tasks", set())
+    # 防重入集合与线程启动失败兜底均已抽取到 spawn 模块：
+    # 兜底分支内延迟 import（api.db.db_models.DB / TplFillTaskService.model）——
+    # 替换真实模块属性即命中 import 解析结果（同 test_template_fill_executor.py 的 spawn 用例）
+    from rag.svr.template_fill import spawn as spawn_mod
+    import api.db.db_models as db_models
+    from api.db.services import template_fill_service as tpl_svc
+    monkeypatch.setattr(spawn_mod, "_running_tasks", set())
+    monkeypatch.setattr(db_models, "DB", types.SimpleNamespace(connection_context=fake_ctx))
+    monkeypatch.setattr(tpl_svc.TplFillTaskService, "model", model)
 
     class _BoomThread:
         def __init__(self, target=None, daemon=None, name=None):
@@ -1079,7 +1091,7 @@ def test_spawn_thread_start_failure_self_heals(monkeypatch):
     resp = asyncio.run(mod.create_fill_task())
     assert resp["code"] == 0, "线程启动失败不得 500（任务行已落库，接口应正常返回）"
     assert inserted["status"] == "pending"
-    assert mod._running_tasks == set(), "spawn 失败后 _running_tasks 不得残留"
+    assert spawn_mod._running_tasks == set(), "spawn 失败后 _running_tasks 不得残留"
     assert entered, "失败复位必须包 DB.connection_context()"
     assert model.recorder["update"]["status"] == "failed"
     assert "任务调度失败" in model.recorder["update"]["error"]
