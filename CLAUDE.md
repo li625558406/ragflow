@@ -57,6 +57,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 范本预览保真渲染 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-11-template-preview-docx-fidelity-design.md` | ★ C端范本预览 docx 分支改 docx-preview 渲染原始文件（字号/加粗/颜色/表格保真）+ applyDocxHighlight 跨 run 占位符高亮保留；xlsx/B端不动（已完成编码+构建验证，未部署，纯前端） |
 | 文件审核保真渲染 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-11-review-panel-docx-fidelity-design.md` | ★ 文件审核只读路径 docx-preview 保真（AI 标注/手动批注锚定+批注栏+引线+兜底全保留，highlightDocxRanges 归一化匹配+同 p 校验）+ 范本预览性能优化（span 映射增量高亮 + content-visibility 屏外页懒渲染）；编辑态保持旧视图（已完成编码+构建验证，未部署，纯前端） |
 | 范本识别准确性与格式保真 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-12-template-detect-accuracy-design.md` | ★ 范本 AI 识别三层改造：识别后处理（标签型 anchor 收缩修正/丢弃/low_confidence 警示）+ 跨 run 区间替换保格式 + B端预览划选手动标记（预览透传 addr）；已完成编码+审查（+16 对抗测试），已部署 2026-09-12 |
+| 范本填写后台化与断连重连 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-12-template-fill-detached-task-design.md` | ★ 对话/流程填写执行与 SSE 连接解耦（方案A）：节点委托 tpl_fill_task 后台线程+观察者轮询+progress 重连端点+前端轮询 hook；已完成编码+两道审查（未部署，部署须 executor/spawn/template_api/template_fill_service/template_fill.py 成套 SCP + 前端 build） |
 
 
 

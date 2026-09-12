@@ -1,5 +1,19 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-12 范本填写后台化与断连重连（方案A）
+
+**主题**：填写执行与 SSE 连接解耦——断连/刷新后任务在服务器跑完，成稿落库可取。
+
+**核心变更**：
+- 画布 TemplateFill 节点确认后委托 tpl_fill_task 后台线程（source='canvas'，spawn 与 B端共用），节点降级为观察者轮询（1.5s，总 deadline 1h），事件新增可选 task_id
+- executor 对齐节点能力：params 保留键拆分（直填/D−C 变化键/检索跳过/用户文件证据，is_canvas 门控 B端零变化）、Redis 进度快照（tpl_fill_progress:{id} TTL 24h，0.5s 节流+毫秒量纲）、取消键契约（tpl_fill:cancel:{id}）、直填沉淀 override_keys 覆盖 manual 默认
+- spawn 抽取 rag/svr/template_fill/spawn.py（daemon 线程+防重入，B端/画布共用）
+- 新端点 GET /template/fill/fill-task/{id}/progress（owner 校验+stalled 双信号判定+downloads bucket 桥接 tplfill-{task_id}，记忆化）
+- 状态机扩展 cancelled 态；TplFillTaskService 新增 cancel_running/find_running（2h 复用窗）/TERMINAL_TASK_STATUSES/sanitize_filename 公开别名
+- 前端：归约记 task_id + useTemplateFillTaskPoll 轮询 hook（仅历史恢复态启用、终态本地合成成稿卡、stalled 提示可重试、迟到响应竞态封死）
+
+**遗留**：未部署；flow_instance_id 暂留空；多范本共享检索去重随委托化不再适用（B端行为）；汇总文案不再含 filled 计数（节点不再持有逐槽状态）
+
 ## 2026-09-12 执行失败对话 UI 提醒（toast 弹窗 + 气泡红底红字）（已部署 2026-09-12）
 
 **主题**：在 canvas 错误兜底消息基础上加显式 UI 提醒，用户不再只看到一段普通文本。
