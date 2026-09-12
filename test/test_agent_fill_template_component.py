@@ -13,15 +13,18 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
-"""「范本填写」画布节点单测。对抗性覆盖：
+"""「范本填写」画布节点单测（委托改造后）。对抗性覆盖：
 - build_candidates：最新版本缺失 / 填写点为空 / key 缺失的脏数据
 - parse_selection：非法 JSON、id 不在候选内、空列表、脏类型（选错范本必须报错
   而非静默换第一个；多选去重保序，兼容旧版单选契约）
-- _invoke_async：无已发布范本、未选知识库、选型 LLM 输出非法、工作副本缺失、
-  多范本各产一份成稿、Begin 表单字段 param 直取、上传文件证据注入、
-  产物落 {tenant_id}-downloads bucket、下载输出列表契约（下游 Message 依赖）
-所有外部依赖（Service / settings.STORAGE_IMPL / executor 函数 / renderer.render）
-经模块属性注入替身，不触真实 DB / LLM / MinIO。"""
+- _invoke_async 委托行为：每范本 insert 一条 source=canvas 的 tpl_fill_task 行
+  （template_version_id/kb_ids/params 下发契约）、spawn_fill_task 被调（测试内
+  零真线程）、观察者按 DB 行状态/快照推 selected→filling→filled/failed→done、
+  成稿桥接落 {tenant_id}-downloads bucket、下载输出列表契约（下游 Message 依赖）
+- _confirm_changed_fields（①段确认环节，未变职责）：超时兜底 + 确认载荷过滤
+所有外部依赖（Service / settings.STORAGE_IMPL / spawn_fill_task / 快照）经模块
+属性注入替身，不触真实 DB / LLM / MinIO / Redis / 线程。
+检索/产值/渲染细节已移交 executor.execute_task，由 test_template_fill_executor.py 覆盖。"""
 import asyncio
 import json
 import re
@@ -78,7 +81,9 @@ def _make_component(param=None, canvas=None):
 
 
 def _ver(placeholders, render_file_id="render_obj"):
-    return SimpleNamespace(placeholders=placeholders, render_file_id=render_file_id, version=1)
+    # id 必填：委托改造后节点 insert 任务行时引用 _ver.id 作为 template_version_id
+    return SimpleNamespace(placeholders=placeholders, render_file_id=render_file_id,
+                           version=1, id="v1")
 
 
 class FakeService:
@@ -94,6 +99,49 @@ class FakeService:
     @classmethod
     def latest(cls, template_id):
         return cls.vers.get(template_id)
+
+
+class _Row:
+    """tpl_fill_task 行桩：status/result_file_id/error 按 id 供给观察者轮询。"""
+
+    def __init__(self, id, status="pending", result_file_id="", error=""):
+        self.id, self.status, self.result_file_id, self.error = \
+            id, status, result_file_id, error
+
+
+class FakeTaskService:
+    """TplFillTaskService 桩（与 test_template_fill_events.py 同风格）：insert 记录
+    参数并把节点传入的 uuid id 依插入顺序映射到序列键 task-N；get_or_none 按
+    sequences {task-N: [Row, ...]} 逐次弹出（耗尽后重复最后一个）；find_running
+    恒 None（画布场景默认无历史任务 → 每范本新建）。"""
+
+    def __init__(self):
+        self.sequences = {}
+        self.queries = {}
+        self.id_map = {}
+        self.inserted = []
+        self._next = 0
+
+    @classmethod
+    def find_running(cls, template_id, tenant_id):
+        return None
+
+    def insert(self, **kw):
+        self._next += 1
+        tid = kw.get("id") or f"task-{self._next}"
+        self.id_map[tid] = f"task-{self._next}"
+        self.inserted.append((tid, kw))
+        return tid
+
+    def get_or_none(self, id=None, **kw):
+        seq = self.sequences.get(self.id_map.get(id, id))
+        if not seq:
+            return None
+        i = self.queries.get(id, 0)
+        self.queries[id] = i + 1
+        row = seq[min(i, len(seq) - 1)]
+        row.id = id  # 与生产一致：row.id 即任务 uuid（桥接 doc_id 由它派生）
+        return row
 
 
 def _ver_slot(name, mode="llm", addr=None):
@@ -172,50 +220,40 @@ def test_param_defaults():
     assert set(p.outputs) == {"content", "download"}
 
 
-# ---------- _invoke_async 集成（全部依赖打桩） ----------
+# ---------- _invoke_async 委托行为（全部依赖打桩，零真线程） ----------
 
 @pytest.fixture()
 def patched_env(monkeypatch):
-    """统一打桩：Service / settings / executor / renderer。返回记录器 dict。"""
-    calls = {"put": [], "get": [], "render": None, "select_llm": 0, "gen_keys": None}
+    """统一打桩：范本 Service / tpl_fill_task Service / 存储 / spawn_fill_task /
+    观察快照 / 轮询 sleep。spawn_fill_task 仅记录不建线程；观察者 1.5s 轮询降为
+    空等待。返回 {"calls": 记录器, "svc": 任务服务桩}。"""
+    calls = {"put": [], "get": [], "spawn": []}
 
     class FakeStorage:
         def get(self, bucket, obj):
             calls["get"].append((bucket, obj))
-            if obj == "render_obj":
-                return b"TPL_BLOB"
-            return None
+            if "missing" in obj:
+                return None
+            return b"TPL_BLOB"
 
-        def put(self, tenant, doc_id, blob):
-            calls["put"].append((tenant, doc_id, blob))
+        def put(self, bucket, doc_id, blob):
+            calls["put"].append((bucket, doc_id, blob))
 
     monkeypatch.setattr(fill_template, "TplTemplateService", FakeService)
     monkeypatch.setattr(fill_template, "TplTemplateVersionService", FakeService)
+    svc = FakeTaskService()
+    monkeypatch.setattr(fill_template, "TplFillTaskService", svc)
     monkeypatch.setattr(fill_template.settings, "STORAGE_IMPL", FakeStorage())
+    monkeypatch.setattr(fill_template, "spawn_fill_task",
+                        lambda task_id: calls["spawn"].append(task_id))
+    monkeypatch.setattr(fill_template.executor, "read_progress_snapshot",
+                        lambda task_id: None)
 
-    async def fake_retrieve_all_shared(tenant_id, placeholders_list, kb_ids, task_id="", should_cancel=None, sem=None):
-        calls["kb_ids"] = kb_ids
-        calls["shared_task_id"] = task_id
-        return [{it["key"]: {"chunks": [{"content": "证据", "doc_id": "d", "doc_name": "n",
-                                         "similarity": 0.9}], "query": it["key"]}
-                 for it in placeholders if it.get("key")}
-                for placeholders in placeholders_list]
+    async def _sleep(_s):
+        return None
 
-    async def fake_generate_values(tenant_id, placeholders, chunks_by_key, params,
-                                   batch_size=10, sem=None, on_progress=None, should_cancel=None):
-        calls["gen_keys"] = [it["key"] for it in placeholders]
-        return {it["key"]: f"值_{it['key']}" for it in placeholders}, set()
-
-    monkeypatch.setattr(fill_template.executor, "retrieve_all_shared", fake_retrieve_all_shared)
-    monkeypatch.setattr(fill_template.executor, "generate_values", fake_generate_values)
-
-    def fake_render(file_type, blob, values, addr_by_key=None):
-        calls["render"] = (file_type, blob, values, addr_by_key)
-        return b"RESULT_BLOB"
-
-    from rag.svr.template_fill import renderer
-    monkeypatch.setattr(renderer, "render", fake_render)
-    return calls
+    monkeypatch.setattr(asyncio, "sleep", _sleep)
+    return {"calls": calls, "svc": svc}
 
 
 def _stage_one_candidate(template_id="t1", placeholders=None, file_type="docx"):
@@ -224,63 +262,113 @@ def _stage_one_candidate(template_id="t1", placeholders=None, file_type="docx"):
     FakeService.vers = {template_id: _ver(placeholders or [_ver_slot("项目名称")])}
 
 
-def test_invoke_async_happy_path_docx(patched_env):
-    _stage_one_candidate()
-    cpn = _make_component(TemplateFillParam())
-    cpn._param.dataset_ids = ["kb1"]
-    import asyncio
-    asyncio.run(cpn._invoke_async())
-
-    assert patched_env["render"][0] == "docx"
-    assert patched_env["render"][2]["项目名称"] == "值_项目名称"
-    assert patched_env["kb_ids"] == ["kb1"]
-    # 产物必须落 {tenant_id}-downloads bucket：/agents/download 与
-    # /files/{id}/content 两个端点的既有读取契约都是这个 bucket
-    assert patched_env["put"][0][0] == "t1-downloads"
-    # 下载输出契约：输出为列表（多范本各一份），每项六字段供下游
-    # Message._extract_downloads / 前端下载与预览按钮使用（url/name 为
-    # /agents/download 直连下载新增）
-    dls = json.loads(cpn.output("download"))
-    assert isinstance(dls, list) and len(dls) == 1
-    dl = dls[0]
-    assert set(dl) == {"doc_id", "filename", "mime_type", "size", "url", "name"}
-    assert dl["url"].startswith("/api/v1/agents/download?id=")
-    assert dl["name"] == "道路报告.docx"
-    assert dl["filename"] == "道路报告.docx"
-    assert dl["mime_type"].endswith("wordprocessingml.document")
-    assert dl["size"] == len(b"RESULT_BLOB")
-    assert "AI 填充 1 个" in cpn.output("content")
-    assert "留空" in cpn.output("content")
-
-
-def test_invoke_async_single_candidate_skips_selection_llm(patched_env, monkeypatch):
-    _stage_one_candidate()
-    async def boom():
-        raise AssertionError("唯一候选不应调用选型 LLM")
-    monkeypatch.setattr(fill_template.executor, "_build_chat_mdl", lambda *_: SimpleNamespace(async_chat=boom))
-    cpn = _make_component(TemplateFillParam())
-    cpn._param.dataset_ids = ["kb1"]
-    import asyncio
-    asyncio.run(cpn._invoke_async())
-
-
-def test_invoke_async_multi_candidate_llm_selects(patched_env, monkeypatch):
+def _stage_two_candidates():
     FakeService.rows = [
         {"id": "t1", "name": "报告A", "description": "", "file_type": "docx"},
         {"id": "t2", "name": "报告B", "description": "", "file_type": "docx"},
     ]
     FakeService.vers = {t: _ver([_ver_slot("项目名称")]) for t in ("t1", "t2")}
 
+
+def _seq_done(svc, n=1, result_file_id="rf1"):
+    """为前 n 个任务行配置「一次非终态 → done 终态」的观察序列。"""
+    svc.sequences = {f"task-{i}": [_Row(f"task-{i}"),
+                                   _Row(f"task-{i}", status="done",
+                                        result_file_id=result_file_id)]
+                     for i in range(1, n + 1)}
+
+
+def test_invoke_async_happy_path_docx(patched_env):
+    """单范本成功：委托面契约全量校验——insert 行参数（版本 pin / kb_ids /
+    canvas 来源 / params 下发键）+ spawn 与 insert 同 id + 事件序列
+    selected→filling→filled→done + 成稿桥接落 {tenant_id}-downloads bucket +
+    下载输出六字段契约（下游 Message._extract_downloads / 前端下载预览依赖）。"""
+    calls, svc = patched_env["calls"], patched_env["svc"]
+    _stage_one_candidate()
+    _seq_done(svc)
+    cpn = _make_component(TemplateFillParam())
+    cpn._param.dataset_ids = ["kb1"]
+    asyncio.run(cpn._invoke_async())
+
+    # 任务行：一范本一行，id 为 uuid，版本经 _ver.id pin 住
+    assert len(svc.inserted) == 1
+    tid, kw = svc.inserted[0]
+    assert kw["template_id"] == "t1"
+    assert kw["template_version_id"] == "v1"
+    assert kw["kb_ids"] == ["kb1"]
+    assert kw["source"] == "canvas"
+    assert kw["status"] == "pending"
+    assert kw["tenant_id"] == "t1"
+    assert re.fullmatch(r"[0-9a-f-]{32,}", tid), "任务 id 应为 uuid"
+    # params 下发契约：背景 + 下划线保留键（executor 侧 split_canvas_params 拆解）
+    params = kw["params"]
+    assert params["用户需求描述"] == "写一份道路工程情况报告"
+    assert params["_direct_values"] == {}
+    assert params["_changed_keys"] == []
+    assert params["_retrieve_skip_keys"] == []
+    assert params["_user_file_text"] == ""
+    # spawn 与 insert 同 id（真线程已被桩掉，测试零真线程）
+    assert calls["spawn"] == [tid]
+    # 事件序列
+    evs = _drain_events(cpn)
+    assert [(e["stage"], e.get("template_id")) for e in evs] == [
+        ("selected", None), ("filling", "t1"), ("filled", "t1"), ("done", None)]
+    filling = evs[1]
+    assert filling["task_id"] == tid
+    assert filling["done"] == 0 and filling["total"] == 1
+    assert filling["name"] == "道路报告"
+    # 产物必须落 {tenant_id}-downloads bucket：/agents/download 与
+    # /files/{id}/content 两个端点的既有读取契约都是这个 bucket
+    assert calls["put"] == [("t1-downloads", f"tplfill-{tid}", b"TPL_BLOB")]
+    # 下载输出契约：输出为列表（多范本各一份），每项六字段
+    dls = json.loads(cpn.output("download"))
+    assert isinstance(dls, list) and len(dls) == 1
+    dl = dls[0]
+    assert set(dl) == {"doc_id", "filename", "mime_type", "size", "url", "name"}
+    assert dl["doc_id"] == f"tplfill-{tid}"
+    assert dl["url"].startswith("/api/v1/agents/download?id=tplfill-")
+    assert dl["name"] == "道路报告.docx"
+    assert dl["filename"] == "道路报告.docx"
+    assert dl["mime_type"].endswith("wordprocessingml.document")
+    assert dl["size"] == len(b"TPL_BLOB")
+    assert "AI 填充完成" in cpn.output("content")
+    assert "共 1 个填写点" in cpn.output("content")
+    assert "留空" in cpn.output("content")
+
+
+def test_invoke_async_single_candidate_skips_selection_llm(patched_env, monkeypatch):
+    calls, svc = patched_env["calls"], patched_env["svc"]
+    _stage_one_candidate()
+    _seq_done(svc)
+
+    async def boom():
+        raise AssertionError("唯一候选不应调用选型 LLM")
+    monkeypatch.setattr(fill_template.executor, "_build_chat_mdl",
+                        lambda *_: SimpleNamespace(async_chat=boom))
+    cpn = _make_component(TemplateFillParam())
+    cpn._param.dataset_ids = ["kb1"]
+    asyncio.run(cpn._invoke_async())
+    assert len(svc.inserted) == 1
+
+
+def test_invoke_async_multi_candidate_llm_selects(patched_env, monkeypatch):
+    calls, svc = patched_env["calls"], patched_env["svc"]
+    _stage_two_candidates()
+
     class FakeMdl:
         async def async_chat(self, system, msgs):
             return '{"template_id": "t2"}'
 
     monkeypatch.setattr(fill_template.executor, "_build_chat_mdl", lambda *_: FakeMdl())
+    # 桥接读取 t2 bucket 工作副本（result_file_id 命名 render_obj 以复用既有断言口径）
+    _seq_done(svc, result_file_id="render_obj")
     cpn = _make_component(TemplateFillParam())
     cpn._param.dataset_ids = ["kb1"]
-    import asyncio
     asyncio.run(cpn._invoke_async())
-    assert patched_env["get"].count(("t2", "render_obj")) == 1
+    # 只为选中的 t2 建任务行 + spawn，落选的 t1 不建行
+    assert [kw["template_id"] for _, kw in svc.inserted] == ["t2"]
+    assert len(calls["spawn"]) == 1
+    assert calls["get"].count(("t2", "render_obj")) == 1
 
 
 def test_invoke_async_no_candidates(patched_env):
@@ -288,25 +376,19 @@ def test_invoke_async_no_candidates(patched_env):
     FakeService.vers = {}
     cpn = _make_component(TemplateFillParam())
     cpn._param.dataset_ids = ["kb1"]
-    import asyncio
     with pytest.raises(ValueError, match="暂无可用的已发布范本"):
         asyncio.run(cpn._invoke_async())
 
 
 def test_invoke_async_no_kb_selected(patched_env):
     cpn = _make_component(TemplateFillParam())  # dataset_ids 空
-    import asyncio
     with pytest.raises(ValueError, match="知识库"):
         asyncio.run(cpn._invoke_async())
 
 
 def test_invoke_async_selection_llm_invalid_output(patched_env, monkeypatch):
     # 两个候选 + 选型 LLM 输出非法 → 节点报错，不静默换第一个
-    FakeService.rows = [
-        {"id": "t1", "name": "报告A", "description": "", "file_type": "docx"},
-        {"id": "t2", "name": "报告B", "description": "", "file_type": "docx"},
-    ]
-    FakeService.vers = {t: _ver([_ver_slot("项目名称")]) for t in ("t1", "t2")}
+    _stage_two_candidates()
 
     class BadMdl:
         async def async_chat(self, system, msgs):
@@ -315,198 +397,136 @@ def test_invoke_async_selection_llm_invalid_output(patched_env, monkeypatch):
     monkeypatch.setattr(fill_template.executor, "_build_chat_mdl", lambda *_: BadMdl())
     cpn = _make_component(TemplateFillParam())
     cpn._param.dataset_ids = ["kb1"]
-    import asyncio
     with pytest.raises(ValueError, match="未能从已发布范本中选出"):
         asyncio.run(cpn._invoke_async())
 
 
-def test_invoke_async_missing_render_blob(patched_env):
-    _stage_one_candidate(placeholders=[_ver_slot("项目名称")])
-    FakeService.vers["t1"] = _ver([_ver_slot("项目名称")], render_file_id="missing_obj")
-    cpn = _make_component(TemplateFillParam())
-    cpn._param.dataset_ids = ["kb1"]
-    import asyncio
-    with pytest.raises(ValueError, match="工作副本缺失"):
-        asyncio.run(cpn._invoke_async())
-
-
-def test_invoke_async_xlsx_addr_passthrough(patched_env):
-    _stage_one_candidate(file_type="xlsx",
-                         placeholders=[_ver_slot("金额", mode="param", addr="Sheet1!B2")])
-    cpn = _make_component(TemplateFillParam())
-    cpn._param.dataset_ids = ["kb1"]
-    import asyncio
-    asyncio.run(cpn._invoke_async())
-    # xlsx 必须带 addr 映射（renderer 坐标直写依赖）；param 模式不进 LLM 产值
-    assert patched_env["render"][0] == "xlsx"
-    assert patched_env["render"][3] == {"金额": "Sheet1!B2"}
-    assert patched_env["gen_keys"] == []
+# 以下三个用例已随委托改造删除（职责移交 executor.execute_task，由
+# test/test_template_fill_executor.py 覆盖）：
+# - test_invoke_async_missing_render_blob（工作副本读取/校验在 execute_task 内）
+# - test_invoke_async_xlsx_addr_passthrough（xlsx addr 坐标直写在 executor 渲染侧）
+# - test_invoke_async_shared_retrieval_called_once_for_multi_templates
+#   （跨范本共享检索去重在 executor retrieve_all_shared 侧）
 
 
 def test_invoke_async_query_fallback_sys_query(patched_env):
-    """query 为空回退 {sys.query}：检索 task_id 应来自画布节点（经共享检索桩透传验证）。"""
+    """query 为空回退 {sys.query}：解析结果经任务 params 背景字段下发 executor。"""
+    calls, svc = patched_env["calls"], patched_env["svc"]
     _stage_one_candidate()
-    seen = {}
-
-    async def fake_retrieve_all_shared(tenant_id, placeholders_list, kb_ids, task_id="", should_cancel=None, sem=None):
-        seen["task_id"] = task_id
-        return [{it["key"]: {"chunks": [], "query": it["key"]}
-                 for it in placeholders if it.get("key")}
-                for placeholders in placeholders_list]
-
-    patched_env  # fixture 已挂 generate_values 桩（全空产值 → 留空路径）
-    import asyncio
+    _seq_done(svc)
     cpn = _make_component(TemplateFillParam(), canvas=FakeCanvas(sys_query="我的需求"))
     cpn._param.dataset_ids = ["kb1"]
-    orig = fill_template.executor.retrieve_all_shared
-    fill_template.executor.retrieve_all_shared = fake_retrieve_all_shared
-    try:
-        asyncio.run(cpn._invoke_async())
-    finally:
-        fill_template.executor.retrieve_all_shared = orig
-    assert seen["task_id"] == "canvas:node1"
+    asyncio.run(cpn._invoke_async())
+    assert svc.inserted[0][1]["params"]["用户需求描述"] == "我的需求"
 
 
 def test_invoke_async_multi_template_ids_two_outputs(patched_env, monkeypatch):
-    """选型 LLM 返回多个 template_ids → 每个范本各产一份成稿。"""
-    FakeService.rows = [
-        {"id": "t1", "name": "报告A", "description": "", "file_type": "docx"},
-        {"id": "t2", "name": "报告B", "description": "", "file_type": "docx"},
-    ]
-    FakeService.vers = {t: _ver([_ver_slot("项目名称")]) for t in ("t1", "t2")}
+    """选型 LLM 返回多个 template_ids → 每个范本各建一行任务、各产一份成稿，
+    选型顺序保序体现在任务行与下载列表。"""
+    calls, svc = patched_env["calls"], patched_env["svc"]
+    _stage_two_candidates()
 
     class MultiMdl:
         async def async_chat(self, system, msgs):
             return '{"template_ids": ["t2", "t1"]}'
 
     monkeypatch.setattr(fill_template.executor, "_build_chat_mdl", lambda *_: MultiMdl())
+    _seq_done(svc, n=2)
     cpn = _make_component(TemplateFillParam())
     cpn._param.dataset_ids = ["kb1"]
-    import asyncio
     asyncio.run(cpn._invoke_async())
 
+    assert [(svc.id_map[tid], kw["template_id"]) for tid, kw in svc.inserted] == [
+        ("task-1", "t2"), ("task-2", "t1")]
+    assert len(calls["spawn"]) == 2
     dls = json.loads(cpn.output("download"))
     assert [d["filename"] for d in dls] == ["报告B.docx", "报告A.docx"]
-    assert len(patched_env["put"]) == 2
-    assert all(bucket == "t1-downloads" for bucket, _doc, _blob in patched_env["put"])
+    assert len(calls["put"]) == 2
+    assert all(bucket == "t1-downloads" for bucket, _doc, _blob in calls["put"])
     assert "已选用 2 份范本" in cpn.output("content")
     assert "报告A" in cpn.output("content") and "报告B" in cpn.output("content")
 
 
 def test_invoke_async_begin_field_param_direct(patched_env):
-    """Begin 表单字段与 param 模式填写点 key 同名 → 不经 LLM 直取字段值。"""
+    """Begin 表单字段经任务 params 原样下发（executor 侧按同名 param 槽直取，
+    不经 LLM）；param 槽不进检索跳过清单（llm 槽专属）。"""
+    calls, svc = patched_env["calls"], patched_env["svc"]
     _stage_one_candidate(placeholders=[_ver_slot("金额", mode="param", addr="Sheet1!B2")])
+    _seq_done(svc)
     cpn = _make_component(TemplateFillParam(),
                           canvas=FakeCanvas(begin_fields={"金额": "1024.5"}))
     cpn._param.dataset_ids = ["kb1"]
-    import asyncio
     asyncio.run(cpn._invoke_async())
-    assert patched_env["gen_keys"] == []          # param 字段不进 LLM 产值
-    assert patched_env["render"][2] == {"金额": "1024.5"}
+    params = svc.inserted[0][1]["params"]
+    assert params["金额"] == "1024.5"
+    assert params["_retrieve_skip_keys"] == []
 
 
-def test_invoke_async_user_file_evidence_prepended(patched_env, monkeypatch):
-    """用户上传文件文本注入：预置片段插到每个 llm 槽证据首位；需求描述进背景。"""
+def test_invoke_async_user_file_evidence_prepended(patched_env):
+    """用户上传文件文本经 params._user_file_text 下发（executor 预置为每个 llm 槽
+    证据首位，[用户上传文件] 前缀）；需求描述照常进背景。"""
+    calls, svc = patched_env["calls"], patched_env["svc"]
     _stage_one_candidate()
-    seen = {"chunks": {}, "background": None}
-
-    async def fake_generate_values(tenant_id, placeholders, chunks_by_key, params,
-                                   batch_size=10, sem=None, on_progress=None, should_cancel=None):
-        seen["chunks"] = {k: v["chunks"] for k, v in chunks_by_key.items()}
-        seen["background"] = params
-        return {it["key"]: f"值_{it['key']}" for it in placeholders}, set()
-
-    monkeypatch.setattr(fill_template.executor, "generate_values", fake_generate_values)
-    import asyncio
+    _seq_done(svc)
     cpn = _make_component(TemplateFillParam(),
                           canvas=FakeCanvas(file_content="这是上传的可研报告正文"))
     cpn._param.dataset_ids = ["kb1"]
     asyncio.run(cpn._invoke_async())
-
-    first = seen["chunks"]["项目名称"][0]
-    assert first["content"].startswith("[用户上传文件]")
-    assert "可研报告正文" in first["content"]
-    # 需求描述进产值 LLM 背景信息
-    assert seen["background"]["用户需求描述"] == "写一份道路工程情况报告"
+    params = svc.inserted[0][1]["params"]
+    assert params["_user_file_text"] == "这是上传的可研报告正文"
+    assert params["用户需求描述"] == "写一份道路工程情况报告"
 
 
 def test_invoke_async_user_file_absent_no_injection(patched_env):
-    """无上传文件（sys.file_content 为空）→ 证据不注入、正常走 KB 桩路径。"""
+    """无上传文件（sys.file_content 为空）→ _user_file_text 空串下发。"""
+    calls, svc = patched_env["calls"], patched_env["svc"]
     _stage_one_candidate()
-    import asyncio
+    _seq_done(svc)
     cpn = _make_component(TemplateFillParam(), canvas=FakeCanvas(file_content=""))
     cpn._param.dataset_ids = ["kb1"]
     asyncio.run(cpn._invoke_async())
-    assert patched_env["render"][2]["项目名称"] == "值_项目名称"
+    assert svc.inserted[0][1]["params"]["_user_file_text"] == ""
 
 
 def test_invoke_async_one_template_failure_degrades_to_summary_line(patched_env, monkeypatch):
-    """多范本并行：单个范本填写失败不拖死节点 → 该范本降级为汇总行，其余照常产出。"""
-    FakeService.rows = [
-        {"id": "t1", "name": "报告A", "description": "", "file_type": "docx"},
-        {"id": "t2", "name": "报告B", "description": "", "file_type": "docx"},
-    ]
-    # t2 工作副本缺失（render_obj 拿不到 blob）→ 该范本 _fill_one 抛 ValueError
-    FakeService.vers = {"t1": _ver([_ver_slot("项目名称")]),
-                        "t2": _ver([_ver_slot("项目名称")], render_file_id="missing_obj")}
+    """多范本：单个范本任务终态 failed 不拖死节点 → 该范本推 failed 并降级为
+    汇总行，其余范本照常 filled 产出。"""
+    calls, svc = patched_env["calls"], patched_env["svc"]
+    _stage_two_candidates()
 
     class MultiMdl:
         async def async_chat(self, system, msgs):
             return '{"template_ids": ["t1", "t2"]}'
 
     monkeypatch.setattr(fill_template.executor, "_build_chat_mdl", lambda *_: MultiMdl())
+    svc.sequences = {
+        "task-1": [_Row("task-1"), _Row("task-1", status="done", result_file_id="rf1")],
+        "task-2": [_Row("task-2", status="failed", error="检索炸了")]}
     cpn = _make_component(TemplateFillParam())
     cpn._param.dataset_ids = ["kb1"]
-    import asyncio
     asyncio.run(cpn._invoke_async())
 
     dls = json.loads(cpn.output("download"))
     assert [d["filename"] for d in dls] == ["报告A.docx"]
+    evs = _drain_events(cpn)
+    stages = [(e["stage"], e.get("template_id")) for e in evs]
+    assert ("failed", "t2") in stages
+    assert ("filled", "t1") in stages
+    assert stages[-1] == ("done", None)
     assert "填写失败" in cpn.output("content") and "报告B" in cpn.output("content")
+    assert "检索炸了" in cpn.output("content")
     assert "报告A" in cpn.output("content")
 
 
-def test_invoke_async_all_templates_failed_raises(patched_env, monkeypatch):
-    """所有范本均失败 → 节点报错（携带首个原因），不输出空下载列表。"""
+def test_invoke_async_all_templates_failed_raises(patched_env):
+    """所有范本任务均终态 failed → 节点报错（携带首个原因），不输出空下载列表。"""
+    calls, svc = patched_env["calls"], patched_env["svc"]
     _stage_one_candidate()
-    FakeService.vers["t1"] = _ver([_ver_slot("项目名称")], render_file_id="missing_obj")
+    svc.sequences = {"task-1": [_Row("task-1", status="failed", error="检索炸了")]}
     cpn = _make_component(TemplateFillParam())
     cpn._param.dataset_ids = ["kb1"]
-    import asyncio
     with pytest.raises(ValueError, match="所有范本填写均失败"):
         asyncio.run(cpn._invoke_async())
-
-
-def test_invoke_async_shared_retrieval_called_once_for_multi_templates(patched_env, monkeypatch):
-    """多范本：共享检索只调一次（retrieve_all_shared 桩调用计数），各范本拿到各自证据。"""
-    FakeService.rows = [
-        {"id": "t1", "name": "报告A", "description": "", "file_type": "docx"},
-        {"id": "t2", "name": "报告B", "description": "", "file_type": "docx"},
-    ]
-    FakeService.vers = {t: _ver([_ver_slot("项目名称")]) for t in ("t1", "t2")}
-    calls = {"shared": 0}
-
-    async def fake_shared(tenant_id, placeholders_list, kb_ids, task_id="",
-                          should_cancel=None, sem=None):
-        calls["shared"] += 1
-        assert len(placeholders_list) == 2
-        return [{it["key"]: {"chunks": [{"content": f"证据_{tid}", "doc_id": "d",
-                                         "doc_name": "n", "similarity": 0.9}],
-                             "query": it["key"]} for it in ph if it.get("key")}
-                for tid, ph in zip(("t1", "t2"), placeholders_list)]
-
-    class MultiMdl:
-        async def async_chat(self, system, msgs):
-            return '{"template_ids": ["t1", "t2"]}'
-
-    monkeypatch.setattr(fill_template.executor, "retrieve_all_shared", fake_shared)
-    monkeypatch.setattr(fill_template.executor, "_build_chat_mdl", lambda *_: MultiMdl())
-    cpn = _make_component(TemplateFillParam())
-    cpn._param.dataset_ids = ["kb1"]
-    import asyncio
-    asyncio.run(cpn._invoke_async())
-    assert calls["shared"] == 1
-    assert len(patched_env["put"]) == 2
 
 
 # ---------- P2 暂停确认：_confirm_changed_fields（超时兜底 + 确认载荷过滤） ----------
@@ -664,18 +684,18 @@ def test_confirm_no_default_items_skips_all(monkeypatch):
     assert _drain_events(cpn) == []
 
 
-# ---------- P2 条件执行：decision 消费侧（检索收窄 + 直填优先 + 沉淀 override） ----------
+# ---------- P2 条件执行：decision 消费侧（委托参数收窄 + 直填下发） ----------
 
-def test_decision_conditional_execution_skips_unchanged_defaults(patched_env, monkeypatch):
-    """P2 核心语义（decision 消费侧）：decisions={"changed": {a}, "values": {f: 直填}}，
-    四个 llm 字段中——
-    - a（有默认值、预判变化 C∩D）→ 走检索 + LLM；
-    - d（无默认值 N）→ 走检索 + LLM；
-    - e（有默认值、未变化 D−C）→ 不检索不调 LLM，渲染直取默认值；
-    - f（有默认值、未变化但用户直填）→ 不检索不调 LLM，渲染直取直填值，
-      沉淀收到 override_keys={f}（直填覆盖沉淀保护）。
-    同时验证：_fill_one 收到的 llm_placeholders 与检索清单同口径收窄。"""
-    import asyncio
+def test_decision_conditional_execution_skips_unchanged_defaults(patched_env):
+    """P2 核心语义（decision 消费侧，委托参数形式）：decisions={"changed": {a},
+    "values": {f: 直填}}，四个 llm 字段中——
+    - a（有默认值、预判变化 C∩D）与 d（无默认值 N）→ 走检索 + LLM（不在 skip）；
+    - e（有默认值、未变化 D−C）→ 进 _retrieve_skip_keys（免检索免 LLM，executor
+      渲染直取默认值）；
+    - f（有默认值、未变化但用户直填）→ 进 skip + 直填值经 _direct_values 下发。
+    executor 侧按这些保留键跳过检索/直取默认值/沉淀 override，由
+    test_template_fill_executor.py 覆盖。"""
+    calls, svc = patched_env["calls"], patched_env["svc"]
 
     ph = [
         {"key": "a", "name": "甲", "fill_mode": "llm", "default_value": "旧甲"},
@@ -684,26 +704,7 @@ def test_decision_conditional_execution_skips_unchanged_defaults(patched_env, mo
         {"key": "f", "name": "己", "fill_mode": "llm", "default_value": "旧己"},
     ]
     _stage_one_candidate(placeholders=ph)
-    FakeService.vers["t1"] = SimpleNamespace(placeholders=ph, render_file_id="render_obj",
-                                             version=1, id="v1")
-    seen = {"retrieved": None}
-    sed_calls = []
-
-    def fake_sediment(cls, template_id, version_id, values, override_keys=None):
-        sed_calls.append({"tid": template_id, "vid": version_id,
-                          "values": dict(values), "override": set(override_keys or set())})
-
-    monkeypatch.setattr(FakeService, "sediment_defaults", classmethod(fake_sediment),
-                        raising=False)
-
-    async def fake_shared(tenant_id, placeholders_list, kb_ids, task_id="",
-                          should_cancel=None, sem=None):
-        seen["retrieved"] = [[it["key"] for it in ph] for ph in placeholders_list]
-        return [{it["key"]: {"chunks": [], "query": it["key"]} for it in ph if it.get("key")}
-                for ph in placeholders_list]
-
-    monkeypatch.setattr(fill_template.executor, "retrieve_all_shared", fake_shared)
-
+    _seq_done(svc)
     cpn = _make_component(TemplateFillParam())
     cpn._param.dataset_ids = ["kb1"]
 
@@ -713,35 +714,23 @@ def test_decision_conditional_execution_skips_unchanged_defaults(patched_env, mo
     cpn._confirm_changed_fields = fake_confirm
     asyncio.run(cpn._invoke_async())
 
-    # 检索清单只含 a（C∩D）与 d（N）；e（D−C）与 f（直填）被排除
-    assert seen["retrieved"] == [["a", "d"]]
-    # LLM 产值同口径收窄
-    assert patched_env["gen_keys"] == ["a", "d"]
-    # 渲染产值：e 直取默认值、f 直取直填值（优先级最高）、a/d 走 LLM 产值
-    assert patched_env["render"][2] == {"a": "值_a", "d": "值_d", "e": "旧戊", "f": "直填值"}
-    # 沉淀：带 override_keys={f}，且 e 的默认值语义不被本次产值破坏
-    assert len(sed_calls) == 1
-    assert sed_calls[0]["override"] == {"f"}
-    assert sed_calls[0]["values"]["e"] == "旧戊"
+    params = svc.inserted[0][1]["params"]
+    # 检索/LLM 收窄：e（D−C）与 f（直填）进跳过清单；a（C∩D）与 d（N）不跳过
+    assert params["_retrieve_skip_keys"] == ["e", "f"]
+    # 预判变化键原样下发（executor 侧蓄意覆盖默认值语义）
+    assert params["_changed_keys"] == ["a"]
+    # 直填值优先级最高：字符串化下发，executor 渲染直取
+    assert params["_direct_values"] == {"f": "直填值"}
 
 
-def test_decision_empty_direct_value_renders_blank(patched_env, monkeypatch):
-    """用户直填空串 = 明确清空：不进 LLM、渲染为空（build_values 空值落空串），
-    且不回填默认值（直填先于 _merge_default_values 摘出 missing）。"""
-    import asyncio
+def test_decision_empty_direct_value_renders_blank(patched_env):
+    """用户直填空串 = 明确清空：_direct_values 原样带空串下发（executor 侧渲染
+    为空串、不回填默认值），且该字段不进检索/LLM（进 skip 清单）。"""
+    calls, svc = patched_env["calls"], patched_env["svc"]
 
     ph = [{"key": "a", "name": "甲", "fill_mode": "llm", "default_value": "旧甲"}]
     _stage_one_candidate(placeholders=ph)
-    FakeService.vers["t1"] = SimpleNamespace(placeholders=ph, render_file_id="render_obj",
-                                             version=1, id="v1")
-
-    async def fake_shared(tenant_id, placeholders_list, kb_ids, task_id="",
-                          should_cancel=None, sem=None):
-        return [{it["key"]: {"chunks": [], "query": it["key"]} for it in ph if it.get("key")}
-                for ph in placeholders_list]
-
-    monkeypatch.setattr(fill_template.executor, "retrieve_all_shared", fake_shared)
-
+    _seq_done(svc)
     cpn = _make_component(TemplateFillParam())
     cpn._param.dataset_ids = ["kb1"]
 
@@ -751,7 +740,6 @@ def test_decision_empty_direct_value_renders_blank(patched_env, monkeypatch):
     cpn._confirm_changed_fields = fake_confirm
     asyncio.run(cpn._invoke_async())
 
-    # 直填字段不进 LLM（检索清单同样排除，但 gen_keys 已足够断言口径）
-    assert patched_env["gen_keys"] == []
-    # 渲染为空串（清空语义），而非旧默认值「旧甲」
-    assert patched_env["render"][2] == {"a": ""}
+    params = svc.inserted[0][1]["params"]
+    assert params["_direct_values"] == {"a": ""}
+    assert params["_retrieve_skip_keys"] == ["a"]
