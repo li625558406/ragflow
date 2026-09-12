@@ -4,6 +4,7 @@
 // flow 特有逻辑：附带当前版本文件开关、审阅目标（用户上传文件优先，否则当前版本）、
 // 标注提取（structuredOutputRef）与存记录/存新版本。
 import { Button } from '@/components/ui/button';
+import message from '@/components/ui/message';
 import { useHandleMessageInputChange } from '@/hooks/logic-hooks';
 import type { ITemplateFillState } from '@/hooks/template-fill-stream';
 import {
@@ -548,6 +549,18 @@ export default function FlowAiPanel({
           .map((e: any) => e.data);
         if (finalTplEvents.length > 0) {
           templateFillEventsRef.current = finalTplEvents;
+        }
+        // canvas 运行期错误的兜底消息（后端 message 事件带 error 标记）：气泡文本
+        // 照常展示 + toast 显式提醒，避免用户只看到一段普通回复没意识到执行失败
+        const errEvent = ((res?.events as any[] | undefined) ?? []).find(
+          (e: any) => e?.event === 'message' && e?.data?.error,
+        );
+        if (errEvent) {
+          message.error(
+            typeof errEvent.data.content === 'string'
+              ? errEvent.data.content
+              : '本轮执行失败，请查看对话内容',
+          );
         }
       } catch (e: any) {
         const msg = e?.message || '发送失败，请检查网络后重试';

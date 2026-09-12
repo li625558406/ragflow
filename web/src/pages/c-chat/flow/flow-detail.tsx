@@ -856,6 +856,9 @@ function DetailSkeleton() {
 }
 
 /** AI 对话记录视图：指令（右）+ 回复（左），含存版本标记；live 为进行中的一轮流式对话 */
+// canvas 运行期错误兜底消息（后端以「执行失败：」前缀落库）：气泡红底红字显式提示
+const isErrorResponse = (t: string) => t.trimStart().startsWith('执行失败：');
+
 function ConversationView({
   chats,
   live,
@@ -904,7 +907,13 @@ function ConversationView({
             </div>
           </div>
           <div className="flex justify-start">
-            <div className="max-w-[90%] rounded-lg rounded-bl-sm border border-[#ECECEC] bg-white px-3 py-1.5 text-sm leading-relaxed text-[#333]">
+            <div
+              className={`max-w-[90%] rounded-lg rounded-bl-sm border px-3 py-1.5 text-sm leading-relaxed ${
+                isErrorResponse(c.response)
+                  ? 'border-red-300 bg-red-50 text-red-700'
+                  : 'border-[#ECECEC] bg-white text-[#333]'
+              }`}
+            >
               <ChapteredMarkdown
                 content={normalizeLlmMarkdown(c.response) || '（无回复内容）'}
                 loading={false}
@@ -939,7 +948,13 @@ function ConversationView({
           {/* 仅剩成稿条（回复已自动入库、response 为空）时不渲染空回复气泡 */}
           {(live.response || live.busy) && (
             <div className="flex justify-start">
-              <div className="max-w-[90%] rounded-lg rounded-bl-sm border border-[#ECECEC] bg-white px-3 py-1.5 text-sm leading-relaxed text-[#333]">
+              <div
+                className={`max-w-[90%] rounded-lg rounded-bl-sm border px-3 py-1.5 text-sm leading-relaxed ${
+                  isErrorResponse(live.response)
+                    ? 'border-red-300 bg-red-50 text-red-700'
+                    : 'border-[#ECECEC] bg-white text-[#333]'
+                }`}
+              >
                 {live.response ? (
                   <ChapteredMarkdown
                     content={normalizeLlmMarkdown(live.response)}

@@ -360,7 +360,7 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
         txt += err_note
         yield ("data:" + json.dumps({
             "event": "message",
-            "data": {"content": err_note},
+            "data": {"content": err_note, "error": True},
             "session_id": session_id,
         }, ensure_ascii=False) + "\n\n")
 
