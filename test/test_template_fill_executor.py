@@ -492,10 +492,12 @@ _MISSING = object()  # checked_ver 哨兵：区分「未传」与「显式传 No
 
 
 def _run_pipeline(monkeypatch, task, *, checked_ver=_MISSING, latest_ver=_broken_latest,
-                  final_ok=True):
+                  final_ok=True, real_render_blob=_MISSING):
     if checked_ver is _MISSING:
         checked_ver = _make_ver()
-    """公共编排 mock：service/存储/检索/LLM 全部替身，返回调用记录 dict。"""
+    """公共编排 mock：service/存储/检索/LLM 全部替身，返回调用记录 dict。
+    real_render_blob 非 _MISSING 时不桩 _render_result、改注入 STORAGE_IMPL
+    （get 返回该 blob），走真渲染路径（模板工作副本缺失等分支直测用）。"""
     from api.db.services import template_fill_service as tpl_svc
     from rag.svr.template_fill import executor
 
@@ -546,9 +548,21 @@ def _run_pipeline(monkeypatch, task, *, checked_ver=_MISSING, latest_ver=_broken
     monkeypatch.setattr(tpl_svc.TplTemplateVersionService, "get_by_id_checked", fake_checked)
     monkeypatch.setattr(tpl_svc.TplTemplateService, "get_or_none",
                         lambda **kw: types.SimpleNamespace(file_type="docx"))
-    monkeypatch.setattr(executor, "_render_result",
-                        lambda task, ver, placeholders, values, ftype: (b"blob", "v2_result_task1.docx", ""))
+    if real_render_blob is _MISSING:
+        monkeypatch.setattr(executor, "_render_result",
+                            lambda task, ver, placeholders, values, ftype: (b"blob", "v2_result_task1.docx", ""))
+    else:
+        class _FakeStorage:
+            def get(self, bucket, name):
+                return real_render_blob
+
+        monkeypatch.setattr(executor.settings, "STORAGE_IMPL", _FakeStorage())
     monkeypatch.setattr(tpl_svc, "_storage_put", lambda bucket, obj, blob: calls["puts"].append(obj))
+    # sediment 桩：记录 (template_id, version_id, values, override_keys)；
+    # 不桩会打真实 DB（依赖 try/except 兜底吞异常，且无法断言 override_keys 语义）
+    monkeypatch.setattr(tpl_svc.TplTemplateVersionService, "sediment_defaults",
+                        classmethod(lambda cls, tid, vid, vals, override_keys=None:
+                                    calls.setdefault("sediment", []).append((tid, vid, vals, override_keys))))
     executor.execute_task(task.id)
     return calls
 
@@ -1296,6 +1310,77 @@ class TestBEndBehaviorUnchanged:
         assert calls["generate"] == [], \
             "画布委托下默认值未变化字段应被收窄、不进 LLM"
         assert calls["transits"][-1] == ("rendering", "done")
+
+
+# ── 沉淀 override_keys 语义：画布直填值可覆盖 manual 默认（委托改造回归） ──
+
+
+def test_canvas_direct_values_sediment_override_keys(monkeypatch):
+    """回归：画布委托（params 带保留键）+ 直填值非空 → sediment 收到
+    override_keys=直填键集合（含空串显式清空键）——用户确认卡显式给值可覆盖
+    default_source="manual" 的默认值（对齐委托前节点内联实现语义）。"""
+    ver = _make_ver(placeholders=[
+        {"key": "k1", "name": "字段一", "fill_mode": "llm"},
+        {"key": "k2", "name": "字段二", "fill_mode": "llm"}])
+    calls = _run_pipeline(
+        monkeypatch,
+        _make_task(params={"_changed_keys": [], "_direct_values": {"k1": "用户确认值", "k2": ""}}),
+        checked_ver=ver)
+    assert calls["sediment"] == [("tpl1", "ver1",
+                                  {"k1": "用户确认值", "k2": ""},
+                                  {"k1", "k2"})], \
+        "直填键（含空串显式清空）必须作为 override_keys 下传 sediment"
+
+
+def test_b_end_sediment_without_override_keys(monkeypatch):
+    """B端普通任务（无保留键）：sediment 不传 override_keys（None）——
+    manual 默认值不受产值沉淀覆盖的既有口径保持不变。"""
+    calls = _run_pipeline(monkeypatch, _make_task(params={}))
+    assert calls["sediment"] == [("tpl1", "ver1", {"k1": "产值"}, None)]
+
+
+def test_pipeline_render_blob_missing_fails_with_message(monkeypatch):
+    """模板工作副本缺失（STORAGE_IMPL.get 返回空）→ 任务落 failed，
+    error 文案为「模板工作副本缺失」，不落稿不进沉淀。"""
+    calls = _run_pipeline(monkeypatch, _make_task(), real_render_blob=b"")
+    assert calls["transits"][-1] == ("rendering", "failed")
+    assert calls["puts"] == [], "工作副本缺失不得落成稿对象"
+    assert "sediment" not in calls, "failed 任务不得沉淀默认值"
+    assert calls["snapshots"][-1]["status"] == "failed"
+    assert calls["snapshots"][-1]["error"] == "模板工作副本缺失"
+
+
+def test_render_result_xlsx_passes_addr_by_key(monkeypatch):
+    """xlsx 范本：_render_result 按 placeholders 组装 addr_by_key 传给 renderer；
+    无 key 项不进映射、无 addr 项落 None（renderer 内按 addr 缺失跳过）。"""
+    from rag.svr.template_fill import executor, renderer
+    captured = {}
+
+    def fake_render(ftype, blob, values, addr_by_key=None):
+        captured.update(ftype=ftype, blob=blob, values=values, addr_by_key=addr_by_key)
+        return b"rendered"
+
+    monkeypatch.setattr(renderer, "render", fake_render)
+
+    class _FakeStorage:
+        def get(self, bucket, name):
+            assert (bucket, name) == ("tpl1", "r.xlsx")
+            return b"tpl-blob"
+
+    monkeypatch.setattr(executor.settings, "STORAGE_IMPL", _FakeStorage())
+    task = types.SimpleNamespace(id="task1", template_id="tpl1")
+    ver = types.SimpleNamespace(version=3, render_file_id="r.xlsx")
+    placeholders = [
+        {"key": "a", "addr": "封面!B1"},
+        {"key": "b"},                # 无 addr → 映射值 None
+        {"addr": "封面!B2"},         # 无 key → 不进映射
+    ]
+    out, result_obj, err = executor._render_result(
+        task, ver, placeholders, {"a": "1", "b": "2"}, "xlsx")
+    assert err == "" and out == b"rendered"
+    assert result_obj == "v3_result_task1.xlsx"
+    assert captured["ftype"] == "xlsx" and captured["blob"] == b"tpl-blob"
+    assert captured["addr_by_key"] == {"a": "封面!B1", "b": None}
 
 
 # ── spawn 抽取共用：B端 fill-task API 与画布节点共一条调度路径 ──

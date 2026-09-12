@@ -865,9 +865,17 @@ async def _execute_task_async(task_id: str):
         return
     _write_snapshot(task_id, force=True, status="done", values=values)
 
-    # ⑦ 产值沉淀为默认值（auto）：失败仅告警，不影响任务终态
+    # ⑦ 产值沉淀为默认值（auto）：失败仅告警，不影响任务终态。
+    # 画布直填键（含空串显式清空键，也是用户决策）随 override_keys 下传：
+    # 用户确认卡显式给值可覆盖 default_source="manual" 的默认值——对齐委托前
+    # 节点内联实现的既有语义；B端任务不传，manual 默认值沉淀口径保持不变。
     try:
-        tpl_svc.TplTemplateVersionService.sediment_defaults(task.template_id, ver.id, values)
+        if is_canvas and direct_values:
+            tpl_svc.TplTemplateVersionService.sediment_defaults(
+                task.template_id, ver.id, values,
+                override_keys=set(direct_values.keys()))
+        else:
+            tpl_svc.TplTemplateVersionService.sediment_defaults(task.template_id, ver.id, values)
     except Exception:
         logger.warning("sediment_defaults failed, task=%s", task_id, exc_info=True)
 
