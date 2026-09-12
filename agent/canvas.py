@@ -387,6 +387,10 @@ class Canvas(Graph):
 
     async def run(self, **kwargs):
         self.globals["sys.date"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        # sys.pending_downloads 是「仅本轮」契约：工具运行期写入、Message 出口
+        # 合并即清空；取消/异常路径会跳过合并且 globals 随 dsl 持久化，下一轮
+        # Canvas.load() 会恢复旧契约并入本轮 downloads（幽灵成稿卡），故开局清零。
+        self.globals["sys.pending_downloads"] = []
         st = time.perf_counter()
         self._loop = asyncio.get_running_loop()
         self.message_id = get_uuid()

@@ -108,7 +108,12 @@ class Message(ComponentBase):
     def _merge_pending_downloads(self, downloads: list[dict[str, Any]]):
         """工具（DocumentRewrite 等）运行期把 download 契约写入 canvas 全局
         sys.pending_downloads；Message 出口统一合并进 downloads 输出（按 doc_id
-        幂等去重），合并后清空防重复下发。"""
+        幂等去重），合并后清空防重复下发。
+
+        约束：本机制假定画布只有**一个** Message 终端节点——合并即清空，
+        多 Message 画布中先执行的节点会吞光 pending，而 workflow_finished
+        只带最后一个节点的 downloads，卡片会整体丢失。给多 Message 画布接
+        工具前必须先改造此机制（如已合并 doc_id 标记方案）。"""
         try:
             pending = (self._canvas.globals or {}).get("sys.pending_downloads") if self._canvas else None
             if isinstance(pending, list):
