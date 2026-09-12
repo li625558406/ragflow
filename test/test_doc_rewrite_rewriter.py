@@ -1,6 +1,7 @@
 # test/test_doc_rewrite_rewriter.py
 # -*- coding: utf-8 -*-
-"""LLM 重写对抗测试：合法JSON/围栏包裹/非法JSON重试/空段落/超限截断/超长节报错。"""
+"""LLM 重写对抗测试：合法JSON/围栏包裹/尾部花括号杂文/非法JSON重试/LLM调用异常重试/
+空段落/超限截断/超长节报错。"""
 import pytest
 
 from rag.svr.document_rewrite.rewriter import (
@@ -11,13 +12,18 @@ from rag.svr.document_rewrite.rewriter import (
 
 
 class FakeMdl:
-    def __init__(self, outputs: list[str]):
+    """outputs 中放 str 则依次返回；放 Exception 实例则该次调用抛出（模拟网络/限流）。"""
+
+    def __init__(self, outputs: list):
         self.outputs = list(outputs)
         self.calls = 0
 
     async def async_chat(self, system, messages):
         self.calls += 1
-        return self.outputs[min(self.calls, len(self.outputs)) - 1]
+        out = self.outputs[min(self.calls, len(self.outputs)) - 1]
+        if isinstance(out, Exception):
+            raise out
+        return out
 
 
 def test_parse_plain_json():
@@ -27,6 +33,13 @@ def test_parse_plain_json():
 def test_parse_fenced_json_with_noise():
     txt = '好的，以下是重写结果：\n```json\n{"paragraphs": ["段落一", "段落二"]}\n```\n请查收。'
     assert _parse_paragraphs(txt) == ["段落一", "段落二"]
+
+
+def test_parse_json_with_trailing_brace_noise():
+    """I1 回归：合法 JSON 后跟带 `}` 的杂文，贪婪匹配整体解析失败，
+    非贪婪兜底抽第一个对象须成功。"""
+    assert _parse_paragraphs('{"paragraphs": ["a"]} 结束 }') == ["a"]
+    assert _parse_paragraphs('{"paragraphs": ["a", "b"]}）以上，{完}') == ["a", "b"]
 
 
 def test_parse_rejects_bad_shapes():
@@ -63,6 +76,27 @@ async def test_rewrite_recovers_on_second_try():
     mdl = FakeMdl(["垃圾输出", '{"paragraphs": [" recovered "]}'])
     out = await rewrite_section("t1", "改", "节", "内容", "", "", mdl=mdl)
     assert out == ["recovered"]
+    assert mdl.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_rewrite_recovers_when_llm_call_raises_once():
+    """I3：async_chat 第一次抛 Exception（网络/限流），第二次返回合法 JSON → 成功。"""
+    mdl = FakeMdl([RuntimeError("connection reset by peer"), '{"paragraphs": ["ok after err"]}'])
+    out = await rewrite_section("t1", "改", "节", "内容", "", "", mdl=mdl)
+    assert out == ["ok after err"]
+    assert mdl.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_rewrite_both_llm_errors_raise_valueerror_with_cause():
+    """I3 对抗：两轮均抛 LLM 异常 → 统一 ValueError，且 `from` 原异常保留根因。"""
+    boom = RuntimeError("rate limited")
+    mdl = FakeMdl([boom, boom])
+    with pytest.raises(ValueError, match="重写失败") as exc_info:
+        await rewrite_section("t1", "改", "节", "内容", "", "", mdl=mdl)
+    assert mdl.calls == 2
+    assert exc_info.value.__cause__ is boom
 
 
 @pytest.mark.asyncio

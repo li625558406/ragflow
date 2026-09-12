@@ -4,7 +4,7 @@
 
 投喂：用户指令 + 目标节全文 + 全文目录 + 前后节标题（不投喂全文正文）。
 输出：JSON {"paragraphs": ["新段落1", ...]}，纯段落文本，LLM 不产格式标记。
-代码端兜底：非法 JSON/空段落重试 1 次；段数 1-50、单段 ≤2000 字（超出截断）；
+代码端兜底：LLM 调用异常/非法 JSON/空段落重试 1 次；段数 1-50、单段 ≤2000 字（超出截断并告警）；
 投喂正文 >3 万字直接报错（不静默截断）。失败不产生版本（由工具层保证）。
 """
 import json
@@ -18,7 +18,12 @@ _MAX_SECTION_CHARS = 30000
 _MAX_PARAGRAPHS = 50
 _MAX_PARA_CHARS = 2000
 
-_JSON_OBJ_RE = re.compile(r"\{.*\}", flags=re.DOTALL)
+# JSON 对象提取：先贪婪（应对正文中含 `}` 的合法对象），
+# 贪婪解析失败再非贪婪（应对 LLM 输出尾部带花括号杂文：贪婪把杂文吞进去导致解析失败）。
+_JSON_OBJ_RES = (
+    re.compile(r"\{.*\}", flags=re.DOTALL),
+    re.compile(r"\{.*?\}", flags=re.DOTALL),
+)
 
 _REWRITE_SYSTEM = (
     "你是公文文档改写专家。用户会给出一份文档的目录、某一节的当前内容，以及针对该节的重写要求。"
@@ -33,18 +38,24 @@ _REWRITE_SYSTEM = (
 def _parse_paragraphs(txt) -> list[str] | None:
     """解析 LLM 输出为段落列表；不合法/全空返回 None（调用方据此重试）。
 
-    容忍 ```json 围栏与前后杂文（贪婪抽第一个 {...}）；仅保留非空 str 并 strip；
-    代码端兜底截断：段数 ≤50、单段 ≤2000 字（超出静默截断并告警）。"""
+    容忍 ```json 围栏与前后杂文（先贪婪后非贪婪抽第一个合法 {...}，照 executor._extract_json
+    已踩坑模式）；仅保留非空 str 并 strip；代码端兜底截断：段数 ≤50、单段 ≤2000 字
+    （超出截断并 logger.warning）。"""
     if not isinstance(txt, str) or not txt.strip():
         return None
-    m = _JSON_OBJ_RE.search(txt)
-    if not m:
-        return None
-    try:
-        data = json.loads(m.group(0))
-    except (ValueError, TypeError):
-        return None
-    if not isinstance(data, dict):
+    data = None
+    for obj_re in _JSON_OBJ_RES:
+        m = obj_re.search(txt)
+        if not m:
+            continue
+        try:
+            parsed = json.loads(m.group(0))
+        except (ValueError, TypeError):
+            continue
+        if isinstance(parsed, dict):
+            data = parsed
+            break
+    if data is None:
         return None
     raw = data.get("paragraphs")
     if not isinstance(raw, list):
@@ -65,7 +76,11 @@ def _parse_paragraphs(txt) -> list[str] | None:
         logger.warning("[rewrite] paragraph(s) truncated to %s chars", _MAX_PARA_CHARS)
     if not paras:
         return None
-    return paras[:_MAX_PARAGRAPHS]
+    total = len(paras)
+    if total > _MAX_PARAGRAPHS:
+        logger.warning("[rewrite] paragraph count truncated %s -> %s", total, _MAX_PARAGRAPHS)
+        paras = paras[:_MAX_PARAGRAPHS]
+    return paras
 
 
 def _build_chat_mdl(tenant_id: str):
@@ -96,11 +111,20 @@ async def rewrite_section(tenant_id: str, instruction: str, section_title: str,
     if mdl is None:
         mdl = _build_chat_mdl(tenant_id)
 
+    last_exc = None
     for attempt in (1, 2):
-        txt = await mdl.async_chat(_REWRITE_SYSTEM, [{"role": "user", "content": user_msg}])
+        try:
+            # 仅捕 Exception：CancelledError 等继承 BaseException，不在此吞掉
+            txt = await mdl.async_chat(_REWRITE_SYSTEM, [{"role": "user", "content": user_msg}])
+        except Exception as e:  # noqa: BLE001 — 网络/限流等 LLM 侧异常纳入统一重试
+            last_exc = e
+            txt = None
+            logger.warning("[rewrite] async_chat failed attempt=%s err=%s", attempt, e)
         paras = _parse_paragraphs(txt)
         if paras:
             return paras
         logger.warning("[rewrite] bad LLM output attempt=%s preview=%s",
                        attempt, (txt or "")[:120])
+    if last_exc is not None:
+        raise ValueError("重写失败，请重试。") from last_exc
     raise ValueError("重写失败，请重试。")
