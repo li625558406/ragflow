@@ -486,7 +486,7 @@ def _run_pipeline(monkeypatch, task, *, checked_ver=_MISSING, latest_ver=_broken
         calls["retrieve"].append((kb_ids, query))
         return [{"content": "证据", "doc_id": "d", "doc_name": "n", "similarity": 0.9}]
 
-    async def fake_generate(tenant_id, placeholders, chunks_by_key, params=None, batch_size=10):
+    async def fake_generate(tenant_id, placeholders, chunks_by_key, params=None, batch_size=10, **kw):
         calls["generate"] = [it.get("key") for it in placeholders]
         return {"k1": "产值"}, set()
 
@@ -1111,3 +1111,85 @@ def test_predict_changed_fields_items_missing_key_no_crash(monkeypatch):
                         lambda *_: (_ for _ in ()).throw(AssertionError("不应构建模型")))
     assert executor._run_async(
         executor.predict_changed_fields("t", [{"name": "无key"}], {})) == set()
+
+
+# ── 画布委托：params 保留键拆分 + Redis 进度快照 ─────────────────────
+
+
+class TestSplitCanvasParams:
+    """画布节点塞进 params 的保留键（下划线前缀）必须与背景信息隔离：
+    干净 params 才能进 build_retrieval_query / _merge_param_values / LLM 背景。"""
+
+    def test_split_extracts_reserved_keys(self):
+        from rag.svr.template_fill.executor import split_canvas_params
+        params = {
+            "项目名称": "X 项目",
+            "_direct_values": {"k1": "v1"},
+            "_changed_keys": ["k2"],
+            "_retrieve_skip_keys": ["k3"],
+            "_user_file_text": "上传文件内容",
+        }
+        clean, opts = split_canvas_params(params)
+        assert clean == {"项目名称": "X 项目"}
+        assert opts["direct_values"] == {"k1": "v1"}
+        assert opts["changed_keys"] == {"k2"}
+        assert opts["retrieve_skip_keys"] == {"k3"}
+        assert opts["user_file_text"] == "上传文件内容"
+
+    def test_split_hostile_payloads(self):
+        from rag.svr.template_fill.executor import split_canvas_params
+        # 对抗：保留键缺失 / 类型乱塞 / params 为 None
+        clean, opts = split_canvas_params(None)
+        assert clean == {}
+        assert opts == {"direct_values": {}, "changed_keys": set(),
+                        "retrieve_skip_keys": set(), "user_file_text": ""}
+        clean, opts = split_canvas_params({
+            "_direct_values": "not-a-dict",       # 标量 → 按空处理
+            "_changed_keys": {"k": 1},            # dict → 迭代键
+            "_retrieve_skip_keys": [1, None],     # 非字符串项 → str 归一
+            "_user_file_text": 42,                # 非字符串 → str()
+        })
+        assert clean == {}
+        assert opts["direct_values"] == {}
+        assert opts["changed_keys"] == {"k"}
+        assert opts["retrieve_skip_keys"] == {"1", "None"}
+        assert opts["user_file_text"] == "42"
+
+
+class TestProgressSnapshot:
+    """快照写失败只告警（Redis 不可用不拖垮填写）；读为纯容错。"""
+
+    def test_write_snapshot_swallows_redis_error(self, monkeypatch):
+        from rag.svr.template_fill import executor
+
+        class _Boom:
+            def set(self, *a, **kw):
+                raise RuntimeError("redis down")
+
+        monkeypatch.setattr(executor, "REDIS_CONN", _Boom())
+        # 不抛异常即通过
+        executor._write_snapshot("t1", status="generating", done=1, total=3)
+
+    def test_read_snapshot_returns_none_on_error(self, monkeypatch):
+        from rag.svr.template_fill import executor
+
+        class _Boom:
+            def get(self, k):
+                raise RuntimeError("redis down")
+
+        monkeypatch.setattr(executor, "REDIS_CONN", _Boom())
+        assert executor.read_progress_snapshot("t1") is None
+
+
+class TestCancelTransit:
+    """cancelled 进入状态机白名单：中间态可转，终态不可被覆盖。"""
+
+    def test_cancel_from_middle_states(self):
+        from api.db.services.template_fill_service import TplFillTaskService
+        for cur in ("pending", "retrieving", "generating"):
+            assert TplFillTaskService.can_transit(cur, "cancelled") is True
+
+    def test_cancel_not_from_terminal(self):
+        from api.db.services.template_fill_service import TplFillTaskService
+        for cur in ("done", "failed", "partial", "cancelled"):
+            assert TplFillTaskService.can_transit(cur, "cancelled") is False

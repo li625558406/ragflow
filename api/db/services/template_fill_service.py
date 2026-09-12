@@ -31,14 +31,14 @@ logger = logging.getLogger(__name__)
 TEMPLATE_STATUSES = ("draft", "published", "disabled")
 
 # 填写任务状态全集（白名单，防任意字符串落库）
-TASK_STATUSES = ("pending", "retrieving", "generating", "rendering", "done", "partial", "failed")
+TASK_STATUSES = ("pending", "retrieving", "generating", "rendering", "done", "partial", "failed", "cancelled")
 # 填写任务状态机：只允许沿 pipeline 顺序推进或进入 failed；终态（done/partial/failed）无出边
 _TASK_TRANSITS = {
-    "pending": {"retrieving", "failed"},
-    "retrieving": {"generating", "failed"},
-    "generating": {"rendering", "failed"},
+    "pending": {"retrieving", "failed", "cancelled"},
+    "retrieving": {"generating", "failed", "cancelled"},
+    "generating": {"rendering", "failed", "cancelled"},
     "rendering": {"done", "partial", "failed"},
-    "done": set(), "partial": set(), "failed": set(),
+    "done": set(), "partial": set(), "failed": set(), "cancelled": set(),
 }
 
 # object name 中用户文件名片段的最大长度（MinIO object 名总长上限远大于此，
@@ -492,3 +492,23 @@ class TplFillTaskService(CommonService):
         fields.update(extra)
         return cls.model.update(**fields).where(
             cls.model.id == task_id, cls.model.status == cur).execute() > 0
+
+    @classmethod
+    @DB.connection_context()
+    def cancel_running(cls, task_id: str) -> bool:
+        """把未终态任务置 cancelled（画布停止/取消路径用）。where 不带 status==cur
+        （取消可能发生在任一中间态），但用 in_ 白名单限定中间态，终态行不受影响。"""
+        return cls.model.update(status="cancelled", error="画布已停止，任务被取消").where(
+            cls.model.id == task_id,
+            cls.model.status.in_(("pending", "retrieving", "generating", "rendering"))).execute() > 0
+
+    @classmethod
+    @DB.connection_context()
+    def find_running(cls, template_id: str, tenant_id: str):
+        """该范本在租户内是否已有执行中任务（画布重复发起时复用观察，不重复起线程）。
+        取最新一条；无则 None。"""
+        return cls.model.select().where(
+            (cls.model.template_id == template_id)
+            & (cls.model.tenant_id == tenant_id)
+            & cls.model.status.in_(("pending", "retrieving", "generating", "rendering"))
+        ).order_by(cls.model.create_time.desc()).first()

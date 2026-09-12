@@ -29,6 +29,7 @@ from api.db.services.llm_service import LLMBundle
 from common import settings
 from common.constants import LLMType
 from rag.app.tag import label_question
+from rag.utils.redis_conn import REDIS_CONN
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +155,85 @@ PREDICT_SYSTEM = (
 
 class GenerateCancelled(Exception):
     """should_cancel 命中时抛出：调用方（组件/B端管道）捕获后各自收口。"""
+
+
+# ── 画布委托任务：params 保留键 + Redis 进度快照 ──────────────────────
+# 画布节点把确认产物（直填值/预判变化键）、用户文件证据、检索跳过键以
+# 下划线前缀保留键塞进 params 传给 execute_task；干净 params 继续充当
+# 背景信息与 param 直取（与 B端表单字段同构）。
+_CANVAS_RESERVED_KEYS = ("_direct_values", "_changed_keys",
+                         "_retrieve_skip_keys", "_user_file_text")
+
+# 进度快照键与 TTL（24h；终态也写一次，靠 TTL 过期，不主动删）
+_PROGRESS_KEY = "tpl_fill_progress:{task_id}"
+_PROGRESS_TTL = 24 * 3600
+# 画布取消键：节点在画布被停止时为未终态任务写该键，executor 探针命中即中断
+_CANCEL_KEY = "tpl_fill:cancel:{task_id}"
+_CANCEL_TTL = 3600
+
+
+def split_canvas_params(params: dict | None) -> tuple[dict, dict]:
+    """拆出画布委托塞在 params 里的保留键，返回 (干净 params, opts)。
+    前端/画布数据不可信：保留键载荷一律防御式清洗（非 dict/list 按空处理、
+    非 str 项 str 归一），不炸 pipeline。"""
+    params = params if isinstance(params, dict) else {}
+    dv = params.get("_direct_values")
+    opts = {
+        "direct_values": ({str(k): str(v) for k, v in dv.items()}
+                          if isinstance(dv, dict) else {}),
+        "changed_keys": {str(k) for k in (params.get("_changed_keys") or [])},
+        "retrieve_skip_keys": {str(k) for k in (params.get("_retrieve_skip_keys") or [])},
+        "user_file_text": str(params.get("_user_file_text") or ""),
+    }
+    clean = {k: v for k, v in params.items() if k not in _CANVAS_RESERVED_KEYS}
+    return clean, opts
+
+
+def _write_snapshot(task_id: str, **fields) -> None:
+    """写进度快照（累积 values 由调用方传全量）。Redis 故障只告警——
+    快照是重连体验增强，不是执行的权威路径（权威在 DB 行）。"""
+    import time as _time
+    try:
+        payload = {"updated_at": int(_time.time())}
+        payload.update(fields)
+        REDIS_CONN.set(_PROGRESS_KEY.format(task_id=task_id),
+                       json.dumps(payload, ensure_ascii=False), exp=_PROGRESS_TTL)
+    except Exception:
+        logger.warning("write fill progress snapshot failed, task=%s", task_id, exc_info=True)
+
+
+def read_progress_snapshot(task_id: str) -> dict | None:
+    """读进度快照（progress 端点用）。失败/不存在返回 None，调用方退化读 DB。"""
+    try:
+        raw = REDIS_CONN.get(_PROGRESS_KEY.format(task_id=task_id))
+        if not raw:
+            return None
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", "ignore")
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        logger.warning("read fill progress snapshot failed, task=%s", task_id, exc_info=True)
+        return None
+
+
+def write_cancel_key(task_id: str) -> None:
+    """写画布取消键（节点取消路径用）。失败只告警：最坏情况是任务跑完但
+    画布已不在看（结果仍落 DB 可取），不会产生副作用错误。"""
+    try:
+        REDIS_CONN.set(_CANCEL_KEY.format(task_id=task_id), "1", exp=_CANCEL_TTL)
+    except Exception:
+        logger.warning("write fill cancel key failed, task=%s", task_id, exc_info=True)
+
+
+def _make_cancel_probe(task_id: str):
+    """execute_task 用的取消探针：命中画布取消键 → True；Redis 异常视为未取消。"""
+    def _probe() -> bool:
+        try:
+            return bool(REDIS_CONN.get(_CANCEL_KEY.format(task_id=task_id)))
+        except Exception:
+            return False
+    return _probe
 
 
 def _clean_for_prompt(text: str, max_len: int) -> str:
@@ -441,6 +521,7 @@ def _render_result(task, ver, placeholders: list[dict], values: dict, tpl_file_t
 
 async def _retrieve_all(tenant_id: str, placeholders: list[dict], kb_ids: list[str],
                         params: dict, task_id: str = "",
+                        skip_keys: set | None = None,
                         should_cancel=None, sem: asyncio.Semaphore | None = None) -> tuple[dict, dict]:
     """逐槽检索公共段（execute_task 与 dry_run 共用，纯抽取）：单槽失败降级为
     空证据（该字段留空待人工二次加工），不中断整单；kb_ids 为空时全槽直接空证据
@@ -465,6 +546,8 @@ async def _retrieve_all(tenant_id: str, placeholders: list[dict], kb_ids: list[s
         query = build_retrieval_query(it.get("retrieval_query") or it.get("name") or key, params)
         chunks_by_key[key] = {"chunks": [], "query": query}
         evidence[key] = {"query": query, "chunks": []}
+        if key in (skip_keys or ()):
+            continue
         if _norm_fill_mode(it) == "llm" and query and kb_ids:
             todo.append((key, query, it))
     ctx = None
@@ -646,28 +729,79 @@ async def _execute_task_async(task_id: str):
     placeholders = ver.placeholders or []
     kb_ids = task.kb_ids or []
     params = task.params or {}
+    clean_params, opts = split_canvas_params(params)
+    direct_values: dict = opts["direct_values"]
+    changed_keys: set = opts["changed_keys"]
 
     # ② 逐槽检索（公共段，dry_run 同款）：单槽失败降级为空证据（字段走 missing/待人工），
     # 不中断整单；kb_ids 为空时全槽直接空证据（不进 retrieve_slot，省 N 次无意义异常+warning）
-    chunks_by_key, evidence = await _retrieve_all(
-        task.tenant_id, placeholders, kb_ids, params, task_id=task_id)
+    cancel_probe = _make_cancel_probe(task_id)
+    try:
+        chunks_by_key, evidence = await _retrieve_all(
+            task.tenant_id, placeholders, kb_ids, clean_params, task_id=task_id,
+            skip_keys=opts["retrieve_skip_keys"], should_cancel=cancel_probe)
+    except GenerateCancelled:
+        svc.cancel_running(task_id)
+        _write_snapshot(task_id, status="cancelled", error="画布已停止，任务被取消")
+        return
 
     # ③ LLM 批量产值（仅 llm 模式字段；整体失败 → 任务失败）
     if not svc.update_status(task_id, "retrieving", "generating"):
         return
+    _write_snapshot(task_id, status="generating", done=0, total=0)
+    # 画布委托对齐节点 _fill_one：D−C 收窄（有默认值且预判未变化不进 LLM）+ 直填键排除
     llm_placeholders = [it for it in placeholders
-                        if _norm_fill_mode(it) == "llm" and it.get("key")]
+                        if _norm_fill_mode(it) == "llm" and it.get("key")
+                        and it["key"] not in direct_values
+                        and not (str(it.get("default_value") or "")
+                                 and it["key"] not in changed_keys)]
     llm_chunks = {it["key"]: chunks_by_key.get(it["key"], {"chunks": [], "query": ""})
                   for it in llm_placeholders}
+    # 用户上传文件作为填写证据：预置片段插到每槽证据首位（优先于 KB 片段）
+    if opts["user_file_text"]:
+        for it in llm_placeholders:
+            llm_chunks.setdefault(it["key"], {"chunks": [], "query": ""})
+            llm_chunks[it["key"]]["chunks"].insert(0, {
+                "content": f"[用户上传文件] {opts['user_file_text']}",
+                "doc_id": "", "doc_name": "用户上传文件", "similarity": 1.0})
+    acc_values: dict = {}
+
+    def _on_progress(done: int, total: int, new_values: dict | None = None):
+        if new_values:
+            acc_values.update(new_values)
+        _write_snapshot(task_id, status="generating", done=done, total=total,
+                        values=dict(acc_values))
+
     try:
-        generated, missing = await generate_values(task.tenant_id, llm_placeholders, llm_chunks, params)
+        generated, missing = await generate_values(
+            task.tenant_id, llm_placeholders, llm_chunks, clean_params,
+            on_progress=_on_progress, should_cancel=cancel_probe)
+    except GenerateCancelled:
+        svc.cancel_running(task_id)
+        _write_snapshot(task_id, status="cancelled", values=dict(acc_values),
+                        error="画布已停止，任务被取消")
+        return
     except Exception as e:
         logger.exception("generate_values failed, task=%s", task_id)
         svc.update_status(task_id, "generating", "failed", error=f"LLM 生成失败: {e}")
+        _write_snapshot(task_id, status="failed", values=dict(acc_values),
+                        error=f"LLM 生成失败: {e}")
         return
 
     # ④ param 模式直取任务参数（不经 LLM，同样过约束兜底），命中则覆盖/摘出 missing
-    _merge_param_values(placeholders, generated, missing, params)
+    # D−C 字段未进 LLM，显式纳入 missing 才能让 _merge_default_values 直取默认值
+    for it in placeholders:
+        k = it.get("key")
+        if (k and k not in generated and k not in direct_values
+                and _norm_fill_mode(it) == "llm"
+                and str(it.get("default_value") or "")
+                and k not in changed_keys):
+            missing.add(k)
+    _merge_param_values(placeholders, generated, missing, clean_params)
+    # 用户直填值直取（空串=明确清空）；先摘出 missing 防默认值回填覆盖直填
+    for k, v in direct_values.items():
+        generated[k] = v
+        missing.discard(k)
     _merge_default_values(placeholders, generated, missing)
 
     values, cell_status = build_values(placeholders, generated)
@@ -681,11 +815,13 @@ async def _execute_task_async(task_id: str):
         render_blob, result_obj, err = _render_result(task, ver, placeholders, values, tpl_file_type)
         if err:
             svc.update_status(task_id, "rendering", "failed", error=err)
+            _write_snapshot(task_id, status="failed", values=values, error=err)
             return
         tpl_svc._storage_put(task.template_id, result_obj, render_blob)
     except Exception as e:
         logger.exception("render/store failed, task=%s", task_id)
         svc.update_status(task_id, "rendering", "failed", error=f"渲染落稿失败: {e}")
+        _write_snapshot(task_id, status="failed", values=values, error=f"渲染落稿失败: {e}")
         return
 
     # ⑥ 终态：渲染成功即 done（缺值留空交人工二次加工，不再有 partial）。
@@ -697,6 +833,7 @@ async def _execute_task_async(task_id: str):
         logger.warning("fill task final status CAS failed, task=%s result_obj=%s "
                        "(result object in storage without terminal status)", task_id, result_obj)
         return
+    _write_snapshot(task_id, status="done", values=values)
 
     # ⑦ 产值沉淀为默认值（auto）：失败仅告警，不影响任务终态
     try:
