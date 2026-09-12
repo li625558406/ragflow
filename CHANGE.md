@@ -1,5 +1,23 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-12 范本填写三连修：成稿标蓝 + 预览高亮失效 + 标签型默认值污染清理（已编码未部署）
+
+**主题**：C端流程 demo01 实测三问题：① 实时预览无蓝色高亮占位符 ② 成稿 Word 填入值无蓝色标记 ③ 478 处占位只产 204 值且大量位置「看起来没填」。
+
+**根因**（服务器 DB + 成稿 docx XML 实证）：
+- ① 09-11 docx-preview 保真改造把预览文件从 render 工作副本改拉 original 原件——detector 生成的 `{{key}}` 只写入 render 副本，original 无占位符，applyDocxHighlight 永远扫不到高亮目标。
+- ② renderer 从未实现标色（设计缺口非回归）。
+- ③ detector LLM 识别把「编号：」「申请人：」「年 月 日」「（投标人名称）」等模板提示文字当 anchor，derive_default_from_anchor 派生成默认值 → D−C 条件执行原样回写成稿（视觉=没填）→ sediment 固化污染基线（523 槽实测 208 个污染默认值）。
+
+**核心变更**：
+- `web/src/hooks/use-template-fill-request.ts`：`useTemplateFillFile` 改拉 `kind=render`（唯一调用方 template-fill-live-preview.tsx，B端下载不受影响）
+- `rag/svr/template_fill/renderer.py`：新增 `_colorize_placeholder_runs`——渲染前把 {{key}} 隔离成独立 run 并标蓝 0000FF（docxtpl 值继承占位 run rPr 成稿即蓝）；混合 run 深拷贝拆分只染占位段；含 w:br/w:drawing 的 run 整体跳过降级；`_set_run_color` 用 `CT_RPr.get_or_add_color` 按 OOXML schema sequence 插入（裸 append 乱序 XML 严格校验器会丢色）
+- `rag/svr/template_fill/detector.py`：新增 `_is_template_skeleton` 三规则防御（冒号结尾标签/日期骨架无数字含全角下划线/括号提示含半角与「万元」后缀），derive_default 拒绝派生——代码层根治污染源头
+- 服务器数据清理：`tpl_template_version` placeholders 清空 208 个垃圾默认值（477→269 有值，备份 /tmp/tpl_placeholders_backup_20260912_103619.json）
+- 测试：`test_template_fill_utils.py` 新增 11 个对抗用例（三类拒绝+不误杀「2026年9月28日」「（含）税金额100万元」「____2026」；标蓝整run/混合run只染值/免序列化字节相等/w:br 降级/rPr 顺序+既有 sz 保留），项目 .venv 89 passed
+
+**遗留**：① anchor 吃掉标签文字的存量问题：LLM 后续填真实值时会落在原标签位置（「编号：」消失），需另起识别质量整改；② `kind=render` 后端缺 fallback original（template_api.py:511，刚上传 draft 无 render 副本时返回文件不存在，实际风险低）；③ 半角括号提示拦截可能保守误杀「(…)」结尾纯括号现值（可接受）。
+
 ## 2026-09-12 修复流程 AI 面板刷新后无成稿卡：template_fill_events 超 TEXT 64KB 被截断致 JSON 损坏（已编码未部署）
 
 **主题**：范本填写（523 填写点大范本）完成后流程 AI 面板只有文字总结，成稿卡（预览/下载/存为流程版本入口）整个消失。

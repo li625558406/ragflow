@@ -510,15 +510,17 @@ export async function confirmTemplateFill(
   }
 }
 
-// ── 范本原始文件（docx-preview 保真渲染用）──────────────────────────
+// ── 范本工作副本（docx-preview 保真渲染 + 占位符高亮用）──────────────────
 
-// 获取模板原始文件 blob（kind=original）。错误体是 JSON（code != 0）时
-// blob 里装的是错误信息而非文件，parse message 抛错（照 downloadTemplateFillResult 口径）。
+// 获取模板工作副本 blob（kind=render）。占位符 {{key}} 只存在于工作副本
+// （识别阶段 anchor→{{key}} 替换写入），原始文件没有占位符，applyDocxHighlight
+// 在其上永远扫不到高亮目标。错误体是 JSON（code != 0）时 blob 里装的是错误信息
+// 而非文件，parse message 抛错（照 downloadTemplateFillResult 口径）。
 export function useTemplateFillFile(id: string) {
   return useQuery({
     queryKey: ['templateFillFile', id],
     queryFn: async () => {
-      const res = await request.get(api.downloadTemplateFill(id, 'original'), {
+      const res = await request.get(api.downloadTemplateFill(id, 'render'), {
         responseType: 'blob',
       });
       const blob = res.data as Blob;

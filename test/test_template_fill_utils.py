@@ -1024,3 +1024,138 @@ def test_merge_detection_empty_llm_keeps_explicit():
     from rag.svr.template_fill.detector import _merge_detection
     explicit = [{"key": "k", "anchor": "{{k}}", "addr": "para:0", "line": 0}]
     assert _merge_detection(explicit, []) == explicit
+
+
+# ---------- detector：标签/骨架型 anchor 拒绝派生（2026-09-12 福建通用本污染防御） ----------
+
+def test_derive_default_from_anchor_rejects_labels():
+    """对抗：冒号结尾标签是模板提示文字而非已填现值——派生成默认值会被 D−C
+    条件执行原样回写成稿（用户视角「没填」）并经 sediment 固化污染基线。"""
+    from rag.svr.template_fill.detector import derive_default_from_anchor
+    assert derive_default_from_anchor("编号：") == ""
+    assert derive_default_from_anchor("申请人:") == ""      # 半角冒号
+    assert derive_default_from_anchor("招标人： ") == ""     # 尾随空白
+    assert derive_default_from_anchor("一、投标保证金（大写）：") == ""  # 前缀+冒号结尾
+
+
+def test_derive_default_from_anchor_rejects_date_skeletons():
+    """对抗：年月日字+空白标点、无数字 = 日期骨架（空范本留空位），不派生默认值；
+    含数字的真实日期（2026年9月28日）必须保留。"""
+    from rag.svr.template_fill.detector import derive_default_from_anchor
+    assert derive_default_from_anchor("年　　月　　日") == ""   # 全角空格骨架
+    assert derive_default_from_anchor("年   月   日") == ""    # 半角空格骨架
+    assert derive_default_from_anchor("月") == ""              # 单字骨架
+    assert derive_default_from_anchor("＿＿年＿＿月＿＿日") == ""
+    # 含数字 → 真实现值，不误杀
+    assert derive_default_from_anchor("2026年9月28日") == "2026年9月28日"
+    assert derive_default_from_anchor("2026-09-28") == "2026-09-28"
+
+
+def test_derive_default_from_anchor_rejects_paren_hints():
+    """对抗：括号提示（待填提示语）不是现值；（大写） 元 这类带金额后缀也要拦。"""
+    from rag.svr.template_fill.detector import derive_default_from_anchor
+    assert derive_default_from_anchor("（投标人名称）") == ""
+    assert derive_default_from_anchor("（大写）") == ""
+    assert derive_default_from_anchor("（元） 元") == ""
+    assert derive_default_from_anchor("（　　）万元") == ""      # 货币后缀提示
+    assert derive_default_from_anchor("(投标人名称)") == ""     # 半角括号
+    # 非括号包裹的正常内容不误杀
+    assert derive_default_from_anchor("（含）税金额100万元") == "（含）税金额100万元"
+
+
+# ---------- renderer：AI 填入值标蓝（渲染前占位 run 预染色） ----------
+
+def _run_colors_of_first_para(blob: bytes):
+    """取成稿第一个段落的 [(run文本, w:color val 或 None)] 列表。"""
+    from docx import Document
+    from docx.oxml.ns import qn
+    p = Document(io.BytesIO(blob)).paragraphs[0]
+    out = []
+    for r in p.runs:
+        rPr = r._r.find(qn("w:rPr"))
+        color = None
+        if rPr is not None:
+            c = rPr.find(qn("w:color"))
+            if c is not None:
+                color = c.get(qn("w:val"))
+        out.append((r.text, color))
+    return out
+
+
+def test_render_docx_value_turns_blue():
+    """整 run 即占位符：渲染后 AI 填入值继承占位 run 的蓝色（0000FF）。"""
+    from docx import Document
+    from rag.svr.template_fill.renderer import render_docx
+    doc = Document()
+    doc.add_paragraph("{{name}}")
+    buf = io.BytesIO(); doc.save(buf)
+    out = render_docx(buf.getvalue(), {"name": "测试项目"})
+    runs = _run_colors_of_first_para(out)
+    assert any(t == "测试项目" and c == "0000FF" for t, c in runs)
+
+
+def test_render_docx_mixed_run_only_value_blue():
+    """对抗：混合 run「项目名称：{{name}}」拆分后只有值标蓝，标签保持无色——
+    若拆分实现有误把标签一起染色，此用例即红。"""
+    from rag.svr.template_fill.renderer import render_docx
+    out = render_docx(_mk_docx_with_placeholder(), {"name": "测试项目"})
+    runs = _run_colors_of_first_para(out)
+    label_blue = [c for t, c in runs if "项目名称" in t and c == "0000FF"]
+    value_blue = [c for t, c in runs if "测试项目" in t and c == "0000FF"]
+    assert not label_blue and value_blue
+
+
+def test_render_docx_no_placeholder_blob_unchanged():
+    """零拷贝：无占位符的 blob 原样返回（省一次解析+序列化）。"""
+    from docx import Document
+    from rag.svr.template_fill.renderer import _colorize_placeholder_runs
+    doc = Document()
+    doc.add_paragraph("纯文本没有占位符")
+    buf = io.BytesIO(); doc.save(buf)
+    assert _colorize_placeholder_runs(buf.getvalue()) == buf.getvalue()
+
+
+def test_render_docx_run_with_br_skipped_safely():
+    """对抗：含 w:br 的 run 拆分会丢结构 → 整体跳过不标蓝，渲染仍正常完成
+    （防御性降级：值正常回填，只是不标蓝，不抛异常不坏文档）。"""
+    from docx import Document
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from rag.svr.template_fill.renderer import render_docx
+    doc = Document()
+    p = doc.add_paragraph()
+    r = p.add_run("{{name}}")
+    r._r.append(OxmlElement("w:br"))  # 非 (rPr|t) 子节点 → 触发跳过守卫
+    buf = io.BytesIO(); doc.save(buf)
+    out = render_docx(buf.getvalue(), {"name": "测试项目"})
+    text = "\n".join(pp.text for pp in Document(io.BytesIO(out)).paragraphs)
+    assert "测试项目" in text and "{{" not in text
+
+
+def test_render_docx_color_respects_rpr_schema_order():
+    """对抗：占位 run 已带 rPr（w:sz/w:u）时，w:color 必须按 OOXML schema
+    sequence 插入（位于 w:sz/w:u 之前）且保留既有属性——裸 append 会产出
+    乱序 XML，严格校验器（部分 WPS/LibreOffice/PDF 转换链）会丢弃颜色。"""
+    from docx import Document
+    from docx.oxml.ns import qn
+    from rag.svr.template_fill.renderer import render_docx
+    doc = Document()
+    p = doc.add_paragraph("编号：{{k}}")
+    for run in p.runs:
+        run.font.size = 1  # 写入 w:sz（half-point=1）
+        run.font.underline = True
+    buf = io.BytesIO(); doc.save(buf)
+    out = render_docx(buf.getvalue(), {"k": "值"})
+    p2 = Document(io.BytesIO(out)).paragraphs[0]
+    order, sz_kept = [], False
+    for r in p2.runs:
+        rPr = r._r.find(qn("w:rPr"))
+        if rPr is None:
+            continue
+        order = [c.tag.split("}")[1] for c in rPr]
+        if "color" in order and order.index("color") > order.index("sz"):
+            raise AssertionError(f"w:color 乱序: {order}")
+        if "值" in (r.text or ""):
+            sz_kept = rPr.find(qn("w:sz")) is not None and any(
+                t == "值" and c == "0000FF" for t, c in _run_colors_of_first_para(out))
+    assert sz_kept

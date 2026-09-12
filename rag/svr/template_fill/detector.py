@@ -29,12 +29,36 @@ _BLANK_ANCHOR_RE = re.compile(
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
+# 标签/骨架型 anchor 判定：这类 anchor 是模板提示文字而非已填现值，派生成默认值
+# 会被 D−C 条件执行原样回写成稿（用户视角「没填」），且经 sediment 固化污染基线。
+# 三类形态（2026-09-12 福建通用本 523 槽实测 163+ 污染）：
+# 1. 冒号结尾（"编号："、"申请人："）——字段标签
+# 2. 日期骨架（"年 月 日"、"月"）——年月日字 + 空白标点、无数字（含数字是真实日期，保留）
+# 3. 括号提示（"（投标人名称）"）——待填提示语
+_LABEL_ANCHOR_RE = re.compile(r".+[：:]\s*$")
+_DATE_SKELETON_RE = re.compile(r"[\s年月日度.．:：\-—_＿、]*[年月日][\s年月日度.．:：\-—_＿、]*")
+_HINT_ANCHOR_RE = re.compile(r"[（(][^（）()]*[）)]\s*[\s元万元整人民币]*")
+
+
+def _is_template_skeleton(text: str) -> bool:
+    if _LABEL_ANCHOR_RE.fullmatch(text):
+        return True
+    if _DATE_SKELETON_RE.fullmatch(text) and not any(c.isdigit() for c in text):
+        return True
+    if _HINT_ANCHOR_RE.fullmatch(text):
+        return True
+    return False
+
+
 def derive_default_from_anchor(anchor) -> str:
     """已填现值提取（纯函数）：anchor 是识别器选中的"将被替换为 {{key}} 的原文子串"。
     已填范本的 anchor 即现值 → 作为 detected 默认值；空范本的 anchor 是留空标记 → 无默认值。
     返回空串表示无默认值。截断对齐 MAX_ANCHOR_LEN（防御旧数据超长）。"""
     text = _CTRL_RE.sub("", str(anchor or "").strip())
     if not text or _BLANK_ANCHOR_RE.fullmatch(text) or text.upper() in ("N/A", "NA", "NONE", "NULL"):
+        return ""
+    # 标签/骨架型 anchor 是模板提示文字：派生默认值会把标签原样回写成稿并污染基线
+    if _is_template_skeleton(text):
         return ""
     return text[:MAX_ANCHOR_LEN]
 
