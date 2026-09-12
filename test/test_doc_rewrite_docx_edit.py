@@ -4,6 +4,7 @@
 import io
 
 from docx import Document
+from docx.oxml.ns import qn
 from docx.shared import Pt
 
 from rag.svr.document_rewrite.docx_edit import replace_section_paragraphs
@@ -116,3 +117,24 @@ def test_empty_paragraphs_list_clears_section():
     out = _roundtrip(doc)
     texts = [p.text for p in out.paragraphs]
     assert texts == ["第一节", "第二节", "第二节正文。"]
+
+
+def test_sectpr_in_template_paragraph_not_duplicated():
+    """分节符（w:pPr/w:sectPr）不得被 pPr 模板复制 N 份——否则 Word 版面错乱。"""
+    doc = Document()
+    doc.add_heading("第一节", level=1)
+    p = doc.add_paragraph("带分节符的正文段。")
+    pPr = p._p.get_or_add_pPr()
+    pPr.append(pPr.makeelement(qn("w:sectPr"), {}))
+    doc.add_heading("第二节", level=1)
+    doc.add_paragraph("第二节正文。")
+    sections = split_sections(doc)
+    replace_section_paragraphs(doc, sections[0], ["新段一。", "新段二。"])
+    out = _roundtrip(doc)
+    sect_count = sum(
+        1 for pp in out.paragraphs
+        if pp._p.pPr is not None and pp._p.pPr.find(qn("w:sectPr")) is not None
+    )
+    assert sect_count == 0
+    texts = [pp.text for pp in out.paragraphs]
+    assert "新段一。" in texts and "新段二。" in texts

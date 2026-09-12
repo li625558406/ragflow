@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import copy
 
+from docx.oxml.ns import qn
 from docx.text.paragraph import Paragraph
 
 
@@ -54,7 +55,12 @@ def _insert_new_paragraph(anchor: Paragraph | None, doc, pPr_tmpl, rPr_tmpl, tex
 
 def replace_section_paragraphs(doc, section: dict, new_paragraphs: list[str]) -> None:
     """把 section（sections.py 切出的节）的正文段替换为 new_paragraphs。
-    就地修改 doc；标题段与表格不动。"""
+    就地修改 doc；标题段与表格不动。
+
+    契约：section 的 para_start/para_end 必须来自**同一个 doc 当前状态**的
+    split_sections——跨节连续替换时前一次替换会使后续节索引漂移，调用方须
+    每次替换后重新切节（或倒序替换）。stale 索引不报错，会静默错切。
+    """
     paras = list(doc.paragraphs)
     start = section["para_start"] + 1
     end = section["para_end"]
@@ -68,7 +74,15 @@ def replace_section_paragraphs(doc, section: dict, new_paragraphs: list[str]) ->
 
     old = paras[start:end + 1]
     first_pPr = old[0]._p.pPr
-    pPr_tmpl = copy.deepcopy(first_pPr) if first_pPr is not None else None
+    if first_pPr is not None:
+        pPr_tmpl = copy.deepcopy(first_pPr)
+        # 段落级分节符绝不拷贝：N 段各带一份 sectPr 会让 Word 版面错乱；
+        # 旧段（连同其分节符）随后被删除，剔除是唯一安全选择
+        sect = pPr_tmpl.find(qn("w:sectPr"))
+        if sect is not None:
+            pPr_tmpl.remove(sect)
+    else:
+        pPr_tmpl = None
     rPr_tmpl = _pick_body_run_rpr(old)
 
     # 逐条插到首个旧段之前（保持顺序），再删旧段；表格元素全程不被触碰
