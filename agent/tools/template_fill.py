@@ -36,7 +36,8 @@ _EXEC_TIMEOUT = int(os.environ.get("COMPONENT_EXEC_TIMEOUT", "60"))
 _MAX_WAIT_SECONDS = min(90, max(_EXEC_TIMEOUT - 10, 10))
 _POLL_INTERVAL = 3
 
-_TERMINAL_STATUSES = ("done", "partial", "failed")
+# 终态判定统一导入 service 层 TERMINAL_TASK_STATUSES（本模块 tool 注册期不可顶层
+# 触发 DB 依赖，沿用方法内延迟 import 惯例，在使用点取用）
 _RUNNING_STATUSES = ("pending", "retrieving", "generating", "rendering")
 
 # status 摘要裁剪阈值
@@ -144,6 +145,7 @@ class FillTemplate(ToolBase, ABC):
 
     def _fill(self, kwargs):
         from api.db.services.template_fill_service import (
+            TERMINAL_TASK_STATUSES,
             TplFillTaskService,
             TplTemplateService,
             TplTemplateVersionService,
@@ -200,7 +202,7 @@ class FillTemplate(ToolBase, ABC):
             time.sleep(_POLL_INTERVAL)
             waited += _POLL_INTERVAL
             task = TplFillTaskService.get_owned(task_id, tenant_id)
-            if task is not None and getattr(task, "status", "") in _TERMINAL_STATUSES:
+            if task is not None and getattr(task, "status", "") in TERMINAL_TASK_STATUSES:
                 return self._format_status(task)
         return (
             f"填写任务已提交（task_id={task_id}），目前仍在进行中。"

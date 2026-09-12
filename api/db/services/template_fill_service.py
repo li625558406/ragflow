@@ -42,6 +42,10 @@ _TASK_TRANSITS = {
     "done": set(), "partial": set(), "failed": set(), "cancelled": set(),
 }
 
+# 终态集合（含 cancelled）：progress 端点 stalled 判定、画布工具轮询退出等共用口径，
+# 各处自行定义易漂移（历史上 tool 侧漏 cancelled），统一导入此常量
+TERMINAL_TASK_STATUSES = ("done", "partial", "failed", "cancelled")
+
 # object name 中用户文件名片段的最大长度（MinIO object 名总长上限远大于此，
 # 截断主要为防极端超长文件名 + 保留扩展名可读性）
 _FILENAME_MAX_LEN = 128
@@ -66,6 +70,10 @@ def _sanitize_filename(name: str, max_len: int = _FILENAME_MAX_LEN) -> str:
     if dot and stem and 0 < len(ext) <= 10:
         return stem[: max_len - len(ext) - 1] + "." + ext
     return base[:max_len]
+
+
+# 公开别名：跨模块（如 template_api 桥接下载）统一用公开名导入，避免依赖下划线私有实现
+sanitize_filename = _sanitize_filename
 
 
 def _storage_put(bucket: str, obj_name: str, blob: bytes):

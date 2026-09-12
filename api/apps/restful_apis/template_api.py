@@ -25,21 +25,22 @@ import tempfile
 import threading
 import uuid
 import zipfile
-from datetime import datetime
 
 from quart import Blueprint, Response, request
 
 from api.apps import current_user, login_required
 from api.db.db_models import DB
 from api.db.services.template_fill_service import (
+    TERMINAL_TASK_STATUSES,
     TplFillTaskService,
     TplTemplateService,
     TplTemplateVersionService,
-    _sanitize_filename,
+    sanitize_filename,
 )
 from api.utils.api_utils import get_error_data_result, get_result
 from common import settings
 from common.misc_utils import get_uuid
+from common.time_utils import current_timestamp
 from rag.svr.template_fill.detector import detect_fill_points, validate_placeholders
 from rag.svr.template_fill.executor import read_progress_snapshot
 from rag.svr.template_fill.spawn import is_running as _task_running
@@ -605,39 +606,58 @@ async def retry_fill_task(task_id: str):
 
 # stalled 判定阈值：非终态任务 update_time 超过该秒数视为中断（服务器重启等）
 _PROGRESS_STALLED_SECONDS = 600
-_TERMINAL_STATUSES = ("done", "failed", "partial", "cancelled")
+
+# done 任务生成稿 bucket 桥接的进程内记忆化：MinIO get+put 是每次轮询都不该重复付的
+# IO 成本；确定性对象名 tplfill-{task_id} 本就幂等覆盖，记忆化不引入正确性风险。
+# 进程重启集合清空 → 重跑一次 get+put，无害自愈。
+_bridged_tasks: set[str] = set()
 
 
-def build_progress_payload(task, snapshot: dict | None) -> dict:
-    """合并 DB 行 + Redis 快照为 progress 响应（纯函数，便于对抗测试）。
-    快照缺失（Redis 挂掉/过期）退化为 DB 行：进度数字停更但状态/终态值仍准确。
-    stalled：非终态且 update_time 超阈值（服务器重启 daemon 线程死）→ 前端提示可重试。"""
+def _bridge_download(task) -> dict | None:
+    """done 任务生成稿桥接：从 {template_id} bucket 拷入 {tenant}-downloads
+    （/agents/download 与 /files/{id}/content 的既有读取契约），返回 download
+    dict 或 None。模板名查询便宜，保留在记忆化前构造 filename；昂贵的 blob
+    get+put 每任务进程内只做一次（确定性对象名 tplfill-{task_id} 幂等覆盖，
+    记忆化复用不产生重复对象；模板缺失/生成稿缺失/IO 异常均不记忆化，下次
+    轮询自动重试）。"""
+    doc_id = f"tplfill-{task.id}"
+    try:
+        tpl = TplTemplateService.get_or_none(id=task.template_id)
+        if not tpl:
+            return None
+        if task.id not in _bridged_tasks:
+            blob = settings.STORAGE_IMPL.get(task.template_id, task.result_file_id)
+            if not blob:
+                return None
+            settings.STORAGE_IMPL.put(f"{task.tenant_id}-downloads", doc_id, blob)
+            _bridged_tasks.add(task.id)
+        filename = f"{sanitize_filename(tpl.name)}.docx"
+    except Exception:
+        logger.exception("progress bucket bridge failed, task=%s", task.id)
+        return None
+    return {"doc_id": doc_id, "filename": filename, "name": filename,
+            "url": f"/api/v1/agents/download?id={doc_id}&created_by={task.tenant_id}"}
+
+
+def build_progress_payload(task, snapshot: dict | None, download: dict | None = None) -> dict:
+    """合并 DB 行 + Redis 快照组装 progress 响应（纯函数，便于对抗测试）；
+    download 由端点层桥接后传入。快照缺失（Redis 挂掉/过期）退化为 DB 行：
+    进度数字停更但状态/终态值仍准确。
+    stalled：非终态且 DB update_time 超阈值（服务器重启 daemon 线程死）→ 前端
+    提示可重试。双信号防误报：DB update_time 只在状态跃迁刷新，长 generating
+    任务会被超阈值——但快照 updated_at（executor 每次写快照都刷新，毫秒 epoch）
+    仍新鲜说明任务活着，不判 stalled；两个活性信号都停跳才判中断。"""
     status = (snapshot or {}).get("status") or task.status
     values = (snapshot or {}).get("values")
     if values is None:
         values = (task.values or {}).get("render") if isinstance(task.values, dict) else None
-    stalled = (task.status not in _TERMINAL_STATUSES
-               and task.update_time is not None
-               and (datetime.now() - task.update_time).total_seconds()
-               > _PROGRESS_STALLED_SECONDS)
-    download = None
-    if task.status == "done" and task.result_file_id:
-        # bucket 桥接：fill-task 稿件在 {template_id} bucket，拷入 {tenant}-downloads
-        # （/agents/download 与 /files/{id}/content 的既有读取契约）。确定性对象名
-        # tplfill-{task_id} 幂等覆盖，重复轮询不产生重复对象。
-        doc_id = f"tplfill-{task.id}"
-        filename = ""
-        try:
-            tpl = TplTemplateService.get_or_none(id=task.template_id)
-            blob = settings.STORAGE_IMPL.get(task.template_id, task.result_file_id)
-            if tpl and blob:
-                filename = f"{_sanitize_filename(tpl.name)}.docx"
-                settings.STORAGE_IMPL.put(f"{task.tenant_id}-downloads", doc_id, blob)
-        except Exception:
-            logger.exception("progress bucket bridge failed, task=%s", task.id)
-        if filename:
-            download = {"doc_id": doc_id, "filename": filename, "name": filename,
-                        "url": f"/api/v1/agents/download?id={doc_id}&created_by={task.tenant_id}"}
+    snap_alive = False
+    if snapshot and snapshot.get("updated_at"):
+        snap_alive = (current_timestamp() - snapshot["updated_at"]) <= _PROGRESS_STALLED_SECONDS * 1000
+    stalled = (task.status not in TERMINAL_TASK_STATUSES
+               and bool(task.update_time)
+               and (current_timestamp() - task.update_time) > _PROGRESS_STALLED_SECONDS * 1000
+               and not snap_alive)
     return {
         "status": status,
         "done": (snapshot or {}).get("done"),
@@ -653,11 +673,15 @@ def build_progress_payload(task, snapshot: dict | None) -> dict:
 @login_required
 async def get_fill_task_progress(task_id: str):
     """断连重连轮询端点（幂等只读）：owner 校验同 get_fill_task，
-    合并 DB 行 + Redis 快照；前端 2s 轮询，status 终态即停。"""
+    合并 DB 行 + Redis 快照；前端 2s 轮询，status 终态即停。
+    done 任务的 download 桥接（MinIO 拷贝）在端点层做，payload 保持纯函数。"""
     task = TplFillTaskService.get_owned(task_id, current_user.id)
     if not task:
         return get_error_data_result("任务不存在")
-    return get_result(data=build_progress_payload(task, read_progress_snapshot(task_id)))
+    download = None
+    if task.status == "done" and task.result_file_id:
+        download = _bridge_download(task)
+    return get_result(data=build_progress_payload(task, read_progress_snapshot(task_id), download))
 
 
 @manager.route("/template/fill/fill-task/<task_id>/download", methods=["GET"])
