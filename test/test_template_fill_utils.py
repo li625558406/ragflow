@@ -1224,3 +1224,52 @@ def test_parse_blank_anchor_no_low_confidence():
     assert len(out) == 1
     assert out[0]["anchor"] == "＿＿＿＿＿＿"
     assert out[0]["low_confidence"] is False
+
+
+# ---------- 识别后处理质量修复：实心收缩打低置信/撞车回退原anchor/混合anchor收缩 ----------
+
+def test_parse_solid_anchor_shrunk_in_mixed_line_low_confidence():
+    """对抗（混合行）：实心 anchor 收缩成功也只是兜底猜测——
+    "大写：壹佰万元整 小写：＿＿＿＿" 中 anchor=壹佰万元整 会被收缩到"小写"字段的空位，
+    属静默错位，必须打低置信警示人工确认。"""
+    from rag.svr.template_fill.detector import parse_detection_response
+    cands = [{"index": 0, "text": "大写：壹佰万元整 小写：＿＿＿＿", "addr": "para:0"}]
+    raw = ('[{"line":0,"anchor":"壹佰万元整","key":"amount",'
+           '"name":"金额","retrieval_query":"","fill_mode":"llm","required":true}]')
+    out = parse_detection_response(raw, cands)
+    assert len(out) == 1
+    assert out[0]["anchor"] == "＿＿＿＿"
+    assert out[0]["low_confidence"] is True
+
+
+def test_merge_collision_from_shrink_falls_back_to_orig_anchor():
+    """对抗（同行双标签）：两个标签收缩后 anchor 撞车（均为同一留白串），
+    (addr, anchor) 去重会把 party_b 静默丢弃——必须回退到原标签 anchor 保留该项
+    并打低置信；内部字段 _orig_anchor 不得泄漏进产物。"""
+    from rag.svr.template_fill.detector import _merge_detection, parse_detection_response
+    cands = [{"index": 0, "text": "甲方：＿＿＿＿ 乙方：＿＿＿＿", "addr": "para:0"}]
+    raw = ('[{"line":0,"anchor":"甲方：","key":"party_a","name":"甲方","fill_mode":"llm"},'
+           '{"line":0,"anchor":"乙方：","key":"party_b","name":"乙方","fill_mode":"llm"}]')
+    parsed = parse_detection_response(raw, cands)
+    assert len(parsed) == 2
+    out = _merge_detection([], parsed)
+    assert len(out) == 2
+    assert out[0]["key"] == "party_a" and out[0]["anchor"] == "＿＿＿＿"
+    assert out[0]["low_confidence"] is False
+    assert out[1]["key"] == "party_b" and out[1]["anchor"] == "乙方："
+    assert out[1]["low_confidence"] is True
+    assert all("_orig_anchor" not in it for it in out)
+
+
+def test_parse_mixed_label_blank_anchor_shrinks_to_blank():
+    """对抗（混合 anchor）："编号：＿＿＿" 结尾非冒号、含留白，旧逻辑原样放行 →
+    渲染时整个"编号：＿＿＿"被替换丢标签。必须收缩为纯留白后缀（low_confidence=False：
+    收缩后即纯留白，替换只动留白，无歧义）。"""
+    from rag.svr.template_fill.detector import parse_detection_response
+    cands = [{"index": 0, "text": "编号：＿＿＿＿＿", "addr": "para:0"}]
+    raw = ('[{"line":0,"anchor":"编号：＿＿＿＿＿","key":"code",'
+           '"name":"编号","retrieval_query":"","fill_mode":"llm","required":true}]')
+    out = parse_detection_response(raw, cands)
+    assert len(out) == 1
+    assert out[0]["anchor"] == "＿＿＿＿＿"
+    assert out[0]["low_confidence"] is False

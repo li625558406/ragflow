@@ -42,6 +42,10 @@ _HINT_ANCHOR_RE = re.compile(r"[（(][^（）()]*[）)]\s*[\s元万元整人民�
 # 留白标记特征（收缩修正的目标形态）：下划线串（含全角＿）/ 连续空格（含全角　）/
 # 括号提示（如"（投标人名称）"）。anchor 本身含留白标记 = 无需修正。
 _BLANK_MARK_RE = re.compile(r"[_＿]{2,}|[ \u3000]{2,}|[（(][^（）()]*[）)]")
+# 混合 anchor（标签前缀 + 纯留白后缀，如"编号：＿＿＿"）：结尾非冒号（漏过标签分支）、
+# 含留白（漏过实心分支），不收缩会在渲染时整体替换丢掉标签，且污染默认值派生
+# → 收缩为后缀留白部分（替换只动留白，标签保留；收缩后即纯留白，无歧义低置信）。
+_MIXED_LABEL_BLANK_RE = re.compile(r"^(.+[：:]\s*)([_＿\u3000 ]+)$")
 # 收缩目标优先级（不能合并成单条正则取 leftmost：同一行内多种留白共存时按类型择优）：
 # 下划线填空线（最典型填写位）> 括号提示（比裸空格更具体，如"工程名称　　（填写完整名称）"
 # 应收缩到括号提示而非中间空格）> 连续空格
@@ -133,11 +137,17 @@ def parse_detection_response(raw: str, candidates: list) -> list:
         if cand is None or not anchor or anchor not in cand["text"]:
             continue
         # 标签/实心 anchor 后处理（治①③，prompt 只是引导，代码层兜底）：
+        # 混合型（标签前缀+纯留白后缀）→ 收缩为后缀留白，替换只动留白标签保留；
         # 标签型 → 收缩到标签后的留白串，收缩失败丢弃（标签绝不能整体被替换）；
-        # 实心（无留白特征）→ 同行有留白特征则收缩，失败保留并打低置信；
+        # 实心（无留白特征）→ 同行有留白特征则收缩（收缩只是兜底猜测，可能收缩到
+        # 同行其它字段的空位造成静默错位，成功也打低置信警示），失败保留并打低置信；
         # 整行无留白特征 → 已填范本现值是合法 anchor，保留并打低置信警示。
         low_confidence = False
-        if _LABEL_ANCHOR_RE.fullmatch(anchor):
+        orig_anchor = anchor  # 收缩会改写 anchor：记录原值供合并撞车时回退（防字段静默丢失）
+        mixed = _MIXED_LABEL_BLANK_RE.match(anchor)
+        if mixed:
+            anchor = mixed.group(2)
+        elif _LABEL_ANCHOR_RE.fullmatch(anchor):
             shrunk = _shrink_anchor_to_blank(anchor, cand["text"])
             if not shrunk:
                 continue
@@ -147,6 +157,7 @@ def parse_detection_response(raw: str, candidates: list) -> list:
                 shrunk = _shrink_anchor_to_blank(anchor, cand["text"])
                 if shrunk:
                     anchor = shrunk
+                    low_confidence = True
                 else:
                     low_confidence = True
             else:
@@ -157,7 +168,7 @@ def parse_detection_response(raw: str, candidates: list) -> list:
         used_keys.add(key)
         # fill_mode 代码层强制 llm：识别产物统一交给 AI 检索填写（prompt 只是引导，
         # LLM 不听话也拦得住）；manual/param 只能由人工在详情页显式配置
-        out.append({
+        item = {
             "key": key,
             "name": str(it.get("name") or key)[:100],
             "description": str(it.get("description") or ""),
@@ -169,7 +180,10 @@ def parse_detection_response(raw: str, candidates: list) -> list:
             "line": line,
             "top_k": 6,
             "low_confidence": low_confidence,
-        })
+        }
+        if anchor != orig_anchor:
+            item["_orig_anchor"] = orig_anchor  # 内部字段：合并撞车回退用，append 前必被删除
+        out.append(item)
     return out
 
 
@@ -272,12 +286,21 @@ async def _detect_chunked(chat, file_type: str, candidates: list) -> tuple:
 def _merge_detection(explicit: list, llm_items: list) -> list:
     """合并手动直通项与 LLM 识别项：(addr, anchor) 去重（手动优先），跨源/跨块
     key 冲突按出现顺序加 _2/_3 后缀（与 parse_detection_response 单次调用内
-    去重语义一致，但作用域为整次识别）。"""
+    去重语义一致，但作用域为整次识别）。
+    收缩撞车回退：同一行多个字段收缩到同一留白串（如"甲方：＿＿ 乙方：＿＿"）时，
+    (addr, anchor) 撞车会把后续字段静默丢弃——带 _orig_anchor 的项回退到原 anchor
+    保留并打低置信（内部字段在 append 前删除，不进产物）。"""
     merged, seen_pos, used_keys = [], set(), set()
     for it in explicit + llm_items:
+        orig_anchor = it.pop("_orig_anchor", None)
         pos = (it["addr"], it["anchor"])
         if pos in seen_pos:
-            continue
+            if orig_anchor and (it["addr"], orig_anchor) not in seen_pos:
+                it["anchor"] = orig_anchor
+                pos = (it["addr"], orig_anchor)
+                it["low_confidence"] = True
+            else:
+                continue
         seen_pos.add(pos)
         base_key, key, n = it["key"], it["key"], 2
         while key in used_keys:
