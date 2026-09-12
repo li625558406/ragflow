@@ -190,9 +190,9 @@ class FillTemplate(ToolBase, ABC):
             created_by=tenant_id,
         )
 
-        # 延迟 import：复用 B 端同一条 daemon 线程执行链路（含防重入）
-        from api.apps.restful_apis import template_api
-        template_api._spawn_fill_task(task_id)
+        # 延迟 import：直连 spawn 模块，复用 B 端同一条 daemon 线程执行链路（含防重入）
+        from rag.svr.template_fill.spawn import spawn_fill_task
+        spawn_fill_task(task_id)
 
         # 同步轮询至终态或超时（sleep 在测试中可被替换）
         waited = 0.0

@@ -1,31 +1,21 @@
 """FillTemplate 工具（agent/tools/template_fill.py）单测。
 
-service 层 / _spawn_fill_task / time.sleep 全部 monkeypatch，不触 DB/LLM/MinIO；
+service 层 / spawn_fill_task / time.sleep 全部 monkeypatch，不触 DB/LLM/MinIO；
 工具实例用 object.__new__ 绕过 ToolBase.__init__（其要求真实 Canvas 实例），
 _param 用 SimpleNamespace 打桩。
 """
-import sys
-import types
 from types import SimpleNamespace
 
 
-def _stub_template_api(monkeypatch, spawned):
-    """sys.modules 预注册 api.apps.restful_apis.template_api 桩。
+def _stub_spawn(monkeypatch, spawned):
+    """monkeypatch spawn 模块的 spawn_fill_task（工具直连的延迟 import 目标）。
 
-    真实 import 会触发 api/apps/__init__.py 的 settings.init_settings()（需本机
-    Redis/ES），照 test_template_api_routes.py 的桩模式；工具侧延迟 import 语义
-    不变，仅替换 import 解析结果。monkeypatch 收尾自动还原 sys.modules。
+    spawn 模块自身零重依赖（仅 logging/threading），可直接 import；
+    记录被 spawn 的 task_id 供断言，monkeypatch 收尾自动还原。
     """
-    apps = types.ModuleType("api.apps")
-    apps.__path__ = []
-    restful = types.ModuleType("api.apps.restful_apis")
-    restful.__path__ = []
-    tpl = types.ModuleType("api.apps.restful_apis.template_api")
-    tpl._spawn_fill_task = lambda task_id: spawned.append(task_id)
-    restful.template_api = tpl
-    monkeypatch.setitem(sys.modules, "api.apps", apps)
-    monkeypatch.setitem(sys.modules, "api.apps.restful_apis", restful)
-    monkeypatch.setitem(sys.modules, "api.apps.restful_apis.template_api", tpl)
+    from rag.svr.template_fill import spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "spawn_fill_task",
+                        lambda task_id: spawned.append(task_id))
 
 
 def _svc():
@@ -137,7 +127,7 @@ def test_fill_success_polls_to_done(monkeypatch):
     monkeypatch.setattr(tpl_svc.TplFillTaskService, "insert", staticmethod(fake_insert))
 
     spawned = []
-    _stub_template_api(monkeypatch, spawned)
+    _stub_spawn(monkeypatch, spawned)
 
     polls = {"n": 0}
 
@@ -178,7 +168,7 @@ def test_fill_kb_ids_tolerant_parsing(monkeypatch):
     monkeypatch.setattr(tpl_svc.TplFillTaskService, "get_owned",
                         staticmethod(lambda task_id, tenant_id: SimpleNamespace(
                             id=task_id, status="failed", error="x")))
-    _stub_template_api(monkeypatch, [])
+    _stub_spawn(monkeypatch, [])
     monkeypatch.setattr("agent.tools.template_fill.time.sleep", lambda s: None)
 
     out = _make_tool()._invoke(action="fill", template_id="t1", kb_ids="kb1, kb2")
@@ -195,7 +185,7 @@ def test_fill_poll_timeout_prompts_status_query(monkeypatch):
     monkeypatch.setattr(tpl_svc.TplFillTaskService, "get_owned",
                         staticmethod(lambda task_id, tenant_id: SimpleNamespace(
                             id=task_id, status="generating")))
-    _stub_template_api(monkeypatch, [])
+    _stub_spawn(monkeypatch, [])
     monkeypatch.setattr("agent.tools.template_fill.time.sleep", lambda s: None)
 
     out = _make_tool()._invoke(action="fill", template_id="t1", kb_ids='["kb1"]')

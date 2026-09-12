@@ -9,6 +9,8 @@ import threading
 
 logger = logging.getLogger(__name__)
 
+__all__ = ["is_running", "spawn_fill_task"]
+
 # 填写任务线程防重入：同一任务同时最多一个执行线程（spawn 时 add、线程 finally discard）
 _running_lock = threading.Lock()
 _running_tasks: set = set()

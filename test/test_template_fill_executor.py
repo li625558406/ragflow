@@ -13,6 +13,18 @@ def _reset_snapshot_throttle(monkeypatch):
     monkeypatch.setattr(executor, "_last_snapshot_ts", {})
 
 
+@pytest.fixture(autouse=True)
+def _reset_spawn_state():
+    """spawn 已入队 target 队列 + 防重入集合按测试隔离：
+    target 抛异常等场景下队列/集合不跨用例残留（手动 clear 漏兜 target 异常路径）。"""
+    from rag.svr.template_fill import spawn as spawn_mod
+    _spawned_targets.clear()
+    spawn_mod._running_tasks.clear()
+    yield
+    _spawned_targets.clear()
+    spawn_mod._running_tasks.clear()
+
+
 def test_validate_kbs_tenant_mismatch_rejected(monkeypatch):
     """KB 不属于任务租户 → 拒绝（跨租户数据泄露防线）。"""
     from rag.svr.template_fill import executor
@@ -1296,6 +1308,7 @@ class _FakeThread:
     由 _flush_spawned() 同步逐个跑——这样才能让「已 spawn 未跑完」的
     中间态可观察，真正验证防重入与 is_running 生命周期。"""
     def __init__(self, target=None, daemon=None, name=None, **kw):
+        assert not kw, f"unexpected Thread kwargs: {kw}"
         self._target = target
     def start(self):
         _spawned_targets.append(self._target)
@@ -1314,7 +1327,6 @@ class TestSpawnReuse:
         import threading
 
         from rag.svr.template_fill import spawn as spawn_mod
-        _spawned_targets.clear()
         calls = []
         # execute_task 经 spawn 模块级注入点解析——monkeypatch 模块属性即命中
         monkeypatch.setattr(spawn_mod, "execute_task", lambda tid: calls.append(tid),
@@ -1329,7 +1341,6 @@ class TestSpawnReuse:
         import threading
 
         from rag.svr.template_fill import spawn as spawn_mod
-        _spawned_targets.clear()
         release = []
         def _fake_exec(tid):
             release.append(tid)
@@ -1341,3 +1352,78 @@ class TestSpawnReuse:
         _flush_spawned()
         assert spawn_mod.is_running("t-iso") is False  # 跑完 finally 已 discard
         assert release == ["t-iso"]
+
+
+class TestSpawnThreadStartFailure:
+    """线程 start() 抛异常：spawn_fill_task 不外抛、防重入集合不永久滞留、
+    任务行被 CAS 置 failed 供重试（add 已执行而线程 finally 永不会跑的兜底分支）。"""
+
+    def test_start_failure_discards_and_force_fails_task(self, monkeypatch):
+        import contextlib
+
+        import threading
+
+        import api.db.db_models as db_models
+        from api.db.services import template_fill_service as tpl_svc
+        from rag.svr.template_fill import spawn as spawn_mod
+
+        class _BoomThread:
+            """start() 必抛的假线程：模拟 Thread 资源耗尽/OS 拒绝启动。"""
+
+            def __init__(self, target=None, daemon=None, name=None, **kw):
+                assert not kw, f"unexpected Thread kwargs: {kw}"
+                self._target = target
+
+            def start(self):
+                raise RuntimeError("thread start boom")
+
+        class _FakeDB:
+            @staticmethod
+            @contextlib.contextmanager
+            def connection_context():
+                yield
+
+        class _FakeColumn:
+            """peewee 列占位：where 表达式不真求值，== 返回真值即可。"""
+
+            def __eq__(self, other):
+                return True
+
+        class _FakeModel:
+            """peewee update().where().execute() 链式替身，记录 update kwargs。"""
+            updates = []
+            _pending = None
+            id = _FakeColumn()
+            status = _FakeColumn()
+
+            @classmethod
+            def update(cls, **kw):
+                cls._pending = kw
+                return cls
+
+            @classmethod
+            def where(cls, *a, **kw):
+                return cls
+
+            @classmethod
+            def execute(cls):
+                cls.updates.append(cls._pending)
+                return 1
+
+        ran = []
+        monkeypatch.setattr(spawn_mod, "execute_task", lambda tid: ran.append(tid),
+                            raising=False)
+        monkeypatch.setattr(threading, "Thread", _BoomThread)
+        # spawn 兜底路径函数内延迟 import——替换模块属性即命中 import 解析结果
+        monkeypatch.setattr(db_models, "DB", _FakeDB)
+        monkeypatch.setattr(tpl_svc.TplFillTaskService, "model", _FakeModel)
+
+        spawn_mod.spawn_fill_task("t-boom")  # 不外抛即通过
+
+        assert spawn_mod.is_running("t-boom") is False, \
+            "线程启动失败后防重入集合必须 discard，否则 retry 恒报执行中"
+        assert ran == [], "线程没启动成功，execute_task 不应被执行"
+        assert len(_FakeModel.updates) == 1
+        upd = _FakeModel.updates[0]
+        assert upd["status"] == "failed"
+        assert "重试" in upd["error"]
