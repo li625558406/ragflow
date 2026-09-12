@@ -351,6 +351,19 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
         }, ensure_ascii=False) + "\n\n")
         return
 
+    # canvas 运行期错误（如「暂无可用的已发布范本」）只置 canvas.error 后静默结束：
+    # 无 message 事件、无异常、txt 为空 → 前端 HTTP 200 正常收流无错误分支可走，
+    # 整轮对话界面空白且 flow_ai_chat 不落记录。此处把错误兜底成一条 assistant
+    # 消息下发并随 _persist_messages("final") 入库，保证用户可见、刷新可回看。
+    if canvas.error and not txt.strip():
+        err_note = f"执行失败：{canvas.error}"
+        txt += err_note
+        yield ("data:" + json.dumps({
+            "event": "message",
+            "data": {"content": err_note},
+            "session_id": session_id,
+        }, ensure_ascii=False) + "\n\n")
+
     # Auto-close unbalanced <think> tags — DeepSeek may leave them open when
     # hitting token / max_rounds limits during tool-calling loops.
     open_think = txt.count("<think>")
