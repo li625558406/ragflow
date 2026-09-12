@@ -189,7 +189,10 @@ export function PlaceholderTable({
       </TableHeader>
       <TableBody>
         {rows.map((row, i) => (
-          <TableRow key={i}>
+          <TableRow
+            key={i}
+            className={row.low_confidence ? 'bg-amber-50' : undefined}
+          >
             <TableCell>
               <Input
                 className={errCls(`${i}-key`)}

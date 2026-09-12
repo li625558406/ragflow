@@ -16,6 +16,8 @@ export interface TplPlaceholder {
   /** 默认值基线：空串/undefined=无；source 标记来源 */
   default_value?: string;
   default_source?: 'detected' | 'auto' | 'manual' | '';
+  /** 识别后处理标记：anchor 为实心文字且无法收缩到留白，需人工重点核对 */
+  low_confidence?: boolean;
 }
 
 export interface TplTemplateItem {
