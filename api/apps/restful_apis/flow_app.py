@@ -1088,8 +1088,10 @@ async def add_ai_record(flow_id: str):
         template_fill_events = body.get("template_fill_events") or ""
         if not isinstance(template_fill_events, str):
             template_fill_events = json.dumps(template_fill_events, ensure_ascii=False)
-        if not version_id:
-            return _err("流程暂无文件版本，无法记录 AI 处理", 101)
+        # 无版本流程（创建时未带初始文件）允许记录 AI 处理：version_id 留空不锚定
+        # 版本；范本填写成稿卡/后续上传会建出第一个版本，记录不因此丢失
+        # （原实现直接报错「流程暂无文件版本」，导致对话与 template_fill_events
+        # 不落库、刷新后成稿卡回放丢失）
 
         output_version_id = ""
         if save_as_version:
