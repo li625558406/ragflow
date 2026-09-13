@@ -32,7 +32,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 | 文档 | 路径 | 包含内容 |
 |------|------|----------|
-| 迭代记录 | `D:\AI\ragflow2\CHANGE.md` | ★ 全部新增需求/功能整改记录：template_fill_events 超 TEXT 64KB 截断致回放无成稿卡修复（MEDIUMTEXT 迁移+挽救解析，09-12，最新）、范本实时预览产值补推、流程对话保存自治等，最新迭代在最上方 |
+| 迭代记录 | `D:\AI\ragflow2\CHANGE.md` | ★ 全部新增需求/功能整改记录：版本记录默认勾选最新一条/文件审核保真预览显原色+显式编辑/doc→docx 转换取证（09-13，最新）、「第X章」文本章标题兜底切节、template_fill_events 64KB 截断修复等，最新迭代在最上方 |
 | 部署服务器 | `D:\AI\ragflow2\本地部署服务器.md` | 服务器SSH连接、Docker部署、前端/后端/Flutter热更新、Nginx配置、常见问题排查 |
 | 第三方接口 | `D:\AI\ragflow2\接口文档_2026-06-04.md` | 标讯API、企业画像API、合同API等第三方接口的请求/响应字段定义和鉴权方式 |
 | 项目架构 | `D:\AI\ragflow2\项目架构.md` | 系统整体架构、模块间调用关系、数据流、技术选型决策背景 |
@@ -55,10 +55,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 移除团队权限隔离 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-09-remove-team-permission-design.md` | ★ 读全局放开（KB/智能体/对话助手/搜索应用/文件所有人可见）+ 写 owner-only；Service 租户参数 None=全局、accessible 存在性检查、新增 owned()；user_tenant 留死路径，后续写权限由 /permission RBAC 承接；实施计划 docs/superpowers/plans/2026-09-09-remove-team-permission.md（已完成编码，未部署，须 15 个后端文件成套 SCP） |
 | 流程对话保存自治 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-11-flow-chat-save-design.md` | ★ 流程 AI 对话与对话页解耦：flow_ai_chat 加 user_id/template_fill_events 成权威存储、影子会话 source='flow' 对话页不可见、存量「流程：xxx」会话打标迁移；多轮续聊仍借 canvas DSL 运行时（设计完成，未实施） |
 | 范本预览保真渲染 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-11-template-preview-docx-fidelity-design.md` | ★ C端范本预览 docx 分支改 docx-preview 渲染原始文件（字号/加粗/颜色/表格保真）+ applyDocxHighlight 跨 run 占位符高亮保留；xlsx/B端不动（已完成编码+构建验证，未部署，纯前端） |
-| 文件审核保真渲染 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-11-review-panel-docx-fidelity-design.md` | ★ 文件审核只读路径 docx-preview 保真（AI 标注/手动批注锚定+批注栏+引线+兜底全保留，highlightDocxRanges 归一化匹配+同 p 校验）+ 范本预览性能优化（span 映射增量高亮 + content-visibility 屏外页懒渲染）；编辑态保持旧视图（已完成编码+构建验证，未部署，纯前端） |
+| 文件审核保真渲染 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-11-review-panel-docx-fidelity-design.md` | ★ 文件审核只读路径 docx-preview 保真（AI 标注/手动批注锚定+批注栏+引线+兜底全保留，highlightDocxRanges 归一化匹配+同 p 校验）+ 范本预览性能优化（span 映射增量高亮 + content-visibility 屏外页懒渲染）；2026-09-13：可编辑文件默认也走保真预览显示原色 +「编辑文档」显式切换（分支根节点加 key 防 React 就地复用泄漏 DOM）+ epoch 桥接修重挂不重渲染（见 CHANGE.md 当日条目，未部署，纯前端） |
 | 范本识别准确性与格式保真 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-12-template-detect-accuracy-design.md` | ★ 范本 AI 识别三层改造：识别后处理（标签型 anchor 收缩修正/丢弃/low_confidence 警示）+ 跨 run 区间替换保格式 + B端预览划选手动标记（预览透传 addr）；已完成编码+审查（+16 对抗测试），已部署 2026-09-12 |
 | 范本填写后台化与断连重连 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-12-template-fill-detached-task-design.md` | ★ 对话/流程填写执行与 SSE 连接解耦（方案A）：节点委托 tpl_fill_task 后台线程+观察者轮询+progress 重连端点+前端轮询 hook；已完成编码+两道审查（未部署，部署须 executor/spawn/template_api/template_fill_service/template_fill.py 成套 SCP + 前端 build） |
 | 对话文档按节局部重写 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-12-chat-doc-section-rewrite-design.md` | ★ C端对话内说「重写第N节」→ DocumentRewrite 工具（outline/rewrite/versions/rollback）对成稿 docx 按节 LLM 重写保格式（heading切节/段落区间替换样式拷贝）+ doc_rewrite_version 版本链可回退 + downloads 持久化/历史恢复/recent_downloads 上下文；已完成编码+两道审查（13 套件 394 passed），实施计划 docs/superpowers/plans/2026-09-12-chat-doc-section-rewrite.md（未部署，后端 7 文件成套 SCP + 前端 build，见 CHANGE.md 当日条目） |
+| 范本 AI 识别加固 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-13-template-detect-hardening-design.md` | ★ `_build_addr_map` 单点编址扩展打通页眉/页脚/文本框/内容控件（识别+预览+替换+标蓝全链路，hdr:/ftr:/tx 前缀向后兼容）+ occ 语义支持同段同形留白多点 + LLM 解析三级容错 + 前端低置信文字徽标；设计完成（2026-09-13，未实施） |
 
 
 
