@@ -304,7 +304,7 @@ def test_invoke_async_happy_path_docx(patched_env):
     params = kw["params"]
     assert params["用户需求描述"] == "写一份道路工程情况报告"
     assert params["_direct_values"] == {}
-    assert params["_changed_keys"] == []
+    assert params["_changed_keys"] == ["项目名称"]
     assert params["_retrieve_skip_keys"] == []
     assert params["_user_file_text"] == ""
     # spawn 与 insert 同 id（真线程已被桩掉，测试零真线程）
@@ -554,8 +554,8 @@ def _drain_events(cpn):
 
 
 def test_confirm_wait_timeout_uses_predicted(monkeypatch):
-    """Redis 一直无确认键 → 超时后按预判集合自动继续，且推送 confirm_pending +
-    confirm_timeout 两个事件；无默认值字段（乙）不进 decisions 载荷；
+    """Redis 一直无确认键 → 超时后按「预判 ∪ 无默认值字段」兜底自动继续
+    （与确认卡初始勾选一致），且推送 confirm_pending + confirm_timeout 两个事件；
     confirm_pending 事件必须下发运行级 confirm_nonce（I2）。"""
     import asyncio
 
@@ -584,7 +584,8 @@ def test_confirm_wait_timeout_uses_predicted(monkeypatch):
     monkeypatch.setattr(fill_template.executor, "predict_changed_fields", fake_predict)
 
     decisions = asyncio.run(cpn._confirm_changed_fields(_chosen_with_defaults(), "需求", {}))
-    assert decisions == {"t1": {"changed": {"a", "ghost"}, "values": {}}}
+    # 兜底：预判（a + 编造 ghost）∪ 无默认值字段（b）——乙照旧交给 LLM
+    assert decisions == {"t1": {"changed": {"a", "ghost", "b"}, "values": {}}}
     events = _drain_events(cpn)
     stages = [e["stage"] for e in events]
     assert stages == ["confirm_pending", "confirm_timeout"]
@@ -687,12 +688,12 @@ def test_confirm_no_default_items_skips_all(monkeypatch):
 # ---------- P2 条件执行：decision 消费侧（委托参数收窄 + 直填下发） ----------
 
 def test_decision_conditional_execution_skips_unchanged_defaults(patched_env):
-    """P2 核心语义（decision 消费侧，委托参数形式）：decisions={"changed": {a},
+    """白名单语义（decision 消费侧，委托参数形式）：decisions={"changed": {a},
     "values": {f: 直填}}，四个 llm 字段中——
-    - a（有默认值、预判变化 C∩D）与 d（无默认值 N）→ 走检索 + LLM（不在 skip）；
-    - e（有默认值、未变化 D−C）→ 进 _retrieve_skip_keys（免检索免 LLM，executor
-      渲染直取默认值）；
-    - f（有默认值、未变化但用户直填）→ 进 skip + 直填值经 _direct_values 下发。
+    - a（勾选）→ 走检索 + LLM（白名单唯一直填外成员）；
+    - d（无默认值、未勾选）→ 进 _retrieve_skip_keys（留空交人工）；
+    - e（有默认值、未勾选）→ 进 skip（executor 渲染直取默认值）；
+    - f（未勾选但用户直填）→ 进 skip + 直填值经 _direct_values 下发。
     executor 侧按这些保留键跳过检索/直取默认值/沉淀 override，由
     test_template_fill_executor.py 覆盖。"""
     calls, svc = patched_env["calls"], patched_env["svc"]
@@ -715,9 +716,9 @@ def test_decision_conditional_execution_skips_unchanged_defaults(patched_env):
     asyncio.run(cpn._invoke_async())
 
     params = svc.inserted[0][1]["params"]
-    # 检索/LLM 收窄：e（D−C）与 f（直填）进跳过清单；a（C∩D）与 d（N）不跳过
-    assert params["_retrieve_skip_keys"] == ["e", "f"]
-    # 预判变化键原样下发（executor 侧蓄意覆盖默认值语义）
+    # 检索/LLM 收窄：d/e/f（白名单外 + 直填）进跳过清单，只有 a 走检索
+    assert params["_retrieve_skip_keys"] == ["d", "e", "f"]
+    # 白名单 = _changed_keys（executor 侧按它收窄 LLM 槽）
     assert params["_changed_keys"] == ["a"]
     # 直填值优先级最高：字符串化下发，executor 渲染直取
     assert params["_direct_values"] == {"f": "直填值"}

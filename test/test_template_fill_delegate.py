@@ -15,8 +15,9 @@ class TestCanvasTaskParams:
             llm_item_keys={it["key"] for it in llm_items},
             placeholders=placeholders, user_file_text="文件内容")
         assert params["_direct_values"] == {"k3": ""}
-        assert params["_changed_keys"] == ["k1"]
-        # D−C（k1 有默认值且未变化→跳；k3 直填→跳）之外只有 k2 走检索
+        # 白名单语义：_changed_keys = 确认后要走检索+LLM 的 key 集合
+        assert params["_changed_keys"] == ["k2"]
+        # k1（未勾选→默认值兜底）与 k3（直填）跳过检索，只有 k2 走检索
         assert params["_retrieve_skip_keys"] == ["k1", "k3"]
         assert params["_user_file_text"] == "文件内容"
         assert params["项目名称"] == "X"
@@ -29,7 +30,7 @@ class TestCanvasTaskParams:
             llm_item_keys={"k1"}, placeholders=[self._ph("k1")],
             user_file_text="")
         assert params["_direct_values"] == {}
-        assert params["_changed_keys"] == []
+        assert params["_changed_keys"] == ["k1"]
         assert params["_retrieve_skip_keys"] == []
         assert "用户需求描述" not in params
 

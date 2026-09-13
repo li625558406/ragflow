@@ -89,12 +89,12 @@ def _canvas_task_params(begin_fields: dict, query: str, decision: dict | None,
                         user_file_text: str) -> dict:
     """组装委托给 executor.execute_task 的任务 params：
     背景（Begin 字段+需求描述，与节点内 background 同构）+ 下划线保留键
-    （直填值/预判变化键/检索跳过键/用户文件证据），executor 侧 split_canvas_params 拆解。
-    llm_item_keys 为确认后仍要走检索+LLM 的字段 key 集合；其余 llm 槽（D−C 与直填）
-    跳过检索，由 executor 的 missing 显式纳入 → _merge_default_values 兜底。"""
+    （直填值/LLM 白名单键/检索跳过键/用户文件证据），executor 侧 split_canvas_params 拆解。
+    llm_item_keys 为确认后仍要走检索+LLM 的字段 key 集合（白名单），同时写入
+    _changed_keys 供 executor 收窄；其余 llm 槽（默认值兜底/留空与直填）跳过检索，
+    由 executor 的 missing 显式纳入 → _merge_default_values 兜底。"""
     decision = decision or {}
     direct = decision.get("values") or {}
-    changed = decision.get("changed") or set()
     skip = [it["key"] for it in placeholders
             if it.get("key") and executor._norm_fill_mode(it) == "llm"
             and it["key"] not in llm_item_keys]
@@ -102,7 +102,7 @@ def _canvas_task_params(begin_fields: dict, query: str, decision: dict | None,
     if query and query.strip():
         params["用户需求描述"] = query.strip()[:_BEGIN_FIELD_PROMPT_MAX]
     params["_direct_values"] = {str(k): str(v) for k, v in direct.items()}
-    params["_changed_keys"] = sorted(str(k) for k in changed)
+    params["_changed_keys"] = sorted(str(k) for k in llm_item_keys)
     params["_retrieve_skip_keys"] = skip
     params["_user_file_text"] = user_file_text or ""
     return params
@@ -241,18 +241,22 @@ class TemplateFill(ComponentBase):
 
     async def _confirm_changed_fields(self, chosen: list[dict], query: str,
                                       begin_fields: dict) -> dict:
-        """P2 暂停确认：预判各范本疑似变化字段 → 推 confirm_pending 事件挂起等待。
-        返回 {template_id: {"changed": set, "values": dict}}；全部选中范本均无
-        默认值字段时返回 {}（跳过确认，行为与现状一致）。
-        超时/Redis 异常/预判失败 → 按预判结果（或空集）自动继续。"""
-        d_map: dict[str, list[dict]] = {}
+        """P2 暂停确认（全量展示）：候选 = 各范本全部 llm 填写点（含无默认值字段），
+        AI 预判只覆盖默认值子集；勾选 = 交给检索+LLM，不勾 = 有默认值用默认值、
+        无默认值留空。返回 {template_id: {"changed": set, "values": dict}}；
+        全部选中范本均无默认值字段时返回 {}（跳过确认，触发条件与现状一致）。
+        超时/Redis 异常/预判失败 → 按预判∪无默认值字段自动继续（同现状全填）。"""
+        d_map: dict[str, list[dict]] = {}        # 全部 llm 填写点（候选 + valid 校验）
+        default_map: dict[str, list[dict]] = {}  # 默认值子集（触发 + 预判）
         for c in chosen:
             items = [it for it in c["_placeholders"]
-                     if executor._norm_fill_mode(it) == "llm" and it.get("key")
-                     and str(it.get("default_value") or "")]
+                     if executor._norm_fill_mode(it) == "llm" and it.get("key")]
             if items:
                 d_map[c["template_id"]] = items
-        if not d_map:
+                defaults = [it for it in items if str(it.get("default_value") or "")]
+                if defaults:
+                    default_map[c["template_id"]] = defaults
+        if not default_map:
             return {}
         task_id = getattr(self._canvas, "task_id", "") or ""
         background = dict(begin_fields)
@@ -260,7 +264,7 @@ class TemplateFill(ComponentBase):
             background["用户需求描述"] = query[:_BEGIN_FIELD_PROMPT_MAX]
         predicted: dict[str, set] = {}
         try:
-            for tid, items in d_map.items():
+            for tid, items in default_map.items():
                 predicted[tid] = await executor.predict_changed_fields(
                     self._canvas.get_tenant_id(), items, background,
                     should_cancel=lambda: self.check_if_canceled("TemplateFill predict"))
@@ -285,8 +289,15 @@ class TemplateFill(ComponentBase):
                                           for it in d_map[tid]],
                            "predicted": sorted(predicted.get(tid) or set())}
                           for tid in d_map]})
-        decisions = {tid: {"changed": set(predicted.get(tid) or set()), "values": {}}
-                     for tid in d_map}
+        # 兜底（未确认/无 task_id）：changed = 预判 ∪ 全部无默认值字段——与确认卡
+        # 初始勾选一致，无默认值字段照旧走检索+LLM（全量展示白名单语义下的现状保持）
+        decisions = {}
+        for tid, items in d_map.items():
+            decisions[tid] = {
+                "changed": (set(predicted.get(tid) or set())
+                            | {it["key"] for it in items
+                               if not str(it.get("default_value") or "")}),
+                "values": {}}
         if not task_id:
             return decisions
         waited = 0.0
@@ -370,19 +381,17 @@ class TemplateFill(ComponentBase):
         decisions = await self._confirm_changed_fields(chosen, query, begin_fields)
 
         def _llm_fill_items(c: dict) -> list[dict]:
-            """确认后该范本真正要走检索+LLM 的字段：N（无默认值）∪ C∩D（预判变化）
-            ∪ 用户直填之外的兜底排除 D−C（直用默认值，免检索免 LLM）。"""
-            d = decisions.get(c["template_id"]) or {}
+            """确认后该范本真正要走检索+LLM 的字段（白名单语义）：changed 即用户/AI
+            拍板要 LLM 填的 key 集合，不勾 = 有默认值用默认值、无默认值留空。
+            decision 缺失（该范本无默认值字段未进确认）→ 全部照旧走检索+LLM。"""
+            d = decisions.get(c["template_id"])
+            if d is None:
+                return [it for it in c["_placeholders"]
+                        if it.get("key") and executor._norm_fill_mode(it) == "llm"]
             changed, direct = d.get("changed") or set(), set((d.get("values") or {}).keys())
-            out = []
-            for it in c["_placeholders"]:
-                k = it.get("key")
-                if not k or executor._norm_fill_mode(it) != "llm" or k in direct:
-                    continue
-                if str(it.get("default_value") or "") and k not in changed:
-                    continue
-                out.append(it)
-            return out
+            return [it for it in c["_placeholders"]
+                    if it.get("key") and executor._norm_fill_mode(it) == "llm"
+                    and it["key"] not in direct and it["key"] in changed]
 
         # ② 委托后台执行器：每范本一个 tpl_fill_task 行 + daemon 线程（复用 B端
         # _spawn_fill_task 同一调度路径）。执行与连接解耦——断连/刷新后任务照常

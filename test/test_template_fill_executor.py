@@ -1382,7 +1382,8 @@ class TestBEndBehaviorUnchanged:
 
     def test_canvas_delegation_still_narrows_default_fields(self, monkeypatch):
         """画布委托正向用例：params 带 `_changed_keys`（画布节点必写，含空值）→
-        门控开启，D−C 收窄生效：有默认值且预判未变化的字段不进 LLM（双向证明）。"""
+        门控开启，白名单收窄生效：白名单外的 llm 字段不进 LLM（双向证明；
+        白名单语义下空集 = 全部收窄，有默认值走默认、无默认值留空）。"""
         calls = _run_pipeline(
             monkeypatch, _make_task(params={"_changed_keys": []}),
             checked_ver=_default_field_ver())

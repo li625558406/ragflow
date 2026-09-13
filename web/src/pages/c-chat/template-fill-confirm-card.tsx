@@ -1,6 +1,7 @@
-// 范本填写「变化字段确认」卡片：画布 TemplateFill 预判出变化字段后挂起，
-// 后端推 SSE confirm_pending 事件，此处渲染候选 checkbox（初始勾选 = AI 预判）
-// 供用户调整并提交确认（POST /template/fill/confirm 写 Redis 唤醒画布继续）。
+// 范本填写「填写字段确认」卡片：画布 TemplateFill 推 SSE confirm_pending 事件后挂起，
+// 此处渲染全部 LLM 填写点候选 checkbox（有默认值字段初始勾选 = AI 预判变化；
+// 无默认值字段默认勾选 = 维持交给 AI 填）供用户调整并提交确认
+// （POST /template/fill/confirm 写 Redis 唤醒画布继续；不勾 = 有默认值用默认、无默认值留空）。
 // 样式对齐 template-fill-progress.tsx 既有卡片；文案全中文，不走 i18n。
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -19,10 +20,17 @@ export default function TemplateFillConfirmCard({
    *  使归约器的 confirm_timeout 守卫（!submitted）真正生效 */
   onSubmitted?: () => void;
 }) {
-  // 各范本勾选的候选字段 key（初始 = AI 预判），Set 不可变更新保证 memo 感知
+  // 各范本勾选的候选字段 key（初始 = AI 预判 ∪ 无默认值字段——后者维持交给 AI），
+  // Set 不可变更新保证 memo 感知
   const [checked, setChecked] = useState<Record<string, Set<string>>>(() =>
     Object.fromEntries(
-      pending.templates.map((t) => [t.template_id, new Set(t.predicted)]),
+      pending.templates.map((t) => [
+        t.template_id,
+        new Set([
+          ...t.predicted,
+          ...t.candidates.filter((c) => !c.default_value).map((c) => c.key),
+        ]),
+      ]),
     ),
   );
   // 直填值（key 为 `${template_id}:${candidate.key}`，留空 = 让 AI 重填）

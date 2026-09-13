@@ -159,9 +159,9 @@ class GenerateCancelled(Exception):
 
 
 # ── 画布委托任务：params 保留键 + Redis 进度快照 ──────────────────────
-# 画布节点把确认产物（直填值/预判变化键）、用户文件证据、检索跳过键以
-# 下划线前缀保留键塞进 params 传给 execute_task；干净 params 继续充当
-# 背景信息与 param 直取（与 B端表单字段同构）。
+# 画布节点把确认产物（直填值/LLM 白名单键 _changed_keys）、用户文件证据、
+# 检索跳过键以下划线前缀保留键塞进 params 传给 execute_task；干净 params 继续
+# 充当背景信息与 param 直取（与 B端表单字段同构）。
 _CANVAS_RESERVED_KEYS = ("_direct_values", "_changed_keys",
                          "_retrieve_skip_keys", "_user_file_text")
 
@@ -774,12 +774,13 @@ async def _execute_task_async(task_id: str):
     if not svc.update_status(task_id, "retrieving", "generating"):
         return
     _write_snapshot(task_id, status="generating", done=0, total=0)
-    # 画布委托对齐节点 _fill_one：D−C 收窄（有默认值且预判未变化不进 LLM）+ 直填键排除
+    # 画布委托对齐节点 _fill_one：白名单收窄（changed_keys=确认后要 LLM 填的 key
+    # 集合，未勾选不进 LLM——有默认值走默认、无默认值留空）+ 直填键排除。
+    # B 端 changed_keys=全部 key（split_canvas_params 兜底），条件恒真行为不变
     llm_placeholders = [it for it in placeholders
                         if _norm_fill_mode(it) == "llm" and it.get("key")
                         and it["key"] not in direct_values
-                        and not (str(it.get("default_value") or "")
-                                 and it["key"] not in changed_keys)]
+                        and it["key"] in changed_keys]
     llm_chunks = {it["key"]: chunks_by_key.get(it["key"], {"chunks": [], "query": ""})
                   for it in llm_placeholders}
     # 用户上传文件作为填写证据：预置片段插到每槽证据首位（优先于 KB 片段）
@@ -818,12 +819,12 @@ async def _execute_task_async(task_id: str):
         return
 
     # ④ param 模式直取任务参数（不经 LLM，同样过约束兜底），命中则覆盖/摘出 missing
-    # D−C 字段未进 LLM，显式纳入 missing 才能让 _merge_default_values 直取默认值
+    # 白名单外字段未进 LLM，显式纳入 missing：有默认值由 _merge_default_values 直取，
+    # 无默认值留空交人工（与"缺值留空交人工二次加工"口径一致）
     for it in placeholders:
         k = it.get("key")
         if (k and k not in generated and k not in direct_values
                 and _norm_fill_mode(it) == "llm"
-                and str(it.get("default_value") or "")
                 and k not in changed_keys):
             missing.add(k)
     _merge_param_values(placeholders, generated, missing, clean_params)
