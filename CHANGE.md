@@ -1,5 +1,30 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-13 修复：存为流程版本后文件审核打开旧文件
+
+**主题**：范本填写成稿「存为流程版本」后，AI 面板「文件审核」仍打开旧版本的文件。
+
+**根因**：`FlowAiPanel.toggleReview` 在 `reviewFileId` 已有值时直接复用旧 document（旧版本转换产物），版本切换后该状态不失效。后端无问题（upload 端点 `add_version` 默认 `switch_current=True`，`current_version_id` 已切新版本）。
+
+**修复**（`web/src/pages/c-chat/flow/flow-ai-panel.tsx`）：新增 `reviewFromVersionId` 记录审阅 document 的来源版本 id；`toggleReview` 进入时若来源为版本且 id ≠ 当前版本 → 作废旧 document 并重传当前版本。手动上传目标（source='upload'）不受版本切换影响；编辑保存/回退切换版本同样触发失效。
+
+**遗留**：审阅抽屉打开状态下版本切换不自动刷新（避免打断用户标注），关闭再开即取新版本。
+
+## 2026-09-13 范本确认卡全量展示字段
+
+**主题**：C端对话/流程的「确认并继续填写」弹框从「仅有默认值字段」扩为**全部 LLM 填写点**，用户自行决定哪些字段交给 AI 填写。
+
+**核心变更**：
+- 语义改为白名单：勾选 = 交给检索+LLM；不勾 = 有默认值直用默认值、无默认值留空交人工。初始勾选 = AI 预判变化字段 ∪ 无默认值字段（维持现状全填）
+- `agent/component/template_fill.py`：`_confirm_changed_fields` 候选扩为全部 llm 填写点（触发条件不变：有默认值字段才弹框；AI 预判只跑默认值子集）；超时/异常兜底 changed = 预判 ∪ 无默认值字段；`_llm_fill_items` 改白名单语义（decision 缺失的范本全量照旧）；`_canvas_task_params` 的 `_changed_keys` 改写 llm_item_keys
+- `rag/svr/template_fill/executor.py`：llm_placeholders 收窄与 missing 纳入去掉 default_value 前提，统一 `key in changed_keys` 白名单判断；B端任务 changed_keys=全部 key，行为零变化
+- `web/src/pages/c-chat/template-fill-confirm-card.tsx`：初始勾选 = predicted ∪ 无默认值字段（对话页+流程 AI 面板共用，一处生效）
+- 测试：3 套件 107 passed（节点/委托参数/executor 断言同步白名单语义）
+
+**遗留**：
+- 未部署（须 `agent/component/template_fill.py` + `rag/svr/template_fill/executor.py` 成套 SCP + 前端 build，后端先于前端）
+- 弹框字段多时列表较长，未做分组/折叠（后续可按需加）
+
 ## 2026-09-12 C端对话文档按节局部重写（DocumentRewrite）
 
 **主题**：对话里说「把第3节重写，补充XX」→ LLM 按节重写成稿 docx → 新版本成稿卡，可回退。

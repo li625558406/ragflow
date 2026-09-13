@@ -111,6 +111,9 @@ export default function FlowAiPanel({
   const [reviewSource, setReviewSource] = useState<'version' | 'upload' | ''>(
     '',
   );
+  // 来源为版本的审阅 document 对应的流程版本 id：版本切换（存为流程版本/
+  // 回退/编辑保存新版本）后旧 document 作废，toggleReview 重传当前版本
+  const [reviewFromVersionId, setReviewFromVersionId] = useState('');
   // flow 特有：未手动上传文件时，发送自动附带当前版本文件
   const [attachFile, setAttachFile] = useState(true);
   // agent_id 与 c-chat 同源：localStorage（c-chat 发送时写入）
@@ -518,9 +521,11 @@ export default function FlowAiPanel({
           | UploadedDoc
           | undefined;
         if (target?.id) {
+          const fromUpload = docs.length > 0;
           setReviewFileId(target.id);
           setReviewFileName(target.name || '');
-          setReviewSource(docs.length > 0 ? 'upload' : 'version');
+          setReviewSource(fromUpload ? 'upload' : 'version');
+          if (!fromUpload) setReviewFromVersionId(version?.id ?? '');
         }
       }
 
@@ -608,6 +613,18 @@ export default function FlowAiPanel({
       setReviewMode(false);
       return;
     }
+    // 审阅 document 来自旧版本（如「存为流程版本」后 current 已切换）→ 作废，
+    // 重走下方当前版本上传，避免文件审核打开旧文件
+    if (
+      reviewFileId &&
+      reviewSource === 'version' &&
+      version &&
+      reviewFromVersionId !== version.id
+    ) {
+      setReviewFileId('');
+      setReviewFileName('');
+      setReviewSource('');
+    }
     if (!reviewFileId && uploadedDocsRef.current[0]) {
       setReviewFileId(uploadedDocsRef.current[0].id);
       setReviewFileName(uploadedDocsRef.current[0].name || '');
@@ -623,6 +640,7 @@ export default function FlowAiPanel({
           setReviewFileId(doc.id);
           setReviewFileName(doc.name);
           setReviewSource('version');
+          setReviewFromVersionId(version.id);
         }
       } catch (e: any) {
         setError(e?.message || '审阅准备失败，请稍后重试');
@@ -634,8 +652,10 @@ export default function FlowAiPanel({
     setReviewMode(true);
   }, [
     reviewFileId,
+    reviewFromVersionId,
     reviewMode,
     reviewPreparing,
+    reviewSource,
     uploadVersionAsDocument,
     version,
   ]);
@@ -774,6 +794,7 @@ export default function FlowAiPanel({
         setReviewFileId(doc.id);
         setReviewFileName(doc.name);
         setReviewSource('version');
+        setReviewFromVersionId(res.version.id);
       }
     },
     [flowId, onSaved, uploadVersionAsDocument, version],
