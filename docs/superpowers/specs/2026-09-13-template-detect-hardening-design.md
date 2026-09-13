@@ -47,15 +47,18 @@
 | 页脚段落 / 表格 | `ftr:<sec>:<idx>` / `ftr:<sec>:cell:...` | 同页眉 |
 | 文本框段落 | `<父addr>:tx<k>:<pi>` | 与嵌套表格 `:t<j>` 同模式；如 `para:3:tx0:1`、`cell:0:1:2:tx0:0` |
 | 文本框内表格 | `<父addr>:tx<k>:cell:...` | 同规则递归 |
+| 内容控件（sdt）段落 | `sdt:<k>:<pi>` | `<k>` 为 body 直系 sdt 的文档顺序号；独立前缀，不消耗存量 `para:` 计数器 |
+| sdt 内表格 cell | `sdt:<k>:cell:<tbl>:<r>:<c>:<pi>` | 复用 cell 语法，挂在 sdt 前缀下 |
+| cell/文本框内 sdt | `<父addr>:sdt<k>:<pi>` | 与 `:t<j>`/`:tx<k>` 同模式追加；内含表格 `:cell:...` 递归 |
 
-`index`（扁平序号）继续全文档单调递增，header/footer/textbox 段落一并编入，与 addr 一一对应。
+`index`（扁平序号）继续全文档单调递增（候选排序用），header/footer/textbox/sdt 段落一并编入，与 addr 一一对应。**存量计数器隔离（红线）**：`para:<idx>`/`cell:<tbl>:...` 的存量编号序列只随存量区域（body 直系 `w:p` 与存量表格 cell 段落）递增；sdt/文本框/页眉页脚段落分配 index 但**不消耗存量计数器**——否则含新元素文档的存量 addr 整体错位，同形 anchor 会静默错填（质量审查 I-1）。
 
 ### 3.3 遍历细节与陷阱
 
 1. **linked header/footer 去重**：`section.header.is_linked_to_previous` 为 True 时该节不持有独立 part（与前一节共享），跳过；另按 part 对象（`header.part`）做全文档去重，防 first/even/default 三类引用同一 part 时重复编址。
 2. **三类页眉页脚都要编**：`section.header` / `section.first_page_header` / `section.even_page_header`（footer 同理）；`is_linked_to_previous` 对 first/even 同样适用。
 3. **mc:AlternateContent 双份文本框**：Word 对浮动文本框常存双份（`mc:Choice` wps + `mc:Fallback` VML）。**只遍历 `mc:Choice`，跳过 `mc:Fallback`**，否则同一段落进候选两次 → anchor 反查「匹配到多处」歧义 + LLM token 浪费。
-4. **`w:sdt` 展开**：body 直系 `w:sdt` 递归进入其 `w:sdtContent` 取 `w:p`/`w:tbl`，按正文规则正常编址（不引入新前缀，替换路径与普通段落一致）。sdt 内再嵌 sdt 同样递归。
+4. **`w:sdt` 展开**：body 直系 `w:sdt` 递归进入其 `w:sdtContent` 取 `w:p`/`w:tbl`，以**独立 `sdt:<k>:` 前缀**编址（`<k>` 按文档顺序），**不使用 `para:` 前缀、不消耗存量 para: 计数器**（否则含 sdt 的存量范本 para:N 整体错位，同形 anchor 静默错填——违反「存量模板行为完全不变」红线）。cell/文本框内的 sdt 以 `:sdt<k>:` 段追加到父 addr。sdt 内再嵌 sdt 同样递归（`:sdt0:sdt1:<pi>`）；sdt 无 `w:sdtContent` 子节点时 debug 日志跳过。
 5. **文本框递归深度防御**：`w:txbxContent` 内可再嵌 drawing/textbox，递归时设深度上限（如 8 层），超限告警跳过，防畸形 XML 爆栈。
 6. **Paragraph 包装**：header/footer 段落用 python-docx 自带 API（`header.paragraphs` / `header.tables`）取原生 `Paragraph` 对象；文本框内 `w:p` 用 `Paragraph(el, parent)` 包装（替换只操作 lxml 子树，无 part 依赖，`doc.save` 整体落盘）。
 7. `_has_link_or_field`、跨 run 替换、标蓝逻辑对 header/footer/textbox 段落同样适用（均基于 Paragraph.runs / lxml），无需分支。

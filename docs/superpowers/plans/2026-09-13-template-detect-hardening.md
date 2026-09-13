@@ -109,7 +109,9 @@ def _iter_txbx_content(el) -> list:
     return out
 ```
 
-3b. 整体替换 `_build_addr_map`（含 docstring）。保持存量正文编址逐字节不变：正文 `w:p` 仍 `para:<扁平idx>`、顶层表格仍 `cell:<序号>`、嵌套表格仍 `:t<j>`、合并单元格去重不变：
+3b. 整体替换 `_build_addr_map`（含 docstring）。保持存量正文编址逐字节不变：正文 `w:p` 仍 `para:<存量段号>`、顶层表格仍 `cell:<序号>`、嵌套表格仍 `:t<j>`、合并单元格去重不变。
+
+> **返工要求（2026-09-13 质量审查 I-1）**：存量计数器与新区域隔离——`para:`/`cell:` 序号只随 body 直系 `w:p`/`w:tbl` 递增；文本框/页眉页脚/sdt 段落只消耗全文档扁平 `index`（排序用），不得挤占存量计数器；sdt 采用独立 `sdt:<k>:` 前缀（body 直系）或 `:sdt<k>:` 段（cell/文本框/嵌套内），不再「按正文规则编址不引入新前缀」。否则含新元素文档的存量 addr 整体错位、同形 anchor 静默错填，违反「存量模板行为完全不变」红线。
 
 ```python
 def _build_addr_map(doc):
@@ -123,12 +125,16 @@ def _build_addr_map(doc):
     - 文本框段落 <父addr>:tx<k>:<pi>（k 为该段落内第 k 个文本框）；
       框内表格 <父addr>:tx<k>:cell:<t>:...；嵌套文本框继续追加 :tx<j> 段。
       mc:AlternateContent 只取 mc:Choice（见 _iter_txbx_content）。
-    - w:sdt 内容控件递归展开，内部段落/表格按正文规则编址（不引入新前缀）。
+    - w:sdt 内容控件独立前缀：body 直系 sdt:<k>:<pi>（内含表格 sdt:<k>:cell:...）；
+      cell/文本框/嵌套内 sdt 追加 :sdt<k>: 段。新区域不消耗存量 para:/cell: 计数器。
     items: [{"index": 扁平序号, "text": 段落文本, "addr": 定位串}]，按文档顺序。
     """
     addr_map = {}
     items = []
-    idx = 0
+    idx = 0        # 全文档扁平序号（items 排序用；新区域段落一并递增）
+    para_seq = -1  # 存量正文段号：只随 body 直系 w:p 递增（I-1 红线：新区域不消耗）
+    tbl_no = -1    # 存量顶层表格号：只随 body 直系 w:tbl 递增
+    sdt_no = -1    # body 直系 sdt 序号（独立 sdt: 前缀）
 
     def _emit(p, addr):
         nonlocal idx
@@ -136,7 +142,33 @@ def _build_addr_map(doc):
         items.append({"index": idx, "text": p.text, "addr": addr})
         idx += 1
 
-    def _walk_table(tbl, prefix):
+    def _walk_sdt(sdt_el, prefix, depth):
+        """内容控件展开：body 直系 → sdt:<k>:...；cell/文本框/嵌套内 →
+        <父addr>:sdt<k>:...。内部段落/表格不消耗任何存量计数器；
+        sdt 无 sdtContent（畸形）→ debug 日志跳过。"""
+        if depth > TXBX_DEPTH_LIMIT:
+            logger.warning("sdt nesting deeper than %d at %s, skipped",
+                           TXBX_DEPTH_LIMIT, prefix)
+            return
+        content = sdt_el.find(qn("w:sdtContent"))
+        if content is None:
+            logger.debug("w:sdt without sdtContent at %s, skipped", prefix)
+            return
+        pi = 0
+        tbl_k = 0
+        sdt_k = 0
+        for block in content.iterchildren():
+            if block.tag == qn("w:p"):
+                _walk_paragraph(Paragraph(block, doc), f"{prefix}:{pi}", depth)
+                pi += 1
+            elif block.tag == qn("w:tbl"):
+                _walk_table(Table(block, doc), f"{prefix}:cell:{tbl_k}", depth)
+                tbl_k += 1
+            elif block.tag == qn("w:sdt"):
+                _walk_sdt(block, f"{prefix}:sdt{sdt_k}", depth + 1)
+                sdt_k += 1
+
+    def _walk_table(tbl, prefix, depth=0):
         seen_tc = set()  # lxml 元素按底层 XML 节点判等：横向合并重复返回的 cell 去重
         for r, row in enumerate(tbl.rows):
             for c, cell in enumerate(row.cells):
@@ -145,9 +177,11 @@ def _build_addr_map(doc):
                 seen_tc.add(cell._tc)
                 cell_addr = f"{prefix}:{r}:{c}"
                 for pi, p in enumerate(cell.paragraphs):
-                    _walk_paragraph(p, f"{cell_addr}:{pi}")
+                    _walk_paragraph(p, f"{cell_addr}:{pi}", depth)
                 for j, sub in enumerate(cell.tables):
-                    _walk_table(sub, f"{cell_addr}:t{j}")
+                    _walk_table(sub, f"{cell_addr}:t{j}", depth)
+                for k, sdt in enumerate(cell._tc.findall(qn("w:sdt"))):
+                    _walk_sdt(sdt, f"{cell_addr}:sdt{k}", depth)
 
     def _walk_paragraph(p, base_addr, txbx_depth=0):
         """编址段落自身及其内嵌文本框（正文/表格 cell/页眉页脚/文本框内通用）。"""
@@ -161,31 +195,34 @@ def _build_addr_map(doc):
                            TXBX_DEPTH_LIMIT, prefix)
             return
         pi = 0
-        tbl_no = 0
+        tbl_k = 0
+        sdt_k = 0
         for block in txbx_el.iterchildren():
             if block.tag == qn("w:p"):
                 _walk_paragraph(Paragraph(block, doc), f"{prefix}:{pi}", depth)
                 pi += 1
             elif block.tag == qn("w:tbl"):
-                _walk_table(Table(block, doc), f"{prefix}:cell:{tbl_no}")
-                tbl_no += 1
+                _walk_table(Table(block, doc), f"{prefix}:cell:{tbl_k}", depth)
+                tbl_k += 1
+            elif block.tag == qn("w:sdt"):
+                _walk_sdt(block, f"{prefix}:sdt{sdt_k}", depth + 1)
+                sdt_k += 1
 
     def _walk_body_blocks(parent_el):
-        """body / sdtContent 共用：w:p → para:<扁平idx>；w:tbl → cell:<序号>:...；
-        w:sdt 递归展开（内部段落/表格按正文规则编址，不引入新前缀）。"""
-        nonlocal idx, tbl_no
+        """body 直系块编址（存量计数器唯一递增点）：
+        w:p → para:<para_seq>；w:tbl → cell:<tbl_no>:...；w:sdt → sdt:<sdt_no>:..."""
+        nonlocal para_seq, tbl_no, sdt_no
         for block in parent_el.iterchildren():
             if block.tag == qn("w:p"):
-                _walk_paragraph(Paragraph(block, doc), f"para:{idx}")
+                para_seq += 1
+                _walk_paragraph(Paragraph(block, doc), f"para:{para_seq}")
             elif block.tag == qn("w:tbl"):
                 tbl_no += 1
                 _walk_table(Table(block, doc), f"cell:{tbl_no}")
             elif block.tag == qn("w:sdt"):
-                content = block.find(qn("w:sdtContent"))
-                if content is not None:
-                    _walk_body_blocks(content)
+                sdt_no += 1
+                _walk_sdt(block, f"sdt:{sdt_no}", 0)
 
-    tbl_no = -1
     _walk_body_blocks(doc.element.body)
     return addr_map, items
 ```
@@ -336,7 +373,7 @@ git commit -m "feat(template-fill): 页眉页脚编址——hdr/ftr前缀+linked
 
 ### Task 3: 内容控件（w:sdt）编址验证
 
-Task 1 的 `_walk_body_blocks` 已含 sdt 递归（`_walk_body_blocks` 对 body 直系 `w:sdt` 进入 `w:sdtContent` 递归，sdt 嵌 sdt 同样递归）。本任务只补测试锁定行为。
+Task 1 返工后 `_build_addr_map` 对 body 直系 `w:sdt` 以独立 `sdt:<k>:` 前缀编址（不消耗存量 `para:` 计数器），sdt 嵌 sdt 以 `:sdt<k>:` 段递归。本任务只补测试锁定行为。
 
 **Files:**
 - Test: `test/test_template_fill_utils.py`（追加）
@@ -357,18 +394,21 @@ def _make_docx_with_sdt():
         '</w:sdt>'
     )
     doc.element.body.append(parse_xml(xml))
+    doc.add_paragraph("sdt 之后的段落：____")  # 验证 sdt 不挤占存量 para 计数器
     buf = io.BytesIO()
     doc.save(buf)
     return buf.getvalue()
 
 
 def test_sdt_wrapped_paragraph_addressed():
-    """body 直系 w:sdt 内容控件：内部段落按正文规则编址（不引入新前缀）。"""
+    """body 直系 w:sdt：内部段落 sdt:0:0 独立前缀；存量 para 计数器不被挤占（I-1）。"""
     from rag.svr.template_fill.docx_utils import extract_docx_candidates, iter_docx_paragraphs
     items = iter_docx_paragraphs(_make_docx_with_sdt())
     hits = [it for it in items if "内容控件里的日期" in it["text"]]
     assert len(hits) == 1
-    assert hits[0]["addr"].startswith("para:")
+    assert hits[0]["addr"] == "sdt:0:0"
+    after = [it for it in items if it["text"].startswith("sdt 之后的段落")]
+    assert len(after) == 1 and after[0]["addr"] == "para:1"  # sdt 未消耗 para 计数器
     cands = extract_docx_candidates(_make_docx_with_sdt())
     assert any("内容控件里的日期" in c["text"] for c in cands)
 ```
@@ -376,7 +416,7 @@ def test_sdt_wrapped_paragraph_addressed():
 - [ ] **Step 2: 运行验证**
 
 Run: `uv run pytest test/test_template_fill_utils.py::test_sdt_wrapped_paragraph_addressed -v`
-Expected: PASS（Task 1 已实现；若 FAIL 检查 `_walk_body_blocks` 的 `w:sdt` 分支）
+Expected: PASS（Task 1 返工后已实现；若 FAIL 检查 `_walk_body_blocks` 的 `w:sdt` 分支与 `para_seq` 计数器隔离）
 
 - [ ] **Step 3: Commit**
 
