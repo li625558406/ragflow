@@ -1,10 +1,13 @@
 """docx 模板工具：段落遍历（含表格内段落）、填写点候选提取、锚文本→占位符替换。
 
 addr 定位约定：正文段落 para:<idx>；表格内段落 cell:<tbl_no>:<row>:<col>:<para_idx>
-（tbl_no 为正文第几个表格，0 起）。缺 tbl_no 时多表格文档的 cell(r,c,p) 会跨表撞号
-（不同表格同位置段落共享 addr，validate/render 按 addr 查到的段落错位），故必须带表序号。
-index 为全文档扁平序号，与 addr 一一对应（合并单元格会在多处重复出现同一 addr，
-替换按"锚文本存在才替换"幂等，重复 addr 无副作用）。
+（tbl_no 为正文第几个**顶层**表格，0 起——存量模板 addr 兼容依赖此规则不变）。
+缺 tbl_no 时多表格文档的 cell(r,c,p) 会跨表撞号（不同表格同位置段落共享 addr，
+validate/render 按 addr 查到的段落错位），故必须带表序号。嵌套表格在父单元格 addr
+后追加 ":t<j>" 段并递归（cell:0:1:2:t0:0:1:0 = 顶层表 0 的 (1,2) 单元格内第 0 个
+嵌套表的 (0,1) 单元格第 0 段）。合并单元格（gridSpan）同一 tc 只按首现坐标编址一次
+（此前重复编址会让同一文本多处进候选，anchor 反查报「匹配到多处」）。
+index 为全文档扁平序号，与 addr 一一对应。
 
 跨 run 替换取舍：普通段落跨 run 时只重写 anchor 覆盖的 run 区间，区间外格式保留
 （`_replace_cross_run_in_place`）；但含超链接（w:hyperlink）/简单域（w:fldSimple）的段落**不可**整段重写——
@@ -13,12 +16,15 @@ python-docx 1.1+ 的 Paragraph.text 包含超链接内文本，而 Paragraph.run
 run 拼接替换路径（见 _replace_via_run_concat）。
 """
 import io
+import logging
 import re
 
 from docx import Document
 from docx.oxml.ns import qn
 from docx.table import Table
 from docx.text.paragraph import Paragraph
+
+logger = logging.getLogger(__name__)
 
 # 常见填写点特征：下划线空位 / 中文括号空位 / 【】空位 / ×× 占位 / 括号内"填写"提示 / "：" 结尾（冒号后留白）。
 # 注意："填写"仅在括号内（如"（请填写）"）才算特征，避免正文说明文字（"应如实填写"）误报污染候选集。
@@ -28,7 +34,8 @@ from docx.text.paragraph import Paragraph
 #   真实日期"2026年9月11日"不含留白不误报）
 # - "\S[ \u3000]{6,}\S"：行内长空白占位（"本招标项目　　（项目名称）　已由　　（审批机关）"跨栏留白）
 FILL_HINT_RE = re.compile(
-    r"(_{2,}|（\s*）|\(\s*\)|【\s*】|×{2,}|XX{1,}|xx{1,}|[（(][^（）()]*填写[^（）()]*[)）]|：\s*$|:\s*$"
+    r"(_{2,}|＿{2,}|（\s*）|\(\s*\)|【\s*】|×{2,}|XX{1,}|xx{1,}|□"
+    r"|[（(][^（）()]*填写[^（）()]*[)）]|：\s*$|:\s*$"
     r"|[:：][ \t\u3000]{3,}\S"
     r"|[ \u3000]{2,}年[ \u3000]*月[ \u3000]*日"
     r"|\S[ \u3000]{6,}\S)"
@@ -37,33 +44,110 @@ FILL_HINT_RE = re.compile(
 # 手动占位符：用户在模板正文里手写的 {{snake_key}}（与 renderer/docxtpl、前端实时预览同口径）
 PH_RE = re.compile(r"\{\{([a-z][a-z0-9_]*)\}\}")
 
+TXBX_DEPTH_LIMIT = 8  # 文本框嵌套深度上限：超限子树跳过（畸形 XML 防爆栈）
+
+# python-docx nsmap 不含 mc 前缀（qn("mc:*") KeyError），markup-compatibility 命名空间自备常量
+NS_MC = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+
+
+def _iter_txbx_content(el) -> list:
+    """深度优先收集 el 下全部 w:txbxContent（文本框内容根元素）。
+
+    mc:AlternateContent 只下钻 mc:Choice、跳过 mc:Fallback——Word 对浮动文本框
+    常存双份（Choice=wps、Fallback=VML），双份都收会让同一段落重复进候选
+    （anchor 反查「匹配到多处」歧义 + LLM token 浪费）。"""
+    out = []
+    fallback_tag = f"{{{NS_MC}}}Fallback"
+
+    def _walk(node):
+        for child in node:
+            tag = child.tag
+            if tag == fallback_tag:
+                continue
+            if tag == qn("w:txbxContent"):
+                out.append(child)
+                continue  # 框内段落由 _walk_txbx 逐段处理（更深嵌套文本框随之发现）
+            _walk(child)
+
+    _walk(el)
+    return out
+
 
 def _build_addr_map(doc):
-    """遍历 body 直系子节点（w:p / w:tbl），返回 ({addr: Paragraph}, items)。
+    """遍历文档全部可填写段落（正文/内容控件/表格/文本框，页眉页脚见 Task 2），
+    返回 ({addr: Paragraph}, items)。
 
-    局限：只遍历顶层表格（cell.paragraphs），嵌套表格（cell.tables）内的段落不在编址范围。
+    编址（存量规则不变，新增前缀均为增量，旧 addr 永不复用）：
+    - 正文段落 para:<idx>；表格内段落 cell:<tbl_no>:<row>:<col>:<para_idx>
+      （tbl_no 只数顶层表格；嵌套表格在父单元格 addr 后追加 ":t<j>" 段递归）；
+      合并单元格（gridSpan 横向合并）同一 tc 只按首现坐标编址一次。
+    - 文本框段落 <父addr>:tx<k>:<pi>（k 为该段落内第 k 个文本框）；
+      框内表格 <父addr>:tx<k>:cell:<t>:...；嵌套文本框继续追加 :tx<j> 段。
+      mc:AlternateContent 只取 mc:Choice（见 _iter_txbx_content）。
+    - w:sdt 内容控件递归展开，内部段落/表格按正文规则编址（不引入新前缀）。
     items: [{"index": 扁平序号, "text": 段落文本, "addr": 定位串}]，按文档顺序。
     """
     addr_map = {}
     items = []
     idx = 0
+
+    def _emit(p, addr):
+        nonlocal idx
+        addr_map[addr] = p
+        items.append({"index": idx, "text": p.text, "addr": addr})
+        idx += 1
+
+    def _walk_table(tbl, prefix):
+        seen_tc = set()  # lxml 元素按底层 XML 节点判等：横向合并重复返回的 cell 去重
+        for r, row in enumerate(tbl.rows):
+            for c, cell in enumerate(row.cells):
+                if cell._tc in seen_tc:
+                    continue
+                seen_tc.add(cell._tc)
+                cell_addr = f"{prefix}:{r}:{c}"
+                for pi, p in enumerate(cell.paragraphs):
+                    _walk_paragraph(p, f"{cell_addr}:{pi}")
+                for j, sub in enumerate(cell.tables):
+                    _walk_table(sub, f"{cell_addr}:t{j}")
+
+    def _walk_paragraph(p, base_addr, txbx_depth=0):
+        """编址段落自身及其内嵌文本框（正文/表格 cell/页眉页脚/文本框内通用）。"""
+        _emit(p, base_addr)
+        for k, txbx in enumerate(_iter_txbx_content(p._p)):
+            _walk_txbx(txbx, f"{base_addr}:tx{k}", txbx_depth + 1)
+
+    def _walk_txbx(txbx_el, prefix, depth):
+        if depth > TXBX_DEPTH_LIMIT:
+            logger.warning("textbox nesting deeper than %d at %s, skipped",
+                           TXBX_DEPTH_LIMIT, prefix)
+            return
+        pi = 0
+        tbl_no = 0
+        for block in txbx_el.iterchildren():
+            if block.tag == qn("w:p"):
+                _walk_paragraph(Paragraph(block, doc), f"{prefix}:{pi}", depth)
+                pi += 1
+            elif block.tag == qn("w:tbl"):
+                _walk_table(Table(block, doc), f"{prefix}:cell:{tbl_no}")
+                tbl_no += 1
+
+    def _walk_body_blocks(parent_el):
+        """body / sdtContent 共用：w:p → para:<扁平idx>；w:tbl → cell:<序号>:...；
+        w:sdt 递归展开（内部段落/表格按正文规则编址，不引入新前缀）。"""
+        nonlocal idx, tbl_no
+        for block in parent_el.iterchildren():
+            if block.tag == qn("w:p"):
+                _walk_paragraph(Paragraph(block, doc), f"para:{idx}")
+            elif block.tag == qn("w:tbl"):
+                tbl_no += 1
+                _walk_table(Table(block, doc), f"cell:{tbl_no}")
+            elif block.tag == qn("w:sdt"):
+                content = block.find(qn("w:sdtContent"))
+                if content is not None:
+                    _walk_body_blocks(content)
+
     tbl_no = -1
-    for block in doc.element.body.iterchildren():
-        if block.tag == qn("w:p"):
-            p = Paragraph(block, doc)
-            addr_map[f"para:{idx}"] = p
-            items.append({"index": idx, "text": p.text, "addr": f"para:{idx}"})
-            idx += 1
-        elif block.tag == qn("w:tbl"):
-            tbl_no += 1
-            tbl = Table(block, doc)
-            for r, row in enumerate(tbl.rows):
-                for c, cell in enumerate(row.cells):
-                    for pi, p in enumerate(cell.paragraphs):
-                        addr = f"cell:{tbl_no}:{r}:{c}:{pi}"
-                        addr_map[addr] = p
-                        items.append({"index": idx, "text": p.text, "addr": addr})
-                        idx += 1
+    _walk_body_blocks(doc.element.body)
     return addr_map, items
 
 
@@ -216,6 +300,10 @@ def apply_docx_placeholders(file_bytes: bytes, replacements: list) -> bytes:
         p = addr_map.get(addr)
         if p is not None:
             _replace_in_paragraph(p, anchor, f"{{{{{key}}}}}")
+        else:
+            # 静默跳过不变（脏输入健壮性），但留告警痕迹：存量模板的落库 addr
+            # 因编址规则演进（如合并单元格去重）悬空时，可凭此定位「填写点没生效」
+            logger.warning("apply_docx_placeholders: addr %r not found, skip key=%s", addr, key)
     buf = io.BytesIO()
     doc.save(buf)
     return buf.getvalue()

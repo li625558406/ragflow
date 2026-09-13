@@ -228,6 +228,102 @@ def test_apply_docx_dirty_entry_missing_fields_skipped(sample_docx):
     assert "{{empty_anchor}}" not in "".join(texts)
 
 
+def test_docx_nested_table_addr_and_apply():
+    """嵌套表格必须进编址范围（此前只遍历顶层表格，范本表内表大量丢填写点）：
+    addr 在父单元格后追加 :t<j> 段；候选提取可命中；apply 按 addr 精确替换。"""
+    from rag.svr.template_fill.docx_utils import (
+        apply_docx_placeholders,
+        extract_docx_candidates,
+        iter_docx_paragraphs,
+    )
+    doc = Document()
+    doc.add_paragraph("封面段落")
+    tbl = doc.add_table(rows=1, cols=2)
+    tbl.rows[0].cells[0].paragraphs[0].text = "外层单元格"
+    cell = tbl.rows[0].cells[1]
+    nested = cell.add_table(rows=1, cols=2)
+    nested.rows[0].cells[0].paragraphs[0].text = "内层：＿＿＿＿＿"
+    nested.rows[0].cells[1].paragraphs[0].text = "（填写完整名称）"
+    buf = io.BytesIO()
+    doc.save(buf)
+    data = buf.getvalue()
+
+    items = iter_docx_paragraphs(data)
+    addrs = [it["addr"] for it in items]
+    assert len(addrs) == len(set(addrs))  # 全局唯一
+    by_addr = {it["addr"]: it["text"] for it in items}
+    assert by_addr["cell:0:0:0:0"] == "外层单元格"
+    assert by_addr["cell:0:0:1:t0:0:0:0"] == "内层：＿＿＿＿＿"
+    assert by_addr["cell:0:0:1:t0:0:1:0"] == "（填写完整名称）"
+
+    # 嵌套单元格的填写点进候选（全角下划线特征 + 括号提示特征）
+    cands = extract_docx_candidates(data)
+    cand_addrs = {c["addr"] for c in cands}
+    assert "cell:0:0:1:t0:0:0:0" in cand_addrs
+    assert "cell:0:0:1:t0:0:1:0" in cand_addrs
+
+    # 按 addr 替换落到嵌套段落，外层不受影响
+    out = apply_docx_placeholders(data, [
+        {"addr": "cell:0:0:1:t0:0:0:0", "anchor": "＿＿＿＿＿", "key": "inner_field"},
+    ])
+    out_by_addr = {it["addr"]: it["text"] for it in iter_docx_paragraphs(out)}
+    assert out_by_addr["cell:0:0:1:t0:0:0:0"] == "内层：{{inner_field}}"
+    assert out_by_addr["cell:0:0:0:0"] == "外层单元格"
+
+
+def test_docx_merged_cell_dedup():
+    """横向合并单元格（gridSpan）：row.cells 会重复返回同一 tc，去重后同一文本
+    只编址一次——否则重复候选导致 anchor 反查「匹配到多处」歧义拒绝。"""
+    from rag.svr.template_fill.docx_utils import (
+        apply_docx_placeholders,
+        extract_docx_candidates,
+        iter_docx_paragraphs,
+    )
+    doc = Document()
+    tbl = doc.add_table(rows=2, cols=2)
+    merged = tbl.rows[0].cells[0].merge(tbl.rows[0].cells[1])
+    merged.paragraphs[0].text = "合并单元格：＿＿＿＿"
+    tbl.rows[1].cells[0].paragraphs[0].text = "甲方：____"
+    tbl.rows[1].cells[1].paragraphs[0].text = "乙方：____"
+    buf = io.BytesIO()
+    doc.save(buf)
+    data = buf.getvalue()
+
+    items = iter_docx_paragraphs(data)
+    merged_texts = [it for it in items if "合并单元格" in it["text"]]
+    assert len(merged_texts) == 1  # 旧逻辑此处为 2（c=0 与 c=1 各编址一次）
+    addrs = [it["addr"] for it in items]
+    assert len(addrs) == len(set(addrs))
+
+    cands = extract_docx_candidates(data)
+    assert sum(1 for c in cands if "合并单元格" in c["text"]) == 1
+
+    # 合并单元格自身可正常替换
+    merged_addr = merged_texts[0]["addr"]
+    out = apply_docx_placeholders(data, [
+        {"addr": merged_addr, "anchor": "＿＿＿＿", "key": "merged_field"},
+    ])
+    out_items = iter_docx_paragraphs(out)
+    assert any("{{merged_field}}" in it["text"] for it in out_items)
+
+
+def test_docx_plain_table_addr_unchanged_after_nested_support():
+    """回归守护：无嵌套表格的普通文档编址必须与旧逻辑完全一致（存量模板 addr
+    兼容性依赖这一点）：顶层表 tbl_no 只数顶层，扁平序号连续递增。"""
+    from rag.svr.template_fill.docx_utils import iter_docx_paragraphs
+    data = _make_docx(
+        ["段落A", "段落B"],
+        table=[["投标单位", ""], ["日期", "____年____月____日"]],
+    )
+    items = iter_docx_paragraphs(data)
+    assert [it["index"] for it in items] == list(range(len(items)))  # 扁平序号连续
+    by_addr = {it["addr"]: it["text"] for it in items}
+    assert by_addr["para:0"] == "段落A"
+    assert by_addr["para:1"] == "段落B"
+    assert by_addr["cell:0:0:0:0"] == "投标单位"
+    assert by_addr["cell:0:1:1:0"] == "____年____月____日"
+
+
 # ---------- xlsx 工具 ----------
 
 def _make_xlsx(sheets: dict):
@@ -972,6 +1068,25 @@ def test_fill_hint_inline_long_blank():
     assert not FILL_HINT_RE.search("本招标项目 已由有关机关批准建设")
 
 
+def test_fill_hint_fullwidth_underscore():
+    """全角下划线填空线（中文范本常用形态）必须命中——此前只认半角 _{2,}，
+    含全角下划线的行根本进不了候选集，LLM 再强也识别不到。"""
+    from rag.svr.template_fill.docx_utils import FILL_HINT_RE
+    assert FILL_HINT_RE.search("投标人名称：＿＿＿＿＿＿＿＿")
+    assert FILL_HINT_RE.search("＿＿＿＿年＿＿月＿＿日")
+    # 单个全角下划线不算填写特征（防正文普通下划线误报）
+    assert not FILL_HINT_RE.search("详见第＿章")
+
+
+def test_fill_hint_checkbox():
+    """勾选框 □（范本常见「□ 是 □ 否」评审项）必须命中。"""
+    from rag.svr.template_fill.docx_utils import FILL_HINT_RE
+    assert FILL_HINT_RE.search("□ 是 □ 否")
+    assert FILL_HINT_RE.search("资格审查方式：□资格预审 □资格后审")
+    # 普通正文不误报
+    assert not FILL_HINT_RE.search("按照有关规定执行")
+
+
 # ---------- 手动占位符 {{key}} 直通 ----------
 
 def test_docx_candidates_include_manual_placeholder_paragraphs():
@@ -1442,3 +1557,48 @@ def test_cross_run_replace_empty_text_run_sandwich():
     out = apply_docx_placeholders(blob, [{"addr": "para:0", "anchor": "BC", "key": "k"}])
     p = Document(io.BytesIO(out)).paragraphs[0]
     assert [r.text for r in p.runs] == ["A{{k}}", "", "D"]
+
+
+# ---------- 范本识别加固（2026-09-13）：文本框/页眉页脚/内容控件编址 ----------
+
+_MC_NS = ('xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+          'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+          'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"')
+
+
+def _make_docx_with_textbox(txbx_text):
+    """正文段落内嵌浮动文本框，mc:AlternateContent 双份存储（Choice+Fallback 同文）。
+    直接拼 XML 绕开 python-docx 无文本框 API 的限制（项目运行时同样按 XML 层遍历）。"""
+    from docx.oxml import parse_xml
+    doc = Document()
+    doc.add_paragraph("无填写点的普通段落")
+    p = doc.add_paragraph("含文本框的容器段落")
+    xml = (
+        f'<w:r {_MC_NS}>'
+        '<mc:AlternateContent>'
+        f'<mc:Choice Requires="wps"><w:txbxContent>'
+        f'<w:p><w:r><w:t>{txbx_text}</w:t></w:r></w:p>'
+        '</w:txbxContent></mc:Choice>'
+        f'<mc:Fallback><w:txbxContent>'
+        f'<w:p><w:r><w:t>{txbx_text}</w:t></w:r></w:p>'
+        '</w:txbxContent></mc:Fallback>'
+        '</mc:AlternateContent>'
+        '</w:r>'
+    )
+    p._p.append(parse_xml(xml))
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def test_textbox_paragraph_addressed_and_fallback_deduped():
+    from rag.svr.template_fill.docx_utils import extract_docx_candidates, iter_docx_paragraphs
+    blob = _make_docx_with_textbox("单位名称：＿＿＿＿＿＿")
+    items = iter_docx_paragraphs(blob)
+    hits = [it for it in items if "单位名称" in it["text"]]
+    # Choice + Fallback 双份只编址一次
+    assert len(hits) == 1
+    assert hits[0]["addr"] == "para:1:tx0:0"
+    # 容器段落自身无填写特征，不进候选；文本框段落进候选
+    cands = extract_docx_candidates(blob)
+    assert [c["addr"] for c in cands] == ["para:1:tx0:0"]
