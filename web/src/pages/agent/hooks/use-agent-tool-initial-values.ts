@@ -78,6 +78,7 @@ export function useAgentToolInitialValues() {
         case Operator.BidIndustryTag:
         case Operator.BidEnterpriseProfile:
         case Operator.BidConstructionSearch:
+        case Operator.DocumentRewrite:
           return {};
 
         default:

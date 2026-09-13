@@ -39,6 +39,10 @@ const Menus = [
     label: t('flow.communication'),
     list: [Operator.Email],
   },
+  {
+    label: t('flow.document'),
+    list: [Operator.DocumentRewrite],
+  },
   // {
   //   label: 'Productivity',
   //   list: [],

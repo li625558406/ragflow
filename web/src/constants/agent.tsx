@@ -129,6 +129,7 @@ export enum Operator {
   SearXNG = 'SearXNG',
   DocGenerator = 'DocGenerator',
   TemplateFill = 'TemplateFill',
+  DocumentRewrite = 'DocumentRewrite',
   Placeholder = 'Placeholder',
   DataOperations = 'DataOperations',
   ListOperations = 'ListOperations',
