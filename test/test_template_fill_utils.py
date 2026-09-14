@@ -2141,3 +2141,149 @@ def test_textbox_in_header_paragraph_addressed():
     hits = [it for it in items if "页眉文本框" in it["text"]]
     assert len(hits) == 1
     assert hits[0]["addr"] == "hdr:0:0:tx0:0"
+
+
+# ---------- occ 同段同形留白（第 N 次出现定位） ----------
+
+
+def test_apply_same_shape_blanks_occ_positional():
+    """同段三处同形留白 occ=1/2/3 各归其位：降序应用后互不挤位。"""
+    blob = _make_docx(["甲方：＿＿＿ 乙方：＿＿＿ 丙方：＿＿＿"])
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders, iter_docx_paragraphs
+    out = apply_docx_placeholders(blob, [
+        {"addr": "para:0", "anchor": "＿＿＿", "key": "party_a", "occ": 1},
+        {"addr": "para:0", "anchor": "＿＿＿", "key": "party_b", "occ": 2},
+        {"addr": "para:0", "anchor": "＿＿＿", "key": "party_c", "occ": 3},
+    ])
+    assert iter_docx_paragraphs(out)[0]["text"] == "甲方：{{party_a}} 乙方：{{party_b}} 丙方：{{party_c}}"
+
+
+def test_apply_occ_beyond_count_is_noop():
+    """occ 超过段内出现次数：no-op，原文保留。"""
+    blob = _make_docx(["姓名：＿＿ 电话：＿＿"])
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders, iter_docx_paragraphs
+    out = apply_docx_placeholders(blob, [
+        {"addr": "para:0", "anchor": "＿＿", "key": "x", "occ": 3},
+    ])
+    assert "＿＿" in iter_docx_paragraphs(out)[0]["text"]
+    assert "{{x}}" not in iter_docx_paragraphs(out)[0]["text"]
+
+
+def test_apply_legacy_no_occ_replaces_all_in_run():
+    """occ 缺省 = 存量 replace-all 语义，行为与加固前完全一致。"""
+    blob = _make_docx(["姓名：＿＿ 电话：＿＿"])
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders, iter_docx_paragraphs
+    out = apply_docx_placeholders(blob, [
+        {"addr": "para:0", "anchor": "＿＿", "key": "x"},
+    ])
+    assert iter_docx_paragraphs(out)[0]["text"] == "姓名：{{x}} 电话：{{x}}"
+
+
+def test_apply_occ_across_runs_picks_nth():
+    """occ=2 目标出现在第 3 个 run 内（第 1 个 run 里的出现不计入）：只动该出现。"""
+    doc = Document()
+    p = doc.add_paragraph()
+    p.add_run("AA")
+    p.add_run("BB")
+    p.add_run("AA")
+    buf = io.BytesIO()
+    doc.save(buf)
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders, iter_docx_paragraphs
+    out = apply_docx_placeholders(buf.getvalue(), [
+        {"addr": "para:0", "anchor": "AA", "key": "second", "occ": 2},
+    ])
+    assert iter_docx_paragraphs(out)[0]["text"] == "AABB{{second}}"
+
+
+def test_apply_occ_spanning_runs_falls_to_cross_run():
+    """occ 目标出现跨 run（单 run 计数找不到）→ 落到跨 run 路径，只重写覆盖区间。"""
+    doc = Document()
+    p = doc.add_paragraph()
+    p.add_run("A_")
+    p.add_run("_B")
+    buf = io.BytesIO()
+    doc.save(buf)
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders, iter_docx_paragraphs
+    out = apply_docx_placeholders(buf.getvalue(), [
+        {"addr": "para:0", "anchor": "__", "key": "span", "occ": 1},
+    ])
+    assert iter_docx_paragraphs(out)[0]["text"] == "A{{span}}B"
+
+
+def test_apply_occ_non_overlapping_semantics():
+    """对抗：非重叠语义。anchor="aaa"、文本 6 个 a，非重叠出现仅 2 次（下标 0、3），
+    occ=2 必须命中下标 3——按重叠推进（find(start+1)）会错命中下标 1。"""
+    blob = _make_docx(["aaaaaa"])
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders, iter_docx_paragraphs
+    out = apply_docx_placeholders(blob, [
+        {"addr": "para:0", "anchor": "aaa", "key": "k", "occ": 2},
+    ])
+    assert iter_docx_paragraphs(out)[0]["text"] == "aaa{{k}}"
+
+
+def test_apply_occ_skips_spanning_occurrence_when_counting():
+    """对抗：更早的出现跨 run（不计入任何单 run 的 count）时，occ 仍须按段落级
+    拼接文本的出现序号定位——p.text="aaa" 的第 1 次非重叠出现是跨界的下标 0-1，
+    若按单 run 局部计数会错命中 run1 内部的 "aa"（段落级视角下它是被覆盖的重叠位）。"""
+    doc = Document()
+    p = doc.add_paragraph()
+    p.add_run("a")
+    p.add_run("aa")
+    buf = io.BytesIO()
+    doc.save(buf)
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders, iter_docx_paragraphs
+    out = apply_docx_placeholders(buf.getvalue(), [
+        {"addr": "para:0", "anchor": "aa", "key": "k", "occ": 1},
+    ])
+    assert iter_docx_paragraphs(out)[0]["text"] == "{{k}}a"
+
+
+def test_apply_occ_second_in_hyperlink_paragraph_via_concat():
+    """对抗：occ 与超链接段落组合。两次出现：第 1 次跨 run0/run1 边界、第 2 次在
+    run1 内，段落尾部带 w:hyperlink。occ=2 必须精确命中第 2 次、第 1 次原样保留，
+    且超链接文本不被复制进正文 run（拼接路径只作用于 p.runs 文本）。"""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    doc = Document()
+    p = doc.add_paragraph("编号：___")
+    p.add_run("__日期：____附注")
+    hl = OxmlElement("w:hyperlink")
+    hl.set(qn("r:id"), "rIdLink")
+    r = OxmlElement("w:r")
+    t = OxmlElement("w:t")
+    t.text = "官网"
+    r.append(t)
+    hl.append(r)
+    p._p.append(hl)
+    buf = io.BytesIO()
+    doc.save(buf)
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders, iter_docx_paragraphs
+    # 前置确认：p.text 含超链接文本，且 "____" 非重叠出现 2 次（第 1 次跨界）
+    assert next(it["text"] for it in iter_docx_paragraphs(buf.getvalue())) \
+        == "编号：_____日期：____附注官网"
+
+    out = apply_docx_placeholders(buf.getvalue(), [
+        {"addr": "para:0", "anchor": "____", "key": "k", "occ": 2},
+    ])
+    text = iter_docx_paragraphs(out)[0]["text"]
+    assert text == "编号：_____日期：{{k}}附注官网"
+    # 第 1 次出现原样保留；超链接文本不被复制
+    assert text.count("____") == 1
+    assert text.count("官网") == 1
+
+
+def test_apply_occ_dirty_value_skips_entry():
+    """对抗：occ 为非法值（0/负数/字符串/布尔）→ 跳过该条，绝不退化成 replace-all
+    误伤其他出现位（occ=None 才是存量 replace-all 语义）。"""
+    blob = _make_docx(["姓名：＿＿ 电话：＿＿"])
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders, iter_docx_paragraphs
+    out = apply_docx_placeholders(blob, [
+        {"addr": "para:0", "anchor": "＿＿", "key": "zero", "occ": 0},
+        {"addr": "para:0", "anchor": "＿＿", "key": "neg", "occ": -1},
+        {"addr": "para:0", "anchor": "＿＿", "key": "str", "occ": "1"},
+        {"addr": "para:0", "anchor": "＿＿", "key": "bool", "occ": True},
+    ])
+    text = iter_docx_paragraphs(out)[0]["text"]
+    assert text == "姓名：＿＿ 电话：＿＿"
+    assert "{{" not in text

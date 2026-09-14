@@ -292,6 +292,23 @@ def extract_docx_candidates(file_bytes: bytes) -> list:
     ]
 
 
+def _nth_index(text: str, sub: str, n: int) -> int:
+    """sub 在 text 中第 n（1-based）次**非重叠**出现的起始下标；不足 n 次返回 -1。
+
+    推进步长必须是 len(sub)（从上一次命中结束位之后继续 find）：若只 +1 会命中
+    重叠出现（如 "aaaa" 里按 +1 找到的第 2 个 "aa" 在下标 1，而 str.count 的
+    非重叠计数下是下标 2），与 run.text.count / joined.count 的出现序号对不上，
+    occ 定位会错位。"""
+    search_from = 0
+    idx = -1
+    for _ in range(n):
+        idx = text.find(sub, search_from)
+        if idx < 0:
+            return -1
+        search_from = idx + len(sub)
+    return idx
+
+
 def _has_link_or_field(p: Paragraph) -> bool:
     """段落是否含超链接（w:hyperlink）或简单域（w:fldSimple）直系子节点。
 
@@ -301,20 +318,27 @@ def _has_link_or_field(p: Paragraph) -> bool:
     return bool(p._p.findall(qn("w:hyperlink")) or p._p.findall(qn("w:fldSimple")))
 
 
-def _replace_via_run_concat(p: Paragraph, anchor: str, repl: str) -> bool:
-    """含超链接/域段落的替换：把所有 run 的文本按序拼接，在拼接串上 replace，
+def _replace_via_run_concat(p: Paragraph, anchor: str, repl: str,
+                            occ: int | None = None) -> bool:
+    """含超链接/域段落的替换：把所有 run 的文本按序拼接，在拼接串上替换，
     再按原 run 长度切分写回各 run。
 
     超链接/域内文本不参与（不在 runs 中），故不会产生复制。替换导致拼接串
     长度变化时，差值并入最后一个非空 run 的文本——简单可行即可，该路径只为
     避免超链接文本复制，不追求精确保持 run 边界。锚文本在拼接串中不存在
-    （跨界没拼上）时返回 False（no-op）。
-    """
+    （跨界没拼上）时返回 False（no-op）。occ=None 为存量 replace-all 语义；
+    occ=N 只替换拼接串中第 N 次非重叠出现（不足 N 次返回 False）。"""
     runs = p.runs
     joined = "".join(r.text for r in runs)
     if anchor not in joined:
         return False
-    replaced = joined.replace(anchor, repl)
+    if occ is None:
+        replaced = joined.replace(anchor, repl)
+    else:
+        start = _nth_index(joined, anchor, occ)
+        if start < 0:
+            return False
+        replaced = joined[:start] + repl + joined[start + len(anchor):]
     # 按原 run 文本长度在替换后的拼接串上切分写回；总长度差（repl 与 anchor 不等长）
     # 并入最后一个非空 run——简单可行即可，不追求精确保持 run 边界。
     pos = 0
@@ -351,7 +375,8 @@ def _locate_run_span(runs: list, start: int, end: int) -> tuple:
     return i, j, off_i, off_j
 
 
-def _replace_cross_run_in_place(p: Paragraph, anchor: str, repl: str) -> bool:
+def _replace_cross_run_in_place(p: Paragraph, anchor: str, repl: str,
+                                occ: int | None = None) -> bool:
     """跨 run 区间替换（格式保真）：只重写 anchor 覆盖的 run 区间——
     首 run 保留 anchor 前文本并接替换值，尾 run 保留 anchor 后文本，中间 run 清空；
     区间外 run 原样不动（段内其他位置格式完整保留）。
@@ -361,11 +386,24 @@ def _replace_cross_run_in_place(p: Paragraph, anchor: str, repl: str) -> bool:
     的语义——anchor 是 repl 子串时（如 anchor="name"、repl="{{name}}"），
     刚写入的 repl 不会被再次命中，避免文本腐坏与后续真实出现漏替。
     中段 run 仅在有文本时置空：空文本 run 的置空唯一效果是经 Run.text setter
-    销毁 rPr 外的结构子节点（w:fldChar/w:drawing 等），跳过即保住结构。"""
+    销毁 rPr 外的结构子节点（w:fldChar/w:drawing 等），跳过即保住结构。
+    occ=None 为存量 replace-all 语义（remaining=全部出现次数，逐次替换）；
+    occ=N 先把扫描起点推进过前 N-1 次出现（步长 len(anchor)，非重叠）、
+    remaining=1，只替换第 N 次出现，不足 N 次返回 False。"""
     runs = p.runs
-    remaining = "".join(r.text for r in runs).count(anchor)
-    replaced = False
+    joined_all = "".join(r.text for r in runs)
+    total = joined_all.count(anchor)
     scan_from = 0
+    if occ is not None:
+        if occ > total:
+            return False
+        # 跳过前 occ-1 次出现：扫描起点推进到第 occ 次出现的起始下标
+        for _ in range(occ - 1):
+            scan_from = joined_all.find(anchor, scan_from) + len(anchor)
+        remaining = 1
+    else:
+        remaining = total
+    replaced = False
     while remaining > 0:
         remaining -= 1
         joined = "".join(r.text for r in runs)
@@ -387,29 +425,49 @@ def _replace_cross_run_in_place(p: Paragraph, anchor: str, repl: str) -> bool:
     return replaced
 
 
-def _replace_in_paragraph(p: Paragraph, anchor: str, repl: str) -> bool:
-    """段内替换锚文本为 repl。优先单 run 内完成；跨 run 时：普通段落只重写
-    anchor 覆盖的 run 区间，区间外格式保留（见 _replace_cross_run_in_place）；
-    含超链接/域的段落走 run 拼接替换（见 _replace_via_run_concat），
-    避免超链接文本被复制进正文 run。"""
+def _replace_in_paragraph(p: Paragraph, anchor: str, repl: str,
+                          occ: int | None = None) -> bool:
+    """段内替换锚文本为 repl。occ=None 为存量 replace-all 语义：优先单 run 内
+    完成（首个含 anchor 的 run 全替换）；跨 run 时：普通段落只重写 anchor 覆盖的
+    run 区间，区间外格式保留（见 _replace_cross_run_in_place）；含超链接/域的
+    段落走 run 拼接替换（见 _replace_via_run_concat），避免超链接文本被复制进
+    正文 run。occ=N 只替换段落拼接文本中第 N 次非重叠出现，不足 N 次返回 False
+    （no-op）。
+
+    occ 路径**不走**单 run 快路径：单 run 的 count 是 run 局部计数，当更早的
+    出现跨界（anchor 被切成两半分属相邻 run）时，局部序号与段落级出现序号错位，
+    会命中错误出现位。跨 run 路径对完全落在单个 run 内的命中同样只重写该 run
+    （i==j 分支），格式保真效果与快路径等价，故 occ 统一走拼接文本坐标系。
+    """
     if not anchor:
         return False
     if anchor not in p.text:
         return False
-    for run in p.runs:
-        if anchor in run.text:
-            # str.replace 语义：同段多次出现全部替换
-            run.text = run.text.replace(anchor, repl)
-            return True
+    if occ is None:
+        for run in p.runs:
+            if anchor in run.text:
+                # str.replace 语义：同段多次出现全部替换（存量行为逐字节不变）
+                run.text = run.text.replace(anchor, repl)
+                return True
     if _has_link_or_field(p):
-        return _replace_via_run_concat(p, anchor, repl)
+        return _replace_via_run_concat(p, anchor, repl, occ)
     if not p.runs:
         return False
-    return _replace_cross_run_in_place(p, anchor, repl)
+    return _replace_cross_run_in_place(p, anchor, repl, occ)
 
 
 def apply_docx_placeholders(file_bytes: bytes, replacements: list) -> bytes:
-    """replacements: [{"addr", "anchor", "key"}]，把 anchor 替换为 {{key}}。
+    """replacements: [{"addr", "anchor", "key", "occ"?}]，把 anchor 替换为 {{key}}。
+
+    occ 语义：None（缺省/存量数据）= replace-all（存量行为完全不变，红线）；
+    正整数 N = 只替换段落文本中第 N 次非重叠出现（同段同形留白第 N 处定位）。
+    occ 存在但非法（非整数/布尔/小于 1）→ 跳过该条——宁可不填也不能退化成
+    replace-all 误伤其他出现位。
+    同段多条 occ 条目按 occ **降序**应用：若按原序逐条应用，前面的替换会改变
+    后面条目所见的出现序号（原文 occ=2 在 occ=1 应用后变成「当前第 1 次」）而
+    错位；降序时先替换的第 N 次不影响更小序号出现的位置。occ=None 条目排在
+    occ 条目之后且相互保持原相对顺序（replace-all 先行会先吞掉 occ 的目标出现）。
+    存量数据（全部无 occ）经此排序后应用顺序与原来逐字节一致。
 
     addr 不存在时静默跳过；anchor 不在该段落时为 no-op（幂等）；
     addr/anchor/key 任一缺失或为空时跳过该条（LLM 脏输入健壮性，与 addr
@@ -417,7 +475,17 @@ def apply_docx_placeholders(file_bytes: bytes, replacements: list) -> bytes:
     """
     doc = Document(io.BytesIO(file_bytes))
     addr_map, _ = _build_addr_map(doc)
+    cleaned = []
     for rep in replacements:
+        occ = rep.get("occ")
+        if occ is not None and (isinstance(occ, bool) or not isinstance(occ, int) or occ < 1):
+            logger.warning(
+                "apply_docx_placeholders: invalid occ %r, skip key=%s", occ, rep.get("key"))
+            continue
+        cleaned.append((rep, occ))
+    # 稳定排序：occ 条目降序在前，None 条目保持原序在后（见 docstring 推导）
+    cleaned.sort(key=lambda t: (t[1] is None, -(t[1] or 0)))
+    for rep, occ in cleaned:
         addr = rep.get("addr")
         anchor = rep.get("anchor")
         key = rep.get("key")
@@ -425,7 +493,7 @@ def apply_docx_placeholders(file_bytes: bytes, replacements: list) -> bytes:
             continue
         p = addr_map.get(addr)
         if p is not None:
-            _replace_in_paragraph(p, anchor, f"{{{{{key}}}}}")
+            _replace_in_paragraph(p, anchor, f"{{{{{key}}}}}", occ)
         else:
             # 静默跳过不变（脏输入健壮性），但留告警痕迹：存量模板的落库 addr
             # 因编址规则演进（如合并单元格去重）悬空时，可凭此定位「填写点没生效」
