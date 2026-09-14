@@ -1,5 +1,17 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-14 范本填写确认卡填写项点击定位跳转
+
+**主题**：confirm_pending 确认卡里用户看得到字段名却定位不到成稿中的填写点——把每个填写项的字段名做成可点击（hover 虚线下划线，勾选/划线均可点），点击经父组件 `onLocate` 回调写入 `liveTarget({template_id, focusKey})`，复用未填充汇总同款 LivePreview 定位链路（data-ph-key → scrollIntoView 居中 + outline 闪烁 2s）直达成稿对应位置。
+
+**核心变更**（纯前端 2 文件，后端零改动）：
+- 确认卡组件：填写项字段名渲染为可点击元素（hover 虚线下划线提示可点），新增可选 `onLocate(template_id, focusKey)` prop；未传时回退纯文本渲染，向后兼容存量调用方
+- 父组件：接线 `onLocate` → `setLiveTarget({template_id, focusKey})`，完全复用既有 LivePreview focusKey 定位链路（滚动居中 + outline 闪烁 2s、渲染完成门控 + 一次性防重），无新状态机
+
+**测试**：确认卡 jest 2 用例（点击触发 onLocate 回调携带 template_id+focusKey / 未传 onLocate 保持纯文本不抛错）+ 相关套件回归 38 passed；`npm run build` 构建通过。
+
+**遗留**：未部署——纯前端改动，`npm run build` + tar + nginx reload 即可，无需重启后端。
+
 ## 2026-09-14 范本填写未填充汇总与成稿内定位跳转
 
 **主题**：范本填写完成后用户不知道成稿里哪些填写点留了空、还要逐页翻找——终态从 values 派生 `unfilled`（留空填写点清单），经 filled 事件/progress 端点透传到前端，成稿行内联汇总展示，点击定位跳转到成稿预览中的对应位置并闪烁。
