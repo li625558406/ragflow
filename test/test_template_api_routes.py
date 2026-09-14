@@ -332,21 +332,75 @@ def test_convert_to_docx_success(monkeypatch):
 
 def test_convert_to_docx_src_ext_passthrough(monkeypatch):
     """src_ext 决定临时源文件后缀（soffice 按后缀选 import filter）：
-    默认 .doc 不变（存量行为逐字节保持），显式 .pdf 用 input.pdf 且必须带
-    --infilter=writer_pdf_import（默认按 Draw 打开无法导出 docx）；
-    产物均恒为 input.docx。"""
+    默认 .doc 不变（存量行为逐字节保持），soffice 命令不带任何 infilter
+    （PDF 已改走 _convert_pdf_to_docx，不再进 LibreOffice 路径）；
+    产物恒为 input.docx。"""
     mod = _template_api
     calls = {}
     monkeypatch.setattr(mod.subprocess, "run", _fake_soffice_run(calls))
     mod._convert_to_docx(b"legacy-doc-bytes")
     assert calls["src"].endswith(os.sep + "input.doc"), "默认参数必须保持 input.doc"
     assert not any("infilter" in a for a in calls["cmd"]), ".doc 不得带 infilter"
-
-    mod._convert_to_docx(b"pdf-bytes", ".pdf")
-    assert calls["src"].endswith(os.sep + "input.pdf"), ".pdf 后缀必须透传给源文件"
-    assert "--infilter=writer_pdf_import" in calls["cmd"], ".pdf 必须显式 Writer PDF 导入过滤器"
-    assert calls["cmd"][calls["cmd"].index("--outdir") + 1] == os.path.dirname(calls["src"])
     assert os.path.basename(calls["out"]) == "input.docx", "产物必须恒为 input.docx"
+
+
+def test_convert_pdf_to_docx_routing_and_output(monkeypatch):
+    """_convert_pdf_to_docx：src 恒为 input.pdf、产物恒为 input.docx；
+    Converter.close 必须被调（释放 PyMuPDF 资源）；产物缺失/空文件 → RuntimeError。"""
+    mod = _template_api
+    calls = {}
+
+    class _FakeConverter:
+        def __init__(self, src):
+            calls["src"] = src
+
+        def convert(self, out):
+            calls["out"] = out
+            if calls.get("mode") == "zero":
+                with open(out, "wb") as f:
+                    pass  # 产出 0 字节文件，模拟空产物
+            elif calls.get("mode") != "ok":
+                return  # 不产出文件，模拟转换失败
+            else:
+                with open(out, "wb") as f:
+                    f.write(b"PK\x03\x04 fake docx")
+
+        def close(self):
+            calls["closed"] = True
+
+    # 注入 stub pdf2docx 模块：本地环境无需真实安装，同时覆盖惰性导入路径
+    stub_mod = types.ModuleType("pdf2docx")
+    stub_mod.Converter = _FakeConverter
+    monkeypatch.setitem(sys.modules, "pdf2docx", stub_mod)
+
+    calls["mode"] = "ok"
+    blob = mod._convert_pdf_to_docx(b"%PDF-1.4 fake")
+    assert blob == b"PK\x03\x04 fake docx", "必须读回转换产物字节"
+    assert calls["src"].endswith(os.sep + "input.pdf"), "源文件必须恒为 input.pdf"
+    assert calls["out"].endswith(os.sep + "input.docx"), "产物必须恒为 input.docx"
+    assert calls.get("closed") is True, "Converter.close 必须被调"
+
+    # 对抗：转换静默失败（无产物）→ RuntimeError，不返回 None/空
+    calls["mode"] = "fail"
+    calls["closed"] = False
+    raised = False
+    try:
+        mod._convert_pdf_to_docx(b"%PDF-1.4 fake")
+    except RuntimeError:
+        raised = True
+    assert raised, "产物缺失必须抛 RuntimeError"
+    assert calls.get("closed") is True, "失败路径也必须调 close"
+
+    # 对抗：产物为 0 字节 → 同样 RuntimeError（空 docx 不是合法 zip）
+    calls["mode"] = "zero"
+    calls["closed"] = False
+    raised = False
+    try:
+        mod._convert_pdf_to_docx(b"%PDF-1.4 fake")
+    except RuntimeError:
+        raised = True
+    assert raised, "0 字节产物必须抛 RuntimeError"
+    assert calls.get("closed") is True, "空产物路径也必须调 close"
 
 
 def test_convert_to_docx_missing_output_raises(monkeypatch):
@@ -496,7 +550,7 @@ def test_upload_pdfx_pseudo_ext_rejected(monkeypatch):
 
 
 def test_upload_pdf_converts_and_stores_docx(monkeypatch):
-    """.pdf 上传走转换路径：以 src_ext='.pdf' 调 _convert_to_docx，入库 file_type='docx'，
+    """.pdf 上传走 pdf2docx 转换路径：调 _convert_pdf_to_docx，入库 file_type='docx'，
     存的是转换产物 blob（原始 PDF 不留存）。"""
     mod = _template_api
     req = _FakeRequest(file=_FakeUploadFile("标书范本.pdf", b"%PDF-1.4 fake"),
@@ -504,30 +558,30 @@ def test_upload_pdf_converts_and_stores_docx(monkeypatch):
     inserted, versions = _patch_upload_deps(monkeypatch, mod, req)
     conv_calls = {}
 
-    def fake_convert(blob, src_ext=".doc"):
-        conv_calls["src_ext"] = src_ext
+    def fake_convert(blob):
+        conv_calls["called"] = True
         return _fake_docx_bytes()
 
-    monkeypatch.setattr(mod, "_convert_to_docx", fake_convert)
+    monkeypatch.setattr(mod, "_convert_pdf_to_docx", fake_convert)
     resp = asyncio.run(mod.upload_template())
     assert resp["code"] == 0
-    assert conv_calls == {"src_ext": ".pdf"}, "PDF 分支必须显式传 src_ext='.pdf'"
+    assert conv_calls == {"called": True}, "PDF 分支必须调 _convert_pdf_to_docx"
     assert inserted["file_type"] == "docx", "PDF 转换后必须以 docx 形态入库"
     assert versions["blob"] == _fake_docx_bytes(), "存的是转换产物而非原始 PDF"
     assert versions["fn"] == "标书范本.pdf"
 
 
 def test_upload_pdf_convert_failure_returns_friendly_error(monkeypatch):
-    """对抗：伪 .pdf（内容不是 PDF 且 soffice 转换抛异常）→ 友好错误 dict，不 500、不写库。"""
+    """对抗：伪 .pdf（内容不是 PDF 且 pdf2docx 转换抛异常）→ 友好错误 dict，不 500、不写库。"""
     mod = _template_api
     req = _FakeRequest(file=_FakeUploadFile("fake.pdf", b"this is not a pdf"),
                        form={"name": "伪 PDF"})
     inserted, versions = _patch_upload_deps(monkeypatch, mod, req)
 
-    def boom(blob, src_ext=".doc"):
+    def boom(blob):
         raise RuntimeError("pdf convert failed")
 
-    monkeypatch.setattr(mod, "_convert_to_docx", boom)
+    monkeypatch.setattr(mod, "_convert_pdf_to_docx", boom)
     resp = asyncio.run(mod.upload_template())
     d = _err_dict(resp)
     assert d["code"] == DATA_ERROR_CODE
@@ -542,8 +596,8 @@ def test_upload_pdf_converted_oversize_rejected(monkeypatch):
     req = _FakeRequest(file=_FakeUploadFile("big.pdf", b"%PDF-1.4"),
                        form={"name": "膨胀 PDF"})
     inserted, versions = _patch_upload_deps(monkeypatch, mod, req)
-    monkeypatch.setattr(mod, "_convert_to_docx",
-                        lambda blob, src_ext=".doc": b"x" * (20 * 1024 * 1024 + 1))
+    monkeypatch.setattr(mod, "_convert_pdf_to_docx",
+                        lambda blob: b"x" * (20 * 1024 * 1024 + 1))
     resp = asyncio.run(mod.upload_template())
     d = _err_dict(resp)
     assert d["code"] == DATA_ERROR_CODE

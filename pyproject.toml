@@ -75,6 +75,8 @@ dependencies = [
     "opendal>=0.45.0,<0.46.0",
     "opensearch-py==2.7.1",
     "ormsgpack==1.5.0",
+    # pdf2docx: 范本库 PDF 上传转 docx（原生段落/表格重建，替代 LibreOffice 文本框模式）；连带 PyMuPDF(AGPL)
+    "pdf2docx==0.5.13",
     "pdfplumber==0.10.4",
     "pluginlib==0.10.0",
     "psycopg2-binary>=2.9.11,<3.0.0",

@@ -25,6 +25,7 @@ import tempfile
 import threading
 import uuid
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 
 from quart import Blueprint, Response, request
 
@@ -89,15 +90,50 @@ def _is_pdf(filename: str) -> bool:
     return (filename or "").lower().endswith(".pdf")
 
 
+# PDF 转换专用线程池：与默认 executor 隔离。pdf2docx 是进程内纯 Python 转换，
+# 病态 PDF 可能长时间自旋且线程无法强杀——专用小池保证即使被占死也只影响
+# PDF 上传路径，不会耗尽全局 to_thread 池（否则会卡死同进程所有异步请求）。
+_PDF_CONVERT_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tpl-pdf")
+# 实测 237 页范本样张 26.5s，放宽到 5 分钟上界
+_PDF_CONVERT_TIMEOUT = 300
+
+
+def _convert_pdf_to_docx(blob: bytes) -> bytes:
+    """pdf2docx 转 PDF 为 .docx。LibreOffice writer_pdf_import 会把全部文字
+    装进定位文本框（实测 237 页范本样张：34,050 个文本框、0 个原生表格，
+    python-docx 按段落读取为 0 字符，下游识别/渲染链路不可见），2026-09-14
+    起改用 pdf2docx 重建 Word 原生流式元素（同一样张：0 文本框、633 个
+    原生表格含合并单元格）。惰性导入：仅 PDF 上传路径承担其加载开销。
+    扫描件（无文字层的图片型 PDF）无法转换，由上层统一异常文案兜底。"""
+    from pdf2docx import Converter
+
+    with tempfile.TemporaryDirectory(prefix="tpl_pdf_") as tmp:
+        src = os.path.join(tmp, "input.pdf")
+        with open(src, "wb") as f:
+            f.write(blob)
+        out = os.path.join(tmp, "input.docx")
+        cv = Converter(src)
+        try:
+            cv.convert(out)
+        finally:
+            try:
+                cv.close()
+            except Exception:
+                # close 失败不顶替 convert 的真实异常（端点日志要记真凶）
+                logger.debug("pdf2docx Converter.close failed", exc_info=True)
+        if not os.path.exists(out) or os.path.getsize(out) == 0:
+            logger.error("convert pdf to docx produced empty output")
+            raise RuntimeError("convert pdf to docx failed")
+        with open(out, "rb") as f:
+            return f.read()
+
+
 def _convert_to_docx(blob: bytes, src_ext: str = ".doc") -> bytes:
-    """经 LibreOffice 转出 .docx。src_ext 选 soffice import filter（.doc 旧版
-    Word / .pdf）。容器内有 LibreOffice；用独立
+    """经 LibreOffice 转出 .docx（仅旧版 .doc 走此路径；PDF 分支见
+    _convert_pdf_to_docx）。容器内有 LibreOffice；用独立
     UserInstallation 目录避免并发/首启 profile 锁冲突。容器 soffice 包装
     脚本未自设库路径，须显式注入 LD_LIBRARY_PATH（否则 soffice.bin 报
-    libreglo.so cannot open shared object file, rc=127）。
-    PDF 必须显式 --infilter=writer_pdf_import：默认按 Draw 打开，
-    没有 Writer 文档模型无法用 docx 导出过滤器（报 source file could
-    not be loaded）。"""
+    libreglo.so cannot open shared object file, rc=127）。"""
     env = {**os.environ, "LD_LIBRARY_PATH": "/usr/lib/libreoffice/program"}
     with tempfile.TemporaryDirectory(prefix="tpl_doc_") as tmp:
         src = os.path.join(tmp, f"input{src_ext}")
@@ -105,12 +141,10 @@ def _convert_to_docx(blob: bytes, src_ext: str = ".doc") -> bytes:
             f.write(blob)
         profile = f"file://{tmp}/lo_profile_{uuid.uuid4().hex}"
         cmd = ["soffice", "--headless", "--norestore", f"-env:UserInstallation={profile}"]
-        if src_ext == ".pdf":
-            cmd.append("--infilter=writer_pdf_import")
         cmd += ["--convert-to", "docx", "--outdir", tmp, src]
         r = subprocess.run(
             cmd,
-            capture_output=True, timeout=60, check=False, env=env)
+            capture_output=True, timeout=180, check=False, env=env)
         out = os.path.join(tmp, "input.docx")
         if not os.path.exists(out):
             logger.error("convert to docx failed (src_ext=%s): rc=%s stderr=%s",
@@ -183,7 +217,9 @@ async def upload_template():
         return get_error_data_result("文件为空或超过 20MB")
     if is_legacy_doc:
         try:
-            blob = _convert_to_docx(blob)
+            # subprocess 同步等待会阻塞 Quart 事件循环（最长 timeout 秒，期间全部
+            # 并发请求停摆），丢线程池执行
+            blob = await asyncio.to_thread(_convert_to_docx, blob)
         except Exception:
             logger.exception("legacy doc convert failed, filename=%s", file.filename)
             return get_error_data_result("旧版 .doc 转换失败，请用 Word 另存为 .docx 后重新上传")
@@ -192,7 +228,16 @@ async def upload_template():
             return get_error_data_result("文件为空或超过 20MB")
     if is_pdf:
         try:
-            blob = await asyncio.to_thread(_convert_to_docx, blob, ".pdf")
+            # 专用池 + wait_for 超时：病态 PDF 自旋时请求可失败返回，
+            # 线程留在专用池内不拖垮全局 to_thread 池
+            blob = await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(
+                    _PDF_CONVERT_POOL, _convert_pdf_to_docx, blob),
+                timeout=_PDF_CONVERT_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.error("pdf convert timed out after %ss, filename=%s",
+                         _PDF_CONVERT_TIMEOUT, file.filename)
+            return get_error_data_result("PDF 转换超时，建议拆分或压缩后重试")
         except Exception:
             logger.exception("pdf convert failed, filename=%s", file.filename)
             return get_error_data_result("PDF 转换失败，建议用 Word/WPS 打开后另存为 .docx 再上传")
@@ -239,6 +284,8 @@ async def detect_placeholders():
     except Exception:
         logger.exception("extract candidates failed, template=%s", tpl.id)
         return get_error_data_result("模板文件损坏或无法解析")
+    if not candidates:
+        return get_error_data_result(_ZERO_CANDIDATES_MSG)
     try:
         suggestions = await detect_fill_points(current_user.id, tpl.file_type, candidates)
     except Exception:
@@ -278,6 +325,9 @@ def _run_detect_task(template_id: str, tenant_id: str):
         except Exception:
             logger.exception("extract candidates failed, template=%s", template_id)
             TplTemplateService.set_detect_status(template_id, "failed", "模板文件损坏或无法解析")
+            return
+        if not candidates:
+            TplTemplateService.set_detect_status(template_id, "failed", _ZERO_CANDIDATES_MSG)
             return
         try:
             # daemon 线程无事件循环，asyncio.run 新建 loop 跑异步 LLM 识别

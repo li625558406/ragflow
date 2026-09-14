@@ -1,5 +1,20 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-14 PDF→Word 转换引擎替换为 pdf2docx
+
+**主题**：范本库 PDF 上传的转 docx 引擎从 LibreOffice `writer_pdf_import` 替换为 pdf2docx（真实样张 A/B 实测后用户裁定采纳）。
+
+**实测依据**（237 页《电子招标投标示范文本.pdf》容器内 A/B）：LibreOffice 产出 34,050 个定位文本框 / 0 个原生表格，python-docx 按段落读取 0 字符（下游识别/渲染链路不可见，是转换件格式差的根因）；pdf2docx 产出 0 文本框 / 633 个原生表格（989 处合并单元格）/ 6,119 真段落，耗时 26.5s。
+
+**核心变更**：
+- `template_api.py`：新增 `_convert_pdf_to_docx`（pdf2docx Converter 惰性导入 + 临时目录 + close 兜底且 close 异常不顶替真凶 + 空/缺产物 RuntimeError）；upload PDF 分支改调它（专用 2 线程池 `_PDF_CONVERT_POOL` + `asyncio.wait_for` 300s 超时——病态 PDF 自旋只占专用池，不拖垮全局 to_thread 池，超时返回「PDF 转换超时」）；`_convert_to_docx` 收窄为仅 .doc 走 LibreOffice（移除 infilter 分支）
+- `pyproject.toml`：主依赖加 `pdf2docx==0.5.13`（连带 PyMuPDF——AGPL，服务端内部使用无碍；pdf2docx 本体 MIT）
+- 测试：`test_template_api_routes.py` 同步——passthrough 测试收窄为 .doc-only，新增 `_convert_pdf_to_docx` 用例（stub 模块注入 sys.modules，不依赖本地装包；覆盖 close 必调/产物缺失/0 字节产物 RuntimeError）；3 个 PDF 上传用例改 patch `_convert_pdf_to_docx`；93 passed；审查（Code Reviewer agent）结论无 block，major（超时保护）与 minor（0 字节用例/close 掩蔽）均已修复
+
+**遗留**：uv.lock 未同步——全量 `uv lock` 被存量 mistralai==0.4.2 × scrapling[fetchers] 冲突卡死（scrapling 自 6 月加入 pyproject 起从未进 lock，存量问题），重建镜像前须先解该冲突；运行容器内已临时 pip 安装 pdf2docx 0.5.13（docker restart 保留、recreate 丢失）。LibreOffice 产物文本框全靠 `:tx<k>:` 编址覆盖的旧链路仍是 2026-09-13 加固版的兜底能力，不受影响。
+
+**部署**：待部署——`template_api.py` SCP 热更新即生效（容器已有 pdf2docx）；镜像重建需先修复 uv.lock 并确认 pdf2docx 进镜像。
+
 ## 2026-09-14 B端范本预览保真渲染（双模式）
 
 **主题**：B端范本详情「模板预览」从纯文本段落列表升级为双模式——默认保真视图（docx-preview 渲染 original 原件，字号/加粗/颜色/表格/排版与源文档一致），「文本模式」切换保留原有划选标记填写点功能。设计文档 `docs/superpowers/specs/2026-09-14-bend-template-fidelity-preview-design.md`。
