@@ -62,6 +62,9 @@ export default function TemplateFillProgress({
         key={`${mergedState.pendingConfirm.task_id}:${mergedState.pendingConfirm.nonce || ''}`}
         pending={mergedState.pendingConfirm}
         onSubmitted={onConfirmSubmitted}
+        onLocate={(templateId, key) =>
+          setLiveTarget({ template_id: templateId, focusKey: key })
+        }
       />
     </div>
   );
