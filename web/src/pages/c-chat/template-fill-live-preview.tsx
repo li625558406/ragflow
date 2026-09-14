@@ -41,12 +41,32 @@ function splitPlaceholders(
   return nodes;
 }
 
+// 点击未填充汇总字段后的定位闪烁时长（毫秒）
+const FLASH_MS = 2000;
+
+/** 定位到容器内 data-ph-key 匹配的占位符：滚动居中 + 临时 outline 闪烁。
+ * 找不到返回 false（调用方据此不标记已定位，留待渲染完成后重试）。 */
+function focusPlaceholder(container: HTMLElement, key: string): boolean {
+  const el = container.querySelector<HTMLElement>(
+    `[data-ph-key="${CSS.escape(key)}"]`,
+  );
+  if (!el) return false;
+  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  const prev = el.style.outline;
+  el.style.outline = '2px solid #1a66fb';
+  window.setTimeout(() => {
+    el.style.outline = prev;
+  }, FLASH_MS);
+  return true;
+}
+
 export default function TemplateFillLivePreview({
   tpl,
+  focusKey,
   onClose,
 }: {
   tpl: ITemplateFillTemplate;
-  /** 可选定位字段 key（点击未填充汇总字段打开预览时携带）；Task 7 实现滚动定位逻辑 */
+  /** 点击未填充汇总字段带来的定位目标（抽屉打开后定位一次） */
   focusKey?: string;
   onClose: () => void;
 }) {
@@ -71,7 +91,11 @@ export default function TemplateFillLivePreview({
   // values 变化时经 spans 映射增量更新（零 DOM 重建），大文档不卡顿。
   // 渲染失败降级回纯文本段落渲染。
   const [renderFailed, setRenderFailed] = useState(false);
+  // docx 保真渲染完成标记：定位 effect 依赖它区分「渲染未完不能定位」与「文档无该 key 静默放弃」
+  const [renderedOk, setRenderedOk] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  // 文本降级/xlsx 路径的滚动容器（与 docx 容器互斥挂载，二者必有其一）
+  const textContainerRef = useRef<HTMLDivElement>(null);
   const placeholderSpansRef = useRef<DocxPlaceholderSpans>(new Map());
   const valuesRef = useRef(values);
   valuesRef.current = values;
@@ -90,12 +114,14 @@ export default function TemplateFillLivePreview({
     if (!docxEnabled || !fileBlob || !containerRef.current) return;
     const el = containerRef.current;
     setRenderFailed(false);
+    setRenderedOk(false);
     placeholderSpansRef.current = new Map();
     el.innerHTML = '';
     renderAsync(fileBlob, el, undefined, { inWrapper: true, breakPages: true })
       .then(() => {
         applyDocxPageLazy(el);
         placeholderSpansRef.current = applyDocxHighlight(el, valuesRef.current);
+        setRenderedOk(true);
       })
       .catch(() => setRenderFailed(true));
   }, [fileBlob, docxEnabled]);
@@ -110,11 +136,28 @@ export default function TemplateFillLivePreview({
   useEffect(() => {
     placeholderSpansRef.current = new Map();
     setRenderFailed(false);
+    setRenderedOk(false);
   }, [tpl.template_id]);
 
   const docxFidelity = docxEnabled && !renderFailed && !fileError;
   const docxLoading =
     fileLoading || (docxEnabled && !fileBlob && !fileError && isLoading);
+
+  // 点击汇总字段后的定位：渲染完成后滚动到该占位符并闪烁；只执行一次
+  //（focusDoneRef 记录已定位 key）。docx 保真渲染未完成（renderedOk=false 且
+  // 未降级）时容器还没有占位符 span，不标记已定位，等依赖翻转后重试；
+  // 文本降级/xlsx 路径随 items 到达触发。文档中无该 key → 静默跳过。
+  const focusDoneRef = useRef<string | null>(null);
+  useEffect(() => {
+    // docx 保真容器与文本降级容器互斥挂载，取当前实际挂载的那个
+    const root = containerRef.current ?? textContainerRef.current;
+    if (!focusKey || docxLoading || !root) return;
+    if (focusDoneRef.current === focusKey) return;
+    if (docxEnabled && !renderedOk && !renderFailed) return;
+    if (focusPlaceholder(root, focusKey)) {
+      focusDoneRef.current = focusKey;
+    }
+  }, [focusKey, docxLoading, renderedOk, items, docxEnabled, renderFailed]);
 
   const filledCount = useMemo(() => Object.keys(values).length, [values]);
 
@@ -139,6 +182,7 @@ export default function TemplateFillLivePreview({
           <span
             key={i}
             title={seg.key}
+            data-ph-key={seg.key}
             className="mx-0.5 rounded bg-[#EFF4FF] px-1 py-px font-mono text-xs font-medium text-[#1a66fb]"
           >
             {v}
@@ -149,6 +193,7 @@ export default function TemplateFillLivePreview({
         <span
           key={i}
           title={`${seg.key}（等待 AI 填入）`}
+          data-ph-key={seg.key}
           className="mx-0.5 rounded border border-dashed border-[#1a66fb]/60 bg-[#EFF4FF] px-1 py-px font-mono text-[10px] text-[#1a66fb]"
         >
           {seg.key}
@@ -193,7 +238,10 @@ export default function TemplateFillLivePreview({
           <div ref={containerRef} />
         </div>
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-6 py-4">
+        <div
+          ref={textContainerRef}
+          className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-6 py-4"
+        >
           {docxEnabled && (renderFailed || fileError) && (
             <div className="mb-2 rounded bg-[#FFF7E8] px-3 py-2 text-xs text-[#FAAD14]">
               格式渲染失败，已降级为纯文本预览

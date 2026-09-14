@@ -50,7 +50,7 @@ export default function TemplateFillProgress({
   const liveTpl = mergedState?.templates.find(
     (t) => t.template_id === liveTarget?.template_id,
   );
-  // 抽屉开/关上报（布局腾位联动）；liveTplId 存在但范本行已被新一轮清空时视为关闭
+  // 抽屉开/关上报（布局腾位联动）；liveTarget 存在但范本行已被新一轮清空时视为关闭
   useEffect(() => {
     onLivePreviewOpenChange?.(Boolean(liveTpl));
   }, [liveTpl, onLivePreviewOpenChange]);

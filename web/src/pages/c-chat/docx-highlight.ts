@@ -21,6 +21,7 @@ function stylePlaceholderSpan(
   values: Record<string, string>,
   key: string,
 ): void {
+  span.dataset.phKey = key;
   const v = values[key];
   // 公共样式：继承 Word 上下文字号（不硬编码字号），保真优先
   span.style.backgroundColor = '#EFF4FF';
