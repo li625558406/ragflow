@@ -46,6 +46,8 @@ export default function TemplateFillLivePreview({
   onClose,
 }: {
   tpl: ITemplateFillTemplate;
+  /** 可选定位字段 key（点击未填充汇总字段打开预览时携带）；Task 7 实现滚动定位逻辑 */
+  focusKey?: string;
   onClose: () => void;
 }) {
   const enabled = Boolean(tpl.template_id);
