@@ -2397,3 +2397,140 @@ def test_apply_success_path_no_warning(caplog):
         {"addr": "para:0", "anchor": "＿＿", "key": "x", "occ": 2},
     ])
     assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
+
+# ---------- occ 识别链：merge 分配 + validate 校验 ----------
+
+
+def _mk_fill_item(key, anchor, addr="para:0"):
+    return {"key": key, "name": key, "description": "", "retrieval_query": "",
+            "fill_mode": "llm", "required": True, "addr": addr,
+            "anchor": anchor, "line": 0, "top_k": 6}
+
+
+def test_merge_llm_same_anchor_duplicates_get_occ_and_low_confidence():
+    """LLM 组同段同形留白多项：occ 1..n 全部保留，occ≥2 打低置信（同形歧义需人工核对）。"""
+    from rag.svr.template_fill.detector import _merge_detection
+    merged = _merge_detection([], [_mk_fill_item("a", "＿＿"), _mk_fill_item("b", "＿＿")])
+    assert [it.get("occ") for it in merged] == [1, 2]
+    assert merged[0].get("low_confidence") in (None, False)
+    assert merged[1]["low_confidence"] is True
+
+
+def test_merge_explicit_duplicates_get_occ_without_low_confidence():
+    """手动直通组同 (addr, anchor) 多份（{{key}} 出现多次）：occ 1..n 确定性保留，不打低置信。"""
+    from rag.svr.template_fill.detector import _merge_detection, extract_explicit_placeholders
+    cands = [{"index": 0, "text": "{{name}} {{name}}", "addr": "para:0"}]
+    explicit = extract_explicit_placeholders(cands)
+    merged = _merge_detection(explicit, [])
+    assert [it.get("occ") for it in merged] == [1, 2]
+    assert all(not it.get("low_confidence") for it in merged)
+
+
+def test_merge_llm_echo_of_explicit_anchor_still_dropped():
+    """LLM 回显手动占位符同 anchor：手动优先丢弃，且不分配 occ（防 occ=2 挤爆校验）。"""
+    from rag.svr.template_fill.detector import _merge_detection, extract_explicit_placeholders
+    cands = [{"index": 0, "text": "编号：{{code}}", "addr": "para:0"}]
+    explicit = extract_explicit_placeholders(cands)
+    llm = [_mk_fill_item("code2", "{{code}}")]
+    merged = _merge_detection(explicit, llm)
+    assert [it["key"] for it in merged] == ["code"]
+    assert all(it.get("occ") is None for it in merged)
+
+
+def test_merge_llm_echo_group_does_not_extend_explicit_occ_sequence():
+    """对抗：LLM 组与 explicit 组各自独立计数——explicit 同形 1 项 + LLM 回显同位 2 项
+    全部丢弃，occ 序列不得串组（否则 explicit 项会被虚标 occ）。"""
+    from rag.svr.template_fill.detector import _merge_detection, extract_explicit_placeholders
+    cands = [{"index": 0, "text": "编号：{{code}}", "addr": "para:0"}]
+    explicit = extract_explicit_placeholders(cands)
+    llm = [_mk_fill_item("echo1", "{{code}}"), _mk_fill_item("echo2", "{{code}}")]
+    merged = _merge_detection(explicit, llm)
+    assert [it["key"] for it in merged] == ["code"]
+    assert "occ" not in merged[0]
+
+
+def test_merge_shrink_rollback_strips_occ():
+    """收缩撞车回退到 _orig_anchor 时 occ 作废（occ 属于收缩后 anchor 的组）。"""
+    from rag.svr.template_fill.detector import _merge_detection
+    a = _mk_fill_item("a", "＿＿")
+    a["_orig_anchor"] = "甲方名称："
+    b = _mk_fill_item("b", "＿＿")
+    b["_orig_anchor"] = "乙方名称："
+    merged = _merge_detection([], [a, b])
+    by_key = {it["key"]: it for it in merged}
+    assert by_key["b"]["anchor"] == "乙方名称："  # 回退保留
+    assert "occ" not in by_key["b"]  # 回退项 occ 作废
+
+
+def test_merge_three_same_blanks_llm_occ_123():
+    """对抗：同段三个同形留白 LLM 组 → occ=1/2/3 全保留，第 2、3 项均打低置信。"""
+    from rag.svr.template_fill.detector import _merge_detection
+    llm = [_mk_fill_item(k, "＿＿") for k in ("a", "b", "c")]
+    merged = _merge_detection([], llm)
+    assert [it["occ"] for it in merged] == [1, 2, 3]
+    assert [it["key"] for it in merged] == ["a", "b", "c"]
+    assert not merged[0].get("low_confidence")  # occ=1 不打低置信（字段缺省/False 均视为未打）
+    assert merged[1]["low_confidence"] is True
+    assert merged[2]["low_confidence"] is True
+
+
+def test_validate_occ_within_actual_count_passes():
+    from rag.svr.template_fill.detector import validate_placeholders
+    cands = [{"index": 0, "text": "甲：＿＿ 乙：＿＿", "addr": "para:0"}]
+    ok, msg = validate_placeholders([_mk_fill_item("a", "＿＿") | {"occ": 2}], cands)
+    assert ok, msg
+
+
+def test_validate_occ_beyond_actual_count_rejected():
+    from rag.svr.template_fill.detector import validate_placeholders
+    cands = [{"index": 0, "text": "甲：＿＿", "addr": "para:0"}]
+    ok, msg = validate_placeholders([_mk_fill_item("a", "＿＿") | {"occ": 2}], cands)
+    assert not ok and "occ" in msg
+
+
+def test_validate_manual_row_occ_gt_1_rejected():
+    from rag.svr.template_fill.detector import validate_placeholders
+    cands = [{"index": 0, "text": "甲：＿＿", "addr": "para:0"}]
+    row = _mk_fill_item("a", "＿＿")
+    row["addr"] = ""  # 手动行：靠 anchor 反查
+    ok, msg = validate_placeholders([row | {"occ": 2}], cands)
+    assert not ok
+
+
+def test_validate_legacy_no_occ_still_passes():
+    from rag.svr.template_fill.detector import validate_placeholders
+    cands = [{"index": 0, "text": "甲：＿＿ 乙：＿＿", "addr": "para:0"}]
+    ok, msg = validate_placeholders([_mk_fill_item("a", "＿＿")], cands)
+    assert ok, msg
+
+
+@pytest.mark.parametrize("bad_occ", [0, -1, True, "2", 1.5])
+def test_validate_occ_dirty_values_rejected(bad_occ):
+    """对抗（脏值）：occ=0/负数/bool（True==1 的陷阱）/字符串/浮点一律拒绝。"""
+    from rag.svr.template_fill.detector import validate_placeholders
+    cands = [{"index": 0, "text": "甲：＿＿ 乙：＿＿", "addr": "para:0"}]
+    ok, msg = validate_placeholders([_mk_fill_item("a", "＿＿") | {"occ": bad_occ}], cands)
+    assert not ok, f"occ={bad_occ!r} 应被拒绝"
+    assert "occ" in msg
+
+
+def test_validate_occ_count_is_non_overlapping():
+    """对抗：出现次数按非重叠语义——anchor="＿＿"（2字符）在"＿＿＿＿"中即 2 次出现：
+    occ=2 放行、occ=3 拒绝（重叠计数会误判 3 次）。"""
+    from rag.svr.template_fill.detector import validate_placeholders
+    cands = [{"index": 0, "text": "空白：＿＿＿＿", "addr": "para:0"}]
+    ok, _ = validate_placeholders([_mk_fill_item("a", "＿＿") | {"occ": 2}], cands)
+    assert ok
+    ok, msg = validate_placeholders([_mk_fill_item("a", "＿＿") | {"occ": 3}], cands)
+    assert not ok and "occ" in msg
+
+
+def test_validate_manual_row_occ_true_rejected():
+    """对抗（手动行 bool 陷阱）：True == 1 在 == 比较下会漏过 occ=1 校验，须显式拒绝 bool。"""
+    from rag.svr.template_fill.detector import validate_placeholders
+    cands = [{"index": 0, "text": "甲：＿＿", "addr": "para:0"}]
+    row = _mk_fill_item("a", "＿＿")
+    row["addr"] = ""
+    ok, msg = validate_placeholders([row | {"occ": True}], cands)
+    assert not ok and "occ" in msg

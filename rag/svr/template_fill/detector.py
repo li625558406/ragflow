@@ -230,6 +230,12 @@ def validate_placeholders(items: list, candidates: list) -> tuple:
             if len(hits) > 1:
                 return False, f"第{row_no}个填写点：锚文本匹配到{len(hits)}处，请使用更长的锚文本"
             cand = hits[0]
+            # 手动添加行没有同形留白分组语义（反查已要求全模板唯一命中），
+            # 只接受 occ 缺省或 occ=1；注意 True == 1 的 bool 陷阱须显式排除
+            occ = it.get("occ")
+            if occ is not None:
+                if not isinstance(occ, int) or isinstance(occ, bool) or occ != 1:
+                    return False, f"{key} 的 occ 非法（手动添加行只支持 occ=1）"
             it["addr"] = cand["addr"]  # 回填，保证落库的占位符都有有效 addr
         else:
             cand = cand_map.get(addr)
@@ -237,6 +243,17 @@ def validate_placeholders(items: list, candidates: list) -> tuple:
                 return False, f"{key} 的定位 {addr!r} 不存在"
             if not anchor or anchor not in cand["text"]:
                 return False, f"{key} 的 anchor 不在 {addr} 文本中"
+            # occ（第 N 次出现定位）终审：缺省放行（存量数据兼容）；存在时须为
+            # 正整数（bool 是 int 子类，True==1 会漏过，显式拒绝）且不超过
+            # anchor 在该候选文本中的实际出现次数（str.count 即非重叠计数，
+            # 与渲染层逐次定位语义一致）
+            occ = it.get("occ")
+            if occ is not None:
+                if not isinstance(occ, int) or isinstance(occ, bool) or occ < 1:
+                    return False, f"{key} 的 occ 非法（须为正整数）"
+                actual = cand["text"].count(anchor)
+                if occ > actual:
+                    return False, f"{key} 的锚文本出现次数不足（occ={occ}，实际{actual}）"
         if it.get("fill_mode") not in FILL_MODES:
             return False, f"{key} 的 fill_mode 非法"
     return True, ""
@@ -293,22 +310,55 @@ async def _detect_chunked(chat, file_type: str, candidates: list) -> tuple:
 
 
 def _merge_detection(explicit: list, llm_items: list) -> list:
-    """合并手动直通项与 LLM 识别项：(addr, anchor) 去重（手动优先），跨源/跨块
-    key 冲突按出现顺序加 _2/_3 后缀（与 parse_detection_response 单次调用内
-    去重语义一致，但作用域为整次识别）。
-    收缩撞车回退：同一行多个字段收缩到同一留白串（如"甲方：＿＿ 乙方：＿＿"）时，
-    (addr, anchor) 撞车会把后续字段静默丢弃——带 _orig_anchor 的项回退到原 anchor
-    保留并打低置信（内部字段在 append 前删除，不进产物）。"""
+    """合并手动直通项与 LLM 识别项。
+    - 同源同 (addr, anchor) 多份（同段同形留白 / 同一 {{key}} 出现多次）：
+      预分配 occ（第 N 次出现定位，渲染层按次序落位）保留全部；LLM 组 occ≥2
+      打低置信（同形留白歧义需人工核对），手动组确定性不打。
+    - 跨源同 (addr, anchor)：仍手动优先丢弃——不给 LLM 项分配 occ，防 LLM
+      幻觉回显 {{key}} 产生 occ=2 超界项挤爆 validate。
+    - 收缩撞车回退：带 _orig_anchor 的项回退到原 anchor 保留并打低置信，
+      occ 作废（属于收缩后 anchor 的组）。
+    跨源/跨块 key 冲突按出现顺序加 _2/_3 后缀（作用域为整次识别）。"""
+
+    def _preassign_occ(items: list, mark_low_confidence: bool) -> None:
+        """同源组内按 (addr, anchor) 计数：出现 >1 次的组按顺序分配 occ=1..n。
+        mark_low_confidence 时 occ≥2 强制低置信（同形留白歧义——即便 parse 阶段
+        判定收缩后"无歧义"，多项撞进同一留白本身就是歧义证据）。"""
+        totals, seq = {}, {}
+        for it in items:
+            p0 = (it["addr"], it["anchor"])
+            totals[p0] = totals.get(p0, 0) + 1
+        for it in items:
+            p0 = (it["addr"], it["anchor"])
+            if totals[p0] > 1:
+                n = seq.get(p0, 0) + 1
+                seq[p0] = n
+                it["occ"] = n
+                if mark_low_confidence and n > 1:
+                    it["low_confidence"] = True
+
+    explicit_pos = {(it["addr"], it["anchor"]) for it in explicit}
+    _preassign_occ(explicit, mark_low_confidence=False)
+    # 跨源撞位的 LLM 项不参与预分配（后续按手动优先丢弃，留 occ 会是超界脏值）
+    _preassign_occ(
+        [it for it in llm_items if (it["addr"], it["anchor"]) not in explicit_pos],
+        mark_low_confidence=True)
+
     merged, seen_pos, used_keys = [], set(), set()
     for it in explicit + llm_items:
         orig_anchor = it.pop("_orig_anchor", None)
         pos = (it["addr"], it["anchor"])
         if pos in seen_pos:
             if orig_anchor and (it["addr"], orig_anchor) not in seen_pos:
+                it.pop("occ", None)  # occ 属于收缩后 anchor 的组，回退后作废
                 it["anchor"] = orig_anchor
                 pos = (it["addr"], orig_anchor)
                 it["low_confidence"] = True
+            elif "occ" in it:
+                # 同源同位组内重复（已预分配 occ=1..n）：保留，渲染层按次序落位
+                pass
             else:
+                # 跨源撞位（LLM 回显手动占位符）：手动优先丢弃
                 continue
         seen_pos.add(pos)
         base_key, key, n = it["key"], it["key"], 2
