@@ -1,5 +1,96 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-13 范本 AI 识别加固
+
+**主题**：识别覆盖面扩展（页眉/页脚/文本框/内容控件）+ 同形留白多点 occ 语义 + LLM 解析与警示加固。设计文档 `docs/superpowers/specs/2026-09-13-template-detect-hardening-design.md`。
+
+**核心变更**：
+- `_build_addr_map` 单点编址扩展（`rag/svr/template_fill/docx_utils.py`）：页眉/页脚（`hdr:/ftr:` 前缀，linked 跳过 + partname 全文档去重，first/even 显式 unlinked 追加后缀段防撞号）、文本框（`:tx<k>:` 后缀，mc:AlternateContent 只取 Choice，深度限 8）、body 直系 w:sdt 递归展开（独立 `sdt:` 前缀 + `:sdt<k>:` 嵌套）——候选提取/B端预览/替换/标蓝四链路自动受益，docxtpl 原生渲染新区域 {{key}}。**存量 addr 兼容红线**：`para_seq` 消耗者仍只有 body 直系段落 + 顶层表格 cell 段落（legacy 标志隔离），嵌套/新区域零消耗，升级前文档存量 para:/cell: 序列逐字节不变（6 场景与基线对比验证）
+- occ 语义：同段同形留白不再静默丢弃。同源同 (addr, anchor) 组预分配 occ（第 N 次非重叠出现定位，`_nth_index` 按 len(sub) 步长）；替换三路径（单 run/跨 run/拼接）支持 occ；缺省 occ=None 保持存量 replace-all 逐字节不变；occ 越界 no-op + warning（对齐设计 §8 可观测性）；xlsx 禁用 occ 预分配（apply 层不识别，防串值）
+- occ 识别链（`detector.py`）：同源组预分配（LLM 组 occ≥2 打 low_confidence）+ 跨源手动优先 + parse 阶段记 anchor 偏移防 LLM 乱序输出串位 + validate 出现次数/序号校验（手动行仅 occ=1）；文案去术语
+- LLM 输出解析三级容错（`_extract_json_array`）：裸数组直解 → 剥 ``` 围栏 → 贪婪正则回退，全败返回 []
+- 前端：填写点表格锚文本列「低置信」琥珀徽标（title 说明收缩修正/同形留白）+ 0 候选文案标注覆盖面（正文/表格/页眉/页脚/文本框）
+
+**验证**：8 套件 415 passed（唯一失败 test_convert_doc_to_docx_success 为他人未提交 timeout 改动所致，与本迭代无关）；`test_template_fill_utils.py` 178 passed 含 16 个 occ + 10 个解析容错 + 存量逐字节兼容钉子；前端 npm run build 通过。
+
+**遗留**：已填现值型（段落无留白特征不进候选）仍不识别（设计文档已知边界）；LLM 同段幻觉重复 anchor 且实际仅 1 次出现时 occ 校验拒绝整批（保守失败）；C 端 docx-preview 保真预览对新区域的展示未专项适配。
+
+**部署**：未部署。后端成套 SCP：`rag/svr/template_fill/docx_utils.py` / `detector.py` / `renderer.py` / `api/apps/restful_apis/template_api.py`；前端 `placeholder-table.tsx`（npm run build + dist SCP）。无数据库变更。
+
+## 2026-09-13 加强：流程「版本记录」默认勾选聚焦最新一条
+
+**主题**：版本记录栏默认选中逻辑跟随 `current_version_id`——回退后 current 指向旧版本，打开流程时勾选落在旧版本上，且其批注/详情视图也跟随旧版本，不符合「默认看最新」预期。
+
+**修复**（`web/src/pages/c-chat/flow/flow-detail.tsx`，纯前端）：
+- `selectedVersion` memo 默认值由 `current_version_id` 改为 version_no 最大的最新版本（reduce 取最大，与倒序列表首项一致）；用户手动点击后以用户选择为准
+- 补 `selectedVersionId` 随 flowId 切换重置（与 visibleCount 重置一致）：切走再切回不带入上一轮手动选择，回到默认最新
+
+**验证**：Playwright 三场景（demo05 打开=v2 最新高亮 → 点 v1=用户选择生效 → 切 demo06 再切回=重置回 v2）全过；tsc 本文件零错误。
+
+**遗留**：无。**未部署**（与同日白屏修复、保真预览切换一并，纯前端 build+SCP+nginx reload）。
+
+## 2026-09-13 加强：文件审核默认保真预览显示原色 + 显式编辑切换
+
+**主题**：文件审核（flow-ai-panel 路径）打开成稿看不到原文颜色（范本填写标蓝的 LLM 填充内容显示为纯黑）。根因：`canEdit=true` 时 ReviewPanel 一律进 Lexical 旧段落编辑视图（纯文本模型，颜色/格式必然丢失），docx 保真视图只有只读路径（眼睛查看）才走。
+
+**修复**（`web/src/pages/c-chat/review-panel.tsx` + `docx-toolbar.tsx`）：
+- 可编辑文件默认也进 docx-preview 保真预览（原色/字号/表格保真 + AI 标注/批注锚定照常），头部新增「编辑文档」按钮，显式点击才切 Lexical 编辑视图
+- 修一个被掩盖的 React 协调 bug：editing/fidelity/loading/fallback 四个分支根节点同为 div，React 就地复用 DOM 不卸载——残留的 docx-wrapper 渲染产物漏进编辑视图、ref callback 不触发。四个分支根节点加 key 强制重挂
+- 「放弃修改」按钮 dirty=0 时原本禁用，现兼任「退出编辑」（有改动时文案仍为放弃修改），保存/放弃/切换文件后均回到保真预览
+
+**验证**：Playwright 全链路（打开=保真 56 页 490 蓝字 span → 编辑=纯 Lexical 无残留 → 退出编辑=保真恢复）通过；tsc 本文件零错误。
+
+**遗留**：编辑视图本身仍是纯文本模型（Lexical 不支持字色），这是编辑态格式简化的既有设计；FlowPanel button 嵌套 button 的 validateDOMNesting 告警为既有问题。**未部署**（与同日白屏修复一并，纯前端 build+SCP+nginx reload）。
+
+## 2026-09-13 调研结论：doc→docx 转换格式问题取证（封面居中/目录）
+
+**取证**：用户反馈文件审核里范本「文字居中了、目录不对、很多格式不对」。取线上 v2 版本文件 + 用户本地原始 .doc（机电监理招标范本 2021.12修订）传服务器容器用同版 LibreOffice 24.2 转换对比 XML：
+- 封面居中（含「福建省公路水运工程…」字样）在**原始 .doc 里就是 jc=center**——是范本编制方套用水运范本模板的痕迹，不是转换弄乱；两次转换 XML 一致
+- 目录域完好（TOC \o "1-3" 域 + 222 个域指令 + 全部章节行）——目录「不对」是 **docx-preview 对 Word 域渲染支持弱**，真实 Word 打开正常
+- 结论：LibreOffice 转换忠实；格式观感问题主要来自 docx-preview 渲染局限，不是转换丢格式
+
+**B端范本库上传时转换 + 全链路 docx 已是现状**（template_api.py：.doc 上传即转 docx，原始 .doc 不留存，识别/填写/预览/下载全按 docx）。
+
+**开源替代结论**：LibreOffice headless 已是开源界 .doc→docx 保真度最高的事实标准；OnlyOffice x2t（AGPL）是唯一可对比备选但部署重、质量互有胜负；pandoc 不支持 .doc 二进制；antiword/wvWare 只提文本；Gotenberg 是 LO 封装。不建议引入新工具。
+
+**可落地改进**：容器补装中文商用字体（宋体/仿宋/楷体/黑体——当前仅 Noto CJK 39 字体，字体替换影响字宽度量→换行位置漂移）；格式争议时用真实 Word 打开转换后 docx 作基准对比。
+
+## 2026-09-13 修复：流程版本历史二次查看 docx 白屏（ReviewPanel 容器重挂不重渲染）
+
+**主题**：demo05 流程版本历史点眼睛查看 docx，第二次打开同一版本内容区空白（首次打开/切换另一版本/切回均正常，唯独「关闭后重开同一版本」白屏）。
+
+**根因**（纯前端，后端链路全程 200 正常）：ReviewPanel 关闭时 `if (!open) return null` 卸载全部 DOM，而 docx-preview 的 renderAsync 渲染产物只存在 DOM 不在 React state。重开同一 fileId 时 blob 命中 TanStack Query 缓存（引用不变）、content 仍在 state → renderAsync effect deps 全不变 → 不重跑渲染 → 容器空白。更深一层竞争：内容请求 effect 的 `setLoading(true)` 会卸载 fidelity 容器，renderAsync 写进 detached DOM，容器重挂后同样因 deps 不变不再渲染。
+
+**修复**（`web/src/pages/c-chat/review-panel.tsx`，epoch 桥接）：容器 ref 改为 ref callback（`docxWrapRefCb`），每次容器真实挂载递增 `docxEpoch` state；renderAsync effect deps 由 `[open, docxBlob, docxFidelityCandidate]` 改为 `[docxBlob, docxFidelityCandidate, docxEpoch]`——任何原因的容器重挂（open 切换 return null / loading 闪断 / 文件切换 / editing↔只读切换）都强制重跑渲染。另采纳审查建议两道防线：`.then` 首行 `if (!el.isConnected) return` 丢弃 stale 渲染产物（防 detached DOM 操作 + stale setMarkedKeys 覆盖）；渲染 effect 起始 `setMarkedKeys(new Set())` 随容器清空重置锚定记录。
+
+**验证**：本地 Playwright 4 场景（首开 55 sections / 重开同版本 55（修复前 0）/ 切另一版本 56 / 切回 55）全过；M1/M2 加入后复验首开+重开仍 55；`tsc --noEmit` 本文件零错误。代码审查（superpowers:code-reviewer）无 Critical/Major。
+
+**遗留**：渲染失败的文件重开不重试渲染（停留在降级段落视图，既有行为非回归）；StrictMode 下 effect 双跑可产生嵌套重复 mark 的外观瑕疵（既有，isConnected 守卫已收敛大半）。**未部署**——纯前端改动，部署须 `npm run build` + dist.tar.gz SCP + nginx reload。
+
+## 2026-09-13 修复：对话按节重写丢章——「第X章」文本章标题兜底切节
+
+**主题**：C端对话 DocumentRewrite「重写第一章」报文档里没有该章。根因（服务器实测证实）：政府范本排版不统一，部分章标题（如机电/高速公路范本第一、二章）在 .doc→docx 转换后是普通文本段落（style=Normal、无大纲级别），`split_sections` 只认 Heading 1 导致这些章从大纲消失（用户大纲只剩第三章起）。
+
+**修复**（`rag/svr/document_rewrite/sections.py`）：新增「第X章」文本特征兜底判定 `_is_chapter_title`——文本以章号开头（汉字/阿拉伯/全角/零〇数字）、≤50 字，排除三类误报：TOC 目录样式段、目录行（字面点线 `......` 及 Word 自动目录的 tab+页码结尾——真实 Word 目录点线是制表符前导符样式而非文本字符）、正文引用句（句读结尾）。标题收集条件改为 `_is_heading1(p) or _is_chapter_title(p)`，混排时按文档顺序统一切节。Heading 2 样式的「第X章」段落也被提升为顶层节（章是重写单元，与 heading 级别无关，有意行为）。
+
+**测试**：`test/test_doc_rewrite_sections.py` 新增 10 个对抗用例（纯文本章识别、Heading1+文本章混排顺序、字面点线/Word tab 目录排除、TOC 样式排除、句读/超长排除、「第一节」不误判、数字变体含第一百零一章、Heading 2 章提升钉住、邻接文本章 para_end==para_start），14→18 用例全过；document_rewrite 全套件 73 passed；ruff 零新增。
+
+**遗留**：另一叠加因素属使用层面——多范本会话产生多张成稿卡，rewrite 绑定 `sys.recent_downloads[0]`（最近一张，机电监理），用户想改的是施工监理成稿；LLM 已正确提示用户先切换/生成目标成稿，暂不改代码。正文引用句（如「第一章总则所述内容适用本章」，≤50 字无句读结尾）理论上仍可能误判，为已知限制。
+
+## 2026-09-13 加强：范本 AI 识别对标准招标范本文件的适配
+
+**主题**：B端范本库 AI 识别填写点针对真实标准范本（`F:\投标项目\投标资料\最新招标文件标准范本`，35 个文件中 15 个 .doc / 12 个 .pdf / 1 个 .docx）的三项加强；PDF 暂不支持（用户决策）。
+
+**核心变更**：
+- `rag/svr/template_fill/docx_utils.py`：FILL_HINT_RE 补全角下划线 `＿{2,}` 与勾选框 `□` 特征（此前全角下划线行根本进不了候选集）；`_build_addr_map` 重写——嵌套表格递归编址（父单元格 addr 追加 `:t<j>` 段，此前嵌套表内填写点整体丢失）+ 合并单元格 gridSpan 按 tc 去重（此前同一文本重复进候选致 anchor 反查「匹配到多处」）；apply 时 addr 悬空补 logger.warning（存量模板编址演进定位痕迹）；模块 docstring 同步 addr 约定
+- `api/apps/restful_apis/template_api.py`：.doc→docx 转换 timeout 60→180（几百页大部头范本）+ `asyncio.to_thread` 丢线程池（不再阻塞 Quart 事件循环 180s）；同步 detect 端点与后台识别线程对「候选为空」返回专门文案 `_ZERO_CANDIDATES_MSG`（提示 .doc 转换可能丢格式/建议另存 docx/手写占位符），后台线程仍置 failed 可重试
+- `rag/svr/template_fill/renderer.py`：仅 docstring 更新（_colorize_placeholder_runs 复用 _build_addr_map 自动获得嵌套覆盖）
+- 测试：新增 5 用例（全角下划线/勾选框特征、嵌套表编址+候选+替换、合并单元格去重、无嵌套普通文档编址回归守护），116 passed；ruff 零新增
+
+**兼容性**：顶层表格 tbl_no 编号规则不变，无合并单元格的存量模板 addr 完全一致；含横向合并单元格的存量模板若曾按非首现坐标落库，重渲染时该填写点会 skip 并打 warning 日志——建议此类模板重新识别一次。
+
+**遗留**：PDF 范本（水利工程 2022、普通公路 2024 等 12 个）不支持上传，待后续评估 pdf2docx 方案；前端对 detect 零候选 error toast 的展示需部署后验证。
+
 ## 2026-09-13 修复：无版本流程无法记录 AI 处理
 
 **主题**：创建流程时未带初始文件 → 范本填写成稿后自动保存记录报「流程暂无文件版本，无法记录 AI 处理」，`template_fill_events` 不落库、刷新后成稿卡回放丢失。
