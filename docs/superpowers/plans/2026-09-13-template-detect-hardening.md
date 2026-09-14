@@ -111,7 +111,7 @@ def _iter_txbx_content(el) -> list:
 
 3b. 整体替换 `_build_addr_map`（含 docstring）。保持存量正文编址逐字节不变：正文 `w:p` 仍 `para:<存量段号>`、顶层表格仍 `cell:<序号>`、嵌套表格仍 `:t<j>`、合并单元格去重不变。
 
-> **返工要求（2026-09-13 质量审查 I-1）**：存量计数器与新区域隔离——`para:`/`cell:` 序号只随 body 直系 `w:p`/`w:tbl` 递增；文本框/页眉页脚/sdt 段落只消耗全文档扁平 `index`（排序用），不得挤占存量计数器；sdt 采用独立 `sdt:<k>:` 前缀（body 直系）或 `:sdt<k>:` 段（cell/文本框/嵌套内），不再「按正文规则编址不引入新前缀」。否则含新元素文档的存量 addr 整体错位、同形 anchor 静默错填，违反「存量模板行为完全不变」红线。
+> **返工要求（2026-09-13 质量审查 I-1，规格审查后修订）**：存量计数器与新区域隔离——`para:` 序号消耗者 = body 直系 `w:p` **与存量表格 cell 段落**（顶层 + 嵌套 `:t<j>`，合并去重后；这是存量语义本身，cell 段落本就消耗扁平序号），`cell:` 表号只随 body 直系 `w:tbl` 递增；文本框/页眉页脚/sdt 段落只消耗全文档扁平 `index`（排序用），两类存量计数器一律不消耗（walker 加 `legacy` 标志区分）。sdt 采用独立 `sdt:<k>:` 前缀（body 直系）或 `:sdt<k>:` 段（cell/文本框/嵌套内），不再「按正文规则编址不引入新前缀」。否则含新元素文档的存量 addr 整体错位、同形 anchor 静默错填，违反「存量模板行为完全不变」红线。
 
 ```python
 def _build_addr_map(doc):
@@ -144,7 +144,7 @@ def _build_addr_map(doc):
 
     def _walk_sdt(sdt_el, prefix, depth):
         """内容控件展开：body 直系 → sdt:<k>:...；cell/文本框/嵌套内 →
-        <父addr>:sdt<k>:...。内部段落/表格不消耗任何存量计数器；
+        <父addr>:sdt<k>:...。内部段落/表格不消耗任何存量计数器（legacy=False）；
         sdt 无 sdtContent（畸形）→ debug 日志跳过。"""
         if depth > TXBX_DEPTH_LIMIT:
             logger.warning("sdt nesting deeper than %d at %s, skipped",
@@ -162,13 +162,14 @@ def _build_addr_map(doc):
                 _walk_paragraph(Paragraph(block, doc), f"{prefix}:{pi}", depth)
                 pi += 1
             elif block.tag == qn("w:tbl"):
-                _walk_table(Table(block, doc), f"{prefix}:cell:{tbl_k}", depth)
+                _walk_table(Table(block, doc), f"{prefix}:cell:{tbl_k}", depth,
+                            legacy=False)
                 tbl_k += 1
             elif block.tag == qn("w:sdt"):
                 _walk_sdt(block, f"{prefix}:sdt{sdt_k}", depth + 1)
                 sdt_k += 1
 
-    def _walk_table(tbl, prefix, depth=0):
+    def _walk_table(tbl, prefix, depth=0, legacy=True):
         seen_tc = set()  # lxml 元素按底层 XML 节点判等：横向合并重复返回的 cell 去重
         for r, row in enumerate(tbl.rows):
             for c, cell in enumerate(row.cells):
@@ -177,14 +178,19 @@ def _build_addr_map(doc):
                 seen_tc.add(cell._tc)
                 cell_addr = f"{prefix}:{r}:{c}"
                 for pi, p in enumerate(cell.paragraphs):
-                    _walk_paragraph(p, f"{cell_addr}:{pi}", depth)
+                    _walk_paragraph(p, f"{cell_addr}:{pi}", depth, legacy)
                 for j, sub in enumerate(cell.tables):
-                    _walk_table(sub, f"{cell_addr}:t{j}", depth)
+                    _walk_table(sub, f"{cell_addr}:t{j}", depth, legacy)
                 for k, sdt in enumerate(cell._tc.findall(qn("w:sdt"))):
-                    _walk_sdt(sdt, f"{cell_addr}:sdt{k}", depth)
+                    _walk_sdt(sdt, f"{cell_addr}:sdt{k}", depth + 1)
 
-    def _walk_paragraph(p, base_addr, txbx_depth=0):
-        """编址段落自身及其内嵌文本框（正文/表格 cell/页眉页脚/文本框内通用）。"""
+    def _walk_paragraph(p, base_addr, txbx_depth=0, legacy=False):
+        """编址段落自身及其内嵌文本框。legacy=True（body 直系 w:p 与存量
+        表格 cell 段落）消耗 para_seq——与升级前编号逐字节一致；
+        新区域段落只消耗扁平 idx，不碰存量计数器。"""
+        nonlocal para_seq
+        if legacy:
+            para_seq += 1
         _emit(p, base_addr)
         for k, txbx in enumerate(_iter_txbx_content(p._p)):
             _walk_txbx(txbx, f"{base_addr}:tx{k}", txbx_depth + 1)
@@ -202,20 +208,22 @@ def _build_addr_map(doc):
                 _walk_paragraph(Paragraph(block, doc), f"{prefix}:{pi}", depth)
                 pi += 1
             elif block.tag == qn("w:tbl"):
-                _walk_table(Table(block, doc), f"{prefix}:cell:{tbl_k}", depth)
+                _walk_table(Table(block, doc), f"{prefix}:cell:{tbl_k}", depth,
+                            legacy=False)
                 tbl_k += 1
             elif block.tag == qn("w:sdt"):
                 _walk_sdt(block, f"{prefix}:sdt{sdt_k}", depth + 1)
                 sdt_k += 1
 
     def _walk_body_blocks(parent_el):
-        """body 直系块编址（存量计数器唯一递增点）：
-        w:p → para:<para_seq>；w:tbl → cell:<tbl_no>:...；w:sdt → sdt:<sdt_no>:..."""
-        nonlocal para_seq, tbl_no, sdt_no
+        """body 直系块编址（存量计数器唯一递增入口）：
+        w:p → para:<para_seq>（legacy）；w:tbl → cell:<tbl_no>:...（legacy 传导
+        至全部 cell 段落/嵌套表）；w:sdt → sdt:<sdt_no>:...（新区域）。"""
+        nonlocal tbl_no, sdt_no
         for block in parent_el.iterchildren():
             if block.tag == qn("w:p"):
-                para_seq += 1
-                _walk_paragraph(Paragraph(block, doc), f"para:{para_seq}")
+                _walk_paragraph(Paragraph(block, doc), f"para:{para_seq + 1}",
+                                legacy=True)
             elif block.tag == qn("w:tbl"):
                 tbl_no += 1
                 _walk_table(Table(block, doc), f"cell:{tbl_no}")
