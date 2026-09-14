@@ -346,12 +346,16 @@ def _merge_default_values(placeholders: list[dict], generated: dict, missing: se
 def derive_unfilled(placeholders: list[dict], values: dict) -> list[dict]:
     """终态派生成稿留空的填写点：values 中该 key 缺失/None/空串/纯空白 = 未填充。
     统一覆盖 LLM 无产值、直填空串清空、白名单外无默认值三条留空路径，与成稿
-    实际内容一致（docxtpl 渲染时空值即留白）。用 str().strip() 判空而非 truthy，
-    防 "0"/"false" 等 falsy 但有效值被误判。required 缺失兜底 True（detector 默认）。"""
+    实际内容一致（docxtpl 渲染时空值即留白）。判空须显式 None 判断而非 `or ""`
+    折叠——数值 0/0.0/False 是有效产值（number 字段过 _apply_constraints 后
+    为 int/float，渲染成 "0" 非留白）；"0"/"false" 字符串同理不算留空。
+    required 缺失兜底 True（detector 默认）。"""
     return [{"key": it["key"], "name": it.get("name") or it["key"],
              "required": bool(it.get("required", True))}
             for it in (placeholders or [])
-            if it.get("key") and not str((values or {}).get(it["key"]) or "").strip()]
+            if it.get("key")
+            and (values is None or (v := (values or {}).get(it["key"])) is None
+                 or not str(v).strip())]
 
 
 async def generate_values(tenant_id: str, placeholders: list[dict], chunks_by_key: dict,

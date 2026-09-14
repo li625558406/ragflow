@@ -1615,11 +1615,14 @@ def test_derive_unfilled_whitespace_is_unfilled():
 
 
 def test_derive_unfilled_falsy_valid_values_filled():
-    """防 falsy 误杀："0"/"false" 是有效产值，不算留空。"""
+    """防 falsy 误杀："0"/"false" 字符串与数值 0/0.0/False 都是有效产值，不算留空
+    （number 字段过 _apply_constraints 后为 int/float，渲染成 "0" 非空白）。"""
     from rag.svr.template_fill import executor
     phs = [{"key": "a", "name": "甲", "required": True},
            {"key": "b", "name": "乙", "required": False}]
     assert executor.derive_unfilled(phs, {"a": "0", "b": "false"}) == []
+    assert executor.derive_unfilled(phs, {"a": 0, "b": 0.0}) == []
+    assert executor.derive_unfilled(phs, {"a": False, "b": 0}) == []
 
 
 def test_derive_unfilled_empty_inputs():
