@@ -1,4 +1,5 @@
 """画布委托任务参数组装的对抗性单测（纯函数，不触库/LLM）。"""
+from types import SimpleNamespace
 
 
 class TestCanvasTaskParams:
@@ -40,3 +41,24 @@ class TestCanvasTaskParams:
             begin_fields={}, query="   ", decision=None,
             llm_item_keys=set(), placeholders=[], user_file_text="x")
         assert "用户需求描述" not in params
+
+
+class TestUnfilledOf:
+    _PHS = [{"key": "a", "name": "甲", "required": True},
+            {"key": "b", "name": "乙", "required": False}]
+
+    def test_partial_filled_returns_unfilled_list(self):
+        from agent.component.template_fill import _unfilled_of
+        row = SimpleNamespace(values={"render": {"a": "x", "b": ""}})
+        assert _unfilled_of(self._PHS, row) == [
+            {"key": "b", "name": "乙", "required": False}]
+
+    def test_all_filled_returns_none(self):
+        from agent.component.template_fill import _unfilled_of
+        row = SimpleNamespace(values={"render": {"a": "x", "b": "y"}})
+        assert _unfilled_of(self._PHS, row) is None
+
+    def test_values_not_dict_returns_none(self):
+        from agent.component.template_fill import _unfilled_of
+        row = SimpleNamespace(values=None)
+        assert _unfilled_of(self._PHS, row) is None

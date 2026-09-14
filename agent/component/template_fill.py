@@ -108,6 +108,16 @@ def _canvas_task_params(begin_fields: dict, query: str, decision: dict | None,
     return params
 
 
+def _unfilled_of(placeholders: list[dict], row) -> list[dict] | None:
+    """终态行的成稿留空填写点（executor.derive_unfilled 包装）：值源 DB 行
+    values.render（终态权威，不依赖 Redis 快照存活）。无留空或值结构异常
+    返回 None——filled 事件不下发该字段，前端不渲染汇总条。"""
+    values = getattr(row, "values", None)
+    if not isinstance(values, dict):
+        return None
+    return executor.derive_unfilled(placeholders, values.get("render") or {}) or None
+
+
 def build_candidates(rows: list[dict], latest_of) -> list[dict]:
     """已发布范本行 → 选型候选（纯逻辑，latest_of 注入便于单测）。
     最新版本缺失或未配置填写点的范本跳过（选了也填不了）。"""
@@ -495,9 +505,13 @@ class TemplateFill(ComponentBase):
                                                  "error": "成稿对象读取失败", "task_id": task_id})
                             continue
                         results[tid] = (dl, None)
-                        self._push_progress({"stage": "filled", "template_id": tid,
-                                             "name": cand["name"], "download": dl,
-                                             "task_id": task_id})
+                        ev = {"stage": "filled", "template_id": tid,
+                              "name": cand["name"], "download": dl,
+                              "task_id": task_id}
+                        unfilled = _unfilled_of(cand["_placeholders"], row)
+                        if unfilled:
+                            ev["unfilled"] = unfilled
+                        self._push_progress(ev)
                     elif row.status == "cancelled":
                         results[tid] = (None, "任务已取消")
                         self._push_progress({"stage": "failed", "template_id": tid,
