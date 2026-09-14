@@ -192,6 +192,9 @@ def parse_detection_response(raw: str, candidates: list) -> list:
         }
         if anchor != orig_anchor:
             item["_orig_anchor"] = orig_anchor  # 内部字段：合并撞车回退用，append 前必被删除
+        # 内部字段：文本偏移（合并预分配 occ 的组内排序键）。基于最终（可能收缩后）
+        # anchor 求位；成员校验已保证 anchor 在候选文本内，find 不会落空（-1 仅理论兜底）
+        item["_anchor_pos"] = cand["text"].find(anchor)
         out.append(item)
     return out
 
@@ -235,7 +238,7 @@ def validate_placeholders(items: list, candidates: list) -> tuple:
             occ = it.get("occ")
             if occ is not None:
                 if not isinstance(occ, int) or isinstance(occ, bool) or occ != 1:
-                    return False, f"{key} 的 occ 非法（手动添加行只支持 occ=1）"
+                    return False, f"{key}：手动添加行只支持单填写位"
             it["addr"] = cand["addr"]  # 回填，保证落库的占位符都有有效 addr
         else:
             cand = cand_map.get(addr)
@@ -250,10 +253,10 @@ def validate_placeholders(items: list, candidates: list) -> tuple:
             occ = it.get("occ")
             if occ is not None:
                 if not isinstance(occ, int) or isinstance(occ, bool) or occ < 1:
-                    return False, f"{key} 的 occ 非法（须为正整数）"
+                    return False, f"{key}：填写位序号非法（须为正整数）"
                 actual = cand["text"].count(anchor)
                 if occ > actual:
-                    return False, f"{key} 的锚文本出现次数不足（occ={occ}，实际{actual}）"
+                    return False, f"{key}：锚文本出现次数不足（需第 {occ} 处，实际仅 {actual} 处）"
         if it.get("fill_mode") not in FILL_MODES:
             return False, f"{key} 的 fill_mode 非法"
     return True, ""
@@ -309,25 +312,34 @@ async def _detect_chunked(chat, file_type: str, candidates: list) -> tuple:
     return items, failed
 
 
-def _merge_detection(explicit: list, llm_items: list) -> list:
+def _merge_detection(explicit: list, llm_items: list, preassign_occ: bool = True) -> list:
     """合并手动直通项与 LLM 识别项。
     - 同源同 (addr, anchor) 多份（同段同形留白 / 同一 {{key}} 出现多次）：
       预分配 occ（第 N 次出现定位，渲染层按次序落位）保留全部；LLM 组 occ≥2
       打低置信（同形留白歧义需人工核对），手动组确定性不打。
+      xlsx 须传 preassign_occ=False 关闭预分配：xlsx 渲染层 replace-all 不识别
+      occ，预分配会让同格重复占位符串值覆盖——关闭后重复项回到旧「去重丢弃、
+      单 key replace-all」自洽语义。
     - 跨源同 (addr, anchor)：仍手动优先丢弃——不给 LLM 项分配 occ，防 LLM
       幻觉回显 {{key}} 产生 occ=2 超界项挤爆 validate。
     - 收缩撞车回退：带 _orig_anchor 的项回退到原 anchor 保留并打低置信，
       occ 作废（属于收缩后 anchor 的组）。
+    权衡说明：同源组项数超过 anchor 实际出现次数时，由 validate_placeholders
+    保守拒绝（整次识别 failed）——接受此权衡：保守失败优于静默错位。
     跨源/跨块 key 冲突按出现顺序加 _2/_3 后缀（作用域为整次识别）。"""
 
     def _preassign_occ(items: list, mark_low_confidence: bool) -> None:
-        """同源组内按 (addr, anchor) 计数：出现 >1 次的组按顺序分配 occ=1..n。
+        """同源组内按 (addr, anchor) 计数：出现 >1 次的组按文本偏移升序（稳定）
+        排序后分配 occ=1..n——防 LLM 乱序输出导致 occ 与文本位置颠倒、渲染值串位
+        （_anchor_pos 由 parse 阶段记录；显式组/手动组天然文本序，排序为 no-op）。
         mark_low_confidence 时 occ≥2 强制低置信（同形留白歧义——即便 parse 阶段
         判定收缩后"无歧义"，多项撞进同一留白本身就是歧义证据）。"""
         totals, seq = {}, {}
         for it in items:
             p0 = (it["addr"], it["anchor"])
             totals[p0] = totals.get(p0, 0) + 1
+        # list.sort 稳定：偏移相同（同 anchor 同候选时 find 结果恒同）保持原相对序
+        items.sort(key=lambda _it: _it.get("_anchor_pos", -1))
         for it in items:
             p0 = (it["addr"], it["anchor"])
             if totals[p0] > 1:
@@ -338,15 +350,17 @@ def _merge_detection(explicit: list, llm_items: list) -> list:
                     it["low_confidence"] = True
 
     explicit_pos = {(it["addr"], it["anchor"]) for it in explicit}
-    _preassign_occ(explicit, mark_low_confidence=False)
-    # 跨源撞位的 LLM 项不参与预分配（后续按手动优先丢弃，留 occ 会是超界脏值）
-    _preassign_occ(
-        [it for it in llm_items if (it["addr"], it["anchor"]) not in explicit_pos],
-        mark_low_confidence=True)
+    if preassign_occ:
+        _preassign_occ(explicit, mark_low_confidence=False)
+        # 跨源撞位的 LLM 项不参与预分配（后续按手动优先丢弃，留 occ 会是超界脏值）
+        _preassign_occ(
+            [it for it in llm_items if (it["addr"], it["anchor"]) not in explicit_pos],
+            mark_low_confidence=True)
 
     merged, seen_pos, used_keys = [], set(), set()
     for it in explicit + llm_items:
         orig_anchor = it.pop("_orig_anchor", None)
+        it.pop("_anchor_pos", None)  # 内部字段：仅预分配排序用，产物不外泄
         pos = (it["addr"], it["anchor"])
         if pos in seen_pos:
             if orig_anchor and (it["addr"], orig_anchor) not in seen_pos:
@@ -355,7 +369,11 @@ def _merge_detection(explicit: list, llm_items: list) -> list:
                 pos = (it["addr"], orig_anchor)
                 it["low_confidence"] = True
             elif "occ" in it:
-                # 同源同位组内重复（已预分配 occ=1..n）：保留，渲染层按次序落位
+                # 同源同位组内重复（已预分配 occ=1..n）：保留，渲染层按次序落位。
+                # 不变式「带 occ 的重复项必属同源组」由预分配阶段保证：
+                # 只有 explicit 组与未撞 explicit_pos 的 LLM 组参与预分配——
+                # 跨源 LLM 项不带 occ（走下方丢弃），xlsx（preassign_occ=False）
+                # 全组不带 occ（重复项同样走下方丢弃，旧 replace-all 语义）
                 pass
             else:
                 # 跨源撞位（LLM 回显手动占位符）：手动优先丢弃
@@ -388,7 +406,9 @@ async def detect_fill_points(tenant_id: str, file_type: str, candidates: list) -
         return await chat_mdl.async_chat(system, messages)
 
     llm_items, failed = await _detect_chunked(_chat, file_type, candidates)
-    merged = _merge_detection(explicit, llm_items)
+    # xlsx 不做 occ 预分配：apply_xlsx_placeholders 是 replace-all 语义不识别 occ，
+    # 同格重复占位符预分配会串值覆盖——回到旧「去重丢弃、单 key replace-all」语义
+    merged = _merge_detection(explicit, llm_items, preassign_occ=(file_type != "xlsx"))
     if failed:
         if not merged:
             raise RuntimeError(f"AI 识别失败：{failed} 个分块全部失败")

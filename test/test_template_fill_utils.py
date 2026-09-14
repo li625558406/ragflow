@@ -2486,7 +2486,7 @@ def test_validate_occ_beyond_actual_count_rejected():
     from rag.svr.template_fill.detector import validate_placeholders
     cands = [{"index": 0, "text": "甲：＿＿", "addr": "para:0"}]
     ok, msg = validate_placeholders([_mk_fill_item("a", "＿＿") | {"occ": 2}], cands)
-    assert not ok and "occ" in msg
+    assert not ok and "出现次数不足" in msg
 
 
 def test_validate_manual_row_occ_gt_1_rejected():
@@ -2512,7 +2512,7 @@ def test_validate_occ_dirty_values_rejected(bad_occ):
     cands = [{"index": 0, "text": "甲：＿＿ 乙：＿＿", "addr": "para:0"}]
     ok, msg = validate_placeholders([_mk_fill_item("a", "＿＿") | {"occ": bad_occ}], cands)
     assert not ok, f"occ={bad_occ!r} 应被拒绝"
-    assert "occ" in msg
+    assert "填写位" in msg
 
 
 def test_validate_occ_count_is_non_overlapping():
@@ -2523,7 +2523,7 @@ def test_validate_occ_count_is_non_overlapping():
     ok, _ = validate_placeholders([_mk_fill_item("a", "＿＿") | {"occ": 2}], cands)
     assert ok
     ok, msg = validate_placeholders([_mk_fill_item("a", "＿＿") | {"occ": 3}], cands)
-    assert not ok and "occ" in msg
+    assert not ok and "出现次数不足" in msg
 
 
 def test_validate_manual_row_occ_true_rejected():
@@ -2533,4 +2533,62 @@ def test_validate_manual_row_occ_true_rejected():
     row = _mk_fill_item("a", "＿＿")
     row["addr"] = ""
     ok, msg = validate_placeholders([row | {"occ": True}], cands)
-    assert not ok and "occ" in msg
+    assert not ok and "单填写位" in msg
+
+
+# ---------- occ 识别链质量加固：xlsx 禁用预分配 + 组内文本偏移定序 + 钉子 ----------
+
+
+def test_merge_xlsx_no_preassign_keeps_dedupe_drop_semantics():
+    """xlsx（preassign_occ=False）：同 (addr, anchor) 重复项回到旧「去重丢弃、
+    单 key replace-all」语义，不产生 occ 字段——xlsx 渲染层 replace-all 不识别
+    occ，预分配会让同格重复占位符串值覆盖（第一个字段被吞）。"""
+    from rag.svr.template_fill.detector import _merge_detection
+    merged = _merge_detection(
+        [], [_mk_fill_item("a", "＿＿"), _mk_fill_item("b", "＿＿")], preassign_occ=False)
+    assert [it["key"] for it in merged] == ["a"]  # 旧去重语义：后者丢弃
+    assert all("occ" not in it for it in merged)
+
+
+def test_merge_occ_assigned_by_text_offset_not_llm_order():
+    """LLM 组乱序输出（乙的项在前、甲的项在后，同段 anchor 同形）：occ 必须按
+    parse 阶段记录的文本偏移 _anchor_pos 升序分配（甲=1、乙=2），而非 LLM 输出序；
+    内部字段 _anchor_pos 不得泄漏进 merge 产物。"""
+    from rag.svr.template_fill.detector import _merge_detection
+    b = _mk_fill_item("party_b", "＿＿")
+    b["_anchor_pos"] = 7  # parse 阶段记录：cand["text"].find(anchor)
+    a = _mk_fill_item("party_a", "＿＿")
+    a["_anchor_pos"] = 0
+    merged = _merge_detection([], [b, a])
+    by_key = {it["key"]: it for it in merged}
+    assert by_key["party_a"]["occ"] == 1  # 文本在前者占 occ=1
+    assert by_key["party_b"]["occ"] == 2
+    assert all("_anchor_pos" not in it for it in merged)
+
+
+def test_merge_middle_item_rollback_leaves_occ_gap_1_3():
+    """钉子：三项同形组中间项收缩撞车回退后，occ 序列钉在 [1, 3] 跳号且三项全保留——
+    渲染层按第 1、3 次出现落位，中间项以原 anchor 独立保留（防跳号被误压缩成 [1,2]）。"""
+    from rag.svr.template_fill.detector import _merge_detection
+    a = _mk_fill_item("a", "＿＿")
+    b = _mk_fill_item("b", "＿＿")
+    b["_orig_anchor"] = "乙方名称："
+    c = _mk_fill_item("c", "＿＿")
+    merged = _merge_detection([], [a, b, c])
+    assert len(merged) == 3
+    by_key = {it["key"]: it for it in merged}
+    assert by_key["a"]["occ"] == 1
+    assert by_key["b"]["anchor"] == "乙方名称：" and "occ" not in by_key["b"]  # 回退项 occ 作废
+    assert by_key["c"]["occ"] == 3
+
+
+def test_validate_manual_row_occ_1_passes():
+    """钉子（正向）：手动行显式 occ=1 与缺省等价，放行且反查回填 addr。"""
+    from rag.svr.template_fill.detector import validate_placeholders
+    cands = [{"index": 0, "text": "甲：＿＿", "addr": "para:0"}]
+    row = _mk_fill_item("a", "＿＿")
+    row["addr"] = ""
+    item = row | {"occ": 1}
+    ok, msg = validate_placeholders([item], cands)
+    assert ok, msg
+    assert item["addr"] == "para:0"  # 反查回填
