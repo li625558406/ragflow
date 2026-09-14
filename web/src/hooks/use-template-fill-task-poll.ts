@@ -81,6 +81,8 @@ export function useTemplateFillTaskPoll(
                       ...(d.values && Object.keys(d.values).length
                         ? { values: d.values }
                         : {}),
+                      // unfilled 同防御：缺省（旧后端/全填满）不清 SSE 已有汇总
+                      ...(d.unfilled ? { unfilled: d.unfilled } : {}),
                     }
                   : {
                       status: 'failed' as const,
