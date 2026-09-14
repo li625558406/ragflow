@@ -9,6 +9,13 @@ export interface ITemplateFillDownload {
   name?: string;
 }
 
+/** 未填充字段（成稿留空的填写点，任务终态一次性下发） */
+export interface ITemplateFillUnfilled {
+  key: string;
+  name: string;
+  required: boolean;
+}
+
 export interface ITemplateFillTemplate {
   template_id: string;
   name: string;
@@ -22,6 +29,8 @@ export interface ITemplateFillTemplate {
   values?: Record<string, string>;
   /** 后台任务锚点（断连重连轮询用）；旧消息无此字段 → 轮询不触发 */
   task_id?: string;
+  /** 成稿留空的填写点（filled 事件/progress 终态派生；历史恢复经轮询端点合并） */
+  unfilled?: ITemplateFillUnfilled[];
 }
 
 export interface ITemplateFillState {
@@ -82,6 +91,8 @@ export interface ITemplateFillEvent {
   total?: number;
   /** filling：该批产出的字段值（实时预览逐槽填入） */
   values?: Record<string, string>;
+  /** filled：成稿留空的填写点汇总（终态一次性整体替换） */
+  unfilled?: ITemplateFillUnfilled[];
   download?: ITemplateFillDownload;
   error?: string;
   templates?: Array<{ template_id: string; name: string; slot_count?: number }>;
@@ -157,6 +168,8 @@ export function applyTemplateFillEvent(
   } else if (d.stage === 'filled') {
     t.status = 'filled';
     t.download = d.download;
+    // 终态一次性数据整体替换（后到者胜幂等）；缺省不清旧值
+    if (d.unfilled) t.unfilled = d.unfilled;
   } else if (d.stage === 'failed') {
     t.status = 'failed';
     t.error = d.error;

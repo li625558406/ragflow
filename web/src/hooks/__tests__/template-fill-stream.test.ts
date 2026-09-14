@@ -239,6 +239,52 @@ describe('applyTemplateFillEvent', () => {
     expect(acc.templateFill?.templates).toHaveLength(1);
     expect(acc.templateFill?.templates[0].template_id).toBe('t2');
   });
+
+  it('filled 携带 unfilled 写入模板行；缺省不清旧值', () => {
+    const acc: IStreamAcc = {};
+    applyTemplateFillEvent(acc, {
+      stage: 'selected',
+      templates: [{ template_id: 't1', name: 'A', slot_count: 2 }],
+    });
+    applyTemplateFillEvent(acc, {
+      stage: 'filled',
+      template_id: 't1',
+      download: { doc_id: 'd1', filename: 'a.docx', mime_type: 'x' },
+      unfilled: [{ key: 'k1', name: '字段一', required: true }],
+    });
+    expect(acc.templateFill?.templates[0].unfilled).toEqual([
+      { key: 'k1', name: '字段一', required: true },
+    ]);
+
+    // 事件缺省 unfilled（如旧后端/全部填满）→ 不清已有值
+    applyTemplateFillEvent(acc, {
+      stage: 'filled',
+      template_id: 't1',
+      download: { doc_id: 'd2', filename: 'b.docx', mime_type: 'x' },
+    });
+    expect(acc.templateFill?.templates[0].unfilled).toEqual([
+      { key: 'k1', name: '字段一', required: true },
+    ]);
+  });
+
+  it('unfilled 后到者胜（终态一次性数据整体替换，重放幂等）', () => {
+    const acc: IStreamAcc = {};
+    applyTemplateFillEvent(acc, {
+      stage: 'selected',
+      templates: [{ template_id: 't1', name: 'A' }],
+    });
+    const ev = {
+      stage: 'filled',
+      template_id: 't1',
+      download: { doc_id: 'd1', filename: 'a.docx', mime_type: 'x' },
+      unfilled: [{ key: 'k1', name: '字段一', required: true }],
+    };
+    applyTemplateFillEvent(acc, ev as any);
+    applyTemplateFillEvent(acc, JSON.parse(JSON.stringify(ev)) as any);
+    expect(acc.templateFill?.templates[0].unfilled).toEqual([
+      { key: 'k1', name: '字段一', required: true },
+    ]);
+  });
 });
 
 describe('confirm_pending / confirm_timeout', () => {
