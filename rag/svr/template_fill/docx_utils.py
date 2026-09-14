@@ -8,8 +8,11 @@ validate/render 按 addr 查到的段落错位），故必须带表序号。嵌�
 嵌套表的 (0,1) 单元格第 0 段）。合并单元格（gridSpan）同一 tc 只按首现坐标编址一次
 （此前重复编址会让同一文本多处进候选，anchor 反查报「匹配到多处」）。
 文本框段落 <父addr>:tx<k>:<pi>、内容控件段落 body 直系 sdt:<k>:<pi> / 嵌套
-<父addr>:sdt<k>:<pi>——新区域只消耗扁平 index，不挤占存量 para:/cell: 序号
-（否则含文本框/sdt 的存量模板升级后 addr 整体错位、同形 anchor 静默错填）。
+<父addr>:sdt<k>:<pi>——新区域（文本框/sdt）只消耗扁平 index，不挤占存量
+para: 序号（否则含文本框/sdt 的存量模板升级后 addr 整体错位、同形 anchor
+静默错填）。注意表格 cell 段落**照旧消耗** para: 计数——存量基线用单一扁平
+序号编正文段，cell 段落本就消耗它，「表格在前、段落在后」的范本升级后段落
+编号才不会前移（walker 用 legacy 标志区分这两类计数消耗）。
 index 为全文档扁平序号，与 addr 一一对应。
 
 跨 run 替换取舍：普通段落跨 run 时只重写 anchor 覆盖的 run 区间，区间外格式保留
@@ -84,18 +87,22 @@ def _build_addr_map(doc):
     - 正文段落 para:<idx>；表格内段落 cell:<tbl_no>:<row>:<col>:<para_idx>
       （tbl_no 只数顶层表格；嵌套表格在父单元格 addr 后追加 ":t<j>" 段递归）；
       合并单元格（gridSpan 横向合并）同一 tc 只按首现坐标编址一次。
+      body 直系 w:p 与存量表格 cell 段落（legacy=True）共同消耗 para: 计数器
+      ——存量基线用单一扁平序号编正文段，cell 段落本就消耗它；嵌套 ":t<j>"
+      表内段落属本次新增编址范围（存量基线不编址嵌套表），不消耗。
     - 文本框段落 <父addr>:tx<k>:<pi>（k 为该段落内第 k 个文本框）；
       框内表格 <父addr>:tx<k>:cell:<t>:...；嵌套文本框继续追加 :tx<j> 段。
       mc:AlternateContent 只取 mc:Choice（见 _iter_txbx_content）。
-    - w:sdt 内容控件独立前缀：body 直系 sdt:<k>:<pi>（内含表格 sdt:<k>:cell:...）；
-      cell/文本框/嵌套内 sdt 追加 :sdt<k>: 段。新区域不消耗存量 para:/cell: 计数器
+      文本框/内容控件段落（新区域，legacy=False）只消耗扁平 index，不碰存量计数器
       （I-1 红线：含文本框/sdt 的存量模板升级后 para:/cell: 序列逐字节不变）。
+    - w:sdt 内容控件独立前缀：body 直系 sdt:<k>:<pi>（内含表格 sdt:<k>:cell:...）；
+      cell/文本框/嵌套内 sdt 追加 :sdt<k>: 段。
     items: [{"index": 扁平序号, "text": 段落文本, "addr": 定位串}]，按文档顺序。
     """
     addr_map = {}
     items = []
     idx = 0        # 全文档扁平序号（items 排序用；新区域段落一并递增）
-    para_seq = -1  # 存量正文段号：只随 body 直系 w:p 递增（I-1 红线：新区域不消耗）
+    para_seq = -1  # 存量段号：body 直系 w:p 与存量表格 cell 段落共同消耗（legacy 标志区分）
     tbl_no = -1    # 存量顶层表格号：只随 body 直系 w:tbl 递增
     sdt_no = -1    # body 直系 sdt 序号（独立 sdt: 前缀）
 
@@ -107,8 +114,8 @@ def _build_addr_map(doc):
 
     def _walk_sdt(sdt_el, prefix, depth):
         """内容控件展开：body 直系 → sdt:<k>:...；cell/文本框/嵌套内 →
-        <父addr>:sdt<k>:...。内部段落/表格不消耗任何存量计数器；
-        sdt 无 sdtContent（畸形）→ debug 日志跳过。"""
+        <父addr>:sdt<k>:...。内部段落/表格不消耗任何存量计数器（legacy=False，
+        sdt 是新区域）；sdt 无 sdtContent（畸形）→ debug 日志跳过。"""
         if depth > TXBX_DEPTH_LIMIT:
             logger.warning("sdt nesting deeper than %d at %s, skipped",
                            TXBX_DEPTH_LIMIT, prefix)
@@ -125,13 +132,20 @@ def _build_addr_map(doc):
                 _walk_paragraph(Paragraph(block, doc), f"{prefix}:{pi}", depth)
                 pi += 1
             elif block.tag == qn("w:tbl"):
-                _walk_table(Table(block, doc), f"{prefix}:cell:{tbl_k}", depth)
+                _walk_table(Table(block, doc), f"{prefix}:cell:{tbl_k}", depth,
+                            legacy=False)
                 tbl_k += 1
             elif block.tag == qn("w:sdt"):
                 _walk_sdt(block, f"{prefix}:sdt{sdt_k}", depth + 1)
                 sdt_k += 1
 
-    def _walk_table(tbl, prefix, depth=0):
+    def _walk_table(tbl, prefix, depth=0, legacy=True):
+        """表格编址。legacy=True（body 直系存量表格）：cell 直系段落消耗 para_seq
+        ——存量基线用单一扁平序号编正文段，cell 段落本就消耗它，表格前置范本
+        升级后段落编号不变。嵌套 ":t<j>" 表一律 legacy=False：其段落属本次新增
+        编址范围（存量基线不编址嵌套表、不计数），透传 legacy 会让含嵌套表的
+        存量范本段落编号前移。cell 直系 sdt 一律 legacy=False（新区域）且深度 +1
+        （sdt→表格→cell→sdt 互嵌路径必须递增，否则 TXBX_DEPTH_LIMIT 防爆栈失效）。"""
         seen_tc = set()  # lxml 元素按底层 XML 节点判等：横向合并重复返回的 cell 去重
         for r, row in enumerate(tbl.rows):
             for c, cell in enumerate(row.cells):
@@ -140,15 +154,20 @@ def _build_addr_map(doc):
                 seen_tc.add(cell._tc)
                 cell_addr = f"{prefix}:{r}:{c}"
                 for pi, p in enumerate(cell.paragraphs):
-                    _walk_paragraph(p, f"{cell_addr}:{pi}", depth)
+                    _walk_paragraph(p, f"{cell_addr}:{pi}", depth, legacy)
                 for j, sub in enumerate(cell.tables):
-                    _walk_table(sub, f"{cell_addr}:t{j}", depth)
+                    _walk_table(sub, f"{cell_addr}:t{j}", depth, legacy=False)
                 # cell 直系内容控件：局部 sdt 序号从 0 起，不消耗任何存量计数器
                 for k, sdt in enumerate(cell._tc.findall(qn("w:sdt"))):
-                    _walk_sdt(sdt, f"{cell_addr}:sdt{k}", depth)
+                    _walk_sdt(sdt, f"{cell_addr}:sdt{k}", depth + 1)
 
-    def _walk_paragraph(p, base_addr, txbx_depth=0):
-        """编址段落自身及其内嵌文本框（正文/表格 cell/页眉页脚/文本框内通用）。"""
+    def _walk_paragraph(p, base_addr, txbx_depth=0, legacy=False):
+        """编址段落自身及其内嵌文本框（正文/表格 cell/文本框内通用）。
+        legacy=True（body 直系 w:p 与存量表格 cell 段落）先消耗 para_seq 再 emit
+        ——与升级前编号逐字节一致；新区域段落只消耗扁平 idx。"""
+        nonlocal para_seq
+        if legacy:
+            para_seq += 1
         _emit(p, base_addr)
         for k, txbx in enumerate(_iter_txbx_content(p._p)):
             _walk_txbx(txbx, f"{base_addr}:tx{k}", txbx_depth + 1)
@@ -166,20 +185,22 @@ def _build_addr_map(doc):
                 _walk_paragraph(Paragraph(block, doc), f"{prefix}:{pi}", depth)
                 pi += 1
             elif block.tag == qn("w:tbl"):
-                _walk_table(Table(block, doc), f"{prefix}:cell:{tbl_k}", depth)
+                _walk_table(Table(block, doc), f"{prefix}:cell:{tbl_k}", depth,
+                            legacy=False)
                 tbl_k += 1
             elif block.tag == qn("w:sdt"):
                 _walk_sdt(block, f"{prefix}:sdt{sdt_k}", depth + 1)
                 sdt_k += 1
 
     def _walk_body_blocks(parent_el):
-        """body 直系块编址（存量计数器唯一递增点）：
-        w:p → para:<para_seq>；w:tbl → cell:<tbl_no>:...；w:sdt → sdt:<sdt_no>:..."""
-        nonlocal para_seq, tbl_no, sdt_no
+        """body 直系块编址（存量计数器唯一递增入口）：
+        w:p → para:<para_seq+1>（legacy）；w:tbl → cell:<tbl_no>:...（legacy 传导
+        至全部 cell 直系段落）；w:sdt → sdt:<sdt_no>:...（新区域）。"""
+        nonlocal tbl_no, sdt_no
         for block in parent_el.iterchildren():
             if block.tag == qn("w:p"):
-                para_seq += 1
-                _walk_paragraph(Paragraph(block, doc), f"para:{para_seq}")
+                _walk_paragraph(Paragraph(block, doc), f"para:{para_seq + 1}",
+                                legacy=True)
             elif block.tag == qn("w:tbl"):
                 tbl_no += 1
                 _walk_table(Table(block, doc), f"cell:{tbl_no}")

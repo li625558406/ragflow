@@ -1727,9 +1727,77 @@ def test_sdt_in_cell_and_textbox_addressed():
 
     by_addr = {it["addr"]: it["text"] for it in iter_docx_paragraphs(buf.getvalue())}
     assert by_addr["cell:0:0:0:sdt0:0"] == "单元格内控件：____"
-    assert by_addr["para:0:tx0:sdt0:0"] == "文本框内控件：____"
+    # 文本框容器段是第 2 个 body 直系段落（表格 cell 直系段落消耗 para: 计数，
+    # 属存量语义）→ para:1；cell 内 sdt 深度递增不改变 addr 形态
+    assert by_addr["para:1:tx0:sdt0:0"] == "文本框内控件：____"
     assert by_addr["sdt:0:sdt0:0"] == "二层控件：____"
     assert by_addr["sdt:1:0"] == "第二个控件：____"
+
+
+def test_legacy_para_addrs_stable_table_before_paragraphs():
+    """回归（I-1 二次返工）：表格在前、段落在后是范本极常见布局——存量基线
+    （a8531b1b~1 部署版）中 cell 段落本就消耗扁平序号，表格后正文段落编号必须
+    把表格段落数算进去（首次返工误把 cell 段落排除在存量计数器外，此类模板
+    升级后全部 para: 前移、DB 存量 addr 错位错填）。文本框/sdt 新区域仍零消耗。"""
+    from docx.oxml import parse_xml
+
+    from rag.svr.template_fill.docx_utils import iter_docx_paragraphs
+    doc = Document()
+    tbl = doc.add_table(rows=1, cols=1)
+    cell = tbl.rows[0].cells[0]
+    cell.paragraphs[0].text = "表格第一段：____"
+    cell.add_paragraph("表格第二段：＿＿＿")
+    doc.add_paragraph("段落A")
+    doc.add_paragraph("段落B")
+    p = doc.add_paragraph("含文本框的容器段落")
+    p._p.append(parse_xml(
+        f'<w:r {_MC_NS}>'
+        '<mc:AlternateContent>'
+        f'<mc:Choice Requires="wps"><w:txbxContent>'
+        f'<w:p><w:r><w:t>文本框里：＿＿＿</w:t></w:r></w:p>'
+        '</w:txbxContent></mc:Choice>'
+        '</mc:AlternateContent>'
+        '</w:r>'
+    ))
+    _add_body_sdt(doc, _sdt_para("内容控件：____"))
+    doc.add_paragraph("段落C")
+    buf = io.BytesIO()
+    doc.save(buf)
+
+    addrs = [it["addr"] for it in iter_docx_paragraphs(buf.getvalue())]
+    # 与存量基线语义逐字节一致：表格两段消耗 para: 计数；文本框/sdt 零消耗
+    assert addrs == [
+        "cell:0:0:0:0", "cell:0:0:0:1",   # 表格段（消耗计数）
+        "para:2", "para:3",               # 段落A/B：编号含表格段落数（缺陷版本此处为 para:0/para:1）
+        "para:4", "para:4:tx0:0",         # 文本框容器段照常计数；框内段落零消耗
+        "sdt:0:0",                        # sdt 新区域零消耗
+        "para:5",                         # 段落C 不受文本框/sdt 挤占
+    ]
+
+
+def test_legacy_nested_table_paras_do_not_consume_para_seq():
+    """回归（I-1 二次返工）：嵌套 ":t<j>" 表内段落属本次新增编址范围——存量基线
+    （a8531b1b~1）根本不编址嵌套表、其段落不消耗任何计数器。若 legacy 透传进
+    嵌套表，含嵌套表的存量范本升级后段落编号同样前移、DB 存量 addr 错位。"""
+    from rag.svr.template_fill.docx_utils import iter_docx_paragraphs
+    doc = Document()
+    tbl = doc.add_table(rows=1, cols=1)
+    cell = tbl.rows[0].cells[0]
+    cell.paragraphs[0].text = "外层单元格"
+    nested = cell.add_table(rows=1, cols=1)
+    nested.rows[0].cells[0].paragraphs[0].text = "内层：＿＿＿＿＿"
+    doc.add_paragraph("表格后的段落")
+    buf = io.BytesIO()
+    doc.save(buf)
+
+    by_addr = {it["addr"]: it["text"] for it in iter_docx_paragraphs(buf.getvalue())}
+    assert by_addr["cell:0:0:0:0"] == "外层单元格"
+    assert by_addr["cell:0:0:0:t0:0:0:0"] == "内层：＿＿＿＿＿"   # 嵌套表新增编址照常可用
+    # 嵌套表段落不消耗 para: 计数（存量基线不编址嵌套表）——段号 = cell 直系段落数
+    # 2（"外层单元格" + python-docx 按规则在嵌套表后自动补的空段）；若 legacy 误透传
+    # 进嵌套表，此处会前移成 para:3
+    assert by_addr["cell:0:0:0:1"] == ""
+    assert by_addr["para:2"] == "表格后的段落"
 
 
 def test_sdt_without_content_skipped():
