@@ -15,6 +15,7 @@ import {
 } from '@/hooks/use-template-fill-request';
 import api from '@/utils/api';
 import { CreateTaskDialog } from './create-task-dialog';
+import FidelityPreview from './fidelity-preview';
 import {
   collectRowErrors,
   emptyPlaceholder,
@@ -83,6 +84,22 @@ export default function TemplateFillDetailPage() {
   const [rowErrors, setRowErrors] = useState<Record<string, boolean>>({});
   const [createOpen, setCreateOpen] = useState(false);
   const [testOpen, setTestOpen] = useState(false);
+  // docx 预览双模式：保真（docx-preview 渲染原件，默认）/ 文本（纯文本段落，
+  // 划选标记填写点在此模式做——保真 DOM 中页眉/页脚/文本框渲染不完整无法映射 addr）
+  const [previewMode, setPreviewMode] = useState<'fidelity' | 'text'>(
+    'fidelity',
+  );
+
+  // 切换模板时回到默认保真模式
+  useEffect(() => {
+    setPreviewMode('fidelity');
+  }, [id]);
+
+  // 保真渲染失败：自动降级文本模式（一次性提示）
+  const handleRenderFailed = () => {
+    setPreviewMode('text');
+    message.warning('保真渲染失败，已切换为文本模式');
+  };
 
   // 划选标记候选：在预览段落中选中文字后记录 {addr, 文本}，段落旁浮出标记按钮
   const [mark, setMark] = useState<{ addr: string; text: string } | null>(null);
@@ -332,8 +349,21 @@ export default function TemplateFillDetailPage() {
       <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
         {/* 左侧：模板预览 */}
         <Card>
-          <CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0">
             <CardTitle className="text-lg">模板预览</CardTitle>
+            {detail.file_type === 'docx' && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  setPreviewMode((m) =>
+                    m === 'fidelity' ? 'text' : 'fidelity',
+                  )
+                }
+              >
+                {previewMode === 'fidelity' ? '文本模式' : '保真模式'}
+              </Button>
+            )}
           </CardHeader>
           <CardContent>
             {previewLoading ? (
@@ -375,6 +405,16 @@ export default function TemplateFillDetailPage() {
                   </div>
                 ))}
               </div>
+            ) : previewMode === 'fidelity' ? (
+              // 保真视图：原件 docx-preview 渲染 + 填写点锚文本高亮；
+              // 只取有定位 addr 的行（手动无 addr 行的 anchor 不做全文匹配，防误标）
+              <FidelityPreview
+                templateId={id ?? ''}
+                anchors={placeholders
+                  .filter((p) => p.addr)
+                  .map((p) => ({ key: p.key, anchor: p.anchor }))}
+                onRenderFailed={handleRenderFailed}
+              />
             ) : (
               <div className="max-h-[65vh] space-y-1 overflow-auto">
                 {previewItems.map((item) => (

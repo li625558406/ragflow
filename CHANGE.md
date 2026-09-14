@@ -1,5 +1,17 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-14 B端范本预览保真渲染（双模式）
+
+**主题**：B端范本详情「模板预览」从纯文本段落列表升级为双模式——默认保真视图（docx-preview 渲染 original 原件，字号/加粗/颜色/表格/排版与源文档一致），「文本模式」切换保留原有划选标记填写点功能。设计文档 `docs/superpowers/specs/2026-09-14-bend-template-fidelity-preview-design.md`。
+
+**核心变更**：
+- 新增 `web/src/pages/template-fill/fidelity-preview.tsx`：拉 kind=original blob（JSON 错误体解析）→ renderAsync 保真渲染 → 屏外页懒渲染（applyDocxPageLazy）→ 已注册填写点按锚文本琥珀色高亮（复用 c-chat/docx-highlight 的 highlightDocxRanges，归一化匹配、同 key 只标首处；已知边界：同形文本取首处，不按 addr 精确定位）
+- `detail.tsx`：previewMode state（默认 fidelity，切模板重置）+ 卡头「文本模式/保真模式」切换按钮（仅 docx）+ 渲染失败自动降级文本模式（一次性 warning + console.warn 排查日志）；text 分支与划选标记零改动；xlsx 分支不受影响
+
+**边界**：保真视图内不可划选（页眉/页脚/文本框 docx-preview 渲染不完整无法映射 addr，双模式是用户裁定方案）；preview 接口 0 段时仍显示空态（先于 fidelity 分支）。
+
+**部署**：纯前端（detail.tsx + fidelity-preview.tsx，build + dist SCP）。
+
 ## 2026-09-14 范本库支持上传 PDF（转 docx 后 AI 识别）
 
 **主题**：范本上传入口格式归一化——.pdf 上传即用 LibreOffice 转 docx，之后全链路（候选提取/AI 识别/预览/替换/标蓝/下载）按 docx 处理，与旧版 .doc 策略同构。设计文档 `docs/superpowers/specs/2026-09-14-template-pdf-upload-design.md`。
