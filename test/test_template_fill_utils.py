@@ -2592,3 +2592,90 @@ def test_validate_manual_row_occ_1_passes():
     ok, msg = validate_placeholders([item], cands)
     assert ok, msg
     assert item["addr"] == "para:0"  # 反查回填
+
+
+# ---------- LLM 输出解析三级容错 ----------
+
+
+def test_parse_bare_array_direct():
+    """裸 JSON 数组（无围栏无前后缀）走最快直解路径。"""
+    from rag.svr.template_fill.detector import parse_detection_response
+    cands = [{"index": 0, "text": "姓名：＿＿", "addr": "para:0"}]
+    items = parse_detection_response(
+        '[{"line": 0, "anchor": "＿＿", "key": "name", "name": "姓名"}]', cands)
+    assert len(items) == 1 and items[0]["key"] == "name"
+
+
+def test_parse_fenced_array():
+    """```json 围栏包裹 → 剥围栏直解。"""
+    from rag.svr.template_fill.detector import parse_detection_response
+    cands = [{"index": 0, "text": "姓名：＿＿", "addr": "para:0"}]
+    raw = '```json\n[{"line": 0, "anchor": "＿＿", "key": "name", "name": "姓名"}]\n```'
+    assert len(parse_detection_response(raw, cands)) == 1
+
+
+def test_parse_array_with_surrounding_prose():
+    """数组前后有说明文字 → 贪婪正则回退兜住。"""
+    from rag.svr.template_fill.detector import parse_detection_response
+    cands = [{"index": 0, "text": "姓名：＿＿", "addr": "para:0"}]
+    raw = '识别结果如下：\n[{"line": 0, "anchor": "＿＿", "key": "name", "name": "姓名"}]\n以上。'
+    assert len(parse_detection_response(raw, cands)) == 1
+
+
+def test_parse_multiple_arrays_takes_balanced_first_via_greedy_fallback():
+    """多数组输入贪婪正则会整体失败 → 返回 []（保守失败，不误采半截）。"""
+    from rag.svr.template_fill.detector import parse_detection_response
+    cands = [{"index": 0, "text": "姓名：＿＿", "addr": "para:0"}]
+    raw = '[{"line": 0}] 中间文字 [{"line": 1}]'
+    assert parse_detection_response(raw, cands) == []
+
+
+def test_parse_garbage_returns_empty():
+    """纯文字拒绝/None 输入 → []（None 不得抛 TypeError）。"""
+    from rag.svr.template_fill.detector import parse_detection_response
+    cands = [{"index": 0, "text": "姓名：＿＿", "addr": "para:0"}]
+    assert parse_detection_response("我无法完成该任务", cands) == []
+    assert parse_detection_response(None, cands) == []
+
+
+def test_parse_fenced_variant_no_language_tag():
+    """对抗：围栏无语言标注 ```\n[...]\n``` → 仍能剥围栏直解。"""
+    from rag.svr.template_fill.detector import parse_detection_response
+    cands = [{"index": 0, "text": "姓名：＿＿", "addr": "para:0"}]
+    raw = '```\n[{"line": 0, "anchor": "＿＿", "key": "name", "name": "姓名"}]\n```'
+    assert len(parse_detection_response(raw, cands)) == 1
+
+
+def test_parse_fenced_variant_uppercase_language():
+    """对抗：围栏语言大写 ```JSON → 仍能剥围栏直解。"""
+    from rag.svr.template_fill.detector import parse_detection_response
+    cands = [{"index": 0, "text": "姓名：＿＿", "addr": "para:0"}]
+    raw = '```JSON\n[{"line": 0, "anchor": "＿＿", "key": "name", "name": "姓名"}]\n```'
+    assert len(parse_detection_response(raw, cands)) == 1
+
+
+def test_parse_fenced_nested_array_fields():
+    """对抗：围栏内数组元素含嵌套数组字段（如 retrieval_query 列表）→
+    剥围栏直解成功，不因贪婪正则跨界截断而失败；嵌套字段被逐项校验安全忽略。"""
+    from rag.svr.template_fill.detector import parse_detection_response
+    cands = [{"index": 0, "text": "姓名：＿＿", "addr": "para:0"}]
+    raw = ('```json\n[{"line": 0, "anchor": "＿＿", "key": "name", "name": "姓名", '
+           '"aliases": ["甲", "乙"], "extra": [1, 2, 3]}]\n```')
+    assert len(parse_detection_response(raw, cands)) == 1
+
+
+def test_parse_empty_and_whitespace_raw():
+    """对抗：raw 为空串/纯空白 → []。"""
+    from rag.svr.template_fill.detector import parse_detection_response
+    cands = [{"index": 0, "text": "姓名：＿＿", "addr": "para:0"}]
+    assert parse_detection_response("", cands) == []
+    assert parse_detection_response("   \n\t  ", cands) == []
+
+
+def test_parse_unbalanced_bracket_truncated():
+    """对抗：`[` 与 `]` 不配平（截断输出）→ json.loads 失败且贪婪正则无 `]`
+    可回退 → 保守返回 []，不误采半截数据。"""
+    from rag.svr.template_fill.detector import parse_detection_response
+    cands = [{"index": 0, "text": "姓名：＿＿", "addr": "para:0"}]
+    raw = '[{"line": 0, "anchor": "＿＿", "key": "name"'
+    assert parse_detection_response(raw, cands) == []

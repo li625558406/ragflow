@@ -112,16 +112,34 @@ def normalize_key(key: str) -> str:
     return k.strip("_") or "field"
 
 
+def _extract_json_array(raw: str):
+    """三级容错抽取 LLM 输出中的 JSON 数组：
+    1. 裸数组直解（规整输出最快路径）；
+    2. 剥 ``` 代码围栏后直解；
+    3. 贪婪正则 [.*] 回退（存量语义，多数组等畸形输入在此保守失败）。
+    全部失败返回 None（调用方按 0 项处理，上层置 failed 不静默）。"""
+    raw = (raw or "").strip()
+    candidates = [raw]
+    fenced = re.match(r"^```[\w-]*\s*(.*?)\s*```$", raw, re.DOTALL)
+    if fenced:
+        candidates.append(fenced.group(1).strip())
+    m = re.search(r"\[.*\]", raw, re.DOTALL)
+    if m:
+        candidates.append(m.group(0))
+    for cand in candidates:
+        try:
+            arr = json.loads(cand)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(arr, list):
+            return arr
+    return None
+
+
 def parse_detection_response(raw: str, candidates: list) -> list:
     """解析 LLM 输出 → 校验后的建议清单。行号/锚文本不合法的项直接丢弃。"""
-    m = re.search(r"\[.*\]", raw, re.DOTALL)
-    if not m:
-        return []
-    try:
-        arr = json.loads(m.group(0))
-    except (ValueError, TypeError):
-        return []
-    if not isinstance(arr, list):
+    arr = _extract_json_array(raw)
+    if arr is None:
         return []
     cand_map = {c["index"]: c for c in candidates}
     out, used_keys = [], set()
