@@ -2287,3 +2287,47 @@ def test_apply_occ_dirty_value_skips_entry():
     text = iter_docx_paragraphs(out)[0]["text"]
     assert text == "姓名：＿＿ 电话：＿＿"
     assert "{{" not in text
+
+
+def test_apply_occ_and_none_mixed_order_same_paragraph():
+    """对抗：同段 occ 条目与 occ=None（replace-all）条目混排。降序稳定排序必须
+    让 occ 先行、None 兜底吞剩余——None 先行会吞掉 occ 的目标出现，导致 occ=2
+    找不到第 2 处而 no-op。且最终文本与提交顺序无关（排序键决定应用顺序）。"""
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders, iter_docx_paragraphs
+    expected = "姓名：{{name}} 电话：{{phone}}"
+    # 提交顺序 A：None 条目在前、occ=2 在后（若按原序应用会错）
+    blob = _make_docx(["姓名：＿＿ 电话：＿＿"])
+    out = apply_docx_placeholders(blob, [
+        {"addr": "para:0", "anchor": "＿＿", "key": "name"},
+        {"addr": "para:0", "anchor": "＿＿", "key": "phone", "occ": 2},
+    ])
+    assert iter_docx_paragraphs(out)[0]["text"] == expected
+    # 提交顺序 B：两条目原序对调，结果必须逐字一致
+    blob = _make_docx(["姓名：＿＿ 电话：＿＿"])
+    out = apply_docx_placeholders(blob, [
+        {"addr": "para:0", "anchor": "＿＿", "key": "phone", "occ": 2},
+        {"addr": "para:0", "anchor": "＿＿", "key": "name"},
+    ])
+    assert iter_docx_paragraphs(out)[0]["text"] == expected
+
+
+def test_apply_occ_and_none_mixed_overlap_different_anchors():
+    """对抗：不同 anchor 且文本交叠（None 条目 anchor="AB" 覆盖 occ 条目
+    anchor="B_" 的起点）。occ 先行改写交叠区后 "AB" 不再存在 → None no-op；
+    若排序被误改（None 先行）则会吞掉交叠区使 occ no-op，两者结果不同。"""
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders, iter_docx_paragraphs
+    expected = "A{{occ_key}}C"
+    # 提交顺序 A：None 在前、occ 在后
+    blob = _make_docx(["AB_C"])
+    out = apply_docx_placeholders(blob, [
+        {"addr": "para:0", "anchor": "AB", "key": "none_key"},
+        {"addr": "para:0", "anchor": "B_", "key": "occ_key", "occ": 1},
+    ])
+    assert iter_docx_paragraphs(out)[0]["text"] == expected
+    # 提交顺序 B：原序对调，结果必须逐字一致
+    blob = _make_docx(["AB_C"])
+    out = apply_docx_placeholders(blob, [
+        {"addr": "para:0", "anchor": "B_", "key": "occ_key", "occ": 1},
+        {"addr": "para:0", "anchor": "AB", "key": "none_key"},
+    ])
+    assert iter_docx_paragraphs(out)[0]["text"] == expected
