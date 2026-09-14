@@ -332,16 +332,19 @@ def test_convert_to_docx_success(monkeypatch):
 
 def test_convert_to_docx_src_ext_passthrough(monkeypatch):
     """src_ext 决定临时源文件后缀（soffice 按后缀选 import filter）：
-    默认 .doc 不变（存量行为逐字节保持），显式 .pdf 用 input.pdf；
+    默认 .doc 不变（存量行为逐字节保持），显式 .pdf 用 input.pdf 且必须带
+    --infilter=writer_pdf_import（默认按 Draw 打开无法导出 docx）；
     产物均恒为 input.docx。"""
     mod = _template_api
     calls = {}
     monkeypatch.setattr(mod.subprocess, "run", _fake_soffice_run(calls))
     mod._convert_to_docx(b"legacy-doc-bytes")
     assert calls["src"].endswith(os.sep + "input.doc"), "默认参数必须保持 input.doc"
+    assert not any("infilter" in a for a in calls["cmd"]), ".doc 不得带 infilter"
 
     mod._convert_to_docx(b"pdf-bytes", ".pdf")
     assert calls["src"].endswith(os.sep + "input.pdf"), ".pdf 后缀必须透传给源文件"
+    assert "--infilter=writer_pdf_import" in calls["cmd"], ".pdf 必须显式 Writer PDF 导入过滤器"
     assert calls["cmd"][calls["cmd"].index("--outdir") + 1] == os.path.dirname(calls["src"])
     assert os.path.basename(calls["out"]) == "input.docx", "产物必须恒为 input.docx"
 

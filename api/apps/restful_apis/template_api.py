@@ -94,16 +94,22 @@ def _convert_to_docx(blob: bytes, src_ext: str = ".doc") -> bytes:
     Word / .pdf）。容器内有 LibreOffice；用独立
     UserInstallation 目录避免并发/首启 profile 锁冲突。容器 soffice 包装
     脚本未自设库路径，须显式注入 LD_LIBRARY_PATH（否则 soffice.bin 报
-    libreglo.so cannot open shared object file, rc=127）。"""
+    libreglo.so cannot open shared object file, rc=127）。
+    PDF 必须显式 --infilter=writer_pdf_import：默认按 Draw 打开，
+    没有 Writer 文档模型无法用 docx 导出过滤器（报 source file could
+    not be loaded）。"""
     env = {**os.environ, "LD_LIBRARY_PATH": "/usr/lib/libreoffice/program"}
     with tempfile.TemporaryDirectory(prefix="tpl_doc_") as tmp:
         src = os.path.join(tmp, f"input{src_ext}")
         with open(src, "wb") as f:
             f.write(blob)
         profile = f"file://{tmp}/lo_profile_{uuid.uuid4().hex}"
+        cmd = ["soffice", "--headless", "--norestore", f"-env:UserInstallation={profile}"]
+        if src_ext == ".pdf":
+            cmd.append("--infilter=writer_pdf_import")
+        cmd += ["--convert-to", "docx", "--outdir", tmp, src]
         r = subprocess.run(
-            ["soffice", "--headless", "--norestore", f"-env:UserInstallation={profile}",
-             "--convert-to", "docx", "--outdir", tmp, src],
+            cmd,
             capture_output=True, timeout=60, check=False, env=env)
         out = os.path.join(tmp, "input.docx")
         if not os.path.exists(out):
