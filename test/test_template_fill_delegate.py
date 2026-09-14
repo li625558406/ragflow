@@ -62,3 +62,16 @@ class TestUnfilledOf:
         from agent.component.template_fill import _unfilled_of
         row = SimpleNamespace(values=None)
         assert _unfilled_of(self._PHS, row) is None
+
+    def test_row_without_values_attr_returns_none(self):
+        # 行对象缺 values 属性（旧 schema/桩对象）：getattr 兜底，不抛 AttributeError
+        from agent.component.template_fill import _unfilled_of
+        assert _unfilled_of(self._PHS, SimpleNamespace()) is None
+
+    def test_render_none_derives_all_placeholders(self):
+        # values={"render": None}（直填路径无 render 键）：按全空派生 → 全部占位符未填充
+        from agent.component.template_fill import _unfilled_of
+        row = SimpleNamespace(values={"render": None})
+        assert _unfilled_of(self._PHS, row) == [
+            {"key": "a", "name": "甲", "required": True},
+            {"key": "b", "name": "乙", "required": False}]

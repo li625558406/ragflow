@@ -145,6 +145,13 @@ class TestBuildProgressPayload:
             None, None, self._PHS)
         assert p["unfilled"] == [{"key": "b", "name": "乙", "required": False}]
 
+    def test_partial_with_placeholders_derives_unfilled(self):
+        # partial 也是终态（部分范本成功）：留空填写点同样要派生下发
+        p = _template_api.build_progress_payload(
+            self._task(status="partial", values={"render": {"a": "", "b": "y"}}),
+            None, None, self._PHS)
+        assert p["unfilled"] == [{"key": "a", "name": "甲", "required": True}]
+
     def test_non_terminal_never_derives(self):
         p = _template_api.build_progress_payload(
             self._task(status="generating",

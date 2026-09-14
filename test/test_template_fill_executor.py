@@ -493,10 +493,11 @@ def test_find_running_rejects_stale_running_rows(monkeypatch):
     assert by_op[("template_id", "==")] == "tpl_x"
     assert by_op[("tenant_id", "==")] == "tenant_x"
     assert by_op[("status", "in")] == ("pending", "retrieving", "generating", "rendering")
-    # 年龄过滤：cutoff = now - 2h（允许毫秒级时钟流逝误差）
+    # 年龄过滤：cutoff = now - 2h（上下界都留时钟流逝容差：find_running 内部与
+    # 本断言各自调 current_timestamp()，间隔可能前进数毫秒，单侧容差会 flaky）
     cutoff = by_op[("create_time", ">=")]
     window_ms = current_timestamp() - cutoff
-    assert 2 * 3600 * 1000 - 5000 <= window_ms <= 2 * 3600 * 1000, \
+    assert 2 * 3600 * 1000 - 5000 <= window_ms <= 2 * 3600 * 1000 + 5000, \
         f"find_running 必须带 2h 年龄过滤，实际窗口 {window_ms}ms"
     assert ("where", 1) in log, "4 个条件经 & 合并为单表达式传入 where"
 

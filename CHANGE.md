@@ -1,5 +1,31 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-14 范本填写未填充汇总与成稿内定位跳转
+
+**主题**：范本填写完成后用户不知道成稿里哪些填写点留了空、还要逐页翻找——终态从 values 派生 `unfilled`（留空填写点清单），经 filled 事件/progress 端点透传到前端，成稿行内联汇总展示，点击定位跳转到成稿预览中的对应位置并闪烁。
+
+**核心变更**：
+- `rag/svr/template_fill/executor.py`：新增 `derive_unfilled` 纯函数——终态 values 派生成稿留空填写点（key 缺失/None/空串/纯空白 = 未填充，与 docxtpl 空值渲染留白口径一致）；显式 None 判断防数值 0/0.0/False 与字符串 "0"/"false" 被误杀（number 字段合法产值）；required 缺失兜底 True（detector 默认）
+- `api/apps/restful_apis/template_api.py`：progress 端点 `build_progress_payload` 终态（done/partial）透传 `unfilled`（placeholders 由端点层查范本版本传入，快照缺失回退 DB render；派生为空不下发空数组）
+- `agent/component/template_fill.py`：画布 TemplateFill 节点 done 分支 filled 事件带 `unfilled`（`_unfilled_of` 包装，值源 DB 行 values.render，不依赖 Redis 快照存活）
+- 前端：SSE 归约器/轮询 hook 合并 `unfilled`（缺省不下键不清 SSE 数据）；成稿行内联汇总（必填红标「必填」徽标/选填灰/点击带 focusKey）；LivePreview focusKey 定位（docx span 与文本 span 写入 data-ph-key，滚动居中+outline 闪烁 2s，渲染完成门控+一次性防重+降级路径 textContainerRef 兜底）
+
+**测试**：derive_unfilled 对抗用例（0/false 不误杀/纯空白/缺 key/required 兜底）、progress 端点（含 partial 终态派生/非终态不下发/快照值权威）、`_unfilled_of` 边界（行缺 values 属性返回 None 不抛错/render=None 按全空派生全部占位符）、前端归约/轮询 jest 用例；后端 5 套件 154 passed；`npm run build` 构建通过（1m29s）。另修 `test_find_running_rejects_stale_running_rows` 时间容差单侧 flaky（上界补 +5000ms 时钟流逝容差）。
+
+**遗留**：未部署——后端 3 文件成套 SCP（`rag/svr/template_fill/executor.py`、`api/apps/restful_apis/template_api.py`、`agent/component/template_fill.py`）+ docker restart；前端 `npm run build` + tar + nginx reload。前后端可独立部署（增量字段无互锁）。
+
+## 2026-09-14 AI 识别 occ 超界判死整次识别（溢出封顶修复）
+
+**主题**：「电子招标投标示范文本」（1351 候选大范本）AI 识别失败，detect_error=`识别结果校验未通过：station_range：锚文本出现次数不足（需第 2 处，实际仅 1 处）`。根因：LLM 对同段同形留白（`＿＿`）输出 2 个不同字段的建议落在同一 (addr, anchor) 组，`_merge_detection::_preassign_occ` 按组大小机械分配 occ=1..n 不核对 anchor 实际出现次数，occ=2 超界 → `validate_placeholders` 保守拒绝（判死整次识别，全部建议丢弃）——旧注释明示「接受此权衡」，但代价是 LLM 输出随机性可让一个坏组毁掉整次识别且重跑可能复现。
+
+**核心变更**（`rag/svr/template_fill/detector.py`）：
+- `_preassign_occ` 增加 cap 封顶：`_merge_detection` 新增可选 `candidates` 参数构建 addr→text 映射，组内序位 n 超过 `text.count(anchor)`（非重叠语义，与 validate 终审同口径）的溢出项**直接丢弃**（LLM 重复建议/幻觉），不再分配超界 occ；显式直通组与 LLM 组同样封顶；幻觉 addr（cap=0）整组保守丢弃
+- `detect_fill_points` 透传 `candidates`；`validate_placeholders` 严格终审不变（继续保护人工确认保存路径）；不传 candidates 的直调行为同旧（兼容存量单测）
+
+**测试**：`test_template_fill_utils.py` +9 对抗用例——真实事故复刻（组 3 项实际 1 处 → 保 1 丢 2 过终审）/ 非重叠计数口径对齐 / 组大小==实际次数不误丢（回归）/ 按 (addr, anchor) 组隔离 / 幻觉 addr 全组丢弃 / 不传 candidates 旧语义回归 / explicit 组封顶 / 溢出封顶优先于收缩回退 / 跨源回显路径不受封顶影响；286 passed（全模板填写套件）；代码审查无 block。
+
+**部署**：**已部署 2026-09-14**（`detector.py` SCP + 容器重启，容器内冒烟验证溢出封顶生效；目标模板「电子招标投标示范文本」重新识别成功：detect_status=done，识别 1111 个填写点，临时重跑脚本已清理）。
+
 ## 2026-09-14 PDF 矢量留白横线回填（识别不到横线修复）
 
 **主题**：范本 PDF 上传后「福建省___市（区）___」「招标编号：____」等填写留白横线识别不到——根因是源 PDF 里这些横线是**矢量绘制线条而非文字**，pdf2docx 只转文字/表格、矢量线直接丢弃，留白在转换件中消失。修复：转换前用 PyMuPDF 把留白横线回填为 `_` 文字再交给 pdf2docx。
