@@ -403,6 +403,113 @@ def test_convert_pdf_to_docx_routing_and_output(monkeypatch):
     assert calls.get("closed") is True, "空产物路径也必须调 close"
 
 
+def _pt(x, y):
+    return types.SimpleNamespace(x=x, y=y)
+
+
+def _drawings(items):
+    return [{"items": items}]
+
+
+def test_blank_line_targets_fill_blank_hit():
+    """文字行内留白横线命中：横线在词基线上（y-mid 差 ~6.5pt），词紧邻线起点。
+    复刻 237 页样张第 3 页封面实测坐标（含线起点比词尾早 0.1pt 的微小重叠）。"""
+    mod = _template_api
+    words = [(160.4, 150.0, 206.5, 163.5, "福建省"),
+             (268.6, 150.0, 330.7, 163.5, "市（区）")]
+    drawings = _drawings([("l", _pt(206.6, 163.8), _pt(268.5, 163.8))])
+    targets = mod._blank_line_targets(drawings, words)
+    assert targets == [(206.6, 268.5, 163.8)], "行内留白横线必须命中"
+
+
+def test_blank_line_targets_skips_decorative():
+    """对抗：装饰线（页眉分隔线，同行无文字）与孤立横线必须跳过。"""
+    mod = _template_api
+    # 页眉文字在横线上方 >10pt（不同行）；正文在页脚远端
+    words = [(100.0, 40.0, 400.0, 52.0, "页眉标题"),
+             (150.0, 750.0, 300.0, 762.0, "正文")]
+    drawings = _drawings([("l", _pt(80.0, 56.5), _pt(520.0, 56.5)),   # 页眉线：y-mid=6.5+16>10？56.5-46=10.5 越界
+                          ("l", _pt(100.0, 300.0), _pt(500.0, 300.0))])  # 页中孤立线：无同行文字
+    assert mod._blank_line_targets(drawings, words) == [], "装饰线/孤立线不得命中"
+
+
+def test_blank_line_targets_skips_table_grid():
+    """对抗：表格网格边框（横线端点接纵线 ±2pt）必须跳过，防下划线污染表格单元格。"""
+    mod = _template_api
+    words = [(100.0, 93.0, 200.0, 106.5, "单元格文字")]
+    # 横线左端点 (100, 120) 接纵线 x=100（y 110..130）；文字 mid=99.75，y-mid=20.25 超界，
+    # 再造一条真同行线但两端都接纵线
+    words2 = [(100.0, 190.0, 200.0, 203.5, "表内文字")]  # mid=196.75
+    drawings = _drawings([
+        ("l", _pt(100.0, 120.0), _pt(300.0, 120.0)),
+        ("l", _pt(100.0, 110.0), _pt(100.0, 130.0)),
+        ("l", _pt(100.0, 200.0), _pt(300.0, 200.0)),
+        ("l", _pt(100.0, 150.0), _pt(100.0, 250.0)),
+        ("l", _pt(300.0, 150.0), _pt(300.0, 250.0)),
+    ])
+    assert mod._blank_line_targets(drawings, words + words2) == [], "接纵线的表格边框不得命中"
+
+
+def test_blank_line_targets_far_text_skipped():
+    """对抗：同行但水平相距超过 GAP_MAX(120pt) 的文字不构成相邻，横线跳过。"""
+    mod = _template_api
+    words = [(500.0, 150.0, 560.0, 163.5, "远处的字")]  # mid=156.75，与 y=163.8 同行但水平远
+    drawings = _drawings([("l", _pt(50.0, 163.8), _pt(120.0, 163.8))])  # 距词 380pt
+    assert mod._blank_line_targets(drawings, words) == [], "水平远距的文字不得使装饰线命中"
+
+
+def test_blank_line_targets_flat_rect_and_word_span():
+    """扁矩形（width≥15, height<3）等价横线；词跨越横线区间（重叠，gap=0）也算相邻。"""
+    mod = _template_api
+    words = [(100.0, 150.0, 250.0, 163.5, "招标人：")]  # mid=156.75，词区间与线 150..250 完全重叠
+    drawings = _drawings([("re", types.SimpleNamespace(x0=150.0, y0=163.8, x1=250.0, y1=164.5,
+                                                        width=100.0, height=0.7))])
+    targets = mod._blank_line_targets(drawings, words)
+    assert targets == [(150.0, 250.0, 163.8)], "扁矩形横线 + 词重叠必须命中"
+
+
+def test_augment_pdf_blank_lines_real_fitz(tmp_path):
+    """真 fitz 集成：① 畸形 PDF（非 PDF 字节）→ 尽力而为回退原路径不抛；
+    ② 文字+横线的真 PDF → 产出 input_aug.pdf 且文字层含回填下划线；
+    ③ 无横线纯文字 PDF → 零改动返回原路径。"""
+    fitz = pytest.importorskip("fitz")
+    mod = _template_api
+
+    # ① 畸形字节：回退原路径，主链路不断
+    bad = tmp_path / "input.pdf"
+    bad.write_bytes(b"this is not a pdf")
+    assert mod._augment_pdf_blank_lines(str(bad)) == str(bad), "畸形 PDF 必须回退原路径"
+
+    # ② 真 PDF：写「招标人：」+ 同基线横线 → 增强副本含下划线
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((100, 100), "招标人：", fontname="china-s", fontsize=12)
+    page.draw_line((140, 100), (250, 100), width=1)
+    src2 = tmp_path / "input.pdf"
+    doc.save(str(src2))
+    doc.close()
+    aug = mod._augment_pdf_blank_lines(str(src2))
+    try:
+        assert aug.endswith("input_aug.pdf"), "有留白线必须产出增强副本"
+        doc2 = fitz.open(aug)
+        txt = doc2[0].get_text()
+        doc2.close()
+        assert "___" in txt, "增强副本文字层必须含回填下划线"
+        assert "招标人：" in txt, "原文字必须保留"
+    finally:
+        if os.path.exists(aug):
+            os.unlink(aug)
+
+    # ③ 无横线纯文字 PDF：零改动返回原路径，不产出副本
+    doc3 = fitz.open()
+    page3 = doc3.new_page(width=595, height=842)
+    page3.insert_text((100, 100), "没有横线的页面", fontname="china-s", fontsize=12)
+    src3 = tmp_path / "input.pdf"  # 覆盖同名（aug 已清理，不复用冲突）
+    doc3.save(str(src3))
+    doc3.close()
+    assert mod._augment_pdf_blank_lines(str(src3)) == str(src3), "无横线必须零改动返回原路径"
+
+
 def test_convert_to_docx_missing_output_raises(monkeypatch):
     """soffice 返回 0 但产物缺失（转换实际失败）→ RuntimeError，由端点兜底。"""
     mod = _template_api

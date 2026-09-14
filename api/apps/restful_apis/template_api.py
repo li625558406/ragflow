@@ -97,14 +97,115 @@ _PDF_CONVERT_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tpl-pd
 # 实测 237 页范本样张 26.5s，放宽到 5 分钟上界
 _PDF_CONVERT_TIMEOUT = 300
 
+# 留白横线回填的几何判定参数（237 页范本样张实测标定）：
+# 横线画在文字基线上，线 y 与同行词垂直中点 y 之差 ≈ 6.5-7pt（字号 10.5-14），
+# 取 (2, 10) 开区间判「同行」；词与横线区间的水平间隙小于 GAP_MAX 视为相邻。
+_PDF_BLANK_Y_MIN, _PDF_BLANK_Y_MAX = 2.0, 10.0
+_PDF_BLANK_GAP_MAX = 120.0
+_PDF_BLANK_MIN_W = 15.0
+# 横线端点接纵线（±2pt）→ 是表格网格边框而非留白，跳过防污染表格
+_PDF_GRID_TOL = 2.0
+
+
+def _blank_line_targets(drawings, words):
+    """纯几何判定：从一页 PDF 的矢量图形与词坐标中筛出「文字行内留白横线」。
+
+    招标范本 PDF 的填写留白（福建省___市（区）___、招标编号：____）普遍是
+    矢量绘制线条而非文字字符，pdf2docx 只转换文字/表格、矢量线直接丢弃——
+    留白在转换件中消失导致 AI 识别不到。本函数找出需要回填 '_' 的横线：
+    - 候选：水平线段/扁矩形（长 ≥ 15pt、厚 < 3pt）；
+    - 排除1 表格边框：端点接纵线（网格）；
+    - 排除2 装饰线（页眉分隔线等）：同行（基线 y 差 ∈ (2,10)）无相邻文字；
+    drawings 为 page.get_drawings() 结构（{"items": [...]})，words 为
+    get_text("words") 结构（x0,y0,x1,y1,word,...）。返回 [(x0, x1, y)]。"""
+    hlines, vsegs = [], []
+    for d in drawings:
+        for item in d.get("items", []):
+            if item[0] == "l":
+                p1, p2 = item[1], item[2]
+                if abs(p1.y - p2.y) < 1 and abs(p1.x - p2.x) >= _PDF_BLANK_MIN_W:
+                    hlines.append((min(p1.x, p2.x), max(p1.x, p2.x), p1.y))
+                elif abs(p1.x - p2.x) < 1 and abs(p1.y - p2.y) >= _PDF_BLANK_MIN_W:
+                    vsegs.append((p1.x, min(p1.y, p2.y), max(p1.y, p2.y)))
+            elif item[0] == "re":
+                r = item[1]
+                if r.width >= _PDF_BLANK_MIN_W and r.height < 3:
+                    hlines.append((r.x0, r.x1, r.y0))
+                elif r.height >= _PDF_BLANK_MIN_W and r.width < 3:
+                    vsegs.append((r.x0, r.y0, r.y1))
+
+    def _touches_grid(x, y):
+        return any(abs(vx - x) <= _PDF_GRID_TOL and vy0 - _PDF_GRID_TOL <= y <= vy1 + _PDF_GRID_TOL
+                   for vx, vy0, vy1 in vsegs)
+
+    targets = []
+    for x0, x1, y in hlines:
+        if _touches_grid(x0, y) or _touches_grid(x1, y):
+            continue  # 表格网格边框
+        # 同行文字：词垂直中点位于横线上方 (2,10)pt 内（线画在基线上）
+        near = [w for w in words if _PDF_BLANK_Y_MIN <= y - (w[1] + w[3]) / 2 <= _PDF_BLANK_Y_MAX]
+        if not near:
+            continue  # 装饰线（页眉线/分隔线），无同行文字
+        # 相邻判定：词与横线区间的水平距离（允许 0.1pt 级微小重叠，gap=0）
+        ok = any(((x0 - w[2]) if w[2] <= x0 else (w[0] - x1) if w[0] >= x1 else 0)
+                 < _PDF_BLANK_GAP_MAX for w in near)
+        if ok:
+            targets.append((x0, x1, y))
+    return targets
+
+
+def _augment_pdf_blank_lines(src: str) -> str:
+    """把 PDF 中矢量绘制的填写留白横线回填为 '_' 文字，另存增强副本返回其路径。
+
+    回填只发生在副本上（同目录 input_aug.pdf），原 PDF 不动。无横线可回填时
+    返回原路径零改动。尽力而为：fitz 打开/解析异常（畸形/加密 PDF 等）一律
+    告警后回退原 PDF，不阻断转换主链路。以 stream 方式打开（不持源文件句柄——
+    Windows 下失败构造的遗留句柄会锁住临时目录致清理失败）。仅 PDF 上传路径
+    使用（惰性导入 fitz，pdf2docx 依赖链必带 PyMuPDF）。"""
+    import fitz
+
+    try:
+        with open(src, "rb") as f:
+            data = f.read()
+        doc = fitz.open(stream=data, filetype="pdf")
+    except Exception:
+        logger.warning("pdf blank augment: open failed, use raw pdf", exc_info=True)
+        return src
+    try:
+        total = 0
+        for page in doc:
+            words = page.get_text("words")
+            targets = _blank_line_targets(page.get_drawings(), words)
+            for x0, x1, y in targets:
+                fs = 10.5
+                uw = fitz.get_text_length("_", fontname="helv", fontsize=fs)
+                n = max(3, int((x1 - x0) / uw))
+                # 下划线文字基线取横线上方 1.5pt：字面压线，视觉与原留白一致
+                page.insert_text((x0, y - 1.5), "_" * n, fontname="helv", fontsize=fs)
+                total += 1
+        if total == 0:
+            return src
+        aug = os.path.join(os.path.dirname(src), "input_aug.pdf")
+        doc.save(aug)
+        logger.info("pdf blank lines augmented: %d lines", total)
+        return aug
+    except Exception:
+        logger.warning("pdf blank augment failed, use raw pdf", exc_info=True)
+        return src
+    finally:
+        doc.close()
+
 
 def _convert_pdf_to_docx(blob: bytes) -> bytes:
     """pdf2docx 转 PDF 为 .docx。LibreOffice writer_pdf_import 会把全部文字
     装进定位文本框（实测 237 页范本样张：34,050 个文本框、0 个原生表格，
     python-docx 按段落读取为 0 字符，下游识别/渲染链路不可见），2026-09-14
     起改用 pdf2docx 重建 Word 原生流式元素（同一样张：0 文本框、633 个
-    原生表格含合并单元格）。惰性导入：仅 PDF 上传路径承担其加载开销。
-    扫描件（无文字层的图片型 PDF）无法转换，由上层统一异常文案兜底。"""
+    原生表格含合并单元格）。转换前经 _augment_pdf_blank_lines 把矢量留白
+    横线回填为 '_' 文字（同一样张候选 565→1351，含网格防护剔除表格边框垃圾）。
+    惰性导入：仅 PDF 上传
+    路径承担其加载开销。扫描件（无文字层的图片型 PDF）无法转换，由上层
+    统一异常文案兜底。"""
     from pdf2docx import Converter
 
     with tempfile.TemporaryDirectory(prefix="tpl_pdf_") as tmp:
@@ -112,7 +213,7 @@ def _convert_pdf_to_docx(blob: bytes) -> bytes:
         with open(src, "wb") as f:
             f.write(blob)
         out = os.path.join(tmp, "input.docx")
-        cv = Converter(src)
+        cv = Converter(_augment_pdf_blank_lines(src))
         try:
             cv.convert(out)
         finally:
