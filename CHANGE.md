@@ -13,7 +13,7 @@
 
 **遗留**：timeout 断言在测试中暂不锁数值（待工作区他人 timeout hunk 定向后恢复锁定）；设计文档 §2.1 已注明 .doc 分支 to_thread 包装属他人未提交 hunk。
 
-**部署**：未部署。后端 SCP `template_api.py`；前端 `upload-wizard.tsx`（build + dist SCP）。无数据库变更。
+**部署**：**已部署 2026-09-14**（后端 4 文件 SCP + 容器重启 + 前端 build/dist SCP + nginx reload）。注意：template_api.py 部署的是工作区版本，包含当时未提交的 4 个 hunk（timeout 60→180、.doc 转换 asyncio.to_thread 包装、detect 两处零候选守卫）——零候选守卫依赖的 `_ZERO_CANDIDATES_MSG` 已随识别加固入库，运行时已验证。
 
 ## 2026-09-13 范本 AI 识别加固
 
@@ -30,7 +30,7 @@
 
 **遗留**：已填现值型（段落无留白特征不进候选）仍不识别（设计文档已知边界）；LLM 同段幻觉重复 anchor 且实际仅 1 次出现时 occ 校验拒绝整批（保守失败）；C 端 docx-preview 保真预览对新区域的展示未专项适配。
 
-**部署**：未部署。后端成套 SCP：`rag/svr/template_fill/docx_utils.py` / `detector.py` / `renderer.py` / `api/apps/restful_apis/template_api.py`；前端 `placeholder-table.tsx`（npm run build + dist SCP）。无数据库变更。
+**部署**：**已部署 2026-09-14**（后端成套 SCP `docx_utils.py` / `detector.py` / `renderer.py` / `template_api.py` + 容器重启；前端 `placeholder-table.tsx` build + dist SCP；与同日 PDF 上传适配一并上线）。无数据库变更。
 
 ## 2026-09-13 加强：流程「版本记录」默认勾选聚焦最新一条
 
