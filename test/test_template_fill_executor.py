@@ -1592,3 +1592,54 @@ class TestSpawnThreadStartFailure:
         upd = _FakeModel.updates[0]
         assert upd["status"] == "failed"
         assert "重试" in upd["error"]
+
+
+def test_derive_unfilled_basic_and_order():
+    """留空字段按占位符清单顺序输出；required 缺省兜底 True（detector 默认口径）。"""
+    from rag.svr.template_fill import executor
+    phs = [{"key": "a", "name": "甲", "required": True},
+           {"key": "b", "name": "乙", "required": False},
+           {"key": "c", "name": "丙"}]
+    vals = {"a": "x", "c": ""}
+    assert executor.derive_unfilled(phs, vals) == [
+        {"key": "b", "name": "乙", "required": False},
+        {"key": "c", "name": "丙", "required": True}]
+
+
+def test_derive_unfilled_whitespace_is_unfilled():
+    """纯空白值 = 未填充（str().strip() 判空口径）。"""
+    from rag.svr.template_fill import executor
+    phs = [{"key": "a", "name": "甲", "required": True}]
+    assert executor.derive_unfilled(phs, {"a": "   "}) == [
+        {"key": "a", "name": "甲", "required": True}]
+
+
+def test_derive_unfilled_falsy_valid_values_filled():
+    """防 falsy 误杀："0"/"false" 是有效产值，不算留空。"""
+    from rag.svr.template_fill import executor
+    phs = [{"key": "a", "name": "甲", "required": True},
+           {"key": "b", "name": "乙", "required": False}]
+    assert executor.derive_unfilled(phs, {"a": "0", "b": "false"}) == []
+
+
+def test_derive_unfilled_empty_inputs():
+    """空 placeholders / None 入参 → 空列表（不炸）。"""
+    from rag.svr.template_fill import executor
+    assert executor.derive_unfilled([], {"a": "x"}) == []
+    assert executor.derive_unfilled(None, None) == []
+
+
+def test_derive_unfilled_no_key_skipped():
+    """无 key 的占位符行跳过（与既有 placeholder missing key, skipped 口径一致）。"""
+    from rag.svr.template_fill import executor
+    phs = [{"name": "无key"}, {"key": "k", "name": "有"}]
+    assert executor.derive_unfilled(phs, {}) == [
+        {"key": "k", "name": "有", "required": True}]
+
+
+def test_derive_unfilled_adversarial_key_passthrough():
+    """key 含花括号残留/Unicode 控制字符 → 原样透传不炸（展示层转义是前端职责）。"""
+    from rag.svr.template_fill import executor
+    phs = [{"key": "a{{b}}", "name": "怪\x00名", "required": False}]
+    got = executor.derive_unfilled(phs, {})
+    assert got == [{"key": "a{{b}}", "name": "怪\x00名", "required": False}]
