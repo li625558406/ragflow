@@ -71,8 +71,9 @@ truthy 判断，防止 `"0"`、`"false"` 等 falsy 但有效值被误判未填�
 
 `build_progress_payload` 增加同款派生（纯函数内，便于对抗测试）：
 
-- placeholders 取该任务模板版本（既有查询路径）；values 优先快照、回退 DB render
-  （与既有 `values` 字段同口径）。
+- 保持纯函数：新增可选入参 `placeholders`，由端点层按
+  `task.template_version_id` 查询范本版本后传入（版本行缺失/无占位符 → 不派生）；
+  values 优先快照、回退 DB render（与既有 `values` 字段同口径）。
 - 响应增加 `"unfilled"` 字段（仅 done/partial 终态且派生非空时）。
 - 断连重连轮询由此拿到汇总，**刷新/重连后不丢**。
 - B端同端点增量字段，B端前端不读即无影响。
