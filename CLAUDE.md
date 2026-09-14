@@ -32,7 +32,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 | 文档 | 路径 | 包含内容 |
 |------|------|----------|
-| 迭代记录 | `D:\AI\ragflow2\CHANGE.md` | ★ 全部新增需求/功能整改记录：版本记录默认勾选最新一条/文件审核保真预览显原色+显式编辑/doc→docx 转换取证（09-13，最新）、「第X章」文本章标题兜底切节、template_fill_events 64KB 截断修复等，最新迭代在最上方 |
+| 迭代记录 | `D:\AI\ragflow2\CHANGE.md` | ★ 全部新增需求/功能整改记录：AI 识别 occ 超界溢出封顶（09-14，最新）/PDF 矢量留白横线回填+pdf2docx 引擎替换（09-14 已部署）/文件审核保真预览显原色+显式编辑、「第X章」文本章标题兜底切节、template_fill_events 64KB 截断修复等，最新迭代在最上方 |
 | 部署服务器 | `D:\AI\ragflow2\本地部署服务器.md` | 服务器SSH连接、Docker部署、前端/后端/Flutter热更新、Nginx配置、常见问题排查 |
 | 第三方接口 | `D:\AI\ragflow2\接口文档_2026-06-04.md` | 标讯API、企业画像API、合同API等第三方接口的请求/响应字段定义和鉴权方式 |
 | 项目架构 | `D:\AI\ragflow2\项目架构.md` | 系统整体架构、模块间调用关系、数据流、技术选型决策背景 |
@@ -62,6 +62,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 范本 AI 识别加固 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-13-template-detect-hardening-design.md` | ★ `_build_addr_map` 单点编址扩展打通页眉/页脚/文本框/内容控件（识别+预览+替换+标蓝全链路，hdr:/ftr:/tx 前缀向后兼容）+ occ 语义支持同段同形留白多点 + LLM 解析三级容错 + 前端低置信文字徽标；已完成编码+测试，**已部署 2026-09-14**（后端 4 文件成套 SCP + 前端 build，见 CHANGE.md 当日条目） |
 | 范本库 PDF 上传适配 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-14-template-pdf-upload-design.md` | ★ 范本上传支持 .pdf：入口格式归一化（转 docx 后全链路按 docx，与 .doc 同构）+ 前端 accept/文案 + 扫描件 0 候选兜底文案；转换引擎 2026-09-14 实测后由 LibreOffice 替换为 pdf2docx（见 CHANGE.md 当日「PDF→Word 转换引擎替换为 pdf2docx」条目，代码待部署） |
 | B端范本预览保真渲染 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-14-bend-template-fidelity-preview-design.md` | ★ B端范本详情预览双模式：默认保真视图（docx-preview 渲染 original 原件 + 填写点锚文本琥珀高亮，复用 c-chat/docx-highlight）+「文本模式」保留划选标记；渲染失败自动降级；xlsx 不动（已完成编码+审查，未部署，纯前端） |
+| 范本填写未填充汇总与定位跳转 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-14-template-fill-unfilled-summary-design.md` | ★ 范本填写终态派生 unfilled（values 留空判定，无需新持久化）→ filled 事件/progress 端点透传 → 成稿行内联汇总（必填红标/选填灰）→ 点击打开 LivePreview scrollIntoView+闪烁定位（docx span 映射 / data-ph-key 兜底）；前后端可独立部署（设计完成，未实施） |
 
 
 
