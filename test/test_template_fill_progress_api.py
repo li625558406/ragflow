@@ -11,6 +11,7 @@ import sys
 import time
 import types
 from types import SimpleNamespace
+from typing import ClassVar
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -134,6 +135,45 @@ class TestBuildProgressPayload:
         d = {"doc_id": "tplfill-x", "filename": "a.docx", "name": "a.docx", "url": "/u"}
         p = _template_api.build_progress_payload(self._task(status="done"), None, download=d)
         assert p["download"] is d
+
+    _PHS: ClassVar = [{"key": "a", "name": "甲", "required": True},
+            {"key": "b", "name": "乙", "required": False}]
+
+    def test_done_with_placeholders_derives_unfilled(self):
+        p = _template_api.build_progress_payload(
+            self._task(status="done", values={"render": {"a": "x", "b": ""}}),
+            None, None, self._PHS)
+        assert p["unfilled"] == [{"key": "b", "name": "乙", "required": False}]
+
+    def test_non_terminal_never_derives(self):
+        p = _template_api.build_progress_payload(
+            self._task(status="generating",
+                       values={"render": {"a": "", "b": ""}}),
+            None, None, self._PHS)
+        assert p["unfilled"] is None
+
+    def test_no_placeholders_no_unfilled(self):
+        p = _template_api.build_progress_payload(
+            self._task(status="done", values={"render": {"a": ""}}), None)
+        assert p["unfilled"] is None
+
+    def test_values_not_dict_no_unfilled(self):
+        p = _template_api.build_progress_payload(
+            self._task(status="done", values=None), None, None, self._PHS)
+        assert p["unfilled"] is None
+
+    def test_falsy_valid_value_all_filled(self):
+        p = _template_api.build_progress_payload(
+            self._task(status="done", values={"render": {"a": "0", "b": "false"}}),
+            None, None, self._PHS)
+        assert p["unfilled"] is None
+
+    def test_snapshot_values_authoritative(self):
+        p = _template_api.build_progress_payload(
+            self._task(status="done", values={"render": {"a": "x", "b": ""}}),
+            {"status": "done", "values": {"a": "", "b": "y"}},
+            None, self._PHS)
+        assert p["unfilled"] == [{"key": "a", "name": "甲", "required": True}]
 
 
 class _FakeStorage:

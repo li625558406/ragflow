@@ -43,7 +43,7 @@ from common import settings
 from common.misc_utils import get_uuid
 from common.time_utils import current_timestamp
 from rag.svr.template_fill.detector import detect_fill_points, validate_placeholders
-from rag.svr.template_fill.executor import read_progress_snapshot
+from rag.svr.template_fill.executor import derive_unfilled, read_progress_snapshot
 from rag.svr.template_fill.spawn import is_running as _task_running
 from rag.svr.template_fill.spawn import spawn_fill_task as _spawn_fill_task
 from rag.utils.redis_conn import REDIS_CONN
@@ -826,7 +826,8 @@ def _bridge_download(task) -> dict | None:
             "url": f"/api/v1/agents/download?id={doc_id}&created_by={task.tenant_id}"}
 
 
-def build_progress_payload(task, snapshot: dict | None, download: dict | None = None) -> dict:
+def build_progress_payload(task, snapshot: dict | None, download: dict | None = None,
+                           placeholders: list[dict] | None = None) -> dict:
     """合并 DB 行 + Redis 快照组装 progress 响应（纯函数，便于对抗测试）；
     download 由端点层桥接后传入。快照缺失（Redis 挂掉/过期）退化为 DB 行：
     进度数字停更但状态/终态值仍准确。
@@ -848,6 +849,12 @@ def build_progress_payload(task, snapshot: dict | None, download: dict | None = 
                and bool(task.update_time)
                and (current_timestamp() - task.update_time) > _PROGRESS_STALLED_SECONDS * 1000
                and not snap_alive)
+    # 终态派生成稿留空填写点（断连重连轮询恢复汇总用）：placeholders 由端点层
+    # 查版本后传入；values 与上方字段同口径（快照优先，回退 DB render）。
+    # 仅 done/partial 派生；派生为空（全填满）置 None，响应不下发空数组。
+    unfilled = None
+    if placeholders and status in ("done", "partial") and isinstance(values, dict):
+        unfilled = derive_unfilled(placeholders, values) or None
     return {
         "status": status,
         "done": (snapshot or {}).get("done"),
@@ -856,6 +863,7 @@ def build_progress_payload(task, snapshot: dict | None, download: dict | None = 
         "download": download,
         "error": (snapshot or {}).get("error") or (task.error or ""),
         "stalled": stalled,
+        "unfilled": unfilled,
     }
 
 
@@ -871,7 +879,14 @@ async def get_fill_task_progress(task_id: str):
     download = None
     if task.status == "done" and task.result_file_id:
         download = _bridge_download(task)
-    return get_result(data=build_progress_payload(task, read_progress_snapshot(task_id), download))
+    placeholders = None
+    if task.status in ("done", "partial"):
+        ver = TplTemplateVersionService.get_by_id_checked(
+            task.template_id, getattr(task, "template_version_id", ""))
+        if ver is not None:
+            placeholders = getattr(ver, "placeholders", None) or []
+    return get_result(data=build_progress_payload(
+        task, read_progress_snapshot(task_id), download, placeholders))
 
 
 @manager.route("/template/fill/fill-task/<task_id>/download", methods=["GET"])
