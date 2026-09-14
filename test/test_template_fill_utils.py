@@ -1907,3 +1907,205 @@ def test_nested_table_depth_accumulates_for_cell_sdt_limit():
     # level8/level9 sdt depth=9/10，超限跳过（若嵌套表未递增 depth，此处会误编址）
     assert "控件层8" not in by_text
     assert "控件层9" not in by_text
+
+
+# ---------- Task 2（2026-09-13）：页眉/页脚编址（hdr:/ftr: 前缀） ----------
+
+
+def _make_docx_with_hf():
+    """两节文档：第 1 节有显式页眉（含表格）+页脚；第 2 节 header 默认 linked。"""
+    from docx.enum.section import WD_SECTION_START
+    from docx.shared import Emu
+    doc = Document()
+    doc.add_paragraph("正文：________")
+    h0 = doc.sections[0].header
+    h0.is_linked_to_previous = False
+    h0.paragraphs[0].text = "投标人（盖章）：____________"
+    tbl = h0.add_table(rows=1, cols=1, width=Emu(4000000))
+    tbl.rows[0].cells[0].paragraphs[0].text = "页眉表格：________"
+    f0 = doc.sections[0].footer
+    f0.is_linked_to_previous = False
+    f0.paragraphs[0].text = "日期：____年____月____日"
+    doc.add_section(WD_SECTION_START.NEW_PAGE)
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def test_corrupt_hf_part_skips_without_killing_doc(monkeypatch):
+    """单个 header/footer part 编址抛异常：跳过该 part（告警日志），不拖垮整文档。"""
+    import rag.svr.template_fill.docx_utils as du
+
+    def boom(hf_el, prefix, doc, walk_paragraph, walk_table):
+        raise ValueError("corrupt part")
+
+    monkeypatch.setattr(du, "_walk_hf_blocks", boom)
+    items = du.iter_docx_paragraphs(_make_docx_with_hf())
+    addrs = [it["addr"] for it in items]
+    assert "para:0" in addrs  # 正文编址不受影响
+    assert not any(a.startswith(("hdr:", "ftr:")) for a in addrs)  # 异常 part 整体跳过
+
+
+def test_header_footer_addressed_and_linked_deduped():
+    from rag.svr.template_fill.docx_utils import extract_docx_candidates, iter_docx_paragraphs
+    items = iter_docx_paragraphs(_make_docx_with_hf())
+    by_addr = {it["addr"]: it["text"] for it in items}
+    assert "投标人（盖章）" in by_addr.get("hdr:0:0", "")
+    assert "页眉表格" in by_addr.get("hdr:0:cell:0:0:0:0", "")
+    assert "____年____月____日" in by_addr.get("ftr:0:0", "")
+    # 第 2 节 header linked 到第 1 节（同一 part）→ 不重复编址
+    assert sum(1 for a in by_addr if a.startswith("hdr:")) == 2  # 段落+表格段各一
+    # 页眉页脚段落进候选
+    cands = extract_docx_candidates(_make_docx_with_hf())
+    addrs = {c["addr"] for c in cands}
+    assert "hdr:0:0" in addrs and "ftr:0:0" in addrs
+
+
+def test_hf_zero_legacy_counter_consumption():
+    """对抗（红线）：页眉页脚段落零消耗存量 para:/cell: 计数器——同一 body 内容
+    加页眉页脚前后，存量前缀（para:/cell:/sdt:）addr 序列逐字节一致。"""
+    from rag.svr.template_fill.docx_utils import iter_docx_paragraphs
+
+    def _fill_body(doc):
+        doc.add_paragraph("第一段：____")
+        tbl = doc.add_table(rows=1, cols=1)
+        tbl.rows[0].cells[0].paragraphs[0].text = "单元格：____"
+        doc.add_paragraph("第二段")
+
+    doc_a = Document()
+    _fill_body(doc_a)
+    doc_b = Document()
+    _fill_body(doc_b)
+    h = doc_b.sections[0].header
+    h.is_linked_to_previous = False
+    h.paragraphs[0].text = "页眉：____________"
+    f = doc_b.sections[0].footer
+    f.is_linked_to_previous = False
+    f.paragraphs[0].text = "日期：____年____月____日"
+    buf_a, buf_b = io.BytesIO(), io.BytesIO()
+    doc_a.save(buf_a)
+    doc_b.save(buf_b)
+
+    def legacy_addrs(blob):
+        return [it["addr"] for it in iter_docx_paragraphs(blob)
+                if it["addr"].split(":", 1)[0] in ("para", "cell", "sdt")]
+
+    addrs_a = legacy_addrs(buf_a.getvalue())
+    addrs_b = legacy_addrs(buf_b.getvalue())
+    # cell 段落本就消耗 para: 计数（存量语义），表格后段落为 para:2；
+    # 红线断言：有无页眉页脚，存量序列逐字节一致
+    assert addrs_a == addrs_b == ["para:0", "cell:0:0:0:0", "para:2"]
+    # 页眉页脚段落有自己的前缀且扁平 index 严格递增
+    items_b = iter_docx_paragraphs(buf_b.getvalue())
+    assert [it["index"] for it in items_b] == list(range(len(items_b)))
+    assert any(it["addr"] == "hdr:0:0" for it in items_b)
+    assert any(it["addr"] == "ftr:0:0" for it in items_b)
+
+
+def test_hf_first_even_variants_addressed_distinctly():
+    """对抗：同节 default/first/even 三类页眉页脚同时 unlinked——各 part 独立编址
+    且 addr 全局唯一（若三类共用 hdr:<sec>:<pi> 前缀会撞号，validate/render 按
+    addr 反查段落将错位到错误 part）。"""
+    from rag.svr.template_fill.docx_utils import iter_docx_paragraphs
+    doc = Document()
+    doc.add_paragraph("正文：________")
+    sec = doc.sections[0]
+    sec.different_first_page_header_footer = True
+    h = sec.header
+    h.is_linked_to_previous = False
+    h.paragraphs[0].text = "默认页眉：____"
+    hfp = sec.first_page_header
+    hfp.is_linked_to_previous = False
+    hfp.paragraphs[0].text = "首页页眉：____"
+    he = sec.even_page_header
+    he.is_linked_to_previous = False
+    he.paragraphs[0].text = "偶数页页眉：____"
+    f = sec.footer
+    f.is_linked_to_previous = False
+    f.paragraphs[0].text = "默认页脚：____"
+    ffp = sec.first_page_footer
+    ffp.is_linked_to_previous = False
+    ffp.paragraphs[0].text = "首页页脚：____"
+    fe = sec.even_page_footer
+    fe.is_linked_to_previous = False
+    fe.paragraphs[0].text = "偶数页页脚：____"
+    buf = io.BytesIO()
+    doc.save(buf)
+
+    items = iter_docx_paragraphs(buf.getvalue())
+    by_addr = {it["addr"]: it["text"] for it in items}
+    assert by_addr["hdr:0:0"] == "默认页眉：____"
+    assert by_addr["hdr:0:first:0"] == "首页页眉：____"
+    assert by_addr["hdr:0:even:0"] == "偶数页页眉：____"
+    assert by_addr["ftr:0:0"] == "默认页脚：____"
+    assert by_addr["ftr:0:first:0"] == "首页页脚：____"
+    assert by_addr["ftr:0:even:0"] == "偶数页页脚：____"
+    # addr 全局唯一（撞号即失守）
+    addrs = [it["addr"] for it in items]
+    assert len(addrs) == len(set(addrs))
+
+
+def test_hf_shared_part_addressed_once():
+    """对抗：两节 headerReference 指向同一 part（手工改 rel 模拟畸形/拷贝文档）——
+    partname 去重保证只编址一次，不产生 hdr:1 重复 addr。"""
+    from docx.enum.section import WD_SECTION_START
+    from docx.opc.constants import RELATIONSHIP_TYPE as RT
+    from docx.oxml.ns import qn
+
+    from rag.svr.template_fill.docx_utils import iter_docx_paragraphs
+    doc = Document()
+    doc.add_paragraph("第一节正文")
+    h0 = doc.sections[0].header
+    h0.is_linked_to_previous = False
+    h0.paragraphs[0].text = "共享页眉：____"
+    doc.add_section(WD_SECTION_START.NEW_PAGE)
+    doc.add_paragraph("第二节正文")
+    h1 = doc.sections[1].header
+    h1.is_linked_to_previous = False  # 先生成自己的 part
+    # add_section 会把旧 sentinel sectPr 留给新节：旧 h0 代理绑定的元素已属第 2 节，
+    # 必须重新取第 1 节 header 才能拿到含「共享页眉」内容的 part
+    part0 = doc.sections[0].header.part
+    r_id = doc.part.relate_to(part0, RT.HEADER)
+    for ref in doc.sections[1]._sectPr.findall(qn("w:headerReference")):
+        if ref.get(qn("w:type")) == "default":
+            ref.set(qn("r:id"), r_id)
+    buf = io.BytesIO()
+    doc.save(buf)
+
+    items = iter_docx_paragraphs(buf.getvalue())
+    hdr_addrs = [it["addr"] for it in items if it["addr"].startswith("hdr:")]
+    assert hdr_addrs == ["hdr:0:0"]  # 共享 part 只编址一次
+    assert any(it["text"] == "共享页眉：____" and it["addr"] == "hdr:0:0" for it in items)
+
+
+def test_textbox_in_header_paragraph_addressed():
+    """对抗：页眉段落内嵌 mc:AlternateContent 文本框 → hdr:0:0:tx0:0；
+    Choice+Fallback 双份存储只编址一次。"""
+    from docx.oxml import parse_xml
+
+    from rag.svr.template_fill.docx_utils import iter_docx_paragraphs
+    doc = Document()
+    doc.add_paragraph("正文：________")
+    h = doc.sections[0].header
+    h.is_linked_to_previous = False
+    p = h.paragraphs[0]
+    p.text = "页眉容器段落"
+    p._p.append(parse_xml(
+        f'<w:r {_MC_NS}>'
+        '<mc:AlternateContent>'
+        f'<mc:Choice Requires="wps"><w:txbxContent>'
+        f'<w:p><w:r><w:t>页眉文本框：＿＿＿＿＿＿</w:t></w:r></w:p>'
+        '</w:txbxContent></mc:Choice>'
+        f'<mc:Fallback><w:txbxContent>'
+        f'<w:p><w:r><w:t>页眉文本框：＿＿＿＿＿＿</w:t></w:r></w:p>'
+        '</w:txbxContent></mc:Fallback>'
+        '</mc:AlternateContent>'
+        '</w:r>'
+    ))
+    buf = io.BytesIO()
+    doc.save(buf)
+
+    items = iter_docx_paragraphs(buf.getvalue())
+    hits = [it for it in items if "页眉文本框" in it["text"]]
+    assert len(hits) == 1
+    assert hits[0]["addr"] == "hdr:0:0:tx0:0"

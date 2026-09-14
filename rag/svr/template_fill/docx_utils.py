@@ -79,8 +79,27 @@ def _iter_txbx_content(el) -> list:
     return out
 
 
+def _walk_hf_blocks(hf_el, prefix, doc, walk_paragraph, walk_table):
+    """页眉/页脚 part 编址：直系 w:p → <prefix>:<pi>（part 内局部序号）；
+    直系 w:tbl → <prefix>:cell:<t>:...。hf_el 为该 part 根元素
+    （python-docx _BaseHeaderFooter._element，is_linked_to_previous 为 False
+    时必有定义，不会触发自动补建副作用）。walk_paragraph/walk_table 由调用方
+    闭包注入，均保持默认 legacy=False——页眉页脚是新区域，零消耗存量
+    para:/cell: 计数器（红线：存量模板加页眉页脚后正文 addr 序列逐字节不变）。
+    模块级以便单测 monkeypatch 打桩（畸形 part 注入异常验证隔离）。"""
+    pi = 0
+    tbl_no = 0
+    for block in hf_el.iterchildren():
+        if block.tag == qn("w:p"):
+            walk_paragraph(Paragraph(block, doc), f"{prefix}:{pi}")
+            pi += 1
+        elif block.tag == qn("w:tbl"):
+            walk_table(Table(block, doc), f"{prefix}:cell:{tbl_no}")
+            tbl_no += 1
+
+
 def _build_addr_map(doc):
-    """遍历文档全部可填写段落（正文/内容控件/表格/文本框，页眉页脚见 Task 2），
+    """遍历文档全部可填写段落（正文/内容控件/表格/文本框/页眉页脚），
     返回 ({addr: Paragraph}, items)。
 
     编址（存量规则不变，新增前缀均为增量，旧 addr 永不复用）：
@@ -97,6 +116,11 @@ def _build_addr_map(doc):
       （I-1 红线：含文本框/sdt 的存量模板升级后 para:/cell: 序列逐字节不变）。
     - w:sdt 内容控件独立前缀：body 直系 sdt:<k>:<pi>（内含表格 sdt:<k>:cell:...）；
       cell/文本框/嵌套内 sdt 追加 :sdt<k>: 段。
+    - 页眉/页脚段落 hdr:<sec>:<pi> / ftr:<sec>:<pi>（sec 为节序号，pi 为 part 内
+      局部段号）；part 内表格 …:cell:<t>:…；首页/偶数页变体追加 :first / :even 段
+      （同节多类页眉同时 unlinked 若共用前缀会撞号，addr 反查段落错位）。
+      linked 节与共享 part（partname 去重）只编址一次；页眉页脚段落属新区域，
+      不消耗存量 para: 计数器。
     items: [{"index": 扁平序号, "text": 段落文本, "addr": 定位串}]，按文档顺序。
     """
     addr_map = {}
@@ -214,6 +238,42 @@ def _build_addr_map(doc):
                 _walk_sdt(block, f"sdt:{sdt_no}", 0)
 
     _walk_body_blocks(doc.element.body)
+
+    # 页眉/页脚：先判 linked 再访问 part/element——对无定义的 header 访问 .part
+    # 会触发 _get_or_add_definition「自动补建定义」副作用（给无页眉文档凭空造出
+    # 空页眉 part）。partname 字符串去重：多节/多类共享同一 part 时只编址一次。
+    # 首页/偶数页变体带 :first/:even 后缀段——同节多类同时 unlinked 时若共用
+    # hdr:<sec>:<pi> 前缀会撞号（两个不同段落同 addr，render 反查错位）。
+    seen_hf = set()
+    hf_slots = (
+        ("hdr", "", lambda s: s.header),
+        ("hdr", ":first", lambda s: s.first_page_header),
+        ("hdr", ":even", lambda s: s.even_page_header),
+        ("ftr", "", lambda s: s.footer),
+        ("ftr", ":first", lambda s: s.first_page_footer),
+        ("ftr", ":even", lambda s: s.even_page_footer),
+    )
+    for sec_no, section in enumerate(doc.sections):
+        for kind, suffix, get_hf in hf_slots:
+            hf = get_hf(section)
+            if hf is None or hf.is_linked_to_previous:
+                continue
+            try:
+                partname = str(hf.part.partname)
+            except Exception:
+                # 残缺引用（r:id 悬空等）等价于该 part 不可用：跳过，不拖垮整文档
+                logger.exception("resolve header/footer part failed at %s:%s, skipped",
+                                 kind, sec_no)
+                continue
+            if partname in seen_hf:
+                continue
+            seen_hf.add(partname)
+            try:
+                _walk_hf_blocks(hf._element, f"{kind}:{sec_no}{suffix}", doc,
+                                _walk_paragraph, _walk_table)
+            except Exception:
+                # 单 part 编址失败（畸形节点等）跳过该 part，不拖垮整文档
+                logger.exception("walk header/footer part %s failed, skipped", partname)
     return addr_map, items
 
 
