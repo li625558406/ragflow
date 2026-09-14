@@ -60,6 +60,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 范本填写后台化与断连重连 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-12-template-fill-detached-task-design.md` | ★ 对话/流程填写执行与 SSE 连接解耦（方案A）：节点委托 tpl_fill_task 后台线程+观察者轮询+progress 重连端点+前端轮询 hook；已完成编码+两道审查（未部署，部署须 executor/spawn/template_api/template_fill_service/template_fill.py 成套 SCP + 前端 build） |
 | 对话文档按节局部重写 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-12-chat-doc-section-rewrite-design.md` | ★ C端对话内说「重写第N节」→ DocumentRewrite 工具（outline/rewrite/versions/rollback）对成稿 docx 按节 LLM 重写保格式（heading切节/段落区间替换样式拷贝）+ doc_rewrite_version 版本链可回退 + downloads 持久化/历史恢复/recent_downloads 上下文；已完成编码+两道审查（13 套件 394 passed），实施计划 docs/superpowers/plans/2026-09-12-chat-doc-section-rewrite.md（未部署，后端 7 文件成套 SCP + 前端 build，见 CHANGE.md 当日条目） |
 | 范本 AI 识别加固 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-13-template-detect-hardening-design.md` | ★ `_build_addr_map` 单点编址扩展打通页眉/页脚/文本框/内容控件（识别+预览+替换+标蓝全链路，hdr:/ftr:/tx 前缀向后兼容）+ occ 语义支持同段同形留白多点 + LLM 解析三级容错 + 前端低置信文字徽标；已完成编码+测试（2026-09-13，未部署，后端 4 文件成套 SCP + 前端 build，见 CHANGE.md 当日条目） |
+| 范本库 PDF 上传适配 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-14-template-pdf-upload-design.md` | ★ 范本上传支持 .pdf：入口格式归一化（LibreOffice 转 docx 后全链路按 docx，与 .doc 同构）+ `_convert_to_docx(src_ext)` 泛化 + 前端 accept/文案 + 扫描件 0 候选兜底文案；实施中（2026-09-14） |
 
 
 

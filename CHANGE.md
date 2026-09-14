@@ -1,5 +1,20 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-14 范本库支持上传 PDF（转 docx 后 AI 识别）
+
+**主题**：范本上传入口格式归一化——.pdf 上传即用 LibreOffice 转 docx，之后全链路（候选提取/AI 识别/预览/替换/标蓝/下载）按 docx 处理，与旧版 .doc 策略同构。设计文档 `docs/superpowers/specs/2026-09-14-template-pdf-upload-design.md`。
+
+**核心变更**：
+- `template_api.py`：新增 `_is_pdf`；`_convert_doc_to_docx` 泛化为 `_convert_to_docx(blob, src_ext=".doc")`（src 临时文件按后缀选 soffice import filter，输出恒 docx，.doc 行为不变）；upload_template 新增独立 PDF 转换块（asyncio.to_thread + 转换失败文案 + 转换后体积复查）；提示文案三处含 .pdf；`_ZERO_CANDIDATES_MSG` 追加 PDF/扫描件兜底子句
+- 前端 `upload-wizard.tsx`：文件正则/accept/label/错误文案/拖拽提示 5 处加 .pdf
+- 测试：`_is_pdf` 边界、src_ext 传参、PDF 上传 happy/失败路径、对抗用例（伪 .pdf 内容、.pdfx 伪扩展名、转换产物膨胀超 20MB）
+
+**已知边界**：soffice 的 PDF 导入是 Draw 系导入，转出 docx 文字多在文本框内——识别/替换/标蓝已覆盖文本框（依赖 2026-09-13 识别加固的 `:tx<k>:` 编址），但版式保真度待真实样张验证；图片型扫描 PDF 转 0 候选走兜底文案。
+
+**遗留**：timeout 断言在测试中暂不锁数值（待工作区他人 timeout hunk 定向后恢复锁定）；设计文档 §2.1 已注明 .doc 分支 to_thread 包装属他人未提交 hunk。
+
+**部署**：未部署。后端 SCP `template_api.py`；前端 `upload-wizard.tsx`（build + dist SCP）。无数据库变更。
+
 ## 2026-09-13 范本 AI 识别加固
 
 **主题**：识别覆盖面扩展（页眉/页脚/文本框/内容控件）+ 同形留白多点 occ 语义 + LLM 解析与警示加固。设计文档 `docs/superpowers/specs/2026-09-13-template-detect-hardening-design.md`。

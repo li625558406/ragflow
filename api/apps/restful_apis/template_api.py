@@ -107,9 +107,9 @@ def _convert_to_docx(blob: bytes, src_ext: str = ".doc") -> bytes:
             capture_output=True, timeout=60, check=False, env=env)
         out = os.path.join(tmp, "input.docx")
         if not os.path.exists(out):
-            logger.error("doc->docx convert failed: rc=%s stderr=%s",
-                         r.returncode, (r.stderr or b"")[:500])
-            raise RuntimeError("doc convert failed")
+            logger.error("convert to docx failed (src_ext=%s): rc=%s stderr=%s",
+                         src_ext, r.returncode, (r.stderr or b"")[:500])
+            raise RuntimeError("convert to docx failed")
         with open(out, "rb") as f:
             return f.read()
 
