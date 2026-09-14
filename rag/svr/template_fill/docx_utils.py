@@ -493,7 +493,14 @@ def apply_docx_placeholders(file_bytes: bytes, replacements: list) -> bytes:
             continue
         p = addr_map.get(addr)
         if p is not None:
-            _replace_in_paragraph(p, anchor, f"{{{{{key}}}}}", occ)
+            # 替换层 no-op 可观测性（设计 §8：no-op + 告警，旧数据回放）：返回 False
+            # 的情形有二——anchor 不在段落文本（模板版本漂移/LLM 脏锚）、occ 超界
+            # （段内出现次数不足 N）。二者此前均静默，导致「填写点没生效」无从定位；
+            # addr 悬空告警在 else 分支（互斥路径），此处不会重复。
+            if not _replace_in_paragraph(p, anchor, f"{{{{{key}}}}}", occ):
+                logger.warning(
+                    "apply_docx_placeholders: replace no-op addr=%s key=%s anchor=%r occ=%s",
+                    addr, key, anchor, occ)
         else:
             # 静默跳过不变（脏输入健壮性），但留告警痕迹：存量模板的落库 addr
             # 因编址规则演进（如合并单元格去重）悬空时，可凭此定位「填写点没生效」

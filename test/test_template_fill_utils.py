@@ -1,4 +1,5 @@
 import io
+import logging
 
 import pytest
 from docx import Document
@@ -2331,3 +2332,68 @@ def test_apply_occ_and_none_mixed_overlap_different_anchors():
         {"addr": "para:0", "anchor": "AB", "key": "none_key"},
     ])
     assert iter_docx_paragraphs(out)[0]["text"] == expected
+
+
+# ---------- 替换层 no-op 可观测性（设计 §8：no-op + 告警，旧数据回放） ----------
+
+
+def _collect_warnings(caplog):
+    import logging
+    caplog.set_level(logging.WARNING, logger="rag.svr.template_fill.docx_utils")
+    return caplog
+
+
+def test_apply_occ_beyond_count_warns(caplog):
+    """occ 超界 no-op 必须留告警日志（含 addr/key/occ），不得静默——否则旧数据
+    回放/锚错位时「填写点没生效」无从定位。"""
+    _collect_warnings(caplog)
+    blob = _make_docx(["姓名：＿＿ 电话：＿＿"])
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders
+    apply_docx_placeholders(blob, [
+        {"addr": "para:0", "anchor": "＿＿", "key": "x", "occ": 3},
+    ])
+    msgs = [r.getMessage() for r in caplog.records
+            if r.levelno == logging.WARNING]
+    assert any("no-op" in m and "para:0" in m and "x" in m and "occ=3" in m
+               for m in msgs), msgs
+
+
+def test_apply_anchor_absent_in_paragraph_warns(caplog):
+    """anchor 不在 addr 指向的段落文本（模板版本漂移/LLM 脏锚）同样值得告警，
+    不得把「anchor 不在文本」漏成静默。"""
+    _collect_warnings(caplog)
+    blob = _make_docx(["项目名称：____________"])
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders
+    apply_docx_placeholders(blob, [
+        {"addr": "para:0", "anchor": "不存在的锚", "key": "x"},
+    ])
+    msgs = [r.getMessage() for r in caplog.records
+            if r.levelno == logging.WARNING]
+    assert any("no-op" in m and "para:0" in m and "不存在的锚" in m
+               for m in msgs), msgs
+
+
+def test_apply_addr_missing_warns_once_not_duplicated(caplog):
+    """回归：addr 悬空既有告警保留，且每条目只告警一次（替换层告警不得与
+    addr 悬空告警叠加产生重复行）。"""
+    _collect_warnings(caplog)
+    blob = _make_docx(["正文"])
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders
+    apply_docx_placeholders(blob, [
+        {"addr": "para:99", "anchor": "＿＿", "key": "x"},
+    ])
+    msgs = [r.getMessage() for r in caplog.records
+            if r.levelno == logging.WARNING]
+    assert any("not found" in m and "para:99" in m for m in msgs), msgs
+    assert sum(1 for m in msgs if "para:99" in m) == 1, msgs
+
+
+def test_apply_success_path_no_warning(caplog):
+    """正常替换路径零告警——告警只属于异常/悬空情形，避免正常回放刷屏。"""
+    _collect_warnings(caplog)
+    blob = _make_docx(["姓名：＿＿ 电话：＿＿"])
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders
+    apply_docx_placeholders(blob, [
+        {"addr": "para:0", "anchor": "＿＿", "key": "x", "occ": 2},
+    ])
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
