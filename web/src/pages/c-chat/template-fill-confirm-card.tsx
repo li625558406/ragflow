@@ -14,11 +14,15 @@ import { useState } from 'react';
 export default function TemplateFillConfirmCard({
   pending,
   onSubmitted,
+  onLocate,
 }: {
   pending: ITemplateFillConfirmPending;
   /** 提交成功后回调（可选）：使用方把 submitted 回写进流式状态，
    *  使归约器的 confirm_timeout 守卫（!submitted）真正生效 */
   onSubmitted?: () => void;
+  /** 点击字段名定位到预览文档位置（可选）：父组件接 setLiveTarget({template_id, focusKey})；
+   *  未传时字段名保持纯文本（向后兼容） */
+  onLocate?: (templateId: string, key: string) => void;
 }) {
   // 各范本勾选的候选字段 key（初始 = AI 预判 ∪ 无默认值字段——后者维持交给 AI），
   // Set 不可变更新保证 memo 感知
@@ -123,16 +127,35 @@ export default function TemplateFillConfirmCard({
                   checked={isChecked}
                   onCheckedChange={() => toggle(t.template_id, c.key)}
                 />
-                <span
-                  className={
-                    isChecked || hasInput
-                      ? 'text-[#000000]'
-                      : 'text-[#8C8C8C] line-through'
-                  }
-                >
-                  {c.name || c.key}
-                  {c.default_value ? `（默认：${c.default_value}）` : ''}
-                </span>
+                {onLocate ? (
+                  <button
+                    type="button"
+                    title={`定位到文档中的「${c.name || c.key}」`}
+                    className={`text-left underline-offset-2 decoration-dotted transition-colors hover:underline ${
+                      isChecked || hasInput
+                        ? 'text-[#000000]'
+                        : 'text-[#8C8C8C] line-through'
+                    }`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onLocate(t.template_id, c.key);
+                    }}
+                  >
+                    {c.name || c.key}
+                    {c.default_value ? `（默认：${c.default_value}）` : ''}
+                  </button>
+                ) : (
+                  <span
+                    className={
+                      isChecked || hasInput
+                        ? 'text-[#000000]'
+                        : 'text-[#8C8C8C] line-through'
+                    }
+                  >
+                    {c.name || c.key}
+                    {c.default_value ? `（默认：${c.default_value}）` : ''}
+                  </span>
+                )}
                 <Input
                   className="ml-auto h-6 w-[140px] border-[#E5E5E5] bg-white text-xs"
                   placeholder="留空则 AI 重填"
