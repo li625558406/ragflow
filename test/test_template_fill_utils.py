@@ -1602,3 +1602,153 @@ def test_textbox_paragraph_addressed_and_fallback_deduped():
     # 容器段落自身无填写特征，不进候选；文本框段落进候选
     cands = extract_docx_candidates(blob)
     assert [c["addr"] for c in cands] == ["para:1:tx0:0"]
+
+
+# ---------- I-1 返工（2026-09-13）：存量计数器隔离 + sdt 独立 sdt: 前缀 ----------
+
+_W_NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+
+
+def _make_sdt_xml(inner_xml):
+    """构造 body 直系 w:sdt（含 sdtContent），inner 为 sdtContent 内部块 XML。"""
+    from docx.oxml import parse_xml
+    return parse_xml(
+        f'<w:sdt {_W_NS}><w:sdtPr><w:alias w:val="t"/></w:sdtPr>'
+        f'<w:sdtContent>{inner_xml}</w:sdtContent></w:sdt>'
+    )
+
+
+def _sdt_para(text):
+    return f'<w:p><w:r><w:t>{text}</w:t></w:r></w:p>'
+
+
+def _add_body_sdt(doc, inner_xml):
+    """构造 body 直系 w:sdt 并插入 sectPr 之前（body.append 会落到文档末尾，
+    破坏文档顺序断言），返回插入的元素。"""
+    from docx.oxml.ns import qn
+    sdt = _make_sdt_xml(inner_xml)
+    body = doc.element.body
+    sect_pr = body.find(qn("w:sectPr"))
+    if sect_pr is not None:
+        sect_pr.addprevious(sdt)
+    else:
+        body.append(sdt)
+    return sdt
+
+
+def test_sdt_wrapped_paragraph_addressed():
+    """body 直系 sdt 内段落 addr == sdt:0:0；前后普通段落仍连续 para:0/para:1
+    （存量计数器不被挤占，I-1 红线）；extract_docx_candidates 命中 sdt 文本。"""
+    from rag.svr.template_fill.docx_utils import extract_docx_candidates, iter_docx_paragraphs
+    doc = Document()
+    doc.add_paragraph("sdt 前面的段落")
+    _add_body_sdt(doc, _sdt_para("内容控件里的日期：____"))
+    doc.add_paragraph("sdt 之后的段落：____")
+    buf = io.BytesIO()
+    doc.save(buf)
+    blob = buf.getvalue()
+
+    items = iter_docx_paragraphs(blob)
+    by_addr = {it["addr"]: it["text"] for it in items}
+    assert by_addr["sdt:0:0"] == "内容控件里的日期：____"
+    assert by_addr["para:0"] == "sdt 前面的段落"
+    assert by_addr["para:1"] == "sdt 之后的段落：____"
+    cands = extract_docx_candidates(blob)
+    assert any(c["addr"] == "sdt:0:0" and "内容控件里的日期" in c["text"] for c in cands)
+
+
+def test_legacy_para_addrs_stable_with_txbx_and_sdt():
+    """「段落→含文本框段落→sdt→段落→顶层表格」文档：存量 addr 序列与升级前逐字节一致，
+    新元素（文本框/sdt）只消耗扁平 index，零消耗 para:/cell: 计数器。"""
+    from docx.oxml import parse_xml
+
+    from rag.svr.template_fill.docx_utils import iter_docx_paragraphs
+    doc = Document()
+    doc.add_paragraph("第一段")
+    p = doc.add_paragraph("含文本框的容器段落")
+    p._p.append(parse_xml(
+        f'<w:r {_MC_NS}>'
+        '<mc:AlternateContent>'
+        f'<mc:Choice Requires="wps"><w:txbxContent>'
+        f'<w:p><w:r><w:t>文本框里：＿＿＿</w:t></w:r></w:p>'
+        '</w:txbxContent></mc:Choice>'
+        '</mc:AlternateContent>'
+        '</w:r>'
+    ))
+    _add_body_sdt(doc, _sdt_para("内容控件：____"))
+    doc.add_paragraph("sdt 后的段落")
+    tbl = doc.add_table(rows=1, cols=1)
+    tbl.rows[0].cells[0].paragraphs[0].text = "表格单元格"
+    buf = io.BytesIO()
+    doc.save(buf)
+
+    addrs = [it["addr"] for it in iter_docx_paragraphs(buf.getvalue())]
+    # 存量 addr 序列逐字节不变（新元素不挤占 para:/cell: 计数器）
+    assert addrs[:2] == ["para:0", "para:1"]
+    # 文本框/sdt 段落只在扁平 index 后追加（addr 用独立前缀）
+    assert "para:1:tx0:0" in addrs
+    assert "sdt:0:0" in addrs
+    # sdt 之后的段落仍是 para:2（若计数器被挤占会错位成 para:3）
+    assert addrs[4] == "para:2"
+    # 顶层表格仍是 cell:0（存量 0 起编号不变）
+    assert "cell:0:0:0:0" in addrs
+    # 扁平 index 严格按文档顺序递增（含新区域）
+    idxs = [it["index"] for it in iter_docx_paragraphs(buf.getvalue())]
+    assert idxs == list(range(len(idxs)))
+
+
+def test_sdt_in_cell_and_textbox_addressed():
+    """cell 内 sdt → <cell_addr>:sdt<k>:<pi>；文本框内 sdt → <父addr>:tx<k>:sdt<j>:<pi>；
+    sdt 嵌 sdt → :sdt<j>: 段追加递归。"""
+    from docx.oxml import parse_xml
+
+    from rag.svr.template_fill.docx_utils import iter_docx_paragraphs
+    doc = Document()
+    tbl = doc.add_table(rows=1, cols=1)
+    cell = tbl.rows[0].cells[0]
+    cell.paragraphs[0].text = "单元格普通段落"
+    cell._tc.append(_make_sdt_xml(_sdt_para("单元格内控件：____")))
+    p = doc.add_paragraph("含文本框的容器段落")
+    p._p.append(parse_xml(
+        f'<w:r {_MC_NS}>'
+        '<mc:AlternateContent>'
+        f'<mc:Choice Requires="wps"><w:txbxContent>'
+        f'<w:sdt {_W_NS}><w:sdtContent>{_sdt_para("文本框内控件：____")}</w:sdtContent></w:sdt>'
+        '</w:txbxContent></mc:Choice>'
+        '</mc:AlternateContent>'
+        '</w:r>'
+    ))
+    # sdt 嵌 sdt：body 直系 sdt 内再嵌一层（该文档第 0 个 body 直系 sdt → sdt:0:sdt0:0）
+    _add_body_sdt(doc, f'<w:sdt {_W_NS}><w:sdtContent>{_sdt_para("二层控件：____")}</w:sdtContent></w:sdt>')
+    # 第二个 body 直系 sdt：锁定 sdt 计数器独立递增
+    _add_body_sdt(doc, _sdt_para("第二个控件：____"))
+    buf = io.BytesIO()
+    doc.save(buf)
+
+    by_addr = {it["addr"]: it["text"] for it in iter_docx_paragraphs(buf.getvalue())}
+    assert by_addr["cell:0:0:0:sdt0:0"] == "单元格内控件：____"
+    assert by_addr["para:0:tx0:sdt0:0"] == "文本框内控件：____"
+    assert by_addr["sdt:0:sdt0:0"] == "二层控件：____"
+    assert by_addr["sdt:1:0"] == "第二个控件：____"
+
+
+def test_sdt_without_content_skipped():
+    """无 sdtContent 的畸形 sdt：不产生 addr、不崩溃，后续正常编址。"""
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import qn
+
+    from rag.svr.template_fill.docx_utils import iter_docx_paragraphs
+    doc = Document()
+    doc.add_paragraph("畸形控件前的段落")
+    # 空 sdtContent 的合法 sdt（内部无任何块）
+    _add_body_sdt(doc, "")
+    # 完全无 sdtContent 子节点的畸形 sdt
+    sdt_el = parse_xml(f'<w:sdt {_W_NS}><w:sdtPr><w:alias w:val="x"/></w:sdtPr></w:sdt>')
+    doc.element.body.find(qn("w:sectPr")).addprevious(sdt_el)
+    doc.add_paragraph("畸形控件后的段落：____")
+    buf = io.BytesIO()
+    doc.save(buf)
+
+    items = iter_docx_paragraphs(buf.getvalue())  # 不抛异常
+    addrs = [it["addr"] for it in items]
+    assert addrs == ["para:0", "para:1"]

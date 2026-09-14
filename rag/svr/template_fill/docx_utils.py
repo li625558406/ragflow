@@ -7,6 +7,9 @@ validate/render 按 addr 查到的段落错位），故必须带表序号。嵌�
 后追加 ":t<j>" 段并递归（cell:0:1:2:t0:0:1:0 = 顶层表 0 的 (1,2) 单元格内第 0 个
 嵌套表的 (0,1) 单元格第 0 段）。合并单元格（gridSpan）同一 tc 只按首现坐标编址一次
 （此前重复编址会让同一文本多处进候选，anchor 反查报「匹配到多处」）。
+文本框段落 <父addr>:tx<k>:<pi>、内容控件段落 body 直系 sdt:<k>:<pi> / 嵌套
+<父addr>:sdt<k>:<pi>——新区域只消耗扁平 index，不挤占存量 para:/cell: 序号
+（否则含文本框/sdt 的存量模板升级后 addr 整体错位、同形 anchor 静默错填）。
 index 为全文档扁平序号，与 addr 一一对应。
 
 跨 run 替换取舍：普通段落跨 run 时只重写 anchor 覆盖的 run 区间，区间外格式保留
@@ -84,12 +87,17 @@ def _build_addr_map(doc):
     - 文本框段落 <父addr>:tx<k>:<pi>（k 为该段落内第 k 个文本框）；
       框内表格 <父addr>:tx<k>:cell:<t>:...；嵌套文本框继续追加 :tx<j> 段。
       mc:AlternateContent 只取 mc:Choice（见 _iter_txbx_content）。
-    - w:sdt 内容控件递归展开，内部段落/表格按正文规则编址（不引入新前缀）。
+    - w:sdt 内容控件独立前缀：body 直系 sdt:<k>:<pi>（内含表格 sdt:<k>:cell:...）；
+      cell/文本框/嵌套内 sdt 追加 :sdt<k>: 段。新区域不消耗存量 para:/cell: 计数器
+      （I-1 红线：含文本框/sdt 的存量模板升级后 para:/cell: 序列逐字节不变）。
     items: [{"index": 扁平序号, "text": 段落文本, "addr": 定位串}]，按文档顺序。
     """
     addr_map = {}
     items = []
-    idx = 0
+    idx = 0        # 全文档扁平序号（items 排序用；新区域段落一并递增）
+    para_seq = -1  # 存量正文段号：只随 body 直系 w:p 递增（I-1 红线：新区域不消耗）
+    tbl_no = -1    # 存量顶层表格号：只随 body 直系 w:tbl 递增
+    sdt_no = -1    # body 直系 sdt 序号（独立 sdt: 前缀）
 
     def _emit(p, addr):
         nonlocal idx
@@ -97,7 +105,33 @@ def _build_addr_map(doc):
         items.append({"index": idx, "text": p.text, "addr": addr})
         idx += 1
 
-    def _walk_table(tbl, prefix):
+    def _walk_sdt(sdt_el, prefix, depth):
+        """内容控件展开：body 直系 → sdt:<k>:...；cell/文本框/嵌套内 →
+        <父addr>:sdt<k>:...。内部段落/表格不消耗任何存量计数器；
+        sdt 无 sdtContent（畸形）→ debug 日志跳过。"""
+        if depth > TXBX_DEPTH_LIMIT:
+            logger.warning("sdt nesting deeper than %d at %s, skipped",
+                           TXBX_DEPTH_LIMIT, prefix)
+            return
+        content = sdt_el.find(qn("w:sdtContent"))
+        if content is None:
+            logger.debug("w:sdt without sdtContent at %s, skipped", prefix)
+            return
+        pi = 0
+        tbl_k = 0
+        sdt_k = 0
+        for block in content.iterchildren():
+            if block.tag == qn("w:p"):
+                _walk_paragraph(Paragraph(block, doc), f"{prefix}:{pi}", depth)
+                pi += 1
+            elif block.tag == qn("w:tbl"):
+                _walk_table(Table(block, doc), f"{prefix}:cell:{tbl_k}", depth)
+                tbl_k += 1
+            elif block.tag == qn("w:sdt"):
+                _walk_sdt(block, f"{prefix}:sdt{sdt_k}", depth + 1)
+                sdt_k += 1
+
+    def _walk_table(tbl, prefix, depth=0):
         seen_tc = set()  # lxml 元素按底层 XML 节点判等：横向合并重复返回的 cell 去重
         for r, row in enumerate(tbl.rows):
             for c, cell in enumerate(row.cells):
@@ -106,9 +140,12 @@ def _build_addr_map(doc):
                 seen_tc.add(cell._tc)
                 cell_addr = f"{prefix}:{r}:{c}"
                 for pi, p in enumerate(cell.paragraphs):
-                    _walk_paragraph(p, f"{cell_addr}:{pi}")
+                    _walk_paragraph(p, f"{cell_addr}:{pi}", depth)
                 for j, sub in enumerate(cell.tables):
-                    _walk_table(sub, f"{cell_addr}:t{j}")
+                    _walk_table(sub, f"{cell_addr}:t{j}", depth)
+                # cell 直系内容控件：局部 sdt 序号从 0 起，不消耗任何存量计数器
+                for k, sdt in enumerate(cell._tc.findall(qn("w:sdt"))):
+                    _walk_sdt(sdt, f"{cell_addr}:sdt{k}", depth)
 
     def _walk_paragraph(p, base_addr, txbx_depth=0):
         """编址段落自身及其内嵌文本框（正文/表格 cell/页眉页脚/文本框内通用）。"""
@@ -122,31 +159,34 @@ def _build_addr_map(doc):
                            TXBX_DEPTH_LIMIT, prefix)
             return
         pi = 0
-        tbl_no = 0
+        tbl_k = 0
+        sdt_k = 0
         for block in txbx_el.iterchildren():
             if block.tag == qn("w:p"):
                 _walk_paragraph(Paragraph(block, doc), f"{prefix}:{pi}", depth)
                 pi += 1
             elif block.tag == qn("w:tbl"):
-                _walk_table(Table(block, doc), f"{prefix}:cell:{tbl_no}")
-                tbl_no += 1
+                _walk_table(Table(block, doc), f"{prefix}:cell:{tbl_k}", depth)
+                tbl_k += 1
+            elif block.tag == qn("w:sdt"):
+                _walk_sdt(block, f"{prefix}:sdt{sdt_k}", depth + 1)
+                sdt_k += 1
 
     def _walk_body_blocks(parent_el):
-        """body / sdtContent 共用：w:p → para:<扁平idx>；w:tbl → cell:<序号>:...；
-        w:sdt 递归展开（内部段落/表格按正文规则编址，不引入新前缀）。"""
-        nonlocal idx, tbl_no
+        """body 直系块编址（存量计数器唯一递增点）：
+        w:p → para:<para_seq>；w:tbl → cell:<tbl_no>:...；w:sdt → sdt:<sdt_no>:..."""
+        nonlocal para_seq, tbl_no, sdt_no
         for block in parent_el.iterchildren():
             if block.tag == qn("w:p"):
-                _walk_paragraph(Paragraph(block, doc), f"para:{idx}")
+                para_seq += 1
+                _walk_paragraph(Paragraph(block, doc), f"para:{para_seq}")
             elif block.tag == qn("w:tbl"):
                 tbl_no += 1
                 _walk_table(Table(block, doc), f"cell:{tbl_no}")
             elif block.tag == qn("w:sdt"):
-                content = block.find(qn("w:sdtContent"))
-                if content is not None:
-                    _walk_body_blocks(content)
+                sdt_no += 1
+                _walk_sdt(block, f"sdt:{sdt_no}", 0)
 
-    tbl_no = -1
     _walk_body_blocks(doc.element.body)
     return addr_map, items
 
