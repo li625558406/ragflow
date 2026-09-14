@@ -61,9 +61,10 @@ XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 _RETRYABLE_STATUSES = ("failed", "partial")
 
 # 零候选专门文案：候选为空意味着特征与手写占位符全部未命中，最常见的真实原因
-# 是旧 .doc 经 LibreOffice 转换后下划线/表格结构丢失。区别于「有候选但识别 0 条」。
+# 是旧 .doc / PDF 经 LibreOffice 转换后下划线/表格/留白结构丢失。区别于「有候选但识别 0 条」。
 _ZERO_CANDIDATES_MSG = ("未从模板中识别到任何疑似填写位置（已扫描正文、表格、页眉、页脚、文本框）。"
                         "若模板由旧版 .doc 转换而来，可能存在格式丢失，建议用 Word 另存为 .docx 后重新上传；"
+                        "若为 PDF 转换而来，可能因扫描件或版式原因无法识别，建议用 Word/WPS 重建为 .docx 后重试；"
                         "或在正文中手写 {{字段名}} 占位符后重试，也可到详情页手动添加填写点")
 
 
@@ -82,14 +83,21 @@ def _is_legacy_doc(filename: str) -> bool:
     return (filename or "").lower().endswith(".doc")
 
 
-def _convert_doc_to_docx(blob: bytes) -> bytes:
-    """旧版 .doc（二进制 Word）转 .docx。容器内有 LibreOffice；用独立
+def _is_pdf(filename: str) -> bool:
+    """是否为 PDF 文件。endswith(".pdf") 大小写不敏感；不会误伤 .pdfx 类伪
+    扩展名；filename 为 None 时按空串兜底返回 False。"""
+    return (filename or "").lower().endswith(".pdf")
+
+
+def _convert_to_docx(blob: bytes, src_ext: str = ".doc") -> bytes:
+    """经 LibreOffice 转出 .docx。src_ext 选 soffice import filter（.doc 旧版
+    Word / .pdf）。容器内有 LibreOffice；用独立
     UserInstallation 目录避免并发/首启 profile 锁冲突。容器 soffice 包装
     脚本未自设库路径，须显式注入 LD_LIBRARY_PATH（否则 soffice.bin 报
     libreglo.so cannot open shared object file, rc=127）。"""
     env = {**os.environ, "LD_LIBRARY_PATH": "/usr/lib/libreoffice/program"}
     with tempfile.TemporaryDirectory(prefix="tpl_doc_") as tmp:
-        src = os.path.join(tmp, "input.doc")
+        src = os.path.join(tmp, f"input{src_ext}")
         with open(src, "wb") as f:
             f.write(blob)
         profile = f"file://{tmp}/lo_profile_{uuid.uuid4().hex}"
@@ -143,16 +151,21 @@ async def upload_template():
     form = await request.form
     file = files.get("file")
     if not file or not file.filename:
-        return get_error_data_result("请上传 .docx / .doc / .xlsx 模板文件")
+        return get_error_data_result("请上传 .docx / .doc / .pdf / .xlsx 模板文件")
     file_type = _file_type_of(file.filename)
     is_legacy_doc = False
+    is_pdf = False
     if not file_type:
         if _is_legacy_doc(file.filename):
             # 旧版 .doc：后端转成 .docx 后以 docx 形态进入全链路（candidates/替换/预览/下载）
             is_legacy_doc = True
             file_type = "docx"
+        elif _is_pdf(file.filename):
+            # PDF：同款格式归一化——转 docx 后走既有识别/渲染/预览链路，原始 PDF 不留存
+            is_pdf = True
+            file_type = "docx"
         else:
-            return get_error_data_result("仅支持 .docx / .doc / .xlsx")
+            return get_error_data_result("仅支持 .docx / .doc / .pdf / .xlsx")
     # read 前先 seek 到尾部探实际大小，避免超大文件先整份读进内存（app 级 MAX_CONTENT_LENGTH 默认 1GB）
     file.seek(0, 2)
     size = file.tell()
@@ -164,14 +177,24 @@ async def upload_template():
         return get_error_data_result("文件为空或超过 20MB")
     if is_legacy_doc:
         try:
-            blob = _convert_doc_to_docx(blob)
+            blob = _convert_to_docx(blob)
         except Exception:
             logger.exception("legacy doc convert failed, filename=%s", file.filename)
             return get_error_data_result("旧版 .doc 转换失败，请用 Word 另存为 .docx 后重新上传")
         # docx 体积可能大于源文件，转换后复查一次，防止存储超限 blob 入库
         if len(blob) > MAX_TEMPLATE_SIZE:
             return get_error_data_result("文件为空或超过 20MB")
+    if is_pdf:
+        try:
+            blob = await asyncio.to_thread(_convert_to_docx, blob, ".pdf")
+        except Exception:
+            logger.exception("pdf convert failed, filename=%s", file.filename)
+            return get_error_data_result("PDF 转换失败，建议用 Word/WPS 打开后另存为 .docx 再上传")
+        # 转换后体积可能大于源文件，复查一次
+        if len(blob) > MAX_TEMPLATE_SIZE:
+            return get_error_data_result("文件为空或超过 20MB")
     # docx/xlsx 均为 zip 容器，轻量验证内容合法性，防后续解析抛 BadZipFile 500
+    # （.doc/.pdf 转换产物也在此校验，转换失败产出非 zip 时被拦截）
     if not zipfile.is_zipfile(io.BytesIO(blob)):
         return get_error_data_result("文件已损坏或不是有效的 docx/xlsx 文件")
     name = (form.get("name") or "").strip()[:256] or file.filename.rsplit(".", 1)[0].strip()[:256]

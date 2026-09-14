@@ -24,7 +24,7 @@ interface UploadWizardProps {
   onSaved?: (id: string) => void;
 }
 
-const TEMPLATE_FILE_RE = /\.(docx|doc|xlsx)$/i;
+const TEMPLATE_FILE_RE = /\.(docx|doc|pdf|xlsx)$/i;
 
 type ItemStatus =
   | 'pending'
@@ -130,7 +130,7 @@ export function UploadWizard({
       if (!TEMPLATE_FILE_RE.test(f.file.name)) {
         patchItem(i, {
           status: 'failed',
-          error: '仅支持 .docx / .doc / .xlsx',
+          error: '仅支持 .docx / .doc / .pdf / .xlsx',
         });
         continue;
       }
@@ -190,11 +190,13 @@ export function UploadWizard({
         </DialogHeader>
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5">
-            <label className="text-sm">模板文件（.docx / .doc / .xlsx）</label>
+            <label className="text-sm">
+              模板文件（.docx / .doc / .pdf / .xlsx）
+            </label>
             <input
               ref={fileInputRef}
               type="file"
-              accept=".docx,.doc,.xlsx"
+              accept=".docx,.doc,.pdf,.xlsx"
               multiple
               className="hidden"
               onChange={handleFileChange}
@@ -216,8 +218,8 @@ export function UploadWizard({
                 <FileUp className="h-8 w-8 text-muted-foreground" />
                 <p className="text-sm text-text-primary">点击选择模板文件</p>
                 <p className="text-xs text-muted-foreground">
-                  支持 .docx / .doc / .xlsx，不超过 20MB；可多选，上传后自动进行
-                  AI 识别
+                  支持 .docx / .doc / .pdf / .xlsx，不超过
+                  20MB；可多选，上传后自动进行 AI 识别
                 </p>
               </div>
             ) : (

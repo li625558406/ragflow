@@ -152,6 +152,19 @@ def test_is_legacy_doc_boundaries():
     assert f(None) is False  # None 安全（or 空串兜底）
 
 
+def test_is_pdf_boundaries():
+    """_is_pdf 纯函数边界：大小写/.pdfx 不误伤/无扩展名/伪扩展名/None 安全。"""
+    f = _template_api._is_pdf
+    assert f("a.pdf") is True
+    assert f("a.PDF") is True  # 大写扩展名按 lower 归一
+    assert f("a.Pdf") is True  # 混合大小写同样归一
+    assert f("a.pdfx") is False  # endswith(".pdf") 不误伤 .pdfx 伪扩展名
+    assert f("noext") is False
+    assert f(".pdf.exe") is False  # 伪扩展名
+    assert f("") is False
+    assert f(None) is False  # None 安全（or 空串兜底）
+
+
 def test_extract_candidates_dispatches_by_file_type():
     """_extract_candidates 按 file_type 分发：docx 走段落提取、xlsx 走单元格提取。"""
     import io
@@ -278,27 +291,36 @@ def test_corrupt_template_returns_error_not_500(monkeypatch):
     assert "文件已损坏或不是有效的 docx/xlsx 文件" in up_src
 
 
-# ---------- 需求①：旧版 .doc 上传转 docx ----------
+# ---------- 需求①：旧版 .doc / PDF 上传转 docx ----------
 
-def test_convert_doc_to_docx_success(monkeypatch):
-    """monkeypatch subprocess.run 伪造 LibreOffice 转换成功产物（不真跑 soffice）。"""
-    mod = _template_api
-    calls = {}
+def _fake_soffice_run(calls):
+    """构造 subprocess.run 替身：记录命令/超时/env，按 soffice 语义产出 input.docx。
+    soffice 语义：--outdir <dir> 后跟源文件路径，产物恒为 <dir>/input.docx。"""
 
     def fake_run(cmd, capture_output, timeout, check=True, env=None):
         calls["cmd"] = list(cmd)
         calls["timeout"] = timeout
         calls["env"] = env
-        # soffice 语义：--outdir <dir> 后跟源文件路径，产物为 <dir>/input.docx
         outdir = cmd[cmd.index("--outdir") + 1]
-        with open(os.path.join(outdir, "input.docx"), "wb") as f:
+        calls["src"] = cmd[-1]
+        out = os.path.join(outdir, "input.docx")
+        calls["out"] = out
+        with open(out, "wb") as f:
             f.write(b"converted-docx-bytes")
         return types.SimpleNamespace(returncode=0, stderr=b"")
 
-    monkeypatch.setattr(mod.subprocess, "run", fake_run)
-    out = mod._convert_doc_to_docx(b"legacy-doc-bytes")
+    return fake_run
+
+
+def test_convert_to_docx_success(monkeypatch):
+    """monkeypatch subprocess.run 伪造 LibreOffice 转换成功产物（不真跑 soffice）。"""
+    mod = _template_api
+    calls = {}
+    monkeypatch.setattr(mod.subprocess, "run", _fake_soffice_run(calls))
+    out = mod._convert_to_docx(b"legacy-doc-bytes")
     assert out == b"converted-docx-bytes"
-    assert calls["timeout"] == 60
+    assert isinstance(calls["timeout"], int) and calls["timeout"] > 0, \
+        "soffice 必须带有限超时（具体数值由部署侧裁定，不在此锁死）"
     assert "--convert-to" in calls["cmd"] and "docx" in calls["cmd"]
     assert "--headless" in calls["cmd"] and "--norestore" in calls["cmd"]
     # 独立 UserInstallation profile 必须携带，防并发/首启锁冲突
@@ -308,14 +330,30 @@ def test_convert_doc_to_docx_success(monkeypatch):
     assert "libreoffice/program" in calls["env"].get("LD_LIBRARY_PATH", "")
 
 
-def test_convert_doc_to_docx_missing_output_raises(monkeypatch):
+def test_convert_to_docx_src_ext_passthrough(monkeypatch):
+    """src_ext 决定临时源文件后缀（soffice 按后缀选 import filter）：
+    默认 .doc 不变（存量行为逐字节保持），显式 .pdf 用 input.pdf；
+    产物均恒为 input.docx。"""
+    mod = _template_api
+    calls = {}
+    monkeypatch.setattr(mod.subprocess, "run", _fake_soffice_run(calls))
+    mod._convert_to_docx(b"legacy-doc-bytes")
+    assert calls["src"].endswith(os.sep + "input.doc"), "默认参数必须保持 input.doc"
+
+    mod._convert_to_docx(b"pdf-bytes", ".pdf")
+    assert calls["src"].endswith(os.sep + "input.pdf"), ".pdf 后缀必须透传给源文件"
+    assert calls["cmd"][calls["cmd"].index("--outdir") + 1] == os.path.dirname(calls["src"])
+    assert os.path.basename(calls["out"]) == "input.docx", "产物必须恒为 input.docx"
+
+
+def test_convert_to_docx_missing_output_raises(monkeypatch):
     """soffice 返回 0 但产物缺失（转换实际失败）→ RuntimeError，由端点兜底。"""
     mod = _template_api
     monkeypatch.setattr(mod.subprocess, "run",
                         lambda *a, **kw: types.SimpleNamespace(returncode=0, stderr=b""))
     raised = False
     try:
-        mod._convert_doc_to_docx(b"legacy-doc-bytes")
+        mod._convert_to_docx(b"legacy-doc-bytes")
     except RuntimeError:
         raised = True
     assert raised, "转换产物缺失必须抛 RuntimeError"
@@ -384,7 +422,7 @@ def _patch_upload_deps(monkeypatch, mod, request_stub, convert_result=None):
     monkeypatch.setattr(mod, "TplTemplateVersionService", types.SimpleNamespace(
         create_initial_version=lambda tid, fn, blob: versions.update(
             tid=tid, fn=fn, blob=blob)))
-    monkeypatch.setattr(mod, "_convert_doc_to_docx", lambda blob: convert_result)
+    monkeypatch.setattr(mod, "_convert_to_docx", lambda blob, src_ext=".doc": convert_result)
     return inserted, versions
 
 
@@ -421,7 +459,7 @@ def test_upload_legacy_doc_convert_failure_returns_friendly_error(monkeypatch):
     def boom(blob):
         raise RuntimeError("doc convert failed")
 
-    monkeypatch.setattr(mod, "_convert_doc_to_docx", boom)
+    monkeypatch.setattr(mod, "_convert_to_docx", boom)
     resp = asyncio.run(mod.upload_template())
     d = _err_dict(resp)
     assert d["code"] == DATA_ERROR_CODE
@@ -438,8 +476,76 @@ def test_upload_unsupported_ext_still_rejected(monkeypatch):
     resp = asyncio.run(mod.upload_template())
     d = _err_dict(resp)
     assert d["code"] == DATA_ERROR_CODE
-    assert "仅支持 .docx / .doc / .xlsx" in d["message"]
+    assert "仅支持 .docx / .doc / .pdf / .xlsx" in d["message"]
     assert not inserted and not versions
+
+
+def test_upload_pdfx_pseudo_ext_rejected(monkeypatch):
+    """对抗：.pdfx 伪扩展名不得被 _is_pdf 误放行（endswith(".pdf") 为 False）→ 拒绝。"""
+    mod = _template_api
+    req = _FakeRequest(file=_FakeUploadFile("bad.pdfx", b"data"), form={})
+    inserted, versions = _patch_upload_deps(monkeypatch, mod, req)
+    resp = asyncio.run(mod.upload_template())
+    d = _err_dict(resp)
+    assert d["code"] == DATA_ERROR_CODE
+    assert "仅支持 .docx / .doc / .pdf / .xlsx" in d["message"]
+    assert not inserted and not versions, "伪扩展名不得写库"
+
+
+def test_upload_pdf_converts_and_stores_docx(monkeypatch):
+    """.pdf 上传走转换路径：以 src_ext='.pdf' 调 _convert_to_docx，入库 file_type='docx'，
+    存的是转换产物 blob（原始 PDF 不留存）。"""
+    mod = _template_api
+    req = _FakeRequest(file=_FakeUploadFile("标书范本.pdf", b"%PDF-1.4 fake"),
+                       form={"name": "PDF 范本"})
+    inserted, versions = _patch_upload_deps(monkeypatch, mod, req)
+    conv_calls = {}
+
+    def fake_convert(blob, src_ext=".doc"):
+        conv_calls["src_ext"] = src_ext
+        return _fake_docx_bytes()
+
+    monkeypatch.setattr(mod, "_convert_to_docx", fake_convert)
+    resp = asyncio.run(mod.upload_template())
+    assert resp["code"] == 0
+    assert conv_calls == {"src_ext": ".pdf"}, "PDF 分支必须显式传 src_ext='.pdf'"
+    assert inserted["file_type"] == "docx", "PDF 转换后必须以 docx 形态入库"
+    assert versions["blob"] == _fake_docx_bytes(), "存的是转换产物而非原始 PDF"
+    assert versions["fn"] == "标书范本.pdf"
+
+
+def test_upload_pdf_convert_failure_returns_friendly_error(monkeypatch):
+    """对抗：伪 .pdf（内容不是 PDF 且 soffice 转换抛异常）→ 友好错误 dict，不 500、不写库。"""
+    mod = _template_api
+    req = _FakeRequest(file=_FakeUploadFile("fake.pdf", b"this is not a pdf"),
+                       form={"name": "伪 PDF"})
+    inserted, versions = _patch_upload_deps(monkeypatch, mod, req)
+
+    def boom(blob, src_ext=".doc"):
+        raise RuntimeError("pdf convert failed")
+
+    monkeypatch.setattr(mod, "_convert_to_docx", boom)
+    resp = asyncio.run(mod.upload_template())
+    d = _err_dict(resp)
+    assert d["code"] == DATA_ERROR_CODE
+    assert "PDF 转换失败" in d["message"]
+    assert not inserted, "转换失败不得写库"
+    assert not versions, "转换失败不得建版本"
+
+
+def test_upload_pdf_converted_oversize_rejected(monkeypatch):
+    """对抗：转换产物膨胀超 20MB → 拒绝入库（转换后体积复查）。"""
+    mod = _template_api
+    req = _FakeRequest(file=_FakeUploadFile("big.pdf", b"%PDF-1.4"),
+                       form={"name": "膨胀 PDF"})
+    inserted, versions = _patch_upload_deps(monkeypatch, mod, req)
+    monkeypatch.setattr(mod, "_convert_to_docx",
+                        lambda blob, src_ext=".doc": b"x" * (20 * 1024 * 1024 + 1))
+    resp = asyncio.run(mod.upload_template())
+    d = _err_dict(resp)
+    assert d["code"] == DATA_ERROR_CODE
+    assert "20MB" in d["message"]
+    assert not inserted and not versions, "超限转换产物不得入库"
 
 
 # ---------- P2 遗留债：published 自动升 v2 + 状态机白名单 ----------
