@@ -13,7 +13,7 @@
 
 **遗留**：timeout 断言在测试中暂不锁数值（待工作区他人 timeout hunk 定向后恢复锁定）；设计文档 §2.1 已注明 .doc 分支 to_thread 包装属他人未提交 hunk。
 
-**部署**：**已部署 2026-09-14**（后端 4 文件 SCP + 容器重启 + 前端 build/dist SCP + nginx reload）。注意：template_api.py 部署的是工作区版本，包含当时未提交的 4 个 hunk（timeout 60→180、.doc 转换 asyncio.to_thread 包装、detect 两处零候选守卫）——零候选守卫依赖的 `_ZERO_CANDIDATES_MSG` 已随识别加固入库，运行时已验证。
+**部署**：**已部署 2026-09-14**（后端 4 文件 SCP + 容器重启 + 前端 build/dist SCP + nginx reload）。注意：template_api.py 部署的是工作区版本，包含当时未提交的 4 个 hunk（timeout 60→180、.doc 转换 asyncio.to_thread 包装、detect 两处零候选守卫）——零候选守卫依赖的 `_ZERO_CANDIDATES_MSG` 已随识别加固入库，运行时已验证。**上线即修**：首版 PDF 转换报「source file could not be loaded」——soffice 默认按 Draw 打开 PDF 无法导出 docx，已补 `--infilter=writer_pdf_import`（commit 86249f25，容器内真实 PDF 转换验证通过）。
 
 ## 2026-09-13 范本 AI 识别加固
 
