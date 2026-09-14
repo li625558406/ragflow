@@ -66,7 +66,7 @@ def _colorize_placeholder_runs(blob: bytes) -> bytes:
     返回（免序列化，省一次 save；解析仍需执行才能判定有无占位符）。防御：含 w:br/w:tab/w:drawing 等非
     (rPr|t) 子节点的 run 拆分会丢结构，整体跳过——该处占位符保持原样渲染
     （值仍正常回填，只是不标蓝）。覆盖面与 docx_utils._build_addr_map 一致
-    （正文段落 + 顶层表格 cell），占位符只会出现在这些位置。"""
+    （正文/内容控件/表格 cell 含嵌套表格/文本框/页眉/页脚），占位符只会出现在这些位置。"""
     from docx import Document
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn

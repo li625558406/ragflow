@@ -247,6 +247,14 @@ export function PlaceholderTable({
               />
             </TableCell>
             <TableCell>
+              {row.low_confidence && (
+                <span
+                  title="该项由 AI 收缩修正或存在同形留白，请核对锚文本是否落在正确空位"
+                  className="mr-1 inline-block rounded bg-amber-100 px-1 py-0.5 text-xs text-amber-700"
+                >
+                  低置信
+                </span>
+              )}
               {row.addr ? (
                 <span
                   className={`block max-w-[160px] truncate text-sm ${

@@ -60,6 +60,12 @@ XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 # 可重试的终态：仅失败/部分完成的任务允许重试
 _RETRYABLE_STATUSES = ("failed", "partial")
 
+# 零候选专门文案：候选为空意味着特征与手写占位符全部未命中，最常见的真实原因
+# 是旧 .doc 经 LibreOffice 转换后下划线/表格结构丢失。区别于「有候选但识别 0 条」。
+_ZERO_CANDIDATES_MSG = ("未从模板中识别到任何疑似填写位置（已扫描正文、表格、页眉、页脚、文本框）。"
+                        "若模板由旧版 .doc 转换而来，可能存在格式丢失，建议用 Word 另存为 .docx 后重新上传；"
+                        "或在正文中手写 {{字段名}} 占位符后重试，也可到详情页手动添加填写点")
+
 
 def _file_type_of(filename: str):
     lower = (filename or "").lower()
