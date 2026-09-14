@@ -2622,7 +2622,7 @@ def test_parse_array_with_surrounding_prose():
     assert len(parse_detection_response(raw, cands)) == 1
 
 
-def test_parse_multiple_arrays_takes_balanced_first_via_greedy_fallback():
+def test_parse_multiple_arrays_conservative_failure_via_greedy_fallback():
     """多数组输入贪婪正则会整体失败 → 返回 []（保守失败，不误采半截）。"""
     from rag.svr.template_fill.detector import parse_detection_response
     cands = [{"index": 0, "text": "姓名：＿＿", "addr": "para:0"}]

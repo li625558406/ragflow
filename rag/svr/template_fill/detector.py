@@ -112,12 +112,13 @@ def normalize_key(key: str) -> str:
     return k.strip("_") or "field"
 
 
-def _extract_json_array(raw: str):
+def _extract_json_array(raw: str) -> list | None:
     """三级容错抽取 LLM 输出中的 JSON 数组：
     1. 裸数组直解（规整输出最快路径）；
     2. 剥 ``` 代码围栏后直解；
     3. 贪婪正则 [.*] 回退（存量语义，多数组等畸形输入在此保守失败）。
-    全部失败返回 None（调用方按 0 项处理，上层置 failed 不静默）。"""
+    全部失败返回 None（调用方折叠为 0 项；当前实现中解析失败与 LLM 合法空结果不可区分，
+    均不计入 failed——历史语义，非静默告警路径）。"""
     raw = (raw or "").strip()
     candidates = [raw]
     fenced = re.match(r"^```[\w-]*\s*(.*?)\s*```$", raw, re.DOTALL)
