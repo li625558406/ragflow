@@ -151,11 +151,13 @@ export default function TemplateFillLivePreview({
   useEffect(() => {
     // docx 保真容器与文本降级容器互斥挂载，取当前实际挂载的那个
     const root = containerRef.current ?? textContainerRef.current;
-    if (!focusKey || docxLoading || !root) return;
-    if (focusDoneRef.current === focusKey) return;
+    // 已定位标记按 范本:字段 维度记录，避免多范本切换后同 key 字段无法重新定位
+    if (!tpl.template_id || !focusKey || docxLoading || !root) return;
+    const focusTarget = `${tpl.template_id}:${focusKey}`;
+    if (focusDoneRef.current === focusTarget) return;
     if (docxEnabled && !renderedOk && !renderFailed) return;
     if (focusPlaceholder(root, focusKey)) {
-      focusDoneRef.current = focusKey;
+      focusDoneRef.current = focusTarget;
     }
   }, [focusKey, docxLoading, renderedOk, items, docxEnabled, renderFailed]);
 
