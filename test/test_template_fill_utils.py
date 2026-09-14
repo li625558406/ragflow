@@ -1820,3 +1820,90 @@ def test_sdt_without_content_skipped():
     items = iter_docx_paragraphs(buf.getvalue())  # 不抛异常
     addrs = [it["addr"] for it in items]
     assert addrs == ["para:0", "para:1"]
+
+
+# ---------- 限深回归钉子（2026-09-14 质量审查收尾）----------
+
+def _deep_sdt_table_layers(n, tag):
+    """递归构造 n 层「sdt(含段落) → 表格 → cell → 嵌套 sdt」交替嵌套 XML 片段
+    （作为最外层 sdt 的 sdtContent 内容使用，命名空间由 _make_sdt_xml 根节点
+    声明继承）。第 n 层含段落 f"{tag}{n}"，其表格 cell 内嵌第 n-1 层 sdt；
+    n==0 时只剩叶子段落。深度每往内一层 +1，便于按文本断言各层编址情况。"""
+    para = f'<w:p><w:r><w:t>{tag}{n}</w:t></w:r></w:p>'
+    if n == 0:
+        return para
+    tbl = (
+        '<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr>'
+        '<w:tblGrid><w:gridCol w:w="100"/></w:tblGrid>'
+        '<w:tr><w:tc><w:tcPr/>'
+        '<w:p/><w:sdt><w:sdtPr><w:alias w:val="d"/></w:sdtPr>'
+        f'<w:sdtContent>{_deep_sdt_table_layers(n - 1, tag)}</w:sdtContent>'
+        '</w:sdt>'
+        '</w:tc></w:tr></w:tbl>'
+    )
+    return para + tbl
+
+
+def test_sdt_table_alternate_nesting_depth_limit():
+    """回归钉子：_walk_sdt 的 TXBX_DEPTH_LIMIT 限深是畸形 XML 防爆栈的关键防御，
+    此前零测试覆盖（删掉 depth+1 全部用例照绿）。构造超过限深（8）层的
+    「sdt→表格→cell→sdt」交替嵌套文档，断言：不抛 RecursionError；
+    限深内各层正常编址（depth 0..8 → 共 9 个 sdt 层）；超限子树整体不产生 addr。"""
+    from rag.svr.template_fill.docx_utils import iter_docx_paragraphs
+    doc = Document()
+    doc.add_paragraph("正文段落")
+    # 10 层交替嵌套：最外层 body sdt depth=0（文本 层10），每往内一层 depth+1，
+    # depth 9/10 的 层1/层0 超限应被跳过
+    _add_body_sdt(doc, _deep_sdt_table_layers(10, "层"))
+    doc.add_paragraph("尾部段落：____")
+    buf = io.BytesIO()
+    doc.save(buf)
+    blob = buf.getvalue()
+
+    items = iter_docx_paragraphs(blob)  # 不抛 RecursionError 即通过第一关
+    by_text = {it["text"]: it["addr"] for it in items}
+    # 限深内层正常编址：depth 0 最外层 sdt 直系段落；depth 8 为最后一个被编址层
+    assert by_text["层10"] == "sdt:0:0"
+    depth8_prefix = "sdt:0" + ":cell:0:0:0:sdt0" * 8
+    assert by_text["层2"] == f"{depth8_prefix}:0"
+    # 超限子树（depth 9/10）不产生任何 addr——限深砍掉的子树必须静默整棵跳过
+    assert "层1" not in by_text
+    assert "层0" not in by_text
+    # 扁平序号连续、addr 全局唯一（限深截断不破坏编址完整性）
+    assert [it["index"] for it in items] == list(range(len(items)))
+    addrs = [it["addr"] for it in items]
+    assert len(addrs) == len(set(addrs))
+
+
+def test_nested_table_depth_accumulates_for_cell_sdt_limit():
+    """嵌套表 ":t<j>" 递归必须 depth + 1（与 sdt/txbx 路径防护语义一致）：
+    否则深层嵌套表内的 cell sdt 深度恒为浅层值，TXBX_DEPTH_LIMIT 对
+    「表套表→cell→sdt」路径失效。断言：深层表套表本身不崩、各层段落照常编址
+    （表格自身不限深）；cell sdt 随嵌套深度累计，depth 8 为最后编址层，
+    depth 9+ 的 sdt 超限跳过。"""
+    from rag.svr.template_fill.docx_utils import iter_docx_paragraphs
+    from docx.oxml.ns import qn
+    doc = Document()
+    tbl = doc.add_table(rows=1, cols=1)
+    cell = tbl.rows[0].cells[0]
+    for i in range(10):  # 10 层表套表：第 i 层 cell 含段落+sdt，depth=i+1
+        cell.paragraphs[0].text = f"表层{i}"
+        cell._tc.append(_make_sdt_xml(_sdt_para(f"控件层{i}")))
+        sub = cell.add_table(rows=1, cols=1)
+        cell = sub.rows[0].cells[0]
+    cell.paragraphs[0].text = "最内层段落"
+    buf = io.BytesIO()
+    doc.save(buf)
+
+    items = iter_docx_paragraphs(buf.getvalue())  # 深层嵌套表不崩
+    by_text = {it["text"]: it["addr"] for it in items}
+    # 各层段落（表格自身不限深）全部照常编址
+    assert by_text["表层0"] == "cell:0:0:0:0"
+    assert "表层9" in by_text and "最内层段落" in by_text
+    # cell sdt 深度随嵌套表累计：level0 sdt depth=1，level7 sdt depth=8（限深边界内）
+    assert by_text["控件层0"] == "cell:0:0:0:sdt0:0"
+    lvl7_prefix = "cell:0" + ":0:0:t0" * 7
+    assert by_text["控件层7"] == f"{lvl7_prefix}:0:0:sdt0:0"
+    # level8/level9 sdt depth=9/10，超限跳过（若嵌套表未递增 depth，此处会误编址）
+    assert "控件层8" not in by_text
+    assert "控件层9" not in by_text

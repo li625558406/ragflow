@@ -139,13 +139,16 @@ def _build_addr_map(doc):
                 _walk_sdt(block, f"{prefix}:sdt{sdt_k}", depth + 1)
                 sdt_k += 1
 
-    def _walk_table(tbl, prefix, depth=0, legacy=True):
-        """表格编址。legacy=True（body 直系存量表格）：cell 直系段落消耗 para_seq
-        ——存量基线用单一扁平序号编正文段，cell 段落本就消耗它，表格前置范本
-        升级后段落编号不变。嵌套 ":t<j>" 表一律 legacy=False：其段落属本次新增
-        编址范围（存量基线不编址嵌套表、不计数），透传 legacy 会让含嵌套表的
-        存量范本段落编号前移。cell 直系 sdt 一律 legacy=False（新区域）且深度 +1
-        （sdt→表格→cell→sdt 互嵌路径必须递增，否则 TXBX_DEPTH_LIMIT 防爆栈失效）。"""
+    def _walk_table(tbl, prefix, depth=0, legacy=False):
+        """表格编址。legacy=True（仅 body 直系存量表格，调用点须显式传参）：cell
+        直系段落消耗 para_seq——存量基线用单一扁平序号编正文段，cell 段落本就
+        消耗它，表格前置范本升级后段落编号不变。默认 legacy=False 是安全侧取值：
+        Task 2 页眉页脚 walker 复用本函数时若漏传 legacy，只会让新区域段落不消耗
+        存量计数（安全），而非静默前移存量编号。嵌套 ":t<j>" 表一律 legacy=False：
+        其段落属本次新增编址范围（存量基线不编址嵌套表、不计数），透传 legacy
+        会让含嵌套表的存量范本段落编号前移。cell 直系 sdt 一律 legacy=False
+        （新区域）且深度 +1；嵌套表同样 depth +1（sdt→表格→cell→sdt / 表套表
+        互嵌路径必须递增，否则 TXBX_DEPTH_LIMIT 防爆栈失效）。"""
         seen_tc = set()  # lxml 元素按底层 XML 节点判等：横向合并重复返回的 cell 去重
         for r, row in enumerate(tbl.rows):
             for c, cell in enumerate(row.cells):
@@ -156,7 +159,7 @@ def _build_addr_map(doc):
                 for pi, p in enumerate(cell.paragraphs):
                     _walk_paragraph(p, f"{cell_addr}:{pi}", depth, legacy)
                 for j, sub in enumerate(cell.tables):
-                    _walk_table(sub, f"{cell_addr}:t{j}", depth, legacy=False)
+                    _walk_table(sub, f"{cell_addr}:t{j}", depth + 1, legacy=False)
                 # cell 直系内容控件：局部 sdt 序号从 0 起，不消耗任何存量计数器
                 for k, sdt in enumerate(cell._tc.findall(qn("w:sdt"))):
                     _walk_sdt(sdt, f"{cell_addr}:sdt{k}", depth + 1)
@@ -193,9 +196,11 @@ def _build_addr_map(doc):
                 sdt_k += 1
 
     def _walk_body_blocks(parent_el):
-        """body 直系块编址（存量计数器唯一递增入口）：
-        w:p → para:<para_seq+1>（legacy）；w:tbl → cell:<tbl_no>:...（legacy 传导
-        至全部 cell 直系段落）；w:sdt → sdt:<sdt_no>:...（新区域）。"""
+        """body 直系块编址。计数器职责：tbl_no/sdt_no 在此递增（唯一入口）；
+        para_seq 不在此递增——由 _walk_paragraph 的 legacy 标志驱动（body 直系
+        w:p 与 legacy 表格 cell 直系段落共同消耗）。w:p → para:<para_seq+1>
+        （legacy）；w:tbl → cell:<tbl_no>:...（legacy=True 显式传导至全部 cell
+        直系段落）；w:sdt → sdt:<sdt_no>:...（新区域，零消耗存量计数器）。"""
         nonlocal tbl_no, sdt_no
         for block in parent_el.iterchildren():
             if block.tag == qn("w:p"):
@@ -203,7 +208,7 @@ def _build_addr_map(doc):
                                 legacy=True)
             elif block.tag == qn("w:tbl"):
                 tbl_no += 1
-                _walk_table(Table(block, doc), f"cell:{tbl_no}")
+                _walk_table(Table(block, doc), f"cell:{tbl_no}", legacy=True)
             elif block.tag == qn("w:sdt"):
                 sdt_no += 1
                 _walk_sdt(block, f"sdt:{sdt_no}", 0)
