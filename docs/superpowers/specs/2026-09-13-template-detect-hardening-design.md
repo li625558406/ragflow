@@ -42,9 +42,9 @@
 |------|-----------|------|
 | 正文段落（现状） | `para:<idx>` | 不变 |
 | 正文表格 cell（现状） | `cell:<tbl>:<r>:<c>:<pi>` | 不变；嵌套表 `:t<j>` 递归（不变） |
-| 页眉段落 | `hdr:<sec>:<idx>` | `<sec>` 为节序号；`<idx>` 为该 header part 内扁平序号 |
-| 页眉内表格 cell | `hdr:<sec>:cell:<tbl>:<r>:<c>:<pi>` | 复用 cell 语法，挂在 hdr 前缀下 |
-| 页脚段落 / 表格 | `ftr:<sec>:<idx>` / `ftr:<sec>:cell:...` | 同页眉 |
+| 页眉段落 | `hdr:<sec>:<idx>` | `<sec>` 为节序号；`<idx>` 为该 header part 内扁平序号；first/even 类显式 unlinked 时追加后缀段防同节撞号：`hdr:<sec>:first:<idx>` / `hdr:<sec>:even:<idx>`（default 类保持无后缀） |
+| 页眉内表格 cell | `hdr:<sec>:cell:<tbl>:<r>:<c>:<pi>` | 复用 cell 语法，挂在 hdr 前缀下（first/even 同理：`hdr:<sec>:first:cell:...`） |
+| 页脚段落 / 表格 | `ftr:<sec>:<idx>` / `ftr:<sec>:cell:...` | 同页眉（first/even 后缀规则同上） |
 | 文本框段落 | `<父addr>:tx<k>:<pi>` | 与嵌套表格 `:t<j>` 同模式；如 `para:3:tx0:1`、`cell:0:1:2:tx0:0` |
 | 文本框内表格 | `<父addr>:tx<k>:cell:...` | 同规则递归 |
 | 内容控件（sdt）段落 | `sdt:<k>:<pi>` | `<k>` 为 body 直系 sdt 的文档顺序号；独立前缀，不消耗存量 `para:` 计数器 |
