@@ -1822,6 +1822,38 @@ def test_sdt_without_content_skipped():
     assert addrs == ["para:0", "para:1"]
 
 
+def test_sdt_containing_table_addressed():
+    """body 直系 sdt 内表格：cell 段落 addr == sdt:<k>:cell:<tbl_k>:<r>:<c>:<pi>
+    （2x2 表格锁定行/列序）；sdt 内表格属新区域零消耗——其后正文段落仍是 para:0、
+    顶层存量表格仍是 cell:0（tbl_no/para_seq 均不被挤占）。"""
+    from rag.svr.template_fill.docx_utils import iter_docx_paragraphs
+    tbl_xml = (
+        '<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr>'
+        '<w:tblGrid><w:gridCol w:w="100"/><w:gridCol w:w="100"/></w:tblGrid>'
+        '<w:tr><w:tc><w:tcPr/><w:p><w:r><w:t>项目名称：____</w:t></w:r></w:p></w:tc>'
+        '<w:tc><w:tcPr/><w:p><w:r><w:t>编号：＿＿</w:t></w:r></w:p></w:tc></w:tr>'
+        '<w:tr><w:tc><w:tcPr/><w:p><w:r><w:t>sdt 表格第二行</w:t></w:r></w:p></w:tc>'
+        '<w:tc><w:tcPr/><w:p/></w:tc></w:tr></w:tbl>'
+    )
+    doc = Document()
+    _add_body_sdt(doc, tbl_xml)
+    doc.add_paragraph("sdt 表格后的段落：____")
+    legacy_tbl = doc.add_table(rows=1, cols=1)
+    legacy_tbl.rows[0].cells[0].paragraphs[0].text = "顶层存量表格"
+    buf = io.BytesIO()
+    doc.save(buf)
+
+    by_addr = {it["addr"]: it["text"] for it in iter_docx_paragraphs(buf.getvalue())}
+    # sdt 内表格 cell 段落：sdt:0:cell:0:<r>:<c>:<pi>（行/列各就各位）
+    assert by_addr["sdt:0:cell:0:0:0:0"] == "项目名称：____"
+    assert by_addr["sdt:0:cell:0:0:1:0"] == "编号：＿＿"
+    assert by_addr["sdt:0:cell:0:1:0:0"] == "sdt 表格第二行"
+    assert by_addr["sdt:0:cell:0:1:1:0"] == ""      # 空段照常编址
+    # sdt 内表格零消耗：正文段落 para:0、顶层表格 cell:0（存量计数器独立）
+    assert by_addr["para:0"] == "sdt 表格后的段落：____"
+    assert by_addr["cell:0:0:0:0"] == "顶层存量表格"
+
+
 # ---------- 限深回归钉子（2026-09-14 质量审查收尾）----------
 
 def _deep_sdt_table_layers(n, tag):
