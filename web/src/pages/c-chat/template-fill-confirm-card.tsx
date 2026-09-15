@@ -14,7 +14,7 @@ import {
   confirmTemplateFill,
   confirmTemplateFillSelect,
 } from '@/hooks/use-template-fill-request';
-import { Loader2 } from 'lucide-react';
+import { ChevronDown, Loader2 } from 'lucide-react';
 import { useState } from 'react';
 
 export default function TemplateFillConfirmCard({
@@ -48,6 +48,8 @@ export default function TemplateFillConfirmCard({
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState('');
+  // 折叠态：大范本（数百填写点）默认收起为一行摘要，点开调整；收起时保留一键确认
+  const [expanded, setExpanded] = useState(false);
 
   const toggle = (templateId: string, key: string) => {
     setChecked((prev) => {
@@ -90,6 +92,7 @@ export default function TemplateFillConfirmCard({
       onSubmitted?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : '确认提交失败');
+      setExpanded(true); // 出错自动展开，让错误与可调整字段可见
     } finally {
       setSubmitting(false);
     }
@@ -117,85 +120,120 @@ export default function TemplateFillConfirmCard({
     );
   }
 
+  const totalCandidates = pending.templates.reduce(
+    (n, t) => n + t.candidates.length,
+    0,
+  );
+  const channelNotReady = !pending.nonce || !pending.task_id;
+  const submitButton = (
+    <Button
+      size="sm"
+      className="h-7 bg-[#1a66fb] px-3 text-xs text-white hover:bg-[#1557d6]"
+      disabled={submitting || channelNotReady}
+      onClick={submit}
+    >
+      {submitting && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
+      确认并继续填写
+    </Button>
+  );
+
   return (
     <div className="space-y-2 rounded-lg border border-[#E5E5E5] bg-[#F5F5F5] px-3 py-2.5 text-xs">
-      {pending.templates.map((t) => (
-        <div key={t.template_id} className="space-y-1.5">
-          <div className="font-medium text-[#000000]">《{t.name}》</div>
-          {t.candidates.map((c) => {
-            const inputKey = `${t.template_id}:${c.key}`;
-            const isChecked = checked[t.template_id]?.has(c.key) ?? false;
-            // 直填了值的字段后端无论是否勾选都直取生效，因此不划线（划线暗示"不变化"，与生效矛盾）
-            const hasInput = (inputs[inputKey] || '').trim() !== '';
-            return (
-              <div key={c.key} className="flex items-center gap-2">
-                <Checkbox
-                  checked={isChecked}
-                  onCheckedChange={() => toggle(t.template_id, c.key)}
-                />
-                {onLocate ? (
-                  <button
-                    type="button"
-                    title={`定位到文档中的「${c.name || c.key}」`}
-                    className={`text-left underline-offset-2 decoration-dotted transition-colors hover:underline ${
-                      isChecked || hasInput
-                        ? 'text-[#000000]'
-                        : 'text-[#8C8C8C] line-through'
-                    }`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onLocate(t.template_id, c.key);
-                    }}
-                  >
-                    {c.name || c.key}
-                    {c.default_value ? `（默认：${c.default_value}）` : ''}
-                  </button>
-                ) : (
-                  <span
-                    className={
-                      isChecked || hasInput
-                        ? 'text-[#000000]'
-                        : 'text-[#8C8C8C] line-through'
-                    }
-                  >
-                    {c.name || c.key}
-                    {c.default_value ? `（默认：${c.default_value}）` : ''}
-                  </span>
-                )}
-                <Input
-                  className="ml-auto h-6 w-[140px] border-[#E5E5E5] bg-white text-xs"
-                  placeholder="留空则 AI 重填"
-                  value={inputs[inputKey] ?? ''}
-                  onChange={(e) =>
-                    setInputs((prev) => ({
-                      ...prev,
-                      [inputKey]: e.target.value,
-                    }))
-                  }
-                />
-              </div>
-            );
-          })}
-        </div>
-      ))}
-      {error && <div className="text-[#E5484D]">{error}</div>}
-      <div className="flex justify-end pt-0.5">
-        {/* nonce/task_id 缺失 = 确认通道未就绪（Redis 唤醒令牌缺失），提交必然无效，前置禁用 */}
-        {(!pending.nonce || !pending.task_id) && (
-          <span className="mr-auto self-center text-[#8C8C8C]">
-            确认通道未就绪，暂时无法提交
-          </span>
-        )}
-        <Button
-          size="sm"
-          className="h-7 bg-[#1a66fb] px-3 text-xs text-white hover:bg-[#1557d6]"
-          disabled={submitting || !pending.nonce || !pending.task_id}
-          onClick={submit}
+      {/* 摘要头（常显）：点击展开/收起完整字段列表；收起时保留一键确认 */}
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          className="flex flex-1 items-center gap-1.5 text-left"
+          onClick={() => setExpanded((v) => !v)}
         >
-          {submitting && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
-          确认并继续填写
-        </Button>
+          <ChevronDown
+            className={`h-3.5 w-3.5 shrink-0 text-[#8C8C8C] transition-transform ${
+              expanded ? '' : '-rotate-90'
+            }`}
+          />
+          <span className="font-medium text-[#000000]">填写字段确认</span>
+          <span className="text-[#8C8C8C]">
+            {pending.templates.length} 个范本 · {totalCandidates} 个填写点
+            {!expanded && '，点击展开调整'}
+          </span>
+        </button>
+        {!expanded && submitButton}
       </div>
+      {expanded && (
+        <>
+          {pending.templates.map((t) => (
+            <div key={t.template_id} className="space-y-1.5">
+              <div className="font-medium text-[#000000]">《{t.name}》</div>
+              {t.candidates.map((c) => {
+                const inputKey = `${t.template_id}:${c.key}`;
+                const isChecked = checked[t.template_id]?.has(c.key) ?? false;
+                // 直填了值的字段后端无论是否勾选都直取生效，因此不划线（划线暗示"不变化"，与生效矛盾）
+                const hasInput = (inputs[inputKey] || '').trim() !== '';
+                return (
+                  <div key={c.key} className="flex items-center gap-2">
+                    <Checkbox
+                      checked={isChecked}
+                      onCheckedChange={() => toggle(t.template_id, c.key)}
+                    />
+                    {onLocate ? (
+                      <button
+                        type="button"
+                        title={`定位到文档中的「${c.name || c.key}」`}
+                        className={`text-left underline-offset-2 decoration-dotted transition-colors hover:underline ${
+                          isChecked || hasInput
+                            ? 'text-[#000000]'
+                            : 'text-[#8C8C8C] line-through'
+                        }`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onLocate(t.template_id, c.key);
+                        }}
+                      >
+                        {c.name || c.key}
+                        {c.default_value ? `（默认：${c.default_value}）` : ''}
+                      </button>
+                    ) : (
+                      <span
+                        className={
+                          isChecked || hasInput
+                            ? 'text-[#000000]'
+                            : 'text-[#8C8C8C] line-through'
+                        }
+                      >
+                        {c.name || c.key}
+                        {c.default_value ? `（默认：${c.default_value}）` : ''}
+                      </span>
+                    )}
+                    <Input
+                      className="ml-auto h-6 w-[140px] border-[#E5E5E5] bg-white text-xs"
+                      placeholder="留空则 AI 重填"
+                      value={inputs[inputKey] ?? ''}
+                      onChange={(e) =>
+                        setInputs((prev) => ({
+                          ...prev,
+                          [inputKey]: e.target.value,
+                        }))
+                      }
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+          {error && <div className="text-[#E5484D]">{error}</div>}
+          <div className="flex justify-end pt-0.5">
+            {/* nonce/task_id 缺失 = 确认通道未就绪（Redis 唤醒令牌缺失），提交必然无效，前置禁用 */}
+            {channelNotReady && (
+              <span className="mr-auto self-center text-[#8C8C8C]">
+                确认通道未就绪，暂时无法提交
+              </span>
+            )}
+            {submitButton}
+          </div>
+        </>
+      )}
+      {/* 收起态下的提交错误也要可见：摘要头下方一行红字 */}
+      {!expanded && error && <div className="text-[#E5484D]">{error}</div>}
     </div>
   );
 }
