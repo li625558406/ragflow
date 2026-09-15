@@ -111,6 +111,10 @@ export default function FlowDetail({
   const [markConfirmSubmitted, setMarkConfirmSubmitted] = useState<
     (() => void) | null
   >(null);
+  // 多范本选择卡片提交回写函数（FlowAiPanel 上报，语义同 confirm）
+  const [markSelectSubmitted, setMarkSelectSubmitted] = useState<
+    (() => void) | null
+  >(null);
   // AI 范本填写成稿「存为流程版本」：成稿 blob（agents/download）→ flow 版本
   const [savingDocIds, setSavingDocIds] = useState<
     Record<string, 'saving' | 'saved' | 'error'>
@@ -497,6 +501,7 @@ export default function FlowDetail({
               live={liveChat}
               authorNames={Object.fromEntries(nicknameMap)}
               onConfirmSubmitted={markConfirmSubmitted ?? undefined}
+              onSelectSubmitted={markSelectSubmitted ?? undefined}
               onLivePreviewOpenChange={(open) => {
                 setTplPreviewOpen(open);
                 onTplPreviewOpenChange?.(open);
@@ -544,6 +549,7 @@ export default function FlowDetail({
               onReviewControlChange={setReviewCtl}
               onReviewOpenChange={setAiReviewOpen}
               onConfirmSubmittedReady={setMarkConfirmSubmitted}
+              onSelectSubmittedReady={setMarkSelectSubmitted}
             />
           )}
 
@@ -870,6 +876,7 @@ function ConversationView({
   authorNames,
   extraAction,
   onConfirmSubmitted,
+  onSelectSubmitted,
   onLivePreviewOpenChange,
 }: {
   chats: FlowAiChatItem[];
@@ -880,6 +887,8 @@ function ConversationView({
   extraAction?: (dl: ITemplateFillDownload) => ReactNode;
   /** 确认卡片提交成功后回调：回写流式态（FlowAiPanel 经 onConfirmSubmittedReady 上报的函数） */
   onConfirmSubmitted?: () => void;
+  /** 多范本选择卡片提交成功后回调：回写流式态（同 onConfirmSubmitted 模式） */
+  onSelectSubmitted?: () => void;
   /** 范本预览抽屉开/关上报（供外层收缩布局腾位） */
   onLivePreviewOpenChange?: (open: boolean) => void;
 }) {
@@ -980,6 +989,7 @@ function ConversationView({
                 state={live.templateFill}
                 streaming={Boolean(live.busy)}
                 onConfirmSubmitted={onConfirmSubmitted}
+                onSelectSubmitted={onSelectSubmitted}
                 onLivePreviewOpenChange={onLivePreviewOpenChange}
                 extraAction={(dl) => extraAction?.(dl)}
               />

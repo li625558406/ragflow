@@ -346,6 +346,61 @@ class TemplateFill(ComponentBase):
         self._push_progress({"stage": "confirm_timeout"})
         return decisions
 
+    async def _confirm_template_selection(self, task_id: str,
+                                          chosen: list[dict]) -> list[dict]:
+        """多范本命中暂停询问（智能折中）：先推 selected（调用方已推），此处推
+        select_pending 确认卡 → 用户勾选（≥1 个）→ POST /template/fill/select-confirm
+        写 Redis 键 → 本方法轮询读取。返回最终 chosen 子集（保 AI 选择顺序）。
+        空/全非法提交、payload 异常、Redis 故障 → 按 AI 选择继续（与超时同兜底）；
+        无 task_id（无法回传）由调用方短路跳过询问。"""
+        nonce = get_uuid()
+        self._push_progress({
+            "stage": "select_pending", "task_id": task_id,
+            "select_nonce": nonce,
+            "select_candidates": [{"template_id": c["template_id"],
+                                   "name": c["name"],
+                                   "slot_count": len(c["_placeholders"]),
+                                   "description": c.get("description") or ""}
+                                  for c in chosen],
+            "ai_selected": [c["template_id"] for c in chosen],
+        })
+        valid_ids = {c["template_id"] for c in chosen}
+        by_id = {c["template_id"]: c for c in chosen}
+        # 运行级 nonce（与字段确认同语义）：task_id 跨运行不变，孤儿键靠 nonce 错开
+        # + 700s TTL 自然过期，防旧运行的选择被新运行立即消费
+        select_key = f"tpl_fill:select:{task_id}:{nonce}"
+        waited = 0.0
+        while waited < _CONFIRM_TIMEOUT:
+            if self.check_if_canceled("TemplateFill select wait"):
+                raise _FillCancelled()
+            try:
+                raw = REDIS_CONN.get(select_key)
+            except Exception:
+                logger.warning("select poll failed; fallback to AI selection",
+                               exc_info=True)
+                break
+            if raw:
+                try:
+                    REDIS_CONN.delete(select_key)
+                    data = json.loads(raw)
+                except Exception:  # noqa: BLE001 — 与字段确认同款，坏载荷兜底不炸 run
+                    logger.warning("select payload unparsable; fallback to AI selection")
+                    break
+                ids_raw = data.get("template_ids") if isinstance(data, dict) else None
+                if not isinstance(ids_raw, list):
+                    break
+                # 未知 id 过滤 + 去重保序；空/全非法 → 兜底走 AI 选择（不炸 run）
+                ids = list(dict.fromkeys(
+                    t for t in ids_raw
+                    if isinstance(t, str) and t in valid_ids))
+                if not ids:
+                    break
+                return [by_id[t] for t in ids]
+            await asyncio.sleep(_CONFIRM_POLL_INTERVAL)
+            waited += _CONFIRM_POLL_INTERVAL
+        self._push_progress({"stage": "select_timeout"})
+        return chosen
+
     def _bridge_download(self, tenant_id: str, cand: dict, row) -> dict | None:
         """成稿 bucket 桥接：fill-task 稿件在 {template_id} bucket，拷入
         {tenant_id}-downloads（既有 /agents/download 与 /files/{id}/content 契约）。
@@ -381,9 +436,24 @@ class TemplateFill(ComponentBase):
         if not candidates:
             raise ValueError("暂无可用的已发布范本，请先在范本库发布并配置填写点")
         chosen = await self._select_templates(tenant_id, candidates, query)
+        # selected 先推（flow 面板 templates.length>0 才挂进度组件，范本行须先可见）
         self._push_progress({"stage": "selected", "templates": [
             {"template_id": c["template_id"], "name": c["name"],
              "slot_count": len(c["_placeholders"])} for c in chosen]})
+        # 智能折中：LLM 选出多个范本时暂停询问用户勾选（≥1 个）；单选不打断。
+        # 无 task_id（SSE 回传不可用）跳过询问直接按 AI 选择填——与字段确认同兜底。
+        if len(chosen) > 1:
+            select_task_id = getattr(self._canvas, "task_id", "") or ""
+            if select_task_id:
+                confirmed = await self._confirm_template_selection(
+                    select_task_id, chosen)
+                if [c["template_id"] for c in confirmed] != \
+                        [c["template_id"] for c in chosen]:
+                    chosen = confirmed
+                    # 二次 selected：reducer 整体替换范本行（用户勾选子集生效）
+                    self._push_progress({"stage": "selected", "templates": [
+                        {"template_id": c["template_id"], "name": c["name"],
+                         "slot_count": len(c["_placeholders"])} for c in chosen]})
         begin_fields = self._begin_fields()
         user_file_text = self._user_file_evidence()
 

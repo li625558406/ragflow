@@ -967,3 +967,41 @@ async def confirm_template_fill():
     if not ok:
         return get_error_data_result("确认提交失败，请重试")
     return get_result(data={"ok": True})
+
+
+@manager.route("/template/fill/select-confirm", methods=["POST"])
+@login_required
+async def confirm_template_fill_select():
+    """画布 TemplateFill 多范本选择确认唤醒（智能折中）：用户在确认卡勾选范本
+    （≥1 个）后写 Redis 选择键，节点 _confirm_template_selection 轮询读取后按
+    最终集合继续填充。nonce 语义与 confirm 端点一致（运行级随机数防孤儿键）。"""
+    body = await request.get_json(silent=True) or {}
+    task_id = str(body.get("task_id") or "").strip()
+    nonce = str(body.get("nonce") or "").strip()
+    template_ids = body.get("template_ids")
+    if not task_id:
+        return get_error_data_result("task_id 不能为空")
+    if not nonce:
+        return get_error_data_result("nonce 不能为空")
+    if not _CONFIRM_NONCE_RE.fullmatch(nonce):
+        return get_error_data_result("nonce 非法")
+    if not isinstance(template_ids, list) or not template_ids:
+        return get_error_data_result("template_ids 不能为空")
+    # 入参清洗：只留非空字符串 id，去重保序
+    ids = list(dict.fromkeys(
+        str(t).strip() for t in template_ids
+        if isinstance(t, str) and t.strip()))
+    if not ids:
+        return get_error_data_result("template_ids 不能为空")
+    # RedisDB.set 内部吞异常只返回 False，必须查返回值（与 confirm 端点同）
+    try:
+        ok = REDIS_CONN.set(f"tpl_fill:select:{task_id}:{nonce}",
+                            json.dumps({"template_ids": ids}, ensure_ascii=False),
+                            exp=_CONFIRM_TTL)
+    except Exception:
+        logger.exception("write select key failed, task=%s nonce=%s",
+                         task_id, nonce)
+        ok = False
+    if not ok:
+        return get_error_data_result("提交失败，请重试")
+    return get_result(data={"ok": True})

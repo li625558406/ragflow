@@ -6,8 +6,14 @@
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
-import type { ITemplateFillConfirmPending } from '@/hooks/template-fill-stream';
-import { confirmTemplateFill } from '@/hooks/use-template-fill-request';
+import type {
+  ITemplateFillConfirmPending,
+  ITemplateFillSelectPending,
+} from '@/hooks/template-fill-stream';
+import {
+  confirmTemplateFill,
+  confirmTemplateFillSelect,
+} from '@/hooks/use-template-fill-request';
 import { Loader2 } from 'lucide-react';
 import { useState } from 'react';
 
@@ -184,6 +190,138 @@ export default function TemplateFillConfirmCard({
           size="sm"
           className="h-7 bg-[#1a66fb] px-3 text-xs text-white hover:bg-[#1557d6]"
           disabled={submitting || !pending.nonce || !pending.task_id}
+          onClick={submit}
+        >
+          {submitting && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
+          确认并继续填写
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// 「多范本选择确认」卡片：AI 初选了多个范本时挂起询问（select_pending 事件），
+// 用户勾选 ≥1 个提交（POST /template/fill/select-confirm 写 Redis 唤醒继续）；
+// 超时（600s）未提交 → 画布按 AI 选择继续，卡片转灰字只读。
+export function TemplateSelectConfirmCard({
+  pending,
+  onSubmitted,
+}: {
+  pending: ITemplateFillSelectPending;
+  /** 提交成功后回调（可选）：使用方把 submitted 回写进流式状态，
+   *  使归约器的 select_timeout 守卫（!submitted）真正生效 */
+  onSubmitted?: () => void;
+}) {
+  // 勾选集合（初始 = AI 初选全集），Set 不可变更新保证 memo 感知
+  const [checked, setChecked] = useState<Set<string>>(
+    () => new Set(pending.ai_selected),
+  );
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [error, setError] = useState('');
+
+  const toggle = (templateId: string) => {
+    setChecked((prev) => {
+      const cur = new Set(prev);
+      if (cur.has(templateId)) {
+        cur.delete(templateId);
+      } else {
+        cur.add(templateId);
+      }
+      return cur;
+    });
+  };
+
+  const submit = async () => {
+    if (submitting || checked.size === 0) return;
+    setSubmitting(true);
+    setError('');
+    try {
+      await confirmTemplateFillSelect(
+        pending.task_id,
+        pending.select_nonce || '',
+        Array.from(checked),
+      );
+      setSubmitted(true);
+      // 回写流式状态：迟到/并发的 select_timeout 不再把本卡片置 expired
+      onSubmitted?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '提交失败');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (submitted || pending.submitted) {
+    return (
+      <div className="rounded-lg border border-[#E5E5E5] bg-[#F5F5F5] px-3 py-2 text-xs text-[#1a66fb]">
+        {pending.expired
+          ? '已提交选择，但填写可能已按 AI 初选继续'
+          : '已确认范本，正在继续填写…'}
+      </div>
+    );
+  }
+
+  if (pending.expired) {
+    return (
+      <div className="rounded-lg border border-[#E5E5E5] bg-[#F5F5F5] px-3 py-2 text-xs text-[#8C8C8C]">
+        等待超时，已按 AI 初选的 {pending.ai_selected.length} 个范本继续填写。
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2 rounded-lg border border-[#E5E5E5] bg-[#F5F5F5] px-3 py-2.5 text-xs">
+      <div className="font-medium text-[#000000]">
+        检测到 {pending.select_candidates.length} 个适用范本，请选择需要填充的
+        （至少 1 个）
+      </div>
+      <div className="text-[#8C8C8C]">不操作将在 10 分钟后按 AI 初选继续。</div>
+      {pending.select_candidates.map((c) => (
+        <label
+          key={c.template_id}
+          className="flex cursor-pointer items-start gap-2"
+        >
+          <Checkbox
+            className="mt-0.5"
+            checked={checked.has(c.template_id)}
+            onCheckedChange={() => toggle(c.template_id)}
+          />
+          <span className="leading-5">
+            <span className="text-[#000000]">《{c.name}》</span>
+            {c.slot_count != null && (
+              <span className="text-[#8C8C8C]">
+                （{c.slot_count} 个填写点）
+              </span>
+            )}
+            {c.description && (
+              <span className="block text-[#8C8C8C]">{c.description}</span>
+            )}
+          </span>
+        </label>
+      ))}
+      {error && <div className="text-[#E5484D]">{error}</div>}
+      <div className="flex justify-end pt-0.5">
+        {checked.size === 0 && (
+          <span className="mr-auto self-center text-[#8C8C8C]">
+            请至少勾选 1 个范本
+          </span>
+        )}
+        {/* nonce/task_id 缺失 = 唤醒通道未就绪，提交必然无效，前置禁用 */}
+        {(!pending.select_nonce || !pending.task_id) && (
+          <span className="mr-auto self-center text-[#8C8C8C]">
+            确认通道未就绪，暂时无法提交
+          </span>
+        )}
+        <Button
+          size="sm"
+          className="h-7 bg-[#1a66fb] px-3 text-xs text-white hover:bg-[#1557d6]"
+          disabled={
+            submitting ||
+            checked.size === 0 ||
+            !pending.select_nonce ||
+            !pending.task_id
+          }
           onClick={submit}
         >
           {submitting && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}

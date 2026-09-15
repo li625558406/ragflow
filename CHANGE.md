@@ -1,5 +1,23 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-15 C端多范本命中暂停询问用户选择（智能折中）
+
+**主题**：C端流程/对话中用户内容经 `_select_templates` LLM 选型后直接全部填充；需求是「查出多个范本时询问用户要哪个，而不是默默全填」。经确认采用智能折中：LLM 只选 1 个 → 维持现状不打断；选多个 → 先推 `selected`（flow 面板 templates.length>0 守卫要求范本行先可见）再推 `select_pending` 确认卡，用户勾选（≥1）提交后按最终子集继续（二次 `selected` 整体替换行卡片）；超时 600s → `select_timeout` 按 AI 初选继续。复用已上线 confirm_pending SSE + Redis 轮询 + POST 回传机制同构骨架。
+
+**核心变更**（后端 2 文件 + 前端 7 文件）：
+- `agent/component/template_fill.py`：新增 `_confirm_template_selection(task_id, chosen)`——推 select_pending（select_nonce/select_candidates/ai_selected）→ 轮询 `tpl_fill:select:{task_id}:{nonce}`（1.5s×600s，与字段确认同款运行级 nonce 防孤儿键）；合法提交过滤未知 id+去重保序返回子集，空/全非法/坏 JSON/Redis 故障兜底走 AI 选择，超时推 select_timeout；等待中取消 → _FillCancelled；`_invoke_async` 多选且有 task_id 时接入，勾选集变化再推一次 selected
+- `api/apps/restful_apis/template_api.py`：新增 POST `/template/fill/select-confirm` 端点——payload {task_id, nonce, template_ids}，nonce 卫生校验与 confirm 端点同款（限长 64+白名单），ids 清洗去重保序，TTL 700（> 节点 600s 超时），Redis set 返回值必查
+- `web/src/hooks/template-fill-stream.ts`：新增 `ITemplateFillSelectPending/ITemplateFillSelectCandidate` 类型与 tf.pendingSelect 态；reducer 新增 select_pending/select_timeout 分支（语义同 confirm）；二次 selected 清挂起态
+- `web/src/pages/c-chat/template-fill-confirm-card.tsx`：新增 `TemplateSelectConfirmCard`——候选 checkbox（初始勾选=AI 初选全集，name+填写点数+描述），提交校验 ≥1，submitted/expired 灰字态与字段确认卡一致
+- `web/src/pages/c-chat/template-fill-progress.tsx`：挂载选择卡（selectCard 先于 confirmCard）；新增 onSelectSubmitted prop
+- `web/src/hooks/use-send-message.ts` / `web/src/hooks/use-template-fill-request.ts` / `web/src/utils/api.ts`：`markSelectSubmitted` 流式态回写（防迟到 select_timeout 置灰）+ `confirmTemplateFillSelect` mutation + select-confirm 路由常量
+- `web/src/pages/c-chat/index.tsx` / `web/src/pages/c-chat/flow/flow-ai-panel.tsx` / `web/src/pages/c-chat/flow/flow-detail.tsx`：onSelectSubmitted/onSelectSubmittedReady 透传接线（镜像 confirm 同款模式）
+- 测试：component 新增 8 用例（超时兜底/ghost 过滤去重保序/5 类脏载荷兜底/取消中断/端到端 selected→select_pending→selected(子集)/无 task_id 与单选不询问）+ routes 新增 4 用例（空 ids 拒绝/nonce 卫生/清洗写键 TTL/Redis 故障友好报错）；39+104 全绿，ruff 违规数与 HEAD 一致（零新增）
+
+**验证**：`uv run pytest` 两套件全绿；`npm run build` 通过。
+
+**遗留**：未部署（部署须后端 2 文件成套 SCP + 容器重启 + 前端 build，等用户明确指示）；历史回放对未知 stage 走 reducer default 忽略，旧消息不受影响；选择确认与字段确认串行（先选范本再确认字段）。
+
 ## 2026-09-15 B端确认视图行补中文名+key 显示 / 点击定位红色脉冲闪烁
 
 **主题**：① 用户反馈「预览里的 {{extra_long_bridge_count_2325}} 徽标在填写点列表中找不到」——排查确认该行**在列表里**（290 项含 特大桥座数/para:2303），根因是确认视图占位符列只渲染锚文本，同形留白范本几百行全是「（留白 N 字符）」，无法与预览 {{key}} 徽标对号；② 用户反馈点击行定位的琥珀色闪烁与常显高亮同色不醒目。

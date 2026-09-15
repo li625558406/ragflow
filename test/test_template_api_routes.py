@@ -77,6 +77,7 @@ EXPECTED_ENDPOINTS = (
     "download_fill_result",
     "test_fill_template",
     "confirm_template_fill",
+    "confirm_template_fill_select",
 )
 
 
@@ -119,6 +120,7 @@ def test_all_routes_registered_on_blueprint():
         "/template/fill/fill-task/<task_id>/retry": {"POST"},
         "/template/fill/fill-task/<task_id>/download": {"GET"},
         "/template/fill/confirm": {"POST"},
+        "/template/fill/select-confirm": {"POST"},
     }
     for rule, methods in expected.items():
         assert rule in rules, f"路由未注册: {rule}（现有: {sorted(rules)}）"
@@ -1907,3 +1909,71 @@ def test_confirm_redis_failure_returns_friendly_error(monkeypatch, fail):
     resp = asyncio.run(mod.confirm_template_fill())
     d = _err_dict(resp)
     assert d["code"] == DATA_ERROR_CODE and "确认提交失败" in d["message"]
+
+
+# ---------- 画布 TemplateFill 多范本选择确认端点（select-confirm） ----------
+
+def test_select_confirm_rejects_missing_or_empty_ids(monkeypatch):
+    """task_id/nonce 缺失、template_ids 缺失/空/全非字符串 → 拒绝且不写 Redis。"""
+    mod = _template_api
+    for body in (
+        {"nonce": "n1", "template_ids": ["t1"]},                          # 缺 task_id
+        {"task_id": "  ", "nonce": "n1", "template_ids": ["t1"]},         # 空白 task_id
+        {"task_id": "t1", "nonce": "n1"},                                 # 缺 ids
+        {"task_id": "t1", "nonce": "n1", "template_ids": []},             # 空数组
+        {"task_id": "t1", "nonce": "n1", "template_ids": "t1"},           # 非数组
+        {"task_id": "t1", "nonce": "n1", "template_ids": ["  "]},         # 全空白串
+        {"task_id": "t1", "nonce": "n1", "template_ids": [1, 2]},         # 非字符串元素
+    ):
+        recorder = {}
+        monkeypatch.setattr(mod, "request", _FakeJsonRequest(body))
+        monkeypatch.setattr(mod, "REDIS_CONN", _FakeConfirmRedis(recorder))
+        resp = asyncio.run(mod.confirm_template_fill_select())
+        d = _err_dict(resp)
+        assert d["code"] == DATA_ERROR_CODE, f"body={body!r} 应拒绝"
+        assert "set" not in recorder, f"body={body!r} 不得写 Redis"
+
+
+def test_select_confirm_rejects_invalid_nonce(monkeypatch):
+    """nonce 卫生校验与 confirm 端点同款（限长 64 + 白名单，防键注入）。"""
+    mod = _template_api
+    for nonce in ("", "  ", "x" * 65, "../evil", "a b:c"):
+        recorder = {}
+        monkeypatch.setattr(mod, "request", _FakeJsonRequest(
+            {"task_id": "t1", "nonce": nonce, "template_ids": ["t1"]}))
+        monkeypatch.setattr(mod, "REDIS_CONN", _FakeConfirmRedis(recorder))
+        resp = asyncio.run(mod.confirm_template_fill_select())
+        d = _err_dict(resp)
+        assert d["code"] == DATA_ERROR_CODE, f"nonce={nonce!r} 应拒绝"
+        assert "nonce" in d["message"]
+        assert "set" not in recorder
+
+
+def test_select_confirm_cleans_and_writes_key_with_ttl(monkeypatch):
+    """成功路径：去重保序 + 空白串过滤后写 tpl_fill:select:{task_id}:{nonce}，
+    值为 {"template_ids": [...]}，TTL 大于节点 600s 等待超时。"""
+    mod = _template_api
+    recorder = {}
+    monkeypatch.setattr(mod, "request", _FakeJsonRequest({
+        "task_id": "task-9", "nonce": "run-nonce-1",
+        "template_ids": ["t2", "t1", "t2", "  "]}))
+    monkeypatch.setattr(mod, "REDIS_CONN", _FakeConfirmRedis(recorder))
+    resp = asyncio.run(mod.confirm_template_fill_select())
+    assert resp["code"] == 0 and resp["data"] == {"ok": True}
+    key, val, exp = recorder["set"]
+    assert key == "tpl_fill:select:task-9:run-nonce-1", "选择键必须带运行级 nonce"
+    assert exp > 600, "TTL 必须大于画布节点 600s 等待超时"
+    assert json.loads(val) == {"template_ids": ["t2", "t1"]}, "去重保序 + 空白串过滤"
+
+
+@pytest.mark.parametrize("fail", ["raise", "false"])
+def test_select_confirm_redis_failure_returns_friendly_error(monkeypatch, fail):
+    """对抗性：Redis 写入抛异常 / 返回 False（RedisDB.set 吞异常真实语义）
+    都必须友好报错，绝不误报 ok:true。"""
+    mod = _template_api
+    monkeypatch.setattr(mod, "request", _FakeJsonRequest(
+        {"task_id": "t1", "nonce": "n1", "template_ids": ["t1"]}))
+    monkeypatch.setattr(mod, "REDIS_CONN", _FakeConfirmRedis({}, fail=fail))
+    resp = asyncio.run(mod.confirm_template_fill_select())
+    d = _err_dict(resp)
+    assert d["code"] == DATA_ERROR_CODE and "提交失败" in d["message"]

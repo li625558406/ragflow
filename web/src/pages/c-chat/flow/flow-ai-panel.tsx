@@ -78,6 +78,7 @@ export default function FlowAiPanel({
   onReviewControlChange,
   onReviewOpenChange,
   onConfirmSubmittedReady,
+  onSelectSubmittedReady,
 }: {
   flowId: string;
   version: FlowVersionItem | null;
@@ -97,6 +98,8 @@ export default function FlowAiPanel({
    *  确认卡片渲染在中部对话区（ConversationView），提交成功后经此把 submitted
    *  回写进本面板的流式累积态，供归约器 confirm_timeout 守卫判断 */
   onConfirmSubmittedReady?: (fn: (() => void) | null) => void;
+  /** 多范本选择卡片提交回写函数上报（同 onConfirmSubmittedReady 模式） */
+  onSelectSubmittedReady?: (fn: (() => void) | null) => void;
 }) {
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -201,6 +204,7 @@ export default function FlowAiPanel({
     answerList,
     structuredOutputRef,
     markConfirmSubmitted,
+    markSelectSubmitted,
   } = useSendMessageBySSE(api.agentChatCompletion, {
     excludeFanOutFromContent: false,
   });
@@ -210,6 +214,12 @@ export default function FlowAiPanel({
     onConfirmSubmittedReady?.(markConfirmSubmitted);
     return () => onConfirmSubmittedReady?.(null);
   }, [onConfirmSubmittedReady, markConfirmSubmitted]);
+
+  // 多范本选择卡片提交回写函数上报（语义同上）
+  useEffect(() => {
+    onSelectSubmittedReady?.(markSelectSubmitted);
+    return () => onSelectSubmittedReady?.(null);
+  }, [onSelectSubmittedReady, markSelectSubmitted]);
 
   useEffect(() => {
     if (streamState.templateFill) {

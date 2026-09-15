@@ -343,6 +343,7 @@ export default function CChat() {
     resetAnswerList,
     structuredOutputRef,
     markConfirmSubmitted,
+    markSelectSubmitted,
   } = useSendMessageBySSE(api.agentChatCompletion, {
     excludeFanOutFromContent: false,
   });
@@ -2471,6 +2472,7 @@ export default function CChat() {
                                     }
                                     streaming={streaming}
                                     onConfirmSubmitted={markConfirmSubmitted}
+                                    onSelectSubmitted={markSelectSubmitted}
                                     onLivePreviewOpenChange={
                                       handleTplPreviewOpenChange
                                     }

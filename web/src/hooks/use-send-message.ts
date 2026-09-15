@@ -736,6 +736,19 @@ export const useSendMessageBySSE = (
     setStreamState({ ...acc });
   }, []);
 
+  // 多范本选择卡片提交成功后的流式态回写（语义同 markConfirmSubmitted）：
+  // 迟到/并发的 select_timeout 不再把选择卡片置 expired
+  const markSelectSubmitted = useCallback(() => {
+    const acc = streamAccRef.current;
+    const ps = acc.templateFill?.pendingSelect;
+    if (!ps || ps.submitted) return;
+    acc.templateFill = {
+      ...acc.templateFill!,
+      pendingSelect: { ...ps, submitted: true },
+    };
+    setStreamState({ ...acc });
+  }, []);
+
   return {
     send,
     answerList,
@@ -747,5 +760,6 @@ export const useSendMessageBySSE = (
     stopOutputMessage,
     structuredOutputRef,
     markConfirmSubmitted,
+    markSelectSubmitted,
   };
 };

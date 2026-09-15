@@ -744,3 +744,237 @@ def test_decision_empty_direct_value_renders_blank(patched_env):
     params = svc.inserted[0][1]["params"]
     assert params["_direct_values"] == {"a": ""}
     assert params["_retrieve_skip_keys"] == ["a"]
+
+
+# ---------- 多范本选择确认（智能折中）：_confirm_template_selection ----------
+
+def _chosen_two():
+    """AI 选出两个范本（顺序 t2→t1），占位符数不同供 slot_count 断言。"""
+    return [
+        {"template_id": "t2", "name": "报告B", "description": "B 描述",
+         "_placeholders": [_ver_slot("a"), _ver_slot("b")]},
+        {"template_id": "t1", "name": "报告A", "description": "",
+         "_placeholders": [_ver_slot("a")]},
+    ]
+
+
+def _select_component(monkeypatch, canvas_task_id="task-9"):
+    canvas = FakeCanvas()
+    canvas.task_id = canvas_task_id
+    return _make_component(TemplateFillParam(), canvas=canvas)
+
+
+def test_select_wait_timeout_falls_back_to_ai(monkeypatch):
+    """Redis 一直无选择键 → 超时推 select_timeout 并按 AI 选择原样继续；
+    select_pending 事件必须下发运行级 select_nonce + 候选清单 + ai_selected。"""
+    cpn = _select_component(monkeypatch)
+    monkeypatch.setattr(fill_template, "_CONFIRM_TIMEOUT", 0.05)
+
+    class FakeRedis:
+        def get(self, k):
+            return None
+
+        def delete(self, k):
+            raise AssertionError("超时路径不得删除任何键")
+
+    monkeypatch.setattr(fill_template, "REDIS_CONN", FakeRedis())
+
+    async def fake_sleep(_s):
+        return None
+
+    monkeypatch.setattr(fill_template.asyncio, "sleep", fake_sleep)
+
+    chosen = _chosen_two()
+    out = asyncio.run(cpn._confirm_template_selection("task-9", chosen))
+    assert out is chosen, "超时必须原样返回 AI 选择（同一列表对象）"
+    events = _drain_events(cpn)
+    assert [e["stage"] for e in events] == ["select_pending", "select_timeout"]
+    pending = events[0]
+    assert re.fullmatch(r"[A-Za-z0-9-]{1,64}", pending["select_nonce"] or ""), \
+        "select_pending 必须下发合法的运行级 select_nonce"
+    assert pending["task_id"] == "task-9"
+    assert pending["ai_selected"] == ["t2", "t1"]
+    assert [c["template_id"] for c in pending["select_candidates"]] == ["t2", "t1"]
+    assert pending["select_candidates"][0]["slot_count"] == 2
+    assert pending["select_candidates"][1]["description"] == ""
+
+
+def test_select_payload_filters_unknown_and_returns_subset(monkeypatch):
+    """用户提交含 ghost id → 只留合法子集（保 AI 选择顺序）；轮询/消费键必须
+    带运行级 nonce（tpl_fill:select:{task_id}:{nonce}）且与事件下发的一致；
+    拿到合法提交后不得再推 select_timeout。"""
+    cpn = _select_component(monkeypatch)
+    payload = json.dumps({"template_ids": ["ghost", "t1", "t1"]})
+    seen = {"deleted": []}
+
+    class FakeRedis:
+        def get(self, k):
+            seen["get"] = k
+            return payload
+
+        def delete(self, k):
+            seen["deleted"].append(k)
+
+    monkeypatch.setattr(fill_template, "REDIS_CONN", FakeRedis())
+
+    async def fake_sleep(_s):
+        return None
+
+    monkeypatch.setattr(fill_template.asyncio, "sleep", fake_sleep)
+
+    chosen = _chosen_two()
+    out = asyncio.run(cpn._confirm_template_selection("task-9", chosen))
+    assert [c["template_id"] for c in out] == ["t1"], "ghost 过滤 + 去重保序"
+    select_key = seen["get"]
+    assert select_key.startswith("tpl_fill:select:task-9:"), \
+        f"选择键必须带运行级 nonce，实际: {select_key}"
+    assert seen["deleted"] == [select_key], "选择键必须消费防重复触发"
+    nonce = select_key.rsplit(":", 1)[1]
+    events = _drain_events(cpn)
+    pending = [e for e in events if e["stage"] == "select_pending"]
+    assert pending and pending[0]["select_nonce"] == nonce, \
+        "事件下发的 select_nonce 必须与轮询键中的 nonce 一致（前端携带它调 select-confirm 端点）"
+    assert [e["stage"] for e in events] == ["select_pending"], \
+        "拿到合法提交后不得再推 select_timeout"
+
+
+@pytest.mark.parametrize("payload", [
+    '{"template_ids": []}',
+    '{"template_ids": ["ghost"]}',
+    '{"template_ids": "t1"}',
+    '"just-a-string"',
+    "not-json",
+])
+def test_select_payload_garbage_falls_back_to_ai(monkeypatch, payload):
+    """对抗性：空提交/全非法 id/脏结构/坏 JSON → 不炸 run，兜底按 AI 选择继续
+    （推 select_timeout，返回原 chosen）。"""
+    cpn = _select_component(monkeypatch)
+
+    class FakeRedis:
+        def get(self, k):
+            return payload
+
+        def delete(self, k):
+            pass
+
+    monkeypatch.setattr(fill_template, "REDIS_CONN", FakeRedis())
+
+    async def fake_sleep(_s):
+        return None
+
+    monkeypatch.setattr(fill_template.asyncio, "sleep", fake_sleep)
+
+    chosen = _chosen_two()
+    out = asyncio.run(cpn._confirm_template_selection("task-9", chosen))
+    assert out is chosen
+    stages = [e["stage"] for e in _drain_events(cpn)]
+    assert stages == ["select_pending", "select_timeout"]
+
+
+def test_select_cancel_during_wait_raises(monkeypatch):
+    """等待期间画布被停止 → _FillCancelled（invoke 统一收口为 cancelled 终态）。"""
+    cpn = _select_component(monkeypatch)
+
+    class CancelCanvas(FakeCanvas):
+        def is_canceled(self):
+            return True
+
+    cpn._canvas = CancelCanvas()
+    cpn._canvas.task_id = "task-9"
+
+    def boom(*a, **kw):
+        raise AssertionError("取消路径不得触 Redis")
+
+    monkeypatch.setattr(fill_template, "REDIS_CONN", boom)
+    with pytest.raises(fill_template._FillCancelled):
+        asyncio.run(cpn._confirm_template_selection("task-9", _chosen_two()))
+    assert _drain_events(cpn)[0]["stage"] == "select_pending", \
+        "取消前 select_pending 已下发（前端卡片可静默过期）"
+
+
+def test_invoke_async_multi_selection_confirm_replaces(patched_env, monkeypatch):
+    """端到端（智能折中主路径）：LLM 选 2 个 + 画布带 task_id →
+    事件序列 selected→select_pending→selected(子集)→filling→…→done；
+    用户勾选子集后只为子集建任务行/产成稿。"""
+    calls, svc = patched_env["calls"], patched_env["svc"]
+    _stage_two_candidates()
+
+    class MultiMdl:
+        async def async_chat(self, system, msgs):
+            return '{"template_ids": ["t2", "t1"]}'
+
+    monkeypatch.setattr(fill_template.executor, "_build_chat_mdl", lambda *_: MultiMdl())
+    _seq_done(svc, n=1)
+    payload = json.dumps({"template_ids": ["t2"]})
+
+    class FakeRedis:
+        def get(self, k):
+            return payload
+
+        def delete(self, k):
+            pass
+
+    monkeypatch.setattr(fill_template, "REDIS_CONN", FakeRedis())
+    canvas = FakeCanvas()
+    canvas.task_id = "run-1"
+    cpn = _make_component(TemplateFillParam(), canvas=canvas)
+    cpn._param.dataset_ids = ["kb1"]
+    asyncio.run(cpn._invoke_async())
+
+    evs = _drain_events(cpn)
+    stages = [e["stage"] for e in evs]
+    assert stages == ["selected", "select_pending", "selected",
+                      "filling", "filled", "done"], f"实际: {stages}"
+    # 二次 selected 是勾选后的子集（整体替换语义，前端行卡片同步收敛）
+    assert [t["template_id"] for t in evs[0]["templates"]] == ["t2", "t1"]
+    assert [t["template_id"] for t in evs[2]["templates"]] == ["t2"]
+    # 只为勾选子集建任务行 + spawn，落选的 t1 不建行
+    assert [kw["template_id"] for _, kw in svc.inserted] == ["t2"]
+    assert calls["spawn"] == [svc.inserted[0][0]]
+
+
+def test_invoke_async_multi_selection_no_task_id_skips_pause(patched_env, monkeypatch):
+    """画布无 task_id（SSE 回传不可用）→ 多选也不询问，直接按 AI 选择填
+    （不推 select_pending、不触 Redis）；单选路径即使有 task_id 也不询问。"""
+    svc = patched_env["svc"]
+    _stage_two_candidates()
+
+    class MultiMdl:
+        async def async_chat(self, system, msgs):
+            return '{"template_ids": ["t2", "t1"]}'
+
+    monkeypatch.setattr(fill_template.executor, "_build_chat_mdl", lambda *_: MultiMdl())
+    _seq_done(svc, n=2)
+
+    def boom(*a, **kw):
+        raise AssertionError("无 task_id / 单选不应触 Redis")
+
+    monkeypatch.setattr(fill_template, "REDIS_CONN", boom)
+    cpn = _make_component(TemplateFillParam())  # FakeCanvas 无 task_id
+    cpn._param.dataset_ids = ["kb1"]
+    asyncio.run(cpn._invoke_async())
+    stages = [e["stage"] for e in _drain_events(cpn)]
+    assert "select_pending" not in stages
+    assert len(svc.inserted) == 2
+
+    # 单选：LLM 只选出 1 个 + 画布带 task_id → 不询问
+    _stage_two_candidates()
+    _seq_done(svc, n=1)
+    svc.inserted.clear()
+    svc.id_map.clear()
+    svc.queries.clear()
+    svc._next = 0
+
+    class SingleMdl:
+        async def async_chat(self, system, msgs):
+            return '{"template_id": "t2"}'
+
+    monkeypatch.setattr(fill_template.executor, "_build_chat_mdl", lambda *_: SingleMdl())
+    canvas = FakeCanvas()
+    canvas.task_id = "run-2"
+    cpn2 = _make_component(TemplateFillParam(), canvas=canvas)
+    cpn2._param.dataset_ids = ["kb1"]
+    asyncio.run(cpn2._invoke_async())
+    stages2 = [e["stage"] for e in _drain_events(cpn2)]
+    assert "select_pending" not in stages2
+    assert len(svc.inserted) == 1

@@ -521,6 +521,21 @@ export async function confirmTemplateFill(
   }
 }
 
+// 多范本选择确认提交（Redis 唤醒画布节点按勾选子集继续填充）
+// select_nonce 来自 select_pending 事件的 select_nonce；template_ids 至少 1 个
+export async function confirmTemplateFillSelect(
+  taskId: string,
+  selectNonce: string,
+  templateIds: string[],
+): Promise<void> {
+  const { data } = await request.post(api.confirmTemplateFillSelect, {
+    data: { task_id: taskId, nonce: selectNonce, template_ids: templateIds },
+  });
+  if (data.code !== 0) {
+    throw new Error(data.message || '提交失败');
+  }
+}
+
 // ── 范本工作副本（docx-preview 保真渲染 + 占位符高亮用）──────────────────
 
 // 获取模板工作副本 blob（kind=render）。占位符 {{key}} 只存在于工作副本

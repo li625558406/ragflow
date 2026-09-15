@@ -38,6 +38,8 @@ export interface ITemplateFillState {
   finished?: boolean;
   /** 画布挂起等待人工确认（confirm_pending 事件产出的确认卡片状态） */
   pendingConfirm?: ITemplateFillConfirmPending;
+  /** 多范本命中：挂起等待用户勾选范本（select_pending 事件产出） */
+  pendingSelect?: ITemplateFillSelectPending;
 }
 
 // ── 变化字段确认（P2：confirm_pending / confirm_timeout）─────────────────
@@ -69,6 +71,30 @@ export interface ITemplateFillConfirmPending {
   submitted?: boolean;
 }
 
+// ── 多范本选择确认（智能折中：select_pending / select_timeout）─────────────
+
+/** select_pending 候选范本（AI 初选集合，用户至少勾选 1 个） */
+export interface ITemplateFillSelectCandidate {
+  template_id: string;
+  name: string;
+  slot_count?: number;
+  description?: string;
+}
+
+/** select_pending 事件的归约结果（expired/submitted 由前端标记，语义同 ConfirmPending） */
+export interface ITemplateFillSelectPending {
+  task_id: string;
+  /** Redis 唤醒 nonce，提交选择时必传 */
+  select_nonce?: string;
+  select_candidates: ITemplateFillSelectCandidate[];
+  /** AI 初选的 template_id 列表（确认卡初始勾选） */
+  ai_selected: string[];
+  /** select_timeout 且用户未提交 → 置 true，卡片转灰字只读 */
+  expired?: boolean;
+  /** 用户已提交选择 → 置 true */
+  submitted?: boolean;
+}
+
 /** use-send-message 的 streamAccRef 与本模块解耦的最小结构约束 */
 export interface IStreamAcc {
   templateFill?: ITemplateFillState;
@@ -83,7 +109,9 @@ export interface ITemplateFillEvent {
     | 'done'
     | 'cancelled'
     | 'confirm_pending'
-    | 'confirm_timeout';
+    | 'confirm_timeout'
+    | 'select_pending'
+    | 'select_timeout';
   template_id?: string;
   name?: string;
   slot_count?: number;
@@ -102,6 +130,10 @@ export interface ITemplateFillEvent {
   confirm_nonce?: string;
   // confirm_pending：各范本候选变化字段（命名避开了 selected 事件的 templates）
   confirm_templates?: ITemplateFillConfirmTemplate[];
+  /** select_pending：挂起任务 ID 同 task_id；Redis 唤醒 nonce；候选与 AI 初选 */
+  select_nonce?: string;
+  select_candidates?: ITemplateFillSelectCandidate[];
+  ai_selected?: string[];
 }
 
 /** 事件归约：进度分支浅拷贝换引用（防 React.memo/useEffect 依赖引用漏渲染），与 hook 的增量累积模式一致 */
@@ -123,6 +155,10 @@ export function applyTemplateFillEvent(
       status: 'selected' as const,
     }));
     tf.finished = undefined;
+    // 勾选后的二次 selected（整体替换）：选择卡完成使命，清除挂起态
+    if (tf.pendingSelect && !tf.pendingSelect.submitted) {
+      tf.pendingSelect = undefined;
+    }
     return;
   }
   // 画布挂起等待人工确认（确认发生在填写开始前；不穿透 finished 终态防御，迟到事件照常忽略）
@@ -138,6 +174,23 @@ export function applyTemplateFillEvent(
     // 用户已提交确认则不覆盖；否则标记过期（卡片转灰字只读）
     if (tf.pendingConfirm && !tf.pendingConfirm.submitted) {
       tf.pendingConfirm = { ...tf.pendingConfirm, expired: true };
+    }
+    return;
+  }
+  // 多范本选择确认：语义与字段确认对齐（先于 filling，迟到事件不穿透 finished）
+  if (d.stage === 'select_pending') {
+    tf.pendingSelect = {
+      task_id: d.task_id || '',
+      select_nonce: d.select_nonce || '',
+      select_candidates: d.select_candidates || [],
+      ai_selected: d.ai_selected || [],
+    };
+    return;
+  }
+  if (d.stage === 'select_timeout') {
+    // 用户已提交选择则不覆盖；否则标记过期（卡片转灰字只读）
+    if (tf.pendingSelect && !tf.pendingSelect.submitted) {
+      tf.pendingSelect = { ...tf.pendingSelect, expired: true };
     }
     return;
   }

@@ -6,7 +6,9 @@ import type {
   ITemplateFillState,
 } from '@/hooks/template-fill-stream';
 import { useTemplateFillTaskPoll } from '@/hooks/use-template-fill-task-poll';
-import TemplateFillConfirmCard from '@/pages/c-chat/template-fill-confirm-card';
+import TemplateFillConfirmCard, {
+  TemplateSelectConfirmCard,
+} from '@/pages/c-chat/template-fill-confirm-card';
 import TemplateFillLivePreview from '@/pages/c-chat/template-fill-live-preview';
 import { Download, Eye, FileText, Loader2 } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
@@ -17,6 +19,7 @@ export default function TemplateFillProgress({
   onPreview,
   extraAction,
   onConfirmSubmitted,
+  onSelectSubmitted,
   onLivePreviewOpenChange,
 }: {
   state?: ITemplateFillState;
@@ -30,6 +33,8 @@ export default function TemplateFillProgress({
   extraAction?: (dl: ITemplateFillDownload) => ReactNode;
   /** 确认卡片提交成功后回调（透传给卡片 onSubmitted）：使用方回写流式状态 */
   onConfirmSubmitted?: () => void;
+  /** 多范本选择卡片提交成功后回调（透传给卡片 onSubmitted）：使用方回写流式状态 */
+  onSelectSubmitted?: () => void;
   /** 实时预览抽屉开/关上报：使用方收缩左右布局为抽屉腾位（c-chat 用；flow 不传则无腾位） */
   onLivePreviewOpenChange?: (open: boolean) => void;
 }) {
@@ -54,7 +59,7 @@ export default function TemplateFillProgress({
   useEffect(() => {
     onLivePreviewOpenChange?.(Boolean(liveTpl));
   }, [liveTpl, onLivePreviewOpenChange]);
-  // 画布挂起确认卡片（confirm_pending）：附加块，置于范本行列表之上
+  // 画布挂起确认卡片（confirm_pending / select_pending）：附加块，置于范本行列表之上
   const confirmCard = mergedState?.pendingConfirm && (
     <div className="mt-2">
       {/* task_id+nonce 唯一标识一轮确认：新一轮覆盖时 remount，重置卡片全部本地状态，避免多轮确认 stale */}
@@ -68,9 +73,20 @@ export default function TemplateFillProgress({
       />
     </div>
   );
-  if (!mergedState?.templates?.length) return confirmCard || null;
+  // 多范本选择确认卡片（select_pending）：先于字段确认出现（后端先选范本再确认字段）
+  const selectCard = mergedState?.pendingSelect && (
+    <div className="mt-2">
+      <TemplateSelectConfirmCard
+        key={`${mergedState.pendingSelect.task_id}:${mergedState.pendingSelect.select_nonce || ''}`}
+        pending={mergedState.pendingSelect}
+        onSubmitted={onSelectSubmitted}
+      />
+    </div>
+  );
+  if (!mergedState?.templates?.length) return confirmCard || selectCard || null;
   return (
     <>
+      {selectCard}
       {confirmCard}
       <div className="mt-2 space-y-1.5">
         {mergedState.templates.map((t) => {
