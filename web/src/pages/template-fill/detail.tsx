@@ -89,15 +89,25 @@ export default function TemplateFillDetailPage() {
   const [previewMode, setPreviewMode] = useState<'fidelity' | 'text'>(
     'fidelity',
   );
+  // 填写点列表双模式：默认确认视图（只读核对识别结果），编辑模式展开配置列
+  const [configEditing, setConfigEditing] = useState(false);
+  // 点击列表行 → 保真预览定位到对应填写点（key）
+  const [focusKey, setFocusKey] = useState<string | null>(null);
+  // 保真预览高亮成功标记的 key 集合（未命中的行在确认视图标「未定位」）
+  const [markedKeys, setMarkedKeys] = useState<Set<string>>(new Set());
 
-  // 切换模板时回到默认保真模式
+  // 切换模板时回到默认保真模式 + 确认视图
   useEffect(() => {
     setPreviewMode('fidelity');
+    setConfigEditing(false);
+    setFocusKey(null);
+    setMarkedKeys(new Set());
   }, [id]);
 
   // 保真渲染失败：自动降级文本模式（一次性提示）
   const handleRenderFailed = () => {
     setPreviewMode('text');
+    setMarkedKeys(new Set());
     message.warning('保真渲染失败，已切换为文本模式');
   };
 
@@ -418,6 +428,8 @@ export default function TemplateFillDetailPage() {
                     addr: p.addr,
                   }))}
                 onRenderFailed={handleRenderFailed}
+                focusKey={focusKey}
+                onMarked={setMarkedKeys}
               />
             ) : (
               <div className="max-h-[65vh] space-y-1 overflow-auto">
@@ -450,8 +462,19 @@ export default function TemplateFillDetailPage() {
 
         {/* 右侧：填写点配置 */}
         <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">填写点配置</CardTitle>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0">
+            <CardTitle className="text-lg">
+              {configEditing ? '填写点配置' : '填写点列表'}
+            </CardTitle>
+            {!readonly && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setConfigEditing((v) => !v)}
+              >
+                {configEditing ? '完成编辑' : '编辑配置'}
+              </Button>
+            )}
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
             {readonly && (
@@ -459,10 +482,17 @@ export default function TemplateFillDetailPage() {
                 模板已停用，配置只读
               </div>
             )}
+            {!configEditing && (
+              <p className="text-xs text-muted-foreground">
+                点击行可在左侧文档中定位查看；确认识别无误后可进入「编辑配置」调整
+              </p>
+            )}
             <div className="max-h-[55vh] overflow-auto">
               {placeholders.length === 0 ? (
                 <p className="py-8 text-center text-sm text-muted-foreground">
-                  暂无填写点，点击下方「添加填写点」
+                  {configEditing
+                    ? '暂无填写点，点击下方「添加填写点」'
+                    : '暂无填写点，请先「编辑配置」添加或执行 AI 识别'}
                 </p>
               ) : (
                 <PlaceholderTable
@@ -475,35 +505,44 @@ export default function TemplateFillDetailPage() {
                   onSaveDefault={handleSaveDefault}
                   savingDefault={saveDefaultsMut.isPending}
                   persistedKeys={persistedKeys}
+                  mode={configEditing ? 'edit' : 'view'}
+                  onLocate={setFocusKey}
+                  markedKeys={
+                    previewMode === 'fidelity' ? markedKeys : undefined
+                  }
                 />
               )}
             </div>
             <div className="flex items-center gap-3">
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={readonly || detectMut.isPending}
-                onClick={runDetect}
-              >
-                {detectMut.isPending ? '识别中…' : 'AI 识别'}
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={readonly}
-                onClick={() =>
-                  setPlaceholders((prev) => [...prev, emptyPlaceholder()])
-                }
-              >
-                添加填写点
-              </Button>
-              <Button
-                size="sm"
-                disabled={readonly || saveMut.isPending}
-                onClick={saveConfig}
-              >
-                {saveMut.isPending ? '保存中…' : '保存配置'}
-              </Button>
+              {configEditing && (
+                <>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={readonly || detectMut.isPending}
+                    onClick={runDetect}
+                  >
+                    {detectMut.isPending ? '识别中…' : 'AI 识别'}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={readonly}
+                    onClick={() =>
+                      setPlaceholders((prev) => [...prev, emptyPlaceholder()])
+                    }
+                  >
+                    添加填写点
+                  </Button>
+                  <Button
+                    size="sm"
+                    disabled={readonly || saveMut.isPending}
+                    onClick={saveConfig}
+                  >
+                    {saveMut.isPending ? '保存中…' : '保存配置'}
+                  </Button>
+                </>
+              )}
               <span className="text-xs text-muted-foreground">
                 共 {placeholders.length} 个填写点
               </span>

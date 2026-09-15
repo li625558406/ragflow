@@ -11,30 +11,60 @@ import {
 import api from '@/utils/api';
 import request from '@/utils/request';
 import { renderAsync } from 'docx-preview';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+
+/** 定位闪烁时长（与 C端确认卡定位一致） */
+const FLASH_MS = 2000;
+
+/** 滚动居中到某填写点 mark 并琥珀色闪烁提示；无 mark 返回 false */
+function focusAnchor(container: HTMLElement, key: string): boolean {
+  const el = container.querySelector<HTMLElement>(
+    `mark[data-anchor-key="${CSS.escape(key)}"]`,
+  );
+  if (!el) return false;
+  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  const prev = el.style.outline;
+  el.style.outline = '2px solid #f59e0b';
+  window.setTimeout(() => {
+    el.style.outline = prev;
+  }, FLASH_MS);
+  return true;
+}
 
 export default function FidelityPreview({
   templateId,
   anchors,
   onRenderFailed,
+  focusKey,
+  onMarked,
 }: {
   templateId: string;
   /** 已注册填写点锚文本高亮项（key 唯一；anchor 空串的行跳过；addr 用于同形留白顺序分配） */
   anchors: Array<{ key: string; anchor: string; addr?: string }>;
   /** 渲染失败回调（父组件降级文本模式） */
   onRenderFailed: () => void;
+  /** 需定位的填写点 key（列表行点击触发） */
+  focusKey?: string | null;
+  /** 渲染高亮完成后回传成功标记的 key 集合（未命中的行由父组件标「未定位」） */
+  onMarked?: (marked: Set<string>) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   // anchors 变化不重渲染整文档：只重跑高亮，需最新值进 done 回调
   const anchorsRef = useRef(anchors);
   anchorsRef.current = anchors;
   const failedRef = useRef(false);
+  // 渲染完成门控：定位必须等高亮跑完
+  const [renderedOk, setRenderedOk] = useState(false);
+  // 一次性防重：同一 (templateId, key) 只定位一次；定位失败不标记，可重试
+  const focusDoneRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!templateId || !containerRef.current) return;
     const el = containerRef.current;
     let cancelled = false;
     failedRef.current = false;
+    setRenderedOk(false);
+    focusDoneRef.current = null;
     el.innerHTML = '';
 
     const fail = () => {
@@ -78,7 +108,7 @@ export default function FidelityPreview({
           // 同形留白多项按 addr 文档序分配第 1/2/…次出现（occ 语义）；
           // 页眉/页脚/文本框未渲染时不标（静默）。
           // showKeyBadge：高亮处追加 {{key}} 徽标，直观看填写点对应占位符
-          highlightDocxRanges(
+          const marked = highlightDocxRanges(
             el,
             anchorsRef.current
               .filter((a) => a.anchor && a.anchor.trim().length >= 2)
@@ -90,6 +120,8 @@ export default function FidelityPreview({
               })),
             { showKeyBadge: true },
           );
+          setRenderedOk(true);
+          onMarked?.(marked);
         });
       })
       .catch((e) => {
@@ -105,6 +137,15 @@ export default function FidelityPreview({
     // anchors 经 ref 透传，避免高亮项变化触发整文档重渲染
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [templateId]);
+
+  // 列表行点击定位：等渲染完成才尝试；同一目标只定位一次；无 mark 静默
+  useEffect(() => {
+    const root = containerRef.current;
+    if (!templateId || !focusKey || !renderedOk || !root) return;
+    const target = `${templateId}:${focusKey}`;
+    if (focusDoneRef.current === target) return;
+    if (focusAnchor(root, focusKey)) focusDoneRef.current = target;
+  }, [focusKey, renderedOk, templateId]);
 
   return (
     <div className="max-h-[65vh] overflow-auto">

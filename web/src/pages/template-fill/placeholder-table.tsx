@@ -140,6 +140,26 @@ function DefaultValueCell({
   );
 }
 
+// addr（后端编址）→ 用户可读位置。para:N 从 0 计，展示 +1；
+// cell 嵌套取首个表格编号；hdr/ftr/tx/sdt 前缀带剩余索引原文
+export function addrLabel(addr: string): string {
+  if (!addr) return '—';
+  const m = /^para:(\d+)$/.exec(addr);
+  if (m) return `第${Number(m[1]) + 1}段`;
+  const cell = /cell:(\d+)/.exec(addr);
+  if (cell) return `表格${Number(cell[1]) + 1}`;
+  const prefixMap: Array<[string, string]> = [
+    ['hdr:', '页眉'],
+    ['ftr:', '页脚'],
+    ['tx:', '文本框'],
+    ['sdt:', '内容控件'],
+  ];
+  for (const [p, label] of prefixMap) {
+    if (addr.startsWith(p)) return `${label} ${addr.slice(p.length)}`;
+  }
+  return addr;
+}
+
 interface PlaceholderTableProps {
   rows: TplPlaceholder[];
   errors: Record<string, boolean>;
@@ -153,6 +173,75 @@ interface PlaceholderTableProps {
   savingDefault?: boolean;
   /** 服务端已持久化的填写点 key 集合；默认值 commit 时未持久化的 key 只回写本地不调即时保存端点 */
   persistedKeys?: Set<string>;
+  /** view=确认视图（只读 #/占位符/位置，整行点击定位）；edit=完整配置列。默认 edit 向后兼容 */
+  mode?: 'view' | 'edit';
+  /** view 模式整行点击定位回调 */
+  onLocate?: (key: string) => void;
+  /** 保真预览高亮成功标记的 key 集合；有 addr 且不在集合内的行显示「未定位」徽标 */
+  markedKeys?: Set<string>;
+}
+
+// 确认视图：只读三列，供用户核对 AI 识别的填写点位置是否正确
+function PlaceholderViewTable({
+  rows,
+  onLocate,
+  markedKeys,
+}: {
+  rows: TplPlaceholder[];
+  onLocate?: (key: string) => void;
+  markedKeys?: Set<string>;
+}) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead className="w-[50px]">#</TableHead>
+          <TableHead>占位符（锚文本）</TableHead>
+          <TableHead className="w-[130px]">位置</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map((row, i) => (
+          <TableRow
+            key={i}
+            className={`cursor-pointer hover:bg-muted/50 ${
+              row.low_confidence ? 'bg-amber-50' : undefined
+            }`}
+            onClick={() => row.key && onLocate?.(row.key)}
+          >
+            <TableCell className="text-muted-foreground">{i + 1}</TableCell>
+            <TableCell>
+              {row.low_confidence && (
+                <span
+                  title="该项由 AI 收缩修正或存在同形留白，请核对锚文本是否落在正确空位"
+                  className="mr-1 inline-block rounded bg-amber-100 px-1 py-0.5 text-xs text-amber-700"
+                >
+                  低置信
+                </span>
+              )}
+              {row.addr && markedKeys && !markedKeys.has(row.key) && (
+                <span
+                  title="锚文本未能在文档中定位，需人工核对或重新识别"
+                  className="mr-1 inline-block rounded bg-muted px-1 py-0.5 text-xs text-muted-foreground"
+                >
+                  未定位
+                </span>
+              )}
+              <span
+                className="inline-block max-w-[280px] truncate align-middle text-sm text-muted-foreground"
+                title={row.anchor}
+              >
+                {row.anchor || '（无锚文本）'}
+              </span>
+            </TableCell>
+            <TableCell className="text-sm text-muted-foreground">
+              {addrLabel(row.addr)}
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
 }
 
 // 可编辑填写点表格（上传向导 Step2 与模板详情页共用）
@@ -166,7 +255,19 @@ export function PlaceholderTable({
   onSaveDefault,
   savingDefault = false,
   persistedKeys,
+  mode = 'edit',
+  onLocate,
+  markedKeys,
 }: PlaceholderTableProps) {
+  if (mode === 'view') {
+    return (
+      <PlaceholderViewTable
+        rows={rows}
+        onLocate={onLocate}
+        markedKeys={markedKeys}
+      />
+    );
+  }
   const errCls = (field: string) =>
     errors[field] ? 'border-red-500 focus-visible:ring-red-500' : '';
 

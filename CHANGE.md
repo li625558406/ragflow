@@ -1,5 +1,17 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-15 B端填写点列表双模式（确认/编辑）+ 点击行定位文档
+
+**主题**：填写点配置列表暴露 key/中文名/检索词/必填/默认值等 LLM 配置列，但用户查看列表的目的只是「确认识别结果、知道填写点在文档哪里」；且 key 不是文档字面文本无法搜索定位。列表改双模式：默认**确认视图**（#/占位符锚文本/位置，整行可点击），点击行左侧保真预览平滑滚动到对应填写点并琥珀色闪烁 2s；配置列收纳进**编辑模式**（「编辑配置」按钮切换，全列与保存/AI 识别/添加行为不变）。高亮未命中的行显示「未定位」徽标，直接暴露识别问题。
+
+**核心变更**（纯前端 3 文件）：
+- `web/src/pages/template-fill/fidelity-preview.tsx`：新增 `focusKey`/`onMarked` props——`focusAnchor`（`mark[data-anchor-key]` scrollIntoView 居中 + outline 琥珀闪烁 2s，复用 C端 live-preview 模式）+ `renderedOk` 渲染完成门控 + `focusDoneRef` 一次性防重；回传 `highlightDocxRanges` 返回值（成功标记 key 集合）
+- `web/src/pages/template-fill/placeholder-table.tsx`：新增 `mode`（默认 'edit' 向后兼容）/`onLocate`/`markedKeys` props；view 模式渲染只读三列表格（低置信徽标保留）；新增 `addrLabel`（para:N→第N+1段、cell:N→表格N+1、hdr:/ftr:/tx:/sdt: 前缀映射）
+- `web/src/pages/template-fill/detail.tsx`：`configEditing`/`focusKey`/`markedKeys` state + 卡头「编辑配置⇄完成编辑」toggle；AI 识别/添加/保存按钮仅编辑模式显示；文本模式/渲染失败不传 markedKeys（防误导性「未定位」）
+- 测试/验证：`npm run build` 通过（lintstaged prettier+eslint 过）
+
+**遗留**：未部署——纯前端 build+SCP+nginx reload；编辑保存后 anchors 变化不重跑高亮（anchorsRef 现状），markedKeys 为渲染时快照，改配置后需重进页面刷新；新增未填 key 的行点击定位静默无效果。
+
 ## 2026-09-15 B端保真预览纯空白 anchor 徽标缺失修复（raw 原文匹配通道）
 
 **主题**：通用本保函段「查验保函网址：（必填）/ 开 立 人：（公章）/ 地址/电话」等大量填写点的留白是**纯空格串**（非下划线字符），归一化去空白后为空串，被 `text.length < 2` 拦截，同日的徽标修复对它们完全无效（专用本 623 个填写点中 556 个属此类）。`highlightDocxRanges` 新增 **raw 原文匹配通道**：纯空白 anchor 走 `fullRaw.indexOf` 精确匹配（docx-preview textNode 保留原始空格），实体字符 anchor 仍走归一化通道，两通道互不干扰。
