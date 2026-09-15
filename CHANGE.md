@@ -1,6 +1,6 @@
 # CHANGE.md — 项目迭代记录
 
-## 2026-09-15 C端多范本命中暂停询问用户选择（智能折中）
+## 2026-09-15 C端多范本命中暂停询问用户选择（智能折中）（已部署 2026-09-15）
 
 **主题**：C端流程/对话中用户内容经 `_select_templates` LLM 选型后直接全部填充；需求是「查出多个范本时询问用户要哪个，而不是默默全填」。经确认采用智能折中：LLM 只选 1 个 → 维持现状不打断；选多个 → 先推 `selected`（flow 面板 templates.length>0 守卫要求范本行先可见）再推 `select_pending` 确认卡，用户勾选（≥1）提交后按最终子集继续（二次 `selected` 整体替换行卡片）；超时 600s → `select_timeout` 按 AI 初选继续。复用已上线 confirm_pending SSE + Redis 轮询 + POST 回传机制同构骨架。
 
@@ -16,7 +16,7 @@
 
 **验证**：`uv run pytest` 两套件全绿；`npm run build` 通过。
 
-**遗留**：未部署（部署须后端 2 文件成套 SCP + 容器重启 + 前端 build，等用户明确指示）；历史回放对未知 stage 走 reducer default 忽略，旧消息不受影响；选择确认与字段确认串行（先选范本再确认字段）。
+**遗留**：无（已部署 2026-09-15：后端 2 文件成套 SCP + 容器重启 + 前端 build 上传；部署后冒烟通过——容器 import OK、登录态实测 select-confirm 非法 nonce 拒绝/合法 payload 200、Redis 键 `{"template_ids": ["t2", "t1"]}` 去重保序 + TTL 633 在 (600,700] 区间）；历史回放对未知 stage 走 reducer default 忽略，旧消息不受影响；选择确认与字段确认串行（先选范本再确认字段）。
 
 ## 2026-09-15 B端确认视图行补中文名+key 显示 / 点击定位红色脉冲闪烁
 
