@@ -32,7 +32,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 | 文档 | 路径 | 包含内容 |
 |------|------|----------|
-| 迭代记录 | `D:\AI\ragflow2\CHANGE.md` | ★ 全部新增需求/功能整改记录：AI 识别 occ 超界溢出封顶（09-14，最新）/PDF 矢量留白横线回填+pdf2docx 引擎替换（09-14 已部署）/文件审核保真预览显原色+显式编辑、「第X章」文本章标题兜底切节、template_fill_events 64KB 截断修复等，最新迭代在最上方 |
+| 迭代记录 | `D:\AI\ragflow2\CHANGE.md` | ★ 全部新增需求/功能整改记录：B端保真预览填写点 {{key}} 徽标（09-15，最新）/AI 识别 occ 超界溢出封顶（09-14）/PDF 矢量留白横线回填+pdf2docx 引擎替换（09-14 已部署）/文件审核保真预览显原色+显式编辑、「第X章」文本章标题兜底切节、template_fill_events 64KB 截断修复等，最新迭代在最上方 |
 | 部署服务器 | `D:\AI\ragflow2\本地部署服务器.md` | 服务器SSH连接、Docker部署、前端/后端/Flutter热更新、Nginx配置、常见问题排查 |
 | 第三方接口 | `D:\AI\ragflow2\接口文档_2026-06-04.md` | 标讯API、企业画像API、合同API等第三方接口的请求/响应字段定义和鉴权方式 |
 | 项目架构 | `D:\AI\ragflow2\项目架构.md` | 系统整体架构、模块间调用关系、数据流、技术选型决策背景 |

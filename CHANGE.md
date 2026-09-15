@@ -1,5 +1,19 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-15 B端范本保真预览显示填写点占位符徽标 + 显示不全修复
+
+**主题**：保真模式预览只看到琥珀色高亮，不知道该填写点对应哪个占位符——`highlightDocxRanges` 新增可选 `opts.showKeyBadge`，在 mark 高亮末尾追加 `{{key}}` 内联徽标（小字号白字琥珀底 chip）。实现中发现并修复「显示不全」的两个根因：① **同形 anchor 只标首处**——范本大量填写点共用同串留白（如都是 `＿＿＿`），位置去重后只显示第一项；② **段落末尾 anchor 全部丢失**——`locate()` 把区间终点解析到下一段开头，同段校验误判跨段整项跳过（此 bug 同时影响 C端审核预览的段尾锚点）。
+
+**核心变更**（纯前端 3 文件）：
+- `web/src/pages/c-chat/docx-highlight.ts`：① `highlightDocxRanges` 加可选 `opts.showKeyBadge` 追加 {{key}} 徽标；② 同形 anchor 多项按 addr 数值感知排序（`para:10` 不再排在 `para:9` 前）依次分配文档第 1/2/…次出现（occ 语义），单项组保持首处+start 提示；③ `locate()` 加 `preferEnd`——区间终点恰为节点归一化终点时优先解析为该节点末尾（Range 语义等价但 parentElement 同段校验不再误判）；④ `DocxHighlightItem` 加可选 `addr`
+- `web/src/pages/template-fill/fidelity-preview.tsx`：传 `showKeyBadge` + addr，说明条补徽标说明
+- `web/src/pages/template-fill/detail.tsx`：anchors 透传 addr
+- 测试：新增 `web/src/pages/c-chat/docx-highlight.test.ts`（11 用例：同形分配/addr 数值序/段尾边界/跨段拦截/同 key 去重/徽标/空安全/混合组回归；jest 基建因遗留 umi/test 配置不可用，等价用例经 jsdom+esbuild 直跑 18 断言全过）
+
+**遗留**：未部署——纯前端，`npm run build` + tar + dist SCP + nginx reload；页眉/页脚未渲染区域仍无徽标（与高亮一致）；同形顺序分配在「中间有未注册同形留白」时会错位（后续可做 addr→DOM 精确定位）；web jest 配置遗留 `umi/test` 依赖缺失，测试基建待修。
+
+## 2026-09-14 范本填写确认卡填写项点击定位跳转
+
 ## 2026-09-14 范本填写确认卡填写项点击定位跳转
 
 **主题**：confirm_pending 确认卡里用户看得到字段名却定位不到成稿中的填写点——把每个填写项的字段名做成可点击（hover 虚线下划线，勾选/划线均可点），点击经父组件 `onLocate` 回调写入 `liveTarget({template_id, focusKey})`，复用未填充汇总同款 LivePreview 定位链路（data-ph-key → scrollIntoView 居中 + outline 闪烁 2s）直达成稿对应位置。
