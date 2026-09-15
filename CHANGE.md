@@ -1,5 +1,17 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-15 B端保真预览纯空白 anchor 徽标缺失修复（raw 原文匹配通道）
+
+**主题**：通用本保函段「查验保函网址：（必填）/ 开 立 人：（公章）/ 地址/电话」等大量填写点的留白是**纯空格串**（非下划线字符），归一化去空白后为空串，被 `text.length < 2` 拦截，同日的徽标修复对它们完全无效（专用本 623 个填写点中 556 个属此类）。`highlightDocxRanges` 新增 **raw 原文匹配通道**：纯空白 anchor 走 `fullRaw.indexOf` 精确匹配（docx-preview textNode 保留原始空格），实体字符 anchor 仍走归一化通道，两通道互不干扰。
+
+**核心变更**（纯前端 1 文件 `web/src/pages/c-chat/docx-highlight.ts`）：
+- 节点偏移快照增加 `rawStart/rawEnd` + `fullRaw` 原文拼接；分组按 `text.length===0 && rawText.length>=2` 判定 raw 通道（组键 `R:`/`N:` 前缀隔离）
+- 新增 `locateRaw`（原始偏移算术映射，preferEnd 语义与 locate 一致）；插入改为「先全部解析为节点位置 → 按 raw 空间 sortKey 文档序从后往前」（norm/raw 两个偏移空间不可直接排序）
+- 修复过程中发现并解决两个匹配陷阱：① **跨组占位撞死**——10 空格串的 8 空格子窗口先被 raw 组占用后，8 空格组 `continue` 不推进 `searchFrom` 导致整组全灭 → `findFree` 循环跳过被占位置；② **子窗口误匹配**——8 空格 anchor 会命中 10 空格串内部 → raw 通道要求「完整空白 run」（候选窗口前后必须是非空白字符或文档边界，留白段由可见文本分隔的语义）
+- 测试：`docx-highlight.test.ts` 新增 raw 通道 7 用例（纯空格命中+原始空白保留/同形多项 addr 分配+不同长度互不误匹配/完整 run 校验/raw+norm 混合/段尾 preferEnd/单空格跳过/出现次数超额），jsdom+esbuild 直跑 32 断言全过；**已部署**（前端 build+SCP+nginx reload，后端无改动）
+
+**遗留**：同前条——页眉/页脚未渲染区无徽标；中间未注册同形留白会错位（addr→DOM 精确定位待做）；anchor 与检测时留白长度不一致则 raw 通道不命中（需重新识别）。
+
 ## 2026-09-15 B端范本保真预览显示填写点占位符徽标 + 显示不全修复
 
 **主题**：保真模式预览只看到琥珀色高亮，不知道该填写点对应哪个占位符——`highlightDocxRanges` 新增可选 `opts.showKeyBadge`，在 mark 高亮末尾追加 `{{key}}` 内联徽标（小字号白字琥珀底 chip）。实现中发现并修复「显示不全」的两个根因：① **同形 anchor 只标首处**——范本大量填写点共用同串留白（如都是 `＿＿＿`），位置去重后只显示第一项；② **段落末尾 anchor 全部丢失**——`locate()` 把区间终点解析到下一段开头，同段校验误判跨段整项跳过（此 bug 同时影响 C端审核预览的段尾锚点）。

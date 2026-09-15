@@ -162,3 +162,108 @@ describe('highlightDocxRanges 同形 anchor 顺序分配', () => {
     expect(keys).toEqual(['project', 'amount', 'remark']);
   });
 });
+
+describe('highlightDocxRanges 纯空白 anchor（raw 原文匹配通道）', () => {
+  const SP = '          '; // 10 空格
+  const SP8 = '        '; // 8 空格
+
+  it('单个纯空格 anchor 走原文匹配并保留原始空白内容', () => {
+    const root = buildDoc(['查验保函网址：            （必填）']);
+    const marked = highlightDocxRanges(
+      root,
+      [
+        {
+          text: '            ',
+          key: 'check_url',
+          color: '#f59e0b',
+          addr: 'para:0',
+        },
+      ],
+      { showKeyBadge: true },
+    );
+    expect(marked.has('check_url')).toBe(true);
+    const mark = root.querySelector('mark[data-anchor-key="check_url"]')!;
+    expect(root.querySelectorAll('p')[0].contains(mark)).toBe(true);
+    // mark 首子节点保留 12 个原始空格
+    expect(mark.childNodes[0].textContent).toBe('            ');
+    expect(mark.querySelector('span')?.textContent).toBe('{{check_url}}');
+  });
+
+  it('同形纯空格串多项按 addr 顺序分配；不同长度空白串互不误匹配', () => {
+    const root = buildDoc([
+      '地址：' + SP + '邮编：' + SP + '电话：' + SP,
+      '开立时间：' + SP8 + '年' + SP8 + '月' + SP8 + '日',
+    ]);
+    const marked = highlightDocxRanges(
+      root,
+      [
+        { text: SP, key: 'phone', color: '#f59e0b', addr: 'para:0' },
+        { text: SP, key: 'addr', color: '#f59e0b', addr: 'para:0' },
+        { text: SP, key: 'zip', color: '#f59e0b', addr: 'para:0' },
+        { text: SP8, key: 'day', color: '#f59e0b', addr: 'para:1' },
+        { text: SP8, key: 'month', color: '#f59e0b', addr: 'para:1' },
+        { text: SP8, key: 'year', color: '#f59e0b', addr: 'para:1' },
+      ],
+      { showKeyBadge: true },
+    );
+    expect(marked.size).toBe(6);
+    const keys = Array.from(root.querySelectorAll('mark[data-anchor-key]')).map(
+      (m) => m.dataset.anchorKey,
+    );
+    expect(keys).toEqual(['phone', 'addr', 'zip', 'day', 'month', 'year']);
+  });
+
+  it('完整空白 run 校验：10 空格串内部不产生 8 空格 anchor 的合法出现', () => {
+    const root = buildDoc(['A:' + SP + 'B:' + SP8 + 'C:']);
+    const marked = highlightDocxRanges(root, [
+      { text: SP8, key: 'long', color: '#f59e0b', addr: 'para:0' },
+      { text: SP, key: 'short', color: '#f59e0b', addr: 'para:0' },
+    ]);
+    expect(marked.size).toBe(2);
+    const keys = Array.from(root.querySelectorAll('mark[data-anchor-key]')).map(
+      (m) => m.dataset.anchorKey,
+    );
+    expect(keys).toEqual(['short', 'long']);
+  });
+
+  it('raw + norm 混合通道互不干扰，文档序正确', () => {
+    const root = buildDoc(['网址：          说明', '日期：＿＿＿']);
+    const marked = highlightDocxRanges(root, [
+      { text: '          ', key: 'blank_k', color: '#f59e0b', addr: 'para:0' },
+      { text: '＿＿＿', key: 'norm_k', color: '#f59e0b', addr: 'para:1' },
+    ]);
+    expect(marked.size).toBe(2);
+    const keys = Array.from(root.querySelectorAll('mark[data-anchor-key]')).map(
+      (m) => m.dataset.anchorKey,
+    );
+    expect(keys).toEqual(['blank_k', 'norm_k']);
+  });
+
+  it('段尾纯空格 anchor：preferEnd 命中且不跨段', () => {
+    const root = buildDoc(['开立人：（公章）   ', '下一段']);
+    const marked = highlightDocxRanges(root, [
+      { text: '   ', key: 'tail_k', color: '#f59e0b', addr: 'para:0' },
+    ]);
+    expect(marked.has('tail_k')).toBe(true);
+    const mark = root.querySelector('mark[data-anchor-key="tail_k"]')!;
+    expect(root.querySelectorAll('p')[0].contains(mark)).toBe(true);
+  });
+
+  it('单空格 anchor（长度 < 2）仍跳过', () => {
+    const root = buildDoc(['a b']);
+    const marked = highlightDocxRanges(root, [
+      { text: ' ', key: 'one', color: '#f59e0b' },
+    ]);
+    expect(marked.size).toBe(0);
+  });
+
+  it('纯空格 anchor 多于文档出现次数：多余项不命中不抛错', () => {
+    const root = buildDoc(['网址：      官方']);
+    const marked = highlightDocxRanges(root, [
+      { text: '      ', key: 'k1', color: '#f59e0b', addr: 'para:0' },
+      { text: '      ', key: 'k2', color: '#f59e0b', addr: 'para:0' },
+    ]);
+    expect(marked.size).toBe(1);
+    expect(root.querySelectorAll('mark').length).toBe(1);
+  });
+});

@@ -170,16 +170,30 @@ export function highlightDocxRanges(
   const marked = new Set<string>();
   if (!items.length) return marked;
 
-  // 归一化（去全部空白）全文 + 节点偏移快照
+  // 归一化（去全部空白）全文 + 节点偏移快照（同时保留原始偏移，供纯空白 anchor 走原文精确匹配）
   const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
-  const entries: Array<{ node: Text; normStart: number; normEnd: number }> = [];
+  const entries: Array<{
+    node: Text;
+    normStart: number;
+    normEnd: number;
+    rawStart: number;
+    rawEnd: number;
+  }> = [];
   let acc = 0;
+  let rawAcc = 0;
   let n = walker.nextNode() as Text | null;
   while (n) {
     const raw = n.nodeValue || '';
     const len = raw.replace(/\s+/g, '').length;
-    entries.push({ node: n, normStart: acc, normEnd: acc + len });
+    entries.push({
+      node: n,
+      normStart: acc,
+      normEnd: acc + len,
+      rawStart: rawAcc,
+      rawEnd: rawAcc + raw.length,
+    });
     acc += len;
+    rawAcc += raw.length;
     n = walker.nextNode() as Text | null;
   }
   const parts: string[] = [];
@@ -187,7 +201,8 @@ export function highlightDocxRanges(
     parts.push((e.node.nodeValue || '').replace(/\s+/g, ''));
   }
   const full = parts.join('');
-  if (!full) return marked;
+  const fullRaw = entries.map((e) => e.node.nodeValue || '').join('');
+  if (!full && !fullRaw) return marked;
 
   // 归一化偏移 → 原始 (文本节点, 节点内偏移)。
   // preferEnd：pos 恰为某节点归一化终点时优先解析为该节点末尾而非下一节点
@@ -221,12 +236,35 @@ export function highlightDocxRanges(
     return null;
   };
 
+  // 纯空白 anchor 专用：原始偏移 → (节点, 节点内偏移)。原文不含归一化，
+  // 纯算术映射；preferEnd 语义与 locate 一致（节点终点优先于下一节点起点）
+  const locateRaw = (
+    pos: number,
+    preferEnd = false,
+  ): { node: Text; off: number } | null => {
+    for (const e of entries) {
+      if (preferEnd && pos > e.rawStart && pos === e.rawEnd) {
+        return { node: e.node, off: e.rawEnd - e.rawStart };
+      }
+      if (pos >= e.rawStart && pos < e.rawEnd) {
+        return { node: e.node, off: pos - e.rawStart };
+      }
+    }
+    return null;
+  };
+
   // 定位 + 同段校验 + 去重（同 key 只锚一处；同位置不重复插）。
   // 同形 anchor 分配：范本填写点大量同形留白（同串下划线/空格），
   // 若都取首处则只有第一项显示 —— 归一化文本相同的多项按 addr 文档序
   // 依次分配第 1/2/…次出现（occ 语义）；单项/无 addr 组保持首处匹配。
-  const valid: Array<{ s: number; e: number; item: DocxHighlightItem }> = [];
-  const seenPos = new Set<number>();
+  const valid: Array<{
+    s: number;
+    e: number;
+    item: DocxHighlightItem;
+    mode: 'norm' | 'raw';
+  }> = [];
+  // 同一匹配位置只允许一个锚点；norm/raw 偏移空间不同，键加前缀隔离
+  const seenPos = new Set<string>();
   const seenKey = new Set<string>();
 
   const cmpAddr = (a: string, b: string): number => {
@@ -245,21 +283,42 @@ export function highlightDocxRanges(
     return 0;
   };
 
-  // 按归一化文本分组，组内带上原顺序
+  // 按文本分组，组内带上原顺序。两类匹配通道：
+  // - norm（默认）：归一化文本 ≥2 字符，走去空白归一化匹配
+  // - raw：纯空白 anchor（同形留白空格串）归一化后为空串，归一化通道永远
+  //   匹配不上 —— 改走原文精确匹配（docx-preview 的 textNode 保留原始空格，
+  //   fullRaw.indexOf 可定位）；raw 偏移空间与 norm 不同，须严格隔离
   const groups = new Map<
     string,
-    Array<{ item: DocxHighlightItem; seq: number }>
+    Array<{
+      item: DocxHighlightItem;
+      seq: number;
+      text: string;
+      mode: 'norm' | 'raw';
+    }>
   >();
   let seqCounter = 0;
   for (const item of items) {
-    const text = (item.text || '').replace(/\s+/g, '');
-    if (text.length < 2) continue;
-    const arr = groups.get(text) || [];
-    arr.push({ item, seq: seqCounter++ });
-    groups.set(text, arr);
+    const rawText = item.text || '';
+    const text = rawText.replace(/\s+/g, '');
+    let mode: 'norm' | 'raw';
+    let groupKey: string;
+    if (text.length === 0 && rawText.length >= 2) {
+      mode = 'raw';
+      groupKey = 'R:' + rawText;
+    } else if (text.length < 2) {
+      continue; // 既非纯空白也过短 → 任何通道都无法稳定匹配
+    } else {
+      mode = 'norm';
+      groupKey = 'N:' + text;
+    }
+    const arr = groups.get(groupKey) || [];
+    arr.push({ item, seq: seqCounter++, text: rawText, mode });
+    groups.set(groupKey, arr);
   }
 
-  for (const [text, group] of groups) {
+  for (const [, group] of groups) {
+    const { mode, text } = group[0];
     const multi = group.length > 1;
     const ordered = multi
       ? [...group].sort(
@@ -268,30 +327,71 @@ export function highlightDocxRanges(
         )
       : group;
     // 多项组：从上一次命中之后继续找下一次出现；单项组保留 start 提示
+    //（仅 norm 通道 —— raw 偏移空间不同，start 提示不可复用）。
+    // 候选位置若已被其他组占用（如 10 空格串吞掉 8 空格串的首个窗口），
+    // 必须继续向后找下一个空闲出现 —— 只 continue 不推进会导致整组撞死。
+    // raw 通道额外要求「完整空白 run」：候选窗口前后必须是非空白字符或
+    // 文档边界 —— 留白段由可见文本分隔，更长的空白串内部不存在更短
+    // anchor 的合法出现（如 10 空格里嵌不下 8 空格填写位）。
+    const fullText = mode === 'raw' ? fullRaw : full;
+    const findFree = (from: number): number => {
+      let i = fullText.indexOf(text, from);
+      while (i >= 0) {
+        const runExact =
+          mode !== 'raw' ||
+          ((i === 0 || !/\s/.test(fullText[i - 1])) &&
+            (i + text.length >= fullText.length ||
+              !/\s/.test(fullText[i + text.length])));
+        if (runExact && !seenPos.has(mode + ':' + i)) return i;
+        i = fullText.indexOf(text, i + 1);
+      }
+      return -1;
+    };
     let searchFrom = 0;
     for (const { item } of ordered) {
       if (seenKey.has(item.key)) continue;
       let idx =
-        !multi && item.start != null && item.start > 4
-          ? full.indexOf(text, Math.max(0, item.start - 4))
+        !multi && mode === 'norm' && item.start != null && item.start > 4
+          ? findFree(Math.max(0, item.start - 4))
           : -1;
       if (idx < 0) {
-        idx = multi ? full.indexOf(text, searchFrom) : full.indexOf(text);
+        idx = findFree(multi ? searchFrom : 0);
       }
-      if (idx < 0 || seenPos.has(idx)) continue;
+      if (idx < 0) continue;
       searchFrom = idx + 1;
-      seenPos.add(idx);
+      seenPos.add(mode + ':' + idx);
       seenKey.add(item.key);
-      valid.push({ s: idx, e: idx + text.length, item });
+      valid.push({ s: idx, e: idx + text.length, item, mode });
     }
   }
 
-  // 从后往前插入：删右侧区间不影响左侧偏移有效性
-  valid.sort((a, b) => b.s - a.s);
+  // 先把全部匹配解析为具体 (节点, 节点内偏移)，再按文档序从后往前插入。
+  // norm/raw 两个偏移空间不可直接比较排序 —— 统一换算成 raw 空间起点作
+  // sortKey；解析后的节点引用与偏移在「严格更靠后」区间删除时保持有效。
+  const nodeRawStart = new Map<Text, number>();
+  for (const e of entries) nodeRawStart.set(e.node, e.rawStart);
+  const resolved: Array<{
+    from: { node: Text; off: number };
+    to: { node: Text; off: number };
+    sortKey: number;
+    item: DocxHighlightItem;
+  }> = [];
   for (const v of valid) {
-    const from = locate(v.s);
-    const to = locate(v.e, true);
+    const from = v.mode === 'raw' ? locateRaw(v.s) : locate(v.s);
+    const to = v.mode === 'raw' ? locateRaw(v.e, true) : locate(v.e, true);
     if (!from || !to) continue;
+    const nodeStart = nodeRawStart.get(from.node);
+    if (nodeStart === undefined) continue;
+    resolved.push({
+      from,
+      to,
+      sortKey: nodeStart + from.off,
+      item: v.item,
+    });
+  }
+  resolved.sort((a, b) => b.sortKey - a.sortKey);
+  for (const v of resolved) {
+    const { from, to } = v;
     // 防跨块误删：起止必须在同一 <p>（docx-preview 段落/单元格内容均在 p 内），
     // 跨段匹配若直接 deleteContents 会破坏块级结构 —— 跳过留给未定位兜底
     const p1 = from.node.parentElement?.closest('p');
