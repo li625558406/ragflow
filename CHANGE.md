@@ -1,6 +1,6 @@
 # CHANGE.md — 项目迭代记录
 
-## 2026-09-15 流程对话发送即存+完成回填（未部署）
+## 2026-09-15 流程对话发送即存+完成回填（已部署 2026-09-15）
 
 **主题**：用户反馈「流程里发送消息后立即刷新页面，本轮内容全部丢失」——原逻辑 AI 记录只在流式结束（done && !sending）时才插入 flow_ai_chat，中途刷新即丢。改为**发送即存**：发出消息瞬间先预落一条「（生成中…）」占位记录（拿到 record_id），流式结束后按 record_id 回填最终回复/事件序列，不再二次插记录；发送链路失败则把占位记录标记为「（本轮未完成，无回复内容）」，不留脏占位。
 
@@ -10,7 +10,7 @@
 - `web/src/pages/c-chat/flow/flow-ai-panel.tsx`：handleSend 在 ensureSession 后预存占位记录（失败降级为不预存，走原逻辑）；新增 pendingRecordIdRef + markPendingFailed（两个失败分支调用）；自动保存 effect 双路径——有预存 id 走回填更新（带 template_fill_events/session_id），无则维持原插记录逻辑
 - 测试：新增 `test/test_flow_ai_record_update.py` 12 用例（update_content None/空串语义、happy path 不插记录不建版本、非本人 403、不存在/跨流程 404、空白 response 101、空白 record_id 404、坏 body 业务码不 500、缺失 events 不覆盖）；47 passed（含 flow 既有 3 套件回归），ruff 违规数与 HEAD 一致（flow_service 12=12、flow_app 59=59 零新增），`npm run build` 通过
 
-**遗留**：未部署——须后端 2 文件（flow_app.py + flow_service.py）成套 SCP + 容器重启 + 前端 build 上传；预存与回填之间容器重启会留下「（生成中…）」占位记录（下次进入可人工辨识，属可接受极端情况）。
+**遗留**：无（已部署 2026-09-15：后端 2 文件成套 SCP + 容器重启 + 前端 build 上传 + nginx reload；部署后冒烟通过——容器 import OK、登录态实测 ai-record 路由通/鉴权通/业务 404 正常）；预存与回填之间容器重启会留下「（生成中…）」占位记录（下次进入可人工辨识，属可接受极端情况）。
 
 ## 2026-09-15 C端多范本命中暂停询问用户选择（智能折中）（已部署 2026-09-15）
 
