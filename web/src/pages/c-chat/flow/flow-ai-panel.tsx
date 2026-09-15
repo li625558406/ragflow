@@ -60,7 +60,16 @@ function parseAndReplay(raw: unknown) {
   const events = parseTemplateFillEvents(raw);
   if (!events) return undefined;
   try {
-    return replayTemplateFillEvents(events);
+    const restored = replayTemplateFillEvents(events);
+    // 挂起的确认卡（字段确认/范本选择）是活连接专属交互态：刷新后原 canvas
+    // 编排已随 SSE 断连取消，重放出可点击的确认卡会误导用户（确认写入
+    // Redis 后无人消费）。剥掉挂起态，保留范本行/进度/成稿卡——填写阶段
+    // 的行带 task_id，挂载后由轮询自动重连真实进度。
+    if (restored) {
+      delete restored.pendingConfirm;
+      delete restored.pendingSelect;
+    }
+    return restored;
   } catch {
     return undefined;
   }
@@ -273,12 +282,34 @@ export default function FlowAiPanel({
   // 发送即存：本轮预落库的记录 id（完成自动保存时按它回填更新，不重复插记录）。
   // 无它则流式期间刷新页面，本轮指令与进度全部丢失
   const pendingRecordIdRef = useRef('');
+  // 事件增量同步防抖定时器：流式期间把事件序列持续写入预存记录，
+  // 中途刷新后历史重放（parseAndReplay）才有数据可恢复——否则事件只在
+  // 最终回填时落库，刷新即丢全部范本进度
+  const eventsSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const events = answerList
       .filter((e: any) => e?.event === 'template_fill_progress')
       .map((e: any) => e.data);
-    if (events.length > 0) templateFillEventsRef.current = events;
-  }, [answerList]);
+    if (events.length === 0) return;
+    templateFillEventsRef.current = events;
+    const rid = pendingRecordIdRef.current;
+    if (!rid) return;
+    if (eventsSyncTimerRef.current) clearTimeout(eventsSyncTimerRef.current);
+    eventsSyncTimerRef.current = setTimeout(() => {
+      eventsSyncTimerRef.current = null;
+      // 回填/失败标记已消费该记录（pendingRecordIdRef 清空）后不再覆盖最终内容
+      if (pendingRecordIdRef.current !== rid) return;
+      saveFlowAiRecord(flowId, {
+        record_id: rid,
+        response: '（生成中…）',
+        session_id: sessionIdRef.current,
+        template_fill_events: templateFillEventsRef.current,
+        save_as_version: false,
+      }).catch(() => {
+        // 静默失败：仅影响刷新重放完整度，最终回填会写入全量事件
+      });
+    }, 2000);
+  }, [answerList, flowId]);
 
   // 对话状态上报（供中部对话区实时展示）：
   // - 发送中（sending || !done）：busy=true，response 取实时流式内容
@@ -482,6 +513,11 @@ export default function FlowAiPanel({
       contentRef.current = '';
       templateFillRef.current = undefined;
       templateFillEventsRef.current = [];
+      // 上一轮未触发的增量同步定时器作废（pendingRecordIdRef 置空后守卫也会拦，这里直接清）
+      if (eventsSyncTimerRef.current) {
+        clearTimeout(eventsSyncTimerRef.current);
+        eventsSyncTimerRef.current = null;
+      }
       setCompleted(null);
       setLastTemplateFill(null);
       setLastRecord(null);
