@@ -426,6 +426,10 @@ export default function TemplateFillDetailPage() {
                     key: p.key,
                     anchor: p.anchor,
                     addr: p.addr,
+                    pIdx: p.p_idx,
+                    pHash: p.p_hash,
+                    aOcc: p.a_occ,
+                    pTotal: p.p_total,
                   }))}
                 onRenderFailed={handleRenderFailed}
                 focusKey={focusKey}

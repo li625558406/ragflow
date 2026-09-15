@@ -18,6 +18,15 @@ export interface TplPlaceholder {
   default_source?: 'detected' | 'auto' | 'manual' | '';
   /** 识别后处理标记：anchor 为实心文字且无法收缩到留白，需人工重点核对 */
   low_confidence?: boolean;
+  // ── 段落哈希直定位元数据（docx detail 接口附加，B端保真预览用）──
+  /** 锚点所在段落扁平序号（items 文档序） */
+  p_idx?: number;
+  /** 锚点段落规范化文本指纹（双 32 位 FNV-1a hex） */
+  p_hash?: string;
+  /** 锚文本在段落内的出现序号（1-based） */
+  a_occ?: number;
+  /** 段落总数 */
+  p_total?: number;
 }
 
 export interface TplTemplateItem {

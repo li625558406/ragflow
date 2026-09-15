@@ -7,6 +7,34 @@
 
 const PLACEHOLDER_RE = /\{\{([a-z][a-z0-9_]*)\}\}/g;
 
+// 与后端 rag/svr/template_fill/docx_utils.py NORM_WS_RE 同一显式空白字符类：
+// 两侧语言自带 \s 语义有差异（JS 含 \uFEFF、Python 含 \x1c-\x1f 等），
+// 段落哈希直定位要求归一化逐字节一致，必须显式枚举。
+/* eslint-disable no-control-regex -- \x1c-\x1f 为 Word 特殊空白，须与后端显式对齐 */
+const NORM_WS_RE =
+  /[ \t\n\r\f\v\x1c-\x1f\x85\u00a0\u1680\u2000-\u200f\u2028\u2029\u205f\u3000\ufeff]+/g;
+const NORM_WS_CHAR_RE =
+  /[ \t\n\r\f\v\x1c-\x1f\x85\u00a0\u1680\u2000-\u200f\u2028\u2029\u205f\u3000\ufeff]/;
+/* eslint-enable no-control-regex */
+
+/** 双 32 位 FNV-1a（UTF-8 字节流、不同 basis/prime）拼 16 位 hex —— 与后端
+ * para_hash32x2 完全同构。只用于段落文本相等性对齐，非密码学；双通道让
+ * 数千段落量级的碰撞概率可忽略。导出供测试构造与后端一致的指纹。 */
+export function fnvHash32x2(norm: string): string {
+  const bytes = new TextEncoder().encode(norm);
+  const fnv1a = (basis: number, prime: number): number => {
+    let h = basis >>> 0;
+    for (let i = 0; i < bytes.length; i++) {
+      h = Math.imul(h ^ bytes[i], prime) >>> 0;
+    }
+    return h;
+  };
+  return (
+    fnv1a(0x811c9dc5, 0x01000193).toString(16).padStart(8, '0') +
+    fnv1a(0x1f2be47c, 0x84ebcbf8).toString(16).padStart(8, '0')
+  );
+}
+
 interface Match {
   start: number;
   end: number;
@@ -154,6 +182,15 @@ export interface DocxHighlightItem {
   start?: number | null;
   /** 填写点段落定位（B端范本预览用）：同形 anchor 多项按 addr 文档序分配第 1/2/…次出现 */
   addr?: string;
+  // ── 段落哈希直定位元数据（B端范本预览，后端 compute_anchor_positions 附加）──
+  /** 锚点所在段落扁平序号（items 文档序；重复文本兜底按比例就近用） */
+  pIdx?: number;
+  /** 锚点段落规范化文本指纹（后端 para_hash32x2，双 32 位 FNV-1a hex） */
+  pHash?: string;
+  /** 锚文本在段落内的出现序号（1-based；norm/raw 两通道同后端口径） */
+  aOcc?: number;
+  /** 段落总数（items 长度；重复文本兜底比例就近用） */
+  pTotal?: number;
 }
 
 /**
@@ -273,6 +310,259 @@ export function highlightDocxRanges(
   // 同一匹配位置只允许一个锚点；norm/raw 偏移空间不同，键加前缀隔离
   const seenPos = new Set<string>();
   const seenKey = new Set<string>();
+
+  // ── 段落哈希直定位通道（B端范本预览）────────────────────────────────
+  // 后端按 addr 精确解析出锚点所在段落（pHash 段落指纹 + aOcc 段内出现序号）。
+  // 同形留白的注册项只是文档全部留白的子集，下方全文顺序分配（occ 语义）会把
+  // 文档靠前的出现分给 addr 靠后的项 —— mark 落错位置、点击行跳转错位。本
+  // 通道按段落文本指纹精确到段、段内序号精确到第几个留白，无歧义；指纹未
+  // 命中（渲染差异/页眉页脚部分变体等）的项回退下方顺序匹配管线，行为不变。
+  const directItems = items.filter(
+    (it) => it.pHash && it.pHash.length === 16 && (it.aOcc ?? 0) >= 1,
+  );
+  if (directItems.length) {
+    // 段落级聚合（文档序）：norm/raw 文本 + 指纹 + 节点局部偏移表
+    interface ParaNode {
+      node: Text;
+      rawStart: number;
+    }
+    interface ParaAgg {
+      inHf: boolean;
+      norm: string;
+      raw: string;
+      /** 空白规范化文本：全部空白字符（含 \t/\u00a0 等）替换为等长空格串，
+       * 与 raw 逐字符等长 —— docx-preview 把 w:tab 渲染为 \u00a0（后端原文
+       * 是 \t），raw 通道精确匹配失败时按 canon 二次尝试，偏移可直接复用 */
+      canon: string;
+      hash: string;
+      nodes: ParaNode[];
+      /** norm 代码单元位 → raw 代码单元位（含末端哨兵） */
+      normToRaw: number[];
+      /** 文档位置占比（与后端 p_idx/p_total 同口径的近似比例） */
+      docFrac: number;
+    }
+    const paraAggs: ParaAgg[] = [];
+    const aggByP = new Map<HTMLElement, ParaAgg>();
+    for (const e of entries) {
+      const raw = e.node.nodeValue || '';
+      const pEl = e.node.parentElement?.closest('p');
+      if (!pEl) continue;
+      let agg = aggByP.get(pEl);
+      if (!agg) {
+        // docx-preview 把页眉/页脚渲染为 <header>/<footer>（分页克隆多份），
+        // 标记后候选匹配优先非 HF 段落，避免正文段被页眉克隆干扰
+        let inHf = false;
+        let anc: HTMLElement | null = pEl;
+        while (anc && anc !== container) {
+          const tag = anc.tagName;
+          if (tag === 'HEADER' || tag === 'FOOTER') {
+            inHf = true;
+            break;
+          }
+          anc = anc.parentElement;
+        }
+        agg = {
+          inHf,
+          norm: '',
+          raw: '',
+          canon: '',
+          hash: '',
+          nodes: [],
+          normToRaw: [],
+          docFrac: 0,
+        };
+        aggByP.set(pEl, agg);
+        paraAggs.push(agg);
+      }
+      agg.nodes.push({ node: e.node, rawStart: agg.raw.length });
+      agg.raw += raw;
+      agg.norm += raw.replace(NORM_WS_RE, '');
+    }
+    const totalParas = Math.max(1, paraAggs.length);
+    paraAggs.forEach((agg, docIdx) => {
+      agg.hash = fnvHash32x2(agg.norm);
+      agg.docFrac = (docIdx + 0.5) / totalParas;
+      agg.canon = agg.raw.replace(NORM_WS_RE, (m) => ' '.repeat(m.length));
+      for (let i = 0; i < agg.raw.length; i++) {
+        if (!NORM_WS_CHAR_RE.test(agg.raw[i])) agg.normToRaw.push(i);
+      }
+      agg.normToRaw.push(agg.raw.length);
+    });
+
+    // 段内原文偏移 → (文本节点, 节点内偏移)；边界落点取靠后的节点（同段内
+    // Range 语义等价）
+    const localRawLocate = (
+      agg: ParaAgg,
+      pos: number,
+    ): { node: Text; off: number } | null => {
+      if (pos < 0 || pos > agg.raw.length) return null;
+      for (let i = agg.nodes.length - 1; i >= 0; i--) {
+        const nd = agg.nodes[i];
+        const len = nd.node.nodeValue?.length || 0;
+        if (pos >= nd.rawStart && pos <= nd.rawStart + len) {
+          return { node: nd.node, off: pos - nd.rawStart };
+        }
+      }
+      return null;
+    };
+
+    // 段内解析锚点区间：norm 通道按去空白文本第 aOcc 次出现（indexOf step+1
+    // 与后端计数同口径），终点做尾部空白收缩；纯空白 anchor 走原文精确出现
+    // + 完整空白 run 校验（与下方 raw 通道同口径）。
+    // findOcc：raw/canon 通道通用查找，返回第 occ 次完整空白 run 出现区间（可空）
+    const findOcc = (
+      text: string,
+      sub: string,
+      occ: number,
+    ): [number, number] | null => {
+      let cnt = 0;
+      let i = text.indexOf(sub);
+      while (i >= 0) {
+        const runExact =
+          (i === 0 || !NORM_WS_CHAR_RE.test(text[i - 1])) &&
+          (i + sub.length >= text.length ||
+            !NORM_WS_CHAR_RE.test(text[i + sub.length]));
+        if (runExact) {
+          cnt++;
+          if (cnt === occ) return [i, i + sub.length];
+        }
+        i = text.indexOf(sub, i + 1);
+      }
+      return null;
+    };
+    /** anchor 的 canon 形态（等长空白替换） */
+    const anchorCanon = (aRaw: string) =>
+      aRaw.replace(NORM_WS_RE, (m) => ' '.repeat(m.length));
+    const resolveInPara = (
+      agg: ParaAgg,
+      m: DocxHighlightItem,
+    ): {
+      from: { node: Text; off: number };
+      to: { node: Text; off: number };
+    } | null => {
+      const aRaw = m.text || '';
+      const aNorm = aRaw.replace(NORM_WS_RE, '');
+      let sRaw = -1;
+      let eRaw = -1;
+      if (aNorm) {
+        let cnt = 0;
+        let i = agg.norm.indexOf(aNorm);
+        while (i >= 0) {
+          cnt++;
+          if (cnt === m.aOcc) {
+            sRaw = agg.normToRaw[i];
+            eRaw = agg.normToRaw[i + aNorm.length] ?? -1;
+            while (eRaw > sRaw && NORM_WS_CHAR_RE.test(agg.raw[eRaw - 1]))
+              eRaw--;
+            break;
+          }
+          i = agg.norm.indexOf(aNorm, i + 1);
+        }
+        if (sRaw < 0 || eRaw <= sRaw) return null;
+      } else {
+        let occ = findOcc(agg.raw, aRaw, m.aOcc!);
+        if (!occ) {
+          // docx-preview 把 w:tab 渲染为 \u00a0（后端原文是 \t）：等长空白
+          // 规范化后二次尝试，canon 与 raw 偏移一一对应可直接复用
+          occ = findOcc(agg.canon, anchorCanon(aRaw), m.aOcc!);
+        }
+        if (!occ) return null;
+        [sRaw, eRaw] = occ;
+      }
+      const from = localRawLocate(agg, sRaw);
+      const to = localRawLocate(agg, eRaw);
+      if (!from || !to) return null;
+      return { from, to };
+    };
+    /** 候选段打分用：该段能否解析 raw 通道成员的锚点（同 norm 不同空白长度的
+     * 候选段区分靠这个强信号，如「地址：」后接 30/35 空格的多个段） */
+    const rawResolvable = (agg: ParaAgg, ms: DocxHighlightItem[]): boolean =>
+      ms.some((m) => {
+        const aRaw = m.text || '';
+        if (aRaw.replace(NORM_WS_RE, '')) return false;
+        return (
+          !!findOcc(agg.raw, aRaw, m.aOcc!) ||
+          !!findOcc(agg.canon, anchorCanon(aRaw), m.aOcc!)
+        );
+      });
+
+    // 按指纹分组；组内再按 pIdx 聚成「段落组」（同段多填写点共享一个候选段，
+    // 段内由各自 aOcc 区分）。段落组与候选段落对齐：
+    // 计数相等 → 按序 1:1（同形留白表格行常见形态：全部同文段落都是注册项）；
+    // 计数不等（存在未注册同文段）→ p_idx 比例就近贪心（段落组一一占用候选）
+    const byHash = new Map<string, DocxHighlightItem[]>();
+    for (const it of directItems) {
+      const arr = byHash.get(it.pHash!) || [];
+      arr.push(it);
+      byHash.set(it.pHash!, arr);
+    }
+    for (const [hash, members] of byHash) {
+      let cands = paraAggs.filter((a) => a.hash === hash);
+      if (!cands.length) continue;
+      if (cands.some((a) => !a.inHf)) cands = cands.filter((a) => !a.inHf);
+      // pIdx → 该段全部填写点（保序）
+      const paraGroups = new Map<number, DocxHighlightItem[]>();
+      for (const m of members) {
+        const k = m.pIdx ?? 0;
+        const arr = paraGroups.get(k) || [];
+        arr.push(m);
+        paraGroups.set(k, arr);
+      }
+      const groups = [...paraGroups.entries()].sort((a, b) => a[0] - b[0]);
+      let assigned: Array<{ ms: DocxHighlightItem[]; agg: ParaAgg }> | null =
+        null;
+      if (cands.length === groups.length) {
+        assigned = groups.map(([, ms], i) => ({ ms, agg: cands[i] }));
+      } else {
+        const used = new Set<number>();
+        assigned = [];
+        for (const [pIdx, ms] of groups) {
+          const expect =
+            ((pIdx ?? 0) + 0.5) / Math.max(1, ms[0].pTotal || groups.length);
+          let best = -1;
+          let bestScore: [number, number] = [Infinity, Infinity];
+          for (let i = 0; i < cands.length; i++) {
+            if (used.has(i)) continue;
+            // 打分①：raw run 实际可解析（同指纹但空白形态不同的克隆段强区分，
+            // 如「地址：」后接 30/35 空格）；打分②：docFrac 与 p_idx 期望距离
+            const s: [number, number] = [
+              rawResolvable(cands[i], ms) ? 0 : 1,
+              Math.abs(cands[i].docFrac - expect),
+            ];
+            if (
+              s[0] < bestScore[0] ||
+              (s[0] === bestScore[0] && s[1] < bestScore[1])
+            ) {
+              bestScore = s;
+              best = i;
+            }
+          }
+          if (best < 0) {
+            assigned = null;
+            break;
+          }
+          used.add(best);
+          assigned.push({ ms, agg: cands[best] });
+        }
+      }
+      if (!assigned) continue;
+      for (const { ms, agg } of assigned) {
+        for (const m of ms) {
+          const r = resolveInPara(agg, m);
+          if (!r) continue;
+          const nodeStart = nodeRawStart.get(r.from.node);
+          if (nodeStart === undefined) continue;
+          resolved.push({
+            from: r.from,
+            to: r.to,
+            sortKey: nodeStart + r.from.off,
+            item: m,
+          });
+          seenKey.add(m.key);
+        }
+      }
+    }
+  }
 
   const cmpAddr = (a: string, b: string): number => {
     const at = a.split(':');

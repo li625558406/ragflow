@@ -39,8 +39,17 @@ export default function FidelityPreview({
   onMarked,
 }: {
   templateId: string;
-  /** 已注册填写点锚文本高亮项（key 唯一；anchor 空串的行跳过；addr 用于同形留白顺序分配） */
-  anchors: Array<{ key: string; anchor: string; addr?: string }>;
+  /** 已注册填写点锚文本高亮项（key 唯一；anchor 空串的行跳过；addr 用于同形留白顺序分配；
+   * p_idx/p_hash/a_occ/p_total 为段落哈希直定位元数据，缺省回退全文顺序匹配） */
+  anchors: Array<{
+    key: string;
+    anchor: string;
+    addr?: string;
+    pIdx?: number;
+    pHash?: string;
+    aOcc?: number;
+    pTotal?: number;
+  }>;
   /** 渲染失败回调（父组件降级文本模式） */
   onRenderFailed: () => void;
   /** 需定位的填写点 key（列表行点击触发） */
@@ -69,7 +78,10 @@ export default function FidelityPreview({
 
   // anchors 的稳定签名：父组件每次 render 重建数组（filter/map），不能直接做 effect 依赖
   const anchorsSig = anchors
-    .map((a) => `${a.key}\u0000${a.anchor}\u0000${a.addr ?? ''}`)
+    .map(
+      (a) =>
+        `${a.key}\u0000${a.anchor}\u0000${a.addr ?? ''}\u0000${a.pHash ?? ''}\u0000${a.aOcc ?? ''}`,
+    )
     .join('\u0001');
 
   const renderDoc = () => {
@@ -103,6 +115,10 @@ export default function FidelityPreview({
               key: a.key,
               color: '#f59e0b',
               addr: a.addr,
+              pIdx: a.pIdx,
+              pHash: a.pHash,
+              aOcc: a.aOcc,
+              pTotal: a.pTotal,
             })),
           { showKeyBadge: true },
         );

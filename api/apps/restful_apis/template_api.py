@@ -585,6 +585,16 @@ async def get_template(template_id: str):
     data = tpl.to_dict()
     data["placeholders"] = ver.placeholders if ver else []
     data["render_ready"] = bool(ver and ver.render_file_id)
+    # docx 范本补充填写点段落定位元数据（B端保真预览直定位用）：
+    # p_idx/p_hash/a_occ/p_total，解析失败静默降级（前端回退全文顺序匹配）
+    if tpl.file_type == "docx" and ver and data["placeholders"]:
+        try:
+            from rag.svr.template_fill.docx_utils import compute_anchor_positions
+            blob = settings.STORAGE_IMPL.get(template_id, ver.original_file_id or "")
+            if blob:
+                compute_anchor_positions(blob, data["placeholders"])
+        except Exception:
+            logger.exception("attach anchor positions failed, template=%s", template_id)
     return get_result(data=data)
 
 

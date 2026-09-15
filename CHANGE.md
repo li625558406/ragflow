@@ -1,5 +1,23 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-15 B端点击定位错位根修：段落哈希直定位通道（同形留白 122→275 精确命中）
+
+**主题**：B端范本详情（机电监理 9eaac738，290 填写点）用户反馈「点击占位符行跳转位置不对，且列表不是按文档顺序排」。排查结论：**列表顺序本来就是文档序**（DB para 索引单调递增、cell 交错正确），错位感知来自跳转错误——根因是同形留白（大量 `＿＿＿`/纯空格串）靠**全文顺序分配**：文档靠前的未注册留白把出现序号吃掉，addr 靠后的注册项 mark 落到错误段落（legacy 管线位置校验仅 122/290 正确）。新增**段落哈希直定位通道**：后端按 addr 精确解析锚点所在段落，附加 4 个定位元数据字段，前端按段落指纹精确到段、段内序号精确到第几个留白。
+
+**核心变更**（后端 2 文件 + 前端 5 文件）：
+- `rag/svr/template_fill/docx_utils.py`：新增 `NORM_WS_RE` 显式空白类（JS/Python \s 口径统一）、`norm_ws`/`para_hash32x2`（双通道 FNV-1a 32bit，16 hex）、`_count_raw_occurrences`（完整 run 校验）；`compute_anchor_positions(file_bytes, placeholders)`——`_build_addr_map` 编址后对每个有 addr 的占位符计算 `p_idx`（段落扁平序号）/`p_hash`（段落归一化指纹）/`a_occ`（段内第几次出现）/`p_total`（总段数），occ 超界不附加（回退 legacy）
+- `api/apps/restful_apis/template_api.py`：`get_template` 详情端点对 docx 范本拉原件 blob 调 `compute_anchor_positions`，异常仅记日志不阻塞详情
+- `web/src/pages/c-chat/docx-highlight.ts`：`DocxHighlightItem` 扩展 `pIdx/pHash/aOcc/pTotal`；`highlightDocxRanges` 新增直定位通道——段落级聚合（norm/raw/canon/指纹/normToRaw/docFrac，页眉页脚 `<header>/<footer>` 克隆降权）；按指纹分组→组内按 pIdx 聚段落组→候选对齐（计数相等 1:1 按序；不等则贪心打分：① raw/canon 实际可解析强信号——区分同指纹不同空白长度的克隆段，② docFrac 与 p_idx 期望距离）；段内解析 norm 通道（aOcc 第 N 次出现+尾部空白收缩）与 raw/canon 通道（完整 run 校验）；**canon 等长空白规范化回退**——docx-preview 把 w:tab 渲染为 \u00a0（后端原文 \t），raw 精确失配时等长替换二次匹配、偏移直接复用；直定位失败回退 legacy 管线（行为不变）；新增导出 `fnvHash32x2`
+- `web/src/hooks/use-template-fill-request.ts`：`TplPlaceholder` 增加可选 `p_idx/p_hash/a_occ/p_total`
+- `web/src/pages/template-fill/fidelity-preview.tsx`：anchors 类型扩展 + `anchorsSig` 纳入新字段（变化触发重渲染高亮）
+- `web/src/pages/template-fill/detail.tsx`：anchors 映射透传 4 字段
+- `web/src/pages/template-fill/placeholder-table.tsx`：view 模式锚文本列纯留白显示「（留白 N 字符）」替代空白
+- 测试：`docx-highlight-direct.test.ts` 新增 8 用例（唯一指纹段非首处/同文段 1:1+段内 aOcc/未注册同文段比例就近/纯空白 raw/【tab→nbsp canon 回退】/指纹未命中回退/无元数据不进通道/aOcc 超界回退），30/30 通过
+
+**验证**：jsdom+docx-preview 真实范本 290 锚全量复现——直定位 marked 281/287、位置校验 **OK 275 / WRONG 0**（legacy 位置正确仅 122），未定位从 17 降到 6（剩余 6 为后端 occ 不足未附元数据项，回退也失败，显示「未定位」徽标待重新识别）；SPOT 抽查 project_report_no/name_1/name_2/planned_start_year 全部落在正确段落；`npm run build` 通过。
+
+**遗留**：后端 2 文件需 SCP+容器重启才生效（前端先行部署时 p_hash 缺失自动全量回退 legacy，无副作用）；地址等同文克隆段靠 raw 可解析信号区分，若克隆段留白完全同形仍有理论错位可能（当前范本 0 例）；后端 `_count_raw_occurrences` 未做 tab↔nbsp 规范化（后端原文自洽，不影响）。
+
 ## 2026-09-15 docx-highlight 匹配管线三类丢失修复（真实范本 290 锚实测 237→270 命中）
 
 **主题**：B端确认视图仍大面积「未定位」。用 jsdom+docx-preview 真实渲染机电监理范本原件 + 290 个 anchor 全量复现 + 插桩定位，找到 `highlightDocxRanges` 匹配管线三类叠加 bug：① **norm 通道用原文（含内部空白）做 indexOf**——「( 批文名称及编号)」括号后有空格的锚对去空白全文永远失配，整组覆没；② **norm 终点吞尾部空白**——preferEnd 解析到节点原始末尾把紧随空白 run 吞进区间，与 raw 空白组占用区间物理重叠，先插入方 deleteContents 截断共享 textNode，另一方偏移越界（Range "Offset out of bound"）被 try/catch 静默丢弃——「(项目名称)」等锚匹配成功却在插入阶段丢失的根因；③ **同段失败的候选先占位再丢弃**——白占出现位置且该 key 直接丢失不再重试。此 bug 同样影响 C端审核预览（共用该函数）。

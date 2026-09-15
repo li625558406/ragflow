@@ -283,6 +283,118 @@ def iter_docx_paragraphs(file_bytes: bytes) -> list:
     return items
 
 
+# 段落哈希定位（B端保真预览直定位用）────────────────────────────────────
+# 与前端 web/src/pages/c-chat/docx-highlight.ts 保持同口径：两侧语言自带的
+# \s 语义有差异（JS 含 \uFEFF、Python 含 \x1c-\x1f 等），空白归一化必须用
+# 显式字符类，否则段落哈希逐字节对不上、直定位全部回退顺序匹配。
+
+NORM_WS_RE = re.compile(
+    r"[ \t\n\r\f\v\x1c-\x1f\x85\u00a0\u1680\u2000-\u200f"
+    r"\u2028\u2029\u205f\u3000\ufeff]+"
+)
+
+_FNV_BASIS_1 = 0x811C9DC5
+_FNV_PRIME_1 = 0x01000193
+_FNV_BASIS_2 = 0x1F2BE47C  # 0x811C9DC5 ^ 0x9E3779B9
+_FNV_PRIME_2 = 0x84EBCBF8  # 0x01000193 ^ 0x85EBCA6B
+
+
+def norm_ws(text: str) -> str:
+    """去空白归一化（与前端 NORM_WS_RE 同一显式字符类）。"""
+    return NORM_WS_RE.sub("", text or "")
+
+
+def para_hash32x2(norm: str) -> str:
+    """段落规范化文本的指纹：UTF-8 字节流跑两趟不同常量的 32 位 FNV-1a，
+    拼 16 位 hex。只用于相等性对齐（前端 fnvHash32x2 完全同构），非密码学。
+    双通道让 3600 段量级的文档碰撞概率可忽略（单 32 位约 1.5e-3）。"""
+    data = (norm or "").encode("utf-8")
+
+    def fnv1a(basis: int, prime: int) -> int:
+        h = basis
+        for b in data:
+            h = ((h ^ b) * prime) & 0xFFFFFFFF
+        return h
+
+    return f"{fnv1a(_FNV_BASIS_1, _FNV_PRIME_1):08x}{fnv1a(_FNV_BASIS_2, _FNV_PRIME_2):08x}"
+
+
+def _count_raw_occurrences(raw: str, sub: str, limit: int) -> int:
+    """sub 在 raw 中第 limit 次出现的序号校验：返回实际可分配出现次数。
+    完整空白 run 校验与前端 raw 通道一致：候选窗口前后须为非空白字符或边界
+    （留白段由可见文本分隔，更长空白串内部不存在更短 anchor 的合法出现）。"""
+    found = 0
+    i = raw.find(sub)
+    while i >= 0:
+        prev_ok = i == 0 or not NORM_WS_RE.match(raw[i - 1])
+        end = i + len(sub)
+        next_ok = end >= len(raw) or not NORM_WS_RE.match(raw[end])
+        if prev_ok and next_ok:
+            found += 1
+            if found >= limit:
+                return found
+        i = raw.find(sub, i + 1)
+    return found
+
+
+def compute_anchor_positions(file_bytes: bytes, placeholders: list) -> None:
+    """为带 addr 的占位符就地补充段落定位元数据（B端保真预览直定位用）：
+    - p_idx：锚点所在段落扁平序号（items 文档序，重复文本兜底排序用）
+    - p_hash：段落规范化文本指纹（前端渲染 DOM 按段落文本相等对齐）
+    - a_occ：锚文本在该段落内的出现序号（1-based；norm 通道按去空白文本
+      indexOf 计数；纯空白 anchor 按原文精确出现+完整空白 run 校验计数，
+      与前端 highlightDocxRanges 两通道同口径）
+    - p_total：段落总数（items 长度；前端重复文本兜底按比例就近用）
+    解析失败（addr 不存在/段内出现序号超界/空段落）跳过该占位符的补充，
+    前端对缺字段项回退全文顺序匹配；整文档级失败静默返回不拖垮 detail 响应。"""
+    try:
+        items = _build_addr_map(Document(io.BytesIO(file_bytes)))[1]
+    except Exception:
+        logger.exception("compute_anchor_positions: build addr map failed, skipped")
+        return
+    addr_items = {it["addr"]: it for it in items}
+    total = len(items)
+    # 同 (addr, 通道键) 组内按列表顺序分配出现序号（检测序≈文档序，与
+    # detector._preassign_occ 同思路）；组内超出段内实际出现数的项不写字段
+    occ_groups = {}
+    for ph in placeholders:
+        if not isinstance(ph, dict):
+            continue
+        it = addr_items.get(ph.get("addr") or "")
+        if not it:
+            continue
+        anchor = ph.get("anchor") or ""
+        a_norm = norm_ws(anchor)
+        p_raw = it.get("text") or ""
+        p_norm = norm_ws(p_raw)
+        if not p_norm:
+            continue  # 空段落无指纹可对齐
+        if a_norm:
+            ch_key = "N:" + a_norm
+            # indexOf step+1 同口径：允许重叠计数（同字符下划线串 "＿＿＿＿"
+            # 含 "＿＿＿" 在 step+1 下是 2 次，str.count 非重叠只有 1 次）
+            occurrences = 0
+            j = p_norm.find(a_norm)
+            while j >= 0:
+                occurrences += 1
+                j = p_norm.find(a_norm, j + 1)
+                if occurrences >= 64:
+                    break  # 防御：病态重复段落截断计数（超出后 seq 校验自然跳过）
+        elif len(anchor) >= 2:
+            ch_key = "R:" + anchor
+            occurrences = _count_raw_occurrences(p_raw, anchor, 10**9)
+        else:
+            continue  # 过短 anchor 两通道都无法稳定匹配
+        seq = occ_groups.get((ph.get("addr"), ch_key), 0) + 1
+        occ_groups[(ph.get("addr"), ch_key)] = seq
+        if seq > occurrences:
+            continue
+        ph["p_idx"] = it["index"]
+        ph["p_hash"] = para_hash32x2(p_norm)
+        ph["a_occ"] = seq
+        ph["p_total"] = total
+
+
 def extract_docx_candidates(file_bytes: bytes) -> list:
     """提取疑似含填写点的段落（供 LLM 识别，降低 token）。
     含手动占位符 {{key}} 的段落无条件纳入（用户显式标注，不经特征猜测）。"""

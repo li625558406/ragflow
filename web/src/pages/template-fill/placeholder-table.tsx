@@ -231,7 +231,12 @@ function PlaceholderViewTable({
                 className="inline-block max-w-[280px] truncate align-middle text-sm text-muted-foreground"
                 title={row.anchor}
               >
-                {row.anchor || '（无锚文本）'}
+                {/* 纯空白锚文本（同形留白空格串）原样渲染不可见，改显示字符数 */}
+                {row.anchor.trim()
+                  ? row.anchor
+                  : row.anchor
+                    ? `（留白 ${row.anchor.length} 字符）`
+                    : '（无锚文本）'}
               </span>
             </TableCell>
             <TableCell className="text-sm text-muted-foreground">
