@@ -16,17 +16,39 @@ import { useEffect, useRef, useState } from 'react';
 /** 定位闪烁时长（与 C端确认卡定位一致） */
 const FLASH_MS = 2000;
 
-/** 滚动居中到某填写点 mark 并琥珀色闪烁提示；无 mark 返回 false */
+/** 定位闪烁样式（红色系脉冲描边+光晕+底色呼吸，与琥珀色常显高亮区分）。
+ * keyframes 的 background-color 动画在层叠中高于 mark 的行内底色，动画结束自动还原 */
+const FLASH_STYLE_ID = 'docx-focus-flash-style';
+function ensureFlashStyle() {
+  if (document.getElementById(FLASH_STYLE_ID)) return;
+  const st = document.createElement('style');
+  st.id = FLASH_STYLE_ID;
+  st.textContent = `
+@keyframes docx-focus-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(239,68,68,.35); background-color: rgba(239,68,68,.20); }
+  50% { box-shadow: 0 0 0 9px rgba(239,68,68,.60); background-color: rgba(239,68,68,.50); }
+}
+.docx-focus-flash {
+  outline: 3px solid #ef4444 !important;
+  outline-offset: 1px;
+  animation: docx-focus-pulse .5s ease-in-out 4;
+}
+`;
+  document.head.appendChild(st);
+}
+
+/** 滚动居中到某填写点 mark 并脉冲闪烁提示；无 mark 返回 false */
 function focusAnchor(container: HTMLElement, key: string): boolean {
   const el = container.querySelector<HTMLElement>(
     `mark[data-anchor-key="${CSS.escape(key)}"]`,
   );
   if (!el) return false;
   el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-  const prev = el.style.outline;
-  el.style.outline = '2px solid #f59e0b';
+  ensureFlashStyle();
+  const prevClass = el.className;
+  el.classList.add('docx-focus-flash');
   window.setTimeout(() => {
-    el.style.outline = prev;
+    el.className = prevClass;
   }, FLASH_MS);
   return true;
 }
