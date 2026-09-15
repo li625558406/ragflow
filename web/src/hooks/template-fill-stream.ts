@@ -111,7 +111,10 @@ export interface ITemplateFillEvent {
     | 'confirm_pending'
     | 'confirm_timeout'
     | 'select_pending'
-    | 'select_timeout';
+    | 'select_timeout'
+    /** 等待期 SSE 保活心跳（选择/字段确认挂起期每 30s 一条，无 template_id，
+     *  reducer 按「无 template_id 直接忽略」语义丢弃；仅用于保持连接与增量落库） */
+    | 'heartbeat';
   template_id?: string;
   name?: string;
   slot_count?: number;

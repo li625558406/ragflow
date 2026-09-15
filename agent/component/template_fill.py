@@ -73,6 +73,10 @@ _BEGIN_FIELD_PROMPT_MAX = 200
 # → POST /template/fill/confirm 写 Redis 键 → 本节点轮询读取）。
 _CONFIRM_TIMEOUT = 600          # 确认等待超时（秒），超时按预判结果自动继续
 _CONFIRM_POLL_INTERVAL = 1.5    # Redis 轮询间隔（与 cancel 探针同量级）
+# 等待期 SSE 心跳间隔：挂起等待最长 600s 全程无数据流，Nginx 等反代空闲超时
+# （默认 60s）会掐断 SSE → 前端事件流冻结、增量落库停摆，刷新后回放缺事件。
+# 每 30s 推一条 heartbeat 保活（前端 reducer 对无 template_id 事件直接忽略）
+_CONFIRM_HEARTBEAT_INTERVAL = 30.0
 
 # 观察者轮询总 deadline：防僵尸任务无限轮询。docker restart 部署等场景下执行中
 # 任务行可能永久停中间态（后台线程已死、无人强置终态），若无总上限节点会每
@@ -311,6 +315,7 @@ class TemplateFill(ComponentBase):
         if not task_id:
             return decisions
         waited = 0.0
+        hb = 0.0
         # 确认键带运行级 nonce（与 confirm_pending 事件下发给前端的一致）
         confirm_key = f"tpl_fill:confirm:{task_id}:{nonce}"
         while waited < _CONFIRM_TIMEOUT:
@@ -343,6 +348,10 @@ class TemplateFill(ComponentBase):
                 return decisions
             await asyncio.sleep(_CONFIRM_POLL_INTERVAL)
             waited += _CONFIRM_POLL_INTERVAL
+            hb += _CONFIRM_POLL_INTERVAL
+            if hb >= _CONFIRM_HEARTBEAT_INTERVAL:
+                hb = 0.0
+                self._push_progress({"stage": "heartbeat", "task_id": task_id})
         self._push_progress({"stage": "confirm_timeout"})
         return decisions
 
@@ -370,6 +379,7 @@ class TemplateFill(ComponentBase):
         # + 700s TTL 自然过期，防旧运行的选择被新运行立即消费
         select_key = f"tpl_fill:select:{task_id}:{nonce}"
         waited = 0.0
+        hb = 0.0
         while waited < _CONFIRM_TIMEOUT:
             if self.check_if_canceled("TemplateFill select wait"):
                 raise _FillCancelled()
@@ -398,6 +408,10 @@ class TemplateFill(ComponentBase):
                 return [by_id[t] for t in ids]
             await asyncio.sleep(_CONFIRM_POLL_INTERVAL)
             waited += _CONFIRM_POLL_INTERVAL
+            hb += _CONFIRM_POLL_INTERVAL
+            if hb >= _CONFIRM_HEARTBEAT_INTERVAL:
+                hb = 0.0
+                self._push_progress({"stage": "heartbeat", "task_id": task_id})
         self._push_progress({"stage": "select_timeout"})
         return chosen
 

@@ -893,10 +893,17 @@ function ConversationView({
   onLivePreviewOpenChange?: (open: boolean) => void;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
-  // 流式回复增长时自动滚到底部
+  // 挂起确认卡出现信号（范本选择/字段确认）：卡在范本行上方，若不滚动用户可能
+  // 完全看不到可操作入口，干等超时后误以为系统「自己执行」了
+  const pendingCardSignal = live?.templateFill?.pendingSelect
+    ? 'select'
+    : live?.templateFill?.pendingConfirm
+      ? 'confirm'
+      : '';
+  // 流式回复增长 / 挂起确认卡出现时自动滚到底部
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: 'end' });
-  }, [live?.response]);
+  }, [live?.response, pendingCardSignal]);
 
   if (!chats.length && !live) {
     return (

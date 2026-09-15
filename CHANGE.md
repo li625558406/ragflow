@@ -1,5 +1,21 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-15 多范本选择卡不可见根修：等待期 SSE 心跳+回放条件保留挂起卡（未部署，后端 1 文件 + 前端 4 文件）
+
+**主题**：用户实测「多范本选择时不知道在哪选择，干等很久后系统自己执行了字段确认」。排查 17:25 轮证据链：DB 记录事件停在 `selected`+`select_pending`（后端推送正确、增量同步也工作了），但用户界面只看到两条范本行没有选择卡——根因是**刷新后回放无条件剥离 `pendingSelect`**（上一条目 d2aad2ed 的防御），选择卡在回放视图中永不出现；而服务端画布在等待期继续存活，600s 超时后按 AI 初选继续 → 字段确认「自己出现」。另发现结构性风险：挂起等待最长 600s 全程无 SSE 数据流，Nginx 空闲超时（默认 60s）会掐断连接，事件流冻结、增量落库停摆。
+
+**核心变更**（后端 1 + 前端 4）：
+- `agent/component/template_fill.py`：`_confirm_template_selection` 与 `_confirm_changed_fields` 等待循环每 30s 推 `{"stage":"heartbeat","task_id"}` 保活 SSE 并维持前端增量落库（新增 `_CONFIRM_HEARTBEAT_INTERVAL=30`；前端 reducer 对无 template_id 事件天然忽略）
+- `web/src/pages/c-chat/flow/flow-ai-panel.tsx`：`parseAndReplay` 改为**条件保留**挂起卡——仅当 `select_pending`/`confirm_pending` 是最后一条事件时保留交互态（服务端等待循环不随 SSE 断连停止，刷新后仍可在超时前提交，Redis 键被正常消费）；其后有任何后续事件说明挂起已被消费，剥离防僵尸卡
+- `web/src/pages/c-chat/flow/flow-detail.tsx`：ConversationView 自动滚动扩展——`pendingSelect`/`pendingConfirm` 出现时也 scrollIntoView（卡在范本行上方，不滚动可能完全出视口）
+- `web/src/pages/c-chat/template-fill-confirm-card.tsx`：选择卡改蓝色强调样式（`#B3CCFF` 边框 + `#F5F8FF` 底），区别于灰色信息行，传达「需要操作」
+- `web/src/hooks/template-fill-stream.ts`：stage 联合类型补 `heartbeat`（文档化）
+- 测试：`test_agent_fill_template_component.py` 新增 2 用例（选择/字段确认长等待各推 3 次心跳、事件带 task_id 无 template_id、pending/timeout 两端事件不受影响）；41 passed 全绿，eslint 通过
+
+**验证**：`uv run pytest test/test_agent_fill_template_component.py -q` 41 passed
+
+**遗留**：① 未部署（须后端 `template_fill.py` SCP + 重启 + 前端 build 成套）；② 刷新后提交选择能被服务端消费，但因 SSE 已断且回放模板无 task_id，行卡片不会实时更新到最终选择集（彻底解决须画布运行整体后台化，同前遗留）；③ `flow-ai-panel.tsx` 存量 3 处 tsc 宽松类型错误（d2aad2ed 引入，vite build 不受影响，顺手修另列）
+
 ## 2026-09-15 填写字段确认卡默认折叠（未部署，纯前端 1 文件）
 
 **主题**：用户需要确认卡折叠态——大范本确认卡（数百填写点行）全量铺开占据对话区。改为**默认收起**：常显摘要头（展开/收起箭头 +「填写字段确认」+「N 个范本 · M 个填写点，点击展开调整」），收起态保留「确认并继续填写」一键提交（按初始勾选集直接确认，无需展开）；展开后为原完整字段列表+底部提交；提交失败自动展开并显错误（收起态错误也单显一行）。与流式事件增量同步同批待部署（同为纯前端 build）。

@@ -309,7 +309,9 @@ export function TemplateSelectConfirmCard({
   }
 
   return (
-    <div className="space-y-2 rounded-lg border border-[#E5E5E5] bg-[#F5F5F5] px-3 py-2.5 text-xs">
+    // 蓝色强调样式（区别于灰色信息行）：这是需要用户主动操作的挂起卡，
+    // 灰卡易被当成纯展示忽略，导致干等超时后误以为系统「自己执行」了
+    <div className="space-y-2 rounded-lg border border-[#B3CCFF] bg-[#F5F8FF] px-3 py-2.5 text-xs">
       <div className="font-medium text-[#000000]">
         检测到 {pending.select_candidates.length} 个适用范本，请选择需要填充的
         （至少 1 个）

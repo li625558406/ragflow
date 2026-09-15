@@ -61,13 +61,15 @@ function parseAndReplay(raw: unknown) {
   if (!events) return undefined;
   try {
     const restored = replayTemplateFillEvents(events);
-    // 挂起的确认卡（字段确认/范本选择）是活连接专属交互态：刷新后原 canvas
-    // 编排已随 SSE 断连取消，重放出可点击的确认卡会误导用户（确认写入
-    // Redis 后无人消费）。剥掉挂起态，保留范本行/进度/成稿卡——填写阶段
-    // 的行带 task_id，挂载后由轮询自动重连真实进度。
-    if (restored) {
-      delete restored.pendingConfirm;
-      delete restored.pendingSelect;
+    // 挂起的确认卡（字段确认/范本选择）：仅当挂起事件是最后一条时保留交互态——
+    // 服务端画布在等待期仍存活（select/confirm 轮询 + 心跳不随 SSE 断连停止），
+    // 刷新后用户仍可在超时前提交选择/确认；一旦其后有任何后续事件（超时/开填/
+    // 终态），说明挂起已被消费，剥掉防止重放出永不生效的僵尸卡。
+    if (restored && events.length) {
+      const lastStage = (events[events.length - 1] as { stage?: string })
+        ?.stage;
+      if (lastStage !== 'select_pending') delete restored.pendingSelect;
+      if (lastStage !== 'confirm_pending') delete restored.pendingConfirm;
     }
     return restored;
   } catch {

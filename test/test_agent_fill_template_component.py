@@ -799,6 +799,81 @@ def test_select_wait_timeout_falls_back_to_ai(monkeypatch):
     assert pending["select_candidates"][1]["description"] == ""
 
 
+def test_select_wait_pushes_heartbeat(monkeypatch):
+    """选择等待期必须周期性推送 heartbeat 事件（保活 SSE / 维持前端增量落库）：
+    长等待多轮轮询中按 _CONFIRM_HEARTBEAT_INTERVAL 节流，事件带 task_id 且
+    不含 template_id（前端 reducer 按无 template_id 忽略）。"""
+    cpn = _select_component(monkeypatch)
+    monkeypatch.setattr(fill_template, "_CONFIRM_TIMEOUT", 10.0)
+    monkeypatch.setattr(fill_template, "_CONFIRM_HEARTBEAT_INTERVAL", 3.0)
+
+    class FakeRedis:
+        def get(self, k):
+            return None
+
+        def delete(self, k):
+            raise AssertionError("超时路径不得删除任何键")
+
+    monkeypatch.setattr(fill_template, "REDIS_CONN", FakeRedis())
+
+    async def fake_sleep(_s):
+        return None
+
+    monkeypatch.setattr(fill_template.asyncio, "sleep", fake_sleep)
+
+    chosen = _chosen_two()
+    out = asyncio.run(cpn._confirm_template_selection("task-9", chosen))
+    assert out is chosen
+    events = _drain_events(cpn)
+    beats = [e for e in events if e["stage"] == "heartbeat"]
+    # waited 每轮 +1.5，10/1.5=7 轮；hb≥3.0 的轮次 = 第 2/4/6 轮 → 3 次心跳
+    assert len(beats) == 3, f"期望 3 次心跳，实际 {len(beats)}：{[e['stage'] for e in events]}"
+    for b in beats:
+        assert b["task_id"] == "task-9"
+        assert "template_id" not in b, "heartbeat 不得带 template_id（前端按无 template_id 忽略）"
+    # 心跳穿插在 select_pending 与 select_timeout 之间，两端事件不受影响
+    assert events[0]["stage"] == "select_pending"
+    assert events[-1]["stage"] == "select_timeout"
+
+
+def test_confirm_wait_pushes_heartbeat(monkeypatch):
+    """字段确认等待期同样必须推送 heartbeat 事件（与选择等待同语义）。"""
+    import asyncio
+
+    cpn = _confirm_component(monkeypatch)
+    monkeypatch.setattr(fill_template, "_CONFIRM_TIMEOUT", 10.0)
+    monkeypatch.setattr(fill_template, "_CONFIRM_HEARTBEAT_INTERVAL", 3.0)
+
+    class FakeRedis:
+        def get(self, k):
+            return None
+
+        def delete(self, k):
+            raise AssertionError("超时路径不得删除任何键")
+
+    monkeypatch.setattr(fill_template, "REDIS_CONN", FakeRedis())
+
+    async def fake_sleep(_s):
+        return None
+
+    monkeypatch.setattr(fill_template.asyncio, "sleep", fake_sleep)
+
+    async def fake_predict(*a, **kw):
+        return set()
+
+    monkeypatch.setattr(fill_template.executor, "predict_changed_fields", fake_predict)
+
+    asyncio.run(cpn._confirm_changed_fields(_chosen_with_defaults(), "需求", {}))
+    events = _drain_events(cpn)
+    beats = [e for e in events if e["stage"] == "heartbeat"]
+    assert len(beats) == 3, f"期望 3 次心跳，实际 {len(beats)}：{[e['stage'] for e in events]}"
+    for b in beats:
+        assert b["task_id"] == "task-9"
+        assert "template_id" not in b
+    assert events[0]["stage"] == "confirm_pending"
+    assert events[-1]["stage"] == "confirm_timeout"
+
+
 def test_select_payload_filters_unknown_and_returns_subset(monkeypatch):
     """用户提交含 ghost id → 只留合法子集（保 AI 选择顺序）；轮询/消费键必须
     带运行级 nonce（tpl_fill:select:{task_id}:{nonce}）且与事件下发的一致；
