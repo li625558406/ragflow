@@ -227,16 +227,22 @@ function PlaceholderViewTable({
                   未定位
                 </span>
               )}
+              {/* 主行：中文名（无名称回退 key）——用户靠它和预览 {{key}} 徽标对号 */}
               <span
-                className="inline-block max-w-[280px] truncate align-middle text-sm text-muted-foreground"
-                title={row.anchor}
+                className="inline-block max-w-[240px] truncate align-middle text-sm"
+                title={row.name || row.key}
               >
-                {/* 纯空白锚文本（同形留白空格串）原样渲染不可见，改显示字符数 */}
+                {row.name || row.key || '（未命名）'}
+              </span>
+              {/* 副行：key + 锚文本形态；纯空白锚文本原样渲染不可见，改显示字符数 */}
+              <span className="block max-w-[320px] truncate text-xs text-muted-foreground">
+                {row.key || '（无 key）'}
+                {' · '}
                 {row.anchor.trim()
                   ? row.anchor
                   : row.anchor
-                    ? `（留白 ${row.anchor.length} 字符）`
-                    : '（无锚文本）'}
+                    ? `留白 ${row.anchor.length} 字符`
+                    : '无锚文本'}
               </span>
             </TableCell>
             <TableCell className="text-sm text-muted-foreground">
