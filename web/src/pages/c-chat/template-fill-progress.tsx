@@ -178,17 +178,18 @@ export default function TemplateFillProgress({
                   下载
                 </a>
               </div>
-              {/* 未填充汇总行：必填红/选填灰，点击带 focusKey 打开预览定位 */}
+              {/* 未填充汇总：竖向列表（字段多时一行堆不下），必填红/选填灰，点击定位 */}
               {t.unfilled && t.unfilled.length > 0 && (
-                <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5 px-3 py-1 text-xs">
-                  <span className="text-[#FAAD14]">
+                <div className="space-y-0.5 px-3 py-1 text-xs">
+                  <div className="text-[#FAAD14]">
                     ⚠ {t.unfilled.length} 个填写点未填充：
-                  </span>
-                  {t.unfilled.map((f, i) => (
-                    <span
-                      key={`${f.key}-${i}`}
-                      className="flex items-center gap-1"
+                  </div>
+                  {t.unfilled.map((f) => (
+                    <div
+                      key={`${f.key}-${f.name}`}
+                      className="flex items-center gap-1.5"
                     >
+                      <span className="shrink-0 text-[#8C8C8C]">·</span>
                       <button
                         className={
                           f.required
@@ -210,10 +211,7 @@ export default function TemplateFillProgress({
                           必填
                         </span>
                       )}
-                      {i < (t.unfilled?.length ?? 0) - 1 && (
-                        <span className="text-[#8C8C8C]">·</span>
-                      )}
-                    </span>
+                    </div>
                   ))}
                 </div>
               )}
