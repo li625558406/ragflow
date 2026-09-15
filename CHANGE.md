@@ -1,5 +1,20 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-15 docx-highlight 匹配管线三类丢失修复（真实范本 290 锚实测 237→270 命中）
+
+**主题**：B端确认视图仍大面积「未定位」。用 jsdom+docx-preview 真实渲染机电监理范本原件 + 290 个 anchor 全量复现 + 插桩定位，找到 `highlightDocxRanges` 匹配管线三类叠加 bug：① **norm 通道用原文（含内部空白）做 indexOf**——「( 批文名称及编号)」括号后有空格的锚对去空白全文永远失配，整组覆没；② **norm 终点吞尾部空白**——preferEnd 解析到节点原始末尾把紧随空白 run 吞进区间，与 raw 空白组占用区间物理重叠，先插入方 deleteContents 截断共享 textNode，另一方偏移越界（Range "Offset out of bound"）被 try/catch 静默丢弃——「(项目名称)」等锚匹配成功却在插入阶段丢失的根因；③ **同段失败的候选先占位再丢弃**——白占出现位置且该 key 直接丢失不再重试。此 bug 同样影响 C端审核预览（共用该函数）。
+
+**核心变更**（纯前端 1 文件 `web/src/pages/c-chat/docx-highlight.ts` 匹配管线重构）：
+- norm 通道搜索改用归一化文本（`searchText`），raw 通道仍用原文
+- 候选有效性校验（同段、边界可解析）前移到选择阶段（`tryResolve`）：无效候选跳过并继续向后找下一个出现，不再白占位置；`valid`+`resolved` 两阶段合并为一阶段
+- norm 终点做**尾部空白收缩**：解析后向前回退全部尾随空白字符（限同段），norm/raw 区间不再物理重叠，从根上消除共享 textNode 截断导致的越界
+- 占位日志插桩（CLAIM/EXHAUSTED/LOCATE-FAIL/CROSS-P/RANGE-ERR）仅用于诊断，未进仓库
+- 测试：`docx-highlight.test.ts` 新增 3 用例（内部空白 norm 锚/尾部空白收缩+相邻双命中/跨段首现跳过继续找同段出现）；scratch jsdom 验证 39 断言全过；真实范本 290 锚全量复现命中 237→270（剩余 20 为单空格<2 按设计跳过、含 tab 留白渲染差异、留白长度与文档不符/重复项等真实语义问题，需重新识别）
+
+**验证与部署**：`npm run build` 通过；**已部署**（前端 build+SCP+nginx reload，后端无改动）。
+
+**遗留**：raw 通道对含 tab 的留白（docx-preview tab 渲染为特殊元素）仍不命中，可后续做 tab↔空白弹性归一；剩余 20 类真实未命中需 B端重新识别。
+
 ## 2026-09-15 B端确认视图「全部未定位」竞态修复（anchors 晚到重渲染）
 
 **主题**：部署后用户反馈确认视图**所有行**都显示「未定位」徽标。根因是首挂载竞态：FidelityPreview 渲染 effect 依赖 `[templateId]` 在子组件先跑，而父组件 `placeholders`（anchors 来源）要等详情接口回来才在父 effect 里初始化——首次高亮跑在**空 anchors** 上，`onMarked` 回传空集合，且 anchors 到齐后无任何机制重跑 → `markedKeys` 永远为空 → 有 addr 的行全部「未定位」。

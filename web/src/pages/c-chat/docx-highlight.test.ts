@@ -267,3 +267,48 @@ describe('highlightDocxRanges 纯空白 anchor（raw 原文匹配通道）', () 
     expect(root.querySelectorAll('mark').length).toBe(1);
   });
 });
+
+describe('highlightDocxRanges 候选有效性前移（真实范本暴露的三类丢失）', () => {
+  it('内部空白 norm anchor 走归一化搜索命中（原文 indexOf 永远失配的回归）', () => {
+    const root = buildDoc(['本招标项目( 批文名称及编号) 批准建设']);
+    const marked = highlightDocxRanges(root, [
+      {
+        text: '( 批文名称及编号)',
+        key: 'approval_doc',
+        color: '#f59e0b',
+        addr: 'para:0',
+      },
+    ]);
+    expect(marked.has('approval_doc')).toBe(true);
+    const mark = root.querySelector('mark[data-anchor-key="approval_doc"]')!;
+    expect(mark.textContent).toBe('( 批文名称及编号)');
+  });
+
+  it('norm 终点尾部空白收缩：不吞紧随空白 run，与 raw 组相邻双命中', () => {
+    const root = buildDoc(['项目(名称)   后文']);
+    const marked = highlightDocxRanges(root, [
+      { text: '(名称)', key: 'norm_k', color: '#f59e0b', addr: 'para:0' },
+      { text: '   ', key: 'raw_k', color: '#f59e0b', addr: 'para:0' },
+    ]);
+    expect(marked.size).toBe(2);
+    const nk = root.querySelector('mark[data-anchor-key="norm_k"]')!;
+    const rk = root.querySelector('mark[data-anchor-key="raw_k"]')!;
+    // norm mark 收缩到最后一个非空白字符，不再与 raw 空白组区间重叠
+    expect(nk.textContent).toBe('(名称)');
+    expect(rk.textContent).toHaveLength(3);
+  });
+
+  it('跨段首现跳过后继续找同段出现（不再先占位再丢弃）', () => {
+    const root = buildDoc([
+      '开头（投标人名',
+      '称）结尾',
+      '后文（投标人名称）完',
+    ]);
+    const marked = highlightDocxRanges(root, [
+      { text: '（投标人名称）', key: 'bidder', color: '#f59e0b' },
+    ]);
+    expect(marked.has('bidder')).toBe(true);
+    const mark = root.querySelector('mark[data-anchor-key="bidder"]')!;
+    expect(root.querySelectorAll('p')[2].contains(mark)).toBe(true);
+  });
+});
