@@ -2594,6 +2594,135 @@ def test_validate_manual_row_occ_1_passes():
     assert item["addr"] == "para:0"  # 反查回填
 
 
+# ---------- occ 预分配溢出封顶：candidates 传入时超界项丢弃而非判死整次识别 ----------
+# 真实事故（2026-09-14 电子招标投标示范文本）：LLM 对同段同形留白输出 2 项建议，
+# 预分配 occ=2 但 anchor 实际仅出现 1 次 → validate 判死整次识别（全部建议丢弃）。
+
+
+def test_merge_overflow_capped_by_actual_count():
+    """对抗（真实事故复刻）：同组 3 项但 anchor 实际仅 1 次出现——只保留第 1 项
+    occ=1，溢出 2 项丢弃；整组结果过 validate 终审（修复前整次识别 failed）。"""
+    from rag.svr.template_fill.detector import _merge_detection, validate_placeholders
+    cands = [{"index": 0, "text": "标段划分：＿＿", "addr": "para:5"}]
+    llm = [_mk_fill_item(k, "＿＿", addr="para:5") for k in ("a", "station_range", "c")]
+    merged = _merge_detection([], llm, candidates=cands)
+    assert [it["key"] for it in merged] == ["a"]  # 溢出项丢弃
+    assert merged[0]["occ"] == 1
+    ok, msg = validate_placeholders(merged, cands)
+    assert ok, msg
+
+
+def test_merge_overflow_cap_is_non_overlapping_count():
+    """对抗：封顶口径与 validate 终审一致（text.count 非重叠语义）——anchor="＿＿"
+    在"＿＿＿＿"中算 2 次，组 3 项时保 2 丢 1，保留项过终审。"""
+    from rag.svr.template_fill.detector import _merge_detection, validate_placeholders
+    cands = [{"index": 0, "text": "空白：＿＿＿＿", "addr": "para:0"}]
+    llm = [_mk_fill_item(k, "＿＿") for k in ("a", "b", "c")]
+    merged = _merge_detection([], llm, candidates=cands)
+    assert [it["occ"] for it in merged] == [1, 2]
+    assert [it["key"] for it in merged] == ["a", "b"]
+    ok, msg = validate_placeholders(merged, cands)
+    assert ok, msg
+
+
+def test_merge_overflow_no_false_positive_when_group_matches_actual():
+    """回归：组大小 == 实际出现次数时不误丢——同段 2 个真实留白 2 项建议全部
+    保留 occ=1/2，occ≥2 仍打低置信（原语义不变）。"""
+    from rag.svr.template_fill.detector import _merge_detection
+    cands = [{"index": 0, "text": "甲：＿＿ 乙：＿＿", "addr": "para:0"}]
+    llm = [_mk_fill_item(k, "＿＿") for k in ("a", "b")]
+    merged = _merge_detection([], llm, candidates=cands)
+    assert [it["occ"] for it in merged] == [1, 2]
+    assert not merged[0].get("low_confidence")
+    assert merged[1]["low_confidence"] is True
+
+
+def test_merge_overflow_per_addr_isolated():
+    """对抗：封顶按 (addr, anchor) 组独立核对——para:0 超 1 项丢弃不得波及
+    para:1 的同形组（该组项数未超实际次数，全保留）。"""
+    from rag.svr.template_fill.detector import _merge_detection
+    cands = [
+        {"index": 0, "text": "甲：＿＿", "addr": "para:0"},
+        {"index": 1, "text": "乙：＿＿ 丙：＿＿", "addr": "para:1"},
+    ]
+    llm = [
+        _mk_fill_item("a", "＿＿", addr="para:0"),
+        _mk_fill_item("bad", "＿＿", addr="para:0"),  # para:0 仅 1 处 → 溢出丢弃
+        _mk_fill_item("b", "＿＿", addr="para:1"),
+        _mk_fill_item("c", "＿＿", addr="para:1"),
+    ]
+    merged = _merge_detection([], llm, candidates=cands)
+    assert [it["key"] for it in merged] == ["a", "b", "c"]
+    assert [it.get("occ") for it in merged] == [1, 1, 2]
+
+
+def test_merge_overflow_unknown_addr_dropped_conservatively():
+    """对抗：直调方传入不存在的 addr（cap 查不到候选文本，count=0）——组内全部
+    项保守丢弃（cap=0 时 n=1 也溢出），不产生任何超界 occ 流向 validate。
+    生产链路 addr 由 parse 阶段从真实候选分配、不会幻觉，此为直调防御。"""
+    from rag.svr.template_fill.detector import _merge_detection
+    cands = [{"index": 0, "text": "甲：＿＿", "addr": "para:0"}]
+    llm = [
+        _mk_fill_item("a", "＿＿", addr="para:0"),
+        _mk_fill_item("ghost", "＿＿", addr="para:999"),  # 幻觉 addr
+        _mk_fill_item("ghost2", "＿＿", addr="para:999"),
+    ]
+    merged = _merge_detection([], llm, candidates=cands)
+    assert [it["key"] for it in merged] == ["a"]  # ghost 组 cap=0 全溢出
+
+
+def test_merge_without_candidates_keeps_legacy_occ_semantics():
+    """回归（兼容直调）：不传 candidates 时行为同旧——组内全保留 occ=1..n，
+    超界与否交给 validate 终审（存量单测与潜在直调方不受影响）。"""
+    from rag.svr.template_fill.detector import _merge_detection
+    llm = [_mk_fill_item(k, "＿＿") for k in ("a", "b")]
+    merged = _merge_detection([], llm)
+    assert [it["occ"] for it in merged] == [1, 2]
+    assert [it["key"] for it in merged] == ["a", "b"]
+
+
+def test_merge_overflow_with_explicit_group_capped_too():
+    """对抗：explicit 直通组同样封顶——{{k}} 在文本中仅 1 次但直通提取异常产生
+    2 项同位时，第 2 项丢弃（防 extract 层回归放大成整次识别失败）。"""
+    from rag.svr.template_fill.detector import _merge_detection
+    cands = [{"index": 0, "text": "编号：{{code}}", "addr": "para:0"}]
+    explicit = [
+        {"key": "code", "name": "code", "description": "", "retrieval_query": "",
+         "fill_mode": "llm", "required": True, "addr": "para:0",
+         "anchor": "{{code}}", "line": 0, "top_k": 6},
+        dict(_mk_fill_item("code_dup", "{{code}}", addr="para:0")),  # 同位异常项
+    ]
+    explicit[0]["_anchor_pos"] = 0
+    explicit[1]["_anchor_pos"] = 3
+    merged = _merge_detection(explicit, [], candidates=cands)
+    assert [it["key"] for it in merged] == ["code"]
+    assert merged[0]["occ"] == 1
+
+
+def test_merge_overflow_takes_precedence_over_shrink_rollback():
+    """对抗（溢出封顶 × 收缩撞车回退交互）：带 _orig_anchor 的项因溢出被丢弃时
+    不再进入回退保留分支——封顶优先于回退，宁缺勿错（docstring 已声明该优先级）。"""
+    from rag.svr.template_fill.detector import _merge_detection
+    cands = [{"index": 0, "text": "甲：＿＿", "addr": "para:0"}]
+    a = _mk_fill_item("a", "＿＿", addr="para:0")
+    b = _mk_fill_item("b", "＿＿", addr="para:0")
+    b["_orig_anchor"] = "乙方名称："  # 旧版会回退保留+低置信；新版溢出直接丢弃
+    merged = _merge_detection([], [a, b], candidates=cands)
+    assert [it["key"] for it in merged] == ["a"]  # b 溢出丢弃，不走 _orig_anchor 回退
+
+
+def test_merge_cross_source_echo_unaffected_by_cap():
+    """回归：LLM 组撞 explicit_pos 的跨源项仍按旧「手动优先丢弃」逻辑处理，
+    封顶机制不改变该路径（跨源项本就不参与预分配）。"""
+    from rag.svr.template_fill.detector import _merge_detection, extract_explicit_placeholders
+    cands = [{"index": 0, "text": "编号：{{code}}", "addr": "para:0"}]
+    explicit = extract_explicit_placeholders(cands)
+    llm = [_mk_fill_item("echo1", "{{code}}"), _mk_fill_item("echo2", "{{code}}")]
+    merged = _merge_detection(explicit, llm, candidates=cands)
+    assert [it["key"] for it in merged] == ["code"]
+    assert "occ" not in merged[0]
+
+
 # ---------- LLM 输出解析三级容错 ----------
 
 

@@ -331,7 +331,8 @@ async def _detect_chunked(chat, file_type: str, candidates: list) -> tuple:
     return items, failed
 
 
-def _merge_detection(explicit: list, llm_items: list, preassign_occ: bool = True) -> list:
+def _merge_detection(explicit: list, llm_items: list, preassign_occ: bool = True,
+                     candidates: list | None = None) -> list:
     """合并手动直通项与 LLM 识别项。
     - 同源同 (addr, anchor) 多份（同段同形留白 / 同一 {{key}} 出现多次）：
       预分配 occ（第 N 次出现定位，渲染层按次序落位）保留全部；LLM 组 occ≥2
@@ -342,42 +343,62 @@ def _merge_detection(explicit: list, llm_items: list, preassign_occ: bool = True
     - 跨源同 (addr, anchor)：仍手动优先丢弃——不给 LLM 项分配 occ，防 LLM
       幻觉回显 {{key}} 产生 occ=2 超界项挤爆 validate。
     - 收缩撞车回退：带 _orig_anchor 的项回退到原 anchor 保留并打低置信，
-      occ 作废（属于收缩后 anchor 的组）。
-    权衡说明：同源组项数超过 anchor 实际出现次数时，由 validate_placeholders
-    保守拒绝（整次识别 failed）——接受此权衡：保守失败优于静默错位。
+      occ 作废（属于收缩后 anchor 的组）。注意：溢出封顶优先于收缩回退——
+      项因溢出被丢弃时不再进入回退分支（丢弃方向保守，宁缺勿错）。
+    - 组内溢出封顶（candidates 传入时）：同组项数超过 anchor 在候选文本中的
+      实际出现次数（text.count 非重叠语义，与 validate 终审同口径）时，溢出项
+      直接丢弃而非分配超界 occ——LLM 对同形留白重复建议/幻觉属输出随机性，
+      不该让 validate 判死整次识别（真实事故：station_range occ=2 超界毁掉
+      1351 候选大范本全部识别结果）。validate_placeholders 的严格终审保持
+      不变，继续保护人工确认保存路径；不传 candidates 时行为同旧（兼容直调）。
     跨源/跨块 key 冲突按出现顺序加 _2/_3 后缀（作用域为整次识别）。"""
 
-    def _preassign_occ(items: list, mark_low_confidence: bool) -> None:
+    # addr → 候选原文，供 occ 预分配封顶核对实际出现次数
+    cand_text = {c["addr"]: c["text"] for c in candidates} if candidates else {}
+
+    def _preassign_occ(items: list, mark_low_confidence: bool) -> set:
         """同源组内按 (addr, anchor) 计数：出现 >1 次的组按文本偏移升序（稳定）
         排序后分配 occ=1..n——防 LLM 乱序输出导致 occ 与文本位置颠倒、渲染值串位
         （_anchor_pos 由 parse 阶段记录；显式组/手动组天然文本序，排序为 no-op）。
         mark_low_confidence 时 occ≥2 强制低置信（同形留白歧义——即便 parse 阶段
-        判定收缩后"无歧义"，多项撞进同一留白本身就是歧义证据）。"""
+        判定收缩后"无歧义"，多项撞进同一留白本身就是歧义证据）。
+        candidates 提供时按 anchor 实际出现次数封顶：超界项不占序位、原样返回
+        待丢弃（其 occ 若落库会被 validate 终审拒绝，此处前置拦截保住其余项）。"""
         totals, seq = {}, {}
         for it in items:
             p0 = (it["addr"], it["anchor"])
             totals[p0] = totals.get(p0, 0) + 1
         # list.sort 稳定：偏移相同（同 anchor 同候选时 find 结果恒同）保持原相对序
         items.sort(key=lambda _it: _it.get("_anchor_pos", -1))
+        overflow = set()
         for it in items:
             p0 = (it["addr"], it["anchor"])
             if totals[p0] > 1:
+                cap = cand_text.get(it["addr"], "").count(it["anchor"]) if cand_text else None
                 n = seq.get(p0, 0) + 1
+                if cap is not None and n > cap:
+                    overflow.add(id(it))
+                    continue
                 seq[p0] = n
                 it["occ"] = n
                 if mark_low_confidence and n > 1:
                     it["low_confidence"] = True
+        return overflow
 
     explicit_pos = {(it["addr"], it["anchor"]) for it in explicit}
+    overflow_ids: set = set()
     if preassign_occ:
-        _preassign_occ(explicit, mark_low_confidence=False)
+        overflow_ids |= _preassign_occ(explicit, mark_low_confidence=False)
         # 跨源撞位的 LLM 项不参与预分配（后续按手动优先丢弃，留 occ 会是超界脏值）
-        _preassign_occ(
+        overflow_ids |= _preassign_occ(
             [it for it in llm_items if (it["addr"], it["anchor"]) not in explicit_pos],
             mark_low_confidence=True)
 
     merged, seen_pos, used_keys = [], set(), set()
     for it in explicit + llm_items:
+        if id(it) in overflow_ids:
+            # 组内溢出项：LLM 对同一留白的重复建议/幻觉，丢弃而非让校验判死全部
+            continue
         orig_anchor = it.pop("_orig_anchor", None)
         it.pop("_anchor_pos", None)  # 内部字段：仅预分配排序用，产物不外泄
         pos = (it["addr"], it["anchor"])
@@ -427,7 +448,9 @@ async def detect_fill_points(tenant_id: str, file_type: str, candidates: list) -
     llm_items, failed = await _detect_chunked(_chat, file_type, candidates)
     # xlsx 不做 occ 预分配：apply_xlsx_placeholders 是 replace-all 语义不识别 occ，
     # 同格重复占位符预分配会串值覆盖——回到旧「去重丢弃、单 key replace-all」语义
-    merged = _merge_detection(explicit, llm_items, preassign_occ=(file_type != "xlsx"))
+    # candidates 透传：occ 预分配按实际出现次数封顶，超界组内溢出项丢弃而非判死整次识别
+    merged = _merge_detection(explicit, llm_items, preassign_occ=(file_type != "xlsx"),
+                              candidates=candidates)
     if failed:
         if not merged:
             raise RuntimeError(f"AI 识别失败：{failed} 个分块全部失败")
