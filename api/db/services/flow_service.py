@@ -369,6 +369,20 @@ class FlowAiChatService(_FlowServiceBase):
 
     @classmethod
     @DB.connection_context()
+    def update_content(cls, record_id: str, response: str,
+                       session_id: str | None = None,
+                       template_fill_events: str | None = None) -> None:
+        """回填更新（发送即存模式）：流式结束后把「（生成中…）」占位记录回填为
+        最终回复/事件序列；session_id/template_fill_events 传 None 表示不修改。"""
+        fields: dict = {"response": response}
+        if session_id is not None:
+            fields["session_id"] = session_id
+        if template_fill_events is not None:
+            fields["template_fill_events"] = template_fill_events
+        cls.model.update(**fields).where(cls.model.id == record_id).execute()
+
+    @classmethod
+    @DB.connection_context()
     def list_by_flow(cls, flow_id: str) -> list:
         return [
             r.__data__

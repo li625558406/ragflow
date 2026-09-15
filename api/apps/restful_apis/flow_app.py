@@ -1065,12 +1065,29 @@ async def add_ai_record(flow_id: str):
 
         existing = None
         if record_id:
-            # record_id 模式：基于已自动保存的记录补建新版本（不重复插记录）
             existing = FlowAiChatService.get_record(record_id)
             if not existing or existing["flow_id"] != flow_id:
                 return _err("AI 记录不存在", 404)
             if not save_as_version:
-                return _err("record_id 仅用于补建版本，需 save_as_version=true", 101)
+                # 回填更新模式（发送即存）：流式结束后把发送时预落的
+                # 「（生成中…）」占位记录回填为最终回复/事件序列，不重复插记录。
+                # 仅记录本人可回填；instruction/version 以发送时为准不覆盖。
+                if existing.get("user_id") != current_user.id:
+                    return _err("无权更新该记录", 403)
+                response = (body.get("response") or "").strip()
+                if not response:
+                    return _err("AI 回复内容不能为空", 101)
+                tpl_events = body.get("template_fill_events") or ""
+                if not isinstance(tpl_events, str):
+                    tpl_events = json.dumps(tpl_events, ensure_ascii=False)
+                FlowAiChatService.update_content(
+                    record_id, response,
+                    session_id=(body.get("session_id") or "").strip() or None,
+                    template_fill_events=tpl_events or None,
+                )
+                return get_json_result(
+                    data={"record": FlowAiChatService.get_record(record_id),
+                          "output_version_id": ""})
             instruction = existing["instruction"]
             response = existing["response"]
             version_id = existing["version_id"] or flow["current_version_id"]

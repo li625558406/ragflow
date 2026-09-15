@@ -270,6 +270,9 @@ export default function FlowAiPanel({
   // 范本填写原始事件序列（template_fill_progress 的 data 载荷）：随自动保存/手动保存
   // 落到 flow_ai_chat.template_fill_events；发送新一轮时清空
   const templateFillEventsRef = useRef<unknown[]>([]);
+  // 发送即存：本轮预落库的记录 id（完成自动保存时按它回填更新，不重复插记录）。
+  // 无它则流式期间刷新页面，本轮指令与进度全部丢失
+  const pendingRecordIdRef = useRef('');
   useEffect(() => {
     const events = answerList
       .filter((e: any) => e?.event === 'template_fill_progress')
@@ -329,7 +332,8 @@ export default function FlowAiPanel({
 
   // 自动保存：一轮对话流式结束后，自动将指令+回复写入流程记录（不建版本），
   // 无需手动点「仅存记录」；「存为新版本」随后可基于该记录补建版本（不重复插记录）。
-  // 失败时保留 contentRef，手动「仅存记录」按钮兜底。
+  // 发送即存模式：本轮已预落「（生成中…）」占位记录（pendingRecordIdRef）→ 回填更新
+  // 同一条，不重复插记录。失败时保留 contentRef，手动「仅存记录」按钮兜底。
   useEffect(() => {
     if (!done || sending || autoSavedRef.current) return;
     const text = contentRef.current.trim();
@@ -337,14 +341,27 @@ export default function FlowAiPanel({
     autoSavedRef.current = true;
     (async () => {
       try {
-        const res = (await saveFlowAiRecord(flowId, {
-          instruction: instructionRef.current || '(见记录)',
-          response: text,
-          version_id: version?.id,
-          session_id: sessionIdRef.current,
-          template_fill_events: templateFillEventsRef.current,
-          save_as_version: false,
-        })) as { record?: { id?: string } };
+        const preSavedId = pendingRecordIdRef.current;
+        pendingRecordIdRef.current = '';
+        const res = (await saveFlowAiRecord(
+          flowId,
+          preSavedId
+            ? {
+                record_id: preSavedId,
+                response: text,
+                session_id: sessionIdRef.current,
+                template_fill_events: templateFillEventsRef.current,
+                save_as_version: false,
+              }
+            : {
+                instruction: instructionRef.current || '(见记录)',
+                response: text,
+                version_id: version?.id,
+                session_id: sessionIdRef.current,
+                template_fill_events: templateFillEventsRef.current,
+                save_as_version: false,
+              },
+        )) as { record?: { id?: string } };
         if (res?.record?.id) {
           setLastRecord({
             id: res.record.id,
@@ -477,6 +494,38 @@ export default function FlowAiPanel({
         return;
       }
 
+      // 发送即存：立刻落一条「生成中」占位记录，等待确认卡/流式期间刷新页面
+      // 本轮指令不丢；完成后自动保存按 pendingRecordIdRef 回填更新同一条记录。
+      // 预存失败降级为原行为（仅完成后自动保存），不阻断发送
+      pendingRecordIdRef.current = '';
+      try {
+        const presave = (await saveFlowAiRecord(flowId, {
+          instruction: query,
+          response: '（生成中…）',
+          version_id: version?.id,
+          session_id: sessionIdRef.current,
+          save_as_version: false,
+        })) as { record?: { id?: string } };
+        if (presave?.record?.id) pendingRecordIdRef.current = presave.record.id;
+      } catch {
+        // 降级：不预存
+      }
+      // 发送失败/HTTP 错误时把占位记录标记为未完成，避免永远停留在「生成中…」
+      const markPendingFailed = async () => {
+        const rid = pendingRecordIdRef.current;
+        pendingRecordIdRef.current = '';
+        if (!rid) return;
+        try {
+          await saveFlowAiRecord(flowId, {
+            record_id: rid,
+            response: '（本轮未完成，无回复内容）',
+            save_as_version: false,
+          });
+        } catch {
+          // 回填失败忽略：记录停留在「生成中」占位
+        }
+      };
+
       const docs = uploadedDocsRef.current;
       let files: unknown[] = docs;
       if (files.length === 0 && attachFile && version) {
@@ -584,6 +633,7 @@ export default function FlowAiPanel({
         if (isSessionMissingError(msg)) sessionIdRef.current = '';
         setError(msg);
         setValue(query);
+        await markPendingFailed();
         return;
       }
 
@@ -599,6 +649,7 @@ export default function FlowAiPanel({
         if (isSessionMissingError(msg)) sessionIdRef.current = '';
         setError(msg);
         setValue(query);
+        await markPendingFailed();
       }
     } finally {
       setSending(false);

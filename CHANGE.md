@@ -1,5 +1,17 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-15 流程对话发送即存+完成回填（未部署）
+
+**主题**：用户反馈「流程里发送消息后立即刷新页面，本轮内容全部丢失」——原逻辑 AI 记录只在流式结束（done && !sending）时才插入 flow_ai_chat，中途刷新即丢。改为**发送即存**：发出消息瞬间先预落一条「（生成中…）」占位记录（拿到 record_id），流式结束后按 record_id 回填最终回复/事件序列，不再二次插记录；发送链路失败则把占位记录标记为「（本轮未完成，无回复内容）」，不留脏占位。
+
+**核心变更**（后端 2 文件 + 前端 1 文件）：
+- `api/db/services/flow_service.py`：`FlowAiChatService.update_content(record_id, response, session_id?, template_fill_events?)`——None 表示不修改（防误清空已有事件），空串表示显式覆盖
+- `api/apps/restful_apis/flow_app.py`：`add_ai_record` 支持 `record_id + save_as_version=false` 回填更新路径——仅记录本人可回填（user_id 校验 403）、record 不存在/跨流程 404、response 空白 101；instruction/version 以发送时为准不覆盖；不建版本不碰存储
+- `web/src/pages/c-chat/flow/flow-ai-panel.tsx`：handleSend 在 ensureSession 后预存占位记录（失败降级为不预存，走原逻辑）；新增 pendingRecordIdRef + markPendingFailed（两个失败分支调用）；自动保存 effect 双路径——有预存 id 走回填更新（带 template_fill_events/session_id），无则维持原插记录逻辑
+- 测试：新增 `test/test_flow_ai_record_update.py` 12 用例（update_content None/空串语义、happy path 不插记录不建版本、非本人 403、不存在/跨流程 404、空白 response 101、空白 record_id 404、坏 body 业务码不 500、缺失 events 不覆盖）；47 passed（含 flow 既有 3 套件回归），ruff 违规数与 HEAD 一致（flow_service 12=12、flow_app 59=59 零新增），`npm run build` 通过
+
+**遗留**：未部署——须后端 2 文件（flow_app.py + flow_service.py）成套 SCP + 容器重启 + 前端 build 上传；预存与回填之间容器重启会留下「（生成中…）」占位记录（下次进入可人工辨识，属可接受极端情况）。
+
 ## 2026-09-15 C端多范本命中暂停询问用户选择（智能折中）（已部署 2026-09-15）
 
 **主题**：C端流程/对话中用户内容经 `_select_templates` LLM 选型后直接全部填充；需求是「查出多个范本时询问用户要哪个，而不是默默全填」。经确认采用智能折中：LLM 只选 1 个 → 维持现状不打断；选多个 → 先推 `selected`（flow 面板 templates.length>0 守卫要求范本行先可见）再推 `select_pending` 确认卡，用户勾选（≥1）提交后按最终子集继续（二次 `selected` 整体替换行卡片）；超时 600s → `select_timeout` 按 AI 初选继续。复用已上线 confirm_pending SSE + Redis 轮询 + POST 回传机制同构骨架。
