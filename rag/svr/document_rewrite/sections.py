@@ -1,13 +1,18 @@
 # rag/svr/document_rewrite/sections.py
 """heading 切节与目录提取（纯函数，python-docx）。
 
-切节协议（设计 §4）：
+切节协议（设计 §4 + 2026-09-13 章标题文本兜底）：
 - 按 heading 1（样式名 Heading 1/标题 1，或段落直接大纲级别 0）切顶层节；
+- 兜底：政府范本排版不统一，部分章标题（如高速公路范本第一、二章）是普通文本
+  段落（.doc→docx 转换后样式丢失），按「第X章」文本特征识别为顶层节——
+  否则这些章从大纲消失，用户「重写第一章」被误判为文档里没有该章；
 - section_no 即文档顺序编号，与 Word 自动编号无关；
 - 顶层节标题段落本身永不参与正文替换（docx_edit 侧负责跳过）；
 - 无任何 heading 的文档抛 NoSectionError，由工具层引导 LLM 建议全文重新生成。
 """
 from __future__ import annotations
+
+import re
 
 from docx.oxml.ns import qn
 from docx.text.paragraph import Paragraph
@@ -18,6 +23,18 @@ class NoSectionError(ValueError):
 
 
 _HEADING1_STYLE_NAMES = {"heading 1", "标题 1"}
+
+# 「第X章」文本章标题（含汉字/阿拉伯/全角数字）；只认「章」，不认「节」（节是 Heading 2 层级）
+_CHAPTER_TITLE_RE = re.compile(r"^第\s*[0-9０-９一二三四五六七八九十百零〇]+\s*章")
+# 目录行特征：点线引导（"第一章 招标公告......2"）不是章标题
+_TOC_LEADER_RE = re.compile(r"\.{3,}|…{2,}|＿{3,}")
+# Word 自动目录的真实形态：点线是制表符前导符样式而非文本字符，p.text 得到
+# "第一章 招标公告\t2"（tab+页码结尾），不含点线字符——按文本特征单独排除
+_TOC_TAB_PAGENUM_RE = re.compile(r"\t\s*\d+\s*$")
+# 目录段样式名特征（.doc→docx 转换后 TOC 样式通常保留）
+_TOC_STYLE_MARK = ("toc", "目录")
+# 章标题不以句读结尾（"第一章 总则的规定如下："是正文引用，不是标题）
+_TRAILING_PUNCT_RE = re.compile(r"[。，；：、？！,.:;?!]$")
 
 
 def _direct_outline_level(p: Paragraph) -> int | None:
@@ -45,6 +62,27 @@ def _is_heading1(p: Paragraph) -> bool:
     return _direct_outline_level(p) == 0
 
 
+def _is_chapter_title(p: Paragraph) -> bool:
+    """「第X章」文本章标题判定（heading 样式缺失时的兜底）。
+    排除三类误报：目录段（TOC 样式）、目录行（点线引导或 tab+页码）、
+    正文引用句（句读结尾/过长）。注意：Heading 2 样式的「第X章」段落也会被
+    提升为顶层节——章是重写单元，与其被标成哪级 heading 无关（有意行为）。"""
+    try:
+        style_name = (p.style.name or "").strip().lower()
+    except (KeyError, AttributeError):  # 样式未定义/损坏时 python-docx 抛 KeyError
+        style_name = ""
+    if any(m in style_name for m in _TOC_STYLE_MARK):
+        return False
+    text = (p.text or "").strip()
+    if not text or len(text) > 50:
+        return False
+    if not _CHAPTER_TITLE_RE.match(text):
+        return False
+    if _TOC_LEADER_RE.search(text) or _TOC_TAB_PAGENUM_RE.search(text):
+        return False
+    return not _TRAILING_PUNCT_RE.search(text)
+
+
 def split_sections(doc) -> list[dict]:
     """切节。返回按文档顺序的节列表：
     {section_no, title, para_start, para_end, preview, word_count}
@@ -57,7 +95,7 @@ def split_sections(doc) -> list[dict]:
     paras = list(doc.paragraphs)
     headings = [
         (i, p) for i, p in enumerate(paras)
-        if _is_heading1(p) and (p.text or "").strip()
+        if (_is_heading1(p) or _is_chapter_title(p)) and (p.text or "").strip()
     ]
     if not headings:
         raise NoSectionError(
