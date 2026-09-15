@@ -51,12 +51,26 @@ export default function FlowPanel({
 }) {
   const [scope, setScope] = useState<FlowScope>('todo');
   const [activeId, setActiveId] = useState<string | null>(null);
+  // 常驻挂载的流程详情 id 集合 = 当前选中 ∪ 对话进行中的流程。切换流程时
+  // 进行中的对话（SSE 流/挂起确认卡/填写进度）不因卸载而中断，切回即恢复现场；
+  // 对话结束且不在选中视图后从常驻集中摘除（终态已落库，回放可恢复展示）
+  const [keptIds, setKeptIds] = useState<string[]>([]);
+  const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
+  // 门禁判断用最新 activeId（回调闭包防陈旧）
+  const activeIdRef = useRef<string | null>(null);
+  activeIdRef.current = activeId;
   const [createOpen, setCreateOpen] = useState(false);
   // 页签采用常驻 hidden-div 模式：不可见时暂停 todo 角标轮询
   const rootRef = useRef<HTMLDivElement>(null);
   const [panelVisible, setPanelVisible] = useState(true);
-  // 批注模块挂载点：位于左侧流程列表下方，由 FlowDetail portal 渲染
-  const [commentSlot, setCommentSlot] = useState<HTMLDivElement | null>(null);
+  // 批注模块挂载点：位于左侧流程列表下方，由各常驻 FlowDetail portal 渲染
+  // （按流程 id 各一个 slot，非选中的隐藏，防止多实例批注内容互相串显）
+  const [commentSlots, setCommentSlots] = useState<
+    Record<string, HTMLDivElement | null>
+  >({});
+  const setSlot = useCallback((id: string, el: HTMLDivElement | null) => {
+    setCommentSlots((prev) => (prev[id] === el ? prev : { ...prev, [id]: el }));
+  }, []);
   // 批注区折叠：默认关闭，有批注时自动展开；用户手动切换后不再自动干预
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [commentCount, setCommentCount] = useState(0);
@@ -116,6 +130,49 @@ export default function FlowPanel({
     setCommentCount(n);
     if (!commentManualRef.current) setCommentsOpen(n > 0);
   }, []);
+
+  /** 选中流程：进详情并纳入常驻挂载集 */
+  const handleSelect = useCallback((id: string) => {
+    setActiveId(id);
+    setKeptIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+  }, []);
+
+  /** 对话进行中状态上报（仅 flowId 自己的详情）：维护 busy 集合驱动常驻/摘除 */
+  const handleBusyChange = useCallback((id: string, b: boolean) => {
+    setBusyIds((prev) => {
+      const has = prev.has(id);
+      if (b === has) return prev;
+      const next = new Set(prev);
+      if (b) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
+
+  // 摘除规则：非选中且对话已结束的详情卸载（终态已落库，回放恢复展示）
+  useEffect(() => {
+    setKeptIds((prev) => {
+      const next = prev.filter((id) => id === activeId || busyIds.has(id));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [activeId, busyIds]);
+
+  /** 流程被删除：移出常驻集与 busy 集，选中态指向它则清空 */
+  const handleDeleted = useCallback(
+    (id: string) => {
+      setKeptIds((prev) => prev.filter((k) => k !== id));
+      setBusyIds((prev) => {
+        if (!prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      if (activeIdRef.current === id) setActiveId(null);
+      qc.invalidateQueries({ queryKey: ['flow-list'] });
+      qc.invalidateQueries({ queryKey: ['flow-list-todo-badge'] });
+    },
+    [qc],
+  );
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['flow-list', scope],
@@ -239,7 +296,7 @@ export default function FlowPanel({
                     return (
                       <button
                         key={f.id}
-                        onClick={() => setActiveId(f.id)}
+                        onClick={() => handleSelect(f.id)}
                         className={`group relative block w-full cursor-pointer overflow-hidden rounded-lg border px-3 py-2.5 text-left transition-all duration-150 motion-reduce:animate-none animate-in fade-in slide-in-from-left-2 fill-mode-both active:scale-[0.99] ${
                           active
                             ? 'border-[#BFD3F5] bg-[#F0F5FF]'
@@ -321,10 +378,16 @@ export default function FlowPanel({
                 />
               </button>
             </div>
-            {commentsOpen && (
-              /* 批注模块挂载点：由 FlowDetail portal 渲染，与列表平分高度 */
-              <div ref={setCommentSlot} className="h-1/2 min-h-0" />
-            )}
+            {commentsOpen &&
+              keptIds.map((id) => (
+                /* 批注模块挂载点（每常驻流程一个，由 FlowDetail portal 渲染）：
+                   非选中的隐藏，防多实例批注内容互相串显 */
+                <div
+                  key={id}
+                  ref={(el) => setSlot(id, el)}
+                  className={id === activeId ? 'h-1/2 min-h-0' : 'hidden'}
+                />
+              ))}
           </div>
 
           {/* 中间分隔线（列表收起时一并隐藏） */}
@@ -332,26 +395,9 @@ export default function FlowPanel({
             <div aria-hidden className="w-px shrink-0 bg-[#E5E5E5]" />
           )}
 
-          {/* 右：详情 */}
+          {/* 右：详情（常驻挂载集渲染，非选中的隐藏——进行中对话不中断） */}
           <div className="min-w-0 flex-1 overflow-hidden rounded-xl bg-white">
-            {activeId ? (
-              <FlowDetail
-                flowId={activeId}
-                commentPortal={commentSlot}
-                onCommentsCount={handleCommentCount}
-                onTplPreviewOpenChange={handleTplPreviewOpen}
-                onReviewOpenChange={handleReviewOpen}
-                onChanged={() => {
-                  qc.invalidateQueries({ queryKey: ['flow-list'] });
-                  qc.invalidateQueries({ queryKey: ['flow-list-todo-badge'] });
-                }}
-                onDeleted={() => {
-                  setActiveId(null);
-                  qc.invalidateQueries({ queryKey: ['flow-list'] });
-                  qc.invalidateQueries({ queryKey: ['flow-list-todo-badge'] });
-                }}
-              />
-            ) : (
+            {!activeId && (
               <div className="flex h-full flex-col items-center justify-center gap-3">
                 <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-[#F2F6FF]">
                   <Waypoints className="h-6 w-6 text-[#1a66fb]" />
@@ -361,6 +407,32 @@ export default function FlowPanel({
                 </div>
               </div>
             )}
+            {keptIds.map((id) => (
+              <div key={id} className={id === activeId ? 'h-full' : 'hidden'}>
+                <FlowDetail
+                  flowId={id}
+                  commentPortal={commentSlots[id] ?? null}
+                  onCommentsCount={(n) => {
+                    // 仅选中流程驱动批注角标（隐藏实例的批注数不串显）
+                    if (activeIdRef.current === id) handleCommentCount(n);
+                  }}
+                  onBusyChange={(b) => handleBusyChange(id, b)}
+                  onTplPreviewOpenChange={(open) => {
+                    if (activeIdRef.current === id) handleTplPreviewOpen(open);
+                  }}
+                  onReviewOpenChange={(open) => {
+                    if (activeIdRef.current === id) handleReviewOpen(open);
+                  }}
+                  onChanged={() => {
+                    qc.invalidateQueries({ queryKey: ['flow-list'] });
+                    qc.invalidateQueries({
+                      queryKey: ['flow-list-todo-badge'],
+                    });
+                  }}
+                  onDeleted={() => handleDeleted(id)}
+                />
+              </div>
+            ))}
           </div>
         </>
       )}
@@ -376,7 +448,7 @@ export default function FlowPanel({
         onClose={() => setCreateOpen(false)}
         onCreated={(id) => {
           setCreateOpen(false);
-          setActiveId(id);
+          handleSelect(id);
           qc.invalidateQueries({ queryKey: ['flow-list'] });
         }}
       />

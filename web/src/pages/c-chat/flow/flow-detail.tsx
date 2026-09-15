@@ -82,6 +82,7 @@ export default function FlowDetail({
   onDeleted,
   onTplPreviewOpenChange,
   onReviewOpenChange,
+  onBusyChange,
 }: {
   flowId: string;
   /** 批注模块 portal 挂载点（外层左侧流程栏下方），不传则不渲染批注模块 */
@@ -95,6 +96,8 @@ export default function FlowDetail({
   onTplPreviewOpenChange?: (open: boolean) => void;
   /** 版本文件审核抽屉开/关上报：外层收缩布局为抽屉腾位 */
   onReviewOpenChange?: (open: boolean) => void;
+  /** AI 对话进行中上报：外层据此在切换流程时保持本详情挂载（防 SSE 中断丢状态） */
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const qc = useQueryClient();
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(
@@ -106,6 +109,11 @@ export default function FlowDetail({
   const [reviewCtl, setReviewCtl] = useState<FlowReviewControl | null>(null);
   // 进行中的一轮 AI 对话（发送后未保存前的流式状态）
   const [liveChat, setLiveChat] = useState<FlowLiveChat | null>(null);
+  // 对话进行中上报：外层据此在切换流程时保持本详情挂载（防 SSE 中断丢状态）
+  const liveBusy = Boolean(liveChat?.busy);
+  useEffect(() => {
+    onBusyChange?.(liveBusy);
+  }, [liveBusy, onBusyChange]);
   // 确认卡片提交回写函数（FlowAiPanel 上报）：提交成功后回写流式态，
   // 使归约器的 confirm_timeout 守卫（!submitted）生效，消除超时/提交竞态假象
   const [markConfirmSubmitted, setMarkConfirmSubmitted] = useState<
