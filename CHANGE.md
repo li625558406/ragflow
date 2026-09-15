@@ -1,5 +1,17 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-15 B端确认视图「全部未定位」竞态修复（anchors 晚到重渲染）
+
+**主题**：部署后用户反馈确认视图**所有行**都显示「未定位」徽标。根因是首挂载竞态：FidelityPreview 渲染 effect 依赖 `[templateId]` 在子组件先跑，而父组件 `placeholders`（anchors 来源）要等详情接口回来才在父 effect 里初始化——首次高亮跑在**空 anchors** 上，`onMarked` 回传空集合，且 anchors 到齐后无任何机制重跑 → `markedKeys` 永远为空 → 有 addr 的行全部「未定位」。
+
+**核心变更**（纯前端 1 文件 `web/src/pages/template-fill/fidelity-preview.tsx` 重写）：
+- **blob 缓存**（`blobRef`）：原件只拉一次，anchors 变化时用同一 blob 重渲染+重跑高亮
+- **anchors 稳定签名**（`anchorsSig`：key\0anchor\0addr join）：父组件每次 render 重建数组不能做 effect 依赖，签名 effect `[anchorsSig]` 在 anchors 首帧到齐/识别/保存后触发 `renderDoc()` 重跑高亮
+- 渲染函数收敛为 `renderDoc()`：`renderSeqRef` 序号守卫（拉取渲染与 anchors 触发的重渲染竞争只保留最后一次）+ `setRenderedOk` 门控 + `onMarked` 回传
+- 点击定位逻辑（focusAnchor/renderedOk 门控/focusDoneRef 一次性防重）不变
+
+**验证**：`npm run build` 通过；**已部署**（前端 build+SCP+nginx reload，后端无改动）。上一条目的「编辑保存后 anchors 变化不重跑高亮」遗留随本修复一并解决。
+
 ## 2026-09-15 B端填写点列表双模式（确认/编辑）+ 点击行定位文档
 
 **主题**：填写点配置列表暴露 key/中文名/检索词/必填/默认值等 LLM 配置列，但用户查看列表的目的只是「确认识别结果、知道填写点在文档哪里」；且 key 不是文档字面文本无法搜索定位。列表改双模式：默认**确认视图**（#/占位符锚文本/位置，整行可点击），点击行左侧保真预览平滑滚动到对应填写点并琥珀色闪烁 2s；配置列收纳进**编辑模式**（「编辑配置」按钮切换，全列与保存/AI 识别/添加行为不变）。高亮未命中的行显示「未定位」徽标，直接暴露识别问题。
@@ -10,7 +22,7 @@
 - `web/src/pages/template-fill/detail.tsx`：`configEditing`/`focusKey`/`markedKeys` state + 卡头「编辑配置⇄完成编辑」toggle；AI 识别/添加/保存按钮仅编辑模式显示；文本模式/渲染失败不传 markedKeys（防误导性「未定位」）
 - 测试/验证：`npm run build` 通过（lintstaged prettier+eslint 过）
 
-**遗留**：未部署——纯前端 build+SCP+nginx reload；编辑保存后 anchors 变化不重跑高亮（anchorsRef 现状），markedKeys 为渲染时快照，改配置后需重进页面刷新；新增未填 key 的行点击定位静默无效果。
+**遗留**：~~未部署~~（已随同日「全部未定位」竞态修复条目部署）；编辑保存后 anchors 变化不重跑高亮——已随竞态修复（blob 缓存+签名重渲染）一并解决；新增未填 key 的行点击定位静默无效果。
 
 ## 2026-09-15 B端保真预览纯空白 anchor 徽标缺失修复（raw 原文匹配通道）
 
