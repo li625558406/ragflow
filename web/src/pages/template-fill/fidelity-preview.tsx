@@ -19,8 +19,8 @@ export default function FidelityPreview({
   onRenderFailed,
 }: {
   templateId: string;
-  /** 已注册填写点锚文本高亮项（key 唯一；anchor 空串的行跳过） */
-  anchors: Array<{ key: string; anchor: string }>;
+  /** 已注册填写点锚文本高亮项（key 唯一；anchor 空串的行跳过；addr 用于同形留白顺序分配） */
+  anchors: Array<{ key: string; anchor: string; addr?: string }>;
   /** 渲染失败回调（父组件降级文本模式） */
   onRenderFailed: () => void;
 }) {
@@ -74,13 +74,21 @@ export default function FidelityPreview({
           if (cancelled) return;
           // 屏外分页懒渲染（大文档滚动优化，与 C端同款）
           applyDocxPageLazy(el);
-          // 已注册填写点按锚文本高亮：去空白归一化匹配，同形文本取首处，
-          // 同 key 只标一处；页眉/页脚/文本框未渲染时不标（静默）
+          // 已注册填写点按锚文本高亮：去空白归一化匹配，同 key 只标一处；
+          // 同形留白多项按 addr 文档序分配第 1/2/…次出现（occ 语义）；
+          // 页眉/页脚/文本框未渲染时不标（静默）。
+          // showKeyBadge：高亮处追加 {{key}} 徽标，直观看填写点对应占位符
           highlightDocxRanges(
             el,
             anchorsRef.current
               .filter((a) => a.anchor && a.anchor.trim().length >= 2)
-              .map((a) => ({ text: a.anchor, key: a.key, color: '#f59e0b' })),
+              .map((a) => ({
+                text: a.anchor,
+                key: a.key,
+                color: '#f59e0b',
+                addr: a.addr,
+              })),
+            { showKeyBadge: true },
           );
         });
       })
@@ -102,8 +110,8 @@ export default function FidelityPreview({
     <div className="max-h-[65vh] overflow-auto">
       {/* 说明条：高亮语义 + 划选指引 */}
       <div className="mb-2 rounded bg-amber-50 px-3 py-1.5 text-xs text-amber-700">
-        按 Word 原始格式渲染；琥珀色下划线为已注册填写点（按锚文本匹配）。
-        划选标记新填写点请切换「文本模式」。
+        按 Word 原始格式渲染；琥珀色下划线为已注册填写点（按锚文本匹配），
+        并标注对应占位符 {'{{key}}'}。划选标记新填写点请切换「文本模式」。
       </div>
       <div ref={containerRef} />
     </div>

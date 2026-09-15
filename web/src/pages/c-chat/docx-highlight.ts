@@ -152,15 +152,20 @@ export interface DocxHighlightItem {
   color: string;
   /** 锚点选段在归一化文本中的起始偏移（消歧重复文本；可空） */
   start?: number | null;
+  /** 填写点段落定位（B端范本预览用）：同形 anchor 多项按 addr 文档序分配第 1/2/…次出现 */
+  addr?: string;
 }
 
 /**
  * 在 docx DOM 上按文本定位并插入 mark[data-anchor-key]。
  * 返回成功插入 mark 的 key 集合 —— 未命中的 key 由调用方归入未定位兜底列表。
+ * opts.showKeyBadge：mark 末尾追加 {{key}} 内联徽标（B端范本保真预览用，
+ * C端审核预览不传则行为不变）。
  */
 export function highlightDocxRanges(
   container: HTMLElement,
   items: DocxHighlightItem[],
+  opts?: { showKeyBadge?: boolean },
 ): Set<string> {
   const marked = new Set<string>();
   if (!items.length) return marked;
@@ -184,11 +189,20 @@ export function highlightDocxRanges(
   const full = parts.join('');
   if (!full) return marked;
 
-  // 归一化偏移 → 原始 (文本节点, 节点内偏移)
-  const locate = (pos: number): { node: Text; off: number } | null => {
+  // 归一化偏移 → 原始 (文本节点, 节点内偏移)。
+  // preferEnd：pos 恰为某节点归一化终点时优先解析为该节点末尾而非下一节点
+  // 开头 —— Range 语义上二者等价，但同段校验取 node.parentElement，
+  // 解析到下一节点会误判跨段（段落末尾留白 anchor 全军覆没的根因）。
+  const locate = (
+    pos: number,
+    preferEnd = false,
+  ): { node: Text; off: number } | null => {
     for (const e of entries) {
-      if (pos < e.normStart || pos >= e.normEnd) continue;
+      const inFwd = pos >= e.normStart && pos < e.normEnd;
+      const atEnd = pos > e.normStart && pos === e.normEnd;
+      if (!inFwd && !(preferEnd && atEnd)) continue;
       const raw = e.node.nodeValue || '';
+      if (atEnd) return { node: e.node, off: raw.length };
       let cnt = e.normStart;
       for (let j = 0; j < raw.length; j++) {
         if (cnt >= pos) return { node: e.node, off: j };
@@ -207,29 +221,76 @@ export function highlightDocxRanges(
     return null;
   };
 
-  // 定位 + 同段校验 + 去重（同 key 只锚首处；同位置不重复插）
+  // 定位 + 同段校验 + 去重（同 key 只锚一处；同位置不重复插）。
+  // 同形 anchor 分配：范本填写点大量同形留白（同串下划线/空格），
+  // 若都取首处则只有第一项显示 —— 归一化文本相同的多项按 addr 文档序
+  // 依次分配第 1/2/…次出现（occ 语义）；单项/无 addr 组保持首处匹配。
   const valid: Array<{ s: number; e: number; item: DocxHighlightItem }> = [];
   const seenPos = new Set<number>();
   const seenKey = new Set<string>();
+
+  const cmpAddr = (a: string, b: string): number => {
+    const at = a.split(':');
+    const bt = b.split(':');
+    const len = Math.max(at.length, bt.length);
+    for (let i = 0; i < len; i++) {
+      const x = at[i];
+      const y = bt[i];
+      if (x === undefined) return -1;
+      if (y === undefined) return 1;
+      if (x === y) continue;
+      if (/^\d+$/.test(x) && /^\d+$/.test(y)) return Number(x) - Number(y);
+      return x < y ? -1 : 1;
+    }
+    return 0;
+  };
+
+  // 按归一化文本分组，组内带上原顺序
+  const groups = new Map<
+    string,
+    Array<{ item: DocxHighlightItem; seq: number }>
+  >();
+  let seqCounter = 0;
   for (const item of items) {
     const text = (item.text || '').replace(/\s+/g, '');
-    if (text.length < 2 || seenKey.has(item.key)) continue;
-    let idx =
-      item.start != null && item.start > 4
-        ? full.indexOf(text, Math.max(0, item.start - 4))
-        : -1;
-    if (idx < 0) idx = full.indexOf(text);
-    if (idx < 0 || seenPos.has(idx)) continue;
-    seenPos.add(idx);
-    seenKey.add(item.key);
-    valid.push({ s: idx, e: idx + text.length, item });
+    if (text.length < 2) continue;
+    const arr = groups.get(text) || [];
+    arr.push({ item, seq: seqCounter++ });
+    groups.set(text, arr);
+  }
+
+  for (const [text, group] of groups) {
+    const multi = group.length > 1;
+    const ordered = multi
+      ? [...group].sort(
+          (a, b) =>
+            cmpAddr(a.item.addr || '', b.item.addr || '') || a.seq - b.seq,
+        )
+      : group;
+    // 多项组：从上一次命中之后继续找下一次出现；单项组保留 start 提示
+    let searchFrom = 0;
+    for (const { item } of ordered) {
+      if (seenKey.has(item.key)) continue;
+      let idx =
+        !multi && item.start != null && item.start > 4
+          ? full.indexOf(text, Math.max(0, item.start - 4))
+          : -1;
+      if (idx < 0) {
+        idx = multi ? full.indexOf(text, searchFrom) : full.indexOf(text);
+      }
+      if (idx < 0 || seenPos.has(idx)) continue;
+      searchFrom = idx + 1;
+      seenPos.add(idx);
+      seenKey.add(item.key);
+      valid.push({ s: idx, e: idx + text.length, item });
+    }
   }
 
   // 从后往前插入：删右侧区间不影响左侧偏移有效性
   valid.sort((a, b) => b.s - a.s);
   for (const v of valid) {
     const from = locate(v.s);
-    const to = locate(v.e);
+    const to = locate(v.e, true);
     if (!from || !to) continue;
     // 防跨块误删：起止必须在同一 <p>（docx-preview 段落/单元格内容均在 p 内），
     // 跨段匹配若直接 deleteContents 会破坏块级结构 —— 跳过留给未定位兜底
@@ -250,6 +311,20 @@ export function highlightDocxRanges(
       mark.style.cursor = 'pointer';
       mark.style.borderRadius = '1px';
       mark.style.padding = '0 1px';
+      if (opts?.showKeyBadge && v.item.key) {
+        const badge = document.createElement('span');
+        badge.textContent = `{{${v.item.key}}}`;
+        badge.style.display = 'inline-block';
+        badge.style.fontSize = '10px';
+        badge.style.lineHeight = '1.5';
+        badge.style.backgroundColor = v.item.color;
+        badge.style.color = '#fff';
+        badge.style.borderRadius = '3px';
+        badge.style.padding = '0 4px';
+        badge.style.marginLeft = '3px';
+        badge.style.verticalAlign = '2px';
+        mark.appendChild(badge);
+      }
       range.deleteContents();
       range.insertNode(mark);
       marked.add(v.item.key);

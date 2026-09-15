@@ -412,7 +412,11 @@ export default function TemplateFillDetailPage() {
                 templateId={id ?? ''}
                 anchors={placeholders
                   .filter((p) => p.addr)
-                  .map((p) => ({ key: p.key, anchor: p.anchor }))}
+                  .map((p) => ({
+                    key: p.key,
+                    anchor: p.anchor,
+                    addr: p.addr,
+                  }))}
                 onRenderFailed={handleRenderFailed}
               />
             ) : (
