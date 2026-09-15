@@ -699,11 +699,11 @@ export default function DocxToolbar({
           )}
           <button
             type="button"
-            disabled={saving || dirty === 0}
+            disabled={saving}
             onClick={onDiscard}
             className="h-7 rounded-md border border-[#D9D9D9] px-2.5 text-[12px] text-[#333333] transition-colors hover:bg-[#F0F2F5] disabled:cursor-not-allowed disabled:opacity-40"
           >
-            放弃修改
+            {dirty > 0 ? '放弃修改' : '退出编辑'}
           </button>
           <button
             type="button"

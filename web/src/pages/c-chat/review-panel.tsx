@@ -15,6 +15,7 @@ import {
   Info,
   Loader2,
   MessageSquare,
+  Pencil,
   Plus,
   Trash2,
   X,
@@ -520,11 +521,19 @@ export default function ReviewPanel({
   }>({ cards: {}, anchors: {}, w: 0, h: 0 });
 
   // ── docx 只读保真（docx-preview）：只读路径渲染原始文件，Word 字号/字体/
-  // 表格样式不丢；AI 标注/手动批注经 highlightDocxRanges 锚定 mark[data-anchor-key]，
-  // 批注栏/引线/未定位兜底全部沿用。编辑态走旧段落视图（Lexical 模型不兼容）。
-  const editing = canEdit && onEditDocument && loadedFileId === fileId;
+  // 表格样式/字色不丢；AI 标注/手动批注经 highlightDocxRanges 锚定
+  // mark[data-anchor-key]，批注栏/引线/未定位兜底全部沿用。
+  // 可编辑文件默认也进保真预览（原色审阅），点「编辑文档」才切 Lexical 旧段落
+  // 编辑视图（纯文本模型，颜色/格式必然丢失），保存/放弃后回到保真预览。
+  const [userEditing, setUserEditing] = useState(false);
+  const editing =
+    canEdit && onEditDocument && loadedFileId === fileId && userEditing;
+  // 切换文件/页签后回到保真预览（编辑态只对当前已加载文件有效）
+  useEffect(() => {
+    setUserEditing(false);
+  }, [fileId]);
   const docxFidelityCandidate = content?.file_type === 'docx' && !editing;
-  const docxWrapRef = useRef<HTMLDivElement>(null);
+  const docxWrapRef = useRef<HTMLDivElement | null>(null);
   const [docxRenderFailed, setDocxRenderFailed] = useState(false);
   const [markedKeys, setMarkedKeys] = useState<Set<string>>(new Set());
   const {
@@ -535,6 +544,14 @@ export default function ReviewPanel({
   const docxFidelity = Boolean(
     docxFidelityCandidate && docxBlob && !docxBlobError && !docxRenderFailed,
   );
+  // 容器挂载代数：renderAsync 的渲染产物不在 React state 里，任何原因导致的
+  // 容器重挂（open 切换 return null、loading 闪断、文件切换）都必须重跑渲染，
+  // 否则容器空白。ref callback 里无法直接进 effect deps，用 epoch 状态桥接。
+  const [docxEpoch, setDocxEpoch] = useState(0);
+  const docxWrapRefCb = useCallback((el: HTMLDivElement | null) => {
+    docxWrapRef.current = el;
+    if (el) setDocxEpoch((n) => n + 1);
+  }, []);
 
   // Build annotation set keyed by paragraph index — supports multiple per paragraph
   const annotationMap = useMemo(() => {
@@ -649,13 +666,20 @@ export default function ReviewPanel({
 
   // blob 到达：清容器 → renderAsync 保真渲染 → 屏外页懒渲染 → 按当前 railItems
   // 插入 mark[data-anchor-key]。渲染失败降级回旧段落视图。
+  // deps 必须含 docxEpoch：渲染产物不留在 state 里，而容器可能被三件事重挂——
+  // 关闭时 return null（重开时同 fileId blob 命中 query 缓存引用不变、content 仍在
+  // state，effect 其他 deps 全不变）、loading 闪断（内容请求 setLoading(true) 卸载
+  // body，与渲染竞争）、文件切换。ref 回调把每次容器挂载折算成 epoch 递增，
+  // 任何重挂都强制重跑渲染，否则容器空白（版本历史二次查看白屏根因）。
   useEffect(() => {
     if (!docxFidelityCandidate || !docxBlob || !docxWrapRef.current) return;
     const el = docxWrapRef.current;
     setDocxRenderFailed(false);
+    setMarkedKeys(new Set());
     el.innerHTML = '';
     renderAsync(docxBlob, el, undefined, { inWrapper: true, breakPages: true })
       .then(() => {
+        if (!el.isConnected) return; // 容器已被重挂/卸载：丢弃本轮 stale 渲染产物
         applyDocxPageLazy(el);
         setMarkedKeys(
           highlightDocxRanges(el, toHighlightItems(railItemsRef.current)),
@@ -666,7 +690,7 @@ export default function ReviewPanel({
         setMarkedKeys(new Set());
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [docxBlob, docxFidelityCandidate]);
+  }, [docxBlob, docxFidelityCandidate, docxEpoch]);
 
   // railItems 变化（annotations/comments 异步到达）：只补插新增 key 的 mark，
   // 已锚定的不重插；highlightDocxRanges 在 setState 外执行（StrictMode 下
@@ -1038,12 +1062,13 @@ export default function ReviewPanel({
     }
   }, [content, onEditDocument, savingEdits, tableBaselines]);
 
-  // 放弃修改：重挂载纸张，丢弃浏览器侧的 DOM 改动
+  // 放弃修改：丢弃浏览器侧改动并退出编辑，回到保真预览
   const handleDiscardEdits = useCallback(() => {
     window.clearTimeout(diffTimer.current);
     setDirty(0);
     setEditError('');
     setResetKey((k) => k + 1);
+    setUserEditing(false);
   }, []);
 
   // Download annotated docx
@@ -1195,6 +1220,19 @@ export default function ReviewPanel({
             </h2>
           </div>
           <div className="flex items-center gap-1 shrink-0">
+            {/* 保真预览默认只读：显式进入编辑（Lexical 旧段落视图，格式/颜色会简化） */}
+            {canEdit &&
+              onEditDocument &&
+              !editing &&
+              loadedFileId === fileId && (
+                <button
+                  onClick={() => setUserEditing(true)}
+                  className="flex items-center gap-1.5 text-xs font-medium text-[#1a66fb] hover:text-[#0f56e0] px-2.5 py-1.5 rounded-lg hover:bg-[#F0F5FF] transition-colors"
+                >
+                  <Pencil className="w-3.5 h-3.5" strokeWidth={2} />
+                  编辑文档
+                </button>
+              )}
             {annotations.length > 0 && (
               <button
                 onClick={handleDownload}
@@ -1333,6 +1371,7 @@ export default function ReviewPanel({
               {editing ? (
                 /* 编辑态：旧纸张视图（Lexical 编辑器模型与保真 DOM 不兼容） */
                 <div
+                  key="view-editing"
                   className="mx-auto w-full max-w-[794px] border border-[#C9C9C9] bg-white px-[72px] py-[64px] shadow-[0_4px_24px_rgba(0,0,0,0.14)]"
                   style={{
                     fontFamily: "'SimSun', '宋体', 'Times New Roman', serif",
@@ -1357,16 +1396,24 @@ export default function ReviewPanel({
                   </div>
                 </div>
               ) : docxFidelity ? (
-                /* 只读保真：docx-preview 渲染原始文件，mark[data-anchor-key] 点击跳批注 */
-                <div className="min-w-0 flex-1 overflow-auto">
+                /* 只读保真：docx-preview 渲染原始文件，mark[data-anchor-key] 点击跳批注。
+                   key 必须保留：分支间根节点同为 div 时 React 会就地复用 DOM（不卸载），
+                   残留的 docx 渲染产物会漏进编辑视图且 ref/epoch 不触发 */
+                <div
+                  key="view-fidelity"
+                  className="min-w-0 flex-1 overflow-auto"
+                >
                   <div
-                    ref={docxWrapRef}
+                    ref={docxWrapRefCb}
                     onClick={handleSelectTableAnn}
                     className="mx-auto w-full max-w-[900px]"
                   />
                 </div>
               ) : docxFidelityCandidate && docxBlobLoading ? (
-                <div className="flex items-center justify-center py-20 text-sm text-[#8A8A8A]">
+                <div
+                  key="view-loading"
+                  className="flex items-center justify-center py-20 text-sm text-[#8A8A8A]"
+                >
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   正在加载原始文档…
                 </div>
@@ -1380,6 +1427,7 @@ export default function ReviewPanel({
                       </div>
                     )}
                   <div
+                    key="view-fallback"
                     className="mx-auto w-full max-w-[794px] border border-[#C9C9C9] bg-white px-[72px] py-[64px] shadow-[0_4px_24px_rgba(0,0,0,0.14)]"
                     style={{
                       fontFamily: "'SimSun', '宋体', 'Times New Roman', serif",
