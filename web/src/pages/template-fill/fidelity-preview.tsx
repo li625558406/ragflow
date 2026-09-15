@@ -92,10 +92,12 @@ export default function FidelityPreview({
         // 同形留白多项按 addr 文档序分配第 1/2/…次出现（occ 语义）；
         // 页眉/页脚/文本框未渲染时不标（静默）。
         // showKeyBadge：高亮处追加 {{key}} 徽标，直观看填写点对应占位符
+        // 过滤用原文长度而非 trim 后长度：纯空格留白 anchor（raw 通道）trim 后为空，
+        // 误过滤会导致这类行全部「未定位」；通道判定交给 highlightDocxRanges 内部
         const marked = highlightDocxRanges(
           el,
           anchorsRef.current
-            .filter((a) => a.anchor && a.anchor.trim().length >= 2)
+            .filter((a) => a.anchor && a.anchor.length >= 2)
             .map((a) => ({
               text: a.anchor,
               key: a.key,
