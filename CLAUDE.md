@@ -66,7 +66,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 范本填写未填充汇总与定位跳转 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-14-template-fill-unfilled-summary-design.md` | ★ 范本填写终态派生 unfilled（values 留空判定，无需新持久化）→ filled 事件/progress 端点透传 → 成稿行内联汇总（必填红标/选填灰）→ 点击打开 LivePreview scrollIntoView+闪烁定位（docx span 映射 / data-ph-key 兜底）；前后端可独立部署（已完成编码+测试，**已部署 2026-09-14**：后端 3 文件成套 SCP + 前端 build） |
 | 确认卡填写项点击定位跳转 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-14-confirm-card-locate-design.md` | ★ confirm_pending 确认卡每填写项字段名可点击，复用未填充汇总同款 liveTarget+focusKey 定位链路打开 LivePreview 滚动闪烁；纯前端 2 文件（已完成编码+测试，未部署：纯前端 build） |
 | 多范本命中暂停询问选择 | `D:\AI\ragflow2\CHANGE.md`（2026-09-15「C端多范本命中暂停询问用户选择（智能折中）」条目） | ★ LLM 选出多个范本时暂停询问：先推 selected 再推 select_pending 确认卡（复用 confirm_pending SSE+Redis+POST 回传同构骨架，新增 select-confirm 端点+运行级 nonce），勾选≥1 后二次 selected 整体替换、超时 600s 按 AI 初选继续；单选不打断；已完成编码+测试（39+104 全绿），**已部署 2026-09-15**（后端 2 文件 SCP+重启+前端 build，部署后端点+Redis 回环冒烟通过） |
-| 流程对话发送即存 | `D:\AI\ragflow2\CHANGE.md`（2026-09-15「流程对话发送即存+完成回填」条目） | ★ 流程 AI 对话发送瞬间预落「（生成中…）」占位记录（修刷新丢本轮），流式结束按 record_id 回填（add_ai_record 新增 record_id+save_as_version=false 更新路径：非本人 403/跨流程 404/空 response 101），失败分支标「本轮未完成」；新增 update_content（None=不修改）+ test_flow_ai_record_update.py 12 用例；**已部署 2026-09-15**（后端 2 文件 SCP+重启+前端 build，部署后 ai-record 路由+鉴权冒烟通过） |
+| 流程对话发送即存 | `D:\AI\ragflow2\CHANGE.md`（2026-09-15「流程对话发送即存+完成回填」+「流式事件增量同步」条目） | ★ 流程 AI 对话发送瞬间预落「（生成中…）」占位记录（修刷新丢本轮），流式结束按 record_id 回填（add_ai_record 新增 record_id+save_as_version=false 更新路径：非本人 403/跨流程 404/空 response 101），失败分支标「本轮未完成」；新增 update_content（None=不修改）+ test_flow_ai_record_update.py 12 用例；**已部署 2026-09-15**；同日追加：流式事件防抖 2s 增量同步预存记录+重放剥挂起确认态（修中途刷新丢范本进度，纯前端 1 文件，未部署；填写阶段刷新可轮询重连，确认阶段刷新编排已死只能恢复展示） |
 
 
 
