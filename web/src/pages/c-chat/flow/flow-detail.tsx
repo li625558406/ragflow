@@ -187,20 +187,25 @@ export default function FlowDetail({
   }, [candidates]);
 
   const selectedVersion: FlowVersionItem | null = useMemo(() => {
-    if (!data) return null;
-    const vid = selectedVersionId ?? data.flow.current_version_id;
-    const versions = data.versions ?? [];
-    return (
-      versions.find((v) => v.id === vid) ??
-      versions[versions.length - 1] ??
-      null
+    const versions = data?.versions ?? [];
+    if (!versions.length) return null;
+    // 默认勾选聚焦最新一条（版本号最大），而非 current_version_id——
+    // 回退后 current 指向旧版本，默认应仍落在最新记录上；用户点击后以用户选择为准
+    const newest = versions.reduce((a, b) =>
+      b.version_no > a.version_no ? b : a,
     );
+    if (!selectedVersionId) return newest;
+    return versions.find((v) => v.id === selectedVersionId) ?? newest;
   }, [data, selectedVersionId]);
 
   // 版本倒序（最新在前）+ 分页展示：初始一页，点「查看更多」再加载一页
   const [visibleCount, setVisibleCount] = useState(VERSION_PAGE_SIZE);
   useEffect(() => {
     setVisibleCount(VERSION_PAGE_SIZE);
+  }, [flowId]);
+  // 切换流程后重置版本选择：回到「默认最新一条」，不带入上一流程的手动选择
+  useEffect(() => {
+    setSelectedVersionId(null);
   }, [flowId]);
   const sortedVersions = useMemo(
     () =>
