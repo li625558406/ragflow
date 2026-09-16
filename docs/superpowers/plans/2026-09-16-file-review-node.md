@@ -3540,80 +3540,437 @@ git commit -m "feat(file-review): executor 多轮状态机 + 标注锚点/修复
 
 **Files:**
 - Create: `agent/component/file_review.py`
+- Test: `test/test_file_review_node.py`
 
-- [ ] **Step 1: 创建文件**
+**形态：fire-and-forget——只建轮次行 + spawn，随即返回；不观察、不推 SSE。**
+与 TemplateFill 的差异是有意的：执行的唯一真相是轮次行（`file_review_round`），
+进度由 T9 的 REST 端点按 `file_id` / `task_id` 反查，三个入口（本节点 / T8 工具 /
+T9 API）共用同一份真相。在节点内推流会把「执行」绑死在某个具体连接上：刷新即丢，
+且第三个入口无连接可推（T6 的模块边界同款理由）。
+
+**两条已实测的硬约束（写错不会报错，只会静默审错文件 / 互相覆盖）：**
+
+1. **`file_id` = `/documents/upload` 返回的 `id`**（MinIO 对象名，桶
+   `{tenant_id}-downloads`；executor 的 `_load_original_blob` 第 4 级兜底正好查这个桶，
+   无需为取字节改任何后端代码）。但**画布会丢弃上传对象的 id**：
+   `canvas.run(files=...)` 只把解析文本放进 `sys.files` / `sys.file_content`
+   （`agent/canvas.py:419-433` 显式丢掉 id），节点拿不到。传 id 的唯一通道是
+   `canvas.run(inputs={"review_file_id": {"value": <upload uuid>}})` →
+   `Begin._invoke` 把**非 file 类型**的 input 值直接 `set_output(k, v)`
+   （`agent/component/begin.py`，file 类型走 `FileService.get_files` 换成文本）。
+   Begin 组件的 **id 恒为字面量 `"begin"`**（`agent/canvas.py:49/75/967` 硬编码，
+   前端 `BeginId = 'begin'` 见 `web/src/constants/agent.tsx:255`），
+   故 DSL 引用写作 **`{begin@review_file_id}`**，不是 `begin_0`。
+   本节点不假设该引用一定写对：参数解析落空时回退「按 component_name 扫 Begin 输出」。
+2. **`task_id` 必须每次调用新生成**。不得复用 `self._canvas.task_id`——它即 agent_id、
+   跨运行不变（TemplateFill 同注释），复用它会让不同文件的审核串成一条任务链：
+   第 2 个文件的第 1 轮按 `max_completed_round_no` 继承旧文件的轮次号，且
+   `_store_version_blob` 的对象名 `frv-{task_id}-{file_version}` 会互相覆盖。
+
+**默认模板要落具体 id，不能落空串**：轮次行是「这一轮用了哪套模板」的审计记录，
+写空串等于对「用的是默认模板」这件事撒谎；T9 的修复轮又按 `cur.template_id` 继承，
+空串会一路传下去。默认值的唯一真相是 `executor.DEFAULT_TEMPLATE_ID`，本节点在
+`_invoke` 内**延迟 import** 取用（顶层 import 会把 `python-docx` 等重依赖带进
+画布启动路径——`agent.component` 包扫描时会 import 本模块；`spawn.py` 同款取舍）。
+T9 建轮次时应照此办理，不要再复制 `'bid_doc_format'` 字面量。
+
+**参数名取 `dataset_ids`（覆盖设计稿 §2.1 写的 `kb_ids`）**：画布知识库选择器的表单
+字段名恒为 `dataset_ids`（`web/src/components/knowledge-base-item.tsx:72` 默认 name；
+`web/src/pages/agent/form/template-fill-form/index.tsx:18` 同）。DB 列与 Service/executor
+仍是 `kb_ids`，只有**节点参数**跟画布约定，否则 T15 的节点配置表单挂不上 KB 选择器。
+
+**类名 `FileReview` ≠ 工具类名 `FileReviewTool`**：`component_class` 按类名解析且
+`agent.component` 优先于 `agent.tools`（`agent/component/__init__.py:51-58`），
+两包同名类会互相遮蔽。TemplateFill 的 docstring 记录了同一条教训，T8 必须配合。
+
+- [ ] **Step 1: 写测试（先红）**
+
+创建 `test/test_file_review_node.py`：
+
+```python
+"""「文件审核」画布节点单测。对抗性覆盖：
+- file_id 三条解析路径：参数写死 uuid / 参数写引用 {begin@review_file_id} / 参数留空扫 Begin 输出
+- 解析落空 → 抛错（不许静默建一条 file_id 为空的轮次行）；非引用垃圾串**原样透传**
+  （不吞不改——错误由 executor 的「文件不存在」响亮暴露，节点不做创造性猜测）
+- 租户缺失 → 抛错（不许建 tenant_id 为空的轮次行）
+- 建轮次契约：round_no=1 / status=reviewing / file_version=v1 / created_by=tenant_id /
+  kb_ids 原样透传（形态归一是 Service 层 _normalize_kb_ids 的职责，节点不二次解析）/
+  user_query 来自 custom_prompt
+- spawn 收到的是 **task_id** 而不是 round id（T5 契约）
+- 两次调用产出两个不同 task_id，且都不等于画布 task_id（复用会让不同文件互相覆盖）
+所有外部依赖（Service / spawn / Begin 组件）经替身注入，不触真实 DB / 线程 / LLM。
+"""
+import pytest
+
+from agent.component import file_review as fr
+from agent.component.file_review import FileReviewParam
+
+# ---------- 桩件 ----------
+
+
+class _Begin:
+    component_name = "Begin"
+
+    def __init__(self, outs):
+        self._outs = outs
+
+    def output(self):
+        return dict(self._outs)
+
+
+class FakeCanvas:
+    def __init__(self, tenant="t1", begin_outs=None, refs=None):
+        self._tenant = tenant
+        self._refs = refs or {}
+        self.task_id = "canvas-task-id"     # 画布运行 id：跨运行不变，节点不得复用
+        self.components = {"begin": {"obj": _Begin(begin_outs or {})}}
+
+    def get_tenant_id(self):
+        return self._tenant
+
+    def get_variable_value(self, exp):
+        return self._refs.get(exp)
+
+    def get_component_name(self, cpn_id):
+        return "begin"
+
+
+def _make(param=None, canvas=None):
+    """绕过 __init__ 直接装桩（与本仓 test_agent_fill_template_component.py 同款）。"""
+    cpn = fr.FileReview.__new__(fr.FileReview)
+    cpn._id = "review_0"
+    cpn._param = param or FileReviewParam()
+    cpn._param.check()
+    cpn._canvas = canvas or FakeCanvas()
+    return cpn
+
+
+@pytest.fixture
+def rec(monkeypatch):
+    """记录 create_round / spawn_review_task 的调用，并返回可变 round id。"""
+    calls = {"rounds": [], "spawned": [], "round_id": "round-1"}
+
+    def _create_round(**kwargs):
+        calls["rounds"].append(kwargs)
+        return calls["round_id"]
+
+    monkeypatch.setattr(fr.FileReviewRoundService, "create_round", _create_round)
+    monkeypatch.setattr(fr.spawn_mod, "spawn_review_task",
+                        lambda tid: calls["spawned"].append(tid))
+    return calls
+
+
+# ---------- file_id 解析 ----------
+
+def test_file_id_literal_param(rec):
+    p = FileReviewParam()
+    p.file_id = "upload-uuid-1"
+    cpn = _make(p)
+    cpn._invoke()
+    assert rec["rounds"][0]["file_id"] == "upload-uuid-1"
+
+
+def test_file_id_from_reference(rec):
+    p = FileReviewParam()
+    p.file_id = "{begin@review_file_id}"
+    cpn = _make(p, FakeCanvas(begin_outs={"review_file_id": "ignored"},
+                              refs={"begin@review_file_id": "upload-uuid-2"}))
+    cpn._invoke()
+    assert rec["rounds"][0]["file_id"] == "upload-uuid-2"
+
+
+def test_file_id_falls_back_to_begin_output(rec):
+    """参数留空（B端用户不填）时，仍应取到前端送入 Begin 的上传 id。"""
+    cpn = _make(canvas=FakeCanvas(begin_outs={"review_file_id": "upload-uuid-3"}))
+    cpn._invoke()
+    assert rec["rounds"][0]["file_id"] == "upload-uuid-3"
+
+
+def test_file_id_ref_unresolved_falls_back(rec):
+    """引用写错/上游没推：展开为空 → 回退 Begin 输出，不得把 '{begin@...}' 当 id。"""
+    p = FileReviewParam()
+    p.file_id = "{begin@review_file_id}"
+    cpn = _make(p, FakeCanvas(begin_outs={"review_file_id": "upload-uuid-4"}, refs={}))
+    cpn._invoke()
+    assert rec["rounds"][0]["file_id"] == "upload-uuid-4"
+
+
+def test_file_id_missing_raises(rec):
+    with pytest.raises(ValueError, match="未指定待审核文件"):
+        _make()._invoke()
+    assert rec["rounds"] == []
+    assert rec["spawned"] == []
+
+
+def test_tenant_missing_raises(rec):
+    cpn = _make(canvas=FakeCanvas(tenant="", begin_outs={"review_file_id": "u"}))
+    with pytest.raises(ValueError, match="租户"):
+        cpn._invoke()
+    assert rec["rounds"] == []
+
+
+def test_non_ref_garbage_passed_through(rec):
+    """非引用形态的串不做任何猜测，原样落库——由 executor 报「文件不存在」。"""
+    p = FileReviewParam()
+    p.file_id = "not-a-uuid"
+    _make(p)._invoke()
+    assert rec["rounds"][0]["file_id"] == "not-a-uuid"
+
+
+# ---------- 建轮次契约 ----------
+
+def test_create_round_contract(rec):
+    p = FileReviewParam()
+    p.file_id = "u1"
+    p.template_id = ""
+    p.custom_prompt = "重点看资质"
+    p.dataset_ids = ["kb1", "kb2"]
+    cpn = _make(p)
+    cpn._invoke()
+    kw = rec["rounds"][0]
+    assert kw["round_no"] == 1
+    assert kw["status"] == "reviewing"
+    assert kw["file_version"] == "v1"
+    # 留空 → 落**具体**默认模板 id，而不是空串：轮次行是「用了哪套模板」的审计记录，
+    # 写空等于对「默认」这件事撒谎；且 T9 的修复轮按 cur.template_id 继承。
+    assert kw["template_id"] == "bid_doc_format"
+    assert kw["user_query"] == "重点看资质"
+    assert kw["tenant_id"] == "t1"
+    assert kw["created_by"] == "t1"
+    assert kw["kb_ids"] == ["kb1", "kb2"]
+
+
+def test_template_id_override(rec):
+    p = FileReviewParam()
+    p.file_id = "u1"
+    p.template_id = "bid_qualification"
+    _make(p)._invoke()
+    assert rec["rounds"][0]["template_id"] == "bid_qualification"
+
+
+# ---------- spawn 契约 ----------
+
+def test_spawn_receives_task_id_not_round_id(rec):
+    rec["round_id"] = "round-xyz"
+    p = FileReviewParam()
+    p.file_id = "u1"
+    _make(p)._invoke()
+    assert rec["spawned"] == [rec["rounds"][0]["task_id"]]
+    assert "round-xyz" not in rec["spawned"]
+
+
+def test_task_id_fresh_per_invoke(rec):
+    """两次运行必须是两个 task：复用画布 task_id 会让不同文件的多轮审核串链。"""
+    cpn = _make(canvas=FakeCanvas(begin_outs={"review_file_id": "u1"}))
+    cpn._invoke()
+    cpn._invoke()
+    t1, t2 = (r["task_id"] for r in rec["rounds"])
+    assert t1 != t2
+    assert "canvas-task-id" not in (t1, t2)
+
+
+# ---------- 输出与元数据 ----------
+
+def test_outputs_after_invoke(rec):
+    rec["round_id"] = "round-9"
+    p = FileReviewParam()
+    p.file_id = "u1"
+    cpn = _make(p)
+    cpn._invoke()
+    assert cpn.output("task_id") == rec["rounds"][0]["task_id"]
+    assert cpn.output("round_id") == "round-9"
+    assert cpn.output("content")
+
+
+def test_param_outputs_declared():
+    """输出的键必须在 param 里声明，否则画布序列化 DSL 时下游引用不到。"""
+    assert set(FileReviewParam().outputs) == {"task_id", "round_id", "content"}
+
+
+def test_check_always_true():
+    """canvas.load() 会调 param.check() 并把异常包装成节点级报错——
+    本节点是运行期解析 file_id，配置期不该拦人。"""
+    assert FileReviewParam().check() is True
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+```bash
+uv run --no-sync pytest test/test_file_review_node.py -v
+```
+Expected: FAIL（`ModuleNotFoundError: No module named 'agent.component.file_review'`）
+
+- [ ] **Step 3: 创建 `agent/component/file_review.py`**
 
 ```python
 # agent/component/file_review.py
-"""「文件审核」画布节点：与 TemplateFill 同形态，启动 detached 后台线程跑多轮审核。
-节点只做任务创建 + 进度观察；执行逻辑全在 rag/svr/file_review/executor.py。"""
-import asyncio
+"""「文件审核」画布节点：fire-and-forget（只建轮次行 + 起后台线程，随即返回）。
+
+为什么与 TemplateFill 形态不同（不观察、不推 SSE）：执行的唯一真相是轮次行
+（file_review_round），进度由 T9 的 REST 端点按 file_id / task_id 反查——三个入口
+（本节点 / T8 对话工具 / T9 API）共用同一份真相。在节点内推流会把「执行」绑死在
+某个具体连接上（刷新即丢），且第三个入口无连接可推。
+
+file_id 是 /documents/upload 返回的 id（MinIO 对象名，桶 {tenant_id}-downloads）。
+画布会丢弃上传对象的 id（canvas.run 只把解析文本放进 sys.files / sys.file_content），
+故由前端以 canvas.run(inputs={"review_file_id": {"value": <uuid>}}) 送入 Begin，
+节点按 {begin@review_file_id} 引用展开或回退扫 Begin 输出（详见 _resolve_file_id）。
+
+类名刻意取 FileReview（工具侧是 FileReviewTool）：component_class 按类名解析且
+agent.component 优先于 agent.tools，两包同名类会互相遮蔽——TemplateFill 的 docstring
+记录了同一条教训，两包不得重名。
+"""
 import json
 import logging
+import re
 from functools import partial
 
 from agent.component.base import ComponentBase, ComponentParamBase
-from api.db.services.file_review_service import (
-    FileReviewRoundService,
-    FileReviewTemplateService,
-)
+from api.db.services.file_review_service import FileReviewRoundService
 from common.misc_utils import get_uuid
 from rag.svr.file_review import spawn as spawn_mod
-from rag.utils.redis_conn import REDIS_CONN
 
 logger = logging.getLogger(__name__)
 
-# SSE 通道：file_review_progress（独立事件名）
-_SSE_CHANNEL_PREFIX = "file_review:progress:"
+# Begin 承载「本次审核哪个上传文件」的输出键名。前端在 canvas.run(inputs=...) 里用这个
+# 键名送入上传 id，三处（对话页 / 流程页 / 本节点）必须一致。
+FILE_ID_INPUT_KEY = "review_file_id"
+
+# 第 1 轮的文件版本号。后续修复轮的 v2/v3 由 T9 的 fix 端点写入——executor 只按
+# 「同 task 已完成轮次」推输入版本，不认识版本号语义。
+_FIRST_VERSION = "v1"
 
 
 class FileReviewParam(ComponentParamBase):
-    """节点参数：file_id 必填；template_id 留空走 LLM 意图匹配（executor 暂走默认）"""
+    """file_id 有三种给法：参数写死 uuid / 参数写变量引用 / 留空读 Begin 输出。"""
+
     def __init__(self):
         super().__init__()
-        self.file_id = ""
-        self.template_id = ""  # 空 → executor 选默认 bid_doc_format
-        self.custom_prompt = ""
-        self.kb_ids = []
-        self.max_rounds = 3
+        self.file_id = ""         # upload uuid，或 {begin@review_file_id} 形态的引用
+        self.template_id = ""     # 留空 → 建轮次时落 executor.DEFAULT_TEMPLATE_ID
+        self.custom_prompt = ""   # 用户自定义审核要求，落进轮次行 user_query
+        self.dataset_ids = []     # 检索知识库（画布 KB 表单字段名，同 TemplateFill）
+        self.max_rounds = 3       # 前端节点面板用；后端不消费——轮次上限由 T9 的 fix
+                                  # 端点按 max_completed_round_no 判定，无对应 DB 列
+        self.outputs = {
+            "task_id": {"value": "", "type": "string"},
+            "round_id": {"value": "", "type": "string"},
+            "content": {"value": "", "type": "string"},
+        }
+
+    def check(self) -> bool:
+        # canvas.load() 会调 check() 并把异常包装成节点级报错。file_id 是**运行期**才
+        # 能解析出来的（引用要等 Begin 输出），配置期一律放行，让 _invoke 报具体原因。
+        return True
 
 
 class FileReview(ComponentBase):
     component_name = "FileReview"
 
+    def _expand_refs(self, text: str) -> str:
+        """变量引用展开：TemplateFill._resolve_query 同款四态（partial/list/str/JSON）。
+
+        复用同一套写法而不是另写解析：引用值的形态由上游组件决定（流式输出是 partial、
+        检索结果是 list），任一处漏判都会让引用原样留在文本里，变成一个看似合法的假
+        file_id，最后变成一句「文件不存在」的费解报错。
+        """
+        for k, v in self.get_input_elements_from_text(text).items():
+            val = v.get("value")
+            if isinstance(val, partial):
+                ans = "".join(str(chunk) for chunk in val())
+            elif isinstance(val, list):
+                ans = ",".join(str(item) for item in val)
+            elif val is None or isinstance(val, str):
+                ans = val or ""
+            else:
+                try:
+                    ans = json.dumps(val, ensure_ascii=False)
+                except Exception:  # noqa: BLE001 — 不可序列化值降级 str
+                    ans = str(val)
+            text = re.sub(r"\{" + re.escape(k) + r"\}", ans, text)
+        return text.strip()
+
+    def _begin_output(self, key: str) -> str:
+        """按 component_name 扫 Begin 输出取键值（TemplateFill._begin_fields 同款）。
+
+        不按 id 取：Begin 的 id 虽是硬编码的 "begin"，但节点参数可能被写成别的组件的
+        引用、或干脆留空，而「本次传入的上传文件」只可能来自 Begin 输出——扫一遍比
+        断言 id 更耐用。取不到（含异常）都返回空串，由调用方给出用户可读的报错。
+        """
+        try:
+            for cpn in (self._canvas.components or {}).values():
+                obj = cpn.get("obj") if isinstance(cpn, dict) else None
+                if obj is not None and getattr(obj, "component_name", "").lower() == "begin":
+                    val = (obj.output() or {}).get(key)
+                    return val if isinstance(val, str) else ""
+        except Exception:  # noqa: BLE001 — 取 Begin 输出失败不该拖垮整轮审核
+            logger.warning("FileReview._begin_output failed", exc_info=True)
+        return ""
+
+    def _resolve_file_id(self) -> str:
+        """待审核文件 id（= /documents/upload 返回的 uuid）。"""
+        text = self._expand_refs(self._param.file_id or "")
+        return text or self._begin_output(FILE_ID_INPUT_KEY)
+
     def _invoke(self, **kwargs):
-        """节点同步入口：创建 round + 起后台线程"""
-        param = self._param
-        if not param.file_id:
-            raise ValueError("FileReview 节点必须配置 file_id")
-
-        task_id = self.get_component_input('task_id') or get_uuid()
-        self.set_component_output('task_id', task_id)
-
-        # 第 1 轮：创建 round
-        rid = FileReviewRoundService.create_round(
-            task_id=task_id, file_id=param.file_id, round_no=1,
-            template_id=param.template_id or 'bid_doc_format',
-            user_query=param.custom_prompt or '审核',
-            file_version='v1', status='reviewing',
-            tenant_id=self._tenant_id, created_by=self._user_id or '',
+        tenant_id = self._canvas.get_tenant_id() if self._canvas else ""
+        if not tenant_id:
+            raise ValueError("无法确定画布租户")
+        file_id = self._resolve_file_id()
+        if not file_id:
+            raise ValueError(
+                "未指定待审核文件：请在节点配置里填写 file_id，"
+                "或由前端以 inputs={'review_file_id': {'value': <上传文件 id>}} 传入")
+        # 每次调用新生成 task_id：画布 task_id 跨运行不变（即 agent_id），复用它会让不同
+        # 文件的审核进同一条任务链（轮次号继承 + frv-{task_id}-{file_version} 对象名互覆盖）。
+        task_id = get_uuid()
+        # 默认模板 id 的唯一真相在 executor，此处延迟 import 取用（不在本模块复制字面量）；
+        # 延迟而非顶层 import，是为了不让画布启动路径（agent.component 包扫描会 import
+        # 本模块）连带拉起 python-docx / settings 等重依赖——spawn.py 同款取舍。
+        from rag.svr.file_review.executor import DEFAULT_TEMPLATE_ID
+        round_id = FileReviewRoundService.create_round(
+            task_id=task_id, file_id=file_id, round_no=1,
+            template_id=self._param.template_id or DEFAULT_TEMPLATE_ID,
+            user_query=self._param.custom_prompt or "",
+            file_version=_FIRST_VERSION, status="reviewing",
+            tenant_id=tenant_id, created_by=tenant_id,
+            # 形态（list / JSON 文本 / 裸 id）归一是 Service 层 _normalize_kb_ids 的职责，
+            # 节点原样透传，不在两处各写一遍口径。
+            kb_ids=self._param.dataset_ids,
         )
-        self.set_component_output('round_id', rid)
-
-        # 起后台线程
-        spawn_mod.spawn_review_task(rid)
-
-        return json.dumps({"task_id": task_id, "round_id": rid, "status": "reviewing"},
-                          ensure_ascii=False)
+        spawn_mod.spawn_review_task(task_id)
+        self.set_output("task_id", task_id)
+        self.set_output("round_id", round_id)
+        self.set_output("content", "已开始审核，批注结果将显示在「文件审核」面板中。")
 ```
 
-- [ ] **Step 2: 提交**
+- [ ] **Step 4: 跑测试确认通过**
 
 ```bash
-git add agent/component/file_review.py
-git commit -m "feat(file-review): canvas node FileReview"
+uv run --no-sync pytest test/test_file_review_node.py -v
 ```
+Expected: PASS
 
+- [ ] **Step 5: 冒烟——画布包整体 import（本模块在 `agent.component` 包扫描时被加载）**
+
+```bash
+uv run --no-sync python -c "
+from agent.component import component_class
+from agent.component.file_review import FileReviewParam
+print(component_class('FileReview').component_name, sorted(FileReviewParam().outputs))
+"
+```
+Expected: `FileReview ['content', 'round_id', 'task_id']`
+（若报 `ImportError`/`AssertionError`，是本模块顶层 import 引入了画布启动路径上的
+重依赖或循环——顶层只允许 import `spawn` 与 Service，**不得**顶层 import
+`rag.svr.file_review.executor`（含 `python-docx`），那是 `_invoke` 内按需拉起的。）
+
+- [ ] **Step 6: 提交**
+
+```bash
+git add agent/component/file_review.py test/test_file_review_node.py
+git commit -m "feat(file-review): canvas node FileReview + 单测"
+```
 ---
 
 ## Task 8: 对话工具 FileReviewTool
