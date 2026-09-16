@@ -3599,6 +3599,8 @@ T9 建轮次时应照此办理，不要再复制 `'bid_doc_format'` 字面量。
 - spawn 收到的是 **task_id** 而不是 round id（T5 契约）
 - 两次调用产出两个不同 task_id，且都不等于画布 task_id（复用会让不同文件互相覆盖）
 所有外部依赖（Service / spawn / Begin 组件）经替身注入，不触真实 DB / 线程 / LLM。
+（共 18 例：上列之外另有 4 例由审查补强——下划线 id 原样透传 / create_round 抛错不 spawn /
+Begin 读输出抛错降级 / Begin 输出非 str 视为取不到。）
 """
 import pytest
 
@@ -3687,12 +3689,47 @@ def test_file_id_falls_back_to_begin_output(rec):
 
 
 def test_file_id_ref_unresolved_falls_back(rec):
-    """引用写错/上游没推：展开为空 → 回退 Begin 输出，不得把 '{begin@...}' 当 id。"""
+    """上游没推（组件在、但该输出为空）：展开为空 → 回退 Begin 输出，
+    不得把 '{begin@...}' 当 id。"""
+    # 注意本用例只覆盖「上游没推」这一种；「引用写错」是另外的结局（拼错的 id 含下划线时
+    # 不匹配引用正则 → 字面串原样透传、不触发回退），见 test_file_id_underscore_ref_stays_literal。
     p = FileReviewParam()
     p.file_id = "{begin@review_file_id}"
     cpn = _make(p, FakeCanvas(begin_outs={"review_file_id": "upload-uuid-4"}, refs={}))
     cpn._invoke()
     assert rec["rounds"][0]["file_id"] == "upload-uuid-4"
+
+
+def test_file_id_underscore_ref_stays_literal(rec):
+    """不匹配引用正则的 {cpn_x@var} 形态不进展开，原样落库——
+    错误由 executor 的「文件不存在」暴露，节点不做创造性猜测。"""
+    p = FileReviewParam()
+    p.file_id = "{begin_x@review_file_id}"
+    _make(p)._invoke()
+    assert rec["rounds"][0]["file_id"] == "{begin_x@review_file_id}"
+
+
+def test_begin_output_raising_falls_back_to_error(rec):
+    """Begin 读输出出问题不应逸出异常，应降级成同一条用户可读报错。"""
+    class _BadBegin:
+        component_name = "Begin"
+
+        def output(self):
+            raise RuntimeError("boom")
+
+    cpn = _make(canvas=FakeCanvas(begin_outs={}))
+    cpn._canvas.components = {"begin": {"obj": _BadBegin()}}
+    with pytest.raises(ValueError, match="未指定待审核文件"):
+        cpn._invoke()
+    assert rec["rounds"] == []
+
+
+def test_begin_output_non_str_ignored(rec):
+    """Begin 输出不是 str（此处为 int）时按取不到处理，不得把 123 当 file_id。"""
+    cpn = _make(canvas=FakeCanvas(begin_outs={"review_file_id": 123}))
+    with pytest.raises(ValueError, match="未指定待审核文件"):
+        cpn._invoke()
+    assert rec["rounds"] == []
 
 
 def test_file_id_missing_raises(rec):
@@ -3757,6 +3794,19 @@ def test_spawn_receives_task_id_not_round_id(rec):
     _make(p)._invoke()
     assert rec["spawned"] == [rec["rounds"][0]["task_id"]]
     assert "round-xyz" not in rec["spawned"]
+
+
+def test_no_spawn_when_create_round_fails(rec, monkeypatch):
+    """建轮次失败必须不 spawn——否则起一个永远读不到轮次行的线程。"""
+    def _boom(**kwargs):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(fr.FileReviewRoundService, "create_round", _boom)
+    p = FileReviewParam()
+    p.file_id = "u1"
+    with pytest.raises(RuntimeError, match="db down"):
+        _make(p)._invoke()
+    assert rec["spawned"] == []
 
 
 def test_task_id_fresh_per_invoke(rec):
@@ -3887,7 +3937,13 @@ class FileReview(ComponentBase):
                     ans = json.dumps(val, ensure_ascii=False)
                 except Exception:  # noqa: BLE001 — 不可序列化值降级 str
                     ans = str(val)
-            text = re.sub(r"\{" + re.escape(k) + r"\}", ans, text)
+            # 必须用 callable 作替换值，不能把 ans 直接当替换串：replacement template
+            # 会把 ans 里的 \ 和 \g<n> 解释成转义 / 反向引用（"C:\Users\x.docx" 抛
+            # bad escape \U 且异常逸出连轮次行都建不起来，"a\nb" 被静默改写成真换行）。
+            # _ans=ans 把本轮值绑成默认参数（过 ruff B023「循环变量未绑定」）。
+            # ⚠ 照抄本段时保留 _ans=ans 写法——TemplateFill._resolve_query 的裸 ans 版本
+            # 有同款缺陷，别抄回去。
+            text = re.sub(r"\{" + re.escape(k) + r"\}", lambda _m, _ans=ans: _ans, text)
         return text.strip()
 
     def _begin_output(self, key: str) -> str:
@@ -3949,7 +4005,7 @@ class FileReview(ComponentBase):
 ```bash
 uv run --no-sync pytest test/test_file_review_node.py -v
 ```
-Expected: PASS
+Expected: PASS（18 例全绿）
 
 - [ ] **Step 5: 冒烟——画布包整体 import（本模块在 `agent.component` 包扫描时被加载）**
 
@@ -3971,6 +4027,13 @@ Expected: `FileReview ['content', 'round_id', 'task_id']`
 git add agent/component/file_review.py test/test_file_review_node.py
 git commit -m "feat(file-review): canvas node FileReview + 单测"
 ```
+
+**实测落地**：`a9eb846d`（实现，14 例）→ 审查后 `0dff040f`（修复：`_expand_refs` 的 `re.sub`
+替换值由裸 `ans` 改 callable，杜绝 `\` / `\g<n>` 被当转义或反向引用解释而抛 `bad escape \U`
+或静默改写 file_id；测试补到 18 例）。两道审查均已通过。
+**同批发现的既有问题（本任务未修，越界）**：`agent/component/template_fill.py:242` 的
+`_resolve_query` 有同款 replacement-template 漏洞。
+
 ---
 
 ## Task 8: 对话工具 FileReviewTool
