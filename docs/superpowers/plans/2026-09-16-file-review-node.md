@@ -24,7 +24,7 @@
 - `rag/svr/file_review/__init__.py` — 包标识
 - `rag/svr/file_review/executor.py` — 多轮状态机主循环（无 Quart 依赖）
 - `rag/svr/file_review/patcher.py` — find-match + python-docx/openpyxl patch 应用
-- `rag/svr/file_review/kb_aggregator.py` — 全 KB 并发 retrieve + token 截断
+- `rag/svr/file_review/kb_aggregator.py` — 纯函数：chunk 列表 → references 文本 + token 预算截断（检索 I/O 在 T6 executor）
 - `rag/svr/file_review/spawn.py` — daemon 线程 + 防重入（与 template_fill/spawn.py 同形态）
 - `agent/component/file_review.py` — 画布节点
 - `agent/tools/file_review.py` — 对话工具
@@ -577,46 +577,69 @@ git commit -m "feat(file-review): service layer CRUD + max round + annotation st
 
 ---
 
-## Task 3: KB 聚合器（全 KB 并发 retrieve + token 截断）
+## Task 3: KB 聚合器（references 拼装 + token 预算截断）
 
 **Files:**
 - Create: `rag/svr/file_review/kb_aggregator.py`
 - Test: `test/test_file_review_kb_aggregator.py`
 
+> **实施修正（2026-09-16，T3 派发前）**：原步骤有两处与真实代码不符，已就地改正——
+> ① `from rag.llm.tokenizer import num_tokens_from_string` 该模块不存在，项目统一用
+> `common/token_utils.num_tokens_from_string`（30+ 处调用点，见 `rag/app/naive.py:33`）；
+> ② chunk 契约写成「带 `page_key` 属性的对象」是错的——`rag/nlp/search.py:537-563`
+> `retrieval()` 实际构造的是 **dict**，文档名键为 `docnm_kwd`；另有 KG 分支把正文放
+> 在 `content`（`agent/tools/retrieval.py:385-388` 删掉了 `content_with_weight`）、
+> 分析结果分支用 `doc_name`。取值按 `content_with_weight → content → text`、
+> 文档名按 `docnm_kwd → doc_name → doc_id → chunk_id` 逐级回退（与
+> `rag/nlp/__init__.py:434-439 get_text()` 同款约定）。
+> ③ 任务标题里的「并发 retrieve」不在本任务：真实检索入口是
+> `await settings.retriever.retrieval(...)`（需要 embd_mdl/tenant_ids，属 I/O），
+> 由 T6 executor 的 `retrieve_kb_chunks` 承担；T3 保持**纯函数**，才能满足设计文档
+> §执行层「无 Quart 依赖，可独立测」的约束。
+>
+> **实施修正 2（2026-09-16，T3 质量审查后）——去掉头部标题行**：原设计让本函数额外
+> 输出 `用户需求：{user_query}` / `审核模板：{name}` / `参考资料：` 头部，但 5 套预置
+> 模板（`db_models.py _PRESET_REVIEW_TEMPLATES`）的 `user_prompt_template` 自己已经写了
+> `用户需求：{user_query}` 与 `参考资料：\n{references}` 两行标题，于是 T6 里
+> `tpl.user_prompt_template.format(..., references=references)` 会渲染出
+> 「`参考资料：`\n`用户需求：…`\n`审核模板：…`\n`参考资料：`\n[1] …」的嵌套重复——
+> 白烧 token 且容易被模型误读成两段独立清单。
+> **本质**：返回值是填进模板 `{references}` 占位符的**槽位内容**，标题归模板所有，
+> 槽位填充方只产片段。故**删除整个头部**，并删除随之失去意义的 `user_query` /
+> `template_name` 两个入参（签名收敛为 `aggregate_references(*, kb_chunks, budget)`）；
+> 无可用片段时返回空串，模板渲染出空的 `参考资料：` 段——这就是「本次没有参考资料」
+> 的诚实表达。此修正**不动已 seed 的 5 行预置模板**（seed 按 id 幂等跳过，改模板文本
+> 反而要额外迁移），因此是零迁移代价的修法。
+
 - [ ] **Step 1: 写失败测试**
 
 ```python
 # test/test_file_review_kb_aggregator.py
-from unittest.mock import MagicMock
+from common.token_utils import num_tokens_from_string
 from rag.svr.file_review.kb_aggregator import aggregate_references
 
 
+def _ck(text, name="doc1"):
+    """假 chunk：形状对齐 rag/nlp/search.py retrieval() 产出的 dict。"""
+    return {"chunk_id": "c1", "doc_id": "d1", "docnm_kwd": name,
+            "content_with_weight": text, "kb_id": "kb1", "similarity": 0.9}
+
+
 def test_empty_kb_returns_empty():
-    out = aggregate_references(
-        kb_chunks=[], user_query='审核投标书', template_name='投标文件格式规范',
-        budget=7800,
-    )
-    assert out == ''
+    assert aggregate_references(kb_chunks=[], budget=7800) == ''
 
 
 def test_concat_within_budget():
-    chunk = MagicMock()
-    chunk.page_key = 'doc1'
-    chunk.content_with_weight = 'x' * 100
-    out = aggregate_references(
-        kb_chunks=[chunk], user_query='q', template_name='t', budget=200,
-    )
+    out = aggregate_references(kb_chunks=[_ck('x' * 100)], budget=200)
     assert 'doc1' in out
     assert len(out) < 300
 
 
 def test_truncate_when_exceeds_budget():
-    chunks = [MagicMock(page_key=f'd{i}', content_with_weight='y' * 1000) for i in range(10)]
-    out = aggregate_references(
-        kb_chunks=chunks, user_query='q', template_name='t', budget=2000,
-    )
-    # 超过预算应截断，只保留前 N 条
-    assert out.count('参考资料') == 1
+    chunks = [_ck('y' * 1000, name=f'd{i}') for i in range(10)]
+    out = aggregate_references(kb_chunks=chunks, budget=2000)
+    # 预算即真实上限；且 10 条装不下（'y'*1000 = 250 token）
+    assert num_tokens_from_string(out) <= 2000
 ```
 
 - [ ] **Step 2: 跑测试确认失败** — `uv run --no-sync pytest test/test_file_review_kb_aggregator.py -v` 期望：ImportError
@@ -630,30 +653,90 @@ def test_truncate_when_exceeds_budget():
 - [ ] **Step 4: 创建 `rag/svr/file_review/kb_aggregator.py`**
 
 ```python
-"""KB 聚合器：全 KB 并发 retrieve + token 截断。
-复用 rag/nlp/search.py 的 retrieve 接口（已是公共接口）。"""
-from typing import Iterable
+"""KB 聚合器：把已检索到的 KB chunk 拼成给 LLM 的参考资料片段 + token 预算截断。
 
-from rag.llm.tokenizer import num_tokens_from_string
+为什么是纯函数：执行层（T6 executor 守护线程）负责 I/O——embedding/ES 检索与
+LLM 调用；本模块只做「chunk 列表 → references 字符串」这一段纯变换，
+不 import settings/Quart，可用假数据独立测试（设计文档 §执行层约束）。
+
+为什么只产片段、不产标题：返回值是填进审核模板 {references} 占位符的**槽位内容**。
+5 套预置模板（db_models.py _PRESET_REVIEW_TEMPLATES）自己已写了
+"用户需求：{user_query}" 与 "参考资料：\n{references}" 两行标题；槽位填充方再输出
+一遍标题，成稿 prompt 里就会出现「参考资料：\n用户需求：…\n审核模板：…\n参考
+资料：」的嵌套重复。故本模块只输出编号片段，无任何标题行。无可用片段时返回空串，
+模板渲染出空的 "参考资料：" 段——这就是「本次没有参考资料」的诚实表达。
+
+chunk 契约（dict，形状见 rag/nlp/search.py retrieval()）：
+    {"chunk_id", "content_with_weight", "doc_id", "docnm_kwd", "kb_id", ...}
+真实检索结果是 dict 而非对象，文档名读 "docnm_kwd"。
+注意 retrieval() 返回的是 ranks 容器 {"chunks": [...], "doc_aggs": [...]}，
+调用方要先取 ranks["chunks"]（传错形状会抛 TypeError，见下——刻意的响亮失败，
+避免"零参考"静默跑完）。
+
+截断语义（锁定，测试依赖）：
+  - budget 是返回串的 token 上限；不变式 tokens(返回值) <= budget。
+  - chunk 整条进或整条不进，绝不切半条：半条标准条款截在句子中间，比没有更容易
+    误导 LLM 产出错误批注。
+  - 超预算即 break，不跳过靠前的大块去塞靠后的小块：保持检索给出的相关度排序。
+  - 编号 [i] 按**已输出**顺序连续递增。
+"""
+from collections.abc import Iterable
+
+from common.token_utils import num_tokens_from_string
+
+# 正文键回退顺序：ES chunk → KG/其它分支 → 兜底
+_CONTENT_KEYS = ("content_with_weight", "content", "text")
+# 文档可读名回退顺序
+_LABEL_KEYS = ("docnm_kwd", "doc_name", "doc_id", "chunk_id")
 
 
-def aggregate_references(*, kb_chunks: Iterable, user_query: str,
-                         template_name: str, budget: int) -> str:
-    """拼接 KB 检索结果为 references 字符串，超 budget 截断。
-    kb_chunks 元素需有 page_key / content_with_weight 属性（ragflow KB chunk 契约）。"""
-    if not kb_chunks:
-        return ''
-    parts = [f"用户需求：{user_query}", f"审核模板：{template_name}", "", "参考资料："]
-    used = sum(num_tokens_from_string(p) for p in parts)
-    out_parts = list(parts)
-    for i, chunk in enumerate(kb_chunks, 1):
-        snippet = f"[{i}] doc={chunk.page_key}\n{chunk.content_with_weight}\n"
-        tok = num_tokens_from_string(snippet)
-        if used + tok > budget:
+def _chunk_text(chunk) -> str:
+    """取 chunk 正文，兼容三种来源（见模块 docstring）。"""
+    if not isinstance(chunk, dict):
+        return ""
+    for key in _CONTENT_KEYS:
+        val = chunk.get(key)
+        if isinstance(val, str) and val.strip():
+            return val
+    return ""
+
+
+def _chunk_label(chunk) -> str:
+    """取 chunk 所属文档的可读名，逐级回退。"""
+    if not isinstance(chunk, dict):
+        return "?"
+    for key in _LABEL_KEYS:
+        val = chunk.get(key)
+        if isinstance(val, str) and val.strip():
+            return val
+    return "?"
+
+
+def aggregate_references(*, kb_chunks: Iterable, budget: int) -> str:
+    """把 KB chunk 拼成编号参考资料片段，token 数不超过 budget。
+
+    非 dict / 无正文的 chunk 直接跳过（不占编号、不占预算）；一条都放不下时返回 ""。
+    """
+    if isinstance(kb_chunks, dict):
+        # retrieval() 返回的是 ranks 容器；误把整个容器传进来会退化成「零参考」却
+        # 静默跑完。这里响亮失败，让调用方立刻发现。
+        raise TypeError("kb_chunks 需为 chunk 列表（ranks['chunks']），不是 ranks 容器")
+    entries = []
+    n = 0
+    for chunk in list(kb_chunks or []):
+        text = _chunk_text(chunk)
+        if not text:
+            continue
+        entry = f"[{n + 1}] doc={_chunk_label(chunk)}\n{text}\n"
+        candidate = entries + [entry]
+        # 预算按**真实输出串**计，不是各段 token 之和："\n".join() 会插入分隔符，且
+        # BPE 在段边界可能合并出不同 token，两者并不相等。按 join 后整串计，
+        # budget 才是真正的输出上限。
+        if num_tokens_from_string("\n".join(candidate)) > budget:
             break
-        out_parts.append(snippet)
-        used += tok
-    return "\n".join(out_parts)
+        entries = candidate
+        n += 1
+    return "\n".join(entries)
 ```
 
 - [ ] **Step 5: 跑测试确认通过**
@@ -952,13 +1035,26 @@ logger = logging.getLogger(__name__)
 
 
 def retrieve_kb_chunks(kb_ids, query):
-    """懒加载包装：测试可 monkeypatch；真实调用走 rag/nlp/search.py。"""
-    from rag.nlp.search import search
-    chunks = []
-    for kid in (kb_ids or []):
-        for c in search(kid, query, top_k=5):
-            chunks.append(c)
-    return chunks
+    """懒加载包装：测试可 monkeypatch；真实调用走 settings.retriever.retrieval。
+
+    注意：`retrieval()` 返回的是 ranks 容器 {"chunks": [...], "doc_aggs": [...]}，
+    必须取 ranks["chunks"] 再交给 aggregate_references（传整个 ranks 容器会抛
+    TypeError，这是刻意的响亮失败，避免"零参考"静默跑完）。
+    检索是 async 的，本模块跑在守护线程里，故包一层 asyncio.run。
+    参数（embd_mdl / tenant_ids / similarity / rerank）依赖 settings 与 LLMBundle，
+    属 I/O，测试一律 monkeypatch 掉本函数。
+    """
+    import asyncio
+
+    from common import settings
+
+    async def _run():
+        ranks = await settings.retriever.retrieval(
+            query, None, [], list(kb_ids or []), 1, 5,
+        )
+        return ranks.get("chunks", [])
+
+    return asyncio.run(_run())
 
 
 def llm_review(*, system_prompt: str, user_prompt: str) -> dict:
@@ -990,12 +1086,10 @@ def execute_task(round_id: str) -> None:
             FileReviewRoundService.update_status(round_id, 'failed', error='审核模板缺失')
             return
 
-        # KB 聚合
-        kb_chunks = retrieve_kb_chunks(kb_ids=None, query=f"{round_row.user_query} {tpl.name}")
-        references = aggregate_references(
-            kb_chunks=kb_chunks, user_query=round_row.user_query,
-            template_name=tpl.name, budget=7800,
-        )
+        # KB 聚合：references 是模板 {references} 占位符的槽位内容（只含编号片段，
+        # 标题行由模板自己写，见 T3 实施修正 2）
+        kb_chunks = retrieve_kb_chunks(kb_ids=None, query=f"{round_row.user_query or ''} {tpl.name}")
+        references = aggregate_references(kb_chunks=kb_chunks, budget=7800)
 
         # 加载文件全文（docx 用 python-docx，xlsx 用 openpyxl，简化以 plain text 演示）
         from rag.utils.minio_conn import MINIO
@@ -1013,8 +1107,11 @@ def execute_task(round_id: str) -> None:
                 file_text = ''
 
         file_excerpt = file_text[:500]
+        # user_query 列可空（db_models.FileReviewRound.user_query = TextField(null=True)），
+        # 直接 format 会把字面量 "None" 渲染进 prompt，故统一归一为空串
         user_prompt = tpl.user_prompt_template.format(
-            user_query=round_row.user_query, file_excerpt=file_excerpt, references=references,
+            user_query=round_row.user_query or '', file_excerpt=file_excerpt,
+            references=references,
         )
 
         # LLM 审视

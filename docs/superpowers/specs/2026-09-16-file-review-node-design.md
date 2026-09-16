@@ -230,20 +230,43 @@ class FileReviewTool(ToolBase):
 
 ## 6. KB 聚合策略（全检全取 + 按轮 token 预算）
 
+> **实施修正（2026-09-16，T3 落地后同步）**：原草图为「api 层 async 函数内部做检索 + 截断」，
+> 落地时按执行层解耦原则拆成两半，并以实际代码为准：
+>
+> - **检索 I/O 在 `rag/svr/file_review/executor.py`（T6）的 `retrieve_kb_chunks`**：调
+>   `settings.retriever.retrieval(query, embd_mdl, tenant_ids, kb_ids, page=1, page_size=5)`，
+>   取返回的 **ranks 容器**里的 `ranks["chunks"]` 再往下传。参数需 embd_mdl/tenant_ids，
+>   是 async，而执行层跑在守护线程里，故包一层 `asyncio.run`。
+> - **聚合 + 截断是纯函数 `rag/svr/file_review/kb_aggregator.py`（T3，已实现）**：
+>   `aggregate_references(*, kb_chunks, budget) -> str`，不 import settings/Quart，可独立单测。
+>   `kb_chunks` 传成 dict（即误把 ranks 容器整个传进来）会抛 `TypeError`——刻意的响亮失败，
+>   避免"零参考"静默跑完。
+>
+> **只产片段、不产标题**（T3 质量审查后修正）：返回值是填进模板 `{references}` 占位符的
+> **槽位内容**。5 套预置模板自己已写了 `用户需求：{user_query}` 与 `参考资料：\n{references}`
+> 两行标题，槽位填充方再输出一遍标题，成稿 prompt 会渲染出「参考资料：→用户需求：→
+> 参考资料：」的嵌套重复。故本函数**只输出编号片段**（`[i] doc=<名>\n<正文>`），无任何
+> 标题行；无可用片段时返回空串，模板渲染出空的 `参考资料：` 段即为「本次没有参考资料」。
+>
+> **截断语义（已锁定，测试依赖）**：`budget` 是**返回串**的 token 上限，且按
+> `"\n".join(候选)` 的真实输出串计数——不是各段 token 之和（`join` 会插入分隔符、BPE 在
+> 段边界可能合并出不同 token，实测头部 sum=15 / join=17，旧口径在 budget=23 时放行了
+> 25 token）。条目**整条进或整条不进**（半条标准条款截在句中比没有更易误导 LLM）；
+> 超预算即 break，不跳过靠前大块去塞靠后小块（保持检索相关度排序）；编号按已输出顺序
+> 连续递增。
+
 ```python
-# api/apps/restful_apis/file_review_api.py 内（独立实现，不动 TemplateFill 的 KB 调用）
-async def aggregate_references(file_id, user_query, template_id, kb_ids=None):
-    # 1. kb_ids 留空 → 取 tenant 全部 enabled KB
-    kbs = await kb_service.list_enabled(kb_ids or None)
-    # 2. 文件级 query = user_query + 模板名
-    query = f"{user_query} {template_name}"
-    # 3. 每 KB 并发 retrieve（top_k=5）
-    chunks = await asyncio.gather(*[kb.retrieve(query, top_k=5) for kb in kbs])
-    # 4. 截断至总 token 预算 8000（system 限 200，KB 余 7800）
-    return truncate_to_token_budget(flatten(chunks), budget=7800)
+# rag/svr/file_review/kb_aggregator.py（纯函数，已实现）
+def aggregate_references(*, kb_chunks: Iterable, budget: int) -> str:
+    # chunk 为 dict（rag/nlp/search.py retrieval() 产出形状）：
+    #   {"chunk_id","content_with_weight","doc_id","docnm_kwd","kb_id",...}
+    # 正文回退 content_with_weight → content → text；文档名回退
+    #   docnm_kwd → doc_name → doc_id → chunk_id → "?"
+    # 非 dict / 无正文 → 跳过（不占编号不占预算）；返回串 token 数 <= budget
 ```
 
-**token 估算复用**：`rag/llm/tokenizer.py` 已有的 `num_tokens_from_string`（公共工具，非 TemplateFill 私有）。
+**token 估算复用**：`common/token_utils.py` 的 `num_tokens_from_string`（公共工具，30+ 处调用点）。
+（原草稿写的 `rag/llm/tokenizer.py` 不存在，属笔误。）
 
 ---
 
