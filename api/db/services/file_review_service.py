@@ -339,13 +339,20 @@ class FileReviewAnnotationService(FileReviewServiceBase):
 
     @classmethod
     @DB.connection_context()
-    def delete_by_round(cls, round_id: str) -> int:
-        """删除该轮次的全部标注，返回删除行数。
+    def delete_by_round(cls, round_id: str, source: str | None = "ai") -> int:
+        """删除该轮次的 AI 标注，返回删除行数。
 
         用途是**保重试幂等**：进程被杀后轮次会滞留在 reviewing，重试会重跑整轮，
         若不清旧标注就会把每条问题再写一遍，面板上出现成对重复。范围严格限定在
         round_id（不按 task_id），避免把历史轮次的人工批注一起抹掉。
+
+        source 默认只删 'ai'：同一轮次上可能存在用户手写批注（source='manual'），
+        它们不是本方法要清的对象 —— 「重跑 AI 审核」不该抹掉用户的活。传 None 退化
+        为只按 round_id 清空整轮，给确实需要清空整轮的场景留出口。
         """
         if not round_id:
             return 0
-        return cls.model.delete().where(cls.model.round_id == round_id).execute()
+        expr = cls.model.round_id == round_id
+        if source is not None:
+            expr = expr & (cls.model.source == source)
+        return cls.model.delete().where(expr).execute()

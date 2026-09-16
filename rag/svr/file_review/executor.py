@@ -12,7 +12,8 @@
 - T5 契约：`execute_task` 必须保证返回（防重入集合没有超时/看门狗，永久阻塞 = 该 task 被
   永远判为「已在执行中」，只能重启进程恢复）。故每条外部调用都有明确的失败出口。
 - 幂等：状态非 reviewing/fixing 的轮次（已完结 / 未知）安静返回，重复 spawn 无副作用；
-  同一轮重跑会先删该轮旧标注（否则进程被杀后重试会留下两套标注）。
+  同一轮重跑会先删该轮的旧 **AI** 标注（否则进程被杀后重试会留下两套标注；用户手写的
+  manual 批注不是本模块的产物，不在清理范围内）。
 """
 
 import asyncio
@@ -110,7 +111,13 @@ def execute_task(task_id: str) -> None:
     try:
         handler(cur, _latest_version_name(rounds, cur))
     except Exception as e:
-        err = str(e) if isinstance(e, FileReviewError) else f"{e.__class__.__name__}: {e}"
+        if isinstance(e, FileReviewError):
+            # FileReviewError 的文案本身就是面向用户的说明，原样透出
+            err = str(e)
+        else:
+            # 其余异常的原文（DB/MinIO 地址、内网路径）会经 error 列透给前端：既是内网
+            # 拓扑泄露，对用户也毫无指导价值。原文只进日志。
+            err = "服务端内部错误，请稍后重试（详见服务端日志）"
         logger.exception("file review round failed, round_id=%s", cur.id)
         try:
             FileReviewRoundService.update_status(cur.id, "failed", error=err[:2000])
@@ -142,8 +149,15 @@ def _run_review_round(round_row, version_name) -> None:
         # None ≠ []：解析失败不能伪装成「审核通过」，否则用户看到的是一个虚假的干净结果
         FileReviewRoundService.update_status(round_row.id, "failed", llm_raw=_clip_raw(raw), error="LLM 输出无法解析为标注列表（原始响应见 llm_raw），请重试")
         return
-    FileReviewAnnotationService.delete_by_round(round_row.id)  # 重跑先清旧标注，保幂等
-    stats = _persist_annotations(round_row, _collect_annotations(parsed, tpl, items))
+    collected = _collect_annotations(parsed, tpl, items)
+    if parsed and not collected:
+        # 与修复轮同构的守卫（见 _run_fix_round 的 idx 判据）：有条目但全不可用（原文与
+        # 问题描述皆空）是畸形响应，落成「未发现问题」等于伪造审核通过。收口必须在
+        # delete_by_round **之前**：这种情况一条新标注都不该落，旧结果更不该被毁。
+        FileReviewRoundService.update_status(round_row.id, "failed", llm_raw=_clip_raw(raw), error="LLM 返回了标注条目但均无可读的原文与问题描述，请重试")
+        return
+    FileReviewAnnotationService.delete_by_round(round_row.id)  # 重跑先清该轮 AI 标注，保幂等
+    stats = _persist_annotations(round_row, collected)
     FileReviewRoundService.update_status(round_row.id, "annotated", llm_raw=_clip_raw(raw), summary=_summary_from_stats(stats))
 
 
@@ -174,14 +188,25 @@ def _run_fix_round(round_row, version_name) -> None:
         return
     if not patches:
         # 合法但空：LLM 判断无需改动。判 failed 会诱发无效重试
-        FileReviewRoundService.update_status(round_row.id, "done", llm_raw=_clip_raw(raw), summary=f"共 {len(chosen)} 项待修复；本轮未产出可落地的修复补丁（保持原样）")
+        summary = f"共 {len(pending)} 项待修复；本轮未产出可落地的修复补丁（保持原样）" + _capped_note(len(pending), len(chosen))
+        FileReviewRoundService.update_status(round_row.id, "done", llm_raw=_clip_raw(raw), summary=summary)
         return
     new_blob, applied = apply_patches_to_docx(blob, patches)
-    fixed_n = _settle_annotations(chosen, by_pos, applied)
-    extra = {"minio_path": _store_version_blob(round_row, new_blob)} if any(applied) else {}
-    open_n = len(chosen) - fixed_n
-    summary = f"本轮修复 {fixed_n} 项" + (f"；{open_n} 项未能唯一定位原文（保持原样）" if open_n else "")
+    extra = {}
+    if any(applied):
+        # 先落盘再改任何状态：对象名由 task_id + file_version 决定，重试覆盖同名对象，天然幂等；
+        # 反过来（先置 fixed 后落盘）一旦 Put 失败，标注说已修、文档没改、重试只看得到
+        # 「没有待修复的问题」——没有任何自动路径能回到正确状态。
+        extra["minio_path"] = _store_version_blob(round_row, new_blob)
+    fixable = _fixable_positions(chosen, patches, by_pos, applied)
+    open_n = len(chosen) - len(fixable)
+    summary = f"本轮修复 {len(fixable)} 项" + (f"；{open_n} 项未能唯一定位原文（保持原样）" if open_n else "") + _capped_note(len(pending), len(chosen))
+    # 收口先于置 fixed：标注状态是「本轮已完成」的派生结果，轮次行写不进去时标注必须留
+    # 在 open（重试才有意义）。派生状态不得抢先于权威记录落地。
     FileReviewRoundService.update_status(round_row.id, "done", llm_raw=_clip_raw(raw), summary=summary, **extra)
+    settled = _settle_annotations(chosen, patches, by_pos, applied)
+    if settled != len(fixable):
+        logger.warning("file review: marked %s/%s annotations fixed, round_id=%s", settled, len(fixable), round_row.id)
 
 
 # ── 外部依赖（模块级 seam，便于测试注入）───────────────────────────
@@ -254,14 +279,17 @@ def _call_llm(tenant_id: str, system_prompt: str, user_prompt: str) -> str:
 def _latest_version_name(rounds: list, upto) -> str | None:
     """取 round_no <= upto 的最近一个已落盘版本对象名（多轮叠加的输入基线）。
 
-    rounds 已按 round_no 升序，故最后一个命中即最近；排除当前轮自身，避免把
-    「本轮的产物」当成「本轮的输入」。
+    显式选 round_no 最大者（同号时后者胜），**不依赖入参顺序**：get_by_task 目前保证
+    升序，但把正确性寄托在调用方的排序上，换个调用路径就会静默退回到更旧的版本。
+    排除当前轮自身，避免把「本轮的产物」当成「本轮的输入」。
     """
-    name = None
+    best = None
     for r in rounds:
-        if r.id != upto.id and r.round_no <= upto.round_no and r.minio_path:
-            name = r.minio_path
-    return name
+        if r.id == upto.id or r.round_no > upto.round_no or not r.minio_path:
+            continue
+        if best is None or r.round_no >= best.round_no:
+            best = r
+    return best.minio_path if best else None
 
 
 def _parse_kb_ids(raw) -> list:
@@ -501,6 +529,14 @@ def _persist_annotations(round_row, collected: list) -> dict:
     return stats
 
 
+def _capped_note(total: int, chosen_n: int) -> str:
+    """待修数超过单轮上限时补一句真实总量，否则用户会把「本轮处理数」当成「问题总数」，
+    剩下那些既不进摘要也不进任何计数。"""
+    if total <= chosen_n:
+        return ""
+    return f"；本轮仅处理前 {chosen_n} 项，其余 {total - chosen_n} 项留待下一轮"
+
+
 def _summary_from_stats(stats: dict) -> str:
     """摘要由**实际落库**的标注派生，不用 LLM 自述的 summary——预置模板输出的是裸数组，
     没有 summary 槽位；自述一旦与实际条数不符，面板就会自相矛盾。"""
@@ -547,15 +583,54 @@ def _plan_patches(parsed: list, chosen: list) -> tuple:
     return patches, by_pos
 
 
-def _settle_annotations(chosen: list, by_pos: dict, applied: list) -> int:
-    """把真正落地的补丁对应标注标 fixed，返回条数；未生效的保持 open（未修复好保持原样）。"""
-    fixed = 0
+def _patch_matches_annotation(ann, patch) -> bool:
+    """补丁的 find 与该标注的 matched_text 是否指向同一段话。
+
+    判据取**双向**子串：find 合法地会比 matched_text 更长（向外扩上下文以保证全文唯一，
+    这正是 FIX_SYSTEM 要求的）或更短（取更短的唯一子串），相等只是其中一种特例。
+    matched_text 为空（标注允许只给问题描述不给原文）时无从校验，**按序号认**——
+    不因噎废食地把这类条目挡在修复之外。find 可能是 None / 非 str（_plan_patches 刻意
+    原样透传），非 str 一律当没给。
+    """
+    raw_find = patch.get("find") if isinstance(patch, dict) else None
+    needle = norm_ws(ann.matched_text or "")
+    find = norm_ws(raw_find) if isinstance(raw_find, str) else ""
+    if not needle or not find:
+        return True
+    return needle in find or find in needle
+
+
+def _fixable_positions(chosen: list, patches: list, by_pos: dict, applied: list) -> list:
+    """真正该标 fixed 的补丁下标：补丁落地 + 序号对得上 + find 确实在改这条标注指的那段话。
+
+    LLM 偶发把 idx 串位时 find 仍可能唯一定位（改的是文档里另一处），只按序号盖
+    「已修复」就是假修复：错的标注变 fixed，原问题分毫未动。
+    """
+    out = []
     for pos, ok in enumerate(applied):
         if not ok:
             continue
         idx = by_pos.get(pos)
         if idx is None:
             continue
-        if FileReviewAnnotationService.update_status(chosen[idx - 1].id, "fixed"):
+        if _patch_matches_annotation(chosen[idx - 1], patches[pos]):
+            out.append(pos)
+    return out
+
+
+def _settle_annotations(chosen: list, patches: list, by_pos: dict, applied: list) -> int:
+    """把真正落地的补丁对应标注标 fixed，返回条数；未生效的保持 open（未修复好保持原样）。
+
+    只负责写标注状态：调用方须先算出 _fixable_positions（摘要要用）并完成轮次收口
+    （见 _run_fix_round 的顺序约定）。
+    """
+    fixable = set(_fixable_positions(chosen, patches, by_pos, applied))
+    for pos, ok in enumerate(applied):
+        idx = by_pos.get(pos)
+        if ok and idx is not None and pos not in fixable:
+            logger.warning("file review: patch find does not match annotation %s, left open", chosen[idx - 1].id)
+    fixed = 0
+    for pos in fixable:
+        if FileReviewAnnotationService.update_status(chosen[by_pos[pos] - 1].id, "fixed"):
             fixed += 1
     return fixed

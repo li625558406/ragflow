@@ -540,3 +540,38 @@ def test_delete_by_round_only_removes_that_round():
     assert FileReviewAnnotationService.delete_by_round(r1) == 1
     rest = FileReviewAnnotation.select().where(FileReviewAnnotation.task_id == tid)
     assert [a.round_id for a in rest] == [r2]
+
+
+def test_delete_by_round_default_keeps_manual_annotations():
+    """默认只清 AI 产物：用户在同一轮次上补的手写批注（source=manual）不是本方法的对象。
+
+    AI 审核重跑是「清掉自己上轮的结果」，把用户的活一起抹掉属于数据丢失。
+    """
+    tid = PFX + 'delroundmanual'
+    r = _mk_round(tid, 1, 'reviewing')
+    ai = FileReviewAnnotationService.create(
+        round_id=r, task_id=tid, file_id=PFX + '-file', file_version='v1',
+        anchor='{}', matched_text='ai', type='format', severity='low',
+        issue='i', suggestion='', source='ai', tenant_id=PFX)
+    manual = FileReviewAnnotationService.create(
+        round_id=r, task_id=tid, file_id=PFX + '-file', file_version='v1',
+        anchor='{}', matched_text='手写', type='format', severity='low',
+        issue='i', suggestion='', source='manual', tenant_id=PFX)
+    assert FileReviewAnnotationService.delete_by_round(r) == 1
+    rest = {a.id for a in FileReviewAnnotation.select().where(FileReviewAnnotation.task_id == tid)}
+    assert rest == {manual}, '手写批注必须保留'
+    assert ai not in rest
+
+
+def test_delete_by_round_none_source_removes_everything():
+    """source=None 退化为「只按 round_id 清空整轮」——给确实需要整轮清空的场景留出口。"""
+    tid = PFX + 'delroundall'
+    r = _mk_round(tid, 1, 'reviewing')
+    for src in ('ai', 'manual'):
+        FileReviewAnnotationService.create(
+            round_id=r, task_id=tid, file_id=PFX + '-file', file_version='v1',
+            anchor='{}', matched_text=src, type='format', severity='low',
+            issue='i', suggestion='', source=src, tenant_id=PFX)
+    assert FileReviewAnnotationService.delete_by_round(r, None) == 2
+    rest = FileReviewAnnotation.select().where(FileReviewAnnotation.task_id == tid)
+    assert list(rest) == []

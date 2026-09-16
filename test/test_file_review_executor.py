@@ -9,6 +9,8 @@
 
 import io
 import json
+import logging
+from types import SimpleNamespace
 
 import pytest
 from docx import Document
@@ -406,21 +408,31 @@ def test_execute_task_empty_annotation_array_marks_annotated(monkeypatch, fstore
     assert row.status == "annotated" and row.summary == "未发现问题" and _anns(tid) == []
 
 
-def test_execute_task_retrieval_failure_marks_failed(monkeypatch, fstore):
-    """检索失败不得静默按「零参考」继续——那会让用户以为「标准就是这些」。"""
+def test_execute_task_retrieval_failure_marks_failed(monkeypatch, fstore, caplog):
+    """检索失败不得静默按「零参考」继续——那会让用户以为「标准就是这些」。
+
+    但 error 列**不得**带上内部异常原文：T9 会把它原样透给前端，DB 地址/内网拓扑
+    是白给的信息泄露，且对用户毫无指导价值。原文只进服务端日志。
+    """
     tid = PFX + "-retrfail"
     _mk_template()
     rid = _mk_round(tid, kb_ids=["kb-1"])
 
     def _boom(*a, **k):
-        raise RuntimeError("retriever down")
+        raise RuntimeError("Can't connect to MySQL server on '10.0.0.1:3306'")
 
     monkeypatch.setattr(executor, "_load_original_blob", lambda t, f: _docx([_BODY]))
     monkeypatch.setattr(executor, "_retrieve_chunks", _boom)
     monkeypatch.setattr(executor, "_call_llm", lambda *a: "[]")
-    executor.execute_task(tid)
+    with caplog.at_level(logging.ERROR, logger="rag.svr.file_review.executor"):
+        executor.execute_task(tid)
     row = _round(rid)
-    assert row.status == "failed" and "retriever down" in row.error
+    assert row.status == "failed"
+    assert row.error == "服务端内部错误，请稍后重试（详见服务端日志）"
+    assert "10.0.0.1" not in row.error and "RuntimeError" not in row.error
+    # 原文确实被 logger.exception 记了（不然排查无从下手）
+    errs = [r for r in caplog.records if r.levelno >= logging.ERROR and r.exc_info]
+    assert errs and "10.0.0.1" in str(errs[-1].exc_info[1])
 
 
 def test_execute_task_unsupported_file_type_marks_failed(monkeypatch, fstore):
@@ -761,3 +773,283 @@ def test_execute_task_drops_empty_shell_annotations(monkeypatch, fstore):
     _wire(monkeypatch, blob=_docx(["甲甲甲" + _BODY]), raw=raw)
     executor.execute_task(tid)
     assert len(_anns(tid)) == 1 and _round(rid).status == "annotated"
+
+
+# ── 审查轮三态：None（解析失败）/ []（明确零问题）/ 非空但全废（畸形） ──
+def test_review_round_three_state_separation(monkeypatch, fstore):
+    """三态必须严格分开，混同任两条都会出事故：
+
+    - None 混成 [] → 解析失败伪造成「审核通过」（用户看到假的干净报告）；
+    - [] 混成 None → LLM 明确说没问题却判故障，逼用户无效重试；
+    - 非空但全废（条目在、原文与问题描述皆空）混成 [] → 同样是伪造「审核通过」。
+    """
+    _mk_template()
+
+    # ① None：不可解析 → failed
+    t_none = PFX + "-3s-none"
+    r_none = _mk_round(t_none)
+    _wire(monkeypatch, blob=_docx([_BODY]), raw="我拒绝回答该问题")
+    executor.execute_task(t_none)
+    assert _round(r_none).status == "failed" and _anns(t_none) == []
+
+    # ② []：合法空数组 = LLM 明确报告零问题 → annotated + 「未发现问题」
+    t_empty = PFX + "-3s-empty"
+    r_empty = _mk_round(t_empty)
+    _wire(monkeypatch, blob=_docx([_BODY]), raw="[]")
+    executor.execute_task(t_empty)
+    row = _round(r_empty)
+    assert row.status == "annotated" and row.summary == "未发现问题" and _anns(t_empty) == []
+
+    # ③ 非空但全废 → failed（不许伪装成零问题）
+    t_shell = PFX + "-3s-shell"
+    r_shell = _mk_round(t_shell)
+    _wire(monkeypatch, blob=_docx([_BODY]), raw=json.dumps([{"type": "low"}]))
+    executor.execute_task(t_shell)
+    row = _round(r_shell)
+    assert row.status == "failed" and _anns(t_shell) == []
+    assert row.summary is None, "畸形响应不得留下「未发现问题」这类摘要"
+
+
+def test_execute_task_shell_only_annotations_keeps_previous_annotations(monkeypatch, fstore):
+    """畸形响应下一条新标注都不该落，**更不该先把旧标注删了**（那是重试前的既得结果）。"""
+    tid = PFX + "-shellkeep"
+    _mk_template()
+    rid = _mk_round(tid)  # 模拟进程被杀后滞留 reviewing 的重跑
+    old = FileReviewAnnotationService.create(
+        round_id=rid,
+        task_id=tid,
+        file_id=PFX + "-file",
+        file_version="v1",
+        anchor="{}",
+        matched_text="上一轮的问题",
+        type="format",
+        severity="high",
+        issue="旧",
+        suggestion="",
+        source="ai",
+        status="open",
+        tenant_id=PFX,
+        created_by=PFX,
+    )
+    _wire(monkeypatch, blob=_docx([_BODY]), raw=json.dumps([{"matched_text": "", "issue": ""}]))
+    executor.execute_task(tid)
+    row = _round(rid)
+    assert row.status == "failed" and "均无可读的原文与问题描述" in row.error
+    assert [a.id for a in _anns(tid)] == [old], "畸形响应不得删掉旧标注"
+
+
+def test_execute_task_non_str_annotation_fields_marks_failed(monkeypatch, fstore):
+    """matched_text/issue 非 str 会被 _clean_str 归空 → 与空壳同罪，不能落成零问题。"""
+    tid = PFX + "-nonstr"
+    _mk_template()
+    rid = _mk_round(tid)
+    _wire(monkeypatch, blob=_docx([_BODY]), raw=json.dumps([{"matched_text": 123, "issue": 456}]))
+    executor.execute_task(tid)
+    assert _round(rid).status == "failed" and _anns(tid) == []
+
+
+# ── 修复轮：落盘 / 收口 / 状态置位的失败窗口 ───────────────────────────
+class _BrokenStorage(_FakeStorage):
+    def put(self, bucket, name, blob):
+        raise RuntimeError("minio down")
+
+
+def _mk_open_ann(tid, rid, matched, file_version="v1"):
+    return FileReviewAnnotationService.create(
+        round_id=rid,
+        task_id=tid,
+        file_id=PFX + "-file",
+        file_version=file_version,
+        anchor="{}",
+        matched_text=matched,
+        type="format",
+        severity="high",
+        issue="i",
+        suggestion="",
+        source="ai",
+        status="open",
+        tenant_id=PFX,
+        created_by=PFX,
+    )
+
+
+_FIX_RAW = json.dumps({"patches": [{"idx": 1, "find": "投标文件缺少封面", "replace": "投标文件包含封面"}]})
+
+
+def test_fix_round_store_failure_keeps_annotations_open_and_retry_succeeds(monkeypatch, fstore):
+    """Put 失败时若已把标注标 fixed，就成了「标注说已修、文档没改、重试说没事」的死局。"""
+    tid, _r1, r2, key = _fix_setup(monkeypatch, fstore, tag="fixputfail", blob=_docx(["投标文件缺少封面" + _BODY]), raw=_FIX_RAW)
+    monkeypatch.setattr(executor, "settings", SimpleNamespace(STORAGE_IMPL=_BrokenStorage()))
+
+    executor.execute_task(tid)
+
+    row = _round(r2)
+    assert row.status == "failed" and row.minio_path is None
+    assert _anns(tid)[0].status == "open", "落盘失败时标注必须停在 open（否则重试无路可走）"
+    # 重试：对象存储恢复 → 同一轮必须能修完，证明没有死局
+    FileReviewRoundService.update_status(r2, "fixing")
+    monkeypatch.setattr(executor, "settings", SimpleNamespace(STORAGE_IMPL=fstore))
+    executor.execute_task(tid)
+    assert _round(r2).status == "done" and _anns(tid)[0].status == "fixed"
+    assert key in [k[1] for k in fstore.blobs]
+
+
+def test_fix_round_recording_failure_keeps_annotations_open_and_retry_succeeds(monkeypatch, fstore):
+    """落盘成功但轮次收口写库失败：标注必须还停在 open，否则重试会看到「没有待修复项」直接 done。
+
+    收口写库是「这一轮已完成」的权威记录，标注置 fixed 是它的派生结果 —— 派生状态不能
+    抢先于权威记录落地。
+    """
+    tid, _r1, r2, key = _fix_setup(monkeypatch, fstore, tag="fixrecfail", blob=_docx(["投标文件缺少封面" + _BODY]), raw=_FIX_RAW)
+    orig_update = FileReviewRound.update
+    armed = {"yes": True}
+
+    def _flaky_update(*a, **k):
+        if armed["yes"]:
+            armed["yes"] = False
+            raise RuntimeError("MySQL server has gone away")
+        return orig_update(*a, **k)
+
+    monkeypatch.setattr(FileReviewRound, "update", _flaky_update)
+    executor.execute_task(tid)
+
+    row = _round(r2)
+    assert row.status == "failed"
+    assert _anns(tid)[0].status == "open", "轮次未收口成功前不得标 fixed"
+    assert key in [k[1] for k in fstore.blobs], "前置条件：本次是「落盘成功、收口失败」"
+    FileReviewRoundService.update_status(r2, "fixing")
+    executor.execute_task(tid)
+    assert _round(r2).status == "done" and _anns(tid)[0].status == "fixed"
+
+
+def test_fix_round_idx_mismatch_does_not_mark_annotation_fixed(monkeypatch, fstore, caplog):
+    """LLM 把 idx 串位：find 改的是文档里**另一处**（仍唯一定位）→ 不能给原标注盖已修复。
+
+    只按序号盖 fixed = 假修复：错的标注变 fixed，真正的问题分毫未动。
+    """
+    tid = PFX + "-fixmis"
+    _mk_template()
+    r1 = _mk_round(tid, status="annotated", file_version="v1", round_no=1)
+    a_id = _mk_open_ann(tid, r1, "投标文件缺少封面")
+    b_id = _mk_open_ann(tid, r1, "投标文件缺少目录")
+    r2 = _mk_round(tid, status="fixing", file_version="v2", round_no=2)
+    # pending 顺序由 create_time 决定（同毫秒并列时无序），按**实际**顺序定位 A 的槽位
+    slot_a = [x.id for x in FileReviewAnnotationService.list_pending_by_task(tid)].index(a_id) + 1
+    _wire(
+        monkeypatch,
+        blob=_docx(["投标文件缺少封面" + _BODY, "投标文件缺少目录" + _BODY]),
+        raw=json.dumps({"patches": [{"idx": slot_a, "find": "投标文件缺少目录", "replace": "投标文件包含目录"}]}),
+    )
+    with caplog.at_level(logging.WARNING, logger="rag.svr.file_review.executor"):
+        executor.execute_task(tid)
+    assert _round(r2).status == "done"
+    assert FileReviewAnnotationService.get_by_id(a_id).status == "open", "idx 串位不得产生假修复"
+    assert FileReviewAnnotationService.get_by_id(b_id).status == "open"
+    assert "does not match annotation" in caplog.text
+
+
+def test_fix_round_patch_find_superset_of_matched_text_still_marks_fixed(monkeypatch, fstore):
+    """find 比 matched_text 长（向外扩上下文保证全文唯一）是提示词要求的合法写法，
+    关联校验不能因此永不修复。"""
+    tid, _r1, r2, _key = _fix_setup(
+        monkeypatch,
+        fstore,
+        tag="fixsup",
+        blob=_docx(["前缀：投标文件缺少封面" + _BODY]),
+        raw=json.dumps({"patches": [{"idx": 1, "find": "前缀：投标文件缺少封面", "replace": "前缀：投标文件包含封面"}]}),
+    )
+    executor.execute_task(tid)
+    row = _round(r2)
+    assert row.status == "done" and "本轮修复 1 项" in row.summary
+    assert _anns(tid)[0].status == "fixed"
+
+
+# ── 摘要必须报真实待修总数（MAX_FIX_ITEMS 截断） ────────────────────────
+def _mk_25_pending(tid):
+    _mk_template()
+    r1 = _mk_round(tid, status="annotated", file_version="v1", round_no=1)
+    for i in range(25):
+        _mk_open_ann(tid, r1, f"待修{i}号")
+    return _mk_round(tid, status="fixing", file_version="v2", round_no=2)
+
+
+def test_fix_summary_reports_true_pending_total_when_capped(monkeypatch, fstore):
+    """pending 25 > 单轮上限 20：摘要必须说明「本轮只处理前 20 项、其余 5 项留待下一轮」，
+    否则用户以为总共只有 20 个问题（剩下 5 个既不进摘要也不进任何计数）。"""
+    tid = PFX + "-fixcapmsg"
+    r2 = _mk_25_pending(tid)
+    monkeypatch.setattr(executor, "MAX_FIX_ITEMS", 20)
+    pending = FileReviewAnnotationService.list_pending_by_task(tid)
+    patches = [{"idx": i + 1, "find": a.matched_text, "replace": f"已修{i}号"} for i, a in enumerate(pending[:20])]
+    _wire(monkeypatch, blob=_docx([f"待修{i}号" + _BODY for i in range(25)]), raw=json.dumps({"patches": patches}))
+    executor.execute_task(tid)
+
+    row = _round(r2)
+    assert row.status == "done"
+    assert "本轮修复 20 项" in row.summary
+    assert "本轮仅处理前 20 项" in row.summary and "其余 5 项" in row.summary
+    statuses = [a.status for a in _anns(tid)]
+    assert statuses.count("fixed") == 20 and statuses.count("open") == 5
+
+
+def test_fix_no_patch_summary_reports_true_pending_total_when_capped(monkeypatch, fstore):
+    """「本轮未产出可落地补丁」分支同样要报真实总数（原实现报的是截断后的 chosen 数）。"""
+    tid = PFX + "-fixcapmsg2"
+    r2 = _mk_25_pending(tid)
+    monkeypatch.setattr(executor, "MAX_FIX_ITEMS", 20)
+    _wire(monkeypatch, blob=_docx([f"待修{i}号" + _BODY for i in range(25)]), raw="[]")
+    executor.execute_task(tid)
+
+    row = _round(r2)
+    assert row.status == "done"
+    assert "共 25 项待修复" in row.summary and "保持原样" in row.summary
+    assert "本轮仅处理前 20 项" in row.summary and "其余 5 项" in row.summary
+
+
+# ── 版本基线：不依赖入参顺序 ────────────────────────────────────────────
+def test_latest_version_name_does_not_depend_on_input_order():
+    """乱序列表下必须选 round_no 最大者（取「最后一个命中」会退回到更旧的版本）。"""
+    rounds = [
+        SimpleNamespace(id="r2", round_no=2, minio_path="v2"),
+        SimpleNamespace(id="r1", round_no=1, minio_path="v1"),
+        SimpleNamespace(id="r3", round_no=3, minio_path=None),
+    ]
+    assert executor._latest_version_name(rounds, rounds[2]) == "v2"
+
+
+def test_latest_version_name_tie_breaks_to_later_row():
+    """同 round_no 多行（该组合无唯一约束）时后者胜，与升序输入下「最后命中」等价。"""
+    rounds = [
+        SimpleNamespace(id="a", round_no=2, minio_path="vA"),
+        SimpleNamespace(id="b", round_no=2, minio_path="vB"),
+        SimpleNamespace(id="cur", round_no=3, minio_path=None),
+    ]
+    assert executor._latest_version_name(rounds, rounds[2]) == "vB"
+
+
+# ── 输入版本对象失效：显式回退原件 ──────────────────────────────────────
+def test_load_input_blob_falls_back_to_original_when_version_missing(monkeypatch, fstore, caplog):
+    """版本对象已被清理（或桶策略变更）时回退原件并告警。
+
+    「第 3 轮在原件基线上修」是显式约定而非静默行为：没有这条告警，用户只会看到
+    「越修越回到起点」而完全无从察觉。
+    """
+    monkeypatch.setattr(executor, "_load_original_blob", lambda t, f: b"ORIGINAL")
+    row = SimpleNamespace(id="r", tenant_id=PFX, file_id="f")
+    with caplog.at_level(logging.WARNING, logger="rag.svr.file_review.executor"):
+        assert executor._load_input_blob(row, "frv-gone-v2") == b"ORIGINAL"
+    assert "version blob missing" in caplog.text
+
+
+# ── 超长 / emoji 匹配串 ────────────────────────────────────────────────
+def test_clean_str_and_anchor_survive_emoji_and_long_text():
+    """emoji（代理对）+ 超长：截断后仍是合法 UTF-8，锚点计算不得炸。"""
+    matched = "😀" * 600
+    cleaned = executor._clean_str(matched, executor.MATCHED_TEXT_MAX)
+    assert len(cleaned) <= executor.MATCHED_TEXT_MAX
+    assert cleaned == cleaned.encode("utf-8").decode("utf-8")  # 截断不得留下半个码点
+    text = "前缀" + matched + "投标文件缺少封面" + _BODY
+    anchor = executor._compute_anchor([{"index": 0, "text": text, "addr": "a0"}], cleaned)
+    assert isinstance(anchor, dict)
+    anchor2 = executor._compute_anchor([{"index": 0, "text": text, "addr": "a0"}], "投标文件缺少封面")
+    assert anchor2["p_idx"] == 0 and anchor2["a_occ"] == 1
