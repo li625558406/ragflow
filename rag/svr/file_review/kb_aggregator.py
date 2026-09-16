@@ -55,6 +55,10 @@ def aggregate_references(*, kb_chunks: Iterable, user_query: str,
     budget 为**整块输出**（含头部）的 token 上限；头部恒输出，可能自身就接近
     或略超预算（用户需求+模板名通常很短），此时返回仅头部的块。
     非 dict / 无正文的 chunk 直接跳过（不占编号、不占预算）。
+
+    不变式：tokens(返回值) <= max(budget, tokens(头部))。
+    头部恒输出（见上），因此当 budget 小于头部自身开销时，返回值就是仅头部、此时允许
+    超过 budget——这是设计上的例外，不是缺陷。
     """
     # 先物化：空 generator / None 都能正确落空，且入参只被消费一次
     chunks = list(kb_chunks or [])
@@ -62,17 +66,18 @@ def aggregate_references(*, kb_chunks: Iterable, user_query: str,
         return ""
 
     out_parts = [f"用户需求：{user_query}", f"审核模板：{template_name}", "", "参考资料："]
-    used = sum(num_tokens_from_string(p) for p in out_parts)
     n = 0
     for chunk in chunks:
         text = _chunk_text(chunk)
         if not text:
             continue
         entry = f"[{n + 1}] doc={_chunk_label(chunk)}\n{text}\n"
-        tok = num_tokens_from_string(entry)
-        if used + tok > budget:
+        candidate = out_parts + [entry]
+        # 预算按**真实输出串**计，不是各段 token 之和："\n".join() 会插入分隔符，且 BPE
+        # 在段边界可能合并出不同 token（实测头部 sum=15 / join=17）。按 join 后整串计，
+        # budget 才是真正的输出上限；旧口径实测在 budget=23 时放行了 25 token。
+        if num_tokens_from_string("\n".join(candidate)) > budget:
             break
-        out_parts.append(entry)
-        used += tok
+        out_parts = candidate
         n += 1
     return "\n".join(out_parts)

@@ -18,8 +18,18 @@ def _header(user_query, template_name):
     return [f"用户需求：{user_query}", f"审核模板：{template_name}", "", "参考资料："]
 
 
+def _joined_tokens(parts):
+    """按**真实输出串**计 token（与实现同一口径：\\n.join 整串，不是各段之和）。
+
+    口径说明：头部 4 段的 token 之和（'q'/'t' 时为 15）≠ "\\n".join 后的 token 数
+    （17），差额来自 join 插入的分隔符与段边界的 BPE 合并。测试若按「各段之和」自算
+    期望值，等价于把错误口径锁进断言——这正是本次修复前的偏差来源。
+    """
+    return num_tokens_from_string("\n".join(parts))
+
+
 def _header_tokens(user_query, template_name):
-    return sum(num_tokens_from_string(p) for p in _header(user_query, template_name))
+    return _joined_tokens(_header(user_query, template_name))
 
 
 def _entry(n, label, text):
@@ -51,6 +61,8 @@ def test_concat_within_budget():
     )
     assert 'doc1' in out
     assert len(out) < 300
+    # 追加：整块输出（含头部）确实落在 budget 之内
+    assert num_tokens_from_string(out) <= 200
 
 
 def test_truncate_when_exceeds_budget():
@@ -60,6 +72,19 @@ def test_truncate_when_exceeds_budget():
     )
     # 超过预算应截断，只保留前 N 条
     assert out.count('参考资料') == 1
+
+    # 追加：真实截断断言（不写死条数，用整串 join 口径自算期望值）
+    parts = _header('q', 't')
+    expected = 0
+    for i in range(10):
+        candidate = parts + [_entry(i + 1, f'd{i}', 'y' * 1000)]
+        if _joined_tokens(candidate) > 2000:
+            break
+        parts = candidate
+        expected += 1
+    assert expected > 0  # 前提：预算确实装得下若干条，不是「一条都进不来」的退化场景
+    assert _entries(out) == [str(i + 1) for i in range(expected)]
+    assert num_tokens_from_string(out) <= 2000
 
 
 # ---------------------------------------------------------------- 空 / 边界
@@ -222,17 +247,17 @@ def test_blank_or_non_str_label_falls_through(chunk, label):
 # ---------------------------------------------------------------- 预算
 
 def test_budget_boundary_exact_fit_then_one_token_short():
+    # 期望值改为「join 后整串」口径自算（旧口径 base+tok 会漏计分隔符）
     chunk = _ck('A', name='doc1')
-    base = _header_tokens('q', 't')
-    tok = _entry_tokens(1, 'doc1', 'A')
+    exact = _joined_tokens(_header('q', 't') + [_entry(1, 'doc1', 'A')])
 
     fit = aggregate_references(
-        kb_chunks=[chunk], user_query='q', template_name='t', budget=base + tok,
+        kb_chunks=[chunk], user_query='q', template_name='t', budget=exact,
     )
     assert '[1] doc=doc1' in fit
 
     short = aggregate_references(
-        kb_chunks=[chunk], user_query='q', template_name='t', budget=base + tok - 1,
+        kb_chunks=[chunk], user_query='q', template_name='t', budget=exact - 1,
     )
     assert '[1] doc=doc1' not in short
     assert short.split('\n')[:4] == _header('q', 't')
@@ -240,16 +265,17 @@ def test_budget_boundary_exact_fit_then_one_token_short():
 
 def test_budget_boundary_second_chunk_dropped_then_kept():
     c1, c2 = _ck('A', name='d1'), _ck('B', name='d2')
-    base = _header_tokens('q', 't')
-    tok = _entry_tokens(1, 'd1', 'A') + _entry_tokens(2, 'd2', 'B')
+    exact = _joined_tokens(
+        _header('q', 't') + [_entry(1, 'd1', 'A'), _entry(2, 'd2', 'B')]
+    )
 
     one = aggregate_references(
-        kb_chunks=[c1, c2], user_query='q', template_name='t', budget=base + tok - 1,
+        kb_chunks=[c1, c2], user_query='q', template_name='t', budget=exact - 1,
     )
     assert _entries(one) == ['1']
 
     both = aggregate_references(
-        kb_chunks=[c1, c2], user_query='q', template_name='t', budget=base + tok,
+        kb_chunks=[c1, c2], user_query='q', template_name='t', budget=exact,
     )
     assert _entries(both) == ['1', '2']
 
@@ -274,6 +300,59 @@ def test_over_budget_breaks_instead_of_skipping_to_smaller_chunk():
     assert 'doc=small' not in out
 
 
+def test_budget_counts_join_separators_not_part_sum():
+    """回归：budget=23 反例——旧口径「各段 token 之和」放行了 25 token 的输出。
+
+    攻击点：头部 4 段的 token 之和为 15、头部 join 后为 17，差额 2 是 "\\n".join()
+    插入的分隔符 + 段边界 BPE 差异；每条 ``[n] doc=d\\nA\\n`` 为 8 token。
+    旧实现用 ``15 + 8 = 23 <= 23`` 放行第 1 条，实际输出 ``join(header+[entry])``
+    = 25 token，预算上限被击穿 2 token。
+
+    防御点：实现按 join 后整串计 token（``25 > 23`` → break），输出只剩头部；
+    头部本身 17 token 恒输出，是设计上显式声明的例外（见实现不变式）。
+    """
+    out = aggregate_references(
+        kb_chunks=[{'docnm_kwd': 'd', 'content_with_weight': 'A'}] * 5,
+        user_query='q', template_name='t', budget=23,
+    )
+    assert out.split('\n') == _header('q', 't')
+    assert '[1] doc=d' not in out
+    assert 'A' not in out.split('参考资料：', 1)[1]  # 头部之后没有任何正文
+    assert num_tokens_from_string(out) <= max(23, _header_tokens('q', 't'))
+
+
+def test_invariant_tokens_never_exceed_max_budget_or_header():
+    """不变式属性测试：tokens(返回值) <= max(budget, tokens(头部串))。
+
+    攻击点：旧实现按「各段 token 之和」比较预算，漏计 "\\n".join() 分隔符与段边界
+    BPE 合并差异。实测（chunk 文本 'A'、label 'd'）：头部 join=17、单条 fit=25、
+    双条 fit=33，而旧口径头部记为 15、每条记为 8；于是 budget=23/24（fit-2/fit-1）
+    时旧实现输出 25 token > budget，本用例转红；budget=32（双条 fit-1）输出 33 也越界。
+
+    防御点：按 join 后整串计 token，故对任意 budget 该不变式恒成立。
+    预算档位覆盖：小于头部 / 等于头部 / 头部+1 / 恰好容 1 条的前一档与本身 /
+    恰好容 2 条的前一档与本身——其中 fit-1 档正是旧实现的漏洞区间。
+    """
+    header = _header('q', 't')
+    header_tokens = _header_tokens('q', 't')
+    fit1 = _joined_tokens(header + [_entry(1, 'd', 'A')])
+    fit2 = _joined_tokens(header + [_entry(1, 'd', 'A'), _entry(2, 'd', 'A')])
+    budgets = [header_tokens - 1, header_tokens, header_tokens + 1,
+               fit1 - 1, fit1, fit2 - 1, fit2]
+    # 前提：档位确实是不同的预算点，且 fit-1 档严格小于 fit 档
+    assert len(set(budgets)) == len(budgets)
+    assert fit1 > header_tokens + 1 and fit2 > fit1
+
+    for budget in budgets:
+        out = aggregate_references(
+            kb_chunks=[{'docnm_kwd': 'd', 'content_with_weight': 'A'}] * 10,
+            user_query='q', template_name='t', budget=budget,
+        )
+        got = num_tokens_from_string(out)
+        limit = max(budget, header_tokens)
+        assert got <= limit, f'budget={budget} 输出 {got} token，上限被击穿'
+
+
 # ---------------------------------------------------------------- Unicode
 
 def test_chinese_and_emoji_content_survives():
@@ -289,17 +368,17 @@ def test_chinese_and_emoji_content_survives():
 
 def test_chinese_content_token_count_participates_in_truncation():
     body = '中' * 400
-    base = _header_tokens('q', 't')
-    tok = _entry_tokens(1, 'doc1', body)
-    assert tok > base  # 前提：中文正文确实占了可观的 token
+    assert _entry_tokens(1, 'doc1', body) > _header_tokens('q', 't')  # 前提：中文正文确实占了可观的 token
+    # 期望值按 join 后整串口径自算
+    exact = _joined_tokens(_header('q', 't') + [_entry(1, 'doc1', body)])
 
     fit = aggregate_references(
-        kb_chunks=[_ck(body)], user_query='q', template_name='t', budget=base + tok,
+        kb_chunks=[_ck(body)], user_query='q', template_name='t', budget=exact,
     )
     assert body in fit
 
     short = aggregate_references(
-        kb_chunks=[_ck(body)], user_query='q', template_name='t', budget=base + tok - 1,
+        kb_chunks=[_ck(body)], user_query='q', template_name='t', budget=exact - 1,
     )
     assert body not in short
 
