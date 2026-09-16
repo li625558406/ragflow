@@ -26,6 +26,8 @@ from abc import ABC
 
 from agent.component.file_review import FILE_ID_INPUT_KEY
 from agent.tools.base import ToolBase, ToolMeta, ToolParamBase
+from api.db.services.file_review_service import SEVERITY_CN as _SEVERITY_CN
+from api.db.services.file_review_service import compose_fix_query
 from common.connection_utils import timeout
 from common.misc_utils import get_uuid
 from rag.svr.file_review import spawn as spawn_mod
@@ -39,8 +41,9 @@ _MAX_WAIT_SECONDS = min(90, max(_EXEC_TIMEOUT - 10, 10))
 _POLL_INTERVAL = 3
 
 # 轮次终态：annotated（首轮审核收口）/ done（修复轮收口）/ failed。
-# 前两者 = Service 层 COMPLETED_ROUND_STATUSES，这里并上 failed —— 工具要能对用户
-# 如实说「这轮失败了」，不能像 Service 那样把 failed 当作「没发生」。
+# 工具要能对用户如实说「这轮失败了」，故不能像 Service 的完成口径那样把 failed 当作
+# 「没发生」—— 但**不许**回头去引 Service 的完成口径常量（它已随 max_completed_round_no
+# 一并删除，见 T9），这里就是权威定义。
 _TERMINAL_ROUND_STATUSES = ("annotated", "done", "failed")
 _RUNNING_ROUND_STATUSES = ("reviewing", "fixing")
 
@@ -51,7 +54,6 @@ _ROUND_STATUS_CN = {
     # 误以为文档已被改动。
     "done": "已收口", "failed": "失败",
 }
-_SEVERITY_CN = {"high": "严重", "medium": "一般", "low": "提示"}
 _SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
 
 # 返回值会进 LLM 上下文：逐条 issue 全文（上限 1000 字）会刷爆 token，逐项裁剪。
@@ -75,33 +77,6 @@ def _severity_cn(sev) -> str:
     唯一硬约束：不许把字面 None 渲染进给用户与 LLM 的文案。
     """
     return _SEVERITY_CN.get(sev) or (sev if isinstance(sev, str) and sev else "未知")
-
-
-def _compose_fix_query(base_query: str, levels: list) -> str:
-    """把级别选择编进本轮 user_query。
-
-    executor 的修复 prompt 会把轮次行的 user_query 原样作为「用户需求：」喂给 LLM
-    （_build_fix_prompt 实测确认），而待修复清单里每条都带「级别=」，级别过滤借此生效。
-
-    `base_query` 必须是**首轮原始需求**，不是上一轮：连轮修复时上一轮本身就是修复轮，
-    其 user_query 里带着**上一轮**已作废的级别指令，拿它当基准会拼出「只修【严重】…」
-    +「只修【一般】…」两条互相排斥的指令，LLM 同时收到后可能该修的不修、或越界改了
-    用户本次没选中的级别——与本方法「按用户本次选定级别修复」的目标正好相反。
-    首轮恒为该 task 的原始审核轮（_review 每次都用新 get_uuid() 开新 task，故每个
-    task 只有一条首轮），且 executor 的修复 prompt 只认 user_query 这一个字段，丢掉
-    首轮原文等于丢掉用户的审核意图。
-
-    级别中英双写（如「严重/high」）：待修清单里每条写的是英文 `级别=high`（severity 已
-    被 _norm_severity 归一成英文），只给中文会多出一层「严重 ⇔ high」的映射不确定性。
-
-    刻意**不**把未选中级别的标注置 wontfix 来硬过滤：wontfix 的语义是「用户决定永不
-    修复此条」，自动置位后用户改口「把中等的也修了」会静默失效（list_pending_by_task
-    不再看到它），而用户没有任何办法从对话里发现这件事。
-    """
-    chosen = "、".join(f"{_SEVERITY_CN.get(s, s)}/{s}" for s in levels)
-    head = f"本次只修复【{chosen}】级别的问题，其余级别的问题请保持原样、不要改动。"
-    base = (base_query or "").strip()
-    return f"{base}\n{head}" if base else head
 
 
 class FileReviewToolParam(ToolParamBase):
@@ -333,8 +308,8 @@ class FileReviewTool(ToolBase, ABC):
             task_id=task_id, file_id=cur.file_id, round_no=round_no,
             template_id=cur.template_id,
             # 基准是 rounds[0]（首轮原始需求）而非 cur（可能是修复轮，带着上一轮已作废
-            # 的级别指令）——详见 _compose_fix_query 的 docstring。
-            user_query=_compose_fix_query(rounds[0].user_query, levels),
+            # 的级别指令）——详见 Service 层 compose_fix_query 的 docstring。
+            user_query=compose_fix_query(rounds[0].user_query, levels),
             file_version=file_version, status="fixing",
             tenant_id=tenant_id, created_by=tenant_id,
             # 修复轮沿用本轮的 kb_ids（已是 JSON 文本，_normalize_kb_ids 幂等）：
