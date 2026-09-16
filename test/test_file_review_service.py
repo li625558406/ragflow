@@ -13,6 +13,7 @@
   用真实写入结果锁死这一点（手写 datetime 会退化成零值且 is not None 仍过）。
 """
 import json
+from types import SimpleNamespace
 
 import peewee
 import pytest
@@ -74,11 +75,19 @@ def _tables_presets_and_cleanup():
 
 
 def _mk_round(task_id, round_no, status, *, file_id=PFX + "-file", file_version="v1", **kw):
-    """走 service 建轮次（审计字段由框架填，这里不传任何时间字段）。"""
+    """走 service 建轮次（审计字段由框架填，这里不传任何时间字段）。
+
+    tenant_id / created_by 用 setdefault 而非写死：get_owned_task 的用例必须能造出
+    「归某租户 / 租户为空」的轮次行，写死会让 tenant_id="t1" 撞成
+    `got multiple values for keyword argument`。默认值与写死时完全一致，
+    既有用例行为不变。
+    """
+    kw.setdefault("tenant_id", "")
+    kw.setdefault("created_by", "u")
     return FileReviewRoundService.create_round(
         task_id=task_id, file_id=file_id, round_no=round_no,
         template_id="bid_doc_format", user_query="审核请求",
-        file_version=file_version, status=status, tenant_id="", created_by="u", **kw)
+        file_version=file_version, status=status, **kw)
 
 
 def _round_row(rid):
@@ -575,3 +584,61 @@ def test_delete_by_round_none_source_removes_everything():
     assert FileReviewAnnotationService.delete_by_round(r, None) == 2
     rest = FileReviewAnnotation.select().where(FileReviewAnnotation.task_id == tid)
     assert list(rest) == []
+
+
+# ── T8 助手：越权闸门 / 轮次编号 / 修复轮余额 ─────────────────────────
+
+
+def _r(no):
+    """只带 round_no 的轮次替身：fix_rounds_left 是纯函数，不需要真轮次行。"""
+    return SimpleNamespace(round_no=no)
+
+
+def test_get_owned_task_short_circuits_on_empty_args():
+    assert FileReviewRoundService.get_owned_task("", "t1") == []
+    assert FileReviewRoundService.get_owned_task(None, "t1") == []
+    assert FileReviewRoundService.get_owned_task(PFX + "own-x", "") == []
+
+
+def test_get_owned_task_denies_unknown_task():
+    assert FileReviewRoundService.get_owned_task(PFX + "no-such-task", "t1") == []
+
+
+def test_get_owned_task_passes_only_when_all_rounds_owned():
+    tid = PFX + "own-a"
+    _mk_round(tid, 1, "annotated", tenant_id="t1")
+    assert len(FileReviewRoundService.get_owned_task(tid, "t1")) == 1
+    # 他人租户：拒绝
+    assert FileReviewRoundService.get_owned_task(tid, "t2") == []
+
+
+def test_get_owned_task_denies_when_any_round_has_empty_tenant():
+    """同一 task 只要**有一条**轮次 tenant 为空/他人，整体拒绝（保守口径）：
+    宁可让脏数据的人自己重新发起，也不能把「是不是他的」判成「大概是」。"""
+    tid = PFX + "own-b"
+    _mk_round(tid, 1, "annotated", tenant_id="t1")
+    _mk_round(tid, 2, "done", tenant_id="")
+    assert FileReviewRoundService.get_owned_task(tid, "t1") == []
+
+
+def test_next_round_counts_all_rounds_including_failed():
+    tid = PFX + "next-a"
+    assert FileReviewRoundService.next_round(tid) == (1, "v1")
+    _mk_round(tid, 1, "annotated")
+    assert FileReviewRoundService.next_round(tid) == (2, "v2")
+    # failed 轮也顶号：只看 done/annotated 会让 v2 这个名字被复用，
+    # 覆盖失败轮已落盘的成稿（T6 交接契约第 2 条），并把同号失败兄弟选成输入基线。
+    _mk_round(tid, 2, "failed")
+    assert FileReviewRoundService.next_round(tid) == (3, "v3")
+
+
+def test_fix_rounds_left_counts_failed_and_clamps():
+    from api.db.services.file_review_service import MAX_FIX_ROUNDS, fix_rounds_left
+
+    assert MAX_FIX_ROUNDS == 3
+    assert fix_rounds_left([]) == MAX_FIX_ROUNDS
+    assert fix_rounds_left([_r(1)]) == MAX_FIX_ROUNDS          # 首轮审核不算修复轮
+    assert fix_rounds_left([_r(1), _r(2)]) == MAX_FIX_ROUNDS - 1
+    assert fix_rounds_left([_r(1), _r(2), _r(3)]) == MAX_FIX_ROUNDS - 2
+    assert fix_rounds_left([_r(1), _r(2), _r(3), _r(4)]) == 0  # 负数钳到 0
+    assert fix_rounds_left([_r(0), _r(1)]) == MAX_FIX_ROUNDS    # round_no=0 的脏行不算修复轮

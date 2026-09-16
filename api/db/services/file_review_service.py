@@ -61,6 +61,23 @@ COMPLETED_ROUND_STATUSES = ("done", "annotated")
 # 「待处理」标注口径：下一轮 LLM prompt 需要引用的未闭环问题。
 PENDING_ANNOTATION_STATUSES = ("open", "new")
 
+# 「最多三轮修复」的权威口径。DB 无该列，由本层判定。T7 节点参数面板里的 max_rounds
+# 只是给用户看的 UI 字段（见 agent/component/file_review.py 的注释「后端不消费」），
+# 后端唯一的轮数上限在这里。
+MAX_FIX_ROUNDS = 3
+
+
+def fix_rounds_left(rounds: list) -> int:
+    """还剩几轮修复机会 = MAX_FIX_ROUNDS - 已发生的修复轮数（下限 0）。
+
+    修复轮 = 该 task 中 round_no > 1 的轮次（第 1 轮按契约恒为 review）。
+    **失败轮也计入**：用户烧掉的是一次尝试机会，不是「什么都没发生」；不计入会让失败的
+    retry 次数无上限，与「最大三轮重试」的口径相悖。
+    round_no 为 0/None 的脏行不算修复轮（不短路会让一条脏行白吃一次机会）。
+    """
+    used = sum(1 for r in rounds if (r.round_no or 0) > 1)
+    return max(0, MAX_FIX_ROUNDS - used)
+
 
 def _clamp_str(model, field_name: str, value):
     """按模型列 max_length 钳制字符串，防 MySQL 静默截断出半截枚举值。
@@ -189,6 +206,52 @@ class FileReviewRoundService(FileReviewServiceBase):
         # affected rows = 实际变化行数（连接未开 CLIENT_FOUND_ROWS），不是匹配行数：
         # 同毫秒 + 同值更新时整行无净变化 -> 0，但行仍存在。用存在性复核避免误判 404。
         return cls.model.select().where(cls.model.id == rid).exists()
+
+    @classmethod
+    @DB.connection_context()
+    def get_owned_task(cls, task_id: str, tenant_id: str) -> list:
+        """越权闸门：返回该 task 的轮次列表，**仅当轮次全部归属 tenant_id**；否则 []。
+
+        [] 同时覆盖四种「不许继续」的情形，调用方一律按「空 = 拒绝」处理、**不区分**：
+        task_id 为空 / 无轮次行 / 轮次归他人 / 轮次 tenant 为空（历史脏行）。区分会把
+        「他人的 task 是否存在」这一信息泄露给攻击者。
+
+        为什么必须有这一层：`execute_task(task_id)` / `spawn_review_task(task_id)` /
+        `_force_fail_round(task_id)` 全链路只按 task_id 圈定、**不含任何 tenant 谓词**
+        （round_row.tenant_id 仅用于选 bucket）。入口不做归属校验 = 任何人拿到 task_id
+        就能触发、读取、收口他人的审核（T6 → T9 交接契约第 5 条，T8/T9 共用本闸门）。
+
+        刻意**不做** task_id 的格式白名单（如「必须 32 位十六进制」）：格式不匹配时本
+        就查不到行、结果同为 []，白名单不增加任何安全边界；反过来，一旦 id 生成方式
+        （现在是 uuid1().hex）变动而白名单没同步，闸门会静默拒绝**所有**合法请求 ——
+        用一个更隐蔽的故障换一个不存在的收益。
+        """
+        if not task_id or not tenant_id:
+            return []
+        rounds = cls.get_by_task(task_id)
+        if not rounds:
+            return []
+        if any((r.tenant_id or "") != tenant_id for r in rounds):
+            return []
+        return rounds
+
+    @classmethod
+    @DB.connection_context()
+    def next_round(cls, task_id: str) -> tuple[int, str]:
+        """下一轮的 (round_no, file_version)：max(**全部**轮次 round_no) + 1。
+
+        刻意**不**复用 max_completed_round_no（只数 done/annotated）—— 那个口径会让
+        **失败轮的编号被复用**，后果有三（T6 审查已实测确认）：
+          ① 产物对象名是 frv-{task_id}-{file_version}，同号即同名：新轮会覆盖失败轮
+             **已经落盘**的成稿（交接契约第 2 条：failed 轮次可能带 minio_path）；
+          ② _latest_version_name 按 round_no 取基线、同号后者胜，新轮会把同号的失败
+             兄弟（或它自己）选成输入基线 —— 自引用，补丁 find 全数落空；
+          ③ 面板上两条同号轮次，用户分不清哪条是哪次。
+        rounds 为空时返回 (1, "v1")，与 T7 节点首轮口径一致（首轮即原件）。
+        """
+        rounds = cls.get_by_task(task_id)
+        no = max((r.round_no or 0) for r in rounds) + 1 if rounds else 1
+        return no, f"v{no}"
 
     @classmethod
     @DB.connection_context()

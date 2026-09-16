@@ -1,0 +1,348 @@
+"""FileReviewTool（agent/tools/file_review.py）单测。
+
+Service / spawn / time.sleep 全部 monkeypatch，不触 DB/LLM/MinIO；工具实例用
+object.__new__ 绕过 ToolBase.__init__（其要求真实 Canvas 实例），_param 用
+SimpleNamespace 打桩（同 test_template_fill_tool.py）。
+
+对抗性覆盖：
+- file_id 三条路：Begin 输出拿到 / 拿不到 → 明确拒绝（不建 file_id 为空的轮次行）/
+  Begin 组件缺失或 output() 抛错或返回非 str → 降级成同一条用户可读拒绝；
+- 租户缺失 → 一律拒绝（不建 tenant 为空的轮次行，否则越权闸门先把自己挡住）；
+- 模板 id：编造的 id 必须被拒（不静默回落默认值 —— 否则审计列里留下假模板记录）；
+- spawn 收到的是 **task_id** 而非 round_id（T5 契约）；
+- fix 的级别过滤：**不得**改写任何标注的状态（未选中级别不许被置 wontfix）；
+- 级别为空 / 未知词 / 该级别无待修项 → 拒绝新建轮次；
+- 轮次余额用尽 / 上一轮仍在跑 → 拒绝；
+- 越权：get_owned_task 返回 [] 时 status/fix 必须拒绝；
+- 轮询超时 → 返回 task_id 并引导 action=status。
+"""
+from types import SimpleNamespace
+
+PFX = "__test_fr_tool__"
+
+
+def _svc():
+    from api.db.services import file_review_service as svc
+
+    return svc
+
+
+def _tpl(tid="bid_doc_format", name="招标文件格式审核", desc="看格式与要件"):
+    return SimpleNamespace(id=tid, name=name, description=desc)
+
+
+def _round(no=1, status="annotated", **kw):
+    base = {"task_id": PFX + "task", "file_id": PFX + "file", "round_no": no,
+            "status": status, "template_id": "bid_doc_format", "user_query": "",
+            "file_version": f"v{no}", "kb_ids": None, "minio_path": None,
+            "summary": "", "error": None}
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def _ann(severity="high", status="open", issue="资质缺失", matched_text="甲公司"):
+    return SimpleNamespace(id="ann-1", severity=severity, status=status,
+                           issue=issue, matched_text=matched_text)
+
+
+class _Begin:
+    component_name = "Begin"
+
+    def __init__(self, outs):
+        self._outs = outs
+
+    def output(self):
+        return dict(self._outs)
+
+
+class _BadBegin:
+    component_name = "Begin"
+
+    def output(self):
+        raise RuntimeError("boom")
+
+
+def _begin(outs):
+    return {"begin": {"obj": _Begin(outs)}}
+
+
+def _patch(monkeypatch, *, templates=None, rounds=None, pending=None,
+           next_round=(1, "v1"), left=3):
+    """统一打桩：Service 查询 + spawn + sleep。返回记录写操作的 calls。"""
+    svc = _svc()
+    calls = {"rounds": [], "spawned": [], "ann_updates": []}
+
+    monkeypatch.setattr(svc.FileReviewRoundService, "create_round",
+                        staticmethod(lambda **kw: calls["rounds"].append(kw) or "round-1"))
+    monkeypatch.setattr(svc.FileReviewRoundService, "get_owned_task",
+                        staticmethod(lambda task_id, tid: list(rounds or [])))
+    monkeypatch.setattr(svc.FileReviewRoundService, "next_round",
+                        staticmethod(lambda task_id: next_round))
+    monkeypatch.setattr(svc.FileReviewTemplateService, "list_enabled",
+                        staticmethod(lambda tid: list(templates or [])))
+    monkeypatch.setattr(svc.FileReviewAnnotationService, "list_pending_by_task",
+                        staticmethod(lambda task_id: list(pending or [])))
+    # 任何对标注状态的改写都是本任务明确禁止的（未选中级别不得被置 wontfix），
+    # 记下来供 test_fix_never_mutates_annotation_status 断言。
+    monkeypatch.setattr(svc.FileReviewAnnotationService, "update_status",
+                        staticmethod(
+                            lambda aid, status: calls["ann_updates"].append((aid, status))))
+    monkeypatch.setattr(svc, "fix_rounds_left", lambda rows: left)
+    monkeypatch.setattr("agent.tools.file_review.time.sleep", lambda s: None)
+
+    from rag.svr.file_review import spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "spawn_review_task",
+                        lambda task_id: calls["spawned"].append(task_id))
+    return calls
+
+
+def _make_tool(tenant="tenant_x", components=None):
+    from agent.tools.file_review import FileReviewTool
+
+    tool = object.__new__(FileReviewTool)
+    tool._param = SimpleNamespace(outputs={}, inputs={}, debug_inputs={})
+    tool.set_output = lambda key, value=None: tool._param.outputs.update({key: {"value": value}})
+    tool.check_if_canceled = lambda msg="": False
+    tool._canvas = SimpleNamespace(get_tenant_id=lambda: tenant,
+                                   components=components or {})
+    return tool
+
+
+# ---------- meta 声明 ----------
+
+def test_meta_declaration():
+    from agent.tools.file_review import FileReviewTool, FileReviewToolParam
+
+    param = FileReviewToolParam()
+    assert param.meta["name"] == "FileReviewTool"
+    assert param.meta["parameters"]["action"]["enum"] == [
+        "list_templates", "review", "status", "fix"]
+    # 类名必须与 T7 节点 FileReview 不同：component_class 按类名解析且 agent.component
+    # 优先于 agent.tools，同名会互相遮蔽
+    assert FileReviewTool.component_name == "FileReviewTool"
+
+
+def test_unknown_action_lists_options():
+    out = _make_tool()._invoke(action="nope")
+    assert "不支持的 action" in out and "list_templates" in out
+
+
+# ---------- list_templates ----------
+
+def test_list_templates_renders_rows(monkeypatch):
+    _patch(monkeypatch, templates=[_tpl("t1", "投标文件审核"), _tpl("t2", "合同审核")])
+    out = _make_tool()._invoke(action="list_templates")
+    assert "投标文件审核" in out and "t1" in out and "合同审核" in out
+
+
+def test_list_templates_empty(monkeypatch):
+    _patch(monkeypatch, templates=[])
+    out = _make_tool()._invoke(action="list_templates")
+    assert "没有可用的审核模板" in out
+
+
+# ---------- review：file_id 解析 ----------
+
+def test_review_uses_file_id_from_begin_output(monkeypatch):
+    calls = _patch(monkeypatch, templates=[_tpl()])
+    tool = _make_tool(components=_begin({"review_file_id": PFX + "upload-1"}))
+    tool._invoke(action="review", user_query="重点看资质", kb_ids='["kb1", "kb2"]')
+    kw = calls["rounds"][0]
+    assert kw["file_id"] == PFX + "upload-1"
+    assert kw["round_no"] == 1 and kw["file_version"] == "v1"
+    assert kw["status"] == "reviewing"
+    assert kw["tenant_id"] == "tenant_x" and kw["created_by"] == "tenant_x"
+    assert kw["user_query"] == "重点看资质"
+    assert kw["kb_ids"] == ["kb1", "kb2"]
+
+
+def test_review_spawns_task_id_not_round_id(monkeypatch):
+    calls = _patch(monkeypatch, templates=[_tpl()])
+    _make_tool(components=_begin({"review_file_id": "u1"}))._invoke(action="review")
+    assert calls["spawned"] == [calls["rounds"][0]["task_id"]]
+    assert "round-1" not in calls["spawned"]
+
+
+def test_review_refuses_without_file_id(monkeypatch):
+    calls = _patch(monkeypatch, templates=[_tpl()])
+    out = _make_tool(components=_begin({}))._invoke(action="review")
+    assert "上传" in out
+    assert calls["rounds"] == [] and calls["spawned"] == []
+
+
+def test_review_refuses_when_begin_component_missing(monkeypatch):
+    calls = _patch(monkeypatch, templates=[_tpl()])
+    out = _make_tool(components={})._invoke(action="review")
+    assert "上传" in out and calls["rounds"] == []
+
+
+def test_review_refuses_when_begin_output_raises(monkeypatch):
+    calls = _patch(monkeypatch, templates=[_tpl()])
+    tool = _make_tool(components={"begin": {"obj": _BadBegin()}})
+    out = tool._invoke(action="review")
+    assert "上传" in out and calls["rounds"] == []
+
+
+def test_review_refuses_when_begin_output_non_str(monkeypatch):
+    calls = _patch(monkeypatch, templates=[_tpl()])
+    tool = _make_tool(components=_begin({"review_file_id": 123}))
+    out = tool._invoke(action="review")
+    assert "上传" in out and calls["rounds"] == []
+
+
+def test_review_refuses_without_tenant(monkeypatch):
+    calls = _patch(monkeypatch, templates=[_tpl()])
+    tool = _make_tool(tenant="", components=_begin({"review_file_id": "u1"}))
+    out = tool._invoke(action="review")
+    assert "身份" in out and calls["rounds"] == []
+
+
+# ---------- review：模板与 kb_ids ----------
+
+def test_review_rejects_unknown_template(monkeypatch):
+    """LLM 编造的模板 id 不许静默回落默认值：否则轮次行会留下一条假模板审计记录。"""
+    calls = _patch(monkeypatch, templates=[_tpl("t1", "投标文件审核")])
+    tool = _make_tool(components=_begin({"review_file_id": "u1"}))
+    out = tool._invoke(action="review", template_id="made-up-id")
+    assert "不可用" in out and "投标文件审核" in out
+    assert calls["rounds"] == []
+
+
+def test_review_default_template_comes_from_executor_constant(monkeypatch):
+    from rag.svr.file_review.executor import DEFAULT_TEMPLATE_ID
+
+    calls = _patch(monkeypatch, templates=[_tpl(DEFAULT_TEMPLATE_ID)])
+    _make_tool(components=_begin({"review_file_id": "u1"}))._invoke(action="review")
+    assert calls["rounds"][0]["template_id"] == DEFAULT_TEMPLATE_ID
+
+
+def test_review_kb_ids_tolerant_parsing(monkeypatch):
+    calls = _patch(monkeypatch, templates=[_tpl()])
+    tool = _make_tool(components=_begin({"review_file_id": "u1"}))
+    tool._invoke(action="review", kb_ids="kb1, kb2")
+    assert calls["rounds"][0]["kb_ids"] == ["kb1", "kb2"]
+    calls["rounds"].clear()
+    tool._invoke(action="review", kb_ids="")
+    assert calls["rounds"][0]["kb_ids"] is None
+
+
+# ---------- review：轮询 ----------
+
+def test_review_poll_timeout_returns_task_id(monkeypatch):
+    running = [_round(1, "reviewing")]
+    calls = _patch(monkeypatch, templates=[_tpl()], rounds=running)
+    out = _make_tool(components=_begin({"review_file_id": "u1"}))._invoke(action="review")
+    assert "仍在进行中" in out and "task_id=" in out and "status" in out
+    assert calls["spawned"]
+
+
+def test_review_poll_terminal_returns_summary(monkeypatch):
+    done = [_round(1, "annotated", summary="共发现 3 处问题")]
+    _patch(monkeypatch, templates=[_tpl()], rounds=done, pending=[_ann()])
+    out = _make_tool(components=_begin({"review_file_id": "u1"}))._invoke(action="review")
+    assert "审核完成" in out and "共发现 3 处问题" in out
+    assert "资质缺失" in out and "严重" in out
+
+
+# ---------- status ----------
+
+def test_status_requires_task_id():
+    out = _make_tool()._invoke(action="status")
+    assert "task_id" in out
+
+
+def test_status_not_owned_refused(monkeypatch):
+    _patch(monkeypatch, rounds=[])
+    out = _make_tool()._invoke(action="status", task_id=PFX + "other-task")
+    assert "没有找到" in out and "无权访问" in out
+
+
+def test_status_lists_pending_grouped_by_severity(monkeypatch):
+    rows = [_round(1, "annotated"), _round(2, "done", minio_path="frv-x-v2")]
+    _patch(monkeypatch, rounds=rows,
+           pending=[_ann("high"), _ann("medium"), _ann("low")])
+    out = _make_tool()._invoke(action="status", task_id=PFX + "task")
+    assert "严重" in out and "一般" in out and "提示" in out
+    assert "成稿" in out and "余额" in out
+
+
+def test_status_reports_failed_round_error(monkeypatch):
+    rows = [_round(1, "failed", error="LLM 输出无法解析为修复补丁列表")]
+    _patch(monkeypatch, rounds=rows)
+    out = _make_tool()._invoke(action="status", task_id=PFX + "task")
+    assert "本轮失败" in out and "无法解析" in out
+
+
+# ---------- fix ----------
+
+def test_fix_creates_new_round_and_encodes_levels(monkeypatch):
+    cur = _round(1, "annotated", user_query="重点看资质", kb_ids='["kb1"]')
+    calls = _patch(monkeypatch, rounds=[cur], next_round=(2, "v2"), left=3,
+                   pending=[_ann("high")])
+    _make_tool()._invoke(action="fix", task_id=PFX + "task", levels="high")
+    kw = calls["rounds"][0]
+    assert kw["round_no"] == 2 and kw["file_version"] == "v2"
+    assert kw["status"] == "fixing"
+    assert kw["file_id"] == cur.file_id          # 沿用该 task 的文件，不重新解析 Begin
+    assert kw["template_id"] == cur.template_id
+    assert kw["kb_ids"] == cur.kb_ids            # 修复轮继承知识库
+    assert kw["tenant_id"] == "tenant_x" and kw["created_by"] == "tenant_x"
+    assert "严重" in kw["user_query"] and "重点看资质" in kw["user_query"]
+    assert calls["spawned"] == [kw["task_id"]]
+
+
+def test_fix_never_mutates_annotation_status(monkeypatch):
+    """级别过滤**不得**靠把未选中级别置 wontfix 实现。
+
+    wontfix 的语义是「用户决定永不修复此条」；自动置位后用户改口「把中等的也修了」
+    会静默失效（list_pending_by_task 不再看到它），且用户无法从对话里察觉。
+    过滤改为写进本轮 user_query（executor 的修复 prompt 会带上它）。
+    """
+    cur = _round(1, "annotated")
+    calls = _patch(monkeypatch, rounds=[cur], next_round=(2, "v2"),
+                   pending=[_ann("high"), _ann("medium")])
+    _make_tool()._invoke(action="fix", task_id=PFX + "task", levels="high")
+    assert calls["ann_updates"] == []
+    assert calls["rounds"]
+
+
+def test_fix_rejects_while_previous_round_running(monkeypatch):
+    calls = _patch(monkeypatch, rounds=[_round(1, "reviewing")])
+    out = _make_tool()._invoke(action="fix", task_id=PFX + "task", levels="high")
+    assert "仍在进行中" in out and calls["rounds"] == []
+
+
+def test_fix_rejects_when_rounds_exhausted(monkeypatch):
+    calls = _patch(monkeypatch, rounds=[_round(3, "done")], left=0)
+    out = _make_tool()._invoke(action="fix", task_id=PFX + "task", levels="high")
+    assert "最大修复轮数" in out and "保持原样" in out and calls["rounds"] == []
+
+
+def test_fix_rejects_unknown_levels(monkeypatch):
+    """未知级别必须拒绝而不是兜底成 medium：用户只想要 low 却被升格成 medium
+    会让「只修低级别」变成「修中等级别」，与用户明确的指令相反。"""
+    calls = _patch(monkeypatch, rounds=[_round(1, "annotated")], pending=[_ann("low")])
+    out = _make_tool()._invoke(action="fix", task_id=PFX + "task", levels="urgent")
+    assert "levels" in out and calls["rounds"] == []
+
+
+def test_fix_rejects_when_no_pending_at_that_level(monkeypatch):
+    calls = _patch(monkeypatch, rounds=[_round(1, "annotated")], pending=[_ann("high")])
+    out = _make_tool()._invoke(action="fix", task_id=PFX + "task", levels="low")
+    assert "没有" in out and calls["rounds"] == []
+
+
+def test_fix_not_owned_refused(monkeypatch):
+    calls = _patch(monkeypatch, rounds=[])
+    out = _make_tool()._invoke(action="fix", task_id=PFX + "other", levels="high")
+    assert "无权访问" in out and calls["rounds"] == []
+
+
+def test_parse_levels_tolerant_and_ordered():
+    from agent.tools.file_review import FileReviewTool
+
+    assert FileReviewTool._parse_levels("低,high,LOW,严重") == ["high", "low"]
+    assert FileReviewTool._parse_levels('["medium"]') == ["medium"]
+    assert FileReviewTool._parse_levels(["medium", "high"]) == ["high", "medium"]
+    assert FileReviewTool._parse_levels("") == []
+    assert FileReviewTool._parse_levels(None) == []
