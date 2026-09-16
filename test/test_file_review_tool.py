@@ -15,6 +15,12 @@ SimpleNamespace 打桩（同 test_template_fill_tool.py）。
 - 轮次余额用尽 / 上一轮仍在跑 → 拒绝；
 - 越权：get_owned_task 返回 [] 时 status/fix 必须拒绝；
 - 轮询超时 → 返回 task_id 并引导 action=status。
+
+代码质量审查整改回归（见文末「代码质量审查整改」段）：
+- 连轮 fix 不得叠加互斥的级别指令（基准恒为首轮原始需求）；
+- spawn 线程仍在收尾时不得建轮次（防永久卡死的 fixing 轮）；
+- 轮次 error 全量拼接会挤占 LLM 上下文 → 必须裁剪；
+- 脏 severity 不得把字面 None 渲染进给用户的文案。
 """
 from types import SimpleNamespace
 
@@ -67,8 +73,11 @@ def _begin(outs):
 
 
 def _patch(monkeypatch, *, templates=None, rounds=None, pending=None,
-           next_round=(1, "v1"), left=3):
-    """统一打桩：Service 查询 + spawn + sleep。返回记录写操作的 calls。"""
+           next_round=(1, "v1"), left=3, running=False):
+    """统一打桩：Service 查询 + spawn + sleep。返回记录写操作的 calls。
+
+    running 对应 spawn 模块的防重入集合：默认 False（无线程在跑，闸门放行）。
+    """
     svc = _svc()
     calls = {"rounds": [], "spawned": [], "ann_updates": []}
 
@@ -93,6 +102,8 @@ def _patch(monkeypatch, *, templates=None, rounds=None, pending=None,
     from rag.svr.file_review import spawn as spawn_mod
     monkeypatch.setattr(spawn_mod, "spawn_review_task",
                         lambda task_id: calls["spawned"].append(task_id))
+    # 防重入集合由 spawn 模块持有；工具侧只读它来判定「线程是否还在收尾」。
+    monkeypatch.setattr(spawn_mod, "is_running", lambda task_id: running)
     return calls
 
 
@@ -346,3 +357,149 @@ def test_parse_levels_tolerant_and_ordered():
     assert FileReviewTool._parse_levels(["medium", "high"]) == ["high", "medium"]
     assert FileReviewTool._parse_levels("") == []
     assert FileReviewTool._parse_levels(None) == []
+
+
+# ---------- 代码质量审查整改（I1 / I2 / M3 / M7） ----------
+
+def test_fix_second_round_does_not_stack_level_directives(monkeypatch):
+    """连轮修复的拼装基准必须是**首轮原始需求**，不是上一轮（I1）。
+
+    第 2 次修复时 rounds[-1] 本身就是修复轮，其 user_query 里带着**上一轮**已作废的
+    级别指令；拿它当基准会拼出「只修【严重】…」+「只修【一般】…」两条互斥指令，而
+    executor._build_fix_prompt 把 round_row.user_query **原样**塞进「用户需求：」——
+    LLM 同时收到两条相斥的「只修某一级别」，结果该修的不修、或越界改了用户没选的级别。
+    """
+    r1 = _round(1, "annotated", user_query="重点看资质")
+    r2 = _round(2, "done",
+                user_query="重点看资质\n"
+                           "本次只修复【严重/high】级别的问题，其余级别的问题请保持原样、不要改动。")
+    calls = _patch(monkeypatch, rounds=[r1, r2], next_round=(3, "v3"),
+                   pending=[_ann("medium")])
+    _make_tool()._invoke(action="fix", task_id=PFX + "task", levels="medium")
+
+    q = calls["rounds"][0]["user_query"]
+    assert q.count("本次只修复") == 1          # 上一轮的级别指令不得被带过来
+    assert "一般/medium" in q                  # 本轮选中的级别（中英双写，与待修项里的
+    assert "严重" not in q                     # 「级别=high」对齐，免去模型自行映射）
+    assert "重点看资质" in q                    # 首轮原始需求必须保留（executor 只认它）
+
+
+def test_fix_refuses_while_spawn_still_running(monkeypatch):
+    """spawn 线程仍在收尾时不得建轮次（I2），否则留下不可自愈的卡死轮。
+
+    三个已核实的事实叠加：① spawn_review_task 在 task_id 已在 _running_tasks 时**直接
+    return**（无返回值、不报错）；② executor._run_fix_round **先**把轮次行置终态 done，
+    **再** _settle_annotations 写最多 20 条标注，中间有宽度可达 20 次 DB 往返的窗口，
+    轮次行读出来已是 done（前置闸门放行）而线程仍在集合里；③ execute_task 每次只处理
+    rounds[-1] 一轮、不循环。于是新轮没有线程消费，恒停在 fixing，该 task 之后所有
+    fix/review 都被前置闸门挡死，且 _force_fail_round 只在崩溃分支触发，无看门狗回收。
+    本检查是唯一可行的闸门：_running_tasks 对同一 task_id 只有本调用点会写入（_review
+    用全新 uuid），故观测到 False 时紧随其后的 spawn 必然能真正注册线程——它把不可逆的
+    卡死换成了可重试的「稍后再试」，不是单纯降低概率。
+    """
+    calls = _patch(monkeypatch, rounds=[_round(1, "done")], running=True,
+                   pending=[_ann("high")])
+    out = _make_tool()._invoke(action="fix", task_id=PFX + "task", levels="high")
+
+    assert calls["rounds"] == [] and calls["spawned"] == []
+    assert "稍后" in out or "收尾" in out
+
+
+def test_fix_proceeds_when_spawn_not_running(monkeypatch):
+    """反向用例：线程已退出时轮次照建，防过度拦截。"""
+    calls = _patch(monkeypatch, rounds=[_round(1, "done")], running=False,
+                   pending=[_ann("high")])
+    _make_tool()._invoke(action="fix", task_id=PFX + "task", levels="high")
+
+    assert len(calls["rounds"]) == 1
+    assert calls["spawned"] == [PFX + "task"]
+
+
+def test_fix_rejects_while_previous_round_fixing(monkeypatch):
+    """_RUNNING_ROUND_STATUSES 的第二个值 fixing 也必须被拦：只测 reviewing 会漏。
+
+    刻意让 is_running 同时为 True——若闸门顺序被写反（先查线程后查轮次状态），文案会
+    变成「收尾」而非「仍在进行中」，本用例即失败。
+    """
+    calls = _patch(monkeypatch, rounds=[_round(1, "fixing")], running=True)
+    out = _make_tool()._invoke(action="fix", task_id=PFX + "task", levels="high")
+
+    assert "仍在进行中" in out
+    assert calls["rounds"] == [] and calls["spawned"] == []
+
+
+def test_status_reports_produced_doc_for_failed_round(monkeypatch):
+    """failed 轮次也可能已落盘成稿（T6 交接契约第 2 条：收口那步抛错前成稿已写 MinIO）。
+
+    用 done + minio_path 构造等于没测——那种输入按 status 判断也能过；必须用 failed
+    才能锁住「判据只看 minio_path，与 status 无关」这条契约。
+    """
+    rows = [_round(1, "failed", error="收口阶段抛错", minio_path="frv-x-v1")]
+    _patch(monkeypatch, rounds=rows)
+    out = _make_tool()._invoke(action="status", task_id=PFX + "task")
+
+    assert "已产出第 1 轮成稿" in out
+
+
+def test_status_truncates_pending_list(monkeypatch):
+    """待修项超过 _MAX_LIST_ITEMS 只列前 N 条 + 一句「其余 N 条略」。
+
+    返回值直接进 LLM 上下文，31 条全列会把上下文挤掉；截断数必须如实告知总数，
+    否则用户会把「列出的条数」当成「问题总数」。
+    """
+    from agent.tools.file_review import _MAX_LIST_ITEMS
+
+    assert _MAX_LIST_ITEMS == 30
+    pending = [_ann("high", issue=f"问题{i}") for i in range(31)]
+    _patch(monkeypatch, rounds=[_round(1, "annotated")], pending=pending)
+    out = _make_tool()._invoke(action="status", task_id=PFX + "task")
+
+    assert out.count("- [") == _MAX_LIST_ITEMS
+    assert "其余 1 条略" in out
+
+
+def test_status_clips_round_error(monkeypatch):
+    """error 列允许写满 2000 字（executor），全量拼接会挤占 LLM 上下文。
+
+    同函数内 summary/issue/matched_text 一律过 _clip，error 是唯一的漏网字段。
+    """
+    from agent.tools.file_review import _MAX_SUMMARY_CHARS
+
+    rows = [_round(1, "failed", error="错" * 900)]
+    _patch(monkeypatch, rounds=rows)
+    out = _make_tool()._invoke(action="status", task_id=PFX + "task")
+
+    assert out.count("错") == _MAX_SUMMARY_CHARS
+
+
+def test_status_renders_unknown_severity_as_unknown(monkeypatch):
+    """脏 severity（None / 未知串）不得把字面 None 渲染进给用户与 LLM 的文案。"""
+    rows = [_round(1, "annotated")]
+    _patch(monkeypatch, rounds=rows, pending=[_ann(None), _ann("bogus")])
+    out = _make_tool()._invoke(action="status", task_id=PFX + "task")
+
+    assert "None" not in out
+    assert "未知" in out
+
+
+def test_review_reports_error_when_spawn_raises(monkeypatch):
+    """外部依赖故障：spawn 抛错要变成用户可读文案 + _ERROR 置位。
+
+    轮次行已落库这条**已知后果**如实断言，不假装不存在：create_round 在 spawn 之前，
+    此时会留下一条 reviewing 轮（无人在跑，只能靠 T9 的 retry/看门狗回收）。
+    """
+    from rag.svr.file_review import spawn as spawn_mod
+
+    calls = _patch(monkeypatch, templates=[_tpl()])
+
+    def _boom(task_id):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(spawn_mod, "spawn_review_task", _boom)
+    tool = _make_tool(components=_begin({"review_file_id": "u1"}))
+    out = tool._invoke(action="review")
+
+    assert out == "文件审核执行失败：boom"
+    assert tool._param.outputs["_ERROR"]["value"] == "boom"
+    assert len(calls["rounds"]) == 1
+    assert calls["rounds"][0]["status"] == "reviewing"

@@ -3,8 +3,11 @@
 
 照 agent/tools/template_fill.py 的插件结构：FileReviewToolParam(ToolParamBase) 声明
 meta，FileReviewTool(ToolBase) 提供 _invoke，被 component_class 按类名自动发现。
-Service 层与 executor 全部**延迟 import**：前者避免工具注册期拉起 DB/Quart，后者
-（含 python-docx）只在真正跑起来时才需要。
+**延迟 import 只针对 rag.svr.file_review.executor**：它是唯一会拉起 python-docx /
+settings 那串重依赖的模块，故只在真正要跑/解析级别别名时才 import。Service 与 DB
+则是**顶层可达**的（本模块顶层 `from agent.component.file_review import ...`，而后者
+顶层 `from api.db.services.file_review_service import ...`，连带 api.db.db_models），
+所以「工具注册期不碰 DB」并不是这里的既成事实，别按它推理。
 
 与 T7 画布节点 agent/component/file_review.py 是同一份执行真相的**两个入口**：两者都
 只做「建轮次行 + spawn 后台线程」，随即返回；进度与结果一律按轮次行反查（本工具的
@@ -43,7 +46,10 @@ _RUNNING_ROUND_STATUSES = ("reviewing", "fixing")
 
 _ROUND_STATUS_CN = {
     "reviewing": "审核中", "annotated": "审核完成", "fixing": "修复中",
-    "done": "修复完成", "failed": "失败",
+    # 刻意用中性词：done 不总意味着「改好了」——executor 在「没有待修复的问题」
+    # 与「该文件类型不支持自动修复」时同样以 done 收口，写「修复完成」会让用户
+    # 误以为文档已被改动。
+    "done": "已收口", "failed": "失败",
 }
 _SEVERITY_CN = {"high": "严重", "medium": "一般", "low": "提示"}
 _SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
@@ -60,20 +66,35 @@ def _clip(text, limit: int) -> str:
     return s if len(s) <= limit else s[:limit] + "…"
 
 
-def _compose_fix_query(prev: str, levels: list) -> str:
+def _severity_cn(sev) -> str:
+    """级别中文名；脏数据（None / 未知串）折成「未知」，不许把 None 渲染进给用户的文案。"""
+    return _SEVERITY_CN.get(sev) or (sev if isinstance(sev, str) and sev else "未知")
+
+
+def _compose_fix_query(base_query: str, levels: list) -> str:
     """把级别选择编进本轮 user_query。
 
     executor 的修复 prompt 会把轮次行的 user_query 原样作为「用户需求：」喂给 LLM
     （_build_fix_prompt 实测确认），而待修复清单里每条都带「级别=」，级别过滤借此生效。
 
+    `base_query` 必须是**首轮原始需求**，不是上一轮：连轮修复时上一轮本身就是修复轮，
+    其 user_query 里带着**上一轮**已作废的级别指令，拿它当基准会拼出「只修【严重】…」
+    +「只修【一般】…」两条互相排斥的指令，LLM 同时收到后可能该修的不修、或越界改了
+    用户本次没选中的级别——与本方法「按用户本次选定级别修复」的目标正好相反。
+    首轮恒为该 task 的原始审核轮（_review 每次都用新 get_uuid() 开新 task，故每个
+    task 只有一条首轮），且 executor 的修复 prompt 只认 user_query 这一个字段，丢掉
+    首轮原文等于丢掉用户的审核意图。
+
+    级别中英双写（如「严重/high」）：待修清单里每条写的是英文 `级别=high`（severity 已
+    被 _norm_severity 归一成英文），只给中文会多出一层「严重 ⇔ high」的映射不确定性。
+
     刻意**不**把未选中级别的标注置 wontfix 来硬过滤：wontfix 的语义是「用户决定永不
     修复此条」，自动置位后用户改口「把中等的也修了」会静默失效（list_pending_by_task
-    不再看到它），而用户没有任何办法从对话里发现这件事。保留原需求原文是因为 executor
-    的修复 prompt 只认这一个字段，丢掉它等于丢掉用户的审核意图。
+    不再看到它），而用户没有任何办法从对话里发现这件事。
     """
-    chosen = "、".join(_SEVERITY_CN.get(s, s) for s in levels)
+    chosen = "、".join(f"{_SEVERITY_CN.get(s, s)}/{s}" for s in levels)
     head = f"本次只修复【{chosen}】级别的问题，其余级别的问题请保持原样、不要改动。"
-    base = (prev or "").strip()
+    base = (base_query or "").strip()
     return f"{base}\n{head}" if base else head
 
 
@@ -277,11 +298,34 @@ class FileReviewTool(ToolBase, ABC):
             return ("没有【" + "、".join(_SEVERITY_CN.get(s, s) for s in levels)
                     + "】级别的待修复问题。待修复问题：" + self._severity_summary(pending))
 
+        # 防「永久卡死的 fixing 轮」——不是降低概率，而是把不可逆状态换成可重试。
+        # 四个已核实的事实叠加出的必死路径：
+        #   ① spawn_review_task 在 task_id 已在 _running_tasks 时**直接 return**（无返回
+        #      值、不报错），调用方无从得知线程没起来；
+        #   ② executor._run_fix_round **先**把轮次行置终态 done，**再** _settle_annotations
+        #      写最多 20 条标注，中间有宽度可达 20 次 DB 往返的窗口——轮次行读出来已是
+        #      done（上面的前置闸门放行），线程却仍在 _running_tasks 里；
+        #   ③ executor.execute_task 每次只处理 rounds[-1] 一轮、不循环，故新轮永远等不到
+        #      线程去消费它；
+        #   ④ 没有看门狗回收（_force_fail_round 只在崩溃/调度失败分支触发）。
+        # 于是新轮恒停在 fixing，该 task 之后所有 fix/review 都被上面的前置闸门挡死。
+        # 本检查是唯一可行的闸门：_running_tasks 对同一 task_id 只有本调用点会写入
+        # （_review 用的是全新 get_uuid()），故一旦观测到 is_running 为 False，紧随其后的
+        # spawn_review_task 必然能真正注册线程——反之观测到 True 就绝不能建轮次。
+        # 它必须放在上面所有**语义**闸门之后：真正原因是「没有可修项」时错答「稍后再试」
+        # 会让用户白等；且与 create_round 之间不得插入其它逻辑（否则又会开出一个新的
+        # 「检查通过但线程未注册」窗口）。
+        if spawn_mod.is_running(task_id):
+            return ("上一轮审核正在收尾，现在发起修复会排在它后面、不会被本轮执行。"
+                    "请稍等片刻后用 action=status 确认状态，再发起修复。")
+
         round_no, file_version = FileReviewRoundService.next_round(task_id)
         FileReviewRoundService.create_round(
             task_id=task_id, file_id=cur.file_id, round_no=round_no,
             template_id=cur.template_id,
-            user_query=_compose_fix_query(cur.user_query, levels),
+            # 基准是 rounds[0]（首轮原始需求）而非 cur（可能是修复轮，带着上一轮已作废
+            # 的级别指令）——详见 _compose_fix_query 的 docstring。
+            user_query=_compose_fix_query(rounds[0].user_query, levels),
             file_version=file_version, status="fixing",
             tenant_id=tenant_id, created_by=tenant_id,
             # 修复轮沿用本轮的 kb_ids（已是 JSON 文本，_normalize_kb_ids 幂等）：
@@ -328,14 +372,17 @@ class FileReviewTool(ToolBase, ABC):
         lines = [(f"审核任务 {task_id}：共 {len(rounds)} 轮，当前第 {cur.round_no} 轮"
                   f"（{_ROUND_STATUS_CN.get(cur.status, cur.status)}）。")]
         if cur.status == "failed":
-            lines.append("本轮失败：" + (cur.error or "（无详细信息，详见服务端日志）"))
+            # error 列允许写满 2000 字（executor 的 err[:2000]），全量拼接会挤占 LLM
+            # 上下文——同函数内 summary/issue/matched_text 一律过 _clip，它不能例外。
+            lines.append("本轮失败：" + (_clip(cur.error, _MAX_SUMMARY_CHARS)
+                                       or "（无详细信息，详见服务端日志）"))
         if cur.summary:
             lines.append("本轮结果：" + _clip(cur.summary, _MAX_SUMMARY_CHARS))
 
         pending = FileReviewAnnotationService.list_pending_by_task(task_id)
         lines.append("待修复问题：" + self._severity_summary(pending))
         for a in pending[:_MAX_LIST_ITEMS]:
-            line = (f"- [{_SEVERITY_CN.get(a.severity, a.severity)}] "
+            line = (f"- [{_severity_cn(a.severity)}] "
                     f"{_clip(a.issue, _MAX_ISSUE_CHARS)}")
             if a.matched_text:
                 line += f"（原文：{_clip(a.matched_text, _MAX_MATCHED_CHARS)}）"
@@ -364,7 +411,7 @@ class FileReviewTool(ToolBase, ABC):
         counts = {}
         for a in items:
             counts[a.severity] = counts.get(a.severity, 0) + 1
-        parts = [f"{_SEVERITY_CN.get(s, s)} {counts[s]} 条"
+        parts = [f"{_severity_cn(s)} {counts[s]} 条"
                  for s in sorted(counts, key=lambda x: _SEVERITY_RANK.get(x, 99))]
         return f"共 {len(items)} 条（{'、'.join(parts)}）"
 

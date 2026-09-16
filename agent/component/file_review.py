@@ -45,8 +45,11 @@ class FileReviewParam(ComponentParamBase):
         self.template_id = ""     # 留空 → 建轮次时落 executor.DEFAULT_TEMPLATE_ID
         self.custom_prompt = ""   # 用户自定义审核要求，落进轮次行 user_query
         self.dataset_ids = []     # 检索知识库（画布 KB 表单字段名，同 TemplateFill）
-        self.max_rounds = 3       # 前端节点面板用；后端不消费——轮次上限由 T9 的 fix
-                                  # 端点按 max_completed_round_no 判定，无对应 DB 列
+        self.max_rounds = 3       # 前端节点面板用；后端不消费——轮次上限的唯一权威是
+                                  # FileReviewRoundService.MAX_FIX_ROUNDS / fix_rounds_left()，
+                                  # 轮号一律由 next_round()（数全部轮次、含 failed）分配。
+                                  # 刻意不用 max_completed_round_no：它只数 done/annotated，
+                                  # 拿它取轮号会撞号覆盖失败轮产物，且新轮基线自引用。
         self.outputs = {
             "task_id": {"value": "", "type": "string"},
             "round_id": {"value": "", "type": "string"},
