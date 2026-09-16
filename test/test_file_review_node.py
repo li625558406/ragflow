@@ -97,7 +97,10 @@ def test_file_id_falls_back_to_begin_output(rec):
 
 
 def test_file_id_ref_unresolved_falls_back(rec):
-    """引用写错/上游没推：展开为空 → 回退 Begin 输出，不得把 '{begin@...}' 当 id。"""
+    """上游没推（组件在、但该输出为空）：展开为空 → 回退 Begin 输出，
+    不得把 '{begin@...}' 当 id。"""
+    # 注意本用例只覆盖「上游没推」这一种；「引用写错」是另外的结局（拼错的 id 含下划线时
+    # 不匹配引用正则 → 字面串原样透传、不触发回退），见 test_file_id_underscore_ref_stays_literal。
     p = FileReviewParam()
     p.file_id = "{begin@review_file_id}"
     cpn = _make(p, FakeCanvas(begin_outs={"review_file_id": "upload-uuid-4"}, refs={}))
@@ -125,6 +128,38 @@ def test_non_ref_garbage_passed_through(rec):
     p.file_id = "not-a-uuid"
     _make(p)._invoke()
     assert rec["rounds"][0]["file_id"] == "not-a-uuid"
+
+
+def test_file_id_underscore_ref_stays_literal(rec):
+    """不匹配引用正则的 {cpn_x@var} 形态不进展开，原样落库——
+    错误由 executor 的「文件不存在」暴露，节点不做创造性猜测。"""
+    p = FileReviewParam()
+    p.file_id = "{begin_x@review_file_id}"
+    _make(p)._invoke()
+    assert rec["rounds"][0]["file_id"] == "{begin_x@review_file_id}"
+
+
+def test_begin_output_raising_falls_back_to_error(rec):
+    """Begin 读输出出问题不应逸出异常，应降级成同一条用户可读报错。"""
+    class _BadBegin:
+        component_name = "Begin"
+
+        def output(self):
+            raise RuntimeError("boom")
+
+    cpn = _make(canvas=FakeCanvas(begin_outs={}))
+    cpn._canvas.components = {"begin": {"obj": _BadBegin()}}
+    with pytest.raises(ValueError, match="未指定待审核文件"):
+        cpn._invoke()
+    assert rec["rounds"] == []
+
+
+def test_begin_output_non_str_ignored(rec):
+    """Begin 输出不是 str（此处为 int）时按取不到处理，不得把 123 当 file_id。"""
+    cpn = _make(canvas=FakeCanvas(begin_outs={"review_file_id": 123}))
+    with pytest.raises(ValueError, match="未指定待审核文件"):
+        cpn._invoke()
+    assert rec["rounds"] == []
 
 
 # ---------- 建轮次契约 ----------
@@ -167,6 +202,19 @@ def test_spawn_receives_task_id_not_round_id(rec):
     _make(p)._invoke()
     assert rec["spawned"] == [rec["rounds"][0]["task_id"]]
     assert "round-xyz" not in rec["spawned"]
+
+
+def test_no_spawn_when_create_round_fails(rec, monkeypatch):
+    """建轮次失败必须不 spawn——否则起一个永远读不到轮次行的线程。"""
+    def _boom(**kwargs):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(fr.FileReviewRoundService, "create_round", _boom)
+    p = FileReviewParam()
+    p.file_id = "u1"
+    with pytest.raises(RuntimeError, match="db down"):
+        _make(p)._invoke()
+    assert rec["spawned"] == []
 
 
 def test_task_id_fresh_per_invoke(rec):

@@ -82,7 +82,13 @@ class FileReview(ComponentBase):
                     ans = json.dumps(val, ensure_ascii=False)
                 except Exception:  # noqa: BLE001 — 不可序列化值降级 str
                     ans = str(val)
-            text = re.sub(r"\{" + re.escape(k) + r"\}", ans, text)
+            # 必须用 callable 作替换值，不能把 ans 直接当替换串：replacement template
+            # 会把 ans 里的 \ 和 \g<n> 解释成转义 / 反向引用（如 "C:\Users\x.docx" 直接
+            # 抛 bad escape \U，异常逸出连轮次行都建不起来，"a\nb" 还会被静默改写成真换行）。
+            # lambda 返回的字面串不经模板解析，对不含反斜杠的输入行为完全等价。
+            # _ans=ans 把本轮值绑成默认参数（lambda 立即被 re.sub 调用，语义与闭包捕获等价，
+            # 但显式绑定可过 ruff B023「循环变量未绑定」）。
+            text = re.sub(r"\{" + re.escape(k) + r"\}", lambda _m, _ans=ans: _ans, text)
         return text.strip()
 
     def _begin_output(self, key: str) -> str:
