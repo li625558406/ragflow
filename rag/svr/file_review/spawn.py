@@ -43,7 +43,12 @@ def _force_fail_round(task_id: str, error: str) -> None:
 
 
 def spawn_review_task(task_id: str) -> None:
-    """起 daemon 线程跑审核 pipeline；同 task 已在跑则直接返回（防重入）。"""
+    """起 daemon 线程跑审核 pipeline；同 task 已在跑则直接返回（防重入）。
+
+    T6 契约：防重入集合没有超时/看门狗，标志位只在 executor 线程或启动失败分支的
+    finally 里 discard。因此 `execute_task` 必须保证返回（不得永久阻塞）——否则该
+    task 会被永远判为「已在执行中」，retry 恒返回，只能重启进程才能恢复。
+    """
     with _running_lock:
         if task_id in _running_tasks:
             return

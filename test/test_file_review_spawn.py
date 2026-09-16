@@ -24,11 +24,18 @@ def _cleanup():
 @pytest.fixture(scope="module", autouse=True)
 def _table_and_cleanup():
     DB.connect(reuse_if_open=True)
-    if not FileReviewRound.table_exists():
-        FileReviewRound.create_table(safe=True)
-    _cleanup()
-    yield
-    _cleanup()
+    try:
+        if not FileReviewRound.table_exists():
+            FileReviewRound.create_table(safe=True)
+        _cleanup()
+        yield
+    finally:
+        # try/finally 而非裸顺序：_cleanup() 抛异常时连接不能让本会话后续用例
+        # 继续复用坏状态 / 泄漏。
+        try:
+            _cleanup()
+        finally:
+            DB.close()
 
 
 def _mk_round(task_id, status="reviewing"):
@@ -227,9 +234,9 @@ def test_force_fail_marks_all_stuck_rounds_of_task(monkeypatch):
 
 
 def test_force_fail_db_failure_does_not_wedge_task(monkeypatch):
-    """外部依赖故障（MySQL 不可用 / update 抛错）时 force-fail 必须自己吞掉异常，
-    且**绝不能**因此漏掉防重入标志位的清理 —— 否则任务被永久锁死，重试恒报
-    「任务正在执行中」，只能重启进程。轮次写不进去就诚实留在 reviewing，不得假装。"""
+    """force-fail 写库失败（MySQL 不可用 / update 抛错）时，防重入标志位仍必须被
+    清理、任务不得被永久锁死 —— 否则重试恒报「任务正在执行中」，只能重启进程。
+    轮次写不进去就诚实留在 reviewing，不得假装。"""
     tid = PFX + 'forcefail-db'
     _mk_round(tid)
 
@@ -254,3 +261,29 @@ def test_force_fail_db_failure_does_not_wedge_task(monkeypatch):
     spawn.spawn_review_task(tid)
     assert _wait_until(lambda: not spawn.is_running(tid))
     assert [r.status for r in _rounds(tid)] == ['reviewing']
+
+
+def test_thread_start_failure_survives_db_failure(monkeypatch):
+    """启动失败 + DB 写失败：spawn_review_task 必须正常返回，不得把 DB 异常
+    冒泡成调用方 500 —— 由 _force_fail_round 内部的 try/except 保证。"""
+    tid = PFX + 'startfail-db'
+    _mk_round(tid)
+
+    class BoomThread:
+        def __init__(self, *a, **kw):
+            pass
+
+        def start(self):
+            raise RuntimeError('cannot start new thread')
+
+    class _BoomQuery:
+        def where(self, *a, **kw):
+            return self
+
+        def execute(self):
+            raise RuntimeError('mysql down')
+
+    monkeypatch.setattr(spawn.threading, 'Thread', BoomThread)
+    monkeypatch.setattr(FileReviewRound, 'update', lambda *a, **kw: _BoomQuery())
+    spawn.spawn_review_task(tid)          # ← 不得抛出
+    assert spawn.is_running(tid) is False
