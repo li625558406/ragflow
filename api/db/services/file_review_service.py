@@ -43,6 +43,8 @@ FileReview* 三模型继承 DataBaseModel，因此：
 越权重放、在 T4 patcher 里是无意义写；判定连同拒绝策略（报错 / 降级 / 标 failed）
 都应在那一层实现。本层返回是否命中行（bool），把「行不存在」交给上层区分 404 与 200。
 test_update_status_writes_arbitrary_value_locks_contract 用例锁定了这一分工。
+唯一例外是**长度**：varchar 列超长会被 MySQL 静默截成半截值（非严格模式下不报错），
+故本层用 _clamp_str 主动按列宽钳制，杜绝「写进去的枚举值只有一半」这种隐性腐坏。
 """
 
 from api.db.db_models import DB, FileReviewAnnotation, FileReviewRound, FileReviewTemplate
@@ -56,6 +58,26 @@ COMPLETED_ROUND_STATUSES = ("done", "annotated")
 
 # 「待处理」标注口径：下一轮 LLM prompt 需要引用的未闭环问题。
 PENDING_ANNOTATION_STATUSES = ("open", "new")
+
+
+def _clamp_str(model, field_name: str, value):
+    """按模型列 max_length 钳制字符串，防 MySQL 静默截断出半截枚举值。
+
+    枚举白名单校验由上层（T4 patcher / T6 执行器）负责，此处不做值域判断。
+    背景：本机 MySQL 当前 sql_mode 非严格，超长值既不报错也不回滚，而是被截成
+    varchar 长度上限的**半截字符串**（如 severity 列 varchar(16) 收到
+    "critical_blocking_需要人工确认" 静默落库为 "critical_blockin"）。严格模式下
+    同一输入会抛 DataError，炸在 T6 守护线程里让轮次永久卡 reviewing。
+    这里主动截断保证「写进去的就是上层给的完整值或被明确钳制的值」，不静默半截。
+
+    未知列名（如未来新增但 model 尚未登记的 extra 键）与 TextField（无 max_length）
+    原样返回，不抛异常；非字符串（None/0）原样透传。
+    """
+    if not isinstance(value, str):
+        return value
+    field = model._meta.fields.get(field_name)
+    max_len = getattr(field, "max_length", None) if field is not None else None
+    return value[:max_len] if max_len else value
 
 
 class FileReviewServiceBase(CommonService):
@@ -116,7 +138,8 @@ class FileReviewRoundService(FileReviewServiceBase):
         cls.model.create(
             id=rid, task_id=task_id, file_id=file_id, round_no=round_no,
             template_id=template_id, user_query=user_query,
-            file_version=file_version, status=status,
+            file_version=_clamp_str(cls.model, "file_version", file_version),
+            status=_clamp_str(cls.model, "status", status),
             tenant_id=tenant_id, created_by=created_by,
         )
         return rid
@@ -128,10 +151,16 @@ class FileReviewRoundService(FileReviewServiceBase):
 
         update_time 由 _normalize_data 自动刷新（不得手写）。返回是否真的改到行：
         False 表示该 id 不存在，供 T9 区分 404 与 200，避免「任务丢了却静默 200」。
+        字符串字段按模型列宽钳制（见 _clamp_str），extra 中的未知键原样透传。
         """
-        fields = {"status": status}
-        fields.update(extra)
-        return cls.model.update(**fields).where(cls.model.id == rid).execute() > 0
+        fields = {"status": _clamp_str(cls.model, "status", status)}
+        for k, v in extra.items():
+            fields[k] = _clamp_str(cls.model, k, v)
+        if cls.model.update(**fields).where(cls.model.id == rid).execute() > 0:
+            return True
+        # affected rows = 实际变化行数（连接未开 CLIENT_FOUND_ROWS），不是匹配行数：
+        # 同毫秒 + 同值更新时整行无净变化 -> 0，但行仍存在。用存在性复核避免误判 404。
+        return cls.model.select().where(cls.model.id == rid).exists()
 
     @classmethod
     @DB.connection_context()
@@ -141,7 +170,12 @@ class FileReviewRoundService(FileReviewServiceBase):
         T9 fix 端点用它算 new_no = max + 1。reviewing/fixing/failed 一律不计入：
         否则一次失败或中断的轮次会把下一轮编号推高，还可能让新轮次建在没有产物的
         版本基线上。
+
+        task_id 为空串/None 时短路返回 0：列无 NOT NULL 之外的值域约束，空串行可
+        落库，不短路会让这类脏行被当成「某个任务的轮次」参与聚合。
         """
+        if not task_id:
+            return 0
         row = cls.model.select(cls.model.round_no).where(
             (cls.model.task_id == task_id)
             & cls.model.status.in_(COMPLETED_ROUND_STATUSES)
@@ -183,9 +217,14 @@ class FileReviewAnnotationService(FileReviewServiceBase):
         aid = get_uuid()
         cls.model.create(
             id=aid, round_id=round_id, task_id=task_id, file_id=file_id,
-            file_version=file_version, anchor=anchor, matched_text=matched_text,
-            type=type, severity=severity, issue=issue, suggestion=suggestion,
-            source=source, status=status, prev_annotation_id=prev_annotation_id,
+            file_version=_clamp_str(cls.model, "file_version", file_version),
+            anchor=anchor, matched_text=matched_text,
+            type=_clamp_str(cls.model, "type", type),
+            severity=_clamp_str(cls.model, "severity", severity),
+            issue=issue, suggestion=suggestion,
+            source=_clamp_str(cls.model, "source", source),
+            status=_clamp_str(cls.model, "status", status),
+            prev_annotation_id=prev_annotation_id,
             tenant_id=tenant_id, created_by=created_by,
         )
         return aid
@@ -194,8 +233,14 @@ class FileReviewAnnotationService(FileReviewServiceBase):
     @DB.connection_context()
     def update_status(cls, aid: str, status: str) -> bool:
         """改标注状态（T4 patcher 判 fixed/wontfix、T9 手动标 wontfix）；
-        返回是否命中行。update_time 由框架刷新。"""
-        return cls.model.update(status=status).where(cls.model.id == aid).execute() > 0
+        返回是否命中行（存在性复核口径同 RoundService.update_status）。update_time
+        由框架刷新。status 按列宽钳制（见 _clamp_str）。"""
+        status = _clamp_str(cls.model, "status", status)
+        if cls.model.update(status=status).where(cls.model.id == aid).execute() > 0:
+            return True
+        # affected rows = 实际变化行数（连接未开 CLIENT_FOUND_ROWS）；同毫秒同值写
+        # 整行无净变化会得 0，但行仍存在，用存在性复核避免误判「行不存在」。
+        return cls.model.select().where(cls.model.id == aid).exists()
 
     @classmethod
     @DB.connection_context()
@@ -228,7 +273,12 @@ class FileReviewAnnotationService(FileReviewServiceBase):
         同 (task_id, round_no) 可能有多行（无唯一约束），统一用 round_id.in_() 覆盖。
         额外带上 task_id 条件：round_id 已隐含归属，这里是对「标注行挂错 round_id」
         这类脏数据的二次防御。
+
+        task_id 为空串/None 时短路返回 []（同 max_completed_round_no）：空串行可
+        落库，不短路会把这类脏行当成本任务的数据引用进下一轮 prompt。
         """
+        if not task_id:
+            return []
         round_ids = [r.id for r in FileReviewRound.select(FileReviewRound.id).where(
             (FileReviewRound.task_id == task_id)
             & (FileReviewRound.round_no == current_round_no))]

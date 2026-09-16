@@ -34,29 +34,41 @@ from api.utils.json_encode import json_dumps
 # "test" 片段，不存在误命中窗口
 PFX = "__test_fr_svc__"
 
+# ORDER BY id 探针模板 id：刻意不以 PFX 开头（首字符 'A' 的 ASCII 小于 PFX 的 '_'
+# 与预置 slug 的小写首字母），用来证明 list_enabled 真的按 id 升序排 —— 见
+# test_list_enabled_templates。清理时必须单独点名删除。
+_ORDER_PROBE_ID = "A_tpl_order_probe"
+
 
 def _cleanup():
-    """只按测试前缀清理，幂等（表不存在时由 fixture 先建表）。"""
+    """只按测试前缀（外加排序探针）清理，幂等（表不存在时由 fixture 先建表）。"""
     FileReviewAnnotation.delete().where(FileReviewAnnotation.task_id.startswith(PFX)).execute()
     FileReviewAnnotation.delete().where(FileReviewAnnotation.file_id.startswith(PFX)).execute()
     FileReviewRound.delete().where(FileReviewRound.task_id.startswith(PFX)).execute()
     FileReviewRound.delete().where(FileReviewRound.file_id.startswith(PFX)).execute()
     FileReviewTemplate.delete().where(FileReviewTemplate.id.startswith(PFX)).execute()
+    FileReviewTemplate.delete().where(FileReviewTemplate.id == _ORDER_PROBE_ID).execute()
 
 
 @pytest.fixture(scope="module", autouse=True)
 def _tables_presets_and_cleanup():
     DB.connect(reuse_if_open=True)
-    for m in (FileReviewTemplate, FileReviewRound, FileReviewAnnotation):
-        if not m.table_exists():
-            m.create_table(safe=True)
-    if FileReviewTemplate.select().where(
-            FileReviewTemplate.tenant_id == "").count() < len(_PRESET_REVIEW_TEMPLATES):
-        _seed_file_review_templates()
-    _cleanup()
-    yield
-    _cleanup()
-    DB.close()
+    try:
+        for m in (FileReviewTemplate, FileReviewRound, FileReviewAnnotation):
+            if not m.table_exists():
+                m.create_table(safe=True)
+        if FileReviewTemplate.select().where(
+                FileReviewTemplate.tenant_id == "").count() < len(_PRESET_REVIEW_TEMPLATES):
+            _seed_file_review_templates()
+        _cleanup()
+        yield
+    finally:
+        # try/finally 而非裸顺序：_cleanup() 抛异常时连接不能让本会话后续用例
+        # 继续复用坏状态 / 泄漏（M2）。
+        try:
+            _cleanup()
+        finally:
+            DB.close()
 
 
 def _mk_round(task_id, round_no, status, *, file_id, file_version="v1", **kw):
@@ -78,12 +90,19 @@ def _mk_ann(*, round_id, task_id, file_id, status="open", file_version="v1", **k
 
 # ── 计划给定的 3 个基线用例 ────────────────────────────────────────────
 def test_list_enabled_templates():
+    # 探针：id 首字符 'A'(0x41) 小于 PFX 的 '_'(0x5F) 与预置 slug 的小写首字母，
+    # 因此若 ORDER BY id 被删，MySQL 按 PK 序返回时它绝不可能排第一 -> 断言必挂。
     with DB.connection_context():
+        FileReviewTemplate.create(
+            id=_ORDER_PROBE_ID, name="探针", system_prompt="x",
+            user_prompt_template="{user_query}{file_excerpt}{references}",
+            tenant_id="", created_by="u")
         rows = FileReviewTemplateService.list_enabled()
     assert len(rows) >= 5
     assert all(r.enabled == 1 for r in rows), "list_enabled 必须过滤 enabled != 1"
     ids = [r.id for r in rows]
     assert ids == sorted(ids), "按 id 升序（前端下拉顺序需稳定）"
+    assert ids[0] == _ORDER_PROBE_ID, "ORDER BY id 必须真实生效（探针 id 排序最前）"
 
 
 def test_max_completed_rounds_excludes_failed():
@@ -116,11 +135,34 @@ def test_lookup_misses_are_none_zero_and_empty_list():
         assert FileReviewTemplateService.get_by_id(f"{PFX}no_such_tpl") is None
         assert FileReviewRoundService.get_by_id(f"{PFX}no_such_round") is None
         assert FileReviewAnnotationService.get_by_id(f"{PFX}no_such_ann") is None
-        assert FileReviewRoundService.get_by_id("") is None, "空 id 应短路，不去打 id IS NULL"
         assert FileReviewRoundService.max_completed_round_no(f"{PFX}no_such_task") == 0
         assert FileReviewRoundService.get_by_task(f"{PFX}no_such_task") == []
         rows = FileReviewAnnotationService.list_by_file_version(f"{PFX}no_file", "v1")
     assert rows is not None and rows == [], "无数据必须是空列表（None 会被上游直接 len() 崩掉）"
+
+
+def test_get_by_id_empty_id_short_circuits_without_sql(monkeypatch):
+    """空 id 短路：返回值对「有无短路」不敏感（无短路时 get(id == "") 抛
+    DoesNotExist 也会被 except 转成 None），必须改为断言**零 SQL** —— 去掉
+    `if not pid: return None` 后这里才会真失败。
+
+    DB.execute(query) 是 peewee 所有 SQL 的唯一出口（execute_sql 仅由它调用），
+    在已建立的连接内（fixture 已 connect，connection_context 复用）计数即可。
+    """
+    calls = []
+    orig = DB.execute
+
+    def spy(query, *a, **k):
+        calls.append(query)
+        return orig(query, *a, **k)
+
+    monkeypatch.setattr(DB, "execute", spy)
+    with DB.connection_context():
+        assert FileReviewRoundService.get_by_id("") is None
+        assert FileReviewAnnotationService.get_by_id("") is None
+        assert FileReviewAnnotationService.get_by_id(None) is None
+        assert FileReviewTemplateService.get_by_id("") is None
+    assert calls == [], "空 id/None 必须短路，不得触库"
 
 
 def test_update_status_on_missing_row_returns_false_without_raising():
@@ -226,7 +268,11 @@ def test_list_by_file_version_task_id_none_returns_all_across_tasks():
         a_rows = FileReviewAnnotationService.list_by_file_version(fid, "v1", ta)
         b_rows = FileReviewAnnotationService.list_by_file_version(fid, "v1", tb)
 
-    assert [r.id for r in all_rows] == [a1, a2, b1], "task_id=None 跨 task 取全量且按 create_time 升序"
+    # 不能断言精确 ids 顺序：生产形态（同机 Docker MySQL）两条 INSERT 可落在同一
+    # 毫秒，MySQL 对并列 ORDER BY key 不保证稳定序。用集合锁内容 + 时间戳非降序锁排序。
+    assert {r.id for r in all_rows} == {a1, a2, b1}, "task_id=None 必须跨 task 取全量"
+    ts = [r.create_time for r in all_rows]
+    assert ts == sorted(ts), "list_by_file_version 必须按 create_time 非降序"
     assert sorted(r.id for r in a_rows) == sorted([a1, a2]), "传 task_id 必须收窄"
     assert [r.id for r in b_rows] == [b1]
 
@@ -305,10 +351,79 @@ def test_update_status_writes_arbitrary_value_locks_contract():
         assert FileReviewAnnotationService.get_by_id(aid).status == bogus_ann
 
 
+# ── 9b. update_status 的 **extra 合入路径（T6 执行器靠它写 summary/minio_path/error） ──
+def test_update_status_merges_extra_fields():
+    tid = f"{PFX}t_extra"
+    with DB.connection_context():
+        rid = _mk_round(tid, 1, "reviewing", file_id=f"{PFX}f_extra")
+        ok = FileReviewRoundService.update_status(
+            rid, "annotated", summary="整轮总结", minio_path="review/v2.docx", error=None)
+        row = FileReviewRoundService.get_by_id(rid)
+    assert ok is True and row.summary == "整轮总结" and row.minio_path == "review/v2.docx"
+    assert row.status == "annotated"
+
+
+def test_update_status_same_value_in_same_ms_still_returns_true(monkeypatch):
+    """C1 回归：affected rows = 实际变化行数（连接未开 CLIENT_FOUND_ROWS），同毫秒
+    同值写会得 0，但行仍存在，必须 True —— 否则 T9 finish 幂等重试会误收 404。"""
+    import api.db.db_models as m
+    monkeypatch.setattr(m, "current_timestamp", lambda *a, **k: 1_700_000_000_000)
+    tid = f"{PFX}t_samems"
+    with DB.connection_context():
+        rid = _mk_round(tid, 1, "reviewing", file_id=f"{PFX}f_samems")
+        assert FileReviewRoundService.update_status(rid, "reviewing") is True
+        assert FileReviewRoundService.update_status(rid, "reviewing") is True, \
+            "同毫秒同值写：行仍在，必须 True（affected=0 不代表行不存在）"
+        assert FileReviewRoundService.get_by_id(rid) is not None
+        aid = _mk_ann(round_id=rid, task_id=tid, file_id=f"{PFX}f_samems", status="open")
+        assert FileReviewAnnotationService.update_status(aid, "open") is True
+        assert FileReviewAnnotationService.update_status(aid, "open") is True
+
+
+def test_list_open_or_new_covers_duplicate_round_rows():
+    """同 (task_id, round_no) 无唯一约束可产生多行（T9 并发重试），IN 必须覆盖全部。"""
+    tid, fid = f"{PFX}t_dupopen", f"{PFX}f_dupopen"
+    with DB.connection_context():
+        r1 = _mk_round(tid, 2, "annotated", file_id=fid, file_version="v2")
+        r2 = _mk_round(tid, 2, "annotated", file_id=fid, file_version="v2")
+        a1 = _mk_ann(round_id=r1, task_id=tid, file_id=fid, status="open", file_version="v2")
+        a2 = _mk_ann(round_id=r2, task_id=tid, file_id=fid, status="new", file_version="v2")
+        got = FileReviewAnnotationService.list_open_or_new_for_next_round(tid, 2)
+    assert {x.id for x in got} == {a1, a2}, "round_id.in_() 必须覆盖同轮次的多行"
+
+
+def test_str_fields_are_clamped_to_column_width():
+    """I1 回归：varchar 列超长会被 MySQL 静默截成半截枚举值（非严格模式不报错）。
+    本层不做白名单，但不得把半截值落库 —— 断言落库值等于按列宽截断后的结果。"""
+    tid, fid = f"{PFX}t_clamp", f"{PFX}f_clamp"
+    long_sev = "critical_blocking_需要人工确认"  # > varchar(16)
+    with DB.connection_context():
+        rid = _mk_round(tid, 1, "reviewing", file_id=fid)
+        aid = FileReviewAnnotationService.create(
+            round_id=rid, task_id=tid, file_id=fid, file_version="v1",
+            anchor=json_dumps({"p_hash": 0}), matched_text="m", type="format",
+            severity=long_sev, issue="i", suggestion="", source="ai", status="open",
+            tenant_id="", created_by="u")
+        row = FileReviewAnnotationService.get_by_id(aid)
+    assert row.severity == long_sev[:16], "超长 severity 必须被显式钳制，而非静默半截"
+
+
+def test_aggregates_short_circuit_on_empty_task_id():
+    """M1：task_id="" 的行可落库，不得被当成「某个任务」参与聚合。"""
+    with DB.connection_context():
+        # 先塞一行 task_id="" 的脏数据，若聚合不短路就会被它命中
+        rid = _mk_round("", 7, "done", file_id=f"{PFX}f_empty_tid")
+        _mk_ann(round_id=rid, task_id="", file_id=f"{PFX}f_empty_tid", status="open")
+        assert FileReviewRoundService.max_completed_round_no("") == 0
+        assert FileReviewAnnotationService.list_open_or_new_for_next_round("", 7) == []
+        assert FileReviewRoundService.max_completed_round_no(None) == 0
+        assert FileReviewAnnotationService.list_open_or_new_for_next_round(None, 7) == []
+
+
 # ── 10. 审计字段由框架接管（修正 1 的防回归） ───────────────────────────
 def test_audit_timestamps_autofilled_by_framework():
     """对抗：service 若手写 create_time=datetime.now()，BIGINT 列会落成零值/报错。
-    这里断言落库值确实是 13 位毫秒整数，且 update 会刷新 update_time。"""
+    这里断言落库值确实是 13 位毫秒整数、_date 由 _time 派生。"""
     tid = f"{PFX}t_audit"
     with DB.connection_context():
         rid = _mk_round(tid, 1, "reviewing", file_id=f"{PFX}f_audit")
@@ -321,10 +436,25 @@ def test_audit_timestamps_autofilled_by_framework():
             assert isinstance(row.update_time, int) and row.update_time > 10 ** 12
             assert row.create_date is not None and row.update_date is not None, \
                 "_date 应由框架从 _time 派生"
-        before = rrow.update_time
+
+
+def test_update_status_refreshes_update_time(monkeypatch):
+    """冻结时间源并推进 5ms，断言 update_time 精确等于新时间戳。
+
+    原来的 `after >= before` 对「是否刷新」不敏感：若 _normalize_data 不再刷
+    update_time，before == after 照样通过 —— 而这正是本用例要防的回归。
+    """
+    import api.db.db_models as m
+    t = {"v": 1_700_000_000_000}
+    monkeypatch.setattr(m, "current_timestamp", lambda *a, **k: t["v"])
+    tid = f"{PFX}t_refresh"
+    with DB.connection_context():
+        rid = _mk_round(tid, 1, "reviewing", file_id=f"{PFX}f_refresh")
+        before = FileReviewRoundService.get_by_id(rid).update_time
+        t["v"] += 5
         FileReviewRoundService.update_status(rid, "annotated")
         after = FileReviewRoundService.get_by_id(rid).update_time
-    assert after >= before, "update 必须刷新 update_time"
+    assert after == before + 5, "update_time 必须被框架刷新为新的毫秒时间戳"
 
 
 # ── 11. 默认值与可选字段 ───────────────────────────────────────────────
