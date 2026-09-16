@@ -15,18 +15,12 @@ from rag.svr.file_review.patcher import (
 )
 
 
-def _docx_bytes(paragraphs, header=None, table=None, split_runs=False):
-    """造真实 docx 字节。split_runs=True 时把每段从中间切成两个 run，
-    模拟 Word 把一句话拆进多个 run 的常态（跨 run 替换的核心场景）。"""
+def _docx_bytes(paragraphs, header=None, table=None):
+    """造真实 docx 字节。跨 run 场景不在此处构造——那些用例必须逐 run 设 rPr
+    才有断言价值，故各自现搭（见 preserves_run_formatting / true_cross_run_straddle）。"""
     doc = Document()
     for text in paragraphs:
-        p = doc.add_paragraph()
-        if split_runs and len(text) > 1:
-            mid = len(text) // 2
-            p.add_run(text[:mid])
-            p.add_run(text[mid:])
-        else:
-            p.add_run(text)
+        doc.add_paragraph().add_run(text)
     if header:
         doc.sections[0].header.paragraphs[0].add_run(header)
     if table:

@@ -755,23 +755,90 @@ git commit -m "feat(file-review): kb aggregator with token budget truncate"
 
 ---
 
-## Task 4: Patcher（find-match + patch 应用 + annotation 状态机）
+## Task 4: Patcher（唯一匹配 + docx 格式保真替换）
 
 **Files:**
 - Create: `rag/svr/file_review/patcher.py`
 - Test: `test/test_file_review_patcher.py`
+- 只读复用（零修改）：`rag/svr/template_fill/docx_utils.py` 的 `_build_addr_map` / `_replace_in_paragraph`
+
+> **实施修正（2026-09-16，派发前核实后重写）**：原计划本任务只做纯文本 `find/replace`，
+> 把 docx 层应用写成「后续 task 接入」——但后续没有任何 task 承接，且设计文档 §14 明确
+> `patcher.py` =「find-match + python-docx/openpyxl patch 应用」。缺了 docx 层，「修复轮」
+> 就落不了盘（改不了文件、存不出 v2），而这是用户的核心诉求（最多三轮修复）。
+> 故本任务补齐 docx 应用层。原标题里的「annotation 状态机」是错位：状态机数据原语
+> （`create(status=..., prev_annotation_id=...)` / `update_status` /
+> `list_open_or_new_for_next_round`）在 **T2 service** 已实现，"哪条该记 fixed/new/open"的
+> 判定属于 **T6 executor**（要 LLM 结果才能定），本任务不涉及。
+>
+> **复用决策（第一性原理，非抄惯例）**：
+> - 跨 run 区间替换是**格式保真**的硬要求——一句话被 Word 切进多个 run 是常态，替换必须
+>   只重写 anchor 覆盖的 run 区间、区间外 `rPr` 原样保留。自写这段要 ~60 行极细的 run
+>   拼接/区间定位代码，与既有实现重复且必然发散。`docx_utils._replace_in_paragraph` 已在
+>   2026-09-15 段落定位链路里被**真实范本**验证（290 锚），故只读复用。`docx_utils.py`
+>   顶层无 Quart/settings 依赖（仅 `io/logging/re/docx.*`），执行层可直接 import。
+> - 复用的是**私有符号**（下划线开头）。耦合点收敛在 patcher 顶部两行 alias，上游改名只改这两行；
+>   测试用**真实 docx 字节**调用（不 mock），符号一旦消失立刻响亮失败。
+> - 段落枚举复用 `_build_addr_map`：它已覆盖正文/表格/文本框/页眉页脚/内容控件。
+>   自写 `doc.paragraphs` 会漏掉页眉页脚与文本框里的问题句（实测只有 `para:0/1`，
+>   而 addr_map 同时给出 `hdr:0:0` 与 `cell:0:0:0:0`）。
+> - **xlsx 修复路径不在本任务范围**：设计里 xlsx 锚点 `{sheet, cell}` 仍是占位形态，
+>   逐单元格定位未设计。v1 对非 docx 文件只做审查（出标注），修复走纯文本降级（见 T6）——
+>   这是显式的范围边界，不是静默缺失。
+>
+> **唯一性语义（锁定，测试依赖）**：**逐层唯一**。patch 先按 `p.text` 在全文档段落里找候选，
+> 候选段落必须**恰好 1 个**（0 = 找不到，>1 = 歧义），再要求该段落内 find 出现**恰好 1 次**。
+> 任一层不唯一即跳过不改（`applied=False`）、绝不猜第一个命中——投标/合同文本里「1000元」
+> 「30天」天然多处出现，猜错会把 A 处的报价改成 B 处的金额，比不改更糟。
+>
+> **实测事实（`.scratch/_t4_probe.py`，已跑通）**：`Document()` 默认模板初始 `paragraphs` 为 0；
+> 跨 run 段 `报价：|1000元` 用 `_replace_in_paragraph(p,'1000元','1500元',occ=1)` 成功；
+> 非 docx 字节抛 `zipfile.BadZipFile`（不是 PackageNotFoundError）；`addr_map` 的 Paragraph 对象唯一。
 
 - [ ] **Step 1: 写失败测试**
 
 ```python
 # test/test_file_review_patcher.py
-from rag.svr.file_review.patcher import apply_patches, find_unique
+"""patcher 对抗测试：唯一匹配 + docx 格式保真替换。
+docx 用例一律用真实字节（python-docx 现造现读），不打桩——复用的是私有符号，
+只有真跑才能证明耦合点还在。"""
+import io
+import zipfile
+
+import pytest
+from docx import Document
+from docx.shared import Pt
+
+from rag.svr.file_review.patcher import (
+    apply_patches,
+    apply_patches_to_docx,
+    find_unique,
+)
 
 
+def _docx_bytes(paragraphs, header=None, table=None):
+    """造真实 docx 字节。跨 run 场景不在此处构造——那些用例必须逐 run 设 rPr
+    才有断言价值，故各自现搭（见 preserves_run_formatting / true_cross_run_straddle）。"""
+    doc = Document()
+    for text in paragraphs:
+        doc.add_paragraph().add_run(text)
+    if header:
+        doc.sections[0].header.paragraphs[0].add_run(header)
+    if table:
+        doc.add_table(rows=1, cols=1).rows[0].cells[0].paragraphs[0].add_run(table)
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def _texts(blob):
+    """文档全文可见段落文本（Document() 初始 0 段，故无需过滤空段）。"""
+    return [p.text for p in Document(io.BytesIO(blob)).paragraphs]
+
+
+# ── find_unique：唯一 / 缺失 / 歧义 ──────────────────────────────
 def test_find_unique_returns_pos_when_single_match():
-    text = '投标人应满足以下要求：abc 资质等级'
-    pos = find_unique(text, 'abc 资质等级')
-    assert pos > 0
+    assert find_unique('投标人应满足：abc 资质等级', 'abc 资质等级') > 0
 
 
 def test_find_unique_returns_neg1_when_zero_match():
@@ -782,34 +849,354 @@ def test_find_unique_returns_neg2_when_multi_match():
     assert find_unique('foo bar foo', 'foo') == -2  # 歧义
 
 
+def test_find_unique_empty_find_is_missing_not_ambiguous():
+    """空 find 必须判「找不到」而不是「歧义」——否则空串会被当成匹配任意位置的锚。"""
+    assert find_unique('anything', '') == -1
+
+
+def test_find_unique_non_overlapping_semantics():
+    """非重叠口径与 str.replace 一致：'aaa' 里找 'aa' 只算 1 次（不是 2 次）。
+    若这里判成歧义（-2）而替换本身能完成，两处口径打架会出现「能改却跳过」。"""
+    assert find_unique('aaa', 'aa') == 0
+
+
+def test_find_unique_find_longer_than_text():
+    assert find_unique('short', 'much longer than text') == -1
+
+
+def test_find_unique_unicode_and_whole_text():
+    assert find_unique('报价￥1,000.00元', '￥1,000.00元') > 0
+    assert find_unique('整段就是锚', '整段就是锚') == 0
+
+
+# ── apply_patches：纯文本层 ─────────────────────────────────────
 def test_apply_patches_single_replace():
-    text = '报价：1000元'
-    out, applied = apply_patches(text, [{'find': '1000元', 'replace': '1500元'}])
+    out, applied = apply_patches('报价：1000元', [{'find': '1000元', 'replace': '1500元'}])
     assert out == '报价：1500元'
     assert applied == [True]
 
 
 def test_apply_patches_skips_ambiguous():
-    text = 'foo bar foo baz'
-    out, applied = apply_patches(text, [{'find': 'foo', 'replace': 'QUX'}])
-    # 歧义 find → 跳过（不改）
-    assert out == text
+    out, applied = apply_patches('foo bar foo baz', [{'find': 'foo', 'replace': 'QUX'}])
+    assert out == 'foo bar foo baz'  # 歧义 → 一字不动
     assert applied == [False]
+
+
+def test_apply_patches_skips_missing():
+    out, applied = apply_patches('报价：1000元', [{'find': '不存在的片段', 'replace': 'x'}])
+    assert out == '报价：1000元'
+    assert applied == [False]
+
+
+def test_apply_patches_sequential_sees_earlier_result():
+    """后面一条 patch 必须看得见前面一条的替换结果（顺序生效）。"""
+    out, applied = apply_patches(
+        'A处', [{'find': 'A处', 'replace': 'B处'}, {'find': 'B处', 'replace': 'C处'}]
+    )
+    assert out == 'C处'
+    assert applied == [True, True]
+
+
+def test_apply_patches_is_order_independent_per_patch_safety():
+    """第一条歧义被跳过后，第二条仍按**原文**判定，不被前一条的跳过影响。"""
+    out, applied = apply_patches(
+        'foo foo and bar',
+        [{'find': 'foo', 'replace': 'X'}, {'find': 'bar', 'replace': 'Y'}],
+    )
+    assert out == 'foo foo and Y'
+    assert applied == [False, True]
+
+
+def test_apply_patches_empty_patches_and_none():
+    assert apply_patches('text', []) == ('text', [])
+    assert apply_patches('text', None) == ('text', [])
+
+
+def test_apply_patches_rejects_empty_find_without_touching_text():
+    """空 find 是畸形输入：跳过且不改（str.replace('', x) 会在每个字符间插入 → 灾难）。"""
+    out, applied = apply_patches('abc', [{'find': '', 'replace': 'X'}])
+    assert out == 'abc'
+    assert applied == [False]
+
+
+def test_apply_patches_malformed_element_skipped():
+    """缺 find 键 / None 元素：跳过（applied=False），不抛异常打断整批。"""
+    out, applied = apply_patches('abc', [{'replace': 'X'}, None])
+    assert out == 'abc'
+    assert applied == [False, False]
+
+
+# ── apply_patches_to_docx：格式保真层 ───────────────────────────
+def test_apply_patches_to_docx_single_unique_replace():
+    blob = _docx_bytes(['报价：1000元', '工期：30天'])
+    out, applied = apply_patches_to_docx(blob, [{'find': '1000元', 'replace': '1500元'}])
+    assert applied == [True]
+    assert _texts(out) == ['报价：1500元', '工期：30天']
+
+
+def test_apply_patches_to_docx_preserves_run_formatting():
+    """格式保真是复用该原语的唯一理由，必须直接断言 rPr——只数 run 个数不可靠
+    （"把整段塞进首 run、其余清空"的错误实现下 run 数同样不变：python-docx
+    设 Run.text 从不增删 run）。"""
+    doc = Document()
+    p = doc.add_paragraph()
+    r0 = p.add_run('报价：')
+    r0.bold = True
+    r0.font.size = Pt(10)
+    r1 = p.add_run('1000元')
+    r1.font.size = Pt(16)
+    doc.add_paragraph('工期：30天')          # 另一段，不应被动
+    buf = io.BytesIO()
+    doc.save(buf)
+
+    out, applied = apply_patches_to_docx(buf.getvalue(), [{'find': '1000元', 'replace': '1500元'}])
+    assert applied == [True]
+    d = Document(io.BytesIO(out))
+    assert [p.text for p in d.paragraphs] == ['报价：1500元', '工期：30天']
+    runs = d.paragraphs[0].runs
+    assert [r.text for r in runs] == ['报价：', '1500元']
+    assert runs[0].bold is True and runs[0].font.size == Pt(10)   # 区间外 run 格式原样
+    assert runs[1].font.size == Pt(16)                            # 替换值落在原 run，rPr 未被重建
+
+
+def test_apply_patches_to_docx_true_cross_run_straddle():
+    """锚**真正跨越** run 边界（'1000元' 被切成 '10' | '00元'）时仍能替换，
+    且只重写覆盖区间、保留前后 run 的格式。"""
+    doc = Document()
+    p = doc.add_paragraph()
+    r0 = p.add_run('报价：10')
+    r0.bold = True
+    r0.font.size = Pt(10)
+    r1 = p.add_run('00元')
+    r1.font.size = Pt(16)
+    buf = io.BytesIO()
+    doc.save(buf)
+
+    out, applied = apply_patches_to_docx(buf.getvalue(), [{'find': '1000元', 'replace': '1500元'}])
+    assert applied == [True]
+    runs = Document(io.BytesIO(out)).paragraphs[0].runs
+    assert ''.join(r.text for r in runs) == '报价：1500元'
+    assert runs[0].bold is True and runs[0].font.size == Pt(10)
+    assert runs[1].font.size == Pt(16)
+
+
+def test_apply_patches_to_docx_covers_header():
+    """页眉里的问题句也要能改——这是复用 _build_addr_map 而非 doc.paragraphs 的理由。"""
+    blob = _docx_bytes(['正文段落'], header='秘密标记')
+    out, applied = apply_patches_to_docx(blob, [{'find': '秘密标记', 'replace': '公开标记'}])
+    assert applied == [True]
+    d = Document(io.BytesIO(out))
+    assert '公开标记' in d.sections[0].header.paragraphs[0].text
+
+
+def test_apply_patches_to_docx_covers_table_cell():
+    blob = _docx_bytes(['正文'], table='表内2000元')
+    out, applied = apply_patches_to_docx(blob, [{'find': '2000元', 'replace': '2500元'}])
+    assert applied == [True]
+    d = Document(io.BytesIO(out))
+    assert '表内2500元' in d.tables[0].rows[0].cells[0].paragraphs[0].text
+
+
+def test_apply_patches_to_docx_skips_when_in_two_paragraphs():
+    """全文档两处命中 → 歧义 → 两处都不动（不是改第一处）。"""
+    blob = _docx_bytes(['报价：1000元', '保证金：1000元'])
+    out, applied = apply_patches_to_docx(blob, [{'find': '1000元', 'replace': '1500元'}])
+    assert applied == [False]
+    assert _texts(out) == ['报价：1000元', '保证金：1000元']
+
+
+def test_apply_patches_to_docx_ambiguity_spans_body_and_table():
+    """跨区域歧义同样要拦：正文 1 处 + 表格 1 处 = 2 个候选段落 → 跳过。"""
+    blob = _docx_bytes(['正文3000元'], table='表内3000元')
+    out, applied = apply_patches_to_docx(blob, [{'find': '3000元', 'replace': '4000元'}])
+    assert applied == [False]
+    assert '3000元' in _texts(out)[0]
+    assert '表内3000元' in Document(io.BytesIO(out)).tables[0].rows[0].cells[0].paragraphs[0].text
+
+
+def test_apply_patches_to_docx_skips_when_twice_in_one_paragraph():
+    """同一段里出现两次 → 段内歧义 → 跳过。"""
+    blob = _docx_bytes(['区间为1000元到1000元'])
+    out, applied = apply_patches_to_docx(blob, [{'find': '1000元', 'replace': '1500元'}])
+    assert applied == [False]
+    assert _texts(out) == ['区间为1000元到1000元']
+
+
+def test_apply_patches_to_docx_skips_missing():
+    blob = _docx_bytes(['报价：1000元'])
+    out, applied = apply_patches_to_docx(blob, [{'find': '不存在的片段', 'replace': 'x'}])
+    assert applied == [False]
+    assert _texts(out) == ['报价：1000元']
+
+
+def test_apply_patches_to_docx_sequential():
+    """docx 层同样顺序生效：后一条看得见前一条写入的文本。"""
+    blob = _docx_bytes(['A处标记'])
+    out, applied = apply_patches_to_docx(
+        blob, [{'find': 'A处', 'replace': 'B处'}, {'find': 'B处', 'replace': 'C处'}]
+    )
+    assert applied == [True, True]
+    assert _texts(out) == ['C处标记']
+
+
+def test_apply_patches_to_docx_empty_patches_returns_input_untouched():
+    """无 patch 不解析也不重存（重存会重排 XML 字节），原字节原样返回。"""
+    blob = _docx_bytes(['报价：1000元'])
+    out, applied = apply_patches_to_docx(blob, [])
+    assert out == blob
+    assert applied == []
+
+
+def test_apply_patches_to_docx_rejects_empty_find():
+    blob = _docx_bytes(['报价：1000元'])
+    out, applied = apply_patches_to_docx(blob, [{'find': '', 'replace': 'X'}])
+    assert applied == [False]
+    assert _texts(out) == ['报价：1000元']
+
+
+def test_apply_patches_to_docx_empty_replace_deletes_text():
+    """replace 为空串 = 删除该片段，是合法操作（不是"没改"）。"""
+    blob = _docx_bytes(['报价：1000元（含税）'])
+    out, applied = apply_patches_to_docx(blob, [{'find': '（含税）', 'replace': ''}])
+    assert applied == [True]
+    assert _texts(out) == ['报价：1000元']
+
+
+def test_apply_patches_to_docx_malformed_element_skipped():
+    blob = _docx_bytes(['报价：1000元'])
+    out, applied = apply_patches_to_docx(blob, [{'replace': 'X'}, None])
+    assert applied == [False, False]
+    assert _texts(out) == ['报价：1000元']
+
+
+def test_apply_patches_to_docx_raises_on_non_docx_bytes():
+    """非 docx 字节必须响亮失败（实测抛 zipfile.BadZipFile），不能静默返回原样——
+    静默会让「修复成功」的假象流到用户面前。T6 捕获后把该轮置 failed。
+    注意：patches 为空时走短路，不会解析，故此处必须传一条 patch 才会触发解析。
+    断言具体类型而非裸 Exception：裸 Exception 会被实现自身的 bug（AttributeError/
+    TypeError 等）蒙混过关，测不出「正确拒绝」与「崩了」的区别。"""
+    with pytest.raises(zipfile.BadZipFile):
+        apply_patches_to_docx(b'not a docx at all', [{'find': 'a', 'replace': 'b'}])
+
+
+def test_apply_patches_to_docx_applied_length_matches_patches():
+    """applied 与 patches 一一对应（T6 靠下标把「未修复」写回对应标注）。"""
+    blob = _docx_bytes(['报价：1000元', '工期：30天'])
+    _, applied = apply_patches_to_docx(
+        blob,
+        [{'find': '1000元', 'replace': '1500元'},
+         {'find': '30天', 'replace': '60天'},
+         {'find': '不存在', 'replace': 'x'}],
+    )
+    assert applied == [True, True, False]
+
+
+# ── 畸形输入必须"跳过"，不能静默删字 / 打断整批 ──────────────────
+def test_apply_patches_none_replace_is_skip_not_delete():
+    """LLM 输出 "replace": null = 「没给出替换文本」，必须跳过而不是删除命中文本。
+    （'' 才是显式删除；把 None 折成 '' 会让一次 LLM 脏字段不可逆地删掉正文。）"""
+    out, applied = apply_patches('报价：1000元', [{'find': '1000元', 'replace': None}])
+    assert out == '报价：1000元'
+    assert applied == [False]
+
+
+def test_apply_patches_to_docx_none_replace_is_skip_not_delete():
+    blob = _docx_bytes(['报价：1000元'])
+    out, applied = apply_patches_to_docx(blob, [{'find': '1000元', 'replace': None}])
+    assert applied == [False]
+    assert _texts(out) == ['报价：1000元']
+
+
+def test_apply_patches_falsy_non_str_replace_is_skip():
+    """0 / False 同样不是"删除"的意思。"""
+    out, applied = apply_patches(
+        'ab', [{'find': 'ab', 'replace': 0}, {'find': 'ab', 'replace': False}]
+    )
+    assert out == 'ab'
+    assert applied == [False, False]
+
+
+def test_apply_patches_non_str_find_is_skip_not_crash():
+    out, applied = apply_patches('abc', [{'find': 1, 'replace': 'Z'}])
+    assert out == 'abc'
+    assert applied == [False]
+
+
+def test_apply_patches_non_dict_element_does_not_abort_batch():
+    """真值非 dict 的元素跳过即可，不能让同批其余合规 patch 一起作废。"""
+    out, applied = apply_patches(
+        '报价：1000元', ['a-string', {'find': '1000元', 'replace': '1500元'}]
+    )
+    assert out == '报价：1500元'
+    assert applied == [False, True]
+
+
+def test_apply_patches_to_docx_non_dict_element_does_not_abort_batch():
+    blob = _docx_bytes(['报价：1000元'])
+    out, applied = apply_patches_to_docx(
+        blob, ['a-string', {'find': '1000元', 'replace': '1500元'}]
+    )
+    assert applied == [False, True]
+    assert _texts(out) == ['报价：1500元']
+
+
+def test_apply_patches_to_docx_all_failed_returns_input_bytes():
+    """有 patch 但全部未生效 → 文档一字未改，必须返回**原字节**：重存会重排 XML
+    字节，让"零改动"被 T6 误存成"修复版新版本"。"""
+    blob = _docx_bytes(['报价：1000元'])
+    out, applied = apply_patches_to_docx(blob, [{'find': '不存在', 'replace': 'x'}])
+    assert applied == [False]
+    assert out == blob
 ```
 
-- [ ] **Step 2: 跑测试确认失败** — `uv run --no-sync pytest test/test_file_review_patcher.py -v` 期望：ImportError
+- [ ] **Step 2: 跑测试确认失败**
+
+```bash
+PYTHONPATH=/d/AI/ragflow2 uv run --no-sync pytest test/test_file_review_patcher.py -v
+```
+Expected: FAIL — `ModuleNotFoundError: No module named 'rag.svr.file_review.patcher'`
 
 - [ ] **Step 3: 创建 `rag/svr/file_review/patcher.py`**
 
 ```python
-"""文件 patcher：find 唯一匹配 + replace 替换；歧义/缺失则跳过保安全。
-被 executor 用于多轮修复；不改 docx 格式（仅段落 run 字符串替换）。
-apply_to_docx / apply_to_xlsx 在 docx/xlsx 文件层应用（后续 task 接入）。"""
-from typing import List, Tuple
+"""文件审核 patcher：唯一匹配定位 + docx 格式保真替换。
+
+职责边界（与 T3 同构）：只做「(文件字节, patch 列表) → (新字节, applied 列表)」这一段
+确定性变换——不调 LLM、不碰 DB、不读 settings，故能拿真实 docx 字节独立单测。
+
+为什么 find 必须唯一才改：投标/合同文本里「1000元」「30天」这类片段天然多处出现，
+猜第一个命中会把 A 处的报价改成 B 处的金额——改错比不改更糟。故 0 次（找不到）与
+>1 次（歧义）一律跳过，由调用方把该条标注记为「未修复」。
+
+为什么复用 template_fill 的 docx 原语：跨 run 区间替换（一句话被 Word 切进多个 run 是常态）
+要求「只重写 anchor 覆盖的 run 区间、区间外 rPr 原样保留」，这段逻辑在
+rag/svr/template_fill/docx_utils.py 已由真实范本验证（2026-09-15 段落定位链路，290 锚）。
+本模块只读复用，不修改对方一个字节；耦合点收敛在下面两行 alias。
+"""
+import io
+
+from docx import Document
+
+# 与 template_fill 的**唯一**耦合点（只读复用，零修改）：
+#   _build_addr_map(doc) -> ({addr: Paragraph}, items)
+#     覆盖正文/表格/文本框/页眉页脚/内容控件的全部段落；
+#     自写 doc.paragraphs 会漏掉页眉页脚与文本框里的问题句。
+#   _replace_in_paragraph(p, anchor, repl, occ=1)
+#     段内第 occ 次出现替换；跨 run 时只重写覆盖区间，区间外格式保留。
+# 上游若改名/改签名，只需改这两行（测试用真实 docx 字节调用，符号消失即响亮失败）。
+from rag.svr.template_fill.docx_utils import _build_addr_map as _docx_addr_map
+from rag.svr.template_fill.docx_utils import _replace_in_paragraph as _docx_replace
+
+__all__ = ["apply_patches", "apply_patches_to_docx", "find_unique"]
 
 
 def find_unique(text: str, find_str: str) -> int:
-    """在 text 中找 find_str：唯一出现返回正位置；0 次返回 -1；>1 次返回 -2（歧义）"""
+    """find_str 在 text 中的**唯一**非重叠出现：唯一返回起始下标；0 次返回 -1；>1 次返回 -2。
+
+    非重叠口径与 str.replace 一致（'aaa' 里找 'aa' 只算 1 次）——否则会出现
+    「判定为歧义而跳过、替换本身却能完成」的口径打架。空 find 判 -1（缺失），
+    不判歧义：空串会被当成"匹配任意位置"的锚，是畸形输入。
+    """
     if not find_str:
         return -1
     count = text.count(find_str)
@@ -820,35 +1207,108 @@ def find_unique(text: str, find_str: str) -> int:
     return text.find(find_str)
 
 
-def apply_patches(text: str, patches: List[dict]) -> Tuple[str, List[bool]]:
-    """逐个 patch 应用：find 唯一才替换，否则跳过并记 applied=False。
-    返回 (新文本, applied 列表)；patches 元素含 find/replace。"""
+def apply_patches(text: str, patches) -> tuple[str, list]:
+    """纯文本层逐条应用 patch（顺序生效，后面的看得见前面的替换结果）。
+
+    docx 走 apply_patches_to_docx（格式保真）；本函数用于已提取成纯文本的场景，
+    以及非 docx 文件的降级修复路径。返回 (新文本, applied 列表)。
+    """
     out = text
     applied = []
-    for p in patches:
-        find_str = p.get('find', '')
-        replace_str = p.get('replace', '')
+    for p in patches or []:
+        if not isinstance(p, dict):
+            # 非 dict 元素（如 LLM 直接吐了个字符串）跳过即可，不能让同批其余合规 patch 一起作废
+            applied.append(False)
+            continue
+        find_str = p.get("find")
+        replace_str = p.get("replace")
+        # 非 str 一律按「缺失」跳过，绝不折成空串："" 表示显式删除该片段，
+        # {"replace": null} 表示「LLM 没给出替换文本」——混同会让脏字段静默删掉正文。
+        if not isinstance(find_str, str) or not isinstance(replace_str, str):
+            applied.append(False)
+            continue
         if find_unique(out, find_str) >= 0:
             out = out.replace(find_str, replace_str, 1)
             applied.append(True)
         else:
             applied.append(False)
     return out, applied
+
+
+def apply_patches_to_docx(file_bytes: bytes, patches) -> tuple[bytes, list]:
+    """在 docx 字节层应用 patch，返回 (新字节, applied 列表)。
+
+    逐层唯一：先按 p.text 在全文档段落里找候选，候选必须恰好 1 个
+    （覆盖正文/表格/文本框/页眉页脚），再要求该段落内 find 出现恰好 1 次。
+    任一层不唯一即跳过该条（applied=False）、文件不动。
+
+    已知保真局限（继承自复用原语，见 docx_utils._replace_in_paragraph docstring）：
+    find 只出现在超链接/域内文本时，p.text 命中而 p.runs 不命中 → no-op 降级为
+    applied=False（安全：不产脏数据）。
+    """
+    if not patches:
+        # 无 patch 不做无意义的解析/重存（重存会重排 XML 字节）
+        return file_bytes, []
+    doc = Document(io.BytesIO(file_bytes))
+    addr_map, _ = _docx_addr_map(doc)
+    paragraphs = list(addr_map.values())
+    applied = []
+    for p in patches or []:
+        if not isinstance(p, dict):
+            # 非 dict 元素跳过，不抛异常打断整批
+            applied.append(False)
+            continue
+        find_str = p.get("find")
+        replace_str = p.get("replace")
+        # 非 str 一律按「缺失」跳过，绝不折成空串（"" 是显式删除，语义不能丢）
+        if not isinstance(find_str, str) or not isinstance(replace_str, str):
+            applied.append(False)
+            continue
+        hits = [para for para in paragraphs if find_str and find_str in para.text]
+        if len(hits) != 1 or find_unique(hits[0].text, find_str) < 0:
+            applied.append(False)
+            continue
+        applied.append(bool(_docx_replace(hits[0], find_str, replace_str, occ=1)))
+    if not any(applied):
+        # 全部未生效 → 文档一字未改（_replace_in_paragraph 返回 False 不产生部分写入），
+        # 必须返回原字节：重存会重排 XML 字节，让「零改动」被 T6 误存成「修复版新版本」。
+        return file_bytes, applied
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue(), applied
 ```
 
 - [ ] **Step 4: 跑测试确认通过**
 
 ```bash
-uv run --no-sync pytest test/test_file_review_patcher.py -v
+PYTHONPATH=/d/AI/ragflow2 uv run --no-sync pytest test/test_file_review_patcher.py -v
 ```
-Expected: PASS
+Expected: PASS（38 个用例全绿；`ruff check rag/svr/file_review/patcher.py test/test_file_review_patcher.py` 无告警）
 
 - [ ] **Step 5: 提交**
 
 ```bash
 git add rag/svr/file_review/patcher.py test/test_file_review_patcher.py
-git commit -m "feat(file-review): patcher with unique-match safety"
+git commit -m "feat(file-review): patcher 唯一匹配 + docx 格式保真替换（复用 template_fill 原语）"
 ```
+
+> **T4 落地修正（2026-09-16，质量审查后，commit `e74383b1`）**：审查发现三处必须修，
+> 已在上面 Step 1/Step 3 的代码块中同步为最终形态：
+> 1. **Critical — `replace` 非 str 时静默删字**：初版用 `(p or {}).get("replace", "") or ""`
+>    把 `None` / `0` / `False` 折成 `""`（=显式删除），与 `find` 非 str 时跳过不对称。
+>    一次 LLM 脏字段就能不可逆删掉正文。改为 `isinstance(..., str)` 双向校验，非 str 一律跳过。
+>    **证伪实测**：把守卫改回旧写法，`test_apply_patches_none_replace_is_skip_not_delete`
+>    与 `test_apply_patches_falsy_non_str_replace_is_skip` 立即变红，证明测试真能拦住回归。
+> 2. **Important — 非 dict / 非 str 元素打断整批**：初版对字符串元素调 `.get` 抛
+>    AttributeError，整批 patch 一起作废（测试注释已承诺"不抛异常打断整批"，实现没做到）。
+> 3. **Important — 全失败仍重存**：初版无条件 `doc.save`，把"零改动"字节重排成一个
+>    看似"修复版"的新版本。改为 `if not any(applied): return file_bytes, applied` 短路。
+>    成立前提已核实：`_replace_in_paragraph` 所有返回 False 的分支都在
+>    `_rewrite_run_span` 之前 return，故 False ⇒ 无部分写入。
+> 4. **测试质量缺口**：原 `len(runs) == 2` 是空断言——python-docx 设 `Run.text`
+>    从不增删 run，错误实现（整段塞进首 run）同样保持 run 数。已换成逐 run 断言
+>    `bold` / `font.size` 的两个真格式用例（`preserves_run_formatting` /
+>    `true_cross_run_straddle`）。
 
 ---
 
