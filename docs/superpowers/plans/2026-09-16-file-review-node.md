@@ -3684,6 +3684,17 @@ git commit -m "feat(file-review): dialogue tool FileReviewTool"
 - Create: `api/apps/restful_apis/file_review_api.py`
 - Test: `test/test_file_review_api.py`
 
+> **T6 → T9 交接契约（强制执行，来自 T6 executor 的两道审查实测结论）**
+>
+> 以下六条是 T6 实现完成后由质量复审**实测**得出的硬约束。不遵守会直接损坏数据或越权，不是风格建议。
+>
+> 1. **重试必须新建轮次，禁止把 `failed` 轮次原地重置为 `fixing` 重跑。** `_latest_version_name` 刻意排除当前轮自身，所以原地重跑会退回**原件**基线，只补剩余 pending 的补丁，再以同名对象 `frv-{task_id}-{file_version}` **覆盖**上一轮的成稿——上一批已置 `fixed` 的改动会从成稿里消失，而标注仍显示 `fixed`。实测复现：两轮改动 a/b，中途失败后原地重跑，成稿只剩 b 的修复。**必须走 `round_no` / `file_version` 递增的新轮次**，此时基线是已落盘版本，不丢。
+> 2. **`status='failed'` 的轮次现在可能带 `minio_path`。** T6 修复轮顺序是「落盘 → 轮次收口 `done` → 置标注 `fixed`」，因此收口那一步抛错时轮次被兜底写成 `failed`，但成稿**已经落盘**（实测：`round=failed && minio_path=frv-…-v2 && summary=本轮修复 1 项`）。progress 端点与 T12 进度卡**不得**按「failed ⇒ 无成稿」渲染，否则会把已修好的成稿藏起来。判据是「有 `minio_path` 就有可下载成稿」，与 `status` 无关。
+> 3. **`failed` 轮次不计入 `max_completed_round_no`（T2 既有口径），续轮会复用同一 `round_no` 与 `file_version`，即同一对象名。** 必须在 T9 明确取哪种口径：接受同名覆盖（简单，与「重试幂等」的设计一致），还是显式 `+1` 错开。**二选一写进代码注释**，不要留下未定义行为。
+> 4. **必须提供「open 但已成稿」的人工兜底出口。** 除上条窗口外还有一种残留：落盘成功、轮次收口成功，但逐条置 `fixed` 时该标注写入失败 → 标注永远停在 `open`，而文档已修好、`find` 已被替换，重跑必然报「0 项未能自动修复」，**不会自愈**。annotations 端点必须提供把标注人工置 `wontfix` / `resolved` 的能力，否则面板上永远挂着一个假未闭环项。
+> 5. **`task_id` 归属校验（越权闸门）。** `execute_task(task_id)` / `spawn_review_task(task_id)` / `_force_fail_round(task_id)` 全链路**只按 task_id 圈定，不含任何 tenant 谓词**（`round_row.tenant_id` 仅用于选 bucket，不参与鉴权）。T9 必须在入口把 `task_id` 归一为 UUID 并校验「该 task 的轮次归属当前登录租户」才允许 spawn / 读取 / 删除，否则可以越权触发、读取、收口他人审核。
+> 6. **`error` 列的固定文案闸门只在 executor 兜底层。** 非 `FileReviewError` 的异常原文一律被替换成「服务端内部错误，请稍后重试（详见服务端日志）」（原文只进服务端日志），以避免 MySQL host:port / MinIO endpoint / 内网路径经 `error` 列透给前端。**T9 自行拼错误文案时同样不得把异常原文写进 `error` 列。**
+
 - [ ] **Step 1: 写失败测试**
 
 ```python
