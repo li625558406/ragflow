@@ -20,8 +20,14 @@ from api.db.services.file_review_service import (
     FileReviewRoundService,
 )
 from rag.svr.file_review import executor
+from rag.svr.template_fill.docx_utils import norm_ws
 
 PFX = "__test_fr_exec__"
+
+# 各 fixture 共用的正文填充段。`_compose_file_text` 的闸门按 `len(norm_ws(text))` 判定
+# （空白不计），真实招标文件正文远超阈值，所以 fixture 必须用真实长度的正文——不能反向
+# 把阈值调小去迁就短 fixture（那会让只带页眉的扫描件蒙混过关、诱发幻觉标注）。
+_BODY = "这是一段用于通过最小正文长度校验的填充文字，用来模拟真实招标文件的正文内容，确保审核链路的正文装配不会被最小长度闸门提前拦下。"
 
 
 def _cleanup():
@@ -266,6 +272,15 @@ def test_latest_version_name_picks_latest_non_null_upto_round():
 
 
 # ── 纯函数：正文装配 ─────────────────────────────────────────────
+def test_body_fixture_clears_min_chars_on_its_own():
+    """自检：`_BODY` 单段必须自己就能过闸门（空白不计）。
+
+    各 fixture 都是「片段 + _BODY」或纯 `_BODY`，只要这条成立，就不会有 fixture 因为
+    「补的字不够」而静默走成空白件路径（那种失败会伪装成断言不匹配，很难查）。
+    """
+    assert len(norm_ws(_BODY)) >= executor.MIN_FILE_TEXT_CHARS
+
+
 def test_compose_file_text_joins_non_empty_and_errors_when_blank():
     long_enough = "这是一段足够长的正文内容，用于通过最小长度校验。" * 3
     out = executor._compose_file_text(_items("", long_enough, "  "))
@@ -332,7 +347,7 @@ def test_retrieval_query_uses_template_name_and_user_query():
 
 # ── 集成：审查轮 ─────────────────────────────────────────────────
 def test_execute_task_review_happy_path(monkeypatch, fstore):
-    tid, blob = PFX + "-r1", _docx(["投标文件缺少封面", "其余内容正常"])
+    tid, blob = PFX + "-r1", _docx(["投标文件缺少封面" + _BODY, "其余内容正常" + _BODY])
     _mk_template()
     rid = _mk_round(tid)
     raw = json.dumps([{"matched_text": "投标文件缺少封面", "type": "format", "severity": "严重", "issue": "缺封面", "suggestion": "补上"}])
@@ -372,7 +387,7 @@ def test_execute_task_unparseable_llm_marks_failed_without_annotations(monkeypat
     tid = PFX + "-bad"
     _mk_template()
     rid = _mk_round(tid)
-    _wire(monkeypatch, blob=_docx(["一段足够长的正文用于通过最小长度校验，重复重复重复重复。"]), raw="我不知道该怎么回答")
+    _wire(monkeypatch, blob=_docx([_BODY]), raw="我不知道该怎么回答")
     executor.execute_task(tid)
     row = _round(rid)
     assert row.status == "failed" and "无法解析" in row.error
@@ -385,7 +400,7 @@ def test_execute_task_empty_annotation_array_marks_annotated(monkeypatch, fstore
     tid = PFX + "-empty"
     _mk_template()
     rid = _mk_round(tid)
-    _wire(monkeypatch, blob=_docx(["一段足够长的正文用于通过最小长度校验，重复重复重复重复。"]), raw="[]")
+    _wire(monkeypatch, blob=_docx([_BODY]), raw="[]")
     executor.execute_task(tid)
     row = _round(rid)
     assert row.status == "annotated" and row.summary == "未发现问题" and _anns(tid) == []
@@ -400,7 +415,7 @@ def test_execute_task_retrieval_failure_marks_failed(monkeypatch, fstore):
     def _boom(*a, **k):
         raise RuntimeError("retriever down")
 
-    monkeypatch.setattr(executor, "_load_original_blob", lambda t, f: _docx(["一段足够长的正文用于通过最小长度校验，重复重复重复重复。"]))
+    monkeypatch.setattr(executor, "_load_original_blob", lambda t, f: _docx([_BODY]))
     monkeypatch.setattr(executor, "_retrieve_chunks", _boom)
     monkeypatch.setattr(executor, "_call_llm", lambda *a: "[]")
     executor.execute_task(tid)
@@ -429,11 +444,25 @@ def test_execute_task_blank_document_marks_failed(monkeypatch, fstore):
     assert "扫描件" in _round(rid).error
 
 
+def test_execute_task_short_document_marks_failed(monkeypatch, fstore):
+    """近空正文同样必须拦下：只带页眉的扫描件（非零字，但远不足 50 字）不得送审。"""
+    tid = PFX + "-short"
+    _mk_template()
+    rid = _mk_round(tid)
+    header_only = "投标文件（正本）"
+    assert 0 < len(norm_ws(header_only)) < executor.MIN_FILE_TEXT_CHARS
+    _wire(monkeypatch, blob=_docx([header_only]), raw="[]")
+    executor.execute_task(tid)
+    row = _round(rid)
+    assert row.status == "failed"
+    assert "扫描件" in row.error
+
+
 def test_execute_task_invalid_template_id_falls_back_to_default(monkeypatch, fstore):
     tid = PFX + "-tplfb"
     _mk_template()
     rid = _mk_round(tid, template_id="not-exist-tpl")
-    _wire(monkeypatch, blob=_docx(["一段足够长的正文用于通过最小长度校验，重复重复重复重复。"]), raw="[]")
+    _wire(monkeypatch, blob=_docx([_BODY]), raw="[]")
     executor.execute_task(tid)
     assert _round(rid).status == "annotated"
 
@@ -442,7 +471,7 @@ def test_execute_task_bad_placeholder_in_template_marks_failed(monkeypatch, fsto
     tid = PFX + "-tplbad"
     _mk_template(user_tpl="需求：{user_query} 未知：{nope}")
     rid = _mk_round(tid)
-    _wire(monkeypatch, blob=_docx(["一段足够长的正文用于通过最小长度校验，重复重复重复重复。"]), raw="[]")
+    _wire(monkeypatch, blob=_docx([_BODY]), raw="[]")
     executor.execute_task(tid)
     assert _round(rid).status == "failed"
 
@@ -457,7 +486,7 @@ def test_execute_task_persisted_kb_ids_are_used_for_retrieval(monkeypatch, fstor
         seen.append(list(kb_ids))
         return []
 
-    monkeypatch.setattr(executor, "_load_original_blob", lambda t, f: _docx(["一段足够长的正文用于通过最小长度校验，重复重复重复重复。"]))
+    monkeypatch.setattr(executor, "_load_original_blob", lambda t, f: _docx([_BODY]))
     monkeypatch.setattr(executor, "_retrieve_chunks", _spy)
     monkeypatch.setattr(executor, "_call_llm", lambda *a: "[]")
     executor.execute_task(tid)
@@ -470,7 +499,7 @@ def test_execute_task_without_kb_ids_skips_retrieval(monkeypatch, fstore):
     _mk_template()
     rid = _mk_round(tid)
     seen = []
-    monkeypatch.setattr(executor, "_load_original_blob", lambda t, f: _docx(["一段足够长的正文用于通过最小长度校验，重复重复重复重复。"]))
+    monkeypatch.setattr(executor, "_load_original_blob", lambda t, f: _docx([_BODY]))
     monkeypatch.setattr(executor, "_retrieve_chunks", lambda *a, **k: seen.append(1) or [])
     monkeypatch.setattr(executor, "_call_llm", lambda *a: "[]")
     executor.execute_task(tid)
@@ -479,7 +508,7 @@ def test_execute_task_without_kb_ids_skips_retrieval(monkeypatch, fstore):
 
 def test_execute_task_rerun_does_not_duplicate_annotations(monkeypatch, fstore):
     """进程被杀后重试同一轮不得留下两套标注。"""
-    tid, blob = PFX + "-rerun", _docx(["投标文件缺少封面"])
+    tid, blob = PFX + "-rerun", _docx(["投标文件缺少封面" + _BODY])
     _mk_template()
     rid = _mk_round(tid)
     raw = json.dumps([{"matched_text": "投标文件缺少封面", "type": "format", "severity": "high", "issue": "缺封面"}])
@@ -503,7 +532,7 @@ def test_execute_task_collects_references_from_kb_chunks(monkeypatch, fstore):
         prompts.append(user)
         return "[]"
 
-    monkeypatch.setattr(executor, "_load_original_blob", lambda t, f: _docx(["一段足够长的正文用于通过最小长度校验，重复重复重复重复。"]))
+    monkeypatch.setattr(executor, "_load_original_blob", lambda t, f: _docx([_BODY]))
     monkeypatch.setattr(executor, "_retrieve_chunks", lambda *a: [{"content": "投标文件必须包含封面", "doc_id": "d1", "doc_name": "招标文件", "similarity": 0.9}])
     monkeypatch.setattr(executor, "_call_llm", _llm)
     executor.execute_task(tid)
@@ -543,14 +572,15 @@ def store_key(tid, ver):
 
 def test_execute_task_fix_happy_path_stores_version_and_marks_fixed(monkeypatch, fstore):
     tid, r1, r2, key = _fix_setup(
-        monkeypatch, fstore, tag="fix", blob=_docx(["投标文件缺少封面"]), raw=json.dumps({"patches": [{"idx": 1, "find": "投标文件缺少封面", "replace": "投标文件包含封面"}]})
+        monkeypatch, fstore, tag="fix", blob=_docx(["投标文件缺少封面" + _BODY]), raw=json.dumps({"patches": [{"idx": 1, "find": "投标文件缺少封面", "replace": "投标文件包含封面"}]})
     )
     executor.execute_task(tid)
     row = _round(r2)
     assert row.status == "done" and "本轮修复 1 项" in row.summary
     assert row.minio_path == key and key in [k[1] for k in fstore.blobs]
     texts = [p.text for p in Document(io.BytesIO(fstore.blobs[(f"{PFX}-downloads", key)])).paragraphs]
-    assert texts == ["投标文件包含封面"]
+    # find 只替换锚片段，正文其余部分（填充段）原样保留
+    assert texts == ["投标文件包含封面" + _BODY]
     assert _anns(tid)[0].status == "fixed"
 
 
@@ -563,12 +593,14 @@ def test_execute_task_fix_preserves_run_formatting(monkeypatch, fstore):
     r0.font.size = Pt(10)
     r1 = p.add_run("投标文件缺少封面")
     r1.font.size = Pt(16)
+    # 填充文字单独成 run：runs[0]/runs[1] 的内容、格式与下标都不受影响（断言按下标取）
+    r2 = p.add_run(_BODY)
     b = io.BytesIO()
     d.save(b)
-    tid, _r1, r2, key = _fix_setup(monkeypatch, fstore, tag="fixfmt", blob=b.getvalue(), raw=json.dumps({"patches": [{"idx": 1, "find": "投标文件缺少封面", "replace": "投标文件包含封面"}]}))
+    tid, _r1, _r2, key = _fix_setup(monkeypatch, fstore, tag="fixfmt", blob=b.getvalue(), raw=json.dumps({"patches": [{"idx": 1, "find": "投标文件缺少封面", "replace": "投标文件包含封面"}]}))
     executor.execute_task(tid)
     runs = Document(io.BytesIO(fstore.blobs[(f"{PFX}-downloads", key)])).paragraphs[0].runs
-    assert "".join(r.text for r in runs) == "前缀：投标文件包含封面"
+    assert "".join(r.text for r in runs) == "前缀：投标文件包含封面" + _BODY
     assert runs[0].bold is True and runs[0].font.size == Pt(10)
     assert runs[1].font.size == Pt(16)
 
@@ -576,7 +608,7 @@ def test_execute_task_fix_preserves_run_formatting(monkeypatch, fstore):
 def test_execute_task_fix_unlocatable_patch_keeps_annotation_open(monkeypatch, fstore):
     """find 在文中不唯一 → patcher 跳过 → 标注保持 open、**不产新版本**（保持原样）。"""
     tid, _r1, r2, key = _fix_setup(
-        monkeypatch, fstore, tag="fixskip", blob=_docx(["投标文件缺少封面", "投标文件缺少封面"]), raw=json.dumps({"patches": [{"idx": 1, "find": "投标文件缺少封面", "replace": "X"}]})
+        monkeypatch, fstore, tag="fixskip", blob=_docx(["投标文件缺少封面" + _BODY, "投标文件缺少封面" + _BODY]), raw=json.dumps({"patches": [{"idx": 1, "find": "投标文件缺少封面", "replace": "X"}]})
     )
     executor.execute_task(tid)
     row = _round(r2)
@@ -607,14 +639,14 @@ def test_execute_task_fix_non_docx_finishes_done_with_manual_hint(monkeypatch, f
 
 
 def test_execute_task_fix_unparseable_marks_failed(monkeypatch, fstore):
-    tid, _r1, r2, _key = _fix_setup(monkeypatch, fstore, tag="fixbad", blob=_docx(["投标文件缺少封面"]), raw="嗯……")
+    tid, _r1, r2, _key = _fix_setup(monkeypatch, fstore, tag="fixbad", blob=_docx(["投标文件缺少封面" + _BODY]), raw="嗯……")
     executor.execute_task(tid)
     assert _round(r2).status == "failed"
 
 
 def test_execute_task_fix_all_idx_out_of_range_marks_failed(monkeypatch, fstore):
     """LLM 回了条目但 idx 全对不上 → 畸形响应，不能伪装成「无需改动」的 done。"""
-    tid, _r1, r2, _key = _fix_setup(monkeypatch, fstore, tag="fixoob", blob=_docx(["投标文件缺少封面"]), raw=json.dumps({"patches": [{"idx": 42, "find": "投标文件缺少封面", "replace": "X"}]}))
+    tid, _r1, r2, _key = _fix_setup(monkeypatch, fstore, tag="fixoob", blob=_docx(["投标文件缺少封面" + _BODY]), raw=json.dumps({"patches": [{"idx": 42, "find": "投标文件缺少封面", "replace": "X"}]}))
     executor.execute_task(tid)
     row = _round(r2)
     assert row.status == "failed" and "idx" in row.error
@@ -622,7 +654,7 @@ def test_execute_task_fix_all_idx_out_of_range_marks_failed(monkeypatch, fstore)
 
 def test_execute_task_fix_empty_patches_finishes_done(monkeypatch, fstore):
     """LLM 合法地回空 patches = 无需改动：判 failed 会诱发无效重试。"""
-    tid, _r1, r2, _key = _fix_setup(monkeypatch, fstore, tag="fixempty", blob=_docx(["投标文件缺少封面"]), raw="[]")
+    tid, _r1, r2, _key = _fix_setup(monkeypatch, fstore, tag="fixempty", blob=_docx(["投标文件缺少封面" + _BODY]), raw="[]")
     executor.execute_task(tid)
     row = _round(r2)
     assert row.status == "done" and "保持原样" in row.summary
@@ -652,7 +684,7 @@ def test_execute_task_fix_caps_items_at_max_fix_items(monkeypatch, fstore):
     r2 = _mk_round(tid, status="fixing", file_version="v2", round_no=2)
     monkeypatch.setattr(executor, "MAX_FIX_ITEMS", 2)
     prompts = []
-    monkeypatch.setattr(executor, "_load_original_blob", lambda t, f: _docx(["待修复文本"]))
+    monkeypatch.setattr(executor, "_load_original_blob", lambda t, f: _docx(["待修复文本" + _BODY]))
     monkeypatch.setattr(executor, "_call_llm", lambda t, s, u: prompts.append(u) or "[]")
     executor.execute_task(tid)
     assert "[3]" not in prompts[0] and "[2]" in prompts[0]
@@ -664,7 +696,7 @@ def test_execute_task_fix_reads_previous_fixed_version_as_input(monkeypatch, fst
     tid = PFX + "-fixchain"
     _mk_template()
     v2_key = store_key(tid, "v2")
-    fstore.blobs[(f"{PFX}-downloads", v2_key)] = _docx(["已修过一次的正文"])
+    fstore.blobs[(f"{PFX}-downloads", v2_key)] = _docx(["已修过一次的正文" + _BODY])
     r1 = _mk_round(tid, status="annotated", file_version="v1", round_no=1)
     FileReviewAnnotationService.create(
         round_id=r1,
@@ -685,7 +717,7 @@ def test_execute_task_fix_reads_previous_fixed_version_as_input(monkeypatch, fst
     FileReviewRoundService.update_status(_mk_round(tid, status="done", file_version="v2", round_no=2), "done", minio_path=v2_key)
     r3 = _mk_round(tid, status="fixing", file_version="v3", round_no=3)
     prompts = []
-    monkeypatch.setattr(executor, "_load_original_blob", lambda t, f: _docx(["原件正文，不该被读到"]))
+    monkeypatch.setattr(executor, "_load_original_blob", lambda t, f: _docx(["原件正文，不该被读到" + _BODY]))
     monkeypatch.setattr(executor, "_call_llm", lambda t, s, u: prompts.append(u) or "[]")
     executor.execute_task(tid)
     assert "已修过一次的正文" in prompts[0] and "原件正文" not in prompts[0]
@@ -697,7 +729,7 @@ def test_execute_task_reraises_when_failure_status_cannot_be_written(monkeypatch
     tid = PFX + "-wede"
     _mk_template()
     _mk_round(tid)
-    _wire(monkeypatch, blob=_docx(["一段足够长的正文用于通过最小长度校验，重复重复重复重复。"]), raw="完全无法解析")
+    _wire(monkeypatch, blob=_docx([_BODY]), raw="完全无法解析")
 
     def _boom_update(*a, **k):
         raise RuntimeError("mysql down")
@@ -715,7 +747,7 @@ def test_execute_task_skips_annotations_outside_declared_type_scope(monkeypatch,
     _mk_template(types=("format",))
     rid = _mk_round(tid)
     raw = json.dumps([{"matched_text": "甲甲甲", "type": "clause", "severity": "low", "issue": "i"}])
-    _wire(monkeypatch, blob=_docx(["甲甲甲是一段足够长的正文内容，重复重复重复重复。"]), raw=raw)
+    _wire(monkeypatch, blob=_docx(["甲甲甲" + _BODY]), raw=raw)
     executor.execute_task(tid)
     assert _round(rid).status == "annotated"
     assert len(_anns(tid)) == 1 and _anns(tid)[0].type == "clause"
@@ -726,6 +758,6 @@ def test_execute_task_drops_empty_shell_annotations(monkeypatch, fstore):
     _mk_template()
     rid = _mk_round(tid)
     raw = json.dumps([{"matched_text": "", "issue": "", "severity": "low"}, {"matched_text": "甲甲甲", "issue": "真的问题", "severity": "low"}])
-    _wire(monkeypatch, blob=_docx(["甲甲甲是一段足够长的正文内容，重复重复重复重复。"]), raw=raw)
+    _wire(monkeypatch, blob=_docx(["甲甲甲" + _BODY]), raw=raw)
     executor.execute_task(tid)
     assert len(_anns(tid)) == 1 and _round(rid).status == "annotated"
