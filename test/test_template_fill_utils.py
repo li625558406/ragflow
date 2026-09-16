@@ -2808,3 +2808,170 @@ def test_parse_unbalanced_bracket_truncated():
     cands = [{"index": 0, "text": "姓名：＿＿", "addr": "para:0"}]
     raw = '[{"line": 0, "anchor": "＿＿", "key": "name"'
     assert parse_detection_response(raw, cands) == []
+
+
+# ---------------------------------------------------------------------------
+# 超链接段落统一走 cross 区间重写 + occ 嵌套剔除（2026-09-16 事故回归）
+# 事故：_replace_via_run_concat 按原 run 长度静态切片回写，替换点之后 run 文本
+# 整体后移，而 w:hyperlink 元素钉在 XML 固定位置 → URL 文本相对位置「瞬移」进
+# 先前写入的 {{key}} 内部，产出 {{bhttp://...}} 之类脏 token，docxtpl Jinja 解析
+# 报 "expected token 'end of print statement', got ':'"。
+# ---------------------------------------------------------------------------
+
+
+def _make_incident_docx():
+    """复刻事故段落结构：run("递交截止时间：") + run("7空年7空月3空日3空时3空分3空秒前 ")
+    + 尾部超链接(URL) + run("（详见公告）")——超链接前后都有正文 run。"""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    doc = Document()
+    p = doc.add_paragraph("递交截止时间：")
+    p.add_run("       年       月   日   时   分   秒前 ")
+    hl = OxmlElement("w:hyperlink")
+    hl.set(qn("r:id"), "rIdLink")
+    r = OxmlElement("w:r")
+    t = OxmlElement("w:t")
+    t.text = "http://fjggzyjy.cn/xxx"
+    r.append(t)
+    hl.append(r)
+    p._p.append(hl)
+    p.add_run("（详见公告）")
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def test_apply_incident_hyperlink_paragraph_no_dirty_token():
+    """事故回归：超链接居中+后随 run 的年月日时分秒段落，6 条目替换后 URL 不得
+    混入任何 {{}} token（旧 concat 路径会产出 {{bhttp://fjggzyjy.cn/x...}}）。"""
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders, iter_docx_paragraphs
+    src = _make_incident_docx()
+    URL = "http://fjggzyjy.cn/xxx"
+    out = apply_docx_placeholders(src, [
+        {"addr": "para:0", "anchor": "       ", "key": "d_year", "occ": 1},
+        {"addr": "para:0", "anchor": "       ", "key": "d_month", "occ": 2},
+        {"addr": "para:0", "anchor": "   ", "key": "d_day", "occ": 1},
+        {"addr": "para:0", "anchor": "   ", "key": "d_hour", "occ": 2},
+        {"addr": "para:0", "anchor": "   ", "key": "d_minute", "occ": 3},
+    ])
+    text = iter_docx_paragraphs(out)[0]["text"]
+    # URL 只在超链接原位出现一次，绝不在 {{}} 内
+    assert text.count(URL) == 1
+    assert "bhttp" not in text
+    import re as _re
+    toks = _re.findall(r"\{\{[^}]*\}\}", text)
+    assert len(toks) == 5, text
+    for tok in toks:
+        assert _re.fullmatch(r"\{\{[a-z0-9_]+\}\}", tok), tok
+    # 5 个占位符分别落在年/月/日/时/分空位，锚文本归零（仅剩「秒」前的 3 空格）
+    assert text == ("递交截止时间：{{d_year}}年{{d_month}}月{{d_day}}日{{d_hour}}时"
+                    "{{d_minute}}分   秒前 " + URL + "（详见公告）"), text
+
+
+def test_apply_occ_nested_in_longer_anchor_skipped():
+    """对抗（occ 嵌套口径）：3 空格锚的嵌套出现（藏在 7 空格空位内）必须被剔除，
+    occ=1/2 落到独立空位上——识别端按独立留白位编号，渲染端不剔除会把序号数到
+    长锚内部而错位。"""
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders, iter_docx_paragraphs
+    doc = Document()
+    doc.add_paragraph("X       Y   Z   W")  # 7空 + 3空 + 3空
+    buf = io.BytesIO()
+    doc.save(buf)
+    out = apply_docx_placeholders(buf.getvalue(), [
+        {"addr": "para:0", "anchor": "   ", "key": "s1", "occ": 1},
+        {"addr": "para:0", "anchor": "   ", "key": "s2", "occ": 2},
+        {"addr": "para:0", "anchor": "       ", "key": "long", "occ": 1},
+    ])
+    text = iter_docx_paragraphs(out)[0]["text"]
+    assert text == "X{{long}}Y{{s1}}Z{{s2}}W", text
+
+
+def test_apply_occ_exceeds_free_slots_is_noop():
+    """对抗：剔除嵌套后幸存空位数不足 occ → no-op（占位符不落位，绝不退化成
+    replace-all 误伤长锚内部）。"""
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders, iter_docx_paragraphs
+    doc = Document()
+    doc.add_paragraph("X       Y   Z")  # 独立 3 空格仅 1 处，另一处嵌在 7 空格内
+    buf = io.BytesIO()
+    doc.save(buf)
+    out = apply_docx_placeholders(buf.getvalue(), [
+        {"addr": "para:0", "anchor": "   ", "key": "s2", "occ": 2},
+        {"addr": "para:0", "anchor": "       ", "key": "long", "occ": 1},
+    ])
+    text = iter_docx_paragraphs(out)[0]["text"]
+    assert "{{s2}}" not in text
+    assert text == "X{{long}}Y   Z", text
+
+
+def test_apply_docx_fld_simple_paragraph_field_intact():
+    """对抗：简单域（w:fldSimple）段落与超链接同构——域内 run 不在 p.runs 中，
+    替换只作用正文 run，域文本不复制不破坏。"""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders, iter_docx_paragraphs
+    doc = Document()
+    p = doc.add_paragraph("页码：")
+    p.add_run("____ 共")
+    fld = OxmlElement("w:fldSimple")
+    fld.set(qn("w:instr"), " PAGE ")
+    r = OxmlElement("w:r")
+    t = OxmlElement("w:t")
+    t.text = "9"
+    r.append(t)
+    fld.append(r)
+    p._p.append(fld)
+    p.add_run("页")
+    buf = io.BytesIO()
+    doc.save(buf)
+    out = apply_docx_placeholders(buf.getvalue(), [
+        {"addr": "para:0", "anchor": "____", "key": "pages"},
+    ])
+    # p.text 含 hyperlink 文本但不含 fldSimple 域内文本（python-docx 1.2 行为），
+    # 提取文本只含正文 run；域完整性（含 "9"）在 XML 层断言
+    text = iter_docx_paragraphs(out)[0]["text"]
+    assert text == "页码：{{pages}} 共页", text
+    from docx import Document as _D
+    p2 = _D(io.BytesIO(out)).paragraphs[0]
+    flds = p2._p.findall(qn("w:fldSimple"))
+    assert len(flds) == 1
+    assert flds[0].find(qn("w:r")).find(qn("w:t")).text == "9"
+
+
+def test_apply_docx_fld_simple_occ_path_token_intact():
+    """对抗（事故同构）：fldSimple 段落 + occ=1 + 锚跨界 run 边界 + 替换值长于锚。
+    旧 run 拼接路径按原 run 长度静态切片回写，会把 {{token}} 拦腰切进两个 run
+    （产出 "{{pages}" 残缺）；区间重写路径 token 原子落在首 run，域内文本不受
+    影响。"""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx import Document as _D
+    from rag.svr.template_fill.docx_utils import apply_docx_placeholders, iter_docx_paragraphs
+    doc = Document()
+    p = doc.add_paragraph("页码：_")
+    p.add_run("___共")
+    fld = OxmlElement("w:fldSimple")
+    fld.set(qn("w:instr"), " PAGE ")
+    r = OxmlElement("w:r")
+    t = OxmlElement("w:t")
+    t.text = "9"
+    r.append(t)
+    fld.append(r)
+    p._p.append(fld)
+    p.add_run("终")
+    buf = io.BytesIO()
+    doc.save(buf)
+    # 前置：runs 拼接 = "页码：____共终"，锚 "：____" 跨 run0/run1
+    out = apply_docx_placeholders(buf.getvalue(), [
+        {"addr": "para:0", "anchor": "：____", "key": "pages", "occ": 1},
+    ])
+    text = iter_docx_paragraphs(out)[0]["text"]
+    assert text == "页码{{pages}}共终", text
+    # 域完整性 + token 原子性须在 document 序全量 w:t 上断言（p.text 不含域内
+    # 文本，旧 concat 切碎的 token 在 p.text 视图恰好拼回完整串，看不到腐坏；
+    # docxtpl 按 document 序解析，域内 "9" 会插进被切碎的 token 中间）
+    p2 = _D(io.BytesIO(out)).paragraphs[0]
+    flow = "".join(t.text or "" for t in p2._p.iter() if t.tag == qn("w:t"))
+    assert flow == "页码{{pages}}共9终", flow
+    flds = p2._p.findall(qn("w:fldSimple"))
+    assert len(flds) == 1
+    assert flds[0].find(qn("w:r")).find(qn("w:t")).text == "9"

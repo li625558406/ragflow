@@ -77,6 +77,7 @@ const normalizeLlmMarkdown = (text: string) =>
 export default function FlowDetail({
   flowId,
   commentPortal,
+  visible = true,
   onCommentsCount,
   onChanged,
   onDeleted,
@@ -87,6 +88,9 @@ export default function FlowDetail({
   flowId: string;
   /** 批注模块 portal 挂载点（外层左侧流程栏下方），不传则不渲染批注模块 */
   commentPortal?: HTMLElement | null;
+  /** 本详情是否为当前选中流程（flow-panel 常驻挂载集透传）：隐藏实例强制收起
+   *  实时预览（预览内存治理，设计 2026-09-16），保证至多一棵大文档 DOM 树 */
+  visible?: boolean;
   /** 当前版本批注数变化时上报（供外层折叠开关展示角标） */
   onCommentsCount?: (count: number) => void;
   onChanged: () => void;
@@ -508,6 +512,7 @@ export default function FlowDetail({
               chats={data.ai_chats ?? []}
               live={liveChat}
               authorNames={Object.fromEntries(nicknameMap)}
+              visible={visible}
               onConfirmSubmitted={markConfirmSubmitted ?? undefined}
               onSelectSubmitted={markSelectSubmitted ?? undefined}
               onLivePreviewOpenChange={(open) => {
@@ -886,6 +891,7 @@ function ConversationView({
   onConfirmSubmitted,
   onSelectSubmitted,
   onLivePreviewOpenChange,
+  visible = true,
 }: {
   chats: FlowAiChatItem[];
   live: FlowLiveChat | null;
@@ -899,6 +905,8 @@ function ConversationView({
   onSelectSubmitted?: () => void;
   /** 范本预览抽屉开/关上报（供外层收缩布局腾位） */
   onLivePreviewOpenChange?: (open: boolean) => void;
+  /** 本详情是否为当前选中流程（FlowDetail 透传）：隐藏实例强制收起实时预览 */
+  visible?: boolean;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   // 挂起确认卡出现信号（范本选择/字段确认）：卡在范本行上方，若不滚动用户可能
@@ -1006,6 +1014,7 @@ function ConversationView({
                 onConfirmSubmitted={onConfirmSubmitted}
                 onSelectSubmitted={onSelectSubmitted}
                 onLivePreviewOpenChange={onLivePreviewOpenChange}
+                forceClosedLivePreview={!visible}
                 extraAction={(dl) => extraAction?.(dl)}
               />
             </div>

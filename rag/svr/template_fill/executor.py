@@ -163,7 +163,8 @@ class GenerateCancelled(Exception):
 # 检索跳过键以下划线前缀保留键塞进 params 传给 execute_task；干净 params 继续
 # 充当背景信息与 param 直取（与 B端表单字段同构）。
 _CANVAS_RESERVED_KEYS = ("_direct_values", "_changed_keys",
-                         "_retrieve_skip_keys", "_user_file_text")
+                         "_retrieve_skip_keys", "_user_file_text",
+                         "_baseline_values")
 
 # 进度快照键与 TTL（24h；终态也写一次，靠 TTL 过期，不主动删）
 _PROGRESS_KEY = "tpl_fill_progress:{task_id}"
@@ -185,6 +186,7 @@ def split_canvas_params(params: dict | None) -> tuple[dict, dict]:
     非 str 项 str 归一），不炸 pipeline。"""
     params = params if isinstance(params, dict) else {}
     dv = params.get("_direct_values")
+    bv = params.get("_baseline_values")
     opts = {
         "direct_values": ({str(k): (str(v) if v is not None else "")
                            for k, v in dv.items()}
@@ -192,6 +194,10 @@ def split_canvas_params(params: dict | None) -> tuple[dict, dict]:
         "changed_keys": {str(k) for k in (params.get("_changed_keys") or [])},
         "retrieve_skip_keys": {str(k) for k in (params.get("_retrieve_skip_keys") or [])},
         "user_file_text": str(params.get("_user_file_text") or ""),
+        # baseline：上一轮已落成稿的真实填写值（非 B 端 default_value 提示），
+        # 仅对 missing 字段兜底，优先级 default_value 之前，让文档保留上次内容
+        "baseline_values": ({str(k): str(v) for k, v in bv.items() if v is not None}
+                            if isinstance(bv, dict) else {}),
     }
     clean = {k: v for k, v in params.items() if k not in _CANVAS_RESERVED_KEYS}
     return clean, opts
@@ -491,6 +497,106 @@ async def predict_changed_fields(tenant_id: str, default_items: list[dict],
         except Exception:
             logger.warning("predict_changed_fields chunk failed; keep defaults", exc_info=True)
     return found
+
+
+# 增量填写场景：从用户 query + 上次填写值抽 patch（要改的字段+值）
+# 节点在检测到同范本已有 done 成稿时调用，决定本次走「改字段」「补全留空」还是「全量重填」
+PATCH_EXTRACT_SYSTEM = (
+    "你是文档增量修改助手。给出一个范本的全部填写点清单（key/中文名/当前已填值）"
+    "和用户本轮原话。请判断用户本轮的意图并产出 JSON，**只能**输出 JSON 对象：\n"
+    "{\"intent\": \"patch\"|\"refill\"|\"fill_unfilled\"|\"noop\","
+    " \"direct\": {\"key\": \"新值\", ...}, \"changed\": [\"key\", ...]}\n"
+    "规则：\n"
+    "- intent=\"patch\"：用户在原话里明确指定了要改的字段及其新值（中文名或 key）。"
+    "direct 放字段 key→新值（必填，值留空也算 patch 即明确清空），changed 放所有要改的 key（与 direct keys 一致即可）。"
+    "用户说「xx 填成 yy」「xx 改成 yy」「xx 留空」都属于 patch。\n"
+    "- intent=\"fill_unfilled\"：用户想补全/完善上次没填上的字段（如「完善」「补全」「继续填」「还有哪些没填的」）。"
+    "把当前已填值仍为空（\"\" 或 null 或 缺失）的字段填进 changed（不需要 direct 值——走检索+LLM）。\n"
+    "- intent=\"refill\"：用户明确要求全部重新填写（如「重新填」「全部重写」「从头填」）。"
+    "直接返回 {\"intent\": \"refill\"} 即可。\n"
+    "- intent=\"noop\"：用户没说修改/补全/重填任何字段，且当前已填值无留空。"
+    "返回 {\"intent\": \"noop\"} 即可。\n"
+    "key 必须在清单中——用户说的字段中文名如果能匹配清单里的 name/key 就用对应 key；"
+    "匹配不上、含糊或与你意图判断不匹配的字段一律忽略，不要编造 key。"
+    "未提及的字段不要塞进 direct/changed。")
+
+
+async def extract_patch_values(tenant_id: str, placeholders: list[dict],
+                                baseline_values: dict,
+                                query: str,
+                                should_cancel=None) -> dict:
+    """增量填写意图+字段抽取（1 次 LLM 调用）：从用户 query + 上次填写值抽 patch。
+    返回：{"intent": str, "direct": dict, "changed": list[str]}
+      - intent ∈ {"patch", "refill", "fill_unfilled", "noop"}
+      - direct: 用户在原话里明确给的值（key → str）
+      - changed: 本次要走的字段 key 集合（包含 direct keys + 用户没给值但希望检索的）
+    LLM 解析失败/输出非法 → 返回 noop（节点兜底走 baseline unfilled 提示）。"""
+    items = [it for it in placeholders
+             if isinstance(it, dict) and it.get("key")]
+    if not items:
+        return {"intent": "noop", "direct": {}, "changed": []}
+    valid = {it["key"] for it in items}
+    by_key = {it["key"]: it for it in items}
+    base_norm = baseline_values if isinstance(baseline_values, dict) else {}
+    spec = []
+    for it in items:
+        k = it["key"]
+        cur = base_norm.get(k)
+        if cur is None:
+            cur_str = ""
+        else:
+            cur_str = str(cur)
+        spec.append({"key": _clean_for_prompt(k, NAME_MAX),
+                     "name": _clean_for_prompt(it.get("name") or k, NAME_MAX),
+                     "current": _clean_for_prompt(cur_str, DEFAULT_HINT_MAX)})
+    user_msg = ("## 填写点清单\n" + json.dumps(spec, ensure_ascii=False)
+                + "\n\n用户原话：" + _clean_for_prompt(
+                    (query or "").strip(), PARAMS_PROMPT_MAX))
+    if _should_cancel(should_cancel):
+        raise GenerateCancelled()
+    try:
+        mdl = _build_chat_mdl(tenant_id)
+        ans = await mdl.async_chat(
+            PATCH_EXTRACT_SYSTEM, [{"role": "user", "content": user_msg}])
+        raw = _extract_json(ans)
+        intent = str(raw.get("intent") or "").strip().lower()
+        if intent not in ("patch", "refill", "fill_unfilled", "noop"):
+            logger.warning("extract_patch_values: bad intent=%r, fallback noop", intent)
+            return {"intent": "noop", "direct": {}, "changed": []}
+        direct_raw = raw.get("direct") if isinstance(raw.get("direct"), dict) else {}
+        direct = {str(k): str(v) for k, v in direct_raw.items()
+                  if isinstance(k, str) and k in valid}
+        # 防御：value 走 _apply_constraints 兜底（与产值同口径），通过才保留
+        direct_validated: dict = {}
+        for k, v in direct.items():
+            v2 = _apply_constraints(v, by_key[k].get("constraints") or {})
+            if v2 is not None:
+                direct_validated[k] = str(v2)
+        changed_raw = raw.get("changed") if isinstance(raw.get("changed"), list) else []
+        changed = {str(k) for k in changed_raw
+                   if isinstance(k, str) and k in valid}
+        # patch 模式：changed 必须包含所有 direct keys（前端确认时这些要展示）
+        if intent == "patch":
+            changed |= set(direct_validated.keys())
+        # fill_unfilled 模式：未提供 changed → 默认填所有留空字段（下方兜底补）
+        if intent == "fill_unfilled" and not changed:
+            for it in items:
+                cur = base_norm.get(it["key"])
+                cur_empty = (cur is None
+                             or (isinstance(cur, str) and not cur.strip()))
+                if cur_empty:
+                    changed.add(it["key"])
+        # noop 模式：清空
+        if intent == "noop" or intent == "refill":
+            direct_validated = {}
+            changed = set()
+        return {"intent": intent, "direct": direct_validated,
+                "changed": sorted(changed)}
+    except GenerateCancelled:
+        raise
+    except Exception:
+        logger.warning("extract_patch_values failed; fallback noop", exc_info=True)
+        return {"intent": "noop", "direct": {}, "changed": []}
 
 
 # ---------- 编排层：产值合成 + 任务 pipeline（状态机乐观转移） ----------
@@ -847,6 +953,15 @@ async def _execute_task_async(task_id: str):
     for k, v in direct_values.items():
         generated[k] = v
         missing.discard(k)
+    # 增量填写场景：baseline 兜底（仅对 missing 字段；优先级 default_value 之前）。
+    # baseline 是上次实际写入成稿的真实值，不是 B 端 default_value 提示——
+    # 用户没动过的字段必须原样保留，否则「增量」会丢上次成果回退到默认值
+    baseline_values = opts.get("baseline_values") if is_canvas else {}
+    if baseline_values:
+        for k, v in baseline_values.items():
+            if k in missing and str(v).strip():
+                generated[k] = v
+                missing.discard(k)
     _merge_default_values(placeholders, generated, missing)
 
     values, cell_status = build_values(placeholders, generated)

@@ -76,6 +76,7 @@ import {
   MessageEventType,
   useSendMessageBySSE,
 } from '@/hooks/use-send-message';
+import { useTemplateFillRunRecovery } from '@/hooks/use-template-fill-run-recovery';
 import type {
   Docagg,
   IMessage,
@@ -424,6 +425,31 @@ export default function CChat() {
   } = useSelectDerivedMessages();
 
   const sendLoading = !done;
+
+  // ── 运行快照权威恢复（设计 2026-09-16）────────────────────────────────
+  // 历史加载后定位最新一条带范本进度的消息（仅覆盖最新一条，历史多轮维持重放回看），
+  // 经运行快照端点轮询权威态整体覆盖其 templateFill；无 canvas run id 的旧消息
+  // hook 透出重放态本身（行为退化为现状），回写经引用相等短路。
+  const [latestTfRecovery, setLatestTfRecovery] = useState<{
+    msgId: string;
+    events: unknown;
+    replayed: ITemplateFillState | undefined;
+  } | null>(null);
+  const recoveredTf = useTemplateFillRunRecovery(
+    latestTfRecovery?.events,
+    latestTfRecovery?.replayed,
+  );
+  useEffect(() => {
+    if (!recoveredTf || !latestTfRecovery) return;
+    if (recoveredTf === latestTfRecovery.replayed) return;
+    setDerivedMessages((prev) =>
+      prev.map((m) =>
+        m.id === latestTfRecovery.msgId && m.templateFill !== recoveredTf
+          ? { ...m, templateFill: recoveredTf }
+          : m,
+      ),
+    );
+  }, [recoveredTf, latestTfRecovery, setDerivedMessages]);
 
   // Collect all reviewed files from message history
   const reviewFileList = useMemo(() => {
@@ -1141,6 +1167,25 @@ export default function CChat() {
           }
 
           setDerivedMessages(mapped);
+
+          // 运行快照权威恢复：定位最新一条带范本进度的消息，供恢复 hook 拉快照覆盖
+          let tfRecovery: {
+            msgId: string;
+            events: unknown;
+            replayed: ITemplateFillState | undefined;
+          } | null = null;
+          for (let i = mapped.length - 1; i >= 0; i--) {
+            const msg = mapped[i] as any;
+            if (msg.templateFill) {
+              tfRecovery = {
+                msgId: msg.id,
+                events: msg.data?.templateFillEvents,
+                replayed: msg.templateFill,
+              };
+              break;
+            }
+          }
+          setLatestTfRecovery(tfRecovery);
 
           // Restore review file from message history
           const firstFile = mapped.find((m: any) => m.files?.length > 0)

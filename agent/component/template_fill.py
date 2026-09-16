@@ -83,6 +83,13 @@ _CONFIRM_HEARTBEAT_INTERVAL = 30.0
 # 1.5s 轮询到天荒地老。超时后写取消键 + 按 failed 收口，走正常汇总输出。
 _OBSERVE_TIMEOUT_S = 3600
 
+# 运行快照键（快照化恢复，设计 2026-09-16）：画布运行全程权威状态的唯一落点，
+# 刷新恢复端点 /template/fill/fill-run/<canvas_task_id>/snapshot 按它组装全量状态。
+# 键名含 canvas_task_id（与 fill task_id 是两个 id 空间，tasks 映射维护对应关系）。
+_RUN_SNAPSHOT_KEY = "tpl_fill:run:{task_id}"
+_RUN_SNAPSHOT_TTL = 7200      # 过程态：覆盖最长观察窗口（_OBSERVE_TIMEOUT_S）+ 余量
+_RUN_SNAPSHOT_DONE_TTL = 600  # 终态：收尾 10 分钟内刷新仍可权威恢复，之后自然过期
+
 
 class _FillCancelled(Exception):
     """画布取消中断填写：不落 failed 事件，由 invoke 统一推 cancelled。"""
@@ -90,13 +97,18 @@ class _FillCancelled(Exception):
 
 def _canvas_task_params(begin_fields: dict, query: str, decision: dict | None,
                         llm_item_keys: set, placeholders: list[dict],
-                        user_file_text: str) -> dict:
+                        user_file_text: str,
+                        *, baseline_values: dict | None = None) -> dict:
     """组装委托给 executor.execute_task 的任务 params：
     背景（Begin 字段+需求描述，与节点内 background 同构）+ 下划线保留键
-    （直填值/LLM 白名单键/检索跳过键/用户文件证据），executor 侧 split_canvas_params 拆解。
+    （直填值/LLM 白名单键/检索跳过键/用户文件证据/基线），executor 侧 split_canvas_params 拆解。
     llm_item_keys 为确认后仍要走检索+LLM 的字段 key 集合（白名单），同时写入
     _changed_keys 供 executor 收窄；其余 llm 槽（默认值兜底/留空与直填）跳过检索，
-    由 executor 的 missing 显式纳入 → _merge_default_values 兜底。"""
+    由 executor 的 missing 显式纳入 → _merge_default_values 兜底。
+
+    baseline_values：增量填写场景下由调用方传入的「上次已落成稿的真实填写值」，
+    仅对 missing 字段兜底（优先级 default_value 之前），让文档保留上次内容。
+    非增量路径传 None 或空 dict，executor 端兜底不触发。"""
     decision = decision or {}
     direct = decision.get("values") or {}
     skip = [it["key"] for it in placeholders
@@ -109,6 +121,7 @@ def _canvas_task_params(begin_fields: dict, query: str, decision: dict | None,
     params["_changed_keys"] = sorted(str(k) for k in llm_item_keys)
     params["_retrieve_skip_keys"] = skip
     params["_user_file_text"] = user_file_text or ""
+    params["_baseline_values"] = dict(baseline_values or {})
     return params
 
 
@@ -192,6 +205,24 @@ class TemplateFill(ComponentBase):
     def _push_progress(self, data: dict) -> None:
         self._event_queue.put_nowait({"event": "template_fill_progress", "data": data})
 
+    def _write_run_snapshot(self, stage: str, *, templates: list[dict] | None = None,
+                            tasks: dict | None = None, pending: dict | None = None,
+                            ttl: int = _RUN_SNAPSHOT_TTL) -> None:
+        """写运行快照（快照化恢复）：画布运行全程权威状态，刷新恢复端点按
+        canvas_task_id 读取。Redis 故障只告警——快照是恢复增强，不是执行权威
+        （执行权威在 DB 任务行）。无 canvas task_id（SSE 回传不可用）静默跳过。"""
+        canvas_task_id = getattr(self._canvas, "task_id", "") or ""
+        if not canvas_task_id:
+            return
+        payload = {"stage": stage, "templates": templates or [], "tasks": tasks or {},
+                   "pending": pending, "updated_at": int(time.time() * 1000)}
+        try:
+            REDIS_CONN.set(_RUN_SNAPSHOT_KEY.format(task_id=canvas_task_id),
+                           json.dumps(payload, ensure_ascii=False), exp=ttl)
+        except Exception:
+            logger.warning("write run snapshot failed, canvas=%s stage=%s",
+                           canvas_task_id, stage, exc_info=True)
+
     def _resolve_query(self) -> str:
         """需求描述解析：按变量引用替换（UserFillUp 同款 partial 适配），空回退 sys.query。"""
         text = (self._param.query or "").strip() or "{sys.query}"
@@ -254,12 +285,19 @@ class TemplateFill(ComponentBase):
         return text.strip()[:_USER_FILE_EVIDENCE_MAX]
 
     async def _confirm_changed_fields(self, chosen: list[dict], query: str,
-                                      begin_fields: dict) -> dict:
+                                      begin_fields: dict,
+                                      *, incremental_overrides: dict | None = None
+                                      ) -> dict:
         """P2 暂停确认（全量展示）：候选 = 各范本全部 llm 填写点（含无默认值字段），
         AI 预判只覆盖默认值子集；勾选 = 交给检索+LLM，不勾 = 有默认值用默认值、
         无默认值留空。返回 {template_id: {"changed": set, "values": dict}}；
         全部选中范本均无默认值字段时返回 {}（跳过确认，触发条件与现状一致）。
-        超时/Redis 异常/预判失败 → 按预判∪无默认值字段自动继续（同现状全填）。"""
+        超时/Redis 异常/预判失败 → 按预判∪无默认值字段自动继续（同现状全填）。
+
+        incremental_overrides: tid -> {"candidates": [...], "predicted": [...],
+                                       "fallback_changed": set, "fallback_values": dict}
+            增量填写场景由调用方提供：候选只列本次要改的项（不是全量 244 项），
+            兜底 changed = patch keys，兜底 values = LLM 抽出的 direct 值。"""
         d_map: dict[str, list[dict]] = {}        # 全部 llm 填写点（候选 + valid 校验）
         default_map: dict[str, list[dict]] = {}  # 默认值子集（触发 + 预判）
         for c in chosen:
@@ -267,10 +305,14 @@ class TemplateFill(ComponentBase):
                      if executor._norm_fill_mode(it) == "llm" and it.get("key")]
             if items:
                 d_map[c["template_id"]] = items
-                defaults = [it for it in items if str(it.get("default_value") or "")]
-                if defaults:
-                    default_map[c["template_id"]] = defaults
-        if not default_map:
+            # 增量填写模式：该范本走 overrides（候选已固定为 patch items），跳过 default_map
+            if incremental_overrides and c["template_id"] in incremental_overrides:
+                continue
+            defaults = [it for it in items if str(it.get("default_value") or "")]
+            if defaults:
+                default_map[c["template_id"]] = defaults
+        # 增量填写模式：该范本已走 overrides，跳过 default_map 与 predict_changed_fields
+        if not default_map and not incremental_overrides:
             return {}
         task_id = getattr(self._canvas, "task_id", "") or ""
         background = dict(begin_fields)
@@ -293,20 +335,48 @@ class TemplateFill(ComponentBase):
         # 确认 + 旧直填值经 sediment 沉淀污染默认值基线
         nonce = get_uuid()
         # 字段名用 confirm_templates：selected 事件的 templates 已被前端归约占用
+        confirm_templates: list[dict] = []
+        for c in chosen:
+            tid = c["template_id"]
+            ov = (incremental_overrides or {}).get(tid)
+            if ov:
+                # 增量填写：候选只列 patch items（不是全量填写点），predicted 全部预勾选
+                confirm_templates.append({
+                    "template_id": tid,
+                    "name": name_of.get(tid, ""),
+                    "candidates": ov["candidates"],
+                    "predicted": ov["predicted"],
+                    "incremental": True,
+                })
+                continue
+            confirm_templates.append({
+                "template_id": tid,
+                "name": name_of.get(tid, ""),
+                "candidates": [{"key": it["key"],
+                                "name": it.get("name") or it["key"],
+                                "default_value": it.get("default_value")}
+                               for it in d_map[tid]],
+                "predicted": sorted(predicted.get(tid) or set())})
         self._push_progress({
             "stage": "confirm_pending", "task_id": task_id,
             "confirm_nonce": nonce,
-            "confirm_templates": [{"template_id": tid, "name": name_of.get(tid, ""),
-                           "candidates": [{"key": it["key"],
-                                           "name": it.get("name") or it["key"],
-                                           "default_value": it.get("default_value")}
-                                          for it in d_map[tid]],
-                           "predicted": sorted(predicted.get(tid) or set())}
-                          for tid in d_map]})
-        # 兜底（未确认/无 task_id）：changed = 预判 ∪ 全部无默认值字段——与确认卡
-        # 初始勾选一致，无默认值字段照旧走检索+LLM（全量展示白名单语义下的现状保持）
-        decisions = {}
-        for tid, items in d_map.items():
+            "confirm_templates": confirm_templates})
+        # 运行快照：挂起进入（挂起态权威落点，刷新恢复据此判定卡是否活着）
+        self._write_run_snapshot("confirm_pending", pending={
+            "type": "confirm", "nonce": nonce, "confirm_templates": confirm_templates})
+        # 兜底（未确认/无 task_id）：全量范本 changed = 预判 ∪ 全部无默认值字段；
+        # 增量范本 changed = patch keys（不是全量填写点）——与确认卡初始勾选一致
+        decisions: dict = {}
+        for c in chosen:
+            tid = c["template_id"]
+            ov = (incremental_overrides or {}).get(tid)
+            if ov:
+                decisions[tid] = {
+                    "changed": set(ov.get("fallback_changed") or list(ov.get("predicted") or [])),
+                    "values": dict(ov.get("fallback_values") or {}),
+                }
+                continue
+            items = d_map.get(tid, [])
             decisions[tid] = {
                 "changed": (set(predicted.get(tid) or set())
                             | {it["key"] for it in items
@@ -336,15 +406,39 @@ class TemplateFill(ComponentBase):
                 for tid, d in (data or {}).items():
                     if tid not in decisions or not isinstance(d, dict):
                         continue
-                    valid = {it["key"] for it in d_map[tid]}
+                    # 增量范本 valid = overrides 候选 key 集合（不是全量填写点）；
+                    # 全量范本 valid = d_map 的 key 集合
+                    ov = (incremental_overrides or {}).get(tid)
+                    if ov:
+                        valid = {c["key"] for c in ov.get("candidates") or []}
+                    else:
+                        valid = {it["key"] for it in d_map.get(tid, [])}
                     # 载荷结构防御：非官方写键可能塞标量（values 非 dict / changed 非 list），
                     # isinstance 兜底按空处理，不炸 run
                     changed_raw = d.get("changed") if isinstance(d.get("changed"), list) else []
                     values_raw = d.get("values") if isinstance(d.get("values"), dict) else {}
-                    decisions[tid] = {
-                        "changed": {k for k in changed_raw if k in valid},
-                        "values": {k: v for k, v in values_raw.items()
-                                   if k in valid}}
+                    if ov:
+                        # 增量补丁：fallback_values 是 LLM 从用户原话抽出的 direct 值
+                        # （如「approval_doc 填写成 港里」→ {approval_doc: 港里}）。
+                        # 前端确认卡 inputs 默认空，用户只点「确认并继续填写」不打字
+                        # 时 values_raw={}——这种情况下必须保留 fallback_values，否则
+                        # 用户在对话里给的直填值被静默丢弃、补丁字段留空。
+                        # 用户在输入框显式改了值（非空字符串）才覆盖；空字符串=未动=用 fallback。
+                        fb_values = ov.get("fallback_values") or {}
+                        final_values: dict = dict(fb_values)
+                        for k, v in values_raw.items():
+                            if k not in valid:
+                                continue
+                            if v is not None and str(v).strip():
+                                final_values[k] = str(v)
+                        decisions[tid] = {
+                            "changed": {k for k in changed_raw if k in valid},
+                            "values": final_values}
+                    else:
+                        decisions[tid] = {
+                            "changed": {k for k in changed_raw if k in valid},
+                            "values": {k: v for k, v in values_raw.items()
+                                       if k in valid}}
                 return decisions
             await asyncio.sleep(_CONFIRM_POLL_INTERVAL)
             waited += _CONFIRM_POLL_INTERVAL
@@ -363,16 +457,21 @@ class TemplateFill(ComponentBase):
         空/全非法提交、payload 异常、Redis 故障 → 按 AI 选择继续（与超时同兜底）；
         无 task_id（无法回传）由调用方短路跳过询问。"""
         nonce = get_uuid()
+        select_candidates = [{"template_id": c["template_id"],
+                              "name": c["name"],
+                              "slot_count": len(c["_placeholders"]),
+                              "description": c.get("description") or ""}
+                             for c in chosen]
         self._push_progress({
             "stage": "select_pending", "task_id": task_id,
             "select_nonce": nonce,
-            "select_candidates": [{"template_id": c["template_id"],
-                                   "name": c["name"],
-                                   "slot_count": len(c["_placeholders"]),
-                                   "description": c.get("description") or ""}
-                                  for c in chosen],
+            "select_candidates": select_candidates,
             "ai_selected": [c["template_id"] for c in chosen],
         })
+        # 运行快照：选择挂起进入
+        self._write_run_snapshot("select_pending", pending={
+            "type": "select", "nonce": nonce, "select_candidates": select_candidates,
+            "ai_selected": [c["template_id"] for c in chosen]})
         valid_ids = {c["template_id"] for c in chosen}
         by_id = {c["template_id"]: c for c in chosen}
         # 运行级 nonce（与字段确认同语义）：task_id 跨运行不变，孤儿键靠 nonce 错开
@@ -451,9 +550,11 @@ class TemplateFill(ComponentBase):
             raise ValueError("暂无可用的已发布范本，请先在范本库发布并配置填写点")
         chosen = await self._select_templates(tenant_id, candidates, query)
         # selected 先推（flow 面板 templates.length>0 才挂进度组件，范本行须先可见）
-        self._push_progress({"stage": "selected", "templates": [
-            {"template_id": c["template_id"], "name": c["name"],
-             "slot_count": len(c["_placeholders"])} for c in chosen]})
+        selected_templates = [{"template_id": c["template_id"], "name": c["name"],
+             "slot_count": len(c["_placeholders"])} for c in chosen]
+        self._push_progress({"stage": "selected", "templates": selected_templates})
+        # 运行快照：运行起点（后续选择/确认/任务映射逐阶段覆盖写）
+        self._write_run_snapshot("selected", templates=selected_templates)
         # 智能折中：LLM 选出多个范本时暂停询问用户勾选（≥1 个）；单选不打断。
         # 无 task_id（SSE 回传不可用）跳过询问直接按 AI 选择填——与字段确认同兜底。
         if len(chosen) > 1:
@@ -468,11 +569,97 @@ class TemplateFill(ComponentBase):
                     self._push_progress({"stage": "selected", "templates": [
                         {"template_id": c["template_id"], "name": c["name"],
                          "slot_count": len(c["_placeholders"])} for c in chosen]})
+                # 选择已消费（用户提交或超时按 AI 初选）：快照重写为选定态并清 pending。
+                # 否则后续 LLM 预判/确认等待期刷新时，恢复端点仍读到 select_pending，
+                # 会重放一张已失效的选择卡（僵尸卡）。selected_templates 同步换为
+                # 确认后子集，供 filling/done 阶段快照沿用
+                selected_templates = [{"template_id": c["template_id"], "name": c["name"],
+                     "slot_count": len(c["_placeholders"])} for c in chosen]
+                self._write_run_snapshot("selected", templates=selected_templates)
         begin_fields = self._begin_fields()
         user_file_text = self._user_file_evidence()
 
+        # 增量填写判定（同范本已有 done 成稿 + 模板版本未变）：本次必须幂等增量，
+        # 否则会重跑全流程并把上次成果覆盖回 default_value/空——这是用户反馈的
+        # 「又从头开始 + 改了之后成稿清空」根因。逐范本独立判定（混合时各自走各自路径）。
+        baselines: dict[str, dict] = {}    # tid -> {"values": dict, "task": row}
+        for c in chosen:
+            base = TplFillTaskService.latest_done(c["template_id"], tenant_id)
+            if not base or base.template_version_id != c["_ver"].id:
+                continue
+            base_values = base.values if isinstance(base.values, dict) else None
+            render = base_values.get("render") if base_values else None
+            if not isinstance(render, dict) or not render:
+                continue
+            baselines[c["template_id"]] = {"values": render, "task": base}
+        # 逐范本抽取增量意图：用户 query → {intent, direct, changed}。
+        # intent=refill 退回全量；intent=noop 保留 baseline 走「轻量复用」（不重抽）；
+        # patch/fill_unfilled 走增量确认（只列本次要改的项）。
+        incremental_overrides: dict[str, dict] = {}
+        noop_tids: set[str] = set()
+        for c in chosen:
+            tid = c["template_id"]
+            if tid not in baselines:
+                continue
+            try:
+                patch = await executor.extract_patch_values(
+                    tenant_id, c["_placeholders"], baselines[tid]["values"], query,
+                    should_cancel=lambda: self.check_if_canceled("TemplateFill patch extract"))
+            except executor.GenerateCancelled:
+                raise _FillCancelled() from None
+            intent = patch.get("intent") or "noop"
+            if intent == "refill":
+                # 用户明确要求全部重新填写 → 不增量
+                baselines.pop(tid, None)
+                continue
+            if intent == "noop":
+                # query 不涉及该范本：保留 baseline 让 executor 兜回所有 missing，
+                # 渲染产物与上次同值（轻量重复，省检索/重抽）。
+                noop_tids.add(tid)
+                continue
+            patch_keys = set(patch.get("changed") or [])
+            # patch/fill_unfilled 都用 overrides 覆盖 default_map + 预判
+            phs = [it for it in c["_placeholders"]
+                   if executor._norm_fill_mode(it) == "llm" and it.get("key")]
+            by_key = {it["key"]: it for it in phs}
+            # 候选只列 patch keys（用户可继续勾选/取消/直填），
+            # default_value = 基线当前值（用作 UI 提示，非提交值）；
+            # direct_value = LLM 从用户原话抽出的 direct 值（如「approval_doc 填写成
+            # 港里」→ {approval_doc: 港里}），用于前端确认卡输入框预填，让用户在
+            # 提交前能看到/编辑 AI 抽取结果——避免空 values 时只点「确认并继续
+            # 填写」也能让 fallback_values 生效（旧 bug：前端 inputs 默认空
+            # → 用户不打字 → values_raw={} → 后端保留 fallback 即可，但用户
+            # 看不到 AI 抽了啥就点了确认；预填解决"看得见 + 可改"）。
+            base_values = baselines[tid]["values"]
+            direct = dict(patch.get("direct") or {})
+            cands = []
+            for k in sorted(patch_keys):
+                if k not in by_key:
+                    continue
+                it = by_key[k]
+                cur = base_values.get(k)
+                cur_str = "" if cur is None else str(cur)
+                dval = direct.get(k)
+                cands.append({"key": k, "name": it.get("name") or k,
+                              "default_value": cur_str,
+                              "direct_value": "" if dval is None else str(dval)})
+            incremental_overrides[tid] = {
+                "candidates": cands,
+                "predicted": [c["key"] for c in cands],
+                # 兜底：用户没改时按 patch 全量走（changed=patch_keys, values=LLM 抽出的 direct）
+                "fallback_changed": patch_keys,
+                "fallback_values": direct,
+            }
+
         # P2 预判 + 暂停确认：有默认值字段才触发；返回 {} = 无基线，行为同现状
-        decisions = await self._confirm_changed_fields(chosen, query, begin_fields)
+        # 增量填写范本走 incremental_overrides：候选只列 patch 项，predicted 全勾选，
+        # 兜底按 LLM 抽出的 patch 自动继续（与全量范本同口径）
+        decisions = await self._confirm_changed_fields(
+            chosen, query, begin_fields, incremental_overrides=incremental_overrides)
+        # noop 范本：补一份空 decision → _llm_fill_items 返回 [] → executor 仅
+        # 用 baseline_values 兜回所有 missing，渲染产物与上次成稿同值（轻量复用）。
+        for tid in noop_tids:
+            decisions.setdefault(tid, {"changed": set(), "values": {}})
 
         def _llm_fill_items(c: dict) -> list[dict]:
             """确认后该范本真正要走检索+LLM 的字段（白名单语义）：changed 即用户/AI
@@ -495,22 +682,31 @@ class TemplateFill(ComponentBase):
         for c in chosen:
             tid = c["template_id"]
             total_of[tid] = len(_llm_fill_items(c))
+            # 增量兜底：如果 confirm 后用户没改（user-submitted 等于 fallback）且 patch
+            # 实质无变化（fallback_changed 为空 + fallback_values 为空），跳过该范本——
+            # 不浪费一次检索+渲染，直接复用 baseline 成稿即可。当前实现：仍 spawn 但
+            # executor 端 baseline 会兜回所有 missing，渲染产物与 baseline 同值（轻量重复）。
             row = TplFillTaskService.find_running(tid, tenant_id)
             if row is not None:
                 task_of[tid] = row.id
                 continue
             task_id = get_uuid()
+            base_for_t = baselines.get(tid)
             TplFillTaskService.insert(
                 id=task_id, template_id=tid, template_version_id=c["_ver"].id,
                 kb_ids=kb_ids,
                 params=_canvas_task_params(
                     begin_fields, query, decisions.get(tid),
                     {it["key"] for it in _llm_fill_items(c)},
-                    c["_placeholders"], user_file_text),
+                    c["_placeholders"], user_file_text,
+                    baseline_values=(base_for_t["values"] if base_for_t else None)),
                 status="pending", source="canvas", flow_instance_id="",
                 tenant_id=tenant_id, created_by=tenant_id)
             spawn_fill_task(task_id)
             task_of[tid] = task_id
+        # 运行快照：进入填写阶段（确认挂起随此写清除 pending；tasks 映射落定，
+        # 刷新恢复端点据此把 fill task 行与运行关联起来）
+        self._write_run_snapshot("filling", templates=selected_templates, tasks=task_of)
 
         # ③ 观察者轮询（1.5s，与确认轮询同量级）：读 Redis 快照 + DB 状态，组装
         # 与既有完全同形的 filling/filled/failed 事件（新增可选 task_id 字段）。
@@ -592,6 +788,12 @@ class TemplateFill(ComponentBase):
                         ev = {"stage": "filled", "template_id": tid,
                               "name": cand["name"], "download": dl,
                               "task_id": task_id}
+                        # 终态补推 values（与 filling 阶段同口径，从 row.values.render 取）：
+                        # 不带 values → 前端"查看填写内容"按钮渲染条件
+                        # `t.values && Object.keys(t.values).length > 0` 不满足 → 按钮消失
+                        render_vals = (row.values or {}).get("render") if isinstance(row.values, dict) else None
+                        if isinstance(render_vals, dict) and render_vals:
+                            ev["values"] = render_vals
                         unfilled = _unfilled_of(cand["_placeholders"], row)
                         if unfilled:
                             ev["unfilled"] = unfilled
@@ -622,9 +824,19 @@ class TemplateFill(ComponentBase):
                 continue
             downloads.append(dl)
             total = len(cand["_placeholders"])
-            summary_lines.append(
-                f"《{cand['name']}》：共 {total} 个填写点，AI 填充完成，"
-                f"未检索到值的填写点已留空。")
+            if tid in noop_tids:
+                summary_lines.append(
+                    f"《{cand['name']}》：本次未涉及，沿用上次填写值"
+                    f"（共 {total} 个填写点）。")
+            elif tid in incremental_overrides:
+                n = len(incremental_overrides[tid]["candidates"])
+                summary_lines.append(
+                    f"《{cand['name']}》：本次增量更新 {n} 个字段"
+                    f"（其余沿用上次填写值，共 {total} 个填写点）。")
+            else:
+                summary_lines.append(
+                    f"《{cand['name']}》：共 {total} 个填写点，AI 填充完成，"
+                    f"未检索到值的填写点已留空。")
         if not downloads:
             raise ValueError("所有范本填写均失败：" + "；".join(
                 str(results.get(c["template_id"], ("", "未知"))[1]) for c in chosen))
@@ -635,6 +847,9 @@ class TemplateFill(ComponentBase):
             ("- " + ln for ln in summary_lines) if len(downloads) > 1 else summary_lines
         ) + suffix)
         self._push_progress({"stage": "done"})
+        # 运行快照终态（短 TTL）：收尾 10 分钟内刷新仍可权威恢复完整成稿卡
+        self._write_run_snapshot("done", templates=selected_templates, tasks=task_of,
+                                 ttl=_RUN_SNAPSHOT_DONE_TTL)
         logger.info("TemplateFill done, canvas=%s templates=%s",
                     self._id, [c["template_id"] for c in chosen])
 

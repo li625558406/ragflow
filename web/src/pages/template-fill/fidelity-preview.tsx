@@ -7,6 +7,7 @@
 import {
   applyDocxPageLazy,
   highlightDocxRanges,
+  instantFocusScroll,
 } from '@/pages/c-chat/docx-highlight';
 import api from '@/utils/api';
 import request from '@/utils/request';
@@ -43,7 +44,7 @@ function focusAnchor(container: HTMLElement, key: string): boolean {
     `mark[data-anchor-key="${CSS.escape(key)}"]`,
   );
   if (!el) return false;
-  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  instantFocusScroll(el);
   ensureFlashStyle();
   const prevClass = el.className;
   el.classList.add('docx-focus-flash');

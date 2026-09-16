@@ -1270,7 +1270,8 @@ class TestSplitCanvasParams:
         clean, opts = split_canvas_params(None)
         assert clean == {}
         assert opts == {"direct_values": {}, "changed_keys": set(),
-                        "retrieve_skip_keys": set(), "user_file_text": ""}
+                        "retrieve_skip_keys": set(), "user_file_text": "",
+                        "baseline_values": {}}
         clean, opts = split_canvas_params({
             "_direct_values": "not-a-dict",       # 标量 → 按空处理
             "_changed_keys": {"k": 1},            # dict → 迭代键
@@ -1647,3 +1648,233 @@ def test_derive_unfilled_adversarial_key_passthrough():
     phs = [{"key": "a{{b}}", "name": "怪\x00名", "required": False}]
     got = executor.derive_unfilled(phs, {})
     assert got == [{"key": "a{{b}}", "name": "怪\x00名", "required": False}]
+
+
+# ========== 增量填写：split_canvas_params 解析 _baseline_values ==========
+
+def test_split_canvas_params_baseline_values_normal():
+    """_baseline_values dict → baseline_values（key/value 均 str 化）。"""
+    from rag.svr.template_fill import executor
+    params = {"_baseline_values": {"k1": "v1", "k2": "v2"},
+              "_direct_values": {"k3": "v3"}}
+    clean, opts = executor.split_canvas_params(params)
+    assert clean == {}
+    assert opts["baseline_values"] == {"k1": "v1", "k2": "v2"}
+    assert opts["direct_values"] == {"k3": "v3"}
+
+
+def test_split_canvas_params_baseline_values_none_value_dropped():
+    """baseline_values 里 value=None 项 → 直接丢弃（合并阶段会拿 str(None).strip() 防空）。"""
+    from rag.svr.template_fill import executor
+    params = {"_baseline_values": {"k1": "v1", "k2": None}}
+    _, opts = executor.split_canvas_params(params)
+    assert opts["baseline_values"] == {"k1": "v1"}
+
+
+def test_split_canvas_params_baseline_values_missing_or_bad_type():
+    """_baseline_values 缺失 / 非 dict → 空 baseline（兜底走全量填充）。"""
+    from rag.svr.template_fill import executor
+    _, opts = executor.split_canvas_params({})
+    assert opts["baseline_values"] == {}
+    _, opts = executor.split_canvas_params({"_baseline_values": "not a dict"})
+    assert opts["baseline_values"] == {}
+
+
+def test_split_canvas_params_baseline_keys_coerced_to_str():
+    """baseline key 是 int/None 等 → str 归一（与 direct_values 同口径）。"""
+    from rag.svr.template_fill import executor
+    params = {"_baseline_values": {1: "v", "k": "v2"}}
+    _, opts = executor.split_canvas_params(params)
+    assert opts["baseline_values"] == {"1": "v", "k": "v2"}
+
+
+# ========== 增量填写：extract_patch_values（mock LLM）==========
+
+def _fake_chat_mdl(monkeypatch, response_text: str):
+    """monkeypatch executor._build_chat_mdl 返回一个 stub，async_chat 直返指定文本。"""
+    from rag.svr.template_fill import executor
+
+    class _Stub:
+        async def async_chat(self, system, msgs, **kw):
+            return response_text
+    monkeypatch.setattr(executor, "_build_chat_mdl", lambda tenant_id: _Stub())
+
+
+def test_extract_patch_values_patch_intent(monkeypatch):
+    """intent=patch + direct 给值 → 直接返回 direct+changed（不重检 LLM 输出合法性）。"""
+    from rag.svr.template_fill import executor
+    _fake_chat_mdl(monkeypatch, json.dumps({
+        "intent": "patch",
+        "direct": {"title": "李港"},
+        "changed": ["title"],
+    }, ensure_ascii=False))
+    out = executor._run_async(executor.extract_patch_values(
+        "t", [{"key": "title", "name": "标题"}, {"key": "body", "name": "正文"}],
+        {"title": "原", "body": "原正文"}, "把标题改成李港"))
+    assert out["intent"] == "patch"
+    assert out["direct"] == {"title": "李港"}
+    assert out["changed"] == ["title"]
+
+
+def test_extract_patch_values_noop_when_all_filled(monkeypatch):
+    """query 没提任何字段 + 所有已填值非空 → noop（不做增量）。"""
+    from rag.svr.template_fill import executor
+    _fake_chat_mdl(monkeypatch, json.dumps({"intent": "noop"}))
+    out = executor._run_async(executor.extract_patch_values(
+        "t", [{"key": "a", "name": "A"}, {"key": "b", "name": "B"}],
+        {"a": "已填", "b": "已填"}, "你看到啥了？"))
+    assert out == {"intent": "noop", "direct": {}, "changed": []}
+
+
+def test_extract_patch_values_refill_drops_direct_and_changed(monkeypatch):
+    """intent=refill → 即使 LLM 输出 direct/changed 也清空（refill 走全量路径）。"""
+    from rag.svr.template_fill import executor
+    _fake_chat_mdl(monkeypatch, json.dumps({
+        "intent": "refill",
+        "direct": {"a": "ignore"},
+        "changed": ["a"],
+    }))
+    out = executor._run_async(executor.extract_patch_values(
+        "t", [{"key": "a", "name": "A"}], {"a": "old"}, "全部重填"))
+    assert out == {"intent": "refill", "direct": {}, "changed": []}
+
+
+def test_extract_patch_values_fill_unfilled_default_keys(monkeypatch):
+    """fill_unfilled 但 LLM 没给 changed → 兜底填所有留空字段。"""
+    from rag.svr.template_fill import executor
+    _fake_chat_mdl(monkeypatch, json.dumps({
+        "intent": "fill_unfilled",
+        # 故意不给 changed
+    }))
+    out = executor._run_async(executor.extract_patch_values(
+        "t", [{"key": "a", "name": "A"}, {"key": "b", "name": "B"},
+              {"key": "c", "name": "C"}],
+        {"a": "已填", "b": "", "c": None}, "补全留空字段"))
+    assert out["intent"] == "fill_unfilled"
+    assert set(out["changed"]) == {"b", "c"}
+
+
+def test_extract_patch_values_invalid_intent_fallback_noop(monkeypatch):
+    """LLM 输出非合法 intent → 兜底 noop（不炸 pipeline）。"""
+    from rag.svr.template_fill import executor
+    _fake_chat_mdl(monkeypatch, json.dumps({
+        "intent": "garbage", "direct": {"a": "v"}, "changed": ["a"]}))
+    out = executor._run_async(executor.extract_patch_values(
+        "t", [{"key": "a", "name": "A"}], {"a": ""}, "query"))
+    assert out == {"intent": "noop", "direct": {}, "changed": []}
+
+
+def test_extract_patch_values_filters_unknown_keys(monkeypatch):
+    """direct/changed 里出现的 key 不在占位符清单 → 丢弃（防注入）。"""
+    from rag.svr.template_fill import executor
+    _fake_chat_mdl(monkeypatch, json.dumps({
+        "intent": "patch",
+        "direct": {"a": "v", "evil_key": "x"},
+        "changed": ["a", "evil_key", "another"]}))
+    out = executor._run_async(executor.extract_patch_values(
+        "t", [{"key": "a", "name": "A"}], {"a": ""}, "query"))
+    assert out["direct"] == {"a": "v"}
+    assert out["changed"] == ["a"]
+
+
+def test_extract_patch_values_llm_exception_fallback_noop(monkeypatch):
+    """LLM 抛异常 → 兜底 noop，不炸调用方。"""
+    from rag.svr.template_fill import executor
+
+    class _Boom:
+        async def async_chat(self, *a, **kw):
+            raise RuntimeError("LLM 503")
+    monkeypatch.setattr(executor, "_build_chat_mdl", lambda tenant_id: _Boom())
+    out = executor._run_async(executor.extract_patch_values(
+        "t", [{"key": "a", "name": "A"}], {"a": ""}, "query"))
+    assert out == {"intent": "noop", "direct": {}, "changed": []}
+
+
+def test_extract_patch_values_empty_placeholders_short_circuits(monkeypatch):
+    """placeholders 为空 → 不调 LLM，直接 noop（防御）。"""
+    from rag.svr.template_fill import executor
+    out = executor._run_async(executor.extract_patch_values("t", [], {}, "query"))
+    assert out == {"intent": "noop", "direct": {}, "changed": []}
+
+
+# ========== 增量填写：基线合并优先级 ==========
+
+def test_baseline_overrides_default_value_for_missing_keys():
+    """核心合并优先级 baseline > default_value：用户在 baseline 上填的值若未在新一轮
+    直接/检索里覆盖，必须原样保留，不能回退到 default_value 提示。"""
+    from rag.svr.template_fill import executor
+
+    # 占位符：title (有默认值), body (有默认值), extra (无默认值)
+    placeholders = [
+        {"key": "title", "name": "标题", "default_value": "范本标题", "fill_mode": "llm"},
+        {"key": "body", "name": "正文", "default_value": "范本正文", "fill_mode": "llm"},
+        {"key": "extra", "name": "附注", "fill_mode": "llm"},
+    ]
+    # 用户本次只改了 title → baseline 兜回 body/extra
+    baseline = {"title": "李港", "body": "上次正文", "extra": "上次附注"}
+    direct = {"title": "李港"}  # 本轮直填
+    generated = {}
+    missing = {p["key"] for p in placeholders}
+
+    # 模拟 _run_task 中合并顺序（不含检索）：direct → baseline → default
+    for k, v in direct.items():
+        generated[k] = v
+        missing.discard(k)
+    if baseline:
+        for k, v in baseline.items():
+            if k in missing and str(v).strip():
+                generated[k] = v
+                missing.discard(k)
+    executor._merge_default_values(placeholders, generated, missing)
+    # title 走直填（保留用户输入）；body/extra 走 baseline（保留上次）
+    assert generated == {"title": "李港", "body": "上次正文", "extra": "上次附注"}
+
+
+def test_baseline_skipped_when_direct_overrides():
+    """直填优先于 baseline：用户显式给了某 key 的新值（哪怕与 baseline 相同），仍按直填走。"""
+    from rag.svr.template_fill import executor
+    placeholders = [{"key": "k", "name": "K", "default_value": "DEFAULT", "fill_mode": "llm"}]
+    baseline = {"k": "BASELINE_VALUE"}
+    direct = {"k": "USER_DIRECT"}
+    generated = {}
+    missing = {"k"}
+    for k, v in direct.items():
+        generated[k] = v
+        missing.discard(k)
+    for k, v in baseline.items():
+        if k in missing and str(v).strip():
+            generated[k] = v
+            missing.discard(k)
+    executor._merge_default_values(placeholders, generated, missing)
+    assert generated["k"] == "USER_DIRECT"
+
+
+def test_baseline_empty_string_skipped():
+    """baseline 给空串视为无值（与 _merge_default_values 口径一致），不覆盖 default。"""
+    from rag.svr.template_fill import executor
+    placeholders = [{"key": "k", "name": "K", "default_value": "DEFAULT", "fill_mode": "llm"}]
+    baseline = {"k": "  "}  # 全空白
+    generated, missing = {}, {"k"}
+    for k, v in baseline.items():
+        if k in missing and str(v).strip():
+            generated[k] = v
+            missing.discard(k)
+    executor._merge_default_values(placeholders, generated, missing)
+    assert generated["k"] == "DEFAULT"
+
+
+def test_baseline_no_keys_overlap_with_missing():
+    """baseline 与 missing 无交集 → 啥都不填，留给 default_value / 留空。"""
+    from rag.svr.template_fill import executor
+    placeholders = [
+        {"key": "k1", "name": "K1", "default_value": "D1", "fill_mode": "llm"},
+        {"key": "k2", "name": "K2", "fill_mode": "llm"},
+    ]
+    baseline = {"k_other": "v"}
+    generated, missing = {}, {"k1", "k2"}
+    for k, v in baseline.items():
+        if k in missing and str(v).strip():
+            generated[k] = v
+            missing.discard(k)
+    executor._merge_default_values(placeholders, generated, missing)
+    assert generated == {"k1": "D1"}  # k2 无 default_value → 留空

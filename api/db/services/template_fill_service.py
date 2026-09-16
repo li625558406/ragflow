@@ -533,3 +533,22 @@ class TplFillTaskService(CommonService):
             & cls.model.status.in_(("pending", "retrieving", "generating", "rendering"))
             & (cls.model.create_time >= current_timestamp() - _RUNNING_REUSE_WINDOW_MS)
         ).order_by(cls.model.create_time.desc()).first()
+
+    @classmethod
+    @DB.connection_context()
+    def latest_done(cls, template_id: str, tenant_id: str):
+        """该范本在租户内最新一条 done 填写任务（对话 modify 就地修改的定位目标）。
+        只认 done：failed/cancelled 没有可用成稿，就地修改无从谈起。无则 None。"""
+        return cls.model.select().where(
+            (cls.model.template_id == template_id)
+            & (cls.model.tenant_id == tenant_id)
+            & (cls.model.status == "done")
+        ).order_by(cls.model.create_time.desc()).first()
+
+    @classmethod
+    @DB.connection_context()
+    def patch_values(cls, task_id: str, values: dict) -> bool:
+        """终态任务 values 字段就地更新（对话 modify 就地改字段后回写合并结果）。
+        只按 id 定位、不改 status（终态行无并发执行器，无 CAS 需要）。"""
+        return cls.model.update(values=values).where(
+            cls.model.id == task_id).execute() > 0

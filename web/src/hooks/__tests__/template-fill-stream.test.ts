@@ -267,6 +267,98 @@ describe('applyTemplateFillEvent', () => {
     ]);
   });
 
+  it('filled 携带 values 整体替换（增量/noop 场景 baseline+default 全量覆盖）', () => {
+    // 增量模式：filling 事件只带 LLM 实时产值（patch 项或 0 项），baseline+default
+    // 兜回的字段不在 filling 事件里。filled.values 才是 row.values.render 的全量
+    // ——必须整体覆盖，否则 t.values 只剩 patch 项，预览大面积虚线槽位（用户视觉
+    // 等同「没填」）。
+    const acc: IStreamAcc = {};
+    applyTemplateFillEvent(acc, {
+      stage: 'selected',
+      templates: [{ template_id: 't1', name: 'A', slot_count: 4 }],
+    });
+    applyTemplateFillEvent(acc, {
+      stage: 'filling',
+      template_id: 't1',
+      name: 'A',
+      done: 1,
+      total: 4,
+      values: { k1: 'patch_value' },
+    });
+    expect(acc.templateFill?.templates[0].values).toEqual({
+      k1: 'patch_value',
+    });
+    applyTemplateFillEvent(acc, {
+      stage: 'filled',
+      template_id: 't1',
+      download: { doc_id: 'd1', filename: 'a.docx', mime_type: 'x' },
+      values: {
+        k1: 'patch_value',
+        k2: 'baseline2',
+        k3: 'baseline3',
+        k4: 'default4',
+      },
+    });
+    expect(acc.templateFill?.templates[0].values).toEqual({
+      k1: 'patch_value',
+      k2: 'baseline2',
+      k3: 'baseline3',
+      k4: 'default4',
+    });
+    expect(acc.templateFill?.templates[0].status).toBe('filled');
+  });
+
+  it('filled 缺省 values 时不清旧值（兼容旧后端 / 全量场景填充已被 filling 累积）', () => {
+    // 全量场景：filling 事件已累积全量 values；filled 不带 values（缺省或旧后端）
+    // → 保留 filling 累积结果，行为兼容。
+    const acc: IStreamAcc = {};
+    applyTemplateFillEvent(acc, {
+      stage: 'selected',
+      templates: [{ template_id: 't1', name: 'A', slot_count: 2 }],
+    });
+    applyTemplateFillEvent(acc, {
+      stage: 'filling',
+      template_id: 't1',
+      name: 'A',
+      done: 2,
+      total: 2,
+      values: { k1: 'v1', k2: 'v2' },
+    });
+    applyTemplateFillEvent(acc, {
+      stage: 'filled',
+      template_id: 't1',
+      download: { doc_id: 'd1', filename: 'a.docx', mime_type: 'x' },
+    });
+    expect(acc.templateFill?.templates[0].values).toEqual({
+      k1: 'v1',
+      k2: 'v2',
+    });
+  });
+
+  it('filled 携带空 values 时不清旧值（防御空覆盖）', () => {
+    // 极端边界：后端发了空 dict → 不覆盖已有的 filling 累积值，避免丢内容。
+    const acc: IStreamAcc = {};
+    applyTemplateFillEvent(acc, {
+      stage: 'selected',
+      templates: [{ template_id: 't1', name: 'A', slot_count: 2 }],
+    });
+    applyTemplateFillEvent(acc, {
+      stage: 'filling',
+      template_id: 't1',
+      name: 'A',
+      done: 1,
+      total: 2,
+      values: { k1: 'v1' },
+    });
+    applyTemplateFillEvent(acc, {
+      stage: 'filled',
+      template_id: 't1',
+      download: { doc_id: 'd1', filename: 'a.docx', mime_type: 'x' },
+      values: {},
+    });
+    expect(acc.templateFill?.templates[0].values).toEqual({ k1: 'v1' });
+  });
+
   it('unfilled 后到者胜（终态一次性数据整体替换，重放幂等）', () => {
     const acc: IStreamAcc = {};
     applyTemplateFillEvent(acc, {

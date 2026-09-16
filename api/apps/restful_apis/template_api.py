@@ -1005,3 +1005,121 @@ async def confirm_template_fill_select():
     if not ok:
         return get_error_data_result("提交失败，请重试")
     return get_result(data={"ok": True})
+
+
+# ---------- 运行快照恢复端点（快照化恢复，设计 2026-09-16） ----------
+
+# 运行快照键与 agent/component/template_fill.py 的写入侧同源同写法
+# （常量复制而非 import：api 层 import agent.component 会拖入画布依赖链）
+_RUN_SNAPSHOT_KEY = "tpl_fill:run:{task_id}"
+
+# DB 行状态 → 前端模板行状态映射（running 中间态统一 filling；done/partial 均
+# 视为 filled——build_values 改造后已无 partial 终态，兼容历史行）
+_TASK_STATUS_TO_TEMPLATE = {
+    "pending": "filling", "retrieving": "filling", "generating": "filling",
+    "rendering": "filling", "done": "filled", "partial": "filled",
+    "failed": "failed", "cancelled": "failed",
+}
+
+
+def build_run_snapshot_payload(run: dict | None, *, owned_check, get_task,
+                               read_snap, version_placeholders,
+                               bridge) -> dict:
+    """运行快照 → 前端恢复状态组装（纯函数，依赖注入便于对抗测试）。
+    run 为 Redis 读出的运行快照 dict（None=键过期/不存在）。
+    - 权限：tasks 映射中的 fill task 必须全部 owned_check 通过，否则按不存在
+      处理（防越权用 canvas task id 探测他人填写进度）。
+    - 逐模板权威态：DB 任务行为执行权威，Redis 进度快照补 done/total/values
+      实时数字；终态 done 行桥接 download + 按版本 placeholders 派生 unfilled
+      （与 per-task progress 端点同口径）。
+    - 快照里的模板行尚无 fill task（确认挂起期）→ status=selected。"""
+    if not isinstance(run, dict) or not run:
+        return {"exists": False}
+    tasks = run.get("tasks") or {}
+    task_ids = [t for t in tasks.values() if isinstance(t, str) and t]
+    # 越权防御：任一 fill task 非本人 → 整体按不存在（不泄漏部分状态）
+    for fid in task_ids:
+        if not owned_check(fid):
+            return {"exists": False}
+    templates_out = []
+    for t in run.get("templates") or []:
+        if not isinstance(t, dict) or not t.get("template_id"):
+            continue
+        tid = t["template_id"]
+        fid = tasks.get(tid) or ""
+        item = {"template_id": tid, "name": t.get("name") or "",
+                "slot_count": t.get("slot_count"), "task_id": fid,
+                "status": "selected", "done": None, "total": None,
+                "values": None, "unfilled": None, "download": None, "error": ""}
+        row = get_task(fid) if fid else None
+        if row is not None:
+            snap = read_snap(fid) or {}
+            st = snap.get("status") or row.status
+            item["status"] = _TASK_STATUS_TO_TEMPLATE.get(st, "filling")
+            item["done"] = snap.get("done")
+            item["total"] = snap.get("total")
+            values = snap.get("values")
+            if values is None:
+                values = (row.values or {}).get("render") if isinstance(row.values, dict) else None
+            item["values"] = values
+            if item["status"] == "filled":
+                if bridge is not None:
+                    item["download"] = bridge(row)
+                if version_placeholders is not None:
+                    phs = version_placeholders(row.template_id, getattr(row, "template_version_id", ""))
+                    if phs and isinstance(values, dict):
+                        item["unfilled"] = derive_unfilled(phs, values) or None
+            elif item["status"] == "failed":
+                item["error"] = snap.get("error") or (row.error or "")
+        templates_out.append(item)
+    stage = run.get("stage") or ""
+    return {"exists": True, "stage": stage, "finished": stage == "done",
+            "templates": templates_out, "pending": run.get("pending")}
+
+
+def _read_run_snapshot(canvas_task_id: str) -> dict | None:
+    """读运行快照（读侧防御同 read_progress_snapshot：坏 JSON/非 dict → None）。"""
+    try:
+        raw = REDIS_CONN.get(_RUN_SNAPSHOT_KEY.format(task_id=canvas_task_id))
+        if not raw:
+            return None
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", "ignore")
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        logger.warning("read run snapshot failed, canvas=%s", canvas_task_id, exc_info=True)
+        return None
+
+
+@manager.route("/template/fill/fill-run/<canvas_task_id>/snapshot", methods=["GET"])
+@login_required
+async def get_fill_run_snapshot(canvas_task_id: str):
+    """画布运行快照恢复端点（幂等只读）：前端刷新后按 confirm/select 事件里的
+    canvas task id 拉全量权威状态（模板行进度/成稿/挂起卡），未完结则轮询。"""
+    canvas_task_id = str(canvas_task_id or "").strip()
+    if not canvas_task_id:
+        return get_error_data_result("canvas_task_id 不能为空")
+    run = _read_run_snapshot(canvas_task_id)
+
+    def _owned_check(task_id: str) -> bool:
+        return TplFillTaskService.get_owned(task_id, current_user.id) is not None
+
+    def _version_placeholders(template_id: str, version_id: str):
+        if not version_id:
+            return None
+        try:
+            ver = TplTemplateVersionService.get_by_id_checked(template_id, version_id)
+        except Exception:
+            return None
+        return getattr(ver, "placeholders", None) or [] if ver is not None else None
+
+    payload = build_run_snapshot_payload(
+        run,
+        owned_check=_owned_check,
+        get_task=lambda fid: TplFillTaskService.get_or_none(id=fid),
+        read_snap=read_progress_snapshot,
+        version_placeholders=_version_placeholders,
+        bridge=lambda row: _bridge_download(row),
+    )
+    return get_result(data=payload)

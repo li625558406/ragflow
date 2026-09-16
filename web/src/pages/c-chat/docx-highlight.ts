@@ -169,6 +169,37 @@ export function applyDocxPageLazy(container: HTMLElement): void {
   });
 }
 
+/**
+ * 定位滚动（B端范本预览 focusAnchor / C端实时预览 focusPlaceholder 共用）：
+ * ① 目标所在分页若被 applyDocxPageLazy 设为 content-visibility:auto（屏外页按
+ *    估算高度占位），先强制真实渲染该页——该页顶部位置不受自身高度影响，随后
+ *    测得的元素位置准确；
+ * ② 把所有可滚动祖先瞬时滚动到元素垂直居中。不用 scrollIntoView 平滑滚动：
+ *    滚动过程中上方懒渲染页逐个真实落地、总高度持续漂移，会停到错误位置
+ *    （文档越深、上方未渲染页越多，偏差越大）。
+ */
+export function instantFocusScroll(el: HTMLElement): void {
+  const page = el.closest('section') as HTMLElement | null;
+  if (page && page.style.contentVisibility === 'auto') {
+    page.style.contentVisibility = 'visible';
+  }
+  let child: HTMLElement | null = el;
+  let node = child.parentElement;
+  while (node) {
+    const oy = window.getComputedStyle(node).overflowY;
+    child = node;
+    node = child.parentElement;
+    if (
+      (oy === 'auto' || oy === 'scroll') &&
+      child.scrollHeight > child.clientHeight + 1
+    ) {
+      const cr = child.getBoundingClientRect();
+      const er = el.getBoundingClientRect();
+      child.scrollTop += er.top - cr.top - (cr.height - er.height) / 2;
+    }
+  }
+}
+
 // ── 文本标注高亮（review-panel 只读保真用）──────────────────────────
 
 export interface DocxHighlightItem {

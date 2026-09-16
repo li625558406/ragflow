@@ -49,6 +49,11 @@ export interface ITemplateFillCandidate {
   key: string;
   name: string;
   default_value: string;
+  /** 增量模式专用：LLM 从用户原话抽出的直填值（如「approval_doc 填写成 港里」
+   *  → {approval_doc: 港里}），前端确认卡输入框用它预填；全量/无此字段
+   *  时为 undefined（不预填，行为同旧契约）。提交后端 confirm 端点时
+   *  values_raw 用户改了走用户的、没改等于空 → 后端 ov 分支保留 fallback_values。 */
+  direct_value?: string;
 }
 
 /** 单范本的确认信息：candidates 为全部可决策字段，predicted 为 AI 预判有变化的字段 */
@@ -120,7 +125,9 @@ export interface ITemplateFillEvent {
   slot_count?: number;
   done?: number;
   total?: number;
-  /** filling：该批产出的字段值（实时预览逐槽填入） */
+  /** filling：该批产出的字段值（实时预览逐槽填入）。
+   *  filled：终态全量产值（覆盖 filling 的部分值，对齐 row.values.render，
+   *  供增量/noop 场景预览 baseline+default 兜回的全部字段）。 */
   values?: Record<string, string>;
   /** filled：成稿留空的填写点汇总（终态一次性整体替换） */
   unfilled?: ITemplateFillUnfilled[];
@@ -224,7 +231,14 @@ export function applyTemplateFillEvent(
   } else if (d.stage === 'filled') {
     t.status = 'filled';
     t.download = d.download;
-    // 终态一次性数据整体替换（后到者胜幂等）；缺省不清旧值
+    // 终态一次性数据整体替换（后到者胜幂等）；缺省不清旧值。
+    // 增量/noop 场景下 filling 事件只带 LLM 实时产值（patch 项或 0 项），
+    // baseline+default 兜回的字段不在 filling 事件里，但都在 row.values.render
+    // ——这里必须用 filled.values 整体覆盖，否则预览只能看到 patch 项的填入，
+    // 其余字段被还原为虚线槽位，用户视觉等同「没填」。
+    if (d.values && Object.keys(d.values).length > 0) {
+      t.values = d.values;
+    }
     if (d.unfilled) t.unfilled = d.unfilled;
   } else if (d.stage === 'failed') {
     t.status = 'failed';
@@ -245,6 +259,98 @@ export function replayTemplateFillEvents(
     }
   }
   return acc.templateFill?.templates?.length ? acc.templateFill : undefined;
+}
+
+// ── 快照化恢复（设计 2026-09-16）：事件序列降级为运行 id 发现 + 旧数据兜底，
+// 刷新恢复的权威态来自后端运行快照端点（/template/fill/fill-run/<id>/snapshot）。
+
+/** 运行快照响应（后端 build_run_snapshot_payload 组装，exists=false 表示键过期） */
+export interface ITemplateFillRunSnapshot {
+  exists: boolean;
+  stage?: string;
+  finished?: boolean;
+  templates?: Array<{
+    template_id: string;
+    name: string;
+    slot_count?: number;
+    task_id?: string;
+    status: 'selected' | 'filling' | 'filled' | 'failed';
+    done?: number | null;
+    total?: number | null;
+    values?: Record<string, string> | null;
+    unfilled?: ITemplateFillUnfilled[] | null;
+    download?: ITemplateFillDownload | null;
+    error?: string;
+  }>;
+  pending?: {
+    type: 'select' | 'confirm';
+    nonce: string;
+    select_candidates?: ITemplateFillSelectCandidate[];
+    ai_selected?: string[];
+    confirm_templates?: ITemplateFillConfirmTemplate[];
+  } | null;
+}
+
+/** 从原始事件序列提取画布运行 id（canvas task_id）：只出现在 confirm_pending /
+ *  select_pending / heartbeat 事件的 task_id 字段（filling 等进度事件的 task_id
+ *  是 fill task id，另一个 id 空间，不可混用）。截断挽救只保头部，而这些事件
+ *  必在序列头部，提取健壮。无确认/选择轮次无此 id → 返回空串（退化为旧兜底）。 */
+export function findCanvasRunId(events: unknown): string {
+  if (!Array.isArray(events)) return '';
+  for (const ev of events) {
+    if (!ev || typeof ev !== 'object') continue;
+    const e = ev as { stage?: string; task_id?: string };
+    if (
+      (e.stage === 'confirm_pending' ||
+        e.stage === 'select_pending' ||
+        e.stage === 'heartbeat') &&
+      typeof e.task_id === 'string' &&
+      e.task_id
+    ) {
+      return e.task_id;
+    }
+  }
+  return '';
+}
+
+/** 运行快照 → ITemplateFillState（权威整体替换重放态）。挂起卡带 nonce 原样
+ *  映射（是否可交互由快照存在性本身保证——节点收口即删/终态短 TTL）。 */
+export function buildStateFromRunSnapshot(
+  snap: ITemplateFillRunSnapshot,
+  canvasRunId: string,
+): ITemplateFillState | undefined {
+  if (!snap?.exists) return undefined;
+  const state: ITemplateFillState = {
+    templates: (snap.templates || []).map((t) => ({
+      template_id: t.template_id,
+      name: t.name || '',
+      slot_count: t.slot_count,
+      task_id: t.task_id || undefined,
+      status: t.status,
+      done: t.done ?? undefined,
+      total: t.total ?? undefined,
+      values: t.values || undefined,
+      unfilled: t.unfilled || undefined,
+      download: t.download || undefined,
+      error: t.error || undefined,
+    })),
+    finished: snap.finished ? true : undefined,
+  };
+  if (snap.pending?.type === 'select') {
+    state.pendingSelect = {
+      task_id: canvasRunId,
+      select_nonce: snap.pending.nonce,
+      select_candidates: snap.pending.select_candidates || [],
+      ai_selected: snap.pending.ai_selected || [],
+    };
+  } else if (snap.pending?.type === 'confirm') {
+    state.pendingConfirm = {
+      task_id: canvasRunId,
+      nonce: snap.pending.nonce,
+      templates: snap.pending.confirm_templates || [],
+    };
+  }
+  return state;
 }
 
 /** 持久化事件序列解析：合法 JSON 数组直接返回；截断损坏（旧 TEXT 64KB 落库上限）

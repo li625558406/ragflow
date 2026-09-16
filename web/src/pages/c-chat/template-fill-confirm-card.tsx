@@ -43,8 +43,22 @@ export default function TemplateFillConfirmCard({
       ]),
     ),
   );
-  // 直填值（key 为 `${template_id}:${candidate.key}`，留空 = 让 AI 重填）
-  const [inputs, setInputs] = useState<Record<string, string>>({});
+  // 直填值（key 为 `${template_id}:${candidate.key}`，留空 = 让 AI 重填）。
+  // 增量模式下后端 cands 携带 direct_value（LLM 从用户原话抽出的 direct），
+  // 这里预填到输入框：用户提交时若没改，values_raw 等于 direct_value，
+  // 后端 ov 分支走「非空 user input 覆盖 fallback」路径——值与 fallback 一致，
+  // 渲染照常；同时让用户在卡里能看到/编辑 AI 抽取的结果再确认。
+  const [inputs, setInputs] = useState<Record<string, string>>(() => {
+    const init: Record<string, string> = {};
+    for (const t of pending.templates) {
+      for (const c of t.candidates) {
+        if (c.direct_value) {
+          init[`${t.template_id}:${c.key}`] = c.direct_value;
+        }
+      }
+    }
+    return init;
+  });
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState('');
@@ -169,6 +183,13 @@ export default function TemplateFillConfirmCard({
                 const isChecked = checked[t.template_id]?.has(c.key) ?? false;
                 // 直填了值的字段后端无论是否勾选都直取生效，因此不划线（划线暗示"不变化"，与生效矛盾）
                 const hasInput = (inputs[inputKey] || '').trim() !== '';
+                // 增量模式 + 后端带了 direct_value（LLM 从原话抽出）→ 预填到输入框
+                // 视作「AI 建议值」，placeholder 提示用户可改可清；区分全量模式
+                // 「留空则 AI 重填」，避免误导。
+                const isPreFilled =
+                  !!c.direct_value &&
+                  hasInput &&
+                  inputs[inputKey] === c.direct_value;
                 return (
                   <div key={c.key} className="flex items-center gap-2">
                     <Checkbox
@@ -206,7 +227,9 @@ export default function TemplateFillConfirmCard({
                     )}
                     <Input
                       className="ml-auto h-6 w-[140px] border-[#E5E5E5] bg-white text-xs"
-                      placeholder="留空则 AI 重填"
+                      placeholder={
+                        isPreFilled ? 'AI 建议值，可改' : '留空则 AI 重填'
+                      }
                       value={inputs[inputKey] ?? ''}
                       onChange={(e) =>
                         setInputs((prev) => ({

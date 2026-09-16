@@ -47,6 +47,10 @@ class _TaskServiceStub:
     def find_running(cls, template_id, tenant_id):
         return None  # 画布场景默认无历史任务 → 每范本新建
 
+    @classmethod
+    def latest_done(cls, template_id, tenant_id):
+        return None  # 增量填写场景默认无历史 done → 走全量填充（与现状行为一致）
+
     def insert(self, **kw):
         self._next += 1
         tid = kw.get("id") or f"task-{self._next}"

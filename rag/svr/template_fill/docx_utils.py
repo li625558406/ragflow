@@ -404,68 +404,40 @@ def extract_docx_candidates(file_bytes: bytes) -> list:
     ]
 
 
-def _nth_index(text: str, sub: str, n: int) -> int:
-    """sub 在 text 中第 n（1-based）次**非重叠**出现的起始下标；不足 n 次返回 -1。
+def _occurrence_intervals(text: str, sub: str) -> list:
+    """sub 在 text 中全部**非重叠**出现的 (start, end) 区间，按位置升序。
 
     推进步长必须是 len(sub)（从上一次命中结束位之后继续 find）：若只 +1 会命中
     重叠出现（如 "aaaa" 里按 +1 找到的第 2 个 "aa" 在下标 1，而 str.count 的
-    非重叠计数下是下标 2），与 run.text.count / joined.count 的出现序号对不上，
+    非重叠计数下是下标 2），与 str.count / run.text.count 的出现序号对不上，
     occ 定位会错位。"""
-    search_from = 0
-    idx = -1
-    for _ in range(n):
-        idx = text.find(sub, search_from)
-        if idx < 0:
-            return -1
-        search_from = idx + len(sub)
-    return idx
-
-
-def _has_link_or_field(p: Paragraph) -> bool:
-    """段落是否含超链接（w:hyperlink）或简单域（w:fldSimple）直系子节点。
-
-    这两类节点的文本会进入 Paragraph.text（python-docx 1.1+ 对 hyperlink 生效），
-    但不在 Paragraph.runs 中，整段重写会导致文本被复制。
-    """
-    return bool(p._p.findall(qn("w:hyperlink")) or p._p.findall(qn("w:fldSimple")))
-
-
-def _replace_via_run_concat(p: Paragraph, anchor: str, repl: str,
-                            occ: int | None = None) -> bool:
-    """含超链接/域段落的替换：把所有 run 的文本按序拼接，在拼接串上替换，
-    再按原 run 长度切分写回各 run。
-
-    超链接/域内文本不参与（不在 runs 中），故不会产生复制。替换导致拼接串
-    长度变化时，差值并入最后一个非空 run 的文本——简单可行即可，该路径只为
-    避免超链接文本复制，不追求精确保持 run 边界。锚文本在拼接串中不存在
-    （跨界没拼上）时返回 False（no-op）。occ=None 为存量 replace-all 语义；
-    occ=N 只替换拼接串中第 N 次非重叠出现（不足 N 次返回 False）。"""
-    runs = p.runs
-    joined = "".join(r.text for r in runs)
-    if anchor not in joined:
-        return False
-    if occ is None:
-        replaced = joined.replace(anchor, repl)
-    else:
-        start = _nth_index(joined, anchor, occ)
-        if start < 0:
-            return False
-        replaced = joined[:start] + repl + joined[start + len(anchor):]
-    # 按原 run 文本长度在替换后的拼接串上切分写回；总长度差（repl 与 anchor 不等长）
-    # 并入最后一个非空 run——简单可行即可，不追求精确保持 run 边界。
+    out = []
     pos = 0
-    last_nonempty = -1
-    for i, r in enumerate(runs):
-        n = len(r.text)
-        r.text = replaced[pos:pos + n]
-        pos += n
-        if n > 0:
-            last_nonempty = i
-    tail = replaced[pos:]
-    if tail:
-        target = runs[max(last_nonempty, 0)]
-        target.text = (target.text or "") + tail
-    return True
+    while True:
+        idx = text.find(sub, pos)
+        if idx < 0:
+            return out
+        out.append((idx, idx + len(sub)))
+        pos = idx + len(sub)
+
+
+def _rewrite_run_span(runs: list, start: int, end: int, repl: str) -> None:
+    """重写 run 拼接坐标系中 [start, end) 区间为 repl：首 run 保留区间前文本并接
+    替换值，尾 run 保留区间后文本，中间 run 清空；区间外 run 原样不动。
+
+    中段 run 仅在有文本时置空：空文本 run 的置空唯一效果是经 Run.text setter
+    销毁 rPr 外的结构子节点（w:fldChar/w:drawing 等），跳过即保住结构。
+    超链接（w:hyperlink）/域（w:fldSimple）内的 run 不在 p.runs 中，天然不被
+    触碰，其文本不会被复制或破坏。"""
+    i, j, off_i, off_j = _locate_run_span(runs, start, end)
+    if i == j:
+        runs[i].text = runs[i].text[:off_i] + repl + runs[i].text[off_j:]
+        return
+    runs[i].text = runs[i].text[:off_i] + repl
+    for mid in range(i + 1, j):
+        if runs[mid].text:
+            runs[mid].text = ""
+    runs[j].text = runs[j].text[off_j:]
 
 
 def _locate_run_span(runs: list, start: int, end: int) -> tuple:
@@ -488,63 +460,71 @@ def _locate_run_span(runs: list, start: int, end: int) -> tuple:
 
 
 def _replace_cross_run_in_place(p: Paragraph, anchor: str, repl: str,
-                                occ: int | None = None) -> bool:
+                                occ: int | None = None,
+                                longer_anchors: tuple = ()) -> bool:
     """跨 run 区间替换（格式保真）：只重写 anchor 覆盖的 run 区间——
     首 run 保留 anchor 前文本并接替换值，尾 run 保留 anchor 后文本，中间 run 清空；
-    区间外 run 原样不动（段内其他位置格式完整保留）。
+    区间外 run 原样不动（段内其他位置格式完整保留）。超链接/域内文本不在 p.runs
+    中，天然不参与拼接与重写，不会被复制或破坏（含超链接段落因此统一走本函数）。
 
-    扫描策略：按替换前出现次数循环，每轮从上一轮替换终点之后继续 find
-    （scan_from = start + len(repl)），严格复刻 str.replace「不重扫替换产物」
-    的语义——anchor 是 repl 子串时（如 anchor="name"、repl="{{name}}"），
-    刚写入的 repl 不会被再次命中，避免文本腐坏与后续真实出现漏替。
-    中段 run 仅在有文本时置空：空文本 run 的置空唯一效果是经 Run.text setter
-    销毁 rPr 外的结构子节点（w:fldChar/w:drawing 等），跳过即保住结构。
-    occ=None 为存量 replace-all 语义（remaining=全部出现次数，逐次替换）；
-    occ=N 先把扫描起点推进过前 N-1 次出现（步长 len(anchor)，非重叠）、
-    remaining=1，只替换第 N 次出现，不足 N 次返回 False。"""
+    occ=None 为存量 replace-all 语义（remaining=全部非重叠出现次数，每轮从上一轮
+    替换终点之后继续 find，scan_from = start + len(repl)，严格复刻 str.replace
+    「不重扫替换产物」的语义——anchor 是 repl 子串时（如 anchor="name"、
+    repl="{{name}}"）刚写入的 repl 不会被再次命中，避免文本腐坏与后续真实出现
+    漏替）。
+
+    occ=N：按非重叠口径（步长 len(anchor)）枚举全部出现，**剔除嵌套在
+    longer_anchors 中更长锚出现区间内的出现**后取第 N 个——识别端 occ 编号按
+    独立留白位分配，而短锚（如 3 空格）的出现可能嵌在长锚（如 7 空格年月空位）
+    内部，若不剔除会把 N 数到别人的空位上（两端 occ 坐标系对齐，见
+    apply_docx_placeholders 的 longer_map）。不足 N 个幸存出现返回 False。
+
+    已知局限：检测端按 p.text（含超链接文本）计数/编址，本函数按 runs 拼接
+    （不含）匹配——锚序列若只出现在超链接文本内则 no-op 降级（安全，不产脏
+    数据）；超链接文本内恰好含与锚同形的序列时两端序号可能错位（罕见，URL
+    连续空格等）。
+    """
     runs = p.runs
     joined_all = "".join(r.text for r in runs)
-    total = joined_all.count(anchor)
-    scan_from = 0
     if occ is not None:
-        if occ > total:
+        occ_ivs = _occurrence_intervals(joined_all, anchor)
+        blocked = []
+        for la in longer_anchors:
+            if la and len(la) > len(anchor):
+                blocked.extend(_occurrence_intervals(joined_all, la))
+        survivors = [
+            s for s, e in occ_ivs
+            if not any(bs < e and s < be for bs, be in blocked)
+        ]
+        if occ > len(survivors):
             return False
-        # 跳过前 occ-1 次出现：扫描起点推进到第 occ 次出现的起始下标
-        for _ in range(occ - 1):
-            scan_from = joined_all.find(anchor, scan_from) + len(anchor)
-        remaining = 1
-    else:
-        remaining = total
+        start = survivors[occ - 1]
+        _rewrite_run_span(runs, start, start + len(anchor), repl)
+        return True
     replaced = False
+    scan_from = 0
+    remaining = joined_all.count(anchor)
     while remaining > 0:
         remaining -= 1
         joined = "".join(r.text for r in runs)
         start = joined.find(anchor, scan_from)
         if start < 0:
             break
-        end = start + len(anchor)
-        i, j, off_i, off_j = _locate_run_span(runs, start, end)
-        if i == j:
-            runs[i].text = runs[i].text[:off_i] + repl + runs[i].text[off_j:]
-        else:
-            runs[i].text = runs[i].text[:off_i] + repl
-            for mid in range(i + 1, j):
-                if runs[mid].text:
-                    runs[mid].text = ""
-            runs[j].text = runs[j].text[off_j:]
+        _rewrite_run_span(runs, start, start + len(anchor), repl)
         scan_from = start + len(repl)
         replaced = True
     return replaced
 
 
 def _replace_in_paragraph(p: Paragraph, anchor: str, repl: str,
-                          occ: int | None = None) -> bool:
+                          occ: int | None = None,
+                          longer_anchors: tuple = ()) -> bool:
     """段内替换锚文本为 repl。occ=None 为存量 replace-all 语义：优先单 run 内
-    完成（首个含 anchor 的 run 全替换）；跨 run 时：普通段落只重写 anchor 覆盖的
-    run 区间，区间外格式保留（见 _replace_cross_run_in_place）；含超链接/域的
-    段落走 run 拼接替换（见 _replace_via_run_concat），避免超链接文本被复制进
-    正文 run。occ=N 只替换段落拼接文本中第 N 次非重叠出现，不足 N 次返回 False
-    （no-op）。
+    完成（首个含 anchor 的 run 全替换）；跨 run 时只重写 anchor 覆盖的 run 区间，
+    区间外格式保留（见 _replace_cross_run_in_place，含超链接/域段落同样走该
+    路径——超链接内文本不在 p.runs 中，不会被复制）。occ=N 只替换段落拼接文本
+    中第 N 次幸存出现（嵌套剔除规则见 _replace_cross_run_in_place），不足 N 次
+    返回 False（no-op）。
 
     occ 路径**不走**单 run 快路径：单 run 的 count 是 run 局部计数，当更早的
     出现跨界（anchor 被切成两半分属相邻 run）时，局部序号与段落级出现序号错位，
@@ -561,11 +541,9 @@ def _replace_in_paragraph(p: Paragraph, anchor: str, repl: str,
                 # str.replace 语义：同段多次出现全部替换（存量行为逐字节不变）
                 run.text = run.text.replace(anchor, repl)
                 return True
-    if _has_link_or_field(p):
-        return _replace_via_run_concat(p, anchor, repl, occ)
     if not p.runs:
         return False
-    return _replace_cross_run_in_place(p, anchor, repl, occ)
+    return _replace_cross_run_in_place(p, anchor, repl, occ, longer_anchors)
 
 
 def apply_docx_placeholders(file_bytes: bytes, replacements: list) -> bytes:
@@ -597,6 +575,16 @@ def apply_docx_placeholders(file_bytes: bytes, replacements: list) -> bytes:
         cleaned.append((rep, occ))
     # 稳定排序：occ 条目降序在前，None 条目保持原序在后（见 docstring 推导）
     cleaned.sort(key=lambda t: (t[1] is None, -(t[1] or 0)))
+    # 同段锚集合：occ 条目替换时下传同段更长的锚，供剔除嵌套在长锚出现内的
+    # 短锚出现（如 3 空格嵌在 7 空格年月空位内）——识别端 occ 按独立留白位编号，
+    # 渲染端若不剔除会把序号数到长锚内部的嵌套出现上而错位。occ=None 的
+    # replace-all 条目不受影响（存量红线）。
+    anchors_by_addr = {}
+    for rep, _occ in cleaned:
+        _addr = rep.get("addr")
+        _anchor = rep.get("anchor")
+        if _addr and _anchor:
+            anchors_by_addr.setdefault(_addr, set()).add(_anchor)
     for rep, occ in cleaned:
         addr = rep.get("addr")
         anchor = rep.get("anchor")
@@ -609,7 +597,11 @@ def apply_docx_placeholders(file_bytes: bytes, replacements: list) -> bytes:
             # 的情形有二——anchor 不在段落文本（模板版本漂移/LLM 脏锚）、occ 超界
             # （段内出现次数不足 N）。二者此前均静默，导致「填写点没生效」无从定位；
             # addr 悬空告警在 else 分支（互斥路径），此处不会重复。
-            if not _replace_in_paragraph(p, anchor, f"{{{{{key}}}}}", occ):
+            if not _replace_in_paragraph(
+                    p, anchor, f"{{{{{key}}}}}", occ,
+                    longer_anchors=tuple(
+                        a for a in anchors_by_addr.get(addr, ())
+                        if len(a) > len(anchor)) if occ is not None else ()):
                 logger.warning(
                     "apply_docx_placeholders: replace no-op addr=%s key=%s anchor=%r occ=%s",
                     addr, key, anchor, occ)

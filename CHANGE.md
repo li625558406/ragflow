@@ -1,5 +1,129 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-16 范本填写增量模式（同范本有 done → 走增量而非从头填充，未部署）
+
+**主题**：用户反馈点击「确认并继续填写」后又「从头开始了」——画布 TemplateFill 节点每次触发都是无状态重启，从空基线重跑全流程；同范本已有 done 成稿时，应当走「增量修改」而非「全部重填」。设计定稿 `docs/superpowers/specs/2026-09-16-template-fill-incremental-design.md`。
+
+**第一性原理**：范本填写完成后产出成稿。后续操作（如「批文名称及编号 填写成 李港」）的第一性意图是「修改这一处」而不是「全部重填」。
+
+**核心变更**（2 后端文件 + 2 测试文件）：
+- 后端基线检测：`agent/component/template_fill.py::_invoke_async` 新增 baseline 检测循环——按范本调 `TplFillTaskService.latest_done`（service 已存在，**此前仅被对话内 modify 工具调用**，画布节点从未用过），校验版本一致后取 `task.values["render"]` 作基线
+- 后端增量意图识别：新增 `executor.extract_patch_values` 函数（1 次 LLM 调用）——从用户 query + 上次填写值抽 `{intent, direct, changed}`，intent ∈ `{patch, refill, fill_unfilled, noop}`；中文名/key 必须能在占位符清单里匹配上，否则忽略（防编造 key）
+- 后端增量分支：节点按 intent 路由——`patch/fill_unfilled` 走 incremental_overrides（确认卡只列本次要改的项，不是全量 244 项）；`refill` 弹 baseline 走全量（与首次相同）；`noop` 保留 baseline + 走轻量复用（task 仍 spawn 但 LLM 槽空，baseline 兜回所有 missing，渲染产物与上次同值）
+- 后端合并优先级：`executor.split_canvas_params` 新增 `_baseline_values` 解析 → `_run_task` 在 `_merge_default_values` 之前按 missing 兜回 baseline → 用户在 baseline 上填的、本轮没被 LLM/直填覆盖的字段必须原样保留，不能回退到 default_value 提示（空串视为无值不覆盖）
+- 后端确认卡增量契约：`_confirm_changed_fields` 新增 `incremental_overrides` kwarg → overrides 范本跳过 default_map 构造（候选只列 patch items，predicted 全勾选，兜底用 LLM 抽出的 fallback）；valid 集合用 overrides candidates key，前端只能勾选 patch items
+- 后端 summary 文案：增量 patch 走「本次增量更新 N 个字段（其余沿用上次填写值，共 M 个填写点）」；noop 走「本次未涉及，沿用上次填写值（共 M 个填写点）」；全量文案不变
+- 防御加固：refill 模式防御性清空 direct/changed（防 LLM 误输出被误用）；baseline 与当前版本不一致（范本升级）→ 跳过 baseline 走全量（不能跨版本混用）
+
+**测试**（8 套件 466 passed 全绿）：
+- `test/test_template_fill_executor.py` +16（split_canvas_params 4：normal/None-drop/missing-bad-type/key-coerce + extract_patch_values 8：patch/noop/refill/无效intent/unknown-key/exception/空placeholders/兜底 + baseline 合并 4：missing-merge/direct-priority/空串跳过/无交集）
+- `test/test_agent_fill_template_component.py` +6（baseline 检测/version mismatch/noop/refill/no baseline/summary 分支）+ `_Row` 扩展 `values`+`template_version_id`、`FakeTaskService` 加 `latest_done`（路由 `_active_instance` 桩）
+- `test/test_template_fill_events.py` `_TaskServiceStub` 加 `latest_done → None`（兼容旧测试期望无 baseline）
+- `test_split_hostile_payloads` 修：opts 期望加 `baseline_values: {}`
+- `test_decision_conditional_execution_skips_unchanged_defaults` + `test_decision_empty_direct_value_renders_blank` 修：fake_confirm 加 `*, incremental_overrides=None` kwarg 兼容新签名
+
+**遗留**：
+①后端 **未部署**——`rag/svr/template_fill/executor.py` + `agent/component/template_fill.py` 成套 SCP + 容器重启；部署前请逐项验证：对话内 modify 工具（已用 `latest_done`）与画布节点（新加）共享同一 service 方法、画布节点下游 1 次 LLM 增量抽取；
+②前端确认卡 UI 未适配增量视觉（`incremental=True` 已下发但前端未读字段区分「全量卡 vs 增量卡」）——当前前端按全量卡渲染对增量场景可工作（只列 N 项）但缺 header 区分 + 默认折叠，待后续；
+③noop 仍 spawn task（轻量复用路径 task 仍 spawn + 渲染副本），可优化为「直接复用 baseline 的 render 桶文件」省一次任务行，但需重构 `_bridge_download` 接受 baseline row；后续；
+④跨版本 baseline 完全丢弃（不走「老字段保留 + 新字段走全量」混合策略，结构变化语义就变）；后续。
+
+**效果**：同范本已有 done 成稿时，对话「把某字段改成 X」→ 确认卡只列该项，task 只检索该项，其余沿用上次；不再出现「又从头开始」的体验。
+
+## 2026-09-16 范本填写快照化恢复 + 预览内存治理（加固增强，后端已部署 / 前端待部署）
+
+**主题**：用户反馈流程页范本填写两大不稳定症状——①打开实时预览/查看成稿时浏览器标签页崩溃（OOM）；②填写完成后刷新页面，字段确认卡（confirm_pending）重现且可交互，600s nonce 窗口内再提交会触发重复填写。设计定稿 `docs/superpowers/specs/2026-09-16-template-fill-snapshot-hardening-design.md`。
+
+**根因**：①docx-preview 把整本文档一次性建全量 DOM（200+ 页），流程页 keptIds 常驻挂载让隐藏的 FlowDetail 各自驻留预览 DOM 树，切换多轮叠加 → OOM；②挂起确认/选择等待态只活在画布节点内存，前端刷新恢复靠「事件序列最后一条是否 confirm_pending」猜测尾巴——提交后 2s 防抖未落库即刷新、SSE 断连后轮询事件不落库，两条路径都会重放出可交互僵尸卡。
+
+**核心变更**：
+- 后端运行快照键：`agent/component/template_fill.py` 新增 `_write_run_snapshot`（键 `tpl_fill:run:{canvas_task_id}`，TTL 过程 7200s/终态 600s，Redis 故障只告警），在 selected/select_pending/confirm_pending/filling/done 五个阶段切换点写入权威状态（stage+templates+tasks 两 id 空间映射+pending 挂起载荷）；多范本选择被消费（用户提交或超时按 AI 初选）后**立即重写为 selected 态并清 pending**（`selected_templates` 同步换为确认后子集）——否则紧随其后的 LLM 预判/确认等待期刷新会读到残留 `select_pending`，重放一张已失效的选择卡（僵尸卡）
+- 后端恢复端点：`api/apps/restful_apis/template_api.py` 新增 `GET /template/fill/fill-run/<canvas_task_id>/snapshot`（login_required）——`build_run_snapshot_payload` 纯函数组装：任一 fill task 越权整体按不存在（防探测）、逐模板 DB 行权威+Redis 进度快照补实时数字、终态 done 行复用 `_bridge_download` 桥接+按版本 placeholders 派生 unfilled（与 progress 端点同口径）
+- 前端恢复链路：`template-fill-stream.ts` 新增 `findCanvasRunId`（从挂起/心跳事件提取 canvas run id）+ `buildStateFromRunSnapshot`（快照→ITemplateFillState 整体映射）；新 hook `use-template-fill-run-recovery.ts`（拉快照整体覆盖重放态，未完结 3s 轮询至终态，键过期把挂起卡标 expired 不再显示僵尸卡）；`flow-ai-panel.tsx` 接线（parseAndReplay 保留作旧数据兜底与 id 发现，快照可用则权威覆盖）；`c-chat index.tsx` 对最新一条带 templateFill 的历史消息跑同一恢复并回写
+- 预览内存治理：`template-fill-progress.tsx` 新增 `forceClosedLivePreview`（true 时清 liveTarget）；`flow-panel.tsx`→`flow-detail.tsx`→`ConversationView` 透传 `visible={id===activeId}`，隐藏详情强制收预览（任意时刻至多一棵大文档 DOM 树）；`template-fill-live-preview.tsx` 超大文档防线（blob>2.5MB 默认纯文本渲染+提示，可显式「切换保真渲染」，渲染失败降级链路不变）
+
+**测试**：新增 `test/test_template_fill_run_snapshot.py` 23 用例（写入侧 4：无 task_id 跳过/键载荷契约/done 短 TTL/Redis 故障吞掉；payload 对抗 15：越权整体隐藏/脏 task 值免查行/脏模板行/selected 挂起期/桥接失败/placeholder 脏数据/空 unfilled 归一/快照值权威/DB 兜底/行值非 dict/failed 取错兜底/partial 与未知态映射/无模板与缺 stage；读侧 4：键缺失/bytes JSON/坏 JSON/非 dict JSON）；模板填写 8 套件 428 passed；前端 tsc 改动文件零新增错误 + 生产构建通过
+
+**遗留**：①后端 **已部署 2026-09-16**（`agent/component/template_fill.py` + `api/apps/restful_apis/template_api.py` 成套 SCP + 容器重启；冒烟验证：容器内 `_write_run_snapshot`/`build_run_snapshot_payload`/`_read_run_snapshot` 全在位、两侧快照键常量一致，宿主机 `GET /api/v1/template/fill/fill-run/<id>/snapshot` 返回 401 证路由已注册且鉴权生效）；②**前端未部署**——build 产物上传 + nginx reload；③前后端可独立部署（旧前端+新后端=快照端点无人调用无影响，新前端+旧后端=快照 404 走 catch 退化重放兜底）；④旧的「事件序列尾巴猜测」重放启发式保留作无 run id 记录兜底，待历史数据自然过期后可评估移除
+
+**效果**：填写中/挂起等待/已完成后刷新页面均从运行快照权威恢复——确认卡不再复活、进度续播、成稿卡完整；大文档预览默认文本兜底，多流程切换不再叠加 DOM 致标签页崩溃。
+
+## 2026-09-16 FillTemplate 新增 modify action：已完成成稿就地改字段（后端 2 文件，已部署 2026-09-16）
+
+**主题**：用户在 C 端流程页填写完成后说「approval_authority 这个填写成 李港」，系统却发起全新填写流程（又出 244 项字段确认卡），观感是之前的填写全部丢失。用户明确要的是**就地修改**：在原已填好的成稿上改指定字段，不重跑、不出确认卡，点开原文件即可核对二次修改处。
+
+**核心变更**（`agent/tools/template_fill.py` + `api/db/services/template_fill_service.py` + 测试）：
+- FillTemplate 新增 action=`modify`：定位该范本最近一次 **done** 任务 → 校验 patch key 合法性（不在填写点中直接拒绝并提示，不编造）→ patch 合并进 `task.values`（render 存值 / cells 状态：非空→filled、空→not_found）→ 读模板工作副本 `renderer.render` 全量重渲染 → **覆盖写原成稿对象名**（`v{ver}_result_{task.id}.{ext}` 同名，前端卡片下载/预览链接自动指向新文件）→ `patch_values` 回写 values → patch 值 `sediment_defaults`（override_keys=patch，用户显式决策可覆盖 manual 默认）
+- 渲染异常时原成稿不动、错误透传；storage put 成功但 DB 回写失败时提示用户用 status 核对；sediment 失败仅告警不影响交付
+- 按名称解析 `_resolve_modify_template_id`：精确同名优先、全状态可改（改历史成稿与当前发布态无关）、多命中列候选
+- 工具描述加使用时机：「用户在填写完成后要求修改/补充/更正成稿里的某几个字段时用 modify，绝不要重新 fill 或重新出确认卡」
+- service 层新增 `TplFillTaskService.latest_done`（template+tenant 最新 done 行）与 `patch_values`（终态行 values 就地更新）
+- 测试：新增 9 用例（缺参/无 done 任务/未知 key 不触文档/成功合并+覆盖写+沉淀/空值标 not_found/渲染失败原稿不动/按名称解析/多命中不触文档）；tool 套件 47 passed，模板填写相关 5 套件 369 passed
+
+**遗留**：①~~未部署~~（**已部署 2026-09-16**：2 文件成套 SCP + 容器重启，容器内冒烟 enum/_modify/_resolve_modify_template_id/latest_done/patch_values 全部在位）；②画布意图路由：Categorize 需把「修改成稿某字段」类意图路由到带 FillTemplate 工具的 Agent 节点（范本查询咨询），提示词文案随画布配置一并给用户手工贴入；③modify 渲染用合并后全量 values，若原成稿由旧版有 bug 链路生成（如超链接腐坏），就地重渲染可顺带修复同款问题
+
+**效果**：填写完成后说「xx 字段改成 yy」即就地改到原成稿，确认卡不再重出，历史填写全部保留。
+
+## 2026-09-16 跳转定位漂移根修：懒渲染估算高度 + scrollIntoView 平滑滚动（纯前端 3 文件，已部署 2026-09-16）
+
+**主题**：用户实测两端跳转定位不对——C 端未填充汇总点击（162 个填写点场景）跳到错误位置；B 端范本库填写点列表点击「前面几个没问题，越往后越偏」。共同根因：`applyDocxPageLazy` 给每个分页 section 设 `content-visibility: auto`（屏外页按估算高度 794×1123 占位），大文档真实页高与估算差异大；定位用 `scrollIntoView({behavior:'smooth'})`，平滑滚动过程中上方懒渲染页逐个真实落地、总高度持续漂移 → 停在错误位置（文档越深、上方未渲染页越多，偏差越大，「越往后越偏」即此症状）。
+
+**核心变更**（`web/src/pages/c-chat/docx-highlight.ts` + C 端 `template-fill-live-preview.tsx` + B 端 `fidelity-preview.tsx`）：
+- docx-highlight.ts 新增共享 `instantFocusScroll(el)`：①目标所在分页若为懒渲染先强制 `content-visibility: visible`（该页顶部位置不受自身高度影响，随后测位准确）；②向上遍历所有可滚动祖先，按 getBoundingClientRect 瞬时设 scrollTop 居中——布局已稳定，位置精确
+- B 端 `focusAnchor`（mark[data-anchor-key]）与 C 端 `focusPlaceholder`（data-ph-key）都改走共享函数；C 端删本地重复实现；两端各自脉冲闪烁保留（B 端红色脉冲 class / C 端琥珀 WAAPI）
+- 顺带修掉 C 端上一版遗留的「2s 闪烁被平滑滚动吃掉」问题（瞬时定位无滚动耗时）
+
+**遗留**：①C 端机电施工范本 3 个 no-op 占位符（tender_agent_1137/1226/1325）文档中无对应 token，点击无反应属已知边界；②同 key 多处出现只定位第一处；③定位后该页保持真实渲染（不再懒渲染），单页开销可忽略
+
+**效果**：两端点击跳转在任意文档深度都精确落在目标段落并脉冲闪烁，不再随文档深度累积偏移。
+
+## 2026-09-16 FillTemplate fill action 支持按名称模糊解析（后端 1 文件，已部署 2026-09-16）
+
+**主题**：C 端流程对话实测「非要用户给全量范本名称才发起填写」——半截名称「福建省高速公路工程电子招标示范文本」时 Agent 查到 2 个候选（1 发布 1 停用）反问 id；说「完善第一个」指代失效又反问；直到贴全量名称才走通。排查确认名称模糊匹配本身没问题（detail/list 均支持），卡点是 `fill` action **强制要求 template_id**（工具描述写死），逼 Agent 必须先拿精确 id。
+
+**核心变更**（`agent/tools/template_fill.py` + 测试）：
+- `_fill` 缺 template_id 时接受 `template_name`：新增 `_resolve_fill_template_id`——精确同名优先 → 过滤已发布 → **唯一命中直接发起**（不反问）；多命中列候选让用户挑；零命中/命中均未发布分别说明原因。事故同构场景（部分名称命中 1 发布 + 1 停用）自动选发布者，正是用户卡住的场景
+- 工具描述同步更新：fill 支持 template_name、使用时机加「用户只说部分名称或『第一个/上面那个』指代时直接解析调用 fill，不要反问要完整名称或 id」
+- 测试：新增 6 用例（事故同构唯一发布命中直接发起/零命中/全部未发布拒绝/多发布列候选不发起/精确同名优先/缺省提示二者之一）；38 passed + 组件套件 41 passed，ruff 通过
+
+**遗留**：① ~~未部署~~（**已部署 2026-09-16**：`agent/tools/template_fill.py` SCP + 容器重启，容器内冒烟 `_resolve_fill_template_id` 在位 + 新描述生效）；② 画布 Agent 节点 sys_prompt 未引导「完善」→ 填写流程与「第一个」指代解析，属 B 端画布 UI 配置，已给用户提示词文案待手工贴入；③ 文件经 ruff format 全量重排（line-length=200），diff 较大但语义仅上述两处
+
+**效果**：用户说半截范本名称即可直接发起填写（唯一已发布命中自动选中）；配合画布提示词修改后「完善第一个」类指代也能走通。
+
+## 2026-09-16 docx 替换链路根修：超链接段落统一区间重写 + occ 嵌套剔除（后端 1 文件，已部署 2026-09-16）
+
+**主题**：C 端流程页《福建省高速公路工程电子招标示范文本（2022版）-机电施工招标范本（2021.12修订）》填写失败「渲染落稿失败: expected token 'end of print statement', got ':'」，其余范本正常。系统化调试（10 个只读诊断脚本）实锤双重根因，均在 `rag/svr/template_fill/docx_utils.py` 替换链路。
+
+**根因**：
+- **A（渲染失败根因）**：旧 `_replace_via_run_concat` 对含超链接/域段落把 runs 拼接替换后**按原 run 长度静态切片回写**——替换值长于锚时 run 文本整体后移，而 w:hyperlink 元素钉在 XML 固定位置，超链接 URL 文本被插进先前写入的 `{{key}}` 切片缝隙中，产出 `{{bhttp://fjggzyjy.cn/...}}` 脏 token，docxtpl Jinja 解析报错。
+- **B（occ 错位，同链条）**：识别端按独立留白位给同段同形锚编号 occ=1..n，渲染端枚举会把嵌套在更长锚（7 空格年月空位内的 3 空格）内部的短锚出现也计入序号 → 时/分/秒落进年/月空位。
+
+**核心变更**（仅 `docx_utils.py` + 测试）：
+- 删除 `_nth_index`/`_has_link_or_field`/`_replace_via_run_concat`，新增 `_occurrence_intervals`/`_rewrite_run_span`；含超链接（w:hyperlink）/域（w:fldSimple）段落统一走 `_replace_cross_run_in_place` 区间重写——超链接/域内 run 不在 p.runs 中天然不被触碰，token 原子落在单 run 永不切碎
+- `_replace_cross_run_in_place` occ 路径改非重叠枚举 + 剔除嵌套在 `longer_anchors`（同段更长已注册锚）出现区间内的出现；`apply_docx_placeholders` 按同 addr 收集更长锚集合下传；occ 超出幸存数返回 False no-op
+- **存量红线保留**：occ=None 单 run 快路径与 replace-all 语义逐字节不变；无超链接普通段落路径不变
+- 测试：新增 5 个对抗性用例（事故结构全等断言+token 纯净正则 / occ 嵌套剔除 / 超幸存数 no-op / fldSimple 域完整性 / fldSimple occ 事故同构——document 序文本流断言，旧实现产出 `{{page9s}}` 腐坏形态被精确击穿）；192+266=458 passed；端到端 docxtpl 真渲染事故结构成功且 URL 完好；code-review 审查通过（2 条建议级设计边界备忘：longer_anchors 依赖「更长锚均被注册」约定、检测/渲染文本坐标系不对称）
+
+**遗留**：① ~~未部署~~（**已部署 2026-09-16**：`docx_utils.py` SCP + `docker restart docker-ragflow-cpu-1`，容器内 import 冒烟新函数在位通过）；② ~~旧 v1 工作副本带脏 token~~（**已原地重建 2026-09-16**：容器内从 original+现有 244 占位符用修复链路重生成 `v1_render.docx` 并覆写 MinIO，验证 255 token 0 脏 + docxtpl 真渲染通过，旧副本备份为 `v1_render.docx.corrupt.bak`；复现实锤存量副本恰含 1 个脏 token `{{bhttp://fjggzyjy.cn/id_deadline_minute}}` 与报错吻合；无需 B 端重新 AI 识别）；③ 服务器 `/home/bid-agent-konus/ragflow2/rag/svr/` 残留 10 个 `_diag_tpl_*.py` + `_diag_repro_tpl_render.py` + `_fix_rebuild_v1_render.py` 诊断/修复脚本待清理；④ 重建时 3 个占位符 replace no-op（tender_agent_1137/1226/1325，纯空白 anchor 与原文不匹配）——该 3 处留白将保持未替换，属识别端锚文本与原文漂移，待观察
+
+**效果**：超链接/域段落替换不再腐坏 URL 与占位符 token；同段同形留白（含嵌套）occ 落位与识别端编号对齐；该范本重新识别后可正常填写。
+
+## 2026-09-16 B端范本画布查询能力：FillTemplate 新增 detail action（后端 1 文件已部署 2026-09-16，画布配置待 UI 操作）
+
+**主题**：用户指出 B 端画布「测试范本」（id=4f9b758cab5b…）Categorize 只有「范本书写/范本文件修改」两类太绝对——用户问「有哪些范本」「某范本有没有这条内容」会被迫落入「范本文件修改」（Categorize 未命中时兜底落**列表最后一类**，categorize.py:151-155），而该分支 Agent 是裸 LLM（tools=[] 无 dataset）只能瞎答。方案 A：扩展工具查询能力 + 用户在画布 UI 加「范本查询咨询」类（放列表最后，模糊问题兜底落到它）。
+
+**核心变更**（`agent/tools/template_fill.py` + `test/test_template_fill_tool.py`）：
+- FillTemplate 工具新增 `action=detail`：按 `template_id` 精确查（get_owned 租户隔离）或 `template_name` 模糊查（get_list_page，名称精确相等优先，多命中列候选追问）；可选 `keyword` 在填写点（中文名/key/锚文本，大小写不敏感子串）匹配，直接回答「某范本有没有某条内容」
+- detail 覆盖 draft/published/disabled 全状态并中文标注（草稿/已发布/已停用）；填写点截断 30 条/锚文本 60 字符防大范本刷爆上下文；无 keyword 时引导二次查询
+- 容错加固（code-review 建议）：placeholders 为合法 JSON 标量/object 等脏数据统一降级空清单；template_name/keyword 回显截断 100 字符防超长刷屏
+- 测试：新增 16 个对抗性用例（空参/无租户/越权/零命中/多命中/精确优先/keyword 命中未命中/大小写/标量与 object 脏数据/超长 anchor 截断/非 dict 行），32 passed + 组件套件 41 passed，ruff 通过
+
+**遗留**：① 画布配置（Categorize 加「范本查询咨询」类 + Agent 节点挂 FillTemplate 工具）需在 B 端画布 UI 手工操作；② 既有「范本文件修改」Agent 仍是裸 LLM（tools 空、sys_prompt 一句话），本次未动
+
+**部署验证（2026-09-16）**：SCP `agent/tools/template_fill.py` + 重启容器；import 冒烟 enum 含 detail；功能冒烟按 detail 同链路查真实 DB——5 个范本，填写点 244/290/1095 条读取正常（1095 条大范本验证了 30 条截断上限的必要性）。
+
+**效果**：画布挂上查询类+FillTemplate 工具后，「有哪些范本」「XX 范本有没有 X 填写项」等查询可由工具真实回答，不再落入无工具分支瞎编。
+
 ## 2026-09-15 流程切换保持进行中对话状态（已部署 2026-09-15，纯前端 2 文件，commit 0702d7b5）
 
 **主题**：用户需求「流程 1 对话 LLM 执行等待中，切到流程 2 看其他内容，切回流程 1 状态不能丢」。原实现 `flow-panel.tsx` 按 `activeId` 条件渲染单个 `FlowDetail`——切换流程即卸载，SSE 流中断、挂起确认卡/填写进度/流式回复全部丢失。

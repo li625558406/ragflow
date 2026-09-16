@@ -11,6 +11,7 @@ import {
 import {
   applyDocxHighlight,
   applyDocxPageLazy,
+  instantFocusScroll,
   updateDocxHighlight,
   type DocxPlaceholderSpans,
 } from '@/pages/c-chat/docx-highlight';
@@ -41,22 +42,30 @@ function splitPlaceholders(
   return nodes;
 }
 
-// 点击未填充汇总字段后的定位闪烁时长（毫秒）
-const FLASH_MS = 2000;
+// 点击未填充汇总字段后的定位脉冲：500ms×6 次 = 3s
+const PULSE_MS = 500;
+const PULSE_TIMES = 6;
 
-/** 定位到容器内 data-ph-key 匹配的占位符：滚动居中 + 临时 outline 闪烁。
- * 找不到返回 false（调用方据此不标记已定位，留待渲染完成后重试）。 */
+// 超大文档防线阈值：>2.5MB 默认文本预览（设计 2026-09-16 预览内存治理）
+const BIG_BLOB_BYTES = 2.5 * 1024 * 1024;
+
+/** 定位到容器内 data-ph-key 匹配的占位符：强制渲染所在分页 + 瞬时居中
+ * （共享 instantFocusScroll，治懒渲染漂移跳错位）+ 琥珀色脉冲闪烁
+ * （WAAPI 自清理、可重复触发）。找不到返回 false（调用方据此不标记
+ * 已定位，留待渲染完成后重试）。 */
 function focusPlaceholder(container: HTMLElement, key: string): boolean {
   const el = container.querySelector<HTMLElement>(
     `[data-ph-key="${CSS.escape(key)}"]`,
   );
   if (!el) return false;
-  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-  const prev = el.style.outline;
-  el.style.outline = '2px solid #1a66fb';
-  window.setTimeout(() => {
-    el.style.outline = prev;
-  }, FLASH_MS);
+  instantFocusScroll(el);
+  el.animate?.(
+    [
+      { backgroundColor: '#FFE58F', boxShadow: '0 0 0 3px #FA8C16' },
+      { backgroundColor: '#EFF4FF', boxShadow: '0 0 0 1px #FA8C16' },
+    ],
+    { duration: PULSE_MS, iterations: PULSE_TIMES, easing: 'ease-in-out' },
+  );
   return true;
 }
 
@@ -93,6 +102,11 @@ export default function TemplateFillLivePreview({
   const [renderFailed, setRenderFailed] = useState(false);
   // docx 保真渲染完成标记：定位 effect 依赖它区分「渲染未完不能定位」与「文档无该 key 静默放弃」
   const [renderedOk, setRenderedOk] = useState(false);
+  // 超大文档防线（预览内存治理，设计 2026-09-16）：>2.5MB 的 docx 默认走纯文本渲染
+  // （docx-preview 整本文档一次性建 DOM 树，200+ 页曾致标签页 OOM），顶部提示 +
+  // 「切换保真渲染」显式覆盖（本地 state 不落库）。渲染失败降级链路不变。
+  const [blobOversize, setBlobOversize] = useState(false);
+  const [forceFidelity, setForceFidelity] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   // 文本降级/xlsx 路径的滚动容器（与 docx 容器互斥挂载，二者必有其一）
   const textContainerRef = useRef<HTMLDivElement>(null);
@@ -109,9 +123,17 @@ export default function TemplateFillLivePreview({
     error: fileError,
   } = useTemplateFillFile(docxEnabled ? tpl.template_id : '');
 
-  // blob 到达：清容器 → renderAsync → 屏外页懒渲染 → 建占位符 span 映射
+  // blob 到达判定体量：超阈值先翻转渲染分支（声明在渲染 effect 之前，同批提交内先生效）
+  useEffect(() => {
+    setBlobOversize(Boolean(fileBlob && fileBlob.size > BIG_BLOB_BYTES));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fileBlob]);
+
+  // blob 到达：清容器 → renderAsync → 屏外页懒渲染 → 建占位符 span 映射。
+  // 超大文档且未显式切换保真 → 跳过整本 DOM 建树（文本分支接管）
   useEffect(() => {
     if (!docxEnabled || !fileBlob || !containerRef.current) return;
+    if (blobOversize && !forceFidelity) return;
     const el = containerRef.current;
     setRenderFailed(false);
     setRenderedOk(false);
@@ -124,7 +146,7 @@ export default function TemplateFillLivePreview({
         setRenderedOk(true);
       })
       .catch(() => setRenderFailed(true));
-  }, [fileBlob, docxEnabled]);
+  }, [fileBlob, docxEnabled, blobOversize, forceFidelity]);
 
   // values 变化：按 span 映射增量更新（已填⇄未填双向切换），不重建 DOM
   useEffect(() => {
@@ -132,14 +154,20 @@ export default function TemplateFillLivePreview({
     updateDocxHighlight(placeholderSpansRef.current, values);
   }, [values, docxEnabled]);
 
-  // 范本切换时清占位符映射（防止上一范本的 span 基线串台）
+  // 范本切换时清占位符映射与体量防线状态（防止上一范本的 span 基线/覆盖选择串台）
   useEffect(() => {
     placeholderSpansRef.current = new Map();
     setRenderFailed(false);
     setRenderedOk(false);
+    setBlobOversize(false);
+    setForceFidelity(false);
   }, [tpl.template_id]);
 
-  const docxFidelity = docxEnabled && !renderFailed && !fileError;
+  const docxFidelity =
+    docxEnabled &&
+    !renderFailed &&
+    !fileError &&
+    (!blobOversize || forceFidelity);
   const docxLoading =
     fileLoading || (docxEnabled && !fileBlob && !fileError && isLoading);
 
@@ -247,6 +275,17 @@ export default function TemplateFillLivePreview({
           {docxEnabled && (renderFailed || fileError) && (
             <div className="mb-2 rounded bg-[#FFF7E8] px-3 py-2 text-xs text-[#FAAD14]">
               格式渲染失败，已降级为纯文本预览
+            </div>
+          )}
+          {docxEnabled && blobOversize && !forceFidelity && (
+            <div className="mb-2 flex items-center gap-2 rounded bg-[#FFF7E8] px-3 py-2 text-xs text-[#FAAD14]">
+              <span>文档较大，已用文本预览保障流畅</span>
+              <button
+                className="ml-auto shrink-0 text-[#1a66fb] transition-colors hover:text-[#1557d6]"
+                onClick={() => setForceFidelity(true)}
+              >
+                切换保真渲染
+              </button>
             </div>
           )}
           {fileType === 'xlsx' ? (

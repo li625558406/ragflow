@@ -4,6 +4,7 @@ service 层 / spawn_fill_task / time.sleep 全部 monkeypatch，不触 DB/LLM/Mi
 工具实例用 object.__new__ 绕过 ToolBase.__init__（其要求真实 Canvas 实例），
 _param 用 SimpleNamespace 打桩。
 """
+
 from types import SimpleNamespace
 
 
@@ -14,18 +15,20 @@ def _stub_spawn(monkeypatch, spawned):
     记录被 spawn 的 task_id 供断言，monkeypatch 收尾自动还原。
     """
     from rag.svr.template_fill import spawn as spawn_mod
-    monkeypatch.setattr(spawn_mod, "spawn_fill_task",
-                        lambda task_id: spawned.append(task_id))
+
+    monkeypatch.setattr(spawn_mod, "spawn_fill_task", lambda task_id: spawned.append(task_id))
 
 
 def _svc():
     from api.db.services import template_fill_service as tpl_svc
+
     return tpl_svc
 
 
 def _make_tool(canvas_tenant="tenant_x"):
     """构造绕过 ComponentBase.__init__ 的 FillTemplate 实例，打桩 _param/canvas/取消检查。"""
     from agent.tools.template_fill import FillTemplate
+
     tool = object.__new__(FillTemplate)
     tool._param = SimpleNamespace(outputs={}, inputs={}, debug_inputs={})
     tool.set_output = lambda key, value=None: tool._param.outputs.update({key: {"value": value}})
@@ -43,8 +46,10 @@ def _pub_template():
 
 # ---------- meta 声明 ----------
 
+
 def test_meta_declaration():
     from agent.tools.template_fill import FillTemplate, FillTemplateParam
+
     param = FillTemplateParam()
     assert param.meta["name"] == "FillTemplate"
     assert "action" in param.meta["parameters"]
@@ -53,10 +58,10 @@ def test_meta_declaration():
 
 # ---------- list_templates ----------
 
+
 def test_list_templates_lists_published(monkeypatch):
     tpl_svc = _svc()
-    rows = [{"id": "t1", "name": "投标申请书", "file_type": "docx"},
-            {"id": "t2", "name": "验收报告", "file_type": "xlsx"}]
+    rows = [{"id": "t1", "name": "投标申请书", "file_type": "docx"}, {"id": "t2", "name": "验收报告", "file_type": "xlsx"}]
     seen = {}
 
     def fake_list(tenant_id, **kw):
@@ -72,13 +77,194 @@ def test_list_templates_lists_published(monkeypatch):
 
 def test_list_templates_empty_hint(monkeypatch):
     tpl_svc = _svc()
-    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_list_page",
-                        staticmethod(lambda tenant_id, **kw: ([], 0)))
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_list_page", staticmethod(lambda tenant_id, **kw: ([], 0)))
     out = _make_tool()._invoke(action="list_templates")
     assert "当前没有已发布的范本" in out
 
 
+# ---------- detail（范本查询/填写点匹配） ----------
+
+
+def _tpl_row(t_id="t1", name="投标申请书", status="published", file_type="docx"):
+    return {"id": t_id, "name": name, "status": status, "file_type": file_type, "description": "用于投标申请", "latest_version": 1}
+
+
+class _TplObj:
+    """模拟 get_owned 返回的 peewee 模型实例（有 to_dict）。"""
+
+    def __init__(self, row):
+        self._row = row
+
+    def to_dict(self):
+        return dict(self._row)
+
+
+def _patch_versions(monkeypatch, tpl_svc, placeholders):
+    monkeypatch.setattr(tpl_svc.TplTemplateVersionService, "latest", staticmethod(lambda template_id: SimpleNamespace(id="ver1", placeholders=placeholders)))
+
+
+def test_detail_requires_id_or_name():
+    out = _make_tool()._invoke(action="detail")
+    assert "template_id" in out and "template_name" in out
+
+
+def test_detail_no_tenant(monkeypatch):
+    tpl_svc = _svc()
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned", staticmethod(lambda template_id, tenant_id, for_update=False: _TplObj(_tpl_row())))
+    out = _make_tool(canvas_tenant=None)._invoke(action="detail", template_id="t1")
+    assert "无法确定当前用户身份" in out
+
+
+def test_detail_by_id_not_owned(monkeypatch):
+    tpl_svc = _svc()
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned", staticmethod(lambda template_id, tenant_id, for_update=False: None))
+    out = _make_tool()._invoke(action="detail", template_id="ghost")
+    assert "范本不存在或无权访问" in out
+
+
+def test_detail_by_id_lists_fill_points(monkeypatch):
+    tpl_svc = _svc()
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned", staticmethod(lambda template_id, tenant_id, for_update=False: _TplObj(_tpl_row())))
+    _patch_versions(
+        monkeypatch,
+        tpl_svc,
+        [
+            {"key": "proj_name", "name": "项目名称", "anchor": "项目名称：", "default_value": ""},
+            {"key": "bidder", "name": "投标人", "anchor": "投标人：", "default_value": "某某公司"},
+        ],
+    )
+    out = _make_tool()._invoke(action="detail", template_id="t1")
+    assert "投标申请书" in out and "已发布" in out and "共 2 个填写点" in out
+    assert "项目名称" in out and "proj_name" in out and "某某公司" in out
+    assert "keyword" in out  # 无 keyword 时引导二次查询
+
+
+def test_detail_by_name_zero_hit(monkeypatch):
+    tpl_svc = _svc()
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_list_page", staticmethod(lambda tenant_id, **kw: ([], 0)))
+    out = _make_tool()._invoke(action="detail", template_name="不存在的范本")
+    assert "没有找到" in out and "不存在的范本" in out
+
+
+def test_detail_by_name_multi_hits_lists_candidates(monkeypatch):
+    tpl_svc = _svc()
+    rows = [_tpl_row("t1", name="投标申请书"), _tpl_row("t2", name="投标函")]
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_list_page", staticmethod(lambda tenant_id, **kw: (rows, 2)))
+    out = _make_tool()._invoke(action="detail", template_name="投标")
+    assert "2 个" in out and "t1" in out and "t2" in out and "请指定 id" in out
+
+
+def test_detail_by_name_exact_match_wins(monkeypatch):
+    """模糊命中多条但名称精确相等时，直接取精确命中不追问。"""
+    tpl_svc = _svc()
+    rows = [_tpl_row("t1", name="投标申请书"), _tpl_row("t2", name="投标申请书（2026版）")]
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_list_page", staticmethod(lambda tenant_id, **kw: (rows, 2)))
+    _patch_versions(monkeypatch, tpl_svc, [{"key": "k", "name": "项目名称", "anchor": "项目名称："}])
+    out = _make_tool()._invoke(action="detail", template_name="投标申请书")
+    assert "共 1 个填写点" in out and "id=t1" in out
+
+
+def test_detail_keyword_hit_filters(monkeypatch):
+    tpl_svc = _svc()
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned", staticmethod(lambda template_id, tenant_id, for_update=False: _TplObj(_tpl_row())))
+    _patch_versions(
+        monkeypatch,
+        tpl_svc,
+        [
+            {"key": "proj_name", "name": "项目名称", "anchor": "项目名称："},
+            {"key": "bidder", "name": "投标人", "anchor": "投标人（盖章）："},
+            {"key": "seal_date", "name": "盖章日期", "anchor": "日期："},
+        ],
+    )
+    out = _make_tool()._invoke(action="detail", template_id="t1", keyword="盖章")
+    assert "匹配的填写点有 2 个" in out
+    assert "投标人" in out and "盖章日期" in out
+    assert "项目名称" not in out  # 未命中项不展示
+
+
+def test_detail_keyword_case_insensitive_key_match(monkeypatch):
+    tpl_svc = _svc()
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned", staticmethod(lambda template_id, tenant_id, for_update=False: _TplObj(_tpl_row())))
+    _patch_versions(monkeypatch, tpl_svc, [{"key": "project_name", "name": "项目名称", "anchor": "名称："}])
+    out = _make_tool()._invoke(action="detail", template_id="t1", keyword="PROJECT_NAME")
+    assert "匹配的填写点有 1 个" in out
+
+
+def test_detail_keyword_miss_explicit(monkeypatch):
+    tpl_svc = _svc()
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned", staticmethod(lambda template_id, tenant_id, for_update=False: _TplObj(_tpl_row())))
+    _patch_versions(monkeypatch, tpl_svc, [{"key": "proj", "name": "项目名称", "anchor": "项目名称："}])
+    out = _make_tool()._invoke(action="detail", template_id="t1", keyword="履约保证金")
+    assert "没有与「履约保证金」匹配的填写点" in out
+    assert "共 1 个填写点" in out  # 总数仍在，LLM 可据此回答近似项
+
+
+def test_detail_no_fill_points(monkeypatch):
+    tpl_svc = _svc()
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned", staticmethod(lambda template_id, tenant_id, for_update=False: _TplObj(_tpl_row())))
+    monkeypatch.setattr(tpl_svc.TplTemplateVersionService, "latest", staticmethod(lambda template_id: None))
+    out = _make_tool()._invoke(action="detail", template_id="t1")
+    assert "尚未配置填写点" in out
+
+
+def test_detail_dirty_placeholders_json_survives(monkeypatch):
+    """历史脏数据：placeholders 落成了非法 JSON 字符串 → 兜底为空清单不崩。"""
+    tpl_svc = _svc()
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned", staticmethod(lambda template_id, tenant_id, for_update=False: _TplObj(_tpl_row())))
+    _patch_versions(monkeypatch, tpl_svc, "{not valid json")
+    out = _make_tool()._invoke(action="detail", template_id="t1")
+    assert "尚未配置填写点" in out
+
+
+def test_detail_scalar_placeholders_survives(monkeypatch):
+    """对抗性：合法 JSON 标量（int/bool）反序列化成功但不可迭代 → 同样兜底为空清单不抛 TypeError。"""
+    tpl_svc = _svc()
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned", staticmethod(lambda template_id, tenant_id, for_update=False: _TplObj(_tpl_row())))
+    _patch_versions(monkeypatch, tpl_svc, 5)
+    out = _make_tool()._invoke(action="detail", template_id="t1")
+    assert "尚未配置填写点" in out
+    out2 = _make_tool()._invoke(action="detail", template_id="t1")
+    assert "尚未配置填写点" in out2
+
+
+def test_detail_object_placeholders_survives(monkeypatch):
+    """对抗性：JSON object（非数组）→ 不误报成业务状态层面的异常，走空清单降级。"""
+    tpl_svc = _svc()
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned", staticmethod(lambda template_id, tenant_id, for_update=False: _TplObj(_tpl_row())))
+    _patch_versions(monkeypatch, tpl_svc, {"key": "proj", "name": "项目名称"})
+    out = _make_tool()._invoke(action="detail", template_id="t1")
+    assert "尚未配置填写点" in out
+
+
+def test_detail_many_points_truncated(monkeypatch):
+    tpl_svc = _svc()
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned", staticmethod(lambda template_id, tenant_id, for_update=False: _TplObj(_tpl_row())))
+    many = [{"key": f"k{i}", "name": f"字段{i}", "anchor": "锚"} for i in range(50)]
+    _patch_versions(monkeypatch, tpl_svc, many)
+    out = _make_tool()._invoke(action="detail", template_id="t1")
+    assert "其余 20 个填写点略" in out
+
+
+def test_detail_giant_anchor_and_non_dict_rows_survive(monkeypatch):
+    """对抗性：超长锚文本被截断、占位符清单混入非 dict 脏行不崩。"""
+    tpl_svc = _svc()
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned", staticmethod(lambda template_id, tenant_id, for_update=False: _TplObj(_tpl_row())))
+    _patch_versions(
+        monkeypatch,
+        tpl_svc,
+        [
+            "not-a-dict",
+            {"key": "proj", "name": "项目名称", "anchor": "长" * 500},
+            None,
+        ],
+    )
+    out = _make_tool()._invoke(action="detail", template_id="t1")
+    assert "共 1 个填写点" in out
+    assert "长" * 60 in out and "长" * 61 not in out  # 截到 60 字符
+
+
 # ---------- 未知 action ----------
+
 
 def test_unknown_action_rejected():
     out = _make_tool()._invoke(action="bogus")
@@ -89,13 +275,12 @@ def test_unknown_action_rejected():
 
 # ---------- fill ----------
 
+
 def _patch_fillable(monkeypatch, tpl_svc):
-    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned",
-                        staticmethod(lambda template_id, tenant_id, for_update=False: _pub_template()))
-    monkeypatch.setattr(tpl_svc.TplTemplateVersionService, "latest",
-                        staticmethod(lambda template_id: SimpleNamespace(
-                            id="ver1", render_file_id="v1_render.docx",
-                            placeholders=[{"key": "proj", "name": "项目名"}])))
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned", staticmethod(lambda template_id, tenant_id, for_update=False: _pub_template()))
+    monkeypatch.setattr(
+        tpl_svc.TplTemplateVersionService, "latest", staticmethod(lambda template_id: SimpleNamespace(id="ver1", render_file_id="v1_render.docx", placeholders=[{"key": "proj", "name": "项目名"}]))
+    )
 
 
 def test_fill_requires_kb_ids(monkeypatch):
@@ -107,9 +292,7 @@ def test_fill_requires_kb_ids(monkeypatch):
 
 def test_fill_rejects_unpublished(monkeypatch):
     tpl_svc = _svc()
-    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned",
-                        staticmethod(lambda template_id, tenant_id, for_update=False:
-                                     SimpleNamespace(id="t1", status="draft")))
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned", staticmethod(lambda template_id, tenant_id, for_update=False: SimpleNamespace(id="t1", status="draft")))
     out = _make_tool()._invoke(action="fill", template_id="t1", kb_ids='["kb1"]')
     assert "发布" in out
 
@@ -135,15 +318,12 @@ def test_fill_success_polls_to_done(monkeypatch):
         polls["n"] += 1
         if polls["n"] == 1:
             return SimpleNamespace(id=task_id, status="pending")
-        return SimpleNamespace(id=task_id, status="done",
-                               values={"render": {"proj": "漳州项目"}, "cells": {"proj": "ok"}},
-                               error="")
+        return SimpleNamespace(id=task_id, status="done", values={"render": {"proj": "漳州项目"}, "cells": {"proj": "ok"}}, error="")
 
     monkeypatch.setattr(tpl_svc.TplFillTaskService, "get_owned", staticmethod(fake_get_owned))
     monkeypatch.setattr("agent.tools.template_fill.time.sleep", lambda s: None)
 
-    out = _make_tool()._invoke(action="fill", template_id="t1",
-                               kb_ids='["kb1", "kb2"]', params='{"a": 1}')
+    out = _make_tool()._invoke(action="fill", template_id="t1", kb_ids='["kb1", "kb2"]', params='{"a": 1}')
 
     assert inserted["template_version_id"] == "ver1"
     assert inserted["source"] == "chat"
@@ -163,11 +343,8 @@ def test_fill_kb_ids_tolerant_parsing(monkeypatch):
     _patch_fillable(monkeypatch, tpl_svc)
 
     inserted = {}
-    monkeypatch.setattr(tpl_svc.TplFillTaskService, "insert",
-                        staticmethod(lambda **kw: inserted.update(kw) or kw.get("id")))
-    monkeypatch.setattr(tpl_svc.TplFillTaskService, "get_owned",
-                        staticmethod(lambda task_id, tenant_id: SimpleNamespace(
-                            id=task_id, status="failed", error="x")))
+    monkeypatch.setattr(tpl_svc.TplFillTaskService, "insert", staticmethod(lambda **kw: inserted.update(kw) or kw.get("id")))
+    monkeypatch.setattr(tpl_svc.TplFillTaskService, "get_owned", staticmethod(lambda task_id, tenant_id: SimpleNamespace(id=task_id, status="failed", error="x")))
     _stub_spawn(monkeypatch, [])
     monkeypatch.setattr("agent.tools.template_fill.time.sleep", lambda s: None)
 
@@ -180,11 +357,8 @@ def test_fill_poll_timeout_prompts_status_query(monkeypatch):
     """轮询超时：提示已提交 + 引导 action=status 查询。"""
     tpl_svc = _svc()
     _patch_fillable(monkeypatch, tpl_svc)
-    monkeypatch.setattr(tpl_svc.TplFillTaskService, "insert",
-                        staticmethod(lambda **kw: kw.get("id")))
-    monkeypatch.setattr(tpl_svc.TplFillTaskService, "get_owned",
-                        staticmethod(lambda task_id, tenant_id: SimpleNamespace(
-                            id=task_id, status="generating")))
+    monkeypatch.setattr(tpl_svc.TplFillTaskService, "insert", staticmethod(lambda **kw: kw.get("id")))
+    monkeypatch.setattr(tpl_svc.TplFillTaskService, "get_owned", staticmethod(lambda task_id, tenant_id: SimpleNamespace(id=task_id, status="generating")))
     _stub_spawn(monkeypatch, [])
     monkeypatch.setattr("agent.tools.template_fill.time.sleep", lambda s: None)
 
@@ -201,6 +375,7 @@ def test_fill_bad_params_rejected(monkeypatch):
 
 # ---------- status ----------
 
+
 def test_status_requires_task_id():
     out = _make_tool()._invoke(action="status")
     assert "task_id" in out
@@ -208,38 +383,36 @@ def test_status_requires_task_id():
 
 def test_status_task_not_owned(monkeypatch):
     tpl_svc = _svc()
-    monkeypatch.setattr(tpl_svc.TplFillTaskService, "get_owned",
-                        staticmethod(lambda task_id, tenant_id: None))
+    monkeypatch.setattr(tpl_svc.TplFillTaskService, "get_owned", staticmethod(lambda task_id, tenant_id: None))
     out = _make_tool()._invoke(action="status", task_id="nope")
     assert "任务不存在" in out
 
 
 def test_status_running(monkeypatch):
     tpl_svc = _svc()
-    monkeypatch.setattr(tpl_svc.TplFillTaskService, "get_owned",
-                        staticmethod(lambda task_id, tenant_id: SimpleNamespace(
-                            id="task1", status="generating")))
+    monkeypatch.setattr(tpl_svc.TplFillTaskService, "get_owned", staticmethod(lambda task_id, tenant_id: SimpleNamespace(id="task1", status="generating")))
     out = _make_tool()._invoke(action="status", task_id="task1")
     assert "填写进行中" in out
 
 
 def test_status_failed(monkeypatch):
     tpl_svc = _svc()
-    monkeypatch.setattr(tpl_svc.TplFillTaskService, "get_owned",
-                        staticmethod(lambda task_id, tenant_id: SimpleNamespace(
-                            id="task1", status="failed", error="LLM 生成失败: timeout")))
+    monkeypatch.setattr(tpl_svc.TplFillTaskService, "get_owned", staticmethod(lambda task_id, tenant_id: SimpleNamespace(id="task1", status="failed", error="LLM 生成失败: timeout")))
     out = _make_tool()._invoke(action="status", task_id="task1")
     assert "填写失败" in out and "LLM 生成失败" in out
 
 
 def test_status_done_summary(monkeypatch):
     tpl_svc = _svc()
-    monkeypatch.setattr(tpl_svc.TplFillTaskService, "get_owned",
-                        staticmethod(lambda task_id, tenant_id: SimpleNamespace(
-                            id="task1", status="done",
-                            values={"render": {"proj": "漳州重要的项目" * 20, "date": "2026-09-07"},
-                                    "cells": {"proj": "ok", "date": "ok"}},
-                            error="")))
+    monkeypatch.setattr(
+        tpl_svc.TplFillTaskService,
+        "get_owned",
+        staticmethod(
+            lambda task_id, tenant_id: SimpleNamespace(
+                id="task1", status="done", values={"render": {"proj": "漳州重要的项目" * 20, "date": "2026-09-07"}, "cells": {"proj": "ok", "date": "ok"}}, error=""
+            )
+        ),
+    )
     out = _make_tool()._invoke(action="status", task_id="task1")
     assert "填写完成" in out
     assert "proj" in out and "date" in out and "2026-09-07" in out
@@ -250,12 +423,271 @@ def test_status_done_summary(monkeypatch):
 
 def test_status_partial_lists_manual_fields(monkeypatch):
     tpl_svc = _svc()
-    monkeypatch.setattr(tpl_svc.TplFillTaskService, "get_owned",
-                        staticmethod(lambda task_id, tenant_id: SimpleNamespace(
-                            id="task1", status="partial",
-                            values={"render": {"proj": "P1", "signer": "{{signer:待人工}}"},
-                                    "cells": {"proj": "ok", "signer": "manual", "seal": "not_found"}},
-                            error="")))
+    monkeypatch.setattr(
+        tpl_svc.TplFillTaskService,
+        "get_owned",
+        staticmethod(
+            lambda task_id, tenant_id: SimpleNamespace(
+                id="task1", status="partial", values={"render": {"proj": "P1", "signer": "{{signer:待人工}}"}, "cells": {"proj": "ok", "signer": "manual", "seal": "not_found"}}, error=""
+            )
+        ),
+    )
     out = _make_tool()._invoke(action="status", task_id="task1")
     assert "部分完成" in out
     assert "待人工补充字段" in out and "signer" in out and "seal" in out
+
+
+# ---------- fill 按 template_name 模糊解析 ----------
+
+
+def _fill_tpl_row(tid, name, status="published"):
+    return {"id": tid, "name": name, "status": status, "file_type": "docx"}
+
+
+def _patch_name_rows(monkeypatch, tpl_svc, rows):
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_list_page", staticmethod(lambda tenant_id, keyword="", page=1, size=50, **kw: (rows, len(rows))))
+
+
+def test_fill_requires_id_or_name(monkeypatch):
+    """template_id/template_name 均缺省时明确提示二者之一（不再只逼 id）。"""
+    out = _make_tool()._invoke(action="fill", kb_ids='["kb1"]')
+    assert "template_id" in out and "template_name" in out
+
+
+def test_fill_by_name_unique_published_proceeds(monkeypatch):
+    """事故同构：部分名称命中 1 已发布 + 1 已停用 → 自动选已发布发起（不反问）。"""
+    tpl_svc = _svc()
+    _patch_name_rows(
+        monkeypatch,
+        tpl_svc,
+        [
+            _fill_tpl_row("t2", "XX范本-机电监理（停用）", status="disabled"),
+            _fill_tpl_row("t1", "XX范本-机电施工"),
+        ],
+    )
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned", staticmethod(lambda template_id, tenant_id, for_update=False: _pub_template()))
+    monkeypatch.setattr(tpl_svc.TplTemplateVersionService, "latest", staticmethod(lambda template_id: SimpleNamespace(id="ver1", render_file_id="v1_render.docx", placeholders=[])))
+    inserted = {}
+    monkeypatch.setattr(tpl_svc.TplFillTaskService, "insert", staticmethod(lambda **kw: inserted.update(kw) or kw.get("id")))
+    monkeypatch.setattr(tpl_svc.TplFillTaskService, "get_owned", staticmethod(lambda task_id, tenant_id: SimpleNamespace(id=task_id, status="failed", error="kb empty")))
+    spawned = []
+    _stub_spawn(monkeypatch, spawned)
+    monkeypatch.setattr("agent.tools.template_fill.time.sleep", lambda s: None)
+
+    out = _make_tool()._invoke(action="fill", template_name="机电施工", kb_ids='["kb1"]')
+    assert inserted["template_id"] == "t1" and spawned == [inserted["id"]]
+    assert "填写失败" in out
+
+
+def test_fill_by_name_zero_hit(monkeypatch):
+    tpl_svc = _svc()
+    _patch_name_rows(monkeypatch, tpl_svc, [])
+    out = _make_tool()._invoke(action="fill", template_name="不存在的范本", kb_ids='["kb1"]')
+    assert "没有找到" in out and "不存在的范本" in out
+
+
+def test_fill_by_name_all_unpublished_rejected(monkeypatch):
+    """命中但全部草稿/停用 → 拒绝发起并说明。"""
+    tpl_svc = _svc()
+    _patch_name_rows(
+        monkeypatch,
+        tpl_svc,
+        [
+            _fill_tpl_row("t1", "范本A", status="draft"),
+            _fill_tpl_row("t2", "范本B", status="disabled"),
+        ],
+    )
+    out = _make_tool()._invoke(action="fill", template_name="范本", kb_ids='["kb1"]')
+    assert "均未发布" in out
+
+
+def test_fill_by_name_multi_published_asks(monkeypatch):
+    """多个已发布命中 → 列候选让用户挑，不发起任务。"""
+    tpl_svc = _svc()
+    _patch_name_rows(
+        monkeypatch,
+        tpl_svc,
+        [
+            _fill_tpl_row("t1", "范本A"),
+            _fill_tpl_row("t2", "范本B"),
+        ],
+    )
+    inserted = {}
+    monkeypatch.setattr(tpl_svc.TplFillTaskService, "insert", staticmethod(lambda **kw: inserted.update(kw) or kw.get("id")))
+    out = _make_tool()._invoke(action="fill", template_name="范本", kb_ids='["kb1"]')
+    assert "已发布范本有 2 个" in out and "t1" in out and "t2" in out
+    assert not inserted
+
+
+def test_fill_by_name_exact_wins_over_fuzzy(monkeypatch):
+    """名称精确相等的候选优先于模糊命中（两个都发布时不再误选）。"""
+    tpl_svc = _svc()
+    _patch_name_rows(
+        monkeypatch,
+        tpl_svc,
+        [
+            _fill_tpl_row("t_fuzzy", "招标范本扩展版"),
+            _fill_tpl_row("t_exact", "招标范本"),
+        ],
+    )
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned", staticmethod(lambda template_id, tenant_id, for_update=False: _pub_template()))
+    monkeypatch.setattr(tpl_svc.TplTemplateVersionService, "latest", staticmethod(lambda template_id: SimpleNamespace(id="ver1", render_file_id="v1_render.docx", placeholders=[])))
+    inserted = {}
+    monkeypatch.setattr(tpl_svc.TplFillTaskService, "insert", staticmethod(lambda **kw: inserted.update(kw) or kw.get("id")))
+    monkeypatch.setattr(tpl_svc.TplFillTaskService, "get_owned", staticmethod(lambda task_id, tenant_id: SimpleNamespace(id=task_id, status="failed", error="x")))
+    _stub_spawn(monkeypatch, [])
+    monkeypatch.setattr("agent.tools.template_fill.time.sleep", lambda s: None)
+
+    _make_tool()._invoke(action="fill", template_name="招标范本", kb_ids='["kb1"]')
+    assert inserted["template_id"] == "t_exact"
+
+
+# ---------- modify（就地修改成稿） ----------
+
+
+def _patch_modify_env(monkeypatch, tpl_svc, *, task_values=None, placeholders=None,
+                      render_raises=False):
+    """modify 全链路打桩：latest_done 任务 / 版本 / storage / renderer / 回写 / 沉淀。"""
+    from rag.svr.template_fill import renderer as renderer_mod
+
+    calls = {"put": [], "patched": None, "sediment": None, "rendered": None}
+
+    monkeypatch.setattr(
+        tpl_svc.TplFillTaskService, "latest_done",
+        staticmethod(lambda template_id, tenant_id: SimpleNamespace(
+            id="task1", template_id=template_id, status="done",
+            values=task_values, result_file_id="v1_result_task1.docx")))
+    monkeypatch.setattr(
+        tpl_svc.TplTemplateVersionService, "latest",
+        staticmethod(lambda template_id: SimpleNamespace(
+            id="ver1", version=1, render_file_id="v1_render.docx",
+            placeholders=placeholders if placeholders is not None else [{"key": "approval_authority", "name": "审批权限", "anchor": "审批权限："}])))
+    monkeypatch.setattr(
+        tpl_svc.TplTemplateService, "get_or_none",
+        staticmethod(lambda id=None: SimpleNamespace(file_type="docx")))
+    monkeypatch.setattr(tpl_svc, "_storage_get", lambda bucket, name: b"render-copy-blob")
+    monkeypatch.setattr(
+        tpl_svc, "_storage_put",
+        lambda bucket, name, blob: calls["put"].append((bucket, name, blob)))
+
+    def fake_render(file_type, blob, values, addr_by_key=None):
+        if render_raises:
+            raise ValueError("boom")
+        calls["rendered"] = dict(values)
+        return b"new-docx"
+
+    monkeypatch.setattr(renderer_mod, "render", fake_render)
+    monkeypatch.setattr(
+        tpl_svc.TplFillTaskService, "patch_values",
+        staticmethod(lambda task_id, values: calls.__setitem__("patched", (task_id, values)) or True))
+    monkeypatch.setattr(
+        tpl_svc.TplTemplateVersionService, "sediment_defaults",
+        staticmethod(lambda template_id, version_id, values, override_keys=None:
+                     calls.__setitem__("sediment", (template_id, version_id, dict(values), set(override_keys or set()))) or True))
+    return calls
+
+
+def test_modify_requires_template_or_name(monkeypatch):
+    out = _make_tool()._invoke(action="modify", params='{"k": "v"}')
+    assert "template_id" in out and "template_name" in out
+
+
+def test_modify_requires_params(monkeypatch):
+    out = _make_tool()._invoke(action="modify", template_id="t1", params="")
+    assert "params" in out
+    out2 = _make_tool()._invoke(action="modify", template_id="t1", params="{bad json")
+    assert "params" in out2
+
+
+def test_modify_no_done_task(monkeypatch):
+    tpl_svc = _svc()
+    monkeypatch.setattr(tpl_svc.TplFillTaskService, "latest_done",
+                        staticmethod(lambda template_id, tenant_id: None))
+    out = _make_tool()._invoke(action="modify", template_id="t1", params='{"k": "v"}')
+    assert "已完成" in out and "fill" in out
+
+
+def test_modify_unknown_key_rejected_without_touching_doc(monkeypatch):
+    tpl_svc = _svc()
+    calls = _patch_modify_env(monkeypatch, tpl_svc)
+    out = _make_tool()._invoke(action="modify", template_id="t1",
+                               params='{"nope_key": "李港"}')
+    assert "不在该范本填写点" in out and "nope_key" in out
+    assert calls["put"] == [] and calls["patched"] is None
+
+
+def test_modify_success_merges_and_overwrites(monkeypatch):
+    tpl_svc = _svc()
+    calls = _patch_modify_env(
+        monkeypatch, tpl_svc,
+        task_values={"cells": {"approval_authority": "not_found", "other": "filled"},
+                     "render": {"approval_authority": "", "other": "已批准"}},
+        placeholders=[{"key": "approval_authority", "name": "审批权限", "anchor": "审批权限："},
+                      {"key": "other", "name": "其他", "anchor": "其他："}])
+    out = _make_tool()._invoke(action="modify", template_id="t1",
+                               params='{"approval_authority": "李港"}')
+    assert "就地修改" in out and "李港" in out and "task1" in out
+    # 覆盖写原成稿对象名（卡片链接不变）
+    assert calls["put"][0][1] == "v1_result_task1.docx"
+    # 重渲染用合并后的完整产值（原值 + patch）
+    assert calls["rendered"] == {"approval_authority": "李港", "other": "已批准"}
+    # values 回写：patch 置 filled，其他字段保留
+    tid, values = calls["patched"]
+    assert tid == "task1"
+    assert values["render"] == {"approval_authority": "李港", "other": "已批准"}
+    assert values["cells"]["approval_authority"] == "filled"
+    assert values["cells"]["other"] == "filled"
+    # patch 沉淀为默认值（override 口径）
+    assert calls["sediment"] == ("t1", "ver1", {"approval_authority": "李港"}, {"approval_authority"})
+
+
+def test_modify_empty_value_marks_not_found(monkeypatch):
+    tpl_svc = _svc()
+    calls = _patch_modify_env(
+        monkeypatch, tpl_svc,
+        task_values={"cells": {"approval_authority": "filled"}, "render": {"approval_authority": "旧值"}})
+    out = _make_tool()._invoke(action="modify", template_id="t1",
+                               params='{"approval_authority": ""}')
+    assert "就地修改" in out
+    assert calls["patched"][1]["cells"]["approval_authority"] == "not_found"
+    assert calls["patched"][1]["render"]["approval_authority"] == ""
+
+
+def test_modify_render_fail_leaves_original(monkeypatch):
+    tpl_svc = _svc()
+    calls = _patch_modify_env(monkeypatch, tpl_svc, render_raises=True)
+    out = _make_tool()._invoke(action="modify", template_id="t1",
+                               params='{"approval_authority": "李港"}')
+    assert "渲染异常" in out and "未改动" in out
+    assert calls["put"] == [] and calls["patched"] is None
+
+
+def test_modify_by_name_unique_resolves(monkeypatch):
+    tpl_svc = _svc()
+    calls = _patch_modify_env(monkeypatch, tpl_svc,
+                              task_values={"cells": {}, "render": {}})
+    seen = {}
+
+    def fake_list(tenant_id, keyword="", **kw):
+        seen["kw"] = keyword
+        return ([{"id": "t1", "name": "机电施工招标范本", "file_type": "docx", "status": "published"}], 1)
+
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_list_page", staticmethod(fake_list))
+    out = _make_tool()._invoke(action="modify", template_name="机电施工",
+                               params='{"approval_authority": "李港"}')
+    assert seen["kw"] == "机电施工"
+    assert "就地修改" in out
+    assert calls["put"][0][0] == "t1"
+
+
+def test_modify_by_name_multi_asks(monkeypatch):
+    tpl_svc = _svc()
+    calls = _patch_modify_env(monkeypatch, tpl_svc)
+    rows = [{"id": "t1", "name": "范本A", "file_type": "docx", "status": "published"},
+            {"id": "t2", "name": "范本B", "file_type": "docx", "status": "published"}]
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_list_page",
+                        staticmethod(lambda tenant_id, keyword="", **kw: (rows, 2)))
+    out = _make_tool()._invoke(action="modify", template_name="范本",
+                               params='{"approval_authority": "李港"}')
+    assert "请指定 id" in out
+    assert calls["put"] == []

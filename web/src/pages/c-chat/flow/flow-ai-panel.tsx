@@ -12,6 +12,7 @@ import {
   replayTemplateFillEvents,
 } from '@/hooks/template-fill-stream';
 import { useSendMessageBySSE } from '@/hooks/use-send-message';
+import { useTemplateFillRunRecovery } from '@/hooks/use-template-fill-run-recovery';
 import type { FlowDocRun } from '@/services/flow-service';
 import {
   addFlowComment,
@@ -61,10 +62,10 @@ function parseAndReplay(raw: unknown) {
   if (!events) return undefined;
   try {
     const restored = replayTemplateFillEvents(events);
-    // 挂起的确认卡（字段确认/范本选择）：仅当挂起事件是最后一条时保留交互态——
-    // 服务端画布在等待期仍存活（select/confirm 轮询 + 心跳不随 SSE 断连停止），
-    // 刷新后用户仍可在超时前提交选择/确认；一旦其后有任何后续事件（超时/开填/
-    // 终态），说明挂起已被消费，剥掉防止重放出永不生效的僵尸卡。
+    // 挂起卡（字段确认/范本选择）liveness 的「旧数据退化路径」：仅当挂起事件是
+    // 最后一条时保留交互态。新数据的权威判定在运行快照恢复 hook（useTemplateFillRunRecovery，
+    // 设计 2026-09-16）——有 canvas run id 时由快照整体覆盖本重放态；本启发式只为
+    // 无 run id 的历史记录兜底（行为与快照方案上线前一致），不再承担新数据判定。
     if (restored && events.length) {
       const lastStage = (events[events.length - 1] as { stage?: string })
         ?.stage;
@@ -255,6 +256,8 @@ export default function FlowAiPanel({
 
   // 刷新恢复：从本流程已保存记录的 template_fill_events 重放范本填写进度
   // （数据源为 flow 自持存储，不再依赖 agent 会话消息）。仅挂载时恢复一次。
+  // 记录被重放所用的原始事件序列（供运行快照恢复 hook 发现 canvas run id）
+  const [replayEvents, setReplayEvents] = useState<unknown>(undefined);
   const replayRestoredRef = useRef(false);
   useEffect(() => {
     if (replayRestoredRef.current || aiChats.length === 0) return;
@@ -266,11 +269,20 @@ export default function FlowAiPanel({
       if (restored) {
         templateFillRef.current = restored;
         setLastTemplateFill(restored);
+        setReplayEvents(aiChats[i].template_fill_events);
         break;
       }
     }
     // 仅挂载后 aiChats 首次到位时恢复一次
   }, [aiChats, lastTemplateFill]);
+
+  // 运行快照权威恢复（设计 2026-09-16）：重放态发现 canvas run id → 拉运行快照，
+  // 存在则整体覆盖重放态（未完结持续轮询），键过期则挂起卡标灰；无 run id 的
+  // 旧数据透出重放态本身（行为退化为现状）
+  const recoveredTemplateFill = useTemplateFillRunRecovery(
+    replayEvents,
+    lastTemplateFill ?? undefined,
+  );
 
   // 从流式事件中提取 session_id（多轮续聊依赖）
   useEffect(() => {
@@ -340,15 +352,16 @@ export default function FlowAiPanel({
       onLiveChatChange?.(completed ?? next);
     } else {
       // completed 清空（自动/手动保存成功）后，仍用最近一次成稿快照上报，
-      // 保证成稿条与「存为流程版本」按钮持续可见可用
+      // 保证成稿条与「存为流程版本」按钮持续可见可用；刷新后上报快照恢复态
+      //（recoveredTemplateFill 含运行快照轮询的权威覆盖）
       onLiveChatChange?.(
         completed ??
-          (lastTemplateFill
+          (recoveredTemplateFill
             ? {
                 instruction: '',
                 response: '',
                 busy: false,
-                templateFill: lastTemplateFill,
+                templateFill: recoveredTemplateFill,
               }
             : null),
       );
@@ -360,7 +373,7 @@ export default function FlowAiPanel({
     sending,
     onLiveChatChange,
     completed,
-    lastTemplateFill,
+    recoveredTemplateFill,
   ]);
 
   // 自动保存：一轮对话流式结束后，自动将指令+回复写入流程记录（不建版本），
@@ -522,6 +535,9 @@ export default function FlowAiPanel({
       }
       setCompleted(null);
       setLastTemplateFill(null);
+      // 新一轮发送：停掉刷新恢复的运行快照轮询（否则旧运行的快照态会在新一轮
+      // 结束保存后压过本轮状态）——恢复链路只服务「刷新后未发送」的场景
+      setReplayEvents(undefined);
       setLastRecord(null);
       autoSavedRef.current = false;
       setValue('');

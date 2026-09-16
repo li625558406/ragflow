@@ -496,4 +496,7 @@ export default {
   // 断连重连：后台填写任务进度快照（status/done/total/values/download/error/stalled）
   templateFillTaskProgress: (taskId: string) =>
     `${restAPIv1}/template/fill/fill-task/${taskId}/progress`,
+  // 刷新恢复权威态：画布运行快照（按 canvas task_id 索引，覆盖挂起卡+全部模板行）
+  templateFillRunSnapshot: (canvasTaskId: string) =>
+    `${restAPIv1}/template/fill/fill-run/${canvasTaskId}/snapshot`,
 };

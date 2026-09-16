@@ -411,6 +411,7 @@ export default function FlowPanel({
               <div key={id} className={id === activeId ? 'h-full' : 'hidden'}>
                 <FlowDetail
                   flowId={id}
+                  visible={id === activeId}
                   commentPortal={commentSlots[id] ?? null}
                   onCommentsCount={(n) => {
                     // 仅选中流程驱动批注角标（隐藏实例的批注数不串显）

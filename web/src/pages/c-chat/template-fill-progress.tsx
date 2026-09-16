@@ -21,6 +21,7 @@ export default function TemplateFillProgress({
   onConfirmSubmitted,
   onSelectSubmitted,
   onLivePreviewOpenChange,
+  forceClosedLivePreview,
 }: {
   state?: ITemplateFillState;
   /** 实时流式进行中（c-chat 传 sendLoading 派生标志；flow 传 live.busy）：
@@ -37,6 +38,10 @@ export default function TemplateFillProgress({
   onSelectSubmitted?: () => void;
   /** 实时预览抽屉开/关上报：使用方收缩左右布局为抽屉腾位（c-chat 用；flow 不传则无腾位） */
   onLivePreviewOpenChange?: (open: boolean) => void;
+  /** 强制收起实时预览（预览内存治理，设计 2026-09-16）：流程页签常驻挂载的隐藏
+   *  详情（visible=false）透传 true——docx-preview 整本文档 DOM 树随隐藏实例驻留，
+   *  多流程切换叠加会 OOM；保证任意时刻至多一棵大文档 DOM 树 */
+  forceClosedLivePreview?: boolean;
 }) {
   // 实时预览：当前打开正文预览的范本 id（存 id 而非对象快照，values 更新时
   // 从 state.templates 派生最新引用，预览槽位才能随 filling 事件实时填入）
@@ -59,6 +64,11 @@ export default function TemplateFillProgress({
   useEffect(() => {
     onLivePreviewOpenChange?.(Boolean(liveTpl));
   }, [liveTpl, onLivePreviewOpenChange]);
+  // 隐藏详情强制收预览：liveTarget 清空后 liveTpl 派生为 undefined，预览组件卸载，
+  // 整本 docx DOM 树随之释放
+  useEffect(() => {
+    if (forceClosedLivePreview) setLiveTarget(null);
+  }, [forceClosedLivePreview]);
   // 画布挂起确认卡片（confirm_pending / select_pending）：附加块，置于范本行列表之上
   const confirmCard = mergedState?.pendingConfirm && (
     <div className="mt-2">

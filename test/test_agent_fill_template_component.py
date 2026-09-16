@@ -104,9 +104,12 @@ class FakeService:
 class _Row:
     """tpl_fill_task 行桩：status/result_file_id/error 按 id 供给观察者轮询。"""
 
-    def __init__(self, id, status="pending", result_file_id="", error=""):
+    def __init__(self, id, status="pending", result_file_id="", error="",
+                 values=None, template_version_id=""):
         self.id, self.status, self.result_file_id, self.error = \
             id, status, result_file_id, error
+        self.values = values or {}
+        self.template_version_id = template_version_id
 
 
 class FakeTaskService:
@@ -120,11 +123,21 @@ class FakeTaskService:
         self.queries = {}
         self.id_map = {}
         self.inserted = []
+        self.latest_done_map = {}  # template_id -> _Row 桩（增量填写场景）
         self._next = 0
 
     @classmethod
     def find_running(cls, template_id, tenant_id):
         return None
+
+    @classmethod
+    def latest_done(cls, template_id, tenant_id):
+        # instance 调用方法（Python 自动传 self 为 cls）
+        inst = getattr(cls, "_active_instance", None)
+        if inst is None:
+            return None
+        row = inst.latest_done_map.get(template_id)
+        return row
 
     def insert(self, **kw):
         self._next += 1
@@ -248,6 +261,9 @@ def patched_env(monkeypatch):
                         lambda task_id: calls["spawn"].append(task_id))
     monkeypatch.setattr(fill_template.executor, "read_progress_snapshot",
                         lambda task_id: None)
+    # FakeTaskService.latest_done 是 classmethod，节点走 cls 调用；桩里走 _active_instance
+    # 单例路由找最新构造的桩实例，方便各测试通过 svc.latest_done_map[tid] 注入历史 done 行
+    FakeTaskService._active_instance = svc
 
     async def _sleep(_s):
         return None
@@ -667,6 +683,120 @@ def test_confirm_payload_scalar_values_defensive(monkeypatch):
         "values 标量 / changed 非串兜底为空，不得 AttributeError"
 
 
+def _incremental_overrides_for_t1():
+    """模拟节点增量调用：候选只列 patch 项，兜底 values = LLM 抽出的 direct
+    （用户在对话里说「approval_doc 填写成 港里」→ {approval_doc: 港里}）。"""
+    return {
+        "t1": {
+            "candidates": [
+                {"key": "approval_doc", "name": "批文名称及编号",
+                 "default_value": "原批文"},
+                {"key": "project_owner", "name": "项目业主",
+                 "default_value": "原业主"},
+            ],
+            "predicted": ["approval_doc", "project_owner"],
+            "fallback_changed": {"approval_doc", "project_owner"},
+            "fallback_values": {"approval_doc": "港里"},
+        },
+    }
+
+
+def test_incremental_confirm_empty_values_preserves_fallback(monkeypatch):
+    """增量模式 + 用户在确认卡不输入（前端 inputs 默认空），点「确认并继续
+    填写」→ 提交载荷 values={}。此时必须保留 fallback_values（LLM 从用户原话
+    抽出的 direct），否则对话里说的「X 填写成 Y」会被静默丢弃、补丁字段留空。
+    修复点：ov 分支先 dict(fb_values)，再叠非空用户输入。"""
+    cpn = _confirm_component(monkeypatch)
+    payload = json.dumps({
+        "t1": {"changed": ["approval_doc", "project_owner"], "values": {}},
+    }, ensure_ascii=False)
+
+    class FakeRedis:
+        def get(self, k):
+            return payload
+
+        def delete(self, k):
+            pass
+
+    monkeypatch.setattr(fill_template, "REDIS_CONN", FakeRedis())
+    # 增量模式下无需预判，但函数仍可能调用，stub 兜底
+    async def fake_predict(*a, **kw):
+        return set()
+    monkeypatch.setattr(fill_template.executor, "predict_changed_fields", fake_predict)
+
+    decisions = asyncio.run(cpn._confirm_changed_fields(
+        _chosen_with_defaults(), "需求", {}, incremental_overrides=_incremental_overrides_for_t1()))
+    # fallback_values 必须保留：用户空输入 ≠ 用户改值
+    assert decisions == {"t1": {
+        "changed": {"approval_doc", "project_owner"},
+        "values": {"approval_doc": "港里"},
+    }}
+
+
+def test_incremental_confirm_user_non_empty_overrides_fallback(monkeypatch):
+    """用户在确认卡显式改了值（非空字符串）→ 覆盖 fallback；空字符串=未动=保留
+    fallback（防前端空串误判覆盖）。"""
+    cpn = _confirm_component(monkeypatch)
+    payload = json.dumps({
+        "t1": {
+            "changed": ["approval_doc"],
+            # 用户在 approval_doc 输入框改成了别的值，project_owner 没动
+            "values": {"approval_doc": "用户改的批文", "project_owner": ""},
+        },
+    }, ensure_ascii=False)
+
+    class FakeRedis:
+        def get(self, k):
+            return payload
+
+        def delete(self, k):
+            pass
+
+    monkeypatch.setattr(fill_template, "REDIS_CONN", FakeRedis())
+    async def fake_predict(*a, **kw):
+        return set()
+    monkeypatch.setattr(fill_template.executor, "predict_changed_fields", fake_predict)
+
+    decisions = asyncio.run(cpn._confirm_changed_fields(
+        _chosen_with_defaults(), "需求", {}, incremental_overrides=_incremental_overrides_for_t1()))
+    # approval_doc 用户改了 → 用用户的；project_owner 不在 fallback_values 里、
+    # 用户空输入 → 不入 values（空串=未动，不应覆盖）
+    assert decisions["t1"]["values"] == {"approval_doc": "用户改的批文"}, \
+        "非空用户输入覆盖 fallback；空串=未动不入 values"
+
+
+def test_incremental_confirm_unknown_keys_filtered(monkeypatch):
+    """载荷里塞越范本/非候选 key → 必须过滤；保留 fallback_values 不变。"""
+    cpn = _confirm_component(monkeypatch)
+    payload = json.dumps({
+        "t1": {
+            "changed": ["approval_doc", "ghost", "unknown"],
+            "values": {"approval_doc": "", "ghost": "x", "unknown": "y"},
+        },
+        "t2": {"changed": ["x"], "values": {"x": "越范本"}},  # 越范本
+    }, ensure_ascii=False)
+
+    class FakeRedis:
+        def get(self, k):
+            return payload
+
+        def delete(self, k):
+            pass
+
+    monkeypatch.setattr(fill_template, "REDIS_CONN", FakeRedis())
+    async def fake_predict(*a, **kw):
+        return set()
+    monkeypatch.setattr(fill_template.executor, "predict_changed_fields", fake_predict)
+
+    decisions = asyncio.run(cpn._confirm_changed_fields(
+        _chosen_with_defaults(), "需求", {}, incremental_overrides=_incremental_overrides_for_t1()))
+    # t2 整体忽略；t1 非候选 key 过滤；fallback 保留
+    assert decisions == {"t1": {
+        "changed": {"approval_doc"},  # ghost/unknown 过滤
+        "values": {"approval_doc": "港里"},  # 用户空输入 + fallback
+    }}
+
+
 def test_confirm_no_default_items_skips_all(monkeypatch):
     """回归红线：全部选中范本均无默认值字段 → 直接返回 {}，不推事件、不触 Redis、
     不调预判（首填链路与现状完全一致）。"""
@@ -709,7 +839,7 @@ def test_decision_conditional_execution_skips_unchanged_defaults(patched_env):
     cpn = _make_component(TemplateFillParam())
     cpn._param.dataset_ids = ["kb1"]
 
-    async def fake_confirm(chosen, query, begin_fields):
+    async def fake_confirm(chosen, query, begin_fields, *, incremental_overrides=None):
         return {"t1": {"changed": {"a"}, "values": {"f": "直填值"}}}
 
     cpn._confirm_changed_fields = fake_confirm
@@ -735,7 +865,7 @@ def test_decision_empty_direct_value_renders_blank(patched_env):
     cpn = _make_component(TemplateFillParam())
     cpn._param.dataset_ids = ["kb1"]
 
-    async def fake_confirm(chosen, query, begin_fields):
+    async def fake_confirm(chosen, query, begin_fields, *, incremental_overrides=None):
         return {"t1": {"changed": set(), "values": {"a": ""}}}
 
     cpn._confirm_changed_fields = fake_confirm
@@ -1053,3 +1183,248 @@ def test_invoke_async_multi_selection_no_task_id_skips_pause(patched_env, monkey
     stages2 = [e["stage"] for e in _drain_events(cpn2)]
     assert "select_pending" not in stages2
     assert len(svc.inserted) == 1
+
+
+# ========== 增量填写（同范本有 done → 走增量路径）==========
+
+def _stage_candidate_with_baseline(template_id="t1", placeholders=None,
+                                     baseline_render=None, baseline_version="v1"):
+    """布置场景：单范本 + latest_done 返回含 baseline render 的历史任务行（版本匹配）。"""
+    placeholders = placeholders or [_ver_slot("title"), _ver_slot("body")]
+    FakeService.rows = [{"id": template_id, "name": "道路报告", "description": "d",
+                         "file_type": "docx"}]
+    ver = _ver(placeholders)
+    FakeService.vers = {template_id: ver}
+    # 让 baseline 版本 = ver.id（默认 v1）
+    FakeService.vers[template_id] = _ver(placeholders, render_file_id="render_obj")
+    return _Row("hist-task-1", status="done", result_file_id="hist-render",
+                values={"render": baseline_render or {}})
+
+
+def _patch_extract_patch_llm(monkeypatch, payload: dict):
+    """monkeypatch extract_patch_values 用 LLM 的 stub：返回指定 payload。"""
+    captured = {}
+
+    class _Stub:
+        async def async_chat(self, system, msgs):
+            captured["system"] = system
+            captured["msgs"] = msgs
+            return json.dumps(payload, ensure_ascii=False)
+
+    # 直接替 extract_patch_values 的 LLM 调用（节点也走 _build_chat_mdl）
+    monkeypatch.setattr(fill_template.executor, "_build_chat_mdl", lambda *_: _Stub())
+    return captured
+
+
+def test_incremental_existing_done_baseline_applied(patched_env, monkeypatch):
+    """同范本有 done baseline → 走增量：确认卡只列 patch 项，任务下发带
+    _baseline_values（executor 端兜回缺失字段）。"""
+    svc = patched_env["svc"]
+    base_render = {"title": "李港", "body": "原正文", "extra": "原附注"}
+    svc.latest_done_map["t1"] = _Row("hist-task", status="done",
+                                      result_file_id="hist-render",
+                                      values={"render": base_render},
+                                      template_version_id="v1")
+    _stage_one_candidate(placeholders=[
+        _ver_slot("title"), _ver_slot("body"), _ver_slot("extra")])
+    _patch_extract_patch_llm(monkeypatch, {
+        "intent": "patch",
+        "direct": {"title": "李港"},
+        "changed": ["title"],
+    })
+    _seq_done(svc)
+    cpn = _make_component(TemplateFillParam())
+    cpn._param.dataset_ids = ["kb1"]
+    asyncio.run(cpn._invoke_async())
+
+    # 任务下发：params 应包含 _baseline_values（executor 端 split_canvas_params 拆出 baseline_values）
+    tid, kw = svc.inserted[0]
+    assert "_baseline_values" in kw["params"]
+    assert kw["params"]["_baseline_values"] == base_render
+
+
+def test_incremental_baseline_version_mismatch_skips(patched_env, monkeypatch):
+    """latest_done 的版本与当前最新版本不一致 → 跳过 baseline，走全量填充（baseline 不能跨版本混用）。"""
+    svc = patched_env["svc"]
+    # baseline 模板版本是 v1，当前模板版本改 v2：节点比对失败，跳过
+    svc.latest_done_map["t1"] = _Row("hist", status="done", result_file_id="hr",
+                                     values={"render": {"title": "OLD_VERSION"}},
+                                     template_version_id="v1")
+    _stage_one_candidate()
+    # 当前 ver 的 id 默认是 _ver 的 "v1"（参 _ver fixture）；改为 v2 触发版本不一致
+    FakeService.vers["t1"].id = "v2"
+    _seq_done(svc)
+    cpn = _make_component(TemplateFillParam())
+    cpn._param.dataset_ids = ["kb1"]
+    asyncio.run(cpn._invoke_async())
+    # 没 baseline → 不下发非空 _baseline_values（key 存在但为空 dict = 无基线）
+    tid, kw = svc.inserted[0]
+    assert not kw["params"].get("_baseline_values")
+
+
+def test_noop_intent_uses_baseline_light_dup(patched_env, monkeypatch):
+    """intent=noop → 不出确认卡（保留 baseline 兜回）；任务仍 spawn 但决策空。"""
+    svc = patched_env["svc"]
+    svc.latest_done_map["t1"] = _Row("hist", status="done",
+                                     values={"render": {"title": "上次", "body": "上次正文"}},
+                                     template_version_id="v1")
+    _stage_one_candidate(placeholders=[_ver_slot("title"), _ver_slot("body")])
+    _patch_extract_patch_llm(monkeypatch, {"intent": "noop"})
+    _seq_done(svc)
+    cpn = _make_component(TemplateFillParam())
+    cpn._param.dataset_ids = ["kb1"]
+    asyncio.run(cpn._invoke_async())
+    tid, kw = svc.inserted[0]
+    # baseline 仍下传（executor 端兜回 missing）
+    assert kw["params"].get("_baseline_values") == {
+        "title": "上次", "body": "上次正文"}
+    # _changed_keys 空（_llm_fill_items 返回 []）
+    assert kw["params"]["_changed_keys"] == []
+
+
+def test_refill_intent_drops_baseline(patched_env, monkeypatch):
+    """intent=refill → baselines.pop + 不下发 baseline_values，走全量填写。"""
+    svc = patched_env["svc"]
+    svc.latest_done_map["t1"] = _Row("hist", status="done",
+                                     values={"render": {"title": "上次"}},
+                                     template_version_id="v1")
+    _stage_one_candidate()
+    _patch_extract_patch_llm(monkeypatch, {"intent": "refill"})
+    _seq_done(svc)
+    cpn = _make_component(TemplateFillParam())
+    cpn._param.dataset_ids = ["kb1"]
+    asyncio.run(cpn._invoke_async())
+    tid, kw = svc.inserted[0]
+    assert not kw["params"].get("_baseline_values")
+    # 全量范本：_changed_keys = 所有 LLM 占位符 key
+    assert set(kw["params"]["_changed_keys"]) == {"项目名称"}
+
+
+def test_no_latest_done_falls_back_to_full_fill(patched_env):
+    """无 done baseline → 走现状全量填充（latest_done_map 空）。"""
+    svc = patched_env["svc"]
+    _stage_one_candidate()
+    _seq_done(svc)
+    cpn = _make_component(TemplateFillParam())
+    cpn._param.dataset_ids = ["kb1"]
+    asyncio.run(cpn._invoke_async())
+    tid, kw = svc.inserted[0]
+    assert not kw["params"].get("_baseline_values")
+    assert kw["params"]["_changed_keys"] == ["项目名称"]
+
+
+def test_incremental_summary_text_branches(patched_env, monkeypatch):
+    """汇总文案分支：增量 patch / noop / 全量三种文案互不相同。"""
+    svc = patched_env["svc"]
+
+    # Case A：增量 patch
+    svc.latest_done_map["t1"] = _Row("hist", status="done",
+                                     values={"render": {"title": "李港"}},
+                                     template_version_id="v1")
+    _stage_one_candidate(placeholders=[_ver_slot("title"), _ver_slot("body")])
+    _patch_extract_patch_llm(monkeypatch, {
+        "intent": "patch",
+        "direct": {"title": "李港"},
+        "changed": ["title"],
+    })
+    _seq_done(svc)
+    cpn = _make_component(TemplateFillParam())
+    cpn._param.dataset_ids = ["kb1"]
+    asyncio.run(cpn._invoke_async())
+    content = cpn._param.outputs["content"]["value"]
+    assert "本次增量更新 1 个字段" in content
+    assert "其余沿用上次填写值" in content
+
+    # 重置
+    svc.latest_done_map.clear()
+    FakeService.rows.clear()
+    FakeService.vers.clear()
+    svc.inserted.clear()
+    svc.id_map.clear()
+    svc.queries.clear()
+    svc.sequences = {}
+    svc._next = 0
+    fill_template.executor._last_snapshot_ts.clear()
+
+
+def test_incremental_cands_carry_direct_value(patched_env, monkeypatch):
+    """增量模式 cands 携带 direct_value（LLM 从用户原话抽出的 direct），供前端
+    确认卡输入框预填：用户提交时若没改，values_raw 等于 direct_value → 后端
+    ov 分支非空 user input 覆盖 fallback 路径，值与 fallback 一致；同时让用户
+    看到/编辑 AI 抽取结果。无 direct 的字段（如 LLM 未抽出）必须为空串。"""
+    svc = patched_env["svc"]
+    svc.latest_done_map["t1"] = _Row("hist", status="done",
+                                     values={"render": {"title": "原标题",
+                                                        "body": "原正文"}},
+                                     template_version_id="v1")
+    _stage_one_candidate(placeholders=[_ver_slot("title"), _ver_slot("body")])
+    # LLM 抽：title 有 direct 值；body 只入 changed 没 direct 值（兜底走 baseline）
+    _patch_extract_patch_llm(monkeypatch, {
+        "intent": "patch",
+        "direct": {"title": "李港"},
+        "changed": ["title", "body"],
+    })
+    _seq_done(svc)
+    cpn = _make_component(TemplateFillParam())
+    cpn._param.dataset_ids = ["kb1"]
+
+    # 拦截 _confirm_changed_fields，捕获 incremental_overrides 入参
+    captured = {}
+
+    async def fake_confirm(chosen, query, begin_fields, *, incremental_overrides=None):
+        captured["overrides"] = incremental_overrides
+        # 返回空 decision → 模拟「用户点确认并继续填写」走默认 patch 路径
+        return {tid: {"changed": set(), "values": {}} for c in chosen for tid in [c["template_id"]]}
+
+    cpn._confirm_changed_fields = fake_confirm
+    asyncio.run(cpn._invoke_async())
+
+    ov = captured["overrides"]
+    assert "t1" in ov, "增量模式必须传 incremental_overrides[tid]"
+    cands = ov["t1"]["candidates"]
+    by_key = {c["key"]: c for c in cands}
+    # title 有 direct → 写入 direct_value（"李港"）；default_value 是基线原值（"原标题"）
+    assert by_key["title"]["direct_value"] == "李港"
+    assert by_key["title"]["default_value"] == "原标题"
+    # body 无 direct → direct_value 空串（前端不预填）
+    assert by_key["body"]["direct_value"] == ""
+    assert by_key["body"]["default_value"] == "原正文"
+
+
+def test_incremental_cands_direct_value_skips_non_llm_slots(patched_env, monkeypatch):
+    """非 llm 填写点（param 模式）不进 cands（不参与确认），自然也不带 direct_value；
+    patch_keys 里的 llm 占位符才进入 candidates。本测试覆盖：direct 含非 llm
+    key 时也不出现在 candidates 里（cands 只取 by_key 交集）。"""
+    svc = patched_env["svc"]
+    svc.latest_done_map["t1"] = _Row("hist", status="done",
+                                     values={"render": {"title": "原"}},
+                                     template_version_id="v1")
+    # 一个 llm 字段（title）+ 一个 param 字段（phone 填模式 param）
+    phs = [_ver_slot("title"),
+           {"key": "phone", "name": "电话", "fill_mode": "param", "addr": "B2"}]
+    _stage_one_candidate(placeholders=phs)
+    # LLM 抽到 direct={"title": "李港", "phone": "12345"}（不应被采用）
+    _patch_extract_patch_llm(monkeypatch, {
+        "intent": "patch",
+        "direct": {"title": "李港", "phone": "12345"},
+        "changed": ["title", "phone"],
+    })
+    _seq_done(svc)
+    cpn = _make_component(TemplateFillParam())
+    cpn._param.dataset_ids = ["kb1"]
+
+    captured = {}
+
+    async def fake_confirm(chosen, query, begin_fields, *, incremental_overrides=None):
+        captured["overrides"] = incremental_overrides
+        return {tid: {"changed": set(), "values": {}} for c in chosen for tid in [c["template_id"]]}
+
+    cpn._confirm_changed_fields = fake_confirm
+    asyncio.run(cpn._invoke_async())
+
+    cands = captured["overrides"]["t1"]["candidates"]
+    keys = [c["key"] for c in cands]
+    assert "title" in keys
+    assert "phone" not in keys, "非 llm 字段不进 candidates（与 _llm_fill_items 范围对齐）"
+    by_key = {c["key"]: c for c in cands}
+    assert by_key["title"]["direct_value"] == "李港"
