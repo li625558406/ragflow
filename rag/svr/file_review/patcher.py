@@ -55,8 +55,17 @@ def apply_patches(text: str, patches) -> tuple[str, list]:
     out = text
     applied = []
     for p in patches or []:
-        find_str = (p or {}).get("find", "") or ""
-        replace_str = (p or {}).get("replace", "") or ""
+        if not isinstance(p, dict):
+            # 非 dict 元素（如 LLM 直接吐了个字符串）跳过即可，不能让同批其余合规 patch 一起作废
+            applied.append(False)
+            continue
+        find_str = p.get("find")
+        replace_str = p.get("replace")
+        # 非 str 一律按「缺失」跳过，绝不折成空串："" 表示显式删除该片段，
+        # {"replace": null} 表示「LLM 没给出替换文本」——混同会让脏字段静默删掉正文。
+        if not isinstance(find_str, str) or not isinstance(replace_str, str):
+            applied.append(False)
+            continue
         if find_unique(out, find_str) >= 0:
             out = out.replace(find_str, replace_str, 1)
             applied.append(True)
@@ -84,13 +93,25 @@ def apply_patches_to_docx(file_bytes: bytes, patches) -> tuple[bytes, list]:
     paragraphs = list(addr_map.values())
     applied = []
     for p in patches or []:
-        find_str = (p or {}).get("find", "") or ""
-        replace_str = (p or {}).get("replace", "") or ""
+        if not isinstance(p, dict):
+            # 非 dict 元素跳过，不抛异常打断整批
+            applied.append(False)
+            continue
+        find_str = p.get("find")
+        replace_str = p.get("replace")
+        # 非 str 一律按「缺失」跳过，绝不折成空串（"" 是显式删除，语义不能丢）
+        if not isinstance(find_str, str) or not isinstance(replace_str, str):
+            applied.append(False)
+            continue
         hits = [para for para in paragraphs if find_str and find_str in para.text]
         if len(hits) != 1 or find_unique(hits[0].text, find_str) < 0:
             applied.append(False)
             continue
         applied.append(bool(_docx_replace(hits[0], find_str, replace_str, occ=1)))
+    if not any(applied):
+        # 全部未生效 → 文档一字未改（_replace_in_paragraph 返回 False 不产生部分写入），
+        # 必须返回原字节：重存会重排 XML 字节，让「零改动」被 T6 误存成「修复版新版本」。
+        return file_bytes, applied
     buf = io.BytesIO()
     doc.save(buf)
     return buf.getvalue(), applied

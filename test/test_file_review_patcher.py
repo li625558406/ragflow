@@ -6,6 +6,7 @@ import zipfile
 
 import pytest
 from docx import Document
+from docx.shared import Pt
 
 from rag.svr.file_review.patcher import (
     apply_patches,
@@ -138,14 +139,49 @@ def test_apply_patches_to_docx_single_unique_replace():
     assert _texts(out) == ['报价：1500元', '工期：30天']
 
 
-def test_apply_patches_to_docx_cross_run_preserves_other_runs():
-    """跨 run 句：只重写 anchor 覆盖区间，段内其余 run 的文本/格式不动。"""
-    blob = _docx_bytes(['报价：1000元'], split_runs=True)
-    out, applied = apply_patches_to_docx(blob, [{'find': '1000元', 'replace': '1500元'}])
+def test_apply_patches_to_docx_preserves_run_formatting():
+    """格式保真是复用该原语的唯一理由，必须直接断言 rPr——只数 run 个数不可靠
+    （"把整段塞进首 run、其余清空"的错误实现下 run 数同样不变）。"""
+    doc = Document()
+    p = doc.add_paragraph()
+    r0 = p.add_run('报价：')
+    r0.bold = True
+    r0.font.size = Pt(10)
+    r1 = p.add_run('1000元')
+    r1.font.size = Pt(16)
+    doc.add_paragraph('工期：30天')          # 另一段，不应被动
+    buf = io.BytesIO()
+    doc.save(buf)
+
+    out, applied = apply_patches_to_docx(buf.getvalue(), [{'find': '1000元', 'replace': '1500元'}])
     assert applied == [True]
-    assert _texts(out) == ['报价：1500元']
-    # 跨 run 替换后仍是两个 run（区间外结构不被压平）
-    assert len(Document(io.BytesIO(out)).paragraphs[0].runs) == 2
+    d = Document(io.BytesIO(out))
+    assert [p.text for p in d.paragraphs] == ['报价：1500元', '工期：30天']
+    runs = d.paragraphs[0].runs
+    assert [r.text for r in runs] == ['报价：', '1500元']
+    assert runs[0].bold is True and runs[0].font.size == Pt(10)   # 区间外 run 格式原样
+    assert runs[1].font.size == Pt(16)                            # 替换值落在原 run，rPr 未被重建
+
+
+def test_apply_patches_to_docx_true_cross_run_straddle():
+    """锚**真正跨越** run 边界（'1000元' 被切成 '10' | '00元'）时仍能替换，
+    且只重写覆盖区间、保留前后 run 的格式。"""
+    doc = Document()
+    p = doc.add_paragraph()
+    r0 = p.add_run('报价：10')
+    r0.bold = True
+    r0.font.size = Pt(10)
+    r1 = p.add_run('00元')
+    r1.font.size = Pt(16)
+    buf = io.BytesIO()
+    doc.save(buf)
+
+    out, applied = apply_patches_to_docx(buf.getvalue(), [{'find': '1000元', 'replace': '1500元'}])
+    assert applied == [True]
+    runs = Document(io.BytesIO(out)).paragraphs[0].runs
+    assert ''.join(r.text for r in runs) == '报价：1500元'
+    assert runs[0].bold is True and runs[0].font.size == Pt(10)
+    assert runs[1].font.size == Pt(16)
 
 
 def test_apply_patches_to_docx_covers_header():
@@ -257,3 +293,61 @@ def test_apply_patches_to_docx_applied_length_matches_patches():
          {'find': '不存在', 'replace': 'x'}],
     )
     assert applied == [True, True, False]
+
+
+# ── 畸形输入必须"跳过"，不能静默删字 / 打断整批 ──────────────────
+def test_apply_patches_none_replace_is_skip_not_delete():
+    """LLM 输出 "replace": null = 「没给出替换文本」，必须跳过而不是删除命中文本。
+    （'' 才是显式删除；把 None 折成 '' 会让一次 LLM 脏字段不可逆地删掉正文。）"""
+    out, applied = apply_patches('报价：1000元', [{'find': '1000元', 'replace': None}])
+    assert out == '报价：1000元'
+    assert applied == [False]
+
+
+def test_apply_patches_to_docx_none_replace_is_skip_not_delete():
+    blob = _docx_bytes(['报价：1000元'])
+    out, applied = apply_patches_to_docx(blob, [{'find': '1000元', 'replace': None}])
+    assert applied == [False]
+    assert _texts(out) == ['报价：1000元']
+
+
+def test_apply_patches_falsy_non_str_replace_is_skip():
+    """0 / False 同样不是"删除"的意思。"""
+    out, applied = apply_patches(
+        'ab', [{'find': 'ab', 'replace': 0}, {'find': 'ab', 'replace': False}]
+    )
+    assert out == 'ab'
+    assert applied == [False, False]
+
+
+def test_apply_patches_non_str_find_is_skip_not_crash():
+    out, applied = apply_patches('abc', [{'find': 1, 'replace': 'Z'}])
+    assert out == 'abc'
+    assert applied == [False]
+
+
+def test_apply_patches_non_dict_element_does_not_abort_batch():
+    """真值非 dict 的元素跳过即可，不能让同批其余合规 patch 一起作废。"""
+    out, applied = apply_patches(
+        '报价：1000元', ['a-string', {'find': '1000元', 'replace': '1500元'}]
+    )
+    assert out == '报价：1500元'
+    assert applied == [False, True]
+
+
+def test_apply_patches_to_docx_non_dict_element_does_not_abort_batch():
+    blob = _docx_bytes(['报价：1000元'])
+    out, applied = apply_patches_to_docx(
+        blob, ['a-string', {'find': '1000元', 'replace': '1500元'}]
+    )
+    assert applied == [False, True]
+    assert _texts(out) == ['报价：1500元']
+
+
+def test_apply_patches_to_docx_all_failed_returns_input_bytes():
+    """有 patch 但全部未生效 → 文档一字未改，必须返回**原字节**：重存会重排 XML
+    字节，让"零改动"被 T6 误存成"修复版新版本"。"""
+    blob = _docx_bytes(['报价：1000元'])
+    out, applied = apply_patches_to_docx(blob, [{'find': '不存在', 'replace': 'x'}])
+    assert applied == [False]
+    assert out == blob
