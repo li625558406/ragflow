@@ -12,6 +12,8 @@
   _normalize_data 自动维护，本层不得手写 —— test_audit_timestamps_autofilled_by_framework
   用真实写入结果锁死这一点（手写 datetime 会退化成零值且 is not None 仍过）。
 """
+import json
+
 import peewee
 import pytest
 
@@ -71,12 +73,16 @@ def _tables_presets_and_cleanup():
             DB.close()
 
 
-def _mk_round(task_id, round_no, status, *, file_id, file_version="v1", **kw):
+def _mk_round(task_id, round_no, status, *, file_id=PFX + "-file", file_version="v1", **kw):
     """走 service 建轮次（审计字段由框架填，这里不传任何时间字段）。"""
     return FileReviewRoundService.create_round(
         task_id=task_id, file_id=file_id, round_no=round_no,
         template_id="bid_doc_format", user_query="审核请求",
         file_version=file_version, status=status, tenant_id="", created_by="u", **kw)
+
+
+def _round_row(rid):
+    return FileReviewRoundService.get_by_id(rid)
 
 
 def _mk_ann(*, round_id, task_id, file_id, status="open", file_version="v1", **kw):
@@ -484,3 +490,53 @@ def test_annotation_prev_annotation_id_chain_persisted():
         row = FileReviewAnnotationService.get_by_id(new)
     assert row.prev_annotation_id == old
     assert row.round_id == r2
+
+
+# ── 12. kb_ids 持久化 + 待处理标注跨轮取全 + 按轮幂等删除（T6 executor 依赖） ──
+def test_create_round_persists_normalized_kb_ids():
+    tid = PFX + 'kbids'
+    rid = FileReviewRoundService.create_round(
+        task_id=tid, file_id=PFX + '-file', round_no=1, template_id='',
+        user_query='q', file_version='v1', status='reviewing',
+        tenant_id=PFX, kb_ids=['kb-1', 'kb-2'],
+    )
+    assert json.loads(_round_row(rid).kb_ids) == ['kb-1', 'kb-2']
+    rid2 = FileReviewRoundService.create_round(
+        task_id=tid, file_id=PFX + '-file', round_no=2, template_id='',
+        user_query='q', file_version='v1', status='reviewing', tenant_id=PFX,
+    )
+    assert _round_row(rid2).kb_ids is None
+    rid3 = FileReviewRoundService.create_round(
+        task_id=tid, file_id=PFX + '-file', round_no=3, template_id='',
+        user_query='q', file_version='v1', status='reviewing',
+        tenant_id=PFX, kb_ids=['kb-9'],
+    )
+    assert _round_row(rid3).kb_ids == '["kb-9"]'
+
+
+def test_list_pending_by_task_is_task_wide_not_round_scoped():
+    """修复轮不产标注；按 round_no 圈定会让第 3 轮取到空集而静默不修。"""
+    tid = PFX + 'pending'
+    r_old = _mk_round(tid, 1, 'annotated')
+    r_cur = _mk_round(tid, 2, 'fixing')
+    for r, st in ((r_old, 'open'), (r_old, 'fixed'), (r_cur, 'new'), (r_cur, 'wontfix')):
+        FileReviewAnnotationService.create(
+            round_id=r, task_id=tid, file_id=PFX + '-file', file_version='v1',
+            anchor='{}', matched_text='t', type='format', severity='low',
+            issue='i', suggestion='', source='ai', status=st, tenant_id=PFX)
+    got = [a.status for a in FileReviewAnnotationService.list_pending_by_task(tid)]
+    assert sorted(got) == ['new', 'open']
+    assert FileReviewAnnotationService.list_pending_by_task('') == []
+
+
+def test_delete_by_round_only_removes_that_round():
+    tid = PFX + 'delround'
+    r1, r2 = _mk_round(tid, 1, 'reviewing'), _mk_round(tid, 2, 'reviewing')
+    for r in (r1, r2):
+        FileReviewAnnotationService.create(
+            round_id=r, task_id=tid, file_id=PFX + '-file', file_version='v1',
+            anchor='{}', matched_text='t', type='format', severity='low',
+            issue='i', suggestion='', source='ai', tenant_id=PFX)
+    assert FileReviewAnnotationService.delete_by_round(r1) == 1
+    rest = FileReviewAnnotation.select().where(FileReviewAnnotation.task_id == tid)
+    assert [a.round_id for a in rest] == [r2]

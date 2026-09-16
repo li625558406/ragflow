@@ -25,10 +25,11 @@ def is_running(task_id: str) -> bool:
 
 
 def _force_fail_round(task_id: str, error: str) -> None:
-    """把该 task 滞留在 reviewing 的轮次 CAS 置 failed，保证可重试。
+    """把该 task 滞留在 reviewing/fixing 的轮次 CAS 置 failed，保证可重试。
 
-    幂等且范围受限：只命中 status=='reviewing' 的该 task 行——executor 已把该轮置
-    done/failed 时命中 0 行，别的任务的滞留轮次也不受影响。
+    幂等且范围受限：只命中 status ∈ {reviewing, fixing} 的该 task 行——executor 已把该轮置
+    done/failed 时命中 0 行，别的任务的滞留轮次也不受影响。fixing 必须一起收：
+    进程在修复中被杀时轮次会停在 fixing，只认 reviewing 会让面板上永远转圈。
     """
     try:
         from api.db.db_models import DB
@@ -36,7 +37,7 @@ def _force_fail_round(task_id: str, error: str) -> None:
         with DB.connection_context():
             FileReviewRoundService.model.update(status="failed", error=error).where(
                 FileReviewRoundService.model.task_id == task_id,
-                FileReviewRoundService.model.status == "reviewing",
+                FileReviewRoundService.model.status.in_(("reviewing", "fixing")),
             ).execute()
     except Exception:
         logger.exception("review task force-fail failed, task_id=%s", task_id)

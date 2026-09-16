@@ -2858,8 +2858,9 @@ def migrate_db():
     if not FileReviewTemplate.table_exists():
         FileReviewTemplate.create_table(safe=True)
         logging.info("file_review: file_review_template table created")
-    # 表由 init_database_tables 先行创建，故不按 table_exists 判定；
-    # 按预置 ID 集合判定，漏跑/中途失败可自愈（详见 _ensure_file_review_templates）
+    # 表由 init_database_tables 先行创建，故不按 table_exists 判定；每次启动无条件跑一遍
+    # 逐行 insert-or-update 的 drift sync（补缺失 + 同步常量文案，不动 enabled），
+    # 漏跑/中途失败可自愈（详见 _ensure_file_review_templates）
     _file_review_seed_err = _ensure_file_review_templates()
     if not FileReviewRound.table_exists():
         FileReviewRound.create_table(safe=True)
@@ -2867,6 +2868,9 @@ def migrate_db():
     if not FileReviewAnnotation.table_exists():
         FileReviewAnnotation.create_table(safe=True)
         logging.info("file_review: file_review_annotation table created")
+    # 加列必须放在三张表都建完之后：老库已有 file_review_round 但缺 kb_ids，
+    # 修复轮/重试要靠这一列复用同一批知识库（重复加列由 alter_db_add_column 幂等兜住）
+    alter_db_add_column(migrator, "file_review_round", "kb_ids", TextField(null=True))
 
     logging.disable(logging.NOTSET)
     # seed 错误延后到恢复日志级别后输出（窗口内 ERROR 级被 disable 抑制，会静默丢失）
@@ -3201,6 +3205,7 @@ class FileReviewRound(DataBaseModel):
     user_query = TextField(null=True)
     status = CharField(max_length=16, null=False)  # reviewing/annotated/fixing/failed/done
     file_version = CharField(max_length=64, null=False)  # v1/v2/v3
+    kb_ids = TextField(null=True)  # JSON 数组文本：本轮用的知识库 id（修复轮与重试复用）
     minio_path = CharField(max_length=256, null=True)
     summary = MediumTextField(null=True)  # 整轮总结可能含大量中文条款摘录
     llm_raw = MediumTextField(null=True)  # TEXT(64KB) 会静默截断整轮 LLM 原始输出（同 flow_ai_chat 事故）
@@ -3222,7 +3227,7 @@ class FileReviewAnnotation(DataBaseModel):
     task_id = CharField(max_length=64, null=False, index=True)  # 复合索引 (file_id,file_version) 不含 task_id，此单列索引必需
     file_id = CharField(max_length=64, null=False, index=True)
     file_version = CharField(max_length=64, null=False)
-    anchor = TextField(null=False)  # JSON: docx {p_hash,offset,run_index} / xlsx {sheet,cell}
+    anchor = TextField(null=False)  # JSON: docx {p_idx,p_hash,a_occ,p_total}；定位失败为 {}
     matched_text = TextField(null=True)
     type = CharField(max_length=32, null=False)
     severity = CharField(max_length=16, null=False)  # high/medium/low，值来自 LLM 输出故留余量
@@ -3256,10 +3261,11 @@ _PRESET_REVIEW_TEMPLATES = [
         ),
         "user_prompt_template": (
             "用户需求：{user_query}\n\n"
-            "文件首段（前 500 字）：\n{file_excerpt}\n\n"
+            "文件正文：\n{file_text}\n\n"
             "参考资料：\n{references}\n\n"
-            "请审视全文，输出 JSON 标注列表：\n"
-            '[{{"anchor": {{...}}, "matched_text": "...", "type": "format", '
+            "请审视全文，输出 JSON 标注列表（type='format'）：\n"
+            "matched_text 必须逐字摘自文档原文（用于定位与修复），不要改写或概括。\n"
+            '[{{"matched_text": "...", "type": "format", '
             '"severity": "high|medium|low", "issue": "...", "suggestion": "..."}}]'
         ),
         "annotation_types": ["format"],
@@ -3278,10 +3284,11 @@ _PRESET_REVIEW_TEMPLATES = [
         ),
         "user_prompt_template": (
             "用户需求：{user_query}\n\n"
-            "文件首段：\n{file_excerpt}\n\n"
+            "文件正文：\n{file_text}\n\n"
             "参考资料：\n{references}\n\n"
             "请审视全文，输出 JSON 标注列表（type='completeness'）：\n"
-            '[{{"anchor": {{...}}, "matched_text": "...", "type": "completeness", '
+            "matched_text 必须逐字摘自文档原文（用于定位与修复），不要改写或概括。\n"
+            '[{{"matched_text": "...", "type": "completeness", '
             '"severity": "high|medium|low", "issue": "...", "suggestion": "..."}}]'
         ),
         "annotation_types": ["completeness"],
@@ -3299,10 +3306,11 @@ _PRESET_REVIEW_TEMPLATES = [
         ),
         "user_prompt_template": (
             "用户需求：{user_query}\n\n"
-            "文件首段：\n{file_excerpt}\n\n"
+            "文件正文：\n{file_text}\n\n"
             "参考资料：\n{references}\n\n"
             "请审视全文，输出 JSON 标注列表（type='clause'）：\n"
-            '[{{"anchor": {{...}}, "matched_text": "...", "type": "clause", '
+            "matched_text 必须逐字摘自文档原文（用于定位与修复），不要改写或概括。\n"
+            '[{{"matched_text": "...", "type": "clause", '
             '"severity": "high|medium|low", "issue": "...", "suggestion": "..."}}]'
         ),
         "annotation_types": ["clause"],
@@ -3322,10 +3330,11 @@ _PRESET_REVIEW_TEMPLATES = [
         ),
         "user_prompt_template": (
             "用户需求：{user_query}\n\n"
-            "文件首段：\n{file_excerpt}\n\n"
+            "文件正文：\n{file_text}\n\n"
             "参考资料：\n{references}\n\n"
             "请审视全文，输出 JSON 标注列表（type='qualification'）：\n"
-            '[{{"anchor": {{...}}, "matched_text": "...", "type": "qualification", '
+            "matched_text 必须逐字摘自文档原文（用于定位与修复），不要改写或概括。\n"
+            '[{{"matched_text": "...", "type": "qualification", '
             '"severity": "high|medium|low", "issue": "...", "suggestion": "..."}}]'
         ),
         "annotation_types": ["qualification"],
@@ -3345,10 +3354,11 @@ _PRESET_REVIEW_TEMPLATES = [
         ),
         "user_prompt_template": (
             "用户需求：{user_query}\n\n"
-            "文件首段：\n{file_excerpt}\n\n"
+            "文件正文：\n{file_text}\n\n"
             "参考资料：\n{references}\n\n"
             "请审视全文，输出 JSON 标注列表（type='price'）：\n"
-            '[{{"anchor": {{...}}, "matched_text": "...", "type": "price", '
+            "matched_text 必须逐字摘自文档原文（用于定位与修复），不要改写或概括。\n"
+            '[{{"matched_text": "...", "type": "price", '
             '"severity": "high|medium|low", "issue": "...", "suggestion": "..."}}]'
         ),
         "annotation_types": ["price"],
@@ -3357,48 +3367,44 @@ _PRESET_REVIEW_TEMPLATES = [
 
 
 def _seed_file_review_templates():
-    """幂等补齐预置审核模板（tenant_id='' 即系统预置）。
+    """幂等补齐并同步预置审核模板（tenant_id='' 即系统预置）。返回失败摘要（空串 = 全部成功）。
 
-    逐行 get_or_none 判重，重复调用/手工清表后重跑均安全；单套失败只收集错误文本
-    不抛出，由调用方决定输出方式（见 _ensure_file_review_templates）。
-    返回失败摘要（空串 = 全部成功）。
+    逐行 insert-or-update，而非「已存在即 continue」：
+    旧实现 + `_ensure_file_review_templates` 的 ID 计数短路会让**常量文案的修订永远到不了
+    已初始化的库**——改 prompt 等于白改，线上跑的还是第一次建库时的文本。
+    已存在的行只 UPDATE 提示词内容列，**不动 enabled**：管理员显式停用（enabled=0）是用户态，
+    启动时的 drift sync 无权把它重新打开；tenant_id / created_by 同样不碰（不属于内容）。
+    下游没有模板编辑端点（只有 list），故无条件同步不会覆盖任何用户改动。
     """
     errs = []
     for tpl in _PRESET_REVIEW_TEMPLATES:
         try:
+            fields = {
+                "name": tpl["name"], "description": tpl["description"],
+                "system_prompt": tpl["system_prompt"],
+                "user_prompt_template": tpl["user_prompt_template"],
+                "annotation_types": json_dumps(tpl["annotation_types"]),
+            }
             if FileReviewTemplate.get_or_none(FileReviewTemplate.id == tpl["id"]):
-                continue
-            FileReviewTemplate.create(
-                id=tpl["id"],
-                name=tpl["name"],
-                description=tpl["description"],
-                system_prompt=tpl["system_prompt"],
-                user_prompt_template=tpl["user_prompt_template"],
-                annotation_types=json_dumps(tpl["annotation_types"]),
-                enabled=1,
-                tenant_id="",
-                # 哨兵值（非真实 user_id）：本功能以 tenant_id="" 认系统预置，
-                # 与既有 collection 扩展表的 tenant_id="system" 哨兵并存
-                created_by="system",
-            )
+                FileReviewTemplate.update(**fields).where(
+                    FileReviewTemplate.id == tpl["id"]).execute()
+            else:
+                FileReviewTemplate.create(
+                    id=tpl["id"], enabled=1, tenant_id="", created_by="system", **fields)
         except Exception as e:
             errs.append(f"{tpl.get('id')}: {e.__class__.__name__}: {e}")
     return "; ".join(errs)
 
 
 def _ensure_file_review_templates():
-    """确保预置审核模板齐全（幂等自愈）。返回错误文本，正常返回 None。
+    """确保预置模板齐全且与常量同步（幂等自愈）。返回错误文本，正常返回 None。
 
-    守卫按预置 **ID 集合** 计数：tenant_id 的 default="" 会让「漏传 tenant_id」的行
-    混进「系统预置」口径，若按 tenant_id=='' 计数，缺一套预置时会被诱饵顶替而误判齐全。
-    migrate_db 在 logging.disable(ERROR) 窗口内，故此处不外抛也不直接 log ERROR，
-    由调用方在恢复日志级别后输出错误文本。
+    不再先按 ID 集合计数再决定要不要播：计数守卫一旦通过就永远跳过 seed，模板文案
+    的修订便再也进不去。改为每个启动无条件跑一遍 drift sync（5 行 UPDATE 的开销可忽略）。
+    migrate_db 运行在 logging.disable(ERROR) 窗口内，故本函数不抛异常、也不直接 log ERROR，
+    而是把失败摘成文本返回给调用方。
     """
     try:
-        preset_ids = [t["id"] for t in _PRESET_REVIEW_TEMPLATES]
-        have = FileReviewTemplate.select().where(FileReviewTemplate.id << preset_ids).count()
-        if have >= len(preset_ids):
-            return None
         return _seed_file_review_templates() or None
     except Exception as e:
         return f"{e.__class__.__name__}: {e}"

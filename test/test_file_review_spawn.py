@@ -287,3 +287,16 @@ def test_thread_start_failure_survives_db_failure(monkeypatch):
     monkeypatch.setattr(FileReviewRound, 'update', lambda *a, **kw: _BoomQuery())
     spawn.spawn_review_task(tid)          # ← 不得抛出
     assert spawn.is_running(tid) is False
+
+
+def test_force_fail_marks_fixing_round_too(monkeypatch):
+    """进程在**修复中**被杀时轮次会滞留在 fixing：CAS 只认 reviewing 会让它永远转圈。"""
+    tid = PFX + 'fixing'
+    _mk_round(tid, status='fixing')
+
+    def boom(task_id):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(spawn, 'execute_task', boom)
+    spawn.spawn_review_task(tid)
+    assert _wait_until(lambda: [r.status for r in _rounds(tid)] == ['failed'])

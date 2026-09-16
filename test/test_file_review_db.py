@@ -17,6 +17,9 @@ from api.db.db_models import (
 _EXPECTED_IDS = {"bid_doc_format", "bid_response_complete", "bid_substantive_clause",
                  "bid_qualification", "bid_price_review"}
 
+# 本文件只往库里塞「非预置口径」的诱饵行，故清理一律按该前缀点名删除
+PFX = "__test_fr_db__"
+
 
 @pytest.fixture(scope="module", autouse=True)
 def _ensure_file_review_tables():
@@ -55,28 +58,26 @@ def test_presets_structure_complete():
 
 
 def test_presets_prompt_template_format_safe():
-    """user_prompt_template 后续要 .format()：字段集必须恰好 3 个，且无游离花括号
-    （游离花括号 → .format 抛 KeyError/ValueError，等于模板整条链废掉）。"""
-    allowed = {"user_query", "file_excerpt", "references"}
+    """user_prompt_template 后续要 .format()：字段集必须恰好 3 个，且无游离花括号。"""
+    allowed = {"user_query", "file_text", "references"}
     for t in _PRESET_REVIEW_TEMPLATES:
         tpl = t["user_prompt_template"]
         fields = {n for _, n, _, _ in string.Formatter().parse(tpl) if n}
-        assert fields == allowed, f"{t['id']} 占位符集合异常: {fields}"
+        assert fields == allowed, f"{t['id']} 占位符={fields}"
         stripped = tpl.replace("{{", "").replace("}}", "")
-        assert stripped.count("{") == stripped.count("}") == len(allowed), \
-            f"{t['id']} 存在游离花括号"
-        out = tpl.format(user_query="Q", file_excerpt="E", references="R")
-        assert "{{" not in out and "}}" not in out, f"{t['id']} 转义未还原"
-        assert out.count("{") == out.count("}") and out.count("[") == out.count("]"), \
-            f"{t['id']} 渲染后 JSON 骨架不配平"
-        assert out.rstrip().endswith("]") and '"anchor"' in out
+        assert stripped.count("{") == stripped.count("}") == len(allowed)
+        out = tpl.format(user_query="Q", file_text="E", references="R")
+        assert "{{" not in out and "}}" not in out
+        assert out.count("{") == out.count("}") and out.count("[") == out.count("]")
+        assert out.rstrip().endswith("]") and '"matched_text"' in out
+        assert '"anchor"' not in out          # 锚点由服务端反查，不得诱导 LLM 编造
 
 
 def test_presets_prompt_template_requires_all_fields():
     """反向断言：占位符被删/改名后，调用方按老契约 format 必须显式报错，而不是静默产出坏 prompt。"""
     for t in _PRESET_REVIEW_TEMPLATES:
         with pytest.raises(KeyError):
-            t["user_prompt_template"].format(user_query="Q", file_excerpt="E")  # 缺 references
+            t["user_prompt_template"].format(user_query="Q", file_text="E")  # 缺 references
 
 
 # ── 2. 列定义防回归（大文本必须 MEDIUMTEXT；枚举/判别键不许 NULL） ───────
@@ -168,23 +169,39 @@ def test_seed_self_heals_after_partial_loss():
         _seed_file_review_templates()   # 任何断言失败都恢复 5 套，避免脏状态传染后续用例
 
 
-def test_ensure_guard_not_fooled_by_decoy_row():
-    """对抗：tenant_id default='' → 漏传 tenant_id 的行会混入预置口径。
-    守卫若按 tenant_id=='' 计数，缺一套预置时会被诱饵顶替而误判「已齐全」。"""
-    decoy = "__decoy_user_tpl__"
+def test_seed_leaves_foreign_rows_untouched():
+    """drift sync 只认预置 ID：别的租户/用户的模板行不得被写入或改写。"""
+    decoy = "decoy_tpl_" + PFX
     FileReviewTemplate.delete().where(FileReviewTemplate.id == decoy).execute()
-    FileReviewTemplate.create(id=decoy, name="诱饵", system_prompt="x",
-                              user_prompt_template="{user_query}{file_excerpt}{references}",
-                              tenant_id="")
-    FileReviewTemplate.delete().where(FileReviewTemplate.id == "bid_qualification").execute()
+    FileReviewTemplate.create(
+        id=decoy, name="别人的模板", description="d", system_prompt="s",
+        user_prompt_template="{user_query}", annotation_types="[]",
+        enabled=0, tenant_id="other-tenant", created_by="someone",
+    )
     try:
-        # 按 tenant_id=='' 计数为 5（诱饵顶替），按 ID 集合计数为 4 —— 必须走后者
-        assert FileReviewTemplate.select().where(FileReviewTemplate.tenant_id == "").count() == 5
-        assert _ensure_file_review_templates() is None
-        assert FileReviewTemplate.get_or_none(FileReviewTemplate.id == "bid_qualification") is not None
+        _seed_file_review_templates()
+        row = FileReviewTemplate.get(FileReviewTemplate.id == decoy)
+        assert row.enabled == 0 and row.tenant_id == "other-tenant" and row.name == "别人的模板"
     finally:
         FileReviewTemplate.delete().where(FileReviewTemplate.id == decoy).execute()
+
+
+def test_seed_drift_syncs_prompt_text_but_never_re_enables():
+    """常量文案修订必须能到已初始化的库（否则改了也白改）；但管理员显式停用的
+    enabled=0 是用户态，启动同步不得把它重新打开。"""
+    tpl_id = _PRESET_REVIEW_TEMPLATES[0]["id"]
+    FileReviewTemplate.update(
+        system_prompt="被改坏的旧值", enabled=0,
+    ).where(FileReviewTemplate.id == tpl_id).execute()
+    try:
+        assert _seed_file_review_templates() == ""
+        row = FileReviewTemplate.get(FileReviewTemplate.id == tpl_id)
+        assert row.system_prompt == _PRESET_REVIEW_TEMPLATES[0]["system_prompt"]
+        assert row.user_prompt_template == _PRESET_REVIEW_TEMPLATES[0]["user_prompt_template"]
+        assert row.enabled == 0
+    finally:
         _seed_file_review_templates()
+        FileReviewTemplate.update(enabled=1).where(FileReviewTemplate.id == tpl_id).execute()
 
 
 def test_ensure_returns_error_text_on_seed_failure(monkeypatch):

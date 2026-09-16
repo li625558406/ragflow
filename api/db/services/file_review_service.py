@@ -47,7 +47,9 @@ test_update_status_writes_arbitrary_value_locks_contract 用例锁定了这一�
 故本层用 _clamp_str 主动按列宽钳制，杜绝「写进去的枚举值只有一半」这种隐性腐坏。
 """
 
-from api.db.db_models import DB, FileReviewAnnotation, FileReviewRound, FileReviewTemplate
+import json
+
+from api.db.db_models import DB, FileReviewAnnotation, FileReviewRound, FileReviewTemplate, json_dumps
 from api.db.services.common_service import CommonService
 from common.misc_utils import get_uuid
 
@@ -78,6 +80,30 @@ def _clamp_str(model, field_name: str, value):
     field = model._meta.fields.get(field_name)
     max_len = getattr(field, "max_length", None) if field is not None else None
     return value[:max_len] if max_len else value
+
+
+def _normalize_kb_ids(kb_ids) -> str | None:
+    """把 kb_ids 统一成 JSON 文本落库（None / 空 → None）。
+
+    接受三种入参并归一，是因为三个调用方（T7 节点 / T8 工具 / T9 API）拿到的形态不同：
+    节点来自画布 DSL（list）、工具来自 LLM 参数解析（可能是 JSON 文本）、API 来自
+    request body。归一放在 Service 层，避免每个调用方各写一遍、口径漂移。
+    """
+    if kb_ids is None:
+        return None
+    if isinstance(kb_ids, str):
+        raw = kb_ids.strip()
+        if not raw:
+            return None
+        try:
+            val = json.loads(raw)
+        except Exception:  # noqa: BLE001 — 入参可能只是裸 id 文本（非 JSON），有明确降级分支
+            return json_dumps([raw])          # 裸的单个 id 文本
+        return _normalize_kb_ids(val)
+    if isinstance(kb_ids, (list, tuple, set)):
+        ids = [str(x) for x in kb_ids if x]
+        return json_dumps(ids) if ids else None
+    return None
 
 
 class FileReviewServiceBase(CommonService):
@@ -126,13 +152,14 @@ class FileReviewRoundService(FileReviewServiceBase):
     @DB.connection_context()
     def create_round(cls, *, task_id: str, file_id: str, round_no: int,
                      template_id: str, user_query: str, file_version: str,
-                     status: str, tenant_id: str = "", created_by: str = "") -> str:
+                     status: str, tenant_id: str = "", created_by: str = "",
+                     kb_ids=None) -> str:
         """新建一轮审核，返回轮次 id。
 
-        tenant_id / created_by 由调用方（T7 节点、T8 工具、T9 API）从会话上下文透传，
-        本层不猜。不传任何时间字段，四个审计列全部由框架写（见模块 docstring）。
-        必填列为 None 时不吞异常：MySQL NOT NULL 违例被 peewee 转成 IntegrityError
-        向上抛，让调用方自己判断该回 400 还是 500。
+        tenant_id / created_by / kb_ids 由调用方（T7 节点、T8 工具、T9 API）从会话
+        上下文透传，本层不猜。kb_ids 归一为 JSON 文本（见 _normalize_kb_ids）：修复轮
+        与重试都要用同一批知识库，故必须随轮次持久化，不能只活在当次请求里。
+        其余契约不变（必填列为 None 时不吞异常，时间字段全部由框架写）。
         """
         rid = get_uuid()
         cls.model.create(
@@ -141,6 +168,7 @@ class FileReviewRoundService(FileReviewServiceBase):
             file_version=_clamp_str(cls.model, "file_version", file_version),
             status=_clamp_str(cls.model, "status", status),
             tenant_id=tenant_id, created_by=created_by,
+            kb_ids=_normalize_kb_ids(kb_ids),
         )
         return rid
 
@@ -289,3 +317,35 @@ class FileReviewAnnotationService(FileReviewServiceBase):
             & cls.model.round_id.in_(round_ids)
             & cls.model.status.in_(PENDING_ANNOTATION_STATUSES)
         ).order_by(cls.model.create_time.asc()))
+
+    @classmethod
+    @DB.connection_context()
+    def list_pending_by_task(cls, task_id: str) -> list:
+        """该 task **全部轮次**中 status ∈ {open, new} 的标注，按创建时间升序。
+
+        与 list_open_or_new_for_next_round 的区别是**不按轮次圈定**，因为修复轮本身
+        不产标注：第 3 轮修复要处理的是第 1 轮 review 留下的 open 项，按 round_no
+        圈定会取到空集，结果是一轮「什么都不修」的静默空转。
+
+        task_id 为空串/None 时短路返回 []（同 max_completed_round_no）：空串行可落库，
+        不短路会把这类脏行当成某个任务的待修复项。
+        """
+        if not task_id:
+            return []
+        return list(cls.model.select().where(
+            (cls.model.task_id == task_id)
+            & cls.model.status.in_(PENDING_ANNOTATION_STATUSES)
+        ).order_by(cls.model.create_time.asc()))
+
+    @classmethod
+    @DB.connection_context()
+    def delete_by_round(cls, round_id: str) -> int:
+        """删除该轮次的全部标注，返回删除行数。
+
+        用途是**保重试幂等**：进程被杀后轮次会滞留在 reviewing，重试会重跑整轮，
+        若不清旧标注就会把每条问题再写一遍，面板上出现成对重复。范围严格限定在
+        round_id（不按 task_id），避免把历史轮次的人工批注一起抹掉。
+        """
+        if not round_id:
+            return 0
+        return cls.model.delete().where(cls.model.round_id == round_id).execute()
