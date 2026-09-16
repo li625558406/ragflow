@@ -2857,8 +2857,13 @@ def migrate_db():
     # 文件审核（2026-09-16）
     if not FileReviewTemplate.table_exists():
         FileReviewTemplate.create_table(safe=True)
-        _seed_file_review_templates()
-        logging.info("file_review: file_review_template table created + 5 presets seeded")
+        logging.info("file_review: file_review_template table created")
+    # 表由 init_database_tables 先行创建，故按预置行数判定（漏跑/中途失败可自愈）
+    try:
+        if FileReviewTemplate.select().where(FileReviewTemplate.tenant_id == "").count() < len(_PRESET_REVIEW_TEMPLATES):
+            _seed_file_review_templates()
+    except Exception as e:
+        logging.exception("file review templates seed failed: %s", e)
     if not FileReviewRound.table_exists():
         FileReviewRound.create_table(safe=True)
         logging.info("file_review: file_review_round table created")
@@ -3170,7 +3175,7 @@ class HrAttendanceImport(DataBaseModel):
 
 
 # ── 文件审核系统（2026-09-16，独立于模板填写 tpl_* / template_fill*） ──
-class FileReviewTemplate(DB.Model):
+class FileReviewTemplate(DataBaseModel):
     """审核模板：预置 5 套招标场景，DB 行式存储便于用户复制修改"""
     id = CharField(max_length=64, primary_key=True)
     name = CharField(max_length=128, null=False)
@@ -3179,19 +3184,17 @@ class FileReviewTemplate(DB.Model):
     user_prompt_template = TextField(null=False)
     annotation_types = TextField(null=True)  # JSON: ['format', 'clause', ...]
     enabled = IntegerField(default=1)
-    tenant_id = CharField(max_length=32, null=True)  # 系统预置 = 空串
+    tenant_id = CharField(max_length=32, null=False, default="", index=True)  # 系统预置 = 空串
     created_by = CharField(max_length=32, null=True)
-    create_time = DateTimeField(null=True)
-    update_time = DateTimeField(null=True)
 
     class Meta:
         db_table = "file_review_template"
 
 
-class FileReviewRound(DB.Model):
+class FileReviewRound(DataBaseModel):
     """审核轮次：每轮 1 行；状态机 reviewing/annotated/fixing/failed/done"""
     id = CharField(max_length=64, primary_key=True)
-    task_id = CharField(max_length=64, null=False, index=True)
+    task_id = CharField(max_length=64, null=False)  # 复合索引 (task_id, round_no) 左前缀已覆盖
     file_id = CharField(max_length=64, null=False, index=True)
     round_no = IntegerField(null=False)
     template_id = CharField(max_length=64, null=True)
@@ -3199,13 +3202,11 @@ class FileReviewRound(DB.Model):
     status = CharField(max_length=16, null=False)  # reviewing/annotated/fixing/failed/done
     file_version = CharField(max_length=64, null=False)  # v1/v2/v3
     minio_path = CharField(max_length=256, null=True)
-    summary = TextField(null=True)
-    llm_raw = TextField(null=True)
+    summary = MediumTextField(null=True)  # 整轮总结可能含大量中文条款摘录
+    llm_raw = MediumTextField(null=True)  # TEXT(64KB) 会静默截断整轮 LLM 原始输出（同 flow_ai_chat 事故）
     error = TextField(null=True)
-    tenant_id = CharField(max_length=32, null=True)
+    tenant_id = CharField(max_length=32, null=False, default="", index=True)
     created_by = CharField(max_length=32, null=True)
-    create_time = DateTimeField(null=True)
-    update_time = DateTimeField(null=True)
 
     class Meta:
         db_table = "file_review_round"
@@ -3214,26 +3215,24 @@ class FileReviewRound(DB.Model):
         )
 
 
-class FileReviewAnnotation(DB.Model):
+class FileReviewAnnotation(DataBaseModel):
     """审核标注：每条独立入库；多轮状态 open/fixed/new/wontfix"""
     id = CharField(max_length=64, primary_key=True)
     round_id = CharField(max_length=64, null=False, index=True)
-    task_id = CharField(max_length=64, null=False, index=True)
+    task_id = CharField(max_length=64, null=False, index=True)  # 复合索引 (file_id,file_version) 不含 task_id，此单列索引必需
     file_id = CharField(max_length=64, null=False, index=True)
     file_version = CharField(max_length=64, null=False)
     anchor = TextField(null=False)  # JSON: docx {p_hash,offset,run_index} / xlsx {sheet,cell}
     matched_text = TextField(null=True)
     type = CharField(max_length=32, null=False)
-    severity = CharField(max_length=8, null=False)  # high/medium/low
+    severity = CharField(max_length=16, null=False)  # high/medium/low，值来自 LLM 输出故留余量
     issue = TextField(null=False)
     suggestion = TextField(null=True)
     source = CharField(max_length=8, null=False)  # ai/manual
     status = CharField(max_length=16, null=False, default='open')
     prev_annotation_id = CharField(max_length=64, null=True)
-    tenant_id = CharField(max_length=32, null=True)
+    tenant_id = CharField(max_length=32, null=False, default="", index=True)
     created_by = CharField(max_length=32, null=True)
-    create_time = DateTimeField(null=True)
-    update_time = DateTimeField(null=True)
 
     class Meta:
         db_table = "file_review_annotation"
@@ -3358,18 +3357,27 @@ _PRESET_REVIEW_TEMPLATES = [
 
 
 def _seed_file_review_templates():
+    """幂等写入预置审核模板（tenant_id='' 即系统预置）。
+
+    逐行 get_or_none 判重，重复调用/手工清表后重跑均安全；单套失败只记日志不抛出，
+    由调用方按行数判定在下次启动补种（部分失败可自愈）。
+    """
     import json
+
     for tpl in _PRESET_REVIEW_TEMPLATES:
-        FileReviewTemplate.create(
-            id=tpl["id"],
-            name=tpl["name"],
-            description=tpl["description"],
-            system_prompt=tpl["system_prompt"],
-            user_prompt_template=tpl["user_prompt_template"],
-            annotation_types=json.dumps(tpl["annotation_types"], ensure_ascii=False),
-            enabled=1,
-            tenant_id="",
-            created_by="system",
-            create_time=datetime.now(),
-            update_time=datetime.now(),
-        )
+        try:
+            if FileReviewTemplate.get_or_none(FileReviewTemplate.id == tpl["id"]):
+                continue
+            FileReviewTemplate.create(
+                id=tpl["id"],
+                name=tpl["name"],
+                description=tpl["description"],
+                system_prompt=tpl["system_prompt"],
+                user_prompt_template=tpl["user_prompt_template"],
+                annotation_types=json.dumps(tpl["annotation_types"], ensure_ascii=False),
+                enabled=1,
+                tenant_id="",
+                created_by="system",
+            )
+        except Exception as e:
+            logging.exception("file review template seed failed for %s: %s", tpl.get("id"), e)
