@@ -5079,11 +5079,14 @@ git commit -m "feat(file-review): 对话工具 FileReviewTool + 越权闸门/轮
 - **并发闸门必须自己在 REST 层补**：I2 的 `is_running` 检查只覆盖单写入者前提（对话内工具调用串行）；T9 的 HTTP 重试/双击会让两个请求同时过闸、各建一条同号轮次、后到者 spawn 静默 no-op。第一性上更干净的修法是让 `spawn_review_task` 返回 `bool`（注册失败由调用方决定是否回滚轮次，消除 TOCTOU），但那要改 `spawn.py`（T5 已审契约），故 T9 需显式决策。
 
 
-## Task 9: REST API 端点（7 个）
+## Task 9: REST API 端点（4 个）+ Service 层收口
 
 **Files:**
 - Create: `api/apps/restful_apis/file_review_api.py`
-- Test: `test/test_file_review_api.py`
+- Create: `test/test_file_review_api.py`
+- Modify: `api/db/services/file_review_service.py`
+- Modify: `test/test_file_review_service.py`
+- Modify: `agent/tools/file_review.py`
 
 > **T6 → T9 交接契约（强制执行，来自 T6 executor 的两道审查实测结论）**
 >
@@ -5099,204 +5102,1194 @@ git commit -m "feat(file-review): 对话工具 FileReviewTool + 越权闸门/轮
 > 7. **同一 task 的并发请求必须在 T9 补闸门（T8 显式遗留）。** T8 在 `_fix` 里加了 `spawn_mod.is_running(task_id)` 检查，防「spawn 静默 no-op → 孤儿 `fixing` 轮次永久卡死」（机理：`spawn_review_task` 命中 `_running_tasks` 即静默 return；`executor._run_fix_round` 先置轮次终态、再写最多 20 条标注，窗口宽达 20 次 DB 往返；`execute_task` 每次只处理 `rounds[-1]` 一轮且不循环；无看门狗）。但该检查的保证以**单写入者**为前提（对话内工具调用串行）。REST 端点一旦暴露给 HTTP 重试/双击，两个请求会同时观测 `is_running=False`、各自 `next_round()` 取到**同一轮号**（`(task_id, round_no)` 无唯一约束）、后到者的 spawn 静默 no-op ⇒ 又回到永久卡死。T9 必须显式决策并写进代码注释：**(a)** REST 层加同款 `is_running` 闸门 + 拒绝并发请求（简单，仍留 TOCTOU 残余）；或 **(b)** 改 `spawn_review_task` 返回 `bool`、注册失败时调用方回滚轮次（第一性更干净，消除 TOCTOU，但要改 `spawn.py`——属 T5 已审契约，**须先向用户确认**）。
 > 8. **「按级别修复」只能经 `user_query` 软表达，且绝不自动置 `wontfix`。** executor 的 `chosen = pending[:MAX_FIX_ITEMS]` 没有 severity 过滤（T6 取舍），级别过滤靠 `round_row.user_query` 被 `_build_fix_prompt` 原样写进「用户需求：」生效。故 fix 端点必须：① 拼装基准用**首轮** `rounds[0].user_query`，不是上一轮——上一轮若是修复轮，其 `user_query` 里带着已作废的级别指令，叠加后 LLM 收到互斥要求（**T8 实测踩过此坑**）；② 拼装函数**提到 Service 层做唯一实现**（T8 现在 `agent/tools/file_review.py` 里的 `_compose_fix_query`；第二个调用方出现时才抽，符合 YAGNI——但抽的时候是**移动**，不是在 API 里复制一份，否则「只修X级」这句话会存在两份口径）；③ **绝不**把未选中级别的标注自动置 `wontfix`/`resolved`——`wontfix` 的语义是「用户决定永不修」，自动置位后用户改口「把中等的也修了」会静默失效，而用户没有任何办法从对话或面板上发现这件事（T8 的 `test_fix_never_mutates_annotation_status` 锁的就是这条）。
 > 9. **默认模板 id 取 `rag.svr.file_review.executor.DEFAULT_TEMPLATE_ID`，不得在 API 里复刻 `'bid_doc_format'` 字面量。** 默认值改了 API 必须跟着变，复制一份就是等着漂移（T7 节点、T8 工具都按此处理）。
+> 
+> **第 7 条已决策：(a)** —— REST 层加 `spawn_mod.is_running(task_id)` 闸门，且 fix 端点内做**无 `await` 临界区**（见 Step 5）。`WS=1`（`docker/launch_backend_service.sh:36-38`）⇒ 单 webserver 进程，临界区内无挂起点 ⇒ 「检查 → next_round → create_round → spawn」之间不存在可交错点，TOCTOU 被消除，不需要改 `spawn.py`（T5 已审契约，不动）。**该性质由 `test_fix_critical_section_has_no_await` 的 AST 结构断言锁死**：日后谁在临界区里加一个 `await`，测试就红。
 
-- [ ] **Step 1: 写失败测试**
+
+> ### T9 规格重写说明（前置侦察实测结论，替换原「7 端点 + SSE」版）
+>
+> 原规格是在没有核对真实 API 面之前写的，实测有 8 处硬伤。**执行前先读完本节**，它同时解释了「为什么端点从 7 个收缩到 4 个」。
+>
+> **原规格的硬伤（逐条已核实）**
+>
+> 1. `spawn_mod.spawn_review_task(rid)` —— 实参是 `round_id`。真实签名只吃 `task_id`（T7 节点、T8 工具都是 `spawn_review_task(task_id)`，`is_running(task_id)` 同理）。传 rid 会让 `_running_tasks` 记下一串没人再用的 round_id，防重入闸门**永久失效**。
+> 2. `tenant_id='', created_by=''` —— 建轮次时把 tenant 写死为空串。后果有两层：① `get_owned_task(task_id, tenant)` 要求「任一轮 tenant 不符即拒绝」，自己写空串的轮次连自己都过不了闸门；② executor `_store_version_blob` 用 `f"{round_row.tenant_id}-downloads"` 选桶，空串会往 `-downloads` 桶里写，成稿**在任何用户那里都取不到**。
+> 3. `if not FileReviewTemplateService.get_by_id(template_id): template_id = 'bid_doc_format'` —— 复刻了模板 id 字面量。默认值的唯一真相是 `rag.svr.file_review.executor.DEFAULT_TEMPLATE_ID`（T7/T8 都按此处理），复制一份就是等着漂移。
+> 4. `max_completed_round_no(task_id)` 算轮号 —— 该口径已被 T6/T8 实测证伪（只数 done/annotated，而 failed 轮也可能已落盘 → 同号即同名对象覆盖 + 自引用基线 + 面板两条同号轮）。权威口径是 `next_round(task_id)`（数全部轮次，含 failed）。**本任务顺手删掉这个死方法**（见 Step 1）。
+> 5. 无归属校验 —— `execute_task` / `spawn_review_task` / `_force_fail_round` 全链路只按 `task_id` 圈定、无 tenant 谓词，入口是唯一防线。原规格一个校验都没有。
+> 6. SSE 端点永不终止：`if status in ('done','failed'): break`，而**主happy path 的终态是 `annotated`**（首轮审核完成），于是流永远不 break、每 2s 空转一次直到浏览器断开。另外 SSE 里混用了 `flask.Response` / `flask.request` / `stream_with_context`，而蓝图是 `quart.Blueprint`。
+> 7. `blueprint = Blueprint(...)` —— 变量名必须是 `manager`（`api/apps/__init__.py:315` 的 `page.manager = Blueprint(...)`，自动注册靠的就是这个名字）。
+> 8. 凭空发明的两个端点：`POST /annotation`（手动加批注 —— 手动批注在本项目已有既有归属：流程页存 `flow_comment`，对话页存在消息本地态。再造一张表/一条链路 = 与现有功能重复）与 `POST /finish`（把最后一轮直接写 `done` —— 会**覆盖**正在跑的 `reviewing`/`fixing` 轮次，线程回头还会写它自己的终态，一轮两个终态；而且「结束审核」这个动作本身就是多余的，见下）。
+
+> **为什么砍掉 SSE（第一性论证）**
+>
+> executor 的粒度是「一轮一行状态」：`execute_task` 每次只处理 `rounds[-1]` 一轮，中途没有任何可上报的步进。也就是说一条 feature 级 SSE 每隔 2s 推的还是同一个状态 —— 比轮询更差的复杂度（多了长连接、心跳、断线重连、nginx 空闲超时四件事）而零信息增益。
+>
+> 更关键的是**本仓库没有「功能级 SSE」先例**：现有 SSE 全部挂在画布/agent 会话上（`agent_api._build_sse_response` + `canvas.py` 的 15s 心跳 + `GeneratorExit` 取消），进度类事件只是**搭车**在画布流里推。唯一的同族功能「范本填写」正是踩过「执行与连接耦合」的坑之后，才改成「后台线程 + 轮询 + 快照」的（见 `2026-09-12-template-fill-detached-task-design.md`）。T9 直接照最终形态做，不重走一遍那条路。
+>
+> 结论：**进度真相是 `file_review_round` 表，前端轮询**。这一条同时简化 T10/T11/T12（见本节末尾「对下游任务的影响」）。
+
+> **为什么没有 start / finish 端点**
+>
+> - **start**：发起入口在 T7 画布节点与 T8 对话工具 —— 二者都已在各自运行时里拿着 `tenant_id` + 上传文件 id，且各自的调用者（画布 / LLM）本来就在那条路径上。再开一个 HTTP 入口，只是多一条**可以绕过它们、也绕过它们归属校验**的越权面。
+> - **finish**：轮次上限已由 `fix_rounds_left` 兜住，不存在「必须显式收口」的状态；而写 `done` 的代价是可能覆盖运行中的轮次（见硬伤 8）。用户「不再修了」的表达方式就是不再点修复。
+
+- [ ] **Step 1: Service 层收口**（三个改动：迁移唯一实现、加两个按文件查询、删死方法）
+
+**1a. 把「只修 X 级」指令的唯一实现从工具层迁到 Service 层**（交接契约第 8 条）
+
+在 `api/db/services/file_review_service.py` 的 `MAX_FIX_ROUNDS` / `fix_rounds_left` 之后、`_clamp_str` 之前插入：
+
+```python
+# ── 修复轮「只修 X 级」指令的唯一实现 ────────────────────────────────
+# 级别过滤在 executor 里**只能软表达**：_run_fix_round 的 chosen = pending[:MAX_FIX_ITEMS]
+# 没有 severity 谓词，LLM 收到的级别约束全部来自 round_row.user_query 被 _build_fix_prompt
+# 原样写进「用户需求：」。所以这句中文措辞就是过滤机制本身，两个发起方（T8 对话工具 /
+# T9 REST 端点）必须是同一份实现 —— 各写一份就是等着两处措辞漂移、行为分叉。
+# 放在本层（而非某一层调用方）是因为两处都要 import 本模块，不新增任何依赖边。
+SEVERITY_CN = {"high": "严重", "medium": "一般", "low": "提示"}
+
+
+def compose_fix_query(base_query: str, levels: list) -> str:
+    """把级别选择编进本轮 user_query。
+
+    `base_query` 必须是**首轮原始需求**，不是上一轮：连轮修复时上一轮本身就是修复轮，
+    其 user_query 里带着**上一轮**已作废的级别指令，拿它当基准会拼出「只修【严重】…」
+    +「只修【一般】…」两条互相排斥的指令，LLM 同时收到后可能该修的不修、或越界改了
+    用户本次没选中的级别——与本函数「按用户本次选定级别修复」的目标正好相反。
+    （T8 实测踩过：test_fix_second_round_does_not_stack_level_directives 锁定该口径。）
+
+    级别中英双写（如「严重/high」）：待修清单里每条写的是英文 `级别=high`（severity 已
+    被 _norm_severity 归一成英文），只给中文会多出一层「严重 ⇔ high」的映射不确定性。
+
+    刻意**不**把未选中级别的标注置 wontfix 来硬过滤：wontfix 的语义是「用户决定永不
+    修复此条」，自动置位后用户改口「把中等的也修了」会静默失效（list_pending_by_task
+    不再看到它），而用户没有任何办法从对话里发现这件事。
+
+    levels 为空时只返回 base_query、不加任何指令：「修全部级别」这种假指令会让
+    executor 修掉用户本次没要的范围。调用方应先用自己的白名单把空集挡在外面。
+    """
+    base = (base_query or "").strip()
+    if not levels:
+        return base
+    chosen = "、".join(f"{SEVERITY_CN.get(s, s)}/{s}" for s in levels)
+    head = f"本次只修复【{chosen}】级别的问题，其余级别的问题请保持原样、不要改动。"
+    return f"{base}\n{head}" if base else head
+```
+
+同时修正本模块顶部 docstring 里「本层只做单条 INSERT/UPDATE/SELECT」的自我描述，补一句：`compose_fix_query` / `SEVERITY_CN` 是纯文本助手，与 `fix_rounds_left` 同属「不触库的判定逻辑」，落在本层是因为两个发起方都已 import 本模块。
+
+**1b. 删掉被证伪的死方法**（硬伤 4）
+
+在 `FileReviewRoundService` 中删除整个 `max_completed_round_no` 方法，以及模块顶部的 `COMPLETED_ROUND_STATUSES` 常量与它上面那段注释。删除后的既有调用点只有测试（见 1d）与文档字符串，一处不漏。
+
+删完顺带修掉两处引用（**必须改**，否则它们会继续向读代码的人推荐这个被证伪的口径）：
+- `next_round` docstring 里「刻意**不**复用 max_completed_round_no（只数 done/annotated）」→ 改为「刻意**不**用「只数 done/annotated」的口径」；
+- `list_by_file_version` / `list_open_or_new_for_next_round` / `list_pending_by_task` docstring 里的「（同 max_completed_round_no）」→ 改为「（同本模块其余聚合方法的短路口径）」。
+
+**1c. 加两个按文件查询**（面板只拿得到 `file_id`，见下）
+
+在 `FileReviewRoundService.get_by_task` **之后**追加：
+
+```python
+    @classmethod
+    @DB.connection_context()
+    def get_by_file(cls, file_id: str) -> list:
+        """该文件**最近一次审核任务**的全部轮次，按轮次号升序；从未审核返回 []。
+
+        面板/进度卡只拿得到 file_id（对话与流程都以「上传的文件」为中心），task_id 是
+        审核过程内部的编号 —— 让前端去「发现」它就得再开一条链路（节点输出 / 工具返回
+        文本都不可靠：用户刷新一次就没了）。故按 file_id 反查 task_id：取该文件**最新
+        的一行**轮次（跨任务按 create_time 取新），再用它的 task_id 取全轮次。
+
+        「最新一行」的 tie-break 是 create_time（13 位毫秒）。同毫秒内插入的两行无法
+        区分先后，调用方不应依赖绝对稳定的结果 —— 与 get_by_task 的次级排序同款取舍。
+
+        刻意**不按 tenant_id 过滤**：读路径遵循本项目「文件所有人可见」的口径
+        （docs/superpowers/specs/2026-09-09-remove-team-permission-design.md），且流程场景
+        下轮次行的 tenant_id 是发起人/画布所有者的，按调用者过滤会让协作者看不到审核结果。
+        写路径（T9 fix 端点）仍必须走 get_owned_task 严格校验（交接契约第 5 条）——
+        读不限、写严格，是有意的不对称。
+
+        脏数据兜底：最新一行没有 task_id（不该发生，列 NOT NULL）时返回 []，而不是拿
+        空 task_id 去 get_by_task（那会把 task_id="" 的脏行当成「一个任务的全部轮次」）。
+        """
+        if not file_id:
+            return []
+        last = cls.model.select().where(
+            cls.model.file_id == file_id
+        ).order_by(cls.model.create_time.desc()).first()
+        if last is None or not last.task_id:
+            return []
+        return cls.get_by_task(last.task_id)
+```
+
+在 `FileReviewAnnotationService.list_pending_by_task` **之后**追加：
+
+```python
+    @classmethod
+    @DB.connection_context()
+    def list_by_file(cls, file_id: str) -> list:
+        """该文件的**全部**标注（跨轮次、跨版本、跨任务），按创建时间升序。
+
+        面板必须看得到全部，**不能**按 file_version 过滤：只有审查轮产标注，而审查轮的
+        file_version 恒为首轮版本（v1），修复轮只改文档、不产新标注，成稿是 v2/v3/v4 ——
+        按「成稿版本」过滤会一条都查不到（T6 executor 实测：_persist_annotations 只在
+        _run_review_round 里被调用，用的就是 `round_row.file_version`）。
+        同一文件被重复审核（新 task）时也必须合并展示，否则用户看不到上一轮的批注。
+        """
+        if not file_id:
+            return []
+        return list(cls.model.select().where(
+            cls.model.file_id == file_id
+        ).order_by(cls.model.create_time.asc()))
+```
+
+**1d. 同步删掉死方法的测试**（`test/test_file_review_service.py`）
+
+- 删整个 `test_max_completed_rounds_excludes_failed`；
+- 删「2. max_completed_round_no 的对抗」整节（含 `test_max_completed_round_no_ignores_reviewing_fixing_and_failed` 与它上面的分节注释）；
+- `test_lookup_misses_are_none_zero_and_empty_list` 里删掉 `max_completed_round_no(...) == 0` 那一行断言；
+- `test_aggregates_short_circuit_on_empty_task_id` 里删掉两行 `max_completed_round_no` 断言（保留 `list_open_or_new_for_next_round` 的两行 —— 那两行仍在测活方法）；
+- `test_round_queries_are_isolated_between_tasks`：删掉两行 `max_completed_round_no` 断言，**改成覆盖新方法 `get_by_file`**（该测试的主题正是「多 task 不串号」，`get_by_file` 是这条契约上最需要被锁的新成员）：
+
+```python
+def test_round_queries_are_isolated_between_tasks():
+    ta, tb = f"{PFX}t_iso_a", f"{PFX}t_iso_b"
+    with DB.connection_context():
+        _mk_round(ta, 1, "done", file_id=f"{PFX}f_iso_a")
+        _mk_round(ta, 2, "annotated", file_id=f"{PFX}f_iso_a", file_version="v2")
+        _mk_round(tb, 4, "done", file_id=f"{PFX}f_iso_b", file_version="v4")
+        assert [r.round_no for r in FileReviewRoundService.get_by_task(ta)] == [1, 2]
+        assert [r.round_no for r in FileReviewRoundService.get_by_task(tb)] == [4]
+        # get_by_file 只认自己文件的轮次，不会把另一个 task 的轮次并进来
+        assert [r.round_no for r in FileReviewRoundService.get_by_file(f"{PFX}f_iso_a")] == [1, 2]
+        assert [r.round_no for r in FileReviewRoundService.get_by_file(f"{PFX}f_iso_b")] == [4]
+        assert FileReviewRoundService.get_by_file(f"{PFX}f_iso_ghost") == []
+```
+
+**1e. 补两个新方法的真实 DB 测试**（追加到 `test_file_review_service.py` 末尾）
+
+```python
+# ── 11. 按文件查询（T9 面板读模型的两个数据源） ────────────────────────
+
+def test_get_by_file_returns_latest_task_rounds():
+    """「最新一行」= create_time 最大者 → 用它的 task_id 取全轮次。
+
+    create_time 是毫秒，两个 task 必须在**不同毫秒**建行，否则 tie-break 未定义；
+    故这里显式 sleep 让两次写入落在不同毫秒（10ms ≫ 1ms 分辨率）。
+    """
+    import time
+    fid = f"{PFX}f_byfile"
+    with DB.connection_context():
+        _mk_round(f"{PFX}t_byfile_old", 1, "done", file_id=fid)
+        time.sleep(0.01)
+        _mk_round(f"{PFX}t_byfile_new", 1, "annotated", file_id=fid)
+        _mk_round(f"{PFX}t_byfile_new", 2, "done", file_id=fid, file_version="v2")
+        rows = FileReviewRoundService.get_by_file(fid)
+    assert [r.round_no for r in rows] == [1, 2], "必须是新 task 的两轮，不是旧 task 的一轮"
+    assert rows[0].task_id == f"{PFX}t_byfile_new"
+
+
+def test_get_by_file_empty_and_blank_are_empty_list():
+    with DB.connection_context():
+        assert FileReviewRoundService.get_by_file(f"{PFX}f_byfile_ghost") == []
+        assert FileReviewRoundService.get_by_file("") == []
+
+
+def test_get_by_file_is_not_tenant_scoped_locks_read_policy():
+    """锁住「读不限、写严格」的不对称：读路径不按 tenant 过滤（文件所有人可见）。
+
+    若有人给 get_by_file 加上 tenant 谓词，流程场景下协作者会看不到审核结果
+    （轮次行的 tenant 是发起人/画布所有者的），这条用例会立刻红。
+    """
+    fid = f"{PFX}f_byfile_tenant"
+    with DB.connection_context():
+        _mk_round(f"{PFX}t_byfile_tenant", 1, "annotated", file_id=fid,
+                  tenant_id="someone_else")
+        rows = FileReviewRoundService.get_by_file(fid)
+    assert [r.round_no for r in rows] == [1]
+
+
+def test_list_by_file_spans_versions_and_tasks():
+    """面板要看到文件的**全部**标注：跨版本、跨 task。"""
+    fid = f"{PFX}f_annot_file"
+    with DB.connection_context():
+        r1 = _mk_round(f"{PFX}t_annot_a", 1, "annotated", file_id=fid)
+        r2 = _mk_round(f"{PFX}t_annot_a", 2, "done", file_id=fid, file_version="v2")
+        r3 = _mk_round(f"{PFX}t_annot_b", 1, "annotated", file_id=fid)
+        _mk_ann(round_id=r1, task_id=f"{PFX}t_annot_a", file_id=fid,
+                file_version="v1", status="fixed")
+        _mk_ann(round_id=r2, task_id=f"{PFX}t_annot_a", file_id=fid,
+                file_version="v2", status="open")
+        _mk_ann(round_id=r3, task_id=f"{PFX}t_annot_b", file_id=fid,
+                file_version="v1", status="open")
+        # 另一个文件的标注不得混入
+        r_other = _mk_round(f"{PFX}t_annot_other", 1, "annotated", file_id=f"{PFX}f_other")
+        _mk_ann(round_id=r_other, task_id=f"{PFX}t_annot_other", file_id=f"{PFX}f_other")
+        rows = FileReviewAnnotationService.list_by_file(fid)
+    assert len(rows) == 3, f"三个版本三条都要返回，实际 {len(rows)}"
+    assert {r.file_version for r in rows} == {"v1", "v2"}
+    assert {r.task_id for r in rows} == {f"{PFX}t_annot_a", f"{PFX}t_annot_b"}
+
+
+def test_list_by_file_empty_and_blank_are_empty_list():
+    with DB.connection_context():
+        assert FileReviewAnnotationService.list_by_file(f"{PFX}f_annot_ghost") == []
+        assert FileReviewAnnotationService.list_by_file("") == []
+```
+
+> `_mk_round` / `_mk_ann` 是本文件既有的 helper；若它们的签名不含 `tenant_id`，在 `_mk_round` 上加一个 `tenant_id=""` 关键字参数并透传给 `create_round`（不要改其它参数与默认值）。
+
+**1f. 跑测试 + 提交**
+
+```bash
+uv run --no-sync pytest test/test_file_review_service.py -v
+```
+
+Expected: PASS（原 30+ 例去掉 3 例死方法用例、新增 5 例 → 全绿）
+
+```bash
+git add api/db/services/file_review_service.py test/test_file_review_service.py
+git commit -m "refactor(file-review): compose_fix_query 迁至 Service 层 + get_by_file/list_by_file + 删被证伪的 max_completed_round_no"
+```
+
+- [ ] **Step 2: 工具侧改为复用唯一实现**
+
+在 `agent/tools/file_review.py`：
+
+1. 删除 `_compose_fix_query` 整个函数（含 docstring）。
+2. 把 `_SEVERITY_CN = {...}` 换成从 Service 层导入（共 4 处使用点不变，见下）：
+   ```python
+   from api.db.services.file_review_service import SEVERITY_CN as _SEVERITY_CN
+   ```
+   （放在该文件既有的 `api.db.services.file_review_service` import 块里，**不要**新增 import 语句块。）
+3. 调用点 `user_query=_compose_fix_query(rounds[0].user_query, levels)` → 改为 `compose_fix_query(...)`，并把该 import 一并加进同一个块。
+4. 修正第 41-43 行那段注释：它写着「前两者 = Service 层 COMPLETED_ROUND_STATUSES」，而该常量已删。改为：
+
+```python
+# 轮次终态：annotated（首轮审核收口）/ done（修复轮收口）/ failed。
+# 工具要能对用户如实说「这轮失败了」，故不能像 Service 的完成口径那样把 failed 当作
+# 「没发生」—— 但**不许**回头去引 Service 的完成口径常量（它已随 max_completed_round_no
+# 一并删除，见 T9），这里就是权威定义。
+```
+
+**注意**：`_severity_cn()`（None/空串 → 「未知」、未知串原样透出）**留在本模块**，不要一起迁走 —— 它的职责是「渲染给用户/LLM 的文案不许出现字面 None」，与 `compose_fix_query` 的「编指令」不是一回事，API 侧不需要它。
+
+```bash
+uv run --no-sync pytest test/test_file_review_tool.py -v
+```
+
+Expected: PASS（37 例，与改动前一致 —— 本步只换实现位置、不改行为）
+
+```bash
+git add agent/tools/file_review.py
+git commit -m "refactor(file-review): 工具复用 Service 层 compose_fix_query，去掉重复实现"
+```
+
+- [ ] **Step 3: 写失败测试**
 
 ```python
 # test/test_file_review_api.py
-import json
-from unittest.mock import patch
+"""文件审核 REST API 测试（T9）。
+
+不依赖 Redis/ES/DB：照 test_template_api_routes.py / test_flow_ai_record_update.py 的模式，
+从源文件加载 file_review_api.py 并注入 `api.apps` 最小桩（login_required 透传 +
+current_user），端点体内的 Service 调用一律 monkeypatch。
+
+端点走**真实 Quart 请求上下文**（app.test_request_context），因此 body 解析、装饰器注入
+tenant_id、路由分发都是真的；只有触库/起线程那两层被替换掉。
+"""
+import ast
+import asyncio
+import os
+import sys
+import types
+from importlib.util import module_from_spec, spec_from_file_location
+from types import SimpleNamespace
+
+import pytest
+from quart import Quart
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+_API_PATH = os.path.abspath(os.path.join(
+    os.path.dirname(__file__), "..", "api", "apps", "restful_apis", "file_review_api.py"))
+
+TENANT = "u1"
 
 
-def test_start_review_returns_task_id(client, auth_headers):
-    with patch('api.apps.restful_apis.file_review_api.spawn_mod.spawn_review_task'):
-        r = client.post('/file/review/start',
-                        json={'file_id': 'f1', 'template_id': 'bid_doc_format'},
-                        headers=auth_headers)
-    assert r.status_code == 200
-    data = r.get_json()
-    assert data['task_id']
-    assert data['round_id']
-    assert data['status'] == 'reviewing'
+def _noop_decorator(f=None, *a, **kw):
+    """login_required 透传桩：必须原样返回被装饰函数（返回内部 deco 会丢函数）。"""
+    return f
 
 
-def test_list_templates(client, auth_headers):
-    r = client.get('/file/review/template/list', headers=auth_headers)
-    assert r.status_code == 200
-    data = r.get_json()
-    assert len(data['templates']) >= 5
+def _load_api():
+    stub = types.ModuleType("api.apps")
+    stub.current_user = SimpleNamespace(id=TENANT)
+    stub.login_required = _noop_decorator
+    sys.modules["api.apps"] = stub
+    spec = spec_from_file_location("file_review_api_under_test", _API_PATH)
+    mod = module_from_spec(spec)
+    sys.modules["file_review_api_under_test"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_api = _load_api()
+
+APP = Quart(__name__)
+APP.register_blueprint(_api.manager)
+
+
+def _call(endpoint, *, method="POST", path="/", body=None, **kwargs):
+    """在真实请求上下文里调端点，返回响应的业务体（dict）。
+
+    注意 endpoint 被真实的 add_tenant_id_to_kwargs 包着，其 wrapper 签名是
+    `(**kwargs)` —— 调用时**必须**全部用关键字传参（传位置参数会被丢进 `*args`、
+    进而漏掉 task_id 等路径参数）。
+    Quart 的 Response.get_json() 是协程，故整体包在 asyncio.run 里。
+    """
+    async def _inner():
+        async with APP.test_request_context(path, method=method, json=body):
+            resp = await endpoint(**kwargs)
+        return await resp.get_json()
+    return asyncio.run(_inner())
+
+
+def _round(round_no, status, **over):
+    row = SimpleNamespace(
+        id=f"r{round_no}", task_id="t1", file_id="f1", round_no=round_no,
+        template_id="bid_doc_format", user_query="审核这份招标文件",
+        status=status, file_version=f"v{round_no}", kb_ids=None,
+        minio_path=None, summary="", llm_raw=None, error="",
+        tenant_id=TENANT, created_by=TENANT)
+    for k, v in over.items():
+        setattr(row, k, v)
+    return row
+
+
+def _ann(aid, **over):
+    row = SimpleNamespace(
+        id=aid, round_id="r1", task_id="t1", file_id="f1", file_version="v1",
+        anchor='{"p_idx": 3}', matched_text="投标人须", type="clause",
+        severity="high", issue="缺少投标保证金条款", suggestion="补一条",
+        source="ai", status="open", prev_annotation_id=None, tenant_id=TENANT)
+    for k, v in over.items():
+        setattr(row, k, v)
+    return row
+
+
+def _patch_services(monkeypatch, *, rounds=(), annotations=(), pending=(),
+                    owned=None, running=False, next_no=None):
+    """替换端点用到的全部 Service / spawn 入口，返回被捕获的调用记录。"""
+    calls = {}
+    owned_rounds = list(rounds) if owned is None else list(owned)
+
+    monkeypatch.setattr(_api.FileReviewRoundService, "get_by_file",
+                        classmethod(lambda cls, fid: list(rounds)))
+    monkeypatch.setattr(_api.FileReviewAnnotationService, "list_by_file",
+                        classmethod(lambda cls, fid: list(annotations)))
+    monkeypatch.setattr(_api.FileReviewRoundService, "get_owned_task",
+                        classmethod(lambda cls, tid, tenant: owned_rounds))
+    monkeypatch.setattr(_api.FileReviewAnnotationService, "list_pending_by_task",
+                        classmethod(lambda cls, tid: list(pending)))
+    monkeypatch.setattr(_api.FileReviewRoundService, "next_round",
+                        classmethod(lambda cls, tid: next_no))
+    monkeypatch.setattr(_api.FileReviewAnnotationService, "get_by_id",
+                        classmethod(lambda cls, aid: calls.get("_ann_row")))
+    monkeypatch.setattr(_api.FileReviewAnnotationService, "update_status",
+                        classmethod(lambda cls, aid, status:
+                                    calls.setdefault("updated", []).append((aid, status)) or True))
+    monkeypatch.setattr(
+        _api.FileReviewRoundService, "create_round",
+        classmethod(lambda cls, **kw: calls.update({"created": kw}) or "rid-new"))
+    monkeypatch.setattr(_api.spawn_mod, "spawn_review_task",
+                        lambda tid: calls.setdefault("spawned", []).append(tid))
+    monkeypatch.setattr(_api.spawn_mod, "is_running", lambda tid: running)
+    return calls
 ```
 
-- [ ] **Step 2: 跑测试确认失败** — `uv run --no-sync pytest test/test_file_review_api.py -v` 期望：ImportError
+- [ ] **Step 4: 跑测试确认失败** — `uv run --no-sync pytest test/test_file_review_api.py -v`
+      期望：`FileNotFoundError`（`file_review_api.py` 还不存在）
 
-- [ ] **Step 3: 创建 `api/apps/restful_apis/file_review_api.py`**
+- [ ] **Step 5: 实现 `api/apps/restful_apis/file_review_api.py`**
 
 ```python
-"""文件审核 REST API：7 端点。
-- POST /file/review/start            启动审核
-- GET  /file/review/{task_id}/progress  SSE 流式进度
-- POST /file/review/{task_id}/fix    用户触发修复
-- POST /file/review/{task_id}/annotation  手动加批注
-- POST /file/review/{task_id}/finish 结束
-- GET  /file/review/template/list    预置模板列表
-- GET  /file/review/{task_id}/annotations  查标注"""
-import asyncio
+#
+#  Copyright 2026 The InfiniFlow Authors. All Rights Reserved.
+#
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+#
+"""文件审核 REST API（4 端点）。
+
+  GET  /file/review/templates                      可用审核模板（系统预置 + 本租户）
+  GET  /file/review/file/<file_id>/state            以文件为中心的权威读模型
+  POST /file/review/<task_id>/fix                   发起一轮修复
+  POST /file/review/annotation/<aid>/status          人工闭环单条标注（兜底出口）
+
+── 设计取舍（T9 前置侦察实测结论，改前请先读 Task 9 的「规格重写说明」）──────
+
+* **不做进度 SSE。** executor 每轮只写一行最终状态、没有步进粒度，SSE 每 2s 推的还是
+  同一个状态；本仓库现有 SSE 全部挂在画布/agent 会话上，没有「功能级 SSE」先例。最接近
+  的同族功能（范本填写）也是踩过「执行与连接耦合」的坑之后才改成「后台线程 + 轮询 + 快照」。
+  进度真相是 file_review_round 表，前端轮询。
+* **没有 start / finish 端点。** 发起入口在 T7 画布节点与 T8 对话工具（都已在运行时里
+  拿着 tenant_id + 文件 id），再开 HTTP 入口只是多一条能绕过它们的越权面。finish 更危险：
+  把最后一轮写 done 会覆盖正在跑的 reviewing/fixing 轮次，线程回头还会写自己的终态。
+* **读不限、写严格**（有意的不对称）：state 不按 tenant 过滤（对齐「文件所有人可见」口径，
+  也让流程协作者看得到审核结果）；fix / annotation-status 必须 get_owned_task 严格校验 ——
+  因为 execute_task / spawn_review_task / _force_fail_round 全链路只按 task_id 圈定、
+  **不含任何 tenant 谓词**，本层是唯一防线（T6 → T9 交接契约第 5 条）。
+* 本模块**不返回**成稿的下载 URL：doc.object 是对象名（或原件 file_id），前端沿用既有
+  GET /api/v1/files/<id> 取 blob —— 该路由对 `{tenant}-downloads` 桶有兜底、并按 zip 魔数
+  识别 docx，审核面板的保真渲染本来就依赖它。
+"""
 import json
 import logging
-import time
-from typing import AsyncGenerator
 
-from flask import Response, request, stream_with_context
-from quart import Blueprint
+from quart import Blueprint, request
 
+from api.apps import login_required
 from api.db.services.file_review_service import (
+    MAX_FIX_ROUNDS,
     FileReviewAnnotationService,
     FileReviewRoundService,
     FileReviewTemplateService,
+    compose_fix_query,
+    fix_rounds_left,
 )
-from api.utils.api_utils import get_json_result, validate_request
-from common.misc_utils import get_uuid
+from api.utils.api_utils import (
+    add_tenant_id_to_kwargs,
+    get_error_argument_result,
+    get_error_data_result,
+    get_json_result,
+)
+from common.constants import RetCode
 from rag.svr.file_review import spawn as spawn_mod
 
 logger = logging.getLogger(__name__)
-blueprint = Blueprint('file_review_api', __name__)
+
+manager = Blueprint("file_review_api", __name__)
+
+# 轮次状态口径与 T6 executor 一致（取值见 db_models.FileReviewRound.status 注释）。
+# 只列「线程还会回来写这一行」的两态：它们与 spawn 的 _running_tasks 是同一件事的两个视角，
+# 是 fix 端点必须拒的两个前置条件。
+_RUNNING_ROUND_STATUSES = ("reviewing", "fixing")
+
+# 级别白名单：与 T1 预置模板 / T6 _norm_severity 的输出一致。
+_SEVERITY_WHITELIST = ("high", "medium", "low")
+
+# 人工可置的标注状态。**排除 fixed**：那是 executor 在补丁真正落地后写的派生结论，
+# 手置会让「文档改了没改」与面板状态失去对应关系。排除 new（下一轮的中间态）。
+_MANUAL_ANNOTATION_STATUSES = ("open", "resolved", "wontfix")
 
 
-@blueprint.route('/file/review/start', methods=['POST'])
-@validate_request('file_id')
-async def start_review():
-    body = await request.get_json()
-    file_id = body['file_id']
-    template_id = body.get('template_id') or 'bid_doc_format'
-    user_query = body.get('user_query') or '审核'
-    levels = body.get('levels') or ['high', 'medium', 'low']
+def _json_list(raw) -> list:
+    """把 TEXT 列里的 JSON 数组还原成 list；非 list / 坏 JSON / 空一律降级 []。
 
-    if not FileReviewTemplateService.get_by_id(template_id):
-        template_id = 'bid_doc_format'
-
-    task_id = get_uuid()
-    rid = FileReviewRoundService.create_round(
-        task_id=task_id, file_id=file_id, round_no=1,
-        template_id=template_id, user_query=user_query,
-        file_version='v1', status='reviewing',
-        tenant_id='', created_by='',
-    )
-    spawn_mod.spawn_review_task(rid)
-    return get_json_result(data={'task_id': task_id, 'round_id': rid, 'status': 'reviewing'})
+    脏值只影响前端下拉候选项，不值得为它让整条端点 500。
+    """
+    if not raw:
+        return []
+    try:
+        val = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    return val if isinstance(val, list) else []
 
 
-@blueprint.route('/file/review/<task_id>/progress', methods=['GET'])
-async def review_progress(task_id: str):
-    """SSE：每 2s 拉一轮状态推送；30s heartbeat 保活"""
-    async def gen() -> AsyncGenerator[str, None]:
-        last_status = None
-        last_push = 0.0
-        while True:
-            rounds = FileReviewRoundService.get_by_task(task_id)
-            cur = rounds[-1] if rounds else None
-            status = cur.status if cur else 'idle'
-            now = time.time()
-            if status != last_status or now - last_push > 30:
-                yield f"data: {json.dumps({'stage': status, 'round_no': cur.round_no if cur else 0}, ensure_ascii=False)}\n\n"
-                last_status = status
-                last_push = now
-            if status in ('done', 'failed'):
-                break
-            await asyncio.sleep(2.0)
-    return Response(gen(), mimetype='text/event-stream')
+def _json_dict(raw) -> dict:
+    """把 anchor 这类 JSON 对象列还原成 dict；脏值降级 {}（=「无定位信息」）。
+
+    前端对 anchor == {} 有既有降级路径（退到 matched_text 全文匹配），故这里降级是安全的；
+    整条端点因为一行脏 anchor 挂掉则不是。
+    """
+    if not raw:
+        return {}
+    try:
+        val = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return val if isinstance(val, dict) else {}
 
 
-@blueprint.route('/file/review/<task_id>/fix', methods=['POST'])
-@validate_request('levels')
-async def fix_review(task_id: str):
-    body = await request.get_json()
-    levels = body['levels']
-    user_query = body.get('user_query') or f"修{'、'.join(levels)}级别问题"
-
-    max_no = FileReviewRoundService.max_completed_round_no(task_id)
-    new_no = max_no + 1
-    cur = FileReviewRoundService.get_by_task(task_id)[-1] if FileReviewRoundService.get_by_task(task_id) else None
-    if not cur:
-        return get_json_result(code=404, message='task 不存在')
-
-    rid = FileReviewRoundService.create_round(
-        task_id=task_id, file_id=cur.file_id, round_no=new_no,
-        template_id=cur.template_id, user_query=user_query,
-        file_version=f'v{new_no}', status='fixing',
-        tenant_id='', created_by='',
-    )
-    spawn_mod.spawn_review_task(rid)
-    return get_json_result(data={'round_id': rid, 'round_no': new_no, 'status': 'fixing'})
+def _template_payload(row) -> dict:
+    return {
+        "id": row.id,
+        "name": row.name,
+        "description": row.description or "",
+        "annotation_types": _json_list(row.annotation_types),
+    }
 
 
-@blueprint.route('/file/review/<task_id>/annotation', methods=['POST'])
-async def add_annotation(task_id: str):
-    body = await request.get_json()
-    aid = FileReviewAnnotationService.create(
-        round_id=body.get('round_id', ''), task_id=task_id,
-        file_id=body['file_id'], file_version=body['file_version'],
-        anchor=json.dumps(body.get('anchor', {})),
-        matched_text=body.get('matched_text', ''),
-        type=body.get('type', 'other'),
-        severity=body.get('severity', 'medium'),
-        issue=body.get('issue', ''),
-        suggestion=body.get('suggestion', ''),
-        source='manual', status='open',
-        tenant_id='', created_by='',
-    )
-    return get_json_result(data={'annotation_id': aid})
+def _round_payload(row) -> dict:
+    return {
+        "id": row.id,
+        "round_no": row.round_no,
+        "status": row.status,
+        "file_version": row.file_version,
+        "template_id": row.template_id or "",
+        "user_query": row.user_query or "",
+        "summary": row.summary or "",
+        "error": row.error or "",
+        "minio_path": row.minio_path or "",
+        # 判据是「有对象名」而不是「状态是 done」：T6 的修复轮先落盘、后收口，收口那一步
+        # 抛错时轮次被兜底写成 failed，而成稿**已经落盘**（交接契约第 2 条）。按状态判会把
+        # 已修好的成稿藏起来。
+        "produced": bool(row.minio_path),
+    }
 
 
-@blueprint.route('/file/review/<task_id>/finish', methods=['POST'])
-async def finish_review(task_id: str):
-    # 标记最后一轮为 done
-    rounds = FileReviewRoundService.get_by_task(task_id)
-    if rounds:
-        FileReviewRoundService.update_status(rounds[-1].id, 'done')
-    return get_json_result(data={'finished': True})
+def _doc_payload(rounds: list, file_id: str) -> dict:
+    """该展示的文档：最近一次落盘的成稿；从未落盘时退回原件。
+
+    显式选 round_no 最大且带 minio_path 的轮次（不依赖入参顺序），与 T6
+    _latest_version_name 的基线口径一致 —— 面板必须展示**最后一版**，否则用户看的是中间稿、
+    批注却来自最终轮。
+    """
+    best = None
+    for r in rounds:
+        if not r.minio_path:
+            continue
+        if best is None or (r.round_no or 0) >= (best.round_no or 0):
+            best = r
+    if best is None:
+        # 还没有成稿：用户看的就是原件。version 留空串而不是 "v1" ——
+        # 「首轮版本号 = v1」是 T7/T8 的命名习惯，不是本层的契约，不该由这里替前端断言。
+        return {"object": file_id, "version": ""}
+    return {"object": best.minio_path, "version": best.file_version}
 
 
-@blueprint.route('/file/review/template/list', methods=['GET'])
-async def list_templates():
-    rows = FileReviewTemplateService.list_enabled()
-    data = [{'id': r.id, 'name': r.name, 'description': r.description,
-             'annotation_types': json.loads(r.annotation_types or '[]')}
-            for r in rows]
-    return get_json_result(data={'templates': data})
+def _annotation_payload(row) -> dict:
+    return {
+        "id": row.id,
+        "round_id": row.round_id,
+        "task_id": row.task_id,
+        "file_id": row.file_id,
+        "file_version": row.file_version,
+        "type": row.type,
+        "severity": row.severity,
+        "issue": row.issue,
+        "suggestion": row.suggestion or "",
+        "matched_text": row.matched_text or "",
+        "source": row.source,
+        "status": row.status,
+        "prev_annotation_id": row.prev_annotation_id or "",
+        "anchor": _json_dict(row.anchor),
+    }
 
 
-@blueprint.route('/file/review/<task_id>/annotations', methods=['GET'])
-async def list_annotations(task_id: str):
-    fv = request.args.get('file_version')
-    fid = request.args.get('file_id')
-    if not (fv and fid):
-        return get_json_result(code=400, message='缺少 file_id/file_version')
-    rows = FileReviewAnnotationService.list_by_file_version(fid, fv, task_id)
-    data = [{'id': r.id, 'type': r.type, 'severity': r.severity, 'issue': r.issue,
-             'suggestion': r.suggestion, 'matched_text': r.matched_text,
-             'source': r.source, 'status': r.status,
-             'file_version': r.file_version,
-             'prev_annotation_id': r.prev_annotation_id,
-             'anchor': json.loads(r.anchor or '{}')}
-            for r in rows]
-    return get_json_result(data={'annotations': data})
+def _count_annotations(rows) -> dict:
+    """面板头部计数。pending 与 executor 的取数口径一致（open/new），fixed 单列。
+
+    这里只做展示、不参与任何判定，故不 import Service 的 PENDING_ANNOTATION_STATUSES ——
+    展示口径与「下一轮要修什么」的取数口径是两件事，绑在一起会让其中一方的调整被迫同步。
+    """
+    counts = {"total": len(rows), "high": 0, "medium": 0, "low": 0,
+              "pending": 0, "fixed": 0}
+    for a in rows:
+        if a.severity in _SEVERITY_WHITELIST:
+            counts[a.severity] += 1
+        if a.status in ("open", "new"):
+            counts["pending"] += 1
+        elif a.status == "fixed":
+            counts["fixed"] += 1
+    return counts
+
+
+def _parse_levels(raw) -> list | None:
+    """归一 levels 入参：小写化、去重、保序。**任一项非法即整批拒绝**（返回 None）。
+
+    不静默丢弃非法项：level 会被 compose_fix_query 拼成给 LLM 的中文指令，悄悄吞掉一个
+    "critical" 会让用户以为「严重级别已纳入本次修复」，而实际指令里根本没有它 ——
+    这种失败没有任何回执。
+    空输入同样返回 None（而非 []）：调用方拿 None 与 [] 走同一条「参数错误」分支，
+    避免出现「修了 0 个级别但轮次照样建」的空转。
+    """
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)) or not raw:
+        return None
+    out = []
+    for item in raw:
+        val = str(item or "").strip().lower()
+        if val not in _SEVERITY_WHITELIST:
+            return None
+        if val not in out:
+            out.append(val)
+    return out or None
+
+
+def _fix_base_query(rounds: list, extra: str = "") -> str:
+    """修复轮的 user_query 基准 = **首轮**原始需求（可选追加本次补充说明）。
+
+    基准只能取首轮：修复轮的 user_query 里已经带着上一轮写进去的级别指令，拿它当基准会把
+    历轮指令叠起来（见 compose_fix_query 的 docstring，T8 实测踩过）。
+    """
+    base = (rounds[0].user_query or "").strip() if rounds else ""
+    extra = (extra or "").strip()
+    if not extra:
+        return base
+    return f"{base}\n本次补充要求：{extra}" if base else f"本次补充要求：{extra}"
+
+
+@manager.route("/file/review/templates", methods=["GET"])  # noqa: F821
+@login_required
+@add_tenant_id_to_kwargs
+async def list_review_templates(tenant_id: str = None):
+    """可用审核模板：系统预置（tenant_id == ""）+ 本租户自有，且 enabled == 1。"""
+    try:
+        rows = FileReviewTemplateService.list_enabled(tenant_id or "")
+        return get_json_result(data={"templates": [_template_payload(r) for r in rows]})
+    except Exception:
+        logger.exception("file review: list templates failed")
+        return get_error_data_result(message="Internal server error")
+
+
+@manager.route("/file/review/file/<file_id>/state", methods=["GET"])  # noqa: F821
+@login_required
+async def review_state(file_id: str):
+    """以文件为中心的权威读模型：前端只凭 file_id 就能渲染进度与批注。
+
+    doc.object = 该展示的文档对象名（最近一次落盘的成稿；无成稿时为原件 file_id），
+    前端沿用既有 GET /api/v1/files/<id>。
+    annotations = 该文件**全部**标注（跨轮次/版本/任务）—— 不能按成稿版本过滤：只有审查轮
+    产标注且其 file_version 恒为首轮版本，成稿是 v2/v3/v4，按成稿版本过滤会一条都查不到。
+
+    不按 tenant 过滤（读路径，见模块 docstring 的「读不限、写严格」）。
+    """
+    try:
+        rounds = FileReviewRoundService.get_by_file(file_id)
+        anns = FileReviewAnnotationService.list_by_file(file_id)
+        return get_json_result(data={
+            "file_id": file_id,
+            "task_id": rounds[-1].task_id if rounds else None,
+            "rounds": [_round_payload(r) for r in rounds],
+            "current": _round_payload(rounds[-1]) if rounds else None,
+            "doc": _doc_payload(rounds, file_id),
+            "annotations": [_annotation_payload(a) for a in anns],
+            "annotation_counts": _count_annotations(anns),
+            "fix_rounds_left": fix_rounds_left(rounds),
+            "max_fix_rounds": MAX_FIX_ROUNDS,
+        })
+    except Exception:
+        logger.exception("file review: load state failed, file_id=%s", file_id)
+        return get_error_data_result(message="Internal server error")
+
+
+@manager.route("/file/review/<task_id>/fix", methods=["POST"])  # noqa: F821
+@login_required
+@add_tenant_id_to_kwargs
+async def fix_review(task_id: str, tenant_id: str = None):
+    """发起一轮修复。body: {"levels": ["high","medium"], "user_query": 可选补充说明}"""
+    try:
+        body = await request.get_json(silent=True) or {}
+        levels = _parse_levels(body.get("levels"))
+        if not levels:
+            return get_error_argument_result(
+                "levels 必须是非空数组，取值只能是 high / medium / low")
+
+        # ══ 临界区开始：到 spawn_review_task 之前**不许出现任何 await** ══════════
+        # 这段是「校验 — 定轮号 — 建轮次 — 起线程」的互斥边界。quart 是单进程单事件循环
+        # （WS 默认 1，见 docker/launch_backend_service.sh），只要区内没有 await，另一个请求
+        # 就插不进来。没有这道边界会怎样：两个并发 fix 各自观测到 is_running=False、
+        # next_round() 取到**同一轮号**（(task_id, round_no) 无唯一约束），后到者的
+        # spawn_review_task 命中 _running_tasks 后**静默 return**，于是留下一条永远没人消费的
+        # fixing 轮次 —— 该 task 之后所有 fix/review 会被下面这些闸门永久挡死
+        # （T6/T8 实测的必死路径）。区内要加 await，请先把 await 挪到临界区之外。
+        rounds = FileReviewRoundService.get_owned_task(task_id, tenant_id or "")
+        if not rounds:
+            # 「不存在」与「不是你的」共用同一句文案：区分会把「他人 task 是否存在」
+            # 这一信息透给攻击者（get_owned_task 的 docstring 同款口径）。
+            return get_error_data_result("文件审核任务不存在或无权访问")
+        cur = rounds[-1]
+        if cur.status in _RUNNING_ROUND_STATUSES:
+            return get_json_result(code=RetCode.OPERATING_ERROR,
+                                   message="当前轮次仍在进行中，请等它结束后再发起修复")
+        if spawn_mod.is_running(task_id):
+            # 轮次行可能**已经**是终态而线程还在收尾：executor._run_fix_round 先置轮次终态、
+            # 再逐条写最多 MAX_FIX_ITEMS(20) 条标注，中间隔着 20 次 DB 往返。此刻
+            # spawn_review_task 会静默 no-op，新轮次永远等不到线程去消费它（T8 实测）。
+            return get_json_result(code=RetCode.OPERATING_ERROR,
+                                   message="上一轮审核正在收尾，请稍等片刻后重试")
+        left = fix_rounds_left(rounds)
+        if left <= 0:
+            return get_json_result(
+                code=RetCode.OPERATING_ERROR,
+                message=f"已达到最大修复轮次（{MAX_FIX_ROUNDS} 轮），未修复的问题请按批注手动处理")
+
+        pending = FileReviewAnnotationService.list_pending_by_task(task_id)
+        if not [a for a in pending if a.severity in levels]:
+            # 所选级别没有待修项时必须拦下：executor 的 chosen 不带 severity 谓词，
+            # 建出来的轮次会去修**别的**级别（把用户没选中的问题改掉），或者空转一轮
+            # 白白烧掉一次重试机会。
+            return get_json_result(code=RetCode.OPERATING_ERROR,
+                                   message="所选级别没有待修复的问题，无需发起修复")
+
+        no, version = FileReviewRoundService.next_round(task_id)
+        rid = FileReviewRoundService.create_round(
+            task_id=task_id,
+            file_id=cur.file_id,
+            round_no=no,
+            template_id=cur.template_id,
+            # 基准取首轮原始需求，不用上一轮（见 _fix_base_query 的说明）。
+            user_query=compose_fix_query(
+                _fix_base_query(rounds, body.get("user_query")), levels),
+            file_version=version,
+            status="fixing",
+            # tenant 必须来自当前用户，不能留空：get_owned_task 要求「任一轮 tenant 不符
+            # 即拒绝」，写空串的轮次连自己都过不了闸门；且 executor 用 `{tenant}-downloads`
+            # 选桶，空串会让成稿落进 `-downloads` 桶、谁都取不到。
+            tenant_id=tenant_id or "",
+            created_by=tenant_id or "",
+            # 继承本轮 KB 配置：修复轮不做检索，但 kb_ids 是「这一轮用了哪些知识库」的
+            # 可追溯配置，留空会让它无从知晓。
+            kb_ids=cur.kb_ids,
+        )
+        spawn_mod.spawn_review_task(task_id)
+        # ══ 临界区结束 ══════════════════════════════════════════════════════
+        return get_json_result(data={"task_id": task_id, "round_id": rid, "round_no": no,
+                                     "status": "fixing", "fix_rounds_left": left - 1})
+    except Exception:
+        logger.exception("file review: start fix round failed, task_id=%s", task_id)
+        return get_error_data_result(message="Internal server error")
+
+
+@manager.route("/file/review/annotation/<annotation_id>/status", methods=["POST"])  # noqa: F821
+@login_required
+@add_tenant_id_to_kwargs
+async def update_annotation_status(annotation_id: str, tenant_id: str = None):
+    """人工把单条标注置为 open / resolved / wontfix（交接契约第 4 条的人工兜底出口）。
+
+    为什么必须有：修复轮可能「成稿落盘成功、轮次收口成功，但逐条置 fixed 时某条标注写入
+    失败」—— 这条标注就永远停在 open，而文档已经改好、find 已被替换，再跑修复只会报
+    「0 项未能自动修复」，**没有任何自动路径能自愈**。没有这个出口，面板上会永远挂着一个
+    假未闭环项。
+    """
+    try:
+        body = await request.get_json(silent=True) or {}
+        status = (body.get("status") or "").strip().lower()
+        if status not in _MANUAL_ANNOTATION_STATUSES:
+            return get_error_argument_result(
+                "status 只能是 open / resolved / wontfix（fixed 由服务端在修复落地后写入，不接受人工设置）")
+        row = FileReviewAnnotationService.get_by_id(annotation_id)
+        if not row:
+            return get_error_data_result("批注不存在或无权访问")
+        # 写路径严格校验：标注 → 所属 task → 轮次归属。用 get_owned_task 而不是直接比
+        # row.tenant_id，是因为后者的可见范围与轮次不完全一致（标注行的 tenant 为空而轮次行
+        # 有 tenant 的历史脏数据），而权限必须按「这条标注所属的审核任务」判。
+        if not FileReviewRoundService.get_owned_task(row.task_id, tenant_id or ""):
+            return get_error_data_result("批注不存在或无权访问")
+        if not FileReviewAnnotationService.update_status(annotation_id, status):
+            # 上面刚查到行，这里再失败只可能是并发删除：同样按「不存在」回，不泄露时序差异。
+            return get_error_data_result("批注不存在或无权访问")
+        return get_json_result(data={"annotation_id": annotation_id, "status": status})
+    except Exception:
+        logger.exception("file review: update annotation status failed, aid=%s", annotation_id)
+        return get_error_data_result(message="Internal server error")
 ```
 
-- [ ] **Step 4: 蓝图自动注册** — `api/apps/__init__.py:289` 的 `search_pages_path` 扫描 `api/apps/restful_apis/*.py` 全自动注册，**无需手动改 `__init__.py`**。确认 `file_review_api.py` 已落入该目录即可生效。
+- [ ] **Step 6: 补端点行为测试**（追加到 `test/test_file_review_api.py`）
 
-- [ ] **Step 5: 跑测试确认通过**
+```python
+# ── 端点接线（不依赖 DB，靠真实 Quart 路由表） ────────────────────────
+
+def test_module_exposes_manager_blueprint_and_async_endpoints():
+    """`manager` 变量名是自动注册的唯一契约（api/apps/__init__.py:315）。"""
+    import inspect
+    assert _api.manager.name == "file_review_api"
+    for name in ("list_review_templates", "review_state", "fix_review",
+                 "update_annotation_status"):
+        fn = getattr(_api, name, None)
+        assert fn is not None, f"缺少端点函数 {name}"
+        assert inspect.iscoroutinefunction(getattr(fn, "__wrapped__", fn)) or callable(fn)
+
+
+def test_all_routes_registered_on_blueprint():
+    rules = {}
+    for r in APP.url_map.iter_rules():
+        if r.rule == "/static/<path:filename>":
+            continue
+        rules.setdefault(r.rule, set()).update(r.methods)
+    assert rules == {
+        "/file/review/templates": {"GET", "HEAD", "OPTIONS"},
+        "/file/review/file/<file_id>/state": {"GET", "HEAD", "OPTIONS"},
+        "/file/review/<task_id>/fix": {"POST", "OPTIONS"},
+        "/file/review/annotation/<annotation_id>/status": {"POST", "OPTIONS"},
+    }, f"路由集合不符：{rules}"
+
+
+def test_fix_critical_section_has_no_await():
+    """结构性锁死临界区：get_owned_task → spawn 之间不许有 await。
+
+    quart 单进程单事件循环下，「区内无 await」就是「检查—定轮号—建轮次—起线程」的互斥
+    边界；一旦有人塞进 await，并发 fix 会各自建出同号轮次、留下永远没人消费的 fixing 轮次，
+    该 task 之后所有 fix/review 被闸门永久挡死。普通用例测不到这个（要构造真并发），
+    故用 AST 在代码层断言。
+    """
+    tree = ast.parse(open(_API_PATH, encoding="utf-8").read())
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.AsyncFunctionDef) and n.name == "fix_review")
+    body = next(s for s in fn.body if isinstance(s, ast.Try)).body
+    start = next(i for i, s in enumerate(body)
+                 if "get_owned_task" in ast.dump(s))
+    end = next(i for i, s in enumerate(body)
+               if "spawn_review_task" in ast.dump(s))
+    assert start < end, "临界区起止顺序异常（get_owned_task 应在 spawn 之前）"
+    for stmt in body[start + 1:end]:
+        assert not any(isinstance(n, ast.Await) for n in ast.walk(stmt)), (
+            f"临界区内出现 await，破坏 fix 的并发互斥：{ast.dump(stmt)[:200]}")
+```
+
+```python
+# ── 纯函数：脏值与边界 ───────────────────────────────────────────────
+
+def test_json_list_and_dict_degrade_on_dirty_input():
+    assert _api._json_list(None) == []
+    assert _api._json_list("") == []
+    assert _api._json_list("not-json") == []
+    assert _api._json_list('{"a": 1}') == []          # 是 JSON 但不是数组
+    assert _api._json_list('["format"]') == ["format"]
+    assert _api._json_dict(None) == {}
+    assert _api._json_dict("[]") == {}                 # 是 JSON 但不是对象
+    assert _api._json_dict("{bad") == {}
+    assert _api._json_dict('{"p_idx": 3}') == {"p_idx": 3}
+
+
+def test_parse_levels_rejects_whole_batch_on_any_invalid_item():
+    f = _api._parse_levels
+    assert f(["high", "medium"]) == ["high", "medium"]
+    assert f("HIGH") == ["high"]                       # 标量字符串也接
+    assert f(["high", "high", "low"]) == ["high", "low"]   # 去重保序
+    assert f(["high", "critical"]) is None             # 整批拒绝，不静默丢弃
+    assert f(["CRITICAL"]) is None
+    assert f([]) is None
+    assert f(None) is None
+    assert f({"high": 1}) is None
+    assert f([None]) is None
+    assert f([" high "]) == ["high"]                   # 前后空白归一
+
+
+def test_fix_base_query_uses_first_round_and_appends_extra():
+    rounds = [_round(1, "annotated", user_query="按招标文件要求审核"),
+              _round(2, "done", user_query="本次只修复【严重/high】级别的问题")]
+    assert _api._fix_base_query(rounds) == "按招标文件要求审核"
+    assert _api._fix_base_query(rounds, "重点看保证金") == \
+        "按招标文件要求审核\n本次补充要求：重点看保证金"
+    assert _api._fix_base_query([], "只这一句") == "本次补充要求：只这一句"
+    assert _api._fix_base_query([]) == ""
+
+
+def test_doc_payload_picks_latest_produced_round():
+    rounds = [_round(1, "annotated"),
+              _round(2, "done", minio_path="frv-t1-v2"),
+              _round(3, "failed", minio_path="frv-t1-v3")]
+    assert _api._doc_payload(rounds, "f1") == {"object": "frv-t1-v3", "version": "v3"}
+    # 乱序入参也要选 round_no 最大的那一版（不依赖调用方排序）
+    assert _api._doc_payload(list(reversed(rounds)), "f1") == \
+        {"object": "frv-t1-v3", "version": "v3"}
+    # 无产物 → 原件，且 version 留空（不替前端断言「原件就是 v1」）
+    assert _api._doc_payload([_round(1, "reviewing")], "f1") == {"object": "f1", "version": ""}
+    assert _api._doc_payload([], "f1") == {"object": "f1", "version": ""}
+
+
+def test_round_payload_produced_follows_minio_path_not_status():
+    """failed 轮也可能已落盘（T6 交接契约第 2 条）：按状态判会把成稿藏起来。"""
+    assert _api._round_payload(_round(2, "failed", minio_path="frv-t1-v2"))["produced"] is True
+    assert _api._round_payload(_round(2, "done"))["produced"] is False
+
+
+def test_count_annotations_buckets():
+    rows = [_ann("a1", severity="high", status="open"),
+            _ann("a2", severity="high", status="fixed"),
+            _ann("a3", severity="medium", status="new"),
+            _ann("a4", severity="low", status="wontfix"),
+            _ann("a5", severity="weird", status="resolved")]
+    assert _api._count_annotations(rows) == {
+        "total": 5, "high": 2, "medium": 1, "low": 1, "pending": 2, "fixed": 1}
+    assert _api._count_annotations([]) == {
+        "total": 0, "high": 0, "medium": 0, "low": 0, "pending": 0, "fixed": 0}
+```
+
+```python
+# ── GET /file/review/templates ──────────────────────────────────────
+
+def test_templates_endpoint_decodes_annotation_types(monkeypatch):
+    rows = [SimpleNamespace(id="bid_doc_format", name="招标文件格式审核",
+                            description=None, annotation_types='["format","clause"]'),
+            SimpleNamespace(id="bad", name="脏数据", description="x",
+                            annotation_types="{not json")]
+    monkeypatch.setattr(_api.FileReviewTemplateService, "list_enabled",
+                        classmethod(lambda cls, tenant: rows))
+    body = _call(_api.list_review_templates, method="GET")
+    assert body["code"] == 0
+    assert body["data"]["templates"][0] == {
+        "id": "bid_doc_format", "name": "招标文件格式审核",
+        "description": "", "annotation_types": ["format", "clause"]}
+    assert body["data"]["templates"][1]["annotation_types"] == []
+```
+
+```python
+# ── GET /file/review/file/<file_id>/state ───────────────────────────
+
+def test_state_endpoint_shape_when_never_reviewed(monkeypatch):
+    _patch_services(monkeypatch)
+    body = _call(_api.review_state, method="GET", file_id="f1")
+    assert body["code"] == 0
+    d = body["data"]
+    assert d["task_id"] is None
+    assert d["current"] is None
+    assert d["rounds"] == []
+    assert d["doc"] == {"object": "f1", "version": ""}
+    assert d["annotations"] == []
+    assert d["fix_rounds_left"] == 3 and d["max_fix_rounds"] == 3
+    assert d["annotation_counts"]["total"] == 0
+
+
+def test_state_endpoint_assembles_rounds_annotations_and_doc(monkeypatch):
+    rounds = [_round(1, "annotated", summary="high:1"),
+              _round(2, "done", summary="本轮修复 1 项", minio_path="frv-t1-v2")]
+    _patch_services(monkeypatch, rounds=rounds,
+                    annotations=[_ann("a1"), _ann("a2", status="fixed")])
+    body = _call(_api.review_state, method="GET", file_id="f1")
+    d = body["data"]
+    assert d["task_id"] == "t1"
+    assert [r["round_no"] for r in d["rounds"]] == [1, 2]
+    assert d["current"]["round_no"] == 2 and d["current"]["produced"] is True
+    assert d["doc"] == {"object": "frv-t1-v2", "version": "v2"}
+    assert d["fix_rounds_left"] == 2          # 已发生 1 个修复轮
+    assert len(d["annotations"]) == 2
+    assert d["annotation_counts"]["pending"] == 1
+
+
+def test_state_endpoint_hides_internal_error_text(monkeypatch):
+    monkeypatch.setattr(_api.FileReviewRoundService, "get_by_file",
+                        classmethod(lambda cls, fid: (_ for _ in ()).throw(
+                            RuntimeError("MySQL 10.0.0.5:3306 refused"))))
+    body = _call(_api.review_state, method="GET", file_id="f1")
+    assert body["code"] != 0
+    assert "3306" not in body["message"], "异常原文不得透给前端（交接契约第 6 条）"
+```
+
+```python
+# ── POST /file/review/<task_id>/fix ─────────────────────────────────
+
+def _fix_setup(monkeypatch, **over):
+    """一轮已完成的审核 + 一条 high 待修项 + next_round 桩，返回调用记录。"""
+    rounds = [_round(1, "annotated", kb_ids='["kb1"]')]
+    kw = dict(rounds=rounds, owned=rounds, pending=[_ann("a1", severity="high")],
+              next_no=(2, "v2"))
+    kw.update(over)
+    return _patch_services(monkeypatch, **kw)
+
+
+def test_fix_rejects_foreign_or_missing_task(monkeypatch):
+    calls = _fix_setup(monkeypatch, owned=[])
+    body = _call(_api.fix_review, task_id="t1", body={"levels": ["high"]})
+    assert body["code"] != 0
+    assert "create_round" not in calls and "spawned" not in calls
+
+
+def test_fix_rejects_while_round_still_running(monkeypatch):
+    rounds = [_round(1, "reviewing")]
+    calls = _fix_setup(monkeypatch, rounds=rounds, owned=rounds)
+    body = _call(_api.fix_review, task_id="t1", body={"levels": ["high"]})
+    assert body["code"] == RetCode.OPERATING_ERROR
+    assert "create_round" not in calls
+
+
+def test_fix_rejects_while_spawn_still_running(monkeypatch):
+    """轮次行已是终态、线程还在收尾：必须拒，否则新轮次永远等不到线程。"""
+    calls = _fix_setup(monkeypatch, running=True)
+    body = _call(_api.fix_review, task_id="t1", body={"levels": ["high"]})
+    assert body["code"] == RetCode.OPERATING_ERROR
+    assert "create_round" not in calls and "spawned" not in calls
+
+
+def test_fix_rejects_when_rounds_exhausted(monkeypatch):
+    rounds = [_round(1, "annotated"), _round(2, "done"), _round(3, "done"), _round(4, "done")]
+    calls = _fix_setup(monkeypatch, rounds=rounds, owned=rounds)
+    body = _call(_api.fix_review, task_id="t1", body={"levels": ["high"]})
+    assert body["code"] == RetCode.OPERATING_ERROR
+    assert "create_round" not in calls
+
+
+def test_fix_rejects_when_selected_levels_have_no_pending(monkeypatch):
+    calls = _fix_setup(monkeypatch, pending=[_ann("a1", severity="low")])
+    body = _call(_api.fix_review, task_id="t1", body={"levels": ["high"]})
+    assert body["code"] == RetCode.OPERATING_ERROR
+    assert "create_round" not in calls, "选中级别无待修项时不许建轮次（会白烧一次重试机会）"
+
+
+def test_fix_rejects_invalid_levels(monkeypatch):
+    calls = _fix_setup(monkeypatch)
+    assert _call(_api.fix_review, task_id="t1",
+                 body={"levels": ["high", "critical"]})["code"] == RetCode.ARGUMENT_ERROR
+    assert _call(_api.fix_review, task_id="t1", body={})["code"] == RetCode.ARGUMENT_ERROR
+    assert _call(_api.fix_review, task_id="t1",
+                 body={"levels": []})["code"] == RetCode.ARGUMENT_ERROR
+    assert "create_round" not in calls
+
+
+def test_fix_creates_gated_round_and_spawns(monkeypatch):
+    calls = _fix_setup(monkeypatch)
+    body = _call(_api.fix_review, task_id="t1", body={"levels": ["high"]})
+    assert body["code"] == 0
+    assert body["data"] == {"task_id": "t1", "round_id": "rid-new",
+                            "round_no": 2, "status": "fixing", "fix_rounds_left": 2}
+    kw = calls["created"]
+    assert kw["task_id"] == "t1"
+    assert kw["file_id"] == "f1"                     # 继承当前轮的 file_id
+    assert (kw["round_no"], kw["file_version"]) == (2, "v2")   # 只用 next_round 的口径
+    assert kw["status"] == "fixing"
+    assert kw["tenant_id"] == TENANT and kw["created_by"] == TENANT   # 不许写空串
+    assert kw["kb_ids"] == '["kb1"]'                 # 继承本轮 KB 配置
+    assert kw["user_query"] == ("审核这份招标文件\n"
+                                "本次只修复【严重/high】级别的问题，其余级别的问题请保持原样、不要改动。")
+    assert calls["spawned"] == ["t1"], "spawn 的实参必须是 task_id（不是 round_id）"
+
+
+def test_fix_second_round_uses_first_round_query_baseline(monkeypatch):
+    """连轮修复：基准恒为首轮原文，不把上一轮的级别指令叠进来。"""
+    rounds = [_round(1, "annotated", user_query="审核这份招标文件"),
+              _round(2, "done", user_query="审核这份招标文件\n本次只修复【严重/high】级别的问题，其余级别的问题请保持原样、不要改动。")]
+    calls = _fix_setup(monkeypatch, rounds=rounds, owned=rounds, next_no=(3, "v3"))
+    _call(_api.fix_review, task_id="t1", body={"levels": ["medium"]})
+    q = calls["created"]["user_query"]
+    assert q.count("本次只修复") == 1, f"级别指令被叠加了：{q}"
+    assert "严重/high" not in q, "上一轮已作废的级别指令不得出现在本轮"
+    assert "一般/medium" in q
+
+
+def test_fix_appends_caller_extra_query(monkeypatch):
+    calls = _fix_setup(monkeypatch)
+    _call(_api.fix_review, task_id="t1",
+          body={"levels": ["high"], "user_query": "重点看保证金"})
+    q = calls["created"]["user_query"]
+    assert "--" not in q and "重点看保证金" in q
+    assert "本次补充要求：重点看保证金" in q
+```
+
+```python
+# ── POST /file/review/annotation/<aid>/status ───────────────────────
+
+def _status_setup(monkeypatch, **over):
+    calls = _patch_services(monkeypatch, owned=[_round(1, "annotated")])
+    calls["_ann_row"] = _ann("a1")
+    return calls
+
+
+def test_annotation_status_rejects_fixed_and_unknown(monkeypatch):
+    calls = _status_setup(monkeypatch)
+    for bad in ("fixed", "new", "", "OPEN "[:0] + "resolved-x", None):
+        body = _call(_api.update_annotation_status, annotation_id="a1",
+                     body={"status": bad})
+        assert body["code"] == RetCode.ARGUMENT_ERROR, f"{bad!r} 应被拒"
+    assert "updated" not in calls, "参数非法时不许写库"
+
+
+def test_annotation_status_rejects_missing_annotation(monkeypatch):
+    calls = _status_setup(monkeypatch)
+    calls["_ann_row"] = None
+    body = _call(_api.update_annotation_status, annotation_id="a1",
+                 body={"status": "wontfix"})
+    assert body["code"] != 0
+    assert "updated" not in calls
+
+
+def test_annotation_status_rejects_foreign_task(monkeypatch):
+    """标注所属 task 不归当前用户 → 拒绝且不写库（写路径严格校验）。"""
+    calls = _status_setup(monkeypatch, owned=[])
+    body = _call(_api.update_annotation_status, annotation_id="a1",
+                 body={"status": "resolved"})
+    assert body["code"] != 0
+    assert "updated" not in calls
+
+
+def test_annotation_status_writes_and_returns(monkeypatch):
+    calls = _status_setup(monkeypatch)
+    body = _call(_api.update_annotation_status, annotation_id="a1",
+                 body={"status": "WontFix"})
+    assert body["code"] == 0
+    assert body["data"] == {"annotation_id": "a1", "status": "wontfix"}
+    assert calls["updated"] == [("a1", "wontfix")]
+
+
+def test_annotation_status_maps_write_miss_to_error(monkeypatch):
+    """并发删除：查到了行但写 0 行 → 仍按「不存在」回，不泄露时序差异。"""
+    calls = _status_setup(monkeypatch)
+    monkeypatch.setattr(_api.FileReviewAnnotationService, "update_status",
+                        classmethod(lambda cls, aid, status: False))
+    body = _call(_api.update_annotation_status, annotation_id="a1",
+                 body={"status": "resolved"})
+    assert body["code"] != 0
+
+
+def test_annotation_status_hides_internal_error_text(monkeypatch):
+    _status_setup(monkeypatch)
+    monkeypatch.setattr(_api.FileReviewAnnotationService, "get_by_id",
+                        classmethod(lambda cls, aid: (_ for _ in ()).throw(
+                            RuntimeError("MinIO endpoint=http://10.0.0.9:9000"))))
+    body = _call(_api.update_annotation_status, annotation_id="a1",
+                 body={"status": "resolved"})
+    assert body["code"] != 0
+    assert "9000" not in body["message"]
+```
+
+> 测试文件顶部需要 `from common.constants import RetCode`（断言业务码用）。`_fix_setup` 里
+> `next_no` 是 stub 返回值，`next_round` 的真实口径已由 `test/test_file_review_service.py`
+> 覆盖，这里只验证端点**用**它而不是自己算轮号。
+
+- [ ] **Step 7: 蓝图自动注册确认**
+
+`api/apps/__init__.py` 的 `search_pages_path` 会 glob `api/apps/restful_apis/*.py` 全自动注册
+（`page.manager = Blueprint(page_name, module_name)`，`url_prefix = f"/api/{API_VERSION}"`），
+**无需手动改 `__init__.py`**。确认 `file_review_api.py` 落在该目录、且变量名是 `manager` 即可。
+
+- [ ] **Step 8: 跑测试确认通过**
 
 ```bash
-uv run --no-sync pytest test/test_file_review_api.py -v
+uv run --no-sync pytest test/test_file_review_api.py test/test_file_review_tool.py test/test_file_review_service.py -v
+uv run --no-sync ruff check api/apps/restful_apis/file_review_api.py api/db/services/file_review_service.py agent/tools/file_review.py test/test_file_review_api.py
 ```
-Expected: PASS
 
-- [ ] **Step 6: 提交**
+Expected: 全部 PASS；ruff 无输出
+
+- [ ] **Step 9: 提交**
 
 ```bash
 git add api/apps/restful_apis/file_review_api.py test/test_file_review_api.py
-git commit -m "feat(file-review): REST API 7 endpoints (auto-registered)"
+git commit -m "feat(file-review): REST API 4 endpoints (轮询读模型 + fix + 标注人工闭环)"
 ```
+
+- [ ] **Step 10: 回填「实测落地」**
+
+实现完成后，把实际提交 SHA、跑测结果（用例数）、实现过程中发现的规格偏差（若有）、
+以及「交给 T10 的硬约束」写进本节末尾的「实测落地」块（格式照 T7 / T8 两节）。
+
+---
+
+> ### T9 对下游任务的影响（T10 / T11 / T12 / T14 / T15 必须按此执行）
+>
+> 上游砍掉 SSE 后，原任务描述里与 SSE 相关的部分全部作废：
+>
+> | 任务 | 原描述 | 改为 |
+> |---|---|---|
+> | T10 | 前端流类型 + **归约函数** | 只保留**类型定义**（`IFileReviewAnnotation` / `IFileReviewRound` / `IFileReviewState`）；删掉 `IFileReviewEvent` 与 `applyFileReviewEvent`（没有事件流可归约）。`filterAnnotationsByVersion` 保留但**面板不得使用**：标注的 file_version 恒为首轮版本而成稿是 v2/v3/v4，按成稿版本过滤会一条都查不到 |
+> | T11 | API Hook（含 start/finish/annotation） | 按 T9 实际端点重写：`listFileReviewTemplates` / `getFileReviewState(file_id)` / `fixFileReview(task_id, levels, user_query?)` / `updateAnnotationStatus(aid, status)`；**删掉** `startFileReview` / `finishReview` / `addAnnotation` |
+> | T12 | 进度卡（EventSource 订阅） | 改为**轮询** `getFileReviewState(file_id)`（未终态时 3s 一次，终态停），参照 `use-template-fill-run-recovery.ts` 的写法；`canFix` 判据改用返回的 `fix_rounds_left > 0 && current.status === 'annotated'`，**不要**用 `rounds.length < 3`（failed 轮同样占名额），也**不要**自己拼 user_query（级别指令由服务端 `compose_fix_query` 生成） |
+> | T14 / T15 | 订阅 `file_review_progress` 流式事件 | 没有该事件。改为「节点/工具产出 task_id → 用 file_id 轮询 state」，即 T12 的进度卡自取数据，不需要对话侧喂事件 |
 
 ---
 
