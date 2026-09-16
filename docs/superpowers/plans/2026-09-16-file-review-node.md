@@ -4040,63 +4040,1033 @@ git commit -m "feat(file-review): canvas node FileReview + 单测"
 
 **Files:**
 - Create: `agent/tools/file_review.py`
+- Create: `test/test_file_review_tool.py`
+- Modify: `api/db/services/file_review_service.py`（**追加**三个助手，不改既有方法）
+- Modify: `test/test_file_review_service.py`（**追加**助手用例）
 
-- [ ] **Step 1: 创建文件**
+> **本段是 T7 交付后按真实 API 重写的一版。** 前版有 5 处硬伤（下），照抄会直接坏：
+> ① 用了 `name=` / `description=` / `_run()` —— 那不是 ToolBase 的表面。真实表面是
+> `component_name` + `FileReviewToolParam.meta` + `_invoke(**kwargs)`，照
+> `agent/tools/template_fill.py` 抄（那边已有两道审查通过的同款结构）。
+> ② `spawn_review_task(rid)` 传了**轮次 id** —— T5 契约是 **task_id**，传轮次 id 会让
+> 执行器读不到轮次行（`get_by_task(round_id)` 返回空）而静默不动。
+> ③ `tenant_id=''` —— 轮次行会永久丢失归属，而 T9/T8 的越权闸门（见 Step 1 的
+> `get_owned_task`）正是按轮次 tenant 判归属：写空串 = 工具把自己人挡在门外。
+> ④ 缺 `kb_ids` —— 轮次行是「本轮用了哪些知识库」的审计记录，修复轮要继承它。
+> ⑤ 硬编码 `'bid_doc_format'` —— 默认模板 id 的唯一真相是
+> `executor.DEFAULT_TEMPLATE_ID`（T7 节点已按此办理）。
+>
+> **边界（严格执行）：**只允许新建 `agent/tools/file_review.py` 与
+> `test/test_file_review_tool.py`，以及**追加**到上述两个既有文件。**禁止**修改
+> `agent/component/file_review.py`（T7）、`rag/svr/file_review/*`（T5/T6）、任何
+> `template_fill*` 文件。
+
+**为什么 `file_id` 不做成 LLM 参数：**待审核文件是「本次运行环境注入的」，不是用户说出来的。
+把它暴露成参数，LLM 就会在缺上下文时**编造一个 uuid**，而编造值会一路落进轮次行与 MinIO
+对象名，最终以一句「文件不存在」暴露。故本工具与 T7 节点同款：扫 Begin 输出取
+`FILE_ID_INPUT_KEY`（键名从 T7 模块 import，单一真相）。
+
+- [ ] **Step 1: 追加 Service 层三个助手（先写失败测试）**
+
+在 `test/test_file_review_service.py` 顶部的 import 区加一行：
+
+```python
+from types import SimpleNamespace
+```
+
+在该文件**末尾**追加：
+
+```python
+# ── T8 助手：越权闸门 / 轮次编号 / 修复轮余额 ─────────────────────────
+
+
+def _r(no):
+    """只带 round_no 的轮次替身：fix_rounds_left 是纯函数，不需要真轮次行。"""
+    return SimpleNamespace(round_no=no)
+
+
+def test_get_owned_task_short_circuits_on_empty_args():
+    assert FileReviewRoundService.get_owned_task("", "t1") == []
+    assert FileReviewRoundService.get_owned_task(None, "t1") == []
+    assert FileReviewRoundService.get_owned_task(PFX + "own-x", "") == []
+
+
+def test_get_owned_task_denies_unknown_task():
+    assert FileReviewRoundService.get_owned_task(PFX + "no-such-task", "t1") == []
+
+
+def test_get_owned_task_passes_only_when_all_rounds_owned():
+    tid = PFX + "own-a"
+    _mk_round(tid, 1, "annotated", tenant_id="t1")
+    assert len(FileReviewRoundService.get_owned_task(tid, "t1")) == 1
+    # 他人租户：拒绝
+    assert FileReviewRoundService.get_owned_task(tid, "t2") == []
+
+
+def test_get_owned_task_denies_when_any_round_has_empty_tenant():
+    """同一 task 只要**有一条**轮次 tenant 为空/他人，整体拒绝（保守口径）：
+    宁可让脏数据的人自己重新发起，也不能把「是不是他的」判成「大概是」。"""
+    tid = PFX + "own-b"
+    _mk_round(tid, 1, "annotated", tenant_id="t1")
+    _mk_round(tid, 2, "done", tenant_id="")
+    assert FileReviewRoundService.get_owned_task(tid, "t1") == []
+
+
+def test_next_round_counts_all_rounds_including_failed():
+    tid = PFX + "next-a"
+    assert FileReviewRoundService.next_round(tid) == (1, "v1")
+    _mk_round(tid, 1, "annotated")
+    assert FileReviewRoundService.next_round(tid) == (2, "v2")
+    # failed 轮也顶号：只看 done/annotated 会让 v2 这个名字被复用，
+    # 覆盖失败轮已落盘的成稿（T6 交接契约第 2 条），并把同号失败兄弟选成输入基线。
+    _mk_round(tid, 2, "failed")
+    assert FileReviewRoundService.next_round(tid) == (3, "v3")
+
+
+def test_fix_rounds_left_counts_failed_and_clamps():
+    from api.db.services.file_review_service import MAX_FIX_ROUNDS, fix_rounds_left
+
+    assert MAX_FIX_ROUNDS == 3
+    assert fix_rounds_left([]) == MAX_FIX_ROUNDS
+    assert fix_rounds_left([_r(1)]) == MAX_FIX_ROUNDS          # 首轮审核不算修复轮
+    assert fix_rounds_left([_r(1), _r(2)]) == MAX_FIX_ROUNDS - 1
+    assert fix_rounds_left([_r(1), _r(2), _r(3)]) == MAX_FIX_ROUNDS - 2
+    assert fix_rounds_left([_r(1), _r(2), _r(3), _r(4)]) == 0  # 负数钳到 0
+    assert fix_rounds_left([_r(0), _r(1)]) == MAX_FIX_ROUNDS    # round_no=0 的脏行不算修复轮
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: `uv run --no-sync pytest test/test_file_review_service.py -k "owned_task or next_round or fix_rounds_left" -v`
+Expected: FAIL —— `AttributeError: type object 'FileReviewRoundService' has no attribute 'get_owned_task'`
+
+- [ ] **Step 3: 在 `api/db/services/file_review_service.py` 追加实现**
+
+在 `PENDING_ANNOTATION_STATUSES` 定义之后追加常量：
+
+```python
+# 「最多三轮修复」的权威口径。DB 无该列，由本层判定。T7 节点参数面板里的 max_rounds
+# 只是给用户看的 UI 字段（见 agent/component/file_review.py 的注释「后端不消费」），
+# 后端唯一的轮数上限在这里。
+MAX_FIX_ROUNDS = 3
+
+
+def fix_rounds_left(rounds: list) -> int:
+    """还剩几轮修复机会 = MAX_FIX_ROUNDS - 已发生的修复轮数（下限 0）。
+
+    修复轮 = 该 task 中 round_no > 1 的轮次（第 1 轮按契约恒为 review）。
+    **失败轮也计入**：用户烧掉的是一次尝试机会，不是「什么都没发生」；不计入会让失败的
+    retry 次数无上限，与「最大三轮重试」的口径相悖。
+    round_no 为 0/None 的脏行不算修复轮（不短路会让一条脏行白吃一次机会）。
+    """
+    used = sum(1 for r in rounds if (r.round_no or 0) > 1)
+    return max(0, MAX_FIX_ROUNDS - used)
+```
+
+在 `FileReviewRoundService` 内、`max_completed_round_no` 之前插入两个方法：
+
+```python
+    @classmethod
+    @DB.connection_context()
+    def get_owned_task(cls, task_id: str, tenant_id: str) -> list:
+        """越权闸门：返回该 task 的轮次列表，**仅当轮次全部归属 tenant_id**；否则 []。
+
+        [] 同时覆盖四种「不许继续」的情形，调用方一律按「空 = 拒绝」处理、**不区分**：
+        task_id 为空 / 无轮次行 / 轮次归他人 / 轮次 tenant 为空（历史脏行）。区分会把
+        「他人的 task 是否存在」这一信息泄露给攻击者。
+
+        为什么必须有这一层：`execute_task(task_id)` / `spawn_review_task(task_id)` /
+        `_force_fail_round(task_id)` 全链路只按 task_id 圈定、**不含任何 tenant 谓词**
+        （round_row.tenant_id 仅用于选 bucket）。入口不做归属校验 = 任何人拿到 task_id
+        就能触发、读取、收口他人的审核（T6 → T9 交接契约第 5 条，T8/T9 共用本闸门）。
+
+        刻意**不做** task_id 的格式白名单（如「必须 32 位十六进制」）：格式不匹配时本
+        就查不到行、结果同为 []，白名单不增加任何安全边界；反过来，一旦 id 生成方式
+        （现在是 uuid1().hex）变动而白名单没同步，闸门会静默拒绝**所有**合法请求 ——
+        用一个更隐蔽的故障换一个不存在的收益。
+        """
+        if not task_id or not tenant_id:
+            return []
+        rounds = cls.get_by_task(task_id)
+        if not rounds:
+            return []
+        if any((r.tenant_id or "") != tenant_id for r in rounds):
+            return []
+        return rounds
+
+    @classmethod
+    @DB.connection_context()
+    def next_round(cls, task_id: str) -> tuple[int, str]:
+        """下一轮的 (round_no, file_version)：max(**全部**轮次 round_no) + 1。
+
+        刻意**不**复用 max_completed_round_no（只数 done/annotated）—— 那个口径会让
+        **失败轮的编号被复用**，后果有三（T6 审查已实测确认）：
+          ① 产物对象名是 frv-{task_id}-{file_version}，同号即同名：新轮会覆盖失败轮
+             **已经落盘**的成稿（交接契约第 2 条：failed 轮次可能带 minio_path）；
+          ② _latest_version_name 按 round_no 取基线、同号后者胜，新轮会把同号的失败
+             兄弟（或它自己）选成输入基线 —— 自引用，补丁 find 全数落空；
+          ③ 面板上两条同号轮次，用户分不清哪条是哪次。
+        rounds 为空时返回 (1, "v1")，与 T7 节点首轮口径一致（首轮即原件）。
+        """
+        rounds = cls.get_by_task(task_id)
+        no = max((r.round_no or 0) for r in rounds) + 1 if rounds else 1
+        return no, "v%d" % no
+```
+
+- [ ] **Step 4: 跑测试确认通过**
+
+Run: `uv run --no-sync pytest test/test_file_review_service.py -v`
+Expected: PASS（既有用例 + 新增 6 例全绿；本文件连真实 MySQL，需本机 DB 起着）
+
+- [ ] **Step 5: 写工具失败测试**
+
+创建 `test/test_file_review_tool.py`：
+
+```python
+"""FileReviewTool（agent/tools/file_review.py）单测。
+
+Service / spawn / time.sleep 全部 monkeypatch，不触 DB/LLM/MinIO；工具实例用
+object.__new__ 绕过 ToolBase.__init__（其要求真实 Canvas 实例），_param 用
+SimpleNamespace 打桩（同 test_template_fill_tool.py）。
+
+对抗性覆盖：
+- file_id 三条路：Begin 输出拿到 / 拿不到 → 明确拒绝（不建 file_id 为空的轮次行）/
+  Begin 组件缺失或 output() 抛错或返回非 str → 降级成同一条用户可读拒绝；
+- 租户缺失 → 一律拒绝（不建 tenant 为空的轮次行，否则越权闸门先把自己挡住）；
+- 模板 id：编造的 id 必须被拒（不静默回落默认值 —— 否则审计列里留下假模板记录）；
+- spawn 收到的是 **task_id** 而非 round_id（T5 契约）；
+- fix 的级别过滤：**不得**改写任何标注的状态（未选中级别不许被置 wontfix）；
+- 级别为空 / 未知词 / 该级别无待修项 → 拒绝新建轮次；
+- 轮次余额用尽 / 上一轮仍在跑 → 拒绝；
+- 越权：get_owned_task 返回 [] 时 status/fix 必须拒绝；
+- 轮询超时 → 返回 task_id 并引导 action=status。
+"""
+from types import SimpleNamespace
+
+PFX = "__test_fr_tool__"
+
+
+def _svc():
+    from api.db.services import file_review_service as svc
+
+    return svc
+
+
+def _tpl(tid="bid_doc_format", name="招标文件格式审核", desc="看格式与要件"):
+    return SimpleNamespace(id=tid, name=name, description=desc)
+
+
+def _round(no=1, status="annotated", **kw):
+    base = dict(task_id=PFX + "task", file_id=PFX + "file", round_no=no,
+                status=status, template_id="bid_doc_format", user_query="",
+                file_version="v%d" % no, kb_ids=None, minio_path=None,
+                summary="", error=None)
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def _ann(severity="high", status="open", issue="资质缺失", matched_text="甲公司"):
+    return SimpleNamespace(id="ann-1", severity=severity, status=status,
+                           issue=issue, matched_text=matched_text)
+
+
+class _Begin:
+    component_name = "Begin"
+
+    def __init__(self, outs):
+        self._outs = outs
+
+    def output(self):
+        return dict(self._outs)
+
+
+class _BadBegin:
+    component_name = "Begin"
+
+    def output(self):
+        raise RuntimeError("boom")
+
+
+def _begin(outs):
+    return {"begin": {"obj": _Begin(outs)}}
+
+
+def _patch(monkeypatch, *, templates=None, rounds=None, pending=None,
+           next_round=(1, "v1"), left=3):
+    """统一打桩：Service 查询 + spawn + sleep。返回记录写操作的 calls。"""
+    svc = _svc()
+    calls = {"rounds": [], "spawned": [], "ann_updates": []}
+
+    monkeypatch.setattr(svc.FileReviewRoundService, "create_round",
+                        staticmethod(lambda **kw: calls["rounds"].append(kw) or "round-1"))
+    monkeypatch.setattr(svc.FileReviewRoundService, "get_owned_task",
+                        staticmethod(lambda task_id, tid: list(rounds or [])))
+    monkeypatch.setattr(svc.FileReviewRoundService, "next_round",
+                        staticmethod(lambda task_id: next_round))
+    monkeypatch.setattr(svc.FileReviewTemplateService, "list_enabled",
+                        staticmethod(lambda tid: list(templates or [])))
+    monkeypatch.setattr(svc.FileReviewAnnotationService, "list_pending_by_task",
+                        staticmethod(lambda task_id: list(pending or [])))
+    # 任何对标注状态的改写都是本任务明确禁止的（未选中级别不得被置 wontfix），
+    # 记下来供 test_fix_never_mutates_annotation_status 断言。
+    monkeypatch.setattr(svc.FileReviewAnnotationService, "update_status",
+                        staticmethod(
+                            lambda aid, status: calls["ann_updates"].append((aid, status))))
+    monkeypatch.setattr(svc, "fix_rounds_left", lambda rows: left)
+    monkeypatch.setattr("agent.tools.file_review.time.sleep", lambda s: None)
+
+    from rag.svr.file_review import spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "spawn_review_task",
+                        lambda task_id: calls["spawned"].append(task_id))
+    return calls
+
+
+def _make_tool(tenant="tenant_x", components=None):
+    from agent.tools.file_review import FileReviewTool
+
+    tool = object.__new__(FileReviewTool)
+    tool._param = SimpleNamespace(outputs={}, inputs={}, debug_inputs={})
+    tool.set_output = lambda key, value=None: tool._param.outputs.update({key: {"value": value}})
+    tool.check_if_canceled = lambda msg="": False
+    tool._canvas = SimpleNamespace(get_tenant_id=lambda: tenant,
+                                   components=components or {})
+    return tool
+
+
+# ---------- meta 声明 ----------
+
+def test_meta_declaration():
+    from agent.tools.file_review import FileReviewTool, FileReviewToolParam
+
+    param = FileReviewToolParam()
+    assert param.meta["name"] == "FileReviewTool"
+    assert param.meta["parameters"]["action"]["enum"] == [
+        "list_templates", "review", "status", "fix"]
+    # 类名必须与 T7 节点 FileReview 不同：component_class 按类名解析且 agent.component
+    # 优先于 agent.tools，同名会互相遮蔽
+    assert FileReviewTool.component_name == "FileReviewTool"
+
+
+def test_unknown_action_lists_options():
+    out = _make_tool()._invoke(action="nope")
+    assert "不支持的 action" in out and "list_templates" in out
+
+
+# ---------- list_templates ----------
+
+def test_list_templates_renders_rows(monkeypatch):
+    _patch(monkeypatch, templates=[_tpl("t1", "投标文件审核"), _tpl("t2", "合同审核")])
+    out = _make_tool()._invoke(action="list_templates")
+    assert "投标文件审核" in out and "t1" in out and "合同审核" in out
+
+
+def test_list_templates_empty(monkeypatch):
+    _patch(monkeypatch, templates=[])
+    out = _make_tool()._invoke(action="list_templates")
+    assert "没有可用的审核模板" in out
+
+
+# ---------- review：file_id 解析 ----------
+
+def test_review_uses_file_id_from_begin_output(monkeypatch):
+    calls = _patch(monkeypatch, templates=[_tpl()])
+    tool = _make_tool(components=_begin({"review_file_id": PFX + "upload-1"}))
+    tool._invoke(action="review", user_query="重点看资质", kb_ids='["kb1", "kb2"]')
+    kw = calls["rounds"][0]
+    assert kw["file_id"] == PFX + "upload-1"
+    assert kw["round_no"] == 1 and kw["file_version"] == "v1"
+    assert kw["status"] == "reviewing"
+    assert kw["tenant_id"] == "tenant_x" and kw["created_by"] == "tenant_x"
+    assert kw["user_query"] == "重点看资质"
+    assert kw["kb_ids"] == ["kb1", "kb2"]
+
+
+def test_review_spawns_task_id_not_round_id(monkeypatch):
+    calls = _patch(monkeypatch, templates=[_tpl()])
+    _make_tool(components=_begin({"review_file_id": "u1"}))._invoke(action="review")
+    assert calls["spawned"] == [calls["rounds"][0]["task_id"]]
+    assert "round-1" not in calls["spawned"]
+
+
+def test_review_refuses_without_file_id(monkeypatch):
+    calls = _patch(monkeypatch, templates=[_tpl()])
+    out = _make_tool(components=_begin({}))._invoke(action="review")
+    assert "上传" in out
+    assert calls["rounds"] == [] and calls["spawned"] == []
+
+
+def test_review_refuses_when_begin_component_missing(monkeypatch):
+    calls = _patch(monkeypatch, templates=[_tpl()])
+    out = _make_tool(components={})._invoke(action="review")
+    assert "上传" in out and calls["rounds"] == []
+
+
+def test_review_refuses_when_begin_output_raises(monkeypatch):
+    calls = _patch(monkeypatch, templates=[_tpl()])
+    tool = _make_tool(components={"begin": {"obj": _BadBegin()}})
+    out = tool._invoke(action="review")
+    assert "上传" in out and calls["rounds"] == []
+
+
+def test_review_refuses_when_begin_output_non_str(monkeypatch):
+    calls = _patch(monkeypatch, templates=[_tpl()])
+    tool = _make_tool(components=_begin({"review_file_id": 123}))
+    out = tool._invoke(action="review")
+    assert "上传" in out and calls["rounds"] == []
+
+
+def test_review_refuses_without_tenant(monkeypatch):
+    calls = _patch(monkeypatch, templates=[_tpl()])
+    tool = _make_tool(tenant="", components=_begin({"review_file_id": "u1"}))
+    out = tool._invoke(action="review")
+    assert "身份" in out and calls["rounds"] == []
+
+
+# ---------- review：模板与 kb_ids ----------
+
+def test_review_rejects_unknown_template(monkeypatch):
+    """LLM 编造的模板 id 不许静默回落默认值：否则轮次行会留下一条假模板审计记录。"""
+    calls = _patch(monkeypatch, templates=[_tpl("t1", "投标文件审核")])
+    tool = _make_tool(components=_begin({"review_file_id": "u1"}))
+    out = tool._invoke(action="review", template_id="made-up-id")
+    assert "不可用" in out and "投标文件审核" in out
+    assert calls["rounds"] == []
+
+
+def test_review_default_template_comes_from_executor_constant(monkeypatch):
+    from rag.svr.file_review.executor import DEFAULT_TEMPLATE_ID
+
+    calls = _patch(monkeypatch, templates=[_tpl(DEFAULT_TEMPLATE_ID)])
+    _make_tool(components=_begin({"review_file_id": "u1"}))._invoke(action="review")
+    assert calls["rounds"][0]["template_id"] == DEFAULT_TEMPLATE_ID
+
+
+def test_review_kb_ids_tolerant_parsing(monkeypatch):
+    calls = _patch(monkeypatch, templates=[_tpl()])
+    tool = _make_tool(components=_begin({"review_file_id": "u1"}))
+    tool._invoke(action="review", kb_ids="kb1, kb2")
+    assert calls["rounds"][0]["kb_ids"] == ["kb1", "kb2"]
+    calls["rounds"].clear()
+    tool._invoke(action="review", kb_ids="")
+    assert calls["rounds"][0]["kb_ids"] is None
+
+
+# ---------- review：轮询 ----------
+
+def test_review_poll_timeout_returns_task_id(monkeypatch):
+    running = [_round(1, "reviewing")]
+    calls = _patch(monkeypatch, templates=[_tpl()], rounds=running)
+    out = _make_tool(components=_begin({"review_file_id": "u1"}))._invoke(action="review")
+    assert "仍在进行中" in out and "task_id=" in out and "status" in out
+    assert calls["spawned"]
+
+
+def test_review_poll_terminal_returns_summary(monkeypatch):
+    done = [_round(1, "annotated", summary="共发现 3 处问题")]
+    _patch(monkeypatch, templates=[_tpl()], rounds=done, pending=[_ann()])
+    out = _make_tool(components=_begin({"review_file_id": "u1"}))._invoke(action="review")
+    assert "审核完成" in out and "共发现 3 处问题" in out
+    assert "资质缺失" in out and "严重" in out
+
+
+# ---------- status ----------
+
+def test_status_requires_task_id():
+    out = _make_tool()._invoke(action="status")
+    assert "task_id" in out
+
+
+def test_status_not_owned_refused(monkeypatch):
+    _patch(monkeypatch, rounds=[])
+    out = _make_tool()._invoke(action="status", task_id=PFX + "other-task")
+    assert "没有找到" in out and "无权访问" in out
+
+
+def test_status_lists_pending_grouped_by_severity(monkeypatch):
+    rows = [_round(1, "annotated"), _round(2, "done", minio_path="frv-x-v2")]
+    _patch(monkeypatch, rounds=rows,
+           pending=[_ann("high"), _ann("medium"), _ann("low")])
+    out = _make_tool()._invoke(action="status", task_id=PFX + "task")
+    assert "严重" in out and "一般" in out and "提示" in out
+    assert "成稿" in out and "余额" in out
+
+
+def test_status_reports_failed_round_error(monkeypatch):
+    rows = [_round(1, "failed", error="LLM 输出无法解析为修复补丁列表")]
+    _patch(monkeypatch, rounds=rows)
+    out = _make_tool()._invoke(action="status", task_id=PFX + "task")
+    assert "本轮失败" in out and "无法解析" in out
+
+
+# ---------- fix ----------
+
+def test_fix_creates_new_round_and_encodes_levels(monkeypatch):
+    cur = _round(1, "annotated", user_query="重点看资质", kb_ids='["kb1"]')
+    calls = _patch(monkeypatch, rounds=[cur], next_round=(2, "v2"), left=3,
+                   pending=[_ann("high")])
+    _make_tool()._invoke(action="fix", task_id=PFX + "task", levels="high")
+    kw = calls["rounds"][0]
+    assert kw["round_no"] == 2 and kw["file_version"] == "v2"
+    assert kw["status"] == "fixing"
+    assert kw["file_id"] == cur.file_id          # 沿用该 task 的文件，不重新解析 Begin
+    assert kw["template_id"] == cur.template_id
+    assert kw["kb_ids"] == cur.kb_ids            # 修复轮继承知识库
+    assert kw["tenant_id"] == "tenant_x" and kw["created_by"] == "tenant_x"
+    assert "严重" in kw["user_query"] and "重点看资质" in kw["user_query"]
+    assert calls["spawned"] == [kw["task_id"]]
+
+
+def test_fix_never_mutates_annotation_status(monkeypatch):
+    """级别过滤**不得**靠把未选中级别置 wontfix 实现。
+
+    wontfix 的语义是「用户决定永不修复此条」；自动置位后用户改口「把中等的也修了」
+    会静默失效（list_pending_by_task 不再看到它），且用户无法从对话里察觉。
+    过滤改为写进本轮 user_query（executor 的修复 prompt 会带上它）。
+    """
+    cur = _round(1, "annotated")
+    calls = _patch(monkeypatch, rounds=[cur], next_round=(2, "v2"),
+                   pending=[_ann("high"), _ann("medium")])
+    _make_tool()._invoke(action="fix", task_id=PFX + "task", levels="high")
+    assert calls["ann_updates"] == []
+    assert calls["rounds"]
+
+
+def test_fix_rejects_while_previous_round_running(monkeypatch):
+    calls = _patch(monkeypatch, rounds=[_round(1, "reviewing")])
+    out = _make_tool()._invoke(action="fix", task_id=PFX + "task", levels="high")
+    assert "仍在进行中" in out and calls["rounds"] == []
+
+
+def test_fix_rejects_when_rounds_exhausted(monkeypatch):
+    calls = _patch(monkeypatch, rounds=[_round(3, "done")], left=0)
+    out = _make_tool()._invoke(action="fix", task_id=PFX + "task", levels="high")
+    assert "最大修复轮数" in out and "保持原样" in out and calls["rounds"] == []
+
+
+def test_fix_rejects_unknown_levels(monkeypatch):
+    """未知级别必须拒绝而不是兜底成 medium：用户只想要 low 却被升格成 medium
+    会让「只修低级别」变成「修中等级别」，与用户明确的指令相反。"""
+    calls = _patch(monkeypatch, rounds=[_round(1, "annotated")], pending=[_ann("low")])
+    out = _make_tool()._invoke(action="fix", task_id=PFX + "task", levels="urgent")
+    assert "levels" in out and calls["rounds"] == []
+
+
+def test_fix_rejects_when_no_pending_at_that_level(monkeypatch):
+    calls = _patch(monkeypatch, rounds=[_round(1, "annotated")], pending=[_ann("high")])
+    out = _make_tool()._invoke(action="fix", task_id=PFX + "task", levels="low")
+    assert "没有" in out and calls["rounds"] == []
+
+
+def test_fix_not_owned_refused(monkeypatch):
+    calls = _patch(monkeypatch, rounds=[])
+    out = _make_tool()._invoke(action="fix", task_id=PFX + "other", levels="high")
+    assert "无权访问" in out and calls["rounds"] == []
+
+
+def test_parse_levels_tolerant_and_ordered():
+    from agent.tools.file_review import FileReviewTool
+
+    assert FileReviewTool._parse_levels("低,high,LOW,严重") == ["high", "low"]
+    assert FileReviewTool._parse_levels('["medium"]') == ["medium"]
+    assert FileReviewTool._parse_levels(["medium", "high"]) == ["high", "medium"]
+    assert FileReviewTool._parse_levels("") == []
+    assert FileReviewTool._parse_levels(None) == []
+```
+
+- [ ] **Step 6: 跑测试确认失败**
+
+Run: `uv run --no-sync pytest test/test_file_review_tool.py -v`
+Expected: FAIL —— `ModuleNotFoundError: No module named 'agent.tools.file_review'`
+
+- [ ] **Step 7: 创建 `agent/tools/file_review.py`**
 
 ```python
 # agent/tools/file_review.py
-"""FileReview 对话工具：用户说"审核投标书"+ 上传文件时触发；
-反问 file_id → 调 FileReview 节点 RPC（简化：直接调 service 起 task）。"""
+"""C端对话 FileReviewTool：列审核模板 / 发起审核 / 查进度 / 按级别发起修复。
+
+照 agent/tools/template_fill.py 的插件结构：FileReviewToolParam(ToolParamBase) 声明
+meta，FileReviewTool(ToolBase) 提供 _invoke，被 component_class 按类名自动发现。
+Service 层与 executor 全部**延迟 import**：前者避免工具注册期拉起 DB/Quart，后者
+（含 python-docx）只在真正跑起来时才需要。
+
+与 T7 画布节点 agent/component/file_review.py 是同一份执行真相的**两个入口**：两者都
+只做「建轮次行 + spawn 后台线程」，随即返回；进度与结果一律按轮次行反查（本工具的
+action=status 与 T9 的 REST 端点读同一批行）。故本模块不推 SSE、不观察线程 —— 把执行
+绑死在某个具体连接上，刷新即丢，且第三个入口无连接可推。
+
+类名必须与节点的 FileReview 不同：component_class 按类名解析且 agent.component 优先于
+agent.tools，同名会互相遮蔽（T7 docstring 记录的同一条教训）。
+"""
+
 import json
 import logging
+import os
+import time
+from abc import ABC
 
-from agent.tools.base import ToolBase
-from api.db.services.file_review_service import (
-    FileReviewRoundService,
-    FileReviewTemplateService,
-)
+from agent.component.file_review import FILE_ID_INPUT_KEY
+from agent.tools.base import ToolBase, ToolMeta, ToolParamBase
+from common.connection_utils import timeout
 from common.misc_utils import get_uuid
 from rag.svr.file_review import spawn as spawn_mod
 
 logger = logging.getLogger(__name__)
 
+# 执行超时与同步轮询上限：与 FillTemplate 同款（env 驱动；等待取 min(90, timeout-10)，
+# 保证轮询不会吃满装饰器配额，超时后引导用户用 action=status 异步查询）。
+_EXEC_TIMEOUT = int(os.environ.get("COMPONENT_EXEC_TIMEOUT", "60"))
+_MAX_WAIT_SECONDS = min(90, max(_EXEC_TIMEOUT - 10, 10))
+_POLL_INTERVAL = 3
 
-class FileReviewTool(ToolBase):
-    """工具名：file_review；参数：file_id（必填）、template_id（选填）、user_query（选填）"""
-    name = "file_review"
-    description = "文件审核：调用 LLM 对上传文件按招标场景模板多轮审视并产出可点击标注"
+# 轮次终态：annotated（首轮审核收口）/ done（修复轮收口）/ failed。
+# 前两者 = Service 层 COMPLETED_ROUND_STATUSES，这里并上 failed —— 工具要能对用户
+# 如实说「这轮失败了」，不能像 Service 那样把 failed 当作「没发生」。
+_TERMINAL_ROUND_STATUSES = ("annotated", "done", "failed")
+_RUNNING_ROUND_STATUSES = ("reviewing", "fixing")
 
-    def _run(self, file_id: str, template_id: str = '', user_query: str = '审核') -> str:
+_ROUND_STATUS_CN = {
+    "reviewing": "审核中", "annotated": "审核完成", "fixing": "修复中",
+    "done": "修复完成", "failed": "失败",
+}
+_SEVERITY_CN = {"high": "严重", "medium": "一般", "low": "提示"}
+_SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
+
+# 返回值会进 LLM 上下文：逐条 issue 全文（上限 1000 字）会刷爆 token，逐项裁剪。
+_MAX_LIST_ITEMS = 30
+_MAX_ISSUE_CHARS = 120
+_MAX_MATCHED_CHARS = 60
+_MAX_SUMMARY_CHARS = 400
+
+
+def _clip(text, limit: int) -> str:
+    s = (text or "").strip()
+    return s if len(s) <= limit else s[:limit] + "…"
+
+
+def _compose_fix_query(prev: str, levels: list) -> str:
+    """把级别选择编进本轮 user_query。
+
+    executor 的修复 prompt 会把轮次行的 user_query 原样作为「用户需求：」喂给 LLM
+    （_build_fix_prompt 实测确认），而待修复清单里每条都带「级别=」，级别过滤借此生效。
+
+    刻意**不**把未选中级别的标注置 wontfix 来硬过滤：wontfix 的语义是「用户决定永不
+    修复此条」，自动置位后用户改口「把中等的也修了」会静默失效（list_pending_by_task
+    不再看到它），而用户没有任何办法从对话里发现这件事。保留原需求原文是因为 executor
+    的修复 prompt 只认这一个字段，丢掉它等于丢掉用户的审核意图。
+    """
+    chosen = "、".join(_SEVERITY_CN.get(s, s) for s in levels)
+    head = f"本次只修复【{chosen}】级别的问题，其余级别的问题请保持原样、不要改动。"
+    base = (prev or "").strip()
+    return f"{base}\n{head}" if base else head
+
+
+class FileReviewToolParam(ToolParamBase):
+    """FileReviewTool 参数声明。"""
+
+    def __init__(self):
+        self.meta: ToolMeta = {
+            "name": "FileReviewTool",
+            "description": """文件审核工具。四个 action：
+
+1. list_templates：列出可用的审核模板（名称/用途/id）。用户没指定模板时先调用它。
+2. review：对**用户刚上传的文件**发起一轮审核。本 action **不需要 file_id 参数** —— 待审核的文件由运行环境注入，工具自己取。可选 template_id（不传则用招标文件格式审核模板）、kb_ids（检索审核依据的知识库 ID 列表，JSON 数组字符串，如 '["kb1"]'，可选）、user_query（用户的审核要求原话，如「重点看资质和工期」）。提交后同步等待最多约 1 分钟，完成即返回批注摘要；超时返回 task_id，引导用户稍后用 action=status 查。
+3. status：按 task_id 查审核进度与批注清单（按级别分组、列出未修复项），以及成稿预览/下载指引。
+4. fix：按**用户选定的问题级别**发起一轮修复。task_id 与 levels 均必填（levels 取值 high/medium/low，逗号分隔）。用户说「把严重的问题改掉」「只修中等的」时用它。最多 3 轮；用尽后明确告知「未修复的保持原样」。
+
+使用时机：用户上传文件并表达审核/检查/把关/看看有没有问题的意图时用 review；用户明确表示要针对某个级别的问题动手修改时用 fix。**先展示后修复**：review 之后要把批注读给用户听、由用户决定修哪个级别，不要自动接着调 fix。levels 只能取用户明确说出的级别，不得替用户扩大范围。kb_ids 必须由用户提供（可结合知识库列表工具），不要编造。""",
+            "parameters": {
+                "action": {
+                    "type": "string",
+                    "description": "操作类型：list_templates（列审核模板）/ review（发起审核）/ status（查进度与批注）/ fix（按级别发起修复）。",
+                    "enum": ["list_templates", "review", "status", "fix"],
+                    "required": True,
+                },
+                "task_id": {
+                    "type": "string",
+                    "description": "审核任务 id。action=status / fix 时必填（review 返回的 task_id）。",
+                    "default": "",
+                    "required": False,
+                },
+                "template_id": {
+                    "type": "string",
+                    "description": "审核模板 id（list_templates 返回的 id）。action=review 时可选，不传则用默认的招标文件格式审核模板。",
+                    "default": "",
+                    "required": False,
+                },
+                "user_query": {
+                    "type": "string",
+                    "description": "用户的审核要求原话（如「重点看资质和工期是否满足」）。action=review 时可选。",
+                    "default": "",
+                    "required": False,
+                },
+                "kb_ids": {
+                    "type": "string",
+                    "description": "知识库 ID 列表，JSON 数组字符串，如 '[\"kb123\"]'。action=review 时可选，用于检索审核依据。",
+                    "default": "",
+                    "required": False,
+                },
+                "levels": {
+                    "type": "string",
+                    "description": "要修复的问题级别，逗号分隔，取值 high/medium/low。action=fix 时必填。",
+                    "default": "",
+                    "required": False,
+                },
+            },
+        }
+        super().__init__()
+
+
+class FileReviewTool(ToolBase, ABC):
+    """C端对话文件审核工具。"""
+
+    component_name = "FileReviewTool"
+
+    @timeout(_EXEC_TIMEOUT)
+    def _invoke(self, **kwargs):
+        if self.check_if_canceled("FileReviewTool"):
+            return
+        try:
+            action = str(kwargs.get("action") or "").strip()
+            if action == "list_templates":
+                return self._list_templates()
+            if action == "review":
+                return self._review(kwargs)
+            if action == "status":
+                return self._status(kwargs)
+            if action == "fix":
+                return self._fix(kwargs)
+            return (f"不支持的 action：{action or '(空)'}。可用 action："
+                    "list_templates（列审核模板）/ review（发起审核）/ "
+                    "status（查进度与批注）/ fix（按级别发起修复）。")
+        except Exception as e:
+            logger.exception("FileReviewTool invoke failed")
+            self.set_output("_ERROR", str(e))
+            return f"文件审核执行失败：{e}"
+
+    # ---------- action: list_templates ----------
+
+    def _list_templates(self):
+        from api.db.services.file_review_service import FileReviewTemplateService
+
+        tenant_id = self._get_tenant_id()
+        if not tenant_id:
+            return "无法确定当前用户身份，请稍后重试。"
+        rows = FileReviewTemplateService.list_enabled(tenant_id)
+        if not rows:
+            return "当前没有可用的审核模板。"
+        lines = [f"共 {len(rows)} 套可用审核模板："]
+        for r in rows:
+            desc = (r.description or "").strip()
+            lines.append(f"- {r.name}（id={r.id}）" + (f"：{desc}" if desc else ""))
+        lines.append("请告知用哪套模板、以及本次审核要重点看什么，即可发起审核。")
+        return "\n".join(lines)
+
+    # ---------- action: review ----------
+
+    def _review(self, kwargs):
+        from api.db.services.file_review_service import (
+            FileReviewRoundService,
+            FileReviewTemplateService,
+        )
+        from rag.svr.file_review.executor import DEFAULT_TEMPLATE_ID
+
+        tenant_id = self._get_tenant_id()
+        if not tenant_id:
+            return "无法确定当前用户身份，请稍后重试。"
+
+        file_id = self._resolve_file_id()
         if not file_id:
-            return json.dumps({"error": "缺少 file_id"}, ensure_ascii=False)
+            return ("没有拿到待审核的文件。请先上传要审核的文件，再说出审核要求"
+                    "（例如「帮我看看这份标书有没有问题」）。")
 
-        tpl_id = template_id or 'bid_doc_format'
-        if not FileReviewTemplateService.get_by_id(tpl_id):
-            tpl_id = 'bid_doc_format'
+        enabled = FileReviewTemplateService.list_enabled(tenant_id)
+        # 默认模板取自 executor 常量，不在此复刻字面量：默认值改了这里必须跟着变，
+        # 复制一份就是等着漂移（T7 节点同款处理）。
+        template_id = str(kwargs.get("template_id") or "").strip() or DEFAULT_TEMPLATE_ID
+        if template_id not in [t.id for t in enabled]:
+            # 不静默回落到默认值：LLM 编造的模板 id 若被吞掉，轮次行里就会留下一条
+            # 「用户用了 X 模板」的假审计记录。把可用清单回给 LLM 让它自查重试。
+            lines = [f"审核模板不可用：{template_id}。可用模板："]
+            for t in enabled:
+                lines.append(f"- {t.name}（id={t.id}）")
+            return "\n".join(lines)
 
         task_id = get_uuid()
-        rid = FileReviewRoundService.create_round(
-            task_id=task_id, file_id=file_id, round_no=1,
-            template_id=tpl_id, user_query=user_query,
-            file_version='v1', status='reviewing',
-            tenant_id='', created_by='',
+        round_no, file_version = FileReviewRoundService.next_round(task_id)
+        FileReviewRoundService.create_round(
+            task_id=task_id, file_id=file_id, round_no=round_no,
+            template_id=template_id,
+            user_query=str(kwargs.get("user_query") or "").strip(),
+            file_version=file_version, status="reviewing",
+            tenant_id=tenant_id, created_by=tenant_id,
+            # 形态（list / JSON 文本 / 裸 id）归一是 Service 层 _normalize_kb_ids 的职责，
+            # 工具只把解析出的空值折成 None（「这次不用参考资料」的显式表达）。
+            kb_ids=self._parse_kb_ids(kwargs.get("kb_ids")) or None,
         )
-        spawn_mod.spawn_review_task(rid)
+        spawn_mod.spawn_review_task(task_id)
+        return self._poll(task_id, tenant_id)
 
-        return json.dumps({
-            "task_id": task_id, "round_id": rid, "status": "reviewing",
-            "message": f"已启动审核（模板：{tpl_id}），稍后查看标注。",
-        }, ensure_ascii=False)
+    # ---------- action: status ----------
+
+    def _status(self, kwargs):
+        from api.db.services.file_review_service import FileReviewRoundService
+
+        tenant_id = self._get_tenant_id()
+        if not tenant_id:
+            return "无法确定当前用户身份，请稍后重试。"
+        task_id = str(kwargs.get("task_id") or "").strip()
+        if not task_id:
+            return "请提供 task_id（发起审核时返回的任务 id）。"
+        rounds = FileReviewRoundService.get_owned_task(task_id, tenant_id)
+        if not rounds:
+            return "没有找到该审核任务，或无权访问（请确认 task_id 是否正确）。"
+        return self._format_status(rounds)
+
+    # ---------- action: fix ----------
+
+    def _fix(self, kwargs):
+        from api.db.services.file_review_service import (
+            MAX_FIX_ROUNDS,
+            FileReviewAnnotationService,
+            FileReviewRoundService,
+            fix_rounds_left,
+        )
+
+        tenant_id = self._get_tenant_id()
+        if not tenant_id:
+            return "无法确定当前用户身份，请稍后重试。"
+        task_id = str(kwargs.get("task_id") or "").strip()
+        if not task_id:
+            return "请提供 task_id（发起审核时返回的任务 id）。"
+        rounds = FileReviewRoundService.get_owned_task(task_id, tenant_id)
+        if not rounds:
+            return "没有找到该审核任务，或无权访问（请确认 task_id 是否正确）。"
+
+        cur = rounds[-1]
+        if cur.status in _RUNNING_ROUND_STATUSES:
+            return (f"第 {cur.round_no} 轮（{_ROUND_STATUS_CN.get(cur.status, cur.status)}）"
+                    "仍在进行中，请稍后用 action=status 查询进度后再发起修复。")
+        if fix_rounds_left(rounds) <= 0:
+            return f"已达到最大修复轮数（{MAX_FIX_ROUNDS} 轮），未修复的问题保持原样。"
+
+        levels = self._parse_levels(kwargs.get("levels"))
+        if not levels:
+            return "请提供要修复的问题级别 levels（high / medium / low 中的一到多个，逗号分隔）。"
+
+        pending = FileReviewAnnotationService.list_pending_by_task(task_id)
+        if not [a for a in pending if a.severity in levels]:
+            # 该级别没东西可修时**不建空转轮次**：executor 会立刻以「没有待修复的问题」
+            # 收口，白烧一次轮次余额，面板上还多一条无意义的行。
+            return ("没有【" + "、".join(_SEVERITY_CN.get(s, s) for s in levels)
+                    + "】级别的待修复问题。待修复问题：" + self._severity_summary(pending))
+
+        round_no, file_version = FileReviewRoundService.next_round(task_id)
+        FileReviewRoundService.create_round(
+            task_id=task_id, file_id=cur.file_id, round_no=round_no,
+            template_id=cur.template_id,
+            user_query=_compose_fix_query(cur.user_query, levels),
+            file_version=file_version, status="fixing",
+            tenant_id=tenant_id, created_by=tenant_id,
+            # 修复轮沿用本轮的 kb_ids（已是 JSON 文本，_normalize_kb_ids 幂等）：
+            # 轮次行是「这轮用了哪些知识库」的审计记录，不能因为本轮不检索就写成空。
+            kb_ids=cur.kb_ids,
+        )
+        spawn_mod.spawn_review_task(task_id)
+        return self._poll(task_id, tenant_id)
+
+    # ---------- 轮询与摘要 ----------
+
+    def _poll(self, task_id: str, tenant_id: str) -> str:
+        """同步轮询至终态或超时（sleep 在测试中被替换）。
+
+        每一跳都带 tenant 走 get_owned_task：轮询期间租户上下文不变，但重查时仍走
+        同一条闸门，避免「入口校验了、产出路径没校验」的半吊子防线。
+        """
+        from api.db.services.file_review_service import FileReviewRoundService
+
+        waited = 0.0
+        while waited < _MAX_WAIT_SECONDS:
+            time.sleep(_POLL_INTERVAL)
+            waited += _POLL_INTERVAL
+            rounds = FileReviewRoundService.get_owned_task(task_id, tenant_id)
+            if rounds and rounds[-1].status in _TERMINAL_ROUND_STATUSES:
+                return self._format_status(rounds)
+        return (f"审核任务已提交（task_id={task_id}），目前仍在进行中。"
+                "请稍后用 action=status 携带该 task_id 查询进度与批注。")
+
+    def _format_status(self, rounds) -> str:
+        """轮次 + 批注统计 + 待修复清单 + 成稿指引。
+
+        action=status 与 _poll 收尾**共用**本方法：两条路径（同步等到 / 稍后查）给出的
+        信息必须一致，否则用户前后两次看到的对不上，会以为结果变了。
+        """
+        from api.db.services.file_review_service import (
+            MAX_FIX_ROUNDS,
+            FileReviewAnnotationService,
+            fix_rounds_left,
+        )
+
+        task_id = rounds[0].task_id
+        cur = rounds[-1]
+        lines = [f"审核任务 {task_id}：共 {len(rounds)} 轮，当前第 {cur.round_no} 轮"
+                 f"（{_ROUND_STATUS_CN.get(cur.status, cur.status)}）。"]
+        if cur.status == "failed":
+            lines.append("本轮失败：" + (cur.error or "（无详细信息，详见服务端日志）"))
+        if cur.summary:
+            lines.append("本轮结果：" + _clip(cur.summary, _MAX_SUMMARY_CHARS))
+
+        pending = FileReviewAnnotationService.list_pending_by_task(task_id)
+        lines.append("待修复问题：" + self._severity_summary(pending))
+        for a in pending[:_MAX_LIST_ITEMS]:
+            line = (f"- [{_SEVERITY_CN.get(a.severity, a.severity)}] "
+                    f"{_clip(a.issue, _MAX_ISSUE_CHARS)}")
+            if a.matched_text:
+                line += f"（原文：{_clip(a.matched_text, _MAX_MATCHED_CHARS)}）"
+            lines.append(line)
+        if len(pending) > _MAX_LIST_ITEMS:
+            lines.append(f"…（其余 {len(pending) - _MAX_LIST_ITEMS} 条略）")
+
+        # 判据是「有 minio_path 就有可下载成稿」，与 status 无关：T6 交接契约第 2 条
+        # 实测 failed 轮次也可能已经落盘（收口那步抛错前成稿已写进 MinIO）。
+        produced = [r for r in rounds if r.minio_path]
+        if produced:
+            latest = produced[-1]
+            lines.append(f"已产出第 {latest.round_no} 轮成稿，可在「文件审核」面板中预览/下载。")
+        lines.append(f"修复轮次余额：还可发起 {fix_rounds_left(rounds)} 轮"
+                     f"（上限 {MAX_FIX_ROUNDS} 轮）。")
+        if pending:
+            lines.append("如需修复，请告知要修复哪个级别（严重/一般/提示）；"
+                         "不需要修复的可以先放着，未修复的问题会保持原样。")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _severity_summary(items) -> str:
+        """按级别统计待修复条数（无则明说「无」，不留空让 LLM 猜）。"""
+        if not items:
+            return "无"
+        counts = {}
+        for a in items:
+            counts[a.severity] = counts.get(a.severity, 0) + 1
+        parts = [f"{_SEVERITY_CN.get(s, s)} {counts[s]} 条"
+                 for s in sorted(counts, key=lambda x: _SEVERITY_RANK.get(x, 99))]
+        return f"共 {len(items)} 条（{'、'.join(parts)}）"
+
+    # ---------- 辅助 ----------
+
+    def _get_tenant_id(self) -> str:
+        canvas = getattr(self, "_canvas", None)
+        if not canvas:
+            return ""
+        try:
+            return canvas.get_tenant_id() or ""
+        except Exception:  # noqa: BLE001 — canvas 实现异常类型不一，兜底空串
+            return ""
+
+    def _begin_output(self, key: str) -> str:
+        """扫 Begin 输出取键值（与 T7 节点 FileReview._begin_output 同款）。
+
+        不按 id 取：Begin 的 id 虽是硬编码的 "begin"，但节点参数可能被写成别的组件的
+        引用、或干脆留空，而「本次传入的上传文件」只可能来自 Begin 输出 —— 扫一遍比
+        断言 id 更耐用。取不到（含异常）都返回空串，由调用方给出用户可读的拒绝。
+        """
+        canvas = getattr(self, "_canvas", None)
+        if not canvas:
+            return ""
+        try:
+            for cpn in (canvas.components or {}).values():
+                obj = cpn.get("obj") if isinstance(cpn, dict) else None
+                if obj is not None and getattr(obj, "component_name", "").lower() == "begin":
+                    val = (obj.output() or {}).get(key)
+                    return val if isinstance(val, str) else ""
+        except Exception:
+            logger.warning("FileReviewTool._begin_output failed", exc_info=True)
+        return ""
+
+    def _resolve_file_id(self) -> str:
+        """待审核文件 id（= /documents/upload 返回的 uuid）= 前端送入 Begin 的值。
+
+        刻意不接受 LLM 传参：见模块 docstring —— 编造 uuid 会一路落进轮次行与 MinIO
+        对象名，最后以一句「文件不存在」暴露，用户完全无从修正。
+        """
+        return self._begin_output(FILE_ID_INPUT_KEY)
+
+    @staticmethod
+    def _parse_kb_ids(raw) -> list:
+        """kb_ids 容错解析：JSON 数组字符串 / 逗号分隔字符串 / list 均可。"""
+        if raw is None:
+            return []
+        if isinstance(raw, (list, tuple)):
+            items = list(raw)
+        else:
+            s = str(raw).strip()
+            if not s:
+                return []
+            try:
+                parsed = json.loads(s)
+                items = parsed if isinstance(parsed, (list, tuple)) else []
+            except Exception:  # noqa: BLE001 — LLM 输出容错：非 JSON 降级为逗号分隔
+                items = [x for x in s.split(",") if x.strip()]
+        return [str(k).strip() for k in items if str(k).strip()]
+
+    @staticmethod
+    def _parse_levels(raw) -> list:
+        """levels → high/medium/low 去重且按严重度排序的列表。
+
+        别名表复用 executor._SEVERITY_ALIASES（「级别语义」的唯一真相；不复刻一份，
+        否则「警告」在一处算 medium、在另一处被拒）。
+        与 executor._norm_severity 的区别是未知词**丢弃而非兜底成 medium**：用户可能
+        只想要 low，静默升格会让「只修低级别」变成「修中等级别」，与用户明说的指令相反。
+        """
+        if raw is None:
+            return []
+        if isinstance(raw, (list, tuple)):
+            items = [str(x) for x in raw]
+        else:
+            s = str(raw).strip()
+            if not s:
+                return []
+            try:
+                parsed = json.loads(s)
+            except Exception:  # noqa: BLE001 — LLM 输出容错：非 JSON 降级为逗号分隔
+                parsed = None
+            items = [str(x) for x in parsed] if isinstance(parsed, list) else s.split(",")
+
+        from rag.svr.file_review.executor import _SEVERITY_ALIASES
+
+        out = []
+        for it in items:
+            sev = _SEVERITY_ALIASES.get(it.strip().lower())
+            if sev and sev not in out:
+                out.append(sev)
+        return sorted(out, key=lambda s: _SEVERITY_RANK[s])
 ```
 
-- [ ] **Step 2: 提交**
+- [ ] **Step 8: 跑测试确认通过**
+
+Run: `uv run --no-sync pytest test/test_file_review_tool.py -v`
+Expected: PASS（27 例）
+
+- [ ] **Step 9: 冒烟 + 回归**
 
 ```bash
-git add agent/tools/file_review.py
-git commit -m "feat(file-review): dialogue tool FileReviewTool"
+uv run --no-sync pytest test/test_file_review_tool.py test/test_file_review_service.py test/test_file_review_node.py -q
+uv run --no-sync pytest test/test_template_fill_tool.py -q
+uv run --no-sync ruff check agent/tools/file_review.py api/db/services/file_review_service.py test/test_file_review_tool.py
+python -c "from agent.tools.file_review import FileReviewTool; print('tool OK', FileReviewTool.component_name)"
 ```
 
----
+Expected: 全绿 + ruff 无输出 + `tool OK FileReviewTool`。
+（最后一条必须在**项目根**跑：它同时证明工具模块顶层 import 不会拉起 docx/Quart 等重依赖。）
+
+- [ ] **Step 10: 提交**
+
+```bash
+git add agent/tools/file_review.py test/test_file_review_tool.py api/db/services/file_review_service.py test/test_file_review_service.py
+git commit -m "feat(file-review): 对话工具 FileReviewTool + 越权闸门/轮次编号助手"
+```
+
+**实测落地**：（执行本任务的 subagent 完成后由控制者补记 SHA 与两道理审查结论。）
+
 
 ## Task 9: REST API 端点（7 个）
 
