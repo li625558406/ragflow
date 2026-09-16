@@ -200,7 +200,9 @@ def _run_fix_round(round_row, version_name) -> None:
         extra["minio_path"] = _store_version_blob(round_row, new_blob)
     fixable = _fixable_positions(chosen, patches, by_pos, applied)
     open_n = len(chosen) - len(fixable)
-    summary = f"本轮修复 {len(fixable)} 项" + (f"；{open_n} 项未能唯一定位原文（保持原样）" if open_n else "") + _capped_note(len(pending), len(chosen))
+    # open_n 有两种成因：补丁没落地（原文未能唯一定位）与补丁落地了但 find 与本条标注不符
+    # （见 _fixable_positions）。文案必须同时覆盖，只写「未能唯一定位」会把后一种误报成定位问题。
+    summary = f"本轮修复 {len(fixable)} 项" + (f"；{open_n} 项未能自动修复（原文未能唯一定位或补丁与本条不符，保持原样）" if open_n else "") + _capped_note(len(pending), len(chosen))
     # 收口先于置 fixed：标注状态是「本轮已完成」的派生结果，轮次行写不进去时标注必须留
     # 在 open（重试才有意义）。派生状态不得抢先于权威记录落地。
     FileReviewRoundService.update_status(round_row.id, "done", llm_raw=_clip_raw(raw), summary=summary, **extra)
