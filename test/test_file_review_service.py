@@ -120,15 +120,6 @@ def test_list_enabled_templates():
     assert ids[0] == _ORDER_PROBE_ID, "ORDER BY id 必须真实生效（探针 id 排序最前）"
 
 
-def test_max_completed_rounds_excludes_failed():
-    tid = f"{PFX}t_max_failed"
-    with DB.connection_context():
-        _mk_round(tid, 1, "done", file_id=f"{PFX}f1")
-        _mk_round(tid, 2, "failed", file_id=f"{PFX}f1", file_version="v2")
-        n = FileReviewRoundService.max_completed_round_no(tid)
-    assert n == 1  # 只统计 done/annotated，不含 failed
-
-
 def test_upsert_annotations_status_transition():
     tid, fid = f"{PFX}t_trans", f"{PFX}f_trans"
     with DB.connection_context():
@@ -150,7 +141,6 @@ def test_lookup_misses_are_none_zero_and_empty_list():
         assert FileReviewTemplateService.get_by_id(f"{PFX}no_such_tpl") is None
         assert FileReviewRoundService.get_by_id(f"{PFX}no_such_round") is None
         assert FileReviewAnnotationService.get_by_id(f"{PFX}no_such_ann") is None
-        assert FileReviewRoundService.max_completed_round_no(f"{PFX}no_such_task") == 0
         assert FileReviewRoundService.get_by_task(f"{PFX}no_such_task") == []
         rows = FileReviewAnnotationService.list_by_file_version(f"{PFX}no_file", "v1")
     assert rows is not None and rows == [], "无数据必须是空列表（None 会被上游直接 len() 崩掉）"
@@ -186,23 +176,6 @@ def test_update_status_on_missing_row_returns_false_without_raising():
         assert FileReviewAnnotationService.update_status(f"{PFX}ghost_ann", "fixed") is False
 
 
-# ── 2. max_completed_round_no 的对抗：中间态/失败态一律不计入 ────────────
-def test_max_completed_round_no_ignores_reviewing_fixing_and_failed():
-    """对抗：把「更大轮次号但未完成」的行塞进来，max 必须是最大的**已完成**轮次，
-    而不是最大轮次号（若实现漏了 status 过滤，会返回 9）。"""
-    tid = f"{PFX}t_mixed"
-    with DB.connection_context():
-        _mk_round(tid, 1, "done", file_id=f"{PFX}f_mixed", file_version="v1")
-        _mk_round(tid, 3, "annotated", file_id=f"{PFX}f_mixed", file_version="v3")
-        _mk_round(tid, 5, "reviewing", file_id=f"{PFX}f_mixed", file_version="v5")
-        _mk_round(tid, 7, "fixing", file_id=f"{PFX}f_mixed", file_version="v7")
-        _mk_round(tid, 9, "failed", file_id=f"{PFX}f_mixed", file_version="v9")
-        assert FileReviewRoundService.max_completed_round_no(tid) == 3
-        # annotated 也必须计入（只测 done 会漏掉「已标注待修复」这一态）
-        _mk_round(tid, 11, "annotated", file_id=f"{PFX}f_mixed", file_version="v11")
-        assert FileReviewRoundService.max_completed_round_no(tid) == 11
-
-
 # ── 3. 多 task 隔离：三个多轮判定方法都不许串号 ─────────────────────────
 def test_round_queries_are_isolated_between_tasks():
     ta, tb = f"{PFX}t_iso_a", f"{PFX}t_iso_b"
@@ -210,11 +183,12 @@ def test_round_queries_are_isolated_between_tasks():
         _mk_round(ta, 1, "done", file_id=f"{PFX}f_iso_a")
         _mk_round(ta, 2, "annotated", file_id=f"{PFX}f_iso_a", file_version="v2")
         _mk_round(tb, 4, "done", file_id=f"{PFX}f_iso_b", file_version="v4")
-        assert FileReviewRoundService.max_completed_round_no(ta) == 2
-        assert FileReviewRoundService.max_completed_round_no(tb) == 4
         assert [r.round_no for r in FileReviewRoundService.get_by_task(ta)] == [1, 2]
         assert [r.round_no for r in FileReviewRoundService.get_by_task(tb)] == [4]
-        assert [r.task_id for r in FileReviewRoundService.get_by_task(ta)] == [ta, ta]
+        # get_by_file 只认自己文件的轮次，不会把另一个 task 的轮次并进来
+        assert [r.round_no for r in FileReviewRoundService.get_by_file(f"{PFX}f_iso_a")] == [1, 2]
+        assert [r.round_no for r in FileReviewRoundService.get_by_file(f"{PFX}f_iso_b")] == [4]
+        assert FileReviewRoundService.get_by_file(f"{PFX}f_iso_ghost") == []
 
 
 def test_get_by_task_orders_ascending_by_round_no():
@@ -429,9 +403,7 @@ def test_aggregates_short_circuit_on_empty_task_id():
         # 先塞一行 task_id="" 的脏数据，若聚合不短路就会被它命中
         rid = _mk_round("", 7, "done", file_id=f"{PFX}f_empty_tid")
         _mk_ann(round_id=rid, task_id="", file_id=f"{PFX}f_empty_tid", status="open")
-        assert FileReviewRoundService.max_completed_round_no("") == 0
         assert FileReviewAnnotationService.list_open_or_new_for_next_round("", 7) == []
-        assert FileReviewRoundService.max_completed_round_no(None) == 0
         assert FileReviewAnnotationService.list_open_or_new_for_next_round(None, 7) == []
 
 
@@ -642,3 +614,71 @@ def test_fix_rounds_left_counts_failed_and_clamps():
     assert fix_rounds_left([_r(1), _r(2), _r(3)]) == MAX_FIX_ROUNDS - 2
     assert fix_rounds_left([_r(1), _r(2), _r(3), _r(4)]) == 0  # 负数钳到 0
     assert fix_rounds_left([_r(0), _r(1)]) == MAX_FIX_ROUNDS    # round_no=0 的脏行不算修复轮
+
+
+# ── 11. 按文件查询（T9 面板读模型的两个数据源） ────────────────────────
+
+def test_get_by_file_returns_latest_task_rounds():
+    """「最新一行」= create_time 最大者 → 用它的 task_id 取全轮次。
+
+    create_time 是毫秒，两个 task 必须在**不同毫秒**建行，否则 tie-break 未定义；
+    故这里显式 sleep 让两次写入落在不同毫秒（10ms ≫ 1ms 分辨率）。
+    """
+    import time
+    fid = f"{PFX}f_byfile"
+    with DB.connection_context():
+        _mk_round(f"{PFX}t_byfile_old", 1, "done", file_id=fid)
+        time.sleep(0.01)
+        _mk_round(f"{PFX}t_byfile_new", 1, "annotated", file_id=fid)
+        _mk_round(f"{PFX}t_byfile_new", 2, "done", file_id=fid, file_version="v2")
+        rows = FileReviewRoundService.get_by_file(fid)
+    assert [r.round_no for r in rows] == [1, 2], "必须是新 task 的两轮，不是旧 task 的一轮"
+    assert rows[0].task_id == f"{PFX}t_byfile_new"
+
+
+def test_get_by_file_empty_and_blank_are_empty_list():
+    with DB.connection_context():
+        assert FileReviewRoundService.get_by_file(f"{PFX}f_byfile_ghost") == []
+        assert FileReviewRoundService.get_by_file("") == []
+
+
+def test_get_by_file_is_not_tenant_scoped_locks_read_policy():
+    """锁住「读不限、写严格」的不对称：读路径不按 tenant 过滤（文件所有人可见）。
+
+    若有人给 get_by_file 加上 tenant 谓词，流程场景下协作者会看不到审核结果
+    （轮次行的 tenant 是发起人/画布所有者的），这条用例会立刻红。
+    """
+    fid = f"{PFX}f_byfile_tenant"
+    with DB.connection_context():
+        _mk_round(f"{PFX}t_byfile_tenant", 1, "annotated", file_id=fid,
+                  tenant_id="someone_else")
+        rows = FileReviewRoundService.get_by_file(fid)
+    assert [r.round_no for r in rows] == [1]
+
+
+def test_list_by_file_spans_versions_and_tasks():
+    """面板要看到文件的**全部**标注：跨版本、跨 task。"""
+    fid = f"{PFX}f_annot_file"
+    with DB.connection_context():
+        r1 = _mk_round(f"{PFX}t_annot_a", 1, "annotated", file_id=fid)
+        r2 = _mk_round(f"{PFX}t_annot_a", 2, "done", file_id=fid, file_version="v2")
+        r3 = _mk_round(f"{PFX}t_annot_b", 1, "annotated", file_id=fid)
+        _mk_ann(round_id=r1, task_id=f"{PFX}t_annot_a", file_id=fid,
+                file_version="v1", status="fixed")
+        _mk_ann(round_id=r2, task_id=f"{PFX}t_annot_a", file_id=fid,
+                file_version="v2", status="open")
+        _mk_ann(round_id=r3, task_id=f"{PFX}t_annot_b", file_id=fid,
+                file_version="v1", status="open")
+        # 另一个文件的标注不得混入
+        r_other = _mk_round(f"{PFX}t_annot_other", 1, "annotated", file_id=f"{PFX}f_other")
+        _mk_ann(round_id=r_other, task_id=f"{PFX}t_annot_other", file_id=f"{PFX}f_other")
+        rows = FileReviewAnnotationService.list_by_file(fid)
+    assert len(rows) == 3, f"三个版本三条都要返回，实际 {len(rows)}"
+    assert {r.file_version for r in rows} == {"v1", "v2"}
+    assert {r.task_id for r in rows} == {f"{PFX}t_annot_a", f"{PFX}t_annot_b"}
+
+
+def test_list_by_file_empty_and_blank_are_empty_list():
+    with DB.connection_context():
+        assert FileReviewAnnotationService.list_by_file(f"{PFX}f_annot_ghost") == []
+        assert FileReviewAnnotationService.list_by_file("") == []

@@ -18,6 +18,8 @@
 形态对齐 template_fill_service：继承 CommonService，类方法 + @DB.connection_context()
 （每个方法一个连接作用域）。本层只做单条 INSERT/UPDATE/SELECT，不开显式事务 —— 没有
 跨行不变量需要保证（新建轮次只写一行，改状态只改一行）。
+`compose_fix_query` / `SEVERITY_CN` 是纯文本助手，与 `fix_rounds_left` 同属「不触库的
+判定逻辑」，落在本层是因为两个发起方（T8 工具 / T9 API）都已 import 本模块。
 
 上游 T1：api/db/db_models.py 的三个模型 + migrate_db 里的建表/补预置。
 下游 T4 patcher / T6 executor / T7 节点 / T8 工具 / T9 API 消费本层。
@@ -53,11 +55,6 @@ from api.db.db_models import DB, FileReviewAnnotation, FileReviewRound, FileRevi
 from api.db.services.common_service import CommonService
 from common.misc_utils import get_uuid
 
-# 「已完成」轮次口径：只有这两态算「本轮跑完、可在其上续下一轮」。
-# failed 刻意不计入 —— 否则 T9 fix 端点会在失败轮次之上续接，而失败轮次没有可用
-# 的 file_version 产物，新轮次会建在空基线上。
-COMPLETED_ROUND_STATUSES = ("done", "annotated")
-
 # 「待处理」标注口径：下一轮 LLM prompt 需要引用的未闭环问题。
 PENDING_ANNOTATION_STATUSES = ("open", "new")
 
@@ -77,6 +74,42 @@ def fix_rounds_left(rounds: list) -> int:
     """
     used = sum(1 for r in rounds if (r.round_no or 0) > 1)
     return max(0, MAX_FIX_ROUNDS - used)
+
+
+# ── 修复轮「只修 X 级」指令的唯一实现 ────────────────────────────────
+# 级别过滤在 executor 里**只能软表达**：_run_fix_round 的 chosen = pending[:MAX_FIX_ITEMS]
+# 没有 severity 谓词，LLM 收到的级别约束全部来自 round_row.user_query 被 _build_fix_prompt
+# 原样写进「用户需求：」。所以这句中文措辞就是过滤机制本身，两个发起方（T8 对话工具 /
+# T9 REST 端点）必须是同一份实现 —— 各写一份就是等着两处措辞漂移、行为分叉。
+# 放在本层（而非某一层调用方）是因为两处都要 import 本模块，不新增任何依赖边。
+SEVERITY_CN = {"high": "严重", "medium": "一般", "low": "提示"}
+
+
+def compose_fix_query(base_query: str, levels: list) -> str:
+    """把级别选择编进本轮 user_query。
+
+    `base_query` 必须是**首轮原始需求**，不是上一轮：连轮修复时上一轮本身就是修复轮，
+    其 user_query 里带着**上一轮**已作废的级别指令，拿它当基准会拼出「只修【严重】…」
+    +「只修【一般】…」两条互相排斥的指令，LLM 同时收到后可能该修的不修、或越界改了
+    用户本次没选中的级别——与本函数「按用户本次选定级别修复」的目标正好相反。
+    （T8 实测踩过：test_fix_second_round_does_not_stack_level_directives 锁定该口径。）
+
+    级别中英双写（如「严重/high」）：待修清单里每条写的是英文 `级别=high`（severity 已
+    被 _norm_severity 归一成英文），只给中文会多出一层「严重 ⇔ high」的映射不确定性。
+
+    刻意**不**把未选中级别的标注置 wontfix 来硬过滤：wontfix 的语义是「用户决定永不
+    修复此条」，自动置位后用户改口「把中等的也修了」会静默失效（list_pending_by_task
+    不再看到它），而用户没有任何办法从对话里发现这件事。
+
+    levels 为空时只返回 base_query、不加任何指令：「修全部级别」这种假指令会让
+    executor 修掉用户本次没要的范围。调用方应先用自己的白名单把空集挡在外面。
+    """
+    base = (base_query or "").strip()
+    if not levels:
+        return base
+    chosen = "、".join(f"{SEVERITY_CN.get(s, s)}/{s}" for s in levels)
+    head = f"本次只修复【{chosen}】级别的问题，其余级别的问题请保持原样、不要改动。"
+    return f"{base}\n{head}" if base else head
 
 
 def _clamp_str(model, field_name: str, value):
@@ -240,7 +273,7 @@ class FileReviewRoundService(FileReviewServiceBase):
     def next_round(cls, task_id: str) -> tuple[int, str]:
         """下一轮的 (round_no, file_version)：max(**全部**轮次 round_no) + 1。
 
-        刻意**不**复用 max_completed_round_no（只数 done/annotated）—— 那个口径会让
+        刻意**不**用「只数 done/annotated」的口径 —— 那个口径会让
         **失败轮的编号被复用**，后果有三（T6 审查已实测确认）：
           ① 产物对象名是 frv-{task_id}-{file_version}，同号即同名：新轮会覆盖失败轮
              **已经落盘**的成稿（交接契约第 2 条：failed 轮次可能带 minio_path）；
@@ -255,26 +288,6 @@ class FileReviewRoundService(FileReviewServiceBase):
 
     @classmethod
     @DB.connection_context()
-    def max_completed_round_no(cls, task_id: str) -> int:
-        """task_id 下**已完成**（done/annotated）的最大轮次号；无完成轮次返回 0。
-
-        T9 fix 端点用它算 new_no = max + 1。reviewing/fixing/failed 一律不计入：
-        否则一次失败或中断的轮次会把下一轮编号推高，还可能让新轮次建在没有产物的
-        版本基线上。
-
-        task_id 为空串/None 时短路返回 0：列无 NOT NULL 之外的值域约束，空串行可
-        落库，不短路会让这类脏行被当成「某个任务的轮次」参与聚合。
-        """
-        if not task_id:
-            return 0
-        row = cls.model.select(cls.model.round_no).where(
-            (cls.model.task_id == task_id)
-            & cls.model.status.in_(COMPLETED_ROUND_STATUSES)
-        ).order_by(cls.model.round_no.desc()).first()
-        return row.round_no if row else 0
-
-    @classmethod
-    @DB.connection_context()
     def get_by_task(cls, task_id: str) -> list:
         """该 task 的全部轮次，按轮次号升序（T9 用 [-1] 取当前轮）。
 
@@ -285,6 +298,37 @@ class FileReviewRoundService(FileReviewServiceBase):
         return list(cls.model.select().where(
             cls.model.task_id == task_id
         ).order_by(cls.model.round_no.asc(), cls.model.create_time.asc()))
+
+    @classmethod
+    @DB.connection_context()
+    def get_by_file(cls, file_id: str) -> list:
+        """该文件**最近一次审核任务**的全部轮次，按轮次号升序；从未审核返回 []。
+
+        面板/进度卡只拿得到 file_id（对话与流程都以「上传的文件」为中心），task_id 是
+        审核过程内部的编号 —— 让前端去「发现」它就得再开一条链路（节点输出 / 工具返回
+        文本都不可靠：用户刷新一次就没了）。故按 file_id 反查 task_id：取该文件**最新
+        的一行**轮次（跨任务按 create_time 取新），再用它的 task_id 取全轮次。
+
+        「最新一行」的 tie-break 是 create_time（13 位毫秒）。同毫秒内插入的两行无法
+        区分先后，调用方不应依赖绝对稳定的结果 —— 与 get_by_task 的次级排序同款取舍。
+
+        刻意**不按 tenant_id 过滤**：读路径遵循本项目「文件所有人可见」的口径
+        （docs/superpowers/specs/2026-09-09-remove-team-permission-design.md），且流程场景
+        下轮次行的 tenant_id 是发起人/画布所有者的，按调用者过滤会让协作者看不到审核结果。
+        写路径（T9 fix 端点）仍必须走 get_owned_task 严格校验（交接契约第 5 条）——
+        读不限、写严格，是有意的不对称。
+
+        脏数据兜底：最新一行没有 task_id（不该发生，列 NOT NULL）时返回 []，而不是拿
+        空 task_id 去 get_by_task（那会把 task_id="" 的脏行当成「一个任务的全部轮次」）。
+        """
+        if not file_id:
+            return []
+        last = cls.model.select().where(
+            cls.model.file_id == file_id
+        ).order_by(cls.model.create_time.desc()).first()
+        if last is None or not last.task_id:
+            return []
+        return cls.get_by_task(last.task_id)
 
 
 class FileReviewAnnotationService(FileReviewServiceBase):
@@ -340,8 +384,8 @@ class FileReviewAnnotationService(FileReviewServiceBase):
 
         task_id 为 None/空时**刻意不按任务隔离**：审核面板要展示同一文件版本上所有
         历史标注（含用户手动补充的），按 task 过滤会把跨任务的批注漏掉。这与
-        max_completed_round_no / list_open_or_new_for_next_round 的强隔离是相反语义，
-        改前请确认调用方（T9 annotations 端点 / T4 patcher）确实需要哪一种。
+        list_open_or_new_for_next_round（同本模块其余聚合方法的短路口径）的强隔离是
+        相反语义，改前请确认调用方（T9 annotations 端点 / T4 patcher）确实需要哪一种。
         """
         q = cls.model.select().where(
             (cls.model.file_id == file_id) & (cls.model.file_version == file_version))
@@ -365,7 +409,7 @@ class FileReviewAnnotationService(FileReviewServiceBase):
         额外带上 task_id 条件：round_id 已隐含归属，这里是对「标注行挂错 round_id」
         这类脏数据的二次防御。
 
-        task_id 为空串/None 时短路返回 []（同 max_completed_round_no）：空串行可
+        task_id 为空串/None 时短路返回 []（同本模块其余聚合方法的短路口径）：空串行可
         落库，不短路会把这类脏行当成本任务的数据引用进下一轮 prompt。
         """
         if not task_id:
@@ -390,7 +434,7 @@ class FileReviewAnnotationService(FileReviewServiceBase):
         不产标注：第 3 轮修复要处理的是第 1 轮 review 留下的 open 项，按 round_no
         圈定会取到空集，结果是一轮「什么都不修」的静默空转。
 
-        task_id 为空串/None 时短路返回 []（同 max_completed_round_no）：空串行可落库，
+        task_id 为空串/None 时短路返回 []（同本模块其余聚合方法的短路口径）：空串行可落库，
         不短路会把这类脏行当成某个任务的待修复项。
         """
         if not task_id:
@@ -398,6 +442,23 @@ class FileReviewAnnotationService(FileReviewServiceBase):
         return list(cls.model.select().where(
             (cls.model.task_id == task_id)
             & cls.model.status.in_(PENDING_ANNOTATION_STATUSES)
+        ).order_by(cls.model.create_time.asc()))
+
+    @classmethod
+    @DB.connection_context()
+    def list_by_file(cls, file_id: str) -> list:
+        """该文件的**全部**标注（跨轮次、跨版本、跨任务），按创建时间升序。
+
+        面板必须看得到全部，**不能**按 file_version 过滤：只有审查轮产标注，而审查轮的
+        file_version 恒为首轮版本（v1），修复轮只改文档、不产新标注，成稿是 v2/v3/v4 ——
+        按「成稿版本」过滤会一条都查不到（T6 executor 实测：_persist_annotations 只在
+        _run_review_round 里被调用，用的就是 `round_row.file_version`）。
+        同一文件被重复审核（新 task）时也必须合并展示，否则用户看不到上一轮的批注。
+        """
+        if not file_id:
+            return []
+        return list(cls.model.select().where(
+            cls.model.file_id == file_id
         ).order_by(cls.model.create_time.asc()))
 
     @classmethod
