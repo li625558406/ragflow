@@ -3464,17 +3464,20 @@ def _settle_annotations(chosen: list, by_pos: dict, applied: list) -> int:
 uv run --no-sync pytest test/test_file_review_executor.py -v
 ```
 
-Expected: 全绿。若出现 `KeyError: 'kb_ids'`，说明 Step 3c 的加列没生效（模型有列但库里没有）；若出现 `OperationalError: Unknown column`，说明 `alter_db_add_column` 没跑——在本机用 peewee 直接补一次：
+Expected: 全绿。若出现 `OperationalError: Unknown column 'kb_ids'`，说明 `migrate_db()` 里的加列没跑到。手工补列**必须走生产同款 helper**：
 
 ```bash
-uv run --no-sync python -c "
-from api.db.db_models import DB, FileReviewRound
-DB.connect(reuse_if_open=True)
+uv run --no-sync python - <<'PY'
+from peewee import TextField
 from playhouse.migrate import MySQLMigrator
-MySQLMigrator(DB).add_column('file_review_round', FileReviewRound.kb_ids)
-print('ok')
-"
+from api.db.db_models import DB, alter_db_add_column
+DB.connect(reuse_if_open=True)
+alter_db_add_column(MySQLMigrator(DB), "file_review_round", "kb_ids", TextField(null=True))
+print("kb_ids" in DB.get_columns("file_review_round"))
+PY
 ```
+
+> 不要写 `MySQLMigrator(DB).add_column(...)`：那只是**构造**一个迁移操作，不 `migrate(...)` 就没有任何效果（却会静默打印成功）；而且 `add_column` 的签名是 `(table, column_name, field)`，漏掉 `column_name` 会直接 TypeError。上面这个 helper 内部包了 `migrate()` 并容忍 1060（列已存在）错误码。
 
 ---
 
