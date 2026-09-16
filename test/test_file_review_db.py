@@ -1,6 +1,7 @@
 import string
 
 import pytest
+from peewee import BigIntegerField, DateTimeField
 
 from api.db.db_models import (
     _PRESET_REVIEW_TEMPLATES,
@@ -9,6 +10,7 @@ from api.db.db_models import (
     FileReviewRound,
     FileReviewTemplate,
     MediumTextField,
+    _ensure_file_review_templates,
     _seed_file_review_templates,
 )
 
@@ -70,11 +72,11 @@ def test_presets_prompt_template_format_safe():
         assert out.rstrip().endswith("]") and '"anchor"' in out
 
 
-def test_presets_extra_kwargs_tolerated():
-    """调用方多传 kwargs 不应炸 —— 防 Task 2 传错参炸模板。"""
+def test_presets_prompt_template_requires_all_fields():
+    """反向断言：占位符被删/改名后，调用方按老契约 format 必须显式报错，而不是静默产出坏 prompt。"""
     for t in _PRESET_REVIEW_TEMPLATES:
-        t["user_prompt_template"].format(
-            user_query="Q", file_excerpt="E", references="R", unexpected="X")
+        with pytest.raises(KeyError):
+            t["user_prompt_template"].format(user_query="Q", file_excerpt="E")  # 缺 references
 
 
 # ── 2. 列定义防回归（大文本必须 MEDIUMTEXT；枚举/判别键不许 NULL） ───────
@@ -91,6 +93,9 @@ def test_enum_and_discriminator_columns_not_null():
         assert a[col].null is False, f"annotation.{col} 不应允许 NULL"
     assert a["status"].default == "open", "新建标注必须默认 open"
     assert a["severity"].max_length >= 16, "severity 来自 LLM 输出，8 字符易 DataError 1406"
+    for m, name in ((FileReviewRound, "round"), (FileReviewAnnotation, "annotation")):
+        f = m._meta.fields["tenant_id"]
+        assert f.null is False and f.default == "", f"{name}.tenant_id 必须 NOT NULL 且默认 ''"
     assert FileReviewTemplate._meta.fields["tenant_id"].null is False, \
         "tenant_id 是系统预置判别键（''=预置），允许 NULL 会让 == '' 过滤漏行"
 
@@ -101,6 +106,10 @@ def test_query_paths_have_indexes():
     assert any(set(i) == {"file_id", "file_version"} for i, _ in FileReviewAnnotation._meta.indexes)
     assert FileReviewAnnotation._meta.fields["round_id"].index, "按轮次取标注是最热查询"
     assert FileReviewTemplate._meta.fields["tenant_id"].index, "按 tenant 列模板是主查询"
+    # M2：FileReviewRound.task_id 的独立索引必须被移除（复合 (task_id, round_no) 左前缀已覆盖）
+    assert not FileReviewRound._meta.fields["task_id"].index
+    # 但 FileReviewAnnotation.task_id 的单列索引必需（其复合索引是 (file_id, file_version)，不含 task_id）
+    assert FileReviewAnnotation._meta.fields["task_id"].index
 
 
 # ── 3. 框架契约 / 审计字段 / seed 幂等 ──────────────────────────────────
@@ -113,12 +122,20 @@ def test_models_expose_framework_helpers():
 
 def test_audit_fields_autofilled_on_insert():
     """对抗视角：调用方忘记传时间也必须被框架兜住，且 update 要刷新 update_time。"""
+    # 列类型断言：手写 DateTimeField 会让毫秒时间戳回退成零值日期且 is not None 仍过（半回退逃逸）
+    assert isinstance(FileReviewRound._meta.fields["create_time"], BigIntegerField)
+    assert isinstance(FileReviewRound._meta.fields["create_date"], DateTimeField)
+    assert isinstance(FileReviewRound._meta.fields["update_time"], BigIntegerField)
+    assert isinstance(FileReviewRound._meta.fields["update_date"], DateTimeField)
+
     rid = "__audit_probe__"
     try:
         FileReviewRound.create(id=rid, task_id=rid, file_id=rid, round_no=1,
                                status="reviewing", file_version="v1")
         row = FileReviewRound.get_by_id(rid)
         assert row.create_time is not None, "create_time 未自动写入"
+        assert isinstance(row.create_time, int) and row.create_time > 10**12, \
+            "create_time 必须是毫秒时间戳（手写 DateTimeField 会回退成 '0000-00-00'）"
         assert row.update_time is not None, "update_time 未自动写入"
         FileReviewRound.update(status="done").where(FileReviewRound.id == rid).execute()
         assert FileReviewRound.get_by_id(rid).update_time is not None, "update 未刷新 update_time"
@@ -136,12 +153,57 @@ def test_seed_is_idempotent():
 
 
 def test_seed_self_heals_after_partial_loss():
-    """模拟「建表已提交但 seed 中途失败」：删掉 2 套后重跑 migrate_db 必须补齐。"""
-    import api.db.db_models as dbm
+    """模拟「建表已提交但 seed 中途失败」：删掉 2 套后重跑 ensure 必须补齐。
+
+    不直调 migrate_db()：那会执行真实迁移 DML（bid_enterprise_cache 探针行、按失败重建整表、
+    api_4_conversation/flow_ai_chat 的 UPDATE、89 处 alter 等），慢且会污染线上库。
+    """
     FileReviewTemplate.delete().where(
         FileReviewTemplate.id << ["bid_qualification", "bid_price_review"]).execute()
-    dbm.migrate_db()
-    assert FileReviewTemplate.select().where(FileReviewTemplate.tenant_id == "").count() == 5
+    assert FileReviewTemplate.select().where(FileReviewTemplate.tenant_id == "").count() == 3
+    try:
+        assert _ensure_file_review_templates() is None
+        assert FileReviewTemplate.select().where(FileReviewTemplate.tenant_id == "").count() == 5
+    finally:
+        _seed_file_review_templates()   # 任何断言失败都恢复 5 套，避免脏状态传染后续用例
+
+
+def test_ensure_guard_not_fooled_by_decoy_row():
+    """对抗：tenant_id default='' → 漏传 tenant_id 的行会混入预置口径。
+    守卫若按 tenant_id=='' 计数，缺一套预置时会被诱饵顶替而误判「已齐全」。"""
+    decoy = "__decoy_user_tpl__"
+    FileReviewTemplate.delete().where(FileReviewTemplate.id == decoy).execute()
+    FileReviewTemplate.create(id=decoy, name="诱饵", system_prompt="x",
+                              user_prompt_template="{user_query}{file_excerpt}{references}",
+                              tenant_id="")
+    FileReviewTemplate.delete().where(FileReviewTemplate.id == "bid_qualification").execute()
+    try:
+        # 按 tenant_id=='' 计数为 5（诱饵顶替），按 ID 集合计数为 4 —— 必须走后者
+        assert FileReviewTemplate.select().where(FileReviewTemplate.tenant_id == "").count() == 5
+        assert _ensure_file_review_templates() is None
+        assert FileReviewTemplate.get_or_none(FileReviewTemplate.id == "bid_qualification") is not None
+    finally:
+        FileReviewTemplate.delete().where(FileReviewTemplate.id == decoy).execute()
+        _seed_file_review_templates()
+
+
+def test_ensure_returns_error_text_on_seed_failure(monkeypatch):
+    """seed 失败必须把错误文本回传给调用方（migrate_db 在恢复日志级别后输出）。"""
+    import api.db.db_models as dbm
+
+    FileReviewTemplate.delete().where(FileReviewTemplate.id == "bid_price_review").execute()
+
+    def _boom():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(dbm, "_seed_file_review_templates", _boom)
+    try:
+        # 内部 try/except 兜住，不外抛；错误以文本形式返回
+        err = dbm._ensure_file_review_templates()
+        assert err and "boom" in err, f"seed 失败未回传错误文本: {err!r}"
+    finally:
+        monkeypatch.undo()
+        _seed_file_review_templates()
 
 
 def test_preset_templates_seeded():

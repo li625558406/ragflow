@@ -2854,16 +2854,13 @@ def migrate_db():
         DocRewriteVersion.create_table(safe=True)
         logging.info("document rewrite: doc_rewrite_version table created")
     seed_default_permissions()
-    # 文件审核（2026-09-16）
+    # ── 文件审核（2026-09-16） ──
     if not FileReviewTemplate.table_exists():
         FileReviewTemplate.create_table(safe=True)
         logging.info("file_review: file_review_template table created")
-    # 表由 init_database_tables 先行创建，故按预置行数判定（漏跑/中途失败可自愈）
-    try:
-        if FileReviewTemplate.select().where(FileReviewTemplate.tenant_id == "").count() < len(_PRESET_REVIEW_TEMPLATES):
-            _seed_file_review_templates()
-    except Exception as e:
-        logging.exception("file review templates seed failed: %s", e)
+    # 表由 init_database_tables 先行创建，故不按 table_exists 判定；
+    # 按预置 ID 集合判定，漏跑/中途失败可自愈（详见 _ensure_file_review_templates）
+    _file_review_seed_err = _ensure_file_review_templates()
     if not FileReviewRound.table_exists():
         FileReviewRound.create_table(safe=True)
         logging.info("file_review: file_review_round table created")
@@ -2872,6 +2869,9 @@ def migrate_db():
         logging.info("file_review: file_review_annotation table created")
 
     logging.disable(logging.NOTSET)
+    # seed 错误延后到恢复日志级别后输出（窗口内 ERROR 级被 disable 抑制，会静默丢失）
+    if _file_review_seed_err:
+        logging.error("file review templates seed failed: %s", _file_review_seed_err)
     # this is after re-enabling logging to allow logging changed user emails
     migrate_add_unique_email(migrator)
 
@@ -3357,13 +3357,13 @@ _PRESET_REVIEW_TEMPLATES = [
 
 
 def _seed_file_review_templates():
-    """幂等写入预置审核模板（tenant_id='' 即系统预置）。
+    """幂等补齐预置审核模板（tenant_id='' 即系统预置）。
 
-    逐行 get_or_none 判重，重复调用/手工清表后重跑均安全；单套失败只记日志不抛出，
-    由调用方按行数判定在下次启动补种（部分失败可自愈）。
+    逐行 get_or_none 判重，重复调用/手工清表后重跑均安全；单套失败只收集错误文本
+    不抛出，由调用方决定输出方式（见 _ensure_file_review_templates）。
+    返回失败摘要（空串 = 全部成功）。
     """
-    import json
-
+    errs = []
     for tpl in _PRESET_REVIEW_TEMPLATES:
         try:
             if FileReviewTemplate.get_or_none(FileReviewTemplate.id == tpl["id"]):
@@ -3374,10 +3374,31 @@ def _seed_file_review_templates():
                 description=tpl["description"],
                 system_prompt=tpl["system_prompt"],
                 user_prompt_template=tpl["user_prompt_template"],
-                annotation_types=json.dumps(tpl["annotation_types"], ensure_ascii=False),
+                annotation_types=json_dumps(tpl["annotation_types"]),
                 enabled=1,
                 tenant_id="",
+                # 哨兵值（非真实 user_id）：本功能以 tenant_id="" 认系统预置，
+                # 与既有 collection 扩展表的 tenant_id="system" 哨兵并存
                 created_by="system",
             )
         except Exception as e:
-            logging.exception("file review template seed failed for %s: %s", tpl.get("id"), e)
+            errs.append(f"{tpl.get('id')}: {e.__class__.__name__}: {e}")
+    return "; ".join(errs)
+
+
+def _ensure_file_review_templates():
+    """确保预置审核模板齐全（幂等自愈）。返回错误文本，正常返回 None。
+
+    守卫按预置 **ID 集合** 计数：tenant_id 的 default="" 会让「漏传 tenant_id」的行
+    混进「系统预置」口径，若按 tenant_id=='' 计数，缺一套预置时会被诱饵顶替而误判齐全。
+    migrate_db 在 logging.disable(ERROR) 窗口内，故此处不外抛也不直接 log ERROR，
+    由调用方在恢复日志级别后输出错误文本。
+    """
+    try:
+        preset_ids = [t["id"] for t in _PRESET_REVIEW_TEMPLATES]
+        have = FileReviewTemplate.select().where(FileReviewTemplate.id << preset_ids).count()
+        if have >= len(preset_ids):
+            return None
+        return _seed_file_review_templates() or None
+    except Exception as e:
+        return f"{e.__class__.__name__}: {e}"
