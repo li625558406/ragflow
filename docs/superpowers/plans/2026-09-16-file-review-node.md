@@ -5044,7 +5044,7 @@ class FileReviewTool(ToolBase, ABC):
 - [ ] **Step 8: 跑测试确认通过**
 
 Run: `uv run --no-sync pytest test/test_file_review_tool.py -v`
-Expected: PASS（27 例）
+Expected: PASS（28 例；代码质量整改轮追加 9 例后为 37 例，见本节文末「实测落地」）
 
 - [ ] **Step 9: 冒烟 + 回归**
 
@@ -5065,7 +5065,18 @@ git add agent/tools/file_review.py test/test_file_review_tool.py api/db/services
 git commit -m "feat(file-review): 对话工具 FileReviewTool + 越权闸门/轮次编号助手"
 ```
 
-**实测落地**：（执行本任务的 subagent 完成后由控制者补记 SHA 与两道理审查结论。）
+**实测落地**：`4eb682db`（实现：`agent/tools/file_review.py` 458 行 + `test/test_file_review_tool.py` 348 行／28 例 + Service 层纯追加 63 行／service 测 6 例）→ 代码质量审查判 `CHANGES REQUESTED` → 整改 `e7ea3c7d`（+223/-16，3 文件）→ 复审 `APPROVED` → `3ec33847`（清两条 Minor）。
+
+两轮审查抓到的**真缺陷**（都在实现里，且都由新增用例锁死，控制者已实测「回退实现即红」）：
+1. **连轮修复向 LLM 投喂互斥指令**：原 `_compose_fix_query(cur.user_query, levels)` 的 `cur` 是 `rounds[-1]`，第 3 轮会把「本次只修复【严重】…」与「本次只修复【一般】…」叠在一起（实测拼出原文两条并存），而 `executor._build_fix_prompt` 把 `user_query` **原样**塞进「用户需求：」——LLM 收到自相矛盾的要求。修法：基准改 `rounds[0].user_query`（首轮恒为该 task 的原始审核轮，因 `_review` 每次用新 `get_uuid()` 开新 task）。
+2. **spawn 静默 no-op 造孤儿 `fixing` 轮次、永久卡死该 task**：`spawn_review_task` 命中 `_running_tasks` 即静默 return；`executor._run_fix_round` **先**置轮次终态 `done`、**再** `_settle_annotations` 写最多 20 条标注（窗口宽达 20 次 DB 往返）；`execute_task` 每次只处理 `rounds[-1]` 一轮且不循环；无看门狗。四者叠加 ⇒ 新轮无人消费、恒停 `fixing`、之后所有 fix/review 被前置闸门挡死且**不可自愈**。修法：`_fix` 在 `create_round` 之前加 `if spawn_mod.is_running(task_id): return "…稍后再试…"`，把不可逆卡死换成可重试；位置必须在四道语义闸门**之后**，否则真因是「没有可修项」时会被误答成「稍后再试」。
+另修正 3 处**注释与实际行为不符**（M4 模块 docstring 的「延迟 import」论断、I3 `agent/component/file_review.py:49` 已作废的 `max_completed_round_no` 指向、M7 `_severity_cn` 口径）——本项目已两次栽在「注释说得比代码好听」上，故一律改注释就实，不改注释就改代码。
+**越界未修（已挂下游）**：`_get_tenant_id`/`_parse_kb_ids`/`_begin_output` 与 `template_fill.py`/T7 节点约 40 行重复——抽 mixin 要动 `agent/tools/base.py` 与既有 `template_fill.py`，违反「不影响现有功能点」硬约束，留作独立后续任务。`executor.py` 的 `chosen = pending[:MAX_FIX_ITEMS]` 无 severity 硬过滤是 T6 既有取舍（级别过滤只能经 `user_query` 软表达），不改上游。
+
+**交棒 T9 的硬约束**（T9 规格另在 Task 9 段就地标注，此处汇总）：
+- 轮号一律用 `FileReviewRoundService.next_round()`，**不得**用 `max_completed_round_no`（后者只数 `done`/`annotated`，会出现同号覆盖失败轮产物 / 新轮基线自引用 / 面板同号）。
+- 修复余额一律用 `fix_rounds_left()`（失败轮计入），不得自算。
+- **并发闸门必须自己在 REST 层补**：I2 的 `is_running` 检查只覆盖单写入者前提（对话内工具调用串行）；T9 的 HTTP 重试/双击会让两个请求同时过闸、各建一条同号轮次、后到者 spawn 静默 no-op。第一性上更干净的修法是让 `spawn_review_task` 返回 `bool`（注册失败由调用方决定是否回滚轮次，消除 TOCTOU），但那要改 `spawn.py`（T5 已审契约），故 T9 需显式决策。
 
 
 ## Task 9: REST API 端点（7 个）
@@ -5080,10 +5091,14 @@ git commit -m "feat(file-review): 对话工具 FileReviewTool + 越权闸门/轮
 >
 > 1. **重试必须新建轮次，禁止把 `failed` 轮次原地重置为 `fixing` 重跑。** `_latest_version_name` 刻意排除当前轮自身，所以原地重跑会退回**原件**基线，只补剩余 pending 的补丁，再以同名对象 `frv-{task_id}-{file_version}` **覆盖**上一轮的成稿——上一批已置 `fixed` 的改动会从成稿里消失，而标注仍显示 `fixed`。实测复现：两轮改动 a/b，中途失败后原地重跑，成稿只剩 b 的修复。**必须走 `round_no` / `file_version` 递增的新轮次**，此时基线是已落盘版本，不丢。
 > 2. **`status='failed'` 的轮次现在可能带 `minio_path`。** T6 修复轮顺序是「落盘 → 轮次收口 `done` → 置标注 `fixed`」，因此收口那一步抛错时轮次被兜底写成 `failed`，但成稿**已经落盘**（实测：`round=failed && minio_path=frv-…-v2 && summary=本轮修复 1 项`）。progress 端点与 T12 进度卡**不得**按「failed ⇒ 无成稿」渲染，否则会把已修好的成稿藏起来。判据是「有 `minio_path` 就有可下载成稿」，与 `status` 无关。
-> 3. **`failed` 轮次不计入 `max_completed_round_no`（T2 既有口径），续轮会复用同一 `round_no` 与 `file_version`，即同一对象名。** 必须在 T9 明确取哪种口径：接受同名覆盖（简单，与「重试幂等」的设计一致），还是显式 `+1` 错开。**二选一写进代码注释**，不要留下未定义行为。
+> 3. **轮号与版本号一律取 `FileReviewRoundService.next_round(task_id)`（T8 新增），禁止用 `max_completed_round_no`。** ~~本条原为「二选一待定」，已由 T8 实测结论取代。~~ 后者只数 `done`/`annotated`，而 `failed` 轮次也可能已经落盘（见第 2 条），复用它会出现三种实测后果：① 与失败轮同号 ⇒ 同名对象 `frv-{task_id}-{file_version}` **覆盖**上一轮已落盘的成稿；② `_latest_version_name` 会把同号的失败兄弟当成新轮自己的基线（自引用）⇒ 所有补丁 `find` 全失败；③ 面板出现两条同号轮次。`next_round` 数**全部** `round_no`（含 failed），已由 `test_next_round_counts_all_rounds_including_failed` 锁死。
 > 4. **必须提供「open 但已成稿」的人工兜底出口。** 除上条窗口外还有一种残留：落盘成功、轮次收口成功，但逐条置 `fixed` 时该标注写入失败 → 标注永远停在 `open`，而文档已修好、`find` 已被替换，重跑必然报「0 项未能自动修复」，**不会自愈**。annotations 端点必须提供把标注人工置 `wontfix` / `resolved` 的能力，否则面板上永远挂着一个假未闭环项。
-> 5. **`task_id` 归属校验（越权闸门）。** `execute_task(task_id)` / `spawn_review_task(task_id)` / `_force_fail_round(task_id)` 全链路**只按 task_id 圈定，不含任何 tenant 谓词**（`round_row.tenant_id` 仅用于选 bucket，不参与鉴权）。T9 必须在入口把 `task_id` 归一为 UUID 并校验「该 task 的轮次归属当前登录租户」才允许 spawn / 读取 / 删除，否则可以越权触发、读取、收口他人审核。
+> 5. **`task_id` 归属校验（越权闸门）——一律用 `FileReviewRoundService.get_owned_task(task_id, tenant_id)`（T8 新增）。** `execute_task(task_id)` / `spawn_review_task(task_id)` / `_force_fail_round(task_id)` 全链路**只按 task_id 圈定，不含任何 tenant 谓词**（`round_row.tenant_id` 仅用于选 bucket，不参与鉴权），所以入口这一层是唯一防线。`get_owned_task` 取该 task 全部轮次，任一轮 tenant 不符、或一行都没有，都整体返回 `[]` ⇒ 拒绝，调用方无从区分「不存在」与「不是你的」。
+> ~~原「必须在入口把 `task_id` 归一为 UUID」已作废~~：T8 论证并采纳了更简的口径——该白名单不增加任何安全（格式不符的 id 同样查不到行 ⇒ `[]` ⇒ 拒绝），却会在 id 生成方式变更时**静默拒绝全部合法请求**，拿一个更坏的失败模式换零收益。
 > 6. **`error` 列的固定文案闸门只在 executor 兜底层。** 非 `FileReviewError` 的异常原文一律被替换成「服务端内部错误，请稍后重试（详见服务端日志）」（原文只进服务端日志），以避免 MySQL host:port / MinIO endpoint / 内网路径经 `error` 列透给前端。**T9 自行拼错误文案时同样不得把异常原文写进 `error` 列。**
+> 7. **同一 task 的并发请求必须在 T9 补闸门（T8 显式遗留）。** T8 在 `_fix` 里加了 `spawn_mod.is_running(task_id)` 检查，防「spawn 静默 no-op → 孤儿 `fixing` 轮次永久卡死」（机理：`spawn_review_task` 命中 `_running_tasks` 即静默 return；`executor._run_fix_round` 先置轮次终态、再写最多 20 条标注，窗口宽达 20 次 DB 往返；`execute_task` 每次只处理 `rounds[-1]` 一轮且不循环；无看门狗）。但该检查的保证以**单写入者**为前提（对话内工具调用串行）。REST 端点一旦暴露给 HTTP 重试/双击，两个请求会同时观测 `is_running=False`、各自 `next_round()` 取到**同一轮号**（`(task_id, round_no)` 无唯一约束）、后到者的 spawn 静默 no-op ⇒ 又回到永久卡死。T9 必须显式决策并写进代码注释：**(a)** REST 层加同款 `is_running` 闸门 + 拒绝并发请求（简单，仍留 TOCTOU 残余）；或 **(b)** 改 `spawn_review_task` 返回 `bool`、注册失败时调用方回滚轮次（第一性更干净，消除 TOCTOU，但要改 `spawn.py`——属 T5 已审契约，**须先向用户确认**）。
+> 8. **「按级别修复」只能经 `user_query` 软表达，且绝不自动置 `wontfix`。** executor 的 `chosen = pending[:MAX_FIX_ITEMS]` 没有 severity 过滤（T6 取舍），级别过滤靠 `round_row.user_query` 被 `_build_fix_prompt` 原样写进「用户需求：」生效。故 fix 端点必须：① 拼装基准用**首轮** `rounds[0].user_query`，不是上一轮——上一轮若是修复轮，其 `user_query` 里带着已作废的级别指令，叠加后 LLM 收到互斥要求（**T8 实测踩过此坑**）；② 拼装函数**提到 Service 层做唯一实现**（T8 现在 `agent/tools/file_review.py` 里的 `_compose_fix_query`；第二个调用方出现时才抽，符合 YAGNI——但抽的时候是**移动**，不是在 API 里复制一份，否则「只修X级」这句话会存在两份口径）；③ **绝不**把未选中级别的标注自动置 `wontfix`/`resolved`——`wontfix` 的语义是「用户决定永不修」，自动置位后用户改口「把中等的也修了」会静默失效，而用户没有任何办法从对话或面板上发现这件事（T8 的 `test_fix_never_mutates_annotation_status` 锁的就是这条）。
+> 9. **默认模板 id 取 `rag.svr.file_review.executor.DEFAULT_TEMPLATE_ID`，不得在 API 里复刻 `'bid_doc_format'` 字面量。** 默认值改了 API 必须跟着变，复制一份就是等着漂移（T7 节点、T8 工具都按此处理）。
 
 - [ ] **Step 1: 写失败测试**
 
