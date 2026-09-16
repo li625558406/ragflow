@@ -782,9 +782,11 @@ git commit -m "feat(file-review): kb aggregator with token budget truncate"
 > - 段落枚举复用 `_build_addr_map`：它已覆盖正文/表格/文本框/页眉页脚/内容控件。
 >   自写 `doc.paragraphs` 会漏掉页眉页脚与文本框里的问题句（实测只有 `para:0/1`，
 >   而 addr_map 同时给出 `hdr:0:0` 与 `cell:0:0:0:0`）。
-> - **xlsx 修复路径不在本任务范围**：设计里 xlsx 锚点 `{sheet, cell}` 仍是占位形态，
->   逐单元格定位未设计。v1 对非 docx 文件只做审查（出标注），修复走纯文本降级（见 T6）——
->   这是显式的范围边界，不是静默缺失。
+> - **xlsx / pdf 修复路径不在本任务范围，且 v1 明确不做**：设计里 xlsx 锚点
+>   `{sheet, cell}` 仍是占位形态，逐单元格定位未设计。T6 的修复轮对非 docx 文件
+>   **只出标注、不自动改**：收口 `done` 并提示「该文件类型不支持自动修复（v1 仅支持
+>   Word .docx），请按批注手动修改」。原稿写的「修复走纯文本降级」是错的——把解码文本
+>   当新版本存回去会毁掉原件，还会成为下一轮审核的输入。
 >
 > **唯一性语义（锁定，测试依赖）**：**逐层唯一**。patch 先按 `p.text` 在全文档段落里找候选，
 > 候选段落必须**恰好 1 个**（0 = 找不到，>1 = 歧义），再要求该段落内 find 出现**恰好 1 次**。
@@ -1762,191 +1764,1773 @@ git commit -m "feat(file-review): spawn 防重入线程 + 线程生命周期兜�
 
 **Files:**
 - Create: `rag/svr/file_review/executor.py`
-- Test: `test/test_file_review_executor.py`
+- Create: `test/test_file_review_executor.py`
+- Modify: `api/db/services/file_review_service.py`（`create_round` 加 `kb_ids`、`list_pending_by_task`、`delete_by_round`）
+- Modify: `test/test_file_review_service.py`（上述三个新方法的用例）
+- Modify: `rag/svr/file_review/spawn.py`（`_force_fail_round` 的 CAS 覆盖 `fixing`）
+- Modify: `test/test_file_review_spawn.py`（`test_force_fail_marks_fixing_round_too`）
+- Modify: `api/db/db_models.py`（`FileReviewRound.kb_ids` + 迁移；预置模板文案修订 + seed 改 insert-or-update；`anchor` 列注释纠正）
+- Modify: `test/test_file_review_db.py`（对齐新文案与 seed 语义）
+- Modify: `docs/superpowers/plans/2026-09-16-file-review-node.md`（T4 说明句：修复范围收敛为 docx-only）
 
-- [ ] **Step 1: 写失败测试**
+---
+
+### 背景：为什么这一步不是「照着原稿写 executor」
+
+原 T6 草稿与本计划前五个任务已冻结的契约**相互矛盾**，直接实现会立刻炸。逐条列出（实现者必须理解这些约束，不能只看代码片段照抄）：
+
+1. **spawn 的执行单元是 `task_id`，不是 `round_id`。** T5 的 `_force_fail_round(task_id, ...)` 按 `FileReviewRound.task_id` 做 CAS；T7/T8/T9 也都按 task 组织。故 `execute_task(task_id)` 的入参是 task，轮次由它自己 `get_by_task(task_id)[-1]` 取。
+2. **`from common.llm_util import llm_complete` 这个模块不存在。** 正确写法是 `LLMBundle(tenant_id, get_tenant_default_model_by_type(tenant_id, LLMType.CHAT))` + `asyncio.run(mdl.async_chat(system, [{"role": "user", "content": prompt}]))`（`async_chat` 返回 `str`，见 `api/db/services/llm_service.py:385`）。导入路径已在 `rag/svr/template_fill/executor.py:29` 验证过：`from api.db.services.llm_service import LLMBundle`。
+3. **检索不能自己拼 `settings.retriever.retrieval(...)`。** 复用 `rag.svr.template_fill.executor.retrieve_slot(tenant_id, kb_ids, query, top_k=...)`——它已带 KB 校验与结果裁剪，`asyncio.run` 包一层即可在同步线程内用。
+4. **不能写 `anchor=json.dumps({"p_hash": 0})` 这种假锚点。** 服务端按 `matched_text` 反查权威锚点 `{p_idx, p_hash, a_occ, p_total}`（复用 `iter_docx_paragraphs` / `norm_ws` / `para_hash32x2`，与 B 端填写点直定位同一套口径），查不到就写 `{}`——**宁可不给跳转链接，也不能给错链接**。
+5. **原稿从不调用 `apply_patches`**，也即修复轮什么都改不了。本任务必须真正落盘：`patcher.apply_patches_to_docx` → 存新版本 blob → 标 `fixed`。
+6. **纯文本降级修复非 docx 会损坏文件。** 把解码文本当新版本存回去，既毁掉原件，又成为下一轮审核的输入。**v1 自动修复只支持 docx**；非 docx 的修复轮诚实收口 `done` 并给出「请按批注手动修改」的说明，标注一律不动。
+7. **`reviewing` 以外还有 `fixing` 会长时间在途。** T5 的 `_force_fail_round` 只 CAS `status == "reviewing"`，进程在修复中被杀就会留下一行永远转圈的 `fixing`。本任务把它扩到 `("reviewing", "fixing")`。
+8. **`kb_ids` 无处可存。** T7 节点接收的 `kb_ids` 要跨轮幸存（重试/续轮都得用同一批 KB），但 `FileReviewRound` 没有该列。本任务补列 + `alter_db_add_column` 迁移 + `create_round(kb_ids=...)`。
+9. **`list_open_or_new_for_next_round(task_id, round_no-1)` 在修复轮取不到东西。** 修复轮本身不产标注，按上一轮 round_no 圈定会在第 3 轮拿到空集从而静默不修。新增 task 级 `list_pending_by_task(task_id)`。
+10. **同一轮重跑会产生两套标注。** 进程被杀后轮次滞留 `reviewing`，重试再跑一遍就会把每条标注写第二次。写标注前先 `delete_by_round(round_id)`。
+11. **预置模板文案有硬伤，且改了也进不了已初始化的库。** ① `{file_excerpt}` 只喂首 500 字却让 LLM「审视全文」；② 输出示例里的 `"anchor": {{...}}` 会诱导 LLM 编造锚点，而锚点本该由服务端反查；③ `_seed_file_review_templates` 对已存在的行 `continue`，`_ensure_file_review_templates` 又按 ID 数量短路——**常量文案修订永远到不了已建库**。故：文案改名 `{file_text}` 并去掉示例里的 `anchor`，seed 改 insert-or-update（只同步提示词内容列，**绝不动 `enabled`**——管理员显式停用是用户态，启动同步不许把它重新打开），`_ensure` 每次都跑一遍。已核实不存在模板编辑端点（只有 `GET /file/review/template/list`），故无条件同步不会覆盖用户改动。
+12. **空正文会诱发幻觉标注。** 扫描件/图片 docx 提不出文字，还让 LLM「审视全文」等于请它编。正文归一化后不足 `MIN_FILE_TEXT_CHARS` 直接抛 `FileReviewError` 让该轮 `failed`。
+13. **静默截断不诚实。** 长文档截到 4 万字符而提示词说「全文」，模型就会断言「全文未提及某条款」。截断必须在正文里显式写明。
+14. **失败收口自己失败会把轮次永久卡死。** 若连 `update_status(..., "failed")` 都写不进去（DB 抖），`execute_task` 正常返回，spawn 的崩溃兜底就永远不会触发。故收口失败要 `raise`，把球踢回 spawn 的独立 CAS。
+15. **JSON 解析顺序错 = 假「审核通过」。** 贪心 `{...}` 排在 `[...]` 之前，会在裸数组 `[{...},{...}]` 里先吃掉第一个内层对象，得到 1 条而不是 N 条，或者直接解析失败；再叠加「把 `[无]` 这类散文字符串数组当成空数组」，就会让一次**根本没审成的**轮次显示为「未发现问题」。解析器必须：先整体 parse → 贪心数组 → 懒数组 → 贪心对象，且候选数组的元素**必须全是 dict**，否则视为解析失败（`None`），与「LLM 明确回了空数组 `[]`」严格区分。
+
+**格式保真提醒（实现者易错点）**：`apply_patches_to_docx` 内部复用 `_replace_cross_run_in_place`，替换只重写覆盖到的 run 区间并保留区间外 `rPr`。`python-docx` 设置 `Run.text` 不会增删 run，所以 **`len(runs)` 不能作为格式保真的证据**——测试必须逐 run 断言 `bold` / `font.size`。
+
+---
+
+- [ ] **Step 1: 写失败测试（四个测试文件）**
+
+先写测试。四个文件各自的完整内容/增量见下。
+
+**1a. 新建 `test/test_file_review_executor.py`**
 
 ```python
 # test/test_file_review_executor.py
-from unittest.mock import MagicMock, patch
-from api.db.db_models import DB
-from api.db.services.file_review_service import FileReviewRoundService
-from rag.svr.file_review.executor import execute_task
+"""executor 对抗测试：多轮状态机 / LLM 输出解析容错 / 锚点唯一性 / 修复落盘 / 幂等与失败收口。
+
+真实 MySQL（同 test_file_review_service.py 的取舍）+ 真实 docx 字节（同 test_file_review_patcher.py）：
+解析与锚定复用的是私有符号，只有真造真读才能证明耦合点还在；打桩掉 DB 后只剩
+「函数被调用过」这种空断言，测不出 where 条件是否真的命中目标行。
+所有测试行带 PFX 前缀，清理只按该前缀删，绝不误伤线上数据。禁止调用 migrate_db()。
+"""
+import io
+import json
+
+import pytest
+from docx import Document
+from docx.shared import Pt
+
+from api.db.db_models import DB, FileReviewAnnotation, FileReviewRound, FileReviewTemplate
+from api.db.services.file_review_service import (
+    FileReviewAnnotationService,
+    FileReviewRoundService,
+)
+from rag.svr.file_review import executor
+
+PFX = "__test_fr_exec__"
 
 
-def test_execute_task_round1_creates_annotations(monkeypatch):
-    # 准备：插 1 个 round（reviewing 状态）+ 1 个 LLM mock 返回 1 条标注
-    monkeypatch.setattr('rag.svr.file_review.executor.retrieve_kb_chunks',
-                        lambda kb_ids, q: [])
-    monkeypatch.setattr('rag.svr.file_review.executor.llm_review',
-                        lambda *a, **k: {
-                            'summary': '存在 1 个 high',
-                            'annotations': [{'matched_text': 'foo', 'type': 'format',
-                                             'severity': 'high', 'issue': 'x', 'suggestion': 'y'}]
-                        })
+def _cleanup():
+    FileReviewAnnotation.delete().where(FileReviewAnnotation.task_id.startswith(PFX)).execute()
+    FileReviewRound.delete().where(FileReviewRound.task_id.startswith(PFX)).execute()
+    FileReviewTemplate.delete().where(FileReviewTemplate.id.startswith(PFX)).execute()
 
-    with DB.connection_context():
-        rid = FileReviewRoundService.create_round(
-            task_id='t1', file_id='f1', round_no=1, template_id='bid_doc_format',
-            user_query='审核', file_version='v1', status='reviewing',
-            tenant_id='', created_by='u'
-        )
 
-    execute_task(rid)
+@pytest.fixture(scope="module", autouse=True)
+def _tables_and_cleanup():
+    from api.db import db_models as dbm
+    DB.connect(reuse_if_open=True)
+    try:
+        for m in (FileReviewTemplate, FileReviewRound, FileReviewAnnotation):
+            if not m.table_exists():
+                m.create_table(safe=True)
+        # 预置模板必须齐：有「template_id 非法 → 回退 DEFAULT_TEMPLATE_ID」的用例要解析到它
+        dbm._seed_file_review_templates()
+        _cleanup()
+        yield
+    finally:
+        try:
+            _cleanup()
+        finally:
+            DB.close()
 
-    with DB.connection_context():
-        anns = list(FileReviewRoundService.model.select().where(
-            FileReviewRoundService.model.id == rid))
-        from api.db.services.file_review_service import FileReviewAnnotationService
-        ann_rows = FileReviewAnnotationService.list_by_file_version('f1', 'v1', 't1')
-    assert anns[0].status == 'annotated'
-    assert anns[0].summary == '存在 1 个 high'
-    assert len(ann_rows) == 1
+
+class _FakeStorage:
+    """内存对象存储替身：只实现 executor 用到的 get/put 两个方法。"""
+
+    def __init__(self):
+        self.blobs = {}
+
+    def get(self, bucket, name):
+        return self.blobs.get((bucket, name))
+
+    def put(self, bucket, name, blob):
+        self.blobs[(bucket, name)] = blob
+        return True
+
+
+@pytest.fixture
+def fstore(monkeypatch):
+    from types import SimpleNamespace
+    st = _FakeStorage()
+    monkeypatch.setattr(executor, "settings", SimpleNamespace(STORAGE_IMPL=st))
+    return st
+
+
+def _docx(paragraphs):
+    d = Document()
+    for t in paragraphs:
+        d.add_paragraph(t)
+    b = io.BytesIO()
+    d.save(b)
+    return b.getvalue()
+
+
+def _mk_template(*, types=("format",), user_tpl=None):
+    tid = PFX + "-tpl"
+    FileReviewTemplate.delete().where(FileReviewTemplate.id == tid).execute()
+    FileReviewTemplate.create(
+        id=tid, name="测试模板", description="d", system_prompt="系统提示",
+        user_prompt_template=user_tpl or "需求：{user_query}\n正文：\n{file_text}\n参考：\n{references}",
+        annotation_types=json.dumps(list(types)), enabled=1, tenant_id="", created_by=PFX,
+    )
+    return tid
+
+
+def _mk_round(tid, *, status="reviewing", file_version="v1", template_id=None,
+              round_no=1, tenant_id=PFX, user_query="看看格式", **kw):
+    return FileReviewRoundService.create_round(
+        task_id=tid, file_id=PFX + "-file", round_no=round_no,
+        template_id=PFX + "-tpl" if template_id is None else template_id,
+        user_query=user_query, file_version=file_version, status=status,
+        tenant_id=tenant_id, created_by=PFX, **kw)
+
+
+def _round(tid):
+    return FileReviewRoundService.get_by_id(tid)
+
+
+def _anns(tid):
+    return list(FileReviewAnnotation.select().where(
+        FileReviewAnnotation.task_id == tid).order_by(FileReviewAnnotation.create_time.asc()))
+
+
+def _wire(monkeypatch, *, blob, raw, chunks=None, storage=None):
+    """把 executor 的四条外部缝全部接上：文件、检索、LLM、对象存储。"""
+    monkeypatch.setattr(executor, "_load_original_blob", lambda tenant_id, file_id: blob)
+    monkeypatch.setattr(executor, "_retrieve_chunks",
+                        lambda tenant_id, kb_ids, query: list(chunks or []))
+    monkeypatch.setattr(executor, "_call_llm", lambda tenant_id, system, user: raw)
+
+
+# ── 纯函数：JSON 解析 ────────────────────────────────────────────
+def test_parse_annotation_items_bare_array():
+    raw = '[{"matched_text": "甲", "type": "format", "severity": "high", "issue": "i"}]'
+    out = executor._parse_annotation_items(raw)
+    assert len(out) == 1 and out[0]["matched_text"] == "甲"
+
+
+def test_parse_annotation_items_greedy_array_before_object():
+    """贪心 object 排在数组前会只吃第一个内层对象 —— 2 条变 1 条。"""
+    raw = '[{"matched_text": "甲"}, {"matched_text": "乙"}]'
+    assert len(executor._parse_annotation_items(raw)) == 2
+
+
+def test_parse_annotation_items_recovers_from_fenced_prose():
+    raw = '好的，结果如下：\n```json\n[{"matched_text": "甲", "issue": "i"}]\n```\n以上。'
+    out = executor._parse_annotation_items(raw)
+    assert len(out) == 1 and out[0]["issue"] == "i"
+
+
+def test_parse_annotation_items_accepts_wrapped_object():
+    raw = '{"annotations": [{"matched_text": "甲"}, {"matched_text": "乙"}], "note": "x"}'
+    assert len(executor._parse_annotation_items(raw)) == 2
+
+
+def test_parse_annotation_items_empty_array_is_empty_not_none():
+    """`[]` = LLM 明确说「没问题」，与「解析不出来」是相反语义。"""
+    assert executor._parse_annotation_items("[]") == []
+
+
+def test_parse_annotation_items_rejects_non_dict_array_elements():
+    """`["无问题"]` / `[1,2]` 是散文噪声，不是「零标注」——折成 [] 会伪造「审核通过」。"""
+    assert executor._parse_annotation_items('["无问题"]') is None
+    assert executor._parse_annotation_items("[1, 2]") is None
+
+
+def test_parse_annotation_items_garbage_is_none():
+    assert executor._parse_annotation_items("对不起，我无法完成该任务") is None
+    assert executor._parse_annotation_items("") is None
+    assert executor._parse_annotation_items(None) is None
+
+
+def test_parse_patch_items_variants():
+    assert executor._parse_patch_items('{"patches": [{"idx": 1}]}') == [{"idx": 1}]
+    assert executor._parse_patch_items('[{"idx": 1}]') == [{"idx": 1}]
+    assert executor._parse_patch_items("[]") == []
+    assert executor._parse_patch_items("嗯") is None
+
+
+# ── 纯函数：归一化 ───────────────────────────────────────────────
+@pytest.mark.parametrize("raw,expect", [
+    ("high", "high"), ("HIGH", "high"), ("严重", "high"), ("Critical", "high"),
+    ("medium", "medium"), ("中", "medium"), ("moderate", "medium"),
+    ("low", "low"), ("低", "low"), ("minor", "low"),
+])
+def test_norm_severity_matrix(raw, expect):
+    assert executor._norm_severity(raw) == expect
+
+
+def test_norm_severity_unknown_falls_back_to_medium():
+    assert executor._norm_severity("天知道") == "medium"
+    assert executor._norm_severity(None) == "medium"
+    assert executor._norm_severity(3) == "medium"
+
+
+def test_clean_str_rejects_non_str_and_strips_control():
+    assert executor._clean_str(None) == ""
+    assert executor._clean_str(123) == ""
+    assert executor._clean_str("  a\x00b\x1fc  ") == "abc"
+    assert executor._clean_str("abcdef", 3) == "abc"
+
+
+def test_norm_token_fallback_on_empty():
+    assert executor._norm_token("  FORMAT ") == "format"
+    assert executor._norm_token("") == "other"
+    assert executor._norm_token(None, "x") == "x"
+
+
+def test_summary_from_stats():
+    assert executor._summary_from_stats({"total": 0, "high": 0, "medium": 0, "low": 0}) == "未发现问题"
+    s = executor._summary_from_stats({"total": 3, "high": 1, "medium": 1, "low": 1})
+    assert "3" in s and "高 1" in s and "中 1" in s and "低 1" in s
+
+
+# ── 纯函数：锚点 ─────────────────────────────────────────────────
+def _items(*texts):
+    return [{"index": i, "text": t, "addr": f"a{i}"} for i, t in enumerate(texts)]
+
+
+def test_compute_anchor_unique_hit():
+    items = _items("封面", "投标文件缺少封面，请补充")
+    a = executor._compute_anchor(items, "投标文件缺少封面")
+    assert a["p_idx"] == 1 and a["a_occ"] == 1 and a["p_total"] == 2
+    assert len(a["p_hash"]) == 16
+
+
+def test_compute_anchor_missing_returns_empty():
+    assert executor._compute_anchor(_items("甲"), "乙") == {}
+
+
+def test_compute_anchor_two_paragraphs_returns_empty():
+    assert executor._compute_anchor(_items("缺封面", "也缺封面"), "缺封面") == {}
+
+
+def test_compute_anchor_twice_in_one_paragraph_returns_empty():
+    assert executor._compute_anchor(_items("缺封面，真的缺封面"), "缺封面") == {}
+
+
+def test_compute_anchor_too_short_returns_empty():
+    assert executor._compute_anchor(_items("甲"), "甲") == {}
+
+
+def test_compute_anchor_normalizes_whitespace_before_matching():
+    """Word 把同一句拆进多段/多空白时，归一化后仍应命中（与前端同口径）。"""
+    a = executor._compute_anchor(_items("投标 文件 缺少 封面"), "投标文件缺少封面")
+    assert a["p_idx"] == 0
+
+
+# ── 纯函数：版本基线 ─────────────────────────────────────────────
+def test_latest_version_name_picks_latest_non_null_upto_round():
+    from types import SimpleNamespace as NS
+    rounds = [NS(id="r1", round_no=1, minio_path=None),
+              NS(id="r2", round_no=2, minio_path="frv-t-v2"),
+              NS(id="r3", round_no=3, minio_path="frv-t-v3")]
+    assert executor._latest_version_name(rounds, rounds[2]) == "frv-t-v2"
+    assert executor._latest_version_name(rounds, rounds[0]) is None
+
+
+# ── 纯函数：正文装配 ─────────────────────────────────────────────
+def test_compose_file_text_joins_non_empty_and_errors_when_blank():
+    long_enough = "这是一段足够长的正文内容，用于通过最小长度校验。" * 3
+    out = executor._compose_file_text(_items("", long_enough, "  "))
+    assert out.startswith("这是一段")
+    with pytest.raises(executor.FileReviewError):
+        executor._compose_file_text(_items("", "  "))
+
+
+def test_compose_file_text_marks_truncation(monkeypatch):
+    monkeypatch.setattr(executor, "FILE_TEXT_MAX_CHARS", 20)
+    out = executor._compose_file_text(_items("啊" * 100))
+    assert out.startswith("啊" * 20) and executor.TRUNCATED_NOTE.strip() in out
+
+
+# ── 纯函数：docx 载入 ────────────────────────────────────────────
+def test_load_docx_items_rejects_non_zip():
+    with pytest.raises(executor.FileReviewError):
+        executor._load_docx_items(b"%PDF-1.4 not a zip")
+
+
+def test_load_docx_items_rejects_zip_without_docx_parts():
+    """PK 开头但不是 docx：python-docx 抛 PackageNotFoundError，必须转成可读文案。"""
+    with pytest.raises(executor.FileReviewError):
+        executor._load_docx_items(b"PK\x03\x04garbage")
+
+
+# ── 纯函数：补丁规划 ─────────────────────────────────────────────
+class _A:
+    def __init__(self, i):
+        self.id = f"a{i}"
+
+
+def test_plan_patches_maps_idx_and_skips_bad():
+    chosen = [_A(1), _A(2), _A(3)]
+    parsed = [{"idx": 1, "find": "x", "replace": "y"},
+              {"idx": 99, "find": "z", "replace": "w"},
+              {"idx": "abc", "find": "q", "replace": "r"},
+              {"idx": 2, "find": "x", "replace": "y"}]
+    patches, by_pos = executor._plan_patches(parsed, chosen)
+    assert [p["find"] for p in patches] == ["x", "x"]
+    assert by_pos == {0: 1, 1: 2}
+
+
+def test_plan_patches_keeps_none_find_verbatim():
+    """find=None 不能被折成 ""：patcher 对非 str find 的跳过规则必须原样生效。"""
+    patches, _ = executor._plan_patches([{"idx": 1, "find": None, "replace": "y"}], [_A(1)])
+    assert patches == [{"find": None, "replace": "y"}]
+
+
+def test_build_fix_prompt_numbers_items_and_states_uniqueness_rule():
+    chosen = [_A(1)]
+    chosen[0].type, chosen[0].severity = "format", "high"
+    chosen[0].matched_text, chosen[0].issue, chosen[0].suggestion = "缺封面", "没封面", "补封面"
+    from types import SimpleNamespace as NS
+    p = executor._build_fix_prompt(NS(user_query="看看"), "文档正文", chosen)
+    assert "[1]" in p and "缺封面" in p and "文档正文" in p and "唯一" in p
+
+
+def test_retrieval_query_uses_template_name_and_user_query():
+    from types import SimpleNamespace as NS
+    q = executor._retrieval_query(NS(user_query="看看格式"), NS(name="投标文件格式规范"))
+    assert "格式规范" in q and "看看格式" in q
+    assert executor._retrieval_query(NS(user_query=""), NS(name="")) == "招标文件要求"
+
+
+# ── 集成：审查轮 ─────────────────────────────────────────────────
+def test_execute_task_review_happy_path(monkeypatch, fstore):
+    tid, blob = PFX + "-r1", _docx(["投标文件缺少封面", "其余内容正常"])
+    _mk_template()
+    rid = _mk_round(tid)
+    raw = json.dumps([{"matched_text": "投标文件缺少封面", "type": "format",
+                       "severity": "严重", "issue": "缺封面", "suggestion": "补上"}])
+    _wire(monkeypatch, blob=blob, raw=raw)
+
+    executor.execute_task(tid)
+
+    row = _round(rid)
+    assert row.status == "annotated"
+    assert "1" in row.summary and "高 1" in row.summary
+    anns = _anns(tid)
+    assert len(anns) == 1
+    assert anns[0].severity == "high" and anns[0].source == "ai" and anns[0].status == "open"
+    assert anns[0].file_version == "v1" and anns[0].tenant_id == PFX
+    anchor = json.loads(anns[0].anchor)
+    assert anchor["p_idx"] == 0 and anchor["a_occ"] == 1 and anchor["p_total"] == 2
+
+
+def test_execute_task_unknown_task_is_noop(monkeypatch, fstore):
+    called = []
+    monkeypatch.setattr(executor, "_call_llm", lambda *a: called.append(1) or "[]")
+    executor.execute_task(PFX + "-nope")
+    assert called == []
+
+
+def test_execute_task_finished_round_is_noop(monkeypatch, fstore):
+    tid = PFX + "-done"
+    _mk_template()
+    rid = _mk_round(tid, status="done")
+    called = []
+    monkeypatch.setattr(executor, "_call_llm", lambda *a: called.append(1) or "[]")
+    executor.execute_task(tid)
+    assert called == [] and _round(rid).status == "done"
+
+
+def test_execute_task_unparseable_llm_marks_failed_without_annotations(monkeypatch, fstore):
+    tid = PFX + "-bad"
+    _mk_template()
+    rid = _mk_round(tid)
+    _wire(monkeypatch, blob=_docx(["一段足够长的正文用于通过最小长度校验，重复重复重复重复。"]),
+          raw="我不知道该怎么回答")
+    executor.execute_task(tid)
+    row = _round(rid)
+    assert row.status == "failed" and "无法解析" in row.error
+    assert _anns(tid) == []
+    assert "我不知道" in row.llm_raw          # 原始响应留档，便于排查
+
+
+def test_execute_task_empty_annotation_array_marks_annotated(monkeypatch, fstore):
+    """LLM 明确回空数组 = 「未发现问题」，不能判 failed（否则用户被迫无效重试）。"""
+    tid = PFX + "-empty"
+    _mk_template()
+    rid = _mk_round(tid)
+    _wire(monkeypatch, blob=_docx(["一段足够长的正文用于通过最小长度校验，重复重复重复重复。"]), raw="[]")
+    executor.execute_task(tid)
+    row = _round(rid)
+    assert row.status == "annotated" and row.summary == "未发现问题" and _anns(tid) == []
+
+
+def test_execute_task_retrieval_failure_marks_failed(monkeypatch, fstore):
+    """检索失败不得静默按「零参考」继续——那会让用户以为「标准就是这些」。"""
+    tid = PFX + "-retrfail"
+    _mk_template()
+    rid = _mk_round(tid, kb_ids=["kb-1"])
+
+    def _boom(*a, **k):
+        raise RuntimeError("retriever down")
+
+    monkeypatch.setattr(executor, "_load_original_blob",
+                        lambda t, f: _docx(["一段足够长的正文用于通过最小长度校验，重复重复重复重复。"]))
+    monkeypatch.setattr(executor, "_retrieve_chunks", _boom)
+    monkeypatch.setattr(executor, "_call_llm", lambda *a: "[]")
+    executor.execute_task(tid)
+    row = _round(rid)
+    assert row.status == "failed" and "retriever down" in row.error
+
+
+def test_execute_task_unsupported_file_type_marks_failed(monkeypatch, fstore):
+    tid = PFX + "-pdf"
+    _mk_template()
+    rid = _mk_round(tid)
+    _wire(monkeypatch, blob=b"%PDF-1.4 xx", raw="[]")
+    executor.execute_task(tid)
+    row = _round(rid)
+    assert row.status == "failed" and "暂不支持审核该文件类型" in row.error
+
+
+def test_execute_task_blank_document_marks_failed(monkeypatch, fstore):
+    """扫描件提不出文字：不能把空正文喂给 LLM 让它「审视全文」（等于请它编）。"""
+    tid = PFX + "-blank"
+    _mk_template()
+    rid = _mk_round(tid)
+    _wire(monkeypatch, blob=_docx(["", "  "]), raw="[]")
+    executor.execute_task(tid)
+    assert _round(rid).status == "failed"
+    assert "扫描件" in _round(rid).error
+
+
+def test_execute_task_invalid_template_id_falls_back_to_default(monkeypatch, fstore):
+    tid = PFX + "-tplfb"
+    _mk_template()
+    rid = _mk_round(tid, template_id="not-exist-tpl")
+    _wire(monkeypatch, blob=_docx(["一段足够长的正文用于通过最小长度校验，重复重复重复重复。"]), raw="[]")
+    executor.execute_task(tid)
+    assert _round(rid).status == "annotated"
+
+
+def test_execute_task_bad_placeholder_in_template_marks_failed(monkeypatch, fstore):
+    tid = PFX + "-tplbad"
+    _mk_template(user_tpl="需求：{user_query} 未知：{nope}")
+    rid = _mk_round(tid)
+    _wire(monkeypatch, blob=_docx(["一段足够长的正文用于通过最小长度校验，重复重复重复重复。"]), raw="[]")
+    executor.execute_task(tid)
+    assert _round(rid).status == "failed"
+
+
+def test_execute_task_persisted_kb_ids_are_used_for_retrieval(monkeypatch, fstore):
+    tid = PFX + "-kbs"
+    _mk_template()
+    rid = _mk_round(tid, kb_ids=["kb-a", "kb-b"])
+    seen = []
+
+    def _spy(tenant_id, kb_ids, query):
+        seen.append(list(kb_ids))
+        return []
+
+    monkeypatch.setattr(executor, "_load_original_blob",
+                        lambda t, f: _docx(["一段足够长的正文用于通过最小长度校验，重复重复重复重复。"]))
+    monkeypatch.setattr(executor, "_retrieve_chunks", _spy)
+    monkeypatch.setattr(executor, "_call_llm", lambda *a: "[]")
+    executor.execute_task(tid)
+    assert seen == [["kb-a", "kb-b"]]
+    assert _round(rid).status == "annotated"
+
+
+def test_execute_task_without_kb_ids_skips_retrieval(monkeypatch, fstore):
+    tid = PFX + "-nokb"
+    _mk_template()
+    rid = _mk_round(tid)
+    seen = []
+    monkeypatch.setattr(executor, "_load_original_blob",
+                        lambda t, f: _docx(["一段足够长的正文用于通过最小长度校验，重复重复重复重复。"]))
+    monkeypatch.setattr(executor, "_retrieve_chunks",
+                        lambda *a, **k: seen.append(1) or [])
+    monkeypatch.setattr(executor, "_call_llm", lambda *a: "[]")
+    executor.execute_task(tid)
+    assert seen == [] and _round(rid).status == "annotated"
+
+
+def test_execute_task_rerun_does_not_duplicate_annotations(monkeypatch, fstore):
+    """进程被杀后重试同一轮不得留下两套标注。"""
+    tid, blob = PFX + "-rerun", _docx(["投标文件缺少封面"])
+    _mk_template()
+    rid = _mk_round(tid)
+    raw = json.dumps([{"matched_text": "投标文件缺少封面", "type": "format",
+                       "severity": "high", "issue": "缺封面"}])
+    _wire(monkeypatch, blob=blob, raw=raw)
+    executor.execute_task(tid)
+    assert len(_anns(tid)) == 1
+    FileReviewRoundService.update_status(rid, "reviewing")     # 模拟重试
+    executor.execute_task(tid)
+    assert len(_anns(tid)) == 1
+    assert _round(rid).status == "annotated"
+
+
+def test_execute_task_collects_references_from_kb_chunks(monkeypatch, fstore):
+    """检索结果必须真的进 prompt（否则「LLM+KB 出标准」这条需求是空话）。"""
+    tid = PFX + "-ref"
+    _mk_template()
+    _mk_round(tid, kb_ids=["kb-a"])
+    prompts = []
+
+    def _llm(tenant_id, system, user):
+        prompts.append(user)
+        return "[]"
+
+    monkeypatch.setattr(executor, "_load_original_blob",
+                        lambda t, f: _docx(["一段足够长的正文用于通过最小长度校验，重复重复重复重复。"]))
+    monkeypatch.setattr(executor, "_retrieve_chunks", lambda *a: [
+        {"content": "投标文件必须包含封面", "doc_id": "d1", "doc_name": "招标文件", "similarity": 0.9}])
+    monkeypatch.setattr(executor, "_call_llm", _llm)
+    executor.execute_task(tid)
+    assert "投标文件必须包含封面" in prompts[0]
+
+
+# ── 集成：修复轮 ─────────────────────────────────────────────────
+def _fix_setup(monkeypatch, fstore, *, tag, blob, raw, sev="high"):
+    """造一个「上一轮 review 已产标注、当前轮 fixing」的局面。"""
+    tid = PFX + "-" + tag
+    _mk_template()
+    r1 = _mk_round(tid, status="annotated", file_version="v1", round_no=1)
+    FileReviewAnnotationService.create(
+        round_id=r1, task_id=tid, file_id=PFX + "-file", file_version="v1",
+        anchor="{}", matched_text="投标文件缺少封面", type="format", severity=sev,
+        issue="缺封面", suggestion="补上", source="ai", status="open",
+        tenant_id=PFX, created_by=PFX)
+    r2 = _mk_round(tid, status="fixing", file_version="v2", round_no=2)
+    _wire(monkeypatch, blob=blob, raw=raw)
+    return tid, r1, r2, store_key(tid, "v2")
+
+
+def store_key(tid, ver):
+    return f"frv-{tid}-{ver}"
+
+
+def test_execute_task_fix_happy_path_stores_version_and_marks_fixed(monkeypatch, fstore):
+    tid, r1, r2, key = _fix_setup(
+        monkeypatch, fstore, tag="fix",
+        blob=_docx(["投标文件缺少封面"]),
+        raw=json.dumps({"patches": [{"idx": 1, "find": "投标文件缺少封面", "replace": "投标文件包含封面"}]}))
+    executor.execute_task(tid)
+    row = _round(r2)
+    assert row.status == "done" and "本轮修复 1 项" in row.summary
+    assert row.minio_path == key and key in [k[1] for k in fstore.blobs]
+    texts = [p.text for p in Document(io.BytesIO(fstore.blobs[(f"{PFX}-downloads", key)])).paragraphs]
+    assert texts == ["投标文件包含封面"]
+    assert _anns(tid)[0].status == "fixed"
+
+
+def test_execute_task_fix_preserves_run_formatting(monkeypatch, fstore):
+    """格式保真必须逐 run 断言：run 个数在错误实现下同样不变。"""
+    d = Document()
+    p = d.add_paragraph()
+    r0 = p.add_run("前缀：")
+    r0.bold = True
+    r0.font.size = Pt(10)
+    r1 = p.add_run("投标文件缺少封面")
+    r1.font.size = Pt(16)
+    b = io.BytesIO()
+    d.save(b)
+    tid, _r1, r2, key = _fix_setup(
+        monkeypatch, fstore, tag="fixfmt", blob=b.getvalue(),
+        raw=json.dumps({"patches": [{"idx": 1, "find": "投标文件缺少封面",
+                                     "replace": "投标文件包含封面"}]}))
+    executor.execute_task(tid)
+    runs = Document(io.BytesIO(fstore.blobs[(f"{PFX}-downloads", key)])).paragraphs[0].runs
+    assert "".join(r.text for r in runs) == "前缀：投标文件包含封面"
+    assert runs[0].bold is True and runs[0].font.size == Pt(10)
+    assert runs[1].font.size == Pt(16)
+
+
+def test_execute_task_fix_unlocatable_patch_keeps_annotation_open(monkeypatch, fstore):
+    """find 在文中不唯一 → patcher 跳过 → 标注保持 open、**不产新版本**（保持原样）。"""
+    tid, _r1, r2, key = _fix_setup(
+        monkeypatch, fstore, tag="fixskip",
+        blob=_docx(["投标文件缺少封面", "投标文件缺少封面"]),
+        raw=json.dumps({"patches": [{"idx": 1, "find": "投标文件缺少封面", "replace": "X"}]}))
+    executor.execute_task(tid)
+    row = _round(r2)
+    assert row.status == "done" and "未能唯一定位" in row.summary
+    assert row.minio_path is None and fstore.blobs == {}
+    assert _anns(tid)[0].status == "open"
+
+
+def test_execute_task_fix_without_pending_annotations_finishes_done(monkeypatch, fstore):
+    tid = PFX + "-fixnone"
+    _mk_template()
+    r2 = _mk_round(tid, status="fixing", file_version="v2", round_no=2)
+    called = []
+    monkeypatch.setattr(executor, "_call_llm", lambda *a: called.append(1) or "[]")
+    monkeypatch.setattr(executor, "_load_original_blob", lambda t, f: b"")
+    executor.execute_task(tid)
+    assert _round(r2).status == "done" and called == []
+
+
+def test_execute_task_fix_non_docx_finishes_done_with_manual_hint(monkeypatch, fstore):
+    """非 docx 不得走「纯文本降级」把原件覆盖成文本。"""
+    tid, _r1, r2, _key = _fix_setup(
+        monkeypatch, fstore, tag="fixpdf", blob=b"%PDF-1.4 xx",
+        raw=json.dumps({"patches": [{"idx": 1, "find": "a", "replace": "b"}]}))
+    executor.execute_task(tid)
+    row = _round(r2)
+    assert row.status == "done" and "手动修改" in row.summary
+    assert row.minio_path is None and fstore.blobs == {}
+    assert _anns(tid)[0].status == "open"
+
+
+def test_execute_task_fix_unparseable_marks_failed(monkeypatch, fstore):
+    tid, _r1, r2, _key = _fix_setup(
+        monkeypatch, fstore, tag="fixbad", blob=_docx(["投标文件缺少封面"]), raw="嗯……")
+    executor.execute_task(tid)
+    assert _round(r2).status == "failed"
+
+
+def test_execute_task_fix_all_idx_out_of_range_marks_failed(monkeypatch, fstore):
+    """LLM 回了条目但 idx 全对不上 → 畸形响应，不能伪装成「无需改动」的 done。"""
+    tid, _r1, r2, _key = _fix_setup(
+        monkeypatch, fstore, tag="fixoob", blob=_docx(["投标文件缺少封面"]),
+        raw=json.dumps({"patches": [{"idx": 42, "find": "投标文件缺少封面", "replace": "X"}]}))
+    executor.execute_task(tid)
+    row = _round(r2)
+    assert row.status == "failed" and "idx" in row.error
+
+
+def test_execute_task_fix_empty_patches_finishes_done(monkeypatch, fstore):
+    """LLM 合法地回空 patches = 无需改动：判 failed 会诱发无效重试。"""
+    tid, _r1, r2, _key = _fix_setup(
+        monkeypatch, fstore, tag="fixempty", blob=_docx(["投标文件缺少封面"]), raw="[]")
+    executor.execute_task(tid)
+    row = _round(r2)
+    assert row.status == "done" and "保持原样" in row.summary
+
+
+def test_execute_task_fix_caps_items_at_max_fix_items(monkeypatch, fstore):
+    tid = PFX + "-fixcap"
+    _mk_template()
+    r1 = _mk_round(tid, status="annotated", file_version="v1", round_no=1)
+    for i in range(5):
+        FileReviewAnnotationService.create(
+            round_id=r1, task_id=tid, file_id=PFX + "-file", file_version="v1",
+            anchor="{}", matched_text=f"缺项{i}", type="format", severity="low",
+            issue="i", suggestion="", source="ai", status="open",
+            tenant_id=PFX, created_by=PFX)
+    r2 = _mk_round(tid, status="fixing", file_version="v2", round_no=2)
+    monkeypatch.setattr(executor, "MAX_FIX_ITEMS", 2)
+    prompts = []
+    monkeypatch.setattr(executor, "_load_original_blob", lambda t, f: _docx(["待修复文本"]))
+    monkeypatch.setattr(executor, "_call_llm",
+                        lambda t, s, u: prompts.append(u) or "[]")
+    executor.execute_task(tid)
+    assert "[3]" not in prompts[0] and "[2]" in prompts[0]
+    assert _round(r2).status == "done"
+
+
+def test_execute_task_fix_reads_previous_fixed_version_as_input(monkeypatch, fstore):
+    """多轮叠加：第 3 轮的输入必须是第 2 轮修复后的版本，不是原件。"""
+    tid = PFX + "-fixchain"
+    _mk_template()
+    v2_key = store_key(tid, "v2")
+    fstore.blobs[(f"{PFX}-downloads", v2_key)] = _docx(["已修过一次的正文"])
+    r1 = _mk_round(tid, status="annotated", file_version="v1", round_no=1)
+    FileReviewAnnotationService.create(
+        round_id=r1, task_id=tid, file_id=PFX + "-file", file_version="v1",
+        anchor="{}", matched_text="缺封面", type="format", severity="high",
+        issue="i", suggestion="", source="ai", status="open", tenant_id=PFX, created_by=PFX)
+    FileReviewRoundService.update_status(
+        _mk_round(tid, status="done", file_version="v2", round_no=2), "done", minio_path=v2_key)
+    r3 = _mk_round(tid, status="fixing", file_version="v3", round_no=3)
+    prompts = []
+    monkeypatch.setattr(executor, "_load_original_blob",
+                        lambda t, f: _docx(["原件正文，不该被读到"]))
+    monkeypatch.setattr(executor, "_call_llm", lambda t, s, u: prompts.append(u) or "[]")
+    executor.execute_task(tid)
+    assert "已修过一次的正文" in prompts[0] and "原件正文" not in prompts[0]
+    assert _round(r3).status == "done"
+
+
+def test_execute_task_reraises_when_failure_status_cannot_be_written(monkeypatch, fstore):
+    """收口写库都失败时必须 raise，把球踢回 spawn 的独立 CAS——否则轮次永久卡死。"""
+    tid = PFX + "-wede"
+    _mk_template()
+    _mk_round(tid)
+    _wire(monkeypatch, blob=_docx(["一段足够长的正文用于通过最小长度校验，重复重复重复重复。"]),
+          raw="完全无法解析")
+
+    def _boom_update(*a, **k):
+        raise RuntimeError("mysql down")
+
+    # 直接替换 Model.update（类属性覆盖，经 FileReviewRoundService.update_status 的
+    # `cls.model.update(...)` 可见），让「收口 failed」这一步也失败。
+    monkeypatch.setattr(FileReviewRound, "update", _boom_update)
+    with pytest.raises(RuntimeError):
+        executor.execute_task(tid)
+
+
+def test_execute_task_skips_annotations_outside_declared_type_scope(monkeypatch, fstore):
+    """模板声明 scope=format，LLM 回了个越界 type：记录（不静默丢问题）但打 warning。"""
+    tid = PFX + "-scope"
+    _mk_template(types=("format",))
+    rid = _mk_round(tid)
+    raw = json.dumps([{"matched_text": "甲甲甲", "type": "clause", "severity": "low", "issue": "i"}])
+    _wire(monkeypatch, blob=_docx(["甲甲甲是一段足够长的正文内容，重复重复重复重复。"]), raw=raw)
+    executor.execute_task(tid)
+    assert _round(rid).status == "annotated"
+    assert len(_anns(tid)) == 1 and _anns(tid)[0].type == "clause"
+
+
+def test_execute_task_drops_empty_shell_annotations(monkeypatch, fstore):
+    tid = PFX + "-shell"
+    _mk_template()
+    rid = _mk_round(tid)
+    raw = json.dumps([{"matched_text": "", "issue": "", "severity": "low"},
+                      {"matched_text": "甲甲甲", "issue": "真的问题", "severity": "low"}])
+    _wire(monkeypatch, blob=_docx(["甲甲甲是一段足够长的正文内容，重复重复重复重复。"]), raw=raw)
+    executor.execute_task(tid)
+    assert len(_anns(tid)) == 1 and _round(rid).status == "annotated"
 ```
 
-- [ ] **Step 2: 跑测试确认失败** — `uv run --no-sync pytest test/test_file_review_executor.py -v` 期望：ImportError
-
-- [ ] **Step 3: 创建 `rag/svr/file_review/executor.py`**
+**1b. `test/test_file_review_service.py` 追加三个用例**
 
 ```python
-"""文件审核执行器主循环：多轮状态机。
-execute_task(round_id) 读 round → 跑审视（KB + LLM）→ 写 annotation → 改 round.status=annotated。
-修复轮 round_no>1 且 status=fixing → LLM patch 应用 → 改 status=annotated。"""
+def test_create_round_persists_normalized_kb_ids():
+    tid = PFX + 'kbids'
+    rid = FileReviewRoundService.create_round(
+        task_id=tid, file_id=PFX + '-file', round_no=1, template_id='',
+        user_query='q', file_version='v1', status='reviewing',
+        tenant_id=PFX, kb_ids=['kb-1', 'kb-2'],
+    )
+    assert json.loads(_round_row(rid).kb_ids) == ['kb-1', 'kb-2']
+    rid2 = FileReviewRoundService.create_round(
+        task_id=tid, file_id=PFX + '-file', round_no=2, template_id='',
+        user_query='q', file_version='v1', status='reviewing', tenant_id=PFX,
+    )
+    assert _round_row(rid2).kb_ids is None
+    rid3 = FileReviewRoundService.create_round(
+        task_id=tid, file_id=PFX + '-file', round_no=3, template_id='',
+        user_query='q', file_version='v1', status='reviewing',
+        tenant_id=PFX, kb_ids=['kb-9'],
+    )
+    assert _round_row(rid3).kb_ids == '["kb-9"]'
+
+
+def test_list_pending_by_task_is_task_wide_not_round_scoped():
+    """修复轮不产标注；按 round_no 圈定会让第 3 轮取到空集而静默不修。"""
+    tid = PFX + 'pending'
+    r_old = _mk_round(tid, 1, 'annotated')
+    r_cur = _mk_round(tid, 2, 'fixing')
+    for r, st in ((r_old, 'open'), (r_old, 'fixed'), (r_cur, 'new'), (r_cur, 'wontfix')):
+        FileReviewAnnotationService.create(
+            round_id=r, task_id=tid, file_id=PFX + '-file', file_version='v1',
+            anchor='{}', matched_text='t', type='format', severity='low',
+            issue='i', suggestion='', source='ai', status=st, tenant_id=PFX)
+    got = [a.status for a in FileReviewAnnotationService.list_pending_by_task(tid)]
+    assert sorted(got) == ['new', 'open']
+    assert FileReviewAnnotationService.list_pending_by_task('') == []
+
+
+def test_delete_by_round_only_removes_that_round():
+    tid = PFX + 'delround'
+    r1, r2 = _mk_round(tid, 1, 'reviewing'), _mk_round(tid, 2, 'reviewing')
+    for r in (r1, r2):
+        FileReviewAnnotationService.create(
+            round_id=r, task_id=tid, file_id=PFX + '-file', file_version='v1',
+            anchor='{}', matched_text='t', type='format', severity='low',
+            issue='i', suggestion='', source='ai', tenant_id=PFX)
+    assert FileReviewAnnotationService.delete_by_round(r1) == 1
+    rest = FileReviewAnnotation.select().where(FileReviewAnnotation.task_id == tid)
+    assert [a.round_id for a in rest] == [r2]
+```
+
+`_round_row(rid)` 需要新增到该文件的辅助区：
+
+```python
+def _round_row(rid):
+    return FileReviewRoundService.get_by_id(rid)
+```
+
+**1c. `test/test_file_review_spawn.py` 追加一个用例**
+
+```python
+def test_force_fail_marks_fixing_round_too(monkeypatch):
+    """进程在**修复中**被杀时轮次会滞留在 fixing：CAS 只认 reviewing 会让它永远转圈。"""
+    tid = PFX + 'fixing'
+    _mk_round(tid, status='fixing')
+
+    def boom(task_id):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(spawn, 'execute_task', boom)
+    spawn.spawn_review_task(tid)
+    assert _wait_until(lambda: [r.status for r in _rounds(tid)] == ['failed'])
+```
+
+**1d. `test/test_file_review_db.py` 改三处 + 换一个用例**
+
+- `test_presets_prompt_template_format_safe`：
+
+```python
+def test_presets_prompt_template_format_safe():
+    allowed = {"user_query", "file_text", "references"}
+    for t in _PRESET_REVIEW_TEMPLATES:
+        tpl = t["user_prompt_template"]
+        fields = {n for _, n, _, _ in string.Formatter().parse(tpl) if n}
+        assert fields == allowed, f"{t['id']} 占位符={fields}"
+        stripped = tpl.replace("{{", "").replace("}}", "")
+        assert stripped.count("{") == stripped.count("}") == len(allowed)
+        out = tpl.format(user_query="Q", file_text="E", references="R")
+        assert "{{" not in out and "}}" not in out
+        assert out.count("{") == out.count("}") and out.count("[") == out.count("]")
+        assert out.rstrip().endswith("]") and '"matched_text"' in out
+        assert '"anchor"' not in out          # 锚点由服务端反查，不得诱导 LLM 编造
+```
+
+- `test_presets_prompt_template_requires_all_fields`：把 `format(user_query="Q", file_excerpt="E")` 换成 `format(user_query="Q", file_text="E")`。
+- `test_ensure_guard_not_fooled_by_decoy_row` → 语义已变（守卫不再按 ID 计数短路），换成：
+
+```python
+def test_seed_leaves_foreign_rows_untouched():
+    """drift sync 只认预置 ID：别的租户/用户的模板行不得被写入或改写。"""
+    decoy = "decoy_tpl_" + PFX
+    FileReviewTemplate.delete().where(FileReviewTemplate.id == decoy).execute()
+    FileReviewTemplate.create(
+        id=decoy, name="别人的模板", description="d", system_prompt="s",
+        user_prompt_template="{user_query}", annotation_types="[]",
+        enabled=0, tenant_id="other-tenant", created_by="someone",
+    )
+    try:
+        _seed_file_review_templates()
+        row = FileReviewTemplate.get(FileReviewTemplate.id == decoy)
+        assert row.enabled == 0 and row.tenant_id == "other-tenant" and row.name == "别人的模板"
+    finally:
+        FileReviewTemplate.delete().where(FileReviewTemplate.id == decoy).execute()
+```
+
+- 追加：
+
+```python
+def test_seed_drift_syncs_prompt_text_but_never_re_enables():
+    """常量文案修订必须能到已初始化的库（否则改了也白改）；但管理员显式停用的
+    enabled=0 是用户态，启动同步不得把它重新打开。"""
+    tpl_id = _PRESET_REVIEW_TEMPLATES[0]["id"]
+    FileReviewTemplate.update(
+        system_prompt="被改坏的旧值", enabled=0,
+    ).where(FileReviewTemplate.id == tpl_id).execute()
+    try:
+        assert _seed_file_review_templates() == ""
+        row = FileReviewTemplate.get(FileReviewTemplate.id == tpl_id)
+        assert row.system_prompt == _PRESET_REVIEW_TEMPLATES[0]["system_prompt"]
+        assert row.user_prompt_template == _PRESET_REVIEW_TEMPLATES[0]["user_prompt_template"]
+        assert row.enabled == 0
+    finally:
+        _seed_file_review_templates()
+        FileReviewTemplate.update(enabled=1).where(FileReviewTemplate.id == tpl_id).execute()
+```
+
+---
+
+- [ ] **Step 2: 跑测试确认失败**
+
+```bash
+uv run --no-sync pytest test/test_file_review_executor.py test/test_file_review_service.py \
+  test/test_file_review_spawn.py test/test_file_review_db.py -x -q
+```
+
+Expected（实现前，必须真的看到这些失败）：
+- `ModuleNotFoundError: No module named 'rag.svr.file_review.executor'`
+- 去掉 executor 导入后：`TypeError: create_round() got an unexpected keyword argument 'kb_ids'`
+- `AttributeError: type object 'FileReviewAnnotationService' has no attribute 'list_pending_by_task'` / `delete_by_round`
+- `test_force_fail_marks_fixing_round_too` → 轮次停在 `fixing`
+- db 测试 `assert fields == {'user_query','file_excerpt','references'}` 失败
+
+若某个失败与预期**不符**，先停下来查清原因，不要继续往下写实现。
+
+---
+
+- [ ] **Step 3: 基础设施改造（executor 之外的四份改动）**
+
+**3a. `api/db/services/file_review_service.py`**
+
+文件头 import 追加：
+
+```python
 import json
 import logging
-from typing import List
 
-from api.db.db_models import DB
+from common.utils import get_uuid            # 已存在
+from api.db.db_models import json_dumps      # 若顶层未导入，按本文件既有 import 风格补齐
+```
+
+（以文件现有 import 块为准，缺失才加；`logger = logging.getLogger(__name__)` 若已有则不重复。）
+
+新增模块级辅助函数（放在 `_clamp_str` 下方）：
+
+```python
+def _normalize_kb_ids(kb_ids) -> str | None:
+    """把 kb_ids 统一成 JSON 文本落库（None / 空 → None）。
+
+    接受三种入参并归一，是因为三个调用方（T7 节点 / T8 工具 / T9 API）拿到的形态不同：
+    节点来自画布 DSL（list）、工具来自 LLM 参数解析（可能是 JSON 文本）、API 来自
+    request body。归一放在 Service 层，避免每个调用方各写一遍、口径漂移。
+    """
+    if kb_ids is None:
+        return None
+    if isinstance(kb_ids, str):
+        raw = kb_ids.strip()
+        if not raw:
+            return None
+        try:
+            val = json.loads(raw)
+        except Exception:
+            return json_dumps([raw])          # 裸的单个 id 文本
+        return _normalize_kb_ids(val)
+    if isinstance(kb_ids, (list, tuple, set)):
+        ids = [str(x) for x in kb_ids if x]
+        return json_dumps(ids) if ids else None
+    return None
+```
+
+`FileReviewRoundService.create_round` 签名与写入改为：
+
+```python
+    @classmethod
+    @DB.connection_context()
+    def create_round(cls, *, task_id: str, file_id: str, round_no: int,
+                     template_id: str, user_query: str, file_version: str,
+                     status: str, tenant_id: str = "", created_by: str = "",
+                     kb_ids=None) -> str:
+        """新建一轮审核，返回轮次 id。
+
+        tenant_id / created_by / kb_ids 由调用方（T7 节点、T8 工具、T9 API）从会话
+        上下文透传，本层不猜。kb_ids 归一为 JSON 文本（见 _normalize_kb_ids）：修复轮
+        与重试都要用同一批知识库，故必须随轮次持久化，不能只活在当次请求里。
+        其余契约不变（必填列为 None 时不吞异常，时间字段全部由框架写）。
+        """
+        rid = get_uuid()
+        cls.model.create(
+            id=rid, task_id=task_id, file_id=file_id, round_no=round_no,
+            template_id=template_id, user_query=user_query,
+            file_version=_clamp_str(cls.model, "file_version", file_version),
+            status=_clamp_str(cls.model, "status", status),
+            tenant_id=tenant_id, created_by=created_by,
+            kb_ids=_normalize_kb_ids(kb_ids),
+        )
+        return rid
+```
+
+`FileReviewAnnotationService` 末尾追加两个类方法：
+
+```python
+    @classmethod
+    @DB.connection_context()
+    def list_pending_by_task(cls, task_id: str) -> list:
+        """该 task **全部轮次**中 status ∈ {open, new} 的标注，按创建时间升序。
+
+        与 list_open_or_new_for_next_round 的区别是**不按轮次圈定**，因为修复轮本身
+        不产标注：第 3 轮修复要处理的是第 1 轮 review 留下的 open 项，按 round_no
+        圈定会取到空集，结果是一轮「什么都不修」的静默空转。
+
+        task_id 为空串/None 时短路返回 []（同 max_completed_round_no）：空串行可落库，
+        不短路会把这类脏行当成某个任务的待修复项。
+        """
+        if not task_id:
+            return []
+        return list(cls.model.select().where(
+            (cls.model.task_id == task_id)
+            & cls.model.status.in_(PENDING_ANNOTATION_STATUSES)
+        ).order_by(cls.model.create_time.asc()))
+
+    @classmethod
+    @DB.connection_context()
+    def delete_by_round(cls, round_id: str) -> int:
+        """删除该轮次的全部标注，返回删除行数。
+
+        用途是**保重试幂等**：进程被杀后轮次会滞留在 reviewing，重试会重跑整轮，
+        若不清旧标注就会把每条问题再写一遍，面板上出现成对重复。范围严格限定在
+        round_id（不按 task_id），避免把历史轮次的人工批注一起抹掉。
+        """
+        if not round_id:
+            return 0
+        return cls.model.delete().where(cls.model.round_id == round_id).execute()
+```
+
+**3b. `rag/svr/file_review/spawn.py`**
+
+`_force_fail_round` 的 CAS 条件改为覆盖修复中：
+
+```python
+        with DB.connection_context():
+            FileReviewRoundService.model.update(status="failed", error=error).where(
+                FileReviewRoundService.model.task_id == task_id,
+                FileReviewRoundService.model.status.in_(("reviewing", "fixing")),
+            ).execute()
+```
+
+docstring 同步补一句：
+
+```
+    幂等且范围受限：只命中 status ∈ {reviewing, fixing} 的该 task 行——executor 已把该轮置
+    done/failed 时命中 0 行，别的任务的滞留轮次也不受影响。fixing 必须一起收：
+    进程在修复中被杀时轮次会停在 fixing，只认 reviewing 会让面板上永远转圈。
+```
+
+**3c. `api/db/db_models.py`**
+
+（i）`FileReviewRound` 加列（放在 `file_version` 之后）：
+
+```python
+    kb_ids = TextField(null=True)  # JSON 数组文本：本轮用的知识库 id（修复轮与重试复用）
+```
+
+（ii）`migrate_db` 里补迁移（参照同文件 `flow_comment` 的写法，**必须放在建表之后**）：
+
+```python
+    alter_db_add_column(migrator, "file_review_round", "kb_ids", TextField(null=True))
+```
+
+（iii）`FileReviewAnnotation.anchor` 的注释纠正（原注释写的是过时且错误的三元组）：
+
+```python
+    anchor = TextField(null=False)  # JSON: docx {p_idx,p_hash,a_occ,p_total}；定位失败为 {}
+```
+
+（iv）五个预置模板的 `user_prompt_template` 全部改成下面这个形态（把 `{file_excerpt}` 换成 `{file_text}`、删掉示例里的 `"anchor": {{...}}`、补「必须逐字摘录」的约束；`type` 值按各自模板的 `annotation_types` 填）：
+
+```python
+        "user_prompt_template": (
+            "用户需求：{user_query}\n\n"
+            "文件正文：\n{file_text}\n\n"
+            "参考资料：\n{references}\n\n"
+            "请审视全文，输出 JSON 标注列表（type='format'）：\n"
+            "matched_text 必须逐字摘自文档原文（用于定位与修复），不要改写或概括。\n"
+            '[{{"matched_text": "...", "type": "format", '
+            '"severity": "high|medium|low", "issue": "...", "suggestion": "..."}}]'
+        ),
+```
+
+五个模板的 `type` 取值依次为：`bid_doc_format` → `format`，`bid_response_complete` → `completeness`，`bid_substantive_clause` → `clause`，`bid_qualification` → `qualification`，`bid_price_review` → `price`。
+
+（v）`_seed_file_review_templates` / `_ensure_file_review_templates` 重写：
+
+```python
+def _seed_file_review_templates():
+    """幂等补齐并同步预置审核模板（tenant_id='' 即系统预置）。返回失败摘要（空串 = 全部成功）。
+
+    逐行 insert-or-update，而非「已存在即 continue」：
+    旧实现 + `_ensure_file_review_templates` 的 ID 计数短路会让**常量文案的修订永远到不了
+    已初始化的库**——改 prompt 等于白改，线上跑的还是第一次建库时的文本。
+    已存在的行只 UPDATE 提示词内容列，**不动 enabled**：管理员显式停用（enabled=0）是用户态，
+    启动时的 drift sync 无权把它重新打开；tenant_id / created_by 同样不碰（不属于内容）。
+    下游没有模板编辑端点（只有 list），故无条件同步不会覆盖任何用户改动。
+    """
+    errs = []
+    for tpl in _PRESET_REVIEW_TEMPLATES:
+        try:
+            fields = {
+                "name": tpl["name"], "description": tpl["description"],
+                "system_prompt": tpl["system_prompt"],
+                "user_prompt_template": tpl["user_prompt_template"],
+                "annotation_types": json_dumps(tpl["annotation_types"]),
+            }
+            if FileReviewTemplate.get_or_none(FileReviewTemplate.id == tpl["id"]):
+                FileReviewTemplate.update(**fields).where(
+                    FileReviewTemplate.id == tpl["id"]).execute()
+            else:
+                FileReviewTemplate.create(
+                    id=tpl["id"], enabled=1, tenant_id="", created_by="system", **fields)
+        except Exception as e:
+            errs.append(f"{tpl.get('id')}: {e.__class__.__name__}: {e}")
+    return "; ".join(errs)
+
+
+def _ensure_file_review_templates():
+    """确保预置模板齐全且与常量同步（幂等自愈）。返回错误文本，正常返回 None。
+
+    不再先按 ID 集合计数再决定要不要播：计数守卫一旦通过就永远跳过 seed，模板文案
+    的修订便再也进不去。改为每个启动无条件跑一遍 drift sync（5 行 UPDATE 的开销可忽略）。
+    migrate_db 运行在 logging.disable(ERROR) 窗口内，故本函数不抛异常、也不直接 log ERROR，
+    而是把失败摘成文本返回给调用方。
+    """
+    try:
+        return _seed_file_review_templates() or None
+    except Exception as e:
+        return f"{e.__class__.__name__}: {e}"
+```
+
+**3d. `docs/superpowers/plans/2026-09-16-file-review-node.md` 的 T4 说明句**
+
+把 T4 里「v1 对非 docx 文件只做审查（出标注），修复走纯文本降级（见 T6）」这句改成：
+
+```
+**xlsx / pdf 修复路径不在本任务范围，且 v1 明确不做**：设计里 xlsx 锚点 `{sheet, cell}` 仍是
+占位形态，逐单元格定位未设计。T6 的修复轮对非 docx 文件**只出标注不自动改**——收口 `done`
+并提示「该文件类型不支持自动修复（v1 仅支持 Word .docx），请按批注手动修改」。原稿写的
+「修复走纯文本降级」是错的：把解码文本当新版本存回去会毁掉原件，还会成为下一轮审核的输入。
+```
+
+---
+
+- [ ] **Step 4: 跑基础设施测试**
+
+```bash
+uv run --no-sync pytest test/test_file_review_service.py test/test_file_review_spawn.py \
+  test/test_file_review_db.py -q
+```
+
+Expected: 全绿（executor 测试此刻仍因模块不存在而 collect error，属预期）。
+
+---
+
+- [ ] **Step 5: 创建 `rag/svr/file_review/executor.py`**
+
+```python
+"""文件审核执行器：多轮状态机（审查轮 reviewing → annotated；修复轮 fixing → done）。
+
+设计边界（为什么这样切）：
+- 本模块**不认识**「此刻该审查还是该修复」：那是 T7 画布节点 / T8 对话工具 / T9 REST 的
+  职责——它们先写好轮次行（`status='reviewing'` 或 `'fixing'`）再交给 spawn 拉起本模块。
+  本模块只按轮次行推进状态机，故三个入口共用同一套逻辑，各自不必复制。
+- 纯变换一律委托已测过的兄弟模块，不在这里重复实现：检索拼装 → `kb_aggregator`；
+  锚点语义 → `template_fill.docx_utils`（与 B 端填写点直定位、前端 fnvHash32x2 同口径）；
+  格式保真替换 → `file_review.patcher`。
+- 不 import Quart / SSE：进度由 T9 的 progress 端点按轮次行反查（三入口共用同一份进度真相），
+  在此推流会把「执行」与「某个具体连接」绑死。
+- T5 契约：`execute_task` 必须保证返回（防重入集合没有超时/看门狗，永久阻塞 = 该 task 被
+  永远判为「已在执行中」，只能重启进程恢复）。故每条外部调用都有明确的失败出口。
+- 幂等：状态非 reviewing/fixing 的轮次（已完结 / 未知）安静返回，重复 spawn 无副作用；
+  同一轮重跑会先删该轮旧标注（否则进程被杀后重试会留下两套标注）。
+"""
+import asyncio
+import json
+import logging
+import re
+
 from api.db.services.file_review_service import (
     FileReviewAnnotationService,
     FileReviewRoundService,
     FileReviewTemplateService,
 )
-from api.utils import get_uuid
-from rag.svr.file_review.kb_aggregator import aggregate_references
-from rag.svr.file_review.patcher import apply_patches
+from common import settings
+from rag.svr.file_review import kb_aggregator
+from rag.svr.file_review.patcher import apply_patches_to_docx
+from rag.svr.template_fill.docx_utils import iter_docx_paragraphs, norm_ws, para_hash32x2
 
 logger = logging.getLogger(__name__)
 
+__all__ = ["FileReviewError", "execute_task"]
 
-def retrieve_kb_chunks(kb_ids, query):
-    """懒加载包装：测试可 monkeypatch；真实调用走 settings.retriever.retrieval。
+DEFAULT_TEMPLATE_ID = "bid_doc_format"
+KB_TOP_K = 6
+KB_BUDGET_TOKENS = 3000
+FILE_TEXT_MAX_CHARS = 40000
+TRUNCATED_NOTE = "\n（注：文档较长，以上为可纳入本次审核的正文，其余部分未纳入）"
+MIN_FILE_TEXT_CHARS = 50
+QUERY_MAX = 300
+LLM_RAW_MAX = 200_000
+MAX_FIX_ITEMS = 20
+MATCHED_TEXT_MAX = 500
+ISSUE_MAX = 1000
+SUGGESTION_MAX = 1000
 
-    注意：`retrieval()` 返回的是 ranks 容器 {"chunks": [...], "doc_aggs": [...]}，
-    必须取 ranks["chunks"] 再交给 aggregate_references（传整个 ranks 容器会抛
-    TypeError，这是刻意的响亮失败，避免"零参考"静默跑完）。
-    检索是 async 的，本模块跑在守护线程里，故包一层 asyncio.run。
-    参数（embd_mdl / tenant_ids / similarity / rerank）依赖 settings 与 LLMBundle，
-    属 I/O，测试一律 monkeypatch 掉本函数。
-    """
-    import asyncio
+_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
-    from common import settings
+# 各级别的同义写法归一：UI 的三色方案与用户的 levels 过滤都按 high/medium/low 匹配，
+# 放任 LLM 自由发挥（"严重"/"Critical"/"warning"）会让这两处同时失配。
+_SEVERITY_ALIASES = {
+    "high": "high", "严重": "high", "高": "high", "critical": "high", "blocker": "high",
+    "medium": "medium", "中": "medium", "中等": "medium", "moderate": "medium",
+    "warning": "medium",
+    "low": "low", "低": "low", "轻微": "low", "minor": "low", "info": "low",
+}
 
-    async def _run():
-        ranks = await settings.retriever.retrieval(
-            query, None, [], list(kb_ids or []), 1, 5,
-        )
-        return ranks.get("chunks", [])
+_ARRAY_GREEDY = re.compile(r"\[[\s\S]*\]")
+_ARRAY_LAZY = re.compile(r"\[[\s\S]*?\]")
+_OBJECT_GREEDY = re.compile(r"\{[\s\S]*\}")
 
-    return asyncio.run(_run())
+FIX_SYSTEM = (
+    "你是文档修复助手。用户给你一份文档正文和一批待修复的问题标注，"
+    "你要为每条标注给出**最小改动**的替换方案：find 必须逐字摘自文档、且全文只出现一次；"
+    "replace 是替换后的文本。无法唯一定位或无需改动的条目直接省略，不要编造原文。"
+    '只输出 JSON：{"patches": [{"idx": 1, "find": "原文片段", "replace": "新文本"}]}'
+)
 
 
-def llm_review(*, system_prompt: str, user_prompt: str) -> dict:
-    """懒加载包装：测试可 monkeypatch；真实调用走 common/llm_util.py。
-    返回 {summary, annotations: [{matched_text, type, severity, issue, suggestion}]}。"""
-    from common.llm_util import llm_complete
-    raw = llm_complete(system_prompt, user_prompt, json_response=True)
+class FileReviewError(Exception):
+    """已知的、可直接展示给用户的中断原因（文案即面向用户的说明）。"""
+
+
+# ── 入口 ─────────────────────────────────────────────────────────
+def execute_task(task_id: str) -> None:
+    """按该 task 最后一个轮次的状态推进状态机；无可推进项则安静返回。"""
     try:
-        return json.loads(raw) if isinstance(raw, str) else raw
+        rounds = FileReviewRoundService.get_by_task(task_id)
     except Exception:
-        logger.exception("llm_review parse fail: %s", raw)
-        return {"summary": "LLM 输出解析失败", "annotations": []}
-
-
-def execute_task(round_id: str) -> None:
-    """单轮执行入口：审查 round_id 对应状态。"""
-    with DB.connection_context():
-        try:
-            round_row = FileReviewRoundService.model.get(FileReviewRoundService.model.id == round_id)
-        except FileReviewRoundService.model.DoesNotExist:
-            logger.error("round not found: %s", round_id)
-            return
-
+        # 连轮次都读不出来（DB 不可用）→ 交给 spawn 的兜底 CAS 再试一次
+        logger.exception("file review: load rounds failed, task_id=%s", task_id)
+        raise
+    cur = rounds[-1] if rounds else None
+    if cur is None:
+        logger.warning("file review: no round row for task_id=%s", task_id)
+        return
+    handler = {"reviewing": _run_review_round, "fixing": _run_fix_round}.get(cur.status)
+    if handler is None:
+        # 已完结（annotated/done/failed）或未知状态：重复 spawn 的幂等出口
+        logger.info("file review: round %s status=%s, nothing to do", cur.id, cur.status)
+        return
     try:
-        tpl = FileReviewTemplateService.get_by_id(round_row.template_id) if round_row.template_id else None
-        if not tpl:
-            tpl = FileReviewTemplateService.get_by_id('bid_doc_format')
-        if not tpl:
-            FileReviewRoundService.update_status(round_id, 'failed', error='审核模板缺失')
-            return
-
-        # KB 聚合：references 是模板 {references} 占位符的槽位内容（只含编号片段，
-        # 标题行由模板自己写，见 T3 实施修正 2）
-        kb_chunks = retrieve_kb_chunks(kb_ids=None, query=f"{round_row.user_query or ''} {tpl.name}")
-        references = aggregate_references(kb_chunks=kb_chunks, budget=7800)
-
-        # 加载文件全文（docx 用 python-docx，xlsx 用 openpyxl，简化以 plain text 演示）
-        from rag.utils.minio_conn import MINIO
-        bucket, obj = round_row.minio_path.split('/', 1) if round_row.minio_path else (None, None)
-        file_text = ''
-        if bucket and obj:
-            try:
-                import io
-                from docx import Document
-                blob = MINIO.get(bucket, obj)
-                doc = Document(io.BytesIO(blob))
-                file_text = '\n'.join(p.text for p in doc.paragraphs)
-            except Exception:
-                logger.exception("file load failed: %s", round_row.minio_path)
-                file_text = ''
-
-        file_excerpt = file_text[:500]
-        # user_query 列可空（db_models.FileReviewRound.user_query = TextField(null=True)），
-        # 直接 format 会把字面量 "None" 渲染进 prompt，故统一归一为空串
-        user_prompt = tpl.user_prompt_template.format(
-            user_query=round_row.user_query or '', file_excerpt=file_excerpt,
-            references=references,
-        )
-
-        # LLM 审视
-        result = llm_review(system_prompt=tpl.system_prompt, user_prompt=user_prompt)
-        annotations = result.get('annotations', [])
-
-        # 写标注
-        for a in annotations:
-            matched = (a.get('matched_text') or '')[:500]
-            FileReviewAnnotationService.create(
-                round_id=round_id, task_id=round_row.task_id,
-                file_id=round_row.file_id, file_version=round_row.file_version,
-                anchor=json.dumps({"p_hash": 0}),  # 简化锚点，docx 真实锚定待 v2
-                matched_text=matched, type=a.get('type', 'other'),
-                severity=a.get('severity', 'medium'),
-                issue=a.get('issue', ''), suggestion=a.get('suggestion', ''),
-                source='ai', status='open',
-                tenant_id=round_row.tenant_id, created_by=round_row.created_by or '',
-            )
-
-        FileReviewRoundService.update_status(round_id, 'annotated', summary=result.get('summary', ''))
+        handler(cur, _latest_version_name(rounds, cur))
     except Exception as e:
-        logger.exception("execute_task crashed: %s", round_id)
-        FileReviewRoundService.update_status(round_id, 'failed', error=str(e)[:500])
+        err = str(e) if isinstance(e, FileReviewError) else f"{e.__class__.__name__}: {e}"
+        logger.exception("file review round failed, round_id=%s", cur.id)
+        try:
+            FileReviewRoundService.update_status(cur.id, "failed", error=err[:2000])
+        except Exception:
+            # 收口都写不进去：绝不能让异常在这里被吞掉——那样 execute_task 正常返回，
+            # spawn 的崩溃兜底 CAS 永不触发，该轮次就永久卡在中间态。重新抛出。
+            logger.exception("file review: cannot record failure, round_id=%s", cur.id)
+            raise
+
+
+# ── 审查轮 ───────────────────────────────────────────────────────
+def _run_review_round(round_row, version_name) -> None:
+    tpl = _resolve_template(round_row.template_id)
+    blob = _load_input_blob(round_row, version_name)
+    items = _load_docx_items(blob)
+    file_text = _compose_file_text(items)
+    chunks = _retrieve_chunks(round_row.tenant_id, _parse_kb_ids(round_row.kb_ids),
+                              _retrieval_query(round_row, tpl))
+    references = kb_aggregator.aggregate_references(kb_chunks=chunks, budget=KB_BUDGET_TOKENS)
+    try:
+        user_prompt = tpl.user_prompt_template.format(
+            user_query=round_row.user_query or "", file_text=file_text, references=references)
+    except Exception as e:
+        raise FileReviewError(f"审核模板 {tpl.id} 的提示词占位符不合法：{e}") from e
+    raw = _call_llm(round_row.tenant_id, tpl.system_prompt, user_prompt)
+    parsed = _parse_annotation_items(raw)
+    if parsed is None:
+        # None ≠ []：解析失败不能伪装成「审核通过」，否则用户看到的是一个虚假的干净结果
+        FileReviewRoundService.update_status(
+            round_row.id, "failed", llm_raw=_clip_raw(raw),
+            error="LLM 输出无法解析为标注列表（原始响应见 llm_raw），请重试")
+        return
+    FileReviewAnnotationService.delete_by_round(round_row.id)   # 重跑先清旧标注，保幂等
+    stats = _persist_annotations(round_row, _collect_annotations(parsed, tpl, items))
+    FileReviewRoundService.update_status(
+        round_row.id, "annotated", llm_raw=_clip_raw(raw), summary=_summary_from_stats(stats))
+
+
+# ── 修复轮 ───────────────────────────────────────────────────────
+def _run_fix_round(round_row, version_name) -> None:
+    blob = _load_input_blob(round_row, version_name)
+    pending = FileReviewAnnotationService.list_pending_by_task(round_row.task_id)
+    if not pending:
+        FileReviewRoundService.update_status(round_row.id, "done", summary="没有待修复的问题")
+        return
+    if blob[:2] != b"PK":
+        # 非 docx 一律不自动改：把解码文本当新版本存回去会毁掉原件，还会成为下一轮
+        # 审核的输入。诚实收口 done（不是 failed——没有可重试的东西），标注保持原样。
+        FileReviewRoundService.update_status(
+            round_row.id, "done",
+            summary=(f"共 {len(pending)} 项待修复；该文件类型不支持自动修复"
+                     "（v1 仅支持 Word .docx），请按批注手动修改"))
+        return
+    chosen = pending[:MAX_FIX_ITEMS]
+    items = _load_docx_items(blob)
+    file_text = _compose_file_text(items)
+    raw = _call_llm(round_row.tenant_id, FIX_SYSTEM,
+                    _build_fix_prompt(round_row, file_text, chosen))
+    parsed = _parse_patch_items(raw)
+    if parsed is None:
+        FileReviewRoundService.update_status(
+            round_row.id, "failed", llm_raw=_clip_raw(raw),
+            error="LLM 输出无法解析为修复补丁列表（原始响应见 llm_raw），请重试")
+        return
+    patches, by_pos = _plan_patches(parsed, chosen)
+    if parsed and not patches:
+        # 有条目但 idx 全对不上：畸形响应，不能伪装成「无需改动」
+        FileReviewRoundService.update_status(
+            round_row.id, "failed", llm_raw=_clip_raw(raw),
+            error="修复补丁的 idx 均无法与本轮标注对应，请重试")
+        return
+    if not patches:
+        # 合法但空：LLM 判断无需改动。判 failed 会诱发无效重试
+        FileReviewRoundService.update_status(
+            round_row.id, "done", llm_raw=_clip_raw(raw),
+            summary=f"共 {len(chosen)} 项待修复；本轮未产出可落地的修复补丁（保持原样）")
+        return
+    new_blob, applied = apply_patches_to_docx(blob, patches)
+    fixed_n = _settle_annotations(chosen, by_pos, applied)
+    extra = {"minio_path": _store_version_blob(round_row, new_blob)} if any(applied) else {}
+    open_n = len(chosen) - fixed_n
+    summary = f"本轮修复 {fixed_n} 项" + (
+        f"；{open_n} 项未能唯一定位原文（保持原样）" if open_n else "")
+    FileReviewRoundService.update_status(round_row.id, "done", llm_raw=_clip_raw(raw),
+                                        summary=summary, **extra)
+
+
+# ── 外部依赖（模块级 seam，便于测试注入）───────────────────────────
+def _load_input_blob(round_row, version_name) -> bytes:
+    """修复轮的输入是**上一轮修复后的版本**（多轮叠加），无版本则回原件。"""
+    if version_name:
+        blob = settings.STORAGE_IMPL.get(f"{round_row.tenant_id}-downloads", version_name)
+        if blob:
+            return blob
+        logger.warning("file review: version blob missing, round_id=%s name=%s",
+                       round_row.id, version_name)
+    return _load_original_blob(round_row.tenant_id, round_row.file_id)
+
+
+def _load_original_blob(tenant_id: str, file_id: str) -> bytes:
+    """取文件原件字节；三级兜底与 file_api 的下载链路同口径，全部落空才报错。"""
+    from api.db.services.file2document_service import File2DocumentService
+    from api.db.services.file_service import FileService
+
+    cands = []
+    ok, file = FileService.get_by_id(file_id)
+    if ok and file is not None:
+        cands.append((file.parent_id, file.location))
+    try:
+        cands.append(File2DocumentService.get_storage_address(file_id=file_id))
+    except Exception:
+        logger.exception("file review: resolve storage address failed, file_id=%s", file_id)
+    for bucket, name in cands:
+        if not bucket or not name:
+            continue
+        blob = settings.STORAGE_IMPL.get(bucket, name)
+        if blob:
+            return blob
+    blob = settings.STORAGE_IMPL.get(f"{tenant_id}-downloads", file_id)
+    if blob:
+        return blob
+    raise FileReviewError(f"文件不存在或已删除（file_id={file_id}），无法审核")
+
+
+def _store_version_blob(round_row, blob: bytes) -> str:
+    """把修复后的文档存为版本对象，返回对象名。
+
+    对象名只用 task_id + file_version（不含轮次号）是刻意的：同一版本号重复跑会**覆盖**，
+    而不是不断堆孤儿对象；重试也天然幂等。
+    """
+    name = f"frv-{round_row.task_id}-{round_row.file_version}"
+    settings.STORAGE_IMPL.put(f"{round_row.tenant_id}-downloads", name, blob)
+    return name
+
+
+def _retrieve_chunks(tenant_id: str, kb_ids: list, query: str) -> list:
+    """检索参考资料。失败**不吞**：静默按「零参考」继续，等于告诉用户「标准就这些」。"""
+    if not kb_ids:
+        return []
+    from rag.svr.template_fill.executor import retrieve_slot
+
+    return asyncio.run(retrieve_slot(tenant_id, kb_ids, query, top_k=KB_TOP_K))
+
+
+def _call_llm(tenant_id: str, system_prompt: str, user_prompt: str) -> str:
+    """同步线程内跑一次 chat 补全（线程无事件循环，必须 asyncio.run）。"""
+    from api.db.joint_services.tenant_model_service import get_tenant_default_model_by_type
+    from api.db.services.llm_service import LLMBundle
+    from common.constants import LLMType
+
+    mdl = LLMBundle(tenant_id, get_tenant_default_model_by_type(tenant_id, LLMType.CHAT))
+    return asyncio.run(mdl.async_chat(system_prompt, [{"role": "user", "content": user_prompt}]))
+
+
+# ── 轮次元数据 ───────────────────────────────────────────────────
+def _latest_version_name(rounds: list, upto) -> str | None:
+    """取 round_no <= upto 的最近一个已落盘版本对象名（多轮叠加的输入基线）。
+
+    rounds 已按 round_no 升序，故最后一个命中即最近；排除当前轮自身，避免把
+    「本轮的产物」当成「本轮的输入」。
+    """
+    name = None
+    for r in rounds:
+        if r.id != upto.id and r.round_no <= upto.round_no and r.minio_path:
+            name = r.minio_path
+    return name
+
+
+def _parse_kb_ids(raw) -> list:
+    """把轮次行里的 kb_ids（JSON 文本）还原成 id 列表；脏值降级为空列表并告警。"""
+    if not raw:
+        return []
+    if isinstance(raw, (list, tuple, set)):
+        return [str(x) for x in raw if x]
+    try:
+        val = json.loads(raw)
+    except Exception:
+        logger.warning("file review: kb_ids is not valid JSON, ignored: %r", raw)
+        return []
+    if isinstance(val, list):
+        return [str(x) for x in val if x]
+    logger.warning("file review: kb_ids JSON is not a list, ignored: %r", raw)
+    return []
+
+
+def _resolve_template(template_id):
+    tpl = FileReviewTemplateService.get_by_id(template_id) if template_id else None
+    if tpl is None:
+        tpl = FileReviewTemplateService.get_by_id(DEFAULT_TEMPLATE_ID)
+    if tpl is None:
+        raise FileReviewError(
+            f"审核模板不存在（template_id={template_id or DEFAULT_TEMPLATE_ID}），"
+            "请检查预置模板是否已初始化")
+    return tpl
+
+
+def _template_types(tpl) -> list:
+    raw = getattr(tpl, "annotation_types", None)
+    if not raw:
+        return []
+    try:
+        val = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        logger.warning("file review: template %s annotation_types unparsable: %r", tpl.id, raw)
+        return []
+    return [str(x) for x in val] if isinstance(val, list) else []
+
+
+def _retrieval_query(round_row, tpl) -> str:
+    parts = [getattr(tpl, "name", "") or "", round_row.user_query or ""]
+    q = " ".join(p.strip() for p in parts if p and p.strip())
+    return q[:QUERY_MAX] or "招标文件要求"
+
+
+# ── 字符串归一 ───────────────────────────────────────────────────
+def _clean_str(value, max_len: int = 0) -> str:
+    """只接受 str（其余一律当没填）；剥控制字符（防注入进 LLM 提示或前端渲染）。"""
+    if not isinstance(value, str):
+        return ""
+    out = _CTRL_RE.sub("", value).strip()
+    return out[:max_len] if max_len > 0 else out
+
+
+def _norm_token(value, fallback: str = "other") -> str:
+    """类型/来源类短标记归一：小写、去控制符、限长。
+
+    刻意**不做白名单改写**——模板自带 annotation_types 声明了 scope，越界与否只用于
+    告警（见 _collect_annotations），不在这里篡改 LLM 的判断。
+    """
+    return _clean_str(value, 32).lower() or fallback
+
+
+def _norm_severity(value) -> str:
+    token = _clean_str(value, 32).lower()
+    sev = _SEVERITY_ALIASES.get(token)
+    if sev is None:
+        logger.warning("file review: unknown severity %r, fallback to medium", value)
+        return "medium"
+    return sev
+
+
+def _clip_raw(raw) -> str:
+    return (raw or "")[:LLM_RAW_MAX]
+
+
+# ── 文档装配与锚点 ───────────────────────────────────────────────
+def _load_docx_items(blob: bytes) -> list:
+    if blob[:2] != b"PK":
+        raise FileReviewError("暂不支持审核该文件类型（当前仅支持 Word .docx），请转换后重试")
+    try:
+        return iter_docx_paragraphs(blob)
+    except Exception as e:
+        raise FileReviewError(f"无法解析文档（可能已损坏或非 .docx 格式）：{e}") from e
+
+
+def _compose_file_text(items: list) -> str:
+    text = "\n".join(it["text"].strip() for it in items if (it.get("text") or "").strip())
+    if len(norm_ws(text)) < MIN_FILE_TEXT_CHARS:
+        # 扫描件/图片文档提不出文字：把空正文喂给「请审视全文」的提示词等于请模型编
+        raise FileReviewError("文档正文为空或无法提取文字（可能是扫描件/图片文档），无法审核")
+    if len(text) > FILE_TEXT_MAX_CHARS:
+        # 静默截断会让模型断言「全文未提及某条款」——截断必须在正文里说明
+        return text[:FILE_TEXT_MAX_CHARS] + TRUNCATED_NOTE
+    return text
+
+
+def _count_occurrences(norm: str, needle: str) -> int:
+    """norm 通道的 indexOf step+1 计数（允许重叠），与 docx_utils 生成 a_occ 时同口径：
+    下划线串「＿＿＿＿」含「＿＿＿」在 step+1 下算 2 次，str.count 非重叠只算 1 次。"""
+    count, start = 0, 0
+    while True:
+        idx = norm.find(needle, start)
+        if idx < 0:
+            return count
+        count += 1
+        start = idx + 1
+
+
+def _compute_anchor(addr_items: list, matched_text: str) -> dict:
+    """按 matched_text 反查权威锚点 {p_idx,p_hash,a_occ,p_total}；不唯一/定位不到 → {}。
+
+    要求**全文唯一命中**（唯一段落 + 段内唯一位置），与 patcher 修复侧的唯一定位口径
+    一致。宁可没有跳转链接，也不能给出指向错误位置的链接。
+    """
+    needle = norm_ws(matched_text)
+    if len(needle) < 2:
+        return {}          # 单字匹配无法稳定定位
+    hits = []
+    for it in addr_items:
+        norm = norm_ws(it.get("text") or "")
+        if not norm or needle not in norm:
+            continue
+        occ = _count_occurrences(norm, needle)
+        if occ:
+            hits.append((it, occ))
+    if len(hits) != 1:
+        return {}
+    it, occ = hits[0]
+    if occ != 1:
+        return {}
+    return {
+        "p_idx": it["index"],
+        "p_hash": para_hash32x2(norm_ws(it["text"])),
+        "a_occ": occ,
+        "p_total": len(addr_items),
+    }
+
+
+# ── LLM 输出解析 ─────────────────────────────────────────────────
+def _json_candidates(raw: str) -> list:
+    """可能的 JSON 片段，按「越可能整体成立」的顺序排列。
+
+    顺序是硬要求：贪心 `{...}` 排在数组之前，会在裸数组 `[{...},{...}]` 里先吃掉第一个
+    内层对象，得到 1 条而不是 N 条（或直接解析失败 → 0 条 → 伪造「审核通过」）。
+    """
+    cands = [raw]
+    for rx in (_ARRAY_GREEDY, _ARRAY_LAZY, _OBJECT_GREEDY):
+        m = rx.search(raw)
+        if m:
+            cands.append(m.group(0))
+    return cands
+
+
+def _items_from(raw, key: str):
+    """从候选片段里取出目标数组；取不到返回 None（**不返回 []**）。"""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    for cand in _json_candidates(raw):
+        try:
+            val = json.loads(cand)
+        except Exception:
+            continue
+        if isinstance(val, dict):
+            val = val.get(key)
+        if not isinstance(val, list):
+            continue
+        if not all(isinstance(x, dict) for x in val):
+            # ["无问题"] / [1,2] 是散文噪声，不是「零标注」——折成 [] 会伪造「审核通过」
+            continue
+        return val
+    return None
+
+
+def _parse_annotation_items(raw):
+    """审查轮输出 → 标注 dict 列表；无法解析返回 None（与「空数组」严格区分）。"""
+    return _items_from(raw, "annotations")
+
+
+def _parse_patch_items(raw):
+    """修复轮输出 → 补丁 dict 列表；无法解析返回 None。"""
+    return _items_from(raw, "patches")
+
+
+# ── 标注落库 ─────────────────────────────────────────────────────
+def _collect_annotations(parsed: list, tpl, addr_items: list) -> list:
+    """把 LLM 的原始条目整理成可落库的形态。
+
+    type 越出模板声明的 annotation_types 时**记录但不丢弃**：静默丢问题比多一个标签
+    更糟；越界本身是「提示词需要修」的信号，故打 warning 供排查。
+    """
+    allowed = _template_types(tpl)
+    out = []
+    for item in parsed:
+        matched = _clean_str(item.get("matched_text"), MATCHED_TEXT_MAX)
+        issue = _clean_str(item.get("issue"), ISSUE_MAX)
+        if not matched and not issue:
+            continue          # 空壳：既无原文也无可读问题，落库只是噪声
+        ann_type = _norm_token(item.get("type"), "other")
+        if allowed and ann_type not in allowed:
+            logger.warning("file review: annotation type %r outside template scope %r",
+                           ann_type, allowed)
+        out.append({
+            "matched_text": matched,
+            "type": ann_type,
+            "severity": _norm_severity(item.get("severity")),
+            "issue": issue,
+            "suggestion": _clean_str(item.get("suggestion"), SUGGESTION_MAX),
+            "anchor": json.dumps(_compute_anchor(addr_items, matched), ensure_ascii=False),
+        })
+    return out
+
+
+def _persist_annotations(round_row, collected: list) -> dict:
+    stats = {"total": 0, "high": 0, "medium": 0, "low": 0}
+    for ann in collected:
+        FileReviewAnnotationService.create(
+            round_id=round_row.id, task_id=round_row.task_id, file_id=round_row.file_id,
+            file_version=round_row.file_version, anchor=ann["anchor"],
+            matched_text=ann["matched_text"], type=ann["type"], severity=ann["severity"],
+            issue=ann["issue"], suggestion=ann["suggestion"], source="ai", status="open",
+            tenant_id=round_row.tenant_id, created_by=round_row.created_by or "")
+        stats["total"] += 1
+        stats[ann["severity"]] += 1
+    return stats
+
+
+def _summary_from_stats(stats: dict) -> str:
+    """摘要由**实际落库**的标注派生，不用 LLM 自述的 summary——预置模板输出的是裸数组，
+    没有 summary 槽位；自述一旦与实际条数不符，面板就会自相矛盾。"""
+    if not stats.get("total"):
+        return "未发现问题"
+    return f"共 {stats['total']} 个问题（高 {stats['high']} / 中 {stats['medium']} / 低 {stats['low']}）"
+
+
+# ── 修复轮辅助 ───────────────────────────────────────────────────
+def _build_fix_prompt(round_row, file_text: str, chosen: list) -> str:
+    lines = []
+    for i, a in enumerate(chosen, 1):
+        lines.append(f"[{i}] 类型={a.type} 级别={a.severity} 原文：{a.matched_text or '（未给出原文）'}")
+        lines.append(f"    问题：{a.issue}")
+        if a.suggestion:
+            lines.append(f"    建议：{a.suggestion}")
+    return (
+        "用户需求：" + (round_row.user_query or "（无）") + "\n\n"
+        "待修复问题：\n" + "\n".join(lines) + "\n\n"
+        "文档正文：\n" + file_text + "\n\n"
+        "请为每条问题给出最小改动的替换方案，输出 JSON：\n"
+        '{"patches": [{"idx": 1, "find": "原文片段", "replace": "新文本"}]}\n'
+        "find 必须是文档中逐字出现且全文唯一的片段，否则该条会被跳过。"
+    )
+
+
+def _plan_patches(parsed: list, chosen: list) -> tuple:
+    """补丁数组 + {补丁下标: 标注序号(1-based)} 映射。
+
+    find/replace **原样透传**（哪怕是 None）：patcher 对 None / 非 str 的跳过规则已被
+    对抗测试锁死，在这里预处理会把那些保护绕过去。
+    """
+    patches, by_pos, seen = [], {}, set()
+    for item in parsed:
+        try:
+            idx = int(item.get("idx"))
+        except (TypeError, ValueError):
+            continue
+        if idx in seen or not 1 <= idx <= len(chosen):
+            continue
+        seen.add(idx)
+        patches.append({"find": item.get("find"), "replace": item.get("replace")})
+        by_pos[len(patches) - 1] = idx
+    return patches, by_pos
+
+
+def _settle_annotations(chosen: list, by_pos: dict, applied: list) -> int:
+    """把真正落地的补丁对应标注标 fixed，返回条数；未生效的保持 open（未修复好保持原样）。"""
+    fixed = 0
+    for pos, ok in enumerate(applied):
+        if not ok:
+            continue
+        idx = by_pos.get(pos)
+        if idx is None:
+            continue
+        if FileReviewAnnotationService.update_status(chosen[idx - 1].id, "fixed"):
+            fixed += 1
+    return fixed
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+---
+
+- [ ] **Step 6: 跑 executor 测试**
 
 ```bash
 uv run --no-sync pytest test/test_file_review_executor.py -v
 ```
-Expected: PASS
 
-- [ ] **Step 5: 提交**
+Expected: 全绿。若出现 `KeyError: 'kb_ids'`，说明 Step 3c 的加列没生效（模型有列但库里没有）；若出现 `OperationalError: Unknown column`，说明 `alter_db_add_column` 没跑——在本机用 peewee 直接补一次：
 
 ```bash
-git add rag/svr/file_review/executor.py test/test_file_review_executor.py
-git commit -m "feat(file-review): executor main loop round1 review"
+uv run --no-sync python -c "
+from api.db.db_models import DB, FileReviewRound
+DB.connect(reuse_if_open=True)
+from playhouse.migrate import MySQLMigrator
+MySQLMigrator(DB).add_column('file_review_round', FileReviewRound.kb_ids)
+print('ok')
+"
 ```
 
+---
+
+- [ ] **Step 7: ruff + 全量回归**
+
+```bash
+uv run --no-sync ruff check rag/svr/file_review api/db/services/file_review_service.py api/db/db_models.py
+uv run --no-sync ruff format rag/svr/file_review/executor.py test/test_file_review_executor.py
+uv run --no-sync pytest test/test_file_review_executor.py test/test_file_review_service.py \
+  test/test_file_review_spawn.py test/test_file_review_db.py test/test_file_review_patcher.py \
+  test/test_file_review_kb_aggregator.py -q
+```
+
+Expected: ruff 无告警；测试全绿。
+
+---
+
+- [ ] **Step 8: 提交**
+
+```bash
+git add rag/svr/file_review/executor.py test/test_file_review_executor.py \
+        api/db/services/file_review_service.py test/test_file_review_service.py \
+        rag/svr/file_review/spawn.py test/test_file_review_spawn.py \
+        api/db/db_models.py test/test_file_review_db.py \
+        docs/superpowers/plans/2026-09-16-file-review-node.md
+git commit -m "feat(file-review): executor 多轮状态机 + 标注锚点/修复落盘/幂等收口"
+```
+
+---
+
+### 本任务的缺陷日志（原稿 → 修正，实现者须理解）
+
+| # | 原稿问题 | 修正 |
+|---|---|---|
+| 1 | `execute_task(round_id)`，与 T5 的 task 级 CAS、T7/T8/T9 的调用口径不一致 | 入参改 `task_id`，内部取 `get_by_task()[-1]`；同步修正 T7/T8/T9 的调用 |
+| 2 | `from common.llm_util import llm_complete`（模块不存在） | `LLMBundle` + `asyncio.run(mdl.async_chat(...))` |
+| 3 | 自拼 `settings.retriever.retrieval(...)` 参数错位 | 复用 `template_fill.executor.retrieve_slot` |
+| 4 | `anchor=json.dumps({"p_hash": 0})` 假锚点 | 服务端按 matched_text 反查 `{p_idx,p_hash,a_occ,p_total}`，不唯一则 `{}` |
+| 5 | 从不调用 `apply_patches` —— 修复轮永远改不动文件 | `apply_patches_to_docx` → 存版本 blob → 标 `fixed` |
+| 6 | 非 docx 走「纯文本降级」修复 | v1 只自动修 docx；其余收口 `done` + 手动修改提示（原件与标注都不动） |
+| 7 | `_force_fail_round` 只 CAS `reviewing` | 扩到 `("reviewing","fixing")` |
+| 8 | `kb_ids` 无处持久化（无列） | `kb_ids` 列 + `alter_db_add_column` + `create_round(kb_ids=...)` 归一 |
+| 9 | 修复轮按上一轮 round_no 取 open 标注 → 第 3 轮空集空转 | 新增 task 级 `list_pending_by_task` |
+| 10 | 同轮重跑会写两套标注 | 写前 `delete_by_round(round_id)` |
+| 11 | 预置模板只喂首 500 字却要求「审视全文」；示例诱导 LLM 编 anchor；seed 短路使文案修订永远进不了库 | 改名 `{file_text}`、删示例 `anchor`、seed 改 insert-or-update（不动 `enabled`）、`_ensure` 每次同步 |
+| 12 | 空正文喂 LLM = 请它编 | 正文不足 `MIN_FILE_TEXT_CHARS` 抛 `FileReviewError` |
+| 13 | 静默截断而提示词说「全文」 | 截断时在正文里追加 `TRUNCATED_NOTE` |
+| 14 | 收口写库失败被吞 → 轮次永久卡死 | 收口失败重新抛，交回 spawn 的独立 CAS |
+| 15 | 贪心 object 排在数组前 → 条数失真 / 解析失败被当成「零问题」 | 候选顺序：整体 → 贪心数组 → 懒数组 → 贪心对象；数组元素必须全为 dict |
+
+### 留给后续任务的口径（T7/T8/T9 必须照此调用）
+
+- `spawn_review_task(task_id)`：入参是 **task_id**，不是 round_id。
+- 三个入口建轮次时必须传 `kb_ids=`（节点来自 DSL，工具来自 LLM 参数，API 来自请求体），否则修复轮与重试检索不到同一批 KB。
+- `fixing` 轮次由入口写好后 spawn；`execute_task` 只认轮次行的现状，不接收「这次是审还是修」的参数。
+- 修复轮只处理 `status ∈ {open, new}` 的标注；要让某项不修，入口必须显式把它的 status 写成 `wontfix`——`levels` 过滤若只塞进 `user_query` 文本里，executor 是不会去解析的。
 ---
 
 ## Task 7: 画布节点 FileReview
