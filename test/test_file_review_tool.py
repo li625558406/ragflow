@@ -472,14 +472,19 @@ def test_status_clips_round_error(monkeypatch):
     assert out.count("错") == _MAX_SUMMARY_CHARS
 
 
-def test_status_renders_unknown_severity_as_unknown(monkeypatch):
-    """脏 severity（None / 未知串）不得把字面 None 渲染进给用户与 LLM 的文案。"""
+def test_status_renders_dirty_severity_safely(monkeypatch):
+    """脏 severity 的两条口径各不相同，都要锁住：
+
+    None/空串 ⇒ 折成「未知」（那是「没有级别」，渲染字面 None 是纯 bug）；
+    不认识的字符串 ⇒ **原样透出**（保留排障线索），不许抹平也不许渲染成 None。
+    """
     rows = [_round(1, "annotated")]
     _patch(monkeypatch, rounds=rows, pending=[_ann(None), _ann("bogus")])
     out = _make_tool()._invoke(action="status", task_id=PFX + "task")
 
-    assert "None" not in out
-    assert "未知" in out
+    assert "None" not in out          # 字面 None 绝不许出现在给用户/LLM 的文案里
+    assert "未知" in out              # None 那一行被折成「未知」
+    assert "bogus" in out             # 未知串原样透出，不抹平
 
 
 def test_review_reports_error_when_spawn_raises(monkeypatch):

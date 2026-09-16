@@ -67,7 +67,13 @@ def _clip(text, limit: int) -> str:
 
 
 def _severity_cn(sev) -> str:
-    """级别中文名；脏数据（None / 未知串）折成「未知」，不许把 None 渲染进给用户的文案。"""
+    """级别中文名。
+
+    只把**空值**（None / 空串）折成「未知」；不认识的**字符串**原样透出——它表达的不是
+    「没有级别」而是「有一条本工具不认识的级别」，抹成「未知」就把排障线索丢了
+    （_severity_summary 的排序键 _SEVERITY_RANK 也恰好把未知串排在最后）。
+    唯一硬约束：不许把字面 None 渲染进给用户与 LLM 的文案。
+    """
     return _SEVERITY_CN.get(sev) or (sev if isinstance(sev, str) and sev else "未知")
 
 
@@ -309,9 +315,12 @@ class FileReviewTool(ToolBase, ABC):
         #      线程去消费它；
         #   ④ 没有看门狗回收（_force_fail_round 只在崩溃/调度失败分支触发）。
         # 于是新轮恒停在 fixing，该 task 之后所有 fix/review 都被上面的前置闸门挡死。
-        # 本检查是唯一可行的闸门：_running_tasks 对同一 task_id 只有本调用点会写入
-        # （_review 用的是全新 get_uuid()），故一旦观测到 is_running 为 False，紧随其后的
-        # spawn_review_task 必然能真正注册线程——反之观测到 True 就绝不能建轮次。
+        # 本检查是唯一可行的闸门，但它的保证**有前提**：_running_tasks 对同一 task_id 只有
+        # 本调用点会写入（_review 用全新 get_uuid()）。在此前提下观测到 is_running 为 False
+        # ⇒ 紧随其后的 spawn_review_task 必然能真正注册线程；观测到 True 就绝不能建轮次。
+        # 该前提**不覆盖同一 task 的并发 fix**：两个并发请求会同时观测到 False、各自建一条
+        # 同号轮次（(task_id, round_no) 无唯一约束），后到者的 spawn 仍旧静默 no-op。对话内
+        # 工具调用是串行的，故本层无此路径；T9 的 REST 端点（HTTP 重试/双击）必须自己补闸门。
         # 它必须放在上面所有**语义**闸门之后：真正原因是「没有可修项」时错答「稍后再试」
         # 会让用户白等；且与 create_round 之间不得插入其它逻辑（否则又会开出一个新的
         # 「检查通过但线程未注册」窗口）。
