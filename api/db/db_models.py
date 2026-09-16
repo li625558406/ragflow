@@ -2854,6 +2854,17 @@ def migrate_db():
         DocRewriteVersion.create_table(safe=True)
         logging.info("document rewrite: doc_rewrite_version table created")
     seed_default_permissions()
+    # 文件审核（2026-09-16）
+    if not FileReviewTemplate.table_exists():
+        FileReviewTemplate.create_table(safe=True)
+        _seed_file_review_templates()
+        logging.info("file_review: file_review_template table created + 5 presets seeded")
+    if not FileReviewRound.table_exists():
+        FileReviewRound.create_table(safe=True)
+        logging.info("file_review: file_review_round table created")
+    if not FileReviewAnnotation.table_exists():
+        FileReviewAnnotation.create_table(safe=True)
+        logging.info("file_review: file_review_annotation table created")
 
     logging.disable(logging.NOTSET)
     # this is after re-enabling logging to allow logging changed user emails
@@ -3156,3 +3167,209 @@ class HrAttendanceImport(DataBaseModel):
 
     class Meta:
         db_table = "hr_attendance_import"
+
+
+# ── 文件审核系统（2026-09-16，独立于模板填写 tpl_* / template_fill*） ──
+class FileReviewTemplate(DB.Model):
+    """审核模板：预置 5 套招标场景，DB 行式存储便于用户复制修改"""
+    id = CharField(max_length=64, primary_key=True)
+    name = CharField(max_length=128, null=False)
+    description = TextField(null=True)
+    system_prompt = TextField(null=False)
+    user_prompt_template = TextField(null=False)
+    annotation_types = TextField(null=True)  # JSON: ['format', 'clause', ...]
+    enabled = IntegerField(default=1)
+    tenant_id = CharField(max_length=32, null=True)  # 系统预置 = 空串
+    created_by = CharField(max_length=32, null=True)
+    create_time = DateTimeField(null=True)
+    update_time = DateTimeField(null=True)
+
+    class Meta:
+        db_table = "file_review_template"
+
+
+class FileReviewRound(DB.Model):
+    """审核轮次：每轮 1 行；状态机 reviewing/annotated/fixing/failed/done"""
+    id = CharField(max_length=64, primary_key=True)
+    task_id = CharField(max_length=64, null=False, index=True)
+    file_id = CharField(max_length=64, null=False, index=True)
+    round_no = IntegerField(null=False)
+    template_id = CharField(max_length=64, null=True)
+    user_query = TextField(null=True)
+    status = CharField(max_length=16, null=False)  # reviewing/annotated/fixing/failed/done
+    file_version = CharField(max_length=64, null=False)  # v1/v2/v3
+    minio_path = CharField(max_length=256, null=True)
+    summary = TextField(null=True)
+    llm_raw = TextField(null=True)
+    error = TextField(null=True)
+    tenant_id = CharField(max_length=32, null=True)
+    created_by = CharField(max_length=32, null=True)
+    create_time = DateTimeField(null=True)
+    update_time = DateTimeField(null=True)
+
+    class Meta:
+        db_table = "file_review_round"
+        indexes = (
+            (("task_id", "round_no"), False),
+        )
+
+
+class FileReviewAnnotation(DB.Model):
+    """审核标注：每条独立入库；多轮状态 open/fixed/new/wontfix"""
+    id = CharField(max_length=64, primary_key=True)
+    round_id = CharField(max_length=64, null=False, index=True)
+    task_id = CharField(max_length=64, null=False, index=True)
+    file_id = CharField(max_length=64, null=False, index=True)
+    file_version = CharField(max_length=64, null=False)
+    anchor = TextField(null=False)  # JSON: docx {p_hash,offset,run_index} / xlsx {sheet,cell}
+    matched_text = TextField(null=True)
+    type = CharField(max_length=32, null=False)
+    severity = CharField(max_length=8, null=False)  # high/medium/low
+    issue = TextField(null=False)
+    suggestion = TextField(null=True)
+    source = CharField(max_length=8, null=False)  # ai/manual
+    status = CharField(max_length=16, null=False, default='open')
+    prev_annotation_id = CharField(max_length=64, null=True)
+    tenant_id = CharField(max_length=32, null=True)
+    created_by = CharField(max_length=32, null=True)
+    create_time = DateTimeField(null=True)
+    update_time = DateTimeField(null=True)
+
+    class Meta:
+        db_table = "file_review_annotation"
+        indexes = (
+            (("file_id", "file_version"), False),
+        )
+
+
+_PRESET_REVIEW_TEMPLATES = [
+    {
+        "id": "bid_doc_format",
+        "name": "投标文件格式规范",
+        "description": "审查投标文件的章节完整性、签字盖章、目录页码、字体行距等格式合规",
+        "system_prompt": (
+            "你是投标文件格式审核专家。审查文档的格式规范，包括：\n"
+            "1. 章节结构完整性（目录/正文/附件）\n"
+            "2. 签字盖章页是否齐全\n"
+            "3. 目录/页码/页眉页脚一致性\n"
+            "4. 字体字号行距是否符合招标要求\n\n"
+            "每条问题标注 type='format'。"
+        ),
+        "user_prompt_template": (
+            "用户需求：{user_query}\n\n"
+            "文件首段（前 500 字）：\n{file_excerpt}\n\n"
+            "参考资料：\n{references}\n\n"
+            "请审视全文，输出 JSON 标注列表：\n"
+            '[{{"anchor": {{...}}, "matched_text": "...", "type": "format", '
+            '"severity": "high|medium|low", "issue": "...", "suggestion": "..."}}]'
+        ),
+        "annotation_types": ["format"],
+    },
+    {
+        "id": "bid_response_complete",
+        "name": "投标响应完整性",
+        "description": "审查投标响应是否对招标点逐项应答、附件是否齐全、偏离表是否填写",
+        "system_prompt": (
+            "你是投标响应完整性审核专家。审查：\n"
+            "1. 招标点是否逐项应答\n"
+            "2. 附件清单是否齐全\n"
+            "3. 偏离表是否填写\n"
+            "4. 应答索引是否清晰\n\n"
+            "每条问题标注 type='completeness'。"
+        ),
+        "user_prompt_template": (
+            "用户需求：{user_query}\n\n"
+            "文件首段：\n{file_excerpt}\n\n"
+            "参考资料：\n{references}\n\n"
+            "请审视全文，输出 JSON 标注列表（type='completeness'）：\n"
+            '[{{"anchor": {{...}}, "matched_text": "...", "type": "completeness", '
+            '"severity": "high|medium|low", "issue": "...", "suggestion": "..."}}]'
+        ),
+        "annotation_types": ["completeness"],
+    },
+    {
+        "id": "bid_substantive_clause",
+        "name": "实质性条款合规",
+        "description": "审查招标★号条款、废标项、否决项、付款/工期/违约金等核心条款",
+        "system_prompt": (
+            "你是招投标实质性条款合规专家。审查：\n"
+            "1. 招标★号条款是否逐条响应\n"
+            "2. 是否触发废标项/否决项\n"
+            "3. 付款方式/工期/违约金/质保等核心条款是否合规\n\n"
+            "每条问题标注 type='clause'。"
+        ),
+        "user_prompt_template": (
+            "用户需求：{user_query}\n\n"
+            "文件首段：\n{file_excerpt}\n\n"
+            "参考资料：\n{references}\n\n"
+            "请审视全文，输出 JSON 标注列表（type='clause'）：\n"
+            '[{{"anchor": {{...}}, "matched_text": "...", "type": "clause", '
+            '"severity": "high|medium|low", "issue": "...", "suggestion": "..."}}]'
+        ),
+        "annotation_types": ["clause"],
+    },
+    {
+        "id": "bid_qualification",
+        "name": "资质合规",
+        "description": "审查营业执照、资质等级、业绩、人员、财务审计报告等资质证明",
+        "system_prompt": (
+            "你是投标资质合规审核专家。审查：\n"
+            "1. 营业执照是否有效\n"
+            "2. 资质等级是否满足招标要求\n"
+            "3. 业绩数量与金额是否达标\n"
+            "4. 项目人员资质是否齐全\n"
+            "5. 财务审计报告是否在有效期内\n\n"
+            "每条问题标注 type='qualification'。"
+        ),
+        "user_prompt_template": (
+            "用户需求：{user_query}\n\n"
+            "文件首段：\n{file_excerpt}\n\n"
+            "参考资料：\n{references}\n\n"
+            "请审视全文，输出 JSON 标注列表（type='qualification'）：\n"
+            '[{{"anchor": {{...}}, "matched_text": "...", "type": "qualification", '
+            '"severity": "high|medium|low", "issue": "...", "suggestion": "..."}}]'
+        ),
+        "annotation_types": ["qualification"],
+    },
+    {
+        "id": "bid_price_review",
+        "name": "投标报价审核",
+        "description": "审查报价上限/下限、清单完整性、合算错误、单价合理性、税率一致",
+        "system_prompt": (
+            "你是投标报价审核专家。审查：\n"
+            "1. 报价是否在招标控制价上限/下限内\n"
+            "2. 报价清单是否完整（无漏项/重复）\n"
+            "3. 是否有合算错误（单价×数量≠合价）\n"
+            "4. 单价是否合理（与同期市场行情偏差）\n"
+            "5. 税率是否一致\n\n"
+            "每条问题标注 type='price'。"
+        ),
+        "user_prompt_template": (
+            "用户需求：{user_query}\n\n"
+            "文件首段：\n{file_excerpt}\n\n"
+            "参考资料：\n{references}\n\n"
+            "请审视全文，输出 JSON 标注列表（type='price'）：\n"
+            '[{{"anchor": {{...}}, "matched_text": "...", "type": "price", '
+            '"severity": "high|medium|low", "issue": "...", "suggestion": "..."}}]'
+        ),
+        "annotation_types": ["price"],
+    },
+]
+
+
+def _seed_file_review_templates():
+    import json
+    for tpl in _PRESET_REVIEW_TEMPLATES:
+        FileReviewTemplate.create(
+            id=tpl["id"],
+            name=tpl["name"],
+            description=tpl["description"],
+            system_prompt=tpl["system_prompt"],
+            user_prompt_template=tpl["user_prompt_template"],
+            annotation_types=json.dumps(tpl["annotation_types"], ensure_ascii=False),
+            enabled=1,
+            tenant_id="",
+            created_by="system",
+            create_time=datetime.now(),
+            update_time=datetime.now(),
+        )
