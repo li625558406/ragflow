@@ -1318,38 +1318,332 @@ git commit -m "feat(file-review): patcher 唯一匹配 + docx 格式保真替换
 - Create: `rag/svr/file_review/spawn.py`
 - Test: `test/test_file_review_spawn.py`
 
+> **形态来源**：与已上线的 `rag/svr/template_fill/spawn.py` 同构——防重入集合 + daemon
+> 线程 + 线程启动失败兜底 + `execute_task` 延迟 import（本模块不拉起重依赖，测试可注入）。
+> 派生差异两处，均由第一性原理确认而非风格偏好：
+>
+> 1. **崩溃路径也要 CAS 置 failed**：template_fill 把「线程体异常」全交给 executor 自置
+>    failed。但 executor **可能压根没跑起来**——`from rag.svr.file_review.executor import
+>    execute_task` 抛 ImportError 时，executor 内部那层兜底根本没机会执行，轮次会永远停在
+>    `reviewing`，前端无限转圈且 **T9 fix 端点会因「已在执行中」拒绝重试**。我们要的不变式
+>    是「**线程退出后，该 task 不得有 reviewing 轮次滞留**」，而线程生命周期只有 spawn 持有，
+>    故这条只能在此处补。两条路径的 error 文案**必须不同**（`执行异常中断` vs `调度失败`），
+>    否则 executor 的真 bug 会被伪装成"调度问题"，把排查引向错误方向。
+> 2. **CAS 用 `task_id` 定位而非 round id**：spawn 入参是 task_id（与 template_fill 的
+>    fill task id 同义），一轮一行的 round 表由 `(task_id, status='reviewing')` 定位。
+>    已核实 `file_review_round.task_id` 存在（`db_models.py:3197`），且
+>    `BaseModel._normalize_data` 由 `Model.update()` 调用（`db_models.py:252-259`），
+>    故裸 `model.update(...)` 同样刷新 `update_time`，与 T1「审计列由框架维护」契约一致。
+>
+> **测试取舍**：force-fail 是**写库**行为，打桩掉 DB 就只剩「函数被调用过」的空断言，测不出
+> where 条件是否真的命中目标行；故此处直连真实 MySQL（同 `test_file_review_service.py`），
+> 全部测试行带 `PFX` 前缀、只按前缀清理。并发断言一律用「事件 + 轮询到期限」
+> （`Event.wait` / `_wait_until`），不用固定 `sleep`——后者要么 flaky 要么拖慢套件。
+
 - [ ] **Step 1: 写失败测试**
 
 ```python
 # test/test_file_review_spawn.py
+"""spawn 对抗测试：防重入 / 崩溃清理 / 线程启动失败清理 + 轮次强制置 failed。
+
+force-fail 是写库操作，故直连真实 MySQL（同 test_file_review_service.py 的取舍）：
+打桩掉 DB 后只剩"函数被调用过"这种空断言，测不出 where 条件是否真的命中目标行。
+所有测试行带 PFX 前缀，清理只按该前缀删，绝不误伤线上数据。
+"""
+import threading
+import time
+
+import pytest
+
+from api.db.db_models import DB, FileReviewRound
+from api.db.services.file_review_service import FileReviewRoundService
 from rag.svr.file_review import spawn
+
+PFX = "__test_fr_spawn__"
+
+
+def _cleanup():
+    FileReviewRound.delete().where(FileReviewRound.task_id.startswith(PFX)).execute()
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _table_and_cleanup():
+    DB.connect(reuse_if_open=True)
+    try:
+        if not FileReviewRound.table_exists():
+            FileReviewRound.create_table(safe=True)
+        _cleanup()
+        yield
+    finally:
+        # try/finally 而非裸顺序：_cleanup() 抛异常时连接不能让本会话后续用例
+        # 继续复用坏状态 / 泄漏。
+        try:
+            _cleanup()
+        finally:
+            DB.close()
+
+
+def _mk_round(task_id, status="reviewing"):
+    """造一行真实轮次，返回 rid。"""
+    return FileReviewRoundService.create_round(
+        task_id=task_id, file_id=PFX + "-file", round_no=1, template_id="",
+        user_query="q", file_version="v1", status=status, tenant_id=PFX,
+    )
+
+
+def _wait_until(pred, timeout=10.0):
+    """轮询等待：daemon 线程的完成时刻不可预知，固定 sleep 要么 flaky 要么白等。
+
+    超时给足 10s：崩溃兜底路径要在远程 MySQL 上真跑一条 UPDATE，5s 在网络抖动时
+    会变成 flaky 失败（方向安全——超时只会误报失败，不会误报通过）。
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if pred():
+            return True
+        time.sleep(0.02)
+    return pred()
+
+
+def _rounds(task_id):
+    return FileReviewRoundService.get_by_task(task_id)
 
 
 def test_is_running_false_initially():
     assert spawn.is_running('nonexistent-task-id') is False
 
 
-def test_spawn_runs_executor(monkeypatch):
+def test_spawn_runs_executor_and_clears_flag(monkeypatch):
+    done = threading.Event()
     seen = []
 
     def fake_executor(task_id):
         seen.append(task_id)
+        done.set()
 
     monkeypatch.setattr(spawn, 'execute_task', fake_executor)
-    spawn.spawn_review_task('t1')
-    import time
-    time.sleep(0.5)
-    assert seen == ['t1']
-    assert not spawn.is_running('t1')  # finally 清理
+    tid = PFX + 't1'
+    spawn.spawn_review_task(tid)
+    assert done.wait(5.0)
+    # 断言透传的就是本 task：否则 executor 跑错任务也照样「成功」
+    assert seen == [tid]
+    assert _wait_until(lambda: not spawn.is_running(tid))   # finally 清理标志位
+
+
+def test_respawn_after_crash_runs_executor_again(monkeypatch):
+    """崩溃 → 标志位清理 → 再次 spawn 必须真的重跑。
+
+    这正是 force-fail 把轮次置 failed 并提示「请重试」所依赖的用户可见恢复路径：
+    若 finally 只在正常返回时生效（或标志位只增不减），重试将静默变成空操作。
+    """
+    calls = []
+
+    def boom(task_id):
+        calls.append(task_id)
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(spawn, 'execute_task', boom)
+    tid = PFX + 'retry'
+    spawn.spawn_review_task(tid)
+    assert _wait_until(lambda: not spawn.is_running(tid))
+    assert calls == [tid]
+    spawn.spawn_review_task(tid)                 # 重试：必须起第二个线程
+    assert _wait_until(lambda: len(calls) == 2), calls
+    assert _wait_until(lambda: not spawn.is_running(tid))
+
+
+def test_spawn_is_noop_while_same_task_running(monkeypatch):
+    """防重入：同 task 执行期间再次 spawn 必须直接返回，不得起第二个线程
+    （否则两轮填写/审核并发写同一文件版本与同一批轮次行）。"""
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def fake_executor(task_id):
+        calls.append(task_id)
+        started.set()
+        release.wait(5.0)
+
+    monkeypatch.setattr(spawn, 'execute_task', fake_executor)
+    tid = PFX + 'reentry'
+    spawn.spawn_review_task(tid)
+    assert started.wait(5.0)
+    spawn.spawn_review_task(tid)
+    spawn.spawn_review_task(tid)
+    time.sleep(0.2)                       # 给"若真起了第二个线程"留出可观测窗口
+    assert calls == [tid]
+    assert spawn.is_running(tid) is True
+    release.set()
+    assert _wait_until(lambda: not spawn.is_running(tid))
+
+
+def test_spawn_clears_flag_after_executor_crash(monkeypatch):
+    """executor 抛异常也必须清标志位：否则该 task 永久滞留集合，retry 恒报
+    「任务正在执行中」，只能重启进程才能恢复。"""
+    def boom(task_id):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(spawn, 'execute_task', boom)
+    tid = PFX + 'crash'
+    spawn.spawn_review_task(tid)
+    assert _wait_until(lambda: not spawn.is_running(tid))
+
+
+def test_executor_crash_marks_reviewing_round_failed(monkeypatch):
+    """崩溃兜底：executor 崩在自身兜底之外时，reviewing 轮次不得滞留。"""
+    tid = PFX + 'crash-db'
+    _mk_round(tid)
+
+    def boom(task_id):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(spawn, 'execute_task', boom)
+    spawn.spawn_review_task(tid)
+    assert _wait_until(lambda: [r.status for r in _rounds(tid)] == ['failed']), \
+        [r.status for r in _rounds(tid)]
+    # 文案必须与「调度失败」区分：否则 executor 的真 bug 被伪装成调度问题
+    assert "执行异常中断" in _rounds(tid)[0].error
+
+
+def test_thread_start_failure_clears_flag_and_fails_round(monkeypatch):
+    """Thread.start 抛异常：add 已执行而 finally 永不跑，标志位必须回滚；
+    轮次同步 CAS 置 failed，否则用户看到一个永远转圈的 reviewing。"""
+    tid = PFX + 'startfail'
+    _mk_round(tid)
+
+    class BoomThread:
+        def __init__(self, *a, **kw):
+            pass
+
+        def start(self):
+            raise RuntimeError("cannot start new thread")
+
+    monkeypatch.setattr(spawn.threading, 'Thread', BoomThread)
+    spawn.spawn_review_task(tid)
+    assert spawn.is_running(tid) is False
+    rows = _rounds(tid)
+    assert [r.status for r in rows] == ['failed']
+    assert "调度失败" in rows[0].error
+
+
+def test_thread_start_failure_does_not_touch_completed_round(monkeypatch):
+    """CAS 边界：已完结轮次（done）不得被「调度失败」误伤置 failed
+    —— 那会把一次成功的审核成果改写成失败态。"""
+    tid = PFX + 'startfail-done'
+    _mk_round(tid, status='done')
+
+    class BoomThread:
+        def __init__(self, *a, **kw):
+            pass
+
+        def start(self):
+            raise RuntimeError("cannot start new thread")
+
+    monkeypatch.setattr(spawn.threading, 'Thread', BoomThread)
+    spawn.spawn_review_task(tid)
+    assert [r.status for r in _rounds(tid)] == ['done']
+
+
+def test_force_fail_is_scoped_to_target_task(monkeypatch):
+    """CAS 必须按 task_id 限定：不得把别的任务滞留轮次一起置 failed。"""
+    tid_a, tid_b = PFX + 'scope-a', PFX + 'scope-b'
+    _mk_round(tid_a)
+    _mk_round(tid_b)
+
+    def boom(task_id):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(spawn, 'execute_task', boom)
+    spawn.spawn_review_task(tid_a)
+    assert _wait_until(lambda: [r.status for r in _rounds(tid_a)] == ['failed'])
+    assert [r.status for r in _rounds(tid_b)] == ['reviewing']   # 未被牵连
+
+
+def test_force_fail_marks_all_stuck_rounds_of_task(monkeypatch):
+    """CAS 是**集合**更新而非单行：同 task 滞留多轮（重试中途再次崩溃）时每行都要
+    置 failed，否则用户重试后仍看到一行永远转圈的 reviewing。"""
+    tid = PFX + 'multi'
+    _mk_round(tid)
+    FileReviewRoundService.create_round(
+        task_id=tid, file_id=PFX + '-file', round_no=2, template_id='',
+        user_query='q', file_version='v2', status='reviewing', tenant_id=PFX,
+    )
+
+    def boom(task_id):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(spawn, 'execute_task', boom)
+    spawn.spawn_review_task(tid)
+    assert _wait_until(lambda: [r.status for r in _rounds(tid)] == ['failed', 'failed']), \
+        [r.status for r in _rounds(tid)]
+
+
+def test_force_fail_db_failure_does_not_wedge_task(monkeypatch):
+    """force-fail 写库失败（MySQL 不可用 / update 抛错）时，防重入标志位仍必须被
+    清理、任务不得被永久锁死 —— 否则重试恒报「任务正在执行中」，只能重启进程。
+    轮次写不进去就诚实留在 reviewing，不得假装。"""
+    tid = PFX + 'forcefail-db'
+    _mk_round(tid)
+
+    def boom(task_id):
+        raise RuntimeError("boom")
+
+    class _BoomQuery:
+        """替身链：.where(...) 返回自身、.execute() 抛错，模拟 DB 写失败。"""
+
+        def where(self, *a, **kw):
+            return self
+
+        def execute(self):
+            raise RuntimeError("mysql down")
+
+    def boom_update(*a, **kw):
+        return _BoomQuery()
+
+    monkeypatch.setattr(spawn, 'execute_task', boom)
+    # 直接替换 Model.update（类属性覆盖，经 FileReviewRoundService.model 可见）
+    monkeypatch.setattr(FileReviewRound, 'update', boom_update)
+    spawn.spawn_review_task(tid)
+    assert _wait_until(lambda: not spawn.is_running(tid))
+    assert [r.status for r in _rounds(tid)] == ['reviewing']
+
+
+def test_thread_start_failure_survives_db_failure(monkeypatch):
+    """启动失败 + DB 写失败：spawn_review_task 必须正常返回，不得把 DB 异常
+    冒泡成调用方 500 —— 由 _force_fail_round 内部的 try/except 保证。"""
+    tid = PFX + 'startfail-db'
+    _mk_round(tid)
+
+    class BoomThread:
+        def __init__(self, *a, **kw):
+            pass
+
+        def start(self):
+            raise RuntimeError('cannot start new thread')
+
+    class _BoomQuery:
+        def where(self, *a, **kw):
+            return self
+
+        def execute(self):
+            raise RuntimeError('mysql down')
+
+    monkeypatch.setattr(spawn.threading, 'Thread', BoomThread)
+    monkeypatch.setattr(FileReviewRound, 'update', lambda *a, **kw: _BoomQuery())
+    spawn.spawn_review_task(tid)          # ← 不得抛出
+    assert spawn.is_running(tid) is False
 ```
 
-- [ ] **Step 2: 跑测试确认失败** — `uv run --no-sync pytest test/test_file_review_spawn.py -v` 期望：ImportError
+- [ ] **Step 2: 跑测试确认失败** — `PYTHONPATH=/d/AI/ragflow2 uv run --no-sync pytest test/test_file_review_spawn.py -v` 期望：`ModuleNotFoundError: No module named 'rag.svr.file_review.spawn'`
 
 - [ ] **Step 3: 创建 `rag/svr/file_review/spawn.py`**
 
 ```python
-"""审核任务执行线程 spawn（与 template_fill/spawn.py 同形态）。
-防重入集合 + daemon 线程 + 线程启动失败兜底。"""
+"""审核任务执行线程 spawn（T9 API / T7 节点 / T8 工具共用入口）。
+
+防重入集合 + daemon 线程 + 线程生命周期兜底。executor 延迟 import——
+本模块自身不拉起任何重依赖，故可被 REST 层与画布层同时安全引用。
+"""
 import logging
 import threading
 
@@ -1357,9 +1651,12 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["is_running", "spawn_review_task"]
 
+# 防重入：同一 task 同时最多一个执行线程（spawn 时 add、线程 finally discard）
 _running_lock = threading.Lock()
 _running_tasks: set = set()
 
+# 生产恒为 None；仅作测试注入点（monkeypatch spawn 模块属性可命中 _run 的名字解析），
+# None 时 _run 内延迟 import 真正的 executor.execute_task
 execute_task = None
 
 
@@ -1368,7 +1665,31 @@ def is_running(task_id: str) -> bool:
         return task_id in _running_tasks
 
 
+def _force_fail_round(task_id: str, error: str) -> None:
+    """把该 task 滞留在 reviewing 的轮次 CAS 置 failed，保证可重试。
+
+    幂等且范围受限：只命中 status=='reviewing' 的该 task 行——executor 已把该轮置
+    done/failed 时命中 0 行，别的任务的滞留轮次也不受影响。
+    """
+    try:
+        from api.db.db_models import DB
+        from api.db.services.file_review_service import FileReviewRoundService
+        with DB.connection_context():
+            FileReviewRoundService.model.update(status="failed", error=error).where(
+                FileReviewRoundService.model.task_id == task_id,
+                FileReviewRoundService.model.status == "reviewing",
+            ).execute()
+    except Exception:
+        logger.exception("review task force-fail failed, task_id=%s", task_id)
+
+
 def spawn_review_task(task_id: str) -> None:
+    """起 daemon 线程跑审核 pipeline；同 task 已在跑则直接返回（防重入）。
+
+    T6 契约：防重入集合没有超时/看门狗，标志位只在 executor 线程或启动失败分支的
+    finally 里 discard。因此 `execute_task` 必须保证返回（不得永久阻塞）——否则该
+    task 会被永远判为「已在执行中」，retry 恒返回，只能重启进程才能恢复。
+    """
     with _running_lock:
         if task_id in _running_tasks:
             return
@@ -1376,12 +1697,16 @@ def spawn_review_task(task_id: str) -> None:
 
     def _run():
         try:
-            fn = execute_task
+            fn = execute_task  # 读模块全局（调用时解析，测试注入可见）
             if fn is None:
                 from rag.svr.file_review.executor import execute_task as fn
             fn(task_id)
         except Exception:
+            # executor 可能压根没跑起来（import 失败），或崩在它自己的兜底之外。
+            # 「线程退出后不得有 reviewing 轮次滞留」这条不变式只有持线程生命周期的
+            # 本模块能保证，故此处必须补一层 CAS（与下面的调度失败文案刻意区分）。
             logger.exception("review task thread crashed, task_id=%s", task_id)
+            _force_fail_round(task_id, "审核执行异常中断（详见服务端日志），请重试")
         finally:
             with _running_lock:
                 _running_tasks.discard(task_id)
@@ -1389,37 +1714,47 @@ def spawn_review_task(task_id: str) -> None:
     try:
         threading.Thread(target=_run, daemon=True, name=f"file-review-{task_id[:8]}").start()
     except Exception:
+        # 线程启动失败：add 已执行而 finally 永不会跑，task_id 会永久滞留集合
+        # 导致 retry 恒报「任务正在执行中」。锁内 discard + CAS 置 failed 供重试。
         with _running_lock:
             _running_tasks.discard(task_id)
         logger.exception("review task spawn failed, task_id=%s", task_id)
-        # 任务行 CAS 置 failed 供重试
-        try:
-            from api.db.db_models import DB
-            from api.db.services.file_review_service import FileReviewRoundService
-            with DB.connection_context():
-                FileReviewRoundService.model.update(
-                    status="failed", error="任务调度失败：后台线程启动异常，请重试"
-                ).where(
-                    FileReviewRoundService.model.task_id == task_id,
-                    FileReviewRoundService.model.status == "reviewing",
-                ).execute()
-        except Exception:
-            logger.exception("review task force-fail failed, task_id=%s", task_id)
+        _force_fail_round(task_id, "任务调度失败：后台线程启动异常，请重试")
 ```
 
 - [ ] **Step 4: 跑测试确认通过**
 
 ```bash
-uv run --no-sync pytest test/test_file_review_spawn.py -v
+PYTHONPATH=/d/AI/ragflow2 uv run --no-sync pytest test/test_file_review_spawn.py -v
 ```
-Expected: PASS
+Expected: PASS（12 个用例全绿；`ruff check rag/svr/file_review/spawn.py test/test_file_review_spawn.py` 无告警）
 
 - [ ] **Step 5: 提交**
 
 ```bash
 git add rag/svr/file_review/spawn.py test/test_file_review_spawn.py
-git commit -m "feat(file-review): spawn with thread safety"
+git commit -m "feat(file-review): spawn 防重入线程 + 线程生命周期兜底（崩溃/启动失败均 CAS 置 failed）"
 ```
+
+> **T5 落地修正（2026-09-16，两道审查后，commit `3fbdf2c7` → `c7fe2286`）**：
+> 实现者按 TDD 落地后自审加了 3 条用例（崩溃后可重跑 / CAS 是集合更新而非单行 /
+> DB 失败不锁死任务），并用**定向变异**证明 7 处改坏实现全部被捕获。规格审查：
+> ✅ 精确符合规格、无少做无越界。质量审查 `APPROVED_WITH_NITS`，其中一条 Important 已修：
+> - **同步路径的 DB 失败会变成调用方 500**：`spawn.py` 启动失败分支**同步**调用
+>   `_force_fail_round`，若其中 DB 写失败而异常未被吞掉，会从 `spawn_review_task`
+>   冒泡到 T9 的 REST handler —— 一次本该「已置 failed、可重试」的轮次变成用户可见 500。
+>   异步路径只是被 `pyproject.toml` 的 `filterwarnings = ["error"]` **意外**兜住
+>   （线程异常转 warning），不可靠。已补 `test_thread_start_failure_survives_db_failure`
+>   钉死该契约（变异验证：把 `_force_fail_round` 的 except 改成 re-raise 即变红）。
+> - 顺带：修正一条**过度宣称**的用例 docstring（原称验证"吞异常"，实际只验证标志位清理）；
+>   `spawn_review_task` docstring 补 T6 契约（防重入集合无超时，`execute_task` 必须保证返回）；
+>   fixture 对齐 `test_file_review_service.py` 的 `try/finally + DB.close()` 写法。
+> - 复审：`git show c7fe2286 -- rag/svr/file_review/spawn.py` 为 **docstring-only**（剥离
+>   docstring 后 `ast.dump` 的 sha256 在两 commit 间完全相同，可执行语句零改动）。
+>
+> **已知取舍（记录，不在本任务修）**：防重入集合是**进程内**的，与 `template_fill/spawn.py`
+> 同限。已核实 `api/ragflow_server.py` 用 `app.run(...)` 单进程，三个调用方都在同一进程内，
+> 故当前充分；若将来把 worker 调成 >1，需改 Redis 标记（留给 T9 视部署形态判断）。
 
 ---
 
