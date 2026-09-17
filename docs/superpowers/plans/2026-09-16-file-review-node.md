@@ -7526,7 +7526,7 @@ def test_e2e_two_rounds(monkeypatch, mock_llm):
         assert any(a.severity == 'high' for a in anns)
 
     # 触发修复（HTTP）
-    fix_endpoint = _api.__dict__['fix_review']  # 由 implementer 按 file_review_api 实际函数名修正
+    fix_endpoint = _api.fix_review  # api/apps/restful_apis/file_review_api.py:283
     body = _call(fix_endpoint, task_id=task_id, body={'levels': ['high']})
     assert body['code'] == RetCode.SUCCESS, body
     rid2 = body['data']['round_id']
@@ -7549,7 +7549,7 @@ def test_e2e_state_endpoint(monkeypatch, mock_llm):
     task_id, rid1 = _make_round_one(file_id)
     _run_round_sync(rid1)
 
-    state_endpoint = _api.__dict__['state_review']  # 由 implementer 按实际函数名修正
+    state_endpoint = _api.review_state  # file_review_api.py:251（无 tenant_id）
     body = _call(state_endpoint, method='GET', file_id=file_id)
     assert body['code'] == RetCode.SUCCESS, body
     payload = body['data']
@@ -7579,8 +7579,8 @@ def test_e2e_annotation_status(monkeypatch, mock_llm):
         anns = FileReviewAnnotationService.list_by_file(file_id)
         ann_id = anns[0].id
 
-    annotation_endpoint = _api.__dict__['update_annotation_status']
-    body = _call(annotation_endpoint, aid=ann_id, body={'status': 'resolved'})
+    annotation_endpoint = _api.update_annotation_status  # 入参名 annotation_id
+    body = _call(annotation_endpoint, annotation_id=ann_id, body={'status': 'resolved'})
     assert body['code'] == RetCode.SUCCESS, body
     assert body['data']['status'] == 'resolved'
 
@@ -7593,7 +7593,7 @@ def test_e2e_annotation_status(monkeypatch, mock_llm):
 # ── E2E 4：templates 端点列出预置 ─────────────────────────
 def test_e2e_templates_list():
     """5 套预置模板（T1 迁移）应全部可列。"""
-    templates_endpoint = _api.__dict__['list_templates']
+    templates_endpoint = _api.list_review_templates  # file_review_api.py:239
     body = _call(templates_endpoint, method='GET')
     assert body['code'] == RetCode.SUCCESS, body
     templates = body['data']['templates']
