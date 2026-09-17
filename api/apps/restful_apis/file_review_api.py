@@ -116,6 +116,9 @@ def _template_payload(row) -> dict:
 
 
 def _round_payload(row) -> dict:
+    _ERROR_CLIP = 200
+    raw_err = row.error or ""
+    error = (raw_err[:_ERROR_CLIP] + "…") if len(raw_err) > _ERROR_CLIP else raw_err
     return {
         "id": row.id,
         "round_no": row.round_no,
@@ -124,7 +127,7 @@ def _round_payload(row) -> dict:
         "template_id": row.template_id or "",
         "user_query": row.user_query or "",
         "summary": row.summary or "",
-        "error": row.error or "",
+        "error": error,
         "minio_path": row.minio_path or "",
         # 判据是「有对象名」而不是「状态是 done」：T6 的修复轮先落盘、后收口，收口那一步
         # 抛错时轮次被兜底写成 failed，而成稿**已经落盘**（交接契约第 2 条）。按状态判会把
@@ -229,10 +232,10 @@ def _fix_base_query(rounds: list, extra: str = "") -> str:
 @manager.route("/file/review/templates", methods=["GET"])
 @login_required
 @add_tenant_id_to_kwargs
-async def list_review_templates(tenant_id: str | None = None):
+async def list_review_templates(tenant_id: str):
     """可用审核模板：系统预置（tenant_id == ""）+ 本租户自有，且 enabled == 1。"""
     try:
-        rows = FileReviewTemplateService.list_enabled(tenant_id or "")
+        rows = FileReviewTemplateService.list_enabled(tenant_id)
         return get_json_result(data={"templates": [_template_payload(r) for r in rows]})
     except Exception:
         logger.exception("file review: list templates failed")
@@ -273,7 +276,7 @@ async def review_state(file_id: str):
 @manager.route("/file/review/<task_id>/fix", methods=["POST"])
 @login_required
 @add_tenant_id_to_kwargs
-async def fix_review(task_id: str, tenant_id: str | None = None):
+async def fix_review(task_id: str, tenant_id: str):
     """发起一轮修复。body: {"levels": ["high","medium"], "user_query": 可选补充说明}"""
     try:
         body = await request.get_json(silent=True) or {}
@@ -290,7 +293,7 @@ async def fix_review(task_id: str, tenant_id: str | None = None):
         # spawn_review_task 命中 _running_tasks 后**静默 return**，于是留下一条永远没人消费的
         # fixing 轮次 —— 该 task 之后所有 fix/review 会被下面这些闸门永久挡死
         # （T6/T8 实测的必死路径）。区内要加 await，请先把 await 挪到临界区之外。
-        rounds = FileReviewRoundService.get_owned_task(task_id, tenant_id or "")
+        rounds = FileReviewRoundService.get_owned_task(task_id, tenant_id)
         if not rounds:
             # 「不存在」与「不是你的」共用同一句文案：区分会把「他人 task 是否存在」
             # 这一信息透给攻击者（get_owned_task 的 docstring 同款口径）。
@@ -333,8 +336,8 @@ async def fix_review(task_id: str, tenant_id: str | None = None):
             # tenant 必须来自当前用户，不能留空：get_owned_task 要求「任一轮 tenant 不符
             # 即拒绝」，写空串的轮次连自己都过不了闸门；且 executor 用 `{tenant}-downloads`
             # 选桶，空串会让成稿落进 `-downloads` 桶、谁都取不到。
-            tenant_id=tenant_id or "",
-            created_by=tenant_id or "",
+            tenant_id=tenant_id,
+            created_by=tenant_id,
             # 继承本轮 KB 配置：修复轮不做检索，但 kb_ids 是「这一轮用了哪些知识库」的
             # 可追溯配置，留空会让它无从知晓。
             kb_ids=cur.kb_ids,
@@ -351,7 +354,7 @@ async def fix_review(task_id: str, tenant_id: str | None = None):
 @manager.route("/file/review/annotation/<annotation_id>/status", methods=["POST"])
 @login_required
 @add_tenant_id_to_kwargs
-async def update_annotation_status(annotation_id: str, tenant_id: str | None = None):
+async def update_annotation_status(annotation_id: str, tenant_id: str):
     """人工把单条标注置为 open / resolved / wontfix（交接契约第 4 条的人工兜底出口）。
 
     为什么必须有：修复轮可能「成稿落盘成功、轮次收口成功，但逐条置 fixed 时某条标注写入
@@ -371,7 +374,7 @@ async def update_annotation_status(annotation_id: str, tenant_id: str | None = N
         # 写路径严格校验：标注 → 所属 task → 轮次归属。用 get_owned_task 而不是直接比
         # row.tenant_id，是因为后者的可见范围与轮次不完全一致（标注行的 tenant 为空而轮次行
         # 有 tenant 的历史脏数据），而权限必须按「这条标注所属的审核任务」判。
-        if not FileReviewRoundService.get_owned_task(row.task_id, tenant_id or ""):
+        if not FileReviewRoundService.get_owned_task(row.task_id, tenant_id):
             return get_error_data_result("批注不存在或无权访问")
         if not FileReviewAnnotationService.update_status(annotation_id, status):
             # 上面刚查到行，这里再失败只可能是并发删除：同样按「不存在」回，不泄露时序差异。

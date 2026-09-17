@@ -121,18 +121,12 @@ def _patch_services(monkeypatch, *, rounds=(), annotations=(), pending=(),
 
 # ── 端点接线（不依赖 DB，靠真实 Quart 路由表） ────────────────────────
 
-def test_module_exposes_manager_blueprint_and_async_endpoints():
-    """`manager` 变量名是自动注册的唯一契约（api/apps/__init__.py:315）。"""
+def test_all_routes_registered_on_blueprint():
+    """路由集合 + manager 名 + 端点函数存在 + 协程化（被 add_tenant_id_to_kwargs / login_required 装饰后
+    `__wrapped__` 透到内层 async）—— 四项合并验证（覆盖被合并的 test_module_exposes_manager_blueprint_and_async_endpoints）。
+    `manager` 变量名是自动注册的唯一契约（api/apps/__init__.py:315）。"""
     import inspect
     assert _api.manager.name == "file_review_api"
-    for name in ("list_review_templates", "review_state", "fix_review",
-                 "update_annotation_status"):
-        fn = getattr(_api, name, None)
-        assert fn is not None, f"缺少端点函数 {name}"
-        assert inspect.iscoroutinefunction(getattr(fn, "__wrapped__", fn)) or callable(fn)
-
-
-def test_all_routes_registered_on_blueprint():
     rules = {}
     for r in APP.url_map.iter_rules():
         if r.rule == "/static/<path:filename>":
@@ -144,6 +138,11 @@ def test_all_routes_registered_on_blueprint():
         "/file/review/<task_id>/fix": {"POST", "OPTIONS"},
         "/file/review/annotation/<annotation_id>/status": {"POST", "OPTIONS"},
     }, f"路由集合不符：{rules}"
+    for name in ("list_review_templates", "review_state", "fix_review",
+                 "update_annotation_status"):
+        fn = getattr(_api, name, None)
+        assert fn is not None, f"缺少端点函数 {name}"
+        assert inspect.iscoroutinefunction(getattr(fn, "__wrapped__", fn)) or callable(fn)
 
 
 def test_fix_critical_section_has_no_await():
@@ -406,7 +405,7 @@ def _status_setup(monkeypatch, **over):
 
 def test_annotation_status_rejects_fixed_and_unknown(monkeypatch):
     calls = _status_setup(monkeypatch)
-    for bad in ("fixed", "new", "", "OPEN "[:0] + "resolved-x", None):
+    for bad in ("fixed", "new", "", "resolved-x", None):
         body = _call(_api.update_annotation_status, annotation_id="a1",
                      body={"status": bad})
         assert body["code"] == RetCode.ARGUMENT_ERROR, f"{bad!r} 应被拒"

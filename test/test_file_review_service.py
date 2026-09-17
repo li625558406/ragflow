@@ -98,7 +98,7 @@ def _mk_ann(*, round_id, task_id, file_id, status="open", file_version="v1", **k
     """走 service 建标注（anchor 用项目统一 JSON 封装序列化）。"""
     return FileReviewAnnotationService.create(
         round_id=round_id, task_id=task_id, file_id=file_id, file_version=file_version,
-        anchor=json_dumps({"p_hash": 0, "offset": 1}), matched_text="foo", type="format",
+        anchor=json_dumps({"p_hash": 0, "offset": 1}), matched_text="foo", ann_type="format",
         severity="high", issue="x", suggestion="y", source="ai", status=status,
         tenant_id="", created_by="u", **kw)
 
@@ -125,7 +125,7 @@ def test_upsert_annotations_status_transition():
     with DB.connection_context():
         ann_id = FileReviewAnnotationService.create(
             round_id=f"{PFX}r1", task_id=tid, file_id=fid, file_version="v1",
-            anchor=json_dumps({"p_hash": 0}), matched_text="foo", type="format",
+            anchor=json_dumps({"p_hash": 0}), matched_text="foo", ann_type="format",
             severity="high", issue="x", suggestion="y", source="ai", status="open",
             tenant_id="", created_by="u",
         )
@@ -314,7 +314,7 @@ def test_not_null_violation_is_not_swallowed():
         with pytest.raises(peewee.IntegrityError):
             FileReviewAnnotationService.create(
                 round_id="r", task_id=tid, file_id=f"{PFX}f_notnull", file_version="v1",
-                anchor=json_dumps({}), matched_text="", type="format", severity="high",
+                anchor=json_dumps({}), matched_text="", ann_type="format", severity="high",
                 issue=None, suggestion="", source="ai",  # issue NOT NULL
                 tenant_id="", created_by="u")
         # 失败后连接仍可用（无残留坏事务）
@@ -390,7 +390,7 @@ def test_str_fields_are_clamped_to_column_width():
         rid = _mk_round(tid, 1, "reviewing", file_id=fid)
         aid = FileReviewAnnotationService.create(
             round_id=rid, task_id=tid, file_id=fid, file_version="v1",
-            anchor=json_dumps({"p_hash": 0}), matched_text="m", type="format",
+            anchor=json_dumps({"p_hash": 0}), matched_text="m", ann_type="format",
             severity=long_sev, issue="i", suggestion="", source="ai", status="open",
             tenant_id="", created_by="u")
         row = FileReviewAnnotationService.get_by_id(aid)
@@ -452,7 +452,7 @@ def test_annotation_defaults_and_optional_fields():
         aid = FileReviewAnnotationService.create(
             round_id=rid, task_id=tid, file_id=fid, file_version="v1",
             anchor=json_dumps({"sheet": "S1", "cell": "A1"}), matched_text="m",
-            type="clause", severity="low", issue="i", suggestion="",
+            ann_type="clause", severity="low", issue="i", suggestion="",
             source="manual", tenant_id="", created_by="u")  # status 省略
         row = FileReviewAnnotationService.get_by_id(aid)
     assert row.status == "open", "status 默认必须是 open"
@@ -503,7 +503,7 @@ def test_list_pending_by_task_is_task_wide_not_round_scoped():
     for r, st in ((r_old, 'open'), (r_old, 'fixed'), (r_cur, 'new'), (r_cur, 'wontfix')):
         FileReviewAnnotationService.create(
             round_id=r, task_id=tid, file_id=PFX + '-file', file_version='v1',
-            anchor='{}', matched_text='t', type='format', severity='low',
+            anchor='{}', matched_text='t', ann_type='format', severity='low',
             issue='i', suggestion='', source='ai', status=st, tenant_id=PFX)
     got = [a.status for a in FileReviewAnnotationService.list_pending_by_task(tid)]
     assert sorted(got) == ['new', 'open']
@@ -516,7 +516,7 @@ def test_delete_by_round_only_removes_that_round():
     for r in (r1, r2):
         FileReviewAnnotationService.create(
             round_id=r, task_id=tid, file_id=PFX + '-file', file_version='v1',
-            anchor='{}', matched_text='t', type='format', severity='low',
+            anchor='{}', matched_text='t', ann_type='format', severity='low',
             issue='i', suggestion='', source='ai', tenant_id=PFX)
     assert FileReviewAnnotationService.delete_by_round(r1) == 1
     rest = FileReviewAnnotation.select().where(FileReviewAnnotation.task_id == tid)
@@ -532,11 +532,11 @@ def test_delete_by_round_default_keeps_manual_annotations():
     r = _mk_round(tid, 1, 'reviewing')
     ai = FileReviewAnnotationService.create(
         round_id=r, task_id=tid, file_id=PFX + '-file', file_version='v1',
-        anchor='{}', matched_text='ai', type='format', severity='low',
+        anchor='{}', matched_text='ai', ann_type='format', severity='low',
         issue='i', suggestion='', source='ai', tenant_id=PFX)
     manual = FileReviewAnnotationService.create(
         round_id=r, task_id=tid, file_id=PFX + '-file', file_version='v1',
-        anchor='{}', matched_text='手写', type='format', severity='low',
+        anchor='{}', matched_text='手写', ann_type='format', severity='low',
         issue='i', suggestion='', source='manual', tenant_id=PFX)
     assert FileReviewAnnotationService.delete_by_round(r) == 1
     rest = {a.id for a in FileReviewAnnotation.select().where(FileReviewAnnotation.task_id == tid)}
@@ -551,7 +551,7 @@ def test_delete_by_round_none_source_removes_everything():
     for src in ('ai', 'manual'):
         FileReviewAnnotationService.create(
             round_id=r, task_id=tid, file_id=PFX + '-file', file_version='v1',
-            anchor='{}', matched_text=src, type='format', severity='low',
+            anchor='{}', matched_text=src, ann_type='format', severity='low',
             issue='i', suggestion='', source=src, tenant_id=PFX)
     assert FileReviewAnnotationService.delete_by_round(r, None) == 2
     rest = FileReviewAnnotation.select().where(FileReviewAnnotation.task_id == tid)

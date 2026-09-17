@@ -517,7 +517,7 @@ def _persist_annotations(round_row, collected: list) -> dict:
             file_version=round_row.file_version,
             anchor=ann["anchor"],
             matched_text=ann["matched_text"],
-            type=ann["type"],
+            ann_type=ann["type"],
             severity=ann["severity"],
             issue=ann["issue"],
             suggestion=ann["suggestion"],

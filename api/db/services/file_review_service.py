@@ -337,7 +337,7 @@ class FileReviewAnnotationService(FileReviewServiceBase):
     @classmethod
     @DB.connection_context()
     def create(cls, *, round_id: str, task_id: str, file_id: str, file_version: str,
-               anchor: str, matched_text: str, type: str, severity: str, issue: str,
+               anchor: str, matched_text: str, ann_type: str, severity: str, issue: str,
                suggestion: str, source: str, status: str = "open",
                prev_annotation_id: str | None = None, tenant_id: str = "",
                created_by: str = "") -> str:
@@ -354,7 +354,7 @@ class FileReviewAnnotationService(FileReviewServiceBase):
             id=aid, round_id=round_id, task_id=task_id, file_id=file_id,
             file_version=_clamp_str(cls.model, "file_version", file_version),
             anchor=anchor, matched_text=matched_text,
-            type=_clamp_str(cls.model, "type", type),
+            type=_clamp_str(cls.model, "type", ann_type),
             severity=_clamp_str(cls.model, "severity", severity),
             issue=issue, suggestion=suggestion,
             source=_clamp_str(cls.model, "source", source),
