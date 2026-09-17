@@ -6487,83 +6487,168 @@ git commit -m "feat(file-review): frontend types + isRoundRunning (no SSE reduce
 ## Task 11: API Hook 封装
 
 **Files:**
+- Modify: `web/src/utils/api.ts`（追加 4 个 endpoint 路径常量）
 - Create: `web/src/hooks/use-file-review-request.ts`
 
-- [ ] **Step 1: 创建文件**
+> ### T11 规格重写说明（替换原「start / finish / annotation」6 函数版）
+>
+> 原 T11 假设 T9 提供 `start` / `finish` / `annotation` / `template/list` / `annotations` 共 6 个端点。T9 砍 SSE 与 `start`/`finish`/`annotation`/`annotations` 后只剩 4 端点，T11 随之收缩为 **4 函数 + 1 失效器**。所有返回类型必须用 T10 导出的接口，不允许再写局部 interface。
+
+- [ ] **Step 1: 追加 endpoint 路径到 `web/src/utils/api.ts`**
+
+在「模板填写」相关路径附近追加（参照既有 `confirmTemplateFill` 的格式，紧贴在一个分组内）。注意 `restAPIv1 = '/api/v1'`（已在 L2 定义），所有路径前缀用它；服务端 `api/apps/restful_apis/file_review_api.py` 的 `@manager.route` 也确认是 `/file/review/...`，最终路径前缀 `/api/v1` × 后端 `/file/review/...` = `/api/v1/file/review/...`。
 
 ```typescript
-// 文件审核 API 调用封装（与 use-template-fill-request 同形态）
-import { useRequest } from '@umijs/max';
+// 文件审核（T9 REST API：4 端点轮询读模型 + fix + 标注人工闭环）
+fileReviewTemplates: `${restAPIv1}/file/review/templates`,
+fileReviewState: (fileId: string) =>
+  `${restAPIv1}/file/review/file/${fileId}/state`,
+fileReviewFix: (taskId: string) => `${restAPIv1}/file/review/${taskId}/fix`,
+fileReviewAnnotationStatus: (annotationId: string) =>
+  `${restAPIv1}/file/review/annotation/${annotationId}/status`,
+```
 
-export async function startFileReview(params: {
-  file_id: string;
-  template_id?: string;
-  user_query?: string;
-}): Promise<{ task_id: string; round_id: string; status: string }> {
-  const r = await fetch('/api/file/review/start', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params),
+- [ ] **Step 2: 创建 `web/src/hooks/use-file-review-request.ts`**
+
+**2a. 头部 import**（参照 `use-template-fill-request.ts` 的 sibling 风格）
+
+```typescript
+import api from '@/utils/api';
+import request from '@/utils/request';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { isRoundRunning } from './file-review-stream';
+import type {
+  IFileReviewState,
+  IFileReviewFixResponse,
+  IFileReviewAnnotationUpdateResponse,
+  IFileReviewTemplatesResponse,
+} from './file-review-stream';
+```
+
+**2b. queryKey 约定**
+
+统一前缀 `['fileReview', ...]`，便于失效器批量处理（与 `['templateFill', ...]` 同形态）。
+
+**2c. 4 个 hook + 1 个失效器**
+
+```typescript
+/** 范本列表：启用即拉一次，无轮询 */
+export function useFileReviewTemplates(opts?: { enabled?: boolean }) {
+  return useQuery({
+    queryKey: ['fileReview', 'templates'] as const,
+    queryFn: async () => {
+      const { data } = await request.get(api.fileReviewTemplates);
+      return data as { code: number; data: IFileReviewTemplatesResponse };
+    },
+    enabled: opts?.enabled ?? true,
   });
-  return (await r.json()).data;
 }
 
-export async function fixFileReview(task_id: string, params: {
-  levels: string[];
-  user_query?: string;
-}): Promise<{ round_id: string; round_no: number }> {
-  const r = await fetch(`/api/file/review/${task_id}/fix`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params),
+/** 文件状态：reviewing/fixing 时 3s 函数式轮询，否则停（终态判定走 isRoundRunning） */
+export function useFileReviewState(fileId: string) {
+  return useQuery({
+    queryKey: ['fileReview', 'state', fileId] as const,
+    queryFn: async () => {
+      const { data } = await request.get(api.fileReviewState(fileId));
+      return data as { code: number; data: IFileReviewState };
+    },
+    enabled: !!fileId,
+    refetchInterval: (query) => {
+      const status = query.state.data?.data?.current?.status;
+      return status && isRoundRunning(status) ? 3000 : false;
+    },
   });
-  return (await r.json()).data;
 }
 
-export async function addAnnotation(task_id: string, params: {
-  file_id: string;
-  file_version: string;
-  type?: string;
-  severity?: string;
-  issue: string;
-  suggestion?: string;
-  anchor?: Record<string, unknown>;
-  matched_text?: string;
-}): Promise<{ annotation_id: string }> {
-  const r = await fetch(`/api/file/review/${task_id}/annotation`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params),
+/** 发起一轮修复：成功时同步失效对应 file_id 的 state 缓存（fix 端点按 task_id 圈定，
+ * 但返回值不含 file_id，故调用方必须透传 file_id 才能失效）。 */
+export function useFixFileReview(fileId: string) {
+  const invalidate = useInvalidateFileReview();
+  return useMutation({
+    mutationFn: async (params: {
+      taskId: string;
+      levels: string[];
+      userQuery?: string;
+    }) => {
+      const { data } = await request.post(api.fileReviewFix(params.taskId), {
+        data: { levels: params.levels, user_query: params.userQuery },
+      });
+      if (data.code !== 0) {
+        throw new Error(data.message || '修复发起失败');
+      }
+      return data.data as IFileReviewFixResponse;
+    },
+    onSuccess: () => invalidate(fileId),
   });
-  return (await r.json()).data;
 }
 
-export async function finishReview(task_id: string): Promise<void> {
-  await fetch(`/api/file/review/${task_id}/finish`, { method: 'POST' });
+/** 人工置标注状态：成功时失效对应 file_id 的 state 缓存 */
+export function useUpdateAnnotationStatus(fileId: string) {
+  const invalidate = useInvalidateFileReview();
+  return useMutation({
+    mutationFn: async (params: {
+      annotationId: string;
+      status: 'open' | 'resolved' | 'wontfix';
+    }) => {
+      const { data } = await request.post(
+        api.fileReviewAnnotationStatus(params.annotationId),
+        { data: { status: params.status } },
+      });
+      if (data.code !== 0) {
+        throw new Error(data.message || '标注状态更新失败');
+      }
+      return data.data as IFileReviewAnnotationUpdateResponse;
+    },
+    onSuccess: () => invalidate(fileId),
+  });
 }
 
-export async function listAnnotations(
-  task_id: string,
-  file_id: string,
-  file_version: string,
-): Promise<{ annotations: any[] }> {
-  const r = await fetch(
-    `/api/file/review/${task_id}/annotations?file_id=${file_id}&file_version=${file_version}`,
-  );
-  return (await r.json()).data;
-}
-
-export function useFileReviewTemplates() {
-  return useRequest('/api/file/review/template/list', { formatResult: (r: any) => r.data.templates });
+/** 失效器：fix / annotation status 变更后必须调一次，让面板与进度卡重拉 state。
+ * fix 端点的 response 不含 file_id（只有 task_id），故调用方必须把 file_id 传进来。
+ * 仅失效 ['fileReview', 'state', fileId] 这一条，避免误冲掉其它文件的轮询。 */
+function useInvalidateFileReview() {
+  const queryClient = useQueryClient();
+  return (fileId: string) => {
+    queryClient.invalidateQueries({
+      queryKey: ['fileReview', 'state', fileId],
+    });
+  };
 }
 ```
 
-- [ ] **Step 2: 提交**
+**2d. 不允许的导出**（与 T10 一样禁导出已删能力）
+
+文件不得导出以下名字（spec 没写、若非必要不加）：
+- ~~`startFileReview`~~ —— T9 没这个端点，审核入口在 T7 画布节点 / T8 对话工具，它们各自走各自的路径
+- ~~`finishReview`~~ —— 同上
+- ~~`addAnnotation`~~ —— 同上
+- ~~`listAnnotations`~~ —— 标注已包含在 state 端点 response 里（`state.annotations`），无需单列
+
+- [ ] **Step 3: 跑类型检查**
 
 ```bash
-git add web/src/hooks/use-file-review-request.ts
-git commit -m "feat(file-review): API hook wrapper"
+cd web && npx tsc --noEmit -p tsconfig.json 2>&1 | grep -E "use-file-review-request\.ts|file-review-stream\.ts|api\.ts" | head
 ```
+
+预期：0 命中（本任务触及的 3 文件零类型错误；其他文件历史错误不在范围）。
+
+- [ ] **Step 4: 提交**
+
+```bash
+git add web/src/utils/api.ts web/src/hooks/use-file-review-request.ts
+git commit -m "feat(file-review): API hook wrapper (4 endpoints + invalidate)"
+```
+
+---
+
+## T11 → T12/T14/T15 交接契约（强制执行）
+
+| 任务 | 约束 |
+|---|---|
+| T12 进度卡 | **必须**复用 `useFileReviewState(fileId)` 作为轮询数据源，不要自写 `setInterval` + `fetch`（破坏 React Query 缓存层会让刷新恢复失效）。`canFix` 判据从 `data.data.current?.status === 'annotated' && data.data.fix_rounds_left > 0` 派生。轮询开关判断**不要**自己拼 `status === 'reviewing' \|\| status === 'fixing'` —— 已由 `isRoundRunning` 集中放在 T10 里。 |
+| T14 对话集成 | 画布节点/对话工具产出 task_id 时调用方必须把 file_id 一并存进 React state；调用 `useFixFileReview(fileId).mutate({taskId, levels, userQuery})`。 |
+| T15 流程页集成 | 同 T14，流程节点挂载进度卡时用 file_id 拉 state。 |
+| 失效器 | fix / annotation status 变更后**必须**失效 `['fileReview', 'state', fileId]`；漏调一次会让用户看到陈旧状态（修复已开始但面板还停在 `annotated`）。已由 hook 内置 `onSuccess` 自动调用，调用方不要再手动失效（重复失效只是浪费，不会出错）。 |
 
 ---
 
