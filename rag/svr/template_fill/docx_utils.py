@@ -397,11 +397,24 @@ def compute_anchor_positions(file_bytes: bytes, placeholders: list) -> None:
 
 def extract_docx_candidates(file_bytes: bytes) -> list:
     """提取疑似含填写点的段落（供 LLM 识别，降低 token）。
-    含手动占位符 {{key}} 的段落无条件纳入（用户显式标注，不经特征猜测）。"""
-    return [
-        it for it in iter_docx_paragraphs(file_bytes)
-        if it["text"].strip() and (FILL_HINT_RE.search(it["text"]) or PH_RE.search(it["text"]))
-    ]
+    含手动占位符 {{key}} 的段落无条件纳入（用户显式标注，不经特征猜测）。
+    附带 slots：run 层切位结果（blank_slots.extract_paragraph_slots），供
+    detector V2「位编号→语义」契约；有位的行即使不命中 FILL_HINT_RE 也纳入
+    （结构性修漏识别）。slots 恒为 list（无位=[]），调用方以真值判 V1/V2 分流。"""
+    from rag.svr.template_fill.blank_slots import extract_paragraph_slots
+    addr_map, items = _build_addr_map(Document(io.BytesIO(file_bytes)))
+    out = []
+    for it in items:
+        text = it["text"]
+        if not text.strip():
+            continue
+        p = addr_map.get(it["addr"])
+        slots = extract_paragraph_slots(p) if p is not None else []
+        if not slots and not (FILL_HINT_RE.search(text) or PH_RE.search(text)):
+            continue
+        it["slots"] = slots
+        out.append(it)
+    return out
 
 
 def _occurrence_intervals(text: str, sub: str) -> list:

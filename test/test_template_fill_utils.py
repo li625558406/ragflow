@@ -3054,3 +3054,51 @@ def test_apply_docx_fld_simple_occ_path_token_intact():
     flds = p2._p.findall(qn("w:fldSimple"))
     assert len(flds) == 1
     assert flds[0].find(qn("w:r")).find(qn("w:t")).text == "9"
+
+
+def _make_docx_with_underline_runs(para_specs):
+    """para_specs: [ [(text, underline_or_None), ...] ]，每项一段。"""
+    doc = Document()
+    for runs_spec in para_specs:
+        p = doc.add_paragraph()
+        for text, u in runs_spec:
+            r = p.add_run(text)
+            if u is not None:
+                r.font.underline = u
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def test_extract_docx_candidates_slots_attached():
+    from rag.svr.template_fill.docx_utils import extract_docx_candidates
+    blob = _make_docx_with_underline_runs([
+        [("本招标项目", None), ("    （招标项目名称） ", True), ("已由", None),
+         (" （审批机关） ", True)],
+    ])
+    cands = extract_docx_candidates(blob)
+    assert len(cands) == 1
+    slots = cands[0]["slots"]
+    assert [s["kind"] for s in slots] == ["hint", "hint"]
+    assert slots[0]["hint"] == "招标项目名称"
+    assert slots[1]["hint"] == "审批机关"
+
+
+def test_extract_docx_candidates_slot_line_included_without_hint_re():
+    """有位的行即使不命中 FILL_HINT_RE 也入候选（结构性修漏识别）。
+    注意间隙用 3 空格：6+ 空格会命中 FILL_HINT_RE 的 \\S[ \\u3000]{6,}\\S，测不出 slots 兜底。"""
+    from rag.svr.template_fill.docx_utils import extract_docx_candidates
+    blob = _make_docx_with_underline_runs([
+        [("合同金额", None), ("   ", True), ("万元，工期", None), ("   ", True), ("天。", None)],
+    ])
+    cands = extract_docx_candidates(blob)
+    assert len(cands) == 1
+    assert len(cands[0]["slots"]) == 2
+
+
+def test_extract_docx_candidates_char_underscore_slots():
+    """普通特征行（字符下划线）同样产出切位结果（kind=blank）。"""
+    from rag.svr.template_fill.docx_utils import extract_docx_candidates
+    cands = extract_docx_candidates(_make_docx(["项目名称：____________", "无填写点的普通段落"]))
+    by_text = {c["text"]: c for c in cands}
+    assert by_text["项目名称：____________"]["slots"][0]["kind"] == "blank"
