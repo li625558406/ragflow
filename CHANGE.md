@@ -1,5 +1,77 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-17 范本填写：增量基线按工作上下文隔离（修 demo03 跨流程串值，未部署）
+
+**主题**：用户报「我的**新**流程，填写范本，把内容填成我**之前要改的值**了」。查证属实，且与上一个「可见性修复」批次**无关**——是又一条独立的值泄漏通道，同样属于「把上一轮输出自动变成下一轮输入」这一族缺陷。
+
+**证据链（DB）**：三份任务行对比 `_baseline_values` / `_retrieve_skip_keys` / 检索结果：
+
+| task | 流程 | `_baseline_values.tenderer_name` | `_changed_keys` 含 tenderer? | chunks | `_retrieve_skip_keys[0]` |
+|---|---|---|---|---|---|
+| `70b17a56…` | demo01 | 无 | 是 | 有 | 无（skip_len=0） |
+| `9549487c…` | demo02 | A | 否 | **空** | `tenderer_name` |
+| `a5b3a53e…` | **demo03（全新流程）** | **B** | 否 | **空** | `tenderer_name` |
+
+demo03 是全新流程，却拿到了 demo02 里手改出的基线值 B。
+
+**根因（一行）**：`agent/component/template_fill.py` 取基线用的是 `TplFillTaskService.latest_done(template_id, tenant_id)`——**只有租户+范本两个维度**；而 `tpl_fill_task.flow_instance_id` 在**三处**建行点全写 `""`（死字段），所以「同一个范本的上一份成稿」在同租户内是**跨流程共享**的。`modify` 恰好把用户手改结果 `patch_values` 写回的就是那一行 `values.render` → 用户在 demo02 的手改动作，静默成了 demo03 的既有结论。
+
+**放大机制（为什么后果是「锁死」而不是「只多填一个字段」）**：基线命中 → `baseline_values` 非空 → 该 key 被移出 `_llm_fill_items` 的候选（LLM 白名单）→ 又被塞进 `_retrieve_skip_keys` → **既不检索也不重填**（demo03 的 `_retrieve_skip_keys` 长 52，demo02 是 44；两次 `chunks=[]`）。于是错值不仅没被纠正，**连纠正的机会都被剥夺**——检索被显式跳过，KB 里的真值永远回不来。
+
+**关键设计判据（决定改法，避免改错）**：`latest_done` 有两个消费方，**语义完全不同**：
+- **定位**（工具 `detail`/`modify`：用户说「把 XX 改成 YY」，要找到「最近那份成稿」）——**必须保持宽口径**，跨会话找到用户刚填的稿正是期望行为。收窄它会让「刚在别的会话填过、这里想改」找不到目标（**静默改行为**），故本轮**不动**，只把两处误导性注释改写成「宽是刻意的」。
+- **继承**（画布节点取增量基线）——**必须同上下文**，否则即本事故。
+
+结论：**不能共用同一个方法**，拆成两个名字自解释的方法，而不是给 `latest_done` 加一个可选参数（可选参数会让「忘了传」静默退化成跨上下文继承，正是本次事故的形态）。
+
+**核心变更**（后端 4 文件 + 前端 0 文件）：
+- **Service 新增 `latest_done_in_context(template_id, tenant_id, context_id)`**（`api/db/services/template_fill_service.py`）：WHERE 增加 `flow_instance_id == context_id` + `status == 'done'`。**`context_id` 为空一律直接返回 `None`（查询前短路）**——安全默认是「走全量重填」，绝不退化成「不限上下文」的宽查；`latest_done` 的 docstring 加反向指引「不要拿它当基线来源」
+- **`context_id` 取什么 = 会话 id（`sys.session_id`）**：流程页的「影子会话」（`flow_app.create_flow_chat_session`，每 (流程, 用户) 一条且持久）**就是该流程实例**；对话页的会话即本次会话。选它而非新造字段，是因为「工作上下文」在系统里已有权威载体，新增字段要多一条生命周期要维护且当下无消费方
+- **`canvas_service.completion` 写入 `canvas.globals["sys.session_id"] = session_id`**（`api/db/services/canvas_service.py`，+6 行）：组件统一从 `self._canvas.globals` 读 `sys.*`，走 globals 而非新增 run 参数即全员可用。`session_id` 在 `if session_id` 分支是入参、`else` 分支是 `get_uuid()`（已随 `API4ConversationService.save` 落库），两条路径都有值，**服务端单点改动、前端零改动**（与 `flow_version_id` 由前端传的既有先例互补）
+- **画布节点取基线改走新方法 + 落对 `flow_instance_id`**（`agent/component/template_fill.py`）：新增 `_work_context_id()`（读 `sys.session_id`，strip，**任何异常/缺失一律空串**）；基线查 `latest_done_in_context(...)`；任务行 `flow_instance_id=ctx_id` 不再写 `""`——**这条是自洽的关键**：新流程第一轮落对了 context，第二轮才能被自己的历史成稿续上，增量填写在同流程内照常工作
+- **工具侧只落字段**（`agent/tools/template_fill.py`）：`_fill` 建任务行时 `flow_instance_id=self._work_context_id()`（同会话内后续画布节点方可把它当基线续写）；工具本身**不做增量**。`_modify` 定位仍走宽口径 `latest_done`（见上「定位」判据）
+
+**行为变化（用户可感知，且正是要的）**：**新流程不再继承任何历史成稿 → 首轮走全量**（检索 + LLM 正常跑）；**同一流程内**再填同一范本仍走增量。**代价需知**：`flow_instance_id` 此前全库是空串，本次改动**只对改后新建的任务行生效**，存量行仍为空串——于是「老流程接着填」时 `latest_done_in_context` 查不到自己的历史（`flow_instance_id=''` ≠ 真实会话 id）→ 退化为**全量重填**（安全方向，不会串值，只是少走一次增量）。
+
+**测试**（后端 899 passed / 0 failed，含 10 套范本填写 + file_review + canvas_service 消费方）：
+- `test/test_agent_fill_template_component.py` 新增 4 例**对抗性**用例：①**demo03 事故回归门**（历史成稿只存在于 `("t1","other-session")` → 断言**三件事同时成立**：无 `_baseline_values`、该字段回到 `_changed_keys` 白名单、**不在 `_retrieve_skip_keys`**、且任务行落 `flow_instance_id == CTX`）；②**空上下文一律不增量**（`session_id=""` 时即便宽查有稿也不得用，并断言仍以 `("t1","")` 去问服务层）；③上下文 **strip** 后原样下传并落行（`"  sess-9  "` → `sess-9`）；④`_work_context_id()` 单测穷举 `"  sess-2  "`/缺键/`None`/`{}`/无 `globals` 属性/`globals=None`/`int` 类型 —— **一律空串不抛**
+- **新增 `test/test_template_fill_service.py`（11 passed）**：桩件测试只能证明「调用方传了 context_id」，**证明不了「服务端真的拿它过滤」**——一个删掉 `flow_instance_id` 条件的改动，桩件测试全绿而生产事故重演。故用 `__func__.__wrapped__` 取回裸函数体 + 假 model 记录列引用，**直接断言 WHERE 里用了哪些列**：收窄口径必须含 `flow_instance_id`、空/falsy 上下文**不得发起查询**、宽口径 `latest_done` **必须不含** `flow_instance_id`（防止后人「顺手」合并两者）。另固化「服务层**不** trim，空格串是 truthy」的分工，避免后人误以为服务层兜了底而删掉节点侧 strip
+- **变异验证（证明守卫有牙）**：临时删掉服务端 `flow_instance_id == context_id` 条件 → 该套件如期 `1 failed`（报 `收窄口径丢了 flow_instance_id 过滤 = demo03 事故重演`），已还原并复测 11 passed
+
+**对上一批次的收口**：本条目**解决**了上一批次遗留项②（「`latest_done` 是租户+范本粒度、`flow_instance_id` 全库空串无法收窄」）的**继承侧**——该遗留描述的正是本事故根因，现已按「流程实例隔离」修掉；**定位侧**仍刻意保持宽口径。
+
+**状态**：**未部署、未 commit、未 push**。部署清单（用户指示后执行，**4 后端文件成套**）：`api/db/services/template_fill_service.py`、`api/db/services/canvas_service.py`、`agent/component/template_fill.py`、`agent/tools/template_fill.py` 四处 SCP + `docker restart docker-ragflow-cpu-1`（`test/` 两文件仅在本地）。前端本批次**零改动**；上一批次的 3 个前端文件仍待 `npm run build` + dist + `nginx -s reload`。
+
+---
+
+## 2026-09-17 范本填写：就地修改后的可见性修复（卡片消失 + 预览不变，未部署）
+
+**主题**：用户实测报出两个症状——①填写完成后**页面整块空白**，「查看填写内容」按钮消失，刷新重进流程才出现；②LLM 回执说「已全部由 A 改为 B」，但「查看填写内容」的文件预览**文案没变**。设计稿 `docs/superpowers/specs/2026-09-17-template-fill-modify-visibility-design.md`。
+
+**第一性原理（本题的关键判据）**：先确认「用户看到的字从哪来」，再决定改哪里。查证结果是——**「查看填写内容」预览根本不是成稿**，而是「范本**工作副本**（识别阶段 anchor→`{{key}}` 的那份）+ 前端 `tpl.values` 覆盖渲染」。屏幕上的文字完全由前端 state 决定，成稿字节改了它也不会变。**因此「只修后端字节」不可能修好症状②**，这一点决定了修复必须横跨四层。
+
+**两个症状、四个根因（互不相干，任一不修症状都仍成立）**：
+
+- **症状①（卡片消失）— 前端状态层**：`flow-ai-panel.tsx` 的 `handleSend` **无条件**执行 `templateFillRef.current = undefined` / `templateFillEventsRef.current = []` / `setLastTemplateFill(null)`。这在「新一轮填写」语义下对，但 `modify` 轮**一个 `template_fill_progress` 事件都不发**（走工具回执，不走 SSE 进度管道）→ 三处快照被清空且无人回填 → `TemplateFillProgress` 返回 `null` → 成稿卡整块消失。**刷新能恢复**这条线索反向证明了「数据一直在，只是本地状态被清掉」，排除了「后端没下发」的歧义。修复：**发送时不清范本快照**（成稿卡可见性不该由「发了一条消息」决定）；语义不丢——真填写轮由 `streamState.templateFill` 经 `[streamState.templateFill]` effect 在同一 commit 内覆盖（该 effect 声明在报告 effect 之前）。`templateFillEventsRef` 同理保留，本轮无新事件则落库的 `template_fill_events` 沿用上轮快照，「改完刷新」能从**本条**记录重放出卡片。`fileReviewRef.current = null` **不动**（文件审核确为每轮重新发起，语义不同）。**刻意不做**：流式期回落 `?? templateFillRef.current` —— 超出批准范围，且流式期卡片闪一下不是用户报的症状
+
+- **症状②之一（模型改错字段）— 工具语义层**：`detail` 的 keyword 只匹配 中文名/key/锚文本，用户给的是一段**值** → 定位不到 → 挑了个名字最像的 key。实测：该段文字实际是 `project_owner（项目业主）` 的值，模型却把 4 个同名「招标人名称」（`tenderer_name` 及 `_2/_3/_4`）全改了——**LLM 的回执没撒谎**（它确实改了它认为的 4 个字段），用户看到的却是「没改对」。修复：新增**第 4 个匹配通道**——`_current_render()` 取该范本最近一次 done 的 `values.render`，keyword 也在**当前成稿值**中匹配，命中项回显「当前值」让模型自证；`detail`/`modify` 均支持 `task_id` 显式钉住（同范本多份成稿时「最近那份」未必在用户眼前）；工具描述 3 处（`keyword` 参数 / `task_id` 参数 / `使用时机` 段）同步写明「用户给的是**内容而不是字段名**时，先 `detail(keyword=那段内容)` 拿真正持有该值的 key 再 modify，别因中文名听起来像就挑一个」
+
+- **症状②之二（预览不刷新）— 前端渲染层**：新增 `fetchTemplateFillTaskProgress(task_id)` 拉 `templateFillTaskProgress` 端点（其 values 取自 DB render，`modify` 已回写），预览**打开时**拉一次覆盖显示。**仅终态取用**（`TERMINAL_PROGRESS_STATUSES = ['done','partial']`）：流式期 SSE 的 values 更新鲜，不能被压回去；`failed/cancelled` 无稿可取。失败/空值/返回 null → 回落卡片快照，**不清空预览**。`filled`/`unfilled` 按 **null 与否**判定而非 `??`（权威响应里 `null` = 空，不能回落卡片上可能过时的清单，否则已填槽位会悬浮显示上轮中文名）。`values` 包 `useMemo`：两者都空时裸 `|| {}` 每渲染产新对象，会把下游 `updateDocxHighlight` effect 与 `filledCount` 的依赖打成「每渲染必变」
+
+- **症状②之三（下载到的也是旧的）— 存储桥接层**：成稿有**两份**——真源 `{template_id}/v{ver}_result_{task_id}.ext`（`_storage_put` 写）与派生副本 `{tenant_id}-downloads/tplfill-{task_id}`（卡片「查看填写内容」/下载走 `/api/v1/agents/download?id=tplfill-…`）。`modify` 原先只覆盖真源。实测字节：真源 219617 B md5 `7c82405c…`（已含新值）vs 副本 219566 B md5 `0f839570…`（旧值）。**不能靠 REST 层自愈**——`template_api._bridge_download` 的进程内记忆化 `_bridged_tasks` 命中即跳过 get+put，正是它把「对象名确定、内容已过时」放大成静默错误。修复：主成稿落盘后**同名覆盖**派生副本。**不去 invalidate `_bridged_tasks`**——对象名确定性、`_modify` 直接写入即维持了该记忆化的不变式（「已桥过 ⇒ 副本等于真源」），跨层去动 REST 私有集合是分层违规且要在两处维护同一不变式。桥接失败**不当作修改失败**（真源已正确落盘），但回执必带 `bridge_note` 讲明，否则用户会以为模型在编造「已修改」
+
+**测试新发现的既存生产 bug（本轮唯一非由用户症状反推出来的缺陷）**：`_modify` 原 `render = dict(vals.get("render") or {})` / `dict(vals.get("cells") or {})` 在 `values.render`/`cells` 为**字符串或标量**时抛 `ValueError`/`TypeError`，异常冒到 `_invoke` 的顶层 try/except 变成一句用户看不懂的「范本填写执行失败：…」。由 `test_modify_values_non_dict_render_does_not_crash` 击穿 → 加 `isinstance` 判型（与 `_current_render` 同口径），缺失即当空基线（merge 后仍能正确覆盖 patch 字段）。
+
+**测试**：后端 `test_template_fill_tool.py` **67 passed**；范本填写相关 10 套件 **644 passed**；前端 `--testPathPattern="template-fill"` **5 suites / 85 tests**（新增 `template-fill-live-preview.test.tsx` 9 例，走 xlsx 文本分支使渲染确定，可对屏幕文本直接断言）。对抗性覆盖要点：`values` 六种脏形态矩阵不炸；`task_id` 四种非法态（不存在/他人/别范本/非 done）逐一拒绝；桥接失败时主成稿仍在且回执含降级提示（断言 `len(puts)==2` + `puts[1]` 精确指向 `{tenant}-downloads/tplfill-task1`）；keyword 5000 字符时输出被截断（`len(out) < 3000`）；**空值永不命中**（防「空串匹配一切」）；权威 `filled: []` 时不得回落卡片过时中文名；`detail` 无 keyword 时**不查** current（计数器断言，不靠 DB 桩副作用）。**桩内不能抛异常**——`_invoke` 顶层 try/except 会把异常吞成返回串，失败信号一律用计数器（本轮踩过，会假通过）。
+
+**未覆盖项（需人肉验收）**：**修复 3（`flow-ai-panel.tsx` 的 3 行删除）没有单测**——仓库既无渲染 `FlowAiPanel` 的测试也未 mock `use-send-message`，补测需 ~7 个 mock 块并驱动完整 SSE 生命周期，为 3 行删除引入的脚手架成本远高于收益。验收步骤：流程里完成一次填写 → 说「把 XX 改成 YY」→ 观察成稿卡是否**始终在场**。
+
+**遗留（3 项，均已写进代码注释与设计稿 §6）**：①**已打开的预览不随同屏 modify 刷新**（成稿卡状态对象在 modify 轮引用不变，无「本轮是新轮」信号；不加轮询——没信号就轮询等于给每个打开的预览挂永久定时器），需关闭重开；②**`latest_done` 是「租户+范本」粒度而非「本次流程」粒度**——本应由当前流程收窄，但 `flow_instance_id` 全库写空串（死字段）无可用信号；缓解是回执必带 `task_id` + 本地化生成时间让误选**可见**且可由用户带 `task_id` 纠正，根治须先让该字段有值；③修复 3 无自动化测试。
+
+**状态**：**未部署、未 commit、未 push**。部署清单（用户指示后执行）：后端 `agent/tools/template_fill.py` 单文件 SCP + `docker restart`；前端 `template-fill-live-preview.tsx` / `use-template-fill-request.ts` / `flow/flow-ai-panel.tsx` 三文件 `npm run build` + dist 上传 + `nginx -s reload`。
+
+---
+
 ## 2026-09-17 范本填写：写回范本库改按钮触发（停止自动沉淀默认值，已部署 2026-09-17）
 
 **主题**：解决用户痛点「范本只要被 LLM 填写过一次，下一轮新流程再填这个范本，产出的就是上一次的内容——占位符像是被覆盖掉了」。设计定稿 `docs/superpowers/specs/2026-09-17-template-fill-manual-sediment-design.md`。

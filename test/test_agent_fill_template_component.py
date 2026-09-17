@@ -46,13 +46,20 @@ PH_XLSX_SLOTS = [
     {"key": "k2", "name": "金额", "fill_mode": "param", "addr": "Sheet1!B2"},
 ]
 
+# 工作上下文 id（会话）：与 FakeCanvas 默认 sys.session_id 一致；增量基线键按
+# (template_id, context_id) 二维组织，镜像服务端 latest_done_in_context 的过滤条件
+CTX = "sess-1"
+
 
 class FakeCanvas:
     def __init__(self, tenant="t1", sys_query="写一份道路工程情况报告",
-                 begin_fields=None, file_content=""):
+                 begin_fields=None, file_content="", session_id=CTX):
         self._tenant = tenant
         self._sys_query = sys_query
-        self.globals = {"sys.query": sys_query, "sys.file_content": file_content}
+        # sys.session_id = 本次运行的工作上下文（canvas_service.completion 写入）；
+        # 增量基线只认同上下文（见 latest_done_in_context）
+        self.globals = {"sys.query": sys_query, "sys.file_content": file_content,
+                        "sys.session_id": session_id}
         begin_fields = begin_fields or {}
         begin_obj = SimpleNamespace(component_name="Begin", output=lambda: begin_fields)
         self.components = {"begin": {"obj": begin_obj}}
@@ -123,7 +130,9 @@ class FakeTaskService:
         self.queries = {}
         self.id_map = {}
         self.inserted = []
-        self.latest_done_map = {}  # template_id -> _Row 桩（增量填写场景）
+        # (template_id, context_id) -> _Row 桩（增量填写场景，键含上下文以镜像服务端过滤）
+        self.latest_done_map = {}
+        self.ctx_calls = []        # 节点实际传下来的 (template_id, context_id)
         self._next = 0
 
     @classmethod
@@ -132,12 +141,24 @@ class FakeTaskService:
 
     @classmethod
     def latest_done(cls, template_id, tenant_id):
-        # instance 调用方法（Python 自动传 self 为 cls）
+        """宽口径定位查询（对话 modify/detail 用）。节点**不应**再调它取基线——
+        这里保留是让「跨上下文」用例能证明：即使宽查有历史成稿，节点拿到的
+        baseline 也必须是 None。"""
         inst = getattr(cls, "_active_instance", None)
         if inst is None:
             return None
-        row = inst.latest_done_map.get(template_id)
-        return row
+        return next((r for (t, _), r in inst.latest_done_map.items() if t == template_id), None)
+
+    @classmethod
+    def latest_done_in_context(cls, template_id, tenant_id, context_id):
+        """镜像服务端实现：空上下文 → None（不做增量）；否则上下文必须精确匹配。"""
+        inst = getattr(cls, "_active_instance", None)
+        if inst is None:
+            return None
+        inst.ctx_calls.append((template_id, context_id))
+        if not context_id:
+            return None
+        return inst.latest_done_map.get((template_id, context_id))
 
     def insert(self, **kw):
         self._next += 1
@@ -262,7 +283,7 @@ def patched_env(monkeypatch):
     monkeypatch.setattr(fill_template.executor, "read_progress_snapshot",
                         lambda task_id: None)
     # FakeTaskService.latest_done 是 classmethod，节点走 cls 调用；桩里走 _active_instance
-    # 单例路由找最新构造的桩实例，方便各测试通过 svc.latest_done_map[tid] 注入历史 done 行
+    # 单例路由找最新构造的桩实例，方便各测试通过 svc.latest_done_map[(tid, ctx)] 注入历史 done 行
     FakeTaskService._active_instance = svc
 
     async def _sleep(_s):
@@ -1221,7 +1242,7 @@ def test_incremental_existing_done_baseline_applied(patched_env, monkeypatch):
     _baseline_values（executor 端兜回缺失字段）。"""
     svc = patched_env["svc"]
     base_render = {"title": "李港", "body": "原正文", "extra": "原附注"}
-    svc.latest_done_map["t1"] = _Row("hist-task", status="done",
+    svc.latest_done_map[("t1", CTX)] = _Row("hist-task", status="done",
                                       result_file_id="hist-render",
                                       values={"render": base_render},
                                       template_version_id="v1")
@@ -1247,7 +1268,7 @@ def test_incremental_baseline_version_mismatch_skips(patched_env, monkeypatch):
     """latest_done 的版本与当前最新版本不一致 → 跳过 baseline，走全量填充（baseline 不能跨版本混用）。"""
     svc = patched_env["svc"]
     # baseline 模板版本是 v1，当前模板版本改 v2：节点比对失败，跳过
-    svc.latest_done_map["t1"] = _Row("hist", status="done", result_file_id="hr",
+    svc.latest_done_map[("t1", CTX)] = _Row("hist", status="done", result_file_id="hr",
                                      values={"render": {"title": "OLD_VERSION"}},
                                      template_version_id="v1")
     _stage_one_candidate()
@@ -1265,7 +1286,7 @@ def test_incremental_baseline_version_mismatch_skips(patched_env, monkeypatch):
 def test_noop_intent_uses_baseline_light_dup(patched_env, monkeypatch):
     """intent=noop → 不出确认卡（保留 baseline 兜回）；任务仍 spawn 但决策空。"""
     svc = patched_env["svc"]
-    svc.latest_done_map["t1"] = _Row("hist", status="done",
+    svc.latest_done_map[("t1", CTX)] = _Row("hist", status="done",
                                      values={"render": {"title": "上次", "body": "上次正文"}},
                                      template_version_id="v1")
     _stage_one_candidate(placeholders=[_ver_slot("title"), _ver_slot("body")])
@@ -1285,7 +1306,7 @@ def test_noop_intent_uses_baseline_light_dup(patched_env, monkeypatch):
 def test_refill_intent_drops_baseline(patched_env, monkeypatch):
     """intent=refill → baselines.pop + 不下发 baseline_values，走全量填写。"""
     svc = patched_env["svc"]
-    svc.latest_done_map["t1"] = _Row("hist", status="done",
+    svc.latest_done_map[("t1", CTX)] = _Row("hist", status="done",
                                      values={"render": {"title": "上次"}},
                                      template_version_id="v1")
     _stage_one_candidate()
@@ -1313,12 +1334,117 @@ def test_no_latest_done_falls_back_to_full_fill(patched_env):
     assert kw["params"]["_changed_keys"] == ["项目名称"]
 
 
+def test_baseline_from_other_context_not_inherited(patched_env, monkeypatch):
+    """【demo03 事故回归门】历史成稿只存在于**别的**上下文 → 本轮不得继承。
+
+    事故现场：demo02 里手改出的值落在该行 values.render，demo03（全新流程）
+    用 latest_done 宽查把它当基线 → 该字段被塞进 _retrieve_skip_keys（既不检索
+    也不给 LLM）→ 新流程产出的是上一个流程的手改值。
+
+    断言三件事缺一不可：①无 _baseline_values；②该字段回到 LLM 白名单
+    （_changed_keys），即没有进 skip；③任务行落的是**本轮**上下文。
+    """
+    svc = patched_env["svc"]
+    # 只有「别的会话」有历史成稿，当前上下文（CTX）没有
+    svc.latest_done_map[("t1", "other-session")] = _Row(
+        "hist-other", status="done", result_file_id="hr",
+        values={"render": {"项目名称": "上个流程的手改值"}},
+        template_version_id="v1")
+    _stage_one_candidate()
+    _seq_done(svc)
+    cpn = _make_component(TemplateFillParam())
+    cpn._param.dataset_ids = ["kb1"]
+    asyncio.run(cpn._invoke_async())
+
+    tid, kw = svc.inserted[0]
+    assert not kw["params"].get("_baseline_values"), "跨上下文的历史成稿不得成为基线"
+    assert kw["params"]["_changed_keys"] == ["项目名称"], "该字段必须回到 LLM 白名单"
+    assert "项目名称" not in (kw["params"].get("_retrieve_skip_keys") or []), \
+        "被基线命中才进 skip；跨上下文未命中即不得进"
+    assert kw["flow_instance_id"] == CTX, "任务行必须落在本轮上下文"
+
+
+def test_baseline_skipped_when_no_work_context(patched_env, monkeypatch):
+    """旁路调用（SDK/自建画布）取不到 sys.session_id → 空上下文一律不做增量。
+
+    安全默认：宁可全量重填，也不跨一个无法证明的边界继承。即便宽查
+    （latest_done）能查到历史成稿，也不得使用。
+    """
+    svc = patched_env["svc"]
+    svc.latest_done_map[("t1", "")] = _Row("hist", status="done",
+                                     values={"render": {"项目名称": "旧值"}},
+                                     template_version_id="v1")
+    _stage_one_candidate()
+    _seq_done(svc)
+    cpn = _make_component(TemplateFillParam(), canvas=FakeCanvas(session_id=""))
+    cpn._param.dataset_ids = ["kb1"]
+    asyncio.run(cpn._invoke_async())
+
+    tid, kw = svc.inserted[0]
+    assert not kw["params"].get("_baseline_values")
+    assert kw["params"]["_changed_keys"] == ["项目名称"]
+    assert kw["flow_instance_id"] == ""
+    assert svc.ctx_calls == [("t1", "")], "仍应以空上下文去问服务层（由服务层拒）"
+
+
+def test_baseline_context_id_is_stripped_and_passed(patched_env, monkeypatch):
+    """上下文 id 必须原样（去空白后）传到服务层，并落进任务行的 flow_instance_id。"""
+    svc = patched_env["svc"]
+    svc.latest_done_map[("t1", "sess-9")] = _Row(
+        "hist", status="done", result_file_id="hr",
+        values={"render": {"项目名称": "同上下文旧值"}},
+        template_version_id="v1")
+    _stage_one_candidate()
+    _patch_extract_patch_llm(monkeypatch, {"intent": "patch", "direct": {}, "changed": []})
+    _seq_done(svc)
+    cpn = _make_component(TemplateFillParam(), canvas=FakeCanvas(session_id="  sess-9  "))
+    cpn._param.dataset_ids = ["kb1"]
+    asyncio.run(cpn._invoke_async())
+
+    assert svc.ctx_calls == [("t1", "sess-9")], "两侧空白必须剥掉，否则匹配不上"
+    tid, kw = svc.inserted[0]
+    assert kw["flow_instance_id"] == "sess-9"
+    assert kw["params"].get("_baseline_values") == {"项目名称": "同上下文旧值"}
+
+
+def test_work_context_id_reads_session_and_degrades_to_blank():
+    """_work_context_id 对抗性单测：正常取值 / 去空白 / 各类残缺画布一律空串不抛。"""
+    def _ctx(canvas):
+        cpn = _make_component(TemplateFillParam(), canvas=canvas)
+        return cpn._work_context_id()
+
+    assert _ctx(FakeCanvas()) == CTX
+    assert _ctx(FakeCanvas(session_id="  sess-2  ")) == "sess-2"
+    # globals 缺 sys.session_id
+    c = FakeCanvas()
+    del c.globals["sys.session_id"]
+    assert _ctx(c) == ""
+    # sys.session_id 为 None / 空串
+    c = FakeCanvas()
+    c.globals["sys.session_id"] = None
+    assert _ctx(c) == ""
+    # globals 整体为空字典
+    c = FakeCanvas()
+    c.globals = {}
+    assert _ctx(c) == ""
+    # 无 globals 属性（SimpleNamespace 无该字段 → AttributeError 被兜底）
+    assert _ctx(SimpleNamespace()) == ""
+    # globals 为 None（.get 抛 AttributeError 被兜底）
+    c = FakeCanvas()
+    c.globals = None
+    assert _ctx(c) == ""
+    # 非字符串类型（int）应被 str() 化而非抛
+    c = FakeCanvas()
+    c.globals["sys.session_id"] = 12345
+    assert _ctx(c) == "12345"
+
+
 def test_incremental_summary_text_branches(patched_env, monkeypatch):
     """汇总文案分支：增量 patch / noop / 全量三种文案互不相同。"""
     svc = patched_env["svc"]
 
     # Case A：增量 patch
-    svc.latest_done_map["t1"] = _Row("hist", status="done",
+    svc.latest_done_map[("t1", CTX)] = _Row("hist", status="done",
                                      values={"render": {"title": "李港"}},
                                      template_version_id="v1")
     _stage_one_candidate(placeholders=[_ver_slot("title"), _ver_slot("body")])
@@ -1353,7 +1479,7 @@ def test_incremental_cands_carry_direct_value(patched_env, monkeypatch):
     ov 分支非空 user input 覆盖 fallback 路径，值与 fallback 一致；同时让用户
     看到/编辑 AI 抽取结果。无 direct 的字段（如 LLM 未抽出）必须为空串。"""
     svc = patched_env["svc"]
-    svc.latest_done_map["t1"] = _Row("hist", status="done",
+    svc.latest_done_map[("t1", CTX)] = _Row("hist", status="done",
                                      values={"render": {"title": "原标题",
                                                         "body": "原正文"}},
                                      template_version_id="v1")
@@ -1396,7 +1522,7 @@ def test_incremental_cands_direct_value_skips_non_llm_slots(patched_env, monkeyp
     patch_keys 里的 llm 占位符才进入 candidates。本测试覆盖：direct 含非 llm
     key 时也不出现在 candidates 里（cands 只取 by_key 交集）。"""
     svc = patched_env["svc"]
-    svc.latest_done_map["t1"] = _Row("hist", status="done",
+    svc.latest_done_map[("t1", CTX)] = _Row("hist", status="done",
                                      values={"render": {"title": "原"}},
                                      template_version_id="v1")
     # 一个 llm 字段（title）+ 一个 param 字段（phone 填模式 param）

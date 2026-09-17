@@ -316,6 +316,19 @@ class TemplateFill(ComponentBase):
             return ""
         return text.strip()[:_USER_FILE_EVIDENCE_MAX]
 
+    def _work_context_id(self) -> str:
+        """本次运行的工作上下文 id（`sys.session_id`，即会话 id）。
+
+        增量填写的基线**只能**在同一上下文内继承（见
+        TplFillTaskService.latest_done_in_context）。流程页的影子会话即该流程实例，
+        对话页即本次会话，由 canvas_service.completion 在每轮 run 前写入 globals。
+        取不到（SDK/自建画布等旁路）→ 空串 → 不做增量、走全量。
+        """
+        try:
+            return str(self._canvas.globals.get("sys.session_id") or "").strip()
+        except Exception:  # noqa: BLE001
+            return ""
+
     async def _confirm_changed_fields(self, chosen: list[dict], query: str,
                                       begin_fields: dict,
                                       *, incremental_overrides: dict | None = None
@@ -615,8 +628,13 @@ class TemplateFill(ComponentBase):
         # 否则会重跑全流程并把上次成果覆盖回 default_value/空——这是用户反馈的
         # 「又从头开始 + 改了之后成稿清空」根因。逐范本独立判定（混合时各自走各自路径）。
         baselines: dict[str, dict] = {}    # tid -> {"values": dict, "task": row}
+        ctx_id = self._work_context_id()
         for c in chosen:
-            base = TplFillTaskService.latest_done(c["template_id"], tenant_id)
+            # 必须同工作上下文（会话）：跨流程继承会把上一个流程的手改值当既有结论
+            # 搬过来，且因进 skip 名单而永不回检索（2026-09-17 demo03 事故）。
+            # ctx 取不到 → 返回 None → 本范本走全量。
+            base = TplFillTaskService.latest_done_in_context(
+                c["template_id"], tenant_id, ctx_id)
             if not base or base.template_version_id != c["_ver"].id:
                 continue
             base_values = base.values if isinstance(base.values, dict) else None
@@ -732,7 +750,7 @@ class TemplateFill(ComponentBase):
                     {it["key"] for it in _llm_fill_items(c)},
                     c["_placeholders"], user_file_text,
                     baseline_values=(base_for_t["values"] if base_for_t else None)),
-                status="pending", source="canvas", flow_instance_id="",
+                status="pending", source="canvas", flow_instance_id=ctx_id,
                 tenant_id=tenant_id, created_by=tenant_id)
             spawn_fill_task(task_id)
             task_of[tid] = task_id

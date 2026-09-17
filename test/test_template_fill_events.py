@@ -53,6 +53,10 @@ class _TaskServiceStub:
     def latest_done(cls, template_id, tenant_id):
         return None  # 增量填写场景默认无历史 done → 走全量填充（与现状行为一致）
 
+    @classmethod
+    def latest_done_in_context(cls, template_id, tenant_id, context_id):
+        return None  # 默认无同上下文历史成稿 → 走全量（本套件不覆盖增量分支）
+
     def insert(self, **kw):
         self._next += 1
         tid = kw.get("id") or f"task-{self._next}"

@@ -560,10 +560,42 @@ class TplFillTaskService(CommonService):
     @DB.connection_context()
     def latest_done(cls, template_id: str, tenant_id: str):
         """该范本在租户内最新一条 done 填写任务（对话 modify 就地修改的定位目标）。
-        只认 done：failed/cancelled 没有可用成稿，就地修改无从谈起。无则 None。"""
+        只认 done：failed/cancelled 没有可用成稿，就地修改无从谈起。无则 None。
+
+        口径刻意是「租户+范本」的宽匹配：它服务的是**定位**（用户说「把 XX 改成 YY」
+        时找最近那份成稿），跨会话找到用户刚填的稿正是期望行为。**不要**拿它当
+        增量填写的基线来源——基线必须同工作上下文，见 latest_done_in_context。"""
         return cls.model.select().where(
             (cls.model.template_id == template_id)
             & (cls.model.tenant_id == tenant_id)
+            & (cls.model.status == "done")
+        ).order_by(cls.model.create_time.desc()).first()
+
+    @classmethod
+    @DB.connection_context()
+    def latest_done_in_context(cls, template_id: str, tenant_id: str, context_id: str):
+        """同范本 + **同一工作上下文**最新一条 done 成稿——增量填写的基线来源。
+
+        context_id 是本次运行的工作上下文（会话 id：流程页即该流程的影子会话 id）。
+        与 latest_done 的分工是刻意的：latest_done 服务于「定位」，本方法服务于
+        「继承」。
+
+        **Why 必须收窄**：增量的语义是「在这份成稿上继续改」。而 latest_done 只有
+        租户+范本两个维度，`tpl_fill_task.flow_instance_id` 又长期写空串，于是
+        2026-09-17 实测事故：demo02 里用户手动 modify 出的值（写回该行
+        values.render）成了全新流程 demo03 的基线 → 该字段既不进 LLM 白名单也不
+        检索（被塞进 _retrieve_skip_keys）→ 新流程产出的是上一个流程的手改值。
+        这与「自动沉淀默认值」是同一类缺陷（把上一轮输出自动变成下一轮输入）。
+
+        **无上下文信号（context_id 为空）一律不做增量**：宁走全量重填，也不跨
+        一个无法证明的边界继承（全量是安全默认，见增量设计文档「无 done baseline
+        → 全量重填」）。"""
+        if not context_id:
+            return None
+        return cls.model.select().where(
+            (cls.model.template_id == template_id)
+            & (cls.model.tenant_id == tenant_id)
+            & (cls.model.flow_instance_id == context_id)
             & (cls.model.status == "done")
         ).order_by(cls.model.create_time.desc()).first()
 

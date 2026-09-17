@@ -340,6 +340,12 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
         except Exception:
             logging.exception(f"[completion] append_message ({tag}) FAILED")
 
+    # 本轮的工作上下文 id（会话）：画布节点据此判定「是不是同一次工作的续写」。
+    # 目前唯一消费方是范本填写的增量基线——TemplateFill 节点把上一份成稿当基线
+    # 继承时**必须**同上下文，否则会跨流程串值（见 latest_done_in_context 注释）。
+    # 走 globals 而非新增 run 参数：组件统一从 self._canvas.globals 读 sys.*。
+    canvas.globals["sys.session_id"] = session_id
+
     try:
         async for ans in canvas.run(query=query, files=files, user_id=user_id, inputs=inputs, internet=kwargs.get("internet"),
                                     recent_downloads=recent_downloads, flow_version_id=flow_version_id):
