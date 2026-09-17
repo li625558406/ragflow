@@ -7338,33 +7338,35 @@ git commit -m "feat(file-review): flow AI panel progress card mount (polling, no
 >
 > 原 T16 spec 引用 T9 已删除的 `/file/review/start` 端点（`spawn_review_task` 在 spawn.py 改为线程派发而非 HTTP 启动端点）。T9 后入口变化：
 >
-> - 发起审核：**没有 HTTP 启动端点**——调用方（T7 节点 / T8 工具 / 调用者）直接构造 round 行 + 后台派发。本任务用 `FileReviewRoundService.create_round(task_id=..., file_id=..., round_no=1, ...)` 同步建轮次行 + 直接 `execute_task(round_id)` 同步执行（绕开线程）
+> - 发起审核：**没有 HTTP 启动端点**——调用方（T7 节点 / T8 工具 / 调用者）直接构造 round 行 + 后台派发。本任务用 `FileReviewRoundService.create_round(task_id=..., file_id=..., round_no=1, ...)` 同步建轮次行 + 直接 `execute_task(task_id)` 同步执行（绕开线程）
 > - 触发修复：`POST /file/review/<task_id>/fix` 端点（T9 实现）
 > - 查进度：`GET /file/review/file/<file_id>/state` 端点（T9 实现）
-> - 标注状态：`POST /file/review/annotation/<aid>/status` 端点（T9 实现）
+> - 标注状态：`POST /file/review/annotation/<annotation_id>/status` 端点（T9 实现）
+> - 列模板：`GET /file/review/templates` 端点（T9 实现）
 > - 下载成稿：`GET /file/review/<task_id>/<file_version>/download` 端点（T15 fix 落地）
 >
 > 此外 spec 需按真实 Service 修正：
 >
 > - **没有 `FileReviewTaskService`**——项目里没有 task 表也没有 TaskService；task_id 是 round 行上的外键，由调用方用 `get_uuid()` 生成字符串（见 `FileReviewRoundService.create_round` 的 `task_id` 入参）。
 > - 没有 `FileReviewRoundService.create_next_round`——用 `create_round(round_no=...)` 显式指定轮次。
-> - LLM 桩不是 `executor.llm_review` / `executor.llm_fix`——executor 只有私有 `_call_llm(tenant, sys, user)`。桩法：monkeypatch `_call_llm` 返回受上下文控制（按 user_prompt 关键字判定走 review 还是 fix JSON）。
+> - LLM 桩不是 `executor.llm_review` / `executor.llm_fix`——executor 只有私有 `_call_llm(tenant, sys, user)`。桩法：monkeypatch `_call_llm` 返回受 system_prompt / user_prompt 字面量控制（按关键字判定走 review 还是 fix JSON）。
 > - 没有 `client` / `auth_headers` fixture——沿用 `test_file_review_api.py` 的 `_call(endpoint, **kwargs)` 模式（真实 Quart `test_request_context`）。
 >
-> 本任务 reshape 为「**端到端覆盖 5 端点全链路**」，含 reviewer / fix / annotation / download / state 五路径。
+> 本任务 reshape 为「**端到端覆盖 5 端点全链路**」，含 templates / state / fix / annotation / download 五路径。
 
-- [ ] **Step 1: 写最小 e2e 测试**
+- [ ] **Step 1: 写 e2e 测试**
 
-文件 `test/test_file_review_e2e.py`，参照 `test/test_file_review_api.py` 的 `_load_api` / `_call` 模式 + `test_file_review_executor.py` 的 monkeypatch LLM 风格。
+文件 `test/test_file_review_e2e.py`，参照 `test_file_review_api.py` 的 `_load_api` / `_call` 模式 + `test_file_review_executor.py` 的 monkeypatch LLM 风格。
 
 **关键约束**（避免 implementer 现场重头查）：
 
 1. 测试文件**不能直接 import `api.apps.restful_apis.file_review_api`**——会触发 login_required 装饰器找不到 `current_user`。必须用 `_load_api()` 桩出 `api.apps` 后从源文件加载（见 `test_file_review_api.py:24-49`）。
-2. `_call(endpoint, **kwargs)` 走 Quart `test_request_context`，返回 JSON 业务体（不是 Response 对象）。
+2. `_call(endpoint, **kwargs)` 走 Quart `test_request_context`，返回 JSON 业务体（不是 Response 对象）。**所有路径参数必须关键字传参**——端点被 `add_tenant_id_to_kwargs` 包成 `(**kwargs)`，位置传参会被吞进 `*args`。
 3. monkeypatch 路径是 `rag.svr.file_review.executor._call_llm`，不是 `llm_review`/`llm_fix`（后者不存在）。
 4. `task_id` 由 `get_uuid()` 生成（无 TaskService），`create_round` 一次性建轮次行并返回 round id。
-5. 调 `execute_task(round_id)` 同步跑轮次（绕开 `spawn_mod.spawn_review_task` 后台线程）；`test_e2e_two_rounds` 里触发 fix 端点前必须把 `api.apps.restful_apis.file_review_api.spawn_mod.spawn_review_task` patch 掉（同 `test_file_review_api.py:358`）。
-6. 所有 fixture 行用 `PFX = '__test_fr_e2e__'` 前缀；teardown 函数删 `task_id.startswith(PFX)` 的所有 round/annotation，避免污染线上。
+5. 调 `execute_task(task_id)` 同步跑轮次（绕开 `spawn_mod.spawn_review_task` 后台线程）；`test_e2e_two_rounds` 里触发 fix 端点前必须把 `api.apps.restful_apis.file_review_api.spawn_mod.spawn_review_task` patch 掉（同 `test_file_review_api.py:358`）。
+6. 所有 fixture 行用 `PFX = '__test_fr_e2e__'` 前缀（落在 **file_id** 上）；清理按 `file_id.startswith(PFX)` 删所有 round/annotation。**不能按 task_id 前缀**——task_id 由 `get_uuid()` 生成（uuid1().hex）不带前缀，按 task_id 过滤恒删 0 行，会让残留数据在重复运行时把断言退化成平凡真。
+7. 存储用内存替身（`_FakeStorage`）替换 `common.settings.STORAGE_IMPL`——`executor.py:29` 是 `from common import settings`，即 executor 与 file_review_api 共享**同一个 settings 模块对象**，patch 一处两方同时命中。
 
 ```python
 # test/test_file_review_e2e.py
@@ -7372,23 +7374,24 @@ git commit -m "feat(file-review): flow AI panel progress card mount (polling, no
 
 参照 test_file_review_api.py 的 _load_api 模式（无需 client fixture），
 并 monkeypatch rag.svr.file_review.executor._call_llm 绕开真实 LLM；
-后台线程用 execute_task(round_id) 同步执行（绕开 spawn_mod.spawn_review_task）。
+后台线程用 execute_task(task_id) 同步执行（绕开 spawn_mod.spawn_review_task）。
 """
 import asyncio
 import io
 import os
 import sys
-import time
 import types
 from importlib.util import module_from_spec, spec_from_file_location
 from types import SimpleNamespace
 
 import pytest
+from docx import Document
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from api.db.db_models import DB, FileReviewAnnotation, FileReviewRound
 from api.db.services.file_review_service import (
+    MAX_FIX_ROUNDS,
     FileReviewAnnotationService,
     FileReviewRoundService,
 )
@@ -7398,9 +7401,12 @@ from common.misc_utils import get_uuid
 # ── Fixture：LLM 桩 ──────────────────────────────────
 PFX = "__test_fr_e2e__"
 
-# 按 system_prompt 字面量分流：executor._run_fix_round 用 FIX_SYSTEM（首句「你是文档修复助手」），
-# 审查轮用模板 tpl.system_prompt（典型首句「投标文件格式审核专家」）。按「修复」字面量分两路。
-_FIX_SYSTEM_MARKER = "文档修复助手"
+# 区分 review / fix 的字面量：executor._run_review_round 用模板的 system_prompt
+# （如「投标文件格式审核专家」）+ user_prompt；executor._run_fix_round 用 FIX_SYSTEM
+# （首句「你是文档修复助手」）+ _build_fix_prompt 含「请为每条问题给出最小改动的
+# 替换方案」。模板真实字面量见 db_models._PRESET_REVIEW_TEMPLATES。
+_FIX_SYSTEM_MARKER = "你是文档修复助手"        # executor.FIX_SYSTEM 字面量
+_FIX_USER_MARKER = "请为每条问题给出最小改动"
 
 
 @pytest.fixture
@@ -7409,7 +7415,7 @@ def mock_llm(monkeypatch):
     def fake_review_json():
         return (
             '{"summary":"high:1 medium:0 low:0","annotations":[{'
-            '"matched_text":"x","type":"format","severity":"high",'
+            '"matched_text":"投标人须","type":"format","severity":"high",'
             '"issue":"e2e test issue","suggestion":"e2e test suggestion"}]}'
         )
 
@@ -7417,14 +7423,16 @@ def mock_llm(monkeypatch):
         return '{"patches":[],"summary":"本轮修复 0 项（mock）"}'
 
     def fake_call_llm(tenant_id, system_prompt, user_prompt):
-        # 修复轮的 system_prompt 是 executor.FIX_SYSTEM（首句「你是文档修复助手」）；
-        # 审查轮用模板的 system_prompt（首句是模板标题，如「投标文件格式审核专家」）。
-        # 用 system_prompt 字面量分流，不依赖 user_prompt（user_prompt 内容随时可变）。
-        if _FIX_SYSTEM_MARKER in system_prompt:
+        # fix 调用：system_prompt == FIX_SYSTEM；review 调用：模板 system_prompt + 用户模板
+        if (system_prompt and _FIX_SYSTEM_MARKER in system_prompt) or \
+                (user_prompt and _FIX_USER_MARKER in user_prompt):
             return fake_fix_json()
         return fake_review_json()
 
     monkeypatch.setattr('rag.svr.file_review.executor._call_llm', fake_call_llm)
+    # 显式断言「本用例不依赖 KB/ES」：本模块从不传 kb_ids，检索本就走不到；
+    # 加这层 patch 是把它变成**被断言的事实**，而非结构上的偶然。
+    monkeypatch.setattr('rag.svr.file_review.executor._retrieve_chunks', lambda *a, **k: [])
     return {'call_llm': fake_call_llm}
 
 
@@ -7470,91 +7478,176 @@ def _call(endpoint, *, method="POST", path="/", body=None, **kwargs):
     return asyncio.run(_inner())
 
 
+# ── Storage 替身 + 真实 docx 构造（同 test_file_review_executor.py） ────
+class _FakeStorage:
+    """内存对象存储替身：只实现 executor 用到的 get/put 两个方法。"""
+
+    def __init__(self):
+        self.blobs = {}
+
+    def get(self, bucket, name):
+        return self.blobs.get((bucket, name))
+
+    def put(self, bucket, name, blob):
+        self.blobs[(bucket, name)] = blob
+        return True
+
+
+_BODY = ("这是一段用于通过最小正文长度校验的填充文字，用来模拟真实招标文件的正文内容，"
+         "确保审核链路的正文装配不会被最小长度闸门提前拦下。")
+
+
+def _docx(paragraphs):
+    d = Document()
+    for t in paragraphs:
+        d.add_paragraph(t)
+    buf = io.BytesIO()
+    d.save(buf)
+    return buf.getvalue()
+
+
+def _seed_file(file_id: str, blob: bytes, fstore: _FakeStorage, tenant_id: str = TENANT):
+    """把 docx 字节塞到 fstore 中：executor._load_original_blob 三级兜底里
+    `{tenant}-downloads` 桶的最后一级一定命中，因此只放那里就够。"""
+    fstore.blobs[(f"{tenant_id}-downloads", file_id)] = blob
+
+
+@pytest.fixture
+def fstore(monkeypatch):
+    """用内存存储替身替换存储后端。
+
+    executor.py:29 是 `from common import settings`，即 executor.settings 与
+    file_review_api.settings 是**同一个模块对象**；故只需 patch
+    common.settings.STORAGE_IMPL 一处，两个调用方同时命中（monkeypatch 会在
+    用例结束自动回滚这个模块属性）。
+    """
+    from common import settings as common_settings
+    st = _FakeStorage()
+    monkeypatch.setattr(common_settings, "STORAGE_IMPL", st)
+    return st
+
+
 # ── Helper：建 task + round_1 + 同步跑 ───────────────────
 def _make_round_one(file_id: str, *, template_id: str = "bid_doc_format",
-                     user_query: str = "审核这份招标文件") -> tuple[str, str]:
-    """直接构造 task + round_1（无 HTTP 启动端点），返回 (task_id, round_id)。"""
+                     user_query: str = "审核这份招标文件") -> tuple:
+    """直接构造 task + round_1（无 HTTP 启动端点），返回 (task_id, round_id)。
+
+    与 _run_round_sync / 后续断言必须共享同一连接上下文：executor.get_by_task 不
+    自带 connection_context，下一调用若开新 context，peewee 连接池切连接时 MySQL
+    REPEATABLE READ 看不到刚写的行、状态机停在 reviewing 不前。
+    """
     task_id = get_uuid()
-    with DB.connection_context():
-        rid = FileReviewRoundService.create_round(
-            task_id=task_id, file_id=file_id, round_no=1,
-            template_id=template_id, user_query=user_query,
-            file_version="v1", status="reviewing",
-            tenant_id=TENANT, created_by=TENANT,
-        )
+    rid = FileReviewRoundService.create_round(
+        task_id=task_id, file_id=file_id, round_no=1,
+        template_id=template_id, user_query=user_query,
+        file_version="v1", status="reviewing",
+        tenant_id=TENANT, created_by=TENANT,
+    )
     return task_id, rid
 
 
 def _run_round_sync(task_id: str):
-    """注意：execute_task 入参是 task_id（不是 round_id）；executor 内部按 task_id 取最新轮次推进。
-    executor.py:94 def execute_task(task_id: str) -> None。
-    若传 round_id 进去，executor 会按 task_id 找不到对应行并打 WARNING 直接静默退出。"""
+    """同步跑一轮 executor：execute_task 按 task_id 取该 task 最新轮次推进。
+
+    注：实际签名只接 task_id（executor.py:94），不是 round_id。
+    execute_task 是同步函数，Service 层写各自在 @DB.connection_context() 内提交，
+    无异步落盘竞态，故不需要 sleep。
+    """
     from rag.svr.file_review.executor import execute_task
     execute_task(task_id)
-    time.sleep(0.1)  # 落盘 commit
 
 
 def _cleanup():
-    FileReviewAnnotation.delete().where(FileReviewAnnotation.task_id.startswith(PFX)).execute()
-    FileReviewRound.delete().where(FileReviewRound.task_id.startswith(PFX)).execute()
+    """按 file_id 前缀清本模块写的行。
+
+    **不能按 task_id 前缀**：task_id 由 get_uuid() 生成（uuid1().hex），不带 PFX；
+    按 task_id.startswith(PFX) 恒删 0 行，会让残留数据在重复运行时把
+    「open→resolved」「标注已落库」等断言退化成平凡真。file_id 全部是 PFX + "fN"。
+    """
+    FileReviewAnnotation.delete().where(FileReviewAnnotation.file_id.startswith(PFX)).execute()
+    FileReviewRound.delete().where(FileReviewRound.file_id.startswith(PFX)).execute()
 
 
-@pytest.fixture(autouse=True)
-def _auto_cleanup():
-    _cleanup()
-    yield
-    _cleanup()
+@pytest.fixture(scope="module", autouse=True)
+def _tables_and_cleanup():
+    """建表 + 预置 5 模板 + 兜底清理（不调 migrate_db，沿用 _seed_file_review_templates 的幂等）。
+
+    模块级保持 DB 连接常开（reuse_if_open=True），让各 test 在同一连接上读写，避开
+    peewee + MySQL REPEATABLE READ 的连接切换快照问题。
+    """
+    from api.db import db_models as dbm
+    from api.db.db_models import FileReviewTemplate as _FRT
+    DB.connect(reuse_if_open=True)
+    try:
+        for m in (_FRT, FileReviewRound, FileReviewAnnotation):
+            if not m.table_exists():
+                m.create_table(safe=True)
+        dbm._seed_file_review_templates()
+        _cleanup()
+        yield
+    finally:
+        try:
+            _cleanup()
+        finally:
+            DB.close()
 
 
 # ── E2E 1：两轮 happy path ────────────────────────────────
-def test_e2e_two_rounds(monkeypatch, mock_llm):
+def test_e2e_two_rounds(monkeypatch, mock_llm, fstore):
     """Round 1 review → annotated → fix → Round 2 annotated。
     验证：round_no 递增、status 流转、annotation 写库。"""
     file_id = PFX + "f1"
+    blob = _docx(["投标人须按本招标文件要求编制投标文件" + _BODY, "其余内容" + _BODY])
+    _seed_file(file_id, blob, fstore)
+
     # 屏蔽后台线程派发（fix 端点内部会调 spawn_mod.spawn_review_task）
     monkeypatch.setattr(
-        'api.apps.restful_apis.file_review_api.spawn_mod.spawn_review_task',
-        lambda *a, **k: None,
-    )
-
-    task_id, rid1 = _make_round_one(file_id)
-    _run_round_sync(task_id)
+        _api.spawn_mod, "spawn_review_task", lambda tid: None)
 
     with DB.connection_context():
+        task_id, rid1 = _make_round_one(file_id)
+        _run_round_sync(task_id)
+
         r1 = FileReviewRoundService.model.get(FileReviewRoundService.model.id == rid1)
         assert r1.status == 'annotated', f"R1 status={r1.status}, expected annotated"
+        # list_by_file 是本文件全部标注（跨任务）；file_id 在本用例唯一，故即本轮产物。
         anns = FileReviewAnnotationService.list_by_file(file_id)
-        assert len(anns) >= 1
-        assert any(a.severity == 'high' for a in anns)
+        assert len(anns) == 1, f"annotations={len(anns)}"
+        assert anns[0].severity == 'high', f"severity={anns[0].severity!r}"
+        assert anns[0].status == 'open', f"status={anns[0].status!r}"
 
     # 触发修复（HTTP）
-    fix_endpoint = _api.fix_review  # api/apps/restful_apis/file_review_api.py:283
+    fix_endpoint = _api.fix_review
     body = _call(fix_endpoint, task_id=task_id, body={'levels': ['high']})
     assert body['code'] == RetCode.SUCCESS, body
     rid2 = body['data']['round_id']
     assert body['data']['round_no'] == 2
     assert body['data']['status'] == 'fixing'
 
-    _run_round_sync(task_id)
-
     with DB.connection_context():
+        _run_round_sync(task_id)
+
         r2 = FileReviewRoundService.model.get(FileReviewRoundService.model.id == rid2)
-        # 'annotated' 是**审查轮**的终态；修复轮在合法但空 patches 时收口 status='done'
-        # （executor._run_fix_round:189-193）。两种状态都表示轮次已收口。
-        assert r2.status in ('done', 'annotated'), \
-            f"R2 status={r2.status}, expected 'done' or 'annotated'"
+        # 修复轮 mock LLM 返空 patches → executor 走 _run_fix_round 的「合法但空」分支，
+        # 确定性收口 status='done'（executor.py:189-193）。'annotated' 只可能由
+        # _run_review_round 写，本路径永远到不了，故不加 OR 放宽。
+        assert r2.status == 'done', f"R2 status={r2.status}, expected done"
+        assert '保持原样' in (r2.summary or ''), f"R2 summary={r2.summary!r}"
         assert r2.round_no == 2
 
 
 # ── E2E 2：state 端点读出完整对象 ─────────────────────────
-def test_e2e_state_endpoint(monkeypatch, mock_llm):
+def test_e2e_state_endpoint(monkeypatch, mock_llm, fstore):
     """state 端点应返回 file_id / rounds[] / current / annotations[] / counts。
     验证：response 字段与 IFileReviewState 对齐（前端契约）。"""
     file_id = PFX + "f2"
-    task_id, rid1 = _make_round_one(file_id)
-    _run_round_sync(task_id)
+    blob = _docx(["投标人须按本招标文件要求编制投标文件" + _BODY, "其余内容" + _BODY])
+    _seed_file(file_id, blob, fstore)
+    with DB.connection_context():
+        task_id, rid1 = _make_round_one(file_id)
+        _run_round_sync(task_id)
 
-    state_endpoint = _api.review_state  # file_review_api.py:251（无 tenant_id）
+    state_endpoint = _api.review_state  # 无 tenant_id（读路径不限租户）
     body = _call(state_endpoint, method='GET', file_id=file_id)
     assert body['code'] == RetCode.SUCCESS, body
     payload = body['data']
@@ -7566,82 +7659,98 @@ def test_e2e_state_endpoint(monkeypatch, mock_llm):
                   'max_fix_rounds']:
         assert field in payload, f"state 端点缺字段 {field}"
 
-    assert payload['file_id'] == file_id
-    assert len(payload['rounds']) == 1
-    assert payload['rounds'][0]['status'] == 'annotated'
-    assert payload['annotation_counts']['high'] >= 1
-    # fix_rounds_left = MAX_FIX_ROUNDS - count(rounds where round_no > 1)
-    # （file_review_service.py:67-76 fix_rounds_left）。
-    # 单轮 review 不消耗修复名额，应等于 max_fix_rounds 本身，不是 -1。
-    assert payload['fix_rounds_left'] == payload['max_fix_rounds']
+    assert payload['file_id'] == file_id, f"file_id={payload['file_id']!r}"
+    assert len(payload['rounds']) == 1, f"rounds={len(payload['rounds'])}"
+    assert payload['rounds'][0]['status'] == 'annotated', \
+        f"round status={payload['rounds'][0]['status']!r}"
+    assert payload['annotation_counts']['high'] >= 1, \
+        f"counts={payload['annotation_counts']}"
+    # 还没发起过修复（只有 round_1 review）→ fix_rounds_left 应等于 max_fix_rounds。
+    # 两边同时算错也能通过，故把 max_fix_rounds 钉到字面量（file_review_service.py:64）。
+    assert payload['max_fix_rounds'] == MAX_FIX_ROUNDS, \
+        f"max_fix_rounds={payload['max_fix_rounds']}"
+    assert payload['fix_rounds_left'] == MAX_FIX_ROUNDS, \
+        f"fix_rounds_left={payload['fix_rounds_left']}"
 
 
 # ── E2E 3：annotation 状态修改端点 ─────────────────────────
-def test_e2e_annotation_status(monkeypatch, mock_llm):
+def test_e2e_annotation_status(monkeypatch, mock_llm, fstore):
     """标注 open → resolved 切换。"""
     file_id = PFX + "f3"
-    task_id, rid1 = _make_round_one(file_id)
-    _run_round_sync(task_id)
-
+    blob = _docx(["投标人须按本招标文件要求编制投标文件" + _BODY, "其余内容" + _BODY])
+    _seed_file(file_id, blob, fstore)
     with DB.connection_context():
+        task_id, rid1 = _make_round_one(file_id)
+        _run_round_sync(task_id)
         anns = FileReviewAnnotationService.list_by_file(file_id)
+        assert len(anns) == 1, f"annotations={len(anns)}"
         ann_id = anns[0].id
+        # 前置状态必须是 open，否则「open→resolved」这条转换没被真正验证
+        assert anns[0].status == 'open', f"pre status={anns[0].status!r}"
 
     annotation_endpoint = _api.update_annotation_status  # 入参名 annotation_id
     body = _call(annotation_endpoint, annotation_id=ann_id, body={'status': 'resolved'})
     assert body['code'] == RetCode.SUCCESS, body
-    assert body['data']['status'] == 'resolved'
+    assert body['data']['status'] == 'resolved', f"data={body['data']}"
 
     with DB.connection_context():
         a = FileReviewAnnotationService.model.get(
             FileReviewAnnotationService.model.id == ann_id)
-        assert a.status == 'resolved'
+        assert a.status == 'resolved', f"persisted status={a.status!r}"
 
 
 # ── E2E 4：templates 端点列出预置 ─────────────────────────
+# T1 迁移 seed 的 5 套预置 id（db_models._PRESET_REVIEW_TEMPLATES）。
+_PRESET_IDS = {
+    "bid_doc_format",
+    "bid_response_complete",
+    "bid_substantive_clause",
+    "bid_qualification",
+    "bid_price_review",
+}
+
+
 def test_e2e_templates_list():
-    """5 套预置模板（T1 迁移）应全部可列。"""
-    templates_endpoint = _api.list_review_templates  # file_review_api.py:239
+    """5 套预置模板（T1 迁移）应全部可列。
+
+    不用 `len(templates) == 5`：list_enabled 返回全库 tenant_id=="" 且 enabled 的模板，
+    同库其他套件（如 test_file_review_service.py）会临时造这类行，个数相等是脆断言。
+    改为断言「这 5 个 id 都在」，更强且不受他方残留影响。
+    """
+    templates_endpoint = _api.list_review_templates
     body = _call(templates_endpoint, method='GET')
     assert body['code'] == RetCode.SUCCESS, body
     templates = body['data']['templates']
-    assert len(templates) == 5, f"got {len(templates)}, expected 5 preset"
+    ids = {t['id'] for t in templates}
+    assert _PRESET_IDS <= ids, f"缺少预置模板：{_PRESET_IDS - ids}"
     for t in templates:
-        assert {'id', 'name', 'description', 'annotation_types'} <= set(t.keys())
+        assert {'id', 'name', 'description', 'annotation_types'} <= set(t.keys()), \
+            f"模板字段缺失：{sorted(t.keys())}"
 
 
 # ── E2E 5：download 端点流式返回字节 ────────────────────────
-def test_e2e_download_endpoint(monkeypatch, mock_llm):
+def test_e2e_download_endpoint(monkeypatch, mock_llm, fstore):
     """fix 端点后产生 minio_path 的 round → download 端点应返回非空字节流。
 
-    实现要点：
-    - 不依赖真 minio：用 monkeypatch.setattr(common.settings, "STORAGE_IMPL", fstore)
-      把下载端点的 STORAGE_IMPL 替换成 in-memory fstore（与 minio 接口同形）。
-    - download 端点走 `settings.STORAGE_IMPL.get(bucket, key)`，所以 fstore 必须有
-      `put(bucket, key, blob)` + `get(bucket, key)` 接口。
-    - download 端点不返回 JSON 业务体，是 Quart `Response` 对象（含 status_code + data），
-      走 `test_request_context` 直接 await endpoint(...) 拿 Response。
+    这里不跑真 patcher（mock fix LLM 返空 patches，executor 不会落盘），
+    直接 mock round 收尾时带 minio_path 的状态，再用 fstore 注入字节。
     """
     file_id = PFX + "f5"
     task_id, rid1 = _make_round_one(file_id)
-    from common import settings as common_settings
-    from common.file_store import FileStorage
-
-    # in-memory fstore：避免真连 minio
-    fstore = FileStorage("")
-    fstore.put(f"{TENANT}-downloads", f"frv-{task_id}-v1", b"fake-docx-bytes")
-    monkeypatch.setattr(common_settings, "STORAGE_IMPL", fstore)
+    # 下载端点只读 round.minio_path 指向的对象，不读原件，故无需 _seed_file。
+    bucket = f"{TENANT}-downloads"
+    key_name = f"frv-{task_id}-v1"
+    fstore.blobs[(bucket, key_name)] = b"fake-docx-bytes"
 
     with DB.connection_context():
         FileReviewRoundService.update_status(
             rid1, 'annotated',
-            minio_path=f"frv-{task_id}-v1", file_version='v1',
+            minio_path=key_name, file_version='v1',
             summary='mock with minio_path',
         )
 
-    download_endpoint = _api.download_review_version  # file_review_api.py:394
+    download_endpoint = _api.download_review_version
     # 走真实 Quart HTTP（download 端点返回 Response 对象，不进 _call 抽象）
-    import asyncio as _asyncio
     from quart import Quart
     app = Quart(__name__)
     app.register_blueprint(_api.manager)
@@ -7652,22 +7761,22 @@ def test_e2e_download_endpoint(monkeypatch, mock_llm):
         ):
             resp = await download_endpoint(task_id=task_id, file_version='v1')
         return resp
-    resp = _asyncio.run(_fetch())
+    resp = asyncio.run(_fetch())
     assert resp.status_code == 200
-    # Quart Response.data 是 bytes（或 async，需 await）
-    data = _asyncio.run(resp.get_data()) if hasattr(resp, 'get_data') else resp.data
-    assert data == b"fake-docx-bytes"
+    # Quart Response.get_data 是 async；await 取字节
+    body_bytes = asyncio.run(resp.get_data())
+    assert body_bytes == b"fake-docx-bytes"
 ```
 
-> **Implementer 备注**：
-> - **Peewee MySQL 连接上下文共享陷阱**：`create_round` 与 `executor.execute_task` 都用 `@DB.connection_context()` 装饰，但两者运行在不同调用栈时，MySQL 默认 REPEATABLE READ 隔离级别下，第二次查询可能看不到第一次写入的行。**解决**：测试用例主体把 `_make_round_one` + `_run_round_sync` + 后续 `with DB.connection_context():` 断言都包在一个外层 `with DB.connection_context():` 里，或者在模块级 fixture `DB.connect(reuse_if_open=True)` 提前建连。否则 executor 会打 `no round row for task_id=...` WARNING 后静默退出（executor.py:104）。
-> - **monkeypatch `api.apps.restful_apis.file_review_api.spawn_mod.spawn_review_task`** 必须在调 fix 端点前 patch 掉（同 `test_file_review_api.py:358`），否则 fix 端点会启动后台线程、可能破坏轮次状态机测试。
-> - `_make_round_one` 直接调 `create_round` 是 T9 后的入口约定（无 `/file/review/start` HTTP 端点）。如果项目里有 helper（如 `_file_review_create_round`），以那个为准。
-> - **execute_task 入参是 task_id，不是 round_id**：`rag/svr/file_review/executor.py:94 def execute_task(task_id: str) -> None`，内部按 task_id 取最新轮次推进；按 round_id 传会被当成「该 task 不存在」静默 no-op。spec 已统一为 `_run_round_sync(task_id)`。
-> - **LLM 桩按 system_prompt 分流，不按 user_prompt**：executor 审查轮用模板 system_prompt（首句「投标文件格式审核专家」），修复轮用 `executor.FIX_SYSTEM`（首句「你是文档修复助手」）。用 `_FIX_SYSTEM_MARKER = "文档修复助手"` 判定走 fix，否则 review；user_prompt 内容模板随时会变、不可靠。
-> - **修复轮 mock LLM 返空 patches 时 status='done'，不是 'annotated'**：`executor._run_fix_round:189-193` 在「合法但空 patches」时收口 status='done'。'annotated' 是**审查轮**的终态。R2.status 断言改为 `in ('done', 'annotated')`。
-> - **fix_rounds_left 在仅有 round_1 review 时等于 max_fix_rounds**（不是 -1）：`file_review_service.py:67-76 fix_rounds_left = MAX_FIX_ROUNDS - count(rounds where round_no > 1)`，单轮 review 不消耗修复名额。state 端点断言改为 `==`。
-> - **download 端点用 `common.settings.STORAGE_IMPL`**：`file_review_api.py:62 from common import settings`，与 executor 模块共享同一 settings 对象。用 `monkeypatch.setattr(common.settings, "STORAGE_IMPL", fstore)` 替换；fstore 走 `common.file_store.FileStorage("")` in-memory 实例，提供 `put(bucket, key, blob)` + `get(bucket, key)` 接口。
+> **Implementer 备注**（均为已交付代码中被验证的事实，改测试前先读这七条）：
+> - **Peewee MySQL 连接上下文共享陷阱**：`create_round` 与 `executor.execute_task` 都用 `@DB.connection_context()` 装饰，但两者运行在不同调用栈时，MySQL 默认 REPEATABLE READ 隔离级别下，第二次查询可能看不到第一次写入的行。**解决**：模块级 fixture `DB.connect(reuse_if_open=True)` 提前建连并保持常开，各 test 把 `_make_round_one` + `_run_round_sync` + 断言包在同一个 `with DB.connection_context():` 里。否则 executor 会打 `no round row for task_id=...` WARNING 后静默退出（executor.py:104），断言停在 `reviewing` 失败。
+> - **monkeypatch `_api.spawn_mod.spawn_review_task`** 必须在调 fix 端点前 patch 掉（同 `test_file_review_api.py:358`），否则 fix 端点会启动后台线程、与同步 `_run_round_sync` 争抢同一轮次状态机。
+> - **execute_task 入参是 task_id，不是 round_id**：`rag/svr/file_review/executor.py:94 def execute_task(task_id: str) -> None`，内部按 task_id 取最新轮次推进；按 round_id 传会被当成「该 task 不存在」静默 no-op。全模块统一为 `_run_round_sync(task_id)`。
+> - **LLM 桩按 system_prompt 分流**：审查轮用模板 system_prompt（如「投标文件格式审核专家」），修复轮用 `executor.FIX_SYSTEM`（首句「你是文档修复助手」）。判据 `_FIX_SYSTEM_MARKER in system_prompt`，**并**补 `_FIX_USER_MARKER in user_prompt` 第二判据（`_build_fix_prompt` 含「请为每条问题给出最小改动」）——两道都命中才走 fix JSON，避免模板 system_prompt 改版后单一判据失效。
+> - **修复轮 mock LLM 返空 patches 时 status='done'，不是 'annotated'**：`executor._run_fix_round:189-193` 在「合法但空 patches」时收口 status='done'。'annotated' 是**审查轮**的终态、本路径永远到不了，故 R2 断言用 `== 'done'` 而非 `in ('done', 'annotated')`（后者会把「误走审查轮」也放过），并补 `assert '保持原样' in r2.summary` 锁定该分支的可观测输出。
+> - **fix_rounds_left 在仅有 round_1 review 时等于 max_fix_rounds**（不是 -1）：`file_review_service.py:67 fix_rounds_left = MAX_FIX_ROUNDS - count(rounds where round_no > 1)`，单轮 review 不消耗修复名额。两个断言都钉到字面量 `MAX_FIX_ROUNDS`（=3），避免「两边同时算错」的平凡真。
+> - **存储替身 patch 的是 `common.settings.STORAGE_IMPL`**：`executor.py:29 from common import settings` 与 `file_review_api.py:62 from common import settings` 指向**同一模块对象**，patch 一处两个调用方同时命中（monkeypatch 用例结束自动回滚）。替身只需实现 `get(bucket, name)` / `put(bucket, name, blob)` 两个方法（executor 只用这两个）。
+> - **清理必须按 file_id 前缀**：`_cleanup()` 用 `FileReviewAnnotation.file_id.startswith(PFX)` / `FileReviewRound.file_id.startswith(PFX)`。task_id 是 `get_uuid()` 产物、无前缀，按它过滤恒删 0 行——这会让残留数据在重复运行时把「open→resolved」「标注已落库」等断言退化成平凡真（这也是历史审查抓到的 C1）。
 
 - [ ] **Step 2: 跑测试**
 
@@ -7675,21 +7784,30 @@ def test_e2e_download_endpoint(monkeypatch, mock_llm):
 uv run --no-sync pytest test/test_file_review_e2e.py -v
 ```
 
-预期：5 用例全绿（download 用例若 minio 不可用则 skip，不算 fail）。
+预期：5 用例全绿（download 用例用内存存储替身，不依赖真 minio）。
+
+**额外必须验证隔离（防「清理失效」类回归）**：连跑两遍后查 DB 残留应为 0 行。
+
+```bash
+uv run --no-sync pytest test/test_file_review_e2e.py -q
+uv run --no-sync pytest test/test_file_review_e2e.py -q
+# 残留检查：rounds=0 annotations=0
+docker exec docker-ragflow-cpu-1 mysql -uroot -pinfini_rag_flow -e "
+  SELECT COUNT(*) AS rounds FROM rag_flow.file_review_round WHERE file_id LIKE '__test_fr_e2e__%';
+  SELECT COUNT(*) AS annotations FROM rag_flow.file_review_annotation WHERE file_id LIKE '__test_fr_e2e__%';"
+```
 
 - [ ] **Step 3: 跑全量回归**
 
 ```bash
-uv run --no-sync pytest -k 'file_review' -v
+uv run --no-sync pytest test/test_file_review_*.py -q
 ```
 
-预期：所有 file_review 测试全绿（e2e 5 个 + 之前 T1-T15 测试套件，无 regression）。
+预期：所有 file_review 测试全绿（e2e 5 个 + T1-T15 既有套件，无 regression）。
 
-```bash
-cd web && npm run build
-```
+**注意**：不要用 `pytest -k 'file_review'`——会捎带收集 `test/testcases/`，其 conftest 要求 `ZHIPU_AI_API_KEY` 环境变量，直接 collect error。必须显式列文件名。
 
-预期：build 成功，0 error。
+本任务纯后端测试，无前端改动，**不需要** `npm run build`。
 
 - [ ] **Step 4: 提交**
 
@@ -7705,7 +7823,8 @@ git commit -m "test(file-review): e2e 5-endpoint coverage + mock LLM"
 | 任务 | 约束 |
 |---|---|
 | T17 部署 | 部署清单**必须**追加 `test/test_file_review_e2e.py` 到回归命令清单（部署后跑一次确认 5 用例全绿） |
-| T17 部署 | 部署清单**必须**追加 5 个端点的冒烟 URL（不再走 `/file/review/template/list` 旧路径，全部按 T9 + T15 fix 重命名后的路径） |
+| T17 部署 | 部署清单**必须**列全 5 个端点的冒烟 URL，且路径按 T9 + T15 重命名后的真实路径——**不再出现** `/file/review/template/list`（旧路径，T9 已改名 `/file/review/templates`） |
+| T17 部署 | 后端文件清单**必须**含 T15 新增的第 5 个端点所在文件（commit `85a3d82c` 的 download 端点） |
 | T18 最终审查 | e2e 测试应纳入回归矩阵；任何后续重构破坏 e2e 必须先修 |
 
 ---
@@ -7714,15 +7833,32 @@ git commit -m "test(file-review): e2e 5-endpoint coverage + mock LLM"
 
 **Files:**（无新增，仅部署）
 
-- [ ] **Step 1: 后端 SCP**
+> ### ⛔ 禁止自动执行（最高优先级约束）
+>
+> 按项目 CLAUDE.md「关键约束 #1 禁止自动部署」「#3 禁止重启 Docker」：**本任务的每一条命令都必须由用户显式下达后才可执行**。执行者（人或 agent）**不得**因为「计划里写了」就自行 scp / restart / build。
+>
+> 本任务在计划中的作用是**操作手册**：列出「用户决定部署时该按什么顺序做什么」。未获授权时，本任务的全部 checkbox 保持未勾选状态。
+>
+> 另：改动的代码**已全部提交在当前分支**（`feat/unified-crawler-framework`），未 push。部署 ≠ push。
+
+### 部署前置条件（缺一不可）
+
+1. T1-T16 全部完成且 `uv run --no-sync pytest test/test_file_review_*.py -q` 本地全绿。
+2. 用户明确表示「可以部署」。
+3. 目标容器 `docker-ragflow-cpu-1` 在运行（`docker ps` 可见）。若用户桌面 Docker 未启动，**停下来问**，不要试图 `docker start`。
+
+### 顺序硬约束（颠倒会出问题）
+
+**先后端（含 restart）→ 再前端 build**。理由：前端 T11 hook 直接打 `/api/v1/file/review/...`，5 个端点尚不存在时前端会连续 404；先上后端可让「构建 → 上传 → nginx reload」这一串动作后面紧接浏览器可用的状态。反向顺序不会报错但会让联调窗口多一段无谓的失败态。
+
+- [ ] **Step 1: 后端 SCP（成套，不能挑单文件）**
 
 ```bash
-# 后端文件清单
+# 后端文件清单（file_review 全链路 11 个文件）
 FILES=(
   api/db/db_models.py
   api/db/services/file_review_service.py
   api/apps/restful_apis/file_review_api.py
-  api/apps/restful_apis/__init__.py
   rag/svr/file_review/__init__.py
   rag/svr/file_review/executor.py
   rag/svr/file_review/kb_aggregator.py
@@ -7738,24 +7874,55 @@ for f in "${FILES[@]}"; do
 done
 ```
 
-- [ ] **Step 2: 容器内冒烟（确认 import 无问题 + DB migration 跑过）**
+> **为何是「成套」**：`db_models.py` 定义 3 张表 + seed；`file_review_service.py` 是唯一 CRUD 入口；`executor.py` / `spawn.py` / `patcher.py` / `kb_aggregator.py` 互相 import；`file_review_api.py` 依赖前两者；`agent/component/file_review.py` + `agent/tools/file_review.py` 复用 Service。挑单文件会产生 `ImportError` 或「新旧契约不匹配」的隐性错误（参见 `踩坑问题清单.md` #28 的成套 SCP 教训）。
+>
+> **注意**：`api/apps/restful_apis/__init__.py` **不在清单里**。blueprint 由 `api/apps/__init__.py:297-300` 的 `glob("*restful_apis/*.py")` 自动发现，无需手改或 SCP 注册文件（`__init__.py` 里没有任何 file_review 引用）。
+
+- [ ] **Step 2: 容器内冒烟（import + migration + 端点注册，三件事一次验完）**
 
 ```bash
 ssh -i "D:\AI\konus-key.pem" root@47.98.102.55 \
   "docker exec docker-ragflow-cpu-1 python -c '
 from api.db.db_models import FileReviewTemplate, FileReviewRound, FileReviewAnnotation
-from api.db.services.file_review_service import FileReviewTemplateService, FileReviewRoundService, FileReviewAnnotationService
+from api.db.services.file_review_service import (
+    FileReviewTemplateService, FileReviewRoundService, FileReviewAnnotationService)
 from rag.svr.file_review.executor import execute_task
 from rag.svr.file_review.spawn import spawn_review_task
+from rag.svr.file_review.patcher import apply_patches
+from rag.svr.file_review.kb_aggregator import aggregate_chunks
 from agent.component.file_review import FileReview
 from agent.tools.file_review import FileReviewTool
-from api.apps.restful_apis.file_review_api import blueprint
-print(\"all imports OK\")
+print(\"imports OK\")
+
+# ① 三表已建 + 5 套预置模板 seed 到位
 tpls = FileReviewTemplateService.list_enabled()
 print(f\"preset templates: {len(tpls)}\")
+assert len(tpls) >= 5, f\"预置模板不足 5：{len(tpls)}\"
+
+# ② 5 个端点已注册（真实前缀 /api/v1，来自 api/apps/__init__.py:322）
+from api.apps import app
+rules = sorted(r.rule for r in app.url_map.iter_rules()
+               if \"file/review\" in r.rule)
+for r in rules:
+    print(\"  route:\", r)
+assert len(rules) == 5, f\"端点数 {len(rules)} != 5\"
 '"
 ```
-Expected: `all imports OK` + `preset templates: 5`
+
+Expected 输出：
+```
+imports OK
+preset templates: 5
+  route: /api/v1/file/review/annotation/<annotation_id>/status
+  route: /api/v1/file/review/file/<file_id>/state
+  route: /api/v1/file/review/templates
+  route: /api/v1/file/review/<task_id>/<file_version>/download
+  route: /api/v1/file/review/<task_id>/fix
+```
+
+> **为何断言 `len(rules) == 5`**：`file_review_api.py` 若因 import 失败被 `register_page` 静默跳过，进程照常启动、`imports OK` 照常打印，只有路由表能暴露。这是本步骤唯一能抓住「蓝图表空」的检查点。
+>
+> 若见 `CrawlerResultService not available` 之类的顶链 import 拖累报错，按 `踩坑问题清单.md` #26 单独 import 每个模块定位真正失败点。
 
 - [ ] **Step 3: 重启容器**
 
@@ -7763,40 +7930,186 @@ Expected: `all imports OK` + `preset templates: 5`
 ssh -i "D:\AI\konus-key.pem" root@47.98.102.55 "docker restart docker-ragflow-cpu-1"
 ```
 
-- [ ] **Step 4: 验证端点（HTTP 200 + JSON OK）**
+> DB migration 在启动期由 `db_models.migrate_db()` 自动跑（3 张表 `CREATE TABLE IF NOT EXISTS` + 幂等 seed），无需手工执行 SQL。**但**：seed 失败在启动期只写日志不阻断（`2d4ecd22` 的改动），所以 Step 2 的 `preset templates: 5` 断言必须在**重启后**再确认一次——见 Step 4 的模板端点冒烟。
+
+- [ ] **Step 4: 5 个端点冒烟（不带 token，预期全部 401）**
 
 ```bash
 ssh -i "D:\AI\konus-key.pem" root@47.98.102.55 \
-  "sleep 30 && docker exec docker-ragflow-cpu-1 curl -s -o /dev/null -w '%{http_code}\n' \
-   http://localhost:9380/file/review/template/list -H 'Authorization: Bearer <TEST_TOKEN>'"
+  "sleep 30 && docker exec docker-ragflow-cpu-1 bash -c '
+for u in \
+  \"/api/v1/file/review/templates\" \
+  \"/api/v1/file/review/file/nonexistent/state\" \
+  \"/api/v1/file/review/nonexistent/fix\" \
+  \"/api/v1/file/review/annotation/nonexistent/status\" \
+  \"/api/v1/file/review/nonexistent/v1/download\" ; do
+  code=\$(curl -s -o /dev/null -w \"%{http_code}\" \"http://localhost:9380\$u\")
+  echo \"\$code  \$u\"
+done'"
 ```
-Expected: 401（未带 token → 鉴权拦截，**确认鉴权层挂上**）
 
-- [ ] **Step 5: 前端 build**
+Expected：5 行全部 `401`。
+
+> **为何预期 401 而不是 404**：不带 token 时 `login_required` 在业务逻辑前拦截。401 同时证明了两件事——① 路由已注册（否则 404）② 鉴权层确实挂上了。若某行是 404，说明该端点没注册成功，回 Step 2 查路由表。
+>
+> 这里**不**验证 200 路径：需要真实 token + 真实 file_id + 真实 round 行，属于 Step 6 人肉验收的职责。用假 id 打 200 只会得到业务错误码，无法区分「端点通了」和「断言写错了」。
+
+- [ ] **Step 5: 前端 build + 上传（后端已就绪后再做）**
 
 ```bash
-cd web && npm run build
+cd D:/AI/ragflow2/web && npm run build
 tar -czf dist.tar.gz dist/
 scp -i "D:\AI\konus-key.pem" dist.tar.gz root@47.98.102.55:/home/bid-agent-konus/ragflow2/web/
 ssh -i "D:\AI\konus-key.pem" root@47.98.102.55 \
   "cd /home/bid-agent-konus/ragflow2/web && rm -rf dist/* dist/.[!.]* dist/..?* 2>/dev/null; tar -xzf dist.tar.gz && rm -f dist.tar.gz && docker exec docker-ragflow-cpu-1 nginx -s reload"
 ```
 
-- [ ] **Step 6: 验收清单**（人肉浏览器）
+> **必须用 `rm -rf dist/*`（删内容、保留目录 inode），绝不能 `mv dist dist.old`**：`web/dist/` 是 bind mount 进容器的目录，换 inode 会让挂载点断开、nginx 读到空目录（`踩坑问题清单.md` 有完整案例）。
 
-1. C 端对话发"审核投标书" + 上传文件 → 自动起 FileReview 工具 → progress 卡显示第 1 轮 → 点"打开审核面板" → review-panel 显示 v1 标注
-2. 手动加批注 → review-panel 显示 manual 行
-3. 点"修高中级别" → progress 卡显示第 2 轮 reviewing → annotated → review-panel 切 v2
-4. 第 3 轮无修复按钮，点"再修一轮"扩展到 v4
-5. 流程页 FileReview 节点配置 → 跑通同上
-6. 刷新页面：标注历史完整，正在审核的轮次经轮询恢复
-7. 并行 TemplateFill 节点运行不受影响（独立性验证）
+- [ ] **Step 6: 部署后回归（在服务器容器内跑，验真实环境而非本地）**
+
+```bash
+ssh -i "D:\AI\konus-key.pem" root@47.98.102.55 \
+  "docker exec -w /ragflow docker-ragflow-cpu-1 python -m pytest test/test_file_review_*.py -q"
+```
+
+Expected：全部通过，其中 e2e 5 用例包含在内（T16 → T17 交接契约要求）。
+
+> 若容器内无 pytest 或测试依赖缺失，退化为本地跑一次同一命令（本地绿 + 服务器 import 冒烟绿，等价覆盖）。**不要**为此在服务器上装包。
+
+- [ ] **Step 7: 验收清单**（人肉浏览器，逐条打勾）
+
+1. C 端对话发「审核投标书」+ 上传文件 → 自动起 FileReview 工具 → progress 卡显示第 1 轮
+2. 点「打开审核面板」→ review-panel 显示 v1 标注（保真预览 + 标注明细）
+3. 手动加批注 → review-panel 显示 manual 行
+4. 点「修高中级别」→ progress 卡显示第 2 轮 reviewing → annotated → review-panel 切 v2
+5. 第 3 轮后无修复按钮（`fix_rounds_left` 归零）
+6. 点「下载」→ 浏览器下载到修复后的 docx（走 T15 download 端点）
+7. 流程页 FileReview 节点配置 → 跑通同 1-6
+8. 刷新页面：标注历史完整，正在审核的轮次经轮询恢复
+9. 并行 TemplateFill 节点运行不受影响（独立性验证）
+
+### 回滚方案
+
+**触发条件**：Step 6 回归失败，或 Step 7 任一环节阻断主流程（如 C 端对话报 500）。
+
+```bash
+# 1. 回到部署前的 commit（部署前的 HEAD 记在部署时的 git rev-parse 输出里）
+cd D:/AI/ragflow2
+git log --oneline -5           # 找到部署前那个 commit
+PRE_DEPLOY=<部署前的 commit sha>
+
+# 2. 把 file_review 相关文件恢复到旧版并重新 SCP
+git checkout $PRE_DEPLOY -- api/db/db_models.py api/db/services/file_review_service.py \
+  api/apps/restful_apis/file_review_api.py rag/svr/file_review/ \
+  agent/component/file_review.py agent/tools/file_review.py
+# 再执行一次 Step 1 的 SCP 循环 + Step 3 的重启
+
+# 3. 前端回滚：重新 build 部署前的 web 代码
+git checkout $PRE_DEPLOY -- web/src && cd web && npm run build
+# 再执行一次 Step 5 的 tar/scp/解包/nginx reload
+```
+
+**DB 无法回滚**：`migrate_db()` 只做 `CREATE TABLE IF NOT EXISTS` + 幂等 seed，**不做 DROP**。回滚代码后 3 张表仍在，但不被引用（旧代码不查它们）。这是**有意设计**——避免回滚时丢用户数据。若确需清空：
+
+```sql
+DROP TABLE IF EXISTS file_review_annotation;
+DROP TABLE IF EXISTS file_review_round;
+DROP TABLE IF EXISTS file_review_template;
+```
+
+> ⚠️ 上面三条 SQL 会**永久删除**所有用户审核记录，仅在确认无人使用过该功能时才执行。执行前先 `SELECT COUNT(*)` 看一眼。
+
+**回滚后必须重跑** Step 2 + Step 4 冒烟，确认路由表回到 0 条 file/review 路由（旧版无此 blueprint）。
+
+---
+
+## Task 18: 最终代码审查 + 分支收尾
+
+**Files:**（无新增代码，仅文档 + 审查）
+
+- [ ] **Step 1: 全量最终审查**
+
+派 `superpowers:code-reviewer`（或项目 `konus-code-review`）对**整个 file_review 变更集**做一次收口审查，范围：
+
+```bash
+# 本轮新增/修改的全部文件（相对分支起点）
+git diff --stat $(git merge-base master HEAD)..HEAD -- \
+  api/db/db_models.py api/db/services/file_review_service.py \
+  api/apps/restful_apis/file_review_api.py rag/svr/file_review/ \
+  agent/component/file_review.py agent/tools/file_review.py \
+  web/src/hooks/file-review-stream.ts web/src/pages/c-chat/file-review-progress.tsx \
+  web/src/utils/api.ts test/test_file_review_*.py
+```
+
+审查关注点（对齐 CLAUDE.md 的 8 条规范）：
+1. 原有功能是否被意外移除 / 返回值被改（重点：`db_models.py` 是共享文件，确认没有误伤其他表）
+2. 5 个端点的越权闸门是否一致（`review_state` 无租户参数是有意为之还是疏漏）
+3. 边界：空 docx、超长文档、`fix_rounds_left` 归零后的第 4 次修复请求、并发两次 fix
+4. 多场景：C 端 / 流程页 / 画布节点三条入口行为一致
+5. 异常处理：LLM 返畸形 JSON、minio 不可达、轮次行缺失
+6. 安全性：OCR / 路径穿越 / 跨租户读 `review_state`
+7. 性能：`list_by_file` 是否走索引、`review_state` 是否 N+1 查标注
+8. 代码质量：与 template_fill 的重复实现是否应抽公共层
+
+**预期结论**：Critical / Major = 0；Minor 记入 CHANGE.md 遗留项，不阻断部署。
+
+- [ ] **Step 2: 更新 CHANGE.md**
+
+按 CLAUDE.md「项目迭代记录（CHANGE.md 规则）」在 `D:\AI\ragflow2\CHANGE.md` **顶部**追加本次迭代条目（增量，不覆盖）：
+
+```markdown
+## 2026-09-XX 文件审核（File Review）全链路
+
+- **主题**：C 端对话工具 / 流程页节点 / 画布节点三入口共用的「投标文件格式审核」能力
+- **核心变更**：
+  - 3 张表 `file_review_template` / `file_review_round` / `file_review_annotation` + 5 套预置审核模板 seed
+  - Service 层 CRUD + 多轮状态机（reviewing → annotated → fixing → done）+ `MAX_FIX_ROUNDS=3`
+  - executor（LLM 审查轮 / 修复轮）+ patcher（docx 格式保真替换）+ kb_aggregator（全 KB 并发检索 + token 预算）
+  - 5 个 REST 端点（templates / state / fix / annotation status / download），轮询读模型（无 SSE）
+  - 前端：流类型 + 归约函数 + API hook + 进度卡 `file-review-progress`（保真预览 + 标注面板）
+  - 画布节点 `FileReview` + 对话工具 `FileReviewTool`
+  - e2e 测试 5 用例（5 端点全链路 + mock LLM）
+- **遗留**：（以 T18 Step 1 审查结论为准填写；无则写「无」）
+- **部署状态**：未部署（代码已提交 `feat/unified-crawler-framework`，部署手册见计划 T17）
+```
+
+- [ ] **Step 3: 更新 CLAUDE.md 参考文档表**
+
+按「文档引用规范」，在 `D:\AI\ragflow2\CLAUDE.md` 的「参考文档」表追加一行，指向本功能的 spec（绝对路径 + 一句话简介 + 当前状态）：
+
+| 文档 | 路径 | 包含内容 |
+|------|------|----------|
+| 文件审核节点 | `D:\AI\ragflow2\docs\superpowers\specs\2026-09-XX-file-review-node-design.md` | ★ C端对话/流程页/画布节点三入口共用的投标文件格式审核：3 表 + 5 端点 + 多轮状态机 + docx 保真修复 + 进度卡；实施计划 `docs/superpowers/plans/2026-09-16-file-review-node.md`（已完成编码 + e2e，未部署） |
+
+> 若 spec 文件尚未落到 `docs/superpowers/specs/`，本步**先补写 spec 文件**再登记。CLAUDE.md 里已在「参考文档」表的说明中提及本功能，但按规范必须有独立 spec 文件 + 独立表行。
+
+- [ ] **Step 4: 收尾检查**
+
+```bash
+cd D:/AI/ragflow2
+git status                 # 应干净（.scratch/ 与既存未跟踪文件除外）
+git log --oneline -12      # 确认 file_review 提交序列完整、无夹带无关改动
+```
+
+逐条确认：
+1. 所有 file_review 提交都在 `feat/unified-crawler-framework` 上，**未 push**（按 CLAUDE.md「禁止自动 push」）
+2. `git status` 无 file_review 相关残留（`.scratch/` 草稿不算）
+3. CHANGE.md + CLAUDE.md 两处文档已更新并提交（可合成一个 `docs:` 提交）
+4. TaskList 中 T1-T18 全部置 completed
+5. 向用户报告：完成项 / 遗留项 / 需用户执行项（是否 push、是否部署）
+
+> **报告口径**：按用户全局 CLAUDE.md 的「任务完成总结」四段式（完成 / 遗留 / 需要你做 / 效果），控制在 4-6 行。
 
 ---
 
 ## 自检清单
 
-- [ ] **Spec 覆盖**：每个 spec 章节均有 task 覆盖（DB→Service→KB→Patcher→Spawn→Executor→Node→Tool→API→Stream→Hook→Progress→i18n→对话→flow→canvas→e2e→部署）
+- [ ] **Spec 覆盖**：每个 spec 章节均有 task 覆盖（DB→Service→KB→Patcher→Spawn→Executor→Node→Tool→API→Stream→Hook→Progress→i18n→对话→flow→canvas→e2e→部署→收尾审查）
 - [ ] **占位符扫描**：无 TBD / TODO / "fill in"
 - [ ] **类型一致**：`IFileReviewState`/`IFileReviewEvent`/`IFileReviewAnnotation` 在 Stream 任务定义、Hook 复用、Progress 组件、对话/flow 挂载全部一致
 - [ ] **增量边界确认**：未触及 `template_fill*` / `tpl_*` / `tpl_fill:*` / `review-panel.tsx` / `Annotation` / `MarginComment`
+- [ ] **端点数量一致**：正文凡述「N 个端点」处 N 均为 **5**（templates / state / fix / annotation-status / download），无残留「4 个」表述
+- [ ] **URL 前缀一致**：所有可执行冒烟 URL 均带 `/api/v1` 前缀（blueprint 由 `api/apps/__init__.py:297-300` 自动 glob 发现，前缀见同文件 :322）
+- [ ] **部署约束显式**：T17 顶部「禁止自动执行」块存在，且 T17 全部 checkbox 保持未勾选
+- [ ] **e2e 已入回归**：T17 Step 6 + T18 均引用 `test/test_file_review_e2e.py`
