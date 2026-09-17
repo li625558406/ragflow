@@ -9,7 +9,6 @@ import asyncio
 import io
 import os
 import sys
-import time
 import types
 from importlib.util import module_from_spec, spec_from_file_location
 from types import SimpleNamespace
@@ -21,6 +20,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from api.db.db_models import DB, FileReviewAnnotation, FileReviewRound
 from api.db.services.file_review_service import (
+    MAX_FIX_ROUNDS,
     FileReviewAnnotationService,
     FileReviewRoundService,
 )
@@ -31,11 +31,9 @@ from common.misc_utils import get_uuid
 PFX = "__test_fr_e2e__"
 
 # 区分 review / fix 的字面量：executor._run_review_round 用模板的 system_prompt
-# （如「投标文件格式审核专家」）+ user_prompt 含「请审视全文」；executor._run_fix_round
-# 用 FIX_SYSTEM（首句「你是文档修复助手」）+ _build_fix_prompt 含「请为每条问题给出
-# 最小改动的替换方案」。模板真实字面量见 db_models._PRESET_REVIEW_TEMPLATES。
-_REVIEW_SYSTEM_FRAGMENT = "审核专家"           # 任一预置模板的 system_prompt 都含此字
-_REVIEW_USER_MARKER = "请审视全文"
+# （如「投标文件格式审核专家」）+ user_prompt；executor._run_fix_round 用 FIX_SYSTEM
+# （首句「你是文档修复助手」）+ _build_fix_prompt 含「请为每条问题给出最小改动的
+# 替换方案」。模板真实字面量见 db_models._PRESET_REVIEW_TEMPLATES。
 _FIX_SYSTEM_MARKER = "你是文档修复助手"        # executor.FIX_SYSTEM 字面量
 _FIX_USER_MARKER = "请为每条问题给出最小改动"
 
@@ -61,6 +59,9 @@ def mock_llm(monkeypatch):
         return fake_review_json()
 
     monkeypatch.setattr('rag.svr.file_review.executor._call_llm', fake_call_llm)
+    # 显式断言「本用例不依赖 KB/ES」：本模块从不传 kb_ids，检索本就走不到；
+    # 加这层 patch 是把它变成**被断言的事实**，而非结构上的偶然。
+    monkeypatch.setattr('rag.svr.file_review.executor._retrieve_chunks', lambda *a, **k: [])
     return {'call_llm': fake_call_llm}
 
 
@@ -142,13 +143,15 @@ def _seed_file(file_id: str, blob: bytes, fstore: _FakeStorage, tenant_id: str =
 
 @pytest.fixture
 def fstore(monkeypatch):
-    from rag.svr.file_review import executor
+    """用内存存储替身替换存储后端。
+
+    executor.py:29 是 `from common import settings`，即 executor.settings 与
+    file_review_api.settings 是**同一个模块对象**；故只需 patch
+    common.settings.STORAGE_IMPL 一处，两个调用方同时命中（monkeypatch 会在
+    用例结束自动回滚这个模块属性）。
+    """
     from common import settings as common_settings
     st = _FakeStorage()
-    # executor 与 file_review_api 各自 import 了 settings，路径不同但对象同源；
-    # patch executor.settings + 设置 common_settings.STORAGE_IMPL 双保险，
-    # 保证下载端点（走 file_review_api 的 settings）也能命中 fstore。
-    monkeypatch.setattr(executor, "settings", SimpleNamespace(STORAGE_IMPL=st))
     monkeypatch.setattr(common_settings, "STORAGE_IMPL", st)
     return st
 
@@ -174,16 +177,24 @@ def _make_round_one(file_id: str, *, template_id: str = "bid_doc_format",
 
 def _run_round_sync(task_id: str):
     """同步跑一轮 executor：execute_task 按 task_id 取该 task 最新轮次推进。
-    注：实际签名只接 task_id，spec 里写的 round_id 是误植，按现实为准。
+
+    注：实际签名只接 task_id（executor.py:94），不是 round_id。
+    execute_task 是同步函数，Service 层写各自在 @DB.connection_context() 内提交，
+    无异步落盘竞态，故不需要 sleep。
     """
     from rag.svr.file_review.executor import execute_task
     execute_task(task_id)
-    time.sleep(0.1)  # 落盘 commit
 
 
 def _cleanup():
-    FileReviewAnnotation.delete().where(FileReviewAnnotation.task_id.startswith(PFX)).execute()
-    FileReviewRound.delete().where(FileReviewRound.task_id.startswith(PFX)).execute()
+    """按 file_id 前缀清本模块写的行。
+
+    **不能按 task_id 前缀**：task_id 由 get_uuid() 生成（uuid1().hex），不带 PFX；
+    按 task_id.startswith(PFX) 恒删 0 行，会让残留数据在重复运行时把
+    「open→resolved」「标注已落库」等断言退化成平凡真。file_id 全部是 PFX + "fN"。
+    """
+    FileReviewAnnotation.delete().where(FileReviewAnnotation.file_id.startswith(PFX)).execute()
+    FileReviewRound.delete().where(FileReviewRound.file_id.startswith(PFX)).execute()
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -228,9 +239,11 @@ def test_e2e_two_rounds(monkeypatch, mock_llm, fstore):
 
         r1 = FileReviewRoundService.model.get(FileReviewRoundService.model.id == rid1)
         assert r1.status == 'annotated', f"R1 status={r1.status}, expected annotated"
+        # list_by_file 是本文件全部标注（跨任务）；file_id 在本用例唯一，故即本轮产物。
         anns = FileReviewAnnotationService.list_by_file(file_id)
-        assert len(anns) >= 1
-        assert any(a.severity == 'high' for a in anns)
+        assert len(anns) == 1, f"annotations={len(anns)}"
+        assert anns[0].severity == 'high', f"severity={anns[0].severity!r}"
+        assert anns[0].status == 'open', f"status={anns[0].status!r}"
 
     # 触发修复（HTTP）
     fix_endpoint = _api.fix_review
@@ -245,10 +258,10 @@ def test_e2e_two_rounds(monkeypatch, mock_llm, fstore):
 
         r2 = FileReviewRoundService.model.get(FileReviewRoundService.model.id == rid2)
         # 修复轮 mock LLM 返空 patches → executor 走 _run_fix_round 的「合法但空」分支，
-        # 收口 status='done'（T6 _run_fix_round 第 189-193 行的诚实收口）。审查轮
-        # 才会落 'annotated'，不要按字面意义比对。
-        assert r2.status in ('done', 'annotated'), \
-            f"R2 status={r2.status}, expected done/annotated"
+        # 确定性收口 status='done'（executor.py:189-193）。'annotated' 只可能由
+        # _run_review_round 写，本路径永远到不了，故不加 OR 放宽。
+        assert r2.status == 'done', f"R2 status={r2.status}, expected done"
+        assert '保持原样' in (r2.summary or ''), f"R2 summary={r2.summary!r}"
         assert r2.round_no == 2
 
 
@@ -275,12 +288,18 @@ def test_e2e_state_endpoint(monkeypatch, mock_llm, fstore):
                   'max_fix_rounds']:
         assert field in payload, f"state 端点缺字段 {field}"
 
-    assert payload['file_id'] == file_id
-    assert len(payload['rounds']) == 1
-    assert payload['rounds'][0]['status'] == 'annotated'
-    assert payload['annotation_counts']['high'] >= 1
-    # 还没发起过修复（只有 round_1 review）→ fix_rounds_left 应等于 max_fix_rounds
-    assert payload['fix_rounds_left'] == payload['max_fix_rounds']
+    assert payload['file_id'] == file_id, f"file_id={payload['file_id']!r}"
+    assert len(payload['rounds']) == 1, f"rounds={len(payload['rounds'])}"
+    assert payload['rounds'][0]['status'] == 'annotated', \
+        f"round status={payload['rounds'][0]['status']!r}"
+    assert payload['annotation_counts']['high'] >= 1, \
+        f"counts={payload['annotation_counts']}"
+    # 还没发起过修复（只有 round_1 review）→ fix_rounds_left 应等于 max_fix_rounds。
+    # 两边同时算错也能通过，故把 max_fix_rounds 钉到字面量（file_review_service.py:64）。
+    assert payload['max_fix_rounds'] == MAX_FIX_ROUNDS, \
+        f"max_fix_rounds={payload['max_fix_rounds']}"
+    assert payload['fix_rounds_left'] == MAX_FIX_ROUNDS, \
+        f"fix_rounds_left={payload['fix_rounds_left']}"
 
 
 # ── E2E 3：annotation 状态修改端点 ─────────────────────────
@@ -293,29 +312,49 @@ def test_e2e_annotation_status(monkeypatch, mock_llm, fstore):
         task_id, rid1 = _make_round_one(file_id)
         _run_round_sync(task_id)
         anns = FileReviewAnnotationService.list_by_file(file_id)
+        assert len(anns) == 1, f"annotations={len(anns)}"
         ann_id = anns[0].id
+        # 前置状态必须是 open，否则「open→resolved」这条转换没被真正验证
+        assert anns[0].status == 'open', f"pre status={anns[0].status!r}"
 
     annotation_endpoint = _api.update_annotation_status  # 入参名 annotation_id
     body = _call(annotation_endpoint, annotation_id=ann_id, body={'status': 'resolved'})
     assert body['code'] == RetCode.SUCCESS, body
-    assert body['data']['status'] == 'resolved'
+    assert body['data']['status'] == 'resolved', f"data={body['data']}"
 
     with DB.connection_context():
         a = FileReviewAnnotationService.model.get(
             FileReviewAnnotationService.model.id == ann_id)
-        assert a.status == 'resolved'
+        assert a.status == 'resolved', f"persisted status={a.status!r}"
 
 
 # ── E2E 4：templates 端点列出预置 ─────────────────────────
+# T1 迁移 seed 的 5 套预置 id（db_models._PRESET_REVIEW_TEMPLATES）。
+_PRESET_IDS = {
+    "bid_doc_format",
+    "bid_response_complete",
+    "bid_substantive_clause",
+    "bid_qualification",
+    "bid_price_review",
+}
+
+
 def test_e2e_templates_list():
-    """5 套预置模板（T1 迁移）应全部可列。"""
+    """5 套预置模板（T1 迁移）应全部可列。
+
+    不用 `len(templates) == 5`：list_enabled 返回全库 tenant_id=="" 且 enabled 的模板，
+    同库其他套件（如 test_file_review_service.py）会临时造这类行，个数相等是脆断言。
+    改为断言「这 5 个 id 都在」，更强且不受他方残留影响。
+    """
     templates_endpoint = _api.list_review_templates
     body = _call(templates_endpoint, method='GET')
     assert body['code'] == RetCode.SUCCESS, body
     templates = body['data']['templates']
-    assert len(templates) == 5, f"got {len(templates)}, expected 5 preset"
+    ids = {t['id'] for t in templates}
+    assert _PRESET_IDS <= ids, f"缺少预置模板：{_PRESET_IDS - ids}"
     for t in templates:
-        assert {'id', 'name', 'description', 'annotation_types'} <= set(t.keys())
+        assert {'id', 'name', 'description', 'annotation_types'} <= set(t.keys()), \
+            f"模板字段缺失：{sorted(t.keys())}"
 
 
 # ── E2E 5：download 端点流式返回字节 ────────────────────────
@@ -326,10 +365,8 @@ def test_e2e_download_endpoint(monkeypatch, mock_llm, fstore):
     直接 mock round 收尾时带 minio_path 的状态，再用 fstore 注入字节。
     """
     file_id = PFX + "f5"
-    blob = _docx(["投标人须按本招标文件要求编制投标文件" + _BODY, "其余内容" + _BODY])
-    _seed_file(file_id, blob, fstore)
-
     task_id, rid1 = _make_round_one(file_id)
+    # 下载端点只读 round.minio_path 指向的对象，不读原件，故无需 _seed_file。
     bucket = f"{TENANT}-downloads"
     key_name = f"frv-{task_id}-v1"
     fstore.blobs[(bucket, key_name)] = b"fake-docx-bytes"
