@@ -499,4 +499,12 @@ export default {
   // 刷新恢复权威态：画布运行快照（按 canvas task_id 索引，覆盖挂起卡+全部模板行）
   templateFillRunSnapshot: (canvasTaskId: string) =>
     `${restAPIv1}/template/fill/fill-run/${canvasTaskId}/snapshot`,
+
+  // 文件审核（T9 REST API：4 端点轮询读模型 + fix + 标注人工闭环）
+  fileReviewTemplates: `${restAPIv1}/file/review/templates`,
+  fileReviewState: (fileId: string) =>
+    `${restAPIv1}/file/review/file/${fileId}/state`,
+  fileReviewFix: (taskId: string) => `${restAPIv1}/file/review/${taskId}/fix`,
+  fileReviewAnnotationStatus: (annotationId: string) =>
+    `${restAPIv1}/file/review/annotation/${annotationId}/status`,
 };
