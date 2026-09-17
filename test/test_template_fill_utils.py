@@ -3102,3 +3102,16 @@ def test_extract_docx_candidates_char_underscore_slots():
     cands = extract_docx_candidates(_make_docx(["项目名称：____________", "无填写点的普通段落"]))
     by_text = {c["text"]: c for c in cands}
     assert by_text["项目名称：____________"]["slots"][0]["kind"] == "blank"
+
+
+def test_extract_docx_candidates_no_slots_hint_re_still_matched():
+    """规格③：run 层无填写位（slots==[]）但文本命中 FILL_HINT_RE 的行仍入候选。
+    "（此处填写）" 命中 [（(][^（）()]*填写[^（）()]*[)）] 分支，且无 underline run、
+    无连续字符下划线（blank_slots 仅从这两处切位）→ slots 恒为 []；
+    对照：无任何特征的段落不入候选。"""
+    from rag.svr.template_fill.docx_utils import extract_docx_candidates
+    cands = extract_docx_candidates(_make_docx(["（此处填写）", "普通正文段落无任何特征"]))
+    by_text = {c["text"]: c for c in cands}
+    assert "（此处填写）" in by_text
+    assert by_text["（此处填写）"]["slots"] == []
+    assert "普通正文段落无任何特征" not in by_text
