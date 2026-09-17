@@ -78,6 +78,55 @@ class TestBuildProgressPayload:
                                                  {"status": "done"})
         assert p["status"] == "done"
 
+    # ── 终态「DB 行权威 / 快照只是重连缓存」口径（2026-09-17 生产事故回归门）──
+    # 事故：对话里就地修改（FillTemplate action=modify）把新值回写进 DB 行 values，
+    # **不碰** Redis 进度快照（24h TTL）→ 快照里的旧值长期遮蔽 DB 新值，前端「预览
+    # 打开拉一次 progress」与「刷新拉运行快照」两条恢复链路都拿到改前内容 → 用户
+    # 看到「模型说改好了、预览没变」。实测该任务：snapshot.values['approval_authority']
+    # =''，DB render 同键='李港111'，其余 112 键完全一致，DB update_time 比快照
+    # updated_at 晚 17 分钟，成稿文件（真源+下载副本 md5 相同）都已含新值。
+
+    def test_terminal_db_row_beats_stale_snapshot(self):
+        """核心守卫：终态下 DB 行是权威，快照旧值不得遮蔽就地修改的结果。"""
+        snap = {"status": "done", "values": {"approval_authority": "", "b": "同"}}
+        p = _template_api.build_progress_payload(
+            self._task(status="done",
+                       values={"render": {"approval_authority": "李港111", "b": "同"}}),
+            snap)
+        assert p["values"] == {"approval_authority": "李港111", "b": "同"}, \
+            "终态仍以快照优先 = 就地修改永远看不见（2026-09-17 事故重演）"
+
+    def test_terminal_db_values_absent_falls_back_to_snapshot(self):
+        """终态但 DB 行没有产值（脏行/未回写）→ 快照兜底，不能变成空。"""
+        snap = {"status": "done", "values": {"a": "1"}}
+        p = _template_api.build_progress_payload(self._task(status="done", values=None), snap)
+        assert p["values"] == {"a": "1"}
+
+    def test_terminal_db_values_empty_dict_falls_back_to_snapshot(self):
+        # render 存在但为空 dict：与「没有产值」同义，不得用空对象盖掉快照
+        snap = {"status": "done", "values": {"a": "1"}}
+        p = _template_api.build_progress_payload(
+            self._task(status="done", values={"render": {}}), snap)
+        assert p["values"] == {"a": "1"}
+
+    def test_authority_follows_effective_status_not_db_status(self):
+        """权威判定必须按**生效状态**（快照 status 优先，同 payload.status）走：
+        DB 还停在 generating、快照已 done 的那一瞬，两者口径不能分裂。
+        此处 DB 行有产值而快照是旧值 → 按 done 取 DB。"""
+        snap = {"status": "done", "values": {"a": "旧"}}
+        p = _template_api.build_progress_payload(
+            self._task(status="generating", values={"render": {"a": "改后"}}), snap)
+        assert p["status"] == "done"
+        assert p["values"] == {"a": "改后"}
+
+    def test_running_snapshot_still_authoritative_over_db(self):
+        """反例守卫：非终态的实时产值只在快照里（DB 行要到终态才写全量）→ 快照
+        优先的口径**不得**被上面那条顺手反向统一掉。"""
+        snap = {"status": "generating", "values": {"a": "实时新值"}}
+        p = _template_api.build_progress_payload(
+            self._task(status="generating", values={"render": {"a": "旧"}}), snap)
+        assert p["values"] == {"a": "实时新值"}
+
     def test_stalled_after_10min(self):
         # DB update_time 超 600s 且无快照活性信号 → 判中断
         p = _template_api.build_progress_payload(self._task(status="generating",
@@ -175,13 +224,16 @@ class TestBuildProgressPayload:
             None, None, self._PHS)
         assert p["unfilled"] is None
 
-    def test_snapshot_values_authoritative(self):
+    def test_terminal_derivations_follow_db_render_not_snapshot(self):
+        """终态 filled/unfilled 必须按 **DB render** 派生：就地修改只回写 DB 行，
+        快照是改前旧值。（本例原为 test_snapshot_values_authoritative —— 断言
+        「终态快照优先」正是 2026-09-17 事故的契约化，此处反转。）"""
         p = _template_api.build_progress_payload(
             self._task(status="done", values={"render": {"a": "x", "b": ""}}),
             {"status": "done", "values": {"a": "", "b": "y"}},
             None, self._PHS)
-        assert p["unfilled"] == [{"key": "a", "name": "甲", "required": True}]
-        assert p["filled"] == [{"key": "b", "name": "乙"}]
+        assert p["unfilled"] == [{"key": "b", "name": "乙", "required": False}]
+        assert p["filled"] == [{"key": "a", "name": "甲"}]
 
     def test_done_with_placeholders_derives_filled(self):
         p = _template_api.build_progress_payload(

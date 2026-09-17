@@ -289,6 +289,29 @@ class TestBuildRunSnapshotPayload:
         t = payload["templates"][0]
         assert t["values"] == {"k1": "snap"} and t["done"] == 2 and t["total"] == 5
 
+    def test_terminal_snapshot_values_must_not_mask_db(self):
+        """刷新恢复链路同守卫（与 per-task progress 同一根因）：终态 done 后
+        就地修改只回写 DB 行 values，Redis 进度快照仍是改前旧值（24h TTL）→
+        若快照优先，用户刷新后成稿卡/预览又退回改前内容。"""
+        row = _row(status="done", values={"render": {"approval_authority": "李港111"}})
+        payload = _template_api.build_run_snapshot_payload(
+            _run(stage="done"), owned_check=lambda x: True, get_task=lambda x: row,
+            read_snap=lambda x: {"status": "done", "values": {"approval_authority": ""}},
+            version_placeholders=None, bridge=None)
+        t = payload["templates"][0]
+        assert t["status"] == "filled"
+        assert t["values"] == {"approval_authority": "李港111"}, \
+            "终态仍以快照优先 = 刷新恢复回退到改前内容（2026-09-17 事故重演）"
+
+    def test_running_snapshot_values_still_authoritative(self):
+        # 反例守卫：非终态的实时产值只在快照里 → 快照优先口径不得被顺手反向统一
+        row = _row(status="generating", values={"render": {"k1": "旧"}})
+        payload = _template_api.build_run_snapshot_payload(
+            _run(), owned_check=lambda x: True, get_task=lambda x: row,
+            read_snap=lambda x: {"status": "generating", "values": {"k1": "实时新值"}},
+            version_placeholders=None, bridge=None)
+        assert payload["templates"][0]["values"] == {"k1": "实时新值"}
+
     def test_db_values_fallback_when_snap_empty(self):
         row = _row(status="generating", values={"render": {"k1": "db"}})
         payload = _template_api.build_run_snapshot_payload(

@@ -851,6 +851,39 @@ def _bridge_download(task) -> dict | None:
             "url": f"/api/v1/agents/download?id={doc_id}&created_by={task.tenant_id}"}
 
 
+def resolve_progress_values(status: str, task, snapshot: dict | None):
+    """产值取数：**终态以 DB 行为权威，非终态以 Redis 进度快照为准**。
+
+    第一性原理：快照是「重连体验增强，不是执行的权威路径（权威在 DB 行）」
+    （executor._write_snapshot docstring），所以它只配给权威**补缺**，不配**遮蔽**。
+    - 非终态：全量产值只在快照里（DB 行要到终态才写 values）→ 快照优先。
+    - 终态：执行器已把全量产值写进 DB 行；此后唯一还会改产值的是就地修改
+      （FillTemplate action=modify），它**只回写 DB 行、不碰 Redis 快照**（24h TTL）
+      → 若仍快照优先，改前旧值会遮蔽新值。DB 行没有产值（脏行/未回写）才退快照。
+
+    为什么不能只看时间戳判定：两种实现的等价性依赖「DB update_time 每次写都刷新」
+    这一未在模型层强制的约定，而状态口径已有明文语义（TERMINAL_TASK_STATUSES），
+    判据越少越不易腐坏。
+
+    status 传**生效状态**（快照 status 优先于 DB status，同 payload.status），
+    否则「DB 还停在 generating、快照已 done」的那一瞬两种口径会分裂。
+    """
+    db_values = None
+    if isinstance(getattr(task, "values", None), dict):
+        db_values = task.values.get("render")
+    snap_values = (snapshot or {}).get("values")
+    if status in TERMINAL_TASK_STATUSES:
+        # DB 行有非空产值即权威（就地修改只回写 DB 行，快照是改前旧值）。
+        # 空 dict/None 视为「DB 侧尚无权威产值」（failed/cancelled 常见）→ 退回
+        # 快照取中途累积值；快照也空才保留 DB 原值——空 dict 仍要能派生出
+        # 「全部未填」（见 test_all_empty_normalizes_unfilled_but_no_filled）。
+        if isinstance(db_values, dict) and db_values:
+            return db_values
+        return snap_values if snap_values is not None else db_values
+    # 非终态：全量产值只在快照里（DB 行要到终态才写 values）
+    return snap_values if snap_values is not None else db_values
+
+
 def build_progress_payload(task, snapshot: dict | None, download: dict | None = None,
                            placeholders: list[dict] | None = None) -> dict:
     """合并 DB 行 + Redis 快照组装 progress 响应（纯函数，便于对抗测试）；
@@ -861,9 +894,7 @@ def build_progress_payload(task, snapshot: dict | None, download: dict | None = 
     任务会被超阈值——但快照 updated_at（executor 每次写快照都刷新，毫秒 epoch，
     旧秒级值读侧防御归一）仍新鲜说明任务活着，不判 stalled；两个活性信号都停跳才判中断。"""
     status = (snapshot or {}).get("status") or task.status
-    values = (snapshot or {}).get("values")
-    if values is None:
-        values = (task.values or {}).get("render") if isinstance(task.values, dict) else None
+    values = resolve_progress_values(status, task, snapshot)
     snap_alive = False
     if snapshot and snapshot.get("updated_at"):
         snap_ts = snapshot["updated_at"]
@@ -875,7 +906,7 @@ def build_progress_payload(task, snapshot: dict | None, download: dict | None = 
                and (current_timestamp() - task.update_time) > _PROGRESS_STALLED_SECONDS * 1000
                and not snap_alive)
     # 终态派生成稿留空填写点（断连重连轮询恢复汇总用）：placeholders 由端点层
-    # 查版本后传入；values 与上方字段同口径（快照优先，回退 DB render）。
+    # 查版本后传入；values 与上方字段同口径（resolve_progress_values）。
     # 仅 done/partial 派生；派生为空（全填满）置 None，响应不下发空数组。
     unfilled = None
     filled = None
@@ -1142,9 +1173,9 @@ def build_run_snapshot_payload(run: dict | None, *, owned_check, get_task,
             item["status"] = _TASK_STATUS_TO_TEMPLATE.get(st, "filling")
             item["done"] = snap.get("done")
             item["total"] = snap.get("total")
-            values = snap.get("values")
-            if values is None:
-                values = (row.values or {}).get("render") if isinstance(row.values, dict) else None
+            # 产值口径与 per-task progress 端点同一函数（终态 DB 行权威，非终态
+            # 快照优先）——刷新恢复若走另一套口径，就地修改会在这条链路上回退。
+            values = resolve_progress_values(st, row, snap)
             item["values"] = values
             if item["status"] == "filled":
                 if bridge is not None:
