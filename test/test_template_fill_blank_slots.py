@@ -151,3 +151,21 @@ def test_oversize_slot_dropped():
 
     p = _para([("x", None), (" " * 600, True)])
     assert extract_paragraph_slots(p) == []
+
+
+def test_empty_paren_hint_not_slot():
+    """空括号「（）」无语义：hint 文本 strip 后为空则该 run 不成位（宁可漏不误）。"""
+    from rag.svr.template_fill.blank_slots import extract_paragraph_slots
+
+    p = _para([("前缀", None), ("（）", True)])
+    assert extract_paragraph_slots(p) == []
+
+
+def test_hint_overlong_truncated_to_100():
+    """hint 内文超 100 字符截断（沿用现有 name 100 上限）。"""
+    from rag.svr.template_fill.blank_slots import extract_paragraph_slots
+
+    p = _para([("x", None), ("（" + "项" * 120 + "）", True)])
+    slots = extract_paragraph_slots(p)
+    assert len(slots) == 1
+    assert len(slots[0]["hint"]) == 100

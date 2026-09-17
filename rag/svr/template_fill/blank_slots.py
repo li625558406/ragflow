@@ -16,18 +16,25 @@ _CHAR_UNDERLINE_RE = re.compile(r"[_＿]{2,}")
 # 下划线格式 run 的文本须匹配留白特征（防实心文字+下划线格式误判为位）：
 # 纯空白/下划线，或 空白+括号提示+空白
 _BLANK_RUN_RE = re.compile(r"^[\s_＿]*$")
+# 括号内不允许嵌套括号（[^（）()]*）：嵌套括号提示（如「（外层（内层））」）不识别为
+# hint 位（保守取舍，宁可漏不误——嵌套形态在真实范本中未见，误标代价高于漏标）。
 _HINT_RUN_RE = re.compile(r"^\s*[（(]([^（）()]*)[））]\s*$")
 # 单个位长度上限：与 detector.MAX_ANCHOR_LEN 同量级，超长位下游 validate 必拒，源头不产
 _MAX_SLOT_LEN = 500
 
 
 def _classify_underline_text(text: str) -> tuple:
-    """下划线格式 run 文本分类 → (kind, hint)。非留白特征返回 ("", "")。"""
+    """下划线格式 run 文本分类 → (kind, hint)。非留白特征返回 ("", "")。
+    hint 命中但括号内 strip 后为空（如「（）」）同样返回 ("", "")——空括号提示
+    没有语义，不成位（宁可漏不误）。"""
     if _BLANK_RUN_RE.fullmatch(text):
         return "blank", ""
     m = _HINT_RUN_RE.fullmatch(text)
     if m:
-        return "hint", m.group(1).strip()[:100]  # 沿用现有 name 100 上限
+        hint = m.group(1).strip()
+        if hint:
+            return "hint", hint[:100]  # 沿用现有 name 100 上限
+        return "", ""
     return "", ""
 
 

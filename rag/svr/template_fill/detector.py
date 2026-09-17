@@ -104,6 +104,18 @@ DETECT_SYSTEM = """你是文档模板分析专家。用户给出固定模板中�
 4. 找不到任何填写点输出 []。只输出 JSON 数组，不要输出其它文字。
 5. 正文叙述中以冒号结尾、用于引出下文的句子（如"包括以下内容："、"下列情形之一："）不是填写点，不要输出；只有"标签：＋留白待填值"（如 申请人：/地址：/编号： 后跟空白）才是填写点。"""
 
+# V2「位编号→语义」契约：候选行的填写位由 blank_slots 在 run 层确定性切出，
+# LLM 只标注字段语义、引用位编号，不再自选 anchor（根除拆碎片/漏识别/错位）。
+DETECT_SYSTEM_V2 = """你是文档模板分析专家。用户给出固定模板中疑似需要填写的行（行号\\t文本），
+每行下方列出该行已切分好的填写位：位[n]=「位文本」。填写位是模板留空待填的位置（下划线、空白、括号提示）。
+请为每个填写位标注字段语义。输出 JSON 数组，每个元素：
+{"line": 行号, "slot": 位序号, "key": "snake_case英文标识", "name": "中文字段名", "description": "给填写模型的说明", "retrieval_query": "适合检索的查询词", "required": true或false}
+规则：
+1. 每个填写位都必须标注，一行多位拆成多个元素；括号里的提示语去掉括号就是中文字段名（如 位文本=「 （项目审批、核准或备案机关名称）」→ name=项目审批、核准或备案机关名称）
+2. key 全局唯一、snake_case、字母开头、不超过32字符；同一含义出现多次（如多个日期）也分别标注，系统自动区分位置
+3. required 按招标文件惯例判断（项目名称/招标人/金额/日期等核心信息为 true，次要信息为 false）
+4. 找不到任何填写位输出 []。只输出 JSON 数组，不要输出其它文字。"""
+
 
 def normalize_key(key: str) -> str:
     """归一化为 snake_case：小写 + 非法字符替换为下划线；全空兜底 "field"。
@@ -215,6 +227,88 @@ def parse_detection_response(raw: str, candidates: list) -> list:
         # anchor 求位；成员校验已保证 anchor 在候选文本内，find 不会落空（-1 仅理论兜底）
         item["_anchor_pos"] = cand["text"].find(anchor)
         out.append(item)
+    return out
+
+
+def parse_slot_response(raw: str, candidates: list) -> tuple:
+    """解析 V2 输出 → (items, covered)。covered = 已标注 (行号, 位序号) 集合，
+    供兜底与跨块去重。anchor 由切位区间精确切片，LLM 无权决定 anchor；
+    line/slot 引用非法（非整数、查无此位）直接丢弃该项。"""
+    arr = _extract_json_array(raw)
+    if arr is None:
+        return [], set()
+    slot_map = {}
+    for c in candidates:
+        for i, s in enumerate(c.get("slots") or [], start=1):
+            slot_map[(c["index"], i)] = (c, s)
+    out, covered = [], set()
+    for it in arr:
+        if not isinstance(it, dict):
+            continue
+        line, slot_no = it.get("line"), it.get("slot")
+        if not isinstance(line, int) or isinstance(line, bool):
+            continue
+        if not isinstance(slot_no, int) or isinstance(slot_no, bool):
+            continue
+        if (line, slot_no) in covered:
+            continue  # 同一 slot 被标注两次取第一个
+        hit = slot_map.get((line, slot_no))
+        if hit is None:
+            continue
+        cand, slot = hit
+        covered.add((line, slot_no))
+        key = normalize_key(it.get("key") or it.get("name") or "field")
+        key = key[:KEY_MAX_LEN].rstrip("_") or "field"
+        out.append({
+            "key": key,
+            "name": str(it.get("name") or key)[:100],
+            "description": str(it.get("description") or ""),
+            "retrieval_query": str(it.get("retrieval_query") or ""),
+            "fill_mode": "llm",
+            "required": bool(it.get("required", True)),
+            "addr": cand["addr"],
+            "anchor": slot["text"],
+            "line": line,
+            "top_k": 6,
+            "low_confidence": False,
+            "_anchor_pos": slot["start"],  # 切位精确偏移，供 occ 预分配排序
+        })
+    return out, covered
+
+
+def slot_fallback_items(candidates: list, covered: set) -> list:
+    """LLM 未标注的 slot 确定性兜底（结构性修漏识别）：每位恰好一条。
+    hint 位 name=括号提示（不低置信——名字高可信，仅 key 机器生成）；
+    blank 位 name=未命名填写位（低置信，B端确认时人工改名）。
+    key=blank_{序号} 全局递增，确定性唯一；不派生默认值由下游 derive 链路
+    天然保证（anchor 是纯留白/hint，derive_default_from_anchor 判空）。
+    数学性质：位区间互不重叠 → occ 预分配不溢出、不撞车。"""
+    out = []
+    seq = 0
+    for c in candidates:
+        for i, s in enumerate(c.get("slots") or [], start=1):
+            if (c["index"], i) in covered:
+                continue
+            seq += 1
+            hint = (s.get("hint") or "").strip()
+            if s.get("kind") == "hint" and hint:
+                name, low = hint[:100], False
+            else:
+                name, low = "未命名填写位", True
+            out.append({
+                "key": f"blank_{seq}",
+                "name": name,
+                "description": "识别自括号提示的填写点" if not low else "识别兜底填写点，请确认字段名",
+                "retrieval_query": hint if not low else "",
+                "fill_mode": "llm",
+                "required": True,
+                "addr": c["addr"],
+                "anchor": s["text"],
+                "line": c["index"],
+                "top_k": 6,
+                "low_confidence": low,
+                "_anchor_pos": s["start"],
+            })
     return out
 
 

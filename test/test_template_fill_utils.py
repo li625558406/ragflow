@@ -3115,3 +3115,116 @@ def test_extract_docx_candidates_no_slots_hint_re_still_matched():
     assert "（此处填写）" in by_text
     assert by_text["（此处填写）"]["slots"] == []
     assert "普通正文段落无任何特征" not in by_text
+
+
+# ---- detector V2「位编号→语义」契约 ----
+
+def _slot_cand():
+    return {
+        "index": 7,
+        "addr": "para:7",
+        "text": "本招标项目    （招标项目名称） 已由 （审批机关） 以批准建设",
+        "slots": [
+            {"start": 5, "end": 17, "text": "    （招标项目名称） ", "kind": "hint", "hint": "招标项目名称"},
+            {"start": 20, "end": 27, "text": " （审批机关） ", "kind": "hint", "hint": "审批机关"},
+        ],
+    }
+
+
+def test_parse_slot_response_valid():
+    from rag.svr.template_fill.detector import parse_slot_response
+    cand = _slot_cand()
+    raw = '[{"line":7,"slot":1,"key":"project_name","name":"招标项目名称","required":true},' \
+          '{"line":7,"slot":2,"key":"approve_org","name":"审批机关","required":true}]'
+    items, covered = parse_slot_response(raw, [cand])
+    assert len(items) == 2
+    assert covered == {(7, 1), (7, 2)}
+    # anchor 由切位区间精确切片，LLM 无权决定
+    assert items[0]["anchor"] == "    （招标项目名称） "
+    assert items[0]["addr"] == "para:7"
+    assert items[0]["_anchor_pos"] == 5
+    assert items[1]["anchor"] == " （审批机关） "
+
+
+def test_parse_slot_response_invalid_slot_dropped():
+    from rag.svr.template_fill.detector import parse_slot_response
+    raw = '[{"line":7,"slot":9,"key":"x","name":"x"},' \
+          '{"line":7,"slot":"1","key":"y","name":"y"},' \
+          '{"line":"7","slot":1,"key":"z","name":"z"}]'
+    items, covered = parse_slot_response(raw, [_slot_cand()])
+    assert items == []
+    assert covered == set()
+
+
+def test_parse_slot_response_duplicate_slot_first_wins():
+    from rag.svr.template_fill.detector import parse_slot_response
+    raw = '[{"line":7,"slot":1,"key":"first_key","name":"甲"},' \
+          '{"line":7,"slot":1,"key":"second_key","name":"乙"}]'
+    items, covered = parse_slot_response(raw, [_slot_cand()])
+    assert len(items) == 1
+    assert items[0]["key"] == "first_key"
+    assert covered == {(7, 1)}
+
+
+def test_parse_slot_response_garbage_returns_empty():
+    from rag.svr.template_fill.detector import parse_slot_response
+    items, covered = parse_slot_response("不是JSON", [_slot_cand()])
+    assert items == [] and covered == set()
+
+
+def test_slot_fallback_items_hint_and_blank():
+    from rag.svr.template_fill.detector import slot_fallback_items
+    cand = {
+        "index": 3, "addr": "para:3", "text": "业主为        ，金额      万元",
+        "slots": [
+            {"start": 3, "end": 11, "text": "        ", "kind": "blank", "hint": ""},
+            {"start": 14, "end": 20, "text": "      ", "kind": "blank", "hint": ""},
+        ],
+    }
+    items = slot_fallback_items([cand], covered=set())
+    assert len(items) == 2
+    assert items[0]["key"] == "blank_1" and items[1]["key"] == "blank_2"
+    assert items[0]["name"] == "未命名填写位"
+    assert items[0]["low_confidence"] is True
+    assert items[0]["anchor"] == "        "
+    assert items[0]["_anchor_pos"] == 3
+
+
+def test_slot_fallback_items_skips_covered_and_uses_hint():
+    from rag.svr.template_fill.detector import slot_fallback_items
+    cand = _slot_cand()
+    items = slot_fallback_items([cand], covered=set())  # 未覆盖 → 兜底生成
+    assert len(items) == 2
+    assert items[0]["name"] == "招标项目名称"
+    assert items[0]["low_confidence"] is False  # hint 位名字高可信
+    # 覆盖后不再生成
+    assert slot_fallback_items([cand], covered={(cand["index"], 1), (cand["index"], 2)}) == []
+
+
+def test_merge_v2_fallback_same_shape_slots_occ_no_overflow():
+    """同段两个同形空白位 + 各一条条目 → occ 预分配 1/2，无溢出丢弃。"""
+    from rag.svr.template_fill.detector import _merge_detection
+    cand = {
+        "index": 3, "addr": "para:3", "text": "业主为        ，金额      万元",
+        "slots": [
+            {"start": 3, "end": 11, "text": "        ", "kind": "blank", "hint": ""},
+            {"start": 14, "end": 20, "text": "      ", "kind": "blank", "hint": ""},
+        ],
+    }
+    a = {"key": "owner", "addr": "para:3", "anchor": "        ", "_anchor_pos": 3,
+         "low_confidence": False, "name": "业主", "line": 3}
+    b = {"key": "amount", "addr": "para:3", "anchor": "      ", "_anchor_pos": 14,
+         "low_confidence": False, "name": "金额", "line": 3}
+    # 两个不同 anchor 文本：不同组，无 occ；再验证同形场景
+    merged = _merge_detection([], [a, b], candidates=[cand])
+    assert len(merged) == 2
+    # cand2 文本 "甲     乙   "：anchor "   " 实际出现于 pos 1 与 pos 7（非重叠计数 2 处）
+    same_a = {"key": "x1", "addr": "para:3", "anchor": "   ", "_anchor_pos": 1,
+              "low_confidence": False, "name": "甲", "line": 3}
+    same_b = {"key": "x2", "addr": "para:3", "anchor": "   ", "_anchor_pos": 7,
+              "low_confidence": False, "name": "乙", "line": 3}
+    cand2 = {"index": 3, "addr": "para:3", "text": "甲     乙   ", "slots": []}
+    merged2 = _merge_detection([], [same_a, same_b], candidates=[cand2])
+    assert len(merged2) == 2
+    occs = sorted(it["occ"] for it in merged2 if "occ" in it)
+    assert occs == [1, 2]
