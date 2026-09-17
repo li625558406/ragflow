@@ -445,6 +445,101 @@ async def _detect_chunked(chat, file_type: str, candidates: list) -> tuple:
     return items, failed
 
 
+async def _detect_slot_chunked(chat, candidates: list) -> tuple:
+    """V2 分块并发识别（位编号→语义）。输入每行附位列表（extract_docx_candidates
+    的 slots 键），输出 (items, covered, failed)；covered 用全局扁平 index 作行键，
+    跨块无碰撞。单块失败不拖垮整体（未覆盖位由调用方 slot_fallback_items 兜底）。
+    坐标系注意：提示词只放 s["text"] 整体，绝不在 c["text"] 上做 text[start:end]
+    切片——slots 是 run 拼接文本坐标系，与候选行 text（p.text）在含 fldSimple 等
+    段落上可不同（Task 2 审查 M-3），切片会产出错位脏 anchor。"""
+    chunks = [candidates[i:i + DETECT_CHUNK_SIZE]
+              for i in range(0, len(candidates), DETECT_CHUNK_SIZE)]
+    sem = asyncio.Semaphore(DETECT_CONCURRENCY)
+
+    async def run_one(chunk: list) -> tuple:
+        lines = []
+        for c in chunk:
+            lines.append(f'{c["index"]}\t{c["text"]}')
+            for i, s in enumerate(c.get("slots") or [], start=1):
+                lines.append(f'位[{i}]=「{s["text"]}」')
+        user_msg = "行与填写位：\n" + "\n".join(lines)
+        async with sem:
+            ans = await chat(DETECT_SYSTEM_V2, [{"role": "user", "content": user_msg}])
+        return parse_slot_response(ans, chunk)
+
+    results = await asyncio.gather(*(run_one(c) for c in chunks), return_exceptions=True)
+    items, covered, failed = [], set(), 0
+    for r in results:
+        if isinstance(r, BaseException):
+            failed += 1
+            logger.warning("slot detect chunk failed: %s", r)
+            continue
+        its, cov = r
+        items.extend(its)
+        covered |= cov
+    return items, covered, failed
+
+
+def _get_chat_model(tenant_id: str):
+    """租户默认对话模型获取（模块级抽出，便于单测打桩绕开 DB/LLM）。
+    延迟 import 语义与原 detect_fill_points 内联版本一致：保证本模块纯函数部分
+    无运行时依赖、可独立单测。"""
+    from api.db.joint_services.tenant_model_service import get_tenant_default_model_by_type
+    from api.db.services.llm_service import LLMBundle
+    from common.constants import LLMType
+    model_config = get_tenant_default_model_by_type(tenant_id, LLMType.CHAT)
+    return LLMBundle(tenant_id, model_config)
+
+
+def _verify_slot_occ(merged: list, candidates: list) -> list:
+    """V2 条目确定性 occ 校验闸（Task 3 审查 Major 3）：_merge_detection 的 occ
+    预分配按 _anchor_pos 排序给同形 anchor 组分配 1..n，但渲染层按 anchor 在候选
+    文本中的**非重叠出现序**取第 N 次（docx_utils._occurrence_intervals，步长
+    len(anchor)）——同段存在非位的同形空白文本插在两位之间时 occ 会静默错位
+    （值写进非位空白、真位落空）。此处据此重算「包含 _anchor_pos 的那次出现」的
+    序号并回写 occ，与渲染层严格同一算法。
+    找不到对应出现（数据腐坏/坐标系分歧，如含 fldSimple 段落上 runs 坐标与
+    p.text 坐标不一致）→ 丢弃该条目，宁可漏不写错位；同组两 V2 条目算出同一
+    出现序（真实切位互不重叠，发生即数据腐坏）→ 保留靠前者、丢弃靠后者。
+    V1/explicit 条目不动（V1 的 _anchor_pos 本就来自同一文本序 find，零回归；
+    explicit 无 _anchor_pos 天然透传）。"""
+    cand_map = {c["addr"]: c for c in candidates}
+    out = []
+    claimed = {}  # (addr, anchor) -> 已占用的出现序号
+    for it in merged:
+        cand = cand_map.get(it.get("addr"))
+        if cand is None or not cand.get("slots"):
+            out.append(it)
+            continue
+        pos = it.get("_anchor_pos")
+        anchor = it.get("anchor") or ""
+        if not isinstance(pos, int) or isinstance(pos, bool) or not anchor:
+            out.append(it)
+            continue
+        text = cand["text"]
+        # 与渲染层 _occurrence_intervals 严格同一算法：非重叠消费，推进步长
+        # len(anchor)（不是 +1，否则重叠出现会把序号数歪）
+        idx, start = 1, text.find(anchor)
+        hit = None
+        while start != -1:
+            if start <= pos < start + len(anchor):
+                hit = idx
+                break
+            idx += 1
+            start = text.find(anchor, start + len(anchor))
+        gkey = (it.get("addr"), anchor)
+        if hit is None or claimed.get(gkey) == hit:
+            logger.warning(
+                "verify_slot_occ: drop %s@%s pos=%s (%s)",
+                it.get("key"), it.get("addr"), pos,
+                "pos 不在任何出现区间" if hit is None else "同组出现序冲突")
+            continue
+        claimed[gkey] = hit
+        it["occ"] = hit
+        out.append(it)
+    return out
+
+
 def _merge_detection(explicit: list, llm_items: list, preassign_occ: bool = True,
                      candidates: list | None = None) -> list:
     """合并手动直通项与 LLM 识别项。
@@ -544,27 +639,47 @@ def _merge_detection(explicit: list, llm_items: list, preassign_occ: bool = True
 
 
 async def detect_fill_points(tenant_id: str, file_type: str, candidates: list) -> list:
-    """识别填写点 = 手动占位符直通 + 分块 LLM 识别合并（失败抛异常，由 API 层转错误响应）。
-    仅此处涉及 LLM/DB（延迟 import，保证纯函数部分无运行时依赖、可独立单测）。"""
-    from api.db.joint_services.tenant_model_service import get_tenant_default_model_by_type
-    from api.db.services.llm_service import LLMBundle
-    from common.constants import LLMType
-
+    """识别填写点 = 手动占位符直通 + V1（无位行 LLM 选 anchor）+ V2（有位行
+    位编号语义标注 + 兜底）合并（失败抛异常，由 API 层转错误响应）。
+    仅此处涉及 LLM/DB（延迟 import 收口在 _get_chat_model，保证纯函数部分无
+    运行时依赖、可独立单测）。"""
     if not candidates:
         return []
     explicit = extract_explicit_placeholders(candidates)
-    model_config = get_tenant_default_model_by_type(tenant_id, LLMType.CHAT)
-    chat_mdl = LLMBundle(tenant_id, model_config)
+    chat_mdl = _get_chat_model(tenant_id)
 
     async def _chat(system, messages):
         return await chat_mdl.async_chat(system, messages)
 
-    llm_items, failed = await _detect_chunked(_chat, file_type, candidates)
+    with_slots = [c for c in candidates if c.get("slots")]
+    without_slots = [c for c in candidates if not c.get("slots")]
+    llm_items, covered, failed = [], set(), 0
+    v1_items, failed1 = await _detect_chunked(_chat, file_type, without_slots)
+    llm_items.extend(v1_items)
+    failed += failed1
+    if with_slots:
+        v2_items, covered, failed2 = await _detect_slot_chunked(_chat, with_slots)
+        llm_items.extend(v2_items)
+        llm_items.extend(slot_fallback_items(with_slots, covered))
+        failed += failed2
+    # V2 条目的切位偏移是确定性 occ 校验闸的判据，但 _merge_detection 会剥离
+    # _anchor_pos（内部字段产物不外泄）——按对象身份暂存，合并后回挂给校验闸，
+    # 闸后再剥，最终产物保持干净（llm_items 全程持引用，id 不会被复用）
+    slot_pos = {id(it): it["_anchor_pos"] for it in llm_items
+                if isinstance(it.get("_anchor_pos"), int)
+                and not isinstance(it.get("_anchor_pos"), bool)}
     # xlsx 不做 occ 预分配：apply_xlsx_placeholders 是 replace-all 语义不识别 occ，
     # 同格重复占位符预分配会串值覆盖——回到旧「去重丢弃、单 key replace-all」语义
     # candidates 透传：occ 预分配按实际出现次数封顶，超界组内溢出项丢弃而非判死整次识别
     merged = _merge_detection(explicit, llm_items, preassign_occ=(file_type != "xlsx"),
                               candidates=candidates)
+    for it in merged:
+        pos = slot_pos.get(id(it))
+        if pos is not None:
+            it["_anchor_pos"] = pos
+    merged = _verify_slot_occ(merged, candidates)
+    for it in merged:
+        it.pop("_anchor_pos", None)
     if failed:
         if not merged:
             raise RuntimeError(f"AI 识别失败：{failed} 个分块全部失败")

@@ -3125,8 +3125,8 @@ def _slot_cand():
         "addr": "para:7",
         "text": "本招标项目    （招标项目名称） 已由 （审批机关） 以批准建设",
         "slots": [
-            {"start": 5, "end": 17, "text": "    （招标项目名称） ", "kind": "hint", "hint": "招标项目名称"},
-            {"start": 20, "end": 27, "text": " （审批机关） ", "kind": "hint", "hint": "审批机关"},
+            {"start": 5, "end": 18, "text": "    （招标项目名称） ", "kind": "hint", "hint": "招标项目名称"},
+            {"start": 20, "end": 28, "text": " （审批机关） ", "kind": "hint", "hint": "审批机关"},
         ],
     }
 
@@ -3299,3 +3299,131 @@ def test_slot_fallback_items_seq_start_continues_numbering():
     # 不传仍从 blank_1 起（默认行为不变）
     items2 = slot_fallback_items([cand], covered=set())
     assert [it["key"] for it in items2] == ["blank_1", "blank_2"]
+
+
+def test_detect_fill_points_routes_v1_v2(monkeypatch):
+    """有位行走 V2、无位行走 V1，兜底补漏，合并进 _merge_detection。
+    _get_chat_model 打桩绕开 DB/LLM；_detect_chunked/_detect_slot_chunked
+    双双打桩断言各收到且仅收到自己的候选分组。"""
+    import asyncio
+
+    from rag.svr.template_fill import detector
+
+    v1_cand = {"index": 1, "addr": "para:1", "text": "项目名称：____________", "slots": []}
+    v2_cand = _slot_cand()  # index=7, addr=para:7, 两个 hint 位
+
+    captured = {}
+
+    async def fake_v1(chat, file_type, candidates):
+        captured["v1"] = [c["index"] for c in candidates]
+        return [], 0
+
+    async def fake_v2(chat, candidates):
+        captured["v2"] = [c["index"] for c in candidates]
+        items = [{
+            "key": "project_name", "name": "招标项目名称", "description": "",
+            "retrieval_query": "", "fill_mode": "llm", "required": True,
+            "addr": "para:7", "anchor": "    （招标项目名称） ", "line": 7,
+            "top_k": 6, "low_confidence": False, "_anchor_pos": 5,
+        }]
+        return items, {(7, 1)}, 0
+
+    class _FakeModel:
+        async def async_chat(self, system, messages):
+            return "[]"
+
+    monkeypatch.setattr(detector, "_get_chat_model", lambda tid: _FakeModel(), raising=False)
+    monkeypatch.setattr(detector, "_detect_chunked", fake_v1)
+    monkeypatch.setattr(detector, "_detect_slot_chunked", fake_v2, raising=False)
+
+    merged = asyncio.run(detector.detect_fill_points(
+        "tenant", "docx", [v1_cand, v2_cand]))
+    assert captured["v1"] == [1]
+    assert captured["v2"] == [7]
+    keys = sorted(it["key"] for it in merged)
+    # 位1 由 LLM 标注；位2 未覆盖 → 兜底（blank_1 序号跨 cand 递增）
+    assert "project_name" in keys
+    assert "blank_1" in keys
+    # 无 V1 撞车：兜底项 anchor 与 LLM 项不同位
+    assert len(merged) == 2
+    # 内部字段不外泄：V2 切位偏移经校验闸后必须被剥离
+    assert all("_anchor_pos" not in it for it in merged)
+
+
+def _blank_gap_cand():
+    """同段三个「  」同形出现，中间 [4,6) 是**非位**同形（不在 slots 里）：
+    甲[0] 空位1[1,3) 乙[3] 非位空格[4,6) 丙[6] 空位2[7,9) 丁[9]"""
+    return {
+        "index": 3,
+        "addr": "para:3",
+        "text": "甲  乙  丙  丁",
+        "slots": [
+            {"start": 1, "end": 3, "text": "  ", "kind": "blank", "hint": ""},
+            {"start": 7, "end": 9, "text": "  ", "kind": "blank", "hint": ""},
+        ],
+    }
+
+
+def _gap_item(key, pos):
+    return {
+        "key": key, "name": key, "description": "", "retrieval_query": "",
+        "fill_mode": "llm", "required": True, "addr": "para:3",
+        "anchor": "  ", "line": 3, "top_k": 6, "low_confidence": False,
+        "_anchor_pos": pos,
+    }
+
+
+def test_verify_slot_occ_corrects_plain_text_insertion():
+    """Major 3 主场景：同段非位同形空白插在两位之间，_merge_detection 按
+    _anchor_pos 排序给的 occ（1、2）相对渲染层非重叠出现序错位（真位2是第 3 次
+    出现）→ 校验闸按渲染层同款算法回写 occ。"""
+    from rag.svr.template_fill.detector import _merge_detection, _verify_slot_occ
+    cand = _blank_gap_cand()
+    merged = _merge_detection([], [_gap_item("a", 1), _gap_item("b", 7)],
+                              preassign_occ=True, candidates=[cand])
+    occs = {it["key"]: it.get("occ") for it in merged}
+    # 错位证据：merge 给 b 的 occ=2，而渲染层非重叠序里第 2 次出现是非位空格
+    assert occs == {"a": 1, "b": 2}
+    # 回挂切位偏移（detect_fill_points 内部行为），过闸后 occ 被纠正为真实出现序
+    pos_by_id = {id(it): p for it, p in zip(merged, (1, 7))}
+    for it in merged:
+        it["_anchor_pos"] = pos_by_id[id(it)]
+    out = _verify_slot_occ(merged, [cand])
+    assert len(out) == 2
+    occs = {it["key"]: it["occ"] for it in out}
+    assert occs == {"a": 1, "b": 3}
+
+
+def test_verify_slot_occ_drops_non_occurrence():
+    """对抗：_anchor_pos 不落在 anchor 任何非重叠出现区间（坐标系分歧/数据腐坏）
+    → 条目丢弃，宁可漏不写错位。"""
+    from rag.svr.template_fill.detector import _verify_slot_occ
+    cand = _blank_gap_cand()
+    it = _gap_item("a", 0)  # pos=0 是「甲」，不属于任何「  」出现区间
+    out = _verify_slot_occ([it], [cand])
+    assert out == []
+
+
+def test_verify_slot_occ_passes_v1_untouched():
+    """无 slots 候选（V1/explicit）条目原样透传：V1 的 _anchor_pos 本就来自同一
+    文本序 find，零回归；有 slots 候选但条目无 _anchor_pos（手动占位符直通）同样不动。"""
+    from rag.svr.template_fill.detector import _verify_slot_occ
+    v1_cand = {"index": 1, "addr": "para:1", "text": "甲  乙", "slots": []}
+    it_v1 = {"key": "a", "addr": "para:1", "anchor": "  ", "occ": 5, "_anchor_pos": 999}
+    explicit_cand = _blank_gap_cand()
+    it_explicit = {"key": "b", "addr": "para:3", "anchor": "  ", "occ": 2}  # 无 _anchor_pos
+    out = _verify_slot_occ([it_v1, it_explicit], [v1_cand, explicit_cand])
+    assert out[0] is it_v1 and out[0]["occ"] == 5
+    assert out[1] is it_explicit and out[1]["occ"] == 2
+
+
+def test_verify_slot_occ_drops_same_hit_collision():
+    """对抗（切位数据腐坏）：同组两 V2 条目的 _anchor_pos 落进同一非重叠出现区间
+    （真实切位互不重叠，不可能发生；发生即数据坏了）→ 保留靠前者，丢弃靠后者。"""
+    from rag.svr.template_fill.detector import _verify_slot_occ
+    cand = _blank_gap_cand()
+    it_a = _gap_item("a", 1)
+    it_b = _gap_item("b", 2)  # 与 a 同在出现区间 [1,3) 内
+    out = _verify_slot_occ([it_a, it_b], [cand])
+    assert len(out) == 1
+    assert out[0]["key"] == "a" and out[0]["occ"] == 1
