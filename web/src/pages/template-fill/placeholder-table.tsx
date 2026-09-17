@@ -181,7 +181,8 @@ interface PlaceholderTableProps {
   markedKeys?: Set<string>;
 }
 
-// 确认视图：只读三列，供用户核对 AI 识别的填写点位置是否正确
+// 确认视图：只读列表，供用户核对 AI 识别的填写点位置 + 查看已写回的默认值
+// （写回范本库只落 default_value、不改文件，本视图是沉淀结果的默认可见处）
 function PlaceholderViewTable({
   rows,
   onLocate,
@@ -191,6 +192,8 @@ function PlaceholderViewTable({
   onLocate?: (key: string) => void;
   markedKeys?: Set<string>;
 }) {
+  // 整表都没有默认值时不渲染该列（避免空列噪音）
+  const showDefaults = rows.some((r) => (r.default_value || '').trim() !== '');
   return (
     <Table>
       <TableHeader>
@@ -198,6 +201,7 @@ function PlaceholderViewTable({
           <TableHead className="w-[50px]">#</TableHead>
           <TableHead>占位符（锚文本）</TableHead>
           <TableHead className="w-[130px]">位置</TableHead>
+          {showDefaults && <TableHead className="w-[160px]">默认值</TableHead>}
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -248,6 +252,35 @@ function PlaceholderViewTable({
             <TableCell className="text-sm text-muted-foreground">
               {addrLabel(row.addr)}
             </TableCell>
+            {showDefaults && (
+              <TableCell>
+                {(row.default_value || '').trim() ? (
+                  <div className="flex items-center gap-1">
+                    <span
+                      className="block max-w-[110px] truncate text-sm"
+                      title={row.default_value}
+                    >
+                      {row.default_value}
+                    </span>
+                    {row.default_source === 'manual' && (
+                      <span className="shrink-0 rounded bg-[#EFF4FF] px-1 text-[10px] text-[#1a66fb]">
+                        手动
+                      </span>
+                    )}
+                    {row.default_source === 'auto' && (
+                      <span className="shrink-0 rounded bg-[#F0F9EB] px-1 text-[10px] text-[#52c41a]">
+                        沉淀
+                      </span>
+                    )}
+                    {row.default_source === 'detected' && (
+                      <span className="shrink-0 rounded bg-[#FFF7E6] px-1 text-[10px] text-[#FA8C16]">
+                        识别
+                      </span>
+                    )}
+                  </div>
+                ) : null}
+              </TableCell>
+            )}
           </TableRow>
         ))}
       </TableBody>

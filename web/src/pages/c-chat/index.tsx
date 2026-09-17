@@ -55,7 +55,9 @@ import {
 } from 'lucide-react';
 import FileReviewProgress from './file-review-progress';
 import ReviewPanel, { type Annotation } from './review-panel';
-import TemplateFillProgress from './template-fill-progress';
+import TemplateFillProgress, {
+  downloadTemplateFillResult,
+} from './template-fill-progress';
 
 import { RealtimeAudioButton } from '@/components/realtime-audio-button';
 import {
@@ -2695,18 +2697,20 @@ export default function CChat() {
                                                   '成稿'}
                                               </span>
                                             </button>
-                                            <a
-                                              href={dl.url}
-                                              target="_blank"
-                                              rel="noopener noreferrer"
+                                            <button
                                               className="ml-auto flex shrink-0 items-center gap-1 text-[#525252] hover:text-[#000000] transition-colors"
+                                              onClick={() =>
+                                                void downloadTemplateFillResult(
+                                                  dl,
+                                                )
+                                              }
                                             >
                                               <Download
                                                 className="w-3.5 h-3.5"
                                                 strokeWidth={2}
                                               />
                                               下载
-                                            </a>
+                                            </button>
                                           </div>
                                         ),
                                       )}

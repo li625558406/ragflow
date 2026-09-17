@@ -392,7 +392,14 @@ export default function FlowAiPanel({
         instruction: instructionRef.current,
         response: streamState.content,
         busy: true,
-        templateFill: streamState.templateFill,
+        // 新轮刚起流式时 streamState.templateFill 必为空：沿用上一轮终态
+        // （templateFillRef，handleSend 刻意不清它）兜底。若上报 undefined，
+        // flow-detail 的 `live.templateFill?.templates?.length` 判空 → 进度卡
+        // 卸载 → 卡内打开着的「查看填写内容」抽屉连同 liveTarget/整棵 docx
+        // DOM 一起销毁（用户实测：发送一条普通消息，右侧预览瞬间变白底），
+        // 轮次结束后卡片虽由 ref 装回，抽屉已不可恢复。与下方 completed
+        // 分支的 templateFillRef 兜底同构。
+        templateFill: streamState.templateFill ?? templateFillRef.current,
         fileReview,
       });
       return;

@@ -1,5 +1,58 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-17 成稿下载适配：新开页签乱码改 fetch Blob 落盘（纯前端，未部署）
+
+**主题**：用户报「流程对话页面的下载按钮打开新浏览器页签显示乱码」。涉及两处同构写法：共用车 `template-fill-progress.tsx` 成稿行（c-chat 对话页与流程页签共用）+ `c-chat/index.tsx` 的 `msg.downloads` 行（DocumentRewrite 等产物），均为 `<a href={dl.url} target="_blank">` 直链。
+
+**根因**：`dl.url` 指向 `/api/v1/agents/download?id&created_by`（agent_api.py:343）——该端点**无 `@login_required`、无 `Content-Disposition` 头**，直接 `Response(blob)` 返回原始字节。浏览器新页签导航到它时把 docx（zip 二进制）当文本渲染 → 乱码；且即使加头也不会带 Authorization 头，直链方案本就不可靠（同 file-review 下载链路已确认的教训）。
+
+**修法**：`template-fill-progress.tsx` 新增导出 `downloadTemplateFillResult(dl)`——fetch（带 Authorization 头，端点日后加鉴权也不破）→ `downloadFileFromBlob`（复用 utils/file-util 既有函数，a.download 带文件名落盘）；两处 `<a target="_blank">` 均改为 button 调它。url 缺失/非 2xx/异常均 message.error 提示。
+
+**验证**：本地 dev（`:9223` 代理生产后端）+ Playwright 实测流程页签 demo04 成稿卡「下载」→ 触发浏览器下载、文件名正确（`…建设信息化….docx`）、219503 字节、`PK` 魔数 + `Microsoft Word 2007+` 识别有效，无新页签。`tsc` 无新增错误（index.tsx 存量 3 处报错与本改动无关）。
+
+**部署清单**：纯前端 2 文件（`web/src/pages/c-chat/template-fill-progress.tsx` + `web/src/pages/c-chat/index.tsx`），需 `npm run build` + dist 上传 + nginx reload。**未部署、未 commit、未 push**。
+
+## 2026-09-17 范本预览：流程页签发送消息致「查看填写内容」抽屉卸载变白底（纯前端，未部署）
+
+**主题**：用户报「点击查看填写内容弹框后，在输入框发送对话，右边渲染的文件变成白色背景」。Playwright 生产环境复现确认：抽屉**整体卸载**——发送后右侧露出流程详情的白色「版本记录」面板，用户感知即「文件变白底」。
+
+**根因（流程页签特有，c-chat 对话页无此问题）**：进度卡在 `flow-detail.tsx` 只条件挂载于 **live（进行中一轮）**：`live.templateFill?.templates?.length ? <TemplateFillProgress/> : null`；而抽屉（`TemplateFillLivePreview`）连同打开状态 `liveTarget`、整棵 docx-preview DOM 树都挂在**进度卡内部**。`flow-ai-panel` 的对话状态上报 effect 在流式分支上报 `templateFill: streamState.templateFill`——**新轮刚起流式时它必为 undefined** → 判空 → 卡片卸载 → 抽屉连带销毁 → `onLivePreviewOpenChange(false)` 收起右侧腾位布局。轮次结束后卡片虽由 `templateFillRef` 兜底装回，但 `liveTarget` 已随卸载丢失，抽屉不会重开。对照 c-chat：卡片挂在旧消息的 `msg.templateFill` 上，发送新消息不影响旧消息 → 抽屉正常存活。
+
+**修法（一行）**：`flow-ai-panel.tsx` 流式上报分支改为 `templateFill: streamState.templateFill ?? templateFillRef.current`——新轮流式期沿用上一轮终态兜底，与 `handleSend` 里「范本填写快照**不清**」的既定注释、与 completed 分支既有的 `templateFillRef` 兜底完全同构。语义上也与 c-chat 对齐：旧填写卡在新轮对话期间持续可见。若新轮真正开启新填写，第一个 `template_fill_progress` 事件到达后 `live.templateFill` 自然切换到新状态（同 template_id 时抽屉还能继续实时填入）。
+
+**验证**：本地 dev server（`:9223`，代理生产后端）+ Playwright 全程复现——修前生产环境发「你好」抽屉立即消失；修后发「在吗」流式期间与回复完成后抽屉均保持打开、docx 渲染完好。c-chat 5 套件 40 用例全绿；`tsc` 无新增错误（`flow-ai-panel` 存量 3 处 `saveFlowAiRecord` 缺 `instruction` 的类型报错与本改动无关）。
+
+**部署清单**：纯前端单文件 `web/src/pages/c-chat/flow/flow-ai-panel.tsx`，需 `npm run build` + dist 上传 + nginx reload。**未部署、未 commit、未 push**。
+
+## 2026-09-17 范本填写：就地修改产值被 Redis 旧快照遮蔽（修「LLM 光说改好了」，未部署）
+
+**主题**：用户报「**改了个屁**，之前都是好的，现在 llm 光说改好了，**是不是改的文件不是一个？**」。用户假设「改的文件不是正在看的那份」——**经查证该假设不成立**，真因是读取侧口径。
+
+**第一性原理判据（决定「该修哪里」）**：「查看填写内容」预览**不是成稿文件**，是「范本**工作副本**（含 `{{key}}`）+ 前端 `values` 覆盖渲染」，屏上文字由**前端拿到的 values** 决定。所以先分清两条链：**下载**读 MinIO 派生副本、**预览**读 values 接口。用户在预览里看到没变 ⇒ 嫌疑在 values 接口，不在 MinIO。
+
+**逐层取证（生产任务 `a77dc640b29211f1be7cdb1ab9caea8d`，范本 `e1a491e0…`）**：
+
+| 层 | 证据 | 结论 |
+|---|---|---|
+| DB 行 | `values.render.approval_authority = '李港111'`，status done，update_time 20:42:38 | ✅ 已改对 |
+| MinIO 真源 | `{template_id}/v1_result_a77dc640….docx` 219503 B，md5 `c7c1b9c14c49`，含「李港111」 | ✅ 已改对 |
+| MinIO 派生副本 | `{tenant_id}-downloads/tplfill-a77dc640…` 219503 B，**md5 与真源完全一致** | ✅ 已改对 → **用户假设被证伪** |
+| values 接口 | 返回 `approval_authority = ''` | ❌ **就是这里** |
+
+**根因**：`tpl_fill_progress:a77dc640…` 的 Redis 进度快照停留在**填写完成时刻**（`updated_at` 20:25:55，即 20:42 就地修改**之前**），其中 `approval_authority = ''`，与 DB render 的差异**恰好只有这一个键**（键集合 113 = 113）。而 `api/apps/restful_apis/template_api.py` 的两处读取点（`build_progress_payload`、`build_run_snapshot_payload`）都**无条件快照优先**；`FillTemplate(action=modify)` 又**只回写 MinIO+DB、从不碰 Redis** ⇒ 修改前旧值持续遮蔽新值，**预览打开时拉权威值、刷新恢复重放，两条链路全被遮蔽**——没有任何一条路径能显示新值，故「改了个屁」。这也解释了**为什么上一批「就地修改可见性修复」（`b1867dff`）新增的预览打开拉取没能生效**：那次新增的 fetch 正是打在这个被遮蔽的端点上。
+
+**改动**：新增纯函数 `resolve_progress_values(status, task, snapshot)`，作为**两处读取点共用的唯一权威口径**——判据用**状态口径**（复用既有明文语义 `TERMINAL_TASK_STATUSES`）而非时间戳（时间戳等价性依赖「DB 每次写都刷新 update_time」这一未在模型层强制的约定，判据越少越不易腐坏）：
+- **非终态** → 全量产值只在快照里（DB 行要到终态才写 values）⇒ 快照优先（原行为不变）；
+- **终态** → DB 行是权威（执行器已写全量、此后只有 `modify` 会改且只写 DB）⇒ **DB 优先，快照只配补缺、不配遮蔽**；DB 无产值（脏行/未回写）才退快照；空 dict 仍走快照分支以保住「全部未填」派生。
+
+**测试**：`test_template_fill_progress_api.py` / `test_template_fill_run_snapshot.py` 新增事故回归闸（终态 DB 压过快照、DB 无值/空 dict 退快照、权威跟随**生效状态**而非 DB 状态、非终态反向保护）；并**反转**既有 `test_snapshot_values_authoritative`——该用例把「终态快照优先」**契约化**了，正是本次事故的成因，改名 `test_terminal_derivations_follow_db_render_not_snapshot` 并写明缘由。11 套件 **666 passed**。
+
+**生产实测（修前基线）**：容器内直调真实 `build_progress_payload` + 真实 DB 行 + 真实 Redis 快照 → `approval_authority = ''`（DB 为 `'李港111'`），断言 `端点仍返回旧值` **失败** ⇒ 与用户现象、与上述根因**完全吻合**。
+
+**遗留**：①已打开的预览不随同屏 modify 刷新（无「新轮」信号，需关重开）——既有已知限制；②运行快照终态 TTL 600s，事件重放兜底在预览打开拉取纠正前可能短暂显示改前值。
+
+**部署清单**：后端单文件 `api/apps/restful_apis/template_api.py` SCP + `docker restart docker-ragflow-cpu-1`。**未部署、未 commit、未 push**。
+
 ## 2026-09-17 范本填写：增量基线按工作上下文隔离（修 demo03 跨流程串值，未部署）
 
 **主题**：用户报「我的**新**流程，填写范本，把内容填成我**之前要改的值**了」。查证属实，且与上一个「可见性修复」批次**无关**——是又一条独立的值泄漏通道，同样属于「把上一轮输出自动变成下一轮输入」这一族缺陷。

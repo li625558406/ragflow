@@ -1,6 +1,7 @@
 // 范本填写进度卡片：c-chat 对话与 flow AI 对话区共用（设计 3.2「逻辑同构」的落地）。
 // selected → 范本卡片行（填写点徽标）；filling → 进度行；filled → 即时下载条（不等其他范本）；
 // failed → 降级文案行。全部文案中文，不走 i18n。
+import message from '@/components/ui/message';
 import {
   buildFilledRows,
   type ITemplateFillDownload,
@@ -13,6 +14,8 @@ import TemplateFillConfirmCard, {
   TemplateSelectConfirmCard,
 } from '@/pages/c-chat/template-fill-confirm-card';
 import TemplateFillLivePreview from '@/pages/c-chat/template-fill-live-preview';
+import { getAuthorization } from '@/utils/authorization-util';
+import { downloadFileFromBlob } from '@/utils/file-util';
 import {
   Check,
   ChevronDown,
@@ -24,6 +27,29 @@ import {
   Save,
 } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
+
+/** 成稿下载：fetch 取 Blob 后走 a.download 落盘（带文件名）。
+ *  **禁止**改成 window.open / a[href] 直链：/agents/download 端点无
+ *  Content-Disposition 头，新开页签会把 docx（zip 二进制）当文本渲染成乱码
+ *  （用户实测：流程页签点下载 → 新页签全是乱码）。供 c-chat 对话页
+ *  msg.downloads 行与本组件成稿行共用。 */
+export async function downloadTemplateFillResult(
+  dl: Pick<ITemplateFillDownload, 'url' | 'filename' | 'name'>,
+): Promise<void> {
+  if (!dl.url) {
+    message.error('下载链接缺失，无法下载');
+    return;
+  }
+  try {
+    const resp = await fetch(dl.url, {
+      headers: { Authorization: getAuthorization() },
+    });
+    if (!resp.ok) throw new Error(`下载失败 ${resp.status}`);
+    downloadFileFromBlob(await resp.blob(), dl.filename || dl.name || '成稿');
+  } catch (e) {
+    message.error(e instanceof Error ? e.message : '下载失败，请稍后重试');
+  }
+}
 
 /** 已填充填写点折叠清单（终态成稿行内）：默认收起、**展开才挂载** DOM
  *  ——244 项的常挂 DOM 无意义（不是 hidden / max-h-0）。中性色，与上方
@@ -342,15 +368,13 @@ export default function TemplateFillProgress({
                     查看填写内容
                   </button>
                 )}
-                <a
-                  href={dl.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                <button
                   className="ml-auto flex shrink-0 items-center gap-1 text-[#525252] transition-colors hover:text-[#000000]"
+                  onClick={() => void downloadTemplateFillResult(dl)}
                 >
                   <Download className="h-3.5 w-3.5" strokeWidth={2} />
                   下载
-                </a>
+                </button>
                 {/* 写回范本库：只有点这里才把本轮成果沉淀为范本默认值。
                     task_id 缺失（旧消息/脏数据）则不渲染，宁可不给入口也不发无效请求 */}
                 {t.task_id && <TemplateFillSedimentButton taskId={t.task_id} />}
