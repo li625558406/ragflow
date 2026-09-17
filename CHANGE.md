@@ -1,6 +1,6 @@
 # CHANGE.md — 项目迭代记录
 
-## 2026-09-17 文件审核收口遗留修复批次（R-1 中断轮次前端可识别 + R-2/R-3，未部署）
+## 2026-09-17 文件审核收口遗留修复批次（R-1 中断轮次前端可识别 + R-2/R-3，已部署 2026-09-17）
 
 **主题**：收口审查遗留 R-1 ~ R-8 的排查结论中，R-1（Major）与 R-2/R-3（Minor）在本批修复；R-1 只做「用户可识别 + 有出口」的一半，**不做**启动期扫描（需改上游核心文件 `api/ragflow_server.py`，未获授权）。
 
@@ -24,14 +24,14 @@
 - 同文件 `getByText(/正在审核|审核中/)` 同时命中 spinner（「正在审核…」）与状态标签（「第 1 轮 · 审核中」）而抛多元素异常，收紧为 `/正在审核/`——与本次审查回合抓到的 M1 是同一类写法，说明该写法在本仓库是重复踩的坑。
 
 **遗留**：
-①**未部署**——后端 3 文件（`api/db/services/file_review_service.py` + `api/apps/restful_apis/file_review_api.py` + `agent/tools/file_review.py`）成套 SCP + 容器重启，**再**前端 build（顺序硬约束同 T17）；
+①~~未部署~~（**已部署 2026-09-17**，与下一条「全链路」同批执行——服务器此前对 file_review **零部署**，故按 T17 清单成套 SCP **10 文件**而非本批次改动的 3 个；实测记录见下方「部署实测」）；
 ②**R-1 只做了一半**：不做启动期扫描 ⇒ 已产生的中断轮次**不会自愈**，用户仍需「重新发起审核」才能继续（此刻该 task 的 fix 永久被拒）；补全需改 `api/ragflow_server.py`（上游核心文件），未获授权故未碰；
 ③**R-6/R-7/R-8 仍只记录未改**（REST `_ADMIT_LOCK` 同步阻塞最长 5s / `levels=None` 会 TypeError（不可达）/ `doc.object` 下发 MinIO 对象名）；
 ④**进度卡吞掉 fix 拒绝文案——已修**：`file-review-progress.tsx` 的 `fixMutation` 此前只用了 `isPending`、全组件无 mutation 错误渲染（`web/src/app.tsx` 的 `QueryClient` 也未配全局 `onError`），用户点「确认修复」被拒时界面毫无反馈（Popover 停留、无提示），R-3 的富文案在卡片这条路径上等于白下沉。现新增 `fixError = fixMutation.error?.message` 派生 + `FixLevelPopover` 的 `error` prop（渲染在按钮行之上，Popover 不自动关闭），并补拒绝文案用例；
 ⑤**「停止轮询」这半边——已补覆盖**：`refetchInterval` 里的 `!current.stale` 是最关键也最难人工验证的一半（其余三半——不转圈/隐藏入口/显示文案——都有人眼可验的表象），回归即恢复「僵尸轮次每 3s 空转 + 永远转圈」。已把判定抽成导出的纯函数 `shouldPollFileReview(current)`（`FILE_REVIEW_POLL_MS` 间隔常量同时收口到一处），配 6 个用例；
 ⑥**本地 jest 工具链不入库**：`.scratch/jest*.cjs|ts` 与 transformer 是本地验证脚手架（`.scratch/` 已 gitignore），**未**纳入仓库；仓库 `web/jest.config.ts` 对 `umi/test` 的依赖仍未修（属独立议题：需决定是修复配置还是迁移到 Vitest）。他人 checkout 后仍跑不了 `npm run test`；
 ⑦全量前端套件仍有 **3 个套件失败（9 用例）**，经逐个核对**均与本功能无关、且都是「测试没跟上实现」的既有腐坏**，本批次不越界修改：`src/utils/__tests__/chat.test.ts`（首提交写入，断言 `$$x + y$$`，而 `preprocessLaTeX` 用 `$$${equation}$$` 保留捕获组内的空格，实现于 `000665ea` 后已改）、`src/pages/c-chat/__tests__/template-fill-confirm-card.test.tsx`（不先点开折叠头就找字段按钮，而确认卡自 2026-09-15 起默认折叠）、`src/hooks/__tests__/logic-hooks.useScrollToBottom.test.tsx`（mock container 是纯对象，缺 hook 已开始调用的 `scrollTo`）；
-⑧未 commit、未 push。
+⑧~~未 commit、未 push~~（**已 commit `d59a5af1` 并 push 2026-09-17**——随本批次之后的部署指令一并推送，另补提交 `e84fd4de`（上一批漏 `git add` 的 `use-template-fill-run-recovery.ts`，HEAD 已 import 却从未入库，clone 后 build 必失败））。
 
 **前端测试基建（本次打通的本地脚手架，不入库）**：仓库 `web/jest.config.ts` import 了已从 `package.json` 移除的 `umi/test`、`web/jest-setup.ts` import 了 `umi/test-setup`，属配置级损坏，jest 一行都跑不起来。本次在 `.scratch/` 下建等价配置绕开，要点如下（供后续复用）：
 - `jest.local.cjs`：`rootDir` 指 web、`testEnvironment: jsdom`、`@/` → `<rootDir>/src/`、`testMatch` 同原配置；
@@ -49,7 +49,7 @@
 
 **效果**：服务重启/崩溃后卡在 `reviewing|fixing` 的轮次不再无限转圈、不再每 3s 空转轮询——进度卡显示红色「已中断」并引导重新发起审核，修复入口不再出现（避免必然失败的按钮）；修复被拒时给出可操作原因（级别中文名 + 待修复问题全貌），失败轮显示 `error` 原文。以上文案在对话工具文本与进度卡（C 端对话、流程 AI 面板共用同一组件）两处看到的是同一份（画布节点不渲染轮次状态，不在此列）。
 
-## 2026-09-17 文件审核（File Review）全链路（未部署）
+## 2026-09-17 文件审核（File Review）全链路（已部署 2026-09-17）
 
 **主题**：C 端对话工具 / 流程页 / 画布节点三入口共用的「投标文件格式审核」能力——上传成稿 → LLM 按模板逐条比对出问题清单 → 用户在审核面板逐条处置 → 可发起最多 3 轮「按级别修复」→ 修复成稿可下载。设计定稿 `docs/superpowers/specs/2026-09-16-file-review-node-design.md`，实施计划 `docs/superpowers/plans/2026-09-16-file-review-node.md`（T1–T18 全部完成）。
 
@@ -72,16 +72,30 @@
 **测试**：`test/test_file_review_service.py` + `_api.py` + `_tool.py` + `_e2e.py` 共 **114 passed**（e2e 5 用例覆盖 5 端点全链路 + mock LLM + 修复轮终态 done + `fix_rounds_left` 归位）；并发串行化用例用 `threading.Barrier(2)` 断言并发两次 fix 只建 1 轮、败者 reason=`running`，锁超时用例断言 `_ADMIT_LOCK.locked()` 仍为 True（未误放）
 
 **遗留**：
-①**未部署**——后端 5 文件成套 SCP + 容器重启，**再**前端 build（顺序硬约束，见计划 T17）；T17 全部 checkbox 保持未勾选，部署需用户明确指示；
+①~~未部署~~（**已部署 2026-09-17**：后端按 T17 清单成套 SCP **10 文件**（含 `api/db/db_models.py` 三表 + seed，且 `rag/svr/file_review/` 目录此前在服务器上不存在）+ 容器重启 → 前端 `npm run build`（1m50s）+ dist 上传 + nginx reload；部署实测与两处计划偏差见下方「部署实测」）；
 ②**R-1（Major，既有缺陷）**：进程重启时若某轮停在 `reviewing|fixing`，`spawn._running_tasks` 随进程清零但**轮次行状态不回落**，此后该 task 的所有 fix 被闸门 2 永久拒绝（`_force_fail_round` 只覆盖崩溃/调度失败分支，无兜底扫描）→ 需手工改库。M3 未使其恶化，但把「不可自愈」从注释提升为显式契约，建议后续加启动期 stale 轮次扫描；
 ③**R-2（Minor）**：`admit_fix_round` docstring 声明「闸门 3 必须在 5 之后」，而实现是先判 `is_running` 再判 `no_pending`（抽取时调换，旧 T8 实现是反的）——两条同时成立时用户会先拿到「上一轮正在收尾」文案、重试一次才拿到真正原因「没有待修复问题」。两者都在 `create_round` 之前，不产生僵尸轮次，属文案时机差，需二选一对齐；
 ④**R-3（Minor）**：对话工具侧 `_fix` 被闸门拒绝时丢了旧实现的富文案（待修复问题全量分布 + 建议 `action=status`），只剩一句通用拒绝。功能等价但 LLM 上下文变少，恢复需让 `admit_fix_round` 一并回传 pending 分布；
 ⑤**R-6（Minor）**：REST 路径的 `_ADMIT_LOCK.acquire(timeout=5s)` 是**同步阻塞**，单事件循环下单次请求最多阻塞全服 5s（正常路径毫秒级、需异常持锁者才放大），后续可评估改 `asyncio.to_thread` 包装；
 ⑥**R-7（Minor）**：`admit_fix_round` 对 `levels=None` 会 `TypeError`（REST 与工具两个调用方均已在入口校验，不可达），属防御性缺口；
 ⑦**R-8（Minor）**：state 端点的 `doc.object` 把 MinIO 对象名下发给前端（低敏，仅用于判断「是否显示下载按钮」）；
-⑧前端 jest 无法执行是**仓库既存问题**（`web/jest.config.ts` 依赖已从 `package.json` 移除的 `umi/test`，项目已迁 Vite），本次新增的进度卡回归用例只经代码审查核对断言自洽、未实际跑过——修 jest 配置属独立议题。
+⑧前端 jest 无法执行是**仓库既存问题**（`web/jest.config.ts` 依赖已从 `package.json` 移除的 `umi/test`，项目已迁 Vite），本次新增的进度卡回归用例只经代码审查核对断言自洽、未实际跑过——修 jest 配置属独立议题。**（后续更新：该结论已部分作废，见上方 2026-09-17「前端测试基建」——用 `.scratch/` 本地脚手架可跑通，两套件 16 用例实跑通过；仓库 `web/jest.config.ts` 仍未修。）**
 
 **效果**：投标文件成稿可一键发起格式审核（按模板出问题清单）→ 面板内逐条处置或按级别发起修复（最多 3 轮，每轮产新成稿版本）→ 成稿带鉴权下载；审核结果在 C 端对话、流程页、画布节点三处看到的是同一份数据与同一个交互。
+
+### 部署实测（2026-09-17）
+
+后端 10 文件成套 SCP → 容器重启 → 前端 `npm run build` + dist 上传 + nginx reload。实测记录与两处**计划偏差**：
+
+- **偏差一：成套范围是 10 文件而非本批次改动的 3 个**。服务器此前对 file_review **零部署**（`rag/svr/file_review/` 目录在服务器上根本不存在），故按 T17 清单成套 SCP，而非只传收口批次的 `file_review_service.py` + `file_review_api.py` + `file_review.py`。
+- **偏差二：`api/db/db_models.py` 在清单内，动了上游核心文件**。项目约束 #2 禁止改上游核心文件，但 T17 清单本就包含它（3 张新表 + seed 必须经 `migrate_db` 建表）。覆盖**前**先 `diff --strip-trailing-cr` 对比服务器与本地：差异为**纯新增**（`@@ -2854,8 +2854,28 @@` 与 `@@ -3156,3 +3176,235 @@`，**+253 / -0**，无任何既有行被删改），据此判定覆盖不破坏服务器上其他功能的模型定义。
+- **md5 校验**：10 个文件逐个 `md5sum` 与本地一致后才重启。
+- **冒烟（T17 Step 2 脚本需修正）**：计划里写的 `aggregate_chunks` **在实现中不存在**，实际符号是 `aggregate_references(*, kb_chunks, budget)`（keyword-only）；同批导出还有 `apply_patches` / `apply_patches_to_docx` / `spawn_review_task` / `is_running` / `execute_task`。修正后冒烟通过：`imports OK` + `preset templates: 5` + `routes OK`（5 条 file_review 路由全部注册）。
+- **5 端点鉴权冒烟全部 401**：`GET /file/review/templates`、三个 POST、`GET …/download` 在无 `Authorization` 头时全部返回 `HTTP/1.1 401` + `{"code":401,…}`，鉴权正常、无安全缺口。
+- **踩坑一（会误判成漏洞）**：用 `curl -s -o /dev/null -w "%{http_code}"` 打 POST 端点会得到**假 200**，必须用 `curl -i` 看真实状态行才可信——`-w` 的写法在部分分支下把连接层结果当成了 HTTP 码。
+- **踩坑二（会误判成服务没起）**：`docker restart` 后约 **40s** 内 5 个端点全返回连接失败（`000`），此时 `curl /v1/system/version` 返回 404 说明 HTTP 已通、只是应用未 ready；日志出现 `Running on http://0.0.0.0:9380` 后再打即得真实状态码。冒烟需等待/重试，不能一次失败就下结论。
+- **前端**：`npm run build` 用时 **1m50s**，`dist.tar.gz` 约 **39M**；上传后按 Inode 陷阱要求 `rm -rf dist/*`（删内容保留 inode）再解包，`nginx -s reload` 成功，`dist/index.html` mtime 为 Sep 17 13:56，容器内 `curl localhost:80/` 与 `/index.html` 均 **200**。
+- **遗留：T17 Step 7（人肉浏览器验收 9 条）未执行**，留待用户——C 端对话发起审核 → 面板处置 → 按级别修复 → 下载成稿；流程页 FileReview 节点；刷新恢复；与 TemplateFill 并行独立性。计划里带 ⛔ 块的 checkbox 同理未勾。
 
 ## 2026-09-16 范本填写增量模式（同范本有 done → 走增量而非从头填充，未部署）
 
