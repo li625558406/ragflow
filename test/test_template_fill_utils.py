@@ -3096,6 +3096,18 @@ def test_extract_docx_candidates_slot_line_included_without_hint_re():
     assert len(cands[0]["slots"]) == 2
 
 
+def test_extract_docx_candidates_blank_underline_only_paragraph_included():
+    """整行纯空白下划线段落（text.strip() 为空但有位）入候选——真实范本 57 行漏识别根修。"""
+    from rag.svr.template_fill.docx_utils import extract_docx_candidates
+    blob = _make_docx_with_underline_runs([
+        [("             ", True)],           # 纯空白下划线独立填写行
+        [("普通空段落", None)],              # 无位无特征 → 不入
+    ])
+    cands = extract_docx_candidates(blob)
+    assert len(cands) == 1
+    assert cands[0]["slots"] and cands[0]["slots"][0]["kind"] == "blank"
+
+
 def test_extract_docx_candidates_char_underscore_slots():
     """普通特征行（字符下划线）同样产出切位结果（kind=blank）。"""
     from rag.svr.template_fill.docx_utils import extract_docx_candidates
