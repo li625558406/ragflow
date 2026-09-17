@@ -27,7 +27,7 @@ from abc import ABC
 from agent.component.file_review import FILE_ID_INPUT_KEY
 from agent.tools.base import ToolBase, ToolMeta, ToolParamBase
 from api.db.services.file_review_service import ROUND_STATUS_CN as _ROUND_STATUS_CN
-from api.db.services.file_review_service import SEVERITY_CN as _SEVERITY_CN
+from api.db.services.file_review_service import SEVERITY_RANK, severity_cn, severity_summary
 from common.connection_utils import timeout
 from common.misc_utils import get_uuid
 from rag.svr.file_review import spawn as spawn_mod
@@ -47,10 +47,12 @@ _POLL_INTERVAL = 3
 _TERMINAL_ROUND_STATUSES = ("annotated", "done", "failed")
 
 # 轮次状态口径（_ROUND_STATUS_CN）与「进行中」两态（RUNNING_ROUND_STATUSES）的唯一实现
-# 都在 Service 层：受理闸门 admit_fix_round 也要用它们。本层只 import 中文名映射（两个
+# 都在 Service 层：受理闸门 admit_fix_round 也要用它们。本层只 import 中文名映射（
 # _format_status 渲染点用），不再重复定义，也不再用 RUNNING_ROUND_STATUSES（前置状态由
 # 闸门在锁内判定，工具层再判一次就是又一个「检查通过但线程未注册」的窗口）。
-_SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
+# 同理，严重度的展示口径（severity_cn / severity_summary / SEVERITY_RANK）也只在 Service
+# 层实现一份：拒绝文案（「没有【严重】级别的待修复问题。待修复问题：共 N 条（…）」）是
+# REST 端点与工具共用的同一句话，各写一份就是等着两处统计口径漂移。
 
 # 返回值会进 LLM 上下文：逐条 issue 全文（上限 1000 字）会刷爆 token，逐项裁剪。
 _MAX_LIST_ITEMS = 30
@@ -62,17 +64,6 @@ _MAX_SUMMARY_CHARS = 400
 def _clip(text, limit: int) -> str:
     s = (text or "").strip()
     return s if len(s) <= limit else s[:limit] + "…"
-
-
-def _severity_cn(sev) -> str:
-    """级别中文名。
-
-    只把**空值**（None / 空串）折成「未知」；不认识的**字符串**原样透出——它表达的不是
-    「没有级别」而是「有一条本工具不认识的级别」，抹成「未知」就把排障线索丢了
-    （_severity_summary 的排序键 _SEVERITY_RANK 也恰好把未知串排在最后）。
-    唯一硬约束：不许把字面 None 渲染进给用户与 LLM 的文案。
-    """
-    return _SEVERITY_CN.get(sev) or (sev if isinstance(sev, str) and sev else "未知")
 
 
 class FileReviewToolParam(ToolParamBase):
@@ -302,12 +293,20 @@ class FileReviewTool(ToolBase, ABC):
             MAX_FIX_ROUNDS,
             FileReviewAnnotationService,
             fix_rounds_left,
+            is_stale_running,
         )
 
         task_id = rounds[0].task_id
         cur = rounds[-1]
+        # 中断判定要在取中文名前算：stale 行的 status 是 reviewing/fixing，直接映射会
+        # 报「审核中 / 修复中」—— 与「永远不会有结果」的真相正好相反。
+        stale = is_stale_running(cur)
+        status_label = "已中断" if stale else _ROUND_STATUS_CN.get(cur.status, cur.status)
         lines = [(f"审核任务 {task_id}：共 {len(rounds)} 轮，当前第 {cur.round_no} 轮"
-                  f"（{_ROUND_STATUS_CN.get(cur.status, cur.status)}）。")]
+                  f"（{status_label}）。")]
+        if stale:
+            lines.append("本轮已中断（服务重启或异常退出），不会再产出结果；"
+                         "如需继续，请重新发起审核。")
         if cur.status == "failed":
             # error 列允许写满 2000 字（executor 的 err[:2000]），全量拼接会挤占 LLM
             # 上下文——同函数内 summary/issue/matched_text 一律过 _clip，它不能例外。
@@ -317,9 +316,9 @@ class FileReviewTool(ToolBase, ABC):
             lines.append("本轮结果：" + _clip(cur.summary, _MAX_SUMMARY_CHARS))
 
         pending = FileReviewAnnotationService.list_pending_by_task(task_id)
-        lines.append("待修复问题：" + self._severity_summary(pending))
+        lines.append("待修复问题：" + severity_summary(pending))
         for a in pending[:_MAX_LIST_ITEMS]:
-            line = (f"- [{_severity_cn(a.severity)}] "
+            line = (f"- [{severity_cn(a.severity)}] "
                     f"{_clip(a.issue, _MAX_ISSUE_CHARS)}")
             if a.matched_text:
                 line += f"（原文：{_clip(a.matched_text, _MAX_MATCHED_CHARS)}）"
@@ -339,18 +338,6 @@ class FileReviewTool(ToolBase, ABC):
             lines.append("如需修复，请告知要修复哪个级别（严重/一般/提示）；"
                          "不需要修复的可以先放着，未修复的问题会保持原样。")
         return "\n".join(lines)
-
-    @staticmethod
-    def _severity_summary(items) -> str:
-        """按级别统计待修复条数（无则明说「无」，不留空让 LLM 猜）。"""
-        if not items:
-            return "无"
-        counts = {}
-        for a in items:
-            counts[a.severity] = counts.get(a.severity, 0) + 1
-        parts = [f"{_severity_cn(s)} {counts[s]} 条"
-                 for s in sorted(counts, key=lambda x: _SEVERITY_RANK.get(x, 99))]
-        return f"共 {len(items)} 条（{'、'.join(parts)}）"
 
     # ---------- 辅助 ----------
 
@@ -439,4 +426,4 @@ class FileReviewTool(ToolBase, ABC):
             sev = _SEVERITY_ALIASES.get(it.strip().lower())
             if sev and sev not in out:
                 out.append(sev)
-        return sorted(out, key=lambda s: _SEVERITY_RANK[s])
+        return sorted(out, key=lambda s: SEVERITY_RANK[s])

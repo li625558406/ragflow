@@ -710,7 +710,11 @@ def _patch_admission(monkeypatch, *, state, created, spawned):
         _time.sleep(0.3)          # 撑开竞争窗口：无锁实现下两个线程都会走进来
         state["rounds"].append(SimpleNamespace(
             round_no=kw["round_no"], status="fixing", user_query=kw["user_query"],
-            file_id="f1", template_id="t1", kb_ids=None))
+            file_id="f1", template_id="t1", kb_ids=None,
+            # 后到者会读这一行走 is_stale_running，而该判据**直接访问** task_id /
+            # create_time（刻意不 getattr 兜底）—— 行不完整就 AttributeError 而不是
+            # 给出 running 结论。替身必须与真实行同形。
+            task_id=kw["task_id"], create_time=int(_time.time() * 1000)))
         created.append(kw)
         return f"rid-{kw['round_no']}"
 
@@ -735,7 +739,8 @@ def test_admit_fix_round_serializes_concurrent_callers(monkeypatch):
 
     state = {"rounds": [SimpleNamespace(round_no=1, status="annotated", file_id="f1",
                                         template_id="t1", kb_ids=None,
-                                        user_query="审核这份招标文件")]}
+                                        user_query="审核这份招标文件",
+                                        task_id=f"{PFX}t_race", create_time=0)]}
     created, spawned = [], []
     svc = _patch_admission(monkeypatch, state=state, created=created, spawned=spawned)
 
@@ -795,3 +800,132 @@ def test_admit_fix_round_busy_on_lock_timeout_and_never_releases_foreign_lock(mo
         holder.join(3)
     assert svc._ADMIT_LOCK.acquire(timeout=1) is True, "持锁者释放后锁必须可用"
     svc._ADMIT_LOCK.release()
+
+
+# ── 14. stale 派生：进程被杀后卡住轮次的唯一判据（R-1） ──────────────────
+# is_stale_running 是**纯判定**（不触库），故这里全用 SimpleNamespace + 打桩 is_running，
+# 并用显式 now_ms 锁定时间轴（不给 flaky 留缝）。
+
+# 固定的「现在」：13 位毫秒，与 create_time 列同单位。
+NOW_MS = 1_800_000_000_000
+
+
+def _patch_is_running(monkeypatch, alive: bool):
+    """spawn._running_tasks 的替身：alive=False 模拟「线程已不存在」。"""
+    from rag.svr.file_review import spawn as spawn_mod
+
+    monkeypatch.setattr(spawn_mod, "is_running", lambda tid: alive)
+
+
+def _stale_row(status="reviewing", create_time=0, task_id="t1"):
+    return SimpleNamespace(task_id=task_id, status=status, create_time=create_time)
+
+
+def test_is_stale_running_requires_expired_grace(monkeypatch):
+    """判据③：行龄必须**严格大于**宽限期（锁定 off-by-one 口径）。"""
+    from api.db.services.file_review_service import STALE_GRACE_SECONDS, is_stale_running
+
+    grace_ms = STALE_GRACE_SECONDS * 1000
+    _patch_is_running(monkeypatch, alive=False)
+
+    def _judge(age_ms):
+        return is_stale_running(_stale_row(create_time=NOW_MS - age_ms), now_ms=NOW_MS)
+
+    assert _judge(0) is False, "刚建的轮次落在建轮→起线程窗口内，不许判 stale"
+    assert _judge(grace_ms - 1) is False
+    assert _judge(grace_ms) is False, "恰好等于宽限期不算（严格大于）"
+    assert _judge(grace_ms + 1) is True
+    assert _judge(10 ** 9) is True, "行龄再大也只是 stale 的**必要**条件之一"
+
+
+def test_is_stale_running_never_claims_while_thread_alive(monkeypatch):
+    """判据②：线程真在跑就绝不判 stale —— 单轮耗时超过 60s 是常态，行龄不是证据。
+    这条同时保证工具侧「先查轮次状态、后查线程」的既有顺序不被打乱。"""
+    from api.db.services.file_review_service import is_stale_running
+
+    _patch_is_running(monkeypatch, alive=True)
+    for status in ("reviewing", "fixing"):
+        row = _stale_row(status=status, create_time=0)   # 行龄 ≈ 半个世纪
+        assert is_stale_running(row, now_ms=NOW_MS) is False
+
+
+def test_is_stale_running_only_applies_to_running_statuses(monkeypatch):
+    """判据①：终态行不参与 —— 否则历史轮次会被显示成「已中断」并隐藏修复入口。"""
+    from api.db.services.file_review_service import is_stale_running
+
+    _patch_is_running(monkeypatch, alive=False)
+    for status in ("annotated", "done", "failed"):
+        assert is_stale_running(_stale_row(status=status, create_time=0),
+                                now_ms=NOW_MS) is False
+    for status in ("reviewing", "fixing"):
+        assert is_stale_running(_stale_row(status=status, create_time=0),
+                                now_ms=NOW_MS) is True
+
+
+def test_is_stale_running_fails_loudly_on_missing_create_time(monkeypatch):
+    """缺 create_time 必须响亮报错（端点 → 500），**不得** getattr 兜底成「已中断」：
+    把一个正常在跑的轮次判死比报错严重得多 —— 用户会当它没有结果而白白重跑。"""
+    from api.db.services.file_review_service import is_stale_running
+
+    _patch_is_running(monkeypatch, alive=False)
+    with pytest.raises(AttributeError):
+        is_stale_running(SimpleNamespace(task_id="t1", status="reviewing"), now_ms=NOW_MS)
+
+
+def test_admit_fix_round_denies_stale_before_running(monkeypatch):
+    """stale 必须排在 running 之前：两者的 status 都在 RUNNING 集合里，顺序反了会把
+    「永远不会好」错答成「等一会就好」—— 用户会白等到天荒地老。"""
+    stale_round = SimpleNamespace(round_no=1, status="reviewing", file_id="f1",
+                                  template_id="t1", kb_ids=None,
+                                  user_query="审核这份招标文件",
+                                  task_id=f"{PFX}t_stale", create_time=0)
+    created, spawned = [], []
+    svc = _patch_admission(monkeypatch, state={"rounds": [stale_round]},
+                           created=created, spawned=spawned)
+
+    with pytest.raises(svc.FixAdmissionDenied) as ei:
+        svc.admit_fix_round(task_id=f"{PFX}t_stale", tenant_id="u1", levels=["high"])
+    assert ei.value.reason == "stale"
+    assert "已中断" in ei.value.message and "重新发起审核" in ei.value.message
+    assert "仍在进行中" not in ei.value.message, "对中断轮次答复「等它结束」＝让用户白等"
+    assert created == [] and spawned == []
+
+
+def test_admit_fix_round_no_pending_message_carries_full_picture(monkeypatch):
+    """拒绝文案是用户看到的最后一句：只说「没有」用户不知道该改选哪个级别，
+    只能靠猜或反复试。措辞由本层统一给出，REST 端点与对话工具逐字共用同一份。"""
+    from api.db.services import file_review_service as svc
+
+    # 修复轮余额充足（只有首轮），确保拦下它的是 no_pending 而不是 no_quota。
+    rounds = [SimpleNamespace(round_no=1, status="annotated", file_id="f1",
+                              template_id="t1", kb_ids=None,
+                              user_query="审核这份招标文件",
+                              task_id=f"{PFX}t_nopending", create_time=0)]
+    monkeypatch.setattr(svc.FileReviewRoundService, "get_owned_task",
+                        classmethod(lambda cls, tid, tenant: list(rounds)))
+    monkeypatch.setattr(svc.FileReviewAnnotationService, "list_pending_by_task",
+                        classmethod(lambda cls, tid: [SimpleNamespace(severity="high"),
+                                                      SimpleNamespace(severity="high"),
+                                                      SimpleNamespace(severity="medium")]))
+    _patch_is_running(monkeypatch, alive=False)
+
+    with pytest.raises(svc.FixAdmissionDenied) as ei:
+        svc.admit_fix_round(task_id=f"{PFX}t_nopending", tenant_id="u1", levels=["low"])
+    assert ei.value.reason == "no_pending"
+    assert ei.value.message == ("没有【提示】级别的待修复问题。"
+                                "待修复问题：共 3 条（严重 2 条、一般 1 条）")
+
+
+def test_severity_helpers_render_unknown_without_losing_it():
+    """脏 severity 不许渲染成字面 None；未登记的值原样透出（排障线索不能丢），
+    且排在已知级别之后。空集必须明说「无」，不留空让用户/LLM 去猜。"""
+    from api.db.services.file_review_service import severity_cn, severity_summary
+
+    assert severity_cn("high") == "严重"
+    assert severity_cn(None) == "未知" and severity_cn("") == "未知"
+    assert severity_cn("weird") == "weird"
+    assert severity_summary([]) == "无"
+    assert severity_summary([SimpleNamespace(severity="medium"),
+                             SimpleNamespace(severity="weird"),
+                             SimpleNamespace(severity=None)]) == \
+        "共 3 条（一般 1 条、weird 1 条、未知 1 条）"

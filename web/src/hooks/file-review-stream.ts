@@ -44,6 +44,14 @@ export interface IFileReviewRound {
   minio_path: string;
   /** 是否有可下载成稿（判据是 minio_path 非空，与 status 无关——见 T9 交接契约第 2 条） */
   produced: boolean;
+  /** 该轮自称在跑（status 是 reviewing/fixing），但后台线程已不复存在 —— 服务重启 /
+   *  崩溃后轮次状态永远不会回落（只有线程内部抛错才会被置 failed）。此时：
+   *  status 仍是 reviewing/fixing 但**必须**停止轮询、停止转圈、**隐藏** fix 入口
+   *  （服务端 stale 闸门拒绝一切 fix，唯一出路是重新发起审核 —— 留着按钮等于给用户
+   *  一个必然失败的入口）。
+   *  服务端判定（Service.is_stale_running，含 60s 宽限避开建轮→起线程窗口）；
+   *  前端**不得**自己按时间重算。 */
+  stale: boolean;
 }
 
 /** state 端点的完整响应体（轮询结果） */

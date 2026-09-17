@@ -18,8 +18,9 @@
 形态对齐 template_fill_service：继承 CommonService，类方法 + @DB.connection_context()
 （每个方法一个连接作用域）。本层只做单条 INSERT/UPDATE/SELECT，不开显式事务 —— 没有
 跨行不变量需要保证（新建轮次只写一行，改状态只改一行）。
-`compose_fix_query` / `SEVERITY_CN` 是纯文本助手，与 `fix_rounds_left` 同属「不触库的
-判定逻辑」，落在本层是因为两个发起方（T8 工具 / T9 API）都已 import 本模块。
+`compose_fix_query` / `severity_cn` / `severity_summary` 是纯文本助手，与 `fix_rounds_left`
+/ `is_stale_running` 同属「不触库的判定逻辑」，落在本层是因为两个发起方（T8 工具 /
+T9 API）都已 import 本模块 —— 各写一份就是等着两处措辞与口径漂移、行为分叉。
 
 上游 T1：api/db/db_models.py 的三个模型 + migrate_db 里的建表/补预置。
 下游 T4 patcher / T6 executor / T7 节点 / T8 工具 / T9 API 消费本层。
@@ -51,6 +52,7 @@ test_update_status_writes_arbitrary_value_locks_contract 用例锁定了这一�
 
 import json
 import threading
+import time
 from typing import NamedTuple
 
 from api.db.db_models import DB, FileReviewAnnotation, FileReviewRound, FileReviewTemplate, json_dumps
@@ -94,6 +96,60 @@ def fix_rounds_left(rounds: list) -> int:
     return max(0, MAX_FIX_ROUNDS - used)
 
 
+# 触发 stale 判定的宽限期（秒）。create_round(status="fixing") 与 spawn_review_task
+# 之间存在一个微秒级窗口：此刻轮次行已是 running 态、线程却尚未注册进 _running_tasks，
+# 该窗口内把它判成「已中断」是误报。给足宽限即可 —— 进程真正被杀远慢于此。
+STALE_GRACE_SECONDS = 60
+
+
+def _now_ms() -> int:
+    """当前时间（13 位毫秒整数），与 create_time 列同单位。"""
+    return int(time.time() * 1000)
+
+
+def is_stale_running(row, now_ms: int | None = None) -> bool:
+    """轮次行自称「还在跑」，但**没有任何线程会回来写它** —— 判定为已中断。
+
+    这是进程被 kill / 崩溃后唯一的自救出口。轮次状态由 T6 executor 在后台线程里推进，
+    线程消失时状态**不会**回落：spawn._force_fail_round 只在「线程启动失败」与「线程内部
+    抛异常」两条分支里 CAS 置 failed，进程整体消失时它没有执行机会。于是该行永久停在
+    reviewing/fixing，而 spawn._running_tasks 是**进程内**集合、重启即空 —— 两个视角从此
+    永久背离。用户侧的后果是三重：进度卡一直转圈、该 task 之后所有 fix 被受理闸门挡死、
+    而卡片在 running 态又隐藏修复入口（无自助出口）。
+
+    判据（三者同时成立才算 stale）：
+      1. status ∈ RUNNING_ROUND_STATUSES —— 终态行不参与；
+      2. spawn_mod.is_running(task_id) 为 False —— 线程真在跑就绝不判 stale。这一条也
+         保证了工具侧「先查轮次状态、后查线程」的既有顺序不被本判定打乱；
+      3. 行龄 > STALE_GRACE_SECONDS —— 避开判据 2 覆盖不到的建轮→起线程窗口。
+
+    **直接访问 row.create_time，不用 getattr 兜底**：三个模型都继承 DataBaseModel，
+    create_time 必然存在。缺列属于「模型契约坏了」，应当响亮报错，而不是 getattr(None) →
+    算术报错前的静默误判 —— 把一个正常在跑的轮次判死会让用户白等不到结果。
+    注意爆炸半径是**整张卡片一起挂**而非「该轮显红」：本函数在 _round_payload 里被逐轮调用，
+    而 _round_payload 在 review_state 的同一个 try 内，一行脏数据会让 annotations / doc /
+    fix_rounds_left 一并丢失、前端退化成「加载失败」（无数据时轮询亦停，与改造前一致）。
+    这是有意接受的：能触发它的是模型契约损坏，此时给半张卡比给 500 更容易误导。
+
+    **部署契约：本判定要求 HTTP 服务与 review 线程在同一个进程内。** 判据②读的是
+    spawn._running_tasks（进程内集合），跨进程即恒空 —— 若将来把 ragflow_server 改成
+    多 worker（hypercorn workers>1）或多进程部署，**所有活轮次都会在 60s 后被误判「已中断」**
+    （前端停轮询、修复入口消失）。改多 worker 之前必须先改本判定（例如换成跨进程可见的
+    心跳键），不能只改部署方式。今天成立：app.run 单进程、thread_pool_exec 是进程内池、
+    WS 只作用于 task_executor 子进程数。
+
+    row 可以是 ORM 行，也可以是测试里的 SimpleNamespace（需 status / task_id / create_time）。
+    """
+    if row.status not in RUNNING_ROUND_STATUSES:
+        return False
+    # 函数内延迟 import：本模块顶层不新增对 spawn 的依赖边（与 admit_fix_round 同款取向）。
+    from rag.svr.file_review import spawn as spawn_mod
+
+    if spawn_mod.is_running(row.task_id):
+        return False
+    return ((_now_ms() if now_ms is None else now_ms) - row.create_time) > STALE_GRACE_SECONDS * 1000
+
+
 # ── 修复轮「只修 X 级」指令的唯一实现 ────────────────────────────────
 # 级别过滤在 executor 里**只能软表达**：_run_fix_round 的 chosen = pending[:MAX_FIX_ITEMS]
 # 没有 severity 谓词，LLM 收到的级别约束全部来自 round_row.user_query 被 _build_fix_prompt
@@ -101,6 +157,40 @@ def fix_rounds_left(rounds: list) -> int:
 # T9 REST 端点）必须是同一份实现 —— 各写一份就是等着两处措辞漂移、行为分叉。
 # 放在本层（而非某一层调用方）是因为两处都要 import 本模块，不新增任何依赖边。
 SEVERITY_CN = {"high": "严重", "medium": "一般", "low": "提示"}
+
+# 严重度排序口径（高→低）。未登记的值排最后（不丢弃）—— 排障时「有一条谁都不认识的
+# 级别」比「它被悄悄塞进 high 里」显眼得多。
+SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
+
+
+def severity_cn(sev) -> str:
+    """severity 英文 → 中文（展示口径的唯一实现）。
+
+    只把**空值**（None / 空串）折成「未知」；不认识的**字符串**原样透出 —— 它表达的不是
+    「没有级别」而是「有一条谁也不认识的级别」，抹成「未知」就把排障线索丢了
+    （SEVERITY_RANK 也恰好把未知串排在最后）。
+    唯一硬约束：不许把字面 None 渲染进给用户 / LLM 的文案。
+    """
+    return SEVERITY_CN.get(sev) or (sev if isinstance(sev, str) and sev else "未知")
+
+
+def severity_summary(items) -> str:
+    """标注集合的严重度分布，形如「共 7 条（严重 3 条、一般 4 条）」。
+
+    两个发起方（T8 工具 / T9 API）的拒绝与进度文案必须用同一份措辞：这是用户看到的
+    **最后一句**话——「所选级别没有待修复的问题」若不带全貌，用户无从知道该改选哪个级别，
+    只能靠猜。空集返回「无」（不留空让 LLM 或用户去猜）。
+    排序按 SEVERITY_RANK；**多个未登记级别之间无稳定序**（同为 99，靠 sorted 稳定性取
+    首次出现顺序），不承诺可复现 —— 它们本就是异常数据，只保证不被吞掉、排在最后。
+    """
+    if not items:
+        return "无"
+    counts = {}
+    for a in items:
+        counts[a.severity] = counts.get(a.severity, 0) + 1
+    parts = [f"{severity_cn(s)} {counts[s]} 条"
+             for s in sorted(counts, key=lambda x: SEVERITY_RANK.get(x, 99))]
+    return f"共 {len(items)} 条（{'、'.join(parts)}）"
 
 
 def compose_fix_query(base_query: str, levels: list) -> str:
@@ -545,7 +635,7 @@ class FixAdmissionDenied(Exception):
     """受理闸门拒绝。reason 机器可读（调用方按它映射错误码），message 面向用户（中文）。
 
     reason 取值集合是固定契约，调用方按它分发：
-      busy / not_found / running / closing / no_quota / no_pending
+      busy / not_found / stale / running / closing / no_quota / no_pending
     """
 
     def __init__(self, reason: str, message: str):
@@ -570,17 +660,27 @@ def admit_fix_round(*, task_id: str, tenant_id: str, levels, user_query_override
     闸门顺序不是随意的，每一条都在挡一条实测过的坏路径：
       1. not_found：task_id 不存在 / 不归 tenant（沿用 get_owned_task 的口径，同一句话，
          不泄露「他人 task 是否存在」）；
-      2. running  ：本轮（rounds[-1]）还在 reviewing/fixing，线程还会回来写这一行；
-      3. closing  ：轮次行已终态但 spawn 线程仍在收尾 —— executor._run_fix_round **先**
+      2. stale    ：本轮自称在跑，但已没有任何线程会回来写它（进程被杀 / 崩溃后
+         _running_tasks 重启即空、行状态却永久停在 running）—— 唯一的自助出口，
+         判据见 is_stale_running；
+      3. running  ：本轮（rounds[-1]）还在 reviewing/fixing，线程还会回来写这一行；
+      4. closing  ：轮次行已终态但 spawn 线程仍在收尾 —— executor._run_fix_round **先**
          置轮次终态、**再**逐条写最多 MAX_FIX_ITEMS(20) 条标注，中间隔着 20 次 DB
          往返；此刻 spawn_review_task 会静默 no-op，新轮次永远等不到线程去消费它；
-      4. no_quota ：修复轮余额用尽（failed 轮同样计入，见 fix_rounds_left）；
-      5. no_pending：所选级别没有待修项 —— 建出来的轮次会去修**别的**级别（把用户没
+      5. no_quota ：修复轮余额用尽（failed 轮同样计入，见 fix_rounds_left）；
+      6. no_pending：所选级别没有待修项 —— 建出来的轮次会去修**别的**级别（把用户没
          选中的问题改掉），或空转一轮白烧一次机会。
-    顺序约束：2 必须在 3 之前（状态未收口时的正确答复是「仍在进行中」，不是「正在收尾」）；
-    3 必须在 5 之后（真正原因是「没有可修项」时错答「稍后再试」会让用户白等）；且从
-    is_running 检查到 spawn_review_task 之间**不得插入其它逻辑** —— 否则又会开出一个
-    新的「检查通过但线程未注册」窗口。
+    顺序约束：
+      * 2 必须在 3 之前：stale 行的 status 同样落在 RUNNING_ROUND_STATUSES 里，顺序反了
+        会把「永远不会好」错答成「等一会就好」—— 这是唯一会让用户白等到天荒地老的答复。
+        反过来不会误伤：判据②要求 is_running 为 False，线程真在跑的一定走 3。
+      * 3 必须在 4 之前：状态未收口时的正确答复是「仍在进行中」，不是「正在收尾」。
+      * 4 在 6 之前是**取舍**而非硬约束：4 的判据是进程内 set 查一次（近零成本、窗口在
+        微秒级），6 要读该 task 的全量标注。把便宜的放前面，代价是两者同时命中时先给出
+        一句与真因无关的「稍等片刻」，用户重试一次即拿到真因；反过来把 6 提前，则每次
+        真实 closing 都多付一次全量标注查询。改顺序前请重新权衡这个代价。
+      * 从 is_running 检查到 spawn_review_task 之间**不得插入其它逻辑** —— 否则又会开出
+        一个新的「检查通过但线程未注册」窗口。
 
     levels 必须由调用方用各自的白名单归一（T8 工具宽松、T9 API 严格拒绝整批非法值，
     这是既有差异）；本层只做 pending 的 severity 过滤，不校验级别取值。
@@ -600,6 +700,15 @@ def admit_fix_round(*, task_id: str, tenant_id: str, levels, user_query_override
             raise FixAdmissionDenied("not_found", "文件审核任务不存在或无权访问")
 
         cur = rounds[-1]
+        # stale 必须在 running 之前判：两者的 status 同样在 RUNNING_ROUND_STATUSES 里，
+        # 顺序反了会把「永远不会好」错答成「等一会就好」。反过来不会误伤活轮次 ——
+        # is_stale_running 的判据②要求 is_running 为 False。
+        if is_stale_running(cur):
+            raise FixAdmissionDenied(
+                "stale",
+                f"第 {cur.round_no} 轮（{ROUND_STATUS_CN.get(cur.status, cur.status)}）"
+                "已中断（服务重启或异常退出），无法继续；请重新发起审核")
+
         if cur.status in RUNNING_ROUND_STATUSES:
             raise FixAdmissionDenied(
                 "running",
@@ -617,7 +726,12 @@ def admit_fix_round(*, task_id: str, tenant_id: str, levels, user_query_override
 
         pending = FileReviewAnnotationService.list_pending_by_task(task_id)
         if not [a for a in pending if a.severity in levels]:
-            raise FixAdmissionDenied("no_pending", "所选级别没有待修复的问题，无需发起修复")
+            # 带全貌而不是只说「没有」：用户无从知道该改选哪个级别，只能靠猜或反复试。
+            # 措辞恒定为「没有【X】级别的待修复问题。待修复问题：…」，两个发起方共用。
+            chosen = "、".join(SEVERITY_CN.get(lv, lv) for lv in levels)
+            raise FixAdmissionDenied(
+                "no_pending",
+                f"没有【{chosen}】级别的待修复问题。待修复问题：{severity_summary(pending)}")
 
         no, version = FileReviewRoundService.next_round(task_id)
         rid = FileReviewRoundService.create_round(

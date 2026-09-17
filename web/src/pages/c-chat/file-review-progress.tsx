@@ -11,6 +11,19 @@ import {
 import { ChevronDown, Download, Eye, Loader2 } from 'lucide-react';
 import { useState } from 'react';
 
+// 状态中文：与服务端 ROUND_STATUS_CN **语义**对齐（措辞刻意不同，服务端用
+// 「审核完成 / 已收口」面向 LLM，这里用「已完成 / 已结束」面向用户）。
+// done 刻意叫「已结束」而不是「修复完成」——executor 在「没有待修复的问题」与
+// 「该文件类型不支持自动修复」时同样以 done 收口，写「完成」会让用户以为文档被改过。
+// 新增/改状态时两边都要过一眼，但不要为了「逐字相同」去改服务端文案。
+const STATUS_CN: Record<string, string> = {
+  reviewing: '审核中',
+  fixing: '修复中',
+  annotated: '已完成',
+  done: '已结束',
+  failed: '失败',
+};
+
 export default function FileReviewProgress({
   fileId,
   taskId: taskIdProp,
@@ -48,16 +61,30 @@ export default function FileReviewProgress({
   // ── 派生（按 T11 交接契约：canFix 不自拼，用 fix_rounds_left） ──
   const current = data?.current ?? null;
   const status = current?.status ?? '';
-  const isRunning = status === 'reviewing' || status === 'fixing';
+  // stale：轮次自称在跑但线程已不存在（服务重启 / 崩溃）。判据在服务端
+  // （Service.is_stale_running，含 60s 宽限），前端只消费，不自己按时间重算 ——
+  // 两处各算一次就是等着宽限期口径漂移。
+  const isStale = current?.stale === true;
+  // 中断的轮次**不是**运行中：否则会永远转圈（服务端 3s 轮询已按同一条件停掉）。
+  const isRunning = !isStale && (status === 'reviewing' || status === 'fixing');
+  const statusLabel = isStale ? '已中断' : STATUS_CN[status] || status;
   // canFix 必须**镜像服务端闸门**，而不是自己发明更严的条件。
-  // 服务端（Service 层 admit_fix_round）放行条件只有三条：
-  //   ① rounds[-1].status ∉ (reviewing, fixing)  ② spawn 未在跑  ③ fix_rounds_left > 0
-  // 这里再叠一次 ①②（服务端会给可读文案，前端叠是为了不给用户点必然失败的东西）。
+  // 服务端（Service 层 admit_fix_round）放行条件：stale 未命中、rounds[-1].status ∉
+  // (reviewing, fixing)、spawn 未在跑、fix_rounds_left > 0、所选级别有待修项。
+  // 这里叠一次前三条（服务端会给可读文案，前端叠是为了不给用户点必然失败的东西）。
   // 曾经写成 `status === 'annotated'` 是**错的**：修复轮的终态是 'done'
   // （executor._run_fix_round 每条收口路径都写 done），于是第 2 轮起按钮永久消失，
   // 「最多 3 轮修复」在 UI 侧实际只能触发 1 轮 —— 只有对话工具还能继续。
-  const canFix = !isRunning && (data?.fix_rounds_left ?? 0) > 0;
+  // isStale 同理必须排除：中断轮次的 status 是 reviewing/fixing，但服务端 stale 闸门
+  // 会拒绝一切 fix（唯一出路是重新发起审核），留着按钮等于给用户一个必然失败的入口。
+  const canFix = !isStale && !isRunning && (data?.fix_rounds_left ?? 0) > 0;
   const taskId = taskIdProp || data?.task_id || '';
+  // 服务端受理闸门拒绝时必须让用户看到原因：R-3 把「没有【严重】级别的待修复问题。
+  // 待修复问题：共 3 条（严重 2 条、一般 1 条）」这类富文案下沉到 Service 层由 REST 与
+  // 对话工具共用，但卡片这条路径此前只用了 isPending、从不渲染 error ⇒ 点「确认修复」
+  // 被拒时界面毫无反馈（Popover 原地不动、无任何提示），富文案等于白下沉。
+  const fixError =
+    fixMutation.error instanceof Error ? fixMutation.error.message : '';
 
   // ── 修复级别选择 Popover ─────────────────────────
   const [picking, setPicking] = useState(false);
@@ -99,19 +126,8 @@ export default function FileReviewProgress({
       <div className="font-medium text-[#000000]">
         文件审核{' '}
         {current && (
-          <span className="text-[#8C8C8C]">
-            第 {current.round_no} 轮 ·{' '}
-            {status === 'reviewing'
-              ? '审核中'
-              : status === 'fixing'
-                ? '修复中'
-                : status === 'annotated'
-                  ? '已完成'
-                  : status === 'done'
-                    ? '已结束'
-                    : status === 'failed'
-                      ? '失败'
-                      : status}
+          <span className={isStale ? 'text-[#F5222D]' : 'text-[#8C8C8C]'}>
+            第 {current.round_no} 轮 · {statusLabel}
           </span>
         )}
         {canFix && (
@@ -120,6 +136,16 @@ export default function FileReviewProgress({
           </span>
         )}
       </div>
+      {isStale && (
+        <div className="text-[#F5222D]">
+          本轮已中断（服务重启或异常退出），不会再产出结果；如需继续请重新发起审核。
+        </div>
+      )}
+      {/* 失败原因：此前卡片只渲染 summary，failed 轮只显示「失败」两个字、原因全丢
+          （对话工具侧一直是渲染 error 的）—— 两处口径不一致，用户只能去问模型。 */}
+      {status === 'failed' && current?.error && (
+        <div className="text-[#F5222D]">失败原因：{current.error}</div>
+      )}
       {current?.summary && (
         <div className="text-[#8C8C8C]">{current.summary}</div>
       )}
@@ -171,6 +197,7 @@ export default function FileReviewProgress({
           }}
           onConfirm={submitFix}
           busy={fixMutation.isPending}
+          error={fixError}
         />
       )}
     </div>
@@ -183,12 +210,15 @@ function FixLevelPopover({
   onCancel,
   onConfirm,
   busy,
+  error,
 }: {
   picked: string[];
   onToggle: (l: string) => void;
   onCancel: () => void;
   onConfirm: () => void;
   busy: boolean;
+  /** 服务端拒绝原因（闸门 reason 文案）。失败时 Popover 不关闭，就地显示。 */
+  error?: string;
 }) {
   // 三选多；中文 label 与 T10 SEVERITY_CN 对齐（high→严重 / medium→一般 / low→提示）
   return (
@@ -211,6 +241,7 @@ function FixLevelPopover({
           </label>
         ))}
       </div>
+      {error && <div className="mt-2 text-[#F5222D]">{error}</div>}
       <div className="mt-2 flex justify-end gap-2">
         <button
           type="button"

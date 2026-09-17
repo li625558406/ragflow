@@ -1,5 +1,54 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-17 文件审核收口遗留修复批次（R-1 中断轮次前端可识别 + R-2/R-3，未部署）
+
+**主题**：收口审查遗留 R-1 ~ R-8 的排查结论中，R-1（Major）与 R-2/R-3（Minor）在本批修复；R-1 只做「用户可识别 + 有出口」的一半，**不做**启动期扫描（需改上游核心文件 `api/ragflow_server.py`，未获授权）。
+
+**第一性原理**：R-1 的本质不是「状态没回落」，而是**轮次行自称在跑、却没有任何活体会回来写它**——这是一个**可判定的谓词**，不该靠「进程启动时回头扫库」这种事后补偿去猜。判定它需要三个事实同时成立：①状态在 `RUNNING_ROUND_STATUSES`；②`spawn.is_running(task_id)` 为 False（进程内注册表是权威）；③行龄超过宽限期（避开 `create_round(status="fixing")` 与 `spawn_review_task` 之间那个「行已 running、线程未注册」的微秒窗口）。三者齐备即判 stale，无需任何新持久化、无需任何新表。于是「数据库不回落」这个既成事实不再需要被修复——只需要被**读出来**并如实告诉用户。
+
+**核心变更**（后端 3 文件 + 前端 3 文件 + 测试 4 套件）：
+- **Service 层 stale 派生**（`api/db/services/file_review_service.py`）：新增 `STALE_GRACE_SECONDS = 60`、`_now_ms()`、`is_stale_running(row, now_ms=None)`（三判据如上一段；**直接访问 `row.create_time` 不做 getattr 兜底**——缺列应响亮报错而非静默把正常轮次判死）。本模块顶层**不**新增对 `spawn` 的依赖边，import 延迟到函数内（与 `admit_fix_round` 同款取向）
+- **`admit_fix_round` 新增 stale 闸门**（`reason="stale"`）：**必须在 running 闸门之前判**——两者 status 同属 `RUNNING_ROUND_STATUSES`，顺序反了会把「永远不会好」错答成「等一会就好」，这是唯一会让用户白等到天荒地老的答复；反向不误伤，判据②已要求 `is_running` 为 False。报文含轮号 + 状态中文 + 「请重新发起审核」
+- **`no_pending` 富文案下沉（R-3）**：新增 `SEVERITY_RANK` / `severity_cn()` / `severity_summary()` 于 Service 层单点实现，`agent/tools/file_review.py` 删掉本地 `_SEVERITY_RANK` / `_severity_cn` / `_severity_summary` 改为 import。两入口（REST / 对话工具）现在逐字共用同一份拒绝文案：`没有【严重】级别的待修复问题。待修复问题：共 3 条（严重 2 条、一般 1 条）`——用户/LLM 不必靠猜或反复试就知道该改选哪个级别
+- **R-2 docstring 对齐**：把假的「闸门 3 必须在 5 之后」换成诚实取舍说明——`is_running`（查进程内 set，近零成本）排在 `no_pending`（要读全量标注）之前是**取舍而非硬约束**，代价是同时命中时先给「稍等片刻」、用户重试一次即得真因
+- **API 层透传 stale**（`api/apps/restful_apis/file_review_api.py`）：`_round_payload` 新增 `"stale": is_stale_running(row)`，本层只透传不自创判据；顺带修正 `review_state` docstring 里 `doc.object` 的残留描述（它有成稿时是 MinIO 对象名，**不是**上传系统的 file_id，不能拿去拼 `/api/v1/files/<id>`）
+- **对话工具中断分支**（`agent/tools/file_review.py::_format_status`）：stale 判定**在取中文名之前**算——stale 行 status 是 reviewing/fixing，直接映射会报「审核中 / 修复中」，与「永远不会有结果」正好相反；命中则显示「已中断」+ 重新发起引导
+- **前端 stale-aware**（`web/src/hooks/file-review-stream.ts` 加必填 `stale: boolean` + 注释明确「前端不得自己按时间重算」；`use-file-review-request.ts` 的 `refetchInterval` 加 `&& !current.stale`，否则僵尸轮次每 3s 白打接口且永远转圈；`pages/c-chat/file-review-progress.tsx` 抽出 `STATUS_CN` 映射、`isRunning` 排除 stale、`canFix` 排除 stale（服务端 stale 闸门拒绝一切 fix，留按钮＝给用户一个必然失败的入口）、状态 label 转红 + 新增中断提示行 + 新增 `current.error` 失败原因行——此前 failed 轮只显示「失败」两个字，与工具侧口径不一致）
+
+**测试**：`test_file_review_{service,api,tool,node,spawn}` + `_e2e` + `db` + `executor` + `patcher` + `kb_aggregator` 共 **337 passed**。新增/强化 12 个用例，含对抗性覆盖：宽限期 **off-by-one 边界**（恰好等于 60s 不算 stale）、线程存活时**绝不**判 stale、终态行不参与、缺 `create_time` 列**断言 AttributeError**（响亮失败而非静默）、stale 与 running **同时命中时 stale 必须优先**、`no_pending` 报文断言含级别名 + 总数 + 分布、未登记 severity 原样透出。`ruff check` 六改动文件全过；前端 `eslint` 四文件 0 告警、`tsc --noEmit` 对本功能零报错。
+
+**前端单测（本批次真正跑起来了）**：此前「jest 不可运行」的结论**已作废**——仓库 `web/jest.config.ts` 确实依赖已移除的 `umi/test`（配置级损坏），但用 `.scratch/` 下的等价本地配置可以完整跑通（见下「前端测试基建」）。本功能两套件 **16 passed**：`web/src/hooks/__tests__/file-review-poll.test.ts` 新建 6 用例（`shouldPollFileReview` 纯函数：reviewing/fixing 续轮询、**stale=true 即便 status 仍 running 也必须停**、终态停、`current` 为 undefined 停、对抗——空串/未知/null status 一律停（白名单而非黑名单，服务端将来加状态时默认行为必须是「不轮询」）、对抗——`stale` 为 undefined（旧服务端）时仍按 status 轮询（向前兼容））+ `web/src/pages/c-chat/__tests__/file-review-progress.test.tsx` 10 用例（含新增的「fix 被服务端闸门拒绝时 Popover 必须显示服务端文案（不吞错）」）。
+
+**顺带修掉 2 个「从未跑过」的既有断言缺陷**（jest 修通后立刻暴露，属既有文件既有缺陷，与本批次改动无关，一并修）：
+- `file-review-progress.test.tsx` 的 fixture `current.summary` 是空串却断言 `/high:1 medium:0 low:0/`——组件渲染的是 `current.summary`。服务端 `current = _round_payload(rounds[-1])` 是同一份 payload 的投影，fixture 两者不一致会造出线上不可能出现的态，已把 fixture 补齐并加注释说明该一致性契约；
+- 同文件 `getByText(/正在审核|审核中/)` 同时命中 spinner（「正在审核…」）与状态标签（「第 1 轮 · 审核中」）而抛多元素异常，收紧为 `/正在审核/`——与本次审查回合抓到的 M1 是同一类写法，说明该写法在本仓库是重复踩的坑。
+
+**遗留**：
+①**未部署**——后端 3 文件（`api/db/services/file_review_service.py` + `api/apps/restful_apis/file_review_api.py` + `agent/tools/file_review.py`）成套 SCP + 容器重启，**再**前端 build（顺序硬约束同 T17）；
+②**R-1 只做了一半**：不做启动期扫描 ⇒ 已产生的中断轮次**不会自愈**，用户仍需「重新发起审核」才能继续（此刻该 task 的 fix 永久被拒）；补全需改 `api/ragflow_server.py`（上游核心文件），未获授权故未碰；
+③**R-6/R-7/R-8 仍只记录未改**（REST `_ADMIT_LOCK` 同步阻塞最长 5s / `levels=None` 会 TypeError（不可达）/ `doc.object` 下发 MinIO 对象名）；
+④**进度卡吞掉 fix 拒绝文案——已修**：`file-review-progress.tsx` 的 `fixMutation` 此前只用了 `isPending`、全组件无 mutation 错误渲染（`web/src/app.tsx` 的 `QueryClient` 也未配全局 `onError`），用户点「确认修复」被拒时界面毫无反馈（Popover 停留、无提示），R-3 的富文案在卡片这条路径上等于白下沉。现新增 `fixError = fixMutation.error?.message` 派生 + `FixLevelPopover` 的 `error` prop（渲染在按钮行之上，Popover 不自动关闭），并补拒绝文案用例；
+⑤**「停止轮询」这半边——已补覆盖**：`refetchInterval` 里的 `!current.stale` 是最关键也最难人工验证的一半（其余三半——不转圈/隐藏入口/显示文案——都有人眼可验的表象），回归即恢复「僵尸轮次每 3s 空转 + 永远转圈」。已把判定抽成导出的纯函数 `shouldPollFileReview(current)`（`FILE_REVIEW_POLL_MS` 间隔常量同时收口到一处），配 6 个用例；
+⑥**本地 jest 工具链不入库**：`.scratch/jest*.cjs|ts` 与 transformer 是本地验证脚手架（`.scratch/` 已 gitignore），**未**纳入仓库；仓库 `web/jest.config.ts` 对 `umi/test` 的依赖仍未修（属独立议题：需决定是修复配置还是迁移到 Vitest）。他人 checkout 后仍跑不了 `npm run test`；
+⑦全量前端套件仍有 **3 个套件失败（9 用例）**，经逐个核对**均与本功能无关、且都是「测试没跟上实现」的既有腐坏**，本批次不越界修改：`src/utils/__tests__/chat.test.ts`（首提交写入，断言 `$$x + y$$`，而 `preprocessLaTeX` 用 `$$${equation}$$` 保留捕获组内的空格，实现于 `000665ea` 后已改）、`src/pages/c-chat/__tests__/template-fill-confirm-card.test.tsx`（不先点开折叠头就找字段按钮，而确认卡自 2026-09-15 起默认折叠）、`src/hooks/__tests__/logic-hooks.useScrollToBottom.test.tsx`（mock container 是纯对象，缺 hook 已开始调用的 `scrollTo`）；
+⑧未 commit、未 push。
+
+**前端测试基建（本次打通的本地脚手架，不入库）**：仓库 `web/jest.config.ts` import 了已从 `package.json` 移除的 `umi/test`、`web/jest-setup.ts` import 了 `umi/test-setup`，属配置级损坏，jest 一行都跑不起来。本次在 `.scratch/` 下建等价配置绕开，要点如下（供后续复用）：
+- `jest.local.cjs`：`rootDir` 指 web、`testEnvironment: jsdom`、`@/` → `<rootDir>/src/`、`testMatch` 同原配置；
+- `jest-esbuild-transformer.cjs`：**四段流水线**。仓库没装 `@babel/preset-react`，JSX 只能交给 esbuild；但 esbuild（任何 format）与 babel 的 `@babel/plugin-transform-modules-commonjs` **都会把 import 的 require 提到文件最前**，把 `jest.mock(...)` 压到其下 ⇒ 被测模块先被真实 require 进缓存、**mock 全部失效**（表现为 9/9 用例报 `mockReturnValue is not a function`）。故必须**另起一趟只含自定义 hoist 插件的 babel pass**（同趟加会被 commonjs 的 import 提升覆盖）。顺序：esbuild(tsx→esm) → babel-jest-hoist（包 `_getJestObj()`）→ commonjs（+ `import.meta.env` 预替换）→ 自定义 hoist；
+- `jest-setup.local.ts`：补 jsdom 缺失的浏览器 API——`TextEncoder/TextDecoder`（react-router 的 development 构建在模块顶层就 `new TextEncoder()`）、`Request/Response/Headers`（`route-hook.ts` 顶层 import `routes.tsx`，`routes.tsx` 又在模块作用域调 `createBrowserRouter()` → `createClientNavigation` → `new Request(...)`，即**只要 import 到 logic-hooks，整棵路由树就在求值期被建一遍**）、`Element.prototype.scrollTo/scrollIntoView`；RTL 的自动 cleanup 在该 transformer 链下不生效（上例 DOM 残留到下一例），显式 `afterEach(cleanup)`；
+- 运行：`cd web && ./node_modules/.bin/jest --config ../.scratch/jest.local.cjs [路径]`；
+- **注意**：上述 `Request/Response/Headers` 是**最小桩实现**（只保证构造不抛错），不是真的 fetch polyfill；将来若有本地用例真发请求，必须换真实现，否则会得到「静默假成功」。
+
+**代码审查回合**：批改后走收口审查（含审查者自建 4 个对抗性探针实跑），修正 6 处：
+①**必修**——新增的进度卡 stale 用例断言 `getByText(/已中断/)` 会同时命中状态标签「第 1 轮 · 已中断」与引导行，testing-library 抛多元素异常（审查者用 jsdom 实测复现），收紧为 `/本轮已中断/`；
+②③ 两处注释（`file-review-stream.ts` / `file_review_api.py`）写「放行修复入口」，与实现恰好相反（是**隐藏**入口 + 服务端拒绝一切 fix），已改；
+④ `is_stale_running` docstring 补两条被审查指出「未来会咬人」的契约：**部署契约**（本判定要求 HTTP 服务与 review 线程同进程，改多 worker 前必须先改本判定，否则所有活轮次 60s 后误判中断）+ 爆炸半径（一行脏 `create_time` 会让整张卡退化成「加载失败」而非该轮显红，为有意接受）；
+⑤ 前端 `STATUS_CN` 注释夸大「与服务端 ROUND_STATUS_CN 对齐」，实为**语义对齐、措辞刻意不同**（服务端「审核完成/已收口」面向 LLM，前端「已完成/已结束」面向用户），已改；
+⑥ 过时/歧义注释：工具侧「两个 `_format_status` 渲染点」→ 一个；`severity_summary` 补「多个未登记级别之间无稳定序」半句。
+
+**效果**：服务重启/崩溃后卡在 `reviewing|fixing` 的轮次不再无限转圈、不再每 3s 空转轮询——进度卡显示红色「已中断」并引导重新发起审核，修复入口不再出现（避免必然失败的按钮）；修复被拒时给出可操作原因（级别中文名 + 待修复问题全貌），失败轮显示 `error` 原文。以上文案在对话工具文本与进度卡（C 端对话、流程 AI 面板共用同一组件）两处看到的是同一份（画布节点不渲染轮次状态，不在此列）。
+
 ## 2026-09-17 文件审核（File Review）全链路（未部署）
 
 **主题**：C 端对话工具 / 流程页 / 画布节点三入口共用的「投标文件格式审核」能力——上传成稿 → LLM 按模板逐条比对出问题清单 → 用户在审核面板逐条处置 → 可发起最多 3 轮「按级别修复」→ 修复成稿可下载。设计定稿 `docs/superpowers/specs/2026-09-16-file-review-node-design.md`，实施计划 `docs/superpowers/plans/2026-09-16-file-review-node.md`（T1–T18 全部完成）。

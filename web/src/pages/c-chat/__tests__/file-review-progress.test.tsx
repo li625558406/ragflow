@@ -43,8 +43,12 @@ const baseState = (over: any = {}) => ({
           error: '',
           minio_path: 'frv-t1-v2.docx',
           produced: true,
+          stale: false,
         },
       ],
+      // current 是服务端对 rounds[-1] 的同一份 payload 投影（review_state 里
+      // `current = _round_payload(rounds[-1])`），故 summary 必须与 rounds[0] 一致 ——
+      // 组件渲染的是 current.summary，两者不一致的 fixture 会造出「线上不可能出现」的态。
       current: {
         id: 'r1',
         round_no: 1,
@@ -52,10 +56,11 @@ const baseState = (over: any = {}) => ({
         file_version: 'v1',
         template_id: 'bid_doc_format',
         user_query: '',
-        summary: '',
+        summary: 'high:1 medium:0 low:0',
         error: '',
         minio_path: 'frv-t1-v2.docx',
         produced: true,
+        stale: false,
       },
       doc: { object: 'frv-t1-v2.docx', version: 'v2' },
       annotations: [
@@ -184,7 +189,9 @@ describe('FileReviewProgress', () => {
     );
     render(<FileReviewProgress fileId="f1" />);
     expect(screen.queryByRole('button', { name: '选择级别修复' })).toBeNull();
-    expect(screen.getByText(/正在审核|审核中/)).toBeInTheDocument();
+    // 必须只匹配 spinner 文案：状态标签是「第 1 轮 · 审核中」，写成
+    // /正在审核|审核中/ 会同时命中两处元素而抛多元素异常。
+    expect(screen.getByText(/正在审核/)).toBeInTheDocument();
   });
 
   it('点击「选择级别修复」调起 Popover，勾选 high + medium 后提交触发 useFixFileReview.mutate', async () => {
@@ -206,6 +213,34 @@ describe('FileReviewProgress', () => {
     });
   });
 
+  it('fix 被服务端闸门拒绝时，Popover 必须显示服务端文案（不吞错）', () => {
+    // 服务端把拒绝原因（含级别中文名 + 待修复问题全貌）放在 mutation 的 error 里；
+    // 组件若只消费 isPending，用户点「确认修复」被拒后界面毫无反馈 —— 富文案等于白下沉。
+    const state = baseState();
+    mockUseFileReviewState.mockReturnValue(state as any);
+    const okFix = {
+      mutate: jest.fn(),
+      isPending: false,
+      isLoading: false,
+      error: null,
+    };
+    mockUseFixFileReview.mockReturnValue(okFix as any);
+    const { rerender } = render(<FileReviewProgress fileId="f1" />);
+    fireEvent.click(screen.getByRole('button', { name: '选择级别修复' }));
+    expect(screen.queryByText(/待修复问题/)).toBeNull();
+
+    // 提交被拒：Popover 不关闭，就地显示原因
+    mockUseFixFileReview.mockReturnValue({
+      ...okFix,
+      error: new Error(
+        '没有【提示】级别的待修复问题。待修复问题：共 1 条（严重 1 条）',
+      ),
+    } as any);
+    rerender(<FileReviewProgress fileId="f1" />);
+    expect(screen.getByText(/待修复问题/)).toBeInTheDocument();
+    expect(screen.getByText(/共 1 条（严重 1 条）/)).toBeInTheDocument();
+  });
+
   it('hook isError 时显示错误降级文案（不暴露服务端文案）', () => {
     mockUseFileReviewState.mockReturnValue({
       ...baseState(),
@@ -215,6 +250,56 @@ describe('FileReviewProgress', () => {
     render(<FileReviewProgress fileId="f1" />);
     expect(screen.getByText(/加载失败|稍后重试/)).toBeInTheDocument();
     expect(screen.queryByText(/3306/)).toBeNull();
+  });
+
+  it('round.stale=true（进程重启后卡住的轮次）：显示已中断、不转圈、不给修复入口', () => {
+    // 服务端 stale 判据成立 ⇒ 后台线程已不存在，那一轮永远不会出结果。
+    // 三件事必须同时变：状态文案（不是「审核中」）、spinner（不是「正在审核」）、
+    // 修复入口（服务端 stale 闸门会拒绝一切 fix，留着按钮＝给用户一个必然失败的入口）。
+    mockUseFileReviewState.mockReturnValue(
+      baseState({
+        data: {
+          ...baseState().data,
+          data: {
+            ...baseState().data.data,
+            fix_rounds_left: 3,
+            current: {
+              ...baseState().data.data.current,
+              status: 'reviewing',
+              stale: true,
+            },
+          },
+        },
+      }) as any,
+    );
+    render(<FileReviewProgress fileId="f1" />);
+    // 必须匹配引导行的完整措辞而非 /已中断/ —— 状态标签「第 1 轮 · 已中断」也含这三个字，
+    // 用宽正则 getByText 会匹配到两个元素并抛异常。
+    expect(screen.getByText(/本轮已中断/)).toBeInTheDocument();
+    expect(screen.getByText(/重新发起审核/)).toBeInTheDocument();
+    expect(screen.queryByText(/正在审核/)).toBeNull();
+    expect(screen.queryByRole('button', { name: '选择级别修复' })).toBeNull();
+  });
+
+  it('failed 轮显示失败原因（error），不只显示「失败」两个字', () => {
+    mockUseFileReviewState.mockReturnValue(
+      baseState({
+        data: {
+          ...baseState().data,
+          data: {
+            ...baseState().data.data,
+            current: {
+              ...baseState().data.data.current,
+              status: 'failed',
+              error: 'LLM 输出无法解析为修复补丁列表',
+            },
+          },
+        },
+      }) as any,
+    );
+    render(<FileReviewProgress fileId="f1" />);
+    expect(screen.getByText(/失败原因/)).toBeInTheDocument();
+    expect(screen.getByText(/无法解析/)).toBeInTheDocument();
   });
 
   it('fix_rounds_left 用 max_fix_rounds - 已发起轮次数派生；禁止用 rounds.length < 3', () => {

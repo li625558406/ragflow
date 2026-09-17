@@ -57,6 +57,7 @@ from api.db.services.file_review_service import (
     FixAdmissionDenied,
     admit_fix_round,
     fix_rounds_left,
+    is_stale_running,
 )
 from api.utils.api_utils import (
     add_tenant_id_to_kwargs,
@@ -143,6 +144,12 @@ def _round_payload(row) -> dict:
         # 抛错时轮次被兜底写成 failed，而成稿**已经落盘**（交接契约第 2 条）。按状态判会把
         # 已修好的成稿藏起来。
         "produced": bool(row.minio_path),
+        # 服务重启 / 崩溃后轮次会永久停在 reviewing|fixing（线程没了、状态不回落）。
+        # 前端据此停止轮询、停止转圈、把状态显示成「已中断」并**隐藏**修复入口（服务端
+        # stale 闸门会拒绝一切 fix，唯一出路是重新发起审核）—— 否则卡片会永远转下去
+        # 且用户无任何出口。判据在 Service 层（is_stale_running），本层只透传，不自己
+        # 发明更宽或更严的条件。
+        "stale": is_stale_running(row),
     }
 
 
@@ -244,10 +251,12 @@ async def list_review_templates(tenant_id: str):
 async def review_state(file_id: str):
     """以文件为中心的权威读模型：前端只凭 file_id 就能渲染进度与批注。
 
-    doc.object = 该展示的文档对象名（最近一次落盘的成稿；无成稿时为原件 file_id），
-    前端沿用既有 GET /api/v1/files/<id>。
+    doc.object = 该展示的文档对象名（最近一次落盘的成稿；无成稿时为原件 file_id）。
+    注意它**不是**上传系统的 file_id —— 有成稿时是审核成稿的 MinIO 对象名，不能拿去拼
+    `/api/v1/files/<id>`；无成稿时的 file_id 才走那条既有链路（见模块 docstring 末条）。
     annotations = 该文件**全部**标注（跨轮次/版本/任务）—— 不能按成稿版本过滤：只有审查轮
     产标注且其 file_version 恒为首轮版本，成稿是 v2/v3/v4，按成稿版本过滤会一条都查不到。
+    rounds[].stale = 该轮自称在跑但已无线程会回来写它（服务重启 / 崩溃），前端据此停轮询。
 
     不按 tenant 过滤（读路径，见模块 docstring 的「读不限、写严格」）。
     """

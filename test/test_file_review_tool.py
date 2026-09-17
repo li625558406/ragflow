@@ -22,6 +22,7 @@ SimpleNamespace 打桩（同 test_template_fill_tool.py）。
 - 轮次 error 全量拼接会挤占 LLM 上下文 → 必须裁剪；
 - 脏 severity 不得把字面 None 渲染进给用户的文案。
 """
+import time
 from types import SimpleNamespace
 
 PFX = "__test_fr_tool__"
@@ -41,7 +42,11 @@ def _round(no=1, status="annotated", **kw):
     base = {"task_id": PFX + "task", "file_id": PFX + "file", "round_no": no,
             "status": status, "template_id": "bid_doc_format", "user_query": "",
             "file_version": f"v{no}", "kb_ids": None, "minio_path": None,
-            "summary": "", "error": None}
+            "summary": "", "error": None,
+            # 默认「刚建的轮次」：reviewing/fixing 的行必须带 create_time，否则
+            # is_stale_running 直接访问它会 AttributeError（刻意不 getattr 兜底）。
+            # 需要构造「中断轮次」的用例显式传 create_time=0。
+            "create_time": int(time.time() * 1000)}
     base.update(kw)
     return SimpleNamespace(**base)
 
@@ -284,6 +289,24 @@ def test_status_reports_failed_round_error(monkeypatch):
     assert "本轮失败" in out and "无法解析" in out
 
 
+def test_status_reports_interrupted_round(monkeypatch):
+    """服务重启后轮次停在 reviewing（线程没了、状态不回落）。若照 status 直译中文，
+    答复会是「审核中」—— 与「永远不会出结果」的真相正好相反，用户只能干等。"""
+    rows = [_round(1, "reviewing", create_time=0)]
+    _patch(monkeypatch, rounds=rows, running=False)
+    out = _make_tool()._invoke(action="status", task_id=PFX + "task")
+    assert "已中断" in out and "重新发起审核" in out
+    assert "审核中" not in out
+
+
+def test_status_not_interrupted_while_thread_alive(monkeypatch):
+    """线程真在跑就不许说「已中断」——哪怕行龄远超宽限期（单轮 > 60s 是常态）。"""
+    rows = [_round(1, "reviewing", create_time=0)]
+    _patch(monkeypatch, rounds=rows, running=True)
+    out = _make_tool()._invoke(action="status", task_id=PFX + "task")
+    assert "审核中" in out and "已中断" not in out
+
+
 # ---------- fix ----------
 
 def test_fix_creates_new_round_and_encodes_levels(monkeypatch):
@@ -338,10 +361,25 @@ def test_fix_rejects_unknown_levels(monkeypatch):
     assert "levels" in out and calls["rounds"] == []
 
 
+def test_fix_rejects_interrupted_round_with_actionable_message(monkeypatch):
+    """中断轮次（服务重启后卡在 reviewing）必须拒绝，且**不能**答复「等它结束」——
+    它永远不会结束。文案必须指向唯一出路（重新发起审核）。"""
+    calls = _patch(monkeypatch, rounds=[_round(1, "reviewing", create_time=0)])
+    out = _make_tool()._invoke(action="fix", task_id=PFX + "task", levels="high")
+    assert "已中断" in out and "重新发起审核" in out
+    assert "仍在进行中" not in out
+    assert calls["rounds"] == [] and calls["spawned"] == []
+
+
 def test_fix_rejects_when_no_pending_at_that_level(monkeypatch):
-    calls = _patch(monkeypatch, rounds=[_round(1, "annotated")], pending=[_ann("high")])
+    """拒绝文案必须带全貌（各级别条数）而不是只说「没有」—— 否则用户无从知道该改选
+    哪个级别，只能靠猜或反复试。文案与 REST 端点是同一份（Service 层给出）。"""
+    calls = _patch(monkeypatch, rounds=[_round(1, "annotated")],
+                   pending=[_ann("high"), _ann("high"), _ann("medium")])
     out = _make_tool()._invoke(action="fix", task_id=PFX + "task", levels="low")
-    assert "没有" in out and calls["rounds"] == []
+    assert "没有【提示】级别的待修复问题" in out
+    assert "共 3 条" in out and "严重 2 条" in out and "一般 1 条" in out
+    assert calls["rounds"] == []
 
 
 def test_fix_not_owned_refused(monkeypatch):

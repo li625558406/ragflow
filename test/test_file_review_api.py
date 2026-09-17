@@ -12,6 +12,7 @@ import ast
 import asyncio
 import os
 import sys
+import time
 import types
 from importlib.util import module_from_spec, spec_from_file_location
 from types import SimpleNamespace
@@ -72,7 +73,11 @@ def _round(round_no, status, **over):
         template_id="bid_doc_format", user_query="审核这份招标文件",
         status=status, file_version=f"v{round_no}", kb_ids=None,
         minio_path=None, summary="", llm_raw=None, error="",
-        tenant_id=TENANT, created_by=TENANT)
+        tenant_id=TENANT, created_by=TENANT,
+        # 默认「刚建的轮次」：reviewing/fixing 的行必须带 create_time，否则
+        # Service.is_stale_running 直接访问它会 AttributeError（刻意不 getattr 兜底）。
+        # 需要构造「中断轮次」的用例显式传 create_time=0（1970 ⇒ 必然超过宽限期）。
+        create_time=int(time.time() * 1000))
     for k, v in over.items():
         setattr(row, k, v)
     return row
@@ -255,6 +260,32 @@ def test_round_payload_produced_follows_minio_path_not_status():
     assert _api._round_payload(_round(2, "done"))["produced"] is False
 
 
+def test_round_payload_marks_interrupted_running_rounds(monkeypatch):
+    """stale 只对「自称在跑」的行成立：终态行哪怕 create_time 是 1970 也不标 stale
+    （判据①先看 status）—— 否则前端会把已完成的历史轮次显示成「已中断」。"""
+    from rag.svr.file_review import spawn as spawn_mod
+
+    monkeypatch.setattr(spawn_mod, "is_running", lambda tid: False)
+    assert _api._round_payload(_round(1, "reviewing", create_time=0))["stale"] is True
+    assert _api._round_payload(_round(1, "fixing", create_time=0))["stale"] is True
+    # 刚建的轮次落在宽限期内：create_round → spawn_review_task 之间存在微秒窗口
+    # （行已是 fixing 态、线程尚未注册），此刻误判 stale 会让卡片立刻显示「已中断」。
+    assert _api._round_payload(_round(2, "fixing"))["stale"] is False
+    assert _api._round_payload(_round(1, "annotated", create_time=0))["stale"] is False
+    assert _api._round_payload(_round(2, "done", create_time=0))["stale"] is False
+    assert _api._round_payload(_round(3, "failed", create_time=0))["stale"] is False
+
+
+def test_round_payload_not_stale_while_thread_alive(monkeypatch):
+    """线程真在跑就绝不判 stale —— 哪怕行龄远超宽限期（单轮耗时 > 60s 是常态）。
+    判据顺序也由本用例锁定：先看 is_running，再轮到时间。"""
+    from rag.svr.file_review import spawn as spawn_mod
+
+    monkeypatch.setattr(spawn_mod, "is_running", lambda tid: True)
+    assert _api._round_payload(_round(1, "reviewing", create_time=0))["stale"] is False
+    assert _api._round_payload(_round(1, "fixing", create_time=0))["stale"] is False
+
+
 def test_count_annotations_buckets():
     rows = [_ann("a1", severity="high", status="open"),
             _ann("a2", severity="high", status="fixed"),
@@ -351,6 +382,18 @@ def test_fix_rejects_while_round_still_running(monkeypatch):
     assert "create_round" not in calls
 
 
+def test_fix_rejects_interrupted_round_with_actionable_message(monkeypatch):
+    """服务重启后轮次永久停在 reviewing（线程没了、状态不回落）：必须拒，且**不能**答复
+    「等它结束后再试」—— 它永远不会结束，那会让用户白等。答复必须指向唯一的出路。"""
+    rounds = [_round(1, "reviewing", create_time=0)]
+    calls = _fix_setup(monkeypatch, rounds=rounds, owned=rounds)
+    body = _call(_api.fix_review, task_id="t1", body={"levels": ["high"]})
+    assert body["code"] == RetCode.OPERATING_ERROR
+    assert "已中断" in body["message"] and "重新发起审核" in body["message"]
+    assert "仍在进行中" not in body["message"]
+    assert "create_round" not in calls and "spawned" not in calls
+
+
 def test_fix_rejects_while_spawn_still_running(monkeypatch):
     """轮次行已是终态、线程还在收尾：必须拒，否则新轮次永远等不到线程。"""
     calls = _fix_setup(monkeypatch, running=True)
@@ -439,10 +482,11 @@ def test_fix_maps_admission_denials_to_error_codes(monkeypatch):
     assert body["code"] == RetCode.DATA_ERROR, "not_found 必须走 get_error_data_result 默认码"
     assert body["message"] == "文件审核任务不存在或无权访问"
 
-    for reason, msg in (("running", "第 2 轮（修复中）仍在进行中，请等它结束后再发起修复"),
+    for reason, msg in (("stale", "第 2 轮（修复中）已中断（服务重启或异常退出），无法继续；请重新发起审核"),
+                        ("running", "第 2 轮（修复中）仍在进行中，请等它结束后再发起修复"),
                         ("closing", "上一轮审核正在收尾，请稍等片刻后重试"),
                         ("no_quota", "已达到最大修复轮次（3 轮），未修复的问题请按批注手动处理"),
-                        ("no_pending", "所选级别没有待修复的问题，无需发起修复"),
+                        ("no_pending", "没有【严重】级别的待修复问题。待修复问题：无"),
                         ("busy", "上一轮操作正在处理中，请稍后重试")):
         monkeypatch.setattr(_api, "admit_fix_round", _deny(reason, msg))
         body = _call(_api.fix_review, task_id="t1", body={"levels": ["high"]})

@@ -4,10 +4,32 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   IFileReviewAnnotationUpdateResponse,
   IFileReviewFixResponse,
+  IFileReviewRound,
   IFileReviewState,
   IFileReviewTemplatesResponse,
 } from './file-review-stream';
 import { isRoundRunning } from './file-review-stream';
+
+/** 轮询间隔（毫秒）。只在这一处出现，避免两处各写一个数后分叉。 */
+export const FILE_REVIEW_POLL_MS = 3000;
+
+/**
+ * 轮询开关：仅当「当前轮自称在跑 **且** 服务端没判它中断」才继续轮询，否则停。
+ *
+ * 抽成导出的纯函数是为了可单测 —— 这是本功能最容易回归、又最难靠肉眼验证的一处：
+ * 漏掉 `!stale` 就会在服务重启 / 崩溃后对着一轮永远不会结束的僵尸轮次每 3s 白打接口，
+ * 并且卡片永远转圈（服务端 stale 判定与前端停轮询是同一件事的两半，必须同时成立）。
+ *
+ * `current` 为 undefined（首次请求未回 / 该文件还没有任何轮次）时停轮询。
+ */
+export function shouldPollFileReview(
+  current: Pick<IFileReviewRound, 'status' | 'stale'> | undefined,
+): false | number {
+  if (!current) return false;
+  return isRoundRunning(current.status) && !current.stale
+    ? FILE_REVIEW_POLL_MS
+    : false;
+}
 
 /** 范本列表：启用即拉一次，无轮询 */
 export function useFileReviewTemplates(opts?: { enabled?: boolean }) {
@@ -30,10 +52,8 @@ export function useFileReviewState(fileId: string) {
       return data as { code: number; data: IFileReviewState };
     },
     enabled: !!fileId,
-    refetchInterval: (query) => {
-      const status = query.state.data?.data?.current?.status;
-      return status && isRoundRunning(status) ? 3000 : false;
-    },
+    refetchInterval: (query) =>
+      shouldPollFileReview(query.state.data?.data?.current),
   });
 }
 
