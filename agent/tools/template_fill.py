@@ -48,6 +48,9 @@ _MAX_VALUE_CHARS = 80
 # detail 摘要裁剪阈值：填写点条数上限（防大范本刷爆上下文）、锚文本截断长度
 _MAX_DETAIL_POINTS = 30
 _MAX_ANCHOR_CHARS = 60
+# keyword 回显截断：值匹配通道允许用户把整段原文当 keyword 传，原样回显等于再复制
+# 一遍这段长文本进上下文
+_MAX_KEYWORD_CHARS = 100
 
 
 class FillTemplateParam(ToolParamBase):
@@ -59,12 +62,12 @@ class FillTemplateParam(ToolParamBase):
             "description": """模板（范本）工具。五个 action：
 
 1. list_templates：列出当前已发布的范本（name/file_type/id），用户没指定范本时先调用它给用户挑选。
-2. detail：查询范本详情。可按 template_id 精确查，或按 template_name 名称模糊查；可选 keyword 在范本填写点（中文名称/英文 key/锚文本）中匹配，用于回答"这个范本里有没有某某内容/这一条"。查询范围含草稿和已停用范本（结果会标注状态）。
+2. detail：查询范本详情。可按 template_id 精确查，或按 template_name 名称模糊查；可选 keyword 在范本填写点（中文名称 / 英文 key / 锚文本 / **当前成稿里的已填值**）中匹配，用于回答"这个范本里有没有某某内容/这一条"。带 keyword 时每个命中项会回显「当前值」，若用户贴的是一段**值**（如"把石狮市交通建设投资有限责任公司改成…"），用这段值当 keyword 查，就能知道它到底是哪个 key——同一段文字可能在范本里对应多个字段，必须按当前值定位而不是按中文名猜 key。查询范围含草稿和已停用范本（结果会标注状态）。
 3. fill：发起一次填写任务。需要 kb_ids（用于检索取数的知识库 ID 列表，JSON 数组字符串，如 '["kb1","kb2"]'）、可选 params（补充参数对象，可传 JSON 字符串）。范本可用 template_id 指定，也可只给 template_name（支持部分名称模糊匹配：唯一已发布命中会直接发起；多个命中会列出候选让用户挑）。任务提交后本工具会同步等待最多约 1 分钟，完成后直接返回字段值摘要；超时未完成会返回 task_id，让用户稍后用 action=status 查询。
 4. status：按 task_id 查询填写任务进度/结果，含字段值摘要、待人工补充字段列表和成稿下载指引。
-5. modify：就地修改已完成填写的成稿。params 传 {字段key: 新值} 对象，直接改到该范本最近一次已完成填写任务的成稿上（原下载/预览不变，不重新发起填写、不出确认卡）。可按 template_id 或 template_name 定位。
+5. modify：就地修改已完成填写的成稿。params 传 {字段key: 新值} 对象，直接改到该范本最近一次已完成填写任务的成稿上（原下载/预览不变，不重新发起填写、不出确认卡，改完卡片上的文件会同步更新）。可按 template_id 或 template_name 定位；也可传 task_id 指定改哪一份成稿（用户明确指某一份而非"最近那份"时用）。**改之前先用 action=detail（keyword 传用户给的那段原文/值）确认 key**，不要凭中文名字面去猜 key。
 
-使用时机：用户询问某个范本的详情、包含哪些填写点、有没有某条内容时用 detail；用户想浏览全部范本时用 list_templates；用户想基于知识库内容按固定模板生成/完善文档时用 fill。用户只提到范本名称的一部分、或用「第一个/上面那个」指代上文列过的范本时，直接解析后调用 fill（传 template_name 或从上文工具结果取 template_id），不要反问用户要完整名称或 id。kb_ids 必须由用户提供（可结合知识库列表工具），不要编造。用户在填写完成后要求修改/补充/更正成稿里的某几个字段（如「把 approval_authority 改成 李港」「xx 那项填成 yy」）时，用 action=modify（params 传字段 key 和新值），绝不要重新 fill 或重新出确认卡——那会让用户感觉之前的填写全部丢失。""",
+使用时机：用户询问某个范本的详情、包含哪些填写点、有没有某条内容时用 detail；用户想浏览全部范本时用 list_templates；用户想基于知识库内容按固定模板生成/完善文档时用 fill。用户只提到范本名称的一部分、或用「第一个/上面那个」指代上文列过的范本时，直接解析后调用 fill（传 template_name 或从上文工具结果取 template_id），不要反问用户要完整名称或 id。kb_ids 必须由用户提供（可结合知识库列表工具），不要编造。用户在填写完成后要求修改/补充/更正成稿里的某几个字段（如「把 approval_authority 改成 李港」「xx 那项填成 yy」）时，用 action=modify（params 传字段 key 和新值），绝不要重新 fill 或重新出确认卡——那会让用户感觉之前的填写全部丢失。用户给的是**内容而不是字段名**时（如「把石狮市交通建设投资有限责任公司改成石狮市李港交通建设投资有限责任公司」），先用 action=detail 把这段内容当 keyword 查一次，从回显的「当前值」找到**真正持有该值的 key**，再拿这个 key 去 modify；不要因为某个中文名听起来像就挑一个 key，同名中文名可能对应多个不同 key，改错了同样会「说改了但没改对」。""",
             "parameters": {
                 "action": {
                     "type": "string",
@@ -86,7 +89,7 @@ class FillTemplateParam(ToolParamBase):
                 },
                 "keyword": {
                     "type": "string",
-                    "description": '关键词，在范本填写点的中文名称/英文 key/锚文本中匹配。action=detail 时可选，用于回答"某范本有没有某条内容"。',
+                    "description": '关键词，在范本填写点的中文名称/英文 key/锚文本/**当前成稿里的已填值**中匹配。action=detail 时可选，用于回答"某范本有没有某条内容"；用户贴的是一段内容（值）而不是字段名时，也用它反查出该内容属于哪个 key。',
                     "default": "",
                     "required": False,
                 },
@@ -104,7 +107,7 @@ class FillTemplateParam(ToolParamBase):
                 },
                 "task_id": {
                     "type": "string",
-                    "description": "填写任务 id。action=status 时必填。",
+                    "description": "填写任务 id。action=status 时必填；action=modify 时可选，用于指定要改哪一份成稿——上文的成稿卡片里带 task_id，若用户明确指的是某一份成稿（而非「最近那份」）就把它传进来，否则按该范本最近一次已完成任务处理。",
                     "default": "",
                     "required": False,
                 },
@@ -208,9 +211,49 @@ class FillTemplate(ToolBase, ABC):
             # 合法 JSON 标量/对象等脏数据同样降级为空清单，不进迭代抛 TypeError
             placeholders = []
         placeholders = [p for p in placeholders if isinstance(p, dict)]
-        return self._format_template_detail(tpl, placeholders, keyword)
+        # 当前成稿值只在带 keyword 时查（值匹配是「把 XX 改成 YY」的定位入口；
+        # 无 keyword 时不需要，也免得给全量清单再加一次 DB 查询）
+        current = self._current_render(str(tpl.get("id", "") or ""), tenant_id,
+                                       str(kwargs.get("task_id") or "").strip()) if keyword else {}
+        return self._format_template_detail(tpl, placeholders, keyword, current)
 
-    def _format_template_detail(self, tpl: dict, placeholders: list, keyword: str) -> str:
+    @staticmethod
+    def _current_render(template_id: str, tenant_id: str, task_id: str = "") -> dict:
+        """某份成稿的当前字段值 {key: value}：task_id 显式指定优先，否则范本最近
+        一次 done。无成稿 / values 脏数据 / 查询异常一律返回空 dict——值匹配是
+        detail 的增强项，缺失只降级为「按值匹配不到」，不能拖垮填写点清单本身。"""
+        from api.db.services.template_fill_service import TplFillTaskService
+
+        try:
+            task = (TplFillTaskService.get_owned(task_id, tenant_id) if task_id
+                    else TplFillTaskService.latest_done(template_id, tenant_id))
+        # 不加 BLE001 抑制注记：该 handler 记了日志，ruff 的 blind-except 对其本就
+        # 豁免，写了反而被 RUF100 判为冗余指令
+        except Exception:  # 增强项：异常降级为无当前值
+            logger.exception("FillTemplate detail: current render lookup failed, template=%s", template_id)
+            return {}
+        if task is None:
+            return {}
+        vals = getattr(task, "values", None) or {}
+        if isinstance(vals, str):
+            try:
+                vals = json.loads(vals)
+            except Exception:  # noqa: BLE001 — 历史脏数据兜底为空
+                return {}
+        render = vals.get("render") if isinstance(vals, dict) else None
+        if not isinstance(render, dict):
+            return {}
+        return {str(k): v for k, v in render.items()}
+
+    def _format_template_detail(self, tpl: dict, placeholders: list, keyword: str,
+                                current: dict | None = None) -> str:
+        """填写点清单（keyword 非空时按关键词过滤）。纯函数便于对抗测试。
+
+        keyword 三处匹配：中文名称 / 英文 key / 锚文本，外加**当前成稿里的已填值**
+        ——用户说的「把 XX 改成 YY」里的 XX 是值不是键，只按名称/key/锚文本匹配会
+        找不到（2026-09-17 实测：模型因此猜了 4 个同名「招标人名称」字段，把另一
+        个字段的值也写进了错的地方）。命中当前值时必须把「哪个 key 现在是这个值」
+        讲清楚，并回显当前值供模型自证。"""
         header = f"范本：{tpl.get('name', '')}（{tpl.get('file_type', '')}，{self._status_cn(str(tpl.get('status', '') or ''))}） id={tpl.get('id', '')}"
         lines = [header]
         desc = str(tpl.get("description", "") or "").strip()
@@ -223,24 +266,45 @@ class FillTemplate(ToolBase, ABC):
 
         lines.append(f"共 {len(placeholders)} 个填写点。")
         show = placeholders
+        cur = current or {}
+        # keyword 回显一律截断：值匹配通道鼓励用户把一整段原文当 keyword 传，
+        # 原样回显会把这段长文本再复制一遍进上下文（与下一条提示的口径也统一）
+        keyword_echo = keyword[:_MAX_KEYWORD_CHARS]
         if keyword:
             kw = keyword.lower()
-            show = [p for p in placeholders if kw in str(p.get("name", "") or "").lower() or kw in str(p.get("key", "") or "").lower() or kw in str(p.get("anchor", "") or "").lower()]
+            matched_value_keys = {k for k, v in cur.items() if kw in str(v or "").lower()}
+            show = [
+                p for p in placeholders
+                if kw in str(p.get("name", "") or "").lower()
+                or kw in str(p.get("key", "") or "").lower()
+                or kw in str(p.get("anchor", "") or "").lower()
+                or str(p.get("key") or "") in matched_value_keys
+            ]
             if not show:
-                lines.append(f"没有与「{keyword[:100]}」匹配的填写点。")
+                lines.append(f"没有与「{keyword_echo}」匹配的填写点（已按中文名称、英文 key、锚文本、当前成稿值四处查找）。")
             else:
-                lines.append(f"与「{keyword}」匹配的填写点有 {len(show)} 个：")
+                lines.append(f"与「{keyword_echo}」匹配的填写点有 {len(show)} 个：")
 
+        shown_current = False
         for p in show[:_MAX_DETAIL_POINTS]:
-            seg = f"- {p.get('name', '')}（{p.get('key', '')}）锚点「{str(p.get('anchor', '') or '')[:_MAX_ANCHOR_CHARS]}」"
+            key = str(p.get("key") or "")
+            seg = f"- {p.get('name', '')}（{key}）锚点「{str(p.get('anchor', '') or '')[:_MAX_ANCHOR_CHARS]}」"
+            value = str(cur.get(key, "") or "").strip()
+            if value:
+                seg += f" 当前值：{value[:_MAX_VALUE_CHARS]}"
+                shown_current = True
             default = str(p.get("default_value", "") or "").strip()
             if default:
                 seg += f" 默认值：{default[:_MAX_VALUE_CHARS]}"
             lines.append(seg)
         if len(show) > _MAX_DETAIL_POINTS:
             lines.append(f"…（其余 {len(show) - _MAX_DETAIL_POINTS} 个填写点略）")
-        if not keyword:
-            lines.append("如需确认本范本是否包含某条内容，请带上 keyword 再次查询。")
+        # 提示只在**真的列出了当前值**时给：cur 非空但一条值都没显示（全未填/查询
+        # 降级）时，说「用上面『当前值』对应的 key」会让模型去找不存在的东西
+        if shown_current:
+            lines.append("提示：如需把某个值改掉，请用上面「当前值」对应的那个 key 调 action=modify（不要按中文名猜 key，可能有多个字段同名）。")
+        elif not keyword:
+            lines.append("如需确认本范本是否包含某条内容，请带上 keyword 再次查询（可按中文名称、英文 key、锚文本或当前成稿值匹配）。")
         return "\n".join(lines)
 
     @staticmethod
@@ -299,7 +363,7 @@ class FillTemplate(ToolBase, ABC):
             params=params,
             status="pending",
             source="chat",
-            flow_instance_id="",
+            flow_instance_id=self._work_context_id(),
             tenant_id=tenant_id,
             created_by=tenant_id,
         )
@@ -360,11 +424,17 @@ class FillTemplate(ToolBase, ABC):
     def _modify(self, kwargs):
         """就地修改：定位该范本最近一次 done 任务 → 合并 patch 值进 values →
         重渲染 → 覆盖写原成稿对象（同名对象，卡片下载/预览链接自动更新）→
-        回写 values。**不沉淀默认值**（2026-09-17 起：默认值只由用户在成稿行点
-        「写回范本库」触发），也不新建任务、不出确认卡。
+        同步覆盖下载桥接副本 → 回写 values。**不沉淀默认值**（2026-09-17 起：
+        默认值只由用户在成稿行点「写回范本库」触发），也不新建任务、不出确认卡。
 
         注意改动的字段不进写回白名单（白名单只认画布确认卡的 _changed_keys /
-        _direct_values），故点「写回范本库」不会沉淀本轮 modify 的字段。"""
+        _direct_values），故点「写回范本库」不会沉淀本轮 modify 的字段。
+
+        目标定位：kwargs.task_id 显式指定优先（校验 owner + 同范本 + done），
+        否则取该范本最近一次 done。**刻意保持「租户+范本」的宽口径**——这里问的是
+        「我刚填的那份在哪」（定位），跨会话找到正是期望；收窄成同会话会静默改掉
+        用户在旧会话里刚填的稿的定位结果。同范本多份成稿时仍以回执里的
+        task_id/生成时间供用户纠偏。"""
         from api.db.services.template_fill_service import (
             TplFillTaskService,
             TplTemplateService,
@@ -390,7 +460,23 @@ class FillTemplate(ToolBase, ABC):
         if not patch:
             return '请通过 params 提供要修改的字段值（JSON 对象字符串，如 \'{"approval_authority": "李港"}\'，key 用填写点英文 key）。'
 
-        task = TplFillTaskService.latest_done(template_id, tenant_id)
+        # 定位要改的成稿：显式 task_id 优先（用户/LLM 指定某一份），否则取该范本
+        # 最近一次 done。两者都必须落在同一范本内——否则会改到别的范本的成稿上。
+        # 定位口径刻意宽（不限会话）：同范本多份成稿时「最近那份」可能不是用户眼前
+        # 那份，故回执必带 task_id 与生成时间，让误选可见、可由用户带 task_id 纠正。
+        # （flow_instance_id 已由画布/工具路径落成会话 id，但那是**增量基线**的判据，
+        # 与这里的定位语义不同，见 latest_done_in_context 的注释。）
+        pinned = str(kwargs.get("task_id") or "").strip()
+        if pinned:
+            task = TplFillTaskService.get_owned(pinned, tenant_id)
+            if task is None:
+                return "指定的 task_id 不存在或无权访问，请确认后重试。"
+            if str(getattr(task, "template_id", "") or "") != template_id:
+                return "指定的 task_id 不属于该范本，无法就地修改。"
+            if str(getattr(task, "status", "") or "") != "done":
+                return f"指定的任务尚未完成（status={getattr(task, 'status', '')}），无法就地修改。"
+        else:
+            task = TplFillTaskService.latest_done(template_id, tenant_id)
         if task is None:
             return "该范本还没有已完成的填写任务，无法就地修改。请先用 action=fill 完成一次填写。"
 
@@ -413,8 +499,13 @@ class FillTemplate(ToolBase, ABC):
                 vals = json.loads(vals)
             except Exception:  # noqa: BLE001 — 历史脏数据兜底为空基线
                 vals = {}
-        render = dict(vals.get("render") or {})
-        cells = dict(vals.get("cells") or {})
+        # 脏形态兜底（与 _current_render 同口径）：render/cells 非 dict（标量/字符串/
+        # None）时 dict(...) 会抛 ValueError/TypeError，异常冒到 _invoke 变成一句用户
+        # 看不懂的「执行失败」。缺失即当空基线——merge 后仍能正确覆盖 patch 的字段。
+        vals_render = vals.get("render") if isinstance(vals, dict) else None
+        vals_cells = vals.get("cells") if isinstance(vals, dict) else None
+        render = dict(vals_render) if isinstance(vals_render, dict) else {}
+        cells = dict(vals_cells) if isinstance(vals_cells, dict) else {}
         for k, v in patch.items():
             render[k] = v
             cells[k] = "filled" if str(v or "").strip() else "not_found"
@@ -437,16 +528,36 @@ class FillTemplate(ToolBase, ABC):
         result_obj = str(getattr(task, "result_file_id", "") or "") or f"v{ver.version}_result_{task.id}.{tpl_file_type}"
         _storage_put(template_id, result_obj, out)
 
+        # 下载桥接副本必须同名覆盖：卡片「查看填写内容」/下载走的是
+        # {tenant}-downloads/tplfill-{task_id}（B 端进度端点、画布节点各有一份
+        # 同款桥接），只更新 {template_id} bucket 会让卡片继续拿到改前的旧字节
+        # ——对象名确定、内容却已过时，且 REST 层桥接有进程内记忆化不会自动重拷。
+        # 失败不当作修改失败（主成稿已正确落盘），但要在回执里讲明，
+        # 否则用户会以为模型在编造「已修改」。
+        bridge_note = ""
+        try:
+            _storage_put(f"{task.tenant_id}-downloads", f"tplfill-{task.id}", out)
+        # 不加 BLE001 抑制注记：同上（handler 已记日志，blind-except 豁免）
+        except Exception:  # 桥接是派生副本，失败降级为提示不中断主流程
+            logger.exception("FillTemplate modify bridge failed, task=%s", task.id)
+            bridge_note = ("\n提示：成稿已改好，但下载副本同步失败——卡片上的下载/预览"
+                           "可能仍是改前内容；可让用户重新打开卡片或稍后重试。")
+
         if not TplFillTaskService.patch_values(task.id, {"cells": cells, "render": render}):
-            return "成稿已更新，但填写记录回写失败，请稍后用 action=status 核对该任务字段值。"
+            return ("成稿已更新，但填写记录回写失败，请稍后用 action=status 核对该任务字段值。"
+                    + bridge_note)
 
         filled_total = sum(1 for v in render.values() if str(v or "").strip())
-        lines = [f"已在原成稿上就地修改 {len(patch)} 个字段（task_id={task.id}，下载/预览链接不变）："]
+        target = f"task_id={task.id}"
+        ts = getattr(task, "create_time", None)
+        if isinstance(ts, (int, float)) and ts:
+            target += f"（该成稿生成于 {time.strftime('%Y-%m-%d %H:%M', time.localtime(ts / 1000))}）"
+        lines = [f"已在原成稿上就地修改 {len(patch)} 个字段（{target}，下载/预览链接不变）："]
         for k, v in patch.items():
             s = str(v)
             lines.append(f"- {k}: {s[:_MAX_VALUE_CHARS]}{'…' if len(s) > _MAX_VALUE_CHARS else ''}")
         lines.append(f"当前共填入 {filled_total}/{len(render)} 个字段，可点开原成稿核对修改处。")
-        return "\n".join(lines)
+        return "\n".join(lines) + bridge_note
 
     @staticmethod
     def _resolve_modify_template_id(tenant_id: str, template_name: str):
@@ -524,6 +635,20 @@ class FillTemplate(ToolBase, ABC):
         if hasattr(self, "_canvas") and self._canvas:
             try:
                 return self._canvas.get_tenant_id() or ""
+            except Exception:  # noqa: BLE001 — canvas 实现异常类型不一，兜底空串
+                return ""
+        return ""
+
+    def _work_context_id(self) -> str:
+        """本次运行的工作上下文 id（`sys.session_id`，即会话 id）。
+
+        只用于给 create_fill_task 落 flow_instance_id——增量基线的同上下文判据
+        （TplFillTaskService.latest_done_in_context）。工具本身不做增量，但同一会话
+        内后续画布节点应当能把它当基线续写，故必须落对。取不到 → 空串。
+        """
+        if hasattr(self, "_canvas") and self._canvas:
+            try:
+                return str(self._canvas.globals.get("sys.session_id") or "").strip()
             except Exception:  # noqa: BLE001 — canvas 实现异常类型不一，兜底空串
                 return ""
         return ""

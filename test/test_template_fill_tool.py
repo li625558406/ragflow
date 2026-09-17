@@ -5,7 +5,10 @@ service 层 / spawn_fill_task / time.sleep 全部 monkeypatch，不触 DB/LLM/Mi
 _param 用 SimpleNamespace 打桩。
 """
 
+import json
 from types import SimpleNamespace
+
+import pytest
 
 
 def _stub_spawn(monkeypatch, spawned):
@@ -23,6 +26,17 @@ def _svc():
     from api.db.services import template_fill_service as tpl_svc
 
     return tpl_svc
+
+
+@pytest.fixture(autouse=True)
+def _no_db_by_default(monkeypatch):
+    """单测不连 DB：detail 的「按当前值反查 key」（2026-09-17）会读该范本最近一次
+    done 任务的产值。默认桩成「没有已填成稿」→ 值匹配降级为空，既有按名称/key/锚
+    文本匹配的用例行为不变；需要值匹配的用例在测试体内再 monkeypatch 覆盖
+    （pytest 的 monkeypatch 是函数级单实例，autouse 先跑、测试体内后设者胜）。"""
+    monkeypatch.setattr(
+        _svc().TplFillTaskService, "latest_done",
+        staticmethod(lambda template_id, tenant_id: None))
 
 
 def _make_tool(canvas_tenant="tenant_x"):
@@ -546,20 +560,30 @@ def test_fill_by_name_exact_wins_over_fuzzy(monkeypatch):
 
 
 def _patch_modify_env(monkeypatch, tpl_svc, *, task_values=None, placeholders=None,
-                      render_raises=False):
+                      render_raises=False, pinned_task=None):
     """modify 全链路打桩：latest_done 任务 / 版本 / storage / renderer / 回写。
 
     sediment 桩只为断言**未被调用**——modify 不再自动沉淀默认值（改由用户在成稿行
-    点「写回范本库」触发）。"""
+    点「写回范本库」触发）。
+
+    pinned_task：传入时打桩 get_owned 返回它，且 latest_done 计数器可用于断言
+    「带 task_id 的 modify 不得回落到最近一份」（桩内不能抛异常——_invoke 顶层
+    try/except 会把异常吞成返回串，断言会假通过）。"""
     from rag.svr.template_fill import renderer as renderer_mod
 
-    calls = {"put": [], "patched": None, "sediment": None, "rendered": None}
+    calls = {"put": [], "patched": None, "sediment": None, "rendered": None,
+             "latest_calls": 0}
 
-    monkeypatch.setattr(
-        tpl_svc.TplFillTaskService, "latest_done",
-        staticmethod(lambda template_id, tenant_id: SimpleNamespace(
+    def fake_latest(template_id, tenant_id):
+        calls["latest_calls"] += 1
+        return SimpleNamespace(
             id="task1", template_id=template_id, status="done",
-            values=task_values, result_file_id="v1_result_task1.docx")))
+            tenant_id="tenant_x", create_time=1758000000000,
+            values=task_values, result_file_id="v1_result_task1.docx")
+
+    monkeypatch.setattr(tpl_svc.TplFillTaskService, "latest_done", staticmethod(fake_latest))
+    monkeypatch.setattr(tpl_svc.TplFillTaskService, "get_owned",
+                        staticmethod(lambda task_id, tenant_id: pinned_task))
     monkeypatch.setattr(
         tpl_svc.TplTemplateVersionService, "latest",
         staticmethod(lambda template_id: SimpleNamespace(
@@ -681,6 +705,324 @@ def test_modify_by_name_unique_resolves(monkeypatch):
     assert seen["kw"] == "机电施工"
     assert "就地修改" in out
     assert calls["put"][0][0] == "t1"
+
+
+def test_modify_rebridges_download_copy(monkeypatch):
+    """改完必须同名覆盖 {tenant}-downloads/tplfill-{task_id}。
+
+    卡片「查看填写内容」/下载走的都是桥接副本；只更新 {template_id} bucket 会让
+    卡片继续拿到改前的旧字节（对象名确定、REST 层桥接有进程内记忆化不会自动重拷），
+    表现为「模型说改了、预览文件还是旧文案」。"""
+    tpl_svc = _svc()
+    calls = _patch_modify_env(monkeypatch, tpl_svc,
+                              task_values={"cells": {}, "render": {}})
+    out = _make_tool()._invoke(action="modify", template_id="t1",
+                               params='{"approval_authority": "李港"}')
+    assert len(calls["put"]) == 2, calls["put"]
+    assert calls["put"][0] == ("t1", "v1_result_task1.docx", b"new-docx")
+    # 桥接 bucket 必须取自任务所属租户（不是画布租户/请求租户），对象名 tplfill-{task_id}
+    assert calls["put"][1] == ("tenant_x-downloads", "tplfill-task1", b"new-docx")
+    # 成功路径不应出现降级提示（否则用户会以为下载副本没同步）
+    assert "下载副本同步失败" not in out
+
+
+def test_modify_bridge_failure_degrades_not_silent(monkeypatch):
+    """桥接失败不得伪装成完全成功：主成稿仍写、values 仍回写，但回执必须点明
+    下载副本可能还是旧内容——否则又是一次「说改了但文件没变」。"""
+    tpl_svc = _svc()
+    calls = _patch_modify_env(monkeypatch, tpl_svc,
+                              task_values={"cells": {}, "render": {}})
+    puts = calls["put"]
+
+    def put_or_raise(bucket, name, blob):
+        if str(bucket).endswith("-downloads"):
+            raise RuntimeError("downloads bucket down")
+        puts.append((bucket, name, blob))
+
+    monkeypatch.setattr(tpl_svc, "_storage_put", put_or_raise)
+    out = _make_tool()._invoke(action="modify", template_id="t1",
+                               params='{"approval_authority": "李港"}')
+    # 主成稿照写、values 照回写：桥接是派生副本，失败不能中断主流程
+    assert puts == [("t1", "v1_result_task1.docx", b"new-docx")]
+    assert calls["patched"] is not None
+    assert "就地修改" in out and "下载副本同步失败" in out
+
+
+def _pinned_task(tid="task1", template_id="t1", status="done", values=None):
+    return SimpleNamespace(id=tid, template_id=template_id, status=status,
+                           tenant_id="tenant_x", create_time=1758000000000,
+                           values=values if values is not None else {"cells": {}, "render": {}},
+                           result_file_id="v1_result_task1.docx")
+
+
+def test_modify_task_id_pins_target_and_skips_latest(monkeypatch):
+    """显式 task_id 优先：不得回落到「最近一份」，且回执自证改的是哪一份。"""
+    tpl_svc = _svc()
+    calls = _patch_modify_env(monkeypatch, tpl_svc, pinned_task=_pinned_task())
+    out = _make_tool()._invoke(action="modify", template_id="t1", task_id="task1",
+                               params='{"approval_authority": "李港"}')
+    assert calls["latest_calls"] == 0, "带 task_id 时不得回落到 latest_done"
+    assert "task_id=task1" in out and "该成稿生成于" in out
+    assert calls["put"][1][1] == "tplfill-task1"
+
+
+def test_modify_task_id_not_owned_rejected(monkeypatch):
+    tpl_svc = _svc()
+    calls = _patch_modify_env(monkeypatch, tpl_svc)  # get_owned 恒返回 None
+    out = _make_tool()._invoke(action="modify", template_id="t1", task_id="someone_else",
+                               params='{"approval_authority": "李港"}')
+    assert "不存在或无权访问" in out
+    assert calls["put"] == [] and calls["patched"] is None
+
+
+def test_modify_task_id_of_other_template_rejected(monkeypatch):
+    """task_id 必须落在同一范本内，否则会改到别的范本的成稿上。"""
+    tpl_svc = _svc()
+    calls = _patch_modify_env(monkeypatch, tpl_svc,
+                              pinned_task=_pinned_task(template_id="t_other"))
+    out = _make_tool()._invoke(action="modify", template_id="t1", task_id="task1",
+                               params='{"approval_authority": "李港"}')
+    assert "不属于该范本" in out
+    assert calls["put"] == [] and calls["patched"] is None
+
+
+def test_modify_task_id_not_done_rejected(monkeypatch):
+    """非 done（无可用成稿）拒绝，且错误串回显真实 status 便于用户判断。"""
+    tpl_svc = _svc()
+    calls = _patch_modify_env(monkeypatch, tpl_svc,
+                              pinned_task=_pinned_task(status="partial"))
+    out = _make_tool()._invoke(action="modify", template_id="t1", task_id="task1",
+                               params='{"approval_authority": "李港"}')
+    assert "尚未完成" in out and "partial" in out
+    assert calls["put"] == [] and calls["patched"] is None
+
+
+def test_modify_blank_task_id_falls_back_to_latest(monkeypatch):
+    """空白 task_id（LLM 常传 ""/空格）等价于未指定：走 latest_done，不能误判成越权。"""
+    tpl_svc = _svc()
+    calls = _patch_modify_env(monkeypatch, tpl_svc,
+                              task_values={"cells": {}, "render": {}})
+    out = _make_tool()._invoke(action="modify", template_id="t1", task_id="   ",
+                               params='{"approval_authority": "李港"}')
+    assert calls["latest_calls"] == 1
+    assert "就地修改" in out
+
+
+def test_modify_values_dirty_json_string_survives(monkeypatch):
+    """历史脏数据（values 存成 JSON 字符串）不能炸 modify：解析后照常合并。"""
+    tpl_svc = _svc()
+    calls = _patch_modify_env(
+        monkeypatch, tpl_svc,
+        task_values=json.dumps({"cells": {"approval_authority": "filled"},
+                                "render": {"approval_authority": "旧值"}}))
+    out = _make_tool()._invoke(action="modify", template_id="t1",
+                               params='{"approval_authority": "李港"}')
+    assert "就地修改" in out
+    assert calls["rendered"] == {"approval_authority": "李港"}
+
+
+def test_modify_values_non_dict_render_does_not_crash(monkeypatch):
+    """values.render 为标量/None 等脏形态：dict(...) 前必须兜底，不能抛 TypeError。"""
+    tpl_svc = _svc()
+    calls = _patch_modify_env(monkeypatch, tpl_svc,
+                              task_values={"cells": "oops", "render": None})
+    out = _make_tool()._invoke(action="modify", template_id="t1",
+                               params='{"approval_authority": "李港"}')
+    assert "就地修改" in out
+    assert calls["rendered"] == {"approval_authority": "李港"}
+
+
+# ---------- detail：按当前成稿值反查 key（2026-09-17 实测缺口） ----------
+
+
+def _patch_current(monkeypatch, tpl_svc, render=None, task_id=None, task=None):
+    """打桩 detail 的当前值来源。
+
+    render 非 None → latest_done 返回带该 render 的任务；
+    task_id 非 None → 同时打桩 get_owned 返回值（测显式指定通道）。"""
+    seen = {"latest": 0, "owned": []}
+    stub = task if task is not None else SimpleNamespace(
+        id="task1", values={"cells": {}, "render": render})
+    monkeypatch.setattr(
+        tpl_svc.TplFillTaskService, "latest_done",
+        staticmethod(lambda template_id, tenant_id: (seen.__setitem__("latest", seen["latest"] + 1)
+                                                    or stub)))
+    monkeypatch.setattr(
+        tpl_svc.TplFillTaskService, "get_owned",
+        staticmethod(lambda tid, tenant_id: seen["owned"].append(tid) or stub))
+    return seen
+
+
+_PH_TENDERER = [
+    {"key": "tenderer_name", "name": "招标人名称", "anchor": "招标人名称：", },
+    {"key": "tenderer_name_2", "name": "招标人名称", "anchor": "招标人名称：", },
+    {"key": "project_owner", "name": "项目业主", "anchor": "项目业主："},
+]
+
+_LONG_COMPANY = "石狮市交通建设投资有限责任公司"
+
+
+def test_detail_keyword_matches_current_value(monkeypatch):
+    """用户贴的是「值」不是字段名：按当前成稿值反查出真正持有该值的 key。"""
+    tpl_svc = _svc()
+    _patch_versions(monkeypatch, tpl_svc, _PH_TENDERER)
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned",
+                        staticmethod(lambda template_id, tenant_id, for_update=False: _TplObj(_tpl_row())))
+    _patch_current(monkeypatch, tpl_svc, render={"project_owner": _LONG_COMPANY})
+    out = _make_tool()._invoke(action="detail", template_id="t1", keyword=_LONG_COMPANY)
+    assert "project_owner" in out
+    assert "当前值" in out and _LONG_COMPANY in out
+    # 值匹配命中的只有 project_owner：两个同名 tenderer_name 不得被捎带列出
+    assert "tenderer_name" not in out
+    assert "当前值」对应的那个 key" in out
+
+
+def test_detail_keyword_value_match_multi_keys_collision(monkeypatch):
+    """同一段文字真在多处（用户的「4 处同名」场景）：全部列出，让模型自己判断改哪几处。"""
+    tpl_svc = _svc()
+    _patch_versions(monkeypatch, tpl_svc, _PH_TENDERER)
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned",
+                        staticmethod(lambda template_id, tenant_id, for_update=False: _TplObj(_tpl_row())))
+    _patch_current(monkeypatch, tpl_svc,
+                   render={"tenderer_name": _LONG_COMPANY,
+                           "tenderer_name_2": _LONG_COMPANY})
+    out = _make_tool()._invoke(action="detail", template_id="t1", keyword=_LONG_COMPANY)
+    assert "tenderer_name" in out and "tenderer_name_2" in out
+    assert out.count(_LONG_COMPANY) >= 2
+
+
+def test_detail_keyword_value_match_merges_with_name_match(monkeypatch):
+    """名称命中 ∪ 值命中：两类通道取并集，不是互相替代。"""
+    tpl_svc = _svc()
+    _patch_versions(monkeypatch, tpl_svc, [
+        {"key": "zh_city", "name": "石狮市项目名称", "anchor": "项目名称："},
+        {"key": "project_owner", "name": "项目业主", "anchor": "项目业主："},
+    ])
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned",
+                        staticmethod(lambda template_id, tenant_id, for_update=False: _TplObj(_tpl_row())))
+    _patch_current(monkeypatch, tpl_svc, render={"project_owner": _LONG_COMPANY})
+    out = _make_tool()._invoke(action="detail", template_id="t1", keyword="石狮市")
+    # zh_city 按中文名称命中，project_owner 按当前值命中 → 并集 2 个
+    assert "匹配的填写点有 2 个" in out
+    assert "zh_city" in out and "project_owner" in out
+
+
+def test_detail_keyword_value_match_case_insensitive(monkeypatch):
+    """值匹配大小写不敏感（英文值如公司英文名/编号）。"""
+    tpl_svc = _svc()
+    _patch_versions(monkeypatch, tpl_svc, [{"key": "bank", "name": "开户行", "anchor": "开户行："}])
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned",
+                        staticmethod(lambda template_id, tenant_id, for_update=False: _TplObj(_tpl_row())))
+    _patch_current(monkeypatch, tpl_svc, render={"bank": "Bank of China"})
+    out = _make_tool()._invoke(action="detail", template_id="t1", keyword="bank of china")
+    assert "bank" in out and "当前值" in out
+
+
+def test_detail_keyword_value_empty_never_matches(monkeypatch):
+    """空串/None 值不得被任意关键词命中（否则未填字段会污染每一次查询）。"""
+    tpl_svc = _svc()
+    _patch_versions(monkeypatch, tpl_svc, [{"key": "a", "name": "甲", "anchor": "甲："},
+                                           {"key": "b", "name": "乙", "anchor": "乙："}])
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned",
+                        staticmethod(lambda template_id, tenant_id, for_update=False: _TplObj(_tpl_row())))
+    _patch_current(monkeypatch, tpl_svc,
+                   render={"a": "", "b": None, "c": "   "})
+    out = _make_tool()._invoke(action="detail", template_id="t1", keyword="石狮市")
+    assert "没有与" in out
+    assert "当前值" not in out
+
+
+def test_detail_keyword_miss_mentions_four_channels(monkeypatch):
+    """未命中提示必须说明查了四处（否则模型会以为该字段不存在而放弃）。"""
+    tpl_svc = _svc()
+    _patch_versions(monkeypatch, tpl_svc, _PH_TENDERER)
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned",
+                        staticmethod(lambda template_id, tenant_id, for_update=False: _TplObj(_tpl_row())))
+    _patch_current(monkeypatch, tpl_svc, render={"project_owner": _LONG_COMPANY})
+    out = _make_tool()._invoke(action="detail", template_id="t1", keyword="不存在的文本")
+    assert "中文名称、英文 key、锚文本、当前成稿值" in out
+
+
+def test_detail_without_keyword_skips_current_lookup(monkeypatch):
+    """无 keyword 不查当前值：少一次 DB 查询（detail 全量清单是高频调用）。"""
+    tpl_svc = _svc()
+    _patch_versions(monkeypatch, tpl_svc, _PH_TENDERER)
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned",
+                        staticmethod(lambda template_id, tenant_id, for_update=False: _TplObj(_tpl_row())))
+    seen = _patch_current(monkeypatch, tpl_svc, render={"project_owner": _LONG_COMPANY})
+    out = _make_tool()._invoke(action="detail", template_id="t1")
+    assert seen["latest"] == 0
+    assert "共 3 个填写点" in out
+    assert "当前值" not in out
+
+
+def test_detail_keyword_current_lookup_failure_degrades(monkeypatch):
+    """当前值查询炸了不能拖垮 detail：仍返回按名称/key/锚文本匹配的清单。"""
+    tpl_svc = _svc()
+    _patch_versions(monkeypatch, tpl_svc, _PH_TENDERER)
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned",
+                        staticmethod(lambda template_id, tenant_id, for_update=False: _TplObj(_tpl_row())))
+
+    def boom(template_id, tenant_id):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(tpl_svc.TplFillTaskService, "latest_done", staticmethod(boom))
+    out = _make_tool()._invoke(action="detail", template_id="t1", keyword="招标人名称")
+    assert "范本填写执行失败" not in out
+    assert "招标人名称" in out
+
+
+def test_detail_keyword_task_id_pins_current_values(monkeypatch):
+    """task_id 显式指定：当前值取该任务，而不是范本最近一份。"""
+    tpl_svc = _svc()
+    _patch_versions(monkeypatch, tpl_svc, [{"key": "project_owner", "name": "项目业主", "anchor": "项目业主："}])
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned",
+                        staticmethod(lambda template_id, tenant_id, for_update=False: _TplObj(_tpl_row())))
+    seen = _patch_current(monkeypatch, tpl_svc, render={"project_owner": _LONG_COMPANY})
+    out = _make_tool()._invoke(action="detail", template_id="t1",
+                               keyword=_LONG_COMPANY, task_id="task9")
+    assert seen["owned"] == ["task9"]
+    assert seen["latest"] == 0
+    assert "project_owner" in out
+
+
+def test_detail_current_values_dirty_payloads_survive(monkeypatch):
+    """values 的四种脏形态（JSON 串 / 非 dict / render 非 dict / None）都不得抛错。"""
+    tpl_svc = _svc()
+    _patch_versions(monkeypatch, tpl_svc, [{"key": "project_owner", "name": "项目业主", "anchor": "项目业主："}])
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned",
+                        staticmethod(lambda template_id, tenant_id, for_update=False: _TplObj(_tpl_row())))
+    dirty = [
+        SimpleNamespace(id="t", values=json.dumps({"render": {"project_owner": _LONG_COMPANY}})),
+        SimpleNamespace(id="t", values="not json{"),
+        SimpleNamespace(id="t", values=["list"]),
+        SimpleNamespace(id="t", values={"render": "scalar"}),
+        SimpleNamespace(id="t", values=None),
+        SimpleNamespace(id="t"),
+    ]
+    for stub in dirty:
+        monkeypatch.setattr(tpl_svc.TplFillTaskService, "latest_done",
+                            staticmethod(lambda a, b, _s=stub: _s))
+        out = _make_tool()._invoke(action="detail", template_id="t1", keyword=_LONG_COMPANY)
+        assert "范本填写执行失败" not in out, (stub, out)
+    # JSON 串那一份是有效值：反查应命中
+    monkeypatch.setattr(tpl_svc.TplFillTaskService, "latest_done",
+                        staticmethod(lambda a, b: dirty[0]))
+    out = _make_tool()._invoke(action="detail", template_id="t1", keyword=_LONG_COMPANY)
+    assert "project_owner" in out
+
+
+def test_detail_current_value_giant_value_truncated(monkeypatch):
+    """超长当前值必须截断（防一条脏值刷爆上下文）。"""
+    tpl_svc = _svc()
+    _patch_versions(monkeypatch, tpl_svc, [{"key": "project_owner", "name": "项目业主", "anchor": "项目业主："}])
+    monkeypatch.setattr(tpl_svc.TplTemplateService, "get_owned",
+                        staticmethod(lambda template_id, tenant_id, for_update=False: _TplObj(_tpl_row())))
+    giant = "狮" * 5000
+    _patch_current(monkeypatch, tpl_svc, render={"project_owner": giant})
+    out = _make_tool()._invoke(action="detail", template_id="t1", keyword=giant)
+    assert "范本填写执行失败" not in out
+    assert len(out) < 3000
 
 
 def test_modify_by_name_multi_asks(monkeypatch):

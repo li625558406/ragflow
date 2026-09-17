@@ -8,8 +8,10 @@ import {
   type ITemplateFillTemplate,
 } from '@/hooks/template-fill-stream';
 import {
+  fetchTemplateFillTaskProgress,
   useTemplateFillFile,
   useTemplateFillPreview,
+  type TemplateFillProgressData,
 } from '@/hooks/use-template-fill-request';
 import {
   applyDocxHighlight,
@@ -53,6 +55,10 @@ const PULSE_TIMES = 6;
 // 超大文档防线阈值：>2.5MB 默认文本预览（设计 2026-09-16 预览内存治理）
 const BIG_BLOB_BYTES = 2.5 * 1024 * 1024;
 
+// 后端 TERMINAL_TASK_STATUSES（done/partial/failed/cancelled）里「有权威产值可取」
+// 的那部分：failed/cancelled 没有成稿，拿到也无值可显。
+const TERMINAL_PROGRESS_STATUSES = ['done', 'partial'];
+
 /** 定位到容器内 data-ph-key 匹配的占位符：强制渲染所在分页 + 瞬时居中
  * （共享 instantFocusScroll，治懒渲染漂移跳错位）+ 琥珀色脉冲闪烁
  * （WAAPI 自清理、可重复触发）。找不到返回 false（调用方据此不标记
@@ -89,14 +95,60 @@ export default function TemplateFillLivePreview({
   );
   const items = data?.data?.items ?? [];
   const fileType = data?.data?.file_type || 'docx';
-  const values = tpl.values || {};
+
+  // 终态权威产值：预览的文字是「前端 values 覆盖模板工作副本」来的（下方 docx
+  // 高亮链路），而对话里的就地修改（FillTemplate action=modify）不发任何
+  // template_fill_progress 事件 → 流式/回放快照里的 values 永远停在改前，
+  // 用户就会看到「模型说改了、预览还是旧文案」。故打开预览时按 task_id 拉一次
+  // progress（终态取值权威：DB render 已被 modify 回写）覆盖显示。
+  // 只在终态取用：流式期间 SSE 的 values 比这发请求更新鲜，不能被它压回去。
+  // 边界：只在「打开预览」这一刻取数。抽屉一直开着、用户在同屏对话里改字段的
+  // 极端路径没有可用的「本轮是新轮」信号（成稿卡状态对象在改字段轮里引用不变），
+  // 需关掉重开一次才刷新——留待出现真实诉求再加轮询。
+  const [authoritative, setAuthoritative] =
+    useState<TemplateFillProgressData | null>(null);
+  useEffect(() => {
+    const tid = tpl.task_id;
+    setAuthoritative(null);
+    if (!tid || tpl.status !== 'filled') return;
+    let alive = true;
+    fetchTemplateFillTaskProgress(tid)
+      .then((d) => {
+        if (
+          alive &&
+          d?.status &&
+          TERMINAL_PROGRESS_STATUSES.includes(d.status)
+        ) {
+          setAuthoritative(d);
+        }
+      })
+      .catch(() => {
+        // 拉取失败回落卡片上的 values：预览仍可用，只是可能显示改前内容
+      });
+    return () => {
+      alive = false;
+    };
+  }, [tpl.task_id, tpl.status]);
+
+  // useMemo 而非裸表达式：两者都空时 `|| {}` 每次渲染都产新对象，会把下游
+  // updateDocxHighlight effect / filledCount 的依赖打成「每渲染必变」。
+  const values = useMemo(
+    () => authoritative?.values || tpl.values || {},
+    [authoritative, tpl.values],
+  );
 
   // key→中文名（filled ∪ unfilled 合并派生；两者按判空口径穷尽且互斥 → 并集即全量）。
   // filling 阶段两者都未到达 → 预览暂无中文名、回落英文 key（对终态后「把 XX 改成
   // YY」的真实用途无影响）。deps 只列两个清单引用：tpl 在流式期间每次归约都换引用，
   // 挂 [tpl] 会让下游 updateDocxHighlight 被事件频率放大。
-  const filledList = tpl.filled;
-  const unfilledList = tpl.unfilled;
+  // 权威响应里两个清单为 null 表示「空」（全填满 / 无留空），此时不能回落到卡片上
+  // 那份可能过时的清单，故按 null 与否判定而非 ??
+  const filledList = authoritative
+    ? (authoritative.filled ?? undefined)
+    : tpl.filled;
+  const unfilledList = authoritative
+    ? (authoritative.unfilled ?? undefined)
+    : tpl.unfilled;
   const names = useMemo(
     () => buildKeyNameMap({ filled: filledList, unfilled: unfilledList }),
     [filledList, unfilledList],

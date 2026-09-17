@@ -584,8 +584,14 @@ export default function FlowAiPanel({
       instructionRef.current = query;
       // 新一轮发送：清空上一轮兜底内容、完成态与已存记录
       contentRef.current = '';
-      templateFillRef.current = undefined;
-      templateFillEventsRef.current = [];
+      // 范本填写快照**不清**：成稿卡的可见性不该由「发了一条消息」决定。只有真正
+      // 产生新填写的一轮才会替换它（streamState.templateFill → templateFillRef）。
+      // 反例（2026-09-17 实测）：填写完成后用户说「把 XX 改成 YY」→ 走 FillTemplate
+      // action=modify，一个 template_fill_progress 事件都不发 → 清空后无人回填，
+      // 成稿卡整块消失（含「查看填写内容」按钮），刷新页面重新进入流程才因历史
+      // 重放又从更早那条记录里长回来。
+      // 事件序列同理保留：本轮若无新事件，落库的 template_fill_events 沿用上一轮
+      // 快照，「改完刷新」也能重放出成稿卡（而不是跳过本条记录去找更早那条）。
       // T15：上一轮 FileReview 节点产出已落到中部卡，新一轮不应继续挂着旧 task_id
       fileReviewRef.current = null;
       // 上一轮未触发的增量同步定时器作废（pendingRecordIdRef 置空后守卫也会拦，这里直接清）
@@ -594,7 +600,6 @@ export default function FlowAiPanel({
         eventsSyncTimerRef.current = null;
       }
       setCompleted(null);
-      setLastTemplateFill(null);
       // 新一轮发送：停掉刷新恢复的运行快照轮询（否则旧运行的快照态会在新一轮
       // 结束保存后压过本轮状态）——恢复链路只服务「刷新后未发送」的场景
       setReplayEvents(undefined);

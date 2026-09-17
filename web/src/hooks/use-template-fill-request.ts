@@ -1,3 +1,8 @@
+import type {
+  ITemplateFillDownload,
+  ITemplateFillFilled,
+  ITemplateFillUnfilled,
+} from '@/hooks/template-fill-stream';
 import api from '@/utils/api';
 import { downloadFileFromBlob } from '@/utils/file-util';
 import request from '@/utils/request';
@@ -548,6 +553,28 @@ export async function sedimentTemplateFillDefaults(
     throw new Error(data.message || '写回失败');
   }
   return { written: Boolean(data.data?.written) };
+}
+
+// ── 就地修改后的权威产值（「查看填写内容」预览刷新用）────────────────────
+// 成稿本体只有服务端有；而「查看填写内容」的保真预览是**用前端 values 覆盖
+// 模板工作副本**渲染出来的（见 template-fill-live-preview 的 docx 高亮链路），
+// 预览里的文字完全由 values 决定。对话里的 FillTemplate(action=modify) 不产生
+// 任何 template_fill_progress 事件 → SSE／回放快照里的 values 会一直停在改前，
+// 于是出现「模型说改了，预览还是旧文案」。打开预览时按 task_id 拉一次 progress
+// 覆盖显示：该端点的 values 取自 DB render，而 modify 已把新值回写进 DB。
+export interface TemplateFillProgressData {
+  status: string;
+  values?: Record<string, string> | null;
+  download?: ITemplateFillDownload | null;
+  unfilled?: ITemplateFillUnfilled[] | null;
+  filled?: ITemplateFillFilled[] | null;
+}
+
+export async function fetchTemplateFillTaskProgress(
+  taskId: string,
+): Promise<TemplateFillProgressData | null> {
+  const { data } = await request.get(api.templateFillTaskProgress(taskId));
+  return (data?.data as TemplateFillProgressData) || null;
 }
 
 // ── 范本工作副本（docx-preview 保真渲染 + 占位符高亮用）──────────────────
