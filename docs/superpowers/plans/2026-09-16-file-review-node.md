@@ -7338,134 +7338,221 @@ git commit -m "feat(file-review): flow AI panel progress card mount (polling, no
 >
 > 原 T16 spec 引用 T9 已删除的 `/file/review/start` 端点（`spawn_review_task` 在 spawn.py 改为线程派发而非 HTTP 启动端点）。T9 后入口变化：
 >
-> - 发起审核：通过 `FileReviewRoundService.create_next_round(file_id, template_id, ...)` 同步建轮次行 + `spawn_mod.spawn_review_task(rid)` 后台派发
+> - 发起审核：**没有 HTTP 启动端点**——调用方（T7 节点 / T8 工具 / 调用者）直接构造 round 行 + 后台派发。本任务用 `FileReviewRoundService.create_round(task_id=..., file_id=..., round_no=1, ...)` 同步建轮次行 + 直接 `execute_task(round_id)` 同步执行（绕开线程）
 > - 触发修复：`POST /file/review/<task_id>/fix` 端点（T9 实现）
 > - 查进度：`GET /file/review/file/<file_id>/state` 端点（T9 实现）
 > - 标注状态：`POST /file/review/annotation/<aid>/status` 端点（T9 实现）
 > - 下载成稿：`GET /file/review/<task_id>/<file_version>/download` 端点（T15 fix 落地）
 >
-> 本任务 reshape 为「**端到端覆盖 4 + 1 端点全链路**」，含 reviewer / fix / annotation / download 四路径。
+> 此外 spec 需按真实 Service 修正：
+>
+> - **没有 `FileReviewTaskService`**——项目里没有 task 表也没有 TaskService；task_id 是 round 行上的外键，由调用方用 `get_uuid()` 生成字符串（见 `FileReviewRoundService.create_round` 的 `task_id` 入参）。
+> - 没有 `FileReviewRoundService.create_next_round`——用 `create_round(round_no=...)` 显式指定轮次。
+> - LLM 桩不是 `executor.llm_review` / `executor.llm_fix`——executor 只有私有 `_call_llm(tenant, sys, user)`。桩法：monkeypatch `_call_llm` 返回受上下文控制（按 user_prompt 关键字判定走 review 还是 fix JSON）。
+> - 没有 `client` / `auth_headers` fixture——沿用 `test_file_review_api.py` 的 `_call(endpoint, **kwargs)` 模式（真实 Quart `test_request_context`）。
+>
+> 本任务 reshape 为「**端到端覆盖 5 端点全链路**」，含 reviewer / fix / annotation / download / state 五路径。
 
 - [ ] **Step 1: 写最小 e2e 测试**
 
-文件 `test/test_file_review_e2e.py`，参照 `test/test_file_review_api.py` 与 `test/test_file_review_executor.py` 的 monkeypatch 风格。
+文件 `test/test_file_review_e2e.py`，参照 `test/test_file_review_api.py` 的 `_load_api` / `_call` 模式 + `test_file_review_executor.py` 的 monkeypatch LLM 风格。
+
+**关键约束**（避免 implementer 现场重头查）：
+
+1. 测试文件**不能直接 import `api.apps.restful_apis.file_review_api`**——会触发 login_required 装饰器找不到 `current_user`。必须用 `_load_api()` 桩出 `api.apps` 后从源文件加载（见 `test_file_review_api.py:24-49`）。
+2. `_call(endpoint, **kwargs)` 走 Quart `test_request_context`，返回 JSON 业务体（不是 Response 对象）。
+3. monkeypatch 路径是 `rag.svr.file_review.executor._call_llm`，不是 `llm_review`/`llm_fix`（后者不存在）。
+4. `task_id` 由 `get_uuid()` 生成（无 TaskService），`create_round` 一次性建轮次行并返回 round id。
+5. 调 `execute_task(round_id)` 同步跑轮次（绕开 `spawn_mod.spawn_review_task` 后台线程）；`test_e2e_two_rounds` 里触发 fix 端点前必须把 `api.apps.restful_apis.file_review_api.spawn_mod.spawn_review_task` patch 掉（同 `test_file_review_api.py:358`）。
+6. 所有 fixture 行用 `PFX = '__test_fr_e2e__'` 前缀；teardown 函数删 `task_id.startswith(PFX)` 的所有 round/annotation，避免污染线上。
 
 ```python
 # test/test_file_review_e2e.py
 """文件审核端到端：5 端点全链路 + 多轮 happy path + 修复+标注+下载。
 
-所有 LLM 调用 monkeypatch 为确定性返回值，绕开真实模型；后台线程用
-`spawn_mod.spawn_review_task` 同步执行（executor.execute_task 直接调用），
-保证测试不需要 sleep 等待。
+参照 test_file_review_api.py 的 _load_api 模式（无需 client fixture），
+并 monkeypatch rag.svr.file_review.executor._call_llm 绕开真实 LLM；
+后台线程用 execute_task(round_id) 同步执行（绕开 spawn_mod.spawn_review_task）。
 """
+import asyncio
 import io
+import os
+import sys
 import time
-from unittest.mock import patch
+import types
+from importlib.util import module_from_spec, spec_from_file_location
+from types import SimpleNamespace
 
 import pytest
 
-from api.db.db_models import DB
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from api.db.db_models import DB, FileReviewAnnotation, FileReviewRound
 from api.db.services.file_review_service import (
     FileReviewAnnotationService,
     FileReviewRoundService,
-    FileReviewTaskService,
 )
-from rag.svr.file_review.executor import execute_task
+from common.constants import RetCode
+from common.misc_utils import get_uuid
+
+# ── Fixture：LLM 桩 ──────────────────────────────────
+PFX = "__test_fr_e2e__"
+
+# 按 user_prompt 内容区分 review / fix 返回；与 executor._run_review_round / _run_fix_round
+# 实际喂给 _call_llm 的字符串模板一致（review 调模板 + 用户文本，fix 调 FIX_SYSTEM + 文件+query）。
+_REVIEW_MARKER = "请审核"
+_FIX_MARKER = "请修复"
 
 
-# ── Fixture：review / fix LLM 桩 ──────────────────────────────
 @pytest.fixture
 def mock_llm(monkeypatch):
-    """桩 LLM：review 返 1 条 high 标注；fix 返空 patch 列表（不改文档但收口）。"""
-    def fake_review(*a, **k):
-        return {
-            'summary': 'high:1 medium:0 low:0',
-            'annotations': [{
-                'matched_text': 'x',
-                'type': 'format',
-                'severity': 'high',
-                'issue': 'e2e test issue',
-                'suggestion': 'e2e test suggestion',
-            }],
-        }
-    def fake_fix(*a, **k):
-        return {'patches': [], 'summary': '本轮修复 0 项（mock）'}
-    monkeypatch.setattr('rag.svr.file_review.executor.llm_review', fake_review)
-    monkeypatch.setattr('rag.svr.file_review.executor.llm_fix', fake_fix)
-    return {'review': fake_review, 'fix': fake_fix}
+    """桩 _call_llm：review 返 1 条 high 标注；fix 返空 patch 列表（不改文档但收口）。"""
+    def fake_review_json():
+        return (
+            '{"summary":"high:1 medium:0 low:0","annotations":[{'
+            '"matched_text":"x","type":"format","severity":"high",'
+            '"issue":"e2e test issue","suggestion":"e2e test suggestion"}]}'
+        )
+
+    def fake_fix_json():
+        return '{"patches":[],"summary":"本轮修复 0 项（mock）"}'
+
+    def fake_call_llm(tenant_id, system_prompt, user_prompt):
+        if _REVIEW_MARKER in user_prompt or _FIX_MARKER in system_prompt:
+            if "修复" in system_prompt or _FIX_MARKER in user_prompt:
+                return fake_fix_json()
+            return fake_review_json()
+        # 兜底：当作 review（避免误判导致测试失败时不报错）
+        return fake_review_json()
+
+    monkeypatch.setattr('rag.svr.file_review.executor._call_llm', fake_call_llm)
+    return {'call_llm': fake_call_llm}
 
 
-# ── Helper：同步跑一轮（绕开后台线程） ─────────────────────
+# ── Api 加载（同 test_file_review_api.py） ─────────────────────
+TENANT = "u1"
+_API_PATH = os.path.abspath(os.path.join(
+    os.path.dirname(__file__), "..", "api", "apps", "restful_apis", "file_review_api.py"))
+
+
+def _noop_decorator(f=None, *a, **kw):
+    return f
+
+
+def _load_api():
+    stub = types.ModuleType("api.apps")
+    stub.current_user = SimpleNamespace(id=TENANT)
+    stub.login_required = _noop_decorator
+    sys.modules["api.apps"] = stub
+    spec = spec_from_file_location("file_review_api_under_test", _API_PATH)
+    mod = module_from_spec(spec)
+    sys.modules["file_review_api_under_test"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_api = _load_api()
+
+
+def _call(endpoint, *, method="POST", path="/", body=None, **kwargs):
+    """真实 Quart 请求上下文调端点，返回 JSON 业务体。
+
+    注意 endpoint 被真实的 add_tenant_id_to_kwargs 包着，签名是 (**kwargs)：
+    调用时**必须**全部用关键字传参，否则路径参数会被丢进 *args、漏到不了 endpoint。
+    """
+    from quart import Quart
+    app = Quart(__name__)
+    app.register_blueprint(_api.manager)
+
+    async def _inner():
+        async with app.test_request_context(path, method=method, json=body):
+            resp = await endpoint(**kwargs)
+        return await resp.get_json()
+    return asyncio.run(_inner())
+
+
+# ── Helper：建 task + round_1 + 同步跑 ───────────────────
+def _make_round_one(file_id: str, *, template_id: str = "bid_doc_format",
+                     user_query: str = "审核这份招标文件") -> tuple[str, str]:
+    """直接构造 task + round_1（无 HTTP 启动端点），返回 (task_id, round_id)。"""
+    task_id = get_uuid()
+    with DB.connection_context():
+        rid = FileReviewRoundService.create_round(
+            task_id=task_id, file_id=file_id, round_no=1,
+            template_id=template_id, user_query=user_query,
+            file_version="v1", status="reviewing",
+            tenant_id=TENANT, created_by=TENANT,
+        )
+    return task_id, rid
+
+
 def _run_round_sync(round_id: str):
+    from rag.svr.file_review.executor import execute_task
     execute_task(round_id)
     time.sleep(0.1)  # 落盘 commit
 
 
-# ── E2E 1：两轮 happy path ──────────────────────────────────
-def test_e2e_two_rounds(client, auth_headers, mock_llm):
+def _cleanup():
+    FileReviewAnnotation.delete().where(FileReviewAnnotation.task_id.startswith(PFX)).execute()
+    FileReviewRound.delete().where(FileReviewRound.task_id.startswith(PFX)).execute()
+
+
+@pytest.fixture(autouse=True)
+def _auto_cleanup():
+    _cleanup()
+    yield
+    _cleanup()
+
+
+# ── E2E 1：两轮 happy path ────────────────────────────────
+def test_e2e_two_rounds(monkeypatch, mock_llm):
     """Round 1 review → annotated → fix → Round 2 annotated。
     验证：round_no 递增、status 流转、annotation 写库。"""
-    # 直接构造 task + round_1（绕开 HTTP，因为 review 启动无端点，spawn 是后台线程）
-    file_id = 'e2e-f1'
-    with DB.connection_context():
-        task = FileReviewTaskService.create(file_id=file_id)
-        r1 = FileReviewRoundService.create_next_round(
-            file_id=file_id, task_id=task.id, template_id='bid_doc_format',
-        )
-    rid1 = r1.id
+    file_id = PFX + "f1"
+    # 屏蔽后台线程派发（fix 端点内部会调 spawn_mod.spawn_review_task）
+    monkeypatch.setattr(
+        'api.apps.restful_apis.file_review_api.spawn_mod.spawn_review_task',
+        lambda *a, **k: None,
+    )
 
-    with patch('api.apps.restful_apis.file_review_api.spawn_mod.spawn_review_task'):
-        _run_round_sync(rid1)
+    task_id, rid1 = _make_round_one(file_id)
+    _run_round_sync(rid1)
 
     with DB.connection_context():
-        r1_after = FileReviewRoundService.model.get(
-            FileReviewRoundService.model.id == rid1)
-        assert r1_after.status == 'annotated', \
-            f"R1 status={r1_after.status}, expected annotated"
-        # 标注应已落库
+        r1 = FileReviewRoundService.model.get(FileReviewRoundService.model.id == rid1)
+        assert r1.status == 'annotated', f"R1 status={r1.status}, expected annotated"
         anns = FileReviewAnnotationService.list_by_file(file_id)
         assert len(anns) >= 1
         assert any(a.severity == 'high' for a in anns)
 
     # 触发修复（HTTP）
-    r = client.post(
-        f'/file/review/{task.id}/fix',
-        json={'levels': ['high']},
-        headers=auth_headers,
-    )
-    assert r.status_code == 200, r.get_json()
-    data = r.get_json()['data']
-    rid2 = data['round_id']
-    assert data['round_no'] == 2
-    assert data['status'] == 'fixing'
+    fix_endpoint = _api.__dict__['fix_review']  # 由 implementer 按 file_review_api 实际函数名修正
+    body = _call(fix_endpoint, task_id=task_id, body={'levels': ['high']})
+    assert body['code'] == RetCode.SUCCESS, body
+    rid2 = body['data']['round_id']
+    assert body['data']['round_no'] == 2
+    assert body['data']['status'] == 'fixing'
 
     _run_round_sync(rid2)
 
     with DB.connection_context():
-        r2_after = FileReviewRoundService.model.get(
-            FileReviewRoundService.model.id == rid2)
-        assert r2_after.status == 'annotated', \
-            f"R2 status={r2_after.status}, expected annotated"
-        assert r2_after.round_no == 2
+        r2 = FileReviewRoundService.model.get(FileReviewRoundService.model.id == rid2)
+        assert r2.status == 'annotated', f"R2 status={r2.status}, expected annotated"
+        assert r2.round_no == 2
 
 
-# ── E2E 2：state 端点读出完整对象 ───────────────────────────
-def test_e2e_state_endpoint(client, auth_headers, mock_llm):
+# ── E2E 2：state 端点读出完整对象 ─────────────────────────
+def test_e2e_state_endpoint(monkeypatch, mock_llm):
     """state 端点应返回 file_id / rounds[] / current / annotations[] / counts。
     验证：response 字段与 IFileReviewState 对齐（前端契约）。"""
-    file_id = 'e2e-f2'
-    with DB.connection_context():
-        task = FileReviewTaskService.create(file_id=file_id)
-        r1 = FileReviewRoundService.create_next_round(
-            file_id=file_id, task_id=task.id, template_id='bid_doc_format',
-        )
-    with patch('api.apps.restful_apis.file_review_api.spawn_mod.spawn_review_task'):
-        _run_round_sync(r1.id)
+    file_id = PFX + "f2"
+    task_id, rid1 = _make_round_one(file_id)
+    _run_round_sync(rid1)
 
-    r = client.get(
-        f'/file/review/file/{file_id}/state', headers=auth_headers)
-    assert r.status_code == 200
-    payload = r.get_json()['data']
+    state_endpoint = _api.__dict__['state_review']  # 由 implementer 按实际函数名修正
+    body = _call(state_endpoint, method='GET', file_id=file_id)
+    assert body['code'] == RetCode.SUCCESS, body
+    payload = body['data']
 
     # T10 类型契约：file_id / task_id / rounds / current / doc / annotations /
     #   annotation_counts / fix_rounds_left / max_fix_rounds
@@ -7482,28 +7569,20 @@ def test_e2e_state_endpoint(client, auth_headers, mock_llm):
 
 
 # ── E2E 3：annotation 状态修改端点 ─────────────────────────
-def test_e2e_annotation_status(client, auth_headers, mock_llm):
-    """标注 open → resolved 切换 + 'wontfix' 退出修复链。"""
-    file_id = 'e2e-f3'
-    with DB.connection_context():
-        task = FileReviewTaskService.create(file_id=file_id)
-        r1 = FileReviewRoundService.create_next_round(
-            file_id=file_id, task_id=task.id, template_id='bid_doc_format',
-        )
-    with patch('api.apps.restful_apis.file_review_api.spawn_mod.spawn_review_task'):
-        _run_round_sync(r1.id)
+def test_e2e_annotation_status(monkeypatch, mock_llm):
+    """标注 open → resolved 切换。"""
+    file_id = PFX + "f3"
+    task_id, rid1 = _make_round_one(file_id)
+    _run_round_sync(rid1)
 
     with DB.connection_context():
         anns = FileReviewAnnotationService.list_by_file(file_id)
         ann_id = anns[0].id
 
-    r = client.post(
-        f'/file/review/annotation/{ann_id}/status',
-        json={'status': 'resolved'},
-        headers=auth_headers,
-    )
-    assert r.status_code == 200
-    assert r.get_json()['data']['status'] == 'resolved'
+    annotation_endpoint = _api.__dict__['update_annotation_status']
+    body = _call(annotation_endpoint, aid=ann_id, body={'status': 'resolved'})
+    assert body['code'] == RetCode.SUCCESS, body
+    assert body['data']['status'] == 'resolved'
 
     with DB.connection_context():
         a = FileReviewAnnotationService.model.get(
@@ -7512,48 +7591,62 @@ def test_e2e_annotation_status(client, auth_headers, mock_llm):
 
 
 # ── E2E 4：templates 端点列出预置 ─────────────────────────
-def test_e2e_templates_list(client, auth_headers):
+def test_e2e_templates_list():
     """5 套预置模板（T1 迁移）应全部可列。"""
-    r = client.get('/file/review/templates', headers=auth_headers)
-    assert r.status_code == 200
-    templates = r.get_json()['data']['templates']
+    templates_endpoint = _api.__dict__['list_templates']
+    body = _call(templates_endpoint, method='GET')
+    assert body['code'] == RetCode.SUCCESS, body
+    templates = body['data']['templates']
     assert len(templates) == 5, f"got {len(templates)}, expected 5 preset"
-    # 每条必备字段
     for t in templates:
         assert {'id', 'name', 'description', 'annotation_types'} <= set(t.keys())
 
 
 # ── E2E 5：download 端点流式返回字节 ────────────────────────
-def test_e2e_download_endpoint(client, auth_headers, mock_llm):
+def test_e2e_download_endpoint(monkeypatch, mock_llm):
     """fix 端点后产生 minio_path 的 round → download 端点应返回非空字节流。"""
+    file_id = PFX + "f5"
+    task_id, rid1 = _make_round_one(file_id)
+    # 不跑真 patcher，直接 mock round 收尾时带 minio_path 的状态
     from common.minio_comm import put_minio_bytes
-    file_id = 'e2e-f5'
+    bucket = f"{TENANT}-downloads"
+    key_name = f"frv-{task_id}-v1"
+    try:
+        put_minio_bytes(bucket, key_name, b"fake-docx-bytes")
+    except Exception:
+        pytest.skip("minio not available in test env, skip download e2e")
     with DB.connection_context():
-        task = FileReviewTaskService.create(file_id=file_id)
-        r1 = FileReviewRoundService.create_next_round(
-            file_id=file_id, task_id=task.id, template_id='bid_doc_format',
+        FileReviewRoundService.update_status(
+            rid1, 'annotated',
+            minio_path=key_name, file_version='v1',
+            summary='mock with minio_path',
         )
-        rid1 = r1.id
-        # 直接 mock 一个 round 收尾时带 minio_path 的状态（不跑真 patcher）
-        # 上传一个空 docx 占位
-        bucket = f"e2e-bucket"
-        key_name = f"frv-{task.id}-v1"
-        try:
-            put_minio_bytes(bucket, key_name, b"fake-docx-bytes")
-            FileReviewRoundService.update_status(
-                rid1, 'annotated',
-                minio_path=key_name, file_version='v1',
-                summary='mock with minio_path',
-            )
-        except Exception:
-            pytest.skip("minio not available in test env, skip download e2e")
 
-    r = client.get(
-        f'/file/review/{task.id}/v1/download', headers=auth_headers)
-    # 期望 200 + application/octet-stream（或 vnd.openxmlformats）
-    assert r.status_code == 200
-    assert r.data == b"fake-docx-bytes"
+    download_endpoint = _api.__dict__['download_review_version']
+    # 走真实 Quart HTTP（download 端点返回 Response 对象，不进 _call 抽象）
+    import asyncio as _asyncio
+    from quart import Quart
+    app = Quart(__name__)
+    app.register_blueprint(_api.manager)
+
+    async def _fetch():
+        async with app.test_request_context(
+            f"/file/review/{task_id}/v1/download", method='GET',
+        ):
+            resp = await download_endpoint(task_id=task_id, file_version='v1')
+        return resp
+    resp = _asyncio.run(_fetch())
+    assert resp.status_code == 200
+    # Quart Response.data 是 bytes（或 async，需 await）
+    data = _asyncio.run(resp.get_data()) if hasattr(resp, 'get_data') else resp.data
+    assert data == b"fake-docx-bytes"
 ```
+
+> **Implementer 备注**：
+> - `_api.__dict__['fix_review']` 等占位符：implementer 需打开 `api/apps/restful_apis/file_review_api.py`，把每个 `@manager.route(...)` 装饰器下面的函数名（一般是 `fix_review` / `state_review` / `update_annotation_status` / `list_templates` / `download_review_version`）查到，替换占位符。如果函数名不同（按状态命名 `review_fix` 等），以源文件为准。
+> - `_call` 模式：fix 端点的路径参数是 `task_id`（看 `add_tenant_id_to_kwargs` 包装器签名推断）；state 端点是 `file_id`；annotation 端点是 `aid`。如有出入以 `_load_api()` 后 `dir(_api)` 与源码为准。
+> - `monkeypatch.setattr('api.apps.restful_apis.file_review_api.spawn_mod.spawn_review_task', ...)` 必须放在 `_call(fix_endpoint, ...)` 之前，否则 fix 端点会启动后台线程、可能破坏轮次状态机测试。
+> - `_make_round_one` 直接调 `create_round` 是 T9 后的入口约定（无 `/file/review/start` HTTP 端点）。如果项目里有 helper（如 `_file_review_create_round`），以那个为准。
 
 - [ ] **Step 2: 跑测试**
 
@@ -7569,7 +7662,7 @@ uv run --no-sync pytest test/test_file_review_e2e.py -v
 uv run --no-sync pytest -k 'file_review' -v
 ```
 
-预期：所有 file_review 测试全绿（应 ≥ 200 个用例，e2e 5 个 + 之前 T1-T11 测试套件）。
+预期：所有 file_review 测试全绿（e2e 5 个 + 之前 T1-T15 测试套件，无 regression）。
 
 ```bash
 cd web && npm run build
@@ -7581,7 +7674,7 @@ cd web && npm run build
 
 ```bash
 git add test/test_file_review_e2e.py
-git commit -m "test(file-review): e2e two-rounds + 5-endpoint coverage"
+git commit -m "test(file-review): e2e 5-endpoint coverage + mock LLM"
 ```
 
 ---
@@ -7593,6 +7686,7 @@ git commit -m "test(file-review): e2e two-rounds + 5-endpoint coverage"
 | T17 部署 | 部署清单**必须**追加 `test/test_file_review_e2e.py` 到回归命令清单（部署后跑一次确认 5 用例全绿） |
 | T17 部署 | 部署清单**必须**追加 5 个端点的冒烟 URL（不再走 `/file/review/template/list` 旧路径，全部按 T9 + T15 fix 重命名后的路径） |
 | T18 最终审查 | e2e 测试应纳入回归矩阵；任何后续重构破坏 e2e 必须先修 |
+
 ---
 
 ## Task 17: 部署（先后端再前端，DB migration 自动）
