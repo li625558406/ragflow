@@ -52,6 +52,7 @@ import {
   Upload,
   X,
 } from 'lucide-react';
+import FileReviewProgress from './file-review-progress';
 import ReviewPanel, { type Annotation } from './review-panel';
 import TemplateFillProgress from './template-fill-progress';
 
@@ -634,6 +635,47 @@ export default function CChat() {
     // Clear ref so message-data path (which filters by reviewFileId) takes over
     if (structuredOutputRef) structuredOutputRef.current = null;
   }, [done]);
+
+  // ── T14 Path A：FileReview 节点产出的 {file_id, task_id} 落到消息上 ──
+  // 沿用 outputs.structured 同款 SSE 扫描模式：在 answerList 里找 component_name=FileReview
+  // 的 node_finished 事件，取 outputs.task_id 与 inputs.file_id，挂到最近一条 assistant。
+  // 不引入新 SSE / streamState.fileReview / setFileReviewState —— 组件内部 useFileReviewState 轮询拿数据。
+  // 此处仅负责「把链路里已经在跑的 task_id 找到并固化到消息」，保证 <FileReviewProgress> 后续挂得上。
+  useEffect(() => {
+    if (!done) return;
+    // 扫 answerList 里 FileReview 节点的 node_finished 事件
+    let fileId = '';
+    let taskId = '';
+    for (const evt of answerList) {
+      const ev: any = evt as any;
+      const data = ev?.data ?? {};
+      const componentName = (data?.component_name ?? '').toString();
+      if (componentName !== 'FileReview') continue;
+      const outputs = data?.outputs ?? {};
+      const inputs = data?.inputs ?? {};
+      if (outputs?.task_id) taskId = String(outputs.task_id);
+      // inputs 里取 file_id（FileReview 节点 param 的 file_id 字段）
+      const fileIdInput = inputs?.file_id ?? inputs?.review_file_id;
+      if (fileIdInput) fileId = String(fileIdInput);
+      if (taskId && fileId) break;
+    }
+    if (!taskId || !fileId) return;
+    setDerivedMessages((prev) => {
+      const next = [...prev];
+      for (let i = next.length - 1; i >= 0; i--) {
+        if (next[i].role === 'assistant') {
+          const cur: any = next[i];
+          if (cur.fileReview?.taskId === taskId) return prev;
+          next[i] = {
+            ...next[i],
+            fileReview: { fileId, taskId },
+          } as any;
+          break;
+        }
+      }
+      return next;
+    });
+  }, [done, answerList]);
 
   // ── Prologue is shown as intro text in the welcome screen, not auto-added as a message
   // This keeps the input centered until the user explicitly starts a conversation.
@@ -2526,6 +2568,28 @@ export default function CChat() {
                                         fileId: dl.doc_id || '',
                                         fileName:
                                           dl.filename || dl.name || '成稿',
+                                      })
+                                    }
+                                  />
+                                )}
+                                {/* 文件审核进度：组件自管 3s 轮询，仅传 fileId + taskId（与 T12 契约对齐） */}
+                                {(msg as any).fileReview && (
+                                  <FileReviewProgress
+                                    fileId={(msg as any).fileReview.fileId}
+                                    taskId={(msg as any).fileReview.taskId}
+                                    onOpenReview={() => {
+                                      // 复用现有审核面板状态：把对应 fileId 推到 reviewMode 上
+                                      // （annotations 已经在 msg.data 上，panel 通过 derivedMessages 渲染）
+                                      setReviewFileId(
+                                        (msg as any).fileReview.fileId,
+                                      );
+                                      setReviewFileName('文件审核');
+                                      setReviewMode(true);
+                                    }}
+                                    onPreviewDoc={(minioPath) =>
+                                      setPreviewDoc({
+                                        fileId: minioPath,
+                                        fileName: '文件审核成稿',
                                       })
                                     }
                                   />
