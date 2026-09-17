@@ -8,9 +8,9 @@
 - 新增 `rag/svr/template_fill/blank_slots.py`：run 层切位器——下划线格式（w:u）留白 run + 字符下划线串确定性切出填写位区间（runs 拼接文本坐标系，与替换层一致）；含超链接段落整段回退 V1
 - `docx_utils.extract_docx_candidates` 候选行附带 `slots` 键；有位行即使不命中 FILL_HINT_RE 也入候选；纯空白整行下划线段落入候选（真实范本 57 行漏识别根修）
 - `detector.py` 分流：有位行走 DETECT_SYSTEM_V2「位编号→语义」契约（LLM 不再自选 anchor，anchor 由切位区间精确切片）；无位行走现有 V1 契约（存量零影响）；LLM 漏标位确定性兜底（hint→括号提示为中文名不低置信，blank→「未命名填写位」低置信，key=blank_N 全局续接）；`_verify_slot_occ` 确定性 occ 校验闸（复刻渲染层非重叠出现+更长锚嵌套剔除口径，治同段非位同形文本/嵌套位的 occ 错位串位）
-- V2 解析防御：key 截断感知去重（防 validate 判死）、required 字符串判型、anchor membership 校验、slot 序号非法丢弃；V2 条目不派生默认值（hint 从源头阻断提示语污染）；下游渲染/前端/validate 零改动
+- V2 解析防御：key 截断感知去重（防 validate 判死）、required 字符串判型、anchor membership 校验、slot 序号非法丢弃；V2 条目显式 `default_value=""` 硬闸 + `derive_default_from_anchor` 混合形态骨架判定（`＿＿＿（项目名称）＿＿` 类「下划线+括号提示」合并位不再把提示语派生成默认值致字段被跳过填写，收口审查 Major-1 根修 fff3a8ec）；下游渲染/前端/validate 零改动
 
-**验证**：真实范本（福建省信息化工程招标示范文本 docx）切位 504 候选行/408 含位行/553 位，用户报告句一次切出 7 位无碎片；535 后端测试全绿；两道审查（spec+quality）×5 任务全过
+**验证**：真实范本（福建省信息化工程招标示范文本 docx）切位 504 候选行/408 含位行/553 位，用户报告句一次切出 7 位无碎片；539 后端测试全绿；两道审查（spec+quality）×5 任务全过 + 收口审查 READY
 
 **遗留**：underline=None 继承样式不识别（首版）；xlsx 不适用；兜底 key（blank_N）可读性一般依赖 B端人工改名；识别后手动增删占位符不经 occ 校验闸的已知窄缝（见设计稿 §7）
 
