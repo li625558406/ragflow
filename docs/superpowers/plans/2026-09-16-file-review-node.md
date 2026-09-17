@@ -7398,10 +7398,9 @@ from common.misc_utils import get_uuid
 # ── Fixture：LLM 桩 ──────────────────────────────────
 PFX = "__test_fr_e2e__"
 
-# 按 user_prompt 内容区分 review / fix 返回；与 executor._run_review_round / _run_fix_round
-# 实际喂给 _call_llm 的字符串模板一致（review 调模板 + 用户文本，fix 调 FIX_SYSTEM + 文件+query）。
-_REVIEW_MARKER = "请审核"
-_FIX_MARKER = "请修复"
+# 按 system_prompt 字面量分流：executor._run_fix_round 用 FIX_SYSTEM（首句「你是文档修复助手」），
+# 审查轮用模板 tpl.system_prompt（典型首句「投标文件格式审核专家」）。按「修复」字面量分两路。
+_FIX_SYSTEM_MARKER = "文档修复助手"
 
 
 @pytest.fixture
@@ -7418,11 +7417,11 @@ def mock_llm(monkeypatch):
         return '{"patches":[],"summary":"本轮修复 0 项（mock）"}'
 
     def fake_call_llm(tenant_id, system_prompt, user_prompt):
-        if _REVIEW_MARKER in user_prompt or _FIX_MARKER in system_prompt:
-            if "修复" in system_prompt or _FIX_MARKER in user_prompt:
-                return fake_fix_json()
-            return fake_review_json()
-        # 兜底：当作 review（避免误判导致测试失败时不报错）
+        # 修复轮的 system_prompt 是 executor.FIX_SYSTEM（首句「你是文档修复助手」）；
+        # 审查轮用模板的 system_prompt（首句是模板标题，如「投标文件格式审核专家」）。
+        # 用 system_prompt 字面量分流，不依赖 user_prompt（user_prompt 内容随时可变）。
+        if _FIX_SYSTEM_MARKER in system_prompt:
+            return fake_fix_json()
         return fake_review_json()
 
     monkeypatch.setattr('rag.svr.file_review.executor._call_llm', fake_call_llm)
@@ -7486,9 +7485,12 @@ def _make_round_one(file_id: str, *, template_id: str = "bid_doc_format",
     return task_id, rid
 
 
-def _run_round_sync(round_id: str):
+def _run_round_sync(task_id: str):
+    """注意：execute_task 入参是 task_id（不是 round_id）；executor 内部按 task_id 取最新轮次推进。
+    executor.py:94 def execute_task(task_id: str) -> None。
+    若传 round_id 进去，executor 会按 task_id 找不到对应行并打 WARNING 直接静默退出。"""
     from rag.svr.file_review.executor import execute_task
-    execute_task(round_id)
+    execute_task(task_id)
     time.sleep(0.1)  # 落盘 commit
 
 
@@ -7516,7 +7518,7 @@ def test_e2e_two_rounds(monkeypatch, mock_llm):
     )
 
     task_id, rid1 = _make_round_one(file_id)
-    _run_round_sync(rid1)
+    _run_round_sync(task_id)
 
     with DB.connection_context():
         r1 = FileReviewRoundService.model.get(FileReviewRoundService.model.id == rid1)
@@ -7533,11 +7535,14 @@ def test_e2e_two_rounds(monkeypatch, mock_llm):
     assert body['data']['round_no'] == 2
     assert body['data']['status'] == 'fixing'
 
-    _run_round_sync(rid2)
+    _run_round_sync(task_id)
 
     with DB.connection_context():
         r2 = FileReviewRoundService.model.get(FileReviewRoundService.model.id == rid2)
-        assert r2.status == 'annotated', f"R2 status={r2.status}, expected annotated"
+        # 'annotated' 是**审查轮**的终态；修复轮在合法但空 patches 时收口 status='done'
+        # （executor._run_fix_round:189-193）。两种状态都表示轮次已收口。
+        assert r2.status in ('done', 'annotated'), \
+            f"R2 status={r2.status}, expected 'done' or 'annotated'"
         assert r2.round_no == 2
 
 
@@ -7547,7 +7552,7 @@ def test_e2e_state_endpoint(monkeypatch, mock_llm):
     验证：response 字段与 IFileReviewState 对齐（前端契约）。"""
     file_id = PFX + "f2"
     task_id, rid1 = _make_round_one(file_id)
-    _run_round_sync(rid1)
+    _run_round_sync(task_id)
 
     state_endpoint = _api.review_state  # file_review_api.py:251（无 tenant_id）
     body = _call(state_endpoint, method='GET', file_id=file_id)
@@ -7565,7 +7570,10 @@ def test_e2e_state_endpoint(monkeypatch, mock_llm):
     assert len(payload['rounds']) == 1
     assert payload['rounds'][0]['status'] == 'annotated'
     assert payload['annotation_counts']['high'] >= 1
-    assert payload['fix_rounds_left'] == payload['max_fix_rounds'] - 1
+    # fix_rounds_left = MAX_FIX_ROUNDS - count(rounds where round_no > 1)
+    # （file_review_service.py:67-76 fix_rounds_left）。
+    # 单轮 review 不消耗修复名额，应等于 max_fix_rounds 本身，不是 -1。
+    assert payload['fix_rounds_left'] == payload['max_fix_rounds']
 
 
 # ── E2E 3：annotation 状态修改端点 ─────────────────────────
@@ -7573,7 +7581,7 @@ def test_e2e_annotation_status(monkeypatch, mock_llm):
     """标注 open → resolved 切换。"""
     file_id = PFX + "f3"
     task_id, rid1 = _make_round_one(file_id)
-    _run_round_sync(rid1)
+    _run_round_sync(task_id)
 
     with DB.connection_context():
         anns = FileReviewAnnotationService.list_by_file(file_id)
@@ -7604,25 +7612,34 @@ def test_e2e_templates_list():
 
 # ── E2E 5：download 端点流式返回字节 ────────────────────────
 def test_e2e_download_endpoint(monkeypatch, mock_llm):
-    """fix 端点后产生 minio_path 的 round → download 端点应返回非空字节流。"""
+    """fix 端点后产生 minio_path 的 round → download 端点应返回非空字节流。
+
+    实现要点：
+    - 不依赖真 minio：用 monkeypatch.setattr(common.settings, "STORAGE_IMPL", fstore)
+      把下载端点的 STORAGE_IMPL 替换成 in-memory fstore（与 minio 接口同形）。
+    - download 端点走 `settings.STORAGE_IMPL.get(bucket, key)`，所以 fstore 必须有
+      `put(bucket, key, blob)` + `get(bucket, key)` 接口。
+    - download 端点不返回 JSON 业务体，是 Quart `Response` 对象（含 status_code + data），
+      走 `test_request_context` 直接 await endpoint(...) 拿 Response。
+    """
     file_id = PFX + "f5"
     task_id, rid1 = _make_round_one(file_id)
-    # 不跑真 patcher，直接 mock round 收尾时带 minio_path 的状态
-    from common.minio_comm import put_minio_bytes
-    bucket = f"{TENANT}-downloads"
-    key_name = f"frv-{task_id}-v1"
-    try:
-        put_minio_bytes(bucket, key_name, b"fake-docx-bytes")
-    except Exception:
-        pytest.skip("minio not available in test env, skip download e2e")
+    from common import settings as common_settings
+    from common.file_store import FileStorage
+
+    # in-memory fstore：避免真连 minio
+    fstore = FileStorage("")
+    fstore.put(f"{TENANT}-downloads", f"frv-{task_id}-v1", b"fake-docx-bytes")
+    monkeypatch.setattr(common_settings, "STORAGE_IMPL", fstore)
+
     with DB.connection_context():
         FileReviewRoundService.update_status(
             rid1, 'annotated',
-            minio_path=key_name, file_version='v1',
+            minio_path=f"frv-{task_id}-v1", file_version='v1',
             summary='mock with minio_path',
         )
 
-    download_endpoint = _api.__dict__['download_review_version']
+    download_endpoint = _api.download_review_version  # file_review_api.py:394
     # 走真实 Quart HTTP（download 端点返回 Response 对象，不进 _call 抽象）
     import asyncio as _asyncio
     from quart import Quart
@@ -7643,10 +7660,14 @@ def test_e2e_download_endpoint(monkeypatch, mock_llm):
 ```
 
 > **Implementer 备注**：
-> - `_api.__dict__['fix_review']` 等占位符：implementer 需打开 `api/apps/restful_apis/file_review_api.py`，把每个 `@manager.route(...)` 装饰器下面的函数名（一般是 `fix_review` / `state_review` / `update_annotation_status` / `list_templates` / `download_review_version`）查到，替换占位符。如果函数名不同（按状态命名 `review_fix` 等），以源文件为准。
-> - `_call` 模式：fix 端点的路径参数是 `task_id`（看 `add_tenant_id_to_kwargs` 包装器签名推断）；state 端点是 `file_id`；annotation 端点是 `aid`。如有出入以 `_load_api()` 后 `dir(_api)` 与源码为准。
-> - `monkeypatch.setattr('api.apps.restful_apis.file_review_api.spawn_mod.spawn_review_task', ...)` 必须放在 `_call(fix_endpoint, ...)` 之前，否则 fix 端点会启动后台线程、可能破坏轮次状态机测试。
+> - **Peewee MySQL 连接上下文共享陷阱**：`create_round` 与 `executor.execute_task` 都用 `@DB.connection_context()` 装饰，但两者运行在不同调用栈时，MySQL 默认 REPEATABLE READ 隔离级别下，第二次查询可能看不到第一次写入的行。**解决**：测试用例主体把 `_make_round_one` + `_run_round_sync` + 后续 `with DB.connection_context():` 断言都包在一个外层 `with DB.connection_context():` 里，或者在模块级 fixture `DB.connect(reuse_if_open=True)` 提前建连。否则 executor 会打 `no round row for task_id=...` WARNING 后静默退出（executor.py:104）。
+> - **monkeypatch `api.apps.restful_apis.file_review_api.spawn_mod.spawn_review_task`** 必须在调 fix 端点前 patch 掉（同 `test_file_review_api.py:358`），否则 fix 端点会启动后台线程、可能破坏轮次状态机测试。
 > - `_make_round_one` 直接调 `create_round` 是 T9 后的入口约定（无 `/file/review/start` HTTP 端点）。如果项目里有 helper（如 `_file_review_create_round`），以那个为准。
+> - **execute_task 入参是 task_id，不是 round_id**：`rag/svr/file_review/executor.py:94 def execute_task(task_id: str) -> None`，内部按 task_id 取最新轮次推进；按 round_id 传会被当成「该 task 不存在」静默 no-op。spec 已统一为 `_run_round_sync(task_id)`。
+> - **LLM 桩按 system_prompt 分流，不按 user_prompt**：executor 审查轮用模板 system_prompt（首句「投标文件格式审核专家」），修复轮用 `executor.FIX_SYSTEM`（首句「你是文档修复助手」）。用 `_FIX_SYSTEM_MARKER = "文档修复助手"` 判定走 fix，否则 review；user_prompt 内容模板随时会变、不可靠。
+> - **修复轮 mock LLM 返空 patches 时 status='done'，不是 'annotated'**：`executor._run_fix_round:189-193` 在「合法但空 patches」时收口 status='done'。'annotated' 是**审查轮**的终态。R2.status 断言改为 `in ('done', 'annotated')`。
+> - **fix_rounds_left 在仅有 round_1 review 时等于 max_fix_rounds**（不是 -1）：`file_review_service.py:67-76 fix_rounds_left = MAX_FIX_ROUNDS - count(rounds where round_no > 1)`，单轮 review 不消耗修复名额。state 端点断言改为 `==`。
+> - **download 端点用 `common.settings.STORAGE_IMPL`**：`file_review_api.py:62 from common import settings`，与 executor 模块共享同一 settings 对象。用 `monkeypatch.setattr(common.settings, "STORAGE_IMPL", fstore)` 替换；fstore 走 `common.file_store.FileStorage("")` in-memory 实例，提供 `put(bucket, key, blob)` + `get(bucket, key)` 接口。
 
 - [ ] **Step 2: 跑测试**
 
