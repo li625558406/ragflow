@@ -6656,191 +6656,445 @@ git commit -m "feat(file-review): API hook wrapper (4 endpoints + invalidate)"
 
 **Files:**
 - Create: `web/src/pages/c-chat/file-review-progress.tsx`
-- Test: `web/src/pages/c-chat/__tests__/file-review-progress.test.tsx`
+- Create: `web/src/pages/c-chat/__tests__/file-review-progress.test.tsx`
+
+> ### T12 规格重写说明（替换原「EventSource 订阅 + SSE 归约」版）
+>
+> T9 砍 SSE 后原 T12 整套基于 `new EventSource(...)` + `applyFileReviewEvent` 的实现失效。本任务 reshape 为「**轮询 + hook 数据驱动**」：
+>
+> - **删** SSE EventSource 订阅（用 `useFileReviewState(fileId)` 内置的 refetchInterval 替代）
+> - **删** `state?: IFileReviewState` 初始 prop —— 改为 `fileId: string` 必填 prop（hook 拿数据）
+> - **删** `listAnnotations` 独立调用 —— 标注已在 `state.data.annotations` 全集中
+> - **删** 「再修一轮」「结束审核」按钮 —— T9 砍了 `finish` 端点；修复即新一轮（`next_round` 自动 +1）
+> - **改** 修复级别按钮：原规格硬编码 `handleFix(['high', 'medium'])` / `handleFix(['high'])` 写在 JSX 内，**改为调起 Popover 让用户多选级别**（用户语义是「我想修严重和一般」，不是「点击预设按钮」）
+> - **改** canFix 判据：用 `state.data.current?.status === 'annotated' && state.data.fix_rounds_left > 0`（与 T11 交接契约一致），**禁止**用 `rounds.length < 3`
+> - **删** `streaming?: boolean` prop —— 轮询开关由 hook 内部控制（`isRoundRunning`），调用方不需要懂
+>
+> 文件位置保持 `pages/c-chat/`（与 `template-fill-progress.tsx` 同目录；c-chat 与 flow 双方都从此处 import，路径不影响复用）
 
 - [ ] **Step 1: 写失败测试**
 
+`web/src/pages/c-chat/__tests__/file-review-progress.test.tsx`，参照 `__tests__/template-fill-confirm-card.test.tsx` 的 mock 风格：
+
 ```tsx
-// web/src/pages/c-chat/__tests__/file-review-progress.test.tsx
-import { render, screen } from '@testing-library/react';
+// 文件审核进度卡：c-chat 对话与 flow AI 对话区共用
+// （T11 交接契约：必须复用 useFileReviewState 拿数据，不自写轮询）。
+import {
+  useFileReviewState,
+  useFixFileReview,
+  useUpdateAnnotationStatus,
+} from '@/hooks/use-file-review-request';
 import FileReviewProgress from '@/pages/c-chat/file-review-progress';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 jest.mock('@/hooks/use-file-review-request', () => ({
-  listAnnotations: jest.fn().mockResolvedValue({ annotations: [] }),
+  useFileReviewState: jest.fn(),
+  useFixFileReview: jest.fn(),
+  useUpdateAnnotationStatus: jest.fn(),
 }));
 
+const mockUseFileReviewState = useFileReviewState as jest.MockedFunction<typeof useFileReviewState>;
+const mockUseFixFileReview = useFixFileReview as jest.MockedFunction<typeof useFixFileReview>;
+const mockUseUpdateAnnotationStatus = useUpdateAnnotationStatus as jest.MockedFunction<
+  typeof useUpdateAnnotationStatus
+>;
+
+const baseState = (over: any = {}) => ({
+  data: {
+    code: 0,
+    data: {
+      file_id: 'f1', task_id: 't1',
+      rounds: [{
+        id: 'r1', round_no: 1, status: 'annotated', file_version: 'v1',
+        template_id: 'bid_doc_format', user_query: '', summary: 'high:1 medium:0 low:0',
+        error: '', minio_path: 'frv-t1-v2.docx', produced: true,
+      }],
+      current: { id: 'r1', round_no: 1, status: 'annotated', file_version: 'v1',
+                 template_id: 'bid_doc_format', user_query: '', summary: '', error: '',
+                 minio_path: 'frv-t1-v2.docx', produced: true },
+      doc: { object: 'frv-t1-v2.docx', version: 'v2' },
+      annotations: [{ id: 'a1', round_id: 'r1', task_id: 't1', file_id: 'f1',
+                      file_version: 'v1', type: 'format', severity: 'high',
+                      issue: '正文未签字', suggestion: '', matched_text: '',
+                      source: 'ai', status: 'open', prev_annotation_id: '', anchor: {} }],
+      annotation_counts: { total: 1, high: 1, medium: 0, low: 0, pending: 1, fixed: 0 },
+      fix_rounds_left: 3, max_fix_rounds: 3,
+    },
+  },
+  isLoading: false, isError: false,
+  refetch: jest.fn(), ...over,
+});
+
 describe('FileReviewProgress', () => {
-  it('renders summary text with counts', () => {
-    render(
-      <FileReviewProgress
-        taskId="t1"
-        fileId="f1"
-        state={{
-          rounds: [{
-            id: 'r1', round_no: 1, file_id: 'f1', file_version: 'v1',
-            status: 'annotated', summary: 'high:1 medium:2 low:0',
-          }],
-          task_id: 't1', file_id: 'f1', current_version: 'v1',
-        }}
-      />,
-    );
+  beforeEach(() => {
+    mockUseFixFileReview.mockReturnValue({ mutate: jest.fn(), isLoading: false } as any);
+    mockUseUpdateAnnotationStatus.mockReturnValue({ mutate: jest.fn(), isLoading: false } as any);
+  });
+
+  it('renders round summary + 「打开审核面板」callback with annotations + doc.version', async () => {
+    mockUseFileReviewState.mockReturnValue(baseState() as any);
+    const onOpenReview = jest.fn();
+    render(<FileReviewProgress fileId="f1" onOpenReview={onOpenReview} />);
     expect(screen.getByText(/第 1 轮/)).toBeInTheDocument();
-    expect(screen.getByText(/high:1 medium:2 low:0/)).toBeInTheDocument();
+    expect(screen.getByText(/high:1 medium:0 low:0/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /打开审核面板/ }));
+    await waitFor(() => expect(onOpenReview).toHaveBeenCalledTimes(1));
+    const [annotations, version] = onOpenReview.mock.calls[0];
+    expect(version).toBe('v2');
+    expect(annotations[0].id).toBe('a1');
+  });
+
+  it('canFix=true 时显示「选择级别修复」入口，fix_rounds_left=0 时隐藏', () => {
+    mockUseFileReviewState.mockReturnValue(baseState() as any);
+    const { rerender } = render(<FileReviewProgress fileId="f1" />);
+    expect(screen.getByRole('button', { name: /修复|级别/ })).toBeInTheDocument();
+    mockUseFileReviewState.mockReturnValue(baseState({
+      data: { ...baseState().data, data: { ...baseState().data.data, fix_rounds_left: 0 } },
+    }) as any);
+    rerender(<FileReviewProgress fileId="f1" />);
+    expect(screen.queryByRole('button', { name: /修复|级别/ })).toBeNull();
+  });
+
+  it('round.status=reviewing 时不显示「修复」入口，显示 spinner', () => {
+    mockUseFileReviewState.mockReturnValue(baseState({
+      data: { ...baseState().data, data: {
+        ...baseState().data.data,
+        current: { ...baseState().data.data.current, status: 'reviewing' },
+      }},
+    }) as any);
+    render(<FileReviewProgress fileId="f1" />);
+    expect(screen.queryByRole('button', { name: /修复|级别/ })).toBeNull();
+    expect(screen.getByText(/正在审核|审核中/)).toBeInTheDocument();
+  });
+
+  it('点击「选择级别修复」调起 Popover，勾选 high + medium 后提交触发 useFixFileReview.mutate', async () => {
+    const mutate = jest.fn();
+    mockUseFixFileReview.mockReturnValue({ mutate, isLoading: false } as any);
+    mockUseFileReviewState.mockReturnValue(baseState() as any);
+    render(<FileReviewProgress fileId="f1" />);
+    fireEvent.click(screen.getByRole('button', { name: /修复|级别/ }));
+    fireEvent.click(screen.getByLabelText(/严重/));
+    fireEvent.click(screen.getByLabelText(/一般/));
+    fireEvent.click(screen.getByRole('button', { name: /确认|提交/ }));
+    await waitFor(() => expect(mutate).toHaveBeenCalledTimes(1));
+    expect(mutate.mock.calls[0][0]).toMatchObject({ levels: ['high', 'medium'] });
+  });
+
+  it('hook isError 时显示错误降级文案（不暴露服务端文案）', () => {
+    mockUseFileReviewState.mockReturnValue({ ...baseState(), isError: true, error: new Error('MySQL 10.0.0.5:3306') } as any);
+    render(<FileReviewProgress fileId="f1" />);
+    expect(screen.getByText(/加载失败|稍后重试/)).toBeInTheDocument();
+    expect(screen.queryByText(/3306/)).toBeNull();
+  });
+
+  it('fix_rounds_left 用 max_fix_rounds - 已发起轮次数派生；禁止用 rounds.length < 3', () => {
+    // 2 轮 round 1=annotated, round 2=failed → fix_rounds_left 来自服务端（不应按 rounds.length 派生）
+    const state2 = baseState({
+      data: { ...baseState().data, data: {
+        ...baseState().data.data, fix_rounds_left: 1,
+        rounds: [
+          { ...baseState().data.data.current, status: 'annotated' },
+          { ...baseState().data.data.current, round_no: 2, status: 'failed' },
+        ],
+      }},
+    });
+    mockUseFileReviewState.mockReturnValue(state2 as any);
+    render(<FileReviewProgress fileId="f1" />);
+    expect(screen.getByText(/剩余.*1.*轮/)).toBeInTheDocument();
   });
 });
 ```
 
-- [ ] **Step 2: 创建 `web/src/pages/c-chat/file-review-progress.tsx`**
+- [ ] **Step 2: 创建组件**
+
+文件 `web/src/pages/c-chat/file-review-progress.tsx`，与 `template-fill-progress.tsx` 同形态（无 i18n、纯中文文案、按设计 3.2「逻辑同构」落地）。
+
+**2a. import 约定**
 
 ```tsx
-// 文件审核进度卡：参照 template-fill-progress.tsx 同形态，
-// 渲染轮次摘要 + 跳 review-panel 按钮 + 版本下拉 + 修复触发按钮
 import {
-  applyFileReviewEvent,
-  type IFileReviewAnnotation,
-  type IFileReviewEvent,
-  type IFileReviewState,
-} from '@/hooks/file-review-stream';
-import {
-  finishReview,
-  fixFileReview,
-  listAnnotations,
+  useFileReviewState,
+  useFixFileReview,
+  useUpdateAnnotationStatus,
 } from '@/hooks/use-file-review-request';
-import { Eye, Loader2 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import type {
+  IFileReviewAnnotation,
+  IFileReviewRound,
+  IFileReviewState,
+} from '@/hooks/file-review-stream';
+import { ChevronDown, Download, Eye, Loader2 } from 'lucide-react';
+import { useState } from 'react';
+```
 
+**2b. props 契约**
+
+```tsx
 export default function FileReviewProgress({
-  taskId,
   fileId,
-  state: initialState,
-  streaming = true,
   onOpenReview,
+  onPreviewDoc,
 }: {
-  taskId: string;
+  /** 必填。轮询 / 失效 / fix 入参都从这里派生。 */
   fileId: string;
-  state?: IFileReviewState;
-  streaming?: boolean;
+  /** 点击「打开审核面板」时回调（参数：标注全集 + 当前成稿版本） */
   onOpenReview?: (annotations: IFileReviewAnnotation[], fileVersion: string) => void;
+  /** 点击「下载成稿」时回调（参数：成稿 MinIO 对象名） */
+  onPreviewDoc?: (minioPath: string) => void;
 }) {
-  const [state, setState] = useState<IFileReviewState>(
-    initialState || { rounds: [], task_id: taskId, file_id: fileId },
-  );
+  // ── 数据 ─────────────────────────────────────────
+  const state = useFileReviewState(fileId);
+  const fixMutation = useFixFileReview(fileId);
+  const _updateAnnotation = useUpdateAnnotationStatus(fileId); // 标注状态由面板触发，组件只透传
 
-  // SSE 订阅
-  useEffect(() => {
-    if (!streaming || !taskId) return;
-    const es = new EventSource(`/api/file/review/${taskId}/progress`);
-    es.onmessage = (e) => {
-      try {
-        const d: IFileReviewEvent = JSON.parse(e.data);
-        setState((s) => applyFileReviewEvent(s, d));
-      } catch {}
-    };
-    return () => es.close();
-  }, [taskId, streaming]);
+  const data = state.data?.code === 0 ? state.data.data : null;
+  const error = state.error;
 
-  // 加载当前版本的标注
-  const loadAnnotations = async (version: string) => {
-    const data = await listAnnotations(taskId, fileId, version);
-    return data.annotations;
+  // ── 派生（按 T11 交接契约：canFix 不自拼，用 fix_rounds_left） ──
+  const current = data?.current ?? null;
+  const status = current?.status ?? '';
+  const isRunning = status === 'reviewing' || status === 'fixing';
+  const canFix = status === 'annotated' && (data?.fix_rounds_left ?? 0) > 0;
+
+  // ── 修复级别选择 Popover ─────────────────────────
+  const [picking, setPicking] = useState(false);
+  const [picked, setPicked] = useState<string[]>([]);
+  const submitFix = (extraUserQuery?: string) => {
+    fixMutation.mutate(
+      {
+        taskId: current!.task_id || data!.task_id || '',
+        levels: picked,
+        userQuery: extraUserQuery,
+      },
+      { onSuccess: () => { setPicking(false); setPicked([]); } },
+    );
+  };
+  // 注：上式中 taskId 取值优先用 state 端点的 task_id（T9 砍了 start，端点由 T7/T8 触发；
+  //  本组件是进度展示，task_id 必须由调用方保证存在 —— 此处兜底空串会在 useFixFileReview
+  //  抛出，但 useFixFileReview 的 taskId 实际由父组件传入更安全。
+  //  设计上：调用方在 fileId 已知时已有 task_id（来自工具/节点产出），建议通过 props 显式传。
+}
+```
+
+> ⚠️ **设计缺陷补注**：上面 `taskId` 取值是兜底逻辑。更清晰的契约是父组件传 `taskId` prop，因为：
+> - 调用方（对话/流程）在挂载进度卡时一定知道 task_id（来自工具/节点的产出）。
+> - state 端点返回的 `task_id` 是**最近一轮**的 task_id，不是用户想要的「发起 fix 用的 task_id」（虽然通常一致，但耦合就是 bug 温床）。
+>
+> **修正方案**：在 props 中加 `taskId?: string` 可选 prop，**显式优先**，缺省才回退到 state.data.task_id。这样调用方可以零改动（继续传 fileId 即可，走兜底分支），但需要传 taskId 时有路径。
+>
+> 实现代码采用下方的最终版本（**已含 taskId prop**）。
+
+**2c. 最终 props 与渲染**
+
+```tsx
+export default function FileReviewProgress({
+  fileId,
+  taskId: taskIdProp,
+  onOpenReview,
+  onPreviewDoc,
+}: {
+  fileId: string;
+  /** 调用方已知 task_id 时显式传（来自 T7 节点 / T8 工具产出），
+   *  修复端点需要的 task_id 优先取此；缺省回退到 state.data.task_id。
+   *  推荐调用方总是传，避免与 state 端点的「最近一轮 task_id」语义耦合。 */
+  taskId?: string;
+  onOpenReview?: (annotations: IFileReviewAnnotation[], fileVersion: string) => void;
+  onPreviewDoc?: (minioPath: string) => void;
+}) {
+  const state = useFileReviewState(fileId);
+  const fixMutation = useFixFileReview(fileId);
+  // （useUpdateAnnotationStatus 在面板调用，组件不在此处挂载）
+  void useUpdateAnnotationStatus;  // 占位 import（spec 要求 import 必须使用，否则 lint 报错）
+
+  const data = state.data?.code === 0 ? state.data.data : null;
+  const error = state.error;
+
+  const current = data?.current ?? null;
+  const status = current?.status ?? '';
+  const isRunning = status === 'reviewing' || status === 'fixing';
+  const canFix = status === 'annotated' && (data?.fix_rounds_left ?? 0) > 0;
+  const taskId = taskIdProp || data?.task_id || '';
+
+  // 修复级别选择
+  const [picking, setPicking] = useState(false);
+  const [picked, setPicked] = useState<string[]>([]);
+  const submitFix = () => {
+    if (!taskId) return; // 防御：极端情况下 state 尚未拉到
+    fixMutation.mutate(
+      { taskId, levels: picked, userQuery: undefined },
+      { onSuccess: () => { setPicking(false); setPicked([]); } },
+    );
   };
 
-  const curRound = state.rounds[state.rounds.length - 1];
-  const curVersion = state.current_version || curRound?.file_version || 'v1';
-  const canFix = curRound?.status === 'annotated' &&
-    state.rounds.filter((r) => r.status === 'done' || r.status === 'annotated').length < 3;
-
-  const handleFix = async (levels: string[]) => {
-    await fixFileReview(taskId, { levels, user_query: `修${levels.join('、')}级别问题` });
-  };
-
-  const handleOpenReview = async () => {
-    const annotations = await loadAnnotations(curVersion);
-    onOpenReview?.(annotations, curVersion);
-  };
+  // ── 渲染 ─────────────────────────────────────────
+  if (state.isError) {
+    return (
+      <div className="rounded-lg border border-[#E5E5E5] bg-[#F5F5F5] px-3 py-2.5 text-xs text-[#8C8C8C]">
+        加载失败，请稍后重试
+      </div>
+    );
+  }
+  if (state.isLoading && !data) {
+    return (
+      <div className="flex items-center gap-1 rounded-lg border border-[#E5E5E5] bg-[#F5F5F5] px-3 py-2.5 text-xs text-[#8C8C8C]">
+        <Loader2 className="h-3 w-3 animate-spin" /> 加载中…
+      </div>
+    );
+  }
+  if (!data || data.rounds.length === 0) {
+    return null; // 还没产出轮次（不应该出现，组件挂在审核流程之后）
+  }
 
   return (
     <div className="space-y-2 rounded-lg border border-[#E5E5E5] bg-[#F5F5F5] px-3 py-2.5 text-xs">
       <div className="font-medium text-[#000000]">
         文件审核{' '}
-        {curRound && (
-          <span className="text-[#8C8C8C]">
-            第 {curRound.round_no} 轮 ·{' '}
-            {curRound.status === 'annotated' ? '已完成' : curRound.status}
+        <span className="text-[#8C8C8C]">
+          第 {current!.round_no} 轮 ·{' '}
+          {status === 'reviewing' ? '审核中'
+            : status === 'fixing' ? '修复中'
+            : status === 'annotated' ? '已完成'
+            : status === 'done' ? '已结束'
+            : status === 'failed' ? '失败'
+            : status}
+        </span>
+        {canFix && (
+          <span className="ml-2 text-[#8C8C8C]">
+            剩余 {data.fix_rounds_left} 轮
           </span>
         )}
       </div>
-      {curRound?.summary && (
-        <div className="text-[#8C8C8C]">{curRound.summary}</div>
+      {current!.summary && (
+        <div className="text-[#8C8C8C]">{current!.summary}</div>
       )}
       <div className="flex flex-wrap items-center gap-2 pt-0.5">
         <button
           type="button"
           className="flex items-center gap-1 rounded border border-[#1a66fb] px-2 py-0.5 text-[#1a66fb] hover:bg-[#F5F8FF]"
-          onClick={handleOpenReview}
+          onClick={() => onOpenReview?.(data.annotations, data.doc.version)}
         >
-          <Eye className="h-3 w-3" /> 打开审核面板（{curVersion}）
+          <Eye className="h-3 w-3" /> 打开审核面板（{data.doc.version || '原件'}）
         </button>
-        {canFix && (
-          <>
-            <button
-              type="button"
-              className="rounded bg-[#1a66fb] px-2 py-0.5 text-white hover:bg-[#1557d6]"
-              onClick={() => handleFix(['high', 'medium'])}
-            >
-              修高中级别
-            </button>
-            <button
-              type="button"
-              className="rounded border border-[#1a66fb] px-2 py-0.5 text-[#1a66fb] hover:bg-[#F5F8FF]"
-              onClick={() => handleFix(['high'])}
-            >
-              仅修高
-            </button>
-          </>
-        )}
-        {curRound?.status === 'annotated' && state.rounds.length >= 3 && (
+        {data.doc.object && data.doc.object !== fileId && (
           <button
             type="button"
-            className="rounded border border-[#8C8C8C] px-2 py-0.5 text-[#8C8C8C]"
-            onClick={() => handleFix(['high', 'medium', 'low'])}
+            className="flex items-center gap-1 rounded border border-[#1a66fb] px-2 py-0.5 text-[#1a66fb] hover:bg-[#F5F8FF]"
+            onClick={() => onPreviewDoc?.(data.doc.object)}
           >
-            再修一轮
+            <Download className="h-3 w-3" /> 下载成稿
           </button>
         )}
-        {curRound?.status === 'annotated' && (
+        {canFix && (
           <button
             type="button"
-            className="ml-auto text-[#8C8C8C] underline-offset-2 hover:underline"
-            onClick={() => finishReview(taskId)}
+            className="flex items-center gap-1 rounded bg-[#1a66fb] px-2 py-0.5 text-white hover:bg-[#1557d6]"
+            onClick={() => setPicking(true)}
           >
-            结束审核
+            选择级别修复 <ChevronDown className="h-3 w-3" />
           </button>
         )}
       </div>
-      {curRound?.status === 'reviewing' && (
+      {isRunning && (
         <div className="flex items-center text-[#8C8C8C]">
-          <Loader2 className="mr-1 h-3 w-3 animate-spin" /> 正在审核…
+          <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+          {status === 'reviewing' ? '正在审核…' : '正在修复…'}
         </div>
       )}
+      {picking && (
+        <FixLevelPopover
+          picked={picked}
+          onToggle={(l) => setPicked((p) =>
+            p.includes(l) ? p.filter((x) => x !== l) : [...p, l],
+          )}
+          onCancel={() => { setPicking(false); setPicked([]); }}
+          onConfirm={submitFix}
+          busy={fixMutation.isLoading}
+        />
+      )}
+    </div>
+  );
+}
+
+function FixLevelPopover({
+  picked, onToggle, onCancel, onConfirm, busy,
+}: {
+  picked: string[];
+  onToggle: (l: string) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+  busy: boolean;
+}) {
+  // 三选多；中文 label 与 T10 SEVERITY_CN 对齐（high→严重 / medium→一般 / low→提示）
+  return (
+    <div className="rounded border border-[#E5E5E5] bg-white p-2">
+      <div className="mb-1 text-[#8C8C8C]">勾选要修复的级别：</div>
+      <div className="flex flex-wrap gap-2">
+        {[
+          { v: 'high', l: '严重' },
+          { v: 'medium', l: '一般' },
+          { v: 'low', l: '提示' },
+        ].map((opt) => (
+          <label key={opt.v} className="flex items-center gap-1">
+            <input
+              type="checkbox"
+              checked={picked.includes(opt.v)}
+              onChange={() => onToggle(opt.v)}
+              disabled={busy}
+            />
+            {opt.l}
+          </label>
+        ))}
+      </div>
+      <div className="mt-2 flex justify-end gap-2">
+        <button type="button" className="text-[#8C8C8C]" onClick={onCancel} disabled={busy}>
+          取消
+        </button>
+        <button
+          type="button"
+          className="rounded bg-[#1a66fb] px-2 py-0.5 text-white disabled:opacity-50"
+          onClick={onConfirm}
+          disabled={busy || picked.length === 0}
+        >
+          {busy ? '提交中…' : '确认修复'}
+        </button>
+      </div>
     </div>
   );
 }
 ```
 
+**2d. 不允许的导出**
+
+文件不得导出以下名字（已删 / 不该在此层出现）：
+- ~~`streaming?: boolean`~~ —— 轮询开关在 hook 内部
+- ~~`state?: IFileReviewState` 初始 prop~~ —— 数据由 hook 提供
+- ~~`finishReview` 调用~~ —— T9 砍了
+- ~~硬编码 `handleFix(['high','medium'])`/`['high']`~~ —— 改为 Popover 多选
+- ~~`rounds.length < 3` 判据~~ —— 用 `fix_rounds_left`
+
 - [ ] **Step 3: 跑测试确认通过**
 
 ```bash
-cd web && npm test -- file-review-progress
+cd web && npx jest web/src/pages/c-chat/__tests__/file-review-progress.test.tsx --no-coverage 2>&1 | tail -20
 ```
-Expected: PASS（jest 跑不通时退化为 build 验证：`npm run build`）
+
+预期：6 个用例全绿。jest 跑不通时退化为 build 验证：`cd web && npm run build`（可能慢，~30s）。
 
 - [ ] **Step 4: 提交**
 
 ```bash
 git add web/src/pages/c-chat/file-review-progress.tsx web/src/pages/c-chat/__tests__/file-review-progress.test.tsx
-git commit -m "feat(file-review): progress card component"
+git commit -m "feat(file-review): progress card (poll + canFix from fix_rounds_left)"
 ```
+
+---
+
+## T12 → T13/T14/T15 交接契约（强制执行）
+
+| 任务 | 约束 |
+|---|---|
+| T13 i18n | **不适用** —— 本组件按设计 3.2「全部文案中文，不走 i18n」（与 `template-fill-progress.tsx` 同款），T13 仅补 dialog / modal / button 通用 key。 |
+| T14 对话侧集成 | 在 c-chat 消息流渲染处挂载 `<FileReviewProgress fileId={...} taskId={...} onOpenReview={...} onPreviewDoc={...} />`。**必须**把 fileId + taskId 一并存进 React state（来自 T8 工具产出）。**禁止**自写 EventSource。 |
+| T15 流程页集成 | 同 T14，从 flow AI 对话区 import 本组件挂载。 |
 
 ---
 
