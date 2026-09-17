@@ -3412,9 +3412,16 @@ def test_verify_slot_occ_passes_v1_untouched():
     it_v1 = {"key": "a", "addr": "para:1", "anchor": "  ", "occ": 5, "_anchor_pos": 999}
     explicit_cand = _blank_gap_cand()
     it_explicit = {"key": "b", "addr": "para:3", "anchor": "  ", "occ": 2}  # 无 _anchor_pos
-    out = _verify_slot_occ([it_v1, it_explicit], [v1_cand, explicit_cand])
+    # 对抗判型：_anchor_pos=True（bool 是 int 子类）必须按非 int 偏移处理 → 原样
+    # 透传（不回写 occ、不丢弃），走与 None 同一判型分支
+    bool_cand = {"index": 9, "addr": "para:9", "text": "甲  乙",
+                 "slots": [{"start": 1, "end": 3, "text": "  ", "kind": "blank", "hint": ""}]}
+    it_bool = {"key": "c", "addr": "para:9", "anchor": "  ", "occ": 4, "_anchor_pos": True}
+    out = _verify_slot_occ([it_v1, it_explicit, it_bool],
+                           [v1_cand, explicit_cand, bool_cand])
     assert out[0] is it_v1 and out[0]["occ"] == 5
     assert out[1] is it_explicit and out[1]["occ"] == 2
+    assert out[2] is it_bool and out[2]["occ"] == 4
 
 
 def test_verify_slot_occ_drops_same_hit_collision():
@@ -3427,3 +3434,64 @@ def test_verify_slot_occ_drops_same_hit_collision():
     out = _verify_slot_occ([it_a, it_b], [cand])
     assert len(out) == 1
     assert out[0]["key"] == "a" and out[0]["occ"] == 1
+
+
+def _nested_cand():
+    """嵌套场景（审查探针）：长空白位 5 空格 [1,6)，其内部藏两个「  」的非重叠
+    出现 [1,3)/[3,5)；真短位 2 空格在 [7,9)/[10,12)/[13,15)。
+    甲[0] 「     」[1,6) 乙[6] 「  」[7,9) 丙[9] 「  」[10,12) 丁[12] 「  」[13,15) 戊[15]"""
+    return {
+        "index": 5,
+        "addr": "para:5",
+        "text": "甲" + "     " + "乙" + "  " + "丙" + "  " + "丁" + "  " + "戊",
+        "slots": [
+            {"start": 1, "end": 6, "text": "     ", "kind": "blank", "hint": ""},
+            {"start": 7, "end": 9, "text": "  ", "kind": "blank", "hint": ""},
+            {"start": 10, "end": 12, "text": "  ", "kind": "blank", "hint": ""},
+            {"start": 13, "end": 15, "text": "  ", "kind": "blank", "hint": ""},
+        ],
+    }
+
+
+def _nested_item(key, anchor, pos):
+    return {
+        "key": key, "name": key, "description": "", "retrieval_query": "",
+        "fill_mode": "llm", "required": True, "addr": "para:5",
+        "anchor": anchor, "line": 5, "top_k": 6, "low_confidence": False,
+        "_anchor_pos": pos,
+    }
+
+
+def test_verify_slot_occ_nested_longer_anchor_survivors():
+    """M-1：同段 1 个长空白位（5 空格）+ 3 个短空白位（2 空格，anchor 同形）。
+    渲染层 _replace_cross_run_in_place 取第 N 次出现前剔除嵌套在更长锚出现区间
+    内的出现（survivors 口径）；校验闸此前只复刻非重叠出现序、没复刻嵌套剔除
+    → 短位 occ 被写成 3/4/5（幸存者序实为 1/2/3，长位内部两个嵌套「  」占掉
+    非重叠序 1/2）→ 值串位或 occ 超界 no-op 填写点丢失。修复后按幸存者序回写。"""
+    from rag.svr.template_fill.detector import _verify_slot_occ
+    cand = _nested_cand()
+    merged = [
+        _nested_item("long", "     ", 3),   # 长位 [1,6) 内部
+        _nested_item("s1", "  ", 7),        # 短位1 [7,9)
+        _nested_item("s2", "  ", 10),       # 短位2 [10,12)
+        _nested_item("s3", "  ", 13),       # 短位3 [13,15)
+    ]
+    out = _verify_slot_occ(merged, [cand])
+    assert len(out) == 4
+    occs = {it["key"]: it["occ"] for it in out}
+    # 非重叠出现序会把短位数成 3/4/5；幸存者序（嵌套剔除后）为 1/2/3
+    assert occs == {"long": 1, "s1": 1, "s2": 2, "s3": 3}
+
+
+def test_verify_slot_occ_drops_nested_blocked_pos():
+    """对抗：_anchor_pos 落在被嵌套剔除的出现上（长位内部 [1,3) 处的短锚
+    「出现」实际是长锚留白的一段，渲染层永不取它）→ 条目丢弃，宁可漏不写错。"""
+    from rag.svr.template_fill.detector import _verify_slot_occ
+    cand = _nested_cand()
+    merged = [
+        _nested_item("long", "     ", 3),
+        _nested_item("ghost", "  ", 1),  # 落在长位内部嵌套出现 [1,3) 上
+    ]
+    out = _verify_slot_occ(merged, [cand])
+    assert len(out) == 1
+    assert out[0]["key"] == "long" and out[0]["occ"] == 1

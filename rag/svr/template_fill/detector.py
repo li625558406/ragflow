@@ -491,21 +491,45 @@ def _get_chat_model(tenant_id: str):
     return LLMBundle(tenant_id, model_config)
 
 
+def _occurrence_intervals(text: str, sub: str) -> list:
+    """sub 在 text 中全部**非重叠**出现的 (start, end) 区间，按位置升序。
+    与 docx_utils._occurrence_intervals 同一算法（步长 len(sub)）——verify 端
+    occ 消费口径必须与渲染层一致，刻意本地复制保持本模块零依赖可独立单测。"""
+    out = []
+    pos = 0
+    while True:
+        idx = text.find(sub, pos)
+        if idx < 0:
+            return out
+        out.append((idx, idx + len(sub)))
+        pos = idx + len(sub)
+
+
 def _verify_slot_occ(merged: list, candidates: list) -> list:
     """V2 条目确定性 occ 校验闸（Task 3 审查 Major 3）：_merge_detection 的 occ
     预分配按 _anchor_pos 排序给同形 anchor 组分配 1..n，但渲染层按 anchor 在候选
-    文本中的**非重叠出现序**取第 N 次（docx_utils._occurrence_intervals，步长
-    len(anchor)）——同段存在非位的同形空白文本插在两位之间时 occ 会静默错位
-    （值写进非位空白、真位落空）。此处据此重算「包含 _anchor_pos 的那次出现」的
-    序号并回写 occ，与渲染层严格同一算法。
-    找不到对应出现（数据腐坏/坐标系分歧，如含 fldSimple 段落上 runs 坐标与
-    p.text 坐标不一致）→ 丢弃该条目，宁可漏不写错位；同组两 V2 条目算出同一
-    出现序（真实切位互不重叠，发生即数据腐坏）→ 保留靠前者、丢弃靠后者。
+    文本中的**幸存出现序**取第 N 次——复刻非重叠出现序（docx_utils
+    ._occurrence_intervals，步长 len(anchor)）**加上更长锚嵌套剔除（survivors）
+    口径**（docx_utils._replace_cross_run_in_place：先剔除嵌套在同 addr 严格更长
+    锚出现区间内的出现，再取第 N 个）——同段存在非位同形空白插在两位之间、或
+    短位嵌在长空白位内部时，只复刻非重叠序会让 occ 静默错位（值写进非位空白、
+    真位落空或 occ 超界 no-op）。此处据此重算「包含 _anchor_pos 的那次幸存出现」
+    的序号并回写 occ，逐行对齐渲染层嵌套判定（半开区间相交 bs < e and s < be；
+    更长锚同样先按非重叠口径枚举出现）。
+    找不到对应幸存出现（数据腐坏/坐标系分歧，如含 fldSimple 段落上 runs 坐标与
+    p.text 坐标不一致、或 pos 落在被剔除的嵌套出现上）→ 丢弃该条目，宁可漏不写
+    错位；同组两 V2 条目算出同一幸存序（真实切位互不重叠，发生即数据腐坏）→
+    保留靠前者、丢弃靠后者。
     V1/explicit 条目不动（V1 的 _anchor_pos 本就来自同一文本序 find，零回归；
     explicit 无 _anchor_pos 天然透传）。"""
     cand_map = {c["addr"]: c for c in candidates}
+    # 渲染层 apply_docx_placeholders 以「同 addr 全部 anchor、严格更长」构造
+    # longer_anchors；此处同源（merged 条目）按 addr 聚合，保证两侧 longer 集合一致
+    anchors_by_addr = {}
+    for it in merged:
+        anchors_by_addr.setdefault(it.get("addr"), set()).add(it.get("anchor") or "")
     out = []
-    claimed = {}  # (addr, anchor) -> 已占用的出现序号
+    claimed = {}  # (addr, anchor) -> 已占用的幸存出现序号
     for it in merged:
         cand = cand_map.get(it.get("addr"))
         if cand is None or not cand.get("slots"):
@@ -517,22 +541,29 @@ def _verify_slot_occ(merged: list, candidates: list) -> list:
             out.append(it)
             continue
         text = cand["text"]
-        # 与渲染层 _occurrence_intervals 严格同一算法：非重叠消费，推进步长
-        # len(anchor)（不是 +1，否则重叠出现会把序号数歪）
-        idx, start = 1, text.find(anchor)
+        # 渲染层 _replace_cross_run_in_place 的 survivors 口径（逐行对齐）：
+        # ① anchor 全部非重叠出现；② 同 addr 严格更长锚的全部非重叠出现记入
+        # blocked；③ 剔除与任一 blocked 区间相交的出现（同一相交表达式）。
+        ivs = _occurrence_intervals(text, anchor)
+        blocked = []
+        for la in anchors_by_addr.get(it.get("addr"), ()):
+            if la and len(la) > len(anchor):
+                blocked.extend(_occurrence_intervals(text, la))
+        survivors = [
+            (s, e) for s, e in ivs
+            if not any(bs < e and s < be for bs, be in blocked)
+        ]
         hit = None
-        while start != -1:
-            if start <= pos < start + len(anchor):
+        for idx, (s, e) in enumerate(survivors, start=1):
+            if s <= pos < e:
                 hit = idx
                 break
-            idx += 1
-            start = text.find(anchor, start + len(anchor))
         gkey = (it.get("addr"), anchor)
         if hit is None or claimed.get(gkey) == hit:
             logger.warning(
                 "verify_slot_occ: drop %s@%s pos=%s (%s)",
                 it.get("key"), it.get("addr"), pos,
-                "pos 不在任何出现区间" if hit is None else "同组出现序冲突")
+                "pos 不在任何幸存出现区间" if hit is None else "同组出现序冲突")
             continue
         claimed[gkey] = hit
         it["occ"] = hit
