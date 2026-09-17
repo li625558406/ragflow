@@ -1,5 +1,41 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-18 范本AI识别加固：run层确定性切位 + LLM语义标注
+
+**主题**：修下划线场景识别四症状（拆碎片/漏识别/重复错位/提示语污染）
+
+**核心变更**：
+- 新增 `rag/svr/template_fill/blank_slots.py`：run 层切位器——下划线格式（w:u）留白 run + 字符下划线串确定性切出填写位区间（runs 拼接文本坐标系，与替换层一致）；含超链接段落整段回退 V1
+- `docx_utils.extract_docx_candidates` 候选行附带 `slots` 键；有位行即使不命中 FILL_HINT_RE 也入候选；纯空白整行下划线段落入候选（真实范本 57 行漏识别根修）
+- `detector.py` 分流：有位行走 DETECT_SYSTEM_V2「位编号→语义」契约（LLM 不再自选 anchor，anchor 由切位区间精确切片）；无位行走现有 V1 契约（存量零影响）；LLM 漏标位确定性兜底（hint→括号提示为中文名不低置信，blank→「未命名填写位」低置信，key=blank_N 全局续接）；`_verify_slot_occ` 确定性 occ 校验闸（复刻渲染层非重叠出现+更长锚嵌套剔除口径，治同段非位同形文本/嵌套位的 occ 错位串位）
+- V2 解析防御：key 截断感知去重（防 validate 判死）、required 字符串判型、anchor membership 校验、slot 序号非法丢弃；V2 条目不派生默认值（hint 从源头阻断提示语污染）；下游渲染/前端/validate 零改动
+
+**验证**：真实范本（福建省信息化工程招标示范文本 docx）切位 504 候选行/408 含位行/553 位，用户报告句一次切出 7 位无碎片；535 后端测试全绿；两道审查（spec+quality）×5 任务全过
+
+**遗留**：underline=None 继承样式不识别（首版）；xlsx 不适用；兜底 key（blank_N）可读性一般依赖 B端人工改名；识别后手动增删占位符不经 occ 校验闸的已知窄缝（见设计稿 §7）
+
+**部署**：未部署。后端 3 文件成套 SCP（blank_slots.py 新增 / docx_utils.py / detector.py）+ 容器重启 + import 冒烟
+
+## 2026-09-17 范本删除级联清理填写任务（解「流程删完了范本删不掉」）
+
+**主题**：用户报「C端流程都删除完了，B端范本还是删除不了」。根因：删除守卫挡在 `tpl_fill_task` 行，而流程删除（`flow_service.delete_flow` 硬删 FlowInstance/AiChat/Comment/Version）**从不回收任务行**，且任务行与流程**无可靠外键**（`flow_instance_id` 2026-09-17 之前全库空串，之后存的也是 canvas session id 而非 flow id）——「流程删掉→任务跟着删」在数据上走不通，范本被死任务行永久锁住。
+
+**修法（级联语义）**：`TplTemplateService.delete_template` 从「有任务拒删」改为**删除范本时级联删除其全部填写任务行 + 成稿对象**（真源 `{template_id}/{result_file_id}` + 派生下载副本 `{tenant_id}-downloads/tplfill-{task_id}`，无成稿的任务不产生对象删除）。自洽性：范本删除后历史成稿本就无从下载（bucket 随范本一起清），任务行与成稿一并删才对。保留「published 须先停用」守卫；清理顺序维持「MinIO rm 在事务外（失败仅告警）→ 事务内锁模板行 → 裸查询依次删任务行/版本行/主表行」（⚠️ 事务内禁用装饰器方法的线上 500 教训 docstring 保留）。`has_tasks` 方法随之删除（唯一调用方即旧守卫）。前端删除确认文案同步：单删补「其历史填写任务与成稿将一并删除」，批删改「仅草稿/已停用的模板会被删除（其填写任务与成稿一并删除），其余自动跳过」。
+
+**测试**：`test_delete_template_refuses_when_tasks_exist` 反转为 `test_delete_template_cascades_fill_tasks`（任务行 DELETE 执行 + 真源/派生副本两对象 rm + 无成稿任务零对象删除）；新增 `_FakeTaskModel` 桩；happy path/rm 失败两用例补空任务桩；批删 fixture 消息换成仍可能出现的「模板不存在」。`test_template_api_routes.py` 106 passed + `test_template_fill_service.py` 11 passed。
+
+**部署清单**：后端单文件 `api/db/services/template_fill_service.py` SCP + 重启；前端 `web/src/pages/template-fill/index.tsx` 需 build。**未部署、未 commit、未 push**。
+
+## 2026-09-17 B端模板预览回显默认值（纯前端，未部署）
+
+**主题**：用户要求「B端的默认值可以回显到模板预览的文件中」——写回范本库/手动编辑的默认值此前只在右侧列表可见，预览文件里仍是留白/锚文本。
+
+**实现**：B端范本详情保真预览（`fidelity-preview.tsx`）在 `highlightDocxRanges` 完成后，对**有默认值且高亮命中**的填写点执行 `applyDefaultValues`——把 `mark[data-anchor-key]` 内的锚文本（含空白留白）就地替换为默认值蓝字（`#1a66fb`，与 C端填入值同款语义），`{{key}}` 徽标保留在值后，悬浮 title 显「默认值：xxx」。DOM 手术要点：mark 内容是 `range.cloneContents()`（docx-preview 的 run span，文本藏在元素里，逐文本节点清理不可靠）+ 徽标是**最后追加**的 span → 整段清空后按 `textContent` 前缀 `{{key}}` 校验把徽标移回，防误留原文残片。未定位/空默认值行静默跳过；`anchorsSig` 加入 defaultValue 使默认值编辑触发重渲染。`detail.tsx` anchors 透传 `default_value`；说明条补「蓝字为已设默认值的回显」。
+
+**验证**：Playwright 实测生产范本详情页——113 个高亮点中 51 个默认值回显（`tenderer_name=武功县住房和城乡建设局`、`approval_authority=李港111` 等），0 个徽标丢失；截图确认值以蓝字嵌在正文原留白处。`tsc` 无新增错误（`detail.tsx` 存量 1 处隐式 any 与本改动无关）。
+
+**部署清单**：纯前端 2 文件（`web/src/pages/template-fill/fidelity-preview.tsx` + `web/src/pages/template-fill/detail.tsx`），需 `npm run build` + dist 上传 + nginx reload。**未部署、未 commit、未 push**。
+
 ## 2026-09-17 成稿下载适配：新开页签乱码改 fetch Blob 落盘（纯前端，未部署）
 
 **主题**：用户报「流程对话页面的下载按钮打开新浏览器页签显示乱码」。涉及两处同构写法：共用车 `template-fill-progress.tsx` 成稿行（c-chat 对话页与流程页签共用）+ `c-chat/index.tsx` 的 `msg.downloads` 行（DocumentRewrite 等产物），均为 `<a href={dl.url} target="_blank">` 直链。

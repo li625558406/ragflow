@@ -268,7 +268,7 @@ def extract_paragraph_slots(p) -> list:
 - [ ] **Step 4: 运行测试确认全部通过**
 
 Run: `.venv/Scripts/python.exe -m pytest test/test_template_fill_blank_slots.py -v`
-Expected: 13 passed
+Expected: 14 passed
 
 - [ ] **Step 5: Commit**
 
