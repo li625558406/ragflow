@@ -49,10 +49,17 @@ const pendingWithDirect: ITemplateFillConfirmPending = {
   ],
 };
 
+/** 卡片默认折叠（388ce463「填写字段确认卡默认折叠」）→ 展开后才挂载字段行与输入框。
+ *  本套件 5 例都针对展开后的卡片，抽出来避免每例重复。 */
+function expandCard() {
+  fireEvent.click(screen.getByRole('button', { name: /点击展开调整/ }));
+}
+
 describe('TemplateFillConfirmCard 字段名点击定位', () => {
   it('onLocate 传入时字段名渲染为 button，点击回传 (template_id, key)', () => {
     const onLocate = jest.fn();
     render(<TemplateFillConfirmCard pending={pending} onLocate={onLocate} />);
+    expandCard();
     const btn = screen.getByRole('button', { name: /项目名称/ });
     fireEvent.click(btn);
     expect(onLocate).toHaveBeenCalledTimes(1);
@@ -64,6 +71,7 @@ describe('TemplateFillConfirmCard 字段名点击定位', () => {
 
   it('onLocate 未传时字段名保持纯文本（不渲染 button）', () => {
     render(<TemplateFillConfirmCard pending={pending} />);
+    expandCard();
     expect(screen.queryByRole('button', { name: /项目名称/ })).toBeNull();
     expect(screen.getByText(/项目名称/)).toBeInTheDocument();
   });
@@ -72,6 +80,7 @@ describe('TemplateFillConfirmCard 字段名点击定位', () => {
 describe('TemplateFillConfirmCard 增量 direct_value 预填', () => {
   it('candidates 带 direct_value → 输入框预填 + placeholder 切换为「AI 建议值，可改」', () => {
     render(<TemplateFillConfirmCard pending={pendingWithDirect} />);
+    expandCard();
     // 找到所有 input
     const inputs =
       screen.getAllByPlaceholderText(/AI 建议值，可改|留空则 AI 重填/);
@@ -92,6 +101,7 @@ describe('TemplateFillConfirmCard 增量 direct_value 预填', () => {
   it('无 direct_value 的旧契约 → 输入框不预填 + placeholder 保持「留空则 AI 重填」', () => {
     // 兼容全量模式 / 旧后端不传 direct_value
     render(<TemplateFillConfirmCard pending={pending} />);
+    expandCard();
     const inputs = screen.getAllByPlaceholderText('留空则 AI 重填');
     expect(inputs.length).toBeGreaterThan(0);
     for (const el of inputs) {
@@ -105,6 +115,7 @@ describe('TemplateFillConfirmCard 增量 direct_value 预填', () => {
     );
     (confirmTemplateFill as jest.Mock).mockClear();
     render(<TemplateFillConfirmCard pending={pendingWithDirect} />);
+    expandCard();
     // 拿到预填「港里」的 input
     const approvalInput = screen.getAllByDisplayValue(
       '港里',

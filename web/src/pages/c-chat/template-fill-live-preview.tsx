@@ -3,7 +3,10 @@
 // （filling 事件 values），pristine 快照重放 + 高亮重涂实现实时填入。渲染失败降级
 // 回纯文本段落渲染。xlsx 分支维持旧链路。最终成稿仍以后端 docxtpl/openpyxl 为准。
 // c-chat 对话与 flow AI 面板共用（经 template-fill-progress 接入）。文案全中文。
-import type { ITemplateFillTemplate } from '@/hooks/template-fill-stream';
+import {
+  buildKeyNameMap,
+  type ITemplateFillTemplate,
+} from '@/hooks/template-fill-stream';
 import {
   useTemplateFillFile,
   useTemplateFillPreview,
@@ -12,6 +15,7 @@ import {
   applyDocxHighlight,
   applyDocxPageLazy,
   instantFocusScroll,
+  isPlaceholderFilled,
   updateDocxHighlight,
   type DocxPlaceholderSpans,
 } from '@/pages/c-chat/docx-highlight';
@@ -87,6 +91,19 @@ export default function TemplateFillLivePreview({
   const fileType = data?.data?.file_type || 'docx';
   const values = tpl.values || {};
 
+  // key→中文名（filled ∪ unfilled 合并派生；两者按判空口径穷尽且互斥 → 并集即全量）。
+  // filling 阶段两者都未到达 → 预览暂无中文名、回落英文 key（对终态后「把 XX 改成
+  // YY」的真实用途无影响）。deps 只列两个清单引用：tpl 在流式期间每次归约都换引用，
+  // 挂 [tpl] 会让下游 updateDocxHighlight 被事件频率放大。
+  const filledList = tpl.filled;
+  const unfilledList = tpl.unfilled;
+  const names = useMemo(
+    () => buildKeyNameMap({ filled: filledList, unfilled: unfilledList }),
+    [filledList, unfilledList],
+  );
+  const namesRef = useRef(names);
+  namesRef.current = names;
+
   // 常驻抽屉：Esc 快捷关闭
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -142,17 +159,22 @@ export default function TemplateFillLivePreview({
     renderAsync(fileBlob, el, undefined, { inWrapper: true, breakPages: true })
       .then(() => {
         applyDocxPageLazy(el);
-        placeholderSpansRef.current = applyDocxHighlight(el, valuesRef.current);
+        placeholderSpansRef.current = applyDocxHighlight(
+          el,
+          valuesRef.current,
+          namesRef.current,
+        );
         setRenderedOk(true);
       })
       .catch(() => setRenderFailed(true));
   }, [fileBlob, docxEnabled, blobOversize, forceFidelity]);
 
-  // values 变化：按 span 映射增量更新（已填⇄未填双向切换），不重建 DOM
+  // values 变化：按 span 映射增量更新（已填⇄未填双向切换），不重建 DOM。
+  // names 一同入 deps：终态 filled/unfilled 到达后补涂已填值的 title（中文名）
   useEffect(() => {
     if (!docxEnabled) return;
-    updateDocxHighlight(placeholderSpansRef.current, values);
-  }, [values, docxEnabled]);
+    updateDocxHighlight(placeholderSpansRef.current, values, names);
+  }, [values, names, docxEnabled]);
 
   // 范本切换时清占位符映射与体量防线状态（防止上一范本的 span 基线/覆盖选择串台）
   useEffect(() => {
@@ -207,11 +229,15 @@ export default function TemplateFillLivePreview({
     splitPlaceholders(text).map((seg, i) => {
       if (seg.type === 'text') return <span key={i}>{seg.value}</span>;
       const v = values[seg.key];
-      if (v !== undefined && v !== '') {
+      const name = names.get(seg.key);
+      // 与 docx 保真路径同口径：已填值 title 带中文名；未填槽位正文显示中文名
+      // （无 name 回落 key）。data-ph-key 恒为 key（定位链路依赖）。
+      // 判空走 isPlaceholderFilled（纯空白算未填，与后端 derive_unfilled 一致）
+      if (isPlaceholderFilled(v)) {
         return (
           <span
             key={i}
-            title={seg.key}
+            title={name ? `${name}（${seg.key}）` : seg.key}
             data-ph-key={seg.key}
             className="mx-0.5 rounded bg-[#EFF4FF] px-1 py-px font-mono text-xs font-medium text-[#1a66fb]"
           >
@@ -219,14 +245,15 @@ export default function TemplateFillLivePreview({
           </span>
         );
       }
+      const label = name || seg.key;
       return (
         <span
           key={i}
-          title={`${seg.key}（等待 AI 填入）`}
+          title={`${label}（等待 AI 填入）`}
           data-ph-key={seg.key}
           className="mx-0.5 rounded border border-dashed border-[#1a66fb]/60 bg-[#EFF4FF] px-1 py-px font-mono text-[10px] text-[#1a66fb]"
         >
-          {seg.key}
+          {label}
         </span>
       );
     });

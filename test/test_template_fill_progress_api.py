@@ -181,6 +181,52 @@ class TestBuildProgressPayload:
             {"status": "done", "values": {"a": "", "b": "y"}},
             None, self._PHS)
         assert p["unfilled"] == [{"key": "a", "name": "甲", "required": True}]
+        assert p["filled"] == [{"key": "b", "name": "乙"}]
+
+    def test_done_with_placeholders_derives_filled(self):
+        p = _template_api.build_progress_payload(
+            self._task(status="done", values={"render": {"a": "x", "b": ""}}),
+            None, None, self._PHS)
+        assert p["filled"] == [{"key": "a", "name": "甲"}]
+
+    def test_filled_unfilled_partition_exhaustive_and_disjoint(self):
+        """反漂移：filled ∪ unfilled == 全部填写点，且两者互斥（前端合并即全量映射）。"""
+        p = _template_api.build_progress_payload(
+            self._task(status="done", values={"render": {"a": "x", "b": "  "}}),
+            None, None, self._PHS)
+        f_keys = {it["key"] for it in p["filled"]}
+        u_keys = {it["key"] for it in p["unfilled"]}
+        assert f_keys == {"a"} and u_keys == {"b"}
+        assert f_keys | u_keys == {"a", "b"} and f_keys & u_keys == set()
+
+    def test_fully_filled_normalizes_filled_but_no_unfilled(self):
+        p = _template_api.build_progress_payload(
+            self._task(status="done", values={"render": {"a": "x", "b": "y"}}),
+            None, None, self._PHS)
+        assert p["unfilled"] is None
+        assert p["filled"] == [{"key": "a", "name": "甲"}, {"key": "b", "name": "乙"}]
+
+    def test_all_empty_normalizes_unfilled_but_no_filled(self):
+        p = _template_api.build_progress_payload(
+            self._task(status="done", values={"render": {}}),
+            None, None, self._PHS)
+        assert p["filled"] is None
+        assert {it["key"] for it in p["unfilled"]} == {"a", "b"}
+
+    def test_non_terminal_never_derives_filled(self):
+        p = _template_api.build_progress_payload(
+            self._task(status="generating", values={"render": {"a": "x", "b": ""}}),
+            None, None, self._PHS)
+        assert p["filled"] is None and p["unfilled"] is None
+
+    def test_values_dirty_never_derives_filled(self):
+        """对抗：values 非 dict（脏数据）→ 两者皆 None 且不抛。"""
+        p = _template_api.build_progress_payload(
+            self._task(status="done", values=["junk"]), None, None, self._PHS)
+        assert p["filled"] is None and p["unfilled"] is None
+        p2 = _template_api.build_progress_payload(
+            self._task(status="done", values="junk"), None, None, self._PHS)
+        assert p2["filled"] is None and p2["unfilled"] is None
 
 
 class _FakeStorage:

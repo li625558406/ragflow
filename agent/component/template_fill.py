@@ -125,14 +125,46 @@ def _canvas_task_params(begin_fields: dict, query: str, decision: dict | None,
     return params
 
 
+def _render_of(row) -> dict | None:
+    """终态行的产值映射（values.render）归一，返回值语义：
+      None —— 行整体没有 values / values 不是 dict（结构异常，调用方返回 None，
+              不下发 unfilled/filled 字段）；
+      {}   —— values 是 dict 但 render 缺失/为 None/为畸形真值（按「全部留空」
+              处理）。对 falsy render 与旧写法 `values.get("render") or {}` 等价，
+              **但对 truthy 非 dict（render 存成 "abc"/123）不等价**——旧写法会在
+              下游 .get 上抛 AttributeError，这里把它降级成「全部留空」。
+    为什么必须在这里挡：derive_* 系列对非 dict 真值会在 .get 上抛（既有弱点，
+    见 derive_unfilled 注释），而这里跑在观察者轮询循环内——抛出去会连坐整个
+    多范本填写轮次，代价远大于少渲染一条汇总。写侧本来只落 dict，但历史行不可信，
+    故不能只靠写侧约束。"""
+    values = getattr(row, "values", None)
+    if not isinstance(values, dict):
+        return None
+    render = values.get("render")
+    if not isinstance(render, dict):
+        return {}
+    return render
+
+
 def _unfilled_of(placeholders: list[dict], row) -> list[dict] | None:
     """终态行的成稿留空填写点（executor.derive_unfilled 包装）：值源 DB 行
     values.render（终态权威，不依赖 Redis 快照存活）。无留空或值结构异常
     返回 None——filled 事件不下发该字段，前端不渲染汇总条。"""
-    values = getattr(row, "values", None)
-    if not isinstance(values, dict):
+    render = _render_of(row)
+    if render is None:
         return None
-    return executor.derive_unfilled(placeholders, values.get("render") or {}) or None
+    return executor.derive_unfilled(placeholders, render) or None
+
+
+def _filled_of(placeholders: list[dict], row) -> list[dict] | None:
+    """终态行的成稿已填填写点（executor.derive_filled 包装），与 _unfilled_of 逐字镜像：
+    同一值源（DB 行 values.render）、同一异常口径。已填清单与留空清单按判空口径
+    穷尽且互斥，前端合并两者即得全量 key→中文名映射——用户填完一轮后才看得到
+    字段叫什么、点得动、能在对话里准确引用（否则只能回落英文 key）。"""
+    render = _render_of(row)
+    if render is None:
+        return None
+    return executor.derive_filled(placeholders, render) or None
 
 
 def build_candidates(rows: list[dict], latest_of) -> list[dict]:
@@ -797,6 +829,11 @@ class TemplateFill(ComponentBase):
                         unfilled = _unfilled_of(cand["_placeholders"], row)
                         if unfilled:
                             ev["unfilled"] = unfilled
+                        # 已填清单（{key,name}，不带值——值已在同一事件的 values 里）：
+                        # 与 unfilled 互补，前端并集得全量中文名映射
+                        filled = _filled_of(cand["_placeholders"], row)
+                        if filled:
+                            ev["filled"] = filled
                         self._push_progress(ev)
                     elif row.status == "cancelled":
                         results[tid] = (None, "任务已取消")

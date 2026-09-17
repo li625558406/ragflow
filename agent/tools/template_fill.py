@@ -360,7 +360,11 @@ class FillTemplate(ToolBase, ABC):
     def _modify(self, kwargs):
         """就地修改：定位该范本最近一次 done 任务 → 合并 patch 值进 values →
         重渲染 → 覆盖写原成稿对象（同名对象，卡片下载/预览链接自动更新）→
-        回写 values → 沉淀 patch 为默认值。不新建任务、不出确认卡。"""
+        回写 values。**不沉淀默认值**（2026-09-17 起：默认值只由用户在成稿行点
+        「写回范本库」触发），也不新建任务、不出确认卡。
+
+        注意改动的字段不进写回白名单（白名单只认画布确认卡的 _changed_keys /
+        _direct_values），故点「写回范本库」不会沉淀本轮 modify 的字段。"""
         from api.db.services.template_fill_service import (
             TplFillTaskService,
             TplTemplateService,
@@ -435,12 +439,6 @@ class FillTemplate(ToolBase, ABC):
 
         if not TplFillTaskService.patch_values(task.id, {"cells": cells, "render": render}):
             return "成稿已更新，但填写记录回写失败，请稍后用 action=status 核对该任务字段值。"
-
-        try:
-            TplTemplateVersionService.sediment_defaults(
-                template_id, ver.id, patch, override_keys=set(patch.keys()))
-        except Exception:  # noqa: BLE001 — 沉淀失败不影响本次修改交付
-            logger.warning("modify sediment_defaults failed, task=%s", task.id, exc_info=True)
 
         filled_total = sum(1 for v in render.values() if str(v or "").strip())
         lines = [f"已在原成稿上就地修改 {len(patch)} 个字段（task_id={task.id}，下载/预览链接不变）："]

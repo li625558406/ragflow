@@ -1,5 +1,96 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-17 范本填写：写回范本库改按钮触发（停止自动沉淀默认值，已部署 2026-09-17）
+
+**主题**：解决用户痛点「范本只要被 LLM 填写过一次，下一轮新流程再填这个范本，产出的就是上一次的内容——占位符像是被覆盖掉了」。设计定稿 `docs/superpowers/specs/2026-09-17-template-fill-manual-sediment-design.md`。
+
+**第一性原理**：用户看到的「占位符被替换」是误判——成稿按任务独立（`result_file_id = v{ver}_result_{task.id}.{ext}`），范本文件与 `{{key}}` 占位符**从未被改写**。真正被改写的是版本行的 `placeholders[].default_value`：`executor` pipeline 第 ⑦ 步与工具 `modify` **无条件**把每轮全部非空产值沉淀进去（`default_source="auto"`）。下一轮的连锁反应是：244 个字段全带默认值 → `_confirm_changed_fields` 的 `default_map` 非空 → 确认卡出现但 AI 只预判少数几项 → 未勾字段经 `_merge_default_values` 用上轮值回填 → 检索+LLM 几乎不跑 → 「新流程被上一轮内容占满」。机制上的根因是**语义错配**：`default_value` 的正当用途是「同一范本在组织内的稳定取值」（招标人名称、报建编号），而「本轮 LLM 恰好填了什么」只是**这一次的结果**，把后者自动写进前者等于让单次运行静默改写范本基线。
+
+**用户拍板的四条口径**：①按钮语义 = **只沉淀默认值**（写 `placeholders[].default_value`，`source=auto`；范本文件与 `{{key}}` 原样不动）；②位置 = **C端成稿行**（对话页 + 流程页签）；③范围 = **仅本轮确认卡里用户/LLM 显式改动的字段**；④存量数据**本次不动，只停止新的自动沉淀**。
+
+**核心变更**（后端 4 文件 + 前端 3 文件 + 测试 4 套件）：
+- **Service `only_keys` 必填硬闸**（`api/db/services/template_fill_service.py`）：`_sediment_into_placeholders(placeholders, values, only_keys, override_keys=None)` 循环内 key 判空后立刻 `if key not in only: continue`。**刻意不给默认值**——`None`（不限制）与 `set()`（一个都不写）语义天差地别，留默认值就等于给「静默全量写」留后门，而本接口的存在意义正是根除该缺陷；去掉自动调用点后生产调用方只剩新端点一处，故能安全收紧为必填。`override_keys` 原语义与 `manual` 保护、`MAX_ANCHOR_LEN` 截断、空值不沉淀等不变量一律不动
+- **删除两处自动沉淀**：`executor` pipeline 第 ⑦ 步整段 + 工具 `modify` 内的 sediment try/except（均连同注释）。`_merge_default_values` 仍在、`default_value` 仍是兜底来源、确认卡触发条件不变——只是默认值从此**只由人工按钮产生**
+- **新端点 `POST /template/fill/fill-task/<task_id>/sediment`**：owner 校验（照 `get_fill_task_progress` 骨架）→ 状态闸（非 `done`/`partial` 拒绝）→ **保留键闸**（`_changed_keys` 与 `_direct_values` **两者都缺**即拒，故意不退化全量——那等于把老 bug 从后门放回来）→ 白名单空集则 `written=False` 且**不碰 DB** → 版本行（任务钉住的版本优先，为空回落 `latest()`）→ `sediment_defaults` 异常包 `logger.exception` + 「写回失败，请重试」
+- **白名单 = 并集**：`only_keys = set(_changed_keys) | set(_direct_values)`。**必须取并集**——`_llm_fill_items` 刻意把直填键从 `_changed_keys` 剔除；漏掉直填键会让「用户在卡里手打的值按了按钮却没写回」。判据用 **key 是否存在**（`"_changed_keys" in params`）而非并集是否非空：noop 轮两者都在但为空集，必须落「写 0 个」而非「无限制全写」。`override_keys` 只传 `_direct_values` 的键（用户手打是显式决策，可覆盖 `manual`；LLM 产的值不行）
+- **拒绝复用 `split_canvas_params`**：`_changed_keys` 传字符串时它会把字符串**逐字符**当 key（CHAR 迭代），单字符 key 理论上可命中真实字段 → 端点显式 `isinstance` 判型（非 list/dict 按空处理），宁可「脏数据下落为空集不写」也不给误命中的可能
+- **前端按钮为独立子组件** `TemplateFillSedimentButton`（`templates.map` 回调内不能用 `useState`，`TemplateFillFilledList` 已是同款先例），挂在成稿行 `<a>下载</a>`（带 `ml-auto`）**之后**天然靠右，形状即 `[下载] [写回范本库]`；`t.task_id` 存在才渲染（旧消息/脏数据宁可不给入口也不发无效请求）。四态 `idle → loading → done/empty/error`（error 可再点重试，`title` 带服务端文案）；文案取短版「写回范本库」，完整语义「沉淀为默认值，不改变范本文件本身」放 `title`——成稿行是窄列。**不用** `extraAction` 槽（`:241` 只有 flow 传「存为流程版本」，而本按钮对话页也要有）。前端不走 `useMutation`（沉淀结果不在前端读模型里，无缓存需失效），照 `confirmTemplateFill` / `testTemplateFill` 直调 async 函数
+
+**行为变化（需向用户明示）**：自动沉淀停掉后 `default_map` 更常为空 → **确认卡出现的频率下降**（只在范本确实有默认值时才弹），首轮/未点过按钮的范本全量走检索+LLM。这正是用户要的「不点按钮就按当前流程的填写内容展示」。
+
+**测试**：后端 **624 passed**（`utils` 198 / `executor` + `tool` + `agent_fill_template_component` + `api_routes` / 新 `sediment_api` 17 / `progress_api` + `run_snapshot` + `delegate` + `events`）。新增含对抗性覆盖：白名单是**硬闸**（白名单外字段即使产值非空、即使是 `manual` 也一个字节不动，用 `snapshot` 逐项比对）、`only_keys=set()` 时全量产值也不写且占位符逐字节不变、幽灵 key 不报错不新建、`override` 与 `only` 是**与**关系（只在两者都命中时才覆盖 `manual`）、非字符串项不误命中 + 非 hashable 抛 `TypeError`（固化失败模式）、placeholders 混入 `"junk"`/`None`/无 key 项时正常项照写；端点侧：**保留键闸反向门禁**（`params={}` / `{"a":"b"}` / `None` / 字符串 / 列表 / 数字一律拒绝且零写入）、`_changed_keys` 与 `_direct_values` 的**类型脏数据矩阵**（字符串不会被逐字符当 key）、`values` 七种畸形形状不炸、版本回落与彻底缺失、幂等（第二次 `written=False`）、异常出富文案。端点的沉淀语义用**真实** `_sediment_into_placeholders`（纯静态方法，不触库）在内存 placeholders 上跑——只测桩的话「端点算出的 only_keys 是否真的落到字段上」这条链路完全没被覆盖。前端 **76 passed**（`.scratch/jest.local.cjs` 脚手架）；`tsc --noEmit` 对三个改动文件零报错（仓库既存 529 行历史松散类型债与本批次无关）。
+
+**收口审查**（`superpowers:code-reviewer`，1 Major + 5 Minor 全部处置，详见设计稿 §7）：
+- **Major 保留键闸可伪造**：写回端点以 `params` 是否带保留键判定「有确认记录」，但 REST 入参同样能带这些键 → 任意 key 可被写进 `default_value`。审查建议的修法（改用 `task.source == "canvas"`）**不成立**——`source` 同样是请求体字段（`template_api.py` 的 `source=(source or "web")[:16]`）。改在契约真正可能被破坏处加固：`create_fill_task` 剥离 `CANVAS_RESERVED_KEYS`，使「带保留键 ⇔ 画布写入」成为不变式。剥离**零副作用**（`validate_placeholders` 要求 key 匹配 `[a-z][a-z0-9_]{0,63}`，`_` 前缀键不可能是合法 param 键），顺带堵上同源的**既有**缺口——executor 的 `is_canvas` 门控此前同样可被 REST 调用方伪造，从而误用 LLM 白名单/直填覆盖/检索收窄。常量随 `_CANVAS_RESERVED_KEYS` → `CANVAS_RESERVED_KEYS` 升为跨模块契约，定义处与两个使用点均写明该等价关系；配 2 个对抗用例（`test_create_fill_task_strips_canvas_reserved_keys` 含「非保留键的下划线键必须保留，只按白名单剥离不通杀前缀」、「只含保留键 → 落空 dict 而非 None」）
+- **Minor `find_running` 会复用非画布任务**：后果比审查描述更重——`is_canvas` 变 False 会让画布的勾选/直填决策**整批丢弃**按全量 LLM 重跑，且该行终态后写回按钮**必然报**「缺少确认记录」。限定 `source="canvas"`（唯一生产调用方即画布节点）
+- **Minor `empty` 文案只描述三分之一成因**：`written=False` 有三种来源（白名单空 / 全受 `manual` 保护 / 新值等于现值），前端无法区分（设计明示返回值保持 `bool`）→ 放宽文案与 `title` 使三者都成立，不硬猜一种误导用户
+- **Minor `_modify` docstring 与行为不符**：删调用后仍暗示会沉淀 → 改正并写明「改动字段不进白名单」
+- **Minor 并发点按钮丢更新**：`select → 内存改 → save()` 整列覆盖无 `for_update()` → 判定可接受（既有形态、概率低、再点一次自愈，且设计 §6-4 明令不动该链路），按建议记入 `sediment_defaults` docstring 作为已知失败模式并写明将来修法
+- **Minor 前端测试缺失**：原「无测试脚手架故不写」的结论不成立 → 补 `template-fill-sediment-button.test.tsx` 6 例（挂载口径 2 + 四态 4；桩掉 `use-template-fill-request` 与 `template-fill-live-preview`，后者顶层 import docx-preview）
+- **附带**：修掉一处**与本批次无关的既存测试腐坏**——`template-fill-confirm-card.test.tsx` 在 `388ce463`「确认卡默认折叠」后未更新，5 例全红（需先点「点击展开调整」），抽 `expandCard()` 修复
+
+**部署实测（2026-09-17 已部署，用户指示）**：
+- **部署前先核对服务器版本**（关键一步）：工作区同时叠着上一批「已填字段中文名」的未提交改动（该批 2026-09-17 已部署），故先把 5 个候选文件从服务器拉回 `.scratch/server/` 与本地 `diff --strip-trailing-cr` 比对——**服务器独有行数全为 0**（本地是严格超集，不存在需保留的服务器侧热修），`agent/component/template_fill.py` 差异 **0 行**（确认上批次确已完整落地）。若跳过此步，无法排除「服务器上有本地没有的直改」被覆盖回去。
+- 后端 **4 文件成套 SCP**：`api/db/services/template_fill_service.py` / `rag/svr/template_fill/executor.py` / `agent/tools/template_fill.py` / `api/apps/restful_apis/template_api.py` → 回读 **md5 四文件全部一致**（`bc6597b3…` / `48cd9426…` / `eee04b5f…` / `d086a404…`）→ `docker restart docker-ragflow-cpu-1`。
+- **import 冒烟**（容器内）：`CANVAS_RESERVED_KEYS` 已加载（5 键元组）、`sediment_defaults` 签名为 `(template_id, version_id, values, only_keys: set, override_keys=None) -> bool`——**`only_keys` 无默认值**，必填闸门确认生效。
+- **残留检查**（均应为 0，实测全 0）：容器内 `executor.py` 的 `sediment_defaults` 调用、`agent/tools/template_fill.py` 的 `sediment`；`service.py` 的 `only_keys` 8 处、`find_running` 的 `source == "canvas"` 1 处均在位。
+- 前端 `npm run build`（**1m37s**，`tsc` 无新增报错）→ tar **39M** → SCP → `rm -rf dist/* dist/.[!.]* dist/..?*` 就地解包（**未用 `mv`**，保 bind mount inode）→ `nginx -s reload`。
+- **HTTP 冒烟**：首页 200（8358 字节，与容器内 `index.html` 一致）；`/chunk/js/index-DmkGVcxP.js` 200 且**命中「写回范本库」「本轮无可写回改动」**（新按钮确已上线）；入口 chunk `/5d41402abc4b2a76b9719d911017c592/entry/js/index-BCo-cRDu.js` 200。
+- 端点探活：`POST /api/v1/template/fill/fill-task/<id>/sediment` 无 Authorization 头 → **401**（非 404，证明路由已注册且鉴权在生效），对照已有 `/progress` 同为 401。
+- **踩坑（新增）**：API 路径前缀是 **`/api/v1`**（`web/src/utils/api.ts:2` 的 `restAPIv1`），首次探活误用 `/v1/...` 得 404，一度误判为「路由未注册」——**用已有端点做对照探针**（同前缀打 `/progress`）即可立刻区分「前缀错」与「未部署」，是本轮避免误诊的关键动作。另注意 `docker exec ... curl -o /tmp/x` 后接的 `grep` 仍在宿主机跑，管道要整段包进 `sh -c`。
+
+**遗留**：
+①**未 commit、未 push**（代码已上线运行）；
+②`modify`（对话里说「把 X 改成 Y」）改动的字段**不进白名单**，点写回不沉淀该字段——需要就下一轮再改一次；
+③任务钉住旧版本而范本已升版时，写回落在旧版本行（不影响新版，也不报错）；
+④「无确认卡 → 白名单 = 全部 llm key」在首轮会一次写入全量字段（按按钮即授权的有意设计）；如认为过宽可后置为「只写有直填值的字段」；
+⑤存量 `default_source="auto"` 默认值**不动**（用户明确选择「本次不动」），B端可经 `PUT /template/fill/<id>/defaults {key: ""}` 手动清；
+⑥按钮无「已写回」持久化态——刷新后回到可点态，重按幂等无害。
+
+**待人工验收（9 条，均为浏览器侧，未执行）**：①全新范本（无默认值）首轮填写 → 成稿行出现「写回范本库」；**先不点**直接开新一轮 → 应重新走检索+LLM、**不出现上轮内容占满**（本需求核心回归点）；②点按钮 → 「已写回范本库」；B端范本详情确认对应字段 `default_value` 变成本轮值、`default_source=auto`，且**范本文件与 `{{key}}` 未变**；③再点一次幂等；④有默认值的范本开新一轮 → 确认卡出现，只勾 2 项 + 直填 1 项 → 写回后只有这 3 个 key 被写、其余默认值原样保留；⑤noop 轮 → 提示「本轮无可写回改动」，B端零变化；⑥刷新（走运行快照恢复）与断连重连后按钮仍在且可用；⑦failed 任务成稿行无按钮；非画布（B端发起）任务点按钮应回「不支持写回」（前端未按 source 区分，后端已拦）；⑧越权 `curl -i` 打他人 task_id → 「任务不存在」；⑨对抗：`curl -i POST .../sediment` 打一个 `params={}` 的 B端任务 → 必须被拒（不能从后门全量沉淀）。注：⑧⑨ 的端点级门禁已有自动化用例覆盖，浏览器侧验收主要看 ①–⑦。
+
+## 2026-09-17 范本填写：已填字段中文名可见 + 按旧值匹配字段（已部署 2026-09-17）
+
+**主题**：解决用户痛点「第一轮 LLM 把范本填完了，我说『把 XX 改成 YY』，LLM 识别不到」。设计定稿 `docs/superpowers/specs/2026-09-17-template-fill-filled-names-design.md`。
+
+**第一性原理**：用户指代一个字段只有三种可能——**说中文名**、**说英文 key**、**复述已填的旧值**。前两条此前名义上支持，第三条被 prompt 明文禁用；而前两条实际也不可能用，因为**已填字段的中文名在整条链路上没有任何展示位**（`filled` 事件只有 `values`，卡片只列「⚠ N 个未填充」，预览里已填值只有 `title=key`、未填槽位显示英文 key）。可见性是可指代的前提。故本批次两件事必须同时做：把中文名送上屏 + 把「按旧值定位」这条路放行（但加确定性闸门）。
+
+**核心变更**（后端 3 文件 + 前端 5 文件 + 测试 7 套件）：
+- **`executor.derive_filled`**（新）：取「有 key 的填写点 − `derive_unfilled` 集合」的**减法构造**，让互补性由构造保证而非靠两处谓词写法一致——两处各写一遍判空，任一漂移都会让 `key→中文名` 映射静默漏项（漏项时 LivePreview 悄悄回落英文 key，用户看不出错但用不了）。**不下发 value**（前端从已下发的 `values` join；`values` 已 30–80KB，`filled` 仅约 13KB）
+- **下发协议与 `unfilled` 完全同构**：终态（`done`/`partial`）才下发、空列表归一为缺省不下发、缺省不清旧值、不落 Redis run snapshot（API 现算，避免第二真源）。三条路径全覆盖：画布 SSE `filled` 事件 / `progress` 端点 / `fill-run/<id>/snapshot` 端点
+- **组件 `_render_of` 归一化**：`row.values.render` 为非 dict 真值时旧代码抛 `AttributeError`，在观察者循环里会带走整轮多范本填写；改为归一为 `{}`（= 全部未填），行为与旧 `values.get("render") or {}` 逐字节一致，只把崩溃转成降级
+- **`PATCH_EXTRACT_SYSTEM` 放宽 + `current_ok` 确定性闸**：新增每项布尔 `current_ok`，**三种成因一律 false**（宁漏不误——漏了还有 name/key 两条路，误了直接改错文档字段）：① `len(c) < MIN_CURRENT_MATCH_LEN(2)`：判据是「原话逐字包含该值」，而 `是/无/男/0` 单字符在中文里几乎必然作为子串出现在任意原话中（「但是」「是否」）→ 必然误命中，**即使清单里唯一也禁用**；② 值歧义：精确重复（`张三` 同时是两个字段的当前值）**或互相包含**（`数量 5 / 金额 50`、`张三 / 张三丰`、`朝阳区 / 朝阳区人民政府`）——用户说「把 50 改成 60」时两个字段都满足「逐字包含」而 prompt ③ 无并列消歧规则 → 双方禁用；③ 截断（`len >= DEFAULT_HINT_MAX=100`，长值尾部不可复述）。歧义计数建在 `_clean_for_prompt` **之后**（故 `张\x00三` 与 `张三` 正确撞值）。**不清空不可用的 current**（会让 LLM 误判「该字段当前为空」，影响 noop/`fill_unfilled` 意图判断），**不调大 `DEFAULT_HINT_MAX`**（它同时是产值 prompt 的 token 预算）。定位优先级写死为 ① name → ② key → ③ 仅前两者都匹配不上且 `current_ok=true` 且原话逐字包含该值时才用 current；prompt 里的三种 false 成因文案与代码实际产生的原因**逐字对齐**（曾有文案称「太短」而代码从不为长度判 false 的错位，测试用 marker 守护）
+- **前端 key→中文名映射**：`buildKeyNameMap(tpl)` 由 `filled ∪ unfilled` 合并派生——两者按判空口径穷尽且互斥，并集即全量，**无需新增 `key_names` 字段、不改 `selected` 事件**（否则两个 name 真源各自随版本漂移）；`buildFilledRows(tpl)` 保序 join `values`，缺失/null/非字符串一律归一（不为脏数据崩、也不显示 `undefined`）
+- **成稿行「已填充 N 个填写点」折叠清单**：默认收起、**条件挂载**（展开才建 DOM，244 项常挂 DOM 无意义）、中性色，与上方未填充汇总（黄标/红标、默认展开）形成「待办醒目 / 已完成收起」的主次；点击字段名沿用未填充汇总的 `liveTarget + focusKey` 定位链路。折叠态必须是独立子组件（`templates.map` 回调里不能用 `useState`）
+- **实时预览中文名穿透**：`stylePlaceholderSpan` 是**唯一**写 `title` 的地方且被 `updateDocxHighlight` 每次 values 变化重跑——「渲染完再遍历 span 补 title」会被覆盖，是假降级。故 `names` 作为**可选参数穿透** `applyDocxHighlight` / `updateDocxHighlight`；已填 `title='中文名（key）'`、未填 `textContent=中文名||key`；`data-ph-key` 恒为 key（定位链路依赖，绝不能动）。四象限逻辑抽成纯函数 `describePlaceholderSpan(value, name, key)`，DOM 副作用留在原处。**未碰 `highlightDocxRanges`**（review-panel / B端保真链路）
+- **前端判空口径对齐后端**（`isPlaceholderFilled`）：原先前端用 `v !== undefined && v !== ''` 把**纯空白**算已填，而后端 `derive_unfilled` 用 `not str(v).strip()` 算未填。本需求把 unfilled 清单摆到卡片上后矛盾首次可见：同一字段「卡片列为未填充、预览却是无虚线框的空白槽」，点击定位也失去落点。抽出导出纯函数 `isPlaceholderFilled`（`null`/`undefined`/纯空白 → false，`"0"`/`"false"` → true，与后端一致），保真路径 `stylePlaceholderSpan` 与文本降级路径 `renderText` 同改一处判据
+
+**测试**：后端 **257 passed**（`executor` 116 / `delegate` / `events` / `progress_api` / `run_snapshot` / `agent_fill_template_component`）。新增含对抗性覆盖：`derive_filled` 与 `derive_unfilled` 的**分区穷尽且互斥**（反漂移核心）、`values=["not","a","dict"]` / `values="x"` / placeholder 含 `"junk"`/`None` 的**试图让代码出错**用例（固化现状、防后续静默改变失败模式）、`current_ok` 全成因矩阵（唯一值可用 / 精确重复 / **单字符** / **子串包含双向** / **控制字符剥离后撞值** / 截断边界 99/100/101 / 空值）、prompt marker 守护（三种成因文案缺一即失败）、`render` 为字符串时事件**两者都不带且不抛**、run snapshot 的 selected/filling/failed 行**不带** `filled`。
+
+**前端单测 75 passed**（`.scratch/jest.local.cjs` 本地脚手架，仓库 `web/jest.config.ts` 对 `umi/test` 的依赖仍未修）；新增 `describePlaceholderSpan` 四象限 + 空白串/null 算未填（对齐后端 strip 口径）+ `"0"`/`"false"` 算已填 + name 为空串回落 key；reducer 新增**阶段隔离**（`filling` 事件携带 `filled` 被忽略）、`filled` 有值但无 `values` 不崩、重复 key 原样产出（契约固化）。
+
+**收口审查**：本机 `konus-code-review` 技能已不存在（`~/.claude/skills` 与 plugins 下均无），改用 superpowers `code-reviewer` 代理执行。出 1 Major + 3 Minor + 5 Nit，**Major 与全部 Minor 当批修复**：Major = `current_ok` 只拦精确重复、漏了子串包含歧义（`5`/`50`、`张三`/`张三丰` 在「原话逐字包含」判据下双双命中，prompt ③ 无并列消歧 → 可能改错字段），且 prompt 文案称「太短」而代码从不为长度判 false → 补 `MIN_CURRENT_MATCH_LEN` + 子串包含互查 + 文案对齐；Minor = 前端空白串判空与后端漂移（且新测试注释把后端口径写反）+ prompt 语义描述不符 + `null` 值三处口径不一 → 抽 `isPlaceholderFilled` 统一；Nit 中「`buildStateFromRunSnapshot` 用 `||` 而非 `??`」经核为等价（该函数整体重建状态，无旧值可保）故不改，「事件 64KB 截断威胁 `filled` 长期可恢复性」录入遗留⑥。审查另外明确确认**无问题**：互补性构造上穷尽（不存在 keyed 项被双清单漏掉）、三路下发缺省语义同构、`names` 必须穿透（后补会被覆盖）、current 新路径确实受三层兜底约束、`_unfilled_of` 重写对既有行为逐字节等价、React memo 依赖与条件挂载正确。
+
+**遗留**：
+①~~未部署~~（**已部署 2026-09-17**：后端 3 文件成套 SCP + md5 逐一核对 + 容器重启；前端 `npm run build`（1m24s）+ dist 39M 上传 + `rm -rf dist/*` 就地解包（873 文件）+ nginx reload。部署实测见下方；**纯增量字段，前后端可独立部署**：旧前端忽略 `filled`，新前端遇旧后端不下发即回落英文 key）；
+②`derive_unfilled` 仍不过滤 `isinstance(it, dict)`、`values` 非 dict 真值时 `(values or {}).get` 会抛——本次只在测试里固化现状，**未修**（真实调用路径已由 `_render_of` 归一挡掉）；
+③`DEFAULT_HINT_MAX=100` 截断 `current` ⇒ 长值字段无法按旧值定位（设计上接受）；
+④值歧义（精确重复 / 互相包含 / 单字符）时按旧值定位不可用，只能按 name/key——**单字符是保守过杀**（全表只有一个「男」字段时其实可定位），取宁漏不误；
+⑤`filling` 阶段 `filled`/`unfilled` 都未到达 ⇒ 预览暂无中文名、回落英文 key（终态后即恢复）；
+⑥`filled` 的长期可恢复性依赖 Redis run snapshot，**不能只靠事件回放**：`template_fill_events` 有 64KB 截断挽救（只保头部事件），而终态事件在尾部且体积最大（`values` 30–80KB + `filled` 约 13KB）最易被截；超 600s 终态 snapshot TTL 后回放会同时丢 `unfilled`/`filled`（非本批次引入）；
+⑦**未 commit、未 push**。
+
+**部署实测（2026-09-17）**：
+- **上传前 diff 校验**：`scp` 取回远端三文件后 `diff --strip-trailing-cr --unified=1`，改动量为 executor `+62/-4`、component `+40/-3`、api `+13/-2`，逐行核对**全部落在本批次意图内、零意外改动**。副产物结论：远端 executor **已含** `PATCH_EXTRACT_SYSTEM`/`_clean_for_prompt` 的增量基线 ⇒ 上一条「范本填写增量模式」实际已随此前批次上线（该条目「未部署」字样已过时）。
+- **md5 三文件逐一核对**：上传后远端 `b8da6d68…` / `c44a763b…` / `1d696468…` 与本地一致。
+- **容器内 import 冒烟**：`derive_filled` / `derive_unfilled` / `MIN_CURRENT_MATCH_LEN` / `_filled_of` / `_render_of` / `build_progress_payload` / `build_run_snapshot_payload` 全部导入成功，`MIN_CURRENT_MATCH_LEN=2`；实调 `derive_filled([{a,甲},{b,乙}], {a:'x', b:'  '})` → `[{'key':'a','name':'甲'}]`，**纯空白值被正确判为未填**（与 `derive_unfilled` 的 strip 口径互补性在生产代码上得到验证）。
+- **生产数据端到端（最有价值的一条）**：容器内以端点同路径（`TplTemplateVersionService.get_by_id_checked` 取 placeholders → `build_progress_payload`）跑**真实 DB 全部 18 条 done/partial 任务**，断言 `filled ∪ unfilled == 有 key 的填写点集合`、交集为空、无越界 key —— **18/18 全部 OK，零 BAD**。典型分布 `filled=107 / unfilled=137 / keyed=244`（244 字段真实范本，正是用户痛点的那个范本）；样本 `[{'key':'report_build_no','name':'报建编号'}, {'key':'tender_no','name':'招标编号'}, {'key':'tender_issuer_name','name':'招标人'}]` 印证中文名已正确随 `filled` 下发。
+- **前端产物核对**：远端 `dist/` 873 文件、容器内 bind mount 同步可见；`grep -rl` 命中新增文案 `已填充`(1) / `等待 AI 填入`(2) / `个填写点`(2) 个产物文件。
+- **接口存活**：`/api/v1/template/fill/fill-task/<id>/progress` 无 `Authorization` 头返回 401（路由已挂载、鉴权闸生效，非 404）。
+- **计划偏差 / 操作失误**：清理 `.scratch/deploy_cmp` 的命令里**误把 `docker restart` 串进了 `&&` 链**，导致容器被多余重启一次；已复查 `status=running` + 重跑 import 冒烟通过，与代码经 bind mount 落盘无关，无实质影响。
+
+**待人工验收（8 条，未执行）**：①真实留空范本三种终态核对卡片「已填充 N 个」计数/中文名/值/点击定位落点；②docx 保真路径已填悬浮 title 含中文名、未填槽位显中文名；③刷新走 run snapshot（600s 内）与断连重连走轮询两端点 `filled` 不丢；④「把『<唯一旧值>』改成 X」→ 确认卡只列该字段且 `direct_value` 预填；⑤**故意用 `5`/`张三` 重试**验证子串包含闸门（应匹配不上、不误改）；⑥新旧前后端兼容矩阵；⑦流程页签复用同卡片；⑧xlsx 路径。
+
 ## 2026-09-17 文件审核收口遗留修复批次（R-1 中断轮次前端可识别 + R-2/R-3，已部署 2026-09-17）
 
 **主题**：收口审查遗留 R-1 ~ R-8 的排查结论中，R-1（Major）与 R-2/R-3（Minor）在本批修复；R-1 只做「用户可识别 + 有出口」的一半，**不做**启动期扫描（需改上游核心文件 `api/ragflow_server.py`，未获授权）。

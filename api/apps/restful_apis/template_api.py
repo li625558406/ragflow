@@ -43,7 +43,12 @@ from common import settings
 from common.misc_utils import get_uuid
 from common.time_utils import current_timestamp
 from rag.svr.template_fill.detector import detect_fill_points, validate_placeholders
-from rag.svr.template_fill.executor import derive_unfilled, read_progress_snapshot
+from rag.svr.template_fill.executor import (
+    CANVAS_RESERVED_KEYS,
+    derive_filled,
+    derive_unfilled,
+    read_progress_snapshot,
+)
 from rag.svr.template_fill.spawn import is_running as _task_running
 from rag.svr.template_fill.spawn import spawn_fill_task as _spawn_fill_task
 from rag.utils.redis_conn import REDIS_CONN
@@ -708,6 +713,16 @@ async def create_fill_task():
     params = body.get("params")
     if params is not None and not isinstance(params, dict):
         return get_error_data_result("params 必须为对象")
+    # 下划线前缀的画布保留键是**服务端内部元数据**，只有画布节点直插 DB 时才写
+    # （agent/component/template_fill.py 的 _canvas_task_params），承载用户在确认卡的
+    # 勾选/直填决策。REST 入口必须剥离，否则调用方可伪造出「有确认记录」的任务：
+    # ① 骗过写回端点的保留键闸门，把任意 key 写进 default_value；
+    # ② 骗过 executor 的 is_canvas 门控，让 LLM 白名单/直填覆盖/检索收窄被误用。
+    # 剥离零副作用：占位符 key 校验要求字母开头（detector.validate_placeholders），
+    # 故 `_` 前缀键不可能是合法的 param 直取键。
+    if isinstance(params, dict):
+        params = {k: v for k, v in params.items()
+                  if k not in CANVAS_RESERVED_KEYS}
     source = body.get("source")
     if source is not None and not isinstance(source, str):
         return get_error_data_result("source 必须为字符串")
@@ -863,8 +878,12 @@ def build_progress_payload(task, snapshot: dict | None, download: dict | None = 
     # 查版本后传入；values 与上方字段同口径（快照优先，回退 DB render）。
     # 仅 done/partial 派生；派生为空（全填满）置 None，响应不下发空数组。
     unfilled = None
+    filled = None
     if placeholders and status in ("done", "partial") and isinstance(values, dict):
         unfilled = derive_unfilled(placeholders, values) or None
+        # 已填清单（{key,name}，不带值——前端从同响应的 values join）：与 unfilled
+        # 互补，两者并集即全量 key→中文名映射。同样现算不落库（避免第二真源）。
+        filled = derive_filled(placeholders, values) or None
     return {
         "status": status,
         "done": (snapshot or {}).get("done"),
@@ -874,6 +893,7 @@ def build_progress_payload(task, snapshot: dict | None, download: dict | None = 
         "error": (snapshot or {}).get("error") or (task.error or ""),
         "stalled": stalled,
         "unfilled": unfilled,
+        "filled": filled,
     }
 
 
@@ -897,6 +917,69 @@ async def get_fill_task_progress(task_id: str):
             placeholders = getattr(ver, "placeholders", None) or []
     return get_result(data=build_progress_payload(
         task, read_progress_snapshot(task_id), download, placeholders))
+
+
+@manager.route("/template/fill/fill-task/<task_id>/sediment", methods=["POST"])
+@login_required
+async def sediment_fill_task(task_id: str):
+    """写回范本库（幂等）：把本轮**用户显式确认/直填**的字段值沉淀为该范本版本的
+    默认值（`placeholders[].default_value`，`default_source="auto"`）。范本文件与
+    `{{key}}` 占位符原样不动——下一轮检索+LLM 仍是权威，默认值只在字段缺值时兜底。
+
+    只由用户在成稿行点「写回范本库」触发；填写 pipeline 不再自动沉淀。"""
+    task = TplFillTaskService.get_owned(task_id, current_user.id)
+    if not task:
+        return get_error_data_result("任务不存在")
+    if task.status not in ("done", "partial"):
+        return get_error_data_result("填写尚未完成，暂不能写回范本库")
+
+    raw_params = getattr(task, "params", None)
+    params = raw_params if isinstance(raw_params, dict) else {}
+    # 保留键存在性闸（而非「并集非空」判断）：没有确认记录的填写任务（B端发起 /
+    # 对话直发）一律拒绝。刻意不退化成「全量沉淀」——那等于把刚移除的自动沉淀
+    # 从后门放回来。noop 轮两者都在但为空集，落在下方的「写 0 个」分支。
+    if "_changed_keys" not in params and "_direct_values" not in params:
+        return get_error_data_result("该任务不支持写回范本库（缺少确认记录）")
+
+    # 白名单 = 本轮实际拍板键：_changed_keys（确认后走检索+LLM 的勾选集合）∪
+    # _direct_values（确认卡里直填的值）。**必须取并集**：_llm_fill_items 刻意把
+    # 直填键从 _changed_keys 剔除。脏数据（非 list/dict）按空处理，不炸端点。
+    raw_changed = params.get("_changed_keys")
+    raw_direct = params.get("_direct_values")
+    changed_keys = {str(k) for k in raw_changed if k} if isinstance(raw_changed, list) else set()
+    direct_keys = {str(k) for k in raw_direct if k} if isinstance(raw_direct, dict) else set()
+    only_keys = changed_keys | direct_keys
+    if not only_keys:
+        return get_result(data={"ok": True, "written": False})
+
+    # 值取 DB 行（权威）：values 落库形状 {"cells": {...}, "render": {...}}；
+    # 历史脏数据可能是 JSON 字符串/非 dict，一律按空处理（只影响沉淀范围）。
+    vals = getattr(task, "values", None) or {}
+    if isinstance(vals, str):
+        try:
+            vals = json.loads(vals)
+        except Exception:  # noqa: BLE001 — 脏数据兜底为空，不阻断写回
+            vals = {}
+    values = vals.get("render") if isinstance(vals, dict) else None
+    if not isinstance(values, dict):
+        values = {}
+
+    # 版本行：任务钉住的版本优先；为空（历史脏数据）回落该范本最新版，同 executor 口径
+    ver = TplTemplateVersionService.get_by_id_checked(
+        task.template_id, getattr(task, "template_version_id", ""))
+    if ver is None:
+        ver = TplTemplateVersionService.latest(task.template_id)
+    if ver is None:
+        return get_error_data_result("范本版本不存在")
+
+    # 直填键可覆盖 manual 默认值（用户手打的值是显式决策）；LLM/检索产的值不覆盖。
+    try:
+        written = TplTemplateVersionService.sediment_defaults(
+            task.template_id, ver.id, values, only_keys, override_keys=direct_keys)
+    except Exception:
+        logger.exception("sediment defaults failed, task=%s template=%s", task_id, task.template_id)
+        return get_error_data_result("写回失败，请重试")
+    return get_result(data={"ok": True, "written": bool(written)})
 
 
 @manager.route("/template/fill/fill-task/<task_id>/download", methods=["GET"])
@@ -1050,7 +1133,8 @@ def build_run_snapshot_payload(run: dict | None, *, owned_check, get_task,
         item = {"template_id": tid, "name": t.get("name") or "",
                 "slot_count": t.get("slot_count"), "task_id": fid,
                 "status": "selected", "done": None, "total": None,
-                "values": None, "unfilled": None, "download": None, "error": ""}
+                "values": None, "unfilled": None, "filled": None,
+                "download": None, "error": ""}
         row = get_task(fid) if fid else None
         if row is not None:
             snap = read_snap(fid) or {}
@@ -1069,6 +1153,7 @@ def build_run_snapshot_payload(run: dict | None, *, owned_check, get_task,
                     phs = version_placeholders(row.template_id, getattr(row, "template_version_id", ""))
                     if phs and isinstance(values, dict):
                         item["unfilled"] = derive_unfilled(phs, values) or None
+                        item["filled"] = derive_filled(phs, values) or None
             elif item["status"] == "failed":
                 item["error"] = snap.get("error") or (row.error or "")
         templates_out.append(item)

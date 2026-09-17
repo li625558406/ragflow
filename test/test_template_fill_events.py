@@ -24,11 +24,13 @@ def _dl(doc_id):
 
 
 class _Row:
-    """tpl_fill_task 行桩：status/result_file_id/error 按 id 供给。"""
+    """tpl_fill_task 行桩：status/result_file_id/error/values 按 id 供给。
+    values 缺省 None（多数用例不关心产值派生；unfilled/filled 派生测试显式传）。"""
 
-    def __init__(self, id, status="pending", result_file_id="", error=""):
+    def __init__(self, id, status="pending", result_file_id="", error="", values=None):
         self.id, self.status, self.result_file_id, self.error = \
             id, status, result_file_id, error
+        self.values = values
 
 
 class _TaskServiceStub:
@@ -403,6 +405,102 @@ def test_observe_deadline_collects_remaining_tasks_as_failed(monkeypatch):
     assert cancel_keys == [svc.inserted[0][0]], "超时收口前必须写取消键（线程若尚存促其自行收口）"
     assert "filled" not in stages and "done" not in stages
     assert comp._outs.get("download") in (None, "")
+
+
+def _filled_event(monkeypatch, values, placeholders=None):
+    """跑单范本成功路径，返回 filled 事件的 data（供 unfilled/filled 派生断言）。"""
+    _fast_sleep(monkeypatch)
+    phs = placeholders if placeholders is not None else [
+        {"key": "k1", "name": "甲", "fill_mode": "llm"},
+        {"key": "k2", "name": "乙", "fill_mode": "llm"}]
+    cands = [_cand("t1", "范本A", phs)]
+    comp, _ = _make_comp(cands, {
+        "task-1": [_Row("task-1", status="generating"),
+                   _Row("task-1", status="done", result_file_id="rf1",
+                        values={"render": values})]},
+        monkeypatch=monkeypatch)
+    import agent.component.template_fill as tf_mod
+    monkeypatch.setattr(tf_mod.executor, "read_progress_snapshot",
+                        lambda task_id: None)
+    evs = _run(comp)
+    filled_evs = [e["data"] for e in evs if e["data"]["stage"] == "filled"]
+    assert len(filled_evs) == 1
+    return filled_evs[0]
+
+
+def test_filled_event_all_filled_has_filled_no_unfilled(monkeypatch):
+    """全填：事件带 filled（{key,name}，不带值），不带 unfilled。"""
+    d = _filled_event(monkeypatch, {"k1": "x", "k2": "0"})
+    assert d["filled"] == [{"key": "k1", "name": "甲"}, {"key": "k2", "name": "乙"}]
+    assert "unfilled" not in d
+    assert d["values"] == {"k1": "x", "k2": "0"}   # 值仍走既有 values 通道，不重复塞进 filled
+
+
+def test_filled_event_partial_has_both_and_partition(monkeypatch):
+    """部分填：filled 与 unfilled 都在，且 key 并集 == 全部填写点、交集为空。"""
+    d = _filled_event(monkeypatch, {"k1": "x", "k2": "   "})
+    assert d["filled"] == [{"key": "k1", "name": "甲"}]
+    assert d["unfilled"] == [{"key": "k2", "name": "乙", "required": True}]
+    f_keys = {it["key"] for it in d["filled"]}
+    u_keys = {it["key"] for it in d["unfilled"]}
+    assert f_keys | u_keys == {"k1", "k2"} and f_keys & u_keys == set()
+
+
+def test_filled_event_all_empty_has_unfilled_only(monkeypatch):
+    """全空：只带 unfilled，不带 filled（空列表不下发，前端不渲染已填区）。"""
+    d = _filled_event(monkeypatch, {})
+    assert "filled" not in d
+    assert {it["key"] for it in d["unfilled"]} == {"k1", "k2"}
+
+
+def test_filled_event_malformed_render_no_crash(monkeypatch):
+    """对抗：render 是畸形真值（字符串）→ **不抛**，按「全空」同口径处理。
+
+    派生跑在观察者轮询循环内，抛 AttributeError 会连坐整个多范本轮次
+    （一个坏行毁掉全部范本）。归一后与 `render: None`（直填路径无 render 键）
+    完全同口径：全空 → 只下发 unfilled。
+    """
+    malformed = _filled_event(monkeypatch, "not-a-dict")
+    assert "filled" not in malformed
+    assert {it["key"] for it in malformed["unfilled"]} == {"k1", "k2"}
+    none_render = _filled_event(monkeypatch, None)
+    assert "filled" not in none_render
+    assert none_render["unfilled"] == malformed["unfilled"]
+
+
+def test_filled_event_none_values_row_no_crash(monkeypatch):
+    """对抗：整行 values 非 dict（旧 schema）→ 两者都不带且不抛。"""
+    _fast_sleep(monkeypatch)
+    cands = [_cand("t1", "范本A", [{"key": "k1", "name": "甲", "fill_mode": "llm"}])]
+    comp, _ = _make_comp(cands, {
+        "task-1": [_Row("task-1", status="generating"),
+                   _Row("task-1", status="done", result_file_id="rf1", values="junk")]},
+        monkeypatch=monkeypatch)
+    import agent.component.template_fill as tf_mod
+    monkeypatch.setattr(tf_mod.executor, "read_progress_snapshot",
+                        lambda task_id: None)
+    evs = [e["data"] for e in _run(comp) if e["data"]["stage"] == "filled"]
+    assert len(evs) == 1
+    assert "filled" not in evs[0] and "unfilled" not in evs[0]
+
+
+def test_failed_event_has_neither_filled_nor_unfilled(monkeypatch):
+    """失败路径不下发任一清单（失败行没有可信产值，渲染清单只会误导）。"""
+    import pytest
+    _fast_sleep(monkeypatch)
+    cands = [_cand("t1", "范本A", [{"key": "k1", "name": "甲", "fill_mode": "llm"}])]
+    comp, _ = _make_comp(cands, {
+        "task-1": [_Row("task-1", status="failed", error="boom",
+                        values={"render": {"k1": "x"}})]},
+        monkeypatch=monkeypatch)
+    import agent.component.template_fill as tf_mod
+    monkeypatch.setattr(tf_mod.executor, "read_progress_snapshot", lambda task_id: None)
+    with pytest.raises(ValueError, match="所有范本填写均失败"):
+        _run(comp)
+    evs = _drain(comp)
+    stages = [e["data"]["stage"] for e in evs]
+    assert stages == ["selected", "failed"]
+    assert "filled" not in evs[-1]["data"] and "unfilled" not in evs[-1]["data"]
 
 
 def _run(comp):

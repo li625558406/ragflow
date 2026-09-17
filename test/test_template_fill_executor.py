@@ -426,6 +426,12 @@ def test_find_running_rejects_stale_running_rows(monkeypatch):
     """对抗（僵尸任务防复用）：find_running 的 where 必须带 create_time 年龄过滤
     （仅复用最近 2h 内创建的中间态行）。docker restart 遗留的永久中间态僵尸行超窗，
     查询即不复用 → 画布节点走新建任务，不会每 1.5s 轮询到天荒地老。
+
+    同时锚定 source="canvas" 复用口径：只有画布节点写保留键，executor 的 is_canvas
+    门控据此启用直填覆盖/检索收窄；复用了同范本的对话/B端任务会让用户确认卡上的
+    勾选与直填决策被整批丢弃（按全量 LLM 重跑），且成稿行的「写回范本库」按钮
+    必然报「缺少确认记录」。
+
     经假 model 捕获 where 表达式断言（不触真库；@DB.connection_context 装饰器
     临时旁路，避免单测连 MySQL）。"""
     import peewee
@@ -474,6 +480,7 @@ def test_find_running_rejects_stale_running_rows(monkeypatch):
     class _FakeModel:
         template_id = _Col("template_id")
         tenant_id = _Col("tenant_id")
+        source = _Col("source")
         status = _Col("status")
         create_time = _Col("create_time")
 
@@ -492,6 +499,7 @@ def test_find_running_rejects_stale_running_rows(monkeypatch):
     by_op = {(op[0], op[1]): op[2] for op in log if isinstance(op, tuple) and len(op) == 3}
     assert by_op[("template_id", "==")] == "tpl_x"
     assert by_op[("tenant_id", "==")] == "tenant_x"
+    assert by_op[("source", "==")] == "canvas", "只能复用画布任务，不得复用对话/B端中间态行"
     assert by_op[("status", "in")] == ("pending", "retrieving", "generating", "rendering")
     # 年龄过滤：cutoff = now - 2h（上下界都留时钟流逝容差：find_running 内部与
     # 本断言各自调 current_timestamp()，间隔可能前进数毫秒，单侧容差会 flaky）
@@ -499,7 +507,7 @@ def test_find_running_rejects_stale_running_rows(monkeypatch):
     window_ms = current_timestamp() - cutoff
     assert 2 * 3600 * 1000 - 5000 <= window_ms <= 2 * 3600 * 1000 + 5000, \
         f"find_running 必须带 2h 年龄过滤，实际窗口 {window_ms}ms"
-    assert ("where", 1) in log, "4 个条件经 & 合并为单表达式传入 where"
+    assert ("where", 1) in log, "5 个条件经 & 合并为单表达式传入 where"
 
 
 def test_build_values_manual_and_notfound():
@@ -638,11 +646,11 @@ def _run_pipeline(monkeypatch, task, *, checked_ver=_MISSING, latest_ver=_broken
 
         monkeypatch.setattr(executor.settings, "STORAGE_IMPL", _FakeStorage())
     monkeypatch.setattr(tpl_svc, "_storage_put", lambda bucket, obj, blob: calls["puts"].append(obj))
-    # sediment 桩：记录 (template_id, version_id, values, override_keys)；
-    # 不桩会打真实 DB（依赖 try/except 兜底吞异常，且无法断言 override_keys 语义）
+    # sediment 桩：**只用于断言「从未被调用」**。自动沉淀已移除（改由用户在成稿行点
+    # 「写回范本库」触发）；不桩会打真实 DB，且无法证明 pipeline 没有偷偷复活沉淀。
     monkeypatch.setattr(tpl_svc.TplTemplateVersionService, "sediment_defaults",
-                        classmethod(lambda cls, tid, vid, vals, override_keys=None:
-                                    calls.setdefault("sediment", []).append((tid, vid, vals, override_keys))))
+                        classmethod(lambda cls, *a, **kw:
+                                    calls.setdefault("sediment", []).append((a, kw))))
     executor.execute_task(task.id)
     return calls
 
@@ -1394,31 +1402,30 @@ class TestBEndBehaviorUnchanged:
         assert calls["transits"][-1] == ("rendering", "done")
 
 
-# ── 沉淀 override_keys 语义：画布直填值可覆盖 manual 默认（委托改造回归） ──
+# ── 自动沉淀已移除：pipeline 任何分支都不得再写 default_value ──
 
 
-def test_canvas_direct_values_sediment_override_keys(monkeypatch):
-    """回归：画布委托（params 带保留键）+ 直填值非空 → sediment 收到
-    override_keys=直填键集合（含空串显式清空键）——用户确认卡显式给值可覆盖
-    default_source="manual" 的默认值（对齐委托前节点内联实现语义）。"""
+def test_pipeline_does_not_auto_sediment(monkeypatch):
+    """反回归：填写 pipeline 结束后**不再**自动沉淀默认值——画布任务（带
+    `_changed_keys`/`_direct_values` 保留键）与 B端任务（无保留键）各跑一遍，
+    两者都不得调用 sediment_defaults。
+
+    保护两件事：①「不再自动写」；②「不再复活」——若日后有人把沉淀调用加回
+    pipeline 任一分支，此用例必红。用户显式点「写回范本库」走独立端点，不在
+    本 pipeline 内。"""
     ver = _make_ver(placeholders=[
         {"key": "k1", "name": "字段一", "fill_mode": "llm"},
         {"key": "k2", "name": "字段二", "fill_mode": "llm"}])
-    calls = _run_pipeline(
+    canvas_calls = _run_pipeline(
         monkeypatch,
-        _make_task(params={"_changed_keys": [], "_direct_values": {"k1": "用户确认值", "k2": ""}}),
+        _make_task(params={"_changed_keys": [], "_direct_values": {"k1": "用户确认值"}}),
         checked_ver=ver)
-    assert calls["sediment"] == [("tpl1", "ver1",
-                                  {"k1": "用户确认值", "k2": ""},
-                                  {"k1", "k2"})], \
-        "直填键（含空串显式清空）必须作为 override_keys 下传 sediment"
+    assert canvas_calls.get("sediment", []) == [], "画布任务不得自动沉淀"
+    assert canvas_calls["transits"][-1] == ("rendering", "done")
 
-
-def test_b_end_sediment_without_override_keys(monkeypatch):
-    """B端普通任务（无保留键）：sediment 不传 override_keys（None）——
-    manual 默认值不受产值沉淀覆盖的既有口径保持不变。"""
-    calls = _run_pipeline(monkeypatch, _make_task(params={}))
-    assert calls["sediment"] == [("tpl1", "ver1", {"k1": "产值"}, None)]
+    b_end_calls = _run_pipeline(monkeypatch, _make_task(params={}))
+    assert b_end_calls.get("sediment", []) == [], "B端任务不得自动沉淀"
+    assert b_end_calls["transits"][-1] == ("rendering", "done")
 
 
 def test_pipeline_render_blob_missing_fails_with_message(monkeypatch):
@@ -1650,6 +1657,121 @@ def test_derive_unfilled_adversarial_key_passthrough():
     assert got == [{"key": "a{{b}}", "name": "怪\x00名", "required": False}]
 
 
+def test_derive_filled_basic_and_order():
+    """已填字段按占位符清单顺序输出；不带 value（前端从 values join）；不带 required。"""
+    from rag.svr.template_fill import executor
+    phs = [{"key": "a", "name": "甲", "required": True},
+           {"key": "b", "name": "乙", "required": False},
+           {"key": "c", "name": "丙"}]
+    vals = {"a": "x", "b": "y", "c": ""}
+    assert executor.derive_filled(phs, vals) == [
+        {"key": "a", "name": "甲"},
+        {"key": "b", "name": "乙"}]
+
+
+def test_derive_filled_whitespace_not_filled():
+    """纯空白不算已填（判空真源仍是 derive_unfilled）。"""
+    from rag.svr.template_fill import executor
+    phs = [{"key": "a", "name": "甲"}]
+    assert executor.derive_filled(phs, {"a": "   "}) == []
+
+
+def test_derive_filled_falsy_valid_values_are_filled():
+    """falsy 有效产值算已填（与 derive_unfilled 同口径，防两处判空漂移）。"""
+    from rag.svr.template_fill import executor
+    phs = [{"key": "a", "name": "甲"}, {"key": "b", "name": "乙"}]
+    assert executor.derive_filled(phs, {"a": "0", "b": "false"}) == [
+        {"key": "a", "name": "甲"}, {"key": "b", "name": "乙"}]
+    assert executor.derive_filled(phs, {"a": 0, "b": 0.0}) == [
+        {"key": "a", "name": "甲"}, {"key": "b", "name": "乙"}]
+    assert executor.derive_filled(phs, {"a": False, "b": 0}) == [
+        {"key": "a", "name": "甲"}, {"key": "b", "name": "乙"}]
+
+
+def test_derive_filled_empty_inputs():
+    """空 placeholders / None 入参 → 空列表（不炸）。"""
+    from rag.svr.template_fill import executor
+    assert executor.derive_filled([], {"a": "x"}) == []
+    assert executor.derive_filled(None, None) == []
+
+
+def test_derive_filled_no_key_skipped():
+    """无 key 的占位符行不进已填（与 unfilled 同过滤条件，保证互补）。"""
+    from rag.svr.template_fill import executor
+    phs = [{"name": "无key"}, {"key": "k", "name": "有"}]
+    assert executor.derive_filled(phs, {"k": "v"}) == [{"key": "k", "name": "有"}]
+
+
+def test_derive_filled_name_falls_back_to_key():
+    """无 name（或空 name）→ 回落 key，前端映射才不会漏项。"""
+    from rag.svr.template_fill import executor
+    phs = [{"key": "a", "name": ""}, {"key": "b"}]
+    assert executor.derive_filled(phs, {"a": "x", "b": "y"}) == [
+        {"key": "a", "name": "a"}, {"key": "b", "name": "b"}]
+
+
+def test_derive_filled_adversarial_key_passthrough():
+    """key 含花括号残留/Unicode 控制字符 → 原样透传不炸（展示层转义是前端职责）。"""
+    from rag.svr.template_fill import executor
+    phs = [{"key": "a{{b}}", "name": "怪\x00名", "required": False}]
+    got = executor.derive_filled(phs, {"a{{b}}": "v"})
+    assert got == [{"key": "a{{b}}", "name": "怪\x00名"}]
+
+
+def test_fill_points_partition_exhaustive_and_disjoint():
+    """反漂移核心：filled ∪ unfilled 必须恰好等于「有 key 的填写点」全集且两者互斥。
+
+    两者若判空口径漂移（例如一方多算了无 key 项、或某 key 两边都漏），
+    前端 buildKeyNameMap 会静默缺项 → 预览回落英文 key，用户看不出错但引用不了。
+    用 llm/param/manual 三来源混合 + 无 key + 无 name 的极端清单固化这个不变量。
+    """
+    from rag.svr.template_fill import executor
+    phs = [{"key": "a", "name": "甲", "fill_mode": "llm"},
+           {"key": "b", "name": "乙", "fill_mode": "param"},
+           {"key": "c", "name": "丙", "fill_mode": "manual"},
+           {"key": "d"},                       # 无 name
+           {"name": "无key"},                  # 无 key
+           {},                                 # 字段全缺
+           {"key": "e", "name": "戊"}]
+    values = {"a": "x", "b": 0, "c": "", "d": "  ", "e": None}
+    filled = executor.derive_filled(phs, values)
+    unfilled = executor.derive_unfilled(phs, values)
+    keyed = {it["key"] for it in phs if isinstance(it, dict) and it.get("key")}
+    f_keys = {it["key"] for it in filled}
+    u_keys = {it["key"] for it in unfilled}
+    assert f_keys | u_keys == keyed
+    assert f_keys & u_keys == set()
+    assert len(filled) + len(unfilled) == len(keyed)
+    assert f_keys == {"a", "b"}          # 0 是有效产值
+    assert u_keys == {"c", "d", "e"}
+
+
+def test_derive_filled_adversarial_non_dict_inputs():
+    """试图让代码出错：values 非 dict 真值 / placeholder 非 dict → 固化现状。
+
+    derive_filled 用减法实现，判空真源只有 derive_unfilled 一处，故二者失败模式
+    必须逐字相同；若将来给 derive_unfilled 加 isinstance 防护而 derive_filled 没跟上
+    （或反之），此用例会先炸，防静默分叉。
+    """
+    import pytest
+
+    from rag.svr.template_fill import executor
+    phs = [{"key": "a", "name": "甲"}]
+    with pytest.raises(AttributeError):
+        executor.derive_unfilled(phs, ["not", "a", "dict"])
+    with pytest.raises(AttributeError):
+        executor.derive_filled(phs, ["not", "a", "dict"])
+    with pytest.raises(AttributeError):
+        executor.derive_unfilled(phs, "x")
+    with pytest.raises(AttributeError):
+        executor.derive_filled(phs, "x")
+    for bad in ("junk", None):
+        with pytest.raises(AttributeError):
+            executor.derive_unfilled([bad], {})
+        with pytest.raises(AttributeError):
+            executor.derive_filled([bad], {})
+
+
 # ========== 增量填写：split_canvas_params 解析 _baseline_values ==========
 
 def test_split_canvas_params_baseline_values_normal():
@@ -1795,6 +1917,213 @@ def test_extract_patch_values_empty_placeholders_short_circuits(monkeypatch):
     from rag.svr.template_fill import executor
     out = executor._run_async(executor.extract_patch_values("t", [], {}, "query"))
     assert out == {"intent": "noop", "direct": {}, "changed": []}
+
+
+def _capture_chat_mdl(monkeypatch, response_text: str) -> dict:
+    """捕获发给 LLM 的 (system, user_msg)，供断言 spec 内容。"""
+    from rag.svr.template_fill import executor
+    seen: dict = {}
+
+    class _Stub:
+        async def async_chat(self, system, msgs, **kw):
+            seen["system"] = system
+            seen["user"] = msgs[0]["content"]
+            return response_text
+    monkeypatch.setattr(executor, "_build_chat_mdl", lambda tenant_id: _Stub())
+    return seen
+
+
+def _spec_of(seen: dict) -> list[dict]:
+    """从捕获的 user_msg 里取出清单 JSON（## 填写点清单\\n<json>\\n\\n用户原话：…）。"""
+    body = seen["user"].split("## 填写点清单\n", 1)[1]
+    body = body.split("\n\n用户原话：", 1)[0]
+    return json.loads(body)
+
+
+def test_patch_extract_spec_carries_current_and_current_ok(monkeypatch):
+    """清单每项必须带 current 原文 + current_ok；唯一短值可用。"""
+    from rag.svr.template_fill import executor
+    seen = _capture_chat_mdl(monkeypatch, json.dumps({"intent": "noop"}))
+    executor._run_async(executor.extract_patch_values(
+        "t", [{"key": "a", "name": "甲"}, {"key": "b", "name": "乙"}],
+        {"a": "张三", "b": ""}, "随便"))
+    spec = _spec_of(seen)
+    assert spec == [
+        {"key": "a", "name": "甲", "current": "张三", "current_ok": True},
+        {"key": "b", "name": "乙", "current": "", "current_ok": False},
+    ]
+
+
+def test_patch_extract_spec_current_ok_false_on_ambiguous_value(monkeypatch):
+    """反漂移核心：两个字段当前值相同（如都是「甲级」）→ 双双 current_ok=false。
+
+    这是本需求最大的真实失败模式：按值定位会命中错误字段，LLM 必须回退到 name/key。
+    """
+    from rag.svr.template_fill import executor
+    seen = _capture_chat_mdl(monkeypatch, json.dumps({"intent": "noop"}))
+    executor._run_async(executor.extract_patch_values(
+        "t", [{"key": "a", "name": "甲"}, {"key": "b", "name": "乙"},
+              {"key": "c", "name": "丙"}],
+        {"a": "甲级", "b": "甲级", "c": "乙级"}, "随便"))
+    spec = {r["key"]: r for r in _spec_of(seen)}
+    assert spec["a"]["current_ok"] is False
+    assert spec["b"]["current_ok"] is False
+    assert spec["c"]["current_ok"] is True      # 唯一值不受影响
+
+
+def test_patch_extract_spec_current_ok_false_on_single_char(monkeypatch):
+    """单字符 current 一律不可定位（MIN_CURRENT_MATCH_LEN）。
+
+    判据是「原话逐字包含该值」，而「是/无/男/0」在中文里几乎必然作为子串出现在
+    任意原话中（「但是」「是否」「男女」）→ 必然误命中。故即使清单里唯一也禁用，
+    宁漏不误（漏了还有 name/key 两条路）。
+    """
+    from rag.svr.template_fill import executor
+    seen = _capture_chat_mdl(monkeypatch, json.dumps({"intent": "noop"}))
+    executor._run_async(executor.extract_patch_values(
+        "t", [{"key": "a", "name": "甲"}, {"key": "b", "name": "乙"},
+              {"key": "c", "name": "丙"}, {"key": "d", "name": "丁"}],
+        {"a": "是", "b": "5", "c": "男", "d": "甲级"}, "随便"))
+    spec = {r["key"]: r for r in _spec_of(seen)}
+    assert spec["a"]["current_ok"] is False
+    assert spec["b"]["current_ok"] is False
+    assert spec["c"]["current_ok"] is False
+    assert spec["d"]["current_ok"] is True
+    # 边界：恰好 MIN_CURRENT_MATCH_LEN 个字符即放行
+    assert executor.MIN_CURRENT_MATCH_LEN == len("甲级")
+
+
+def test_patch_extract_spec_current_ok_false_on_substring_containment(monkeypatch):
+    """子串包含歧义：原话引用较长值时，较短值也「逐字包含」→ 必须双方禁用。
+
+    真实表单项：「数量 5 / 金额 50」「张三 / 张三丰」「是 / 是否」。用户说
+    「把 50 改成 60」，A(current=5) 与 B(current=50) 都满足逐字包含，而 prompt
+    ③ 无并列消歧规则 → LLM 可能落到 A、改错字段。故包含关系（任一方向）双方置 false。
+    """
+    from rag.svr.template_fill import executor
+    seen = _capture_chat_mdl(monkeypatch, json.dumps({"intent": "noop"}))
+    executor._run_async(executor.extract_patch_values(
+        "t", [{"key": "a", "name": "数量"}, {"key": "b", "name": "金额"},
+              {"key": "c", "name": "姓名"}, {"key": "d", "name": "别名"},
+              {"key": "e", "name": "独苗"}],
+        # a 是 b 的子串；c 是 d 的子串；e 与谁都不互相包含
+        {"a": "50", "b": "500", "c": "张三", "d": "张三丰", "e": "李四"},
+        "随便"))
+    spec = {r["key"]: r for r in _spec_of(seen)}
+    assert spec["a"]["current_ok"] is False     # 被包含方
+    assert spec["b"]["current_ok"] is False     # 包含方
+    assert spec["c"]["current_ok"] is False
+    assert spec["d"]["current_ok"] is False
+    assert spec["e"]["current_ok"] is True      # 无包含关系、长度足够 → 可用
+
+
+def test_patch_extract_spec_current_ok_substring_check_and_reverse_direction(monkeypatch):
+    """包含关系双向对称：短值在前、长值在后时同样双双禁用（顺序不能影响判据）。"""
+    from rag.svr.template_fill import executor
+    seen = _capture_chat_mdl(monkeypatch, json.dumps({"intent": "noop"}))
+    executor._run_async(executor.extract_patch_values(
+        "t", [{"key": "long", "name": "长"}, {"key": "short", "name": "短"}],
+        {"long": "朝阳区人民政府", "short": "朝阳区"}, "随便"))
+    spec = {r["key"]: r for r in _spec_of(seen)}
+    assert spec["long"]["current_ok"] is False
+    assert spec["short"]["current_ok"] is False
+
+
+def test_patch_extract_spec_current_ok_false_on_truncation(monkeypatch):
+    """超长 current 被截断 → LLM 只见前缀，无法与原话逐字比对 → current_ok=false。
+
+    边界取 DEFAULT_HINT_MAX 两侧：99 字符可用、100 与 101 一律不可用
+    （截断后长度恒为上限，无法区分「原本正好 100」与「被截断」，宁漏不误）。
+    """
+    from rag.svr.template_fill import executor
+    limit = executor.DEFAULT_HINT_MAX
+    seen = _capture_chat_mdl(monkeypatch, json.dumps({"intent": "noop"}))
+    executor._run_async(executor.extract_patch_values(
+        "t", [{"key": "ok", "name": "OK"}, {"key": "eq", "name": "EQ"},
+              {"key": "over", "name": "OVER"}],
+        {"ok": "x" * (limit - 1), "eq": "y" * limit, "over": "z" * (limit + 1)},
+        "随便"))
+    spec = {r["key"]: r for r in _spec_of(seen)}
+    assert spec["ok"]["current_ok"] is True
+    assert spec["eq"]["current_ok"] is False
+    assert spec["over"]["current_ok"] is False
+    # 截断只发生在进 prompt 的副本上，current_ok 不因截断而清空 current 字段
+    assert len(spec["over"]["current"]) == limit
+
+
+def test_patch_extract_spec_current_blank_not_ok(monkeypatch):
+    """空/纯空白 current → current_ok=false（不能按「空值」定位字段）。"""
+    from rag.svr.template_fill import executor
+    seen = _capture_chat_mdl(monkeypatch, json.dumps({"intent": "noop"}))
+    executor._run_async(executor.extract_patch_values(
+        "t", [{"key": "a", "name": "甲"}, {"key": "b", "name": "乙"}],
+        {"a": "   ", "b": None}, "随便"))
+    spec = {r["key"]: r for r in _spec_of(seen)}
+    assert spec["a"]["current"] == ""
+    assert spec["a"]["current_ok"] is False
+    assert spec["b"]["current_ok"] is False
+
+
+def test_patch_extract_spec_current_ok_uses_cleaned_string_for_ambiguity(monkeypatch):
+    """歧义计数必须基于「清洗后」字符串：控制字符被剥离后撞值的两字段也要双双禁用。
+
+    若 counts 建立在原始值上，「张\\x00三」与「张三」会被当成两个不同值而都放行，
+    但进 prompt 的 current 已同形 → LLM 仍可命中错字段。
+    """
+    from rag.svr.template_fill import executor
+    seen = _capture_chat_mdl(monkeypatch, json.dumps({"intent": "noop"}))
+    executor._run_async(executor.extract_patch_values(
+        "t", [{"key": "a", "name": "甲"}, {"key": "b", "name": "乙"}],
+        {"a": "张\x00三", "b": "张三"}, "随便"))
+    spec = {r["key"]: r for r in _spec_of(seen)}
+    assert spec["a"]["current"] == "张三"       # 控制字符已剥离
+    assert spec["b"]["current"] == "张三"
+    assert spec["a"]["current_ok"] is False
+    assert spec["b"]["current_ok"] is False
+
+
+def test_patch_extract_system_requires_current_ok_gate():
+    """防止后人「简化」prompt 时误删闸门：定位优先级与 current_ok 条件必须在系统提示里。
+
+    这段文字是「按旧值匹配字段」唯一的行为约束——它一被删，LLM 就会自由地按
+    近似值/字段含义乱认字段，直接改错文档（且只有人工确认卡挡得住）。
+    """
+    from rag.svr.template_fill import executor
+    sys_prompt = executor.PATCH_EXTRACT_SYSTEM
+    assert "current_ok" in sys_prompt
+    assert "逐字包含" in sys_prompt
+    assert "current_ok=false" in sys_prompt
+    # false 的三种成因必须与代码实际产生的一致（曾出现文案称「太短」但代码从
+    # 不因长度判 false 的错位）；单字符/互相包含/截断三者缺一即文案失真
+    assert "只有一个字" in sys_prompt
+    assert "互相包含" in sys_prompt
+    assert "截断" in sys_prompt
+    for marker in ("①", "②", "③"):
+        assert marker in sys_prompt
+
+
+def test_extract_patch_values_current_match_still_constrained(monkeypatch):
+    """LLM 按 current 认出字段后给出的值，仍必须过白名单 + _apply_constraints。
+
+    current 只是「定位字段」的入口放宽，值本身的校验一层不减：
+    编造 key 丢弃、约束越界值改写（number 字段非数字 → 丢弃该 direct 项）。
+    """
+    from rag.svr.template_fill import executor
+    _fake_chat_mdl(monkeypatch, json.dumps({
+        "intent": "patch",
+        "direct": {"title": "张三的申请书", "made_up": "越权", "amount": "abc"},
+        "changed": ["title", "made_up", "amount"],
+    }, ensure_ascii=False))
+    out = executor._run_async(executor.extract_patch_values(
+        "t",
+        [{"key": "title", "name": "标题"},
+         {"key": "amount", "name": "金额", "constraints": {"type": "number"}}],
+        {"title": "原", "amount": "100"}, "把张三改成李四"))
+    assert out["intent"] == "patch"
+    # 编造 key 丢弃；number 字段收到非数字 → 约束闸拦下，不进 direct
+    assert out["direct"] == {"title": "张三的申请书"}
+    assert "made_up" not in out["direct"]
+    assert out["changed"] == ["amount", "title"]        # changed 仍过 valid 白名单
 
 
 # ========== 增量填写：基线合并优先级 ==========

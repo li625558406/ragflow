@@ -139,6 +139,10 @@ MAX_EVIDENCE_CHUNKS = 6  # 每字段进 prompt 的证据片段上限（片段已
 PARAMS_PROMPT_MAX = 2000       # 任务参数整体序列化进 prompt 的截断上限
 CONSTRAINTS_PROMPT_MAX = 200   # 单字段 constraints 序列化进 prompt 的截断上限
 DEFAULT_HINT_MAX = 100         # 默认值作为 prompt 参考提示的截断上限
+# 增量抽取里「按已填旧值定位字段」的最小可定位长度：单字符值（是/无/男/女/0）
+# 在中文语境里几乎必然作为子串出现在任意原话中（「但是」「是否」「是不是」），
+# 按它定位必改错字段。1 字符一律禁用 current 定位（宁漏不误，漏了还有 name/key）
+MIN_CURRENT_MATCH_LEN = 2
 
 GENERATE_SYSTEM = (
     "你是文档填写引擎。根据每个字段的【检索证据】填写字段值。规则：\n"
@@ -162,9 +166,12 @@ class GenerateCancelled(Exception):
 # 画布节点把确认产物（直填值/LLM 白名单键 _changed_keys）、用户文件证据、
 # 检索跳过键以下划线前缀保留键塞进 params 传给 execute_task；干净 params 继续
 # 充当背景信息与 param 直取（与 B端表单字段同构）。
-_CANVAS_RESERVED_KEYS = ("_direct_values", "_changed_keys",
-                         "_retrieve_skip_keys", "_user_file_text",
-                         "_baseline_values")
+# 跨模块契约（故不带下划线前缀）：template_api.create_fill_task 必须把这个集合
+# 从 REST 入参里剥离，保证「params 带保留键 ⇔ 画布节点写入了用户确认决策」这一
+# 等价关系成立——写回端点与下方 is_canvas 都依赖它做判定。
+CANVAS_RESERVED_KEYS = ("_direct_values", "_changed_keys",
+                        "_retrieve_skip_keys", "_user_file_text",
+                        "_baseline_values")
 
 # 进度快照键与 TTL（24h；终态也写一次，靠 TTL 过期，不主动删）
 _PROGRESS_KEY = "tpl_fill_progress:{task_id}"
@@ -199,7 +206,7 @@ def split_canvas_params(params: dict | None) -> tuple[dict, dict]:
         "baseline_values": ({str(k): str(v) for k, v in bv.items() if v is not None}
                             if isinstance(bv, dict) else {}),
     }
-    clean = {k: v for k, v in params.items() if k not in _CANVAS_RESERVED_KEYS}
+    clean = {k: v for k, v in params.items() if k not in CANVAS_RESERVED_KEYS}
     return clean, opts
 
 
@@ -364,6 +371,20 @@ def derive_unfilled(placeholders: list[dict], values: dict) -> list[dict]:
                  or not str(v).strip())]
 
 
+def derive_filled(placeholders: list[dict], values: dict) -> list[dict]:
+    """终态已填充的填写点（[{key, name}]，保 placeholders 文档序；**不下发值**——
+    前端从已下发的 values 里 join，避免同一事件里重复传输几千字）。
+    与 derive_unfilled 互补，且互补性由构造保证：取「有 key 的填写点 − 未填充集合」，
+    判空真源只有 derive_unfilled 一处，杜绝两处谓词漂移导致 key→name 映射静默漏项
+    （漏项时 LivePreview 会悄悄回落英文 key，用户看不出错但用不了）。
+    第二段的过滤写法与 derive_unfilled 逐字一致，失败模式（非 dict 项、values 非
+    dict 真值）随之完全同构。"""
+    unfilled_keys = {it["key"] for it in derive_unfilled(placeholders, values)}
+    return [{"key": it["key"], "name": it.get("name") or it["key"]}
+            for it in (placeholders or [])
+            if it.get("key") and it["key"] not in unfilled_keys]
+
+
 async def generate_values(tenant_id: str, placeholders: list[dict], chunks_by_key: dict,
                           params: dict | None = None,
                           batch_size: int = BATCH_SIZE,
@@ -502,12 +523,13 @@ async def predict_changed_fields(tenant_id: str, default_items: list[dict],
 # 增量填写场景：从用户 query + 上次填写值抽 patch（要改的字段+值）
 # 节点在检测到同范本已有 done 成稿时调用，决定本次走「改字段」「补全留空」还是「全量重填」
 PATCH_EXTRACT_SYSTEM = (
-    "你是文档增量修改助手。给出一个范本的全部填写点清单（key/中文名/当前已填值）"
+    "你是文档增量修改助手。给出一个范本的全部填写点清单"
+    "（每项含 key / 中文名 name / 当前已填值 current / 该 current 能否用于定位 current_ok）"
     "和用户本轮原话。请判断用户本轮的意图并产出 JSON，**只能**输出 JSON 对象：\n"
     "{\"intent\": \"patch\"|\"refill\"|\"fill_unfilled\"|\"noop\","
     " \"direct\": {\"key\": \"新值\", ...}, \"changed\": [\"key\", ...]}\n"
     "规则：\n"
-    "- intent=\"patch\"：用户在原话里明确指定了要改的字段及其新值（中文名或 key）。"
+    "- intent=\"patch\"：用户在原话里明确指定了要改的字段及其新值（中文名、key 或该字段的当前值）。"
     "direct 放字段 key→新值（必填，值留空也算 patch 即明确清空），changed 放所有要改的 key（与 direct keys 一致即可）。"
     "用户说「xx 填成 yy」「xx 改成 yy」「xx 留空」都属于 patch。\n"
     "- intent=\"fill_unfilled\"：用户想补全/完善上次没填上的字段（如「完善」「补全」「继续填」「还有哪些没填的」）。"
@@ -516,8 +538,14 @@ PATCH_EXTRACT_SYSTEM = (
     "直接返回 {\"intent\": \"refill\"} 即可。\n"
     "- intent=\"noop\"：用户没说修改/补全/重填任何字段，且当前已填值无留空。"
     "返回 {\"intent\": \"noop\"} 即可。\n"
-    "key 必须在清单中——用户说的字段中文名如果能匹配清单里的 name/key 就用对应 key；"
-    "匹配不上、含糊或与你意图判断不匹配的字段一律忽略，不要编造 key。"
+    "定位字段严格按此优先级，命中即停："
+    "① 原话中的中文名与 name 字面匹配；② 原话中的 key 与 key 字面匹配；"
+    "③ 仅当 ①② 都匹配不上时，才可用 current 定位，且必须同时满足：该字段 current_ok 为 true，"
+    "并且原话**逐字包含**该字段的 current 原文。\n"
+    "current_ok=false 表示该值只有一个字、与别的字段当前值相同或互相包含、或已被截断，"
+    "按它定位会改错字段，一律禁止使用。"
+    "也不要用 current 去匹配原话未逐字包含的字段（如原话只说了近似值、或只描述了字段含义）。\n"
+    "key 必须在清单中——匹配不上、含糊或与你意图判断不匹配的字段一律忽略，不要编造 key。"
     "未提及的字段不要塞进 direct/changed。")
 
 
@@ -549,6 +577,39 @@ async def extract_patch_values(tenant_id: str, placeholders: list[dict],
         spec.append({"key": _clean_for_prompt(k, NAME_MAX),
                      "name": _clean_for_prompt(it.get("name") or k, NAME_MAX),
                      "current": _clean_for_prompt(cur_str, DEFAULT_HINT_MAX)})
+    # current_ok：LLM 按「已填旧值」定位字段的前提是——该值在清单里唯一、足够具体、
+    # 且 LLM 看到了完整原文。三种失效情形都置 false（宁漏不误：漏了还有 name/key 两条路，
+    # 误了就直接改错文档字段）：
+    #  ① 太短——单字符值（是/无/男/女/0）在中文里几乎必然作为子串出现在任意原话中，
+    #     判据是「原话逐字包含该值」，单字符必然命中 → 按 MIN_CURRENT_MATCH_LEN 一律禁用；
+    #  ② 值歧义——精确重复（「张三」同时是两个字段的当前值）或**子串包含**
+    #     （「张三」/「张三丰」、「5」/「50」）：原话引用较长值时，较短值也满足
+    #     「逐字包含」，prompt ③ 无并列消歧规则 → LLM 可能选中错字段。故包含关系
+    #     双方一律置 false（长度阈值已挡掉 1 字符，此处处理 ≥2 字符的包含对）；
+    #  ③ 截断——current 进 prompt 前被 _clean_for_prompt 截到 DEFAULT_HINT_MAX，
+    #     LLM 只见前缀，原话里的完整值无法与之逐字比对。截断后长度等于上限即
+    #     无法区分「原本正好 100 字符」与「被截断」，故一律按不可用处理。
+    # 注意不把不可用的 current 清空：它是意图判断（noop / fill_unfilled）的输入，
+    # 清空会让 LLM 误判「该字段当前为空」。
+    counts: dict[str, int] = {}
+    for r in spec:
+        c = r["current"]
+        if c:
+            counts[c] = counts.get(c, 0) + 1
+    # 子串包含：任一方向包含即双方不可用（空串是任意串的子串，故先 `if c` 过滤）
+    ambiguous: set[str] = set()
+    curs = [c for c in counts if c]
+    for i, a in enumerate(curs):
+        for b in curs[i + 1:]:
+            if a in b or b in a:
+                ambiguous.add(a)
+                ambiguous.add(b)
+    for r in spec:
+        c = r["current"]
+        r["current_ok"] = (len(c) >= MIN_CURRENT_MATCH_LEN
+                           and len(c) < DEFAULT_HINT_MAX
+                           and counts.get(c, 0) == 1
+                           and c not in ambiguous)
     user_msg = ("## 填写点清单\n" + json.dumps(spec, ensure_ascii=False)
                 + "\n\n用户原话：" + _clean_for_prompt(
                     (query or "").strip(), PARAMS_PROMPT_MAX))
@@ -865,8 +926,10 @@ async def _execute_task_async(task_id: str):
     params = task.params or {}
     clean_params, opts = split_canvas_params(params)
     # 画布委托门控：只有 params 携带保留键（画布节点必写，含空值）才启用
-    # D−C 收窄/直填覆盖/证据注入/取消探针；B端普通任务保持全量进 LLM 的既有行为
-    is_canvas = any(k in params for k in _CANVAS_RESERVED_KEYS)
+    # D−C 收窄/直填覆盖/证据注入/取消探针；B端普通任务保持全量进 LLM 的既有行为。
+    # 该等价关系的成立依赖 create_fill_task 从 REST 入参剥离保留键（否则调用方
+    # 可伪造画布语义，让 LLM 白名单/直填覆盖被误用）。
+    is_canvas = any(k in params for k in CANVAS_RESERVED_KEYS)
     direct_values: dict = opts["direct_values"] if is_canvas else {}
     changed_keys: set = (opts["changed_keys"] if is_canvas
                          else {it.get("key") for it in placeholders if it.get("key")})
@@ -995,20 +1058,6 @@ async def _execute_task_async(task_id: str):
                        "(result object in storage without terminal status)", task_id, result_obj)
         return
     _write_snapshot(task_id, force=True, status="done", values=values)
-
-    # ⑦ 产值沉淀为默认值（auto）：失败仅告警，不影响任务终态。
-    # 画布直填键（含空串显式清空键，也是用户决策）随 override_keys 下传：
-    # 用户确认卡显式给值可覆盖 default_source="manual" 的默认值——对齐委托前
-    # 节点内联实现的既有语义；B端任务不传，manual 默认值沉淀口径保持不变。
-    try:
-        if is_canvas and direct_values:
-            tpl_svc.TplTemplateVersionService.sediment_defaults(
-                task.template_id, ver.id, values,
-                override_keys=set(direct_values.keys()))
-        else:
-            tpl_svc.TplTemplateVersionService.sediment_defaults(task.template_id, ver.id, values)
-    except Exception:
-        logger.warning("sediment_defaults failed, task=%s", task_id, exc_info=True)
 
 
 def execute_task(task_id: str):

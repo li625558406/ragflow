@@ -547,7 +547,10 @@ def test_fill_by_name_exact_wins_over_fuzzy(monkeypatch):
 
 def _patch_modify_env(monkeypatch, tpl_svc, *, task_values=None, placeholders=None,
                       render_raises=False):
-    """modify 全链路打桩：latest_done 任务 / 版本 / storage / renderer / 回写 / 沉淀。"""
+    """modify 全链路打桩：latest_done 任务 / 版本 / storage / renderer / 回写。
+
+    sediment 桩只为断言**未被调用**——modify 不再自动沉淀默认值（改由用户在成稿行
+    点「写回范本库」触发）。"""
     from rag.svr.template_fill import renderer as renderer_mod
 
     calls = {"put": [], "patched": None, "sediment": None, "rendered": None}
@@ -582,8 +585,8 @@ def _patch_modify_env(monkeypatch, tpl_svc, *, task_values=None, placeholders=No
         staticmethod(lambda task_id, values: calls.__setitem__("patched", (task_id, values)) or True))
     monkeypatch.setattr(
         tpl_svc.TplTemplateVersionService, "sediment_defaults",
-        staticmethod(lambda template_id, version_id, values, override_keys=None:
-                     calls.__setitem__("sediment", (template_id, version_id, dict(values), set(override_keys or set()))) or True))
+        staticmethod(lambda *a, **kw:
+                     calls.__setitem__("sediment", (a, kw)) or True))
     return calls
 
 
@@ -637,8 +640,8 @@ def test_modify_success_merges_and_overwrites(monkeypatch):
     assert values["render"] == {"approval_authority": "李港", "other": "已批准"}
     assert values["cells"]["approval_authority"] == "filled"
     assert values["cells"]["other"] == "filled"
-    # patch 沉淀为默认值（override 口径）
-    assert calls["sediment"] == ("t1", "ver1", {"approval_authority": "李港"}, {"approval_authority"})
+    # 反回归：modify 不再自动沉淀默认值（改由用户点「写回范本库」按钮触发）
+    assert calls["sediment"] is None, "modify 不得自动沉淀默认值"
 
 
 def test_modify_empty_value_marks_not_found(monkeypatch):

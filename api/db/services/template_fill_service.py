@@ -308,16 +308,26 @@ class TplTemplateVersionService(CommonService):
 
     @staticmethod
     def _sediment_into_placeholders(placeholders: list, values: dict,
+                                    only_keys: set,
                                     override_keys: set | None = None) -> bool:
-        """产值沉淀纯逻辑：非空值写入 default_value（source=auto）。
-        manual 不覆盖，除非 key ∈ override_keys（用户确认卡片显式给值）。
+        """产值沉淀纯逻辑：**只处理 key ∈ only_keys** 的非空值，写入 default_value
+        （source=auto）。manual 不覆盖，除非 key ∈ override_keys（用户在确认卡片显式直填）。
+
+        `only_keys` 为**必填**：调用方必须明确交出「本轮用户显式确认/改动的 key 集合」。
+        刻意不给 None 默认值——`None`（不限制）与 `set()`（一个都不写）语义天差地别，
+        留默认值就等于给「静默全量写」留后门（本接口的存在意义正是根除该缺陷）。
+        `only_keys` 含不存在的 key 不报错（按 placeholders 侧遍历，天然忽略）。
+
         空值（渲染留空）不沉淀——不得抹掉历史默认值。返回是否有变更。"""
         from rag.svr.template_fill.detector import MAX_ANCHOR_LEN  # 与 _merge_defaults 同源同写法
+        only = only_keys or set()
         override = override_keys or set()
         changed = False
         for it in placeholders:
             key = it.get("key") if isinstance(it, dict) else None
             if not key:
+                continue
+            if key not in only:
                 continue
             val = (values or {}).get(key)
             if val in (None, ""):
@@ -337,15 +347,21 @@ class TplTemplateVersionService(CommonService):
     @classmethod
     @DB.connection_context()
     def sediment_defaults(cls, template_id: str, version_id: str, values: dict,
-                          override_keys: set | None = None) -> bool:
-        """填写成功后把产值沉淀为该版本默认值。失败由调用方兜底（仅日志，
-        不影响成稿交付）。返回是否有变更；版本行不存在返回 False。"""
+                          only_keys: set, override_keys: set | None = None) -> bool:
+        """把产值沉淀为该版本默认值——**仅当用户显式点「写回范本库」按钮时调用**
+        （填写成功不再自动沉淀）。只写 `only_keys` 内的 key。失败由调用方兜底。
+        返回是否有变更；版本行不存在返回 False。
+
+        已知竞态（未加行锁，本次不修）：select → 内存改 → save() 整列覆盖，无
+        `for_update()`。两个任务对同一版本并发点按钮时，后写者的 placeholders 快照
+        会盖掉先写者的新键（丢更新）。概率低、后果自愈（再点一次即可补），故保持
+        与改造前同形；若要修，在 DB.atomic() 内对版本行 for_update() 后再改。"""
         ver = cls.model.select().where(
             (cls.model.id == version_id) & (cls.model.template_id == template_id)).first()
         if ver is None:
             return False
         placeholders = ver.placeholders or []
-        if not cls._sediment_into_placeholders(placeholders, values, override_keys):
+        if not cls._sediment_into_placeholders(placeholders, values, only_keys, override_keys):
             return False
         ver.placeholders = placeholders
         ver.save()
@@ -523,13 +539,19 @@ class TplFillTaskService(CommonService):
     @classmethod
     @DB.connection_context()
     def find_running(cls, template_id: str, tenant_id: str):
-        """该范本在租户内是否已有执行中任务（画布重复发起时复用观察，不重复起线程）。
-        取最新一条；无则 None。只复用最近 _RUNNING_REUSE_WINDOW_MS 内创建的中间态行：
-        超龄中间态行是部署重启遗留的僵尸（线程已死无人收口），复用会导致节点无限轮询，
-        改为新建任务重跑。"""
+        """该范本在租户内是否已有**画布发起的**执行中任务（画布重复发起时复用观察，
+        不重复起线程）。取最新一条；无则 None。只复用最近 _RUNNING_REUSE_WINDOW_MS
+        内创建的中间态行：超龄中间态行是部署重启遗留的僵尸（线程已死无人收口），
+        复用会导致节点无限轮询，改为新建任务重跑。
+
+        必须限定 source="canvas"：只有画布节点写入保留键（_changed_keys/_direct_values），
+        executor 的 is_canvas 门控据此启用直填覆盖/检索收窄。若复用了同范本的对话或
+        B端任务，那些用户在确认卡上的勾选/直填决策会被整批丢弃（按全量 LLM 重跑），
+        且该行终态后成稿行的「写回范本库」按钮必然报「缺少确认记录」。"""
         return cls.model.select().where(
             (cls.model.template_id == template_id)
             & (cls.model.tenant_id == tenant_id)
+            & (cls.model.source == "canvas")
             & cls.model.status.in_(("pending", "retrieving", "generating", "rendering"))
             & (cls.model.create_time >= current_timestamp() - _RUNNING_REUSE_WINDOW_MS)
         ).order_by(cls.model.create_time.desc()).first()

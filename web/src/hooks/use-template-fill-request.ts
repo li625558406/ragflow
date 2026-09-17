@@ -536,6 +536,20 @@ export async function confirmTemplateFillSelect(
   }
 }
 
+// 写回范本库：把本轮用户显式确认/直填的字段值沉淀为范本版本的默认值
+// （placeholders[].default_value，source=auto）。幂等——重复点 written=false。
+export async function sedimentTemplateFillDefaults(
+  taskId: string,
+): Promise<{ written: boolean }> {
+  const { data } = await request.post(api.sedimentTemplateFillTask(taskId), {
+    data: {},
+  });
+  if (data.code !== 0) {
+    throw new Error(data.message || '写回失败');
+  }
+  return { written: Boolean(data.data?.written) };
+}
+
 // ── 范本工作副本（docx-preview 保真渲染 + 占位符高亮用）──────────────────
 
 // 获取模板工作副本 blob（kind=render）。占位符 {{key}} 只存在于工作副本

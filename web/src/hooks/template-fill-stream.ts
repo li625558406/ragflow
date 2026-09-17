@@ -16,6 +16,15 @@ export interface ITemplateFillUnfilled {
   required: boolean;
 }
 
+/** 已填充填写点（成稿已填的字段，任务终态一次性下发）。
+ *  注意与模板行的 `status: 'filled'` 同名但语义无关：那是任务阶段，这是字段清单。
+ *  不下发值——值与它同在 events/progress 响应的 values 里，前端按 key join
+ *  （避免同一响应里重复传输几千字）。与 unfilled 互补：并集即全量 key→中文名。 */
+export interface ITemplateFillFilled {
+  key: string;
+  name: string;
+}
+
 export interface ITemplateFillTemplate {
   template_id: string;
   name: string;
@@ -31,6 +40,9 @@ export interface ITemplateFillTemplate {
   task_id?: string;
   /** 成稿留空的填写点（filled 事件/progress 终态派生；历史恢复经轮询端点合并） */
   unfilled?: ITemplateFillUnfilled[];
+  /** 成稿已填的填写点（同上来源）：用户填完一轮后靠它看到字段中文名、点得动、
+   *  才能在对话里准确引用（否则只剩英文 key 无法指代）。 */
+  filled?: ITemplateFillFilled[];
 }
 
 export interface ITemplateFillState {
@@ -131,6 +143,8 @@ export interface ITemplateFillEvent {
   values?: Record<string, string>;
   /** filled：成稿留空的填写点汇总（终态一次性整体替换） */
   unfilled?: ITemplateFillUnfilled[];
+  /** filled：成稿已填的填写点汇总（终态一次性整体替换） */
+  filled?: ITemplateFillFilled[];
   download?: ITemplateFillDownload;
   error?: string;
   templates?: Array<{ template_id: string; name: string; slot_count?: number }>;
@@ -240,6 +254,7 @@ export function applyTemplateFillEvent(
       t.values = d.values;
     }
     if (d.unfilled) t.unfilled = d.unfilled;
+    if (d.filled) t.filled = d.filled;
   } else if (d.stage === 'failed') {
     t.status = 'failed';
     t.error = d.error;
@@ -279,6 +294,7 @@ export interface ITemplateFillRunSnapshot {
     total?: number | null;
     values?: Record<string, string> | null;
     unfilled?: ITemplateFillUnfilled[] | null;
+    filled?: ITemplateFillFilled[] | null;
     download?: ITemplateFillDownload | null;
     error?: string;
   }>;
@@ -331,6 +347,7 @@ export function buildStateFromRunSnapshot(
       total: t.total ?? undefined,
       values: t.values || undefined,
       unfilled: t.unfilled || undefined,
+      filled: t.filled || undefined,
       download: t.download || undefined,
       error: t.error || undefined,
     })),
@@ -394,4 +411,49 @@ export function parseTemplateFillEvents(raw: unknown): unknown[] | undefined {
   } catch {
     return undefined;
   }
+}
+
+// ── 填写点中文名映射 / 已填行派生（纯函数，供卡片与预览共用）──────────────
+// filled 与 unfilled 按判空口径穷尽且互斥（后端同一处真源派生），故并集即全量：
+// 无需再新增 key_names 字段，也不会出现两个中文名真源各自漂移。
+
+/** 全量 key→中文名映射（filled ∪ unfilled；name 缺失回落 key，保证不漏项）。
+ *  unfilled 后写：两者 key 不可能重叠，顺序只为确定性。 */
+export function buildKeyNameMap(
+  tpl: Pick<ITemplateFillTemplate, 'filled' | 'unfilled'>,
+): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const f of tpl.filled || []) {
+    if (f?.key) map.set(f.key, f.name || f.key);
+  }
+  for (const u of tpl.unfilled || []) {
+    if (u?.key) map.set(u.key, u.name || u.key);
+  }
+  return map;
+}
+
+export interface ITemplateFillFilledRow {
+  key: string;
+  name: string;
+  value: string;
+}
+
+/** 已填清单 + values join 成可渲染行（保 filled 顺序 = 文档顺序）。
+ *  值缺失/非字符串一律归一为空串（展示层不因脏数据崩，也不显示 "undefined"）。 */
+export function buildFilledRows(
+  tpl: Pick<ITemplateFillTemplate, 'filled' | 'values'>,
+): ITemplateFillFilledRow[] {
+  const values = tpl.values || {};
+  return (tpl.filled || [])
+    .filter((f) => f?.key)
+    .map((f) => {
+      // values 类型标注是 string，但后端 render 可能落 int/float（number 字段）
+      // 或 null；按 unknown 处理，展示层不因脏数据崩、也不出现 "undefined"
+      const raw: unknown = (values as Record<string, unknown>)[f.key];
+      return {
+        key: f.key,
+        name: f.name || f.key,
+        value: typeof raw === 'string' ? raw : raw == null ? '' : String(raw),
+      };
+    });
 }

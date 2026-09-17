@@ -75,3 +75,49 @@ class TestUnfilledOf:
         assert _unfilled_of(self._PHS, row) == [
             {"key": "a", "name": "甲", "required": True},
             {"key": "b", "name": "乙", "required": False}]
+
+
+class TestFilledOf:
+    """_filled_of 与 _unfilled_of 逐字镜像（同值源、同异常口径），逐一对照。"""
+
+    _PHS = [{"key": "a", "name": "甲", "required": True},
+            {"key": "b", "name": "乙", "required": False}]
+
+    def test_partial_filled_returns_filled_list(self):
+        from agent.component.template_fill import _filled_of
+        row = SimpleNamespace(values={"render": {"a": "x", "b": ""}})
+        assert _filled_of(self._PHS, row) == [{"key": "a", "name": "甲"}]
+
+    def test_all_filled_returns_all(self):
+        from agent.component.template_fill import _filled_of
+        row = SimpleNamespace(values={"render": {"a": "x", "b": "y"}})
+        assert _filled_of(self._PHS, row) == [
+            {"key": "a", "name": "甲"}, {"key": "b", "name": "乙"}]
+
+    def test_values_not_dict_returns_none(self):
+        from agent.component.template_fill import _filled_of
+        row = SimpleNamespace(values=None)
+        assert _filled_of(self._PHS, row) is None
+
+    def test_row_without_values_attr_returns_none(self):
+        from agent.component.template_fill import _filled_of
+        assert _filled_of(self._PHS, SimpleNamespace()) is None
+
+    def test_render_none_derives_none(self):
+        # values={"render": None} → 全部按未填充 → 已填清单为空 → None（与 unfilled 互补）
+        from agent.component.template_fill import _filled_of
+        row = SimpleNamespace(values={"render": None})
+        assert _filled_of(self._PHS, row) is None
+
+    def test_complementary_with_unfilled_of(self):
+        """反漂移：两者并集必须覆盖全部有 key 的填写点，交集为空。"""
+        from agent.component.template_fill import _filled_of, _unfilled_of
+        row = SimpleNamespace(values={"render": {"a": "x", "b": "   "}})
+        filled = _filled_of(self._PHS, row) or []
+        unfilled = _unfilled_of(self._PHS, row) or []
+        f_keys = {it["key"] for it in filled}
+        u_keys = {it["key"] for it in unfilled}
+        assert f_keys == {"a"}
+        assert u_keys == {"b"}
+        assert f_keys | u_keys == {p["key"] for p in self._PHS}
+        assert f_keys & u_keys == set()

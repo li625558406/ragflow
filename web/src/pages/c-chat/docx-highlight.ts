@@ -44,27 +44,61 @@ interface Match {
 /** key → 该 key 在文档中的全部占位符 span（同 key 多处出现时整体更新） */
 export type DocxPlaceholderSpans = Map<string, HTMLSpanElement[]>;
 
+/** 已填判定（判空口径对齐后端 `derive_unfilled`：`v is None or not str(v).strip()`）。
+ *  纯空白算未填 —— 后端正是据此把它收进 unfilled 清单、卡片会列它为「未填充」；
+ *  预览若按已填渲染（无虚线框的空白槽）两侧就自相矛盾、点击定位也失去落点。
+ *  null 与 undefined 同判未填（`buildFilledRows` 亦把 null 归一为空串）。 */
+export function isPlaceholderFilled(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  return String(value).trim() !== '';
+}
+
+/** 槽位文本与悬浮说明（纯函数，四象限：有/无 name × 已填/未填 全覆盖）。
+ *  - 已填：正文显示值；title 带中文名（有 name 时「中文名（key）」，
+ *    无 name 回落 key）——用户悬浮即知该值对应哪个字段。
+ *  - 未填：正文显示中文名（无 name 回落 key），title 说明等待 AI 填入。
+ *  data-ph-key 始终保持为 key（定位链路 focusPlaceholder / 点击行跳转依赖）。 */
+export function describePlaceholderSpan(
+  value: string | undefined,
+  name: string | undefined,
+  key: string,
+): { text: string; title: string; phName?: string } {
+  const label = name || key;
+  if (isPlaceholderFilled(value)) {
+    return {
+      text: String(value),
+      title: name ? `${name}（${key}）` : key,
+      phName: name,
+    };
+  }
+  return { text: label, title: `${label}（等待 AI 填入）`, phName: name };
+}
+
 function stylePlaceholderSpan(
   span: HTMLSpanElement,
   values: Record<string, string>,
   key: string,
+  names?: Map<string, string>,
 ): void {
   span.dataset.phKey = key;
+  const name = names?.get(key);
   const v = values[key];
   // 公共样式：继承 Word 上下文字号（不硬编码字号），保真优先
   span.style.backgroundColor = '#EFF4FF';
   span.style.color = '#1a66fb';
   span.style.borderRadius = '2px';
   span.style.padding = '0 2px';
-  if (v !== undefined && v !== '') {
-    span.textContent = v;
-    span.title = key;
+  const d = describePlaceholderSpan(v, name, key);
+  span.textContent = d.text;
+  span.title = d.title;
+  // 中文名另存 data 属性供排查/测试断言；name 消失时清掉（防上一轮残留）
+  if (d.phName) span.dataset.phName = d.phName;
+  else delete span.dataset.phName;
+  if (isPlaceholderFilled(v)) {
     span.style.border = '';
     span.style.fontSize = '';
   } else {
-    // 未填：虚线槽位显示 key；key 较长，略缩字号避免撑版
-    span.textContent = key;
-    span.title = `${key}（等待 AI 填入）`;
+    // 未填：虚线槽位显示中文名（无 name 回落 key）；名较长，略缩字号避免撑版
     span.style.border = '1px dashed rgba(26, 102, 251, 0.6)';
     span.style.fontSize = '0.85em';
   }
@@ -73,10 +107,13 @@ function stylePlaceholderSpan(
 /**
  * 扫描容器内全部 {{key}} 占位符并替换为高亮 span。
  * 返回 key → span[] 映射，供 updateDocxHighlight 增量更新（values 变化零 DOM 重建）。
+ * names：key→中文名映射（filled ∪ unfilled 合并派生，见 buildKeyNameMap），
+ * 缺省时回落英文 key（旧调用方行为不变）。
  */
 export function applyDocxHighlight(
   container: HTMLElement,
   values: Record<string, string>,
+  names?: Map<string, string>,
 ): DocxPlaceholderSpans {
   const groups: DocxPlaceholderSpans = new Map();
   // 1. 有序收集全部文本节点
@@ -130,7 +167,7 @@ export function applyDocxHighlight(
       range.setStart(from.node, from.off);
       range.setEnd(to.node, to.off);
       const span = document.createElement('span');
-      stylePlaceholderSpan(span, values, key);
+      stylePlaceholderSpan(span, values, key, names);
       range.deleteContents();
       range.insertNode(span);
       const arr = groups.get(key) || [];
@@ -146,14 +183,15 @@ export function applyDocxHighlight(
 /**
  * 增量更新 applyDocxHighlight 产出的占位符 span（values 变化时调用）：
  * 只改已有 span 的文本/样式，不做任何 DOM 重建 —— 大文档下 filling 事件
- * 高频到达也不卡顿。
+ * 高频到达也不卡顿。names 同 applyDocxHighlight（终态中文名到达后补涂 title）。
  */
 export function updateDocxHighlight(
   groups: DocxPlaceholderSpans,
   values: Record<string, string>,
+  names?: Map<string, string>,
 ): void {
   for (const [key, spans] of groups) {
-    for (const span of spans) stylePlaceholderSpan(span, values, key);
+    for (const span of spans) stylePlaceholderSpan(span, values, key, names);
   }
 }
 

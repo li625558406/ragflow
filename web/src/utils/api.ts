@@ -499,6 +499,9 @@ export default {
   // 刷新恢复权威态：画布运行快照（按 canvas task_id 索引，覆盖挂起卡+全部模板行）
   templateFillRunSnapshot: (canvasTaskId: string) =>
     `${restAPIv1}/template/fill/fill-run/${canvasTaskId}/snapshot`,
+  // 写回范本库：把本轮显式确认/改动的字段值沉淀为范本默认值（按钮触发，幂等）
+  sedimentTemplateFillTask: (taskId: string) =>
+    `${restAPIv1}/template/fill/fill-task/${taskId}/sediment`,
 
   // 文件审核（T9 REST API：5 端点轮询读模型 + fix + 标注人工闭环 + 成稿下载）
   fileReviewTemplates: `${restAPIv1}/file/review/templates`,

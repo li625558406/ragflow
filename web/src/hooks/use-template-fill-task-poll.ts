@@ -83,6 +83,8 @@ export function useTemplateFillTaskPoll(
                         : {}),
                       // unfilled 同防御：缺省（旧后端/全填满）不清 SSE 已有汇总
                       ...(d.unfilled ? { unfilled: d.unfilled } : {}),
+                      // filled 同防御（与 unfilled 镜像）
+                      ...(d.filled ? { filled: d.filled } : {}),
                     }
                   : {
                       status: 'failed' as const,

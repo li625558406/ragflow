@@ -270,6 +270,144 @@ describe('useTemplateFillTaskPoll', () => {
     });
   });
 
+  it('终态 done 带 filled → 合并 override（历史恢复已填清单不丢）', async () => {
+    jest.useFakeTimers();
+    mockedGet.mockReturnValue(
+      envelope({
+        status: 'done',
+        download: { doc_id: 'd1', filename: '成稿.docx' },
+        values: { a: 'x' },
+        filled: [{ key: 'a', name: '字段甲' }],
+        unfilled: [{ key: 'b', name: '字段乙', required: false }],
+      }),
+    );
+    const { result } = renderHook(() =>
+      useTemplateFillTaskPoll([fillingTpl()], true),
+    );
+    await flush();
+    expect(result.current?.[0]).toMatchObject({
+      status: 'filled',
+      filled: [{ key: 'a', name: '字段甲' }],
+      unfilled: [{ key: 'b', name: '字段乙', required: false }],
+    });
+  });
+
+  it('终态 done 缺 filled → 不下键，保留 SSE 已有清单', async () => {
+    jest.useFakeTimers();
+    mockedGet.mockReturnValue(
+      envelope({
+        status: 'done',
+        download: { doc_id: 'd1', filename: '成稿.docx' },
+      }),
+    );
+    const { result } = renderHook(() =>
+      useTemplateFillTaskPoll(
+        [
+          fillingTpl({
+            status: 'filling',
+            filled: [{ key: 'k1', name: '字段一' }],
+          }),
+        ],
+        true,
+      ),
+    );
+    await flush();
+    expect(result.current?.[0]).toMatchObject({
+      status: 'filled',
+      filled: [{ key: 'k1', name: '字段一' }],
+    });
+  });
+
+  it('终态 done 带空 filled 数组 → 下发（数组为真值，与 unfilled 同语义）', async () => {
+    jest.useFakeTimers();
+    mockedGet.mockReturnValue(
+      envelope({
+        status: 'done',
+        download: { doc_id: 'd1' },
+        filled: [],
+      }),
+    );
+    const { result } = renderHook(() =>
+      useTemplateFillTaskPoll(
+        [
+          fillingTpl({
+            status: 'filling',
+            filled: [{ key: 'k1', name: '字段一' }],
+          }),
+        ],
+        true,
+      ),
+    );
+    await flush();
+    expect(result.current?.[0].filled).toEqual([]);
+  });
+
+  it('竞态：终态后迟到的 running 响应不覆盖已落地的 filled', async () => {
+    jest.useFakeTimers();
+    let resolveSlow: (v: {
+      data: { code: number; data: Record<string, unknown> };
+    }) => void = () => {};
+    const slowPromise = new Promise<{
+      data: { code: number; data: Record<string, unknown> };
+    }>((resolve) => {
+      resolveSlow = resolve;
+    });
+    mockedGet.mockImplementationOnce(() => slowPromise);
+    mockedGet.mockImplementationOnce(() =>
+      envelope({
+        status: 'done',
+        download: { doc_id: 'd1' },
+        filled: [{ key: 'k1', name: '字段一' }],
+      }),
+    );
+    const { result } = renderHook(() =>
+      useTemplateFillTaskPoll([fillingTpl()], true),
+    );
+    await flush();
+    jest.advanceTimersByTime(2000);
+    await flush();
+    expect(result.current?.[0]).toMatchObject({
+      status: 'filled',
+      filled: [{ key: 'k1', name: '字段一' }],
+    });
+    // 慢 tick 的 running 快照迟到：整键丢弃，filled 不被 undefined 抹掉
+    resolveSlow({
+      data: { code: 0, data: { status: 'running', done: 5, total: 10 } },
+    });
+    await flush();
+    expect(result.current?.[0]).toMatchObject({
+      status: 'filled',
+      filled: [{ key: 'k1', name: '字段一' }],
+    });
+  });
+
+  it('SSE 已 filled 的行：终态 override 的 filled 一并被丢弃', async () => {
+    jest.useFakeTimers();
+    mockedGet.mockReturnValue(
+      envelope({
+        status: 'done',
+        download: { doc_id: 'd2' },
+        filled: [{ key: 'zzz', name: '轮询名' }],
+      }),
+    );
+    const { result } = renderHook(() =>
+      useTemplateFillTaskPoll(
+        [
+          fillingTpl({
+            status: 'filled',
+            filled: [{ key: 'k1', name: 'SSE名' }],
+          }),
+        ],
+        true,
+      ),
+    );
+    await flush();
+    expect(result.current?.[0]).toMatchObject({
+      status: 'filled',
+      filled: [{ key: 'k1', name: 'SSE名' }],
+    });
+  });
+
   it('unmount 后不再发起请求', async () => {
     jest.useFakeTimers();
     mockedGet.mockReturnValue(

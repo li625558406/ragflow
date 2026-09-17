@@ -978,7 +978,7 @@ def test_sediment_into_placeholders():
           {"name": "无key"},
           {"key": "", "default_value": "旧空key", "default_source": "auto"}]
     values = {"a": "新A", "b": "新B", "c": "新C", "empty": "", "d": "", "e": None}
-    changed = S._sediment_into_placeholders(ph, values)
+    changed = S._sediment_into_placeholders(ph, values, {"a", "b", "c", "d", "e"})
     assert changed is True
     assert ph[0]["default_value"] == "新A" and ph[0]["default_source"] == "auto"
     assert ph[1]["default_value"] == "人工"    # manual 不被覆盖
@@ -993,15 +993,15 @@ def test_sediment_into_placeholders():
 def test_sediment_override_manual():
     from api.db.services.template_fill_service import TplTemplateVersionService as S
     ph = [{"key": "b", "default_value": "人工", "default_source": "manual"}]
-    S._sediment_into_placeholders(ph, {"b": "用户直填"}, override_keys={"b"})
+    S._sediment_into_placeholders(ph, {"b": "用户直填"}, {"b"}, override_keys={"b"})
     assert ph[0]["default_value"] == "用户直填" and ph[0]["default_source"] == "auto"
 
 
 def test_sediment_no_change_returns_false():
     from api.db.services.template_fill_service import TplTemplateVersionService as S
     ph = [{"key": "a", "default_value": "同值", "default_source": "auto"}]
-    assert S._sediment_into_placeholders(ph, {"a": "同值"}) is False
-    assert S._sediment_into_placeholders(ph, {}) is False
+    assert S._sediment_into_placeholders(ph, {"a": "同值"}, {"a"}) is False
+    assert S._sediment_into_placeholders(ph, {}, {"a"}) is False
 
 
 def test_sediment_long_value_truncated_to_max_anchor_len():
@@ -1010,9 +1010,88 @@ def test_sediment_long_value_truncated_to_max_anchor_len():
     ph = [{"key": "a", "default_value": "", "default_source": ""}]
     # 超长 LLM 输出（600 字）：截到 500，且算变更
     long_val = "长" * (MAX_ANCHOR_LEN + 100)
-    assert S._sediment_into_placeholders(ph, {"a": long_val}) is True
+    assert S._sediment_into_placeholders(ph, {"a": long_val}, {"a"}) is True
     assert len(ph[0]["default_value"]) == MAX_ANCHOR_LEN
     assert ph[0]["default_source"] == "auto"
+
+
+# ---------- service：沉淀 only_keys 白名单（按钮触发，对抗性） ----------
+
+
+def test_sediment_only_keys_whitelist_excludes_others():
+    """白名单是硬闸：不在 only_keys 的字段即使产值非空也一个字节都不许动。
+    这是本需求的核心不变量——上一版正是「无差别全量写」把范本基线污染了。"""
+    from api.db.services.template_fill_service import TplTemplateVersionService as S
+    ph = [{"key": "in", "default_value": "旧", "default_source": "auto"},
+          {"key": "out", "default_value": "旧", "default_source": "auto"},
+          {"key": "out_manual", "default_value": "人工", "default_source": "manual"}]
+    snapshot = [dict(it) for it in ph]
+    assert S._sediment_into_placeholders(
+        ph, {"in": "新", "out": "不该写", "out_manual": "也不该写"}, {"in"}) is True
+    assert ph[0]["default_value"] == "新"
+    assert ph[1] == snapshot[1], "白名单外字段被写入——硬闸失效"
+    assert ph[2] == snapshot[2], "白名单外 manual 字段被写入——硬闸失效"
+
+
+def test_sediment_only_keys_empty_set_writes_nothing():
+    """only_keys=set()（noop 轮）→ 全量非空产值也不写，且返回 False。
+    契约上「空集合」必须是「一个都不写」，绝不能退化成「不限制」。"""
+    from api.db.services.template_fill_service import TplTemplateVersionService as S
+    ph = [{"key": "a", "default_value": "旧", "default_source": "auto"},
+          {"key": "b", "default_value": "", "default_source": ""}]
+    snapshot = [dict(it) for it in ph]
+    assert S._sediment_into_placeholders(ph, {"a": "新A", "b": "新B"}, set()) is False
+    assert ph == snapshot
+
+
+def test_sediment_only_keys_unknown_key_ignored():
+    """only_keys 含 placeholders 里不存在的 key（画布旧 key / 脏数据）→
+    不报错、不新建项、其余正常写。"""
+    from api.db.services.template_fill_service import TplTemplateVersionService as S
+    ph = [{"key": "a", "default_value": "", "default_source": ""}]
+    assert S._sediment_into_placeholders(
+        ph, {"a": "新A", "ghost": "幽灵值"}, {"a", "ghost"}) is True
+    assert len(ph) == 1 and ph[0]["default_value"] == "新A"
+
+
+def test_sediment_override_requires_both_sets():
+    """覆盖 manual 是 only_keys 与 override_keys 的**与**关系：
+    只在白名单内但不在 override 里（LLM 产的值）不许覆盖 manual；
+    只在 override 里但不在白名单内（白名单外）也不许碰。"""
+    from api.db.services.template_fill_service import TplTemplateVersionService as S
+    ph = [{"key": "llm_key", "default_value": "人工", "default_source": "manual"},
+          {"key": "direct_key", "default_value": "人工", "default_source": "manual"},
+          {"key": "outside", "default_value": "人工", "default_source": "manual"}]
+    S._sediment_into_placeholders(
+        ph, {"llm_key": "LLM值", "direct_key": "直填值", "outside": "白名单外"},
+        {"llm_key", "direct_key"}, override_keys={"direct_key", "outside"})
+    assert ph[0]["default_value"] == "人工", "非直填键不得覆盖 manual"
+    assert ph[1]["default_value"] == "直填值", "直填键应覆盖 manual"
+    assert ph[2]["default_value"] == "人工", "白名单外不得覆盖 manual"
+
+
+def test_sediment_only_keys_non_str_items():
+    """only_keys 含非字符串项（前端/画布数据不可信）→ 不抛异常、不误命中。
+    注意非 hashable 项（list/dict）会在成员判断处抛 TypeError——与
+    values.get(非hashable key) 同源的既有失败模式，此处固化现状不额外兜底。"""
+    import pytest
+    from api.db.services.template_fill_service import TplTemplateVersionService as S
+    ph = [{"key": "a", "default_value": "", "default_source": ""}]
+    # 非字符串但 hashable：天然不匹配字符串 key
+    assert S._sediment_into_placeholders(ph, {"a": "新A"}, {"a", 1, None}) is True
+    assert ph[0]["default_value"] == "新A"
+    # 非 hashable：抛 TypeError（固化现状，防后续静默改成「吞掉」而掩盖真 bug）
+    with pytest.raises(TypeError):
+        S._sediment_into_placeholders([{"key": "a"}], {"a": "新A"}, {["bad"]})
+
+
+def test_sediment_placeholders_dirty_items_not_touched():
+    """placeholders 混入非 dict / None / 无 key 项 → 跳过不报错，正常项照写。"""
+    from api.db.services.template_fill_service import TplTemplateVersionService as S
+    ph = ["junk", None, {"name": "无key"}, {"key": "a", "default_value": "", "default_source": ""}]
+    assert S._sediment_into_placeholders(ph, {"a": "新A", "junk": "x"}, {"a", "junk"}) is True
+    assert ph[0] == "junk" and ph[1] is None and ph[2] == {"name": "无key"}
+    assert ph[3]["default_value"] == "新A"
 
 
 # ---------- service：B端默认值编辑（纯函数） ----------

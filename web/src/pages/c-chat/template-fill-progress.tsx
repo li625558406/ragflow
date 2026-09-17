@@ -1,17 +1,165 @@
 // 范本填写进度卡片：c-chat 对话与 flow AI 对话区共用（设计 3.2「逻辑同构」的落地）。
 // selected → 范本卡片行（填写点徽标）；filling → 进度行；filled → 即时下载条（不等其他范本）；
 // failed → 降级文案行。全部文案中文，不走 i18n。
-import type {
-  ITemplateFillDownload,
-  ITemplateFillState,
+import {
+  buildFilledRows,
+  type ITemplateFillDownload,
+  type ITemplateFillFilledRow,
+  type ITemplateFillState,
 } from '@/hooks/template-fill-stream';
+import { sedimentTemplateFillDefaults } from '@/hooks/use-template-fill-request';
 import { useTemplateFillTaskPoll } from '@/hooks/use-template-fill-task-poll';
 import TemplateFillConfirmCard, {
   TemplateSelectConfirmCard,
 } from '@/pages/c-chat/template-fill-confirm-card';
 import TemplateFillLivePreview from '@/pages/c-chat/template-fill-live-preview';
-import { Download, Eye, FileText, Loader2 } from 'lucide-react';
+import {
+  Check,
+  ChevronDown,
+  Download,
+  Eye,
+  FileText,
+  Loader2,
+  RefreshCw,
+  Save,
+} from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
+
+/** 已填充填写点折叠清单（终态成稿行内）：默认收起、**展开才挂载** DOM
+ *  ——244 项的常挂 DOM 无意义（不是 hidden / max-h-0）。中性色，与上方
+ *  未填充汇总（黄标/红标、默认展开）形成主次对比：待办醒目、已完成收起。
+ *  点击字段名沿用未填充汇总的 liveTarget+focusKey 定位链路。
+ *  必须是独立子组件：模板行在 map 回调里渲染，回调内不能用 useState。 */
+function TemplateFillFilledList({
+  rows,
+  onLocate,
+}: {
+  rows: ITemplateFillFilledRow[];
+  onLocate: (key: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  // 全部填满时后端不下发 filled（空列表归一为缺省）→ 这里天然不渲染；
+  // 双保险防空数组（旧后端/脏数据）渲染出「已填充 0 个」
+  if (!rows.length) return null;
+  return (
+    <div className="px-3 py-1 text-xs">
+      <button
+        className="flex items-center gap-1 text-[#8C8C8C] transition-colors hover:text-[#525252]"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <ChevronDown
+          className={`h-3 w-3 shrink-0 transition-transform ${open ? '' : '-rotate-90'}`}
+        />
+        已填充 {rows.length} 个填写点
+      </button>
+      {open && (
+        <div className="mt-0.5 space-y-0.5 border-l border-[#E5E5E5] pl-3">
+          {rows.map((r) => (
+            // key 唯一性由 validate_placeholders / _merge_detection 保证
+            <div key={r.key} className="flex items-center gap-1.5">
+              <span className="shrink-0 text-[#8C8C8C]">·</span>
+              <button
+                className="shrink-0 text-[#525252] underline decoration-dotted underline-offset-2 transition-colors hover:text-[#1a66fb]"
+                title={`定位到文档中的「${r.name}」（${r.key}）`}
+                onClick={() => onLocate(r.key)}
+              >
+                {r.name}
+              </button>
+              <span className="shrink-0 text-[#8C8C8C]">：</span>
+              {/* 值用 CSS truncate 截断展示，不做 JS 切片——保留完整值供复制/悬浮查看 */}
+              <span
+                className="min-w-0 flex-1 truncate text-[#000000]"
+                title={`${r.name}（${r.key}）：${r.value}`}
+              >
+                {r.value}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 写回范本库按钮（终态成稿行内）：把本轮**用户显式确认/直填**的字段值沉淀为该
+ *  范本版本的默认值（placeholders[].default_value，source=auto）。范本文件与
+ *  {{key}} 占位符原样不动——下一轮检索+LLM 仍是权威，默认值只在字段缺值时兜底。
+ *
+ *  填写 pipeline 不再自动沉淀：不点这个按钮，下一轮就按当前流程重新检索+LLM 填，
+ *  不会出现「新流程被上一轮内容占满」。幂等——重复点第二次回落「本轮无可写回改动」。
+ *
+ *  必须是独立子组件：模板行在 map 回调里渲染，回调内不能用 useState。 */
+function TemplateFillSedimentButton({ taskId }: { taskId: string }) {
+  const [state, setState] = useState<
+    'idle' | 'loading' | 'done' | 'empty' | 'error'
+  >('idle');
+  const [errMsg, setErrMsg] = useState('');
+
+  const onWriteBack = async () => {
+    if (state === 'loading') return;
+    setState('loading');
+    try {
+      const { written } = await sedimentTemplateFillDefaults(taskId);
+      setState(written ? 'done' : 'empty');
+    } catch (e) {
+      setErrMsg(e instanceof Error ? e.message : '写回失败');
+      setState('error');
+    }
+  };
+
+  if (state === 'loading') {
+    return (
+      <span className="flex shrink-0 items-center gap-1 text-[#8C8C8C]">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        写回中…
+      </span>
+    );
+  }
+  if (state === 'done') {
+    return (
+      <span
+        className="flex shrink-0 items-center gap-1 text-[#52C41A]"
+        title="已沉淀为本范本默认值，范本文件与 {{占位符}} 未改动"
+      >
+        <Check className="h-3.5 w-3.5" />
+        已写回范本库
+      </span>
+    );
+  }
+  if (state === 'empty') {
+    return (
+      <span
+        className="flex shrink-0 items-center gap-1 text-[#8C8C8C]"
+        title="本轮没有可沉淀的改动：确认卡未勾选/直填任何字段，或这些字段已有范本库里人工维护的默认值（不会被自动覆盖）"
+      >
+        <Check className="h-3.5 w-3.5" />
+        本轮无可写回改动
+      </span>
+    );
+  }
+  return (
+    <button
+      className={`flex shrink-0 items-center gap-1 transition-colors ${
+        state === 'error'
+          ? 'text-[#F5222D] hover:text-[#CF1322]'
+          : 'text-[#1a66fb] hover:text-[#1557d6]'
+      }`}
+      title={
+        state === 'error'
+          ? `写回失败：${errMsg}（可再点重试）`
+          : '写回范本库：把本轮确认/直填的字段沉淀为范本默认值，不改变范本文件本身'
+      }
+      onClick={onWriteBack}
+    >
+      {state === 'error' ? (
+        <RefreshCw className="h-3.5 w-3.5" />
+      ) : (
+        <Save className="h-3.5 w-3.5" />
+      )}
+      {state === 'error' ? '写回失败' : '写回范本库'}
+    </button>
+  );
+}
 
 export default function TemplateFillProgress({
   state,
@@ -203,6 +351,9 @@ export default function TemplateFillProgress({
                   <Download className="h-3.5 w-3.5" strokeWidth={2} />
                   下载
                 </a>
+                {/* 写回范本库：只有点这里才把本轮成果沉淀为范本默认值。
+                    task_id 缺失（旧消息/脏数据）则不渲染，宁可不给入口也不发无效请求 */}
+                {t.task_id && <TemplateFillSedimentButton taskId={t.task_id} />}
               </div>
               {/* 未填充汇总：竖向列表（字段多时一行堆不下），必填红/选填灰，点击定位 */}
               {t.unfilled && t.unfilled.length > 0 && (
@@ -241,6 +392,14 @@ export default function TemplateFillProgress({
                   ))}
                 </div>
               )}
+              {/* 已填充汇总：默认折叠（展开才建 DOM），点击字段名走同一套定位链路。
+                  放在未填充汇总之后：待办在上、已完成在下 */}
+              <TemplateFillFilledList
+                rows={buildFilledRows(t)}
+                onLocate={(key) =>
+                  setLiveTarget({ template_id: t.template_id, focusKey: key })
+                }
+              />
             </div>
           );
         })}

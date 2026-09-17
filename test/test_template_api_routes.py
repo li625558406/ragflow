@@ -1119,6 +1119,50 @@ def test_create_fill_task_source_defaults_to_web(monkeypatch):
     assert inserted["source"] == "web"
 
 
+def test_create_fill_task_strips_canvas_reserved_keys(monkeypatch):
+    """对抗（后门防御）：REST 入参里的下划线画布保留键必须被剥离，普通 param 键保留。
+
+    保留键只由画布节点直插 DB 时写入，承载用户在确认卡上的勾选/直填决策。若 REST
+    入口原样落库，调用方就能伪造「有确认记录」的任务：
+    ① 骗过写回范本库端点的保留键闸门，把任意 key 写进 default_value（本次改造
+       要根除的「静默全量写」被从后门放回来）；
+    ② 骗过 executor 的 is_canvas 门控，让 LLM 白名单/直填覆盖/检索收窄被误用。
+    剥离零副作用：占位符 key 校验要求字母开头（detector.validate_placeholders），
+    故 `_` 前缀不可能是合法的 param 直取键。"""
+    mod = _template_api
+    injected = {
+        "_changed_keys": ["a", "b"],
+        "_direct_values": {"a": "伪造直填"},
+        "_retrieve_skip_keys": ["b"],
+        "_user_file_text": "伪造证据",
+        "_baseline_values": {"a": "伪造基线"},
+    }
+    inserted, spawned = _patch_fill_deps(
+        monkeypatch, mod,
+        {"template_id": "tpl_x", "kb_ids": ["kb1"],
+         "params": {**injected, "tone": "正式", "_not_a_reserved_key": "保留"}})
+    resp = asyncio.run(mod.create_fill_task())
+    assert resp["code"] == 0
+    # 保留键全清；非保留键（含其它下划线键）原样保留——只按白名单剥离，不做前缀通杀
+    assert inserted["params"] == {"tone": "正式", "_not_a_reserved_key": "保留"}
+    assert spawned == [inserted["id"]], "剥离后仍应正常起线程"
+
+
+def test_create_fill_task_strips_reserved_keys_even_if_only_them(monkeypatch):
+    """只有保留键 → 落库成空 dict（而非 None/保留键），端点仍成功。
+
+    noop 轮之外，画布节点也可能只带保留键；此处固化「剥离后为空」的落库形状，
+    避免哪天写成「空则回落原值」把后门又开回去。"""
+    mod = _template_api
+    inserted, _spawned = _patch_fill_deps(
+        monkeypatch, mod,
+        {"template_id": "tpl_x", "kb_ids": ["kb1"],
+         "params": {"_changed_keys": ["a"], "_direct_values": {}}})
+    resp = asyncio.run(mod.create_fill_task())
+    assert resp["code"] == 0
+    assert inserted["params"] == {}
+
+
 def _make_task(status="failed", result_file_id="", template_id="tpl_x"):
     return types.SimpleNamespace(id="task-1", status=status,
                                  result_file_id=result_file_id,
