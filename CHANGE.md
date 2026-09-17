@@ -1,5 +1,39 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-17 文件审核（File Review）全链路（未部署）
+
+**主题**：C 端对话工具 / 流程页 / 画布节点三入口共用的「投标文件格式审核」能力——上传成稿 → LLM 按模板逐条比对出问题清单 → 用户在审核面板逐条处置 → 可发起最多 3 轮「按级别修复」→ 修复成稿可下载。设计定稿 `docs/superpowers/specs/2026-09-16-file-review-node-design.md`，实施计划 `docs/superpowers/plans/2026-09-16-file-review-node.md`（T1–T18 全部完成）。
+
+**第一性原理**：投标文件成稿的格式合规是**逐条可枚举的检查项**（模板 → 规则清单 → 逐条判定），不是「让 LLM 自由点评」。故数据模型以「模板 → 轮次 → 标注」三层落库，标注是唯一事实，进度是派生量——这让「人工闭环单条标注」「只修某些级别」成为自然操作，而不需要额外的任务表或状态机引擎。
+
+**核心变更**（后端 5 文件 + 前端 8 文件 + 测试 5 套件）：
+- **DB 3 表**：`file_review_template` / `file_review_round` / `file_review_annotation`（`api/db/db_models.py` 末尾追加 + `migrate_db`），5 套预置审核模板 seed。**无 task 表**——`task_id` 是轮次行上的外键，一把审核会话 = 同一个 `task_id` 下的多轮
+- **Service 层**（`api/db/services/file_review_service.py`）：CRUD + 多轮状态机（`reviewing → annotated → fixing → done` / 异常 `failed`）+ `MAX_FIX_ROUNDS = 3` + `fix_rounds_left(rounds) = MAX - count(round_no > 1)`（**按轮次行数派生，不落库**，避免计数列与真实轮次漂移）+ `RUNNING_ROUND_STATUSES` / `ROUND_STATUS_CN` 单点定义
+- **执行链**（`rag/svr/file_review/`）：`kb_aggregator`（全 KB 并发 retrieve + token 预算截断）→ `executor`（审查轮 / 修复轮两条 LLM 路径，`execute_task(task_id)` 同步推进）→ `patcher`（docx 格式保真区间替换，唯一匹配才改）→ 成稿落 `{tenant_id}-downloads` 桶，对象名 `frv-{task_id}-{file_version}`；`spawn` 负责 daemon 线程 + 防重入
+- **5 个 REST 端点**（`api/apps/restful_apis/file_review_api.py`，blueprint 由 `api/apps/__init__.py` 自动 glob 发现，无需注册）：`GET /file/review/templates`、`GET /file/review/file/<file_id>/state`、`POST /file/review/<task_id>/fix`、`POST /file/review/annotation/<aid>/status`、`GET /file/review/<task_id>/<file_version>/download`。**轮询读模型，不做进度 SSE**——executor 每轮只写一行终态、没有步进粒度；读不限、写严格（state 不按 tenant 过滤对齐「文件所有人可见」，fix / annotation-status 必须 `get_owned_task` 严格校验，因为下游全链路只按 task_id 圈定、不含 tenant 谓词）
+- **画布节点 + 对话工具**：`agent/component/file_review.py`（FileReview 节点）+ `agent/tools/file_review.py`（FileReviewTool，对话内自动发现，**不加 DSL 意图分析**）
+- **前端**：`hooks/file-review-stream.ts`（流类型 + 归约）、`hooks/use-file-review-request.ts`（4 个 hook，轮询开关由 hook 内部控）、进度卡 `pages/c-chat/file-review-progress.tsx`（c-chat 与 flow AI 面板共用）、`services/file-review-service.ts`（成稿下载）
+
+**收口审查修复（4 个 Major，均已闭环）**：
+- **M1 下载成稿必然 401**：`download` 端点带 `@login_required`，而 `_load_user` **只从 `request.headers["Authorization"]` 取用户、不从 cookie 兜底**；两处触发点用 `window.open` 直链（浏览器导航请求不带自定义头）⇒ 必 401。改为 `services/file-review-service.ts` 的 `downloadFileReviewVersion`（fetch 手挂 `getAuthorization()` 取 Blob → createObjectURL 触发下载，与既有 `flow-service.downloadVersionBlob` 同款）。顺带把 Content-Disposition 里的内部 file_id 摘掉，改为 `文件审核_{version}.docx`
+- **M2 前端 canFix 闸门与服务端不一致**：服务端放行条件只有三条（`rounds[-1].status ∉ (reviewing, fixing)`、spawn 未在跑、`fix_rounds_left > 0`）；前端曾写成 `status === 'annotated'`，但**修复轮的终态是 `done`** ⇒ 第 2 轮起按钮永久消失，「最多 3 轮修复」在 UI 只能触发 1 轮（只有对话工具能继续）。改为 `!isRunning && fix_rounds_left > 0` 镜像服务端闸门 + 补回归用例
+- **M3 三入口 fix 受理无并发保护**：画布线程与 quart 事件循环是两个线程，「校验 — 定轮号 — 建轮次 — 起线程」整段可被并发穿插出僵尸 `fixing` 轮（此后该 task 永久被闸门挡死、只能手工改库）。下沉 `admit_fix_round`（`_ADMIT_LOCK` 进程级锁 + 覆盖整段 + `finally` 释放 + `acquire(timeout=5s)` 超时返回可重试拒绝而非静默卡死），REST 与对话工具两个调用方共用；`threading.Lock` 在 `WS=1` 单进程部署下即全局锁
+- **M4 画布 FileReview 节点缺前端注册**：补 `Operator.FileReview` 枚举 + `RestrictedUpstreamMap` / `NodeMap` / `initialFormValuesMap` / `form-config-map` / 图标 / 工具面板项 + 新增 `pages/agent/form/file-review-form/`（5 字段与后端 `FileReviewParam` 逐字一致）
+
+**测试**：`test/test_file_review_service.py` + `_api.py` + `_tool.py` + `_e2e.py` 共 **114 passed**（e2e 5 用例覆盖 5 端点全链路 + mock LLM + 修复轮终态 done + `fix_rounds_left` 归位）；并发串行化用例用 `threading.Barrier(2)` 断言并发两次 fix 只建 1 轮、败者 reason=`running`，锁超时用例断言 `_ADMIT_LOCK.locked()` 仍为 True（未误放）
+
+**遗留**：
+①**未部署**——后端 5 文件成套 SCP + 容器重启，**再**前端 build（顺序硬约束，见计划 T17）；T17 全部 checkbox 保持未勾选，部署需用户明确指示；
+②**R-1（Major，既有缺陷）**：进程重启时若某轮停在 `reviewing|fixing`，`spawn._running_tasks` 随进程清零但**轮次行状态不回落**，此后该 task 的所有 fix 被闸门 2 永久拒绝（`_force_fail_round` 只覆盖崩溃/调度失败分支，无兜底扫描）→ 需手工改库。M3 未使其恶化，但把「不可自愈」从注释提升为显式契约，建议后续加启动期 stale 轮次扫描；
+③**R-2（Minor）**：`admit_fix_round` docstring 声明「闸门 3 必须在 5 之后」，而实现是先判 `is_running` 再判 `no_pending`（抽取时调换，旧 T8 实现是反的）——两条同时成立时用户会先拿到「上一轮正在收尾」文案、重试一次才拿到真正原因「没有待修复问题」。两者都在 `create_round` 之前，不产生僵尸轮次，属文案时机差，需二选一对齐；
+④**R-3（Minor）**：对话工具侧 `_fix` 被闸门拒绝时丢了旧实现的富文案（待修复问题全量分布 + 建议 `action=status`），只剩一句通用拒绝。功能等价但 LLM 上下文变少，恢复需让 `admit_fix_round` 一并回传 pending 分布；
+⑤**R-6（Minor）**：REST 路径的 `_ADMIT_LOCK.acquire(timeout=5s)` 是**同步阻塞**，单事件循环下单次请求最多阻塞全服 5s（正常路径毫秒级、需异常持锁者才放大），后续可评估改 `asyncio.to_thread` 包装；
+⑥**R-7（Minor）**：`admit_fix_round` 对 `levels=None` 会 `TypeError`（REST 与工具两个调用方均已在入口校验，不可达），属防御性缺口；
+⑦**R-8（Minor）**：state 端点的 `doc.object` 把 MinIO 对象名下发给前端（低敏，仅用于判断「是否显示下载按钮」）；
+⑧前端 jest 无法执行是**仓库既存问题**（`web/jest.config.ts` 依赖已从 `package.json` 移除的 `umi/test`，项目已迁 Vite），本次新增的进度卡回归用例只经代码审查核对断言自洽、未实际跑过——修 jest 配置属独立议题。
+
+**效果**：投标文件成稿可一键发起格式审核（按模板出问题清单）→ 面板内逐条处置或按级别发起修复（最多 3 轮，每轮产新成稿版本）→ 成稿带鉴权下载；审核结果在 C 端对话、流程页、画布节点三处看到的是同一份数据与同一个交互。
+
 ## 2026-09-16 范本填写增量模式（同范本有 done → 走增量而非从头填充，未部署）
 
 **主题**：用户反馈点击「确认并继续填写」后又「从头开始了」——画布 TemplateFill 节点每次触发都是无状态重启，从空基线重跑全流程；同范本已有 done 成稿时，应当走「增量修改」而非「全部重填」。设计定稿 `docs/superpowers/specs/2026-09-16-template-fill-incremental-design.md`。
