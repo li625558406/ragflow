@@ -34,9 +34,13 @@
   也让流程协作者看得到审核结果）；fix / annotation-status 必须 get_owned_task 严格校验 ——
   因为 execute_task / spawn_review_task / _force_fail_round 全链路只按 task_id 圈定、
   **不含任何 tenant 谓词**，本层是唯一防线（T6 → T9 交接契约第 5 条）。
-* 本模块**不返回**成稿的下载 URL：doc.object 是对象名（或原件 file_id），前端沿用既有
-  GET /api/v1/files/<id> 取 blob —— 该路由对 `{tenant}-downloads` 桶有兜底、并按 zip 魔数
-  识别 docx，审核面板的保真渲染本来就依赖它。
+* **成稿下载走本模块的专用端点，不走 GET /api/v1/files/<id>**：doc.object 是审核成稿的
+  MinIO 对象名（`frv-{task_id}-{version}`，见 `file_review_service` 的落盘口径），**不是**
+  上传系统的 file_id —— 旧链路把它当 file_id 拼 `/api/v1/files/<id>` 会 404（T9 → T14/T15
+  复盘）。该端点带 `@login_required`，而 `_load_user` 只从 `request.headers["Authorization"]`
+  取用户、**不从 cookie 兜底**，所以前端**不能**用 window.open / a[href] 直链（浏览器导航
+  请求不带自定义头 ⇒ 必 401），必须 fetch 手挂 Authorization 取 Blob
+  （`web/src/services/file-review-service.ts`）。
 """
 import json
 import logging
@@ -50,7 +54,8 @@ from api.db.services.file_review_service import (
     FileReviewAnnotationService,
     FileReviewRoundService,
     FileReviewTemplateService,
-    compose_fix_query,
+    FixAdmissionDenied,
+    admit_fix_round,
     fix_rounds_left,
 )
 from api.utils.api_utils import (
@@ -62,16 +67,17 @@ from api.utils.api_utils import (
 from common import settings
 from common.constants import RetCode
 from common.misc_utils import thread_pool_exec
-from rag.svr.file_review import spawn as spawn_mod
+
+# 本模块**不**顶层 import rag.svr.file_review.spawn：起线程那一步已随受理闸门一起下沉到
+# Service 层的 admit_fix_round（由它函数内延迟 import），本层不再直接触 spawn。
 
 logger = logging.getLogger(__name__)
 
 manager = Blueprint("file_review_api", __name__)
 
-# 轮次状态口径与 T6 executor 一致（取值见 db_models.FileReviewRound.status 注释）。
-# 只列「线程还会回来写这一行」的两态：它们与 spawn 的 _running_tasks 是同一件事的两个视角，
-# 是 fix 端点必须拒的两个前置条件。
-_RUNNING_ROUND_STATUSES = ("reviewing", "fixing")
+# 轮次状态口径（RUNNING_ROUND_STATUSES）与受理闸门（admit_fix_round / FixAdmissionDenied）
+# 都在 Service 层 —— 对话工具那条线程与 quart 事件循环是两个线程，只有进程级锁能互斥，
+# 故互斥边界不能留在这个只跑在事件循环里的模块。故本模块不保留重复定义。
 
 # 级别白名单：与 T1 预置模板 / T6 _norm_severity 的输出一致。
 _SEVERITY_WHITELIST = ("high", "medium", "low")
@@ -220,19 +226,6 @@ def _parse_levels(raw) -> list | None:
     return out or None
 
 
-def _fix_base_query(rounds: list, extra: str = "") -> str:
-    """修复轮的 user_query 基准 = **首轮**原始需求（可选追加本次补充说明）。
-
-    基准只能取首轮：修复轮的 user_query 里已经带着上一轮写进去的级别指令，拿它当基准会把
-    历轮指令叠起来（见 compose_fix_query 的 docstring，T8 实测踩过）。
-    """
-    base = (rounds[0].user_query or "").strip() if rounds else ""
-    extra = (extra or "").strip()
-    if not extra:
-        return base
-    return f"{base}\n本次补充要求：{extra}" if base else f"本次补充要求：{extra}"
-
-
 @manager.route("/file/review/templates", methods=["GET"])
 @login_required
 @add_tenant_id_to_kwargs
@@ -289,67 +282,31 @@ async def fix_review(task_id: str, tenant_id: str):
             return get_error_argument_result(
                 "levels 必须是非空数组，取值只能是 high / medium / low")
 
-        # ══ 临界区开始：到 spawn_review_task 之前**不许出现任何 await** ══════════
-        # 这段是「校验 — 定轮号 — 建轮次 — 起线程」的互斥边界。quart 是单进程单事件循环
-        # （WS 默认 1，见 docker/launch_backend_service.sh），只要区内没有 await，另一个请求
-        # 就插不进来。没有这道边界会怎样：两个并发 fix 各自观测到 is_running=False、
-        # next_round() 取到**同一轮号**（(task_id, round_no) 无唯一约束），后到者的
-        # spawn_review_task 命中 _running_tasks 后**静默 return**，于是留下一条永远没人消费的
-        # fixing 轮次 —— 该 task 之后所有 fix/review 会被下面这些闸门永久挡死
-        # （T6/T8 实测的必死路径）。区内要加 await，请先把 await 挪到临界区之外。
-        rounds = FileReviewRoundService.get_owned_task(task_id, tenant_id)
-        if not rounds:
-            # 「不存在」与「不是你的」共用同一句文案：区分会把「他人 task 是否存在」
-            # 这一信息透给攻击者（get_owned_task 的 docstring 同款口径）。
-            return get_error_data_result("文件审核任务不存在或无权访问")
-        cur = rounds[-1]
-        if cur.status in _RUNNING_ROUND_STATUSES:
-            return get_json_result(code=RetCode.OPERATING_ERROR,
-                                   message="当前轮次仍在进行中，请等它结束后再发起修复")
-        if spawn_mod.is_running(task_id):
-            # 轮次行可能**已经**是终态而线程还在收尾：executor._run_fix_round 先置轮次终态、
-            # 再逐条写最多 MAX_FIX_ITEMS(20) 条标注，中间隔着 20 次 DB 往返。此刻
-            # spawn_review_task 会静默 no-op，新轮次永远等不到线程去消费它（T8 实测）。
-            return get_json_result(code=RetCode.OPERATING_ERROR,
-                                   message="上一轮审核正在收尾，请稍等片刻后重试")
-        left = fix_rounds_left(rounds)
-        if left <= 0:
-            return get_json_result(
-                code=RetCode.OPERATING_ERROR,
-                message=f"已达到最大修复轮次（{MAX_FIX_ROUNDS} 轮），未修复的问题请按批注手动处理")
+        # 受理序列「校验 — 定轮号 — 建轮次 — 起线程」必须原子，但互斥边界不能留在本模块：
+        # 「临界区内不许 await」只挡得住并发 HTTP 请求（quart 单进程单事件循环，WS 默认 1，
+        # 见 docker/launch_backend_service.sh），挡不住**对话工具那条线程** —— T8 的 _fix
+        # 被 common.connection_utils.timeout 丢进独立 daemon 线程执行，与事件循环是两个
+        # 线程。两入口并发打同一 task_id 时双方都会观测到 is_running=False、next_round()
+        # 取到同一轮号（(task_id, round_no) 无唯一约束），后到者的 spawn_review_task 命中
+        # _running_tasks 后静默 return，那条 fixing 轮次永远等不到线程消费，该 task 之后
+        # 所有 fix/review 被前置闸门永久挡死（T6/T8 实测的必死路径）。故互斥下沉到 Service
+        # 层的进程级 threading.Lock（admit_fix_round），跨线程有效。
+        # 这里**必须同步调用**（不得 await）：一旦 await，锁会在 await 点被让出去。
+        try:
+            result = admit_fix_round(
+                task_id=task_id, tenant_id=tenant_id, levels=levels,
+                # 基准取首轮原始需求（见 _fix_base_query 的说明）；非法类型在 Service 层忽略。
+                user_query_override=body.get("user_query"))
+        except FixAdmissionDenied as denied:
+            if denied.reason == "not_found":
+                # 「不存在」与「不是你的」共用同一句文案（get_owned_task 的口径），走默认
+                # 错误码路径 —— 与改造前的返回值完全一致。
+                return get_error_data_result(denied.message)
+            return get_json_result(code=RetCode.OPERATING_ERROR, message=denied.message)
 
-        pending = FileReviewAnnotationService.list_pending_by_task(task_id)
-        if not [a for a in pending if a.severity in levels]:
-            # 所选级别没有待修项时必须拦下：executor 的 chosen 不带 severity 谓词，
-            # 建出来的轮次会去修**别的**级别（把用户没选中的问题改掉），或者空转一轮
-            # 白白烧掉一次重试机会。
-            return get_json_result(code=RetCode.OPERATING_ERROR,
-                                   message="所选级别没有待修复的问题，无需发起修复")
-
-        no, version = FileReviewRoundService.next_round(task_id)
-        rid = FileReviewRoundService.create_round(
-            task_id=task_id,
-            file_id=cur.file_id,
-            round_no=no,
-            template_id=cur.template_id,
-            # 基准取首轮原始需求，不用上一轮（见 _fix_base_query 的说明）。
-            user_query=compose_fix_query(
-                _fix_base_query(rounds, body.get("user_query")), levels),
-            file_version=version,
-            status="fixing",
-            # tenant 必须来自当前用户，不能留空：get_owned_task 要求「任一轮 tenant 不符
-            # 即拒绝」，写空串的轮次连自己都过不了闸门；且 executor 用 `{tenant}-downloads`
-            # 选桶，空串会让成稿落进 `-downloads` 桶、谁都取不到。
-            tenant_id=tenant_id,
-            created_by=tenant_id,
-            # 继承本轮 KB 配置：修复轮不做检索，但 kb_ids 是「这一轮用了哪些知识库」的
-            # 可追溯配置，留空会让它无从知晓。
-            kb_ids=cur.kb_ids,
-        )
-        spawn_mod.spawn_review_task(task_id)
-        # ══ 临界区结束 ══════════════════════════════════════════════════════
-        return get_json_result(data={"task_id": task_id, "round_id": rid, "round_no": no,
-                                     "status": "fixing", "fix_rounds_left": left - 1})
+        return get_json_result(data={"task_id": task_id, "round_id": result.round_id,
+                                     "round_no": result.round_no, "status": "fixing",
+                                     "fix_rounds_left": result.fix_rounds_left})
     except Exception:
         logger.exception("file review: start fix round failed, task_id=%s", task_id)
         return get_error_data_result(message="Internal server error")
@@ -422,9 +379,14 @@ async def download_review_version(task_id: str, file_version: str):
         if not bucket:
             return get_error_data_result("该任务归属缺失，无法下载")
         blob = await thread_pool_exec(settings.STORAGE_IMPL.get, bucket, object_name)
-        # 文件名：{fileId}_v{file_version}.docx（简化命名，T16 联调如需原文件名再调整）
-        file_id = target.file_id or ""
-        file_name = f"{file_id}_{file_version}.docx" if file_id else f"{file_version}.docx"
+        if not blob:
+            # STORAGE_IMPL.get 对丢失的对象返回 None；直接塞进 Response 会得到 200 + 0 字节，
+            # 把「产物丢了」伪装成一次成功下载 —— 用户拿到空文件、无从判断是重试还是重跑，
+            # 面板上「可下载」与实际打不开互相矛盾。这里如实报错。
+            return get_error_data_result("成稿文件已丢失，请重新发起修复")
+        # 文件名只用 file_version，**不带** file_id：那是上传系统的内部 uuid，透给用户既无
+        # 信息量，还会被误当成可寻址的文件标识。编码方式不变（filename*=UTF-8''{quote}）。
+        file_name = f"文件审核_{file_version}.docx"
         return Response(
             blob,
             mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",

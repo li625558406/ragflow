@@ -13,6 +13,7 @@ import EmailForm from '../form/email-form';
 import ExeSQLForm from '../form/exesql-form';
 import ExtractorForm from '../form/extractor-form';
 import FanOutForm from '../form/fanout-form';
+import FileReviewForm from '../form/file-review-form';
 import GithubForm from '../form/github-form';
 import GoogleForm from '../form/google-form';
 import GoogleScholarForm from '../form/google-scholar-form';
@@ -118,6 +119,9 @@ export const FormConfigMap = {
   },
   [Operator.TemplateFill]: {
     component: TemplateFillForm,
+  },
+  [Operator.FileReview]: {
+    component: FileReviewForm,
   },
   [Operator.Note]: {
     component: () => <></>,

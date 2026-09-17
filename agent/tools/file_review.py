@@ -26,8 +26,8 @@ from abc import ABC
 
 from agent.component.file_review import FILE_ID_INPUT_KEY
 from agent.tools.base import ToolBase, ToolMeta, ToolParamBase
+from api.db.services.file_review_service import ROUND_STATUS_CN as _ROUND_STATUS_CN
 from api.db.services.file_review_service import SEVERITY_CN as _SEVERITY_CN
-from api.db.services.file_review_service import compose_fix_query
 from common.connection_utils import timeout
 from common.misc_utils import get_uuid
 from rag.svr.file_review import spawn as spawn_mod
@@ -45,15 +45,11 @@ _POLL_INTERVAL = 3
 # 「没发生」—— 但**不许**回头去引 Service 的完成口径常量（它已随 max_completed_round_no
 # 一并删除，见 T9），这里就是权威定义。
 _TERMINAL_ROUND_STATUSES = ("annotated", "done", "failed")
-_RUNNING_ROUND_STATUSES = ("reviewing", "fixing")
 
-_ROUND_STATUS_CN = {
-    "reviewing": "审核中", "annotated": "审核完成", "fixing": "修复中",
-    # 刻意用中性词：done 不总意味着「改好了」——executor 在「没有待修复的问题」
-    # 与「该文件类型不支持自动修复」时同样以 done 收口，写「修复完成」会让用户
-    # 误以为文档已被改动。
-    "done": "已收口", "failed": "失败",
-}
+# 轮次状态口径（_ROUND_STATUS_CN）与「进行中」两态（RUNNING_ROUND_STATUSES）的唯一实现
+# 都在 Service 层：受理闸门 admit_fix_round 也要用它们。本层只 import 中文名映射（两个
+# _format_status 渲染点用），不再重复定义，也不再用 RUNNING_ROUND_STATUSES（前置状态由
+# 闸门在锁内判定，工具层再判一次就是又一个「检查通过但线程未注册」的窗口）。
 _SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
 
 # 返回值会进 LLM 上下文：逐条 issue 全文（上限 1000 字）会刷爆 token，逐项裁剪。
@@ -244,12 +240,7 @@ class FileReviewTool(ToolBase, ABC):
     # ---------- action: fix ----------
 
     def _fix(self, kwargs):
-        from api.db.services.file_review_service import (
-            MAX_FIX_ROUNDS,
-            FileReviewAnnotationService,
-            FileReviewRoundService,
-            fix_rounds_left,
-        )
+        from api.db.services.file_review_service import FixAdmissionDenied, admit_fix_round
 
         tenant_id = self._get_tenant_id()
         if not tenant_id:
@@ -257,66 +248,28 @@ class FileReviewTool(ToolBase, ABC):
         task_id = str(kwargs.get("task_id") or "").strip()
         if not task_id:
             return "请提供 task_id（发起审核时返回的任务 id）。"
-        rounds = FileReviewRoundService.get_owned_task(task_id, tenant_id)
-        if not rounds:
-            return "没有找到该审核任务，或无权访问（请确认 task_id 是否正确）。"
 
-        cur = rounds[-1]
-        if cur.status in _RUNNING_ROUND_STATUSES:
-            return (f"第 {cur.round_no} 轮（{_ROUND_STATUS_CN.get(cur.status, cur.status)}）"
-                    "仍在进行中，请稍后用 action=status 查询进度后再发起修复。")
-        if fix_rounds_left(rounds) <= 0:
-            return f"已达到最大修复轮数（{MAX_FIX_ROUNDS} 轮），未修复的问题保持原样。"
-
+        # 级别解析留在工具层，且**刻意比 REST 端点宽松**（接受逗号串/别名，见 _parse_levels）：
+        # 这是 LLM 参数解析的实际形态，与 REST「任一项非法即整批拒绝」是有意的既有差异。
         levels = self._parse_levels(kwargs.get("levels"))
         if not levels:
             return "请提供要修复的问题级别 levels（high / medium / low 中的一到多个，逗号分隔）。"
 
-        pending = FileReviewAnnotationService.list_pending_by_task(task_id)
-        if not [a for a in pending if a.severity in levels]:
-            # 该级别没东西可修时**不建空转轮次**：executor 会立刻以「没有待修复的问题」
-            # 收口，白烧一次轮次余额，面板上还多一条无意义的行。
-            return ("没有【" + "、".join(_SEVERITY_CN.get(s, s) for s in levels)
-                    + "】级别的待修复问题。待修复问题：" + self._severity_summary(pending))
-
-        # 防「永久卡死的 fixing 轮」——不是降低概率，而是把不可逆状态换成可重试。
-        # 四个已核实的事实叠加出的必死路径：
-        #   ① spawn_review_task 在 task_id 已在 _running_tasks 时**直接 return**（无返回
-        #      值、不报错），调用方无从得知线程没起来；
-        #   ② executor._run_fix_round **先**把轮次行置终态 done，**再** _settle_annotations
-        #      写最多 20 条标注，中间有宽度可达 20 次 DB 往返的窗口——轮次行读出来已是
-        #      done（上面的前置闸门放行），线程却仍在 _running_tasks 里；
-        #   ③ executor.execute_task 每次只处理 rounds[-1] 一轮、不循环，故新轮永远等不到
-        #      线程去消费它；
-        #   ④ 没有看门狗回收（_force_fail_round 只在崩溃/调度失败分支触发）。
-        # 于是新轮恒停在 fixing，该 task 之后所有 fix/review 都被上面的前置闸门挡死。
-        # 本检查是唯一可行的闸门，但它的保证**有前提**：_running_tasks 对同一 task_id 只有
-        # 本调用点会写入（_review 用全新 get_uuid()）。在此前提下观测到 is_running 为 False
-        # ⇒ 紧随其后的 spawn_review_task 必然能真正注册线程；观测到 True 就绝不能建轮次。
-        # 该前提**不覆盖同一 task 的并发 fix**：两个并发请求会同时观测到 False、各自建一条
-        # 同号轮次（(task_id, round_no) 无唯一约束），后到者的 spawn 仍旧静默 no-op。对话内
-        # 工具调用是串行的，故本层无此路径；T9 的 REST 端点（HTTP 重试/双击）必须自己补闸门。
-        # 它必须放在上面所有**语义**闸门之后：真正原因是「没有可修项」时错答「稍后再试」
-        # 会让用户白等；且与 create_round 之间不得插入其它逻辑（否则又会开出一个新的
-        # 「检查通过但线程未注册」窗口）。
-        if spawn_mod.is_running(task_id):
-            return ("上一轮审核正在收尾，现在发起修复会排在它后面、不会被本轮执行。"
-                    "请稍等片刻后用 action=status 确认状态，再发起修复。")
-
-        round_no, file_version = FileReviewRoundService.next_round(task_id)
-        FileReviewRoundService.create_round(
-            task_id=task_id, file_id=cur.file_id, round_no=round_no,
-            template_id=cur.template_id,
-            # 基准是 rounds[0]（首轮原始需求）而非 cur（可能是修复轮，带着上一轮已作废
-            # 的级别指令）——详见 Service 层 compose_fix_query 的 docstring。
-            user_query=compose_fix_query(rounds[0].user_query, levels),
-            file_version=file_version, status="fixing",
-            tenant_id=tenant_id, created_by=tenant_id,
-            # 修复轮沿用本轮的 kb_ids（已是 JSON 文本，_normalize_kb_ids 幂等）：
-            # 轮次行是「这轮用了哪些知识库」的审计记录，不能因为本轮不检索就写成空。
-            kb_ids=cur.kb_ids,
-        )
-        spawn_mod.spawn_review_task(task_id)
+        # 「校验 — 定轮号 — 建轮次 — 起线程」整段交给 Service 层的 admit_fix_round。
+        # 为什么必须这样：本函数被 @timeout 丢进**独立 daemon 线程**执行，与 quart 事件
+        # 循环是两个线程 —— REST 端点赖以互斥的「临界区内无 await」在这里毫无意义。两入口
+        # 并发打同一 task_id 的必死路径（双方都观测到 is_running=False → 各自 next_round()
+        # 拿到同一轮号 → 后到者 spawn 静默 no-op → 留下永远没人消费的 fixing 轮次 → 该 task
+        # 之后所有 fix/review 被前置闸门永久挡死，只能手工改库）只有 admit_fix_round 内部
+        # 那把进程级 threading.Lock 能挡，详见它的 docstring。
+        try:
+            admit_fix_round(
+                task_id=task_id, tenant_id=tenant_id, levels=levels,
+                # 工具不提供「本次补充要求」入口：review 阶段的 user_query 已是首轮基准。
+                user_query_override="")
+        except FixAdmissionDenied as denied:
+            # message 本就是面向用户的文案，原样回传；reason 供 API 层映射错误码。
+            return denied.message
         return self._poll(task_id, tenant_id)
 
     # ---------- 轮询与摘要 ----------

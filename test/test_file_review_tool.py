@@ -324,9 +324,10 @@ def test_fix_rejects_while_previous_round_running(monkeypatch):
 
 
 def test_fix_rejects_when_rounds_exhausted(monkeypatch):
+    """文案由 Service 层受理闸门统一给出（T8/T9 共用同一份，不再各自措辞）。"""
     calls = _patch(monkeypatch, rounds=[_round(3, "done")], left=0)
     out = _make_tool()._invoke(action="fix", task_id=PFX + "task", levels="high")
-    assert "最大修复轮数" in out and "保持原样" in out and calls["rounds"] == []
+    assert "最大修复轮" in out and "手动处理" in out and calls["rounds"] == []
 
 
 def test_fix_rejects_unknown_levels(monkeypatch):
@@ -413,6 +414,30 @@ def test_fix_proceeds_when_spawn_not_running(monkeypatch):
 
     assert len(calls["rounds"]) == 1
     assert calls["spawned"] == [PFX + "task"]
+
+
+def test_fix_surfaces_admission_denial_message_verbatim(monkeypatch):
+    """受理闸门的拒绝文案必须**原样**进对话（工具不重写、不吞掉、不换通用兜底）。
+
+    工具层已不再自己判前置状态（再判一次就是又一个「检查通过但线程未注册」的窗口），
+    故所有拒绝分支的文案只有 Service 一处来源。这里直接打桩闸门按 reason 抛错，证明
+    工具确实把 denied.message 透出、且入参形态（levels 列表 / 空 override）没被改动。
+    """
+    from api.db.services import file_review_service as svc
+
+    _patch(monkeypatch, rounds=[_round(1, "annotated")], pending=[_ann("high")])
+    seen = []
+
+    def _deny(**kw):
+        seen.append(kw)
+        raise svc.FixAdmissionDenied("busy", "上一轮操作正在处理中，请稍后重试")
+
+    monkeypatch.setattr(svc, "admit_fix_round", _deny)
+    out = _make_tool()._invoke(action="fix", task_id=PFX + "task", levels="high")
+
+    assert out == "上一轮操作正在处理中，请稍后重试"
+    assert seen == [{"task_id": PFX + "task", "tenant_id": "tenant_x",
+                     "levels": ["high"], "user_query_override": ""}]
 
 
 def test_fix_rejects_while_previous_round_fixing(monkeypatch):

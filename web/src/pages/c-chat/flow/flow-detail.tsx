@@ -2,6 +2,7 @@
 import ChapteredMarkdown from '@/components/chaptered-markdown';
 import { Button } from '@/components/ui/button';
 import type { ITemplateFillDownload } from '@/hooks/template-fill-stream';
+import { downloadFileReviewVersion } from '@/services/file-review-service';
 import {
   archiveFlow,
   deleteFlow,
@@ -1045,17 +1046,16 @@ function ConversationView({
                   );
                 }}
                 onPreviewDoc={(_minioPath, fileVersion) => {
-                  // 最小可用路径：直接调 download 端点触发浏览器下载，绕过
-                  // flow 端 onPreviewDoc 旧有的「关 review 抽屉 + 透传到
+                  // 绕过 flow 端 onPreviewDoc 旧有的「关 review 抽屉 + 透传到
                   // downloadVersionBlob」链路 —— 那条链路要求对象名匹配 flow
                   // 的 FlowVersionService 记录，但审核成稿是 task 维度的，
                   // 不在 flow_version 表里。改用专用 download 端点。
+                  // 必须走 downloadFileReviewVersion（fetch 手挂 Authorization
+                  // 取 Blob）：该端点带 @login_required 且只从请求头取用户，
+                  // window.open 不带自定义头 → 必 401（同 c-chat/index.tsx）。
                   const tid = live.fileReview?.taskId;
                   if (!tid || !fileVersion) return;
-                  const url = `/api/v1/file/review/${encodeURIComponent(
-                    tid,
-                  )}/${encodeURIComponent(fileVersion)}/download`;
-                  window.open(url, '_blank');
+                  void downloadFileReviewVersion(tid, fileVersion);
                 }}
               />
             </div>

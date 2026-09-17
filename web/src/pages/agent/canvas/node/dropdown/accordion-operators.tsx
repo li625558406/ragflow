@@ -125,6 +125,7 @@ export function AccordionOperators({
               Operator.SearXNG,
               Operator.DocGenerator,
               Operator.TemplateFill,
+              Operator.FileReview,
               Operator.BidSearch,
               Operator.BidGetDetail,
               Operator.BidImportToKb,

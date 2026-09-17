@@ -28,6 +28,7 @@ import { useClickDrawer } from '@/components/pdf-drawer/hooks';
 import { RAGFlowAvatar } from '@/components/ragflow-avatar';
 import ToolsPanel from '@/components/tools';
 import { Textarea } from '@/components/ui/textarea';
+import { downloadFileReviewVersion } from '@/services/file-review-service';
 import {
   Bookmark,
   Check,
@@ -2587,23 +2588,24 @@ export default function CChat() {
                                       setReviewMode(true);
                                     }}
                                     onPreviewDoc={(_minioPath, fileVersion) => {
-                                      // 最小可用路径：直接调 download 端点触发浏览器下载。
                                       // doc.object 是 MinIO 对象名而非上传系统 fileId，
                                       // 旧的 setPreviewDoc({fileId: minioPath}) 把对象
                                       // 名当 fileId 用是错误的（T9 → T14/T15 复盘）：
                                       // /api/v1/files/<id> 找不到 → 「下载成稿」按钮
-                                      // 死链。这里改走专用 download 端点，绕过 live preview
-                                      // 抽屉直接下载，后续可再迭代成内嵌预览。
-                                      const tid =
-                                        (msg as any).fileReview?.taskId ||
-                                        taskId;
+                                      // 死链。这里改走专用 download 端点。
+                                      // 必须走 downloadFileReviewVersion（fetch 手挂
+                                      // Authorization 取 Blob）：该端点带 @login_required
+                                      // 且只从请求头取用户，window.open 不带自定义头 → 必 401。
+                                      // taskId 只取 fileReview.taskId：外层守卫已保证
+                                      // fileReview 存在；会话级 taskId 是错误 id，兜底会
+                                      // 拼出必然 404 的 URL。
+                                      const tid = (msg as any).fileReview
+                                        ?.taskId;
                                       if (!tid || !fileVersion) return;
-                                      const url = `/api/v1/file/review/${encodeURIComponent(
+                                      void downloadFileReviewVersion(
                                         tid,
-                                      )}/${encodeURIComponent(
                                         fileVersion,
-                                      )}/download`;
-                                      window.open(url, '_blank');
+                                      );
                                     }}
                                   />
                                 )}

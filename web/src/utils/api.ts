@@ -500,11 +500,15 @@ export default {
   templateFillRunSnapshot: (canvasTaskId: string) =>
     `${restAPIv1}/template/fill/fill-run/${canvasTaskId}/snapshot`,
 
-  // 文件审核（T9 REST API：4 端点轮询读模型 + fix + 标注人工闭环）
+  // 文件审核（T9 REST API：5 端点轮询读模型 + fix + 标注人工闭环 + 成稿下载）
   fileReviewTemplates: `${restAPIv1}/file/review/templates`,
   fileReviewState: (fileId: string) =>
     `${restAPIv1}/file/review/file/${fileId}/state`,
   fileReviewFix: (taskId: string) => `${restAPIv1}/file/review/${taskId}/fix`,
   fileReviewAnnotationStatus: (annotationId: string) =>
     `${restAPIv1}/file/review/annotation/${annotationId}/status`,
+  // 成稿下载：走 @login_required，**不能**用 window.open / a[href] 直链（浏览器导航
+  // 不带自定义 Authorization 头 → 必 401）。见 services/file-review-service.ts 的说明。
+  fileReviewDownload: (taskId: string, fileVersion: string) =>
+    `${restAPIv1}/file/review/${encodeURIComponent(taskId)}/${encodeURIComponent(fileVersion)}/download`,
 };

@@ -682,3 +682,116 @@ def test_list_by_file_empty_and_blank_are_empty_list():
     with DB.connection_context():
         assert FileReviewAnnotationService.list_by_file(f"{PFX}f_annot_ghost") == []
         assert FileReviewAnnotationService.list_by_file("") == []
+
+
+# ── 13. admit_fix_round：受理闸门的跨线程互斥（M3） ─────────────────────
+# 这两条是本层唯一的并发语义，且都用真线程/真锁验证（不是「调一次没抛错」）。
+
+def _patch_admission(monkeypatch, *, state, created, spawned):
+    """把 admit_fix_round 依赖的四个触库点 + spawn 换成纯内存替身。
+
+    state["rounds"] 是**共享可变列表**：get_owned_task 返回它的快照，create_round 往它
+    追加 —— 这样「第二个线程看到第一个建出的修复轮」这件事才真被验证。
+    """
+    import time as _time
+
+    from api.db.services import file_review_service as svc
+
+    monkeypatch.setattr(svc.FileReviewRoundService, "get_owned_task",
+                        classmethod(lambda cls, tid, tenant: list(state["rounds"])))
+    monkeypatch.setattr(svc.FileReviewAnnotationService, "list_pending_by_task",
+                        classmethod(lambda cls, tid: [SimpleNamespace(severity="high")]))
+
+    def _next_round(cls, tid):
+        no = max(r.round_no for r in state["rounds"]) + 1
+        return no, f"v{no}"
+
+    def _create_round(cls, **kw):
+        _time.sleep(0.3)          # 撑开竞争窗口：无锁实现下两个线程都会走进来
+        state["rounds"].append(SimpleNamespace(
+            round_no=kw["round_no"], status="fixing", user_query=kw["user_query"],
+            file_id="f1", template_id="t1", kb_ids=None))
+        created.append(kw)
+        return f"rid-{kw['round_no']}"
+
+    monkeypatch.setattr(svc.FileReviewRoundService, "next_round", classmethod(_next_round))
+    monkeypatch.setattr(svc.FileReviewRoundService, "create_round", classmethod(_create_round))
+
+    from rag.svr.file_review import spawn as spawn_mod
+    monkeypatch.setattr(spawn_mod, "is_running", lambda tid: False)
+    monkeypatch.setattr(spawn_mod, "spawn_review_task", lambda tid: spawned.append(tid))
+    return svc
+
+
+def test_admit_fix_round_serializes_concurrent_callers(monkeypatch):
+    """对抗性并发：两个线程同时受理同一 task，**只允许一个建出轮次**。
+
+    这是本锁存在的唯一理由 —— REST 端点跑在 quart 事件循环、对话工具被
+    common.connection_utils.timeout 丢进独立 daemon 线程，「临界区内无 await」不构成
+    任何跨线程互斥。无锁实现下两个线程都会通过 status 闸门、各自 next_round() 拿到同
+    一个轮号，后到者的 spawn_review_task 静默 no-op，留下永远没人消费的 fixing 行。
+    """
+    import threading
+
+    state = {"rounds": [SimpleNamespace(round_no=1, status="annotated", file_id="f1",
+                                        template_id="t1", kb_ids=None,
+                                        user_query="审核这份招标文件")]}
+    created, spawned = [], []
+    svc = _patch_admission(monkeypatch, state=state, created=created, spawned=spawned)
+
+    barrier = threading.Barrier(2)
+    results = []
+
+    def _worker():
+        barrier.wait()
+        try:
+            results.append(("ok", svc.admit_fix_round(
+                task_id=f"{PFX}t_race", tenant_id="u1", levels=["high"])))
+        except svc.FixAdmissionDenied as denied:
+            results.append(("denied", denied.reason))
+
+    threads = [threading.Thread(target=_worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert sorted(kind for kind, _ in results) == ["denied", "ok"], results
+    assert [v for kind, v in results if kind == "denied"] == ["running"], \
+        "后到者必须看到前一个建出的 fixing 轮次（而不是也建一轮）"
+    assert len(created) == 1, f"并发下只允许建一轮，实际 {len(created)}"
+    assert spawned == [f"{PFX}t_race"]
+
+
+def test_admit_fix_round_busy_on_lock_timeout_and_never_releases_foreign_lock(monkeypatch):
+    """锁被占用且超时 → busy；且超时路径**不得**去 release 别人的锁。
+
+    「拿不到却释放」比「拿不到」危险得多：一次误释放就能让后续所有互斥失效，重新打开
+    同号轮次的窗口。这里用真锁 + 真线程构造持锁者，断言锁仍在它手里。
+    """
+    import threading
+
+    from api.db.services import file_review_service as svc
+
+    monkeypatch.setattr(svc, "ADMIT_LOCK_TIMEOUT", 0.1)
+    held, release = threading.Event(), threading.Event()
+
+    def _holder():
+        with svc._ADMIT_LOCK:
+            held.set()
+            release.wait(5)
+
+    holder = threading.Thread(target=_holder, daemon=True)
+    holder.start()
+    assert held.wait(2), "持锁线程未能启动"
+    try:
+        with pytest.raises(svc.FixAdmissionDenied) as ei:
+            svc.admit_fix_round(task_id=f"{PFX}t_busy", tenant_id="u1", levels=["high"])
+        assert ei.value.reason == "busy"
+        assert ei.value.message  # 面向用户的中文文案必须存在
+        assert svc._ADMIT_LOCK.locked() is True, "超时路径不得释放持锁者仍持有的锁"
+    finally:
+        release.set()
+        holder.join(3)
+    assert svc._ADMIT_LOCK.acquire(timeout=1) is True, "持锁者释放后锁必须可用"
+    svc._ADMIT_LOCK.release()

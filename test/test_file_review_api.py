@@ -113,9 +113,13 @@ def _patch_services(monkeypatch, *, rounds=(), annotations=(), pending=(),
     monkeypatch.setattr(
         _api.FileReviewRoundService, "create_round",
         classmethod(lambda cls, **kw: calls.update({"created": kw}) or "rid-new"))
-    monkeypatch.setattr(_api.spawn_mod, "spawn_review_task",
+    # 受理闸门已下沉到 Service 层的 admit_fix_round，它**函数内延迟 import** spawn 模块 ——
+    # 与这里 import 到的是同一个模块对象，故按模块打桩依旧命中（不再经 _api.spawn_mod）。
+    from rag.svr.file_review import spawn as spawn_mod
+
+    monkeypatch.setattr(spawn_mod, "spawn_review_task",
                         lambda tid: calls.setdefault("spawned", []).append(tid))
-    monkeypatch.setattr(_api.spawn_mod, "is_running", lambda tid: running)
+    monkeypatch.setattr(spawn_mod, "is_running", lambda tid: running)
     return calls
 
 
@@ -146,27 +150,38 @@ def test_all_routes_registered_on_blueprint():
         assert inspect.iscoroutinefunction(getattr(fn, "__wrapped__", fn)) or callable(fn)
 
 
-def test_fix_critical_section_has_no_await():
-    """结构性锁死临界区：get_owned_task → spawn 之间不许有 await。
+def test_fix_admission_is_synchronous_and_lock_guarded():
+    """结构性锁死受理契约：互斥在 Service 层，是**同步函数 + 进程级 threading.Lock**，
+    且端点必须在无 await 的临界区内调它。
 
-    quart 单进程单事件循环下，「区内无 await」就是「检查—定轮号—建轮次—起线程」的互斥
-    边界；一旦有人塞进 await，并发 fix 会各自建出同号轮次、留下永远没人消费的 fixing 轮次，
-    该 task 之后所有 fix/review 被闸门永久挡死。普通用例测不到这个（要构造真并发），
-    故用 AST 在代码层断言。
+    为什么盯着这件事：quart 单进程单事件循环下，「临界区内无 await」只挡得住并发 HTTP
+    请求；对话工具被 common.connection_utils.timeout 丢进**独立 daemon 线程**执行，与事件
+    循环是两个线程 —— 只有进程级锁能覆盖它。若有人把 admit_fix_round 改成协程、或在端点
+    里 await 它，锁会在 await 点被让出去，两入口再次并发建出同号轮次、留下永远没人消费的
+    fixing 轮次，该 task 之后所有 fix/review 被前置闸门永久挡死（不可逆）。普通用例测不到
+    这个（要构造真并发），故用 AST + 函数性质在代码层断言。
     """
+    import inspect
+    import threading
+
+    from api.db.services import file_review_service as svc
+
+    assert not inspect.iscoroutinefunction(svc.admit_fix_round), \
+        "admit_fix_round 必须是同步函数（持 threading.Lock；async 会让锁在 await 点失效）"
+    assert isinstance(svc.ADMIT_LOCK_TIMEOUT, (int, float)) and svc.ADMIT_LOCK_TIMEOUT > 0
+    assert isinstance(svc._ADMIT_LOCK, type(threading.Lock())), \
+        "受理锁必须是 threading.Lock 实例（进程级、跨线程共享）"
+
     with open(_API_PATH, encoding="utf-8") as fh:
         tree = ast.parse(fh.read())
     fn = next(n for n in ast.walk(tree)
               if isinstance(n, ast.AsyncFunctionDef) and n.name == "fix_review")
     body = next(s for s in fn.body if isinstance(s, ast.Try)).body
-    start = next(i for i, s in enumerate(body)
-                 if "get_owned_task" in ast.dump(s))
-    end = next(i for i, s in enumerate(body)
-               if "spawn_review_task" in ast.dump(s))
-    assert start < end, "临界区起止顺序异常（get_owned_task 应在 spawn 之前）"
-    for stmt in body[start + 1:end]:
+    stmts = [s for s in body if "admit_fix_round" in ast.dump(s)]
+    assert stmts, "fix_review 必须把受理交给 admit_fix_round"
+    for stmt in stmts:
         assert not any(isinstance(n, ast.Await) for n in ast.walk(stmt)), (
-            f"临界区内出现 await，破坏 fix 的并发互斥：{ast.dump(stmt)[:200]}")
+            f"admit_fix_round 不得被 await（会让出锁、破坏跨线程互斥）：{ast.dump(stmt)[:200]}")
 
 
 # ── 纯函数：脏值与边界 ───────────────────────────────────────────────
@@ -198,13 +213,27 @@ def test_parse_levels_rejects_whole_batch_on_any_invalid_item():
 
 
 def test_fix_base_query_uses_first_round_and_appends_extra():
+    """基准只能取首轮 + 非法类型的 user_query 不得把端点打成 500。
+
+    `_fix_base_query` 已随受理闸门下沉到 Service 层（admit_fix_round 内部用它算基准），
+    故这里从 Service import。对抗：body 里的 user_query 是任意 JSON —— dict/list/数字直接
+    .strip() 会 AttributeError → 500；必须按「没提补充要求」忽略，而不是 str() 成 repr
+    拼进给 LLM 的 user_query（那只是换了一种脏数据，用户同样无从修正）。
+    """
+    from api.db.services.file_review_service import _fix_base_query as f
+
     rounds = [_round(1, "annotated", user_query="按招标文件要求审核"),
               _round(2, "done", user_query="本次只修复【严重/high】级别的问题")]
-    assert _api._fix_base_query(rounds) == "按招标文件要求审核"
-    assert _api._fix_base_query(rounds, "重点看保证金") == \
+    assert f(rounds) == "按招标文件要求审核"
+    assert f(rounds, "重点看保证金") == \
         "按招标文件要求审核\n本次补充要求：重点看保证金"
-    assert _api._fix_base_query([], "只这一句") == "本次补充要求：只这一句"
-    assert _api._fix_base_query([]) == ""
+    assert f([], "只这一句") == "本次补充要求：只这一句"
+    assert f([]) == ""
+    # 非字符串一律忽略：既不 500，也不把 repr 写进 user_query
+    assert f(rounds, {"a": 1}) == "按招标文件要求审核"
+    assert f(rounds, ["x"]) == "按招标文件要求审核"
+    assert f(rounds, 123) == "按招标文件要求审核"
+    assert f(rounds, "  ") == "按招标文件要求审核"
 
 
 def test_doc_payload_picks_latest_produced_round():
@@ -395,6 +424,32 @@ def test_fix_appends_caller_extra_query(monkeypatch):
     assert "本次补充要求：重点看保证金" in q
 
 
+def test_fix_maps_admission_denials_to_error_codes(monkeypatch):
+    """reason → 错误码映射：not_found 走默认错误码路径（与改造前逐字一致），其余走
+    OPERATING_ERROR。码位差异本身是会泄露信息的 —— not_found 不能与「参数错了」同码。"""
+    def _deny(reason, message):
+        def _raise(**kw):
+            assert kw["task_id"] == "t1" and kw["levels"] == ["high"]
+            raise _api.FixAdmissionDenied(reason, message)
+        return _raise
+
+    monkeypatch.setattr(_api, "admit_fix_round",
+                        _deny("not_found", "文件审核任务不存在或无权访问"))
+    body = _call(_api.fix_review, task_id="t1", body={"levels": ["high"]})
+    assert body["code"] == RetCode.DATA_ERROR, "not_found 必须走 get_error_data_result 默认码"
+    assert body["message"] == "文件审核任务不存在或无权访问"
+
+    for reason, msg in (("running", "第 2 轮（修复中）仍在进行中，请等它结束后再发起修复"),
+                        ("closing", "上一轮审核正在收尾，请稍等片刻后重试"),
+                        ("no_quota", "已达到最大修复轮次（3 轮），未修复的问题请按批注手动处理"),
+                        ("no_pending", "所选级别没有待修复的问题，无需发起修复"),
+                        ("busy", "上一轮操作正在处理中，请稍后重试")):
+        monkeypatch.setattr(_api, "admit_fix_round", _deny(reason, msg))
+        body = _call(_api.fix_review, task_id="t1", body={"levels": ["high"]})
+        assert body["code"] == RetCode.OPERATING_ERROR, reason
+        assert body["message"] == msg, reason
+
+
 # ── POST /file/review/annotation/<aid>/status ───────────────────────
 
 def _status_setup(monkeypatch, **over):
@@ -459,3 +514,67 @@ def test_annotation_status_hides_internal_error_text(monkeypatch):
                  body={"status": "resolved"})
     assert body["code"] != 0
     assert "9000" not in body["message"]
+
+
+# ── GET /file/review/<task_id>/<file_version>/download ──────────────
+
+class _FakeStorage:
+    """存储替身：只实现端点用到的 get。
+
+    必须替换 `settings.STORAGE_IMPL` 本身、而不是 `thread_pool_exec`：端点的实参
+    `settings.STORAGE_IMPL.get` 在调 thread_pool_exec **之前**就被求值，本环境该属性
+    是 None，先炸 AttributeError → 被外层兜成 Internal server error，测不到守卫分支。
+    """
+
+    def __init__(self, blob):
+        self.blob = blob
+        self.calls = []
+
+    def get(self, bucket, key):
+        self.calls.append((bucket, key))
+        return self.blob
+
+
+def test_download_returns_error_when_object_missing(monkeypatch):
+    """对抗：STORAGE_IMPL.get 返回 None（对象丢失）时不得回 200 + 0 字节。
+
+    那是把「产物丢了」伪装成一次成功下载：用户拿到空文件，无从判断该重试还是该重跑，
+    面板上「可下载」与实际打不开互相矛盾。
+    """
+    row = _round(1, "annotated", minio_path="frv-t1-v1", file_version="v1")
+    monkeypatch.setattr(_api.FileReviewRoundService, "get_by_task",
+                        classmethod(lambda cls, tid: [row]))
+    store = _FakeStorage(None)
+    monkeypatch.setattr(_api.settings, "STORAGE_IMPL", store)
+
+    body = _call(_api.download_review_version, method="GET",
+                 task_id="t1", file_version="v1")
+    assert body["code"] != 0
+    assert "丢失" in body["message"]
+    # 证明守卫真的走到了「取到 None」这一步（而不是提前因别的异常短路）
+    assert store.calls == [(f"{TENANT}-downloads", "frv-t1-v1")]
+
+
+def test_download_filename_excludes_internal_file_id(monkeypatch):
+    """对抗：Content-Disposition 里不得出现上传系统的内部 uuid（file_id）。
+
+    file_id 是系统内部标识，透给用户既无信息量，还会被当成可寻址的文件标识。
+    """
+    from urllib.parse import quote
+
+    row = _round(1, "annotated", minio_path="frv-t1-v1", file_version="v1",
+                 file_id="internal-uuid-should-not-leak")
+    monkeypatch.setattr(_api.FileReviewRoundService, "get_by_task",
+                        classmethod(lambda cls, tid: [row]))
+    monkeypatch.setattr(_api.settings, "STORAGE_IMPL",
+                        _FakeStorage(b"PK\x03\x04fake-docx"))
+
+    async def _inner():
+        async with APP.test_request_context("/", method="GET"):
+            return await _api.download_review_version(task_id="t1", file_version="v1")
+
+    resp = asyncio.run(_inner())
+    assert resp.status_code == 200
+    disp = resp.headers["Content-Disposition"]
+    assert "internal-uuid-should-not-leak" not in disp
+    assert quote("文件审核_v1.docx") in disp

@@ -29,10 +29,12 @@ export default function FileReviewProgress({
     fileVersion: string,
   ) => void;
   /** 点击「下载成稿」时回调（参数：成稿 MinIO 对象名 + 成稿版本号）。
-   *  调用方拿到 (minioPath, fileVersion) 后拼出
-   *  GET /api/v1/file/review/<taskId>/<fileVersion>/download URL 触发浏览器下载
-   *  —— 走专门端点，不复用 upload 系统的 fileId 路由（doc.object 是 MinIO 对象名，
-   *  旧链路把它当 fileId 用是错误的，见 T9 → T14/T15 复盘）。 */
+   *  调用方**必须**调 `downloadFileReviewVersion(taskId, fileVersion)`
+   *  （`@/services/file-review-service`）—— 它用 fetch 手挂 Authorization 取 Blob
+   *  再 createObjectURL 下载。**禁止**改成 window.open / a[href] 直链：下载端点带
+   *  `@login_required` 且只从请求头取用户，浏览器导航类请求不带自定义头 ⇒ 必 401。
+   *  doc.object 是 MinIO 对象名而非 upload 系统的 fileId，也不能拿它拼
+   *  `/api/v1/files/<id>`（见 T9 → T14/T15 复盘）。 */
   onPreviewDoc?: (minioPath: string, fileVersion: string) => void;
 }) {
   // ── 数据 ─────────────────────────────────────────
@@ -47,7 +49,14 @@ export default function FileReviewProgress({
   const current = data?.current ?? null;
   const status = current?.status ?? '';
   const isRunning = status === 'reviewing' || status === 'fixing';
-  const canFix = status === 'annotated' && (data?.fix_rounds_left ?? 0) > 0;
+  // canFix 必须**镜像服务端闸门**，而不是自己发明更严的条件。
+  // 服务端（Service 层 admit_fix_round）放行条件只有三条：
+  //   ① rounds[-1].status ∉ (reviewing, fixing)  ② spawn 未在跑  ③ fix_rounds_left > 0
+  // 这里再叠一次 ①②（服务端会给可读文案，前端叠是为了不给用户点必然失败的东西）。
+  // 曾经写成 `status === 'annotated'` 是**错的**：修复轮的终态是 'done'
+  // （executor._run_fix_round 每条收口路径都写 done），于是第 2 轮起按钮永久消失，
+  // 「最多 3 轮修复」在 UI 侧实际只能触发 1 轮 —— 只有对话工具还能继续。
+  const canFix = !isRunning && (data?.fix_rounds_left ?? 0) > 0;
   const taskId = taskIdProp || data?.task_id || '';
 
   // ── 修复级别选择 Popover ─────────────────────────

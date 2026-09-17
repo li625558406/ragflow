@@ -141,6 +141,32 @@ describe('FileReviewProgress', () => {
     expect(screen.queryByRole('button', { name: '选择级别修复' })).toBeNull();
   });
 
+  it('回归：修复轮终态 done + fix_rounds_left>0 时入口仍显示（第 2 轮起按钮不得消失）', () => {
+    // 曾经 canFix 写成 `status === 'annotated'`，而修复轮的终态是 'done'
+    // （executor._run_fix_round 每条收口路径都写 done）→ 第 2 轮起按钮永久消失，
+    // 「最多 3 轮修复」在 UI 侧实际只能触发 1 轮。
+    mockUseFileReviewState.mockReturnValue(
+      baseState({
+        data: {
+          ...baseState().data,
+          data: {
+            ...baseState().data.data,
+            fix_rounds_left: 2,
+            current: { ...baseState().data.data.current, status: 'done' },
+            rounds: [
+              { ...baseState().data.data.current, round_no: 2, status: 'done' },
+            ],
+          },
+        },
+      }) as any,
+    );
+    render(<FileReviewProgress fileId="f1" />);
+    expect(
+      screen.getByRole('button', { name: '选择级别修复' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/剩余.*2.*轮/)).toBeInTheDocument();
+  });
+
   it('round.status=reviewing 时不显示「修复」入口，显示 spinner', () => {
     mockUseFileReviewState.mockReturnValue(
       baseState({

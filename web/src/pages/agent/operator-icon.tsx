@@ -2,6 +2,7 @@ import { IconFontFill } from '@/components/icon-font';
 import SvgIcon from '@/components/svg-icon';
 import { cn } from '@/lib/utils';
 import {
+  FileCheck2,
   FileCode,
   FilePen,
   FilePenLine,
@@ -81,6 +82,7 @@ export const LucideIconMap = {
   [Operator.ExitLoop]: LogOut,
   [Operator.DocGenerator]: FileText,
   [Operator.TemplateFill]: FilePen,
+  [Operator.FileReview]: FileCheck2,
   [Operator.DocumentRewrite]: FilePenLine,
 };
 

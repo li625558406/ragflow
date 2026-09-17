@@ -958,6 +958,7 @@ export const RestrictedUpstreamMap = {
   [Operator.ExitLoop]: [Operator.Begin],
   [Operator.DocGenerator]: [Operator.Begin],
   [Operator.TemplateFill]: [Operator.Begin],
+  [Operator.FileReview]: [Operator.Begin],
 };
 
 export const NodeMap = {
@@ -1030,6 +1031,7 @@ export const NodeMap = {
   [Operator.ExcelProcessor]: 'ragNode',
   [Operator.DocGenerator]: 'ragNode',
   [Operator.TemplateFill]: 'ragNode',
+  [Operator.FileReview]: 'ragNode',
 };
 
 export enum BeginQueryType {
@@ -1266,6 +1268,21 @@ export const initialTemplateFillValues = {
   outputs: {
     content: { type: 'string' },
     download: { type: 'string' },
+  },
+};
+
+// 文件审核节点。file_id 默认留空：运行期按 {begin@review_file_id} 引用展开，
+// 展开失败再回退扫 Begin 输出（后端 _resolve_file_id），故留空即走 Begin 通道。
+export const initialFileReviewValues = {
+  file_id: '',
+  template_id: '',
+  custom_prompt: '',
+  dataset_ids: [],
+  max_rounds: 3,
+  outputs: {
+    task_id: { type: 'string' },
+    round_id: { type: 'string' },
+    content: { type: 'string' },
   },
 };
 

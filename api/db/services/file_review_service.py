@@ -50,6 +50,8 @@ test_update_status_writes_arbitrary_value_locks_contract 用例锁定了这一�
 """
 
 import json
+import threading
+from typing import NamedTuple
 
 from api.db.db_models import DB, FileReviewAnnotation, FileReviewRound, FileReviewTemplate, json_dumps
 from api.db.services.common_service import CommonService
@@ -62,6 +64,22 @@ PENDING_ANNOTATION_STATUSES = ("open", "new")
 # 只是给用户看的 UI 字段（见 agent/component/file_review.py 的注释「后端不消费」），
 # 后端唯一的轮数上限在这里。
 MAX_FIX_ROUNDS = 3
+
+# 轮次状态口径的**唯一实现**（T6 executor 写、T7 节点 / T8 工具 / T9 API 读）。
+# 提到本层而不是各调用点各写一份：受理闸门 admit_fix_round 也要用它，两个发起方
+# （T8 工具 / T9 API）都 import 本模块，放这里不新增任何依赖边。
+#
+# RUNNING_ROUND_STATUSES 只列「线程还会回来写这一行」的两态 —— 它们与 spawn 的
+# _running_tasks 是同一件事的两个视角，是受理闸门必须拒的两个前置条件。
+RUNNING_ROUND_STATUSES = ("reviewing", "fixing")
+
+ROUND_STATUS_CN = {
+    "reviewing": "审核中", "annotated": "审核完成", "fixing": "修复中",
+    # 刻意用中性词：done 不总意味着「改好了」——executor 在「没有待修复的问题」
+    # 与「该文件类型不支持自动修复」时同样以 done 收口，写「修复完成」会让用户
+    # 误以为文档已被改动。
+    "done": "已收口", "failed": "失败",
+}
 
 
 def fix_rounds_left(rounds: list) -> int:
@@ -110,6 +128,24 @@ def compose_fix_query(base_query: str, levels: list) -> str:
     chosen = "、".join(f"{SEVERITY_CN.get(s, s)}/{s}" for s in levels)
     head = f"本次只修复【{chosen}】级别的问题，其余级别的问题请保持原样、不要改动。"
     return f"{base}\n{head}" if base else head
+
+
+def _fix_base_query(rounds: list, extra="") -> str:
+    """修复轮的 user_query 基准 = **首轮**原始需求（可选追加本次补充说明）。
+
+    基准只能取首轮：修复轮的 user_query 里已经带着上一轮写进去的级别指令，拿它当基准会把
+    历轮指令叠起来（见 compose_fix_query 的 docstring，T8 实测踩过）。
+
+    extra 只接受 str：REST 端点的 body["user_query"] 是任意 JSON（dict/list/数字都可能），
+    直接 .strip() 会 AttributeError → 500。非字符串一律按「没提补充要求」忽略，而不是
+    str() 成 repr —— 把 `{'a': 1}` 的原样文本拼进给 LLM 的 user_query 只是换了一种脏数据，
+    用户同样无从修正。
+    """
+    base = (rounds[0].user_query or "").strip() if rounds else ""
+    extra = extra.strip() if isinstance(extra, str) else ""
+    if not extra:
+        return base
+    return f"{base}\n本次补充要求：{extra}" if base else f"本次补充要求：{extra}"
 
 
 def _clamp_str(model, field_name: str, value):
@@ -480,3 +516,129 @@ class FileReviewAnnotationService(FileReviewServiceBase):
         if source is not None:
             expr = expr & (cls.model.source == source)
         return cls.model.delete().where(expr).execute()
+
+
+# ── fix 受理闸门：两个发起入口共用的进程级互斥 ──────────────────────────
+# 为什么必须有：受理序列「校验 → 定轮号 → 建轮次 → 起线程」本身不是原子的。
+#   * REST 端点（T9 file_review_api.fix_review）跑在 quart 单进程单事件循环里，「临界区
+#     内不许 await」就能互斥 —— 但它只挡得住并发 HTTP 请求；
+#   * 对话工具（T8 FileReviewTool._fix）被 common.connection_utils.timeout 丢进**独立
+#     daemon 线程**执行，与事件循环是两个线程，「无 await」这个机制对它完全无效。
+# 两个入口并发打同一 task_id 时的必死路径（不可逆，T6/T8 实测）：双方都观测到
+# spawn.is_running()==False → 各自 next_round() 拿到**同一个轮号**（(task_id, round_no)
+# 无唯一约束）→ 建出两条同号轮次 → 后到者的 spawn_review_task 命中 spawn.py:53 的
+# _running_tasks 后**静默 return** → 那条轮次永远等不到线程消费，永久卡在 fixing →
+# 此后该 task 的所有 fix/review 被前置闸门挡死，只能手工改库才能恢复。
+# threading.Lock 是进程级状态，跨线程天然共享，是本问题唯一有效的同步原语。
+#
+# 刻意**不做** per-task 锁字典：会引入无界 dict 增长（task_id 由 uuid 生成、用完不回收），
+# 而受理是低频、短临界区（几次同步 DB 往返，无 IO 等待），全局单锁的竞争概率可忽略。
+_ADMIT_LOCK = threading.Lock()
+
+# 获取受理锁的最长等待（秒）。持锁者只做几次同步 DB 往返，真发生竞争应在毫秒级结束；
+# 5s 是「对端卡在异常分支」时给用户的等待上限。超时按 busy 拒绝而不是排队：排在后面的
+# 请求拿到锁时状态可能已变，早拒绝、让用户重试比让它排队后拿到一个过期结论更省事。
+ADMIT_LOCK_TIMEOUT = 5.0
+
+
+class FixAdmissionDenied(Exception):
+    """受理闸门拒绝。reason 机器可读（调用方按它映射错误码），message 面向用户（中文）。
+
+    reason 取值集合是固定契约，调用方按它分发：
+      busy / not_found / running / closing / no_quota / no_pending
+    """
+
+    def __init__(self, reason: str, message: str):
+        super().__init__(message)
+        self.reason = reason
+        self.message = message
+
+
+class AdmitResult(NamedTuple):
+    """受理成功后的轮次快照。fix_rounds_left 是**本轮建完之后**的余额（已扣掉 1）。"""
+    round_id: str
+    round_no: int
+    fix_rounds_left: int
+
+
+def admit_fix_round(*, task_id: str, tenant_id: str, levels, user_query_override="") -> AdmitResult:
+    """受理一轮修复：校验 → 定轮号 → 建轮次 → spawn，**全程持进程级锁**。
+
+    同步函数；调用方不得在持锁期间 await（REST 侧必须在无 await 的临界区内同步调用）。
+    返回 AdmitResult 或抛 FixAdmissionDenied —— 不返回「拒绝码」，避免调用方漏判。
+
+    闸门顺序不是随意的，每一条都在挡一条实测过的坏路径：
+      1. not_found：task_id 不存在 / 不归 tenant（沿用 get_owned_task 的口径，同一句话，
+         不泄露「他人 task 是否存在」）；
+      2. running  ：本轮（rounds[-1]）还在 reviewing/fixing，线程还会回来写这一行；
+      3. closing  ：轮次行已终态但 spawn 线程仍在收尾 —— executor._run_fix_round **先**
+         置轮次终态、**再**逐条写最多 MAX_FIX_ITEMS(20) 条标注，中间隔着 20 次 DB
+         往返；此刻 spawn_review_task 会静默 no-op，新轮次永远等不到线程去消费它；
+      4. no_quota ：修复轮余额用尽（failed 轮同样计入，见 fix_rounds_left）；
+      5. no_pending：所选级别没有待修项 —— 建出来的轮次会去修**别的**级别（把用户没
+         选中的问题改掉），或空转一轮白烧一次机会。
+    顺序约束：2 必须在 3 之前（状态未收口时的正确答复是「仍在进行中」，不是「正在收尾」）；
+    3 必须在 5 之后（真正原因是「没有可修项」时错答「稍后再试」会让用户白等）；且从
+    is_running 检查到 spawn_review_task 之间**不得插入其它逻辑** —— 否则又会开出一个
+    新的「检查通过但线程未注册」窗口。
+
+    levels 必须由调用方用各自的白名单归一（T8 工具宽松、T9 API 严格拒绝整批非法值，
+    这是既有差异）；本层只做 pending 的 severity 过滤，不校验级别取值。
+    """
+    if not _ADMIT_LOCK.acquire(timeout=ADMIT_LOCK_TIMEOUT):
+        # 超时路径在这里直接抛，**不能**落进下面的 try/finally 去 release —— 那会把别人
+        # 正持有的锁放掉（一次「拿不到却释放」就能让后续所有互斥失效）。
+        raise FixAdmissionDenied("busy", "上一轮操作正在处理中，请稍后重试")
+    try:
+        # 函数内延迟 import：本模块顶层不新增对 spawn 的依赖边（spawn.py 自身也是延迟
+        # import service 的，同一取向，避免 import 顺序耦合成为新坑）。
+        from rag.svr.file_review import spawn as spawn_mod
+
+        rounds = FileReviewRoundService.get_owned_task(task_id, tenant_id)
+        if not rounds:
+            # 「不存在」与「不是你的」共用同一句文案（get_owned_task 的 docstring 同款口径）。
+            raise FixAdmissionDenied("not_found", "文件审核任务不存在或无权访问")
+
+        cur = rounds[-1]
+        if cur.status in RUNNING_ROUND_STATUSES:
+            raise FixAdmissionDenied(
+                "running",
+                f"第 {cur.round_no} 轮（{ROUND_STATUS_CN.get(cur.status, cur.status)}）"
+                "仍在进行中，请等它结束后再发起修复")
+
+        if spawn_mod.is_running(task_id):
+            raise FixAdmissionDenied("closing", "上一轮审核正在收尾，请稍等片刻后重试")
+
+        left = fix_rounds_left(rounds)
+        if left <= 0:
+            raise FixAdmissionDenied(
+                "no_quota",
+                f"已达到最大修复轮次（{MAX_FIX_ROUNDS} 轮），未修复的问题请按批注手动处理")
+
+        pending = FileReviewAnnotationService.list_pending_by_task(task_id)
+        if not [a for a in pending if a.severity in levels]:
+            raise FixAdmissionDenied("no_pending", "所选级别没有待修复的问题，无需发起修复")
+
+        no, version = FileReviewRoundService.next_round(task_id)
+        rid = FileReviewRoundService.create_round(
+            task_id=task_id,
+            file_id=cur.file_id,
+            round_no=no,
+            template_id=cur.template_id,
+            # 基准取首轮原始需求，不用上一轮（见 _fix_base_query 的说明）。
+            user_query=compose_fix_query(_fix_base_query(rounds, user_query_override), levels),
+            file_version=version,
+            status="fixing",
+            # tenant 必须来自当前用户，不能留空：get_owned_task 要求「任一轮 tenant 不符
+            # 即拒绝」，写空串的轮次连自己都过不了闸门；且 executor 用 `{tenant}-downloads`
+            # 选桶，空串会让成稿落进 `-downloads` 桶、谁都取不到。
+            tenant_id=tenant_id,
+            created_by=tenant_id,
+            # 继承本轮 KB 配置：修复轮不做检索，但 kb_ids 是「这一轮用了哪些知识库」的
+            # 可追溯配置，留空会让它无从知晓。
+            kb_ids=cur.kb_ids,
+        )
+        spawn_mod.spawn_review_task(task_id)
+        return AdmitResult(round_id=rid, round_no=no, fix_rounds_left=left - 1)
+    finally:
+        _ADMIT_LOCK.release()

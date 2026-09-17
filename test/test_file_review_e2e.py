@@ -229,9 +229,11 @@ def test_e2e_two_rounds(monkeypatch, mock_llm, fstore):
     blob = _docx(["投标人须按本招标文件要求编制投标文件" + _BODY, "其余内容" + _BODY])
     _seed_file(file_id, blob, fstore)
 
-    # 屏蔽后台线程派发（fix 端点内部会调 spawn_mod.spawn_review_task）
-    monkeypatch.setattr(
-        _api.spawn_mod, "spawn_review_task", lambda tid: None)
+    # 屏蔽后台线程派发（fix 端点内部经 Service 层 admit_fix_round 调 spawn_review_task；
+    # 它函数内延迟 import 的正是这个模块对象，故按模块打桩即可命中 —— 不再经 _api.spawn_mod）
+    from rag.svr.file_review import spawn as spawn_mod
+
+    monkeypatch.setattr(spawn_mod, "spawn_review_task", lambda tid: None)
 
     with DB.connection_context():
         task_id, rid1 = _make_round_one(file_id)
