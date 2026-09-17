@@ -965,6 +965,18 @@ def test_merge_defaults_prev_dirty_items_ignored():
     assert out[0]["default_value"] == "好值"
 
 
+def test_merge_defaults_v2_explicit_empty_hard_gate():
+    """V2 硬闸（设计 §4.5）：V2 条目显式带 default_value=""（键存在）→ 无论 anchor
+    形态都不派生默认值——即使 anchor 是本会触发混合形态泄漏的骨架文本。"""
+    from api.db.services.template_fill_service import TplTemplateVersionService as S
+    out = S._merge_defaults([{"key": "proj", "anchor": "＿＿＿（项目名称）＿＿", "default_value": ""}], [])
+    assert out[0]["default_value"] == ""
+    assert out[0]["default_source"] == ""
+    # 对照：V1 条目（无 default_value 键）同 anchor 现在也不派生（层1 混合形态骨架分支）
+    out2 = S._merge_defaults([{"key": "proj", "anchor": "＿＿＿（项目名称）＿＿"}], [])
+    assert out2[0]["default_value"] == ""
+
+
 # ---------- service：产值沉淀默认值（纯函数） ----------
 
 def test_sediment_into_placeholders():
@@ -1305,6 +1317,25 @@ def test_derive_default_from_anchor_rejects_paren_hints():
     assert derive_default_from_anchor("(投标人名称)") == ""     # 半角括号
     # 非括号包裹的正常内容不误杀
     assert derive_default_from_anchor("（含）税金额100万元") == "（含）税金额100万元"
+
+
+def test_derive_default_from_anchor_rejects_mixed_blank_hint():
+    """对抗（Major-1 回归）：blank_slots 合并位「下划线+括号提示+下划线」混合形态——
+    strip 后既非纯留白、也不 fullmatch _HINT_ANCHOR_RE，曾泄漏提示语为默认值
+    （'＿＿＿（项目名称）＿＿' 整串回流 default_map → 字段被判已有值永不填写）。"""
+    from rag.svr.template_fill.detector import derive_default_from_anchor
+    assert derive_default_from_anchor("＿＿＿（项目名称）＿＿") == ""       # 全角下划线+提示
+    assert derive_default_from_anchor("___（甲方）___（乙方）___") == ""   # 半角下划线+多提示组
+    assert derive_default_from_anchor("＿＿＿（大写）＿＿  （盖章）") == ""  # 多提示组+空格混合
+
+
+def test_derive_default_from_anchor_mixed_real_content_not_killed():
+    """反向保护：剔除非括号骨架字符后剩真实内容（非括号 CJK/字母/数字）不误杀。"""
+    from rag.svr.template_fill.detector import derive_default_from_anchor
+    assert derive_default_from_anchor("＿＿＿实际内容＿＿") == "＿＿＿实际内容＿＿"
+    assert derive_default_from_anchor("厦门××公司") == "厦门××公司"
+    assert derive_default_from_anchor("（含）税金额100万元") == "（含）税金额100万元"
+    assert derive_default_from_anchor("＿＿＿2026年9月＿＿") == "＿＿＿2026年9月＿＿"
 
 
 # ---------- renderer：AI 填入值标蓝（渲染前占位 run 预染色） ----------
@@ -3211,6 +3242,19 @@ def test_slot_fallback_items_skips_covered_and_uses_hint():
     assert items[0]["low_confidence"] is False  # hint 位名字高可信
     # 覆盖后不再生成
     assert slot_fallback_items([cand], covered={(cand["index"], 1), (cand["index"], 2)}) == []
+
+
+def test_v2_items_carry_explicit_empty_default():
+    """V2 硬闸（设计 §4.5）：LLM 标注项与兜底项都必须显式带 default_value=""
+    ——_merge_defaults 分支1按「键存在」触发，V2 条目无论 anchor 形态不派生默认值。"""
+    from rag.svr.template_fill.detector import parse_slot_response, slot_fallback_items
+    cand = _slot_cand()
+    items, _ = parse_slot_response(
+        '[{"line":7,"slot":1,"key":"project_name","name":"招标项目名称"}]', [cand])
+    assert items[0]["default_value"] == ""
+    fb = slot_fallback_items([cand], covered=set())
+    assert len(fb) == 2
+    assert all(it["default_value"] == "" for it in fb)
 
 
 def test_merge_v2_fallback_same_shape_slots_occ_no_overflow():

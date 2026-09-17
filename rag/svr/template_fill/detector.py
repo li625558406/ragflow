@@ -39,6 +39,14 @@ _CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _LABEL_ANCHOR_RE = re.compile(r".+[：:]\s*$")
 _DATE_SKELETON_RE = re.compile(r"[\s年月日度.．:：\-—_＿、]*[年月日][\s年月日度.．:：\-—_＿、]*")
 _HINT_ANCHOR_RE = re.compile(r"[（(][^（）()]*[）)]\s*[\s元万元整人民币]*")
+# 混合形态骨架（"＿＿＿（项目名称）＿＿"、"___（甲方）___（乙方）___"，blank_slots 合并位
+# 典型产物）：strip 后既非纯留白（含括号/提示文字）、也不 fullmatch _HINT_ANCHOR_RE（不以
+# 括号开头）——剔除留白/标点（保留括号）后仅剩完整括号提示组 → 视为模板骨架，不派生默认值。
+# 剔除集 = _BLANK_ANCHOR_RE 字符类去掉括号 + _HINT_ANCHOR_RE 允许的货币后缀字；
+# 含任何非括号 CJK/字母/数字残留（真实现值）则不命中，不误杀。
+_HINT_MIX_STRIP_RE = re.compile(
+    r"[\s_＿\-—–~·*.×﹏－﹣。．,，、;；:：/\\'\"”「」『』【】\[\]……⋯‥▁＊〰元万元整人民币]+")
+_PURE_HINT_GROUPS_RE = re.compile(r"(?:[（(][^（）()]*[）)])+")
 
 # 留白标记特征（收缩修正的目标形态）：下划线串（含全角＿）/ 连续空格（含全角　）/
 # 括号提示（如"（投标人名称）"）。anchor 本身含留白标记 = 无需修正。
@@ -78,7 +86,10 @@ def _is_template_skeleton(text: str) -> bool:
         return True
     if _DATE_SKELETON_RE.fullmatch(text) and not any(c.isdigit() for c in text):
         return True
-    return bool(_HINT_ANCHOR_RE.fullmatch(text))
+    if _HINT_ANCHOR_RE.fullmatch(text):
+        return True
+    # 混合形态（下划线/标点 + 括号提示的组合）：剔除非括号骨架字符后仅剩完整括号提示组
+    return bool(_PURE_HINT_GROUPS_RE.fullmatch(_HINT_MIX_STRIP_RE.sub("", text)))
 
 
 def derive_default_from_anchor(anchor) -> str:
@@ -290,6 +301,11 @@ def parse_slot_response(raw: str, candidates: list) -> tuple:
             "line": line,
             "top_k": 6,
             "low_confidence": False,
+            # V2 硬闸（设计 §4.5：V2 条目一律不派生默认值）：显式带空 default_value，
+            # _merge_defaults 分支1按「键存在」触发 → 无论 anchor 形态都跳过派生。
+            # 用既有序列化字段而非新标记键：B端默认值列/显式清空态本就理解 ""，
+            # 不向 API/DB JSON 泄漏内部标记；下游 default_map 按 truthy 过滤，"" 天然不触发。
+            "default_value": "",
             "_anchor_pos": slot["start"],  # 切位精确偏移，供 occ 预分配排序
         })
     return out, covered
@@ -300,8 +316,9 @@ def slot_fallback_items(candidates: list, covered: set, seq_start: int = 0) -> l
     hint 位 name=括号提示（不低置信——名字高可信，仅 key 机器生成）；
     blank 位 name=未命名填写位（低置信，B端确认时人工改名）。
     key=blank_{序号} 全局递增，确定性唯一；分块调用时必须传续接的 seq_start
-    保证 blank_N 全局唯一（Task 4 分流层负责汇总）；不派生默认值由下游 derive
-    链路天然保证（anchor 是纯留白/hint，derive_default_from_anchor 判空）。
+    保证 blank_N 全局唯一（Task 4 分流层负责汇总）；不派生默认值由条目显式
+    default_value="" 硬闸保证（merge 位是「留白+提示」混合形态时 derive 判空
+    不可依赖，见 derive_default_from_anchor 的混合形态骨架分支作第二道防线）。
     位区间互不重叠 → 兜底条目自身不溢出 occ 预分配上限；同段非位同形文本的
     occ 错位由分流层的确定性校验兜底（见 detect_fill_points）。"""
     out = []
@@ -328,6 +345,8 @@ def slot_fallback_items(candidates: list, covered: set, seq_start: int = 0) -> l
                 "line": c["index"],
                 "top_k": 6,
                 "low_confidence": low,
+                # V2 硬闸（同 parse_slot_response）：兜底条目也不派生默认值（设计 §4.5）
+                "default_value": "",
                 "_anchor_pos": s["start"],
             })
     return out
