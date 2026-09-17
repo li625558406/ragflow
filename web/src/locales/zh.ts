@@ -1675,6 +1675,13 @@ General：实体和关系提取提示来自 GitHub - microsoft/graphrag：基于
       templateFillDescription:
         '根据需求从已发布范本中智能选择最合适的一个，检索所选知识库自动填写其占位符，输出可下载的成稿，未检索到值的填写点留空待人工补充。',
       templateFillQuery: '需求描述',
+      fileReview: '文件审核',
+      fileReviewDescription:
+        '对上传文件按招标场景模板多轮审视并产出可点击标注，用户可触发多轮修复。',
+      fileReviewFileId: '文件 ID',
+      fileReviewTemplate: '审核模板',
+      fileReviewCustomPrompt: '自定义要求',
+      fileReviewMaxRounds: '最大轮次',
       subtitle: '副标题',
       logoImage: '标志图片',
       logoPosition: '标志位置',
