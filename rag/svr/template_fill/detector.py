@@ -111,7 +111,7 @@ DETECT_SYSTEM_V2 = """你是文档模板分析专家。用户给出固定模板�
 请为每个填写位标注字段语义。输出 JSON 数组，每个元素：
 {"line": 行号, "slot": 位序号, "key": "snake_case英文标识", "name": "中文字段名", "description": "给填写模型的说明", "retrieval_query": "适合检索的查询词", "required": true或false}
 规则：
-1. 每个填写位都必须标注，一行多位拆成多个元素；括号里的提示语去掉括号就是中文字段名（如 位文本=「 （项目审批、核准或备案机关名称）」→ name=项目审批、核准或备案机关名称）
+1. 每个填写位都必须标注，一行多位拆成多个元素；位序号从 1 开始，按行内列出顺序编号；括号里的提示语去掉括号就是中文字段名（如 位文本=「 （项目审批、核准或备案机关名称）」→ name=项目审批、核准或备案机关名称）
 2. key 全局唯一、snake_case、字母开头、不超过32字符；同一含义出现多次（如多个日期）也分别标注，系统自动区分位置
 3. required 按招标文件惯例判断（项目名称/招标人/金额/日期等核心信息为 true，次要信息为 false）
 4. 找不到任何填写位输出 []。只输出 JSON 数组，不要输出其它文字。"""
@@ -233,7 +233,10 @@ def parse_detection_response(raw: str, candidates: list) -> list:
 def parse_slot_response(raw: str, candidates: list) -> tuple:
     """解析 V2 输出 → (items, covered)。covered = 已标注 (行号, 位序号) 集合，
     供兜底与跨块去重。anchor 由切位区间精确切片，LLM 无权决定 anchor；
-    line/slot 引用非法（非整数、查无此位）直接丢弃该项。"""
+    line/slot 引用非法（非整数、查无此位）直接丢弃该项；slot 文本不在候选
+    原文中（runs 坐标系腐坏）同样丢弃，不静默产脏 anchor；
+    key 与 V1 同口径做 parse 级截断感知去重（跨 slot 唯一），避免 merge 再加
+    后缀溢出 KEY_MAX_LEN 被 validate_placeholders 判死整次识别。"""
     arr = _extract_json_array(raw)
     if arr is None:
         return [], set()
@@ -241,7 +244,7 @@ def parse_slot_response(raw: str, candidates: list) -> tuple:
     for c in candidates:
         for i, s in enumerate(c.get("slots") or [], start=1):
             slot_map[(c["index"], i)] = (c, s)
-    out, covered = [], set()
+    out, covered, used_keys = [], set(), set()
     for it in arr:
         if not isinstance(it, dict):
             continue
@@ -256,16 +259,32 @@ def parse_slot_response(raw: str, candidates: list) -> tuple:
         if hit is None:
             continue
         cand, slot = hit
+        # 防御：slot 文本必须仍是候选原文的子串（runs 坐标系与候选 text 理论一致，
+        # 不一致说明数据腐坏，丢弃优于静默产脏 anchor）
+        if slot["text"] not in (cand.get("text") or ""):
+            continue
         covered.add((line, slot_no))
         key = normalize_key(it.get("key") or it.get("name") or "field")
         key = key[:KEY_MAX_LEN].rstrip("_") or "field"
+        # 截断感知去重（与 parse_detection_response 同算法）：重复 key 拼后缀时
+        # 同步收缩基串，保证含后缀总长仍 ≤KEY_MAX_LEN
+        suffix = 2
+        base = key
+        while key in used_keys:
+            tail = f"_{suffix}"
+            key = base[: KEY_MAX_LEN - len(tail)].rstrip("_") + tail
+            suffix += 1
+        used_keys.add(key)
+        # required 显式判型：bool("false")==True 是经典陷阱，仅布尔 True /
+        # 字符串 "true" 语义为 True，其余（"false"/False/0）为 False；缺失默认 True
+        req = it.get("required", True)
         out.append({
             "key": key,
             "name": str(it.get("name") or key)[:100],
             "description": str(it.get("description") or ""),
             "retrieval_query": str(it.get("retrieval_query") or ""),
             "fill_mode": "llm",
-            "required": bool(it.get("required", True)),
+            "required": req is True or (isinstance(req, str) and req.strip().lower() == "true"),
             "addr": cand["addr"],
             "anchor": slot["text"],
             "line": line,
@@ -276,15 +295,17 @@ def parse_slot_response(raw: str, candidates: list) -> tuple:
     return out, covered
 
 
-def slot_fallback_items(candidates: list, covered: set) -> list:
+def slot_fallback_items(candidates: list, covered: set, seq_start: int = 0) -> list:
     """LLM 未标注的 slot 确定性兜底（结构性修漏识别）：每位恰好一条。
     hint 位 name=括号提示（不低置信——名字高可信，仅 key 机器生成）；
     blank 位 name=未命名填写位（低置信，B端确认时人工改名）。
-    key=blank_{序号} 全局递增，确定性唯一；不派生默认值由下游 derive 链路
-    天然保证（anchor 是纯留白/hint，derive_default_from_anchor 判空）。
-    数学性质：位区间互不重叠 → occ 预分配不溢出、不撞车。"""
+    key=blank_{序号} 全局递增，确定性唯一；分块调用时必须传续接的 seq_start
+    保证 blank_N 全局唯一（Task 4 分流层负责汇总）；不派生默认值由下游 derive
+    链路天然保证（anchor 是纯留白/hint，derive_default_from_anchor 判空）。
+    位区间互不重叠 → 兜底条目自身不溢出 occ 预分配上限；同段非位同形文本的
+    occ 错位由分流层的确定性校验兜底（见 detect_fill_points）。"""
     out = []
-    seq = 0
+    seq = seq_start
     for c in candidates:
         for i, s in enumerate(c.get("slots") or [], start=1):
             if (c["index"], i) in covered:
@@ -349,9 +370,8 @@ def validate_placeholders(items: list, candidates: list) -> tuple:
             # 手动添加行没有同形留白分组语义（反查已要求全模板唯一命中），
             # 只接受 occ 缺省或 occ=1；注意 True == 1 的 bool 陷阱须显式排除
             occ = it.get("occ")
-            if occ is not None:
-                if not isinstance(occ, int) or isinstance(occ, bool) or occ != 1:
-                    return False, f"{key}：手动添加行只支持单填写位"
+            if occ is not None and (not isinstance(occ, int) or isinstance(occ, bool) or occ != 1):
+                return False, f"{key}：手动添加行只支持单填写位"
             it["addr"] = cand["addr"]  # 回填，保证落库的占位符都有有效 addr
         else:
             cand = cand_map.get(addr)

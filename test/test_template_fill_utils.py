@@ -3228,3 +3228,74 @@ def test_merge_v2_fallback_same_shape_slots_occ_no_overflow():
     assert len(merged2) == 2
     occs = sorted(it["occ"] for it in merged2 if "occ" in it)
     assert occs == [1, 2]
+
+
+# ---- Task 3 审查修复回归（F1 required 判型 / key 去重 / membership 防御 / 序号续接）----
+
+def test_parse_slot_response_required_string_typed():
+    """对抗：LLM 输出 "required":"false"（字符串），bool("false")==True 陷阱
+    → 显式判型：仅布尔 True / 字符串 "true" 为 True，缺失默认 True。"""
+    from rag.svr.template_fill.detector import parse_slot_response
+    raw = '[{"line":7,"slot":1,"key":"a","name":"甲","required":"false"},' \
+          '{"line":7,"slot":2,"key":"b","name":"乙","required":"true"}]'
+    items, _ = parse_slot_response(raw, [_slot_cand()])
+    assert items[0]["required"] is False
+    assert items[1]["required"] is True
+    # 缺失 → 默认 True
+    items2, _ = parse_slot_response('[{"line":7,"slot":1,"key":"c","name":"丙"}]', [_slot_cand()])
+    assert items2[0]["required"] is True
+
+
+def test_parse_slot_response_duplicate_long_key_dedup_no_overflow():
+    """对抗（F1）：V2 parse 级缺 key 去重 → 两个 71 字符相同 key 原样透传，
+    merge 再加 _2 后缀得 66 字符，validate_placeholders 判死整次识别。
+    修后与 V1 同口径：截断感知后缀，含后缀总长 ≤64，且过 validate 终审。"""
+    from rag.svr.template_fill.detector import parse_slot_response, validate_placeholders
+    long_key = "liability_for_refusing_to_replace_key_construction_management_personnel"
+    assert len(long_key) == 71
+    raw = f'[{{"line":7,"slot":1,"key":"{long_key}","name":"A"}},' \
+          f'{{"line":7,"slot":2,"key":"{long_key}","name":"B"}}]'
+    items, covered = parse_slot_response(raw, [_slot_cand()])
+    assert len(items) == 2 and covered == {(7, 1), (7, 2)}
+    k1, k2 = items[0]["key"], items[1]["key"]
+    assert k1 != k2
+    import re as _re
+    for k in (k1, k2):
+        assert len(k) <= 64
+        assert _re.fullmatch(r"[a-z][a-z0-9_]{0,63}", k)
+    ok, err = validate_placeholders(items, [_slot_cand()])
+    assert ok, err
+
+
+def test_parse_slot_response_zero_based_slots_all_dropped():
+    """对抗：LLM 全部输出 0 起位序号（位编号契约从 1 开始）→ 查无此位全部丢弃，
+    items==[] 且 covered==set()，下游 slot_fallback_items 对全量 slot 兜底
+    （固化丢弃行为——降级路径不因脏序号部分产脏项）。"""
+    from rag.svr.template_fill.detector import parse_slot_response, slot_fallback_items
+    cand = _slot_cand()
+    raw = '[{"line":7,"slot":0,"key":"a","name":"甲"},' \
+          '{"line":7,"slot":0,"key":"b","name":"乙"}]'
+    items, covered = parse_slot_response(raw, [cand])
+    assert items == [] and covered == set()
+    assert len(slot_fallback_items([cand], covered)) == 2
+
+
+def test_parse_slot_response_membership_defense_drops_forged_slot():
+    """对抗（F4）：候选 text 与 slot["text"] 坐标系不一致（数据腐坏/伪造候选）
+    → 该项丢弃且不占 covered，不静默产脏 anchor。"""
+    from rag.svr.template_fill.detector import parse_slot_response
+    cand = dict(_slot_cand(), text="与 slots 区间完全无关的另一段文本")
+    raw = '[{"line":7,"slot":1,"key":"a","name":"甲"}]'
+    items, covered = parse_slot_response(raw, [cand])
+    assert items == [] and covered == set()
+
+
+def test_slot_fallback_items_seq_start_continues_numbering():
+    """（F2）分块调用传续接 seq_start → blank_N 跨块全局唯一。"""
+    from rag.svr.template_fill.detector import slot_fallback_items
+    cand = _slot_cand()
+    items = slot_fallback_items([cand], covered=set(), seq_start=5)
+    assert [it["key"] for it in items] == ["blank_6", "blank_7"]
+    # 不传仍从 blank_1 起（默认行为不变）
+    items2 = slot_fallback_items([cand], covered=set())
+    assert [it["key"] for it in items2] == ["blank_1", "blank_2"]
