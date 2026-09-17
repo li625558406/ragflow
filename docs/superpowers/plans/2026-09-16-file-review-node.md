@@ -6293,113 +6293,194 @@ git commit -m "feat(file-review): REST API 4 endpoints (轮询读模型 + fix + 
 
 ---
 
-## Task 10: 前端流类型 + 归约函数
+## Task 10: 前端类型 + 小工具（无 SSE 归约）
 
 **Files:**
 - Create: `web/src/hooks/file-review-stream.ts`
 
+> ### T10 规格重写说明（替换原「SSE 事件 + 归约」版）
+>
+> 原规格假设 T9 提供 SSE 事件流；T9 已砍 SSE（见 T9 规格重写说明），改为「以文件为中心的轮询读模型」+ `GET /file/review/file/<file_id>/state` 一次性给齐。本任务随之简化：
+>
+> - **删** `IFileReviewEvent` 与 `applyFileReviewEvent` —— 没有事件流可归约。状态权威源是 state 端点返回的完整对象（`rounds[]` + `current` + `annotations[]` + `fix_rounds_left`）。
+> - **删** `filterAnnotationsByVersion` —— 该函数按 `file_version` 过滤标注，但 T6/T9 实测：**所有标注的 `file_version` 恒为首轮版本 v1**（只有 review 轮产标注，fix 轮不产标注）；而成稿是 v2/v3/v4。按成稿版本过滤 = 一条都查不到 = 纯死代码。面板要展示标注就是 state 端点给的 `annotations[]` 全集，不需要过滤。
+> - **不加 SSE 重连/状态合并等新增能力** —— 父项目 CLAUDE.md 明确「不为想象中的未来需求过度设计」。轮询逻辑由 T12 在 hook 层负责（参照既有 `use-template-fill-run-recovery.ts` 的快照 + 轮询模式）。
+> - **保留** 类型定义 —— 因为响应体形状横跨 hook / 进度卡 / 面板三处共享，不抽出来三处各写一份会漂移。
+> - **加一个 `isRoundRunning(status)` 谓词** —— T12 的轮询要按它判断「继续轮询 / 停止」，集中在一个文件里供 hook 与进度卡共用（避免三处各写 `status === 'reviewing' || status === 'fixing'` 漂移）。
+>
+> T11/T12 必须按本文件的类型契约对齐 API hook 与进度卡。
+
 - [ ] **Step 1: 创建文件**
 
+**1a. 文件头注释（说明数据来源与设计取舍）**
+
+文件顶端写明：
+- 模块名：`web/src/hooks/file-review-stream.ts`（与 `template-fill-stream.ts` 并列，纯类型与小工具模块，无 React 依赖）。
+- 数据来源：`GET /api/v1/file/review/file/<file_id>/state` 端点（`api/apps/restful_apis/file_review_api.py` 的 `review_state` 处理器）。
+- 与 `template-fill-stream.ts` 的关键差异：本模块**没有** `IFileReviewEvent` / 归约器，因为没有 SSE；状态权威源是完整对象（轮询一次性给齐），不是事件序列。
+- 标注版本语义：**所有标注的 `file_version` 恒为首轮 v1**（T9 交接契约第 2 条的延伸：只有 review 轮产标注）。面板禁止按 `file_version` 过滤 —— 见 `IFileReviewAnnotation.file_version` 字段的 JSDoc 警告。
+
+**1b. 四个类型 + 一个谓词**（完整代码如下，逐行覆盖文件全部内容）
+
 ```typescript
-// 文件审核 SSE 事件类型与归约器（与 template-fill-stream.ts 并列，独立）
+// 文件审核状态类型与小工具（与 template-fill-stream.ts 并列，纯类型模块）
+// 数据来源：GET /api/v1/file/review/file/<file_id>/state（T9 review_state 处理器）
+// 没有 SSE、没有归约器：进度真相是 file_review_round 表，前端轮询拿完整对象。
+// 注意标注版本语义：所有标注的 file_version 恒为首轮 v1（只有 review 轮产标注）；
+// 面板展示标注用 state.annotations 全集，禁止按 file_version 过滤。
+
+/** 单条标注 */
 export interface IFileReviewAnnotation {
   id: string;
-  type: string;             // format/completeness/clause/qualification/price/other
+  round_id: string;
+  task_id: string;
+  file_id: string;
+  /** 恒为首轮 v1；不要按此字段过滤面板标注列表。 */
+  file_version: string;
+  /** 自由字符串（format / completeness / clause / qualification / price / other …），
+   *  T6 不做白名单校验，executor 兜底归一为 'other'。 */
+  type: string;
   severity: 'high' | 'medium' | 'low';
   issue: string;
-  suggestion?: string;
-  matched_text?: string;
+  suggestion: string;
+  matched_text: string;
   source: 'ai' | 'manual';
-  status?: 'open' | 'fixed' | 'new' | 'wontfix';
-  file_version?: string;
-  prev_annotation_id?: string;
-  anchor?: Record<string, unknown>;
+  status: 'open' | 'new' | 'fixed' | 'resolved' | 'wontfix';
+  prev_annotation_id: string;
+  /** 已序列化的 JSON 字符串（docx: p_hash/offset/run_index；xlsx: sheet/cell），
+   * 解析由调用方按类型处理。 */
+  anchor: string | Record<string, unknown>;
 }
 
+/** 单轮次（一次 review 或一次 fix 的产物） */
 export interface IFileReviewRound {
   id: string;
   round_no: number;
-  template_id?: string;
-  template_name?: string;
-  file_id: string;
+  /** reviewing/annotated/fixing/done/failed —— 见 isRoundRunning 谓词的注释 */
+  status: string;
+  /** 成稿对象名（v2/v3/v4 …）；无成稿时为 '' */
   file_version: string;
-  status: 'reviewing' | 'annotated' | 'fixing' | 'failed' | 'done';
-  summary?: string;
-  annotations?: IFileReviewAnnotation[];
+  template_id: string;
+  user_query: string;
+  summary: string;
+  /** 已被 T9 _ERROR_CLIP=200 裁剪后的错误文案（>200 加 … 后缀） */
+  error: string;
+  /** 该轮成稿的 MinIO 对象名（无成稿时为 ''） */
+  minio_path: string;
+  /** 是否有可下载成稿（判据是 minio_path 非空，与 status 无关——见 T9 交接契约第 2 条） */
+  produced: boolean;
 }
 
+/** state 端点的完整响应体（轮询结果） */
 export interface IFileReviewState {
+  file_id: string;
+  task_id: string | null;
   rounds: IFileReviewRound[];
-  finished?: boolean;
-  task_id?: string;
-  file_id?: string;
-  current_version?: string;
+  /** 最近一轮；用户主动选 fix 的入口会读它的 task_id/round_no */
+  current: IFileReviewRound | null;
+  /** 该展示的文档：最近一次落盘的成稿；从未落盘时回退到原件（object=file_id, version=''） */
+  doc: { object: string; version: string };
+  /** 全部标注（跨轮次/版本/任务）；file_version 恒为 v1 */
+  annotations: IFileReviewAnnotation[];
+  /** 面板头部计数（仅展示，不参与任何判定——见 _count_annotations 注释） */
+  annotation_counts: {
+    total: number;
+    high: number;
+    medium: number;
+    low: number;
+    pending: number;
+    fixed: number;
+  };
+  /** 剩余可发起 fix 的轮次数（Service.fix_rounds_left，0 表示封顶） */
+  fix_rounds_left: number;
+  max_fix_rounds: number;
 }
 
-export interface IFileReviewEvent {
-  stage: 'started' | 'reviewing' | 'annotated' | 'fixing' | 'file_version' | 'done' | 'failed' | 'heartbeat';
-  task_id?: string;
-  round_no?: number;
-  template_id?: string;
-  template_name?: string;
-  file_id?: string;
-  file_version?: string;
-  summary?: string;
-  annotation_count?: { high?: number; medium?: number; low?: number };
+/** fix 端点的响应（POST /file/review/<task_id>/fix） */
+export interface IFileReviewFixResponse {
+  task_id: string;
+  round_id: string;
+  round_no: number;
+  status: 'fixing';
+  fix_rounds_left: number;
 }
 
-export function applyFileReviewEvent(
-  acc: IFileReviewState,
-  d: IFileReviewEvent,
-): IFileReviewState {
-  if (!acc.task_id && d.task_id) acc.task_id = d.task_id;
-  if (!acc.file_id && d.file_id) acc.file_id = d.file_id;
-  // heartbeat 不入态
-  if (d.stage === 'heartbeat') return acc;
-  if (d.stage === 'started') return { ...acc, rounds: [] };
-  if (d.stage === 'done') return { ...acc, finished: true };
-  if (d.stage === 'file_version' && d.file_version) {
-    return { ...acc, current_version: d.file_version };
-  }
-  const round_no = d.round_no ?? 0;
-  let rounds = [...acc.rounds];
-  let cur = rounds.find((r) => r.round_no === round_no);
-  if (!cur) {
-    cur = {
-      id: `r${round_no}`,
-      round_no,
-      file_id: d.file_id || acc.file_id || '',
-      file_version: d.file_version || `v${round_no}`,
-      status: 'reviewing',
-    };
-    rounds.push(cur);
-  }
-  if (d.template_id) cur.template_id = d.template_id;
-  if (d.template_name) cur.template_name = d.template_name;
-  if (d.stage === 'reviewing') cur.status = 'reviewing';
-  else if (d.stage === 'fixing') cur.status = 'fixing';
-  else if (d.stage === 'annotated') {
-    cur.status = 'annotated';
-    if (d.summary) cur.summary = d.summary;
-  } else if (d.stage === 'failed') cur.status = 'failed';
-  return { ...acc, rounds };
+/** 标注状态修改端点的响应 */
+export interface IFileReviewAnnotationUpdateResponse {
+  annotation_id: string;
+  status: IFileReviewAnnotation['status'];
 }
 
-/** 按 file_version 过滤标注：review-panel 加载用 */
-export function filterAnnotationsByVersion(
-  annotations: IFileReviewAnnotation[],
-  file_version: string,
-): IFileReviewAnnotation[] {
-  return annotations.filter((a) => a.file_version === file_version);
+/** 范本列表端点的响应 */
+export interface IFileReviewTemplatesResponse {
+  templates: Array<{
+    id: string;
+    name: string;
+    description: string;
+    annotation_types: string[];
+  }>;
+}
+
+/** 轮次是否还在执行（决定轮询是否继续）。
+ * 包含 reviewing 与 fixing —— 两种状态都意味着「后台线程还在写这轮」。
+ * 注意：fixing 轮次的「终态前窗口」可能长达 20 次 DB 往返（T9 交接契约第 7 条），
+ * 所以即使 status='fixing' 也必须继续轮询，不能停下。 */
+export function isRoundRunning(status: string): boolean {
+  return status === 'reviewing' || status === 'fixing';
 }
 ```
 
-- [ ] **Step 2: 提交**
+**1c. 自检（不允许的导出）**
+
+文件**不得**导出以下名字（已删 / 重新设计）：
+- ~~`IFileReviewEvent`~~
+- ~~`applyFileReviewEvent`~~
+- ~~`filterAnnotationsByVersion`~~
+
+理由：见本节开头的「T10 规格重写说明」。
+
+- [ ] **Step 2: 自检 + 类型对齐**
+
+读 `api/apps/restful_apis/file_review_api.py` 的四个 payload 构造器（`_template_payload` / `_round_payload` / `_doc_payload` / `_annotation_payload`）与 state 端点 body，逐字段核对本文件类型定义；任何不对齐的地方按服务端为准改类型。
+
+**特别核对**：
+- `_round_payload` 返回的 11 个字段全在 `IFileReviewRound` 里（id/round_no/status/file_version/template_id/user_query/summary/error/minio_path/produced + status）。
+- `_annotation_payload` 返回的 13 个字段全在 `IFileReviewAnnotation` 里。
+- state 端点的 data 字段（`file_id`/`task_id`/`rounds`/`current`/`doc`/`annotations`/`annotation_counts`/`fix_rounds_left`/`max_fix_rounds`）全在 `IFileReviewState` 里。
+- `annotation_counts` 字段在 `api/apps/restful_apis/file_review_api.py:_count_annotations` 实测返回什么字段就写什么字段（不要按规约猜 —— 本节明确「按服务端为准」）。
+
+- [ ] **Step 3: 跑类型检查 + 构建**
+
+```bash
+cd web && npx tsc --noEmit -p tsconfig.json 2>&1 | grep -E "file-review-stream\.ts|error TS" | head -20
+```
+
+预期：本文件 0 错误（其他文件已有错误不在本任务范围）。
+
+若前端类型检查通过率低（很多历史错误），退化为：
+```bash
+cd web && npx tsc --noEmit -p tsconfig.json 2>&1 | grep -c "file-review-stream"
+```
+预期：**0**（本文件零类型错误）。
+
+- [ ] **Step 4: 提交**
 
 ```bash
 git add web/src/hooks/file-review-stream.ts
-git commit -m "feat(file-review): frontend stream types + reducer"
+git commit -m "feat(file-review): frontend types + isRoundRunning (no SSE reducer)"
 ```
+
+---
+
+## T10 → T11/T12/T14/T15 交接契约（强制执行）
+
+| 任务 | 约束 |
+|---|---|
+| T11 API Hook | **必须**用本文件导出的 5 个类型（`IFileReviewState` / `IFileReviewRound` / `IFileReviewAnnotation` / `IFileReviewFixResponse` / `IFileReviewTemplatesResponse`）声明响应类型；不得再自造一份局部 interface。 |
+| T12 进度卡 | **必须**用 `isRoundRunning` 决定「继续轮询 / 停止」（不要在 hook / 组件里自写 `status === 'reviewing' \|\| status === 'fixing'`）；轮询间隔默认 3s，可被 hook 接受 `intervalMs` 入参覆盖；终态（`status === 'annotated'` 且 `fix_rounds_left === 0`，或 `status === 'done'` 或 `status === 'failed'`）停轮询。 |
+| T12 进度卡（canFix 判据） | `canFix = fix_rounds_left > 0 && current?.status === 'annotated'`；**禁止**用 `rounds.length < 3`（failed 轮同样占名额）；**禁止**自拼 user_query（级别指令由服务端 `compose_fix_query` 生成）。 |
+| T12 面板展示 | 展示标注用 `state.annotations` 全集，**禁止**按 `file_version` 过滤（见 `IFileReviewAnnotation.file_version` JSDoc）。 |
+| T14 / T15 集成 | 流式事件已砍，对话侧 / 流程侧都改为「节点 / 工具产出 task_id → 用 file_id 轮询 state」；不需要对话侧再喂进度事件给本模块。 |
 
 ---
 
