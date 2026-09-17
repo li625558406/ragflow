@@ -34,6 +34,7 @@ import {
   useState,
 } from 'react';
 import { createPortal } from 'react-dom';
+import FileReviewProgress from '../file-review-progress';
 import ReviewPanel from '../review-panel';
 import TemplateFillProgress from '../template-fill-progress';
 import FlowAiPanel, { type FlowReviewControl } from './flow-ai-panel';
@@ -519,6 +520,7 @@ export default function FlowDetail({
                 setTplPreviewOpen(open);
                 onTplPreviewOpenChange?.(open);
               }}
+              reviewCtl={reviewCtl}
               extraAction={(dl) => {
                 const st = savingDocIds[dl.doc_id || ''];
                 return (
@@ -892,6 +894,8 @@ function ConversationView({
   onSelectSubmitted,
   onLivePreviewOpenChange,
   visible = true,
+  reviewCtl,
+  onPreviewDoc,
 }: {
   chats: FlowAiChatItem[];
   live: FlowLiveChat | null;
@@ -907,6 +911,12 @@ function ConversationView({
   onLivePreviewOpenChange?: (open: boolean) => void;
   /** 本详情是否为当前选中流程（FlowDetail 透传）：隐藏实例强制收起实时预览 */
   visible?: boolean;
+  /** T15：FileReviewProgress 回调桥（FlowAiPanel 上报的 reviewCtl.openWithFile） */
+  reviewCtl?: FlowReviewControl | null;
+  /** T15：FileReviewProgress 成稿预览回调 —— 流程页无 LivePreview，抽屉预览复用
+   *  flow 已有的 viewVersionId + viewFileId 流程，故 onPreviewDoc 关闭当前 review 抽屉
+   *  并由外层透传到 downloadVersionBlob 流程。本任务仅保留入口，详实现归 T16 收口 */
+  onPreviewDoc?: (minioPath: string) => void;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   // 挂起确认卡出现信号（范本选择/字段确认）：卡在范本行上方，若不滚动用户可能
@@ -1016,6 +1026,27 @@ function ConversationView({
                 onLivePreviewOpenChange={onLivePreviewOpenChange}
                 forceClosedLivePreview={!visible}
                 extraAction={(dl) => extraAction?.(dl)}
+              />
+            </div>
+          ) : null}
+          {/* T15：文件审核进度卡 —— 与 c-chat 共用同一组件（pages/c-chat/file-review-progress），
+              流式期间 FileReview 节点产出 task_id 后由 FlowAiPanel 落到 live.fileReview。
+              组件内部 useFileReviewState 自管 3s 轮询，不在此处引入新 SSE */}
+          {live.fileReview ? (
+            <div className="max-w-[90%]">
+              <FileReviewProgress
+                fileId={live.fileReview.fileId}
+                taskId={live.fileReview.taskId}
+                onOpenReview={() => {
+                  // 复用 flow 审核入口面板：把 task_id 对应 fileId 推到 FlowAiPanel
+                  // 内部并打开 reviewMode；fileName 用「文件审核」占位（具体成稿
+                  // 文件名由 state.doc.file_name 给出，T16 联调时按需微调）
+                  reviewCtl?.openWithFile?.(
+                    live.fileReview!.fileId,
+                    '文件审核',
+                  );
+                }}
+                onPreviewDoc={(minioPath) => onPreviewDoc?.(minioPath)}
               />
             </div>
           ) : null}

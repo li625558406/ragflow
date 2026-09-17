@@ -48,6 +48,10 @@ export type FlowReviewControl = {
   visible: boolean;
   active: boolean;
   toggle: () => void;
+  /** T15：FileReviewProgress 点击「打开审核面板」时调用 —— 同步切换到指定 fileId
+   *  并打开 review 抽屉。无 fileId 时退回 toggle 行为（用当前 reviewFileId）。
+   *  实现位于面板内部，导出接口供中部对话区 <FileReviewProgress /> 复用。 */
+  openWithFile?: (fileId: string, fileName?: string) => void;
 };
 
 // 打字机占位（与 c-chat 同款文案与节奏）
@@ -290,6 +294,54 @@ export default function FlowAiPanel({
     if (sid) sessionIdRef.current = sid;
   }, [answerList]);
 
+  // ── T15：FileReview 节点产出的 {file_id, task_id} 落到 live.fileReview ──
+  // 与 T14 c-chat 同形态：在 answerList 里扫 component_name=FileReview 的 node_finished
+  // 事件，取 outputs.task_id + inputs.file_id，挂到当前 live 上经 onLiveChatChange
+  // 上报到 flow-detail 的 ConversationView，由其在 TemplateFillProgress 同位置挂
+  // <FileReviewProgress />。组件内部 useFileReviewState 自管轮询，本面板不引入
+  // 新 SSE / streamState.fileReview / setFileReviewState —— 仅固化链路里已在跑
+  // 的 task_id + file_id，保证刷新后进度卡可继续轮询恢复。
+  //
+  // 持久化策略：因流式上报 effect 会反复用「新对象」覆盖 live，fileReview 不能直接
+  // 存在对象上 —— 改存 ref，再在每次 onLiveChatChange 报告前合并（同一轮任务 id
+  // 不重复切换时合并幂等）。同时新一轮发送（handleSend）必须清空，避免旧轮残留。
+  const fileReviewRef = useRef<{ fileId: string; taskId: string } | null>(null);
+  useEffect(() => {
+    if (!done) return;
+    let fileId = '';
+    let taskId = '';
+    for (const evt of answerList) {
+      const ev: any = evt as any;
+      const data = ev?.data ?? {};
+      const componentName = (data?.component_name ?? '').toString();
+      if (componentName !== 'FileReview') continue;
+      const outputs = data?.outputs ?? {};
+      const inputs = data?.inputs ?? {};
+      if (outputs?.task_id) taskId = String(outputs.task_id);
+      const fileIdInput = inputs?.file_id ?? inputs?.review_file_id;
+      if (fileIdInput) fileId = String(fileIdInput);
+      if (taskId && fileId) break;
+    }
+    if (!taskId || !fileId) return;
+    // 幂等：同 taskId 不重复切换（避免 render 抖动）
+    if (
+      fileReviewRef.current &&
+      fileReviewRef.current.taskId === taskId &&
+      fileReviewRef.current.fileId === fileId
+    ) {
+      return;
+    }
+    fileReviewRef.current = { fileId, taskId };
+    // 立刻上报一次，让中部对话区立即出现进度卡
+    onLiveChatChange?.({
+      instruction: instructionRef.current,
+      response: contentRef.current,
+      busy: false,
+      templateFill: templateFillRef.current,
+      fileReview: fileReviewRef.current,
+    });
+  }, [done, answerList, onLiveChatChange]);
+
   // 范本填写原始事件序列（template_fill_progress 的 data 载荷）：随自动保存/手动保存
   // 落到 flow_ai_chat.template_fill_events；发送新一轮时清空
   const templateFillEventsRef = useRef<unknown[]>([]);
@@ -330,14 +382,18 @@ export default function FlowAiPanel({
   // - 结束后：send() 尾部 resetAnswerList 会清空 streamState，
   //   用 contentRef 兜住完整回复转成 completed 展示
   // - 保存/重新发送时清空 contentRef + completed，上报回落 null
+  // - T15：fileReview 字段由 fileReviewRef 合并到每次上报，避免主上报 effect
+  //   反复重置 live 对象时把 FileReview 节点派生的 {fileId,taskId} 吞掉
   useEffect(() => {
     if (streamState.content) contentRef.current = streamState.content;
+    const fileReview = fileReviewRef.current ?? undefined;
     if (sending || !done) {
       onLiveChatChange?.({
         instruction: instructionRef.current,
         response: streamState.content,
         busy: true,
         templateFill: streamState.templateFill,
+        fileReview,
       });
       return;
     }
@@ -347,6 +403,7 @@ export default function FlowAiPanel({
         response: contentRef.current,
         busy: false,
         templateFill: templateFillRef.current,
+        fileReview,
       };
       setCompleted((prev) => (prev ? prev : next));
       onLiveChatChange?.(completed ?? next);
@@ -362,6 +419,7 @@ export default function FlowAiPanel({
                 response: '',
                 busy: false,
                 templateFill: recoveredTemplateFill,
+                fileReview,
               }
             : null),
       );
@@ -528,6 +586,8 @@ export default function FlowAiPanel({
       contentRef.current = '';
       templateFillRef.current = undefined;
       templateFillEventsRef.current = [];
+      // T15：上一轮 FileReview 节点产出已落到中部卡，新一轮不应继续挂着旧 task_id
+      fileReviewRef.current = null;
       // 上一轮未触发的增量同步定时器作废（pendingRecordIdRef 置空后守卫也会拦，这里直接清）
       if (eventsSyncTimerRef.current) {
         clearTimeout(eventsSyncTimerRef.current);
@@ -783,6 +843,16 @@ export default function FlowAiPanel({
       active: reviewMode,
       toggle: () => {
         void toggleReview();
+      },
+      // T15：FileReviewProgress 回调入口 —— 指定 fileId 切换并打开 review 抽屉
+      // （与 toggle 的「使用当前 reviewFileId」行为差异：upload 流必给 fileId，
+      //  否则版本文档场景用 reviewFileId 兜底）
+      openWithFile: (fileId: string, fileName?: string) => {
+        setReviewFileId(fileId);
+        if (fileName) setReviewFileName(fileName);
+        setReviewSource('upload');
+        setReviewFromVersionId('');
+        setReviewMode(true);
       },
     });
   }, [onReviewControlChange, reviewVisible, reviewMode, toggleReview]);

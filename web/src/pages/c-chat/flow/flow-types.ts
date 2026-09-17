@@ -80,6 +80,12 @@ export interface FlowLiveChat {
   busy: boolean;
   /** 范本填写进度（template_fill_progress 事件累积，随流式上报） */
   templateFill?: ITemplateFillState;
+  /** 文件审核进度（FileReview 节点产出 task_id 后落到此处供中部对话区挂载
+   *  <FileReviewProgress>，与 c-chat 同款 msg.fileReview 字段语义） */
+  fileReview?: {
+    fileId: string;
+    taskId: string;
+  };
 }
 
 /** 全部流程管理页（超管）：状态筛选，''（全部）由调用方转换为不传 status */
