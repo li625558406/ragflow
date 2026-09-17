@@ -8028,7 +8028,10 @@ DROP TABLE IF EXISTS file_review_template;
 
 **Files:**（无新增代码，仅文档 + 审查）
 
-- [ ] **Step 1: 全量最终审查**
+- [x] **Step 1: 全量最终审查**
+
+> **执行结论（2026-09-17）**：`superpowers:code-reviewer` 完成收口审查 → 0 Critical / 4 Major / 13 Minor / 8 已确认正确。4 个 Major（下载 401、canFix 闸门不镜像、受理无并发锁、画布节点未注册）已全部修复并复审通过（提交 `5f44630a`）；复审新发现 0 个新引入问题，残留项记入 CHANGE.md 2026-09-17 条目 R-1~R-8。全量复核：后端 114 passed、ruff 通过、tsc 改动文件零新增错误、eslint 0 error。
+
 
 派 `superpowers:code-reviewer`（或项目 `konus-code-review`）对**整个 file_review 变更集**做一次收口审查，范围：
 
@@ -8054,7 +8057,7 @@ git diff --stat $(git merge-base master HEAD)..HEAD -- \
 
 **预期结论**：Critical / Major = 0；Minor 记入 CHANGE.md 遗留项，不阻断部署。
 
-- [ ] **Step 2: 更新 CHANGE.md**
+- [x] **Step 2: 更新 CHANGE.md**
 
 按 CLAUDE.md「项目迭代记录（CHANGE.md 规则）」在 `D:\AI\ragflow2\CHANGE.md` **顶部**追加本次迭代条目（增量，不覆盖）：
 
@@ -8074,7 +8077,7 @@ git diff --stat $(git merge-base master HEAD)..HEAD -- \
 - **部署状态**：未部署（代码已提交 `feat/unified-crawler-framework`，部署手册见计划 T17）
 ```
 
-- [ ] **Step 3: 更新 CLAUDE.md 参考文档表**
+- [x] **Step 3: 更新 CLAUDE.md 参考文档表**
 
 按「文档引用规范」，在 `D:\AI\ragflow2\CLAUDE.md` 的「参考文档」表追加一行，指向本功能的 spec（绝对路径 + 一句话简介 + 当前状态）：
 
@@ -8084,7 +8087,7 @@ git diff --stat $(git merge-base master HEAD)..HEAD -- \
 
 > 若 spec 文件尚未落到 `docs/superpowers/specs/`，本步**先补写 spec 文件**再登记。CLAUDE.md 里已在「参考文档」表的说明中提及本功能，但按规范必须有独立 spec 文件 + 独立表行。
 
-- [ ] **Step 4: 收尾检查**
+- [x] **Step 4: 收尾检查**
 
 ```bash
 cd D:/AI/ragflow2
