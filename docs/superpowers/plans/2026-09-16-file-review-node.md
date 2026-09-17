@@ -7126,138 +7126,206 @@ git commit -m "feat(file-review): zh.ts i18n keys"
 
 ---
 
-## Task 14: 对话侧集成（FileReviewTool + 流式事件挂载）
+## Task 14: 对话侧集成（轮询进度卡挂载 + 工具接入）
 
 **Files:**
 - Modify: `web/src/pages/c-chat/index.tsx`
 
-- [ ] **Step 1: 找到对话侧流式事件订阅处**
+> ### T14 规格重写说明（替换原「SSE 事件挂载 + applyFileReviewEvent」版）
+>
+> T9 砍 SSE 后原 T14 整套基于 `setFileReviewState` / `applyFileReviewEvent` 的实现失效。本任务 reshape 为「**组件自管轮询 + 最小挂载点**」：
+>
+> - **删** SSE 事件订阅分支（搜索 `template_fill_progress` 旁边的 `if (d.event === 'file_review_progress')`，整段删除）
+> - **删** `setFileReviewState` / `streamState.fileReview` 维护 —— 进度由组件 hook 内部 3s 轮询拿
+> - **删** `state={msg.fileReview} streaming={false}` 传参 —— `FileReviewProgress` 仅需要 `fileId` + `taskId` + `onOpenReview`/`onPreviewDoc`
+> - **保留** 工具注册 —— T8 已通过 `component_class` 按类名自动发现（`agent/tools/__init__.py` 无须改），T14 不重复
+> - **保留** 消息渲染处挂载 —— 找到 c-chat 消息渲染 FileReview 工具结果的位置，mount `<FileReviewProgress />`
+>
+> 与 T12 交接契约一致：**调用方只需传 fileId + taskId**，组件自管 refetchInterval。
 
-定位 `web/src/pages/c-chat/index.tsx` 中处理 `template_fill_progress` 事件的分支（搜索字符串 `template_fill_progress`），在它旁边新增：
+- [ ] **Step 1: 找到 FileReview 工具结果在消息中的落点**
 
-```typescript
-if (d.event === 'file_review_progress') {
-  setFileReviewState((s) => applyFileReviewEvent(s, d));
-  continue;
-}
+读 `web/src/pages/c-chat/index.tsx` 全文，定位以下任一信号点（实现位置以实际代码为准，下面是预测方向）：
+
+- 工具结果通过 agent 消息内容回传 → c-chat 需解析工具调用记录，提取 `file_id` + `task_id`
+- 工具结果直接落到消息字段（如未来 T14 实现可能在 `msg` 上加 `fileReview?: {fileId, taskId}`）
+- c-chat 内已有 `<TemplateFillProgress>` mount 点（line 2511-2532 附近），按同形态追加
+
+**判断信号**：跑 `grep -n "TemplateFillProgress\|template_fill" web/src/pages/c-chat/index.tsx` 看现有挂载骨架。
+
+- [ ] **Step 2: 删除 SSE 事件订阅（若存在）**
+
+```bash
+grep -n "file_review_progress\|setFileReviewState\|applyFileReviewEvent" web/src/pages/c-chat/index.tsx
 ```
 
-- [ ] **Step 2: 在对话消息渲染处增加 FileReviewProgress 挂载**
+预期：0 命中（这些是原 SSE 版 spec 写的，T9 砍 SSE 后实际代码不应有；若命中则删除整段 if 分支）。
 
-定位 message 渲染分支（搜索 `<TemplateFillProgress` 出现处，按相同挂载模式追加）：
+**严格约束：不允许**新增任何 `addEventListener` / `new EventSource` / `streamState.fileReview` 等 SSE 痕迹。轮询由 `useFileReviewState` 内部完成。
+
+- [ ] **Step 3: 挂载 `<FileReviewProgress />`**
+
+参照 `<TemplateFillProgress>` 挂载位置（line 2511 附近），按 T12 契约追加：
 
 ```tsx
-{msg.fileReview?.rounds?.length > 0 && (
+{/* 文件审核进度卡：组件自管轮询，仅传 fileId + taskId（与 T12 契约对齐） */}
+{msg.fileReview && (
   <FileReviewProgress
-    taskId={msg.fileReview.task_id}
-    fileId={msg.fileReview.file_id}
-    state={msg.fileReview}
-    streaming={false}
-    onOpenReview={(annotations, version) => setReviewPanel({ annotations, version })}
+    fileId={msg.fileReview.fileId}
+    taskId={msg.fileReview.taskId}
+    onOpenReview={(annotations, version) =>
+      setReviewPanel({ annotations, version })
+    }
+    onPreviewDoc={(minioPath) =>
+      setPreviewDoc({ fileId: minioPath, fileName: '文件审核成稿' })
+    }
   />
 )}
 ```
 
-- [ ] **Step 3: 工具注册**
+**重要**：`msg.fileReview` 字段的填充机制不在 T14 范围内。T14 仅完成「**若有则渲染**」的客户端骨架，工具结果如何落到 `msg.fileReview` 由以下两条任一实现：
 
-定位对话侧工具注册列表（搜索 `template_fill` 出现处，按模板填写的注册模式追加 file_review）：
+- **路径 A（推荐）**：让 Agent canvas 节点执行 file_review 后，把 `{file_id, task_id}` 写入消息的工具调用结果块 → c-chat 解析工具结果时把它投射到 `msg.fileReview`
+- **路径 B**：临时让 c-chat 用正则扫 agent 回复文本找 `file_id=xxx&task_id=xxx` 之类结构 —— 简单但不健壮，仅作为 T14 占位实现
 
-```typescript
-{ name: 'file_review', tool: FileReviewTool, label: '文件审核' },
-```
+T14 任选其一落地；若实现路径 B 必须在 commit message 里标注「占位实现，T15 阶段替换为路径 A」。
 
 - [ ] **Step 4: 验证 build**
 
 ```bash
-cd web && npm run build
+cd web && npm run build 2>&1 | tail -10
 ```
-Expected: build 成功
 
-- [ ] **Step 5: 提交**
+预期：build 成功，0 错误。
+
+- [ ] **Step 5: 类型检查**
 
 ```bash
-git add web/src/pages/c-chat/index.tsx
-# 若 Step 3 改了其他文件：git add <additional-files>
-git commit -m "feat(file-review): c-chat dialogue integration"
+cd web && npx tsc --noEmit -p tsconfig.json 2>&1 | grep "c-chat/index.tsx" | head
 ```
 
----
-
-## Task 15: 流程页集成（FileReview 节点注册）
-
-**Files:**
-- Modify: `web/src/pages/c-chat/flow/flow-panel.tsx`
-- Modify: `web/src/pages/agent/canvas/index.tsx`
-
-- [ ] **Step 1: flow-panel.tsx 注册 FileReview 节点类型**
-
-定位 `flow-panel.tsx` 中节点注册表（搜索 `TemplateFill` 字符串，按其注册模式追加）：
-
-```typescript
-{ type: 'FileReview', label: '文件审核', icon: FileSearch },
-```
-
-- [ ] **Step 2: flow AI 面板进度卡挂载**
-
-定位 flow AI 对话渲染区（搜索 `TemplateFillProgress` 出现处，按相同模式追加）：
-
-```tsx
-{msg.fileReview?.rounds?.length > 0 && (
-  <FileReviewProgress
-    taskId={msg.fileReview.task_id}
-    fileId={msg.fileReview.file_id}
-    state={msg.fileReview}
-    streaming={false}
-    onOpenReview={(annotations, version) => setReviewPanel({ annotations, version })}
-  />
-)}
-```
-
-- [ ] **Step 3: agent/canvas 编辑器节点调色板新增分组**
-
-定位 `agent/canvas/index.tsx` 的节点调色板配置（搜索 `TemplateFill` 字符串，按分组配置模式追加）：
-
-```typescript
-{
-  group: '文件审核',
-  items: [
-    { type: 'FileReview', label: '文件审核', icon: FileSearch,
-      params: ['file_id', 'template_id', 'custom_prompt', 'kb_ids', 'max_rounds'] },
-  ],
-},
-```
-
-- [ ] **Step 4: 节点配置表单**
-
-定位节点参数编辑组件（搜索 `TemplateFill` 字符串出现于 ParamEditor 处，按 case 分支模式追加）：
-
-```tsx
-case 'FileReview':
-  return (
-    <div className="space-y-2">
-      <Input label="文件 ID" value={param.file_id} onChange={...} />
-      <Select label="审核模板" value={param.template_id}
-              options={templates.map(t => ({ label: t.name, value: t.id }))}
-              allowEmpty onChange={...} />
-      <Textarea label="自定义要求（可选）" value={param.custom_prompt} onChange={...} />
-      <NumberInput label="最大轮次" value={param.max_rounds} defaultValue={3} onChange={...} />
-    </div>
-  );
-```
-
-- [ ] **Step 5: 验证 build**
-
-```bash
-cd web && npm run build
-```
-Expected: build 成功
+预期：仅本文件 0 命中（其他文件历史错误不在 T14 范围）。
 
 - [ ] **Step 6: 提交**
 
 ```bash
-git add web/src/pages/c-chat/flow/flow-panel.tsx web/src/pages/agent/canvas/index.tsx
-git commit -m "feat(file-review): flow + canvas editor integration"
+git add web/src/pages/c-chat/index.tsx
+# 若 Step 3 路径 A/B 涉及其他文件：git add <additional-files>
+git commit -m "feat(file-review): c-chat progress card mount (polling, no SSE)"
 ```
+
+---
+
+## T14 → T15 交接契约（强制执行）
+
+| 任务 | 约束 |
+|---|---|
+| T15 流程页集成 | **不重复** 注册 FileReview 节点 —— T7 后端节点已通过 `component_class` 自动发现；T15 只需在 `web/src/pages/c-chat/flow/flow-panel.tsx` 与 `web/src/pages/agent/canvas/index.tsx` 的节点注册表中**按 T7 的后端类名 `FileReview` 追加可视化渲染分支**（前端组件发现机制与 T8 tool 同源）。**禁止**为 FileReview 单开 SSE/事件管线。 |
+| T15 共享组件 | 流程页与 c-chat 都 import 同一个 `web/src/pages/c-chat/file-review-progress.tsx` —— 路径不挪，避免两边 import 路径漂移。 |
+| 工具结果落点 | T14/T15 的「`msg.fileReview` 从哪来」按 T14 Step 3 路径 A 实现（Agent canvas 节点把 `{file_id, task_id}` 写进工具调用结果）；T16 端到端测试覆盖该链路。 |
+
+---
+
+## Task 15: 流程页集成（FileReview 节点渲染 + 进度卡挂载）
+
+**Files:**
+- Modify: `web/src/pages/c-chat/flow/flow-ai-panel.tsx`（按实际模板填写模板）
+- 可能 Modify: `web/src/pages/c-chat/flow/flow-panel.tsx`（若节点类型注册表需要追加）
+
+> ### T15 规格重写说明（替换原「3 文件 + 节点调色板 + 配置表单」版）
+>
+> 实测原 T15 假设的几个文件路径与本仓库实际不符：
+>
+> - `web/src/pages/c-chat/flow/flow-panel.tsx` **不**存在 TemplateFill 注册项；它是通用节点渲染器（agent canvas 节点由 `component_class` 按类名自动发现，**前端无须手写调色板与表单**）
+> - `web/src/pages/agent/canvas/index.tsx` **不**存在 TemplateFill 注册项；同理——节点 UI 由 `agent/component/file_review.py` 配套的 React 组件按类名自动加载
+>
+> 因此本任务实际只做一件事：**在 flow AI 对话面板挂载 `<FileReviewProgress />`**，结构与 T14 c-chat 集成同形态。
+>
+> - **删** 「flow-panel.tsx 注册节点类型」、「画布编辑器调色板新增分组」、「节点配置表单」三段 —— 这都是为手写注册机制设计的，本仓库不适用
+> - **删** `state={msg.fileReview} streaming={false}` —— 组件自管轮询
+> - **保留** flow AI 对话面板渲染处挂载 `<FileReviewProgress fileId taskId onOpenReview />`（与 c-chat 同形态）
+>
+> T7 后端节点的「前端可视化渲染分支」由 `agent/component/file_review.py` 配套的 React 组件按类名发现；T15 不重复。若 T7 已配 React 组件，本步骤可能只是验证可渲染性（无新文件）。
+
+- [ ] **Step 1: 定位 flow AI 对话面板的 TemplateFillProgress 挂载点**
+
+```bash
+grep -n "TemplateFillProgress\|<TemplateFillProgress" web/src/pages/c-chat/flow/flow-ai-panel.tsx | head -10
+```
+
+按现有挂载骨架追加 FileReviewProgress（同形态）。
+
+- [ ] **Step 2: 验证「节点类型是否已自动注册」**
+
+```bash
+grep -rn "FileReview\b" web/src/pages/agent/ web/src/pages/c-chat/flow/ 2>&1 | grep -v "file-review-progress\|file-review-stream\|use-file-review-request" | head
+```
+
+预期：若 `agent/component/file_review.py` 已配套 React 组件（按 T7 docstring 承诺），则该项 grep 命中——T15 无须再改。
+
+若 0 命中（说明 T7 后端节点没有 React 前端可视化），则：
+
+- 在 `web/src/pages/agent/canvas/` 或 `web/src/pages/c-chat/flow/` 下创建一个最小节点可视化组件 `file-review-node.tsx`（按 `template-fill-node.tsx` 或同类节点参考）
+- 在节点注册发现路径追加 import（若不靠自动发现）
+
+这种情况比较少见，T15 默认按「已自动注册」路径走。
+
+- [ ] **Step 3: 挂载 FileReviewProgress**
+
+参照 T14 c-chat 集成，在 `flow-ai-panel.tsx` 的消息渲染分支同位置追加：
+
+```tsx
+{/* 文件审核进度卡：与 c-chat 共用同一组件（路径 pages/c-chat/，两侧都 import 此处） */}
+{msg.fileReview && (
+  <FileReviewProgress
+    fileId={msg.fileReview.fileId}
+    taskId={msg.fileReview.taskId}
+    onOpenReview={(annotations, version) =>
+      setReviewPanel({ annotations, version })
+    }
+    onPreviewDoc={(minioPath) =>
+      setPreviewDoc({ fileId: minioPath, fileName: '文件审核成稿' })
+    }
+  />
+)}
+```
+
+**注意**：`msg.fileReview` 字段填充机制在 T14 已确定（工具结果投射或正则占位，T14 commit message 已说明）。T15 复用同一字段；如路径不一致需在 T15 commit message 标注。
+
+- [ ] **Step 4: 验证 build**
+
+```bash
+cd web && npm run build 2>&1 | tail -10
+```
+
+预期：build 成功。
+
+- [ ] **Step 5: 类型检查**
+
+```bash
+cd web && npx tsc --noEmit -p tsconfig.json 2>&1 | grep "flow-ai-panel.tsx" | head
+```
+
+预期：本文件 0 命中（其他文件历史错误不在 T15 范围）。
+
+- [ ] **Step 6: 提交**
+
+```bash
+git add web/src/pages/c-chat/flow/flow-ai-panel.tsx
+# 若 Step 2 创建了新组件：git add <new-component-file>
+git commit -m "feat(file-review): flow AI panel progress card mount (polling, no SSE)"
+```
+
+---
+
+## T15 → T16 交接契约（强制执行）
+
+| 任务 | 约束 |
+|---|---|
+| T16 端到端 | **必须**覆盖 `fileId` + `taskId` 双 prop 显式传入路径（spec 提醒 T12 测试只覆盖了无 prop 回退分支） |
+| T16 端到端 | **必须**覆盖修复级别 Popover 多选 → `mutate({levels:['high','medium']})` 链路（验证轮询 → 端点入参映射） |
+| T16 端到端 | **必须**覆盖 c-chat 与 flow 两侧都看到同一份标注（验证组件复用而非各写一份） |
+| T17 部署 | 部署清单追加 c-chat + flow AI 面板两侧的 SCP 同步（同一组件两侧 import，部署改动一致） |
 
 ---
 
