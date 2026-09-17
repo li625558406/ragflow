@@ -98,10 +98,14 @@ describe('FileReviewProgress', () => {
   beforeEach(() => {
     mockUseFixFileReview.mockReturnValue({
       mutate: jest.fn(),
+      // TanStack Query v5 mutation: busy 状态用 isPending（v4 的 isLoading 已重命名）。
+      // 同时保留 isLoading:false 兜底未升级 mock 的类型。
+      isPending: false,
       isLoading: false,
     } as any);
     mockUseUpdateAnnotationStatus.mockReturnValue({
       mutate: jest.fn(),
+      isPending: false,
       isLoading: false,
     } as any);
   });
@@ -123,7 +127,7 @@ describe('FileReviewProgress', () => {
     mockUseFileReviewState.mockReturnValue(baseState() as any);
     const { rerender } = render(<FileReviewProgress fileId="f1" />);
     expect(
-      screen.getByRole('button', { name: /修复|级别/ }),
+      screen.getByRole('button', { name: '选择级别修复' }),
     ).toBeInTheDocument();
     mockUseFileReviewState.mockReturnValue(
       baseState({
@@ -134,7 +138,7 @@ describe('FileReviewProgress', () => {
       }) as any,
     );
     rerender(<FileReviewProgress fileId="f1" />);
-    expect(screen.queryByRole('button', { name: /修复|级别/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: '选择级别修复' })).toBeNull();
   });
 
   it('round.status=reviewing 时不显示「修复」入口，显示 spinner', () => {
@@ -153,7 +157,7 @@ describe('FileReviewProgress', () => {
       }) as any,
     );
     render(<FileReviewProgress fileId="f1" />);
-    expect(screen.queryByRole('button', { name: /修复|级别/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: '选择级别修复' })).toBeNull();
     expect(screen.getByText(/正在审核|审核中/)).toBeInTheDocument();
   });
 
@@ -161,11 +165,12 @@ describe('FileReviewProgress', () => {
     const mutate = jest.fn();
     mockUseFixFileReview.mockReturnValue({
       mutate,
+      isPending: false,
       isLoading: false,
     } as any);
     mockUseFileReviewState.mockReturnValue(baseState() as any);
     render(<FileReviewProgress fileId="f1" />);
-    fireEvent.click(screen.getByRole('button', { name: /修复|级别/ }));
+    fireEvent.click(screen.getByRole('button', { name: '选择级别修复' }));
     fireEvent.click(screen.getByLabelText(/严重/));
     fireEvent.click(screen.getByLabelText(/一般/));
     fireEvent.click(screen.getByRole('button', { name: /确认|提交/ }));

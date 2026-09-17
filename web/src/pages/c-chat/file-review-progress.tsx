@@ -85,28 +85,30 @@ export default function FileReviewProgress({
     <div className="space-y-2 rounded-lg border border-[#E5E5E5] bg-[#F5F5F5] px-3 py-2.5 text-xs">
       <div className="font-medium text-[#000000]">
         文件审核{' '}
-        <span className="text-[#8C8C8C]">
-          第 {current!.round_no} 轮 ·{' '}
-          {status === 'reviewing'
-            ? '审核中'
-            : status === 'fixing'
-              ? '修复中'
-              : status === 'annotated'
-                ? '已完成'
-                : status === 'done'
-                  ? '已结束'
-                  : status === 'failed'
-                    ? '失败'
-                    : status}
-        </span>
+        {current && (
+          <span className="text-[#8C8C8C]">
+            第 {current.round_no} 轮 ·{' '}
+            {status === 'reviewing'
+              ? '审核中'
+              : status === 'fixing'
+                ? '修复中'
+                : status === 'annotated'
+                  ? '已完成'
+                  : status === 'done'
+                    ? '已结束'
+                    : status === 'failed'
+                      ? '失败'
+                      : status}
+          </span>
+        )}
         {canFix && (
           <span className="ml-2 text-[#8C8C8C]">
-            剩余 {data.fix_rounds_left} 轮
+            剩余 {data.fix_rounds_left ?? 0} 轮
           </span>
         )}
       </div>
-      {current!.summary && (
-        <div className="text-[#8C8C8C]">{current!.summary}</div>
+      {current?.summary && (
+        <div className="text-[#8C8C8C]">{current.summary}</div>
       )}
       <div className="flex flex-wrap items-center gap-2 pt-0.5">
         <button
