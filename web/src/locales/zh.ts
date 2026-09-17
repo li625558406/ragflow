@@ -2151,6 +2151,7 @@ General：实体和关系提取提示来自 GitHub - microsoft/graphrag：基于
       bidSearchContractDescription: '搜索中标结果和合同公告',
       bidRewriteQuery: '搜索条件重写',
       documentRewrite: '文档局部重写',
+      fillTemplate: '范本填写工具',
       bidRewriteQueryDescription: 'AI将自然语言重写为结构化搜索条件',
       bidIndustryTag: '行业标签推理',
       bidIndustryTagDescription: '根据关键词推理行业编码',

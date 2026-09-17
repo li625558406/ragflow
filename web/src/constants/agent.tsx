@@ -131,6 +131,7 @@ export enum Operator {
   TemplateFill = 'TemplateFill',
   FileReview = 'FileReview',
   DocumentRewrite = 'DocumentRewrite',
+  FillTemplate = 'FillTemplate',
   Placeholder = 'Placeholder',
   DataOperations = 'DataOperations',
   ListOperations = 'ListOperations',

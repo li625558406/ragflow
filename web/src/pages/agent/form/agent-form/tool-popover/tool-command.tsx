@@ -41,7 +41,7 @@ const Menus = [
   },
   {
     label: t('flow.document'),
-    list: [Operator.DocumentRewrite],
+    list: [Operator.FillTemplate, Operator.DocumentRewrite],
   },
   // {
   //   label: 'Productivity',

@@ -84,6 +84,7 @@ export const LucideIconMap = {
   [Operator.TemplateFill]: FilePen,
   [Operator.FileReview]: FileCheck2,
   [Operator.DocumentRewrite]: FilePenLine,
+  [Operator.FillTemplate]: FilePen,
 };
 
 const Empty = () => {
