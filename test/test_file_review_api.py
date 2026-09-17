@@ -137,9 +137,10 @@ def test_all_routes_registered_on_blueprint():
         "/file/review/file/<file_id>/state": {"GET", "HEAD", "OPTIONS"},
         "/file/review/<task_id>/fix": {"POST", "OPTIONS"},
         "/file/review/annotation/<annotation_id>/status": {"POST", "OPTIONS"},
+        "/file/review/<task_id>/<file_version>/download": {"GET", "HEAD", "OPTIONS"},
     }, f"路由集合不符：{rules}"
     for name in ("list_review_templates", "review_state", "fix_review",
-                 "update_annotation_status"):
+                 "update_annotation_status", "download_review_version"):
         fn = getattr(_api, name, None)
         assert fn is not None, f"缺少端点函数 {name}"
         assert inspect.iscoroutinefunction(getattr(fn, "__wrapped__", fn)) or callable(fn)

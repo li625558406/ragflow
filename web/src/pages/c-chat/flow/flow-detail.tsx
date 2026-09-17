@@ -895,7 +895,6 @@ function ConversationView({
   onLivePreviewOpenChange,
   visible = true,
   reviewCtl,
-  onPreviewDoc,
 }: {
   chats: FlowAiChatItem[];
   live: FlowLiveChat | null;
@@ -913,10 +912,9 @@ function ConversationView({
   visible?: boolean;
   /** T15：FileReviewProgress 回调桥（FlowAiPanel 上报的 reviewCtl.openWithFile） */
   reviewCtl?: FlowReviewControl | null;
-  /** T15：FileReviewProgress 成稿预览回调 —— 流程页无 LivePreview，抽屉预览复用
-   *  flow 已有的 viewVersionId + viewFileId 流程，故 onPreviewDoc 关闭当前 review 抽屉
-   *  并由外层透传到 downloadVersionBlob 流程。本任务仅保留入口，详实现归 T16 收口 */
-  onPreviewDoc?: (minioPath: string) => void;
+  /** T15：FileReviewProgress 成稿预览 —— 本任务已改走专用 download 端点
+   *  （GET /api/v1/file/review/<taskId>/<fileVersion>/download），不再需要父层透传回调。
+   *  旧 prop 已删（无外部调用方）。 */
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   // 挂起确认卡出现信号（范本选择/字段确认）：卡在范本行上方，若不滚动用户可能
@@ -1046,7 +1044,19 @@ function ConversationView({
                     '文件审核',
                   );
                 }}
-                onPreviewDoc={(minioPath) => onPreviewDoc?.(minioPath)}
+                onPreviewDoc={(_minioPath, fileVersion) => {
+                  // 最小可用路径：直接调 download 端点触发浏览器下载，绕过
+                  // flow 端 onPreviewDoc 旧有的「关 review 抽屉 + 透传到
+                  // downloadVersionBlob」链路 —— 那条链路要求对象名匹配 flow
+                  // 的 FlowVersionService 记录，但审核成稿是 task 维度的，
+                  // 不在 flow_version 表里。改用专用 download 端点。
+                  const tid = live.fileReview?.taskId;
+                  if (!tid || !fileVersion) return;
+                  const url = `/api/v1/file/review/${encodeURIComponent(
+                    tid,
+                  )}/${encodeURIComponent(fileVersion)}/download`;
+                  window.open(url, '_blank');
+                }}
               />
             </div>
           ) : null}

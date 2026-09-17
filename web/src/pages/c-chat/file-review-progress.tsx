@@ -28,8 +28,12 @@ export default function FileReviewProgress({
     annotations: IFileReviewAnnotation[],
     fileVersion: string,
   ) => void;
-  /** 点击「下载成稿」时回调（参数：成稿 MinIO 对象名） */
-  onPreviewDoc?: (minioPath: string) => void;
+  /** 点击「下载成稿」时回调（参数：成稿 MinIO 对象名 + 成稿版本号）。
+   *  调用方拿到 (minioPath, fileVersion) 后拼出
+   *  GET /api/v1/file/review/<taskId>/<fileVersion>/download URL 触发浏览器下载
+   *  —— 走专门端点，不复用 upload 系统的 fileId 路由（doc.object 是 MinIO 对象名，
+   *  旧链路把它当 fileId 用是错误的，见 T9 → T14/T15 复盘）。 */
+  onPreviewDoc?: (minioPath: string, fileVersion: string) => void;
 }) {
   // ── 数据 ─────────────────────────────────────────
   const state = useFileReviewState(fileId);
@@ -119,11 +123,11 @@ export default function FileReviewProgress({
           <Eye className="h-3 w-3" /> 打开审核面板（{data.doc.version || '原件'}
           ）
         </button>
-        {data.doc.object && data.doc.object !== fileId && (
+        {data.doc.object && data.doc.object !== fileId && data.doc.version && (
           <button
             type="button"
             className="flex items-center gap-1 rounded border border-[#1a66fb] px-2 py-0.5 text-[#1a66fb] hover:bg-[#F5F8FF]"
-            onClick={() => onPreviewDoc?.(data.doc.object)}
+            onClick={() => onPreviewDoc?.(data.doc.object, data.doc.version)}
           >
             <Download className="h-3 w-3" /> 下载成稿
           </button>

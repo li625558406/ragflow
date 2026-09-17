@@ -13,12 +13,13 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
-"""文件审核 REST API（4 端点）。
+"""文件审核 REST API（5 端点）。
 
-  GET  /file/review/templates                      可用审核模板（系统预置 + 本租户）
-  GET  /file/review/file/<file_id>/state            以文件为中心的权威读模型
-  POST /file/review/<task_id>/fix                   发起一轮修复
-  POST /file/review/annotation/<aid>/status          人工闭环单条标注（兜底出口）
+  GET  /file/review/templates                                可用审核模板（系统预置 + 本租户）
+  GET  /file/review/file/<file_id>/state                      以文件为中心的权威读模型
+  POST /file/review/<task_id>/fix                             发起一轮修复
+  POST /file/review/annotation/<aid>/status                  人工闭环单条标注（兜底出口）
+  GET  /file/review/<task_id>/<file_version>/download        下载指定轮次成稿 MinIO 对象
 
 ── 设计取舍（T9 前置侦察实测结论，改前请先读 Task 9 的「规格重写说明」）──────
 
@@ -39,8 +40,9 @@
 """
 import json
 import logging
+from urllib.parse import quote
 
-from quart import Blueprint, request
+from quart import Blueprint, Response, request
 
 from api.apps import login_required
 from api.db.services.file_review_service import (
@@ -57,7 +59,9 @@ from api.utils.api_utils import (
     get_error_data_result,
     get_json_result,
 )
+from common import settings
 from common.constants import RetCode
+from common.misc_utils import thread_pool_exec
 from rag.svr.file_review import spawn as spawn_mod
 
 logger = logging.getLogger(__name__)
@@ -382,4 +386,50 @@ async def update_annotation_status(annotation_id: str, tenant_id: str):
         return get_json_result(data={"annotation_id": annotation_id, "status": status})
     except Exception:
         logger.exception("file review: update annotation status failed, aid=%s", annotation_id)
+        return get_error_data_result(message="Internal server error")
+
+
+@manager.route("/file/review/<task_id>/<file_version>/download", methods=["GET"])
+@login_required
+async def download_review_version(task_id: str, file_version: str):
+    """下载指定 (task_id, file_version) 轮次的成稿 MinIO 对象。
+
+    与 flow_app.download_version 同形态：用 settings.STORAGE_IMPL.get(bucket, key)
+    取 blob，返回 Content-Disposition 触发浏览器下载。对象名按 executor._store_version_blob
+    的约定：bucket = `{tenant_id}-downloads`，key = `frv-{task_id}-{file_version}`。
+
+    不入 owner-gate：T9 决策 reads ungated（文件所有人可见），下载属于读路径。
+    """
+    try:
+        # 复用既有 get_by_task 聚合所有轮次 —— 不新增 list_by_task（与 service 层「按
+        # 维度查一轮次」是同一种查询）。首轮 file_id 即后续轮次的 file_id（task 是一次
+        # 审核会话，所有轮次归属同一文件）。
+        rounds = FileReviewRoundService.get_by_task(task_id)
+        if not rounds:
+            return get_error_data_result("任务不存在")
+        tenant_id = rounds[0].tenant_id or ""
+        # 防御空 file_version：避免拼出 `frv-t1-` 这种「全 task 共用一份成稿」的脏路径。
+        if not file_version:
+            return get_error_data_result("该轮次无成稿")
+        target = next(
+            (r for r in rounds if r.file_version == file_version and r.minio_path),
+            None,
+        )
+        if not target:
+            return get_error_data_result("该轮次无成稿")
+        object_name = f"frv-{task_id}-{file_version}"
+        bucket = f"{tenant_id}-downloads" if tenant_id else ""
+        if not bucket:
+            return get_error_data_result("该任务归属缺失，无法下载")
+        blob = await thread_pool_exec(settings.STORAGE_IMPL.get, bucket, object_name)
+        # 文件名：{fileId}_v{file_version}.docx（简化命名，T16 联调如需原文件名再调整）
+        file_id = target.file_id or ""
+        file_name = f"{file_id}_{file_version}.docx" if file_id else f"{file_version}.docx"
+        return Response(
+            blob,
+            mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(file_name)}"},
+        )
+    except Exception:
+        logger.exception("file review: download failed, task_id=%s version=%s", task_id, file_version)
         return get_error_data_result(message="Internal server error")
