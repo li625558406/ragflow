@@ -40,7 +40,10 @@ demo03 是全新流程，却拿到了 demo02 里手改出的基线值 B。
 
 **对上一批次的收口**：本条目**解决**了上一批次遗留项②（「`latest_done` 是租户+范本粒度、`flow_instance_id` 全库空串无法收窄」）的**继承侧**——该遗留描述的正是本事故根因，现已按「流程实例隔离」修掉；**定位侧**仍刻意保持宽口径。
 
-**状态**：**未部署、未 commit、未 push**。部署清单（用户指示后执行，**4 后端文件成套**）：`api/db/services/template_fill_service.py`、`api/db/services/canvas_service.py`、`agent/component/template_fill.py`、`agent/tools/template_fill.py` 四处 SCP + `docker restart docker-ragflow-cpu-1`（`test/` 两文件仅在本地）。前端本批次**零改动**；上一批次的 3 个前端文件仍待 `npm run build` + dist + `nginx -s reload`。
+**状态**：**已部署 2026-09-17 + 已 commit + 已 push**（HEAD `12228c49`）。部署集：后端 4 文件成套 SCP（`api/db/services/template_fill_service.py`、`api/db/services/canvas_service.py`、`agent/component/template_fill.py`、`agent/tools/template_fill.py`）+ `docker restart docker-ragflow-cpu-1`。
+
+**部署实测（2026-09-17）**：①覆盖前按规程把 4 个文件从服务器拉回 `diff --strip-trailing-cr` 比对，**服务器独有行均为 0**（本地严格超集，可安全覆盖）；②SCP 后 md5 四文件一致；③容器 `import` 冒烟通过，且断言到 `latest_done_in_context` 的 `context_id` **无默认值**、`canvas_service` 源码含 `sys.session_id`、节点 `hasattr(_work_context_id)` 为真且源码不再出现宽口径 `latest_done(`；④**运行时验证（决定性证据）**：容器内直调 `latest_done_in_context('x','y','')` / `(…,None)` / `(…,'no-such-session')` **均返回 None**，证明空上下文短路与 `flow_instance_id` 过滤在真实 DB 上生效；⑤最新 done 行 `a5b3a53e`（demo03 那条）`flow_instance_id` 仍为 `''`，与设计预期一致——存量行不回溯，老流程接着填退化为全量。
+**探活教训（易误判，已回写部署参考）**：`/api/v1/template/**` 的 blueprint 把 `@login_required` 挂在 **blueprint 级 `before_request`**，**不存在的路径也回 401** → 「目标 401」**不能**作为「路由已注册」的证据（本次差点据此误报成功）。区分法：打一个**故意写错的同前缀路径**，若同样 401 则 401 无区分力，改用上面的运行时证据。
 
 ---
 
@@ -68,7 +71,8 @@ demo03 是全新流程，却拿到了 demo02 里手改出的基线值 B。
 
 **遗留（3 项，均已写进代码注释与设计稿 §6）**：①**已打开的预览不随同屏 modify 刷新**（成稿卡状态对象在 modify 轮引用不变，无「本轮是新轮」信号；不加轮询——没信号就轮询等于给每个打开的预览挂永久定时器），需关闭重开；②**`latest_done` 是「租户+范本」粒度而非「本次流程」粒度**——本应由当前流程收窄，但 `flow_instance_id` 全库写空串（死字段）无可用信号；缓解是回执必带 `task_id` + 本地化生成时间让误选**可见**且可由用户带 `task_id` 纠正，根治须先让该字段有值；③修复 3 无自动化测试。
 
-**状态**：**未部署、未 commit、未 push**。部署清单（用户指示后执行）：后端 `agent/tools/template_fill.py` 单文件 SCP + `docker restart`；前端 `template-fill-live-preview.tsx` / `use-template-fill-request.ts` / `flow/flow-ai-panel.tsx` 三文件 `npm run build` + dist 上传 + `nginx -s reload`。
+**状态**：**已部署 2026-09-17 + 已 commit + 已 push**（commit `b1867dff`，HEAD 随其后一批为 `12228c49`）。部署集：后端 `agent/tools/template_fill.py` 单文件 SCP + `docker restart`；前端 `template-fill-live-preview.tsx` / `use-template-fill-request.ts` / `flow/flow-ai-panel.tsx`（另含 `__tests__/template-fill-live-preview.test.tsx` 仅入库不参与构建）+ 同批登记 `FillTemplate` 工具的 5 个画布编辑器文件，一并 `npm run build`（1m27s，39M dist）+ dist 上传 + 原地解压 + `nginx -s reload`。
+**部署实测**：`curl 127.0.0.1/` → 200；容器内 `curl /chunk/js/locale-zh-BiKDwP1h.js | grep -c 范本填写工具` → **1**（构建产物与服务器所服务 chunk 名一致，确认新包已生效，非旧缓存）。
 
 ---
 
