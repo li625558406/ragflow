@@ -929,3 +929,62 @@ def test_severity_helpers_render_unknown_without_losing_it():
                              SimpleNamespace(severity="weird"),
                              SimpleNamespace(severity=None)]) == \
         "共 3 条（一般 1 条、weird 1 条、未知 1 条）"
+
+
+# ── 15. heal_stale_round：中断轮次惰性自愈（R-1 落库单点） ───────────────
+# 判定复用 is_stale_running（纯谓词），落库走 update_status；DB 用例走真库，
+# 时间轴用显式 now_ms 锁定（不给 flaky 留缝）。
+
+def test_heal_stale_round_persists_failed_with_error(monkeypatch):
+    """命中谓词 → 落库 failed + 中断文案，且**同步刷新传入行的内存字段**——
+    调用方（state 端点 / 受理闸门）随后读的是回落后的值，不重查库。"""
+    from api.db.services.file_review_service import heal_stale_round
+
+    tid = f"{PFX}t_heal_db"
+    rid = _mk_round(tid, 1, "reviewing")
+    row = _round_row(rid)
+    _patch_is_running(monkeypatch, alive=False)
+
+    assert heal_stale_round(row, now_ms=row.create_time + 61_000) is True
+    assert row.status == "failed" and "已中断" in row.error
+    after = _round_row(rid)
+    assert after.status == "failed" and "已中断" in after.error
+
+
+def test_heal_stale_round_skips_live_thread_terminal_and_grace(monkeypatch):
+    """谓词不成立一律不动库：线程活着（单轮超 60s 是常态）、行龄在宽限期内、终态行。"""
+    from api.db.services.file_review_service import heal_stale_round
+
+    tid = f"{PFX}t_heal_skip"
+    rid = _mk_round(tid, 1, "reviewing")
+    row = _round_row(rid)
+
+    _patch_is_running(monkeypatch, alive=True)
+    assert heal_stale_round(row, now_ms=row.create_time + 10 ** 9) is False
+
+    _patch_is_running(monkeypatch, alive=False)
+    assert heal_stale_round(row, now_ms=row.create_time) is False, "行龄 0 在宽限期内"
+
+    done = _round_row(_mk_round(tid, 2, "done", file_version="v2"))
+    assert heal_stale_round(done, now_ms=done.create_time + 10 ** 9) is False
+
+    after = _round_row(rid)
+    assert after.status == "reviewing" and not after.error
+
+
+def test_heal_stale_round_is_idempotent(monkeypatch):
+    """heal 后 status 离开 RUNNING 集合，谓词不再成立 ⇒ 第二次调用返回 False、
+    不再触库。并发双 heal 最终行值相同（同一份文案），无害。"""
+    from api.db.services.file_review_service import heal_stale_round
+
+    tid = f"{PFX}t_heal_idem"
+    rid = _mk_round(tid, 1, "fixing")
+    row = _round_row(rid)
+    _patch_is_running(monkeypatch, alive=False)
+    when = row.create_time + 61_000
+
+    assert heal_stale_round(row, now_ms=when) is True
+    row.error = "SENTINEL"  # 若第二次误写库并刷新内存，哨兵会被覆盖而暴露
+    assert heal_stale_round(row, now_ms=when) is False
+    assert row.error == "SENTINEL"               # 内存未被第二次触碰
+    assert _round_row(rid).error != "SENTINEL"   # 库里仍是首轮落下的文案

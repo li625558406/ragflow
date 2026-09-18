@@ -150,6 +150,36 @@ def is_stale_running(row, now_ms: int | None = None) -> bool:
     return ((_now_ms() if now_ms is None else now_ms) - row.create_time) > STALE_GRACE_SECONDS * 1000
 
 
+# R-1 自愈的落库文案——唯一实现，state 端点与受理闸门共用。
+STALE_HEAL_ERROR = "服务重启或异常退出，本轮审核已中断"
+
+
+def heal_stale_round(row, now_ms: int | None = None) -> bool:
+    """「自称在跑却无人会回来写」的中断轮次就地回落为 failed（R-1 自愈落库单点）。
+
+    判据完全复用 is_stale_running（三判据 + 60s 宽限；**部署契约同它**：要求 HTTP
+    服务与 review 线程同进程，改多 worker 前必须先改判定）。命中即把轮次行落为
+    failed + error 文案，并**同步刷新传入 row 的内存 status/error**——调用方随后
+    构建 payload / 走后续闸门时读到的就是回落后的值，无需重查库。
+
+    幂等由谓词天然保证：heal 后 status='failed' ∉ RUNNING_ROUND_STATUSES，谓词不再
+    成立，第二次调用直接返回 False。并发双 heal 最终行值相同，无害。
+
+    「读路径触发写」是设计核心而非副作用：中断轮次的唯一消费场景就是被读取
+    （state 端点）与被受理（admit_fix_round），两个消费点接入即覆盖全部出口，
+    无需启动期扫描或后台线程。写的是确定性事实（线程已不存在、行永远等不到结果），
+    与用户输入无关，state 端点「读不限」策略不受影响。
+
+    返回是否真的发生了回落（非中断行 / 幂等重入返回 False）。
+    """
+    if not is_stale_running(row, now_ms=now_ms):
+        return False
+    FileReviewRoundService.update_status(row.id, "failed", error=STALE_HEAL_ERROR)
+    row.status = "failed"
+    row.error = STALE_HEAL_ERROR
+    return True
+
+
 # ── 修复轮「只修 X 级」指令的唯一实现 ────────────────────────────────
 # 级别过滤在 executor 里**只能软表达**：_run_fix_round 的 chosen = pending[:MAX_FIX_ITEMS]
 # 没有 severity 谓词，LLM 收到的级别约束全部来自 round_row.user_query 被 _build_fix_prompt
