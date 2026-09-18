@@ -872,23 +872,74 @@ def test_is_stale_running_fails_loudly_on_missing_create_time(monkeypatch):
         is_stale_running(SimpleNamespace(task_id="t1", status="reviewing"), now_ms=NOW_MS)
 
 
-def test_admit_fix_round_denies_stale_before_running(monkeypatch):
-    """stale 必须排在 running 之前：两者的 status 都在 RUNNING 集合里，顺序反了会把
-    「永远不会好」错答成「等一会就好」—— 用户会白等到天荒地老。"""
-    stale_round = SimpleNamespace(round_no=1, status="reviewing", file_id="f1",
-                                  template_id="t1", kb_ids=None,
+def test_admit_fix_round_heals_stale_then_admits(monkeypatch):
+    """R-1：stale 闸门从「拒绝」改为「heal → 刷新内存 → 放行走后续闸门」。
+    中断轮与线程内部崩溃的 failed 轮同权：有余额即可直接发起下一轮修复，
+    不再要求「重新发起审核」。"""
+    stale_round = SimpleNamespace(id="r-old", round_no=1, status="reviewing",
+                                  file_id="f1", template_id="t1", kb_ids=None,
                                   user_query="审核这份招标文件",
-                                  task_id=f"{PFX}t_stale", create_time=0)
-    created, spawned = [], []
+                                  task_id=f"{PFX}t_stale_heal", create_time=0)
+    created, spawned, updates = [], [], []
     svc = _patch_admission(monkeypatch, state={"rounds": [stale_round]},
                            created=created, spawned=spawned)
+    monkeypatch.setattr(svc.FileReviewRoundService, "update_status",
+                        classmethod(lambda cls, rid, status, **extra:
+                                    updates.append((rid, status, extra)) or True))
+
+    result = svc.admit_fix_round(task_id=f"{PFX}t_stale_heal", tenant_id="u1",
+                                 levels=["high"])
+    assert updates and updates[0][0] == "r-old" and updates[0][1] == "failed"
+    assert stale_round.status == "failed", "内存未刷新 ⇒ 后续闸门会读到旧 running 态"
+    assert created and created[0]["round_no"] == 2
+    assert spawned == [f"{PFX}t_stale_heal"]
+    assert result.round_no == 2
+
+
+def test_admit_fix_round_after_heal_respects_quota(monkeypatch):
+    """自愈不是绕过闸门：heal 后继续走 no_quota——余额耗尽照样拒绝。
+    余额口径 = round_no>1 的行数（failed 也计入），故需 3 条修复轮才耗尽
+    MAX_FIX_ROUNDS=3；末轮保持 stale 态以验证「拒绝发生在 heal 之后」。"""
+    rounds = [SimpleNamespace(id="r1", round_no=1, status="annotated", file_id="f1",
+                              template_id="t1", kb_ids=None,
+                              user_query="审核这份招标文件",
+                              task_id=f"{PFX}t_stale_quota", create_time=0),
+              SimpleNamespace(id="r2", round_no=2, status="failed", file_id="f1",
+                              template_id="t1", kb_ids=None, user_query="修复",
+                              task_id=f"{PFX}t_stale_quota", create_time=0),
+              SimpleNamespace(id="r3", round_no=3, status="failed", file_id="f1",
+                              template_id="t1", kb_ids=None, user_query="修复",
+                              task_id=f"{PFX}t_stale_quota", create_time=0),
+              SimpleNamespace(id="r4", round_no=4, status="fixing", file_id="f1",
+                              template_id="t1", kb_ids=None, user_query="修复",
+                              task_id=f"{PFX}t_stale_quota", create_time=0)]
+    updates = []
+    svc = _patch_admission(monkeypatch, state={"rounds": rounds},
+                           created=[], spawned=[])
+    monkeypatch.setattr(svc.FileReviewRoundService, "update_status",
+                        classmethod(lambda cls, rid, status, **extra:
+                                    updates.append((rid, status)) or True))
 
     with pytest.raises(svc.FixAdmissionDenied) as ei:
-        svc.admit_fix_round(task_id=f"{PFX}t_stale", tenant_id="u1", levels=["high"])
-    assert ei.value.reason == "stale"
-    assert "已中断" in ei.value.message and "重新发起审核" in ei.value.message
-    assert "仍在进行中" not in ei.value.message, "对中断轮次答复「等它结束」＝让用户白等"
-    assert created == [] and spawned == []
+        svc.admit_fix_round(task_id=f"{PFX}t_stale_quota", tenant_id="u1",
+                            levels=["high"])
+    assert ei.value.reason == "no_quota"
+    assert ("r4", "failed") in updates, "拒绝发生在 heal 之后：中断轮必须已被回落"
+
+
+def test_admit_fix_round_rejects_non_list_levels(monkeypatch):
+    """R-7 防御闸：levels 非 list（None / 字符串 / 元组 / 集合）在取锁与触库
+    **之前**拒绝——不得 TypeError 冒烟成 500，也不得消耗锁等待窗口。"""
+    from api.db.services import file_review_service as svc
+
+    monkeypatch.setattr(svc.FileReviewRoundService, "get_owned_task",
+                        classmethod(lambda cls, tid, tenant: (_ for _ in ()).throw(
+                            AssertionError("levels 判型必须发生在任何触库之前"))))
+    for bad in (None, "high", ("high",), {"high"}):
+        with pytest.raises(svc.FixAdmissionDenied) as ei:
+            svc.admit_fix_round(task_id="t1", tenant_id="u1", levels=bad)
+        assert ei.value.reason == "invalid_levels"
+        assert not svc._ADMIT_LOCK.locked(), "拒绝路径不得持有受理锁"
 
 
 def test_admit_fix_round_no_pending_message_carries_full_picture(monkeypatch):

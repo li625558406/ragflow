@@ -665,7 +665,7 @@ class FixAdmissionDenied(Exception):
     """受理闸门拒绝。reason 机器可读（调用方按它映射错误码），message 面向用户（中文）。
 
     reason 取值集合是固定契约，调用方按它分发：
-      busy / not_found / stale / running / closing / no_quota / no_pending
+      busy / not_found / invalid_levels / running / closing / no_quota / no_pending
     """
 
     def __init__(self, reason: str, message: str):
@@ -684,15 +684,20 @@ class AdmitResult(NamedTuple):
 def admit_fix_round(*, task_id: str, tenant_id: str, levels, user_query_override="") -> AdmitResult:
     """受理一轮修复：校验 → 定轮号 → 建轮次 → spawn，**全程持进程级锁**。
 
-    同步函数；调用方不得在持锁期间 await（REST 侧必须在无 await 的临界区内同步调用）。
+    同步函数；REST 侧必须经 `asyncio.to_thread` 调用（R-6：持锁段的锁等待与 DB
+    往返不得阻塞事件循环），对话工具线程直接同步调用。锁本身是跨线程的
+    threading.Lock，工作线程与事件循环线程被同一把锁串行化。
     返回 AdmitResult 或抛 FixAdmissionDenied —— 不返回「拒绝码」，避免调用方漏判。
+
+    前置条件：levels 必须是 list（R-7 判型闸在本函数第一行，取锁/触库之前）。
 
     闸门顺序不是随意的，每一条都在挡一条实测过的坏路径：
       1. not_found：task_id 不存在 / 不归 tenant（沿用 get_owned_task 的口径，同一句话，
          不泄露「他人 task 是否存在」）；
-      2. stale    ：本轮自称在跑，但已没有任何线程会回来写它（进程被杀 / 崩溃后
-         _running_tasks 重启即空、行状态却永久停在 running）—— 唯一的自助出口，
-         判据见 is_stale_running；
+      2. stale→heal：本轮自称在跑但已无线程会回来写它 —— 受理点上就地 heal 为 failed
+         （R-1 自愈），随后与崩溃 failed 轮**同权走后续闸门**：有余额即可直接发起下一轮
+         修复，不再要求「重新发起审核」。heal 输给并发消费者（返回 False 但谓词刚成立）
+         时行在库里已是 failed，同样按 failed 继续评估；
       3. running  ：本轮（rounds[-1]）还在 reviewing/fixing，线程还会回来写这一行；
       4. closing  ：轮次行已终态但 spawn 线程仍在收尾 —— executor._run_fix_round **先**
          置轮次终态、**再**逐条写最多 MAX_FIX_ITEMS(20) 条标注，中间隔着 20 次 DB
@@ -700,21 +705,14 @@ def admit_fix_round(*, task_id: str, tenant_id: str, levels, user_query_override
       5. no_quota ：修复轮余额用尽（failed 轮同样计入，见 fix_rounds_left）；
       6. no_pending：所选级别没有待修项 —— 建出来的轮次会去修**别的**级别（把用户没
          选中的问题改掉），或空转一轮白烧一次机会。
-    顺序约束：
-      * 2 必须在 3 之前：stale 行的 status 同样落在 RUNNING_ROUND_STATUSES 里，顺序反了
-        会把「永远不会好」错答成「等一会就好」—— 这是唯一会让用户白等到天荒地老的答复。
-        反过来不会误伤：判据②要求 is_running 为 False，线程真在跑的一定走 3。
-      * 3 必须在 4 之前：状态未收口时的正确答复是「仍在进行中」，不是「正在收尾」。
-      * 4 在 6 之前是**取舍**而非硬约束：4 的判据是进程内 set 查一次（近零成本、窗口在
-        微秒级），6 要读该 task 的全量标注。把便宜的放前面，代价是两者同时命中时先给出
-        一句与真因无关的「稍等片刻」，用户重试一次即拿到真因；反过来把 6 提前，则每次
-        真实 closing 都多付一次全量标注查询。改顺序前请重新权衡这个代价。
-      * 从 is_running 检查到 spawn_review_task 之间**不得插入其它逻辑** —— 否则又会开出
-        一个新的「检查通过但线程未注册」窗口。
+    顺序约束：2 必须在 3 之前（原因同前版）；3 必须在 4 之前；4 在 6 之前是取舍；
+      从 is_running 检查到 spawn_review_task 之间不得插入其它逻辑。
 
-    levels 必须由调用方用各自的白名单归一（T8 工具宽松、T9 API 严格拒绝整批非法值，
-    这是既有差异）；本层只做 pending 的 severity 过滤，不校验级别取值。
+    levels 的取值白名单仍由调用方归一（T8 工具宽松、T9 API 严格拒绝整批非法值，
+    这是既有差异）；本层只判「是不是 list」并做 pending 的 severity 过滤，不校验级别取值。
     """
+    if not isinstance(levels, list):
+        raise FixAdmissionDenied("invalid_levels", "修复级别参数不合法")
     if not _ADMIT_LOCK.acquire(timeout=ADMIT_LOCK_TIMEOUT):
         # 超时路径在这里直接抛，**不能**落进下面的 try/finally 去 release —— 那会把别人
         # 正持有的锁放掉（一次「拿不到却释放」就能让后续所有互斥失效）。
@@ -733,11 +731,11 @@ def admit_fix_round(*, task_id: str, tenant_id: str, levels, user_query_override
         # stale 必须在 running 之前判：两者的 status 同样在 RUNNING_ROUND_STATUSES 里，
         # 顺序反了会把「永远不会好」错答成「等一会就好」。反过来不会误伤活轮次 ——
         # is_stale_running 的判据②要求 is_running 为 False。
+        # R-1 自愈：中断轮就地回落（幂等）后放行走后续闸门；heal 内部已同步刷新
+        # cur.status，这里再赋一次是防御并发下 heal 输给别的消费者的残影。
         if is_stale_running(cur):
-            raise FixAdmissionDenied(
-                "stale",
-                f"第 {cur.round_no} 轮（{ROUND_STATUS_CN.get(cur.status, cur.status)}）"
-                "已中断（服务重启或异常退出），无法继续；请重新发起审核")
+            heal_stale_round(cur)
+            cur.status = "failed"
 
         if cur.status in RUNNING_ROUND_STATUSES:
             raise FixAdmissionDenied(
