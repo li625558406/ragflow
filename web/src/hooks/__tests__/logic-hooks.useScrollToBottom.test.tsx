@@ -18,7 +18,7 @@ function createMockContainer({ atBottom = true } = {}) {
   const scrollTop = atBottom ? 100 : 0;
   const clientHeight = 100;
   const scrollHeight = 200;
-  const listeners = {};
+  const listeners: Record<string, (event: Event) => void> = {};
   return {
     current: {
       scrollTop,
@@ -69,7 +69,7 @@ describe('useScrollToBottom', () => {
 
     const { rerender } = renderHook(
       ({ messages }) => useScrollToBottom(messages, containerRef),
-      { initialProps: { messages: [] } },
+      { initialProps: { messages: [] as string[] } },
     );
 
     rerender({ messages: ['msg1'] });
@@ -83,7 +83,7 @@ describe('useScrollToBottom', () => {
 
     const { rerender } = renderHook(
       ({ messages }) => useScrollToBottom(messages, containerRef),
-      { initialProps: { messages: [] } },
+      { initialProps: { messages: [] as string[] } },
     );
 
     // Simulate user scrolls up before messages change
