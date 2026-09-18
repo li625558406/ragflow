@@ -62,7 +62,7 @@ const baseState = (over: any = {}) => ({
         produced: true,
         stale: false,
       },
-      doc: { object: 'frv-t1-v2.docx', version: 'v2' },
+      doc: { has_result: true, version: 'v2' },
       annotations: [
         {
           id: 'a1',
@@ -126,6 +126,31 @@ describe('FileReviewProgress', () => {
     const [annotations, version] = onOpenReview.mock.calls[0];
     expect(version).toBe('v2');
     expect(annotations[0].id).toBe('a1');
+  });
+
+  it('has_result 时显示「下载成稿」，onPreviewDoc 只收 fileVersion（R-8 不再透传对象名）', () => {
+    const onPreviewDoc = jest.fn();
+    mockUseFileReviewState.mockReturnValue(baseState() as any);
+    render(<FileReviewProgress fileId="f1" onPreviewDoc={onPreviewDoc} />);
+    fireEvent.click(screen.getByRole('button', { name: /下载成稿/ }));
+    expect(onPreviewDoc).toHaveBeenCalledTimes(1);
+    expect(onPreviewDoc).toHaveBeenCalledWith('v2');
+  });
+
+  it('has_result=false（从未落盘）不显示「下载成稿」', () => {
+    mockUseFileReviewState.mockReturnValue(
+      baseState({
+        data: {
+          ...baseState().data,
+          data: {
+            ...baseState().data.data,
+            doc: { has_result: false, version: '' },
+          },
+        },
+      }) as any,
+    );
+    render(<FileReviewProgress fileId="f1" />);
+    expect(screen.queryByRole('button', { name: /下载成稿/ })).toBeNull();
   });
 
   it('canFix=true 时显示「选择级别修复」入口，fix_rounds_left=0 时隐藏', () => {

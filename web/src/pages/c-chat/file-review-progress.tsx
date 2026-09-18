@@ -41,14 +41,13 @@ export default function FileReviewProgress({
     annotations: IFileReviewAnnotation[],
     fileVersion: string,
   ) => void;
-  /** 点击「下载成稿」时回调（参数：成稿 MinIO 对象名 + 成稿版本号）。
+  /** 点击「下载成稿」时回调（参数：成稿版本号）。
    *  调用方**必须**调 `downloadFileReviewVersion(taskId, fileVersion)`
    *  （`@/services/file-review-service`）—— 它用 fetch 手挂 Authorization 取 Blob
    *  再 createObjectURL 下载。**禁止**改成 window.open / a[href] 直链：下载端点带
    *  `@login_required` 且只从请求头取用户，浏览器导航类请求不带自定义头 ⇒ 必 401。
-   *  doc.object 是 MinIO 对象名而非 upload 系统的 fileId，也不能拿它拼
-   *  `/api/v1/files/<id>`（见 T9 → T14/T15 复盘）。 */
-  onPreviewDoc?: (minioPath: string, fileVersion: string) => void;
+   *  R-8：服务端不再下发 MinIO 对象名，这里只收版本号。 */
+  onPreviewDoc?: (fileVersion: string) => void;
 }) {
   // ── 数据 ─────────────────────────────────────────
   const state = useFileReviewState(fileId);
@@ -158,11 +157,11 @@ export default function FileReviewProgress({
           <Eye className="h-3 w-3" /> 打开审核面板（{data.doc.version || '原件'}
           ）
         </button>
-        {data.doc.object && data.doc.object !== fileId && data.doc.version && (
+        {data.doc.has_result && data.doc.version && (
           <button
             type="button"
             className="flex items-center gap-1 rounded border border-[#1a66fb] px-2 py-0.5 text-[#1a66fb] hover:bg-[#F5F8FF]"
-            onClick={() => onPreviewDoc?.(data.doc.object, data.doc.version)}
+            onClick={() => onPreviewDoc?.(data.doc.version)}
           >
             <Download className="h-3 w-3" /> 下载成稿
           </button>

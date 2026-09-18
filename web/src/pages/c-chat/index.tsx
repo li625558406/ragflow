@@ -2589,12 +2589,9 @@ export default function CChat() {
                                       setReviewFileName('文件审核');
                                       setReviewMode(true);
                                     }}
-                                    onPreviewDoc={(_minioPath, fileVersion) => {
-                                      // doc.object 是 MinIO 对象名而非上传系统 fileId，
-                                      // 旧的 setPreviewDoc({fileId: minioPath}) 把对象
-                                      // 名当 fileId 用是错误的（T9 → T14/T15 复盘）：
-                                      // /api/v1/files/<id> 找不到 → 「下载成稿」按钮
-                                      // 死链。这里改走专用 download 端点。
+                                    onPreviewDoc={(fileVersion) => {
+                                      // R-8：服务端不下发对象名，预览/下载只凭
+                                      // taskId + fileVersion 走专用 download 端点。
                                       // 必须走 downloadFileReviewVersion（fetch 手挂
                                       // Authorization 取 Blob）：该端点带 @login_required
                                       // 且只从请求头取用户，window.open 不带自定义头 → 必 401。

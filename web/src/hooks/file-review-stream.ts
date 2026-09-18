@@ -50,7 +50,9 @@ export interface IFileReviewRound {
    *  （服务端 stale 闸门拒绝一切 fix，唯一出路是重新发起审核 —— 留着按钮等于给用户
    *  一个必然失败的入口）。
    *  服务端判定（Service.is_stale_running，含 60s 宽限避开建轮→起线程窗口）；
-   *  前端**不得**自己按时间重算。 */
+   *  前端**不得**自己按时间重算。
+   *  加固后（R-1 自愈）state 端点读取时会把中断轮就地回落为 failed，本字段仅覆盖
+   *  「已中断但尚未被任何读取 heal」的瞬时窗口，heal 后 stale 恒为 false。 */
   stale: boolean;
 }
 
@@ -61,8 +63,10 @@ export interface IFileReviewState {
   rounds: IFileReviewRound[];
   /** 最近一轮；用户主动选 fix 的入口会读它的 task_id/round_no */
   current: IFileReviewRound | null;
-  /** 该展示的文档：最近一次落盘的成稿；从未落盘时回退到原件（object=file_id, version=''） */
-  doc: { object: string; version: string };
+  /** 该展示的文档：最近一次落盘的成稿版本。R-8：MinIO 内部对象名不再下发，
+   *  预览/下载一律走 task_id + version 的专用端点。从未落盘时 has_result=false、
+   *  version=''（替代旧版「object !== fileId 哨兵」约定）。 */
+  doc: { has_result: boolean; version: string };
   /** 全部标注（跨轮次/版本/任务）；file_version 恒为 v1 */
   annotations: IFileReviewAnnotation[];
   /** 面板头部计数（仅展示，不参与任何判定——见 _count_annotations 注释） */

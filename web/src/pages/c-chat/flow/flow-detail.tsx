@@ -1045,11 +1045,11 @@ function ConversationView({
                     '文件审核',
                   );
                 }}
-                onPreviewDoc={(_minioPath, fileVersion) => {
-                  // 绕过 flow 端 onPreviewDoc 旧有的「关 review 抽屉 + 透传到
-                  // downloadVersionBlob」链路 —— 那条链路要求对象名匹配 flow
-                  // 的 FlowVersionService 记录，但审核成稿是 task 维度的，
-                  // 不在 flow_version 表里。改用专用 download 端点。
+                onPreviewDoc={(fileVersion) => {
+                  // R-8：服务端不下发对象名，预览/下载只凭 taskId + fileVersion
+                  // 走专用 download 端点（不走 flow 的 downloadVersionBlob——
+                  // 那条链路要求对象名匹配 FlowVersionService 记录，但审核成稿
+                  // 是 task 维度的，不在 flow_version 表里）。
                   // 必须走 downloadFileReviewVersion（fetch 手挂 Authorization
                   // 取 Blob）：该端点带 @login_required 且只从请求头取用户，
                   // window.open 不带自定义头 → 必 401（同 c-chat/index.tsx）。
