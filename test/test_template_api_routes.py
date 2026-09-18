@@ -750,14 +750,34 @@ def test_save_placeholders_published_upgrades_version(monkeypatch):
 
 # ---------- P2 遗留债④：模板删除 ----------
 
-def test_delete_template_refuses_when_tasks_exist(monkeypatch):
-    """有填写任务记录的模板拒删（历史任务下载依赖其 bucket=template_id 的对象）。"""
-    from api.db.services.template_fill_service import TplTemplateService
-    monkeypatch.setattr(TplTemplateService, "get_owned", classmethod(
+def test_delete_template_cascades_fill_tasks(monkeypatch):
+    """语义变更（2026-09-17）：有填写任务不再拒删——任务行与成稿对象（真源
+    + 派生下载副本）随模板级联删除。根因：C端流程删除从不回收 tpl_fill_task，
+    且任务行与流程无可靠外键（flow_instance_id 历史空串），不级联范本永远删不掉。"""
+    from api.db.services import template_fill_service as svc
+    monkeypatch.setattr(svc.TplTemplateService, "get_owned", classmethod(
         lambda cls, tid, uid, **kw: types.SimpleNamespace(id="tpl_x", status="disabled")))
-    monkeypatch.setattr(TplTemplateService, "has_tasks", classmethod(lambda cls, tid: True))
-    ok, msg = TplTemplateService.delete_template("tpl_x", "tenant_x")
-    assert not ok and "填写任务" in msg
+    vers = _FakeVersionModel([])
+    monkeypatch.setattr(svc, "TplTemplateVersion", vers)
+    tasks_model = _FakeTaskModel([
+        types.SimpleNamespace(id="task_1", tenant_id="tenant_x",
+                              result_file_id="v1_result_task_1.docx"),
+        types.SimpleNamespace(id="task_2", tenant_id="tenant_x", result_file_id=""),
+    ])
+    monkeypatch.setattr(svc, "TplFillTask", tasks_model)
+    main = _FakeMainModel(row=types.SimpleNamespace(id="tpl_x", status="disabled"))
+    monkeypatch.setattr(svc.TplTemplateService, "model", main)
+    removed = []
+    monkeypatch.setattr(svc.settings, "STORAGE_IMPL", types.SimpleNamespace(
+        rm=lambda bucket, fnm: removed.append((bucket, fnm))))
+    ok, msg = svc.TplTemplateService.delete_template("tpl_x", "tenant_x")
+    assert ok, msg
+    assert sorted(removed) == [("tenant_x-downloads", "tplfill-task_1"),
+                               ("tpl_x", "v1_result_task_1.docx")], \
+        "真源成稿与派生副本都要清；无成稿的任务不得产生对象删除"
+    assert tasks_model.recorder.get("task_delete_executed"), "任务行必须级联删除"
+    assert vers.recorder.get("version_delete_executed"), "版本行必须删除"
+    assert main.recorder.get("main_delete_executed"), "主表行必须删除"
 
 
 def test_delete_template_refuses_published(monkeypatch):
@@ -809,6 +829,30 @@ class _FakeVersionModel:
         return _FakeDeleteQuery(self.recorder, "version_delete")
 
 
+class _FakeTaskModel:
+    """TplFillTask 桩：select().where() 可迭代出给定任务行，delete() 可记录。"""
+
+    # service 里 where(TplFillTask.template_id == ...) 的哨兵表达式对象
+    template_id = object()
+
+    def __init__(self, rows):
+        self._rows = rows
+        self.recorder = {}
+
+    def select(self):
+        return self
+
+    def where(self, *exprs):
+        self.recorder["select_where"] = list(exprs)
+        return self
+
+    def __iter__(self):
+        return iter(self._rows)
+
+    def delete(self):
+        return _FakeDeleteQuery(self.recorder, "task_delete")
+
+
 class _FakeMainModel:
     # service 里 where(cls.model.id == ..., cls.model.tenant_id == ...) 的哨兵表达式对象
     id = object()
@@ -841,12 +885,12 @@ def test_delete_template_success_cleans_versions_and_storage(monkeypatch):
     from api.db.services import template_fill_service as svc
     monkeypatch.setattr(svc.TplTemplateService, "get_owned", classmethod(
         lambda cls, tid, uid, **kw: types.SimpleNamespace(id="tpl_x", status="draft")))
-    monkeypatch.setattr(svc.TplTemplateService, "has_tasks", classmethod(lambda cls, tid: False))
     vers = _FakeVersionModel([
         types.SimpleNamespace(original_file_id="v1_original_a.docx", render_file_id="v1_render.docx"),
         types.SimpleNamespace(original_file_id="v2_original.docx", render_file_id=None),
     ])
     monkeypatch.setattr(svc, "TplTemplateVersion", vers)
+    monkeypatch.setattr(svc, "TplFillTask", _FakeTaskModel([]))
     # 事务内裸查询 for_update().first() 返回行（行锁复查通过）
     main = _FakeMainModel(row=types.SimpleNamespace(id="tpl_x", status="draft"))
     monkeypatch.setattr(svc.TplTemplateService, "model", main)
@@ -866,11 +910,11 @@ def test_delete_template_storage_rm_failure_does_not_block(monkeypatch):
     from api.db.services import template_fill_service as svc
     monkeypatch.setattr(svc.TplTemplateService, "get_owned", classmethod(
         lambda cls, tid, uid, **kw: types.SimpleNamespace(id="tpl_x", status="disabled")))
-    monkeypatch.setattr(svc.TplTemplateService, "has_tasks", classmethod(lambda cls, tid: False))
     vers = _FakeVersionModel([
         types.SimpleNamespace(original_file_id="v1_original_a.docx", render_file_id=None),
     ])
     monkeypatch.setattr(svc, "TplTemplateVersion", vers)
+    monkeypatch.setattr(svc, "TplFillTask", _FakeTaskModel([]))
     main = _FakeMainModel(row=types.SimpleNamespace(id="tpl_x", status="disabled"))
     monkeypatch.setattr(svc.TplTemplateService, "model", main)
 
@@ -1587,14 +1631,14 @@ def test_batch_delete_mixed_success_and_failure(monkeypatch):
     mod = _template_api
     calls = _patch_batch_delete(
         monkeypatch, mod, {"ids": ["tpl_a", "tpl_b", "tpl_c"]},
-        {"tpl_b": (False, "该模板已有填写任务记录，不可删除（历史任务需保留可下载）"),
+        {"tpl_b": (False, "模板不存在"),
          "tpl_c": (False, "已发布模板不可删除，请先停用")})
     resp = asyncio.run(mod.batch_delete_templates())
     assert resp["code"] == 0
     assert resp["data"]["deleted"] == ["tpl_a"]
     failed = {f["id"]: f["message"] for f in resp["data"]["failed"]}
     assert set(failed) == {"tpl_b", "tpl_c"}
-    assert "填写任务" in failed["tpl_b"] and "停用" in failed["tpl_c"]
+    assert "不存在" in failed["tpl_b"] and "停用" in failed["tpl_c"]
     assert calls == [("tpl_a", "u1"), ("tpl_b", "u1"), ("tpl_c", "u1")], \
         "每个 id 都必须尝试且以 current_user.id 归属租户"
 
