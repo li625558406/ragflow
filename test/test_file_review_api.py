@@ -115,6 +115,12 @@ def _patch_services(monkeypatch, *, rounds=(), annotations=(), pending=(),
     monkeypatch.setattr(_api.FileReviewAnnotationService, "update_status",
                         classmethod(lambda cls, aid, status:
                                     calls.setdefault("updated", []).append((aid, status)) or True))
+    # R-1 heal 落库走的是**轮次** Service 的 update_status（heal_stale_round 内部调用），
+    # 与上面的标注 Service 同名不同类，必须分开打桩并分别记录。
+    monkeypatch.setattr(_api.FileReviewRoundService, "update_status",
+                        classmethod(lambda cls, rid, status, **extra:
+                                    calls.setdefault("round_updates", []).append(
+                                        (rid, status, extra)) or True))
     monkeypatch.setattr(
         _api.FileReviewRoundService, "create_round",
         classmethod(lambda cls, **kw: calls.update({"created": kw}) or "rid-new"))
@@ -242,16 +248,14 @@ def test_fix_base_query_uses_first_round_and_appends_extra():
 
 
 def test_doc_payload_picks_latest_produced_round():
-    rounds = [_round(1, "annotated"),
-              _round(2, "done", minio_path="frv-t1-v2"),
-              _round(3, "failed", minio_path="frv-t1-v3")]
-    assert _api._doc_payload(rounds, "f1") == {"object": "frv-t1-v3", "version": "v3"}
-    # 乱序入参也要选 round_no 最大的那一版（不依赖调用方排序）
-    assert _api._doc_payload(list(reversed(rounds)), "f1") == \
-        {"object": "frv-t1-v3", "version": "v3"}
-    # 无产物 → 原件，且 version 留空（不替前端断言「原件就是 v1」）
-    assert _api._doc_payload([_round(1, "reviewing")], "f1") == {"object": "f1", "version": ""}
-    assert _api._doc_payload([], "f1") == {"object": "f1", "version": ""}
+    rounds = [_round(1, "done", minio_path="frv-t1-v2", file_version="v2"),
+              _round(3, "done", minio_path="frv-t1-v3", file_version="v3")]
+    assert _api._doc_payload(rounds) == {"has_result": True, "version": "v3"}
+    assert _api._doc_payload(list(reversed(rounds))) == \
+        {"has_result": True, "version": "v3"}
+    assert _api._doc_payload([_round(1, "reviewing")]) == \
+        {"has_result": False, "version": ""}
+    assert _api._doc_payload([]) == {"has_result": False, "version": ""}
 
 
 def test_round_payload_produced_follows_minio_path_not_status():
@@ -325,7 +329,7 @@ def test_state_endpoint_shape_when_never_reviewed(monkeypatch):
     assert d["task_id"] is None
     assert d["current"] is None
     assert d["rounds"] == []
-    assert d["doc"] == {"object": "f1", "version": ""}
+    assert d["doc"] == {"has_result": False, "version": ""}
     assert d["annotations"] == []
     assert d["fix_rounds_left"] == 3 and d["max_fix_rounds"] == 3
     assert d["annotation_counts"]["total"] == 0
@@ -341,10 +345,26 @@ def test_state_endpoint_assembles_rounds_annotations_and_doc(monkeypatch):
     assert d["task_id"] == "t1"
     assert [r["round_no"] for r in d["rounds"]] == [1, 2]
     assert d["current"]["round_no"] == 2 and d["current"]["produced"] is True
-    assert d["doc"] == {"object": "frv-t1-v2", "version": "v2"}
+    assert d["doc"] == {"has_result": True, "version": "v2"}
     assert d["fix_rounds_left"] == 2          # 已发生 1 个修复轮
     assert len(d["annotations"]) == 2
     assert d["annotation_counts"]["pending"] == 1
+
+
+def test_state_endpoint_heals_interrupted_round(monkeypatch):
+    """R-1 自愈：state 读取把中断轮就地落为 failed（update_status 恰好一次），
+    payload 读到回落后的行——status=failed、stale=false、error 带中断文案。
+    前端走既有失败展示链路（current.error），不再出现常驻「已中断」僵尸态。"""
+    rounds = [_round(1, "reviewing", create_time=0)]
+    calls = _patch_services(monkeypatch, rounds=rounds)
+
+    d = _call(_api.review_state, method="GET", path="/x", file_id="f1")["data"]
+
+    assert d["rounds"][0]["status"] == "failed"
+    assert "已中断" in d["rounds"][0]["error"]
+    assert d["current"]["status"] == "failed"
+    assert d["rounds"][0]["stale"] is False, "heal 后谓词不再成立，stale 恒 false"
+    assert len(calls["round_updates"]) == 1 and calls["round_updates"][0][1] == "failed"
 
 
 def test_state_endpoint_hides_internal_error_text(monkeypatch):
@@ -382,16 +402,23 @@ def test_fix_rejects_while_round_still_running(monkeypatch):
     assert "create_round" not in calls
 
 
-def test_fix_rejects_interrupted_round_with_actionable_message(monkeypatch):
-    """服务重启后轮次永久停在 reviewing（线程没了、状态不回落）：必须拒，且**不能**答复
-    「等它结束后再试」—— 它永远不会结束，那会让用户白等。答复必须指向唯一的出路。"""
+def test_fix_heals_interrupted_round_then_admits(monkeypatch):
+    """服务重启后轮次永久停在 reviewing（线程没了、状态不回落）。R-1 自愈改变了受理
+    语义：不再「拒 + 让用户重新发起审核」（旧契约，用例已作废），而是受理点上就地
+    heal 为 failed、与崩溃 failed 轮同权走后续闸门 —— 有余额且有待修项即可直接发起
+    下一轮修复。本用例锁定 heal→放行的完整链路与落库内容。"""
     rounds = [_round(1, "reviewing", create_time=0)]
     calls = _fix_setup(monkeypatch, rounds=rounds, owned=rounds)
     body = _call(_api.fix_review, task_id="t1", body={"levels": ["high"]})
-    assert body["code"] == RetCode.OPERATING_ERROR
-    assert "已中断" in body["message"] and "重新发起审核" in body["message"]
-    assert "仍在进行中" not in body["message"]
-    assert "create_round" not in calls and "spawned" not in calls
+    assert body["code"] == 0
+    assert body["data"]["round_no"] == 2 and body["data"]["status"] == "fixing"
+    assert body["data"]["fix_rounds_left"] == 2
+    # heal 落库恰好一次：置 failed 且 error 是确定性的中断文案（不是用户输入派生）
+    assert len(calls["round_updates"]) == 1
+    rid, status, extra = calls["round_updates"][0]
+    assert (rid, status) == ("r1", "failed") and "已中断" in extra["error"]
+    assert calls["created"]["round_no"] == 2
+    assert calls["spawned"] == ["t1"]
 
 
 def test_fix_rejects_while_spawn_still_running(monkeypatch):

@@ -34,13 +34,14 @@
   也让流程协作者看得到审核结果）；fix / annotation-status 必须 get_owned_task 严格校验 ——
   因为 execute_task / spawn_review_task / _force_fail_round 全链路只按 task_id 圈定、
   **不含任何 tenant 谓词**，本层是唯一防线（T6 → T9 交接契约第 5 条）。
-* **成稿下载走本模块的专用端点，不走 GET /api/v1/files/<id>**：doc.object 是审核成稿的
-  MinIO 对象名（`frv-{task_id}-{version}`，见 `file_review_service` 的落盘口径），**不是**
-  上传系统的 file_id —— 旧链路把它当 file_id 拼 `/api/v1/files/<id>` 会 404（T9 → T14/T15
-  复盘）。该端点带 `@login_required`，而 `_load_user` 只从 `request.headers["Authorization"]`
-  取用户、**不从 cookie 兜底**，所以前端**不能**用 window.open / a[href] 直链（浏览器导航
-  请求不带自定义头 ⇒ 必 401），必须 fetch 手挂 Authorization 取 Blob
-  （`web/src/services/file-review-service.ts`）。
+* **成稿下载走本模块的专用端点，不走 GET /api/v1/files/<id>**：审核成稿的 MinIO 对象名
+  是 `frv-{task_id}-{version}`（见 `file_review_service` 的落盘口径），**不是**上传系统的
+  file_id —— 旧链路把 doc.object 当 file_id 拼 `/api/v1/files/<id>` 会 404（T9 → T14/T15
+  复盘）。R-8 起 state 的 doc payload 已**摘除对象名**，只下发 `{has_result, version}`，
+  预览/下载一律凭 task_id + version 走本模块的专用端点。该端点带 `@login_required`，
+  而 `_load_user` 只从 `request.headers["Authorization"]` 取用户、**不从 cookie 兜底**，
+  所以前端**不能**用 window.open / a[href] 直链（浏览器导航请求不带自定义头 ⇒ 必 401），
+  必须 fetch 手挂 Authorization 取 Blob（`web/src/services/file-review-service.ts`）。
 """
 import json
 import logging
@@ -57,6 +58,7 @@ from api.db.services.file_review_service import (
     FixAdmissionDenied,
     admit_fix_round,
     fix_rounds_left,
+    heal_stale_round,
     is_stale_running,
 )
 from api.utils.api_utils import (
@@ -148,17 +150,21 @@ def _round_payload(row) -> dict:
         # 前端据此停止轮询、停止转圈、把状态显示成「已中断」并**隐藏**修复入口（服务端
         # stale 闸门会拒绝一切 fix，唯一出路是重新发起审核）—— 否则卡片会永远转下去
         # 且用户无任何出口。判据在 Service 层（is_stale_running），本层只透传，不自己
-        # 发明更宽或更严的条件。
+        # 发明更宽或更严的条件。R-1 自愈接入后，state / admit 两个消费点都会先 heal：
+        # 本字段只剩「已中断但尚未被任何读取 heal」的**瞬时窗口**语义（heal 后谓词
+        # 不成立，stale 恒 false），不再是常驻态。
         "stale": is_stale_running(row),
     }
 
 
-def _doc_payload(rounds: list, file_id: str) -> dict:
-    """该展示的文档：最近一次落盘的成稿；从未落盘时退回原件。
+def _doc_payload(rounds: list) -> dict:
+    """该展示的文档版本与「有无成稿」。**不下发 MinIO 对象名**（R-8：内部对象名
+    不该出 API；已核实两个前端调用点都只消费 version，预览/下载走 task_id+version
+    的专用 download 端点）。
 
     显式选 round_no 最大且带 minio_path 的轮次（不依赖入参顺序），与 T6
-    _latest_version_name 的基线口径一致 —— 面板必须展示**最后一版**，否则用户看的是中间稿、
-    批注却来自最终轮。
+    _latest_version_name 的基线口径一致 —— 面板必须展示**最后一版**。
+    has_result 替代旧版「object != file_id 哨兵」的隐式约定。
     """
     best = None
     for r in rounds:
@@ -167,10 +173,10 @@ def _doc_payload(rounds: list, file_id: str) -> dict:
         if best is None or (r.round_no or 0) >= (best.round_no or 0):
             best = r
     if best is None:
-        # 还没有成稿：用户看的就是原件。version 留空串而不是 "v1" ——
-        # 「首轮版本号 = v1」是 T7/T8 的命名习惯，不是本层的契约，不该由这里替前端断言。
-        return {"object": file_id, "version": ""}
-    return {"object": best.minio_path, "version": best.file_version}
+        # 还没有成稿：version 留空串——「首轮版本号 = v1」是 T7/T8 的命名习惯，
+        # 不是本层的契约，不该由这里替前端断言。
+        return {"has_result": False, "version": ""}
+    return {"has_result": True, "version": best.file_version}
 
 
 def _annotation_payload(row) -> dict:
@@ -251,9 +257,9 @@ async def list_review_templates(tenant_id: str):
 async def review_state(file_id: str):
     """以文件为中心的权威读模型：前端只凭 file_id 就能渲染进度与批注。
 
-    doc.object = 该展示的文档对象名（最近一次落盘的成稿；无成稿时为原件 file_id）。
-    注意它**不是**上传系统的 file_id —— 有成稿时是审核成稿的 MinIO 对象名，不能拿去拼
-    `/api/v1/files/<id>`；无成稿时的 file_id 才走那条既有链路（见模块 docstring 末条）。
+    doc = {"has_result", "version"}：该展示的文档版本（最近一次落盘的成稿）与「有无成稿」。
+    **不下发 MinIO 对象名**（R-8）：预览/下载一律走 task_id + file_version 的专用 download
+    端点（见模块 docstring 末条）。
     annotations = 该文件**全部**标注（跨轮次/版本/任务）—— 不能按成稿版本过滤：只有审查轮
     产标注且其 file_version 恒为首轮版本，成稿是 v2/v3/v4，按成稿版本过滤会一条都查不到。
     rounds[].stale = 该轮自称在跑但已无线程会回来写它（服务重启 / 崩溃），前端据此停轮询。
@@ -262,13 +268,18 @@ async def review_state(file_id: str):
     """
     try:
         rounds = FileReviewRoundService.get_by_file(file_id)
+        # R-1 自愈：中断轮次在第一次被读取时就地回落（幂等），随后 payload 构建读到的
+        # 是回落后的 failed 行。stale 字段保留，仅覆盖「已中断但尚未被任何读取 heal」
+        # 的瞬时窗口（heal 后谓词不成立，stale 恒 false）。
+        for r in rounds:
+            heal_stale_round(r)
         anns = FileReviewAnnotationService.list_by_file(file_id)
         return get_json_result(data={
             "file_id": file_id,
             "task_id": rounds[-1].task_id if rounds else None,
             "rounds": [_round_payload(r) for r in rounds],
             "current": _round_payload(rounds[-1]) if rounds else None,
-            "doc": _doc_payload(rounds, file_id),
+            "doc": _doc_payload(rounds),
             "annotations": [_annotation_payload(a) for a in anns],
             "annotation_counts": _count_annotations(anns),
             "fix_rounds_left": fix_rounds_left(rounds),
