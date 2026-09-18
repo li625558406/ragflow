@@ -18,7 +18,7 @@ npm install
 npm run dev        # Development server
 npm run build      # Production build
 npm run lint       # ESLint
-npm run test       # Jest tests
+npm run test       # Vitest tests
 ```
 
 ## Development Conventions

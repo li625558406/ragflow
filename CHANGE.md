@@ -1,6 +1,58 @@
 # CHANGE.md — 项目迭代记录
 
-## 2026-09-18 范本AI识别加固：run层确定性切位 + LLM语义标注
+## 2026-09-18 文件审核加固（R-1 中断轮次自愈 + R-6/R-7/R-8 + 前端迁 Vitest，未部署）
+
+**主题**：收口 2026-09-17 文件审核全链路的遗留清单（R-1/R-6/R-7/R-8）+ 前端测试基建从损坏的 jest（依赖已移除的 umi/test）整体迁 Vitest。设计稿 `docs/superpowers/specs/2026-09-18-file-review-hardening-design.md`，实施计划 `docs/superpowers/plans/2026-09-18-file-review-hardening.md`（subagent-driven 执行，每任务两道审查）。
+
+**四项修复**：
+- **R-1 中断轮次惰性自愈**：新增 Service 层 `heal_stale_round(row, now_ms)`（判据复用 `is_stale_running` 三判据；命中即 `update_status(id,'failed',error='服务重启或异常退出，本轮审核已中断')` 落库 + 同步刷新传入行内存；幂等由谓词天然保证）。「读路径触发写」是设计核心而非补偿机制：中断轮唯一消费场景是被读取（state 端点逐轮 heal）与被受理（`admit_fix_round` stale 闸门 heal 后放行），两点接入即覆盖全部出口，不引入 janitor 线程/启动扫描。**语义变化：中断轮自愈后与崩溃 failed 轮同权——有修复余额即可直接发起新修复轮，不再强制「重新发起审核」**；`FixAdmissionDenied` reason 契约 `stale` 移除、`invalid_levels` 加入
+- **R-6**：`fix_review` 端点受理改 `await asyncio.to_thread(admit_fix_round, ...)`——最坏 5s 锁等待 + 同步 DB 往返移出事件循环；threading.Lock 跨线程互斥不变（仓库既有模式，llm_app/template_api 同款）
+- **R-7**：`admit_fix_round` 入口（取锁/触库之前）`levels` 非 list 一律 `invalid_levels` 拒绝（原 `None` 会 TypeError 冒 500）
+- **R-8**：`_doc_payload` 摘除 MinIO 内部对象名，返回 `{has_result, version}`（替代「object != file_id 哨兵」隐式约定）；前端 `file-review-stream.ts` 类型收窄、`file-review-progress.tsx` 下载按钮门控改 `has_result && version`、`onPreviewDoc` 签名收窄为 `(fileVersion)`、两个调用点同步。**注意 `doc.object` 字段已从 API 删除，后端（file_review_service.py + file_review_api.py）与前端必须同批部署**——前端先行会短暂隐藏「下载成稿」按钮（后端上线自愈）
+
+**前端测试基建迁 Vitest**：`vitest.config.ts`（jsdom/globals/别名，include `src/**/*.test.{ts,tsx}` 全量收录——执行期修订：窄 `__tests__` 模式会静默排除目录外 7 个健康套件 96 用例）+ `src/test/setup.ts`（API 桩移植自 .scratch 脚手架）+ devDeps 换血（vitest/jsdom 进，jest 4 包出，连带删 jest.config.ts/jest-setup.ts）+ tsconfig types → `vitest/globals`；10 个测试文件 jest→vi 机械迁移（1 处 `vi.hoisted` 治 TDZ、3 处 requireMock 改直接 import+vi.mocked）；修 2 个既有腐坏套件（chat.test LaTeX 断言对齐现实现——捕获组空格保留；useScrollToBottom mock 补 scrollTo + 断言改锚现契约 `container.scrollTo`）。**实测基线勘误**：设计稿「3 套件 9 用例腐坏」为过期记录，实际 2 套件 4 用例（confirm-card 已被上一批修好）。
+
+**测试**：后端 10 文件 **344 passed**（基线 337 + 净增 7，含 heal 落库/幂等/heal 后放行/heal 后 no_quota 仍拒/invalid_levels 触库前拒/state heal 恰一次/活轮次绝不 heal）+ ruff 0 error；前端 **17 套件 219 用例全绿** + 改动文件 tsc 零新增错误（useScrollToBottom 测试 listeners/initialProps 类型顺手修正）。
+
+**遗留**：①`use-file-review-request.ts:56` 既有 tsc 错误（null vs undefined，非本批引入，一词可修）；②vitest 5 engines 要求 node ≥22.12 与 web/package.json `>=18.20.4` 声明冲突（本机 Node 24 无碍）；③web/CLAUDE.md 测试命令说明已同步改 Vitest。
+
+**部署**（等用户指令）：后端 2 文件成套 SCP（`api/db/services/file_review_service.py` + `api/apps/restful_apis/file_review_api.py`）+ 容器重启；前端 `npm run build` + dist 上传 + nginx reload，**须与后端同批**。冒烟：state 端点响应 doc 无 `object` 键；无 Authorization 头 401。
+
+## 2026-09-18（三）填写点列表按文档序排序（对齐预览从上到下）
+
+**主题**：用户反馈 B端填写点列表顺序与模板预览文件中占位符出现顺序不一致。
+
+**根因**：列表（placeholder-table.tsx）按 `placeholders` 数组序渲染、无排序；落库序是识别管线**拼接序**（手动 {{key}} 直通 → V1 无位行 → V2 有位行 → 漏标兜底），组内再按分块+LLM 输出序——与文档序无关。预览按 docx DOM 天然文档序，故「正文段（V1）在前、签署栏（V2）在后」类范本两序必然错开。功能无影响（预览高亮按锚定位不依赖数组序），纯展示顺序问题。
+
+**改动**：
+- `detector.detect_fill_points`：`_verify_slot_occ` 后对 merged 按 `(line, _anchor_pos)` 稳定排序（行号=候选行扁平序号即文档序；段内偏移使乱序输出的同段多位归位）——新识别落库即文档序
+- `web/src/pages/template-fill/detail.tsx`：详情加载时按 `(line ?? MAX, occ ?? 0)` 排序展示——**存量旧数据立即受益**；划选手动添加行（无 line）垫底不跳顶；保存随展示序回写
+- `use-template-fill-request.ts`：`TplPlaceholder` 补 `line?`/`occ?` 类型
+
+**测试**：TDD 红→绿，新增 `test_detect_fill_points_sorted_document_order`（V1 line=9 在管线序先于 V2 line=2、V2 乱序输出偏移 7/1 → 排序后 ka(1)、kb(7)、v1_field(9)；`_anchor_pos` 不外泄）；557 后端全绿
+
+**部署**：**已部署 2026-09-18**——后端 detector.py 单文件 SCP + 双侧 md5 一致 + 容器重启 + import 冒烟通过；前端 build（1m18s，本机内存不足 OOM 杀过一次、用户清理后重跑成功）+ dist 上传 + nginx reload + 首页 200。**未 commit、未 push**
+
+## 2026-09-18（二）切位上线后两症状根修：簇级分类 + 完整空白出现定位
+
+**主题**：run 层切位部署后用户实测两缺陷——①「＿＿＿（项目名称）＿＿＿ 已由 ＿＿＿（项目审批、核准或备案机关名称）＿＿＿」识别成 3 个占位符（应 2 个）；②B端预览徽标错位：para:76 的 contract_no_94、para:759 的 supervisor 渲染到 para:54/55 区域。
+
+**根因（生产数据实证，非猜测）**：
+- ①Word 把提示语拆成多 run（机电监理范本 para85 实测 `(` + `项目名称` + `)   ` 三个 u=True run），blank_slots 逐 run 全匹配全部失败 → 只有空白 run 成位、提示语丢弃 → 12 个空白碎片占位符
+- ②anchor 是下划线 run 文本，相邻非下划线空白没拼进去 → anchor 非段内「完整空白 run」（contract_no_94 锚 4 空格 vs 段内 5 空格，严格口径计 0）→ compute_anchor_positions 跳过 pHash → 前端回退全文顺序匹配分到文档第一个同形空白段。tenderer_seal_54 等锚含「（盖单位章）」走 norm 通道正常 →「一半对一半飞」
+
+**核心变更（三层）**：
+- `blank_slots.py`：连续下划线 run 成簇 + 簇文本整体分类（全空白→blank；括号组扫描且组外全空白/下划线→hint 位，单组铺满整簇（`＿＿＿（项目名称）＿＿` 1 个 hint 位）、多组分区段铺满；组外有实心文字→逐 run 回退旧行为）+ 纯空白 blank 位扩展为段内最大空白 run（向前/后吸收相邻空白，止于非空白或相邻位边界）+ 触接的同为 hint 位不合并（多括号簇拆出的相邻提示位保持独立）
+- `docx_utils.compute_anchor_positions`：纯空白 anchor 严格完整 run 计数为 0 时回退普通非重叠计数（64 截断防病态段），仍写 p_idx/p_hash/a_occ/p_total；**整组统一口径**（同 (addr,anchor) 组严格>0 全用严格序、严格=0 全用宽松序）避免混编号——**存量范本无需重新识别即修复定位**
+- `docx-highlight.ts`（C/B 端共用）：新增 findPlainOcc（非重叠 indexOf 步长=len，与后端 _occurrence_intervals 同构）作 resolveInPara 第四回退（raw 严格→canon 严格→raw 宽容→canon 宽容）；**rawResolvable 打分刻意 strict-only**（审查 M-1：宽容回退参与打分会削弱同形克隆段强区分信号）；填值层（addr 定位+宽松 indexOf）不受影响零改动
+
+**测试**：TDD 全程红→绿。新增后端 10 例（多 run 提示语簇合并精确复刻 para85 形态/一簇多括号拆多位/混合形态单 hint/簇分类失败回退/空白扩展 4+1→5/扩展止于非空白与位边界/空白 gap 并入 hint 回归闸/compute 部分空白锚保 pHash/完全不存在仍跳过/宽松序 occ 分配）+ 前端 1 例（8 空格锚 vs 12 空格 run 宽容回退段内定位）；template_fill 全套 556 后端 + 31 前端全绿
+
+**审查**：superpowers:code-reviewer 1 Major（M-1 rawResolvable）+ 4 Minor，M-1/m-1（canon 宽容补齐）/m-2（64 截断）已修复，m-3（plain 回退出现序固有歧义，仅残留于 V1 存量 sub-run 锚，V2 新锚走严格通道不受影响）为已知取舍，m-4（commit 拆分）知悉
+
+**部署**：**已部署 2026-09-18**——后端 2 文件成套 SCP（blank_slots.py / docx_utils.py）+ 双侧 md5 一致 + 容器重启 + import 冒烟通过；前端 npm run build（3m24s）+ dist 上传（rm -rf dist/* 保 inode）+ nginx reload，首页内外网均 200。注意：本次 dist 一并带上了工作区 3 个此前已完工待部署的前端改动（template-fill-live-preview.tsx / template-fill/detail.tsx / fidelity-preview.tsx）。**未 commit、未 push**
+
+## 2026-09-18（一）范本AI识别加固：run层确定性切位 + LLM语义标注
 
 **主题**：修下划线场景识别四症状（拆碎片/漏识别/重复错位/提示语污染）
 
