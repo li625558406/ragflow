@@ -347,7 +347,7 @@ export default function TemplateFillPage() {
         onOk={handleDeleteConfirm}
         title="删除模板"
         content={{
-          title: `确定删除模板「${deleteTarget?.name ?? ''}」？删除后不可恢复。`,
+          title: `确定删除模板「${deleteTarget?.name ?? ''}」？其历史填写任务与成稿将一并删除，删除后不可恢复。`,
         }}
         cancelButtonText="取消"
         okButtonText="删除"
@@ -358,7 +358,7 @@ export default function TemplateFillPage() {
         onOk={handleBatchDeleteConfirm}
         title="批量删除模板"
         content={{
-          title: `确定删除选中的 ${selected.size} 个模板？仅草稿/已停用且无填写任务记录的模板会被删除，其余自动跳过。`,
+          title: `确定删除选中的 ${selected.size} 个模板？仅草稿/已停用的模板会被删除（其填写任务与成稿一并删除），其余自动跳过。`,
         }}
         cancelButtonText="取消"
         okButtonText="删除"

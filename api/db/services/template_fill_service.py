@@ -160,27 +160,25 @@ class TplTemplateService(CommonService):
 
     @classmethod
     @DB.connection_context()
-    def has_tasks(cls, template_id: str) -> bool:
-        """该模板是否存在填写任务记录（有任务即拒删：历史任务下载依赖其 bucket 对象）。"""
-        return TplFillTask.select().where(
-            TplFillTask.template_id == template_id).exists()
-
-    @classmethod
-    @DB.connection_context()
     def delete_template(cls, template_id: str, tenant_id: str) -> tuple:
-        """删除模板（仅 draft/disabled 且无填写任务记录）。
+        """删除模板（仅 draft/disabled）：级联删除其全部填写任务与成稿对象。
 
-        清理顺序：逐版本删 MinIO 对象（bucket=template_id）→ 事务内删版本行 → 删主表行。
-        对象删除失败仅告警不阻塞（DB 行残留引用比对象残留危害小，且站点存储故障
-        不应永久卡死模板删除）；返回 (ok, msg)。
+        2026-09-17 语义变更：原先「有填写任务记录即拒删」（历史成稿下载依赖
+        bucket=template_id 的对象），但 C端流程删除（flow_service.delete_flow
+        硬删）从不回收 tpl_fill_task，且任务行与流程无可靠外键（flow_instance_id
+        2026-09-17 前全库空串、之后存 canvas session id 亦非 flow id）——
+        「流程删掉范本就能删」在数据上只能靠删范本时级联清理任务实现；范本
+        删除后历史成稿本就无从下载（bucket 随范本一起清），任务行与成稿对象
+        一并删除才自洽：
+          - 真源成稿 {template_id}/{result_file_id}
+          - 派生下载副本 {tenant_id}-downloads/tplfill-{task_id}（仅真源存在时才可能存在）
 
-        事务与锁：has_tasks 复查 → 版本行 DELETE → 主表行 DELETE 包进 DB.atomic()，
-        且复查用 for_update 行锁锁住模板行——否则守卫通过后、删除前若并发新建填写
-        任务，会删掉仍被历史任务引用的模板（TOCTOU）；两条 DELETE 同事务，也杜绝
-        版本行删掉而主表行删失败留下的「零版本模板」损坏态。MinIO rm 循环刻意留在
-        事务外、DB 删除之前：rm 失败不回滚 DB 的语义不变。
+        清理顺序：逐版本+逐任务删 MinIO 对象（失败仅告警不阻塞）→ 事务内
+        锁模板行 → 删任务行 → 删版本行 → 删主表行（同事务，杜绝任务/版本行
+        删掉而主表行删失败留下的损坏态）。MinIO rm 刻意留在事务外、DB 删除
+        之前：rm 失败不回滚 DB 的语义不变。
 
-        ⚠️ 事务内必须用裸查询（不得调 has_tasks/get_owned 等带 @DB.connection_context
+        ⚠️ 事务内必须用裸查询（不得调 get_owned 等带 @DB.connection_context
         的方法）：该装饰器退出时无条件 db.close()，而连接上有 atomic 开着的事务时
         close 会抛 OperationalError('Attempting to close database while transaction
         is open.')——真实 MySQL 已踩坑（线上删除模板 500），SQLite/单测桩不触发。
@@ -190,8 +188,8 @@ class TplTemplateService(CommonService):
             return False, "模板不存在"
         if tpl.status not in ("draft", "disabled"):
             return False, "已发布模板不可删除，请先停用"
-        if cls.has_tasks(template_id):
-            return False, "该模板已有填写任务记录，不可删除（历史任务需保留可下载）"
+        tasks = list(TplFillTask.select().where(
+            TplFillTask.template_id == template_id))
         for ver in TplTemplateVersion.select().where(TplTemplateVersion.template_id == template_id):
             for obj in (ver.original_file_id, ver.render_file_id):
                 if obj:
@@ -200,16 +198,27 @@ class TplTemplateService(CommonService):
                     except Exception:  # noqa: BLE001 — 各存储实现异常类型不一，删除失败只告警不阻塞
                         logger.warning("template fill: delete storage obj failed: %s/%s",
                                        template_id, obj)
+        for t in tasks:
+            if not t.result_file_id:
+                continue  # 无成稿：真源与派生副本都不存在
+            for bucket, obj in (
+                (template_id, t.result_file_id),
+                (f"{t.tenant_id}-downloads", f"tplfill-{t.id}"),
+            ):
+                try:
+                    settings.STORAGE_IMPL.rm(bucket, obj)
+                except Exception:  # noqa: BLE001 — 同上，派生副本可能本就不存在
+                    logger.warning("template fill: delete fill-task obj failed: %s/%s",
+                                   bucket, obj)
         with DB.atomic():
-            # 事务内复查（TOCTOU 闭合）：守卫与删除之间的并发写入已由行锁串行化。
-            # 复查查询为裸查询（复用事务连接），理由见 docstring ⚠️ 段
-            if TplFillTask.select().where(
-                    TplFillTask.template_id == template_id).limit(1).exists():
-                return False, "该模板已有填写任务记录，不可删除（历史任务需保留可下载）"
+            # 行锁锁住模板行（TOCTOU 闭合）；以下删除全为裸查询（复用事务连接），
+            # 理由见 docstring ⚠️ 段
             if not cls.model.select().where(
                     (cls.model.id == template_id) & (cls.model.tenant_id == tenant_id)
             ).for_update().first():
                 return False, "模板不存在"
+            TplFillTask.delete().where(
+                TplFillTask.template_id == template_id).execute()
             TplTemplateVersion.delete().where(
                 TplTemplateVersion.template_id == template_id).execute()
             cls.model.delete().where(cls.model.id == template_id,
