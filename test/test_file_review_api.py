@@ -162,15 +162,18 @@ def test_all_routes_registered_on_blueprint():
 
 
 def test_fix_admission_is_synchronous_and_lock_guarded():
-    """结构性锁死受理契约：互斥在 Service 层，是**同步函数 + 进程级 threading.Lock**，
-    且端点必须在无 await 的临界区内调它。
+    """结构性锁死受理契约：互斥在 Service 层，是**同步函数 + 进程级 threading.Lock**；
+    REST 端点必须经 asyncio.to_thread 把受理整段移入线程池并 await 结果（R-6）。
 
-    为什么盯着这件事：quart 单进程单事件循环下，「临界区内无 await」只挡得住并发 HTTP
-    请求；对话工具被 common.connection_utils.timeout 丢进**独立 daemon 线程**执行，与事件
-    循环是两个线程 —— 只有进程级锁能覆盖它。若有人把 admit_fix_round 改成协程、或在端点
-    里 await 它，锁会在 await 点被让出去，两入口再次并发建出同号轮次、留下永远没人消费的
-    fixing 轮次，该 task 之后所有 fix/review 被前置闸门永久挡死（不可逆）。普通用例测不到
-    这个（要构造真并发），故用 AST + 函数性质在代码层断言。
+    为什么盯着这件事：对话工具被 common.connection_utils.timeout 丢进**独立 daemon 线程**
+    执行，与 quart 事件循环是两个线程 —— 只有进程级锁能覆盖两入口（若把 admit_fix_round
+    改成协程，锁会在 await 点失效，两入口再次并发建出同号轮次、留下永远没人消费的 fixing
+    轮次，该 task 之后所有 fix/review 被前置闸门永久挡死，不可逆）。而锁等待最坏 5s、闸门
+    里还有多次同步 DB 往返，端点在事件循环里同步直跑会把整个事件循环卡住——期间所有请求
+    （含 state 轮询）全部停摆。R-6 故要求端点经 to_thread 移入线程池：锁是 threading.Lock，
+    跨线程共享，移入工作线程不改变互斥语义（事件循环、to_thread 工作线程、对话工具线程
+    三者仍被同一把锁串行化）。普通用例测不到这些（要构造真并发/真慢 IO），故用 AST +
+    函数性质在代码层断言。
     """
     import inspect
     import threading
@@ -191,8 +194,11 @@ def test_fix_admission_is_synchronous_and_lock_guarded():
     stmts = [s for s in body if "admit_fix_round" in ast.dump(s)]
     assert stmts, "fix_review 必须把受理交给 admit_fix_round"
     for stmt in stmts:
-        assert not any(isinstance(n, ast.Await) for n in ast.walk(stmt)), (
-            f"admit_fix_round 不得被 await（会让出锁、破坏跨线程互斥）：{ast.dump(stmt)[:200]}")
+        dump = ast.dump(stmt)
+        assert "to_thread" in dump, \
+            "受理必须经 asyncio.to_thread 移入线程池（R-6：持锁段不得阻塞事件循环）"
+        assert any(isinstance(n, ast.Await) for n in ast.walk(stmt)), \
+            "to_thread 调用必须被 await（结果要回传给响应）"
 
 
 # ── 纯函数：脏值与边界 ───────────────────────────────────────────────
@@ -367,6 +373,23 @@ def test_state_endpoint_heals_interrupted_round(monkeypatch):
     assert len(calls["round_updates"]) == 1 and calls["round_updates"][0][1] == "failed"
 
 
+def test_state_endpoint_does_not_heal_live_round(monkeypatch):
+    """反向用例：活轮次（线程还在跑）读取时绝不落库——heal 只针对「无人会回来写」
+    的中断轮。round_updates 必须为空。
+
+    两道判据都要不成立：线程真在跑（is_running=True）+ 行龄在宽限期内（刚建的轮次）。
+    若判据顺序被写反或宽限被删，活轮会在读取时被误落 failed，前端把进行中的审核显示成
+    「已中断」，executor 线程回头写终态时还会与之竞态。"""
+    rounds = [_round(1, "reviewing")]          # 默认新 create_time，行龄在宽限期内
+    calls = _patch_services(monkeypatch, rounds=rounds, running=True)
+
+    d = _call(_api.review_state, method="GET", path="/x", file_id="f1")["data"]
+
+    assert d["rounds"][0]["status"] == "reviewing"
+    assert d["rounds"][0]["stale"] is False
+    assert calls.get("round_updates", []) == []
+
+
 def test_state_endpoint_hides_internal_error_text(monkeypatch):
     monkeypatch.setattr(_api.FileReviewRoundService, "get_by_file",
                         classmethod(lambda cls, fid: (_ for _ in ()).throw(
@@ -509,7 +532,7 @@ def test_fix_maps_admission_denials_to_error_codes(monkeypatch):
     assert body["code"] == RetCode.DATA_ERROR, "not_found 必须走 get_error_data_result 默认码"
     assert body["message"] == "文件审核任务不存在或无权访问"
 
-    for reason, msg in (("stale", "第 2 轮（修复中）已中断（服务重启或异常退出），无法继续；请重新发起审核"),
+    for reason, msg in (("invalid_levels", "修复级别参数不合法"),
                         ("running", "第 2 轮（修复中）仍在进行中，请等它结束后再发起修复"),
                         ("closing", "上一轮审核正在收尾，请稍等片刻后重试"),
                         ("no_quota", "已达到最大修复轮次（3 轮），未修复的问题请按批注手动处理"),

@@ -43,6 +43,7 @@
   所以前端**不能**用 window.open / a[href] 直链（浏览器导航请求不带自定义头 ⇒ 必 401），
   必须 fetch 手挂 Authorization 取 Blob（`web/src/services/file-review-service.ts`）。
 """
+import asyncio
 import json
 import logging
 from urllib.parse import quote
@@ -302,18 +303,16 @@ async def fix_review(task_id: str, tenant_id: str):
             return get_error_argument_result(
                 "levels 必须是非空数组，取值只能是 high / medium / low")
 
-        # 受理序列「校验 — 定轮号 — 建轮次 — 起线程」必须原子，但互斥边界不能留在本模块：
-        # 「临界区内不许 await」只挡得住并发 HTTP 请求（quart 单进程单事件循环，WS 默认 1，
-        # 见 docker/launch_backend_service.sh），挡不住**对话工具那条线程** —— T8 的 _fix
-        # 被 common.connection_utils.timeout 丢进独立 daemon 线程执行，与事件循环是两个
-        # 线程。两入口并发打同一 task_id 时双方都会观测到 is_running=False、next_round()
-        # 取到同一轮号（(task_id, round_no) 无唯一约束），后到者的 spawn_review_task 命中
-        # _running_tasks 后静默 return，那条 fixing 轮次永远等不到线程消费，该 task 之后
-        # 所有 fix/review 被前置闸门永久挡死（T6/T8 实测的必死路径）。故互斥下沉到 Service
-        # 层的进程级 threading.Lock（admit_fix_round），跨线程有效。
-        # 这里**必须同步调用**（不得 await）：一旦 await，锁会在 await 点被让出去。
+        # 受理序列「校验 — 定轮号 — 建轮次 — 起线程」必须原子，互斥在 Service 层的
+        # 进程级 threading.Lock（admit_fix_round），跨线程有效（对话工具被
+        # common.connection_utils.timeout 丢进独立 daemon 线程）。
+        # R-6：acquire 最坏要等 5s 超时、闸门里还有多次同步 DB 往返——整段经
+        # asyncio.to_thread 移入线程池，事件循环不被单请求阻塞。锁是 threading.Lock，
+        # 移入工作线程不改变互斥语义（事件循环、to_thread 工作线程、对话工具线程
+        # 三者仍被同一把锁串行化）。
         try:
-            result = admit_fix_round(
+            result = await asyncio.to_thread(
+                admit_fix_round,
                 task_id=task_id, tenant_id=tenant_id, levels=levels,
                 # 基准取首轮原始需求（见 _fix_base_query 的说明）；非法类型在 Service 层忽略。
                 user_query_override=body.get("user_query"))

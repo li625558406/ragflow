@@ -39,7 +39,8 @@ def _tpl(tid="bid_doc_format", name="招标文件格式审核", desc="看格式�
 
 
 def _round(no=1, status="annotated", **kw):
-    base = {"task_id": PFX + "task", "file_id": PFX + "file", "round_no": no,
+    base = {"id": f"r{no}", "task_id": PFX + "task", "file_id": PFX + "file",
+            "round_no": no,
             "status": status, "template_id": "bid_doc_format", "user_query": "",
             "file_version": f"v{no}", "kb_ids": None, "minio_path": None,
             "summary": "", "error": None,
@@ -84,7 +85,7 @@ def _patch(monkeypatch, *, templates=None, rounds=None, pending=None,
     running 对应 spawn 模块的防重入集合：默认 False（无线程在跑，闸门放行）。
     """
     svc = _svc()
-    calls = {"rounds": [], "spawned": [], "ann_updates": []}
+    calls = {"rounds": [], "spawned": [], "ann_updates": [], "round_updates": []}
 
     monkeypatch.setattr(svc.FileReviewRoundService, "create_round",
                         staticmethod(lambda **kw: calls["rounds"].append(kw) or "round-1"))
@@ -101,6 +102,14 @@ def _patch(monkeypatch, *, templates=None, rounds=None, pending=None,
     monkeypatch.setattr(svc.FileReviewAnnotationService, "update_status",
                         staticmethod(
                             lambda aid, status: calls["ann_updates"].append((aid, status))))
+    # R-1 heal 落库走的是**轮次** Service 的 update_status（heal_stale_round 内部调用，
+    # admit_fix_round 的 stale→heal 分支会触达），与上面的标注 Service 同名不同类，
+    # 必须分开打桩并分别记录（与 test_file_review_api.py 的 _patch_services 同款）。
+    monkeypatch.setattr(svc.FileReviewRoundService, "update_status",
+                        staticmethod(
+                            lambda rid, status, **extra:
+                            calls.setdefault("round_updates", []).append(
+                                (rid, status, extra)) or True))
     monkeypatch.setattr(svc, "fix_rounds_left", lambda rows: left)
     monkeypatch.setattr("agent.tools.file_review.time.sleep", lambda s: None)
 
@@ -361,14 +370,26 @@ def test_fix_rejects_unknown_levels(monkeypatch):
     assert "levels" in out and calls["rounds"] == []
 
 
-def test_fix_rejects_interrupted_round_with_actionable_message(monkeypatch):
-    """中断轮次（服务重启后卡在 reviewing）必须拒绝，且**不能**答复「等它结束」——
-    它永远不会结束。文案必须指向唯一出路（重新发起审核）。"""
-    calls = _patch(monkeypatch, rounds=[_round(1, "reviewing", create_time=0)])
+def test_fix_heals_interrupted_round_then_admits(monkeypatch):
+    """服务重启后轮次永久停在 reviewing（线程没了、状态不回落）。R-1 自愈改变了受理
+    语义：不再「拒 + 让用户重新发起审核」（旧契约，用例已作废），而是受理点上就地
+    heal 为 failed、与崩溃 failed 轮同权走后续闸门 —— 有余额且有待修项即可直接发起
+    下一轮修复。本用例锁定工具侧 heal→放行的完整链路与落库内容（受理闸门在 Service
+    层，工具线程同步直调，无 R-6 的 to_thread 改造）。"""
+    calls = _patch(monkeypatch, rounds=[_round(1, "reviewing", create_time=0)],
+                   next_round=(2, "v2"), pending=[_ann("high")])
     out = _make_tool()._invoke(action="fix", task_id=PFX + "task", levels="high")
-    assert "已中断" in out and "重新发起审核" in out
-    assert "仍在进行中" not in out
-    assert calls["rounds"] == [] and calls["spawned"] == []
+
+    # 不再拒绝：新轮次照建、spawn 照发
+    assert len(calls["rounds"]) == 1
+    assert calls["rounds"][0]["round_no"] == 2 and calls["rounds"][0]["status"] == "fixing"
+    assert calls["spawned"] == [PFX + "task"]
+    # heal 落库恰好一次：置 failed 且 error 是确定性的中断文案（不是用户输入派生）
+    assert len(calls["round_updates"]) == 1
+    rid, status, extra = calls["round_updates"][0]
+    assert (rid, status) == ("r1", "failed") and "已中断" in extra["error"]
+    # heal 后 cur 已是 failed 终态，_poll 即刻给出状态摘要而不是「仍在进行中」干等
+    assert "本轮失败" in out and "已中断" in out
 
 
 def test_fix_rejects_when_no_pending_at_that_level(monkeypatch):
