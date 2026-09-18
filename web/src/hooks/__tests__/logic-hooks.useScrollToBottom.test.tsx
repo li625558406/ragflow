@@ -24,6 +24,7 @@ function createMockContainer({ atBottom = true } = {}) {
       scrollTop,
       clientHeight,
       scrollHeight,
+      scrollTo: vi.fn(),
       addEventListener: vi.fn((event, cb) => {
         listeners[event] = cb;
       }),
@@ -65,38 +66,23 @@ describe('useScrollToBottom', () => {
 
   it('should scroll to bottom when isAtBottom is true and messages change', async () => {
     const containerRef = createMockContainer({ atBottom: true });
-    const mockScroll = vi.fn();
-
-    function useTestScrollToBottom(messages: any, containerRef: any) {
-      const hook = useScrollToBottom(messages, containerRef);
-      hook.scrollRef.current = { scrollIntoView: mockScroll } as any;
-      return hook;
-    }
 
     const { rerender } = renderHook(
-      ({ messages }) => useTestScrollToBottom(messages, containerRef),
+      ({ messages }) => useScrollToBottom(messages, containerRef),
       { initialProps: { messages: [] } },
     );
 
     rerender({ messages: ['msg1'] });
     await flushAll();
 
-    expect(mockScroll).toHaveBeenCalled();
+    expect(containerRef.current.scrollTo).toHaveBeenCalled();
   });
 
   it('should NOT scroll to bottom when isAtBottom is false and messages change', async () => {
     const containerRef = createMockContainer({ atBottom: false });
-    const mockScroll = vi.fn();
 
-    function useTestScrollToBottom(messages: any, containerRef: any) {
-      const hook = useScrollToBottom(messages, containerRef);
-      hook.scrollRef.current = { scrollIntoView: mockScroll } as any;
-      console.log('HOOK: isAtBottom:', hook.isAtBottom);
-      return hook;
-    }
-
-    const { result, rerender } = renderHook(
-      ({ messages }) => useTestScrollToBottom(messages, containerRef),
+    const { rerender } = renderHook(
+      ({ messages }) => useScrollToBottom(messages, containerRef),
       { initialProps: { messages: [] } },
     );
 
@@ -107,15 +93,12 @@ describe('useScrollToBottom', () => {
       await flushAll();
       // Advance fake timers by 10ms instead of real setTimeout
       vi.advanceTimersByTime(10);
-      console.log('AFTER SCROLL: isAtBottom:', result.current.isAtBottom);
     });
 
     rerender({ messages: ['msg1'] });
     await flushAll();
 
-    console.log('AFTER RERENDER: isAtBottom:', result.current.isAtBottom);
-
-    expect(mockScroll).not.toHaveBeenCalled();
+    expect(containerRef.current.scrollTo).not.toHaveBeenCalled();
 
     // Optionally, flush again after the assertion to see if it gets called late
     await flushAll();
