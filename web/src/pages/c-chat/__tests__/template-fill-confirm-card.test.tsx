@@ -5,12 +5,16 @@
 // placeholder 切换为「AI 建议值，可改」；提交时未改 → 走 ov 分支非空 user 覆盖
 // fallback，值与 fallback 一致——后端保留 fallback 兜底，前端让用户看见/编辑。
 import type { ITemplateFillConfirmPending } from '@/hooks/template-fill-stream';
+import { confirmTemplateFill } from '@/hooks/use-template-fill-request';
 import TemplateFillConfirmCard from '@/pages/c-chat/template-fill-confirm-card';
 import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 
-jest.mock('@/hooks/use-template-fill-request', () => ({
-  confirmTemplateFill: jest.fn().mockResolvedValue(undefined),
+vi.mock('@/hooks/use-template-fill-request', () => ({
+  confirmTemplateFill: vi.fn().mockResolvedValue(undefined),
 }));
+
+const confirmMock = vi.mocked(confirmTemplateFill);
 
 const pending: ITemplateFillConfirmPending = {
   task_id: 't1',
@@ -57,7 +61,7 @@ function expandCard() {
 
 describe('TemplateFillConfirmCard 字段名点击定位', () => {
   it('onLocate 传入时字段名渲染为 button，点击回传 (template_id, key)', () => {
-    const onLocate = jest.fn();
+    const onLocate = vi.fn();
     render(<TemplateFillConfirmCard pending={pending} onLocate={onLocate} />);
     expandCard();
     const btn = screen.getByRole('button', { name: /项目名称/ });
@@ -110,10 +114,7 @@ describe('TemplateFillConfirmCard 增量 direct_value 预填', () => {
   });
 
   it('用户清空预填值（清空「港里」回空）→ 提交时 values_raw={} → 后端走 fallback 兜底', async () => {
-    const { confirmTemplateFill } = jest.requireMock(
-      '@/hooks/use-template-fill-request',
-    );
-    (confirmTemplateFill as jest.Mock).mockClear();
+    confirmMock.mockClear();
     render(<TemplateFillConfirmCard pending={pendingWithDirect} />);
     expandCard();
     // 拿到预填「港里」的 input
@@ -128,7 +129,7 @@ describe('TemplateFillConfirmCard 增量 direct_value 预填', () => {
     // 等异步提交完成（mockResolvedValue）
     await new Promise((r) => setTimeout(r, 0));
     expect(confirmTemplateFill).toHaveBeenCalledTimes(1);
-    const [, , decisions] = (confirmTemplateFill as jest.Mock).mock.calls[0];
+    const [, , decisions] = confirmMock.mock.calls[0];
     // 用户空值 → 不入 values（前端提交时不发空键），后端 ov 分支保留 fallback
     expect(decisions.tpl2.values).toEqual({});
   });

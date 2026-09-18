@@ -16,6 +16,7 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./src/test/setup.ts'],
-    include: ['src/**/__tests__/**/*.test.{ts,tsx}'],
+    // 覆盖 __tests__ 目录内与目录外（docx-* 等与源码同目录）的全部单测
+    include: ['src/**/*.test.{ts,tsx}'],
   },
 });

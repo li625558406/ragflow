@@ -3,14 +3,23 @@
 // request/api 均为 mock，不触网。
 import request from '@/utils/request';
 import { act, renderHook } from '@testing-library/react';
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+} from 'vitest';
 import type { ITemplateFillTemplate } from '../template-fill-stream';
 import { useTemplateFillTaskPoll } from '../use-template-fill-task-poll';
 
-jest.mock('@/utils/request', () => ({
+vi.mock('@/utils/request', () => ({
   __esModule: true,
-  default: { get: jest.fn() },
+  default: { get: vi.fn() },
 }));
-jest.mock('@/utils/api', () => ({
+vi.mock('@/utils/api', () => ({
   __esModule: true,
   default: {
     templateFillTaskProgress: (id: string) =>
@@ -18,7 +27,7 @@ jest.mock('@/utils/api', () => ({
   },
 }));
 
-const mockedGet = request.get as unknown as jest.Mock;
+const mockedGet = request.get as unknown as Mock;
 
 const fillingTpl = (
   extra: Partial<ITemplateFillTemplate> = {},
@@ -41,22 +50,22 @@ describe('useTemplateFillTaskPoll', () => {
     mockedGet.mockReset();
   });
   afterEach(() => {
-    jest.useRealTimers();
+    vi.useRealTimers();
   });
 
   it('enabled=false（流式期间）不发起任何请求', async () => {
-    jest.useFakeTimers();
+    vi.useFakeTimers();
     const { result } = renderHook(() =>
       useTemplateFillTaskPoll([fillingTpl()], false),
     );
-    jest.advanceTimersByTime(6000);
+    vi.advanceTimersByTime(6000);
     await flush();
     expect(mockedGet).not.toHaveBeenCalled();
     expect(result.current?.[0].status).toBe('filling');
   });
 
   it('enabled=true 立即 tick：running 响应合并进度 override', async () => {
-    jest.useFakeTimers();
+    vi.useFakeTimers();
     mockedGet.mockReturnValue(
       envelope({ status: 'running', done: 3, total: 10 }),
     );
@@ -73,7 +82,7 @@ describe('useTemplateFillTaskPoll', () => {
   });
 
   it('stalled（非终态）→ 判 failed「任务中断，请稍后刷新重试」并停止轮询', async () => {
-    jest.useFakeTimers();
+    vi.useFakeTimers();
     mockedGet.mockReturnValue(
       envelope({ status: 'generating', stalled: true, done: 2, total: 10 }),
     );
@@ -85,14 +94,14 @@ describe('useTemplateFillTaskPoll', () => {
       status: 'failed',
       error: '任务中断，请稍后刷新重试',
     });
-    jest.advanceTimersByTime(4000);
+    vi.advanceTimersByTime(4000);
     await flush();
     // stopped 集合生效：后续 tick 不再请求
     expect(mockedGet).toHaveBeenCalledTimes(1);
   });
 
   it('终态 done 缺 values → 不下 values 键，保留 SSE 已累积的值', async () => {
-    jest.useFakeTimers();
+    vi.useFakeTimers();
     mockedGet.mockReturnValue(
       envelope({
         status: 'done',
@@ -113,7 +122,7 @@ describe('useTemplateFillTaskPoll', () => {
   });
 
   it('终态 done 带 values → 使用轮询返回的 values', async () => {
-    jest.useFakeTimers();
+    vi.useFakeTimers();
     mockedGet.mockReturnValue(
       envelope({
         status: 'done',
@@ -132,7 +141,7 @@ describe('useTemplateFillTaskPoll', () => {
   });
 
   it('SSE 已 filled 的行以 SSE 为准，终态 override 被丢弃', async () => {
-    jest.useFakeTimers();
+    vi.useFakeTimers();
     mockedGet.mockReturnValue(
       envelope({ status: 'failed', error: '过期失败' }),
     );
@@ -146,7 +155,7 @@ describe('useTemplateFillTaskPoll', () => {
   });
 
   it('interval 稳定：templates 引用连续变化（模拟 SSE 事件）不重建 interval、不触发立即 tick', async () => {
-    jest.useFakeTimers();
+    vi.useFakeTimers();
     mockedGet.mockReturnValue(
       envelope({ status: 'running', done: 1, total: 10 }),
     );
@@ -166,26 +175,26 @@ describe('useTemplateFillTaskPoll', () => {
     await flush();
     expect(mockedGet).toHaveBeenCalledTimes(1);
     // 一个完整周期后恰好多一次轮询
-    jest.advanceTimersByTime(2000);
+    vi.advanceTimersByTime(2000);
     await flush();
     expect(mockedGet).toHaveBeenCalledTimes(2);
   });
 
   it('轮询响应异常（reject）不中断：下一周期继续轮询', async () => {
-    jest.useFakeTimers();
+    vi.useFakeTimers();
     mockedGet.mockRejectedValueOnce(new Error('network'));
     const { result } = renderHook(() =>
       useTemplateFillTaskPoll([fillingTpl()], true),
     );
     await flush();
     expect(result.current?.[0].status).toBe('filling'); // 无 override
-    jest.advanceTimersByTime(2000);
+    vi.advanceTimersByTime(2000);
     await flush();
     expect(mockedGet).toHaveBeenCalledTimes(2);
   });
 
   it('重叠 tick 竞态：慢请求迟到的 running 响应不覆盖终态 override', async () => {
-    jest.useFakeTimers();
+    vi.useFakeTimers();
     let resolveSlow: (v: {
       data: { code: number; data: Record<string, unknown> };
     }) => void = () => {};
@@ -205,7 +214,7 @@ describe('useTemplateFillTaskPoll', () => {
     );
     await flush();
     expect(mockedGet).toHaveBeenCalledTimes(1);
-    jest.advanceTimersByTime(2000);
+    vi.advanceTimersByTime(2000);
     await flush();
     expect(mockedGet).toHaveBeenCalledTimes(2);
     // 快 tick 终态已落地：stopped.add + override {status:'filled'}
@@ -225,7 +234,7 @@ describe('useTemplateFillTaskPoll', () => {
   });
 
   it('终态 done 带 unfilled → 合并 override（历史恢复汇总不丢）', async () => {
-    jest.useFakeTimers();
+    vi.useFakeTimers();
     mockedGet.mockReturnValue(
       envelope({
         status: 'done',
@@ -245,7 +254,7 @@ describe('useTemplateFillTaskPoll', () => {
   });
 
   it('终态 done 缺 unfilled → 不下键，保留 SSE 已有汇总', async () => {
-    jest.useFakeTimers();
+    vi.useFakeTimers();
     mockedGet.mockReturnValue(
       envelope({
         status: 'done',
@@ -271,7 +280,7 @@ describe('useTemplateFillTaskPoll', () => {
   });
 
   it('终态 done 带 filled → 合并 override（历史恢复已填清单不丢）', async () => {
-    jest.useFakeTimers();
+    vi.useFakeTimers();
     mockedGet.mockReturnValue(
       envelope({
         status: 'done',
@@ -293,7 +302,7 @@ describe('useTemplateFillTaskPoll', () => {
   });
 
   it('终态 done 缺 filled → 不下键，保留 SSE 已有清单', async () => {
-    jest.useFakeTimers();
+    vi.useFakeTimers();
     mockedGet.mockReturnValue(
       envelope({
         status: 'done',
@@ -319,7 +328,7 @@ describe('useTemplateFillTaskPoll', () => {
   });
 
   it('终态 done 带空 filled 数组 → 下发（数组为真值，与 unfilled 同语义）', async () => {
-    jest.useFakeTimers();
+    vi.useFakeTimers();
     mockedGet.mockReturnValue(
       envelope({
         status: 'done',
@@ -343,7 +352,7 @@ describe('useTemplateFillTaskPoll', () => {
   });
 
   it('竞态：终态后迟到的 running 响应不覆盖已落地的 filled', async () => {
-    jest.useFakeTimers();
+    vi.useFakeTimers();
     let resolveSlow: (v: {
       data: { code: number; data: Record<string, unknown> };
     }) => void = () => {};
@@ -364,7 +373,7 @@ describe('useTemplateFillTaskPoll', () => {
       useTemplateFillTaskPoll([fillingTpl()], true),
     );
     await flush();
-    jest.advanceTimersByTime(2000);
+    vi.advanceTimersByTime(2000);
     await flush();
     expect(result.current?.[0]).toMatchObject({
       status: 'filled',
@@ -382,7 +391,7 @@ describe('useTemplateFillTaskPoll', () => {
   });
 
   it('SSE 已 filled 的行：终态 override 的 filled 一并被丢弃', async () => {
-    jest.useFakeTimers();
+    vi.useFakeTimers();
     mockedGet.mockReturnValue(
       envelope({
         status: 'done',
@@ -409,7 +418,7 @@ describe('useTemplateFillTaskPoll', () => {
   });
 
   it('unmount 后不再发起请求', async () => {
-    jest.useFakeTimers();
+    vi.useFakeTimers();
     mockedGet.mockReturnValue(
       envelope({ status: 'running', done: 1, total: 2 }),
     );
@@ -424,7 +433,7 @@ describe('useTemplateFillTaskPoll', () => {
     await flush();
     unmount();
     // 卸载后推进多个周期：effect cleanup 已置 cancelled + 清 interval，不再请求
-    jest.advanceTimersByTime(6000);
+    vi.advanceTimersByTime(6000);
     await flush();
     expect(mockedGet).toHaveBeenCalledTimes(1);
   });

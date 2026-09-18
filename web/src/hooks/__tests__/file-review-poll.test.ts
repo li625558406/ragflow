@@ -4,8 +4,10 @@
 // 前端据此停轮询。漏了后半句，后果是服务重启 / 崩溃后对一个永远不会结束的僵尸轮次每 3s
 // 白打一次接口，且卡片永远转圈。这两半必须同时成立，所以两半都要有用例。
 // request / api 均为 mock：本文件只测纯判定，不触网也不拉起 axios 层。
-jest.mock('@/utils/request', () => ({ __esModule: true, default: {} }));
-jest.mock('@/utils/api', () => ({ __esModule: true, default: {} }));
+import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('@/utils/request', () => ({ __esModule: true, default: {} }));
+vi.mock('@/utils/api', () => ({ __esModule: true, default: {} }));
 
 import {
   FILE_REVIEW_POLL_MS,

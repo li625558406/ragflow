@@ -7,23 +7,17 @@ import {
 } from '@/hooks/use-file-review-request';
 import FileReviewProgress from '@/pages/c-chat/file-review-progress';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-jest.mock('@/hooks/use-file-review-request', () => ({
-  useFileReviewState: jest.fn(),
-  useFixFileReview: jest.fn(),
-  useUpdateAnnotationStatus: jest.fn(),
+vi.mock('@/hooks/use-file-review-request', () => ({
+  useFileReviewState: vi.fn(),
+  useFixFileReview: vi.fn(),
+  useUpdateAnnotationStatus: vi.fn(),
 }));
 
-const mockUseFileReviewState = useFileReviewState as jest.MockedFunction<
-  typeof useFileReviewState
->;
-const mockUseFixFileReview = useFixFileReview as jest.MockedFunction<
-  typeof useFixFileReview
->;
-const mockUseUpdateAnnotationStatus =
-  useUpdateAnnotationStatus as jest.MockedFunction<
-    typeof useUpdateAnnotationStatus
-  >;
+const mockUseFileReviewState = vi.mocked(useFileReviewState);
+const mockUseFixFileReview = vi.mocked(useFixFileReview);
+const mockUseUpdateAnnotationStatus = vi.mocked(useUpdateAnnotationStatus);
 
 const baseState = (over: any = {}) => ({
   data: {
@@ -95,21 +89,21 @@ const baseState = (over: any = {}) => ({
   },
   isLoading: false,
   isError: false,
-  refetch: jest.fn(),
+  refetch: vi.fn(),
   ...over,
 });
 
 describe('FileReviewProgress', () => {
   beforeEach(() => {
     mockUseFixFileReview.mockReturnValue({
-      mutate: jest.fn(),
+      mutate: vi.fn(),
       // TanStack Query v5 mutation: busy 状态用 isPending（v4 的 isLoading 已重命名）。
       // 同时保留 isLoading:false 兜底未升级 mock 的类型。
       isPending: false,
       isLoading: false,
     } as any);
     mockUseUpdateAnnotationStatus.mockReturnValue({
-      mutate: jest.fn(),
+      mutate: vi.fn(),
       isPending: false,
       isLoading: false,
     } as any);
@@ -117,7 +111,7 @@ describe('FileReviewProgress', () => {
 
   it('renders round summary + 「打开审核面板」callback with annotations + doc.version', async () => {
     mockUseFileReviewState.mockReturnValue(baseState() as any);
-    const onOpenReview = jest.fn();
+    const onOpenReview = vi.fn();
     render(<FileReviewProgress fileId="f1" onOpenReview={onOpenReview} />);
     expect(screen.getByText(/第 1 轮/)).toBeInTheDocument();
     expect(screen.getByText(/high:1 medium:0 low:0/)).toBeInTheDocument();
@@ -129,7 +123,7 @@ describe('FileReviewProgress', () => {
   });
 
   it('has_result 时显示「下载成稿」，onPreviewDoc 只收 fileVersion（R-8 不再透传对象名）', () => {
-    const onPreviewDoc = jest.fn();
+    const onPreviewDoc = vi.fn();
     mockUseFileReviewState.mockReturnValue(baseState() as any);
     render(<FileReviewProgress fileId="f1" onPreviewDoc={onPreviewDoc} />);
     fireEvent.click(screen.getByRole('button', { name: /下载成稿/ }));
@@ -220,7 +214,7 @@ describe('FileReviewProgress', () => {
   });
 
   it('点击「选择级别修复」调起 Popover，勾选 high + medium 后提交触发 useFixFileReview.mutate', async () => {
-    const mutate = jest.fn();
+    const mutate = vi.fn();
     mockUseFixFileReview.mockReturnValue({
       mutate,
       isPending: false,
@@ -244,7 +238,7 @@ describe('FileReviewProgress', () => {
     const state = baseState();
     mockUseFileReviewState.mockReturnValue(state as any);
     const okFix = {
-      mutate: jest.fn(),
+      mutate: vi.fn(),
       isPending: false,
       isLoading: false,
       error: null,

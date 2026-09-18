@@ -1,6 +1,8 @@
 // describePlaceholderSpan 纯函数单测：docx 保真预览槽位的文本/悬浮说明。
 // 四象限（有/无中文名 × 已填/未填）+ 脏值边界。样式副作用留在
 // stylePlaceholderSpan（DOM 脚手架在本仓库已腐坏，不做渲染测试）。
+import { describe, expect, it } from 'vitest';
+
 import { describePlaceholderSpan } from '../docx-highlight';
 
 describe('describePlaceholderSpan', () => {

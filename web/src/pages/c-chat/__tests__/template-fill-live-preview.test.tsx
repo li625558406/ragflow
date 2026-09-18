@@ -9,12 +9,16 @@
 // 本套件走 xlsx 文本分支（不走 docx-preview，渲染确定）：file_type='xlsx'
 // 时组件用 renderText 把 {{key}} 槽位替换成 values[key]，可直接断言屏幕文本。
 import type { ITemplateFillTemplate } from '@/hooks/template-fill-stream';
+import { fetchTemplateFillTaskProgress } from '@/hooks/use-template-fill-request';
 import TemplateFillLivePreview from '@/pages/c-chat/template-fill-live-preview';
 import { render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-jest.mock('docx-preview', () => ({ renderAsync: jest.fn() }));
+vi.mock('docx-preview', () => ({ renderAsync: vi.fn() }));
 
-const previewData = {
+// vi.mock 工厂会被提升到文件顶部：previewData 被 useTemplateFillPreview 工厂
+// 引用，必须用 vi.hoisted 同步提升，否则工厂执行时该常量尚未初始化（TDZ）。
+const previewData = vi.hoisted(() => ({
   code: 0,
   data: {
     file_type: 'xlsx',
@@ -27,24 +31,23 @@ const previewData = {
       },
     ],
   },
-};
+}));
 
-jest.mock('@/hooks/use-template-fill-request', () => ({
-  useTemplateFillPreview: jest.fn(() => ({
+vi.mock('@/hooks/use-template-fill-request', () => ({
+  useTemplateFillPreview: vi.fn(() => ({
     data: previewData,
     isLoading: false,
   })),
-  useTemplateFillFile: jest.fn(() => ({
+  useTemplateFillFile: vi.fn(() => ({
     data: undefined,
     isLoading: false,
     error: undefined,
   })),
-  fetchTemplateFillTaskProgress: jest.fn(),
+  fetchTemplateFillTaskProgress: vi.fn(),
 }));
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const hooks = jest.requireMock('@/hooks/use-template-fill-request') as {
-  fetchTemplateFillTaskProgress: jest.Mock;
+const hooks = {
+  fetchTemplateFillTaskProgress: vi.mocked(fetchTemplateFillTaskProgress),
 };
 
 const OLD = '石狮市交通建设投资有限责任公司';
@@ -68,7 +71,7 @@ function renderPreview(tpl: ITemplateFillTemplate) {
 }
 
 beforeEach(() => {
-  jest.clearAllMocks();
+  vi.clearAllMocks();
 });
 
 describe('TemplateFillLivePreview 权威产值覆盖', () => {

@@ -1,4 +1,15 @@
-jest.mock('eventsource-parser/stream', () => ({}));
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
+
+vi.mock('eventsource-parser/stream', () => ({}));
 
 import { act, renderHook } from '@testing-library/react';
 import { useScrollToBottom } from '../logic-hooks';
@@ -13,10 +24,10 @@ function createMockContainer({ atBottom = true } = {}) {
       scrollTop,
       clientHeight,
       scrollHeight,
-      addEventListener: jest.fn((event, cb) => {
+      addEventListener: vi.fn((event, cb) => {
         listeners[event] = cb;
       }),
-      removeEventListener: jest.fn(),
+      removeEventListener: vi.fn(),
     },
     listeners,
   } as any;
@@ -24,20 +35,20 @@ function createMockContainer({ atBottom = true } = {}) {
 
 // Helper to flush all timers and microtasks
 async function flushAll() {
-  jest.runAllTimers();
+  vi.runAllTimers();
   // Flush microtasks
   await Promise.resolve();
   // Sometimes, effects queue more timers, so run again
-  jest.runAllTimers();
+  vi.runAllTimers();
   await Promise.resolve();
 }
 
 describe('useScrollToBottom', () => {
   beforeEach(() => {
-    jest.useFakeTimers();
+    vi.useFakeTimers();
   });
   afterEach(() => {
-    jest.useRealTimers();
+    vi.useRealTimers();
   });
 
   it('should set isAtBottom true when user is at bottom', () => {
@@ -54,7 +65,7 @@ describe('useScrollToBottom', () => {
 
   it('should scroll to bottom when isAtBottom is true and messages change', async () => {
     const containerRef = createMockContainer({ atBottom: true });
-    const mockScroll = jest.fn();
+    const mockScroll = vi.fn();
 
     function useTestScrollToBottom(messages: any, containerRef: any) {
       const hook = useScrollToBottom(messages, containerRef);
@@ -75,7 +86,7 @@ describe('useScrollToBottom', () => {
 
   it('should NOT scroll to bottom when isAtBottom is false and messages change', async () => {
     const containerRef = createMockContainer({ atBottom: false });
-    const mockScroll = jest.fn();
+    const mockScroll = vi.fn();
 
     function useTestScrollToBottom(messages: any, containerRef: any) {
       const hook = useScrollToBottom(messages, containerRef);
@@ -95,7 +106,7 @@ describe('useScrollToBottom', () => {
       containerRef.current.addEventListener.mock.calls[0][1]();
       await flushAll();
       // Advance fake timers by 10ms instead of real setTimeout
-      jest.advanceTimersByTime(10);
+      vi.advanceTimersByTime(10);
       console.log('AFTER SCROLL: isAtBottom:', result.current.isAtBottom);
     });
 

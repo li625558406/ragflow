@@ -1,4 +1,6 @@
-/** @jest-environment jsdom */
+// 环境由 vitest.config.ts 统一配置为 jsdom（旧注释头已随 jest→vi 迁移移除）
+import { describe, expect, it } from 'vitest';
+
 import { parseTableCells } from './docx-table-utils';
 
 describe('parseTableCells', () => {
