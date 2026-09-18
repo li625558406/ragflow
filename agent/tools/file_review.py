@@ -306,7 +306,8 @@ class FileReviewTool(ToolBase, ABC):
                   f"（{status_label}）。")]
         if stale:
             lines.append("本轮已中断（服务重启或异常退出），不会再产出结果；"
-                         "如需继续，请重新发起审核。")
+                         "如修复轮次还有余额，可直接发起修复（读取后本轮会自动回落为失败），"
+                         "否则请重新发起审核。")
         if cur.status == "failed":
             # error 列允许写满 2000 字（executor 的 err[:2000]），全量拼接会挤占 LLM
             # 上下文——同函数内 summary/issue/matched_text 一律过 _clip，它不能例外。
