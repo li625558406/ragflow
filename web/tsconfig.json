@@ -28,7 +28,7 @@
       "@parent/*": ["../src/*"]
     },
 
-    "types": ["vite/client", "node", "@testing-library/jest-dom"]
+    "types": ["vite/client", "node", "vitest/globals"]
   },
   "include": ["src"],
   "exclude": ["node_modules", "dist"],
