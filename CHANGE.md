@@ -14,6 +14,10 @@
 
 **追加（同日性能返工）——编辑模式点击定位卡顿根修**：用户反馈编辑模式点击很卡。根因不在聚焦逻辑本身（view/edit 同一条 `setFocusReq → FidelityPreview effect` 链路），而在渲染成本：编辑表数百行 × 7 受控 Input，`setFocusReq` 是 detail 页 state，点击一次即全表重渲染 reconcile 上千输入框；确认视图是只读 span，成本可忽略，故「感觉不一致」。修法：`updateRow`/`removeRow`/`handleSaveDefault`/`locateRow` 四回调 `useCallback` 稳定引用 + `PlaceholderTable` 包 `memo`——定位点击只触发 FidelityPreview 效果，编辑表整体跳过重渲染。tsc 零新增、76 用例全绿，已部署 + push。
 
+**追加（同日二次返工）——保存被「格式不正确」拦截根修**：用户删一行配置点「保存配置」报「存在格式不正确的填写点」。服务器实测该范本 1143 行中 5 行锚文本为纯空白（4×`' '`、1×`'\t'`）——09-18 run 层识别「留白位」的合法产物（确认视图显「留白 N 字符」，后端 `validate_placeholders` 对带 addr 行本就放行），但前端 `trimRows` 把 anchor 无脑 `trim()` 成空串 + `collectRowErrors` 判空标红，纯前端校验与识别语义矛盾。修法：`trimRows` anchor 仅在有非空白内容时去首尾（纯空白原样保留）；`collectRowErrors` 改「空锚文本恒标红 + 纯空白须有 addr 才合法」（无 addr 手动行仍必须有可见锚文本，后端要靠它反查定位）；新增 `placeholder-table.test.ts` 19 用例对抗性回归（留白保留/key 边界 64 字符/全角假名/空行三连标等）。**注意**：修复前若对含留白位范本点过保存成功，其留白 anchor 已被历史 trim 毁成空串，需重新 AI 识别。tsc 零新增、95 用例全绿，已部署 + push。
+
+## 2026-09-19（二）B端范本详情「下载原件」401 修复（fetch+Blob 落盘）
+
 **主题**：用户报 B端范本详情点「下载原件」新开页签打开 `/api/v1/template/fill/{id}/file?kind=original` 返回 401。与成稿下载乱码（09-17）同款地雷：`@login_required` 不从 cookie 兜底，`window.open` 直链不带 Authorization 头必 401。
 
 **澄清的语义**：PDF 上传已归一化——上传时源 PDF 转 docx 后入库，**源 PDF 不留存**，`original_file_id` 存的就是转换后 docx。故 `kind=original` 下载到的即「PDF 转 Word」文件，无需第二个下载入口（用户确认按此口径）。

@@ -40,18 +40,21 @@ export function emptyPlaceholder(): TplPlaceholder {
   };
 }
 
-// 提交前统一 trim，保证「校验的值 = 提交的值」（校验与提交都用同一份归一化结果）
+// 提交前统一 trim，保证「校验的值 = 提交的值」（校验与提交都用同一份归一化结果）。
+// anchor 例外：纯空白锚文本是「留白位」的合法形态（run 层识别产物，trim 会把
+// ' ' 毁成空串导致定位失效），仅在有非空白内容时去首尾空白
 export function trimRows(rows: TplPlaceholder[]) {
   return rows.map((r) => ({
     ...r,
     key: r.key.trim(),
     name: r.name.trim(),
-    anchor: r.anchor.trim(),
+    anchor: r.anchor.trim() || r.anchor,
     retrieval_query: (r.retrieval_query || '').trim(),
   }));
 }
 
-// 行级校验：key 格式、name、anchor 非空；入参须已 trim
+// 行级校验：key 格式、name、anchor 非空；入参须已 trim。
+// 纯空白锚文本须有 addr 才合法（识别落位的留白位）；无 addr 的手动行必须有可见锚文本
 export function collectRowErrors(rows: TplPlaceholder[]) {
   const errors: Record<string, boolean> = {};
   rows.forEach((row, i) => {
@@ -61,7 +64,7 @@ export function collectRowErrors(rows: TplPlaceholder[]) {
     if (!row.name) {
       errors[`${i}-name`] = true;
     }
-    if (!row.anchor) {
+    if (!row.anchor || (!row.anchor.trim() && !row.addr)) {
       errors[`${i}-anchor`] = true;
     }
   });
