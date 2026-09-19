@@ -1,5 +1,13 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-19（四）B端范本库列表页滚动被裁切修复
+
+**主题**：用户报范本库列表「不能滚动，超出的被遮挡」。根因：B端 `root-layout` 的 `<main>` 是 `size-full overflow-hidden`（`layouts/root-layout.tsx:11`），所有 B端页面必须自带内部滚动容器；范本库列表页裸渲染 `Card` 无滚动层，列表条目变多（电子招标系列 12 条长名模板）后内容超过视口即被裁切。属布局缺口被内容增长暴露，非本轮改动回归（本页本轮零改动）。
+
+**改动**（纯前端单文件 `template-fill/index.tsx`）：`Card` 加 `flex size-full flex-col overflow-hidden`（标题+搜索区固定），`CardContent` 加 `min-h-0 flex-1 overflow-auto`（列表+分页滚动），与 datasets 页 `CardContainer flex-1 overflow-auto` 同款模式。
+
+**验证**：tsc 零新增、19 用例全绿，已部署 + push。
+
 ## 2026-09-19（三）B端范本详情编辑模式填写点点击定位
 
 **主题**：用户要求 B端范本库详情页「编辑配置」模式下点击占位符行也能跳转定位到文档位置，与非编辑（确认视图）模式功能一致。此前 `onLocate` 虽已传入 PlaceholderTable，但 edit 分支的 `TableRow` 完全没绑定点击逻辑。

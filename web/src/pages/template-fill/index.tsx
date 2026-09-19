@@ -155,7 +155,9 @@ export default function TemplateFillPage() {
   };
 
   return (
-    <Card className="bg-transparent border-none">
+    // main（root-layout）是 overflow-hidden，B端页面必须自带内部滚动容器，
+    // 否则列表超高被裁切且无法滚动
+    <Card className="flex size-full flex-col overflow-hidden bg-transparent border-none">
       <CardHeader>
         <div className="flex items-center justify-between">
           <CardTitle className="text-2xl">范本库</CardTitle>
@@ -209,7 +211,7 @@ export default function TemplateFillPage() {
           </Select>
         </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="min-h-0 flex-1 overflow-auto">
         {isLoading ? (
           <div className="flex items-center justify-center py-12">
             <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-b-transparent" />
