@@ -12,7 +12,7 @@
 
 **部署**：已随同批次部署（前端 build + dist 上传 + nginx reload），已 commit + push。
 
-## 2026-09-19（二）B端范本详情「下载原件」401 修复（fetch+Blob 落盘）
+**追加（同日性能返工）——编辑模式点击定位卡顿根修**：用户反馈编辑模式点击很卡。根因不在聚焦逻辑本身（view/edit 同一条 `setFocusReq → FidelityPreview effect` 链路），而在渲染成本：编辑表数百行 × 7 受控 Input，`setFocusReq` 是 detail 页 state，点击一次即全表重渲染 reconcile 上千输入框；确认视图是只读 span，成本可忽略，故「感觉不一致」。修法：`updateRow`/`removeRow`/`handleSaveDefault`/`locateRow` 四回调 `useCallback` 稳定引用 + `PlaceholderTable` 包 `memo`——定位点击只触发 FidelityPreview 效果，编辑表整体跳过重渲染。tsc 零新增、76 用例全绿，已部署 + push。
 
 **主题**：用户报 B端范本详情点「下载原件」新开页签打开 `/api/v1/template/fill/{id}/file?kind=original` 返回 401。与成稿下载乱码（09-17）同款地雷：`@login_required` 不从 cookie 兜底，`window.open` 直链不带 Authorization 头必 401。
 

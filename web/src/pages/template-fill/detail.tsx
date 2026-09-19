@@ -1,5 +1,5 @@
 import { ArrowLeft } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 
 import { Button } from '@/components/ui/button';
@@ -132,17 +132,25 @@ export default function TemplateFillDetailPage() {
   );
 
   // 默认值单 key 即时保存（失焦触发；空串=清空）
-  const handleSaveDefault = (key: string, value: string) => {
-    if (!id) return;
-    saveDefaultsMut.mutate(
-      { id, defaults: { [key]: value } },
-      {
-        onSuccess: () => message.success('默认值已保存'),
-        onError: (err) =>
-          message.error(err instanceof Error ? err.message : '保存默认值失败'),
-      },
-    );
-  };
+  // 以下回调均 useCallback 稳定引用：PlaceholderTable 已 memo，定位点击只触发
+  // FidelityPreview 效果，不再全量重渲染编辑表（数百行 × 7 输入框，曾致明显卡顿）
+  const { mutate: mutateSaveDefaults } = saveDefaultsMut;
+  const handleSaveDefault = useCallback(
+    (key: string, value: string) => {
+      if (!id) return;
+      mutateSaveDefaults(
+        { id, defaults: { [key]: value } },
+        {
+          onSuccess: () => message.success('默认值已保存'),
+          onError: (err) =>
+            message.error(
+              err instanceof Error ? err.message : '保存默认值失败',
+            ),
+        },
+      );
+    },
+    [id, mutateSaveDefaults],
+  );
 
   // detect 建议与现有手动行合并（与上传向导同规则）：
   // 建议在前、手动行（无定位 addr）在后，key 重复的手动行丢弃，避免覆盖手动添加的行
@@ -190,23 +198,30 @@ export default function TemplateFillDetailPage() {
   // 已停用模板右侧编辑区整体只读
   const readonly = detail?.status === 'disabled';
 
-  const updateRow = (index: number, patch: Partial<TplPlaceholder>) => {
-    setPlaceholders((prev) =>
-      prev.map((row, i) => (i === index ? { ...row, ...patch } : row)),
-    );
-    setRowErrors((prev) => {
-      const next = { ...prev };
-      Object.keys(next).forEach((k) => {
-        if (k.startsWith(`${index}-`)) delete next[k];
+  const updateRow = useCallback(
+    (index: number, patch: Partial<TplPlaceholder>) => {
+      setPlaceholders((prev) =>
+        prev.map((row, i) => (i === index ? { ...row, ...patch } : row)),
+      );
+      setRowErrors((prev) => {
+        const next = { ...prev };
+        Object.keys(next).forEach((k) => {
+          if (k.startsWith(`${index}-`)) delete next[k];
+        });
+        return next;
       });
-      return next;
-    });
-  };
+    },
+    [],
+  );
 
-  const removeRow = (index: number) => {
+  const removeRow = useCallback((index: number) => {
     setPlaceholders((prev) => prev.filter((_, i) => i !== index));
     setRowErrors({});
-  };
+  }, []);
+
+  const locateRow = useCallback((key: string) => {
+    setFocusReq((p) => ({ key, seq: (p?.seq ?? 0) + 1 }));
+  }, []);
 
   // 预览划选：mouseup 时若非折叠选区完整落在该段落内则记为候选
   const handleParaMouseUp = (
@@ -539,9 +554,7 @@ export default function TemplateFillDetailPage() {
                   savingDefault={saveDefaultsMut.isPending}
                   persistedKeys={persistedKeys}
                   mode={configEditing ? 'edit' : 'view'}
-                  onLocate={(key) =>
-                    setFocusReq((p) => ({ key, seq: (p?.seq ?? 0) + 1 }))
-                  }
+                  onLocate={locateRow}
                   markedKeys={
                     previewMode === 'fidelity' ? markedKeys : undefined
                   }

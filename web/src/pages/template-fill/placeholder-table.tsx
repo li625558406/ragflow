@@ -1,5 +1,5 @@
 import { Trash2 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -289,7 +289,8 @@ function PlaceholderViewTable({
 }
 
 // 可编辑填写点表格（上传向导 Step2 与模板详情页共用）
-export function PlaceholderTable({
+// memo：详情页数百行 × 7 受控输入框，父组件点击定位等无关 state 更新时跳过全表重渲染
+export const PlaceholderTable = memo(function PlaceholderTable({
   rows,
   errors,
   onUpdate,
@@ -462,4 +463,4 @@ export function PlaceholderTable({
       </TableBody>
     </Table>
   );
-}
+});
