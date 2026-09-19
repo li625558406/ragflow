@@ -407,6 +407,8 @@ git commit -m "feat(file-review): state 端点接入自愈 + doc payload 摘除 
 
 ### Task 4: fix 端点 `asyncio.to_thread`（R-6）+ 契约测试反转
 
+> **执行期修订（T2 质量审查 I-1）**：T2 语义反转后 `test/test_file_review_tool.py::test_fix_rejects_interrupted_round_with_actionable_message`（约 line 362-370）同样必红——其 `_round` 助手（line 40-53）缺 `id` 字段（heal 内 `row.id` 触 AttributeError）。本任务一并改写：① `_round` 助手补 `"id"` 字段；② 工具测试 `_patch` 补 `FileReviewRoundService.update_status` 记录桩；③ 该用例按新语义改写为「heal 后放行建新轮」断言（对齐 test_file_review_api.py 同名用例的改写方向）；④ `test_file_review_api.py:485` reason→错误码映射把死条目 `("stale", ...)` 换成 `("invalid_levels", ...)`；`agent/tools/file_review.py` fix action 的 reason 分发中 `stale` 死分支同步清理（Service 不再产出）。依据：设计稿 §5.1「现有 stale 闸门拒绝用例需按新语义改写而非保留」。
+
 **Files:**
 - Modify: `api/apps/restful_apis/file_review_api.py`（`fix_review` 端点）
 - Test: `test/test_file_review_api.py`
@@ -633,10 +635,12 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./src/test/setup.ts'],
-    include: ['src/**/__tests__/**/*.test.{ts,tsx}'],
+    include: ['src/**/__tests__/**/*.test.{ts,tsx}', 'src/**/*.test.{ts,tsx}'],
   },
 });
 ```
+
+> **执行期修订（T7 质量审查 I-1）**：include 必须含 `src/**/*.test.{ts,tsx}` —— 仓库另有 7 个测试文件在 `__tests__` 目录外（c-chat 下 6 个 docx/recent-downloads + agent/single-debug-sheet/utils.test.ts，共 96 用例、零 jest API、全绿），窄模式会把它们静默排除出 `npm test`（含本分支活跃的 docx-highlight-direct.test.ts）。
 
 - [ ] **Step 3: `web/src/test/setup.ts`**（从 `.scratch/jest-setup.local.ts` 移植，去掉绝对路径与 jest 专属部分）
 

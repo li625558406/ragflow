@@ -1,5 +1,62 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-19（三）B端范本详情编辑模式填写点点击定位
+
+**主题**：用户要求 B端范本库详情页「编辑配置」模式下点击占位符行也能跳转定位到文档位置，与非编辑（确认视图）模式功能一致。此前 `onLocate` 虽已传入 PlaceholderTable，但 edit 分支的 `TableRow` 完全没绑定点击逻辑。
+
+**改动**（纯前端 2 文件）：
+- `placeholder-table.tsx` edit 分支行点击定位：`row.key && row.addr` 时整行 `cursor-pointer` + 点击触发 `onLocate(row.key)`。与 view 模式的差异点——编辑行内全是表单控件，用 `closest('input, textarea, select, button, [role=combobox], [role=checkbox]')` 判定点击目标，落在交互控件内不触发定位（避免点输入框编辑时预览乱跳）。
+- `detail.tsx` 提示文案从仅 `!configEditing` 显示改为两模式都显示，edit 模式文案注明「点击输入框等编辑控件时不跳转」。
+
+**验证**：`npx vitest run src/pages/template-fill src/hooks` 4 套件 76 用例全绿；tsc 对两文件零新增错误（detail.tsx:476 TS7006 为 HEAD 既有）。
+
+**部署**：未部署、未 commit、未 push；随 09-19（二）下载 401 修复一并部署即可（同一文件 detail.tsx，部署 = 前端 `npm run build` + dist 上传 + nginx reload）。
+
+## 2026-09-19（二）B端范本详情「下载原件」401 修复（fetch+Blob 落盘）
+
+**主题**：用户报 B端范本详情点「下载原件」新开页签打开 `/api/v1/template/fill/{id}/file?kind=original` 返回 401。与成稿下载乱码（09-17）同款地雷：`@login_required` 不从 cookie 兜底，`window.open` 直链不带 Authorization 头必 401。
+
+**澄清的语义**：PDF 上传已归一化——上传时源 PDF 转 docx 后入库，**源 PDF 不留存**，`original_file_id` 存的就是转换后 docx。故 `kind=original` 下载到的即「PDF 转 Word」文件，无需第二个下载入口（用户确认按此口径）。
+
+**改动**（纯前端单文件 `web/src/pages/template-fill/detail.tsx`）：`openDownload` 从 `window.open(直链)` 改为 fetch 带 `getAuthorization()` 取 Blob → `downloadFileFromBlob` 落盘（与 `downloadTemplateFillResult` 同构），文件名 `{范本名}.{docx|xlsx}`；「下载原件」「下载工作副本」两按钮共用此链路。同页面族排查：fidelity-preview 已是带 token 的 axios、tasks 走 fetch 模式，无其他直链地雷。
+
+**验证**：`npx vitest run src/pages/template-fill src/hooks` 4 套件 76 用例全绿；tsc 对本文件零新增错误（line 476 TS7006 为 HEAD 既有）。
+
+**部署**：未部署、未 commit、未 push；部署 = 前端 `npm run build` + dist 上传 + nginx reload。
+
+## 2026-09-19 PDF 转 Word 关闭 stream 表格识别（根治正文被伪表格切碎）
+
+**主题**：用户报「电子招标投标示范文本」PDF（237 页，WPS 导出，`.scratch/电子招标投标示范文本.pdf`）上传范本库转 Word 效果不理想。
+
+**排查（第一性复核，含一次自我纠错）**：首轮回填判定函数用了自行复刻的旧逻辑（词底 y 窗口 + 宽/4 估算），得出「留白判定窗口不匹配、超宽 39%」的错误结论；重读真实代码（垂直中点窗口 + `get_text_length` 精确宽度）后推翻。**真实基线**：留白回填 1154 条正常、`_` 存活 63%、内容零丢失——留白链路本来是好的。渲染源页目视对比定位真凶：**pdf2docx 的 stream 表格识别把无框正文误判为表格**——「3.3 每个投标人最多可对___（具体数量）个标段投标」被拆进 4×6 伪表格、语序断裂（325 表格中 164 个单行/单列伪表格），回填的 `_` 随之被吞 37%。注意 `extract_stream_table` 默认已是 False，真正的开关是 `parse_stream_table`。
+
+**改动**（后端单文件 `api/apps/restful_apis/template_api.py` +1 处）：
+- `_convert_pdf_to_docx` 的 `cv.convert(out)` 改为 `cv.convert(out, parse_stream_table=False)`——关闭无线框表格识别；有线框真表格走 lattice 识别不受影响（「业绩要求」附表实测保留）
+- 测试契约：`test_convert_pdf_to_docx_routing_and_output` stub 签名改 `convert(self, out, **kwargs)`，新增断言 `parse_stream_table is False`（防参数回退）
+
+**验证**：106 测试全绿；真实样张端到端转换：伪表格 325→78、`_` 存活 63%→91%、页探针零缺失、第 8 页正文流与原件逐句一致、`项目报建编号：___` 等留白在正文流可见。ruff 报 7 处均为改动行之外的既有债务，未动。
+
+**遗留**：① 剩余 9% `_` 损耗（lattice 表格区域内的留白被表格结构吞并，可接受）；② pdf2docx 偶发非确定性 page error（第 26 页 `list index out of range` 同一输入两次转换一次出现一次不出现，Python 哈希随机化影响布局分析顺序；第 203 页合并单元格报错但内容未丢）——同因，未处理；③ 页眉页脚（「第X章 XXX+页码」）仍混入正文，对 AI 识别是噪声，未处理。
+
+**部署**：**已部署 2026-09-19**（单文件 `template_api.py` SCP + md5 双侧一致 + 容器重启 + 冒烟：容器内 grep 到 `parse_stream_table=False` 在位、`template_api` 导入正常、服务 HTTP 200）；未 commit、未 push。影响此后所有 PDF 上传转换（存量范本不受影响）。
+
+## 2026-09-18（四）流程页预览抽屉不出现根修（portal 到 body）+ 未填充汇总默认折叠
+
+**主题**：用户报 C端流程页点击「已填充 N 个填写点」里的字段名，右侧预览抽屉不出现（「被内容长度撑回去」）；同轮要求未填充汇总也像已填充清单一样默认折叠。
+
+**根因（Playwright 生产复现实证）**：抽屉其实已挂载，只是被定位到 x≈4922（屏幕外）。两因素叠加：① `c-chat/index.tsx` 页壳 `.cs-page-enter` 动画 `fill-mode: both` 使 `transform: translateY(0)` **永久保留**——identity transform 也是 transform，该元素成为所有 `fixed` 后代的包含块，抽屉相对内容树而非视口定位；② FlowAiPanel 上传区存在超大 min-content 内容且祖先链缺 `min-w-0` 钳制，把包含块横向撑宽到 9844px，抽屉 `w-1/2` + `right-0` 随之落到屏幕外。c-chat 对话页同受①影响（仅因 pane 恰好未撑宽而侥幸正常）。
+
+**改动**（纯前端 3 文件）：
+- `template-fill-live-preview.tsx`：抽屉改 `createPortal(…, document.body)`——视口级覆盖层不应依赖「所有祖先恰好不创建包含块」这一脆弱条件，portal 后任何页面的内容树布局怪癖都不再影响其定位
+- `template-fill-progress.tsx`：①未填充汇总抽成 `TemplateFillUnfilledList`，与已填充清单同级别同交互（默认收起、展开才挂 DOM、点击字段走 liveTarget+focusKey 定位），开关保留琥珀色 ⚠ 与已填充中性色形成待办/已完成主次对比；②已填充行值 span 补 `w-0`（flex-basis 0）——`min-w-0` 只允许「用的时候」缩、不改变 intrinsic 贡献，`truncate` 的 nowrap 长值仍会把祖先 min-content 撑到近万 px（同轮用户追加报告「关抽屉后对话区乱、右侧无限宽、下载按钮看不见」的根因，Playwright 二分实证：244 个值 span 把 pane 撑到 9968px，加 w-0 后回落 1030）
+- `c-chat/index.tsx`：7 处 tab pane 容器补 `min-w-0`——详情列内容 min-content（675px）经 min-w-0 不阻断的 intrinsic 贡献链传到 pane，pane 作为 flex 项 `min-width:auto` 被钉在 1020px；补 min-w-0 后 pane 收缩、内部 overflow-auto/hidden 消化。Playwright 实测：展开双清单 pane 稳定 929px（=视口），下载按钮 x=594 在视口内，「版本记录」侧栏回归可见，开抽屉→关抽屉全程布局不乱
+
+**验证**：本地 dev + Playwright 实测（上）；`vitest` c-chat 5 套件 42 用例全绿；tsc 对改动文件零新增错误（index.tsx 3 个报错经 stash 基线对照确认为既有）。
+
+**遗留**：`.cs-page-enter` 的永久 transform 仍在（portal 后 fixed 抽屉已挂 body，无消费方受损）；该动画是页壳级样式、改动影响面大，本次不动。
+
+**部署**：未部署、未 commit、未 push；部署 = 前端 `npm run build` + dist 上传 + nginx reload。
+
 ## 2026-09-18 文件审核加固（R-1 中断轮次自愈 + R-6/R-7/R-8 + 前端迁 Vitest，未部署）
 
 **主题**：收口 2026-09-17 文件审核全链路的遗留清单（R-1/R-6/R-7/R-8）+ 前端测试基建从损坏的 jest（依赖已移除的 umi/test）整体迁 Vitest。设计稿 `docs/superpowers/specs/2026-09-18-file-review-hardening-design.md`，实施计划 `docs/superpowers/plans/2026-09-18-file-review-hardening.md`（subagent-driven 执行，每任务两道审查）。
