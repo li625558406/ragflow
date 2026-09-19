@@ -14,6 +14,8 @@ import {
   type TplPlaceholder,
 } from '@/hooks/use-template-fill-request';
 import api from '@/utils/api';
+import { getAuthorization } from '@/utils/authorization-util';
+import { downloadFileFromBlob } from '@/utils/file-util';
 import { CreateTaskDialog } from './create-task-dialog';
 import FidelityPreview from './fidelity-preview';
 import {
@@ -170,7 +172,14 @@ export default function TemplateFillDetailPage() {
   // 编辑不会被刷新覆盖；保存后 refetch 返回新引用时会以服务端数据（含回填 addr）对齐。
   useEffect(() => {
     if (detail?.placeholders) {
-      setPlaceholders(detail.placeholders);
+      // 展示按文档序（与预览从上到下一致）：存量数据落库序是识别管线拼接序
+      // （手动直通→V1→V2→兜底）；无 line 的行（划选手动添加）垫底不跳顶
+      const rows = [...detail.placeholders].sort(
+        (a, b) =>
+          (a.line ?? Number.MAX_SAFE_INTEGER) -
+            (b.line ?? Number.MAX_SAFE_INTEGER) || (a.occ ?? 0) - (b.occ ?? 0),
+      );
+      setPlaceholders(rows);
       setRowErrors({});
     }
   }, [detail?.id, detail?.placeholders]);
@@ -259,9 +268,24 @@ export default function TemplateFillDetailPage() {
     );
   };
 
-  const openDownload = (kind: 'original' | 'render') => {
+  const openDownload = async (kind: 'original' | 'render') => {
     if (!id) return;
-    window.open(api.downloadTemplateFill(id, kind));
+    // **禁止**改成 window.open 直链：@login_required 不从 cookie 兜底，
+    // 新开页签不带 Authorization 头必 401。fetch 带 token 取 Blob 后落盘。
+    // PDF 上传已归一化为 docx，kind=original 下载到的即 PDF 转换的 Word 文件。
+    try {
+      const resp = await fetch(api.downloadTemplateFill(id, kind), {
+        headers: { Authorization: getAuthorization() },
+      });
+      if (!resp.ok) throw new Error(`下载失败 ${resp.status}`);
+      const ext = detail?.file_type === 'xlsx' ? 'xlsx' : 'docx';
+      downloadFileFromBlob(
+        await resp.blob(),
+        `${detail?.name || '范本'}.${ext}`,
+      );
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : '下载失败，请稍后重试');
+    }
   };
 
   // xlsx 预览按 sheet 分组（保持 items 中 sheet 首次出现的顺序）
@@ -430,6 +454,7 @@ export default function TemplateFillDetailPage() {
                     pHash: p.p_hash,
                     aOcc: p.a_occ,
                     pTotal: p.p_total,
+                    defaultValue: p.default_value,
                   }))}
                 onRenderFailed={handleRenderFailed}
                 focusKey={focusKey}
@@ -486,11 +511,11 @@ export default function TemplateFillDetailPage() {
                 模板已停用，配置只读
               </div>
             )}
-            {!configEditing && (
-              <p className="text-xs text-muted-foreground">
-                点击行可在左侧文档中定位查看；确认识别无误后可进入「编辑配置」调整
-              </p>
-            )}
+            <p className="text-xs text-muted-foreground">
+              {configEditing
+                ? '点击行可在左侧文档中定位查看（点击输入框等编辑控件时不跳转）'
+                : '点击行可在左侧文档中定位查看；确认识别无误后可进入「编辑配置」调整'}
+            </p>
             <div className="max-h-[55vh] overflow-auto">
               {placeholders.length === 0 ? (
                 <p className="py-8 text-center text-sm text-muted-foreground">

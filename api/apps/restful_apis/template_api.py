@@ -220,7 +220,12 @@ def _convert_pdf_to_docx(blob: bytes) -> bytes:
         out = os.path.join(tmp, "input.docx")
         cv = Converter(_augment_pdf_blank_lines(src))
         try:
-            cv.convert(out)
+            # parse_stream_table=False：关闭无线框表格识别。范本 PDF（WPS 导出）
+            # 的正文条款会被误判为 stream 表格——整句拆进单元格、语序断裂、
+            # 回填的 '_' 被吞（实测 237 页养护工程样张：伪表格 325→78、
+            # '_' 存活 63%→91%、正文恢复连贯；有线框真表格走 lattice 识别不受
+            # 影响，如「业绩要求」附表仍保留）。
+            cv.convert(out, parse_stream_table=False)
         finally:
             try:
                 cv.close()

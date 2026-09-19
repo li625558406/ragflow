@@ -333,120 +333,138 @@ export function PlaceholderTable({
         </TableRow>
       </TableHeader>
       <TableBody>
-        {rows.map((row, i) => (
-          <TableRow
-            key={i}
-            className={row.low_confidence ? 'bg-amber-50' : undefined}
-          >
-            <TableCell>
-              <Input
-                className={errCls(`${i}-key`)}
-                value={row.key}
-                onChange={(e) => onUpdate(i, { key: e.target.value })}
-                placeholder="如 project_name"
-                disabled={disabled}
-              />
-            </TableCell>
-            <TableCell>
-              <Input
-                className={errCls(`${i}-name`)}
-                value={row.name}
-                onChange={(e) => onUpdate(i, { name: e.target.value })}
-                disabled={disabled}
-              />
-            </TableCell>
-            <TableCell>
-              <Input
-                value={row.retrieval_query}
-                onChange={(e) =>
-                  onUpdate(i, { retrieval_query: e.target.value })
-                }
-                disabled={disabled}
-              />
-            </TableCell>
-            <TableCell>
-              <Select
-                value={row.fill_mode}
-                onValueChange={(v) =>
-                  onUpdate(i, { fill_mode: v as TplPlaceholder['fill_mode'] })
-                }
-                disabled={disabled}
-              >
-                <SelectTrigger className="w-[100px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="llm">AI填写</SelectItem>
-                  <SelectItem value="param">参数</SelectItem>
-                  <SelectItem value="manual">人工</SelectItem>
-                </SelectContent>
-              </Select>
-            </TableCell>
-            <TableCell className="text-center">
-              <Checkbox
-                checked={row.required}
-                onCheckedChange={(checked) =>
-                  onUpdate(i, { required: checked === true })
-                }
-                disabled={disabled}
-              />
-            </TableCell>
-            <TableCell>
-              {row.low_confidence && (
-                <span
-                  title="该项由 AI 收缩修正或存在同形留白，请核对锚文本是否落在正确空位"
-                  className="mr-1 inline-block rounded bg-amber-100 px-1 py-0.5 text-xs text-amber-700"
-                >
-                  低置信
-                </span>
-              )}
-              {row.addr ? (
-                <span
-                  className={`block max-w-[160px] truncate text-sm ${
-                    errors[`${i}-anchor`]
-                      ? 'text-red-500'
-                      : 'text-muted-foreground'
-                  }`}
-                  title={row.anchor}
-                >
-                  {row.anchor}
-                </span>
-              ) : (
-                <Input
-                  className={errCls(`${i}-anchor`)}
-                  value={row.anchor}
-                  onChange={(e) => onUpdate(i, { anchor: e.target.value })}
-                  placeholder="模板中已有的原文片段"
-                  disabled={disabled}
-                />
-              )}
-            </TableCell>
-            {showDefaults && (
+        {rows.map((row, i) => {
+          // 编辑模式行点击定位：与 view 模式行为一致，但编辑行内全是表单控件，
+          // 点击 input/select/button/checkbox 等交互元素时不触发定位
+          const locatable = !!(row.key && row.addr && onLocate);
+          return (
+            <TableRow
+              key={i}
+              className={`${
+                locatable ? 'cursor-pointer hover:bg-muted/50' : ''
+              } ${row.low_confidence ? 'bg-amber-50' : undefined}`}
+              onClick={(e) => {
+                if (!locatable) return;
+                const t = e.target as HTMLElement;
+                if (
+                  t.closest(
+                    'input, textarea, select, button, [role="combobox"], [role="checkbox"]',
+                  )
+                )
+                  return;
+                onLocate?.(row.key);
+              }}
+            >
               <TableCell>
-                <DefaultValueCell
-                  row={row}
-                  index={i}
-                  onUpdate={onUpdate}
-                  onSave={onSaveDefault!}
-                  saving={savingDefault}
+                <Input
+                  className={errCls(`${i}-key`)}
+                  value={row.key}
+                  onChange={(e) => onUpdate(i, { key: e.target.value })}
+                  placeholder="如 project_name"
                   disabled={disabled}
-                  persistedKeys={persistedKeys}
                 />
               </TableCell>
-            )}
-            <TableCell>
-              <Button
-                size="icon-xs"
-                variant="ghost"
-                onClick={() => onRemove(i)}
-                title="删除该填写点"
-                disabled={disabled}
-              >
-                <Trash2 className="size-[1em] text-red-500" />
-              </Button>
-            </TableCell>
-          </TableRow>
-        ))}
+              <TableCell>
+                <Input
+                  className={errCls(`${i}-name`)}
+                  value={row.name}
+                  onChange={(e) => onUpdate(i, { name: e.target.value })}
+                  disabled={disabled}
+                />
+              </TableCell>
+              <TableCell>
+                <Input
+                  value={row.retrieval_query}
+                  onChange={(e) =>
+                    onUpdate(i, { retrieval_query: e.target.value })
+                  }
+                  disabled={disabled}
+                />
+              </TableCell>
+              <TableCell>
+                <Select
+                  value={row.fill_mode}
+                  onValueChange={(v) =>
+                    onUpdate(i, { fill_mode: v as TplPlaceholder['fill_mode'] })
+                  }
+                  disabled={disabled}
+                >
+                  <SelectTrigger className="w-[100px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="llm">AI填写</SelectItem>
+                    <SelectItem value="param">参数</SelectItem>
+                    <SelectItem value="manual">人工</SelectItem>
+                  </SelectContent>
+                </Select>
+              </TableCell>
+              <TableCell className="text-center">
+                <Checkbox
+                  checked={row.required}
+                  onCheckedChange={(checked) =>
+                    onUpdate(i, { required: checked === true })
+                  }
+                  disabled={disabled}
+                />
+              </TableCell>
+              <TableCell>
+                {row.low_confidence && (
+                  <span
+                    title="该项由 AI 收缩修正或存在同形留白，请核对锚文本是否落在正确空位"
+                    className="mr-1 inline-block rounded bg-amber-100 px-1 py-0.5 text-xs text-amber-700"
+                  >
+                    低置信
+                  </span>
+                )}
+                {row.addr ? (
+                  <span
+                    className={`block max-w-[160px] truncate text-sm ${
+                      errors[`${i}-anchor`]
+                        ? 'text-red-500'
+                        : 'text-muted-foreground'
+                    }`}
+                    title={row.anchor}
+                  >
+                    {row.anchor}
+                  </span>
+                ) : (
+                  <Input
+                    className={errCls(`${i}-anchor`)}
+                    value={row.anchor}
+                    onChange={(e) => onUpdate(i, { anchor: e.target.value })}
+                    placeholder="模板中已有的原文片段"
+                    disabled={disabled}
+                  />
+                )}
+              </TableCell>
+              {showDefaults && (
+                <TableCell>
+                  <DefaultValueCell
+                    row={row}
+                    index={i}
+                    onUpdate={onUpdate}
+                    onSave={onSaveDefault!}
+                    saving={savingDefault}
+                    disabled={disabled}
+                    persistedKeys={persistedKeys}
+                  />
+                </TableCell>
+              )}
+              <TableCell>
+                <Button
+                  size="icon-xs"
+                  variant="ghost"
+                  onClick={() => onRemove(i)}
+                  title="删除该填写点"
+                  disabled={disabled}
+                >
+                  <Trash2 className="size-[1em] text-red-500" />
+                </Button>
+              </TableCell>
+            </TableRow>
+          );
+        })}
       </TableBody>
     </Table>
   );

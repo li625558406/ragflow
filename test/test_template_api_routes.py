@@ -356,8 +356,9 @@ def test_convert_pdf_to_docx_routing_and_output(monkeypatch):
         def __init__(self, src):
             calls["src"] = src
 
-        def convert(self, out):
+        def convert(self, out, **kwargs):
             calls["out"] = out
+            calls["kwargs"] = kwargs
             if calls.get("mode") == "zero":
                 with open(out, "wb") as f:
                     pass  # 产出 0 字节文件，模拟空产物
@@ -381,6 +382,10 @@ def test_convert_pdf_to_docx_routing_and_output(monkeypatch):
     assert calls["src"].endswith(os.sep + "input.pdf"), "源文件必须恒为 input.pdf"
     assert calls["out"].endswith(os.sep + "input.docx"), "产物必须恒为 input.docx"
     assert calls.get("closed") is True, "Converter.close 必须被调"
+    # parse_stream_table=False 必须显式传递：关闭无线框表格识别（防正文被
+    # 误判为 stream 表格切碎、留白 '_' 被吞），有线框真表格走 lattice 不受影响
+    assert calls["kwargs"].get("parse_stream_table") is False, \
+        "convert 必须显式传 parse_stream_table=False（传 True/缺省都会让正文被伪表格吞掉）"
 
     # 对抗：转换静默失败（无产物）→ RuntimeError，不返回 None/空
     calls["mode"] = "fail"
