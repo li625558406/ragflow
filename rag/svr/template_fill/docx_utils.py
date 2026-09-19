@@ -382,7 +382,23 @@ def compute_anchor_positions(file_bytes: bytes, placeholders: list) -> None:
                     break  # 防御：病态重复段落截断计数（超出后 seq 校验自然跳过）
         elif len(anchor) >= 2:
             ch_key = "R:" + anchor
+            # 完整空白 run 严格口径；为 0 时回退普通非重叠计数（_occurrence_intervals
+            # 口径，与前端 findPlainOcc 同构）。2026-09-18 事故：anchor 落在更长空白
+            # run 内（如 4 空格锚 vs 段内 5 空格 run）严格口径计 0 → 跳过 pHash →
+            # 前端回退全文顺序匹配错位。整组统一口径：严格>0 用严格序，严格=0 全组
+            # 用宽松序，避免同组混编号致前端两通道定位到同一出现。
             occurrences = _count_raw_occurrences(p_raw, anchor, 10**9)
+            if not occurrences:
+                # 普通非重叠计数（与前端 findPlainOcc 同构），64 截断防病态
+                # 超长空白段（与 norm 通道截断同量级，超出后 seq 校验自然跳过）
+                occurrences = 0
+                scan = 0
+                while occurrences < 64:
+                    idx = p_raw.find(anchor, scan)
+                    if idx < 0:
+                        break
+                    occurrences += 1
+                    scan = idx + len(anchor)
         else:
             continue  # 过短 anchor 两通道都无法稳定匹配
         seq = occ_groups.get((ph.get("addr"), ch_key), 0) + 1

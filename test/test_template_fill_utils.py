@@ -3551,3 +3551,97 @@ def test_verify_slot_occ_drops_nested_blocked_pos():
     out = _verify_slot_occ(merged, [cand])
     assert len(out) == 1
     assert out[0]["key"] == "long" and out[0]["occ"] == 1
+
+
+# ── compute_anchor_positions 宽容回退（2026-09-18 事故回归：空白 anchor 非段内
+#    完整 run 时跳过 pHash → 前端回退全文顺序匹配错位）──
+
+
+def test_compute_anchor_positions_partial_ws_anchor_keeps_phash():
+    """空白 anchor 落在更长空白 run 内（anchor 4 空格、段内 run 6 空格）→
+    完整 run 校验计数为 0，此前 seq>occurrences 直接跳过不写 pHash → 前端
+    回退全文顺序匹配分到别的段落（contract_no_94 错位事故）。修复后回退
+    普通非重叠计数，仍写 p_idx/p_hash/a_occ/p_total。"""
+    from rag.svr.template_fill.docx_utils import compute_anchor_positions
+    blob = _make_docx(["合同编号为      。", "普通段落"])
+    ph = {"key": "contract_no", "addr": "para:0", "anchor": "    "}  # 4 空格
+    compute_anchor_positions(blob, [ph])
+    assert ph.get("p_idx") == 0
+    assert ph.get("p_hash")
+    assert ph.get("a_occ") == 1
+    assert ph.get("p_total") == 2
+
+
+def test_compute_anchor_positions_absent_anchor_still_skipped():
+    """anchor 在段内完全不存在 → 两通道都计 0 → 仍不写定位字段（不乱标）。"""
+    from rag.svr.template_fill.docx_utils import compute_anchor_positions
+    blob = _make_docx(["合同编号为      。", "普通段落"])
+    ph = {"key": "nope", "addr": "para:0", "anchor": "       "}  # 7 空格，段内无
+    compute_anchor_positions(blob, [ph])
+    assert "p_hash" not in ph
+    assert "a_occ" not in ph
+
+
+def test_compute_anchor_positions_fallback_occ_ordering():
+    """回退口径下同段多次出现按非重叠序分配：anchor 2 空格落在 4 空格 run 内
+    （完整 run 校验 0 次）→ 非重叠 2 次 → 两条目 a_occ=1/2。"""
+    from rag.svr.template_fill.docx_utils import compute_anchor_positions
+    blob = _make_docx(["甲：      乙：      丙", "普通段落"])  # 两个 6 空格 run
+    ph1 = {"key": "a", "addr": "para:0", "anchor": "  "}
+    ph2 = {"key": "b", "addr": "para:0", "anchor": "  "}
+    compute_anchor_positions(blob, [ph1, ph2])
+    assert ph1.get("a_occ") == 1 and ph1.get("p_idx") == 0
+    assert ph2.get("a_occ") == 2 and ph2.get("p_idx") == 0
+
+
+def test_detect_fill_points_sorted_document_order(monkeypatch):
+    """识别产物按文档序排序（2026-09-18 用户反馈：填写点列表顺序与预览不一致）。
+    管线拼接序 = 手动直通 → V1（无位行）→ V2（有位行）→ 兜底，与文档序无关；
+    B端列表按数组序渲染会与预览从上到下对不上。V1 项 line=9、V2 两项 line=2
+    （段内偏移 5/1 乱序输出）→ 排序后 line2-pos1、line2-pos5、line9；
+    内部 _anchor_pos 仍不外泄。"""
+    import asyncio
+
+    from rag.svr.template_fill import detector
+
+    v1_cand = {"index": 9, "addr": "para:9", "text": "项目名称：____________", "slots": []}
+    v2_cand = {
+        "index": 2, "addr": "para:2", "text": "甲（提示甲）乙（提示乙）",
+        "slots": [
+            {"start": 1, "end": 6, "text": "（提示甲）", "kind": "hint", "hint": "提示甲"},
+            {"start": 7, "end": 12, "text": "（提示乙）", "kind": "hint", "hint": "提示乙"},
+        ],
+    }
+
+    def _v1_item():
+        return {"key": "v1_field", "name": "项目名称", "description": "",
+                "retrieval_query": "", "fill_mode": "llm", "required": True,
+                "addr": "para:9", "anchor": "____________", "line": 9, "top_k": 6,
+                "low_confidence": False}
+
+    def _v2_item(key, name, pos):
+        return {"key": key, "name": name, "description": "",
+                "retrieval_query": "", "fill_mode": "llm", "required": True,
+                "addr": "para:2", "line": 2, "top_k": 6, "low_confidence": False,
+                "_anchor_pos": pos,
+                "anchor": "（提示甲）" if key == "ka" else "（提示乙）"}
+
+    async def fake_v1(chat, file_type, candidates):
+        return [_v1_item()], 0
+
+    async def fake_v2(chat, candidates):
+        # 乱序输出：偏移 7 的项在前
+        return [_v2_item("kb", "提示乙", 7), _v2_item("ka", "提示甲", 1)], {(2, 1), (2, 2)}, 0
+
+    class _FakeModel:
+        async def async_chat(self, system, messages):
+            return "[]"
+
+    monkeypatch.setattr(detector, "_get_chat_model", lambda tid: _FakeModel(), raising=False)
+    monkeypatch.setattr(detector, "_detect_chunked", fake_v1)
+    monkeypatch.setattr(detector, "_detect_slot_chunked", fake_v2, raising=False)
+
+    merged = asyncio.run(detector.detect_fill_points("tenant", "docx", [v1_cand, v2_cand]))
+    keys = [it["key"] for it in merged]
+    assert keys == ["ka", "kb", "v1_field"]
+    assert all("_anchor_pos" not in it for it in merged)

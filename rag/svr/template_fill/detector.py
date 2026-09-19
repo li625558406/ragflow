@@ -728,6 +728,19 @@ async def detect_fill_points(tenant_id: str, file_type: str, candidates: list) -
         if pos is not None:
             it["_anchor_pos"] = pos
     merged = _verify_slot_occ(merged, candidates)
+    # 全局文档序排序（2026-09-18 用户反馈：B端填写点列表顺序与预览不一致）：
+    # 管线拼接序 = 手动直通 → V1（无位行）→ V2（有位行）→ 兜底，与文档序无关，
+    # 而列表/确认卡按数组序渲染。按 (行号, 段内偏移) 稳定排序——_anchor_pos 仅
+    # 切位项持有，无偏移项（V1/手动/兜底）组内保持原相对序（stable sort）。
+    def _doc_order(_it: dict) -> tuple:
+        line = _it.get("line")
+        pos = _it.get("_anchor_pos")
+        return (
+            line if isinstance(line, int) and not isinstance(line, bool) else 0,
+            pos if isinstance(pos, int) and not isinstance(pos, bool) else -1,
+        )
+
+    merged.sort(key=_doc_order)
     for it in merged:
         it.pop("_anchor_pos", None)
     if failed:

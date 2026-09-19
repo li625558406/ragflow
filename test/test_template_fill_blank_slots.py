@@ -169,3 +169,109 @@ def test_hint_overlong_truncated_to_100():
     slots = extract_paragraph_slots(p)
     assert len(slots) == 1
     assert len(slots[0]["hint"]) == 100
+
+
+# ── 簇级分类与空白扩展（2026-09-18 事故回归：逐 run 全匹配拆碎片/漏提示语）──
+
+
+def test_split_run_hint_cluster_two_slots():
+    """真实事故形态（机电监理范本 para85）：Word 把提示语拆成多 run——
+    '   '+'('+'项目名称'+')   ' 连续下划线 run 必须按簇合并成一个 hint 位，
+    而不是只把空白 run 切成碎片、丢掉提示语。"""
+    from rag.svr.template_fill.blank_slots import extract_paragraph_slots
+
+    p = _para([
+        ("本招标项目", None),
+        ("   ", True), ("(", True), ("项目名称", True), (")   ", True),
+        ("已由", None),
+        ("   ", True), ("(", True),
+        ("项目审批、核准或备案机关名称", True), (")    ", True),
+        ("以", None),
+    ])
+    slots = extract_paragraph_slots(p)
+    assert len(slots) == 2
+    assert [s["kind"] for s in slots] == ["hint", "hint"]
+    assert [s["hint"] for s in slots] == ["项目名称", "项目审批、核准或备案机关名称"]
+    runs_text = "".join(r.text for r in p.runs)
+    for s in slots:
+        assert runs_text[s["start"] : s["end"]] == s["text"]
+
+
+def test_multi_hint_cluster_split_into_slots():
+    """一簇连续下划线 run 含多个括号提示 → 拆成多个 hint 位（para919 形态）。"""
+    from rag.svr.template_fill.blank_slots import extract_paragraph_slots
+
+    p = _para([
+        ("对该", None),
+        ("（", True), ("招标", True), ("项目名称）", True), ("（合同段名称）", True),
+        ("合同段的投标。", None),
+    ])
+    slots = extract_paragraph_slots(p)
+    assert [s["hint"] for s in slots] == ["招标项目名称", "合同段名称"]
+    runs_text = "".join(r.text for r in p.runs)
+    assert runs_text[slots[0]["start"] : slots[0]["end"]] == "（招标项目名称）"
+    assert runs_text[slots[1]["start"] : slots[1]["end"]] == "（合同段名称）"
+
+
+def test_underscore_paren_mixed_single_run_one_hint_slot():
+    """「＿＿＿（项目名称）＿＿」混合形态（单下划线 run）：一个 hint 位，
+    不再拆成两个空白位把提示语夹丢。"""
+    from rag.svr.template_fill.blank_slots import extract_paragraph_slots
+
+    p = _para([("本招标项目", None), ("＿＿＿（项目名称）＿＿", True), ("已由", None)])
+    slots = extract_paragraph_slots(p)
+    assert len(slots) == 1
+    assert slots[0]["kind"] == "hint"
+    assert slots[0]["hint"] == "项目名称"
+    assert slots[0]["text"] == "＿＿＿（项目名称）＿＿"
+
+
+def test_cluster_paren_plus_solid_falls_back_per_run():
+    """簇内括号提示与实心文字混排（簇分类失败）→ 逐 run 回退，提示 run 仍成位。"""
+    from rag.svr.template_fill.blank_slots import extract_paragraph_slots
+
+    p = _para([("（甲）", True), ("实心", True)])
+    slots = extract_paragraph_slots(p)
+    assert len(slots) == 1
+    assert slots[0]["kind"] == "hint"
+    assert slots[0]["hint"] == "甲"
+
+
+def test_blank_slot_expands_to_maximal_ws_run():
+    """真实事故形态（合同编号 para76）：下划线 run 4 空格 + 相邻非下划线空格
+    → anchor 扩展为段内最大空白 run（完整 run 才能被 compute_anchor_positions /
+    前端 raw 通道按完整空白出现定位）。"""
+    from rag.svr.template_fill.blank_slots import extract_paragraph_slots
+
+    p = _para([("合同编号为 ", None), ("    ", True), ("。", None)])
+    slots = extract_paragraph_slots(p)
+    assert len(slots) == 1
+    assert slots[0]["kind"] == "blank"
+    assert slots[0]["text"] == "     "  # 5 空格 = 下划线 4 + 相邻 1
+    runs_text = "".join(r.text for r in p.runs)
+    assert runs_text[slots[0]["start"] : slots[0]["end"]] == slots[0]["text"]
+
+
+def test_expansion_stops_at_non_whitespace_both_sides():
+    """扩展只在空白内进行：两侧非空白（或已有位边界）即停，多位互不侵占。"""
+    from rag.svr.template_fill.blank_slots import extract_paragraph_slots
+
+    p = _para([
+        ("为", None), (" ", None), ("   ", True), ("，金额", None),
+        ("     ", True), (" 元", None),
+    ])
+    slots = extract_paragraph_slots(p)
+    assert len(slots) == 2
+    assert slots[0]["text"] == "    "   # 3 下划线空格 + 前邻 1 空格
+    assert slots[1]["text"] == "      "  # 5 下划线空格 + 后邻 1 空格
+
+
+def test_ws_gap_between_blank_and_hint_merges_into_hint():
+    """空白位与提示位只隔空白文本 → 合并为一个 hint 位（既有 gap 合并语义回归闸）。"""
+    from rag.svr.template_fill.blank_slots import extract_paragraph_slots
+
+    p = _para([("编号", None), ("   ", True), (" ", None), ("（名称）  ", True)])
+    slots = extract_paragraph_slots(p)
+    assert len(slots) == 1
+    assert slots[0]["kind"] == "hint"
+    assert slots[0]["text"] == "    （名称）  "
