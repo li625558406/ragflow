@@ -334,8 +334,8 @@ export function PlaceholderTable({
       </TableHeader>
       <TableBody>
         {rows.map((row, i) => {
-          // 编辑模式行点击定位：与 view 模式行为一致，但编辑行内全是表单控件，
-          // 点击 input/select/button/checkbox 等交互元素时不触发定位
+          // 编辑模式行点击定位：与 view 模式行为一致；仅排除按钮类控件
+          // （删除按钮/Radix SelectTrigger/Checkbox 均渲染为 button），点击输入框同样定位
           const locatable = !!(row.key && row.addr && onLocate);
           return (
             <TableRow
@@ -345,13 +345,7 @@ export function PlaceholderTable({
               } ${row.low_confidence ? 'bg-amber-50' : undefined}`}
               onClick={(e) => {
                 if (!locatable) return;
-                const t = e.target as HTMLElement;
-                if (
-                  t.closest(
-                    'input, textarea, select, button, [role="combobox"], [role="checkbox"]',
-                  )
-                )
-                  return;
+                if ((e.target as HTMLElement).closest('button')) return;
                 onLocate?.(row.key);
               }}
             >

@@ -4,13 +4,13 @@
 
 **主题**：用户要求 B端范本库详情页「编辑配置」模式下点击占位符行也能跳转定位到文档位置，与非编辑（确认视图）模式功能一致。此前 `onLocate` 虽已传入 PlaceholderTable，但 edit 分支的 `TableRow` 完全没绑定点击逻辑。
 
-**改动**（纯前端 2 文件）：
-- `placeholder-table.tsx` edit 分支行点击定位：`row.key && row.addr` 时整行 `cursor-pointer` + 点击触发 `onLocate(row.key)`。与 view 模式的差异点——编辑行内全是表单控件，用 `closest('input, textarea, select, button, [role=combobox], [role=checkbox]')` 判定点击目标，落在交互控件内不触发定位（避免点输入框编辑时预览乱跳）。
-- `detail.tsx` 提示文案从仅 `!configEditing` 显示改为两模式都显示，edit 模式文案注明「点击输入框等编辑控件时不跳转」。
+**首版缺陷与返工**：首版把排除区做得太宽（`closest('input, …')` 全排除）——编辑行「占位符」正是 key 输入框，用户点它必然无反应；且 FidelityPreview `focusDoneRef`「同一目标只定位一次」，在确认视图点过一次后进编辑模式再点同一点位全无反应。返工两处：
+- `placeholder-table.tsx`：排除区收窄到仅 `closest('button')`（删除按钮/Radix SelectTrigger/Checkbox 都渲染为 button），点击输入框同样触发定位。
+- `fidelity-preview.tsx` + `detail.tsx`：定位请求改为 `{key, seq}`，父组件每次点击 `seq` 递增，FidelityPreview 按 `key+seq` 识别新请求——同一点位重复点击也能重新定位（对 view 模式同样生效，修掉既有「点一次后就哑」缺陷）。
 
-**验证**：`npx vitest run src/pages/template-fill src/hooks` 4 套件 76 用例全绿；tsc 对两文件零新增错误（detail.tsx:476 TS7006 为 HEAD 既有）。
+**验证**：vitest 4 套件 76 用例全绿；tsc 对改动文件零新增错误（detail.tsx TS7006 为 HEAD 既有）。
 
-**部署**：未部署、未 commit、未 push；随 09-19（二）下载 401 修复一并部署即可（同一文件 detail.tsx，部署 = 前端 `npm run build` + dist 上传 + nginx reload）。
+**部署**：已随同批次部署（前端 build + dist 上传 + nginx reload），已 commit + push。
 
 ## 2026-09-19（二）B端范本详情「下载原件」401 修复（fetch+Blob 落盘）
 

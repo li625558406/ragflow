@@ -85,6 +85,7 @@ export default function FidelityPreview({
   anchors,
   onRenderFailed,
   focusKey,
+  focusSeq,
   onMarked,
 }: {
   templateId: string;
@@ -105,6 +106,8 @@ export default function FidelityPreview({
   onRenderFailed: () => void;
   /** 需定位的填写点 key（列表行点击触发） */
   focusKey?: string | null;
+  /** 定位请求序号：父组件每次点击递增，同 key 重复点击也能重新定位 */
+  focusSeq?: number;
   /** 渲染高亮完成后回传成功标记的 key 集合（未命中的行由父组件标「未定位」） */
   onMarked?: (marked: Set<string>) => void;
 }) {
@@ -252,14 +255,15 @@ export default function FidelityPreview({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [anchorsSig]);
 
-  // 列表行点击定位：等渲染完成才尝试；同一目标只定位一次；无 mark 静默
+  // 列表行点击定位：等渲染完成才尝试；同一渲染轮次内按 focusSeq 识别新请求
+  // （同 key 重复点击 seq 递增 → 重新定位）；无 mark 静默
   useEffect(() => {
     const root = containerRef.current;
     if (!templateId || !focusKey || !renderedOk || !root) return;
-    const target = `${templateId}:${focusKey}`;
+    const target = `${templateId}:${focusKey}:${focusSeq ?? 0}`;
     if (focusDoneRef.current === target) return;
     if (focusAnchor(root, focusKey)) focusDoneRef.current = target;
-  }, [focusKey, renderedOk, templateId]);
+  }, [focusKey, focusSeq, renderedOk, templateId]);
 
   return (
     <div className="max-h-[65vh] overflow-auto">

@@ -93,8 +93,11 @@ export default function TemplateFillDetailPage() {
   );
   // 填写点列表双模式：默认确认视图（只读核对识别结果），编辑模式展开配置列
   const [configEditing, setConfigEditing] = useState(false);
-  // 点击列表行 → 保真预览定位到对应填写点（key）
-  const [focusKey, setFocusKey] = useState<string | null>(null);
+  // 点击列表行 → 保真预览定位到对应填写点；seq 每次点击递增，
+  // 使同一 key 重复点击也能重新触发预览定位（FidelityPreview 靠 key+seq 识别新请求）
+  const [focusReq, setFocusReq] = useState<{ key: string; seq: number } | null>(
+    null,
+  );
   // 保真预览高亮成功标记的 key 集合（未命中的行在确认视图标「未定位」）
   const [markedKeys, setMarkedKeys] = useState<Set<string>>(new Set());
 
@@ -102,7 +105,7 @@ export default function TemplateFillDetailPage() {
   useEffect(() => {
     setPreviewMode('fidelity');
     setConfigEditing(false);
-    setFocusKey(null);
+    setFocusReq(null);
     setMarkedKeys(new Set());
   }, [id]);
 
@@ -457,7 +460,8 @@ export default function TemplateFillDetailPage() {
                     defaultValue: p.default_value,
                   }))}
                 onRenderFailed={handleRenderFailed}
-                focusKey={focusKey}
+                focusKey={focusReq?.key ?? null}
+                focusSeq={focusReq?.seq}
                 onMarked={setMarkedKeys}
               />
             ) : (
@@ -513,7 +517,7 @@ export default function TemplateFillDetailPage() {
             )}
             <p className="text-xs text-muted-foreground">
               {configEditing
-                ? '点击行可在左侧文档中定位查看（点击输入框等编辑控件时不跳转）'
+                ? '点击行可在左侧文档中定位查看（删除按钮和填写方式下拉除外）'
                 : '点击行可在左侧文档中定位查看；确认识别无误后可进入「编辑配置」调整'}
             </p>
             <div className="max-h-[55vh] overflow-auto">
@@ -535,7 +539,9 @@ export default function TemplateFillDetailPage() {
                   savingDefault={saveDefaultsMut.isPending}
                   persistedKeys={persistedKeys}
                   mode={configEditing ? 'edit' : 'view'}
-                  onLocate={setFocusKey}
+                  onLocate={(key) =>
+                    setFocusReq((p) => ({ key, seq: (p?.seq ?? 0) + 1 }))
+                  }
                   markedKeys={
                     previewMode === 'fidelity' ? markedKeys : undefined
                   }
