@@ -24,6 +24,7 @@ import {
 import { renderAsync } from 'docx-preview';
 import { Loader2, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 // 与后端 PLACEHOLDER_RE 同口径：{{lower_snake_key}}
 const PLACEHOLDER_RE = /\{\{([a-z][a-z0-9_]*)\}\}/g;
@@ -99,12 +100,12 @@ export default function TemplateFillLivePreview({
   // 终态权威产值：预览的文字是「前端 values 覆盖模板工作副本」来的（下方 docx
   // 高亮链路），而对话里的就地修改（FillTemplate action=modify）不发任何
   // template_fill_progress 事件 → 流式/回放快照里的 values 永远停在改前，
-  // 用户就会看到「模型说改了、预览还是旧文案」。故打开预览时按 task_id 拉一次
-  // progress（终态取值权威：DB render 已被 modify 回写）覆盖显示。
+  // 用户就会看到「模型说改了、预览还是旧文案」。故按 task_id 拉 progress
+  // （终态取值权威：DB render 已被 modify 回写）覆盖显示。
   // 只在终态取用：流式期间 SSE 的 values 比这发请求更新鲜，不能被它压回去。
-  // 边界：只在「打开预览」这一刻取数。抽屉一直开着、用户在同屏对话里改字段的
-  // 极端路径没有可用的「本轮是新轮」信号（成稿卡状态对象在改字段轮里引用不变），
-  // 需关掉重开一次才刷新——留待出现真实诉求再加轮询。
+  // 抽屉打开期间每 3s 轮询：同屏 modify 后无需关重开，值变化才 set（键数+逐键
+  // 相等比较，响应引用每次都新不能直接比），下游 updateDocxHighlight 增量重涂
+  // 即「静默刷新」——不重建 DOM、不打断滚动/定位。拉取失败静默保留当前显示。
   const [authoritative, setAuthoritative] =
     useState<TemplateFillProgressData | null>(null);
   useEffect(() => {
@@ -112,21 +113,36 @@ export default function TemplateFillLivePreview({
     setAuthoritative(null);
     if (!tid || tpl.status !== 'filled') return;
     let alive = true;
-    fetchTemplateFillTaskProgress(tid)
-      .then((d) => {
-        if (
-          alive &&
-          d?.status &&
-          TERMINAL_PROGRESS_STATUSES.includes(d.status)
-        ) {
-          setAuthoritative(d);
-        }
-      })
-      .catch(() => {
-        // 拉取失败回落卡片上的 values：预览仍可用，只是可能显示改前内容
-      });
+    const sameValues = (
+      a?: Record<string, string> | null,
+      b?: Record<string, string> | null,
+    ) => {
+      const ka = Object.keys(a || {});
+      const kb = Object.keys(b || {});
+      return ka.length === kb.length && ka.every((k) => a![k] === b![k]);
+    };
+    const tick = () => {
+      fetchTemplateFillTaskProgress(tid)
+        .then((d) => {
+          if (!alive || !d?.status) return;
+          if (!TERMINAL_PROGRESS_STATUSES.includes(d.status)) return;
+          setAuthoritative((prev) =>
+            prev &&
+            prev.status === d.status &&
+            sameValues(prev.values, d.values)
+              ? prev
+              : d,
+          );
+        })
+        .catch(() => {
+          // 拉取失败回落卡片上的 values：预览仍可用，只是可能显示改前内容
+        });
+    };
+    tick();
+    const timer = window.setInterval(tick, 3000);
     return () => {
       alive = false;
+      window.clearInterval(timer);
     };
   }, [tpl.task_id, tpl.status]);
 
@@ -310,8 +326,12 @@ export default function TemplateFillLivePreview({
       );
     });
 
-  return (
-    // 右侧常驻抽屉：无遮罩不挡对话（可边跟 LLM 对话边实时看填入）；由使用方收缩主区腾位
+  return createPortal(
+    // 右侧常驻抽屉：无遮罩不挡对话（可边跟 LLM 对话边实时看填入）；由使用方收缩主区腾位。
+    // 必须 portal 到 body：本组件挂在对话内容树深处，任一祖先带 transform（如
+    // c-chat 页壳 .cs-page-enter 动画 fill-mode:both 永久保留的 identity transform）
+    // 都会成为 fixed 的包含块，抽屉就会相对内容树而非视口定位——流程页内容把
+    // 包含块撑宽后抽屉被定位到屏幕外（「点击已填充字段预览不出现」事故根因）。
     <div className="fixed right-0 top-0 z-40 flex h-full w-1/2 flex-col border-l border-[#E5E5E5] bg-white shadow-[-8px_0_24px_rgba(0,0,0,0.08)] animate-in fade-in slide-in-from-right-4 duration-300">
       {/* 头部：模板名 + 实时填充进度 + 关闭 */}
       <div className="flex items-center gap-2 border-b border-[#E5E5E5] px-4 py-3">
@@ -410,6 +430,7 @@ export default function TemplateFillLivePreview({
         按 Word 原始格式渲染；蓝色为 AI 已填入内容，虚线槽位等待 AI
         填入。成稿以最终渲染文件为准。
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

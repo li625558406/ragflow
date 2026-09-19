@@ -502,6 +502,24 @@ export function highlightDocxRanges(
     /** anchor 的 canon 形态（等长空白替换） */
     const anchorCanon = (aRaw: string) =>
       aRaw.replace(NORM_WS_RE, (m) => ' '.repeat(m.length));
+    // 宽容回退：普通非重叠 indexOf 计数（步长=len，与后端 _occurrence_intervals
+    // 同口径）。2026-09-18 事故回归：anchor 落在更长空白 run 内（如 4 空格锚 vs
+    // 渲染 12 空格 run）时完整空白 run 校验计 0 → 此前直接 return null 回退全文
+    // 顺序匹配错位；后端 compute_anchor_positions 同步了该回退口径（严格=0 才用）。
+    const findPlainOcc = (
+      text: string,
+      sub: string,
+      occ: number,
+    ): [number, number] | null => {
+      let cnt = 0;
+      let i = text.indexOf(sub);
+      while (i >= 0) {
+        cnt++;
+        if (cnt === occ) return [i, i + sub.length];
+        i = text.indexOf(sub, i + sub.length);
+      }
+      return null;
+    };
     const resolveInPara = (
       agg: ParaAgg,
       m: DocxHighlightItem,
@@ -535,6 +553,8 @@ export function highlightDocxRanges(
           // 规范化后二次尝试，canon 与 raw 偏移一一对应可直接复用
           occ = findOcc(agg.canon, anchorCanon(aRaw), m.aOcc!);
         }
+        if (!occ) occ = findPlainOcc(agg.raw, aRaw, m.aOcc!);
+        if (!occ) occ = findPlainOcc(agg.canon, anchorCanon(aRaw), m.aOcc!);
         if (!occ) return null;
         [sRaw, eRaw] = occ;
       }
@@ -544,7 +564,10 @@ export function highlightDocxRanges(
       return { from, to };
     };
     /** 候选段打分用：该段能否解析 raw 通道成员的锚点（同 norm 不同空白长度的
-     * 候选段区分靠这个强信号，如「地址：」后接 30/35 空格的多个段） */
+     * 候选段区分靠这个强信号，如「地址：」后接 30/35 空格的多个段）。
+     * 刻意 strict-only：宽容回退若参与打分，短空白 anchor 内嵌于长空白 run 的
+     * 克隆段也会「可解析」，强区分信号失效退化为就近贪心（审查 M-1）；
+     * plain 回退只留在 resolveInPara 段内定位。 */
     const rawResolvable = (agg: ParaAgg, ms: DocxHighlightItem[]): boolean =>
       ms.some((m) => {
         const aRaw = m.text || '';

@@ -18,6 +18,10 @@ export interface TplPlaceholder {
   addr: string;
   anchor: string;
   top_k: number;
+  /** 候选行扁平序号（文档序，识别产物附带；划选手动添加行为 undefined） */
+  line?: number;
+  /** 同段同形锚的第 N 次出现（1-based，同组多留白时区分） */
+  occ?: number;
   /** 默认值基线：空串/undefined=无；source 标记来源 */
   default_value?: string;
   default_source?: 'detected' | 'auto' | 'manual' | '';

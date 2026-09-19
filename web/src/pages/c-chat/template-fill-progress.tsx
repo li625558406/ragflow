@@ -7,6 +7,7 @@ import {
   type ITemplateFillDownload,
   type ITemplateFillFilledRow,
   type ITemplateFillState,
+  type ITemplateFillUnfilled,
 } from '@/hooks/template-fill-stream';
 import { sedimentTemplateFillDefaults } from '@/hooks/use-template-fill-request';
 import { useTemplateFillTaskPoll } from '@/hooks/use-template-fill-task-poll';
@@ -53,7 +54,7 @@ export async function downloadTemplateFillResult(
 
 /** 已填充填写点折叠清单（终态成稿行内）：默认收起、**展开才挂载** DOM
  *  ——244 项的常挂 DOM 无意义（不是 hidden / max-h-0）。中性色，与上方
- *  未填充汇总（黄标/红标、默认展开）形成主次对比：待办醒目、已完成收起。
+ *  未填充汇总（琥珀开关/红必填标、同样默认收起）形成主次对比：待办醒目、已完成中性。
  *  点击字段名沿用未填充汇总的 liveTarget+focusKey 定位链路。
  *  必须是独立子组件：模板行在 map 回调里渲染，回调内不能用 useState。 */
 function TemplateFillFilledList({
@@ -92,13 +93,72 @@ function TemplateFillFilledList({
                 {r.name}
               </button>
               <span className="shrink-0 text-[#8C8C8C]">：</span>
-              {/* 值用 CSS truncate 截断展示，不做 JS 切片——保留完整值供复制/悬浮查看 */}
+              {/* 值用 CSS truncate 截断展示，不做 JS 切片——保留完整值供复制/悬浮查看。
+                  w-0 必须有：min-w-0 只允许「用的时候」缩，不改 intrinsic 贡献——
+                  truncate 的 nowrap 长值仍会把祖先 min-content 撑到近万 px（流程页
+                  对话区被撑宽、下载按钮被推出屏幕事故根因）；w-0 让 flex-basis=0
+                  才真正切断传播 */}
               <span
-                className="min-w-0 flex-1 truncate text-[#000000]"
+                className="w-0 min-w-0 flex-1 truncate text-[#000000]"
                 title={`${r.name}（${r.key}）：${r.value}`}
               >
                 {r.value}
               </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 未填充填写点折叠清单（终态成稿行内）：与已填充清单同级别同交互——默认收起、
+ *  展开才挂 DOM，点击字段名走 liveTarget+focusKey 定位链路。开关文字保留琥珀色
+ *  ⚠ 与已填充的中性色形成主次对比：待办醒目、已完成收起。 */
+function TemplateFillUnfilledList({
+  rows,
+  onLocate,
+}: {
+  rows: ITemplateFillUnfilled[];
+  onLocate: (key: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  if (!rows.length) return null;
+  return (
+    <div className="px-3 py-1 text-xs">
+      <button
+        className="flex items-center gap-1 text-[#FAAD14] transition-colors hover:text-[#D48806]"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <ChevronDown
+          className={`h-3 w-3 shrink-0 transition-transform ${open ? '' : '-rotate-90'}`}
+        />
+        ⚠ {rows.length} 个填写点未填充
+      </button>
+      {open && (
+        <div className="mt-0.5 space-y-0.5 border-l border-[#E5E5E5] pl-3">
+          {rows.map((f) => (
+            <div
+              key={`${f.key}-${f.name}`}
+              className="flex items-center gap-1.5"
+            >
+              <span className="shrink-0 text-[#8C8C8C]">·</span>
+              <button
+                className={
+                  f.required
+                    ? 'shrink-0 text-[#F5222D] underline decoration-dotted underline-offset-2 transition-colors hover:text-[#CF1322]'
+                    : 'shrink-0 text-[#8C8C8C] underline decoration-dotted underline-offset-2 transition-colors hover:text-[#525252]'
+                }
+                title={`定位到文档中的「${f.name}」`}
+                onClick={() => onLocate(f.key)}
+              >
+                {f.name}
+              </button>
+              {f.required && (
+                <span className="shrink-0 rounded bg-[#FFF1F0] px-1 text-[10px] text-[#F5222D]">
+                  必填
+                </span>
+              )}
             </div>
           ))}
         </div>
@@ -379,42 +439,14 @@ export default function TemplateFillProgress({
                     task_id 缺失（旧消息/脏数据）则不渲染，宁可不给入口也不发无效请求 */}
                 {t.task_id && <TemplateFillSedimentButton taskId={t.task_id} />}
               </div>
-              {/* 未填充汇总：竖向列表（字段多时一行堆不下），必填红/选填灰，点击定位 */}
+              {/* 未填充汇总：默认折叠（与已填充清单同级别），必填红/选填灰，点击定位 */}
               {t.unfilled && t.unfilled.length > 0 && (
-                <div className="space-y-0.5 px-3 py-1 text-xs">
-                  <div className="text-[#FAAD14]">
-                    ⚠ {t.unfilled.length} 个填写点未填充：
-                  </div>
-                  {t.unfilled.map((f) => (
-                    <div
-                      key={`${f.key}-${f.name}`}
-                      className="flex items-center gap-1.5"
-                    >
-                      <span className="shrink-0 text-[#8C8C8C]">·</span>
-                      <button
-                        className={
-                          f.required
-                            ? 'text-[#F5222D] underline decoration-dotted underline-offset-2 transition-colors hover:text-[#CF1322]'
-                            : 'text-[#8C8C8C] underline decoration-dotted underline-offset-2 transition-colors hover:text-[#525252]'
-                        }
-                        title={`定位到文档中的「${f.name}」`}
-                        onClick={() =>
-                          setLiveTarget({
-                            template_id: t.template_id,
-                            focusKey: f.key,
-                          })
-                        }
-                      >
-                        {f.name}
-                      </button>
-                      {f.required && (
-                        <span className="rounded bg-[#FFF1F0] px-1 text-[10px] text-[#F5222D]">
-                          必填
-                        </span>
-                      )}
-                    </div>
-                  ))}
-                </div>
+                <TemplateFillUnfilledList
+                  rows={t.unfilled}
+                  onLocate={(key) =>
+                    setLiveTarget({ template_id: t.template_id, focusKey: key })
+                  }
+                />
               )}
               {/* 已填充汇总：默认折叠（展开才建 DOM），点击字段名走同一套定位链路。
                   放在未填充汇总之后：待办在上、已完成在下 */}

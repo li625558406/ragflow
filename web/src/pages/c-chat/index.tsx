@@ -1955,7 +1955,7 @@ export default function CChat() {
               key={getTabResetKey('chat')}
               className={
                 mainView === 'chat'
-                  ? 'cs-page-enter flex-1 flex flex-col min-h-0 relative transition-[padding] duration-300 ease-in-out'
+                  ? 'cs-page-enter flex-1 flex flex-col min-h-0 min-w-0 relative transition-[padding] duration-300 ease-in-out'
                   : 'hidden'
               }
               style={{
@@ -3151,7 +3151,7 @@ export default function CChat() {
               key={getTabResetKey('collaboration')}
               className={
                 mainView === 'collaboration'
-                  ? 'collab-root cs-page-enter flex-1 flex flex-col min-h-0'
+                  ? 'collab-root cs-page-enter flex-1 flex flex-col min-h-0 min-w-0'
                   : 'hidden'
               }
             >
@@ -3166,7 +3166,7 @@ export default function CChat() {
               key={getTabResetKey('tools')}
               className={
                 mainView === 'tools'
-                  ? 'cs-page-enter flex-1 flex flex-col min-h-0'
+                  ? 'cs-page-enter flex-1 flex flex-col min-h-0 min-w-0'
                   : 'hidden'
               }
             >
@@ -3178,7 +3178,7 @@ export default function CChat() {
               key={getTabResetKey('bid')}
               className={
                 mainView === 'bid'
-                  ? 'cs-page-enter flex-1 flex flex-col min-h-0'
+                  ? 'cs-page-enter flex-1 flex flex-col min-h-0 min-w-0'
                   : 'hidden'
               }
             >
@@ -3190,7 +3190,7 @@ export default function CChat() {
               key={getTabResetKey('favorites')}
               className={
                 mainView === 'favorites'
-                  ? 'cs-page-enter flex-1 flex flex-col min-h-0'
+                  ? 'cs-page-enter flex-1 flex flex-col min-h-0 min-w-0'
                   : 'hidden'
               }
             >
@@ -3205,7 +3205,7 @@ export default function CChat() {
               key={getTabResetKey('flow')}
               className={
                 mainView === 'flow'
-                  ? 'cs-page-enter flex-1 flex flex-col min-h-0 transition-[padding] duration-300 ease-in-out'
+                  ? 'cs-page-enter flex-1 flex flex-col min-h-0 min-w-0 transition-[padding] duration-300 ease-in-out'
                   : 'hidden'
               }
               style={{
@@ -3224,7 +3224,7 @@ export default function CChat() {
               key={getTabResetKey('hr')}
               className={
                 mainView === 'hr'
-                  ? 'cs-page-enter flex-1 flex flex-col min-h-0'
+                  ? 'cs-page-enter flex-1 flex flex-col min-h-0 min-w-0'
                   : 'hidden'
               }
             >

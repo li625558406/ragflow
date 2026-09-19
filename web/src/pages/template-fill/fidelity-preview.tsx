@@ -38,6 +38,32 @@ function ensureFlashStyle() {
   document.head.appendChild(st);
 }
 
+/** 默认值回显：有默认值的填写点，把高亮 mark 里的锚文本（含空白留白）就地
+ *  替换为默认值蓝字（#1a66fb，与 C端填入值同款语义），{{key}} 徽标保留在值后。
+ *  mark 内容 = range.cloneContents()（docx-preview 的 run span，文本可能藏在
+ *  元素里，逐文本节点清理不可靠）+ 追加在**最后**的徽标 span → 整段清空后
+ *  按 textContent 前缀 '{{' 校验把徽标移回，避免误留原文残片。 */
+function applyDefaultValues(
+  container: HTMLElement,
+  values: Map<string, string>,
+) {
+  values.forEach((value, key) => {
+    const mark = container.querySelector<HTMLElement>(
+      `mark[data-anchor-key="${CSS.escape(key)}"]`,
+    );
+    if (!mark) return;
+    const badge = mark.lastElementChild;
+    const badgeOk = badge && (badge.textContent || '').startsWith(`{{${key}}}`);
+    while (mark.firstChild) mark.removeChild(mark.firstChild);
+    if (badgeOk && badge) mark.appendChild(badge);
+    const v = document.createElement('span');
+    v.textContent = value;
+    v.title = `默认值：${value}`;
+    v.style.color = '#1a66fb';
+    mark.insertBefore(v, mark.firstChild);
+  });
+}
+
 /** 滚动居中到某填写点 mark 并脉冲闪烁提示；无 mark 返回 false */
 function focusAnchor(container: HTMLElement, key: string): boolean {
   const el = container.querySelector<HTMLElement>(
@@ -72,6 +98,8 @@ export default function FidelityPreview({
     pHash?: string;
     aOcc?: number;
     pTotal?: number;
+    /** 非空时高亮处就地回显默认值蓝字（写回范本库/手动/识别三来源） */
+    defaultValue?: string;
   }>;
   /** 渲染失败回调（父组件降级文本模式） */
   onRenderFailed: () => void;
@@ -103,7 +131,7 @@ export default function FidelityPreview({
   const anchorsSig = anchors
     .map(
       (a) =>
-        `${a.key}\u0000${a.anchor}\u0000${a.addr ?? ''}\u0000${a.pHash ?? ''}\u0000${a.aOcc ?? ''}`,
+        `${a.key}\u0000${a.anchor}\u0000${a.addr ?? ''}\u0000${a.pHash ?? ''}\u0000${a.aOcc ?? ''}\u0000${a.defaultValue ?? ''}`,
     )
     .join('\u0001');
 
@@ -145,6 +173,13 @@ export default function FidelityPreview({
             })),
           { showKeyBadge: true },
         );
+        // 默认值回显：有默认值的填写点把锚文本/留白替换为值蓝字（未定位的行静默跳过）
+        const values = new Map<string, string>();
+        anchorsRef.current.forEach((a) => {
+          const dv = (a.defaultValue || '').trim();
+          if (dv && marked.has(a.key)) values.set(a.key, dv);
+        });
+        if (values.size > 0) applyDefaultValues(el, values);
         setRenderedOk(true);
         onMarkedRef.current?.(marked);
       })
@@ -231,7 +266,8 @@ export default function FidelityPreview({
       {/* 说明条：高亮语义 + 划选指引 */}
       <div className="mb-2 rounded bg-amber-50 px-3 py-1.5 text-xs text-amber-700">
         按 Word 原始格式渲染；琥珀色下划线为已注册填写点（按锚文本匹配），
-        并标注对应占位符 {'{{key}}'}。划选标记新填写点请切换「文本模式」。
+        并标注对应占位符 {'{{key}}'}；蓝字为已设默认值的回显
+        （悬浮查看完整值）。划选标记新填写点请切换「文本模式」。
       </div>
       <div ref={containerRef} />
     </div>

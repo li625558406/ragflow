@@ -235,3 +235,29 @@ describe('highlightDocxRanges 段落哈希直定位', () => {
     expect(marked.has('k')).toBe(true);
   });
 });
+
+it('空白 anchor 落在更长空白 run 内：宽容回退仍段内定位（不再全文错位）', () => {
+  // 事故形态：anchor 8 空格、渲染 run 12 空格——runExact（完整空白 run）
+  // 与 canon 等长均失败，此前 return null 回退全文顺序匹配分到别的段落。
+  // 修复后按非重叠 indexOf 回退口径就地命中。
+  const blankDoc = '网址：            （必填）'; // 12 空格留白
+  const root = buildDoc([blankDoc]);
+  const marked = highlightDocxRanges(
+    root,
+    [
+      {
+        text: '        ', // 8 空格
+        key: 'partial',
+        color: COLOR,
+        pHash: H(blankDoc),
+        pIdx: 0,
+        aOcc: 1,
+        pTotal: 1,
+      },
+    ],
+    { showKeyBadge: true },
+  );
+  expect(marked.has('partial')).toBe(true);
+  const mark = root.querySelector('mark[data-anchor-key="partial"]')!;
+  expect(mark.childNodes[0].textContent).toBe('        ');
+});
