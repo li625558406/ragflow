@@ -1,5 +1,5 @@
 import { useDebounce } from 'ahooks';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 
 import { ConfirmDeleteDialog } from '@/components/confirm-delete-dialog';
@@ -69,6 +69,12 @@ export default function TemplateFillPage() {
   const [batchConfirmOpen, setBatchConfirmOpen] = useState(false);
   // 300ms 防抖：输入过程中不触发列表请求
   const debouncedKeyword = useDebounce(keyword, { wait: 300 });
+  // 翻页后滚动区回顶
+  const contentRef = useRef<HTMLDivElement>(null);
+  const gotoPage = (p: number) => {
+    setPage(p);
+    contentRef.current?.scrollTo({ top: 0 });
+  };
   const { data, isLoading } = useListTemplateFill({
     keyword: debouncedKeyword,
     status,
@@ -211,7 +217,7 @@ export default function TemplateFillPage() {
           </Select>
         </div>
       </CardHeader>
-      <CardContent className="min-h-0 flex-1 overflow-auto">
+      <CardContent ref={contentRef} className="min-h-0 flex-1 overflow-auto">
         {isLoading ? (
           <div className="flex items-center justify-center py-12">
             <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-b-transparent" />
@@ -322,12 +328,18 @@ export default function TemplateFillPage() {
             </TableBody>
           </Table>
         )}
-        <div className="mt-4 flex justify-end gap-2">
+      </CardContent>
+      {/* 分页固定在滚动区外，无需滚到底即可翻页 */}
+      <div className="flex items-center justify-between px-6 pb-4">
+        <span className="text-sm text-muted-foreground">
+          {total != null ? `共 ${total} 条模板` : ''}
+        </span>
+        <div className="flex gap-2">
           <Button
             size="sm"
             variant="outline"
             disabled={page <= 1}
-            onClick={() => setPage(page - 1)}
+            onClick={() => gotoPage(page - 1)}
           >
             上一页
           </Button>
@@ -335,12 +347,12 @@ export default function TemplateFillPage() {
             size="sm"
             variant="outline"
             disabled={!hasMore}
-            onClick={() => setPage(page + 1)}
+            onClick={() => gotoPage(page + 1)}
           >
             下一页
           </Button>
         </div>
-      </CardContent>
+      </div>
       <ConfirmDeleteDialog
         open={deleteTarget != null}
         onOpenChange={(open) => {
