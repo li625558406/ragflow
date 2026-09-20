@@ -288,69 +288,73 @@ export default function FlowPanel({
                   </div>
                 )}
 
-                <div className="space-y-1 p-2">
-                  {list.map((f: FlowInstanceItem, i) => {
-                    const active = activeId === f.id;
-                    const canCancel =
-                      f.initiator_id === meId && !TERMINAL_STATUS.has(f.status);
-                    return (
-                      <button
-                        key={f.id}
-                        onClick={() => handleSelect(f.id)}
-                        className={`group relative block w-full cursor-pointer overflow-hidden rounded-lg border px-3 py-2.5 text-left transition-all duration-150 motion-reduce:animate-none animate-in fade-in slide-in-from-left-2 fill-mode-both active:scale-[0.99] ${
-                          active
-                            ? 'border-[#BFD3F5] bg-[#F0F5FF]'
-                            : 'border-transparent hover:bg-[#F7F8FA]'
-                        }`}
-                        style={{
-                          animationDelay: `${Math.min(i * 40, 240)}ms`,
-                        }}
-                      >
-                        {/* 选中态左侧指示条 */}
-                        {active && (
-                          <span
-                            aria-hidden
-                            className="absolute inset-y-1.5 left-0 w-[3px] rounded-r-full bg-[#1a66fb] motion-reduce:animate-none animate-in fade-in slide-in-from-left-1 duration-200"
-                          />
-                        )}
-                        <div className="truncate text-sm font-medium text-[#222]">
-                          {f.title}
-                        </div>
-                        <div className="mt-1.5 flex items-center gap-1.5 text-xs">
-                          <span
-                            className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                              STATUS_DOT[f.status] ?? 'bg-[#bbb]'
-                            }`}
-                          />
-                          <span
-                            className={`font-medium ${
-                              STATUS_TEXT_COLOR[f.status] ?? 'text-[#888]'
-                            }`}
-                          >
-                            {STATUS_LABEL[f.status] ?? f.status}
-                          </span>
-                          <span className="ml-auto shrink-0 text-[#aaa]">
-                            {relTime(f.update_time)}
-                          </span>
-                          {canCancel && (
-                            <button
-                              type="button"
-                              disabled={cancelBusyId === f.id}
-                              onClick={(e) => {
-                                // 阻止冒泡：作废不触发卡片选中
-                                e.stopPropagation();
-                                handleCancelFromList(f);
-                              }}
-                              className="shrink-0 cursor-pointer rounded-md border border-[#E5484D]/40 px-2 py-0.5 text-xs font-medium text-[#E5484D] transition-colors hover:border-[#E5484D] hover:bg-[#E5484D] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              作废
-                            </button>
+                {/* 仅非空渲染：空态下 h-full 占位 + 本层 p-2 padding 会溢出 16px 出滚动条 */}
+                {list.length > 0 && (
+                  <div className="space-y-1 p-2">
+                    {list.map((f: FlowInstanceItem, i) => {
+                      const active = activeId === f.id;
+                      const canCancel =
+                        f.initiator_id === meId &&
+                        !TERMINAL_STATUS.has(f.status);
+                      return (
+                        <button
+                          key={f.id}
+                          onClick={() => handleSelect(f.id)}
+                          className={`group relative block w-full cursor-pointer overflow-hidden rounded-lg border px-3 py-2.5 text-left transition-all duration-150 motion-reduce:animate-none animate-in fade-in slide-in-from-left-2 fill-mode-both active:scale-[0.99] ${
+                            active
+                              ? 'border-[#BFD3F5] bg-[#F0F5FF]'
+                              : 'border-transparent hover:bg-[#F7F8FA]'
+                          }`}
+                          style={{
+                            animationDelay: `${Math.min(i * 40, 240)}ms`,
+                          }}
+                        >
+                          {/* 选中态左侧指示条 */}
+                          {active && (
+                            <span
+                              aria-hidden
+                              className="absolute inset-y-1.5 left-0 w-[3px] rounded-r-full bg-[#1a66fb] motion-reduce:animate-none animate-in fade-in slide-in-from-left-1 duration-200"
+                            />
                           )}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
+                          <div className="truncate text-sm font-medium text-[#222]">
+                            {f.title}
+                          </div>
+                          <div className="mt-1.5 flex items-center gap-1.5 text-xs">
+                            <span
+                              className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                                STATUS_DOT[f.status] ?? 'bg-[#bbb]'
+                              }`}
+                            />
+                            <span
+                              className={`font-medium ${
+                                STATUS_TEXT_COLOR[f.status] ?? 'text-[#888]'
+                              }`}
+                            >
+                              {STATUS_LABEL[f.status] ?? f.status}
+                            </span>
+                            <span className="ml-auto shrink-0 text-[#aaa]">
+                              {relTime(f.update_time)}
+                            </span>
+                            {canCancel && (
+                              <button
+                                type="button"
+                                disabled={cancelBusyId === f.id}
+                                onClick={(e) => {
+                                  // 阻止冒泡：作废不触发卡片选中
+                                  e.stopPropagation();
+                                  handleCancelFromList(f);
+                                }}
+                                className="shrink-0 cursor-pointer rounded-md border border-[#E5484D]/40 px-2 py-0.5 text-xs font-medium text-[#E5484D] transition-colors hover:border-[#E5484D] hover:bg-[#E5484D] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                作废
+                              </button>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </div>
 
