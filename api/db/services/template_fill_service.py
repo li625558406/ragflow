@@ -103,11 +103,11 @@ class TplTemplateService(CommonService):
 
     @classmethod
     @DB.connection_context()
-    def get_list_page(cls, tenant_id: str, keyword: str = "", status: str = "", page: int = 1, size: int = 20):
+    def get_list_page(cls, tenant_id: str, keyword: str = "", status: str = "", page: int = 1, size: int = 10):
         # 分页参数下界钳制：peewee paginate 对 page=0 静默当第 1 页，page<0 会生成
         # 负 OFFSET → MySQL 1064 → 500；size<=0 同理。上界防单次拉全表。
         page = max(1, int(page or 1))
-        size = min(max(1, int(size or 20)), 100)
+        size = min(max(1, int(size or 10)), 100)
         q = cls.model.select().where(cls.model.tenant_id == tenant_id)
         if keyword:
             q = q.where(cls.model.name.contains(keyword))
@@ -502,10 +502,10 @@ class TplFillTaskService(CommonService):
 
     @classmethod
     @DB.connection_context()
-    def get_list_page(cls, tenant_id: str, status: str = "", page: int = 1, size: int = 20):
+    def get_list_page(cls, tenant_id: str, status: str = "", page: int = 1, size: int = 10):
         # 与 TplTemplateService.get_list_page 同款钳制：防负 OFFSET 500、防单次拉全表
         page = max(1, int(page or 1))
-        size = min(max(1, int(size or 20)), 100)
+        size = min(max(1, int(size or 10)), 100)
         q = cls.model.select().where(cls.model.tenant_id == tenant_id)
         if status:
             q = q.where(cls.model.status == status)

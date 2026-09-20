@@ -4,7 +4,9 @@ import { useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+// 通用分页：总数 + 页码 + 每页条数选择（10/20/50/100）
 import message from '@/components/ui/message';
+import { RAGFlowPagination } from '@/components/ui/ragflow-pagination';
 import {
   Select,
   SelectContent,
@@ -32,8 +34,6 @@ import {
 } from './status';
 import { TaskDetailDrawer } from './task-detail-drawer';
 
-const PAGE_SIZE = 20;
-
 const STATUS_OPTIONS = Object.entries(STATUS_LABEL);
 
 // create_time 为后端秒级时间戳（BigInteger，time.time()），转本地显示
@@ -45,10 +45,11 @@ function formatCreateTime(ts?: number) {
 export default function TemplateFillTasksPage() {
   const [status, setStatus] = useState('');
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
   const { data, isLoading } = useListTemplateFillTasks({
     status,
     page,
-    size: PAGE_SIZE,
+    size: pageSize,
   });
   const retryMut = useRetryTemplateFillTask();
   // 详情抽屉：'' 表示未打开（抽屉内 hook 对空 taskId 不发请求）
@@ -56,8 +57,6 @@ export default function TemplateFillTasksPage() {
 
   const items = data?.data ?? [];
   const total = data?.total_datasets;
-  const hasMore =
-    total != null ? page * PAGE_SIZE < total : items.length >= PAGE_SIZE;
 
   const handleDetail = (taskId: string) => {
     setDetailTaskId(taskId);
@@ -79,7 +78,8 @@ export default function TemplateFillTasksPage() {
   };
 
   return (
-    <Card className="bg-transparent border-none">
+    // main（root-layout）是 overflow-hidden，页面自带内部滚动容器防裁切
+    <Card className="flex size-full flex-col overflow-hidden bg-transparent border-none">
       <CardHeader>
         <div className="flex items-center justify-between">
           <CardTitle className="text-2xl">填写任务</CardTitle>
@@ -106,7 +106,7 @@ export default function TemplateFillTasksPage() {
           </Select>
         </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="min-h-0 flex-1 overflow-auto">
         {isLoading ? (
           <div className="flex items-center justify-center py-12">
             <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-b-transparent" />
@@ -175,25 +175,22 @@ export default function TemplateFillTasksPage() {
             </TableBody>
           </Table>
         )}
-        <div className="mt-4 flex justify-end gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={page <= 1}
-            onClick={() => setPage(page - 1)}
-          >
-            上一页
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={!hasMore}
-            onClick={() => setPage(page + 1)}
-          >
-            下一页
-          </Button>
-        </div>
       </CardContent>
+      <div className="px-6 pb-4">
+        <RAGFlowPagination
+          total={total ?? 0}
+          current={page}
+          pageSize={pageSize}
+          onChange={(p, ps) => {
+            if (ps !== pageSize) {
+              setPage(1);
+              setPageSize(ps);
+            } else {
+              setPage(p);
+            }
+          }}
+        />
+      </div>
       <TaskDetailDrawer
         taskId={detailTaskId}
         open={!!detailTaskId}

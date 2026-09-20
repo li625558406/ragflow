@@ -376,7 +376,7 @@ async def list_templates():
     args = request.args
     rows, total = TplTemplateService.get_list_page(
         current_user.id, keyword=args.get("keyword", ""),
-        status=args.get("status", ""), page=args.get("page", 1, type=int), size=args.get("size", 20, type=int))
+        status=args.get("status", ""), page=args.get("page", 1, type=int), size=args.get("size", 10, type=int))
     return get_result(data=rows, total=total)
 
 
@@ -783,7 +783,7 @@ async def list_fill_tasks():
     args = request.args
     rows, total = TplFillTaskService.get_list_page(
         current_user.id, status=args.get("status", ""),
-        page=args.get("page", 1, type=int), size=args.get("size", 20, type=int))
+        page=args.get("page", 1, type=int), size=args.get("size", 10, type=int))
     return get_result(data=rows, total=total)
 
 

@@ -8,6 +8,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import message from '@/components/ui/message';
+// 通用分页：总数 + 页码 + 每页条数选择（10/20/50/100）
+import { RAGFlowPagination } from '@/components/ui/ragflow-pagination';
 import {
   Select,
   SelectContent,
@@ -33,8 +35,6 @@ import {
 } from '@/hooks/use-template-fill-request';
 import { Routes } from '@/routes';
 import { UploadWizard } from './upload-wizard';
-
-const PAGE_SIZE = 20;
 
 const STATUS_LABEL: Record<string, string> = {
   draft: '草稿',
@@ -71,15 +71,12 @@ export default function TemplateFillPage() {
   const debouncedKeyword = useDebounce(keyword, { wait: 300 });
   // 翻页后滚动区回顶
   const contentRef = useRef<HTMLDivElement>(null);
-  const gotoPage = (p: number) => {
-    setPage(p);
-    contentRef.current?.scrollTo({ top: 0 });
-  };
+  const [pageSize, setPageSize] = useState(10);
   const { data, isLoading } = useListTemplateFill({
     keyword: debouncedKeyword,
     status,
     page,
-    size: PAGE_SIZE,
+    size: pageSize,
   });
   const publishMut = usePublishTemplateFill();
   const disableMut = useDisableTemplateFill();
@@ -88,8 +85,6 @@ export default function TemplateFillPage() {
 
   const items = data?.data ?? [];
   const total = data?.total_datasets;
-  const hasMore =
-    total != null ? page * PAGE_SIZE < total : items.length >= PAGE_SIZE;
 
   const handlePublish = (it: TplTemplateItem) => {
     publishMut.mutate(it.id, {
@@ -329,29 +324,22 @@ export default function TemplateFillPage() {
           </Table>
         )}
       </CardContent>
-      {/* 分页固定在滚动区外，无需滚到底即可翻页 */}
-      <div className="flex items-center justify-between px-6 pb-4">
-        <span className="text-sm text-muted-foreground">
-          {total != null ? `共 ${total} 条模板` : ''}
-        </span>
-        <div className="flex gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={page <= 1}
-            onClick={() => gotoPage(page - 1)}
-          >
-            上一页
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={!hasMore}
-            onClick={() => gotoPage(page + 1)}
-          >
-            下一页
-          </Button>
-        </div>
+      {/* 分页固定在滚动区外：总数 + 页码 + 每页条数选择（10/20/50/100） */}
+      <div className="px-6 pb-4">
+        <RAGFlowPagination
+          total={total ?? 0}
+          current={page}
+          pageSize={pageSize}
+          onChange={(p, ps) => {
+            if (ps !== pageSize) {
+              setPage(1);
+              setPageSize(ps);
+            } else {
+              setPage(p);
+            }
+            contentRef.current?.scrollTo({ top: 0 });
+          }}
+        />
       </div>
       <ConfirmDeleteDialog
         open={deleteTarget != null}
