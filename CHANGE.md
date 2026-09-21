@@ -17,7 +17,7 @@
 
 **收口审查（superpowers:code-reviewer）2 Major + 4 Minor 全处置**：M-1 闸门原在锁外基于入参行判定——并发双回退等锁期间状态已被改掉，陈旧入参会把逆补丁重复应用（修复被静默前放）→ 改为 `_ADMIT_LOCK` 内按 id 重取行 + `_revert_patch_of` 基于重取行全量闸门（附对抗用例）；M-2 REST 端点同步调 perform_revert（锁等待+MinIO 往返）会阻塞 quart 事件循环、拉长锁持有致 admit_fix_round 误报 busy → `await asyncio.to_thread(perform_revert, row)`（R-6 同款结论）；m-1 kind 先建 normal 再补 revert 有窗口期（并发 state 读会把该轮误计额度）→ `create_round` 加 `kind` 参数随建行一次写齐；m-2 建轮 tenant 以**轮次行**为权威（best.tenant_id，标注行 tenant 历史脏空串不作依据）；m-3 错误码口径（ARGUMENT_ERROR vs OPERATING_ERROR）与既有 fix 端点保持一致，不动；m-4 `_round_payload` 不透出 kind（前端无消费方），不动。
 
-**未部署、未 commit**（部署硬约束：**先后端 4 文件成套 SCP + docker restart（migrate 自动建列）→ 再前端 build+dist+nginx reload**；反序 revert 按钮会打 404）。
+**后端已部署 2026-09-21 并已 commit+push（ec072ab3）**：4 文件成套 SCP + md5 双端一致 + docker restart（migrate 自动建列：kind/patch_json 验证在位）+ import 冒烟 + revert 端点无 Authorization 401（注册且鉴权正常）。**前端未部署**——生产 dist 旧版，对比/徽标/回退按钮需 build+dist+nginx reload 后用户才可见（部署硬约束已满足：后端先行）。
 
 **遗留**：①存量修复（本批之前已 fixed 的批注）无 patch_json，不显示对比/回退（徽标也不显示——`patch` 缺失即旧数据，如实呈现）；②删除型修复与纯插入型修复不可自动回退（逆补丁数学上不可行），文案已引导手动处理；③并发两个回退由 `_ADMIT_LOCK` 串行化，同批注第二次会因 patch 清空被拒，跨批注并发安全。
 
