@@ -11,7 +11,7 @@
 
 **测试**：后端 test_file_review_api 49 passed（新 5 例：任务不存在不碰存储/无产物轮+空版本号同闸/对象丢失不伪装空段落成功/PK 直解成功路径/OLE2 转换后解析+转换失败不续解）；前端 docx-view-utils 17 + review-panel-version 5（overlay 翻转+空 state 不误翻/成稿优先拉版本 content+来源徽标+不拉原文件/版本 content 失败降级/无成稿行为不变）+ 既有 6 套件共 85 passed；file_review 后端全 5 套件 267 passed；tsc 改动文件零错误。setup.ts 补 ResizeObserver 守卫桩（jsdom 缺口在 harness）。
 
-**未部署、未 commit**（部署硬约束：后端 1 文件 SCP+restart 先行——新端点前端不消费无碍；前端 build+dist+nginx reload 后行）。
+**后端已部署 2026-09-21（md5 双端一致+docker restart+import 冒烟+新端点/对照端点无 Authorization 双 401）；已 commit（5739af89）。前端未部署**——生产 dist 旧版，弹框联动/未定位降级/成稿版本展示/边栏折叠需 build+dist+nginx reload 后可见。
 
 **同日追加：边栏批注卡默认折叠**——用户要求「文档正文的批注右侧的批注内容正文默认折叠起来，可展开」。AiCard/CommentCard 正文（摘录/问题/建议/修复对比/操作、人工批注内容）改为默认折叠只留头部行：头部尾随 ChevronDown 切换按钮（stopPropagation 防误触发定位跳转），`selected` 时自动展开（列表区跳转/正文 mark 点击后能看到内容）。E2E（dev :9222 demo01）：9 卡默认全折叠、点箭头展开+标题翻转、annotation-select 定位后自动展开+选中环；tsc 零错误+组件测试 5 例回归全绿。
 
