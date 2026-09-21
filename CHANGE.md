@@ -1,5 +1,22 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-21（十）审核弹框手动编辑复用：对话附件/流程版本就地改文字，产出新文件自动交接 LLM
+
+**主题**：用户提出「附件上传的文件和流程新发起时的初始文件，都能复用文件审核弹框做文本展示 + 手动修改内容，修改后的文件还能让 LLM 继续分析」。选定方案：产出**全新文件对象**（原文件字节不动）+ 编辑产出的新文件**自动进附件队列**（发送后 LLM 可见）。
+
+**改动（后端 2 文件 + 前端 5 文件）**：
+- `api/utils/docx_edit.py`（新增，共享编辑内核）：`parse_edit_payload`（edits/deletes/inserts/table_edits 对抗性校验：上限 200 ops、单文本 20000 字、runs 文本一致性、para_index/行号/列号整型、align/heading_level 枚举、控制字符拒收）+ `ensure_docx_blob`（PK 魔数直放 / OLE2 `.doc`→LibreOffice 转换 / 其他类型拒绝）+ `apply_ops_to_doc`（**先全量定位后统一应用**的事务式编辑：任一 para_index 定位失败整体拒绝、原文件不动；段落改写拷贝首 run 样式、表格 cell 改写首段清多余段）+ `edit_docx_blob` → `(new_blob, doc_title, converted)` + `safe_filename`（路径穿越清洗）。
+- `api/apps/restful_apis/file_api.py`：新端点 `POST /files/<file_id>/edit`——`{tenant_id}-downloads/{file_id}` 直传通道取 blob → 内核编辑 → 存为**新 uuid 对象**，返回 `{file_id, file_name: "{原名}_编辑.docx"}`；无 DB 行、原文件不变、bucket 即租户边界（owner-gate 天然成立）。
+- `web/src/services/flow-service.ts`：抽 `flowDocEditOpsToBody`（camelCase ops → snake_case 请求体，流程版本编辑与附件编辑共用同一契约）+ 新 `editFileDocument(fileId, fileName, ops)`。
+- `web/src/pages/c-chat/chat-input-box.tsx`：新 `injectDoc` prop——父层驱动的队列注入（nonce 防重、removeId 剔旧、同 id 不重复追加）。
+- `web/src/pages/c-chat/flow/flow-ai-panel.tsx`：`handleEditDocument` 按 `reviewSource` 分派——`version` → `editFlowDocument`（存新版本）+ 热切面板到新版本文件；`upload` → `editFileDocument` + `setQueueInjectDoc` 注入 ChatInputBox 队列（removeId 剔旧文件）+ 面板热切到新文件；`canEdit` 闸：version 需有版本对象、upload 需 .docx 扩展名。
+- `web/src/pages/c-chat/index.tsx`：附件审核弹框接 `onEditDocument` → `editFileDocument` → 直接 `setUploadedFiles` 换队（c-chat 输入框队列在 index 层自管，不经 ChatInputBox）。
+- `web/src/pages/c-chat/flow/flow-detail.tsx`：版本时间线行新增铅笔编辑按钮（owner + .docx 才渲染）→ 打开 ReviewPanel 弹框 `canEdit` + `onEditDocument={handleEditVersionDocument}`（`editFlowDocument` → invalidate flow-detail → 关弹框重开新版本，绕开同版本 document 复用）。
+
+**测试**：后端 `test/test_file_edit_document.py` 新 20 例（parse 对抗矩阵／定位失败原子性「输入不动」／表格事务性／safe_filename 穿越／端点：非法 id 矩阵 [32 位非 hex、31 位、全横线、uuid+"!"]、对象缺失、空 ops、成功路径新对象可解析且原文节未动、pdf 拒收无副作用）+ 既有 flow 编辑 50 例 = 72 passed；前端 `flow-service-edit-file.test.ts` 4 例（URL/方法/snake_case 映射/code!=0 抛后端 message/file_name 兜底/流程版本回归闸）+ `chat-input-box-inject.test.tsx` 4 例（注入进队/removeId 剔旧/nonce 防重/null 不变）+ 全量 vitest 23 文件 293 passed；tsc 对改动文件零新增错误（index.tsx 1300/1301/3278 三处经 git stash 对照为 HEAD 既存）。测试基建教训：路由文件加载须在 exec_module 前 inject fake `manager`（包 init 的 F821 注入）；FakeStorage 必须**同步**方法（async 会漏进真线程池）；pytest 里 `resp.get_json()` 不可靠改 `json.loads(await resp.get_data())`；注入只进队列不渲染 DOM chip，断言经 `onUploadedFilesChange` 回调。
+
+**部署**（均未执行，待用户指示）：后端 `api/utils/docx_edit.py`（新增）+ `api/apps/restful_apis/file_api.py` 成套 SCP + restart；前端 build + dist + nginx reload。后端先行安全（新端点前端不消费无碍）。未 commit、未 push。
+
 ## 2026-09-21（九）原文 ⇄ AI 修改自由切换——回退后可一键恢复 AI 修改
 
 **主题**：接（六）（八），用户反馈回退语义太死板：「可以回退，也可以再点保留，又恢复了，也就是我可以要原文内容，也可以要 AI 修改后的内容，可以自由切换」。现状：回退会**清空** patch_json，批注回 open 后再点「确认保留」只是纯状态标记，文档永远停在原文，AI 修改一旦回退就找不回来。

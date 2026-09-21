@@ -47,8 +47,9 @@ from api.utils.validation_utils import (
 )
 from api.utils.web_utils import CONTENT_TYPE_MAP, apply_safe_file_response_headers
 from common import settings
-from common.misc_utils import thread_pool_exec
+from common.misc_utils import get_uuid, thread_pool_exec
 from api.apps.services import file_api_service
+from api.utils.docx_edit import edit_docx_blob, parse_edit_payload, safe_filename
 
 
 @manager.route("/files", methods=["POST"])  # noqa: F821
@@ -779,6 +780,49 @@ async def get_content(tenant_id: str = None, file_id: str = None):
     except Exception as e:
         logging.exception(e)
         return get_error_data_result(message="Internal server error")
+
+
+# 对话直传附件的对象名约束：POST /documents/upload 以 get_uuid()（32 位小写十六进制）为对象名
+_OBJECT_ID_RE = re.compile(r"[0-9a-f]{32}")
+
+
+@manager.route("/files/<file_id>/edit", methods=["POST"])  # noqa: F821
+@login_required
+@add_tenant_id_to_kwargs
+async def edit_file_document(tenant_id: str = None, file_id: str = None):
+    """对话直传附件的 Word 式正文编辑（审核弹框「编辑文档」通道）。
+
+    附件（POST /documents/upload）是 {tenant_id}-downloads/<uuid> 的独立对象、
+    无 DB 行，bucket 本身即租户隔离边界——只能编辑本租户自己的附件。
+    ops 与流程编辑（/flow/<id>/document/edit）共用 api/utils/docx_edit.py 内核；
+    原件永不改动，结果存为新对象（新 uuid，命名 原名_编辑.docx），前端以
+    返回的新 file_id 替换附件队列，LLM 经既有 files/review_file_id 契约分析。"""
+    try:
+        if not _OBJECT_ID_RE.fullmatch(file_id or ""):
+            return get_error_data_result(message="非法的文件 id")
+        body = await request.get_json(silent=True) or {}
+        try:
+            parsed = parse_edit_payload(body)
+        except ValueError as ve:
+            return get_error_data_result(message=str(ve))
+        bname = f"{tenant_id}-downloads"
+        blob = await thread_pool_exec(settings.STORAGE_IMPL.get, bname, file_id)
+        if not blob:
+            return get_error_data_result(message="文件不存在或已过期")
+        src_name = str(body.get("file_name") or "") or "document.docx"
+        try:
+            new_blob, root, _converted = await thread_pool_exec(
+                edit_docx_blob, blob, src_name, parsed
+            )
+        except ValueError as ve:
+            return get_error_data_result(message=str(ve))
+        new_id = get_uuid()
+        await thread_pool_exec(settings.STORAGE_IMPL.put, bname, new_id, new_blob)
+        file_name = safe_filename(f"{root}_编辑.docx")
+        return get_result(data={"file_id": new_id, "file_name": file_name})
+    except Exception as e:
+        logging.exception("edit file document failed")
+        return get_error_data_result(message=str(e))
 
 
 @manager.route("/files/<file_id>/annotate", methods=["POST"])  # noqa: F821

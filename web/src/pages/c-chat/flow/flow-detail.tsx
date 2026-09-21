@@ -6,11 +6,13 @@ import {
   downloadFileReviewVersion,
   downloadFileReviewVersionBlob,
 } from '@/services/file-review-service';
+import type { FlowDocEditOps } from '@/services/flow-service';
 import {
   archiveFlow,
   deleteFlow,
   deleteFlowVersion,
   downloadVersionBlob,
+  editFlowDocument,
   getFlowDetail,
   listCandidates,
   submitFlow,
@@ -25,6 +27,7 @@ import {
   FileText,
   MessageSquare,
   MessagesSquare,
+  Pencil,
   Trash2,
   User,
 } from 'lucide-react';
@@ -210,6 +213,8 @@ export default function FlowDetail({
   const [viewFileId, setViewFileId] = useState('');
   const [viewFileName, setViewFileName] = useState('');
   const [viewVersionId, setViewVersionId] = useState('');
+  // 查看抽屉的编辑模式：仅发起人 + doc/docx 版本可开（时间线行「编辑」按钮切入）
+  const [viewEditMode, setViewEditMode] = useState(false);
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['flow-detail', flowId],
@@ -345,10 +350,13 @@ export default function FlowDetail({
   };
 
   /** 只读查看版本文件内容：下载 blob → 转 document → ReviewPanel 展示。
-   * 所有参与人可用（不限于当前节点负责人），同一版本已加载时直接复用。 */
-  const handleViewFile = async (v: FlowVersionItem) => {
+   * 所有参与人可用（不限于当前节点负责人），同一版本已加载时直接复用；
+   * editable=true 时以编辑模式打开（仅「编辑」入口传入）。 */
+  const handleViewFile = async (v: FlowVersionItem, editable = false) => {
+    if (!editable) setViewEditMode(false);
     if (viewFileId && viewVersionId === v.id) {
       setViewOpen(true);
+      if (editable) setViewEditMode(true);
       return;
     }
     setViewPreparing(true);
@@ -372,6 +380,7 @@ export default function FlowDetail({
         setViewFileId(d.id);
         setViewFileName(v.file_name);
         setViewVersionId(v.id);
+        setViewEditMode(editable);
         setViewOpen(true);
         return;
       }
@@ -382,6 +391,17 @@ export default function FlowDetail({
       setViewPreparing(false);
       setViewPendingId('');
     }
+  };
+
+  /** 编辑版本文件：editFlowDocument 存新版本（后端 .doc 先转 docx）→ 刷新详情 →
+   * 新版本重转 document 就地替换预览（viewFileId 先清空绕过同版本复用）。 */
+  const handleEditVersionDocument = async (ops: FlowDocEditOps) => {
+    if (!viewVersionId) throw new Error('无版本文件，无法编辑');
+    const res = await editFlowDocument(flowId, viewVersionId, ops);
+    qc.invalidateQueries({ queryKey: ['flow-detail', flowId] });
+    onChanged();
+    setViewFileId('');
+    await handleViewFile(res.version, true);
   };
 
   /** 删除流程（仅发起人；仅已作废）：级联删版本/批注/AI记录，删后回到空态 */
@@ -679,7 +699,7 @@ export default function FlowDetail({
                       </span>
                       <span className="truncate">{relTime(v.create_time)}</span>
                       <span className="ml-auto flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-150 focus-within:opacity-100 group-hover:opacity-100">
-                        {/* 操作：查看 + 下载 + 删除（删除仅领导可用，其余置灰） */}
+                        {/* 操作：查看 + 编辑（仅发起人+doc/docx）+ 下载 + 删除（删除仅领导可用，其余置灰） */}
                         <button
                           type="button"
                           title="查看文件内容"
@@ -696,6 +716,20 @@ export default function FlowDetail({
                         >
                           <Eye className="h-3.5 w-3.5" strokeWidth={2.5} />
                         </button>
+                        {isOwner && /\.(docx?)$/i.test(v.file_name) && (
+                          <button
+                            type="button"
+                            title="编辑文件内容（保存为新版本）"
+                            disabled={viewPreparing}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleViewFile(v, true);
+                            }}
+                            className="cursor-pointer rounded-md p-1 text-[#1a66fb] transition-colors hover:bg-[#E1EBFF] disabled:cursor-wait"
+                          >
+                            <Pencil className="h-3.5 w-3.5" strokeWidth={2.5} />
+                          </button>
+                        )}
                         <button
                           type="button"
                           title="下载该版本"
@@ -809,15 +843,20 @@ export default function FlowDetail({
           commentPortal,
         )}
 
-      {/* 版本文件只读查看（所有参与人可用）：不传批注增删/编辑回调，纯查看 + 批注边栏展示 */}
+      {/* 版本文件查看/编辑（所有参与人可看，编辑仅发起人+doc/docx）：编辑保存为新版本后就地刷新预览 */}
       <ReviewPanel
         open={viewOpen}
-        onClose={() => setViewOpen(false)}
+        onClose={() => {
+          setViewOpen(false);
+          setViewEditMode(false);
+        }}
         fileId={viewFileId}
         fileName={viewFileName}
         annotations={[]}
         comments={commentsOf}
         commentAuthors={Object.fromEntries(nicknameMap)}
+        canEdit={viewEditMode}
+        onEditDocument={handleEditVersionDocument}
       />
     </div>
   );

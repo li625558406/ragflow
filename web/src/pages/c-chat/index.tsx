@@ -29,6 +29,7 @@ import { RAGFlowAvatar } from '@/components/ragflow-avatar';
 import ToolsPanel from '@/components/tools';
 import { Textarea } from '@/components/ui/textarea';
 import { downloadFileReviewVersion } from '@/services/file-review-service';
+import { editFileDocument } from '@/services/flow-service';
 import {
   Bookmark,
   Check,
@@ -3417,6 +3418,31 @@ export default function CChat() {
           onFileChange={(id, name) => {
             setReviewFileId(id);
             setReviewFileName(name);
+          }}
+          canEdit={/\.(docx?)$/i.test(reviewFileName)}
+          onEditDocument={async (ops) => {
+            // 对话附件编辑：产出全新文件（原文件字节不变），自动替换附件队列，
+            // 下条消息即可携带编辑版让 LLM 分析；面板就地切到新文件
+            const res = await editFileDocument(
+              reviewFileId,
+              reviewFileName,
+              ops,
+            );
+            setUploadedFiles((prev) => [
+              ...prev.filter((f) => f.id !== reviewFileId),
+              {
+                id: res.file_id,
+                name: res.file_name,
+                mime_type:
+                  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                created_by: '',
+                size: 0,
+                extension: '.docx',
+              },
+            ]);
+            setReviewFileId(res.file_id);
+            setReviewFileName(res.file_name);
+            showToast('已生成编辑版，已加入附件队列');
           }}
         />
 

@@ -705,6 +705,9 @@ export default function ReviewPanel({
   const docxFidelityCandidate = content?.file_type === 'docx' && !editing;
   const docxWrapRef = useRef<HTMLDivElement | null>(null);
   const [docxRenderFailed, setDocxRenderFailed] = useState(false);
+  // 回到顶部：监听主滚动容器（批注列表+文档共用），滚过一屏后浮出按钮
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [showBackTop, setShowBackTop] = useState(false);
   const [markedKeys, setMarkedKeys] = useState<Set<string>>(new Set());
   // blob 与 content 同源切换：content 来自成稿版本时拉版本 blob（frv- 对象）。
   // 版本 blob 失败（对象丢失等）→ versionDegraded 粘性置位 → content effect
@@ -1815,8 +1818,12 @@ export default function ReviewPanel({
           展示同时存在，点击列表项跳转到文档中对应批注位置（滚动容器与范本预览
           同款：min-h-0 flex-1 + overflow-x-hidden 防横向滚动条） */}
       <div
+        ref={scrollRef}
         className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-6 py-4"
-        onScroll={() => setPendingSel(null)}
+        onScroll={(e) => {
+          setPendingSel(null);
+          setShowBackTop(e.currentTarget.scrollTop > 400);
+        }}
       >
         {loading && (
           <div className="flex items-center justify-center py-20">
@@ -2345,12 +2352,25 @@ export default function ReviewPanel({
           </div>
         )}
       </div>
+
+      {/* 回到顶部：滚过一屏后浮出，平滑滚回列表区顶部 */}
+      {showBackTop && (
+        <button
+          title="回到顶部"
+          onClick={() =>
+            scrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' })
+          }
+          className="absolute bottom-8 right-8 z-10 flex h-9 w-9 items-center justify-center rounded-full border border-[#E5E5E5] bg-white text-[#525252] shadow-md transition-colors hover:border-[#91CAFF] hover:bg-[#F0F5FF] hover:text-[#1a66fb]"
+        >
+          <ChevronUp className="h-4 w-4" strokeWidth={2} />
+        </button>
+      )}
     </>
   );
 
   if (inline) {
     return (
-      <div className="flex flex-col h-full bg-[#FAFBFC] overflow-hidden">
+      <div className="relative flex flex-col h-full bg-[#FAFBFC] overflow-hidden">
         {innerContent}
       </div>
     );

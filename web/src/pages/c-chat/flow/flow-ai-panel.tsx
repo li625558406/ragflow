@@ -20,6 +20,7 @@ import {
   createFlowChatSession,
   deleteFlowComment,
   downloadVersionBlob,
+  editFileDocument,
   editFlowDocument,
   getFlowVersionContent,
   saveFlowAiRecord,
@@ -152,10 +153,17 @@ export default function FlowAiPanel({
   // AI 批注删除（硬删 DB 行）：成功后失效该 file 的 state 缓存，进度卡计数同步刷新
   const delAnnotation = useDeleteFileReviewAnnotation(reviewFileId);
   const [reviewPreparing, setReviewPreparing] = useState(false);
-  // 审核目标来源：version = 流程版本文件（可编辑段落）；upload = 用户手动上传（只读）
+  // 审核目标来源：version = 流程版本文件（可编辑段落，存新版本）；
+  // upload = 用户手动上传附件（doc/docx 可编辑，产出新文件自动进附件队列）
   const [reviewSource, setReviewSource] = useState<'version' | 'upload' | ''>(
     '',
   );
+  // 编辑产出文件注入 ChatInputBox 附件队列（nonce 变化生效一次）
+  const [queueInjectDoc, setQueueInjectDoc] = useState<{
+    doc: UploadedDoc;
+    removeId?: string;
+    nonce: number;
+  } | null>(null);
   // 来源为版本的审阅 document 对应的流程版本 id：版本切换（存为流程版本/
   // 回退/编辑保存新版本）后旧 document 作废，toggleReview 重传当前版本
   const [reviewFromVersionId, setReviewFromVersionId] = useState('');
@@ -202,7 +210,8 @@ export default function FlowAiPanel({
   const sessionIdRef = useRef('');
   // ChatInputBox 内部上传完成的文档对象（发送时附带）
   const uploadedDocsRef = useRef<UploadedDoc[]>([]);
-  const [uploadedDocs, setUploadedDocs] = useState<UploadedDoc[]>([]);
+  // 2026-09-21：uploadedDocs state 已删——唯一读者是审核入口显示判定（现恒 true），
+  // 上传队列只经下方 ref 同步（发送时读取，避免闭包过期）
   // 流式期间持续累积回复内容：send() 结束时 hook 会 resetAnswerList 清空
   // streamState，这里兜住完整回复供完成后展示/保存
   const contentRef = useRef('');
@@ -687,7 +696,6 @@ export default function FlowAiPanel({
   // ChatInputBox 上传完成的文档对象同步到 ref（发送时读取，避免闭包过期）
   const handleUploadedDocsChange = useCallback((files: UploadedDoc[]) => {
     uploadedDocsRef.current = files;
-    setUploadedDocs(files);
   }, []);
 
   // 上传版本为 document（AI 附件与审阅面板共用）；不传参则用当前版本，
@@ -1039,7 +1047,20 @@ export default function FlowAiPanel({
       setReviewSource('upload');
     }
     if (!reviewFileId && !uploadedDocsRef.current[0]) {
-      if (!version || reviewPreparing) return;
+      if (reviewPreparing) return;
+      if (!version) {
+        // 无版本流程：打开流程内最近的审核文件（对话直传上传通道的 document，
+        // 与 openWithFile 同一语义）；连历史审核都没有时引导先上传
+        if (!boundFileReview?.fileId) {
+          message.error('请先上传流程版本，或在对话中上传文件后再发起审核');
+          return;
+        }
+        setReviewFileId(boundFileReview.fileId);
+        setReviewFileName('');
+        setReviewSource('upload');
+        setReviewMode(true);
+        return;
+      }
       setError('');
       setReviewPreparing(true);
       try {
@@ -1064,12 +1085,15 @@ export default function FlowAiPanel({
     reviewMode,
     reviewPreparing,
     reviewSource,
+    boundFileReview,
     uploadVersionAsDocument,
     version,
   ]);
 
   // 文件审核入口状态上报：父级据此在顶部按钮行渲染/更新按钮；卸载时清空
-  const reviewVisible = !!version || uploadedDocs.length > 0;
+  // 2026-09-21：始终显示——无版本流程点击时回退到流程内最近审核文件（对话直传
+  // 那份），不再因「无版本且无待上传」隐藏入口（用户实测按钮消失的根因）
+  const reviewVisible = true;
   useEffect(() => {
     onReviewControlChange?.({
       visible: reviewVisible,
@@ -1201,8 +1225,11 @@ export default function FlowAiPanel({
     [flowId, onSaved],
   );
 
-  // Word 式正文编辑：后端按 para_index 同步增删改段落并存新版本（source=manual_edit，
-  // .doc 先转 docx），刷新流程详情后把新版本重新上传为 document，预览即切到新内容
+  // Word 式正文编辑，按审核目标来源分派：
+  // - version：后端按 para_index 同步增删改段落并存新版本（source=manual_edit，
+  //   .doc 先转 docx），刷新流程详情后把新版本重新上传为 document，预览即切到新内容
+  // - upload：对话直传附件走 /files/<id>/edit，产出全新文件对象（原文件不变），
+  //   自动注入附件队列——下条消息即可让 LLM 分析编辑后的内容
   const handleEditDocument = useCallback(
     async (ops: {
       edits: Array<{ paraIndex: number; newText: string }>;
@@ -1216,6 +1243,19 @@ export default function FlowAiPanel({
         runs?: FlowDocRun[];
       }>;
     }) => {
+      if (reviewSource === 'upload') {
+        if (!reviewFileId) throw new Error('无文件，无法编辑');
+        const res = await editFileDocument(reviewFileId, reviewFileName, ops);
+        setQueueInjectDoc({
+          doc: { id: res.file_id, name: res.file_name },
+          removeId: reviewFileId,
+          nonce: Date.now(),
+        });
+        setReviewFileId(res.file_id);
+        setReviewFileName(res.file_name);
+        message.success('已生成编辑版，已加入附件队列');
+        return;
+      }
       if (!version) throw new Error('无版本文件，无法编辑');
       const res = await editFlowDocument(flowId, version.id, ops);
       onSaved();
@@ -1227,7 +1267,15 @@ export default function FlowAiPanel({
         setReviewFromVersionId(res.version.id);
       }
     },
-    [flowId, onSaved, uploadVersionAsDocument, version],
+    [
+      flowId,
+      onSaved,
+      reviewFileId,
+      reviewFileName,
+      reviewSource,
+      uploadVersionAsDocument,
+      version,
+    ],
   );
 
   // 标题行内容（上下文 / 附带版本文件）：
@@ -1281,7 +1329,12 @@ export default function FlowAiPanel({
           delAnnotation.mutateAsync(id).then(() => undefined)
         }
         currentUserId={currentUserId}
-        canEdit={!!isOwner && reviewSource === 'version' && !!version}
+        canEdit={
+          !!isOwner &&
+          (reviewSource === 'version'
+            ? !!version
+            : reviewSource === 'upload' && /\.(docx?)$/i.test(reviewFileName))
+        }
         onEditDocument={handleEditDocument}
       />
 
@@ -1305,6 +1358,7 @@ export default function FlowAiPanel({
           // 审核入口已挪到标题行醒目按钮，隐藏输入框工具栏内的入口
           reviewAvailable={false}
           onUploadedFilesChange={handleUploadedDocsChange}
+          injectDoc={queueInjectDoc}
           accept=".doc,.docx"
           autoFocus
           leftSlot={titleRow}

@@ -69,6 +69,13 @@ interface ChatInputBoxProps {
   reviewAvailable?: boolean;
   /** 上传完成的文档对象数组变化回调（父级发送时附带） */
   onUploadedFilesChange?: (files: UploadedDoc[]) => void;
+  /** 父级注入文档进队列（如弹框编辑产出的新文件自动进附件队列）：
+   * nonce 变化时生效一次，removeId 存在时先移除旧文档再追加 */
+  injectDoc?: {
+    doc: UploadedDoc;
+    removeId?: string;
+    nonce: number;
+  } | null;
   /** 限制可上传的文件类型（如 '.doc,.docx'），文件选择/拖拽/粘贴均生效 */
   accept?: string;
   autoFocus?: boolean;
@@ -91,6 +98,7 @@ export default function ChatInputBox({
   onToggleReview,
   reviewAvailable,
   onUploadedFilesChange,
+  injectDoc,
   accept,
   autoFocus,
   leftSlot,
@@ -114,6 +122,20 @@ export default function ChatInputBox({
   useEffect(() => {
     onUploadedFilesChange?.(uploadedFiles);
   }, [uploadedFiles, onUploadedFilesChange]);
+
+  // 父级注入：编辑产出的新文件自动进附件队列（nonce 变化生效一次，防重复追加）
+  const injectedNonceRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!injectDoc || injectDoc.nonce === injectedNonceRef.current) return;
+    injectedNonceRef.current = injectDoc.nonce;
+    setUploadedFiles((prev) => {
+      const withoutOld = injectDoc.removeId
+        ? prev.filter((d) => d.id !== injectDoc.removeId)
+        : prev;
+      if (withoutOld.some((d) => d.id === injectDoc.doc.id)) return withoutOld;
+      return [...withoutOld, injectDoc.doc];
+    });
+  }, [injectDoc]);
 
   // 语音转写结果回填输入框（与 c-chat 一致）
   useEffect(() => {

@@ -208,6 +208,40 @@ export interface FlowDocEditOps {
   }>;
 }
 
+/** 编辑 ops → 后端 snake_case 请求体（流程版本编辑与对话附件编辑共用同一契约） */
+function flowDocEditOpsToBody(ops: FlowDocEditOps) {
+  return {
+    edits: ops.edits.map((e) => ({
+      para_index: e.paraIndex,
+      new_text: e.newText,
+      ...(e.runs ? { runs: e.runs } : {}),
+      ...(e.align ? { align: e.align } : {}),
+      ...(e.indent ? { indent: e.indent } : {}),
+      ...(e.headingLevel !== undefined
+        ? { heading_level: e.headingLevel }
+        : {}),
+    })),
+    table_edits: (ops.tableEdits || []).map((t) => ({
+      para_index: t.paraIndex,
+      row: t.row,
+      col: t.col,
+      new_text: t.newText,
+      ...(t.runs ? { runs: t.runs } : {}),
+    })),
+    deletes: ops.deletes,
+    inserts: ops.inserts.map((i) => ({
+      after_para_index: i.afterParaIndex,
+      new_text: i.newText,
+      ...(i.runs ? { runs: i.runs } : {}),
+      ...(i.align ? { align: i.align } : {}),
+      ...(i.indent ? { indent: i.indent } : {}),
+      ...(i.headingLevel !== undefined
+        ? { heading_level: i.headingLevel }
+        : {}),
+    })),
+  };
+}
+
 export async function editFlowDocument(
   flowId: string,
   versionId: string,
@@ -218,34 +252,24 @@ export async function editFlowDocument(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       version_id: versionId,
-      edits: ops.edits.map((e) => ({
-        para_index: e.paraIndex,
-        new_text: e.newText,
-        ...(e.runs ? { runs: e.runs } : {}),
-        ...(e.align ? { align: e.align } : {}),
-        ...(e.indent ? { indent: e.indent } : {}),
-        ...(e.headingLevel !== undefined
-          ? { heading_level: e.headingLevel }
-          : {}),
-      })),
-      table_edits: (ops.tableEdits || []).map((t) => ({
-        para_index: t.paraIndex,
-        row: t.row,
-        col: t.col,
-        new_text: t.newText,
-        ...(t.runs ? { runs: t.runs } : {}),
-      })),
-      deletes: ops.deletes,
-      inserts: ops.inserts.map((i) => ({
-        after_para_index: i.afterParaIndex,
-        new_text: i.newText,
-        ...(i.runs ? { runs: i.runs } : {}),
-        ...(i.align ? { align: i.align } : {}),
-        ...(i.indent ? { indent: i.indent } : {}),
-        ...(i.headingLevel !== undefined
-          ? { heading_level: i.headingLevel }
-          : {}),
-      })),
+      ...flowDocEditOpsToBody(ops),
+    }),
+  });
+}
+
+/** 对话附件（{tenant}-downloads/{file_id} 直传通道）Word 式编辑：产出全新文件对象，
+ * 原文件字节不变；返回新 file_id/file_name 供面板切换与附件队列注入 */
+export async function editFileDocument(
+  fileId: string,
+  fileName: string,
+  ops: FlowDocEditOps,
+): Promise<{ file_id: string; file_name: string }> {
+  return apiFetch(`/files/${fileId}/edit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...flowDocEditOpsToBody(ops),
+      file_name: fileName || 'document.docx',
     }),
   });
 }
