@@ -55,6 +55,25 @@ describe('docx-render-cache', () => {
     expect(takeDocxRender(blobs[1], document.createElement('div'))).toBe(false);
   });
 
+  it('对抗：淘汰后同一 Blob 再 stash 复用空 holder，不残留旧内容', () => {
+    const blobs = ['r1', 'r2', 'r3', 'r4'].map(blob);
+    blobs.forEach((b, i) => stashDocxRender(b, tree(`old-${i + 1}`)));
+    expect(takeDocxRender(blobs[0], document.createElement('div'))).toBe(false); // 已被淘汰
+    stashDocxRender(blobs[0], tree('fresh'));
+    const el = document.createElement('div');
+    expect(takeDocxRender(blobs[0], el)).toBe(true);
+    expect(el.textContent).toBe('fresh');
+  });
+
+  it('对抗：同 Blob 未 take 连续两次 stash，holder 不叠加两棵树', () => {
+    const b = blob('dup');
+    stashDocxRender(b, tree('第一棵'));
+    stashDocxRender(b, tree('第二棵'));
+    const el = document.createElement('div');
+    expect(takeDocxRender(b, el)).toBe(true);
+    expect(el.textContent).toBe('第二棵');
+  });
+
   it('BIG_BLOB_BYTES = 2.5MB', () => {
     expect(BIG_BLOB_BYTES).toBe(2.5 * 1024 * 1024);
   });

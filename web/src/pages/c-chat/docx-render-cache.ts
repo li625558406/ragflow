@@ -28,22 +28,26 @@ function ensureHolder(blob: Blob): HTMLDivElement {
     order.unshift(blob);
     // 配额淘汰：清空最旧 holder 的内容（WeakMap 条目保留，空 holder 等效失效）
     while (order.length > MAX_ENTRIES) {
-      const oldest = order.pop();
-      const h = oldest ? stash.get(oldest) : null;
+      // while 条件已保证 order 非空，pop 必返回 Blob，non-null 断言安全
+      const h = stash.get(order.pop()!);
       if (h) h.innerHTML = '';
     }
   }
   return holder;
 }
 
-/** 渲染 effect 卸载/依赖变更前调用：把 el 的渲染产物子树整体摘进离屏缓存。 */
+/** 渲染 effect 卸载/依赖变更前调用：把 el 的渲染产物子树整体摘进离屏缓存。
+ *  append 前先清空 holder——防御同一 Blob 被两个不同 el 先后 stash 时两棵树
+ *  混在 holder（共享基建设防，计划调用流下不可达：stash 前 el 必已被清空）。 */
 export function stashDocxRender(blob: Blob, el: HTMLElement): void {
   if (!el.firstElementChild) return;
   const holder = ensureHolder(blob);
+  holder.innerHTML = '';
   while (el.firstChild) holder.appendChild(el.firstChild);
 }
 
-/** 重开回放：把缓存子树搬回 el。命中返回 true（调用方随后 strip/重涂）。 */
+/** 重开回放：把缓存子树搬回 el。命中返回 true（调用方随后 strip/重涂）。
+ *  契约：调用方须传空容器（重开挂载的干净 el）；非空容器内容会与缓存子树混排。 */
 export function takeDocxRender(blob: Blob, el: HTMLElement): boolean {
   const holder = stash.get(blob);
   if (!holder || !holder.firstElementChild) return false;
