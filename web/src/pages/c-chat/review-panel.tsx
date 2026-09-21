@@ -39,6 +39,7 @@ import {
   type DocxHighlightItem,
 } from './docx-highlight';
 import DocxParagraphEditor, { collectEditorOps } from './docx-paragraph-editor';
+import { BIG_BLOB_BYTES } from './docx-render-cache';
 import { parseTableCells, type TableCellInfo } from './docx-table-utils';
 import {
   getLocateText,
@@ -740,8 +741,21 @@ export default function ReviewPanel({
   const docxBlobError = versionBlobUsable
     ? versionBlobQuery.error
     : origBlobQuery.error;
+  // 超大文档防线（2026-09-21 补齐范本预览同款门槛）：>2.5MB 默认文本降级，
+  // 「切换保真渲染」显式覆盖（本地 state 不落库）。派生判定而非 state+effect：
+  // blob 到达的同一 commit 内守卫即生效，不会先白渲染一遍再翻转分支。
+  const docxOversize = Boolean(docxBlob && docxBlob.size > BIG_BLOB_BYTES);
+  const [docxForceFidelity, setDocxForceFidelity] = useState(false);
+  // blob 换对象（切文件/版本）后覆盖选择失效，回到默认降级
+  useEffect(() => {
+    setDocxForceFidelity(false);
+  }, [docxBlob]);
   const docxFidelity = Boolean(
-    docxFidelityCandidate && docxBlob && !docxBlobError && !docxRenderFailed,
+    docxFidelityCandidate &&
+    docxBlob &&
+    !docxBlobError &&
+    !docxRenderFailed &&
+    (!docxOversize || docxForceFidelity),
   );
   // 容器挂载代数：renderAsync 的渲染产物不在 React state 里，任何原因导致的
   // 容器重挂（open 切换 return null、loading 闪断、文件切换）都必须重跑渲染，
@@ -935,6 +949,8 @@ export default function ReviewPanel({
   // 任何重挂都强制重跑渲染，否则容器空白（版本历史二次查看白屏根因）。
   useEffect(() => {
     if (!docxFidelityCandidate || !docxBlob || !docxWrapRef.current) return;
+    // 超大文档默认文本降级：不进 renderAsync（「切换保真渲染」覆盖后放行）
+    if (docxOversize && !docxForceFidelity) return;
     const el = docxWrapRef.current;
     setDocxRenderFailed(false);
     setMarkedKeys(new Set());
@@ -953,7 +969,13 @@ export default function ReviewPanel({
         setMarkedKeys(new Set());
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [docxBlob, docxFidelityCandidate, docxEpoch]);
+  }, [
+    docxBlob,
+    docxFidelityCandidate,
+    docxEpoch,
+    docxOversize,
+    docxForceFidelity,
+  ]);
 
   // railItems 变化（annotations/comments 异步到达）：只补插新增 key 的 mark，
   // 已锚定的不重插；highlightDocxRanges 在 setState 外执行（StrictMode 下
@@ -2072,6 +2094,21 @@ export default function ReviewPanel({
                     (docxBlobError || docxRenderFailed) && (
                       <div className="mx-auto mb-2 max-w-[794px] rounded bg-[#FFF7E8] px-3 py-2 text-xs text-[#FAAD14]">
                         格式渲染失败，已降级为纯文本预览
+                      </div>
+                    )}
+                  {docxFidelityCandidate &&
+                    docxOversize &&
+                    !docxForceFidelity &&
+                    docxBlob &&
+                    !docxBlobLoading && (
+                      <div className="mx-auto mb-2 flex max-w-[794px] items-center gap-2 rounded bg-[#FFF7E8] px-3 py-2 text-xs text-[#FAAD14]">
+                        <span>文档较大，已用文本预览保障流畅</span>
+                        <button
+                          className="ml-auto shrink-0 text-[#1a66fb] transition-colors hover:text-[#1557d6]"
+                          onClick={() => setDocxForceFidelity(true)}
+                        >
+                          切换保真渲染
+                        </button>
                       </div>
                     )}
                   <div
