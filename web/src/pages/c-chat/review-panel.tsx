@@ -949,11 +949,13 @@ export default function ReviewPanel({
   // 任何重挂都强制重跑渲染，否则容器空白（版本历史二次查看白屏根因）。
   useEffect(() => {
     if (!docxFidelityCandidate || !docxBlob || !docxWrapRef.current) return;
-    // 超大文档默认文本降级：不进 renderAsync（「切换保真渲染」覆盖后放行）
-    if (docxOversize && !docxForceFidelity) return;
     const el = docxWrapRef.current;
+    // 重置失败态必须在 oversize 守卫之前：跨文件切换（前一个文件渲染失败）后
+    // 命中守卫 return 的话，新文件从未渲染却残留「格式渲染失败」横幅
     setDocxRenderFailed(false);
     setMarkedKeys(new Set());
+    // 超大文档默认文本降级：不进 renderAsync（「切换保真渲染」覆盖后放行）
+    if (docxOversize && !docxForceFidelity) return;
     el.innerHTML = '';
     renderAsync(docxBlob, el, undefined, { inWrapper: true, breakPages: true })
       .then(() => {
