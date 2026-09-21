@@ -1178,9 +1178,21 @@ def fst(monkeypatch):
 def test_perform_revert_requires_fixed_status(fst):
     aid, row = _revert_setup("rv-open", status="open",
                              patch={"find": "A", "replace": "B"})
-    with pytest.raises(executor.FileReviewError, match="只有已修复的批注才能回退"):
+    with pytest.raises(executor.FileReviewError, match="只有已修复/已确认保留的批注才能回退"):
         executor.perform_revert(row)
     assert FileReviewAnnotation.get_by_id(aid).status == "open"
+
+
+def test_perform_revert_allowed_from_resolved(fst):
+    """确认保留（resolved）后仍可回退：确认只是标记，文档同样含修复内容。"""
+    patch = {"find": "投标文件缺少封面", "replace": "投标文件包含封面"}
+    aid, row = _revert_setup(
+        "rv-resolved", status="resolved", patch=patch,
+        blob=_docx(["投标文件包含封面" + _BODY]))
+    out = executor.perform_revert(row)
+    assert out["version"] == "v3"
+    after = FileReviewAnnotation.get_by_id(aid)
+    assert after.status == "open" and json.loads(after.patch_json) == patch
 
 
 def test_perform_revert_rejects_empty_and_garbage_patch_json(fst):
@@ -1253,13 +1265,14 @@ def test_perform_revert_happy_path_restores_text_and_creates_revert_round(fst):
     # r2 是真修复轮计 1 次；v3 revert 轮不吃额度 → 剩 MAX-1 而非 MAX-2
     assert fix_rounds_left(rounds) == MAX_FIX_ROUNDS - 1
 
-    # 批注回 open + patch 清空（防二次回退）
+    # 批注回 open + patch **保留**（自由切换：前端据此显示「恢复 AI 修改」）
     after = FileReviewAnnotation.get_by_id(aid)
-    assert after.status == "open" and after.patch_json == ""
+    assert after.status == "open" and json.loads(after.patch_json) == patch
 
 
 def test_perform_revert_second_call_rejected_after_first(fst):
-    """回退后 patch 已清空：同一行再调必须拒绝（防二次回退/重复建轮）。"""
+    """回退后状态是 open（patch 保留）：状态闸拒绝二次回退（防重复建轮）。
+    再切回去走 perform_reapply，不是再回退。"""
     patch = {"find": "投标文件缺少封面", "replace": "投标文件包含封面"}
     _aid, row = _revert_setup("rv-twice", patch=patch, blob=_docx(["投标文件包含封面" + _BODY]))
     executor.perform_revert(row)
@@ -1276,13 +1289,115 @@ def test_perform_revert_stale_row_rejected_by_in_lock_refetch(fst):
     aid, row = _revert_setup(
         "rv-stale", patch=patch, blob=_docx(["投标文件包含封面" + _BODY]))
     # 模拟并发请求抢先完成回退（拿锁→改库→放锁），本调用手里只剩旧快照 row
-    FileReviewAnnotationService.update_status(aid, "open", patch_json="")
+    FileReviewAnnotationService.update_status(aid, "open")
     stale = FileReviewAnnotation.get_by_id(aid)
     stale.status = "fixed"
     stale.patch_json = json.dumps(patch, ensure_ascii=False)
-    with pytest.raises(executor.FileReviewError, match="只有已修复的批注才能回退"):
+    with pytest.raises(executor.FileReviewError, match="只有已修复/已确认保留的批注才能回退"):
         executor.perform_revert(stale)
     # 批注仍停在 open（未被陈旧快照二次处理），也无 round 4
     after = FileReviewAnnotation.get_by_id(aid)
-    assert after.status == "open" and after.patch_json == ""
+    assert after.status == "open"
     assert len(FileReviewRoundService.get_by_task(row.task_id)) == 2
+
+
+# ── 恢复 AI 修改（perform_reapply）：回退的对偶，原文 ⇄ AI 修改自由切换 ──
+
+
+def test_perform_reapply_happy_path_applies_forward_and_creates_apply_round(fst):
+    """回退后（open+patch，文档是原文）恢复：正补丁命中 → 产 kind='apply' 轮
+    （不烧修复额度）→ 批注 resolved + patch 保留。"""
+    patch = {"find": "投标文件缺少封面", "replace": "投标文件包含封面"}
+    aid, row = _revert_setup(
+        "ra-ok", status="open", patch=patch,
+        blob=_docx(["投标文件缺少封面" + _BODY]))
+    out = executor.perform_reapply(row)
+    assert out["applied"] is True and out["version"] == "v3"
+
+    texts = [p.text for p in Document(io.BytesIO(
+        st.blobs[(f"{PFX}-downloads", store_key(row.task_id, "v3"))])).paragraphs]
+    assert texts == ["投标文件包含封面" + _BODY]
+
+    rounds = FileReviewRoundService.get_by_task(row.task_id)
+    ap = [r for r in rounds if r.round_no == 3][0]
+    assert ap.status == "done" and ap.kind == "apply"
+    assert "恢复批注修改" in ap.summary
+
+    after = FileReviewAnnotation.get_by_id(aid)
+    assert after.status == "resolved" and json.loads(after.patch_json) == patch
+
+    from api.db.services.file_review_service import fix_rounds_left, MAX_FIX_ROUNDS
+    # r2 修复轮计 1；revert/apply 轮都不吃额度
+    assert fix_rounds_left(rounds) == MAX_FIX_ROUNDS - 1
+
+
+def test_perform_reapply_full_toggle_roundtrip(fst):
+    """回退 → 恢复 → 再回退：补丁始终保留，文档在原文/AI 修改间完整往复。"""
+    patch = {"find": "投标文件缺少封面", "replace": "投标文件包含封面"}
+    original = _docx(["投标文件缺少封面" + _BODY])
+    fixed = _docx(["投标文件包含封面" + _BODY])
+    aid, row = _revert_setup("ra-toggle", status="fixed", patch=patch, blob=fixed)
+    executor.perform_revert(row)                      # → v3 = 原文, open+patch
+    row2 = FileReviewAnnotation.get_by_id(aid)
+    executor.perform_reapply(row2)                    # → v4 = AI 修改, resolved+patch
+    row3 = FileReviewAnnotation.get_by_id(aid)
+    executor.perform_revert(row3)                     # → v5 = 原文, open+patch
+    def blob_texts(v):
+        return [p.text for p in Document(io.BytesIO(
+            st.blobs[(f"{PFX}-downloads", store_key(row.task_id, v))])).paragraphs]
+    assert blob_texts("v3") == [p.text for p in Document(io.BytesIO(original)).paragraphs]
+    assert blob_texts("v4") == [p.text for p in Document(io.BytesIO(fixed)).paragraphs]
+    assert blob_texts("v5") == [p.text for p in Document(io.BytesIO(original)).paragraphs]
+    final = FileReviewAnnotation.get_by_id(aid)
+    assert final.status == "open" and json.loads(final.patch_json) == patch
+    assert len(FileReviewRoundService.get_by_task(row.task_id)) == 5
+
+
+def test_perform_reapply_idempotent_when_fix_already_in_doc(fst):
+    """文档已含修复（self-heal 出口把 fixed 打回 open 的历史行 / 重复恢复）：
+    find 打不中但 replace 在 → 不动文档不产轮，仅置 resolved。"""
+    patch = {"find": "投标文件缺少封面", "replace": "投标文件包含封面"}
+    aid, row = _revert_setup(
+        "ra-idem", status="open", patch=patch,
+        blob=_docx(["投标文件包含封面" + _BODY]))
+    out = executor.perform_reapply(row)
+    assert out["applied"] is False
+    assert len(FileReviewRoundService.get_by_task(row.task_id)) == 2
+    after = FileReviewAnnotation.get_by_id(aid)
+    assert after.status == "resolved" and json.loads(after.patch_json) == patch
+
+
+def test_perform_reapply_rejects_when_neither_side_present(fst):
+    """find/replace 都不在文档（原文被后续轮改写）→ 诚实拒绝，批注原样。"""
+    patch = {"find": "投标文件缺少封面", "replace": "投标文件包含封面"}
+    aid, row = _revert_setup(
+        "ra-gone", status="open", patch=patch,
+        blob=_docx(["投标文件改成了别的" + _BODY]))
+    with pytest.raises(executor.FileReviewError, match="原文已被后续修复改动"):
+        executor.perform_reapply(row)
+    after = FileReviewAnnotation.get_by_id(aid)
+    assert after.status == "open" and json.loads(after.patch_json) == patch
+    assert len(FileReviewRoundService.get_by_task(row.task_id)) == 2
+
+
+def test_perform_reapply_zero_diff_patch_flips_status_without_round(fst):
+    """find == replace 的零差异补丁：应用等于没应用，不产轮只置 resolved。"""
+    patch = {"find": "同文本", "replace": "同文本"}
+    aid, row = _revert_setup(
+        "ra-zero", status="open", patch=patch,
+        blob=_docx(["同文本" + _BODY]))
+    out = executor.perform_reapply(row)
+    assert out["applied"] is False
+    assert len(FileReviewRoundService.get_by_task(row.task_id)) == 2
+    assert FileReviewAnnotation.get_by_id(aid).status == "resolved"
+
+
+def test_perform_reapply_rejects_missing_and_garbage_patch(fst):
+    _aid, row = _revert_setup("ra-nopatch", status="open", patch=None)
+    with pytest.raises(executor.FileReviewError, match="没有可恢复的 AI 修改记录"):
+        executor.perform_reapply(row)
+    _aid2, row2 = _revert_setup("ra-garbage", status="open", patch={"find": "A", "replace": "B"})
+    FileReviewAnnotation.update(patch_json="not-json").where(
+        FileReviewAnnotation.id == row2.id).execute()
+    with pytest.raises(executor.FileReviewError, match="没有可恢复的 AI 修改记录"):
+        executor.perform_reapply(FileReviewAnnotation.get_by_id(row2.id))

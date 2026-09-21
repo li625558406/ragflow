@@ -262,18 +262,50 @@ export default function FileReviewProgress({
                   )}
                   {a.status === 'fixed' && (
                     <div className="ml-5">
-                      <FixActions fileId={fileId} annotationId={a.id} />
+                      <FixActions
+                        fileId={fileId}
+                        annotationId={a.id}
+                        status="fixed"
+                      />
                     </div>
                   )}
                   {a.status === 'resolved' && (
-                    <div className="ml-5 text-[#52C41A]">已确认保留</div>
+                    <div className="ml-5">
+                      <span className="mr-2 text-[#52C41A]">已确认保留</span>
+                      {a.patch && (a.patch.find || a.patch.replace) && (
+                        <FixActions
+                          fileId={fileId}
+                          annotationId={a.id}
+                          status="resolved"
+                        />
+                      )}
+                    </div>
                   )}
                 </div>
               ))}
               {openAnns.map((a) => (
-                <div key={a.id} className="flex items-start gap-1.5">
-                  <SeverityTag severity={a.severity} />
-                  <span className="text-[#595959]">{a.issue}</span>
+                <div key={a.id}>
+                  <div className="flex items-start gap-1.5">
+                    <SeverityTag severity={a.severity} />
+                    <span className="text-[#595959]">
+                      {a.issue}
+                      {/* open+patch=回退过的批注：标记已回退，可一键恢复 AI 修改 */}
+                      {a.patch && (a.patch.find || a.patch.replace) && (
+                        <span className="ml-1 rounded bg-[#8C8C8C] px-1 py-px text-[10px] font-bold text-white">
+                          已回退
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                  {a.patch && (a.patch.find || a.patch.replace) && (
+                    <div className="ml-5">
+                      <FixActions
+                        fileId={fileId}
+                        annotationId={a.id}
+                        status="open"
+                      />
+                    </div>
+                  )}
                 </div>
               ))}
               {openAnns.length > 0 && (

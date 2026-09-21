@@ -160,10 +160,16 @@ def apply_patches_to_docx(file_bytes: bytes, patches) -> tuple[bytes, list]:
             applied.append(False)
             continue
         if "\n" in find_str:
-            # 跨行 patch：连续段落序列定位 + 变更行替换
-            applied.append(
-                _apply_multiline_patch(paragraphs, find_str, replace_str)
-            )
+            # 跨行 patch：连续段落序列定位 + 变更行替换。序列通道失败时降级单段
+            # 通道——整段摘文可能物理落在**一个**段落里（原文档 w:br 换行，或正向
+            # 修复把含换行的 replace 写进单段、回退逆补丁再找它，生产实证
+            # ann 212b980c：逆 find='1.技术和服务响应情况\n45.00' 同段命中，
+            # 序列通道 0 命中误报「原文已被后续修复改动」）。严格增量：序列通道
+            # 成功路径一字不变，降级只在原先 applied=False 的地方多一次机会。
+            ok = _apply_multiline_patch(paragraphs, find_str, replace_str)
+            if not ok:
+                ok = _apply_single(paragraphs, find_str, replace_str)
+            applied.append(ok)
             continue
         applied.append(_apply_single(paragraphs, find_str, replace_str))
     if not any(applied):

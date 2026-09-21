@@ -72,7 +72,11 @@ from api.utils.api_utils import (
 from common import settings
 from common.constants import RetCode
 from common.misc_utils import thread_pool_exec
-from rag.svr.file_review.executor import FileReviewError, perform_revert  # noqa: F401 (FileReviewError 供 except 子句引用)
+from rag.svr.file_review.executor import (
+    FileReviewError,
+    perform_reapply,
+    perform_revert,
+)  # noqa: F401 (FileReviewError 供 except 子句引用)
 
 # 本模块**不**顶层 import rag.svr.file_review.spawn：起线程那一步已随受理闸门一起下沉到
 # Service 层的 admit_fix_round（由它函数内延迟 import），本层不再直接触 spawn。
@@ -360,6 +364,17 @@ async def update_annotation_status(annotation_id: str, tenant_id: str):
         # 有 tenant 的历史脏数据），而权限必须按「这条标注所属的审核任务」判。
         if not FileReviewRoundService.get_owned_task(row.task_id, tenant_id):
             return get_error_data_result("批注不存在或无权访问")
+        # open + patch → resolved 走**恢复链路**（2026-09-21（八）自由切换）：这是
+        # 回退后的批注，「确认保留」语义是把 AI 修改重新应用回文档（正补丁 → apply
+        # 轮），不是单纯改状态。fixed/resolved → resolved 才是纯标记（修复已在文档）。
+        # perform_reapply 持 _ADMIT_LOCK + MinIO 往返，必须丢线程池（同 revert）。
+        if (
+            status == "resolved"
+            and (row.status or "") == "open"
+            and (row.patch_json or "").strip()
+        ):
+            result = await asyncio.to_thread(perform_reapply, row)
+            return get_json_result(data={"annotation_id": annotation_id, **result})
         if not FileReviewAnnotationService.update_status(annotation_id, status):
             # 上面刚查到行，这里再失败只可能是并发删除：同样按「不存在」回，不泄露时序差异。
             return get_error_data_result("批注不存在或无权访问")

@@ -1,5 +1,32 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-21（九）原文 ⇄ AI 修改自由切换——回退后可一键恢复 AI 修改
+
+**主题**：接（六）（八），用户反馈回退语义太死板：「可以回退，也可以再点保留，又恢复了，也就是我可以要原文内容，也可以要 AI 修改后的内容，可以自由切换」。现状：回退会**清空** patch_json，批注回 open 后再点「确认保留」只是纯状态标记，文档永远停在原文，AI 修改一旦回退就找不回来。
+
+**方案**：patch_json 改为**永久保留**（回退不再清空），新增 `perform_reapply` 正向恢复。状态环：`fixed/resolved+patch --回退--> open+patch（文档=原文）--确认保留--> resolved+patch（文档=AI 修改）--回退--> ...` 无限双向切换，patch 是切换的唯一权威凭据。
+
+**改动（后端 3 文件 + 前端 2 文件）**：
+- `rag/svr/file_review/executor.py`：`perform_revert` 尾部不再清 patch_json（注释写明自由切换语义）；回退闸放行 fixed+resolved（open+patch 被闸住防重复回退）；新增 `perform_reapply(annotation_row)`——`_ADMIT_LOCK` 下重取行→patch 校验→取最佳修复轮 blob→**按文档状态分派**：正向 find 命中 → `apply_patches_to_docx` 应用 + 产 `kind='apply'` 轮 + 置 resolved；find 不中但逆探（replace 在文档中）命中 → 幂等（修复已在文档）纯状态翻转不产轮；两边都不在 → 诚实 101「原文已被后续修复改动，无法恢复」（自愈 legacy 脏数据）；find==replace → 零差异纯翻转不产轮。
+- `api/db/services/file_review_service.py`：`fix_rounds_left` 对 kind='apply' 同 revert carve-out（恢复不是修复尝试，不烧额度）。
+- `api/apps/restful_apis/file_review_api.py`：`update_annotation_status` 路由——status='resolved' 且行是 open 且 patch_json 非空 → `perform_reapply`（`asyncio.to_thread` 包裹，锁+MinIO 不阻塞 quart 事件循环）；其余组合照旧纯状态翻转。
+- `web/src/pages/c-chat/review-fix-diff.tsx`：FixActions 按 status 分派——fixed→[回退][确认保留]；resolved→[回退]（确认后仍可回原文）；open+patch→[恢复 AI 修改]（按钮文案）。
+- `web/src/pages/c-chat/review-panel.tsx`：AiCard 新增「已回退」灰徽标（open+patch）；FixActions 带 status 透传。
+
+**测试**：executor 新 7 例（happy path 产 apply 轮+额度不烧／fixed→revert→reapply→revert 全环 roundtrip 断言 v3=原文 v4=AI 修改 v5=原文 共 5 轮／幂等逆探不产轮／两边都不在诚实拒绝／零差异补丁不产轮／缺 patch+坏 JSON 拒绝／resolved 也可回退）；api 新 2 例（open+patch 路由进 reapply 不走纯翻转／fixed→resolved 与裸 open 保持纯翻转不进 reapply）；前端 review-panel-version 新 describe 4 例（fixed 双按钮／open+patch 已回退徽标+恢复按钮无确认保留／resolved 仍有回退无恢复／open 无 patch 不渲染任何切换按钮）。后端 4 套件 260 passed + 前端相关 4 套件 59 passed 全绿。前端用例教训：边栏卡默认折叠（（七）追加项）+ 正文不含 matched_text 时批注落入底部兜底区无卡片——用例正文必须含 matched_text 且先点展开箭头。
+
+**部署硬约束**：后端 3 文件（executor.py + file_review_service.py + file_review_api.py）**成套 SCP + restart**；前端 build+dist+nginx reload。反序无碍（前端按钮对旧后端报错不崩），但只部署前端不部署后端则「恢复 AI 修改」点了被 status 端点当纯翻转处理、文档不变。**未部署、未 commit、未 push**，待用户确认。
+
+## 2026-09-21（八）回退误报「原文已被后续修复改动」根修——patcher 跨行通道降级单段
+
+**主题**：用户回退 fixed 批注报 101「原文已被后续修复改动，无法自动回退」。生产诊断（最近任务全部 fixed+patch_json 批注，逐条用与 perform_revert 同口径重放逆补丁）坐实：该任务 5 条 fixed 中 4 条本就可回退，唯一失败的是 `ann 212b980c`——其正向 patch 是「单行 find → **含换行 replace**」（`'30分' → '28分\n（扣2分）'` 形态），replace 经 `_apply_single` 连同 `<w:br/>` 写进了**单个段落**；回退时逆补丁 find=replace 含 `\n`，`apply_patches_to_docx` 按「find 含换行 → 跨行段落序列通道」路由，序列通道要求各行分处连续段落 ⇒ 结构性 0 命中 ⇒ 误报「被后续改动」。**不是真被改过，是路由不对称**。
+
+**改动（后端单文件 `rag/svr/file_review/patcher.py`）**：find 含 `\n` 的 patch 先走跨行序列通道（既有成功路径一字不变），失败后**降级单段通道** `_apply_single`（整段摘文物理落在一个段落里的形态：原文档 w:br 换行，或正向含换行 replace 落进单段后回逆补丁再找它）。严格增量——降级只在原先 applied=False 的地方多一次机会；`run.text`/`para.text` 对 `<w:br/>` 与 `\n` 双向一致已在本地 venv 实测（写入转 br、读回转 \n，runs 拼接与段落 text 同含 \n，`_replace_in_paragraph` 单段匹配无障碍）。既有多行用例行为全部不变（纯插入/重复行歧义/空转补丁的 fallback 均仍 0 命中）。
+
+**测试**：patcher 45→49 passed（新 4 例对抗：单段含换行 find 降级命中／正向含换行 replace→逆补丁完整还原的 roundtrip 对称性闸／降级继承唯一性闸（同形两段仍诚实跳过）／行序倒置单段 0 命中不误救）；executor+service+api 关联 202 passed 全绿。
+
+**部署**：后端单文件 `rag/svr/file_review/patcher.py` SCP + restart（**未部署、未 commit**，待用户确认）；生产重放已在容器旧代码上复现 `ann 212b980c` applied=False 与报错吻合，部署后同脚本应转 True。遗留：纯插入/删行型逆补丁（逆 find 含空行）仍结构性不可回退（无锚点，诚实保留手动处理路径）。
+
 ## 2026-09-21（七）审核弹框三项根修：确认保留即时联动 + 未定位有序降级 + 弹框展示成稿版本
 
 **主题**：后端（六）部署后用户实测弹框（ReviewPanel）报三问题：①弹框点「确认保留」无任何反馈（进度卡「查看明细」点了立即变，弹框不变）；②「文档里有批注的文案，但显示未定位」；③确认保留后弹框里文档还是原文。生产诊断（最近 8 任务逐条同口径重放）定位：①面板批注是父组件 props（会话内存），mutation 只 invalidate state 查询、无人刷新 props ⇒ 永远旧值；②MISS 分三类——`multi`（LLM 复制行致序列通道多命中→-1）、`dup`/表格（重复段/表格整体一个 HTML 段落致序列通道结构性失配）、`nomatch`（`/；` 归一化后为空，诚实不可定位）；③面板渲染原始上传文件，成稿版本（`frv-{task_id}-{version}`）从不进面板——state `doc.has_result/version` 设计注释本就写着「面板必须展示最后一版」但前端从未消费。
@@ -14,6 +41,8 @@
 **后端已部署 2026-09-21（md5 双端一致+docker restart+import 冒烟+新端点/对照端点无 Authorization 双 401）；已 commit（5739af89）。前端未部署**——生产 dist 旧版，弹框联动/未定位降级/成稿版本展示/边栏折叠需 build+dist+nginx reload 后可见。
 
 **同日追加：边栏批注卡默认折叠**——用户要求「文档正文的批注右侧的批注内容正文默认折叠起来，可展开」。AiCard/CommentCard 正文（摘录/问题/建议/修复对比/操作、人工批注内容）改为默认折叠只留头部行：头部尾随 ChevronDown 切换按钮（stopPropagation 防误触发定位跳转），`selected` 时自动展开（列表区跳转/正文 mark 点击后能看到内容）。E2E（dev :9222 demo01）：9 卡默认全折叠、点箭头展开+标题翻转、annotation-select 定位后自动展开+选中环；tsc 零错误+组件测试 5 例回归全绿。
+
+**同日再追加：展开卡被下一张卡遮挡根修**——用户报「展开后，弹框被遮挡住了」。根因：边栏卡是 `absolute` 定位（top 由 measure() 防重叠算出），展开只改卡片自身高度、不改 wrap 高度 → 既有 ResizeObserver 只观察 wrapRef 永不触发 → measure() 不重算 tops → 展开卡与下一张卡重叠，后绘制的下一张盖住展开内容。修法：ResizeObserver 同时逐卡观察 `[data-card-key]` 元素（高度一变即重测；`top` 变化不改尺寸，无回环）。E2E 复验（demo01）：ai-3 展开 h=178 后 ai-4 正确下推零重叠、展开正文完整可见、SVG 引线保持吸附；tsc 零错误 + 22 用例全绿。既知既有行为（非本次引入）：锚点远超视口的卡被钳制到 wrap 底部时可能相互重叠（ai-5/8/9 同 top），与展开遮挡无关。
 
 **遗留**：①`/；` 类纯符号摘录诚实未定位（不可修）；②目录/标题重复段多命中取首现，可能与批注真实锚定段不符（与单行 dup 同口径的既知折衷）；③已打开的弹框不随新成稿版本自动刷新（需关重开）。
 

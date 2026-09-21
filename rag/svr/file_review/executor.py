@@ -690,14 +690,17 @@ def _settle_annotations(chosen: list, patches: list, by_pos: dict, applied: list
 
 # ── 批注回退（REST 直调，非后台轮次）────────────────────────────────
 def _revert_patch_of(row) -> dict:
-    """回退闸门：只有 fixed + 结构合法 patch 可回退，返回补丁；否则抛 FileReviewError。
+    """回退闸门：fixed/resolved + 结构合法 patch 可回退，返回补丁；否则抛 FileReviewError。
 
-    必须在 _ADMIT_LOCK 内对**锁内重取的行**调用（perform_revert）：并发双回退时
-    另一请求可能已完成回退（状态回 open、patch 清空），用锁外陈旧行过闸会把
-    「逆补丁」再正着打回去——静默重放修复 + 多出孤儿 revert 轮，全程无报错。
+    resolved 也放行（2026-09-21（八）自由切换）：确认保留只是标记，文档同样含修复
+    内容，用户从 resolved 也要能回到原文。必须在 _ADMIT_LOCK 内对**锁内重取的行**
+    调用（perform_revert）：并发双回退时另一请求可能已完成回退（状态回 open、
+    patch 保留），用锁外陈旧行过闸会把「逆补丁」再正着打回去——静默重放修复 +
+    多出孤儿 revert 轮，全程无报错。open + patch（已回退态）不可再回退：文档
+    已是原文，再打逆补丁必然 applied=False，被后面的诚实拒绝兜住。
     """
-    if (row.status or "") != "fixed":
-        raise FileReviewError("只有已修复的批注才能回退")
+    if (row.status or "") not in ("fixed", "resolved"):
+        raise FileReviewError("只有已修复/已确认保留的批注才能回退")
     try:
         patch = json.loads(row.patch_json or "")
     except (TypeError, ValueError):
@@ -780,8 +783,91 @@ def perform_revert(annotation_row) -> dict:
             rid, "done", minio_path=name,
             summary=f"回退批注修复：{issue_clip}" if issue_clip else "回退批注修复",
         )
-        # patch_json 同笔清空：防同一补丁二次回退（逆补丁已不可再命中，留着只会让
-        # 前端误显示「可回退」）。回退痕迹由 revert 轮的 summary 承载。
-        if not FileReviewAnnotationService.update_status(row.id, "open", patch_json=""):
+        # patch_json **保留**（2026-09-21（八）自由切换语义）：回退后批注是
+        # open + patch，前端据此显示「恢复 AI 修改」，用户可在原文/AI 修改间往复
+        # 切换——恢复走 perform_reapply 用同一份补丁正向应用。旧版「同笔清空」防的
+        # 二次回退由 _revert_patch_of 的状态闸（open 不可回退）承接。回退痕迹由
+        # revert 轮的 summary 承载。
+        if not FileReviewAnnotationService.update_status(row.id, "open"):
             raise FileReviewError("批注不存在或已被删除")
     return {"version": version, "round_no": round_no}
+
+
+def perform_reapply(annotation_row) -> dict:
+    """把一条 open + patch（已回退）批注的 AI 修改**重新应用**：正补丁 → 产新版本
+    （kind='apply' 轮，与 revert 同不烧修复额度）→ 批注置 resolved。
+
+    与 perform_revert 对偶，构成「原文 ⇄ AI 修改」自由切换的另一半。文档现状分派：
+    - find 仍唯一命中（文档是原文）→ 正向应用补丁，产 apply 轮；
+    - find 不在、replace 在（修复已在文档里——self-heal 出口把 fixed 标注打回
+      open 的历史行，或重复恢复）→ 不动文档，仅置 resolved（幂等）；
+    - 两者都不在（原文被后续修复轮改写）→ 诚实拒绝，与回退同文案口径。
+    find == replace 的零差异补丁不产轮（应用等于没应用）。
+    """
+    from api.db.services import file_review_service as svc
+
+    with svc._ADMIT_LOCK:
+        row = FileReviewAnnotationService.get_by_id(annotation_row.id)
+        if not row:
+            raise FileReviewError("批注不存在或已被删除")
+        try:
+            patch = json.loads(row.patch_json or "")
+        except (TypeError, ValueError):
+            patch = None
+        if not isinstance(patch, dict) or not isinstance(patch.get("find"), str) \
+                or not isinstance(patch.get("replace"), str) or not row.patch_json:
+            raise FileReviewError("该批注没有可恢复的 AI 修改记录")
+        if patch["find"] == "":
+            raise FileReviewError("该修复补丁缺少原文内容，无法恢复")
+
+        rounds = FileReviewRoundService.get_by_task(row.task_id)
+        if not rounds:
+            raise FileReviewError("审核任务轮次不存在，无法恢复")
+        best = None
+        for r in rounds:
+            if r.minio_path and (best is None or (r.round_no or 0) >= (best.round_no or 0)):
+                best = r
+        if not best:
+            raise FileReviewError("文档版本内容缺失，无法恢复")
+        tenant_id = best.tenant_id or row.tenant_id
+        blob = settings.STORAGE_IMPL.get(f"{tenant_id}-downloads", best.minio_path)
+        if not blob:
+            raise FileReviewError("文档版本内容缺失，无法恢复")
+
+        def _set_resolved():
+            if not FileReviewAnnotationService.update_status(row.id, "resolved"):
+                raise FileReviewError("批注不存在或已被删除")
+
+        if patch["find"] == patch["replace"]:
+            _set_resolved()
+            return {"applied": False}
+
+        new_blob, applied = apply_patches_to_docx(blob, [patch])
+        if applied[0]:
+            round_no = max((r.round_no or 0) for r in rounds) + 1
+            version = f"v{round_no}"
+            name = f"frv-{row.task_id}-{version}"
+            settings.STORAGE_IMPL.put(f"{tenant_id}-downloads", name, new_blob)
+            issue_clip = (row.issue or "")[:80]
+            rid = FileReviewRoundService.create_round(
+                task_id=row.task_id, file_id=row.file_id,
+                round_no=round_no, template_id="",
+                user_query="", status="done", file_version=version,
+                tenant_id=tenant_id, kind="apply",
+            )
+            FileReviewRoundService.update_status(
+                rid, "done", minio_path=name,
+                summary=f"恢复批注修改：{issue_clip}" if issue_clip else "恢复批注修改",
+            )
+            _set_resolved()
+            return {"version": version, "round_no": round_no, "applied": True}
+
+        # find 打不中：修复可能已在文档里（幂等分支）。用逆补丁探针判——逆补丁
+        # 能命中说明 replace 在文档里，置 resolved 即可；否则原文被后续轮改写。
+        _, probe = apply_patches_to_docx(
+            blob, [{"find": patch["replace"], "replace": patch["find"]}]
+        )
+        if probe[0]:
+            _set_resolved()
+            return {"applied": False}
+        raise FileReviewError("原文已被后续修复改动，无法恢复，请在文档中手动处理")

@@ -91,12 +91,14 @@ def fix_rounds_left(rounds: list) -> int:
     **失败轮也计入**：用户烧掉的是一次尝试机会，不是「什么都没发生」；不计入会让失败的
     retry 次数无上限，与「最大三轮重试」的口径相悖。
     round_no 为 0/None 的脏行不算修复轮（不短路会让一条脏行白吃一次机会）。
-    kind='revert'（批注回退轮）**不计入**：回退不是修复尝试，不该消耗用户的修复额度
-    （存量行 kind 为空串按 normal 处理，与默认值语义一致）。
+    kind='revert'（批注回退轮）与 kind='apply'（批注恢复轮）**不计入**：回退/恢复
+    都不是修复尝试，不该消耗用户的修复额度（存量行 kind 为空串按 normal 处理，
+    与默认值语义一致）。
     """
     used = sum(
         1 for r in rounds
-        if (r.round_no or 0) > 1 and (getattr(r, "kind", "") or "normal") != "revert"
+        if (r.round_no or 0) > 1
+        and (getattr(r, "kind", "") or "normal") not in ("revert", "apply")
     )
     return max(0, MAX_FIX_ROUNDS - used)
 

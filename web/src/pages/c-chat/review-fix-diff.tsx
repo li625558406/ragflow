@@ -43,14 +43,19 @@ export function FixDiffView({
   );
 }
 
-/** 回退 / 确认保留操作行。仅在 status='fixed' 且有 patch 时渲染：
- * 回退成功后批注回 open（无 patch），本组件随之消失；确认保留置 resolved。 */
+/** 回退 / 确认保留 / 恢复 AI 修改操作行——「原文 ⇄ AI 修改」自由切换（按 status 分派）：
+ * fixed    → [回退][确认保留]（确认=纯标记，修复已在文档）；
+ * resolved → [回退]（确认保留后仍可回到原文）；
+ * open+patch（已回退）→ [恢复 AI 修改]（服务端正补丁应用回文档，产 apply 轮）。
+ * open 无 patch（从未修过/旧数据）不渲染本组件。 */
 export function FixActions({
   fileId,
   annotationId,
+  status,
 }: {
   fileId: string;
   annotationId: string;
+  status: string;
 }) {
   const revertMutation = useRevertAnnotation(fileId);
   const statusMutation = useUpdateAnnotationStatus(fileId);
@@ -77,22 +82,36 @@ export function FixActions({
   return (
     <div className="mt-1">
       <div className="flex items-center gap-2">
-        <button
-          type="button"
-          disabled={busy}
-          className="rounded border border-[#FF4D4F] px-1.5 py-px text-[#FF4D4F] hover:bg-[#FFF1F0] disabled:opacity-50"
-          onClick={onRevert}
-        >
-          回退
-        </button>
-        <button
-          type="button"
-          disabled={busy}
-          className="rounded border border-[#52C41A] px-1.5 py-px text-[#52C41A] hover:bg-[#F6FFED] disabled:opacity-50"
-          onClick={onConfirm}
-        >
-          确认保留
-        </button>
+        {(status === 'fixed' || status === 'resolved') && (
+          <button
+            type="button"
+            disabled={busy}
+            className="rounded border border-[#FF4D4F] px-1.5 py-px text-[#FF4D4F] hover:bg-[#FFF1F0] disabled:opacity-50"
+            onClick={onRevert}
+          >
+            回退
+          </button>
+        )}
+        {status === 'fixed' && (
+          <button
+            type="button"
+            disabled={busy}
+            className="rounded border border-[#52C41A] px-1.5 py-px text-[#52C41A] hover:bg-[#F6FFED] disabled:opacity-50"
+            onClick={onConfirm}
+          >
+            确认保留
+          </button>
+        )}
+        {status === 'open' && (
+          <button
+            type="button"
+            disabled={busy}
+            className="rounded border border-[#52C41A] px-1.5 py-px text-[#52C41A] hover:bg-[#F6FFED] disabled:opacity-50"
+            onClick={onConfirm}
+          >
+            恢复 AI 修改
+          </button>
+        )}
       </div>
       {err && <div className="mt-0.5 text-[#F5222D]">{err}</div>}
     </div>

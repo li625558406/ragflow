@@ -422,3 +422,58 @@ def test_plain_text_apply_patches_still_matches_across_lines():
     )
     assert applied == [True]
     assert out == '甲行改\n乙行'
+
+
+# ── 序列通道失败降级单段通道（回退生产事故回归 ann 212b980c）──────────
+def test_multiline_find_in_one_paragraph_falls_back_to_single():
+    """find 含换行但整段摘文物理落在**一个**段落里（w:br 换行，或正向修复把含
+    换行的 replace 写进单段）→ 序列通道 0 命中后降级单段通道命中。此前直接
+    applied=False，回退端误报「原文已被后续修复改动」。"""
+    blob = _docx_bytes(['评分项：1.技术和服务响应情况\n45.00'])
+    out, applied = apply_patches_to_docx(
+        blob,
+        [{'find': '1.技术和服务响应情况\n45.00', 'replace': '1.技术和服务响应情况 45.00'}],
+    )
+    assert applied == [True]
+    assert _texts(out) == ['评分项：1.技术和服务响应情况 45.00']
+
+
+def test_revert_roundtrip_single_paragraph_multiline_replace():
+    """正向「单行 find → 含换行 replace」落进单段后，逆补丁必须能完整还原
+    （perform_revert 的数据通路对称性闸）。"""
+    blob = _docx_bytes(['本项得分：30分'])
+    fixed, applied = apply_patches_to_docx(
+        blob, [{'find': '30分', 'replace': '28分\n（扣2分）'}]
+    )
+    assert applied == [True]
+    reverted, applied_rev = apply_patches_to_docx(
+        fixed, [{'find': '28分\n（扣2分）', 'replace': '30分'}]
+    )
+    assert applied_rev == [True]
+    assert _texts(reverted) == _texts(blob)
+
+
+def test_multiline_single_fallback_still_respects_ambiguity():
+    """降级单段通道继承唯一性闸：同形两段摘文命中 2 个段落 → 仍诚实跳过。"""
+    blob = _docx_bytes(['甲行\n乙行', '前言', '甲行\n乙行'])
+    out, applied = apply_patches_to_docx(
+        blob, [{'find': '甲行\n乙行', 'replace': '改行\n改行'}]
+    )
+    assert applied == [False]
+    assert out == blob
+
+
+def test_multiline_single_fallback_unique_in_one_of_two_paragraphs():
+    """序列结构性失配（行序倒置）但单段唯一命中 → 降级通道救回。"""
+    blob = _docx_bytes(['附录 4  资格审查条件', '评分项：甲行\n乙行'])
+    out, applied = apply_patches_to_docx(
+        blob, [{'find': '乙行\n甲行', 'replace': '乙行改\n甲行'}]
+    )
+    # '乙行\n甲行' 单段不存在（段内是 甲行\n乙行）→ 单段也 0 命中 → False
+    assert applied == [False]
+    assert out == blob
+    out2, applied2 = apply_patches_to_docx(
+        blob, [{'find': '甲行\n乙行', 'replace': '甲行改\n乙行改'}]
+    )
+    assert applied2 == [True]
+    assert _texts(out2) == ['附录 4  资格审查条件', '评分项：甲行改\n乙行改']

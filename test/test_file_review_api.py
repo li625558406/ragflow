@@ -88,7 +88,8 @@ def _ann(aid, **over):
         id=aid, round_id="r1", task_id="t1", file_id="f1", file_version="v1",
         anchor='{"p_idx": 3}', matched_text="投标人须", type="clause",
         severity="high", issue="缺少投标保证金条款", suggestion="补一条",
-        source="ai", status="open", prev_annotation_id=None, tenant_id=TENANT)
+        source="ai", status="open", prev_annotation_id=None, tenant_id=TENANT,
+        patch_json="")
     for k, v in over.items():
         setattr(row, k, v)
     return row
@@ -604,6 +605,53 @@ def test_annotation_status_maps_write_miss_to_error(monkeypatch):
     body = _call(_api.update_annotation_status, annotation_id="a1",
                  body={"status": "resolved"})
     assert body["code"] != 0
+
+
+# ── open+patch → resolved 走恢复链路（（八）原文 ⇄ AI 修改自由切换）──────
+
+def test_annotation_status_open_with_patch_routes_to_reapply(monkeypatch):
+    """回退后的批注（open+patch）确认保留 = 恢复 AI 修改：必须路由到
+    perform_reapply（正补丁应用 + apply 轮），不能只翻状态——只翻状态会让
+    文档停在原文而批注显示已保留，语义断裂。"""
+    calls = _status_setup(monkeypatch)
+    calls["_ann_row"] = _ann("a1", status="open",
+                             patch_json='{"find": "旧", "replace": "新"}')
+    seen = {}
+
+    def _fake_reapply(row):
+        seen["row_id"] = row.id
+        return {"applied": True, "version": "v3", "round_no": 3}
+
+    monkeypatch.setattr(_api, "perform_reapply", _fake_reapply)
+    body = _call(_api.update_annotation_status, annotation_id="a1",
+                 body={"status": "resolved"})
+    assert body["code"] == 0
+    assert body["data"]["applied"] is True and body["data"]["version"] == "v3"
+    assert seen["row_id"] == "a1"
+    assert "updated" not in calls, "恢复链路不得再走纯状态写入"
+
+
+def test_annotation_status_fixed_resolved_and_bare_open_stay_simple_flip(monkeypatch):
+    """fixed→resolved（修复已在文档）与 open 无 patch（旧 self-heal 出口）
+    仍走纯状态写入，不进恢复链路。"""
+    calls = _status_setup(monkeypatch)
+    calls["_ann_row"] = _ann("a1", status="fixed",
+                             patch_json='{"find": "旧", "replace": "新"}')
+    monkeypatch.setattr(_api, "perform_reapply",
+                        lambda row: (_ for _ in ()).throw(AssertionError("不该进恢复链路")))
+    body = _call(_api.update_annotation_status, annotation_id="a1",
+                 body={"status": "resolved"})
+    assert body["code"] == 0
+    assert calls["updated"] == [("a1", "resolved")]
+
+    calls2 = _status_setup(monkeypatch)
+    calls2["_ann_row"] = _ann("a2", status="open", patch_json="")
+    monkeypatch.setattr(_api, "perform_reapply",
+                        lambda row: (_ for _ in ()).throw(AssertionError("不该进恢复链路")))
+    body2 = _call(_api.update_annotation_status, annotation_id="a2",
+                  body={"status": "resolved"})
+    assert body2["code"] == 0
+    assert calls2["updated"] == [("a2", "resolved")]
 
 
 def test_annotation_status_hides_internal_error_text(monkeypatch):

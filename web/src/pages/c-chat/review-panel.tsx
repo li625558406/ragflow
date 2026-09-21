@@ -382,7 +382,8 @@ function AiCard({
         >
           AI
         </span>
-        {/* 修复标记：fixed=AI 修复轮已修（绿）；resolved+有补丁=已确认保留 */}
+        {/* 修复标记：fixed=AI 修复轮已修（绿）；resolved+有补丁=已确认保留；
+            open+有补丁=已回退（patch 保留，可一键恢复 AI 修改） */}
         {ann.status === 'fixed' && (
           <span className="shrink-0 rounded bg-[#67C23A] px-1 py-px text-[10px] font-bold text-white">
             已修复
@@ -391,6 +392,11 @@ function AiCard({
         {ann.status === 'resolved' && hasPatch && (
           <span className="shrink-0 rounded bg-[#388E3C] px-1 py-px text-[10px] font-bold text-white">
             已确认
+          </span>
+        )}
+        {ann.status === 'open' && hasPatch && (
+          <span className="shrink-0 rounded bg-[#8C8C8C] px-1 py-px text-[10px] font-bold text-white">
+            已回退
           </span>
         )}
         <button
@@ -444,10 +450,14 @@ function AiCard({
             </div>
           )}
           {hasPatch && <FixDiffView patch={ann.patch} />}
-          {ann.status === 'fixed' && fileId && !!ann.id && (
+          {hasPatch && fileId && !!ann.id && (
             // stopPropagation：卡片 onClick 是定位跳转，不能让按钮点击触发它
             <div onClick={(e) => e.stopPropagation()}>
-              <FixActions fileId={fileId} annotationId={String(ann.id)} />
+              <FixActions
+                fileId={fileId}
+                annotationId={String(ann.id)}
+                status={ann.status || 'open'}
+              />
             </div>
           )}
         </div>
@@ -1330,8 +1340,16 @@ export default function ReviewPanel({
       fitDocxToColumn();
       measure();
     };
+    // 卡片是 absolute 定位：展开/折叠只改自身高度、不改 wrap 高度，只观察
+    // wrap 不会触发 → 展开卡与下一张卡重叠被盖住。必须逐卡观察，高度一变
+    // 即重测 tops（top 变化不改尺寸，不会回环）。
     const ro = new ResizeObserver(() => measure());
-    if (wrapRef.current) ro.observe(wrapRef.current);
+    if (wrapRef.current) {
+      ro.observe(wrapRef.current);
+      wrapRef.current
+        .querySelectorAll<HTMLElement>('[data-card-key]')
+        .forEach((el) => ro.observe(el));
+    }
     document.addEventListener('scroll', onScroll, true);
     const raf = requestAnimationFrame(measure);
     const t = setTimeout(measure, 120); // 字体/图片稳定后的二次校准
