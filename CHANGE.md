@@ -15,7 +15,7 @@
 
 **测试**：executor 新 7 例（happy path 产 apply 轮+额度不烧／fixed→revert→reapply→revert 全环 roundtrip 断言 v3=原文 v4=AI 修改 v5=原文 共 5 轮／幂等逆探不产轮／两边都不在诚实拒绝／零差异补丁不产轮／缺 patch+坏 JSON 拒绝／resolved 也可回退）；api 新 2 例（open+patch 路由进 reapply 不走纯翻转／fixed→resolved 与裸 open 保持纯翻转不进 reapply）；前端 review-panel-version 新 describe 4 例（fixed 双按钮／open+patch 已回退徽标+恢复按钮无确认保留／resolved 仍有回退无恢复／open 无 patch 不渲染任何切换按钮）。后端 4 套件 260 passed + 前端相关 4 套件 59 passed 全绿。前端用例教训：边栏卡默认折叠（（七）追加项）+ 正文不含 matched_text 时批注落入底部兜底区无卡片——用例正文必须含 matched_text 且先点展开箭头。
 
-**部署硬约束**：后端 3 文件（executor.py + file_review_service.py + file_review_api.py）**成套 SCP + restart**；前端 build+dist+nginx reload。反序无碍（前端按钮对旧后端报错不崩），但只部署前端不部署后端则「恢复 AI 修改」点了被 status 端点当纯翻转处理、文档不变。**未部署、未 commit、未 push**，待用户确认。
+**部署硬约束**：后端 3 文件（executor.py + file_review_service.py + file_review_api.py）**成套 SCP + restart**；前端 build+dist+nginx reload。反序无碍（前端按钮对旧后端报错不崩），但只部署前端不部署后端则「恢复 AI 修改」点了被 status 端点当纯翻转处理、文档不变。**后端已部署 2026-09-21**（4 文件含 patcher.py 成套 SCP+md5 双端一致+restart+冒烟：imports OK/apply carve-out/api 路由/revert 保留 patch/回退闸放行 resolved/HTTP 401 鉴权，均通过）；**已 commit+push 088f3f07**。前端未部署。
 
 ## 2026-09-21（八）回退误报「原文已被后续修复改动」根修——patcher 跨行通道降级单段
 
