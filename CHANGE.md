@@ -15,7 +15,7 @@
 
 **测试**：后端 `test/test_file_edit_document.py` 新 20 例（parse 对抗矩阵／定位失败原子性「输入不动」／表格事务性／safe_filename 穿越／端点：非法 id 矩阵 [32 位非 hex、31 位、全横线、uuid+"!"]、对象缺失、空 ops、成功路径新对象可解析且原文节未动、pdf 拒收无副作用）+ 既有 flow 编辑 50 例 = 72 passed；前端 `flow-service-edit-file.test.ts` 4 例（URL/方法/snake_case 映射/code!=0 抛后端 message/file_name 兜底/流程版本回归闸）+ `chat-input-box-inject.test.tsx` 4 例（注入进队/removeId 剔旧/nonce 防重/null 不变）+ 全量 vitest 23 文件 293 passed；tsc 对改动文件零新增错误（index.tsx 1300/1301/3278 三处经 git stash 对照为 HEAD 既存）。测试基建教训：路由文件加载须在 exec_module 前 inject fake `manager`（包 init 的 F821 注入）；FakeStorage 必须**同步**方法（async 会漏进真线程池）；pytest 里 `resp.get_json()` 不可靠改 `json.loads(await resp.get_data())`；注入只进队列不渲染 DOM chip，断言经 `onUploadedFilesChange` 回调。
 
-**部署**（均未执行，待用户指示）：后端 `api/utils/docx_edit.py`（新增）+ `api/apps/restful_apis/file_api.py` 成套 SCP + restart；前端 build + dist + nginx reload。后端先行安全（新端点前端不消费无碍）。未 commit、未 push。
+**部署**：**后端已部署 2026-09-21**（2 文件 SCP+md5 双端一致+restart+容器内 import 冒烟+路由确认 `/files/<file_id>/edit` 已注册+HTTP 无 Authorization 401）；**前端已部署 2026-09-21**（build 1m22s+dist 上传解包+nginx reload，首页 200、chunk md5 双端一致、静态资源 200）。**已 commit+push 95c72c0e**。
 
 ## 2026-09-21（九）原文 ⇄ AI 修改自由切换——回退后可一键恢复 AI 修改
 
