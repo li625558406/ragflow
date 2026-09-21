@@ -974,13 +974,19 @@ export default function ReviewPanel({
       setMarkedKeys(
         highlightDocxRanges(el, toHighlightItems(railItemsRef.current)),
       );
-      return;
+      // 回放分支同样注册 cleanup：不摘回缓存的话，关闭弹框后树留在已 detach 的
+      // el 里被 GC，重开必 miss 全量重渲（缓存隔次生效）
+      return () => {
+        stashDocxRender(docxBlob, el);
+      };
     }
     // 在飞渲染防错树：cancelled 堵 late resolve 清掉后续文件已渲染的树；
     // settled 堵「A 渲染中切走 → cleanup 把 A 的树 stash 进 B 的缓存键」的
     // 跨会话错树污染（在飞渲染的容器内容不可信，不入缓存，大不了下次重渲）。
+    // failed 再堵一层：失败回执后容器可能留半构建残树，同样不可入缓存。
     let cancelled = false;
     let settled = false;
+    let failed = false;
     el.innerHTML = '';
     renderAsync(docxBlob, el, undefined, { inWrapper: true, breakPages: true })
       .then(() => {
@@ -994,15 +1000,18 @@ export default function ReviewPanel({
       })
       .catch(() => {
         settled = true;
+        failed = true;
+        // 迟到的失败回执不污染新文件（与 then 路径的 cancelled 闸对称）
+        if (cancelled) return;
         setDocxRenderFailed(true);
         setMarkedKeys(new Set());
       });
     return () => {
       cancelled = true;
       // 卸载/换文件/进编辑视图前：产物子树整体摘进离屏缓存（树只存在一份，
-      // 不在 el 就在 holder，内存不翻倍）；渲染仍在飞（未 settle）则内容不可信，
-      // 放弃 stash
-      if (settled) stashDocxRender(docxBlob, el);
+      // 不在 el 就在 holder，内存不翻倍）；渲染仍在飞（未 settle）或已失败则
+      // 内容不可信，放弃 stash
+      if (settled && !failed) stashDocxRender(docxBlob, el);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
