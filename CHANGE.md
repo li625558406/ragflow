@@ -1,5 +1,53 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-21（六）修复对比 + 修复标记 + 回退/确认保留——「结果可审视 + 可撤销」闭环
+
+**主题**：接（五），用户要求「能看到修复前和修复后的对比；修复后的批注要做标记；修复的批注可以手动点击回退或使用修复后的内容」。现状缺口：落地补丁（find→replace）只写进 docx 字节，批注行没有存档，UI 无从展示「改了什么」；fixed 批注无视觉标记；修错了无法撤销。
+
+**方案数据流**：修复轮落地时把**实际应用的补丁**存进批注行（新列 `patch_json`，在 `_patch_matches_annotation` 闸通过那一刻与 fixed 同笔写入——它是「确实修好了」的唯一权威记录）→ state 端点下发 `patch` → 前端红绿对比；回退 = 逆补丁（find↔replace 互换）应用到**最新落盘版本** → 产新版本（新轮次行 `kind='revert'`，同步终态建行不经 execute_task）→ 批注回 open + patch 清空；确认保留 = 复用既有 status 端点置 `resolved`（白名单已放行，零新端点语义）。
+
+**改动（后端 4 文件 + 前端 6 文件）**：
+- `api/db/db_models.py`：FileReviewRound + `kind`（normal/revert，默认 normal）；FileReviewAnnotation + `patch_json`（空=无修复存档）；migrate_db 追加两行幂等 alter。
+- `api/db/services/file_review_service.py`：`fix_rounds_left` 对 kind='revert' carve-out（回退不是修复尝试，不烧额度；kind 空/None 存量行按 normal）；标注 `update_status` 加 `**extra`（镜像 RoundService 模式，供 status+patch_json 同笔写）。
+- `rag/svr/file_review/executor.py`：`_settle_annotations` 标 fixed 时写 `patch_json`（未落地的补丁不写，open 行永远无补丁）；新增 `perform_revert(annotation_row)`——闸门链（非 fixed 拒 / 空/脏 patch_json 拒「旧版本修复未存档」/ 删除型 replace="" 拒（逆补丁空 find 会被 patcher 恒跳过，与其静默失败不如明说）/ find="" 纯插入拒）→ 进程锁 `_ADMIT_LOCK` 内取「round_no 最大且已落盘」版本为基线（**不能**用 `_latest_version_name`：它解引用 upto.id，回退没有当前轮）→ 逆补丁不命中（原文被后续轮改动）诚实拒绝且批注不动 → 先 Put 后写状态（与修复轮同顺序契约）→ revert 轮 summary=`回退批注修复：<issue截断>` → 批注 open+patch 清空（防二次回退）。
+- `api/apps/restful_apis/file_review_api.py`：`_annotation_payload` + `patch`（`_json_dict` 脏值降级）；新端点 `POST /file/review/annotation/<aid>/revert`（照抄 delete 闸链；FileReviewError 业务文案逐字透传——「为什么不能自动回退」是业务结论，吞掉等于让用户重新一个个对）。
+- 前端：`api.ts` + `useRevertAnnotation`（成功 invalidate state，批注自动落回未修复组）；`file-review-stream.ts` 类型 + `patch`；新组件 `review-fix-diff.tsx`（**进度卡与面板共用防漂移**：FixDiffView 修复前行红底删除线/修复后行绿底、multiline 按行渲染（后端 _apply_multiline_patch 只改变更行，行数恒相等）；FixActions 回退（window.confirm 后调 revert）+ 确认保留（status→resolved））；`file-review-progress.tsx` 修复结果区每条 fixed 挂对比+操作，resolved+patch 计入已修复并显示「已确认保留」；`review-panel.tsx` AiCard 加「已修复」（绿）/"已确认" 徽标 + 对比 + 操作（stopPropagation 防触发定位跳转），列表条目加修复小徽标（保持紧凑无操作按钮）。
+
+**测试**：后端 3 套件新增 17 例全绿（service：revert carve-out 矩阵 + patch_json 同笔写/清；executor：补丁落库/跳过不落库 + perform_revert 全对抗（非 fixed/空 patch/垃圾 JSON/删除型/纯插入/原文被改拒绝且批注原样/无 blob/成功路径建 revert 轮+原文恢复+额度不烧+二次回退拒+**陈旧入参行并发双回退只成功一次**——锁内重取复核）；api：revert 闸链（缺失/越权/FileReviewError 逐字/内部错误脱敏）+ 路由契约表更新）——合计 311 passed；前端进度卡套件 25 passed（新增 diff 渲染/回退调 API/confirm 取消不调/已确认保留无操作按钮/无 patch 不显示对比）；tsc 零错误。本地测试库已补列（等价 migrate_db 两行 ALTER）。
+
+**收口审查（superpowers:code-reviewer）2 Major + 4 Minor 全处置**：M-1 闸门原在锁外基于入参行判定——并发双回退等锁期间状态已被改掉，陈旧入参会把逆补丁重复应用（修复被静默前放）→ 改为 `_ADMIT_LOCK` 内按 id 重取行 + `_revert_patch_of` 基于重取行全量闸门（附对抗用例）；M-2 REST 端点同步调 perform_revert（锁等待+MinIO 往返）会阻塞 quart 事件循环、拉长锁持有致 admit_fix_round 误报 busy → `await asyncio.to_thread(perform_revert, row)`（R-6 同款结论）；m-1 kind 先建 normal 再补 revert 有窗口期（并发 state 读会把该轮误计额度）→ `create_round` 加 `kind` 参数随建行一次写齐；m-2 建轮 tenant 以**轮次行**为权威（best.tenant_id，标注行 tenant 历史脏空串不作依据）；m-3 错误码口径（ARGUMENT_ERROR vs OPERATING_ERROR）与既有 fix 端点保持一致，不动；m-4 `_round_payload` 不透出 kind（前端无消费方），不动。
+
+**未部署、未 commit**（部署硬约束：**先后端 4 文件成套 SCP + docker restart（migrate 自动建列）→ 再前端 build+dist+nginx reload**；反序 revert 按钮会打 404）。
+
+**遗留**：①存量修复（本批之前已 fixed 的批注）无 patch_json，不显示对比/回退（徽标也不显示——`patch` 缺失即旧数据，如实呈现）；②删除型修复与纯插入型修复不可自动回退（逆补丁数学上不可行），文案已引导手动处理；③并发两个回退由 `_ADMIT_LOCK` 串行化，同批注第二次会因 patch 清空被拒，跨批注并发安全。
+
+## 2026-09-21（五）修复轮结果反馈——进度卡显示「已修复 N 项 / 未修复 M 项」+ 可展开明细
+
+**主题**：用户触发「选择级别修复」后进度卡毫无反馈，「好像 llm 并没有修复任何批注内容……起码给我一个 ui 的结果，我这啥都不知道，还要一个一个对」。**生产数据诊断（demo02，task 936136a0）证明修复其实生效**：修复轮（v2，user_query=只修严重级别）把 3 条 high 中的 2 条翻为 `fixed`，剩 1 条 high open——「承诺30分钟内响应…的得分」缺分值（需补「得X分」，属**纯插入+需编造具体分值**，按（十二）既知边界诚实跳过）。真正缺口是 UI：fixed/open 数据全在 state 端点 `annotations` 里，卡片却一条不显。
+
+**改动（纯前端 2 文件）**：
+- `file-review-progress.tsx`：新增修复结果区——`fixedAnns`（status='fixed'，AI 修复轮专属成果；手动面板走 resolved/wontfix 互不污染）+ `openAnns`（status='open' 且 source='ai'，人工批注不计入）+ `hasFixRounds`（rounds.length>1 才渲染，首轮 annotated 无修复语义）。默认一行「已修复 N 项（绿）/ 未修复 M 项（灰）+ 查看明细」；展开逐条列级别徽标（SeverityTag：严重红/一般琥珀/提示蓝，fixed 项徽标转绿）+ issue，open 项尾注引导「无法自动修改的类型（目录/标题重复、需补分值的纯插入）可打开审核面板手动处理」；fixed=0 且 open=0 显示「没有待修复的问题」。useState 提前到早退分支之前（hooks 顺序契约），data 判空用 `?.` 兜底。
+- 测试 `__tests__/file-review-progress.test.tsx` 新增 3 例（demo02 回归：2 fixed/2 open 计数+手动批注排除+默认收起/单轮不渲染结果区/0 落地如实显示「已修复 0 项」），套件 22 passed；tsc 对改动文件零错误。
+
+**未部署、未 commit**（部署 = 前端 build+dist+nginx reload，可与（二）（三）（四）合并批）。
+
+**遗留**：①fixed 是文件级累计口径（多轮修复时显示累计修复数，非「本轮」——修复轮只翻 status 不记轮次归属，per-round 归因需加轮次字段，未做）；②修复轮选择的 levels 未落库，无法按所选级别过滤「未修复」（未选级别保持 open 是合法态，会一并计入未修复数）。
+
+## 2026-09-21（四）人工批注绿色专属色系——与 AI 批注一眼区分
+
+**主题**：用户反馈「人工批注的样式不够醒目，不能很明显地跟 AI 批注区分开」。现状：①正文 mark 人工与 AI 都按**级别**配色（红/琥珀/蓝）——正文里完全无法区分来源（最关键断层）；②边栏人工卡白底灰框偏淡，AI 卡反而是彩色底；③来源 chip 只是浅色小徽标，存在感弱。方案：**绿色 = 人工专属色系**（AI 保持按级别配色），正文一眼「绿=人工 / 彩=AI」，级别（严重/一般/提示）在人工卡上仅保留徽标不占主色。
+
+**改动（纯前端单文件 `review-panel.tsx`）**：新增 `MANUAL_STYLE` 常量（border `#67C23A` / bg `#F6FFED` / text `#388E3C`）三处统一：
+- **正文 mark + SVG 引线**：`railByPara` 人工批注 `color` 从级别色改为绿（引线 `stroke={it.color}` 自动继承）——正文 mark 绿=人工、彩=AI。
+- **边栏 CommentCard**：白底灰框 → 绿色系卡（`#F6FFED` 底 + `#D9F2DC` 边 + 绿左边框 + 图标/作者名 `#388E3C`），人工 chip 升实底绿白字；级别徽标保留原级别色。
+- **列表区条目**：人工条目左边框/图标转绿（AI 条目维持级别色），来源 chip 双双升级实底白字（AI `#1a66fb` / 人工 `#67C23A`）；AI 卡（AiCard）的 AI chip 同步升级实底蓝白字，两边对称。
+
+**同日追加：列表区人工批注删除按钮**——用户指出「人工批注也可以删除的」。列表条目此前只有 AI 有删除（`annotationId` 闸），人工条目无删除入口；且**无锚点人工批注（plainComments）只有列表这一处展示、全界面无任何删除路径**。修法：listEntries 人工条目补 `commentId/commentUserId`，渲染处新增删除按钮（闸门=`onDeleteComment` 已传 + `commentUserId === currentUserId` 仅本人可删，与边栏 CommentCard 同口径），确认弹窗+`handleDeleteComment` 复用既有链路（deleteFlowComment + onSaved refetch）。
+
+**测试**：tsc 对 review-panel 零错误；file-review-progress 19 + docx-highlight-seq 8 用例全绿。**未部署、未 commit**。
+
+**遗留**：①正文高亮底色由 highlightDocxRanges 按传入色渲染，人工绿底与选区蓝色并存时视觉可辨，未做透明度分级；②历史已渲染的旧 mark 颜色在重开面板时按新色重插（无持久化颜色，无存量兼容问题）。
+
 ## 2026-09-21（三）无版本流程手动批注被「流程暂无文件版本」拒绝——批注 version_id 放宽为可空
 
 **主题**：用户在**无版本**新流程里发起文件审核（对话上传文件）→ 审核面板看 AI 批注 → 自己选中文本写批注 → 报 `{code:101, message:"流程暂无文件版本，无法批注"}`。根因：flow_comment 设计之初文档只经版本通道进入流程，add_comment 端点强校验 `version_id = body.version_id or current_version_id` 非空；而文件审核目标走上传文档通道，流程没有任何版本 → 恒空 → 101。**第一性原理**：批注意见锚定的是文档内容（anchor_text/anchor_para），版本只是意见产生时文档的引用；文档不经版本通道进入流程不该丢掉批注能力。version_id 语义放宽为「产生意见的版本，可为空 = 流程级意见」。

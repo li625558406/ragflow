@@ -10,6 +10,7 @@ import {
 } from '@/hooks/use-file-review-request';
 import { ChevronDown, Download, Eye, Loader2 } from 'lucide-react';
 import { useState } from 'react';
+import { FixActions, FixDiffView } from './review-fix-diff';
 
 // 状态中文：与服务端 ROUND_STATUS_CN **语义**对齐（措辞刻意不同，服务端用
 // 「审核完成 / 已收口」面向 LLM，这里用「已完成 / 已结束」面向用户）。
@@ -123,6 +124,22 @@ export default function FileReviewProgress({
   const fixError =
     fixMutation.error instanceof Error ? fixMutation.error.message : '';
 
+  // ── 修复轮结果反馈：AI 修复轮把标注翻成 status='fixed'（手动面板走
+  // resolved/wontfix，互不污染）。fixed 是文件级累计；「确认保留」把 fixed 置为
+  // resolved 且带 patch（有修复记录的确认），仍计入已修复；open 只统计 AI 批注
+  // （人工批注不参与修复轮）。
+  const fixedAnns = (data?.annotations ?? []).filter(
+    (a) =>
+      a.status === 'fixed' ||
+      (a.status === 'resolved' && a.patch && (a.patch.find || a.patch.replace)),
+  );
+  const openAnns = (data?.annotations ?? []).filter(
+    (a) => a.status === 'open' && a.source === 'ai',
+  );
+  // 只有存在修复轮（轮次 > 1）才展示结果区：首轮 annotated 没有任何「修复」语义。
+  const hasFixRounds = (data?.rounds?.length ?? 0) > 1;
+  const [showFixDetail, setShowFixDetail] = useState(false);
+
   const runSaveAsVersion = async (fileVersion: string) => {
     if (!onSaveAsVersion || !taskId || !fileVersion) return;
     if (saveStates[fileVersion] === 'saving') return;
@@ -209,6 +226,66 @@ export default function FileReviewProgress({
       {current?.summary && (
         <div className="text-[#8C8C8C]">{current.summary}</div>
       )}
+      {hasFixRounds && (
+        <div>
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="text-[#52C41A]">已修复 {fixedAnns.length} 项</span>
+            <span className="text-[#8C8C8C]">未修复 {openAnns.length} 项</span>
+            {(fixedAnns.length > 0 || openAnns.length > 0) && (
+              <button
+                type="button"
+                className="flex items-center gap-0.5 text-[#1a66fb]"
+                onClick={() => setShowFixDetail((v) => !v)}
+              >
+                {showFixDetail ? '收起明细' : '查看明细'}
+                <ChevronDown
+                  className={`h-3 w-3 transition-transform ${showFixDetail ? 'rotate-180' : ''}`}
+                />
+              </button>
+            )}
+          </div>
+          {/* 未修复为 0 且确实修过：明说，别让用户猜「是不是压根没修」 */}
+          {hasFixRounds && fixedAnns.length === 0 && openAnns.length === 0 && (
+            <div className="text-[#8C8C8C]">没有待修复的问题。</div>
+          )}
+          {showFixDetail && (
+            <div className="mt-1 space-y-1">
+              {fixedAnns.map((a) => (
+                <div key={a.id}>
+                  <div className="flex items-start gap-1.5">
+                    <SeverityTag severity={a.severity} fixed />
+                    <span className="text-[#388E3C]">{a.issue}</span>
+                  </div>
+                  {/* 修复前/后对比 + 回退/确认保留：patch 为空（旧版修复无存档）时只隐藏 diff，操作仍可展示 */}
+                  {a.patch && (a.patch.find || a.patch.replace) && (
+                    <FixDiffView patch={a.patch} />
+                  )}
+                  {a.status === 'fixed' && (
+                    <div className="ml-5">
+                      <FixActions fileId={fileId} annotationId={a.id} />
+                    </div>
+                  )}
+                  {a.status === 'resolved' && (
+                    <div className="ml-5 text-[#52C41A]">已确认保留</div>
+                  )}
+                </div>
+              ))}
+              {openAnns.map((a) => (
+                <div key={a.id} className="flex items-start gap-1.5">
+                  <SeverityTag severity={a.severity} />
+                  <span className="text-[#595959]">{a.issue}</span>
+                </div>
+              ))}
+              {openAnns.length > 0 && (
+                <div className="text-[#8C8C8C]">
+                  未修复项多为无法自动修改的类型（如目录/标题重复、需补充分值的纯插入），
+                  可打开审核面板逐条查看或手动处理。
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-2 pt-0.5">
         <button
           type="button"
@@ -277,6 +354,30 @@ export default function FileReviewProgress({
         />
       )}
     </div>
+  );
+}
+
+// 级别徽标（严重/一般/提示）：与 review-panel SEVERITY_CONFIG 的中文与色系对齐
+function SeverityTag({
+  severity,
+  fixed,
+}: {
+  severity: string;
+  fixed?: boolean;
+}) {
+  const map: Record<string, { l: string; c: string }> = {
+    high: { l: '严重', c: '#F5222D' },
+    medium: { l: '一般', c: '#FA8C16' },
+    low: { l: '提示', c: '#1a66fb' },
+  };
+  const it = map[severity] || { l: severity, c: '#8C8C8C' };
+  return (
+    <span
+      className="mt-px shrink-0 rounded px-1 py-px text-[10px] font-bold leading-4 text-white"
+      style={{ backgroundColor: fixed ? '#52C41A' : it.c }}
+    >
+      {it.l}
+    </span>
   );
 }
 

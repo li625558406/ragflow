@@ -120,6 +120,26 @@ export function useDeleteFileReviewAnnotation(fileId: string) {
   });
 }
 
+/** 回退一条已修复批注：后端逆补丁恢复原文→产 revert 版本→批注回 open。
+ * 成功失效 state 缓存后，该批注自动从「已修复」落回「未修复」，两处统计联动。
+ * 失败（删除型不可回退/原文被后续轮改动等）抛 Error，文案来自服务端，调用方展示。 */
+export function useRevertAnnotation(fileId: string) {
+  const invalidate = useInvalidateFileReview();
+  return useMutation({
+    mutationFn: async (annotationId: string) => {
+      const { data } = await request.post(
+        api.fileReviewAnnotationRevert(annotationId),
+        { data: {} },
+      );
+      if (!data || data.code !== 0) {
+        throw new Error(data?.message || '回退失败');
+      }
+      return data.data as { annotation_id: string; version: string };
+    },
+    onSuccess: () => invalidate(fileId),
+  });
+}
+
 /** 失效器：fix / annotation status 变更后必须调一次，让面板与进度卡重拉 state。
  * fix 端点的 response 不含 file_id（只有 task_id），故调用方必须把 file_id 传进来。
  * 仅失效 ['fileReview', 'state', fileId] 这一条，避免误冲掉其它文件的轮询。 */

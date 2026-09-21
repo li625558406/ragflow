@@ -91,8 +91,13 @@ def fix_rounds_left(rounds: list) -> int:
     **失败轮也计入**：用户烧掉的是一次尝试机会，不是「什么都没发生」；不计入会让失败的
     retry 次数无上限，与「最大三轮重试」的口径相悖。
     round_no 为 0/None 的脏行不算修复轮（不短路会让一条脏行白吃一次机会）。
+    kind='revert'（批注回退轮）**不计入**：回退不是修复尝试，不该消耗用户的修复额度
+    （存量行 kind 为空串按 normal 处理，与默认值语义一致）。
     """
-    used = sum(1 for r in rounds if (r.round_no or 0) > 1)
+    used = sum(
+        1 for r in rounds
+        if (r.round_no or 0) > 1 and (getattr(r, "kind", "") or "normal") != "revert"
+    )
     return max(0, MAX_FIX_ROUNDS - used)
 
 
@@ -359,13 +364,15 @@ class FileReviewRoundService(FileReviewServiceBase):
     def create_round(cls, *, task_id: str, file_id: str, round_no: int,
                      template_id: str, user_query: str, file_version: str,
                      status: str, tenant_id: str = "", created_by: str = "",
-                     kb_ids=None) -> str:
+                     kb_ids=None, kind: str = "normal") -> str:
         """新建一轮审核，返回轮次 id。
 
         tenant_id / created_by / kb_ids 由调用方（T7 节点、T8 工具、T9 API）从会话
         上下文透传，本层不猜。kb_ids 归一为 JSON 文本（见 _normalize_kb_ids）：修复轮
         与重试都要用同一批知识库，故必须随轮次持久化，不能只活在当次请求里。
-        其余契约不变（必填列为 None 时不吞异常，时间字段全部由框架写）。
+        kind 标记轮次类别（normal=审核/修复轮，revert=回退轮——fix_rounds_left 不计回退轮），
+        随建行一次写齐：若先建 normal 再补 revert，并发 state 读落在两写之间会把该轮
+        误计进额度（白扣一次修复机会）。其余契约不变（必填列为 None 时不吞异常，时间字段全部由框架写）。
         """
         rid = get_uuid()
         cls.model.create(
@@ -375,6 +382,7 @@ class FileReviewRoundService(FileReviewServiceBase):
             status=_clamp_str(cls.model, "status", status),
             tenant_id=tenant_id, created_by=created_by,
             kb_ids=_normalize_kb_ids(kb_ids),
+            kind=_clamp_str(cls.model, "kind", kind),
         )
         return rid
 
@@ -522,12 +530,14 @@ class FileReviewAnnotationService(FileReviewServiceBase):
 
     @classmethod
     @DB.connection_context()
-    def update_status(cls, aid: str, status: str) -> bool:
-        """改标注状态（T4 patcher 判 fixed/wontfix、T9 手动标 wontfix）；
+    def update_status(cls, aid: str, status: str, **extra) -> bool:
+        """改标注状态并合入 extra（patch_json 等，修复轮落地时与 fixed 同笔写入）；
         返回是否命中行（存在性复核口径同 RoundService.update_status）。update_time
-        由框架刷新。status 按列宽钳制（见 _clamp_str）。"""
-        status = _clamp_str(cls.model, "status", status)
-        if cls.model.update(status=status).where(cls.model.id == aid).execute() > 0:
+        由框架刷新。status 与 extra 键均按列宽钳制（见 _clamp_str）。"""
+        fields = {"status": _clamp_str(cls.model, "status", status)}
+        for k, v in extra.items():
+            fields[k] = _clamp_str(cls.model, k, v)
+        if cls.model.update(**fields).where(cls.model.id == aid).execute() > 0:
             return True
         # affected rows = 实际变化行数（连接未开 CLIENT_FOUND_ROWS）；同毫秒同值写
         # 整行无净变化会得 0，但行仍存在，用存在性复核避免误判「行不存在」。

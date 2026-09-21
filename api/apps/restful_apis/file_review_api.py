@@ -71,6 +71,7 @@ from api.utils.api_utils import (
 from common import settings
 from common.constants import RetCode
 from common.misc_utils import thread_pool_exec
+from rag.svr.file_review.executor import FileReviewError, perform_revert  # noqa: F401 (FileReviewError 供 except 子句引用)
 
 # 本模块**不**顶层 import rag.svr.file_review.spawn：起线程那一步已随受理闸门一起下沉到
 # Service 层的 admit_fix_round（由它函数内延迟 import），本层不再直接触 spawn。
@@ -194,6 +195,8 @@ def _annotation_payload(row) -> dict:
         "matched_text": row.matched_text or "",
         "source": row.source,
         "status": row.status,
+        # 修复轮实际落地的 find/replace（脏值降级 {} = 无补丁，前端据此隐藏对比/回退）
+        "patch": _json_dict(getattr(row, "patch_json", "")),
         "prev_annotation_id": row.prev_annotation_id or "",
         "anchor": _json_dict(row.anchor),
     }
@@ -362,6 +365,34 @@ async def update_annotation_status(annotation_id: str, tenant_id: str):
         return get_json_result(data={"annotation_id": annotation_id, "status": status})
     except Exception:
         logger.exception("file review: update annotation status failed, aid=%s", annotation_id)
+        return get_error_data_result(message="Internal server error")
+
+
+@manager.route("/file/review/annotation/<annotation_id>/revert", methods=["POST"])
+@login_required
+@add_tenant_id_to_kwargs
+async def revert_annotation_fix(annotation_id: str, tenant_id: str):
+    """回退一条已修复批注：逆补丁恢复原文 → 产新版本（kind='revert' 轮）→ 批注回 open。
+
+    权限链照抄 delete 端点（登录 → 存在性 → get_owned_task 归属）。executor 的
+    FileReviewError 携带用户可读文案（删除型不可回退/原文被后续轮改动/无修复记录等），
+    逐字透传给前端——这些是「为什么不能自动回退」的业务结论，吞掉换成 Internal error
+    等于让用户重新一个个对。
+    """
+    try:
+        row = FileReviewAnnotationService.get_by_id(annotation_id)
+        if not row:
+            return get_error_data_result("批注不存在或无权访问")
+        if not FileReviewRoundService.get_owned_task(row.task_id, tenant_id):
+            return get_error_data_result("批注不存在或无权访问")
+        # perform_revert 全程持 _ADMIT_LOCK（等锁 + MinIO blob 往返），必须丢线程池，
+        # 否则阻塞 quart 事件循环——并发 admit_fix_round 会因锁被同步占住而误报 busy。
+        result = await asyncio.to_thread(perform_revert, row)
+        return get_json_result(data={"annotation_id": annotation_id, **result})
+    except FileReviewError as e:
+        return get_error_argument_result(str(e))
+    except Exception:
+        logger.exception("file review: revert annotation failed, aid=%s", annotation_id)
         return get_error_data_result(message="Internal server error")
 
 

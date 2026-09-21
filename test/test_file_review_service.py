@@ -1078,3 +1078,45 @@ def test_heal_stale_round_is_idempotent(monkeypatch):
     assert heal_stale_round(row, now_ms=when) is False
     assert row.error == "SENTINEL"               # 内存未被第二次触碰
     assert _round_row(rid).error != "SENTINEL"   # 库里仍是首轮落下的文案
+
+
+# ── 修复对比 + 回退（patch_json / kind='revert' carve-out）────────────
+
+
+def test_fix_rounds_left_ignores_revert_rounds():
+    """回退轮不烧修复额度：round_no>1 但 kind='revert' 不计入 used。
+    kind 为空串/None 的存量行按 normal 处理（照旧计额）。"""
+    from api.db.services.file_review_service import MAX_FIX_ROUNDS, fix_rounds_left
+
+    def rr(no, kind):
+        return SimpleNamespace(round_no=no, kind=kind)
+
+    assert fix_rounds_left([_r(1), rr(2, "revert")]) == MAX_FIX_ROUNDS
+    assert fix_rounds_left([_r(1), rr(2, "revert"), rr(3, "revert")]) == MAX_FIX_ROUNDS
+    # 回退轮之外的真修复轮照旧计额
+    assert fix_rounds_left([_r(1), rr(2, "revert"), _r(3)]) == MAX_FIX_ROUNDS - 1
+    # kind 缺失/空串 = 存量行，按 normal 计额
+    assert fix_rounds_left([_r(1), rr(2, "")]) == MAX_FIX_ROUNDS - 1
+    assert fix_rounds_left([_r(1), rr(2, None)]) == MAX_FIX_ROUNDS - 1
+
+
+def test_annotation_update_status_merges_patch_json_extra():
+    """标 fixed 时补丁与状态同笔落库（patch_json extra）；回退时同笔清空。"""
+    from api.db.db_models import FileReviewAnnotation as M
+
+    tid, fid = f"{PFX}t_patch", f"{PFX}f_patch"
+    rid = _mk_round(tid, 1, "annotated")
+    aid = _mk_ann(round_id=rid, task_id=tid, file_id=fid)
+    patch = json.dumps({"find": "旧", "replace": "新"}, ensure_ascii=False)
+
+    assert FileReviewAnnotationService.update_status(aid, "fixed", patch_json=patch) is True
+    row = FileReviewAnnotation.get_by_id(aid)
+    assert row.status == "fixed" and row.patch_json == patch
+
+    # 同笔清空（回退路径）：status 与 patch_json 一次 update
+    assert FileReviewAnnotationService.update_status(aid, "open", patch_json="") is True
+    row = FileReviewAnnotation.get_by_id(aid)
+    assert row.status == "open" and row.patch_json == ""
+
+    # 不存在的 id：False（与既有 update_status 契约一致）
+    assert FileReviewAnnotationService.update_status("no-such-aid", "open", patch_json="") is False

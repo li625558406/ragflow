@@ -43,6 +43,7 @@ import {
   normalizeForMatch,
   sanitizeTableHtml,
 } from './docx-view-utils';
+import { FixActions, FixDiffView } from './review-fix-diff';
 
 // ── Types ──
 
@@ -163,6 +164,11 @@ const SEVERITY_CONFIG: Record<
     textColor: '#1890FF',
   },
 };
+
+// 人工批注专属绿色系：AI 批注按级别配色（红/琥珀/蓝），人工批注整体绿色
+// （正文 mark / 边栏卡 / 列表条目三处统一）——绿=人工、彩=AI 一眼区分。
+// 级别（严重/一般/提示）在人工卡上仅保留徽标，不再占用卡片主色。
+const MANUAL_STYLE = { border: '#67C23A', bg: '#F6FFED', text: '#388E3C' };
 
 const TYPE_LABELS: Record<string, string> = {
   policy_violation: '政策违规',
@@ -386,6 +392,7 @@ function AiCard({
   onSelect,
   canDelete,
   onDelete,
+  fileId,
 }: {
   num: number;
   ann: Annotation;
@@ -394,6 +401,8 @@ function AiCard({
   onSelect: () => void;
   canDelete?: boolean;
   onDelete?: () => void;
+  /** 有值且 status='fixed' 时展示回退/确认操作（数据来自 state 轮询） */
+  fileId?: string;
 }) {
   const cfg = SEVERITY_CONFIG[ann.severity] || SEVERITY_CONFIG.low;
   const Icon = cfg.icon;
@@ -401,6 +410,7 @@ function AiCard({
   const suggestion = ann.suggestion || ann.recommendation || ann.advice || '';
   const annType = ann.type || ann.category || '';
   const mt = getMatchedText(ann);
+  const hasPatch = !!(ann.patch && (ann.patch.find || ann.patch.replace));
   return (
     <div
       id={`annotation-${num}`}
@@ -429,9 +439,20 @@ function AiCard({
           {cfg.label} {TYPE_LABELS[annType] || annType || '问题'}
           {unmatched ? '（未定位）' : ''}
         </span>
-        <span className="ml-auto shrink-0 rounded bg-[#F0F5FF] px-1 py-px text-[10px] font-semibold text-[#1a66fb]">
+        <span className="ml-auto shrink-0 rounded bg-[#1a66fb] px-1 py-px text-[10px] font-bold text-white">
           AI
         </span>
+        {/* 修复标记：fixed=AI 修复轮已修（绿）；resolved+有补丁=已确认保留 */}
+        {ann.status === 'fixed' && (
+          <span className="shrink-0 rounded bg-[#67C23A] px-1 py-px text-[10px] font-bold text-white">
+            已修复
+          </span>
+        )}
+        {ann.status === 'resolved' && hasPatch && (
+          <span className="shrink-0 rounded bg-[#388E3C] px-1 py-px text-[10px] font-bold text-white">
+            已确认
+          </span>
+        )}
         {canDelete && onDelete && (
           <button
             onClick={(e) => {
@@ -462,6 +483,13 @@ function AiCard({
           <span>{suggestion}</span>
         </div>
       )}
+      {hasPatch && <FixDiffView patch={ann.patch} />}
+      {ann.status === 'fixed' && fileId && !!ann.id && (
+        // stopPropagation：卡片 onClick 是定位跳转，不能让按钮点击触发它
+        <div onClick={(e) => e.stopPropagation()}>
+          <FixActions fileId={fileId} annotationId={String(ann.id)} />
+        </div>
+      )}
     </div>
   );
 }
@@ -487,21 +515,25 @@ function CommentCard({
   return (
     <div
       onClick={onSelect}
-      className={`group cursor-pointer rounded-md bg-white p-2.5 text-xs transition-all duration-300 ${
+      className={`group cursor-pointer rounded-md p-2.5 text-xs transition-all duration-300 ${
         selected ? 'ring-2 ring-[#1a66fb] shadow-lg' : ''
       }`}
       style={{
-        border: '1px solid #E5E5E5',
-        borderLeft: `3px solid ${scfg.border}`,
+        backgroundColor: MANUAL_STYLE.bg,
+        border: `1px solid #D9F2DC`,
+        borderLeft: `3px solid ${MANUAL_STYLE.border}`,
       }}
     >
       <div className="mb-1 flex items-center gap-1.5">
         <MessageSquare
           className="w-3.5 h-3.5 shrink-0"
-          style={{ color: scfg.border }}
+          style={{ color: MANUAL_STYLE.text }}
           strokeWidth={2}
         />
-        <span className="truncate font-semibold text-[#1a66fb]">
+        <span
+          className="truncate font-semibold"
+          style={{ color: MANUAL_STYLE.text }}
+        >
           {author || comment.user_id || '批注'}
         </span>
         <span
@@ -512,7 +544,10 @@ function CommentCard({
             comment.severity || 'medium'
           ] || '一般'}
         </span>
-        <span className="shrink-0 rounded bg-[#F0F9EB] px-1 py-px text-[10px] font-semibold text-[#67C23A]">
+        <span
+          className="shrink-0 rounded px-1 py-px text-[10px] font-bold text-white"
+          style={{ backgroundColor: MANUAL_STYLE.border }}
+        >
           人工
         </span>
         {comment.create_time ? (
@@ -763,9 +798,8 @@ export default function ReviewPanel({
             paraIndex: idx,
             kind: 'comment',
             comment: c,
-            color: (
-              SEVERITY_CONFIG[c.severity || 'medium'] || SEVERITY_CONFIG.medium
-            ).border,
+            // 正文 mark 统一绿色（人工专属色），级别只留在卡片徽标
+            color: MANUAL_STYLE.border,
           });
         }
       }
@@ -951,7 +985,18 @@ export default function ReviewPanel({
       source: 'ai' | 'human';
       /** AI 批注的后端 id（有值且传了 onDeleteAnnotation 才显示删除按钮） */
       annotationId?: string;
+      /** 修复标记（仅展示）：fixed=已修复；resolved+有补丁=已确认保留 */
+      fixState?: 'fixed' | 'confirmed';
+      /** 人工批注 id + 批注人（传了 onDeleteComment 且是本人批注才显示删除按钮） */
+      commentId?: string;
+      commentUserId?: string;
     }[] = [];
+    const fixStateOf = (a: Annotation): 'fixed' | 'confirmed' | undefined => {
+      if (a.status === 'fixed') return 'fixed';
+      const hasPatch = !!(a.patch && (a.patch.find || a.patch.replace));
+      if (a.status === 'resolved' && hasPatch) return 'confirmed';
+      return undefined;
+    };
     for (const it of activeRailItems) {
       if (it.kind === 'ai') {
         const ann = it.ann!;
@@ -970,6 +1015,7 @@ export default function ReviewPanel({
           matched: true,
           source: 'ai',
           annotationId: ann.id ? String(ann.id) : undefined,
+          fixState: fixStateOf(ann),
         });
       } else {
         const c = it.comment!;
@@ -982,6 +1028,8 @@ export default function ReviewPanel({
           title: c.content,
           matched: true,
           source: 'human',
+          commentId: c.id,
+          commentUserId: c.user_id,
         });
       }
     }
@@ -1004,6 +1052,7 @@ export default function ReviewPanel({
         matched: false,
         source: 'ai',
         annotationId: ann.id ? String(ann.id) : undefined,
+        fixState: fixStateOf(ann),
       });
     });
     for (const c of [...unmatched.comments, ...unmatched.plainComments]) {
@@ -1016,6 +1065,8 @@ export default function ReviewPanel({
         title: c.content,
         matched: false,
         source: 'human',
+        commentId: c.id,
+        commentUserId: c.user_id,
       });
     }
     // 级别降序 高→中→低：稳定排序（同级别内保持原文档序）；已定位整体在未定位之前
@@ -1712,7 +1763,9 @@ export default function ReviewPanel({
                       selected ? 'ring-2 ring-[#1a66fb]' : ''
                     }`}
                     style={{
-                      borderLeft: `3px ${e.matched ? 'solid' : 'dashed'} ${cfg.border}`,
+                      borderLeft: `3px ${e.matched ? 'solid' : 'dashed'} ${
+                        e.source === 'ai' ? cfg.border : MANUAL_STYLE.border
+                      }`,
                     }}
                   >
                     <div className="flex items-center gap-1.5 text-xs text-[#888]">
@@ -1726,7 +1779,12 @@ export default function ReviewPanel({
                       ) : (
                         <MessageSquare
                           className="h-3.5 w-3.5 shrink-0"
-                          style={{ color: cfg.border }}
+                          style={{
+                            color:
+                              e.source === 'ai'
+                                ? cfg.border
+                                : MANUAL_STYLE.text,
+                          }}
                           strokeWidth={2}
                         />
                       )}
@@ -1739,16 +1797,25 @@ export default function ReviewPanel({
                       >
                         {cfg.label}
                       </span>
-                      {/* 来源 chip：AI 蓝 / 人工绿，与文档边栏卡片徽标同色 */}
+                      {/* 来源 chip 实底白字：AI 蓝 / 人工绿（与边栏卡徽标同色系） */}
                       <span
-                        className={`shrink-0 rounded px-1 py-px text-[10px] font-semibold ${
-                          e.source === 'ai'
-                            ? 'bg-[#F0F5FF] text-[#1a66fb]'
-                            : 'bg-[#F0F9EB] text-[#67C23A]'
+                        className={`shrink-0 rounded px-1 py-px text-[10px] font-bold text-white ${
+                          e.source === 'ai' ? 'bg-[#1a66fb]' : 'bg-[#67C23A]'
                         }`}
                       >
                         {e.source === 'ai' ? 'AI' : '人工'}
                       </span>
+                      {/* 修复小徽标：列表保持紧凑，回退/确认操作在边栏卡与进度卡 */}
+                      {e.fixState === 'fixed' && (
+                        <span className="shrink-0 rounded bg-[#67C23A] px-1 py-px text-[10px] font-bold text-white">
+                          已修复
+                        </span>
+                      )}
+                      {e.fixState === 'confirmed' && (
+                        <span className="shrink-0 rounded bg-[#388E3C] px-1 py-px text-[10px] font-bold text-white">
+                          已确认
+                        </span>
+                      )}
                       {e.typeLabel && (
                         <span className="shrink-0 text-[11px] text-[#666]">
                           {e.typeLabel}
@@ -1772,6 +1839,24 @@ export default function ReviewPanel({
                                 )
                               )
                                 handleDeleteAnnotation(e.annotationId!);
+                            }}
+                            title="删除批注"
+                            className={`shrink-0 rounded p-0.5 text-[#bbb] transition-colors hover:bg-[#FFF2F0] hover:text-[#FF4D4F] ${
+                              e.matched ? 'ml-auto' : ''
+                            }`}
+                          >
+                            <Trash2 className="h-3 w-3" strokeWidth={2} />
+                          </button>
+                        )}
+                      {e.source === 'human' &&
+                        e.commentId &&
+                        onDeleteComment &&
+                        e.commentUserId === currentUserId && (
+                          <button
+                            onClick={(ev) => {
+                              ev.stopPropagation();
+                              if (window.confirm('确定删除这条批注？'))
+                                handleDeleteComment(e.commentId!);
                             }}
                             title="删除批注"
                             className={`shrink-0 rounded p-0.5 text-[#bbb] transition-colors hover:bg-[#FFF2F0] hover:text-[#FF4D4F] ${
@@ -1993,6 +2078,7 @@ export default function ReviewPanel({
                         ann={it.ann!}
                         selected={selectedKey === it.key}
                         onSelect={() => handleAnchorClick(it.key)}
+                        fileId={fileId}
                         canDelete={!!onDeleteAnnotation && !!it.ann!.id}
                         onDelete={() =>
                           handleDeleteAnnotation(String(it.ann!.id))

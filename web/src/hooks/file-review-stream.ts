@@ -21,6 +21,9 @@ export interface IFileReviewAnnotation {
   matched_text: string;
   source: 'ai' | 'manual';
   status: 'open' | 'new' | 'fixed' | 'resolved' | 'wontfix';
+  /** 修复轮实际落地的补丁（修复前 find / 修复后 replace）。空对象 = 无修复记录
+   *  （未修复或旧版本修复），前端据此隐藏对比与回退。 */
+  patch?: { find: string; replace: string };
   prev_annotation_id: string;
   /** 已解析的定位对象（docx: p_hash/offset/run_index；xlsx: sheet/cell）。
    *  服务端 _json_dict 永远返回 dict（脏值降级 {}，永远不会是 string / null）。 */

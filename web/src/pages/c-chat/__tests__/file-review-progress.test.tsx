@@ -3,6 +3,7 @@
 import {
   useFileReviewState,
   useFixFileReview,
+  useRevertAnnotation,
   useUpdateAnnotationStatus,
 } from '@/hooks/use-file-review-request';
 import FileReviewProgress, {
@@ -15,11 +16,13 @@ vi.mock('@/hooks/use-file-review-request', () => ({
   useFileReviewState: vi.fn(),
   useFixFileReview: vi.fn(),
   useUpdateAnnotationStatus: vi.fn(),
+  useRevertAnnotation: vi.fn(),
 }));
 
 const mockUseFileReviewState = vi.mocked(useFileReviewState);
 const mockUseFixFileReview = vi.mocked(useFixFileReview);
 const mockUseUpdateAnnotationStatus = vi.mocked(useUpdateAnnotationStatus);
+const mockUseRevertAnnotation = vi.mocked(useRevertAnnotation);
 
 const baseState = (over: any = {}) => ({
   data: {
@@ -105,6 +108,11 @@ describe('FileReviewProgress', () => {
       isLoading: false,
     } as any);
     mockUseUpdateAnnotationStatus.mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+      isLoading: false,
+    } as any);
+    mockUseRevertAnnotation.mockReturnValue({
       mutate: vi.fn(),
       isPending: false,
       isLoading: false,
@@ -391,6 +399,335 @@ describe('FileReviewProgress', () => {
       ).toBeDisabled(),
     );
     expect(onSaveAsVersion).toHaveBeenCalledTimes(2);
+  });
+
+  it('修复轮结果：统计已修复/未修复（fixed=AI修复轮成果，手动批注不计入未修复），默认收起明细', () => {
+    // demo02 回归场景：修复轮实际修了 2/3 条严重项，但卡片毫无反馈，用户以为一条没修。
+    // 手动批注（source='human'）走 resolved/wontfix，不参与修复轮统计。
+    const ann = (over: any) => ({
+      id: 'a',
+      round_id: 'r1',
+      task_id: 't1',
+      file_id: 'f1',
+      file_version: 'v1',
+      type: 'format',
+      severity: 'high',
+      issue: '',
+      suggestion: '',
+      matched_text: '',
+      source: 'ai',
+      status: 'open',
+      prev_annotation_id: '',
+      anchor: {},
+      ...over,
+    });
+    mockUseFileReviewState.mockReturnValue(
+      baseState({
+        data: {
+          ...baseState().data,
+          data: {
+            ...baseState().data.data,
+            fix_rounds_left: 2,
+            current: {
+              ...baseState().data.data.current,
+              round_no: 2,
+              status: 'done',
+            },
+            rounds: [
+              { ...baseState().data.data.current },
+              {
+                ...baseState().data.data.current,
+                round_no: 2,
+                status: 'done',
+              },
+            ],
+            annotations: [
+              ann({
+                id: 'fx1',
+                status: 'fixed',
+                severity: 'high',
+                issue: '签章页缺少公章',
+              }),
+              ann({
+                id: 'fx2',
+                status: 'fixed',
+                severity: 'high',
+                issue: '投标函日期缺失',
+              }),
+              ann({
+                id: 'op1',
+                status: 'open',
+                severity: 'high',
+                issue: '评分项未写明分值',
+              }),
+              ann({
+                id: 'op2',
+                status: 'open',
+                severity: 'medium',
+                issue: '格式不统一',
+              }),
+              ann({
+                id: 'man1',
+                status: 'open',
+                severity: 'low',
+                source: 'human',
+                issue: '我的人工批注',
+              }),
+            ],
+          },
+        },
+      }) as any,
+    );
+    render(<FileReviewProgress fileId="f1" />);
+    expect(screen.getByText(/已修复 2 项/)).toBeInTheDocument();
+    expect(screen.getByText(/未修复 2 项/)).toBeInTheDocument();
+    // 手动批注不得计入未修复
+    expect(screen.queryByText(/人工批注/)).toBeNull();
+    // 默认收起：明细里的 issue 文案不可见
+    expect(screen.queryByText(/签章页缺少公章/)).toBeNull();
+    // 展开后可见 fixed 与 open 明细
+    fireEvent.click(screen.getByRole('button', { name: /查看明细/ }));
+    expect(screen.getByText(/签章页缺少公章/)).toBeInTheDocument();
+    expect(screen.getByText(/投标函日期缺失/)).toBeInTheDocument();
+    expect(screen.getByText(/评分项未写明分值/)).toBeInTheDocument();
+    expect(screen.getByText(/格式不统一/)).toBeInTheDocument();
+  });
+
+  it('只有一轮（首轮 annotated）不渲染修复结果区', () => {
+    mockUseFileReviewState.mockReturnValue(baseState() as any);
+    render(<FileReviewProgress fileId="f1" />);
+    expect(screen.queryByText(/已修复/)).toBeNull();
+    expect(screen.queryByText(/未修复/)).toBeNull();
+  });
+
+  it('修复轮 0 落地（fixed=0）：如实显示「已修复 0 项」而非谎报成功', () => {
+    mockUseFileReviewState.mockReturnValue(
+      baseState({
+        data: {
+          ...baseState().data,
+          data: {
+            ...baseState().data.data,
+            current: {
+              ...baseState().data.data.current,
+              round_no: 2,
+              status: 'done',
+            },
+            rounds: [
+              { ...baseState().data.data.current },
+              {
+                ...baseState().data.data.current,
+                round_no: 2,
+                status: 'done',
+              },
+            ],
+          },
+        },
+      }) as any,
+    );
+    render(<FileReviewProgress fileId="f1" />);
+    expect(screen.getByText(/已修复 0 项/)).toBeInTheDocument();
+    expect(screen.getByText(/未修复 1 项/)).toBeInTheDocument();
+  });
+
+  it('fixed+patch 展开显示修复前/后对比与回退/确认操作；回退经 confirm 调 useRevertAnnotation', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const revertMutate = vi.fn();
+    mockUseRevertAnnotation.mockReturnValue({
+      mutate: revertMutate,
+      isPending: false,
+      isLoading: false,
+    } as any);
+    mockUseFileReviewState.mockReturnValue(
+      baseState({
+        data: {
+          ...baseState().data,
+          data: {
+            ...baseState().data.data,
+            current: {
+              ...baseState().data.data.current,
+              round_no: 2,
+              status: 'done',
+            },
+            rounds: [
+              { ...baseState().data.data.current },
+              {
+                ...baseState().data.data.current,
+                round_no: 2,
+                status: 'done',
+              },
+            ],
+            annotations: [
+              {
+                id: 'a1',
+                round_id: 'r1',
+                task_id: 't1',
+                file_id: 'f1',
+                file_version: 'v1',
+                type: 'format',
+                severity: 'high',
+                issue: '日期格式错误',
+                suggestion: '',
+                matched_text: '',
+                source: 'ai',
+                status: 'fixed',
+                prev_annotation_id: '',
+                anchor: {},
+                patch: { find: '2025年1月', replace: '2026年9月' },
+              },
+            ],
+          },
+        },
+      }) as any,
+    );
+    render(<FileReviewProgress fileId="f1" />);
+    fireEvent.click(screen.getByRole('button', { name: /查看明细/ }));
+    // 红绿对比块 + 前后文本
+    expect(screen.getByText('修复前 → 修复后')).toBeInTheDocument();
+    expect(screen.getByText('2025年1月')).toBeInTheDocument();
+    expect(screen.getByText('2026年9月')).toBeInTheDocument();
+    // 回退：confirm 拦截通过后调 revert mutation
+    fireEvent.click(screen.getByRole('button', { name: '回退' }));
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(revertMutate).toHaveBeenCalledWith(
+      'a1',
+      expect.objectContaining({ onError: expect.any(Function) }),
+    );
+    confirmSpy.mockRestore();
+  });
+
+  it('回退 confirm 取消时不调 revert', () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const revertMutate = vi.fn();
+    mockUseRevertAnnotation.mockReturnValue({
+      mutate: revertMutate,
+      isPending: false,
+      isLoading: false,
+    } as any);
+    mockUseFileReviewState.mockReturnValue(
+      baseState({
+        data: {
+          ...baseState().data,
+          data: {
+            ...baseState().data.data,
+            current: {
+              ...baseState().data.data.current,
+              round_no: 2,
+              status: 'done',
+            },
+            rounds: [
+              { ...baseState().data.data.current },
+              {
+                ...baseState().data.data.current,
+                round_no: 2,
+                status: 'done',
+              },
+            ],
+            annotations: [
+              {
+                id: 'a1',
+                round_id: 'r1',
+                task_id: 't1',
+                file_id: 'f1',
+                file_version: 'v1',
+                type: 'format',
+                severity: 'high',
+                issue: '日期格式错误',
+                suggestion: '',
+                matched_text: '',
+                source: 'ai',
+                status: 'fixed',
+                prev_annotation_id: '',
+                anchor: {},
+                patch: { find: 'A', replace: 'B' },
+              },
+            ],
+          },
+        },
+      }) as any,
+    );
+    render(<FileReviewProgress fileId="f1" />);
+    fireEvent.click(screen.getByRole('button', { name: /查看明细/ }));
+    fireEvent.click(screen.getByRole('button', { name: '回退' }));
+    expect(revertMutate).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  it('resolved+patch（确认保留）计入已修复、显示已确认保留且无操作按钮；无 patch 的 fixed 不显示对比', () => {
+    const statusMutate = vi.fn();
+    mockUseUpdateAnnotationStatus.mockReturnValue({
+      mutate: statusMutate,
+      isPending: false,
+      isLoading: false,
+    } as any);
+    mockUseFileReviewState.mockReturnValue(
+      baseState({
+        data: {
+          ...baseState().data,
+          data: {
+            ...baseState().data.data,
+            current: {
+              ...baseState().data.data.current,
+              round_no: 2,
+              status: 'done',
+            },
+            rounds: [
+              { ...baseState().data.data.current },
+              {
+                ...baseState().data.data.current,
+                round_no: 2,
+                status: 'done',
+              },
+            ],
+            annotations: [
+              {
+                id: 'a1',
+                round_id: 'r1',
+                task_id: 't1',
+                file_id: 'f1',
+                file_version: 'v1',
+                type: 'format',
+                severity: 'high',
+                issue: '已确认那条',
+                suggestion: '',
+                matched_text: '',
+                source: 'ai',
+                status: 'resolved',
+                prev_annotation_id: '',
+                anchor: {},
+                patch: { find: '旧文案', replace: '新文案' },
+              },
+              {
+                id: 'a2',
+                round_id: 'r1',
+                task_id: 't1',
+                file_id: 'f1',
+                file_version: 'v1',
+                type: 'format',
+                severity: 'medium',
+                issue: '无补丁那条',
+                suggestion: '',
+                matched_text: '',
+                source: 'ai',
+                status: 'fixed',
+                prev_annotation_id: '',
+                anchor: {},
+              },
+            ],
+          },
+        },
+      }) as any,
+    );
+    render(<FileReviewProgress fileId="f1" />);
+    expect(screen.getByText(/已修复 2 项/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /查看明细/ }));
+    // resolved+patch：已确认保留，无回退/确认按钮，不显示对比
+    expect(screen.getByText('已确认保留')).toBeInTheDocument();
+    const confirmedRow = screen.getByText('已确认那条').closest('div')!;
+    expect(confirmedRow.textContent).not.toContain('修复前');
+    // 无 patch 的 fixed：不显示对比与操作（旧版本修复数据无补丁）
+    const plainRow = screen.getByText('无补丁那条').closest('div')!;
+    expect(plainRow.textContent).not.toContain('修复前');
+    expect(plainRow.textContent).not.toContain('回退');
   });
 });
 

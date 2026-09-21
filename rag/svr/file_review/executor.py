@@ -678,6 +678,110 @@ def _settle_annotations(chosen: list, patches: list, by_pos: dict, applied: list
             logger.warning("file review: patch find does not match annotation %s, left open", chosen[idx - 1].id)
     fixed = 0
     for pos in fixable:
-        if FileReviewAnnotationService.update_status(chosen[by_pos[pos] - 1].id, "fixed"):
+        # 落地补丁与本条标注**同笔**持久化（patch_json）：修复前(find)/后(replace)对比
+        # 与「回退」的唯一数据源。llm_raw 里有同样的 find/replace，但按轮不按标注归档，
+        # 前端无从知道哪条补丁对应哪条标注——在这里按标注落库就是把对应关系钉死在
+        # 「确实修好了」的时刻（_patch_matches_annotation 已闸），不引入事后反推。
+        patch_json = json.dumps(patches[pos], ensure_ascii=False)
+        if FileReviewAnnotationService.update_status(chosen[by_pos[pos] - 1].id, "fixed", patch_json=patch_json):
             fixed += 1
     return fixed
+
+
+# ── 批注回退（REST 直调，非后台轮次）────────────────────────────────
+def _revert_patch_of(row) -> dict:
+    """回退闸门：只有 fixed + 结构合法 patch 可回退，返回补丁；否则抛 FileReviewError。
+
+    必须在 _ADMIT_LOCK 内对**锁内重取的行**调用（perform_revert）：并发双回退时
+    另一请求可能已完成回退（状态回 open、patch 清空），用锁外陈旧行过闸会把
+    「逆补丁」再正着打回去——静默重放修复 + 多出孤儿 revert 轮，全程无报错。
+    """
+    if (row.status or "") != "fixed":
+        raise FileReviewError("只有已修复的批注才能回退")
+    try:
+        patch = json.loads(row.patch_json or "")
+    except (TypeError, ValueError):
+        patch = None
+    if not isinstance(patch, dict) or not isinstance(patch.get("find"), str) \
+            or not isinstance(patch.get("replace"), str) or not row.patch_json:
+        raise FileReviewError("该批注没有可回退的修复记录（可能是旧版本修复，修复内容未存档）")
+    if patch["replace"] == "":
+        # 删除型修复逆向后 find=""，patcher 对空 find 恒跳过——与其静默失败不如明说
+        raise FileReviewError("删除型修复暂不支持自动回退，请在文档中手动恢复该段内容")
+    if patch["find"] == "":
+        raise FileReviewError("该修复补丁缺少原文内容，无法回退")
+    return patch
+
+
+def perform_revert(annotation_row) -> dict:
+    """把一条 fixed 标注的修复**撤销**：逆补丁恢复原文，产新版本，标注回 open。
+
+    与修复轮的本质差别：这是**同步小操作**（一次读 blob + 一次补丁 + 一次写），
+    不起后台线程。轮次行直接以终态 done + kind='revert' 建行——execute_task 只分发
+    reviewing/fixing 态，终态行永远不会被当成修复轮消费；fix_rounds_left 对 kind=
+    'revert' 有 carve-out（回退不是修复尝试，不烧额度）。
+
+    临界区（重取复核 → 取 max round_no → 建行 → 改标注）用 Service 层的 _ADMIT_LOCK
+    进程锁：两个并发回退同时算 round_no 会串号（同号覆盖同名对象 + 版本计数错乱），
+    与 admit_fix_round 的并发形态同构，复用同一把锁不新增锁语义。闸门也必须锁内
+    基于重取行执行（见 _revert_patch_of）。调用方（REST 端点）应经 asyncio.to_thread
+    调本函数——锁等待与 MinIO 往返不得阻塞事件循环（R-6 同款结论）。
+    """
+    from api.db.services import file_review_service as svc
+
+    with svc._ADMIT_LOCK:
+        # 锁内重取复核：入参行只是「曾经存在」的快照，等锁期间状态可能已被并发
+        # 回退改掉；一切判定以锁内新行为准。
+        row = FileReviewAnnotationService.get_by_id(annotation_row.id)
+        if not row:
+            raise FileReviewError("批注不存在或已被删除")
+        patch = _revert_patch_of(row)
+
+        rounds = FileReviewRoundService.get_by_task(row.task_id)
+        if not rounds:
+            raise FileReviewError("审核任务轮次不存在，无法回退")
+        # 输入基线 = round_no 最大且已落盘的版本（与 _doc_payload 口径一致）；不能用
+        # _latest_version_name——它以「当前轮」为 upto 解引用 upto.id/round_no，回退
+        # 没有当前轮。rounds[-1] 可能是 failed/无产物行，直接取它同样错。
+        best = None
+        for r in rounds:
+            if r.minio_path and (best is None or (r.round_no or 0) >= (best.round_no or 0)):
+                best = r
+        if not best:
+            raise FileReviewError("文档版本内容缺失，无法回退")
+        # 桶/建轮的 tenant 以**轮次行**为权威：权限闸 get_owned_task 校验的就是
+        # rounds 的归属；标注行 tenant 历史脏数据（空串）不可作为依据。
+        tenant_id = best.tenant_id or row.tenant_id
+        blob = settings.STORAGE_IMPL.get(f"{tenant_id}-downloads", best.minio_path)
+        if not blob:
+            raise FileReviewError("文档版本内容缺失，无法回退")
+        new_blob, applied = apply_patches_to_docx(blob, [{"find": patch["replace"], "replace": patch["find"]}])
+        if not applied[0]:
+            # 原文被后续轮改动（或多轮修复叠加后 replace 文本已不存在）：此时强行插回
+            # 会把内容放错位置，诚实拒绝并保持现状（批注仍是 fixed，可继续手动处理）
+            raise FileReviewError("原文已被后续修复改动，无法自动回退，请在文档中手动处理")
+
+        round_no = max((r.round_no or 0) for r in rounds) + 1
+        version = f"v{round_no}"
+        name = f"frv-{row.task_id}-{version}"
+        # 先落盘再动任何状态：与修复轮同一顺序契约——Put 失败时不留「标注说已回退、
+        # 文档没改」的半程态；Put 成功后行级写入失败只留下孤儿对象，无害。
+        settings.STORAGE_IMPL.put(f"{tenant_id}-downloads", name, new_blob)
+        issue_clip = (row.issue or "")[:80]
+        # kind 随建行一次写齐：若先建 normal 再补 revert，并发 state 读落在两写
+        # 之间会把该轮误计进 fix_rounds_left（白扣一次额度）。
+        rid = FileReviewRoundService.create_round(
+            task_id=row.task_id, file_id=row.file_id,
+            round_no=round_no, template_id="",
+            user_query="", status="done", file_version=version,
+            tenant_id=tenant_id, kind="revert",
+        )
+        FileReviewRoundService.update_status(
+            rid, "done", minio_path=name,
+            summary=f"回退批注修复：{issue_clip}" if issue_clip else "回退批注修复",
+        )
+        # patch_json 同笔清空：防同一补丁二次回退（逆补丁已不可再命中，留着只会让
+        # 前端误显示「可回退」）。回退痕迹由 revert 轮的 summary 承载。
+        if not FileReviewAnnotationService.update_status(row.id, "open", patch_json=""):
+            raise FileReviewError("批注不存在或已被删除")
+    return {"version": version, "round_no": round_no}

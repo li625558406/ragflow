@@ -156,11 +156,12 @@ def test_all_routes_registered_on_blueprint():
         "/file/review/<task_id>/fix": {"POST", "OPTIONS"},
         "/file/review/annotation/<annotation_id>/status": {"POST", "OPTIONS"},
         "/file/review/annotation/<annotation_id>/delete": {"POST", "OPTIONS"},
+        "/file/review/annotation/<annotation_id>/revert": {"POST", "OPTIONS"},
         "/file/review/<task_id>/<file_version>/download": {"GET", "HEAD", "OPTIONS"},
     }, f"路由集合不符：{rules}"
     for name in ("list_review_templates", "review_state", "fix_review",
                  "update_annotation_status", "delete_annotation",
-                 "download_review_version"):
+                 "revert_annotation_fix", "download_review_version"):
         fn = getattr(_api, name, None)
         assert fn is not None, f"缺少端点函数 {name}"
         assert inspect.iscoroutinefunction(getattr(fn, "__wrapped__", fn)) or callable(fn)
@@ -713,3 +714,69 @@ def test_download_filename_excludes_internal_file_id(monkeypatch):
     disp = resp.headers["Content-Disposition"]
     assert "internal-uuid-should-not-leak" not in disp
     assert quote("文件审核_v1.docx") in disp
+
+
+# ── POST /file/review/annotation/<aid>/revert ────────────────────────
+
+def _executor_err(msg):
+    from rag.svr.file_review.executor import FileReviewError
+    return FileReviewError(msg)
+
+
+def _revert_setup(monkeypatch, *, owned=None, result=None, err=None):
+    # owned=None 表示「用默认归属正常轮次」；只有显式传 [] 才构造越权场景
+    # （透传 None 会让 _patch_services 走 list(rounds)=[] 分支，误判成他人任务）。
+    calls = _status_setup(monkeypatch) if owned is None else _status_setup(monkeypatch, owned=owned)
+    seen = {}
+
+    def _fake_revert(row):
+        seen["row"] = row
+        if err is not None:
+            raise err
+        return result or {"version": "v3", "round_no": 3}
+
+    monkeypatch.setattr(_api, "perform_revert", _fake_revert)
+    return calls, seen
+
+
+def test_annotation_revert_succeeds_and_returns_version(monkeypatch):
+    calls, seen = _revert_setup(
+        monkeypatch, result={"version": "v3", "round_no": 3})
+    body = _call(_api.revert_annotation_fix, annotation_id="a1", body={})
+    assert body["code"] == 0
+    assert body["data"] == {"annotation_id": "a1", "version": "v3", "round_no": 3}
+    assert seen["row"].id == "a1"
+
+
+def test_annotation_revert_rejects_missing_annotation(monkeypatch):
+    calls, seen = _revert_setup(monkeypatch)
+    calls["_ann_row"] = None
+    body = _call(_api.revert_annotation_fix, annotation_id="a1", body={})
+    assert body["code"] != 0
+    assert "row" not in seen, "标注不存在时不得触 executor"
+
+
+def test_annotation_revert_rejects_foreign_task(monkeypatch):
+    """标注所属 task 不归当前用户 → 拒绝且不触 executor（与 delete 同闸）。"""
+    calls, seen = _revert_setup(monkeypatch, owned=[])
+    body = _call(_api.revert_annotation_fix, annotation_id="a1", body={})
+    assert body["code"] != 0
+    assert "row" not in seen
+
+
+def test_annotation_revert_maps_file_review_error_verbatim(monkeypatch):
+    """FileReviewError 的业务文案（删除型不可回退/原文被改等）逐字透传给前端。"""
+    _calls, seen = _revert_setup(
+        monkeypatch, err=_executor_err("删除型修复暂不支持自动回退，请在文档中手动恢复该段内容"))
+    body = _call(_api.revert_annotation_fix, annotation_id="a1", body={})
+    assert body["code"] == RetCode.ARGUMENT_ERROR
+    assert "删除型修复" in body["message"]
+
+
+def test_annotation_revert_hides_internal_error_text(monkeypatch):
+    """非业务异常（MinIO 炸了等）不得把内部细节漏给前端。"""
+    _calls, _seen = _revert_setup(
+        monkeypatch, err=RuntimeError("MinIO endpoint=http://10.0.0.9:9000"))
+    body = _call(_api.revert_annotation_fix, annotation_id="a1", body={})
+    assert body["code"] != 0
+    assert "9000" not in body["message"]

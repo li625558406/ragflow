@@ -2880,6 +2880,10 @@ def migrate_db():
     # 加列必须放在三张表都建完之后：老库已有 file_review_round 但缺 kb_ids，
     # 修复轮/重试要靠这一列复用同一批知识库（重复加列由 alter_db_add_column 幂等兜住）
     alter_db_add_column(migrator, "file_review_round", "kb_ids", TextField(null=True))
+    # 2026-09-21 修复对比/回退：round 加 kind（revert=回退轮，不占修复额度）、
+    # annotation 加 patch_json（修复轮实际落地的 find/replace，对比与回退数据源）
+    alter_db_add_column(migrator, "file_review_round", "kind", CharField(max_length=16, null=False, default="normal"))
+    alter_db_add_column(migrator, "file_review_annotation", "patch_json", TextField(null=False, default=""))
 
     logging.disable(logging.NOTSET)
     # seed 错误延后到恢复日志级别后输出（窗口内 ERROR 级被 disable 抑制，会静默丢失）
@@ -3215,6 +3219,7 @@ class FileReviewRound(DataBaseModel):
     status = CharField(max_length=16, null=False)  # reviewing/annotated/fixing/failed/done
     file_version = CharField(max_length=64, null=False)  # v1/v2/v3
     kb_ids = TextField(null=True)  # JSON 数组文本：本轮用的知识库 id（修复轮与重试复用）
+    kind = CharField(max_length=16, null=False, default="normal")  # normal=审核/修复轮；revert=批注回退轮（不占修复额度，fix_rounds_left 有 carve-out）
     minio_path = CharField(max_length=256, null=True)
     summary = MediumTextField(null=True)  # 整轮总结可能含大量中文条款摘录
     llm_raw = MediumTextField(null=True)  # TEXT(64KB) 会静默截断整轮 LLM 原始输出（同 flow_ai_chat 事故）
@@ -3244,6 +3249,8 @@ class FileReviewAnnotation(DataBaseModel):
     suggestion = TextField(null=True)
     source = CharField(max_length=8, null=False)  # ai/manual
     status = CharField(max_length=16, null=False, default='open')
+    # 修复轮实际落地的 find/replace 补丁（JSON，空串=无）；修复前/后对比与回退的数据源
+    patch_json = TextField(null=False, default="")
     prev_annotation_id = CharField(max_length=64, null=True)
     tenant_id = CharField(max_length=32, null=False, default="", index=True)
     created_by = CharField(max_length=32, null=True)
