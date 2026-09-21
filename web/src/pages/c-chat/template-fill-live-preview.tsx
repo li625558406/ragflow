@@ -18,9 +18,15 @@ import {
   applyDocxPageLazy,
   instantFocusScroll,
   isPlaceholderFilled,
+  rebuildPlaceholderSpans,
   updateDocxHighlight,
   type DocxPlaceholderSpans,
 } from '@/pages/c-chat/docx-highlight';
+import {
+  BIG_BLOB_BYTES,
+  stashDocxRender,
+  takeDocxRender,
+} from '@/pages/c-chat/docx-render-cache';
 import { renderAsync } from 'docx-preview';
 import { Loader2, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -52,9 +58,6 @@ function splitPlaceholders(
 // 点击未填充汇总字段后的定位脉冲：500ms×6 次 = 3s
 const PULSE_MS = 500;
 const PULSE_TIMES = 6;
-
-// 超大文档防线阈值：>2.5MB 默认文本预览（设计 2026-09-16 预览内存治理）
-const BIG_BLOB_BYTES = 2.5 * 1024 * 1024;
 
 // 后端 TERMINAL_TASK_STATUSES（done/partial/failed/cancelled）里「有权威产值可取」
 // 的那部分：failed/cancelled 没有成稿，拿到也无值可显。
@@ -190,7 +193,6 @@ export default function TemplateFillLivePreview({
   // 超大文档防线（预览内存治理，设计 2026-09-16）：>2.5MB 的 docx 默认走纯文本渲染
   // （docx-preview 整本文档一次性建 DOM 树，200+ 页曾致标签页 OOM），顶部提示 +
   // 「切换保真渲染」显式覆盖（本地 state 不落库）。渲染失败降级链路不变。
-  const [blobOversize, setBlobOversize] = useState(false);
   const [forceFidelity, setForceFidelity] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   // 文本降级/xlsx 路径的滚动容器（与 docx 容器互斥挂载，二者必有其一）
@@ -208,14 +210,16 @@ export default function TemplateFillLivePreview({
     error: fileError,
   } = useTemplateFillFile(docxEnabled ? tpl.template_id : '');
 
-  // blob 到达判定体量：超阈值先翻转渲染分支（声明在渲染 effect 之前，同批提交内先生效）
-  useEffect(() => {
-    setBlobOversize(Boolean(fileBlob && fileBlob.size > BIG_BLOB_BYTES));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fileBlob]);
+  // 超大文档防线（派生判定而非 state+effect）：blob 到达的同一 commit 内守卫即
+  // 生效——旧写法会在同一 commit 先以 oversize=false 白渲染一遍大文件再翻转分支
+  const blobOversize = Boolean(fileBlob && fileBlob.size > BIG_BLOB_BYTES);
 
   // blob 到达：清容器 → renderAsync → 屏外页懒渲染 → 建占位符 span 映射。
-  // 超大文档且未显式切换保真 → 跳过整本 DOM 建树（文本分支接管）
+  // 超大文档且未显式切换保真 → 跳过整本 DOM 建树（文本分支接管）。
+  // 2026-09-21 渲染缓存：卸载/依赖变更时产物子树摘进按 blob 键的离屏缓存，
+  // 重开 takeDocxRender 命中 → appendChild 回放（毫秒级）。回放的树里占位符
+  // span 已带上一轮 values 文本（{{key}} 原文已被 replace），重建映射后交给
+  // 下方 updateDocxHighlight effect 按当前 values/names 重涂。
   useEffect(() => {
     if (!docxEnabled || !fileBlob || !containerRef.current) return;
     if (blobOversize && !forceFidelity) return;
@@ -223,9 +227,26 @@ export default function TemplateFillLivePreview({
     setRenderFailed(false);
     setRenderedOk(false);
     placeholderSpansRef.current = new Map();
+    if (takeDocxRender(fileBlob, el)) {
+      applyDocxPageLazy(el);
+      placeholderSpansRef.current = rebuildPlaceholderSpans(el);
+      setRenderedOk(true);
+      // 回放分支同样注册 cleanup：不摘回缓存的话，关闭抽屉后树留在已 detach
+      // 的 el 里被 GC，重开必 miss 全量重渲（缓存隔次生效）
+      return () => {
+        stashDocxRender(fileBlob, el);
+      };
+    }
+    // 在飞渲染防错树：cancelled 堵 late resolve 清掉后续范本已渲染的树；
+    // settled/failed 堵在飞或失败残留入缓存（内容不可信，大不了下次重渲）
+    let cancelled = false;
+    let settled = false;
+    let failed = false;
     el.innerHTML = '';
     renderAsync(fileBlob, el, undefined, { inWrapper: true, breakPages: true })
       .then(() => {
+        settled = true;
+        if (cancelled || !el.isConnected) return;
         applyDocxPageLazy(el);
         placeholderSpansRef.current = applyDocxHighlight(
           el,
@@ -234,7 +255,16 @@ export default function TemplateFillLivePreview({
         );
         setRenderedOk(true);
       })
-      .catch(() => setRenderFailed(true));
+      .catch(() => {
+        settled = true;
+        failed = true;
+        if (cancelled) return;
+        setRenderFailed(true);
+      });
+    return () => {
+      cancelled = true;
+      if (settled && !failed) stashDocxRender(fileBlob, el);
+    };
   }, [fileBlob, docxEnabled, blobOversize, forceFidelity]);
 
   // values 变化：按 span 映射增量更新（已填⇄未填双向切换），不重建 DOM。
@@ -249,7 +279,6 @@ export default function TemplateFillLivePreview({
     placeholderSpansRef.current = new Map();
     setRenderFailed(false);
     setRenderedOk(false);
-    setBlobOversize(false);
     setForceFidelity(false);
   }, [tpl.template_id]);
 
