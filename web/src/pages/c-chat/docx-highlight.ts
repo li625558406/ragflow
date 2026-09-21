@@ -913,3 +913,40 @@ export function highlightDocxRanges(
   }
   return marked;
 }
+
+// ── 渲染缓存回放配套（2026-09-21）────────────────────────────────
+
+/** 剥离 highlightDocxRanges 插入的全部 mark[data-anchor-key]，把原文（文本节点）
+ *  还原回段落里——渲染缓存回放的前置清理：缓存树里可能带上一轮批注的 mark，
+ *  回放后须按当前 railItems 重涂，不能让旧 mark 残留/与新 mark 叠加。
+ *  showKeyBadge 产生的 {{key}} 徽标 span 一并删除（仅删 textContent 精确等于
+ *  {{本 mark key}} 的直接子 span，不动其他内容）。 */
+export function stripDocxAnnotationMarks(container: HTMLElement): void {
+  container.querySelectorAll('mark[data-anchor-key]').forEach((m) => {
+    const mark = m as HTMLElement;
+    const key = mark.dataset.anchorKey || '';
+    mark.querySelectorAll(':scope > span').forEach((sp) => {
+      if ((sp.textContent || '') === `{{${key}}}`) sp.remove();
+    });
+    mark.replaceWith(...mark.childNodes);
+  });
+}
+
+/** 从已应用过 applyDocxHighlight 的渲染树上重建 key → span[] 映射：
+ *  缓存回放的树里占位符已是带 data-ph-key 的高亮 span（{{key}} 原文已被
+ *  replace 掉，无法再走 applyDocxHighlight 的全文扫描），span 的文本/样式
+ *  可能是上一轮 values 的产物，重建映射后交给 updateDocxHighlight 按当前
+ *  values/names 重涂即可。 */
+export function rebuildPlaceholderSpans(
+  container: HTMLElement,
+): DocxPlaceholderSpans {
+  const groups: DocxPlaceholderSpans = new Map();
+  container.querySelectorAll<HTMLElement>('[data-ph-key]').forEach((span) => {
+    const key = span.dataset.phKey || '';
+    if (!key) return;
+    const arr = groups.get(key) || [];
+    arr.push(span);
+    groups.set(key, arr);
+  });
+  return groups;
+}
