@@ -112,3 +112,22 @@ describe('ReviewPanel 大文件渲染优化（A：oversize 门槛）', () => {
     expect(await screen.findByText('保真正文段落')).toBeTruthy();
   });
 });
+
+describe('ReviewPanel 大文件渲染优化（B：渲染产物缓存）', () => {
+  it('卸载重开同一文件走缓存回放，renderAsync 只调用一次', async () => {
+    mockUseFileBlob.mockReturnValue({
+      data: new Blob(['small-f1']),
+      isLoading: false,
+      error: null,
+    } as any);
+    mockGet.mockResolvedValue(ok(paras(['任意'])));
+    const first = renderPanel();
+    await screen.findByText('保真正文段落');
+    expect(mockRenderAsync).toHaveBeenCalledTimes(1);
+    first.unmount();
+    renderPanel();
+    // 缓存命中：appendChild 回放，不再整本重渲染
+    await screen.findByText('保真正文段落');
+    expect(mockRenderAsync).toHaveBeenCalledTimes(1);
+  });
+});

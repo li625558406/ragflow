@@ -36,10 +36,15 @@ import {
   applyDocxPageLazy,
   highlightDocxRanges,
   instantFocusScroll,
+  stripDocxAnnotationMarks,
   type DocxHighlightItem,
 } from './docx-highlight';
 import DocxParagraphEditor, { collectEditorOps } from './docx-paragraph-editor';
-import { BIG_BLOB_BYTES } from './docx-render-cache';
+import {
+  BIG_BLOB_BYTES,
+  stashDocxRender,
+  takeDocxRender,
+} from './docx-render-cache';
 import { parseTableCells, type TableCellInfo } from './docx-table-utils';
 import {
   getLocateText,
@@ -942,11 +947,14 @@ export default function ReviewPanel({
 
   // blob 到达：清容器 → renderAsync 保真渲染 → 屏外页懒渲染 → 按当前 railItems
   // 插入 mark[data-anchor-key]。渲染失败降级回旧段落视图。
-  // deps 必须含 docxEpoch：渲染产物不留在 state 里，而容器可能被三件事重挂——
+  // deps 必须含 docxEpoch：渲染产物不在 React state 里，而容器可能被三件事重挂——
   // 关闭时 return null（重开时同 fileId blob 命中 query 缓存引用不变、content 仍在
   // state，effect 其他 deps 全不变）、loading 闪断（内容请求 setLoading(true) 卸载
   // body，与渲染竞争）、文件切换。ref 回调把每次容器挂载折算成 epoch 递增，
   // 任何重挂都强制重跑渲染，否则容器空白（版本历史二次查看白屏根因）。
+  // 2026-09-21 渲染缓存：effect 卸载/依赖变更时把产物子树摘进按 blob 键的离屏
+  // 缓存（stashDocxRender），重开同一文件 takeDocxRender 命中 → appendChild 回放
+  // （毫秒级）→ 剥上一轮 mark → 按当前 railItems 重涂，renderAsync 不再重跑。
   useEffect(() => {
     if (!docxFidelityCandidate || !docxBlob || !docxWrapRef.current) return;
     const el = docxWrapRef.current;
@@ -956,6 +964,15 @@ export default function ReviewPanel({
     setMarkedKeys(new Set());
     // 超大文档默认文本降级：不进 renderAsync（「切换保真渲染」覆盖后放行）
     if (docxOversize && !docxForceFidelity) return;
+    if (takeDocxRender(docxBlob, el)) {
+      stripDocxAnnotationMarks(el);
+      fitDocxToColumn();
+      applyDocxPageLazy(el);
+      setMarkedKeys(
+        highlightDocxRanges(el, toHighlightItems(railItemsRef.current)),
+      );
+      return;
+    }
     el.innerHTML = '';
     renderAsync(docxBlob, el, undefined, { inWrapper: true, breakPages: true })
       .then(() => {
@@ -970,6 +987,11 @@ export default function ReviewPanel({
         setDocxRenderFailed(true);
         setMarkedKeys(new Set());
       });
+    return () => {
+      // 卸载/换文件/进编辑视图前：产物子树整体摘进离屏缓存（树只存在一份，
+      // 不在 el 就在 holder，内存不翻倍）
+      stashDocxRender(docxBlob, el);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     docxBlob,
