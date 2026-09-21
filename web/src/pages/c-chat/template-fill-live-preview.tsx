@@ -222,6 +222,9 @@ export default function TemplateFillLivePreview({
   // 下方 updateDocxHighlight effect 按当前 values/names 重涂。
   useEffect(() => {
     if (!docxEnabled || !fileBlob || !containerRef.current) return;
+    // 注意：此处 oversize 守卫在状态重置之前，与 review-panel（重置在前）刻意
+    // 不同——本组件跨范本切换由 template_id 独立 effect 兜底重置，勿「对齐」时
+    // 把重置提前而意识不到对另一 effect 的依赖
     if (blobOversize && !forceFidelity) return;
     const el = containerRef.current;
     setRenderFailed(false);
