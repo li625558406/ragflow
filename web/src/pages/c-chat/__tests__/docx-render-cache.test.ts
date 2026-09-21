@@ -74,6 +74,15 @@ describe('docx-render-cache', () => {
     expect(el.textContent).toBe('第二棵');
   });
 
+  it('对抗：take 传入非空容器（在飞切换残树）先机械清空，不混排两棵树', () => {
+    const b = blob('mix');
+    stashDocxRender(b, tree('缓存树'));
+    const el = tree('在飞残树');
+    expect(takeDocxRender(b, el)).toBe(true);
+    expect(el.textContent).toBe('缓存树');
+    expect(el.querySelectorAll('p')).toHaveLength(1);
+  });
+
   it('BIG_BLOB_BYTES = 2.5MB', () => {
     expect(BIG_BLOB_BYTES).toBe(2.5 * 1024 * 1024);
   });

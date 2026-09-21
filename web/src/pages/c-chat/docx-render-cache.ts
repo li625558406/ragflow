@@ -47,10 +47,13 @@ export function stashDocxRender(blob: Blob, el: HTMLElement): void {
 }
 
 /** 重开回放：把缓存子树搬回 el。命中返回 true（调用方随后 strip/重涂）。
- *  契约：调用方须传空容器（重开挂载的干净 el）；非空容器内容会与缓存子树混排。 */
+ *  append 前机械清空 el——把「调用方须传空容器」的注释契约变成基建保证，
+ *  堵「同 el 在飞渲染被切走后残树未清 + 缓存命中」的混树窗口（范本抽屉
+ *  切换范本不重挂容器，真实可达）。 */
 export function takeDocxRender(blob: Blob, el: HTMLElement): boolean {
   const holder = stash.get(blob);
   if (!holder || !holder.firstElementChild) return false;
+  el.innerHTML = '';
   while (holder.firstChild) el.appendChild(holder.firstChild);
   return true;
 }
