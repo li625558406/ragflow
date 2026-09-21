@@ -968,15 +968,24 @@ export default function ReviewPanel({
       stripDocxAnnotationMarks(el);
       fitDocxToColumn();
       applyDocxPageLazy(el);
+      // 回放在 effect 阶段同步插 mark（renderAsync 异步无此窗口）——同一
+      // commit 的补插 effect 闭包还是旧 markedKeys，防双插靠补插 effect 的
+      // DOM 已插判定，这里无需额外闸
       setMarkedKeys(
         highlightDocxRanges(el, toHighlightItems(railItemsRef.current)),
       );
       return;
     }
+    // 在飞渲染防错树：cancelled 堵 late resolve 清掉后续文件已渲染的树；
+    // settled 堵「A 渲染中切走 → cleanup 把 A 的树 stash 进 B 的缓存键」的
+    // 跨会话错树污染（在飞渲染的容器内容不可信，不入缓存，大不了下次重渲）。
+    let cancelled = false;
+    let settled = false;
     el.innerHTML = '';
     renderAsync(docxBlob, el, undefined, { inWrapper: true, breakPages: true })
       .then(() => {
-        if (!el.isConnected) return; // 容器已被重挂/卸载：丢弃本轮 stale 渲染产物
+        settled = true;
+        if (cancelled || !el.isConnected) return; // 容器已被重挂/卸载：丢弃本轮 stale 渲染产物
         fitDocxToColumn();
         applyDocxPageLazy(el);
         setMarkedKeys(
@@ -984,13 +993,16 @@ export default function ReviewPanel({
         );
       })
       .catch(() => {
+        settled = true;
         setDocxRenderFailed(true);
         setMarkedKeys(new Set());
       });
     return () => {
+      cancelled = true;
       // 卸载/换文件/进编辑视图前：产物子树整体摘进离屏缓存（树只存在一份，
-      // 不在 el 就在 holder，内存不翻倍）
-      stashDocxRender(docxBlob, el);
+      // 不在 el 就在 holder，内存不翻倍）；渲染仍在飞（未 settle）则内容不可信，
+      // 放弃 stash
+      if (settled) stashDocxRender(docxBlob, el);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -1006,11 +1018,18 @@ export default function ReviewPanel({
   // updater 双调用会重复改 DOM）
   useEffect(() => {
     if (!docxFidelity || !docxWrapRef.current) return;
+    // 已插判定以 DOM 为权威：缓存回放分支在 effect 阶段同步插好 mark 时，本
+    // effect 同一 commit 的闭包 markedKeys 还是旧值（React batched），仅按
+    // state 过滤会把 fresh 全集在已插 mark 上再插一层（嵌套双层 mark）；
+    // 容器里已有同名 mark 的一律跳过，时序无关、天然幂等
+    const wrap = docxWrapRef.current;
     const fresh = toHighlightItems(railItems).filter(
-      (it) => !markedKeys.has(it.key),
+      (it) =>
+        !markedKeys.has(it.key) &&
+        !wrap.querySelector(`mark[data-anchor-key="${it.key}"]`),
     );
     if (!fresh.length) return;
-    const added = highlightDocxRanges(docxWrapRef.current, fresh);
+    const added = highlightDocxRanges(wrap, fresh);
     if (!added.size) return;
     setMarkedKeys((prev) => new Set([...prev, ...added]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
