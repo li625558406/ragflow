@@ -260,9 +260,14 @@ export default function FlowDetail({
   );
 
   const commentsOf = useMemo(() => {
-    if (!data || !selectedVersion) return [];
+    if (!data) return [];
+    // version_id 为空 = 流程级批注（对话上传文件未经版本通道时的审核批注，
+    // 后端不再以「暂无文件版本」拒绝）——任何选中版本下都可见，无版本流程也可见
     return (data.comments ?? []).filter(
-      (c) => c.version_id === selectedVersion.id,
+      (c) =>
+        !selectedVersion ||
+        c.version_id === selectedVersion.id ||
+        !c.version_id,
     );
   }, [data, selectedVersion]);
 

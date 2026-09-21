@@ -59,10 +59,11 @@ def quart_app():
     return Quart(__name__)
 
 
-def _patch_flow(monkeypatch):
+def _patch_flow(monkeypatch, current_version_id="v1"):
     monkeypatch.setattr(
         _flow_app, "_flow_dict",
-        lambda fid: {"id": fid, "current_version_id": "v1", "status": "initiator",
+        lambda fid: {"id": fid, "current_version_id": current_version_id,
+                     "status": "initiator",
                      "initiator_id": "u1", "leader_id": "u2", "handler_id": "u3",
                      "deleted": 0})
     monkeypatch.setattr(_flow_app, "_others_of", lambda flow, uid: [])
@@ -136,6 +137,53 @@ class TestAddCommentSeverity:
         res = _call(quart_app, {"content": "   ", "severity": "high"})
         assert res["code"] == 101
         assert not captured
+
+
+class TestCommentVersionless:
+    """无版本批注放行：对话上传文件（文件审核目标）不经版本通道进入流程，
+    批注不应被「流程暂无文件版本」拒绝——version_id 为空存空串视为流程级意见。"""
+
+    def test_versionless_flow_comment_allowed(self, quart_app, monkeypatch):
+        """无版本流程（current_version_id=''）+ body 不带 version_id → 放行且存空串。"""
+        _patch_flow(monkeypatch, current_version_id="")
+        captured: dict = {}
+        _fake_comment_svc(monkeypatch, captured)
+        res = _call(quart_app, {"content": "审核意见：格式不对"})
+        assert res["code"] == 0, res
+        assert captured["version_id"] == ""
+
+    def test_explicit_version_id_wins_over_current(self, quart_app, monkeypatch):
+        """body 显式 version_id 优先于 current_version_id。"""
+        _patch_flow(monkeypatch, current_version_id="v-current")
+        captured: dict = {}
+        _fake_comment_svc(monkeypatch, captured)
+        res = _call(quart_app, {"content": "意见", "version_id": "v-explicit"})
+        assert res["code"] == 0
+        assert captured["version_id"] == "v-explicit"
+
+    def test_body_version_id_falsy_falls_back_to_current(self, quart_app, monkeypatch):
+        """body version_id 为空串/None 时回退 current_version_id（不误存空）。"""
+        _patch_flow(monkeypatch, current_version_id="v-current")
+        for empty in ("", None):
+            captured: dict = {}
+            _fake_comment_svc(monkeypatch, captured)
+            res = _call(quart_app, {"content": "意见", "version_id": empty})
+            assert res["code"] == 0
+            assert captured["version_id"] == "v-current"
+
+    def test_versionless_with_anchor_and_severity(self, quart_app, monkeypatch):
+        """无版本批注同样携带锚点+级别（审核面板选中原文批注的主路径）。"""
+        _patch_flow(monkeypatch, current_version_id="")
+        captured: dict = {}
+        _fake_comment_svc(monkeypatch, captured)
+        res = _call(quart_app, {"content": "这句要改", "severity": "high",
+                                "anchor_text": "投标保证金", "anchor_para": 5,
+                                "anchor_start": 3})
+        assert res["code"] == 0
+        assert captured["version_id"] == ""
+        assert captured["anchor_text"] == "投标保证金"
+        assert captured["anchor_para"] == 5
+        assert captured["severity"] == "high"
 
 
 class TestServiceSeverityFallback:

@@ -1,5 +1,18 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-21（三）无版本流程手动批注被「流程暂无文件版本」拒绝——批注 version_id 放宽为可空
+
+**主题**：用户在**无版本**新流程里发起文件审核（对话上传文件）→ 审核面板看 AI 批注 → 自己选中文本写批注 → 报 `{code:101, message:"流程暂无文件版本，无法批注"}`。根因：flow_comment 设计之初文档只经版本通道进入流程，add_comment 端点强校验 `version_id = body.version_id or current_version_id` 非空；而文件审核目标走上传文档通道，流程没有任何版本 → 恒空 → 101。**第一性原理**：批注意见锚定的是文档内容（anchor_text/anchor_para），版本只是意见产生时文档的引用；文档不经版本通道进入流程不该丢掉批注能力。version_id 语义放宽为「产生意见的版本，可为空 = 流程级意见」。
+
+**改动**：
+- 后端 `flow_app.py` add_comment 单处：删 101 拦截，version_id 回退链尾补 `or ""`（空串合法，FlowComment.version_id null=False 存空串无碍）。
+- 前端 `flow-detail.tsx` `commentsOf` 单处：原 `!selectedVersion → []` + 严格按 version_id 相等过滤，改为 `!selectedVersion || version_id 匹配 || version_id 为空`——流程级批注在任何选中版本下都可见，无版本流程也可见；该 memo 同时喂 FlowAiPanel（ReviewPanel 批注列表+锚定高亮，审核文件场景 anchor 匹配天然命中）与左下批注模块，一处改两处通。
+- flow-ai-panel `handleAddAnchoredComment` 零改动（本就传 `version?.id`，undefined → 回退链 → 空串放行）。
+
+**测试**：`test_flow_comment_severity.py` 新增 `TestCommentVersionless` 4 例（无版本放行存空串 / 显式 version_id 优先 / body 空值回退 current / 无版本+锚点+级别主路径），套件 10 passed；tsc 对 flow-detail 零错误。
+
+**遗留**：①版本删除级联「锚定批注一并删」不会碰 version_id 为空的批注（随流程硬删才回收，语义正确）；②version_id 为空的批注在查看其他版本预览时也会出现在列表（锚点匹配不中显示未定位），可接受不按版本隔离。
+
 ## 2026-09-21（二）流程对话用户气泡附件 chip：flow_ai_chat 加 files 列 + live/历史气泡展示
 
 **主题**：用户要求「附件上传的文件在对话输出框做一个展示效果，看看范本填写和文件审核用不用也展示」。现状：流程页签用户气泡只有纯文本指令，随消息手动上传的文件发送后即「消失」（只在进度卡/成稿卡里间接可见），发送者与协作者都无法从对话流看出每轮带了什么附件。**范本填写/文件审核不需要单独做**：两者的进度卡已各自展示文件名（成稿对象/审核目标），chip 在**用户消息层**对所有消息类型统一生效，无需按功能适配。只展示**手动上传**（版本自动附带每条消息都带 id 轮换的流程自身文档，展示是噪音，与（十五）守卫同一取舍）。

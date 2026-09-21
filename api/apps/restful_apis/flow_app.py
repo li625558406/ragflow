@@ -987,9 +987,10 @@ async def add_comment(flow_id: str):
         content = (body.get("content") or "").strip()
         if not content:
             return _err("批注内容不能为空", 101)
-        version_id = body.get("version_id") or flow["current_version_id"]
-        if not version_id:
-            return _err("流程暂无文件版本，无法批注", 101)
+        # 批注意见锚定的是文档内容（anchor_text/para）；文档可经对话上传进入流程
+        # （不经版本通道，如文件审核目标），版本只是意见产生时的文档引用——
+        # 为空时存空串视为「流程级意见」，不再以「暂无文件版本」拒绝
+        version_id = body.get("version_id") or flow["current_version_id"] or ""
         # Word 式批注锚点：选中的原文选段 + 段落 index + 段落内起始偏移（均可空）
         anchor_text = (body.get("anchor_text") or "").strip()[:500]
         anchor_para = body.get("anchor_para")
