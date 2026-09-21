@@ -9,7 +9,7 @@
 - 前端 `flow-detail.tsx` `commentsOf` 单处：原 `!selectedVersion → []` + 严格按 version_id 相等过滤，改为 `!selectedVersion || version_id 匹配 || version_id 为空`——流程级批注在任何选中版本下都可见，无版本流程也可见；该 memo 同时喂 FlowAiPanel（ReviewPanel 批注列表+锚定高亮，审核文件场景 anchor 匹配天然命中）与左下批注模块，一处改两处通。
 - flow-ai-panel `handleAddAnchoredComment` 零改动（本就传 `version?.id`，undefined → 回退链 → 空串放行）。
 
-**测试**：`test_flow_comment_severity.py` 新增 `TestCommentVersionless` 4 例（无版本放行存空串 / 显式 version_id 优先 / body 空值回退 current / 无版本+锚点+级别主路径），套件 10 passed；tsc 对 flow-detail 零错误。
+**测试**：`test_flow_comment_severity.py` 新增 `TestCommentVersionless` 4 例（无版本放行存空串 / 显式 version_id 优先 / body 空值回退 current / 无版本+锚点+级别主路径），套件 10 passed；tsc 对 flow-detail 零错误。**后端已部署 2026-09-21**（flow_app.py SCP+md5 一致+restart+import 冒烟+端点 401）；**已 commit（a919c45d）+ push**；**前端未部署**（生产 dist 还是旧版，commentsOf 放行需 build 后生效）。
 
 **遗留**：①版本删除级联「锚定批注一并删」不会碰 version_id 为空的批注（随流程硬删才回收，语义正确）；②version_id 为空的批注在查看其他版本预览时也会出现在列表（锚点匹配不中显示未定位），可接受不按版本隔离。
 
