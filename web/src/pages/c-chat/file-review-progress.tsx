@@ -24,11 +24,44 @@ const STATUS_CN: Record<string, string> = {
   failed: '失败',
 };
 
+// 从 SSE 全量原始事件序列（send() 返回的 events）里提取 FileReview 节点产出的
+// {fileId, taskId}。**必须**喂 res.events 而不是 answerList：hook 收尾时
+// setDone(true) 与 resetAnswerList() 同帧批处理，done 态扫描 effect 只能见到空
+// 列表（structured output 之所以用 ref 拦截就是同一原因）。轮询端点只认 file_id，
+// 节点 inputs 是空 dict，file_id 的唯一来源是节点 outputs（2026-09-20 增补）。
+export function extractFileReviewTarget(
+  events: unknown[] | undefined,
+): { fileId: string; taskId: string } | null {
+  let fileId = '';
+  let taskId = '';
+  for (const evt of events ?? []) {
+    const ev: any = evt as any;
+    if (ev?.event !== 'node_finished') continue;
+    const data = ev?.data ?? {};
+    // component_name 是 DSL 节点显示名（如「FileReview:BraveLionsScan」），组件类型
+    // 在 component_type 字段；component_name 精确等值保留作兜底
+    const componentType = (data?.component_type ?? '').toString();
+    const componentName = (data?.component_name ?? '').toString();
+    if (componentType !== 'FileReview' && componentName !== 'FileReview')
+      continue;
+    const outputs = data?.outputs ?? {};
+    const inputs = data?.inputs ?? {};
+    if (outputs?.task_id) taskId = String(outputs.task_id);
+    // file_id 权威来源是节点 outputs；inputs 两键为旧兜底
+    const fileIdInput =
+      outputs?.file_id ?? inputs?.file_id ?? inputs?.review_file_id;
+    if (fileIdInput) fileId = String(fileIdInput);
+    if (taskId && fileId) break;
+  }
+  return taskId && fileId ? { fileId, taskId } : null;
+}
+
 export default function FileReviewProgress({
   fileId,
   taskId: taskIdProp,
   onOpenReview,
   onPreviewDoc,
+  onSaveAsVersion,
 }: {
   /** 必填。轮询 / 失效 / fix 入参都从这里派生。 */
   fileId: string;
@@ -48,6 +81,11 @@ export default function FileReviewProgress({
    *  `@login_required` 且只从请求头取用户，浏览器导航类请求不带自定义头 ⇒ 必 401。
    *  R-8：服务端不再下发 MinIO 对象名，这里只收版本号。 */
   onPreviewDoc?: (fileVersion: string) => void;
+  /** 点击「存为流程版本」时回调（参数：taskId + 成稿版本号）。
+   *  flow 页签专属：把审核成稿上传为流程版本（版本记录 /「查看文件内容」随之可见
+   *  修改后文件）。c-chat 无流程版本概念，不传即不渲染按钮。
+   *  失败必须 reject——卡片据 resolve/reject 翻转按钮态（保存中/已存/失败重试）。 */
+  onSaveAsVersion?: (taskId: string, fileVersion: string) => Promise<void>;
 }) {
   // ── 数据 ─────────────────────────────────────────
   const state = useFileReviewState(fileId);
@@ -85,9 +123,26 @@ export default function FileReviewProgress({
   const fixError =
     fixMutation.error instanceof Error ? fixMutation.error.message : '';
 
+  const runSaveAsVersion = async (fileVersion: string) => {
+    if (!onSaveAsVersion || !taskId || !fileVersion) return;
+    if (saveStates[fileVersion] === 'saving') return;
+    setSaveStates((p) => ({ ...p, [fileVersion]: 'saving' }));
+    try {
+      await onSaveAsVersion(taskId, fileVersion);
+      setSaveStates((p) => ({ ...p, [fileVersion]: 'saved' }));
+    } catch {
+      setSaveStates((p) => ({ ...p, [fileVersion]: 'error' }));
+    }
+  };
+
   // ── 修复级别选择 Popover ─────────────────────────
   const [picking, setPicking] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
+  // ── 存为流程版本（flow 页签专属）：按成稿版本记态，版本随新轮推进（v1→v2）时
+  // 新版本无键自然回到可点击态，无需手动重置。
+  const [saveStates, setSaveStates] = useState<
+    Record<string, 'saving' | 'saved' | 'error'>
+  >({});
   const submitFix = () => {
     if (!taskId) return; // 防御：极端情况下 state 尚未拉到
     fixMutation.mutate(
@@ -119,6 +174,12 @@ export default function FileReviewProgress({
   if (!data || data.rounds.length === 0) {
     return null; // 还没产出轮次（不应该出现，组件挂在审核流程之后）
   }
+
+  // 按钮态：仅当调用方提供回调且有成稿时才有意义（取值须在 data 判空之后）
+  const docVersion = data.doc.version;
+  const saveState = onSaveAsVersion
+    ? (saveStates[docVersion] ?? 'idle')
+    : 'idle';
 
   return (
     <div className="space-y-2 rounded-lg border border-[#E5E5E5] bg-[#F5F5F5] px-3 py-2.5 text-xs">
@@ -164,6 +225,22 @@ export default function FileReviewProgress({
             onClick={() => onPreviewDoc?.(data.doc.version)}
           >
             <Download className="h-3 w-3" /> 下载成稿
+          </button>
+        )}
+        {data.doc.has_result && data.doc.version && onSaveAsVersion && (
+          <button
+            type="button"
+            disabled={saveState === 'saving' || saveState === 'saved'}
+            className="flex items-center gap-1 rounded border border-[#1a66fb] px-2 py-0.5 text-[#1a66fb] hover:bg-[#F5F8FF] disabled:opacity-60"
+            onClick={() => runSaveAsVersion(docVersion)}
+          >
+            {saveState === 'saving'
+              ? '保存中…'
+              : saveState === 'saved'
+                ? '已存为流程版本'
+                : saveState === 'error'
+                  ? '保存失败，重试'
+                  : '存为流程版本'}
           </button>
         )}
         {canFix && (

@@ -2,7 +2,10 @@
 import ChapteredMarkdown from '@/components/chaptered-markdown';
 import { Button } from '@/components/ui/button';
 import type { ITemplateFillDownload } from '@/hooks/template-fill-stream';
-import { downloadFileReviewVersion } from '@/services/file-review-service';
+import {
+  downloadFileReviewVersion,
+  downloadFileReviewVersionBlob,
+} from '@/services/file-review-service';
 import {
   archiveFlow,
   deleteFlow,
@@ -170,6 +173,27 @@ export default function FlowDetail({
       await qc.invalidateQueries({ queryKey: ['flow-detail', flowId] });
     },
     [flowId, qc, savingDocIds],
+  );
+  // 文件审核成稿「存为流程版本」：审核（含修复轮）收口后，把成稿经 review 专用
+  // download 端点取 Blob（@login_required 只认请求头，同 downloadFileReviewVersion）
+  // 上传为 flow 版本 —— 版本记录 /「查看文件内容」随之可见修改后文件。
+  // 与范本填写 saveDownloadAsVersion 同构；失败向上抛出，由进度卡把按钮翻转为
+  // 「保存失败，重试」（卡片自管状态，此处不落本地 saving 集合）。
+  const saveReviewAsVersion = useCallback(
+    async (taskId: string, fileVersion: string) => {
+      const blob = await downloadFileReviewVersionBlob(taskId, fileVersion);
+      const fd = new FormData();
+      fd.append(
+        'file',
+        new File([blob], `文件审核_${fileVersion}.docx`, {
+          type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        }),
+      );
+      fd.append('source', 'ai_file_review');
+      await uploadFlowVersion(flowId, fd);
+      await qc.invalidateQueries({ queryKey: ['flow-detail', flowId] });
+    },
+    [flowId, qc],
   );
   const uploadInputRef = useRef<HTMLInputElement>(null);
   // 版本文件只读查看（所有参与人可用）：版本转 document 后交给 ReviewPanel
@@ -522,6 +546,7 @@ export default function FlowDetail({
                 onTplPreviewOpenChange?.(open);
               }}
               reviewCtl={reviewCtl}
+              onReviewSaveAsVersion={saveReviewAsVersion}
               extraAction={(dl) => {
                 const st = savingDocIds[dl.doc_id || ''];
                 return (
@@ -728,24 +753,51 @@ export default function FlowDetail({
                 {commentsOf.length === 0 && (
                   <div className="text-xs text-[#999]">暂无批注</div>
                 )}
-                {commentsOf.map((c) => (
-                  <div
-                    key={c.id}
-                    className="rounded-md bg-[#F7F8FA] px-2.5 py-1.5"
-                  >
-                    <div className="flex items-center justify-between text-xs text-[#888]">
-                      <span className="truncate">
-                        {nicknameMap.get(c.user_id) || c.user_id}
-                      </span>
-                      <span className="shrink-0">
-                        {new Date(c.create_time).toLocaleString()}
-                      </span>
+                {commentsOf.map((c) => {
+                  /* 级别徽标：与审核面板批注卡同口径（严重/一般/提示），存量无值视为一般 */
+                  const sev = ['high', 'medium', 'low'].includes(
+                    c.severity || '',
+                  )
+                    ? (c.severity as string)
+                    : 'medium';
+                  const sevStyle = {
+                    high: { color: '#FF4D4F', bg: '#FFF2F0' },
+                    medium: { color: '#FA8C16', bg: '#FFF7E6' },
+                    low: { color: '#1890FF', bg: '#F0F5FF' },
+                  }[sev] ?? { color: '#FA8C16', bg: '#FFF7E6' };
+                  const sevLabel =
+                    { high: '严重', medium: '一般', low: '提示' }[sev] ??
+                    '一般';
+                  return (
+                    <div
+                      key={c.id}
+                      className="rounded-md bg-[#F7F8FA] px-2.5 py-1.5"
+                    >
+                      <div className="flex items-center justify-between text-xs text-[#888]">
+                        <span className="flex min-w-0 items-center gap-1">
+                          <span className="truncate">
+                            {nicknameMap.get(c.user_id) || c.user_id}
+                          </span>
+                          <span
+                            className="shrink-0 rounded px-1 py-px text-[10px] font-semibold"
+                            style={{
+                              color: sevStyle.color,
+                              backgroundColor: sevStyle.bg,
+                            }}
+                          >
+                            {sevLabel}
+                          </span>
+                        </span>
+                        <span className="shrink-0">
+                          {new Date(c.create_time).toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="mt-0.5 whitespace-pre-wrap text-sm text-[#333]">
+                        {c.content}
+                      </div>
                     </div>
-                    <div className="mt-0.5 whitespace-pre-wrap text-sm text-[#333]">
-                      {c.content}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </div>,
@@ -886,6 +938,61 @@ function DetailSkeleton() {
 // canvas 运行期错误兜底消息（后端以「执行失败：」前缀落库）：气泡红底红字显式提示
 const isErrorResponse = (t: string) => t.trimStart().startsWith('执行失败：');
 
+// flow_ai_chat.file_review 字段解析："{file_id,task_id}" JSON 字符串 → 挂卡目标；
+// 空串/畸形/缺键静默返 null（持久化是尽力而为，不因坏数据挂掉整个对话列表渲染）
+const parseFileReview = (
+  raw: string | undefined,
+): { fileId: string; taskId: string } | null => {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed?.fileId && parsed?.taskId) return parsed;
+  } catch {
+    // 旧数据/畸形 JSON：静默忽略
+  }
+  return null;
+};
+
+// flow_ai_chat.files 字段解析："[{id,name}]" JSON 字符串 → 用户气泡附件 chip；
+// 空串/畸形/空数组静默返空（发送时事实的尽力展示，坏数据不挂列表渲染）
+const parseChatFiles = (
+  raw: string | undefined,
+): { id: string; name: string }[] => {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.length) {
+      return parsed.filter((f) => f?.id);
+    }
+  } catch {
+    // 旧数据/畸形 JSON：静默忽略
+  }
+  return [];
+};
+
+/** 用户气泡附件 chip 行（浅色主题，与气泡 bg-[#EFF4FF] 同层） */
+const ChatFileChips = ({
+  files,
+}: {
+  files: { id: string; name: string }[];
+}) => {
+  if (!files.length) return null;
+  return (
+    <div className="mt-1 flex flex-wrap gap-1">
+      {files.map((f) => (
+        <span
+          key={f.id}
+          className="inline-flex max-w-[240px] items-center gap-1 rounded-md bg-white/70 px-2 py-0.5 text-[11px] text-[#4a6285]"
+          title={f.name}
+        >
+          <FileText className="h-3 w-3 shrink-0" strokeWidth={2} />
+          <span className="truncate">{f.name}</span>
+        </span>
+      ))}
+    </div>
+  );
+};
+
 function ConversationView({
   chats,
   live,
@@ -896,6 +1003,7 @@ function ConversationView({
   onLivePreviewOpenChange,
   visible = true,
   reviewCtl,
+  onReviewSaveAsVersion,
 }: {
   chats: FlowAiChatItem[];
   live: FlowLiveChat | null;
@@ -913,6 +1021,12 @@ function ConversationView({
   visible?: boolean;
   /** T15：FileReviewProgress 回调桥（FlowAiPanel 上报的 reviewCtl.openWithFile） */
   reviewCtl?: FlowReviewControl | null;
+  /** 文件审核成稿「存为流程版本」回调（签名与卡片 onSaveAsVersion 一致，
+   *  透传给已入库记录与 live 两处进度卡；不传则卡片不渲染该按钮） */
+  onReviewSaveAsVersion?: (
+    taskId: string,
+    fileVersion: string,
+  ) => Promise<void>;
   /** T15：FileReviewProgress 成稿预览 —— 本任务已改走专用 download 端点
    *  （GET /api/v1/file/review/<taskId>/<fileVersion>/download），不再需要父层透传回调。
    *  旧 prop 已删（无外部调用方）。 */
@@ -950,6 +1064,7 @@ function ConversationView({
           <div className="flex justify-end">
             <div className="max-w-[80%] whitespace-pre-wrap rounded-lg rounded-br-sm bg-[#EFF4FF] px-3 py-1.5 text-sm leading-relaxed text-[#1a3a6b]">
               {c.instruction}
+              <ChatFileChips files={parseChatFiles(c.files)} />
             </div>
           </div>
           <div className="flex justify-start">
@@ -966,6 +1081,30 @@ function ConversationView({
               />
             </div>
           </div>
+          {/* 文件审核进度卡持久化：记录带 file_review（{file_id,task_id} JSON）
+              时挂卡（组件内部自管轮询与数据），刷新/重进后历史回复的卡片恢复。
+              live 态卡片由 ConversationView 底部 live 分支渲染，此处只管已入库记录。 */}
+          {parseFileReview(c.file_review) && (
+            <div className="max-w-[90%]">
+              <FileReviewProgress
+                fileId={parseFileReview(c.file_review)!.fileId}
+                taskId={parseFileReview(c.file_review)!.taskId}
+                onOpenReview={(annotations) => {
+                  reviewCtl?.openWithFile?.(
+                    parseFileReview(c.file_review)!.fileId,
+                    '文件审核',
+                    annotations as any,
+                  );
+                }}
+                onPreviewDoc={(fileVersion) => {
+                  const tid = parseFileReview(c.file_review)?.taskId;
+                  if (!tid || !fileVersion) return;
+                  void downloadFileReviewVersion(tid, fileVersion);
+                }}
+                onSaveAsVersion={onReviewSaveAsVersion}
+              />
+            </div>
+          )}
           <div className="flex items-center gap-2 px-1 text-[10px] text-[#aaa]">
             {c.user_id && authorNames?.[c.user_id] && (
               <span className="rounded bg-[#F5F5F5] px-1 text-[#888]">
@@ -988,6 +1127,7 @@ function ConversationView({
             <div className="flex justify-end">
               <div className="max-w-[80%] whitespace-pre-wrap rounded-lg rounded-br-sm bg-[#EFF4FF] px-3 py-1.5 text-sm leading-relaxed text-[#1a3a6b]">
                 {live.instruction}
+                <ChatFileChips files={live.files || []} />
               </div>
             </div>
           )}
@@ -1036,13 +1176,17 @@ function ConversationView({
               <FileReviewProgress
                 fileId={live.fileReview.fileId}
                 taskId={live.fileReview.taskId}
-                onOpenReview={() => {
+                onOpenReview={(annotations) => {
                   // 复用 flow 审核入口面板：把 task_id 对应 fileId 推到 FlowAiPanel
                   // 内部并打开 reviewMode；fileName 用「文件审核」占位（具体成稿
-                  // 文件名由 state.doc.file_name 给出，T16 联调时按需微调）
+                  // 文件名由 state.doc.file_name 给出，T16 联调时按需微调）。
+                  // 2026-09-20：批注必须转发 —— file_review 批注在轮询 state 里，
+                  // 面板原 annotations 来源（structured output）没有它，不转发
+                  // 面板恒空（用户实测「打开审核面板看不到批注」）。
                   reviewCtl?.openWithFile?.(
                     live.fileReview!.fileId,
                     '文件审核',
+                    annotations as any,
                   );
                 }}
                 onPreviewDoc={(fileVersion) => {
@@ -1057,6 +1201,7 @@ function ConversationView({
                   if (!tid || !fileVersion) return;
                   void downloadFileReviewVersion(tid, fileVersion);
                 }}
+                onSaveAsVersion={onReviewSaveAsVersion}
               />
             </div>
           ) : null}

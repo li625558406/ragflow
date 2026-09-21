@@ -24,7 +24,7 @@ import os
 import time
 from abc import ABC
 
-from agent.component.file_review import FILE_ID_INPUT_KEY
+from agent.component.file_review import FILE_ID_INPUT_KEY, REVIEW_TASK_ID_INPUT_KEY
 from agent.tools.base import ToolBase, ToolMeta, ToolParamBase
 from api.db.services.file_review_service import ROUND_STATUS_CN as _ROUND_STATUS_CN
 from api.db.services.file_review_service import SEVERITY_RANK, severity_cn, severity_summary
@@ -77,7 +77,7 @@ class FileReviewToolParam(ToolParamBase):
 1. list_templates：列出可用的审核模板（名称/用途/id）。用户没指定模板时先调用它。
 2. review：对**用户刚上传的文件**发起一轮审核。本 action **不需要 file_id 参数** —— 待审核的文件由运行环境注入，工具自己取。可选 template_id（不传则用招标文件格式审核模板）、kb_ids（检索审核依据的知识库 ID 列表，JSON 数组字符串，如 '["kb1"]'，可选）、user_query（用户的审核要求原话，如「重点看资质和工期」）。提交后同步等待最多约 1 分钟，完成即返回批注摘要；超时返回 task_id，引导用户稍后用 action=status 查。
 3. status：按 task_id 查审核进度与批注清单（按级别分组、列出未修复项），以及成稿预览/下载指引。
-4. fix：按**用户选定的问题级别**发起一轮修复。task_id 与 levels 均必填（levels 取值 high/medium/low，逗号分隔）。用户说「把严重的问题改掉」「只修中等的」时用它。最多 3 轮；用尽后明确告知「未修复的保持原样」。
+4. fix：按**用户选定的问题级别**发起一轮修复。levels 必填（取值 high/medium/low，逗号分隔）。task_id 可不传——流程页签等已绑定审核的场景由运行环境自动注入；额度内可多次发起（每轮修复消耗 1 次机会，最多 3 轮），用尽后明确告知「未修复的保持原样」。用户说「把严重的问题改掉」「只修中等的」「再修一轮」时用它。**用户点名修复某一条时**（如「修复第 2 条，因为业主要求…」「把『未附营业执照』那条改掉」）：levels 取该条所属级别，user_query 写明条目序号或原文片段 + 修改要求/原因，并声明「其余问题保持原样、不要改动」。
 
 使用时机：用户上传文件并表达审核/检查/把关/看看有没有问题的意图时用 review；用户明确表示要针对某个级别的问题动手修改时用 fix。**先展示后修复**：review 之后要把批注读给用户听、由用户决定修哪个级别，不要自动接着调 fix。levels 只能取用户明确说出的级别，不得替用户扩大范围。kb_ids 必须由用户提供（可结合知识库列表工具），不要编造。""",
             "parameters": {
@@ -89,7 +89,7 @@ class FileReviewToolParam(ToolParamBase):
                 },
                 "task_id": {
                     "type": "string",
-                    "description": "审核任务 id。action=status / fix 时必填（review 返回的 task_id）。",
+                    "description": "审核任务 id。action=status / fix 时提供（review 返回的 task_id）；运行环境已注入（如流程页签）时可不传。",
                     "default": "",
                     "required": False,
                 },
@@ -101,7 +101,7 @@ class FileReviewToolParam(ToolParamBase):
                 },
                 "user_query": {
                     "type": "string",
-                    "description": "用户的审核要求原话（如「重点看资质和工期是否满足」）。action=review 时可选。",
+                    "description": "action=review：用户的审核要求原话（如「重点看资质和工期是否满足」），可选。action=fix：本次修复的补充要求，可选；用户点名修复某一条时必写——条目序号（status 列表里的序号）或原文片段 + 修改要求/原因，并声明「其余问题保持原样」。",
                     "default": "",
                     "required": False,
                 },
@@ -113,7 +113,7 @@ class FileReviewToolParam(ToolParamBase):
                 },
                 "levels": {
                     "type": "string",
-                    "description": "要修复的问题级别，逗号分隔，取值 high/medium/low。action=fix 时必填。",
+                    "description": "要修复的问题级别，逗号分隔，取值 high/medium/low。action=fix 时必填（点名某一条时取该条所属级别）。",
                     "default": "",
                     "required": False,
                 },
@@ -220,9 +220,10 @@ class FileReviewTool(ToolBase, ABC):
         tenant_id = self._get_tenant_id()
         if not tenant_id:
             return "无法确定当前用户身份，请稍后重试。"
-        task_id = str(kwargs.get("task_id") or "").strip()
+        task_id = self._resolve_task_id(kwargs)
         if not task_id:
-            return "请提供 task_id（发起审核时返回的任务 id）。"
+            return ("请提供 task_id（发起审核时返回的任务 id；"
+                    "流程页签等已绑定审核的场景会自动注入，无需手填）。")
         rounds = FileReviewRoundService.get_owned_task(task_id, tenant_id)
         if not rounds:
             return "没有找到该审核任务，或无权访问（请确认 task_id 是否正确）。"
@@ -236,9 +237,10 @@ class FileReviewTool(ToolBase, ABC):
         tenant_id = self._get_tenant_id()
         if not tenant_id:
             return "无法确定当前用户身份，请稍后重试。"
-        task_id = str(kwargs.get("task_id") or "").strip()
+        task_id = self._resolve_task_id(kwargs)
         if not task_id:
-            return "请提供 task_id（发起审核时返回的任务 id）。"
+            return ("请提供 task_id（发起审核时返回的任务 id；"
+                    "流程页签等已绑定审核的场景会自动注入，无需手填）。")
 
         # 级别解析留在工具层，且**刻意比 REST 端点宽松**（接受逗号串/别名，见 _parse_levels）：
         # 这是 LLM 参数解析的实际形态，与 REST「任一项非法即整批拒绝」是有意的既有差异。
@@ -256,8 +258,11 @@ class FileReviewTool(ToolBase, ABC):
         try:
             admit_fix_round(
                 task_id=task_id, tenant_id=tenant_id, levels=levels,
-                # 工具不提供「本次补充要求」入口：review 阶段的 user_query 已是首轮基准。
-                user_query_override="")
+                # 2026-09-20（十七）：开放「本次补充要求」入口——用户点名修某一条
+                # （「修复第 3 条，业主名称应为 XX」）或附加原因时，LLM 把条目定位与
+                # 要求写进 user_query，与 REST body["user_query"] 同通道（Service 层
+                # _fix_base_query 把它拼进本轮基准）。非字符串按没提处理（同口径）。
+                user_query_override=self._norm_extra_query(kwargs.get("user_query")))
         except FixAdmissionDenied as denied:
             # message 本就是面向用户的文案，原样回传；reason 供 API 层映射错误码。
             return denied.message
@@ -318,8 +323,11 @@ class FileReviewTool(ToolBase, ABC):
 
         pending = FileReviewAnnotationService.list_pending_by_task(task_id)
         lines.append("待修复问题：" + severity_summary(pending))
-        for a in pending[:_MAX_LIST_ITEMS]:
-            line = (f"- [{severity_cn(a.severity)}] "
+        # 序号与修复轮 prompt 的 [idx] 编号同序同源（list_pending_by_task 顺序、1 起）：
+        # 用户说「修复第 N 条」时 LLM 据此把序号+原文转写进 fix 的 user_query。
+        # 注意超过 MAX_FIX_ITEMS(20) 的条目修复轮截断不含——序号仅供阅读定位。
+        for no, a in enumerate(pending[:_MAX_LIST_ITEMS], 1):
+            line = (f"{no}. [{severity_cn(a.severity)}] "
                     f"{_clip(a.issue, _MAX_ISSUE_CHARS)}")
             if a.matched_text:
                 line += f"（原文：{_clip(a.matched_text, _MAX_MATCHED_CHARS)}）"
@@ -379,6 +387,19 @@ class FileReviewTool(ToolBase, ABC):
         """
         return self._begin_output(FILE_ID_INPUT_KEY)
 
+    def _resolve_task_id(self, kwargs) -> str:
+        """task_id 两通道：LLM 显式参数 > Begin 注入（REVIEW_TASK_ID_INPUT_KEY）。
+
+        流程页签的审核由 FileReview 节点发起，task_id 只到前端、不进 LLM 上下文；
+        前端把已知绑定经 inputs 送入 Begin 后，用户在对话里说「修复/查进度」无需
+        背诵 task_id。显式参数优先：同一上下文里 review 刚返回的 task_id 比
+        注入的「历史绑定」更即时（同会话连修多轮时必须跟着 review/fix 的返回走）。
+        """
+        explicit = str(kwargs.get("task_id") or "").strip()
+        if explicit:
+            return explicit
+        return self._begin_output(REVIEW_TASK_ID_INPUT_KEY)
+
     @staticmethod
     def _parse_kb_ids(raw) -> list:
         """kb_ids 容错解析：JSON 数组字符串 / 逗号分隔字符串 / list 均可。"""
@@ -396,6 +417,14 @@ class FileReviewTool(ToolBase, ABC):
             except Exception:  # noqa: BLE001 — LLM 输出容错：非 JSON 降级为逗号分隔
                 items = [x for x in s.split(",") if x.strip()]
         return [str(k).strip() for k in items if str(k).strip()]
+
+    @staticmethod
+    def _norm_extra_query(raw) -> str:
+        """fix 补充要求归一：非字符串一律按「没提」忽略（REST body 口径一致），
+        字符串裁到 500 字防 LLM 长篇大论挤占修复 prompt（fix prompt 单条 issue 才 120 字）。"""
+        if not isinstance(raw, str):
+            return ""
+        return raw.strip()[:500]
 
     @staticmethod
     def _parse_levels(raw) -> list:

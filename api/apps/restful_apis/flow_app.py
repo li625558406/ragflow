@@ -1004,11 +1004,15 @@ async def add_comment(flow_id: str):
                 anchor_start = int(anchor_start)
             except (TypeError, ValueError):
                 anchor_start = None
+        # 批注级别：high/medium/low，非法值兜底 medium（Service 层同款兜底双保险）
+        severity = body.get("severity") or "medium"
+        if severity not in ("high", "medium", "low"):
+            severity = "medium"
 
         comment = FlowCommentService.add_comment(
             flow_id, version_id, current_user.id, content,
             anchor_text=anchor_text, anchor_para=anchor_para,
-            anchor_start=anchor_start,
+            anchor_start=anchor_start, severity=severity,
         )
         others = _others_of(flow, current_user.id)
         try:
@@ -1080,10 +1084,16 @@ async def add_ai_record(flow_id: str):
                 tpl_events = body.get("template_fill_events") or ""
                 if not isinstance(tpl_events, str):
                     tpl_events = json.dumps(tpl_events, ensure_ascii=False)
+                file_review = body.get("file_review") or ""
+                if not isinstance(file_review, str):
+                    file_review = json.dumps(file_review, ensure_ascii=False)
+                # 列宽 CharField(255)：超长入参就地截断，防 DB 报错炸掉整条回填
+                file_review = file_review[:255]
                 FlowAiChatService.update_content(
                     record_id, response,
                     session_id=(body.get("session_id") or "").strip() or None,
                     template_fill_events=tpl_events or None,
+                    file_review=file_review or None,
                 )
                 return get_json_result(
                     data={"record": FlowAiChatService.get_record(record_id),
@@ -1105,6 +1115,22 @@ async def add_ai_record(flow_id: str):
         template_fill_events = body.get("template_fill_events") or ""
         if not isinstance(template_fill_events, str):
             template_fill_events = json.dumps(template_fill_events, ensure_ascii=False)
+        # 随消息上传的附件（用户气泡 chip 展示用）：白名单只取 id/name，防注入/超大；
+        # 上限 10 个、名称截 255。发送时事实——只随新增（预存占位）落库，回填不覆盖。
+        raw_chat_files = body.get("files")
+        chat_files: list = []
+        if isinstance(raw_chat_files, list):
+            for f in raw_chat_files[:10]:
+                if isinstance(f, dict) and f.get("id"):
+                    chat_files.append(
+                        {"id": str(f["id"])[:64],
+                         "name": str(f.get("name") or "")[:255]})
+        files_json = json.dumps(chat_files, ensure_ascii=False) if chat_files else ""
+        # 文件审核进度卡：记录级 {file_id,task_id}，刷新后历史气泡按它挂进度卡
+        file_review = body.get("file_review") or ""
+        if not isinstance(file_review, str):
+            file_review = json.dumps(file_review, ensure_ascii=False)
+        file_review = file_review[:255]
         # 无版本流程（创建时未带初始文件）允许记录 AI 处理：version_id 留空不锚定
         # 版本；范本填写成稿卡/后续上传会建出第一个版本，记录不因此丢失
         # （原实现直接报错「流程暂无文件版本」，导致对话与 template_fill_events
@@ -1130,6 +1156,7 @@ async def add_ai_record(flow_id: str):
             record = FlowAiChatService.add_record(
                 flow_id, version_id, instruction, response, session_id, output_version_id,
                 user_id=user_id, template_fill_events=template_fill_events,
+                file_review=file_review, files=files_json,
             )
         return get_json_result(data={"record": record, "output_version_id": output_version_id})
     except LookupError as e:

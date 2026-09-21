@@ -32,6 +32,7 @@ import { diffBlocks, type EditorBlock } from './docx-diff';
 import {
   applyDocxPageLazy,
   highlightDocxRanges,
+  instantFocusScroll,
   type DocxHighlightItem,
 } from './docx-highlight';
 import DocxParagraphEditor, { collectEditorOps } from './docx-paragraph-editor';
@@ -63,6 +64,8 @@ export interface MarginComment {
   anchor_para?: number | null;
   /** 锚点选段在段落归一化文本中的起始偏移（消歧重复文本） */
   anchor_start?: number | null;
+  /** 批注级别 high/medium/low（存量无值视为 medium=一般） */
+  severity?: string;
   user_id?: string;
   create_time?: number;
 }
@@ -100,9 +103,13 @@ interface ReviewPanelProps {
     anchorText: string;
     anchorPara: number | null;
     anchorStart?: number | null;
+    /** 批注级别 high/medium/low（创建时选择，默认 medium） */
+    severity?: string;
   }) => Promise<void> | void;
   /** 删除手动批注（仅作者自己的批注显示删除按钮）；不传则不启用 */
   onDeleteComment?: (commentId: string) => Promise<void> | void;
+  /** 删除 AI 批注（物理删 DB 行，后端与状态修改同闸）；不传则不显示删除按钮 */
+  onDeleteAnnotation?: (annotationId: string) => Promise<void> | void;
   /** 当前登录用户 id（判断批注删除按钮可见性） */
   currentUserId?: string;
   /** 是否开放正文编辑（整篇 contentEditable，Word 式改字/回车分段/退格并段） */
@@ -262,6 +269,48 @@ function matchAnnotation(
   return false;
 }
 
+/** 跨行摘录的分行归一化（matched_text 含 \n 且非空归一化行 ≥2 才可走序列通道） */
+function multilineLineNorms(matchedText: string): string[] {
+  if (!matchedText || !matchedText.includes('\n')) return [];
+  return matchedText
+    .split('\n')
+    .map((l) => normalizeForMatch(l))
+    .filter((l) => l.length >= 2);
+}
+
+/**
+ * 跨行摘录序列匹配：LLM 摘录常为多行拼接（matched_text 含 \n），单段 includes
+ * 必然失配。按行（过滤空行）在段落序列上滑窗：连续 N 段中第 i 段包含第 i 行
+ * （normalizeForMatch 同口径），与后端修复轮 _apply_multiline_patch 连续段落
+ * 序列定位同构。唯命中闸：命中序列数 ≠1 → 返回 -1（宁可未定位不错位）。
+ * 返回基段落（首行所在段）index。
+ */
+function matchMultiline(
+  paragraphs: { index: number; text: string }[],
+  matchedText: string,
+): number {
+  const lines = multilineLineNorms(matchedText);
+  if (lines.length < 2) return -1;
+  const paraNorms = paragraphs.map((p) => normalizeForMatch(p.text));
+  let base = -1;
+  let hits = 0;
+  for (let b = 0; b + lines.length <= paraNorms.length; b++) {
+    let ok = true;
+    for (let i = 0; i < lines.length; i++) {
+      if (!paraNorms[b + i].includes(lines[i])) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) {
+      hits++;
+      if (hits > 1) return -1;
+      base = paragraphs[b].index;
+    }
+  }
+  return hits === 1 ? base : -1;
+}
+
 // ── Inline annotation highlight（Word 式：正文高亮 + data-anchor-key 供引线锚定） ──
 
 interface HighlightTarget {
@@ -335,12 +384,16 @@ function AiCard({
   unmatched,
   selected,
   onSelect,
+  canDelete,
+  onDelete,
 }: {
   num: number;
   ann: Annotation;
   unmatched?: boolean;
   selected: boolean;
   onSelect: () => void;
+  canDelete?: boolean;
+  onDelete?: () => void;
 }) {
   const cfg = SEVERITY_CONFIG[ann.severity] || SEVERITY_CONFIG.low;
   const Icon = cfg.icon;
@@ -352,7 +405,7 @@ function AiCard({
     <div
       id={`annotation-${num}`}
       onClick={onSelect}
-      className={`cursor-pointer rounded-md p-2.5 text-xs transition-all duration-300 ${
+      className={`group cursor-pointer rounded-md p-2.5 text-xs transition-all duration-300 ${
         selected ? 'ring-2 ring-[#1a66fb] shadow-lg' : ''
       } ${unmatched ? 'opacity-75' : ''}`}
       style={{
@@ -376,6 +429,22 @@ function AiCard({
           {cfg.label} {TYPE_LABELS[annType] || annType || '问题'}
           {unmatched ? '（未定位）' : ''}
         </span>
+        <span className="ml-auto shrink-0 rounded bg-[#F0F5FF] px-1 py-px text-[10px] font-semibold text-[#1a66fb]">
+          AI
+        </span>
+        {canDelete && onDelete && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              if (window.confirm('确定删除这条 AI 批注？删除后不可恢复。'))
+                onDelete();
+            }}
+            title="删除批注"
+            className="shrink-0 rounded p-0.5 text-[#bbb] opacity-0 transition-opacity hover:bg-[#FFF2F0] hover:text-[#FF4D4F] focus:opacity-100 group-hover:opacity-100"
+          >
+            <Trash2 className="h-3 w-3" strokeWidth={2} />
+          </button>
+        )}
       </div>
       {mt && (
         <div className="text-[#666] mb-1 leading-relaxed border-l-2 border-[#D4D4D4] pl-2">
@@ -412,21 +481,39 @@ function CommentCard({
   canDelete?: boolean;
   onDelete?: () => void;
 }) {
+  // 级别配色与 AI 卡同源 SEVERITY_CONFIG；存量无 severity 视为 medium=一般
+  const scfg =
+    SEVERITY_CONFIG[comment.severity || 'medium'] || SEVERITY_CONFIG.medium;
   return (
     <div
       onClick={onSelect}
       className={`group cursor-pointer rounded-md bg-white p-2.5 text-xs transition-all duration-300 ${
         selected ? 'ring-2 ring-[#1a66fb] shadow-lg' : ''
       }`}
-      style={{ border: '1px solid #E5E5E5', borderLeft: '3px solid #1a66fb' }}
+      style={{
+        border: '1px solid #E5E5E5',
+        borderLeft: `3px solid ${scfg.border}`,
+      }}
     >
       <div className="mb-1 flex items-center gap-1.5">
         <MessageSquare
-          className="w-3.5 h-3.5 shrink-0 text-[#1a66fb]"
+          className="w-3.5 h-3.5 shrink-0"
+          style={{ color: scfg.border }}
           strokeWidth={2}
         />
         <span className="truncate font-semibold text-[#1a66fb]">
           {author || comment.user_id || '批注'}
+        </span>
+        <span
+          className="shrink-0 rounded px-1 py-px text-[10px] font-semibold"
+          style={{ color: scfg.textColor, backgroundColor: scfg.bg }}
+        >
+          {{ high: '严重', medium: '一般', low: '提示' }[
+            comment.severity || 'medium'
+          ] || '一般'}
+        </span>
+        <span className="shrink-0 rounded bg-[#F0F9EB] px-1 py-px text-[10px] font-semibold text-[#67C23A]">
+          人工
         </span>
         {comment.create_time ? (
           <span className="ml-auto shrink-0 text-[10px] text-[#aaa]">
@@ -468,6 +555,7 @@ export default function ReviewPanel({
   commentAuthors,
   onAddComment,
   onDeleteComment,
+  onDeleteAnnotation,
   currentUserId,
   canEdit,
   onEditDocument,
@@ -496,8 +584,19 @@ export default function ReviewPanel({
     paraIndex: number | null;
     anchorStart: number | null;
     note: string;
+    severity: string;
   } | null>(null);
   const [submittingComment, setSubmittingComment] = useState(false);
+  // AI 批注删除的乐观移除：成功后父级经 state 端点刷新会自然去掉该行，
+  // removedIds 只覆盖「刷新到达前」的窗口；失败回滚。跨所有来源一致生效
+  // （annotationMap / unmatched / 边栏卡 / 批注列表全走 visibleAnnotations）。
+  const [removedAnnIds, setRemovedAnnIds] = useState<Set<string>>(new Set());
+  const visibleAnnotations = useMemo(
+    () => annotations.filter((a) => !(a.id && removedAnnIds.has(String(a.id)))),
+    [annotations, removedAnnIds],
+  );
+  // 「其他批注」兜底提示：点击未定位条目（批注列表区）时给出无法定位说明 + 高亮
+  const [unmatchedHintKey, setUnmatchedHintKey] = useState<string | null>(null);
   // Word 式整篇编辑：Lexical 编辑器承载正文，保存时按模型 diff 出
   // 改写/新增/删除三类操作；dirty 为改动处数，resetKey 用于放弃修改时重挂载
   const editorRef = useRef<LexicalEditor | null>(null);
@@ -531,6 +630,7 @@ export default function ReviewPanel({
   // 切换文件/页签后回到保真预览（编辑态只对当前已加载文件有效）
   useEffect(() => {
     setUserEditing(false);
+    setUnmatchedHintKey(null);
   }, [fileId]);
   const docxFidelityCandidate = content?.file_type === 'docx' && !editing;
   const docxWrapRef = useRef<HTMLDivElement | null>(null);
@@ -553,23 +653,70 @@ export default function ReviewPanel({
     if (el) setDocxEpoch((n) => n + 1);
   }, []);
 
+  // 保真视图 fit-width：docx-preview 的 A4 页固定 794px 宽，文档列窄于「页+wrapper 内边距」
+  // 时，docx-wrapper（flex 水平居中）对称溢出 + 外层 overflow-x-hidden ⇒ 页面两侧被裁。
+  // docx-preview 无缩放渲染选项，用 CSS zoom 等比缩小到列宽：zoom 影响布局（无需另做高度
+  // 补偿），且 getBoundingClientRect / 元素坐标均按缩后几何返回 ⇒ 边栏锚点测量天然一致。
+  // 只在渲染完成与窗口 resize 时调用——滚动/重测路径严禁调它，否则构成反馈循环。
+  const fitDocxToColumn = useCallback(() => {
+    const el = docxWrapRef.current;
+    const parent = el?.parentElement;
+    if (!el || !parent) return;
+    // 先复位再测自然内容宽。不能用 scrollWidth：docx-wrapper 是 flex 水平居中，
+    // 页宽超出列宽时向两侧对称溢出，scrollWidth 只计右侧溢出 ⇒ 系统性低估
+    // （实测 854 被测成 764，缩放后页面仍超列宽）。width:max-content 让容器
+    // 撑到完整内容宽（含 wrapper 左右 padding），offsetWidth 即真实自然宽。
+    el.style.zoom = '1';
+    el.style.width = 'max-content';
+    el.style.maxWidth = 'none';
+    const pw = el.offsetWidth;
+    const cw = parent.clientWidth;
+    if (!pw || pw <= cw + 1) {
+      el.style.zoom = '';
+      el.style.width = '';
+      el.style.maxWidth = '';
+      return;
+    }
+    const k = cw / pw;
+    el.style.zoom = String(k);
+    // 固定为自然宽 pw（数值上等于 max-content 结果），缩后恰好铺满列；
+    // 溢出场景 auto margin 归 0，从左缘起完整可见。
+    el.style.width = `${pw}px`;
+  }, []);
+
   // Build annotation set keyed by paragraph index — supports multiple per paragraph
+  // 每条批注只归属首个匹配段落：matched_text 常命中多个段落（章标题/重复短语），
+  // 不去重会让同一条批注在多个段落各生成一张边栏卡（实测 25 条批注渲染 33 张卡，
+  // 「已定位」统计超过总数），docx 高亮也随之重复标蓝。
   const annotationMap = useMemo(() => {
     if (!content) return new Map<number, Annotation[]>();
     const map = new Map<number, Annotation[]>();
+    const claimed = new Set<Annotation>();
+    // 前置通道：跨行摘录（matched_text 含 \n 且非空行 ≥2）走连续段落序列匹配。
+    // 这类批注刻意不进下方逐段匹配 —— 其 matched_text 无法整段 includes，
+    // 而 keyword 策略会把多行内容的关键词误配到单个段落（错位归属）。
+    for (const ann of visibleAnnotations) {
+      if (multilineLineNorms(getMatchedText(ann)).length < 2) continue;
+      const base = matchMultiline(content.paragraphs, getMatchedText(ann));
+      if (base >= 0) {
+        claimed.add(ann);
+        map.set(base, [ann]);
+      }
+    }
     for (const para of content.paragraphs) {
-      const matches = annotations.filter((ann) =>
-        matchAnnotation(para.text, ann),
+      const matches = visibleAnnotations.filter(
+        (ann) => !claimed.has(ann) && matchAnnotation(para.text, ann),
       );
       if (matches.length > 0) {
         matches.sort(
           (a, b) => getMatchedText(b).length - getMatchedText(a).length,
         );
+        matches.forEach((ann) => claimed.add(ann));
         map.set(para.index, matches);
       }
     }
     return map;
-  }, [content, annotations]);
+  }, [content, visibleAnnotations]);
 
   // 边栏锚定项：AI 标注 + 带锚点的手动批注，按段落归组
   const railByPara = useMemo(() => {
@@ -616,7 +763,9 @@ export default function ReviewPanel({
             paraIndex: idx,
             kind: 'comment',
             comment: c,
-            color: '#1a66fb',
+            color: (
+              SEVERITY_CONFIG[c.severity || 'medium'] || SEVERITY_CONFIG.medium
+            ).border,
           });
         }
       }
@@ -648,13 +797,24 @@ export default function ReviewPanel({
   const toHighlightItems = (items: RailItem[]): DocxHighlightItem[] => {
     const out: DocxHighlightItem[] = [];
     for (const it of items) {
-      const text =
+      const raw =
         it.kind === 'ai'
           ? getMatchedText(it.ann!)
           : (it.comment?.anchor_text || '').trim();
+      if (!raw) continue;
+      // 跨行摘录：完整分行走 highlightDocxRanges 序列通道（唯一连续段落序列
+      // 才插 mark）；首行文本作 text 兜底（序列未命中时按单段常规匹配）
+      const hasNl = raw.includes('\n');
+      const text = hasNl
+        ? raw
+            .split('\n')
+            .map((s) => s.trim())
+            .find(Boolean) || ''
+        : raw;
       if (!text) continue;
       out.push({
         text,
+        lines: hasNl ? raw.split('\n') : undefined,
         key: it.key,
         color: it.color,
         start:
@@ -680,6 +840,7 @@ export default function ReviewPanel({
     renderAsync(docxBlob, el, undefined, { inWrapper: true, breakPages: true })
       .then(() => {
         if (!el.isConnected) return; // 容器已被重挂/卸载：丢弃本轮 stale 渲染产物
+        fitDocxToColumn();
         applyDocxPageLazy(el);
         setMarkedKeys(
           highlightDocxRanges(el, toHighlightItems(railItemsRef.current)),
@@ -759,7 +920,7 @@ export default function ReviewPanel({
         .map((i) => i.comment!.id),
     );
     return {
-      ai: annotations.filter((a) => !matchedAi.has(getMatchedText(a))),
+      ai: visibleAnnotations.filter((a) => !matchedAi.has(getMatchedText(a))),
       comments: (comments || []).filter(
         (c) => (c.anchor_text || '').trim() && !matchedCm.has(c.id),
       ),
@@ -767,21 +928,104 @@ export default function ReviewPanel({
         (c) => !(c.anchor_text || '').trim(),
       ),
     };
-  }, [activeRailItems, annotations, comments]);
+  }, [activeRailItems, visibleAnnotations, comments]);
 
-  // Listen for annotation selection events (from table-HTML highlight clicks)
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const num = (e as CustomEvent).detail as number;
-      const key = `ai-${num}`;
-      setSelectedKey(key);
-      document
-        .getElementById(`rail-${key}`)
-        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    };
-    window.addEventListener('annotation-select', handler);
-    return () => window.removeEventListener('annotation-select', handler);
-  }, []);
+  // 批注列表条目（置顶列表区，与文档边栏批注同时存在）：已定位在前（级别
+  // 高→中→低降序，同级别内保持文档序）、未定位在后；文本取问题描述（AI）/
+  // 批注内容（人工），悬浮 title 给全文（含建议）
+  const listEntries = useMemo(() => {
+    const sevOf = (s: string) =>
+      (['high', 'medium', 'low'].includes(s) ? s : 'medium') as
+        | 'high'
+        | 'medium'
+        | 'low';
+    const items: {
+      key: string;
+      num?: number;
+      sev: 'high' | 'medium' | 'low';
+      typeLabel: string;
+      author: string;
+      text: string;
+      title: string;
+      matched: boolean;
+      source: 'ai' | 'human';
+      /** AI 批注的后端 id（有值且传了 onDeleteAnnotation 才显示删除按钮） */
+      annotationId?: string;
+    }[] = [];
+    for (const it of activeRailItems) {
+      if (it.kind === 'ai') {
+        const ann = it.ann!;
+        const issue = ann.issue || ann.problem || ann.description || '';
+        const suggestion =
+          ann.suggestion || ann.recommendation || ann.advice || '';
+        const annType = ann.type || ann.category || '';
+        items.push({
+          key: it.key,
+          num: it.num,
+          sev: sevOf(ann.severity),
+          typeLabel: TYPE_LABELS[annType] || annType,
+          author: 'AI',
+          text: issue || getMatchedText(ann),
+          title: suggestion ? `${issue}\n建议：${suggestion}` : issue,
+          matched: true,
+          source: 'ai',
+          annotationId: ann.id ? String(ann.id) : undefined,
+        });
+      } else {
+        const c = it.comment!;
+        items.push({
+          key: it.key,
+          sev: sevOf(c.severity || 'medium'),
+          typeLabel: '',
+          author: commentAuthors?.[c.user_id || ''] || c.user_id || '批注',
+          text: c.content,
+          title: c.content,
+          matched: true,
+          source: 'human',
+        });
+      }
+    }
+    const matchedAiCount = activeRailItems.filter(
+      (i) => i.kind === 'ai',
+    ).length;
+    unmatched.ai.forEach((ann, i) => {
+      const issue = ann.issue || ann.problem || ann.description || '';
+      const suggestion =
+        ann.suggestion || ann.recommendation || ann.advice || '';
+      const annType = ann.type || ann.category || '';
+      items.push({
+        key: `unmatched-ai-${i}`,
+        num: matchedAiCount + i + 1,
+        sev: sevOf(ann.severity),
+        typeLabel: TYPE_LABELS[annType] || annType,
+        author: 'AI',
+        text: issue || getMatchedText(ann),
+        title: suggestion ? `${issue}\n建议：${suggestion}` : issue,
+        matched: false,
+        source: 'ai',
+        annotationId: ann.id ? String(ann.id) : undefined,
+      });
+    });
+    for (const c of [...unmatched.comments, ...unmatched.plainComments]) {
+      items.push({
+        key: c.id,
+        sev: sevOf(c.severity || 'medium'),
+        typeLabel: '',
+        author: commentAuthors?.[c.user_id || ''] || c.user_id || '批注',
+        text: c.content,
+        title: c.content,
+        matched: false,
+        source: 'human',
+      });
+    }
+    // 级别降序 高→中→低：稳定排序（同级别内保持原文档序）；已定位整体在未定位之前
+    const sevRank = { high: 0, medium: 1, low: 2 } as const;
+    return [...items].sort(
+      (a, b) =>
+        (a.matched === b.matched ? 0 : a.matched ? -1 : 1) ||
+        sevRank[a.sev] - sevRank[b.sev],
+    );
+  }, [activeRailItems, unmatched, commentAuthors]);
 
   // 常驻抽屉（非 inline 模式）：Esc 快捷关闭（与范本实时预览抽屉同款）
   useEffect(() => {
@@ -793,12 +1037,42 @@ export default function ReviewPanel({
     return () => window.removeEventListener('keydown', onKey);
   }, [inline, open, onClose]);
 
-  const handleAnchorClick = useCallback((key: string) => {
-    setSelectedKey(key);
-    document
-      .getElementById(`rail-${key}`)
-      ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  }, []);
+  const handleAnchorClick = useCallback(
+    (key: string) => {
+      setSelectedKey(key);
+      setUnmatchedHintKey(null);
+      // 跳转文档中对应批注位置：mark 优先，表格内等无 mark 场景按段落兜底
+      //（与布局测量同款取锚思路）。instantFocusScroll 强制真实渲染懒加载分页后
+      // 瞬时居中——smooth 滚动会被上方懒渲染页高度漂移带偏。
+      const it = railItems.find((i) => i.key === key);
+      const el =
+        wrapRef.current?.querySelector<HTMLElement>(
+          `[data-anchor-key="${key}"]`,
+        ) ??
+        (it
+          ? wrapRef.current?.querySelector<HTMLElement>(
+              `[data-para-index="${it.paraIndex}"]`,
+            )
+          : null);
+      if (el) {
+        instantFocusScroll(el);
+        el.classList.remove('ann-flash');
+        void el.offsetWidth; // 重启动画
+        el.classList.add('ann-flash');
+      }
+    },
+    [railItems],
+  );
+
+  // Listen for annotation selection events (from table-HTML highlight clicks)
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const num = (e as CustomEvent).detail as number;
+      handleAnchorClick(`ai-${num}`);
+    };
+    window.addEventListener('annotation-select', handler);
+    return () => window.removeEventListener('annotation-select', handler);
+  }, [handleAnchorClick]);
 
   // Fetch file content when panel opens
   useEffect(() => {
@@ -905,15 +1179,44 @@ export default function ReviewPanel({
           : { cards: tops, anchors, w: wrap.offsetWidth, h: wrap.offsetHeight };
       });
     };
+    // 锚点坐标是「mark 视口位置 − wrap 视口位置」，而滚动发生在 wrap 内层的
+    // overflow-auto 容器里：wrap 不动、mark 动 ⇒ 不随滚动重测，边栏卡必然错位。
+    // 另外 content-visibility 懒渲染让页高在滚动中持续从估算值变真实值。
+    // 用 document 级 capture 滚动监听（不依赖识别具体滚动容器）+ ResizeObserver
+    // （页真实渲染改变 wrap 高度）双通道触发持续重测；rAF 节流。
+    let scrollRaf = 0;
+    const onScroll = () => {
+      if (scrollRaf) return;
+      scrollRaf = requestAnimationFrame(measure);
+    };
+    const onResize = () => {
+      fitDocxToColumn();
+      measure();
+    };
+    const ro = new ResizeObserver(() => measure());
+    if (wrapRef.current) ro.observe(wrapRef.current);
+    document.addEventListener('scroll', onScroll, true);
     const raf = requestAnimationFrame(measure);
     const t = setTimeout(measure, 120); // 字体/图片稳定后的二次校准
-    window.addEventListener('resize', measure);
+    window.addEventListener('resize', onResize);
     return () => {
       cancelAnimationFrame(raf);
+      cancelAnimationFrame(scrollRaf);
       clearTimeout(t);
-      window.removeEventListener('resize', measure);
+      window.removeEventListener('resize', onResize);
+      document.removeEventListener('scroll', onScroll, true);
+      ro.disconnect();
     };
-  }, [content, activeRailItems, open, fileId, fileName, annotations, comments]);
+  }, [
+    content,
+    activeRailItems,
+    open,
+    fileId,
+    fileName,
+    visibleAnnotations,
+    comments,
+    fitDocxToColumn,
+  ]);
 
   // ── 手动批注：选中文本 → 悬浮「添加批注」→ 输入 → 提交 ──
 
@@ -993,6 +1296,7 @@ export default function ReviewPanel({
         anchorText: draft.text,
         anchorPara: draft.paraIndex,
         anchorStart: draft.anchorStart,
+        severity: draft.severity,
       });
       setDraft(null);
       setPendingSel(null);
@@ -1012,6 +1316,25 @@ export default function ReviewPanel({
       }
     },
     [onDeleteComment],
+  );
+
+  // 删除 AI 批注：乐观移除（列表/边栏/统计即时减少），失败回滚并提示
+  const handleDeleteAnnotation = useCallback(
+    async (annotationId: string) => {
+      if (!onDeleteAnnotation) return;
+      setRemovedAnnIds((prev) => new Set(prev).add(annotationId));
+      try {
+        await onDeleteAnnotation(annotationId);
+      } catch (e: any) {
+        setRemovedAnnIds((prev) => {
+          const next = new Set(prev);
+          next.delete(annotationId);
+          return next;
+        });
+        window.alert(e?.message || '删除失败，请稍后重试');
+      }
+    },
+    [onDeleteAnnotation],
   );
 
   // 编辑器内容变化 → 防抖后 diff 出改动处数（模型级，不碰 DOM）
@@ -1073,13 +1396,13 @@ export default function ReviewPanel({
 
   // Download annotated docx
   const handleDownload = async () => {
-    if (!fileId || !annotations.length) return;
+    if (!fileId || !visibleAnnotations.length) return;
     setDownloading(true);
     setDownloadError(null);
     try {
       const res = await request.post(
         api.annotateFile(fileId),
-        { annotations },
+        { annotations: visibleAnnotations },
         { responseType: 'blob' },
       );
       // Check if the response is actually JSON (error) rather than blob
@@ -1121,14 +1444,14 @@ export default function ReviewPanel({
   // Stats
   const stats = useMemo(() => {
     const bySeverity = { high: 0, medium: 0, low: 0 };
-    for (const ann of annotations) {
+    for (const ann of visibleAnnotations) {
       if (bySeverity[ann.severity as keyof typeof bySeverity] !== undefined) {
         bySeverity[ann.severity as keyof typeof bySeverity]++;
       }
     }
     const matched = activeRailItems.filter((i) => i.kind === 'ai').length;
-    return { matched, total: annotations.length, bySeverity };
-  }, [annotations, activeRailItems]);
+    return { matched, total: visibleAnnotations.length, bySeverity };
+  }, [visibleAnnotations, activeRailItems]);
 
   const handleSelectTableAnn = useCallback(
     (e: React.MouseEvent) => {
@@ -1233,7 +1556,7 @@ export default function ReviewPanel({
                   编辑文档
                 </button>
               )}
-            {annotations.length > 0 && (
+            {visibleAnnotations.length > 0 && (
               <button
                 onClick={handleDownload}
                 disabled={downloading}
@@ -1294,7 +1617,7 @@ export default function ReviewPanel({
       )}
 
       {/* Annotation stats bar */}
-      {annotations.length > 0 && (
+      {visibleAnnotations.length > 0 && (
         <div className="flex items-center gap-3 px-5 py-2.5 text-xs border-b border-[#F0F0F0] bg-[#FAFAFA]">
           <span className="text-[#8A8A8A]">
             共 {stats.total} 处标注，{stats.matched} 处已定位
@@ -1324,8 +1647,9 @@ export default function ReviewPanel({
         </div>
       )}
 
-      {/* Content：正文列 + 右侧批注栏（Word 式）+ SVG 引线（滚动容器与范本预览同款：
-          min-h-0 flex-1 + overflow-x-hidden 防横向滚动条） */}
+      {/* Content：顶部批注列表区 + 下方文档（含边栏批注/引线）——列表展示与批注
+          展示同时存在，点击列表项跳转到文档中对应批注位置（滚动容器与范本预览
+          同款：min-h-0 flex-1 + overflow-x-hidden 防横向滚动条） */}
       <div
         className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-6 py-4"
         onScroll={() => setPendingSel(null)}
@@ -1348,6 +1672,125 @@ export default function ReviewPanel({
                 strokeWidth={1.5}
               />
               <p className="text-sm text-[#FF4D4F]">{error}</p>
+            </div>
+          </div>
+        )}
+
+        {/* 批注列表（与下方文档边栏批注同时存在）：已定位按文档序在前、未定位在后；
+            点击已定位项跳转文档中对应批注位置（闪烁高亮），未定位项给兜底提示。
+            条目样式与流程页签批注模块同款紧凑列表 */}
+        {!loading && !error && content && listEntries.length > 0 && (
+          <div className="mb-4 rounded-lg border border-[#E8E8E8] bg-white px-3 py-2.5">
+            <div className="mb-2 text-sm font-bold text-[#1A1A1A]">
+              📋 批注列表（{listEntries.length} 条）
+              <span className="ml-1.5 text-[10px] font-normal text-[#8A8A8A]">
+                点击条目跳转到文档中的批注位置
+              </span>
+            </div>
+            {unmatchedHintKey && (
+              <div className="mb-2 rounded-md border border-[#FFE58F] bg-[#FFFBE6] px-2.5 py-2 text-xs text-[#AD6800]">
+                ⚠️
+                该批注无法精确定位到原文位置（预览文本与审核抽取口径差异），请对照批注内容在文档中人工查找。
+              </div>
+            )}
+            <div className="space-y-2">
+              {listEntries.map((e) => {
+                const cfg = SEVERITY_CONFIG[e.sev];
+                const selected = e.matched
+                  ? selectedKey === e.key
+                  : unmatchedHintKey === e.key;
+                return (
+                  <div
+                    key={e.key}
+                    id={`list-${e.key}`}
+                    onClick={() =>
+                      e.matched
+                        ? handleAnchorClick(e.key)
+                        : setUnmatchedHintKey(e.key)
+                    }
+                    className={`cursor-pointer rounded-md bg-[#F7F8FA] px-2.5 py-1.5 transition-all duration-300 ${
+                      selected ? 'ring-2 ring-[#1a66fb]' : ''
+                    }`}
+                    style={{
+                      borderLeft: `3px ${e.matched ? 'solid' : 'dashed'} ${cfg.border}`,
+                    }}
+                  >
+                    <div className="flex items-center gap-1.5 text-xs text-[#888]">
+                      {e.num != null ? (
+                        <span
+                          className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
+                          style={{ backgroundColor: cfg.border }}
+                        >
+                          {e.num}
+                        </span>
+                      ) : (
+                        <MessageSquare
+                          className="h-3.5 w-3.5 shrink-0"
+                          style={{ color: cfg.border }}
+                          strokeWidth={2}
+                        />
+                      )}
+                      <span
+                        className="shrink-0 rounded px-1 py-px text-[10px] font-semibold"
+                        style={{
+                          color: cfg.textColor,
+                          backgroundColor: cfg.bg,
+                        }}
+                      >
+                        {cfg.label}
+                      </span>
+                      {/* 来源 chip：AI 蓝 / 人工绿，与文档边栏卡片徽标同色 */}
+                      <span
+                        className={`shrink-0 rounded px-1 py-px text-[10px] font-semibold ${
+                          e.source === 'ai'
+                            ? 'bg-[#F0F5FF] text-[#1a66fb]'
+                            : 'bg-[#F0F9EB] text-[#67C23A]'
+                        }`}
+                      >
+                        {e.source === 'ai' ? 'AI' : '人工'}
+                      </span>
+                      {e.typeLabel && (
+                        <span className="shrink-0 text-[11px] text-[#666]">
+                          {e.typeLabel}
+                        </span>
+                      )}
+                      <span className="truncate">{e.author}</span>
+                      {!e.matched && (
+                        <span className="ml-auto shrink-0 text-[10px] font-medium text-[#FAAD14]">
+                          未定位
+                        </span>
+                      )}
+                      {e.source === 'ai' &&
+                        e.annotationId &&
+                        onDeleteAnnotation && (
+                          <button
+                            onClick={(ev) => {
+                              ev.stopPropagation();
+                              if (
+                                window.confirm(
+                                  '确定删除这条 AI 批注？删除后不可恢复。',
+                                )
+                              )
+                                handleDeleteAnnotation(e.annotationId!);
+                            }}
+                            title="删除批注"
+                            className={`shrink-0 rounded p-0.5 text-[#bbb] transition-colors hover:bg-[#FFF2F0] hover:text-[#FF4D4F] ${
+                              e.matched ? 'ml-auto' : ''
+                            }`}
+                          >
+                            <Trash2 className="h-3 w-3" strokeWidth={2} />
+                          </button>
+                        )}
+                    </div>
+                    <div
+                      className="mt-0.5 line-clamp-2 whitespace-pre-wrap text-sm text-[#333]"
+                      title={e.title}
+                    >
+                      {e.text}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
@@ -1529,7 +1972,7 @@ export default function ReviewPanel({
               )}
             </div>
 
-            {/* 右侧批注栏 */}
+            {/* 右侧批注栏：卡片散布对齐锚点 + 引线（与顶部批注列表同时存在） */}
             <div className="relative shrink-0" style={{ width: RAIL_W }}>
               {activeRailItems.map((it) => {
                 const top = layout.cards[it.key];
@@ -1550,6 +1993,10 @@ export default function ReviewPanel({
                         ann={it.ann!}
                         selected={selectedKey === it.key}
                         onSelect={() => handleAnchorClick(it.key)}
+                        canDelete={!!onDeleteAnnotation && !!it.ann!.id}
+                        onDelete={() =>
+                          handleDeleteAnnotation(String(it.ann!.id))
+                        }
                       />
                     ) : (
                       <CommentCard
@@ -1616,6 +2063,7 @@ export default function ReviewPanel({
                       paraIndex: pendingSel.paraIndex,
                       anchorStart: pendingSel.anchorStart,
                       note: '',
+                      severity: 'medium',
                     })
                   }
                   className="flex items-center gap-1 rounded-full border border-[#D6E2FF] bg-white px-2.5 py-1.5 text-xs font-medium text-[#1a66fb] shadow-lg hover:bg-[#F0F5FF]"
@@ -1632,6 +2080,35 @@ export default function ReviewPanel({
               >
                 <div className="mb-1.5 truncate rounded border-l-2 border-[#1a66fb] bg-[#F5F8FF] px-1.5 py-0.5 text-[10px] text-[#666]">
                   锚点：{draft.text}
+                </div>
+                {/* 批注级别：创建时选择，与 AI 审核级别同一套配色语义 */}
+                <div className="mb-1.5 flex items-center gap-1">
+                  <span className="shrink-0 text-[10px] text-[#8A8A8A]">
+                    级别
+                  </span>
+                  {(
+                    [
+                      ['high', '严重'],
+                      ['medium', '一般'],
+                      ['low', '提示'],
+                    ] as const
+                  ).map(([val, label]) => {
+                    const c = SEVERITY_CONFIG[val];
+                    const active = draft.severity === val;
+                    return (
+                      <button
+                        key={val}
+                        onClick={() => setDraft({ ...draft, severity: val })}
+                        className="rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors"
+                        style={{
+                          color: active ? '#fff' : c.textColor,
+                          backgroundColor: active ? c.border : c.bg,
+                        }}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
                 </div>
                 <Textarea
                   autoFocus
@@ -1663,55 +2140,6 @@ export default function ReviewPanel({
           </div>
         )}
 
-        {/* 未定位 AI 标注 + 未定位/普通手动批注（边栏兜底列表） */}
-        {!loading &&
-          !error &&
-          content &&
-          (unmatched.ai.length > 0 ||
-            unmatched.comments.length > 0 ||
-            unmatched.plainComments.length > 0) && (
-            <div className="mt-6 pt-4 border-t-2 border-[#E8E8E8]">
-              <div className="text-sm font-bold text-[#1A1A1A] mb-3">
-                📋 其他批注（
-                {unmatched.ai.length +
-                  unmatched.comments.length +
-                  unmatched.plainComments.length}{' '}
-                条）
-              </div>
-              <div className="space-y-2">
-                {unmatched.ai.map((ann, i) => (
-                  <AiCard
-                    key={`unmatched-ai-${i}`}
-                    num={
-                      activeRailItems.filter((x) => x.kind === 'ai').length +
-                      i +
-                      1
-                    }
-                    ann={ann}
-                    unmatched
-                    selected={false}
-                    onSelect={() => {}}
-                  />
-                ))}
-                {[...unmatched.comments, ...unmatched.plainComments].map(
-                  (c) => (
-                    <CommentCard
-                      key={c.id}
-                      comment={c}
-                      author={commentAuthors?.[c.user_id || '']}
-                      selected={false}
-                      onSelect={() => {}}
-                      canDelete={
-                        !!onDeleteComment && c.user_id === currentUserId
-                      }
-                      onDelete={() => handleDeleteComment(c.id)}
-                    />
-                  ),
-                )}
-              </div>
-            </div>
-          )}
-
         {!loading && !error && !content && (
           <div className="flex items-center justify-center py-20">
             <p className="text-sm text-[#8A8A8A]">暂无内容</p>
@@ -1734,7 +2162,7 @@ export default function ReviewPanel({
   // 由使用方收缩主区腾位；animate-in 滑入，Esc 关闭。
   if (!open) return null;
   return (
-    <div className="fixed right-0 top-0 z-40 flex h-full w-1/2 flex-col border-l border-[#E5E5E5] bg-white text-[#1A1A1A] shadow-[-8px_0_24px_rgba(0,0,0,0.08)] animate-in fade-in slide-in-from-right-4 duration-300">
+    <div className="fixed right-0 top-0 z-40 flex h-full w-2/3 flex-col border-l border-[#E5E5E5] bg-white text-[#1A1A1A] shadow-[-8px_0_24px_rgba(0,0,0,0.08)] animate-in fade-in slide-in-from-right-4 duration-300">
       {innerContent}
     </div>
   );

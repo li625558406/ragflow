@@ -538,7 +538,7 @@ def test_status_truncates_pending_list(monkeypatch):
     _patch(monkeypatch, rounds=[_round(1, "annotated")], pending=pending)
     out = _make_tool()._invoke(action="status", task_id=PFX + "task")
 
-    assert out.count("- [") == _MAX_LIST_ITEMS
+    assert out.count(". [") == _MAX_LIST_ITEMS  # 序号锚点「N. [级别]」（与修复 prompt [idx] 同序）
     assert "其余 1 条略" in out
 
 
@@ -592,3 +592,120 @@ def test_review_reports_error_when_spawn_raises(monkeypatch):
     assert tool._param.outputs["_ERROR"]["value"] == "boom"
     assert len(calls["rounds"]) == 1
     assert calls["rounds"][0]["status"] == "reviewing"
+
+
+# ---------- task_id 注入解析（流程页签对话修复，2026-09-20（十六）） ----------
+
+def test_fix_resolves_task_id_from_begin_injection(monkeypatch):
+    """流程页签：审核由 FileReview 节点发起，task_id 只到前端不进 LLM 上下文。
+    前端经 inputs.review_task_id 注入 Begin 后，LLM 不传 task_id 也能发起修复。"""
+    from agent.component.file_review import REVIEW_TASK_ID_INPUT_KEY
+
+    cur = _round(1, "annotated")
+    calls = _patch(monkeypatch, rounds=[cur], next_round=(2, "v2"),
+                   pending=[_ann("high")])
+    tool = _make_tool(components=_begin({REVIEW_TASK_ID_INPUT_KEY: PFX + "task"}))
+    out = tool._invoke(action="fix", levels="high")
+
+    assert "task_id" not in out or "请提供" not in out   # 未被拒绝
+    assert calls["rounds"] and calls["rounds"][0]["task_id"] == PFX + "task"
+    assert calls["spawned"] == [PFX + "task"]
+
+
+def test_status_resolves_task_id_from_begin_injection(monkeypatch):
+    from agent.component.file_review import REVIEW_TASK_ID_INPUT_KEY
+
+    _patch(monkeypatch, rounds=[_round(1, "annotated")],
+           pending=[_ann("high")])
+    tool = _make_tool(components=_begin({REVIEW_TASK_ID_INPUT_KEY: PFX + "task"}))
+    out = tool._invoke(action="status")
+    assert "请提供" not in out and "task_id" not in out.split("审核任务")[0]
+
+
+def test_explicit_task_id_wins_over_injected(monkeypatch):
+    """同会话 review/fix 刚返回的 task_id 比「历史绑定」注入更即时——显式参数必须赢，
+    否则用户对旧流程说「修一下新审核的任务」会被静默改道到注入的旧任务。"""
+    from agent.component.file_review import REVIEW_TASK_ID_INPUT_KEY
+
+    seen = {}
+
+    def _recorder(task_id, tid):
+        seen["task_id"] = task_id
+        return [_round(1, "annotated")]
+
+    _patch(monkeypatch, pending=[_ann("high")])
+    svc = _svc()
+    monkeypatch.setattr(svc.FileReviewRoundService, "get_owned_task",
+                        staticmethod(_recorder))
+    tool = _make_tool(
+        components=_begin({REVIEW_TASK_ID_INPUT_KEY: PFX + "injected"}))
+    tool._invoke(action="status", task_id=PFX + "explicit")
+
+    assert seen["task_id"] == PFX + "explicit"
+
+
+def test_fix_refuses_without_task_id_or_injection(monkeypatch):
+    """两通道都拿不到 task_id → 明确拒绝，不建轮次不起线程。"""
+    cur = _round(1, "annotated")
+    calls = _patch(monkeypatch, rounds=[cur], pending=[_ann("high")])
+    out = _make_tool()._invoke(action="fix", levels="high")
+
+    assert "请提供 task_id" in out
+    assert calls["rounds"] == [] and calls["spawned"] == []
+
+
+def test_fix_injection_bad_begin_degrades_to_refusal(monkeypatch):
+    """Begin output() 抛错 → 注入通道降级为空串 → 与「没注入」同一条用户可读拒绝。"""
+    cur = _round(1, "annotated")
+    calls = _patch(monkeypatch, rounds=[cur], pending=[_ann("high")])
+    out = _make_tool(components={"begin": {"obj": _BadBegin()}})._invoke(
+        action="fix", levels="high")
+
+    assert "请提供 task_id" in out
+    assert calls["rounds"] == [] and calls["spawned"] == []
+
+
+# ---------- fix 补充要求透传（点名某条 + 原因，2026-09-20（十七）） ----------
+
+def test_fix_passes_user_query_override(monkeypatch):
+    """用户点名某一条 + 原因：补充要求与首轮基准、级别指令一起拼进本轮 user_query。"""
+    cur = _round(1, "annotated", user_query="重点看资质")
+    calls = _patch(monkeypatch, rounds=[cur], next_round=(2, "v2"),
+                   pending=[_ann("high")])
+    _make_tool()._invoke(action="fix", task_id=PFX + "task", levels="high",
+                         user_query="只修第 1 条（未附营业执照），改为已附扫描件，其余问题保持原样")
+    q = calls["rounds"][0]["user_query"]
+    assert "重点看资质" in q              # 首轮基准仍在
+    assert "只修复【严重/high】" in q      # 级别指令仍在
+    assert "只修第 1 条" in q             # 补充要求已拼入
+
+
+def test_fix_ignores_non_string_user_query(monkeypatch):
+    """REST 同口径：非字符串的补充要求按「没提」处理，不抛错不写进轮次。"""
+    cur = _round(1, "annotated")
+    calls = _patch(monkeypatch, rounds=[cur], next_round=(2, "v2"),
+                   pending=[_ann("high")])
+    _make_tool()._invoke(action="fix", task_id=PFX + "task", levels="high",
+                         user_query={"note": "x"})
+    assert calls["rounds"] and "x" not in calls["rounds"][0]["user_query"]
+
+
+def test_fix_clips_overlong_user_query(monkeypatch):
+    """补充要求裁到 500 字：修复 prompt 单条 issue 才 120 字，长篇要求会挤爆上下文。"""
+    cur = _round(1, "annotated")
+    calls = _patch(monkeypatch, rounds=[cur], next_round=(2, "v2"),
+                   pending=[_ann("high")])
+    _make_tool()._invoke(action="fix", task_id=PFX + "task", levels="high",
+                         user_query="修" * 600)
+    q = calls["rounds"][0]["user_query"]
+    assert "修" * 501 not in q
+
+
+def test_status_numbers_pending_items(monkeypatch):
+    """待修条目带 1 起序号（与修复 prompt 的 [idx] 同序同源）——
+    「修复第 N 条」的序号锚点全靠它。"""
+    _patch(monkeypatch, rounds=[_round(1, "annotated")],
+           pending=[_ann("high"), _ann("medium", issue="工期条款缺失")])
+    out = _make_tool()._invoke(action="status", task_id=PFX + "task")
+    assert "1. [严重]" in out
+    assert "2. [一般]" in out

@@ -345,3 +345,80 @@ def test_apply_patches_to_docx_all_failed_returns_input_bytes():
     out, applied = apply_patches_to_docx(blob, [{'find': '不存在', 'replace': 'x'}])
     assert applied == [False]
     assert out == blob
+
+
+# ── 跨行 patch 分解（demo05 生产事故回归：LLM 摘跨段 find，单段闸门必然 0 命中）──
+def test_multiline_patch_decomposed_and_applied():
+    """find/replace 按行剥去相同上下文后能一一配对 → 逐行落地。"""
+    blob = _docx_bytes(['编号 3.1.1', '构成投标文件的其他资料'])
+    out, applied = apply_patches_to_docx(
+        blob,
+        [{'find': '编号 3.1.1\n构成投标文件的其他资料', 'replace': '编号 3.1.2\n构成投标文件的其他资料'}],
+    )
+    assert applied == [True]
+    assert _texts(out) == ['编号 3.1.2', '构成投标文件的其他资料']
+
+
+def test_multiline_sequence_disambiguates_single_line_ambiguity():
+    """单行全文多处歧义、加上后继行上下文后序列唯一 → 正确锚定（demo05
+    「3.1.1 孤立编号段」形态的回归闸）。"""
+    blob = _docx_bytes(['3.1.1', '构成投标文件的其他资料', '无关段落', '3.1.1', '别的段落'])
+    out, applied = apply_patches_to_docx(
+        blob,
+        [{'find': '3.1.1\n构成投标文件的其他资料', 'replace': '3.1.2\n构成投标文件的其他资料'}],
+    )
+    assert applied == [True]
+    assert _texts(out) == ['3.1.2', '构成投标文件的其他资料', '无关段落', '3.1.1', '别的段落']
+
+
+def test_multiline_changed_lines_target_sequence_not_guess():
+    """多变更行按序列定位：只有首个「甲行+丙行」相邻序列命中，替换落在该处，
+    不会波及后面的重复「丙行」。"""
+    blob = _docx_bytes(['甲行', '丙行', '丙行', '尾部'])
+    out, applied = apply_patches_to_docx(
+        blob,
+        [{'find': '甲行\n丙行', 'replace': '乙行\n丁行'}],
+    )
+    assert applied == [True]
+    assert _texts(out) == ['乙行', '丁行', '丙行', '尾部']
+
+
+def test_multiline_pure_insertion_is_abandoned():
+    """空 find 配非空 replace = 凭空插入新行，段落级替换无锚点 → 诚实跳过。"""
+    blob = _docx_bytes(['业绩要求', '附录 4  资格审查条件'])
+    out, applied = apply_patches_to_docx(
+        blob,
+        [{'find': '业绩要求\n附录 4  资格审查条件', 'replace': '业绩要求\n/\n附录 4  资格审查条件'}],
+    )
+    assert applied == [False]
+    assert out == blob
+
+
+def test_multiline_duplicate_lines_are_ambiguous_not_guessed():
+    """重复行删除（find 2 行 → replace 1 行）无法判定删哪份 → 跳过，不猜。"""
+    blob = _docx_bytes(['第二章  投标人须知', '第二章  投标人须知', '正文'])
+    out, applied = apply_patches_to_docx(
+        blob,
+        [{'find': '第二章  投标人须知\n第二章  投标人须知', 'replace': '第二章  投标人须知'}],
+    )
+    assert applied == [False]
+    assert out == blob
+
+
+def test_multiline_patch_no_context_change_returns_false():
+    """find 与 replace 完全相同（LLM 空转补丁）→ 无实际变更行 → False。"""
+    blob = _docx_bytes(['甲行', '乙行'])
+    out, applied = apply_patches_to_docx(
+        blob, [{'find': '甲行\n乙行', 'replace': '甲行\n乙行'}]
+    )
+    assert applied == [False]
+    assert out == blob
+
+
+def test_plain_text_apply_patches_still_matches_across_lines():
+    """纯文本降级路径本就支持跨行匹配（文本按行拼接），不得被分解逻辑波及。"""
+    out, applied = apply_patches(
+        '甲行\n乙行', [{'find': '甲行\n乙行', 'replace': '甲行改\n乙行'}]
+    )
+    assert applied == [True]
+    assert out == '甲行改\n乙行'

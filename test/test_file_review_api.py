@@ -115,6 +115,9 @@ def _patch_services(monkeypatch, *, rounds=(), annotations=(), pending=(),
     monkeypatch.setattr(_api.FileReviewAnnotationService, "update_status",
                         classmethod(lambda cls, aid, status:
                                     calls.setdefault("updated", []).append((aid, status)) or True))
+    monkeypatch.setattr(_api.FileReviewAnnotationService, "delete_annotation",
+                        classmethod(lambda cls, aid:
+                                    calls.setdefault("deleted", []).append(aid) or True))
     # R-1 heal 落库走的是**轮次** Service 的 update_status（heal_stale_round 内部调用），
     # 与上面的标注 Service 同名不同类，必须分开打桩并分别记录。
     monkeypatch.setattr(_api.FileReviewRoundService, "update_status",
@@ -152,10 +155,12 @@ def test_all_routes_registered_on_blueprint():
         "/file/review/file/<file_id>/state": {"GET", "HEAD", "OPTIONS"},
         "/file/review/<task_id>/fix": {"POST", "OPTIONS"},
         "/file/review/annotation/<annotation_id>/status": {"POST", "OPTIONS"},
+        "/file/review/annotation/<annotation_id>/delete": {"POST", "OPTIONS"},
         "/file/review/<task_id>/<file_version>/download": {"GET", "HEAD", "OPTIONS"},
     }, f"路由集合不符：{rules}"
     for name in ("list_review_templates", "review_state", "fix_review",
-                 "update_annotation_status", "download_review_version"):
+                 "update_annotation_status", "delete_annotation",
+                 "download_review_version"):
         fn = getattr(_api, name, None)
         assert fn is not None, f"缺少端点函数 {name}"
         assert inspect.iscoroutinefunction(getattr(fn, "__wrapped__", fn)) or callable(fn)
@@ -608,6 +613,42 @@ def test_annotation_status_hides_internal_error_text(monkeypatch):
                  body={"status": "resolved"})
     assert body["code"] != 0
     assert "9000" not in body["message"]
+
+
+# ── POST /file/review/annotation/<aid>/delete ───────────────────────
+
+def test_annotation_delete_succeeds_and_returns_id(monkeypatch):
+    calls = _status_setup(monkeypatch)
+    body = _call(_api.delete_annotation, annotation_id="a1", body={})
+    assert body["code"] == 0
+    assert body["data"] == {"annotation_id": "a1"}
+    assert calls["deleted"] == ["a1"]
+
+
+def test_annotation_delete_rejects_missing_annotation(monkeypatch):
+    calls = _status_setup(monkeypatch)
+    calls["_ann_row"] = None
+    body = _call(_api.delete_annotation, annotation_id="a1", body={})
+    assert body["code"] != 0
+    assert "deleted" not in calls, "标注不存在时不许写库"
+
+
+def test_annotation_delete_rejects_foreign_task(monkeypatch):
+    """标注所属 task 不归当前用户 → 拒绝且不删（与状态修改同闸）。"""
+    calls = _status_setup(monkeypatch, owned=[])
+    body = _call(_api.delete_annotation, annotation_id="a1", body={})
+    assert body["code"] != 0
+    assert "deleted" not in calls
+
+
+def test_annotation_delete_maps_write_miss_to_error(monkeypatch):
+    """重复删除 / 并发删除：查到了行但删 0 行 → 按「不存在」回，幂等不 500。"""
+    _status_setup(monkeypatch)
+    monkeypatch.setattr(_api.FileReviewAnnotationService, "delete_annotation",
+                        classmethod(lambda cls, aid: False))
+    body = _call(_api.delete_annotation, annotation_id="a1", body={})
+    assert body["code"] != 0
+    assert "批注不存在或无权访问" == body["message"]
 
 
 # ── GET /file/review/<task_id>/<file_version>/download ──────────────

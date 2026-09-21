@@ -11,6 +11,7 @@ import {
   parseTemplateFillEvents,
   replayTemplateFillEvents,
 } from '@/hooks/template-fill-stream';
+import { useDeleteFileReviewAnnotation } from '@/hooks/use-file-review-request';
 import { useSendMessageBySSE } from '@/hooks/use-send-message';
 import { useTemplateFillRunRecovery } from '@/hooks/use-template-fill-run-recovery';
 import type { FlowDocRun } from '@/services/flow-service';
@@ -24,8 +25,10 @@ import {
   saveFlowAiRecord,
 } from '@/services/flow-service';
 import api from '@/utils/api';
+import request from '@/utils/request';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ChatInputBox, { type UploadedDoc } from '../chat-input-box';
+import { extractFileReviewTarget } from '../file-review-progress';
 import ReviewPanel, { type Annotation } from '../review-panel';
 import type {
   FlowAiChatItem,
@@ -51,7 +54,28 @@ export type FlowReviewControl = {
   /** T15：FileReviewProgress 点击「打开审核面板」时调用 —— 同步切换到指定 fileId
    *  并打开 review 抽屉。无 fileId 时退回 toggle 行为（用当前 reviewFileId）。
    *  实现位于面板内部，导出接口供中部对话区 <FileReviewProgress /> 复用。 */
-  openWithFile?: (fileId: string, fileName?: string) => void;
+  openWithFile?: (
+    fileId: string,
+    fileName?: string,
+    /** 文件审核批注（进度卡 state.annotations，IFileReviewAnnotation 与
+     *  ReviewPanel.Annotation 字段兼容直接透传）；不传则面板沿用原标注来源 */
+    annotations?: Annotation[],
+  ) => void;
+};
+
+// flow_ai_chat.file_review 字段解析（与 flow-detail.parseFileReview 同构）：
+// "{fileId,taskId}" JSON 字符串 → {fileId, taskId}；空串/畸形静默返 null
+const parseRecordFileReview = (
+  raw: string | undefined,
+): { fileId: string; taskId: string } | null => {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed?.fileId && parsed?.taskId) return parsed;
+  } catch {
+    // 旧数据/畸形 JSON：静默忽略
+  }
+  return null;
 };
 
 // 打字机占位（与 c-chat 同款文案与节奏）
@@ -125,6 +149,8 @@ export default function FlowAiPanel({
   const [reviewMode, setReviewMode] = useState(false);
   const [reviewFileId, setReviewFileId] = useState('');
   const [reviewFileName, setReviewFileName] = useState('');
+  // AI 批注删除（硬删 DB 行）：成功后失效该 file 的 state 缓存，进度卡计数同步刷新
+  const delAnnotation = useDeleteFileReviewAnnotation(reviewFileId);
   const [reviewPreparing, setReviewPreparing] = useState(false);
   // 审核目标来源：version = 流程版本文件（可编辑段落）；upload = 用户手动上传（只读）
   const [reviewSource, setReviewSource] = useState<'version' | 'upload' | ''>(
@@ -156,6 +182,21 @@ export default function FlowAiPanel({
   const { handleInputChange, value, setValue } = useHandleMessageInputChange();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
+  // 「一个流程只能审核一个文件」的绑定源 + 对话修复的 task_id 注入源：流程内最近
+  // 一条携带 file_review 的 AI 记录（从尾往前扫，空/畸形记录跳过）。发送守卫据此
+  // 拦截不同文件的新审核；taskId 经 inputs.review_task_id 送入 Begin，供
+  // FileReviewTool 的 fix/status 回退解析（节点产出的 task_id 不进 LLM 上下文）。
+  const boundFileReview = useMemo<{
+    fileId: string;
+    taskId: string;
+  } | null>(() => {
+    for (let i = aiChats.length - 1; i >= 0; i--) {
+      const fr = parseRecordFileReview(aiChats[i].file_review);
+      if (fr?.fileId && fr?.taskId)
+        return { fileId: fr.fileId, taskId: fr.taskId };
+    }
+    return null;
+  }, [aiChats]);
   const instructionRef = useRef('');
   // 会话续接：只恢复【自己】保存记录里的 session_id（多人操作各自独立续聊）
   const sessionIdRef = useRef('');
@@ -305,6 +346,9 @@ export default function FlowAiPanel({
   // 持久化策略：因流式上报 effect 会反复用「新对象」覆盖 live，fileReview 不能直接
   // 存在对象上 —— 改存 ref，再在每次 onLiveChatChange 报告前合并（同一轮任务 id
   // 不重复切换时合并幂等）。同时新一轮发送（handleSend）必须清空，避免旧轮残留。
+  // ⚠️ 此 effect 只在**中止路径**生效（中止不 resetAnswerList）：正常收尾时
+  // setDone(true) 与 resetAnswerList 同帧批处理，done 态下 answerList 已空，
+  // 正常路径的提取在 handleSend 里走 res.events（extractFileReviewTarget）。
   const fileReviewRef = useRef<{ fileId: string; taskId: string } | null>(null);
   useEffect(() => {
     if (!done) return;
@@ -313,12 +357,18 @@ export default function FlowAiPanel({
     for (const evt of answerList) {
       const ev: any = evt as any;
       const data = ev?.data ?? {};
+      // component_name 是 DSL 节点显示名（如「FileReview:BraveLionsScan」），组件类型
+      // 在 component_type 字段——按显示名精确匹配永远扫不到（生产实测事件两字段即此形态）
+      const componentType = (data?.component_type ?? '').toString();
       const componentName = (data?.component_name ?? '').toString();
-      if (componentName !== 'FileReview') continue;
+      if (componentType !== 'FileReview' && componentName !== 'FileReview')
+        continue;
       const outputs = data?.outputs ?? {};
       const inputs = data?.inputs ?? {};
       if (outputs?.task_id) taskId = String(outputs.task_id);
-      const fileIdInput = inputs?.file_id ?? inputs?.review_file_id;
+      // file_id 权威来源是节点 outputs（inputs 是空 dict）；inputs 两键为旧兜底
+      const fileIdInput =
+        outputs?.file_id ?? inputs?.file_id ?? inputs?.review_file_id;
       if (fileIdInput) fileId = String(fileIdInput);
       if (taskId && fileId) break;
     }
@@ -348,6 +398,13 @@ export default function FlowAiPanel({
   // 发送即存：本轮预落库的记录 id（完成自动保存时按它回填更新，不重复插记录）。
   // 无它则流式期间刷新页面，本轮指令与进度全部丢失
   const pendingRecordIdRef = useRef('');
+  // 本轮手动上传附件（发送起点快照）：流式上报/完成上报时挂到 live.files 供
+  // 用户气泡渲染附件 chip；自动保存时随记录落库（发送时事实，不回填覆盖）。
+  // 必须在 handleSend 里从 manualDocs 同步快照赋值——ChatInputBox 清队列后
+  // uploadedDocsRef 恒为空，流式期间再读会丢
+  const liveFilesRef = useRef<{ id: string; name: string }[] | undefined>(
+    undefined,
+  );
   // 事件增量同步防抖定时器：流式期间把事件序列持续写入预存记录，
   // 中途刷新后历史重放（parseAndReplay）才有数据可恢复——否则事件只在
   // 最终回填时落库，刷新即丢全部范本进度
@@ -401,6 +458,7 @@ export default function FlowAiPanel({
         // 分支的 templateFillRef 兜底同构。
         templateFill: streamState.templateFill ?? templateFillRef.current,
         fileReview,
+        files: liveFilesRef.current,
       });
       return;
     }
@@ -411,6 +469,7 @@ export default function FlowAiPanel({
         busy: false,
         templateFill: templateFillRef.current,
         fileReview,
+        files: liveFilesRef.current,
       };
       setCompleted((prev) => (prev ? prev : next));
       onLiveChatChange?.(completed ?? next);
@@ -418,6 +477,25 @@ export default function FlowAiPanel({
       // completed 清空（自动/手动保存成功）后，仍用最近一次成稿快照上报，
       // 保证成稿条与「存为流程版本」按钮持续可见可用；刷新后上报快照恢复态
       //（recoveredTemplateFill 含运行快照轮询的权威覆盖）
+      // 2026-09-20：无范本快照但有 fileReview 时同样不能上报 null——null 会把
+      // live 整个清空，文件审核进度卡随 auto-save 完成瞬间消失（用户实测进度卡
+      // 「从来不出现」的最后一环：出现过一瞬即被收尾分支抹掉）。instruction/
+      // response 置空防与已入库历史气泡重复（同 recoveredTemplateFill 分支口径）。
+      // fileReview 落库后（auto-save → onSaved → ai_chats refetch）历史气泡会按
+      // record.file_review 自己挂卡，此时 live 分支不再上报 fileReview 让位历史卡
+      // ——否则同一条进度卡出现两遍（live 一张 + 历史一张）。
+      const frTakenOver =
+        !!fileReview &&
+        aiChats.some((c) => {
+          if (!c.file_review) return false;
+          try {
+            const parsed = JSON.parse(c.file_review);
+            return parsed?.taskId === fileReview.taskId;
+          } catch {
+            return false;
+          }
+        });
+      const liveFileReview = frTakenOver ? undefined : fileReview;
       onLiveChatChange?.(
         completed ??
           (recoveredTemplateFill
@@ -426,9 +504,17 @@ export default function FlowAiPanel({
                 response: '',
                 busy: false,
                 templateFill: recoveredTemplateFill,
-                fileReview,
+                fileReview: liveFileReview,
               }
-            : null),
+            : liveFileReview
+              ? {
+                  instruction: '',
+                  response: '',
+                  busy: false,
+                  templateFill: templateFillRef.current,
+                  fileReview: liveFileReview,
+                }
+              : null),
       );
     }
   }, [
@@ -439,6 +525,7 @@ export default function FlowAiPanel({
     onLiveChatChange,
     completed,
     recoveredTemplateFill,
+    aiChats,
   ]);
 
   // 自动保存：一轮对话流式结束后，自动将指令+回复写入流程记录（不建版本），
@@ -454,6 +541,10 @@ export default function FlowAiPanel({
       try {
         const preSavedId = pendingRecordIdRef.current;
         pendingRecordIdRef.current = '';
+        // 本轮若有文件审核进度卡，随记录落库（刷新后历史气泡按它恢复挂卡）
+        const frJson = fileReviewRef.current
+          ? JSON.stringify(fileReviewRef.current)
+          : undefined;
         const res = (await saveFlowAiRecord(
           flowId,
           preSavedId
@@ -462,6 +553,7 @@ export default function FlowAiPanel({
                 response: text,
                 session_id: sessionIdRef.current,
                 template_fill_events: templateFillEventsRef.current,
+                file_review: frJson,
                 save_as_version: false,
               }
             : {
@@ -470,6 +562,7 @@ export default function FlowAiPanel({
                 version_id: version?.id,
                 session_id: sessionIdRef.current,
                 template_fill_events: templateFillEventsRef.current,
+                file_review: frJson,
                 save_as_version: false,
               },
         )) as { record?: { id?: string } };
@@ -499,13 +592,74 @@ export default function FlowAiPanel({
   }, [stopOutputMessage]);
 
   // 审阅标注：从智能体 structured output 提取（与 c-chat 同源）
+  // 2026-09-20：文件审核进度卡「打开审核面板」时传入 file_review 批注
+  // （state 端点 annotations）—— 本轮批注产自 FileReview 节点而非智能体
+  // structured output，原逻辑面板恒空（用户实测看不到批注）。
+  // 批注带 fileId 绑定（与 c-chat frPanelAnnotations 同构）：切文件自动失效，
+  // 防上一个文件的历史批注串显到新文件面板。
+  const [fileReviewAnnotations, setFileReviewAnnotations] = useState<{
+    fileId: string;
+    annotations: Annotation[];
+  } | null>(null);
   const annotations = useMemo<Annotation[]>(() => {
+    if (
+      fileReviewAnnotations &&
+      fileReviewAnnotations.fileId === reviewFileId &&
+      fileReviewAnnotations.annotations.length > 0
+    ) {
+      return fileReviewAnnotations.annotations;
+    }
     const structured = structuredOutputRef.current as any;
     const anns = structured?.annotations;
     return Array.isArray(anns) && anns.length > 0 ? (anns as Annotation[]) : [];
     // ref 读取依赖 done/answerList 触发重算
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [done, answerList]);
+  }, [done, answerList, fileReviewAnnotations, reviewFileId]);
+
+  // 重开面板恢复历史批注：面板批注原先只在 live 轮透传，刷新/重开后透传与
+  // structured output 来源均已清空 → 面板恒空（用户实测「审核完重开批注不见」）。
+  // 批注真源在 file_review 系统存库，按 fileId 拉 state 端点兜底恢复；
+  // live 透传 / structured output 优先级不变，仅在两者皆空时才拉。
+  useEffect(() => {
+    if (!reviewMode || !reviewFileId) return;
+    if (
+      fileReviewAnnotations &&
+      fileReviewAnnotations.fileId === reviewFileId &&
+      fileReviewAnnotations.annotations.length > 0
+    ) {
+      return; // live 透传批注在场，不覆盖
+    }
+    const structured = structuredOutputRef.current as any;
+    if (
+      Array.isArray(structured?.annotations) &&
+      structured.annotations.length > 0
+    ) {
+      return; // structured output 批注在场，不覆盖
+    }
+    let alive = true;
+    (async () => {
+      try {
+        const { data } = await request.get(api.fileReviewState(reviewFileId));
+        const anns = data?.data?.annotations;
+        if (
+          alive &&
+          data?.code === 0 &&
+          Array.isArray(anns) &&
+          anns.length > 0
+        ) {
+          setFileReviewAnnotations({
+            fileId: reviewFileId,
+            annotations: anns as Annotation[],
+          });
+        }
+      } catch {
+        // 静默：面板仍可打开，仅无历史批注
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [reviewMode, reviewFileId, fileReviewAnnotations]);
 
   const busy = !done || sending;
   // 结束后 streamState 被 hook reset，从 contentRef 兜底取完整回复
@@ -584,6 +738,31 @@ export default function FlowAiPanel({
       setError(NO_AGENT_HINT);
       return;
     }
+    // 「一个流程只能审核一个文件」守卫：流程内已有审核绑定（历史记录 / 本轮实时
+    // 产出）时，再上传**另一个**文件发送会被整条拦截——审核任务链按文件独立
+    // （task_id / 轮次 / 成稿对象名都挂 file_id，见 agent/component/file_review.py），
+    // 同一流程出现第二条链会让进度卡与修复轮互相打架。只拦用户手动上传的不同
+    // 文件：版本自动附带路径每次上传 id 都轮换且语义上仍是流程自身文档，不在
+    // 拦截范围（否则每轮带附件的普通对话都发不出去）。
+    // 手动上传队列必须在此**同步快照**：setSending(true) 让 ChatInputBox 在
+    // sendLoading 上升沿清空队列并回传 onUploadedFilesChange([])（chat-input-box
+    // 清队列 effect），把本 ref 一并清空；而下方发请求前还有预存占位记录的 await
+    // ——await 之后再读 ref 恒为空 → files 为空 → 不注入 review_file_id，
+    // FileReview 节点报「未指定待审核文件」（新流程无版本时无任何兜底路径）。
+    const manualDocs = [...uploadedDocsRef.current];
+    // 附件 chip 数据同样取发送起点同步快照（发送时事实）：live 气泡与落库共用
+    liveFilesRef.current = manualDocs.length
+      ? manualDocs.map((d) => ({ id: d.id, name: d.name || '' }))
+      : undefined;
+    const manualUploadId = manualDocs[0]?.id;
+    const boundFrId =
+      boundFileReview?.fileId || fileReviewRef.current?.fileId || '';
+    if (manualUploadId && boundFrId && manualUploadId !== boundFrId) {
+      message.error(
+        '一个流程只能审核一个文件：当前流程已发起过文件审核，如需审核其他文件请新建流程',
+      );
+      return;
+    }
     setError('');
     setSending(true);
     try {
@@ -631,6 +810,7 @@ export default function FlowAiPanel({
           version_id: version?.id,
           session_id: sessionIdRef.current,
           save_as_version: false,
+          files: liveFilesRef.current,
         })) as { record?: { id?: string } };
         if (presave?.record?.id) pendingRecordIdRef.current = presave.record.id;
       } catch {
@@ -652,14 +832,18 @@ export default function FlowAiPanel({
         }
       };
 
-      const docs = uploadedDocsRef.current;
+      // 用发送起点的同步快照（ref 此时已被 ChatInputBox 清空，见 handleSend 顶部注释）
+      const docs = manualDocs;
       let files: unknown[] = docs;
       if (files.length === 0 && attachFile && version) {
         // 轻量通道：服务端提取版本纯文本 → 小 txt 文件上传（免每次整份 docx
         // blob 上传 + 画布重复解析）；失败静默回退原 uploadVersionAsDocument。
         // 审阅模式不走轻量通道：txt 无 docx 段落结构，会污染审阅目标
         // （ReviewPanel 展示 txt 段落但编辑落回版本 docx，段落错位损坏文档）
-        if (!reviewMode) {
+        // Word 版本不走轻量通道：txt 同样无 docx 结构，不能作为文件审核目标
+        // （审核执行器仅支持 .docx），必须上传版本原件并取其 id 作 review_file_id
+        const isWordVersion = /\.(docx|doc)$/i.test(version.file_name || '');
+        if (!reviewMode && !isWordVersion) {
           try {
             const text = await getFlowVersionContent(flowId, version.id);
             if (text) {
@@ -716,12 +900,33 @@ export default function FlowAiPanel({
 
       let res: any = null;
       try {
+        // 文件审核契约：待审核文件 id 必须经 inputs.review_file_id 送入 Begin——
+        // FileReview 节点/工具都只认 Begin 的这个输出，画布会丢弃 files 里的上传 id。
+        // 无附件不发该键（空值只会换来节点报「未指定待审核文件」）。
+        // 对话修复注入：流程里节点产出的 task_id 只到前端、不进 LLM 上下文，把已知
+        // 绑定经 inputs.review_task_id 送入 Begin，FileReviewTool 的 fix/status 回退
+        // 解析它——用户说「修复严重问题」「查下进度」无需提供 task_id。无附件也注入
+        // （纯文本对话修复正是主场景）；本轮实时 fileReviewRef 已在发送起点被清空，
+        // 这里只读落库绑定（保存后 onSaved → ai_chats refetch 会及时补上）。
+        const firstFileId = (files[0] as { id?: string } | undefined)?.id;
+        const reviewInputs: Record<string, { value: string; type: string }> =
+          {};
+        if (firstFileId) {
+          reviewInputs.review_file_id = { value: firstFileId, type: 'line' };
+        }
+        if (boundFileReview?.taskId) {
+          reviewInputs.review_task_id = {
+            value: boundFileReview.taskId,
+            type: 'line',
+          };
+        }
         res = await send({
           agent_id: agentId,
           query,
           session_id: sessionIdRef.current,
           stream: true,
           files,
+          inputs: Object.keys(reviewInputs).length ? reviewInputs : undefined,
           internet: false,
           // 当前流程版本文档：sys.flow_version_id 供 flow 场景 DocumentRewrite 定位重写目标（无版本空串→工具降级 chat 来源）
           flow_version_id: String(version?.id ?? ''),
@@ -741,6 +946,21 @@ export default function FlowAiPanel({
           .map((e: any) => e.data);
         if (finalTplEvents.length > 0) {
           templateFillEventsRef.current = finalTplEvents;
+        }
+        // T15 进度卡（2026-09-20 根修）：done 与 resetAnswerList 同帧批处理，
+        // answerList 态扫描 effect 只能见到空列表——必须从 res.events 全量原始
+        // 事件里提取（与上方 finalTplEvents / c-chat downloads 回填同款模式）。
+        // 立即上报一次，让中部对话区在流结束后立刻出现进度卡。
+        const fr = extractFileReviewTarget(res?.events as any[] | undefined);
+        if (fr) {
+          fileReviewRef.current = fr;
+          onLiveChatChange?.({
+            instruction: instructionRef.current,
+            response: contentRef.current,
+            busy: false,
+            templateFill: templateFillRef.current,
+            fileReview: fr,
+          });
         }
         // canvas 运行期错误的兜底消息（后端 message 事件带 error 标记）：气泡文本
         // 照常展示 + toast 显式提醒，避免用户只看到一段普通回复没意识到执行失败
@@ -783,6 +1003,7 @@ export default function FlowAiPanel({
   }, [
     agentId,
     attachFile,
+    boundFileReview,
     busy,
     ensureSession,
     flowId,
@@ -859,9 +1080,19 @@ export default function FlowAiPanel({
       // T15：FileReviewProgress 回调入口 —— 指定 fileId 切换并打开 review 抽屉
       // （与 toggle 的「使用当前 reviewFileId」行为差异：upload 流必给 fileId，
       //  否则版本文档场景用 reviewFileId 兜底）
-      openWithFile: (fileId: string, fileName?: string) => {
+      openWithFile: (
+        fileId: string,
+        fileName?: string,
+        annotations?: Annotation[],
+      ) => {
         setReviewFileId(fileId);
         if (fileName) setReviewFileName(fileName);
+        // 文件审核批注优先（本轮批注在 file_review 系统，不在 structured output）；
+        // 空/未传视为「无本轮批注」，仍绑定 fileId —— restore effect 据此按 file_id 拉 state 端点恢复历史批注
+        setFileReviewAnnotations({
+          fileId,
+          annotations: annotations && annotations.length > 0 ? annotations : [],
+        });
         setReviewSource('upload');
         setReviewFromVersionId('');
         setReviewMode(true);
@@ -941,18 +1172,20 @@ export default function FlowAiPanel({
     ],
   );
 
-  // Word 式手动批注：选中审阅正文后写入 flow 评论（带锚点），经 onSaved 刷新回显
+  // Word 式手动批注：选中审阅正文后写入 flow 评论（带锚点+级别），经 onSaved 刷新回显
   const handleAddAnchoredComment = useCallback(
     async (p: {
       content: string;
       anchorText: string;
       anchorPara: number | null;
       anchorStart?: number | null;
+      severity?: string;
     }) => {
       await addFlowComment(flowId, p.content, version?.id, {
         anchorText: p.anchorText,
         anchorPara: p.anchorPara,
         anchorStart: p.anchorStart ?? null,
+        severity: p.severity,
       });
       onSaved();
     },
@@ -1044,6 +1277,9 @@ export default function FlowAiPanel({
         commentAuthors={commentAuthors}
         onAddComment={handleAddAnchoredComment}
         onDeleteComment={handleDeleteComment}
+        onDeleteAnnotation={(id) =>
+          delAnnotation.mutateAsync(id).then(() => undefined)
+        }
         currentUserId={currentUserId}
         canEdit={!!isOwner && reviewSource === 'version' && !!version}
         onEditDocument={handleEditDocument}

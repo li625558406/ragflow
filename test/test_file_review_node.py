@@ -237,15 +237,25 @@ def test_outputs_after_invoke(rec):
     cpn._invoke()
     assert cpn.output("task_id") == rec["rounds"][0]["task_id"]
     assert cpn.output("round_id") == "round-9"
+    # file_id 必须进 outputs：前端进度卡轮询端点只认 file_id，而节点 inputs 是空 dict，
+    # SSE node_finished 事件里无处可取（生产实测进度卡永不出现的根因之一）
+    assert cpn.output("file_id") == "u1"
     assert cpn.output("content")
 
 
 def test_param_outputs_declared():
     """输出的键必须在 param 里声明，否则画布序列化 DSL 时下游引用不到。"""
-    assert set(FileReviewParam().outputs) == {"task_id", "round_id", "content"}
+    assert set(FileReviewParam().outputs) == {"task_id", "round_id", "file_id", "content"}
 
 
 def test_check_always_true():
     """canvas.load() 会调 param.check() 并把异常包装成节点级报错——
     本节点是运行期解析 file_id，配置期不该拦人。"""
     assert FileReviewParam().check() is True
+
+
+def test_thoughts_returns_str():
+    """canvas.run 的 node_started 对批内每个组件调 thoughts()，基类抛
+    NotImplementedError 会杀掉整条 SSE 流（生产事故：流程页文件审核整轮无回复）。"""
+    cpn = _make()
+    assert isinstance(cpn.thoughts(), str) and cpn.thoughts()

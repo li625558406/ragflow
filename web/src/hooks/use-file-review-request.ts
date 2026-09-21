@@ -100,6 +100,26 @@ export function useUpdateAnnotationStatus(fileId: string) {
   });
 }
 
+/** 删除批注（硬删 DB 行，AI / manual 均可）：成功时失效对应 file_id 的 state 缓存。
+ * 注意：标注没有前端可见的独立 id 字段时面板用不了这个 mutation ——
+ * ReviewPanel 的 onDeleteAnnotation 拿到的是后端标注 id。 */
+export function useDeleteFileReviewAnnotation(fileId: string) {
+  const invalidate = useInvalidateFileReview();
+  return useMutation({
+    mutationFn: async (annotationId: string) => {
+      const { data } = await request.post(
+        api.fileReviewAnnotationDelete(annotationId),
+        { data: {} },
+      );
+      if (!data || data.code !== 0) {
+        throw new Error(data?.message || '批注删除失败');
+      }
+      return data.data as { annotation_id: string };
+    },
+    onSuccess: () => invalidate(fileId),
+  });
+}
+
 /** 失效器：fix / annotation status 变更后必须调一次，让面板与进度卡重拉 state。
  * fix 端点的 response 不含 file_id（只有 task_id），故调用方必须把 file_id 传进来。
  * 仅失效 ['fileReview', 'state', fileId] 这一条，避免误冲掉其它文件的轮询。 */

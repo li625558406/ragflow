@@ -332,7 +332,7 @@ export default function TemplateFillLivePreview({
     // c-chat 页壳 .cs-page-enter 动画 fill-mode:both 永久保留的 identity transform）
     // 都会成为 fixed 的包含块，抽屉就会相对内容树而非视口定位——流程页内容把
     // 包含块撑宽后抽屉被定位到屏幕外（「点击已填充字段预览不出现」事故根因）。
-    <div className="fixed right-0 top-0 z-40 flex h-full w-1/2 flex-col border-l border-[#E5E5E5] bg-white shadow-[-8px_0_24px_rgba(0,0,0,0.08)] animate-in fade-in slide-in-from-right-4 duration-300">
+    <div className="fixed right-0 top-0 z-40 flex h-full w-2/3 flex-col border-l border-[#E5E5E5] bg-white shadow-[-8px_0_24px_rgba(0,0,0,0.08)] animate-in fade-in slide-in-from-right-4 duration-300">
       {/* 头部：模板名 + 实时填充进度 + 关闭 */}
       <div className="flex items-center gap-2 border-b border-[#E5E5E5] px-4 py-3">
         <span className="truncate text-sm font-medium text-[#000000]">

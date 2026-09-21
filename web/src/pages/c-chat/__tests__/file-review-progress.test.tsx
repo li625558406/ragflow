@@ -5,7 +5,9 @@ import {
   useFixFileReview,
   useUpdateAnnotationStatus,
 } from '@/hooks/use-file-review-request';
-import FileReviewProgress from '@/pages/c-chat/file-review-progress';
+import FileReviewProgress, {
+  extractFileReviewTarget,
+} from '@/pages/c-chat/file-review-progress';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -343,5 +345,129 @@ describe('FileReviewProgress', () => {
     mockUseFileReviewState.mockReturnValue(state2 as any);
     render(<FileReviewProgress fileId="f1" />);
     expect(screen.getByText(/剩余.*1.*轮/)).toBeInTheDocument();
+  });
+
+  it('不传 onSaveAsVersion 不渲染「存为流程版本」（c-chat 无流程版本概念）', () => {
+    mockUseFileReviewState.mockReturnValue(baseState() as any);
+    render(<FileReviewProgress fileId="f1" />);
+    expect(screen.queryByRole('button', { name: /存为流程版本/ })).toBeNull();
+  });
+
+  it('点击「存为流程版本」回调 (taskId, fileVersion)，成功翻转「已存为流程版本」且禁用', async () => {
+    mockUseFileReviewState.mockReturnValue(baseState() as any);
+    const onSaveAsVersion = vi.fn().mockResolvedValue(undefined);
+    render(
+      <FileReviewProgress fileId="f1" onSaveAsVersion={onSaveAsVersion} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: '存为流程版本' }));
+    expect(onSaveAsVersion).toHaveBeenCalledWith('t1', 'v2');
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: '已存为流程版本' }),
+      ).toBeDisabled(),
+    );
+  });
+
+  it('保存失败 reject 翻转「保存失败，重试」且可再次点击', async () => {
+    mockUseFileReviewState.mockReturnValue(baseState() as any);
+    const onSaveAsVersion = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce(undefined);
+    render(
+      <FileReviewProgress fileId="f1" onSaveAsVersion={onSaveAsVersion} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: '存为流程版本' }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: '保存失败，重试' }),
+      ).toBeEnabled(),
+    );
+    // 失败重试走通后翻转为已存
+    fireEvent.click(screen.getByRole('button', { name: '保存失败，重试' }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: '已存为流程版本' }),
+      ).toBeDisabled(),
+    );
+    expect(onSaveAsVersion).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('extractFileReviewTarget', () => {
+  // 生产实测事件形态：component_name 是 DSL 节点显示名，组件类型在 component_type；
+  // file_id 唯一来源是节点 outputs（inputs 是空 dict）
+  const frEvent = {
+    event: 'node_finished',
+    data: {
+      component_type: 'FileReview',
+      component_name: 'FileReview:BraveLionsScan',
+      inputs: {},
+      outputs: {
+        task_id: 't-1',
+        round_id: 'r-1',
+        file_id: 'f-9',
+        content: 'ok',
+      },
+    },
+  };
+
+  it('extracts from component_type match + outputs.file_id', () => {
+    expect(extractFileReviewTarget([frEvent])).toEqual({
+      fileId: 'f-9',
+      taskId: 't-1',
+    });
+  });
+
+  it('falls back to inputs.review_file_id when outputs lacks file_id（旧后端兜底）', () => {
+    const ev = {
+      event: 'node_finished',
+      data: {
+        component_name: 'FileReview',
+        inputs: { review_file_id: 'f-legacy' },
+        outputs: { task_id: 't-2' },
+      },
+    };
+    expect(extractFileReviewTarget([ev])).toEqual({
+      fileId: 'f-legacy',
+      taskId: 't-2',
+    });
+  });
+
+  it('ignores other components and non-node_finished events', () => {
+    const others = [
+      { event: 'message', data: { content: 'hi' } },
+      {
+        event: 'node_finished',
+        data: {
+          component_type: 'Agent',
+          component_name: 'FileReview:模仿者', // 显示名含 FileReview 也不得误匹配
+          outputs: { task_id: 'bad', file_id: 'bad' },
+        },
+      },
+      ...Array.from({ length: 50 }, (_, i) => ({
+        event: 'message',
+        data: { content: `pad-${i}` },
+      })),
+    ];
+    expect(extractFileReviewTarget([...others, frEvent])).toEqual({
+      fileId: 'f-9',
+      taskId: 't-1',
+    });
+  });
+
+  it('returns null on missing fileId/taskId/undefined events', () => {
+    const noTask = {
+      event: 'node_finished',
+      data: { component_type: 'FileReview', outputs: { file_id: 'f-9' } },
+    };
+    const noFile = {
+      event: 'node_finished',
+      data: { component_type: 'FileReview', outputs: { task_id: 't-1' } },
+    };
+    expect(extractFileReviewTarget([noTask])).toBeNull();
+    expect(extractFileReviewTarget([noFile])).toBeNull();
+    expect(extractFileReviewTarget(undefined)).toBeNull();
+    expect(extractFileReviewTarget([])).toBeNull();
   });
 });

@@ -67,10 +67,11 @@ def _fake_svc(existing, monkeypatch):
 
     svc = SimpleNamespace(
         get_record=lambda rid: dict(existing) if existing and rid == RECORD_ID else None,
-        update_content=lambda rid, response, session_id=None, template_fill_events=None:
+        update_content=lambda rid, response, session_id=None, template_fill_events=None, file_review=None:
             calls.update({"rid": rid, "response": response,
                           "session_id": session_id,
-                          "template_fill_events": template_fill_events}),
+                          "template_fill_events": template_fill_events,
+                          "file_review": file_review}),
         set_output_version=lambda *a, **kw: calls.update({"set_output_version": True}),
         add_record=lambda *a, **kw: (_ for _ in ()).throw(AssertionError("回填分支不应 add_record")),
     )
@@ -151,6 +152,17 @@ class TestUpdateContentFields:
         assert cap["fields"] == {"response": "r", "session_id": "s1", "template_fill_events": "[{}]"}
         assert cap.get("executed")
 
+    def test_file_review_none_means_not_touched(self, monkeypatch):
+        """file_review=None（前端不传）不得覆盖已有值——普通文本轮回填不带审核卡。"""
+        svc, cap = self._capture(monkeypatch)
+        svc.update_content(RECORD_ID, "r", template_fill_events="[]")
+        assert "file_review" not in cap["fields"]
+
+    def test_file_review_written_when_passed(self, monkeypatch):
+        svc, cap = self._capture(monkeypatch)
+        svc.update_content(RECORD_ID, "r", file_review='{"fileId":"f1","taskId":"t1"}')
+        assert cap["fields"]["file_review"] == '{"fileId":"f1","taskId":"t1"}'
+
 
 # ── add_ai_record 回填分支 ────────────────────────────────────────
 
@@ -174,6 +186,45 @@ class TestAiRecordUpdatePath:
         assert json.loads(calls["template_fill_events"]) == [{"stage": "selected"}]
         assert res["data"]["output_version_id"] == ""
         assert "set_output_version" not in calls
+
+    def test_file_review_passes_through_and_serialized(self, quart_app, monkeypatch):
+        """file_review 随回填落库；dict 入参序列化为 JSON 字符串。"""
+        _patch_flow(monkeypatch)
+        calls = _fake_svc(_existing(), monkeypatch)
+        monkeypatch.setattr(_flow_app, "FlowVersionService", SimpleNamespace(
+            add_version=lambda *a, **kw: (_ for _ in ()).throw(
+                AssertionError("回填分支不应创建版本"))))
+
+        res = _call(quart_app, {"record_id": RECORD_ID, "save_as_version": False,
+                                "response": "最终回复",
+                                "file_review": {"fileId": "f-9", "taskId": "t-1"}})
+        assert res["code"] == 0
+        assert isinstance(calls["file_review"], str)
+        assert json.loads(calls["file_review"]) == {"fileId": "f-9", "taskId": "t-1"}
+
+    def test_file_review_absent_means_not_touched(self, quart_app, monkeypatch):
+        """普通文本轮回填不带 file_review 键 → None → 不覆盖既有值。"""
+        _patch_flow(monkeypatch)
+        calls = _fake_svc(_existing(), monkeypatch)
+        monkeypatch.setattr(_flow_app, "FlowVersionService", SimpleNamespace(
+            add_version=lambda *a, **kw: (_ for _ in ()).throw(AssertionError())))
+
+        res = _call(quart_app, {"record_id": RECORD_ID, "save_as_version": False,
+                                "response": "普通回复"})
+        assert res["code"] == 0
+        assert calls["file_review"] is None
+
+    def test_file_review_truncated_to_255(self, quart_app, monkeypatch):
+        """超长入参截断到 255：列宽 CharField(255)，防 DB 报错炸掉整条回填。"""
+        _patch_flow(monkeypatch)
+        calls = _fake_svc(_existing(), monkeypatch)
+        monkeypatch.setattr(_flow_app, "FlowVersionService", SimpleNamespace(
+            add_version=lambda *a, **kw: (_ for _ in ()).throw(AssertionError())))
+
+        res = _call(quart_app, {"record_id": RECORD_ID, "save_as_version": False,
+                                "response": "r", "file_review": "x" * 500})
+        assert res["code"] == 0
+        assert len(calls["file_review"]) == 255
 
     def test_non_owner_rejected_403(self, quart_app, monkeypatch):
         """记录本人才能回填：同流程其他参与人/任意人都不行。"""

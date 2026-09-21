@@ -510,6 +510,9 @@ export default {
   fileReviewFix: (taskId: string) => `${restAPIv1}/file/review/${taskId}/fix`,
   fileReviewAnnotationStatus: (annotationId: string) =>
     `${restAPIv1}/file/review/annotation/${annotationId}/status`,
+  // 批注删除（物理删除，与状态修改同闸：login_required + get_owned_task）
+  fileReviewAnnotationDelete: (annotationId: string) =>
+    `${restAPIv1}/file/review/annotation/${annotationId}/delete`,
   // 成稿下载：走 @login_required，**不能**用 window.open / a[href] 直链（浏览器导航
   // 不带自定义 Authorization 头 → 必 401）。见 services/file-review-service.ts 的说明。
   fileReviewDownload: (taskId: string, fileVersion: string) =>

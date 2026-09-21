@@ -135,6 +135,8 @@ export async function addFlowComment(
     anchorText?: string;
     anchorPara?: number | null;
     anchorStart?: number | null;
+    /** 批注级别 high/medium/low，非法值后端兜底 medium */
+    severity?: string;
   },
 ): Promise<{ comment: unknown }> {
   return apiFetch(`/flow/${flowId}/comment`, {
@@ -146,6 +148,7 @@ export async function addFlowComment(
       anchor_text: anchor?.anchorText || '',
       anchor_para: anchor?.anchorPara ?? null,
       anchor_start: anchor?.anchorStart ?? null,
+      severity: anchor?.severity || 'medium',
     }),
   });
 }
@@ -250,7 +253,8 @@ export async function editFlowDocument(
 export async function saveFlowAiRecord(
   flowId: string,
   payload: {
-    instruction: string;
+    /** 新增记录必传；回填更新（record_id 模式）不需要 —— instruction 以发送时为准不覆盖 */
+    instruction?: string;
     response: string;
     /** 传入时基于已存记录补建版本（不重复插记录） */
     record_id?: string;
@@ -259,6 +263,10 @@ export async function saveFlowAiRecord(
     save_as_version?: boolean;
     /** 范本填写原始事件序列（后端序列化为 JSON 字符串落库） */
     template_fill_events?: unknown[];
+    /** 文件审核进度卡 JSON 字符串（{file_id,task_id}，刷新后历史气泡挂卡用） */
+    file_review?: string;
+    /** 随消息上传的附件（用户气泡 chip 展示；后端白名单归一 [{id,name}]，发送时事实不回填） */
+    files?: { id: string; name: string }[];
   },
 ): Promise<{ record: unknown; output_version_id: string }> {
   return apiFetch(`/flow/${flowId}/ai-record`, {

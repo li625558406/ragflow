@@ -74,12 +74,68 @@ def apply_patches(text: str, patches) -> tuple[str, list]:
     return out, applied
 
 
+def _apply_multiline_patch(doc_paragraphs, find_str: str, replace_str: str) -> bool:
+    """跨行 patch：用完整 find 行序列唯一定位连续段落，只替换其中变更行。
+
+    生产实证（2026-09-20 demo05）：LLM 拿到的正文是按行拼接的多行文本，为求全文唯一
+    常摘出**跨段** find——单段闸门 `find in para.text` 必然 0 命中。行序本身就是定位
+    信息：find/replace 按行 1:1 对齐，用「连续段落逐一包含对应 find 行」做唯一定位
+    （孤立编号段「3.1.1」全文多处歧义、加上后继行上下文后序列唯一），替换只落
+    f_lines[k] != r_lines[k] 的变更行——**剥上下文行会连带剥掉唯一性来源，定位必须用
+    完整行序列**。
+
+    诚实放弃的形态（宁可跳过不产半截修改）：
+    - 行数不等（纯插入/删行）或空 find 行配非空 replace——段落级替换无锚点；
+    - 序列命中 0 次或 >1 次（定位歧义）；
+    - 变更行在其段落内出现 >1 次（行内替换歧义）。
+    """
+    f_lines = find_str.split("\n")
+    r_lines = replace_str.split("\n")
+    if not f_lines or len(f_lines) != len(r_lines):
+        return False
+    changed = [k for k in range(len(f_lines)) if f_lines[k] != r_lines[k]]
+    if not changed:
+        return False
+    if any((not f_lines[k]) and r_lines[k] for k in changed):
+        # 空 find 行配非空 replace = 「凭空插入内容」：段落级替换无法定位锚点
+        return False
+    n = len(f_lines)
+    seqs = [
+        i
+        for i in range(len(doc_paragraphs) - n + 1)
+        if all(
+            f_lines[k] and f_lines[k] in doc_paragraphs[i + k].text for k in range(n)
+        )
+    ]
+    if len(seqs) != 1:
+        return False
+    base = seqs[0]
+    if any(doc_paragraphs[base + k].text.count(f_lines[k]) != 1 for k in changed):
+        return False
+    for k in changed:
+        if not _docx_replace(doc_paragraphs[base + k], f_lines[k], r_lines[k], occ=1):
+            return False
+    return True
+
+
+def _apply_single(doc_paragraphs, find_str: str, replace_str: str) -> bool:
+    """单段内唯一命中即替换；0 次或 >1 次一律不动。"""
+    hits = [para for para in doc_paragraphs if find_str and find_str in para.text]
+    if len(hits) != 1 or find_unique(hits[0].text, find_str) < 0:
+        return False
+    return bool(_docx_replace(hits[0], find_str, replace_str, occ=1))
+
+
 def apply_patches_to_docx(file_bytes: bytes, patches) -> tuple[bytes, list]:
     """在 docx 字节层应用 patch，返回 (新字节, applied 列表)。
 
     逐层唯一：先按 p.text 在全文档段落里找候选，候选必须恰好 1 个
     （覆盖正文/表格/文本框/页眉页脚），再要求该段落内 find 出现恰好 1 次。
     任一层不唯一即跳过该条（applied=False）、文件不动。
+
+    find 含换行（跨段摘文，LLM 为求全文唯一的常见形态）时走**跨行序列定位**：
+    剥去与 replace 相同的首尾行后，用「连续段落逐一包含对应行」唯一定位，替换只落
+    变更行；定位歧义 / 行内多次出现 / 纯插入删行一律整条跳过。见 _apply_multiline_patch。
 
     已知保真局限（继承自复用原语，见 docx_utils._replace_in_paragraph docstring）：
     find 只出现在超链接/域内文本时，p.text 命中而 p.runs 不命中 → no-op 降级为
@@ -103,11 +159,13 @@ def apply_patches_to_docx(file_bytes: bytes, patches) -> tuple[bytes, list]:
         if not isinstance(find_str, str) or not isinstance(replace_str, str):
             applied.append(False)
             continue
-        hits = [para for para in paragraphs if find_str and find_str in para.text]
-        if len(hits) != 1 or find_unique(hits[0].text, find_str) < 0:
-            applied.append(False)
+        if "\n" in find_str:
+            # 跨行 patch：连续段落序列定位 + 变更行替换
+            applied.append(
+                _apply_multiline_patch(paragraphs, find_str, replace_str)
+            )
             continue
-        applied.append(bool(_docx_replace(hits[0], find_str, replace_str, occ=1)))
+        applied.append(_apply_single(paragraphs, find_str, replace_str))
     if not any(applied):
         # 全部未生效 → 文档一字未改（_replace_in_paragraph 返回 False 不产生部分写入），
         # 必须返回原字节：重存会重排 XML 字节，让「零改动」被 T6 误存成「修复版新版本」。

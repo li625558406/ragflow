@@ -1,5 +1,175 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-21（二）流程对话用户气泡附件 chip：flow_ai_chat 加 files 列 + live/历史气泡展示
+
+**主题**：用户要求「附件上传的文件在对话输出框做一个展示效果，看看范本填写和文件审核用不用也展示」。现状：流程页签用户气泡只有纯文本指令，随消息手动上传的文件发送后即「消失」（只在进度卡/成稿卡里间接可见），发送者与协作者都无法从对话流看出每轮带了什么附件。**范本填写/文件审核不需要单独做**：两者的进度卡已各自展示文件名（成稿对象/审核目标），chip 在**用户消息层**对所有消息类型统一生效，无需按功能适配。只展示**手动上传**（版本自动附带每条消息都带 id 轮换的流程自身文档，展示是噪音，与（十五）守卫同一取舍）。
+
+**改动**：
+- 后端 3 文件：`db_models.py` FlowAiChat 加 `files` TextField（默认空串）+ migrate_db `alter_db_add_column`（幂等）；`flow_service.py` `add_record` 加 `files` 参数透传 insert；`flow_app.py` add_ai_record 白名单归一（只取 dict 且有 id 的项、上限 10 个、id 截 64/name 截 255、json.dumps 落库）——**发送时事实**：只随新增（预存占位）落库，record_id 回填路径不传不覆盖。
+- 前端 4 文件：`flow-service.ts` saveFlowAiRecord payload 加 `files`；`flow-types.ts` FlowAiChatItem 加 `files?: string`（JSON 串，空串=无）+ FlowLiveChat 加 `files?: {id,name}[]`（发送起点快照）；`flow-ai-panel.tsx` 新增 `liveFilesRef`，handleSend 在 manualDocs 同步快照处一并赋值（ChatInputBox 清队列后 ref 恒空，流式期间再读会丢——（一）竞态同源），预存调用带 `files`，流式/完成两处 FlowLiveChat 构造挂 `files: liveFilesRef.current`（else 分支 recovered/liveFileReview 变体 instruction 为空不挂）；`flow-detail.tsx` 新增 `parseChatFiles`（空串/畸形/空数组静默返空，与 parseFileReview 同口径）+ `ChatFileChips` 组件（浅色主题 chip：FileText 图标 + truncate + title 全名），历史气泡 parse `c.files`、live 气泡用 `live.files`，均嵌在指令气泡内 bg-[#EFF4FF] 同层。
+
+**测试**：tsc 对 4 个前端改动文件零错误；file-review-progress 套件 19 passed；后端 test_flow_ai_record_update.py 17 passed（add_record 签名变更无回归）。**未部署、未 commit/push**。
+
+**遗留**：①chip 纯展示不可点击下载（附件 id 是 documents 表文件，可后续加点击预览/下载）；②旧记录无 files 列值自然空串不渲染，无需回填。
+
+## 2026-09-21（一）新流程手动上传文件审核报「未指定待审核文件」——上传队列清空竞态
+
+**主题**：用户新建流程（无版本）→ 输入框上传文件 → 发送，FileReview 节点报「未指定待审核文件：…由前端以 inputs={'review_file_id': …} 传入」。**根因是竞态而非注入缺失**：flow-ai-panel `handleSend` 起手 `setSending(true)` → ChatInputBox 在 `sendLoading` 上升沿清空文件队列（`chat-input-box.tsx:106`）并回传 `onUploadedFilesChange([])` → 父层 `uploadedDocsRef.current` 被清空；而 handleSend 在**预存占位记录的 `await saveFlowAiRecord` 之后**才读 `uploadedDocsRef.current` 取附件（原 line 811）→ 恒读到空数组 → `firstFileId` 为空 → 不注入 `review_file_id`。**为什么此前 E2E 没抓到**：demo01 有流程版本，`files` 为空时走版本自动附带路径（uploadVersionAsDocument 在 await 后重新上传）兜底成功；「新流程无版本 + 手动上传」无任何兜底路径才暴露。c-chat 无此问题——它用 handler 起手同步展开的 state 快照 `[...uploadedFiles]`（index.tsx:1453）。
+
+**改动（纯前端单文件 `flow-ai-panel.tsx`，2 处）**：handleSend 顶部（守卫处，任何 await 之前）同步快照 `const manualDocs = [...uploadedDocsRef.current]`，守卫与后续取附件（`const docs = manualDocs`）统一用这份快照；注释记录竞态链条。快照取守卫时点而非更早：与 manualUploadId 守卫同一读点，语义一致。
+
+**验证**：tsc 对 flow-ai-panel 零错误；file-review-progress 套件 19 passed 回归。**已部署 2026-09-21**（前端 build 1m25s + dist 上传解包 + nginx reload + 首页 200）。**未 commit/push**。
+
+**遗留**：①待用户人肉复测原路径（新流程→上传→发送→进度卡出现）；②ChatInputBox 清队列时机（sendLoading 上升沿）与父层异步读取的耦合模式仍在，后续其他调用方若在 await 后读 `uploadedDocsRef` 会踩同款坑——已用注释在两处标记。
+
+## 2026-09-20（十八）文件审核成稿「存为流程版本」：修复后新版本进「查看文件内容」
+
+**主题**：用户要求「确认审核修改后，生成新的版本，然后查看文件内容是修改后的文件」——现状是审核成稿只活在进度卡的「下载成稿」里，流程版本时间线 /「查看文件内容」（ReviewPanel 只读视图）看到的仍是最初上传的原件，修复结果对流程其他参与人不可见。经权衡取**手动按钮**（同范本填写成稿「存为流程版本」既有模式）：自动建版会在最多 3 轮修复中连灌 1~3 条版本且第 1 轮无修复时会把未修改原件也灌进去，何时「修够了」只有用户知道。
+
+**改动（纯前端 2 文件）**：
+- `web/src/pages/c-chat/file-review-progress.tsx`：新增可选 prop `onSaveAsVersion?: (taskId, fileVersion) => Promise<void>`——有成稿（`doc.has_result && doc.version`）且调用方提供时，成稿行渲染「存为流程版本」按钮；卡片**自管按钮态**（saving/saved/error 按成稿版本记 `Record` 键，新轮 v1→v2 时新版本无键自然回到可点击态），resolve →「已存为流程版本」禁用、reject →「保存失败，重试」可再点。c-chat 不传即不渲染（无流程版本概念），共享组件零影响。
+- `web/src/pages/c-chat/flow/flow-detail.tsx`：新增 `saveReviewAsVersion(taskId, fileVersion)`——`downloadFileReviewVersionBlob`（review 专用 download 端点取 Blob，`@login_required` 只认请求头，直链必 401 的既有结论）→ `FormData(file + source='ai_file_review')` → `uploadFlowVersion(flowId, fd)` → invalidate `['flow-detail', flowId]`（版本时间线 /「查看文件内容」随之可见修改后文件）；失败向上抛由卡片翻态（与范本填写 `saveDownloadAsVersion` 同构，但状态归卡片、不落父层 saving 集合）。经 ConversationView 新 prop `onReviewSaveAsVersion` 透传给**已入库记录与 live 两处**进度卡。
+
+**测试**：`file-review-progress.test.tsx` +3（不传 prop 不渲染按钮 / 点击回调收 `(taskId='t1', fileVersion='v2')` 且成功翻「已存为流程版本」+disabled / reject 翻「保存失败，重试」且重试走通翻已存）；套件 19 passed。tsc 对两改动文件零新增错误（唯一命中为（十四）既存遗留 `use-file-review-request.ts:56`）。
+
+**遗留**：①按钮态在卡片实例内，卡片因流程切换卸载重挂后「已存」态丢失（可重复点击再存一条同内容版本——与范本填写同款已知取舍）；②E2E 未跑（需部署后：审核→修复→点「存为流程版本」→版本时间线出现新版本→「查看文件内容」看到修改后文件）。**已部署 2026-09-21（前端+后端合并批）**：后端 2 文件 SCP + md5 双端一致 + restart + import 冒烟（`REVIEW_TASK_ID_INPUT_KEY`/`_norm_extra_query` 在位）；前端 build（1m26s）+ dist 39M 上传解包 + nginx reload；冒烟：首页 200、chunk 命中「存为流程版本」「一个流程只能审核一个文件」文案、fix/download 端点无 Authorization 401。**未 commit/push**。
+
+## 2026-09-20（十七）文件审核对话修复：点名某条 + 补充原因（fix user_query 透传）
+
+**主题**：用户问「说『修复某某条的内容因为什么什么』可以吗」。排查：**现在不行**——①对话工具 `_fix` 刻意传 `user_query_override=""`，「本次补充要求」入口没暴露给对话（REST body["user_query"] 有、卡片 UI 也没发）；②「只修某一条」无通道——修复轮待修清单是该任务全部 pending（截 20 条），级别约束本就是 prompt 软指令（`compose_fix_query` →「本次只修复【X】级别…其余保持原样」），指定单条完全没有锚点。经确认取**方案 A（软约束轻适配）**：先跑起来，实测越界再升级硬约束（Service/executor 白名单）。
+
+**改动（仅 `agent/tools/file_review.py`）**：
+- `_fix` 开放 `user_query` → `admit_fix_round(user_query_override=...)`（Service/REST 同通道早已支持，Service `_fix_base_query` 把它拼进本轮基准、与首轮需求/级别指令叠加）；新增 `_norm_extra_query` 归一（非字符串按没提处理同 REST 口径、裁 500 字防挤爆修复 prompt）。
+- `_status` 待修条目改编号列表「N. [级别] 问题（原文：…）」——序号与修复 prompt 的 `[idx]` 编号**同序同源**（list_pending_by_task 顺序、1 起），「修复第 N 条」从此有锚点；超 MAX_FIX_ITEMS(20) 的条目修复轮截断不含，序号仅供阅读。
+- meta 描述引导 LLM：点名某条时 levels 取该条级别、user_query 写「序号/原文片段 + 要求/原因 + 其余保持原样」；`user_query` 参数描述合并 review/fix 两义（原 key 复用，不新增参数键）。
+
+**测试**：`test_file_review_tool.py` +4（补充要求拼入且首轮基准/级别指令同在、非字符串忽略、超长裁 500、status 序号锚点）；既有 `test_status_truncates_pending_list` 断言随 `- [` → `N. [` 格式升级更新。50 passed；service/api 套件回归 145 passed。
+
+**遗留**：①「只修这一条」是 prompt 软约束，修复 LLM 理论上可能越界改动其他条目（指令已写硬「其余问题保持原样、不要改动」，与级别过滤同机制，（十二）实测遵守良好）；若实测越界 → 升级 Service/executor 标注白名单硬过滤；②前端进度卡级别选择 Popover 无对应入口（对话专属能力，卡片行为不变）。**已部署 2026-09-21**（与（十六）同批：后端 SCP + 重启，见（十八）冒烟记录）。**未 commit/push**。
+
+## 2026-09-20（十六）文件审核对话修复：task_id 经 Begin 注入（流程页签）
+
+**主题**：用户要求适配两个能力——①「选择级别修复」能否**二次修复**；②**对话方式修复**。排查结论：①已支持无需开发（卡片 `canFix = !stale && !running && fix_rounds_left > 0` 镜像服务端闸门，`MAX_FIX_ROUNDS=3` 额度内可反复发起，失败轮也计入；对话工具 fix 同样支持连修）；②存在真缺口——流程页签的审核由 `FileReview` **节点**发起，task_id 只经 SSE 到前端、**从不进 LLM 上下文**，用户在流程对话里说「把严重的问题修一下」时 LLM 无从提供 task_id（c-chat 无此问题：同会话 review 工具返回里带 task_id）。
+
+**改动**：
+- `agent/component/file_review.py`：新增常量 `REVIEW_TASK_ID_INPUT_KEY = "review_task_id"`（与 `FILE_ID_INPUT_KEY` 并列，前端经 `canvas.run(inputs=...)` 送入 Begin）。
+- `agent/tools/file_review.py`：新增 `_resolve_task_id(kwargs)`——「LLM 显式参数 > Begin 注入」两通道（显式优先：同会话 review/fix 刚返回的 task_id 比历史绑定注入更即时）；`_fix`/`_status` 的 task_id 解析换用它；meta 描述同步（task_id 可不传、fix 额度内可多次发起）。
+- `web/src/pages/c-chat/flow/flow-ai-panel.tsx`：绑定源 memo 扩展为 `boundFileReview: {fileId, taskId} | null`（（十五）守卫同源）；发送时把 `boundFileReview.taskId` 经 `inputs.review_task_id` 注入 Begin——**无附件也注入**（纯文本对话修复正是主场景；本轮实时 `fileReviewRef` 已在发送起点被清空，只读落库绑定，保存后 refetch 及时会补）。
+
+**链路闭环**：对话发起修复 → 工具 `admit_fix_round` 建新轮（round_no+1）→ 已有进度卡按 file_id 轮询 state 自动接上新 fixing 轮 → 卡片「选择级别修复」按钮按剩余额度继续可用（即二次修复）。二次修复本身零改动，仅回归确认。
+
+**测试**：`test_file_review_tool.py` +5（Begin 注入发起 fix/status / 显式参数压过注入 / 两通道全空拒绝且不建轮次 / Begin 抛错降级同款拒绝），46 passed；相邻三套件（node/service/api）114 passed 回归无破坏；tsc 对 flow-ai-panel 零新增。
+
+**遗留**：①注入依赖「最近一条携带 file_review 的记录」，记录保存后 ai_chats refetch 完成前的瞬间窗口内发送会拿不到 taskId（工具回退为提示用户提供，不误伤）；②`use-file-review-request.ts:56` 的 tsc 既有类型错误（（十四）遗留，非本次文件）；③未做浏览器 E2E（需运行中画布+真实 LLM），部署后建议人肉验证：流程对话说「修复严重级别的问题」→ 观察修复轮被受理且进度卡转为修复中。**已部署 2026-09-21**（后端 2 文件 SCP + md5 一致 + 重启 + import 冒烟；前端随合并批 build 部署，见（十八）冒烟记录）。**未 commit/push**。
+
+## 2026-09-20（十五）流程「一个流程只能审核一个文件」发送守卫
+
+**主题**：流程 DSL 的 FileReview 审核能力按文件独立成任务链（`agent/component/file_review.py` 每次触发 `get_uuid()` 新 task_id，轮次/成稿对象名都挂 file_id），业务约束是**一个流程只能审核一个文件**——但流程页签此前无任何约束，用户在同一流程里先后上传不同文件会产生第二条互不相干的审核链（进度卡与修复轮互相打架）。经确认：行为取「已有审核则拒绝新文件」（拦截并提示、不创建新审核任务），落地层仅前端流程页签。
+
+**改动（纯前端单文件 `flow-ai-panel.tsx`，3 处）**：
+- 新增本地 `parseRecordFileReview`（与 flow-detail.parseFileReview 同构：`{fileId,taskId}` JSON 安全解析）。
+- 新增 `boundReviewFileId` useMemo：从 `aiChats` 尾部往前扫最近一条携带 `file_review` 的记录取其 fileId（绑定源）。
+- `handleSend` 顶部守卫（在 `fileReviewRef` 清空与预存占位记录之前）：用户**手动上传**的文件 id 与绑定 fileId 不同 → `message.error('一个流程只能审核一个文件：当前流程已发起过文件审核，如需审核其他文件请新建流程')` 并拦截整条发送（输入框文字保留，不预存、不建会话、不上传）。绑定源同时兜底 `fileReviewRef.current`（本轮实时产出、记录未落库窗口）。
+
+**刻意不拦的路径**：版本自动附带（attachFile）路径——`uploadVersionAsDocument` 每次上传产生**新 document id**，且语义上仍是流程自身文档；若一并拦截，流程里已有审核后每轮带附件的普通对话都发不出去。即「同一流程版本文件的重复审核」不被此守卫拦（属重新发起，走同一文件的链路语义）。
+
+**验证**：tsc 全量零新增错误（flow-ai-panel 相关 0 条）；未跑浏览器 E2E（守卫为纯前端前置判断，路径清晰）。
+
+**遗留**：①仅拦手动上传路径，若用户先发版本文件审核、再手动上传同一文件的不同副本（新 id）会被误拦（id 不同）——按「拒绝新文件」语义可接受；②后端 DSL 节点/对话工具入口不设同款闸（用户明确仅前端）。**已部署 2026-09-21**（前端随合并批 build + dist + nginx reload，见（十八）冒烟记录）。**未 commit/push**。
+
+## 2026-09-20（十四）文件审核批注：跨行序列定位 + AI 批注硬删 + AI/人工来源强区分
+
+**主题**：用户三连需求（demo01 流程文件审核面板）：①「为什么有些批注是未定位的」——实测 11/53 未定位，主因 8 条为 LLM 跨行摘录（matched_text 含 `\n`），前端 `matchAnnotation` 单段 `includes` 必然失配，保真视图 `tryResolve` 有同段校验（`p1 !== p2` 跳过）跨行永远产不出 mark → rail 过滤后进未定位（与（十二）修复轮落地率是同一表示断层的前端另一半）；②「批注可以删除」——AI 批注无删除入口（人工批注已有链路），选**硬删**（直接删 DB 行，`prev_annotation_id` 全库只写不读实证无链断裂风险）+ **与状态修改同闸**（`login_required` + `get_owned_task`）；③「明显区分人为批注和ai批注」——rail 卡徽标同为灰色辨识度低、批注列表区完全没有来源标识。
+
+**改动**：
+
+*A. 跨行序列匹配（救回 8 条跨行摘录类未定位）*
+- `review-panel.tsx` 新增纯函数 `matchMultiline(paragraphs, matchedText)`：`\n` split + 空行过滤 + 非空行 ≥2 才走通道；连续段落滑窗，第 i 段 norm-contains 第 i 行；**唯命中闸**（命中 ≠1 → -1，宁未定位不错位）；`annotationMap` useMemo 前置通道（多行批注不进逐段 `matchAnnotation`——keyword 策略会把多行关键词误配单段造成错位），命中即 claimed + `map.set(baseIdx, [ann])`。
+- `docx-highlight.ts` `DocxHighlightItem` 加 `lines?: string[]`；`highlightDocxRanges` 增序列通道（复用 ParaAgg 聚合结构，排除页眉页脚段落）：唯一连续段落序列命中后在窗口内逐行定位插 mark，**各行 mark 共用同一 `data-anchor-key`**；多命中/跨 HF/空段断裂 → 跳过（`text` 首行仍走常规兜底单段匹配）。
+- `toHighlightItems`：含 `\n` 的 matched_text 填 `lines`（首行 trim 作 `text` 兜底）。
+
+*B. 批注删除（硬删）*
+- 后端：`file_review_service.py` `delete_annotation(aid)`（物理删除，`@classmethod @DB.connection_context()` 照抄 `update_status` 风格）；`file_review_api.py` 新端点 `POST /file/review/annotation/<annotation_id>/delete`，装饰器链+归属闸（`get_owned_task`）+错误 envelope（「批注不存在或无权访问」，并发删除窗口按不存在回）照抄 `update_annotation_status`。
+- 前端：`api.ts` + `useDeleteFileReviewAnnotation(fileId)`（onSuccess invalidate state）；`review-panel.tsx` 新 prop `onDeleteAnnotation` + `removedAnnIds` Set 乐观移除（失败回滚+alert），rail 卡 AiCard 加 Trash2 确认删除按钮（`window.confirm`）、批注列表区 AI 条目同款（stopPropagation）；`flow-ai-panel.tsx` 传 `(id) => delAnnotation.mutateAsync(id).then(() => undefined)`（**必须返回真 Promise**——初版块体不返回 Promise 使 handleDeleteAnnotation 无法感知失败，404 后乐观移除不回滚，E2E 实测发现）。
+- 测试：`test_file_review_api.py` +4（删除成功返回 id/不存在拒/跨租户拒/写 0 行映射错误）、`test_file_review_service.py` +3（物理删单行/空参 false/重复删幂等），95 passed。
+
+*C. AI/人工强区分*
+- AI = 蓝底蓝字 `bg-[#F0F5FF] text-[#1a66fb]`、人工 = 绿底绿字 `bg-[#F0F9EB] text-[#67C23A]`；rail 卡 AiCard「AI」/CommentCard「人工」徽标同色化，批注列表区每条加来源 chip（级别徽标后）。
+
+**验证**：后端 pytest 95 passed；前端 vitest 19 套件 250 全绿（新增 `docx-highlight-seq.test.ts` 7 用例：唯一命中逐行插 mark/多命中仅首行兜底/空行过滤/空段断裂/单行走兜底/序列不存在/跨 HF 边界）；tsc 零新增；E2E（dev :9222，demo01）——①统计 **53 处标注 50 处已定位（未定位 11→3**，剩余为 content 端点 1897 段 vs 后端 addr map 4505 段解析口径差异类）；②8 个跨行 key 各产 2 个段落 mark（序列通道直接证据）；③列表点已定位条目跳转 + ann-flash 正常；④删除 confirm → 后端未部署 404 → **回滚恢复 53 + alert**（成功路径待部署后验证）；⑤AI 蓝 chip class 实证（demo01 无人工批注实例，绿 chip 为同构静态样式）。
+
+**遗留**：①c-chat/index.tsx 的「查看文件内容」弹框 ReviewPanel 实例未接 onDeleteAnnotation（计划只要求 flow-ai-panel，如需一致后续追加）；②解析口径差异类 3 条未定位不根治。**后端已部署 2026-09-20**（2 文件 SCP + `diff --strip-trailing-cr` 部署前验证纯新增零删改 + md5 双端一致 + restart + import 冒烟（`delete_annotation(aid) -> bool` 签名/端点符号在位）+ 无 Authorization 头 401；**删除成功路径复验通过**：dev 前端新代码 + 远程新后端，删除未定位批注 POST 200 → 统计 53→52/列表同步/无 alert → 刷新后仍 52 条 DB 持久化确认）。**前端已随 2026-09-21 合并批部署**（build + dist + nginx reload，见 2026-09-20（十八）冒烟记录）。**未 commit/push**。
+
+## 2026-09-20（十三）审核面板批注定位三层修复：fit-width 缩放 + 滚动/懒渲染持续重测
+
+**主题**：用户报「批注的定位好像有点乱」。Playwright 几何实测定性出**三层纯视觉问题**（数据层无恙：39 个 mark 文本与批注 matched_text 对应正确）——①**rail 卡漂移**：锚点 Y 只在面板打开时测一次（rAF+120ms 二次校准），测量发生在 content-visibility 懒渲染估算布局下（containIntrinsicSize 794×1123），真实页高与估算差异随页深累积（实测 drift 第 3 页 3px、第 8 页 180~204px）；且 rail 是滚动容器的**兄弟节点**（不随文档滚动），锚点坐标是「mark 视口位置 − wrap 视口位置」，滚动后不重测必然错位。②**横向裁切**：docx-preview 的 A4 页固定 794px 宽、无缩放渲染选项，文档列仅 675px（960 抽屉 − 210 rail − 16 gap）→ `docx-wrapper`（flex 水平居中）对称溢出 + 外层 overflow-x-hidden → 页面两侧被裁（1920 视口实裁 ~60px）。③**巨页**：前附表跨页大表格 docx-preview 无法正确分页，单页真实 13612px（保真局限，只能靠缩放+重测缓解不可根治）。
+
+**改动（纯前端单文件 `review-panel.tsx`，3 处）**：
+- 新增 `fitDocxToColumn()`：CSS zoom fit-width——复位后 `width:max-content` 测自然内容宽（**不能用 scrollWidth**：flex 居中对称溢出时只计右侧溢出，实测 854 被低估成 764，缩放后仍裁 26px），`k=列宽/自然宽` 设 zoom，宽度补偿为自然宽、放开 max-w；只在渲染完成与窗口 resize 调用（滚动/重测路径禁入，防反馈循环）。zoom 影响布局无需高度补偿，getBoundingClientRect 天然 zoom-aware ⇒ 边栏测量一致；zoom 继承使 containIntrinsicSize 自动等比。
+- measure effect 加双通道持续重测：`document.addEventListener('scroll', …, true)` capture 捕获任意内层滚动容器（规避容器识别启发式失败——内层无 min-h-0 随内容长高、真实滚动在外层）+ `ResizeObserver(wrap)` 感知懒渲染页高从估算变真实；rAF 节流。resize 回调先 fit 再测。
+- 渲染 effect：renderAsync 成功后先 `fitDocxToColumn()` 再懒渲染/高亮。
+
+**验证**：tsc 本次文件零新增；vitest 11 文件 141 全绿；Playwright E2E（本地 dev :9222，demo01 第 2 轮 39 处标注）——①1920 视口 zoom=0.790（自然宽 854=794+60 padding）、页面双侧 **0 裁切**；②1400 视口 zoom=0.486 同样 0 裁切；③**历史漂移最严重的 6 个锚点（ai-1/14/6/23 旧 drift 3~204px + 深处 ai-30/47）滚动后 drift 全部 = 0**（判定式 = cardTop − (markTop + markH/2 − 8)，锚点取 mark 中心）；④列表点 `list-ai-14` 跳转：mark 入视口 + ann-flash 闪烁 + 落点 drift 0；⑤截图确认 rail 卡引线精确对齐。
+
+**遗留**：①docx-preview 巨页保真局限（跨页大表格不分页）不可根治，窄抽屉下 fit-width 字号偏小（1400 视口 zoom 0.486）是「完整显示优先」的权衡；②附带发现未修：已作废流程（terminal）不挂 FlowAiPanel → 历史进度卡「打开审核面板」按钮 optional chaining 静默无效（demo05 全作废 hence 面板打不开）。**已部署 2026-09-20**（build 1m39s + dist 上传解包保 inode + nginx reload + 首页 200；部署前 md5 对比 7 个后端文件双端全一致 ⇒ 本次纯前端、无需重启；生产验证：弹框 1280px/zoom 复位 A4 原尺寸/零裁切/39 卡在位/深锚点 ai-14/23/47 drift 全 0）。**未 commit/push**。
+
+**追加（同日）——三处文档弹框加宽（随（十三）同批已部署）**：用户要求「文件审核弹框、查看文件内容按钮弹框、范本完善弹框宽度都加大」。前两者共用同一组件（`ReviewPanel`，版本列表「查看文件内容」= 无批注的纯查看模式），后者 = `TemplateFillLivePreview`（范本填写预览抽屉），两处弹框根容器同为 `fixed right-0 top-0 w-1/2` 半屏——统一 `w-1/2` → `w-2/3`（50% → 67%，1920 视口 960px → 1280px）。附带收益：审核面板文档列宽 995px 超过 A4 自然宽 854px，`fitDocxToColumn` 不再缩放（zoom 复位），**A4 原尺寸 1:1 完整显示**。E2E：1920 视口下审核面板与「查看文件内容」弹框均实测 1280px、零裁切、39 批注卡定位正常；vitest 46 用例通过。范本填写预览同一行类名同款改动（内层 flex-1 自适应受益），demo01 无填写卡未做浏览器实测，部署后可见。
+
+**追加（同日）——弹框打开时左侧内容腾位适配**：用户报「左边的弹框内容没有展示全」。根因：弹框加宽到 `w-2/3`（fixed 盖视口右 2/3）后，外层腾位 padding 还是 `w-1/2` 时代写的 `'50%'`（c-chat/index.tsx 对话视图与流程页签两处，注释仍写「同为半屏宽」）⇒ 右侧 16.7% 宽度内对话内容（进度卡「本轮修复 3 项…」等）仍被面板盖住。修法：①两处 padding `'50%'` → `'66.667%'` + 注释同步；②超管「全部流程」页（flow-manage.tsx）**完全没有腾位**——补齐：新增 `tplPreviewOpen`/`reviewOpen` 两 state，详情容器加同款 `paddingRight: 66.667%` 腾位 + `transition-[padding]` 过渡，并给 FlowDetail 透传 `onTplPreviewOpenChange`/`onReviewOpenChange`（既有可选 props，FlowDetail 内部 viewOpen/aiReviewOpen/tplPreviewOpen 三路已上抛）。腾位链路说明：对话页 chat 视图内联审核面板是 flex 兄弟节点（`inline` 模式推挤布局）天然无遮挡，只有 fixed 弹框路径（reviewSheetOpen = 成稿预览/非 chat 审核视图/flowReviewOpen）需要 padding。E2E（dev :9222，demo01 流程页签）：打开审核面板后面板 left=640（1280px），进度卡 right=547、提交按钮 right=528、选择级别修复按钮 right=395 全部完整可见（零遮挡）；关闭后面板 padding 恢复 0px 布局还原；tsc 零新增、vitest 18 文件 242 全绿。**已随 2026-09-21 合并批部署**（前端 build + dist + nginx reload，见 2026-09-20（十八）冒烟记录）。**未 commit/push**。
+
+## 2026-09-20（十二）文件审核修复轮补丁落地率根修：跨行序列定位 + 双重转义归一 + 提示词契约
+
+**主题**：用户在 demo05 勾「严重」确认修复后「没有修复」。生产数据实锤（任务 `d9373b2c`）：第 2 轮 7 条补丁仅 1 条落地、第 3 轮 6 条全部落地失败，摘要全被计成「原文未能唯一定位或补丁与本条不符」。**根因链**：①`_compose_file_text` 给 LLM 的是按行拼接的多行正文，而 `FIX_SYSTEM` 只要求「find 逐字摘自文档、全文唯一」，没约束单段内 → LLM 为求全文唯一必然摘出**跨段** find（含换行）；②docx 落地闸门是 `find in para.text`（单段内），跨行 find 必然 0 命中；③LLM 还可能双重转义换行（json.loads 后残留字面 `\`+`n`）；④规划层 `_patch_matches_annotation` 用 norm_ws（空白不敏感）校验全部放行，失败只在 docx 层暴露。**首撞即真因：LLM 视图（多行文本）与 docx 落地口径（单段落）之间存在表示断层**。
+
+**改动（后端 2 文件）**：
+- `patcher.py` 新增 `_apply_multiline_patch`：find 含换行时走**连续段落序列定位**——find/replace 按行 1:1 对齐（行数不等=纯插入/删行，诚实跳过），用「连续段落逐一包含对应 find 行」唯一定位（**定位必须用完整行序列**：孤立编号段「3.1.1」全文 12 处歧义，加上后继行上下文后序列唯一——剥上下文行会连带剥掉唯一性来源），替换只落 `f_lines[k] != r_lines[k]` 的变更行；序列命中 ≠1、变更行段内出现 >1 次、空 find 行配非空 replace 一律整条跳过。
+- `executor.py`：①`_plan_patches` 补 `_unescape_llm_newline`（字面 `\n` → 真实换行，None/非 str 原样透传不破坏 patcher 跳过规则）；②`FIX_SYSTEM` 与 `_build_fix_prompt` 明确「find 必须取自同一段落内的连续文字，不得包含换行；跨行问题只能摘其中一行内足以唯一定位的最小片段」。
+
+**测试**：patcher +6 / executor +4，含 demo05 形态回归闸（单行多处歧义+后继行上下文唯一、序列定位不波及后续重复行、纯插入放弃、重复行删除不猜、空转补丁 False、纯文本降级路径不受影响、双重转义归一、提示词契约）；file_review 全套 **358 passed**。
+
+**生产真实数据重放验证**（容器内只读脚本，新逻辑原样内嵌 + 真实 docx 字节 + 真实 llm_raw）：第 2 轮 1/7 → **3/7**、第 3 轮 0/6 → **2/6**（新增落地均为「孤立编号段+后继行」序列补丁）；剩余未落地 4 条属**本质不可自动改**：3 条目录行/正文标题重复（删哪份有歧义，目录是域生成删错即毁）+ 1 条纯插入行（段落级替换无锚点），诚实跳过是正确行为。
+
+**遗留**：①executor `chosen = pending[:MAX_FIX_ITEMS]` 不按所选级别过滤（levels 只是 user_query 文字指令），预算被未勾选级别稀释——本例 4 条高危都在前 20 未伤到，后续可考虑结构化透传 levels；②「目录/标题重复」类高危问题的自动修复需要域感知的段落删除能力，当前设计下永远走人工。**已部署 2026-09-20**（用户确认后执行：后端 2 文件 SCP，md5 双文件一致 + `docker restart` + 容器内 import 冒烟（`_apply_multiline_patch`/`_apply_single`/`_unescape_llm_newline` 符号在位）+ `_plan_patches` 源码确认调用归一化 + `FIX_SYSTEM` 含禁换行契约；无前端改动）。旧轮次 3 轮额度已耗尽，验证需重新发起审核。**未 commit/push**。
+
+## 2026-09-20（十一）审核面板批注列表：列表区与文档批注同时存在 + 点击跳转文档锚点
+
+**主题**：用户报「我要的是所有批注都要在列表中能看到和点击跳转，我现在只能看到其他批注的列表」。此前批注以 Word 式边栏卡（绝对定位散布文档右侧 + SVG 引线）呈现，用户只在「其他批注」折叠区看到 1 条未定位条目。**初版做成了「列表/文档」双视图切换（列表视图下隐藏边栏卡），用户随即否定**：「你这个列表我要的是文档页面的列表格式样式啊，下面文档的批注也是在的，一个是列表展示，一个是批注展示，**同时存在**，然后列表点击后可以跳转到指定批注的地方」——修正方向为：①列表用流程页签批注模块同款**紧凑列表样式**（不是 AiCard/CommentCard 大卡）；②列表展示与文档边栏批注**共存**（不是二选一）；③列表点击跳文档中对应批注位置。
+
+**最终改动（纯前端单文件 `review-panel.tsx`）**：
+- 还原单滚动列布局（初版新增的 `railView` 状态、「列表/文档」切换按钮、右侧 `<aside>` 窗格、`otherOpen` 折叠态全部移除），rail 批注栏（210px）与 SVG 引线恢复常驻——文档批注展示不变。
+- **批注列表区置顶**（滚动容器顶部、文档之前的白色圆角卡）：「📋 批注列表（N 条）」+ 提示「点击条目跳转到文档中的批注位置」；条目 = 流程页签批注模块同款紧凑卡（`bg-[#F7F8FA]` + 左侧 3px 级别色边，未定位虚线边 + 黄色「未定位」徽标），编号圆点（AI 接续已定位序号）+ 级别徽标 + 类型 + 作者 + `line-clamp-2` 内容（title 含建议全文）；**全部 25 条集中可见**（**级别高→中→低降序**——稳定排序同级别内保持文档序，已定位整体在未定位之前）。
+- `listEntries` memo：从 `activeRailItems`（已定位）+ `unmatched`（未定位）统一产出紧凑条目模型，AI 字段提取（issue/suggestion/severity/type）与编号接续逻辑与 rail 卡同源。
+- `handleAnchorClick` 统一跳**文档锚点**：mark `[data-anchor-key]` 优先、无 mark（表格内等）按 `[data-para-index]` 段落兜底，`instantFocusScroll`（强制真实渲染懒加载分页后瞬时居中，规避 smooth 滚动被懒页高度漂移带偏）+ `ann-flash` 闪烁（`void offsetWidth` 重启动画）；`annotation-select` 事件（表格内点击）复用同一回调；未定位条目点击给既有「无法精确定位」黄色提示条。
+
+**验证**：tsc 本次文件零新增；vitest 18 文件 242 全绿；Playwright E2E（本地 dev :9222 代理生产后端，demo05 流程 25 处标注轮次）：①列表区 25 条（含 1 未定位徽标）与边栏 24 卡**同屏共存**；②点击 `list-ai-5` 跳转全链路 `{markFound: true, visible: true, flashed: true, railSelected: true, listSelected: true}`；③未定位条目点击提示条出现。**已部署 2026-09-20**（build 1m14s + dist 上传解包保 inode + nginx reload + 首页 200 + chunk 含新文案「批注列表」），未 commit/push。遗留：c-chat 侧刷新恢复需会话消息持久化；「未定位」徽标两套抽取器口径差异未动。
+
+## 2026-09-20（九）审核面板重开批注恢复 + 存量轮次历史挂卡回填
+
+**主题**：用户报「审核完重开文件审核，之前的批注都不见了，对话区域的控件也没了」。排查定性两缺口：①**批注重开消失＝设计缺口**——面板批注来源（live 透传 / structured output / 消息扫描 / 节点事件）全部依赖本轮会话内存，刷新/重开后全空，而批注真源在 file_review 系统存库却无前端读取通路；②**控件消失＝存量遗留**——用户轮次（15:48）在（七）持久化部署（16:53）之前，记录无 `file_review` 列 → 无卡可恢复。
+
+**改动（纯前端 2 文件 + 一次性数据回填，后端零改动）**：
+- `flow-ai-panel.tsx`：`fileReviewAnnotations` 升级 `{fileId, annotations}` 绑定结构（与 c-chat `frPanelAnnotations` 同构，切文件自动失效防串显）；新增 **restore effect**——reviewMode+reviewFileId 在位且 live 透传/structured output 皆空时，按 fileId 拉 `GET /file/review/file/<id>/state`（现成端点，返回跨轮次批注全集）兜底恢复；`openWithFile` 空批注也绑定 fileId（让 restore 识别「需拉取」）。
+- `c-chat/index.tsx`：`reviewAnnotations` memo 后加同款 restore effect（四来源全空才拉，不覆盖）。
+- **存量回填**（服务器一次性脚本，已清理）：文件上传通道不落 `file` 表、轮次不含 flow_id、minio_path 全 NULL——无任何名称/归属锚点，唯一可靠关联是**时间邻近**（轮次与发送即存记录恒差 4~9.5 秒）。贪心最近邻（Δ≤600s，一条记录只配一轮，`__test_fr_` 测试轮自动跳过）回填 9 条 `flow_ai_chat.file_review = {"fileId":..,"taskId":..}`（camelCase 与 `parseFileReview` 约定一致），幂等（空串守卫）。
+
+**验证**：tsc 本次文件零新增（c-chat/index 3 错 stash 基线确认既存）；vitest 242 全绿；Playwright E2E：demo05 刷新后 4 条历史消息全部恢复挂卡（第 1 轮·已完成/剩余 3 轮/问题统计）→ 点「打开审核面板（原件）」→ 面板显示「共 25 处标注，高 4 / 中 15 / 低 6」与轮次数据一致，批注条目级别徽标+AI 标识+问题+建议完整渲染（「其他批注 1 条」系其余 24 条已定位锚在文档内，属保真预览正常行为）；4 张卡各自拉自己的 state 端点，fileId 绑定防串显生效。（**前端已部署 2026-09-20**：build 1m25s + dist 上传解包 + nginx reload + 首页 200 + chunk 含新逻辑；**未 commit、未 push**。遗留：c-chat 侧刷新恢复仍需会话消息持久化；「未定位」徽标两套抽取器口径差异未动）
+
+**追加（2026-09-20 十）——边栏批注卡重复渲染：一条批注匹配多段落各生成一卡**：用户报「批注统计与批注列表数量不一致（25 vs 列表只有 1）」。Playwright DOM 实测定性：边栏实际渲染 **33 张** `rail-ai-*` 卡 + 其他批注 1 条，统计行「共 25 处标注，**33 处已定位**」——已定位超过总数，实为**同一条批注被重复渲染**：`review-panel.tsx` 的 `annotationMap` 对每个段落放入**所有**匹配该段文本的批注，而 matched_text（如「第二章 投标人须知」）常命中多个段落（章标题/目录/页眉短语），同一条批注便在每个命中段落各生成一张边栏卡，docx 高亮也随之重复标蓝；用户看到的「列表只有 1 条」即其他批注折叠区条目数与顶部统计对不上。修法（单文件 1 处）：`annotationMap` 加 `claimed` Set，每条批注只归属**首个**匹配段落（段内多条批注按 matched_text 长度排序的原逻辑保留）。修后实测：24 张卡 + 其他批注 1 条 + 统计「共 25 处标注，24 处已定位」三者完全一致。vitest 242 全绿、tsc 零新增，**已部署 2026-09-20**（build 1m19s + dist + nginx reload + 首页 200），未 commit/push。
+
+## 2026-09-20 流程页文件审核节点缺 thoughts() 致整轮无回复
+
+**主题**：用户在 C端流程页（demo01）发「审核一下这个文件」，LLM 整轮无回复。服务器日志（10:13:21）定位：`POST /api/v1/agents/chat/completion` SSE 流在 `Canvas BATCH [2:3]: FileReview:BraveLionsScan` 起跑即崩——`canvas.run` 的 node_started 事件对批内每个组件调 `get_component_thoughts` → `ComponentBase.thoughts()`（base.py:584）抛 `NotImplementedError`，异常沿 `async for ans in canvas.run(...)` 逸出杀掉整条流（quart `raise_task_exceptions` 落 ASGI ERROR，HTTP 响应体为空）。FileReview 组件（fire-and-forget 形态）漏覆写 `thoughts()`——TemplateFill/FanOut 均有同款覆写，属节点新增时遗漏；单测全走 `_make()` 桩直调 `_invoke`，不经过 canvas.run 事件路径故未拦住。
+
+**改动**：`agent/component/file_review.py` 补 `thoughts()` 返回「正在发起文件审核...」（5 行）；`test/test_file_review_node.py` 补回归测试 `test_thoughts_returns_str`。19 用例全绿。
+
+**遗留**：①部署（后端单文件 SCP + 重启，未授权未执行）；②审查其余自定义组件是否同样缺 `thoughts()` 覆写（仅 FileReview 一例）；③事故轮的消息未落库（异常先于 append_message），前端该轮显示空白属预期，修复后重发即可。
+
+**追加（2026-09-20 二）——review_file_id 未随请求传入（第二层缺口）**：thoughts 修复部署后用户重发，节点正常起跑但报「未指定待审核文件」。排查确认：FileReview 节点与工具都只认 Begin 输出 `review_file_id`（画布会丢弃 files 里的上传 id，见两处 `_resolve_file_id`），而后端 inputs 透传链路（REST body → completion → canvas.run → Begin._invoke 逐键 set_output）齐全，**但 c-chat 与 flow-ai-panel 两个发送入口的请求体都没带 `inputs`**——正是 09-17 部署时「T17 Step 7 人肉浏览器验收 9 条未执行」会拦住的缺口。修法（纯前端 2 文件）：①两处发送体补 `inputs: { review_file_id: { value: <第一个附件 id>, type: 'line' } }`（无附件不发键）；②flow 面板附带版本文件时 **Word 版本（.doc/.docx）不走轻量 txt 通道**——审核执行器仅支持 .docx（executor.py:375），txt 传了也白传，改走 uploadVersionAsDocument 上传原件（轻量通道仍覆盖非 Word 版本）。tsc 零新增（报错均既存腐坏），file-review 相关 2 套件 18 用例全绿（前端已部署 2026-09-20：build+dist+nginx reload，chunk 命中新代码；无后端改动）。
+
+**追加（2026-09-20 三）——老 .doc 原件就地转 docx（第三层缺口）**：前端部署后用户再试，轮次建起但执行器 failed「暂不支持审核该文件类型」。生产取证：轮次行 file_id 指向的 `-downloads` 对象头 4 字节是 `d0cf11e0`——**用户版本文件是老 .doc（Word 97-2003 OLE2），不是真 .docx（PK zip）**，`_load_docx_items` 的 PK 校验如实拒绝；顺带发现该上传 id 无 file 表行（`FileService.get_by_id` 落空），三级兜底的最后一跳 `-downloads/{file_id}` 救了场。修法（后端单文件 `rag/svr/file_review/executor.py`）：`_load_input_blob` 对原件判 OLE2 魔数 → `_convert_doc_to_docx` 就地转 docx（与范本入口 `template_api._convert_to_docx` 同款 soffice 参数——独立 UserInstallation 防 profile 锁 + 显式 `LD_LIBRARY_PATH=/usr/lib/libreoffice/program` 防 rc=127；**不共用代码是有意的**：REST 层与执行器层级方向不允许反向 import，注释里写明以范本那份为基准同步）；修复版本分支直接返回不重转。范本库「入口格式归一化」同口径：转换一次，后续全链路只认 docx，批注/修复产物天然是 docx 版本链。82 用例全绿（新增 3 例：OLE2 触发转换/PK 直通不转换/版本分支跳过原件路径）（**已部署 2026-09-20**：executor.py SCP + md5 一致 + 容器重启 + import 冒烟）。
+
+**追加（2026-09-20 四）——老 .doc 文件审核/查看保真渲染+标注适配（第四层）**：用户要求文件审核与查看的文档 UI 展示与原件格式一模一样（含文字颜色），并确认标注能否适配。排查结论：ReviewPanel 本就具备 docx 保真渲染（docx-preview `renderAsync` 保字号/加粗/颜色/表格）+ AI 批注/手动批注锚定（`highlightDocxRanges` → `mark[data-anchor-key]` + 批注栏），但**老 .doc 文件两层都被挡在门外**：①`GET /files/{id}/content` 对 OLE2 转换成功后仍返回 `file_type:"doc"`，前端 `docxFidelityCandidate = content?.file_type === 'docx' && !editing` 闸门不放行 → 永远走纯文本降级视图；②`GET /files/{id}` 下载端点原样返回 OLE2 字节 → 即使放行 `renderAsync` 也会解析失败。修法（后端单文件 `api/apps/restful_apis/file_api.py` 2 处，前端零改动）：①content 端点 .doc 转换成功路径返回 `file_type:"docx"`（前端保真闸自动打开）；②download 端点判 OLE2 魔数 → 复用 `api/utils/doc_utils.doc_to_docx_via_libreoffice` 转 docx 后返回，文件名 `.doc`→`.docx` 同步改名。影响面核实：`/files/{id}/content` 与 `useFileBlob` 的唯一前端消费方均为 ReviewPanel（document-viewer 同步受益），无其他调用方受影响。顺带把第三层 executor 里 ~30 行 soffice 重复实现改为复用共享 `doc_utils`（import 方向合规：api/utils 是公共工具层），行为不变。101 用例全绿（executor 82 + node 19；file_api 无既有专属测试文件）。（**已部署 2026-09-20**：2 文件 SCP + md5 双文件一致 + 容器重启 + import 冒烟 OK + files 两端点无鉴权 401 路由在位）**追加（2026-09-20 五）——文件审核进度卡永不出现的三层根因**：用户实测「已开始审核…」回复了但进度面板始终不出现。排查坐实**三层**断点，任一都足以让卡片永不挂载：①前端两处扫描（c-chat T14 Path A + flow T15）精确匹配 `component_name === 'FileReview'`，但后端 `node_finished` 事件的 `component_name` 是 **DSL 节点显示名**（`canvas.py:590` 取 `n["data"]["name"]`，实测 `FileReview:BraveLionsScan`），组件类型在 `component_type` 字段——按显示名匹配永远 continue 掉；②即便匹配上，file_id 也取不到——`get_input_values()` 只返回 `_param.inputs`（FileReviewParam 未定义 → 事件 inputs 是空 `{}`），而节点 outputs 只吐 task_id/round_id/content 没吐 file_id，且 `useFileReviewState` 轮询端点**只认 file_id**；③**最致命**：扫描 effect 门在 `if (!done) return`，而 `use-send-message.ts` 收尾时 `setDone(true)` 与 `resetAnswerList()` **同帧批处理**——effect 触发时 done=true 但 answerList 已被清空，事件永远扫不到（hook 里 structuredOutputRef 注释原话 "survives answerList reset" 早已记录同一陷阱，FileReview 扫描设计时没吸收）。修法：后端 outputs 增补 `file_id`（已部署）；前端 `file-review-progress.tsx` 新增导出纯函数 `extractFileReviewTarget(events)`（component_type 判定 + outputs.file_id 优先 + inputs 两键旧兜底），两个发送路径在 `send()` 返回后从 **`res.events` 全量原始事件**提取（c-chat downloads 回填 / flow finalTplEvents 早已是同款模式，证明 answerList 不可依赖），done 态扫描 effect 保留仅作中止路径兜底（中止不 resetAnswerList）。4+16 用例全绿（新增 4 例对抗：显示名含 FileReview 的 Agent 节点不误匹配/缺 task 或缺 file 返 null/undefined 入参/旧后端 inputs 兜底），tsc 295 基线零新增。（后端**已部署 2026-09-20**：SCP + md5 一致 + 容器重启 + import 冒烟 `file_id in outputs` OK；**前端随本地 dev 生效**，生产 dist 待下次 build 部署；遗留：fileReview 仍不落 flow 记录，刷新后卡片不恢复——T14/T15 原设计缺口，未在本轮处理）。**追加（2026-09-20 六）——第四层根因：auto-save 收尾上报 null 抹掉 live，进度卡「闪现即消失」**：三层修复后 Playwright 实测卡片仍不出现（SSE 抓包证明 node_finished 事件正确、extractFileReviewTarget 能提取到 {fileId,taskId}），定位到 flow-ai-panel 主上报 effect 的 else 分支（无范本快照路径）：流结束后 `setCompleted(null)` 触发重渲染，else 分支无条件 `onLiveChatChange?.(null)` 把 live 整个清空 → flow-detail 挂载点 `{live.fileReview ? <FileReviewProgress/> : null}` 随 auto-save 完成瞬间卸载。修法一行思路：else 分支改为三分支上报——`completed ?? (recoveredTemplateFill ? {...} : fileReview ? {instruction:'', response:'', busy:false, templateFill: templateFillRef.current, fileReview} : null)`，instruction/response 置空防与已入库历史气泡重复（同 recoveredTemplateFill 分支口径）。Playwright 端到端验证通过：demo05 流程发「审核一下这个文件」→ 回复后中部对话区出现进度卡（第 1 轮 · 已完成 / 剩余 3 轮 / 共 30 个问题（高 2 / 中 20 / 低 8）+ 打开审核面板 + 选择级别修复按钮），且 auto-save 完成后 15s 仍在。纯前端 flow-ai-panel.tsx 单文件（**未部署、未 commit**；部署 = build + dist + nginx reload）。**追加（2026-09-20 七）——批注面板空白根修 + 进度卡刷新持久化**：用户实测两个症状：①点「打开审核面板」看不到批注内容；②要求进度卡刷新后仍在。**症状①根因（批注在链路上被丢弃）**：FileReviewProgress.onOpenReview 明明把轮询 state 的批注全集 `(annotations, doc.version)` 传了出来，但两个消费方都**丢弃了它**——flow-detail 只调 `reviewCtl.openWithFile(fileId)`，c-chat 只 `setReviewFileId + setReviewMode(true)`；而 ReviewPanel 的 `annotations` prop 来源是智能体 structured output（flow）/ msg.data.annotations 扫描（c-chat），本轮批注产自 FileReview 节点走 file_review 轮询端点，原三来源里都没有 ⇒ 面板恒空。修法：批注透传——`FlowReviewControl.openWithFile(fileId, fileName, annotations?)` 加第三参，flow-ai-panel 新增 `fileReviewAnnotations` state 优先于 structured output；c-chat 新增 `frPanelAnnotations` state（按 fileId 绑定，打开其他文件自动失效回落）。IFileReviewAnnotation 与 ReviewPanel.Annotation 字段天然兼容（matched_text/severity/issue/suggestion），直接透传；未锚定批注有 rail 边栏兜底（「未定位」徽标）不影响阅读。Playwright 实测：demo05 新轮审核 25 个问题，点「打开审核面板」批注栏全部可见（编号+级别+问题+建议）。**症状②（持久化）**：fileReview 原来只存于 live state，刷新即丢。仿 template_fill_events 同构最小方案：`flow_ai_chat` 加 `file_review` 列（CharField(255)，存 `{file_id,task_id}` JSON，migrate_db 增列），`add_record/update_content/add_ai_record` 三处透传（dict 入参序列化、超长 255 截断、None=不覆盖），前端自动保存随记录落库；**恢复走历史挂卡**——ConversationView `chats.map` 里 parse `record.file_review` 后挂 FileReviewProgress（组件自管轮询），flow-ai-panel 主上报 effect 加**去重让位**：ai_chats 里已有同 taskId 记录时 live 不再上报 fileReview（否则 auto-save→refetch 后同一条卡出现两遍）。测试：后端 34 passed（新增 5 例对抗：file_review None 不覆盖/dict 序列化/超长截断/缺席透传/普通轮不覆盖），前端 11 文件 141 passed，tsc 顺带修正 `saveFlowAiRecord` payload 类型缺陷（instruction 改可选——record_id 回填模式本就不传，382/700 行既有调用全在报错）。**部署约束：前后端必须成套**——前端先上而后端无 file_review 列 → 历史挂卡静默不出现（parse 空），持久化失效但无害；后端先上前端旧版无影响。（**后端 3 文件未部署、前端随本地 dev 生效、全部未 commit**；部署 = 后端 `db_models.py + flow_service.py + flow_app.py` 成套 SCP + 重启（自动建列），前端 build + dist + nginx reload。遗留：①批注锚定率——file_review anchor 区间与 ReviewPanel 段落抽取器不同，部分批注显示「未定位」（内容可读，点击定位待对齐抽取口径）；②c-chat 侧刷新恢复未做（derivedMessages 不持久化，需走会话消息持久化，工程量另计）；③存量记录无 file_review 字段，刷新后旧回复无卡，新轮起才有）**追加（2026-09-20 八）——其他批注置顶折叠区 + 人工批注级别 + flow-panel ref 无限循环崩溃修复**：①「📋 其他批注（N 条）」从未定位兜底区（滚动区底部）移至审核面板滚动容器**首行**，默认折叠可展开；点击未定位条目显示「无法精确定位」黄色提示并高亮该卡片（此前点击会滚动定位失败无反馈）。②人工批注支持级别：后端 `flow_comment` 加 `severity` 列（high/medium/low，存量默认 medium，migrate_db 增列）+ Service/端点双层非法值兜底 medium；前端批注草稿表单加级别选择器（严重/一般/提示），CommentCard 徽标按级别配色 + 「人工」徽标与 AI 卡「AI」徽标区分，rail/文档旁注气泡同配色；flow 页签左下批注模块（flow-detail portal）补级别徽标同口径；`addFlowComment` anchor 参数透传 severity。③**Playwright E2E 中发现既存生产崩溃**：`flow-panel.tsx` slot 挂载点内联箭头 `ref={(el) => setSlot(id, el)}` 每次 render 新建 → React 18 每轮先旧 ref(null) 再新 ref(el) → 每轮 2 次 setState → Maximum update depth exceeded——**任何有批注的流程打开页签必崩**（commentsOpen 有批注自动展开才挂载 slot，无批注流程掩盖了该 bug；stash 基线对比确认与本轮改动无关）。修法：`useMemo` 按 keptIds 稳定生成 ref 表 `slotRefs`。E2E 实测：demo05（含批注）正常打开无崩溃；无锚批注 → 顶部折叠区出现 → 展开 → 点击 → 提示+高亮全链路通过；文档旁注气泡与批注卡「一般」「人工」徽标渲染正确；E2E 测试批注已清理。6 后端 + 242 前端用例全绿，tsc 本次文件零新增（顺带修掉新写的 flow-detail sevStyle 索引 possibly-undefined 2 处）。（**已部署 2026-09-20**：后端 3 文件成套 SCP（md5 三文件一致）+ 容器重启 + import 冒烟（severity 参数+列在位）+ MySQL 建列确认（varchar(16) NOT NULL，3 旧行回填 medium，顺带补列 DEFAULT 'medium' 消除 NOT NULL 无默认隐患）+ severity=high 线上落库闭环验证通过后清理；前端 build 1m32s + dist 上传解包（保 inode）+ nginx reload + 首页 200 + 新 chunk 含「其他批注」文案 + delete 端点无鉴权 401 路由在位；本地 dist.tar.gz 已清理。**未 commit、未 push**。本次部署同时带上此前未部署的 2026-09-20（七）file_review 持久化改动——同在 db_models/flow_service/flow_app 三文件内）
+
 ## 2026-09-19（五）C端流程页签空状态滚动条消除
 
 **主题**：用户报「暂无流程 + 发起新流程 空状态出现上下滚动条」。根因（`c-chat/flow/flow-panel.tsx`）：空状态占位是 `h-full`（= 滚动容器 100% 高），但同滚动区内列表包装层 `<div className="space-y-1 p-2">` **无条件渲染**——列表为空时该层仅剩 p-2 padding 也占 16px，总内容高 = 100% + 16px → 必然溢出出滚动条。`flow-manage.tsx` 无此问题（其空态/表格分支互斥且表格有 `list.length > 0` 守卫）。

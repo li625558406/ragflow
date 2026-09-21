@@ -318,8 +318,18 @@ async def download(tenant_id: str = None, file_id: str = None):
         if not blob:
             return get_error_data_result(message=result if not success else "File not found in storage")
 
-        response = await make_response(blob)
+        # 老 .doc（OLE2）统一转 docx 返回：本路由的消费方是 docx-preview 保真渲染
+        # （useFileBlob）与浏览器查看器，两者都渲染不了 OLE2 二进制；docx-preview
+        # 拿到 OLE2 会渲染失败降级成无格式纯文本视图。转换失败回退原件（至少可下载）。
         name = file.name if success else file_id
+        if blob[:4] == b"\xd0\xcf\x11\xe0":
+            docx_blob = await thread_pool_exec(_doc_to_docx_via_libreoffice, blob)
+            if docx_blob:
+                blob = docx_blob
+                if not (name or "").lower().endswith(".docx"):
+                    name = re.sub(r"\.doc$", ".docx", name or "", flags=re.IGNORECASE) or f"{file_id}.docx"
+
+        response = await make_response(blob)
         ext = re.search(r"\.([^.]+)$", (name or "").lower())
         if ext:
             ext = ext.group(1)
@@ -731,9 +741,13 @@ async def get_content(tenant_id: str = None, file_id: str = None):
                         f"[file_content] .doc→.docx parsed: paragraph_count={len(paragraphs)} "
                         f"type_counts={para_types} total_text_len={total_text_len}"
                     )
+                    # file_type 返回 docx 而非 doc（段落本就来自转换后的 docx，且
+                    # /files/<id> 下载端点对 OLE2 同样返回转换 docx）——前端审核
+                    # 面板以 file_type==='docx' 作为 docx-preview 保真渲染的闸门，
+                    # 返回 doc 才会让 .doc 文件掉进无格式纯文本视图。
                     return get_result(data={
                         "filename": filename,
-                        "file_type": "doc",
+                        "file_type": "docx",
                         "paragraphs": paragraphs,
                     })
                 # Fallback: plain text extraction (no formatting)

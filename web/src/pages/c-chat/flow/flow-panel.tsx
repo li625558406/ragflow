@@ -71,6 +71,16 @@ export default function FlowPanel({
   const setSlot = useCallback((id: string, el: HTMLDivElement | null) => {
     setCommentSlots((prev) => (prev[id] === el ? prev : { ...prev, [id]: el }));
   }, []);
+  /* ref 回调必须身份稳定：内联箭头每次 render 新建 → React 每轮先旧 ref(null)
+     再新 ref(el)，各触发一次 setState → 无限循环（Maximum update depth exceeded，
+     有批注 commentsOpen=true 挂载 slot 时必崩）。按 keptIds 稳定生成 ref 表。 */
+  const slotRefs = useMemo(() => {
+    const refs: Record<string, (el: HTMLDivElement | null) => void> = {};
+    keptIds.forEach((id) => {
+      refs[id] = (el) => setSlot(id, el);
+    });
+    return refs;
+  }, [keptIds, setSlot]);
   // 批注区折叠：默认关闭，有批注时自动展开；用户手动切换后不再自动干预
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [commentCount, setCommentCount] = useState(0);
@@ -388,7 +398,7 @@ export default function FlowPanel({
                    非选中的隐藏，防多实例批注内容互相串显 */
                 <div
                   key={id}
-                  ref={(el) => setSlot(id, el)}
+                  ref={slotRefs[id]}
                   className={id === activeId ? 'h-1/2 min-h-0' : 'hidden'}
                 />
               ))}

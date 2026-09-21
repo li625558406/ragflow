@@ -365,6 +365,31 @@ async def update_annotation_status(annotation_id: str, tenant_id: str):
         return get_error_data_result(message="Internal server error")
 
 
+@manager.route("/file/review/annotation/<annotation_id>/delete", methods=["POST"])
+@login_required
+@add_tenant_id_to_kwargs
+async def delete_annotation(annotation_id: str, tenant_id: str):
+    """物理删除单条批注（AI / manual 均可），与状态修改同闸。
+
+    权限链照抄 update_annotation_status：登录 → 标注存在性 → get_owned_task 按
+    「标注所属审核任务」判归属（标注行 tenant 历史脏数据不可作依据）。硬删不软删：
+    prev_annotation_id 只写不读，无链断裂风险；重复删除幂等（第二次按「不存在」回）。
+    """
+    try:
+        row = FileReviewAnnotationService.get_by_id(annotation_id)
+        if not row:
+            return get_error_data_result("批注不存在或无权访问")
+        if not FileReviewRoundService.get_owned_task(row.task_id, tenant_id):
+            return get_error_data_result("批注不存在或无权访问")
+        if not FileReviewAnnotationService.delete_annotation(annotation_id):
+            # 存在性检查与删除之间的并发删除窗口：同样按「不存在」回，不泄露时序差异。
+            return get_error_data_result("批注不存在或无权访问")
+        return get_json_result(data={"annotation_id": annotation_id})
+    except Exception:
+        logger.exception("file review: delete annotation failed, aid=%s", annotation_id)
+        return get_error_data_result(message="Internal server error")
+
+
 @manager.route("/file/review/<task_id>/<file_version>/download", methods=["GET"])
 @login_required
 async def download_review_version(task_id: str, file_version: str):

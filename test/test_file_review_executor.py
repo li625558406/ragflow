@@ -329,6 +329,32 @@ def test_plan_patches_keeps_none_find_verbatim():
     assert patches == [{"find": None, "replace": "y"}]
 
 
+def test_plan_patches_unescapes_double_escaped_newline():
+    """LLM 双重转义纠正：JSON 里 `\\\\n` 经 json.loads 后残留字面「\\n」两字符，
+    必须还原成真实换行，否则与文档任何段落文本都不可能相等（demo05 生产事故根因）。"""
+    parsed = [{"idx": 1, "find": "甲行\\n乙行", "replace": "甲行改\\n乙行"}]
+    patches, _ = executor._plan_patches(parsed, [_A(1)])
+    assert patches == [{"find": "甲行\n乙行", "replace": "甲行改\n乙行"}]
+
+
+def test_plan_patches_leaves_real_newline_and_plain_backslash_alone():
+    """已是真实换行的 find 不动；不含「\\n」序列的普通反斜杠文本也不动。"""
+    parsed = [{"idx": 1, "find": "甲行\n乙行", "replace": "反斜杠\\文本"}]
+    patches, _ = executor._plan_patches(parsed, [_A(1)])
+    assert patches == [{"find": "甲行\n乙行", "replace": "反斜杠\\文本"}]
+
+
+def test_fix_prompt_and_system_forbid_newline_in_find():
+    """提示词必须明确 find 不得含换行（单段落地闸门的契约前置到生成侧）。"""
+    assert "不得包含换行" in executor.FIX_SYSTEM
+    round_row = SimpleNamespace(user_query="修一下")
+    chosen = [_A(1)]
+    chosen[0].type, chosen[0].severity = "format", "high"
+    chosen[0].matched_text, chosen[0].issue, chosen[0].suggestion = "原文", "问题", ""
+    prompt = executor._build_fix_prompt(round_row, "正文", chosen)
+    assert "不得包含换行" in prompt
+
+
 def test_build_fix_prompt_numbers_items_and_states_uniqueness_rule():
     chosen = [_A(1)]
     chosen[0].type, chosen[0].severity = "format", "high"
@@ -1053,3 +1079,36 @@ def test_clean_str_and_anchor_survive_emoji_and_long_text():
     assert isinstance(anchor, dict)
     anchor2 = executor._compute_anchor([{"index": 0, "text": text, "addr": "a0"}], "投标文件缺少封面")
     assert anchor2["p_idx"] == 0 and anchor2["a_occ"] == 1
+
+
+# ── 老 .doc（OLE2）原件就地转 docx ────────────────────────────────────
+def test_load_input_blob_converts_legacy_doc(monkeypatch):
+    """原件是 OLE2 魔数（老 .doc）时必须转 docx 再返回——生产事故：用户版本文件
+    是 .doc，blob 直通 _load_docx_items 的 PK 校验被拒，整轮 failed。"""
+    row = SimpleNamespace(id="r", tenant_id=PFX, file_id="f")
+    calls = []
+    monkeypatch.setattr(executor, "_load_original_blob", lambda t, f: b"\xd0\xcf\x11\xe0OLDC")
+    monkeypatch.setattr(executor, "_convert_doc_to_docx",
+                        lambda blob: calls.append(blob) or b"PK\x03\x04new")
+    assert executor._load_input_blob(row, None) == b"PK\x03\x04new"
+    assert calls == [b"\xd0\xcf\x11\xe0OLDC"]
+
+
+def test_load_input_blob_docx_passthrough_no_convert(monkeypatch):
+    """真 docx（PK）不得触发转换；转换器异常时原样冒泡由 execute_task 记 failed。"""
+    row = SimpleNamespace(id="r", tenant_id=PFX, file_id="f")
+    monkeypatch.setattr(executor, "_load_original_blob", lambda t, f: b"PK\x03\x04real")
+    called = []
+    monkeypatch.setattr(executor, "_convert_doc_to_docx", lambda b: called.append(b))
+    assert executor._load_input_blob(row, None) == b"PK\x03\x04real"
+    assert called == []
+
+
+def test_load_input_blob_version_blob_skips_convert(monkeypatch, fstore):
+    """修复版本是我们自己产出的 docx：即使（防御性）命中 OLE2 前缀判断场景，
+    版本分支命中时直接返回，不走原件转换路径。"""
+    fstore.blobs[(PFX + "-downloads", "frv-t-v2")] = b"PK\x03\x04fixed"
+    row = SimpleNamespace(id="r", tenant_id=PFX, file_id="f")
+    monkeypatch.setattr(executor, "_load_original_blob",
+                        lambda t, f: (_ for _ in ()).throw(AssertionError("must not load original")))
+    assert executor._load_input_blob(row, "frv-t-v2") == b"PK\x03\x04fixed"

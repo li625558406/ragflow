@@ -243,6 +243,9 @@ export function instantFocusScroll(el: HTMLElement): void {
 export interface DocxHighlightItem {
   /** 要高亮的文本（按去空白归一化匹配，与 review-panel findTextEndRect 同口径） */
   text: string;
+  /** 跨行锚点（C端审核跨行摘录）：matched_text 含换行时的分行数组；
+   * 走连续段落序列匹配（唯一命中才插 mark），命中后各行 mark 共用同一 key */
+  lines?: string[];
   /** 锚定 key，写入 mark 的 data-anchor-key（批注栏 measure/点击定位依据） */
   key: string;
   /** 高亮主色（底色取 color+'22'、下边框取 color） */
@@ -387,9 +390,18 @@ export function highlightDocxRanges(
   // 通道按段落文本指纹精确到段、段内序号精确到第几个留白，无歧义；指纹未
   // 命中（渲染差异/页眉页脚部分变体等）的项回退下方顺序匹配管线，行为不变。
   const directItems = items.filter(
-    (it) => it.pHash && it.pHash.length === 16 && (it.aOcc ?? 0) >= 1,
+    (it) =>
+      !it.lines && it.pHash && it.pHash.length === 16 && (it.aOcc ?? 0) >= 1,
   );
-  if (directItems.length) {
+  // 跨行序列通道候选：分行后非空行 ≥2 才可做序列匹配（单行走下方常规通道）
+  const seqItems = items.filter((it) => {
+    if (!it.lines) return false;
+    const n = (it.lines || [])
+      .map((l) => (l || '').replace(NORM_WS_RE, ''))
+      .filter(Boolean).length;
+    return n >= 2;
+  });
+  if (directItems.length || seqItems.length) {
     // 段落级聚合（文档序）：norm/raw 文本 + 指纹 + 节点局部偏移表
     interface ParaNode {
       node: Text;
@@ -578,79 +590,137 @@ export function highlightDocxRanges(
         );
       });
 
-    // 按指纹分组；组内再按 pIdx 聚成「段落组」（同段多填写点共享一个候选段，
-    // 段内由各自 aOcc 区分）。段落组与候选段落对齐：
-    // 计数相等 → 按序 1:1（同形留白表格行常见形态：全部同文段落都是注册项）；
-    // 计数不等（存在未注册同文段）→ p_idx 比例就近贪心（段落组一一占用候选）
-    const byHash = new Map<string, DocxHighlightItem[]>();
-    for (const it of directItems) {
-      const arr = byHash.get(it.pHash!) || [];
-      arr.push(it);
-      byHash.set(it.pHash!, arr);
-    }
-    for (const [hash, members] of byHash) {
-      let cands = paraAggs.filter((a) => a.hash === hash);
-      if (!cands.length) continue;
-      if (cands.some((a) => !a.inHf)) cands = cands.filter((a) => !a.inHf);
-      // pIdx → 该段全部填写点（保序）
-      const paraGroups = new Map<number, DocxHighlightItem[]>();
-      for (const m of members) {
-        const k = m.pIdx ?? 0;
-        const arr = paraGroups.get(k) || [];
-        arr.push(m);
-        paraGroups.set(k, arr);
-      }
-      const groups = [...paraGroups.entries()].sort((a, b) => a[0] - b[0]);
-      let assigned: Array<{ ms: DocxHighlightItem[]; agg: ParaAgg }> | null =
-        null;
-      if (cands.length === groups.length) {
-        assigned = groups.map(([, ms], i) => ({ ms, agg: cands[i] }));
-      } else {
-        const used = new Set<number>();
-        assigned = [];
-        for (const [pIdx, ms] of groups) {
-          const expect =
-            ((pIdx ?? 0) + 0.5) / Math.max(1, ms[0].pTotal || groups.length);
-          let best = -1;
-          let bestScore: [number, number] = [Infinity, Infinity];
-          for (let i = 0; i < cands.length; i++) {
-            if (used.has(i)) continue;
-            // 打分①：raw run 实际可解析（同指纹但空白形态不同的克隆段强区分，
-            // 如「地址：」后接 30/35 空格）；打分②：docFrac 与 p_idx 期望距离
-            const s: [number, number] = [
-              rawResolvable(cands[i], ms) ? 0 : 1,
-              Math.abs(cands[i].docFrac - expect),
-            ];
-            if (
-              s[0] < bestScore[0] ||
-              (s[0] === bestScore[0] && s[1] < bestScore[1])
-            ) {
-              bestScore = s;
-              best = i;
+    // ── 跨行序列通道（C端审核跨行摘录）────────────────────────────────
+    // LLM 批注 matched_text 常为多行拼接摘录（含 \n），单段 includes 必然
+    // 失配，且全文顺序匹配会被同段校验（p1 !== p2）拒绝 —— 永远产不出 mark。
+    // 本通道按行（过滤空行）在段落序列上滑窗：连续 N 段中第 i 段包含第 i 行
+    // （去空白归一化），与后端修复轮 _apply_multiline_patch 连续段落序列定位
+    // 同构。唯命中闸：命中序列数 ≠1 → 诚实跳过（宁可未定位不错位）。命中后
+    // 在窗口内逐行定位插 mark，各行 mark 共用同一 data-anchor-key（边栏 rail
+    // 按 key 归组取首个 mark）。页眉/页脚段落存在非 HF 正文时排除。
+    if (seqItems.length) {
+      const paras = paraAggs.some((a) => !a.inHf)
+        ? paraAggs.filter((a) => !a.inHf)
+        : paraAggs;
+      for (const it of seqItems) {
+        const lineNorms = (it.lines || [])
+          .map((l) => (l || '').replace(NORM_WS_RE, ''))
+          .filter(Boolean);
+        if (lineNorms.length < 2) continue;
+        let base = -1;
+        let hits = 0;
+        for (let b = 0; b + lineNorms.length <= paras.length; b++) {
+          let ok = true;
+          for (let i = 0; i < lineNorms.length; i++) {
+            if (!paras[b + i].norm.includes(lineNorms[i])) {
+              ok = false;
+              break;
             }
           }
-          if (best < 0) {
-            assigned = null;
-            break;
+          if (ok) {
+            hits++;
+            base = b;
           }
-          used.add(best);
-          assigned.push({ ms, agg: cands[best] });
         }
-      }
-      if (!assigned) continue;
-      for (const { ms, agg } of assigned) {
-        for (const m of ms) {
-          const r = resolveInPara(agg, m);
-          if (!r) continue;
-          const nodeStart = nodeRawStart.get(r.from.node);
-          if (nodeStart === undefined) continue;
+        if (hits !== 1 || base < 0 || seenKey.has(it.key)) continue;
+        for (let i = 0; i < lineNorms.length; i++) {
+          const agg = paras[base + i];
+          const aNorm = lineNorms[i];
+          const at = agg.norm.indexOf(aNorm);
+          if (at < 0) continue; // 不可能：滑窗已校验包含
+          const sRaw = agg.normToRaw[at];
+          let eRaw = agg.normToRaw[at + aNorm.length] ?? agg.raw.length;
+          while (eRaw > sRaw && NORM_WS_CHAR_RE.test(agg.raw[eRaw - 1])) eRaw--;
+          const from = localRawLocate(agg, sRaw);
+          const to = localRawLocate(agg, eRaw);
+          const nodeStart = from ? nodeRawStart.get(from.node) : undefined;
+          if (!from || !to || nodeStart === undefined) continue;
           resolved.push({
-            from: r.from,
-            to: r.to,
-            sortKey: nodeStart + r.from.off,
-            item: m,
+            from,
+            to,
+            sortKey: nodeStart + from.off,
+            item: it,
           });
-          seenKey.add(m.key);
+        }
+        seenKey.add(it.key);
+      }
+    }
+
+    if (directItems.length) {
+      // 按指纹分组；组内再按 pIdx 聚成「段落组」（同段多填写点共享一个候选段，
+      // 段内由各自 aOcc 区分）。段落组与候选段落对齐：
+      // 计数相等 → 按序 1:1（同形留白表格行常见形态：全部同文段落都是注册项）；
+      // 计数不等（存在未注册同文段）→ p_idx 比例就近贪心（段落组一一占用候选）
+      const byHash = new Map<string, DocxHighlightItem[]>();
+      for (const it of directItems) {
+        const arr = byHash.get(it.pHash!) || [];
+        arr.push(it);
+        byHash.set(it.pHash!, arr);
+      }
+      for (const [hash, members] of byHash) {
+        let cands = paraAggs.filter((a) => a.hash === hash);
+        if (!cands.length) continue;
+        if (cands.some((a) => !a.inHf)) cands = cands.filter((a) => !a.inHf);
+        // pIdx → 该段全部填写点（保序）
+        const paraGroups = new Map<number, DocxHighlightItem[]>();
+        for (const m of members) {
+          const k = m.pIdx ?? 0;
+          const arr = paraGroups.get(k) || [];
+          arr.push(m);
+          paraGroups.set(k, arr);
+        }
+        const groups = [...paraGroups.entries()].sort((a, b) => a[0] - b[0]);
+        let assigned: Array<{ ms: DocxHighlightItem[]; agg: ParaAgg }> | null =
+          null;
+        if (cands.length === groups.length) {
+          assigned = groups.map(([, ms], i) => ({ ms, agg: cands[i] }));
+        } else {
+          const used = new Set<number>();
+          assigned = [];
+          for (const [pIdx, ms] of groups) {
+            const expect =
+              ((pIdx ?? 0) + 0.5) / Math.max(1, ms[0].pTotal || groups.length);
+            let best = -1;
+            let bestScore: [number, number] = [Infinity, Infinity];
+            for (let i = 0; i < cands.length; i++) {
+              if (used.has(i)) continue;
+              // 打分①：raw run 实际可解析（同指纹但空白形态不同的克隆段强区分，
+              // 如「地址：」后接 30/35 空格）；打分②：docFrac 与 p_idx 期望距离
+              const s: [number, number] = [
+                rawResolvable(cands[i], ms) ? 0 : 1,
+                Math.abs(cands[i].docFrac - expect),
+              ];
+              if (
+                s[0] < bestScore[0] ||
+                (s[0] === bestScore[0] && s[1] < bestScore[1])
+              ) {
+                bestScore = s;
+                best = i;
+              }
+            }
+            if (best < 0) {
+              assigned = null;
+              break;
+            }
+            used.add(best);
+            assigned.push({ ms, agg: cands[best] });
+          }
+        }
+        if (!assigned) continue;
+        for (const { ms, agg } of assigned) {
+          for (const m of ms) {
+            const r = resolveInPara(agg, m);
+            if (!r) continue;
+            const nodeStart = nodeRawStart.get(r.from.node);
+            if (nodeStart === undefined) continue;
+            resolved.push({
+              from: r.from,
+              to: r.to,
+              sortKey: nodeStart + r.from.off,
+              item: m,
+            });
+            seenKey.add(m.key);
+          }
         }
       }
     }

@@ -2320,6 +2320,7 @@ class FlowComment(DataBaseModel):
     anchor_text = TextField(null=True, help_text="Word 式批注锚点：选中的原文选段（可空则普通批注）")
     anchor_para = IntegerField(null=True, help_text="锚点段落 index（审阅解析的 paragraph index，可空）")
     anchor_start = IntegerField(null=True, help_text="锚点选段在段落归一化文本中的起始偏移（消歧重复文本，可空）")
+    severity = CharField(max_length=16, null=False, default="medium", help_text="批注级别 high/medium/low（存量默认 medium=一般）")
 
     class Meta:
         db_table = "flow_comment"
@@ -2342,6 +2343,8 @@ class FlowAiChat(DataBaseModel):
     session_id = CharField(max_length=64, null=False, default="", help_text="对话会话 id")
     user_id = CharField(max_length=32, null=False, default="", help_text="操作人 user_id（对话归属展示）")
     template_fill_events = MediumTextField(null=False, default="", help_text="范本填写原始事件序列 JSON（刷新回放用）")
+    file_review = CharField(max_length=255, null=False, default="", help_text="文件审核进度卡 {file_id,task_id} JSON（刷新恢复挂卡用）")
+    files = TextField(null=False, default="", help_text="随消息上传的附件 [{id,name}] JSON（用户气泡附件 chip 展示用，发送时事实不回填）")
 
     class Meta:
         db_table = "flow_ai_chat"
@@ -2832,6 +2835,12 @@ def migrate_db():
     alter_db_add_column(migrator, "flow_ai_chat", "template_fill_events", MediumTextField(null=False, default="", help_text="范本填写原始事件序列 JSON（刷新回放用）"))
     # 2026-09-12 TEXT(64KB) 超限截断致 JSON 损坏（回放无成稿卡），升级 MEDIUMTEXT(16MB)
     alter_db_column_type(migrator, "flow_ai_chat", "template_fill_events", MediumTextField(null=False, default="", help_text="范本填写原始事件序列 JSON（刷新回放用）"))
+    # 2026-09-20 文件审核进度卡持久化：flow_ai_chat 记录级 {file_id,task_id}，刷新后历史挂卡
+    alter_db_add_column(migrator, "flow_ai_chat", "file_review", CharField(max_length=255, null=False, default="", help_text="文件审核进度卡 {file_id,task_id} JSON（刷新恢复挂卡用）"))
+    # 2026-09-20 人工批注级别：flow_comment 加 severity（存量默认 medium=一般）
+    alter_db_add_column(migrator, "flow_comment", "severity", CharField(max_length=16, null=False, default="medium", help_text="批注级别 high/medium/low"))
+    # 2026-09-21 用户气泡附件 chip：flow_ai_chat 加 files（[{id,name}] JSON，发送时落库）
+    alter_db_add_column(migrator, "flow_ai_chat", "files", TextField(null=False, default="", help_text="随消息上传的附件 [{id,name}] JSON（用户气泡附件 chip 展示用，发送时事实不回填）"))
     try:
         # 存量回填（幂等）：流程影子会话打标 → 对话页签不可见；归属流程发起人。
         # atomic 显式提交：启动期 connection_context 归还连接时未提交 DML 会被回滚（DDL 不受影响）

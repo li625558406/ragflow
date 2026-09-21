@@ -53,7 +53,9 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import FileReviewProgress from './file-review-progress';
+import FileReviewProgress, {
+  extractFileReviewTarget,
+} from './file-review-progress';
 import ReviewPanel, { type Annotation } from './review-panel';
 import TemplateFillProgress, {
   downloadTemplateFillResult,
@@ -97,6 +99,7 @@ import FlowPanel from '@/pages/c-chat/flow/flow-panel';
 import HrView from '@/pages/c-chat/hr';
 import api from '@/utils/api';
 import { markdownToBodyHtml } from '@/utils/markdown-to-word';
+import request from '@/utils/request';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { v4 as uuid } from 'uuid';
@@ -474,7 +477,23 @@ export default function CChat() {
   }, [derivedMessages]);
 
   // Extract review annotations — from message data (persisted) or SSE ref (live)
+  // 2026-09-20：文件审核进度卡「打开审核面板」传入的 file_review 批注（轮询 state
+  // 端点 annotations）优先——本轮批注产自 FileReview 节点，原三个来源里都没有它，
+  // 不透传面板恒空。按 fileId 绑定：打开其他文件时自动失效回落原来源。
+  const [frPanelAnnotations, setFrPanelAnnotations] = useState<{
+    fileId: string;
+    annotations: Annotation[];
+  } | null>(null);
   const reviewAnnotations = useMemo<Annotation[]>(() => {
+    // Priority 0: FileReview 节点批注（进度卡透传，与当前 reviewFileId 绑定）
+    if (
+      frPanelAnnotations &&
+      frPanelAnnotations.fileId === reviewFileId &&
+      frPanelAnnotations.annotations.length > 0
+    ) {
+      return frPanelAnnotations.annotations;
+    }
+
     // Priority 1: Live SSE structured output (current streaming)
     const structured = structuredOutputRef?.current;
     if (
@@ -527,8 +546,41 @@ export default function CChat() {
     derivedMessages,
     nodeEventsByMsgId,
     reviewFileId,
+    frPanelAnnotations,
     done,
   ]);
+
+  // 重开/刷新后恢复历史批注：上述四个来源全部依赖本轮会话内存（live 透传 /
+  // structured output / 消息扫描 / 节点事件），会话清空或重开面板后全为空 →
+  // 面板恒空（用户实测「审核完重开批注不见」）。批注真源在 file_review 系统
+  // 存库，按 fileId 拉 state 端点兜底恢复；仅在既有来源全空时才拉，不覆盖。
+  useEffect(() => {
+    if (!reviewMode || !reviewFileId) return;
+    if (reviewAnnotations.length > 0) return;
+    let alive = true;
+    (async () => {
+      try {
+        const { data } = await request.get(api.fileReviewState(reviewFileId));
+        const anns = data?.data?.annotations;
+        if (
+          alive &&
+          data?.code === 0 &&
+          Array.isArray(anns) &&
+          anns.length > 0
+        ) {
+          setFrPanelAnnotations({
+            fileId: reviewFileId,
+            annotations: anns as Annotation[],
+          });
+        }
+      } catch {
+        // 静默：面板仍可打开，仅无历史批注
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [reviewMode, reviewFileId, reviewAnnotations]);
 
   // Get node events for the latest message that has them (for input-area chip).
   // During the window between the first NodeStarted and the first Message event,
@@ -644,6 +696,9 @@ export default function CChat() {
   // 的 node_finished 事件，取 outputs.task_id 与 inputs.file_id，挂到最近一条 assistant。
   // 不引入新 SSE / streamState.fileReview / setFileReviewState —— 组件内部 useFileReviewState 轮询拿数据。
   // 此处仅负责「把链路里已经在跑的 task_id 找到并固化到消息」，保证 <FileReviewProgress> 后续挂得上。
+  // ⚠️ 正常收尾时 setDone(true) 与 resetAnswerList 同帧批处理，done 态下 answerList
+  // 已空——本 effect 只在**中止路径**（不 resetAnswerList）兜底；正常路径在
+  // sendMessage 里走 res.events（extractFileReviewTarget，同 downloads 回填模式）。
   useEffect(() => {
     if (!done) return;
     // 扫 answerList 里 FileReview 节点的 node_finished 事件
@@ -652,13 +707,18 @@ export default function CChat() {
     for (const evt of answerList) {
       const ev: any = evt as any;
       const data = ev?.data ?? {};
+      // component_name 是 DSL 节点显示名（如「FileReview:BraveLionsScan」），组件类型
+      // 在 component_type 字段——按显示名精确匹配永远扫不到（生产实测事件两字段即此形态）
+      const componentType = (data?.component_type ?? '').toString();
       const componentName = (data?.component_name ?? '').toString();
-      if (componentName !== 'FileReview') continue;
+      if (componentType !== 'FileReview' && componentName !== 'FileReview')
+        continue;
       const outputs = data?.outputs ?? {};
       const inputs = data?.inputs ?? {};
       if (outputs?.task_id) taskId = String(outputs.task_id);
-      // inputs 里取 file_id（FileReview 节点 param 的 file_id 字段）
-      const fileIdInput = inputs?.file_id ?? inputs?.review_file_id;
+      // file_id 权威来源是节点 outputs（inputs 是空 dict）；inputs 两键为旧兜底
+      const fileIdInput =
+        outputs?.file_id ?? inputs?.file_id ?? inputs?.review_file_id;
       if (fileIdInput) fileId = String(fileIdInput);
       if (taskId && fileId) break;
     }
@@ -1393,12 +1453,19 @@ export default function CChat() {
     async (query: string, sessionId: string | null, _msgId?: string) => {
       void _msgId;
       const currentFiles = [...uploadedFiles];
+      // 文件审核契约：待审核文件 id 必须经 inputs.review_file_id 送入 Begin——
+      // FileReview 工具只认 Begin 的这个输出，画布会丢弃 files 里的上传 id。
+      // 无附件不发该键（空值只会换来工具报「未指定待审核文件」）。
+      const firstFileId = currentFiles[0]?.id;
       const res = await send({
         agent_id: currentAgentId,
         query,
         session_id: sessionId,
         stream: true,
         files: currentFiles,
+        inputs: firstFileId
+          ? { review_file_id: { value: firstFileId, type: 'line' } }
+          : undefined,
         internet: enableInternet,
         // 最近成稿卡契约：后端白名单写入 sys.recent_downloads，DocumentRewrite 定位重写目标
         recent_downloads: collectRecentDownloads(
@@ -1437,6 +1504,24 @@ export default function CChat() {
             }
           }
           return prev;
+        });
+      }
+
+      // 文件审核进度卡：done 时 answerList 已被同帧清空，done 态扫描 effect 永远
+      // 扑空——必须从 send 返回的全量原始事件里提取（同上方 downloads 回填模式）
+      const fr = extractFileReviewTarget(res?.events as any[] | undefined);
+      if (fr) {
+        setDerivedMessages((prev) => {
+          const next = [...prev];
+          for (let i = next.length - 1; i >= 0; i--) {
+            if (next[i].role === 'assistant') {
+              const cur: any = next[i];
+              if (cur.fileReview?.taskId === fr.taskId) return prev;
+              next[i] = { ...next[i], fileReview: fr } as any;
+              break;
+            }
+          }
+          return next;
         });
       }
     },
@@ -1959,8 +2044,8 @@ export default function CChat() {
                   : 'hidden'
               }
               style={{
-                // 范本预览/审核类抽屉（同为半屏宽）打开时右侧腾位，与抽屉平分布局
-                paddingRight: tplPreviewOpen || reviewSheetOpen ? '50%' : 0,
+                // 范本预览/审核类抽屉（同 2/3 屏宽）打开时右侧腾位，与抽屉平分布局
+                paddingRight: tplPreviewOpen || reviewSheetOpen ? '66.667%' : 0,
               }}
             >
               {/* Header */}
@@ -2580,9 +2665,16 @@ export default function CChat() {
                                   <FileReviewProgress
                                     fileId={(msg as any).fileReview.fileId}
                                     taskId={(msg as any).fileReview.taskId}
-                                    onOpenReview={() => {
+                                    onOpenReview={(annotations) => {
                                       // 复用现有审核面板状态：把对应 fileId 推到 reviewMode 上
                                       // （annotations 已经在 msg.data 上，panel 通过 derivedMessages 渲染）
+                                      // 2026-09-20：file_review 批注透传面板 —— 批注在轮询
+                                      // state 里，面板原来源没有它，不传恒空
+                                      setFrPanelAnnotations({
+                                        fileId: (msg as any).fileReview.fileId,
+                                        annotations:
+                                          annotations as Annotation[],
+                                      });
                                       setReviewFileId(
                                         (msg as any).fileReview.fileId,
                                       );
@@ -3209,8 +3301,8 @@ export default function CChat() {
                   : 'hidden'
               }
               style={{
-                // 范本预览/审核类抽屉（同为半屏宽）打开时右侧腾位，与抽屉平分布局
-                paddingRight: tplPreviewOpen || reviewSheetOpen ? '50%' : 0,
+                // 范本预览/审核类抽屉（同 2/3 屏宽）打开时右侧腾位，与抽屉平分布局
+                paddingRight: tplPreviewOpen || reviewSheetOpen ? '66.667%' : 0,
               }}
             >
               <FlowPanel

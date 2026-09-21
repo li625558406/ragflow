@@ -54,6 +54,9 @@ export default function FlowManage({ onBack }: { onBack: () => void }) {
   } | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [actionError, setActionError] = useState('');
+  // 详情内范本预览/审核类弹框（fixed 2/3 屏宽）打开时右侧腾位，避免盖住左侧内容
+  const [tplPreviewOpen, setTplPreviewOpen] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
   const qc = useQueryClient();
   const meId = useMemo(currentUserId, []);
 
@@ -153,9 +156,16 @@ export default function FlowManage({ onBack }: { onBack: () => void }) {
             返回列表
           </Button>
         </div>
-        <div className="min-h-0 flex-1 overflow-hidden rounded-xl border border-[#E5E5E5] bg-white">
+        <div
+          className="min-h-0 flex-1 overflow-hidden rounded-xl border border-[#E5E5E5] bg-white transition-[padding] duration-300 ease-in-out"
+          style={{
+            paddingRight: tplPreviewOpen || reviewOpen ? '66.667%' : 0,
+          }}
+        >
           <FlowDetail
             flowId={viewFlowId}
+            onTplPreviewOpenChange={setTplPreviewOpen}
+            onReviewOpenChange={setReviewOpen}
             onChanged={refresh}
             onDeleted={() => {
               setViewFlowId(null);

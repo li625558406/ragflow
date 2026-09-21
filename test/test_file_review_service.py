@@ -558,6 +558,45 @@ def test_delete_by_round_none_source_removes_everything():
     assert list(rest) == []
 
 
+# ── 批注删除（物理删除单条，AI / manual 均可）─────────────────────────
+
+
+def test_delete_annotation_removes_single_row_physically():
+    tid = PFX + 'delann'
+    r = _mk_round(tid, 1, 'annotated')
+    a1 = FileReviewAnnotationService.create(
+        round_id=r, task_id=tid, file_id=PFX + '-file', file_version='v1',
+        anchor='{}', matched_text='甲', ann_type='format', severity='low',
+        issue='i', suggestion='', source='ai', tenant_id=PFX)
+    a2 = FileReviewAnnotationService.create(
+        round_id=r, task_id=tid, file_id=PFX + '-file', file_version='v1',
+        anchor='{}', matched_text='乙', ann_type='format', severity='low',
+        issue='i', suggestion='', source='manual', tenant_id=PFX)
+    assert FileReviewAnnotationService.delete_annotation(a1) is True
+    rest = {a.id for a in FileReviewAnnotation.select().where(
+        FileReviewAnnotation.task_id == tid)}
+    assert rest == {a2}, '只删目标行，同轮其他批注（含 manual）不动'
+
+
+def test_delete_annotation_missing_or_empty_returns_false():
+    assert FileReviewAnnotationService.delete_annotation(
+        PFX + 'ghost-ann') is False
+    assert FileReviewAnnotationService.delete_annotation('') is False, \
+        '空 id 短路，不发 SQL'
+
+
+def test_delete_annotation_is_idempotent_on_repeat():
+    """重复删除幂等：第二次命中 0 行返回 False，由端点层按「不存在」回。"""
+    tid = PFX + 'delannrep'
+    r = _mk_round(tid, 1, 'annotated')
+    aid = FileReviewAnnotationService.create(
+        round_id=r, task_id=tid, file_id=PFX + '-file', file_version='v1',
+        anchor='{}', matched_text='t', ann_type='format', severity='low',
+        issue='i', suggestion='', source='ai', tenant_id=PFX)
+    assert FileReviewAnnotationService.delete_annotation(aid) is True
+    assert FileReviewAnnotationService.delete_annotation(aid) is False
+
+
 # ── T8 助手：越权闸门 / 轮次编号 / 修复轮余额 ─────────────────────────
 
 

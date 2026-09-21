@@ -535,6 +535,20 @@ class FileReviewAnnotationService(FileReviewServiceBase):
 
     @classmethod
     @DB.connection_context()
+    def delete_annotation(cls, aid: str) -> bool:
+        """物理删除单条标注（用户在审核面板删除 AI 批注），返回是否命中行。
+
+        刻意硬删而非软删：prev_annotation_id 全库只写不读（仅 create 写入 +
+        payload 序列化回显），不存在「删除后链断裂」；软删会多一列状态语义，
+        还得让所有查询路径（list_by_file / list_pending_by_task / 计数）统一
+        过滤，改动面远大于收益。重复删除幂等：第二次 execute() 命中 0 行返回
+        False，由端点层决定报错口径。"""
+        if not aid:
+            return False
+        return cls.model.delete().where(cls.model.id == aid).execute() > 0
+
+    @classmethod
+    @DB.connection_context()
     def list_by_file_version(cls, file_id: str, file_version: str, task_id: str | None = None) -> list:
         """review-panel 加载用：某文件某版本的**全部**标注（AI + manual），按创建时间升序。
 

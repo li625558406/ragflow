@@ -31,6 +31,12 @@ logger = logging.getLogger(__name__)
 # 键名送入上传 id，三处（对话页 / 流程页 / 本节点）必须一致。
 FILE_ID_INPUT_KEY = "review_file_id"
 
+# Begin 承载「当前已绑定审核任务」的输出键名。FileReview 节点产出的 task_id 只经 SSE
+# 到前端、从不进 LLM 上下文——流程页签里用户说「修复严重问题」时 LLM 无从提供 task_id。
+# 前端把已知 task_id（进度卡/历史记录派生）经 canvas.run(inputs=...) 用这个键名送入
+# Begin，工具 _fix/_status 按「LLM 显式参数 > 本键注入」解析。
+REVIEW_TASK_ID_INPUT_KEY = "review_task_id"
+
 # 第 1 轮的文件版本号。后续修复轮的 v2/v3 由 T9 的 fix 端点写入——executor 只按
 # 「同 task 已完成轮次」推输入版本，不认识版本号语义。
 _FIRST_VERSION = "v1"
@@ -53,6 +59,10 @@ class FileReviewParam(ComponentParamBase):
         self.outputs = {
             "task_id": {"value": "", "type": "string"},
             "round_id": {"value": "", "type": "string"},
+            # file_id 必须进 outputs：前端进度卡轮询端点只认 file_id（useFileReviewState
+            # 按 file_id 轮询），而节点 inputs 是空 dict（_param.inputs 未定义），事件里
+            # 无处可取——outputs 是 SSE node_finished 事件里唯一能带出它的通道。
+            "file_id": {"value": "", "type": "string"},
             "content": {"value": "", "type": "string"},
         }
 
@@ -116,6 +126,11 @@ class FileReview(ComponentBase):
         text = self._expand_refs(self._param.file_id or "")
         return text or self._begin_output(FILE_ID_INPUT_KEY)
 
+    def thoughts(self) -> str:
+        # canvas.run 的 node_started 事件对批内每个组件调 thoughts()，基类抛
+        # NotImplementedError 会杀掉整条 SSE 流（TemplateFill/FanOut 均有同款覆写）。
+        return "正在发起文件审核..."
+
     def _invoke(self, **kwargs):
         tenant_id = self._canvas.get_tenant_id() if self._canvas else ""
         if not tenant_id:
@@ -145,4 +160,5 @@ class FileReview(ComponentBase):
         spawn_mod.spawn_review_task(task_id)
         self.set_output("task_id", task_id)
         self.set_output("round_id", round_id)
+        self.set_output("file_id", file_id)
         self.set_output("content", "已开始审核，批注结果将显示在「文件审核」面板中。")

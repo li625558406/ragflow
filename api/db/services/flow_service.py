@@ -305,10 +305,11 @@ class FlowCommentService(_FlowServiceBase):
     @DB.connection_context()
     def add_comment(cls, flow_id: str, version_id: str, user_id: str, content: str,
                     anchor_text: str = "", anchor_para: int | None = None,
-                    anchor_start: int | None = None) -> dict:
+                    anchor_start: int | None = None, severity: str = "medium") -> dict:
         c = cls.insert(
             flow_id=flow_id, version_id=version_id, user_id=user_id, content=content,
             anchor_text=anchor_text or "", anchor_para=anchor_para, anchor_start=anchor_start,
+            severity=severity if severity in ("high", "medium", "low") else "medium",
         )
         return c.__data__
 
@@ -341,7 +342,8 @@ class FlowAiChatService(_FlowServiceBase):
     @DB.connection_context()
     def add_record(cls, flow_id: str, version_id: str, instruction: str,
                    response: str, session_id: str = "", output_version_id: str = "",
-                   user_id: str = "", template_fill_events: str = "") -> dict:
+                   user_id: str = "", template_fill_events: str = "",
+                   file_review: str = "", files: str = "") -> dict:
         rec = cls.insert(
             flow_id=flow_id,
             version_id=version_id,
@@ -351,6 +353,8 @@ class FlowAiChatService(_FlowServiceBase):
             output_version_id=output_version_id,
             user_id=user_id,
             template_fill_events=template_fill_events,
+            file_review=file_review,
+            files=files,
         )
         return rec.__data__
 
@@ -371,14 +375,17 @@ class FlowAiChatService(_FlowServiceBase):
     @DB.connection_context()
     def update_content(cls, record_id: str, response: str,
                        session_id: str | None = None,
-                       template_fill_events: str | None = None) -> None:
+                       template_fill_events: str | None = None,
+                       file_review: str | None = None) -> None:
         """回填更新（发送即存模式）：流式结束后把「（生成中…）」占位记录回填为
-        最终回复/事件序列；session_id/template_fill_events 传 None 表示不修改。"""
+        最终回复/事件序列；session_id/template_fill_events/file_review 传 None 表示不修改。"""
         fields: dict = {"response": response}
         if session_id is not None:
             fields["session_id"] = session_id
         if template_fill_events is not None:
             fields["template_fill_events"] = template_fill_events
+        if file_review is not None:
+            fields["file_review"] = file_review
         cls.model.update(**fields).where(cls.model.id == record_id).execute()
 
     @classmethod

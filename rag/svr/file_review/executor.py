@@ -81,6 +81,8 @@ _OBJECT_GREEDY = re.compile(r"\{[\s\S]*\}")
 FIX_SYSTEM = (
     "你是文档修复助手。用户给你一份文档正文和一批待修复的问题标注，"
     "你要为每条标注给出**最小改动**的替换方案：find 必须逐字摘自文档、且全文只出现一次；"
+    "find 必须是同一段落/同一行内的连续文字，**不得包含换行**——跨行的问题请选取其中"
+    "一行内足以唯一定位的最小片段；"
     "replace 是替换后的文本。无法唯一定位或无需改动的条目直接省略，不要编造原文。"
     '只输出 JSON：{"patches": [{"idx": 1, "find": "原文片段", "replace": "新文本"}]}'
 )
@@ -212,14 +214,37 @@ def _run_fix_round(round_row, version_name) -> None:
 
 
 # ── 外部依赖（模块级 seam，便于测试注入）───────────────────────────
+# 老版 .doc（Word 97-2003）是 OLE2 复合文档，魔数 D0 CF 11 E0；真 .docx 是 PK zip。
+_DOLE2_MAGIC = b"\xd0\xcf\x11\xe0"
+
+
+def _convert_doc_to_docx(blob: bytes) -> bytes:
+    """老 .doc 经 LibreOffice 转 .docx；失败抛 FileReviewError（用户可读文案）。
+
+    转换实现在 api/utils/doc_utils.py（file_api / flow_app 共用同一份）：独立
+    profile 目录防并发锁、显式注入 LD_LIBRARY_PATH 防 soffice.bin rc=127。"""
+    from api.utils.doc_utils import doc_to_docx_via_libreoffice
+
+    out = doc_to_docx_via_libreoffice(blob)
+    if not out:
+        raise FileReviewError("文档为旧版 .doc 格式且自动转换失败，请用 Word 另存为 .docx 后重试")
+    return out
+
+
 def _load_input_blob(round_row, version_name) -> bytes:
-    """修复轮的输入是**上一轮修复后的版本**（多轮叠加），无版本则回原件。"""
+    """修复轮的输入是**上一轮修复后的版本**（多轮叠加），无版本则回原件。
+
+    原件是老 .doc（OLE2 魔数）时**就地转 docx**（范本入口「格式归一化」同口径：
+    转换一次，后续全链路只认 docx）；修复版本是我们自己产出的 docx，无需再判。"""
     if version_name:
         blob = settings.STORAGE_IMPL.get(f"{round_row.tenant_id}-downloads", version_name)
         if blob:
             return blob
         logger.warning("file review: version blob missing, round_id=%s name=%s", round_row.id, version_name)
-    return _load_original_blob(round_row.tenant_id, round_row.file_id)
+    blob = _load_original_blob(round_row.tenant_id, round_row.file_id)
+    if blob[:4] == _DOLE2_MAGIC:
+        blob = _convert_doc_to_docx(blob)
+    return blob
 
 
 def _load_original_blob(tenant_id: str, file_id: str) -> bytes:
@@ -561,15 +586,30 @@ def _build_fix_prompt(round_row, file_text: str, chosen: list) -> str:
         "文档正文：\n" + file_text + "\n\n"
         "请为每条问题给出最小改动的替换方案，输出 JSON：\n"
         '{"patches": [{"idx": 1, "find": "原文片段", "replace": "新文本"}]}\n'
-        "find 必须是文档中逐字出现且全文唯一的片段，否则该条会被跳过。"
+        "find 必须是文档中逐字出现且全文唯一的片段，否则该条会被跳过。\n"
+        "find 必须取自同一段落内的连续文字，不得包含换行；跨行问题只能摘其中"
+        "一行内足以唯一定位的最小片段。"
     )
+
+
+def _unescape_llm_newline(value):
+    """LLM 双重转义纠正：把字面「\\n」（反斜杠+n 两个字符）还原成真实换行。
+
+    生产实证（2026-09-20 demo05）：LLM 摘跨行原文时在 JSON 里吐 `\\\\n`，json.loads 后
+    find 里残留的是字面反斜杠+n——与文档中任何真实换行都不可能相等，补丁必然 0 命中。
+    只处理 str；None / 非 str 原样返回（patcher 的跳过规则不受影响）。
+    """
+    if isinstance(value, str) and "\\n" in value:
+        return value.replace("\\n", "\n")
+    return value
 
 
 def _plan_patches(parsed: list, chosen: list) -> tuple:
     """补丁数组 + {补丁下标: 标注序号(1-based)} 映射。
 
-    find/replace **原样透传**（哪怕是 None）：patcher 对 None / 非 str 的跳过规则已被
-    对抗测试锁死，在这里预处理会把那些保护绕过去。
+    find/replace 基本原样透传（哪怕是 None）：patcher 对 None / 非 str 的跳过规则已被
+    对抗测试锁死，在这里预处理会把那些保护绕过去。唯一例外是 LLM 双重转义的换行
+    （`_unescape_llm_newline`）——那是字符层面的还原，不是语义预处理。
     """
     patches, by_pos, seen = [], {}, set()
     for item in parsed:
@@ -580,7 +620,12 @@ def _plan_patches(parsed: list, chosen: list) -> tuple:
         if idx in seen or not 1 <= idx <= len(chosen):
             continue
         seen.add(idx)
-        patches.append({"find": item.get("find"), "replace": item.get("replace")})
+        patches.append(
+            {
+                "find": _unescape_llm_newline(item.get("find")),
+                "replace": _unescape_llm_newline(item.get("replace")),
+            }
+        )
         by_pos[len(patches) - 1] = idx
     return patches, by_pos
 

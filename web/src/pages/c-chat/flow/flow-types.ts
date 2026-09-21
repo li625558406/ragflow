@@ -45,6 +45,8 @@ export interface FlowCommentItem {
   content: string;
   anchor_text?: string;
   anchor_para?: number | null;
+  /** 批注级别 high/medium/low（存量无值视为 medium=一般） */
+  severity?: string;
   create_time: number;
 }
 
@@ -60,6 +62,10 @@ export interface FlowAiChatItem {
   user_id: string;
   /** 范本填写原始事件序列：落库/读取均为 JSON 字符串（兼容历史数组类型），回放前 parse */
   template_fill_events?: string | unknown[];
+  /** 文件审核进度卡 {file_id,task_id} JSON（刷新后历史气泡按它挂进度卡），空串=无 */
+  file_review?: string;
+  /** 随消息上传的附件 [{id,name}] JSON 字符串（用户气泡附件 chip 展示），空串=无 */
+  files?: string;
   create_time: number;
 }
 
@@ -78,6 +84,8 @@ export interface FlowLiveChat {
   instruction: string;
   response: string;
   busy: boolean;
+  /** 本轮手动上传的附件（发送起点快照；历史记录保存前 live 气泡 chip 用） */
+  files?: { id: string; name: string }[];
   /** 范本填写进度（template_fill_progress 事件累积，随流式上报） */
   templateFill?: ITemplateFillState;
   /** 文件审核进度（FileReview 节点产出 task_id 后落到此处供中部对话区挂载
