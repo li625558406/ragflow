@@ -116,3 +116,13 @@ if (!Element.prototype.scrollTo) {
 if (!Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = function scrollIntoView() {} as any;
 }
+
+// jsdom 未实现 ResizeObserver（review-panel 引线布局等 observe 容器尺寸）。
+// 补 noop 桩：用例不消费回调，只要构造/observe 不抛错。
+if (!(globalThis as any).ResizeObserver) {
+  (globalThis as any).ResizeObserver = class ResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as any;
+}

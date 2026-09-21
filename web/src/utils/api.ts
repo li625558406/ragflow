@@ -520,4 +520,7 @@ export default {
   // 不带自定义 Authorization 头 → 必 401）。见 services/file-review-service.ts 的说明。
   fileReviewDownload: (taskId: string, fileVersion: string) =>
     `${restAPIv1}/file/review/${encodeURIComponent(taskId)}/${encodeURIComponent(fileVersion)}/download`,
+  // 成稿版本段落结构（审核弹框展示修复后文案，与 download 同读路径）
+  fileReviewVersionContent: (taskId: string, fileVersion: string) =>
+    `${restAPIv1}/file/review/${encodeURIComponent(taskId)}/${encodeURIComponent(fileVersion)}/content`,
 };

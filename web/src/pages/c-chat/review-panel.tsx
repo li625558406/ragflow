@@ -1,6 +1,7 @@
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { useFileBlob } from '@/hooks/use-file-blob';
+import { useFileBlob, useReviewVersionBlob } from '@/hooks/use-file-blob';
+import { useFileReviewState } from '@/hooks/use-file-review-request';
 import type { FlowDocRun } from '@/services/flow-service';
 import api from '@/utils/api';
 import request from '@/utils/next-request';
@@ -9,7 +10,9 @@ import type { LexicalEditor } from 'lexical';
 import {
   AlertCircle,
   AlertTriangle,
+  ChevronDown,
   ChevronRight,
+  ChevronUp,
   Download,
   FileText,
   Info,
@@ -38,9 +41,14 @@ import {
 import DocxParagraphEditor, { collectEditorOps } from './docx-paragraph-editor';
 import { parseTableCells, type TableCellInfo } from './docx-table-utils';
 import {
+  getLocateText,
+  getMatchedText,
   highlightInTableByAnchor,
   highlightInTableHtml,
-  normalizeForMatch,
+  matchAnnotation,
+  matchMultiline,
+  mergeAnnotationOverlays,
+  multilineLineNorms,
   sanitizeTableHtml,
 } from './docx-view-utils';
 import { FixActions, FixDiffView } from './review-fix-diff';
@@ -178,12 +186,7 @@ const TYPE_LABELS: Record<string, string> = {
   risk_warning: '风险提示',
 };
 
-// ── Paragraph matcher ──
-
-// Get matched_text from annotation, supporting field name aliases
-function getMatchedText(ann: Annotation): string {
-  return (ann.matched_text || ann.text || ann.quote || '').trim();
-}
+// ── Paragraph matcher（匹配/定位函数已迁 docx-view-utils.ts 共享+单测） ──
 
 /**
  * 在元素内查找锚点文本（跨文本节点、忽略空白差异），返回匹配文字末尾的矩形。
@@ -241,80 +244,6 @@ function findTextEndRect(
     }
   }
   return null;
-}
-
-function matchAnnotation(
-  paragraphText: string,
-  annotation: Annotation,
-): boolean {
-  const target = getMatchedText(annotation);
-  if (!target || target.length < 2) return false;
-  // Strategy 1: exact match
-  if (paragraphText.includes(target)) return true;
-  // Strategy 2: HTML-stripped match (for table paragraphs)
-  const cleanPara = paragraphText.replace(/<[^>]+>/g, '');
-  if (cleanPara.includes(target)) return true;
-  // Strategy 3: normalized full match (strip all punctuation)
-  const normPara = normalizeForMatch(paragraphText);
-  const normTarget = normalizeForMatch(target);
-  if (normTarget.length >= 4 && normPara.includes(normTarget)) return true;
-  // Strategy 4: keyword match — extract 2-3 key phrases (8+ chars) from target
-  // and check if at least 2 appear in the paragraph
-  const keywords = [];
-  // Split by common delimiters and take meaningful chunks
-  const chunks = target
-    .split(/[，。、；：的且在持有满足进行评价以下含]/)
-    .filter((c) => c.length >= 6);
-  for (const chunk of chunks.slice(0, 4)) {
-    const normChunk = normalizeForMatch(chunk);
-    if (normChunk.length >= 4 && normPara.includes(normChunk)) {
-      keywords.push(chunk);
-    }
-  }
-  if (keywords.length >= 2) return true;
-  return false;
-}
-
-/** 跨行摘录的分行归一化（matched_text 含 \n 且非空归一化行 ≥2 才可走序列通道） */
-function multilineLineNorms(matchedText: string): string[] {
-  if (!matchedText || !matchedText.includes('\n')) return [];
-  return matchedText
-    .split('\n')
-    .map((l) => normalizeForMatch(l))
-    .filter((l) => l.length >= 2);
-}
-
-/**
- * 跨行摘录序列匹配：LLM 摘录常为多行拼接（matched_text 含 \n），单段 includes
- * 必然失配。按行（过滤空行）在段落序列上滑窗：连续 N 段中第 i 段包含第 i 行
- * （normalizeForMatch 同口径），与后端修复轮 _apply_multiline_patch 连续段落
- * 序列定位同构。唯命中闸：命中序列数 ≠1 → 返回 -1（宁可未定位不错位）。
- * 返回基段落（首行所在段）index。
- */
-function matchMultiline(
-  paragraphs: { index: number; text: string }[],
-  matchedText: string,
-): number {
-  const lines = multilineLineNorms(matchedText);
-  if (lines.length < 2) return -1;
-  const paraNorms = paragraphs.map((p) => normalizeForMatch(p.text));
-  let base = -1;
-  let hits = 0;
-  for (let b = 0; b + lines.length <= paraNorms.length; b++) {
-    let ok = true;
-    for (let i = 0; i < lines.length; i++) {
-      if (!paraNorms[b + i].includes(lines[i])) {
-        ok = false;
-        break;
-      }
-    }
-    if (ok) {
-      hits++;
-      if (hits > 1) return -1;
-      base = paragraphs[b].index;
-    }
-  }
-  return hits === 1 ? base : -1;
 }
 
 // ── Inline annotation highlight（Word 式：正文高亮 + data-anchor-key 供引线锚定） ──
@@ -411,6 +340,13 @@ function AiCard({
   const annType = ann.type || ann.category || '';
   const mt = getMatchedText(ann);
   const hasPatch = !!(ann.patch && (ann.patch.find || ann.patch.replace));
+  // 正文（摘录/问题/建议/修复对比/操作）默认折叠，只留头部行——边栏几十张卡
+  // 全展开会把文档正文盖满；点头部箭头展开，点批注定位跳转（onSelect）后随
+  // selected 自动展开，与列表区跳转联动可见内容。
+  const [expanded, setExpanded] = useState(false);
+  useEffect(() => {
+    if (selected) setExpanded(true);
+  }, [selected]);
   return (
     <div
       id={`annotation-${num}`}
@@ -423,7 +359,7 @@ function AiCard({
         borderLeft: `3px ${unmatched ? 'dashed' : 'solid'} ${cfg.border}`,
       }}
     >
-      <div className="flex items-center gap-1.5 mb-1">
+      <div className="flex items-center gap-1.5">
         <span
           className="font-bold text-[11px] shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-white"
           style={{ backgroundColor: cfg.border, opacity: unmatched ? 0.6 : 1 }}
@@ -439,7 +375,11 @@ function AiCard({
           {cfg.label} {TYPE_LABELS[annType] || annType || '问题'}
           {unmatched ? '（未定位）' : ''}
         </span>
-        <span className="ml-auto shrink-0 rounded bg-[#1a66fb] px-1 py-px text-[10px] font-bold text-white">
+        <span
+          className={`shrink-0 rounded bg-[#1a66fb] px-1 py-px text-[10px] font-bold text-white ${
+            expanded ? '' : 'ml-auto'
+          }`}
+        >
           AI
         </span>
         {/* 修复标记：fixed=AI 修复轮已修（绿）；resolved+有补丁=已确认保留 */}
@@ -453,6 +393,22 @@ function AiCard({
             已确认
           </span>
         )}
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            setExpanded((v) => !v);
+          }}
+          title={expanded ? '折叠' : '展开'}
+          className={`shrink-0 rounded p-0.5 text-[#999] hover:bg-black/5 ${
+            expanded ? '' : 'ml-auto'
+          }`}
+        >
+          {expanded ? (
+            <ChevronUp className="h-3.5 w-3.5" strokeWidth={2} />
+          ) : (
+            <ChevronDown className="h-3.5 w-3.5" strokeWidth={2} />
+          )}
+        </button>
         {canDelete && onDelete && (
           <button
             onClick={(e) => {
@@ -467,27 +423,33 @@ function AiCard({
           </button>
         )}
       </div>
-      {mt && (
-        <div className="text-[#666] mb-1 leading-relaxed border-l-2 border-[#D4D4D4] pl-2">
-          📄 {mt.substring(0, 120)}
-          {mt.length > 120 ? '...' : ''}
-        </div>
-      )}
-      {issue && <p className="text-[#333333] leading-relaxed mb-1">{issue}</p>}
-      {suggestion && (
-        <div className="flex items-start gap-1 text-[#525252]">
-          <ChevronRight
-            className="w-3 h-3 mt-0.5 shrink-0 text-[#1a66fb]"
-            strokeWidth={2}
-          />
-          <span>{suggestion}</span>
-        </div>
-      )}
-      {hasPatch && <FixDiffView patch={ann.patch} />}
-      {ann.status === 'fixed' && fileId && !!ann.id && (
-        // stopPropagation：卡片 onClick 是定位跳转，不能让按钮点击触发它
-        <div onClick={(e) => e.stopPropagation()}>
-          <FixActions fileId={fileId} annotationId={String(ann.id)} />
+      {expanded && (
+        <div className="mt-1">
+          {mt && (
+            <div className="text-[#666] mb-1 leading-relaxed border-l-2 border-[#D4D4D4] pl-2">
+              📄 {mt.substring(0, 120)}
+              {mt.length > 120 ? '...' : ''}
+            </div>
+          )}
+          {issue && (
+            <p className="text-[#333333] leading-relaxed mb-1">{issue}</p>
+          )}
+          {suggestion && (
+            <div className="flex items-start gap-1 text-[#525252]">
+              <ChevronRight
+                className="w-3 h-3 mt-0.5 shrink-0 text-[#1a66fb]"
+                strokeWidth={2}
+              />
+              <span>{suggestion}</span>
+            </div>
+          )}
+          {hasPatch && <FixDiffView patch={ann.patch} />}
+          {ann.status === 'fixed' && fileId && !!ann.id && (
+            // stopPropagation：卡片 onClick 是定位跳转，不能让按钮点击触发它
+            <div onClick={(e) => e.stopPropagation()}>
+              <FixActions fileId={fileId} annotationId={String(ann.id)} />
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -512,6 +474,11 @@ function CommentCard({
   // 级别配色与 AI 卡同源 SEVERITY_CONFIG；存量无 severity 视为 medium=一般
   const scfg =
     SEVERITY_CONFIG[comment.severity || 'medium'] || SEVERITY_CONFIG.medium;
+  // 与 AiCard 同口径：正文默认折叠只留头部行，箭头展开/定位选中自动展开
+  const [expanded, setExpanded] = useState(false);
+  useEffect(() => {
+    if (selected) setExpanded(true);
+  }, [selected]);
   return (
     <div
       onClick={onSelect}
@@ -524,7 +491,7 @@ function CommentCard({
         borderLeft: `3px solid ${MANUAL_STYLE.border}`,
       }}
     >
-      <div className="mb-1 flex items-center gap-1.5">
+      <div className="flex items-center gap-1.5">
         <MessageSquare
           className="w-3.5 h-3.5 shrink-0"
           style={{ color: MANUAL_STYLE.text }}
@@ -555,6 +522,22 @@ function CommentCard({
             {new Date(comment.create_time).toLocaleDateString()}
           </span>
         ) : null}
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            setExpanded((v) => !v);
+          }}
+          title={expanded ? '折叠' : '展开'}
+          className={`shrink-0 rounded p-0.5 text-[#999] hover:bg-black/5 ${
+            expanded && comment.create_time ? '' : 'ml-auto'
+          }`}
+        >
+          {expanded ? (
+            <ChevronUp className="h-3.5 w-3.5" strokeWidth={2} />
+          ) : (
+            <ChevronDown className="h-3.5 w-3.5" strokeWidth={2} />
+          )}
+        </button>
         {canDelete && onDelete && (
           <button
             onClick={(e) => {
@@ -568,9 +551,11 @@ function CommentCard({
           </button>
         )}
       </div>
-      <div className="whitespace-pre-wrap leading-relaxed text-[#333]">
-        {comment.content}
-      </div>
+      {expanded && (
+        <div className="mt-1 whitespace-pre-wrap leading-relaxed text-[#333]">
+          {comment.content}
+        </div>
+      )}
     </div>
   );
 }
@@ -626,9 +611,43 @@ export default function ReviewPanel({
   // removedIds 只覆盖「刷新到达前」的窗口；失败回滚。跨所有来源一致生效
   // （annotationMap / unmatched / 边栏卡 / 批注列表全走 visibleAnnotations）。
   const [removedAnnIds, setRemovedAnnIds] = useState<Set<string>>(new Set());
+
+  // ── 服务端权威状态订阅（确认保留无反馈根修）：props 批注是父组件的会话内存
+  // 快照，确认保留/回退 mutation 只 invalidate state 查询、无人刷新 props ⇒ 弹框
+  // 内永远旧值。这里订阅 useFileReviewState（与进度卡「查看明细」同源同刷新），
+  // 按 annotation id 把最新 {status, patch} 覆盖到 props 批注上（不改父组件）：
+  // 确认保留/回退后徽标、FixDiffView、FixActions 在弹框内即时翻转。
+  const { data: stateRes } = useFileReviewState(open ? fileId : '');
+  const stateData = stateRes?.data;
+  const mergedAnnotations = useMemo(
+    () => mergeAnnotationOverlays(annotations, stateData?.annotations || []),
+    [annotations, stateData],
+  );
   const visibleAnnotations = useMemo(
-    () => annotations.filter((a) => !(a.id && removedAnnIds.has(String(a.id)))),
-    [annotations, removedAnnIds],
+    () =>
+      mergedAnnotations.filter(
+        (a) => !(a.id && removedAnnIds.has(String(a.id))),
+      ),
+    [mergedAnnotations, removedAnnIds],
+  );
+
+  // ── 成稿版本判定（面板仍显示原文根修）：state.doc.has_result/version 的设计
+  // 语义就是「该展示的文档：最近一次落盘的成稿版本」。有成稿时 content/blob
+  // 一律改拉版本端点；content 实际来源单独记录（版本拉取失败降级回原文件后
+  // 置回 false），保证段落与 blob 恒同源。
+  const stateTaskId = stateData?.task_id || '';
+  const stateVersion = stateData?.doc?.has_result
+    ? stateData.doc.version || ''
+    : '';
+  const showVersion = !!stateTaskId && !!stateVersion;
+  const [contentIsVersion, setContentIsVersion] = useState(false);
+  // 定位/高亮文本：展示成稿时 fixed/resolved 批注的 matched_text 已被替换成
+  // patch.replace，按 matched_text 定位必然失配——改用 getLocateText；展示原
+  // 文件时一律 matched_text。仅用于定位/高亮，卡片展示仍是 matched_text。
+  const matchTextOf = useCallback(
+    (ann: Annotation) =>
+      contentIsVersion ? getLocateText(ann) : getMatchedText(ann),
+    [contentIsVersion],
   );
   // 「其他批注」兜底提示：点击未定位条目（批注列表区）时给出无法定位说明 + 高亮
   const [unmatchedHintKey, setUnmatchedHintKey] = useState<string | null>(null);
@@ -660,8 +679,14 @@ export default function ReviewPanel({
   // 可编辑文件默认也进保真预览（原色审阅），点「编辑文档」才切 Lexical 旧段落
   // 编辑视图（纯文本模型，颜色/格式必然丢失），保存/放弃后回到保真预览。
   const [userEditing, setUserEditing] = useState(false);
+  // 展示成稿版本时强制关闭编辑入口：编辑保存流以原 fileId 为基准，对着成稿
+  // 段落改字再按原文件落地会静默丢修复。
   const editing =
-    canEdit && onEditDocument && loadedFileId === fileId && userEditing;
+    canEdit &&
+    onEditDocument &&
+    !contentIsVersion &&
+    loadedFileId === fileId &&
+    userEditing;
   // 切换文件/页签后回到保真预览（编辑态只对当前已加载文件有效）
   useEffect(() => {
     setUserEditing(false);
@@ -671,11 +696,37 @@ export default function ReviewPanel({
   const docxWrapRef = useRef<HTMLDivElement | null>(null);
   const [docxRenderFailed, setDocxRenderFailed] = useState(false);
   const [markedKeys, setMarkedKeys] = useState<Set<string>>(new Set());
-  const {
-    data: docxBlob,
-    isLoading: docxBlobLoading,
-    error: docxBlobError,
-  } = useFileBlob(docxFidelityCandidate ? fileId : '');
+  // blob 与 content 同源切换：content 来自成稿版本时拉版本 blob（frv- 对象）。
+  // 版本 blob 失败（对象丢失等）→ versionDegraded 粘性置位 → content effect
+  // 降级回原文件，contentIsVersion 复位 —— 严禁只降 blob 不降 content：段落与
+  // 渲染文件不同源会让 mark 全部错位。
+  const [versionDegraded, setVersionDegraded] = useState(false);
+  // 版本变更（新一轮修复/回退产新 version）后重试版本链路
+  useEffect(() => {
+    setVersionDegraded(false);
+  }, [fileId, stateTaskId, stateVersion]);
+  const versionBlobQuery = useReviewVersionBlob(
+    contentIsVersion ? stateTaskId : '',
+    contentIsVersion ? stateVersion : '',
+  );
+  useEffect(() => {
+    if (versionBlobQuery.error) setVersionDegraded(true);
+  }, [versionBlobQuery.error]);
+  const preferOriginalBlob = !contentIsVersion || !!versionBlobQuery.error;
+  const versionBlobUsable =
+    contentIsVersion && !versionBlobQuery.error && !!versionBlobQuery.data;
+  const origBlobQuery = useFileBlob(
+    docxFidelityCandidate && preferOriginalBlob ? fileId : '',
+  );
+  const docxBlob = versionBlobUsable
+    ? versionBlobQuery.data
+    : origBlobQuery.data;
+  const docxBlobLoading = versionBlobUsable
+    ? versionBlobQuery.isLoading
+    : origBlobQuery.isLoading;
+  const docxBlobError = versionBlobUsable
+    ? versionBlobQuery.error
+    : origBlobQuery.error;
   const docxFidelity = Boolean(
     docxFidelityCandidate && docxBlob && !docxBlobError && !docxRenderFailed,
   );
@@ -727,12 +778,13 @@ export default function ReviewPanel({
     if (!content) return new Map<number, Annotation[]>();
     const map = new Map<number, Annotation[]>();
     const claimed = new Set<Annotation>();
-    // 前置通道：跨行摘录（matched_text 含 \n 且非空行 ≥2）走连续段落序列匹配。
-    // 这类批注刻意不进下方逐段匹配 —— 其 matched_text 无法整段 includes，
-    // 而 keyword 策略会把多行内容的关键词误配到单个段落（错位归属）。
+    // 前置通道：跨行摘录（定位文本含 \n 且非空行 ≥2）走序列匹配——matchMultiline
+    // 内部已有有序降级（序列唯命中 → 首行首现 → 表格拼接 → 诚实未定位），不再
+    // 「宁可未定位」；keyword 策略仍不用于多行（会把多行关键词误配到单段落）。
     for (const ann of visibleAnnotations) {
-      if (multilineLineNorms(getMatchedText(ann)).length < 2) continue;
-      const base = matchMultiline(content.paragraphs, getMatchedText(ann));
+      const locate = matchTextOf(ann);
+      if (multilineLineNorms(locate).length < 2) continue;
+      const base = matchMultiline(content.paragraphs, locate);
       if (base >= 0) {
         claimed.add(ann);
         map.set(base, [ann]);
@@ -740,18 +792,21 @@ export default function ReviewPanel({
     }
     for (const para of content.paragraphs) {
       const matches = visibleAnnotations.filter(
-        (ann) => !claimed.has(ann) && matchAnnotation(para.text, ann),
+        (ann) =>
+          !claimed.has(ann) && matchAnnotation(para.text, matchTextOf(ann)),
       );
       if (matches.length > 0) {
         matches.sort(
           (a, b) => getMatchedText(b).length - getMatchedText(a).length,
         );
         matches.forEach((ann) => claimed.add(ann));
-        map.set(para.index, matches);
+        // 合并而非覆盖：跨行批注可能经首行/拼接通道落在与单行批注相同的段落
+        // （如目录首现），覆盖会把先落的批注从边栏里挤丢。
+        map.set(para.index, [...(map.get(para.index) || []), ...matches]);
       }
     }
     return map;
-  }, [content, visibleAnnotations]);
+  }, [content, visibleAnnotations, matchTextOf]);
 
   // 边栏锚定项：AI 标注 + 带锚点的手动批注，按段落归组
   const railByPara = useMemo(() => {
@@ -783,12 +838,11 @@ export default function ReviewPanel({
         let idx = -1;
         if (c.anchor_para != null) {
           const p = content.paragraphs.find((pp) => pp.index === c.anchor_para);
-          if (p && matchAnnotation(p.text, { matched_text: at } as Annotation))
-            idx = p.index;
+          if (p && matchAnnotation(p.text, at)) idx = p.index;
         }
         if (idx < 0) {
           const p = content.paragraphs.find((pp) =>
-            matchAnnotation(pp.text, { matched_text: at } as Annotation),
+            matchAnnotation(pp.text, at),
           );
           if (p) idx = p.index;
         }
@@ -827,13 +881,14 @@ export default function ReviewPanel({
   railItemsRef.current = railItems;
 
   // railItem → highlightDocxRanges 入参（与旧视图 targetsByPara 同源：首个 AI
-  // 标注 + 首个手动批注的文本/颜色/锚点偏移）
+  // 标注 + 首个手动批注的文本/颜色/锚点偏移）。AI 文本走 matchTextOf：成稿
+  // 版本里 matched_text 已被替换，高亮必须锚定 patch.replace。
   const toHighlightItems = (items: RailItem[]): DocxHighlightItem[] => {
     const out: DocxHighlightItem[] = [];
     for (const it of items) {
       const raw =
         it.kind === 'ai'
-          ? getMatchedText(it.ann!)
+          ? matchTextOf(it.ann!)
           : (it.comment?.anchor_text || '').trim();
       if (!raw) continue;
       // 跨行摘录：完整分行走 highlightDocxRanges 序列通道（唯一连续段落序列
@@ -902,15 +957,17 @@ export default function ReviewPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [docxFidelity, railItems, markedKeys]);
 
-  // 段落高亮目标（首个 AI 标注 + 首个手动批注）
+  // 段落高亮目标（首个 AI 标注 + 首个手动批注）；AI 文本用 matchTextOf——
+  // 成稿版本里 matched_text 已被替换，必须按 patch.replace 高亮
   const targetsByPara = useMemo(() => {
     const m = new Map<number, HighlightTarget[]>();
     for (const [idx, items] of railByPara) {
       const ts: HighlightTarget[] = [];
       const firstAi = items.find((i) => i.kind === 'ai');
-      if (firstAi?.ann && getMatchedText(firstAi.ann)) {
+      const aiText = firstAi?.ann ? matchTextOf(firstAi.ann) : '';
+      if (firstAi?.ann && aiText) {
         ts.push({
-          text: getMatchedText(firstAi.ann),
+          text: aiText,
           color: firstAi.color,
           key: firstAi.key,
         });
@@ -926,7 +983,7 @@ export default function ReviewPanel({
       if (ts.length) m.set(idx, ts);
     }
     return m;
-  }, [railByPara]);
+  }, [railByPara, matchTextOf]);
 
   // 表格 diff 基线：与初始灌入共用 parseTableCells（同源）；解析失败的表不出现在
   // Map 里 → diffBlocks 自动跳过该表改动（保护）
@@ -941,12 +998,13 @@ export default function ReviewPanel({
     return m;
   }, [content]);
 
-  // 未匹配到段落的项（边栏下方兜底展示）
+  // 未匹配到段落的项（边栏下方兜底展示）；键与 railItems 同口径用 matchTextOf，
+  // 否则成稿模式下 fixed/resolved 批注会被误判成「未匹配」重复出现
   const unmatched = useMemo(() => {
     const matchedAi = new Set(
       activeRailItems
         .filter((i) => i.kind === 'ai')
-        .map((i) => getMatchedText(i.ann!)),
+        .map((i) => matchTextOf(i.ann!)),
     );
     const matchedCm = new Set(
       activeRailItems
@@ -954,7 +1012,7 @@ export default function ReviewPanel({
         .map((i) => i.comment!.id),
     );
     return {
-      ai: visibleAnnotations.filter((a) => !matchedAi.has(getMatchedText(a))),
+      ai: visibleAnnotations.filter((a) => !matchedAi.has(matchTextOf(a))),
       comments: (comments || []).filter(
         (c) => (c.anchor_text || '').trim() && !matchedCm.has(c.id),
       ),
@@ -962,7 +1020,7 @@ export default function ReviewPanel({
         (c) => !(c.anchor_text || '').trim(),
       ),
     };
-  }, [activeRailItems, visibleAnnotations, comments]);
+  }, [activeRailItems, visibleAnnotations, comments, matchTextOf]);
 
   // 批注列表条目（置顶列表区，与文档边栏批注同时存在）：已定位在前（级别
   // 高→中→低降序，同级别内保持文档序）、未定位在后；文本取问题描述（AI）/
@@ -1125,37 +1183,65 @@ export default function ReviewPanel({
     return () => window.removeEventListener('annotation-select', handler);
   }, [handleAnchorClick]);
 
-  // Fetch file content when panel opens
+  // Fetch file content when panel opens。有落盘成稿（state.doc）时改拉**版本
+  // content**——修复/确认保留后面板必须展示修复后文案（面板仍显原文根修）；
+  // 版本 content 失败（对象丢失/网络）或空段落，或版本 blob 已失败
+  // （versionDegraded），降级回原文件 content，contentIsVersion 复位。
   useEffect(() => {
     if (!open || !fileId) return;
     let cancelled = false;
 
-    setLoading(true);
-    setError(null);
-
-    request
-      .get(api.getFileContent(fileId), { params: { _t: Date.now() } })
-      .then((res: any) => {
-        if (cancelled) return;
-        if (res?.data?.code === 0) {
-          setContent(res.data.data);
-          setLoadedFileId(fileId);
-        } else {
-          setError(res?.data?.message || 'Failed to load file content');
-        }
-      })
-      .catch((e: any) => {
-        if (cancelled) return;
-        setError(e?.message || 'Failed to load file content');
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
+    const loadOriginal = async () => {
+      const res = await request.get(api.getFileContent(fileId), {
+        params: { _t: Date.now() },
       });
+      if (cancelled) return;
+      if (res?.data?.code === 0) {
+        setContent(res.data.data);
+        setLoadedFileId(fileId);
+        setContentIsVersion(false);
+      } else {
+        setError(res?.data?.message || 'Failed to load file content');
+      }
+    };
 
+    const load = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        if (showVersion && !versionDegraded) {
+          try {
+            const res = await request.get(
+              api.fileReviewVersionContent(stateTaskId, stateVersion),
+            );
+            const data = res?.data?.data;
+            if (
+              !cancelled &&
+              res?.data?.code === 0 &&
+              Array.isArray(data?.paragraphs) &&
+              data.paragraphs.length > 0
+            ) {
+              setContent(data);
+              setLoadedFileId(fileId);
+              setContentIsVersion(true);
+              return;
+            }
+          } catch {
+            // 版本 content 失败：降级回原文件（诚实回退，不留白屏）
+          }
+        }
+        await loadOriginal();
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message || 'Failed to load file content');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    load();
     return () => {
       cancelled = true;
     };
-  }, [open, fileId]);
+  }, [open, fileId, showVersion, stateTaskId, stateVersion, versionDegraded]);
 
   // 关闭/切换文件时清掉选区浮层与编辑态
   useEffect(() => {
@@ -1188,7 +1274,7 @@ export default function ReviewPanel({
         if (!r && para) {
           const text =
             it.kind === 'ai'
-              ? getMatchedText(it.ann!)
+              ? matchTextOf(it.ann!)
               : it.comment?.anchor_text || '';
           const start = it.kind === 'comment' ? it.comment?.anchor_start : null;
           r =
@@ -1540,7 +1626,7 @@ export default function ReviewPanel({
       if (firstAi?.ann) {
         tableHtml = highlightInTableHtml(
           tableHtml,
-          getMatchedText(firstAi.ann),
+          matchTextOf(firstAi.ann),
           firstAi.color,
           firstAi.key,
         );
@@ -1566,7 +1652,7 @@ export default function ReviewPanel({
         />
       );
     },
-    [railByPara, handleSelectTableAnn],
+    [railByPara, handleSelectTableAnn, matchTextOf],
   );
 
   const innerContent = (
@@ -1592,12 +1678,21 @@ export default function ReviewPanel({
             <h2 className="text-sm font-semibold text-[#1A1A1A] truncate">
               {fileName || '文件审核'}
             </h2>
+            {/* 成稿版本指示：当前正文 = 修复轮落盘的成稿（含已保留的修改），
+                让「确认保留后文档变了」有可感知的来源说明 */}
+            {contentIsVersion && (
+              <span className="shrink-0 rounded border border-[#B7EB8F] bg-[#F6FFED] px-1.5 py-0.5 text-[10px] font-bold text-[#388E3C]">
+                修复后成稿 {stateVersion}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-1 shrink-0">
-            {/* 保真预览默认只读：显式进入编辑（Lexical 旧段落视图，格式/颜色会简化） */}
+            {/* 保真预览默认只读：显式进入编辑（Lexical 旧段落视图，格式/颜色会简化）；
+                成稿版本展示时强制关闭（编辑流按原 fileId 落地会静默丢修复） */}
             {canEdit &&
               onEditDocument &&
               !editing &&
+              !contentIsVersion &&
               loadedFileId === fileId && (
                 <button
                   onClick={() => setUserEditing(true)}
@@ -1989,7 +2084,7 @@ export default function ReviewPanel({
                           if (firstAi?.ann) {
                             tableHtml = highlightInTableHtml(
                               tableHtml,
-                              getMatchedText(firstAi.ann),
+                              matchTextOf(firstAi.ann),
                               firstAi.color,
                               firstAi.key,
                             );

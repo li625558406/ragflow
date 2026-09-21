@@ -158,6 +158,7 @@ def test_all_routes_registered_on_blueprint():
         "/file/review/annotation/<annotation_id>/delete": {"POST", "OPTIONS"},
         "/file/review/annotation/<annotation_id>/revert": {"POST", "OPTIONS"},
         "/file/review/<task_id>/<file_version>/download": {"GET", "HEAD", "OPTIONS"},
+        "/file/review/<task_id>/<file_version>/content": {"GET", "HEAD", "OPTIONS"},
     }, f"路由集合不符：{rules}"
     for name in ("list_review_templates", "review_state", "fix_review",
                  "update_annotation_status", "delete_annotation",
@@ -714,6 +715,118 @@ def test_download_filename_excludes_internal_file_id(monkeypatch):
     disp = resp.headers["Content-Disposition"]
     assert "internal-uuid-should-not-leak" not in disp
     assert quote("文件审核_v1.docx") in disp
+
+
+# ── GET /file/review/<task_id>/<file_version>/content ────────────────
+
+class _FakeDocx:
+    """Docx 解析替身：断言端点把**转换后的 docx 字节**传进来。"""
+
+    def __init__(self):
+        self.calls = []
+
+    def to_paragraphs(self, filename=None, binary=None):
+        self.calls.append(binary)
+        return [{"index": 0, "text": "修复后段落", "type": "paragraph", "page": 1}]
+
+
+def _content_setup(monkeypatch, *, rounds, blob, fake_docx=None):
+    """content 端点公共打桩：轮次行 + 存储替身 + Docx 模块桩（rag.app.naive 依赖
+    深重，测试只需要 to_paragraphs 这一个行为）。返回 (storage, fake_docx)。"""
+    monkeypatch.setattr(_api.FileReviewRoundService, "get_by_task",
+                        classmethod(lambda cls, tid: list(rounds)))
+    store = _FakeStorage(blob)
+    monkeypatch.setattr(_api.settings, "STORAGE_IMPL", store)
+    fake_docx = fake_docx or _FakeDocx()
+    naive_stub = types.ModuleType("rag.app.naive")
+    naive_stub.Docx = lambda: fake_docx
+    monkeypatch.setitem(sys.modules, "rag.app.naive", naive_stub)
+    return store, fake_docx
+
+
+def test_version_content_rejects_missing_task(monkeypatch):
+    """对抗：task 不存在（轮次空）→ 可读错误，不碰存储。"""
+    store, _ = _content_setup(monkeypatch, rounds=[], blob=b"PK\x03\x04")
+    body = _call(_api.review_version_content, method="GET",
+                 task_id="t1", file_version="v2")
+    assert body["code"] != 0
+    assert "任务不存在" == body["message"]
+    assert store.calls == []
+
+
+def test_version_content_rejects_round_without_artifact(monkeypatch):
+    """对抗：版本号存在但该轮无 minio_path（未产出/失败轮）→ 「该轮次无成稿」。
+
+    防御空 file_version 拼出 `frv-t1-` 这种全 task 共用的脏路径同属此闸。
+    """
+    row = _round(1, "failed", minio_path=None, file_version="v1")
+    store, _ = _content_setup(monkeypatch, rounds=[row], blob=b"PK\x03\x04")
+    body = _call(_api.review_version_content, method="GET",
+                 task_id="t1", file_version="v1")
+    assert body["code"] != 0
+    assert "该轮次无成稿" == body["message"]
+    body = _call(_api.review_version_content, method="GET",
+                 task_id="t1", file_version="")
+    assert body["code"] != 0
+    assert store.calls == [], "两处失败都不得发起对象读取"
+
+
+def test_version_content_returns_error_when_object_missing(monkeypatch):
+    """对抗：对象丢失（get 返回 None）不得伪装成空段落成功。"""
+    row = _round(2, "done", minio_path="frv-t1-v2", file_version="v2")
+    store, _ = _content_setup(monkeypatch, rounds=[row], blob=None)
+    body = _call(_api.review_version_content, method="GET",
+                 task_id="t1", file_version="v2")
+    assert body["code"] != 0
+    assert "丢失" in body["message"]
+    assert store.calls == [(f"{TENANT}-downloads", "frv-t1-v2")]
+
+
+def test_version_content_parses_docx_blob(monkeypatch):
+    """成功路径：PK 魔数直接解析，返回段落结构（弹框成稿视图的数据源）。"""
+    row = _round(2, "done", minio_path="frv-t1-v2", file_version="v2")
+    _, fake_docx = _content_setup(
+        monkeypatch, rounds=[row], blob=b"PK\x03\x04fake-docx")
+    body = _call(_api.review_version_content, method="GET",
+                 task_id="t1", file_version="v2")
+    assert body["code"] == 0
+    assert body["data"]["file_type"] == "docx"
+    assert body["data"]["file_version"] == "v2"
+    assert body["data"]["paragraphs"][0]["text"] == "修复后段落"
+    assert fake_docx.calls == [b"PK\x03\x04fake-docx"]
+
+
+def test_version_content_converts_legacy_doc_blob(monkeypatch):
+    """防御历史脏对象：OLE2 魔数先走 LibreOffice 转换，解析的是**转换后**字节；
+    转换失败如实报错，不静默降级纯文本。"""
+    from api.utils import doc_utils
+
+    row = _round(2, "done", minio_path="frv-t1-v2", file_version="v2")
+    store, fake_docx = _content_setup(
+        monkeypatch, rounds=[row], blob=b"\xd0\xcf\x11\xe0legacy-doc")
+
+    calls = []
+
+    def _fake_convert(binary):
+        calls.append(binary)
+        return b"PK\x03\x04converted"
+
+    monkeypatch.setattr(doc_utils, "doc_to_docx_via_libreoffice", _fake_convert)
+    body = _call(_api.review_version_content, method="GET",
+                 task_id="t1", file_version="v2")
+    assert body["code"] == 0
+    assert calls == [b"\xd0\xcf\x11\xe0legacy-doc"]
+    assert fake_docx.calls == [b"PK\x03\x04converted"]
+
+    calls.clear()
+    monkeypatch.setattr(doc_utils, "doc_to_docx_via_libreoffice",
+                        lambda binary: None)
+    body = _call(_api.review_version_content, method="GET",
+                 task_id="t1", file_version="v2")
+    assert body["code"] != 0
+    assert "解析失败" in body["message"]
+    assert fake_docx.calls == [b"PK\x03\x04converted"], "转换失败不得继续解析"
+    assert store.calls[-1] == (f"{TENANT}-downloads", "frv-t1-v2")
 
 
 # ── POST /file/review/annotation/<aid>/revert ────────────────────────

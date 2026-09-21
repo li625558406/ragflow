@@ -1,5 +1,22 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-21（七）审核弹框三项根修：确认保留即时联动 + 未定位有序降级 + 弹框展示成稿版本
+
+**主题**：后端（六）部署后用户实测弹框（ReviewPanel）报三问题：①弹框点「确认保留」无任何反馈（进度卡「查看明细」点了立即变，弹框不变）；②「文档里有批注的文案，但显示未定位」；③确认保留后弹框里文档还是原文。生产诊断（最近 8 任务逐条同口径重放）定位：①面板批注是父组件 props（会话内存），mutation 只 invalidate state 查询、无人刷新 props ⇒ 永远旧值；②MISS 分三类——`multi`（LLM 复制行致序列通道多命中→-1）、`dup`/表格（重复段/表格整体一个 HTML 段落致序列通道结构性失配）、`nomatch`（`/；` 归一化后为空，诚实不可定位）；③面板渲染原始上传文件，成稿版本（`frv-{task_id}-{version}`）从不进面板——state `doc.has_result/version` 设计注释本就写着「面板必须展示最后一版」但前端从未消费。
+
+**改动（后端 1 文件 + 前端 5 文件 + 测试 3 文件）**：
+- **A 状态联动**：`review-panel.tsx` 订阅 `useFileReviewState(open?fileId:'')`（与进度卡同源同刷新），新增共享纯函数 `mergeAnnotationOverlays`（docx-view-utils.ts）按 annotation id 把 state 最新 `{status,patch}` 覆盖到 props 批注（不改父组件）；**无变化时返回原数组引用**——state 轮询重放相同数据不能触发下游 annotationMap/rail 全量重算。弹框内徽标/FixDiffView/FixActions 确认保留/回退后即时翻转。
+- **B 未定位降级**：`matchAnnotation`/`matchMultiline` 从 review-panel.tsx 迁出至 `docx-view-utils.ts` 共享+可单测；matchMultiline 改**有序降级**——①序列唯命中（不变）→ ②首行通道（最长行 norm，文档序第一个命中段；与单行 dup「定位首现」同口径，多行不应反而更差）→ ③诚实未定位。**计划偏差**：原设计的第③「拼接通道」（表格）实现时证明**不可达死代码**——拼接命中蕴含段落 norm 含全部行 ⇒ 必含最长行 ⇒ 首行通道必先命中，故不设（代码留证明注释）。附带修复：annotationMap 同段覆盖 bug（多行批注与单行批注命中同段时后者被丢）改合并——降级通道增多后碰撞概率上升，必须合并。
+- **C 成稿版本展示**：后端 `file_review_api.py` 新端点 `GET /file/review/<task_id>/<file_version>/content`（镜像 download 闸链：任务存在→轮次有产物→bucket→对象非空；读路径不入 owner-gate 与 download 同决策；魔数分发 PK 直接解析/OLE2 先 LibreOffice 转换，两头都解不出报错不静默降级纯文本）。前端 `api.ts` + `fileReviewVersionContent`；`use-file-blob.ts` + `useReviewVersionBlob`（staleTime 5min，(task_id,version) 不可变）；面板 content effect 有成稿时改拉版本 content，**粘性降级状态机**（`versionDegraded` 按 (fileId,taskId,version) 复位 + `contentIsVersion` 记录实际来源）防「版本 blob 失败 × 版本 content 成功」乒乓死循环与段落/blob 不同源错位；blob 双 hook 常调+enabled 门控（禁条件 hooks）合并 data/loading/error；`getLocateText(ann)`（fixed/resolved+patch→patch.replace，否则 matched_text）仅用于定位/高亮（`matchTextOf` 随 `contentIsVersion` 切换），卡片展示仍 matched_text；成稿展示时头部加「修复后成稿 {version}」徽标 + **编辑闸**（编辑流按原 fileId 落地会静默丢修复）。
+
+**测试**：后端 test_file_review_api 49 passed（新 5 例：任务不存在不碰存储/无产物轮+空版本号同闸/对象丢失不伪装空段落成功/PK 直解成功路径/OLE2 转换后解析+转换失败不续解）；前端 docx-view-utils 17 + review-panel-version 5（overlay 翻转+空 state 不误翻/成稿优先拉版本 content+来源徽标+不拉原文件/版本 content 失败降级/无成稿行为不变）+ 既有 6 套件共 85 passed；file_review 后端全 5 套件 267 passed；tsc 改动文件零错误。setup.ts 补 ResizeObserver 守卫桩（jsdom 缺口在 harness）。
+
+**未部署、未 commit**（部署硬约束：后端 1 文件 SCP+restart 先行——新端点前端不消费无碍；前端 build+dist+nginx reload 后行）。
+
+**同日追加：边栏批注卡默认折叠**——用户要求「文档正文的批注右侧的批注内容正文默认折叠起来，可展开」。AiCard/CommentCard 正文（摘录/问题/建议/修复对比/操作、人工批注内容）改为默认折叠只留头部行：头部尾随 ChevronDown 切换按钮（stopPropagation 防误触发定位跳转），`selected` 时自动展开（列表区跳转/正文 mark 点击后能看到内容）。E2E（dev :9222 demo01）：9 卡默认全折叠、点箭头展开+标题翻转、annotation-select 定位后自动展开+选中环；tsc 零错误+组件测试 5 例回归全绿。
+
+**遗留**：①`/；` 类纯符号摘录诚实未定位（不可修）；②目录/标题重复段多命中取首现，可能与批注真实锚定段不符（与单行 dup 同口径的既知折衷）；③已打开的弹框不随新成稿版本自动刷新（需关重开）。
+
 ## 2026-09-21（六）修复对比 + 修复标记 + 回退/确认保留——「结果可审视 + 可撤销」闭环
 
 **主题**：接（五），用户要求「能看到修复前和修复后的对比；修复后的批注要做标记；修复的批注可以手动点击回退或使用修复后的内容」。现状缺口：落地补丁（find→replace）只写进 docx 字节，批注行没有存档，UI 无从展示「改了什么」；fixed 批注无视觉标记；修错了无法撤销。

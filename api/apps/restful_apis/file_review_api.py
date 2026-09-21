@@ -20,6 +20,7 @@
   POST /file/review/<task_id>/fix                             发起一轮修复
   POST /file/review/annotation/<aid>/status                  人工闭环单条标注（兜底出口）
   GET  /file/review/<task_id>/<file_version>/download        下载指定轮次成稿 MinIO 对象
+  GET  /file/review/<task_id>/<file_version>/content         读取指定轮次成稿段落结构（审核弹框展示成稿）
 
 ── 设计取舍（T9 前置侦察实测结论，改前请先读 Task 9 的「规格重写说明」）──────
 
@@ -469,4 +470,61 @@ async def download_review_version(task_id: str, file_version: str):
         )
     except Exception:
         logger.exception("file review: download failed, task_id=%s version=%s", task_id, file_version)
+        return get_error_data_result(message="Internal server error")
+
+
+@manager.route("/file/review/<task_id>/<file_version>/content", methods=["GET"])
+@login_required
+async def review_version_content(task_id: str, file_version: str):
+    """读取指定 (task_id, file_version) 轮次成稿的段落结构，供审核弹框展示成稿版本。
+
+    与 download 同一读路径（不入 owner-gate）、同一闸链（任务存在 → 轮次有产物 →
+    bucket 可用 → 对象非空），取到 blob 后按魔数分发解析：PK 即 docx 直接
+    Docx().to_paragraphs；OLE2（.doc 原件经 LibreOffice 修复链路产出前不会有，但
+    防御历史脏对象）先 doc_to_docx_via_libreoffice 转换再解析 —— 与
+    /files/<id>/content 对原文件的口径同构，保证弹框里成稿段落与原文件段落同源可比。
+    """
+    try:
+        rounds = FileReviewRoundService.get_by_task(task_id)
+        if not rounds:
+            return get_error_data_result("任务不存在")
+        tenant_id = rounds[0].tenant_id or ""
+        if not file_version:
+            return get_error_data_result("该轮次无成稿")
+        target = next(
+            (r for r in rounds if r.file_version == file_version and r.minio_path),
+            None,
+        )
+        if not target:
+            return get_error_data_result("该轮次无成稿")
+        bucket = f"{tenant_id}-downloads" if tenant_id else ""
+        if not bucket:
+            return get_error_data_result("该任务归属缺失，无法读取")
+        blob = await thread_pool_exec(
+            settings.STORAGE_IMPL.get, bucket, f"frv-{task_id}-{file_version}"
+        )
+        if not blob:
+            return get_error_data_result("成稿文件已丢失，请重新发起修复")
+
+        from api.utils.doc_utils import doc_to_docx_via_libreoffice, is_doc_file
+
+        # 防御：成稿落盘一律是 docx（executor._store_version_blob 口径），此处按魔数
+        # 分发只为兼容历史脏对象；两头都解不出再报错，不静默降级纯文本（会让弹框
+        # 把成稿当纯文本渲染，与保真视图互相矛盾）。
+        if is_doc_file(blob):
+            docx_blob = await thread_pool_exec(doc_to_docx_via_libreoffice, blob)
+            if not docx_blob:
+                return get_error_data_result("成稿文件解析失败，请重新发起修复")
+            blob = docx_blob
+        if blob[:2] != b"PK":
+            return get_error_data_result("成稿文件格式异常，请重新发起修复")
+
+        from rag.app.naive import Docx
+
+        paragraphs = await thread_pool_exec(Docx().to_paragraphs, binary=blob)
+        return get_json_result(
+            data={"file_type": "docx", "file_version": file_version, "paragraphs": paragraphs}
+        )
+    except Exception:
+        logger.exception("file review: version content failed, task_id=%s version=%s", task_id, file_version)
         return get_error_data_result(message="Internal server error")
