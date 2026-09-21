@@ -1,5 +1,20 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-21（十二）审核/范本预览大文件渲染优化：渲染产物缓存+体量门槛
+
+**主题**：用户反馈「C端流程页面的文件审核和范本填写，文件过大渲染慢」。根因三层：docx-preview `renderAsync` 在主线程同步建整棵 DOM（JSZip 解压+XML 解析+整树构建，大文件打开瞬间卡死，`content-visibility` 只省排版救不了建树）；审核面板（ReviewPanel）没有体量门槛（范本预览有 >2.5MB 文本降级，审核面板漏了）；弹框/抽屉关闭重开同一文件整本重渲染。选定方案 A（审核面板补门槛）+ B（渲染产物缓存）。
+
+**改动（纯前端 5 文件 + 4 新测试套件）**：
+- `web/src/pages/c-chat/docx-render-cache.ts`（新增，核心基建）：`stashDocxRender(blob, el)` 把渲染产物子树搬进 WeakMap<Blob, holder> 离屏缓存 + `takeDocxRender(blob, el)` 命中搬回（appendChild 毫秒级回放）+ `BIG_BLOB_BYTES = 2.5MB` 阈值单一来源（范本预览本地常量收敛至此）。设计要点：**以 Blob 对象身份为键**——版本轮换（新 Blob）天然 miss 全量重渲、React Query 逐出后整树可 GC；**树只存在一份**（不在 el 就在 holder，stash 是搬移非复制，内存不翻倍）；**LRU 上限 3**（order 引用序 + 淘汰清 holder，`firstElementChild` 判空等效失效）。
+- `web/src/pages/c-chat/docx-highlight.ts`：末尾纯追加 `stripDocxAnnotationMarks`（剥 mark[data-anchor-key] 含 {{key}} 徽标 span，还原可重涂文本——缓存树带上一轮 mark，重放后须剥净重涂）+ `rebuildPlaceholderSpans`（按 [data-ph-key] 重建 span 映射——applyDocxHighlight 已把 {{key}} 原文 replace 掉无法重扫，范本预览回放走重建）。
+- `web/src/pages/c-chat/review-panel.tsx`（方案 A+B）：①派生 `docxOversize`（`blob.size > 阈值` 直接算而非 state+effect——blob 到达的同一 commit 守卫即生效，不会先白渲染一遍再翻转）+ `docxForceFidelity` 显式覆盖 state（blob 换对象重置）+「文档较大，已用文本预览保障流畅」横幅与「切换保真渲染」按钮；②渲染 effect 接缓存：重置失败态**必须在 oversize 守卫之前**（否则跨文件切换残留失败横幅）→ take 命中 `stripDocxAnnotationMarks` + 重涂（回放分支同样注册 cleanup stash，否则缓存隔次生效）→ miss 走 renderAsync（`cancelled/settled/failed` 三闭包标志：堵 late resolve 清新文件树、堵在飞/失败树入缓存形成无自愈跨会话错树污染）；③补插 effect 的 fresh 过滤加 **DOM 已插判定**（`querySelector(mark[data-anchor-key])`）——回放使容器在 effect 阶段就有树，同 commit 补插 effect 闭包里 markedKeys 还是旧空 Set 会双插嵌套 mark（ref 闸方案因 epoch 双跑不可行，DOM 判定时序无关天然幂等）。
+- `web/src/pages/c-chat/template-fill-live-preview.tsx`（范本实时预览同款）：本地 `BIG_BLOB_BYTES` 删除收敛到共享模块；`blobOversize` 改派生判定；渲染 effect 接缓存（回放 `rebuildPlaceholderSpans` 重建映射 → 既有 `updateDocxHighlight` effect 按当前 values/names 重涂——关闭期间 values 变更重开显示新值，有用例钉住）。
+- 新测试：`docx-render-cache.test.ts`（7 例含 2 对抗：淘汰复用不残留、同 Blob 连续 stash 不叠加）、`docx-highlight-strip-rebuild.test.ts`（4 例）、`review-panel-render-perf.test.tsx`（5 例：oversize 不触发 renderAsync/切换保真/缓存回放 renderAsync 只 1 次/mark 不双插 spy 检测/在飞不入缓存）、`template-fill-live-preview-cache.test.tsx`（3 例：关开重放/派生首帧生效/values 变更重涂）。
+
+**审查修复的关键问题**（两轮 subagent spec+质量审查）：①回放路径 mark 双重嵌套插入（缓存命中使容器在 effect 阶段就有树，暴露了补插 effect 的 stale markedKeys 竞态）；②在飞 renderAsync 错树持久化入缓存（`isConnected` 闸只覆盖重挂覆盖不了同 el 换 blob，缓存使污染跨会话持久）；③回放分支漏注册 cleanup 致缓存隔次生效+冷开双跑；④oversize 守卫在重置失败态之前 return 致跨文件切换双横幅。TDD 附带发现：范本预览旧 state 写法中范本切换 effect 的 `setBlobOversize(false)` 与 oversize 赋值 effect 同批执行时后者被覆盖——派生判定根治。
+
+**测试**：全量 vitest 27 文件 312 passed（基线 293 + 新增 19+）；`npm run build` 通过（1m20s）。**未部署**（部署 = build+dist+nginx reload，纯前端）；未 push。LRU 不按体积加权为已知限制（forceFidelity 放行的超大文档入缓存极端下可达数百 MB，后续可按 blob.size 加权）。
+
 ## 2026-09-21（十）审核弹框手动编辑复用：对话附件/流程版本就地改文字，产出新文件自动交接 LLM
 
 **主题**：用户提出「附件上传的文件和流程新发起时的初始文件，都能复用文件审核弹框做文本展示 + 手动修改内容，修改后的文件还能让 LLM 继续分析」。选定方案：产出**全新文件对象**（原文件字节不动）+ 编辑产出的新文件**自动进附件队列**（发送后 LLM 可见）。
