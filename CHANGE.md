@@ -21,7 +21,7 @@
 
 **固有限制**：`GET /agents` 列表与详情因 C 端对话下拉硬依赖，读接口无法对普通用户关闭（B 端管理页面入口+全部写操作已封）；存量 role_permission 行中 4 个失效 key 残留无害。
 
-**部署（须成套 SCP，permission_utils.py 被多文件引用单发会 ImportError）**：后端 7 文件 `api/utils/permission_utils.py` + `api/apps/restful_apis/{memory_api,crawl4ai_app,crawl4ai_ws,template_api,agent_api,permission_app}.py` → 容器重启 → import 冒烟；前端 build+dist+nginx reload。**未部署、未 commit。**
+**部署（须成套 SCP，permission_utils.py 被多文件引用单发会 ImportError）**：后端 7 文件 `api/utils/permission_utils.py` + `api/apps/restful_apis/{memory_api,crawl4ai_app,crawl4ai_ws,template_api,agent_api,permission_app}.py` → 容器重启 → import 冒烟；前端 build+dist+nginx reload。**已部署 2026-09-22 + commit+push 3c0ec6e3**：7 文件 md5 双端一致 + 容器重启 + import 冒烟通过；前端 build 1m9s + dist 上传 + nginx reload，主 chunk md5 双端一致。生产鉴权实测（demo01@kk.com 普通用户）：memories/template fill list/permission roles/agents create 业务码 403「仅超级管理员可访问」（HTTP 200 + body code=403，与既有 RBAC 装饰器同款返回风格），GET /agents 列表 code 0（C 端保留 ✓）、/permission/me 正常；超管四端点全部 code 0；无鉴权裸调三端点 401。
 
 **遗留**：crawl4ai WS 用 token 鉴权（非 login 装饰器），超管校验在 handler 内做——非超管连上即断，前端进度弹窗仅 B 端使用、影响面为零。
 
