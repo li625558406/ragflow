@@ -1,5 +1,15 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-22 流程页签智能体解耦 + 审核弹框默认编辑态
+
+**主题**：两项前端功能首次固化入仓（此前仅存工作区，已随 2026-09-21 渲染优化批部署上线）。
+
+**改动（纯前端 5 文件）**：
+- **流程页签智能体解耦**（flow-panel.tsx + flow-ai-panel.tsx + flow-detail.tsx + c-chat/index.tsx）：流程页签不再复用 c-chat 的 `ragflow_agent_id`——flow-panel 顶栏「新建流程」按钮旁新增智能体下拉（只列名称带「流程」二字的 agent，加载失败保持「未找到流程智能体」提示态由发送守卫兜底），独立 localStorage 键 `ragflow_flow_agent_id` 持久化（savedId 失效回退首个），全面板统一一个 agent 经 props（flow-panel → FlowDetail → FlowAiPanel）下发，切换由 FlowAiPanel 自行清 sessionIdRef 防会话-agent 绑定错配；c-chat 对话页按同规则**反向过滤**（名称含「流程」的 agent 不在对话页展示）。
+- **审核弹框默认编辑态**（review-panel.tsx）：新增 `defaultEditing` prop——从「编辑」入口打开面板直接落编辑视图，免去再点一次「编辑文档」；面板常驻挂载初值只在首挂载生效，故加 open 翻转复位 effect（`if (open) setUserEditing(!!defaultEditing)`）。
+
+**部署**：随 2026-09-21 渲染优化批已上线（build 含工作区在途改动），2026-09-22 commit+push 固化。生产已验证 flow 智能体选择器代码在线上产物（`ragflow_flow_agent_id` 命中 chunk）。
+
 ## 2026-09-21（十二）审核/范本预览大文件渲染优化：渲染产物缓存+体量门槛
 
 **主题**：用户反馈「C端流程页面的文件审核和范本填写，文件过大渲染慢」。根因三层：docx-preview `renderAsync` 在主线程同步建整棵 DOM（JSZip 解压+XML 解析+整树构建，大文件打开瞬间卡死，`content-visibility` 只省排版救不了建树）；审核面板（ReviewPanel）没有体量门槛（范本预览有 >2.5MB 文本降级，审核面板漏了）；弹框/抽屉关闭重开同一文件整本重渲染。选定方案 A（审核面板补门槛）+ B（渲染产物缓存）。
