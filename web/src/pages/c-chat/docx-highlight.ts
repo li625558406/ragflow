@@ -140,8 +140,24 @@ export function applyDocxHighlight(
   }
   if (matches.length === 0) return groups;
 
-  // 绝对偏移 → (文本节点, 节点内偏移)；落在边界时归入包含它的节点
-  const locate = (pos: number): { node: Text; off: number } | null => {
+  // 绝对偏移 → (文本节点, 节点内偏移)；落在边界时归入包含它的节点。
+  // preferEnd：pos 恰为某节点终点时优先解析为该节点末尾而非下一节点开头 ——
+  // 占位符是段落最后一个 run 时，下一文本节点在**下一段落**里，Range 起止跨到
+  // 兄弟段落会把替换 span 抽到共同祖先（页容器）下变成块级独占一行（与标签
+  // 不在一行的根因）。Range 语义上两种解析等价，但插入落点不等价 —— 与
+  // highlightDocxRanges.locate 的 preferEnd 同构。
+  const locate = (
+    pos: number,
+    preferEnd = false,
+  ): { node: Text; off: number } | null => {
+    if (preferEnd) {
+      for (let i = spans.length - 1; i >= 0; i--) {
+        const s = spans[i];
+        if (pos > s.start && pos === s.end) {
+          return { node: s.node, off: s.node.data.length };
+        }
+      }
+    }
     for (const s of spans) {
       if (pos >= s.start && pos < s.end) {
         return { node: s.node, off: pos - s.start };
@@ -160,7 +176,7 @@ export function applyDocxHighlight(
   for (let i = matches.length - 1; i >= 0; i--) {
     const { start, end, key } = matches[i];
     const from = locate(start);
-    const to = locate(end);
+    const to = locate(end, true);
     if (!from || !to) continue;
     try {
       const range = document.createRange();

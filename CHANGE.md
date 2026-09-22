@@ -1,5 +1,17 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-22（八）范本预览占位符与填写值断行根修——「查看填写内容」UI 与下载文件不一致
+
+**主题**：用户报「范本填写的『查看填写内容』预览里，占位符/填写值与前面的标签不在一行，但下载后的文件格式正确」。生产取证（tpl_fill_task 最近 done 任务 values 无换行；工作副本 XML 里标签与 `{{key}}` 同段同排）排除数据问题，定位为纯前端渲染缺陷。
+
+**根因（真实文件 + docx-preview 本地复现，Playwright DOM 量测实证）**：`docx-highlight.ts` 的 `applyDocxHighlight` 中 `locate(end)` 在匹配终点恰为某文本节点末尾时，会落到**下一个文本节点开头**——占位符是段落最后一个 run 时，下一文本节点在**下一段落**里 → Range 起止跨到兄弟段落 → `deleteContents`+`insertNode` 把高亮 span 抽到共同祖先（页容器 `<article>`）下变成块级独占一行。实证三例：`tenderer_name`/`tender_agency_name`（段落末位 run）span 落 article 直下、标签 `<p>` 里留空壳；`publish_year`（段中有后续文本）正常在 `<p>` 内同行。`highlightDocxRanges` 早在留白 anchor 事故就修过同款（`preferEnd` 参数），占位符路径的 `locate` 未同步。
+
+**改动（前端单文件 `web/src/pages/c-chat/docx-highlight.ts`）**：`applyDocxHighlight` 的 `locate` 加 `preferEnd` 参数（pos 恰为节点终点时优先解析为该节点末尾），终点查找传 `locate(end, true)`——Range 起止收敛回同段落内，插入落点保持在段落 `<p>` 里。
+
+**验证**：用真实生产工作副本（`v1_render.docx`，291 占位符段）+ esbuild 打包真实源码 + docx-preview 同参数渲染复现→修复：修复后 415/415 占位符 span 全部落回段落 `<p>` 内（修复前 article 直下断行），「招标代理机构：福建品辰有限公司」标签与值同行（行框垂直重叠实证）+ 截图目检；`docx-highlight` 全 5 套件 53 passed（49+4）。
+
+**部署（已部署 + push 2026-09-22）**：`npm run build`（1m30s）+ dist 上传（解包前 rm -rf dist/* 保留 inode）+ nginx reload；**873 个 dist 文件双端 md5 全量一致**，首页 200。复现产物在 `.scratch/repro/`（repro.html + 打包脚本），遗留服务器 /tmp/render.docx 临时文件可忽略。
+
 ## 2026-09-22（七）范本库超管跨租户全量视野——解「角色超管进范本库列表空白」
 
 **主题**：（六）后用户报「范本库列表看不到数据」：demo01 有超管角色能进页面，但 `get_list_page`/`get_owned` 按 `tenant_id == 当前用户` 严格隔离，而 33 个范本全在 lg186 租户名下 → 查自己租户恒 0 条。与用户确认口径：**超管跨租户全量可见可管理**（与「全部流程」超管全库视野同构）。
