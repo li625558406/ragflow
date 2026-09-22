@@ -278,6 +278,27 @@ export default function FlowDetail({
     );
   }, [data, selectedVersion]);
 
+  // 「查看文件内容」抽屉的批注：按被查看版本（viewVersionId）过滤，而非时间线
+  // 选中版本——查看 v3 时时间线可能停在 v5，跟随选中会把 v5 的批注锚在 v3 的
+  // 内容上。同样放行流程级批注（空 version_id 任何版本下可见）。
+  const viewComments = useMemo(() => {
+    if (!data) return [];
+    return (data.comments ?? []).filter(
+      (c) => c.version_id === viewVersionId || !c.version_id,
+    );
+  }, [data, viewVersionId]);
+  // 被查看版本的标签（「v{n}」）：抽屉标题栏 + 批注归属徽标展示用
+  const viewVersionLabel = useMemo(() => {
+    const v = (data?.versions ?? []).find((x) => x.id === viewVersionId);
+    return v ? `v${v.version_no}` : '';
+  }, [data, viewVersionId]);
+  // 版本 id → 版本号：左下批注模块每张卡的归属徽标
+  const versionNoById = useMemo(() => {
+    const m = new Map<string, number>();
+    (data?.versions ?? []).forEach((v) => m.set(v.id, v.version_no));
+    return m;
+  }, [data]);
+
   // 批注数上报给外层折叠开关
   useEffect(() => {
     onCommentsCount?.(commentsOf.length);
@@ -796,6 +817,12 @@ export default function FlowDetail({
                           >
                             {sevLabel}
                           </span>
+                          {/* 归属版本徽标：版本绑定显「v{n}」，流程级显「流程」 */}
+                          <span className="shrink-0 rounded border border-[#BFD3F5] bg-[#F0F5FF] px-1 py-px text-[10px] font-semibold text-[#1a66fb]">
+                            {c.version_id
+                              ? `v${versionNoById.get(c.version_id) ?? '?'}`
+                              : '流程'}
+                          </span>
                         </span>
                         <span className="shrink-0">
                           {new Date(c.create_time).toLocaleString()}
@@ -813,7 +840,9 @@ export default function FlowDetail({
           commentPortal,
         )}
 
-      {/* 版本文件查看/编辑（所有参与人可看，编辑仅发起人+doc/docx）：编辑保存为新版本后就地刷新预览 */}
+      {/* 版本文件查看/编辑（所有参与人可看，编辑仅发起人+doc/docx）：编辑保存为新版本后就地刷新预览。
+          批注按被查看版本过滤（viewComments）+ versionLabel 版本徽标——与文件审核入口
+          （最新审核文件的 AI 批注，flow-ai-panel）区分版本维度 */}
       <ReviewPanel
         open={viewOpen}
         onClose={() => {
@@ -823,7 +852,8 @@ export default function FlowDetail({
         fileId={viewFileId}
         fileName={viewFileName}
         annotations={[]}
-        comments={commentsOf}
+        comments={viewComments}
+        versionLabel={viewVersionLabel}
         commentAuthors={Object.fromEntries(nicknameMap)}
         canEdit={viewEditMode}
         defaultEditing={viewEditMode}

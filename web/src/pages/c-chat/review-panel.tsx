@@ -89,6 +89,8 @@ export interface MarginComment {
   anchor_start?: number | null;
   /** 批注级别 high/medium/low（存量无值视为 medium=一般） */
   severity?: string;
+  /** 归属流程版本 id（空串=流程级批注，任何版本下可见） */
+  version_id?: string;
   user_id?: string;
   create_time?: number;
 }
@@ -118,6 +120,10 @@ interface ReviewPanelProps {
   onFileChange?: (fileId: string, fileName: string) => void;
   /** 手动批注列表（带锚点的 flow 评论，渲染到正文边栏） */
   comments?: MarginComment[];
+  /** 当前查看的流程版本标签（如「v3」）：标题栏显示版本徽标，批注卡对
+   * version_id 绑定项显示同款归属徽标（流程级显示「流程」）；不传=无版本
+   * 语义（文件审核入口），一切批注 UI 保持原样 */
+  versionLabel?: string;
   /** 手动批注作者映射 user_id → nickname */
   commentAuthors?: Record<string, string>;
   /** 提交手动批注（选中文本后写入）；不传则不启用手动批注入口 */
@@ -485,6 +491,7 @@ function AiCard({
 function CommentCard({
   comment,
   author,
+  versionTag,
   selected,
   onSelect,
   canDelete,
@@ -492,6 +499,8 @@ function CommentCard({
 }: {
   comment: MarginComment;
   author?: string;
+  /** 归属版本徽标文案（如「v3」/「流程」）；不传不显示（文件审核面板无版本语义） */
+  versionTag?: string;
   selected: boolean;
   onSelect: () => void;
   canDelete?: boolean;
@@ -543,6 +552,11 @@ function CommentCard({
         >
           人工
         </span>
+        {versionTag && (
+          <span className="shrink-0 rounded border border-[#BFD3F5] bg-[#F0F5FF] px-1 py-px text-[10px] font-semibold text-[#1a66fb]">
+            {versionTag}
+          </span>
+        )}
         {comment.create_time ? (
           <span className="ml-auto shrink-0 text-[10px] text-[#aaa]">
             {new Date(comment.create_time).toLocaleDateString()}
@@ -599,6 +613,7 @@ export default function ReviewPanel({
   onFileChange,
   comments,
   commentAuthors,
+  versionLabel,
   onAddComment,
   onDeleteComment,
   onDeleteAnnotation,
@@ -1188,6 +1203,8 @@ export default function ReviewPanel({
       /** 人工批注 id + 批注人（传了 onDeleteComment 且是本人批注才显示删除按钮） */
       commentId?: string;
       commentUserId?: string;
+      /** 归属版本徽标（如「v3」/「流程」）；仅 versionLabel 场景显示 */
+      versionTag?: string;
     }[] = [];
     const fixStateOf = (a: Annotation): 'fixed' | 'confirmed' | undefined => {
       if (a.status === 'fixed') return 'fixed';
@@ -1228,6 +1245,11 @@ export default function ReviewPanel({
           source: 'human',
           commentId: c.id,
           commentUserId: c.user_id,
+          versionTag: versionLabel
+            ? c.version_id
+              ? versionLabel
+              : '流程'
+            : undefined,
         });
       }
     }
@@ -1265,6 +1287,11 @@ export default function ReviewPanel({
         source: 'human',
         commentId: c.id,
         commentUserId: c.user_id,
+        versionTag: versionLabel
+          ? c.version_id
+            ? versionLabel
+            : '流程'
+          : undefined,
       });
     }
     // 级别降序 高→中→低：稳定排序（同级别内保持原文档序）；已定位整体在未定位之前
@@ -1274,7 +1301,7 @@ export default function ReviewPanel({
         (a.matched === b.matched ? 0 : a.matched ? -1 : 1) ||
         sevRank[a.sev] - sevRank[b.sev],
     );
-  }, [activeRailItems, unmatched, commentAuthors]);
+  }, [activeRailItems, unmatched, commentAuthors, versionLabel]);
 
   // 常驻抽屉（非 inline 模式）：Esc 快捷关闭（与范本实时预览抽屉同款）
   useEffect(() => {
@@ -1939,6 +1966,13 @@ export default function ReviewPanel({
             <h2 className="text-sm font-semibold text-[#1A1A1A] truncate">
               {fileName || '文件审核'}
             </h2>
+            {/* 流程版本指示：从版本时间线「查看文件内容」进入时标注当前查看的
+                版本，批注归属（版本绑定/流程级）以此为基准 */}
+            {versionLabel && (
+              <span className="shrink-0 rounded border border-[#BFD3F5] bg-[#F0F5FF] px-1.5 py-0.5 text-[10px] font-bold text-[#1a66fb]">
+                版本 {versionLabel}
+              </span>
+            )}
             {/* 成稿版本指示：当前正文 = 修复轮落盘的成稿（含已保留的修改），
                 让「确认保留后文档变了」有可感知的来源说明 */}
             {contentIsVersion && (
@@ -2166,6 +2200,12 @@ export default function ReviewPanel({
                       >
                         {e.source === 'ai' ? 'AI' : '人工'}
                       </span>
+                      {/* 归属版本徽标：版本查看抽屉场景下区分版本绑定/流程级批注 */}
+                      {e.versionTag && (
+                        <span className="shrink-0 rounded border border-[#BFD3F5] bg-[#F0F5FF] px-1 py-px text-[10px] font-semibold text-[#1a66fb]">
+                          {e.versionTag}
+                        </span>
+                      )}
                       {/* 修复小徽标：列表保持紧凑，回退/确认操作在边栏卡与进度卡 */}
                       {e.fixState === 'fixed' && (
                         <span className="shrink-0 rounded bg-[#67C23A] px-1 py-px text-[10px] font-bold text-white">
@@ -2481,6 +2521,13 @@ export default function ReviewPanel({
                       <CommentCard
                         comment={it.comment!}
                         author={commentAuthors?.[it.comment!.user_id || '']}
+                        versionTag={
+                          versionLabel
+                            ? it.comment!.version_id
+                              ? versionLabel
+                              : '流程'
+                            : undefined
+                        }
                         selected={selectedKey === it.key}
                         onSelect={() => handleAnchorClick(it.key)}
                         canDelete={

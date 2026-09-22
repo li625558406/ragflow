@@ -1,5 +1,21 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-22（四）批注版本维度——查看文件内容抽屉批注按被查看版本过滤 + 版本标识 UI
+
+**主题**：流程页签两个审核入口的批注版本语义区分——「文件审核」按钮的批注针对最新审核文件（flow-ai-panel，零改动）；版本时间线「查看文件内容」的批注改为跟随**被查看版本**。
+
+**根因**：查看抽屉（flow-detail ReviewPanel）的 `comments={commentsOf}` 跟随**时间线选中版本**过滤——点 v3 的「查看文件内容」而时间线停在 v5 时，v5 的批注被锚在 v3 的内容上（错位）。数据基础已有（flow_comment.version_id 列 + FlowCommentItem 透传），纯前端可修。
+
+**改动**（纯前端 2 文件 + 测试）：
+1. `flow-detail.tsx`：新增 `viewComments`（按 viewVersionId 过滤：该版本批注 + 流程级空 version_id）/ `viewVersionLabel`（v{n}）/ `versionNoById` 三 memo；查看抽屉 ReviewPanel 改传 `comments={viewComments}` + `versionLabel`；左下批注模块每张卡加归属徽标（版本绑定显「v{n}」、流程级显「流程」）。
+2. `review-panel.tsx`：`MarginComment` 加 `version_id?`；新可选 prop `versionLabel`——标题栏显示「版本 v{n}」徽标；CommentCard/批注列表条目对 version_id 绑定项显示 versionLabel 徽标、流程级显「流程」（`versionTag` 字段）。**不传 versionLabel（文件审核入口）一切 UI 零变化**。
+
+**测试**：review-panel-version 套件 +4 用例（流程级徽标/绑定徽标显 label 而非裸 id/不传 versionLabel 时连裸 version_id 也不误显/仅有标题徽标不渲染空壳），全量 vitest 345 passed；tsc 改动文件零错误。
+
+**遗留**：AI 审核批注无版本维度（锚定审核 fileId），未做批注→流程版本映射（需后端落 version_id，本批未含）；抽屉内无版本切换器（切换=关掉从时间线另点版本）。
+
+**部署**：纯前端 build+dist+nginx reload；未部署、未 commit。
+
 ## 2026-09-22（三）就地修改后进度卡未填充汇总不刷新——终态行低频权威轮询
 
 **主题**：解「说『把招标代理机构改成福建省品辰有限公司』，AI 回执改了 3 个 key、成稿文档内容也确实变了，但进度卡『390 个填写点未填充』里仍有『招标代理机构名称』」。用户观察到的 390 = 填写完成时刻（16:19）的终态事件快照；modify 后权威口径应为 387（差数恰为 modify 的 3 个 key）。

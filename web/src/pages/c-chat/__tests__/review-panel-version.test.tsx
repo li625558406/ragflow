@@ -256,3 +256,66 @@ describe('ReviewPanel 成稿版本展示（问题③）', () => {
     ).toBe(false);
   });
 });
+
+// ── 批注版本维度（2026-09-22 版本查看抽屉）：versionLabel 驱动标题栏版本徽标 +
+// 批注归属徽标（version_id 绑定→v{n}，流程级→流程）；不传=文件审核入口零变化 ──
+import { type MarginComment } from '@/pages/c-chat/review-panel';
+
+describe('ReviewPanel 批注版本维度', () => {
+  const cm = (over: Partial<MarginComment> = {}): MarginComment => ({
+    id: 'c1',
+    content: '这里表述要改',
+    severity: 'medium',
+    user_id: 'u1',
+    version_id: '',
+    ...over,
+  });
+  const renderWith = (opts: {
+    versionLabel?: string;
+    comments?: MarginComment[];
+  }) =>
+    render(
+      <ReviewPanel
+        open
+        onClose={vi.fn()}
+        fileId="f1"
+        fileName="投标文件.docx"
+        annotations={[]}
+        {...opts}
+      />,
+    );
+
+  it('versionLabel + 流程级批注（空 version_id）→ 标题栏「版本 v3」+ 条目「流程」徽标', async () => {
+    mockGet.mockResolvedValue(ok(paras(['这是原始正文段落'])));
+    renderWith({ versionLabel: 'v3', comments: [cm({ version_id: '' })] });
+    expect(await screen.findByText('版本 v3')).toBeInTheDocument();
+    expect(screen.getAllByText('流程').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('version_id 绑定批注 → 归属徽标显示 versionLabel（v3）而非裸 id', async () => {
+    mockGet.mockResolvedValue(ok(paras(['这是原始正文段落'])));
+    renderWith({
+      versionLabel: 'v3',
+      comments: [cm({ id: 'c2', version_id: 'ver-abc-123' })],
+    });
+    expect(await screen.findByText('版本 v3')).toBeInTheDocument();
+    expect(screen.getAllByText('v3').length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText('ver-abc-123')).toBeNull();
+  });
+
+  it('不传 versionLabel（文件审核入口）→ 不出现任何版本徽标（含误显裸 version_id）', async () => {
+    mockGet.mockResolvedValue(ok(paras(['这是原始正文段落'])));
+    renderWith({ comments: [cm({ version_id: 'ver-abc-123' })] });
+    expect(await screen.findByText(/这是原始正文段落/)).toBeInTheDocument();
+    expect(screen.queryByText(/版本 v\d/)).toBeNull();
+    expect(screen.queryByText('流程')).toBeNull();
+    expect(screen.queryByText('ver-abc-123')).toBeNull();
+  });
+
+  it('versionLabel 但无批注 → 仅标题徽标，无归属徽标（不渲染空壳）', async () => {
+    mockGet.mockResolvedValue(ok(paras(['这是原始正文段落'])));
+    renderWith({ versionLabel: 'v5', comments: [] });
+    expect(await screen.findByText('版本 v5')).toBeInTheDocument();
+    expect(screen.queryByText('流程')).toBeNull();
+  });
+});
