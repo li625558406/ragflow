@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 from quart import Blueprint, Response, request
 
 from api.apps import current_user, login_required
-from api.utils.permission_utils import superuser_required
+from api.utils.permission_utils import superuser_required, is_superadmin
 from api.db.db_models import DB
 from api.db.services.template_fill_service import (
     TERMINAL_TASK_STATUSES,
@@ -290,7 +290,8 @@ def _load_latest_blob(template_id: str):
 
 
 async def _load_template(template_id: str):
-    tpl = TplTemplateService.get_owned(template_id, current_user.id)
+    # 超管跨租户全量可见可管理（与「全部流程」超管全库视野同构）；普通调用方仍严格租户隔离
+    tpl = TplTemplateService.get_owned(template_id, current_user.id, allow_global=is_superadmin(current_user))
     if not tpl:
         return None, get_error_data_result("模板不存在")
     return tpl, None
@@ -379,7 +380,8 @@ async def list_templates():
     args = request.args
     rows, total = TplTemplateService.get_list_page(
         current_user.id, keyword=args.get("keyword", ""),
-        status=args.get("status", ""), page=args.get("page", 1, type=int), size=args.get("size", 10, type=int))
+        status=args.get("status", ""), page=args.get("page", 1, type=int), size=args.get("size", 10, type=int),
+        all_tenants=is_superadmin(current_user))
     return get_result(data=rows, total=total)
 
 
@@ -419,7 +421,7 @@ _detecting_lock = threading.Lock()
 _detecting: set = set()
 
 
-def _run_detect_task(template_id: str, tenant_id: str):
+def _run_detect_task(template_id: str, tenant_id: str, allow_global: bool = False):
     """daemon 线程体：LLM 识别 → 校验 → 自动保存填写点 → 状态落 DB。
 
     仅对无已保存填写点的草稿模板开放（端点守卫），自动保存不会覆盖人工配置。
@@ -427,7 +429,7 @@ def _run_detect_task(template_id: str, tenant_id: str):
     0 条识别结果也置 failed——列表显示「识别完成」但详情空白比显式失败更误导。
     """
     try:
-        tpl = TplTemplateService.get_owned(template_id, tenant_id)
+        tpl = TplTemplateService.get_owned(template_id, tenant_id, allow_global=allow_global)
         if not tpl:
             TplTemplateService.set_detect_status(template_id, "failed", "模板不存在")
             return
@@ -507,7 +509,7 @@ async def detect_placeholders_async():
     try:
         threading.Thread(target=_run_detect_task, daemon=True,
                          name=f"tpl-detect-{tpl.id[:8]}",
-                         args=(tpl.id, current_user.id)).start()
+                         args=(tpl.id, current_user.id, is_superadmin(current_user))).start()
     except Exception:
         # 线程启动失败：回收标记并把状态置 failed，防卡 running
         with _detecting_lock:
@@ -798,7 +800,8 @@ async def list_fill_tasks():
     args = request.args
     rows, total = TplFillTaskService.get_list_page(
         current_user.id, status=args.get("status", ""),
-        page=args.get("page", 1, type=int), size=args.get("size", 10, type=int))
+        page=args.get("page", 1, type=int), size=args.get("size", 10, type=int),
+        all_tenants=is_superadmin(current_user))
     return get_result(data=rows, total=total)
 
 
@@ -806,7 +809,7 @@ async def list_fill_tasks():
 @login_required
 @superuser_required
 async def get_fill_task(task_id: str):
-    task = TplFillTaskService.get_owned(task_id, current_user.id)
+    task = TplFillTaskService.get_owned(task_id, current_user.id, allow_global=is_superadmin(current_user))
     if not task:
         return get_error_data_result("任务不存在")
     return get_result(data=task.to_dict())
@@ -818,7 +821,7 @@ async def get_fill_task(task_id: str):
 async def retry_fill_task(task_id: str):
     """重试失败/部分完成的任务：复位为 pending 后新起一轮 pipeline，
     values/evidence/result_file_id 由新一轮覆盖写（非增量修补）。"""
-    task = TplFillTaskService.get_owned(task_id, current_user.id)
+    task = TplFillTaskService.get_owned(task_id, current_user.id, allow_global=is_superadmin(current_user))
     if not task:
         return get_error_data_result("任务不存在")
     if task.status not in _RETRYABLE_STATUSES:
@@ -956,7 +959,7 @@ async def get_fill_task_progress(task_id: str):
     """断连重连轮询端点（幂等只读）：owner 校验同 get_fill_task，
     合并 DB 行 + Redis 快照；前端 2s 轮询，status 终态即停。
     done 任务的 download 桥接（MinIO 拷贝）在端点层做，payload 保持纯函数。"""
-    task = TplFillTaskService.get_owned(task_id, current_user.id)
+    task = TplFillTaskService.get_owned(task_id, current_user.id, allow_global=is_superadmin(current_user))
     if not task:
         return get_error_data_result("任务不存在")
     download = None
@@ -980,7 +983,7 @@ async def sediment_fill_task(task_id: str):
     `{{key}}` 占位符原样不动——下一轮检索+LLM 仍是权威，默认值只在字段缺值时兜底。
 
     只由用户在成稿行点「写回范本库」触发；填写 pipeline 不再自动沉淀。"""
-    task = TplFillTaskService.get_owned(task_id, current_user.id)
+    task = TplFillTaskService.get_owned(task_id, current_user.id, allow_global=is_superadmin(current_user))
     if not task:
         return get_error_data_result("任务不存在")
     if task.status not in ("done", "partial"):
@@ -1039,7 +1042,7 @@ async def sediment_fill_task(task_id: str):
 @login_required
 @superuser_required
 async def download_fill_result(task_id: str):
-    task = TplFillTaskService.get_owned(task_id, current_user.id)
+    task = TplFillTaskService.get_owned(task_id, current_user.id, allow_global=is_superadmin(current_user))
     if not task:
         return get_error_data_result("任务不存在")
     if not task.result_file_id:
@@ -1242,7 +1245,7 @@ async def get_fill_run_snapshot(canvas_task_id: str):
     run = _read_run_snapshot(canvas_task_id)
 
     def _owned_check(task_id: str) -> bool:
-        return TplFillTaskService.get_owned(task_id, current_user.id) is not None
+        return TplFillTaskService.get_owned(task_id, current_user.id, allow_global=is_superadmin(current_user)) is not None
 
     def _version_placeholders(template_id: str, version_id: str):
         if not version_id:

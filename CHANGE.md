@@ -1,5 +1,19 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-22（七）范本库超管跨租户全量视野——解「角色超管进范本库列表空白」
+
+**主题**：（六）后用户报「范本库列表看不到数据」：demo01 有超管角色能进页面，但 `get_list_page`/`get_owned` 按 `tenant_id == 当前用户` 严格隔离，而 33 个范本全在 lg186 租户名下 → 查自己租户恒 0 条。与用户确认口径：**超管跨租户全量可见可管理**（与「全部流程」超管全库视野同构）。
+
+**改动（后端 2 文件）**：
+- `template_fill_service.py`：`TplTemplateService`/`TplFillTaskService` 的 `get_list_page` 加 `all_tenants=False`、`get_owned` 加 `allow_global=False`——为 True 时跳过租户条件；**调用方须已做超管闸**（service 不自查，agent/tools 与画布 component 等普通租户语境调用点零改动不受影响）。
+- `template_api.py`：范本列表/任务列表传 `all_tenants=is_superadmin(current_user)`；`_load_template`（15 个管理端点的单点入口）与 6 处任务 `get_owned` 传 `allow_global=is_superadmin(current_user)`；detect-async 线程 args 追加 allow_global 第 3 参。C 端 progress/sediment/snapshot 端点同参数但普通用户恒 False，租户隔离语义不变。执行链（spawn/executor）不依赖 get_owned，跨租户填写安全。
+
+**测试**：顺带修复（五）引入的**存量测试腐坏**——`superuser_required` 上线后 test_template_api_routes/sediment/progress/run_snapshot 四套件未重跑，桩用户无 `is_superuser` 被 403 挡在端点体外（且 `get_owned` 桩 lambda 不收新 kwarg）；修法=桩用户补 `is_superuser=1` + 桩 lambda 补 `**kw` + 线程参数断言适配第 3 参。范本 9 套件 **259 passed**。
+
+**部署（已部署 2026-09-22）**：2 文件成套 SCP md5 双端一致 + 重启 + import 冒烟；生产实测 demo01（角色超管）`/template/fill/list` 返回 lg186 租户的范本数据（code 0，首页 10 条，created_by=7ab771d4）。
+
+**遗留**：超管在自己租户发起对他人租户范本的填写任务时，task 行归属操作者租户（检索用操作者 KB/模型，符合预期）；范本详情页的「上传新版本」等写操作同样跨租户放开（口径即「可管理」）。
+
 ## 2026-09-22（六）超管判定改「账号标志 OR 超级管理员角色」——用户管理页指派角色即生效
 
 **主题**：（五）上线后用户报「用户管理 B 端界面的配置没有效果」：界面上把用户挂到内置「超级管理员」角色，但 5 模块硬限制只认 `user.is_superuser` 账号标志，角色指派永远不解锁。与用户确认口径：**角色=超管**——超管判定改为 `is_superuser 账号标志 OR 拥有内置「超级管理员」角色`，指派角色即解锁 5 模块。

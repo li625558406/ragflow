@@ -103,12 +103,14 @@ class TplTemplateService(CommonService):
 
     @classmethod
     @DB.connection_context()
-    def get_list_page(cls, tenant_id: str, keyword: str = "", status: str = "", page: int = 1, size: int = 10):
+    def get_list_page(cls, tenant_id: str, keyword: str = "", status: str = "", page: int = 1, size: int = 10,
+                      all_tenants: bool = False):
         # 分页参数下界钳制：peewee paginate 对 page=0 静默当第 1 页，page<0 会生成
         # 负 OFFSET → MySQL 1064 → 500；size<=0 同理。上界防单次拉全表。
         page = max(1, int(page or 1))
         size = min(max(1, int(size or 10)), 100)
-        q = cls.model.select().where(cls.model.tenant_id == tenant_id)
+        # all_tenants=True：超管跨租户全量视野（与「全部流程」超管全库可见同构）；调用方须已做超管闸
+        q = cls.model.select() if all_tenants else cls.model.select().where(cls.model.tenant_id == tenant_id)
         if keyword:
             q = q.where(cls.model.name.contains(keyword))
         if status:
@@ -119,15 +121,18 @@ class TplTemplateService(CommonService):
 
     @classmethod
     @DB.connection_context()
-    def get_owned(cls, template_id: str, tenant_id: str, for_update: bool = False):
+    def get_owned(cls, template_id: str, tenant_id: str, for_update: bool = False, allow_global: bool = False):
         """取租户内模板，不存在/越权返回 None。
 
         peewee 的 Model.get_or_none 支持位置条件参数，但用 `&` 合并成
         单表达式最稳妥（与 common_service.get_by_id 的单条件位置传参惯例一致）。
         for_update=True 时加行锁（SELECT ... FOR UPDATE）——调用方须在 DB.atomic()
         事务内使用，锁到事务结束；SQLite 方言下为静默 no-op，不影响单测。
+        allow_global=True：超管跨租户取模板（忽略租户条件）；调用方须已做超管闸。
         """
-        q = cls.model.select().where((cls.model.id == template_id) & (cls.model.tenant_id == tenant_id))
+        cond = cls.model.id == template_id if allow_global else \
+            (cls.model.id == template_id) & (cls.model.tenant_id == tenant_id)
+        q = cls.model.select().where(cond)
         if for_update:
             q = q.for_update()
         return q.first()
@@ -495,18 +500,24 @@ class TplFillTaskService(CommonService):
 
     @classmethod
     @DB.connection_context()
-    def get_owned(cls, task_id: str, tenant_id: str):
-        """取租户内填写任务，不存在/越权返回 None（id+tenant_id 双条件）。"""
-        return cls.model.select().where(
-            (cls.model.id == task_id) & (cls.model.tenant_id == tenant_id)).first()
+    def get_owned(cls, task_id: str, tenant_id: str, allow_global: bool = False):
+        """取租户内填写任务，不存在/越权返回 None（id+tenant_id 双条件）。
+
+        allow_global=True：超管跨租户取任务（忽略租户条件）；调用方须已做超管闸。
+        """
+        cond = cls.model.id == task_id if allow_global else \
+            (cls.model.id == task_id) & (cls.model.tenant_id == tenant_id)
+        return cls.model.select().where(cond).first()
 
     @classmethod
     @DB.connection_context()
-    def get_list_page(cls, tenant_id: str, status: str = "", page: int = 1, size: int = 10):
+    def get_list_page(cls, tenant_id: str, status: str = "", page: int = 1, size: int = 10,
+                      all_tenants: bool = False):
         # 与 TplTemplateService.get_list_page 同款钳制：防负 OFFSET 500、防单次拉全表
         page = max(1, int(page or 1))
         size = min(max(1, int(size or 10)), 100)
-        q = cls.model.select().where(cls.model.tenant_id == tenant_id)
+        # all_tenants=True：超管跨租户全量视野；调用方须已做超管闸
+        q = cls.model.select() if all_tenants else cls.model.select().where(cls.model.tenant_id == tenant_id)
         if status:
             q = q.where(cls.model.status == status)
         total = q.count()

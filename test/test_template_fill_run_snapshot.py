@@ -37,7 +37,7 @@ def _load_template_api():
                 setattr(mod, k, v)
             sys.modules[name] = mod
             return mod
-    _make_stub("api.apps", current_user=SimpleNamespace(id="u1"), login_required=_noop_decorator)
+    _make_stub("api.apps", current_user=SimpleNamespace(id="u1", is_superuser=1), login_required=_noop_decorator)
     import importlib.util
     path = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "api", "apps", "restful_apis", "template_api.py"))

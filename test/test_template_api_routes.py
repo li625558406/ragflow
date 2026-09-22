@@ -44,7 +44,7 @@ def _noop_decorator(f=None, *a, **kw):
 def _load_template_api():
     # current_user 用 SimpleNamespace：端点内部会取 .id（如 _load_template → get_owned(tid, current_user.id)），
     # 桩成 None 会让守卫路径直调时 NoneType.id 崩溃
-    user_stub = types.SimpleNamespace(id="u1")
+    user_stub = types.SimpleNamespace(id="u1", is_superuser=1)  # superuser_required 桩用户须超管，测试只打端点体
     _make_stub_module("api.apps", current_user=user_stub, login_required=_noop_decorator)
     path = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "api", "apps", "restful_apis", "template_api.py"))
@@ -264,7 +264,7 @@ def test_load_template_not_found(monkeypatch):
     """模板不存在 / 非本人模板（get_owned 返回 None）→ 错误 dict。"""
     mod = _template_api
     monkeypatch.setattr(mod, "TplTemplateService",
-                        types.SimpleNamespace(get_owned=lambda tid, uid: None))
+                        types.SimpleNamespace(get_owned=lambda tid, uid, **kw: None))
     tpl, err = asyncio.run(mod._load_template("tpl-gone"))
     assert tpl is None
     assert _err_dict(err)["code"] == DATA_ERROR_CODE
@@ -1222,7 +1222,7 @@ def _make_task(status="failed", result_file_id="", template_id="tpl_x"):
 def test_get_fill_task_not_found(monkeypatch):
     mod = _template_api
     monkeypatch.setattr(mod, "TplFillTaskService", types.SimpleNamespace(
-        get_owned=lambda tid, uid: None))
+        get_owned=lambda tid, uid, **kw: None))
     resp = asyncio.run(mod.get_fill_task("task-gone"))
     d = _err_dict(resp)
     assert d["code"] == DATA_ERROR_CODE and "任务不存在" in d["message"]
@@ -1231,7 +1231,7 @@ def test_get_fill_task_not_found(monkeypatch):
 def test_get_fill_task_success(monkeypatch):
     mod = _template_api
     monkeypatch.setattr(mod, "TplFillTaskService", types.SimpleNamespace(
-        get_owned=lambda tid, uid: _make_task()))
+        get_owned=lambda tid, uid, **kw: _make_task()))
     resp = asyncio.run(mod.get_fill_task("task-1"))
     assert resp["code"] == 0
     assert resp["data"]["id"] == "task-1"
@@ -1242,7 +1242,7 @@ def test_list_fill_tasks_uses_service_pagination(monkeypatch):
     from werkzeug.datastructures import MultiDict
     calls = {}
 
-    def fake_page(tenant_id, status="", page=1, size=20):
+    def fake_page(tenant_id, status="", page=1, size=20, **kw):
         calls.update(tenant_id=tenant_id, status=status, page=page, size=size)
         return [{"id": "t1"}], 7
 
@@ -1268,7 +1268,7 @@ def _patch_retry_deps(monkeypatch, mod, task, update_ret=1):
 
     spawned = []
     monkeypatch.setattr(mod, "TplFillTaskService", types.SimpleNamespace(
-        get_owned=lambda tid, uid: task, model=model))
+        get_owned=lambda tid, uid, **kw: task, model=model))
     monkeypatch.setattr(mod, "DB", types.SimpleNamespace(connection_context=fake_ctx))
     monkeypatch.setattr(mod, "_spawn_fill_task", lambda tid: spawned.append(tid))
     return model, spawned, entered
@@ -1336,7 +1336,7 @@ def test_retry_success_resets_and_spawns(monkeypatch):
 def test_download_fill_result_not_found(monkeypatch):
     mod = _template_api
     monkeypatch.setattr(mod, "TplFillTaskService", types.SimpleNamespace(
-        get_owned=lambda tid, uid: None))
+        get_owned=lambda tid, uid, **kw: None))
     resp = asyncio.run(mod.download_fill_result("task-gone"))
     d = _err_dict(resp)
     assert d["code"] == DATA_ERROR_CODE and "任务不存在" in d["message"]
@@ -1346,14 +1346,14 @@ def test_download_fill_result_rejects_without_file(monkeypatch):
     """无 result_file_id / 存储对象缺失 → 各自的友好错误，不 500。"""
     mod = _template_api
     monkeypatch.setattr(mod, "TplFillTaskService", types.SimpleNamespace(
-        get_owned=lambda tid, uid: _make_task(status="done", result_file_id="")))
+        get_owned=lambda tid, uid, **kw: _make_task(status="done", result_file_id="")))
     resp = asyncio.run(mod.download_fill_result("task-1"))
     d = _err_dict(resp)
     assert "尚未产出" in d["message"]
 
     fetched = []
     monkeypatch.setattr(mod, "TplFillTaskService", types.SimpleNamespace(
-        get_owned=lambda tid, uid: _make_task(status="done", result_file_id="f.docx")))
+        get_owned=lambda tid, uid, **kw: _make_task(status="done", result_file_id="f.docx")))
     monkeypatch.setattr(mod, "settings", types.SimpleNamespace(
         STORAGE_IMPL=types.SimpleNamespace(
             get=lambda bucket, name: fetched.append((bucket, name)) or None)))
@@ -1366,7 +1366,7 @@ def test_download_fill_result_rejects_without_file(monkeypatch):
 def test_download_fill_success_returns_blob_attachment(monkeypatch):
     mod = _template_api
     monkeypatch.setattr(mod, "TplFillTaskService", types.SimpleNamespace(
-        get_owned=lambda tid, uid: _make_task(status="done", result_file_id="f.docx")))
+        get_owned=lambda tid, uid, **kw: _make_task(status="done", result_file_id="f.docx")))
     monkeypatch.setattr(mod, "TplTemplateService", types.SimpleNamespace(
         get_by_id=lambda tid: (True, _make_fill_tpl(file_type="docx"))))
     monkeypatch.setattr(mod, "settings", types.SimpleNamespace(
@@ -1383,7 +1383,7 @@ def test_download_fill_xlsx_tpl_uses_xlsx_mime(monkeypatch):
     """xlsx 模板的生成稿 → XLSX_MIME + .xlsx 文件名（get_by_id 元组契约 True 分支）。"""
     mod = _template_api
     monkeypatch.setattr(mod, "TplFillTaskService", types.SimpleNamespace(
-        get_owned=lambda tid, uid: _make_task(status="done", result_file_id="f.xlsx")))
+        get_owned=lambda tid, uid, **kw: _make_task(status="done", result_file_id="f.xlsx")))
     monkeypatch.setattr(mod, "TplTemplateService", types.SimpleNamespace(
         get_by_id=lambda tid: (True, _make_fill_tpl(file_type="xlsx"))))
     monkeypatch.setattr(mod, "settings", types.SimpleNamespace(
@@ -1398,7 +1398,7 @@ def test_download_fill_tpl_missing_falls_back_docx(monkeypatch):
     """对抗性：模板行已被删（get_by_id → (False, None)）→ ext 兜底 docx，仍可下载。"""
     mod = _template_api
     monkeypatch.setattr(mod, "TplFillTaskService", types.SimpleNamespace(
-        get_owned=lambda tid, uid: _make_task(status="done", result_file_id="f.bin")))
+        get_owned=lambda tid, uid, **kw: _make_task(status="done", result_file_id="f.bin")))
     monkeypatch.setattr(mod, "TplTemplateService", types.SimpleNamespace(
         get_by_id=lambda tid: (False, None)))
     monkeypatch.setattr(mod, "settings", types.SimpleNamespace(
@@ -1595,7 +1595,7 @@ def _patch_batch_delete(monkeypatch, mod, body, results):
     calls = []
     monkeypatch.setattr(mod, "request", _FakeJsonRequest(body))
     monkeypatch.setattr(mod, "TplTemplateService", types.SimpleNamespace(
-        delete_template=lambda tid, uid: (calls.append((tid, uid)),
+        delete_template=lambda tid, uid, **kw: (calls.append((tid, uid)),
                                           results.get(tid, (True, "")))[1]))
     return calls
 
@@ -1725,7 +1725,8 @@ def test_detect_async_accepts_empty_template_and_returns_running(monkeypatch):
     assert resp["code"] == 0 and resp["data"]["status"] == "running"
     assert statuses == [("tpl_x", "running", "")]
     assert len(_FakeThread.instances) == 1
-    assert _FakeThread.instances[0].args == ("tpl_x", "u1"), \
+    # 第 3 参为 allow_global（超管跨租户识别），桩用户 is_superuser=1 -> True
+    assert _FakeThread.instances[0].args == ("tpl_x", "u1", True), \
         "线程必须拿到 template_id + current_user.id"
 
 

@@ -29,7 +29,7 @@ def _noop_decorator(f=None, *a, **kw):
 
 def _load_template_api():
     mod = types.ModuleType("api.apps")
-    mod.current_user = SimpleNamespace(id="u1")
+    mod.current_user = SimpleNamespace(id="u1", is_superuser=1)
     mod.login_required = _noop_decorator
     sys.modules["api.apps"] = mod
     import importlib.util
@@ -84,7 +84,7 @@ def _install(monkeypatch, task, *, placeholders=None, owned=True, latest_ver="MI
     """装配端点依赖。`checked_ver`/`latest_ver` 传 "MISSING" 表示用默认值
     （checked 命中一条假版本行 / latest 无命中）。"""
     monkeypatch.setattr(_template_api, "TplFillTaskService", SimpleNamespace(
-        get_owned=lambda tid, uid: task if owned else None))
+        get_owned=lambda tid, uid, **kw: task if owned else None))
     rec = _Recorder(placeholders or [])
 
     def get_by_id_checked(template_id, version_id):
