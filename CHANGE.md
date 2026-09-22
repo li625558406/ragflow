@@ -12,7 +12,7 @@
 
 **测试**：套件 21 passed；全量 vitest **340 passed**（基线 336 + 净增 4）。端到端数据验证走容器内真实 DB + 真实 placeholders 重放（见根因段），progress 端点 `build_progress_payload` 即同口径纯函数（`resolve_progress_values` 终态 DB 权威 + `derive_unfilled`）。
 
-**部署**：**未部署、未 commit**（部署 = 前端 build+dist+nginx reload，纯前端；后端零改动）。修复生效后行为：对话里说改字段 → 进度卡未填充汇总 10s 内自动从 390 变 387（无需刷新/重开）。
+**部署**：**已部署 2026-09-22 并 push（7b7f3630）**：build（1m09s）+ dist 上传解包（保 inode）+ nginx reload，首页 200、新构建 chunk `index-5qdmr3QH.js` md5 双端一致（`d8cef006b570`）。修复生效后行为：对话里说改字段 → 进度卡未填充汇总 10s 内自动从 390 变 387（无需刷新/重开）。
 
 
 **主题**：版本行铅笔编辑从 Lexical 纯文本旧段落视图换成 docx-preview 保真树上的段落级 contentEditable 编辑，格式所见即所得。v1 限制段内文字与表格单元格修改，拦截一切结构性变更（分段/并段/跨段删除/拖放）。实施计划 `docs/superpowers/plans/2026-09-22-flow-fidelity-edit.md`（6 Task 全完成）。
