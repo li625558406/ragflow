@@ -68,10 +68,12 @@ async def _authenticate(token: str) -> Dict[str, Any]:
         raise PermissionError("Invalid token")
 
     user = users[0]
+    from api.utils.permission_utils import is_superadmin
     return {
         "id": user.id,
         "name": getattr(user, "nickname", None) or getattr(user, "email", "") or user.id,
-        "is_superuser": bool(getattr(user, "is_superuser", 0)),
+        # 与 superuser_required 同口径：账号标志 OR 内置「超级管理员」角色
+        "is_superuser": is_superadmin(user),
     }
 
 

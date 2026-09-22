@@ -61,3 +61,5 @@ NORMAL_ROLE_PERMISSIONS = ["bid", "chat", "c_chat", "home", "user_setting"]
 # 权限缓存 TTL（秒）与 key 前缀
 PERMISSION_CACHE_TTL = 600
 PERMISSION_CACHE_PREFIX = "perm:"
+# 超管角色成员缓存（与权限缓存同 TTL；用户拥有内置「超级管理员」角色的判定结果）
+SUPER_ROLE_CACHE_PREFIX = "superrole:"

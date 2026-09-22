@@ -10,6 +10,7 @@ from api.utils.permission_utils import (
     superuser_required,
     get_cached_user_permissions,
     invalidate_user_permissions,
+    is_superadmin,
 )
 from api.db.db_models import (
     DB,
@@ -43,7 +44,8 @@ async def get_my_permissions():
         keys = get_cached_user_permissions(current_user.id)
         return get_json_result(data={
             "permissions": sorted(keys),
-            "is_superuser": bool(current_user.is_superuser),
+            # 超管判定唯一口径：账号标志 OR 内置「超级管理员」角色（与 superuser_required 同源）
+            "is_superuser": is_superadmin(current_user),
         })
     except Exception as e:
         logging.exception(e)
@@ -102,9 +104,18 @@ async def create_role():
 async def update_role(role_id):
     try:
         body = await _json()
+        role = PermissionRoleService.get_or_none(id=role_id)
+        if not role:
+            return get_data_error_result(message="角色不存在", code=RetCode.DATA_ERROR)
         updates = {}
         if "name" in body:
-            updates["name"] = (body["name"] or "").strip()
+            new_name = (body["name"] or "").strip()
+            # 内置角色名是代码判定依据（普通用户回退/超管角色成员判定），改名会静默破坏口径
+            if role.builtin and new_name != role.name:
+                return get_data_error_result(message="内置角色不可改名", code=RetCode.FORBIDDEN)
+            if new_name and new_name != role.name and PermissionRoleService.get_or_none(name=new_name):
+                return get_data_error_result(message="角色名已存在", code=RetCode.ARGUMENT_ERROR)
+            updates["name"] = new_name
         if "description" in body:
             updates["description"] = body["description"]
         if updates:
@@ -240,7 +251,8 @@ async def delete_user(user_id):
     仅超管可操作（permission_manage 权限之外再收紧一层）。
     """
     try:
-        if not bool(getattr(current_user, "is_superuser", False)):
+        # 与 superuser_required 同口径（账号标志 OR 超级管理员角色）；装饰器已挡，这里留防御
+        if not is_superadmin(current_user):
             return get_data_error_result(message="仅超级管理员可删除用户", code=RetCode.FORBIDDEN)
         if user_id == current_user.id:
             return get_data_error_result(message="不能删除当前登录账号", code=RetCode.FORBIDDEN)
@@ -248,7 +260,7 @@ async def delete_user(user_id):
         # 已软删（status="0"）的用户在此处查不到匹配 → 同样走「用户不存在」，幂等拒绝重复删除
         if not user or user.status != "1":
             return get_data_error_result(message="用户不存在", code=RetCode.DATA_ERROR)
-        if user.is_superuser:
+        if is_superadmin(user):
             return get_data_error_result(message="不能删除超级管理员", code=RetCode.FORBIDDEN)
 
         # 同 delete_role：事务内直接用 peewee 模型操作，不走带 connection_context 的 Service 方法

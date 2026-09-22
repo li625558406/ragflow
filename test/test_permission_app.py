@@ -40,7 +40,8 @@ def _load_permission_app():
     _make_stub_module("api.utils.permission_utils", permission_required=noop_decorator,
                       superuser_required=noop_decorator,
                       get_cached_user_permissions=lambda *a, **kw: set(),
-                      invalidate_user_permissions=lambda *a, **kw: None)
+                      invalidate_user_permissions=lambda *a, **kw: None,
+                      is_superadmin=lambda *a, **kw: False)
     _make_stub_module("api.db.services.permission_service",
                       PermissionRoleService=object, PermissionRolePermissionService=object,
                       PermissionUserRoleService=object, get_users_with_roles=lambda: [])

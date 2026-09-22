@@ -5,7 +5,7 @@ from peewee import IntegrityError
 
 from api.db.db_models import PermissionRole, PermissionRolePermission, PermissionUserRole
 from api.db.services.common_service import CommonService
-from api.constants import NORMAL_ROLE_NAME
+from api.constants import NORMAL_ROLE_NAME, SUPER_ROLE_NAME
 
 
 class PermissionRoleService(CommonService):
@@ -47,6 +47,14 @@ def get_user_permission_keys(user_id: str) -> set[str]:
     if not role_ids:
         return roles_permission_keys(get_normal_role_ids())
     return roles_permission_keys(role_ids)
+
+
+def user_has_super_role(user_id: str) -> bool:
+    """用户是否拥有内置「超级管理员」角色（超管判定第二通道，与 is_superuser 账号标志取或）。"""
+    role = PermissionRole.get_or_none(PermissionRole.name == SUPER_ROLE_NAME)
+    if not role:
+        return False
+    return bool(PermissionUserRole.get_or_none(user_id=user_id, role_id=role.id))
 
 
 def assign_normal_role(user_id: str) -> bool:

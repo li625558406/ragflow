@@ -1,5 +1,24 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-22（六）超管判定改「账号标志 OR 超级管理员角色」——用户管理页指派角色即生效
+
+**主题**：（五）上线后用户报「用户管理 B 端界面的配置没有效果」：界面上把用户挂到内置「超级管理员」角色，但 5 模块硬限制只认 `user.is_superuser` 账号标志，角色指派永远不解锁。与用户确认口径：**角色=超管**——超管判定改为 `is_superuser 账号标志 OR 拥有内置「超级管理员」角色`，指派角色即解锁 5 模块。
+
+**改动（后端 5 文件，前端零改动）**：
+- `api/db/services/permission_service.py`：新增 `user_has_super_role(user_id)`（查 `PermissionRole.name == SUPER_ROLE_NAME`（api/constants.py 既有常量）+ `PermissionUserRole` 成员行；角色库缺失返回 False 不抛错）。
+- `api/constants.py`：新增 `SUPER_ROLE_CACHE_PREFIX = "superrole:"`。
+- `api/utils/permission_utils.py`：新增 `get_cached_super_role()`（Redis 缓存 TTL 同 PERMISSION_CACHE_TTL=600s；Redis 故障降级直查 DB）；新增 `is_superadmin(user)`（**唯一口径**：账号标志真值短路，不触发角色查询；否则查缓存角色）；`superuser_required` / `invalidate_user_permissions`（一并失效 superrole 键，零新增调用点——set_user_roles/delete_role/set_role_permissions/delete_user 既有失效路径自动覆盖角色变更）。
+- `permission_app.py`：`/permission/me` 的 `is_superuser` 改 is_superadmin（前端 usePermission 拿到角色超管身份，navbar/RouteGuard 即刻生效）；`update_role` 加**内置角色不可改名**守卫（角色名是代码判定依据，改名会静默剥离角色超管）+ 改名重名校验；`delete_user` 改用 is_superadmin 双向守卫（不能删超管/仅超管可删）。
+- `crawl4ai_ws.py`：`_authenticate` 返回 `is_superuser: is_superadmin(user)`，WS 与 REST 同口径。
+
+**事故教训（缓存序列化坑）**：`REDIS_CONN.set_obj` 内部 `json.dumps`——存字符串 `"1"` 落盘成 `'"1"'`（带引号 5 字节），读回不匹配 `(b"1","1")` 判定 → **角色超管恒 False**，且毒化键随 TTL 存活 10 分钟（首次容器内直调 True、线上端点 False 的矛盾即源于此）。修复：存 int `1/0`（json 落盘即 `"1"/"0"`）。另：redis-cli 默认 db 0 扫不到键，项目 `REDIS_CONN` 用 **db 1**（`config.get("db", 1)`），清缓存须 `-n 1`。
+
+**测试**：`test_permission_utils.py` +7 例（is_superadmin 短路不碰 Redis/DB、角色成员放行、双通道皆无拒绝、superrole 缓存 hit 1/0/miss 回源/Redis 挂降级 DB），`test_permission_service.py` +3 例（成员真/无成员假/角色缺失 False 且不查成员表），`test_permission_app.py` 桩补 is_superadmin；权限 6 套件 **46 passed**；5 文件 py_compile 通过。
+
+**部署（已部署 2026-09-22，前端零改动无需 build）**：后端 5 文件成套 SCP（constants.py/permission_service.py/permission_utils.py/permission_app.py/crawl4ai_ws.py）md5 双端一致 + 容器重启 + import 冒烟通过 + 修复序列化 bug 后二次 SCP 单文件（permission_utils.py md5 8ff4d2a1）。生产实测：demo01@kk.com（is_superuser=0 + 超级管理员角色）登录 → `/permission/me` `is_superuser:true`（权限列表仍走角色勾选不变）+ `/permission/roles`、`/memories`、`/template/fill/list` 全部 code 0；对照用户（仅普通用户角色）容器内直调 `is_superadmin=False`。
+
+**遗留**：指派/回收「超级管理员」角色后缓存最迟 600s 生效（set_user_roles 已主动失效，直接改库才需等 TTL）。
+
 ## 2026-09-22（五）B 端 5 模块仅超管可见——范本库/智能体/记忆/智能采集/用户管理页面+数据硬限制
 
 **主题**：这 5 个模块此前普通用户可见可达（范本库完全无权限控制；其余 4 个仅菜单级 RBAC、后端每文件只有 1 个端点有鉴权）。改为**超管硬限制**（`is_superuser` 判定，不走角色勾选）。
