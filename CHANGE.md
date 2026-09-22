@@ -1,6 +1,19 @@
 # CHANGE.md — 项目迭代记录
 
-## 2026-09-22（二）流程版本保真编辑（路线 D）：docx-preview 树上段落级编辑替换 Lexical 旧视图
+## 2026-09-22（三）就地修改后进度卡未填充汇总不刷新——终态行低频权威轮询
+
+**主题**：解「说『把招标代理机构改成福建省品辰有限公司』，AI 回执改了 3 个 key、成稿文档内容也确实变了，但进度卡『390 个填写点未填充』里仍有『招标代理机构名称』」。用户观察到的 390 = 填写完成时刻（16:19）的终态事件快照；modify 后权威口径应为 387（差数恰为 modify 的 3 个 key）。
+
+**根因（生产数据坐实，非猜测）**：容器内直调真实 DB——task `5ec20cfcb6…` 的 `values.render` 中 `tender_agency_name/agency_name_contact/agency_name_sign` 三 key 均已是「福建省品辰有限公司」，用真实 placeholders 重放 `derive_unfilled` = 387 项且三 key 全部判已填充——**后端数据与派生逻辑全对**。断层在前端：进度卡的 `unfilled/filled` 清单来自 `template_fill_events` 终态事件快照（`useTemplateFillTaskPoll` 只轮询 `filling` 行，终态即进 `stopped` 集合**永久停轮询**），而对话就地修改（FillTemplate action=modify）只回写 DB 行、不发任何 SSE 事件 → 卡片清单永远停在填写完成时刻。抽屉内预览内容是新的，因为 LivePreview 有自己独立的 3s 权威轮询（2026-09-17 修的「预览打开拉权威 values」正是这个）——与用户「文档内容改了但列表没更新」的观察完全吻合。
+
+**改动（纯前端 2 文件）**：
+- `web/src/hooks/use-template-fill-task-poll.ts`：终态 `filled` 行从「永久停轮询」改为 **10s 低频权威刷新**（`TERMINAL_REFRESH_MS`，filling 行保持 2s 不变；挂载立即刷一次）。刷新产物进**独立 `refreshOverrides` 槽**（只含 `unfilled/filled` 两键，缺省不下键不清 SSE 已有清单）——分槽原因：`overrides` 槽的「SSE filled 行丢弃 override」契约防的是轮询旧数据压过新 SSE，必须保留；而 refresh 槽本身就是终态端点权威派生，必须能更新已合成 filled 行的清单（这正是 modify 后刷新的唯一通道）。`status/download/values` 永不经 refresh 槽（成稿行本体不降级）；values 不在此合并——LivePreview 抽屉已有同款 3s 权威轮询做增量重涂，卡片清单只需两键，省全量产值重复传输。响应处理将 refresh 通道判定**前置于** `stopped` 迟到防护（filling 合成过终态的行 id 恒在 stopped 中，refresh 正是为它续上的路径）。非终态响应（异常竞态）忽略，终态行不降级。
+- `web/src/hooks/__tests__/use-template-fill-task-poll.test.ts`：16→21 例。新增 5 例对抗：权威 refresh 更新 filled 清单且 status/download 不降级（语义翻转用例——原「SSE filled 行终态 override 一并丢弃」按新契约改写）；10s 节流边界（挂载立即刷、8s 内 4 个周期全节流、累计 10s 放行）；响应缺两键不清已有清单；running 响应竞态不降级；filling 合成终态（stopped）后行转 filled 改走 refresh 通道继续刷新。既有 16 例全保留全绿（「SSE 为准」契约只对 overrides 槽收窄、未破坏）。
+
+**测试**：套件 21 passed；全量 vitest **340 passed**（基线 336 + 净增 4）。端到端数据验证走容器内真实 DB + 真实 placeholders 重放（见根因段），progress 端点 `build_progress_payload` 即同口径纯函数（`resolve_progress_values` 终态 DB 权威 + `derive_unfilled`）。
+
+**部署**：**未部署、未 commit**（部署 = 前端 build+dist+nginx reload，纯前端；后端零改动）。修复生效后行为：对话里说改字段 → 进度卡未填充汇总 10s 内自动从 390 变 387（无需刷新/重开）。
+
 
 **主题**：版本行铅笔编辑从 Lexical 纯文本旧段落视图换成 docx-preview 保真树上的段落级 contentEditable 编辑，格式所见即所得。v1 限制段内文字与表格单元格修改，拦截一切结构性变更（分段/并段/跨段删除/拖放）。实施计划 `docs/superpowers/plans/2026-09-22-flow-fidelity-edit.md`（6 Task 全完成）。
 

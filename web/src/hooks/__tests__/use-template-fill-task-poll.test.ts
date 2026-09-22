@@ -390,13 +390,17 @@ describe('useTemplateFillTaskPoll', () => {
     });
   });
 
-  it('SSE 已 filled 的行：终态 override 的 filled 一并被丢弃', async () => {
+  it('SSE 已 filled 的行：权威 refresh 更新 filled 清单（modify 后刷新），status/download 不降级', async () => {
     vi.useFakeTimers();
+    // 2026-09-22 语义：终态行不再永久停轮询，10s 低频权威刷新 unfilled/filled
+    // （对话就地 modify 只回写 DB 不发事件——refresh 槽是卡片清单刷新的唯一通道）；
+    // status/download 永不经 refresh 槽，SSE 合成的成稿行不降级
     mockedGet.mockReturnValue(
       envelope({
         status: 'done',
         download: { doc_id: 'd2' },
-        filled: [{ key: 'zzz', name: '轮询名' }],
+        filled: [{ key: 'zzz', name: '权威名' }],
+        unfilled: [{ key: 'empty1', name: '补填前留空', required: true }],
       }),
     );
     const { result } = renderHook(() =>
@@ -405,16 +409,143 @@ describe('useTemplateFillTaskPoll', () => {
           fillingTpl({
             status: 'filled',
             filled: [{ key: 'k1', name: 'SSE名' }],
+            download: { doc_id: 'd1', filename: '成稿.docx' },
           }),
         ],
         true,
       ),
     );
     await flush();
+    const merged = result.current?.[0];
+    // 清单被权威响应更新（modify 生效可见）
+    expect(merged?.filled).toEqual([{ key: 'zzz', name: '权威名' }]);
+    expect(merged?.unfilled).toEqual([
+      { key: 'empty1', name: '补填前留空', required: true },
+    ]);
+    // 成稿行本体不被轮询降级：status 保持 filled、download 保留 SSE 合成的那份
+    expect(merged?.status).toBe('filled');
+    expect(merged?.download).toMatchObject({ doc_id: 'd1' });
+  });
+
+  it('终态行 10s 节流：挂载立即刷一次，2s 周期内不重复请求，10s 后再刷', async () => {
+    vi.useFakeTimers();
+    mockedGet.mockReturnValue(
+      envelope({
+        status: 'done',
+        unfilled: [{ key: 'b', name: '字段乙', required: true }],
+      }),
+    );
+    const { result } = renderHook(() =>
+      useTemplateFillTaskPoll(
+        [
+          fillingTpl({
+            status: 'filled',
+            unfilled: [{ key: 'old', name: '旧字段', required: true }],
+          }),
+        ],
+        true,
+      ),
+    );
+    await flush();
+    expect(mockedGet).toHaveBeenCalledTimes(1);
+    expect(result.current?.[0].unfilled).toEqual([
+      { key: 'b', name: '字段乙', required: true },
+    ]);
+    // 8s 内经过 4 个 2s 周期：全部被节流跳过
+    vi.advanceTimersByTime(8000);
+    await flush();
+    expect(mockedGet).toHaveBeenCalledTimes(1);
+    // 累计 10s：refresh 放行
+    vi.advanceTimersByTime(2000);
+    await flush();
+    expect(mockedGet).toHaveBeenCalledTimes(2);
+  });
+
+  it('终态行 refresh：响应缺 unfilled/filled → 不写键，保留 SSE 已有清单', async () => {
+    vi.useFakeTimers();
+    mockedGet.mockReturnValue(
+      envelope({ status: 'done', download: { doc_id: 'd1' } }),
+    );
+    const existing = [{ key: 'k1', name: '字段一', required: true }];
+    const { result } = renderHook(() =>
+      useTemplateFillTaskPoll(
+        [fillingTpl({ status: 'filled', unfilled: existing })],
+        true,
+      ),
+    );
+    await flush();
+    expect(result.current?.[0].unfilled).toBe(existing);
+  });
+
+  it('终态行 refresh：响应 running（异常竞态）→ 忽略，行不降级', async () => {
+    vi.useFakeTimers();
+    mockedGet.mockReturnValue(
+      envelope({ status: 'running', done: 5, total: 10 }),
+    );
+    const { result } = renderHook(() =>
+      useTemplateFillTaskPoll(
+        [fillingTpl({ status: 'filled', download: { doc_id: 'd1' } })],
+        true,
+      ),
+    );
+    await flush();
+    const merged = result.current?.[0];
+    expect(merged?.status).toBe('filled');
+    expect(merged?.done).toBeUndefined();
+  });
+
+  it('filling 行合成终态（stopped）后行转 filled，改走 refresh 通道继续低频刷新', async () => {
+    vi.useFakeTimers();
+    mockedGet.mockImplementation(() =>
+      Promise.resolve({
+        data: {
+          code: 0,
+          data: {
+            status: 'done',
+            download: { doc_id: 'd1' },
+            unfilled: [{ key: 'a', name: '首轮未填', required: true }],
+          },
+        },
+      }),
+    );
+    const { result, rerender } = renderHook(
+      ({ templates }: { templates: ITemplateFillTemplate[] }) =>
+        useTemplateFillTaskPoll(templates, true),
+      { initialProps: { templates: [fillingTpl()] } },
+    );
+    await flush();
+    // filling 合成终态：stopped.add，2s 通道停
     expect(result.current?.[0]).toMatchObject({
       status: 'filled',
-      filled: [{ key: 'k1', name: 'SSE名' }],
+      unfilled: [{ key: 'a', name: '首轮未填', required: true }],
     });
+    // 行转 filled 后 refresh 通道立即可用（挂载后首个 tick 已把 filled 行纳入 targets，
+    // 但节流以首轮 filling 请求时刻为基线 → 推进 10s 放行）
+    rerender({
+      templates: [
+        fillingTpl({
+          status: 'filled',
+          download: { doc_id: 'd1' },
+          unfilled: [{ key: 'a', name: '首轮未填', required: true }],
+        }),
+      ],
+    });
+    mockedGet.mockImplementation(() =>
+      Promise.resolve({
+        data: {
+          code: 0,
+          data: {
+            status: 'done',
+            unfilled: [{ key: 'b', name: 'modify 后新清单', required: true }],
+          },
+        },
+      }),
+    );
+    vi.advanceTimersByTime(10000);
+    await flush();
+    expect(result.current?.[0].unfilled).toEqual([
+      { key: 'b', name: 'modify 后新清单', required: true },
+    ]);
   });
 
   it('unmount 后不再发起请求', async () => {
