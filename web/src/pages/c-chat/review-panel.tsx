@@ -737,6 +737,10 @@ export default function ReviewPanel({
   const fidDisposeRef = useRef<(() => void) | null>(null);
   // 突变闸：编辑过的树绝不允许 stashDocxRender 入缓存（否则脏树会被后续只读回放）
   const docxMutatedRef = useRef(false);
+  // 渲染完成 ref：与 docxReadyTick 配对——tick 让 editify effect 重跑，ref 让它
+  // 知道渲染是否真的完成（deps 如 editingFidelity 先变时 renderAsync 仍在逐页
+  // 构建，wrapper 已出现但 section 不全，只数 DOM 必然误判对齐失败）
+  const docxRenderDoneRef = useRef(false);
   const fidTimer = useRef<number | undefined>(undefined);
   // 结构拦截提示（短暂浮现自动消失）
   const [structHint, setStructHint] = useState('');
@@ -1004,6 +1008,7 @@ export default function ReviewPanel({
     setDocxRenderFailed(false);
     setMarkedKeys(new Set());
     docxMutatedRef.current = false; // 新一轮渲染产物视为干净
+    docxRenderDoneRef.current = false; // 渲染未完成前 editify 不得对齐
     // 超大文档默认文本降级：不进 renderAsync（「切换保真渲染」覆盖后放行）
     if (docxOversize && !docxForceFidelity) return;
     if (takeDocxRender(docxBlob, el)) {
@@ -1013,6 +1018,7 @@ export default function ReviewPanel({
       // 回放在 effect 阶段同步插 mark（renderAsync 异步无此窗口）——同一
       // commit 的补插 effect 闭包还是旧 markedKeys，防双插靠补插 effect 的
       // DOM 已插判定，这里无需额外闸
+      docxRenderDoneRef.current = true;
       setDocxReadyTick((n) => n + 1);
       setMarkedKeys(
         highlightDocxRanges(el, toHighlightItems(railItemsRef.current)),
@@ -1037,6 +1043,7 @@ export default function ReviewPanel({
         if (cancelled || !el.isConnected) return; // 容器已被重挂/卸载：丢弃本轮 stale 渲染产物
         fitDocxToColumn();
         applyDocxPageLazy(el);
+        docxRenderDoneRef.current = true;
         setDocxReadyTick((n) => n + 1);
         setMarkedKeys(
           highlightDocxRanges(el, toHighlightItems(railItemsRef.current)),
@@ -1746,10 +1753,14 @@ export default function ReviewPanel({
     fidDisposeRef.current = null;
     fidMapRef.current = null;
     if (!editingFidelity || !docxWrapRef.current || !content) return;
+    // 渲染未完成（全量 renderAsync 异步逐页构建中）不对齐：等渲染 effect 置
+    // docxRenderDoneRef 并 bump docxReadyTick 后本 effect 重跑再动手
+    if (!docxRenderDoneRef.current) return;
     const wrap = docxWrapRef.current;
     const map = mapDocxParas(wrap, content.paragraphs);
     if (!map.ok) {
       // 宁回退不可错改：对齐失败整体转旧 Lexical 编辑视图
+      console.warn('[fidelity-edit] map failed:', map.reason);
       setFidelityEditBlocked(true);
       return;
     }
@@ -1757,6 +1768,7 @@ export default function ReviewPanel({
     fidDisposeRef.current = editifyDocx(wrap, {
       pEls: map.pByEl,
       tableByEl: map.tableByEl,
+      readOnlyEls: map.readOnlyEls,
       onInput: () => {
         docxMutatedRef.current = true;
         window.clearTimeout(fidTimer.current);

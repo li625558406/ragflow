@@ -1,5 +1,18 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-22（二）流程版本保真编辑（路线 D）：docx-preview 树上段落级编辑替换 Lexical 旧视图
+
+**主题**：版本行铅笔编辑从 Lexical 纯文本旧段落视图换成 docx-preview 保真树上的段落级 contentEditable 编辑，格式所见即所得。v1 限制段内文字与表格单元格修改，拦截一切结构性变更（分段/并段/跨段删除/拖放）。实施计划 `docs/superpowers/plans/2026-09-22-flow-fidelity-edit.md`（6 Task 全完成）。
+
+**改动（纯前端 3 文件）**：
+- `web/src/pages/c-chat/docx-fidelity-edit.ts`（新增，核心）：严格对齐层 + 块抽取 + 编辑守卫三段。**对齐口径复刻后端 `_build_para_map`**（`rag/app/naive.py` to_paragraphs）：section 直子 article 的 P/TABLE 按文档序收集、空段不占 index、整表占一个 index、`w:sdt`（目录内容控件）后端整块跳过而 docx-preview `parseSdt` 展平无痕迹 → **模型驱动双指针对齐**（模型段按序在 DOM 找同类型+归一化文本相等段；DOM 多余段只允许「目录形态」（`docx_toc{N}` 类或全部文本在内部锚链接里）跳过，其余整体 fail 回退 Lexical——宁可不编辑不能改错段）；目录形态段即便匹配上也强制只读（readOnlyEls，杜绝「改正文写到目录条目」歧义）。canonical 技巧（归一化相等取模型原文）根除 tab/\u00a0/br 渲染差异幻影 diff。**vMerge 幻影抑制**：python-docx `r.cells` 对垂直合并 continue 位置返回 restart 格文本（naive.py 基线 HTML 表头逐行重复），docx-preview 渲染 continue 为空 td → DOM 格空 + 基线同列多行同文本 → 视为未改动（代价：放弃「清空 vMerge 疑似格」，此类格按 row/col 落地本就有歧义）。beforeinput 拦截 insertParagraph/insertLineBreak/跨段删除/段首退格/拖放；粘贴剥换行强制段内。
+- `web/src/pages/c-chat/docx-edit-bar.tsx`（新增）：保真编辑工具条（portal 吸顶），改动数/结构提示/错误 + 保存为新版本/放弃。
+- `web/src/pages/c-chat/review-panel.tsx`：editify effect 接线——deps `[editingFidelity, docxEpoch, docxReadyTick, fidelityNonce, content]`，`docxRenderDoneRef` 闸保证跑在渲染完成的树上（全量 renderAsync 异步逐页构建中不对齐，撞空容器必误判失败）；对齐失败 `fidelityEditBlocked` 整体转旧 Lexical 编辑视图（blob/nonce/fileId 变化复位）；放弃 = `docxMutatedRef` 置脏禁入渲染缓存 + nonce bump 强制干净重渲。
+
+**E2E 实测（本地 dev 9222 代理生产 API，真实 315KB 投标文件 2299 模型段/36 表全对齐）**：改字 →「改动 1 处」精确；表格格改字 → tableEdits 坐标正确（paraIndex=354 row0 col0）；回车拦截+提示浮现；段首退格拦截；粘贴三行文本剥换行为一行；保存为新版本 → 后端 `document/edit` 200 → 版本时间线热现 v2 → 拉取新版本 content 验证段落与表格改动**全部落地**；放弃 → 文本恢复且编辑态保持。
+
+**测试**：`docx-fidelity-edit.test.ts` 23 例（含 tocLike 标记、sdt 展平跳过、目录条目 readOnlyEls、vMerge 幻影抑制 3 例、结构拦截、粘贴剥换行等对抗用例）；全量 vitest 336 passed + build 通过。**未部署**（部署 = build+dist+nginx reload，纯前端）。
+
 ## 2026-09-22 流程页签智能体解耦 + 审核弹框默认编辑态
 
 **主题**：两项前端功能首次固化入仓（此前仅存工作区，已随 2026-09-21 渲染优化批部署上线）。

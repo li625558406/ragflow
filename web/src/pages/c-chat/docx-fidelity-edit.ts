@@ -27,18 +27,44 @@ export interface DomFlowEntry {
   el: HTMLElement;
   kind: 'text' | 'image' | 'table';
   normText: string;
+  /** 目录形态（sdt 展平或 sdt 外 TOC 条目）：见 isTocLikePara */
+  tocLike: boolean;
 }
 
-/** 收集 docx-preview 树的顶层流元素（各 section 直子级，文档序）。
- * 只认 P/TABLE 直子级：页眉页脚在 header/footer 容器里、表格单元格段落嵌在
- * table 里，天然排除——与后端 body 直子级遍历同口径。 */
+/** 目录形态判定：后端 to_paragraphs 只遍历 body 直子级 w:p/w:tbl，w:sdt（内容
+ * 控件，实践中几乎都是目录 TOC）整块跳过不占 index；docx-preview parseSdt 把
+ * sdtContent 展平成普通段落、DOM 无结构痕迹，无法区分「sdt 内」与「恰好同款
+ * 样式的 sdt 外目录条目」（后者后端占 index）。因此不做收集期跳过，只标记形态
+ * （样式类 docx_toc{N}，或段内全部文本位于内部锚点链接 a[href^="#"] 中），
+ * 由 mapDocxParas 的模型驱动对齐裁决：多余目录形态段跳过，匹配上的强制只读。 */
+export function isTocLikePara(el: HTMLElement): boolean {
+  if (/^docx_toc\d+$/i.test(el.className || '')) return true;
+  const a = el.querySelector('a[href^="#"]');
+  if (!a) return false;
+  return (
+    normalizeParaText(el.textContent || '') ===
+    normalizeParaText(a.textContent || '')
+  );
+}
+
+/** 收集 docx-preview 树的顶层流元素（文档序）。
+ * 正文容器 = section 的直子 article（当前 docx-preview 版本 section 直子级是
+ * header/article/footer，正文段全在 article 里）；无 article 的旧结构退回
+ * section 本身。只认正文容器直子级 P/TABLE：页眉页脚在 header/footer 容器里、
+ * 表格单元格段落嵌在 table 里，天然排除——与后端 body 直子级遍历同口径。 */
 export function collectDocxFlowEls(wrap: HTMLElement): DomFlowEntry[] {
   const out: DomFlowEntry[] = [];
   for (const sec of Array.from(wrap.querySelectorAll('section'))) {
-    for (const el of Array.from(sec.children)) {
+    const body = sec.querySelector(':scope > article') || (sec as HTMLElement);
+    for (const el of Array.from(body.children)) {
       const tag = el.tagName;
       if (tag === 'TABLE') {
-        out.push({ el: el as HTMLElement, kind: 'table', normText: '' });
+        out.push({
+          el: el as HTMLElement,
+          kind: 'table',
+          normText: '',
+          tocLike: false,
+        });
       } else if (tag === 'P') {
         const host = el as HTMLElement;
         const normText = normalizeParaText(host.textContent || '');
@@ -48,6 +74,7 @@ export function collectDocxFlowEls(wrap: HTMLElement): DomFlowEntry[] {
           el: host,
           kind: hasImg && !normText ? 'image' : 'text',
           normText,
+          tocLike: isTocLikePara(host),
         });
       }
     }
@@ -63,10 +90,15 @@ export type FidelityMap =
       pByEl: Map<HTMLElement, number>;
       /** 顶层 table el → paraIndex */
       tableByEl: Map<HTMLElement, number>;
+      /** 目录形态但与模型匹配上的段（sdt 内/外无法区分）：映射有效但禁止编辑 */
+      readOnlyEls: Set<HTMLElement>;
     };
 
-/** 严格 1:1 对齐：长度、逐位类型、text 位归一化文本三重校验。
- * 模型侧 table/image 条目 normText 记 ''，与 DOM table/image 对位。 */
+/** 模型驱动顺序对齐：模型段必须按序在 DOM 中找到同类型且归一化文本相等的段；
+ * DOM 多余段（模型没有的）只允许目录形态（w:sdt 展平的目录——后端不占 index）
+ * 被跳过，其余一律整体回退（宁可不编辑也不能改错段）。目录形态段即便与模型
+ * 匹配（sdt 外目录条目后端占 index）也进 readOnlyEls，由 editify 拒绝开启编辑
+ * ——目录段不可编辑，杜绝把改正文写到目录条目上的歧义。 */
 export function mapDocxParas(
   wrap: HTMLElement,
   paragraphs: DocxSourceParagraph[],
@@ -82,33 +114,38 @@ export function mapDocxParas(
     normText:
       p.type === 'table' || p.type === 'image' ? '' : normalizeParaText(p.text),
   }));
-  if (dom.length !== model.length) {
-    return {
-      ok: false,
-      reason: `流元素数不一致 DOM=${dom.length} 模型=${model.length}`,
-    };
-  }
   const pByEl = new Map<HTMLElement, number>();
   const tableByEl = new Map<HTMLElement, number>();
-  for (let i = 0; i < dom.length; i++) {
-    const d = dom[i];
+  const readOnlyEls = new Set<HTMLElement>();
+  let j = 0;
+  const fail = (reason: string): FidelityMap => ({ ok: false, reason });
+  for (let i = 0; i < model.length; i++) {
     const m = model[i];
-    if (d.kind !== m.kind) {
-      return {
-        ok: false,
-        reason: `第 ${i + 1} 个流元素类型不一致 DOM=${d.kind} 模型=${m.kind}`,
-      };
+    if (j >= dom.length) return fail(`第 ${i + 1} 个模型段无对应 DOM 流元素`);
+    const d = dom[j];
+    const matched =
+      d.kind === m.kind && (m.kind === 'table' || d.normText === m.normText);
+    if (!matched && !d.tocLike) {
+      return fail(`第 ${i + 1} 段与 DOM 不一致（类型 ${d.kind}/${m.kind}）`);
     }
-    if (d.kind === 'table') {
-      tableByEl.set(d.el, m.index);
-    } else {
-      if (d.normText !== m.normText) {
-        return { ok: false, reason: `第 ${i + 1} 段文本与模型不一致` };
-      }
+    if (!matched) {
+      j++; // 模型没有的目录形态段：跳过（后端 sdt 口径）
+      i--;
+      continue;
+    }
+    if (d.kind === 'table') tableByEl.set(d.el, m.index);
+    else {
       pByEl.set(d.el, m.index);
+      if (d.tocLike) readOnlyEls.add(d.el);
+    }
+    j++;
+  }
+  for (; j < dom.length; j++) {
+    if (!dom[j].tocLike) {
+      return fail(`DOM 末尾多出 ${dom.length - j} 个非目录流元素`);
     }
   }
-  return { ok: true, pByEl, tableByEl };
+  return { ok: true, pByEl, tableByEl, readOnlyEls };
 }
 
 // ── 块抽取 ─────────────────────────────────────────────────
@@ -205,11 +242,28 @@ export function collectFidelityBlocks(
         const n = parseInt(td.getAttribute('colspan') || '1', 10);
         const colSpan = Number.isFinite(n) && n > 0 ? n : 1;
         const bc = base?.find((x) => x.row === ri && x.col === col);
+        const bcText = bc?.text || '';
+        const domRaw = cellDomText(td);
+        // vMerge 幻影抑制：python-docx r.cells 对垂直合并 continue 位置返回
+        // restart 格（同文本），基线 HTML 表头逐行重复；docx-preview 把
+        // continue 渲染为空 td。DOM 格空 + 基线同列多行同文本 → 视为未改动
+        // （取基线文本），否则空 DOM 会被误报「清空单元格」。用户改字（DOM
+        // 非空）不受影响；代价是放弃「清空 vMerge 疑似格」操作（对 vMerge 表
+        // 按 row/col 落地本就有歧义）。
+        let text: string;
+        if (!normalizeParaText(domRaw) && bcText && base) {
+          const dupSameCol = base.some(
+            (x) => x.col === bc!.col && x.row !== ri && x.text === bcText,
+          );
+          text = dupSameCol ? bcText : canonicalCellText(domRaw, bcText);
+        } else {
+          text = canonicalCellText(domRaw, bcText);
+        }
         blocks.push({
           paraIndex: idx,
           kind: 'table',
           cell: { row: ri, col },
-          text: canonicalCellText(cellDomText(td), bc?.text || ''),
+          text,
         });
         col += colSpan;
       }
@@ -235,6 +289,8 @@ export function collectFidelityBlocks(
 export interface EditifyOptions {
   pEls: Map<HTMLElement, number>;
   tableByEl: Map<HTMLElement, number>;
+  /** 目录形态等映射有效但禁止编辑的段（如 sdt 内外目录条目，改正文 vs 改目录有歧义） */
+  readOnlyEls?: Set<HTMLElement>;
   /** 任意 input（含守卫放行的删除/输入）后触发，调用方防抖 diff */
   onInput: () => void;
   /** 结构性变更被拦截时提示（调用方做短暂浮现） */
@@ -282,6 +338,7 @@ export function editifyDocx(
 ): () => void {
   const editables: HTMLElement[] = [];
   for (const el of opts.pEls.keys()) {
+    if (opts.readOnlyEls?.has(el)) continue;
     if (el.getAttribute('contenteditable') !== 'true') {
       el.setAttribute('contenteditable', 'true');
       editables.push(el);

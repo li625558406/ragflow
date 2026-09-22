@@ -76,6 +76,55 @@ describe('collectDocxFlowEls', () => {
     expect(els[3].kind).toBe('image');
     wrap.remove();
   });
+
+  it('article 结构：正文容器取 section 直子 article，页眉 p 不占 index', () => {
+    // 真实 docx-preview（breakPages）产物：section 直子级是 header/article/footer
+    const wrap = document.createElement('div');
+    wrap.className = 'docx-wrapper';
+    const sec = document.createElement('section');
+    const hdr = document.createElement('header');
+    hdr.innerHTML = '<p>页眉文本</p>';
+    const art = document.createElement('article');
+    art.innerHTML =
+      '<p>正文一</p><p></p><table><tr><td>格</td></tr></table><p>正文二</p>';
+    const ftr = document.createElement('footer');
+    ftr.innerHTML = '<p>第 1 页</p>';
+    sec.append(hdr, art, ftr);
+    wrap.appendChild(sec);
+    document.body.appendChild(wrap);
+    const els = collectDocxFlowEls(wrap);
+    expect(els).toHaveLength(3); // 页眉/页脚 p 与空段均不占 index
+    expect(els[0].kind).toBe('text');
+    expect(els[0].normText).toBe('正文一');
+    expect(els[1].kind).toBe('table');
+    expect(els[2].normText).toBe('正文二');
+    wrap.remove();
+  });
+
+  it('目录形态段标记 tocLike：TOC 样式类与内部锚链接全包两种形态', () => {
+    const wrap = document.createElement('div');
+    wrap.className = 'docx-wrapper';
+    const sec = document.createElement('section');
+    const art = document.createElement('article');
+    art.innerHTML = [
+      '<p class="docx_toc1"><a href="#_Toc1"><span>第1章 招标公告</span><span>6</span></a></p>',
+      '<p><a href="#_Ref1"><span>交叉引用</span></a></p>', // 全部文本在内部锚链接里
+      '<p>正文一</p>',
+      '<p><a href="https://example.com"><span>外链段</span></a>尾注</p>', // 外链+段外文本，非目录形态
+    ].join('');
+    sec.appendChild(art);
+    wrap.appendChild(sec);
+    document.body.appendChild(wrap);
+    const els = collectDocxFlowEls(wrap);
+    expect(els).toHaveLength(4);
+    expect(els[0].tocLike).toBe(true);
+    expect(els[1].tocLike).toBe(true);
+    expect(els[2].tocLike).toBe(false);
+    expect(els[2].normText).toBe('正文一');
+    expect(els[3].tocLike).toBe(false);
+    expect(els[3].normText).toBe('外链段尾注');
+    wrap.remove();
+  });
 });
 
 describe('mapDocxParas', () => {
@@ -117,6 +166,66 @@ describe('mapDocxParas', () => {
   it('对抗：类型错位（DOM 表 vs 模型段）→ ok:false', () => {
     const wrap = buildWrap([{ kind: 'table' }]);
     expect(mapDocxParas(wrap, [P(0, 'x')]).ok).toBe(false);
+    wrap.remove();
+  });
+
+  it('DOM 多余目录段（sdt 展平）被跳过：模型驱动对齐 ok', () => {
+    // 真实场景：w:sdt（目录）被 docx-preview 展平成 53 个普通段，后端模型没有
+    const wrap = document.createElement('div');
+    wrap.className = 'docx-wrapper';
+    const sec = document.createElement('section');
+    const art = document.createElement('article');
+    art.innerHTML =
+      '<p class="docx_toc1"><a href="#_Toc1"><span>第1章 目录条目</span><span>6</span></a></p>' +
+      '<p class="docx_toc2"><a href="#_Toc2"><span>第2章 目录条目二</span><span>9</span></a></p>' +
+      '<p>正文一</p>';
+    sec.appendChild(art);
+    wrap.appendChild(sec);
+    document.body.appendChild(wrap);
+    const r = mapDocxParas(wrap, [P(0, '正文一')]);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.pByEl.size).toBe(1);
+      expect(r.readOnlyEls.size).toBe(0); // 多余目录段被跳过，不进映射
+    }
+    wrap.remove();
+  });
+
+  it('sdt 外目录条目与模型匹配 → 进 readOnlyEls（映射有效但禁编辑）', () => {
+    // 真实场景：目录条目在 sdt 外（后端占 index），与正文段文本可能相同
+    const wrap = document.createElement('div');
+    wrap.className = 'docx-wrapper';
+    const sec = document.createElement('section');
+    const art = document.createElement('article');
+    art.innerHTML =
+      '<p class="docx_toc1"><a href="#_Toc1"><span>十三、汇总表</span></a></p>' +
+      '<p>十三、汇总表</p>';
+    sec.appendChild(art);
+    wrap.appendChild(sec);
+    document.body.appendChild(wrap);
+    const r = mapDocxParas(wrap, [P(0, '十三、汇总表'), P(1, '十三、汇总表')]);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.pByEl.size).toBe(2);
+      expect(r.readOnlyEls.size).toBe(1); // 只有目录形态段被禁编辑
+      const [first] = Array.from(r.pByEl.keys());
+      expect(r.readOnlyEls.has(first)).toBe(true);
+    }
+    wrap.remove();
+  });
+
+  it('对抗：DOM 多余段非目录形态 → ok:false（绝不带病映射）', () => {
+    const wrap = buildWrap([
+      { kind: 'p', text: '多余正文段' },
+      { kind: 'p', text: '正文一' },
+    ]);
+    expect(mapDocxParas(wrap, [P(0, '正文一')]).ok).toBe(false);
+    wrap.remove();
+  });
+
+  it('对抗：模型段无对应 DOM（DOM 先耗尽）→ ok:false', () => {
+    const wrap = buildWrap([{ kind: 'p', text: '唯一段' }]);
+    expect(mapDocxParas(wrap, [P(0, '唯一段'), P(1, '缺失段')]).ok).toBe(false);
     wrap.remove();
   });
 });
@@ -208,6 +317,101 @@ describe('collectFidelityBlocks', () => {
     const ops = diffBlocks(collectFidelityBlocks(model, r), model);
     if ('error' in ops) throw new Error(ops.error);
     expect(ops.deletes).toEqual([0]);
+    wrap.remove();
+  });
+
+  it('对抗：vMerge 幻影抑制——基线同列多行同文本且 DOM 格空 → 视为未改动', () => {
+    // 真实场景：python-docx r.cells 对垂直合并 continue 位置返回 restart 格文本，
+    // naive.py 基线 HTML 表头逐行重复；docx-preview 把 continue 渲染为空 td。
+    const wrap = document.createElement('div');
+    wrap.className = 'docx-wrapper';
+    const sec = document.createElement('section');
+    const table = document.createElement('table');
+    table.innerHTML =
+      '<tr><td>列名甲</td><td>列名乙</td></tr>' + '<tr><td></td><td></td></tr>'; // docx-preview：vMerge continue 渲染空格
+    sec.appendChild(table);
+    wrap.appendChild(sec);
+    document.body.appendChild(wrap);
+    const model = [{ index: 0, text: '<table/>', type: 'table' as const }];
+    const r = mapDocxParas(wrap, model);
+    if (!r.ok) throw new Error('map failed');
+    const baselines = new Map<number, BaselineCell[]>([
+      [
+        0,
+        [
+          { row: 0, col: 0, colSpan: 1, header: false, text: '列名甲' },
+          { row: 0, col: 1, colSpan: 1, header: false, text: '列名乙' },
+          // 基线侧：continue 位置重复了 restart 文本（python-docx 语义）
+          { row: 1, col: 0, colSpan: 1, header: false, text: '列名甲' },
+          { row: 1, col: 1, colSpan: 1, header: false, text: '列名乙' },
+        ],
+      ],
+    ]);
+    const blocks = collectFidelityBlocks(model, r, baselines);
+    const ops = diffBlocks(blocks, model, baselines);
+    if ('error' in ops) throw new Error(ops.error);
+    expect(ops.tableEdits).toEqual([]);
+    expect(ops.count).toBe(0);
+    wrap.remove();
+  });
+
+  it('对抗：vMerge 特征不吞真实改动——同列文本唯一时清空仍产 tableEdit', () => {
+    const wrap = document.createElement('div');
+    wrap.className = 'docx-wrapper';
+    const sec = document.createElement('section');
+    const table = document.createElement('table');
+    table.innerHTML = '<tr><td>列名甲</td></tr><tr><td></td></tr>';
+    sec.appendChild(table);
+    wrap.appendChild(sec);
+    document.body.appendChild(wrap);
+    const model = [{ index: 0, text: '<table/>', type: 'table' as const }];
+    const r = mapDocxParas(wrap, model);
+    if (!r.ok) throw new Error('map failed');
+    const baselines = new Map<number, BaselineCell[]>([
+      [
+        0,
+        [
+          { row: 0, col: 0, colSpan: 1, header: false, text: '列名甲' },
+          { row: 1, col: 0, colSpan: 1, header: false, text: '独值' },
+        ],
+      ],
+    ]);
+    const blocks = collectFidelityBlocks(model, r, baselines);
+    const ops = diffBlocks(blocks, model, baselines);
+    if ('error' in ops) throw new Error(ops.error);
+    expect(ops.tableEdits).toEqual([
+      { paraIndex: 0, row: 1, col: 0, newText: '', runs: undefined },
+    ]);
+    wrap.remove();
+  });
+
+  it('对抗：vMerge 抑制不吞用户改字——DOM 格非空走正常 diff', () => {
+    const wrap = document.createElement('div');
+    wrap.className = 'docx-wrapper';
+    const sec = document.createElement('section');
+    const table = document.createElement('table');
+    table.innerHTML = '<tr><td>列名甲</td></tr><tr><td>改成新值</td></tr>';
+    sec.appendChild(table);
+    wrap.appendChild(sec);
+    document.body.appendChild(wrap);
+    const model = [{ index: 0, text: '<table/>', type: 'table' as const }];
+    const r = mapDocxParas(wrap, model);
+    if (!r.ok) throw new Error('map failed');
+    const baselines = new Map<number, BaselineCell[]>([
+      [
+        0,
+        [
+          { row: 0, col: 0, colSpan: 1, header: false, text: '列名甲' },
+          { row: 1, col: 0, colSpan: 1, header: false, text: '列名甲' },
+        ],
+      ],
+    ]);
+    const blocks = collectFidelityBlocks(model, r, baselines);
+    const ops = diffBlocks(blocks, model, baselines);
+    if ('error' in ops) throw new Error(ops.error);
+    expect(ops.tableEdits).toEqual([
+      { paraIndex: 0, row: 1, col: 0, newText: '改成新值', runs: undefined },
+    ]);
     wrap.remove();
   });
 });
