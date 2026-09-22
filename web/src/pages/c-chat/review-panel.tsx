@@ -129,6 +129,8 @@ interface ReviewPanelProps {
   currentUserId?: string;
   /** 是否开放正文编辑（整篇 contentEditable，Word 式改字/回车分段/退格并段） */
   canEdit?: boolean;
+  /** 打开即进入编辑视图（从「编辑」入口进来的场景，免去再点一次「编辑文档」） */
+  defaultEditing?: boolean;
   /** 提交文档改动（改写/新增/删除段落，保存为新版本后由父级刷新预览） */
   onEditDocument?: (ops: {
     edits: Array<{ paraIndex: number; newText: string }>;
@@ -594,6 +596,7 @@ export default function ReviewPanel({
   onDeleteAnnotation,
   currentUserId,
   canEdit,
+  defaultEditing,
   onEditDocument,
 }: ReviewPanelProps) {
   const [content, setContent] = useState<FileContent | null>(null);
@@ -694,7 +697,7 @@ export default function ReviewPanel({
   // mark[data-anchor-key]，批注栏/引线/未定位兜底全部沿用。
   // 可编辑文件默认也进保真预览（原色审阅），点「编辑文档」才切 Lexical 旧段落
   // 编辑视图（纯文本模型，颜色/格式必然丢失），保存/放弃后回到保真预览。
-  const [userEditing, setUserEditing] = useState(false);
+  const [userEditing, setUserEditing] = useState(!!defaultEditing);
   // 展示成稿版本时强制关闭编辑入口：编辑保存流以原 fileId 为基准，对着成稿
   // 段落改字再按原文件落地会静默丢修复。
   const editing =
@@ -708,6 +711,12 @@ export default function ReviewPanel({
     setUserEditing(false);
     setUnmatchedHintKey(null);
   }, [fileId]);
+  // 每次打开按入口意图复位编辑态：从「编辑」入口（defaultEditing）进来直接落
+  // 编辑视图，免去再点一次「编辑文档」；面板常驻挂载，初值只在首挂载生效，
+  // 必须随 open 翻转同步
+  useEffect(() => {
+    if (open) setUserEditing(!!defaultEditing);
+  }, [open, defaultEditing]);
   const docxFidelityCandidate = content?.file_type === 'docx' && !editing;
   const docxWrapRef = useRef<HTMLDivElement | null>(null);
   const [docxRenderFailed, setDocxRenderFailed] = useState(false);
