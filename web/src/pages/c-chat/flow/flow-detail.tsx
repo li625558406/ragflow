@@ -69,6 +69,25 @@ const HOLDER_FIELD: Record<
   summary: 'initiator_id',
 };
 
+// 提交/退回按钮的目标节点处理人字段：按钮文案改为「提交至/退回至 + 处理人名称」
+// 提交：发起→领导、领导→处理、处理→汇总（汇总处理人=发起人）
+const NEXT_HOLDER_FIELD: Record<
+  string,
+  'initiator_id' | 'leader_id' | 'handler_id'
+> = {
+  initiator: 'leader_id',
+  leader: 'handler_id',
+  handler: 'initiator_id',
+};
+// 退回：领导→发起、处理→领导
+const PREV_HOLDER_FIELD: Record<
+  string,
+  'initiator_id' | 'leader_id' | 'handler_id'
+> = {
+  leader: 'initiator_id',
+  handler: 'leader_id',
+};
+
 const TERMINAL_STATUS = new Set(['archived', 'cancelled']);
 
 /** 版本时间线每页条数（倒序展示，超出部分点「查看更多」加载） */
@@ -326,6 +345,14 @@ export default function FlowDetail({
     ? (flow[holderField] as string | undefined) || ''
     : '';
   const holderName = holderId ? nicknameMap.get(holderId) || holderId : '';
+  // 提交/退回目标节点的处理人名称（按钮文案用；取不到时回退原「下一节点/上一节点」文案）
+  const targetName = (field?: 'initiator_id' | 'leader_id' | 'handler_id') => {
+    if (!field) return '';
+    const id = (flow[field] as string | undefined) || '';
+    return id ? nicknameMap.get(id) || id : '';
+  };
+  const nextHolderName = targetName(NEXT_HOLDER_FIELD[flow.status]);
+  const prevHolderName = targetName(PREV_HOLDER_FIELD[flow.status]);
 
   const handleDownload = async (v: FlowVersionItem) => {
     try {
@@ -517,7 +544,9 @@ export default function FlowDetail({
                     disabled={busy}
                     onClick={() => handleSubmit('return')}
                   >
-                    退回上一节点
+                    {prevHolderName
+                      ? `退回至${prevHolderName}`
+                      : '退回上一节点'}
                   </Button>
                 )}
                 <Button
@@ -525,7 +554,7 @@ export default function FlowDetail({
                   disabled={busy}
                   onClick={() => handleSubmit('next')}
                 >
-                  提交下一节点
+                  {nextHolderName ? `提交至${nextHolderName}` : '提交下一节点'}
                 </Button>
               </>
             )}

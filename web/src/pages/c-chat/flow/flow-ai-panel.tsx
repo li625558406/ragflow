@@ -26,6 +26,7 @@ import {
   saveFlowAiRecord,
 } from '@/services/flow-service';
 import api from '@/utils/api';
+import { getAuthorization } from '@/utils/authorization-util';
 import request from '@/utils/request';
 import { FileText } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -748,6 +749,48 @@ export default function FlowAiPanel({
     [flowId, version],
   );
 
+  // 上传范本填写成稿为 document（文件审核兜底目标）：流程无版本、无历史审核时，
+  // 「上一个操作员的最新产出」= 历史范本填写轮的最新 done 成稿（templateFillRef
+  // 经 template_fill_events 重放已含 filled 行的 download.url）。下载走 fetch 带
+  // Authorization（/agents/download 无鉴权直链会乱码，同 downloadTemplateFillResult
+  // 口径），再上传为 document 换取 file id。无成稿/下载或上传失败返回 null。
+  const uploadTemplateFillResultAsDocument = useCallback(async () => {
+    const templates = templateFillRef.current?.templates;
+    if (!templates?.length) return null;
+    // 从尾向前找：多范本/多轮时取事件序列上最新产出的成稿
+    const dl = [...templates]
+      .reverse()
+      .find((t) => t.status === 'filled' && t.download?.url)?.download;
+    if (!dl?.url) return null;
+    const resp = await fetch(dl.url, {
+      headers: { Authorization: getAuthorization() },
+    });
+    if (!resp.ok) return null;
+    const blob = await resp.blob();
+    const file = new File(
+      [blob],
+      dl.filename || dl.name || '范本填写成稿.docx',
+      {
+        type: dl.mime_type || 'application/octet-stream',
+      },
+    );
+    const fd = new FormData();
+    fd.append('file', file);
+    const up = await fetch('/api/v1/documents/upload', {
+      method: 'POST',
+      headers: {
+        Authorization: localStorage.getItem('Authorization') || '',
+      },
+      body: fd,
+    });
+    const result = await up.json();
+    if (result.code === 0 && result.data) {
+      const d = Array.isArray(result.data) ? result.data[0] : result.data;
+      if (d?.id) return d as { id: string; name: string };
+    }
+    return null;
+  }, []);
+
   // 发送：用户上传文件优先；否则按开关附带当前版本文件。
   // 发送语义与 c-chat handlePressEnter 一致（组合态从 DOM 取值、失败回填输入框）。
   const handleSend = useCallback(async () => {
@@ -1064,8 +1107,27 @@ export default function FlowAiPanel({
       if (reviewPreparing) return;
       if (!version) {
         // 无版本流程：打开流程内最近的审核文件（对话直传上传通道的 document，
-        // 与 openWithFile 同一语义）；连历史审核都没有时引导先上传
+        // 与 openWithFile 同一语义）；再退一步用上一操作员的范本填写成稿兜底
+        // （历史轮最新 done 成稿上传为 document，见 uploadTemplateFillResultAsDocument）；
+        // 连成稿都没有时才引导先上传
         if (!boundFileReview?.fileId) {
+          if (reviewPreparing) return;
+          setError('');
+          setReviewPreparing(true);
+          try {
+            const doc = await uploadTemplateFillResultAsDocument();
+            if (doc) {
+              setReviewFileId(doc.id);
+              setReviewFileName(doc.name);
+              setReviewSource('upload');
+              setReviewMode(true);
+              return;
+            }
+          } catch {
+            // 成稿下载/上传失败不阻断，落到下方引导文案
+          } finally {
+            setReviewPreparing(false);
+          }
           message.error('请先上传流程版本，或在对话中上传文件后再发起审核');
           return;
         }
@@ -1100,6 +1162,7 @@ export default function FlowAiPanel({
     reviewPreparing,
     reviewSource,
     boundFileReview,
+    uploadTemplateFillResultAsDocument,
     uploadVersionAsDocument,
     version,
   ]);
@@ -1393,22 +1456,17 @@ export default function FlowAiPanel({
         />
       </div>
 
-      {/* 保存动作：回复完成后自动已存记录，这里仅保留「存为新版本」；
-          hasContent 为 true 说明自动保存失败，补显手动「仅存记录」兜底 */}
-      {done && (hasContent || lastRecord) && (
+      {/* 保存动作：回复完成后自动已存记录；hasContent 为 true 说明自动保存
+          失败，补显手动「仅存记录」兜底 */}
+      {done && hasContent && (
         <div className="mt-2 flex justify-end gap-2">
-          {hasContent && (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={saving}
-              onClick={() => handleSave(false)}
-            >
-              仅存记录
-            </Button>
-          )}
-          <Button size="sm" disabled={saving} onClick={() => handleSave(true)}>
-            存为新版本
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={saving}
+            onClick={() => handleSave(false)}
+          >
+            仅存记录
           </Button>
         </div>
       )}

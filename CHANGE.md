@@ -1,5 +1,29 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-22（十）流程页签按钮文案两项调整
+
+**主题**：①用户要求去掉流程页签回复完成后的「存为新版本」按钮；②「提交下一节点/退回上一节点」按钮文案中的「下一节点/上一节点」改为目标节点的**处理人名称**。
+
+**改动（纯前端 2 文件）**：
+- `flow-ai-panel.tsx`：删除「存为新版本」按钮，渲染条件从 `(hasContent || lastRecord)` 收窄为 `hasContent`（`lastRecord` 只为该按钮存在，避免残留空容器）；自动保存与失败兜底「仅存记录」不受影响。`lastRecord` state 与 `handleSave(true)` 分支成为不可达死代码，按最小改动保留未删。
+- `flow-detail.tsx`：新增 `NEXT_HOLDER_FIELD`（发起→leader_id、领导→handler_id、处理→initiator_id 即汇总审核=发起人）与 `PREV_HOLDER_FIELD`（领导→发起、处理→领导），按钮文案动态化为「提交至{处理人}」/「退回至{处理人}」，名称走 `nicknameMap`（与「当前负责人」同一展示口径）；字段缺失时回退原「下一节点/上一节点」文案。
+
+**验证**：全量 vitest **352 passed** 零回归（无测试引用被删按钮文案）；随（九）同批部署 2026-09-22（build+dist+nginx reload），同批 commit+push。
+
+## 2026-09-22（九）流程「文件审核」自动携带上一操作员的范本填写成稿
+
+**主题**：用户报「流程进入下一个节点后点文件审核，报『请先上传流程版本，或在对话中上传文件后再发起审核』」。排查确认守卫按设计工作（生产 DB 实证：流程 557273f4 处于 leader 节点，**ver_cnt=0**、无历史审核绑定、发起时也未上传文件），但存在体验断层——上一操作员的范本填写成稿（2 笔 done）从未成为流程版本，下一节点用户**没有任何入口**能审核它。与用户确认预期口径：**应带上「上一个操作员的历史记录中最新版本的文件」**。
+
+**数据链（生产实证）**：`flow_ai_chat.template_fill_events`（102KB/95 事件）里 `filled` 终态事件携带完整 `download.url`（`/api/v1/agents/download?id=tplfill-<task_id>&created_by=...`）；前端历史恢复链路（挂载时从 aiChats 重放最新带事件记录 → `templateFillRef`）已能还原出 `status='filled'` 的模板行。即：**成稿下载地址在 leader 打开页签时就已在本地状态里**，只差 toggleReview 守卫没走这一路。注意 `tpl_fill_task.flow_instance_id` 存的是 canvas session id，不能作为后端反查 flow 的关联——关联只能经 template_fill_events 的 task_id 建立（前端侧天然持有）。
+
+**改动（前端单文件 `web/src/pages/c-chat/flow/flow-ai-panel.tsx`）**：
+- 新增 `uploadTemplateFillResultAsDocument`：从 `templateFillRef.current.templates` **从尾向前**找最新 `status='filled' && download.url` 行 → fetch 带 Authorization 取 Blob（禁直链，同 `downloadTemplateFillResult` 口径）→ POST `/api/v1/documents/upload` 换 file id。无成稿/下载或上传失败返回 null。
+- `toggleReview` 无版本守卫分支（`!version && !boundFileReview?.fileId`）：在报错引导前插入成稿兜底——上传成功即 `setReviewFileId/Name/Source('upload')` 并打开审核面板；失败静默落到原引导文案。优先级保持：手动上传 > 流程版本 > 历史审核绑定 > **范本成稿（新增）** > 引导报错。
+
+**验证**：E2E 全链路（本地 dev + 生产真实数据）——demo01@kk.com（leader）登录 → 打开流程（版本 0 条）→ 点「文件审核」→ 面板打开且渲染的正是范本成稿（含就地修改后的「招标代理机构：福建品辰有限公司」3 处、5.2 监理依据等正文），无报错；截图 `.scratch/review-from-tplfill-result.png`。全量 vitest **29 套件 352 passed** 零回归；tsc 对该文件零错误。
+
+**遗留（未部署、未 commit）**：部署 = 纯前端 `npm run build` + dist + nginx reload。多范本场景取事件序列最新一个 done 成稿（从尾向前首个 filled）；若上一操作员既没跑范本填写也没传版本/审核文件，仍会引导报错（符合预期）。
+
 ## 2026-09-22（八）范本预览占位符与填写值断行根修——「查看填写内容」UI 与下载文件不一致
 
 **主题**：用户报「范本填写的『查看填写内容』预览里，占位符/填写值与前面的标签不在一行，但下载后的文件格式正确」。生产取证（tpl_fill_task 最近 done 任务 values 无换行；工作副本 XML 里标签与 `{{key}}` 同段同排）排除数据问题，定位为纯前端渲染缺陷。
