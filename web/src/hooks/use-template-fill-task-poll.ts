@@ -29,12 +29,18 @@ export function useTemplateFillTaskPoll(
   const [overrides, setOverrides] = useState<
     Record<string, Partial<ITemplateFillTemplate>>
   >({});
-  // 终态权威刷新产物（与 overrides 分槽）：只含 unfilled/filled，专供已合成
-  // filled 行合并。分槽原因：overrides 槽的「SSE filled 行丢弃 override」契约
+  // 终态权威刷新产物（与 overrides 分槽）：unfilled/filled/values 三键，专供已
+  // 合成 filled 行合并。分槽原因：overrides 槽的「SSE filled 行丢弃 override」契约
   // 防的是轮询旧数据压过新 SSE；而 refresh 槽本身就是终态端点权威派生，必须
   // 能更新 SSE 合成行的清单（这正是 modify 后刷新的唯一通道）。
+  // values 必须一并合并：derive_filled 清单只含 {key,name} 不含值，卡片「已填充
+  // 列表」的值靠从 t.values 按 key join——modify 补填的 key 在 SSE 累积的旧
+  // values 里不存在 → 条目在、冒号后空白（2026-09-22 生产实测）。
   const [refreshOverrides, setRefreshOverrides] = useState<
-    Record<string, Pick<ITemplateFillTemplate, 'unfilled' | 'filled'>>
+    Record<
+      string,
+      Pick<ITemplateFillTemplate, 'unfilled' | 'filled' | 'values'>
+    >
   >({});
   // 已到终态的 task_id，停 filling 轮询（终态本地合成后不再按 2s 请求；
   // 行转 filled 后改走 10s 低频 refresh，见 targets 筛选）。
@@ -82,17 +88,21 @@ export function useTemplateFillTaskPoll(
             (x) => x.task_id === taskId,
           );
           if (!d?.status) continue;
-          // 终态行 refresh 通道：只写清单两键（modify 后 DB 权威派生）；
+          // 终态行 refresh 通道：只写清单两键+values（modify 后 DB 权威派生）；
           // 非终态响应忽略（终态行不降级），failed/cancelled 行已被 targets 排除。
           // 必须先于 stopped 防护判定——filling 合成过终态的行 id 恒在 stopped 中，
           // 而本通道正是为它续上的刷新路径，不受该集合约束
           if (cur?.status === 'filled') {
             if (!TERMINAL_TASK_STATUSES.includes(d.status)) continue;
-            const patch: Pick<ITemplateFillTemplate, 'unfilled' | 'filled'> =
-              {};
+            const patch: Pick<
+              ITemplateFillTemplate,
+              'unfilled' | 'filled' | 'values'
+            > = {};
             // 缺省（旧后端/全填满的 null）不下键：不清 SSE 已有清单
             if (d.unfilled) patch.unfilled = d.unfilled;
             if (d.filled) patch.filled = d.filled;
+            if (d.values && Object.keys(d.values).length)
+              patch.values = d.values;
             if (!Object.keys(patch).length) continue;
             setRefreshOverrides((prev) =>
               prev[taskId] === patch ? prev : { ...prev, [taskId]: patch },

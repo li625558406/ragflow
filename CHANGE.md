@@ -14,6 +14,8 @@
 
 **部署**：**已部署 2026-09-22 并 push（7b7f3630）**：build（1m09s）+ dist 上传解包（保 inode）+ nginx reload，首页 200、新构建 chunk `index-5qdmr3QH.js` md5 双端一致（`d8cef006b570`）。修复生效后行为：对话里说改字段 → 进度卡未填充汇总 10s 内自动从 390 变 387（无需刷新/重开）。
 
+**追加（同日生产实测返工）**：首轮部署后用户验收「未填充 387 对了」，但**已填充列表里 modify 的填充点条目在、冒号后值为空**（文档中有值）。根因 = 首轮取舍漏项：`derive_filled` 清单按后端设计**只含 `{key,name}` 不含值**，卡片值靠 `buildFilledRows` 从 `t.values` 按 key join（`template-fill-stream.ts:446`）——而 modify 补填的 key 在 SSE 累积的旧 `values` 里不存在，首轮又刻意没把 `values` 纳入 refresh 槽。修法 = refresh 槽扩为 `unfilled/filled/values` 三键（终态响应本来就带 values，零额外请求成本；缺省不下键防御保持）。测试 21→22 例（新增 values 合并用例 + 权威刷新用例补 values 断言），全量 **341 passed**。（**未部署、未 commit**；部署 = build+dist+nginx reload，纯前端）
+
 
 **主题**：版本行铅笔编辑从 Lexical 纯文本旧段落视图换成 docx-preview 保真树上的段落级 contentEditable 编辑，格式所见即所得。v1 限制段内文字与表格单元格修改，拦截一切结构性变更（分段/并段/跨段删除/拖放）。实施计划 `docs/superpowers/plans/2026-09-22-flow-fidelity-edit.md`（6 Task 全完成）。
 

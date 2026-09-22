@@ -427,6 +427,45 @@ describe('useTemplateFillTaskPoll', () => {
     expect(merged?.download).toMatchObject({ doc_id: 'd1' });
   });
 
+  it('refresh 带 values → filled 行 values 更新（已填充列表 join 出值，modify 补填可见）', async () => {
+    vi.useFakeTimers();
+    // derive_filled 清单只含 {key,name} 不含值，卡片值靠 t.values 按 key join；
+    // modify 补填的 key 在 SSE 累积的旧 values 里不存在 → 条目在、值空白，
+    // 故 refresh 槽必须一并合并 values（2026-09-22 生产实测补的键）
+    mockedGet.mockReturnValue(
+      envelope({
+        status: 'done',
+        filled: [
+          { key: 'tender_agency_name', name: '招标代理机构名称' },
+          { key: 'project_name', name: '项目名称' },
+        ],
+        values: {
+          tender_agency_name: '福建省品辰有限公司',
+          project_name: '渔港工程',
+        },
+      }),
+    );
+    const { result } = renderHook(() =>
+      useTemplateFillTaskPoll(
+        [
+          fillingTpl({
+            status: 'filled',
+            // SSE 累积的旧 values：不含 modify 补填的 key
+            values: { project_name: '渔港工程' },
+          }),
+        ],
+        true,
+      ),
+    );
+    await flush();
+    const merged = result.current?.[0];
+    expect(merged?.values).toEqual({
+      tender_agency_name: '福建省品辰有限公司',
+      project_name: '渔港工程',
+    });
+    expect(merged?.status).toBe('filled');
+  });
+
   it('终态行 10s 节流：挂载立即刷一次，2s 周期内不重复请求，10s 后再刷', async () => {
     vi.useFakeTimers();
     mockedGet.mockReturnValue(
