@@ -5,7 +5,11 @@
 // 改坏后端段落）。对齐规则复刻后端 _build_para_map 的遍历口径：空文本且无图
 // 的 w:p 不占 index、整表占一个 index、图片段占 index。
 
-import type { DocxSourceParagraph } from './docx-diff';
+import type {
+  BaselineCell,
+  DocxSourceParagraph,
+  EditorBlock,
+} from './docx-diff';
 
 export type { DocxSourceParagraph };
 

@@ -31,7 +31,15 @@ import {
   useRef,
   useState,
 } from 'react';
-import { diffBlocks, type EditorBlock } from './docx-diff';
+import { createPortal } from 'react-dom';
+import { diffBlocks, type DocxDiffOps, type EditorBlock } from './docx-diff';
+import DocxEditBar from './docx-edit-bar';
+import {
+  collectFidelityBlocks,
+  editifyDocx,
+  mapDocxParas,
+  type FidelityMap,
+} from './docx-fidelity-edit';
 import {
   applyDocxPageLazy,
   highlightDocxRanges,
@@ -695,8 +703,9 @@ export default function ReviewPanel({
   // ── docx 只读保真（docx-preview）：只读路径渲染原始文件，Word 字号/字体/
   // 表格样式/字色不丢；AI 标注/手动批注经 highlightDocxRanges 锚定
   // mark[data-anchor-key]，批注栏/引线/未定位兜底全部沿用。
-  // 可编辑文件默认也进保真预览（原色审阅），点「编辑文档」才切 Lexical 旧段落
-  // 编辑视图（纯文本模型，颜色/格式必然丢失），保存/放弃后回到保真预览。
+  // 可编辑文件默认也进保真预览（原色审阅），点「编辑文档」进入保真编辑（路
+  // 线 D：docx-preview 树上直接改字，格式所见即所得）；对齐失败/降级/非 docx
+  // 回退旧 Lexical 段落编辑视图（格式会简化）。
   const [userEditing, setUserEditing] = useState(!!defaultEditing);
   // 展示成稿版本时强制关闭编辑入口：编辑保存流以原 fileId 为基准，对着成稿
   // 段落改字再按原文件落地会静默丢修复。
@@ -717,7 +726,22 @@ export default function ReviewPanel({
   useEffect(() => {
     if (open) setUserEditing(!!defaultEditing);
   }, [open, defaultEditing]);
-  const docxFidelityCandidate = content?.file_type === 'docx' && !editing;
+  // ── 保真编辑（路线 D）：编辑态留在 docx-preview 树上，见 docx-fidelity-edit.ts ──
+  const [fidelityEditBlocked, setFidelityEditBlocked] = useState(false);
+  // 放弃修改 → bump 强制干净重放/重渲（脏树因突变闸不入缓存，必然 miss → 全量 renderAsync）
+  const [fidelityNonce, setFidelityNonce] = useState(0);
+  // 渲染完成信号：缓存回放分支（同步）与 renderAsync.then（异步）两处 bump，
+  // editify effect 以它为依赖，保证跑在已渲染的树上
+  const [docxReadyTick, setDocxReadyTick] = useState(0);
+  const fidMapRef = useRef<Extract<FidelityMap, { ok: true }> | null>(null);
+  const fidDisposeRef = useRef<(() => void) | null>(null);
+  // 突变闸：编辑过的树绝不允许 stashDocxRender 入缓存（否则脏树会被后续只读回放）
+  const docxMutatedRef = useRef(false);
+  const fidTimer = useRef<number | undefined>(undefined);
+  // 结构拦截提示（短暂浮现自动消失）
+  const [structHint, setStructHint] = useState('');
+  const structHintTimer = useRef<number | undefined>(undefined);
+  const docxFidelityCandidate = content?.file_type === 'docx';
   const docxWrapRef = useRef<HTMLDivElement | null>(null);
   const [docxRenderFailed, setDocxRenderFailed] = useState(false);
   // 回到顶部：监听主滚动容器（批注列表+文档共用），滚过一屏后浮出按钮
@@ -771,6 +795,14 @@ export default function ReviewPanel({
     !docxRenderFailed &&
     (!docxOversize || docxForceFidelity),
   );
+  // 保真编辑可用 = 编辑态 + 保真在场 + 对齐未被拒；否则回退旧 Lexical 编辑视图
+  const editingFidelity = editing && docxFidelity && !fidelityEditBlocked;
+  // 保真分支在场 = 只读保真 或 保真编辑（进编辑不换分支不重挂树）
+  const showFidelity = docxFidelity && (!editing || !fidelityEditBlocked);
+  // 换文件/换 blob/放弃重渲后，对齐拒绝态复位（新树允许重新尝试对齐）
+  useEffect(() => {
+    setFidelityEditBlocked(false);
+  }, [docxBlob, fidelityNonce, fileId]);
   // 容器挂载代数：renderAsync 的渲染产物不在 React state 里，任何原因导致的
   // 容器重挂（open 切换 return null、loading 闪断、文件切换）都必须重跑渲染，
   // 否则容器空白。ref callback 里无法直接进 effect deps，用 epoch 状态桥接。
@@ -971,6 +1003,7 @@ export default function ReviewPanel({
     // 命中守卫 return 的话，新文件从未渲染却残留「格式渲染失败」横幅
     setDocxRenderFailed(false);
     setMarkedKeys(new Set());
+    docxMutatedRef.current = false; // 新一轮渲染产物视为干净
     // 超大文档默认文本降级：不进 renderAsync（「切换保真渲染」覆盖后放行）
     if (docxOversize && !docxForceFidelity) return;
     if (takeDocxRender(docxBlob, el)) {
@@ -980,6 +1013,7 @@ export default function ReviewPanel({
       // 回放在 effect 阶段同步插 mark（renderAsync 异步无此窗口）——同一
       // commit 的补插 effect 闭包还是旧 markedKeys，防双插靠补插 effect 的
       // DOM 已插判定，这里无需额外闸
+      setDocxReadyTick((n) => n + 1);
       setMarkedKeys(
         highlightDocxRanges(el, toHighlightItems(railItemsRef.current)),
       );
@@ -1003,6 +1037,7 @@ export default function ReviewPanel({
         if (cancelled || !el.isConnected) return; // 容器已被重挂/卸载：丢弃本轮 stale 渲染产物
         fitDocxToColumn();
         applyDocxPageLazy(el);
+        setDocxReadyTick((n) => n + 1);
         setMarkedKeys(
           highlightDocxRanges(el, toHighlightItems(railItemsRef.current)),
         );
@@ -1020,7 +1055,8 @@ export default function ReviewPanel({
       // 卸载/换文件/进编辑视图前：产物子树整体摘进离屏缓存（树只存在一份，
       // 不在 el 就在 holder，内存不翻倍）；渲染仍在飞（未 settle）或已失败则
       // 内容不可信，放弃 stash
-      if (settled && !failed) stashDocxRender(docxBlob, el);
+      if (settled && !failed && !docxMutatedRef.current)
+        stashDocxRender(docxBlob, el);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -1029,6 +1065,7 @@ export default function ReviewPanel({
     docxEpoch,
     docxOversize,
     docxForceFidelity,
+    fidelityNonce,
   ]);
 
   // railItems 变化（annotations/comments 异步到达）：只补插新增 key 的 mark，
@@ -1635,6 +1672,114 @@ export default function ReviewPanel({
     setUserEditing(false);
   }, []);
 
+  // ── 保真编辑 handlers（路线 D）──────────────────────────────
+
+  // 保真树 → blocks → diff；deletes/inserts 出现即拦截（v1 只许段内文字与单元格修改）
+  const runFidDiff = useCallback((): Extract<
+    DocxDiffOps,
+    { error?: undefined }
+  > | null => {
+    if (!content || !fidMapRef.current) return null;
+    const blocks = collectFidelityBlocks(
+      content.paragraphs,
+      fidMapRef.current,
+      tableBaselines,
+    );
+    const ops = diffBlocks(blocks, content.paragraphs, tableBaselines);
+    if ('error' in ops) {
+      setDirty(0);
+      setEditError(ops.error || '当前改动无法保存');
+      return null;
+    }
+    if (ops.deletes.length || ops.inserts.length) {
+      setDirty(0);
+      setEditError('暂不支持新增或删除段落，请只修改段内文字');
+      return null;
+    }
+    return ops;
+  }, [content, tableBaselines]);
+
+  const handleFidDirty = useCallback(() => {
+    if (!editingFidelity) return;
+    const ops = runFidDiff();
+    if (!ops) return;
+    setDirty(ops.count);
+    setEditError('');
+  }, [editingFidelity, runFidDiff]);
+
+  const handleFidSave = useCallback(async () => {
+    if (!onEditDocument || savingEdits) return;
+    const ops = runFidDiff();
+    if (!ops) return;
+    if (!ops.count) {
+      setDirty(0);
+      return;
+    }
+    setSavingEdits(true);
+    setEditError('');
+    try {
+      await onEditDocument(ops);
+      // 成功后 content/版本由父级刷新，editing 随 contentIsVersion 自动退出
+      setDirty(0);
+    } catch (e: any) {
+      setEditError(e?.message || '保存失败，请稍后重试');
+    } finally {
+      setSavingEdits(false);
+    }
+  }, [onEditDocument, savingEdits, runFidDiff]);
+
+  const handleFidDiscard = useCallback(() => {
+    window.clearTimeout(fidTimer.current);
+    docxMutatedRef.current = true; // 脏树禁止入缓存
+    setDirty(0);
+    setEditError('');
+    setStructHint('');
+    // 重放/重渲干净树，editify 随 ready tick 重挂
+    setFidelityNonce((n) => n + 1);
+  }, []);
+
+  // 进入保真编辑：对齐 → 开 contentEditable + 结构守卫。依赖 docxReadyTick 保证
+  // 跑在渲染完成的树上（全量 renderAsync 路径异步完成，仅靠 editingFidelity 会
+  // 撞空容器误判对齐失败）。dispose 先行保证 StrictMode 双跑幂等。
+  useEffect(() => {
+    fidDisposeRef.current?.();
+    fidDisposeRef.current = null;
+    fidMapRef.current = null;
+    if (!editingFidelity || !docxWrapRef.current || !content) return;
+    const wrap = docxWrapRef.current;
+    const map = mapDocxParas(wrap, content.paragraphs);
+    if (!map.ok) {
+      // 宁回退不可错改：对齐失败整体转旧 Lexical 编辑视图
+      setFidelityEditBlocked(true);
+      return;
+    }
+    fidMapRef.current = map;
+    fidDisposeRef.current = editifyDocx(wrap, {
+      pEls: map.pByEl,
+      tableByEl: map.tableByEl,
+      onInput: () => {
+        docxMutatedRef.current = true;
+        window.clearTimeout(fidTimer.current);
+        fidTimer.current = window.setTimeout(handleFidDirty, 250);
+      },
+      onStructBlocked: (msg) => {
+        setStructHint(msg);
+        window.clearTimeout(structHintTimer.current);
+        structHintTimer.current = window.setTimeout(
+          () => setStructHint(''),
+          2500,
+        );
+      },
+    });
+    return () => {
+      fidDisposeRef.current?.();
+      fidDisposeRef.current = null;
+      fidMapRef.current = null;
+      window.clearTimeout(fidTimer.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingFidelity, docxEpoch, docxReadyTick, fidelityNonce, content]);
+
   // Download annotated docx
   const handleDownload = async () => {
     if (!fileId || !visibleAnnotations.length) return;
@@ -1791,7 +1936,8 @@ export default function ReviewPanel({
             )}
           </div>
           <div className="flex items-center gap-1 shrink-0">
-            {/* 保真预览默认只读：显式进入编辑（Lexical 旧段落视图，格式/颜色会简化）；
+            {/* 保真预览默认只读：显式进入保真编辑（docx-preview 树上直接改字，
+                格式所见即所得；对齐失败自动回退 Lexical 旧段落视图，格式会简化）；
                 成稿版本展示时强制关闭（编辑流按原 fileId 落地会静默丢修复） */}
             {canEdit &&
               onEditDocument &&
@@ -2099,8 +2245,39 @@ export default function ReviewPanel({
                   {editError}
                 </div>
               )}
-              {editing ? (
-                /* 编辑态：旧纸张视图（Lexical 编辑器模型与保真 DOM 不兼容） */
+              {showFidelity ? (
+                /* 保真分支：只读审阅 或 保真编辑（同一棵 docx-preview 树，进编辑
+                   不换分支不重挂）。编辑态时 editifyDocx 对映射段/表格 td 开
+                   contentEditable，结构守卫见 docx-fidelity-edit.ts；工具条经
+                   portal 进上方吸顶宿主。
+                   key 必须保留：分支间根节点同为 div 时 React 会就地复用 DOM（不卸载），
+                   残留的 docx 渲染产物会漏进编辑视图且 ref/epoch 不触发 */
+                <div
+                  key="view-fidelity"
+                  className="min-w-0 flex-1 overflow-auto"
+                >
+                  {editingFidelity &&
+                    toolbarHost &&
+                    createPortal(
+                      <DocxEditBar
+                        dirty={dirty}
+                        saving={savingEdits}
+                        error={editError}
+                        hint={structHint}
+                        onSave={handleFidSave}
+                        onDiscard={handleFidDiscard}
+                      />,
+                      toolbarHost,
+                    )}
+                  <div
+                    ref={docxWrapRefCb}
+                    onClick={handleSelectTableAnn}
+                    className="mx-auto w-full max-w-[900px]"
+                  />
+                </div>
+              ) : editing ? (
+                /* 回退编辑：非 docx/降级/对齐失败 → 旧纸张视图（Lexical 编辑器
+                   模型与保真 DOM 不兼容，格式会简化） */
                 <div
                   key="view-editing"
                   className="mx-auto w-full max-w-[794px] border border-[#C9C9C9] bg-white px-[72px] py-[64px] shadow-[0_4px_24px_rgba(0,0,0,0.14)]"
@@ -2125,20 +2302,6 @@ export default function ReviewPanel({
                       onDiscard={handleDiscardEdits}
                     />
                   </div>
-                </div>
-              ) : docxFidelity ? (
-                /* 只读保真：docx-preview 渲染原始文件，mark[data-anchor-key] 点击跳批注。
-                   key 必须保留：分支间根节点同为 div 时 React 会就地复用 DOM（不卸载），
-                   残留的 docx 渲染产物会漏进编辑视图且 ref/epoch 不触发 */
-                <div
-                  key="view-fidelity"
-                  className="min-w-0 flex-1 overflow-auto"
-                >
-                  <div
-                    ref={docxWrapRefCb}
-                    onClick={handleSelectTableAnn}
-                    className="mx-auto w-full max-w-[900px]"
-                  />
                 </div>
               ) : docxFidelityCandidate && docxBlobLoading ? (
                 <div
