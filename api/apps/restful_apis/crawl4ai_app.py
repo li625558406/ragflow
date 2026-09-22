@@ -30,7 +30,7 @@ from quart import Blueprint, request
 from api.apps import current_user, login_required
 from api.db.services.crawler_service import CrawlerResultService, CrawlerTaskService
 from api.utils.api_utils import get_data_error_result, get_json_result
-from api.utils.permission_utils import permission_required
+from api.utils.permission_utils import superuser_required
 from common.misc_utils import get_uuid
 
 manager = Blueprint("rest_crawl4ai_app", __name__)
@@ -144,6 +144,7 @@ def _validate_task_payload(body: dict, creating: bool) -> str:
 
 @manager.route("/crawl4ai/tasks", methods=["POST"])  # noqa: F821
 @login_required
+@superuser_required
 async def create_task():
     body = await request.get_json() or {}
     err = _validate_task_payload(body, creating=True)
@@ -159,6 +160,7 @@ async def create_task():
 
 @manager.route("/crawl4ai/tasks", methods=["GET"])  # noqa: F821
 @login_required
+@superuser_required
 async def list_tasks():
     page = int(request.args.get("page", 1))
     page_size = min(int(request.args.get("page_size", 20)), 100)
@@ -178,6 +180,7 @@ async def list_tasks():
 
 @manager.route("/crawl4ai/tasks/<task_id>", methods=["GET"])  # noqa: F821
 @login_required
+@superuser_required
 async def get_task(task_id):
     ok, task = CrawlerTaskService.get_by_id(task_id)
     if not ok:
@@ -187,6 +190,7 @@ async def get_task(task_id):
 
 @manager.route("/crawl4ai/tasks/<task_id>", methods=["PUT"])  # noqa: F821
 @login_required
+@superuser_required
 async def update_task(task_id):
     ok, task = CrawlerTaskService.get_by_id(task_id)
     if not ok:
@@ -205,6 +209,7 @@ async def update_task(task_id):
 
 @manager.route("/crawl4ai/tasks/<task_id>", methods=["DELETE"])  # noqa: F821
 @login_required
+@superuser_required
 async def delete_task(task_id):
     ok, task = CrawlerTaskService.get_by_id(task_id)
     if not ok:
@@ -219,6 +224,7 @@ async def delete_task(task_id):
 
 @manager.route("/crawl4ai/tasks/<task_id>/trigger", methods=["POST"])  # noqa: F821
 @login_required
+@superuser_required
 async def trigger_task(task_id):
     ok, task = CrawlerTaskService.get_by_id(task_id)
     if not ok:
@@ -337,6 +343,7 @@ async def trigger_task(task_id):
 
 @manager.route("/crawl4ai/tasks/<task_id>/status", methods=["GET"])  # noqa: F821
 @login_required
+@superuser_required
 async def task_status(task_id):
     ok, task = CrawlerTaskService.get_by_id(task_id)
     if not ok:
@@ -357,7 +364,7 @@ async def task_status(task_id):
 
 @manager.route("/crawl4ai/results", methods=["GET"])  # noqa: F821
 @login_required
-@permission_required("crawler")
+@superuser_required
 async def list_results():
     page = int(request.args.get("page", 1))
     page_size = min(int(request.args.get("page_size", 20)), 100)
@@ -378,6 +385,7 @@ async def list_results():
 
 @manager.route("/crawl4ai/results/<result_id>", methods=["GET"])  # noqa: F821
 @login_required
+@superuser_required
 async def get_result(result_id):
     ok, result = CrawlerResultService.get_by_id(result_id)
     if not ok:
@@ -387,6 +395,7 @@ async def get_result(result_id):
 
 @manager.route("/crawl4ai/sites", methods=["GET"])  # noqa: F821
 @login_required
+@superuser_required
 async def list_sites():
     # 权限策略（2026-07-22）: 所有登录用户可见全部站点的下拉选项
     return get_json_result(data=CrawlerResultService.site_options())
@@ -398,6 +407,7 @@ async def list_sites():
 
 @manager.route("/crawl4ai/health", methods=["GET"])  # noqa: F821
 @login_required
+@superuser_required
 async def engine_health():
     from api.utils.crawl4ai_client import Crawl4aiClient
     return get_json_result(data={"engine_alive": Crawl4aiClient().health()})

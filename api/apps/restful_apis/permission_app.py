@@ -7,7 +7,7 @@ from quart import Blueprint, request
 from api.apps import current_user, login_required
 from api.utils.api_utils import get_json_result, get_data_error_result
 from api.utils.permission_utils import (
-    permission_required,
+    superuser_required,
     get_cached_user_permissions,
     invalidate_user_permissions,
 )
@@ -52,7 +52,7 @@ async def get_my_permissions():
 
 @manager.route("/permission/roles", methods=["GET"])
 @login_required
-@permission_required("permission_manage")
+@superuser_required
 async def list_roles():
     try:
         # 注意：CommonService.get_all 仅在 reverse 非 None 时才应用 order_by，故须显式传 reverse=False
@@ -77,7 +77,7 @@ async def list_roles():
 
 @manager.route("/permission/roles", methods=["POST"])
 @login_required
-@permission_required("permission_manage")
+@superuser_required
 async def create_role():
     try:
         body = await _json()
@@ -98,7 +98,7 @@ async def create_role():
 
 @manager.route("/permission/roles/<role_id>", methods=["PUT"])
 @login_required
-@permission_required("permission_manage")
+@superuser_required
 async def update_role(role_id):
     try:
         body = await _json()
@@ -117,7 +117,7 @@ async def update_role(role_id):
 
 @manager.route("/permission/roles/<role_id>", methods=["DELETE"])
 @login_required
-@permission_required("permission_manage")
+@superuser_required
 async def delete_role(role_id):
     try:
         role = PermissionRoleService.get_or_none(id=role_id)
@@ -143,7 +143,7 @@ async def delete_role(role_id):
 
 @manager.route("/permission/roles/<role_id>/permissions", methods=["PUT"])
 @login_required
-@permission_required("permission_manage")
+@superuser_required
 async def set_role_permissions(role_id):
     try:
         body = await _json()
@@ -184,7 +184,7 @@ async def set_role_permissions(role_id):
 
 @manager.route("/permission/users", methods=["GET"])
 @login_required
-@permission_required("permission_manage")
+@superuser_required
 async def list_users():
     try:
         return get_json_result(data={"items": get_users_with_roles()})
@@ -195,7 +195,7 @@ async def list_users():
 
 @manager.route("/permission/users/<user_id>/roles", methods=["PUT"])
 @login_required
-@permission_required("permission_manage")
+@superuser_required
 async def set_user_roles(user_id):
     try:
         body = await _json()
@@ -233,7 +233,7 @@ async def set_user_roles(user_id):
 
 @manager.route("/permission/users/<user_id>", methods=["DELETE"])
 @login_required
-@permission_required("permission_manage")
+@superuser_required
 async def delete_user(user_id):
     """超级管理员软删除普通用户：置 status/is_active 为 "0" + 清会话 token。
     不清理业务数据（KB/对话/租户等保留，软删除可逆）；角色绑定保留。

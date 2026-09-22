@@ -1,7 +1,11 @@
-import { Outlet, useLocation } from 'react-router';
-import { Header } from './components/header';
 import PermissionGuard from '@/components/permission/permission-guard';
-import { getRequiredPermission } from '@/constants/permission';
+import {
+  getRequiredPermission,
+  isSuperuserOnlyPath,
+} from '@/constants/permission';
+import { usePermission } from '@/hooks/use-permission';
+import { Navigate, Outlet, useLocation } from 'react-router';
+import { Header } from './components/header';
 
 export function RootLayoutContainer({ children }: React.PropsWithChildren) {
   return (
@@ -15,6 +19,13 @@ export function RootLayoutContainer({ children }: React.PropsWithChildren) {
 
 function RouteGuard() {
   const { pathname } = useLocation();
+  const { isSuperuser, loading } = usePermission();
+  // 仅超管模块（范本库/智能体/记忆/智能采集/用户管理）：非超管直达一律重定向首页
+  if (isSuperuserOnlyPath(pathname)) {
+    if (loading) return null;
+    if (!isSuperuser) return <Navigate to="/" replace />;
+    return <Outlet />;
+  }
   const required = getRequiredPermission(pathname);
   if (!required) return <Outlet />;
   return (

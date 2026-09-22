@@ -38,6 +38,7 @@ def _load_permission_app():
     _make_stub_module("api.utils.api_utils", get_json_result=lambda *a, **kw: None,
                       get_data_error_result=lambda *a, **kw: None)
     _make_stub_module("api.utils.permission_utils", permission_required=noop_decorator,
+                      superuser_required=noop_decorator,
                       get_cached_user_permissions=lambda *a, **kw: set(),
                       invalidate_user_permissions=lambda *a, **kw: None)
     _make_stub_module("api.db.services.permission_service",

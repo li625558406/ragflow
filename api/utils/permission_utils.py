@@ -45,6 +45,28 @@ def invalidate_user_permissions(user_id: str) -> None:
         pass
 
 
+def superuser_required(func):
+    """免参装饰器：仅超级管理员可访问（硬限制，不走角色勾选）。
+
+    堆叠顺序与 permission_required 一致：@manager.route → @login_required → @superuser_required。
+    """
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        from api.apps import current_user
+        from api.utils.api_utils import get_json_result
+        from common.constants import RetCode
+
+        user = current_user
+        if not user:
+            return get_json_result(code=RetCode.UNAUTHORIZED, message="未登录")
+        if not user.is_superuser:
+            return get_json_result(code=RetCode.FORBIDDEN, message="仅超级管理员可访问")
+        if iscoroutinefunction(func):
+            return await func(*args, **kwargs)
+        return func(*args, **kwargs)
+    return wrapper
+
+
 def permission_required(permission_key: str):
     def decorator(func):
         @wraps(func)

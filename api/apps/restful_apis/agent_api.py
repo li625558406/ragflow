@@ -62,7 +62,7 @@ from api.utils.api_utils import (
     server_error_response,
     validate_request,
 )
-from api.utils.permission_utils import permission_required
+from api.utils.permission_utils import superuser_required
 from common import settings
 from common.constants import RetCode
 from common.misc_utils import get_uuid, thread_pool_exec
@@ -341,6 +341,7 @@ def delete_agent_session_item(agent_id, session_id, tenant_id):
 
 
 @manager.route("/agents/download", methods=["GET"])  # noqa: F821
+@login_required
 async def download_agent_file():
     id = request.args.get("id")
     created_by = request.args.get("created_by")
@@ -410,12 +411,14 @@ async def _iter_session_completion_events(tenant_id, agent_id, req, return_trace
 
 @manager.route("/agents/templates", methods=["GET"])  # noqa: F821
 @login_required
+@superuser_required
 def list_agent_template():
     return get_json_result(data=[item.to_dict() for item in CanvasTemplateService.get_all()])
 
 
 @manager.route("/agents/prompts", methods=["GET"])  # noqa: F821
 @login_required
+@superuser_required
 def prompts():
     from rag.prompts.generator import (
         ANALYZE_TASK_SYSTEM,
@@ -437,7 +440,6 @@ def prompts():
 
 @manager.route("/agents", methods=["GET"])  # noqa: F821
 @login_required
-@permission_required("agent")
 @add_tenant_id_to_kwargs
 def list_agents(tenant_id):
     keywords = request.args.get("keywords", "")
@@ -466,6 +468,7 @@ def list_agents(tenant_id):
 
 @manager.route("/agents", methods=["POST"])  # noqa: F821
 @login_required
+@superuser_required
 @add_tenant_id_to_kwargs
 async def create_agent(tenant_id):
     req = {k: v for k, v in (await get_request_json()).items() if v is not None}
@@ -533,6 +536,8 @@ async def create_agent(tenant_id):
 
 
 @manager.route("/agents/<agent_id>/upload", methods=["POST"])  # noqa: F821
+@login_required
+@superuser_required
 async def upload_agent_file(agent_id):
     exists, canvas = UserCanvasService.get_by_canvas_id(agent_id)
     if not exists:
@@ -554,6 +559,7 @@ async def upload_agent_file(agent_id):
 
 @manager.route("/agents/<agent_id>/components/<component_id>/input-form", methods=["GET"])  # noqa: F821
 @login_required
+@superuser_required
 @add_tenant_id_to_kwargs
 def get_agent_component_input_form(agent_id, component_id, tenant_id):
     try:
@@ -576,6 +582,7 @@ def get_agent_component_input_form(agent_id, component_id, tenant_id):
 @manager.route("/agents/<agent_id>/components/<component_id>/debug", methods=["POST"])  # noqa: F821
 @validate_request("params")
 @login_required
+@superuser_required
 @add_tenant_id_to_kwargs
 async def debug_agent_component(agent_id, component_id, tenant_id):
     req = await get_request_json()
@@ -656,6 +663,7 @@ def get_agent(agent_id, tenant_id):
 
 @manager.route("/agents/<agent_id>/versions", methods=["GET"])  # noqa: F821
 @login_required
+@superuser_required
 @add_tenant_id_to_kwargs
 def list_agent_versions(agent_id, tenant_id):
     if not UserCanvasService.accessible(agent_id, tenant_id):
@@ -677,6 +685,7 @@ def list_agent_versions(agent_id, tenant_id):
 
 @manager.route("/agents/<agent_id>/versions/<version_id>", methods=["GET"])  # noqa: F821
 @login_required
+@superuser_required
 @add_tenant_id_to_kwargs
 def get_agent_version(agent_id, version_id, tenant_id):
     if not UserCanvasService.accessible(agent_id, tenant_id):
@@ -697,6 +706,7 @@ def get_agent_version(agent_id, version_id, tenant_id):
 
 @manager.route("/agents/<agent_id>/logs/<message_id>", methods=["GET"])  # noqa: F821
 @login_required
+@superuser_required
 @add_tenant_id_to_kwargs
 def get_agent_logs(agent_id, message_id, tenant_id):
     if not UserCanvasService.accessible(agent_id, tenant_id):
@@ -719,6 +729,7 @@ def get_agent_logs(agent_id, message_id, tenant_id):
 
 @manager.route("/agents/<agent_id>", methods=["DELETE"])  # noqa: F821
 @login_required
+@superuser_required
 @add_tenant_id_to_kwargs
 def delete_agent(agent_id, tenant_id):
     if not UserCanvasService.query(user_id=tenant_id, id=agent_id):
@@ -734,6 +745,7 @@ def delete_agent(agent_id, tenant_id):
 
 @manager.route("/agents/<agent_id>", methods=["PUT"])  # noqa: F821
 @login_required
+@superuser_required
 @add_tenant_id_to_kwargs
 async def update_agent(agent_id, tenant_id):
     req = {k: v for k, v in (await get_request_json()).items() if v is not None}
@@ -792,6 +804,7 @@ async def update_agent(agent_id, tenant_id):
 
 @manager.route("/agents/<agent_id>/reset", methods=["POST"])  # noqa: F821
 @login_required
+@superuser_required
 @add_tenant_id_to_kwargs
 async def reset_agent(agent_id, tenant_id):
     # 2026-09-09 移除团队隔离：reset 覆写 DSL，属写操作，仅 agent 所有者可执行
@@ -829,6 +842,7 @@ async def reset_agent(agent_id, tenant_id):
 @manager.route("/agents/rerun", methods=["POST"])  # noqa: F821
 @validate_request("id", "dsl", "component_id")
 @login_required
+@superuser_required
 @add_tenant_id_to_kwargs
 async def rerun_agent(tenant_id):
     req = await get_request_json()
@@ -867,6 +881,7 @@ async def rerun_agent(tenant_id):
 @manager.route("/agents/test_db_connection", methods=["POST"])  # noqa: F821
 @validate_request("db_type", "database", "username", "host", "port", "password")
 @login_required
+@superuser_required
 async def test_db_connection():
     req = await get_request_json()
     try:
@@ -1909,6 +1924,7 @@ async def webhook(agent_id: str):
 
 @manager.route("/agents/<agent_id>/webhook/logs", methods=["GET"])  # noqa: F821
 @login_required
+@superuser_required
 async def webhook_trace(agent_id: str):
     exists, cvs = UserCanvasService.get_by_id(agent_id)
     if not exists or str(cvs.user_id) != str(current_user.id):

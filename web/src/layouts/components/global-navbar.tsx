@@ -24,6 +24,7 @@ const menuItems: Array<{
   path: string;
   name: string;
   permission?: string;
+  superuserOnly?: boolean;
   icon?: LucideIcon;
   'data-testid'?: string;
 }> = [
@@ -38,22 +39,26 @@ const menuItems: Array<{
     path: Routes.Agents,
     name: 'header.flow',
     'data-testid': 'nav-agent',
-    permission: 'agent',
+    superuserOnly: true,
   },
-  { path: Routes.Memories, name: 'header.memories', permission: 'memory' },
-  { path: Routes.Crawl4ai, name: 'header.crawl4ai', permission: 'crawler' },
-  { path: Routes.TemplateFill, name: 'header.templateFill' },
+  { path: Routes.Memories, name: 'header.memories', superuserOnly: true },
+  { path: Routes.Crawl4ai, name: 'header.crawl4ai', superuserOnly: true },
+  {
+    path: Routes.TemplateFill,
+    name: 'header.templateFill',
+    superuserOnly: true,
+  },
   {
     path: Routes.Permission,
     name: 'header.userManagement',
-    permission: 'permission_manage',
+    superuserOnly: true,
   },
 ];
 
 const GlobalNavbar = supportsCssAnchor
   ? () => {
       const { t } = useTranslation();
-      const { hasPermission } = usePermission();
+      const { hasPermission, isSuperuser } = usePermission();
       const { pathname } = useLocation();
       const navbarAnchorNamePrefix = useId().replace(/:/g, '');
 
@@ -78,7 +83,11 @@ const GlobalNavbar = supportsCssAnchor
         <nav>
           <ul className="relative flex items-center p-1 bg-bg-card rounded-full border border-border-button">
             {menuItems
-              .filter((it) => !it.permission || hasPermission(it.permission))
+              .filter((it) =>
+                it.superuserOnly
+                  ? isSuperuser
+                  : !it.permission || hasPermission(it.permission),
+              )
               .map(({ path, name, icon: Icon, ...props }) => {
                 const isActive = path === activePath;
                 const anchorName = `--${navbarAnchorNamePrefix}${path === Routes.Root ? '-root' : path.replace('/', '-')}`;
@@ -123,7 +132,7 @@ const GlobalNavbar = supportsCssAnchor
     }
   : () => {
       const { t } = useTranslation();
-      const { hasPermission } = usePermission();
+      const { hasPermission, isSuperuser } = usePermission();
       const { pathname } = useLocation();
 
       const activePath = useMemo(() => {
@@ -140,7 +149,11 @@ const GlobalNavbar = supportsCssAnchor
         <nav>
           <ul className="flex items-center p-1 bg-bg-card rounded-full border border-border-button">
             {menuItems
-              .filter((it) => !it.permission || hasPermission(it.permission))
+              .filter((it) =>
+                it.superuserOnly
+                  ? isSuperuser
+                  : !it.permission || hasPermission(it.permission),
+              )
               .map(({ path, name, icon: Icon, ...props }) => {
                 const isActive = path === activePath;
 

@@ -30,6 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 from quart import Blueprint, Response, request
 
 from api.apps import current_user, login_required
+from api.utils.permission_utils import superuser_required
 from api.db.db_models import DB
 from api.db.services.template_fill_service import (
     TERMINAL_TASK_STATUSES,
@@ -297,6 +298,7 @@ async def _load_template(template_id: str):
 
 @manager.route("/template/fill/upload", methods=["POST"])
 @login_required
+@superuser_required
 async def upload_template():
     files = await request.files
     form = await request.form
@@ -371,6 +373,7 @@ async def upload_template():
 
 @manager.route("/template/fill/list", methods=["GET"])
 @login_required
+@superuser_required
 async def list_templates():
     # type=int：转换失败（如 ?page=abc）回退默认值，避免 int("abc") 500；负数/超界由 service 层钳制
     args = request.args
@@ -382,6 +385,7 @@ async def list_templates():
 
 @manager.route("/template/fill/detect", methods=["POST"])
 @login_required
+@superuser_required
 async def detect_placeholders():
     body = await request.get_json()
     tpl, err = await _load_template((body or {}).get("template_id", ""))
@@ -475,6 +479,7 @@ def _run_detect_task(template_id: str, tenant_id: str):
 
 @manager.route("/template/fill/detect-async", methods=["POST"])
 @login_required
+@superuser_required
 async def detect_placeholders_async():
     """触发后台 AI 识别：立即返回 running，前端列表轮询 detect_status 展示进度。
 
@@ -515,6 +520,7 @@ async def detect_placeholders_async():
 
 @manager.route("/template/fill/<template_id>/save-placeholders", methods=["POST"])
 @login_required
+@superuser_required
 async def save_placeholders(template_id: str):
     body = await request.get_json()
     items = (body or {}).get("placeholders")
@@ -543,6 +549,7 @@ async def save_placeholders(template_id: str):
 
 @manager.route("/template/fill/<template_id>/defaults", methods=["PUT"])
 @login_required
+@superuser_required
 async def update_template_defaults(template_id: str):
     """B端默认值编辑：{defaults: {key: value}}，空串=清空该字段默认值。"""
     body = await request.get_json(silent=True) or {}
@@ -560,6 +567,7 @@ async def update_template_defaults(template_id: str):
 
 @manager.route("/template/fill/<template_id>/publish", methods=["POST"])
 @login_required
+@superuser_required
 async def publish_template(template_id: str):
     tpl, err = await _load_template(template_id)
     if err:
@@ -575,6 +583,7 @@ async def publish_template(template_id: str):
 
 @manager.route("/template/fill/<template_id>/disable", methods=["POST"])
 @login_required
+@superuser_required
 async def disable_template(template_id: str):
     tpl, err = await _load_template(template_id)
     if err:
@@ -587,6 +596,7 @@ async def disable_template(template_id: str):
 
 @manager.route("/template/fill/<template_id>", methods=["GET"])
 @login_required
+@superuser_required
 async def get_template(template_id: str):
     tpl, err = await _load_template(template_id)
     if err:
@@ -610,6 +620,7 @@ async def get_template(template_id: str):
 
 @manager.route("/template/fill/<template_id>", methods=["DELETE"])
 @login_required
+@superuser_required
 async def delete_template_endpoint(template_id: str):
     """删除模板：仅 draft/disabled 且无填写任务记录可删（守卫在 service 层）。"""
     ok, msg = TplTemplateService.delete_template(template_id, current_user.id)
@@ -623,6 +634,7 @@ BATCH_DELETE_MAX = 50
 
 @manager.route("/template/fill/batch-delete", methods=["POST"])
 @login_required
+@superuser_required
 async def batch_delete_templates():
     """批量删除模板：逐个走 delete_template（守卫/事务复用单删），部分失败不影响其余。"""
     req = await request.get_json(silent=True) or {}
@@ -698,6 +710,7 @@ async def download_template(template_id: str):
 
 @manager.route("/template/fill/fill-task", methods=["POST"])
 @login_required
+@superuser_required
 async def create_fill_task():
     """发起填写任务：校验链通过后落 pending 行，起后台线程跑 pipeline。
     template_version_id 钉住当前版本（published 后再改填写点会升版，历史任务按当时版本复现）。"""
@@ -746,6 +759,7 @@ async def create_fill_task():
 
 @manager.route("/template/fill/<template_id>/test-fill", methods=["POST"])
 @login_required
+@superuser_required
 async def test_fill_template(template_id: str):
     """测试填写（B端试跑）：同 pipeline 前两步（检索+LLM 生成），不建任务、不渲染、
     不落 MinIO，同步等待直接返回 values/cells/evidence 供用户预览效果。
@@ -778,6 +792,7 @@ async def test_fill_template(template_id: str):
 
 @manager.route("/template/fill/fill-task/list", methods=["GET"])
 @login_required
+@superuser_required
 async def list_fill_tasks():
     # type=int：转换失败（如 ?page=abc）回退默认值，避免 int("abc") 500；负数/超界由 service 层钳制
     args = request.args
@@ -789,6 +804,7 @@ async def list_fill_tasks():
 
 @manager.route("/template/fill/fill-task/<task_id>", methods=["GET"])
 @login_required
+@superuser_required
 async def get_fill_task(task_id: str):
     task = TplFillTaskService.get_owned(task_id, current_user.id)
     if not task:
@@ -798,6 +814,7 @@ async def get_fill_task(task_id: str):
 
 @manager.route("/template/fill/fill-task/<task_id>/retry", methods=["POST"])
 @login_required
+@superuser_required
 async def retry_fill_task(task_id: str):
     """重试失败/部分完成的任务：复位为 pending 后新起一轮 pipeline，
     values/evidence/result_file_id 由新一轮覆盖写（非增量修补）。"""
@@ -1020,6 +1037,7 @@ async def sediment_fill_task(task_id: str):
 
 @manager.route("/template/fill/fill-task/<task_id>/download", methods=["GET"])
 @login_required
+@superuser_required
 async def download_fill_result(task_id: str):
     task = TplFillTaskService.get_owned(task_id, current_user.id)
     if not task:

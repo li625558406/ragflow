@@ -1,5 +1,30 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-22（五）B 端 5 模块仅超管可见——范本库/智能体/记忆/智能采集/用户管理页面+数据硬限制
+
+**主题**：这 5 个模块此前普通用户可见可达（范本库完全无权限控制；其余 4 个仅菜单级 RBAC、后端每文件只有 1 个端点有鉴权）。改为**超管硬限制**（`is_superuser` 判定，不走角色勾选）。
+
+**口径决策**（与用户确认）：①超管硬限制——权限管理页中 agent/memory/crawler/permission_manage 4 个 key 的勾选不再生效（前端勾选列表已移除这 4 key）；②范本库只限 B 端管理接口——C 端对话/流程硬依赖的填写运行时接口保持仅登录；③agent/memory/crawler 后端补齐全覆盖。
+
+**改动（后端 7 文件 + 前端 3 文件）**：
+- `api/utils/permission_utils.py`：新增免参装饰器 `superuser_required`（复用 permission_required 骨架：未登录 401 / 非超管 403「仅超级管理员可访问」/ async+sync 透传）。
+- `memory_api.py`：全部 12 端点加闸（C 端零调用）。
+- `crawl4ai_app.py`：全部 11 端点加闸；`crawl4ai_ws.py`：`_authenticate` 返回补 `is_superuser`，非超管 close(4003)。
+- `template_api.py`：17 个 B 端管理端点加闸（upload/list/detect/detect-async/save-placeholders/defaults/publish/disable/GET+DELETE {id}/batch-delete/fill-task POST/list/{id}/retry/download/test-fill）；**7 个 C 端端点零改动**（preview/file/progress/sediment/confirm/select-confirm/snapshot）。
+- `agent_api.py`：15 个管理端点加闸（创建/更新/删除/reset/rerun/test_db_connection/upload/versions×2/logs/templates/prompts/input-form/debug/webhook-logs）；顺带安全修复 2 处**完全裸奔**端点（`GET /agents/download`、`POST /agents/{id}/upload` 补 `@login_required`，前者 C 端成稿下载依赖故不加超管闸）；**`GET /agents` 移除 `@permission_required("agent")`**——C 端对话页/流程页签拉列表硬依赖，普通角色用户会被 403 打断 C 端。
+- `permission_app.py`：8 个管理端点 `permission_required("permission_manage")` → `superuser_required`；`/permission/me` 不动（C 端 hr/flow-panel 在用）。
+- `web/src/constants/permission.ts`：新增 `SUPERUSER_ONLY_PREFIXES` + `isSuperuserOnlyPath()`；MODULE_PATH_PERMISSION 移除 5 模块条目；MODULE_PERMISSIONS 移除 4 个失效 key。
+- `web/src/layouts/root-layout.tsx`：RouteGuard 前置超管分支——`isSuperuserOnlyPath` 命中且非超管重定向 `/`。
+- `web/src/layouts/components/global-navbar.tsx`：5 个菜单项改 `superuserOnly: true`，两渲染分支过滤条件 `superuserOnly ? isSuperuser : hasPermission(key)`。
+
+**测试**：`test_permission_utils.py` +6 对抗用例（未登录 401/普通用户 403/falsy is_superuser 拒绝/超管放行透传/is_superuser=1 放行/异常不吞），套件 12 passed；权限 5 套件 21 passed；前端新增 `constants/permission.test.ts` 7 例（段边界/前缀注入/C 端路径不误伤/移除条目后 undefined），全量 vitest **352 passed**；`npm run build` 通过；7 个后端文件 py_compile 通过。
+
+**固有限制**：`GET /agents` 列表与详情因 C 端对话下拉硬依赖，读接口无法对普通用户关闭（B 端管理页面入口+全部写操作已封）；存量 role_permission 行中 4 个失效 key 残留无害。
+
+**部署（须成套 SCP，permission_utils.py 被多文件引用单发会 ImportError）**：后端 7 文件 `api/utils/permission_utils.py` + `api/apps/restful_apis/{memory_api,crawl4ai_app,crawl4ai_ws,template_api,agent_api,permission_app}.py` → 容器重启 → import 冒烟；前端 build+dist+nginx reload。**未部署、未 commit。**
+
+**遗留**：crawl4ai WS 用 token 鉴权（非 login 装饰器），超管校验在 handler 内做——非超管连上即断，前端进度弹窗仅 B 端使用、影响面为零。
+
 ## 2026-09-22（四）批注版本维度——查看文件内容抽屉批注按被查看版本过滤 + 版本标识 UI
 
 **主题**：流程页签两个审核入口的批注版本语义区分——「文件审核」按钮的批注针对最新审核文件（flow-ai-panel，零改动）；版本时间线「查看文件内容」的批注改为跟随**被查看版本**。

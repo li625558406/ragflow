@@ -1,6 +1,23 @@
 # test/test_permission_utils.py
+import asyncio
+import sys
+import types
 from unittest.mock import patch, MagicMock
 import api.utils.permission_utils as pu
+from common.constants import RetCode
+
+# superuser_required 运行时才 `from api.apps import current_user`，直接导入会触发
+# init_settings→Redis（本机不可用）。参照 test_permission_app.py 注入最小桩。
+if "api.apps" not in sys.modules:
+    _stub_apps = types.ModuleType("api.apps")
+    _stub_apps.current_user = None
+    sys.modules["api.apps"] = _stub_apps
+
+
+def _make_user(is_superuser):
+    u = MagicMock()
+    u.is_superuser = is_superuser
+    return u
 
 
 def test_superuser_always_allowed():
@@ -33,3 +50,67 @@ def test_cache_hit_skips_db(mocker):
     mocker.patch.object(pu.REDIS_CONN, "get", return_value='["bid","crawler"]')
     with patch("api.utils.permission_utils.get_user_permission_keys", side_effect=AssertionError("不应查 DB")):
         assert pu.get_cached_user_permissions("u1") == {"bid", "crawler"}
+
+
+# ── superuser_required 对抗用例 ──────────────────────────────────────
+
+def _handler_registered(is_async):
+    if is_async:
+        @pu.superuser_required
+        async def handler(x, y=0):
+            return {"ok": x + y}
+    else:
+        @pu.superuser_required
+        def handler(x, y=0):
+            return {"ok": x + y}
+    return handler
+
+
+def test_superuser_required_unauthenticated(mocker):
+    mocker.patch("api.apps.current_user", None)
+    res = asyncio.run(_handler_registered(True)(1))
+    assert res["code"] == RetCode.UNAUTHORIZED
+
+
+def test_superuser_required_forbidden_for_normal_user(mocker):
+    mocker.patch("api.apps.current_user", _make_user(False))
+    for is_async in (True, False):
+        res = asyncio.run(_handler_registered(is_async)(1))
+        assert res["code"] == RetCode.FORBIDDEN
+
+
+def test_superuser_required_falsy_superuser_flag_denied(mocker):
+    # 对抗性：is_superuser 为 0/None 等假值也必须拒绝
+    for falsy in (0, None, False, ""):
+        mocker.patch("api.apps.current_user", _make_user(falsy))
+        res = asyncio.run(_handler_registered(True)(1))
+        assert res["code"] == RetCode.FORBIDDEN
+
+
+def test_superuser_required_allows_superuser_and_passthrough(mocker):
+    mocker.patch("api.apps.current_user", _make_user(True))
+    # async 透传参数与返回值
+    assert asyncio.run(_handler_registered(True)(2, y=3)) == {"ok": 5}
+    # sync 透传
+    assert asyncio.run(_handler_registered(False)(2, y=3)) == {"ok": 5}
+
+
+def test_superuser_required_truthy_variants_allowed(mocker):
+    # 对抗性：is_superuser=1（DB 整型）也必须放行
+    mocker.patch("api.apps.current_user", _make_user(1))
+    assert asyncio.run(_handler_registered(True)(1)) == {"ok": 1}
+
+
+def test_superuser_required_handler_exception_not_swallowed(mocker):
+    mocker.patch("api.apps.current_user", _make_user(True))
+
+    @pu.superuser_required
+    async def boom():
+        raise ValueError("boom")
+
+    try:
+        asyncio.run(boom())
+        raised = False
+    except ValueError:
+        raised = True
+    assert raised

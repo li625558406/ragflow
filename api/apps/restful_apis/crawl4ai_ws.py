@@ -3,8 +3,7 @@
 Listens on: /api/v1/crawl4ai/tasks/<task_id>/ws
 
 Auth: same JWT token pattern as collaboration_ws.py (query param `?token=` or
-Authorization: Bearer header). Token-only check (no per-task ACL — any
-logged-in user can observe any task).
+Authorization: Bearer header). 智能采集仅超管可观察（与 crawl4ai_app.py 同口径）。
 
 Protocol:
   Server → Client messages (JSON):
@@ -72,6 +71,7 @@ async def _authenticate(token: str) -> Dict[str, Any]:
     return {
         "id": user.id,
         "name": getattr(user, "nickname", None) or getattr(user, "email", "") or user.id,
+        "is_superuser": bool(getattr(user, "is_superuser", 0)),
     }
 
 
@@ -107,10 +107,17 @@ async def handle_crawler_task_ws(task_id: str):
         return
 
     try:
-        await _authenticate(token)
+        auth_user = await _authenticate(token)
     except PermissionError as e:
         await websocket.accept()
         await websocket.send(json.dumps({"type": "error", "message": str(e)}))
+        await websocket.close(4003)
+        return
+
+    # 智能采集仅超管可见（与 crawl4ai_app.py REST 端点同口径）
+    if not auth_user.get("is_superuser"):
+        await websocket.accept()
+        await websocket.send(json.dumps({"type": "error", "message": "仅超级管理员可访问"}))
         await websocket.close(4003)
         return
 
