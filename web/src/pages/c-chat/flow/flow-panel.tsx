@@ -28,6 +28,16 @@ const BASE_SCOPES: { key: FlowScope; label: string }[] = [
   { key: 'joined', label: '我参与的' },
 ];
 
+// 流程专属智能体：只列名称带「流程」二字的 agent（与对话页解耦，对话页同规则反向过滤）
+const FLOW_AGENT_KEYWORD = '流程';
+// 选择持久化键：与 c-chat 的 ragflow_agent_id 彻底分离，互不覆盖
+const FLOW_AGENT_LS_KEY = 'ragflow_flow_agent_id';
+
+interface FlowAgentOption {
+  id: string;
+  title: string;
+}
+
 /** 终态：归档/作废后不可再作废（与 flow-detail 顶部判断口径一致） */
 const TERMINAL_STATUS = new Set(['archived', 'cancelled']);
 
@@ -108,6 +118,66 @@ export default function FlowPanel({
     },
     [onReviewOpenChange],
   );
+
+  // 流程专属智能体选择（2026-09-21 与对话页解耦）：顶栏「新建流程」按钮旁下拉，
+  // 全面板统一一个 agent（持久化在独立 localStorage 键），经 props 下发到各流程
+  // 详情的 AI 面板；切换时由 FlowAiPanel 自行清会话引用（会话行与 agent 绑定）
+  const [flowAgents, setFlowAgents] = useState<FlowAgentOption[]>([]);
+  const [flowAgentId, setFlowAgentId] = useState(
+    () => localStorage.getItem(FLOW_AGENT_LS_KEY) || '',
+  );
+  const [agentDdOpen, setAgentDdOpen] = useState(false);
+  const agentDdRef = useRef<HTMLDivElement>(null);
+
+  // 加载流程智能体列表（名称带「流程」过滤），savedId 失效时回退首个
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const resp = await fetch('/api/v1/agents?page_size=100', {
+          headers: {
+            Authorization: localStorage.getItem('Authorization') || '',
+          },
+        });
+        const result = await resp.json();
+        if (!alive) return;
+        if (result.code !== 0) throw new Error(result.message);
+        const list: FlowAgentOption[] = (
+          (result.data?.canvas || []) as FlowAgentOption[]
+        ).filter((a) => (a.title || '').includes(FLOW_AGENT_KEYWORD));
+        setFlowAgents(list);
+        setFlowAgentId((prev) =>
+          list.some((a) => a.id === prev) ? prev : (list[0]?.id ?? ''),
+        );
+      } catch {
+        // 加载失败：AI 面板保持「未找到流程智能体」提示态，发送守卫兜底
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // 下拉展开时点击外部关闭
+  useEffect(() => {
+    if (!agentDdOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (
+        agentDdRef.current &&
+        !agentDdRef.current.contains(e.target as Node)
+      ) {
+        setAgentDdOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [agentDdOpen]);
+
+  const handleSwitchFlowAgent = useCallback((id: string) => {
+    setFlowAgentId(id);
+    localStorage.setItem(FLOW_AGENT_LS_KEY, id);
+    setAgentDdOpen(false);
+  }, []);
 
   // 超管追加「全部流程」页签，与其余三视角并列切换
   const scopes = useMemo(
@@ -261,13 +331,53 @@ export default function FlowPanel({
                     </button>
                   ))}
                 </div>
-                <Button
-                  className="h-8 w-full gap-1 rounded-lg text-sm font-medium transition-transform active:scale-[0.99]"
-                  onClick={() => setCreateOpen(true)}
-                >
-                  <Plus className="h-4 w-4" />
-                  新建流程
-                </Button>
+                <div className="flex items-center gap-2">
+                  {/* 流程专属智能体选择（只列名称带「流程」的 agent） */}
+                  {flowAgents.length > 0 && (
+                    <div className="relative min-w-0 flex-1" ref={agentDdRef}>
+                      <button
+                        onClick={() => setAgentDdOpen((o) => !o)}
+                        className="flex h-8 w-full items-center justify-between rounded-lg border border-[#D4D4D4] bg-white px-2.5 text-sm text-[#222] transition-colors hover:border-[#1a66fb]"
+                        title="选择流程对话使用的智能体（仅显示名称带「流程」的智能体）"
+                      >
+                        <span className="truncate">
+                          {flowAgents.find((a) => a.id === flowAgentId)
+                            ?.title || '选择智能体...'}
+                        </span>
+                        <ChevronDown
+                          className={`ml-1 h-3.5 w-3.5 shrink-0 text-[#999] transition-transform ${
+                            agentDdOpen ? 'rotate-180' : ''
+                          }`}
+                          strokeWidth={2}
+                        />
+                      </button>
+                      {agentDdOpen && (
+                        <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-52 overflow-y-auto rounded-lg border border-[#D4D4D4] bg-white py-1 shadow-[0_4px_16px_rgba(0,0,0,0.08)]">
+                          {flowAgents.map((a) => (
+                            <button
+                              key={a.id}
+                              onClick={() => handleSwitchFlowAgent(a.id)}
+                              className={`w-full truncate px-3 py-2 text-left text-sm transition-colors ${
+                                a.id === flowAgentId
+                                  ? 'bg-[#F0F5FF] font-medium text-[#1a66fb]'
+                                  : 'text-[#333333] hover:bg-[#F0F5FF] hover:text-[#1a66fb]'
+                              }`}
+                            >
+                              {a.title || '未命名智能体'}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <Button
+                    className="h-8 shrink-0 gap-1 rounded-lg text-sm font-medium transition-transform active:scale-[0.99]"
+                    onClick={() => setCreateOpen(true)}
+                  >
+                    <Plus className="h-4 w-4" />
+                    新建流程
+                  </Button>
+                </div>
               </div>
 
               {/* 列表 */}
@@ -426,6 +536,7 @@ export default function FlowPanel({
                 <FlowDetail
                   flowId={id}
                   visible={id === activeId}
+                  agentId={flowAgentId}
                   commentPortal={commentSlots[id] ?? null}
                   onCommentsCount={(n) => {
                     // 仅选中流程驱动批注角标（隐藏实例的批注数不串显）

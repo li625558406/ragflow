@@ -86,6 +86,7 @@ export default function FlowDetail({
   flowId,
   commentPortal,
   visible = true,
+  agentId,
   onCommentsCount,
   onChanged,
   onDeleted,
@@ -96,6 +97,8 @@ export default function FlowDetail({
   flowId: string;
   /** 批注模块 portal 挂载点（外层左侧流程栏下方），不传则不渲染批注模块 */
   commentPortal?: HTMLElement | null;
+  /** 流程专属智能体 id（flow-panel 顶栏统一选择下发）：AI 面板发送/建会话用它 */
+  agentId?: string;
   /** 本详情是否为当前选中流程（flow-panel 常驻挂载集透传）：隐藏实例强制收起
    *  实时预览（预览内存治理，设计 2026-09-16），保证至多一棵大文档 DOM 树 */
   visible?: boolean;
@@ -602,6 +605,7 @@ export default function FlowDetail({
           {isOwner && !terminal && (
             <FlowAiPanel
               flowId={flowId}
+              agentId={agentId}
               version={selectedVersion}
               aiChats={data.ai_chats ?? []}
               comments={commentsOf}
@@ -856,6 +860,7 @@ export default function FlowDetail({
         comments={commentsOf}
         commentAuthors={Object.fromEntries(nicknameMap)}
         canEdit={viewEditMode}
+        defaultEditing={viewEditMode}
         onEditDocument={handleEditVersionDocument}
       />
     </div>

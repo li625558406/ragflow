@@ -1052,7 +1052,11 @@ export default function CChat() {
       .then((r) => r.json())
       .then((result) => {
         if (result.code !== 0) throw new Error(result.message);
-        const list: Agent[] = result.data?.canvas || [];
+        // 流程专属智能体（名称带「流程」）只在流程页签使用，对话页不展示
+        const all: Agent[] = result.data?.canvas || [];
+        const list: Agent[] = all.filter(
+          (a) => !(a.title || '').includes('流程'),
+        );
         setAgents(list);
         if (list.length > 0) {
           const savedId = localStorage.getItem('ragflow_agent_id');

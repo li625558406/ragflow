@@ -27,6 +27,7 @@ import {
 } from '@/services/flow-service';
 import api from '@/utils/api';
 import request from '@/utils/request';
+import { FileText } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ChatInputBox, { type UploadedDoc } from '../chat-input-box';
 import { extractFileReviewTarget } from '../file-review-progress';
@@ -38,7 +39,10 @@ import type {
   FlowVersionItem,
 } from './flow-types';
 
-const NO_AGENT_HINT = '未配置对话智能体，请先在「对话」页签使用过智能体对话';
+// flow 专属智能体在 flow-panel 顶栏统一选择（只列名称带「流程」的 agent），
+// 经 props 下发到这里；此处只负责使用与切换时的会话重建
+const NO_AGENT_HINT =
+  '未找到名称带「流程」的智能体，请先在 B 端创建或重命名（名称需含「流程」二字）';
 
 // 影子会话失效类错误：会话行被外部清理（后端路由层校验 "Session not found!"）
 // 或会话与当前智能体绑定校验不过（"Session does not belong to the requested agent."）。
@@ -109,6 +113,7 @@ function parseAndReplay(raw: unknown) {
 
 export default function FlowAiPanel({
   flowId,
+  agentId = '',
   version,
   aiChats,
   comments,
@@ -122,6 +127,8 @@ export default function FlowAiPanel({
   onSelectSubmittedReady,
 }: {
   flowId: string;
+  /** 流程专属智能体 id（flow-panel 顶栏统一选择下发，空=未找到流程智能体） */
+  agentId?: string;
   version: FlowVersionItem | null;
   aiChats: FlowAiChatItem[];
   comments: FlowCommentItem[];
@@ -169,10 +176,17 @@ export default function FlowAiPanel({
   const [reviewFromVersionId, setReviewFromVersionId] = useState('');
   // flow 特有：未手动上传文件时，发送自动附带当前版本文件
   const [attachFile, setAttachFile] = useState(true);
-  // agent_id 与 c-chat 同源：localStorage（c-chat 发送时写入）
-  const [agentId] = useState(
-    () => localStorage.getItem('ragflow_agent_id') || '',
-  );
+  // agent_id 流程页签独立选择：flow-panel 顶栏统一选好经 props 下发（2026-09-21
+  // 与对话页解耦，不再读 c-chat 写入的 ragflow_agent_id）。切换 agent 时必须
+  // 弃旧会话——会话行与 agent 绑定（"Session does not belong to the requested
+  // agent."），置空让下次发送经 ensureSession 自动重建
+  const prevAgentIdRef = useRef(agentId);
+  useEffect(() => {
+    if (prevAgentIdRef.current !== agentId) {
+      prevAgentIdRef.current = agentId;
+      sessionIdRef.current = '';
+    }
+  }, [agentId]);
   // 当前登录用户 id（批注删除按钮仅对自己的批注显示）
   const [currentUserId] = useState(() => {
     try {
@@ -1282,12 +1296,26 @@ export default function FlowAiPanel({
   // 经 ChatInputBox 的 leftSlot 渲染在发送按钮同一行，不再单独占一行
   const titleRow = (
     <>
-      <span className="min-w-0 flex-1 truncate text-xs text-[#999]">
-        （上下文：
-        {version
-          ? `v${version.version_no} ${version.file_name}`
-          : '无上下文文件'}
-        ）
+      <span className="flex min-w-0 flex-1 items-center">
+        {version ? (
+          <span
+            className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border border-[#BFD3F5] bg-[#F0F5FF] px-2 py-0.5"
+            title={`发送时自动附带当前版本文件作为 AI 上下文：v${version.version_no} ${version.file_name}`}
+          >
+            <FileText
+              className="size-3 shrink-0 text-[#1a66fb]"
+              strokeWidth={2}
+            />
+            <span className="shrink-0 text-[11px] font-semibold text-[#1a66fb]">
+              上下文
+            </span>
+            <span className="truncate text-[11px] font-medium text-[#1a66fb]">
+              v{version.version_no} {version.file_name}
+            </span>
+          </span>
+        ) : (
+          <span className="truncate text-xs text-[#999]">（无上下文文件）</span>
+        )}
       </span>
       {/* flow 特有：未手动上传文件时发送自动附带当前版本 */}
       {version && (
