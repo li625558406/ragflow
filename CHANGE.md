@@ -11,7 +11,7 @@
 
 **E2E 实测（本地 dev 9222 代理生产 API，真实 315KB 投标文件 2299 模型段/36 表全对齐）**：改字 →「改动 1 处」精确；表格格改字 → tableEdits 坐标正确（paraIndex=354 row0 col0）；回车拦截+提示浮现；段首退格拦截；粘贴三行文本剥换行为一行；保存为新版本 → 后端 `document/edit` 200 → 版本时间线热现 v2 → 拉取新版本 content 验证段落与表格改动**全部落地**；放弃 → 文本恢复且编辑态保持。
 
-**测试**：`docx-fidelity-edit.test.ts` 23 例（含 tocLike 标记、sdt 展平跳过、目录条目 readOnlyEls、vMerge 幻影抑制 3 例、结构拦截、粘贴剥换行等对抗用例）；全量 vitest 336 passed + build 通过。**未部署**（部署 = build+dist+nginx reload，纯前端）。
+**测试**：`docx-fidelity-edit.test.ts` 23 例（含 tocLike 标记、sdt 展平跳过、目录条目 readOnlyEls、vMerge 幻影抑制 3 例、结构拦截、粘贴剥换行等对抗用例）；全量 vitest 336 passed + build 通过。**已部署 2026-09-22 并 push（055810df + 4d569935）**：build（1m13s）+ dist 上传解包（保 inode）+ nginx reload，生产冒烟首页 200 + 新 chunk `index-DjzvYUlT.js` 命中「保真编辑」「仅支持段内文字修改」文案。
 
 ## 2026-09-22 流程页签智能体解耦 + 审核弹框默认编辑态
 
