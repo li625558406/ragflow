@@ -225,3 +225,134 @@ export function collectFidelityBlocks(
   }
   return blocks;
 }
+
+// ── 编辑守卫 ───────────────────────────────────────────────
+
+export interface EditifyOptions {
+  pEls: Map<HTMLElement, number>;
+  tableByEl: Map<HTMLElement, number>;
+  /** 任意 input（含守卫放行的删除/输入）后触发，调用方防抖 diff */
+  onInput: () => void;
+  /** 结构性变更被拦截时提示（调用方做短暂浮现） */
+  onStructBlocked: (msg: string) => void;
+}
+
+/** 光标是否贴在 host 的起始/末尾边界（Range toString 判空，跨文本节点） */
+function caretAtEdge(host: HTMLElement, atStart: boolean): boolean {
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount || !sel.isCollapsed) return false;
+  const caret = sel.getRangeAt(0);
+  const probe = document.createRange();
+  probe.selectNodeContents(host);
+  try {
+    if (atStart) probe.setEnd(caret.startContainer, caret.startOffset);
+    else probe.setStart(caret.endContainer, caret.endOffset);
+  } catch {
+    return false;
+  }
+  return probe.toString().length === 0;
+}
+
+/** 光标所在（或选区起点所在）的可编辑宿主 */
+function editableHostOf(
+  node: Node | null,
+  root: HTMLElement,
+): HTMLElement | null {
+  let n: HTMLElement | null =
+    node?.nodeType === Node.TEXT_NODE
+      ? node.parentElement
+      : (node as HTMLElement | null);
+  while (n && n !== root) {
+    if (n.getAttribute?.('contenteditable') === 'true') return n;
+    n = n.parentElement;
+  }
+  return null;
+}
+
+/** 在保真树上开启段落级编辑：映射段与表格 td 开 contentEditable，
+ * beforeinput 拦截一切结构性变更（分段/并段/跨段删除/粘贴换行/拖放）。
+ * 返回 dispose（还原 contentEditable、摘监听）。 */
+export function editifyDocx(
+  wrap: HTMLElement,
+  opts: EditifyOptions,
+): () => void {
+  const editables: HTMLElement[] = [];
+  for (const el of opts.pEls.keys()) {
+    if (el.getAttribute('contenteditable') !== 'true') {
+      el.setAttribute('contenteditable', 'true');
+      editables.push(el);
+    }
+  }
+  for (const t of opts.tableByEl.keys()) {
+    for (const tr of Array.from((t as HTMLTableElement).rows)) {
+      for (const td of Array.from(tr.cells)) {
+        if (td.getAttribute('contenteditable') !== 'true') {
+          td.setAttribute('contenteditable', 'true');
+          editables.push(td);
+        }
+      }
+    }
+  }
+
+  const STRUCT_MSG = '暂不支持分段/删除整段等结构调整，请只修改段内文字';
+  const onBeforeInput = (ev: Event) => {
+    const e = ev as InputEvent;
+    const t = e.inputType;
+    if (t === 'insertParagraph' || t === 'insertLineBreak') {
+      e.preventDefault();
+      opts.onStructBlocked(STRUCT_MSG);
+      return;
+    }
+    if (t === 'insertFromPaste') {
+      // 纯文本手动插入并剥换行：粘贴多段会拆出新段落
+      e.preventDefault();
+      const raw = e.dataTransfer?.getData('text/plain') ?? e.data ?? '';
+      const clean = raw.replace(/\s+/g, ' ');
+      if (clean.trim()) document.execCommand('insertText', false, clean);
+      return;
+    }
+    if (!t.startsWith('delete')) return;
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return;
+    const range = sel.getRangeAt(0);
+    const startHost = editableHostOf(range.startContainer, wrap);
+    const endHost = editableHostOf(range.endContainer, wrap);
+    // 选区跨段（剪切/退格跨段）→ 拦
+    if (startHost && endHost && startHost !== endHost && !range.collapsed) {
+      e.preventDefault();
+      opts.onStructBlocked(STRUCT_MSG);
+      return;
+    }
+    if (!range.collapsed || !startHost) return;
+    if (
+      (t === 'deleteContentBackward' || t === 'deleteWordBackward') &&
+      caretAtEdge(startHost, true)
+    ) {
+      e.preventDefault();
+      opts.onStructBlocked(STRUCT_MSG);
+      return;
+    }
+    if (
+      (t === 'deleteContentForward' || t === 'deleteWordForward') &&
+      caretAtEdge(startHost, false)
+    ) {
+      e.preventDefault();
+      opts.onStructBlocked(STRUCT_MSG);
+    }
+  };
+  const onDrop = (e: DragEvent) => {
+    e.preventDefault();
+    opts.onStructBlocked(STRUCT_MSG);
+  };
+  const onInput = () => opts.onInput();
+  wrap.addEventListener('beforeinput', onBeforeInput, true);
+  wrap.addEventListener('drop', onDrop, true);
+  wrap.addEventListener('input', onInput, true);
+
+  return () => {
+    wrap.removeEventListener('beforeinput', onBeforeInput, true);
+    wrap.removeEventListener('drop', onDrop, true);
+    wrap.removeEventListener('input', onInput, true);
+    for (const el of editables) el.removeAttribute('contenteditable');
+  };
+}

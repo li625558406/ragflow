@@ -4,6 +4,7 @@ import { diffBlocks, type BaselineCell } from './docx-diff';
 import {
   collectDocxFlowEls,
   collectFidelityBlocks,
+  editifyDocx,
   mapDocxParas,
   normalizeParaText,
   type DocxSourceParagraph,
@@ -207,6 +208,120 @@ describe('collectFidelityBlocks', () => {
     const ops = diffBlocks(collectFidelityBlocks(model, r), model);
     if ('error' in ops) throw new Error(ops.error);
     expect(ops.deletes).toEqual([0]);
+    wrap.remove();
+  });
+});
+
+// ── Task 3: 编辑守卫 ──────────────────────────────────────────
+
+function fireBeforeInput(el: Element, inputType: string): boolean {
+  const ev = new Event('beforeinput', {
+    bubbles: true,
+    cancelable: true,
+  }) as InputEvent;
+  Object.defineProperty(ev, 'inputType', { value: inputType });
+  el.dispatchEvent(ev);
+  return ev.defaultPrevented;
+}
+
+describe('editifyDocx', () => {
+  it('对映射段落与表格 td 开 contentEditable；dispose 还原', () => {
+    const wrap = buildWrap([{ kind: 'p', text: '甲' }, { kind: 'table' }]);
+    const r = mapDocxParas(wrap, [
+      P(0, '甲'),
+      { index: 1, text: '<table/>', type: 'table' },
+    ]);
+    if (!r.ok) throw new Error('map failed');
+    // buildWrap 的 table 没有行，手动补一行供 td 断言
+    const table = Array.from(r.tableByEl.keys())[0] as HTMLTableElement;
+    table.innerHTML = '<tr><td>格</td></tr>';
+    const blocked: string[] = [];
+    const dispose = editifyDocx(wrap, {
+      pEls: r.pByEl,
+      tableByEl: r.tableByEl,
+      onInput: () => {},
+      onStructBlocked: (m) => blocked.push(m),
+    });
+    const p = Array.from(r.pByEl.keys())[0];
+    expect(p.getAttribute('contenteditable')).toBe('true');
+    expect(table.rows[0].cells[0].getAttribute('contenteditable')).toBe('true');
+    dispose();
+    expect(p.getAttribute('contenteditable')).toBeNull();
+    expect(table.rows[0].cells[0].getAttribute('contenteditable')).toBeNull();
+    wrap.remove();
+  });
+
+  it('回车（insertParagraph）被拦截并提示', () => {
+    const wrap = buildWrap([{ kind: 'p', text: '甲' }]);
+    const r = mapDocxParas(wrap, [P(0, '甲')]);
+    if (!r.ok) throw new Error('map failed');
+    const blocked: string[] = [];
+    const dispose = editifyDocx(wrap, {
+      pEls: r.pByEl,
+      tableByEl: r.tableByEl,
+      onInput: () => {},
+      onStructBlocked: (m) => blocked.push(m),
+    });
+    const p = Array.from(r.pByEl.keys())[0];
+    expect(fireBeforeInput(p, 'insertParagraph')).toBe(true);
+    expect(blocked).toHaveLength(1);
+    dispose();
+    wrap.remove();
+  });
+
+  it('段中间退格放行；段首退格（会并段）拦截', () => {
+    const wrap = buildWrap([{ kind: 'p', text: '甲乙' }]);
+    const r = mapDocxParas(wrap, [P(0, '甲乙')]);
+    if (!r.ok) throw new Error('map failed');
+    const blocked: string[] = [];
+    const dispose = editifyDocx(wrap, {
+      pEls: r.pByEl,
+      tableByEl: r.tableByEl,
+      onInput: () => {},
+      onStructBlocked: (m) => blocked.push(m),
+    });
+    const p = Array.from(r.pByEl.keys())[0] as HTMLElement;
+    p.innerHTML = '<span>甲</span><span>乙</span>';
+    const sel = window.getSelection()!;
+
+    // 段首（"甲"前无字符）→ 拦截
+    const first = p.childNodes[0].firstChild!;
+    const r3 = document.createRange();
+    r3.setStart(first, 0);
+    r3.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(r3);
+    expect(fireBeforeInput(p, 'deleteContentBackward')).toBe(true);
+    expect(blocked).toHaveLength(1);
+
+    // 段中间（"乙"开头，其前有"甲"可删）→ 放行
+    const second = p.childNodes[1].firstChild!;
+    const r2 = document.createRange();
+    r2.setStart(second, 0);
+    r2.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(r2);
+    expect(fireBeforeInput(p, 'deleteContentBackward')).toBe(false);
+    expect(blocked).toHaveLength(1);
+    dispose();
+    wrap.remove();
+  });
+
+  it('拖放被拦截', () => {
+    const wrap = buildWrap([{ kind: 'p', text: '甲' }]);
+    const r = mapDocxParas(wrap, [P(0, '甲')]);
+    if (!r.ok) throw new Error('map failed');
+    const dispose = editifyDocx(wrap, {
+      pEls: r.pByEl,
+      tableByEl: r.tableByEl,
+      onInput: () => {},
+      onStructBlocked: () => {},
+    });
+    const p = Array.from(r.pByEl.keys())[0];
+    const ev = new Event('drop', { bubbles: true, cancelable: true });
+    p.dispatchEvent(ev);
+    expect(ev.defaultPrevented).toBe(true);
+    dispose();
     wrap.remove();
   });
 });
