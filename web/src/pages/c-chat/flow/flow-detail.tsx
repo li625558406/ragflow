@@ -201,7 +201,6 @@ export default function FlowDetail({
     },
     [flowId, qc],
   );
-  const uploadInputRef = useRef<HTMLInputElement>(null);
   // 版本文件只读查看（所有参与人可用）：版本转 document 后交给 ReviewPanel
   const [viewOpen, setViewOpen] = useState(false);
   // AI 面板「文件审核」抽屉开/关（FlowAiPanel 上报）
@@ -343,13 +342,6 @@ export default function FlowDetail({
 
   const handleArchive = () => {
     doAction(() => archiveFlow(flowId));
-  };
-
-  const handleUploadFile = (file: File | null) => {
-    if (!file) return;
-    const fd = new FormData();
-    fd.append('file', file);
-    doAction(() => uploadFlowVersion(flowId, fd));
   };
 
   /** 只读查看版本文件内容：下载 blob → 转 document → ReviewPanel 展示。
@@ -513,32 +505,6 @@ export default function FlowDetail({
                   onClick={() => handleSubmit('next')}
                 >
                   提交下一节点
-                </Button>
-              </>
-            )}
-            {isOwner && !terminal && (
-              <>
-                <input
-                  ref={uploadInputRef}
-                  type="file"
-                  accept=".doc,.docx"
-                  className="hidden"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0] ?? null;
-                    e.target.value = '';
-                    if (f && !/\.(doc|docx)$/i.test(f.name)) {
-                      window.alert('仅支持 doc/docx 格式的文档');
-                      return;
-                    }
-                    handleUploadFile(f);
-                  }}
-                />
-                <Button
-                  size="sm"
-                  disabled={busy}
-                  onClick={() => uploadInputRef.current?.click()}
-                >
-                  上传修改版
                 </Button>
               </>
             )}

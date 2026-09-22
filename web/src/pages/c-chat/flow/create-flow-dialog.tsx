@@ -136,7 +136,7 @@ export default function CreateFlowDialog({
             <label className="text-sm text-[#555]">
               初始文件
               <span className="ml-1 text-xs text-[#999]">
-                （可选，仅支持 doc/docx，创建后可在详情页上传）
+                （可选，仅支持 doc/docx）
               </span>
             </label>
             {file && (
