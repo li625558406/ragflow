@@ -106,3 +106,122 @@ export function mapDocxParas(
   }
   return { ok: true, pByEl, tableByEl };
 }
+
+// ── 块抽取 ─────────────────────────────────────────────────
+// 严禁 innerText：content-visibility 屏外页 visibility:hidden 会被漏计，
+// 一律 textContent/TreeWalker。
+
+/** 顶层段文本：textContent + br→\n，跳过 img/svg（模型侧图片段文本为空） */
+function blockDomText(el: HTMLElement): string {
+  let s = '';
+  const walk = (node: Node) => {
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      const e = node as Element;
+      const tag = e.tagName.toLowerCase();
+      if (tag === 'br') {
+        s += '\n';
+        return;
+      }
+      if (tag === 'img' || tag === 'svg' || tag === 'script' || tag === 'style')
+        return;
+      e.childNodes.forEach(walk);
+    } else if (node.nodeType === Node.TEXT_NODE) {
+      s += node.nodeValue || '';
+    }
+  };
+  walk(el);
+  return s;
+}
+
+/** 单元格文本：与基线 parseTableCells 的 cellText 同语义（嵌套表跳过、br→\n） */
+function cellDomText(td: Element): string {
+  let s = '';
+  const walk = (node: Node) => {
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      const e = node as Element;
+      const tag = e.tagName.toLowerCase();
+      if (tag === 'table' || tag === 'script' || tag === 'style') return;
+      if (tag === 'br') {
+        s += '\n';
+        return;
+      }
+      e.childNodes.forEach(walk);
+    } else if (node.nodeType === Node.TEXT_NODE) {
+      s += (node.nodeValue || '').replace(/\u00a0/g, ' ');
+    }
+  };
+  walk(td);
+  return s;
+}
+
+/** canonical 技巧：归一化相等 → 取模型原文（tab/\u00a0/br 等渲染差异不产生幻影
+ * edit）；不等（用户改过）→ 取 DOM 文本并压平空白（换行/制表符不进后端） */
+function canonicalText(domRaw: string, modelRaw: string): string {
+  if (normalizeParaText(domRaw) === normalizeParaText(modelRaw))
+    return modelRaw;
+  return domRaw.replace(/\s+/g, ' ').trim();
+}
+
+/** 单元格 canonical：与正文段不同，换行是合法语义（基线 cellText 与后端
+ * cell.text 都按 \n 分段），改写后的格文本只 trim、不压平换行 */
+function canonicalCellText(domRaw: string, modelRaw: string): string {
+  if (normalizeParaText(domRaw) === normalizeParaText(modelRaw))
+    return modelRaw;
+  return domRaw.trim();
+}
+
+/** 从保真树抽取 EditorBlock[]（文档序）：text 段 + 表格单元格（colspan 累加坐标，
+ * 与 readEditorBlocks/parseTableCells 同口径）。未覆盖的模型段落补虚拟块防误删
+ * （strict 对齐下不可达，防御性保留）。 */
+export function collectFidelityBlocks(
+  paragraphs: DocxSourceParagraph[],
+  map: Extract<FidelityMap, { ok: true }>,
+  tableBaselines?: Map<number, BaselineCell[]>,
+): EditorBlock[] {
+  const byIdx = new Map(paragraphs.map((p) => [p.index, p]));
+  const blocks: EditorBlock[] = [];
+  const covered = new Set<number>();
+  for (const [el, idx] of map.pByEl) {
+    const orig = byIdx.get(idx);
+    if (!orig) continue;
+    covered.add(idx);
+    blocks.push({
+      paraIndex: idx,
+      kind: 'text',
+      text: canonicalText(blockDomText(el), orig.text),
+    });
+  }
+  for (const [tbl, idx] of map.tableByEl) {
+    covered.add(idx);
+    const base = tableBaselines?.get(idx);
+    let ri = 0;
+    for (const tr of Array.from((tbl as HTMLTableElement).rows)) {
+      let col = 0;
+      for (const td of Array.from(tr.cells)) {
+        const n = parseInt(td.getAttribute('colspan') || '1', 10);
+        const colSpan = Number.isFinite(n) && n > 0 ? n : 1;
+        const bc = base?.find((x) => x.row === ri && x.col === col);
+        blocks.push({
+          paraIndex: idx,
+          kind: 'table',
+          cell: { row: ri, col },
+          text: canonicalCellText(cellDomText(td), bc?.text || ''),
+        });
+        col += colSpan;
+      }
+      ri += 1;
+    }
+  }
+  // 防御：对齐 strict 契约下模型全覆盖；万一出现空洞，补虚拟块让 diffBlocks
+  // 记 seen，避免被当 delete 送后端
+  for (const p of paragraphs) {
+    if (covered.has(p.index)) continue;
+    blocks.push({
+      paraIndex: p.index,
+      kind:
+        p.type === 'table' ? 'table' : p.type === 'image' ? 'image' : 'text',
+      text: p.type === 'table' || p.type === 'image' ? '' : p.text,
+    });
+  }
+  return blocks;
+}
