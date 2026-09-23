@@ -56,3 +56,116 @@ body,
     'Microsoft YaHei', '微软雅黑', 'PingFang SC', 'Helvetica Neue', Arial,
     sans-serif !important;
 }
+
+/* 流程页签 AI 对话气泡：LLM Markdown 输出排版适配（表格/标题/列表/代码）。
+   仅作用于 flow-detail ConversationView 的回复气泡，不影响 c-chat 等其它
+   ChapteredMarkdown 使用方。 */
+.flow-chat-md {
+  font-size: 14px;
+  line-height: 1.7;
+  word-break: break-word;
+
+  p,
+  ul,
+  ol,
+  table,
+  pre,
+  blockquote {
+    margin: 6px 0;
+    &:first-child {
+      margin-top: 0;
+    }
+    &:last-child {
+      margin-bottom: 0;
+    }
+  }
+
+  // 标题：气泡内收敛到 14~16px，避免默认 h1/h2 巨字号
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    margin: 12px 0 6px;
+    font-weight: 600;
+    line-height: 1.4;
+    &:first-child {
+      margin-top: 0;
+    }
+  }
+  h1 {
+    font-size: 16px;
+  }
+  h2 {
+    font-size: 15px;
+  }
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-size: 14px;
+  }
+
+  ul,
+  ol {
+    padding-left: 22px;
+  }
+  li {
+    margin: 2px 0;
+  }
+
+  // 表格：边框 + 表头底色 + 横向滚动（宽表不撑破气泡）
+  table {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  th,
+  td {
+    border: 1px solid #e5e6eb;
+    padding: 5px 10px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th {
+    background: #f5f7fa;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  // 代码
+  code {
+    font-size: 13px;
+    background: #f5f6f7;
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+  pre {
+    background: #f7f8fa;
+    border: 1px solid #ececec;
+    border-radius: 6px;
+    padding: 10px 12px;
+    overflow-x: auto;
+  }
+  pre code {
+    background: none;
+    padding: 0;
+  }
+
+  hr {
+    margin: 10px 0;
+    border: none;
+    border-top: 1px solid #eee;
+  }
+  img {
+    max-width: 100%;
+    border-radius: 6px;
+  }
+  a {
+    color: #1a66fb;
+  }
+}

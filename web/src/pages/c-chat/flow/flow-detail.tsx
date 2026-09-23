@@ -1143,7 +1143,7 @@ function ConversationView({
           </div>
           <div className="flex justify-start">
             <div
-              className={`max-w-[90%] rounded-lg rounded-bl-sm border px-3 py-1.5 text-sm leading-relaxed ${
+              className={`flow-chat-md max-w-[90%] rounded-lg rounded-bl-sm border px-3 py-2 ${
                 isErrorResponse(c.response)
                   ? 'border-red-300 bg-red-50 text-red-700'
                   : 'border-[#ECECEC] bg-white text-[#333]'
@@ -1209,7 +1209,7 @@ function ConversationView({
           {(live.response || live.busy) && (
             <div className="flex justify-start">
               <div
-                className={`max-w-[90%] rounded-lg rounded-bl-sm border px-3 py-1.5 text-sm leading-relaxed ${
+                className={`flow-chat-md max-w-[90%] rounded-lg rounded-bl-sm border px-3 py-2 ${
                   isErrorResponse(live.response)
                     ? 'border-red-300 bg-red-50 text-red-700'
                     : 'border-[#ECECEC] bg-white text-[#333]'
