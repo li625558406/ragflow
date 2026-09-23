@@ -1,5 +1,19 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-23（二）范本识别：蓝色已填值识别为填写点+默认值（docx）
+
+**主题**：用户需求——部分上传范本占位符位置已用**蓝色字体**填了旧值，现状 blank_slots 纯文本切位切不出位（蓝字非留白）→ 整行退化 V1 LLM 自选 anchor、不产默认值。要求蓝色旧值被识别为正式填写点，旧值沉淀为该位置 default_value（下次填写 AI 换新值，检索不到时默认值兜底）。经澄清确认：仅 docx；该类文件蓝色≈已填值标记（无蓝色标题/超链接干扰）。
+
+**改动（后端 2 文件，方案 A：扩展 V2 管线新 slot 类型 kind="blue"）**：
+- `blank_slots.py`：①`_is_blue_run`——rgb 直值 B 通道严格占优（`B - max(R,G) >= 40`，`_BLUE_DIFF=40`，覆盖纯蓝/0070C0/主题蓝 4472C4/深蓝 1F4E79；排除黑灰红绿；仅主题色无 rgb 直值保守不判；空白文本不算值）；②主循环 blue 簇分支（置于 underline 之前 → **blue 优先**，天然覆盖「下划线空位被填了蓝字」形态）；③merge 循环 blue 隔离守卫——blue 只与 blue 合并（XOR 判型），蓝值后紧跟的下划线空位是另一个填写位，不并防空位文本卷进默认值。
+- `detector.py`：①`DETECT_SYSTEM_V2` 增补规则 5（位文本可能已是预填旧值，照常标注语义）；②`parse_slot_response` blue 位豁免 V2 硬闸——`default_value = slot["text"]` 且显式带 **`default_source: "detected"`**（关键：缺失会被 `_merge_defaults` 兜底成 "manual" → 沉淀保护误伤写回按钮 + B端徽标错标人工，生产者+管线层三层测试钉死）；③`slot_fallback_items` LLM 漏标 blue 位兜底成点（name=「已填填写点」+low_confidence+default_value=位文本）。
+
+**下游零改动**：确认列表/B端预览回显默认值/渲染替换成稿继承蓝色 run 格式/default_map 消费链全部既有功能自然生效；存量范本需详情页重新识别，无数据迁移；前端零改动。
+
+**验证**：6 任务 subagent-driven TDD，新增 17 用例（blank_slots +9 / utils +6 / 事故回归闸），5 直接套件 **457 passed**、template_fill 全 10 套件 **570 passed**；端到端脚本实证蓝值切位坐标自洽；最终整体审查 **READY TO MERGE**（0 Critical / 0 Important）。设计稿 `docs/superpowers/specs/2026-09-23-template-blue-filled-detect-design.md`、计划 `docs/superpowers/plans/2026-09-23-template-blue-filled-detect.md`。
+
+**遗留（未部署）**：部署 = 后端 2 文件（blank_slots.py、detector.py）成套 SCP+容器重启；样式级颜色继承（蓝色定义在 Word 样式而非 run rPr）与仅主题色无 rgb 直值会漏识别（人工添加填写点兜底）；同行两个独立蓝值只隔一空格会合并为一位（人工确认可改）。Minor 不阻塞项：blue 默认值不经骨架过滤（误涂蓝标签会沉淀为默认值，人工可改，设计稿 §2 已接受）。
+
 ## 2026-09-23（一）流程对话 LLM 回复排版适配（表格/标题/代码）
 
 **主题**：用户报「流程页对话 LLM 输出正文格式需要适配——表格、字体大小等」。排查生产数据（`flow_ai_chat` id `57cac8e8…`）实锤：LLM 回复里是标准 Markdown 管道表格、`remark-gfm` 也正常解析成 HTML `<table>`，但表格**零样式**（无边框/无表头底色/无间距），白底气泡里视觉上等同纯文本列——「没渲染」实为「渲染了但看不见」。
