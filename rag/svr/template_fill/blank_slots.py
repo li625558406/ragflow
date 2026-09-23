@@ -19,6 +19,23 @@ from docx.oxml.ns import qn
 
 # 字符下划线：连续下划线字符 ≥2（不要求格式，兼容手打下划线）
 _CHAR_UNDERLINE_RE = re.compile(r"[_＿]{2,}")
+# 蓝色已填值判定：rgb 直值 B 通道严格占优（B - max(R,G) ≥ 40）。覆盖纯蓝/
+# 0070C0/主题蓝 4472C4/深蓝 1F4E79 等，排除黑灰（差 0）/红/绿。仅主题色无
+# rgb 直值 → 保守不判（宁漏不误）；空白文本不算值。
+_BLUE_DIFF = 40
+
+
+def _is_blue_run(run) -> bool:
+    if not (run.text or "").strip():
+        return False
+    rgb = run.font.color.rgb
+    if rgb is None:
+        return False
+    hex6 = str(rgb)
+    if len(hex6) != 6:
+        return False
+    r, g, b = int(hex6[0:2], 16), int(hex6[2:4], 16), int(hex6[4:6], 16)
+    return b - max(r, g) >= _BLUE_DIFF
 # 下划线格式 run 的文本须匹配留白特征（防实心文字+下划线格式误判为位）：
 # 纯空白/下划线，或 空白+括号提示+空白
 _BLANK_RUN_RE = re.compile(r"^[\s_＿]*$")
@@ -102,6 +119,15 @@ def extract_paragraph_slots(p) -> list:
         if not t:
             i += 1
             continue  # 空文本 run 无坐标贡献，不断簇
+        if _is_blue_run(runs[i]):
+            j = i
+            while j < n and _is_blue_run(runs[j]):
+                j += 1
+            ct = "".join((runs[k].text or "") for k in range(i, j))
+            segs.append([pos, pos + len(ct), "blue", ""])
+            pos += len(ct)
+            i = j
+            continue
         if bool(runs[i].font.underline):
             j = i
             while j < n and bool(runs[j].font.underline):

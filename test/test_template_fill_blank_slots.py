@@ -2,6 +2,18 @@
 
 from docx import Document
 from docx.oxml.ns import qn
+from docx.shared import RGBColor
+
+
+def _add_colored_runs(p, runs_spec):
+    """runs_spec: [(text, underline, rgb)]，rgb 为 (r,g,b) 元组或 None。"""
+    for text, u, rgb in runs_spec:
+        r = p.add_run(text)
+        if u is not None:
+            r.font.underline = u
+        if rgb is not None:
+            r.font.color.rgb = RGBColor(*rgb)
+    return p
 
 
 def _add_runs(p, runs_spec):
@@ -275,3 +287,66 @@ def test_ws_gap_between_blank_and_hint_merges_into_hint():
     assert len(slots) == 1
     assert slots[0]["kind"] == "hint"
     assert slots[0]["text"] == "    （名称）  "
+
+
+def test_blue_value_run_slotted():
+    """蓝色实心文字 run = blue 位（已填值标记）。"""
+    from rag.svr.template_fill.blank_slots import extract_paragraph_slots
+
+    p = _add_colored_runs(_para([]), [
+        ("本招标项目", None, None),
+        ("福建省厦门市", None, (0x00, 0x00, 0xFF)),
+        ("，建设单位", None, None),
+    ])
+    slots = extract_paragraph_slots(p)
+    assert len(slots) == 1
+    s = slots[0]
+    assert s["kind"] == "blue"
+    assert s["text"] == "福建省厦门市"
+    assert s["hint"] == ""
+    runs_text = "".join(r.text for r in p.runs)
+    assert runs_text[s["start"] : s["end"]] == s["text"]
+
+
+def test_blue_multi_run_cluster_one_slot():
+    """同一值被 Word 拆成相邻多个蓝色 run → 成簇切一个位。"""
+    from rag.svr.template_fill.blank_slots import extract_paragraph_slots
+
+    p = _add_colored_runs(_para([]), [
+        ("李", None, (0x00, 0x70, 0xC0)),
+        ("港", None, (0x00, 0x70, 0xC0)),
+    ])
+    slots = extract_paragraph_slots(p)
+    assert len(slots) == 1
+    assert slots[0]["text"] == "李港"
+    assert slots[0]["kind"] == "blue"
+
+
+def test_blue_whitespace_run_not_slotted():
+    """对抗：蓝色格式打在纯空白上不算已填值（无实心内容）。"""
+    from rag.svr.template_fill.blank_slots import extract_paragraph_slots
+
+    p = _add_colored_runs(_para([]), [
+        ("前文", None, None),
+        ("   ", None, (0x00, 0x00, 0xFF)),
+        ("后文", None, None),
+    ])
+    assert extract_paragraph_slots(p) == []
+
+
+def test_blue_channel_dominance_threshold():
+    """蓝色判定 = B 通道占优 ≥40：常见蓝全命中，黑/灰/红/绿不命中。"""
+    from rag.svr.template_fill.blank_slots import extract_paragraph_slots
+
+    blue_cases = [(0x00, 0x00, 0xFF), (0x00, 0x70, 0xC0), (0x44, 0x72, 0xC4),
+                  (0x1F, 0x4E, 0x79), (0x80, 0x80, 0xFF)]
+    for rgb in blue_cases:
+        p = _add_colored_runs(_para([]), [("值", None, rgb)])
+        slots = extract_paragraph_slots(p)
+        assert len(slots) == 1 and slots[0]["kind"] == "blue", f"{rgb} 应判蓝"
+
+    non_blue_cases = [(0x00, 0x00, 0x00), (0x80, 0x80, 0x80), (0xFF, 0x00, 0x00),
+                      (0x00, 0xB0, 0x50), (0xFF, 0xFF, 0x00)]
+    for rgb in non_blue_cases:
+        p = _add_colored_runs(_para([]), [("值", None, rgb)])
+        assert extract_paragraph_slots(p) == [], f"{rgb} 不应判蓝"
