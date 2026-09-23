@@ -350,3 +350,57 @@ def test_blue_channel_dominance_threshold():
     for rgb in non_blue_cases:
         p = _add_colored_runs(_para([]), [("值", None, rgb)])
         assert extract_paragraph_slots(p) == [], f"{rgb} 不应判蓝"
+
+
+def test_blue_gap_whitespace_merged():
+    """相邻 blue 段之间只隔空白 → 合并为一个值段。"""
+    from rag.svr.template_fill.blank_slots import extract_paragraph_slots
+
+    p = _add_colored_runs(_para([]), [
+        ("李", None, (0x00, 0x00, 0xFF)),
+        (" ", None, None),
+        ("港", None, (0x00, 0x00, 0xFF)),
+    ])
+    slots = extract_paragraph_slots(p)
+    assert len(slots) == 1
+    assert slots[0]["text"] == "李 港"
+    assert slots[0]["kind"] == "blue"
+
+
+def test_blue_underline_filled_slot_blue_wins():
+    """下划线空位被填蓝字：blue 优先，成 blue 位而非被下划线簇吞掉。"""
+    from rag.svr.template_fill.blank_slots import extract_paragraph_slots
+
+    p = _add_colored_runs(_para([]), [
+        ("项目名称：", None, None),
+        ("李港", True, (0x00, 0x70, 0xC0)),
+        (" 地址：", None, None),
+    ])
+    slots = extract_paragraph_slots(p)
+    assert len(slots) == 1
+    assert slots[0]["kind"] == "blue"
+    assert slots[0]["text"] == "李港"
+
+
+def test_blue_and_blank_adjacent_stay_separate():
+    """对抗：蓝值后紧跟下划线空位（同为留白格式/紧邻）→ 两个独立位，
+    空位不得卷进 blue 值段。"""
+    from rag.svr.template_fill.blank_slots import extract_paragraph_slots
+
+    p = _add_colored_runs(_para([]), [
+        ("李港", None, (0x00, 0x00, 0xFF)),
+        ("____", True, None),
+        ("尾", None, None),
+    ])
+    slots = extract_paragraph_slots(p)
+    kinds = [(s["kind"], s["text"]) for s in slots]
+    assert ("blue", "李港") in kinds
+    assert ("blank", "____") in kinds
+
+
+def test_blue_over_500_skipped():
+    """对抗：超长蓝值（>500 字符）不产位（与 _MAX_SLOT_LEN 同口径）。"""
+    from rag.svr.template_fill.blank_slots import extract_paragraph_slots
+
+    p = _add_colored_runs(_para([]), [("蓝" * 501, None, (0x00, 0x00, 0xFF))])
+    assert extract_paragraph_slots(p) == []

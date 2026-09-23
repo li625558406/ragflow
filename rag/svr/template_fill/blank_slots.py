@@ -99,11 +99,13 @@ def extract_paragraph_slots(p) -> list:
     - 坐标系：p.runs 文本拼接（与替换层一致）；python-docx 1.2.0 的 p.text
       含超链接文本而 p.runs 不含，故段落含 w:hyperlink 时坐标系不可靠，
       整段不切位（返回 []，该行回退 LLM V1 路径）。
-    - 位判定两种来源：下划线格式（bool(font.underline) 真值：None/False 无、
-      True/枚举有）的连续 run 簇整体分类；或连续下划线字符 ≥2。
+    - 位判定三种来源：下划线格式（bool(font.underline) 真值：None/False 无、
+      True/枚举有）的连续 run 簇整体分类；或连续下划线字符 ≥2；蓝色字体
+      rgb 直值 B 通道占优（_is_blue_run）的连续 run 簇 = blue 已填值位
+      （优先于下划线判定，只与 blue 合并）。
     - 簇分类失败回退逐 run 判定（旧行为）；相邻位段（中间只隔空白文本）合并为
       一个位，组内有 hint 则整体 kind=hint（触接的同为 hint 位不合并——多括号
-      簇拆出的相邻提示位必须保持独立）。
+      簇拆出的相邻提示位必须保持独立；blue 位与 blank/hint 一律不合并）。
     - 纯空白 blank 位扩展为段内最大空白 run：向前/后吸收相邻空白文本，止于
       非空白字符或相邻位边界（多位互不侵占）。
     """
@@ -166,6 +168,11 @@ def extract_paragraph_slots(p) -> list:
         prev = merged[-1]
         if s[0] == prev[1] and prev[2] == "hint" and s[2] == "hint":
             merged.append(s)  # 多括号簇拆出的相邻 hint 位保持独立
+            continue
+        # blue 位只与 blue 合并：与 blank/hint 相邻/gap-blank 一律不并——
+        # 蓝值后紧跟的下划线空位是另一个填写位，并入会把空位文本卷进默认值
+        if (prev[2] == "blue") != (s[2] == "blue"):
+            merged.append(s)
             continue
         gap_blank = not runs_text[prev[1] : s[0]].strip()
         if s[0] <= prev[1] or (gap_blank and s[0] >= prev[1]):
