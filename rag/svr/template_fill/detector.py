@@ -301,11 +301,13 @@ def parse_slot_response(raw: str, candidates: list) -> tuple:
             "line": line,
             "top_k": 6,
             "low_confidence": False,
-            # V2 硬闸（设计 §4.5：V2 条目一律不派生默认值）：显式带空 default_value，
-            # _merge_defaults 分支1按「键存在」触发 → 无论 anchor 形态都跳过派生。
+            # V2 硬闸（设计 §4.5）：留白/hint 位一律不派生默认值（切出的位无值可派生），
+            # 显式带空 default_value，_merge_defaults 分支1按「键存在」触发跳过派生。
+            # 例外：blue 位（蓝色已填值）位文本本身就是旧值 → default_value = 位文本
+            # （来源=detected，下次填写 default_map 兜底，AI 换新值时被整体替换）。
             # 用既有序列化字段而非新标记键：B端默认值列/显式清空态本就理解 ""，
             # 不向 API/DB JSON 泄漏内部标记；下游 default_map 按 truthy 过滤，"" 天然不触发。
-            "default_value": "",
+            "default_value": slot["text"] if slot.get("kind") == "blue" else "",
             "_anchor_pos": slot["start"],  # 切位精确偏移，供 occ 预分配排序
         })
     return out, covered

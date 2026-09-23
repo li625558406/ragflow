@@ -3645,3 +3645,34 @@ def test_detect_fill_points_sorted_document_order(monkeypatch):
     keys = [it["key"] for it in merged]
     assert keys == ["ka", "kb", "v1_field"]
     assert all("_anchor_pos" not in it for it in merged)
+
+
+def test_parse_slot_response_blue_default_value():
+    """blue 位豁免「不派生默认值」硬闸：default_value = 位文本（旧值即默认值）；
+    其余位维持 "" 不回归。"""
+    from rag.svr.template_fill.detector import parse_slot_response
+    cand = _slot_cand()
+    # membership 防御要求位文本是候选原文子串：把旧值真实嵌入候选文本 [30:36]
+    cand["text"] = cand["text"][:30] + "福建省厦门市" + cand["text"][30:]
+    cand["slots"].append({"start": 30, "end": 36, "text": "福建省厦门市",
+                          "kind": "blue", "hint": ""})
+    raw = '[{"line":7,"slot":1,"key":"project_name","name":"招标项目名称"},' \
+          '{"line":7,"slot":3,"key":"city","name":"城市"}]'
+    items, covered = parse_slot_response(raw, [cand])
+    assert covered == {(7, 1), (7, 3)}
+    assert items[0]["default_value"] == ""  # hint 位硬闸不回归
+    assert items[1]["default_value"] == "福建省厦门市"
+    assert items[1]["anchor"] == "福建省厦门市"
+    assert items[1]["_anchor_pos"] == 30
+
+
+def test_parse_slot_response_blue_slot_text_corrupt_dropped():
+    """对抗：slot 文本不再是候选原文子串（坐标系腐坏）→ blue 位同样丢弃，
+    不静默产脏 anchor/默认值。"""
+    from rag.svr.template_fill.detector import parse_slot_response
+    cand = _slot_cand()
+    cand["slots"].append({"start": 30, "end": 36, "text": "不存在的旧值",
+                          "kind": "blue", "hint": ""})
+    raw = '[{"line":7,"slot":3,"key":"city","name":"城市"}]'
+    items, covered = parse_slot_response(raw, [cand])
+    assert items == [] and covered == set()
