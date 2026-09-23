@@ -1,5 +1,19 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-23（三）流程页「提示 : 102 任务不存在」无限弹错修复
+
+**主题**：用户报选中流程「漳武高速南靖出口至北环城路段微提升改造项目」一直报「提示 : 102 任务不存在」。排查生产 DB：流程历史 `template_fill_events` 引用的填写任务 `c0fe2764…` 行已消失——该任务所属旧范本「市政房建竞争性谈判文件」（`52003264…`，16:11 上传）在 20:51 被删除重传（为蓝色识别），09-17「范本删除级联清理填写任务」功能把任务行+成稿对象一并级联删除；前端 `filled` 行 10s 低频权威刷新（09-22 引入）持续打 progress 端点恒回 102，全局拦截器 `request.ts` 对非 0 业务码无条件弹 notification → 每 10s 弹一次无限报错。
+
+**改动（纯前端 4 文件）**：
+- `request.ts`：拦截器支持请求级 `skipBusinessError` 选项（共享拦截器不加端点特判，供调用方声明自行处理业务错误）。
+- `use-template-fill-task-poll.ts`：progress 响应业务码 102 → `missing` 集合永久停两条轮询通道（独立于 `stopped`——后者刻意不封 filled 行 refresh）；`filling` 行降级 failed「范本已删除，填写任务不存在」；`filled` 行保持卡片现状只停刷新。信封归一化（兼容 umi-request 直接解析 body 与测试桩 `{data:…}` 两层形态）。
+- `use-template-fill-request.ts`：`fetchTemplateFillTaskProgress` 同挂 `skipBusinessError`，102 静默回落 null 走既有「失败回落快照」兜底。
+- 测试 +2 例（filling 降级停轮 / filled 保持现状停 refresh），全量 vitest **354 passed**。
+
+**行为变化**：旧成稿卡保留但下载会失败（对象已随级联删除，数据不可恢复，属范本删除的既定语义）；新范本 `6efdafb4…`（20:51 重传，含蓝色识别）不受影响，可重新发起填写。
+
+（**已部署 2026-09-23 + commit 4e94ab30 + push**：build+dist+nginx reload，index.html 双端 md5 一致，首页 200）
+
 ## 2026-09-23（二）范本识别：蓝色已填值识别为填写点+默认值（docx）
 
 **主题**：用户需求——部分上传范本占位符位置已用**蓝色字体**填了旧值，现状 blank_slots 纯文本切位切不出位（蓝字非留白）→ 整行退化 V1 LLM 自选 anchor、不产默认值。要求蓝色旧值被识别为正式填写点，旧值沉淀为该位置 default_value（下次填写 AI 换新值，检索不到时默认值兜底）。经澄清确认：仅 docx；该类文件蓝色≈已填值标记（无蓝色标题/超链接干扰）。
