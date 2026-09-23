@@ -577,7 +577,12 @@ export interface TemplateFillProgressData {
 export async function fetchTemplateFillTaskProgress(
   taskId: string,
 ): Promise<TemplateFillProgressData | null> {
-  const { data } = await request.get(api.templateFillTaskProgress(taskId));
+  // skipBusinessError：任务不存在（范本删除级联清理任务行）时静默回落 null，
+  // 由调用方走既有「失败回落快照」兜底，不弹全局「提示 : 102」错误
+  const res = await request.get(api.templateFillTaskProgress(taskId), {
+    skipBusinessError: true,
+  } as any);
+  const data = (res as { data?: { data?: unknown } })?.data;
   return (data?.data as TemplateFillProgressData) || null;
 }
 

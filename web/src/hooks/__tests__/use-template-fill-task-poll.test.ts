@@ -607,4 +607,51 @@ describe('useTemplateFillTaskPoll', () => {
     await flush();
     expect(mockedGet).toHaveBeenCalledTimes(1);
   });
+
+  it('102 任务不存在：filling 行降级 failed「范本已删除，填写任务不存在」并停轮询', async () => {
+    vi.useFakeTimers();
+    mockedGet.mockReturnValue(
+      Promise.resolve({ data: { code: 102, message: '任务不存在' } }),
+    );
+    const { result } = renderHook(() =>
+      useTemplateFillTaskPoll([fillingTpl()], true),
+    );
+    await flush();
+    expect(result.current?.[0]).toMatchObject({
+      status: 'failed',
+      error: '范本已删除，填写任务不存在',
+    });
+    vi.advanceTimersByTime(6000);
+    await flush();
+    // missing 集合生效：不再轮询（否则全局/本地反复报「任务不存在」）
+    expect(mockedGet).toHaveBeenCalledTimes(1);
+  });
+
+  it('102 任务不存在：filled 行保持卡片现状，refresh 通道也停', async () => {
+    vi.useFakeTimers();
+    mockedGet.mockReturnValue(
+      Promise.resolve({ data: { code: 102, message: '任务不存在' } }),
+    );
+    const { result } = renderHook(() =>
+      useTemplateFillTaskPoll(
+        [
+          fillingTpl({
+            status: 'filled',
+            download: { doc_id: 'd1' },
+            filled: [{ key: 'a', name: '甲' }],
+          }),
+        ],
+        true,
+      ),
+    );
+    await flush();
+    // filled 行不降级不丢字段（卡片现状保留），仅停 10s refresh
+    expect(result.current?.[0]).toMatchObject({
+      status: 'filled',
+      download: { doc_id: 'd1' },
+    });
+    vi.advanceTimersByTime(12000);
+    await flush();
+    expect(mockedGet).toHaveBeenCalledTimes(1);
+  });
 });

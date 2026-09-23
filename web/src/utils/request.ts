@@ -168,7 +168,7 @@ request.interceptors.response.use(async (response: Response, options) => {
     }
     authorizationUtil.removeAll();
     redirectToLogin();
-  } else if (data?.code !== 0) {
+  } else if (data?.code !== 0 && !(options as any)?.skipBusinessError) {
     notification.error({
       message: `${i18n.t('message.hint')} : ${data?.code}`,
       description: data?.message,

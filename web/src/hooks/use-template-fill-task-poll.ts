@@ -47,6 +47,11 @@ export function useTemplateFillTaskPoll(
   // 刻意不清理：retry 场景走新一轮消息/新卡片（新 task_id），同 task_id 复活不存在，
   // 清理反而可能让已合成终态的行被再次轮询覆盖。
   const stopped = useRef<Set<string>>(new Set());
+  // 已失效任务（progress 端点业务码 102「任务不存在」，成因：范本删除级联清理
+  // 填写任务行，流程历史事件仍引用该 task_id）：两条通道全部停轮询。独立于
+  // stopped——stopped 刻意不封 filled 行的 refresh 通道（filling 期合成终态的行
+  // 要靠它续刷），而 missing 行的 refresh 也必须停，否则 10s 一次无限弹错
+  const missing = useRef<Set<string>>(new Set());
   // 终态行上次 refresh 时刻（节流）：挂载立即刷一次，此后每 TERMINAL_REFRESH_MS 一次
   const lastRefreshAt = useRef<Record<string, number>>({});
   // 最新 templates 存 ref：effect deps 只留 [enabled]，interval 不随 SSE 事件
@@ -62,6 +67,8 @@ export function useTemplateFillTaskPoll(
       const now = Date.now();
       const targets = (templatesRef.current || []).filter((t) => {
         if (!t.task_id) return false;
+        // 已失效任务：两条通道全停（102 后永远不会再有有效响应）
+        if (missing.current.has(t.task_id)) return false;
         // filled 行走 refresh 通道（stopped 只封 filling 通道，见响应处理）
         if (t.status === 'filled') return true;
         return t.status === 'filling' && !stopped.current.has(t.task_id);
@@ -77,16 +84,41 @@ export function useTemplateFillTaskPoll(
           continue;
         }
         try {
-          // request 为 umi-request extend 实例，data 为 {code, data, message} 信封
-          const { data } = await request.get(
-            api.templateFillTaskProgress(taskId),
-          );
+          // request 为 umi-request extend 实例，data 为 {code, data, message} 信封；
+          // skipBusinessError：102（任务不存在）由本 hook 优雅降级，不走全局
+          // notification（否则 2s/10s 轮询下无限弹「提示 : 102 任务不存在」）
+          const res = await request.get(api.templateFillTaskProgress(taskId), {
+            skipBusinessError: true,
+          } as any);
           if (cancelled) return;
-          const d = data?.data || data;
+          // 信封归一：umi-request 实际解析 body 为 {code,data,message}，测试桩
+          // 多包一层 {data:…}——以 code 键所在层为准
+          const env = (
+            (res as { code?: number }).code !== undefined
+              ? res
+              : (res as { data?: { code?: number; data?: unknown } }).data
+          ) as { code?: number; data?: unknown };
           // 响应到达时行的最新状态（await 期间 SSE 可能已把行转 filled）
           const cur = (templatesRef.current || []).find(
             (x) => x.task_id === taskId,
           );
+          // 任务行已不存在（范本删除级联清理，流程历史事件仍引用该 task_id）：
+          // 永久停轮询；filling 行降级为 failed 提示，filled 行保持卡片现状只停刷新
+          if (env?.code === 102) {
+            missing.current.add(taskId);
+            if (cur?.status !== 'filled') {
+              setOverrides((prev) => ({
+                ...prev,
+                [taskId]: {
+                  status: 'failed' as const,
+                  error: '范本已删除，填写任务不存在',
+                },
+              }));
+            }
+            continue;
+          }
+          const data = env?.data as { data?: unknown } | undefined;
+          const d = data?.data || data;
           if (!d?.status) continue;
           // 终态行 refresh 通道：只写清单两键+values（modify 后 DB 权威派生）；
           // 非终态响应忽略（终态行不降级），failed/cancelled 行已被 targets 排除。
