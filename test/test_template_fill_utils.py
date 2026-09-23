@@ -3678,3 +3678,30 @@ def test_parse_slot_response_blue_slot_text_corrupt_dropped():
     raw = '[{"line":7,"slot":3,"key":"city","name":"城市"}]'
     items, covered = parse_slot_response(raw, [cand])
     assert items == [] and covered == set()
+
+
+def test_slot_fallback_items_blue_default_value():
+    """LLM 漏标 blue 位 → 兜底成点：name=已填填写点、低置信、default_value=位文本
+    + default_source=detected（值与来源都是确定性的，不因 LLM 漏标丢失）。"""
+    from rag.svr.template_fill.detector import slot_fallback_items
+    cand = _slot_cand()
+    cand["slots"].append({"start": 30, "end": 36, "text": "福建省厦门市",
+                          "kind": "blue", "hint": ""})
+    items = slot_fallback_items([cand], covered=set())
+    blue = [it for it in items if it["anchor"] == "福建省厦门市"]
+    assert len(blue) == 1
+    it = blue[0]
+    assert it["name"] == "已填填写点"
+    assert it["low_confidence"] is True
+    assert it["default_value"] == "福建省厦门市"
+    assert it["default_source"] == "detected"
+    assert it["fill_mode"] == "llm"
+
+
+def test_slot_fallback_hint_blank_default_unchanged():
+    """回归闸：hint/blank 兜底位 default_value 仍为 ""。"""
+    from rag.svr.template_fill.detector import slot_fallback_items
+    cand = _slot_cand()
+    items = slot_fallback_items([cand], covered=set())
+    assert len(items) == 2
+    assert all(it["default_value"] == "" for it in items)

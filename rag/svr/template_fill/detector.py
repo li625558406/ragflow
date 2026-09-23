@@ -321,8 +321,9 @@ def slot_fallback_items(candidates: list, covered: set, seq_start: int = 0) -> l
     hint 位 name=括号提示（不低置信——名字高可信，仅 key 机器生成）；
     blank 位 name=未命名填写位（低置信，B端确认时人工改名）。
     key=blank_{序号} 全局递增，确定性唯一；分块调用时必须传续接的 seq_start
-    保证 blank_N 全局唯一（Task 4 分流层负责汇总）；不派生默认值由条目显式
-    default_value="" 硬闸保证（merge 位是「留白+提示」混合形态时 derive 判空
+    保证 blank_N 全局唯一（Task 4 分流层负责汇总）；留白/hint 位不派生默认值由
+    条目显式 default_value="" 硬闸保证（blue 位例外：位文本即旧值，见下）；
+    （merge 位是「留白+提示」混合形态时 derive 判空
     不可依赖，见 derive_default_from_anchor 的混合形态骨架分支作第二道防线）。
     位区间互不重叠 → 兜底条目自身不溢出 occ 预分配上限；同段非位同形文本的
     occ 错位由分流层的确定性校验兜底（见 detect_fill_points）。"""
@@ -334,7 +335,14 @@ def slot_fallback_items(candidates: list, covered: set, seq_start: int = 0) -> l
                 continue
             seq += 1
             hint = (s.get("hint") or "").strip()
-            if s.get("kind") == "hint" and hint:
+            default_value = ""
+            default_source = None
+            if s.get("kind") == "blue":
+                # blue 位兜底：值与来源都确定不丢，仅语义命名低置信（LLM 漏标）。
+                # 必须显式带 detected：缺省会被 _merge_defaults 分支1兜底成
+                # "manual"（沉淀保护误伤 + B端徽标错标），与 parse_slot_response 同因
+                name, low, default_value, default_source = "已填填写点", True, s["text"], "detected"
+            elif s.get("kind") == "hint" and hint:
                 name, low = hint[:100], False
             else:
                 name, low = "未命名填写位", True
@@ -350,8 +358,10 @@ def slot_fallback_items(candidates: list, covered: set, seq_start: int = 0) -> l
                 "line": c["index"],
                 "top_k": 6,
                 "low_confidence": low,
-                # V2 硬闸（同 parse_slot_response）：兜底条目也不派生默认值（设计 §4.5）
-                "default_value": "",
+                # V2 硬闸（同 parse_slot_response）：留白/hint 位不派生默认值；
+                # blue 位例外——位文本即旧值，直接沉淀（含 detected 来源）
+                "default_value": default_value,
+                **({"default_source": default_source} if default_source else {}),
                 "_anchor_pos": s["start"],
             })
     return out
