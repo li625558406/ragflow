@@ -3705,3 +3705,24 @@ def test_slot_fallback_hint_blank_default_unchanged():
     items = slot_fallback_items([cand], covered=set())
     assert len(items) == 2
     assert all(it["default_value"] == "" for it in items)
+    # 防脏态：空值项若带 detected 来源，_merge_defaults 会存出「空值+来源」徽标脏态
+    assert all("default_source" not in it for it in items)
+
+
+def test_blue_fallback_merge_defaults_keeps_detected_source():
+    """管线级事故闸（I-1）：兜底 blue 位条目经 TplTemplateVersionService
+    ._merge_defaults(items, prev_placeholders) 后来源仍为 detected（不被兜底成
+    manual——merge 分支1对已带 default_source 的显式条目原样保留），且来源非
+    manual，后续沉淀保护闸不会拦它的覆盖。"""
+    from rag.svr.template_fill.detector import slot_fallback_items
+    from api.db.services.template_fill_service import TplTemplateVersionService
+
+    cand = _slot_cand()
+    cand["slots"].append({"start": 30, "end": 36, "text": "福建省厦门市",
+                          "kind": "blue", "hint": ""})
+    items = slot_fallback_items([cand], covered={(cand["index"], 1), (cand["index"], 2)})
+    assert len(items) == 1
+    merged = TplTemplateVersionService._merge_defaults(items, [])
+    it = merged[0]
+    assert it["default_value"] == "福建省厦门市"
+    assert it.get("default_source") == "detected"

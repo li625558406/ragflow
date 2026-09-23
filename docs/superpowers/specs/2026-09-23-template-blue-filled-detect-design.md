@@ -42,7 +42,7 @@ docx XML 中 run 的颜色信息（`w:color`）从未被利用。
 
 ### 4.1 识别层：蓝色切位（`blank_slots.py`）
 
-**蓝色判定 `_is_blue_color`**：
+**蓝色判定 `_is_blue_run`**：
 - 输入 run 的 `font.color.rgb`（hex RGB），判据 = **B 通道严格占优**：
   `B - max(R, G) >= 40`。
 - 覆盖常见蓝：0000FF（255-0）、0070C0（192-112=80）、4472C4（196-114=82）、
