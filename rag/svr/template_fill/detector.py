@@ -308,6 +308,9 @@ def parse_slot_response(raw: str, candidates: list) -> tuple:
             # 用既有序列化字段而非新标记键：B端默认值列/显式清空态本就理解 ""，
             # 不向 API/DB JSON 泄漏内部标记；下游 default_map 按 truthy 过滤，"" 天然不触发。
             "default_value": slot["text"] if slot.get("kind") == "blue" else "",
+            # blue 位显式带 detected 来源：缺省会走 _merge_defaults 分支1兜底成
+            # "manual"——那会触发沉淀保护（写回按钮写不进该 key）且 B端徽标错标人工
+            **({"default_source": "detected"} if slot.get("kind") == "blue" else {}),
             "_anchor_pos": slot["start"],  # 切位精确偏移，供 occ 预分配排序
         })
     return out, covered

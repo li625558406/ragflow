@@ -3662,6 +3662,8 @@ def test_parse_slot_response_blue_default_value():
     assert covered == {(7, 1), (7, 3)}
     assert items[0]["default_value"] == ""  # hint 位硬闸不回归
     assert items[1]["default_value"] == "福建省厦门市"
+    assert items[1]["default_source"] == "detected"
+    assert "default_source" not in items[0]  # hint 位不带来源键，_merge_defaults 照旧兜底
     assert items[1]["anchor"] == "福建省厦门市"
     assert items[1]["_anchor_pos"] == 30
 
