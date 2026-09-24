@@ -49,10 +49,10 @@ LLM 基于匹配内容做上下文编写。
 
 | 文件 | 改动 |
 |------|------|
-| `rag/svr/template_fill/executor.py` | 新增 `extract_entities`；`_retrieve_all`/`retrieve_all_shared` 二档降级；`_build_msg`/`GENERATE_SYSTEM` fulltext 适配；`CANVAS_RESERVED_KEYS` 追加 `_entities` |
+| `rag/svr/template_fill/executor.py` | 新增 `extract_entities`；`_retrieve_all` 二档降级；`_build_msg`/`GENERATE_SYSTEM` fulltext 适配；`CANVAS_RESERVED_KEYS` 追加 `_entities`。（`retrieve_all_shared` 全仓无调用方，不改） |
 | `agent/component/template_fill.py` | 画布节点调 `extract_entities`（与预判并行）；`_confirm_changed_fields` 弹卡条件扩展 + candidates 带 `direct_value` + 兜底分支带预填；`_canvas_task_params` 写 `_entities` |
 | `api/apps/restful_apis/template_api.py` | 零改动（`create_fill_task` 剥离逻辑基于 `CANVAS_RESERVED_KEYS` 自动跟随） |
-| `web/src/pages/c-chat/template-fill-confirm-card.tsx` | 全量模式渲染 `direct_value`（增量模式已有该机制，仅确认类型定义与文案） |
+| 前端 | 零改动：`ITemplateFillCandidate.direct_value` 类型与确认卡预填/提交/清空回退已存在（增量模式在用），全量模式后端下发该字段即自动生效；既有 vitest 已覆盖 |
 
 ## 3. 实体分析 LLM
 
@@ -107,7 +107,8 @@ LLM 基于匹配内容做上下文编写。
 
 ## 4. 二档全文降级（executor 检索阶段）
 
-`_retrieve_all` 与 `retrieve_all_shared` 两处同构改造：
+`_retrieve_all` 改造（`retrieve_all_shared` 全仓无调用方，YAGNI 不改；将来启用时
+按同构补齐）：
 
 1. 第一档 gather 完成后，收集**证据为空**的 llm 槽。
 2. 触发条件：任务 params 带 `_entities`（仅画布链路启用；B端/REST/dry_run 无实体
@@ -122,8 +123,6 @@ LLM 基于匹配内容做上下文编写。
    全部为二档片段）；evidence 同步。
 6. 第二轮 gather 共享同一 `sem` 并发闸与 `ctx`（检索上下文复用）；取消探针/
    单槽失败降级语义与第一档完全一致（失败→该槽保持空证据）。
-7. `retrieve_all_shared` 去重键 `(top_k, query)` 扩展为 `(tier, top_k, query)`
-   防一二档同词碰撞。
 
 ### 4.1 LLM 产值 prompt 适配
 
@@ -150,9 +149,9 @@ LLM 基于匹配内容做上下文编写。
 - `extract_entities` 对抗用例：原话无实体 / LLM 返回编造 key / 值非字符串 /
   超长原话 / JSON 畸形 / 直填与语境混合输入（用户给的示例原话作 fixture）。
 - 二档触发：空槽才触发 / 有证据不触发 / 无 `_entities` 不触发 / 二档取消穿透 /
-  fulltext 打标进 evidence / shared 版去重键含 tier 不碰撞 / 阈值与 top_k 放宽正确。
+  fulltext 打标进 evidence / 阈值与 top_k 放宽正确。
 - 确认卡：direct_value 下发 / 无默认值范本因 direct 弹卡 / 兜底分支带预填 /
-  valid 过滤编造 key / 前端全量模式渲染预填（vitest）。
+  valid 过滤编造 key / 前端直填契约由既有 vitest 钉死（零新增）。
 - prompt 构建：fulltext 标签渲染、普通片段不受影响。
 
 ## 7. 明确不做（YAGNI）
