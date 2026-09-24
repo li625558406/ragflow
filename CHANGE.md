@@ -1,6 +1,6 @@
 # CHANGE.md — 项目迭代记录
 
-## 2026-09-24 范本填写检索增强——二档全文降级 + 用户输入实体分析（方案 A）
+## 2026-09-24 范本填写检索增强——二档全文降级 + 用户输入实体分析（方案 A）（已部署 2026-09-24 + push 60f969b1）
 
 **主题**：用户输入含具体实体信息（如直接给出单位名称/日期）时，一档检索（KB 相似度）常因空槽占位词命中差导致产值靠默认值/编造。本次给检索加二档全文降级，并在画布确认阶段用一次 LLM 做实体分析（直填值抽取 + 实体/`__context__` 语境提取），实体组合词进宽检索提升命中。
 
@@ -12,7 +12,7 @@
 
 **验证**：后端 **957 passed**（18 套件）+ 前端确认卡 **5 passed**；审查收口批次（gather 取消收口 / 实体键清洗对称 / 接线端到端断言）。设计稿 `docs/superpowers/specs/2026-09-24-template-fill-retrieval-fallback-design.md`、计划 `docs/superpowers/plans/2026-09-24-template-fill-retrieval-fallback.md`。
 
-**遗留（未部署）**：部署 = 后端 2 文件成套 SCP（`rag/svr/template_fill/executor.py` + `agent/component/template_fill.py`）+ 容器重启；前端无需 build。
+**遗留**：终审 4 Minor 不阻塞——①二档命中后 evidence 的 query 标签未同步更新；②混合模式（全量+增量范本同轮）下增量范本被动获得二档能力；③direct 嵌套值 str 归一为 repr 形态；④`_extract_all` 多范本串行。**部署实测（2026-09-24）**：后端 2 文件 SCP 双端 md5 一致 + 容器重启 + import 冒烟通过（`FULLTEXT_SIMILARITY_THRESHOLD=0.1`、`_entities` 保留键确认）；nginx 首页 200。前端零改动无需 build。**已 push（f635ffbd..60f969b1，10 提交）**。
 
 ## 2026-09-23（三）流程页「提示 : 102 任务不存在」无限弹错修复
 
