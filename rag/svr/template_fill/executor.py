@@ -44,6 +44,10 @@ VECTOR_SIMILARITY_WEIGHT = 0.5
 # 单槽 ES 查询秒级耗时下把小时级串行压到分钟级，同时不把 ES/embd 打爆
 RETRIEVAL_CONCURRENCY = 6
 
+FULLTEXT_SIMILARITY_THRESHOLD = 0.1   # 二档全文宽检索阈值（低于一档 SIMILARITY_THRESHOLD）
+_TIER2_ENTITY_MAX = 3                 # 二档组合词最多取实体值个数
+_ENTITY_PRIO_WORDS = ("项目", "名称", "标题")
+
 
 def _run_async(coro):
     """后台线程内执行 async pipeline（线程无事件循环，必须 asyncio.run）。"""
@@ -107,14 +111,15 @@ def load_retrieval_ctx(tenant_id: str, kb_ids: list[str]):
 
 
 async def retrieve_slot(tenant_id: str, kb_ids: list[str], query: str, top_k: int = TOP_K_DEFAULT,
-                        ctx=None) -> list[dict]:
+                        ctx=None, similarity_threshold: float = SIMILARITY_THRESHOLD) -> list[dict]:
     """单槽位检索。query 已由上游清洗；异常向上抛由编排层兜底为该槽位空结果。
-    ctx 为 load_retrieval_ctx 产物（多槽并发时复用，省每槽重复加载）。"""
+    ctx 为 load_retrieval_ctx 产物（多槽并发时复用，省每槽重复加载）。
+    similarity_threshold 供二档宽检索传更低阈值（默认一档现状值）。"""
     kbs, embd_mdl = ctx if ctx else load_retrieval_ctx(tenant_id, kb_ids)
     page_size = max(TOP_K_MIN, min(int(top_k or TOP_K_DEFAULT), TOP_K_MAX))
     kbinfos = await settings.retriever.retrieval(
         query, embd_mdl, [kb.tenant_id for kb in kbs], [kb.id for kb in kbs],
-        1, page_size, SIMILARITY_THRESHOLD, VECTOR_SIMILARITY_WEIGHT,
+        1, page_size, similarity_threshold, VECTOR_SIMILARITY_WEIGHT,
         aggs=True, rank_feature=label_question(query, kbs))
     return [_clip_chunk(ck) for ck in kbinfos.get("chunks", [])]
 
@@ -774,10 +779,33 @@ def _render_result(task, ver, placeholders: list[dict], values: dict, tpl_file_t
     return out, result_obj, ""
 
 
+def _fulltext_query(entities: dict, name: str) -> str:
+    """二档组合词：项目/名称/标题类实体值优先（最多 _TIER2_ENTITY_MAX 个），
+    其余实体值随后，再拼 __context__ 检索语境与填写点名称；空段剔除后整体截断。"""
+    prio, rest, ctx_val = [], [], ""
+    for k, v in (entities or {}).items():
+        v = str(v or "").strip()
+        if not v:
+            continue
+        k = str(k)
+        if k == "__context__":
+            ctx_val = v
+        elif any(w in k for w in _ENTITY_PRIO_WORDS):
+            prio.append(v)
+        else:
+            rest.append(v)
+    parts = (prio + rest)[:_TIER2_ENTITY_MAX]
+    if ctx_val:
+        parts.append(ctx_val)
+    parts.append(str(name or "").strip())
+    return _clean_for_prompt(" ".join(p for p in parts if p), QUERY_MAX)
+
+
 async def _retrieve_all(tenant_id: str, placeholders: list[dict], kb_ids: list[str],
                         params: dict, task_id: str = "",
                         skip_keys: set | None = None,
-                        should_cancel=None, sem: asyncio.Semaphore | None = None) -> tuple[dict, dict]:
+                        should_cancel=None, sem: asyncio.Semaphore | None = None,
+                        entities: dict | None = None) -> tuple[dict, dict]:
     """逐槽检索公共段（execute_task 与 dry_run 共用，纯抽取）：单槽失败降级为
     空证据（该字段留空待人工二次加工），不中断整单；kb_ids 为空时全槽直接空证据
     （不进 retrieve_slot，省 N 次无意义异常+warning）。
@@ -789,7 +817,11 @@ async def _retrieve_all(tenant_id: str, placeholders: list[dict], kb_ids: list[s
     results 误记成槽失败，取消请求被静默吞掉）；传 None 时行为与不取消完全一致。
     sem 为可选注入的共享信号量（跨层共享并发闸）；不传则内部按
     RETRIEVAL_CONCURRENCY 自建，行为不变。
-    返回 (chunks_by_key, evidence) 双结构。task_id 仅用于日志上下文（dry_run 无任务 id）。"""
+    返回 (chunks_by_key, evidence) 双结构。task_id 仅用于日志上下文（dry_run 无任务 id）。
+    entities 为可选核心实体字典（仅画布链路传非空）：启用二档全文降级——一档证据为空
+    的 llm 槽用「核心实体+填写点名称」组合词做一轮更宽的全文检索（FULLTEXT_SIMILARITY_
+    THRESHOLD 宽阈值 + top_k 翻倍封顶）补证据，命中片段打 source="fulltext"；entities
+    为 None/空（B端/REST/dry_run）时二档不启用，行为纯现状。"""
     chunks_by_key: dict = {}
     evidence: dict = {}
     todo: list[tuple[str, str, dict]] = []   # (key, query, placeholder)
@@ -839,6 +871,41 @@ async def _retrieve_all(tenant_id: str, placeholders: list[dict], kb_ids: list[s
         _key, chunks = res
         chunks_by_key[key]["chunks"] = chunks
         evidence[key]["chunks"] = chunks
+
+    # 二档全文降级：仅画布链路（entities 非空）启用。一档证据为空的 llm 槽用
+    # 「核心实体+填写点名称」组合词宽检索补一轮，命中片段打 source=fulltext 并入
+    # 证据（该槽一档为空，槽内全部为二档片段）；失败/取消语义与一档一致。
+    if entities:
+        empty = [(key, it) for key, _q, it in todo if not chunks_by_key[key]["chunks"]]
+        if empty:
+            async def _one2(key: str, it: dict):
+                q2 = _fulltext_query(entities, it.get("name") or key)
+                if not q2:
+                    return key, []
+                async with sem:
+                    if _should_cancel(should_cancel):
+                        raise GenerateCancelled()
+                    chunks = await retrieve_slot(
+                        tenant_id, kb_ids, q2,
+                        min(int(it.get("top_k") or TOP_K_DEFAULT) * 2, TOP_K_MAX),
+                        ctx=ctx, similarity_threshold=FULLTEXT_SIMILARITY_THRESHOLD)
+                return key, [dict(c, source="fulltext") for c in chunks]
+
+            results2 = await asyncio.gather(
+                *[_one2(key, it) for key, it in empty], return_exceptions=True)
+            for res in results2:
+                if isinstance(res, GenerateCancelled):
+                    logger.info("_retrieve_all tier2 cancelled: task=%s", task_id)
+                    raise res
+            for (key, _it), res in zip(empty, results2):
+                if isinstance(res, BaseException):
+                    logger.warning("tier2 retrieve_slot failed, task=%s key=%s: %s",
+                                   task_id, key, res)
+                    continue
+                _key, chunks2 = res
+                if chunks2:
+                    chunks_by_key[key]["chunks"] = chunks2
+                    evidence[key]["chunks"] = chunks2
     return chunks_by_key, evidence
 
 

@@ -2299,3 +2299,120 @@ def test_extract_entities_cancel_propagates(monkeypatch):
         raise AssertionError("GenerateCancelled 未穿透")
     except executor.GenerateCancelled:
         pass
+
+
+# ---------- 二档全文降级 ----------
+
+def test_fulltext_query_composition():
+    """二档组合词：项目/名称/标题类实体优先，__context__ 次之，填写点名称兜底。"""
+    from rag.svr.template_fill import executor
+    q = executor._fulltext_query(
+        {"项目名称": "A项目", "采购人": "B单位", "__context__": "市政房建"}, "工程概况")
+    assert q.startswith("A项目")
+    assert "B单位" in q and "市政房建" in q and "工程概况" in q
+    q2 = executor._fulltext_query({}, "字段名")
+    assert q2 == "字段名"          # 无实体退化为填写点名称
+    assert executor._fulltext_query({"__context__": ""}, "") == ""   # 全空 → 空词
+
+
+def test_retrieve_all_tier2_fills_empty_slots(monkeypatch):
+    """一档空槽触发二档：组合词含实体+填写点名称、宽阈值、top_k 翻倍封顶；
+    命中片段打 source=fulltext；一档有证据的槽不触发。"""
+    from rag.svr.template_fill import executor
+    calls = []
+
+    async def fake_slot(tenant_id, kb_ids, query, top_k=6, ctx=None, similarity_threshold=0.2):
+        calls.append({"query": query, "top_k": top_k, "thr": similarity_threshold})
+        if query == "字段0":
+            return []
+        return [{"content": "一档证据", "doc_id": "d", "doc_name": "n", "similarity": 0.9}]
+
+    monkeypatch.setattr(executor, "load_retrieval_ctx", lambda t, k: ("kbs", "embd"))
+    monkeypatch.setattr(executor, "retrieve_slot", fake_slot)
+    placeholders = [{"key": "k0", "name": "字段0", "fill_mode": "llm"},
+                    {"key": "k1", "name": "字段1", "fill_mode": "llm"}]
+    entities = {"项目名称": "莆美项目", "__context__": "市政房建"}
+    chunks_by_key, evidence = executor._run_async(executor._retrieve_all(
+        "t", placeholders, ["kb1"], {}, entities=entities))
+    t2 = [c for c in calls if "莆美项目" in c["query"]]
+    assert len(t2) == 1, "二档只对空槽 k0 发起一次"
+    assert "字段0" in t2[0]["query"]
+    assert t2[0]["thr"] == executor.FULLTEXT_SIMILARITY_THRESHOLD
+    assert t2[0]["top_k"] == 12                 # 默认 6 翻倍
+    assert chunks_by_key["k0"]["chunks"][0]["source"] == "fulltext"
+    assert evidence["k0"]["chunks"][0]["source"] == "fulltext"
+    assert chunks_by_key["k1"]["chunks"][0]["content"] == "一档证据"
+
+
+def test_retrieve_all_tier2_skipped_without_entities(monkeypatch):
+    """无 entities（B端/REST/dry_run）→ 只有第一档，行为纯现状。"""
+    from rag.svr.template_fill import executor
+    calls = []
+
+    async def fake_slot(tenant_id, kb_ids, query, top_k=6, ctx=None, similarity_threshold=0.2):
+        calls.append(query)
+        return []
+
+    monkeypatch.setattr(executor, "load_retrieval_ctx", lambda t, k: ("kbs", "embd"))
+    monkeypatch.setattr(executor, "retrieve_slot", fake_slot)
+    placeholders = [{"key": "k0", "name": "字段0", "fill_mode": "llm"}]
+    executor._run_async(executor._retrieve_all("t", placeholders, ["kb1"], {}))
+    assert len(calls) == 1
+
+
+def test_retrieve_all_tier2_failure_degrades_empty(monkeypatch):
+    """二档单槽失败降级空证据，不中断整单。"""
+    from rag.svr.template_fill import executor
+
+    async def fake_slot(tenant_id, kb_ids, query, top_k=6, ctx=None, similarity_threshold=0.2):
+        if query == "字段0":
+            return []
+        raise RuntimeError("es down")          # 二档查询炸
+
+    monkeypatch.setattr(executor, "load_retrieval_ctx", lambda t, k: ("kbs", "embd"))
+    monkeypatch.setattr(executor, "retrieve_slot", fake_slot)
+    placeholders = [{"key": "k0", "name": "字段0", "fill_mode": "llm"}]
+    chunks_by_key, _ = executor._run_async(executor._retrieve_all(
+        "t", placeholders, ["kb1"], {}, entities={"项目名称": "A"}))
+    assert chunks_by_key["k0"]["chunks"] == []
+
+
+def test_retrieve_all_tier2_cancel_propagates(monkeypatch):
+    """二档取消信号穿透（不被降级吞掉）。"""
+    from rag.svr.template_fill import executor
+
+    async def fake_slot(tenant_id, kb_ids, query, top_k=6, ctx=None, similarity_threshold=0.2):
+        if query == "字段0":
+            return []
+        raise executor.GenerateCancelled()      # 二档取消
+
+    monkeypatch.setattr(executor, "load_retrieval_ctx", lambda t, k: ("kbs", "embd"))
+    monkeypatch.setattr(executor, "retrieve_slot", fake_slot)
+    placeholders = [{"key": "k0", "name": "字段0", "fill_mode": "llm"}]
+    try:
+        executor._run_async(executor._retrieve_all(
+            "t", placeholders, ["kb1"], {}, entities={"项目名称": "A"},
+            should_cancel=lambda: False))
+        raise AssertionError("GenerateCancelled 未穿透")
+    except executor.GenerateCancelled:
+        pass
+
+
+def test_retrieve_slot_similarity_threshold_passthrough(monkeypatch):
+    """retrieve_slot 新增 similarity_threshold 参数并透传给检索器。"""
+    from rag.svr.template_fill import executor
+    captured = {}
+
+    class FakeRetriever:
+        async def retrieval(self, question, embd_mdl, tenant_ids, kb_ids, page, page_size,
+                            similarity_threshold, *a, **kw):
+            captured["thr"] = similarity_threshold
+            return {"chunks": []}
+
+    monkeypatch.setattr(executor.settings, "retriever", FakeRetriever())
+    monkeypatch.setattr(executor, "_load_and_check_kbs", lambda tenant, kbs: [
+        types.SimpleNamespace(id="kb1", tenant_id=tenant, embd_id="bge")])
+    monkeypatch.setattr(executor, "_build_embd_mdl", lambda tenant, kbs: object())
+    monkeypatch.setattr(executor, "label_question", lambda q, kbs: None)
+    executor._run_async(executor.retrieve_slot("t", ["kb1"], "q", similarity_threshold=0.1))
+    assert captured["thr"] == 0.1
