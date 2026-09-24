@@ -660,6 +660,66 @@ async def extract_patch_values(tenant_id: str, placeholders: list[dict],
         return {"intent": "noop", "direct": {}, "changed": []}
 
 
+ENTITIES_SYSTEM = (
+    "你是文档填写助手。分析用户需求原话，只输出一个 JSON 对象（不要输出任何其他文字）：\n"
+    '{"direct": {"字段key": "字段值"}, "entities": {"实体名": "实体值"}}\n'
+    "规则：\n"
+    "1. direct：只收原话中明确给出了具体值、且能按名称/描述语义对应到给定字段清单的字段；"
+    "原话没给值、或对应关系拿不准的字段一律不输出。\n"
+    "2. entities：提取原话中的关键实体（如项目名称、采购人、招标代理、预算金额等），"
+    "键为实体名、值为实体值；描述性/背景性内容（如「根据XX文件」）归入键 \"__context__\"。\n")
+
+
+async def extract_entities(tenant_id: str, query: str, placeholders: list[dict],
+                           should_cancel=None) -> dict:
+    """用户原话实体分析（画布确认阶段调用，与 predict_changed_fields 并行）：
+    一次 LLM 调用同时完成直填值抽取（direct，key 限给定填写点清单，高可信闸——
+    拿不准的对应关系不输出）与关键实体/检索语境提取（entities，__context__ 固定键）。
+    直填值过 _apply_constraints 约束闸；LLM 失败/不可解析/空输入 → 空结果兜底，
+    不阻塞主流程（调用方按「无实体」走现状）。GenerateCancelled 穿透。"""
+    items = [it for it in placeholders if isinstance(it, dict) and it.get("key")]
+    if not query or not query.strip() or not items:
+        return {"direct": {}, "entities": {}}
+    valid = {it["key"]: it for it in items}
+    spec = [{"key": _clean_for_prompt(it["key"], NAME_MAX),
+             "name": _clean_for_prompt(it.get("name") or it["key"], NAME_MAX),
+             "description": _clean_for_prompt(it.get("description") or "", DESC_MAX)}
+            for it in items]
+    user_msg = ("## 字段清单\n" + json.dumps(spec, ensure_ascii=False) +
+                "\n\n## 用户需求原话\n" + _clean_for_prompt(query, QUERY_MAX))
+    if _should_cancel(should_cancel):
+        raise GenerateCancelled()
+    try:
+        mdl = _build_chat_mdl(tenant_id)
+        ans = await mdl.async_chat(ENTITIES_SYSTEM, [{"role": "user", "content": user_msg}])
+        raw = _extract_json(ans)
+    except GenerateCancelled:
+        raise
+    except Exception:  # noqa: BLE001 — 实体分析失败不阻塞填写主流程
+        logger.warning("extract_entities failed, tenant=%s", tenant_id, exc_info=True)
+        return {"direct": {}, "entities": {}}
+    direct: dict = {}
+    raw_direct = raw.get("direct")
+    if isinstance(raw_direct, dict):
+        for k, v in raw_direct.items():
+            it = valid.get(k)
+            if it is None or v is None:
+                continue            # 编造 key / 显式 null 一律丢弃
+            val = _apply_constraints(str(v), it.get("constraints") or {})
+            if val:
+                direct[k] = val
+    entities: dict = {}
+    raw_ent = raw.get("entities")
+    if isinstance(raw_ent, dict):
+        for k, v in raw_ent.items():
+            if v is None:
+                continue
+            val = _clean_for_prompt(str(v), PARAM_VAL_MAX)
+            if val:
+                entities[str(k)[:NAME_MAX]] = val
+    return {"direct": direct, "entities": entities}
+
+
 # ---------- 编排层：产值合成 + 任务 pipeline（状态机乐观转移） ----------
 
 _FILL_MODES = ("llm", "param", "manual")

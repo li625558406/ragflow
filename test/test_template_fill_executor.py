@@ -2207,3 +2207,95 @@ def test_baseline_no_keys_overlap_with_missing():
             missing.discard(k)
     executor._merge_default_values(placeholders, generated, missing)
     assert generated == {"k1": "D1"}  # k2 无 default_value → 留空
+
+
+# ---------- 实体分析 extract_entities ----------
+
+def test_extract_entities_happy(monkeypatch):
+    """直填值+实体一次抽出；direct key 限给定填写点；原话与字段清单进 prompt。"""
+    from rag.svr.template_fill import executor
+    captured = {}
+
+    async def fake_chat(sys, msgs):
+        captured["sys"], captured["msg"] = sys, msgs[0]["content"]
+        return '{"direct": {"buyer": "某单位"}, "entities": {"项目名称": "A项目", "__context__": "市政房建文件"}}'
+
+    monkeypatch.setattr(executor, "_build_chat_mdl",
+                        lambda tenant: types.SimpleNamespace(async_chat=fake_chat))
+    phs = [{"key": "buyer", "name": "采购人", "fill_mode": "llm"}]
+    out = executor._run_async(executor.extract_entities("t", "采购人：某单位，生成A项目文件", phs))
+    assert out["direct"] == {"buyer": "某单位"}
+    assert out["entities"] == {"项目名称": "A项目", "__context__": "市政房建文件"}
+    assert "采购人" in captured["msg"] and "采购人：某单位" in captured["msg"]
+
+
+def test_extract_entities_ghost_key_and_null_dropped(monkeypatch):
+    """编造 key（不在填写点清单）与显式 null 值一律丢弃；非 str 实体值 str 归一。"""
+    from rag.svr.template_fill import executor
+
+    async def fake_chat(sys, msgs):
+        return ('{"direct": {"ghost": "x", "buyer": "某单位"},'
+                ' "entities": {"金额": 123, "空": null}}')
+
+    monkeypatch.setattr(executor, "_build_chat_mdl",
+                        lambda tenant: types.SimpleNamespace(async_chat=fake_chat))
+    phs = [{"key": "buyer", "name": "采购人", "fill_mode": "llm"}]
+    out = executor._run_async(executor.extract_entities("t", "原话", phs))
+    assert out["direct"] == {"buyer": "某单位"}
+    assert out["entities"] == {"金额": "123"}
+
+
+def test_extract_entities_bad_json_returns_empty(monkeypatch):
+    """LLM 输出不可解析 → 空结果兜底（不阻塞主流程）。"""
+    from rag.svr.template_fill import executor
+
+    async def fake_chat(sys, msgs):
+        return "完全不是 JSON"
+
+    monkeypatch.setattr(executor, "_build_chat_mdl",
+                        lambda tenant: types.SimpleNamespace(async_chat=fake_chat))
+    phs = [{"key": "buyer", "name": "采购人", "fill_mode": "llm"}]
+    out = executor._run_async(executor.extract_entities("t", "原话", phs))
+    assert out == {"direct": {}, "entities": {}}
+
+
+def test_extract_entities_llm_failure_returns_empty(monkeypatch):
+    """LLM 调用异常 → 空结果兜底。"""
+    from rag.svr.template_fill import executor
+
+    async def fake_chat(sys, msgs):
+        raise RuntimeError("llm down")
+
+    monkeypatch.setattr(executor, "_build_chat_mdl",
+                        lambda tenant: types.SimpleNamespace(async_chat=fake_chat))
+    phs = [{"key": "buyer", "name": "采购人", "fill_mode": "llm"}]
+    out = executor._run_async(executor.extract_entities("t", "原话", phs))
+    assert out == {"direct": {}, "entities": {}}
+
+
+def test_extract_entities_empty_query_or_slots_no_llm(monkeypatch):
+    """空原话/空填写点清单 → 直接空结果，不发起 LLM 调用。"""
+    from rag.svr.template_fill import executor
+    called = {"n": 0}
+
+    async def fake_chat(sys, msgs):
+        called["n"] += 1
+        return "{}"
+
+    monkeypatch.setattr(executor, "_build_chat_mdl",
+                        lambda tenant: types.SimpleNamespace(async_chat=fake_chat))
+    phs = [{"key": "buyer", "name": "采购人", "fill_mode": "llm"}]
+    assert executor._run_async(executor.extract_entities("t", "   ", phs)) == {"direct": {}, "entities": {}}
+    assert executor._run_async(executor.extract_entities("t", "原话", [])) == {"direct": {}, "entities": {}}
+    assert called["n"] == 0
+
+
+def test_extract_entities_cancel_propagates(monkeypatch):
+    """取消信号穿透（不被空结果兜底吞掉）；取消在 LLM 调用前触发，无需 LLM 桩。"""
+    from rag.svr.template_fill import executor
+    try:
+        executor._run_async(executor.extract_entities(
+            "t", "原话", [{"key": "a", "name": "甲", "fill_mode": "llm"}], should_cancel=lambda: True))
+        raise AssertionError("GenerateCancelled 未穿透")
+    except executor.GenerateCancelled:
+        pass
