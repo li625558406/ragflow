@@ -2344,6 +2344,39 @@ def test_retrieve_all_tier2_fills_empty_slots(monkeypatch):
     assert chunks_by_key["k1"]["chunks"][0]["content"] == "一档证据"
 
 
+def test_retrieve_all_tier2_multi_empty_slots_no_cross_contamination(monkeypatch):
+    """两个槽一档都空：二档各发一次（不共用一次查询），且片段按槽归属落位
+    （A 槽二档片段不得混进 B 槽）。"""
+    from rag.svr.template_fill import executor
+    calls = []
+
+    async def fake_slot(tenant_id, kb_ids, query, top_k=6, ctx=None, similarity_threshold=0.2):
+        calls.append({"query": query, "top_k": top_k, "thr": similarity_threshold})
+        if similarity_threshold == executor.FULLTEXT_SIMILARITY_THRESHOLD:
+            # 二档：按填写点名称分发各自片段，验证片段不串槽
+            name = "字段A" if "字段A" in query else "字段B"
+            return [{"content": f"二档片段-{name}", "doc_id": "d", "doc_name": "n",
+                     "similarity": 0.5}]
+        return []  # 一档两槽全空
+
+    monkeypatch.setattr(executor, "load_retrieval_ctx", lambda t, k: ("kbs", "embd"))
+    monkeypatch.setattr(executor, "retrieve_slot", fake_slot)
+    placeholders = [{"key": "ka", "name": "字段A", "fill_mode": "llm"},
+                    {"key": "kb", "name": "字段B", "fill_mode": "llm"}]
+    entities = {"项目名称": "莆美项目", "__context__": "市政房建"}
+    chunks_by_key, evidence = executor._run_async(executor._retrieve_all(
+        "t", placeholders, ["kb1"], {}, entities=entities))
+    t2 = [c for c in calls if c["thr"] == executor.FULLTEXT_SIMILARITY_THRESHOLD]
+    assert len(t2) == 2, "两个空槽二档各发一次"
+    assert all(c["top_k"] == 12 for c in t2), "二档 top_k 翻倍封顶"
+    assert any("字段A" in c["query"] for c in t2)
+    assert any("字段B" in c["query"] for c in t2)
+    assert [c["content"] for c in chunks_by_key["ka"]["chunks"]] == ["二档片段-字段A"]
+    assert [c["content"] for c in chunks_by_key["kb"]["chunks"]] == ["二档片段-字段B"]
+    assert all(c["source"] == "fulltext" for c in chunks_by_key["ka"]["chunks"])
+    assert [c["content"] for c in evidence["kb"]["chunks"]] == ["二档片段-字段B"]
+
+
 def test_retrieve_all_tier2_skipped_without_entities(monkeypatch):
     """无 entities（B端/REST/dry_run）→ 只有第一档，行为纯现状。"""
     from rag.svr.template_fill import executor

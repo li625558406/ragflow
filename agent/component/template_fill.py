@@ -353,7 +353,8 @@ class TemplateFill(ComponentBase):
         无默认值留空。返回 (decisions, entity_map)：decisions 为
         {template_id: {"changed": set, "values": dict}}；entity_map 为各范本
         extract_entities 结果（{"direct":..., "entities":...}），调用方取 entities
-        并集写 params._entities。
+        并集写 params._entities。增量范本（incremental_overrides 覆盖者）不做实体
+        抽取，不出现在 entity_map。
         无默认值字段且无实体直填值时跳过确认（decisions={}，触发条件在原「无默认值
         跳过」基础上并入直填值维度）。
         超时/Redis 异常/预判失败 → 按预判∪无默认值字段自动继续（同现状全填）。
@@ -406,13 +407,18 @@ class TemplateFill(ComponentBase):
             return out
 
         # 预判与实体抽取并行：两者互不依赖（预判吃默认值子集，抽取吃全部填写点
-        # +用户原话），串行会白白叠加两段 LLM 时延
-        try:
-            predicted, entity_map = await asyncio.gather(_predict_all(), _extract_all())
-        except executor.GenerateCancelled:
-            # 预判/抽取期取消信号不外逸：与检索/产值阶段同路转 _FillCancelled，
-            # 由 invoke 统一收口为 cancelled 终态（不落 failed）
-            raise _FillCancelled() from None
+        # +用户原话），串行会白白叠加两段 LLM 时延。return_exceptions 确保兄弟
+        # 协程跑完（一路取消时另一路不被打成孤儿 Task），取消/异常统一在此收口
+        results = await asyncio.gather(_predict_all(), _extract_all(),
+                                       return_exceptions=True)
+        for r in results:
+            if isinstance(r, executor.GenerateCancelled):
+                # 预判/抽取期取消信号不外逸：与检索/产值阶段同路转 _FillCancelled，
+                # 由 invoke 统一收口为 cancelled 终态（不落 failed）
+                raise _FillCancelled() from None
+        if any(isinstance(r, BaseException) for r in results):
+            raise next(r for r in results if isinstance(r, BaseException))
+        predicted, entity_map = results
         direct_map = {tid: (m or {}).get("direct") or {} for tid, m in entity_map.items()}
         has_direct = any(direct_map.values())
         # 弹卡条件扩展：默认值字段 ∪ 实体直填值，任一非空即弹卡；全空维持原状跳过
@@ -777,6 +783,7 @@ class TemplateFill(ComponentBase):
         # 跑完落库；节点降级为观察者。同一范本已有执行中任务则复用观察（不重复起线程）。
         task_of: dict[str, str] = {}   # template_id -> task_id
         total_of: dict[str, int] = {}  # template_id -> llm 槽数（filling 事件 total 回落，建任务时算一次）
+        merged_entities = _merged_entities(entity_map)  # 与范本无关的并集，循环外算一次
         for c in chosen:
             tid = c["template_id"]
             total_of[tid] = len(_llm_fill_items(c))
@@ -798,7 +805,7 @@ class TemplateFill(ComponentBase):
                     {it["key"] for it in _llm_fill_items(c)},
                     c["_placeholders"], user_file_text,
                     baseline_values=(base_for_t["values"] if base_for_t else None),
-                    entities=_merged_entities(entity_map)),
+                    entities=merged_entities),
                 status="pending", source="canvas", flow_instance_id=ctx_id,
                 tenant_id=tenant_id, created_by=tenant_id)
             spawn_fill_task(task_id)

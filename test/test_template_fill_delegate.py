@@ -66,6 +66,11 @@ class TestMergedEntities:
         assert _merged_entities(emap) == {"项目名称": "A", "__context__": "C1", "采购人": "B"}
         assert _merged_entities({}) == {}
 
+    def test_none_entity_map_returns_empty(self):
+        # entity_map 为 None（confirm 跳过路径等）→ 空 dict，不炸调用方
+        from agent.component.template_fill import _merged_entities
+        assert _merged_entities(None) == {}
+
 
 class TestUnfilledOf:
     _PHS = [{"key": "a", "name": "甲", "required": True},

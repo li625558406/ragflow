@@ -489,6 +489,45 @@ def test_invoke_async_multi_template_ids_two_outputs(patched_env, monkeypatch):
     assert "报告A" in cpn.output("content") and "报告B" in cpn.output("content")
 
 
+def test_invoke_async_entities_union_flows_to_params(patched_env, monkeypatch):
+    """invoke 接线端到端断言：confirm 阶段各范本 extract_entities 产出的 entities
+    经 _merged_entities 并集后，随每行任务 params._entities 下发 executor
+    （executor 侧 split_canvas_params 拆解为二档检索拼词）。"""
+    calls, svc = patched_env["calls"], patched_env["svc"]
+    FakeService.rows = [
+        {"id": "t1", "name": "报告A", "description": "", "file_type": "docx"},
+        {"id": "t2", "name": "报告B", "description": "", "file_type": "docx"},
+    ]
+    FakeService.vers = {
+        "t1": _ver([_ver_slot("项目名称")]),
+        "t2": _ver([_ver_slot("建设单位")]),
+    }
+
+    async def fake_extract(tenant_id, query, placeholders, should_cancel=None):
+        keys = {it["key"] for it in placeholders}
+        if "建设单位" in keys:
+            return {"direct": {}, "entities": {"单位B": "乙公司"}}
+        return {"direct": {}, "entities": {"单位A": "甲公司"}}
+
+    monkeypatch.setattr(fill_template.executor, "extract_entities", fake_extract)
+
+    class MultiMdl:
+        async def async_chat(self, system, msgs):
+            return '{"template_ids": ["t1", "t2"]}'
+
+    monkeypatch.setattr(fill_template.executor, "_build_chat_mdl", lambda *_: MultiMdl())
+    _seq_done(svc, n=2)
+    cpn = _make_component(TemplateFillParam())
+    cpn._param.dataset_ids = ["kb1"]
+    asyncio.run(cpn._invoke_async())
+
+    # 并集（先到先得）：两行任务 params._entities 均为各范本实体并集
+    merged = {"单位A": "甲公司", "单位B": "乙公司"}
+    assert len(svc.inserted) == 2
+    for _tid, kw in svc.inserted:
+        assert kw["params"]["_entities"] == merged
+
+
 def test_invoke_async_begin_field_param_direct(patched_env):
     """Begin 表单字段经任务 params 原样下发（executor 侧按同名 param 槽直取，
     不经 LLM）；param 槽不进检索跳过清单（llm 槽专属）。"""
@@ -713,6 +752,31 @@ def test_confirm_payload_scalar_values_defensive(monkeypatch):
     decisions, _emap = asyncio.run(cpn._confirm_changed_fields(_chosen_with_defaults(), "需求", {}))
     assert decisions == {"t1": {"changed": set(), "values": {}}}, \
         "values 标量 / changed 非串兜底为空，不得 AttributeError"
+
+
+def test_confirm_gather_cancel_raises_fill_cancelled(monkeypatch):
+    """gather 取消收口：一路（预判）抛 GenerateCancelled → 转抛
+    fill_template._FillCancelled（取消信号不外逸成裸异常）；return_exceptions
+    语义下兄弟协程（实体抽取）跑完不被打成孤儿 Task，且不弹确认卡。"""
+    import asyncio
+
+    cpn = _confirm_component(monkeypatch)
+    extract_done = []
+
+    async def fake_predict(*a, **kw):
+        raise fill_template.executor.GenerateCancelled()
+
+    async def fake_extract(tenant_id, query, placeholders, should_cancel=None):
+        extract_done.append(True)
+        return {"direct": {}, "entities": {}}
+
+    monkeypatch.setattr(fill_template.executor, "predict_changed_fields", fake_predict)
+    monkeypatch.setattr(fill_template.executor, "extract_entities", fake_extract)
+
+    with pytest.raises(fill_template._FillCancelled):
+        asyncio.run(cpn._confirm_changed_fields(_chosen_with_defaults(), "需求", {}))
+    assert extract_done == [True], "兄弟协程应跑完（return_exceptions 收口），不产生孤儿 Task"
+    assert _drain_events(cpn) == [], "取消路径不得弹出 confirm_pending 确认卡"
 
 
 def _incremental_overrides_for_t1():

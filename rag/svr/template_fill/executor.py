@@ -213,7 +213,7 @@ def split_canvas_params(params: dict | None) -> tuple[dict, dict]:
         "baseline_values": ({str(k): str(v) for k, v in bv.items() if v is not None}
                             if isinstance(bv, dict) else {}),
         # entities：用户原话实体分析结果（画布节点预计算注入），二档降级检索用
-        "entities": ({str(k): str(v) for k, v in en.items()}
+        "entities": ({str(k): str(v) for k, v in en.items() if v is not None}
                      if isinstance(en, dict) else {}),
     }
     clean = {k: v for k, v in params.items() if k not in CANVAS_RESERVED_KEYS}
@@ -728,7 +728,9 @@ async def extract_entities(tenant_id: str, query: str, placeholders: list[dict],
                 continue
             val = _clean_for_prompt(str(v), PARAM_VAL_MAX)
             if val:
-                entities[str(k)[:NAME_MAX]] = val
+                ekey = _clean_for_prompt(str(k), NAME_MAX)
+                if ekey:
+                    entities[ekey] = val
     return {"direct": direct, "entities": entities}
 
 
