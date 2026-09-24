@@ -177,7 +177,7 @@ class GenerateCancelled(Exception):
 # 等价关系成立——写回端点与下方 is_canvas 都依赖它做判定。
 CANVAS_RESERVED_KEYS = ("_direct_values", "_changed_keys",
                         "_retrieve_skip_keys", "_user_file_text",
-                        "_baseline_values")
+                        "_baseline_values", "_entities")
 
 # 进度快照键与 TTL（24h；终态也写一次，靠 TTL 过期，不主动删）
 _PROGRESS_KEY = "tpl_fill_progress:{task_id}"
@@ -200,6 +200,7 @@ def split_canvas_params(params: dict | None) -> tuple[dict, dict]:
     params = params if isinstance(params, dict) else {}
     dv = params.get("_direct_values")
     bv = params.get("_baseline_values")
+    en = params.get("_entities")
     opts = {
         "direct_values": ({str(k): (str(v) if v is not None else "")
                            for k, v in dv.items()}
@@ -211,6 +212,9 @@ def split_canvas_params(params: dict | None) -> tuple[dict, dict]:
         # 仅对 missing 字段兜底，优先级 default_value 之前，让文档保留上次内容
         "baseline_values": ({str(k): str(v) for k, v in bv.items() if v is not None}
                             if isinstance(bv, dict) else {}),
+        # entities：用户原话实体分析结果（画布节点预计算注入），二档降级检索用
+        "entities": ({str(k): str(v) for k, v in en.items()}
+                     if isinstance(en, dict) else {}),
     }
     clean = {k: v for k, v in params.items() if k not in CANVAS_RESERVED_KEYS}
     return clean, opts
@@ -1066,13 +1070,14 @@ async def _execute_task_async(task_id: str):
     skip_keys = opts["retrieve_skip_keys"] if is_canvas else None
     user_file_text = opts["user_file_text"] if is_canvas else ""
     cancel_probe = _make_cancel_probe(task_id) if is_canvas else None
+    entities = opts["entities"] if is_canvas else None
 
     # ② 逐槽检索（公共段，dry_run 同款）：单槽失败降级为空证据（字段走 missing/待人工），
     # 不中断整单；kb_ids 为空时全槽直接空证据（不进 retrieve_slot，省 N 次无意义异常+warning）
     try:
         chunks_by_key, evidence = await _retrieve_all(
             task.tenant_id, placeholders, kb_ids, clean_params, task_id=task_id,
-            skip_keys=skip_keys, should_cancel=cancel_probe)
+            skip_keys=skip_keys, should_cancel=cancel_probe, entities=entities)
     except GenerateCancelled:
         # cancel_running 返回 False 说明行已终态（如崩溃兜底已强置 failed）：
         # 不再写 cancelled 快照误导前端，按 failed 收口（error 沿用原文案）

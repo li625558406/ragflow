@@ -1279,7 +1279,7 @@ class TestSplitCanvasParams:
         assert clean == {}
         assert opts == {"direct_values": {}, "changed_keys": set(),
                         "retrieve_skip_keys": set(), "user_file_text": "",
-                        "baseline_values": {}}
+                        "baseline_values": {}, "entities": {}}
         clean, opts = split_canvas_params({
             "_direct_values": "not-a-dict",       # 标量 → 按空处理
             "_changed_keys": {"k": 1},            # dict → 迭代键
@@ -2447,3 +2447,27 @@ def test_generate_values_fulltext_evidence_label(monkeypatch):
 def test_generate_system_has_fulltext_rule():
     from rag.svr.template_fill import executor
     assert "全文匹配" in executor.GENERATE_SYSTEM
+
+
+# ---------- _entities 保留键 ----------
+
+def test_split_canvas_params_entities_payload():
+    from rag.svr.template_fill import executor
+    clean, opts = executor.split_canvas_params(
+        {"_entities": {"项目名称": "X", "__context__": "市政房建"}, "k": "v"})
+    assert opts["entities"] == {"项目名称": "X", "__context__": "市政房建"}
+    assert clean == {"k": "v"}
+
+
+def test_split_canvas_params_entities_malformed():
+    """非 dict 载荷一律按空处理，不炸 pipeline。"""
+    from rag.svr.template_fill import executor
+    for bad in (None, "x", 123, [1, 2]):
+        _, opts = executor.split_canvas_params({"_entities": bad})
+        assert opts["entities"] == {}
+
+
+def test_canvas_reserved_keys_include_entities():
+    """_entities 必须在保留键集合（is_canvas 判定与 REST 剥离都依赖它）。"""
+    from rag.svr.template_fill import executor
+    assert "_entities" in executor.CANVAS_RESERVED_KEYS
