@@ -282,6 +282,11 @@ def patched_env(monkeypatch):
                         lambda task_id: calls["spawn"].append(task_id))
     monkeypatch.setattr(fill_template.executor, "read_progress_snapshot",
                         lambda task_id: None)
+    # invoke 路径会真调 _confirm_changed_fields → 实体抽取必须桩掉（防触真 LLM）
+    async def fake_extract(tenant_id, query, placeholders, should_cancel=None):
+        return {"direct": {}, "entities": {}}
+
+    monkeypatch.setattr(fill_template.executor, "extract_entities", fake_extract)
     # FakeTaskService.latest_done 是 classmethod，节点走 cls 调用；桩里走 _active_instance
     # 单例路由找最新构造的桩实例，方便各测试通过 svc.latest_done_map[(tid, ctx)] 注入历史 done 行
     FakeTaskService._active_instance = svc
@@ -569,9 +574,15 @@ def test_invoke_async_all_templates_failed_raises(patched_env):
 # ---------- P2 暂停确认：_confirm_changed_fields（超时兜底 + 确认载荷过滤） ----------
 
 def _confirm_component(monkeypatch, canvas_task_id="task-9"):
-    """确认编排专用组件：画布带 task_id（真实 canvas 构造时注入，缺省回退空串即跳过等待）。"""
+    """确认编排专用组件：画布带 task_id（真实 canvas 构造时注入，缺省回退空串即跳过等待）。
+    实体抽取默认桩为空结果（防既有用例真调 LLM）；需要 direct/entities 的用例自行覆盖。"""
     canvas = FakeCanvas()
     canvas.task_id = canvas_task_id
+
+    async def fake_extract(tenant_id, query, placeholders, should_cancel=None):
+        return {"direct": {}, "entities": {}}
+
+    monkeypatch.setattr(fill_template.executor, "extract_entities", fake_extract)
     return _make_component(TemplateFillParam(), canvas=canvas)
 
 
@@ -620,7 +631,7 @@ def test_confirm_wait_timeout_uses_predicted(monkeypatch):
 
     monkeypatch.setattr(fill_template.executor, "predict_changed_fields", fake_predict)
 
-    decisions = asyncio.run(cpn._confirm_changed_fields(_chosen_with_defaults(), "需求", {}))
+    decisions, _emap = asyncio.run(cpn._confirm_changed_fields(_chosen_with_defaults(), "需求", {}))
     # 兜底：预判（a + 编造 ghost）∪ 无默认值字段（b）——乙照旧交给 LLM
     assert decisions == {"t1": {"changed": {"a", "ghost", "b"}, "values": {}}}
     events = _drain_events(cpn)
@@ -659,7 +670,7 @@ def test_confirm_payload_filters_unknown_keys(monkeypatch):
 
     monkeypatch.setattr(fill_template.executor, "predict_changed_fields", fake_predict)
 
-    decisions = asyncio.run(cpn._confirm_changed_fields(_chosen_with_defaults(), "需求", {}))
+    decisions, _emap = asyncio.run(cpn._confirm_changed_fields(_chosen_with_defaults(), "需求", {}))
     confirm_key = seen["get"]
     assert confirm_key.startswith("tpl_fill:confirm:task-9:"), \
         f"确认键必须带运行级 nonce，实际: {confirm_key}"
@@ -699,7 +710,7 @@ def test_confirm_payload_scalar_values_defensive(monkeypatch):
 
     monkeypatch.setattr(fill_template.executor, "predict_changed_fields", fake_predict)
 
-    decisions = asyncio.run(cpn._confirm_changed_fields(_chosen_with_defaults(), "需求", {}))
+    decisions, _emap = asyncio.run(cpn._confirm_changed_fields(_chosen_with_defaults(), "需求", {}))
     assert decisions == {"t1": {"changed": set(), "values": {}}}, \
         "values 标量 / changed 非串兜底为空，不得 AttributeError"
 
@@ -745,7 +756,7 @@ def test_incremental_confirm_empty_values_preserves_fallback(monkeypatch):
         return set()
     monkeypatch.setattr(fill_template.executor, "predict_changed_fields", fake_predict)
 
-    decisions = asyncio.run(cpn._confirm_changed_fields(
+    decisions, _emap = asyncio.run(cpn._confirm_changed_fields(
         _chosen_with_defaults(), "需求", {}, incremental_overrides=_incremental_overrides_for_t1()))
     # fallback_values 必须保留：用户空输入 ≠ 用户改值
     assert decisions == {"t1": {
@@ -778,7 +789,7 @@ def test_incremental_confirm_user_non_empty_overrides_fallback(monkeypatch):
         return set()
     monkeypatch.setattr(fill_template.executor, "predict_changed_fields", fake_predict)
 
-    decisions = asyncio.run(cpn._confirm_changed_fields(
+    decisions, _emap = asyncio.run(cpn._confirm_changed_fields(
         _chosen_with_defaults(), "需求", {}, incremental_overrides=_incremental_overrides_for_t1()))
     # approval_doc 用户改了 → 用用户的；project_owner 不在 fallback_values 里、
     # 用户空输入 → 不入 values（空串=未动，不应覆盖）
@@ -809,7 +820,7 @@ def test_incremental_confirm_unknown_keys_filtered(monkeypatch):
         return set()
     monkeypatch.setattr(fill_template.executor, "predict_changed_fields", fake_predict)
 
-    decisions = asyncio.run(cpn._confirm_changed_fields(
+    decisions, _emap = asyncio.run(cpn._confirm_changed_fields(
         _chosen_with_defaults(), "需求", {}, incremental_overrides=_incremental_overrides_for_t1()))
     # t2 整体忽略；t1 非候选 key 过滤；fallback 保留
     assert decisions == {"t1": {
@@ -819,8 +830,8 @@ def test_incremental_confirm_unknown_keys_filtered(monkeypatch):
 
 
 def test_confirm_no_default_items_skips_all(monkeypatch):
-    """回归红线：全部选中范本均无默认值字段 → 直接返回 {}，不推事件、不触 Redis、
-    不调预判（首填链路与现状完全一致）。"""
+    """回归红线：全部选中范本均无默认值字段且无实体直填值 → decisions={} 跳过确认，
+    不推事件、不触 Redis、不调预判（实体抽取仍会跑——它是弹卡条件的输入之一）。"""
     import asyncio
 
     cpn = _make_component(TemplateFillParam())  # FakeCanvas 无 task_id 也无关紧要
@@ -828,12 +839,145 @@ def test_confirm_no_default_items_skips_all(monkeypatch):
     def boom(*a, **kw):
         raise AssertionError("无默认值字段不应触发预判/Redis")
 
+    async def fake_extract(tenant_id, query, placeholders, should_cancel=None):
+        return {"direct": {}, "entities": {}}
+
     monkeypatch.setattr(fill_template, "REDIS_CONN", boom)
     monkeypatch.setattr(fill_template.executor, "predict_changed_fields", boom)
+    monkeypatch.setattr(fill_template.executor, "extract_entities", fake_extract)
     chosen = [{"template_id": "t1", "name": "报告",
                "_placeholders": [{"key": "k1", "name": "字段", "fill_mode": "llm"}]}]
-    assert asyncio.run(cpn._confirm_changed_fields(chosen, "需求", {})) == {}
+    assert asyncio.run(cpn._confirm_changed_fields(chosen, "需求", {}))[0] == {}
     assert _drain_events(cpn) == []
+
+
+def test_confirm_candidates_carry_direct_value(monkeypatch):
+    """实体直填值进 confirm_pending 事件 candidates.direct_value（前端预填输入框）。"""
+    import asyncio
+
+    cpn = _confirm_component(monkeypatch)
+    monkeypatch.setattr(fill_template, "_CONFIRM_TIMEOUT", 0.05)
+
+    class FakeRedis:
+        def get(self, k):
+            return None
+
+        def delete(self, k):
+            raise AssertionError
+
+    monkeypatch.setattr(fill_template, "REDIS_CONN", FakeRedis())
+
+    async def fake_sleep(_s):
+        return None
+
+    monkeypatch.setattr(fill_template.asyncio, "sleep", fake_sleep)
+
+    async def fake_predict(*a, **kw):
+        return set()
+
+    monkeypatch.setattr(fill_template.executor, "predict_changed_fields", fake_predict)
+
+    async def fake_extract(tenant_id, query, placeholders, should_cancel=None):
+        return {"direct": {"a": "直填甲"}, "entities": {"项目名称": "A项目"}}
+
+    monkeypatch.setattr(fill_template.executor, "extract_entities", fake_extract)
+    decisions, emap = asyncio.run(
+        cpn._confirm_changed_fields(_chosen_with_defaults(), "需求", {}))
+    events = _drain_events(cpn)
+    pending_ev = [e for e in events if e["stage"] == "confirm_pending"][0]
+    cands = pending_ev["confirm_templates"][0]["candidates"]
+    by_key = {c["key"]: c for c in cands}
+    assert by_key["a"]["direct_value"] == "直填甲"
+    assert by_key["b"]["direct_value"] == ""
+    # 兜底 values 带直填值（超时未确认也不丢用户原话给出的值）
+    assert decisions["t1"]["values"] == {"a": "直填甲"}
+    assert emap["t1"]["entities"] == {"项目名称": "A项目"}
+
+
+def test_confirm_pops_card_for_direct_without_defaults(monkeypatch):
+    """无默认值字段但有实体直填值 → 也弹确认卡（原状是直接跳过）。"""
+    import asyncio
+
+    cpn = _confirm_component(monkeypatch)
+    monkeypatch.setattr(fill_template, "_CONFIRM_TIMEOUT", 0.05)
+
+    class FakeRedis:
+        def get(self, k):
+            return None
+
+        def delete(self, k):
+            raise AssertionError
+
+    monkeypatch.setattr(fill_template, "REDIS_CONN", FakeRedis())
+
+    async def fake_sleep(_s):
+        return None
+
+    monkeypatch.setattr(fill_template.asyncio, "sleep", fake_sleep)
+
+    async def fake_extract(tenant_id, query, placeholders, should_cancel=None):
+        return {"direct": {"b": "直填乙"}, "entities": {}}
+
+    monkeypatch.setattr(fill_template.executor, "extract_entities", fake_extract)
+    chosen = [{"template_id": "t1", "name": "范本",
+               "_placeholders": [{"key": "b", "name": "乙", "fill_mode": "llm"}]}]
+    decisions, _emap = asyncio.run(cpn._confirm_changed_fields(chosen, "需求", {}))
+    events = _drain_events(cpn)
+    assert any(e["stage"] == "confirm_pending" for e in events), "直填值必须弹卡供确认"
+    assert decisions["t1"]["values"] == {"b": "直填乙"}
+
+
+def test_confirm_skipped_when_no_defaults_no_direct(monkeypatch):
+    """无默认值且无直填值 → 维持原状跳过确认（返回空 decisions），不推事件。"""
+    import asyncio
+
+    cpn = _confirm_component(monkeypatch)
+
+    async def fake_extract(tenant_id, query, placeholders, should_cancel=None):
+        return {"direct": {}, "entities": {}}
+
+    monkeypatch.setattr(fill_template.executor, "extract_entities", fake_extract)
+    chosen = [{"template_id": "t1", "name": "范本",
+               "_placeholders": [{"key": "b", "name": "乙", "fill_mode": "llm"}]}]
+    decisions, emap = asyncio.run(cpn._confirm_changed_fields(chosen, "需求", {}))
+    assert decisions == {}
+    assert emap["t1"] == {"direct": {}, "entities": {}}
+    assert _drain_events(cpn) == []
+
+
+def test_confirm_incremental_skips_entity_extraction(monkeypatch):
+    """增量范本不做实体抽取（patch 流程有自己的 direct 抽取），extract 不被调用。"""
+    import asyncio
+
+    cpn = _confirm_component(monkeypatch)
+    monkeypatch.setattr(fill_template, "_CONFIRM_TIMEOUT", 0.05)
+    called = {"n": 0}
+
+    async def fake_extract(*a, **kw):
+        called["n"] += 1
+        return {"direct": {}, "entities": {}}
+
+    monkeypatch.setattr(fill_template.executor, "extract_entities", fake_extract)
+
+    class FakeRedis:
+        def get(self, k):
+            return None
+
+        def delete(self, k):
+            raise AssertionError
+
+    monkeypatch.setattr(fill_template, "REDIS_CONN", FakeRedis())
+
+    async def fake_sleep(_s):
+        return None
+
+    monkeypatch.setattr(fill_template.asyncio, "sleep", fake_sleep)
+
+    ov = {"t1": {"candidates": [{"key": "a", "name": "甲"}],
+                 "predicted": ["a"], "fallback_changed": {"a"}, "fallback_values": {}}}
+    asyncio.run(cpn._confirm_changed_fields(
+        _chosen_with_defaults(), "需求", {}, incremental_overrides=ov))
+    assert called["n"] == 0
 
 
 # ---------- P2 条件执行：decision 消费侧（委托参数收窄 + 直填下发） ----------
@@ -861,7 +1005,7 @@ def test_decision_conditional_execution_skips_unchanged_defaults(patched_env):
     cpn._param.dataset_ids = ["kb1"]
 
     async def fake_confirm(chosen, query, begin_fields, *, incremental_overrides=None):
-        return {"t1": {"changed": {"a"}, "values": {"f": "直填值"}}}
+        return ({"t1": {"changed": {"a"}, "values": {"f": "直填值"}}}, {})
 
     cpn._confirm_changed_fields = fake_confirm
     asyncio.run(cpn._invoke_async())
@@ -887,7 +1031,7 @@ def test_decision_empty_direct_value_renders_blank(patched_env):
     cpn._param.dataset_ids = ["kb1"]
 
     async def fake_confirm(chosen, query, begin_fields, *, incremental_overrides=None):
-        return {"t1": {"changed": set(), "values": {"a": ""}}}
+        return ({"t1": {"changed": set(), "values": {"a": ""}}}, {})
 
     cpn._confirm_changed_fields = fake_confirm
     asyncio.run(cpn._invoke_async())
@@ -1500,7 +1644,7 @@ def test_incremental_cands_carry_direct_value(patched_env, monkeypatch):
     async def fake_confirm(chosen, query, begin_fields, *, incremental_overrides=None):
         captured["overrides"] = incremental_overrides
         # 返回空 decision → 模拟「用户点确认并继续填写」走默认 patch 路径
-        return {tid: {"changed": set(), "values": {}} for c in chosen for tid in [c["template_id"]]}
+        return ({tid: {"changed": set(), "values": {}} for c in chosen for tid in [c["template_id"]]}, {})
 
     cpn._confirm_changed_fields = fake_confirm
     asyncio.run(cpn._invoke_async())
@@ -1543,7 +1687,7 @@ def test_incremental_cands_direct_value_skips_non_llm_slots(patched_env, monkeyp
 
     async def fake_confirm(chosen, query, begin_fields, *, incremental_overrides=None):
         captured["overrides"] = incremental_overrides
-        return {tid: {"changed": set(), "values": {}} for c in chosen for tid in [c["template_id"]]}
+        return ({tid: {"changed": set(), "values": {}} for c in chosen for tid in [c["template_id"]]}, {})
 
     cpn._confirm_changed_fields = fake_confirm
     asyncio.run(cpn._invoke_async())

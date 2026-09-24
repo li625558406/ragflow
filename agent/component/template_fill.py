@@ -347,11 +347,15 @@ class TemplateFill(ComponentBase):
     async def _confirm_changed_fields(self, chosen: list[dict], query: str,
                                       begin_fields: dict,
                                       *, incremental_overrides: dict | None = None
-                                      ) -> dict:
+                                      ) -> tuple[dict, dict]:
         """P2 暂停确认（全量展示）：候选 = 各范本全部 llm 填写点（含无默认值字段），
         AI 预判只覆盖默认值子集；勾选 = 交给检索+LLM，不勾 = 有默认值用默认值、
-        无默认值留空。返回 {template_id: {"changed": set, "values": dict}}；
-        全部选中范本均无默认值字段时返回 {}（跳过确认，触发条件与现状一致）。
+        无默认值留空。返回 (decisions, entity_map)：decisions 为
+        {template_id: {"changed": set, "values": dict}}；entity_map 为各范本
+        extract_entities 结果（{"direct":..., "entities":...}），调用方取 entities
+        并集写 params._entities。
+        无默认值字段且无实体直填值时跳过确认（decisions={}，触发条件在原「无默认值
+        跳过」基础上并入直填值维度）。
         超时/Redis 异常/预判失败 → 按预判∪无默认值字段自动继续（同现状全填）。
 
         incremental_overrides: tid -> {"candidates": [...], "predicted": [...],
@@ -371,23 +375,49 @@ class TemplateFill(ComponentBase):
             defaults = [it for it in items if str(it.get("default_value") or "")]
             if defaults:
                 default_map[c["template_id"]] = defaults
-        # 增量填写模式：该范本已走 overrides，跳过 default_map 与 predict_changed_fields
-        if not default_map and not incremental_overrides:
-            return {}
         task_id = getattr(self._canvas, "task_id", "") or ""
+        tenant_id = self._canvas.get_tenant_id()
         background = dict(begin_fields)
         if query:
             background["用户需求描述"] = query[:_BEGIN_FIELD_PROMPT_MAX]
         predicted: dict[str, set] = {}
-        try:
+        entity_map: dict[str, dict] = {}
+        inc_tids = set((incremental_overrides or {}).keys())
+
+        async def _predict_all():
+            out: dict[str, set] = {}
             for tid, items in default_map.items():
-                predicted[tid] = await executor.predict_changed_fields(
-                    self._canvas.get_tenant_id(), items, background,
+                out[tid] = await executor.predict_changed_fields(
+                    tenant_id, items, background,
                     should_cancel=lambda: self.check_if_canceled("TemplateFill predict"))
+            return out
+
+        async def _extract_all():
+            out: dict[str, dict] = {}
+            for c in chosen:
+                tid = c["template_id"]
+                # 增量范本不做实体抽取（patch 流程有自己的 direct 抽取，避免双份
+                # LLM 调用）；无 llm 填写点的范本也没的可抽
+                if tid in inc_tids or not d_map.get(tid):
+                    continue
+                out[tid] = await executor.extract_entities(
+                    tenant_id, query, d_map[tid],
+                    should_cancel=lambda: self.check_if_canceled("TemplateFill entities"))
+            return out
+
+        # 预判与实体抽取并行：两者互不依赖（预判吃默认值子集，抽取吃全部填写点
+        # +用户原话），串行会白白叠加两段 LLM 时延
+        try:
+            predicted, entity_map = await asyncio.gather(_predict_all(), _extract_all())
         except executor.GenerateCancelled:
-            # 预判期取消信号不外逸：与检索/产值阶段同路转 _FillCancelled，
+            # 预判/抽取期取消信号不外逸：与检索/产值阶段同路转 _FillCancelled，
             # 由 invoke 统一收口为 cancelled 终态（不落 failed）
             raise _FillCancelled() from None
+        direct_map = {tid: (m or {}).get("direct") or {} for tid, m in entity_map.items()}
+        has_direct = any(direct_map.values())
+        # 弹卡条件扩展：默认值字段 ∪ 实体直填值，任一非空即弹卡；全空维持原状跳过
+        if not default_map and not incremental_overrides and not has_direct:
+            return {}, entity_map
         name_of = {c["template_id"]: c["name"] for c in chosen}
         # 运行级 nonce：task_id 即 agent_id（跨运行不变），确认键必须带本次运行的
         # 随机 nonce——孤儿键（重复点击/超时后才确认/取消残留/delete 失败）在新运行
@@ -414,7 +444,8 @@ class TemplateFill(ComponentBase):
                 "name": name_of.get(tid, ""),
                 "candidates": [{"key": it["key"],
                                 "name": it.get("name") or it["key"],
-                                "default_value": it.get("default_value")}
+                                "default_value": it.get("default_value"),
+                                "direct_value": str((direct_map.get(tid) or {}).get(it["key"]) or "")}
                                for it in d_map[tid]],
                 "predicted": sorted(predicted.get(tid) or set())})
         self._push_progress({
@@ -441,9 +472,11 @@ class TemplateFill(ComponentBase):
                 "changed": (set(predicted.get(tid) or set())
                             | {it["key"] for it in items
                                if not str(it.get("default_value") or "")}),
-                "values": {}}
+                # 兜底 values 带实体直填值：超时未确认也不丢用户原话给出的值
+                "values": {k: v for k, v in (direct_map.get(tid) or {}).items()
+                           if k in {i["key"] for i in items}}}
         if not task_id:
-            return decisions
+            return decisions, entity_map
         waited = 0.0
         hb = 0.0
         # 确认键带运行级 nonce（与 confirm_pending 事件下发给前端的一致）
@@ -499,7 +532,7 @@ class TemplateFill(ComponentBase):
                             "changed": {k for k in changed_raw if k in valid},
                             "values": {k: v for k, v in values_raw.items()
                                        if k in valid}}
-                return decisions
+                return decisions, entity_map
             await asyncio.sleep(_CONFIRM_POLL_INTERVAL)
             waited += _CONFIRM_POLL_INTERVAL
             hb += _CONFIRM_POLL_INTERVAL
@@ -507,7 +540,7 @@ class TemplateFill(ComponentBase):
                 hb = 0.0
                 self._push_progress({"stage": "heartbeat", "task_id": task_id})
         self._push_progress({"stage": "confirm_timeout"})
-        return decisions
+        return decisions, entity_map
 
     async def _confirm_template_selection(self, task_id: str,
                                           chosen: list[dict]) -> list[dict]:
@@ -719,7 +752,7 @@ class TemplateFill(ComponentBase):
         # P2 预判 + 暂停确认：有默认值字段才触发；返回 {} = 无基线，行为同现状
         # 增量填写范本走 incremental_overrides：候选只列 patch 项，predicted 全勾选，
         # 兜底按 LLM 抽出的 patch 自动继续（与全量范本同口径）
-        decisions = await self._confirm_changed_fields(
+        decisions, entity_map = await self._confirm_changed_fields(
             chosen, query, begin_fields, incremental_overrides=incremental_overrides)
         # noop 范本：补一份空 decision → _llm_fill_items 返回 [] → executor 仅
         # 用 baseline_values 兜回所有 missing，渲染产物与上次成稿同值（轻量复用）。
@@ -764,7 +797,8 @@ class TemplateFill(ComponentBase):
                     begin_fields, query, decisions.get(tid),
                     {it["key"] for it in _llm_fill_items(c)},
                     c["_placeholders"], user_file_text,
-                    baseline_values=(base_for_t["values"] if base_for_t else None)),
+                    baseline_values=(base_for_t["values"] if base_for_t else None),
+                    entities=_merged_entities(entity_map)),
                 status="pending", source="canvas", flow_instance_id=ctx_id,
                 tenant_id=tenant_id, created_by=tenant_id)
             spawn_fill_task(task_id)

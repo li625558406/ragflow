@@ -118,6 +118,11 @@ def _make_comp(candidates, sequences=None, canceled=False, monkeypatch=None):
     comp._bridge_download = lambda tenant_id, cand, row: _dl(f"d-{_rev(row.id)}")
     monkeypatch.setattr(tf_mod, "TplFillTaskService", svc)
     monkeypatch.setattr(tf_mod, "spawn_fill_task", lambda task_id: None)
+    # invoke 路径真调 _confirm_changed_fields → 实体抽取必须桩掉（防触真 LLM）
+    async def fake_extract(tenant_id, query, placeholders, should_cancel=None):
+        return {"direct": {}, "entities": {}}
+
+    monkeypatch.setattr(tf_mod.executor, "extract_entities", fake_extract)
 
     outs = {}
     comp.set_output = lambda k, v: outs.update({k: v})
