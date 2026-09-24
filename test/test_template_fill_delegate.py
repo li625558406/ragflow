@@ -42,6 +42,30 @@ class TestCanvasTaskParams:
             llm_item_keys=set(), placeholders=[], user_file_text="x")
         assert "用户需求描述" not in params
 
+    def test_entities_written_to_params(self):
+        from agent.component.template_fill import _canvas_task_params
+        params = _canvas_task_params(
+            begin_fields={}, query="需求", decision=None,
+            llm_item_keys={"k1"}, placeholders=[self._ph("k1")],
+            user_file_text="", entities={"项目名称": "A项目", "__context__": "市政房建"})
+        assert params["_entities"] == {"项目名称": "A项目", "__context__": "市政房建"}
+
+    def test_entities_default_empty(self):
+        from agent.component.template_fill import _canvas_task_params
+        params = _canvas_task_params(
+            begin_fields={}, query="", decision=None,
+            llm_item_keys={"k1"}, placeholders=[self._ph("k1")], user_file_text="")
+        assert params["_entities"] == {}
+
+
+class TestMergedEntities:
+    def test_union(self):
+        from agent.component.template_fill import _merged_entities
+        emap = {"t1": {"direct": {}, "entities": {"项目名称": "A", "__context__": "C1"}},
+                "t2": {"direct": {}, "entities": {"采购人": "B", "__context__": "C2"}}}
+        assert _merged_entities(emap) == {"项目名称": "A", "__context__": "C1", "采购人": "B"}
+        assert _merged_entities({}) == {}
+
 
 class TestUnfilledOf:
     _PHS = [{"key": "a", "name": "甲", "required": True},

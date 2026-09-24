@@ -95,10 +95,21 @@ class _FillCancelled(Exception):
     """画布取消中断填写：不落 failed 事件，由 invoke 统一推 cancelled。"""
 
 
+def _merged_entities(entity_map: dict) -> dict:
+    """各范本实体分析结果（extract_entities 返回值）的 entities 并集（先到先得），
+    供 executor 二档检索拼词；__context__ 取首个非空。"""
+    merged: dict = {}
+    for m in (entity_map or {}).values():
+        for k, v in ((m or {}).get("entities") or {}).items():
+            merged.setdefault(str(k), str(v))
+    return merged
+
+
 def _canvas_task_params(begin_fields: dict, query: str, decision: dict | None,
                         llm_item_keys: set, placeholders: list[dict],
                         user_file_text: str,
-                        *, baseline_values: dict | None = None) -> dict:
+                        *, baseline_values: dict | None = None,
+                        entities: dict | None = None) -> dict:
     """组装委托给 executor.execute_task 的任务 params：
     背景（Begin 字段+需求描述，与节点内 background 同构）+ 下划线保留键
     （直填值/LLM 白名单键/检索跳过键/用户文件证据/基线），executor 侧 split_canvas_params 拆解。
@@ -108,7 +119,10 @@ def _canvas_task_params(begin_fields: dict, query: str, decision: dict | None,
 
     baseline_values：增量填写场景下由调用方传入的「上次已落成稿的真实填写值」，
     仅对 missing 字段兜底（优先级 default_value 之前），让文档保留上次内容。
-    非增量路径传 None 或空 dict，executor 端兜底不触发。"""
+    非增量路径传 None 或空 dict，executor 端兜底不触发。
+
+    entities：各范本实体分析 entities 并集（_merged_entities 产出），供 executor
+    二档检索拼词。"""
     decision = decision or {}
     direct = decision.get("values") or {}
     skip = [it["key"] for it in placeholders
@@ -122,6 +136,7 @@ def _canvas_task_params(begin_fields: dict, query: str, decision: dict | None,
     params["_retrieve_skip_keys"] = skip
     params["_user_file_text"] = user_file_text or ""
     params["_baseline_values"] = dict(baseline_values or {})
+    params["_entities"] = dict(entities or {})
     return params
 
 
