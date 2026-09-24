@@ -1,5 +1,19 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-24 范本填写检索增强——二档全文降级 + 用户输入实体分析（方案 A）
+
+**主题**：用户输入含具体实体信息（如直接给出单位名称/日期）时，一档检索（KB 相似度）常因空槽占位词命中差导致产值靠默认值/编造。本次给检索加二档全文降级，并在画布确认阶段用一次 LLM 做实体分析（直填值抽取 + 实体/`__context__` 语境提取），实体组合词进宽检索提升命中。
+
+**改动（后端 2 文件）**：
+- 新增 `extract_entities`：画布确认阶段与既有变化字段预判 `gather` 并行，一次 LLM 同时产直填值 + 实体/语境；高可信闸过滤 + 失败空兜底（`return_exceptions` 收口不拖垮主流程）。
+- `_retrieve_all` 二档降级：一档空槽后用「实体组合词」宽检索（`FULLTEXT_SIMILARITY_THRESHOLD=0.1`、top_k 翻倍封顶 20、片段打 `source=fulltext`）；仅画布链路（`_entities` 保留键）启用，B端/REST/dry_run 零行为变化（is_canvas/REST 剥离自动跟随）。
+- 产值 prompt：fulltext 片段按「归纳编写」规则消费（仍禁编造）；确认卡弹卡条件扩展 + `candidates.direct_value` 预填——前端零改动，复用增量模式契约。
+- `_confirm_changed_fields` 返回值改 `(decisions, entity_map)` 元组（破坏性内部契约，invoke 与测试全量适配）；实体键清洗与直填键对称。
+
+**验证**：后端 **957 passed**（18 套件）+ 前端确认卡 **5 passed**；审查收口批次（gather 取消收口 / 实体键清洗对称 / 接线端到端断言）。设计稿 `docs/superpowers/specs/2026-09-24-template-fill-retrieval-fallback-design.md`、计划 `docs/superpowers/plans/2026-09-24-template-fill-retrieval-fallback.md`。
+
+**遗留（未部署）**：部署 = 后端 2 文件成套 SCP（`rag/svr/template_fill/executor.py` + `agent/component/template_fill.py`）+ 容器重启；前端无需 build。
+
 ## 2026-09-23（三）流程页「提示 : 102 任务不存在」无限弹错修复
 
 **主题**：用户报选中流程「漳武高速南靖出口至北环城路段微提升改造项目」一直报「提示 : 102 任务不存在」。排查生产 DB：流程历史 `template_fill_events` 引用的填写任务 `c0fe2764…` 行已消失——该任务所属旧范本「市政房建竞争性谈判文件」（`52003264…`，16:11 上传）在 20:51 被删除重传（为蓝色识别），09-17「范本删除级联清理填写任务」功能把任务行+成稿对象一并级联删除；前端 `filled` 行 10s 低频权威刷新（09-22 引入）持续打 progress 端点恒回 102，全局拦截器 `request.ts` 对非 0 业务码无条件弹 notification → 每 10s 弹一次无限报错。
