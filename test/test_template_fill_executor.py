@@ -2416,3 +2416,34 @@ def test_retrieve_slot_similarity_threshold_passthrough(monkeypatch):
     monkeypatch.setattr(executor, "label_question", lambda q, kbs: None)
     executor._run_async(executor.retrieve_slot("t", ["kb1"], "q", similarity_threshold=0.1))
     assert captured["thr"] == 0.1
+
+
+# ---------- fulltext 证据标签 ----------
+
+def test_generate_values_fulltext_evidence_label(monkeypatch):
+    """fulltext 片段标签 [全文匹配 片段N]，普通片段标签不变。"""
+    from rag.svr.template_fill import executor
+    captured = {}
+
+    async def fake_chat(sys, msgs):
+        captured["sys"] = sys
+        captured["msg"] = msgs[0]["content"]
+        return '{"k0": "v"}'
+
+    monkeypatch.setattr(executor, "_build_chat_mdl",
+                        lambda tenant: types.SimpleNamespace(async_chat=fake_chat))
+    phs = [{"key": "k0", "name": "字段0", "fill_mode": "llm"}]
+    chunks = {"k0": {"chunks": [{"content": "证据A", "doc_id": "d", "doc_name": "n",
+                                 "similarity": 0.9, "source": "fulltext"},
+                                {"content": "证据B", "doc_id": "d", "doc_name": "n",
+                                 "similarity": 0.9}], "query": "q"}}
+    values, missing = executor._run_async(executor.generate_values("t", phs, chunks))
+    assert "[全文匹配 片段1] 证据A" in captured["msg"]
+    assert "[片段2] 证据B" in captured["msg"]
+    assert values == {"k0": "v"} and missing == set()
+    assert "全文匹配" in captured["sys"], "system prompt 需含 fulltext 归纳编写规则"
+
+
+def test_generate_system_has_fulltext_rule():
+    from rag.svr.template_fill import executor
+    assert "全文匹配" in executor.GENERATE_SYSTEM

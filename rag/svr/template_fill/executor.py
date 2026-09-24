@@ -154,7 +154,8 @@ GENERATE_SYSTEM = (
     "1. 只准依据证据作答，禁止编造；证据中找不到的字段值输出 null。\n"
     "2. 遵守字段约束（类型/最大长度）。\n"
     "3. 字段带 default_value 时为该字段上次填写值，可作参考；证据与之冲突时以证据为准。\n"
-    "4. 只输出一个 JSON 对象：{\"字段key\": \"字段值或null\", ...}，不要输出任何其他文字。")
+    "4. 只输出一个 JSON 对象：{\"字段key\": \"字段值或null\", ...}，不要输出任何其他文字。\n"
+    "5. 片段标注[全文匹配]的字段，可基于片段内容的上下文归纳编写字段值；仍禁止无中生有。")
 
 PREDICT_CHUNK = 200  # 预判清单分块阈值：400字段×~150字符≈60K，超小窗口模型风险，分块串行
 PREDICT_SYSTEM = (
@@ -432,8 +433,10 @@ async def generate_values(tenant_id: str, placeholders: list[dict], chunks_by_ke
         for it in batch:
             key = _clean_for_prompt(it["key"], NAME_MAX)
             chunks = (chunks_by_key.get(it["key"]) or {}).get("chunks", [])
-            joined = "\n---\n".join(f"[片段{j + 1}] {c['content']}"
-                                    for j, c in enumerate(chunks[:MAX_EVIDENCE_CHUNKS])) or "（无检索证据）"
+            joined = "\n---\n".join(
+                (f"[全文匹配 片段{j + 1}] " if c.get("source") == "fulltext"
+                 else f"[片段{j + 1}] ") + c["content"]
+                for j, c in enumerate(chunks[:MAX_EVIDENCE_CHUNKS])) or "（无检索证据）"
             evidence.append(f"### 字段 {key}\n{joined}")
         return ("## 字段清单\n" + json.dumps(spec, ensure_ascii=False) +
                 "\n\n## 检索证据\n" + "\n\n".join(evidence) +
