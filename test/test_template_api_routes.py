@@ -15,10 +15,10 @@ import os
 import sys
 import types
 import zipfile
+from importlib.util import module_from_spec, spec_from_file_location
 from typing import ClassVar
 
 import pytest
-from importlib.util import module_from_spec, spec_from_file_location
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -766,8 +766,10 @@ def test_delete_template_cascades_fill_tasks(monkeypatch):
     monkeypatch.setattr(svc, "TplTemplateVersion", vers)
     tasks_model = _FakeTaskModel([
         types.SimpleNamespace(id="task_1", tenant_id="tenant_x",
-                              result_file_id="v1_result_task_1.docx"),
-        types.SimpleNamespace(id="task_2", tenant_id="tenant_x", result_file_id=""),
+                              result_file_id="v1_result_task_1.docx",
+                              flow_instance_id=""),
+        types.SimpleNamespace(id="task_2", tenant_id="tenant_x", result_file_id="",
+                              flow_instance_id=""),
     ])
     monkeypatch.setattr(svc, "TplFillTask", tasks_model)
     main = _FakeMainModel(row=types.SimpleNamespace(id="tpl_x", status="disabled"))
@@ -792,6 +794,139 @@ def test_delete_template_refuses_published(monkeypatch):
         lambda cls, tid, uid, **kw: types.SimpleNamespace(id="tpl_x", status="published")))
     ok, msg = TplTemplateService.delete_template("tpl_x", "tenant_x")
     assert not ok and "停用" in msg
+
+
+# ---------- 2026-09-25 删除守卫：进行中的流程使用中的范本拒删 ----------
+
+class _FakeExpr:
+    """谓词桩：支持 & 组合（service 里 (in_(...)) & (deleted == 0) & (status != ...)）。"""
+
+    def __and__(self, other):
+        return self
+
+
+class _FakeField(_FakeExpr):
+    """字段桩：in_/==/!= 都返回 _FakeExpr。"""
+
+    def in_(self, values):
+        return _FakeExpr()
+
+    def __eq__(self, other):
+        return _FakeExpr()
+
+    def __ne__(self, other):
+        return _FakeExpr()
+
+
+class _FakeFlowChatModel:
+    """FlowAiChat 桩：select().where() 可迭代出给定 会话id→flow_id 映射行。"""
+
+    session_id = _FakeField()
+    flow_id = object()
+
+    def __init__(self, rows):
+        self._rows = rows
+        self.where_exprs = None
+
+    def select(self, *fields):
+        return self
+
+    def where(self, *exprs):
+        self.where_exprs = list(exprs)
+        return self
+
+    def __iter__(self):
+        return iter(self._rows)
+
+
+class _FakeFlowInstanceModel:
+    """FlowInstance 桩：select().where() 可迭代出给定流程行（模拟谓词过滤后结果）。"""
+
+    id = _FakeField()
+    title = object()
+    deleted = _FakeField()
+    status = _FakeField()
+
+    def __init__(self, rows):
+        self._rows = rows
+        self.where_exprs = None
+
+    def select(self, *fields):
+        return self
+
+    def where(self, *exprs):
+        self.where_exprs = list(exprs)
+        return self
+
+    def __iter__(self):
+        return iter(self._rows)
+
+
+def test_delete_template_blocks_when_active_flow_uses_template(monkeypatch):
+    """守卫：范本被进行中的流程使用（deleted=0 且非 cancelled）→ 拒删且零副作用。"""
+    from api.db.services import template_fill_service as svc
+    monkeypatch.setattr(svc.TplTemplateService, "get_owned", classmethod(
+        lambda cls, tid, uid, **kw: types.SimpleNamespace(id="tpl_x", status="disabled")))
+    monkeypatch.setattr(svc, "TplTemplateVersion", _FakeVersionModel([]))
+    monkeypatch.setattr(svc, "TplFillTask", _FakeTaskModel([
+        types.SimpleNamespace(id="task_1", tenant_id="tenant_x", result_file_id="",
+                              flow_instance_id="sess_1"),
+    ]))
+    monkeypatch.setattr(svc, "FlowAiChat", _FakeFlowChatModel(
+        [types.SimpleNamespace(flow_id="flow_1")]))
+    monkeypatch.setattr(svc, "FlowInstance", _FakeFlowInstanceModel(
+        [types.SimpleNamespace(id="flow_1", title="采购流程A")]))
+    main = _FakeMainModel(row=types.SimpleNamespace(id="tpl_x", status="disabled"))
+    monkeypatch.setattr(svc.TplTemplateService, "model", main)
+    removed = []
+    monkeypatch.setattr(svc.settings, "STORAGE_IMPL", types.SimpleNamespace(
+        rm=lambda bucket, fnm: removed.append((bucket, fnm))))
+    ok, msg = svc.TplTemplateService.delete_template("tpl_x", "tenant_x")
+    assert not ok and "流程A" in msg and "作废" in msg, msg
+    assert not removed, "拒删时不得触碰 MinIO 对象"
+    assert not main.recorder.get("main_delete_executed"), "拒删时不得删主表行"
+
+
+def test_delete_template_allows_when_flows_all_cancelled_or_deleted(monkeypatch):
+    """用户口径：关联流程全被删除/作废（FlowInstance 谓词过滤后为空）→ 照常级联删除。"""
+    from api.db.services import template_fill_service as svc
+    monkeypatch.setattr(svc.TplTemplateService, "get_owned", classmethod(
+        lambda cls, tid, uid, **kw: types.SimpleNamespace(id="tpl_x", status="disabled")))
+    monkeypatch.setattr(svc, "TplTemplateVersion", _FakeVersionModel([]))
+    monkeypatch.setattr(svc, "TplFillTask", _FakeTaskModel([
+        types.SimpleNamespace(id="task_1", tenant_id="tenant_x", result_file_id="",
+                              flow_instance_id="sess_1"),
+    ]))
+    monkeypatch.setattr(svc, "FlowAiChat", _FakeFlowChatModel(
+        [types.SimpleNamespace(flow_id="flow_1")]))
+    monkeypatch.setattr(svc, "FlowInstance", _FakeFlowInstanceModel([]))
+    main = _FakeMainModel(row=types.SimpleNamespace(id="tpl_x", status="disabled"))
+    monkeypatch.setattr(svc.TplTemplateService, "model", main)
+    monkeypatch.setattr(svc.settings, "STORAGE_IMPL", types.SimpleNamespace(
+        rm=lambda bucket, fnm: None))
+    ok, msg = svc.TplTemplateService.delete_template("tpl_x", "tenant_x")
+    assert ok, msg
+    assert main.recorder.get("main_delete_executed"), "流程全部删除/作废后必须放行删除"
+
+
+def test_active_flow_usage_empty_sessions_skips_query(monkeypatch):
+    """对抗性：旧数据 flow_instance_id 全空串 → 不查库直接放行（级联语义不受影响）。"""
+    from api.db.services import template_fill_service as svc
+
+    def boom(*a, **kw):
+        raise AssertionError("session_ids 为空时不得发起 FlowAiChat 查询")
+
+    monkeypatch.setattr(svc, "FlowAiChat", types.SimpleNamespace(select=boom))
+    assert svc.TplTemplateService._active_flow_usage([]) == []
+
+
+def test_active_flow_usage_filters_deleted_and_cancelled():
+    """源码闸：谓词必须含 deleted == 0 与 status != 'cancelled'（假桩无法验证
+    SQL 语义，用源码断言防回退——口径为用户钦定：删除/作废不阻塞，归档阻塞）。"""
+    from api.db.services import template_fill_service as svc
+    src = inspect.getsource(svc.TplTemplateService._active_flow_usage)
+    assert "FlowInstance.deleted == 0" in src
+    assert 'FlowInstance.status != "cancelled"' in src
 
 
 class _FakeDeleteQuery:
@@ -958,7 +1093,7 @@ def test_delete_template_atomic_block_uses_bare_queries():
     单测桩/SQLite 不触发，只有真实 MySQL 暴露，故用源码断言防回退。"""
     from api.db.services import template_fill_service as svc
     src = inspect.getsource(svc.TplTemplateService.delete_template)
-    head, sep, atomic_block = src.partition("with DB.atomic():")
+    _head, sep, atomic_block = src.partition("with DB.atomic():")
     assert sep, "delete_template 必须包含 with DB.atomic(): 事务块"
     assert "cls.has_tasks(" not in atomic_block, \
         "事务内不得调用装饰器版 has_tasks（connection_context 退出 close 与 atomic 冲突）"
@@ -1438,9 +1573,9 @@ def test_spawn_thread_start_failure_self_heals(monkeypatch):
     # 防重入集合与线程启动失败兜底均已抽取到 spawn 模块：
     # 兜底分支内延迟 import（api.db.db_models.DB / TplFillTaskService.model）——
     # 替换真实模块属性即命中 import 解析结果（同 test_template_fill_executor.py 的 spawn 用例）
-    from rag.svr.template_fill import spawn as spawn_mod
-    import api.db.db_models as db_models
+    from api.db import db_models
     from api.db.services import template_fill_service as tpl_svc
+    from rag.svr.template_fill import spawn as spawn_mod
     monkeypatch.setattr(spawn_mod, "_running_tasks", set())
     monkeypatch.setattr(db_models, "DB", types.SimpleNamespace(connection_context=fake_ctx))
     monkeypatch.setattr(tpl_svc.TplFillTaskService, "model", model)

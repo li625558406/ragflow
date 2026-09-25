@@ -20,7 +20,7 @@
 """
 import logging
 
-from api.db.db_models import DB, TplFillTask, TplTemplate, TplTemplateVersion
+from api.db.db_models import DB, FlowAiChat, FlowInstance, TplFillTask, TplTemplate, TplTemplateVersion
 from api.db.services.common_service import CommonService
 from common import settings
 from common.misc_utils import get_uuid
@@ -164,9 +164,38 @@ class TplTemplateService(CommonService):
             cls.model.id == template_id).execute() > 0
 
     @classmethod
+    def _active_flow_usage(cls, session_ids: list) -> list:
+        """范本仍被「进行中」C 端流程使用的清单（2026-09-25 删除守卫）。
+
+        关联链路：tpl_fill_task.flow_instance_id 存的是画布会话 id（sys.session_id，
+        流程页即该流程影子会话 id，见 latest_done_in_context）→ FlowAiChat.session_id
+        反查 flow_id → FlowInstance。会话 id 经 FlowAiChat 归窄：c-chat 普通会话不会
+        命中任何 flow 行，天然只统计流程使用。
+
+        只拦截 deleted=0 且 status != 'cancelled' 的流程——删除/作废的流程不阻塞
+        （用户口径 2026-09-25：关联流程全被删除或作废即可删范本），归档（archived）
+        视为仍在使用。session_ids 为空（旧数据 flow_instance_id 全空串，无关联可查）
+        直接返回 []，不阻塞——与「范本删除级联清理任务」的既有语义一致。
+
+        调用方须已处于 DB 连接上下文内（delete_template 的 @DB.connection_context）。"""
+        if not session_ids:
+            return []
+        flow_ids = {r.flow_id for r in FlowAiChat.select(FlowAiChat.flow_id).where(
+            FlowAiChat.session_id.in_(session_ids))}
+        if not flow_ids:
+            return []
+        return list(FlowInstance.select(FlowInstance.id, FlowInstance.title).where(
+            (FlowInstance.id.in_(flow_ids))
+            & (FlowInstance.deleted == 0)
+            & (FlowInstance.status != "cancelled")))
+
+    @classmethod
     @DB.connection_context()
     def delete_template(cls, template_id: str, tenant_id: str) -> tuple:
         """删除模板（仅 draft/disabled）：级联删除其全部填写任务与成稿对象。
+
+        2026-09-25 新增守卫：范本仍被进行中的 C 端流程使用（见 _active_flow_usage）
+        则拒删——已删除/已作废的流程不阻塞；旧数据 flow_instance_id 空串不阻塞。
 
         2026-09-17 语义变更：原先「有填写任务记录即拒删」（历史成稿下载依赖
         bucket=template_id 的对象），但 C端流程删除（flow_service.delete_flow
@@ -195,6 +224,15 @@ class TplTemplateService(CommonService):
             return False, "已发布模板不可删除，请先停用"
         tasks = list(TplFillTask.select().where(
             TplFillTask.template_id == template_id))
+        # 2026-09-25 删除守卫：范本仍被进行中的 C 端流程使用则拒删
+        # （已删除/已作废的流程不阻塞，用户口径；归档视为仍在使用）
+        blocking = cls._active_flow_usage(
+            sorted({t.flow_instance_id for t in tasks if t.flow_instance_id}))
+        if blocking:
+            titles = "、".join(f"「{b.title}」" for b in blocking[:3])
+            suffix = f" 等 {len(blocking)} 个流程" if len(blocking) > 3 else ""
+            return False, (f"模板正被进行中的流程使用：{titles}{suffix}，"
+                           "请先将相关流程作废或删除后再删模板")
         for ver in TplTemplateVersion.select().where(TplTemplateVersion.template_id == template_id):
             for obj in (ver.original_file_id, ver.render_file_id):
                 if obj:
