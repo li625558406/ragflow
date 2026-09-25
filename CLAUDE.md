@@ -32,6 +32,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 | 文档 | 路径 | 包含内容 |
 |------|------|----------|
+| 终态预览默认成稿 | `D:\AI\ragflow2\CHANGE.md`（2026-09-25（十二）条目） | ★ 渲染源默认第三次翻转（用户拍板）：字节级验证替换链路正常（rewrite v2 落库+派生副本已桥接，LG11111 在成稿；bytes 搜索 False 是 docx 拆 run 假阴性须剥标签查）→ 用户仍要默认看成稿。preferResult 初始 true，showResult=wantResult&&preferResult&&!resultError 结构不动，「返回填写视图」切回看占位符/定位，失败回落。纯前端 2 文件 56 passed（**已部署 2026-09-25**：md5 双端一致） |
 | 槽位徽标对齐 B 端琥珀胶囊 | `D:\AI\ragflow2\CHANGE.md`（2026-09-25（十一）条目） | ★ 解（十）「颜色/UI 跟 B 端不一样」：B 端 highlightDocxRanges 徽标是琥珀实底胶囊（白字 10px 圆角）+琥珀 mark 底 #f59e0b22+2px 下划线，（十）误写成灰色 mono 文本。修法=stylePlaceholderSpan 逐属性复刻 B 端样式+全量重置（updateDocxHighlight 增量重涂防残留），renderText 同款 Tailwind；已填值蓝字 #1a66fb（B 端默认值回显同语义）。纯前端 2 文件 56 passed（**已部署 2026-09-25**：md5 双端一致） |
 | 填写视图 {{key}} 徽标形态 | `D:\AI\ragflow2\CHANGE.md`（2026-09-25（十）条目） | ★ C端「查看填写内容」填写视图槽位形态改造为 B 端同款「正文值+{{key}}徽标」：stylePlaceholderSpan/renderText 改「值节点+徽标节点」结构（已填=蓝色值+mono 小字徽标；未填=仅徽标+虚线框），中文名留 title，data-ph-key 定位契约不动；describePlaceholderSpan 签名刻意未动保 10 个严格断言用例；B 端范本库预览/审核面板用独立 highlightDocxRanges 零影响。纯前端 2 文件 5 套件 56 passed（**已部署 2026-09-25**：全量 md5 双端一致，chunk 命中新形态特征） |
 | 终态预览回填写视图 | `D:\AI\ragflow2\CHANGE.md`（2026-09-25（九）条目） | ★ 解「点击已填充字段预览不跳转、文档中没有填充点标识」：（五）终态自动切成稿渲染，成稿中占位符已被值替换 → 高亮/定位全失效。修法=终态默认回**工作副本**渲染（占位符标识+蓝字填写值+点击已填充字段跳转定位恢复），头部新增「查看成稿」⇄「返回填写视图」显式切换按钮保留（四）（五）的正文修改可见入口，成稿拉取失败回落。纯前端 2 文件 3 套件 24 passed（**已部署 2026-09-25**：build+dist 双端 md5 一致+nginx reload，chunk 命中新按钮文案） |

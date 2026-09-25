@@ -192,11 +192,12 @@ describe('TemplateFillLivePreview 权威产值覆盖', () => {
   });
 });
 
-// ── 成稿渲染源切换（demo03 事故，2026-09-25；2026-09-25 二次迭代改显式切换）──
-// 「查看填写内容」docx 分支此前只渲染模板工作副本（含 {{key}}），replace/rewrite
-// 改的非填写点正文只存在于成稿。曾改为「终态自动切成稿」，但成稿中占位符已被值
-// 替换——占位符标识消失、点击已填充字段无法定位（用户反馈回退）。终态默认仍渲染
-// 工作副本（占位符/定位/蓝字可用），「查看成稿」按钮显式切换，拉取失败回落工作副本。
+// ── 成稿渲染源切换（demo03 事故，2026-09-25；同日三迭代：显式切换 → 默认成稿）──
+// 「查看填写内容」docx 分支渲染源在「工作副本（含 {{key}}，占位符/定位可用）」与
+// 「成稿派生副本（replace/rewrite 的正文修改可见）」之间反复：自动切成稿 → 用户报
+// 占位符消失改回默认工作副本 → 用户确认替换生效但「默认展示成稿效果」拍板（同一
+// 份成稿里字段值已由值替换落地，正文修改也在）。终态默认成稿，「返回填写视图」
+// 切回工作副本看占位符徽标/点击定位；成稿拉取失败回落工作副本。
 describe('TemplateFillLivePreview 成稿渲染源切换', () => {
   const workBlob = new Blob(['work-copy']);
   const resultBlob = new Blob(['result-copy']);
@@ -247,7 +248,7 @@ describe('TemplateFillLivePreview 成稿渲染源切换', () => {
     return calls[calls.length - 1][0];
   };
 
-  it('终态 + 下载契约：默认仍渲染工作副本，点「查看成稿」后切到成稿派生副本', () => {
+  it('终态 + 下载契约：默认渲染成稿派生副本（2026-09-25 用户拍板），点「返回填写视图」切工作副本', () => {
     setPreview(docxPreviewData);
     workHook.mockReturnValue({
       data: workBlob,
@@ -260,29 +261,29 @@ describe('TemplateFillLivePreview 成稿渲染源切换', () => {
       error: undefined,
     } as never);
     renderPreview(cardTpl({ download: dl }));
-    // 默认填写视图：占位符标识/点击定位都在工作副本上
-    expect(renderedBlob()).toBe(workBlob);
-    fireEvent.click(screen.getByText('查看成稿'));
-    expect(renderedBlob()).toBe(resultBlob);
-  });
-
-  it('切到成稿后点「返回填写视图」切回工作副本', () => {
-    setPreview(docxPreviewData);
-    workHook.mockReturnValue({
-      data: workBlob,
-      isLoading: false,
-      error: undefined,
-    } as never);
-    resultHook.mockReturnValue({
-      data: resultBlob,
-      isLoading: false,
-      error: undefined,
-    } as never);
-    renderPreview(cardTpl({ download: dl }));
-    fireEvent.click(screen.getByText('查看成稿'));
+    // 默认成稿视图：replace/rewrite 的正文修改直接可见
     expect(renderedBlob()).toBe(resultBlob);
     fireEvent.click(screen.getByText('返回填写视图'));
     expect(renderedBlob()).toBe(workBlob);
+  });
+
+  it('切回填写视图后点「查看成稿」再切成稿', () => {
+    setPreview(docxPreviewData);
+    workHook.mockReturnValue({
+      data: workBlob,
+      isLoading: false,
+      error: undefined,
+    } as never);
+    resultHook.mockReturnValue({
+      data: resultBlob,
+      isLoading: false,
+      error: undefined,
+    } as never);
+    renderPreview(cardTpl({ download: dl }));
+    fireEvent.click(screen.getByText('返回填写视图'));
+    expect(renderedBlob()).toBe(workBlob);
+    fireEvent.click(screen.getByText('查看成稿'));
+    expect(renderedBlob()).toBe(resultBlob);
   });
 
   it('成稿拉取失败回落工作副本：预览仍可用（显示改前内容是可接受降级）', () => {

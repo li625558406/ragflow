@@ -214,12 +214,12 @@ export default function TemplateFillLivePreview({
   // 模板原文，replace/rewrite 的修改只存在于成稿——终态且有下载契约时改拉
   // 成稿派生副本（后端桥接保证与版本链最新内容一致），拉取失败回落工作副本。
   // 成稿中占位符已被值替换 → 占位符高亮/定位自然失效（span 映射为空），可接受。
-  // 终态渲染源：默认工作副本（占位符高亮/点击定位/蓝字填写值都在这条链路上，
-  // 2026-09-25 用户反馈「文档中没有填充点的标识、点击不跳转」后由自动切成稿改回
-  // 默认填写视图）；「查看成稿」显式切换后才拉成稿派生副本（replace/rewrite 改的
-  // 非填写点正文只存在于成稿），拉取失败回落工作副本。成稿中占位符已被值替换，
-  // 高亮/定位在该视图下自然失效。
-  const [preferResult, setPreferResult] = useState(false);
+  // 终态渲染源：默认成稿派生副本（2026-09-25 用户最终拍板「默认展示成稿效果」——
+  // replace/rewrite 改的非填写点正文只在成稿可见，字段值也已由值替换落地）；
+  // 「返回填写视图」切换回工作副本看占位符徽标/点击定位（该视图下占位符高亮/
+  // 定位可用而成稿正文修改不可见，两视图分工互斥是固有代价）。成稿拉取失败
+  // 回落工作副本，预览仍可用。
+  const [preferResult, setPreferResult] = useState(true);
   const {
     data: resultBlob,
     isLoading: resultLoading,
@@ -305,7 +305,7 @@ export default function TemplateFillLivePreview({
     setRenderFailed(false);
     setRenderedOk(false);
     setForceFidelity(false);
-    setPreferResult(false);
+    setPreferResult(true);
   }, [tpl.template_id]);
 
   const docxFidelity =
