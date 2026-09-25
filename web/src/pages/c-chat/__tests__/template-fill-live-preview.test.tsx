@@ -9,10 +9,16 @@
 // 本套件走 xlsx 文本分支（不走 docx-preview，渲染确定）：file_type='xlsx'
 // 时组件用 renderText 把 {{key}} 槽位替换成 values[key]，可直接断言屏幕文本。
 import type { ITemplateFillTemplate } from '@/hooks/template-fill-stream';
-import { fetchTemplateFillTaskProgress } from '@/hooks/use-template-fill-request';
+import {
+  fetchTemplateFillTaskProgress,
+  useTemplateFillFile,
+  useTemplateFillPreview,
+  useTemplateFillResultFile,
+} from '@/hooks/use-template-fill-request';
 import TemplateFillLivePreview from '@/pages/c-chat/template-fill-live-preview';
 import { render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { renderAsync } from 'docx-preview';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('docx-preview', () => ({ renderAsync: vi.fn() }));
 
@@ -39,6 +45,11 @@ vi.mock('@/hooks/use-template-fill-request', () => ({
     isLoading: false,
   })),
   useTemplateFillFile: vi.fn(() => ({
+    data: undefined,
+    isLoading: false,
+    error: undefined,
+  })),
+  useTemplateFillResultFile: vi.fn(() => ({
     data: undefined,
     isLoading: false,
     error: undefined,
@@ -173,5 +184,130 @@ describe('TemplateFillLivePreview 权威产值覆盖', () => {
     );
     const span = await waitFor(() => screen.getByText(NEW));
     expect(span.getAttribute('title')).toBe('tenderer_name');
+  });
+});
+
+// ── 成稿渲染源切换（demo03 事故，2026-09-25）────────────────────────────────
+// 「查看填写内容」docx 分支此前只渲染模板工作副本（含 {{key}}），replace/rewrite
+// 改的非填写点正文只存在于成稿——预览永远显示改前内容。终态且有下载契约时改拉
+// 成稿派生副本，拉取失败回落工作副本。
+describe('TemplateFillLivePreview 成稿渲染源切换', () => {
+  const workBlob = new Blob(['work-copy']);
+  const resultBlob = new Blob(['result-copy']);
+  const dl = {
+    doc_id: 'tplfill-task1',
+    filename: '成稿.docx',
+    mime_type: 'docx',
+    url: '/api/v1/agents/download?obj=tplfill-task1',
+  };
+  const docxPreviewData = {
+    code: 0,
+    data: { file_type: 'docx', items: [] },
+  };
+
+  const previewHook = vi.mocked(useTemplateFillPreview);
+  const workHook = vi.mocked(useTemplateFillFile);
+  const resultHook = vi.mocked(useTemplateFillResultFile);
+
+  const setPreview = (d: unknown) =>
+    previewHook.mockReturnValue({
+      data: d,
+      isLoading: false,
+    } as never);
+
+  beforeEach(() => {
+    vi.mocked(renderAsync).mockReset();
+    vi.mocked(renderAsync).mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    // 恢复工厂默认，避免 mockReturnValue 泄漏到上面的权威覆盖用例
+    setPreview(previewData);
+    workHook.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      error: undefined,
+    } as never);
+    resultHook.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      error: undefined,
+    } as never);
+  });
+
+  const renderedBlob = () => {
+    const calls = vi.mocked(renderAsync).mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    return calls[calls.length - 1][0];
+  };
+
+  it('终态 + 下载契约：渲染源切到成稿派生副本', () => {
+    setPreview(docxPreviewData);
+    workHook.mockReturnValue({
+      data: workBlob,
+      isLoading: false,
+      error: undefined,
+    } as never);
+    resultHook.mockReturnValue({
+      data: resultBlob,
+      isLoading: false,
+      error: undefined,
+    } as never);
+    renderPreview(cardTpl({ download: dl }));
+    expect(renderedBlob()).toBe(resultBlob);
+  });
+
+  it('成稿拉取失败回落工作副本：预览仍可用（显示改前内容是可接受降级）', () => {
+    setPreview(docxPreviewData);
+    workHook.mockReturnValue({
+      data: workBlob,
+      isLoading: false,
+      error: undefined,
+    } as never);
+    resultHook.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      error: new Error('成稿获取失败 500'),
+    } as never);
+    renderPreview(cardTpl({ download: dl }));
+    expect(renderedBlob()).toBe(workBlob);
+  });
+
+  it('非终态（filling）：不切换，成稿可能尚不存在', () => {
+    setPreview(docxPreviewData);
+    workHook.mockReturnValue({
+      data: workBlob,
+      isLoading: false,
+      error: undefined,
+    } as never);
+    resultHook.mockReturnValue({
+      data: resultBlob,
+      isLoading: false,
+      error: undefined,
+    } as never);
+    renderPreview(cardTpl({ status: 'filling', download: dl }));
+    expect(renderedBlob()).toBe(workBlob);
+  });
+
+  it('无下载契约（download.url 缺失）：不切换', () => {
+    setPreview(docxPreviewData);
+    workHook.mockReturnValue({
+      data: workBlob,
+      isLoading: false,
+      error: undefined,
+    } as never);
+    renderPreview(cardTpl({ download: { ...dl, url: undefined } }));
+    expect(renderedBlob()).toBe(workBlob);
+  });
+
+  it('xlsx 分支永不切换（成稿 hook 收到 undefined）', () => {
+    workHook.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      error: undefined,
+    } as never);
+    renderPreview(cardTpl({ download: dl }));
+    expect(resultHook).toHaveBeenCalledWith(undefined);
+    expect(vi.mocked(renderAsync)).not.toHaveBeenCalled();
   });
 });

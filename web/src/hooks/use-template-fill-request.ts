@@ -4,6 +4,7 @@ import type {
   ITemplateFillUnfilled,
 } from '@/hooks/template-fill-stream';
 import api from '@/utils/api';
+import { getAuthorization } from '@/utils/authorization-util';
 import { downloadFileFromBlob } from '@/utils/file-util';
 import request from '@/utils/request';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -615,5 +616,36 @@ export function useTemplateFillFile(id: string) {
       return blob;
     },
     enabled: !!id,
+  });
+}
+
+// ── 成稿派生副本 blob（终态预览渲染用）─────────────────────────────────
+
+// 「查看填写内容」预览此前只渲染模板工作副本（含 {{key}}）+ values 覆盖——
+// replace/rewrite 改的是非填写点正文（只存在于成稿，工作副本永不变化），
+// 预览永远显示改前正文（demo03 事故：模型说改好了、点开预览还是旧内容）。
+// 终态且有下载契约时改拉成稿派生副本 {tenant}-downloads/tplfill-{task_id}
+// （后端 modify/replace/rewrite 桥接保证它与版本链最新内容一致）。
+// fetch 带 Authorization（/agents/download 端点不读 cookie，直链必 401）。
+export function useTemplateFillResultFile(dl?: ITemplateFillDownload | null) {
+  return useQuery({
+    queryKey: ['templateFillResultFile', dl?.doc_id],
+    queryFn: async () => {
+      const res = await fetch(dl!.url!, {
+        headers: { Authorization: getAuthorization() },
+      });
+      if (!res.ok) {
+        throw new Error(`成稿获取失败 ${res.status}`);
+      }
+      const blob = await res.blob();
+      if (!blob || blob.size === 0) {
+        throw new Error('文件为空');
+      }
+      if (blob.type.includes('application/json')) {
+        throw new Error('成稿获取失败');
+      }
+      return blob;
+    },
+    enabled: Boolean(dl?.url),
   });
 }

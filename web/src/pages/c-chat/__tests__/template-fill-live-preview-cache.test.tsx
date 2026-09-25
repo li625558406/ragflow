@@ -36,6 +36,11 @@ vi.mock('@/hooks/use-template-fill-request', () => ({
     isLoading: false,
     error: undefined,
   })),
+  useTemplateFillResultFile: vi.fn(() => ({
+    data: undefined,
+    isLoading: false,
+    error: undefined,
+  })),
   fetchTemplateFillTaskProgress: vi.fn(() => Promise.resolve(null)),
 }));
 

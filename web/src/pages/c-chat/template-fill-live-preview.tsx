@@ -11,6 +11,7 @@ import {
   fetchTemplateFillTaskProgress,
   useTemplateFillFile,
   useTemplateFillPreview,
+  useTemplateFillResultFile,
   type TemplateFillProgressData,
 } from '@/hooks/use-template-fill-request';
 import {
@@ -205,10 +206,25 @@ export default function TemplateFillLivePreview({
   // 文件与 preview 并行拉取提速
   const docxEnabled = fileType === 'docx';
   const {
-    data: fileBlob,
-    isLoading: fileLoading,
-    error: fileError,
+    data: workBlob,
+    isLoading: workLoading,
+    error: workError,
   } = useTemplateFillFile(docxEnabled ? tpl.template_id : '');
+  // 终态成稿渲染源切换（demo03 事故）：工作副本里的 {{key}} 之外的正文来自
+  // 模板原文，replace/rewrite 的修改只存在于成稿——终态且有下载契约时改拉
+  // 成稿派生副本（后端桥接保证与版本链最新内容一致），拉取失败回落工作副本。
+  // 成稿中占位符已被值替换 → 占位符高亮/定位自然失效（span 映射为空），可接受。
+  const {
+    data: resultBlob,
+    isLoading: resultLoading,
+    error: resultError,
+  } = useTemplateFillResultFile(docxEnabled ? tpl.download : undefined);
+  const wantResult =
+    docxEnabled && tpl.status === 'filled' && Boolean(tpl.download?.url);
+  const showResult = wantResult && !resultError;
+  const fileBlob = showResult ? resultBlob : workBlob;
+  const fileLoading = showResult ? resultLoading : workLoading;
+  const fileError = showResult ? undefined : workError;
 
   // 超大文档防线（派生判定而非 state+effect）：blob 到达的同一 commit 内守卫即
   // 生效——旧写法会在同一 commit 先以 oversize=false 白渲染一遍大文件再翻转分支
