@@ -1,5 +1,21 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-25（四）DocumentRewrite replace/rewrite 桥接 tplfill 派生副本（已部署 2026-09-25 + push 259b0c9d）
+
+**主题**：用户实测流程 demo03「把 6.1法定条件改成 LG11111」，AI 回复成功但「没有渲染展示到文档中」。生产字节实锤：**替换本身成功**（版本链 v2=rewrite-7eef7026 第 40 段即 `6.1法定条件：LG11111`，977 段无丢失、参数方向正确），败在**可见性**——填写进度卡的「查看填写内容」预览/下载走 `{tenant}-downloads/tplfill-{task_id}` 派生副本（实测仍为旧字节），而 replace/rewrite 只写版本链新对象（rewrite-{uuid}）从不动派生副本；流程页签用户眼中进度卡就是「文档」。与 09-17「就地修改可见性修复」同一类缺口：modify 当时有桥接，replace/rewrite 漏了。
+
+**改动**（后端单文件 `agent/tools/document_rewrite.py` + 测试 +2，doc_rewrite 三套件 59 passed）：
+- `_doc_for_action` 返回值扩展 7 元组（新增 doc_id=链感知最新成稿对象名，flow 场景空串），5 处解构同步。
+- 新增 `_bridge_fill_copy`：chat 场景 tplfill- 成稿落盘后**同名覆盖** `{tenant}-downloads/tplfill-{root_id}`（复刻 modify 同款桥接；put 返回 None 也视为失败，与 `_storage_put` 同口径）；失败不当作修改失败（主成稿已落盘+新卡已出），回执追加「预览副本同步失败」提示。
+- `_replace`/`_rewrite` 落盘后调用（rollback 未动：它只回退历史版本，语义上新卡即权威）。
+- 测试：桥接写入字节含替换内容验证 + MinIO 故障降级（主流程成功语义不变、新卡照常发出）。
+
+**数据修复**：demo03 任务 52c472da 的派生副本已用 v2 字节（110750 B）同名覆盖并回读验证（LG11111 命中段 40）。
+
+**遗留**：【LG】测试02 v3 污染段修正仍待用户发指令；（二）（三）遗留各项继续有效。
+
+**部署清单**（后端单文件 SCP + 容器重启）：`agent/tools/document_rewrite.py`；前端零改动。
+
 ## 2026-09-25（三）DocumentRewrite outline 取原文 + replace 参数颠倒防御（已部署 2026-09-25 + push 4a465f02）
 
 **主题**：（二）上线后用户实测流程【LG】测试02「把 6.1法定条件改成 LG11111」仍失败且第一遍没识别到。诊断：**replace 机制正常**（v3 总段数 977 无丢失），败在 agent LLM 填参——outline 只有章节标题拿不到确切原文，第一遍全凭猜测且**参数填反**：`find_text='6.1法定条件'`（短语当旧文）+ `replace_text='6.1法定条件：符合…条件。'`（整句当新文）→ 产出重复膨胀污染段；第二遍基于污染文本替换残留尾巴 → v3 段 40 = `6.1法定条件：LG11111：符合《…》第二十二条第一款规定的条件。`（LG11111 在但句子结构已坏）。
