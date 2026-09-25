@@ -1,6 +1,6 @@
 # CHANGE.md — 项目迭代记录
 
-## 2026-09-25 流程页签 DocumentRewrite 定位范本成稿卡（成稿卡优先于流程版本）
+## 2026-09-25 流程页签 DocumentRewrite 定位范本成稿卡（成稿卡优先于流程版本）（已部署 2026-09-25）
 
 **主题**：用户实测「范本填写完成后说『把 6.1法定条件 的内容改成 LG11111』」AI 定位不到——法定条件是范本固定正文（非填写点），填写/modify 链路（含 09-24 二档降级）按设计不碰它；正确链路 DocumentRewrite（按节重写）在流程页签却报「本会话没有可用的成稿卡片」。根因：**flow-ai-panel 发送只传 `flow_version_id` 不传 `recent_downloads`**（c-chat 有传），流程无版本时后端 `_resolve_doc_id` 恒空。范本成稿本身是受支持的（download 契约 `doc_id=tplfill-{task_id}` 存 downloads 桶，工具已适配剥前缀+`source_type='chat_fill'` 版本链）。
 
