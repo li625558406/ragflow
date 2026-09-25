@@ -138,3 +138,96 @@ def test_sectpr_in_template_paragraph_not_duplicated():
     assert sect_count == 0
     texts = [pp.text for pp in out.paragraphs]
     assert "新段一。" in texts and "新段二。" in texts
+
+
+# ---------- find_and_replace 精准替换（2026-09-25 事故：整章重写替换单行修改）----------
+
+def _fr_import():
+    from rag.svr.document_rewrite.docx_edit import find_and_replace
+    return find_and_replace
+
+
+def test_find_replace_basic_count_and_text():
+    fr = _fr_import()
+    doc = _build_doc()
+    count, hits = fr(doc, "第二节正文", "LG11111")
+    assert count == 1
+    out = _roundtrip(doc)
+    texts = [p.text for p in out.paragraphs]
+    assert "LG11111。" in texts
+    assert hits or count == 0
+
+
+def test_find_replace_cross_run_match():
+    """跨 run 场景：目标文本被拆在多个 run 里，逐字子串仍命中并整段重写。"""
+    fr = _fr_import()
+    doc = Document()
+    doc.add_heading("节", level=1)
+    p = doc.add_paragraph("前缀")
+    p.add_run("符合《政府采购法》第二十")
+    p.add_run("二条规定的条件。后缀")
+    count, _ = fr(doc, "符合《政府采购法》第二十二条规定的条件。", "LG11111")
+    assert count == 1
+    out = _roundtrip(doc)
+    assert out.paragraphs[1].text == "前缀LG11111后缀"
+
+
+def test_find_replace_no_match_returns_zero_and_doc_untouched():
+    """对抗：找不到时零改动（事务语义），调用方据此给引导文案。"""
+    fr = _fr_import()
+    doc = _build_doc()
+    before = _roundtrip(doc)
+    count, hits = fr(doc, "根本不存在的原文内容XYZ", "新文本")
+    assert count == 0 and hits == []
+    after_texts = [p.text for p in _roundtrip(doc).paragraphs]
+    before_texts = [p.text for p in before.paragraphs]
+    assert after_texts == before_texts
+
+
+def test_find_replace_multiple_occurrences_all_replaced():
+    fr = _fr_import()
+    doc = Document()
+    doc.add_heading("节", level=1)
+    doc.add_paragraph("甲方：A公司。乙方见证甲方履约。")
+    doc.add_paragraph("甲方义务另列。")
+    count, hits = fr(doc, "甲方", "采购人")
+    assert count == 3
+    assert len(hits) == 2
+    out = _roundtrip(doc)
+    assert out.paragraphs[1].text == "采购人：A公司。乙方见证采购人履约。"
+    assert out.paragraphs[2].text == "采购人义务另列。"
+
+
+def test_find_replace_keeps_first_run_format_and_drops_hyperlink():
+    """整段重写保留首 run 字符格式；超链接/域先移除防新旧文本拼接
+    （同 api/utils/docx_edit._replace_para_text 口径）。"""
+    from docx.oxml import OxmlElement
+
+    fr = _fr_import()
+    doc = Document()
+    doc.add_heading("节", level=1)
+    p = doc.add_paragraph("")
+    r1 = p.add_run("链接前")
+    r1.font.size = Pt(14)
+    hl = OxmlElement("w:hyperlink")
+    r_in = OxmlElement("w:r")
+    t = OxmlElement("w:t")
+    t.text = "链接内文本"
+    r_in.append(t)
+    hl.append(r_in)
+    p._p.append(hl)
+    p.add_run("链接后")
+    count, _ = fr(doc, "链接前链接内文本链接后", "替换完成")
+    assert count == 1
+    out = _roundtrip(doc)
+    np = out.paragraphs[1]
+    assert np.text == "替换完成"
+    assert np.runs[0].font.size.pt == 14
+
+
+def test_find_replace_empty_doc_no_crash():
+    """对抗：空文档/无段落不崩溃，返回零。"""
+    fr = _fr_import()
+    doc = Document()
+    count, hits = fr(doc, "任意", "替换")
+    assert count == 0 and hits == []

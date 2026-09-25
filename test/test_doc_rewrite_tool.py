@@ -99,7 +99,9 @@ def test_meta_declaration():
     from agent.tools.document_rewrite import DocumentRewriteParam
     p = DocumentRewriteParam()
     assert p.meta["name"] == "DocumentRewrite"
-    assert set(p.meta["parameters"]) >= {"action", "section_no", "instruction", "version_no", "doc_id"}
+    assert set(p.meta["parameters"]) >= {"action", "find_text", "replace_text",
+                                         "section_no", "instruction", "version_no", "doc_id"}
+    assert "replace" in p.meta["parameters"]["action"]["enum"]
     assert p.meta["parameters"]["action"]["required"] is True
 
 
@@ -368,6 +370,72 @@ def test_emit_download_resets_corrupted_pending():
     assert dl[0]["doc_id"] == "rewrite-v2"
     for key in ("filename", "name", "mime_type", "size", "url"):
         assert key in dl[0]
+
+
+# ---------- replace（精准替换：2026-09-25 事故「改成X」曾被设计成整章重写）----------
+
+def test_replace_produces_contract_and_applies_change():
+    """happy path：docx 实际被改 + 契约/版本登记 source_type=replace。"""
+    canvas = FakeCanvas(sys_vars=_recent())
+    tool = _make_tool(canvas)
+    reg_calls = {}
+
+    def fake_reg(tenant_id, root_id, new_blob, file_type, base_file_name, **kw):
+        reg_calls.update(tenant_id=tenant_id, root_id=root_id, blob=new_blob, **kw)
+        return {"version_no": 2, "obj": "rewrite-task1-v2", "file_name": "方案_v2.docx"}
+
+    with patch.object(DocumentRewrite, "_load_chat_blob",
+                      MagicMock(return_value=(_docx_blob(), DOC_ID, BASE_NAME))), \
+            patch("agent.tools.document_rewrite.list_versions", return_value=[]), \
+            patch("agent.tools.document_rewrite.ensure_base_version") as ens, \
+            patch("agent.tools.document_rewrite.register_chat_version", side_effect=fake_reg):
+        out = tool._invoke(action="replace",
+                           find_text="第二节正文", replace_text="LG11111")
+
+    # 文档真实改动：登记收到的新 blob 里第二节正文已被替换、其他内容原样
+    changed = Document(io.BytesIO(reg_calls["blob"]))
+    texts = [p.text for p in changed.paragraphs]
+    assert "LG11111。" in texts and "第一节正文。" in texts
+    assert reg_calls["source_type"] == "replace"
+    assert reg_calls["root_id"] == "task1"
+    assert "第二节正文" in reg_calls["instruction"]
+    ens.assert_called_once()
+    dl = canvas.globals["sys.pending_downloads"]
+    assert len(dl) == 1 and dl[0]["doc_id"] == "rewrite-task1-v2"
+    assert "精准替换" in out and "共 1 处" in out
+
+
+def test_replace_no_match_zero_change_and_guidance():
+    """对抗：找不到原文必须零改动（不落版本不出卡），给可执行的引导文案。"""
+    canvas = FakeCanvas(sys_vars=_recent())
+    tool = _make_tool(canvas)
+    with patch.object(DocumentRewrite, "_load_chat_blob",
+                      MagicMock(return_value=(_docx_blob(), DOC_ID, BASE_NAME))), \
+            patch("agent.tools.document_rewrite.register_chat_version") as reg:
+        out = tool._invoke(action="replace",
+                           find_text="文档里根本不存在的句子XYZ", replace_text="新文本")
+    reg.assert_not_called()
+    assert canvas.globals["sys.pending_downloads"] == []
+    assert "未找到" in out and "outline" in out
+
+
+def test_replace_missing_params():
+    canvas = FakeCanvas(sys_vars=_recent())
+    tool = _make_tool(canvas)
+    out1 = tool._invoke(action="replace", find_text="", replace_text="x")
+    out2 = tool._invoke(action="replace", find_text="原文", replace_text="  ")
+    assert "find_text" in out1
+    assert "replace_text" in out2
+    assert canvas.globals["sys.pending_downloads"] == []
+
+
+def test_replace_short_find_text_rejected():
+    """对抗：过短 find_text 全篇逐字替换极易误伤，直接拒绝。"""
+    canvas = FakeCanvas(sys_vars=_recent())
+    tool = _make_tool(canvas)
+    out = tool._invoke(action="replace", find_text="的", replace_text="X")
+    assert "过短" in out
+    assert canvas.globals["sys.pending_downloads"] == []
 
 
 # ---------- versions ----------

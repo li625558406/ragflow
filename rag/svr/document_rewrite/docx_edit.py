@@ -8,6 +8,9 @@
 - 新 run rPr 拷贝自「正文特征 run」（被删段落中非加粗且文本最长的 run，
   跳过加粗标题 run；全加粗时退化为最长 run）；
 - 支持 1段→N段、N段→1段、N段→0段、空节→N段。
+- find_and_replace：段落内逐字精准替换（零 LLM 重生成，文档其余内容一字不动）——
+  2026-09-25 事故教训：「把某条改成X」曾被设计成整章 LLM 重写，目标节定位错 +
+  92 段截到 50 段静默丢内容，精准局部改动必须走文本层替换。
 原 Document 对象就地修改；版本化由调用方负责（先读 blob → 改 → 存新 blob）。
 """
 from __future__ import annotations
@@ -90,3 +93,34 @@ def replace_section_paragraphs(doc, section: dict, new_paragraphs: list[str]) ->
         _insert_new_paragraph(old[0], doc, pPr_tmpl, rPr_tmpl, text)
     for p in old:
         p._p.getparent().remove(p._p)
+
+
+def find_and_replace(doc, find_text: str, replace_text: str) -> tuple[int, list[int]]:
+    """段落内逐字精准替换：把 find_text 的全部出现替换为 replace_text。
+
+    匹配口径：p.text 逐字子串（含段内多处）；替换实现为整段文本重写、保留段落
+    pPr 与首 run 字符格式（同 api/utils/docx_edit._replace_para_text 口径），
+    超链接/w:fldSimple 先移除——p.runs 不覆盖其内部 run，残留会致新旧文本拼接。
+    找不到零改动（事务语义），返回 (替换总处数, 被替换段落在 doc.paragraphs 空间的索引)。
+    """
+    count = 0
+    hit_idx = []
+    for i, p in enumerate(doc.paragraphs):
+        text = p.text or ""
+        if find_text not in text:
+            continue
+        new_text = text.replace(find_text, replace_text)
+        el = p._p
+        for child in list(el):
+            if child.tag in (qn("w:hyperlink"), qn("w:fldSimple")):
+                el.remove(child)
+        runs = p.runs
+        if runs:
+            runs[0].text = new_text
+            for r in runs[1:]:
+                r.text = ""
+        else:
+            p.add_run(new_text)
+        count += text.count(find_text)
+        hit_idx.append(i)
+    return count, hit_idx

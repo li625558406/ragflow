@@ -1,11 +1,12 @@
 # test/test_doc_rewrite_rewriter.py
 # -*- coding: utf-8 -*-
 """LLM 重写对抗测试：合法JSON/围栏包裹/尾部花括号杂文/非法JSON重试/LLM调用异常重试/
-空段落/超限截断/超长节报错。"""
+空段落/超限拒绝/输出体量闸/超长节报错。"""
 import pytest
 
 from rag.svr.document_rewrite.rewriter import (
     _MAX_PARAGRAPHS,
+    _MIN_OUTPUT_RATIO,
     _parse_paragraphs,
     rewrite_section,
 )
@@ -107,10 +108,57 @@ async def test_section_too_long_raises_before_llm():
     assert mdl.calls == 0
 
 
-def test_paragraph_limits():
+def test_paragraph_over_limit_rejected_not_truncated():
+    """事故回归（2026-09-25）：段数超限曾是静默截断 92→50，整节尾部内容被销毁仍照常落版本。
+    现契约：超限一律拒绝（返回 None 触发重试），绝不静默丢段。"""
     paras = [f"段{i}" for i in range(_MAX_PARAGRAPHS + 10)]
     out = _parse_paragraphs('{"paragraphs": ' + repr(paras).replace("'", '"') + "}")
-    assert out is not None
-    assert len(out) <= _MAX_PARAGRAPHS
+    assert out is None
+
+
+def test_paragraph_overlong_rejected_not_truncated():
+    """单段超长同理：拒绝（None 触发重试），不再截断到 2000 字静默丢文。"""
     long_out = _parse_paragraphs('{"paragraphs": ["' + "长" * 3000 + '"]}')
-    assert long_out is not None and len(long_out[0]) == 2000
+    assert long_out is None
+
+
+@pytest.mark.asyncio
+async def test_output_volume_below_ratio_rejects_and_fails_with_clear_message():
+    """事故回归：LLM 重生成 92 段被截到 50 段后体量只有源文约一半，仍照常落版本。
+    现契约：输出总字数低于源文 _MIN_OUTPUT_RATIO → 拒绝保存（重试一次仍不足则报错，
+    文案须讲明「防内容丢失已放弃」，不得落版本）。"""
+    src = "源" * 1000
+    bad = '{"paragraphs": ["' + "短" * (int(1000 * _MIN_OUTPUT_RATIO) - 10) + '"]}'
+    mdl = FakeMdl([bad, bad])
+    with pytest.raises(ValueError, match="内容丢失"):
+        await rewrite_section("t1", "改", "节", src, "", "", mdl=mdl)
+    assert mdl.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_output_volume_recovers_on_second_try():
+    mdl = FakeMdl(
+        ['{"paragraphs": ["太短"]}',
+         '{"paragraphs": ["' + "够" * int(1000 * _MIN_OUTPUT_RATIO + 100) + '"] }']
+    )
+    out = await rewrite_section("t1", "改", "节", "源" * 1000, "", "", mdl=mdl)
+    assert len(out[0]) == int(1000 * _MIN_OUTPUT_RATIO + 100)
+    assert mdl.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_output_volume_gate_not_applied_to_tiny_sections():
+    """微小源文（引导词/空节）不做体量闸，正常改写不被误拒。"""
+    mdl = FakeMdl(['{"paragraphs": ["一段简短的新正文。"]}'])
+    out = await rewrite_section("t1", "改", "节", "原文", "", "", mdl=mdl)
+    assert out == ["一段简短的新正文。"]
+    assert mdl.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_rewrite_llm_error_final_message_unchanged():
+    """LLM 异常路径文案保持「重写失败」不变（体量闸文案只属于体量失败）。"""
+    boom = RuntimeError("x")
+    mdl = FakeMdl([boom, boom])
+    with pytest.raises(ValueError, match="重写失败"):
+        await rewrite_section("t1", "改", "节", "内容", "", "", mdl=mdl)

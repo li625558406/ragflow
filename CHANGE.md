@@ -1,5 +1,19 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-25（二）DocumentRewrite 精准替换 replace + 截断数据丢失根修（未部署）
+
+**主题**：用户实测「把 6.1法定条件 的内容改成 LG11111」——AI 回复「已改好、生成 v2」，但生产服务器 v2 对象逐段校验**没有 LG11111**，第 40 段原文原样。生产实锤三层叠加缺陷：①**目标节定位错**：切节只到「章」级，6.1法定条件在第 40 段属第 4 节《第一章 采购邀请书》（段 18-70），agent 却猜了第 5 节《第二章 须知》（段 71-170）去重写——6.1 根本不在被替换区间；②**语义粒度错配**：单句替换被设计成整章 LLM 全量重写（99 段正文重生成）；③**静默截断数据丢失**：日志实锤 `[rewrite] paragraph count truncated 92 -> 50`，v1→v2 全文净丢 49 段（①②③④⑤被合并、尾部条款丢失），版本照常落库、成稿卡照常发出，无任何失败信号。**教训：宁诚实失败，不静默丢文。**
+
+**改动**（后端 3 文件 + 测试 3 文件，88 passed）：
+- `agent/tools/document_rewrite.py`：新增 **action=replace 精准替换**——`find_text`（须与正文逐字一致）+ `replace_text`，走 `find_and_replace` docx 文本层替换，**零 LLM 重生成、其余内容一字不动**；找不到零改动给引导（outline 核对原文 / 改用 rewrite）；find_text<2 字拒绝（防全篇误伤）；版本登记 `source_type="replace"`；meta description 五 action 重排并引导「把XX改成YY」优先 replace、整节语义改写（润色/扩写）才用 rewrite。
+- `rag/svr/document_rewrite/docx_edit.py`：新增 `find_and_replace`（段落内逐字子串全替、跨 run 整段重写保留段落 pPr+首 run 字符格式、移除 w:hyperlink/w:fldSimple 防新旧拼接，口径同 api/utils/docx_edit._replace_para_text）；找不到事务性零改动。
+- `rag/svr/document_rewrite/rewriter.py`：**截断改拒绝**——段数>50、单段>2000 字一律 return None 触发重试（原为静默截断照常落版本）；新增**输出体量闸** `_MIN_OUTPUT_RATIO=0.6`：源文≥200 字时输出总字数 < 源文 60% 视为疑似截断/漏段，拒绝保存（重试一次仍不足报错，文案明说「为防止内容丢失已放弃保存」）；微小源文不启用闸防误拒。
+- 测试：rewriter 反转截断契约用例（超限拒绝/体量闸拒绝+文案/微小节豁免/LLM 异常路径文案不变）；docx_edit +6（跨 run 命中/零命中零改动/多处全替/保首 run 格式+剥超链接/空文档）；tool +5（replace 契约+真改验证/零命中不落版本/缺参/过短拒绝/meta 枚举）。
+
+**遗留**：①outline 只到「章」级，agent 定位小条款所在节仍靠猜（replace 逐字匹配后不再依赖节定位，风险大幅收敛；outline 附条款行增强有需求再做）；②v2 受损文档留在用户版本链，需用户说「回退到上一版」恢复；③用户「压缩改写」类合法指令若输出低于源文 60% 会被体量闸拒绝（诚实失败优于静默丢文，可拆细指令绕过）。
+
+**部署清单**（后端 3 文件成套 SCP + 容器重启）：`agent/tools/document_rewrite.py`、`rag/svr/document_rewrite/docx_edit.py`、`rag/svr/document_rewrite/rewriter.py`；前端零改动。
+
 ## 2026-09-25 流程页签 DocumentRewrite 定位范本成稿卡（成稿卡优先于流程版本）（已部署 2026-09-25）
 
 **主题**：用户实测「范本填写完成后说『把 6.1法定条件 的内容改成 LG11111』」AI 定位不到——法定条件是范本固定正文（非填写点），填写/modify 链路（含 09-24 二档降级）按设计不碰它；正确链路 DocumentRewrite（按节重写）在流程页签却报「本会话没有可用的成稿卡片」。根因：**flow-ai-panel 发送只传 `flow_version_id` 不传 `recent_downloads`**（c-chat 有传），流程无版本时后端 `_resolve_doc_id` 恒空。范本成稿本身是受支持的（download 契约 `doc_id=tplfill-{task_id}` 存 downloads 桶，工具已适配剥前缀+`source_type='chat_fill'` 版本链）。

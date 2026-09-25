@@ -65,21 +65,35 @@ class DocumentRewriteParam(ToolParamBase):
     def __init__(self):
         self.meta: ToolMeta = {
             "name": "DocumentRewrite",
-            "description": """文档局部重写工具。对当前会话最近生成的成稿文档（Word）做按节重写。四个 action：
+            "description": """文档局部修改工具。对当前会话最近生成的成稿文档（Word）做精准替换或按节重写。五个 action：
 
-1. outline：返回文档的带编号章节目录。当用户说「重写第N节/某节」但不确定节号，或没有指明操作文档时，先调用它确认。
-2. rewrite：重写某一节。需要 section_no（节号，来自 outline）和 instruction（用户对该节的重写要求，原样转述用户的补充要求）。
-   完成后返回新版本说明，用户会看到新的成稿卡片。多次重写请逐节顺序进行，请勿在同一轮并行发起多个 rewrite。
-3. versions：列出该文档的全部历史版本（版本号/来源/说明）。
-4. rollback：回退到某个历史版本。需要 version_no（versions 返回的版本号）。回退会生成一个新版本（内容为历史版），不会丢失任何版本。
+1. outline：返回文档的带编号章节目录。当不确定节号，或没有指明操作文档时，先调用它确认。
+2. replace：精准替换。把文档中某句/某条原文逐字替换为指定文本，文档其余内容一字不动。需要 find_text（要被替换的原文片段，必须与文档正文逐字一致，尽量给完整句子或条款）和 replace_text（新文本）。
+   当用户说「把XX内容改成/换成/替换成YY」且能从对话上下文或 outline 确认原文片段时，优先用 replace 而不是 rewrite——replace 零重生成、绝不损伤文档其他内容。
+3. rewrite：重写某一节（整节正文由 LLM 按要求重新编写）。需要 section_no（节号，来自 outline）和 instruction（用户对该节的重写要求，原样转述用户的补充要求）。
+   只在需要按语义改写整节（润色/扩写/调整表述/补充内容）时使用，不要用它做单句替换。完成后返回新版本说明，用户会看到新的成稿卡片。多次重写请逐节顺序进行，请勿在同一轮并行发起多个 rewrite。
+4. versions：列出该文档的全部历史版本（版本号/来源/说明）。
+5. rollback：回退到某个历史版本。需要 version_no（versions 返回的版本号）。回退会生成一个新版本（内容为历史版），不会丢失任何版本。
 
-使用时机：用户对已生成的成稿说「把第N节重写/重新写一下XX部分/回退到上一版」时使用。文档默认取本会话最近一张成稿卡（含范本填写生成的成稿）；本会话没有成稿卡时才落到流程版本文档，均无需传 doc_id。用户明确要求修改流程版本文档而本会话有成稿卡时，说明请到「流程」页签的版本时间线操作。""",
+使用时机：用户对已生成的成稿说「把XX改成YY/把第N节重写/回退到上一版」时使用。文档默认取本会话最近一张成稿卡（含范本填写生成的成稿）；本会话没有成稿卡时才落到流程版本文档，均无需传 doc_id。用户明确要求修改流程版本文档而本会话有成稿卡时，说明请到「流程」页签的版本时间线操作。""",
             "parameters": {
                 "action": {
                     "type": "string",
-                    "description": "操作类型：outline（目录）/ rewrite（重写某节）/ versions（版本列表）/ rollback（回退）。",
-                    "enum": ["outline", "rewrite", "versions", "rollback"],
+                    "description": "操作类型：outline（目录）/ replace（精准替换原文）/ rewrite（重写某节）/ versions（版本列表）/ rollback（回退）。",
+                    "enum": ["outline", "replace", "rewrite", "versions", "rollback"],
                     "required": True,
+                },
+                "find_text": {
+                    "type": "string",
+                    "description": "要被替换的原文片段，必须与文档正文逐字一致（含标点），尽量给完整句子或条款。action=replace 时必填。",
+                    "default": "",
+                    "required": False,
+                },
+                "replace_text": {
+                    "type": "string",
+                    "description": "替换后的新文本。action=replace 时必填。",
+                    "default": "",
+                    "required": False,
                 },
                 "section_no": {
                     "type": "string",
@@ -125,6 +139,8 @@ class DocumentRewrite(ToolBase, ABC):
             action = str(kwargs.get("action") or "").strip()
             if action == "outline":
                 return self._outline(kwargs)
+            if action == "replace":
+                return self._replace(kwargs)
             if action == "rewrite":
                 return self._rewrite(kwargs)
             if action == "versions":
@@ -133,7 +149,8 @@ class DocumentRewrite(ToolBase, ABC):
                 return self._rollback(kwargs)
             return (
                 f"不支持的 action：{action or '(空)'}。"
-                "可用 action：outline（目录）/ rewrite（重写某节）/ versions（版本列表）/ rollback（回退）。"
+                "可用 action：outline（目录）/ replace（精准替换原文）/ rewrite（重写某节）"
+                "/ versions（版本列表）/ rollback（回退）。"
             )
         except ValueError as e:
             # 引导类失败（无文档来源/文件缺失/LLM 重写失败）直接把说明给 LLM 转述
@@ -310,6 +327,55 @@ class DocumentRewrite(ToolBase, ABC):
         if err:
             return err
         return "文档章节目录：\n" + build_outline(sections)
+
+    # ---------- action: replace ----------
+
+    def _replace(self, kwargs):
+        """精准替换：find_text 逐字替换为 replace_text，其余内容一字不动。
+        零 LLM 重生成（2026-09-25 事故教训：单句替换曾被设计成整章重写，
+        定位错节 + 输出截断静默丢内容）。找不到原文零改动并给引导。"""
+        from rag.svr.document_rewrite.docx_edit import find_and_replace
+
+        tenant_id = self._canvas.get_tenant_id()
+        find_text = str(kwargs.get("find_text") or "").strip()
+        replace_text = str(kwargs.get("replace_text") or "").strip()
+        if not find_text:
+            return "缺少 find_text（要被替换的原文片段，须与文档正文逐字一致）。"
+        if not replace_text:
+            return "缺少 replace_text（替换后的新文本）。"
+        if len(find_text) < 2:
+            return "find_text 过短（少于2字），逐字全篇替换极易误伤其他内容，请提供更完整的原文片段。"
+
+        doc, root_id, mode, base_name, src_blob, flow_row = self._doc_for_action(kwargs)
+        count, _hits = find_and_replace(doc, find_text, replace_text)
+        if count == 0:
+            return (
+                "文档中未找到与该原文逐字一致的内容，未做任何修改。"
+                "常见原因：提供的原文与正文不完全一致（多字/少字/标点差异）。"
+                "可先用 action=outline 确认章节并核对原文后重试，"
+                "或改用 action=rewrite 按节重写。"
+            )
+
+        new_blob = self._save_docx_bytes(doc)
+        if mode == "flow":
+            row = save_flow_version(flow_row, new_blob, "docx", f"{base_name}.docx", tenant_id)
+            obj_id = row["file_path"]
+        else:
+            ensure_base_version(tenant_id, root_id, src_blob, "docx", base_name)
+            row = register_chat_version(
+                tenant_id, root_id, new_blob, "docx", base_name,
+                source_type="replace",
+                instruction=f"「{find_text[:50]}」→「{replace_text[:50]}」",
+            )
+            obj_id = row["obj"]
+
+        version_no = row["version_no"]
+        self._emit_download(
+            tenant_id, obj_id, f"{base_name}_v{version_no}.docx", len(new_blob))
+        return (
+            f"已完成精准替换（共 {count} 处）：「{find_text[:50]}」→「{replace_text[:50]}」。"
+            f"新版本 v{version_no} 已生成，请查看新的成稿卡片；文档其余内容原样未动。"
+        )
 
     # ---------- action: rewrite ----------
 
