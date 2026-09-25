@@ -1,5 +1,16 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-25（十一）槽位徽标对齐 B 端琥珀胶囊样式（已部署 2026-09-25）
+
+**主题**：（十）上线后用户反馈「为什么跟B端的不一样，颜色还有ui展示效果不一样」——（十）把徽标写成了灰色 mono 纯文本小字，而 B 端范本库预览（`highlightDocxRanges`，docx-highlight.ts:912-933）的徽标是**琥珀色实底胶囊**（白字 10px 圆角）+ 琥珀 mark 底（`#f59e0b22`）+ 2px 琥珀下划线。已填值蓝字 `#1a66fb`（B 端默认值回显同语义）。
+
+**改动**（纯前端 2 文件，5 套件 56 passed）：
+- `docx-highlight.ts` `stylePlaceholderSpan`：逐属性复刻 B 端 mark+胶囊徽标样式；因该函数被 `updateDocxHighlight` 反复调用，样式**全量重置**（含上一轮可能设过的虚线 border，防增量重涂残留）。
+- `template-fill-live-preview.tsx` `renderText`：同款琥珀 mark + 胶囊徽标 Tailwind 实现（`border-b-2 border-[#f59e0b] bg-[#f59e0b22]` + `rounded-[3px] bg-[#f59e0b] px-1 text-[10px] text-white`）。
+- 测试适配 2 处：值改在嵌套值节点后 `getByText(NEW)` 命中内层 span，断言改 `closest('[data-ph-key]')` 取外层槽位。
+
+**部署**：build + dist 上传 + nginx reload，全量 md5 双端一致（ae5fab3d），首页 200，chunk 命中 `f59e0b22` 特征。
+
 ## 2026-09-25（十）填写视图槽位形态改造——正文值+{{key}}徽标（同B端）（已部署 2026-09-25）
 
 **主题**：（九）修复后用户问「填写视图，没有了以前的填写点的占位符了吗？就像是B端范本库预览：项目名称：霞涌村养鸡场产业路建设项目{{project_name_l8}}」——且实测「完全没有高亮标识」（最大嫌疑浏览器缓存旧 chunk，render 文件已验证 {{key}} 全部单 run 完整零拆分）。AskUserQuestion 确认目标形态=「正文+{{key}}徽标（同B端）」。

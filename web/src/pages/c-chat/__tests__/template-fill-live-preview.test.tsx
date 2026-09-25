@@ -161,7 +161,10 @@ describe('TemplateFillLivePreview 权威产值覆盖', () => {
       unfilled: null,
     });
     renderPreview(cardTpl());
-    const span = await waitFor(() => screen.getByText(NEW));
+    // 值在嵌套值节点里，title/data-ph-key 在外层槽位 span 上
+    const span = (await waitFor(() =>
+      screen.getByText(NEW).closest('[data-ph-key]'),
+    )) as HTMLElement;
     // title 用「中文名（key）」；names 来自权威 filled 清单而非卡片快照
     expect(span.getAttribute('title')).toBe('招标人名称（tenderer_name）');
   });
@@ -182,7 +185,9 @@ describe('TemplateFillLivePreview 权威产值覆盖', () => {
         ],
       }),
     );
-    const span = await waitFor(() => screen.getByText(NEW));
+    const span = (await waitFor(() =>
+      screen.getByText(NEW).closest('[data-ph-key]'),
+    )) as HTMLElement;
     expect(span.getAttribute('title')).toBe('tenderer_name');
   });
 });

@@ -83,37 +83,41 @@ function stylePlaceholderSpan(
   span.dataset.phKey = key;
   const name = names?.get(key);
   const v = values[key];
-  // 公共样式：继承 Word 上下文字号（不硬编码字号），保真优先
-  span.style.backgroundColor = '#EFF4FF';
-  span.style.color = '#1a66fb';
-  span.style.borderRadius = '2px';
-  span.style.padding = '0 2px';
+  // 槽位形态完全对齐 B 端范本库预览（highlightDocxRanges 的 mark+胶囊徽标同款，
+  // 2026-09-25 用户反馈「颜色/UI 跟 B 端不一样」）：琥珀 mark 底（#f59e0b22）+
+  // 2px 琥珀下划线 + 琥珀胶囊 {{key}} 徽标（白字 10px 圆角）；已填 = 蓝色填写值
+  // （#1a66fb，与 B 端默认值回显同语义）+ 徽标保留。stylePlaceholderSpan 会被
+  // updateDocxHighlight 反复调用，样式必须全量重置（含上一轮可能设过的虚线 border）。
+  span.style.border = '';
+  span.style.backgroundColor = '#f59e0b22';
+  span.style.borderBottom = '2px solid #f59e0b';
+  span.style.borderRadius = '1px';
+  span.style.padding = '0 1px';
+  span.style.cursor = 'pointer';
   const d = describePlaceholderSpan(v, name, key);
   span.title = d.title;
   // 中文名另存 data 属性供排查/测试断言；name 消失时清掉（防上一轮残留）
   if (d.phName) span.dataset.phName = d.phName;
   else delete span.dataset.phName;
-  // 槽位形态对齐 B 端范本库预览（2026-09-25 用户需求）：正文 + {{key}} 徽标。
-  // 已填 = 蓝色填写值 + {{key}} 徽标；未填 = 仅 {{key}} 徽标（虚线槽位），
-  // 中文名保留在悬浮 title。徽标 mono 等宽小字，字号相对上下文缩放不撑版。
   span.textContent = '';
-  const badge = document.createElement('span');
-  badge.textContent = `{{${key}}}`;
-  badge.style.fontFamily =
-    'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
-  badge.style.fontSize = '0.85em';
-  badge.style.opacity = '0.85';
   if (isPlaceholderFilled(v)) {
     const valSpan = document.createElement('span');
     valSpan.textContent = d.text;
+    valSpan.style.color = '#1a66fb';
     span.appendChild(valSpan);
-    badge.style.marginLeft = '4px';
-    span.style.border = '';
-    span.style.fontSize = '';
-  } else {
-    // 未填：虚线槽位，{{key}} 徽标即全部内容
-    span.style.border = '1px dashed rgba(26, 102, 251, 0.6)';
   }
+  // 胶囊徽标：与本文件 highlightDocxRanges（B 端 mark 徽标）逐属性同款
+  const badge = document.createElement('span');
+  badge.textContent = `{{${key}}}`;
+  badge.style.display = 'inline-block';
+  badge.style.fontSize = '10px';
+  badge.style.lineHeight = '1.5';
+  badge.style.backgroundColor = '#f59e0b';
+  badge.style.color = '#fff';
+  badge.style.borderRadius = '3px';
+  badge.style.padding = '0 4px';
+  badge.style.marginLeft = '3px';
+  badge.style.verticalAlign = '2px';
   span.appendChild(badge);
 }
 
