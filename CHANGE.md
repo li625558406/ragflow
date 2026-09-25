@@ -1,5 +1,18 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-25（五）终态预览渲染源切到成稿派生副本（已部署 2026-09-25 + push e5684a5c）
+
+**主题**：（四）桥接派生副本后用户仍报「说是改好了，我点击查看填写内容，文本渲染的还是没有显示新的内容」。**第四层断层（最后一层）**：「查看填写内容」预览的渲染源是**模板工作副本**（`useTemplateFillFile(template_id)`，含 `{{key}}` 的原始范本）+ 前端 values 覆盖渲染——replace/rewrite 改的是**非填写点正文**，只存在于成稿，工作副本永远不会变，预览无论怎么刷新/重开都显示改前内容。modify 可见只因为它改 values（填写点）。教训同 09-17：修可见性问题必须先确认「用户看到的画面由哪个数据源渲染」。
+
+**改动**（纯前端 4 文件，25 套件 335 passed + build）：
+- `use-template-fill-request.ts` 新增 `useTemplateFillResultFile(dl)`：fetch 带 Authorization 拉 `{tenant}-downloads/tplfill-{task_id}` 成稿派生副本（`/agents/download` 不读 cookie，直链必 401）；对抗面：非 2xx / 空 blob / 200+application/json 业务错误信封一律抛错。
+- `template-fill-live-preview.tsx` 渲染源切换：workBlob/resultBlob 双源 + `wantResult = docx && status==='filled' && download?.url` 分派；`resultError` 回落工作副本（预览仍可用）；非终态/无下载契约/xlsx 不切换。成稿中占位符已被值替换 → 高亮/点击定位自然失效（可接受降级）。
+- 测试：组件切换边界 5 用例（终态切成稿/失败回落/filling 不切/无 url 不切/xlsx 永不切）+ hook 对抗 6 用例；两个既有套件 mock 工厂补新导出。
+
+**遗留**：①成稿视图下占位符点击定位失效（终态本来极少用）；②旧消息无 download 契约时仍渲染工作副本（历史数据无解，符合预期）。
+
+**部署**：纯前端 build + dist 上传 + nginx reload；`use-template-fill-request-*.js` chunk md5 双端一致。
+
 ## 2026-09-25（四）DocumentRewrite replace/rewrite 桥接 tplfill 派生副本（已部署 2026-09-25 + push 259b0c9d）
 
 **主题**：用户实测流程 demo03「把 6.1法定条件改成 LG11111」，AI 回复成功但「没有渲染展示到文档中」。生产字节实锤：**替换本身成功**（版本链 v2=rewrite-7eef7026 第 40 段即 `6.1法定条件：LG11111`，977 段无丢失、参数方向正确），败在**可见性**——填写进度卡的「查看填写内容」预览/下载走 `{tenant}-downloads/tplfill-{task_id}` 派生副本（实测仍为旧字节），而 replace/rewrite 只写版本链新对象（rewrite-{uuid}）从不动派生副本；流程页签用户眼中进度卡就是「文档」。与 09-17「就地修改可见性修复」同一类缺口：modify 当时有桥接，replace/rewrite 漏了。
