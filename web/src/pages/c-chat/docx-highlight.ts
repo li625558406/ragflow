@@ -89,19 +89,32 @@ function stylePlaceholderSpan(
   span.style.borderRadius = '2px';
   span.style.padding = '0 2px';
   const d = describePlaceholderSpan(v, name, key);
-  span.textContent = d.text;
   span.title = d.title;
   // 中文名另存 data 属性供排查/测试断言；name 消失时清掉（防上一轮残留）
   if (d.phName) span.dataset.phName = d.phName;
   else delete span.dataset.phName;
+  // 槽位形态对齐 B 端范本库预览（2026-09-25 用户需求）：正文 + {{key}} 徽标。
+  // 已填 = 蓝色填写值 + {{key}} 徽标；未填 = 仅 {{key}} 徽标（虚线槽位），
+  // 中文名保留在悬浮 title。徽标 mono 等宽小字，字号相对上下文缩放不撑版。
+  span.textContent = '';
+  const badge = document.createElement('span');
+  badge.textContent = `{{${key}}}`;
+  badge.style.fontFamily =
+    'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+  badge.style.fontSize = '0.85em';
+  badge.style.opacity = '0.85';
   if (isPlaceholderFilled(v)) {
+    const valSpan = document.createElement('span');
+    valSpan.textContent = d.text;
+    span.appendChild(valSpan);
+    badge.style.marginLeft = '4px';
     span.style.border = '';
     span.style.fontSize = '';
   } else {
-    // 未填：虚线槽位显示中文名（无 name 回落 key）；名较长，略缩字号避免撑版
+    // 未填：虚线槽位，{{key}} 徽标即全部内容
     span.style.border = '1px dashed rgba(26, 102, 251, 0.6)';
-    span.style.fontSize = '0.85em';
   }
+  span.appendChild(badge);
 }
 
 /**

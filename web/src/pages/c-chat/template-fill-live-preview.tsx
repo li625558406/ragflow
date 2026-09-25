@@ -353,30 +353,33 @@ export default function TemplateFillLivePreview({
       if (seg.type === 'text') return <span key={i}>{seg.value}</span>;
       const v = values[seg.key];
       const name = names.get(seg.key);
-      // 与 docx 保真路径同口径：已填值 title 带中文名；未填槽位正文显示中文名
-      // （无 name 回落 key）。data-ph-key 恒为 key（定位链路依赖）。
-      // 判空走 isPlaceholderFilled（纯空白算未填，与后端 derive_unfilled 一致）
+      // 与 docx 保真路径同口径（同 B 端范本库预览形态）：正文 + {{key}} 徽标——
+      // 已填 = 蓝色填写值 + {{key}} 徽标；未填 = 仅 {{key}} 徽标（中文名在悬浮
+      // title）。data-ph-key 恒为 key（定位链路依赖）。判空走 isPlaceholderFilled
+      // （纯空白算未填，与后端 derive_unfilled 一致）
       if (isPlaceholderFilled(v)) {
         return (
           <span
             key={i}
             title={name ? `${name}（${seg.key}）` : seg.key}
             data-ph-key={seg.key}
-            className="mx-0.5 rounded bg-[#EFF4FF] px-1 py-px font-mono text-xs font-medium text-[#1a66fb]"
+            className="mx-0.5 rounded bg-[#EFF4FF] px-1 py-px text-xs font-medium text-[#1a66fb]"
           >
             {v}
+            <span className="ml-1 font-mono text-[0.85em] opacity-85">
+              {`{{${seg.key}}}`}
+            </span>
           </span>
         );
       }
-      const label = name || seg.key;
       return (
         <span
           key={i}
-          title={`${label}（等待 AI 填入）`}
+          title={`${name || seg.key}（等待 AI 填入）`}
           data-ph-key={seg.key}
-          className="mx-0.5 rounded border border-dashed border-[#1a66fb]/60 bg-[#EFF4FF] px-1 py-px font-mono text-[10px] text-[#1a66fb]"
+          className="mx-0.5 rounded border border-dashed border-[#1a66fb]/60 bg-[#EFF4FF] px-1 py-px font-mono text-xs text-[#1a66fb]"
         >
-          {label}
+          {`{{${seg.key}}}`}
         </span>
       );
     });

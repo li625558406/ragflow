@@ -1,5 +1,17 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-25（十）填写视图槽位形态改造——正文值+{{key}}徽标（同B端）（已部署 2026-09-25）
+
+**主题**：（九）修复后用户问「填写视图，没有了以前的填写点的占位符了吗？就像是B端范本库预览：项目名称：霞涌村养鸡场产业路建设项目{{project_name_l8}}」——且实测「完全没有高亮标识」（最大嫌疑浏览器缓存旧 chunk，render 文件已验证 {{key}} 全部单 run 完整零拆分）。AskUserQuestion 确认目标形态=「正文+{{key}}徽标（同B端）」。
+
+**改动**（纯前端 2 文件，5 套件 56 passed）：
+- `docx-highlight.ts` `stylePlaceholderSpan`：槽位改为「值节点 + {{key}} 徽标节点」结构——已填=蓝色值 + mono 小字徽标（`fontSize:0.85em; opacity:0.85; marginLeft:4px`）；未填=仅徽标+虚线框（`border:1px dashed rgba(26,102,251,0.6)`）。`describePlaceholderSpan` 签名刻意未动（保护 10 个 toEqual 严格断言纯函数套件），中文名保留在悬浮 title，`data-ph-key` 定位契约不动。
+- `template-fill-live-preview.tsx` `renderText`（xlsx 文本分支）：同形态——已填 `{值}` + `<span className="ml-1 font-mono text-[0.85em] opacity-85">{{key}}</span>`；未填仅 `{{key}}` 虚线框。
+
+**影响面确认**：改动收敛在 C 端「查看填写内容」填写视图专用链路（applyDocxHighlight/updateDocxHighlight/rebuildPlaceholderSpans 仅 live-preview 使用）；B 端范本库预览与文件审核面板用独立 API `highlightDocxRanges` 零影响。
+
+**部署**：build 1m20s + dist 上传解包 + nginx reload，全量 js/css md5 双端一致（8691368c），首页 200，chunk 命中新形态特征（opacity-85/font-mono）。
+
 ## 2026-09-25（九）终态预览渲染源回退——默认填写视图恢复占位符定位（已部署 2026-09-25）
 
 **主题**：用户报「点击已填充 X 个填充点的列表名称，预览文档没有跳转，文档中没有填充点的标识」。（五）把终态预览渲染源自动切成稿派生副本，而成稿中占位符已被真实值替换 → 占位符标识消失、`focusPlaceholder` 找不到 `[data-ph-key]` → 点击定位全失效。当时备注「定位失效可接受」被用户实测否定。**前置背景**：范本 6efdafb4 硬删后经 binlog 恢复（DB 行重插 + MinIO 从重传版补位）出现字节/元数据错配（434 vs 193），重识别升 v6（454 点）后又按用户要求回退到人工筛选的 193 点集（干跑匹配 185/193，升版 v7；同套适配到新范本 b5b98da0 v2，193 点默认值 193/193 完整保留，存档 `.scratch/tpl6efd_193_placeholders.json`）。
