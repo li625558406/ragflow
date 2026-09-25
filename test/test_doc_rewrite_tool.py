@@ -99,7 +99,7 @@ def test_meta_declaration():
     from agent.tools.document_rewrite import DocumentRewriteParam
     p = DocumentRewriteParam()
     assert p.meta["name"] == "DocumentRewrite"
-    assert set(p.meta["parameters"]) >= {"action", "find_text", "replace_text",
+    assert set(p.meta["parameters"]) >= {"action", "keyword", "find_text", "replace_text",
                                          "section_no", "instruction", "version_no", "doc_id"}
     assert "replace" in p.meta["parameters"]["action"]["enum"]
     assert p.meta["parameters"]["action"]["required"] is True
@@ -127,6 +127,44 @@ def test_outline_action():
         out = tool._invoke(action="outline")
     assert "第1节 第一节" in out
     assert "第2节 第二节" in out
+
+
+def test_outline_keyword_returns_paragraph_verbatim():
+    """二轮事故回归：replace 前须能拿到逐字原文——keyword 命中时返回段落完整原文
+    （含标点），禁止 agent 凭记忆猜 find_text。"""
+    tool = _make_tool(FakeCanvas(sys_vars=_recent()))
+    with patch.object(DocumentRewrite, "_load_chat_blob",
+                      MagicMock(return_value=(_docx_blob(), DOC_ID, BASE_NAME))):
+        out = tool._invoke(action="outline", keyword="第二节正文")
+    assert "第二节正文。" in out
+    assert "find_text" in out
+    # 不应展示章节目录形态（没带第N节编号行）
+    assert "文档章节目录" not in out
+
+
+def test_outline_keyword_zero_hits_guides():
+    tool = _make_tool(FakeCanvas(sys_vars=_recent()))
+    with patch.object(DocumentRewrite, "_load_chat_blob",
+                      MagicMock(return_value=(_docx_blob(), DOC_ID, BASE_NAME))):
+        out = tool._invoke(action="outline", keyword="不存在的句子XYZ")
+    assert "没有找到" in out
+    assert "章节目录" in out or "目录" in out
+
+
+def test_replace_swapped_params_rejected():
+    """二轮事故回归：find_text 是 replace_text 的子串 = 新旧颠倒（旧短语当 find、
+    整句当 replace 致句子膨胀重复），必须拒绝且零改动不落版本。"""
+    canvas = FakeCanvas(sys_vars=_recent())
+    tool = _make_tool(canvas)
+    with patch.object(DocumentRewrite, "_load_chat_blob",
+                      MagicMock(return_value=(_docx_blob(), DOC_ID, BASE_NAME))), \
+            patch("agent.tools.document_rewrite.register_chat_version") as reg:
+        out = tool._invoke(action="replace",
+                           find_text="第二节正文",
+                           replace_text="第二节正文：符合规定的全部条件。")
+    assert "填反" in out or "颠倒" in out
+    assert canvas.globals["sys.pending_downloads"] == []
+    reg.assert_not_called()
 
 
 # ---------- rewrite ----------

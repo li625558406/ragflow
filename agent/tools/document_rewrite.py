@@ -68,8 +68,9 @@ class DocumentRewriteParam(ToolParamBase):
             "description": """文档局部修改工具。对当前会话最近生成的成稿文档（Word）做精准替换或按节重写。五个 action：
 
 1. outline：返回文档的带编号章节目录。当不确定节号，或没有指明操作文档时，先调用它确认。
-2. replace：精准替换。把文档中某句/某条原文逐字替换为指定文本，文档其余内容一字不动。需要 find_text（要被替换的原文片段，必须与文档正文逐字一致，尽量给完整句子或条款）和 replace_text（新文本）。
-   当用户说「把XX内容改成/换成/替换成YY」且能从对话上下文或 outline 确认原文片段时，优先用 replace 而不是 rewrite——replace 零重生成、绝不损伤文档其他内容。
+   可选 keyword：只返回包含该关键词的段落原文（每段完整文字）——replace 前必须先用它取得要替换内容的逐字原文，禁止凭记忆或猜测填写。
+2. replace：精准替换。把文档中某段原文逐字替换为指定文本，文档其余内容一字不动。需要 find_text（要被替换的原文，必须是先用 outline+keyword 从文档中取出的完整原句，逐字一致含标点；find_text 是旧内容，replace_text 是新内容，方向不能反）和 replace_text（新文本）。
+   当用户说「把XX内容改成/换成/替换成YY」时优先用 replace 而不是 rewrite——replace 零重生成、绝不损伤文档其他内容。标准流程：outline(keyword=关键词) 取原文 → replace(find_text=原文, replace_text=新文)。
 3. rewrite：重写某一节（整节正文由 LLM 按要求重新编写）。需要 section_no（节号，来自 outline）和 instruction（用户对该节的重写要求，原样转述用户的补充要求）。
    只在需要按语义改写整节（润色/扩写/调整表述/补充内容）时使用，不要用它做单句替换。完成后返回新版本说明，用户会看到新的成稿卡片。多次重写请逐节顺序进行，请勿在同一轮并行发起多个 rewrite。
 4. versions：列出该文档的全部历史版本（版本号/来源/说明）。
@@ -82,6 +83,12 @@ class DocumentRewriteParam(ToolParamBase):
                     "description": "操作类型：outline（目录）/ replace（精准替换原文）/ rewrite（重写某节）/ versions（版本列表）/ rollback（回退）。",
                     "enum": ["outline", "replace", "rewrite", "versions", "rollback"],
                     "required": True,
+                },
+                "keyword": {
+                    "type": "string",
+                    "description": "可选。action=outline 时按关键词返回包含它的段落原文（供 replace 取逐字原文）。",
+                    "default": "",
+                    "required": False,
                 },
                 "find_text": {
                     "type": "string",
@@ -323,6 +330,26 @@ class DocumentRewrite(ToolBase, ABC):
         from rag.svr.document_rewrite.sections import build_outline
 
         _doc, _root, _mode, _base, _blob, _flow = self._doc_for_action(kwargs)
+        keyword = str(kwargs.get("keyword") or "").strip()
+        if keyword:
+            # 供 replace 取逐字原文：返回含关键词的段落完整原文（含标点），
+            # 让 find_text 从真实正文复制而非凭记忆猜测（2026-09-25 二轮教训）
+            paras = [p.text or "" for p in _doc.paragraphs]
+            hits = [(i, t.strip()) for i, t in enumerate(paras) if keyword in t and t.strip()]
+            if not hits:
+                return (
+                    f"文档正文中没有找到包含「{keyword[:50]}」的段落。"
+                    "可能原因：文档中不存在该内容，或措辞与您预期不同。"
+                    f"可去掉 keyword 只返回章节目录，确认相关内容位于哪一节。"
+                )
+            limit = 10
+            lines = [f"包含「{keyword[:50]}」的段落原文（共 {len(hits)} 处）："]
+            for _i, t in hits[:limit]:
+                lines.append(f"- {t[:2000]}")
+            if len(hits) > limit:
+                lines.append(f"（另有 {len(hits) - limit} 处未展示）")
+            lines.append("替换时请从上面原样复制整段（或其中要改的完整句子）作为 find_text。")
+            return "\n".join(lines)
         sections, err = self._sections_safe(_doc)
         if err:
             return err
@@ -345,6 +372,13 @@ class DocumentRewrite(ToolBase, ABC):
             return "缺少 replace_text（替换后的新文本）。"
         if len(find_text) < 2:
             return "find_text 过短（少于2字），逐字全篇替换极易误伤其他内容，请提供更完整的原文片段。"
+        if find_text in replace_text:
+            # 参数颠倒特征：把旧短语当 find、新长文当 replace，会让文档越替换越膨胀
+            return (
+                "find_text 是 replace_text 的子串，疑似新旧内容填反了。"
+                "find_text 应为文档中要被替换掉的旧原文（先用 outline+keyword 取逐字原文），"
+                "replace_text 应为替换后的新文本。请调换后重试。"
+            )
 
         doc, root_id, mode, base_name, src_blob, flow_row = self._doc_for_action(kwargs)
         count, _hits = find_and_replace(doc, find_text, replace_text)
