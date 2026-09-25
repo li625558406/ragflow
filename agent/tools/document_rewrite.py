@@ -258,15 +258,18 @@ class DocumentRewrite(ToolBase, ABC):
 
     # ---------- 公共 ----------
 
-    def _doc_for_action(self, kwargs) -> tuple[object, str, str, str, bytes, dict | None]:
-        """统一取 (Document, root_id, mode, base_name, 源blob, flow行)。
-        mode: chat（root_id=doc_id 剥 tplfill- 前缀）/ flow（root_id=flow_id）。"""
+    def _doc_for_action(self, kwargs) -> tuple[object, str, str, str, str, bytes, dict | None]:
+        """统一取 (Document, root_id, doc_id, mode, base_name, 源blob, flow行)。
+        mode: chat（root_id=doc_id 剥 tplfill- 前缀）/ flow（root_id=flow_id）。
+        doc_id：chat 场景解析出的成稿对象名（剥前缀后的链感知最新对象，可能带
+        rewrite- 前缀）；flow 场景为空串。tplfill- 桥接用它判断是否填写成稿。"""
         from docx import Document as DocxDocument
 
         blob, fv_row, flow_row = self._load_flow_target()
         if blob is not None:
             mode = "flow"
             root_id = str(fv_row.get("flow_id") or "")
+            doc_id = ""
             base_name = (fv_row.get("file_name") or "流程文档").rsplit(".", 1)[0]
         else:
             mode = "chat"
@@ -274,7 +277,7 @@ class DocumentRewrite(ToolBase, ABC):
             blob, doc_id, base_name = self._load_chat_blob(doc_id)
             root_id = root_id_for_doc(doc_id)
         doc = DocxDocument(io.BytesIO(blob))
-        return doc, root_id, mode, base_name, blob, flow_row
+        return doc, root_id, doc_id, mode, base_name, blob, flow_row
 
     def _make_download(self, tenant_id: str, doc_id: str, filename: str, size: int) -> dict:
         ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
@@ -309,6 +312,28 @@ class DocumentRewrite(ToolBase, ABC):
         return buf.getvalue()
 
     @staticmethod
+    def _bridge_fill_copy(tenant_id: str, root_id: str, new_blob: bytes) -> str:
+        """tplfill 成稿派生副本同名覆盖（modify 同款桥接，09-17 教训）。
+
+        填写进度卡的「查看填写内容」预览/下载走 {tenant}-downloads/tplfill-{task_id}；
+        只写版本链新对象（rewrite-{uuid}）时卡片继续展示改前字节——用户在流程页签
+        眼中进度卡就是「文档」，改完看不到即认为没改成功。失败不当作修改失败
+        （主成稿已正确落盘+新卡已出），降级为回执提示。"""
+        from common import settings as common_settings
+
+        try:
+            st = common_settings.STORAGE_IMPL
+            if st is None:
+                raise RuntimeError("STORAGE_IMPL unavailable")
+            if st.put(f"{tenant_id}-downloads", f"tplfill-{root_id}", new_blob) is None:
+                raise RuntimeError("storage put returned None")
+            return ""
+        except Exception:
+            logger.exception("DocumentRewrite fill-copy bridge failed root=%s", root_id)
+            return ("\n提示：文档已改好并生成新版本，但填写卡片的预览/下载副本同步失败"
+                    "——重新打开预览可能仍显示改前内容，可稍后重试。")
+
+    @staticmethod
     def _to_int(v):
         try:
             return int(str(v).strip())
@@ -329,7 +354,7 @@ class DocumentRewrite(ToolBase, ABC):
     def _outline(self, kwargs):
         from rag.svr.document_rewrite.sections import build_outline
 
-        _doc, _root, _mode, _base, _blob, _flow = self._doc_for_action(kwargs)
+        _doc, _root, _did, _mode, _base, _blob, _flow = self._doc_for_action(kwargs)
         keyword = str(kwargs.get("keyword") or "").strip()
         if keyword:
             # 供 replace 取逐字原文：返回含关键词的段落完整原文（含标点），
@@ -380,7 +405,7 @@ class DocumentRewrite(ToolBase, ABC):
                 "replace_text 应为替换后的新文本。请调换后重试。"
             )
 
-        doc, root_id, mode, base_name, src_blob, flow_row = self._doc_for_action(kwargs)
+        doc, root_id, doc_id, mode, base_name, src_blob, flow_row = self._doc_for_action(kwargs)
         count, _hits = find_and_replace(doc, find_text, replace_text)
         if count == 0:
             return (
@@ -406,9 +431,13 @@ class DocumentRewrite(ToolBase, ABC):
         version_no = row["version_no"]
         self._emit_download(
             tenant_id, obj_id, f"{base_name}_v{version_no}.docx", len(new_blob))
+        bridge_note = ""
+        if mode == "chat" and str(doc_id).startswith("tplfill-"):
+            bridge_note = self._bridge_fill_copy(tenant_id, root_id, new_blob)
         return (
             f"已完成精准替换（共 {count} 处）：「{find_text[:50]}」→「{replace_text[:50]}」。"
             f"新版本 v{version_no} 已生成，请查看新的成稿卡片；文档其余内容原样未动。"
+            + bridge_note
         )
 
     # ---------- action: rewrite ----------
@@ -425,7 +454,7 @@ class DocumentRewrite(ToolBase, ABC):
         if not instruction:
             return "缺少 instruction（重写要求）。请说明要把这一节改成什么样。"
 
-        doc, root_id, mode, base_name, src_blob, flow_row = self._doc_for_action(kwargs)
+        doc, root_id, doc_id, mode, base_name, src_blob, flow_row = self._doc_for_action(kwargs)
         sections, err = self._sections_safe(doc)
         if err:
             return err
@@ -472,10 +501,14 @@ class DocumentRewrite(ToolBase, ABC):
         version_no = row["version_no"]
         self._emit_download(
             tenant_id, obj_id, f"{base_name}_v{version_no}.docx", len(new_blob))
+        bridge_note = ""
+        if mode == "chat" and str(doc_id).startswith("tplfill-"):
+            bridge_note = self._bridge_fill_copy(tenant_id, root_id, new_blob)
         return (
             f"已完成第{section_no}节《{sec['title']}》重写（新版本 v{version_no}）：{instruction}。"
             f"共 {len(new_paras)} 个段落。新版本已生成，请查看新的成稿卡片；"
             f"如不满意可以说「回退到上一版」。"
+            + bridge_note
         )
 
     # ---------- action: versions ----------
@@ -484,7 +517,7 @@ class DocumentRewrite(ToolBase, ABC):
         # flow 场景提前引导：不进 _doc_for_action（flow 已删时会抛错而非引导）
         if str(self._read_sys("sys.flow_version_id") or "").strip():
             return "流程文档的版本请到「流程」页签的版本时间线查看。"
-        _doc, root_id, mode, _base, _blob, _flow = self._doc_for_action(kwargs)
+        _doc, root_id, _did, mode, _base, _blob, _flow = self._doc_for_action(kwargs)
         rows = list_versions(root_id)
         if not rows:
             return ("该文档还没有重写版本记录（当前成稿即原始版本）。"
@@ -512,7 +545,7 @@ class DocumentRewrite(ToolBase, ABC):
         if str(self._read_sys("sys.flow_version_id") or "").strip():
             return "流程文档版本请到「流程」页签操作回退。"
 
-        _doc, root_id, mode, base_name, _blob, _flow = self._doc_for_action(kwargs)
+        _doc, root_id, _did, mode, base_name, _blob, _flow = self._doc_for_action(kwargs)
         hist = get_version(root_id, version_no)
         if hist is None:
             rows = list_versions(root_id)

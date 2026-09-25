@@ -476,6 +476,52 @@ def test_replace_short_find_text_rejected():
     assert canvas.globals["sys.pending_downloads"] == []
 
 
+def test_replace_bridges_fill_derived_copy():
+    """demo03 事故回归：replace/rewrite 只写版本链新对象，填写进度卡的预览/下载
+    副本（{tenant}-downloads/tplfill-{task_id}）仍是改前字节 → 流程页签用户眼中
+    「没改进文档」。必须同名覆盖派生副本（modify 同款桥接）。"""
+    canvas = FakeCanvas(sys_vars=_recent())
+    tool = _make_tool(canvas)
+    storage = MagicMock()
+    with patch.object(DocumentRewrite, "_load_chat_blob",
+                      MagicMock(return_value=(_docx_blob(), DOC_ID, BASE_NAME))), \
+            patch("agent.tools.document_rewrite.list_versions", return_value=[]), \
+            patch("agent.tools.document_rewrite.ensure_base_version"), \
+            patch("agent.tools.document_rewrite.register_chat_version",
+                  return_value={"version_no": 2, "obj": "rewrite-x-v2", "file_name": "方案_v2.docx"}), \
+            patch("common.settings.STORAGE_IMPL", storage):
+        out = tool._invoke(action="replace",
+                           find_text="第二节正文", replace_text="LG11111")
+    storage.put.assert_called_once()
+    args = storage.put.call_args[0]
+    assert args[0] == "t1-downloads" and args[1] == "tplfill-task1"
+    from docx import Document as _Doc
+    bridged = _Doc(io.BytesIO(args[2]))
+    assert any("LG11111" in (p.text or "") for p in bridged.paragraphs)
+    assert "同步失败" not in out  # 成功不加噪音提示
+
+
+def test_bridge_failure_degrades_to_note_not_failure():
+    """对抗：派生副本桥接失败不得当作修改失败（主成稿已落盘、新卡已出），
+    回执追加提示文案。"""
+    canvas = FakeCanvas(sys_vars=_recent())
+    tool = _make_tool(canvas)
+    storage = MagicMock()
+    storage.put.side_effect = RuntimeError("minio down")
+    with patch.object(DocumentRewrite, "_load_chat_blob",
+                      MagicMock(return_value=(_docx_blob(), DOC_ID, BASE_NAME))), \
+            patch("agent.tools.document_rewrite.list_versions", return_value=[]), \
+            patch("agent.tools.document_rewrite.ensure_base_version"), \
+            patch("agent.tools.document_rewrite.register_chat_version",
+                  return_value={"version_no": 2, "obj": "rewrite-x-v2", "file_name": "方案_v2.docx"}), \
+            patch("common.settings.STORAGE_IMPL", storage):
+        out = tool._invoke(action="replace",
+                           find_text="第二节正文", replace_text="LG11111")
+    assert "精准替换" in out and "新版本 v2" in out  # 主流程成功语义不变
+    assert "同步失败" in out
+    assert len(canvas.globals["sys.pending_downloads"]) == 1  # 新卡照常发出
+
+
 # ---------- versions ----------
 
 def test_versions_action_empty_chain():
