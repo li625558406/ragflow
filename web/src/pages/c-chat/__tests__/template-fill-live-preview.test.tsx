@@ -16,7 +16,7 @@ import {
   useTemplateFillResultFile,
 } from '@/hooks/use-template-fill-request';
 import TemplateFillLivePreview from '@/pages/c-chat/template-fill-live-preview';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { renderAsync } from 'docx-preview';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -187,10 +187,11 @@ describe('TemplateFillLivePreview 权威产值覆盖', () => {
   });
 });
 
-// ── 成稿渲染源切换（demo03 事故，2026-09-25）────────────────────────────────
+// ── 成稿渲染源切换（demo03 事故，2026-09-25；2026-09-25 二次迭代改显式切换）──
 // 「查看填写内容」docx 分支此前只渲染模板工作副本（含 {{key}}），replace/rewrite
-// 改的非填写点正文只存在于成稿——预览永远显示改前内容。终态且有下载契约时改拉
-// 成稿派生副本，拉取失败回落工作副本。
+// 改的非填写点正文只存在于成稿。曾改为「终态自动切成稿」，但成稿中占位符已被值
+// 替换——占位符标识消失、点击已填充字段无法定位（用户反馈回退）。终态默认仍渲染
+// 工作副本（占位符/定位/蓝字可用），「查看成稿」按钮显式切换，拉取失败回落工作副本。
 describe('TemplateFillLivePreview 成稿渲染源切换', () => {
   const workBlob = new Blob(['work-copy']);
   const resultBlob = new Blob(['result-copy']);
@@ -241,7 +242,7 @@ describe('TemplateFillLivePreview 成稿渲染源切换', () => {
     return calls[calls.length - 1][0];
   };
 
-  it('终态 + 下载契约：渲染源切到成稿派生副本', () => {
+  it('终态 + 下载契约：默认仍渲染工作副本，点「查看成稿」后切到成稿派生副本', () => {
     setPreview(docxPreviewData);
     workHook.mockReturnValue({
       data: workBlob,
@@ -254,7 +255,29 @@ describe('TemplateFillLivePreview 成稿渲染源切换', () => {
       error: undefined,
     } as never);
     renderPreview(cardTpl({ download: dl }));
+    // 默认填写视图：占位符标识/点击定位都在工作副本上
+    expect(renderedBlob()).toBe(workBlob);
+    fireEvent.click(screen.getByText('查看成稿'));
     expect(renderedBlob()).toBe(resultBlob);
+  });
+
+  it('切到成稿后点「返回填写视图」切回工作副本', () => {
+    setPreview(docxPreviewData);
+    workHook.mockReturnValue({
+      data: workBlob,
+      isLoading: false,
+      error: undefined,
+    } as never);
+    resultHook.mockReturnValue({
+      data: resultBlob,
+      isLoading: false,
+      error: undefined,
+    } as never);
+    renderPreview(cardTpl({ download: dl }));
+    fireEvent.click(screen.getByText('查看成稿'));
+    expect(renderedBlob()).toBe(resultBlob);
+    fireEvent.click(screen.getByText('返回填写视图'));
+    expect(renderedBlob()).toBe(workBlob);
   });
 
   it('成稿拉取失败回落工作副本：预览仍可用（显示改前内容是可接受降级）', () => {
@@ -270,6 +293,7 @@ describe('TemplateFillLivePreview 成稿渲染源切换', () => {
       error: new Error('成稿获取失败 500'),
     } as never);
     renderPreview(cardTpl({ download: dl }));
+    fireEvent.click(screen.getByText('查看成稿'));
     expect(renderedBlob()).toBe(workBlob);
   });
 

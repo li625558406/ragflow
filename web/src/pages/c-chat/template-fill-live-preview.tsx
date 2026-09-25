@@ -214,6 +214,12 @@ export default function TemplateFillLivePreview({
   // 模板原文，replace/rewrite 的修改只存在于成稿——终态且有下载契约时改拉
   // 成稿派生副本（后端桥接保证与版本链最新内容一致），拉取失败回落工作副本。
   // 成稿中占位符已被值替换 → 占位符高亮/定位自然失效（span 映射为空），可接受。
+  // 终态渲染源：默认工作副本（占位符高亮/点击定位/蓝字填写值都在这条链路上，
+  // 2026-09-25 用户反馈「文档中没有填充点的标识、点击不跳转」后由自动切成稿改回
+  // 默认填写视图）；「查看成稿」显式切换后才拉成稿派生副本（replace/rewrite 改的
+  // 非填写点正文只存在于成稿），拉取失败回落工作副本。成稿中占位符已被值替换，
+  // 高亮/定位在该视图下自然失效。
+  const [preferResult, setPreferResult] = useState(false);
   const {
     data: resultBlob,
     isLoading: resultLoading,
@@ -221,7 +227,7 @@ export default function TemplateFillLivePreview({
   } = useTemplateFillResultFile(docxEnabled ? tpl.download : undefined);
   const wantResult =
     docxEnabled && tpl.status === 'filled' && Boolean(tpl.download?.url);
-  const showResult = wantResult && !resultError;
+  const showResult = wantResult && preferResult && !resultError;
   const fileBlob = showResult ? resultBlob : workBlob;
   const fileLoading = showResult ? resultLoading : workLoading;
   const fileError = showResult ? undefined : workError;
@@ -299,6 +305,7 @@ export default function TemplateFillLivePreview({
     setRenderFailed(false);
     setRenderedOk(false);
     setForceFidelity(false);
+    setPreferResult(false);
   }, [tpl.template_id]);
 
   const docxFidelity =
@@ -396,6 +403,14 @@ export default function TemplateFillLivePreview({
               ? `已填入 ${filledCount} 个字段`
               : '等待填写'}
         </span>
+        {wantResult && (
+          <button
+            className="ml-1 shrink-0 rounded px-1.5 py-0.5 text-xs text-[#1a66fb] transition-colors hover:bg-[#EFF4FF]"
+            onClick={() => setPreferResult((v) => !v)}
+          >
+            {showResult ? '返回填写视图' : '查看成稿'}
+          </button>
+        )}
         <button
           className="ml-auto rounded p-1 text-[#8C8C8C] transition-colors hover:bg-[#F5F5F5] hover:text-[#000000]"
           onClick={onClose}
