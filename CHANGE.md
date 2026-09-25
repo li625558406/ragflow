@@ -1,5 +1,15 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-25（九）终态预览渲染源回退——默认填写视图恢复占位符定位（已部署 2026-09-25）
+
+**主题**：用户报「点击已填充 X 个填充点的列表名称，预览文档没有跳转，文档中没有填充点的标识」。（五）把终态预览渲染源自动切成稿派生副本，而成稿中占位符已被真实值替换 → 占位符标识消失、`focusPlaceholder` 找不到 `[data-ph-key]` → 点击定位全失效。当时备注「定位失效可接受」被用户实测否定。**前置背景**：范本 6efdafb4 硬删后经 binlog 恢复（DB 行重插 + MinIO 从重传版补位）出现字节/元数据错配（434 vs 193），重识别升 v6（454 点）后又按用户要求回退到人工筛选的 193 点集（干跑匹配 185/193，升版 v7；同套适配到新范本 b5b98da0 v2，193 点默认值 193/193 完整保留，存档 `.scratch/tpl6efd_193_placeholders.json`）。
+
+**改动**（纯前端 2 文件，3 套件 24 passed，commit 5b735b2b）：`template-fill-live-preview.tsx` 渲染源分派改 `showResult = wantResult && preferResult && !resultError`——终态默认渲染**工作副本**（占位符高亮/蓝字填写值/点击已填充字段跳转定位全链路恢复）；头部新增「查看成稿」⇄「返回填写视图」切换按钮（wantResult 即终态+下载契约时渲染），保留（四）（五）修的「replace/rewrite 正文修改在成稿可见」入口；成稿拉取失败回落工作副本；范本切换重置 preferResult。测试：切换 describe 重写（默认工作副本+点按切到成稿/返回切回/失败回落 3 用例重写，非终态/无契约/xlsx 3 用例保留）。
+
+## 2026-09-25（八）范本 6efdafb4 binlog 硬删恢复 + 写回回滚 + 错配重识别（运维操作，无代码变更）
+
+**主题**：用户误删范本「市政房建竞争性谈判文件」（6efdafb4，5 版本）要求恢复；随后要求回滚一次写回；恢复后预览错配（文件字节与元数据不一致）重识别修复。全程 binlog（ROW+FULL）行镜像救援，无代码变更。要点沉淀：①delete_template 硬删（DB 物理删+MinIO 级联 rm，无软删），binlog DELETE 事件含完整行镜像可重插；②mysqlbinlog 在宿主机 /usr/bin（MySQL 容器内无），`docker cp` binlog 出来解码；字符串字面量需反转义（\0\n\r\t\b\Z\'\"\\）；③tpl_template 14 列/tpl_template_version 11 列列序见 `.scratch/restore_tpl_6efd.py`；④MinIO versioning Off，rm 后不可反删；⑤published 范本 save_placeholders 自动升版新建行（disabled 才原地改写）——重识别 454 点落 v6、回退 193 点落 v7，历史版本全保留；⑥`_merge_defaults` 优先级 1「条目显式带 default_value 字段→原样保留」使 193 点筛选集跨范本迁移默认值零丢失。
+
 ## 2026-09-25（七）范本删除守卫——仍被进行中流程使用的范本拒删（已部署 2026-09-25 + push c6ad4ef2）
 
 **主题**：用户要求「删除 B 端范本时判断是否正在被流程使用；流程全删除或作废（cancelled）才可删」。背景：delete_template 既有级联语义（09-17）会连带删掉填写任务行+成稿对象，流程还在跑时范本被删 → filled 行 10s 权威轮询打 progress 恒 102、流程断粮（与 09-23（三）同类事故的删除侧源头）。
