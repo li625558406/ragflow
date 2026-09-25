@@ -1,5 +1,23 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-25（七）范本删除守卫——仍被进行中流程使用的范本拒删（已部署 2026-09-25 + push c6ad4ef2）
+
+**主题**：用户要求「删除 B 端范本时判断是否正在被流程使用；流程全删除或作废（cancelled）才可删」。背景：delete_template 既有级联语义（09-17）会连带删掉填写任务行+成稿对象，流程还在跑时范本被删 → filled 行 10s 权威轮询打 progress 恒 102、流程断粮（与 09-23（三）同类事故的删除侧源头）。
+
+**关联链路（关键考古）**：`tpl_fill_task.flow_instance_id` 存的是**画布会话 id**（`sys.session_id`，流程页即该流程影子会话 id，见 latest_done_in_context）而非 flow_id → 须经 `FlowAiChat.session_id` 反查 `flow_id` → `FlowInstance`。会话 id 经 FlowAiChat 归窄后 c-chat 普通会话天然不命中。**口径**：拦截 `deleted=0 且 status != 'cancelled'` 任一存在即拒删（归档 archived 视为仍在使用）；旧数据 flow_instance_id 全空串（09-17 前）无关联可查 → 不阻塞，与级联语义一致。拒删提示列前 3 个流程名 + 总数。
+
+**改动**（后端 2 文件，10 套件 110 passed + ruff）：
+- `template_fill_service.py`：新增 `_active_flow_usage(session_ids)` classmethod（无 @DB.connection_context——调用方 delete_template 已在连接上下文内，遵守「事务内裸查询」既定模式）；delete_template 在 tasks 取出后、storage rm 之前插入守卫。
+- `test_template_api_routes.py`：4 新用例（拒删+零副作用不 rm 不删行 / 全 cancelled+deleted 放行且事务执行 / 空 session_ids 跳过查询 / 源码断言谓词含 deleted==0 与 status!=cancelled 防回退）+ 3 个桩类（`_FakeField` 支持 `in_/==/!=/&` 组合——peewee 谓词链 `&` 无法用裸 object 桩，两轮迭代修复）。
+
+**部署**：后端单文件 `template_fill_service.py` SCP + md5 双端一致 + 容器重启 + import 冒烟（`_active_flow_usage` 存在）。
+
+## 2026-09-25（六）写回范本库按钮二次确认弹框（已部署 2026-09-25 + push 408ea327）
+
+**主题**：用户要求「C端流程页面的写回范本库按钮做一个二次确认」。写回会把本轮字段值沉淀为范本默认值（影响后续所有轮次兜底值），误触代价高。按钮位于共享组件 `TemplateFillSedimentButton`（template-fill-progress.tsx），c-chat 对话页与流程页签两入口一次修改同时生效。
+
+**改动**（纯前端 2 文件，写回套件 12 用例全绿）：idle/error 两分支改 AlertDialog 包裹（确认写回/取消两键，确认后才调 `sedimentTemplateFillDefaults`）；错误态重试同样先过确认。测试新增「二次确认」describe 2 用例（点击只弹框不发请求 / 取消不发请求按钮仍在），既有四态用例全部改为经 `clickThroughConfirm()` 助手触发。
+
 ## 2026-09-25（五）终态预览渲染源切到成稿派生副本（已部署 2026-09-25 + push e5684a5c）
 
 **主题**：（四）桥接派生副本后用户仍报「说是改好了，我点击查看填写内容，文本渲染的还是没有显示新的内容」。**第四层断层（最后一层）**：「查看填写内容」预览的渲染源是**模板工作副本**（`useTemplateFillFile(template_id)`，含 `{{key}}` 的原始范本）+ 前端 values 覆盖渲染——replace/rewrite 改的是**非填写点正文**，只存在于成稿，工作副本永远不会变，预览无论怎么刷新/重开都显示改前内容。modify 可见只因为它改 values（填写点）。教训同 09-17：修可见性问题必须先确认「用户看到的画面由哪个数据源渲染」。
