@@ -20,8 +20,9 @@ meta，DocumentRewrite(ToolBase) 提供 _invoke，被 component 按类名自动�
 DB/存储层（FileService / FlowVersionService / LLMBundle）全部延迟 import，
 避免工具注册期触发 DB 依赖。
 
-文档来源：flow 场景读 sys.flow_version_id（优先）；chat 场景读 doc_id 参数或
-sys.recent_downloads 最近成稿卡。rewrite/rollback 成功后把 download 契约 append
+文档来源：显式 doc_id 参数 > sys.recent_downloads 最新成稿卡（含范本填写成稿
+tplfill- 对象）> flow 场景 sys.flow_version_id（前端保证有成稿卡时不传该变量，
+由前端控制「最新产物优先」）。rewrite/rollback 成功后把 download 契约 append
 到 canvas 全局 sys.pending_downloads，由 Message 组件合并输出成稿卡。
 
 versions / rewriter 执行层自身零 DB 依赖（DB/存储 import 全在函数体内），
@@ -72,7 +73,7 @@ class DocumentRewriteParam(ToolParamBase):
 3. versions：列出该文档的全部历史版本（版本号/来源/说明）。
 4. rollback：回退到某个历史版本。需要 version_no（versions 返回的版本号）。回退会生成一个新版本（内容为历史版），不会丢失任何版本。
 
-使用时机：用户对已生成的成稿说「把第N节重写/重新写一下XX部分/回退到上一版」时使用。文档默认取本会话最近一张成稿卡；操作流程文档版本时自动生效，无需传 doc_id。""",
+使用时机：用户对已生成的成稿说「把第N节重写/重新写一下XX部分/回退到上一版」时使用。文档默认取本会话最近一张成稿卡（含范本填写生成的成稿）；本会话没有成稿卡时才落到流程版本文档，均无需传 doc_id。用户明确要求修改流程版本文档而本会话有成稿卡时，说明请到「流程」页签的版本时间线操作。""",
             "parameters": {
                 "action": {
                     "type": "string",

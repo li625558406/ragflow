@@ -32,6 +32,7 @@ import { FileText } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ChatInputBox, { type UploadedDoc } from '../chat-input-box';
 import { extractFileReviewTarget } from '../file-review-progress';
+import { collectRecentFillDownloads } from '../recent-downloads';
 import ReviewPanel, { type Annotation } from '../review-panel';
 import type {
   FlowAiChatItem,
@@ -985,6 +986,13 @@ export default function FlowAiPanel({
             type: 'line',
           };
         }
+        // 重写目标优先级（最新产物优先）：本会话最新范本成稿卡 > 流程版本文档。
+        // 有成稿卡时传 recent_downloads 并把 flow_version_id 置空——后端
+        // DocumentRewrite 对流程版本目标无条件优先（_doc_for_action），必须以
+        // 缺参让位它才能降级到 chat 来源；无成稿卡回落流程版本（现状行为）。
+        const fillDownloads = collectRecentFillDownloads(
+          recoveredTemplateFill ?? templateFillRef.current,
+        );
         res = await send({
           agent_id: agentId,
           query,
@@ -993,8 +1001,12 @@ export default function FlowAiPanel({
           files,
           inputs: Object.keys(reviewInputs).length ? reviewInputs : undefined,
           internet: false,
-          // 当前流程版本文档：sys.flow_version_id 供 flow 场景 DocumentRewrite 定位重写目标（无版本空串→工具降级 chat 来源）
-          flow_version_id: String(version?.id ?? ''),
+          // 最近范本成稿卡契约：sys.recent_downloads 供 DocumentRewrite 定位重写目标
+          recent_downloads: fillDownloads.length ? fillDownloads : undefined,
+          // 当前流程版本文档：sys.flow_version_id 供 flow 场景 DocumentRewrite 定位重写目标（无版本/有成稿卡空串→工具降级 chat 来源）
+          flow_version_id: fillDownloads.length
+            ? ''
+            : String(version?.id ?? ''),
         });
         // hook 收尾时同步 flush+reset（React 批处理），streamState 一次性清空；
         // 尾包 message 与 [DONE] 同帧到达时 RAF flush 未跑过，contentRef 拿不到
@@ -1072,6 +1084,7 @@ export default function FlowAiPanel({
     busy,
     ensureSession,
     flowId,
+    recoveredTemplateFill,
     reviewMode,
     send,
     setValue,

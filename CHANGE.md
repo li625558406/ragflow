@@ -1,5 +1,20 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-25 流程页签 DocumentRewrite 定位范本成稿卡（成稿卡优先于流程版本）
+
+**主题**：用户实测「范本填写完成后说『把 6.1法定条件 的内容改成 LG11111』」AI 定位不到——法定条件是范本固定正文（非填写点），填写/modify 链路（含 09-24 二档降级）按设计不碰它；正确链路 DocumentRewrite（按节重写）在流程页签却报「本会话没有可用的成稿卡片」。根因：**flow-ai-panel 发送只传 `flow_version_id` 不传 `recent_downloads`**（c-chat 有传），流程无版本时后端 `_resolve_doc_id` 恒空。范本成稿本身是受支持的（download 契约 `doc_id=tplfill-{task_id}` 存 downloads 桶，工具已适配剥前缀+`source_type='chat_fill'` 版本链）。
+
+**改动**：目标优先级定为「最新产物优先」：**本会话最新范本成稿卡 > 流程版本文档**，纯前端控制——
+- `recent-downloads.ts` 新增 `collectRecentFillDownloads`（仅取 status='filled' 且带 doc_id 的模板行，倒序 limit 2，filename 清洗复用同款 `sanitizeDownloadFilename`；无成稿返回 [] 调用方回落流程版本）+ 6 组对抗用例；
+- `flow-ai-panel.tsx` handleSend：有填充卡传 `recent_downloads` 并把 `flow_version_id` 置空——后端 `_doc_for_action` 对流程版本无条件优先，必须以缺参让位；数据源 `recoveredTemplateFill ?? templateFillRef.current`（快照权威恢复优先）；deps 补 `recoveredTemplateFill`（审查 I-1：3s 轮询窗口内 filling→filled 翻转后闭包过期会静默回落流程版本）；无成稿卡逐字段与改前一致；
+- `document_rewrite.py` 仅注释/工具描述文案同步（显式 doc_id > recent_downloads > flow_version_id，前端缺参实现；补「明确指流程文档时引导去版本时间线」）——零逻辑改动。
+
+**语义变化（设计接受）**：有成稿卡时 versions/rollback 也落成稿重写链（原「流程文档请到页签操作」引导仅在无成稿卡时出现）；用户明确指流程版本文档目前不可达（工具无参数指回，遗留）。
+
+**验证**：前端 vitest 360 passed（+6 新用例）+ build 通过；后端 test_doc_rewrite_tool 19 passed；审查 1 Important + 3 Minor（I-1/M-1/M-3 已修，M-2 截断序列无 run id 旧数据回落流程版本/ M-4 limit 2 为知悉项）。
+
+**遗留**：①用户明确要改流程版本而成稿卡在场时不可达（需工具加 target 参数，后续有需求再议）；②截断事件序列且无 run id 的旧数据会静默回落流程版本。
+
 ## 2026-09-24 范本填写检索增强——二档全文降级 + 用户输入实体分析（方案 A）（已部署 2026-09-24 + push 60f969b1）
 
 **主题**：用户输入含具体实体信息（如直接给出单位名称/日期）时，一档检索（KB 相似度）常因空槽占位词命中差导致产值靠默认值/编造。本次给检索加二档全文降级，并在画布确认阶段用一次 LLM 做实体分析（直填值抽取 + 实体/`__context__` 语境提取），实体组合词进宽检索提升命中。
