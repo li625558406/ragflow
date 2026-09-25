@@ -1,6 +1,17 @@
 // 范本填写进度卡片：c-chat 对话与 flow AI 对话区共用（设计 3.2「逻辑同构」的落地）。
 // selected → 范本卡片行（填写点徽标）；filling → 进度行；filled → 即时下载条（不等其他范本）；
 // failed → 降级文案行。全部文案中文，不走 i18n。
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
 import message from '@/components/ui/message';
 import {
   buildFilledRows,
@@ -224,26 +235,48 @@ function TemplateFillSedimentButton({ taskId }: { taskId: string }) {
     );
   }
   return (
-    <button
-      className={`flex shrink-0 items-center gap-1 transition-colors ${
-        state === 'error'
-          ? 'text-[#F5222D] hover:text-[#CF1322]'
-          : 'text-[#1a66fb] hover:text-[#1557d6]'
-      }`}
-      title={
-        state === 'error'
-          ? `写回失败：${errMsg}（可再点重试）`
-          : '写回范本库：把本轮确认/直填的字段沉淀为范本默认值，不改变范本文件本身'
-      }
-      onClick={onWriteBack}
-    >
-      {state === 'error' ? (
-        <RefreshCw className="h-3.5 w-3.5" />
-      ) : (
-        <Save className="h-3.5 w-3.5" />
-      )}
-      {state === 'error' ? '写回失败' : '写回范本库'}
-    </button>
+    // 二次确认：写回会把本轮字段值沉淀为范本默认值（影响后续所有轮次的兜底值），
+    // 误触代价高，先弹框确认再执行
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <button
+          className={`flex shrink-0 items-center gap-1 transition-colors ${
+            state === 'error'
+              ? 'text-[#F5222D] hover:text-[#CF1322]'
+              : 'text-[#1a66fb] hover:text-[#1557d6]'
+          }`}
+          title={
+            state === 'error'
+              ? `写回失败：${errMsg}（可再点重试）`
+              : '写回范本库：把本轮确认/直填的字段沉淀为范本默认值，不改变范本文件本身'
+          }
+        >
+          {state === 'error' ? (
+            <RefreshCw className="h-3.5 w-3.5" />
+          ) : (
+            <Save className="h-3.5 w-3.5" />
+          )}
+          {state === 'error' ? '写回失败' : '写回范本库'}
+        </button>
+      </AlertDialogTrigger>
+      <AlertDialogContent className="bg-bg-base">
+        <AlertDialogHeader>
+          <AlertDialogTitle>写回范本库</AlertDialogTitle>
+          <AlertDialogDescription>
+            确定把本轮确认/直填的字段值沉淀为该范本的默认值？范本文件与占位符本身不会被改动；写回后可随时在范本库详情中人工修改。
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>取消</AlertDialogCancel>
+          <AlertDialogAction
+            className="bg-[#1a66fb] text-white hover:bg-[#1557d6]"
+            onClick={onWriteBack}
+          >
+            确认写回
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
